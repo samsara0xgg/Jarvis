@@ -131,10 +131,11 @@ tools:
     # 拿到的是纯 <head>，抽出来一个字都没有。150KB 的页面只读到 5.4%。
     # 2MiB 足够越过任何正常文档的 head，同时仍然拒绝无限流。
     fetch_max_bytes: 2097152
-    # web_fetch 真正的输出上限：HTML 抽完正文之后，最多把多少字节的
-    # 文本交给 LLM（超出部分变成 "…[truncated N bytes of extracted text]"）。
-    # 卡在抽取后的文本上，这个数字才名副其实——8KB 可读正文，而不是
-    # 8KB 可能一个字正文都不含的标记。
+    # web_fetch 真正的输出上限：整个结果序列化后最多多少个字符交给
+    # LLM。超出时 dispatcher 对最长的那段文本做头尾截断（保留约 75% 头
+    # 和 25% 尾，中间标 "…[omitted N chars]…"），并把 truncated 置 true。
+    # 卡在抽取后的文本上，这个数字才名副其实——8K 可读正文，而不是
+    # 8K 可能一个字正文都不含的标记。
     fetch_max_text_bytes: 8192
     # web_search 和 web_fetch 共用同一个超时（秒）。ADR-0011 D5 原文给
     # 两个工具分别写了 15s/20s，但这里只有一个键——D7 定的 schema 就是

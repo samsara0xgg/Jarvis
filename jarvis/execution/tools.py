@@ -561,8 +561,23 @@ class ToolDefinition:
 
 # --- Tool (ADR 0019: the flat definition replacing ToolDefinition) ----------
 
-type FlatHandler = Callable[[Mapping[str, Any]], Mapping[str, Any]]
+
+@dataclass(frozen=True)
+class ToolContext:
+    """What a flat handler may reach beyond its arguments."""
+
+    conn: sqlite3.Connection
+    runtime_paths: RuntimePathsLike
+
+
+type FlatHandler = Callable[[Mapping[str, Any], ToolContext], Mapping[str, Any]]
 """A tool is a function of its arguments; everything else is the dispatcher's."""
+
+DEFAULT_MAX_RESULT_CHARS: Final[int] = 8192
+"""Serialized-result budget of a flat tool that declares none (the 8 KiB every D5 tool used)."""
+
+_MIN_WINDOW_CHARS: Final[int] = 80
+"""Below this a head+tail window is all marker; the dispatcher shrinks the next string instead."""
 
 
 class ToolError(Exception):
@@ -578,12 +593,15 @@ class ToolError(Exception):
 class Tool:
     """One registered tool (ADR 0019).
 
-    ``handler`` takes the request's arguments and returns the result payload.
-    The dispatcher emits every event, moves the lifecycle and serializes the
-    payload: a return is an ``observation``, a raised :class:`ToolError` is an
-    ``error`` observation, any other exception propagates as it does today.
-    ``requires_entity`` and ``requires_confirmation`` feed the Pre-action Gate
-    arms that still exist; they leave with the audit chain.
+    ``handler`` takes the request's arguments and a :class:`ToolContext` and
+    returns the result payload. The dispatcher emits every event, moves the
+    lifecycle and serializes the payload: a return is an ``observation``, a
+    raised :class:`ToolError` is an ``error`` observation, any other exception
+    is an ``unexpected_error`` observation. ``max_result_chars`` bounds the
+    serialized result: the longest string values are windowed head+tail until
+    it fits and the payload is marked ``truncated``. ``requires_entity`` and
+    ``requires_confirmation`` feed the Pre-action Gate arms that still exist;
+    they leave with the audit chain.
     """
 
     name: str
@@ -595,6 +613,7 @@ class Tool:
     read_only: bool
     requires_entity: bool = False
     requires_confirmation: bool = False
+    max_result_chars: int = DEFAULT_MAX_RESULT_CHARS
 
     @property
     def is_async(self) -> bool:
@@ -611,6 +630,7 @@ def tool(  # noqa: PLR0913 — one keyword per Tool field.
     read_only: bool,
     requires_entity: bool = False,
     requires_confirmation: bool = False,
+    max_result_chars: int = DEFAULT_MAX_RESULT_CHARS,
 ) -> Callable[[FlatHandler], Tool]:
     """Build a :class:`Tool` from a handler; the function's name is the tool's."""
 
@@ -625,31 +645,87 @@ def tool(  # noqa: PLR0913 — one keyword per Tool field.
             read_only=read_only,
             requires_entity=requires_entity,
             requires_confirmation=requires_confirmation,
+            max_result_chars=max_result_chars,
         )
 
     return wrap
 
 
-def _observe(
+def _head_tail(text: str, keep: int) -> str:
+    """Keep ``keep`` chars of ``text``: ~75% head, ~25% tail, an omission marker between."""
+    if len(text) <= keep:
+        return text
+    # The marker's digit count is bounded by len(text), so the result never exceeds `keep`.
+    room = keep - len(f"\n…[omitted {len(text)} chars]…\n")
+    if room < _MIN_WINDOW_CHARS:
+        return text[: max(0, keep)]
+    head = room * 3 // 4
+    tail = room - head
+    return f"{text[:head]}\n…[omitted {len(text) - head - tail} chars]…\n{text[-tail:]}"
+
+
+def _string_slots(node: Any, slots: list[tuple[Any, Any]]) -> None:  # noqa: ANN401 — walks any JSON-shaped value.
+    """Collect every ``(container, key)`` that holds a str inside a JSON-shaped payload."""
+    items: Any = node.items() if isinstance(node, dict) else enumerate(node)
+    for key, value in items:
+        if isinstance(value, str):
+            slots.append((node, key))
+        elif isinstance(value, (dict, list)):
+            _string_slots(value, slots)
+
+
+def _fit_result(payload: dict[str, Any], cap: int) -> dict[str, Any]:
+    """Window the longest strings head+tail until ``tool_result(payload)`` fits ``cap``."""
+    while (over := len(tool_result(payload)) - cap) > 0:
+        slots: list[tuple[Any, Any]] = []
+        _string_slots(payload, slots)
+        candidates = [(c, k) for c, k in slots if len(c[k]) > _MIN_WINDOW_CHARS]
+        if not candidates:
+            break
+        container, key = max(candidates, key=lambda ck: len(ck[0][ck[1]]))
+        payload["truncated"] = True
+        keep = max(_MIN_WINDOW_CHARS, len(container[key]) - over)
+        container[key] = _head_tail(container[key], keep)
+    return payload
+
+
+def _observe(  # noqa: PLR0913 — the four handler arguments plus the definition and the uid the dispatcher holds.
     tool_def: Tool,
     action_request: ActionRequest,
     conn: sqlite3.Connection,
+    runtime_paths: RuntimePathsLike,
     lifecycle: ActionLifecycle,
     *,
     running_event_uid: str,
 ) -> RawResult:
-    """Run a flat tool and write its one terminal, ``action.result_observed``."""
+    """Run a flat tool and write its one terminal, ``action.result_observed``.
+
+    The terminal row is the dispatcher's whatever the handler did, so the
+    lifecycle never strands at ``running`` (ADR-0011 §5 "never a crash"): a
+    non-``ToolError`` exception becomes an ``unexpected_error`` observation
+    and is logged with its traceback.
+    """
     action_id = action_request.action_id
+    cap = tool_def.max_result_chars
     error: str | None = None
+    message = ""
+    payload: dict[str, Any] = {}
+    tool_output = ""
     try:
-        payload: dict[str, Any] = dict(tool_def.handler(action_request.arguments))
-        semantics: ResultSemantics = "observation"
+        raw = tool_def.handler(action_request.arguments, ToolContext(conn, runtime_paths))
+        payload = _fit_result(dict(raw), cap)
         tool_output = tool_result(payload)
     except ToolError as exc:
-        error = exc.code
+        error, message = exc.code, str(exc)
+    except Exception as exc:
+        # The terminal row is the dispatcher's whatever the handler did.
+        LOGGER.exception("tool %s raised", tool_def.name)
+        error = "unexpected_error"
+        message = f"{tool_def.name}: unexpected {type(exc).__name__}: {exc}"
+    if error is not None:
+        tool_output = tool_result(_fit_result({"error": message, "code": error}, cap))
         payload = {"error": error}
-        semantics = "error"
-        tool_output = tool_error(str(exc), code=error)
+    semantics: ResultSemantics = "observation" if error is None else "error"
     event_payload: dict[str, Any] = {
         "action_id": action_id,
         "semantics": semantics,
@@ -687,7 +763,8 @@ def _run_handler(  # noqa: PLR0913 — the four handler arguments plus the defin
     if isinstance(tool_def, ToolDefinition):
         return tool_def.handler(action_request, conn, runtime_paths, lifecycle)
     return _observe(
-        tool_def, action_request, conn, lifecycle, running_event_uid=running_event_uid,
+        tool_def, action_request, conn, runtime_paths, lifecycle,
+        running_event_uid=running_event_uid,
     )
 
 
@@ -2151,7 +2228,7 @@ def _spoken_clock(hour: int, minute: int) -> str:
     risk_level="L0",
     read_only=True,
 )
-def get_current_time(_args: Mapping[str, Any]) -> dict[str, Any]:
+def get_current_time(_args: Mapping[str, Any], _ctx: ToolContext) -> dict[str, Any]:
     """Read the system clock (spec §3.5.4); Tier 0's tool, jarvis_llm may call it too.
 
     The payload carries the machine keys ``iso`` / ``date`` / ``time`` /
@@ -3697,97 +3774,61 @@ def _with_api_key(backend: _KeyedSearchBackend, api_key: str) -> _SearchBackend:
     return _call
 
 
-def _make_web_search_handler(
+def _make_web_search(
     *,
     default_max_results: int,
     timeout_s: float,
     provider: str = DEFAULT_WEB_SEARCH_PROVIDER,
     api_key: str | None = None,
-) -> ToolHandler:
-    """Bind `tools.web.{search_max_results,timeout_s,search_provider}` into a closure.
-
-    ADR-0011 D7. Same shape as `_make_search_notes_handler` — config
-    read once at registry-build time, closed over here.
-    """
+) -> Tool:
+    """Bind `tools.web.{search_max_results,timeout_s,search_provider}` into `web_search`."""
     backend, provider_used = _resolve_search_backend(provider, api_key)
 
-    def _handler(
-        action_request: ActionRequest,
-        conn: sqlite3.Connection,
-        runtime_paths: RuntimePathsLike,  # noqa: ARG001 — signature uniformity.
-        lifecycle: ActionLifecycle,
-    ) -> RawResult:
-        running_event_uid = _get_running_event_uid(conn, action_request.action_id)
-        action_id = action_request.action_id
-
+    def web_search(args: Mapping[str, Any], _ctx: ToolContext) -> dict[str, Any]:
+        query = args.get("query")
+        if not isinstance(query, str) or not query.strip():
+            msg = f"web_search: query must be a non-empty string (got {query!r})"
+            raise ToolError(msg, code="invalid_argument")
+        max_results = default_max_results
+        max_results_arg = args.get("max_results")
+        if (
+            isinstance(max_results_arg, (int, float))
+            and not isinstance(max_results_arg, bool)
+            and math.isfinite(max_results_arg)
+        ):
+            # `json.loads` accepts Infinity/NaN on the tool-arg path and `int(inf)`
+            # raises; a malformed value means "use the default" (ADR-0011 §12).
+            max_results = int(max_results_arg)
+        max_results = max(1, min(max_results, _WEB_SEARCH_MAX_RESULTS_CAP))
         try:
-            query = action_request.arguments.get("query")
-            if not isinstance(query, str) or not query.strip():
-                return _emit_tool_error(
-                    conn=conn,
-                    lifecycle=lifecycle,
-                    action_id=action_id,
-                    running_event_uid=running_event_uid,
-                    code="invalid_argument",
-                    message=f"web_search: query must be a non-empty string (got {query!r})",
-                )
+            rows = backend(query, max_results, timeout_s=timeout_s)
+        except Exception as exc:
+            # ddgs anti-bot churn and keyed 401/429 are routine (ADR-0011 §5):
+            # name the backend, no in-handler retry.
+            msg = f"web_search: {provider_used} backend error: {exc}"
+            raise ToolError(msg, code="web_search_backend_error") from exc
+        # Naming the backend keeps the `_resolve_search_backend` degrade visible
+        # in the event log instead of inferable.
+        return {
+            "results": [
+                f"{i}. {title} — {url} — {_collapse_ws(text)[:_WEB_SEARCH_RESULT_TEXT_CAP]}"
+                for i, (title, url, text) in enumerate(rows, start=1)
+            ],
+            "provider": provider_used,
+        }
 
-            max_results = default_max_results
-            max_results_arg = action_request.arguments.get("max_results")
-            if (
-                isinstance(max_results_arg, (int, float))
-                and not isinstance(max_results_arg, bool)
-                and math.isfinite(max_results_arg)
-            ):
-                # SHOULD-FIX 6, ADR-0011 §12: `json.loads` accepts
-                # `Infinity`/`NaN` in the LLM tool-arg path, and
-                # `int(inf)` raises OverflowError — fold that shape
-                # into "ignore, use the default", same as any other
-                # malformed `max_results_arg` this branch already
-                # ignores silently.
-                max_results = int(max_results_arg)
-            max_results = max(1, min(max_results, _WEB_SEARCH_MAX_RESULTS_CAP))
-
-            try:
-                rows = backend(query, max_results, timeout_s=timeout_s)
-            except Exception as exc:  # noqa: BLE001 — backend breakage (ddgs anti-bot churn is expected and normal, ADR-0011 §5; a keyed provider can 401/429 just as routinely) degrades to an error observation naming the backend, never a crash; no retry loop in-handler.
-                return _emit_tool_error(
-                    conn=conn,
-                    lifecycle=lifecycle,
-                    action_id=action_id,
-                    running_event_uid=running_event_uid,
-                    code="web_search_backend_error",
-                    message=f"web_search: {provider_used} backend error: {exc}",
-                )
-
-            results = _cap_rows_total_bytes(
-                [
-                    f"{i}. {title} — {url} — {_collapse_ws(text)[:_WEB_SEARCH_RESULT_TEXT_CAP]}"
-                    for i, (title, url, text) in enumerate(rows, start=1)
-                ],
-                _WEB_SEARCH_TOTAL_MAX_BYTES,
-            )
-            # Naming the backend keeps the `_resolve_search_backend`
-            # degrade visible in the event log instead of inferable.
-            payload: dict[str, Any] = {"results": results, "provider": provider_used}
-            return _emit_tool_observation(
-                conn=conn,
-                lifecycle=lifecycle,
-                action_id=action_id,
-                running_event_uid=running_event_uid,
-                payload=payload,
-            )
-        except Exception as exc:  # noqa: BLE001 — handler-boundary catch-all (MUST-FIX 2, ADR-0011 §12): §5's contract is "never a crash"; anything not already folded into a named error observation above (e.g. a future argument-shape bug) still terminal-transitions the lifecycle instead of stranding it at `running`, naming the real exception type so a genuine bug stays diagnosable.
-            return _emit_tool_error(
-                conn=conn,
-                lifecycle=lifecycle,
-                action_id=action_id,
-                running_event_uid=running_event_uid,
-                code="web_search_unexpected_error",
-                message=f"web_search: unexpected {type(exc).__name__}: {exc}",
-            )
-
-    return _handler
+    return Tool(
+        name="web_search",
+        description=(
+            "Search the web and return numbered title — url — snippet rows. "
+            "Use for questions about current events or anything not already known."
+        ),
+        input_schema=_WEB_SEARCH_INPUT_SCHEMA,
+        handler=web_search,
+        allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
+        risk_level="L1",
+        read_only=True,
+    )
 
 
 # --- web_fetch -----------------------------------------------------------------
@@ -3812,7 +3853,9 @@ unbounded stream."""
 
 DEFAULT_WEB_FETCH_MAX_TEXT_BYTES: Final[int] = 8192
 """Default `tools.web.fetch_max_text_bytes` — the cap on the text this
-tool actually returns, applied AFTER HTML extraction.
+tool actually returns, applied AFTER HTML extraction. Since ADR 0019 it
+is the tool's ``max_result_chars``: the dispatcher counts characters over
+the whole serialized result and windows the longest string head+tail.
 
 This is the 8 KiB context bound the old `fetch_max_bytes` was really
 reaching for. Capping extracted text (rather than raw bytes) is what
@@ -4218,52 +4261,6 @@ def _decode_hop_body(
         return truncate_utf8(body, total_bytes)
 
 
-def _cap_extracted_text(text: str, max_bytes: int) -> tuple[str, int]:
-    """Cap ALREADY-EXTRACTED text to `max_bytes`, codepoint-safe.
-
-    Returns `(capped, undelivered_bytes)`; `undelivered_bytes == 0`
-    means nothing was cut. The `lossy` leg of `truncate_utf8` cannot
-    fire here — `text` is a valid `str`, so re-encoding it always
-    produces well-formed UTF-8 and the only possible cut is a clean
-    codepoint boundary.
-
-    This is the counterpart to the drain-side `max_bytes` cap in
-    `_fetch_hop`: that one bounds bytes off the socket, this one bounds
-    what the LLM is asked to read. Keeping them separate is the whole
-    point — see :data:`DEFAULT_WEB_FETCH_MAX_BYTES`.
-    """
-    encoded = text.encode("utf-8")
-    if len(encoded) <= max_bytes:
-        return text, 0
-    capped, undelivered, _lossy = truncate_utf8(encoded[:max_bytes], len(encoded))
-    return capped, undelivered
-
-
-def _truncation_marker(
-    *, text_undelivered: int, body_undelivered: int, body_total_exact: bool,
-) -> str:
-    """Render the inline `…[…]` marker naming which cut(s) fired.
-
-    Both can fire on one response — a page past the drain cap whose
-    extracted text ALSO overruns the text cap — and they mean different
-    things to a reader deciding whether to fetch more, so name both
-    rather than picking one. Returns `""` when nothing was cut.
-    """
-    markers: list[str] = []
-    if text_undelivered > 0:
-        markers.append(f"truncated {text_undelivered} bytes of extracted text")
-    if body_undelivered > 0:
-        # MUST-FIX 3, ADR-0011 §12: when the drain stopped at the cap or
-        # the fetch deadline before the server declared a
-        # Content-Length, the shortfall is a true LOWER bound (bytes
-        # actually seen past the cap), never a claimed exact count.
-        qualifier = "" if body_total_exact else "at least "
-        markers.append(f"download stopped {qualifier}{body_undelivered} bytes short")
-    if not markers:
-        return ""
-    return "…[" + "; ".join(markers) + "]"
-
-
 def _looks_like_html(body: bytes) -> bool:
     """Sniff a leading `<`/`<!doctype` to detect an HTML document.
 
@@ -4276,166 +4273,140 @@ def _looks_like_html(body: bytes) -> bool:
     return stripped.startswith(b"<")
 
 
-def _make_web_fetch_handler(  # noqa: C901 — thin closure factory; the complexity ruff counts lives entirely in the nested `_handler` (see its own noqa), not in this function's own body.
-    *, max_bytes: int, max_text_bytes: int, timeout_s: float,
-) -> ToolHandler:
-    """Bind the `tools.web.*` fetch knobs into a closure (ADR-0011 D7).
+_WEB_EXTRACT_URL: Final[str] = "https://api.tavily.com/extract"
 
-    `fetch_max_bytes`, `fetch_max_text_bytes` and `timeout_s`.
-    `max_bytes` bounds the socket drain; `max_text_bytes` bounds the
-    extracted text handed back. See :data:`DEFAULT_WEB_FETCH_MAX_BYTES`
-    for why collapsing the two made the tool unable to read real pages.
+
+def _tavily_extract(url: str, *, api_key: str, timeout_s: float) -> dict[str, Any]:
+    """Tavily `/extract` (basic depth) for one URL: markdown text, PDFs included.
+
+    Raises `ToolError` when Tavily answered but could not extract the page
+    (its `failed_results` reason) and `httpx.HTTPError` when Tavily itself
+    failed; `web_fetch` falls back to fetching here on either.
+    """
+    response = httpx.post(
+        _WEB_EXTRACT_URL,
+        headers={"Authorization": f"Bearer {api_key}"},
+        json={"urls": [url], "extract_depth": "basic"},
+        timeout=timeout_s,
+    )
+    response.raise_for_status()
+    data = response.json()
+    results = data.get("results") or []
+    if not results:
+        failed = (data.get("failed_results") or [{}])[0]
+        msg = f"web_fetch: tavily could not extract {url}: {failed.get('error', 'unknown')}"
+        raise ToolError(msg, code="web_fetch_failed")
+    return {
+        "url": results[0].get("url") or url,
+        "content": results[0].get("raw_content") or "",
+        "source": "tavily",
+    }
+
+
+def _html_content(html_text: str, *, body_truncated: bool) -> str:
+    """The extracted text, or the one-line reason there is none."""
+    if html_text.strip():
+        return html_text
+    if body_truncated:
+        return (
+            "(the page was cut off by the download cap before any body text "
+            "was parsed — cannot tell whether it has visible content past the cut)"
+        )
+    # ADR-0011 D5: no JS rendering — an SPA that hydrates via script returns
+    # only its shell here. Declared limitation, not an empty-page bug.
+    return (
+        "(no visible text in the initial HTML — this may be a "
+        "JavaScript-rendered page; this tool does not execute JS)"
+    )
+
+
+def _self_fetch(url: str, *, timeout_s: float, max_bytes: int) -> dict[str, Any]:
+    """Fetch and tag-strip one page here: the keyless path and Tavily's fallback (ADR-0011 D5)."""
+    outcome = _fetch_url_backend(url, timeout_s=timeout_s, max_bytes=max_bytes)
+    if not outcome.ok:
+        raise ToolError(
+            outcome.error_message or "web_fetch: unknown failure",
+            code=outcome.error_code or "web_fetch_failed",
+        )
+    mime = (outcome.content_type or "").split(";", 1)[0].strip().lower()
+    if not mime and _looks_like_html(outcome.body):
+        # No Content-Type at all: sniff, or raw markup would pass as plain text.
+        mime = "text/html"
+    payload: dict[str, Any] = {
+        "url": outcome.final_url,
+        "status_code": outcome.status_code,
+        "content_type": outcome.content_type,
+        "source": "fetch",
+    }
+    if mime and not mime.startswith("text/"):
+        payload["note"] = (
+            f"non-text content-type {outcome.content_type!r}; body not decoded as text"
+        )
+        return payload
+    text, undelivered_bytes, lossy = _decode_hop_body(
+        outcome.body, outcome.total_bytes, outcome.content_type,
+    )
+    body_truncated = undelivered_bytes > 0
+    if mime == "text/html":
+        title, html_text = _extract_readable_html(text)
+        if title:
+            payload["title"] = title
+        payload["content"] = _html_content(html_text, body_truncated=body_truncated)
+    else:
+        payload["content"] = text
+    payload["total_bytes"] = outcome.total_bytes
+    if body_truncated:
+        # The 2 MiB drain cap fired; the text cap is the dispatcher's.
+        payload["download_truncated"] = True
+    if not outcome.total_bytes_exact:
+        payload["total_bytes_exact"] = False
+    if lossy:
+        payload["encoding"] = "lossy"
+    return payload
+
+
+def _make_web_fetch(
+    *, max_bytes: int, max_text_chars: int, timeout_s: float, extract_api_key: str | None,
+) -> Tool:
+    """Bind the `tools.web.*` fetch knobs and the Tavily key into `web_fetch`.
+
+    With a key the page comes from Tavily extract (markdown, PDFs, no JS
+    limitation); any Tavily failure falls back to fetching here. The egress
+    guard runs first either way, so no private address leaves the machine.
     """
 
-    def _handler(  # noqa: C901, PLR0912 — one linear guard/content-type/decode/shape pass (MUST-FIX 2's handler-boundary try/except wraps all of it, ADR-0011 §12) — splitting the content-type sniff, charset decode, and HTML-placeholder branches into helpers would scatter the fail-fast checks from the payload fields they gate, same rationale as `_make_search_notes_handler`'s own noqa.
-        action_request: ActionRequest,
-        conn: sqlite3.Connection,
-        runtime_paths: RuntimePathsLike,  # noqa: ARG001 — signature uniformity.
-        lifecycle: ActionLifecycle,
-    ) -> RawResult:
-        running_event_uid = _get_running_event_uid(conn, action_request.action_id)
-        action_id = action_request.action_id
-
-        try:
-            url = action_request.arguments.get("url")
-            if not isinstance(url, str) or not url.strip():
-                return _emit_tool_error(
-                    conn=conn,
-                    lifecycle=lifecycle,
-                    action_id=action_id,
-                    running_event_uid=running_event_uid,
-                    code="invalid_argument",
-                    message=f"web_fetch: url must be a non-empty string (got {url!r})",
+    def web_fetch(args: Mapping[str, Any], _ctx: ToolContext) -> dict[str, Any]:
+        url = args.get("url")
+        if not isinstance(url, str) or not url.strip():
+            msg = f"web_fetch: url must be a non-empty string (got {url!r})"
+            raise ToolError(msg, code="invalid_argument")
+        allowed, reason = validate_egress_url(url)
+        if not allowed:
+            msg = f"web_fetch: {reason}"
+            raise ToolError(msg, code="ssrf_guard_refused")
+        if extract_api_key:
+            try:
+                return _tavily_extract(url, api_key=extract_api_key, timeout_s=timeout_s)
+            except (httpx.HTTPError, ToolError, ValueError) as exc:
+                LOGGER.warning(
+                    "web_fetch: tavily extract failed for %s (%s); fetching directly", url, exc,
                 )
+        return _self_fetch(url, timeout_s=timeout_s, max_bytes=max_bytes)
 
-            outcome = _fetch_url_backend(url, timeout_s=timeout_s, max_bytes=max_bytes)
-            if not outcome.ok:
-                return _emit_tool_error(
-                    conn=conn,
-                    lifecycle=lifecycle,
-                    action_id=action_id,
-                    running_event_uid=running_event_uid,
-                    code=outcome.error_code or "web_fetch_failed",
-                    message=outcome.error_message or "web_fetch: unknown failure",
-                )
-
-            mime = (outcome.content_type or "").split(";", 1)[0].strip().lower()
-            if not mime and _looks_like_html(outcome.body):
-                # SHOULD-FIX 7, ADR-0011 §12: a response with NO
-                # Content-Type used to skip both the non-text branch
-                # below and the HTML branch further down, dumping raw
-                # markup as if it were the tool's plain-text case.
-                mime = "text/html"
-            if mime and not mime.startswith("text/"):
-                payload: dict[str, Any] = {
-                    "url": outcome.final_url,
-                    "status_code": outcome.status_code,
-                    "content_type": outcome.content_type,
-                    "note": (
-                        f"non-text content-type {outcome.content_type!r}; "
-                        "body not decoded as text"
-                    ),
-                }
-                return _emit_tool_observation(
-                    conn=conn,
-                    lifecycle=lifecycle,
-                    action_id=action_id,
-                    running_event_uid=running_event_uid,
-                    payload=payload,
-                )
-
-            text, undelivered_bytes, lossy = _decode_hop_body(
-                outcome.body, outcome.total_bytes, outcome.content_type,
-            )
-            body_truncated = undelivered_bytes > 0
-
-            title: str | None = None
-            placeholder = False
-            if mime == "text/html":
-                title, html_text = _extract_readable_html(text)
-                if html_text.strip():
-                    content = html_text
-                elif body_truncated:
-                    # SHOULD-FIX 7, ADR-0011 §12: the cap cut the
-                    # document before any body text was parsed — unlike
-                    # the genuinely-empty-parse case below, the page may
-                    # well have content past the cut. Don't blame JS
-                    # for a truncation artifact, and don't glue the
-                    # byte-count marker onto this sentence either — it
-                    # already names the cut inline (`placeholder=True`
-                    # skips the generic marker append below).
-                    #
-                    # Now reachable only past a 2 MiB `<head>`, not the
-                    # old 8 KiB one: this used to be the ROUTINE outcome
-                    # for any real page, which is what made the tool
-                    # useless.
-                    placeholder = True
-                    content = (
-                        "(the page was cut off by the download cap before any "
-                        "body text was parsed — cannot tell whether it has "
-                        "visible content past the cut)"
-                    )
-                else:
-                    # ADR-0011 D5: no JS rendering — an SPA that hydrates via
-                    # script returns only its shell here. Declared limitation,
-                    # not an empty-page bug; say so instead of narrating
-                    # nothing as "the page has no content".
-                    placeholder = True
-                    content = (
-                        "(no visible text in the initial HTML — this may be a "
-                        "JavaScript-rendered page; this tool does not execute JS)"
-                    )
-            else:
-                content = text
-
-            # The output cap lands HERE — on extracted text, not on the
-            # raw bytes upstream. A placeholder is a fixed sentence the
-            # tool wrote itself; capping it would only mangle it.
-            text_undelivered = 0
-            if not placeholder:
-                content, text_undelivered = _cap_extracted_text(content, max_text_bytes)
-
-            if not placeholder:
-                content += _truncation_marker(
-                    text_undelivered=text_undelivered,
-                    body_undelivered=undelivered_bytes if body_truncated else 0,
-                    body_total_exact=outcome.total_bytes_exact,
-                )
-
-            payload = {
-                "url": outcome.final_url,
-                "status_code": outcome.status_code,
-                "content_type": outcome.content_type,
-                "content": content,
-                # Unchanged contract: "you did not get the whole thing",
-                # now true for either cut.
-                "truncated": bool(text_undelivered > 0 or body_truncated),
-                "total_bytes": outcome.total_bytes,
-            }
-            if not outcome.total_bytes_exact:
-                payload["total_bytes_exact"] = False
-            if title is not None:
-                payload["title"] = title
-            if lossy:
-                payload["encoding"] = "lossy"
-            return _emit_tool_observation(
-                conn=conn,
-                lifecycle=lifecycle,
-                action_id=action_id,
-                running_event_uid=running_event_uid,
-                payload=payload,
-            )
-        except Exception as exc:  # noqa: BLE001 — handler-boundary catch-all (MUST-FIX 2, ADR-0011 §12): closes the class where a URL passes the SSRF guard but breaks a DIFFERENT parser downstream (`httpx.InvalidURL`/`CookieConflict`/`StreamError` are NOT `httpx.HTTPError` subclasses and would otherwise escape `_fetch_url_backend`'s own except clause, then `ToolRegistry.dispatch`'s bare `finally`, all the way past `decide()`, which has no `except Exception`). §5's contract is "never a crash": name the real exception type and terminal-transition the lifecycle exactly like every other error path here.
-            return _emit_tool_error(
-                conn=conn,
-                lifecycle=lifecycle,
-                action_id=action_id,
-                running_event_uid=running_event_uid,
-                code="web_fetch_unexpected_error",
-                message=f"web_fetch: unexpected {type(exc).__name__}: {exc}",
-            )
-
-    return _handler
+    return Tool(
+        name="web_fetch",
+        description=(
+            "Fetch a URL's readable content: markdown (PDFs included) via Tavily "
+            "extract when configured, else the page title plus tag-stripped text. "
+            "The direct path does not execute JavaScript."
+        ),
+        input_schema=_WEB_FETCH_INPUT_SCHEMA,
+        handler=web_fetch,
+        allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
+        risk_level="L1",
+        read_only=True,
+        max_result_chars=max_text_chars,
+    )
 
 
 # --- open_url --------------------------------------------------------------
@@ -6417,52 +6388,21 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
         )
     )
     registry.register(
-        ToolDefinition(
-            name="web_search",
-            description=(
-                "Search the web (DuckDuckGo) and return numbered "
-                "title — url — snippet rows. Use for questions about "
-                "current events or anything not already known."
-            ),
-            allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
-            risk_level="L1",
-            result_semantics="observation",
-            is_async=False,
-            input_schema=_WEB_SEARCH_INPUT_SCHEMA,
-            handler=_make_web_search_handler(
-                default_max_results=web_search_max_results,
-                timeout_s=web_timeout_s,
-                provider=web_search_provider,
-                api_key=web_search_api_key,
-            ),
-            domain="browser",
-            read_only=True,
-            requires_entity=False,
-            requires_confirmation=False,
+        _make_web_search(
+            default_max_results=web_search_max_results,
+            timeout_s=web_timeout_s,
+            provider=web_search_provider,
+            api_key=web_search_api_key,
         )
     )
     registry.register(
-        ToolDefinition(
-            name="web_fetch",
-            description=(
-                "Fetch a URL's content: page title + tag-stripped readable "
-                "text for HTML, raw text otherwise. Does not execute "
-                "JavaScript, so a JS-rendered page may return only its shell."
+        _make_web_fetch(
+            max_bytes=web_fetch_max_bytes,
+            max_text_chars=web_fetch_max_text_bytes,
+            timeout_s=web_timeout_s,
+            extract_api_key=(
+                web_search_api_key if web_search_provider.strip().lower() == "tavily" else None
             ),
-            allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
-            risk_level="L1",
-            result_semantics="observation",
-            is_async=False,
-            input_schema=_WEB_FETCH_INPUT_SCHEMA,
-            handler=_make_web_fetch_handler(
-                max_bytes=web_fetch_max_bytes,
-                max_text_bytes=web_fetch_max_text_bytes,
-                timeout_s=web_timeout_s,
-            ),
-            domain="browser",
-            read_only=True,
-            requires_entity=False,
-            requires_confirmation=False,
         )
     )
     registry.register(
@@ -6657,6 +6597,7 @@ __all__ = [
     "ResultSemantics",
     "RuntimePathsLike",
     "Tool",
+    "ToolContext",
     "ToolDefinition",
     "ToolError",
     "ToolRegistry",
