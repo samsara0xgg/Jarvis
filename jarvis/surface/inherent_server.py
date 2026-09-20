@@ -85,6 +85,7 @@ from fastapi import (
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ValidationError
 
+from jarvis.surface.codex_sessions import CodexSession, fold_codex_hook
 from jarvis.surface.inherent_protocol import (
     HELLO_TIMEOUT_S,
     INITIAL_MAX_FRAMES_PER_S,
@@ -1076,6 +1077,21 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0915 — one cl
         async def usage_refresh_now() -> dict[str, Any]:
             """ADR-0018: poll every source now, then answer like ``GET``."""
             return await usage_refresh()
+
+    # ADR 0019 step 4: Allen's own Codex sessions, fed by scripts/codex_hook_log.py.
+    codex_board: dict[str, CodexSession] = {}
+
+    @app.post("/inherent/codex-hook", status_code=200)
+    async def codex_hook(payload: dict[str, Any]) -> dict[str, bool]:
+        """Fold one Codex hook payload into the session board; never a decision."""
+        fold_codex_hook(codex_board, payload, now_ms=int(time.time() * 1000))
+        return {"ok": True}
+
+    @app.get("/inherent/codex-sessions")
+    async def codex_sessions() -> dict[str, Any]:
+        """Newest-first rows for the Resonance Codex card."""
+        rows = sorted(codex_board.values(), key=lambda r: int(r["since_ms"]), reverse=True)
+        return {"sessions": rows}
 
     @app.post("/inherent/image-submit", status_code=501)
     async def image_submit() -> None:
