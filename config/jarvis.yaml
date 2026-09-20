@@ -76,6 +76,10 @@ observer:
   # 被观察的 repo（绝对路径，`~` 会展开）。空列表 = 不启动观察器任务。
   # Allen 自己维护这份清单：观察器只读，不 fetch，不写外部世界。
   repos: []
+  # Read saved app/window/Chrome spans; TimeSink remains the only collector/writer.
+  timesink:
+    enabled: true
+    db_path: "~/Library/Application Support/TimeSink/timesink.sqlite"
   # ADR-0018 usage observer：AI 订阅额度 / API 花费 / 余额轮询，只在快照变化
   # 时 emit usage.state_observed，供 Resonance「模型额度」模块读取。
   # 凭证一律来自本机登录态和环境变量（Keychain、~/.codex/auth.json、

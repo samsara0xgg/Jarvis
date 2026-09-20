@@ -921,6 +921,19 @@ def _cancel_timeout_ms(config: Mapping[str, Any]) -> int:
     return value
 
 
+def _timesink_db_path(full_config: Mapping[str, Any]) -> Path | None:
+    """Opt into local TimeSink reads; an absent setting never opens a user's store."""
+    observer = full_config.get("observer")
+    config = observer.get("timesink") if isinstance(observer, Mapping) else None
+    if not isinstance(config, Mapping) or config.get("enabled") is not True:
+        return None
+    raw = config.get("db_path")
+    if not isinstance(raw, str) or not raw.strip():
+        message = "observer.timesink.db_path must be a nonempty local path"
+        raise ValueError(message)
+    return Path(raw).expanduser().resolve()
+
+
 def _observer_repo_paths(config: Mapping[str, Any]) -> tuple[str, ...]:
     """Return the watched repos from ``observer.repos``; empty = observer off.
 
@@ -1543,6 +1556,8 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
     registry = build_default_registry(
         action_runner=action_runner,
         memory_db_path=memory.db_path,
+        observed_repos=_observer_repo_paths(full_config),
+        timesink_db_path=_timesink_db_path(full_config),
         confirmation_dispatch_outbox=wave1_features.confirmation_dispatch_outbox,
         # ADR-0008 Step 4: with this on, `dispatch` returns as soon as an
         # is_async ActionRun is accepted and the runner owns the rest.

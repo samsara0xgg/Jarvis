@@ -548,6 +548,85 @@ Run      = 在某个 task 上的一次推进尝试</code></pre>
 
 <p>Memory 写入不是 State Object 自己决定。Runtime Decision 产生 memory candidate，检查 memory policy、stability、evidence、secret boundary 后 emit event；State Object fold 成 Memory Projection。</p>
 
+<h4 id="daily-loop-tools">3.3.5a Local daily-loop tools</h4>
+<p>Personal todos, sourced knowledge and saved briefings are separate from engineering task/worker status.
+They are local, event-derived records: <code>todo.revised</code>, <code>knowledge.revised</code>, and
+<code>briefing.revised</code> (owner L4, actor jarvis_llm, schema version 1). Each event carries
+<code>request_id, request_hash, operation, item, action_id</code>; item carries <code>id, version,
+created_at, updated_at</code> plus the domain fields below. L2 appends the domain revision atomically;
+the dispatcher alone owns action lifecycle events. Original conversation records remain in memory.db.</p>
+<table>
+<thead><tr><th>Tool</th><th>Input contract</th><th>Result / behavior</th></tr></thead>
+<tbody>
+<tr><td>search_records</td><td>keyword?, from?, to?, limit?, cursor?</td><td>records with id, ts, source, excerpt, text_chars, source_ref; count, snapshot, next_cursor. Replaces the former rendered-only output.</td></tr>
+<tr><td>read_records</td><td>record_ids (1–20 unique IDs), cursor?</td><td>Exact text chunks with offset, total_chars, complete; missing_ids and next_cursor. Continue until null.</td></tr>
+<tr><td>query_activity</td><td>from, to, sources? (git/app/screen/agent), project? (full repo path), limit?, cursor?</td><td>items with id, source, kind, observed_at, occurred_at, project, project_basis, ended_at, summary, source_refs, detail_available; coverage, count, snapshot, next_cursor. Git range uses observed_at, so late-discovered commits remain visible; app spans use overlap with [from,to).</td></tr>
+<tr><td>read_activity</td><td>activity_id, cursor?</td><td>Saved Git payload or revision-pinned TimeSink row as JSON text chunks; source_refs, kind, observed_at, offset, total_chars, complete, next_cursor. Never captures fresh state.</td></tr>
+<tr><td>search_knowledge</td><td>query?, project?, kind?, status?, limit?, cursor?</td><td>Full current knowledge items and source_ref; default active, also deprecated / needs_confirmation / all.</td></tr>
+<tr><td>save_knowledge</td><td>statement, kind, source_refs, basis, request_id; knowledge_id?, expected_version?, project?, status?</td><td>knowledge_id, version, source_ref. Kind: fact/decision/lesson/preference; basis: user_statement/observation/inference. Updates supersede a previous version of the same identity; supersedes points at the previous immutable event. No current activity state or verified-worker verdict.</td></tr>
+<tr><td>create_todo</td><td>title, request_id; project?, due_at?, priority?, source_refs?</td><td>todo_id, version, source_ref. New state open; priority low/normal/high, default normal. Local storage only, no reminder or remote sync.</td></tr>
+<tr><td>list_todos</td><td>status?, project?, due_before?, limit?, cursor?</td><td>Current items and source_ref; default open, also done/cancelled/all. due_before excludes undated tasks and its upper boundary.</td></tr>
+<tr><td>update_todo</td><td>todo_id, expected_version, patch, request_id</td><td>todo_id, version, source_ref. Patch permits title/project/due_at/priority/status only; null clears due_at/project. User instruction can complete/reopen/cancel; worker completion alone does not update a todo.</td></tr>
+<tr><td>save_briefing</td><td>local_date, timezone, content, source_refs, coverage, request_id; expected_version?</td><td>briefing_id, version, source_ref. Date + IANA timezone identifies one briefing with immutable revisions. No delivery or scheduling side effect.</td></tr>
+<tr><td>get_briefing</td><td>local_date, timezone, cursor?</td><td>Saved metadata plus content chunks, offset, total_chars, complete, next_cursor; delivery_status=not_tracked. Continuation stays on its initial revision.</td></tr>
+</tbody></table>
+<p>Query intervals are half-open [from,to); timestamp parameters require explicit UTC offsets.
+Paging limit defaults to 20 and is capped at 50. Cursors bind query arguments and storage identity;
+list pages retain their initial append watermark, folding versions before filtering mutable fields.
+Late arrivals are available to a new query. Only returned next_cursor values may be used. History text
+chunks preserve exact text, including escaped characters; exhaustion, missing IDs and failures are explicit.</p>
+<p>All tools are flat Tool definitions available to jarvis_llm. Reads are risk L0; save/create/update are
+L1 local reversible writes. The existing GPT Live read-only registry exposes reads only. Tool output cap
+is 16,384 characters, whole-row page budget 11,000, and detail chunks at most 3,500 text characters / 4,000
+JSON characters. Writes reject oversized item metadata before committing, so it remains retrievable.
+Knowledge statement limit is 4,000 characters, todo title 500, briefing content 16,000, and source refs at most 20.</p>
+<p>Each write checks request_id across these three revision event types inside BEGIN IMMEDIATE.
+An exact retry returns the original receipt; changed arguments yield request_conflict. New records expect
+version zero; updates require the current version and otherwise return version_conflict with its number.
+source_refs resolve record:&lt;id&gt; in the configured memory.db, event:&lt;uid&gt; in this runtime's log,
+or timesink:&lt;database&gt;:&lt;id&gt;:&lt;revision&gt; against the configured TimeSink row.
+External references must match their cited revision at save time; source_changed requires a fresh query.
+Exact write retries return their original receipt even if the external source later changes.
+Updating a todo cannot replace its sources and does not revalidate previously accepted references.
+Knowledge requires at least one source; existence is provenance, not verification. Contradictory uncertain
+claims should be saved as needs_confirmation rather than replacing accepted user facts as verified truth.
+Malformed arguments, nonexistent entries and invalid sources return explicit tool errors.</p>
+<p>query_activity supports repo.state_observed, project.commit_seen and TimeSink app/window/Chrome spans.
+Screen/agent report not_implemented. Git coverage reports status=unknown, configured_now,
+observations_in_window, last_observed_at_in_window and skipped_count; sparse change events cannot prove
+continuous collection. A disabled current Git configuration does not erase historical observations.
+Activity project keys are observed repository paths, not inferred basename aliases. A project filter excludes
+TimeSink spans and explicitly reports that they have no reliable repository mapping.</p>
+<p>observer.timesink.enabled and db_path bind the local read-only adapter. The shipped configuration
+points to ~/Library/Application Support/TimeSink/timesink.sqlite; absent/disabled configuration never
+opens that store. Queries open an existing WAL-aware read transaction, never create/migrate the source,
+and never run Git, screenshot tools, an LLM, or a second collector. Missing/unreadable/incompatible
+TimeSink stores report app coverage=unavailable without suppressing Git results.</p>
+<p>TimeSink GRDB timestamps are interpreted as UTC. Nonzero spans are selected by overlap, with
+occurred_at=start, ended_at=end, observed_at=null, and duration_seconds_in_window clipped to the requested
+interval. Results include app_name, app_bundle_id, summary (title excerpt), url_excerpt, domain,
+project=null, project_basis=not_inferred, and revision-pinned source_refs usable in knowledge/todos/briefings.
+read_activity returns the exact saved row as paged JSON; stored_timestamp_timezone=UTC.
+Title/URL excerpts are bounded; full values remain in the detail reader. No page contents, screenshot or OCR
+are collected. TimeSink's suppressed incognito fields remain suppressed.</p>
+<p>App coverage=partial means saved spans are readable, not that the requested interval was continuously
+observed. Coverage includes latest_span_end, observations_in_window, time_basis=span_overlap and
+gap_reason=unknown. Idle/lock/sleep/collector health are not stored by TimeSink; gaps cannot prove rest,
+and tracked durations cannot prove attention or task completion. Mixed queries report
+time_basis=source_specific, ordering Git by observed_at and app spans by occurred_at.</p>
+<p>Activity cursors pin both append watermarks (snapshot for the event log; timesink_snapshot for span IDs)
+and check a digest of the selected TimeSink revisions. Later inserts are omitted from continuation;
+changed/deleted rows or source replacement produce invalid_cursor and require restarting the query.
+TimeSink IDs bind database identity, row ID and content revision; changed detail reads return source_changed,
+deleted rows return not_found. This is revision validation, not historical version archival: a saved reference
+can become unavailable after the independent source changes. Coverage freshness metadata may advance
+between pages without changing the selected rows.</p>
+<p>Briefing coverage has records/git/app/screen/agent/todos/knowledge entries with values
+available/partial/unknown/unavailable/not_implemented; omitted entries default to unknown.
+coverage_basis=reported_by_generator distinguishes it from measured collector health. Saving a briefing
+never marks it delivered or heard. Background consolidation, skills, collectors, scheduler, wake-time
+catch-up, delivery deduplication and Live write-policy integration are separate capabilities.</p>
+
 <h4>3.3.6 Mode Runtime State vs Mode Preset Table</h4>
 
 <table>
