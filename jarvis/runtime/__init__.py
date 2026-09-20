@@ -123,6 +123,7 @@ from jarvis.execution.tools import (
     release_turn_actions,
     turn_action_ids,
 )
+from jarvis.execution.workers import Workers, make_worker_tools
 from jarvis.runtime.stream_bridge import LoopBoundTokenStream
 from jarvis.shared import CallerPrincipal, Event
 from jarvis.shared.action_admission import bind_action_admission
@@ -461,6 +462,9 @@ class JarvisRuntime:
     # empty tuple = no cue can veto the routine route (the other pre-route
     # conditions still apply).
     tool_cues: ToolCueTable = ()
+    # ADR 0019: the resident codex app-server and the four worker tools bound
+    # to it. None = a hand-assembled runtime without workers.
+    workers: Workers | None = None
 
 
 @dataclass(frozen=True)
@@ -1420,6 +1424,18 @@ def _load_runtime_env_and_trace(paths: RuntimePaths) -> None:
     _configure_realtime_trace_export(paths)
 
 
+def _register_workers(registry: ToolRegistry, paths: RuntimePaths) -> Workers:
+    """ADR 0019: workers are threads on one ``codex app-server``.
+
+    The server starts lazily on the first spawn, so a one-shot CLI turn
+    pays nothing; the daemon stops it at shutdown.
+    """
+    workers = Workers(paths.root / "codex.sock", paths.event_log)
+    for worker_tool in make_worker_tools(workers):
+        registry.register(worker_tool)
+    return workers
+
+
 def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays explicit
     *,
     config_path: Path | None = None,
@@ -1563,6 +1579,7 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
         ),
         screen_max_width_px=screen_max_width_px,
     )
+    workers = _register_workers(registry, paths)
     lifecycle = ActionLifecycle()
 
     # 3b. Spec §17 Tier 0 whitelist — sits next to jarvis.yaml so Allen
@@ -1686,6 +1703,7 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
         committed_event_bus=committed_event_bus,
         input_flags=_wave5_input_flags(full_config),
         memory=memory,
+        workers=workers,
         sensevoice_dir=_realtime_model_path(
             full_config,
             key="sensevoice_dir",

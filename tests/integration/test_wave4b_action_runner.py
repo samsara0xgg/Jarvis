@@ -541,17 +541,25 @@ def test_child_borrows_parent_scope_without_self_wait(
 
 
 def test_resource_key_resolution_failure_never_runs_the_handler(tmp_path: Path) -> None:
-    """A `spawn_worker` with no task_id fails as an action, not unlocked."""
+    """An action whose resource key cannot be resolved fails as an action, not unlocked."""
     ran: list[str] = []
 
     def _body(request: ActionRequest, _conn: sqlite3.Connection) -> RawResult:
         ran.append(request.action_id)
         return _ack(request)
 
-    fixture = _Fixture(tmp_path, tools=(_fixture_tool("spawn_worker", _body),))
+    def _unresolvable(
+        request: ActionRequest, _tool: ToolDefinition | Tool, _conn: sqlite3.Connection,
+    ) -> ToolConcurrency:
+        msg = f"action {request.action_id!r} names no resolvable resource"
+        raise ResourceKeyResolutionError(msg)
+
+    fixture = _Fixture(
+        tmp_path, tools=(_fixture_tool("noresolve", _body),), resolver=_unresolvable,
+    )
     try:
         with pytest.raises(ResourceKeyResolutionError):
-            fixture.dispatch(_request("spawn_worker", "A-noresolve", turn_id="T-x"))
+            fixture.dispatch(_request("noresolve", "A-noresolve", turn_id="T-x"))
         assert ran == []
         assert _ordered_types(fixture.conn) == ["action.dispatched", "action.failed"]
         failed = _payloads(fixture.conn, "action.failed")[0]

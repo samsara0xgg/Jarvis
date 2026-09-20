@@ -4916,6 +4916,10 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                         len(drained),
                         ", ".join(drained),
                     )
+            # ADR 0019: the codex app-server child goes with the daemon; its
+            # open worker_edges rows become closed.
+            if runtime.workers is not None:
+                await asyncio.to_thread(runtime.workers.stop)
             _shutdown_tts(tts_pipe)
             # Force-restore output volume in case a duck escaped a finally
             # block on the way down (best-effort; idempotent if depth == 0).

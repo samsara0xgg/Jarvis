@@ -5209,10 +5209,9 @@ def default_resource_key_resolver(
 ) -> ToolConcurrency:
     """Resolve one request's canonical resource keys and lease mode.
 
-    Four rules, in ADR-0008 D9's order:
+    Three rules, in ADR-0008 D9's order (the ``spawn_worker`` repo lease
+    left with ADR 0019: a worker is a Codex thread in its own sandbox):
 
-    1. ``spawn_worker`` takes ``realpath(repo)`` write-exclusively — it
-       stashes, runs Codex over the tree, and later restores.
     2. ``verify_diff`` reads the same tree and borrows its parent run's scope
        instead of contending with it.
     3. a read-only tool needs no lease at all.
@@ -5220,12 +5219,6 @@ def default_resource_key_resolver(
        global-exclusive, which is the fail-closed default rather than a guess
        about what it touches.
     """
-    if tool_def.name == _SPAWN_WORKER_TOOL_NAME:
-        return ToolConcurrency(
-            resource_keys=(_spawn_worker_resource_key(action_request, conn),),
-            mode="write_exclusive",
-            carries_cleanup_debt=True,
-        )
     if tool_def.name == _VERIFY_DIFF_TOOL_NAME:
         provenance = _verify_diff_run_provenance(action_request, conn)
         return ToolConcurrency(
@@ -5883,41 +5876,6 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
         resource_key_resolver=resource_key_resolver,
         background_async=background_async,
         confirmation_dispatch_outbox=confirmation_dispatch_outbox,
-    )
-    registry.register(
-        ToolDefinition(
-            name="spawn_worker",
-            description=(
-                "Spawn a worker (codex stub Day-1) for the given task_id; "
-                "writes diff.json artifact and reports completion asynchronously."
-            ),
-            # frozen 2026-09-12: engineering is off the LLM menu; no caller may reach this.
-            allowed_callers=frozenset(),
-            risk_level="L2",
-            result_semantics="ack",
-            is_async=True,
-            input_schema=_SPAWN_WORKER_INPUT_SCHEMA,
-            handler=spawn_worker_handler,
-            domain="agent_control",
-            read_only=False,
-            requires_entity=False,
-            requires_confirmation=False,
-            # ADR-0009 D4: the only Day-2 tool that can outlive its
-            # dispatch call, hence the only one carrying a supervisor
-            # deadline. Passed as the resolver itself so a per-run
-            # `JARVIS_CODEX_TURN_TIMEOUT_S` moves the persisted deadline
-            # in step with the in-process driver deadline.
-            result_budget_s=_resolve_codex_turn_timeout_s,
-            # ADR-0008 D9 (Step 4). `spawn_worker_handler` polls its
-            # execution context and hands `run_codex_action` a
-            # `should_cancel`; the driver sends `turn/interrupt` and the
-            # finalizer closes the client, which terminates and if needed
-            # kills the `codex app-server` subprocess. "terminate_process"
-            # rather than "cooperative" because that is what actually
-            # happens to the child — the declaration has to survive being
-            # read as a promise about the OS process.
-            cancellation_mode="terminate_process",
-        )
     )
     registry.register(VERIFY_DIFF_TOOL_DEF)
     registry.register(

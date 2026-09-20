@@ -182,6 +182,10 @@ class CodexClient:
         """Answer a server-initiated request (approval prompts)."""
         self._send({"id": request_id, "result": dict(result)})
 
+    def respond_error(self, request_id: object, message: str, *, code: int = -32601) -> None:
+        """Refuse a server-initiated request (JSON-RPC ``method not found`` by default)."""
+        self._send({"id": request_id, "error": {"code": code, "message": message}})
+
     def close(self) -> None:
         """Close the socket; pending requests fail with :class:`CodexAppServerError`."""
         self._closed = True
