@@ -14,10 +14,13 @@ found at start is logged so a wire change after an upgrade can be dated.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
+import os
 import queue
 import re
+import signal
 import subprocess
 import threading
 import time
@@ -57,6 +60,12 @@ def codex_version(codex_bin: str = "codex") -> str | None:
     return match.group(1) if match else None
 
 
+def _signal_group(proc: subprocess.Popen[bytes], sig: signal.Signals) -> None:
+    """Signal the child's whole process group; a group already gone is fine."""
+    with contextlib.suppress(ProcessLookupError):
+        os.killpg(proc.pid, sig)
+
+
 class CodexAppServer:
     """One ``codex app-server`` child listening on a unix socket."""
 
@@ -85,6 +94,9 @@ class CodexAppServer:
             proc = subprocess.Popen(  # noqa: S603 — fixed argv, no shell.
                 [self.codex_bin, "app-server", "--listen", f"unix://{self.socket_path}"],
                 stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+                # The npm `codex` is a node wrapper that execs the native binary as a
+                # child; a group of its own lets stop() take both down together.
+                start_new_session=True,
             )
         self._proc = proc
         deadline = time.monotonic() + timeout_s
@@ -107,17 +119,23 @@ class CodexAppServer:
         raise CodexAppServerError(msg)
 
     def stop(self, *, timeout_s: float = 5.0) -> None:
-        """Terminate the child (SIGTERM, then SIGKILL after ``timeout_s``)."""
+        """Terminate the child's process group (SIGTERM, then SIGKILL after ``timeout_s``).
+
+        The group, not just the wrapper: the node ``codex`` wrapper exits on
+        SIGTERM and leaves the native ``codex app-server`` behind otherwise.
+        """
         proc = self._proc
         if proc is None:
             return
         if proc.poll() is None:
-            proc.terminate()
+            _signal_group(proc, signal.SIGTERM)
             try:
                 proc.wait(timeout=timeout_s)
             except subprocess.TimeoutExpired:
-                proc.kill()
+                _signal_group(proc, signal.SIGKILL)
                 proc.wait()
+        # The wrapper may have exited on its own with the native child still up.
+        _signal_group(proc, signal.SIGKILL)
         self._proc = None
         self.socket_path.unlink(missing_ok=True)
 
