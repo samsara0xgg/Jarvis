@@ -1,11 +1,9 @@
-"""The in-turn waiter wakes on ``worker.reported``, not on a sync tool's old row.
+"""The in-turn waiter wakes on the running action's terminal, not on an absorbed row.
 
-Found live on 2026-09-04 (Wave 4 burn 4 at ``b298be8``): the model ran
-``list_tasks`` and ``get_current_time`` before ``spawn_worker`` in one decide()
-iteration. Both sync tools wrote ``action.result_observed`` rows the turn owns,
-so the waiter returned the first of them as the trigger, the worker's
-``worker.reported`` was never handed to L3, no ``action.result_observed`` was
-written for the worker, and cleanup recorded ``verification_skipped``.
+Found live on 2026-09-04 (Wave 4 burn 4 at ``b298be8``): sync tools wrote
+``action.result_observed`` rows the turn owns and had already absorbed, so
+the waiter returned the first of them as the trigger and the still-running
+action's own terminal was never handed to L3.
 """
 from __future__ import annotations
 
@@ -20,7 +18,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 _SYNC = "A-sync-list-tasks"
-_WORKER = "A-async-spawn-worker"
+_WORKER = "A-still-running"
 
 
 def _register_at(lifecycle: ActionLifecycle, action_id: str, state: str) -> None:
@@ -31,7 +29,7 @@ def _register_at(lifecycle: ActionLifecycle, action_id: str, state: str) -> None
             return
 
 
-def test_waiter_skips_the_sync_tools_absorbed_row_and_returns_worker_reported(
+def test_waiter_skips_the_absorbed_row_and_returns_the_running_actions_terminal(
     tmp_path: Path,
 ) -> None:
     """Both rows are owned by the turn; only the still-running worker may wake it."""
@@ -48,8 +46,8 @@ def test_waiter_skips_the_sync_tools_absorbed_row_and_returns_worker_reported(
         )
         emit_event(
             conn,
-            type="worker.reported",
-            payload={"action_id": _WORKER, "status": "ok", "run_id": "R1"},
+            type="action.timeout_assumed",
+            payload={"action_id": _WORKER, "reason": "supervisor_sweep"},
             correlation={"action_id": _WORKER, "turn_id": "T1"},
         )
 
@@ -61,5 +59,5 @@ def test_waiter_skips_the_sync_tools_absorbed_row_and_returns_worker_reported(
             timeout=0.2,
         )
 
-    assert event.type == "worker.reported"
+    assert event.type == "action.timeout_assumed"
     assert event.payload["action_id"] == _WORKER

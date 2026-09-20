@@ -73,7 +73,7 @@ def build_llm_messages(
 
     - For a ``surface.user_intent`` trigger: one ``{"role":"user",
       "content": <utterance>}`` message.
-    - For a re-entry (``worker.reported`` / ``action.result_observed``):
+    - For a re-entry (``action.result_observed``):
       one ``{"role":"user", "content": <summary>}`` describing the
       latest result so the LLM can plan next steps.
 
@@ -101,20 +101,6 @@ def build_llm_messages(
     if trigger.type in ("surface.user_intent", "utterance.received"):
         transcript = trigger.payload.get("transcript", "")
         return [{"role": "user", "content": str(transcript)}]
-
-    if trigger.type == "worker.reported":
-        summary = trigger.payload.get("summary", "worker reported a result")
-        run_id = trigger.payload.get("run_id", "unknown")
-        return [
-            {
-                "role": "user",
-                "content": (
-                    f"[system trigger] worker.reported for run_id={run_id}: {summary}. "
-                    f"Proceed with verification per Allen's request "
-                    f"('审核了再告诉我')."
-                ),
-            }
-        ]
 
     if trigger.type == "action.result_observed":
         semantics = trigger.payload.get("semantics", "unknown")

@@ -174,7 +174,6 @@ def validate_tier0_table(
     table: Tier0Table,
     *,
     allowed_tool_names: frozenset[str],
-    async_tool_names: frozenset[str],
     entity_required_tool_names: frozenset[str] = frozenset(),
     requires_confirmation_tool_names: frozenset[str] = frozenset(),
 ) -> None:
@@ -216,12 +215,6 @@ def validate_tier0_table(
                 f"tier0 patterns: {pattern.pattern_id!r} targets tool "
                 f"{pattern.tool_name!r} which regex_router may not call "
                 f"(allowed: {sorted(allowed_tool_names)})"
-            )
-            raise Tier0ConfigError(msg)
-        if pattern.tool_name in async_tool_names:
-            msg = (
-                f"tier0 patterns: {pattern.pattern_id!r} targets async tool "
-                f"{pattern.tool_name!r}; Tier 0 dispatches sync tools only"
             )
             raise Tier0ConfigError(msg)
         if pattern.tool_name in entity_required_tool_names:

@@ -1,146 +1,114 @@
-# Daily-loop tools — implementation handoff
+# Daily-loop tools — Claude Code handoff
 
 Branch: `codex/daily-loop-tools`.
-Base: `d542a4d` from CC's `worktree-adr0019-impl`.
-Scope: the agreed 10 new tools and the `search_records` extension. Local todos are
-canonical; no Microsoft synchronization. Accepted decision: ../adr/0020-local-daily-loop-state.md.
-Interface contract: ../spec.html#daily-loop-tools.
+Completed implementation commit: `1ced9d3`.
+Integrated dependency: CC's `worktree-adr0019-impl` at `37f65e7`, including
+four Codex worker tools, the audit-chain removal, and the log-only Stop hook.
+Continue from this branch; do not recreate the removed ActionRunner or audit chain.
+Production Jarvis has not been restarted and main has not been modified.
 
-## Delivered
+## Completed scope
 
-- Flat Tool adapters in `jarvis/execution/daily_tools.py`; the existing dispatcher
-  still owns action serialization and lifecycle. Only registration and the old
-  search_records definition change in `execution/tools.py`.
-- Independent state modules for validated inputs, history reads, Git activity
-  reads, and local todo/knowledge/briefing revisions. No conversation schema changes.
-- `search_records` now returns structured excerpts with IDs and a snapshot cursor;
-  `read_records` returns exact chunked originals. Callers expecting the former
-  rendered-only output must adopt the documented result.
-- Writes use immutable revision events, exact-request deduplication, optimistic
-  version checks, and validated source references. Read-only Live exposure stays
-  read-only. Metadata that cannot fit the output budget fails explicitly rather
-  than silently clipping IDs or cursors.
-- Git activity queries consume existing observation events. App activity reads
-  TimeSink locally; screen/agent remain not_implemented. Historical health is unknown.
-- Natural-language cues for todos, briefings, knowledge and activity/history
-  requests reach the tool-offering path instead of tool-free routine replies.
+- Eleven flat tool interfaces: search_records, read_records, query_activity,
+  read_activity, search_knowledge, save_knowledge, create_todo, list_todos,
+  update_todo, save_briefing, get_briefing.
+- Local event-derived todos, knowledge and briefings with request deduplication,
+  version checks and source validation. No Microsoft synchronization or delivery.
+- Exact paged conversation reads without changing memory.db. search_records now
+  returns identified excerpts, replacing its former rendered-only response.
+- Git observations and local TimeSink app/window/Chrome spans behind the same
+  activity tools. TimeSink remains the only app collector and database writer.
+- TimeSink reads use overlap, UTC/DST conversion, clipped durations, WAL snapshots,
+  append watermarks and mutable-row revision checks. Gaps have unknown causes;
+  project filters exclude unmapped app spans rather than inferring attribution.
+- External source refs pin database identity, row and revision. Updated evidence
+  requires a fresh query; prior TimeSink revisions are not archived.
+- Daily requests reach the tool-offering route. GPT Live's read-only policy remains.
+- Shared registry integration tested with spawn_worker, wait_worker, send_input,
+  close_worker and daily tools present together without starting a worker.
 
-## Verification
+## Entry points and contracts
 
-Focused acceptance:
+- jarvis/execution/daily_tools.py: flat adapters and model-facing descriptions.
+- jarvis/state/daily_contract.py: closed schemas, paging and source-ref guidance.
+- jarvis/state/daily_records.py: original conversation retrieval.
+- jarvis/state/daily_store.py: local revision writes and folds.
+- jarvis/state/daily_activity.py: mixed activity queries and details.
+- jarvis/state/timesink.py: read-only external SQLite adapter.
+- config/jarvis.yaml observer.timesink: enabled local database path, wired only
+  through jarvis/runtime/__init__.py. An absent block does not open the user's DB.
+- docs/spec.html#daily-loop-tools: canonical interface and failure semantics.
+- docs/adr/0020-local-daily-loop-state.md and 0021-read-local-timesink-activity.md:
+  accepted architectural decisions.
 
-```sh
-python -m pytest -q tests/integration/test_daily_tools.py \
-  tests/integration/test_flat_tool_dispatch.py \
-  tests/integration/test_routine_pre_route.py
-```
+Use returned source_refs for evidence, not an activity: lookup ID. A live-model
+run exposed that ambiguity; the shared schema and tool descriptions now explain it.
+The separate session branch b521d24 also changes conversation history access:
+reconcile its response/registry changes when integrating it, preserving compaction.
 
-Latest focused result: 50 passed in 0.23s. Covers runner and inline dispatch,
-restart persistence, cross-domain request deduplication, concurrent update conflict,
-reference validation/rollback, timestamp offsets and DST boundaries, lossless long
-text, stable snapshot pagination, missing-record continuation and no delivery side effects.
+## Verification on the integrated branch
 
-Real-model acceptance (requires the configured DEEPSEEK_API_KEY in the environment):
+- Complete hermetic suite: 957 passed, 1 skipped, 4 deselected, 4 warnings in 56.28s.
+  Command: python -m pytest tests -q -m 'not live_llm and not live_codex' -x.
+- Focused suite after source-ref wording clarification: 57 passed in 0.28s.
+  Files: test_daily_tools.py, test_timesink_activity.py, test_flat_tool_dispatch.py,
+  test_routine_pre_route.py under tests/integration/.
+- Installed TimeSink read through shipped config and real dispatcher: 1914 rows
+  over 24 hours, 128 pages, no duplicate IDs, independent SQL count matched.
+  Exact detail and a source-referencing temporary briefing passed. No network or
+  screen capture. Metadata-only evidence: /tmp/jarvis-timesink-acceptance.json.
+- Real-model acceptance after the source-ref clarification: 1 passed in 20.10s;
+  DeepSeek selected all eleven interfaces with zero errors, synthetic fixtures only.
+  Command: python -m pytest tests/integration/test_daily_tools_live.py --live-llm -q.
+  Evidence: /tmp/jarvis-daily-merged-synthetic-fixed/test_live_daily_tool_selection0/acceptance.json.
+- Architecture: 1 contract kept, 0 broken. All 14 changed Python files pass Ruff;
+  the six daily-loop implementation modules pass strict mypy.
+- Full strict mypy reports 3 pre-existing errors in voice_live.py and
+  test_launchd_install.py (223 files checked). Full Ruff reports 82 pre-existing
+  errors only in unchanged .claude/skills/horizon/scripts files.
+- The ADR checker still reports the pre-existing missing ADR-0013 reference.
+  Both newly added ADRs conform to the file standard.
+- Before integration, 1091 hermetic checks passed; the smaller integrated count
+  reflects CC's removal of retired execution-chain tests, not skipped new tools.
 
-```sh
-python -m pytest -q -s tests/integration/test_daily_tools_live.py --live-llm
-```
+## Screen collection — discussed and accepted, not implemented
 
-Recorded run: 1 passed in 22.03s, deepseek-v4-flash selected all 11 interfaces,
-zero tool errors. Its outgoing payload is limited to literal synthetic prompts,
-these tool definitions and temporary-database results. No personal runtime prompt,
-production memory or repository content is sent. This proves real model/tool
-interaction, not the full voice/attention/background pipeline.
-
-Architecture gate: 1 contract kept, 0 broken. New implementation modules pass
-strict mypy (5 source files). Changed Python files pass ruff. Full-repository mypy
-still reports three pre-existing errors in voice_live.py and test_launchd_install.py.
-The ADR checker accepts the new ADR but the repository check has a pre-existing
-missing ADR-0013 reference, reproduced in CC's worktree too.
-
-## Coordination with CC
-
-CC added worker tools in `1bad3a4` after this branch started. Its changes to tools.py
-remove old worker registration/resource handling; this branch changes history-tool
-registration and adds daily tools. Both changes touch tools.py and runtime/__init__.py,
-so review the integration diff even when Git merges cleanly. Do not copy entire files.
-
-Session branch `b521d24` modifies memory rendering and adds ID-based history access.
-This branch reads the existing records table without altering that schema. Preserve
-its session compaction and ID access when reconciling the two search_records definitions.
-
-## Remaining daily-loop work
-
-These are separate follow-up implementations, not capabilities provided by these tools:
-
-1. Skill discovery/loading and the knowledge-consolidation / morning-briefing instructions.
-2. Persist idle/lock/sleep reasons and collector health in TimeSink; add selected
-   screen and external Agent collection. App/window/Chrome span reads are connected.
-3. Background input watermarks, incremental consolidation, scheduling and wake catch-up.
-4. Morning card/voice delivery, quiet periods, defer/acknowledge state and crash recovery.
-5. GPT Live write admission through the existing permission policy, followed by real
-   voice acceptance. Adding tools must not silently remove ReadOnlyToolRegistry.
-6. Repeated real-day acceptance of the complete loop after those pieces are connected.
-
-Do not treat save_briefing as delivery or a due_at field as a scheduled reminder.
-Before merging, consolidate durable contract changes in spec/ADR and remove this
-scratch handoff when its integration notes are no longer needed.
-
-
-## TimeSink local connection (2026-09-20)
-
-The activity tools now read TimeSink's installed SQLite store through
-`jarvis/state/timesink.py`, configured by `observer.timesink` in config/jarvis.yaml.
-TimeSink remains the sole app/window/Chrome collector. This work adds no MCP,
-screenshot polling, idle event persistence, scheduler or production restart.
-
-The adapter handles overlapping spans, UTC/DST conversion, clipped durations,
-WAL reads, missing/incompatible stores, mutable-row cursor checks and revision-pinned
-source references for knowledge/todos/briefings. Project filters explicitly exclude
-unmapped app spans. External references are not archived; old versions can become
-unavailable. Integration tests are in tests/integration/test_timesink_activity.py.
-
-TimeSink acceptance evidence:
-- Focused daily + TimeSink + flat dispatch + routing suite: 59 passed in 0.29s,
-  including ActionRunner reads, source revision invalidation, and mutable source refs.
-- Full hermetic integration/canary suite: 1090 passed, 1 skipped, 3 deselected,
-  4 warnings in 62.14s. The additional runner test above was added and passed after
-  that full run; the only later production edit was a config type annotation fix.
-- Installed TimeSink live read: 2170 spans in a 24-hour interval, 145 pages with no
-  duplicate IDs, exact count matches independent read-only SQL. Detail retrieval
-  and source validation in a temporary briefing store passed. No network or captures.
-  Metadata-only evidence: /tmp/jarvis-timesink-acceptance.json.
-- Changed Python files pass Ruff; the 4 changed state/tool modules pass strict mypy.
-  Full strict mypy checked 268 files and reports only the same 3 baseline errors.
-- Import architecture: 1 kept, 0 broken (108 files / 335 dependencies).
-- Source app and production Jarvis were not modified/restarted; changes remain in
-  codex/daily-loop-tools and require integration with CC's concurrent branch.
-
-
-## Screen collection handoff — discussed, not implemented
-
-Allen accepted a first-pass design on 2026-09-20. Start from this branch's
-TimeSink adapter and flat activity tools; do not add a second app/idle tracker.
+Allen approved these first-pass parameters on 2026-09-20:
 
 - Identify foreground windows by process + window ID, not title alone.
-- After a foreground-window change, wait 3 seconds on the same window.
-  Restart the timer on another change. While scrolling/dragging, wait 1 second
-  after it settles, but cap the deferral at 10 seconds.
-- Check content changes every 30 seconds in a retained window. Enforce a
-  10-second minimum between full captures; deduplicate unchanged frames.
-- Reconfirm content every 5 minutes. Prefer accessible text, adding a screenshot
-  for visual content; low-resolution local comparison need not retain every frame.
-- Initial visual threshold: roughly 10% of image regions materially changed;
-  validate against real apps, cursors, clocks, animations and video before fixing it.
-- After 3 minutes without input, reduce checks to once every 2 minutes; reading,
-  videos and meetings must not be equated with absence. Pause on lock/sleep/manual
-  suspension, then restart stability checks on resume.
-- Associate captures with timestamps, app/window identity and TimeSink spans;
-  recheck window identity after capture and discard a mismatched sample.
-- Keep acquisition local; summarize selected time segments later rather than
-  sending each image to a model. Retention, exclusions, permission handling and
-  durable collector health/state events still need a concrete implementation.
-- Accept with an actual app-switch/read/develop/lock run and measure missed
-  meaningful segments, duplicate captures and performance impact.
+- After a window change, wait 3 seconds on the same window. Restart that timer
+  on another change. While scrolling/dragging, wait 1 second after it settles,
+  but cap deferral at 10 seconds.
+- Check for content changes every 30 seconds in a retained window. Enforce a
+  10-second minimum between full captures and deduplicate unchanged frames.
+- Reconfirm content every 5 minutes. Prefer accessible text, with a screenshot
+  for visual content; low-resolution local checks need not retain every frame.
+- Start visual-change detection around 10% of image regions materially changed.
+  Validate on real apps, cursors, clocks, animation and video before fixing it.
+- After 3 minutes without input, reduce checks to once every 2 minutes. Reading,
+  video and meetings are not absence. Pause on lock/sleep/manual suspension,
+  then restart stability checks on resume.
+- Associate timestamps, app/window identity and TimeSink spans. Recheck window
+  identity after capture and discard a mismatched sample.
+- Acquisition stays local; summarize selected time segments later rather than
+  sending every image to a model. Define retention, exclusions, permission
+  handling and durable collector health/state events before shipping.
+- Accept with a real app-switch/read/develop/lock run; measure meaningful missed
+  segments, duplicate captures and performance impact.
 
-No screen collection, scheduler, delivery or new skill has been implemented here.
+TimeSink currently pauses accounting on idle/lock/sleep but does not persist those
+reasons. Reuse its native detection rather than adding a second app/idle tracker.
+Screen collection can be referenced from Hermes's local computer_use capture/AX
+implementation, but no Hermes service or new MCP server has been integrated here.
+
+## Remaining daily loop
+
+1. Persist TimeSink state/health reasons and implement the above content collector.
+2. Add external agent activity history where worker/session data is available.
+3. Skill discovery/loading plus night consolidation and morning briefing workflows.
+4. Background watermarks, scheduling and wake-time catch-up.
+5. Morning delivery, quiet periods, defer/acknowledge and delivery deduplication.
+6. GPT Live write admission through policy, then multi-day and real-voice acceptance.
+
+A due_at is not a scheduled reminder; saving a briefing does not deliver it.
+No screen collector, new skill, scheduler or production deployment is included.

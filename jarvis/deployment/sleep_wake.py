@@ -6,7 +6,7 @@ spec §3.7.8.
 A 3-minute Codex turn easily spans a Mac sleep. The daemon must observe
 sleep/wake and reconcile in-flight state. Mac-only minimum
 (cross-domain publication deferred per ADR-0002 deviation V4): power
-observer + ``reconcile_after_wake`` handle the case fail-closed.
+observer records it; the supervisor sweep closes what the sleep outlived.
 
 The real observer is :class:`_IOKitPowerObserver` —
 ``IORegisterForSystemPower`` driven over **ctypes** against IOKit +
@@ -35,11 +35,8 @@ invoked guarded (the exception is logged and swallowed) and
 timed-out emit never vetoes or delays a sleep — the fail-closed wake-side
 reconciliation is the safety net (spec §3.7.8 — "sleep hook 不可靠").
 
-The Codex subprocess almost always dies through a sleep — macOS power
-management does not preserve subprocess sockets/pipes across deep sleep.
-Reconciliation is the spec's mandated fail-closed behavior: emit
-``worker.terminated_by_sleep`` + ``action.timeout_assumed`` (which a
-later Limitation Claim will reference); never silently mark the action
+An action the sleep outlived is closed by the supervisor sweep's deadline
+ladder (``action.timeout_assumed``); nothing here ever marks an action
 complete.
 
 Supervisor sweep (ADR-0009 D4, spec §3.4.8)
@@ -48,12 +45,7 @@ Supervisor sweep (ADR-0009 D4, spec §3.4.8)
 :func:`sweep_overdue_actions` lives here rather than in a module of its
 own because H13 scopes the ``deployment -> jarvis.state.event_log``
 exception to this one file, and because it shares the open-action fold
-with the wake path. There is exactly ONE fold
-(:func:`_open_actions`); the two consumers differ only in what they
-project out of it — the wake path keeps actions that reached
-``run.started`` (it names a run in ``worker.terminated_by_sleep``), the
-sweep keeps all of them and reads deadlines. Copying the fold instead of
-parameterizing it is how the two paths would drift apart.
+(:func:`_open_actions`) with the sleep path.
 
 The sweep is an emitter, not a second brain: one
 ``action.timeout_assumed`` per overdue action, and the existing Result
@@ -98,10 +90,7 @@ LOGGER = logging.getLogger("jarvis.deployment.sleep_wake")
 
 
 # Terminal event types that close an action's lifecycle. An ``action_id``
-# that reached ``run.started`` (so a worker run is registered) but carries
-# no event of a type in this set is considered "in-flight" by
-# ``_in_progress_actions`` and a candidate for fail-closed reconciliation
-# on wake.
+# that carries no event of a type in this set is open.
 _TERMINAL_ACTION_EVENT_TYPES: Final[frozenset[str]] = frozenset(
     {
         "action.result_observed",
@@ -125,8 +114,6 @@ _TERMINAL_ACTION_EVENT_TYPES_ORDERED: Final[tuple[str, ...]] = tuple(
 _OPEN_ACTION_EVENT_TYPES: Final[tuple[str, ...]] = (
     "action.dispatched",
     "action.running",
-    "run.started",
-    "worker.heartbeat",
     *_TERMINAL_ACTION_EVENT_TYPES_ORDERED,
 )
 
@@ -586,10 +573,9 @@ def install_power_observer(
     IOPM callbacks deterministically; unit tests do the same.
 
     The before-sleep callback emits ``mac.sleeping`` (with the list of
-    in-progress ``action_id``s) plus one ``worker.suspended_by_sleep``
-    per in-flight action. The on-wake callback emits ``mac.awake`` and
-    invokes :func:`reconcile_after_wake` to fail-closed any orphan runs
-    that the sleep killed.
+    open ``action_id``s). The on-wake callback emits ``mac.awake``; the
+    supervisor sweep (:func:`sweep_overdue_actions`) is what closes an
+    action the sleep outlived, on its own deadline ladder.
 
     Args:
         event_log: Open Event Log connection (from
@@ -631,38 +617,21 @@ def install_power_observer(
     observer = factory()
 
     def _before_sleep() -> None:
-        """Emit mac.sleeping + per-action worker.suspended_by_sleep."""
+        """Emit mac.sleeping with the open action ids."""
         if before_sleep_hook is not None:
             before_sleep_hook()
-        in_progress = _in_progress_actions(conn)
         emit_event(
             conn,
             type="mac.sleeping",
             payload={
                 "ts_epoch_ms": int(time.time() * 1000),
                 "reason": "system_sleep",
-                "in_progress_action_ids": [a.action_id for a in in_progress],
+                "in_progress_action_ids": [a.action_id for a in _open_actions(conn)],
             },
         )
-        for action in in_progress:
-            payload: dict[str, object] = {
-                "run_id": action.run_id,
-                "action_id": action.action_id,
-            }
-            if action.last_heartbeat_ts is not None:
-                payload["last_heartbeat_ts"] = action.last_heartbeat_ts
-            emit_event(
-                conn,
-                type="worker.suspended_by_sleep",
-                payload=payload,
-                correlation={
-                    "run_id": action.run_id,
-                    "action_id": action.action_id,
-                },
-            )
 
     def _on_wake() -> None:
-        """Emit mac.awake + run reconcile_after_wake (fail-closed)."""
+        """Emit mac.awake."""
         slept_for_ms = _slept_for_ms(conn)
         emit_event(
             conn,
@@ -672,7 +641,6 @@ def install_power_observer(
                 "slept_for_ms": slept_for_ms,
             },
         )
-        reconcile_after_wake(conn)
         if on_wake_hook is not None:
             on_wake_hook()
 
@@ -696,71 +664,6 @@ def install_power_observer(
     return observer
 
 
-# --- reconcile_after_wake --------------------------------------------------
-
-
-def reconcile_after_wake(event_log: sqlite3.Connection | None) -> int:
-    """Fail-closed reconciliation for in-flight actions. Returns closed count.
-
-    For each ``action.running`` event with no terminal event yet, emit
-    ``worker.terminated_by_sleep`` followed by ``action.timeout_assumed``
-    so the Result Interpreter / projection can derive a Limitation
-    outcome. Idempotent: dedup by checking whether
-    ``action.timeout_assumed`` already exists for the ``action_id``
-    (via :func:`_in_progress_actions`), so invoking twice in succession
-    does not double-emit.
-
-    The mac.* events are emitted by :func:`install_power_observer`'s
-    callbacks; this function only handles the per-action fail-closed
-    reconciliation, which is the safe-to-call-multiple-times path.
-
-    Args:
-        event_log: Open Event Log connection.
-
-    Returns:
-        Number of actions newly closed by this call (0 on idempotent
-        re-invocation).
-
-    Raises:
-        ValueError: If ``event_log`` is None.
-    """
-    if event_log is None:
-        msg = "reconcile_after_wake requires a non-None event_log connection"
-        raise ValueError(msg)
-    conn: sqlite3.Connection = event_log
-
-    closed = 0
-    for action in _in_progress_actions(conn):
-        emit_event(
-            conn,
-            type="worker.terminated_by_sleep",
-            payload={
-                "run_id": action.run_id,
-                "action_id": action.action_id,
-                "reason": "subprocess_lost_to_sleep",
-            },
-            correlation={
-                "run_id": action.run_id,
-                "action_id": action.action_id,
-            },
-        )
-        # ADR-0008 F8 — a supervisor terminal races L4's own result. The CAS
-        # picks one winner inside `BEGIN IMMEDIATE`; the loser gets
-        # `AlreadyTerminal` and appends nothing, so an action can never carry
-        # two canonical terminals.
-        terminalize_action(
-            conn,
-            event_type="action.timeout_assumed",
-            payload={
-                "action_id": action.action_id,
-                "reason": "lost_to_sleep",
-            },
-            correlation={"action_id": action.action_id},
-        )
-        closed += 1
-    return closed
-
-
 # --- sweep_overdue_actions -------------------------------------------------
 
 
@@ -778,17 +681,11 @@ def sweep_overdue_actions(
     serve start and as the periodic task (Step 7 wires both).
 
     Emits exactly ONE ``action.timeout_assumed`` per closure —
-    ``reason="supervisor_sweep"``, ``run_id`` on the correlation when the
-    action reached ``run.started``. Deliberately no ``worker.*`` event,
-    for run-less and run-ful orphans alike: ``run_id`` is born at
-    ``run.started``, so a run-less orphan has no run to declare
-    terminated, and ADR-0009 §4 registers no supervisor-side worker type
-    that would be true of the others (reusing
-    ``worker.terminated_by_sleep`` would put a false cause on the trace).
+    ``reason="supervisor_sweep"``.
 
-    The sweep is an emitter, not a second brain: the Result Interpreter
-    and ``_handle_action_terminal_failure`` already turn a timeout into
-    the Limitation claim, and the ADR-0002 amendment routes it to
+    The sweep is an emitter, not a second brain:
+    ``_handle_action_terminal_failure`` already turns a timeout into the
+    limitation answer, and the ADR-0002 amendment routes it to
     ``queue_review``.
 
     Double-emission is excluded twice over (F7 — "at most one
@@ -834,9 +731,6 @@ def sweep_overdue_actions(
             continue
         if _has_terminal_event(conn, action.action_id):
             continue
-        correlation = {"action_id": action.action_id}
-        if action.run_id is not None:
-            correlation["run_id"] = action.run_id
         # ADR-0008 F8 — `_has_terminal_event` above is a cheap pre-filter,
         # not the arbiter: it is a check-then-act that a concurrent L4 result
         # can slip through. The CAS is what actually decides.
@@ -847,7 +741,7 @@ def sweep_overdue_actions(
                 "action_id": action.action_id,
                 "reason": _SWEEP_TIMEOUT_REASON,
             },
-            correlation=correlation,
+            correlation={"action_id": action.action_id},
         )
         closed += 1
     return closed
@@ -857,38 +751,13 @@ def sweep_overdue_actions(
 
 
 @dataclass(frozen=True)
-class _InProgressAction:
-    """Snapshot of one in-flight action used by the sleep/wake fold.
-
-    A worker run's ``run_id`` is first written to the log by the codex
-    handler's ``run.started`` event, NOT by ``action.running``. The
-    generic L4 dispatcher emits ``action.running`` with
-    ``correlation={action_id, turn_id}`` and no ``run_id`` (it is minted
-    inside the handler, several steps after dispatch — see
-    :mod:`jarvis.execution.tools`). The fold therefore associates each
-    action's ``run_id`` from its ``run.started`` event and silently skips
-    actions that never reached ``run.started`` (e.g. a failed
-    ``codex --version`` preflight), so the fail-closed reconciliation
-    path only emits worker.* events for actions a worker actually owns.
-    """
-
-    action_id: str
-    run_id: str
-    last_heartbeat_ts: str | None
-
-@dataclass(frozen=True)
 class _OpenAction:
-    """One action the log shows as open — the shared fold's output row.
+    """One action the log shows as open — the fold's output row.
 
-    Superset of :class:`_InProgressAction`: ``run_id`` may be ``None``
-    (the action never reached ``run.started``) and the deadline anchors
-    are carried for the supervisor sweep. The wake path narrows this
-    back down in :func:`_in_progress_actions`.
+    The deadline anchors are carried for the supervisor sweep.
     """
 
     action_id: str
-    run_id: str | None
-    last_heartbeat_ts: str | None
     dispatched_ts_ms: int | None
     running_ts_ms: int | None
     result_expected_by_ms: int | None
@@ -898,8 +767,6 @@ class _OpenAction:
 class _PendingAction:
     """Mutable accumulator for one action_id while the fold runs."""
 
-    run_id: str | None = None
-    last_heartbeat_ts: str | None = None
     dispatched_ts_ms: int | None = None
     running_ts_ms: int | None = None
     result_expected_by_ms: int | None = None
@@ -916,7 +783,7 @@ class _LifecycleRow:
 
 
 def _iter_lifecycle_rows(event_log: sqlite3.Connection) -> Iterator[_LifecycleRow]:
-    """Yield the action/run lifecycle rows in log order, and nothing else.
+    """Yield the action lifecycle rows in log order, and nothing else.
 
     ADR-0009 D4: type-scoped, not ``iter_events`` — see
     :data:`_OPEN_ACTION_EVENT_TYPES`. Only the four columns the fold
@@ -933,31 +800,12 @@ def _iter_lifecycle_rows(event_log: sqlite3.Connection) -> Iterator[_LifecycleRo
         )
 
 
-def _correlation_str(row: _LifecycleRow, key: str) -> str | None:
-    """Pull ``key`` out of a row's correlation map; None if absent."""
-    raw = row.correlation.get(key)
-    return None if raw is None else str(raw)
-
-
-def _note_run_id(
-    pending: dict[str, _PendingAction],
-    action_id: str,
-    run_id: str | None,
-) -> _PendingAction:
-    """Register ``action_id`` if unseen; fill its ``run_id`` once known.
-
-    ``action.running`` from the generic dispatcher registers the action
-    with a ``None`` run_id; the later ``run.started`` (or a unit-test seed
-    that bakes the run_id straight onto ``action.running``) fills it in.
-    The first non-None run_id wins; a terminal event evicts the action
-    before any re-run, so per-action run_id never needs overwriting.
-    """
+def _note_action(pending: dict[str, _PendingAction], action_id: str) -> _PendingAction:
+    """Register ``action_id`` if unseen and return its accumulator."""
     record = pending.get(action_id)
     if record is None:
-        record = _PendingAction(run_id=run_id)
+        record = _PendingAction()
         pending[action_id] = record
-    elif run_id is not None and record.run_id is None:
-        record.run_id = run_id
     return record
 
 
@@ -983,50 +831,28 @@ def _apply_lifecycle_row(
     """Fold one lifecycle row into the pending map.
 
     ``action.dispatched`` / ``action.running`` register the action and
-    record their timestamps (the sweep's fallback deadline anchors);
-    ``run.started`` supplies the ``run_id``; ``worker.heartbeat``
-    refreshes liveness; a terminal row evicts the action outright.
+    record their timestamps (the sweep's fallback deadline anchors); a
+    terminal row evicts the action outright.
     """
     raw_action_id = row.payload.get("action_id")
-    action_id = None if raw_action_id is None else str(raw_action_id)
-    if row.type == "run.started":
-        started_action_id = _correlation_str(row, "action_id")
-        if started_action_id is not None:
-            _note_run_id(pending, started_action_id, _correlation_str(row, "run_id"))
+    if raw_action_id is None:
         return
-    if action_id is None:
-        return
+    action_id = str(raw_action_id)
     if row.type == "action.dispatched":
-        _note_dispatched(
-            _note_run_id(pending, action_id, _correlation_str(row, "run_id")),
-            row,
-        )
+        _note_dispatched(_note_action(pending, action_id), row)
     elif row.type == "action.running":
-        record = _note_run_id(pending, action_id, _correlation_str(row, "run_id"))
+        record = _note_action(pending, action_id)
         if record.running_ts_ms is None:
             record.running_ts_ms = row.ts_epoch_ms
-    elif row.type == "worker.heartbeat":
-        heartbeat_record = pending.get(action_id)
-        if heartbeat_record is not None:
-            heartbeat_record.last_heartbeat_ts = str(row.ts_epoch_ms)
     elif row.type in _TERMINAL_ACTION_EVENT_TYPES:
         pending.pop(action_id, None)
 
 
 def _open_actions(event_log: sqlite3.Connection) -> list[_OpenAction]:
-    """Shared low-level fold: every action the log shows as open.
+    """Low-level fold: every action the log shows as open.
 
-    ADR-0009 D4 pins ONE fold for both consumers, parameterized by what
-    each projects out of it rather than duplicated:
-
-    - :func:`reconcile_after_wake` (via :func:`_in_progress_actions`)
-      keeps only actions that reached ``run.started``, because it emits
-      ``worker.terminated_by_sleep`` and there must be a run to name.
-    - :func:`sweep_overdue_actions` keeps all of them — including the
-      daemon-died-during-preflight window — and reads the deadline
-      anchors, because an action nobody ever started is exactly the
-      ghost the sweep exists to close.
-
+    :func:`sweep_overdue_actions` reads the deadline anchors off it;
+    :func:`install_power_observer` lists the ids on ``mac.sleeping``.
     The returned list preserves first-seen order.
     """
     pending: dict[str, _PendingAction] = {}
@@ -1035,37 +861,11 @@ def _open_actions(event_log: sqlite3.Connection) -> list[_OpenAction]:
     return [
         _OpenAction(
             action_id=action_id,
-            run_id=record.run_id,
-            last_heartbeat_ts=record.last_heartbeat_ts,
             dispatched_ts_ms=record.dispatched_ts_ms,
             running_ts_ms=record.running_ts_ms,
             result_expected_by_ms=record.result_expected_by_ms,
         )
         for action_id, record in pending.items()
-    ]
-
-
-def _in_progress_actions(event_log: sqlite3.Connection) -> list[_InProgressAction]:
-    """Return one record per action that has a started run but no terminal.
-
-    The wake path's projection of :func:`_open_actions`. ``action.running``
-    registers an action; ``run.started`` supplies its ``run_id`` (the
-    first event that carries one for a real worker run — ``action.running``
-    from the generic dispatcher has only ``{action_id, turn_id}``). A
-    later terminal event for that ``action_id`` evicts the entry. Actions
-    that never reached ``run.started`` carry a ``None`` run_id and are
-    skipped (no worker was ever registered) — the deliberate blind spot
-    the supervisor sweep, and only the supervisor sweep, covers. The
-    returned list preserves first-seen order.
-    """
-    return [
-        _InProgressAction(
-            action_id=action.action_id,
-            run_id=action.run_id,
-            last_heartbeat_ts=action.last_heartbeat_ts,
-        )
-        for action in _open_actions(event_log)
-        if action.run_id is not None
     ]
 
 
@@ -1093,9 +893,8 @@ def _deadline_ms(action: _OpenAction, *, budget_ms: int) -> int | None:
     3. Pre-dispatch-era rows: first-seen ``action.running`` ts plus the
        same budget.
 
-    ``None`` when no anchor exists at all (an action known only from a
-    ``run.started`` row) — the sweep then leaves it alone rather than
-    inventing an age for it.
+    ``None`` when no anchor exists at all — the sweep then leaves it
+    alone rather than inventing an age for it.
     """
     if action.result_expected_by_ms is not None:
         return action.result_expected_by_ms
@@ -1126,6 +925,5 @@ def _slept_for_ms(event_log: sqlite3.Connection) -> int:
 __all__ = [
     "PowerObserver",
     "install_power_observer",
-    "reconcile_after_wake",
     "sweep_overdue_actions",
 ]

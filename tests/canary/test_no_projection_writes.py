@@ -60,6 +60,9 @@ _L2_OPERATIONAL_INSERTS: dict[str, frozenset[str]] = {
     # memory.db (2026-09-12): a standalone SQLite file, not the event log —
     # every utterance and answer, append-only. Not a projection of events.
     "jarvis/state/memory_db.py": frozenset({"records"}),
+    # ADR 0019: which Codex threads this daemon opened (parent action, child
+    # thread, open|closed). Topology, not a projection of events.
+    "jarvis/state/worker_edges.py": frozenset({"worker_edges"}),
 }
 
 # A receipt that could never move from `processing` to `accepted` would be a
@@ -71,6 +74,8 @@ _L2_OPERATIONAL_INSERTS: dict[str, frozenset[str]] = {
 # H1, and the table is bounded operational debt, never a projection.
 _L2_OPERATIONAL_UPDATES: dict[str, frozenset[str]] = {
     "jarvis/state/input_submission_inbox.py": frozenset({"input_submission_receipts"}),
+    # ADR 0019: an edge moves from open to closed exactly once.
+    "jarvis/state/worker_edges.py": frozenset({"worker_edges"}),
 }
 
 

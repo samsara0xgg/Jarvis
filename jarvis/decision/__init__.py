@@ -9,7 +9,6 @@ This package exports the public surface of L3:
 - :class:`EffectivePolicy` (from :mod:`jarvis.decision.policy`).
 - :class:`GateResult` / :class:`ResponsePlan` (from
   :mod:`jarvis.decision.gates`).
-- :class:`ResolverResult` (from :mod:`jarvis.decision.resolver`).
 - :func:`decide` — the single function the composition root
   (Step 10) wires into the runtime loop.
 - :class:`DecideContext` / :class:`DecideResult` — call / return
@@ -20,18 +19,12 @@ individual stages:
 
 - ``packet.py`` — Situation Packet assembler.
 - ``policy.py`` — Effective Policy Resolver.
-- ``resolver.py`` — pure, LLM-free entity-ref resolver
-  (canary H10 asserts no ``jarvis.decision.llm`` import).
 - ``intent.py`` — Tier 0 scaffold + Tier 2 LLM bridge.
 - ``gates.py`` — Pre-action / Pre-emit gates + Attention Policy.
-- ``result_interpreter.py`` — Post-action gate / claim+evidence
-  emission per the Day-1 semantics->level table.
 - ``llm.py`` — multi-provider LLM client (Step 8).
 
 ``decide()`` handles **one** trigger per call and returns. Multi-trigger
-orchestration (utterance -> worker.reported -> verify -> turn.ended)
-lives in Step 10's ``jarvis/runtime``. Step 12's scenario test exercises
-the full loop through ``decide()`` re-entry.
+orchestration lives in ``jarvis/runtime``.
 
 Layer rules: stdlib + ``jarvis.shared`` + ``jarvis.state`` +
 ``jarvis.constitution`` (optional). MUST NOT import
@@ -47,23 +40,14 @@ import functools
 import hashlib
 import json
 import logging
-import math
-import re
 import time
 import unicodedata
 import uuid
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
 
-from jarvis.decision.action_cancel import (
-    CANCEL_ACTION_TOOL_NAME,
-    build_cancel_action_request,
-    cancel_resolution_answer,
-    render_cancel_result_for_llm,
-    resolve_cancellable_action,
-)
 from jarvis.decision.confirm_grammar import match_confirm_grammar
 from jarvis.decision.cost_guard import CostRecorder
 from jarvis.decision.gates import (
@@ -84,28 +68,12 @@ from jarvis.decision.intent import (
 from jarvis.decision.llm_stream import LLMResponseFailed, LLMTextDelta
 from jarvis.decision.packet import (
     DEFAULT_OBSERVER_POLL_INTERVAL_S,
-    EVIDENCE_NOTE_PREFIX,
     SituationPacket,
     assemble_packet,
-    format_evidence_context_note,
     format_pending_confirmation_note,
     format_status_board_note,
 )
 from jarvis.decision.policy import EffectivePolicy, effective_policy, surface_for
-from jarvis.decision.pre_emit_phrases import COMPLETION_REGEXES
-from jarvis.decision.resolver import (
-    ResolverConfidence,
-    ResolverResult,
-    resolve_task_ref,
-    resolve_task_ref_by_window,
-)
-from jarvis.decision.result_interpreter import (
-    VerifyVerdict,
-    emit_worker_report_extras,
-    interpret_verify_diff_bundle,
-    result_interpreter,
-)
-from jarvis.decision.reviewer import ReviewerVerdict, review_diff
 from jarvis.decision.stream_envelope import (
     StreamEnvelopeSplitter,
     compose_envelope,
@@ -147,7 +115,7 @@ if TYPE_CHECKING:
     from jarvis.decision.pre_route import RoutineStreamRoute, StreamCorrection
     from jarvis.decision.stream_sentences import SemanticCandidate
     from jarvis.decision.tier0 import Tier0Hit, Tier0Table
-    from jarvis.shared import AuthorizationLease, EvidenceLevel, RiskLevel
+    from jarvis.shared import AuthorizationLease, RiskLevel
     from jarvis.state.projections import PendingConfirmationSlot
 
 LOGGER = logging.getLogger(__name__)
@@ -162,159 +130,11 @@ _DEFAULT_MAX_TOOL_ITERATIONS = 5
 # live burn can use a short value without touching code.
 _DEFAULT_CONFIRMATION_TTL_MS: Final[int] = 600_000
 
-# `_dispatch_one_tool_call`'s three-way signal to `_run_tool_use_loop`
-# (ADR-0012 D5 widens the prior bool: True=continue / False=pause):
-# "continue" — sync tool dispatched, loop to the next iteration;
-# "async_pause" — spawn_worker paused, `worker.reported` re-enters
-# later; "confirm_required" — the FIRST confirm_required this turn was
+# `_dispatch_one_tool_call`'s signal to `_run_tool_use_loop`:
+# "continue" — tool dispatched, loop to the next iteration;
+# "confirm_required" — the FIRST confirm_required this turn was
 # frozen into an ask, the tool loop ends here (no more LLM calls).
-_DispatchOutcome = Literal["continue", "async_pause", "confirm_required"]
-
-# Limitation-language template used when Pre-emit Gate forces a downgrade
-# after the LLM's second attempt still claims completion. Day-1 keeps it
-# Chinese-first per the prompt asset's Chinese-default rule. Acceptance F4
-# regex includes "未验证" so this template satisfies it on the negative path.
-_FORCED_LIMITATION_TEMPLATE = (
-    "tool result: {draft}\n— Pre-emit Gate forced limitation framing (unverified / 未验证)."
-)
-
-# Completion-keyword scrub set. Mirrors the gate's _COMPLETION_KEYWORDS
-# (in `jarvis.decision.gates`) in spirit; the gate decides whether to
-# FORCE downgrade, this scrub decides what text to render once the
-# forced template fires. Kept separate from the gate's regex set so spec
-# changes can evolve independently (the gate adds/removes detection
-# patterns; the scrub adds/removes redaction patterns). The
-# coverage drift guard
-# `tests/unit/test_pre_emit_forced_template.py::test_completion_scrub_covers_every_gate_keyword`
-# locks in the mapping — every new gate keyword must declare an
-# explicit scrub counterpart there.
-#
-# ADR-0002 Step 13: the canonical completion regex patterns live in
-# :mod:`jarvis.decision.pre_emit_phrases` (``COMPLETION_REGEXES``). The
-# scrub consumes the canonical source-text via ``.pattern`` (so
-# ``re.sub(..., flags=re.IGNORECASE)`` is applied uniformly here) and
-# appends two scrub-only synonyms the gate doesn't detect today —
-# ``completed`` / ``finished`` — so the forced template doesn't leak
-# them. Bare `完成` is canonical-anchored with `^` rather than scrubbed
-# mid-text because CJK has no `\b` word boundary and unrooted `完成`
-# mid-string false-matches phrases like `完成度` / `完成情况`. If the
-# gate trips on mid-text `完成`, the forced template still trips and
-# `_hard_refusal_plan` is the final defense.
-_COMPLETION_SCRUB_PATTERNS: Final[tuple[str, ...]] = (
-    *tuple(pat.pattern for pat in COMPLETION_REGEXES),
-    r"\bcompleted\b",       # scrub-only synonym (gate doesn't detect)
-    r"\bfinished\b",        # scrub-only synonym (gate doesn't detect)
-)
-
-_COMPLETION_REDACTION_MARKER: Final[str] = "[redacted-completion-claim]"
-
-
-def _scrub_completion_keywords(text: str) -> str:
-    """Replace completion-class keywords with a redaction marker.
-
-    Used by the forced limitation template when the LLM's retry still
-    claims completion — the embedded draft must not carry bare
-    completion words to the surface. Case-insensitive by default.
-    """
-    out = text
-    for pat in _COMPLETION_SCRUB_PATTERNS:
-        out = re.sub(pat, _COMPLETION_REDACTION_MARKER, out, flags=re.IGNORECASE)
-    return out
-
-
-# Demonstrative + task-noun reference detector. When the user's utterance
-# clearly refers to a specific existing task ("昨天那个 task", "刚才的任务")
-# but the Resolver finds no matching subject AND the ledger has no open
-# tasks, the canonical surface response IS the F1 branch-1 hard refusal
-# text ("找不到对应的 task"), not an LLM-generated paraphrase via the
-# list_tasks tool. _no_task_to_refer_to() drives the deterministic
-# short-circuit in :func:`_run_tool_use_loop`. The pattern is intentionally
-# permissive — false positives degrade to the same correct text, false
-# negatives just fall through to the normal LLM path.
-_DEMONSTRATIVE_TASK_RE: Final[re.Pattern[str]] = re.compile(
-    r"(那个|那些|这个|这些|刚才|上次|昨天|今天|明天).{0,30}(task|任务|项目)",
-)
-
-
-def _no_task_to_refer_to(packet: SituationPacket) -> bool:
-    """True iff the user demonstratively referenced a task that doesn't exist.
-
-    Conditions (all must hold):
-        - ``packet.open_tasks`` is empty (no resolvable target).
-        - ``packet.trigger_event.payload['transcript']`` matches
-          :data:`_DEMONSTRATIVE_TASK_RE` (demonstrative pronoun /
-          temporal anchor + task noun).
-
-    Used by :func:`_run_tool_use_loop` to short-circuit to the F1
-    branch-1 hard refusal before the LLM round-trip -- guarantees the
-    canonical "找不到对应的 task (未验证 / unverified)" surface on the
-    "user refers to a task that does not exist" path, irrespective of
-    whether the LLM would otherwise dispatch ``list_tasks`` and produce
-    a paraphrase.
-    """
-    if packet.open_tasks:
-        return False
-    transcript = packet.trigger_event.payload.get("transcript", "") or ""
-    if not isinstance(transcript, str):
-        return False
-    return _DEMONSTRATIVE_TASK_RE.search(transcript) is not None
-
-
-def _hard_refusal_plan(
-    active_subject: str,
-    *,
-    active_claim_levels: tuple[EvidenceLevel, ...] = (),
-) -> ResponsePlan:
-    r"""Build a fixed limitation ResponsePlan with no LLM-supplied text.
-
-    Used as the last line of defense when both the LLM retry and the
-    scrubbed forced template still trip the Pre-emit Gate. The text
-    uses ``未验证 / unverified`` (F4 limitation regex hit via ``未验证``
-    in ``_LIMITATION_PATTERNS`` and the ``\bunverified\b`` negation
-    marker, NOT bare ``\bverified\b``) and avoids every completion
-    keyword the gate detects, so it is scrub-safe by construction.
-
-    ``active_claim_levels`` is carried through from the last Pre-emit
-    Gate verdict (typically ``forced_plan.active_claim_levels``) so the
-    final ResponsePlan still records what evidence levels the subject
-    actually held. Defaults to ``()`` only for direct unit-test calls
-    that don't have a gate verdict to thread through.
-
-    F1: branch the user-facing text on what evidence the subject
-    actually holds, so Allen sees "找不到 task" / "verify 没过" /
-    "没有 diff" instead of operator-facing gate jargon. Branch-4 (the
-    catch-all) keeps the original wording. All branches must contain
-    both "未验证" and "unverified" and must NOT match any pattern in
-    :data:`jarvis.decision.gates._COMPLETION_KEYWORDS` (scrub-safe by
-    construction — see ``test_hard_refusal_plan_text_variants``).
-    """
-    if not active_claim_levels:
-        text = "找不到对应的 task（未验证 / unverified）。"  # noqa: RUF001 — intentional Chinese punctuation.
-    elif "executed" in active_claim_levels:
-        text = (
-            "Codex 跑了但 verify 没过（未验证 / unverified），"  # noqa: RUF001 — intentional Chinese punctuation.
-            "verify_command 返回非 0。"
-        )
-    elif tuple(active_claim_levels) == ("reported",):
-        text = "Codex 报告了但没产生可验证的 diff（未验证 / unverified）。"  # noqa: RUF001 — intentional Chinese punctuation.
-    else:
-        text = (
-            f"agent reported, status unverified (未验证) — Pre-emit Gate "
-            f"refused completion language for subject {active_subject} "
-            f"(no Postcondition evidence)."
-        )
-    # Hard refusal is always routine — by construction it carries no
-    # completion claim, so spec §3.4.13's risk class is the floor.
-    return ResponsePlan(
-        text=text,
-        permission="force_limitation_language",
-        downgrade_required=False,  # this text is scrub-safe by construction
-        active_claim_levels=active_claim_levels,
-        response_hash=hashlib.sha256(text.encode("utf-8")).hexdigest(),
-        output_risk_class="routine",
-        required_gate_mode="sentence",
-    )
-
+_DispatchOutcome = Literal["continue", "confirm_required"]
 
 # --- Pricing table loader (ADR-0002 Step 3 § cost.recorded plumbing) ------
 
@@ -481,49 +301,6 @@ def _emit_cost_recorded_from_metadata(
     return _append_cost_recorded(ctx, cost, turn_id=turn_id)
 
 
-def _emit_cost_recorded_for_run(
-    ctx: DecideContext,
-    *,
-    run_id: str,
-    turn_id: str | None,
-) -> Event | None:
-    """Emit one ``cost.recorded`` for a run from its durable executor report.
-
-    ADR-0008 Step 4: a truly background `spawn_worker` hands its
-    ``RawResult`` to the ActionRunner, so ``metadata["cost"]`` never reaches
-    this layer. L4 instead stamps the run's tokens onto
-    ``task.executor_reported``, and L3 — still the only permitted emit-site —
-    reads them back here when the run re-enters ``decide``.
-
-    Idempotent by the durable fold: a run that already has a
-    ``cost.recorded`` row (the foreground path records it at dispatch) gets
-    nothing further, so the same re-entry is safe under either dispatch mode.
-    """
-    report: Mapping[str, Any] | None = None
-    for event in iter_events_of_types(
-        ctx.conn,
-        ("cost.recorded", "task.executor_reported"),
-    ):
-        if event.payload.get("run_id") != run_id:
-            continue
-        if event.type == "cost.recorded":
-            return None
-        report = event.payload
-    if report is None or not isinstance(report.get("model"), str):
-        return None
-    return _append_cost_recorded(
-        ctx,
-        {
-            "kind": report.get("executor", "codex"),
-            "model": report["model"],
-            "tokens_in": report.get("tokens_in", 0),
-            "tokens_out": report.get("tokens_out", 0),
-            "run_id": run_id,
-        },
-        turn_id=turn_id,
-    )
-
-
 def _append_cost_recorded(
     ctx: DecideContext,
     cost: Mapping[str, Any],
@@ -594,10 +371,6 @@ class RuntimePathsLike(Protocol):
         """Path to the SQLite Event Log file."""
         ...
 
-    def artifact_dir_for_run(self, run_id: str) -> Path:
-        """Return (and create) the per-run artifact directory."""
-        ...
-
     def pending_write_path(self, confirmation_id: str) -> Path:
         """Return the staging path for a pending write's content.
 
@@ -612,9 +385,7 @@ class RuntimePathsLike(Protocol):
 class ToolDefinitionLike(Protocol):
     """Structural view of L4 ``ToolDefinition`` records.
 
-    Used by ``decide()`` when assembling the LLM tool list and when
-    deciding whether a tool is async (no immediate Result Interpreter
-    invocation).
+    Used by ``decide()`` when assembling the LLM tool list.
     """
 
     @property
@@ -625,11 +396,6 @@ class ToolDefinitionLike(Protocol):
     @property
     def description(self) -> str:
         """Tool description (LLM-facing)."""
-        ...
-
-    @property
-    def is_async(self) -> bool:
-        """True if the handler schedules a follow-up event."""
         ...
 
     @property
@@ -788,16 +554,10 @@ class DecideContext:
             threshold (3x the interval, ADR-0009 D6 v0). The default is
             the shipped cadence, so a hand-assembled context still calls
             staleness the way the daemon does.
-        entity_bookmarks: ``(alias, absolute-path)`` seed pairs for the
-            EntityRegistry projection's config route (ADR-0011 D4),
-            threaded down to every ``assemble_packet`` call the same
-            way ``tier0_table`` is threaded. The runtime composition
-            root loads ``config/file_targets.yaml``; L3 cannot import
-            the loader itself. Default ``()`` — no seed.
         entity_resolver: Injected resolve-on-propose callable (ADR-0011
             D4), or ``None``. ``_dispatch_one_tool_call`` calls it for
             a ``requires_entity=True`` tool whose ``target_entity_ref``
-            is still unset after the task-ref resolver runs. ``None``
+            is still unset. ``None``
             (the default) makes the feature inert: every
             ``requires_entity=True`` tool then refuses via Step 3's
             gate arm — correct fail-closed behavior, not a bug, for
@@ -840,7 +600,6 @@ class DecideContext:
     max_tool_iterations: int = _DEFAULT_MAX_TOOL_ITERATIONS
     tier0_table: Tier0Table | None = None
     observer_poll_interval_s: int = DEFAULT_OBSERVER_POLL_INTERVAL_S
-    entity_bookmarks: Sequence[tuple[str, str]] = ()
     entity_resolver: EntityResolverLike | None = None
     write_entity_resolver: EntityResolverLike | None = None
     confirmation_ttl_ms: int = _DEFAULT_CONFIRMATION_TTL_MS
@@ -865,14 +624,11 @@ class DecideResult:
 
     Attributes:
         response_plan: Final ResponsePlan when this invocation
-            produced user-facing text (utterance / sync-result
-            branches); ``None`` for invocations that only emitted
-            internal events (e.g. the spawn_worker dispatch leg of
-            the utterance branch).
+            produced user-facing text; ``None`` for invocations that
+            only emitted internal events.
         events_emitted: Frozen tuple of every Event ``decide()``
-            emitted during this invocation (turn / entity / action /
-            gate / claim / evidence / task). Surface adapters and
-            tests inspect this.
+            emitted during this invocation (turn / action / gate /
+            confirmation). Surface adapters and tests inspect this.
         turn_id: Turn correlation for this invocation (when
             applicable).
         attention_channel: Output of
@@ -913,18 +669,6 @@ class _Scratch:
 
     events: list[Event] = field(default_factory=list)
     turn_id: str | None = None
-    # active_subject_ref tracks the canonical task_id (or other entity
-    # id) currently in play. Set by the Resolver after entity.resolved.
-    active_subject_ref: str | None = None
-    # active_action_request lets the worker.reported branch fabricate a
-    # synthetic ActionRequest if necessary (the spawn_worker action.id
-    # is the link). Day-1 we rely on it being available in the trace.
-    last_run_id: str | None = None
-    # action_id of the currently in-flight async action (spawn_worker)
-    # — used by the worker.reported branch to thread Result Interpreter.
-    in_flight_action_id: str | None = None
-    in_flight_target_ref: str | None = None
-    in_flight_turn_id: str | None = None
     # ADR-0012 D5: the exact rendered template_line for the FIRST
     # `confirm_required` this turn froze — stamped by
     # `_stage_and_request_confirmation` via `_dispatch_one_tool_call`,
@@ -941,41 +685,14 @@ class _Scratch:
     # silent_log/queue_review candidate. Same flag-to-finalize idiom as
     # `pending_confirmation_template_line` above.
     confirmation_answered_this_turn: bool = False
-    # ADR-0008 D10: the deterministic answer for a `cancel_action` whose
-    # target resolved to none or to several open actions — a plain spoken
-    # answer or a clarifying question, never a confirmation ask. Stamped
-    # by `_dispatch_one_tool_call`, read one frame up by
-    # `_run_tool_use_loop` to end the turn with it (the same
-    # flag-to-finalize idiom as `pending_confirmation_template_line`), so
-    # the LLM cannot pick a candidate on Allen's behalf.
-    cancel_answer_text: str | None = None
-
-
-def _active_subject_or_default(
-    scratch: _Scratch,
-    packet: SituationPacket,
-) -> str | None:
-    """Resolved subject, else the first open task, else None.
-
-    The single home of a fallback previously duplicated across
-    `_finalize_response` and the prompt-note builders — the note and
-    the gate must brief/judge the SAME subject, or the LLM gets briefed
-    on task A and gated on task B.
-    """
-    if scratch.active_subject_ref is not None:
-        return scratch.active_subject_ref
-    if packet.open_tasks:
-        return packet.open_tasks[0].task_id
-    return None
 
 
 def _insert_system_notes(
     messages: list[dict[str, Any]],
     packet: SituationPacket,
-    scratch: _Scratch,
     ctx: DecideContext,
 ) -> None:
-    """Insert the four prompt-head system notes into ``messages``.
+    """Insert the prompt-head system notes into ``messages``.
 
     Each note is added via ``messages.insert(0, ...)``, and each such
     call pushes every note already inserted further from index 0 — so
@@ -983,10 +700,9 @@ def _insert_system_notes(
     nearest the live conversation (later inserts push it toward the
     tail, where the user message sits), the LAST call ends up at index
     0, farthest from it. Final stacking order (top → bottom):
-    Status Board (ambient background, called last), open tasks (Task
-    Ledger snapshot for reference resolution), evidence context, pending
-    confirmation (nearest the conversation, called first — the most
-    immediately turn-critical: it governs what THIS draft may claim
+    Status Board (ambient background, called last), open actions,
+    pending confirmation (nearest the conversation, called first — the
+    most immediately turn-critical: it governs what THIS draft may claim
     about THIS turn's outstanding ask; spec §3.4.4, Phase 0 batch 4;
     ADR-0012 §3 D4).
 
@@ -1001,24 +717,12 @@ def _insert_system_notes(
     # it (C6) without being able to act on it — the note carries no
     # confirmation_id. Called FIRST so it ends up nearest the
     # conversation: it is the most immediately turn-critical of the
-    # four (governs what THIS draft may claim about THIS turn's
+    # notes (governs what THIS draft may claim about THIS turn's
     # outstanding ask).
     pending_confirmation_note = format_pending_confirmation_note(packet)
     if pending_confirmation_note is not None:
         messages.insert(0, {"role": "user", "content": pending_confirmation_note})
-    evidence_note = format_evidence_context_note(
-        packet, subject_ref=_active_subject_or_default(scratch, packet),
-    )
-    if evidence_note is not None:
-        messages.insert(0, {"role": "user", "content": evidence_note})
-    # Task Ledger snapshot so the LLM can resolve natural references
-    # like "昨天那个 task" to the canonical task_id (Step 12 follow-up).
-    open_tasks_note = _format_open_tasks_note(packet)
-    if open_tasks_note is not None:
-        messages.insert(0, {"role": "user", "content": open_tasks_note})
-    # ADR-0008 D10: the non-terminal actions, so a cancel utterance can
-    # name its target; `cancel_action`'s resolver still trusts only the
-    # L2 fold, never this rendering.
+    # The non-terminal actions, so the LLM knows what is still running.
     open_actions_note = _format_open_actions_note(packet)
     if open_actions_note is not None:
         messages.insert(0, {"role": "user", "content": open_actions_note})
@@ -1032,29 +736,6 @@ def _insert_system_notes(
         messages.insert(0, {"role": "user", "content": status_board_note})
 
 
-def _refresh_evidence_note(
-    messages: list[dict[str, Any]],
-    packet: SituationPacket,
-    scratch: _Scratch,
-) -> None:
-    """Replace (or insert) the evidence-context note after a packet refresh.
-
-    The resolver may have set the subject since the first render, and
-    sync tool dispatches change the claim/evidence state mid-loop.
-    """
-    refreshed_note = format_evidence_context_note(
-        packet, subject_ref=_active_subject_or_default(scratch, packet),
-    )
-    if refreshed_note is None:
-        return
-    for note_index, message in enumerate(messages):
-        content = message.get("content")
-        if isinstance(content, str) and content.startswith(EVIDENCE_NOTE_PREFIX):
-            messages[note_index] = {"role": "user", "content": refreshed_note}
-            return
-    messages.insert(0, {"role": "user", "content": refreshed_note})
-
-
 # --- decide() entry point ---------------------------------------------------
 
 
@@ -1064,22 +745,12 @@ def decide(trigger: Event, ctx: DecideContext) -> DecideResult:
     See the module docstring for the canonical event trace. The
     branches handled Day-1:
 
-    - **``surface.user_intent``**: emit ``turn.started``, run Tier 0
-      (returns None Day-1), then drive the Tier 2 LLM tool-use loop.
-      Each tool call goes through the Resolver (if it has a task_id
-      argument), the Pre-action Gate, dispatch, and either the
-      Result Interpreter (sync) or "return None" (async — the Timer
-      will re-enter via ``worker.reported``). When the LLM emits
-      text, run the Pre-emit Gate; possibly re-prompt once; finalize
-      with ``turn.ended``.
-    - **``worker.reported``**: emit ``action.result_observed
-      (semantics=report)`` referencing the worker.reported event,
-      transition the lifecycle ``running -> result_observed``, run
-      Result Interpreter to emit a Report Claim + reported Evidence,
-      then re-call the LLM so it can plan verification.
-    - **``action.result_observed``**: run Result Interpreter on the
-      observed semantics, then ask the LLM for a final response,
-      then Pre-emit Gate, then ``turn.ended``.
+    - **``surface.user_intent``**: emit ``turn.started``, run Tier 0,
+      then drive the Tier 2 LLM tool-use loop. Each tool call goes
+      through the Pre-action Gate and dispatch. When the LLM emits
+      text, run the Pre-emit Gate and finalize with ``turn.ended``.
+    - **``action.result_observed``**: ask the LLM for a final
+      response, then Pre-emit Gate, then ``turn.ended``.
 
     The orchestration of MULTI-trigger across a single conversation
     turn is owned by Step 10 ``jarvis/runtime``. ``decide()`` is
@@ -1093,7 +764,7 @@ def decide(trigger: Event, ctx: DecideContext) -> DecideResult:
         Frozen :class:`DecideResult`.
     """
     scratch = _Scratch()
-    packet = assemble_packet(trigger, ctx.conn, entity_bookmarks=ctx.entity_bookmarks)
+    packet = assemble_packet(trigger, ctx.conn)
     policy = effective_policy(_allowed_tool_surface(ctx.tool_registry))
 
     # ``utterance.received`` is the voice-surface twin of
@@ -1104,15 +775,9 @@ def decide(trigger: Event, ctx: DecideContext) -> DecideResult:
     # every voice turn no-ops here and the watcher times out 5 s later.
     if trigger.type in ("surface.user_intent", "utterance.received"):
         return _handle_utterance(packet, policy, ctx, scratch)
-    if trigger.type == "worker.reported":
-        return _handle_worker_reported(packet, policy, ctx, scratch)
     if trigger.type == "action.result_observed":
         return _handle_result_observed(packet, policy, ctx, scratch)
     if trigger.type in ("action.timeout_assumed", "action.failed", "action.cancelled"):
-        # ADR-0008 D9/D10 (Step 4): a cancelled ActionRun is a third terminal
-        # the paused turn has to be woken by. It is a limitation, not a
-        # failure of Jarvis, and it re-enters through the same arm because
-        # the Result Interpreter row it needs is identical.
         return _handle_action_terminal_failure(packet, policy, ctx, scratch)
 
     # Unknown trigger: emit nothing, return an empty plan. Stage 2 may
@@ -1228,8 +893,7 @@ def _handle_utterance(
         return _run_tier0_path(hit, packet, policy, ctx, scratch)
 
     # Tier 2 tool-use loop. Each iteration calls the LLM, dispatches any
-    # tool_calls (with full Resolver + Pre-action Gate + Result
-    # Interpreter), and either continues (if more tool calls) or breaks
+    # tool_calls (through the Pre-action Gate), and either continues (if more tool calls) or breaks
     # (if the LLM returned text — which goes to Pre-emit Gate).
     return _run_tool_use_loop(packet, policy, ctx, scratch)
 
@@ -1241,65 +905,10 @@ def _run_tool_use_loop(
     scratch: _Scratch,
 ) -> DecideResult:
     """Drive the Tier 2 LLM tool-use loop until text or limit."""
-    # F1 deterministic short-circuit: when the user demonstratively
-    # references a task that doesn't exist in the ledger, emit the
-    # canonical "找不到对应的 task (未验证 / unverified)" hard refusal
-    # directly. Without this the LLM may dispatch ``list_tasks`` and
-    # paraphrase ("open tasks 为空"); the F1 branch-1 text carries the
-    # bilingual unverified marker the surface gate guarantees on the
-    # "user referenced a nonexistent task" path. Skipping the LLM
-    # round-trip also collapses turn latency for this dead-end case.
-    if _no_task_to_refer_to(packet):
-        plan = _hard_refusal_plan(
-            active_subject="unknown_subject",
-            active_claim_levels=(),
-        )
-        # Emit entity.resolved with outcome="not_found" so the audit
-        # chain records the resolution attempt — without this, the
-        # F1 short-circuit returns a hard refusal without any trace of
-        # which natural ref we tried to resolve. The synthetic
-        # ResolverResult mirrors what resolve_task_ref would have
-        # returned against an empty ledger.
-        transcript_raw = packet.trigger_event.payload.get("transcript", "")
-        natural_ref = transcript_raw if isinstance(transcript_raw, str) else ""
-        synthetic_result = ResolverResult(
-            resolved_to=None,
-            confidence="none",
-            candidates=(),
-            match_basis="no task to refer to (F1 short-circuit)",
-        )
-        scratch.events.append(
-            _emit_entity_resolved(
-                ctx,
-                natural_ref=natural_ref,
-                result=synthetic_result,
-                turn_id=scratch.turn_id,
-                source_event_id=packet.trigger_event.event_uid,
-            )
-        )
-        if scratch.turn_id is not None:
-            ended_event = emit_event(
-                ctx.conn,
-                type="turn.ended",
-                payload={
-                    "turn_id": scratch.turn_id,
-                    "final_response_hash": plan.response_hash,
-                },
-                source_event_id=packet.trigger_event.event_uid,
-                correlation={"turn_id": scratch.turn_id},
-            )
-            scratch.events.append(ended_event)
-        return DecideResult(
-            response_plan=plan,
-            events_emitted=tuple(scratch.events),
-            turn_id=scratch.turn_id,
-            attention_channel="voice_notify",
-        )
-
     if ctx.routine_stream is not None:
         return _run_routine_stream(packet, ctx, ctx.routine_stream, scratch)
 
-    messages = _loop_messages(packet, scratch, ctx)
+    messages = _loop_messages(packet, ctx)
     llm_surface = surface_for(policy, ctx.tool_registry, CallerPrincipal.JARVIS_LLM)
     tools = tool_definitions_for_llm([_tool_to_dict(t) for t in llm_surface])
 
@@ -1350,12 +959,10 @@ def _run_tool_use_loop(
             # iteration sees the LLM's tool requests in history.
             messages.append(_assistant_message_for(chat_result))
 
-            dispatch_outcome: _DispatchOutcome = "continue"
             for tool_call in chat_result.tool_calls:
                 _check_response_cancelled(ctx, "before tool proposal")
-                dispatch_outcome = _dispatch_one_tool_call(
+                _dispatch_one_tool_call(
                     tool_call=tool_call,
-                    packet=packet,
                     policy=policy,
                     ctx=ctx,
                     scratch=scratch,
@@ -1369,37 +976,15 @@ def _run_tool_use_loop(
                 # `_dispatch_one_tool_call` once
                 # `_confirmation_already_requested_this_turn` is True,
                 # per D4 "further L3 proposals in the same turn get the
-                # synthetic refuse result"). Only "async_pause" breaks
-                # immediately — spawn_worker pausing mid-batch has
-                # always short-circuited the remaining tool_calls.
-                if dispatch_outcome == "async_pause":
-                    break
+                # synthetic refuse result").
 
             turn_ending_draft = _turn_ending_draft(scratch, chat_result.text)
             if turn_ending_draft is not None:
                 return _finalize_response(turn_ending_draft, packet, ctx, scratch)
 
-            if dispatch_outcome == "async_pause":
-                # spawn_worker is async; lifecycle stays at running and
-                # the Timer will re-enter via worker.reported. Return
-                # a "partial" DecideResult — no final response yet.
-                attention = attention_policy(packet, packet.task_ledger_snapshot.claim_evidence)
-                return DecideResult(
-                    response_plan=None,
-                    events_emitted=tuple(scratch.events),
-                    turn_id=scratch.turn_id,
-                    attention_channel=attention,
-                )
-
-            # Otherwise (only sync tool results) refresh the packet so
-            # the next LLM call sees freshly-emitted claims/evidence,
-            # and re-render the evidence note against it — sync tools
-            # (verify_diff) mint claims mid-loop, which is exactly when
-            # the note must not be stale.
-            packet = assemble_packet(
-                packet.trigger_event, ctx.conn, entity_bookmarks=ctx.entity_bookmarks,
-            )
-            _refresh_evidence_note(messages, packet, scratch)
+            # Refresh the packet so the next LLM call sees the log as the
+            # tool dispatches left it.
+            packet = assemble_packet(packet.trigger_event, ctx.conn)
             continue
 
         # LLM returned text -> finalize via Pre-emit Gate.
@@ -1427,18 +1012,12 @@ def _turn_ending_draft(scratch: _Scratch, llm_text: str | None) -> str | None:
     normal Pre-emit Gate scrub like any other draft) plus the
     runtime-rendered template line frozen at staging time
     (`_stage_and_request_confirmation`), never composed by the LLM.
-
-    ADR-0008 D10: an unresolved ``cancel_action`` ends the turn with its
-    deterministic answer (a question when several actions are open, a
-    plain no-op answer when none is). It is not a confirmation: no ask,
-    no pending slot, no lease. Allen's reply is a new turn that resolves
-    to one candidate.
     """
     if _confirmation_already_requested_this_turn(scratch):
         llm_preamble = (llm_text or "").strip()
         template_line = scratch.pending_confirmation_template_line or ""
         return f"{llm_preamble}\n\n{template_line}" if llm_preamble else template_line
-    return scratch.cancel_answer_text
+    return None
 
 
 _TIER0_GATE_REFUSED_TEXT: Final[str] = "这条指令被 Pre-action Gate 拦下，未执行。"  # noqa: RUF001 — fullwidth comma/period are intentional Chinese punctuation.
@@ -1520,22 +1099,20 @@ def _run_tier0_path(
 ) -> DecideResult:
     """Dispatch one Tier 0 whitelist hit (spec §17) without the LLM.
 
-    Mirrors :func:`_dispatch_one_tool_call` steps 2-7b for a sync,
-    entity-free tool with ``caller_principal=REGEX_ROUTER``: proposed →
-    Pre-action Gate → authorized → L4 dispatch → Result Interpreter →
-    deterministic template text → :func:`_finalize_response` (Pre-emit
-    Gate + attention). Spec §3.5.2: "低延迟路径，但仍要过 entity /
-    policy / risk gate".
+    Mirrors :func:`_dispatch_one_tool_call` for a sync, entity-free tool
+    with ``caller_principal=REGEX_ROUTER``: proposed → Pre-action Gate →
+    authorized → L4 dispatch → deterministic template text →
+    :func:`_finalize_response` (Pre-emit Gate + attention). Spec §3.5.2:
+    "低延迟路径，但仍要过 entity / policy / risk gate".
 
-    An entry naming an unknown or async tool is a table
-    misconfiguration that ``validate_tier0_table`` normally rejects at
-    bootstrap; reaching it here degrades to the Tier 2 loop rather than
-    failing the turn.
+    An entry naming an unknown tool is a table misconfiguration that
+    ``validate_tier0_table`` normally rejects at bootstrap; reaching it
+    here degrades to the Tier 2 loop rather than failing the turn.
     """  # noqa: RUF002 — fullwidth punctuation is verbatim spec §3.5.2 Chinese quotation.
     tool_def = _find_registered_tool_def(ctx.tool_registry, hit.tool_name)
-    if tool_def is None or tool_def.is_async:
+    if tool_def is None:
         LOGGER.warning(
-            "tier0: pattern %r targets unusable tool %r — falling back to LLM",
+            "tier0: pattern %r targets unknown tool %r — falling back to LLM",
             hit.pattern_id,
             hit.tool_name,
         )
@@ -1571,14 +1148,7 @@ def _run_tier0_path(
     )
     scratch.events.append(proposed_event)
 
-    gate = pre_action_gate(
-        action_request,
-        policy,
-        packet.task_ledger_snapshot,
-        tool_def=tool_def,
-        entity_registry=packet.entity_registry,
-        action_admissions=packet.action_admissions,
-    )
+    gate = pre_action_gate(action_request, policy, tool_def=tool_def)
     gate_event = emit_event(
         ctx.conn,
         type="gate.evaluated",
@@ -1642,19 +1212,6 @@ def _run_tier0_path(
         tool_name=hit.tool_name,
         result_source="synchronous_dispatch_return",
     )
-    result_observed_uid = _latest_event_uid_of_type(
-        ctx.conn, event_type="action.result_observed",
-    )
-    source_event_for_interpreter = result_observed_uid or proposed_event.event_uid
-    for slot in bundle.slots:
-        interpreted_events = result_interpreter(
-            slot,
-            source_event_id=source_event_for_interpreter,
-            action_request=action_request,
-            conn=ctx.conn,
-            subject_ref_override=None,
-        )
-        scratch.events.extend(interpreted_events)
 
     primary_slot = bundle.slots[0]
     if primary_slot.error is not None:
@@ -1701,10 +1258,9 @@ def _run_tier0_path(
     )
 
 
-def _dispatch_one_tool_call(  # noqa: C901, PLR0912, PLR0913, PLR0915 — single-pass orchestration of resolver (Day-1 + Day-2 time-window) + gate + dispatch + interpreter; splitting muddles the audit trace.
+def _dispatch_one_tool_call(  # noqa: PLR0915 — single-pass orchestration of resolver + gate + dispatch; splitting muddles the audit trace.
     *,
     tool_call: object,
-    packet: SituationPacket,
     policy: EffectivePolicy,
     ctx: DecideContext,
     scratch: _Scratch,
@@ -1713,10 +1269,9 @@ def _dispatch_one_tool_call(  # noqa: C901, PLR0912, PLR0913, PLR0915 — single
     """Resolve, gate, and dispatch one LLM-proposed tool call.
 
     Returns:
-        ``"continue"`` if the tool was sync (the loop should continue
-        with the next iteration). ``"async_pause"`` if the tool was
-        async (the caller should pause and return a partial
-        DecideResult). ``"confirm_required"`` if this call's Pre-action
+        ``"continue"`` if the tool was dispatched or refused (the loop
+        should continue with the next iteration). ``"confirm_required"``
+        if this call's Pre-action
         Gate outcome was ``confirm_required`` AND it is the first such
         outcome this turn (ADR-0012 D5) — the caller must end the tool
         loop and finalize with the frozen ask's template line. A
@@ -1732,13 +1287,7 @@ def _dispatch_one_tool_call(  # noqa: C901, PLR0912, PLR0913, PLR0915 — single
     except (TypeError, ValueError):
         arguments = {}
 
-    # 1. Tool definition lookup (ADR-0011 §12.2 MUST-FIX 2). Moved ahead
-    #    of the task-ref resolver below: an unknown tool must not run
-    #    the resolver at all (it would emit a task-flavored
-    #    ``entity.resolved`` for a name that doesn't even exist — a
-    #    deliberate, minor behavior change from the previous ordering),
-    #    and a ``requires_entity=True`` tool must never run it either —
-    #    see the guard on that block.
+    # 1. Tool definition lookup.
     tool_def = _find_tool_def(ctx.tool_registry, name)
     if tool_def is None:
         # Unknown tool from LLM. Inject a tool-result message saying so
@@ -1751,130 +1300,22 @@ def _dispatch_one_tool_call(  # noqa: C901, PLR0912, PLR0913, PLR0915 — single
         )
         return "continue"
 
-    # 2. Task-ref resolver. Tools that accept a ``task_id`` go through
-    #    the resolver; LLM-supplied ``task_id`` is treated as a natural
-    #    ref (per spec §3.3.7: LLM must not invent entity IDs). When the
-    #    LLM additionally emits a structured ``{since_ts, until_ts}``
-    #    pair on the action arguments (ADR-0002 Step 5: L3 LLM
-    #    translates natural-language time windows like "昨天" into
-    #    epoch-ms bounds), we route through ``resolve_task_ref_by_window``
-    #    so the resolver queries the projection via
-    #    :meth:`TaskLedgerSnapshot.tasks_in_window` — no direct SQL from
-    #    L3 per spec §3.4.3.
-    #
-    #    ADR-0011 §12.2 MUST-FIX 2: gated on ``not tool_def.requires_entity``
-    #    — a ``requires_entity=True`` tool (e.g. ``read_file``) must not
-    #    have ``target_entity_ref`` filled from a ``task_id`` /
-    #    ``natural_ref`` argument that raw, unvalidated LLM JSON happens
-    #    to carry alongside an unrelated ``target``. Without this guard
-    #    that fill runs BEFORE the resolve-on-propose block below ever
-    #    sees ``target_entity_ref`` (its precondition is
-    #    ``target_entity_ref is None``), so the file target is neither
-    #    resolved nor refused — it is silently skipped.
-    target_entity_ref: str | None = None
-    if not tool_def.requires_entity:
-        natural_ref_raw = arguments.get("task_id") or arguments.get("natural_ref") or ""
-        natural_ref = natural_ref_raw if isinstance(natural_ref_raw, str) else ""
-        since_ts = _coerce_epoch_ms(arguments.get("since_ts"))
-        until_ts = _coerce_epoch_ms(arguments.get("until_ts"))
-        resolver_result: ResolverResult | None = None
-        if since_ts is not None and until_ts is not None:
-            resolver_result = resolve_task_ref_by_window(
-                natural_ref,
-                packet.task_ledger_snapshot,
-                since_ts=since_ts,
-                until_ts=until_ts,
-            )
-            # Window-resolution args are consumed here; do not leak into the
-            # L4 tool call (L4 tools don't understand them).
-            arguments.pop("since_ts", None)
-            arguments.pop("until_ts", None)
-        elif natural_ref:
-            resolver_result = resolve_task_ref(natural_ref, packet.task_ledger_snapshot)
-        if resolver_result is not None:
-            scratch.events.append(
-                _emit_entity_resolved(
-                    ctx,
-                    natural_ref=natural_ref,
-                    result=resolver_result,
-                    turn_id=scratch.turn_id,
-                    source_event_id=packet.trigger_event.event_uid,
-                )
-            )
-            if resolver_result.resolved_to is not None:
-                target_entity_ref = resolver_result.resolved_to
-                scratch.active_subject_ref = resolver_result.resolved_to
-                # Rewrite arguments.task_id to the canonical id so L4 sees
-                # the real id, not the natural ref. ``run_id`` arguments
-                # are left untouched.
-                if "task_id" in arguments:
-                    arguments["task_id"] = resolver_result.resolved_to
-
-    # ADR-0008 D10: `cancel_action` resolves its target from the L2 fold
-    # (`packet.action_admissions`, mirrored by the `action:` EntityRegistry
-    # kind), never from the LLM's raw `target_action_id` alone. Runs before
-    # the resolve-on-propose block below so a `requires_entity=True` cancel
-    # never reaches the file resolver. An unresolved target (none open, or
-    # several) ends the turn with a deterministic answer and proposes
-    # nothing — no `action.proposed`, no `gate.evaluated`, no ask.
-    cancel_target: str | None = None
-    if name == CANCEL_ACTION_TOOL_NAME:
-        resolution = resolve_cancellable_action(
-            packet, requested=arguments.get("target_action_id"),
-        )
-        if resolution.action_id is None:
-            scratch.cancel_answer_text = cancel_resolution_answer(resolution)
-            messages.append(
-                _tool_result_message(
-                    call_id=call_id,
-                    content=json.dumps(
-                        {
-                            "status": resolution.kind,
-                            "candidates": list(resolution.candidates),
-                            "message": scratch.cancel_answer_text,
-                        },
-                        ensure_ascii=False,
-                    ),
-                )
-            )
-            return "continue"
-        cancel_target = resolution.action_id
-        target_entity_ref = resolution.action_ref
-        arguments["target_action_id"] = cancel_target
-
-    # ADR-0011 D4 (resolve-on-propose): a tool that declares
-    # `requires_entity=True` (e.g. `read_file`) but has no
-    # `target_entity_ref` yet gets one shot at the injected entity
-    # resolver here. Nothing upstream can have filled the ref first: the
-    # task-ref resolver block above is skipped entirely for a
-    # `requires_entity=True` tool (its `not tool_def.requires_entity`
-    # guard, §12.2 MUST-FIX 2 above), and the active-subject inheritance
-    # below carries its own `not tool_def.requires_entity` guard — so
-    # this is the only block that can set `target_entity_ref` for such a
-    # tool. `ctx.entity_resolver` / `ctx.write_entity_resolver` (ADR-0012
-    # D1, see the tool-name branch below) are `None` in any context that
-    # hasn't wired them; the feature is then inert and Step 3's
-    # `requires_entity` gate arm refuses, which is correct fail-closed
-    # behavior, not a bug. `entity.resolved` is emitted on BOTH outcomes
-    # (ADR §4) — the `not_found` emission is what E2 depends on.
-    #
-    # ADR-0011 §12.2 MUST-FIX 1: `gate_entity_registry` starts as the
-    # packet's registry (assembled before this call, so it can be one
-    # `entity.resolved` event stale) and is overlaid with the
-    # just-emitted event on a hit, via the exact same fold logic route 3
-    # of `_fold_entity_registry` uses (`EntityRegistry.with_resolved_event`).
-    # The event is already durable in the log; this only catches the
-    # gate's view up to it — it is not a widening of trust.
+    # 2. ADR-0011 D4 (resolve-on-propose): a tool that declares
+    # `requires_entity=True` (e.g. `read_file`) gets one shot at the
+    # injected entity resolver here. `ctx.entity_resolver` /
+    # `ctx.write_entity_resolver` (ADR-0012 D1, see the tool-name branch
+    # below) are `None` in any context that hasn't wired them; the
+    # feature is then inert and the `requires_entity` gate arm refuses,
+    # which is correct fail-closed behavior, not a bug.
     # ADR-0012 D1: `write_file`'s write-target resolution differs from
     # every other `requires_entity=True` tool's (a non-existent target
     # can still resolve, iff its parent directory is in scope), so it
     # gets its own injected resolver rather than sharing
-    # `ctx.entity_resolver`. Selecting by bare tool name mirrors the
-    # existing `name == "verify_diff"` precedent just above this block.
+    # `ctx.entity_resolver`.
     file_entity_resolver = (
         ctx.write_entity_resolver if name == "write_file" else ctx.entity_resolver
     )
-    gate_entity_registry = packet.entity_registry
+    target_entity_ref: str | None = None
     # ADR-0012 §3 D3: the confirmation snapshot's human-readable
     # `canonical_target` is the resolver's `.canonical` (bare absolute
     # path), captured here at the source of truth rather than
@@ -1886,97 +1327,15 @@ def _dispatch_one_tool_call(  # noqa: C901, PLR0912, PLR0913, PLR0915 — single
     # only ever happens via this block, so the two are always set
     # together on the path that reaches confirm_required.
     write_target_canonical: str | None = None
-    if (
-        tool_def.requires_entity
-        and target_entity_ref is None
-        and file_entity_resolver is not None
-    ):
+    if tool_def.requires_entity and file_entity_resolver is not None:
         raw_target = arguments.get("target")
         raw_query = raw_target if isinstance(raw_target, str) else ""
         resolved = file_entity_resolver(raw_query)
-        entity_event = _emit_file_entity_resolved(
-            ctx,
-            natural_ref=raw_query,
-            resolved=resolved,
-            turn_id=scratch.turn_id,
-            source_event_id=packet.trigger_event.event_uid,
-        )
-        scratch.events.append(entity_event)
         if resolved is not None:
             target_entity_ref = resolved.entity_id
             write_target_canonical = resolved.canonical
-            gate_entity_registry = gate_entity_registry.with_resolved_event(entity_event)
-
-    # When the tool accepts run_id (verify_diff), prefer the most recent
-    # run we spawned this turn. The action.proposed correlation carries
-    # run_id forward.
-    if "run_id" in arguments and scratch.last_run_id is not None:
-        arguments["run_id"] = arguments.get("run_id") or scratch.last_run_id
-
-    # If the tool did not carry a task_id argument (e.g. verify_diff
-    # is keyed on run_id), inherit the active subject from scratch so
-    # the resulting Postcondition Claim's subject_ref is the canonical
-    # task_id rather than the synthetic action_id. Without this, the
-    # Pre-emit Gate cannot find the verified evidence for the active
-    # subject and task.verified is never emitted. (Step 12 follow-up.)
-    #
-    # ADR-0011 D3/D4 guard: a `requires_entity=True` tool must NEVER
-    # inherit the active *task* subject as its `target_entity_ref` —
-    # doing so would hand the gate a task id for a tool whose contract
-    # is a non-task entity (e.g. a file), and the ledger arm would pass
-    # it, silently defeating both D3 (an entity-required tool needs a
-    # REAL resolved target) and D4/E2 (an unresolved target must
-    # refuse, not fall back to whatever task happens to be active).
-    if (
-        target_entity_ref is None
-        and scratch.active_subject_ref is not None
-        and not tool_def.requires_entity
-    ):
-        target_entity_ref = scratch.active_subject_ref
-
-    # ADR-0002 Step 12 § Verify_command plumbing (lines 875-913):
-    # when L3 proposes the ``verify_diff`` action, lift the task's
-    # ``verify_command`` and ``repo_path`` off the Task Ledger
-    # projection and stash them on ``ActionRequest.payload`` using the
-    # EXACT literal keys ``"verify_command"`` / ``"repo_path"`` so the
-    # L4 ``verify_diff_handler`` reads them via
-    # ``action_request.payload.get("verify_command")``. The values are
-    # passed through verbatim — no transformation. Canary
-    # ``test_canary_verify_command_plumbed_to_action_request`` AST-checks
-    # both ends.
-    action_payload: Mapping[str, Any] | None = None
-    if name == "verify_diff" and target_entity_ref is not None:
-        task_record = packet.task_ledger_snapshot.get(target_entity_ref)
-        if task_record is not None:
-            payload_dict: dict[str, Any] = {
-                "verify_command": task_record.verify_command,
-            }
-            if task_record.repo_path is not None:
-                payload_dict["repo_path"] = task_record.repo_path
-            action_payload = payload_dict
-
-    # Idempotence guard (spec §3.4.3/§3.4.4 decide-from-state + §3.4.6
-    # untrusted LLM): a verify_diff for a task already verify-proposed this
-    # turn is redundant — re-verifying the same artifact yields no new
-    # evidence and risks a duplicate task.verified. Computed BEFORE this
-    # action.proposed is emitted so the query sees only prior proposals;
-    # enforced as a Pre-action Gate refusal below.
-    redundant_verify_diff = name == "verify_diff" and _verify_diff_already_proposed_this_turn(
-        ctx.conn, turn_id=scratch.turn_id, task_id=target_entity_ref,
-    )
 
     action_id = _new_action_id()
-    if cancel_target is not None:
-        # ADR-0008 D10: freeze the target's recorded admission gate uid
-        # into the request; the gate's `admission_matched` arm compares it.
-        reason_raw = arguments.get("reason")
-        action_payload = build_cancel_action_request(
-            packet,
-            request_id=action_id,
-            target_action_id=cancel_target,
-            reason=reason_raw if isinstance(reason_raw, str) else "",
-            requested_by_turn_id=scratch.turn_id,
-        ).as_action_payload()
     action_request = ActionRequest(
         action_id=action_id,
         tool_name=name,
@@ -1985,9 +1344,8 @@ def _dispatch_one_tool_call(  # noqa: C901, PLR0912, PLR0913, PLR0915 — single
         risk_level=tool_def.risk_level,
         arguments=arguments,
         authorization_lease=None,
-        run_id=scratch.last_run_id if "run_id" in arguments else None,
+        run_id=None,
         turn_id=scratch.turn_id,
-        payload=action_payload,
     )
 
     # 3. action.proposed
@@ -2007,27 +1365,10 @@ def _dispatch_one_tool_call(  # noqa: C901, PLR0912, PLR0913, PLR0915 — single
     )
     scratch.events.append(proposed_event)
 
-    # 4. Pre-action Gate. Uses `gate_entity_registry`, not
-    #    `packet.entity_registry` — see the MUST-FIX 1 comment above the
-    #    resolve-on-propose block: the two are identical except when
-    #    this call just resolved a file target, in which case the
-    #    former also carries that event.
-    gate = pre_action_gate(
-        action_request,
-        policy,
-        packet.task_ledger_snapshot,
-        tool_def=tool_def,
-        entity_registry=gate_entity_registry,
-        action_admissions=packet.action_admissions,
-    )
+    # 4. Pre-action Gate.
+    gate = pre_action_gate(action_request, policy, tool_def=tool_def)
     gate_outcome = gate.outcome
     gate_reasons = list(gate.reasons)
-    if redundant_verify_diff and gate_outcome == "pass":
-        # Refuse the redundant verify_diff (spec §3.4.3/§3.4.4 + §3.4.6) so
-        # the existing refuse path injects a tool-result and the LLM settles
-        # into a response instead of re-verifying an already-settled task.
-        gate_outcome = "refuse"
-        gate_reasons = ["redundant_verify_diff_this_turn"]
     gate_event = emit_event(
         ctx.conn,
         type="gate.evaluated",
@@ -2109,10 +1450,7 @@ def _dispatch_one_tool_call(  # noqa: C901, PLR0912, PLR0913, PLR0915 — single
     ctx.lifecycle.transition(action_id, "authorized")
 
     # 6. Dispatch via L4 ToolRegistry (emits action.dispatched +
-    #    action.running internally; handler emits run.started for
-    #    spawn_worker and action.result_observed for sync tools).
-    #    Day-2 § RawResultBundle contract: dispatcher returns a bundle
-    #    uniformly; single-slot tools are wrapped at the L4 boundary.
+    #    action.running + action.result_observed).
     record_realtime_trace(
         "action_dispatch_started",
         turn_id=scratch.turn_id,
@@ -2133,390 +1471,29 @@ def _dispatch_one_tool_call(  # noqa: C901, PLR0912, PLR0913, PLR0915 — single
         tool_name=name,
         result_slots=len(bundle.slots),
     )
-    if not tool_def.is_async:
-        record_realtime_trace(
-            "action_result_available",
-            turn_id=scratch.turn_id,
-            action_id=action_id,
-            tool_name=name,
-            result_source="synchronous_dispatch_return",
-        )
+    record_realtime_trace(
+        "action_result_available",
+        turn_id=scratch.turn_id,
+        action_id=action_id,
+        tool_name=name,
+        result_source="synchronous_dispatch_return",
+    )
     primary_slot = bundle.slots[0]
 
-    # 6b. ADR-0002 Step 3: when L4 returns RawResult.metadata["cost"]
-    #     (populated by spawn_worker from Codex's turn/completed once
-    #     Step 10 wires it), emit cost.recorded(kind="codex") from L3.
-    #     L3 is the sole emit-site per spec §5.4.1; L4 only places the
-    #     payload on metadata. Cost lives on slot 1 (spawn_worker single
-    #     slot or verify_diff observation slot) — multi-slot tools do
-    #     not populate cost on the chained verification slot.
+    # 6b. ADR-0002 Step 3: when L4 returns RawResult.metadata["cost"],
+    #     emit cost.recorded from L3 — the sole emit-site per spec §5.4.1.
     cost_event = _emit_cost_recorded_from_metadata(
         ctx, primary_slot, turn_id=scratch.turn_id,
     )
     if cost_event is not None:
         scratch.events.append(cost_event)
 
-    # 7a. Async tools (spawn_worker): leave lifecycle at running and
-    #     pause. ``worker.reported`` will re-enter decide() later.
-    if tool_def.is_async:
-        scratch.in_flight_action_id = action_id
-        scratch.in_flight_target_ref = target_entity_ref
-        scratch.in_flight_turn_id = scratch.turn_id
-        # Capture the run_id so verify_diff can refer to it.
-        run_id_from_raw = primary_slot.payload.get("run_id")
-        if isinstance(run_id_from_raw, str):
-            scratch.last_run_id = run_id_from_raw
-        return "async_pause"
-
-    # 7b. Sync tools (verify_diff Day-2 dual-slot, create_task single
-    #     slot): the handler emitted ``action.result_observed`` itself.
-    #     Find that event in the freshly-folded log so we have a
-    #     source_event_id for the claim+evidence pair(s) the Result
-    #     Interpreter is about to emit. For verify_diff, route through
-    #     the Day-2 F2 ladder (Step 12 § Evidence ladder) which calls
-    #     :func:`review_diff` once on the captured diff text and emits
-    #     per-slot, per-source Claim/Evidence rows per the ADR table.
-    #     Other tools continue to use the Day-1 single-slot path.
-    result_observed_uid = _latest_event_uid_of_type(
-        ctx.conn,
-        event_type="action.result_observed",
-    )
-    source_event_for_interpreter = result_observed_uid or proposed_event.event_uid
-
-    last_interpreted_evidence: Event | None
-    verify_verdict: VerifyVerdict
-    if name == "verify_diff":
-        last_interpreted_evidence, verify_verdict = _route_verify_diff_bundle(
-            bundle=bundle,
-            ctx=ctx,
-            scratch=scratch,
-            action_request=action_request,
-            target_entity_ref=target_entity_ref,
-            fallback_source_event_id=source_event_for_interpreter,
-        )
-    else:
-        last_interpreted_evidence = None
-        verify_verdict = "neither"
-        for slot in bundle.slots:
-            interpreted_events = result_interpreter(
-                slot,
-                source_event_id=source_event_for_interpreter,
-                action_request=action_request,
-                conn=ctx.conn,
-                subject_ref_override=target_entity_ref,
-            )
-            scratch.events.extend(interpreted_events)
-            last_interpreted_evidence = interpreted_events[1]
-            if slot.semantics == "verification" and target_entity_ref is not None:
-                verify_verdict = "verified"
-
-    # Trailing completion event per the F2 ladder + Fix 2 Option A
-    # amendment. Three branches keyed on the Result Interpreter's
-    # verdict:
-    #
-    # - verdict="verified" → task.verified per ADR § Canonical event
-    #   trace evt 22. Canonical happy path: diff_nonempty AND
-    #   verify_command exit 0. Cause-chain sources the last evidence
-    #   event the interpreter emitted.
-    # - verdict="no_op" → task.no_op (Fix 2 Option A). Empty diff +
-    #   verify_command exit 0: the verify_command alone cannot promote
-    #   to level=verified absent an artifact-change signal (spec §8.9).
-    #   No evidence event to chain off of, so source the cause-chain
-    #   off the action.proposed row.
-    # - verdict="neither" → emit nothing (verify failed, no verify
-    #   slot, or no canonical subject).
-    if verify_verdict == "verified" and last_interpreted_evidence is not None:
-        task_verified_event = emit_event(
-            ctx.conn,
-            type="task.verified",
-            payload={"task_id": target_entity_ref, "by": "jarvis"},
-            source_event_id=last_interpreted_evidence.event_uid,
-            correlation=_action_correlation(action_request),
-        )
-        scratch.events.append(task_verified_event)
-        scratch.active_subject_ref = target_entity_ref
-    elif verify_verdict == "no_op" and target_entity_ref is not None:
-        no_op_payload: dict[str, Any] = {"task_id": target_entity_ref}
-        if action_payload is not None:
-            verify_command = action_payload.get("verify_command")
-            if isinstance(verify_command, str) and verify_command:
-                no_op_payload["verify_command"] = verify_command
-        no_op_payload["reason"] = (
-            "diff_nonempty=False + verify_command exit 0; "
-            "no artifact-change signal to support task.verified (spec §8.9)"
-        )
-        task_no_op_event = emit_event(
-            ctx.conn,
-            type="task.no_op",
-            payload=no_op_payload,
-            source_event_id=proposed_event.event_uid,
-            correlation=_action_correlation(action_request),
-        )
-        scratch.events.append(task_no_op_event)
-        scratch.active_subject_ref = target_entity_ref
-
-    # 8. Append the tool result back into the messages list so the LLM
-    #    can see it on the next iteration. Multi-slot returns: render
-    #    the bundle as a JSON object so the LLM sees both outputs. A
-    #    `cancel_action` ack also carries its spoken meaning per
-    #    `CancelOutcome` variant (ADR-0008 D10) — an unconfirmed cancel
-    #    is reported as not stopped, never as a success.
+    # 7. Append the tool result back into the messages list so the LLM
+    #    can see it on the next iteration.
     messages.append(
-        _tool_result_message(
-            call_id=call_id,
-            content=(
-                render_cancel_result_for_llm(primary_slot.payload)
-                if name == CANCEL_ACTION_TOOL_NAME
-                else _render_bundle_for_llm(bundle)
-            ),
-        )
+        _tool_result_message(call_id=call_id, content=_render_bundle_for_llm(bundle)),
     )
     return "continue"
-
-
-def _route_verify_diff_bundle(  # noqa: PLR0913 - F2 ladder hand-off inputs are all load-bearing per ADR-0002 § Verify_command plumbing.
-    *,
-    bundle: RawResultBundle,
-    ctx: DecideContext,
-    scratch: _Scratch,
-    action_request: ActionRequest,
-    target_entity_ref: str | None,
-    fallback_source_event_id: str,
-) -> tuple[Event | None, VerifyVerdict]:
-    """Drive the F2 ladder for a ``verify_diff`` :class:`RawResultBundle`.
-
-    Per ADR-0002 Step 12 (§ Evidence ladder lines 250-339), amended by
-    Fix 2 Option A for the empty-diff paradox row:
-
-    1. Looks up the ``action.result_observed`` event_uid per slot from
-       the freshly-folded log so the F2 ladder rows hang off the right
-       cause-chain row.
-    2. Calls :func:`review_diff` once on the captured diff text (slot
-       1) — wrapped in :meth:`LLMClient.fresh_context` per
-       § Reviewer contract (line 738). Skipped when slot 1 has
-       ``diff_nonempty == False``.
-    3. Emits ``cost.recorded(kind="reviewer", ...)`` from the same
-       function body so the per-LLM-call cost canary is satisfied
-       (the reviewer module itself does not emit; Step 12 owns the
-       caller-side emit per § Reviewer contract line 743+).
-    4. Delegates to :func:`interpret_verify_diff_bundle` to emit the
-       Claim + Evidence rows per the ladder.
-
-    Returns ``(last_evidence_event, verdict)`` where ``verdict`` is
-    one of :data:`VerifyVerdict`: ``"verified"`` → caller emits
-    ``task.verified``; ``"no_op"`` → caller emits ``task.no_op``;
-    ``"neither"`` → caller emits nothing.
-    """
-    if target_entity_ref is None:
-        # No canonical subject → fall back to the Day-1 single-slot
-        # path; ladder rows need a subject_ref to be useful.
-        last_evidence: Event | None = None
-        for slot in bundle.slots:
-            interpreted_events = result_interpreter(
-                slot,
-                source_event_id=fallback_source_event_id,
-                action_request=action_request,
-                conn=ctx.conn,
-                subject_ref_override=target_entity_ref,
-            )
-            scratch.events.extend(interpreted_events)
-            last_evidence = interpreted_events[1]
-        return last_evidence, "neither"
-
-    # Per spec §5.4.2 + ADR-0002 § Verify_command plumbing line 905,
-    # L3 emits one ``action.result_observed`` per slot. Step 11's
-    # handler emits the slot-1 (observation) event itself for backward
-    # compat; the slot-2 (verification | error) event is L3's job and
-    # lands here. We then collect the freshly-folded event_uids so the
-    # F2 ladder rows hang off the right cause-chain row.
-    if len(bundle.slots) > 1:
-        slot2 = bundle.slots[1]
-        scratch.events.append(
-            emit_event(
-                ctx.conn,
-                type="action.result_observed",
-                payload={
-                    "action_id": action_request.action_id,
-                    "semantics": slot2.semantics,
-                    "tool_output": slot2.tool_output,
-                    "error": slot2.error,
-                    "run_id": action_request.run_id,
-                },
-                source_event_id=fallback_source_event_id,
-                correlation=_action_correlation(action_request),
-            ),
-        )
-
-    source_event_ids_by_semantics = _collect_recent_result_observed_uids(
-        ctx.conn,
-        action_id=action_request.action_id,
-        fallback=fallback_source_event_id,
-    )
-
-    observation_slot = bundle.slots[0]
-    diff_nonempty = bool(observation_slot.payload.get("diff_nonempty", False))
-    # ADR-0002 § Reviewer contract: the reviewer sees the FULL diff.
-    # ``diff_text_preview`` stays as the fallback for slots minted
-    # before the full-text field existed.
-    diff_text = observation_slot.payload.get("diff_text")
-    if not isinstance(diff_text, str) or not diff_text:
-        diff_text = observation_slot.payload.get("diff_text_preview")
-    task_goal = _task_goal_for_subject(ctx, target_entity_ref)
-
-    reviewer_verdict: ReviewerVerdict | None = None
-    if diff_nonempty and isinstance(diff_text, str) and diff_text:
-        # Step 9 + Step 12: call the reviewer LLM in fresh-context.
-        # ``review_diff`` itself wraps the ``.chat()`` call inside the
-        # context manager (canary
-        # ``test_canary_reviewer_fresh_context`` enforces).
-        reviewer_cost_recorder = (
-            CostRecorder(ctx.conn, pricing_table=_pricing_table())
-            if ctx.wave1_features.exactly_once_cost_accounting
-            else None
-        )
-        _check_response_cancelled(ctx, "before reviewer request")
-        reviewer_verdict = review_diff(
-            task_goal=task_goal,
-            diff_text=diff_text,
-            llm_client=ctx.llm_client,
-            cost_recorder=reviewer_cost_recorder,
-            turn_id=scratch.turn_id,
-            request_admission=ctx.request_admission,
-        )
-        # ADR-0002 § Reviewer contract line 743: the reviewer module
-        # returns token counts on :class:`ReviewerVerdict`; this
-        # function — the L3 caller — emits the matching
-        # ``cost.recorded(kind="reviewer", ...)`` so the
-        # per-LLM-call canary is satisfied without putting the emit
-        # inside ``reviewer.py``.
-        if reviewer_cost_recorder is not None:
-            accounting_outcome = reviewer_cost_recorder.last_outcome
-            if accounting_outcome is None:  # pragma: no cover - guarded chat always records
-                msg = "reviewer cost guard returned without a disposition"
-                raise RuntimeError(msg)
-            scratch.events.append(accounting_outcome.event)
-        else:
-            scratch.events.append(
-                _emit_cost_recorded_from_verdict(
-                    ctx,
-                    verdict=reviewer_verdict,
-                    turn_id=scratch.turn_id,
-                    action_id=action_request.action_id,
-                ),
-            )
-
-    _check_response_cancelled(ctx, "after reviewer response")
-    emitted, verdict = interpret_verify_diff_bundle(
-        bundle,
-        source_event_ids_by_semantics=source_event_ids_by_semantics,
-        action_request=action_request,
-        conn=ctx.conn,
-        subject_ref=target_entity_ref,
-        task_goal=task_goal,
-        reviewer_verdict=reviewer_verdict,
-    )
-    scratch.events.extend(emitted)
-
-    # Find the last evidence.attached event so the caller can hang
-    # task.verified off it (cause-chain — Acceptance H10).
-    last_evidence = next(
-        (e for e in reversed(emitted) if e.type == "evidence.attached"),
-        None,
-    )
-    return last_evidence, verdict
-
-
-def _collect_recent_result_observed_uids(
-    conn: sqlite3.Connection,
-    *,
-    action_id: str,
-    fallback: str,
-) -> dict[str, str]:
-    """Return the most recent ``action.result_observed.event_uid`` per slot semantics.
-
-    Step 11's ``verify_diff_handler`` emits one ``action.result_observed``
-    per slot (observation + verification | error). Step 12 hangs the
-    F2 ladder rows off the right cause-chain row by keying on the
-    payload's ``semantics`` field. When no row matches a semantics, the
-    caller's ``fallback`` value is returned for that key so the
-    interpreter still emits.
-    """
-    cursor = conn.execute(
-        "SELECT event_uid, payload_json "
-        "FROM events "
-        "WHERE type = 'action.result_observed' "
-        "ORDER BY id DESC LIMIT 4",
-    )
-    by_semantics: dict[str, str] = {}
-    for event_uid, payload_json in cursor.fetchall():
-        try:
-            payload = json.loads(payload_json)
-        except (TypeError, ValueError):
-            continue
-        if payload.get("action_id") != action_id:
-            continue
-        semantics = payload.get("semantics")
-        if isinstance(semantics, str) and semantics not in by_semantics:
-            by_semantics[semantics] = event_uid
-    if not by_semantics:
-        by_semantics["observation"] = fallback
-    return by_semantics
-
-
-def _task_goal_for_subject(
-    ctx: DecideContext,
-    subject_ref: str,
-) -> str:
-    """Return the goal text for ``subject_ref`` from the live Task Ledger."""
-    snapshot = make_snapshot(ctx.conn)
-    record = snapshot.task_ledger.get(subject_ref)
-    if record is not None:
-        return record.goal
-    # Conservative fallback: the LLM may still produce a usable review
-    # against an empty goal (it will just see no goal context).
-    return ""
-
-
-def _emit_cost_recorded_from_verdict(
-    ctx: DecideContext,
-    *,
-    verdict: ReviewerVerdict,
-    turn_id: str | None,
-    action_id: str,
-) -> Event:
-    """Emit ``cost.recorded(kind="reviewer", ...)`` from a :class:`ReviewerVerdict`.
-
-    Mirror of :func:`_emit_cost_recorded` but reads the token counts
-    off the reviewer verdict (the reviewer module returns these so
-    the caller can emit without re-reading the LLM client's last
-    ChatResult, which would race with another call).
-    """
-    cost_usd = compute_cost_usd(
-        verdict.model,
-        verdict.tokens_in,
-        verdict.tokens_out,
-        0,
-        0,
-        dict(_pricing_table()),
-    )
-    payload: dict[str, Any] = {
-        "kind": "reviewer",
-        "model": verdict.model,
-        "tokens_in": verdict.tokens_in,
-        "tokens_out": verdict.tokens_out,
-        "cache_read_in": 0,
-        "cache_write_in": 0,
-        "cost_usd": cost_usd,
-    }
-    correlation: dict[str, str] = {"action_id": action_id}
-    if turn_id is not None:
-        correlation["turn_id"] = turn_id
-    return emit_event(
-        ctx.conn,
-        type="cost.recorded",
-        payload=payload,
-        correlation=correlation,
-    )
 
 
 def _render_bundle_for_llm(bundle: RawResultBundle) -> str:
@@ -2544,167 +1521,6 @@ def _render_bundle_for_llm(bundle: RawResultBundle) -> str:
     return json.dumps(rendered, ensure_ascii=False)
 
 
-# --- worker.reported branch ------------------------------------------------
-
-
-def _handle_worker_reported(
-    packet: SituationPacket,
-    policy: EffectivePolicy,
-    ctx: DecideContext,
-    scratch: _Scratch,
-) -> DecideResult:
-    """Process a ``worker.reported`` re-entry (async lifecycle).
-
-    Per ADR § Gate contracts (Result Interpreter):
-
-    1. Emit ``action.result_observed(semantics=report)`` referencing
-       the worker.reported event_uid (since L4's async spawn_worker
-       did not — the canonical trace evt 11 is L3's responsibility).
-    2. Transition the lifecycle ``running -> result_observed``.
-    3. Result Interpreter: emit Report Claim + reported Evidence.
-    4. Call the LLM with an "[system trigger] worker.reported" prompt
-       so it can plan verification.
-    5. Continue via the standard tool-use loop.
-    """
-    trigger = packet.trigger_event
-    action_id = trigger.payload.get("action_id")
-    run_id = trigger.payload.get("run_id")
-    turn_id_from_corr = (
-        packet.current_turn_id
-        or (trigger.correlation.get("turn_id") if trigger.correlation is not None else None)
-    )
-    scratch.turn_id = turn_id_from_corr if isinstance(turn_id_from_corr, str) else None
-    if isinstance(run_id, str):
-        scratch.last_run_id = run_id
-        # ADR-0008 Step 4: a background worker's cost never came back on a
-        # RawResult, so record it here from the run's durable executor
-        # report. A no-op when the foreground path already recorded it.
-        cost_event = _emit_cost_recorded_for_run(
-            ctx,
-            run_id=run_id,
-            turn_id=scratch.turn_id,
-        )
-        if cost_event is not None:
-            scratch.events.append(cost_event)
-
-    if not isinstance(action_id, str):
-        LOGGER.warning("worker.reported missing action_id payload — no-op")
-        return DecideResult(
-            response_plan=None,
-            events_emitted=tuple(scratch.events),
-            turn_id=scratch.turn_id,
-            attention_channel="silent_log",
-        )
-
-    # Active subject = the task_id the trigger correlation carries.
-    task_id_corr = None
-    if trigger.correlation is not None:
-        task_id_corr = trigger.correlation.get("task_id")
-    if isinstance(task_id_corr, str):
-        scratch.active_subject_ref = task_id_corr
-
-    # 1. action.result_observed referencing the worker.reported.
-    result_observed_event = emit_event(
-        ctx.conn,
-        type="action.result_observed",
-        payload={
-            "action_id": action_id,
-            "semantics": "report",
-            "tool_output": trigger.payload.get("summary"),
-            "run_id": run_id,
-        },
-        source_event_id=trigger.event_uid,
-        correlation={
-            "action_id": action_id,
-            **({"run_id": run_id} if isinstance(run_id, str) else {}),
-            **({"turn_id": scratch.turn_id} if scratch.turn_id else {}),
-        },
-    )
-    scratch.events.append(result_observed_event)
-
-    # 2. Lifecycle running -> result_observed.
-    current = ctx.lifecycle.state_of(action_id)
-    if current == "running":
-        ctx.lifecycle.transition(action_id, "result_observed")
-
-    # 3. Result Interpreter — Report claim + reported evidence.
-    synthetic_request = ActionRequest(
-        action_id=action_id,
-        tool_name="spawn_worker",
-        target_entity_ref=scratch.active_subject_ref,
-        caller_principal=CallerPrincipal.JARVIS_LLM,
-        risk_level="L2",
-        arguments={},
-        authorization_lease=None,
-        run_id=run_id if isinstance(run_id, str) else None,
-        turn_id=scratch.turn_id,
-    )
-    synthetic_raw = _synthesize_raw_for_worker_report(
-        action_id=action_id,
-        artifact_path=trigger.payload.get("artifact_path"),
-        summary=trigger.payload.get("summary"),
-    )
-    interpreted = result_interpreter(
-        synthetic_raw,
-        source_event_id=result_observed_event.event_uid,
-        action_request=synthetic_request,
-        conn=ctx.conn,
-        subject_ref_override=scratch.active_subject_ref,
-    )
-    scratch.events.extend(interpreted)
-
-    # 3b. Phase 0 batch 5: fold the optional WorkerReport fields
-    # (remaining_risks / tests_run / commands_run) into claims.
-    if scratch.active_subject_ref is not None:
-        report_extra_events = emit_worker_report_extras(
-            ctx.conn,
-            report_payload=trigger.payload,
-            subject_ref=scratch.active_subject_ref,
-            source_event_id=trigger.event_uid,
-            correlation={
-                "action_id": action_id,
-                **({"run_id": run_id} if isinstance(run_id, str) else {}),
-                **({"turn_id": scratch.turn_id} if scratch.turn_id else {}),
-            },
-        )
-        scratch.events.extend(report_extra_events)
-
-    # 4 + 5. Re-call the LLM to plan verification + continue loop.
-    return _run_tool_use_loop(
-        assemble_packet(trigger, ctx.conn, entity_bookmarks=ctx.entity_bookmarks),
-        policy,
-        ctx,
-        scratch,
-    )
-
-
-def _synthesize_raw_for_worker_report(
-    *,
-    action_id: str,
-    artifact_path: object,
-    summary: object,
-) -> RawResult:
-    """Build a synthetic RawResult for the worker.reported trigger.
-
-    The worker.reported event is not a tool's ``RawResult`` — it is an
-    asynchronous report from L4's Timer thread. L3 fabricates a real
-    ``RawResult`` so the Result Interpreter sees a uniform shape. Step 0b
-    of ADR-0002 collapsed the prior ``_SyntheticRawResult`` helper into a
-    direct ``RawResult`` construction now that the type lives in
-    ``jarvis.shared``.
-    """
-    payload: dict[str, Any] = {}
-    if isinstance(artifact_path, str):
-        payload["artifact_path"] = artifact_path
-    return RawResult(
-        action_id=action_id,
-        semantics="report",
-        payload=payload,
-        tool_output=str(summary) if summary is not None else None,
-        error=None,
-    )
-
-
 # --- action.result_observed branch -----------------------------------------
 
 
@@ -2718,13 +1534,9 @@ def _handle_result_observed(
 
     Day-1 this branch is only used when the runtime feeds a freshly
     appended ``action.result_observed`` back into ``decide()`` outside
-    of the tool-use loop. The happy path produces verified evidence
-    via the inline loop in ``surface.user_intent``; this branch covers
-    Stage 2 scenarios where the surface drives multi-step planning
-    asynchronously.
+    of the tool-use loop.
     """
     trigger = packet.trigger_event
-    semantics = trigger.payload.get("semantics", "ack")
     action_id = trigger.payload.get("action_id")
     if not isinstance(action_id, str):
         LOGGER.warning("action.result_observed missing action_id — no-op")
@@ -2734,59 +1546,15 @@ def _handle_result_observed(
             turn_id=scratch.turn_id,
             attention_channel="silent_log",
         )
-
-    # Fabricate a synthetic ActionRequest + RawResult so the Result
-    # Interpreter can fold this into the claim/evidence stream.
-    payload_run_id = trigger.payload.get("run_id")
-    synthetic_request = ActionRequest(
-        action_id=action_id,
-        tool_name=str(trigger.payload.get("tool_name", "unknown")),
-        target_entity_ref=scratch.active_subject_ref,
-        caller_principal=CallerPrincipal.JARVIS_LLM,
-        risk_level="L0",
-        arguments={},
-        authorization_lease=None,
-        run_id=payload_run_id if isinstance(payload_run_id, str) else None,
-        turn_id=scratch.turn_id,
-    )
-    synthetic_raw = RawResult(
-        action_id=action_id,
-        semantics=semantics,
-        payload=dict(trigger.payload),
-        tool_output=trigger.payload.get("tool_output"),
-        error=trigger.payload.get("error"),
-    )
-
-    interpreted = result_interpreter(
-        synthetic_raw,
-        source_event_id=trigger.event_uid,
-        action_request=synthetic_request,
-        conn=ctx.conn,
-        subject_ref_override=scratch.active_subject_ref,
-    )
-    scratch.events.extend(interpreted)
-
-    # Ask the LLM to compose a final response now that fresh evidence
-    # is on the trace.
-    return _run_tool_use_loop(
-        assemble_packet(trigger, ctx.conn, entity_bookmarks=ctx.entity_bookmarks),
-        policy,
-        ctx,
-        scratch,
-    )
+    # Ask the LLM to compose a final response now that the result is on
+    # the trace.
+    return _run_tool_use_loop(assemble_packet(trigger, ctx.conn), policy, ctx, scratch)
 
 
 # --- action.timeout_assumed / action.failed branch -------------------------
 
-# Canonical user-facing limitation phrasings for the spawn_worker
-# terminal-failure paths (B-0003c / ADR-0002 Negative-path appendix
-# lines 1593-1600). Both strings are matched by their respective
-# patterns in ``jarvis.decision.pre_emit_phrases.LIMITATION_REGEXES``
-# (``r"超时.{0,4}未完成"`` / ``r"跑挂"``); the ``未完成`` substring is
-# allowed past ``_COMPLETION_KEYWORDS`` by the ``(?<![未没不])``
-# negative lookbehind, so the gate's attempt-0 verdict is
-# ``force_limitation_language`` with ``downgrade_required=False`` —
-# no LLM retry round-trip.
+# Canonical user-facing limitation phrasings for the action
+# terminal-failure paths (B-0003c / ADR-0002 Negative-path appendix).
 _TIMEOUT_LIMITATION_TEXT: Final[str] = "Codex 超时，未完成"  # noqa: RUF001 — fullwidth comma is intentional Chinese punctuation.
 _FAILED_LIMITATION_TEXT: Final[str] = "Codex 跑挂了，没新 diff"  # noqa: RUF001 — fullwidth comma is intentional Chinese punctuation.
 # ADR-0008 D9 (Step 4). A cancelled run is a limitation with a different
@@ -2807,104 +1575,17 @@ def _handle_action_terminal_failure(
     ctx: DecideContext,
     scratch: _Scratch,
 ) -> DecideResult:
-    """Process an ``action.timeout_assumed`` / ``action.failed`` re-entry.
+    """Process an ``action.timeout_assumed`` / ``failed`` / ``cancelled`` re-entry.
 
-    Per B-0003c + ADR-0002 Negative-path appendix:
-
-    1. Recover correlation (``turn_id``, ``run_id``, ``task_id``,
-       ``action_id``) from the trigger correlation/payload. Look up
-       the spawning ``action.proposed`` event to recover the original
-       ``tool_name``; default to ``"spawn_worker"`` when missing.
-    2. Synthesize a :class:`RawResult` with ``semantics="error"`` and
-       a :class:`ActionRequest` whose ``tool_name`` matches the
-       proposed event. Feed both to
-       :func:`jarvis.decision.result_interpreter.result_interpreter`,
-       which emits ``claim.created(type=Limitation)`` +
-       ``evidence.attached(relation=limits, level=reported)`` per the
-       ``_SEMANTICS_TO_CLAIM["error"]`` row.
-    3. Pick the canonical user-facing limitation text for the trigger
-       type and feed it to :func:`_finalize_response`, which runs the
-       Pre-emit Gate and emits ``turn.ended``.
-
-    The canonical limitation strings (``"Codex 超时,未完成"`` /
-    ``"Codex 跑挂了,没新 diff"``) are matched by the corresponding
-    patterns in :mod:`jarvis.decision.pre_emit_phrases.LIMITATION_REGEXES`
-    so the gate's attempt-0 verdict is force_limitation_language with
-    ``downgrade_required=False`` — no LLM retry round-trip.
+    Recover the ``turn_id`` from the trigger correlation, pick the
+    canonical user-facing limitation text for the trigger type and feed
+    it to :func:`_finalize_response`, which runs the Pre-emit Gate and
+    emits ``turn.ended``.
     """
     trigger = packet.trigger_event
-    action_id = trigger.payload.get("action_id")
-    error = trigger.payload.get("error")
-    reason = trigger.payload.get("reason")
-
     correlation = trigger.correlation or {}
     turn_id_corr = correlation.get("turn_id") or packet.current_turn_id
-    run_id_corr = correlation.get("run_id")
-    task_id_corr = correlation.get("task_id")
-
     scratch.turn_id = turn_id_corr if isinstance(turn_id_corr, str) else None
-    if isinstance(run_id_corr, str):
-        scratch.last_run_id = run_id_corr
-        # Same reason as the worker.reported arm: a background worker that
-        # timed out, crashed or was cancelled still burned tokens, and this
-        # is the only layer allowed to say so.
-        cost_event = _emit_cost_recorded_for_run(
-            ctx,
-            run_id=run_id_corr,
-            turn_id=scratch.turn_id,
-        )
-        if cost_event is not None:
-            scratch.events.append(cost_event)
-    if isinstance(task_id_corr, str):
-        scratch.active_subject_ref = task_id_corr
-
-    # Look up the original spawning action.proposed event so the
-    # synthetic ActionRequest carries the same tool_name (typically
-    # "spawn_worker"). Falling back to "spawn_worker" keeps the
-    # handler degradation-safe when the proposed event was emitted in
-    # a previous process or the action_id is otherwise unrecoverable.
-    tool_name = _tool_name_for_action_id(
-        ctx.conn,
-        action_id if isinstance(action_id, str) else None,
-    )
-
-    if not isinstance(action_id, str):
-        LOGGER.warning(
-            "%s missing action_id payload — emitting limitation without "
-            "claim/evidence",
-            trigger.type,
-        )
-    else:
-        synthetic_request = ActionRequest(
-            action_id=action_id,
-            tool_name=tool_name,
-            target_entity_ref=scratch.active_subject_ref,
-            caller_principal=CallerPrincipal.JARVIS_LLM,
-            risk_level="L2",
-            arguments={},
-            authorization_lease=None,
-            run_id=run_id_corr if isinstance(run_id_corr, str) else None,
-            turn_id=scratch.turn_id,
-        )
-        synthetic_raw = RawResult(
-            action_id=action_id,
-            semantics="error",
-            payload={
-                "action_id": action_id,
-                "error": error,
-                "reason": reason,
-            },
-            tool_output=None,
-            error=error if isinstance(error, str) else None,
-        )
-        interpreted = result_interpreter(
-            synthetic_raw,
-            source_event_id=trigger.event_uid,
-            action_request=synthetic_request,
-            conn=ctx.conn,
-            subject_ref_override=scratch.active_subject_ref,
-        )
-        scratch.events.extend(interpreted)
 
     canonical_text = _ACTION_TERMINAL_LIMITATION_TEXT.get(
         trigger.type,
@@ -2914,45 +1595,10 @@ def _handle_action_terminal_failure(
     return _finalize_response(canonical_text, packet, ctx, scratch)
 
 
-def _tool_name_for_action_id(
-    conn: sqlite3.Connection,
-    action_id: str | None,
-) -> str:
-    """Look up the ``tool_name`` from the spawning ``action.proposed`` row.
-
-    Returns the tool name on the action.proposed event keyed by
-    ``payload.action_id == action_id``. Falls back to
-    ``"spawn_worker"`` when no proposed event is found — the
-    handler's degradation path per B-0003c.
-    """
-    if action_id is None:
-        return "spawn_worker"
-    cursor = conn.execute(
-        "SELECT payload_json FROM events WHERE type = ? "
-        "ORDER BY id DESC",
-        ("action.proposed",),
-    )
-    for row in cursor:
-        try:
-            payload = json.loads(row[0])
-        except (TypeError, ValueError):
-            continue
-        if payload.get("action_id") == action_id:
-            tool = payload.get("tool_name")
-            if isinstance(tool, str) and tool:
-                return tool
-            break
-    return "spawn_worker"
-
-
-def _loop_messages(
-    packet: SituationPacket,
-    scratch: _Scratch,
-    ctx: DecideContext,
-) -> list[dict[str, Any]]:
+def _loop_messages(packet: SituationPacket, ctx: DecideContext) -> list[dict[str, Any]]:
     """Build the tool loop's messages: history, system notes, correction prefix."""
     messages = build_llm_messages(packet)
-    _insert_system_notes(messages, packet, scratch, ctx)
+    _insert_system_notes(messages, packet, ctx)
     if ctx.stream_correction is not None:
         # The failed stream's exposed prefix is the model's own prior text;
         # the correction continues it and never rewrites it (ADR-0008 D3).
@@ -3158,7 +1804,7 @@ def _run_routine_stream(
     to the ordinary full-text path in place, on the text it already has.
     """
     messages = build_llm_messages(packet)
-    _insert_system_notes(messages, packet, scratch, ctx)
+    _insert_system_notes(messages, packet, ctx)
     streamed = _stream_routine_text(ctx, route, messages, scratch, gate_segments=True)
     if streamed.emitted_segments == 0:
         # D2 rules 1 and 4: a seal before the first permit exposed nothing, so
@@ -3177,7 +1823,7 @@ def _run_routine_stream(
             text_characters=len(draft),
         )
         return _finalize_response(draft, packet, ctx, scratch)
-    attention = attention_policy(packet, make_snapshot(ctx.conn).claim_evidence)
+    attention = attention_policy(packet)
     response_id = route.context.response_id
     document = streamed.document
     outcome: ResponsePlan | StreamFinalizationFailure
@@ -3278,11 +1924,8 @@ def _emit_pre_emit_gate_event(
 ) -> Event:
     """Emit one ``gate.evaluated(pre_emit)`` event for a Pre-emit verdict.
 
-    ``attempt`` is the retry index — 0 for the initial draft, 1 for the
-    LLM retry, 2 for the forced template. Every Pre-emit Gate verdict
-    along the retry chain gets its own event so the audit trail can
-    reconstruct the full path, not just the final ResponsePlan
-    (spec § Invariant 1: state flows through events).
+    ``attempt`` is always 0 since ADR 0019 removed the retry chain; the
+    field stays on the payload so the audit row keeps its shape.
     """
     gate_event = emit_event(
         ctx.conn,
@@ -3329,22 +1972,6 @@ def _finalize_response(  # noqa: PLR0913 — draft + the three decide() handles 
 ) -> DecideResult:
     """Apply the Pre-emit Gate to a draft, emit gate + turn.ended, return.
 
-    Implements the one-retry rule per ADR § Gate contracts. Each
-    ``pre_emit_gate(...)`` call emits its own ``gate.evaluated`` event
-    with a distinct ``attempt`` index (0 / 1 / 2) so the audit trail
-    captures every verdict, not just the final one:
-
-    - attempt 0 — initial verdict on the LLM draft. If
-      ``downgrade_required`` is False, ship that plan.
-    - attempt 1 — re-prompt the LLM once with a limitation-language
-      system note; gate the retry text.
-    - attempt 2 — if the retry still trips the gate, rewrite the draft
-      via ``_FORCED_LIMITATION_TEMPLATE`` (with completion-keyword
-      scrub on the embedded text) and gate that. If even this trips,
-      fall back to a fixed :func:`_hard_refusal_plan` that is
-      scrub-safe by construction (no extra gate event — it is a
-      deterministic bailout, not a gate verdict).
-
     ``gate_text`` (ADR-0011 §12, MUST-FIX 2a): the Tier 0 path
     (`_run_tier0_path`) renders `draft_text` by interpolating TOOL
     OUTPUT — possibly user-controlled, e.g. clipboard content — into
@@ -3357,14 +1984,9 @@ def _finalize_response(  # noqa: PLR0913 — draft + the three decide() handles 
     `draft_text`; `draft_text` — the fully rendered response, content
     and all — still ships to the user unchanged below. The LLM path
     never sets `gate_text`: there the whole draft IS Jarvis's own
-    words, so it keeps gating itself exactly as before. Retry attempts
-    1/2 (unreachable today — no shipped Tier 0 template contains
-    completion language) still gate `draft_text` if a future
-    misconfigured template ever gets this far; that is the intended
-    defense-in-depth, not an oversight.
+    words.
 
-    ``turn.ended.source_event_id`` references the LAST gate event in
-    the chain regardless of which branch was taken.
+    ``turn.ended.source_event_id`` references the gate event.
     """
     # A draft that thinks aloud before its envelope would carry that reasoning
     # into ``ResponsePlan.text`` (2026-09-12, turn T7d3d8e48: "I have enough to
@@ -3372,31 +1994,12 @@ def _finalize_response(  # noqa: PLR0913 — draft + the three decide() handles 
     # was clean). Text outside the envelope has no channel; drop it before the
     # gate hashes the draft.
     draft_text = envelope_only(draft_text)
-    hard_refusal_used = False
-    active_subject = _active_subject_or_default(scratch, packet)
-    if active_subject is None:
-        # Spec §3.4.12 v0 + §3.4.4 LLMSituationPacket: no subject in
-        # scope is a first-class case, not a failure mode. Pass None to
-        # the gate; it short-circuits to a routine pass-through (see
-        # pre_emit_gate's None branch). The retry chain (attempts 1
-        # and 2) and _hard_refusal_plan remain reachable only when a
-        # real subject is in scope and downgrade_required fires.
-        LOGGER.debug(
-            "_finalize_response: no active_subject_ref and no open tasks "
-            "(turn_id=%r); passing None to pre_emit_gate for §3.4.12 v0 "
-            "pass-through (no consequential claim to gate).",
-            scratch.turn_id,
-        )
 
-    # Always refresh the projection so the gate sees the latest
-    # claim/evidence rows.
-    projections = make_snapshot(ctx.conn)
-
-    # Attempt 0 — initial verdict on the raw LLM draft (or, on the
-    # Tier 0 path, on the closed template literal — see `gate_text` in
-    # the docstring above).
+    # Attempt 0 — the verdict on the raw LLM draft (or, on the Tier 0
+    # path, on the closed template literal — see `gate_text` in the
+    # docstring above).
     text_to_gate = draft_text if gate_text is None else gate_text
-    plan = pre_emit_gate(text_to_gate, projections.claim_evidence, active_subject)
+    plan = pre_emit_gate(text_to_gate)
     if gate_text is not None:
         # `pre_emit_gate` echoes back whatever text it gated. Ship the
         # fully rendered `draft_text` instead of the template literal,
@@ -3411,122 +2014,13 @@ def _finalize_response(  # noqa: PLR0913 — draft + the three decide() handles 
         )
     last_gate_event = _emit_pre_emit_gate_event(ctx, scratch, plan=plan, attempt=0)
 
-    # The ``active_subject is not None`` clause is redundant at runtime —
-    # pre_emit_gate's None branch returns downgrade_required=False
-    # unconditionally (spec §3.4.12 v0), so plan.downgrade_required
-    # already implies active_subject is not None. It is present to
-    # narrow the type for _hard_refusal_plan below (attempt 2).
-    if plan.downgrade_required and active_subject is not None:
-        # Attempt 1 — single LLM retry. Append a system-style
-        # instruction and re-run the LLM ONCE; do not pull tools this
-        # time — we want text.
-        retry_messages: list[dict[str, Any]] = [
-            {"role": "user", "content": packet.trigger_event.payload.get("transcript", "")},
-            _assistant_text_message(draft_text),
-            {
-                "role": "user",
-                "content": (
-                    "[system note] Pre-emit Gate refused: the active task has no "
-                    "verified Postcondition evidence. Rewrite your response using "
-                    "limitation language (e.g. 'agent reported, not verified' / "
-                    "'未验证')."
-                ),
-            },
-        ]
-        record_realtime_trace(
-            "llm_chat_call_started_upper_bound",
-            turn_id=scratch.turn_id,
-            request_kind="pre_emit_retry",
-            iteration=1,
-            measurement_semantics="before_llm_client_call_not_transport_send",
-        )
-        with realtime_trace_context(
-            turn_id=scratch.turn_id,
-            request_kind="pre_emit_retry",
-            iteration=1,
-        ):
-            retry_result = _run_llm_chat_with_cost_guard(
-                ctx,
-                messages=retry_messages,
-                system=ctx.system_prompt,
-                tools=None,
-                kind="decision",
-                turn_id=scratch.turn_id,
-            )
-        record_realtime_trace(
-            "llm_batch_response_completed",
-            turn_id=scratch.turn_id,
-            request_kind="pre_emit_retry",
-            iteration=1,
-            candidate_kind="text",
-            text_characters=len(retry_result.text or ""),
-        )
-        # ADR-0002 Step 3: emit cost.recorded for the Pre-emit retry
-        # LLM turn (the second of two L3 chat() sites in this module).
-        scratch.events.append(
-            _emit_cost_recorded(
-                ctx, retry_result, kind="decision", turn_id=scratch.turn_id,
-            ),
-        )
-        _check_response_cancelled(ctx, "after retry provider response")
-        retry_text = retry_result.text or ""
-        retry_plan = pre_emit_gate(retry_text, projections.claim_evidence, active_subject)
-        last_gate_event = _emit_pre_emit_gate_event(
-            ctx, scratch, plan=retry_plan, attempt=1,
-        )
-        if not retry_plan.downgrade_required:
-            plan = retry_plan
-        else:
-            # Attempt 2 — forced template. Defense in depth:
-            #   (a) scrub completion keywords from the LLM draft so the
-            #       embedded text can't carry bare completion claims to
-            #       the surface.
-            #   (b) if the scrubbed-and-templated text STILL trips the
-            #       gate (e.g. a completion synonym the scrub regex
-            #       doesn't cover), fall back to a fixed
-            #       _hard_refusal_plan that is scrub-safe by
-            #       construction.
-            forced = _FORCED_LIMITATION_TEMPLATE.format(
-                draft=_scrub_completion_keywords(retry_text or draft_text),
-            )
-            forced_plan = pre_emit_gate(forced, projections.claim_evidence, active_subject)
-            last_gate_event = _emit_pre_emit_gate_event(
-                ctx, scratch, plan=forced_plan, attempt=2,
-            )
-            if forced_plan.downgrade_required:
-                # Thread the gate's last computed claim_levels through
-                # so the hard-refusal plan still reports the subject's
-                # actual evidence state (typically empty / reported
-                # only — that's WHY the gate kept refusing).
-                plan = _hard_refusal_plan(
-                    active_subject,
-                    active_claim_levels=forced_plan.active_claim_levels,
-                )
-                hard_refusal_used = True
-            else:
-                plan = forced_plan
-
-    # ADR-0012 D5 MUST-FIX (post-review): the template line must
-    # survive the retry chain above UNCONDITIONALLY. The retry chain
-    # re-prompts the LLM with only `draft_text`/`retry_text` in
-    # history — the LLM never sees `scratch.pending_confirmation_
-    # template_line` as something to preserve, so a downgrade_required
-    # verdict on attempt 0 can silently drop the line from `plan.text`
-    # (attempt 1's retry_plan, or attempt 2's forced/hard-refusal
-    # plan, all overwrite `plan` with fresh text that was never built
-    # from the frozen snapshot). That line is Allen's only chance to
-    # catch a fuzzy-resolved write target before bytes are written
-    # (Step 4 erratum) — losing it would let a "是" bind to a
-    # confirmation whose rendered question Allen never actually saw.
-    # Idempotent post-condition, not a rewrite of the function above:
-    # if this turn froze a template_line and the text about to ship
-    # doesn't already end with it, append it and re-hash — same
-    # re-hash discipline as the `gate_text` override earlier in this
-    # function, so `turn.ended` below and the returned plan agree.
-    # Unreachable-in-practice on the acceptance scenario (write_file
-    # proposals carry no active_subject_ref, so pre_emit_gate never
-    # even reaches the retry chain) but not a structural guarantee —
-    # this guard is what makes it one.
+    # ADR-0012 D5: the template line is Allen's only chance to catch a
+    # fuzzy-resolved write target before bytes are written (Step 4
+    # erratum). Idempotent post-condition: if this turn froze a
+    # template_line and the text about to ship doesn't already end with
+    # it, append it and re-hash — same re-hash discipline as the
+    # `gate_text` override above, so `turn.ended` and the returned plan
+    # agree.
     pending_template_line = scratch.pending_confirmation_template_line
     if pending_template_line and not plan.text.endswith(pending_template_line):
         guarded_text = (
@@ -3544,8 +2038,7 @@ def _finalize_response(  # noqa: PLR0913 — draft + the three decide() handles 
     # prefix unchanged, then its own continuation.
     plan = _with_correction_prefix(plan, ctx)
 
-    # turn.ended. ``source_event_id`` references the last gate verdict
-    # on the chain (attempt 0 / 1 / 2 depending on how far retry went).
+    # turn.ended. ``source_event_id`` references the gate verdict.
     if scratch.turn_id is not None:
         scratch.events.append(
             emit_turn_ended(
@@ -3557,38 +2050,7 @@ def _finalize_response(  # noqa: PLR0913 — draft + the three decide() handles 
             ),
         )
 
-    # B-0005/B-0006: a Limitation Claim emitted THIS turn must reach the
-    # operator (ADR K5 row) — scan the turn's own events, not the folded
-    # projection, so historical Limitations never re-trigger voice.
-    limitation_emitted = any(
-        ev.type == "claim.created" and ev.payload.get("type") == "Limitation"
-        for ev in scratch.events
-    )
-    # Phase 0 batch 5: the worker's explicit review request promotes the
-    # worker.reported silent_log fallthrough to queue_review (never a
-    # voice demotion — see attention_policy's branch placement).
-    needs_human_review = (
-        packet.trigger_event.type == "worker.reported"
-        and packet.trigger_event.payload.get("needs_human_review") is True
-    )
-    attention = attention_policy(
-        packet,
-        projections.claim_evidence,
-        limitation_emitted=limitation_emitted,
-        needs_human_review=needs_human_review,
-        document_form=document_form,
-    )
-    # The attention_policy verdict reflects evidence state at the trigger
-    # event (worker.reported + no verified Postcondition → silent_log per
-    # ``test_attention_silent_log_on_worker_reported_without_verified``).
-    # When the Pre-emit Gate retry chain exhausted to _hard_refusal_plan,
-    # the fixed limitation text IS the user-facing answer — swallowing it
-    # to silent_log strands the operator after a long wait. Promote to
-    # voice_notify so it is spoken like any other direct answer; the
-    # message itself still uses limitation language so the "审核了再告诉我"
-    # spirit holds.
-    if hard_refusal_used and attention == "silent_log":
-        attention = "voice_notify"
+    attention = attention_policy(packet, document_form=document_form)
 
     # ADR-0012 D5: a `confirmation.requested` emitted THIS turn always
     # routes to `ask_confirm` — the same finalize-scan-override pattern
@@ -3651,60 +2113,8 @@ def _pre_emit_reasons(plan: ResponsePlan) -> tuple[str, ...]:
 # --- Helpers ----------------------------------------------------------------
 
 
-def _coerce_epoch_ms(value: object) -> int | None:
-    """Return ``value`` as int when it looks like an epoch-ms; else None.
-
-    The LLM emits ``since_ts`` / ``until_ts`` as part of the tool-call
-    arguments JSON (ADR-0002 Step 5 § Time-window resolver). JSON has no
-    integer/float distinction, so accept both and coerce. Anything that
-    is not a finite numeric value is treated as missing (the resolver
-    then falls back to the natural-ref path).
-    """
-    if isinstance(value, bool):  # bool is an int subclass — reject explicitly.
-        return None
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float) and math.isfinite(value):
-        return int(value)
-    return None
-
-
-def _format_open_tasks_note(packet: SituationPacket) -> str | None:
-    """Render the open-task snapshot as a system note string, or None.
-
-    Returns None when there are no open tasks (no signal to give the
-    LLM). Otherwise a short bullet list of ``task_id: goal`` entries
-    plus a directive instructing the LLM to use the matching task_id
-    when the user references a task by natural language. This is the
-    Day-1 minimum that lets the LLM consume the Task Ledger snapshot
-    without requiring a full Situation Packet rendering.
-    """
-    if not packet.open_tasks:
-        return None
-    bullets = "\n".join(
-        f"- task_id={record.task_id!r}, goal={record.goal!r}"
-        for record in packet.open_tasks
-    )
-    return (
-        "[system context] Current open tasks (Task Ledger snapshot):\n"
-        f"{bullets}\n"
-        "When the user references a task by natural language (e.g. "
-        "'昨天那个 task'), pass the matching `task_id` from this list "
-        "to any tool that needs one. Do not invent task_ids. When the "
-        "user references a task by a time window (e.g. 'yesterday'), you "
-        "may instead pass `since_ts` and `until_ts` (epoch milliseconds) "
-        "as extra arguments — the resolver runs a time-window query "
-        "against the Task Ledger. Yesterday = [now - 86400000, now]."
-    )
-
-
 def _format_open_actions_note(packet: SituationPacket) -> str | None:
-    """Render the Status Board's open actions as a system note, or None.
-
-    ADR-0008 D10: `cancel_action` takes a `target_action_id`, so the LLM
-    has to see which actions are still running. Same shape as
-    :func:`_format_open_tasks_note` — None when nothing is open.
-    """
+    """Render the Status Board's open actions as a system note, or None."""
     if not packet.status_board.open_actions:
         return None
     now_ms = int(time.time() * 1000)
@@ -3717,9 +2127,6 @@ def _format_open_actions_note(packet: SituationPacket) -> str | None:
         "[system context] Open actions (Status Board snapshot — dispatched, "
         "not finished):\n"
         f"{bullets}\n"
-        "When Allen asks to stop, cancel or abort what is running, pass the "
-        "matching `action_id` from this list as `target_action_id` to "
-        "`cancel_action`; with exactly one open action, that is the one. "
         "Do not invent action_ids."
     )
 
@@ -3757,85 +2164,6 @@ def _action_correlation(action_request: ActionRequest) -> Mapping[str, str]:
     if action_request.turn_id is not None:
         out["turn_id"] = action_request.turn_id
     return out
-
-
-def _emit_entity_resolved(
-    ctx: DecideContext,
-    *,
-    natural_ref: str,
-    result: ResolverResult,
-    turn_id: str | None,
-    source_event_id: str,
-) -> Event:
-    """Emit the ``entity.resolved`` event per ADR § Resolver contract."""
-    outcome = _resolver_outcome(result)
-    payload: dict[str, Any] = {
-        "entity_type": "task",
-        "natural_ref": natural_ref,
-        "resolved_to": result.resolved_to,
-        "confidence": result.confidence,
-        "candidates": list(result.candidates),
-        "match_basis": result.match_basis,
-        "outcome": outcome,
-    }
-    if result.confidence == "fuzzy":
-        payload["resolver_warning"] = True
-    return emit_event(
-        ctx.conn,
-        type="entity.resolved",
-        payload=payload,
-        source_event_id=source_event_id,
-        correlation={"turn_id": turn_id} if turn_id else None,
-    )
-
-
-def _emit_file_entity_resolved(
-    ctx: DecideContext,
-    *,
-    natural_ref: str,
-    resolved: ResolvedEntityLike | None,
-    turn_id: str | None,
-    source_event_id: str,
-) -> Event:
-    """Emit the file-flavored ``entity.resolved`` event (ADR-0011 D4).
-
-    A separate function rather than a branch inside
-    :func:`_emit_entity_resolved`: that function's shape is load-bearing
-    for the flagship canary's task-resolution path, and a resolver
-    outcome ladder do not apply the same way here — the injected
-    resolver either fully resolves or misses outright (no ambiguous
-    multi-candidate case), so this emitter always writes
-    ``candidates=[]`` and one of exactly two outcomes. Emitted on BOTH
-    outcomes per ADR §4 — the ``not_found`` emission is what E2
-    (garbage target -> gate refuse) depends on for its audit trail.
-    """
-    if resolved is not None:
-        payload: dict[str, Any] = {
-            "entity_type": "file",
-            "natural_ref": natural_ref,
-            "resolved_to": resolved.entity_id,
-            "confidence": resolved.confidence,
-            "candidates": [],
-            "match_basis": resolved.match_basis,
-            "outcome": "resolved",
-        }
-    else:
-        payload = {
-            "entity_type": "file",
-            "natural_ref": natural_ref,
-            "resolved_to": None,
-            "confidence": "none",
-            "candidates": [],
-            "match_basis": "none",
-            "outcome": "not_found",
-        }
-    return emit_event(
-        ctx.conn,
-        type="entity.resolved",
-        payload=payload,
-        source_event_id=source_event_id,
-        correlation={"turn_id": turn_id} if turn_id else None,
-    )
 
 
 def _confirmation_already_requested_this_turn(scratch: _Scratch) -> bool:
@@ -4106,8 +2434,7 @@ def _handle_confirmation_accepted(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR
        outcome, so the audit trail shows what was attempted even on a
        refusal.
     6. On ``pass``: ``action.authorized`` + lifecycle transition,
-       dispatch via the L4 registry, Result Interpreter on the
-       returned slot, fixed broadcast.
+       dispatch via the L4 registry, fixed broadcast.
     """
     try:
         accepted_event = _record_confirmation_answer(slot, grammar_hit, transcript, ctx, scratch)
@@ -4211,18 +2538,13 @@ def _handle_confirmation_accepted(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR
     # was durably appended — its slot's `accepted_event_uid` is still None.
     # D2.4's single-use check joins on exactly that field (cross-step
     # contract #2), so the gate needs a projection that has already seen
-    # THIS turn's acceptance. Re-fold fresh off the log, mirroring how
-    # `_dispatch_one_tool_call` overlays a just-emitted `entity.resolved`
-    # onto `gate_entity_registry` rather than trusting the packet's copy
-    # (ADR-0011 §12.2 MUST-FIX 1) — same "the event is already durable;
-    # only the caller's cached VIEW of it needs a refresh" shape.
+    # THIS turn's acceptance. Re-fold fresh off the log — the event is
+    # already durable; only the caller's cached VIEW of it needs a refresh.
     pending_confirmations = make_snapshot(ctx.conn).pending_confirmations
     gate = pre_action_gate(
         action_request,
         policy,
-        packet.task_ledger_snapshot,
         tool_def=tool_def,
-        entity_registry=packet.entity_registry,
         pending_confirmations=pending_confirmations,
     )
     gate_payload: dict[str, Any] = {
@@ -4305,19 +2627,6 @@ def _handle_confirmation_accepted(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR
     )
     primary_result_slot = bundle.slots[0]
 
-    result_observed_uid = _latest_event_uid_of_type(
-        ctx.conn, event_type="action.result_observed",
-    )
-    source_event_for_interpreter = result_observed_uid or proposed_event.event_uid
-    interpreted_events = result_interpreter(
-        primary_result_slot,
-        source_event_id=source_event_for_interpreter,
-        action_request=action_request,
-        conn=ctx.conn,
-        subject_ref_override=target_entity_ref,
-    )
-    scratch.events.extend(interpreted_events)
-
     if primary_result_slot.error is not None:
         draft = _CONFIRMATION_DISPATCH_ERROR_TEMPLATE.format(error=primary_result_slot.error)
         return _finalize_response(draft, packet, ctx, scratch)
@@ -4328,22 +2637,6 @@ def _handle_confirmation_accepted(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR
         path=path_written, bytes_written=bytes_written,
     )
     return _finalize_response(draft, packet, ctx, scratch)
-
-
-def _resolver_outcome(result: ResolverResult) -> str:
-    """Map ResolverResult.confidence -> entity.resolved.outcome.
-
-    Per ADR § Resolver contract table. The ladder is
-    ``{"resolved", "ambiguous", "not_found"}`` — ``"not_found"`` is the
-    canonical 0-candidate outcome (formerly ``"failed"``).
-    """
-    if result.confidence in ("exact", "high"):
-        return "resolved"
-    if result.confidence == "fuzzy":
-        if result.resolved_to is not None:
-            return "resolved"
-        return "ambiguous"
-    return "not_found"
 
 
 def _find_tool_def(
@@ -4457,41 +2750,6 @@ def _latest_event_uid_of_type(
     return str(row[0])
 
 
-def _verify_diff_already_proposed_this_turn(
-    conn: sqlite3.Connection,
-    *,
-    turn_id: str | None,
-    task_id: str | None,
-) -> bool:
-    """True if a ``verify_diff`` was already proposed for ``task_id`` this turn.
-
-    Deterministic idempotence signal for the decision loop. The untrusted
-    Tier-2 LLM (spec §3.4.6) may re-propose ``verify_diff`` for a task whose
-    verification was already settled this turn — re-verifying the same
-    artifact yields no new evidence and risks a duplicate ``task.verified``.
-    Spec §3.4.3/§3.4.4 put ``open_actions`` in the Situation Packet precisely
-    so the decision engine picks the next action from current state rather
-    than redundantly re-acting; this query is the deterministic backstop the
-    Pre-action Gate consults to refuse the redundant proposal.
-
-    Turn- and task-scoped: a verify_diff in another turn, or for another task,
-    does not count. ``None`` turn/task fails open (treated as not-redundant),
-    so the first proposal of a turn always proceeds.
-    """
-    if turn_id is None or task_id is None:
-        return False
-    cursor = conn.execute(
-        "SELECT 1 FROM events "
-        "WHERE type = 'action.proposed' "
-        "AND json_extract(payload_json, '$.tool_name') = 'verify_diff' "
-        "AND json_extract(payload_json, '$.target_entity_ref') = ? "
-        "AND json_extract(payload_json, '$.turn_id') = ? "
-        "LIMIT 1",
-        (task_id, turn_id),
-    )
-    return cursor.fetchone() is not None
-
-
 # --- Public re-exports ------------------------------------------------------
 
 
@@ -4506,8 +2764,6 @@ __all__ = [
     "LifecycleLike",
     "PreEmitPermission",
     "ResolvedEntityLike",
-    "ResolverConfidence",
-    "ResolverResult",
     "ResponsePlan",
     "RuntimePathsLike",
     "SituationPacket",
@@ -4519,7 +2775,4 @@ __all__ = [
     "emit_turn_ended",
     "pre_action_gate",
     "pre_emit_gate",
-    "resolve_task_ref",
-    "resolve_task_ref_by_window",
-    "result_interpreter",
 ]

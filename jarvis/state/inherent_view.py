@@ -15,10 +15,9 @@ Three sections of truth are folded:
   each response's L3 lifecycle joined from the ``response.*`` rows that name
   it — reported from committed events, never assumed;
 - the bounded **action projection** (D13) from the eight registered
-  ``action.*`` lifecycle types plus ``worker.quiesced`` and the cleanup pair,
-  carrying each action's canonical state, its cleanup state and — folded but
-  never serialized, because the shipped ``ActionUpsert`` has no slot for it —
-  the A5 :class:`CancelRequestView`;
+  ``action.*`` lifecycle types, carrying each action's canonical state and —
+  folded but never serialized, because the shipped ``ActionUpsert`` has no
+  slot for it — the A5 :class:`CancelRequestView`;
 - the single globally unique **confirmation slot** (D14) from
   ``confirmation.requested`` / ``.accepted`` / ``.rejected`` /
   ``.expired``.  Expiry clears the slot two ways, and both report reason
@@ -47,9 +46,9 @@ sent (D16, and D13's "bounded ActionViewProjection"):
 A row produces a transition — exactly one durable envelope — when it is a
 response row carrying a ``response_id`` (even when nothing changed: a
 duplicate open, a late or repeated segment) or when it moved something the
-wire carries.  A row that moves only fold-internal truth — an action's
-cleanup state, the cancel request's own state machine, a lifecycle for a
-response this fold never opened, the D21 correlation — advances the cursor
+wire carries.  A row that moves only fold-internal truth — the cancel
+request's own state machine, a lifecycle for a response this fold never
+opened, the D21 correlation — advances the cursor
 and produces nothing: no wire field changed, and an empty durable envelope
 would only cost the client an ACK.
 
@@ -91,11 +90,6 @@ ACTION_EVENT_TYPES: Final[tuple[str, ...]] = (
     "action.failed",
     "action.cancelled",
 )
-CLEANUP_EVENT_TYPES: Final[tuple[str, ...]] = (
-    "worker.quiesced",
-    "action.cleanup_completed",
-    "action.cleanup_failed",
-)
 CONFIRMATION_EVENT_TYPES: Final[tuple[str, ...]] = (
     "confirmation.requested",
     "confirmation.accepted",
@@ -108,7 +102,6 @@ FOLD_EVENT_TYPES: Final[tuple[str, ...]] = (
     *RESPONSE_EVENT_TYPES,
     *RESPONSE_LIFECYCLE_EVENT_TYPES,
     *ACTION_EVENT_TYPES,
-    *CLEANUP_EVENT_TYPES,
     *CONFIRMATION_EVENT_TYPES,
     INPUT_CORRELATION_TYPE,
     GATE_EVENT_TYPE,
@@ -133,7 +126,6 @@ ActionCanonicalState = Literal[
     "failed",
     "cancelled",
 ]
-CleanupState = Literal["none", "quiesced", "completed", "quarantined"]
 CancelRequestState = Literal[
     "received", "authorized", "quiescing", "rejected", "failed", "resolved",
 ]
@@ -185,11 +177,6 @@ _CANCEL_RESOLUTION_OF_STATE: Final[dict[str, str]] = {
 _CANCEL_SETTLED_STATES: Final[frozenset[str]] = frozenset({"rejected", "resolved"})
 _CANCEL_LIVE_STATES: Final[frozenset[str]] = frozenset({"received", "authorized", "quiescing"})
 _DEFAULT_RISK: Final[str] = "unknown"
-_CLEANUP_STATE_OF_TYPE: Final[dict[str, CleanupState]] = {
-    "worker.quiesced": "quiesced",
-    "action.cleanup_completed": "completed",
-    "action.cleanup_failed": "quarantined",
-}
 _LIFECYCLE_OF_TYPE: Final[dict[str, ResponseLifecycle]] = {
     "response.started": "generating",
     "response.completed": "completed",
@@ -308,7 +295,6 @@ class ActionView:
     safe_target_ref: str | None = None
     result_available: bool = False
     failure_code: str | None = None
-    cleanup_state: CleanupState = "none"
     #: D13 ``cancellable_hint``, computed here because L5 never derives it.
     cancellable: bool = False
     cancel_request: CancelRequestView | None = None
@@ -653,11 +639,9 @@ class InherentView:
             return (
                 self._fold_action(cursor, event_uid, event_type, ts_epoch_ms, payload) or None
             )
-        if event_type in _CLEANUP_STATE_OF_TYPE:
-            self._fold_cleanup(event_type, ts_epoch_ms, payload)
-        elif event_type in CONFIRMATION_EVENT_TYPES:
+        if event_type in CONFIRMATION_EVENT_TYPES:
             return self._fold_confirmation(cursor, event_type, payload, correlation) or None
-        elif event_type == GATE_EVENT_TYPE:
+        if event_type == GATE_EVENT_TYPE:
             self._fold_gate(cursor, payload, source_event_id)
         elif event_type == INPUT_CORRELATION_TYPE:
             self._remember_request(payload)
@@ -801,18 +785,6 @@ class InherentView:
             action = replace(action, task_id=_string(payload, "task_id") or action.task_id)
         self._resolve_cancel_of_target(cursor, action.action_id, action.canonical_state)
         return action
-
-    def _fold_cleanup(
-        self, event_type: str, ts_epoch_ms: int, payload: Mapping[str, Any],
-    ) -> None:
-        """Record the D9 cleanup trio on a known action; the wire carries none of it."""
-        action_id = _string(payload, "action_id")
-        action = None if action_id is None else self._actions.get(action_id)
-        if action is None or action_id is None:
-            return
-        self._actions[action_id] = replace(
-            action, cleanup_state=_CLEANUP_STATE_OF_TYPE[event_type], updated_at_ms=ts_epoch_ms,
-        )
 
     def _action_view(self, action: ActionView) -> ActionView:
         """Materialize the two derived fields L5 is forbidden to compute."""
@@ -1152,7 +1124,6 @@ class InherentView:
 __all__ = [
     "ACTION_EVENT_TYPES",
     "CANCEL_TOOL_NAME",
-    "CLEANUP_EVENT_TYPES",
     "CONFIRMATION_EVENT_TYPES",
     "FOLD_EVENT_TYPES",
     "GATE_EVENT_TYPE",

@@ -16,7 +16,6 @@ sticks to stdlib only.
 Day-2 ADR-0002 § Sleep/wake protocol introduces
 `jarvis.deployment.sleep_wake`, which DOES import
 `jarvis.state.event_log` to emit `mac.sleeping` / `mac.awake` /
-`worker.suspended_by_sleep` / `worker.terminated_by_sleep` /
 `action.timeout_assumed` events per spec §3.7.8. H13's narrow
 exception for `sleep_wake.py` is documented in
 `tests/canary/test_layer_ownership_boundaries.py`. The Day-1 stricter
@@ -55,8 +54,7 @@ class RuntimePaths:
         event_log: SQLite Event Log file at `${root}/mac_events.db`
             (spec §5.1 + ADR § Configurable paths). Owned by L2 at write
             time; L6 only places it.
-        artifacts_root: Worker artifact store root at `${root}/artifacts/`.
-            Per-run subdirs derived via `artifact_dir_for_run`.
+        artifacts_root: Artifact store root at `${root}/artifacts/`.
         registry: File-backed EventTypeRegistry path at `${root}/registry.json`,
             available if Step 4's L2 chooses file-backing. Just a path; L6
             does not create or open it.
@@ -72,30 +70,10 @@ class RuntimePaths:
     registry: Path
     inherent_v2_token: Path
 
-    def artifact_dir_for_run(self, run_id: str) -> Path:
-        """Return (and create) the per-run artifact directory.
-
-        Shape: `${artifacts_root}/run_<run_id>/`. The directory is created
-        lazily on the first call for a given `run_id`; subsequent calls are
-        idempotent (`exist_ok=True`). L4 `spawn_worker` writes its real
-        artifact (e.g. `diff.json`) into this directory.
-
-        Args:
-            run_id: Canonical run identifier from the Event Log
-                (`run.started.run_id`).
-
-        Returns:
-            The per-run directory path. Always exists after this call.
-        """
-        run_dir = self.artifacts_root / f"run_{run_id}"
-        run_dir.mkdir(parents=True, exist_ok=True)
-        return run_dir
-
     def pending_write_path(self, confirmation_id: str) -> Path:
         """Return the staging path for a pending write's content (ADR-0012 §3 D3).
 
         Shape: `${artifacts_root}/pending_writes/<confirmation_id>`.
-        Sibling of `artifact_dir_for_run`'s `run_<run_id>/` convention.
         The `pending_writes/` directory is created lazily on first call
         (`exist_ok=True`); the content FILE itself is written by the
         caller (`decision/__init__.py`'s `confirm_required` handling),

@@ -110,9 +110,6 @@ ignore = [
     "PT022",    # generator fixtures even when teardown is implicit; matches surrounding style
     "RUF002",   # CJK fullwidth punctuation in docstrings is verbatim from ADR scenario
 ]
-# Vendored from Hermes (MIT) per ADR-0002 § Reference sources.
-# Upstream-sync only — do not lint-fix in place.
-"jarvis/execution/codex_client.py" = ["ALL"]
 # Vendored from jarvis-legacy per ADR-0002 § Reference sources.
 # Upstream-sync only — do not lint-fix in place.
 "jarvis/shared/pricing.py" = ["ALL"]

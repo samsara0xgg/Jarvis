@@ -5,22 +5,30 @@ Asserts on the Event Log after a real ``ToolRegistry.dispatch``: the chain
 terminal's ``source_event_id`` being the running row, its correlation being
 ``{action_id}`` alone, and the payload the dispatcher serializes on the
 return path, the ``ToolError`` path, the unexpected-exception path and the
-result-cap path — once on the runner thread and once inline.
+result-cap path.
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
+import sqlite3
 from typing import TYPE_CHECKING, Any
 
-import pytest
-
-from jarvis.execution.tools import ToolError, get_current_time, tool
-from jarvis.shared import CallerPrincipal
-from tests.integration.test_wave4b_action_runner import _Fixture, _request
+from jarvis.deployment import bootstrap_runtime
+from jarvis.execution.tools import (
+    ActionLifecycle,
+    Tool,
+    ToolDefinition,
+    ToolError,
+    ToolRegistry,
+    get_current_time,
+    tool,
+)
+from jarvis.shared import ActionRequest, CallerPrincipal, RawResultBundle
+from jarvis.state.event_log import open_event_log
 
 if TYPE_CHECKING:
-    import sqlite3
     from collections.abc import Mapping
     from pathlib import Path
 
@@ -70,6 +78,48 @@ def long_tool(args: Mapping[str, Any], _ctx: ToolContext) -> dict[str, Any]:
     return {"text": "a" * args["x"], "rows": ["b" * 40, "c" * 40], "n": args["x"]}
 
 
+class _Fixture:
+    """One runtime root, registry and lifecycle wired together."""
+
+    def __init__(self, tmp_path: Path, *, tools: tuple[Tool | ToolDefinition, ...]) -> None:
+        self.paths = bootstrap_runtime(tmp_path)
+        self.conn = open_event_log(self.paths.event_log)
+        self.registry = ToolRegistry()
+        for one in tools:
+            self.registry.register(one)
+        self.lifecycle = ActionLifecycle()
+
+    def dispatch(self, request: ActionRequest) -> RawResultBundle:
+        """Authorize and dispatch one request on the caller's thread."""
+        self.lifecycle.register(request.action_id)
+        self.lifecycle.transition(request.action_id, "authorized")
+        return self.registry.dispatch(request, self.conn, self.paths, self.lifecycle)
+
+    def close(self) -> None:
+        with contextlib.suppress(sqlite3.Error):
+            self.conn.close()
+
+
+def _request(
+    tool_name: str,
+    action_id: str,
+    *,
+    arguments: dict[str, Any] | None = None,
+) -> ActionRequest:
+    """Build one ActionRequest for a fixture tool."""
+    return ActionRequest(
+        action_id=action_id,
+        tool_name=tool_name,
+        target_entity_ref=None,
+        caller_principal=CallerPrincipal.JARVIS_LLM,
+        risk_level="L1",
+        arguments=arguments if arguments is not None else {},
+        authorization_lease=None,
+        run_id=None,
+        turn_id=None,
+    )
+
+
 type _Row = tuple[str, str, dict[str, Any], str | None, dict[str, Any] | None]
 
 
@@ -97,11 +147,10 @@ def _chain(fx: _Fixture, action_id: str) -> dict[str, Any]:
     return observed
 
 
-@pytest.mark.parametrize("with_runner", [True, False], ids=["runner", "inline"])
-def test_flat_tool_writes_the_same_terminal_row(tmp_path: Path, *, with_runner: bool) -> None:
+def test_flat_tool_writes_the_same_terminal_row(tmp_path: Path) -> None:
     """Return, ToolError, crash and overflow each end in one ``action.result_observed``."""
     tools = (get_current_time, failing_tool, crashing_tool, long_tool)
-    fx = _Fixture(tmp_path, tools=tools, with_runner=with_runner)
+    fx = _Fixture(tmp_path, tools=tools)
     try:
         bundle = fx.dispatch(_request("get_current_time", "A1"))
         observed = _chain(fx, "A1")

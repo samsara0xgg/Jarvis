@@ -19,7 +19,7 @@ from jarvis.execution.tools import (
 )
 from jarvis.state.event_log import emit_event, open_runtime_event_log
 from jarvis.state.memory_db import append_record, open_memory_db
-from tests.integration.test_wave4b_action_runner import _Fixture, _request
+from tests.integration.test_flat_tool_dispatch import _Fixture, _request
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -27,13 +27,12 @@ if TYPE_CHECKING:
 
 
 class DailyHarness:
-    """Use a real default registry for both runner and inline tool calls."""
+    """Use the current flat dispatcher and real default registry."""
 
     def __init__(
         self,
         root: Path,
         *,
-        runner: bool = False,
         timesink_path: Path | None = None,
     ) -> None:
         """Create an isolated default-registry fixture."""
@@ -43,7 +42,7 @@ class DailyHarness:
         self.tools = build_default_registry(
             memory_db_path=self.memory, timesink_db_path=timesink_path
         ).get_definitions()
-        self.fx = _Fixture(root, tools=self.tools, with_runner=runner)
+        self.fx = _Fixture(root, tools=self.tools)
         self.sequence = 0
 
     def call(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
@@ -71,10 +70,9 @@ def daily(tmp_path: Path) -> Iterator[DailyHarness]:
         harness.fx.close()
 
 
-@pytest.mark.parametrize("runner", [False, True])
-def test_todos_dispatch_retries_revisions_and_restart(tmp_path: Path, *, runner: bool) -> None:
+def test_todos_dispatch_retries_revisions_and_restart(tmp_path: Path) -> None:
     """Completion and reopening survive restart; retries never create duplicate events."""
-    h = DailyHarness(tmp_path, runner=runner)
+    h = DailyHarness(tmp_path)
     try:
         args = {"title": "Connect activity query", "request_id": "create-one"}
         first = h.call("create_todo", args)
@@ -457,7 +455,7 @@ def test_no_memory_file_is_created_by_history_lookup(tmp_path: Path) -> None:
     """Unavailable history is reported, not fabricated as an empty initialized store."""
     missing = tmp_path / "missing.db"
     tools = build_daily_tools(missing)
-    fx = _Fixture(tmp_path, tools=tools, with_runner=False)
+    fx = _Fixture(tmp_path, tools=tools)
     try:
         result = fx.dispatch(_request("search_records", "missing", arguments={}))
         assert result.slots[0].error == "source_unavailable"

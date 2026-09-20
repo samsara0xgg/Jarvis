@@ -36,7 +36,8 @@ _DESCRIPTIONS = {
     "read_activity": (
         "Read a saved activity's original JSON in chunks by activity_id. Does not take a "
         "screenshot or inspect today's diff. Follow next_cursor until null. TimeSink IDs pin "
-        "a revision; source_changed requires a fresh query."
+        "a revision; source_changed requires a fresh query. For saving evidence, copy the "
+        "returned source_refs, not the activity_id."
     ),
     "search_knowledge": (
         "Find saved reusable facts, decisions, lessons and preferences. Defaults to active; "
@@ -68,7 +69,9 @@ _DESCRIPTIONS = {
         "retries."
     ),
     "save_briefing": (
-        "Save a daily briefing with source_refs and explicit coverage gaps; no notification, "
+        "Save a daily briefing with source_refs and explicit coverage gaps. Copy source_refs "
+        "from activity results exactly; activity:... IDs are NOT valid source refs. "
+        "No notification, "
         "speech or scheduling. local_date is YYYY-MM-DD; timezone is an IANA name. Use "
         "expected_version to revise an existing date. Reuse request_id for exact retries."
     ),

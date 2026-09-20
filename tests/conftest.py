@@ -37,9 +37,8 @@ Why this lives at session scope:
    ``IORegisterForSystemPower`` and starts a real ``jarvis-power-observer``
    CFRunLoop thread. Those tests pass either way, but a Mac that sleeps
    mid-``pytest`` would then deliver a genuine kernel notification into
-   the test process, which marshals a ``mac.sleeping`` emit plus
-   ``reconcile_after_wake`` into whichever temp event log happens to be
-   live — an unreproducible cross-test flake.
+   the test process, which marshals a ``mac.sleeping`` emit into
+   whichever temp event log happens to be live — an unreproducible cross-test flake.
 
 Tests that exercise voice paths (``test_voice_*``, integration
 ``test_wake_listener_wiring`` etc.) already ``patch.object`` these seams

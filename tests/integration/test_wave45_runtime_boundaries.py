@@ -105,7 +105,6 @@ def test_boot_vision_requests_are_thread_local_and_accounted(
         "confirmation_dispatch_outbox",
         "exactly_once_cost_accounting",
         "response_run_lifecycle",
-        "action_runner",
         "enabled",
     ],
 )
@@ -123,7 +122,6 @@ def test_pump_requires_every_concurrency_dependency(missing: str) -> None:
             True,
         ),
         "response": {"response_run_lifecycle": True},
-        "actions": {"action_runner": True},
         "input": {"intent_pump": True},
     }
     assert _wave5_input_flags({"realtime": realtime}).intent_pump
@@ -131,7 +129,6 @@ def test_pump_requires_every_concurrency_dependency(missing: str) -> None:
         realtime,
         realtime["concurrency_safety"],
         realtime["response"],
-        realtime["actions"],
     ):
         if missing in block:
             block[missing] = False

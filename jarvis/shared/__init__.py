@@ -68,8 +68,7 @@ ClaimStatus = Literal["open", "supported", "refuted", "limited", "superseded"]
 
 `accepted` is deliberately NOT a status — spec §8.7 has no such state.
 `claim.accepted` (Allen's manual acceptance) folds as accepted-LEVEL
-evidence (§8.4 ladder top) plus status `supported`; see
-`jarvis.state.projections._fold_claim_evidence`.
+evidence (§8.4 ladder top) plus status `supported`.
 """
 
 ClaimType = Literal[

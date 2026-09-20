@@ -50,7 +50,17 @@ def object_fields(fields: dict[str, Any], *required: str) -> dict[str, Any]:
 _CURSOR = text_field(4096)
 _PAGE = {"limit": {"type": "integer", "minimum": 1, "maximum": 50}, "cursor": _CURSOR}
 _VERSION = {"type": "integer", "minimum": 0}
-_REFS = {"type": "array", "items": text_field(240), "maxItems": 20, "uniqueItems": True}
+_REFS = {
+    "type": "array",
+    "items": text_field(240),
+    "maxItems": 20,
+    "uniqueItems": True,
+    "description": (
+        "Evidence references: record:<record_id>, event:<event_uid>, or the exact timesink: "
+        "reference returned by a tool. For activity evidence, copy values from source_refs, "
+        "NOT the activity id (activity:... is a lookup ID, not a source reference)."
+    ),
+}
 _PROJECT = text_field(512, nullable=True)
 _TODO_FIELDS = {
     "title": text_field(500),

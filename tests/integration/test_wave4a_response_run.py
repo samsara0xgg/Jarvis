@@ -730,8 +730,8 @@ def test_cancel_during_action_wait_leaves_action_alive(
         try:
             emit_event(
                 conn,
-                type="worker.reported",
-                payload={"run_id": "RUN-live", "action_id": action_id, "status": "success"},
+                type="action.failed",
+                payload={"action_id": action_id, "error": "fixture", "reason": "late worker"},
                 correlation={"action_id": action_id, "turn_id": "T-action"},
             )
         finally:
@@ -794,7 +794,7 @@ def test_cancel_during_action_wait_leaves_action_alive(
     assert _event_count(runtime.conn, "response.cancelled") == 1
     assert _event_count(runtime.conn, "action.cancelled") == 0
     assert worker_done.wait(timeout=5)
-    assert _event_count(runtime.conn, "worker.reported") == 1
+    assert _event_count(runtime.conn, "action.failed") == 1
     assert runtime.response_runs.get(run.response_id) is None
     runtime.conn.close()
 

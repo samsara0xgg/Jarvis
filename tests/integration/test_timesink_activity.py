@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from jarvis.runtime import _timesink_db_path
+from jarvis.runtime import _register_workers, _timesink_db_path
 from jarvis.state.event_log import emit_event
 from tests.integration.test_daily_tools import DailyHarness
 
@@ -298,15 +298,28 @@ def test_configuration_is_explicit_and_validated(tmp_path: Path) -> None:
         _timesink_db_path({"observer": {"timesink": {"enabled": True}}})
 
 
-def test_runner_dispatch_reads_same_local_source(
+def test_codex_workers_coexist_with_local_activity_tools(
     tmp_path: Path, source: sqlite3.Connection
 ) -> None:
-    """ActionRunner uses the bound source path, without a second collector or remote call."""
+    """The runtime registers Codex workers alongside daily tools without starting a worker."""
     add_span(source, "2026-09-19 09:00:00.000", "2026-09-19 09:10:00.000")
-    h = DailyHarness(tmp_path, runner=True, timesink_path=tmp_path / "timesink.sqlite")
+    h = DailyHarness(tmp_path, timesink_path=tmp_path / "timesink.sqlite")
+    workers = _register_workers(h.fx.registry, h.fx.paths)
     try:
+        names = [tool.name for tool in h.fx.registry.get_definitions()]
+        assert len(names) == len(set(names))
+        assert {
+            "spawn_worker",
+            "wait_worker",
+            "send_input",
+            "close_worker",
+            "query_activity",
+            "read_activity",
+            "save_briefing",
+        } <= set(names)
         result = h.call("query_activity", QUERY)
         assert result["count"] == 1
         assert h.call("read_activity", {"activity_id": result["items"][0]["id"]})["complete"]
     finally:
+        workers.stop()
         h.fx.close()
