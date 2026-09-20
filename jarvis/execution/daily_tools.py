@@ -32,7 +32,8 @@ _DESCRIPTIONS = {
         "For 'what was I doing at <time>' use sources=['app','screen'], then read_activity on "
         "a screen item for its full text. App durations are estimates, not attention. agent is "
         "not_implemented. project is a full repo path and excludes unmapped app/screen rows. "
-        "Check coverage and state_events (idle/lock/sleep/pause) before calling a gap rest. "
+        "Check coverage, state_at_start and state_events (idle/lock/sleep/pause) before calling a "
+        "gap rest; state events page with the items, so follow next_cursor to the end. "
         "Follow next_cursor with identical filters; invalid_cursor means a mutable TimeSink "
         "row changed: restart the query."
     ),

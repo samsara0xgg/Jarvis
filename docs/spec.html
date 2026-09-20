@@ -583,31 +583,53 @@ points to ~/Library/Application Support/TimeSink/timesink.sqlite; absent/disable
 opens that store. Queries open an existing WAL-aware read transaction, never create/migrate the source,
 and never run Git, screenshot tools, an LLM, or a second collector. Missing/unreadable/incompatible
 TimeSink stores report app coverage=unavailable without suppressing Git results.</p>
-<p>TimeSink GRDB timestamps are interpreted as UTC. Nonzero spans are selected by overlap, with
-occurred_at=start, ended_at=end, observed_at=null, and duration_seconds_in_window clipped to the requested
-interval. Results include app_name, app_bundle_id, summary (title excerpt), url_excerpt, domain,
+<p>TimeSink GRDB timestamps are interpreted as UTC and stored with millisecond precision; every bound is
+rendered in that same text form (rounded up for &lt; and &gt;=, down for &gt; and &lt;=) so SQL compares instants,
+never strings of different length. The requested window is [from,to). A span is the half-open [start,end)
+and is selected when start&lt;to and end&gt;from; a capture is the closed set of observation instants
+[at,ended_at] and is selected when at&lt;to and ended_at&gt;=from (an instantaneous capture exactly at from
+is inside); a state event is selected when from&lt;=at&lt;to. Adjacent windows partition every row.
+Nonzero spans carry occurred_at=start, ended_at=end, observed_at=null, and duration_seconds_in_window
+clipped to the requested interval. Results include app_name, app_bundle_id, summary (title excerpt), url_excerpt, domain,
 project=null, project_basis=not_inferred, and revision-pinned source_refs usable in knowledge/todos/briefings.
 read_activity returns the exact saved row as paged JSON; stored_timestamp_timezone=UTC.
 Title/URL excerpts are bounded; full values remain in the detail reader. Jarvis collects no page contents,
 screenshot or OCR itself. TimeSink's suppressed incognito fields remain suppressed.</p>
 <p>Screen captures are TimeSink's <code>capture</code> rows (ADR-0022): one row per distinct front-window
-content, selected by overlap of occurred_at=at..ended_at=lastSeenAt with the requested interval, kind
-screen.capture, provider timesink, time_basis=capture_overlap, summary = app + window title + a bounded
-OCR excerpt, text_chars, image_available, project=null, project_basis=not_inferred, and revision-pinned
-timesink-capture: source_refs. read_activity returns the full OCR text as paged content_format=text with
-app/window identity, span_id and image_path (absolute, null once the image aged out). A store without the
-capture tables reports screen coverage=unavailable without affecting app results.</p>
+content inside one continuous observation segment. TimeSink extends a row's lastSeenAt only while the same
+window stays in front and ticks keep arriving; leaving the window and coming back, pausing, an excluded
+app, a lock, sleep or a stopped tracker each start a new segment, so unchanged content seen again becomes a
+new row and the stretch in between is never attributed to the old one. Items carry kind screen.capture,
+provider timesink, time_basis=capture_overlap, occurred_at=at, ended_at and ended_at_basis: last_seen
+when ended_at is lastSeenAt, interrupted when a row written before segments existed crosses a recorded
+lock/sleep/pause/stop event or the start of another app's span, in which case ended_at is that recorded
+instant (the true end is no later; nothing is invented) and last_seen_at keeps the stored value. Items also carry summary = app + window title + a
+bounded OCR excerpt, text_chars, image_available, project=null, project_basis=not_inferred, and
+revision-pinned timesink-capture: source_refs. read_activity returns the full OCR text as paged
+content_format=text with app/window identity, span_id, ended_at, ended_at_basis, last_seen_at,
+image_available (the file exists now) and image_path (absolute, null once the image aged out or was
+deleted). A store without the capture tables reports screen coverage=unavailable without affecting app
+results.</p>
 <p>App coverage=partial means saved spans are readable, not that the requested interval was continuously
 observed. Coverage includes latest_span_end, observations_in_window, time_basis=span_overlap and
-gap_reason=unknown for spans. Any query touching app or screen also returns state_events: TimeSink's own
-reasons inside the interval (idle/active, lock/unlock, sleep/wake, pause/resume, start/stop,
-screen_denied, bounded to 200). Gaps not explained by a state event remain unknown, and tracked durations
+gap_reason=unknown for spans. Any query touching app or screen also returns TimeSink's own reasons
+(idle/active, lock/unlock, sleep/wake, pause/resume, start/stop, screen_denied): state_at_start is the
+latest event before from of each independent group (start/stop; lock/sleep/unlock/wake; idle/active;
+pause/resume/screen_denied), so a lock before from with no unlock inside explains an empty window;
+state_events are the events inside [from,to) in time order, paged with the items inside the same
+cursor and page budget, never truncated silently; state_coverage.status is partial with
+events_in_window when the stateEvent table is readable, unavailable when it is not, and unknown when
+neither app nor screen was requested. Spans, captures and state events of one page come from one read
+transaction. Gaps not explained by a state event remain unknown, and tracked durations
 cannot prove attention or task completion. Mixed queries report time_basis=source_specific, ordering Git
 by observed_at and app spans and captures by occurred_at.</p>
-<p>Activity cursors pin the append watermarks (snapshot for the event log; span and capture IDs for
-TimeSink) and check a digest of the selected TimeSink span and capture revisions. Later inserts are omitted from continuation;
-changed/deleted rows or source replacement produce invalid_cursor and require restarting the query.
-TimeSink IDs bind database identity, row ID and content revision; changed detail reads return source_changed,
+<p>Activity cursors pin the append watermarks (snapshot for the event log; span, capture and state event
+IDs for TimeSink), the item and state event offsets, and check a digest of the selected TimeSink span and
+capture revisions. Later inserts are omitted from continuation; changed/deleted rows or source replacement
+produce invalid_cursor and require restarting the query. TimeSink IDs bind database identity, row ID and
+content revision; a capture's revision covers its identity, time basis (at, lastSeenAt), app, window, title,
+span and OCR text but not image retention, so a reference saved into knowledge, todos or a briefing stays
+readable after the image aged out. Changed detail reads return source_changed,
 deleted rows return not_found. This is revision validation, not historical version archival: a saved reference
 can become unavailable after the independent source changes. Coverage freshness metadata may advance
 between pages without changing the selected rows.</p>

@@ -314,11 +314,7 @@ def page_rows(  # noqa: PLR0913 — page query, binding and its persisted positi
     key: str = "items",
 ) -> dict[str, Any]:
     """Return whole rows within a budget; never silently cut a record in half."""
-    selected: list[dict[str, Any]] = []
-    for row in rows[offset : offset + args.get("limit", 20)]:
-        if len(encoded([*selected, row])) > PAGE_BUDGET:
-            break
-        selected.append(row)
+    selected = fit(rows[offset : offset + args.get("limit", 20)], PAGE_BUDGET)
     if not selected and offset < len(rows):
         msg = "Record exceeds page budget; use its detail reader"
         raise DailyError(msg, "result_too_large")
@@ -329,6 +325,16 @@ def page_rows(  # noqa: PLR0913 — page query, binding and its persisted positi
         "snapshot": snapshot,
         "next_cursor": make_cursor(binding, [snapshot, end]) if end < len(rows) else None,
     }
+
+
+def fit(rows: list[dict[str, Any]], budget: int) -> list[dict[str, Any]]:
+    """Take whole leading rows while their JSON encoding stays within budget."""
+    selected: list[dict[str, Any]] = []
+    for row in rows:
+        if len(encoded([*selected, row])) > budget:
+            break
+        selected.append(row)
+    return selected
 
 
 def text_chunk(content: str, offset: int) -> tuple[str, int]:

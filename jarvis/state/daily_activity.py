@@ -8,10 +8,12 @@ from typing import TYPE_CHECKING, Any
 
 from jarvis.state import timesink
 from jarvis.state.daily_contract import (
+    PAGE_BUDGET,
     DailyError,
     cursor_position,
     encoded,
     fingerprint,
+    fit,
     make_cursor,
     page_rows,
     text_chunk,
@@ -50,9 +52,16 @@ def query_activity(
             {k: v for k, v in args.items() if k != "cursor"},
         ]
     )
-    snapshot, app_watermark, app_revision, screen_watermark, screen_revision, offset = (
-        cursor_position(args.get("cursor"), binding, [high_water(conn), 0, 0, 0, 0, 0])
-    )
+    (
+        snapshot,
+        app_watermark,
+        app_revision,
+        screen_watermark,
+        screen_revision,
+        offset,
+        state_watermark,
+        state_offset,
+    ) = cursor_position(args.get("cursor"), binding, [high_water(conn), 0, 0, 0, 0, 0, 0, 0])
     rows = conn.execute(
         "SELECT event_uid,type,ts_epoch_ms,payload_json FROM events "
         "WHERE type IN (?,?) AND id<=? AND ts_epoch_ms>=? AND ts_epoch_ms<? "
@@ -103,35 +112,47 @@ def query_activity(
         }
     else:
         items = []
-    if "app" in sources:
-        app_watermark, app_revision = _timesink_source(
-            timesink.query_spans,
-            args,
-            start,
-            end,
-            timesink_path,
-            (app_watermark, app_revision),
-            items=items,
-            coverage=coverage,
-            name="app",
-            noun="TimeSink spans",
+    uses_timesink = bool({"app", "screen"} & set(sources)) and timesink_path is not None
+    # One read transaction, so spans, captures and state events describe the same instant.
+    with timesink.snapshot(timesink_path if uses_timesink else None) as snap:
+        if "app" in sources:
+            app_watermark, app_revision = _timesink_source(
+                timesink.query_spans,
+                args,
+                start,
+                end,
+                snap,
+                (app_watermark, app_revision),
+                items=items,
+                coverage=coverage,
+                name="app",
+                noun="TimeSink spans",
+            )
+        if "screen" in sources:
+            screen_watermark, screen_revision = _timesink_source(
+                timesink.query_captures,
+                args,
+                start,
+                end,
+                snap,
+                (screen_watermark, screen_revision),
+                items=items,
+                coverage=coverage,
+                name="screen",
+                noun="Screen captures",
+            )
+        state = timesink.query_state(
+            snap, start, end, watermark=state_watermark if args.get("cursor") else None
         )
-    if "screen" in sources:
-        screen_watermark, screen_revision = _timesink_source(
-            timesink.query_captures,
-            args,
-            start,
-            end,
-            timesink_path,
-            (screen_watermark, screen_revision),
-            items=items,
-            coverage=coverage,
-            name="screen",
-            noun="Screen captures",
-        )
+    if not uses_timesink:
+        state["coverage"] = {"status": "unknown", "reason": "Reported with app or screen sources."}
     items.sort(key=lambda item: (item["observed_at"] or item["occurred_at"], item["id"]))
     result = page_rows(items, args, binding, snapshot, offset)
-    if result["next_cursor"]:
+    # State events share the page budget with the items: never silently dropped, only paged.
+    events = fit(state["events"][state_offset:], PAGE_BUDGET - len(encoded(result["items"])))
+    state_end = state_offset + len(events)
+    result["next_cursor"] = None
+    if offset + result["count"] < len(items) or state_end < len(state["events"]):
         result["next_cursor"] = make_cursor(
             binding,
             [
@@ -141,16 +162,20 @@ def query_activity(
                 screen_watermark,
                 screen_revision,
                 offset + result["count"],
+                state["watermark"],
+                state_end,
             ],
         )
-    uses_timesink = bool({"app", "screen"} & set(sources)) and timesink_path is not None
     result.update(
         coverage=coverage,
         time_basis="source_specific" if uses_timesink else "observed_at",
         timesink_snapshot=app_watermark,
-        # Why TimeSink stopped/resumed in the window: idle/active, lock/unlock,
-        # sleep/wake, pause/resume, start/stop, screen_denied.
-        state_events=timesink.state_events(timesink_path, start, end) if uses_timesink else [],
+        # Why TimeSink stopped/resumed: the latest lock/idle/pause/tracker event before the
+        # window, then every event inside it (idle/active, lock/unlock, sleep/wake,
+        # pause/resume, start/stop, screen_denied) in pages.
+        state_at_start=state["at_start"],
+        state_events=events,
+        state_coverage=state["coverage"],
     )
     return result
 
@@ -160,7 +185,7 @@ def _timesink_source(  # noqa: PLR0913 — one paging pin per source, threaded f
     args: dict[str, Any],
     start: datetime,
     end: datetime,
-    timesink_path: Path | None,
+    snap: timesink.Snapshot | None,
     pinned: tuple[int, int],
     *,
     items: list[dict[str, Any]],
@@ -182,9 +207,7 @@ def _timesink_source(  # noqa: PLR0913 — one paging pin per source, threaded f
             },
         }
     else:
-        found = query(
-            timesink_path, start, end, watermark=watermark if args.get("cursor") else None
-        )
+        found = query(snap, start, end, watermark=watermark if args.get("cursor") else None)
     if args.get("cursor") and revision != found["revision"]:
         message = "TimeSink results changed while paging; restart the query"
         raise DailyError(message, "invalid_cursor")
@@ -211,11 +234,14 @@ def read_activity(
             "kind": "screen.capture",
             "observed_at": None,
             "occurred_at": timesink.moment(row["at"]),
-            "ended_at": timesink.moment(row["lastSeenAt"]),
+            "ended_at": row["endedAt"],
+            "ended_at_basis": row["endedAtBasis"],
+            "last_seen_at": timesink.moment(row["lastSeenAt"]),
             "app_name": row["appName"],
             "app_bundle_id": row["appBundleID"],
             "window_title": row["title"],
             "span_id": row["spanID"],
+            "image_available": row["imagePath"] is not None,
             "image_path": row["imagePath"],
             "content": chunk,
             "content_format": "text",

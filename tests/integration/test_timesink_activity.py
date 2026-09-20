@@ -80,7 +80,7 @@ def add_capture(
     cursor = conn.execute(
         "INSERT INTO capture(at,lastSeenAt,appBundleID,appName,windowID,title,spanID,text,"
         "imagePath) VALUES(?,?,?,?,?,?,?,?,?)",
-        (at, last_seen, "com.mitchellh.ghostty", "Ghostty", 13117, "cc | rules", None, text, image),
+        (at, last_seen, "com.google.Chrome", "Chrome", 13117, "cc | rules", None, text, image),
     )
     conn.commit()
     assert cursor.lastrowid is not None
@@ -353,10 +353,12 @@ SCREEN_QUERY = {**QUERY, "sources": ["app", "screen"]}
 
 
 def test_screen_captures_state_events_and_full_text(
-    connected: DailyHarness, source: sqlite3.Connection
+    connected: DailyHarness, source: sqlite3.Connection, tmp_path: Path
 ) -> None:
     """A screen row is one content stretch; its full OCR text and the gap reasons are readable."""
     long_text = "OCR line " * 2000
+    (tmp_path / "captures" / "d").mkdir(parents=True)
+    (tmp_path / "captures" / "d" / "1.jpg").write_bytes(b"jpeg")
     add_span(source, "2026-09-19 09:00:00.000", "2026-09-19 09:10:00.000")
     capture_id = add_capture(
         source, "2026-09-19 08:59:00.000", "2026-09-19 09:04:00.000", text=long_text
@@ -380,7 +382,8 @@ def test_screen_captures_state_events_and_full_text(
     assert first["occurred_at"] == "2026-09-19T08:59:00.000+00:00"
     assert first["ended_at"] == "2026-09-19T09:04:00.000+00:00"
     assert first["duration_seconds_in_window"] == 240
-    assert first["summary"].startswith("Ghostty: cc | rules — OCR line")
+    assert first["summary"].startswith("Chrome: cc | rules — OCR line")
+    assert first["ended_at_basis"] == "last_seen"
     assert len(first["summary"]) == 300
     assert first["image_available"] is True
     assert result["items"][2]["image_available"] is False
@@ -390,6 +393,9 @@ def test_screen_captures_state_events_and_full_text(
         {"at": "2026-09-19T09:12:00.000+00:00", "kind": "idle"},
         {"at": "2026-09-19T09:40:00.000+00:00", "kind": "lock"},
     ]
+    assert result["state_at_start"] == []
+    assert result["state_coverage"]["status"] == "partial"
+    assert result["state_coverage"]["events_in_window"] == 2
 
     args: dict[str, Any] = {"activity_id": first["id"]}
     content = ""
@@ -440,5 +446,247 @@ def test_screen_source_on_a_store_without_capture_tables(tmp_path: Path) -> None
         assert result["coverage"]["app"]["status"] == "partial"
         assert result["coverage"]["screen"]["status"] == "unavailable"
         assert result["state_events"] == []
+        assert result["state_coverage"]["status"] == "unavailable"
     finally:
         h.fx.close()
+
+
+def add_event(conn: sqlite3.Connection, at: str, kind: str) -> None:
+    """Write a tracker state reason exactly as TimeSink's ObservationStore does."""
+    conn.execute("INSERT INTO stateEvent(at,kind) VALUES(?,?)", (at, kind))
+    conn.commit()
+
+
+def collect(harness: DailyHarness, args: dict[str, Any]) -> tuple[list[Any], list[Any], int]:
+    """Follow next_cursor to the end, returning every item, every state event and the page count."""
+    items: list[Any] = []
+    events: list[Any] = []
+    pages = 0
+    cursor = None
+    while True:
+        page = harness.call("query_activity", {**args, **({"cursor": cursor} if cursor else {})})
+        assert "code" not in page, page
+        pages += 1
+        items += page["items"]
+        events += page["state_events"]
+        cursor = page["next_cursor"]
+        if cursor is None:
+            return items, events, pages
+
+
+def test_state_events_page_with_items_and_are_never_dropped(
+    connected: DailyHarness, source: sqlite3.Connection
+) -> None:
+    """260 events plus long captures exceed one output budget; paging must deliver all of them."""
+    for i in range(260):
+        add_event(
+            source, f"2026-09-19 09:{i // 5:02d}:{(i % 5) * 12:02d}.000", ("idle", "active")[i % 2]
+        )
+    for i in range(6):
+        add_capture(
+            source,
+            f"2026-09-19 09:{i * 5:02d}:00.000",
+            f"2026-09-19 09:{i * 5 + 1:02d}:00.000",
+            text="x" * 1500,
+        )
+    add_span(source, "2026-09-19 09:00:00.000", "2026-09-19 09:10:00.000")
+    args = {**SCREEN_QUERY, "limit": 50}
+    first = connected.call("query_activity", args)
+    assert first["next_cursor"] is not None
+    assert first["state_coverage"]["events_in_window"] == 260
+    add_event(source, "2026-09-19 09:30:01.000", "lock")  # after the first page: not in this paging
+    items, events, pages = collect(connected, {**args, "cursor": first["next_cursor"]})
+    items = first["items"] + items
+    events = first["state_events"] + events
+    assert pages >= 1
+    assert len(items) == 7
+    assert len(events) == 260
+    assert events == sorted(events, key=lambda event: event["at"])
+    assert [event["kind"] for event in events[:2]] == ["idle", "active"]
+    fresh = connected.call("query_activity", args)
+    assert fresh["state_coverage"]["events_in_window"] == 261
+    narrow = connected.call(
+        "query_activity",
+        {**SCREEN_QUERY, "from": "2026-09-19T09:10:00Z", "to": "2026-09-19T09:11:00Z"},
+    )
+    assert [event["at"][11:19] for event in narrow["state_events"]] == [
+        "09:10:00",
+        "09:10:12",
+        "09:10:24",
+        "09:10:36",
+        "09:10:48",
+    ]
+    assert narrow["next_cursor"] is None
+
+
+def test_state_at_start_reports_the_standing_state(
+    connected: DailyHarness, source: sqlite3.Connection
+) -> None:
+    """A lock before from with no unlock inside the window explains an empty window."""
+    add_event(source, "2026-09-19 08:30:00.000", "start")
+    add_event(source, "2026-09-19 08:40:00.000", "idle")
+    add_event(source, "2026-09-19 08:45:00.000", "active")
+    add_event(source, "2026-09-19 08:50:00.000", "lock")
+    add_event(source, "2026-09-19 10:00:00.000", "unlock")
+    result = connected.call("query_activity", SCREEN_QUERY)
+    assert result["items"] == []
+    assert result["state_events"] == []
+    assert result["state_coverage"]["status"] == "partial"
+    assert [(event["at"][11:16], event["kind"]) for event in result["state_at_start"]] == [
+        ("08:30", "start"),
+        ("08:45", "active"),
+        ("08:50", "lock"),
+    ]
+    git_only = connected.call("query_activity", {**QUERY, "sources": ["git"]})
+    assert git_only["state_coverage"]["status"] == "unknown"
+    assert git_only["state_at_start"] == []
+
+
+def test_millisecond_boundaries_follow_the_half_open_window(
+    connected: DailyHarness, source: sqlite3.Connection
+) -> None:
+    """GRDB stores milliseconds; [from,to) must hold at both ends for events, captures and spans."""
+    add_event(source, "2026-09-19 08:59:59.999", "idle")
+    add_event(source, "2026-09-19 09:00:00.000", "active")
+    add_event(source, "2026-09-19 09:59:59.999", "lock")
+    add_event(source, "2026-09-19 10:00:00.000", "unlock")
+    add_capture(source, "2026-09-19 09:00:00.000", "2026-09-19 09:00:00.000", text="at from")
+    add_capture(source, "2026-09-19 08:50:00.000", "2026-09-19 09:00:00.000", text="seen at from")
+    add_capture(source, "2026-09-19 08:50:00.000", "2026-09-19 08:59:59.999", text="before")
+    add_capture(source, "2026-09-19 10:00:00.000", "2026-09-19 10:00:00.000", text="at to")
+    add_capture(source, "2026-09-19 09:59:59.999", "2026-09-19 10:00:00.000", text="ends at to")
+    add_span(source, "2026-09-19 08:50:00.000", "2026-09-19 09:00:00.000")
+    add_span(source, "2026-09-19 10:00:00.000", "2026-09-19 10:10:00.000")
+    add_span(source, "2026-09-19 09:59:59.999", "2026-09-19 10:00:00.000")
+    for window in (
+        {"from": "2026-09-19T09:00:00Z", "to": "2026-09-19T10:00:00Z"},
+        {"from": "2026-09-19T02:00:00-07:00", "to": "2026-09-19T12:00:00+02:00"},
+        {"from": "2026-09-19T09:00:00.000Z", "to": "2026-09-19T09:59:59.999500Z"},
+    ):
+        result = connected.call("query_activity", {**SCREEN_QUERY, **window})
+        assert [event["kind"] for event in result["state_events"]] == ["active", "lock"], window
+        assert sorted(
+            item["summary"].split(" — ")[1]
+            for item in result["items"]
+            if item["source"] == "screen"
+        ) == sorted(["at from", "seen at from", "ends at to"]), window
+        assert [
+            item["occurred_at"][11:23] for item in result["items"] if item["source"] == "app"
+        ] == ["09:59:59.999"]
+    earlier = connected.call(
+        "query_activity",
+        {**SCREEN_QUERY, "from": "2026-09-19T08:00:00Z", "to": "2026-09-19T09:00:00Z"},
+    )
+    assert [event["kind"] for event in earlier["state_events"]] == ["idle"]
+    assert sorted(
+        item["summary"].split(" — ")[1] for item in earlier["items"] if item["source"] == "screen"
+    ) == sorted(["seen at from", "before"])
+    assert connected.call("query_activity", {**SCREEN_QUERY, "to": "2026-09-19T09:00:00.000500Z"})[
+        "state_events"
+    ] == [{"at": "2026-09-19T09:00:00.000+00:00", "kind": "active"}]
+
+
+def test_text_evidence_outlives_the_image(
+    connected: DailyHarness, source: sqlite3.Connection, tmp_path: Path
+) -> None:
+    """A capture reference outlives its pruned image; text edits still fail closed."""
+    image = tmp_path / "captures" / "d" / "1.jpg"
+    image.parent.mkdir(parents=True)
+    image.write_bytes(b"jpeg")
+    capture_id = add_capture(
+        source, "2026-09-19 09:00:00.000", "2026-09-19 09:01:00.000", text="evidence"
+    )
+    item = connected.call("query_activity", SCREEN_QUERY)["items"][0]
+    detail = connected.call("read_activity", {"activity_id": item["id"]})
+    assert detail["image_available"] is True
+    assert detail["image_path"] == str(image)
+    knowledge = {
+        "statement": "Seen on screen",
+        "kind": "fact",
+        "basis": "observation",
+        "source_refs": item["source_refs"],
+        "request_id": "k-before",
+    }
+    assert connected.call("save_knowledge", knowledge)["version"] == 1
+    image.unlink()  # TimeSink deletes the day folder first ...
+    detail = connected.call("read_activity", {"activity_id": item["id"]})
+    assert detail["image_available"] is False
+    assert detail["image_path"] is None
+    assert detail["content"] == "evidence"
+    source.execute(
+        "UPDATE capture SET imagePath=NULL WHERE id=?", (capture_id,)
+    )  # ... then forgets the path
+    source.commit()
+    detail = connected.call("read_activity", {"activity_id": item["id"]})
+    assert detail["image_available"] is False
+    assert detail["content"] == "evidence"
+    assert connected.call("query_activity", SCREEN_QUERY)["items"][0]["id"] == item["id"]
+    assert connected.call("save_knowledge", {**knowledge, "request_id": "k-after"})["version"] == 1
+    todo = connected.call(
+        "create_todo", {"title": "Follow up", "source_refs": item["source_refs"], "request_id": "t"}
+    )
+    assert "todo_id" in todo
+    briefing = connected.call(
+        "save_briefing",
+        {
+            "local_date": "2026-09-19",
+            "timezone": "America/Vancouver",
+            "content": "Seen on screen",
+            "source_refs": item["source_refs"],
+            "coverage": {"screen": "partial"},
+            "request_id": "b",
+        },
+    )
+    assert briefing["version"] == 1
+    source.execute("UPDATE capture SET text='rewritten' WHERE id=?", (capture_id,))
+    source.commit()
+    assert connected.call("read_activity", {"activity_id": item["id"]})["code"] == "source_changed"
+    assert (
+        connected.call("save_knowledge", {**knowledge, "request_id": "k-text"})["code"]
+        == "source_changed"
+    )
+
+
+def test_rows_recorded_across_a_break_are_clipped_and_marked(
+    connected: DailyHarness, source: sqlite3.Connection
+) -> None:
+    """Rows written before segments broke on lock/pause/other apps end at the recorded break."""
+    add_capture(source, "2026-09-19 09:00:00.000", "2026-09-19 09:50:00.000", text="A")
+    add_event(source, "2026-09-19 09:10:00.000", "lock")
+    add_event(source, "2026-09-19 09:40:00.000", "unlock")
+    add_capture(source, "2026-09-19 09:20:00.000", "2026-09-19 09:45:00.000", text="B")
+    source.execute(
+        "INSERT INTO span(start,end,appBundleID,appName) VALUES(?,?,?,?)",
+        ("2026-09-19 09:30:00.000", "2026-09-19 09:35:00.000", "com.mitchellh.ghostty", "Ghostty"),
+    )
+    add_capture(source, "2026-09-19 09:46:00.000", "2026-09-19 09:47:00.000", text="C")
+    add_span(source, "2026-09-19 09:46:00.000", "2026-09-19 09:47:30.000")  # same app: no break
+    source.commit()
+    items = [
+        item
+        for item in connected.call("query_activity", SCREEN_QUERY)["items"]
+        if item["source"] == "screen"
+    ]
+    assert [
+        (
+            i["summary"][-1],
+            i["ended_at"][11:16],
+            i["ended_at_basis"],
+            i["duration_seconds_in_window"],
+        )
+        for i in items
+    ] == [
+        ("A", "09:10", "interrupted", 600.0),
+        ("B", "09:30", "interrupted", 600.0),
+        ("C", "09:47", "last_seen", 60.0),
+    ]
+    assert items[0]["last_seen_at"] == "2026-09-19T09:50:00.000+00:00"
+    detail = connected.call("read_activity", {"activity_id": items[0]["id"]})
+    assert detail["ended_at"] == "2026-09-19T09:10:00.000+00:00"
+    assert detail["ended_at_basis"] == "interrupted"
+    assert detail["last_seen_at"] == "2026-09-19T09:50:00.000+00:00"
+    later = connected.call(
+        "query_activity",
+        {**SCREEN_QUERY, "from": "2026-09-19T09:40:00Z", "to": "2026-09-19T10:00:00Z"},
+    )
+    assert [item["summary"][-1] for item in later["items"] if item["source"] == "screen"] == ["C"]
