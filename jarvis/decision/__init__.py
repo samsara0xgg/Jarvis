@@ -67,11 +67,9 @@ from jarvis.decision.intent import (
 )
 from jarvis.decision.llm_stream import LLMResponseFailed, LLMTextDelta
 from jarvis.decision.packet import (
-    DEFAULT_OBSERVER_POLL_INTERVAL_S,
     SituationPacket,
     assemble_packet,
     format_pending_confirmation_note,
-    format_status_board_note,
 )
 from jarvis.decision.policy import EffectivePolicy, effective_policy, surface_for
 from jarvis.decision.stream_envelope import (
@@ -547,13 +545,6 @@ class DecideContext:
             composition root loaded from ``config/tier0_patterns.yaml``.
             ``None`` (or an empty table) disables Tier 0 — every turn
             falls through to the Tier 2 LLM loop.
-        observer_poll_interval_s: The repo observer's configured poll
-            cadence (``observer.poll_interval_s``), in seconds, supplied
-            by the composition root the same way ``tier0_table`` is.
-            Only the Status Board note reads it, to derive its stale
-            threshold (3x the interval, ADR-0009 D6 v0). The default is
-            the shipped cadence, so a hand-assembled context still calls
-            staleness the way the daemon does.
         entity_resolver: Injected resolve-on-propose callable (ADR-0011
             D4), or ``None``. ``_dispatch_one_tool_call`` calls it for
             a ``requires_entity=True`` tool whose ``target_entity_ref``
@@ -599,7 +590,6 @@ class DecideContext:
     system_prompt: str
     max_tool_iterations: int = _DEFAULT_MAX_TOOL_ITERATIONS
     tier0_table: Tier0Table | None = None
-    observer_poll_interval_s: int = DEFAULT_OBSERVER_POLL_INTERVAL_S
     entity_resolver: EntityResolverLike | None = None
     write_entity_resolver: EntityResolverLike | None = None
     confirmation_ttl_ms: int = _DEFAULT_CONFIRMATION_TTL_MS
@@ -690,56 +680,59 @@ class _Scratch:
     confirmation_answered_this_turn: bool = False
 
 
+_STATUS_HEADER: Final[str] = "[当前状态｜程序提供，不是用户说的话]"  # noqa: RUF001 — Chinese punctuation is intentional.
+# Channels whose transcript came in by voice; anything else is typed text.
+_VOICE_CHANNELS: Final[frozenset[str]] = frozenset({"inherent_ptt", "inherent_wake", "speech"})
+
+
+def _interaction_line(packet: SituationPacket) -> str | None:
+    """How this turn reached Jarvis, or None when the trigger carries no channel."""
+    channel = packet.trigger_event.payload.get("channel")
+    if not isinstance(channel, str) or not channel:
+        return None
+    if channel == "gpt_live":
+        return "交互方式：语音（由 Live 转述，回答要适合念出来）"  # noqa: RUF001 — Chinese punctuation is intentional.
+    return "交互方式：语音" if channel in _VOICE_CHANNELS else "交互方式：文字"  # noqa: RUF001 — Chinese punctuation is intentional.
+
+
+def _current_status_block(packet: SituationPacket, ctx: DecideContext) -> str | None:
+    """This turn's state under one header, or None when there is nothing to say."""
+    lines = [
+        line
+        for line in (
+            ctx.time_note,
+            _interaction_line(packet),
+            format_pending_confirmation_note(packet),
+            _format_open_actions_note(packet),
+        )
+        if line
+    ]
+    if not lines:
+        return None
+    return "\n".join((_STATUS_HEADER, *lines))
+
+
 def _insert_system_notes(
     messages: list[dict[str, Any]],
     packet: SituationPacket,
     ctx: DecideContext,
 ) -> None:
-    """Insert the prompt-head system notes into ``messages``.
+    """History ahead of the conversation; this turn's state on the user message.
 
-    Each note is added via ``messages.insert(0, ...)``, and each such
-    call pushes every note already inserted further from index 0 — so
-    the call order below is bottom-to-top: the FIRST call ends up
-    nearest the live conversation (later inserts push it toward the
-    tail, where the user message sits), the LAST call ends up at index
-    0, farthest from it. Final stacking order (top → bottom):
-    Status Board (ambient background, called last), open actions,
-    pending confirmation (nearest the conversation, called first — the
-    most immediately turn-critical: it governs what THIS draft may claim
-    about THIS turn's outstanding ask; spec §3.4.4, Phase 0 batch 4;
-    ADR-0012 §3 D4).
-
-    The memory history block is inserted LAST so it sits at index 0,
-    ahead of every per-turn note: it is the one block that stays
-    byte-identical between turns, so the provider's prefix cache covers
-    it, and everything that changes per turn (the time line, the folded
-    state) follows it (spec §10.5).
+    The history block is byte-identical between turns except at its end,
+    so it sits at index 0 for the provider's prefix cache (spec §10.5).
+    Everything that changes per turn — the time line, the interaction
+    mode, a pending confirmation ask, actions still running — rides at
+    the head of this turn's own user message under a header that says it
+    is not the user's words, so a request never carries two user
+    messages in a row.
     """
-    # ADR-0012 §3 D4: id-free note naming an outstanding confirmation
-    # ask, if one is live. Lets an unrelated turn's LLM know an ask is
-    # outstanding (C4) and a paraphrased-consent turn's LLM talk about
-    # it (C6) without being able to act on it — the note carries no
-    # confirmation_id. Called FIRST so it ends up nearest the
-    # conversation: it is the most immediately turn-critical of the
-    # notes (governs what THIS draft may claim about THIS turn's
-    # outstanding ask).
-    pending_confirmation_note = format_pending_confirmation_note(packet)
-    if pending_confirmation_note is not None:
-        messages.insert(0, {"role": "user", "content": pending_confirmation_note})
-    # The non-terminal actions, so the LLM knows what is still running.
-    open_actions_note = _format_open_actions_note(packet)
-    if open_actions_note is not None:
-        messages.insert(0, {"role": "user", "content": open_actions_note})
-    # ADR-0009 D6 (render half of Step 11): folded Status Board with its
-    # §3.6.9 freshness wording, so "repo X 现在什么状态" is answered from
-    # observer-folded state instead of the LLM reaching for git (M6).
-    status_board_note = format_status_board_note(
-        packet, poll_interval_s=ctx.observer_poll_interval_s,
-    )
-    if status_board_note is not None:
-        messages.insert(0, {"role": "user", "content": status_board_note})
-    if ctx.time_note:
-        messages.insert(0, {"role": "user", "content": ctx.time_note})
+    status = _current_status_block(packet, ctx)
+    if status is not None:
+        for message in reversed(messages):
+            if message.get("role") == "user":
+                message["content"] = f"{status}\n\n{message['content']}"
+                break
     if ctx.memory_note:
         messages.insert(0, {"role": "user", "content": ctx.memory_note})
 
@@ -2122,21 +2115,13 @@ def _pre_emit_reasons(plan: ResponsePlan) -> tuple[str, ...]:
 
 
 def _format_open_actions_note(packet: SituationPacket) -> str | None:
-    """Render the Status Board's open actions as a system note, or None."""
-    if not packet.status_board.open_actions:
+    """One line for the actions still running, or None when nothing is."""
+    open_actions = packet.status_board.open_actions
+    if not open_actions:
         return None
     now_ms = int(time.time() * 1000)
-    bullets = "\n".join(
-        f"- action_id={action.action_id!r}, dispatched "
-        f"{max(0, (now_ms - action.dispatched_ts_ms) // 1000)} s ago, no terminal yet"
-        for action in packet.status_board.open_actions
-    )
-    return (
-        "[system context] Open actions (Status Board snapshot — dispatched, "
-        "not finished):\n"
-        f"{bullets}\n"
-        "Do not invent action_ids."
-    )
+    oldest_s = max(0, (now_ms - min(action.dispatched_ts_ms for action in open_actions)) // 1000)
+    return f"后台在跑：{len(open_actions)} 个操作还没回报（最早的 {oldest_s} 秒前派出）"  # noqa: RUF001 — Chinese punctuation is intentional.
 
 
 def _new_turn_id() -> str:
@@ -2338,8 +2323,7 @@ _CONFIRMATION_DISPATCH_ERROR_TEMPLATE: Final[str] = "写入执行出错，未写
 
 # ADR-0012 §3 D6 exact wording — "backed by ack semantics; the wording
 # deliberately stops at 已执行 and must not be strengthened" (no 完成/
-# 已完成/verified/done — see `_COMPLETION_KEYWORDS` in `jarvis.decision.gates`;
-# "执行"/"已执行" do not match any of those patterns).
+# 已完成/verified/done; "已执行" is exactly what the ack proves).
 _CONFIRMED_WRITE_SUCCESS_TEMPLATE: Final[str] = (
     "write_file 已执行：`{path}`（{bytes_written} 字节）"  # noqa: RUF001 — fullwidth colon/parens/comma are intentional Chinese punctuation.
 )

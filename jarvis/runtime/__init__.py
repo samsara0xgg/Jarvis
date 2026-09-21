@@ -2295,7 +2295,9 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
     # One consistent read of memory.db for this turn's prompt: the history
     # block goes ahead of every per-turn note, the time line after them.
     memory_context = (
-        render_context(memory.db_path, exclude_id=memory_exclude_id)
+        render_context(
+            memory.db_path, exclude_id=memory_exclude_id, since=runtime.session.history_since,
+        )
         if memory is not None
         else None
     )
@@ -2384,13 +2386,14 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             # runs can never read each other's last-call metadata. With the
             # flag off this is the same shared client object as before.
             llm_client=run.request_client if run is not None else runtime.llm_client,
-            system_prompt=runtime.system_prompt,
+            # The profile rides the system prompt: stable across turns, so it
+            # sits in the cached prefix rather than in the per-turn context.
+            system_prompt=(
+                f"{runtime.system_prompt.rstrip()}\n\n{memory_context.profile}"
+                if memory_context is not None and memory_context.profile
+                else runtime.system_prompt
+            ),
             tier0_table=runtime.tier0_table,
-            # ADR-0009 D5/D6 — the Status Board note calls an observation
-            # "stale" at 3x the observer's poll interval. Read from the
-            # same config key the observer task polls on, so the two can
-            # never disagree about what "stale" means.
-            observer_poll_interval_s=int(_observer_poll_interval_s(runtime.config)),
             # ADR-0011 D4 — resolve-on-propose. Built fresh per turn (a
             # trivial closure) rather than stored on JarvisRuntime: it
             # closes over `runtime.conn`, which the JarvisRuntime fields
