@@ -75,7 +75,15 @@ observer:
   poll_interval_s: 60
   # 被观察的 repo（绝对路径，`~` 会展开）。空列表 = 不启动观察器任务。
   # Allen 自己维护这份清单：观察器只读，不 fetch，不写外部世界。
-  repos: []
+  # 按路径观察：每个 checkout / worktree 单独一行，主仓库不覆盖其它 worktree。
+  # 只列当前在用的目录；worktree 删掉后要从这里移除，否则每轮都记一条跳过警告。
+  repos:
+    - ~/Projects/jarvis
+    - ~/Projects/jarvis/.claude/worktrees/timesink-fixes
+    - ~/.codex/worktrees/daily-loop-tools/jarvis
+    - ~/Projects/timesink
+    - ~/Projects/timesink-screen-capture
+    - ~/Projects/malibu-workshop
   # Read saved app/window/Chrome spans; TimeSink remains the only collector/writer.
   timesink:
     enabled: true
