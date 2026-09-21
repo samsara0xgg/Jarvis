@@ -550,6 +550,7 @@ the dispatcher alone owns action lifecycle events. Original conversation records
 <tr><td>update_todo</td><td>todo_id, expected_version, patch, request_id</td><td>todo_id, version, source_ref. Patch permits title/project/due_at/priority/status only; null clears due_at/project. User instruction can complete/reopen/cancel; worker completion alone does not update a todo.</td></tr>
 <tr><td>save_briefing</td><td>local_date, timezone, content, source_refs, coverage, request_id; expected_version?</td><td>briefing_id, version, source_ref. Date + IANA timezone identifies one briefing with immutable revisions. No delivery or scheduling side effect.</td></tr>
 <tr><td>get_briefing</td><td>local_date, timezone, cursor?</td><td>Saved metadata plus content chunks, offset, total_chars, complete, next_cursor; delivery_status=not_tracked. Continuation stays on its initial revision.</td></tr>
+<tr><td>refresh_work_state</td><td>question?, note?, force?</td><td>The ADR 0023 work-state view: state (the saved record or null), data (latest timesink.state_observed head or null), refreshing, outcome (analyzed / reused / no_evidence / failed), error, joined?. Runs the runtime's one refresh workflow; L1 because it appends work_state.revised.</td></tr>
 </tbody></table>
 <p>Query intervals are half-open [from,to); timestamp parameters require explicit UTC offsets.
 Paging limit defaults to 20 and is capped at 50. Cursors bind query arguments and storage identity;
@@ -638,6 +639,58 @@ available/partial/unknown/unavailable/not_implemented; omitted entries default t
 coverage_basis=reported_by_generator distinguishes it from measured collector health. Saving a briefing
 never marks it delivered or heard. Background consolidation, skills, collectors, scheduler, wake-time
 catch-up, delivery deduplication and Live write-policy integration are separate capabilities.</p>
+<p id="work-state"><strong>Current work state (ADR 0023).</strong> One record, folded as the latest
+<code>work_state.revised</code> event (owner L2, actor jarvis_llm, schema version 1; payload
+<code>item, trigger</code> = dashboard | conversation, <code>action_id?</code>). item carries
+<code>id=work_state, version, created_at, updated_at, analyzed_at, observed_until</code> (the latest
+TimeSink instant the analysis saw, null when none), <code>evidence {fingerprint, window {from,
+recent_from, to}, coverage {app, screen, state, records, todos, knowledge, git}, counts}</code>,
+<code>now</code> (a claim or null), <code>activities[]</code> (claims with <code>progress</code>),
+<code>links[]</code> (<code>kind</code> todo | discussion, <code>ref</code> = todo id or record:&lt;id&gt;,
+title, note, basis), <code>uncertainties[]</code>, <code>note</code> (the user's statement fed into this
+analysis), <code>question</code>, <code>model</code>. A claim is <code>{text, basis, refs}</code> where
+basis is <code>stated</code> (Allen said it: an Allen-authored record or the note), <code>observed</code>
+(app/window/screen data) or <code>inferred</code> (the model's reading), and refs are the durable
+source references (record:, event:, timesink:, timesink-capture:, note) behind it. The rules are
+enforced on save, not by prompt: refs the model did not receive are dropped; a stated claim without a
+Allen-authored record or note ref and an observed claim without a TimeSink ref become inferred and are counted in
+uncertainties; a record with inferred claims always carries an uncertainty; <code>now</code> is kept
+only when it cites screen observations inside the recent window (<code>window.recent_from</code>..) and carries
+<code>as_of</code> = the newest cited screen instant so it is never shown as "current" without its instant;
+<code>evidence.limits</code> (truncation, unreadable sources, unconfigured Git) are appended to
+uncertainties. Writes check <code>expected_version</code>; a stale writer gets version_conflict and
+the newer record stands. The analysis never changes todos: a link is a claim, not a completion.</p>
+<p>The refresh workflow is one runtime job shared by <code>refresh_work_state</code> and
+<code>POST /inherent/work-state/refresh</code>; <code>GET /inherent/work-state</code> returns the same
+view without analysing. It gathers bounded evidence: the defaults are today's spans aggregated per app and
+window, the last 2 h of screen captures with OCR excerpts, today's earlier captures grouped per
+window, TimeSink state events, 48 h of memory.db records, open todos, active knowledge, today's
+Git observations and the note; when a question is given its topic terms (stop words removed,
+CJK bigrams added) also retrieve matching older records and captures (14 days) and rank todos and
+knowledge, so "之前说的事情进展如何" reaches the relevant history without tools. Every cap that
+clipped material is written into <code>evidence.limits</code> and into the material itself. "Today"
+and every rendered time use <code>work_state.timezone</code> (unset = system local). The fingerprint
+covers the bounded material, its source revisions and durations, state events, coverage, local day,
+record ids, todo/knowledge versions, Git observations, the note and question. Extending rows change
+the evidence revision; the request clock alone does not invalidate a result; the model is called only when it differs from the saved
+record's or <code>force</code> is set, otherwise outcome=reused. Empty evidence is
+outcome=no_evidence and writes nothing. The model receives only the report tool and keyed text,
+never images; screen and record text is material, not instruction. A refresh whose input
+(question, note, force) equals the running one joins it (<code>joined=true</code>); a different
+input waits and then runs on the record the first saved, so a new question or fact is never answered
+with a result computed for another. Each run returns its own immutable result to its callers.
+Malformed model reports fail schema validation rather than saving an empty replacement. A failed call keeps the previous record (outcome=failed,
+error). No refresh runs on opening the dashboard, on ordinary turns or in the background.</p>
+<p>Background sync is <code>timesink.state_observed</code> (owner L5, actor observer): every
+<code>observer.timesink.poll_interval_s</code> (default 300) the daemon reads the store head —
+<code>status</code> ok | unavailable, <code>identity</code>, span/capture/state max ids,
+<code>span_latest_end</code>, <code>capture_latest_seen</code>, <code>state_latest {at, kind}</code>,
+<code>observed_at_ms</code>, <code>reason?</code> — and emits only when the head changed; the baseline
+is recovered from the log, so a restart or a wake adds at most one row and never re-accumulates an
+activity. The read view reports three clocks apart: <code>freshness.checked_at_ms</code> (last read, including unchanged polls and manual refreshes), <code>freshness.latest_observed_at</code> (newest span end / capture last-seen the poll found)
+and <code>freshness.analyzed_at</code>; a successful poll is not fresh data. The check clock is
+maintained in memory on every read, with the persisted observation as a fallback after restart. The head is a
+collector-health trail; it never triggers decide() and never calls a model.</p>
 
 <h4>3.3.6 Mode Runtime State vs Mode Preset Table</h4>
 
@@ -1508,7 +1561,8 @@ CREATE INDEX idx_events_actor_ts      ON events(actor, ts_epoch_ms);</code></pre
 <li><strong>Action lifecycle (8-state, canonical)</strong>：<code>action.proposed</code> · <code>action.authorized</code> · <code>action.dispatched</code> · <code>action.running</code> · <code>action.result_observed</code> · <code>action.failed</code> · <code>action.timeout_assumed</code> · <code>action.cancelled</code></li>
 <li><strong>Memory / Learning</strong>：<code>memory.proposed</code> · <code>observation.added</code> · <code>feedback.received</code></li>
 <li><strong>Mode / 注意力</strong>：<code>mode.transitioned</code> · <code>focus.changed</code> · <code>lens.enabled</code> · <code>override.applied</code> · <code>confirmation.accepted</code> · <code>confirmation.rejected</code></li>
-<li><strong>感知 / 环境</strong>：<code>sensor.observed</code> · <code>sensor.alert</code> · <code>presence.inferred</code> · <code>environment.snapshot</code> · <code>repo.state_observed</code> · <code>project.commit_seen</code> · <code>usage.state_observed</code> · <code>tts.usage_observed</code>（observer 事件，只折叠不触发 decide，见 ADR-0009 / ADR-0018）</li>
+<li><strong>感知 / 环境</strong>：<code>sensor.observed</code> · <code>sensor.alert</code> · <code>presence.inferred</code> · <code>environment.snapshot</code> · <code>repo.state_observed</code> · <code>project.commit_seen</code> · <code>usage.state_observed</code> · <code>tts.usage_observed</code> · <code>timesink.state_observed</code>（observer 事件，只折叠不触发 decide，见 ADR-0009 / ADR-0018 / ADR 0023）</li>
+<li><strong>Work state</strong>：<code>work_state.revised</code>（ADR 0023，<a href="#work-state">§3.3.5a</a>；按需分析的持久记录，每条结论带 basis）</li>
 <li><strong>Surface</strong>：<code>surface.user_intent</code> · <code>surface.failed</code> · <code>surface.dismissed</code> · <code>surface.clarified</code></li>
 <li><strong>Cross-domain (discriminator pattern)</strong>：<code>cross_domain.request.dispatched</code> · <code>cross_domain.request.received</code> · <code>cross_domain.request.deferred</code> · <code>cross_domain.request.expired</code> · <code>cross_domain.response.sent</code> · <code>cross_domain.response.received</code> · <code>cross_domain.response.late</code> · <code>cross_domain.event_quarantined</code><br><em>Note:</em> 具体 action 在 <code>payload.action_type</code> 区分，不分裂成多个 event type（见 <a href="#layer-deployment-domains">§3.7.3</a>）。</li>
 <li><strong>Deployment / Domain</strong>：<code>mac.sleeping</code> · <code>mac.awake</code> · <code>domain_availability.changed</code> · <code>domain_projection.stale</code></li>
@@ -2676,6 +2730,7 @@ panel  =  evidence and action controls</code></pre>
 <p>低打扰、可浏览的状态面。适合：</p>
 <ul>
 <li>Codex sessions（running / needs_input / finished，<a href="#agent-protocol">§15.2</a>）</li>
+<li>当前工作状态（<a href="#work-state">§3.3.5a</a>，ADR 0023）：<code>GET /inherent/work-state</code> 每 60 s 轮询只读，刷新按钮 <code>POST /inherent/work-state/refresh</code> 与对话里的 refresh_work_state 走同一条分析；显示上次结果、数据时间、分析时间，更新中保留旧结果，失败标"未更新"，较旧的返回不覆盖较新的记录</li>
 <li>pending review</li>
 <li>evidence status</li>
 <li>current project state</li>

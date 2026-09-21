@@ -45,6 +45,7 @@ from dataclasses import dataclass, field, replace
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, cast
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 
@@ -108,6 +109,7 @@ from jarvis.execution.tools import (
     DEFAULT_WEB_TIMEOUT_S,
     ActionLifecycle,
     ReadOnlyToolRegistry,
+    ToolContext,
     ToolRegistry,
     VisionClient,
     build_default_registry,
@@ -116,6 +118,7 @@ from jarvis.execution.tools import (
 )
 from jarvis.execution.workers import Workers, make_worker_tools
 from jarvis.runtime.stream_bridge import LoopBoundTokenStream
+from jarvis.runtime.work_state import WorkStateService, build_analyst
 from jarvis.shared import CallerPrincipal, Event
 from jarvis.shared.action_admission import bind_action_admission
 from jarvis.shared.pricing import load_pricing_table
@@ -149,6 +152,7 @@ from jarvis.surface.stream_emission import emit_permitted_segment
 if TYPE_CHECKING:
     import sqlite3
     from collections.abc import Callable
+    from datetime import tzinfo
 
     from jarvis.decision import ResponsePlan
     from jarvis.decision.confirm_grammar import ConfirmGrammarTable
@@ -415,6 +419,9 @@ class JarvisRuntime:
     # ADR 0019: the resident codex app-server and the four worker tools bound
     # to it. None = a hand-assembled runtime without workers.
     workers: Workers | None = None
+    # ADR 0023: the one current-work-state refresh workflow, shared by the
+    # `refresh_work_state` tool and the Resonance dashboard routes.
+    work_state: WorkStateService | None = None
 
 
 @dataclass(frozen=True)
@@ -837,6 +844,56 @@ def _timesink_db_path(full_config: Mapping[str, Any]) -> Path | None:
         message = "observer.timesink.db_path must be a nonempty local path"
         raise ValueError(message)
     return Path(raw).expanduser().resolve()
+
+
+_FALLBACK_TIMESINK_POLL_INTERVAL_S: Final[float] = 300.0
+_FALLBACK_WORK_STATE_PRESET: Final[str] = "fast"
+
+
+def _timesink_poll_interval_s(config: Mapping[str, Any]) -> float:
+    """``observer.timesink.poll_interval_s`` — how often the head poll runs (ADR 0023)."""
+    observer = config.get("observer")
+    block = observer.get("timesink") if isinstance(observer, Mapping) else None
+    raw = block.get("poll_interval_s") if isinstance(block, Mapping) else None
+    return _positive_float(raw, _FALLBACK_TIMESINK_POLL_INTERVAL_S)
+
+
+def _work_state_preset(config: Mapping[str, Any]) -> str:
+    """``work_state.preset`` — the llm preset the on-demand analysis runs on (ADR 0023)."""
+    block = config.get("work_state")
+    raw = block.get("preset") if isinstance(block, Mapping) else None
+    return raw if isinstance(raw, str) and raw.strip() else _FALLBACK_WORK_STATE_PRESET
+
+
+def _work_state_timezone(config: Mapping[str, Any]) -> tzinfo | None:
+    """``work_state.timezone`` — the local zone day windows are cut in; unset = system local."""
+    block = config.get("work_state")
+    raw = block.get("timezone") if isinstance(block, Mapping) else None
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    try:
+        return ZoneInfo(raw.strip())
+    except ZoneInfoNotFoundError as exc:
+        message = f"work_state.timezone must be an IANA zone name: {raw!r}"
+        raise ValueError(message) from exc
+
+
+def _work_state_tool_refresh(
+    service: WorkStateService,
+) -> Callable[[Mapping[str, Any], ToolContext], dict[str, Any]]:
+    """Bind the service to the flat tool's ``(args, ctx)`` handler shape."""
+
+    def refresh(args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
+        return service.refresh(
+            ctx.conn,
+            question=args.get("question"),
+            note=args.get("note"),
+            force=bool(args.get("force", False)),
+            trigger="conversation",
+            action_id=ctx.action_id,
+        )
+
+    return refresh
 
 
 def _observer_repo_paths(config: Mapping[str, Any]) -> tuple[str, ...]:
@@ -1444,10 +1501,25 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
     web_search_provider, web_search_api_key = _web_search_provider_config(full_config)
     vision_preset_name, screen_max_width_px = _screen_tools_config(full_config)
     memory = MemorySettings.from_config(full_config.get("memory"), runtime_root=paths.root)
+    work_state = WorkStateService(
+        event_log_path=paths.event_log,
+        memory_path=memory.db_path,
+        timesink_path=_timesink_db_path(full_config),
+        repos=_observer_repo_paths(full_config),
+        analyst=build_analyst(
+            full_config,
+            _work_state_preset(full_config),
+            pricing_path=repo_root / "data" / "pricing.json",
+            account_cost=wave1_features.exactly_once_cost_accounting,
+        ),
+        model=_work_state_preset(full_config),
+        tz=_work_state_timezone(full_config),
+    )
     registry = build_default_registry(
         memory_db_path=memory.db_path,
         observed_repos=_observer_repo_paths(full_config),
         timesink_db_path=_timesink_db_path(full_config),
+        work_state_refresh=_work_state_tool_refresh(work_state),
         confirmation_dispatch_outbox=wave1_features.confirmation_dispatch_outbox,
         obsidian_vault_root=_obsidian_vault_root(full_config),
         web_search_max_results=web_search_max_results,
@@ -1584,6 +1656,7 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
             fallback=DEFAULT_SILERO_VAD_PATH,
         ),
         tool_cues=tool_cues,
+        work_state=work_state,
     )
 
 

@@ -114,6 +114,13 @@ SCHEMAS: dict[str, dict[str, Any]] = {
     "read_activity": object_fields(
         {"activity_id": text_field(200), "cursor": _CURSOR}, "activity_id"
     ),
+    "refresh_work_state": object_fields(
+        {
+            "question": text_field(500),
+            "note": text_field(2000),
+            "force": {"type": "boolean"},
+        }
+    ),
     "search_knowledge": object_fields(
         {
             "query": text_field(500),
@@ -204,6 +211,7 @@ def validate(value: Any, schema: dict[str, Any], path: str = "args") -> None:  #
     checks = {
         "string": isinstance(value, str),
         "integer": type(value) is int,
+        "boolean": isinstance(value, bool),
         "object": isinstance(value, dict),
         "array": isinstance(value, list),
     }
@@ -213,6 +221,8 @@ def validate(value: Any, schema: dict[str, Any], path: str = "args") -> None:  #
     if "enum" in schema and value not in schema["enum"]:
         msg = f"{path}: must be one of {schema['enum']}"
         raise DailyError(msg)
+    if kind == "boolean":
+        return
     if kind == "string":
         if not value.strip() or len(value) > schema.get("maxLength", 200):
             msg = f"{path}: empty or over length limit"

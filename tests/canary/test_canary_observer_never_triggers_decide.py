@@ -43,6 +43,7 @@ from tests.canary._helpers import iter_jarvis_py_files, parse, relative_to_repo,
 _OBSERVER_MODULES: dict[str, frozenset[str]] = {
     "jarvis/surface/repo_observer.py": frozenset({"repo.state_observed", "project.commit_seen"}),
     "jarvis/surface/usage_observer.py": frozenset({"usage.state_observed"}),
+    "jarvis/surface/timesink_observer.py": frozenset({"timesink.state_observed"}),
 }
 
 # ``tts.usage_observed`` is emitted by the media owner, not an observer

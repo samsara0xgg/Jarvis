@@ -89,6 +89,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from jarvis.deployment.sleep_wake import PowerObserver
+    from jarvis.runtime.work_state import WorkStateService
     from jarvis.shared.realtime import PresentationIntent
     from jarvis.state.committed_event_bus import CommittedEventBus
 
@@ -127,6 +128,8 @@ from jarvis.runtime import (
     _observer_repo_paths,
     _positive_float,
     _positive_int,
+    _timesink_db_path,
+    _timesink_poll_interval_s,
     _wait_for_next_trigger,
     drive_turn,
     make_barge_in_interrupt_callable,
@@ -202,6 +205,7 @@ from jarvis.surface.inherent_server import (
 )
 from jarvis.surface.playback_recovery import reconcile_open_playback
 from jarvis.surface.repo_observer import RepoObserver
+from jarvis.surface.timesink_observer import TimesinkHead, TimesinkObserver
 from jarvis.surface.usage_observer import UsageConfig, UsageObserver, latest_usage
 
 LOGGER = logging.getLogger("jarvis.runtime.inherent_loop")
@@ -3808,6 +3812,69 @@ def _start_usage_observer(
     ]
 
 
+async def _poll_timesink_once(
+    observer: TimesinkObserver, on_checked: Callable[[TimesinkHead], None] | None = None
+) -> None:
+    """Read the head off the loop thread, emit on it — the usage observer's split.
+
+    ``on_checked`` sees every read, changed or not: the work-state view's
+    "checked" clock must move even when the head did not.
+    """
+    try:
+        head = await asyncio.to_thread(observer.collect)
+    except Exception:  # one bad cycle must not kill the observer task.
+        LOGGER.exception("timesink_observer: collect failed; skipping cycle.")
+        return
+    if on_checked is not None:
+        on_checked(head)
+    try:
+        observer.emit(head)
+    except Exception:  # an emit failure is logged, never fatal to the daemon.
+        LOGGER.exception("timesink_observer: emit failed; baseline unchanged.")
+
+
+async def _timesink_observer_task(
+    observer: TimesinkObserver,
+    *,
+    interval_s: float,
+    on_checked: Callable[[TimesinkHead], None] | None = None,
+) -> None:
+    """ADR 0023 background sync: poll first, then every ``interval_s``; never a model call."""
+    LOGGER.info("timesink_observer started (interval=%.0fs)", interval_s)
+    try:
+        while True:
+            await _poll_timesink_once(observer, on_checked)
+            await asyncio.sleep(interval_s)
+    except asyncio.CancelledError:
+        LOGGER.info("timesink_observer cancelled")
+        raise
+
+
+def _start_timesink_observer(runtime: JarvisRuntime) -> list[asyncio.Task[None]]:
+    """Start the head poll when ``observer.timesink`` is enabled; baseline from the log."""
+    path = _timesink_db_path(runtime.config)
+    if path is None:
+        LOGGER.info("timesink_observer: observer.timesink disabled; observer not started.")
+        return []
+    observer = TimesinkObserver(runtime.conn, path)
+    observer.recover_baseline()
+    return [
+        asyncio.create_task(
+            _timesink_observer_task(
+                observer,
+                interval_s=_timesink_poll_interval_s(runtime.config),
+                on_checked=None if runtime.work_state is None else runtime.work_state.note_checked,
+            ),
+            name="timesink_observer",
+        ),
+    ]
+
+
+async def _refresh_work_state_now(service: WorkStateService) -> dict[str, Any]:
+    """``POST /inherent/work-state/refresh``: the single-flight analysis on its own connection."""
+    return await asyncio.to_thread(service.refresh_in_own_connection, trigger="dashboard")
+
+
 def _install_power_observer_or_degrade(
     conn: sqlite3.Connection,
     loop: asyncio.AbstractEventLoop,
@@ -4402,9 +4469,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         voice_pipeline_callable: Any | None = None
         # ADR-0005 §5.1 / §5.3: ONE shared SystemAudioDucker arbitrates
         # wake-capture muting against TTS provider/playback output leases.
-        shared_ducker: voice_ducking.SystemAudioDucker = (
-            voice_ducking.SystemAudioDucker()
-        )
+        shared_ducker: voice_ducking.SystemAudioDucker = voice_ducking.SystemAudioDucker()
 
         live_voice: voice_live.LiveVoice | None = None
 
@@ -4508,7 +4573,8 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             # ADR-0016 D9: the composition root is the only place that wires
             # the L5 session to L2 (inbox, memory.db, Event Log) and to the bus.
             live_backend = _LiveBackend(
-                event_log_path=runtime.runtime_paths.event_log, memory=runtime.memory,
+                event_log_path=runtime.runtime_paths.event_log,
+                memory=runtime.memory,
             )
             live_voice = voice_live.LiveVoice(
                 config=gpt_live_config,
@@ -4647,6 +4713,16 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 if usage_observer is None
                 else functools.partial(_refresh_usage_now, usage_observer, runtime.conn)
             ),
+            work_state_read=(
+                None
+                if runtime.work_state is None
+                else functools.partial(runtime.work_state.read, runtime.conn)
+            ),
+            work_state_refresh=(
+                None
+                if runtime.work_state is None
+                else functools.partial(_refresh_work_state_now, runtime.work_state)
+            ),
             barge_in_confirm_callable=(
                 duplex_voice_session.confirm_ptt_barge_in
                 if duplex_voice_session is not None and duplex_voice_session.barge_in_armed
@@ -4668,7 +4744,8 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 ),
                 attach_client=None if inherent_view is None else inherent_view.attach_client,
                 submit_text=functools.partial(
-                    _submit_text_v2, runtime.runtime_paths.event_log,
+                    _submit_text_v2,
+                    runtime.runtime_paths.event_log,
                 ),
                 submit_asr=(
                     None
@@ -4780,6 +4857,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         # that anchor-then-bootstrap ordering.
         watchers.extend(_start_repo_observer(runtime))
         watchers.extend(_start_usage_observer(usage_observer, runtime.config))
+        watchers.extend(_start_timesink_observer(runtime))
 
         # ADR-0009 D3 — power observer, installed after the lock (which
         # stays the outermost scope) and immediately before the try/finally

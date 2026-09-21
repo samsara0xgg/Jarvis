@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
     from pathlib import Path
 
-    from jarvis.execution.tools import FlatHandler, ToolContext
+    from jarvis.execution.tools import FlatHandler, ToolContext, WorkStateRefresh
 
 _DESCRIPTIONS = {
     "search_records": (
@@ -87,6 +87,18 @@ _DESCRIPTIONS = {
 }
 _RESULT_CAP = 16384
 _WRITES = frozenset({"save_knowledge", "create_todo", "update_todo", "save_briefing"})
+_WORK_STATE_DESCRIPTION = (
+    "Investigate and update Allen's persisted current work state. Call this when he asks what "
+    "he is doing now, what he did today/recently, or how something discussed earlier is "
+    "progressing. It reads the latest TimeSink app/window/screen data, recent conversation "
+    "records, open todos, knowledge and Git observations, runs one analysis and saves the "
+    "result; outcome=reused means nothing new was observed and the saved state still holds, "
+    "no_evidence means there is no data, failed keeps the previous state. Pass the user's "
+    "question verbatim and put facts he just stated into note (they count as new evidence). "
+    "Every claim in the state carries basis stated/observed/inferred; never present an "
+    "inferred item as fact, and never mark todos done from it. Use force only when asked to "
+    "re-analyse. For more detail on one item use query_activity/read_activity/read_records."
+)
 
 
 def _read(  # noqa: PLR0913 — request context and independent configured source stores.
@@ -135,6 +147,33 @@ def _handler(
         return result
 
     return handle
+
+
+def build_work_state_tool(refresh: WorkStateRefresh | None) -> tuple[Tool, ...]:
+    """ADR 0023: the conversation entry to the runtime's refresh workflow; absent when not wired."""
+    if refresh is None:
+        return ()
+
+    def handle(args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
+        values = dict(args)
+        try:
+            validate(values, SCHEMAS["refresh_work_state"])
+            return refresh(values, ctx)
+        except DailyError as exc:
+            raise ToolError(str(exc), code=exc.code) from exc
+
+    return (
+        Tool(
+            name="refresh_work_state",
+            description=_WORK_STATE_DESCRIPTION,
+            input_schema=SCHEMAS["refresh_work_state"],
+            handler=handle,
+            allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
+            risk_level="L1",
+            read_only=False,
+            max_result_chars=_RESULT_CAP,
+        ),
+    )
 
 
 def build_daily_tools(

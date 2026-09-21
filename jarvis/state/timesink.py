@@ -430,3 +430,37 @@ def read_span(path: Path | None, reference: str) -> dict[str, Any]:
         message = "TimeSink span was updated; query again for its current revision"
         raise DailyError(message, "source_changed")
     return original
+
+
+def search_captures(
+    snap: Snapshot | None,
+    start: datetime,
+    end: datetime,
+    terms: list[str],
+    *,
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Captures in [start, end) whose OCR text or title contains any term; newest first, bounded.
+
+    Question-directed retrieval for the work-state analysis (ADR 0023). Same item shape as
+    :func:`query_captures`; an unavailable store or an empty term list is an empty list.
+    """
+    if snap is None or not terms:
+        return []
+    clauses = " OR ".join("(text LIKE ? ESCAPE '\\' OR title LIKE ? ESCAPE '\\')" for _ in terms)
+    params: list[Any] = [_sql_date(start, ceil=True), _sql_date(end, ceil=True)]
+    for term in terms:
+        escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        params += [f"%{escaped}%", f"%{escaped}%"]
+    try:
+        rows = [
+            dict(row)
+            for row in snap.conn.execute(
+                f"{_CAPTURE_SELECT} WHERE at>=? AND at<? AND ({clauses}) "
+                "ORDER BY at DESC,id DESC LIMIT ?",
+                (*params, limit),
+            )
+        ]
+    except sqlite3.Error:
+        return []
+    return [_capture_item(row, snap.identity, start, end) for row in rows]

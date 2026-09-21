@@ -87,6 +87,14 @@ ignore = [
 # characters that ASR output contains, so the ambiguous-char lints are
 # noise here (same rationale as sentence_splitter).
 "jarvis/surface/voice_asr.py" = ["RUF001", "RUF003"]
+# The work-state analysis prompt and material headings are Chinese by
+# design (ADR 0023); fullwidth punctuation there is text, not a typo.
+"jarvis/decision/work_state.py" = ["RUF001"]
+# The evidence gather writes its material-limit notes in Chinese (ADR 0023);
+# same fullwidth-punctuation rationale as the prompt above.
+"jarvis/state/work_state.py" = ["RUF001"]
+# Its acceptance test asserts on those Chinese strings verbatim.
+"tests/integration/test_work_state.py" = ["RUF001"]
 # Tests use bare `assert` (pytest), don't need return-type annotations, and
 # carry magic numbers in assertion targets by design.
 "tests/**/*.py" = [

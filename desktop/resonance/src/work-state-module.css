@@ -1,0 +1,15 @@
+/* 当前状态 (ADR 0023). Sized for the 300px panel; reuses the quota foot/status/refresh styles. */
+.work-detail { display:flex; flex-direction:column; min-height:100%; font-size:12px; }
+.work-section { margin:0 0 12px; }
+.work-section h4 { margin:0 0 6px; font-size:10px; font-weight:400; color:var(--dashboard-muted,#a1a8b6); letter-spacing:.02em; }
+.work-claim { display:flex; align-items:flex-start; gap:8px; padding:6px 0; line-height:1.6; color:#d4d8e3; }
+.work-claim + .work-claim { border-top:1px solid var(--dashboard-line,#ffffff13); }
+.work-claim small { display:block; margin-top:3px; font-size:10px; color:var(--dashboard-muted,#a1a8b6); line-height:1.5; }
+.work-basis { flex-shrink:0; margin-top:3px; font-size:10px; line-height:16px; padding:0 6px; border-radius:8px; background:#ffffff10; color:#c3c9d6; white-space:nowrap; }
+.work-basis.is-stated { background:#abbce62a; color:#d0daf1; }
+.work-basis.is-observed { background:#9fd3b52a; color:#c9e9d6; }
+.work-basis.is-inferred { background:#dbc3a02a; color:#e8d7bb; }
+.work-empty { margin:2px 0; color:var(--dashboard-muted,#a1a8b6); }
+.work-uncertain { margin:0; padding-left:16px; color:#d4d8e3; line-height:1.6; }
+.work-uncertain li + li { margin-top:4px; }
+.quota-status.is-muted { color:var(--dashboard-muted,#a1a8b6); }

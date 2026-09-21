@@ -325,6 +325,9 @@ class ToolContext:
 type FlatHandler = Callable[[Mapping[str, Any], ToolContext], Mapping[str, Any]]
 """A tool is a function of its arguments; everything else is the dispatcher's."""
 
+type WorkStateRefresh = Callable[[Mapping[str, Any], ToolContext], dict[str, Any]]
+"""ADR 0023: the runtime's one refresh workflow, injected into ``refresh_work_state``."""
+
 DEFAULT_MAX_RESULT_CHARS: Final[int] = 8192
 """Serialized-result budget of a flat tool that declares none (the 8 KiB every D5 tool used)."""
 
@@ -3446,6 +3449,7 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
     memory_db_path: Path | None = None,
     observed_repos: tuple[str, ...] = (),
     timesink_db_path: Path | None = None,
+    work_state_refresh: WorkStateRefresh | None = None,
 ) -> ToolRegistry:
     """Assemble the default ToolRegistry.
 
@@ -3494,6 +3498,9 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
             admits through the outbox instead of a plain append.
         observed_repos: Currently configured Git repositories for activity coverage metadata.
         timesink_db_path: Optional existing TimeSink SQLite store, opened read-only.
+        work_state_refresh: ADR 0023 — the runtime's one work-state refresh
+            workflow; `None` (hand-built registries) leaves `refresh_work_state`
+            off the menu.
         memory_db_path: `memory.db_path` — registers `search_records`
             over that memory.db. `None` (hand-built test registries)
             registers no memory tool.
@@ -3602,12 +3609,17 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
         )
     )
     # Local import avoids a cycle: daily adapters use this module's flat Tool type.
-    from jarvis.execution.daily_tools import build_daily_tools  # noqa: PLC0415
+    from jarvis.execution.daily_tools import (  # noqa: PLC0415
+        build_daily_tools,
+        build_work_state_tool,
+    )
 
     for daily_tool in build_daily_tools(
         memory_db_path, repos=observed_repos, timesink_path=timesink_db_path
     ):
         registry.register(daily_tool)
+    for state_tool in build_work_state_tool(work_state_refresh):
+        registry.register(state_tool)
     return registry
 
 

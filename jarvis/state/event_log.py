@@ -959,6 +959,39 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         optional_payload=(),
         schema_version=1,
     ),
+    # Current work state (ADR 0023): one record, latest row wins, every claim
+    # inside `item` carries basis stated | observed | inferred plus refs.
+    # `trigger` is dashboard | conversation; `action_id` only for the latter.
+    EventTypeSchema(
+        event_type="work_state.revised",
+        owner_layer="L2",
+        actor="jarvis_llm",
+        required_payload=("item", "trigger"),
+        optional_payload=("action_id",),
+        schema_version=1,
+    ),
+    # ADR 0023: the 5-minute TimeSink head poll. Emitted only when the head
+    # (max ids, latest span end / capture lastSeenAt, latest state event)
+    # changed; never a decision trigger, never a model call.
+    EventTypeSchema(
+        event_type="timesink.state_observed",
+        owner_layer="L5",
+        actor="observer",
+        required_payload=(
+            "status",
+            "identity",
+            "span_high",
+            "span_latest_end",
+            "capture_high",
+            "capture_latest_seen",
+            "state_high",
+            "state_latest",
+            "observed_at_ms",
+            "actor",
+        ),
+        optional_payload=("reason",),
+        schema_version=1,
+    ),
 )
 
 

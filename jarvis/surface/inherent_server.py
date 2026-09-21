@@ -50,6 +50,8 @@ inherent-swift client's ``BridgeBackend`` keeps working unchanged):
   frame is routed to the returned :class:`V2ClientHandle`; without it the
   socket says hello and then only listens, as card 1 left it.
 - ``GET /api/health``            — liveness; ``{"status": "ok"}``
+- ``GET /inherent/work-state``   — ADR 0023 saved current-work-state record + data head
+- ``POST /inherent/work-state/refresh`` — ADR 0023 on-demand analysis (single-flight)
 - ``POST /inherent/image-submit`` — Step 2 / ADR-0004 stub (501)
 - ``POST /inherent/asr-submit``   — ADR-0005 §5.2; multipart WAV in, transcript out.
   Falls back to 501 when ``InherentDeps.voice_pipeline_callable`` is unset
@@ -414,6 +416,12 @@ class InherentDeps:
     # the same read model. ``None`` leaves both routes unregistered.
     usage_read: Callable[[], dict[str, Any]] | None = None
     usage_refresh: Callable[[], Awaitable[dict[str, Any]]] | None = None
+    # ADR 0023: the current-work-state record. ``work_state_read`` is a small
+    # SQLite fold on the loop thread; ``work_state_refresh`` awaits the
+    # runtime's single-flight analysis (off-thread) and answers the same
+    # shape plus ``outcome``. ``None`` leaves both routes unregistered.
+    work_state_read: Callable[[], dict[str, Any]] | None = None
+    work_state_refresh: Callable[[], Awaitable[dict[str, Any]]] | None = None
 
 
 class _FrameRateLimiter:
@@ -1077,6 +1085,19 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0915 — one cl
         async def usage_refresh_now() -> dict[str, Any]:
             """ADR-0018: poll every source now, then answer like ``GET``."""
             return await usage_refresh()
+
+    if deps.work_state_read is not None and deps.work_state_refresh is not None:
+        work_state_read, work_state_refresh = deps.work_state_read, deps.work_state_refresh
+
+        @app.get("/inherent/work-state")
+        async def work_state() -> dict[str, Any]:
+            """ADR 0023: the saved record, the latest TimeSink head and whether a refresh runs."""
+            return work_state_read()
+
+        @app.post("/inherent/work-state/refresh", status_code=200)
+        async def work_state_refresh_now() -> dict[str, Any]:
+            """ADR 0023: analyse now (or join the running analysis), then answer like ``GET``."""
+            return await work_state_refresh()
 
     # ADR 0019 step 4: Allen's own Codex sessions, fed by scripts/codex_hook_log.py.
     codex_board: dict[str, CodexSession] = {}

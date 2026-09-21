@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Database, Pulse, ArrowDownLeft, ArrowLeft, ArrowUp, ArrowUpRight, ArrowsInSimple, ArrowsOutSimple, CaretDown, ChatCircle, GitBranch, IconContext, Minus } from '@phosphor-icons/react';
+import { Database, Compass, ArrowDownLeft, ArrowLeft, ArrowUp, ArrowUpRight, ArrowsInSimple, ArrowsOutSimple, CaretDown, ChatCircle, GitBranch, IconContext, Minus } from '@phosphor-icons/react';
 import { PresentationCapsule } from './PresentationCapsule';
 import { MotionPreview } from './MotionPreview';
 import type { Presence } from './VoicePresence';
@@ -8,11 +8,12 @@ import { playFeedback, stopFeedback, warmFeedback, type FeedbackCue } from './fe
 import { usePreferences } from './preferences';
 import { QuotaDetail, QuotaSummary, useUsage } from './QuotaModule';
 import { CodexDetail, CodexSummary, useCodexSessions } from './CodexModule';
+import { WorkStateDetail, WorkStateSummary, useWorkState } from './WorkStateModule';
 import './dashboard-preview.css';
 
 const modules = [
   { name: '对话', Icon: ChatCircle }, { name: 'Codex', Icon: GitBranch },
-  { name: '模型额度', Icon: Database }, { name: 'Health', Icon: Pulse },
+  { name: '模型额度', Icon: Database }, { name: '当前状态', Icon: Compass },
 ];
 const accent = '#abbce6';
 
@@ -32,6 +33,8 @@ export function DashboardPreview({ standalone = false, embedded = false, port = 
   // ADR-0018: live quotas when Electron passes the daemon port; demo data in the lab.
   const quota = useUsage(port);
   const codex = useCodexSessions(port);
+  // ADR 0023: the persisted work state; the same refresh the conversation tool runs.
+  const work = useWorkState(port);
   const feedback = (cue: FeedbackCue) => { if (preferences.feedbackEnabled) void playFeedback(cue, preferences.feedbackVolume); };
   useEffect(() => { if (embedded) return; warmFeedback(); return stopFeedback; }, [embedded]);
   const [open, setOpen] = useState(true);
@@ -43,7 +46,6 @@ export function DashboardPreview({ standalone = false, embedded = false, port = 
   const [microphoneMuted, setMicrophoneMuted] = useState(false);
   const [speakerMuted, setSpeakerMuted] = useState(false);
   const [raw, setRaw] = useState(false);
-  const [sensorOffline, setSensorOffline] = useState(false);
   const [draft, setDraft] = useState('');
   const [message, setMessage] = useState('帮我看看今天还有什么需要处理。');
   const [answered, setAnswered] = useState(true);
@@ -88,7 +90,6 @@ export function DashboardPreview({ standalone = false, embedded = false, port = 
   };
   const send = () => { if (!draft.trim()) return; simulate(draft.trim()); setDraft(''); setSelected(0); };
   const answer = completed ? '设计方向已经确认。下午的语音测试提醒，也已经排好了。' : '今天还有两件事，下午的提醒已经排好了。';
-  const status = sensorOffline ? '1 项需要关注' : '一切正常';
   return <IconContext.Provider value={{ size: 16, weight: 'regular' }}>
     <main className={`dashboard-preview ${standalone || embedded ? 'compact-dashboard' : ''} ${embedded ? 'embedded-dashboard' : ''}`}>
       <header className="dashboard-intro"><span>RESONANCE / DASHBOARD</span><h1>需要时，靠近一点。</h1><p>四个模块，一个随对话展开的空间。</p></header>
@@ -100,7 +101,7 @@ export function DashboardPreview({ standalone = false, embedded = false, port = 
             microphoneMuted={microphoneMuted} speakerMuted={speakerMuted}
             onMicrophoneToggle={() => { feedback(microphoneMuted ? 'mic-on' : 'mic-off'); setMicrophoneMuted(value => !value); }} onSpeakerToggle={() => { feedback(speakerMuted ? 'speaker-on' : 'speaker-off'); setSpeakerMuted(value => !value); }}
             onActivate={() => { feedback('voice-enter'); setLive(true); setOpen(true); }} onCollapse={() => { feedback('voice-exit'); cancelDemo(); setLive(false); setPresence('standby'); setDemoPhase('等你开口'); }}
-            onCompose={() => { setOpen(value => !value); }} onNotifications={() => { setOpen(true); setSelected(sensorOffline ? 3 : 1); }}/>
+            onCompose={() => { setOpen(value => !value); }} onNotifications={() => { setOpen(true); setSelected(1); }}/>
         </div>
         <section data-interactive className="dashboard-surface" inert={!open} aria-label="Resonance dashboard" aria-hidden={!open}>
           <div className="dashboard-heading">
@@ -118,7 +119,7 @@ export function DashboardPreview({ standalone = false, embedded = false, port = 
                 {index === 0 && <><span className={`module-conversation ${answered ? '' : 'is-processing'}`}>{cancelled ? '对话已暂停，随时可以继续。' : answered ? answer : '正在整理今天的安排…'}</span><span className="module-caption">{cancelled ? '已停止 · 可重新开始' : answered ? '刚刚 · 1 次委派' : '模型 A · 处理中'}</span></>}
                 {index === 1 && <CodexSummary sessions={codex}/>}
                 {index === 2 && <QuotaSummary usage={quota.usage}/>}
-                {index === 3 && <><span className={`module-primary ${sensorOffline ? 'needs-attention' : ''}`}>{status}</span><span className="module-caption">{sensorOffline ? '环境传感器暂时离线' : '语音、模型与传感器'}<br/>{sensorOffline ? '其余 3 项运行正常' : '4 / 4 已连接'}</span></>}
+                {index === 3 && <WorkStateSummary view={work.view}/>}
               </button>
               <div className="module-detail" inert={selected !== index} aria-hidden={selected !== index}>
                 <div className="detail-label"><Icon/>{name}<span>{index === 0 ? '当前对话' : '此刻'}</span></div>
@@ -126,16 +127,16 @@ export function DashboardPreview({ standalone = false, embedded = false, port = 
                   {index === 0 && <><div className="transcript-label">你<span>14:32</span></div><p className="transcript-user">{message}</p><div className="transcript-label jarvis-label"><span className="jarvis-dot"/>Jarvis<span>刚刚</span></div><p className="transcript-answer" aria-live="polite">{cancelled ? '这次演示已停止，没有生成新的回复。' : answered ? `${answer} ${completed ? '' : '你可以先确认 Resonance dashboard 的方向，下午 4 点再查看语音连接测试结果。'}` : '正在整理今天的安排…'}</p><div className="delegation"><button className="delegation-toggle" aria-expanded={raw} aria-controls="delegate-original" onClick={() => setRaw(value => !value)}><GitBranch/><span>模型 A <small>· {cancelled ? '已停止' : answered ? '已完成' : '处理中'}</small></span><CaretDown className={raw ? 'rotated' : ''}/></button><div className={`delegation-reveal ${raw ? 'is-open' : ''}`} id="delegate-original" inert={!raw}><div><div className="delegate-output"><span>原始输出 · 示例</span><p>{cancelled ? '本次演示已停止，没有模型结果。' : answered ? '已检查当前待办：\n1. 确认 Resonance dashboard 设计方向，等待 Allen 选择。\n2. 今天 16:00 查看语音连接测试结果，提醒已安排。\n\n后台任务：整理两种 dashboard 布局。' : '等待模型返回…'}</p></div></div></div></div></>}
                   {index === 1 && <CodexDetail sessions={codex}/>}
                   {index === 2 && <QuotaDetail usage={quota.usage} onRefresh={() => void quota.refresh()} refreshing={quota.refreshing}/>}
-                  {index === 3 && <><div className={`health-summary ${sensorOffline ? 'needs-attention' : ''}`}><Pulse size={20}/><div>{status}<small>{sensorOffline ? '语音和文字对话仍然可用' : '所有通道均可用'}</small></div></div>{[['Jarvis runtime', '心跳正常 · 刚刚', '已连接'], ['语音链路', '麦克风与播放通道可用', '就绪'], ['模型连接', '3 个模型可响应', '正常'], ['环境传感器', sensorOffline ? '最近数据 · 5 分钟前' : '最近数据 · 8 秒前', sensorOffline ? '离线' : '正常']].map(([label, hint, status]) => <div className="dashboard-list-row" key={label}><div>{label}<small>{hint}</small></div><span className={status === '离线' ? 'row-status needs-attention' : 'row-status'}>{status}</span></div>)}</>}
+                  {index === 3 && <WorkStateDetail view={work.view} onRefresh={work.refresh} refreshing={work.refreshing} notice={work.notice}/>}
                 </div>
               </div>
             </article>)}
           </div>
-          <div className="dashboard-status"><span className={sensorOffline ? 'needs-attention' : ''}>{sensorOffline ? '环境传感器离线' : '最近同步 · 刚刚'}</span><span aria-live="polite">{demoPhase}</span></div>
+          <div className="dashboard-status"><span>最近同步 · 刚刚</span><span aria-live="polite">{demoPhase}</span></div>
           <form className="dashboard-composer" onSubmit={event => { event.preventDefault(); send(); }}><input ref={input} aria-label="给 Jarvis 发消息" value={draft} onChange={event => setDraft(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && event.nativeEvent.isComposing) event.preventDefault(); }} placeholder="和 Jarvis 说点什么…"/><button className="dashboard-send" type="submit" disabled={!draft.trim()} aria-label="发送演示消息"><ArrowUp/></button></form>
         </section>
       </div>
-      <footer className="dashboard-lab-controls"><div><button onClick={() => simulate()}>模拟一轮对话<ArrowUpRight size={13}/></button><button onClick={() => { cancelDemo(); setLive(false); setPresence('standby'); setDemoPhase('等你开口'); hide(); }}>待机<ArrowDownLeft size={13}/></button><button aria-pressed={sensorOffline} onClick={() => { setSensorOffline(value => !value); if (!sensorOffline) setOpen(true); }}>{sensorOffline ? '恢复连接' : '模拟异常'}</button><button aria-pressed={slow} onClick={() => setSlow(value => !value)}>慢放</button></div><p>设计预览 · 演示数据与本地交互<span>主色 #ABBCE6</span></p></footer>
+      <footer className="dashboard-lab-controls"><div><button onClick={() => simulate()}>模拟一轮对话<ArrowUpRight size={13}/></button><button onClick={() => { cancelDemo(); setLive(false); setPresence('standby'); setDemoPhase('等你开口'); hide(); }}>待机<ArrowDownLeft size={13}/></button><button aria-pressed={slow} onClick={() => setSlow(value => !value)}>慢放</button></div><p>设计预览 · 演示数据与本地交互<span>主色 #ABBCE6</span></p></footer>
     </main>
   </IconContext.Provider>;
 }
