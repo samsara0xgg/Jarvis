@@ -2107,6 +2107,17 @@ Memory 只保存能长期降低 Allen 重复解释成本的稳定可复用个人
 <h3>10.5 Cache 策略</h3>
 <p>Situation Packet 必须放在 <strong>prompt 后部，作为动态块</strong>。前面大段（Jarvis identity / mode policy table / tool policy / evidence policy / Allen stable profile）保持稳定，每轮变 packet 不破 prefix cache。</p>
 
+<h4>10.5.1 后台 session 请求的组成（ADR 0024）</h4>
+<p>后台决策请求固定为下面四部分，按此顺序；除此之外没有别的 note 进入请求。</p>
+<table>
+<tr><th>部分</th><th>内容</th><th>轮间</th></tr>
+<tr><td><code>system</code></td><td><code>prompts/jarvis_v1.md</code> 全文，尾部接 <code>[关于 Allen]</code> 档案块（memory.db <code>profile</code> 表一行一条；表空则没有这块）</td><td>稳定</td></tr>
+<tr><td>第一条 <code>user</code></td><td>历史块：当前摘要（若有），然后是摘要锚点之后、且不早于 <code>session.history_since</code> 的 <code>records</code> 全文，渲染时去掉已退役的 <code>&lt;voice&gt;</code>/<code>&lt;document&gt;</code> 标签</td><td>只在尾部增长</td></tr>
+<tr><td>最后一条 <code>user</code></td><td><code>[当前状态｜程序提供，不是用户说的话]</code> 块接本轮原话。块内依次：时间行（分钟精度，间隔超过 30 分钟带"距上次交流"）、交互方式（由触发事件的 channel 推出：语音 / 文字 / 语音（由 Live 转述））、待答复的确认（有才出现）、后台在跑的操作数（有才出现）</td><td>每轮变</td></tr>
+<tr><td><code>tools</code></td><td><code>jarvis_llm</code> 可见的工具定义</td><td>稳定</td></tr>
+</table>
+<p><code>history_since</code> 之前的记录留在 memory.db，<code>search_records</code> / <code>read_records</code> 可查，不进 prompt，也不进压缩摘要。后台不再被要求输出 <code>&lt;voice&gt;</code>/<code>&lt;document&gt;</code> 信封：无标签时整段文本同时作为 voice 与 document。Status Board 不再作为 prompt note 进入请求，仓库观察只喂面板。</p>
+
 <h3>10.6 谁负责生成</h3>
 
 <pre><code>State Object projections
