@@ -542,7 +542,7 @@ the dispatcher alone owns action lifecycle events. Original conversation records
 <tr><td>search_records</td><td>keyword?, from?, to?, limit?, cursor?</td><td>records with id, ts, source, excerpt, text_chars, source_ref; count, snapshot, next_cursor. Replaces the former rendered-only output.</td></tr>
 <tr><td>read_records</td><td>record_ids (1–20 unique IDs), cursor?</td><td>Exact text chunks with offset, total_chars, complete; missing_ids and next_cursor. Continue until null.</td></tr>
 <tr><td>query_activity</td><td>from, to, sources? (git/app/screen/agent), project? (full repo path), limit?, cursor?</td><td>items with id, source, kind, observed_at, occurred_at, project, project_basis, ended_at, summary, source_refs, detail_available; coverage, count, snapshot, next_cursor. Git range uses observed_at, so late-discovered commits remain visible; app spans use overlap with [from,to).</td></tr>
-<tr><td>read_activity</td><td>activity_id, cursor?</td><td>Saved Git payload or revision-pinned TimeSink row as JSON text chunks; source_refs, kind, observed_at, offset, total_chars, complete, next_cursor. Never captures fresh state.</td></tr>
+<tr><td>read_activity</td><td>activity_id, cursor?</td><td>Saved Git payload or revision-pinned TimeSink row as JSON text chunks, a <code>git:</code> reference as <code>git show --stat</code> text, a <code>codex-session:</code> reference as the session's dated turns; source_refs, kind, observed_at, offset, total_chars, complete, next_cursor. Never captures fresh state.</td></tr>
 <tr><td>search_knowledge</td><td>query?, project?, kind?, status?, limit?, cursor?</td><td>Full current knowledge items and source_ref; default active, also deprecated / needs_confirmation / all.</td></tr>
 <tr><td>save_knowledge</td><td>statement, kind, source_refs, basis, request_id; knowledge_id?, expected_version?, project?, status?</td><td>knowledge_id, version, source_ref. Kind: fact/decision/lesson/preference; basis: user_statement/observation/inference. Updates supersede a previous version of the same identity; supersedes points at the previous immutable event. No current activity state or verified-worker verdict.</td></tr>
 <tr><td>create_todo</td><td>title, request_id; project?, due_at?, priority?, source_refs?</td><td>todo_id, version, source_ref. New state open; priority low/normal/high, default normal. Local storage only, no reminder or remote sync.</td></tr>
@@ -719,14 +719,16 @@ once per run: the day's TimeSink spans aggregated per app and per window, its ca
 window and per hour (the longest OCR text of each group), TimeSink state events, that day's
 memory.db records, that day's commits read from every watched local repository (each local
 branch, filtered by committer time, marked on <code>main</code> or not) with the observer's
-<code>project.commit_seen</code> events folded in by SHA for the observation time, that day's Codex
-session files (<code>~/.codex/sessions</code>, first prompt and last reply, labelled as the agent's
-own account), plus open todos, active knowledge and the previous day's report as context that is
+<code>project.commit_seen</code> events folded in by SHA for the observation time, the Codex
+sessions with a turn inside the window (<code>~/.codex/sessions</code>, every file begun by that day
+and written since, cut to the window in the listing and in the details; first prompt and last
+reply, labelled as the agent's own account), plus open todos, active knowledge and the previous day's report as context that is
 labelled not-today. Commits are deduplicated by SHA across repository paths, each entry naming
 every path it was found in, and carry both their commit time and their observation time (or
 观察器未记录) with a <code>late</code> flag when the commit fell on another local day. Every cap
 that clipped material names the omitted count and is written into the material and into the saved
-report, and every capture, window and record of the day is a citable key whether listed or not.
+report, and every capture, window, record, commit and session of the day is a citable, searchable
+key whether listed or not.
 Empty evidence is <code>no_evidence</code> and writes nothing. The model receives the skill's
 instructions, the keyed material, and three tools: <code>search_material</code>, a keyword search
 over the whole day (capture text in the store; windows, records, commits and sessions in memory)
@@ -746,8 +748,8 @@ supports the claim. A completed item that cites neither is named by number as an
 not relabelled; a <code>user_next_steps</code> entry that cites no Allen-authored record is
 removed from that section and quoted as an uncertainty; coverage, evidence counts and every
 material limit are appended as uncertainties. 核心摘要, the only section served onward, is the
-model's prose followed by every item's number and title under its status, split for completed
-items by whether a same-day commit or an Allen-authored record stands behind it, so a summary
+model's prose followed by the completed items by number and title, split by whether a same-day
+commit or an Allen-authored record stands behind each, and a count of the rest, so a summary
 cannot outrun the body unnoticed. Each cited source is written out once, in
 证据引用, and the body cites it by number; the first 20 are also saved as the briefing's
 <code>source_refs</code>, which the store checks on save (<code>git:&lt;repo&gt;:&lt;sha&gt;</code>

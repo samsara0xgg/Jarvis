@@ -891,12 +891,13 @@ def test_a_commit_written_earlier_cannot_verify_completion(rig: Rig) -> None:
     assert "有 1 项标为完成的事项没有当天提交或 Allen 原话依据：第 1 项。" in content
 
 
-def test_the_summary_keeps_the_prose_and_lists_every_item_by_status(rig: Rig) -> None:
-    """核心摘要 is served alone: the model's prose, then every item under its status.
+def test_the_summary_keeps_the_prose_and_names_what_it_calls_finished(rig: Rig) -> None:
+    """核心摘要 is served alone: the model's prose, the completed items, a count of the rest.
 
     The prose is what a reader skims; the lines after it say which items the
     report calls finished and whether a same-day commit or Allen's own words
-    stand behind each, so a summary cannot outrun the body unnoticed.
+    stand behind each, so a summary cannot outrun the body unnoticed. What
+    is still in progress is only counted, so the section stays short.
     """
     result = rig.run()
     assert result["outcome"] == "generated"
@@ -905,10 +906,10 @@ def test_the_summary_keeps_the_prose_and_lists_every_item_by_status(rig: Rig) ->
     for line in (
         "完成（有当天提交或 Allen 原话）：1 每日工具的读取修复",
         "完成（无当天提交或 Allen 原话）：3 演示界面显示已部署",
-        "讨论：4 没有依据的事项",
-        "浏览：2 浏览招聘页面",
+        "另有讨论 1 项、浏览 1 项，见工作事项。",
     ):
         assert line in served, served
+    assert "浏览招聘页面" not in served, "items in progress are counted, not listed"
     assert "待核实" not in served
     content = rig.call("get_briefing", {"local_date": "2026-09-19", "timezone": ZONE})["content"]
     summary_section = content.split("## 核心摘要\n")[1].split("\n## ")[0]
@@ -1275,7 +1276,7 @@ def test_a_summary_claiming_deployment_is_served_next_to_the_status_line(rig: Ri
     assert result["outcome"] == "generated"
     served = result["summary"]
     assert served.startswith("系统已经部署成功。")
-    assert "进行中：1 部署" in served
+    assert "另有进行中 1 项，见工作事项。" in served
     assert "完成（" not in served
 
 

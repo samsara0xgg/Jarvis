@@ -52,14 +52,12 @@ _PROOF_NONE = {
     "screen": "依据：仅屏幕/应用记录",
     "inferred": "依据：无有效引用",
 }
-_GROUPS = (
-    ("completed", True, "完成（有当天提交或 Allen 原话）"),
-    ("completed", False, "完成（无当天提交或 Allen 原话）"),
-    ("attempted", None, "进行中"),
-    ("discussed", None, "讨论"),
-    ("browsed", None, "浏览"),
+_PROVEN = (
+    (True, "完成（有当天提交或 Allen 原话）"),
+    (False, "完成（无当天提交或 Allen 原话）"),
 )
-"""核心摘要 lists every item under one of these, by number and title, after the model's prose."""
+_REST = (("attempted", "进行中"), ("discussed", "讨论"), ("browsed", "浏览"))
+"""核心摘要 names each completed item after the model's prose and counts the rest."""
 _NOT_VERIFIED = (
     "状态（浏览/讨论/尝试/完成）是报告作者的判断；"
     "运行时只标注每条引用的来源，既不核实来源是否支持这条结论，"
@@ -500,22 +498,30 @@ def _fit(content: str) -> str:
 
 
 def _status_lines(items: list[tuple[int, str, str, bool]]) -> list[str]:
-    """Every item by number and title under its status, after the model's prose in 核心摘要.
+    """Each completed item by number and title, then a count of the rest, after the prose.
 
     ``summary_of`` serves this section alone to the conversation, so the prose
     alone would be the whole report downstream. These lines travel with it: a
     summary that calls something finished is read next to the line that says
-    which items actually cite a same-day commit or Allen's own words.
+    which items actually cite a same-day commit or Allen's own words. The
+    items still in progress are only counted here; they are read in the body.
     """
     out = []
-    for status, proven, heading in _GROUPS:
+    for proven, heading in _PROVEN:
         names = [
             f"{index} {title}"
-            for index, title, item_status, confirmed in items
-            if item_status == status and (proven is None or confirmed is proven)
+            for index, title, status, confirmed in items
+            if status == "completed" and confirmed is proven
         ]
         if names:
             out.append(f"{heading}：{'、'.join(names)}")
+    counts = [
+        f"{heading} {n} 项"
+        for status, heading in _REST
+        if (n := sum(1 for _, _, item_status, _ in items if item_status == status))
+    ]
+    if counts:
+        out.append(f"另有{'、'.join(counts)}，见工作事项。")
     return out or ["（本报告没有归并出工作事项。）"]
 
 
