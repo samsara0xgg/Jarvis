@@ -671,6 +671,26 @@ def _first_prompt(asks: list[str]) -> str:
     return next((a for a in asks if a and not a.startswith(("<", "#"))), asks[0] if asks else "")
 
 
+def _session_files(root: Path, day: date, start: datetime) -> list[Path]:
+    """Session files that may hold a turn of the day: begun by then, still written since.
+
+    Codex files a session under the local date it began and appends to it as
+    long as it is used, so a session begun last week and continued today
+    lives in last week's directory; its mtime is what says it was touched.
+    """
+    since = start.timestamp()
+    found = []
+    for path in root.glob("*/*/*/*.jsonl"):
+        try:
+            begun = date(*(int(part) for part in path.parts[-4:-1]))
+            touched = path.stat().st_mtime
+        except (ValueError, OSError):
+            continue
+        if begun <= day and touched >= since:
+            found.append(path)
+    return sorted(found)
+
+
 def _agent_section(g: _Gather, sessions_root: Path | None) -> None:
     if sessions_root is None or not sessions_root.is_dir():
         g.coverage["agent"] = "unavailable"
@@ -678,13 +698,8 @@ def _agent_section(g: _Gather, sessions_root: Path | None) -> None:
         g.limits.append("没有代理会话记录：Codex 本机会话目录不可读")
         return
     g.coverage["agent"] = "partial"
-    files: list[Path] = []
-    for day in (g.day - timedelta(days=1), g.day):
-        folder = sessions_root / f"{day:%Y}" / f"{day:%m}" / f"{day:%d}"
-        if folder.is_dir():
-            files += sorted(folder.glob("*.jsonl"))
     sessions = []
-    for path in files:
+    for path in _session_files(sessions_root, g.day, g.start):
         try:
             session = codex_session(path, g.start, g.end)
         except OSError:
@@ -843,9 +858,9 @@ def _commit_detail(key: str, evidence: DayEvidence) -> str | None:
     return None if shown is None else f"[{key}]\n{shown[:DETAIL_TEXT]}"
 
 
-def _session_detail(key: str, path: Path) -> str:
-    """A Codex session's prompts and last reply, marked as the agent's own account."""
-    session = codex_session(path)
+def _session_detail(key: str, path: Path, start: datetime, end: datetime) -> str:
+    """A Codex session's prompts and last reply inside the window, marked as its own account."""
+    session = codex_session(path, start, end)
     asks = "\n".join(f"- {_squeeze(a, 160)}" for a in session["asks"] if a)[:DETAIL_TEXT]
     last = session["answers"][-1] if session["answers"] else ""
     return (
@@ -904,7 +919,8 @@ def read_detail(  # noqa: PLR0911 — one return per reference kind.
             body = json.dumps(original, ensure_ascii=False)[:DETAIL_TEXT]
             return f"[{key}]（原始行，时间为 UTC）{body}"
         if ref.startswith("codex-session:"):
-            return _session_detail(key, Path(ref.partition(":")[2]))
+            start, end = (datetime.fromisoformat(evidence.window[k]) for k in ("from", "to"))
+            return _session_detail(key, Path(ref.partition(":")[2]), start, end)
         shown = _stored_detail(key, ref, conn, memory_path)
     except (DailyError, sqlite3.Error, OSError) as exc:
         return f"[{key}] 该条目当前不可读：{exc}"

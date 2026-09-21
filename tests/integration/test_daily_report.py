@@ -718,6 +718,56 @@ def test_codex_sessions_are_agent_material_labelled_as_self_report(
         rig.fx.close()
 
 
+def test_a_session_continued_later_shows_only_that_days_turns(
+    tmp_path: Path, source: sqlite3.Connection
+) -> None:
+    """A session begun a week earlier and continued on the day is found in its old folder.
+
+    Neither the listing nor the detail carries what was said two days later.
+    """
+    add_span(source, "2026-09-19 16:00:00.000", "2026-09-19 17:00:00.000")
+    sessions = tmp_path / "sessions"
+    old_folder = codex_session_file(
+        sessions,
+        "2026-09-12T20:00:00Z",
+        "sess-long",
+        [
+            ("2026-09-12T20:00:01Z", "user", "上周开的会话"),
+            ("2026-09-12T20:00:02Z", "assistant", "上周的回复"),
+            ("2026-09-19T20:00:01Z", "user", "部署做到哪了"),
+            ("2026-09-19T20:00:02Z", "assistant", "尚未完成，还在改配置。"),
+            ("2026-09-21T20:00:01Z", "user", "现在呢"),
+            ("2026-09-21T20:00:02Z", "assistant", "已部署。"),
+        ],
+        cwd="/elsewhere",
+    )
+    assert old_folder.parts[-4:-1] == ("2026", "09", "12"), "filed under the day it began"
+    codex_session_file(
+        sessions,
+        "2026-09-20T20:00:00Z",
+        "sess-after",
+        [
+            ("2026-09-20T20:00:01Z", "user", "第二天的事"),
+            ("2026-09-20T20:00:02Z", "assistant", "好"),
+        ],
+        cwd="/elsewhere",
+    )
+    rig = Rig(tmp_path, timesink=tmp_path / "timesink.sqlite", codex_sessions=sessions)
+    rig.reporter.ask_details = ["c1"]
+    try:
+        assert rig.run()["outcome"] == "generated"
+        listing = rig.reporter.materials[0]
+        assert "[c1] 13:00-13:00 Codex Desktop @ /elsewhere，1 问 1 答：" in listing
+        assert "首问「部署做到哪了」末答「尚未完成，还在改配置。」" in listing
+        assert "sess-after" not in listing, "a session begun after the day has no turn in it"
+        detail = rig.reporter.materials[1]
+        assert "最后回复：\n尚未完成，还在改配置。" in detail
+        assert "已部署" not in detail, "a reply given two days later is not this day's evidence"
+        assert "上周的回复" not in detail
+    finally:
+        rig.fx.close()
+
+
 def test_late_seen_commit_is_marked_not_counted_as_new_work(rig: Rig) -> None:
     """A commit observed today but written days ago is flagged late with its own time."""
     rig.commit(
