@@ -138,6 +138,8 @@ class DayEvidence:
     haystack: dict[str, str] = field(default_factory=dict)
     """Key -> searchable text for windows, records, commits and sessions; captures are searched
     in the store, whose text was never copied here."""
+    commit_rows: dict[str, dict[str, Any]] = field(default_factory=dict)
+    """Every commit of the day by key, listed or not, for the detail behind a commit key."""
 
     @property
     def empty(self) -> bool:
@@ -174,6 +176,7 @@ class _Gather:
     stated: set[str] = field(default_factory=set)
     commits: dict[str, str] = field(default_factory=dict)
     haystack: dict[str, str] = field(default_factory=dict)
+    commit_rows: dict[str, dict[str, Any]] = field(default_factory=dict)
     latest: datetime | None = None
 
     def clock(self, value: str) -> str:
@@ -366,7 +369,7 @@ def _record_section(g: _Gather, memory_path: Path | None) -> None:
             "who": str(source),
             "text": _squeeze(str(text), _RECORD_TEXT),
         }
-        g.haystack[key] = f"{row['at']} {row['who']}: {_squeeze(str(text), DETAIL_TEXT)}"
+        g.haystack[key] = f"{row['at']} {row['who']}: {' '.join(str(text).split())}"
         if index < _MAX_RECORDS:
             records.append(row)
     g.sections["records"] = records
@@ -511,7 +514,7 @@ def _git_sections(g: _Gather, conn: sqlite3.Connection, repos: Sequence[str]) ->
     if len(ordered) > _MAX_COMMITS:
         g.limits.append(f"当天的提交共 {len(ordered)} 个（去重后），只列出前 {_MAX_COMMITS} 个")
     git = []
-    for index, entry in enumerate(ordered[:_MAX_COMMITS]):
+    for index, entry in enumerate(ordered):
         key = f"g{index + 1}"
         ref = (
             f"event:{entry['uid']}"
@@ -530,20 +533,19 @@ def _git_sections(g: _Gather, conn: sqlite3.Connection, repos: Sequence[str]) ->
             else None
         )
         g.haystack[key] = f"{entry['sha'][:7]} {entry['subject']}"
-        git.append(
-            {
-                "key": key,
-                "sha": entry["sha"][:7],
-                "subject": entry["subject"],
-                "committed": committed.strftime("%m-%d %H:%M"),
-                "observed": seen_at.strftime("%H:%M") if seen_at else "观察器未记录",
-                "paths": ", ".join(entry["paths"]),
-                "late": late,
-                "main": {True: "已在 main", False: "未进 main", None: "main 未知"}[
-                    entry["on_main"]
-                ],
-            }
-        )
+        row = {
+            "key": key,
+            "sha": entry["sha"][:7],
+            "subject": entry["subject"],
+            "committed": committed.strftime("%m-%d %H:%M"),
+            "observed": seen_at.strftime("%H:%M") if seen_at else "观察器未记录",
+            "paths": ", ".join(entry["paths"]),
+            "late": late,
+            "main": {True: "已在 main", False: "未进 main", None: "main 未知"}[entry["on_main"]],
+        }
+        g.commit_rows[key] = row
+        if index < _MAX_COMMITS:
+            git.append(row)
     g.sections["git"] = git
     repo_states = []
     ranked_states = sorted(states.values(), key=lambda x: x["repo"])[:_MAX_REPO_STATES]
@@ -719,23 +721,24 @@ def _agent_section(g: _Gather, sessions_root: Path | None) -> None:
         )
     home = str(Path.home())
     rows = []
-    for index, session in enumerate(sessions[:_MAX_AGENT_SESSIONS]):
+    for index, session in enumerate(sessions):
         key = f"c{index + 1}"
         g.refs[key] = f"codex-session:{session['path']}"
-        g.haystack[key] = _squeeze(" ".join([*session["asks"], *session["answers"]]), DETAIL_TEXT)
+        g.haystack[key] = " ".join(" ".join([*session["asks"], *session["answers"]]).split())
         g.saw(session["last"].isoformat())
-        rows.append(
-            {
-                "key": key,
-                "first": session["first"].astimezone(g.zone).strftime("%H:%M"),
-                "last": session["last"].astimezone(g.zone).strftime("%H:%M"),
-                "app": session["originator"],
-                "cwd": session["cwd"].replace(home, "~", 1),
-                "turns": f"{len(session['asks'])} 问 {len(session['answers'])} 答",
-                "ask": _squeeze(_first_prompt(session["asks"]), _AGENT_ASK),
-                "answer": _squeeze(session["answers"][-1], _AGENT_ANSWER),
-            }
-        )
+        if index < _MAX_AGENT_SESSIONS:
+            rows.append(
+                {
+                    "key": key,
+                    "first": session["first"].astimezone(g.zone).strftime("%H:%M"),
+                    "last": session["last"].astimezone(g.zone).strftime("%H:%M"),
+                    "app": session["originator"],
+                    "cwd": session["cwd"].replace(home, "~", 1),
+                    "turns": f"{len(session['asks'])} 问 {len(session['answers'])} 答",
+                    "ask": _squeeze(_first_prompt(session["asks"]), _AGENT_ASK),
+                    "answer": _squeeze(session["answers"][-1], _AGENT_ANSWER),
+                }
+            )
     g.sections["agent"] = rows
 
 
@@ -782,6 +785,7 @@ def gather_day(  # noqa: PLR0913 — the configured stores plus the day, its zon
         stated=frozenset(g.stated),
         commits=dict(g.commits),
         haystack=g.haystack,
+        commit_rows=g.commit_rows,
     )
 
 
@@ -842,7 +846,10 @@ def search_day(
         if all(term in text.casefold() for term in terms)
     ]
     if not hits:
-        return f"「{query}」在这一天的材料里没有出现。"
+        return (
+            f"「{query}」在这一天可检索的材料里没有出现"
+            "（检索范围：当天全部截屏文字、窗口标题、对话记录全文、提交标题、Codex 会话全文）。"
+        )
     shown = hits[:MAX_HITS]
     rest = len(hits) - len(shown)
     more = f"\n…另有 {rest} 处命中未列出，请换更具体的关键字。" if rest else ""
@@ -857,7 +864,7 @@ def git_show(repo: str, sha: str) -> str | None:
 
 def _commit_detail(key: str, evidence: DayEvidence) -> str | None:
     """The commit itself, from the repository it was found in, for a commit key."""
-    commit = next((row for row in evidence.sections.get("git", []) if row["key"] == key), None)
+    commit = evidence.commit_rows.get(key)
     if commit is None:
         return None
     shown = git_show(commit["paths"].split(", ")[0], commit["sha"])

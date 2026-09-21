@@ -817,6 +817,90 @@ def test_saved_git_and_session_refs_read_back_through_read_activity(
         rig.fx.close()
 
 
+def test_search_covers_what_the_listing_left_out(
+    tmp_path: Path, source: sqlite3.Connection
+) -> None:
+    """Unlisted commits, sessions and records, and text past an excerpt, are found and cited.
+
+    The listing stops at 40 commits, 20 sessions and 80 records and shows an
+    excerpt of each record; the search reaches the 41st, the 21st, the 81st
+    and a word 3000 characters into a record, and each can be cited and
+    detailed.
+    """
+    add_span(source, "2026-09-19 16:00:00.000", "2026-09-19 17:00:00.000")
+    sessions = tmp_path / "sessions"
+    for index in range(21):
+        begun = f"2026-09-19T{10 + index // 6:02d}:{(index % 6) * 10:02d}"
+        codex_session_file(
+            sessions,
+            f"{begun}:00Z",
+            f"sess-{index + 1:02d}",
+            [
+                (f"{begun}:01Z", "user", "问"),
+                # Busier sessions come first, so the 21st is the quietest one.
+                *[(f"{begun}:{n + 2:02d}Z", "assistant", f"答{n}") for n in range(21 - index)],
+                (f"{begun}:59Z", "assistant", f"会话尾巴词{index + 1:02d}"),
+            ],
+            cwd="/elsewhere",
+        )
+    rig = Rig(
+        tmp_path,
+        timesink=tmp_path / "timesink.sqlite",
+        repos=("/repo/jarvis",),
+        codex_sessions=sessions,
+    )
+    for index in range(41):
+        rig.commit(
+            f"{index + 1:040x}",
+            f"feat: change number {index + 1:02d}",
+            "/repo/jarvis",
+            committed=f"2026-09-19T{8 + index // 10:02d}:{(index % 10) * 5:02d}:00-07:00",
+            observed=f"2026-09-19T{8 + index // 10:02d}:{(index % 10) * 5 + 1:02d}:00-07:00",
+        )
+    for index in range(81):
+        when = f"2026-09-19T{8 + index // 10:02d}:{(index % 10) * 6:02d}:00-07:00"
+        rig.record(f"rec-{index + 1:03d}", f"第{index + 1:03d}条对话", ts=when)
+    rig.record("rec-long", "开头" + "字" * 3000 + "藏在很后面的词", ts="2026-09-19T20:00:00-07:00")
+    rig.reporter.script = [
+        [
+            (SEARCH_TOOL_NAME, {"query": "number 41"}),
+            (SEARCH_TOOL_NAME, {"query": "会话尾巴词21"}),
+            (SEARCH_TOOL_NAME, {"query": "第081条"}),
+            (SEARCH_TOOL_NAME, {"query": "藏在很后面的词"}),
+        ],
+        [(DETAILS_TOOL_NAME, {"keys": ["g41", "c21"]})],
+    ]
+    rig.reporter.report = _one_item("清单之外的证据", "attempted", ["g41", "c21", "r81"])
+    try:
+        result = rig.run()
+        assert result["outcome"] == "generated", result.get("error")
+        first = rig.reporter.materials[0]
+        assert "当天的提交共 41 个（去重后），只列出前 40 个" in first
+        assert "[g41]" not in first
+        assert "[c21]" not in first
+        assert "[r81]" not in first
+        assert "当天有对话的 Codex 会话共 21 个，只列出回复最多的 20 个" in first
+        assert "当天的对话记录共 82 条，只列出前 80 条" in first
+        second = rig.reporter.materials[1]
+        assert "「number 41」命中 1 处" in second
+        assert "[g41] 0000000 feat: change number 41" in second
+        assert "「会话尾巴词21」命中 1 处" in second
+        assert "[c21] " in second
+        assert "「第081条」命中 1 处" in second
+        assert "[r81] " in second
+        assert "「藏在很后面的词」命中 1 处" in second, "a record's whole text is searched"
+        third = rig.reporter.materials[2]
+        assert "change number 41" in third, "the unlisted commit's detail is served"
+        assert "[c21] Codex 会话 sess-21" in third
+        saved = rig.call("get_briefing", {"local_date": "2026-09-19", "timezone": ZONE})
+        assert (
+            "清单之外的证据 — 尝试/进行中［依据：当天提交 0000000；Allen 原话 r81］"
+        ) in saved["content"]
+        assert len(saved["source_refs"]) == 3
+    finally:
+        rig.fx.close()
+
+
 def test_late_seen_commit_is_marked_not_counted_as_new_work(rig: Rig) -> None:
     """A commit observed today but written days ago is flagged late with its own time."""
     rig.commit(
@@ -1041,7 +1125,7 @@ def test_search_reaches_material_the_summary_left_out(
         assert "「979」命中 2 处" in second
         assert f"[s{short}] 09:20 Chrome — cc | rules: 终端里出现 pytest 979 passed 字样" in second
         assert "[r1] 11:00 allen: 我说过 979 这个数是 Codex 报的。" in second
-        assert "「没有这个词」在这一天的材料里没有出现" in second
+        assert "「没有这个词」在这一天可检索的材料里没有出现（检索范围：" in second
         assert "「PASSED pytest」命中 1 处" in second, "every word, any order, any case"
         assert second.count(f"[s{short}]") == 2, "found by both the phrase and the words"
         third = rig.reporter.materials[2]
