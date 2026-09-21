@@ -188,7 +188,8 @@ SCHEMAS: dict[str, dict[str, Any]] = {
         {
             "local_date": text_field(10),
             "timezone": text_field(100),
-            "content": text_field(16000),
+            # Read back in pages, so the day's citations fit without being dropped.
+            "content": text_field(48000),
             "source_refs": _REFS,
             "coverage": _COVERAGE,
             "expected_version": _VERSION,

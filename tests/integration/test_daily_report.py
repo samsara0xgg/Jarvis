@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from jarvis.decision.daily_report import (
+    CONTENT_LIMIT,
     DETAILS_TOOL_NAME,
     REPORT_TOOL_NAME,
     SKILL,
@@ -505,16 +506,30 @@ def test_screen_demo_text_does_not_become_a_completed_task(rig: Rig) -> None:
     """A "deploy finished" banner on screen cannot verify completion."""
     assert rig.run()["outcome"] == "generated"
     content = rig.call("get_briefing", {"local_date": "2026-09-19", "timezone": ZONE})["content"]
-    assert "演示界面显示已部署 — 完成（未证实）" in content
-    assert "每日工具的读取修复 — 完成［有据" in content
-    assert "已标为未证实" in content
+    assert "演示界面显示已部署 — 完成［引用来源：仅屏幕/应用记录］" in content
+    assert "只有屏幕/应用记录或没有有效引用" in content
+
+
+def test_the_cited_source_class_never_certifies_the_status(rig: Rig) -> None:
+    """Grading is about the source, so it neither verifies 完成 nor rewrites it.
+
+    The same status word is written for both completed items; only the bracket,
+    which names the class of source, differs. Nothing in the report says an
+    item was checked, because the runtime cannot read what the quote means.
+    """
+    assert rig.run()["outcome"] == "generated"
+    content = rig.call("get_briefing", {"local_date": "2026-09-19", "timezone": ZONE})["content"]
+    assert "每日工具的读取修复 — 完成［引用来源：当天的 Git 提交，或 Allen 本人的记录］" in content
+    assert "演示界面显示已部署 — 完成［引用来源：仅屏幕/应用记录］" in content
+    assert "证实" not in content, "no grade may claim the claim itself was checked"
+    assert "既不核实来源是否支持这条结论，也不核实事情是否真的做完" in content
 
 
 def test_invented_keys_and_unstated_next_steps_are_demoted(rig: Rig) -> None:
     """Keys the model never received are dropped; a next step without Allen's words moves."""
     assert rig.run()["outcome"] == "generated"
     content = rig.call("get_briefing", {"local_date": "2026-09-19", "timezone": ZONE})["content"]
-    assert "没有依据的事项 — 讨论［推断，无有效引用］" in content
+    assert "没有依据的事项 — 讨论［引用来源：无有效引用］" in content
     assert "引用不是材料里的键，已丢弃" in content
     assert "明天继续写日报工具。" in content.split("## 用户明确表达的下一步")[1].split("## 建议")[0]
     suggestions = content.split("## 建议（模型提出，非用户承诺）")[1].split("## 数据覆盖")[0]
@@ -535,20 +550,34 @@ def test_a_commit_written_earlier_cannot_verify_completion(rig: Rig) -> None:
     assert rig.run()["outcome"] == "generated"
     assert "[g1] 提交于 09-10 09:00" in rig.reporter.last_material, "g1 is the late commit"
     content = rig.call("get_briefing", {"local_date": "2026-09-19", "timezone": ZONE})["content"]
-    assert "靠旧提交撑起的完成 — 完成（未证实）［推断，无有效引用］" in content
-    assert "有 1 项标为完成的事项没有当天的 Git 提交" in content
+    assert "靠旧提交撑起的完成 — 完成［引用来源：无有效引用］" in content
+    assert "有 1 项标为完成的事项只有屏幕/应用记录或没有有效引用" in content
 
 
-def test_the_summary_carries_the_bodys_verdicts(rig: Rig) -> None:
-    """核心摘要 is the only section served onward, so the body's verdicts ride inside it."""
+def test_the_summary_carries_every_items_status_by_name(rig: Rig) -> None:
+    """核心摘要 is served alone, so it names each item's status and grade, not a count.
+
+    A summary that contradicts the body — claiming a deployment that the body
+    graded on screen text alone — is contradicted in the same text the
+    conversation receives, and the reader is told which item it was.
+    """
     result = rig.run()
     assert result["outcome"] == "generated"
-    assert "核对提示" in result["summary"]
-    assert "1 项标为“完成”的事项没有当天提交或 Allen 原话佐证" in result["summary"]
-    assert "1 条“下一步”不是 Allen 本人说的" in result["summary"]
+    served = result["summary"]
+    assert "逐项引用来源：" in served
+    for mark in (
+        "1 每日工具的读取修复／完成／当天提交或本人记录",
+        "2 浏览招聘页面／浏览／仅屏幕/应用记录",
+        "3 演示界面显示已部署／完成／仅屏幕/应用记录",
+        "4 没有依据的事项／讨论／无有效引用",
+    ):
+        assert mark in served, served
+    assert "另有 1 条“下一步”没有 Allen 原话依据，已归入建议。" in served
+    assert "不核实事情是否真的做完" in served
     content = rig.call("get_briefing", {"local_date": "2026-09-19", "timezone": ZONE})["content"]
     summary_section = content.split("## 核心摘要\n")[1].split("\n## ")[0]
-    assert summary_section.startswith("（核对提示："), summary_section
+    assert summary_section.startswith("（逐项引用来源："), summary_section
+    assert result["summary"] == " ".join(summary_section.split())
 
 
 def test_every_citation_reaches_the_report(tmp_path: Path, source: sqlite3.Connection) -> None:
@@ -581,11 +610,18 @@ def test_every_citation_reaches_the_report(tmp_path: Path, source: sqlite3.Conne
             generated_at=NOW.astimezone(TZ),
         )
         cited = next(line for line in content.splitlines() if line.startswith("引用："))
-        assert len(cited.removeprefix("引用：").split(", ")) == 25
-        assert "等 25 个" not in content
-        assert "共引用 25 个来源" in content
+        numbers = cited.removeprefix("引用：").split(", ")
+        assert numbers == [f"#{n}" for n in range(1, 26)]
+        assert "共 25 个来源" in content
         assert len(refs) == 20, "the store's source_refs cap is unchanged"
-        for ref in cited.removeprefix("引用：").split(", "):
+        # Every citation resolves in 证据引用, including the 5 beyond the source_refs cap.
+        sources: dict[str, str] = {}
+        for line in content.splitlines():
+            if line.startswith("#") and line[1:2].isdigit():
+                number, _, ref = line.partition(" ")
+                sources[number] = ref
+        assert [sources[n] for n in numbers] == list(evidence.refs.values())
+        for ref in sources.values():
             assert ref.startswith("timesink:")
     finally:
         rig.fx.close()
@@ -802,9 +838,9 @@ def test_report_fits_the_save_limit(rig: Rig) -> None:
         model="canned",
         generated_at=NOW.astimezone(TZ),
     )
-    assert len(content) <= 16000
-    assert "超出保存上限" in content, "a trimmed report says it was trimmed"
-    # Over budget the citation lines shrink and are counted; they are never dropped outright.
-    assert f"等 {len(keys)} 个" in content
+    assert len(content) <= CONTENT_LIMIT
+    # The day's own material bounds the report: everything the model can cite still fits.
+    assert "超出保存上限" not in content
+    assert all(f"#{n}" in content for n in range(1, len(keys) + 1))
     assert len(refs) <= 20
     assert set(coverage) <= {"records", "git", "app", "screen", "agent", "todos", "knowledge"}

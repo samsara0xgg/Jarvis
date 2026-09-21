@@ -28,7 +28,12 @@ REPORT_NOW = "以上就是你要的原文。材料到此为止，现在必须调
 REPORT_AGAIN = "上一次汇报无法解析，请按 schema 重新调用 report_daily_work，内容可以更简短。"
 """Served after an unusable reply: providers malform or truncate long arguments now and then."""
 STATUSES = ("browsed", "discussed", "attempted", "completed")
-CONTENT_LIMIT = 16000
+CONTENT_LIMIT = 44000
+"""Sized for the whole day cited: every source written once, plus capped prose and ref numbers.
+
+ponytail: not a proof — a model that cites every key in every claim still overruns and is
+truncated with a note. Cap the refs per claim if that ever stops being hypothetical.
+"""
 MAX_SOURCE_REFS = 20
 _STATUS_LABELS = {
     "browsed": "浏览",
@@ -36,13 +41,23 @@ _STATUS_LABELS = {
     "attempted": "尝试/进行中",
     "completed": "完成",
 }
+# The grade is the class of the cited source. It never says the source supports the claim, and
+# it never clears a status: only the report model can read a quote, so 完成 stays the model's.
 _GRADE_LABELS = {
-    # ponytail: the grade is the class of the cited source, never that the source supports the
-    # claim — only the report model can read a quote. Say what is checked, not "已证实".
-    "confirmed": "有据：当天的 Git 提交或 Allen 本人陈述",
-    "screen": "仅屏幕/应用记录依据",
-    "inferred": "推断，无有效引用",
+    "confirmed": "引用来源：当天的 Git 提交，或 Allen 本人的记录",
+    "screen": "引用来源：仅屏幕/应用记录",
+    "inferred": "引用来源：无有效引用",
 }
+_GRADE_SHORT = {
+    "confirmed": "当天提交或本人记录",
+    "screen": "仅屏幕/应用记录",
+    "inferred": "无有效引用",
+}
+_NOT_VERIFIED = (
+    "状态（浏览/讨论/尝试/完成）是报告作者的判断；"
+    "运行时只标注每条引用的来源种类，既不核实来源是否支持这条结论，"
+    "也不核实事情是否真的做完。"
+)
 _MAX_ITEMS = 12
 _MAX_DECISIONS = 8
 _MAX_OPEN = 10
@@ -53,10 +68,10 @@ _TITLE = 80
 _TEXT = 400
 _SHORT = 240
 _SUMMARY = 1200
+_SERVED = 3000
+"""``summary_of`` serves the whole 核心摘要 section, digest included, not just the prose."""
 _SUMMARY_HEADING = "## 核心摘要"
 _REF_PREFIX = "引用："
-_FALLBACK_REFS = 3
-"""Only when the whole report is over the save limit: a shortened citation line beats none."""
 
 
 def _claim_schema(*fields: tuple[str, dict[str, Any]]) -> dict[str, Any]:
@@ -264,9 +279,9 @@ def _malformed(what: str) -> NoReturn:
 def _refs(raw: Any) -> list[str]:  # noqa: ANN401 — model output.
     if not isinstance(raw, list) or not all(isinstance(r, str) for r in raw):
         _malformed("refs is not a list of keys")
-    # Every key is resolved against the day's material, so the material is the only bound
-    # that matters; truncating here would drop citations the report can never show again.
     return list(raw)
+
+
 
 
 def _claim(raw: Any, *fields: str) -> dict[str, Any]:  # noqa: ANN401 — model output.
@@ -329,7 +344,7 @@ def parse_report(result: ChatResult) -> dict[str, Any]:
     for key in ("items", "decisions", "open_items", "user_next_steps"):
         if not isinstance(raw.get(key), list):
             _malformed(f"{key} is not a list")
-    return {
+    report: dict[str, Any] = {
         "summary": _text(raw["summary"], _SUMMARY),
         "items": [_claim(x, "title", "status", "activity") for x in raw["items"]][:_MAX_ITEMS],
         "decisions": [_claim(x, "text", "rationale") for x in raw["decisions"]][:_MAX_DECISIONS],
@@ -338,6 +353,7 @@ def parse_report(result: ChatResult) -> dict[str, Any]:
         "suggestions": _texts(raw.get("suggestions"), _MAX_SUGGESTIONS),
         "uncertainties": _texts(raw.get("uncertainties"), _MAX_UNCERTAINTIES),
     }
+    return report
 
 
 def summary_of(content: str) -> str:
@@ -346,7 +362,7 @@ def summary_of(content: str) -> str:
     if not found:
         return content[:_SUMMARY]
     body = rest.split("\n## ", 1)[0]
-    return " ".join(body.split())[:_SUMMARY]
+    return " ".join(body.split())[:_SERVED]
 
 
 class _Composer:
@@ -356,34 +372,45 @@ class _Composer:
         self.evidence = evidence
         self.cited: list[str] = []
         self.unknown = 0
+        self._number: dict[str, int] = {}
 
-    def refs(self, keys: list[str]) -> list[str]:
-        found: list[str] = []
+    def refs(self, keys: list[str]) -> list[int]:
+        """Citation numbers into ``cited``; a key the model was never given is counted instead.
+
+        Numbers, not the references themselves: a reference is written out once,
+        in 证据引用, so a claim citing it many times cannot grow the report.
+        """
+        found: list[int] = []
         for key in keys:
             ref = self.evidence.refs.get(key)
             if ref is None:
                 self.unknown += 1
-            elif ref not in found:
-                found.append(ref)
-        for ref in found:
-            if ref not in self.cited:
+                continue
+            if ref not in self._number:
                 self.cited.append(ref)
+                self._number[ref] = len(self.cited)
+            if self._number[ref] not in found:
+                found.append(self._number[ref])
         return found
 
-    def grade(self, refs: list[str]) -> str:
+    def source(self, numbers: list[int]) -> list[str]:
+        return [self.cited[number - 1] for number in numbers]
+
+    def grade(self, numbers: list[int]) -> str:
+        refs = self.source(numbers)
         if any(r in self.evidence.commits or r in self.evidence.stated for r in refs):
             return "confirmed"
         if any(r.startswith("timesink") for r in refs):
             return "screen"
         return "inferred"
 
-    def stated(self, refs: list[str]) -> bool:
-        return any(r in self.evidence.stated for r in refs)
+    def stated(self, numbers: list[int]) -> bool:
+        return any(r in self.evidence.stated for r in self.source(numbers))
 
 
-def _ref_line(refs: list[str]) -> str:
-    """Every ref, spelled out: only 20 reach ``source_refs``, so the body is the full record."""
-    return f"{_REF_PREFIX}{', '.join(refs)}" if refs else f"{_REF_PREFIX}无"
+def _ref_line(numbers: list[int]) -> str:
+    """Citation numbers; 证据引用 at the foot of the report resolves every one of them."""
+    return f"{_REF_PREFIX}{', '.join(f'#{n}' for n in numbers)}" if numbers else f"{_REF_PREFIX}无"
 
 
 def _bullets(rows: list[dict[str, Any]], composer: _Composer, empty: str) -> list[str]:
@@ -399,41 +426,26 @@ def _bullets(rows: list[dict[str, Any]], composer: _Composer, empty: str) -> lis
     return out
 
 
-def _shrink(line: str) -> str:
-    """Over budget a citation line keeps its first few refs, counted — never none of them."""
-    if not line.startswith(_REF_PREFIX):
-        return line
-    refs = line.removeprefix(_REF_PREFIX).split(", ")
-    if len(refs) <= _FALLBACK_REFS:
-        return line
-    return f"{_REF_PREFIX}{', '.join(refs[:_FALLBACK_REFS])} 等 {len(refs)} 个"
-
-
 def _fit(content: str) -> str:
+    """Last resort only: the capped prose and one line per cited source fit by construction."""
     if len(content) <= CONTENT_LIMIT:
         return content
-    slim_note = f"\n…（报告超出保存上限，各条引用行只保留前 {_FALLBACK_REFS} 个来源。）"
-    cut_note = "\n…（报告超出保存上限，各条引用行已缩短，正文也已截断。）"
-    slim = "\n".join(_shrink(line) for line in content.splitlines())
-    if len(slim) + len(slim_note) <= CONTENT_LIMIT:
-        return slim + slim_note
-    return slim[: CONTENT_LIMIT - len(cut_note)] + cut_note
+    note = "\n…（报告超出保存上限，已截断。）"
+    return content[: CONTENT_LIMIT - len(note)] + note
 
 
-def _caveat(unverified: int, moved: int) -> list[str]:
-    """The body's verdicts, restated inside 核心摘要.
+def _digest(marks: list[str], moved: int) -> list[str]:
+    """Every item's status and grade, by name, inside 核心摘要.
 
-    ``summary_of`` serves this section alone to the conversation, so a summary
-    that claims what the body marked unverified would be read as the report.
+    ``summary_of`` serves this section alone to the conversation, so the prose
+    alone would be the whole report downstream. The digest travels with it: a
+    summary that contradicts the body is contradicted in the same breath, and
+    the reader is told which item, not merely how many.
     """
-    notes = []
-    if unverified:
-        notes.append(f"{unverified} 项标为“完成”的事项没有当天提交或 Allen 原话佐证")
-    if moved:
-        notes.append(f"{moved} 条“下一步”不是 Allen 本人说的，已归入建议")
-    if not notes:
-        return []
-    return [f"（核对提示：{'；'.join(notes)}。摘要与正文标注冲突时以正文为准。）"]
+    if not marks:
+        return [f"（逐项引用来源：本报告没有归并出工作事项。{_NOT_VERIFIED}）"]
+    tail = f"另有 {moved} 条“下一步”没有 Allen 原话依据，已归入建议。" if moved else ""
+    return [f"（逐项引用来源：{'；'.join(marks)}。{tail}{_NOT_VERIFIED}）"]
 
 
 def compose_report(
@@ -445,23 +457,25 @@ def compose_report(
 ) -> tuple[str, list[str], dict[str, str]]:
     """The saved content, its first 20 source refs and its coverage.
 
-    Keys the model was not given are dropped and counted; a ``completed`` item
-    without a same-day commit or an Allen-authored record behind it is marked
-    unverified; a next step that does not cite Allen's own words becomes a
-    suggestion; both verdicts are restated inside 核心摘要, which is the only
-    section the conversation is served.
+    Keys the model was not given are dropped and counted; every claim is graded
+    by the class of source it cites, which never certifies the claim itself and
+    never alters the status the model chose; a next step that does not cite
+    Allen's own words becomes a suggestion; every item's status and grade are
+    restated by name inside 核心摘要, the only section the conversation is
+    served; each cited source is written out once, in 证据引用.
     """
     composer = _Composer(evidence)
     partial = "，这一天尚未结束" if evidence.window["partial"] else ""
     lines = ["## 工作事项"]
-    unverified = 0
+    marks: list[str] = []
+    thin = 0
     for index, item in enumerate(report["items"], 1):
         refs = composer.refs(item["refs"])
         grade = composer.grade(refs)
         label = _STATUS_LABELS[item["status"]]
         if item["status"] == "completed" and grade != "confirmed":
-            label += "（未证实）"
-            unverified += 1
+            thin += 1
+        marks.append(f"{index} {item['title']}／{label}／{_GRADE_SHORT[grade]}")
         lines += [
             f"### {index}. {item['title']} — {label}［{_GRADE_LABELS[grade]}］",
             item["activity"],
@@ -505,12 +519,13 @@ def compose_report(
         + "。"
     )
     lines += [f"- 材料范围：{limit}" for limit in evidence.limits]
+    lines.append(f"- {_NOT_VERIFIED}")
     if composer.unknown:
         lines.append(f"- 有 {composer.unknown} 处引用不是材料里的键，已丢弃。")
-    if unverified:
+    if thin:
         lines.append(
-            f"- 有 {unverified} 项标为完成的事项没有当天的 Git 提交或 Allen 本人陈述佐证，"
-            "已标为未证实。"
+            f"- 有 {thin} 项标为完成的事项只有屏幕/应用记录或没有有效引用，"
+            "逐项见核心摘要的引用来源一览。"
         )
     if moved:
         lines.append(f"- 有 {len(moved)} 条“下一步”没有 Allen 原话依据，已归入建议。")
@@ -518,9 +533,10 @@ def compose_report(
     lines += [
         "",
         "## 证据引用",
-        f"- 共引用 {len(composer.cited)} 个来源，上方每条的引用行已逐个列出；其中前 "
+        f"- 共 {len(composer.cited)} 个来源，正文按编号引用；其中前 "
         f"{min(len(composer.cited), MAX_SOURCE_REFS)} 个另存为 source_refs（字段上限）；"
         "用 read_activity / read_records 回查原文。",
+        *(f"#{number} {ref}" for number, ref in enumerate(composer.cited, 1)),
     ]
     head = [
         f"# 工作日报 {evidence.day}（{evidence.zone}）",
@@ -528,8 +544,8 @@ def compose_report(
         f"{evidence.window['from']} 到 {evidence.window['to']}{partial}；模型 {model}。",
         "",
         _SUMMARY_HEADING,
-        # The caveat leads the section: downstream readers are served this section alone.
-        *_caveat(unverified, len(moved)),
+        # The digest leads the section: downstream readers are served this section alone.
+        *_digest(marks, len(moved)),
         report["summary"],
         "",
     ]

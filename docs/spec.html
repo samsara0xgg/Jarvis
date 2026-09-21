@@ -730,12 +730,17 @@ labelled UTC), and <code>report_daily_work</code>. At most three model calls per
 asks again instead of reporting is served its details and told to report. A malformed report fails
 the run without replacing the saved version, and a provider failure keeps it too
 (<code>outcome=failed</code> with the round and finish reason). The saved text is composed by
-code, not by the model: refs the model was not given are dropped and counted; an item marked
-<code>completed</code> whose refs hold no commit event and no Allen-authored record is written as
-完成（未证实）; a <code>user_next_steps</code> entry that cites no Allen-authored record becomes a
-suggestion; coverage, evidence counts and every material limit are appended as uncertainties. The
-first 20 cited references are saved as the briefing's <code>source_refs</code> and the rest stay
-in the per-section 引用 lines, so every claim is re-checkable through
+code, not by the model: refs the model was not given are dropped and counted; every claim is
+labelled with the class of source it cites — a same-day commit or an Allen-authored record, screen
+and app records alone, or no valid reference — which asserts nothing about whether that source
+supports the claim and never alters the <code>status</code> the model chose, so 完成 stays the
+model's judgement and the report says so; a <code>user_next_steps</code> entry that cites no
+Allen-authored record becomes a suggestion; coverage, evidence counts and every material limit are
+appended as uncertainties. Every item's title, status and source class is restated inside
+核心摘要, the only section served onward, so a summary that contradicts the body is contradicted
+in the same text and the reader is told which item. Each cited source is written out once, in
+证据引用, and the body cites it by number; the first 20 are also saved as the briefing's
+<code>source_refs</code>, so every claim is re-checkable through
 <code>read_activity</code> / <code>read_records</code>. Saving a report still delivers nothing, and
 a suggestion inside a report creates no todo and triggers no action.</p>
 
