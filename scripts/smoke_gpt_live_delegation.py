@@ -11,9 +11,8 @@ memory.db, no daemon, no network, and asserts on the durable observables:
   correlated ``turn.failed`` as a failure;
 - ``brief_note``: profile first, newest records chosen backwards, emitted in
   time order, within the character budget;
-- ``ReadOnlyToolRegistry``: only ``read_only`` tools, never ``cancel_action``,
-  and a mutating dispatch raises ``UnknownToolError`` before any
-  ``action.dispatched`` row exists.
+- ``ReadOnlyToolRegistry``: only ``read_only`` tools, and a mutating dispatch
+  raises ``UnknownToolError`` before any ``action.dispatched`` row exists.
 
 Run: ``.venv/bin/python scripts/smoke_gpt_live_delegation.py``
 """
@@ -157,13 +156,10 @@ def _check_registry_view(memory: MemorySettings, event_log: Path) -> None:
     view = ReadOnlyToolRegistry(full)
     names = {t.name for t in view.get_definitions()}
     _ok(all(t.read_only for t in view.get_definitions()), "view exposes only read_only tools")
-    _ok(
-        {"cancel_action", "create_task", "write_file"}.isdisjoint(names),
-        "view hides cancel_action and mutating tools",
-    )
+    _ok({"write_file", "create_memo"}.isdisjoint(names), "view hides mutating tools")
     _ok({"web_search", "web_fetch", "search_records"} <= names, f"view keeps {sorted(names)}")
-    _ok("create_task" in {t.name for t in full.get_definitions()}, "shared registry untouched")
-    request = SimpleNamespace(tool_name="create_task", action_id="A1")
+    _ok("write_file" in {t.name for t in full.get_definitions()}, "shared registry untouched")
+    request = SimpleNamespace(tool_name="write_file", action_id="A1")
     refused = False
     try:
         view.dispatch(request, None, None, None)  # type: ignore[arg-type]

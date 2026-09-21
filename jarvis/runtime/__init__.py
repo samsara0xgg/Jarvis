@@ -18,9 +18,8 @@ Responsibilities (Day-1):
    (re-entering as more triggers arrive), record the Pre-emit token,
    and render the final ``ResponsePlan`` to stdout (L5).
 3. :func:`_wait_for_next_trigger` — poll the event log for the next
-   L3 trigger event (``worker.reported``, ``action.result_observed``,
-   ``action.timeout_assumed``, or ``action.failed``) produced by L4's
-   ``threading.Timer`` worker thread. ``time.sleep`` is intentional
+   L3 trigger event (``action.result_observed``, ``action.timeout_assumed``,
+   ``action.failed`` or ``action.cancelled``). ``time.sleep`` is intentional
    here per spec §3.4.1: the composition root polls across thread
    boundaries; the "no time.sleep" rule applies only to L3 / L4 gate
    machinery.
@@ -38,7 +37,6 @@ import json
 import logging
 import os
 import re
-import sqlite3
 import sys
 import time
 import uuid
@@ -47,6 +45,7 @@ from dataclasses import dataclass, field, replace
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, cast
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 
@@ -95,18 +94,11 @@ from jarvis.decision.response_run import (
     request_response_cancel,
     start_response_run,
 )
-from jarvis.decision.result_interpreter import emit_stash_conflict_surfacing
 from jarvis.decision.stream_gate import routine_stream_policy
 from jarvis.decision.tier0 import Tier0ConfigError, load_tier0_table, validate_tier0_table
 from jarvis.deployment import RuntimePaths, bootstrap_runtime, load_env_file
-from jarvis.execution.action_runner import ActionRunner, VerificationOutcome
-from jarvis.execution.diff_capture import StashError, restore_pretask_changes
-from jarvis.execution.path_resolver import (
-    FileTargetsConfigError,
-    load_file_targets_config,
-    resolve_write_target,
-)
 from jarvis.execution.path_resolver import resolve as resolve_file_entity
+from jarvis.execution.path_resolver import resolve_write_target
 from jarvis.execution.tools import (
     DEFAULT_OBSIDIAN_VAULT_ROOT,
     DEFAULT_SCREEN_MAX_WIDTH_PX,
@@ -117,13 +109,16 @@ from jarvis.execution.tools import (
     DEFAULT_WEB_TIMEOUT_S,
     ActionLifecycle,
     ReadOnlyToolRegistry,
+    ToolContext,
     ToolRegistry,
     VisionClient,
     build_default_registry,
     release_turn_actions,
     turn_action_ids,
 )
+from jarvis.execution.workers import Workers, make_worker_tools
 from jarvis.runtime.stream_bridge import LoopBoundTokenStream
+from jarvis.runtime.work_state import WorkStateService, build_analyst
 from jarvis.shared import CallerPrincipal, Event
 from jarvis.shared.action_admission import bind_action_admission
 from jarvis.shared.pricing import load_pricing_table
@@ -131,7 +126,6 @@ from jarvis.shared.realtime import (
     RESPONSE_CANCEL_REASONS,
     AlreadyTerminal,
     Wave1FeatureFlags,
-    Wave4ActionFlags,
     Wave4ResponseFlags,
     Wave5InputFlags,
     new_response_id,
@@ -141,7 +135,7 @@ from jarvis.shared.realtime_trace import (
     record_realtime_trace,
 )
 from jarvis.state.committed_event_bus import CommittedEventBus
-from jarvis.state.event_log import iter_events, open_event_log, open_runtime_event_log
+from jarvis.state.event_log import open_event_log, open_runtime_event_log
 from jarvis.state.memory_db import MemorySettings, SessionSettings, append_record, render_context
 from jarvis.state.stream_emission import committed_text_prefix
 from jarvis.state.trigger_consumption import mark_trigger_consumed
@@ -156,7 +150,9 @@ from jarvis.surface.cli_render import render_response
 from jarvis.surface.stream_emission import emit_permitted_segment
 
 if TYPE_CHECKING:
+    import sqlite3
     from collections.abc import Callable
+    from datetime import tzinfo
 
     from jarvis.decision import ResponsePlan
     from jarvis.decision.confirm_grammar import ConfirmGrammarTable
@@ -182,27 +178,18 @@ _DEFAULT_PROMPT_FILENAME = Path("prompts") / "jarvis_v1.md"
 DEFAULT_SENSEVOICE_DIR = Path("data/sensevoice-small-int8")
 DEFAULT_SILERO_VAD_PATH = Path("data/silero_vad.onnx")
 
-# Trigger event types the runtime loop expects from L4 async paths.
-# ``worker.reported`` is the spawn_worker happy-path Timer event.
+# Trigger event types the runtime loop expects from L4 paths.
 # ``action.result_observed`` is defensive — sync tools emit it inline
 # so decide() consumes it within one invocation, but we accept it here
 # so a late-firing scheduled re-entry does not deadlock the poll loop.
-# ``action.timeout_assumed`` and ``action.failed`` are the spawn_worker
-# terminal failure events (B-0003b): the Codex turn timed out or the
-# subprocess crashed; the runtime must wake decide() so L3 can fold a
-# Limitation Claim onto the trace and emit a canonical limitation
-# response. Without these in the trigger set the runtime waiter would
-# deadlock and the user would see silence after a 10-min Codex hang.
+# ``action.timeout_assumed`` / ``action.failed`` / ``action.cancelled``
+# are the terminal failure events (supervisor sweep, dispatcher): the
+# runtime must wake decide() so L3 can emit a canonical limitation
+# response.
 _RUNTIME_TRIGGER_TYPES: tuple[str, ...] = (
-    "worker.reported",
     "action.result_observed",
     "action.timeout_assumed",
     "action.failed",
-    # ADR-0008 D9 (Step 4). Once `spawn_worker` is truly background, a cancel
-    # is a fourth way for the action a turn is waiting on to end, and it is
-    # the only one the handler does not write itself. Without it here the
-    # cancelled turn sits in the waiter until its trigger timeout expires
-    # even though its terminal is already durable.
     "action.cancelled",
 )
 
@@ -211,18 +198,12 @@ _RUNTIME_TRIGGER_TYPES: tuple[str, ...] = (
 _DEFAULT_POLL_INTERVAL_S: float = 0.01
 
 # Default per-turn iteration ceiling. Protects ``run_turn`` from a stuck
-# trigger chain. ADR § Acceptance F2 puts the Day-1 happy path at ~3
-# iterations (utterance -> worker.reported -> verify-result composition),
-# so 50 is ample headroom.
+# trigger chain. 50 is ample headroom.
 _DEFAULT_MAX_ITERATIONS: int = 50
 
-# Conversational per-trigger wait: the budget for a turn with NO
-# background async worker of its own in flight. The spawn_worker Timer
-# fires at ~10 ms in Day-1; ``verify_diff`` re-entry happens inline. 5 s
-# is generous, and small enough that a stuck ordinary turn cannot pin one
-# of ``max_concurrent_turns`` for long. A turn that IS waiting on a
-# background worker gets the runner's lease timeout instead — see
-# :func:`_trigger_wait_budget`.
+# Conversational per-trigger wait. 5 s is generous, and small enough that
+# a stuck ordinary turn cannot pin one of ``max_concurrent_turns`` for
+# long — see :func:`_trigger_wait_budget`.
 _DEFAULT_TRIGGER_TIMEOUT_S: float = 5.0
 
 # Fallback for a runtime whose config carries no ``observer:`` block
@@ -251,10 +232,6 @@ _MIN_CONFIRMATION_EXPIRY_SWEEP_INTERVAL_S: float = 5.0
 # terminal CAS waits for a contended writer — never an in-flight provider
 # call, which has no cancellation seam until ADR-0008 Step 6.
 _FALLBACK_CANCEL_TIMEOUT_MS: int = 500
-
-# ADR-0008 §6 `realtime.actions.lease_timeout_s` default — see
-# `jarvis.execution.action_runner._DEFAULT_LEASE_TIMEOUT_S` for why 900 s.
-_FALLBACK_LEASE_TIMEOUT_S: float = 900.0
 
 # Default `tools.screen.vision_preset` (ADR-0011 D7) — the `llm.presets.*`
 # key `screen_look` reads for its one vision call when the config's
@@ -364,21 +341,6 @@ def _make_write_entity_resolver(conn: sqlite3.Connection) -> EntityResolverLike:
     return _resolve
 
 
-def _entity_bookmarks() -> tuple[tuple[str, str], ...]:
-    """Load `config/file_targets.yaml` bookmarks as `(alias, abs-path)` pairs.
-
-    Seeds the EntityRegistry projection's config route (ADR-0011 D4).
-    `jarvis.state` may not import `jarvis.execution.path_resolver`, so
-    the composition root loads the config here and threads the pairs
-    down as plain data — the same reason `tier0_table` is loaded here
-    and threaded rather than re-parsed inside `jarvis.decision`.
-    """
-    return tuple(
-        (alias, str(path))
-        for alias, path in load_file_targets_config().bookmarks.items()
-    )
-
-
 # --- Public dataclasses -----------------------------------------------------
 
 
@@ -412,7 +374,7 @@ class JarvisRuntime:
             artifacts_root + registry).
         conn: Open Event Log connection. The caller closes it when
             the process exits.
-        tool_registry: L4 default registry (spawn_worker + verify_diff).
+        tool_registry: L4 default registry.
         lifecycle: L4 per-process action lifecycle FSM.
         llm_client: L3 multi-provider LLM client.
         system_prompt: Rendered system prompt string (verbatim
@@ -420,10 +382,6 @@ class JarvisRuntime:
         tier0_table: Spec §17 Tier 0 whitelist loaded from
             ``config/tier0_patterns.yaml``; empty tuple = Tier 0
             disabled.
-        entity_bookmarks: ``(alias, absolute-path)`` pairs loaded from
-            ``config/file_targets.yaml`` (ADR-0011 D4) — seeds the
-            EntityRegistry projection's config route. Empty tuple =
-            no bookmarks configured.
         confirm_grammar_table: ADR-0012 §3 D6 exact-sentence yes/no
             grammar loaded from ``config/confirm_grammar.yaml``; empty
             tuple = the answer-path grammar hook disabled (same "off
@@ -438,12 +396,9 @@ class JarvisRuntime:
     llm_client: LLMClient
     system_prompt: str
     tier0_table: Tier0Table = ()
-    entity_bookmarks: tuple[tuple[str, str], ...] = ()
     confirm_grammar_table: ConfirmGrammarTable = ()
     wave1_features: Wave1FeatureFlags = field(default_factory=Wave1FeatureFlags)
     response_flags: Wave4ResponseFlags = field(default_factory=Wave4ResponseFlags)
-    action_flags: Wave4ActionFlags = field(default_factory=Wave4ActionFlags)
-    action_runner: ActionRunner | None = None
     llm_session_factory: LLMSessionFactory | None = None
     response_runs: ResponseRunRegistry | None = None
     committed_event_bus: CommittedEventBus | None = None
@@ -463,6 +418,12 @@ class JarvisRuntime:
     # empty tuple = no cue can veto the routine route (the other pre-route
     # conditions still apply).
     tool_cues: ToolCueTable = ()
+    # ADR 0019: the resident codex app-server and the four worker tools bound
+    # to it. None = a hand-assembled runtime without workers.
+    workers: Workers | None = None
+    # ADR 0023: the one current-work-state refresh workflow, shared by the
+    # `refresh_work_state` tool and the Resonance dashboard routes.
+    work_state: WorkStateService | None = None
 
 
 @dataclass(frozen=True)
@@ -477,8 +438,7 @@ class RunTurnResult:
             :func:`jarvis.decision.decide`.
         turn_id: Correlation id used across the trace.
         iterations: Number of :func:`jarvis.decision.decide` invocations
-            this turn drove (1 for sync-only, 2 for the Day-1 happy
-            path with one ``worker.reported`` re-entry).
+            this turn drove.
         events_emitted: Frozen tuple of every Event the decide()
             invocations emitted (concatenated across iterations).
         attention_channel: L3 Attention Policy verdict from the final
@@ -783,59 +743,11 @@ def _wave4_response_flags(config: Mapping[str, Any]) -> Wave4ResponseFlags:
     return _wave4_response_activation(config).flags
 
 
-def _wave4_action_flags(config: Mapping[str, Any]) -> Wave4ActionFlags:
-    """Resolve the ADR-0008 Step 3 switch, with the same preconditions as 4A.
-
-    ``action_runner`` writes `action.running`, the cleanup trio and every
-    canonical terminal through the Wave-1 transactional-append and
-    lifecycle-terminal-CAS primitives, so requesting it without them (or
-    without ``realtime.enabled``) downgrades once, with one warning, to the
-    inline dispatch path.
-    """
-    realtime = config.get("realtime")
-    if not isinstance(realtime, Mapping):
-        return Wave4ActionFlags()
-    actions_raw = realtime.get("actions")
-    requested = Wave4ActionFlags.from_mapping(
-        actions_raw if isinstance(actions_raw, Mapping) else None,
-    )
-    if requested.all_disabled:
-        return requested
-    wave1 = _wave1_feature_flags(config)
-    reason: str | None = None
-    if realtime.get("enabled") is not True:
-        reason = "realtime_parent_disabled"
-    elif not (wave1.transactional_event_append and wave1.lifecycle_terminal_cas):
-        reason = "wave1_primitives_disabled"
-    if reason is None:
-        if requested.true_async_workers and not requested.action_runner:
-            # Nothing would own the work after `dispatch` returned.
-            LOGGER.warning(
-                "realtime.actions downgraded (action_runner_disabled): requested "
-                "true_async_workers=True; effective true_async_workers=False",
-            )
-            record_realtime_trace(
-                "action_activation_downgraded",
-                reason="action_runner_disabled",
-            )
-            return Wave4ActionFlags(action_runner=False, true_async_workers=False)
-        return requested
-    LOGGER.warning(
-        "realtime.actions downgraded (%s): requested action_runner=%s, "
-        "true_async_workers=%s; effective both False",
-        reason,
-        requested.action_runner,
-        requested.true_async_workers,
-    )
-    record_realtime_trace("action_activation_downgraded", reason=reason)
-    return Wave4ActionFlags()
-
-
 def _wave5_input_flags(config: Mapping[str, Any]) -> Wave5InputFlags:
     """Resolve the ADR-0008 D8 intent-pump switch.
 
     Parallel decisions require authorization consumption, isolated response
-    clients, atomic accounting, and runner ownership as well as input claims.
+    clients and atomic accounting as well as input claims.
     """
     realtime = config.get("realtime")
     if not isinstance(realtime, Mapping):
@@ -859,8 +771,6 @@ def _wave5_input_flags(config: Mapping[str, Any]) -> Wave5InputFlags:
         reason = "concurrency_safety_disabled"
     elif not _wave4_response_flags(config).response_run_lifecycle:
         reason = "response_lifecycle_disabled"
-    elif not _wave4_action_flags(config).action_runner:
-        reason = "action_runner_disabled"
     if reason is None:
         return requested
     LOGGER.warning(
@@ -873,6 +783,8 @@ def _wave5_input_flags(config: Mapping[str, Any]) -> Wave5InputFlags:
         reason=reason,
     )
     return Wave5InputFlags()
+
+
 
 
 def _positive_int(
@@ -921,6 +833,69 @@ def _cancel_timeout_ms(config: Mapping[str, Any]) -> int:
             )
         return _FALLBACK_CANCEL_TIMEOUT_MS
     return value
+
+
+def _timesink_db_path(full_config: Mapping[str, Any]) -> Path | None:
+    """Opt into local TimeSink reads; an absent setting never opens a user's store."""
+    observer = full_config.get("observer")
+    config = observer.get("timesink") if isinstance(observer, Mapping) else None
+    if not isinstance(config, Mapping) or config.get("enabled") is not True:
+        return None
+    raw = config.get("db_path")
+    if not isinstance(raw, str) or not raw.strip():
+        message = "observer.timesink.db_path must be a nonempty local path"
+        raise ValueError(message)
+    return Path(raw).expanduser().resolve()
+
+
+_FALLBACK_TIMESINK_POLL_INTERVAL_S: Final[float] = 300.0
+_FALLBACK_WORK_STATE_PRESET: Final[str] = "fast"
+
+
+def _timesink_poll_interval_s(config: Mapping[str, Any]) -> float:
+    """``observer.timesink.poll_interval_s`` — how often the head poll runs (ADR 0023)."""
+    observer = config.get("observer")
+    block = observer.get("timesink") if isinstance(observer, Mapping) else None
+    raw = block.get("poll_interval_s") if isinstance(block, Mapping) else None
+    return _positive_float(raw, _FALLBACK_TIMESINK_POLL_INTERVAL_S)
+
+
+def _work_state_preset(config: Mapping[str, Any]) -> str:
+    """``work_state.preset`` — the llm preset the on-demand analysis runs on (ADR 0023)."""
+    block = config.get("work_state")
+    raw = block.get("preset") if isinstance(block, Mapping) else None
+    return raw if isinstance(raw, str) and raw.strip() else _FALLBACK_WORK_STATE_PRESET
+
+
+def _work_state_timezone(config: Mapping[str, Any]) -> tzinfo | None:
+    """``work_state.timezone`` — the local zone day windows are cut in; unset = system local."""
+    block = config.get("work_state")
+    raw = block.get("timezone") if isinstance(block, Mapping) else None
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    try:
+        return ZoneInfo(raw.strip())
+    except ZoneInfoNotFoundError as exc:
+        message = f"work_state.timezone must be an IANA zone name: {raw!r}"
+        raise ValueError(message) from exc
+
+
+def _work_state_tool_refresh(
+    service: WorkStateService,
+) -> Callable[[Mapping[str, Any], ToolContext], dict[str, Any]]:
+    """Bind the service to the flat tool's ``(args, ctx)`` handler shape."""
+
+    def refresh(args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
+        return service.refresh(
+            ctx.conn,
+            question=args.get("question"),
+            note=args.get("note"),
+            force=bool(args.get("force", False)),
+            trigger="conversation",
+            action_id=ctx.action_id,
+        )
+
+    return refresh
 
 
 def _observer_repo_paths(config: Mapping[str, Any]) -> tuple[str, ...]:
@@ -1422,6 +1397,18 @@ def _load_runtime_env_and_trace(paths: RuntimePaths) -> None:
     _configure_realtime_trace_export(paths)
 
 
+def _register_workers(registry: ToolRegistry, paths: RuntimePaths) -> Workers:
+    """ADR 0019: workers are threads on one ``codex app-server``.
+
+    The server starts lazily on the first spawn, so a one-shot CLI turn
+    pays nothing; the daemon stops it at shutdown.
+    """
+    workers = Workers(paths.root / "codex.sock", paths.event_log)
+    for worker_tool in make_worker_tools(workers):
+        registry.register(worker_tool)
+    return workers
+
+
 def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays explicit
     *,
     config_path: Path | None = None,
@@ -1439,8 +1426,7 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
        opens (or creates) the SQLite spine, idempotently installing
        the schema / indexes / append-only triggers.
     3. L4 registry + lifecycle — :func:`jarvis.execution.tools.build_default_registry`
-       registers ``spawn_worker`` + ``verify_diff``; the
-       :class:`ActionLifecycle` is per-process FSM.
+       registers the tools; the :class:`ActionLifecycle` is per-process FSM.
     3b. L3 Tier 0 whitelist — ``config/tier0_patterns.yaml`` parsed and
        cross-checked against the registry's ``regex_router`` surface.
     4. L3 LLM client — :class:`jarvis.decision.llm.LLMClient` reads the
@@ -1516,40 +1502,28 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
     ) = _web_tools_config(full_config)
     web_search_provider, web_search_api_key = _web_search_provider_config(full_config)
     vision_preset_name, screen_max_width_px = _screen_tools_config(full_config)
-    # 3a. ADR-0008 Step 3 (Wave 4B). The runner is built before the registry
-    #     because the registry closes over it; with the switch off it stays
-    #     None and `dispatch` keeps running handlers inline.
-    action_flags = _wave4_action_flags(full_config)
-    action_runner = (
-        ActionRunner(
-            event_log_path=paths.event_log,
-            max_concurrent_runs=_positive_int(
-                full_config,
-                section="actions",
-                key="max_concurrent_runs",
-                fallback=1,
-            ),
-            lease_timeout_s=float(
-                _positive_int(
-                    full_config,
-                    section="actions",
-                    key="lease_timeout_s",
-                    fallback=int(_FALLBACK_LEASE_TIMEOUT_S),
-                ),
-            ),
-        )
-        if action_flags.action_runner
-        else None
-    )
     memory = MemorySettings.from_config(full_config.get("memory"), runtime_root=paths.root)
     session = SessionSettings.from_config(full_config.get("session"))
+    work_state = WorkStateService(
+        event_log_path=paths.event_log,
+        memory_path=memory.db_path,
+        timesink_path=_timesink_db_path(full_config),
+        repos=_observer_repo_paths(full_config),
+        analyst=build_analyst(
+            full_config,
+            _work_state_preset(full_config),
+            pricing_path=repo_root / "data" / "pricing.json",
+            account_cost=wave1_features.exactly_once_cost_accounting,
+        ),
+        model=_work_state_preset(full_config),
+        tz=_work_state_timezone(full_config),
+    )
     registry = build_default_registry(
-        action_runner=action_runner,
         memory_db_path=memory.db_path,
+        observed_repos=_observer_repo_paths(full_config),
+        timesink_db_path=_timesink_db_path(full_config),
+        work_state_refresh=_work_state_tool_refresh(work_state),
         confirmation_dispatch_outbox=wave1_features.confirmation_dispatch_outbox,
-        # ADR-0008 Step 4: with this on, `dispatch` returns as soon as an
-        # is_async ActionRun is accepted and the runner owns the rest.
-        background_async=action_flags.true_async_workers,
         obsidian_vault_root=_obsidian_vault_root(full_config),
         web_search_max_results=web_search_max_results,
         web_search_provider=web_search_provider,
@@ -1566,6 +1540,7 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
         ),
         screen_max_width_px=screen_max_width_px,
     )
+    workers = _register_workers(registry, paths)
     lifecycle = ActionLifecycle()
 
     # 3b. Spec §17 Tier 0 whitelist — sits next to jarvis.yaml so Allen
@@ -1578,7 +1553,6 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
         validate_tier0_table(
             tier0_table,
             allowed_tool_names=frozenset(t.name for t in regex_router_tools),
-            async_tool_names=frozenset(t.name for t in regex_router_tools if t.is_async),
             entity_required_tool_names=frozenset(
                 t.name for t in regex_router_tools if t.requires_entity
             ),
@@ -1605,21 +1579,6 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
         )
     except PolicyConsistencyError as exc:
         msg = f"runtime: tool registry requires_confirmation invariant violated: {exc}"
-        raise RuntimeBootstrapError(msg) from exc
-
-    # 3d. ADR-0011 D4 — EntityRegistry config seed. A missing/empty
-    #     `file_targets.yaml` still degrades to no bookmarks (same
-    #     posture as `open_path`'s own use of this config) — genuinely
-    #     best-effort. A MALFORMED file is different: it would silently
-    #     remove a trust source the Pre-action Gate consults (ADR-0011
-    #     §12.2), so `load_file_targets_config` raising
-    #     `FileTargetsConfigError` fails the boot loudly instead of
-    #     degrading, matching steps 3b/3c above — a silent trust
-    #     reduction is worse than a loud boot failure.
-    try:
-        entity_bookmarks = _entity_bookmarks()
-    except FileTargetsConfigError as exc:
-        msg = f"runtime: config/file_targets.yaml invalid: {exc}"
         raise RuntimeBootstrapError(msg) from exc
 
     # 3e. ADR-0012 §3 D6 — answer-path grammar table. Same posture as
@@ -1678,18 +1637,16 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
         llm_client=llm_client,
         system_prompt=system_prompt,
         tier0_table=tier0_table,
-        entity_bookmarks=entity_bookmarks,
         confirm_grammar_table=confirm_grammar_table,
         wave1_features=wave1_features,
         response_flags=response_flags,
-        action_flags=action_flags,
-        action_runner=action_runner,
         llm_session_factory=llm_session_factory,
         response_runs=response_runs,
         committed_event_bus=committed_event_bus,
         input_flags=_wave5_input_flags(full_config),
         memory=memory,
         session=session,
+        workers=workers,
         sensevoice_dir=_realtime_model_path(
             full_config,
             key="sensevoice_dir",
@@ -1703,6 +1660,7 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
             fallback=DEFAULT_SILERO_VAD_PATH,
         ),
         tool_cues=tool_cues,
+        work_state=work_state,
     )
 
 
@@ -1743,9 +1701,7 @@ def _start_drive_turn_response(
     route: str | None = None
     context = None
     if runtime.response_flags.routine_streaming and correction is None:
-        packet = assemble_packet(
-            user_intent_event, runtime.conn, entity_bookmarks=runtime.entity_bookmarks,
-        )
+        packet = assemble_packet(user_intent_event, runtime.conn)
         route = pre_route(
             packet,
             tier0_table=runtime.tier0_table,
@@ -2057,13 +2013,12 @@ def _wait_for_next_trigger(  # noqa: PLR0913 — one defaulted cancel predicate 
 ) -> tuple[Event, int]:
     """Poll the event log for the next L3 trigger event after ``after_id``.
 
-    Trigger types: ``worker.reported`` (spawn_worker happy-path
-    Timer thread), ``action.result_observed`` (defensive — sync
+    Trigger types: ``action.result_observed`` (defensive — sync
     tools emit this inline so decide() already absorbed it, but a
-    late re-entry from a stale Timer is accepted to keep the poll
-    loop drainable), and ``action.timeout_assumed`` /
-    ``action.failed`` (B-0003b — spawn_worker terminal failures
-    emitted by the L4 handler when the Codex turn times out or the
+    late re-entry is accepted to keep the poll loop drainable), and
+    ``action.timeout_assumed`` / ``action.failed`` / ``action.cancelled``
+    (terminal failures emitted by the dispatcher or the supervisor
+    sweep when the
     subprocess crashes; the runtime waiter must wake decide() so L3
     can fold a Limitation Claim).
 
@@ -2104,12 +2059,8 @@ def _wait_for_next_trigger(  # noqa: PLR0913 — one defaulted cancel predicate 
             this process still holds at ``running``; a sync tool writes
             the same row inline and moves its action past ``running``
             before ``dispatch`` returns, so decide() has already absorbed
-            it. Without this check a turn that ran a sync tool and then
-            paused on ``spawn_worker`` in the same decide() iteration wakes
-            on the sync tool's row instead of ``worker.reported`` (found
-            live 2026-09-04: the worker never got its ``action.result_observed``
-            and the turn ended with ``verification_skipped``). An action
-            unknown to this process (crash recovery) is not filtered.
+            it. An action unknown to this process (crash recovery) is not
+            filtered.
         timeout: Hard wall-clock cap in seconds; raise
             :class:`TriggerWaitTimeout` if exceeded.
         poll_interval_s: Sleep between polls (default 10 ms).
@@ -2164,38 +2115,15 @@ def _wait_for_next_trigger(  # noqa: PLR0913 — one defaulted cancel predicate 
         time.sleep(poll_interval_s)
 
 
-def _trigger_wait_budget(
-    runtime: JarvisRuntime,
-    *,
-    turn_id: str,
-    override: float | None,
-) -> float:
+def _trigger_wait_budget(override: float | None) -> float:
     """Return this iteration's per-trigger wait budget, in seconds.
 
-    The single timeout authority for an in-turn action wait:
-
-    * An explicit caller value always wins. Scenarios and any surface that
-      wants its own budget keep it.
-    * Otherwise, while the ActionRunner still owns one of this turn's
-      actions, the budget is that runner's lease timeout
-      (``realtime.actions.lease_timeout_s``, ADR-0008 §6). That is exactly
-      the ADR-0008 Step 4 ``true_async_workers`` case: a foreground
-      dispatch has already been awaited by the time control reaches this
-      wait, so a job still in flight here is a background worker whose
-      ``worker.reported`` is minutes away. Reusing the lease clock keeps
-      one authority — a turn's wait can then neither expire before the
-      action it waits on nor outlive it.
-    * Otherwise the conversational default, so an ordinary turn still
-      cannot pin one of ``max_concurrent_turns`` for a quarter of an hour.
-
-    Read fresh on every iteration, like ``turn_action_ids`` beside it: the
-    action that paused ``decide()`` was registered inside the call above.
+    An explicit caller value always wins. Scenarios and any surface that
+    wants its own budget keep it; otherwise the conversational default, so
+    an ordinary turn cannot pin one of ``max_concurrent_turns`` for long.
     """
     if override is not None:
         return override
-    runner = runtime.action_runner
-    if runner is not None and runner.turn_has_inflight(turn_id):
-        return runner.lease_timeout_s
     return _DEFAULT_TRIGGER_TIMEOUT_S
 
 
@@ -2285,18 +2213,12 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
     1. Call :func:`jarvis.decision.decide` with ``user_intent_event``
        as the first trigger. If it returns a :class:`ResponsePlan`,
        finalize immediately.
-    2. Otherwise the decide() call paused on an async tool
-       (spawn_worker); poll the event log for the next
-       ``worker.reported`` / ``action.result_observed`` /
-       ``action.timeout_assumed`` / ``action.failed`` row, re-enter
-       decide() with that trigger, repeat.
-    3. Run the stash-pop finalizer (ADR-0002 § Dirty-tree policy,
-       amended 2026-08-25) from the ``finally`` — lexically after the
-       last ``decide(...)`` call so the ``verify_command`` subprocess
-       saw exactly Codex's tree, and unconditionally so an exception
-       between decide() and finalization cannot orphan the pre-task
-       stash. Canary ``test_canary_stash_pop_after_verify`` enforces
-       the ordering inside :func:`drive_turn`.
+    2. Otherwise the decide() call paused on an action; poll the event
+       log for the next ``action.result_observed`` /
+       ``action.timeout_assumed`` / ``action.failed`` /
+       ``action.cancelled`` row, re-enter decide() with that trigger,
+       repeat.
+    3. Release the turn's live action ids from the ``finally``.
     4. Record the Pre-emit token on a fresh :class:`SurfaceState`, then
        call :func:`jarvis.surface.cli_render.render_response` which
        routes the channel-split text across the L3 attention channel's
@@ -2469,9 +2391,6 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             # same config key the observer task polls on, so the two can
             # never disagree about what "stale" means.
             observer_poll_interval_s=int(_observer_poll_interval_s(runtime.config)),
-            # ADR-0011 D4 — EntityRegistry config seed, threaded the same
-            # way tier0_table is threaded.
-            entity_bookmarks=runtime.entity_bookmarks,
             # ADR-0011 D4 — resolve-on-propose. Built fresh per turn (a
             # trivial closure) rather than stored on JarvisRuntime: it
             # closes over `runtime.conn`, which the JarvisRuntime fields
@@ -2528,7 +2447,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             ):
                 result = decide(trigger_event, decide_ctx)
             if trigger_event.type in {
-                "worker.reported", "action.failed", "action.timeout_assumed", "action.cancelled",
+                "action.failed", "action.timeout_assumed", "action.cancelled",
             }:
                 mark_trigger_consumed(runtime.conn, trigger_event.event_uid, effective_turn_id)
             collected_events.extend(result.events_emitted)
@@ -2582,17 +2501,13 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
                 last_gate_event_uid = result.last_gate_event_uid
                 break
 
-            # No final plan -> decide() paused on an async tool. Wait for the
+            # No final plan -> decide() paused on an action. Wait for the
             # next L4-side trigger event.
             # ADR-0009 D4 / F9 — the waiter is scoped to the actions THIS
             # turn dispatched. Read fresh each iteration: the action
             # that paused decide() was registered inside the call above.
             owned_action_ids = turn_action_ids(effective_turn_id)
-            wait_timeout_s = _trigger_wait_budget(
-                runtime,
-                turn_id=effective_turn_id,
-                override=trigger_timeout_s,
-            )
+            wait_timeout_s = _trigger_wait_budget(trigger_timeout_s)
             record_realtime_trace(
                 "action_wait_started",
                 turn_id=effective_turn_id,
@@ -2788,261 +2703,9 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
         raise
     finally:
         if not suspended:
-            # --- Stash-pop finalizer (ADR-0002 § Dirty-tree policy, amended
-            # 2026-08-25). Lives in the finally: lexically after the last
-            # decide() call — canary ``test_canary_stash_pop_after_verify``
-            # enforces the ordering, so verify_diff read exactly Codex's
-            # tree — and unconditionally, so an exception between decide()
-            # and finalization cannot orphan Allen's pre-task stash. The
-            # guard keeps the finally from masking the original exception.
             if run is not None and runtime.response_runs is not None:
                 runtime.response_runs.unregister(run.response_id)
-
-            def _finalize_turn_resources() -> VerificationOutcome:
-                """Restore this turn's stashes, release its actions, report the outcome.
-
-                ADR-0008 D9 (Step 4): the runner decides *when* this runs — here
-                on this thread when every action of the turn already finished,
-                or on a background worker's own thread the moment it does. Either
-                way it opens its own Event Log connection, because
-                ``runtime.conn`` belongs to whichever thread ``drive_turn`` is on
-                and SQLite would refuse it from the worker.
-
-                Order is the ADR-0002 Dirty-tree policy: verify_diff has already
-                reached its terminal by the time the driver asks, the stash goes
-                back next, and only then may the cleanup terminal say the repo is
-                safe.
-                """
-                finalizer_conn = open_event_log(runtime.runtime_paths.event_log)
-                try:
-                    _pop_pending_stashes(
-                        finalizer_conn,
-                        artifacts_root=runtime.runtime_paths.artifacts_root,
-                        turn_id=effective_turn_id,
-                    )
-                    return _turn_verification_outcome(finalizer_conn, effective_turn_id)
-                finally:
-                    with contextlib.suppress(sqlite3.Error):
-                        finalizer_conn.close()
-
-            try:
-                if runtime.action_runner is None:
-                    _finalize_turn_resources()
-                else:
-                    runtime.action_runner.finalize_turn_cleanup(
-                        effective_turn_id,
-                        # Overridden by whatever `_finalize_turn_resources`
-                        # derives; this is the value for a turn whose finalizer
-                        # could not run at all.
-                        verification_outcome="verification_skipped",
-                        on_finalize=_finalize_turn_resources,
-                    )
-            except Exception:
-                LOGGER.exception(
-                    "drive_turn: turn cleanup finalizer failed (turn_id=%r)",
-                    effective_turn_id,
-                )
             release_turn_actions(effective_turn_id)
-
-
-def _turn_verification_outcome(
-    conn: sqlite3.Connection,
-    turn_id: str,
-) -> VerificationOutcome:
-    """Report what this turn's cleanup actually established, not what it hoped.
-
-    ADR-0008 D9 makes ``verification_outcome`` a durable claim about the
-    repository's state, so it is derived from the turn's own rows rather than
-    assumed: a surfaced stash conflict outranks everything, a
-    ``semantics="verification"`` result means ``verify_diff`` passed, and the
-    remaining case is honestly ``verification_skipped`` — the common one,
-    because most turns dispatch no verifying action at all.
-    """
-    verified = False
-    for event in iter_events(conn):
-        if (event.correlation or {}).get("turn_id") != turn_id:
-            continue
-        if (
-            event.type == "worker.artifact_observed"
-            and event.payload.get("kind") == "stash_conflict"
-        ):
-            return "conflict_surfaced"
-        if (
-            event.type == "action.result_observed"
-            and event.payload.get("semantics") == "verification"
-        ):
-            verified = True
-    return "verified" if verified else "verification_skipped"
-
-
-# --- Stash-pop finalizer (ADR-0002 § Dirty-tree policy) --------------------
-
-
-def _task_repo_path(conn: sqlite3.Connection, task_id: str) -> Path | None:
-    """Look up the ``repo_path`` payload from the latest ``task.created`` event.
-
-    Walks the event log directly (L2 read is allowed from the
-    composition root per ``.importlinter``); returns ``None`` when the
-    task_id is unknown or carries no ``repo_path``. The stash-pop helper
-    treats ``None`` as "skip this run" — we never `git -C` into a
-    nonexistent dir.
-    """
-    latest_repo: str | None = None
-    for evt in iter_events(conn):
-        if evt.type != "task.created":
-            continue
-        if evt.payload.get("task_id") != task_id:
-            continue
-        raw = evt.payload.get("repo_path")
-        if isinstance(raw, str) and raw:
-            latest_repo = raw
-    return Path(latest_repo) if latest_repo is not None else None
-
-
-def _pop_pending_stashes(  # noqa: C901 — composition walker folds the clean / conflict / git-error stash-pop outcomes per worker.reported row; splitting the guard ladder hurts readability.
-    conn: sqlite3.Connection,
-    *,
-    artifacts_root: Path,
-    turn_id: str,
-) -> None:
-    """Restore every pre-task stash recorded by this turn's terminal events.
-
-    Walks the event log for terminal worker / action events —
-    ``worker.reported``, ``action.failed``, ``action.timeout_assumed``,
-    ``action.cancelled`` — whose ``correlation.turn_id`` matches
-    ``turn_id``. L4's ``spawn_worker_handler`` stamps the ``stash_ref``
-    onto each of those payloads at emit time (success via the
-    ``worker.reported`` literal, failure paths via
-    ``_spawn_worker_emit_terminal_failure``); the ``run_id`` rides on the
-    payload (``worker.reported``) or on the correlation (failure events).
-    The cancel and assumed-timeout terminals are written by the
-    ActionRunner rather than by L4 once ``spawn_worker`` is truly
-    background, so those carry ``stash_ref`` plus ``run_id`` and
-    ``task_id`` on the payload — see
-    :func:`jarvis.execution.action_runner._stamp_worker_identity`. For
-    each stash_ref-carrying row we
-    call :func:`jarvis.execution.diff_capture.restore_pretask_changes`
-    with the repo cwd resolved from ``task.created.repo_path``. The
-    runtime invokes this finalizer from ``drive_turn``'s ``finally`` —
-    strictly after the last ``decide()`` call, so verify_diff always
-    read exactly Codex's tree, and unconditionally, so an exception
-    mid-turn cannot orphan the stash.
-
-    This call is the SOLE legitimate site for
-    ``restore_pretask_changes``; canary
-    ``test_canary_stash_pop_after_verify`` enforces that L4 never pops
-    the stash and that L3 / runtime own the order (verify_diff first,
-    pop second).
-
-    Args:
-        conn: Open Event Log connection.
-        artifacts_root: ``RuntimePaths.artifacts_root`` — conflict
-            patches land at ``<artifacts_root>/run_<run_id>/conflict.patch``.
-        turn_id: The composition root's turn correlation id. Only
-            terminal events tagged with this turn are popped.
-
-    Returns:
-        None. A clean pop adds no events. A stash-pop CONFLICT is routed
-        through :func:`jarvis.decision.result_interpreter.emit_stash_conflict_surfacing`
-        so it becomes observable — ``worker.artifact_observed(kind=stash_conflict)``
-        plus a ``Limitation`` Claim — rather than a silent ``conflict.patch``
-        write nothing references (ADR-0002 J13). Non-conflict
-        :class:`StashError` is logged and skipped so a single stuck stash
-        doesn't mask the user-facing response.
-    """
-    # Terminal event types that may carry a pre-task stash_ref. A run that
-    # appears under two types (e.g. worker.reported + action.timeout_assumed)
-    # is popped once via the shared seen_run_ids dedup below.
-    #
-    # `action.cancelled` belongs here for the same reason the other three do:
-    # ADR-0008 §12 lists "cancelled-stash cleanup" among the paths that must
-    # reach a cleanup terminal, and once `spawn_worker` runs in the background
-    # the cancel terminal is written by the runner rather than the handler —
-    # so it is the ONLY durable row naming the stash of a cancelled run. Omit
-    # it and cancelling a Codex worker silently shelves the user's uncommitted
-    # work with nothing left to restore it.
-    terminal_types = {
-        "worker.reported",
-        "action.failed",
-        "action.timeout_assumed",
-        "action.cancelled",
-    }
-    seen_run_ids: set[str] = set()
-    for evt in iter_events(conn):
-        if evt.type not in terminal_types:
-            continue
-        if evt.correlation is None or evt.correlation.get("turn_id") != turn_id:
-            continue
-        # worker.reported carries run_id in the payload; the failure
-        # events carry it on the correlation only.
-        run_id_raw = evt.payload.get("run_id")
-        if not isinstance(run_id_raw, str):
-            run_id_raw = evt.correlation.get("run_id")
-        stash_ref_raw = evt.payload.get("stash_ref")
-        # Handler-written terminals carry task_id on the correlation; the two
-        # the runner writes (cancel, assumed timeout) carry it on the payload,
-        # because the runner's correlation is the canonical
-        # {action_id, run_id?, turn_id?} triple and has no task slot.
-        task_id_raw = evt.correlation.get("task_id") if evt.correlation is not None else None
-        if not isinstance(task_id_raw, str):
-            task_id_raw = evt.payload.get("task_id")
-        if not isinstance(run_id_raw, str) or run_id_raw in seen_run_ids:
-            continue
-        seen_run_ids.add(run_id_raw)
-        # stash_ref may be None on a clean tree at spawn-time — pass
-        # through; restore_pretask_changes is a no-op for None.
-        stash_ref: str | None = stash_ref_raw if isinstance(stash_ref_raw, str) else None
-        if stash_ref is None:
-            continue
-        if not isinstance(task_id_raw, str):
-            continue
-        repo_path = _task_repo_path(conn, task_id_raw)
-        if repo_path is None:
-            continue
-        try:
-            conflict = restore_pretask_changes(
-                repo_path,
-                stash_ref,
-                artifact_dir=artifacts_root,
-                run_id=run_id_raw,
-            )
-        except StashError:
-            # Don't propagate — a non-conflict error here means git
-            # itself failed (e.g. stash ref vanished); log and continue
-            # so the user-facing response is not held hostage.
-            LOGGER.exception(
-                "runtime: failed to pop stash %s for run %s",
-                stash_ref,
-                run_id_raw,
-            )
-            continue
-        if conflict is None:
-            continue
-        # Stash-pop CONFLICT: restore_pretask_changes preserved the patch
-        # and left the tree holding Codex's edits (a merge conflict is
-        # reset to Codex's HEAD; an uncommitted-overwrite abort is left
-        # as-is). Route it through L3 so the conflict surfaces as
-        # worker.artifact_observed + a Limitation Claim
-        # rather than a silent file write — ADR-0002 J13 / dirty-tree policy
-        # ("never silently overwrite Allen's work"). The worker.reported row
-        # carries the spawn_worker action that created the stash.
-        action_id_raw = evt.payload.get("action_id")
-        if not isinstance(action_id_raw, str):
-            continue
-        emit_stash_conflict_surfacing(
-            conn,
-            patch_path=conflict.patch_path,
-            reason=conflict.reason,
-            run_id=run_id_raw,
-            action_id=action_id_raw,
-            task_id=task_id_raw,
-            source_event_id=evt.event_uid,
-            correlation={
-                "run_id": run_id_raw,
-                "task_id": task_id_raw,
-                "turn_id": turn_id,
-            },
-        )
 
 
 __all__ = [

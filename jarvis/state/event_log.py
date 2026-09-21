@@ -242,22 +242,6 @@ class EventTypeSchema:
 # payload shape and the spec §5.4 owner-layer rules.
 _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
     EventTypeSchema(
-        # owner_layer is L4 per ADR-0002 § Day-2 EventTypeRegistry
-        # extensions: in Day-1 the only emit-site was a hand-seeded test
-        # fixture (L2); Day-2 Step 4 lands the `create_task` L4 tool, at
-        # which point this declaration first becomes load-bearing.
-        event_type="task.created",
-        owner_layer="L4",
-        actor="jarvis_llm",
-        required_payload=("task_id", "goal"),
-        # `repo_path` + `verify_command` are populated by the Day-2
-        # `create_task` L4 tool (ADR-0002 Step 4) from the JARVIS_LLM
-        # ActionRequest; stored verbatim so L4 can later pass
-        # `verify_command` to `/bin/sh -c` (Step 11).
-        optional_payload=("source", "deadline", "repo_path", "verify_command"),
-        schema_version=1,
-    ),
-    EventTypeSchema(
         event_type="turn.started",
         owner_layer="L3",
         actor="jarvis_runtime",
@@ -286,22 +270,6 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
             "emotion",
             "audio_artifact_ref",
         ),
-        schema_version=1,
-    ),
-    EventTypeSchema(
-        event_type="entity.resolved",
-        owner_layer="L3",
-        actor="jarvis_runtime",
-        required_payload=(
-            "entity_type",
-            "natural_ref",
-            "resolved_to",
-            "confidence",
-            "candidates",
-            "match_basis",
-            "outcome",
-        ),
-        optional_payload=("resolver_warning",),
         schema_version=1,
     ),
     EventTypeSchema(
@@ -391,10 +359,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         owner_layer="L4",
         actor="jarvis_runtime",
         required_payload=("action_id", "semantics"),
-        # `error_payload` carries the L4 error-context dict for the
-        # task-isolation error codes (`cross_task_artifact`,
-        # `artifact_missing_task_id`); see
-        # `jarvis.execution.tools._verify_diff_emit_error`.
+        # `error_payload` carries an L4 error-context dict.
         optional_payload=("tool_output", "error", "run_id", "error_payload"),
         schema_version=1,
     ),
@@ -403,9 +368,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         owner_layer="L4",
         actor="jarvis_runtime",
         required_payload=("action_id",),
-        # `stash_ref` — the runtime stash-pop finalizer needs it to
-        # restore the pre-task stash on failure paths.
-        optional_payload=("error", "reason", "stash_ref"),
+        optional_payload=("error", "reason"),
         schema_version=1,
     ),
     EventTypeSchema(
@@ -413,15 +376,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         owner_layer="L4",
         actor="jarvis_runtime",
         required_payload=("action_id",),
-        # `stash_ref` — the runtime stash-pop finalizer needs it to
-        # restore the pre-task stash on failure paths.
-        # `run_id` / `task_id` ride with `stash_ref` (Step 4): the finalizer
-        # resolves the stash's repository from `task_id` and keys its conflict
-        # artifact on `run_id`.  Both terminals below are written by the
-        # ActionRunner, whose correlation is the canonical
-        # {action_id, run_id?, turn_id?} triple with no task slot, so the ids
-        # have to ride the payload.
-        optional_payload=("error", "reason", "stash_ref", "run_id", "task_id"),
+        optional_payload=("error", "reason"),
         schema_version=1,
     ),
     EventTypeSchema(
@@ -429,266 +384,8 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         owner_layer="L4",
         actor="jarvis_runtime",
         required_payload=("action_id",),
-        # ADR-0008 §4.2 additive fields on the existing type, plus
-        # `stash_ref` (Step 4).  A cancelled `spawn_worker` stashed Allen's
-        # pre-task tree before it started, and the runner — not the handler —
-        # owns this terminal, so the ref has to ride the terminal the same way
-        # `action.failed` / `action.timeout_assumed` already carry it.  The
-        # cleanup finalizer reads exactly one durable source.
-        optional_payload=(
-            "error",
-            "reason",
-            "requested_by_turn_id",
-            "cancel_scope",
-            "cancellation_mode",
-            "stash_ref",
-            "run_id",
-            "task_id",
-        ),
-        schema_version=1,
-    ),
-    # --- ADR-0008 D9 operational cleanup trio (Wave 4B) ---------------------
-    #
-    # These three are NOT ActionLifecycle terminals. The canonical terminal
-    # says what the action concluded; `worker.quiesced` says the owned worker
-    # stopped writing; the cleanup pair says the repository is safe to hand to
-    # the next action. Collapsing them would make a supervisor-declared
-    # `action.timeout_assumed` release a repo whose process is still alive.
-    EventTypeSchema(
-        event_type="worker.quiesced",
-        owner_layer="L4",
-        actor="jarvis_runtime",
-        required_payload=("action_id", "worker_epoch"),
-        optional_payload=("run_id", "exit_code", "reason"),
-        schema_version=1,
-    ),
-    EventTypeSchema(
-        event_type="action.cleanup_completed",
-        owner_layer="L4",
-        actor="jarvis_runtime",
-        required_payload=("action_id", "worker_epoch", "verification_outcome"),
-        optional_payload=("stash_ref", "resource_keys"),
-        schema_version=1,
-    ),
-    EventTypeSchema(
-        event_type="action.cleanup_failed",
-        owner_layer="L4",
-        actor="jarvis_runtime",
-        required_payload=("action_id", "worker_epoch", "reason"),
-        optional_payload=("stash_ref", "resource_keys", "quarantine_reason"),
-        schema_version=1,
-    ),
-    EventTypeSchema(
-        event_type="run.started",
-        owner_layer="L4",
-        actor="jarvis_runtime",
-        required_payload=("run_id", "task_id"),
-        optional_payload=("runner",),
-        schema_version=1,
-    ),
-    EventTypeSchema(
-        event_type="worker.reported",
-        owner_layer="L4",
-        actor="codex_worker",
-        required_payload=("run_id", "action_id", "status"),
-        # Optional keys aligned with the spec §5.4.2 WorkerReport
-        # registry entry — Phase 0 batch 5 reclaims the submit_report
-        # fields L4 previously dropped.
-        optional_payload=(
-            "summary",
-            "artifact_path",
-            "stash_ref",
-            "changed_files",
-            "commands_run",
-            "tests_run",
-            "evidence_submitted",
-            "remaining_risks",
-            "needs_human_review",
-            "next_recommended_action",
-        ),
-        schema_version=1,
-    ),
-    EventTypeSchema(
-        event_type="claim.created",
-        owner_layer="L3",
-        actor="jarvis_runtime",
-        required_payload=(
-            "claim_id",
-            "type",
-            "statement",
-            "subject_ref",
-            "produced_by_event_id",
-        ),
-        # `supersedes` (forward-pointing field) removed 2026-08-25: no
-        # emitter ever wrote it and no fold read it. Supersession is the
-        # backward-pointing `claim.superseded` EVENT per spec §3.3.3 —
-        # one model, not two.
-        optional_payload=(),
-        schema_version=1,
-    ),
-    EventTypeSchema(
-        event_type="evidence.attached",
-        owner_layer="L3",
-        actor="jarvis_runtime",
-        # ADR-0002 F8 / Step 12: `relation` added to required_payload so
-        # every Evidence Record carries the (relation, level) pair from
-        # spec §8.6. Deferred from Step 1 because the Day-1 emit-sites in
-        # the Result Interpreter / unit fixtures had no relation
-        # plumbing; Step 12 lifts every emit-site to derive relation
-        # from the F2 ladder and amends the registry here.
-        required_payload=("evidence_id", "claim_id", "relation", "level"),
-        optional_payload=(
-            "artifact_path",
-            "content_hash",
-            "scope",
-            "freshness_ms",
-            "source_type",
-            "source_id",
-            "observed_at",
-            "freshness",
-            "summary",
-            "artifact_ref",
-            "limitations",
-        ),
-        schema_version=1,
-    ),
-    # --- Claim correction events (spec §3.3.3 / §3.8 invariant 2) --------
-    # The append-only correction mechanism: a claim is never edited, its
-    # status is changed by one of these events and re-derived by the fold.
-    # Spec §6's projection table lists only refuted/accepted as fold
-    # sources — treated as a typo (§3.3.3 and §5.2 both list all four);
-    # the fold consumes all four.
-    EventTypeSchema(
-        # Emitted by the Result Interpreter when a deterministic outcome
-        # contradicts an existing claim (e.g. verify_command exit != 0
-        # refutes the worker's Report claim).
-        event_type="claim.refuted",
-        owner_layer="L3",
-        actor="jarvis_runtime",
-        required_payload=("claim_id", "reason"),
-        optional_payload=(),
-        schema_version=1,
-    ),
-    EventTypeSchema(
-        # Emitted when advisory signal qualifies (not vetoes) a claim —
-        # e.g. the reviewer disagrees with a verify_command pass. A
-        # `limited` claim stays active for completion (ADR-0002
-        # reviewer-advisory: no veto over task.verified).
-        event_type="claim.limited",
-        owner_layer="L3",
-        actor="jarvis_runtime",
-        required_payload=("claim_id", "reason"),
-        optional_payload=(),
-        schema_version=1,
-    ),
-    EventTypeSchema(
-        # Emitted when a newer claim of the same (type, subject_ref)
-        # replaces an older one — re-runs of the same task. Backward
-        # pointer lives HERE (the event), not on claim.created.
-        event_type="claim.superseded",
-        owner_layer="L3",
-        actor="jarvis_runtime",
-        required_payload=("claim_id", "superseded_by_claim_id"),
-        optional_payload=(),
-        schema_version=1,
-    ),
-    EventTypeSchema(
-        # Allen's manual acceptance — the §8.4 ladder top realized as an
-        # event. Registered + folded (accepted-level evidence, status →
-        # supported); NO emitter exists yet: it needs a human-input
-        # surface (e.g. `jarvis accept`) plus an amendment to ADR-0002's
-        # "verify_command-less tasks never reach verified" pin. Deferred
-        # as its own follow-up; registering now occupies the schema so
-        # the fold and readers are correction-complete.
-        event_type="claim.accepted",
-        owner_layer="L3",
-        actor="user",
-        required_payload=("claim_id",),
-        optional_payload=("note",),
-        schema_version=1,
-    ),
-    EventTypeSchema(
-        event_type="task.verified",
-        owner_layer="L2",
-        actor="jarvis_runtime",
-        required_payload=("task_id", "by"),
-        optional_payload=(),
-        schema_version=1,
-    ),
-    # Fix 2 Option A — empty-diff + verify-pass paradox now emits
-    # `task.no_op` instead of `task.verified`. Absent an artifact-change
-    # Postcondition signal, the verify_command alone cannot support
-    # `task.verified` (spec §8.9 — code task requires artifact changed +
-    # verification passed). L3 emits this from
-    # `_dispatch_one_tool_call` when the Result Interpreter signals
-    # no_op. See amended ADR-0002 § Evidence ladder paradox row.
-    EventTypeSchema(
-        event_type="task.no_op",
-        owner_layer="L3",
-        actor="jarvis_runtime",
-        required_payload=("task_id",),
-        optional_payload=("reason", "verify_command"),
-        schema_version=1,
-    ),
-    # --- Day-2 extensions (ADR-0002 § Day-2 EventTypeRegistry extensions) ---
-    #
-    # Eight Day-2 originals (worker.* heartbeat/artifact_observed/
-    # report_missing, task.executor_assigned/reported, cost.recorded,
-    # surface.user_intent/response_emitted) plus four sleep/wake events
-    # (mac.sleeping/awake, worker.suspended_by_sleep/terminated_by_sleep).
-    # Schema lifted verbatim from ADR-0002 lines 1162-1262.
-    EventTypeSchema(
-        event_type="worker.heartbeat",
-        owner_layer="L4",
-        actor="codex_worker",
-        required_payload=("run_id", "action_id"),
-        optional_payload=("elapsed_ms", "last_log_line", "summary"),
-        schema_version=1,
-    ),
-    EventTypeSchema(
-        event_type="worker.artifact_observed",
-        owner_layer="L4",
-        actor="jarvis_runtime",
-        required_payload=("run_id", "action_id", "artifact_path"),
-        optional_payload=("content_hash", "kind"),
-        schema_version=1,
-    ),
-    EventTypeSchema(
-        event_type="worker.report_missing",
-        owner_layer="L4",
-        actor="jarvis_runtime",
-        required_payload=("run_id", "action_id"),
-        optional_payload=("reason",),
-        schema_version=1,
-    ),
-    EventTypeSchema(
-        event_type="task.executor_assigned",
-        owner_layer="L3",
-        actor="jarvis_runtime",
-        required_payload=("task_id", "executor", "action_id"),
-        optional_payload=("model",),
-        schema_version=1,
-    ),
-    EventTypeSchema(
-        event_type="task.executor_reported",
-        owner_layer="L4",
-        actor="codex_worker",
-        required_payload=("task_id", "run_id", "status"),
-        # ADR-0008 Step 4: `executor` / `model` / `tokens_in` / `tokens_out`
-        # are the run's accounting facts.  A truly background `spawn_worker`
-        # returns its RawResult to the runner, not to L3, so the cost that
-        # used to travel on `RawResult.metadata["cost"]` needs a durable home
-        # for L3 to read at re-entry.  This row is emitted on every path
-        # (report, timeout, crash), which is exactly the set of runs that
-        # burned tokens.  L3 remains the sole `cost.recorded` emit-site.
-        optional_payload=(
-            "summary",
-            "diff_path",
-            "executor",
-            "model",
-            "tokens_in",
-            "tokens_out",
-        ),
+        # ADR-0008 §4.2 additive fields on the existing type.
+        optional_payload=("error", "reason", "requested_by_turn_id", "cancel_scope"),
         schema_version=1,
     ),
     EventTypeSchema(
@@ -1028,22 +725,6 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         optional_payload=("reconciliation_summary",),
         schema_version=1,
     ),
-    EventTypeSchema(
-        event_type="worker.suspended_by_sleep",
-        owner_layer="L6",
-        actor="jarvis_runtime",
-        required_payload=("run_id", "action_id"),
-        optional_payload=("last_heartbeat_ts",),
-        schema_version=1,
-    ),
-    EventTypeSchema(
-        event_type="worker.terminated_by_sleep",
-        owner_layer="L6",
-        actor="jarvis_runtime",
-        required_payload=("run_id", "action_id"),
-        optional_payload=("reason",),
-        schema_version=1,
-    ),
     # --- ADR-0003 Inherent Text Surface extensions ---
     EventTypeSchema(
         # Watcher-level catch-all when drive_turn raises uncaught
@@ -1252,6 +933,63 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         actor="user",
         required_payload=("text", "action_id"),
         optional_payload=(),
+        schema_version=1,
+    ),
+    EventTypeSchema(
+        event_type="todo.revised",
+        owner_layer="L4",
+        actor="jarvis_llm",
+        required_payload=("request_id", "request_hash", "operation", "item", "action_id"),
+        optional_payload=(),
+        schema_version=1,
+    ),
+    EventTypeSchema(
+        event_type="knowledge.revised",
+        owner_layer="L4",
+        actor="jarvis_llm",
+        required_payload=("request_id", "request_hash", "operation", "item", "action_id"),
+        optional_payload=(),
+        schema_version=1,
+    ),
+    EventTypeSchema(
+        event_type="briefing.revised",
+        owner_layer="L4",
+        actor="jarvis_llm",
+        required_payload=("request_id", "request_hash", "operation", "item", "action_id"),
+        optional_payload=(),
+        schema_version=1,
+    ),
+    # Current work state (ADR 0023): one record, latest row wins, every claim
+    # inside `item` carries basis stated | observed | inferred plus refs.
+    # `trigger` is dashboard | conversation; `action_id` only for the latter.
+    EventTypeSchema(
+        event_type="work_state.revised",
+        owner_layer="L2",
+        actor="jarvis_llm",
+        required_payload=("item", "trigger"),
+        optional_payload=("action_id",),
+        schema_version=1,
+    ),
+    # ADR 0023: the 5-minute TimeSink head poll. Emitted only when the head
+    # (max ids, latest span end / capture lastSeenAt, latest state event)
+    # changed; never a decision trigger, never a model call.
+    EventTypeSchema(
+        event_type="timesink.state_observed",
+        owner_layer="L5",
+        actor="observer",
+        required_payload=(
+            "status",
+            "identity",
+            "span_high",
+            "span_latest_end",
+            "capture_high",
+            "capture_latest_seen",
+            "state_high",
+            "state_latest",
+            "observed_at_ms",
+            "actor",
+        ),
+        optional_payload=("reason",),
         schema_version=1,
     ),
 )

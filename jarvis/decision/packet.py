@@ -4,16 +4,16 @@ Per ADR 0001 § Stub strategy L3 row ("real, reads projection snapshots")
 and spec §3.4.x.
 
 The Situation Packet bundles the trigger event, the most recent trace
-window, the live Task Ledger snapshot, and (ADR-0009 D6) the Status
-Board for the L3 decision pipeline (Intent Router / Resolver / Gates).
-Reading projections from disk on every L3 invocation is fine Day-1 — the
-trace is short, and rebuilding per invocation is exactly what makes the
-Status Board's freshness automatic: there is no cache to invalidate.
+window, and (ADR-0009 D6) the Status Board for the L3 decision pipeline
+(Intent Router / Gates). Reading projections from disk on every L3
+invocation is fine Day-1 — the trace is short, and rebuilding per
+invocation is exactly what makes the Status Board's freshness automatic:
+there is no cache to invalidate.
 
 Layer rules: stdlib + ``jarvis.shared`` + ``jarvis.state``. No imports
 of sibling layers (``jarvis.execution`` / ``jarvis.surface`` /
 ``jarvis.deployment``) and no import of ``jarvis.decision.llm`` so this
-module can be re-used by the resolver / gates without circular pulls.
+module can be re-used by the gates without circular pulls.
 """
 
 from __future__ import annotations
@@ -26,7 +26,6 @@ from jarvis.state.decision_snapshot import read_decision_snapshot
 
 if TYPE_CHECKING:
     import sqlite3
-    from collections.abc import Sequence
 
     from jarvis.shared import Event
     from jarvis.state.authorization_snapshot import AuthorizationSnapshot
@@ -34,12 +33,9 @@ if TYPE_CHECKING:
     from jarvis.state.projections import (
         ActionAdmissions,
         CommitObservation,
-        EntityRegistry,
         PendingConfirmations,
         RepoObservation,
         StatusBoard,
-        TaskLedgerRecord,
-        TaskLedgerSnapshot,
     )
 
 
@@ -51,32 +47,21 @@ class SituationPacket:
     """Bundle of "what's true at the moment of this L3 invocation".
 
     Frozen so a single packet can be passed to multiple downstream
-    callers (Resolver / Gates / LLM bridge) without anyone mutating
-    shared state mid-evaluation.
+    callers (Gates / LLM bridge) without anyone mutating shared state
+    mid-evaluation.
 
     Attributes:
         trigger_event: The single event that re-entered L3 (e.g.
-            ``surface.user_intent``, ``worker.reported``,
-            ``action.result_observed``).
+            ``surface.user_intent``, ``action.result_observed``).
         recent_trace: Frozen tuple of the most recent events (oldest
             first; same order as Recent Trace projection iteration).
-        task_ledger_snapshot: Snapshot of the Task Ledger projection
-            used by the Resolver and Pre-action Gate.
-        open_tasks: Convenience tuple of currently-open task records
-            (derived from the snapshot; cached here so downstream
-            callers do not need to recompute).
         current_turn_id: Turn correlation for the trigger (when known
             from ``trigger_event.correlation`` or
             ``trigger_event.payload``).
-        current_run_id: Run correlation for the trigger (similar).
         status_board: Folded Status Board (ADR-0009 D6) — watched-repo
             state, last Mac power transition, open actions. Carried on
             the packet so L3 can answer "repo X 现在什么状态" from the
             log instead of shelling out to git mid-turn.
-        entity_registry: Folded EntityRegistry (ADR-0011 D4) — `file:` /
-            `repo:` / `task:` entries the trusted resolver (or config
-            bookmarks) has produced. Consulted by the Pre-action Gate's
-            widened entity-trust arm (ADR-0011 §12.2 Reconciliation J).
         pending_confirmation: Folded PendingConfirmations (ADR-0012 §3
             D4, packet block 8) — the single live-or-recent
             confirmation ask, plus every `lease_id` a passing gate
@@ -84,20 +69,14 @@ class SituationPacket:
             (Step 6) and `format_pending_confirmation_note` both read
             this field.
         action_admissions: Folded ActionAdmissions (ADR-0008 D10) — the
-            admitting `gate.evaluated` uid, dispatched uid and
-            `run.started` run_id of every non-terminal action. L3's
-            `resolve_cancellable_action` and the Pre-action Gate's
-            `cancel_action` arm read this field.
+            admitting `gate.evaluated` uid and dispatched uid of every
+            non-terminal action.
     """
 
     trigger_event: Event
     recent_trace: tuple[Event, ...]
-    task_ledger_snapshot: TaskLedgerSnapshot
-    open_tasks: tuple[TaskLedgerRecord, ...]
     current_turn_id: str | None
-    current_run_id: str | None
     status_board: StatusBoard
-    entity_registry: EntityRegistry
     pending_confirmation: PendingConfirmations
     action_admissions: ActionAdmissions
     conversation_history: ConversationHistory | None = None
@@ -120,12 +99,7 @@ def _extract_correlation(trigger: Event, key: str) -> str | None:
     return None
 
 
-def assemble_packet(
-    trigger: Event,
-    conn: sqlite3.Connection,
-    *,
-    entity_bookmarks: Sequence[tuple[str, str]] = (),
-) -> SituationPacket:
+def assemble_packet(trigger: Event, conn: sqlite3.Connection) -> SituationPacket:
     """Build a :class:`SituationPacket` from the live event log.
 
     Reads the Event Log and confirmation/dispatch operational tables under one
@@ -138,29 +112,19 @@ def assemble_packet(
             packet so downstream callers can inspect its payload
             without re-querying.
         conn: Open Event Log connection.
-        entity_bookmarks: `(alias, absolute-path)` seed pairs forwarded
-            to the EntityRegistry's config route (ADR-0011 D4). L3 may
-            not import `jarvis.execution.path_resolver`; the runtime
-            composition root loads `config/file_targets.yaml` and
-            threads the pairs down as plain data. Default `()`.
 
     Returns:
         Frozen :class:`SituationPacket` ready for the Intent Router,
-        Resolver, Effective Policy resolver, and Gates.
+        Effective Policy resolver, and Gates.
     """
-    state = read_decision_snapshot(conn, entity_bookmarks=entity_bookmarks)
+    state = read_decision_snapshot(conn)
     projections = state.projections
-    snapshot = projections.task_ledger.snapshot()
 
     return SituationPacket(
         trigger_event=trigger,
         recent_trace=projections.recent_trace.events,
-        task_ledger_snapshot=snapshot,
-        open_tasks=snapshot.open_tasks(),
         current_turn_id=_extract_correlation(trigger, "turn_id"),
-        current_run_id=_extract_correlation(trigger, "run_id"),
         status_board=projections.status_board,
-        entity_registry=projections.entity_registry,
         pending_confirmation=projections.pending_confirmations,
         action_admissions=projections.action_admissions,
         conversation_history=projections.conversation_history,
@@ -271,9 +235,8 @@ def format_status_board_note(
 ) -> str | None:
     """Render the Status Board as an LLM system note, or None when empty.
 
-    Mirrors ``jarvis.decision._format_open_tasks_note``: None when there
-    is no signal worth spending context on (no repo has been observed
-    yet), otherwise a bullet list plus a short directive. One bullet per
+    None when there is no signal worth spending context on (no repo has
+    been observed yet), otherwise a bullet list plus a short directive. One bullet per
     watched repo, each ending in its own spec §3.6.9 freshness clause.
 
     Args:
@@ -330,100 +293,6 @@ def format_status_board_note(
     )
 
 
-# --- Evidence context note (spec §3.4.4 evidence_summary, minimal) ----------
-
-# Claims rendered per note before the remainder is summarized as a count.
-_NOTE_MAX_CLAIMS: Final[int] = 6
-
-# Statement text cap per line (claim statements are producer-capped at
-# 200 chars; this is the tighter render budget).
-_NOTE_STATEMENT_CHARS: Final[int] = 90
-
-# Stable header prefix — `jarvis.decision` uses it to find and REPLACE
-# the note when the packet is re-assembled mid-turn (sync tool results
-# change evidence exactly when it matters).
-EVIDENCE_NOTE_PREFIX: Final[str] = "[system context] Evidence state for"
-
-
-def format_evidence_context_note(
-    packet: SituationPacket,
-    *,
-    subject_ref: str | None,
-    max_claims: int = _NOTE_MAX_CLAIMS,
-) -> str | None:
-    """Render the subject's Claim/Evidence state as an LLM system note.
-
-    The projection has ridden the packet since Day-1
-    (``task_ledger_snapshot.claim_evidence``) but nothing rendered it,
-    so the LLM drafted completion answers blind, got refused by the
-    Pre-emit Gate, and burned a retry round-trip. This note hands it
-    the per-turn facts the gate will judge it on, in the same evidence
-    vocabulary the system prompt already teaches.
-
-    Correction-aware (spec §3.8 invariant 2): refuted / superseded
-    claims are excluded from the bullets and summarized as a count.
-    ``stale_warnings`` / ``missing`` from the full §3.4.4 shape stay
-    deferred with their contract fields (typed freshness,
-    ``required_for_completion``).
-
-    Returns None when there is no subject or the subject has no claims —
-    no signal is worth no context spend.
-    """
-    if subject_ref is None:
-        return None
-    claim_evidence = packet.task_ledger_snapshot.claim_evidence
-    all_claims = claim_evidence.claims_for(subject_ref)
-    if not all_claims:
-        return None
-    active = claim_evidence.active_claims_for(subject_ref)
-    inactive_count = len(all_claims) - len(active)
-
-    shown = active[-max_claims:]
-    lines = []
-    for claim in shown:
-        rows = claim_evidence.evidence_for(claim.claim_id)
-        supporting = [
-            ev.level for ev in rows if ev.payload.get("relation", "supports") == "supports"
-        ]
-        strongest = (
-            max(supporting, key=lambda lv: _EVIDENCE_NOTE_RANK[lv]) if supporting else "none"
-        )
-        refuting = sum(1 for ev in rows if ev.payload.get("relation") == "refutes")
-        statement = claim.statement[:_NOTE_STATEMENT_CHARS]
-        lines.append(
-            f"- [{claim.type}] {statement} — status={claim.status}, "
-            f"strongest_support={strongest}, refuting_evidence={refuting}",
-        )
-    hidden = len(active) - len(shown)
-    if hidden > 0:
-        lines.append(f"- (+{hidden} older active claim(s) not shown)")
-    if inactive_count > 0:
-        lines.append(
-            f"- ({inactive_count} claim(s) refuted or superseded — corrections "
-            f"applied, no longer count as support)",
-        )
-
-    bullets = "\n".join(lines)
-    return (
-        f"{EVIDENCE_NOTE_PREFIX} {subject_ref!r} (Claim/Evidence projection — "
-        "the Pre-emit Gate judges completion language against exactly this):\n"
-        f"{bullets}\n"
-        "`reported` is the worker's own words, not proof. Only an active "
-        "Postcondition claim with `verified`/`accepted` SUPPORTING evidence "
-        "justifies completion language; anything less, use limitation "
-        "language and say what is unverified."
-    )
-
-
-_EVIDENCE_NOTE_RANK: Final[dict[str, int]] = {
-    "reported": 0,
-    "observed": 1,
-    "executed": 2,
-    "verified": 3,
-    "accepted": 4,
-}
-
-
 # --- Pending confirmation note (ADR-0012 §3 D4, packet block 8) -------------
 
 
@@ -477,10 +346,8 @@ def format_pending_confirmation_note(
 
 __all__ = [
     "DEFAULT_OBSERVER_POLL_INTERVAL_S",
-    "EVIDENCE_NOTE_PREFIX",
     "SituationPacket",
     "assemble_packet",
-    "format_evidence_context_note",
     "format_pending_confirmation_note",
     "format_status_board_note",
 ]

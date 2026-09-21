@@ -18,7 +18,6 @@ declare global { interface Window { jarvis?: {
   copy: (text: string) => Promise<boolean>;
   layout: (mode: string, height: number) => void; focus: (enabled: boolean) => Promise<void>; hide: () => void; passthrough: (enabled: boolean) => void;
   material: (rects: {x:number;y:number;width:number;height:number;radius:number;opacity:number;occlusion?:GlassOcclusion}[], strength: number) => void;
-  dashboard: () => void;
   onCommand: (cb: (value: string) => void) => () => void;
 } } }
 const lab = new URLSearchParams(location.search).has('lab');

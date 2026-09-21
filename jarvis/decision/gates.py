@@ -8,12 +8,6 @@ caller (``decide()`` in :mod:`jarvis.decision`) emits the
 do NOT touch the event log — keeping side-effect emission in one place
 is what makes Acceptance C inspectable.
 
-The Post-action Gate (Result Interpreter) lives in
-:mod:`jarvis.decision.result_interpreter` because it emits two events
-(claim.created + evidence.attached) rather than returning a single
-verdict; bundling it with the other gates would smear the
-"gate-decides, caller-emits" pattern.
-
 Layer rules: stdlib + ``jarvis.shared`` + ``jarvis.state``. No imports
 of sibling layers and no import of ``jarvis.decision.llm``.
 """
@@ -21,10 +15,9 @@ of sibling layers and no import of ``jarvis.decision.llm``.
 from __future__ import annotations
 
 import hashlib
-import re
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Final, Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
 
 from jarvis.decision.policy import risk_rank
 from jarvis.shared import CallerPrincipal
@@ -35,13 +28,7 @@ if TYPE_CHECKING:
     from jarvis.decision.packet import SituationPacket
     from jarvis.decision.policy import EffectivePolicy
     from jarvis.shared import ActionRequest, AuthorizationLease, EvidenceLevel
-    from jarvis.state.projections import (
-        ActionAdmissions,
-        ClaimEvidenceProjection,
-        EntityRegistry,
-        PendingConfirmations,
-        TaskLedgerSnapshot,
-    )
+    from jarvis.state.projections import PendingConfirmations
 
 
 # --- Public types -----------------------------------------------------------
@@ -107,35 +94,21 @@ class ResponsePlan:
     """Output of the Pre-emit Gate.
 
     Attributes:
-        text: Final response text the surface should render. Day-1
-            this is either the original draft (when
-            ``permission=allow_completion_language``) or a
-            template-downgraded variant (when ``downgrade_required``
-            forces a rewrite).
+        text: Final response text the surface should render — the
+            draft, unchanged.
         permission: ``allow_completion_language`` or
-            ``force_limitation_language`` per ADR contract.
-        downgrade_required: True iff
-            ``permission == force_limitation_language`` AND the draft
-            contained completion-class language. Drives the
-            ``decide()`` retry loop.
-        active_claim_levels: Evidence levels actually backing
-            completion claims for the active subject. Surfaces on
-            the ``gate.evaluated(pre_emit)`` event so Acceptance C4
-            can assert the ladder.
-        response_hash: ``sha256`` hex of ``text`` (after any
-            downgrade). Stamped onto the ``gate.evaluated`` event so
-            Acceptance C3 can check the surface uses the same token
-            it was gated on.
-        output_risk_class: spec §3.4.13 risk classification per
-            ADR-0002 § ResponsePlan schema extension. Day-2 defaults
-            to ``"routine"`` for non-consequential acks; lifts to
-            ``"consequential_claim"`` when the response references a
-            Postcondition Claim at ``level=verified``. The Pre-emit
-            Gate is the sole derivation site (Step 12 wires it).
-        required_gate_mode: spec §3.4.13 required gate mode. Defaults
-            to ``"sentence"`` for routine acks; lifts to
-            ``"full_text"`` when ``output_risk_class != "routine"``.
-            ``"structured"`` is reserved for Stage 2.
+            ``force_limitation_language`` per ADR contract. Always
+            ``allow_completion_language`` since ADR 0019 removed the
+            claim/evidence ladder.
+        downgrade_required: Always ``False`` (see ``permission``).
+        active_claim_levels: Always empty (see ``permission``).
+        response_hash: ``sha256`` hex of ``text``. Stamped onto the
+            ``gate.evaluated`` event so Acceptance C3 can check the
+            surface uses the same token it was gated on.
+        output_risk_class: spec §3.4.13 risk classification. Always
+            ``"routine"``.
+        required_gate_mode: spec §3.4.13 required gate mode. Always
+            ``"sentence"`` (routine = sentence-boundary streaming).
     """
 
     text: str
@@ -175,44 +148,15 @@ class _EntityGateToolLike(Protocol):
 def _check_entity_trusted(
     action_request: ActionRequest,
     tool_def: _EntityGateToolLike | None,
-    ledger_snapshot: TaskLedgerSnapshot,
-    entity_registry: EntityRegistry | None,
 ) -> tuple[bool, str]:
     """Evaluate check 2 (entity_trusted) for :func:`pre_action_gate`.
 
-    Split out purely to keep ``pre_action_gate`` under ruff's
-    PLR0912/PLR0915 branch/statement thresholds — the logic itself is
-    unchanged from the inline version.
-
-    None arm (ADR-0011 D3, untouched by §12.2): if
-    ``target_entity_ref`` is None and ``tool_def.requires_entity`` is
-    True, the tool declares it cannot act without a resolved entity —
-    refuse with reason ``"entity_required: <tool_name> demands a
-    resolved target"``. ``tool_def is None`` (unknown tool) does NOT
-    take this branch, but NOT because check 1 (``caller_allowed``)
-    would refuse it — ``allowed_tool_surface`` is a bare name
-    allowlist, structurally independent of the registry, so a name
-    could be caller-allowed with no registry definition behind it. The
-    real reason ``tool_def is None`` never reaches this gate in
-    production: both call sites early-return before constructing the
-    ``ActionRequest`` when their own lookup returns None —
-    ``jarvis/decision/__init__.py`` ~994-1000 (Tier 0 path falls back
-    to the LLM loop) and ~1174-1183 (LLM path injects an "unknown
-    tool" result and returns). This is defense-in-depth for a case
-    that cannot currently occur.
-
-    Non-None arm (ADR-0011 §12.2 Reconciliation J): trusted when
-    ``target_entity_ref`` is EITHER a known Task Ledger task id
-    (checked FIRST, byte-for-byte the pre-ADR-0011 rule — open OR
-    reported_complete OR verified_complete all count, since rejecting
-    reported_complete would break the verify_diff leg of the Day-1
-    happy path) OR a known ``entity_id`` in ``entity_registry`` (the
-    D4 fold of resolver-produced ``file:``/``repo:`` ids — without
-    this second universe, a resolve-on-propose ``file:`` id could
-    never pass, since it is by construction never a Task Ledger task
-    id). ``entity_registry is None`` (a caller that hasn't wired one)
-    simply means this arm never matches — it does not widen trust, it
-    only adds a second place trust CAN come from.
+    ADR-0011 D3: if ``target_entity_ref`` is None and
+    ``tool_def.requires_entity`` is True, the tool declares it cannot act
+    without a resolved entity — refuse with reason ``"entity_required:
+    <tool_name> demands a resolved target"``. A resolved ref passes: the
+    resolver that produced it is the trusted source (ADR 0019 removed the
+    Task Ledger / EntityRegistry membership universes).
     """
     if action_request.target_entity_ref is None:
         if tool_def is not None and tool_def.requires_entity:
@@ -221,92 +165,18 @@ def _check_entity_trusted(
                 f"{action_request.tool_name} demands a resolved target"
             )
         return True, "entity_trusted: no target_entity_ref to check"
-
-    known_task_ids = set(ledger_snapshot.records_by_task_id.keys())
-    in_ledger = action_request.target_entity_ref in known_task_ids
-    in_registry = (
-        entity_registry is not None and action_request.target_entity_ref in entity_registry
-    )
-    if in_ledger:
-        matched_where = "is in Task Ledger"
-    elif in_registry:
-        matched_where = "is in EntityRegistry"
-    else:
-        matched_where = "is NOT in Task Ledger or EntityRegistry"
-    return (
-        in_ledger or in_registry,
+    return True, (
         f"entity_trusted: target_entity_ref={action_request.target_entity_ref!r} "
-        f"{matched_where}",
+        "was produced by the resolver"
     )
 
 
-_CANCEL_ACTION_TOOL_NAME: Final[str] = "cancel_action"
-"""The one tool check 5 (`admission_matched`) runs for (ADR-0008 D10)."""
-
-
-def _check_cancel_admission(
-    action_request: ActionRequest,
-    action_admissions: ActionAdmissions | None,
-    checks: dict[str, bool],
-    reasons: list[str],
-) -> bool:
-    """Evaluate check 5 (admission_matched); a no-op for any other tool.
-
-    ADR-0008 D10: for a ``cancel_action`` request, its
-    ``authorization_gate_event_uid`` (frozen by L3 from the target's
-    recorded admission) must equal the L2 lookup's ``admission_gate_uid``
-    for ``target_action_id``. Absent, unknown, or mismatched all fail —
-    and the caller refuses, never ``confirm_required``: Allen re-granting
-    cannot fix a stale uid. This arm is the single truth source for the
-    match; nothing downstream re-checks it. Records the verdict into
-    ``checks``/``reasons`` and returns it (``True`` for a non-cancel).
-    """
-    if action_request.tool_name != _CANCEL_ACTION_TOOL_NAME:
-        return True
-    matched, reason = _cancel_admission_verdict(action_request, action_admissions)
-    checks["admission_matched"] = matched
-    reasons.append(reason)
-    return matched
-
-
-def _cancel_admission_verdict(
-    action_request: ActionRequest,
-    action_admissions: ActionAdmissions | None,
-) -> tuple[bool, str]:
-    """The (matched, reason) pair behind :func:`_check_cancel_admission`."""
-    target = action_request.arguments.get("target_action_id")
-    payload = action_request.payload or {}
-    claimed = payload.get("authorization_gate_event_uid")
-    admission = (
-        action_admissions.get(target)
-        if action_admissions is not None and isinstance(target, str)
-        else None
-    )
-    if admission is None:
-        return False, f"admission_matched: target_action_id={target!r} has no admission record"
-    if admission.admission_gate_uid is None:
-        return False, (
-            f"admission_matched: target {target!r} was dispatched without a passing "
-            "pre_action gate"
-        )
-    if not isinstance(claimed, str) or not claimed:
-        return False, "admission_matched: request carries no authorization_gate_event_uid"
-    matched = claimed == admission.admission_gate_uid
-    return matched, (
-        "admission_matched: authorization_gate_event_uid "
-        f"{'matches' if matched else 'does not match'} the target's admission gate"
-    )
-
-
-def pre_action_gate(  # noqa: PLR0913 — one keyword per MUST-check input; ADR-0012 D2.4 adds the fourth gate input alongside `entity_registry`, same load-bearing shape.
+def pre_action_gate(
     action_request: ActionRequest,
     policy: EffectivePolicy,
-    ledger_snapshot: TaskLedgerSnapshot,
     *,
     tool_def: _EntityGateToolLike | None,
-    entity_registry: EntityRegistry | None = None,
     pending_confirmations: PendingConfirmations | None = None,
-    action_admissions: ActionAdmissions | None = None,
 ) -> GateResult:
     """Evaluate the four MUST-checks per ADR § Gate contracts.
 
@@ -316,28 +186,14 @@ def pre_action_gate(  # noqa: PLR0913 — one keyword per MUST-check input; ADR-
 
     1. **caller_allowed**: ``action_request.caller_principal`` is in
        ``policy.allowed_tool_surface`` for ``tool_name``.
-    2. **entity_trusted**: if ``target_entity_ref`` is non-None, it
-       must be EITHER the ``task_id`` of a task known to
-       ``ledger_snapshot`` (checked first, byte-for-byte the Day-1
-       rule — this is what keeps the shipped ``verify_diff`` /
-       ``spawn_worker`` path, which passes bare task ids, untouched)
-       OR a known ``entity_id`` in ``entity_registry`` (ADR-0011
-       §12.2 Reconciliation J — the widening that makes D4's
-       ``file:``/``repo:`` ids trustworthy; ``entity_registry=None``
-       degrades to "no registry universe", i.e. only the ledger arm
-       can pass). If ``target_entity_ref`` is None AND
+    2. **entity_trusted**: if ``target_entity_ref`` is None AND
        ``tool_def.requires_entity`` is True, the check FAILS
        (ADR-0011 D3) with reason ``"entity_required: <tool_name>
        demands a resolved target"`` — this is the arm that makes the
        entity check non-vacuous for tools like ADR-0012's
-       ``write_file``. Tools with ``requires_entity=False`` (the six
-       Day-1 tools) keep passing on a None ref, and an unknown tool
-       (``tool_def is None``) does not trigger this arm either — not
-       because check 1 would catch it (``allowed_tool_surface`` is a
-       name allowlist independent of the registry), but because both
-       call sites early-return on an unresolved ``tool_def`` before
-       ever constructing the ``ActionRequest`` (see the inline
-       comment below for the exact line ranges).
+       ``write_file``. Tools with ``requires_entity=False`` keep
+       passing on a None ref, and a resolved ref always passes (the
+       resolver is the trusted source).
     3. **risk_within_ceiling**: ``risk_level <= autonomy_ceiling``
        per the L0..L4 ladder.
     4. **lease_validated** (ADR-0012 D2 — lease validation v2): when
@@ -362,10 +218,6 @@ def pre_action_gate(  # noqa: PLR0913 — one keyword per MUST-check input; ADR-
        ``pending_confirmations.consumed_lease_ids`` (folded from a
        prior passing ``gate.evaluated`` that carried this same
        ``lease_id`` — see :func:`_lease_single_use_ok`).
-    5. **admission_matched** (ADR-0008 D10) — runs only for a
-       ``cancel_action`` request: see :func:`_check_cancel_admission`.
-       A failure here always refuses.
-
     Outcome ladder — ``lease_hard_invalid`` (see that local variable's
     definition below) distinguishes "the lease is corrupt or spent"
     from "the lease is merely unsatisfied but a fresh grant could fix
@@ -394,7 +246,6 @@ def pre_action_gate(  # noqa: PLR0913 — one keyword per MUST-check input; ADR-
         action_request: ActionRequest the L3 LLM proposed.
         policy: EffectivePolicy from
             :func:`jarvis.decision.policy.effective_policy`.
-        ledger_snapshot: TaskLedgerSnapshot for entity-trust check.
         tool_def: The tool definition the caller already resolved for
             this ``action_request.tool_name`` (or ``None`` for an
             unknown tool). ADR-0011 D3: the gate takes this from the
@@ -407,13 +258,6 @@ def pre_action_gate(  # noqa: PLR0913 — one keyword per MUST-check input; ADR-
             resolved definition removes that divergence. Keyword-only
             and required — there are only two call sites and both
             already hold the value.
-        entity_registry: The folded EntityRegistry projection
-            (``packet.entity_registry``), or ``None``. ADR-0011 §12.2:
-            the second universe check 2's non-None arm may match
-            against, alongside (never instead of) the Task Ledger.
-            Keyword-only with a ``None`` default so pre-Step-4 callers
-            (and hand-built test fixtures) keep compiling; ``None``
-            simply means the registry arm never matches.
         pending_confirmations: The folded PendingConfirmations
             projection (``packet.pending_confirmation``), or ``None``.
             ADR-0012 D2.4 (Step 6): check 4's single-use sub-check
@@ -430,13 +274,7 @@ def pre_action_gate(  # noqa: PLR0913 — one keyword per MUST-check input; ADR-
             lease-bearing request with no projection supplied fails
             single-use SOFT (``confirm_required``, not ``refuse`` —
             see :func:`_lease_single_use_ok`'s docstring for the
-            fail-closed rationale and why it differs from
-            ``entity_registry=None``'s posture).
-        action_admissions: The folded ActionAdmissions projection
-            (``packet.action_admissions``), or ``None``. ADR-0008 D10:
-            check 5 reads the target's recorded admission gate uid
-            from it. Only consulted for a ``cancel_action`` request;
-            ``None`` then means "no admission record" and refuses.
+            fail-closed rationale).
 
     Returns:
         Frozen :class:`GateResult` with per-check bool + reason.
@@ -458,9 +296,7 @@ def pre_action_gate(  # noqa: PLR0913 — one keyword per MUST-check input; ADR-
     #    function's branch/statement count under ruff's PLR0912/PLR0915
     #    thresholds; see `_check_entity_trusted`'s docstring for the
     #    full contract (unchanged from the inline version).
-    entity_trusted, entity_reason = _check_entity_trusted(
-        action_request, tool_def, ledger_snapshot, entity_registry,
-    )
+    entity_trusted, entity_reason = _check_entity_trusted(action_request, tool_def)
     checks["entity_trusted"] = entity_trusted
     reasons.append(entity_reason)
 
@@ -526,11 +362,6 @@ def pre_action_gate(  # noqa: PLR0913 — one keyword per MUST-check input; ADR-
         )
     checks["lease_validated"] = lease_validated
 
-    # 5. admission_matched (ADR-0008 D10) — cancel_action only.
-    admission_matched = _check_cancel_admission(
-        action_request, action_admissions, checks, reasons,
-    )
-
     # Outcome decision
     all_pass = all(checks.values())
     if all_pass:
@@ -547,7 +378,6 @@ def pre_action_gate(  # noqa: PLR0913 — one keyword per MUST-check input; ADR-
         and caller_allowed
         and entity_trusted
         and risk_within_ceiling
-        and admission_matched
     ):
         # The action is otherwise legal but lacks a valid authorization
         # lease; Allen could grant (or re-grant) one. Surface as
@@ -736,166 +566,28 @@ def _lease_single_use_ok(
 
 # --- Pre-emit Gate ----------------------------------------------------------
 
-# Completion-class language detection. ADR § Gate contracts spells out the
-# canonical keyword set: ``完成`` / ``已完成`` / ``verified`` / ``done``.
-# Match case-insensitively. ``\b`` for English so a stray ``redone`` does
-# not trigger; the CJK forms carry a negative lookbehind ``(?<![未没不])``
-# so explicit negations (``未完成`` / ``没完成`` / ``不完成``) are NOT
-# treated as completion language — they are limitation phrasings. ADR-0002
-# Negative-path appendix pins ``"Codex 超时,未完成"`` as canonical
-# limitation text; without the lookbehind that text trips the gate.
-#
-# Mirror set: ``_COMPLETION_SCRUB_PATTERNS`` in `jarvis.decision.__init__`.
-# Every new entry here must declare its scrub counterpart in
-# `tests/unit/test_pre_emit_forced_template.py::_GATE_TO_SCRUB_COVERAGE`
-# (drift guard) — adding a gate keyword without a scrub decision will
-# fail Tier 1.
-_COMPLETION_KEYWORDS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"(?<![未没不])完成"),
-    re.compile(r"(?<![未没不])已完成"),
-    re.compile(r"\bverified\b", re.IGNORECASE),
-    re.compile(r"\bdone\b", re.IGNORECASE),
-)
-
-
-def _contains_completion_language(text: str) -> bool:
-    """Return True iff ``text`` contains any completion-class keyword."""
-    return any(pat.search(text) for pat in _COMPLETION_KEYWORDS)
-
 
 def _response_hash(text: str) -> str:
     """sha256 hex of ``text`` (utf-8). Stamped on gate.evaluated(pre_emit)."""
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def pre_emit_gate(
-    draft_text: str,
-    claim_evidence: ClaimEvidenceProjection,
-    active_subject_ref: str | None,
-) -> ResponsePlan:
-    """Evaluate the draft response per ADR § Gate contracts.
+def pre_emit_gate(draft_text: str) -> ResponsePlan:
+    """Stamp the draft with the routine ResponsePlan (spec §3.4.12 v0).
 
-    Logic:
-
-    1. Find the strongest evidence level for ``active_subject_ref``
-       via ``claim_evidence.strongest_level_for(...)``.
-    2. Detect completion-class language in the draft.
-    3. ``allow_completion_language`` IFF strongest evidence level
-       is ``verified``/``accepted`` AND there exists a Postcondition
-       Claim with ``subject_ref == active_subject_ref``.
-    4. ``force_limitation_language`` otherwise.
-    5. ``downgrade_required`` = (``force_limitation_language`` AND
-       draft contains completion language).
-
-    Args:
-        draft_text: LLM's draft response (output of the tool-use loop).
-        claim_evidence: Folded Claim/Evidence projection.
-        active_subject_ref: Subject the response is "about" — Day-1
-            this is the active ``task_id``. ``None`` signals no subject
-            is in scope (spec §3.4.4 LLMSituationPacket admits this as
-            ``active_task?`` optional); the gate then short-circuits to
-            a routine pass-through per §3.4.12 v0.
-
-    Returns:
-        Frozen :class:`ResponsePlan` carrying the verdict + final
-        text (which equals the draft Day-1 — ``decide()`` does any
-        rewriting after observing the verdict).
+    ADR 0019 removed the claim/evidence ladder, so no completion claim is
+    ever judged: the draft passes through unchanged with ``routine`` /
+    ``sentence`` streaming and its ``response_hash`` for Acceptance C3.
     """
-    # Spec §3.4.12 v0: only gate consequential claims. When the caller
-    # has no subject in scope, no claim is being made about any tracked
-    # entity — the gate has nothing to enforce. Pass the draft through
-    # unchanged with a routine ResponsePlan (matches §3.4.13 / §3.6.6
-    # routine = sentence-boundary streaming). §13.1 three checks are
-    # vacuously satisfied: (a) claim ≤ evidence trivially holds (no
-    # claim), (b) output_form is routine, (c) no agent report is being
-    # interpreted (Result Interpreter §3.4.11 is upstream).
-    if active_subject_ref is None:
-        return ResponsePlan(
-            text=draft_text,
-            permission="allow_completion_language",
-            downgrade_required=False,
-            active_claim_levels=(),
-            response_hash=_response_hash(draft_text),
-            output_risk_class="routine",
-            required_gate_mode="sentence",
-        )
-
-    # `strongest_level_for` and `active_claims_for` are correction-aware
-    # (2026-08-25): refuted/superseded claims and non-supporting evidence
-    # no longer grant completion language.
-    strongest = claim_evidence.strongest_level_for(active_subject_ref)
-    has_postcondition_for_subject = any(
-        claim.type == "Postcondition"
-        for claim in claim_evidence.active_claims_for(active_subject_ref)
-    )
-
-    # Collect ALL evidence levels for the subject (not just the
-    # strongest) so the ``active_claim_levels`` audit field is
-    # informative.
-    levels: list[EvidenceLevel] = [
-        ev.level
-        for claim in claim_evidence.claims_for(active_subject_ref)
-        for ev in claim_evidence.evidence_for(claim.claim_id)
-    ]
-
-    has_completion = _contains_completion_language(draft_text)
-
-    if strongest in ("verified", "accepted") and has_postcondition_for_subject:
-        permission: PreEmitPermission = "allow_completion_language"
-    else:
-        permission = "force_limitation_language"
-
-    downgrade_required = permission == "force_limitation_language" and has_completion
-
-    # ADR-0002 Step 12 (spec §3.4.13): when the response is allowed to
-    # carry completion language for a Postcondition Claim backed by
-    # verified/accepted evidence, classify the output as
-    # ``consequential_claim`` and lift the gate mode to ``full_text``
-    # so the surface gates the whole response, not just per-sentence.
-    # Routine acks default to ``routine`` / ``sentence``.
-    output_risk_class, required_gate_mode = _derive_output_risk(
-        strongest=strongest,
-        has_postcondition=has_postcondition_for_subject,
-    )
-
-    # Day-1: the gate does NOT rewrite the text. ``decide()`` reads the
-    # ResponsePlan and either re-prompts the LLM (preferred) or
-    # template-downgrades on the second attempt. Returning ``text``
-    # unchanged keeps the response_hash check meaningful — the surface
-    # writes the same text the gate just hashed.
     return ResponsePlan(
         text=draft_text,
-        permission=permission,
-        downgrade_required=downgrade_required,
-        active_claim_levels=tuple(levels),
+        permission="allow_completion_language",
+        downgrade_required=False,
+        active_claim_levels=(),
         response_hash=_response_hash(draft_text),
-        output_risk_class=output_risk_class,
-        required_gate_mode=required_gate_mode,
+        output_risk_class="routine",
+        required_gate_mode="sentence",
     )
-
-
-def _derive_output_risk(
-    *,
-    strongest: EvidenceLevel | None,
-    has_postcondition: bool,
-) -> tuple[OutputRiskClass, RequiredGateMode]:
-    """Return ``(output_risk_class, required_gate_mode)`` per spec §3.4.13.
-
-    Day-2 rule (ADR-0002 § ResponsePlan schema extension):
-
-    - Verified/accepted Postcondition Claim backing the subject →
-      ``("consequential_claim", "full_text")``. The response is
-      asserting a real-world completion fact; gate the entire text.
-    - Otherwise → ``("routine", "sentence")``. Routine acks gate
-      per-sentence so the LLM keeps natural cadence.
-
-    ``high_risk_claim`` is reserved Day-2; nothing in the flagship
-    scenario fits and the field stays available for Stage 2 high-risk
-    operators.
-    """
-    if strongest in ("verified", "accepted") and has_postcondition:
-        return "consequential_claim", "full_text"
-    return "routine", "sentence"
 
 
 # --- Attention Policy (Day-1 minimal) ---------------------------------------
@@ -921,40 +613,19 @@ _RECONCILIATION_TRIGGER_TYPES: frozenset[str] = frozenset(
 )
 
 
-def attention_policy(  # noqa: C901, PLR0912 — small branch tree but ruff counts each ``if`` separately.
+def attention_policy(
     packet: SituationPacket,
-    claim_evidence: ClaimEvidenceProjection,
     *,
-    limitation_emitted: bool = False,
-    needs_human_review: bool = False,
     document_form: bool = False,
 ) -> AttentionChannel:
     """Decide where this L3 invocation should surface output.
 
-    Day-1 rules per ADR § Stub strategy L3 Attention row + the
-    B-0005/B-0006 Limitation-routing amendment (2026-08-10):
-
-    - If a verified Postcondition Claim was just emitted for the
-      current subject -> ``"voice_notify"``.
-    - If trigger is ``worker.reported`` and this turn emitted a
-      Limitation Claim -> ``"voice_notify"`` (ADR K5 row: the
-      verify-fail / reviewer-fail limitation utterance must reach
-      ``say``, not die in ``silent_log``).
-    - If trigger is ``worker.reported`` and the worker set
-      ``needs_human_review`` -> ``"queue_review"`` (Phase 0 batch 5:
-      a promotion from ``silent_log`` ONLY — the branch sits below
-      both voice checks, so it can never demote a ``voice_notify``).
-    - If trigger is ``worker.reported`` and no verified evidence
-      yet -> ``"silent_log"`` (Allen said "审核了再告诉我";
-      reporting an unverified status would violate the spirit).
     - If trigger is a reconciliation terminal
       (``action.timeout_assumed`` / ``action.failed`` /
       ``action.cancelled``) -> ``"queue_review"`` (B-0005 pinned):
       after a worker timeout Allen has typically walked away, so the
-      limitation queues for review; badge escalation is deferred
-      until the Inherent cockpit exists. Keyed on the trigger, not on
-      ``limitation_emitted`` — a terminal without ``action_id`` emits
-      no claim, and a 3am system turn must never speak.
+      limitation queues for review. Keyed on the trigger: a 3am system
+      turn must never speak.
     - If the answer to the user's own utterance is ``document_form``
       (material to read, not a one-line conclusion) -> ``"badge_card"``
       (spec §12.4: Inherent panel, 不出声; §18.3: voice = conclusion,
@@ -965,69 +636,16 @@ def attention_policy(  # noqa: C901, PLR0912 — small branch tree but ruff coun
       assistant (docs/goals/speak-ordinary-answers.md).
 
     Args:
-        packet: Current SituationPacket (trigger + open tasks +
-            correlations).
-        claim_evidence: Folded projection used to detect verified
-            Postcondition evidence.
-        limitation_emitted: ``True`` when the CURRENT turn emitted a
-            ``claim.created(type=Limitation)`` (computed by
-            ``_finalize_response`` from ``scratch.events``, NOT from
-            the projection — historical Limitations of the same
-            subject must not re-trigger voice on later turns).
-        needs_human_review: ``True`` when a ``worker.reported``
-            trigger's payload carried ``needs_human_review=True`` —
-            the worker explicitly asked for a human look. Promotes
-            the worker.reported ``silent_log`` fallthrough to
-            ``queue_review``; never demotes a voice verdict.
+        packet: Current SituationPacket (trigger + correlations).
         document_form: ``True`` when the caller already holds the final
             answer text and it is multi-line material (a list, a file,
             a result table). Only meaningful for user-utterance
             triggers; system triggers keep their own routing.
 
     Returns:
-        One of ``"voice_notify"`` / ``"silent_log"`` /
-        ``"queue_review"`` / ``"badge_card"``.
+        One of ``"voice_notify"`` / ``"queue_review"`` / ``"badge_card"``.
     """
     trigger_type = packet.trigger_event.type
-
-    # Active subject: prefer an explicit ``task_id`` in the trigger
-    # correlation; fall back to the first open task. This mirrors
-    # ``decide()``'s active-subject extraction.
-    active_subject: str | None = None
-    if packet.trigger_event.correlation is not None:
-        candidate = packet.trigger_event.correlation.get("task_id")
-        if isinstance(candidate, str):
-            active_subject = candidate
-    if active_subject is None and packet.open_tasks:
-        active_subject = packet.open_tasks[0].task_id
-
-    # Correction-aware walk (2026-08-25): skip refuted/superseded claims
-    # and require SUPPORTING evidence — a verified-level refuting row must
-    # not trigger the completion voice path.
-    has_verified_postcondition = False
-    if active_subject is not None:
-        for claim in claim_evidence.active_claims_for(active_subject):
-            if claim.type != "Postcondition":
-                continue
-            for ev in claim_evidence.evidence_for(claim.claim_id):
-                if ev.level in ("verified", "accepted") and (
-                    ev.payload.get("relation", "supports") == "supports"
-                ):
-                    has_verified_postcondition = True
-                    break
-            if has_verified_postcondition:
-                break
-
-    if has_verified_postcondition:
-        return "voice_notify"
-    if limitation_emitted and trigger_type == "worker.reported":
-        return "voice_notify"
-    if trigger_type == "worker.reported":
-        # Phase 0 batch 5: the worker's explicit needs_human_review
-        # flag promotes the silent_log fallthrough to queue_review.
-        # Placement below both voice branches makes this a promotion
-        # only — never a voice demotion.
-        return "queue_review" if needs_human_review else "silent_log"
     if trigger_type in _RECONCILIATION_TRIGGER_TYPES:
         return "queue_review"
     if document_form and trigger_type in ("surface.user_intent", "utterance.received"):

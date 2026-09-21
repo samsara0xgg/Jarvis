@@ -116,7 +116,6 @@ def pre_route(
         trigger.type not in _USER_TRIGGERS
         or not transcript.strip()
         or tier_0_match(packet, tier0_table) is not None
-        or packet.open_tasks
         or (slot is not None and slot.is_live(now_ms))
         or packet.status_board.open_actions
         or _DEMONSTRATIVE_TASK_RE.search(transcript) is not None

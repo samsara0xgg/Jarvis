@@ -447,9 +447,14 @@ def collect_deepseek(*, timeout_s: float) -> UsageSnapshot:
             {"Authorization": f"Bearer {key}"},
             timeout_s=timeout_s,
         )
-        info = (body.get("balance_infos") or [{}])[0]
-    except (urllib.error.URLError, OSError, ValueError, IndexError) as exc:
+    except (urllib.error.URLError, OSError, ValueError) as exc:
         return _error("deepseek", exc)
+    infos = body.get("balance_infos") or []
+    if not infos:
+        # A 200 with no balance row is missing data, not a zero balance: an "ok"
+        # 0.0 would look like a spent account and rewrite the baseline.
+        return _error("deepseek", "no balance_infos in response")
+    info = infos[0]
     return UsageSnapshot(
         "deepseek",
         "ok",
@@ -551,14 +556,27 @@ class UsageObserver:
         return dict(self._baselines)
 
     def collect(self) -> list[UsageSnapshot]:
-        """Every remote service, sequentially; a failure is a snapshot, never a raise."""
+        """Every remote service, sequentially; a failure is a snapshot, never a raise.
+
+        The guard is here rather than inside each collector because this is
+        where the promise is made: a body that parses badly (a string where a
+        percentage belongs, a missing key) costs that one service its row, not
+        the whole cycle's.
+        """
         timeout_s = self._config.http_timeout_s
-        return [
-            collect_claude(timeout_s=timeout_s),
-            collect_codex(timeout_s=timeout_s),
-            collect_openai(timeout_s=timeout_s),
-            collect_deepseek(timeout_s=timeout_s),
-        ]
+        collectors: tuple[tuple[str, Callable[..., UsageSnapshot]], ...] = (
+            ("claude", collect_claude),
+            ("codex", collect_codex),
+            ("openai", collect_openai),
+            ("deepseek", collect_deepseek),
+        )
+        snapshots: list[UsageSnapshot] = []
+        for service, collector in collectors:
+            try:
+                snapshots.append(collector(timeout_s=timeout_s))
+            except Exception as exc:  # noqa: BLE001 - the docstring's promise.
+                snapshots.append(_error(service, exc))
+        return snapshots
 
     def emit(self, snapshots: list[UsageSnapshot]) -> list[Event]:
         """Append one ``usage.state_observed`` per *changed* service."""

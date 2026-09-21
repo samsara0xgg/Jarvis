@@ -97,7 +97,6 @@ if (locked) app.whenReady().then(() => {
     clipboard.writeText(text);
     return true;
   });
-  ipcMain.on('open-dashboard', event => { if (event.sender === win.webContents) openDashboard(); });
   ipcMain.on('hide', event => { if (event.sender === win.webContents) win.hide(); });
   ipcMain.on('drag', (event, payload) => {
     if (event.sender !== win.webContents || lab) return;

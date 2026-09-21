@@ -1,0 +1,225 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "Jarvis Realtime 交付流水线",
+    "subtitle": "从实机现象到合并上线的一轮闭环（2026-09-05/06 实际跑法）",
+    "locale": "zh-CN",
+    "output": "docs/archify/realtime-delivery.workflow.html",
+    "animation": "trace",
+    "visual_preset": "blueprint",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "gate",
+        "label": "闸门段：派活之前",
+        "focus": ["finding", "premise", "brief", "verify", "no_card"],
+        "note": "Hub 交给 lane 的是一条待证前提，不是一个结论。前提站不住，正确结果是不写卡。"
+      },
+      {
+        "id": "land",
+        "label": "落地段：回报之后",
+        "focus": ["implement", "spot_check", "merge", "merged_verify", "deploy"],
+        "note": "抽查只针对 lane 自称的观测量；验的是合并树，不是单条 lane。"
+      }
+    ]
+  },
+  "lanes": [
+    { "id": "live", "label": "实机与现象" },
+    { "id": "lane", "label": "Lane · 新开会话 · 独立 worktree" },
+    { "id": "hub", "label": "Hub · 只裁决不写码" },
+    { "id": "owner", "label": "Allen" },
+    { "id": "exception", "label": "停下报告", "variant": "exception" }
+  ],
+  "phases": [
+    { "id": "discover", "label": "发现", "fromCol": 0, "toCol": 0 },
+    { "id": "gate", "label": "立闸与派发", "fromCol": 1, "toCol": 2, "variant": "emphasis" },
+    { "id": "build", "label": "成卡与实现", "fromCol": 3, "toCol": 4 },
+    { "id": "land", "label": "抽查与上线", "fromCol": 5, "toCol": 5, "variant": "dashed" }
+  ],
+  "groups": [
+    {
+      "id": "lane_owns",
+      "label": "同一个会话：起草 · 实现 · 自证",
+      "lane": "lane",
+      "fromCol": 2,
+      "toCol": 4,
+      "variant": "emphasis"
+    }
+  ],
+  "mainPath": [
+    "live_run",
+    "finding",
+    "premise",
+    "brief",
+    "verify",
+    "card",
+    "implement",
+    "spot_check",
+    "merge",
+    "merged_verify",
+    "deploy"
+  ],
+  "nodes": [
+    {
+      "id": "live_run",
+      "lane": "live",
+      "col": 0,
+      "type": "external",
+      "label": "实机运行",
+      "sublabel": "daemon :8009 + 卡片",
+      "tag": "真跑",
+      "width": 150
+    },
+    {
+      "id": "finding",
+      "lane": "live",
+      "col": 1,
+      "type": "messagebus",
+      "label": "现象入队",
+      "sublabel": "事件日志 · 耳朵 · 眼睛",
+      "tag": "不注水",
+      "width": 150
+    },
+    {
+      "id": "premise",
+      "lane": "hub",
+      "col": 1,
+      "type": "security",
+      "label": "写闸门不写结论",
+      "sublabel": "先查未实现的 ADR 裁定",
+      "tag": "一条待证前提",
+      "width": 150
+    },
+    {
+      "id": "brief",
+      "lane": "hub",
+      "col": 2,
+      "type": "backend",
+      "label": "新开 lane 会话",
+      "sublabel": "禁扰事实 · 无单测 · 钉 ruff",
+      "width": 160
+    },
+    {
+      "id": "verify",
+      "lane": "lane",
+      "col": 2,
+      "type": "security",
+      "label": "先验前提",
+      "sublabel": "不成立就不许动手",
+      "width": 150
+    },
+    {
+      "id": "card",
+      "lane": "lane",
+      "col": 3,
+      "type": "database",
+      "label": "成卡 docs/goals",
+      "sublabel": "验收点名观测量",
+      "width": 150
+    },
+    {
+      "id": "no_card",
+      "lane": "exception",
+      "col": 3,
+      "type": "external",
+      "label": "NO CARD",
+      "sublabel": "「不值得开卡」也是交付物",
+      "tag": "成功结局",
+      "width": 160
+    },
+    {
+      "id": "implement",
+      "lane": "lane",
+      "col": 4,
+      "type": "backend",
+      "label": "实现并自证",
+      "sublabel": "退化用例逐个变红",
+      "width": 150
+    },
+    {
+      "id": "spot_check",
+      "lane": "hub",
+      "col": 4,
+      "type": "security",
+      "label": "一次 grep 抽查",
+      "sublabel": "只查它自称的观测量",
+      "tag": "不重跑闸门",
+      "width": 150
+    },
+    {
+      "id": "merge",
+      "lane": "owner",
+      "col": 5,
+      "type": "cloud",
+      "label": "Allen 合并",
+      "sublabel": "--no-ff · 不 push",
+      "tag": "main 只归他",
+      "width": 150
+    },
+    {
+      "id": "merged_verify",
+      "lane": "hub",
+      "col": 5,
+      "type": "database",
+      "label": "验合并树",
+      "sublabel": "文本干净 ≠ 语义干净",
+      "width": 150
+    },
+    {
+      "id": "deploy",
+      "lane": "live",
+      "col": 5,
+      "type": "frontend",
+      "label": "重启并实机验证",
+      "sublabel": "启动记录 · canary · 耳朵",
+      "width": 160
+    }
+  ],
+  "edges": [
+    { "from": "live_run", "to": "finding", "role": "main", "label": "跑出问题" },
+    { "from": "finding", "to": "premise", "role": "main", "label": "进队列" },
+    { "from": "premise", "to": "brief", "role": "main" },
+    { "from": "brief", "to": "verify", "role": "main", "label": "整段简报" },
+    { "from": "verify", "to": "no_card", "role": "branch", "label": "前提死了" },
+    { "from": "verify", "to": "card", "role": "main", "label": "前提成立" },
+    { "from": "card", "to": "implement", "role": "main" },
+    { "from": "implement", "to": "spot_check", "role": "main", "label": "SendMessage 回报" },
+    { "from": "spot_check", "to": "merge", "role": "main", "label": "通过" },
+    { "from": "merge", "to": "merged_verify", "role": "main", "label": "全套套件 + Tier 1" },
+    { "from": "merged_verify", "to": "deploy", "role": "main", "label": "绿了才上" }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "这次为什么顺",
+      "items": [
+        "闸门写成待证前提：四条 lane 全部推翻过 hub，四次都对",
+        "卡片自带完整设计，实现者不用猜，也不许重新设计",
+        "验收点名观测量，抽查只要一次 grep，不必重读全部代码",
+        "合并粒度小、--no-ff、main 只归 Allen，回滚永远是一条命令",
+        "deploy 之后重回实机，现象再进队列，这条闭环是流程的起点"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "这次踩的坑",
+      "items": [
+        "只盯 launcher.py 派活，没先查 card.sh 怎么启动 → 修好的不在他那条路上",
+        "给 lane 的 nm 证据没写清是哪个 Mach-O 文件，害它纠正一个本来就对的方法",
+        "合并树验证是临时补的，不是流程里的固定一步",
+        "start.sh 指着没有 sherpa-onnx 的 venv 漂了一天，8 次 ASR 崩溃没人认领"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "哪些该从散文变成可执行",
+      "items": [
+        "反复犯的错都写在散文里：散文会被跳过，脚本不会",
+        "简报样板、三点 diff、ruff 钉版 → 脚本或 skill",
+        "git add . / 直推 main / 裸 stash → hook 拦截，不靠自觉",
+        "「先查 owner 实际怎么跑」→ 卡片必填项，不是提醒"
+      ]
+    }
+  ]
+}

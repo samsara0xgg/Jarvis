@@ -89,10 +89,9 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from jarvis.deployment.sleep_wake import PowerObserver
-    from jarvis.execution.action_runner import ActionRunner
+    from jarvis.runtime.work_state import WorkStateService
     from jarvis.shared.realtime import PresentationIntent
     from jarvis.state.committed_event_bus import CommittedEventBus
-    from jarvis.state.projections import ClaimEvidenceProjection
 
 from jarvis.decision.commentary import (
     COMMENTARY_ATTENTION_CHANNEL,
@@ -116,7 +115,7 @@ from jarvis.deployment import inherent_v2_token_matches, rotate_inherent_v2_toke
 from jarvis.deployment.launchd import repo_root
 from jarvis.deployment.process_lock import acquire_exclusive
 from jarvis.deployment.sleep_wake import install_power_observer, sweep_overdue_actions
-from jarvis.execution.tools import live_action_ids, running_action_ids
+from jarvis.execution.tools import live_action_ids
 from jarvis.runtime import (
     JarvisRuntime,
     TriggerWaitTimeout,
@@ -130,6 +129,8 @@ from jarvis.runtime import (
     _observer_repo_paths,
     _positive_float,
     _positive_int,
+    _timesink_db_path,
+    _timesink_poll_interval_s,
     _wait_for_next_trigger,
     drive_turn,
     make_barge_in_interrupt_callable,
@@ -207,6 +208,7 @@ from jarvis.surface.inherent_server import (
 )
 from jarvis.surface.playback_recovery import reconcile_open_playback
 from jarvis.surface.repo_observer import RepoObserver
+from jarvis.surface.timesink_observer import TimesinkHead, TimesinkObserver
 from jarvis.surface.usage_observer import UsageConfig, UsageObserver, latest_usage
 
 LOGGER = logging.getLogger("jarvis.runtime.inherent_loop")
@@ -829,24 +831,6 @@ def _reconcile_open_responses_in_thread(
         with contextlib.suppress(sqlite3.Error):
             conn.close()
     return len(events)
-
-
-def _reconcile_action_quarantine_in_thread(
-    action_runner: ActionRunner,
-    event_log_path: Path,
-) -> tuple[str, ...]:
-    """Re-establish repository quarantine at boot (ADR-0008 D9 / F23).
-
-    Runs on an ``asyncio.to_thread`` worker with its OWN connection, for the
-    same ``check_same_thread`` reason as the response reconciler above.
-    Returns the action ids whose leases were re-taken.
-    """
-    conn = open_event_log(event_log_path)
-    try:
-        return action_runner.reconcile_quarantine(conn)
-    finally:
-        with contextlib.suppress(sqlite3.Error):
-            conn.close()
 
 
 def _reconcile_open_playback_in_thread(
@@ -1701,11 +1685,11 @@ def _emit_pre_emit_verdict(
 def _commentary_action_turn_id(conn: sqlite3.Connection, action_event: Event) -> str | None:
     """Return the turn an action row belongs to, following its own chain.
 
-    The row's correlation is read first, but it is not always filled: the
-    ActionRunner's canonical terminals reach
+    The row's correlation is read first, but it is not always filled: a
+    canonical terminal can reach
     :func:`jarvis.state.lifecycle_terminal.terminalize_action` with an empty
-    correlation on the inline synchronous path, so ``action.result_observed``
-    commits without a ``turn_id``. The action's own ``action.dispatched`` row
+    correlation, so ``action.result_observed`` commits without a
+    ``turn_id``. The action's own ``action.dispatched`` row
     always carries one (``_action_correlation`` fills it from the
     ActionRequest), and joining through it is the same causal chain A5's
     ``ActionAdmissions`` exposes — durable and unambiguous, unlike guessing
@@ -1854,14 +1838,13 @@ def _complete_commentary(runtime: JarvisRuntime, entry: _OpenCommentary) -> None
     entry.run.mark("completed")
 
 
-def _render_commentary(  # noqa: PLR0913 - the run's five independent inputs
+def _render_commentary(
     runtime: JarvisRuntime,
     conn: sqlite3.Connection,
     *,
     intent: PresentationIntent,
     action_event: Event,
     turn_id: str,
-    claim_evidence: ClaimEvidenceProjection,
 ) -> _OpenCommentary:
     """Open one ``phase="commentary"`` run and deliver its single segment.
 
@@ -1911,7 +1894,7 @@ def _render_commentary(  # noqa: PLR0913 - the run's five independent inputs
     # No subject is in scope for a fixed lifecycle phrase, so the Pre-emit
     # Gate short-circuits to its routine pass-through and hands back the
     # token `render_response` demands.
-    plan = pre_emit_gate(commentary_speech_text(intent), claim_evidence, None)
+    plan = pre_emit_gate(commentary_speech_text(intent))
     _emit_pre_emit_verdict(conn, plan=plan, turn_id=turn_id)
     render_response(
         record_pre_emit_token(
@@ -1995,10 +1978,7 @@ def _open_commentary_in_worker_thread(  # noqa: PLR0911 - one early return per s
             # never consume the turn's only slot: a turn whose first
             # qualifying row is silenced still speaks on a later row.
             return None
-        projections = rebuild_projections(
-            conn,
-            entity_bookmarks=runtime.entity_bookmarks,
-        )
+        projections = rebuild_projections(conn)
         slot = projections.pending_confirmations.slot
         if slot is not None and slot.is_live(int(time.time() * 1000)):
             # ADR-0014: new commentary never overwrites an unresolved
@@ -2008,7 +1988,7 @@ def _open_commentary_in_worker_thread(  # noqa: PLR0911 - one early return per s
             return None
         if (
             action_event.type in _COMMENTARY_NON_TERMINAL_TYPES
-            and f"action:{intent.subject_ref}" not in projections.entity_registry.entries_by_id
+            and projections.action_admissions.get(intent.subject_ref) is None
         ):
             return None
         if previous is not None:
@@ -2019,7 +1999,6 @@ def _open_commentary_in_worker_thread(  # noqa: PLR0911 - one early return per s
             intent=intent,
             action_event=action_event,
             turn_id=turn_id,
-            claim_evidence=projections.claim_evidence,
         )
     finally:
         with contextlib.suppress(sqlite3.Error):
@@ -3265,9 +3244,8 @@ def _spawn_voice_input_owners(  # noqa: PLR0913 - composition boundary dependenc
 # already produces the Limitation claim + limitation utterance, which is
 # why the sweep stays an emitter rather than a second brain.
 #
-# The happy-path re-entries (``worker.reported`` /
-# ``action.result_observed``) are deliberately absent: those are only
-# ever written from inside a live driver mid-turn, so a system turn on
+# The happy-path re-entry (``action.result_observed``) is deliberately
+# absent: it is only ever written from inside a live driver mid-turn, so a system turn on
 # one would re-drive work somebody else is already driving, and their L3
 # branches expect mid-turn scratch state a fresh turn does not have.
 _SYSTEM_TRIGGER_TYPES: tuple[str, ...] = (
@@ -3474,19 +3452,12 @@ async def _system_trigger_watcher(
        skips it and advances the cursor past it. The two predicates
        partition the terminal-event stream: no row is claimed twice, and
        no row with an ``action_id`` is dropped by both.
-    3. **A row the RUNNER still owns is held, not dropped.** Since
-       ADR-0008 Step 4 a background worker outlives its turn, so
-       :func:`live_action_ids` covers two claims and only one of them —
-       the live turn's — implies somebody will consume the row. For the
-       runner's claim the cursor still advances (the row is off the
-       query), but the row itself waits in ``held`` until L4 lets go;
-       otherwise an ``action.failed`` written a millisecond before the
-       runner's ``on_finished`` hook fires would be silently lost.
 
     The system turn itself is just ``drive_turn`` on a worker thread with
     the terminal row as its trigger: L3's
-    ``_handle_action_terminal_failure`` branch folds the Limitation claim
-    and the ADR-0002 amendment routes it to ``queue_review``. The sweep
+    ``_handle_action_terminal_failure`` branch answers with the canonical
+    limitation text and the ADR-0002 amendment routes it to
+    ``queue_review``. The sweep
     is an emitter, not a second brain.
 
     Cancellation: re-raises :class:`asyncio.CancelledError` so
@@ -3494,11 +3465,6 @@ async def _system_trigger_watcher(
     """
     after_id = anchor_id
     LOGGER.info("system_trigger_watcher started (after_id=%d)", after_id)
-    # Rows whose action the runner had not finished yet. HELD, never
-    # dropped: the cursor has already advanced past them, so a `continue`
-    # would lose the row for good, and L4 letting go a millisecond later
-    # is precisely when the orphan becomes real.
-    held: list[Event] = []
     # Set BEFORE the first poll and before anything that could raise: the
     # caller is blocked on this event and will not run the bootstrap
     # sweep until it fires.
@@ -3510,22 +3476,15 @@ async def _system_trigger_watcher(
                 after_id=after_id,
                 event_types=_SYSTEM_TRIGGER_TYPES,
             )
-            pending = [*held, *(ev for _row_id, ev in new_events)]
-            held = []
             for row_id, _ev in new_events:
                 after_id = max(after_id, row_id)
-            for ev in pending:
+            for _row_id, ev in new_events:
                 action_id = _event_action_id(ev)
                 if action_id is None:
                     continue
                 if action_id in live_action_ids():
-                    if action_id in running_action_ids():
-                        # L4 has not finished this action. It is not an
-                        # orphan yet — but nothing else will re-offer the
-                        # row, so hold it rather than drop it.
-                        held.append(ev)
-                    # Otherwise a live turn is driving it and will fold its
-                    # own terminal; a system turn would double-handle it.
+                    # A live turn is driving it and will fold its own
+                    # terminal; a system turn would double-handle it.
                     continue
                 if trigger_was_consumed(runtime.conn, ev.event_uid):
                     continue
@@ -3863,6 +3822,69 @@ def _start_usage_observer(
             name="usage_observer",
         ),
     ]
+
+
+async def _poll_timesink_once(
+    observer: TimesinkObserver, on_checked: Callable[[TimesinkHead], None] | None = None
+) -> None:
+    """Read the head off the loop thread, emit on it — the usage observer's split.
+
+    ``on_checked`` sees every read, changed or not: the work-state view's
+    "checked" clock must move even when the head did not.
+    """
+    try:
+        head = await asyncio.to_thread(observer.collect)
+    except Exception:  # one bad cycle must not kill the observer task.
+        LOGGER.exception("timesink_observer: collect failed; skipping cycle.")
+        return
+    if on_checked is not None:
+        on_checked(head)
+    try:
+        observer.emit(head)
+    except Exception:  # an emit failure is logged, never fatal to the daemon.
+        LOGGER.exception("timesink_observer: emit failed; baseline unchanged.")
+
+
+async def _timesink_observer_task(
+    observer: TimesinkObserver,
+    *,
+    interval_s: float,
+    on_checked: Callable[[TimesinkHead], None] | None = None,
+) -> None:
+    """ADR 0023 background sync: poll first, then every ``interval_s``; never a model call."""
+    LOGGER.info("timesink_observer started (interval=%.0fs)", interval_s)
+    try:
+        while True:
+            await _poll_timesink_once(observer, on_checked)
+            await asyncio.sleep(interval_s)
+    except asyncio.CancelledError:
+        LOGGER.info("timesink_observer cancelled")
+        raise
+
+
+def _start_timesink_observer(runtime: JarvisRuntime) -> list[asyncio.Task[None]]:
+    """Start the head poll when ``observer.timesink`` is enabled; baseline from the log."""
+    path = _timesink_db_path(runtime.config)
+    if path is None:
+        LOGGER.info("timesink_observer: observer.timesink disabled; observer not started.")
+        return []
+    observer = TimesinkObserver(runtime.conn, path)
+    observer.recover_baseline()
+    return [
+        asyncio.create_task(
+            _timesink_observer_task(
+                observer,
+                interval_s=_timesink_poll_interval_s(runtime.config),
+                on_checked=None if runtime.work_state is None else runtime.work_state.note_checked,
+            ),
+            name="timesink_observer",
+        ),
+    ]
+
+
+async def _refresh_work_state_now(service: WorkStateService) -> dict[str, Any]:
+    """``POST /inherent/work-state/refresh``: the single-flight analysis on its own connection."""
+    return await asyncio.to_thread(service.refresh_in_own_connection, trigger="dashboard")
 
 
 def _install_power_observer_or_degrade(
@@ -4462,9 +4484,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         voice_pipeline_callable: Any | None = None
         # ADR-0005 §5.1 / §5.3: ONE shared SystemAudioDucker arbitrates
         # wake-capture muting against TTS provider/playback output leases.
-        shared_ducker: voice_ducking.SystemAudioDucker = (
-            voice_ducking.SystemAudioDucker()
-        )
+        shared_ducker: voice_ducking.SystemAudioDucker = voice_ducking.SystemAudioDucker()
 
         live_voice: voice_live.LiveVoice | None = None
 
@@ -4630,20 +4650,6 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         # work is accepted against a tree whose stash was never restored. The
         # re-taken lease has no execution context, so nothing in this process
         # can release it — clearing it is a human's job, which is the point.
-        if runtime.action_runner is not None:
-            quarantined = await asyncio.to_thread(
-                _reconcile_action_quarantine_in_thread,
-                runtime.action_runner,
-                runtime.runtime_paths.event_log,
-            )
-            if quarantined:
-                LOGGER.warning(
-                    "boot reconciliation re-quarantined %d repository lease(s) "
-                    "for action(s) that terminated without cleanup: %s",
-                    len(quarantined),
-                    ", ".join(quarantined),
-                )
-
         # ADR-0008 §4.4 — the live playback actor is the only writer of a
         # playback terminal, so a process killed mid-playback leaves its
         # generation open forever. Close each one here, third and last, in
@@ -4723,6 +4729,16 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 if usage_observer is None
                 else functools.partial(_refresh_usage_now, usage_observer, runtime.conn)
             ),
+            work_state_read=(
+                None
+                if runtime.work_state is None
+                else functools.partial(runtime.work_state.read, runtime.conn)
+            ),
+            work_state_refresh=(
+                None
+                if runtime.work_state is None
+                else functools.partial(_refresh_work_state_now, runtime.work_state)
+            ),
             barge_in_confirm_callable=(
                 duplex_voice_session.confirm_ptt_barge_in
                 if duplex_voice_session is not None and duplex_voice_session.barge_in_armed
@@ -4744,7 +4760,8 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 ),
                 attach_client=None if inherent_view is None else inherent_view.attach_client,
                 submit_text=functools.partial(
-                    _submit_text_v2, runtime.runtime_paths.event_log,
+                    _submit_text_v2,
+                    runtime.runtime_paths.event_log,
                 ),
                 submit_asr=(
                     None
@@ -4879,6 +4896,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         # that anchor-then-bootstrap ordering.
         watchers.extend(_start_repo_observer(runtime))
         watchers.extend(_start_usage_observer(usage_observer, runtime.config))
+        watchers.extend(_start_timesink_observer(runtime))
 
         # ADR-0009 D3 — power observer, installed after the lock (which
         # stays the outermost scope) and immediately before the try/finally
@@ -4939,23 +4957,10 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             for w in watchers:
                 w.cancel()
             await asyncio.gather(*watchers, return_exceptions=True)
-            # ADR-0008 D9 (Step 4). With truly background workers a Codex
-            # subprocess can still be running once the watchers are gone.
-            # Draining it here means a stopped daemon leaves a terminalized
-            # action and a restored tree, not an orphan holding a stashed
-            # repository until the next boot's quarantine scan finds it.
-            if runtime.action_runner is not None:
-                drained = await asyncio.to_thread(
-                    runtime.action_runner.shutdown,
-                    cancel=True,
-                    reason="daemon_shutdown",
-                )
-                if drained:
-                    LOGGER.info(
-                        "shutdown cancelled %d in-flight action(s): %s",
-                        len(drained),
-                        ", ".join(drained),
-                    )
+            # ADR 0019: the codex app-server child goes with the daemon; its
+            # open worker_edges rows become closed.
+            if runtime.workers is not None:
+                await asyncio.to_thread(runtime.workers.stop)
             _shutdown_tts(tts_pipe)
             # Force-restore output volume in case a duck escaped a finally
             # block on the way down (best-effort; idempotent if depth == 0).

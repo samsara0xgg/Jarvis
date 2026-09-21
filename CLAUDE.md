@@ -6,7 +6,8 @@ Jarvis is Allen's private state-centric runtime.
 
 - For changes that alter cross-layer contracts, persistent state semantics,
   public interfaces, or architectural ownership, settle the design before
-  implementation. Record durable architectural decisions as ADRs.
+  implementation. Record durable architectural decisions as ADRs, in the
+  format `docs/adr/README.md` defines and `scripts/check_adrs.py` asserts.
 - For local changes whose behavior and boundaries are already clear, implement
   directly without creating design ceremony.
 - Keep changes scoped to the requested behavior.
