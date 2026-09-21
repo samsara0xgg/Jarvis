@@ -151,6 +151,7 @@ def live(tmp_path: Path) -> Iterator[LiveRig]:
         fx.conn,
         int((now - timedelta(days=_IMPORT_DAYS)).timestamp() * 1000),
     )
+    sessions = Path.home() / ".codex" / "sessions"
     service = DailyReportService(
         memory_path=memory,
         timesink_path=frozen,
@@ -158,6 +159,7 @@ def live(tmp_path: Path) -> Iterator[LiveRig]:
         reporter=reporter,
         model=config["work_state"]["preset"],
         tz=zone,
+        codex_sessions_path=sessions if sessions.is_dir() else None,
     )
     tools = build_default_registry(
         memory_db_path=memory,

@@ -653,7 +653,7 @@ title, note, basis), <code>uncertainties[]</code>, <code>note</code> (the user's
 analysis), <code>question</code>, <code>model</code>. A claim is <code>{text, basis, refs}</code> where
 basis is <code>stated</code> (Allen said it: an Allen-authored record or the note), <code>observed</code>
 (app/window/screen data) or <code>inferred</code> (the model's reading), and refs are the durable
-source references (record:, event:, timesink:, timesink-capture:, note) behind it. The rules are
+source references (record:, event:, timesink:, timesink-capture:, git:, codex-session:, note) behind it. The rules are
 enforced on save, not by prompt: refs the model did not receive are dropped; a stated claim without a
 Allen-authored record or note ref and an observed claim without a TimeSink ref become inferred and are counted in
 uncertainties; a record with inferred claims always carries an uncertainty; <code>now</code> is kept
@@ -705,7 +705,7 @@ drift apart. A skill carries instructions only: the procedure, the evidence caps
 and every rule enforced on save are code in L2/L3/runtime. Skills are not discovered dynamically,
 are not user-editable at runtime, and never carry credentials or executable steps.</p>
 
-<p id="daily-work-report"><strong>Daily work report (ADR 0024).</strong> One local calendar day,
+<p id="daily-work-report"><strong>Daily work report (ADR 0025).</strong> One local calendar day,
 one saved briefing. <code>daily_work_report</code> and the runtime job behind it resolve the day
 in <code>work_state.timezone</code> (argument <code>timezone</code> overrides, unset falls back to
 the system IANA zone): no <code>local_date</code> means the previous local date, never now minus
@@ -717,23 +717,31 @@ the next version through <code>save_briefing</code>'s own <code>expected_version
 stale writer gets <code>version_conflict</code> and the saved report stands. Evidence is gathered
 once per run: the day's TimeSink spans aggregated per app and per window, its captures grouped per
 window and per hour (the longest OCR text of each group), TimeSink state events, that day's
-memory.db records, that day's Git observations, plus open todos, active knowledge and the previous
-day's report as context that is labelled not-today. Commits are deduplicated by
-<code>commit_sha</code> across repository paths, each entry naming every path it was seen in, and
-carry both their commit time and their observation time with a <code>late</code> flag when the two
-fall on different local days. Every cap that clipped material names the omitted count and is
-written into the material and into the saved report. Empty evidence is <code>no_evidence</code>
-and writes nothing. The model receives the skill's instructions, the keyed material, and exactly
-two tools: <code>request_details</code>, which returns the originals behind up to ten keys (full
-OCR text, exact record text, the raw Git payload or the stored span row, whose bare GRDB times are
-labelled UTC), and <code>report_daily_work</code>. At most three model calls per run: a model that
-asks again instead of reporting is served its details and told to report. A malformed report fails
-the run without replacing the saved version, and a provider failure keeps it too
-(<code>outcome=failed</code> with the round and finish reason). The saved text is composed by
+memory.db records, that day's commits read from every watched local repository (each local
+branch, filtered by committer time, marked on <code>main</code> or not) with the observer's
+<code>project.commit_seen</code> events folded in by SHA for the observation time, that day's Codex
+session files (<code>~/.codex/sessions</code>, first prompt and last reply, labelled as the agent's
+own account), plus open todos, active knowledge and the previous day's report as context that is
+labelled not-today. Commits are deduplicated by SHA across repository paths, each entry naming
+every path it was found in, and carry both their commit time and their observation time (or
+观察器未记录) with a <code>late</code> flag when the commit fell on another local day. Every cap
+that clipped material names the omitted count and is written into the material and into the saved
+report, and every capture, window and record of the day is a citable key whether listed or not.
+Empty evidence is <code>no_evidence</code> and writes nothing. The model receives the skill's
+instructions, the keyed material, and three tools: <code>search_material</code>, a keyword search
+over the whole day (capture text in the store; windows, records, commits and sessions in memory)
+returning up to twenty keys with a line of context; <code>request_details</code>, which returns
+the originals behind up to ten keys (full OCR text, exact record text, <code>git show --stat</code>
+of a commit, a session's prompts and last reply, or the stored span row, whose bare GRDB times are
+labelled UTC); and <code>report_daily_work</code>. Calls use <code>tool_choice=auto</code>. At
+most four model calls per run: two rounds in which the model may search or ask, after which it is
+told to report, and one retry of an unusable report. A malformed report fails the run without
+replacing the saved version, and a provider failure keeps it too (<code>outcome=failed</code> with
+the round and finish reason). The saved text is composed by
 code, not by the model: refs the model was not given are dropped and counted; every item is
 labelled with what it cites — each same-day commit by short SHA and each Allen-authored record by
-its material key, or else screen and app records alone, or no valid reference — which asserts
-nothing about whether that source
+its material key, or else Codex session self-report alone, screen and app records alone, or no
+valid reference — which asserts nothing about whether that source
 supports the claim. A completed item that cites neither is named by number as an uncertainty,
 not relabelled; a <code>user_next_steps</code> entry that cites no Allen-authored record is
 removed from that section and quoted as an uncertainty; coverage, evidence counts and every
@@ -742,8 +750,10 @@ model's prose followed by every item's number and title under its status, split 
 items by whether a same-day commit or an Allen-authored record stands behind it, so a summary
 cannot outrun the body unnoticed. Each cited source is written out once, in
 证据引用, and the body cites it by number; the first 20 are also saved as the briefing's
-<code>source_refs</code>, so every claim is re-checkable through
-<code>read_activity</code> / <code>read_records</code>. Saving a report still delivers nothing, and
+<code>source_refs</code>, which the store checks on save (<code>git:&lt;repo&gt;:&lt;sha&gt;</code>
+with <code>git cat-file</code>, <code>codex-session:&lt;file&gt;</code> as a file), so every claim
+is re-checkable through <code>read_activity</code> / <code>read_records</code>, the repository or
+the session file. Saving a report still delivers nothing, and
 a suggestion inside a report creates no todo and triggers no action. Reports exceeding the composition
 budget fail without saving, preserving the previous version; no body or citation index is truncated.</p>
 
