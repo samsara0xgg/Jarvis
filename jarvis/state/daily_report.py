@@ -625,6 +625,7 @@ def codex_session(
     meta: dict[str, Any] = {}
     asks: list[str] = []
     answers: list[str] = []
+    turns: list[tuple[str, str, str]] = []
     first = last = None
     with path.open(encoding="utf-8") as handle:
         for line in handle:
@@ -647,12 +648,14 @@ def codex_session(
             if (start and moment < start) or (end and moment >= end):
                 continue
             text = _message_text(payload)
-            if payload.get("role") == "user":
+            role = str(payload.get("role"))
+            if role == "user":
                 asks.append(text)
-            elif payload.get("role") == "assistant":
+            elif role == "assistant":
                 answers.append(text)
             else:
                 continue
+            turns.append((moment.isoformat(timespec="seconds"), role, text))
             first = moment if first is None else first
             last = moment
     return {
@@ -661,6 +664,7 @@ def codex_session(
         "originator": str(meta.get("originator") or "codex"),
         "asks": asks,
         "answers": answers,
+        "turns": turns,
         "first": first,
         "last": last,
     }
@@ -846,15 +850,17 @@ def search_day(
     return f"「{query}」命中 {len(hits)} 处：\n{listed}{more}"
 
 
+def git_show(repo: str, sha: str) -> str | None:
+    """The commit's header, message and changed files; None when the repository cannot show it."""
+    return _git(repo, ("show", "--stat", "--format=%H%n%an %ci%n%n%B", sha))
+
+
 def _commit_detail(key: str, evidence: DayEvidence) -> str | None:
     """The commit itself, from the repository it was found in, for a commit key."""
     commit = next((row for row in evidence.sections.get("git", []) if row["key"] == key), None)
     if commit is None:
         return None
-    shown = _git(
-        commit["paths"].split(", ")[0],
-        ("show", "--stat", "--format=%H%n%an %ci%n%n%B", commit["sha"]),
-    )
+    shown = git_show(commit["paths"].split(", ")[0], commit["sha"])
     return None if shown is None else f"[{key}]\n{shown[:DETAIL_TEXT]}"
 
 

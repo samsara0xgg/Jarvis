@@ -768,6 +768,55 @@ def test_a_session_continued_later_shows_only_that_days_turns(
         rig.fx.close()
 
 
+def test_saved_git_and_session_refs_read_back_through_read_activity(
+    tmp_path: Path, source: sqlite3.Connection
+) -> None:
+    """The references a saved report carries resolve later through the ordinary tool.
+
+    A git: ref reads as the commit (git show --stat); a codex-session: ref as
+    the session's dated turns; a missing one is not_found.
+    """
+    add_span(source, "2026-09-19 16:00:00.000", "2026-09-19 17:00:00.000")
+    repo = tmp_path / "repo"
+    shas = git_repo(repo, [("feat: readable later", "2026-09-19T10:00:00-07:00", "main")])
+    sessions = tmp_path / "sessions"
+    talked = codex_session_file(
+        sessions,
+        "2026-09-19T20:00:00Z",
+        "sess-read",
+        [
+            ("2026-09-19T20:00:01Z", "user", "先看看"),
+            ("2026-09-19T20:00:02Z", "assistant", "看完了，没问题。"),
+        ],
+        cwd="/elsewhere",
+    )
+    rig = Rig(
+        tmp_path, timesink=tmp_path / "timesink.sqlite", repos=(str(repo),), codex_sessions=sessions
+    )
+    rig.reporter.report = _one_item("回查", "attempted", ["g1", "c1"])
+    try:
+        assert rig.run()["outcome"] == "generated"
+        saved = rig.call("get_briefing", {"local_date": "2026-09-19", "timezone": ZONE})
+        git_ref = f"git:{repo}:{shas['feat: readable later']}"
+        assert saved["source_refs"] == [git_ref, f"codex-session:{talked}"]
+        commit = rig.call("read_activity", {"activity_id": git_ref})
+        assert commit["kind"] == "git.commit"
+        assert commit["complete"] is True
+        assert shas["feat: readable later"] in commit["content"]
+        assert "feat: readable later" in commit["content"]
+        assert "f0 | 1 +" in commit["content"]
+        session = rig.call("read_activity", {"activity_id": f"codex-session:{talked}"})
+        assert session["kind"] == "codex.session"
+        assert "the agent's own account, not a verified result" in session["content"]
+        assert "2026-09-19T20:00:02+00:00 assistant: 看完了，没问题。" in session["content"]
+        missing = rig.call("read_activity", {"activity_id": f"git:{repo}:{'0' * 40}"})
+        assert missing["code"] == "not_found"
+        gone = rig.call("read_activity", {"activity_id": "codex-session:/no/such.jsonl"})
+        assert gone["code"] == "not_found"
+    finally:
+        rig.fx.close()
+
+
 def test_late_seen_commit_is_marked_not_counted_as_new_work(rig: Rig) -> None:
     """A commit observed today but written days ago is flagged late with its own time."""
     rig.commit(
