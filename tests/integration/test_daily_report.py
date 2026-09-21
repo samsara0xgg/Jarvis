@@ -1091,6 +1091,27 @@ def test_malformed_reports_are_rejected_field_by_field() -> None:
     ]
 
 
+def test_an_over_long_claim_is_cut_at_a_sentence_and_says_so() -> None:
+    """Long activity text ends at its last full sentence inside the cap, never mid-word."""
+    sentences = "提交 e17fbd2（当天，已在 main）修好了锁屏与睡眠状态的区分。" * 12
+    long = parse_report(_reply(
+        {**_one_item("很长的事项", "attempted", []), "items": [
+            {"title": "很长的事项", "status": "attempted", "activity": sentences, "refs": []}
+        ]}
+    ))
+    activity = long["items"][0]["activity"]
+    assert len(activity) <= 400
+    assert activity.endswith("区分。…"), activity[-20:]
+    assert "main）修好" not in activity[-12:], "the cut is at a sentence end, not inside one"
+    # A wall of text with no sentence end is cut at the cap and marked.
+    wall = parse_report(_reply(
+        {**_one_item("无标点", "attempted", []), "items": [
+            {"title": "无标点", "status": "attempted", "activity": "字" * 500, "refs": []}
+        ]}
+    ))["items"][0]["activity"]
+    assert wall == "字" * 399 + "…"
+
+
 def test_report_fits_the_save_limit(rig: Rig) -> None:
     """A bounded report preserves every citation in its saved index."""
     evidence = gather_day(

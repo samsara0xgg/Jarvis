@@ -97,15 +97,18 @@ REPORT_TOOL: dict[str, Any] = {
     "input_schema": {
         "type": "object",
         "properties": {
-            "summary": {"type": "string", "description": "核心摘要，2 到 6 句。"},
+            "summary": {"type": "string", "description": f"核心摘要，三句，不超过 {_SUMMARY} 字。"},
             "items": {
                 "type": "array",
                 "maxItems": _MAX_ITEMS,
                 "description": "按工作事项归并的活动、产出与进展。",
                 "items": _claim_schema(
-                    ("title", {"type": "string"}),
+                    ("title", {"type": "string", "description": f"不超过 {_TITLE} 字。"}),
                     ("status", {"type": "string", "enum": list(STATUSES)}),
-                    ("activity", {"type": "string"}),
+                    (
+                        "activity",
+                        {"type": "string", "description": f"不超过 {_TEXT} 字，超出会在句末截断。"},
+                    ),
                 ),
             },
             "decisions": {
@@ -113,8 +116,11 @@ REPORT_TOOL: dict[str, Any] = {
                 "maxItems": _MAX_DECISIONS,
                 "description": "重要决定与方案变化；rationale 有依据才填，否则 null。",
                 "items": _claim_schema(
-                    ("text", {"type": "string"}),
-                    ("rationale", {"type": ["string", "null"]}),
+                    ("text", {"type": "string", "description": f"不超过 {_TEXT} 字。"}),
+                    (
+                        "rationale",
+                        {"type": ["string", "null"], "description": f"不超过 {_SHORT} 字。"},
+                    ),
                 ),
             },
             "open_items": {
@@ -304,8 +310,19 @@ def requested_queries(result: ChatResult) -> list[tuple[str, str, Any]]:
     return queries
 
 
+_BREAKS = "。；！？.;!?\n"
+
+
 def _text(value: Any, limit: int) -> str:  # noqa: ANN401 — model output.
-    return " ".join(str(value).split())[:limit]
+    """One line, at most ``limit`` characters, cut at the last sentence end when too long."""
+    flat = " ".join(str(value).split())
+    if len(flat) <= limit:
+        return flat
+    head = flat[: limit - 1]
+    stop = max(head.rfind(mark) for mark in _BREAKS)
+    if stop >= limit // 2:
+        return head[: stop + 1] + "…"
+    return head + "…"
 
 
 def _malformed(what: str) -> NoReturn:
