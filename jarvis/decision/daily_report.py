@@ -29,11 +29,7 @@ REPORT_AGAIN = "上一次汇报无法解析，请按 schema 重新调用 report_
 """Served after an unusable reply: providers malform or truncate long arguments now and then."""
 STATUSES = ("browsed", "discussed", "attempted", "completed")
 CONTENT_LIMIT = 44000
-"""Sized for the whole day cited: every source written once, plus capped prose and ref numbers.
-
-ponytail: not a proof — a model that cites every key in every claim still overruns and is
-truncated with a note. Cap the refs per claim if that ever stops being hypothetical.
-"""
+"""Reports exceeding this budget fail without saving or dropping their citation index."""
 MAX_SOURCE_REFS = 20
 _STATUS_LABELS = {
     "browsed": "浏览",
@@ -41,21 +37,24 @@ _STATUS_LABELS = {
     "attempted": "尝试/进行中",
     "completed": "完成",
 }
-# The grade is the class of the cited source. It never says the source supports the claim, and
-# it never clears a status: only the report model can read a quote, so 完成 stays the model's.
-_GRADE_LABELS = {
-    "confirmed": "引用来源：当天的 Git 提交，或 Allen 本人的记录",
-    "screen": "引用来源：仅屏幕/应用记录",
-    "inferred": "引用来源：无有效引用",
+# The proof label names what the item actually cites — which commit, which of Allen's records —
+# so a reader sees at once when a completed item leans on an unrelated commit or on nothing.
+# It never says the source supports the claim: only the report model can read a quote.
+_PROOF_NONE = {
+    "screen": "依据：仅屏幕/应用记录",
+    "inferred": "依据：无有效引用",
 }
-_GRADE_SHORT = {
-    "confirmed": "当天提交或本人记录",
-    "screen": "仅屏幕/应用记录",
-    "inferred": "无有效引用",
-}
+_GROUPS = (
+    ("completed", True, "完成（有当天提交或 Allen 原话）"),
+    ("completed", False, "完成（无当天提交或 Allen 原话）"),
+    ("attempted", None, "进行中"),
+    ("discussed", None, "讨论"),
+    ("browsed", None, "浏览"),
+)
+"""核心摘要 lists every item under one of these, by number and title, after the model's prose."""
 _NOT_VERIFIED = (
     "状态（浏览/讨论/尝试/完成）是报告作者的判断；"
-    "运行时只标注每条引用的来源种类，既不核实来源是否支持这条结论，"
+    "运行时只标注每条引用的来源，既不核实来源是否支持这条结论，"
     "也不核实事情是否真的做完。"
 )
 _MAX_ITEMS = 12
@@ -373,6 +372,7 @@ class _Composer:
         self.cited: list[str] = []
         self.unknown = 0
         self._number: dict[str, int] = {}
+        self._key_of = {ref: key for key, ref in evidence.refs.items()}
 
     def refs(self, keys: list[str]) -> list[int]:
         """Citation numbers into ``cited``; a key the model was never given is counted instead.
@@ -396,13 +396,21 @@ class _Composer:
     def source(self, numbers: list[int]) -> list[str]:
         return [self.cited[number - 1] for number in numbers]
 
-    def grade(self, numbers: list[int]) -> str:
+    def proof(self, numbers: list[int]) -> tuple[str, str]:
+        """The class of what an item cites, and a label naming the commits or records behind it."""
         refs = self.source(numbers)
-        if any(r in self.evidence.commits or r in self.evidence.stated for r in refs):
-            return "confirmed"
+        shas = [self.evidence.commits[r] for r in refs if r in self.evidence.commits]
+        said = [self._key_of[r] for r in refs if r in self.evidence.stated]
+        if shas or said:
+            parts = []
+            if shas:
+                parts.append("当天提交 " + "、".join(shas))
+            if said:
+                parts.append("Allen 原话 " + "、".join(said))
+            return "confirmed", "依据：" + "；".join(parts)
         if any(r.startswith("timesink") for r in refs):
-            return "screen"
-        return "inferred"
+            return "screen", _PROOF_NONE["screen"]
+        return "inferred", _PROOF_NONE["inferred"]
 
     def stated(self, numbers: list[int]) -> bool:
         return any(r in self.evidence.stated for r in self.source(numbers))
@@ -427,25 +435,31 @@ def _bullets(rows: list[dict[str, Any]], composer: _Composer, empty: str) -> lis
 
 
 def _fit(content: str) -> str:
-    """Last resort only: the capped prose and one line per cited source fit by construction."""
-    if len(content) <= CONTENT_LIMIT:
-        return content
-    note = "\n…（报告超出保存上限，已截断。）"
-    return content[: CONTENT_LIMIT - len(note)] + note
+    """Never persist a report whose body or citation index would be cut off."""
+    if len(content) > CONTENT_LIMIT:
+        message = f"report exceeds {CONTENT_LIMIT} characters; nothing saved or truncated"
+        raise DailyReportParseError(message)
+    return content
 
 
-def _digest(marks: list[str], moved: int) -> list[str]:
-    """Every item's status and grade, by name, inside 核心摘要.
+def _status_lines(items: list[tuple[int, str, str, bool]]) -> list[str]:
+    """Every item by number and title under its status, after the model's prose in 核心摘要.
 
     ``summary_of`` serves this section alone to the conversation, so the prose
-    alone would be the whole report downstream. The digest travels with it: a
-    summary that contradicts the body is contradicted in the same breath, and
-    the reader is told which item, not merely how many.
+    alone would be the whole report downstream. These lines travel with it: a
+    summary that calls something finished is read next to the line that says
+    which items actually cite a same-day commit or Allen's own words.
     """
-    if not marks:
-        return [f"（逐项引用来源：本报告没有归并出工作事项。{_NOT_VERIFIED}）"]
-    tail = f"另有 {moved} 条“下一步”没有 Allen 原话依据，已归入建议。" if moved else ""
-    return [f"（逐项引用来源：{'；'.join(marks)}。{tail}{_NOT_VERIFIED}）"]
+    out = []
+    for status, proven, heading in _GROUPS:
+        names = [
+            f"{index} {title}"
+            for index, title, item_status, confirmed in items
+            if item_status == status and (proven is None or confirmed is proven)
+        ]
+        if names:
+            out.append(f"{heading}：{'、'.join(names)}")
+    return out or ["（本报告没有归并出工作事项。）"]
 
 
 def compose_report(
@@ -457,27 +471,28 @@ def compose_report(
 ) -> tuple[str, list[str], dict[str, str]]:
     """The saved content, its first 20 source refs and its coverage.
 
-    Keys the model was not given are dropped and counted; every claim is graded
-    by the class of source it cites, which never certifies the claim itself and
-    never alters the status the model chose; a next step that does not cite
-    Allen's own words becomes a suggestion; every item's status and grade are
-    restated by name inside 核心摘要, the only section the conversation is
-    served; each cited source is written out once, in 证据引用.
+    Keys the model was not given are dropped and counted; every item is
+    labelled with the commits and Allen-authored records it cites, by name,
+    which never certifies the claim itself; a next step that does not cite
+    Allen's own words is removed from that section and named as an
+    uncertainty; 核心摘要 keeps the model's prose and lists every item under
+    its status, the only section the conversation is served; each cited
+    source is written out once, in 证据引用.
     """
     composer = _Composer(evidence)
     partial = "，这一天尚未结束" if evidence.window["partial"] else ""
     lines = ["## 工作事项"]
-    marks: list[str] = []
-    thin = 0
+    listed: list[tuple[int, str, str, bool]] = []
+    thin: list[int] = []
     for index, item in enumerate(report["items"], 1):
         refs = composer.refs(item["refs"])
-        grade = composer.grade(refs)
+        grade, proof = composer.proof(refs)
         label = _STATUS_LABELS[item["status"]]
         if item["status"] == "completed" and grade != "confirmed":
-            thin += 1
-        marks.append(f"{index} {item['title']}／{label}／{_GRADE_SHORT[grade]}")
+            thin.append(index)
+        listed.append((index, item["title"], item["status"], grade == "confirmed"))
         lines += [
-            f"### {index}. {item['title']} — {label}［{_GRADE_LABELS[grade]}］",
+            f"### {index}. {item['title']} — {label}［{proof}］",
             item["activity"],
             _ref_line(refs),
             "",
@@ -505,8 +520,7 @@ def compose_report(
         "",
         "## 建议（模型提出，非用户承诺）",
     ]
-    suggestions = [*report["suggestions"], *moved]
-    lines += [f"- {text}" for text in suggestions] or ["- 无。"]
+    lines += [f"- {text}" for text in report["suggestions"]] or ["- 无。"]
     lines += ["", "## 数据覆盖与不确定性"]
     covered = "，".join(f"{k}={v}" for k, v in evidence.coverage.items())
     lines.append(f"- 来源覆盖：{covered}。")
@@ -523,12 +537,16 @@ def compose_report(
     if composer.unknown:
         lines.append(f"- 有 {composer.unknown} 处引用不是材料里的键，已丢弃。")
     if thin:
+        which = "、".join(str(index) for index in thin)
         lines.append(
-            f"- 有 {thin} 项标为完成的事项只有屏幕/应用记录或没有有效引用，"
-            "逐项见核心摘要的引用来源一览。"
+            f"- 有 {len(thin)} 项标为完成的事项没有当天提交或 Allen 原话依据：第 {which} 项。"
         )
     if moved:
-        lines.append(f"- 有 {len(moved)} 条“下一步”没有 Allen 原话依据，已归入建议。")
+        quoted = "".join(f"「{text}」" for text in moved)
+        lines.append(
+            f"- 模型把 {len(moved)} 条内容当作 Allen 明确表达的下一步，但引用的不是他的原话，"
+            f"已从该节移除：{quoted}"
+        )
     lines += [f"- {text}" for text in report["uncertainties"]]
     lines += [
         "",
@@ -544,9 +562,10 @@ def compose_report(
         f"{evidence.window['from']} 到 {evidence.window['to']}{partial}；模型 {model}。",
         "",
         _SUMMARY_HEADING,
-        # The digest leads the section: downstream readers are served this section alone.
-        *_digest(marks, len(moved)),
         report["summary"],
+        # Downstream readers are served this section alone: the prose never travels without
+        # the list of what the report actually calls finished, and on what.
+        *_status_lines(listed),
         "",
     ]
     return (

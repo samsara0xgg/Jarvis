@@ -1,6 +1,6 @@
 ---
 name: daily-work-report
-description: Generate, or reuse, the written work report for one local calendar day (default yesterday in Allen's zone). Call when Allen asks for yesterday's or a date's 工作报告 / 日报 / 工作总结, or wants a written account of what he did that day. It reads that day's saved TimeSink app, window and screen data, Git observations, conversation records, todos and knowledge, writes an evidence-cited report and saves it as that date's briefing. outcome=reused means a saved report already existed (pass regenerate=true only when Allen explicitly asks to redo it); no_evidence means nothing was recorded for that day and nothing was saved; failed means the previous version, if any, still stands. Not for "what am I doing now / today so far" (refresh_work_state) and not for reading a saved report unchanged (get_briefing).
+description: Generate, or reuse, the written work report for one local calendar day (default yesterday in Allen's zone). Call when Allen asks for yesterday's or a date's 工作报告 / 日报 / 工作总结, or wants a written account of what he did that day. It reads that day's saved TimeSink app, window and screen data, Git commits, conversation records, todos and knowledge, writes an evidence-cited report and saves it as that date's briefing. outcome=reused means a saved report already existed (pass regenerate=true only when Allen explicitly asks to redo it); no_evidence means nothing was recorded for that day and nothing was saved; failed means the previous version, if any, still stands. Not for "what am I doing now / today so far" (refresh_work_state) and not for reading a saved report unchanged (get_briefing).
 ---
 
 # 每日工作报告
@@ -22,25 +22,25 @@ description: Generate, or reuse, the written work report for one local calendar 
 - `timezone`：IANA 时区名，缺省为配置的本地时区。
 - `regenerate`：明确要求重新生成时为 true；否则已有报告直接复用。
 
-## 执行流程（由运行时负责，供你了解材料来源）
+## 材料
 
-1. 已有该日报告且未要求重生成，直接复用，不调用模型。
-2. 取该日当地 [00:00, 24:00) 窗口内的应用时段、屏幕内容、TimeSink 状态事件、
-   Git 观察和对话记录；另附未完成待办、已保存知识、前一天的报告作为上下文。
-3. 材料超出预算时按固定规则筛选，遗漏范围写进"材料范围说明"。
-4. 第一轮你可以用 `request_details` 索取至多 10 条关键条目的原文；之后必须用
-   `report_daily_work` 汇报。第一轮直接汇报也可以。
-5. 运行时校验每条引用、依据等级和"下一步"的出处，组装并保存报告。保存失败即失败，
-   不会覆盖已有版本。
+- 材料取该日当地 [00:00, 24:00) 窗口内的应用时段、屏幕内容、TimeSink 状态事件、
+  Git 提交和对话记录；另附未完成待办、已保存知识、前一天的报告作为上下文。
+- 材料超出预算时按固定规则筛选，遗漏范围写在"材料范围说明"里。
+- 第一轮你可以用 `request_details` 索取至多 10 条关键条目的原文；之后必须用
+  `report_daily_work` 汇报。第一轮直接汇报也可以。
 
 ## 质量要求
 
 - 用客观、清晰的书面中文。信息量随证据多少变化：证据多就写全，证据少就写短，
   不为填满栏目编造，也不评价 Allen 勤奋与否。
 - 完整不等于堆积 OCR。保留关键事实、结论和进展，细节靠引用回查。
-- 浏览、讨论、尝试、完成必须区分（`status`）。
-- 演示界面、示例、计划、引用文字、模型自述都不证明实际执行。屏幕上出现"已完成"
-  "部署成功"之类提示，不等于事情真的完成；只有 Git 提交或 Allen 本人陈述才算佐证。
+- 浏览、讨论、尝试、完成必须区分（`status`）。`completed` 的条件和正文的来源写法
+  见报告格式。
+- 演示界面、示例、计划、引用文字、代理自述都不证明实际执行。屏幕上出现"已完成"
+  "部署成功""测试通过"之类文字，不等于事情真的完成；只有当天的 Git 提交或 Allen
+  本人陈述才算实证。Codex、Claude 这类代理说"已合入 main""已重启""验收通过"，
+  是它们的自述，正文要写成"据 Codex 自述"，状态最多到 `attempted`。
 - 发生时间和观察时间要分开。材料里标为 late 的提交是那天才被看到的旧提交，不算当天新工作。
 - 同一提交跨 worktree 出现已经去重，按提交计数，不按路径计数。
 - 应用打开时长是估计，不是有效工作时长；不要把时长直接说成工作量。

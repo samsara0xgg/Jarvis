@@ -114,7 +114,8 @@ class DayEvidence:
     sections: dict[str, list[dict[str, Any]]]
     refs: dict[str, str] = field(default_factory=dict)
     stated: frozenset[str] = frozenset()
-    commits: frozenset[str] = frozenset()
+    commits: dict[str, str] = field(default_factory=dict)
+    """Same-day commit refs and their short SHAs: what a proof label may name."""
 
     @property
     def empty(self) -> bool:
@@ -147,7 +148,7 @@ class _Gather:
     coverage: dict[str, str] = field(default_factory=dict)
     limits: list[str] = field(default_factory=list)
     stated: set[str] = field(default_factory=set)
-    commits: set[str] = field(default_factory=set)
+    commits: dict[str, str] = field(default_factory=dict)
     latest: datetime | None = None
 
     def clock(self, value: str) -> str:
@@ -421,7 +422,7 @@ def _git_sections(g: _Gather, conn: sqlite3.Connection, repos: Sequence[str]) ->
         late = committed.date() != g.day
         if not late:
             # An older commit only seen today is evidence of its own day, not of this one.
-            g.commits.add(ref)
+            g.commits[ref] = entry["sha"][:7]
         git.append(
             {
                 "key": key,
@@ -537,7 +538,7 @@ def gather_day(  # noqa: PLR0913 — the configured stores plus the day, its zon
         sections=g.sections,
         refs=g.refs,
         stated=frozenset(g.stated),
-        commits=frozenset(g.commits),
+        commits=dict(g.commits),
     )
 
 

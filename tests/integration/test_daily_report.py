@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import closing
+from dataclasses import replace
 from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
@@ -506,21 +507,23 @@ def test_screen_demo_text_does_not_become_a_completed_task(rig: Rig) -> None:
     """A "deploy finished" banner on screen cannot verify completion."""
     assert rig.run()["outcome"] == "generated"
     content = rig.call("get_briefing", {"local_date": "2026-09-19", "timezone": ZONE})["content"]
-    assert "演示界面显示已部署 — 完成［引用来源：仅屏幕/应用记录］" in content
-    assert "只有屏幕/应用记录或没有有效引用" in content
+    assert "演示界面显示已部署 — 完成［依据：仅屏幕/应用记录］" in content
+    assert "有 1 项标为完成的事项没有当天提交或 Allen 原话依据：第 3 项。" in content
 
 
-def test_the_cited_source_class_never_certifies_the_status(rig: Rig) -> None:
-    """Grading is about the source, so it neither verifies 完成 nor rewrites it.
+def test_the_proof_label_names_the_source_and_never_certifies_the_status(rig: Rig) -> None:
+    """The bracket names the commit or record an item cites; it never says it was checked.
 
-    The same status word is written for both completed items; only the bracket,
-    which names the class of source, differs. Nothing in the report says an
+    The same status word is written for both completed items; only the bracket
+    differs, and it spells out the SHA so a completed item leaning on an
+    unrelated commit is visible at a glance. Nothing in the report says an
     item was checked, because the runtime cannot read what the quote means.
     """
     assert rig.run()["outcome"] == "generated"
     content = rig.call("get_briefing", {"local_date": "2026-09-19", "timezone": ZONE})["content"]
-    assert "每日工具的读取修复 — 完成［引用来源：当天的 Git 提交，或 Allen 本人的记录］" in content
-    assert "演示界面显示已部署 — 完成［引用来源：仅屏幕/应用记录］" in content
+    assert "每日工具的读取修复 — 完成［依据：当天提交 abc1234］" in content
+    assert "演示界面显示已部署 — 完成［依据：仅屏幕/应用记录］" in content
+    assert "待核实" not in content, "no blanket disclaimer on completed items"
     assert "证实" not in content, "no grade may claim the claim itself was checked"
     assert "既不核实来源是否支持这条结论，也不核实事情是否真的做完" in content
 
@@ -529,12 +532,15 @@ def test_invented_keys_and_unstated_next_steps_are_demoted(rig: Rig) -> None:
     """Keys the model never received are dropped; a next step without Allen's words moves."""
     assert rig.run()["outcome"] == "generated"
     content = rig.call("get_briefing", {"local_date": "2026-09-19", "timezone": ZONE})["content"]
-    assert "没有依据的事项 — 讨论［引用来源：无有效引用］" in content
+    assert "没有依据的事项 — 讨论［依据：无有效引用］" in content
     assert "引用不是材料里的键，已丢弃" in content
     assert "明天继续写日报工具。" in content.split("## 用户明确表达的下一步")[1].split("## 建议")[0]
     suggestions = content.split("## 建议（模型提出，非用户承诺）")[1].split("## 数据覆盖")[0]
-    assert "顺手把 CI 修好。" in suggestions
-    assert "没有 Allen 原话依据，已归入建议" in content
+    assert "顺手把 CI 修好。" not in suggestions, "a demoted step is not dressed up as advice"
+    assert (
+        "模型把 1 条内容当作 Allen 明确表达的下一步，但引用的不是他的原话，"
+        "已从该节移除：「顺手把 CI 修好。」"
+    ) in content
 
 
 def test_a_commit_written_earlier_cannot_verify_completion(rig: Rig) -> None:
@@ -550,33 +556,31 @@ def test_a_commit_written_earlier_cannot_verify_completion(rig: Rig) -> None:
     assert rig.run()["outcome"] == "generated"
     assert "[g1] 提交于 09-10 09:00" in rig.reporter.last_material, "g1 is the late commit"
     content = rig.call("get_briefing", {"local_date": "2026-09-19", "timezone": ZONE})["content"]
-    assert "靠旧提交撑起的完成 — 完成［引用来源：无有效引用］" in content
-    assert "有 1 项标为完成的事项只有屏幕/应用记录或没有有效引用" in content
+    assert "靠旧提交撑起的完成 — 完成［依据：无有效引用］" in content
+    assert "有 1 项标为完成的事项没有当天提交或 Allen 原话依据：第 1 项。" in content
 
 
-def test_the_summary_carries_every_items_status_by_name(rig: Rig) -> None:
-    """核心摘要 is served alone, so it names each item's status and grade, not a count.
+def test_the_summary_keeps_the_prose_and_lists_every_item_by_status(rig: Rig) -> None:
+    """核心摘要 is served alone: the model's prose, then every item under its status.
 
-    A summary that contradicts the body — claiming a deployment that the body
-    graded on screen text alone — is contradicted in the same text the
-    conversation receives, and the reader is told which item it was.
+    The prose is what a reader skims; the lines after it say which items the
+    report calls finished and whether a same-day commit or Allen's own words
+    stand behind each, so a summary cannot outrun the body unnoticed.
     """
     result = rig.run()
     assert result["outcome"] == "generated"
     served = result["summary"]
-    assert "逐项引用来源：" in served
-    for mark in (
-        "1 每日工具的读取修复／完成／当天提交或本人记录",
-        "2 浏览招聘页面／浏览／仅屏幕/应用记录",
-        "3 演示界面显示已部署／完成／仅屏幕/应用记录",
-        "4 没有依据的事项／讨论／无有效引用",
+    assert served.startswith("主要在 Jarvis 仓库上改每日工具，并看了一轮招聘页面。"), served
+    for line in (
+        "完成（有当天提交或 Allen 原话）：1 每日工具的读取修复",
+        "完成（无当天提交或 Allen 原话）：3 演示界面显示已部署",
+        "讨论：4 没有依据的事项",
+        "浏览：2 浏览招聘页面",
     ):
-        assert mark in served, served
-    assert "另有 1 条“下一步”没有 Allen 原话依据，已归入建议。" in served
-    assert "不核实事情是否真的做完" in served
+        assert line in served, served
+    assert "待核实" not in served
     content = rig.call("get_briefing", {"local_date": "2026-09-19", "timezone": ZONE})["content"]
     summary_section = content.split("## 核心摘要\n")[1].split("\n## ")[0]
-    assert summary_section.startswith("（逐项引用来源："), summary_section
     assert result["summary"] == " ".join(summary_section.split())
 
 
@@ -791,7 +795,7 @@ def test_malformed_reports_are_rejected_field_by_field() -> None:
 
 
 def test_report_fits_the_save_limit(rig: Rig) -> None:
-    """An over-long report is trimmed to the content cap and says so."""
+    """A bounded report preserves every citation in its saved index."""
     evidence = gather_day(
         rig.fx.conn,
         memory_path=rig.memory,
@@ -844,3 +848,76 @@ def test_report_fits_the_save_limit(rig: Rig) -> None:
     assert all(f"#{n}" in content for n in range(1, len(keys) + 1))
     assert len(refs) <= 20
     assert set(coverage) <= {"records", "git", "app", "screen", "agent", "todos", "knowledge"}
+
+
+def test_a_summary_claiming_deployment_is_served_next_to_the_status_line(rig: Rig) -> None:
+    """The prose is kept, and the line after it says the item is still in progress."""
+    rig.reporter.report = _one_item("部署", "attempted", ["s1"])
+    rig.reporter.report["summary"] = "系统已经部署成功。"
+    result = rig.run()
+    assert result["outcome"] == "generated"
+    served = result["summary"]
+    assert served.startswith("系统已经部署成功。")
+    assert "进行中：1 部署" in served
+    assert "完成（" not in served
+
+
+@pytest.mark.parametrize(
+    ("keys", "label"),
+    [
+        (["g1"], "依据：当天提交 abc1234"),
+        (["r1"], "依据：Allen 原话 r1"),
+        (["g1", "r1"], "依据：当天提交 abc1234；Allen 原话 r1"),
+        (["s1"], "依据：仅屏幕/应用记录"),
+        (["invented"], "依据：无有效引用"),
+    ],
+)
+def test_the_proof_label_spells_out_what_a_completed_item_cites(
+    rig: Rig, keys: list[str], label: str
+) -> None:
+    """A commit is named by SHA and a record by key; screen text and nothing are said so."""
+    rig.reporter.report = _one_item("部署", "completed", keys)
+    result = rig.run()
+    assert result["outcome"] == "generated"
+    saved = rig.call("get_briefing", {"local_date": DAY.isoformat(), "timezone": ZONE})
+    assert f"部署 — 完成［{label}］" in saved["content"]
+    proven = "当天提交" in label or "原话" in label
+    assert ("完成（有当天提交或 Allen 原话）：1 部署" in result["summary"]) is proven
+    assert ("完成（无当天提交或 Allen 原话）：1 部署" in result["summary"]) is not proven
+
+
+def test_overbudget_regeneration_preserves_saved_report(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """198 shared citations cannot be truncated into a successful new revision."""
+    assert rig.run()["outcome"] == "generated"
+    args = {"local_date": DAY.isoformat(), "timezone": ZONE}
+    before = rig.call("get_briefing", args)
+    evidence = gather_day(
+        rig.fx.conn,
+        memory_path=rig.memory,
+        timesink_path=rig.service._timesink_path,  # noqa: SLF001 — configured test store.
+        repos=("/repo/jarvis",), day=DAY, zone_name=ZONE, zone=TZ, now=NOW,
+    )
+    refs = {
+        f"s{i}": f"timesink-capture:0123456789abcdef:{i:03}:0123456789abcdef0123456789abcdef"
+        for i in range(198)
+    }
+    evidence = replace(evidence, refs=refs)
+    monkeypatch.setattr("jarvis.runtime.daily_report.gather_day", lambda *_a, **_kw: evidence)
+    keys = list(refs)
+    rig.reporter.report = {
+        **_one_item("大报告", "attempted", keys),
+        "items": [
+            {"title": f"事项{i}", "status": "attempted", "activity": "文" * 400, "refs": keys}
+            for i in range(12)
+        ],
+        "decisions": [
+            {"text": "文" * 400, "rationale": "理" * 240, "refs": keys} for _ in range(8)
+        ],
+        "open_items": [{"text": "文" * 400, "refs": keys} for _ in range(10)],
+    }
+    result = rig.run(regenerate=True)
+    assert result["outcome"] == "failed"
+    assert "nothing saved or truncated" in result["error"]
+    assert rig.call("get_briefing", args) == before
