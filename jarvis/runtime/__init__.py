@@ -890,6 +890,12 @@ def _daily_report_preset(config: Mapping[str, Any]) -> str:
     return _work_state_preset(config)
 
 
+def _codex_sessions_path() -> Path | None:
+    """Codex's own session directory when this machine has one; ADR 0024's agent material."""
+    root = Path.home() / ".codex" / "sessions"
+    return root if root.is_dir() else None
+
+
 def _daily_report_tool_run(
     service: DailyReportService,
 ) -> Callable[[Mapping[str, Any], ToolContext], dict[str, Any]]:
@@ -1558,6 +1564,7 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
         ),
         model=_daily_report_preset(full_config),
         tz=_work_state_timezone(full_config),
+        codex_sessions_path=_codex_sessions_path(),
     )
     registry = build_default_registry(
         memory_db_path=memory.db_path,

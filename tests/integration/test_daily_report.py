@@ -14,6 +14,7 @@ import subprocess
 from contextlib import closing
 from dataclasses import replace
 from datetime import UTC, date, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
@@ -40,7 +41,6 @@ from tests.integration.test_timesink_activity import add_capture, add_span, sour
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
-    from pathlib import Path
 
 __all__ = ["source"]
 
@@ -153,6 +153,38 @@ def git_repo(path: Path, commits: list[tuple[str, str, str]]) -> dict[str, str]:
     return shas
 
 
+def codex_session_file(
+    root: Path, started: str, session_id: str, turns: list[tuple[str, str, str]], *, cwd: str
+) -> Path:
+    """One Codex rollout file as Codex writes it: session_meta, then (ts, role, text) messages."""
+    day = datetime.fromisoformat(started).astimezone(TZ)
+    folder = root / f"{day:%Y}" / f"{day:%m}" / f"{day:%d}"
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"rollout-{day:%Y-%m-%dT%H-%M-%S}-{session_id}.jsonl"
+    rows: list[dict[str, Any]] = [
+        {
+            "timestamp": started,
+            "type": "session_meta",
+            "payload": {"id": session_id, "cwd": cwd, "originator": "Codex Desktop"},
+        }
+    ]
+    kinds = {"user": "input_text", "assistant": "output_text"}
+    rows += [
+        {
+            "timestamp": ts,
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": role,
+                "content": [{"type": kinds[role], "text": text}],
+            },
+        }
+        for ts, role, text in turns
+    ]
+    path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+    return path
+
+
 class CannedReporter:
     """Return one fixed report and record what it was asked; ``fail`` raises like an outage."""
 
@@ -206,7 +238,14 @@ class CannedReporter:
 class Rig:
     """The real registry + log + memory around one service and one canned reporter."""
 
-    def __init__(self, root: Path, *, timesink: Path | None, repos: tuple[str, ...] = ()) -> None:
+    def __init__(
+        self,
+        root: Path,
+        *,
+        timesink: Path | None,
+        repos: tuple[str, ...] = (),
+        codex_sessions: Path | None = None,
+    ) -> None:
         """Wire the stores exactly as the composition root does, minus the model."""
         self.memory = root / "memory.db"
         with closing(open_memory_db(self.memory)):
@@ -220,6 +259,7 @@ class Rig:
             reporter=self.reporter,
             model="canned",
             tz=TZ,
+            codex_sessions_path=codex_sessions,
         )
         self.tools = build_default_registry(
             memory_db_path=self.memory,
@@ -399,7 +439,8 @@ def test_report_generates_saves_and_reads_back(rig: Rig) -> None:
         "todos",
         "knowledge",
     }
-    assert saved["coverage"]["agent"] == "not_implemented"
+    assert saved["coverage"]["agent"] == "unavailable", "no Codex session directory was given"
+    assert "没有代理会话记录" in content
 
 
 def test_repeat_reuses_and_regenerate_makes_a_new_version(rig: Rig) -> None:
@@ -600,6 +641,64 @@ def test_an_observed_commit_keeps_its_observation_time_and_event_ref(
         detail = rig.reporter.materials[1]
         assert "feat: seen by the observer" in detail
         assert "f0 | 1 +" in detail, "git show --stat lists the changed file"
+    finally:
+        rig.fx.close()
+
+
+def test_codex_sessions_are_agent_material_labelled_as_self_report(
+    tmp_path: Path, source: sqlite3.Connection
+) -> None:
+    """A Codex session that day is listed with its first prompt and last reply, as self-report.
+
+    An item citing only a session is labelled 仅 Codex 会话自述, never proof; a
+    session with no reply in the window is not listed; the injected preamble
+    is not the first prompt; request_details serves the prompts and the last
+    reply; the saved reference is the session file the store checks.
+    """
+    add_span(source, "2026-09-19 16:00:00.000", "2026-09-19 17:00:00.000")
+    sessions = tmp_path / "sessions"
+    talked = codex_session_file(
+        sessions,
+        "2026-09-19T20:00:00Z",
+        "sess-talk",
+        [
+            ("2026-09-19T20:00:01Z", "user", "# AGENTS.md instructions\n<INSTRUCTIONS>…"),
+            ("2026-09-19T20:00:02Z", "user", "把 TimeSink 的读取边界修好并跑测试"),
+            ("2026-09-19T20:05:00Z", "assistant", "改好了，34 个测试通过，已合入 main。"),
+        ],
+        cwd=str(Path.home() / "Projects" / "jarvis"),
+    )
+    codex_session_file(
+        sessions,
+        "2026-09-18T20:00:00Z",
+        "sess-yesterday",
+        [("2026-09-18T20:00:01Z", "user", "昨天的事"), ("2026-09-18T20:00:02Z", "assistant", "好")],
+        cwd="/elsewhere",
+    )
+    rig = Rig(tmp_path, timesink=tmp_path / "timesink.sqlite", codex_sessions=sessions)
+    rig.reporter.report = _one_item("修 TimeSink 读取边界", "completed", ["c1"])
+    rig.reporter.ask_details = ["c1"]
+    try:
+        result = rig.run()
+        assert result["outcome"] == "generated", result.get("error")
+        assert result["coverage"]["agent"] == "partial"
+        assert result["evidence_counts"]["agent"] == 1
+        material = rig.reporter.materials[0]
+        assert (
+            "[c1] 13:00-13:05 Codex Desktop @ ~/Projects/jarvis，2 问 1 答："
+            "首问「把 TimeSink 的读取边界修好并跑测试」末答「改好了，34 个测试通过，已合入 main。」"
+        ) in material
+        assert "sess-yesterday" not in material
+        assert "代理说的「已完成」「已合并」是它的自述" in material
+        detail = rig.reporter.materials[1]
+        assert "[c1] Codex 会话 sess-talk（Codex Desktop" in detail
+        assert "代理的自述，不是核实结果" in detail
+        assert "- 把 TimeSink 的读取边界修好并跑测试" in detail
+        assert "最后回复：\n改好了，34 个测试通过，已合入 main。" in detail
+        saved = rig.call("get_briefing", {"local_date": "2026-09-19", "timezone": ZONE})
+        assert "修 TimeSink 读取边界 — 完成［依据：仅 Codex 会话自述］" in saved["content"]
+        assert "完成（无当天提交或 Allen 原话）：1 修 TimeSink 读取边界" in result["summary"]
+        assert saved["source_refs"] == [f"codex-session:{talked}"]
     finally:
         rig.fx.close()
 

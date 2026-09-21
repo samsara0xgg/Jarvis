@@ -6,6 +6,7 @@ import json
 import subprocess
 from contextlib import closing
 from datetime import date, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -29,7 +30,6 @@ from jarvis.state.event_log import append_event_in_transaction, read_log_epoch
 
 if TYPE_CHECKING:
     import sqlite3
-    from pathlib import Path
 
 EVENT_TYPES = ("todo.revised", "knowledge.revised", "briefing.revised")
 _OPERATIONS = {
@@ -108,6 +108,8 @@ def check_refs(
         elif prefix == "git":
             repo, _, sha = identity.rpartition(":")
             exists = bool(repo) and commit_exists(repo, sha)
+        elif prefix == "codex-session":
+            exists = identity.endswith(".jsonl") and Path(identity).is_file()
         if not exists:
             msg = f"Source does not exist: {ref}"
             raise DailyError(msg, "invalid_source")

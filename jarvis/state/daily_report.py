@@ -43,6 +43,9 @@ _MAX_REPO_STATES = 10
 _MAX_STATE_EVENTS = 40
 _MAX_TODOS = 20
 _MAX_KNOWLEDGE = 15
+_MAX_AGENT_SESSIONS = 20
+_AGENT_ASK = 120
+_AGENT_ANSWER = 200
 _PREVIOUS_TEXT = 1200
 _LOCALTIME = Path("/etc/localtime")
 _GIT_TIMEOUT_S = 5.0
@@ -132,7 +135,9 @@ class DayEvidence:
     @property
     def empty(self) -> bool:
         """True when the day holds no activity at all (context alone is not a day)."""
-        return not any(self.sections.get(key) for key in ("windows", "screen", "records", "git"))
+        return not any(
+            self.sections.get(key) for key in ("windows", "screen", "records", "git", "agent")
+        )
 
 
 def _squeeze(text: str, limit: int) -> str:
@@ -588,6 +593,119 @@ def _previous_section(g: _Gather, conn: sqlite3.Connection, zone_name: str) -> N
     ]
 
 
+def _message_text(payload: dict[str, Any]) -> str:
+    content = payload.get("content")
+    if not isinstance(content, list):
+        return ""
+    return " ".join(str(x.get("text") or "") for x in content if isinstance(x, dict)).strip()
+
+
+def codex_session(
+    path: Path, start: datetime | None = None, end: datetime | None = None
+) -> dict[str, Any]:
+    """One Codex session file: who ran it where, and its user/assistant turns inside [start, end).
+
+    Codex writes ``~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl``, one JSON
+    object per line; only ``session_meta`` and the user/assistant messages are
+    read. Whatever the agent says about its own work is its self-report.
+    """
+    meta: dict[str, Any] = {}
+    asks: list[str] = []
+    answers: list[str] = []
+    first = last = None
+    with path.open(encoding="utf-8") as handle:
+        for line in handle:
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            payload = row.get("payload") if isinstance(row, dict) else None
+            if not isinstance(payload, dict):
+                continue
+            if row.get("type") == "session_meta":
+                meta = payload
+                continue
+            if row.get("type") != "response_item" or payload.get("type") != "message":
+                continue
+            try:
+                moment = datetime.fromisoformat(str(row.get("timestamp")))
+            except ValueError:
+                continue
+            if (start and moment < start) or (end and moment >= end):
+                continue
+            text = _message_text(payload)
+            if payload.get("role") == "user":
+                asks.append(text)
+            elif payload.get("role") == "assistant":
+                answers.append(text)
+            else:
+                continue
+            first = moment if first is None else first
+            last = moment
+    return {
+        "id": str(meta.get("id") or path.stem),
+        "cwd": str(meta.get("cwd") or ""),
+        "originator": str(meta.get("originator") or "codex"),
+        "asks": asks,
+        "answers": answers,
+        "first": first,
+        "last": last,
+    }
+
+
+def _first_prompt(asks: list[str]) -> str:
+    """The first user text that is not an injected preamble (instructions, pasted files)."""
+    return next((a for a in asks if a and not a.startswith(("<", "#"))), asks[0] if asks else "")
+
+
+def _agent_section(g: _Gather, sessions_root: Path | None) -> None:
+    if sessions_root is None or not sessions_root.is_dir():
+        g.coverage["agent"] = "unavailable"
+        g.sections["agent"] = []
+        g.limits.append("没有代理会话记录：Codex 本机会话目录不可读")
+        return
+    g.coverage["agent"] = "partial"
+    files: list[Path] = []
+    for day in (g.day - timedelta(days=1), g.day):
+        folder = sessions_root / f"{day:%Y}" / f"{day:%m}" / f"{day:%d}"
+        if folder.is_dir():
+            files += sorted(folder.glob("*.jsonl"))
+    sessions = []
+    for path in files:
+        try:
+            session = codex_session(path, g.start, g.end)
+        except OSError:
+            continue
+        if session["answers"]:
+            session["path"] = path
+            sessions.append(session)
+    sessions.sort(key=lambda x: (-len(x["answers"]), x["first"]))
+    if len(sessions) > _MAX_AGENT_SESSIONS:
+        g.limits.append(
+            f"当天有对话的 Codex 会话共 {len(sessions)} 个，"
+            f"只列出回复最多的 {_MAX_AGENT_SESSIONS} 个"
+        )
+    home = str(Path.home())
+    rows = []
+    for index, session in enumerate(sessions[:_MAX_AGENT_SESSIONS]):
+        key = f"c{index + 1}"
+        g.refs[key] = f"codex-session:{session['path']}"
+        g.saw(session["last"].isoformat())
+        rows.append(
+            {
+                "key": key,
+                "first": session["first"].astimezone(g.zone).strftime("%H:%M"),
+                "last": session["last"].astimezone(g.zone).strftime("%H:%M"),
+                "app": session["originator"],
+                "cwd": session["cwd"].replace(home, "~", 1),
+                "turns": f"{len(session['asks'])} 问 {len(session['answers'])} 答",
+                "ask": _squeeze(_first_prompt(session["asks"]), _AGENT_ASK),
+                "answer": _squeeze(session["answers"][-1], _AGENT_ANSWER),
+            }
+        )
+    g.sections["agent"] = rows
+
+
 def gather_day(  # noqa: PLR0913 — the configured stores plus the day, its zone and the clock.
     conn: sqlite3.Connection,
     *,
@@ -598,6 +716,7 @@ def gather_day(  # noqa: PLR0913 — the configured stores plus the day, its zon
     zone_name: str,
     zone: tzinfo,
     now: datetime,
+    codex_sessions_path: Path | None = None,
 ) -> DayEvidence:
     """Read every configured source once for the whole local day, bounded and keyed."""
     start, end, partial = day_window(day, zone, now)
@@ -606,10 +725,10 @@ def gather_day(  # noqa: PLR0913 — the configured stores plus the day, its zon
         _timesink_sections(g, snap)
     _record_section(g, memory_path)
     _git_sections(g, conn, repos)
+    _agent_section(g, codex_sessions_path)
     _folded_section(g, conn, "todo", "t", _MAX_TODOS)
     _folded_section(g, conn, "knowledge", "k", _MAX_KNOWLEDGE)
     g.coverage["todos"] = g.coverage["knowledge"] = "available"
-    g.coverage["agent"] = "not_implemented"
     _previous_section(g, conn, zone_name)
     return DayEvidence(
         day=day.isoformat(),
@@ -644,7 +763,41 @@ def _commit_detail(key: str, evidence: DayEvidence) -> str | None:
     return None if shown is None else f"[{key}]\n{shown[:DETAIL_TEXT]}"
 
 
-def read_detail(  # noqa: PLR0911 — one branch per reference kind.
+def _session_detail(key: str, path: Path) -> str:
+    """A Codex session's prompts and last reply, marked as the agent's own account."""
+    session = codex_session(path)
+    asks = "\n".join(f"- {_squeeze(a, 160)}" for a in session["asks"] if a)[:DETAIL_TEXT]
+    last = session["answers"][-1] if session["answers"] else ""
+    return (
+        f"[{key}] Codex 会话 {session['id']}（{session['originator']}，{session['cwd']}）"
+        f"——代理的自述，不是核实结果\n提问：\n{asks}\n最后回复：\n{_squeeze(last, DETAIL_TEXT)}"
+    )
+
+
+def _stored_detail(
+    key: str, ref: str, conn: sqlite3.Connection, memory_path: Path | None
+) -> str | None:
+    """A conversation record or an event-log row behind a key; None for other kinds."""
+    identity = ref.partition(":")[2]
+    if ref.startswith("record:"):
+        with closing(read_connection(memory_path)) as memory:
+            row = memory.execute(
+                "SELECT ts,source,text FROM records WHERE id=?", (identity,)
+            ).fetchone()
+        if row is None:
+            return f"[{key}] 记录已不存在"
+        return f"[{key}] {row[0]} {row[1]}: {_squeeze(str(row[2]), DETAIL_TEXT)}"
+    if ref.startswith("event:"):
+        row = conn.execute(
+            "SELECT type,payload_json FROM events WHERE event_uid=?", (identity,)
+        ).fetchone()
+        if row is None:
+            return f"[{key}] 事件已不存在"
+        return f"[{key}] {row[0]}: {str(row[1])[:DETAIL_TEXT]}"
+    return None
+
+
+def read_detail(  # noqa: PLR0911 — one return per reference kind.
     key: str,
     evidence: DayEvidence,
     *,
@@ -670,24 +823,12 @@ def read_detail(  # noqa: PLR0911 — one branch per reference kind.
             # The stored row keeps GRDB's bare UTC text; unlabelled it reads as a local clock.
             body = json.dumps(original, ensure_ascii=False)[:DETAIL_TEXT]
             return f"[{key}]（原始行，时间为 UTC）{body}"
-        if ref.startswith("record:"):
-            with closing(read_connection(memory_path)) as memory:
-                row = memory.execute(
-                    "SELECT ts,source,text FROM records WHERE id=?", (ref.partition(":")[2],)
-                ).fetchone()
-            if row is None:
-                return f"[{key}] 记录已不存在"
-            return f"[{key}] {row[0]} {row[1]}: {_squeeze(str(row[2]), DETAIL_TEXT)}"
-        if ref.startswith("event:"):
-            row = conn.execute(
-                "SELECT type,payload_json FROM events WHERE event_uid=?", (ref.partition(":")[2],)
-            ).fetchone()
-            if row is None:
-                return f"[{key}] 事件已不存在"
-            return f"[{key}] {row[0]}: {str(row[1])[:DETAIL_TEXT]}"
-    except (DailyError, sqlite3.Error) as exc:
+        if ref.startswith("codex-session:"):
+            return _session_detail(key, Path(ref.partition(":")[2]))
+        shown = _stored_detail(key, ref, conn, memory_path)
+    except (DailyError, sqlite3.Error, OSError) as exc:
         return f"[{key}] 该条目当前不可读：{exc}"
-    return f"[{key}] 没有可读的原文"
+    return shown if shown is not None else f"[{key}] 没有可读的原文"
 
 
 def save_report(  # noqa: PLR0913 — the two source stores, the identity, the payload and the writer.

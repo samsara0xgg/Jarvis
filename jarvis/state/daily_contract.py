@@ -56,8 +56,9 @@ _REFS = {
     "maxItems": 20,
     "uniqueItems": True,
     "description": (
-        "Evidence references: record:<record_id>, event:<event_uid>, git:<repo path>:<sha>, or "
-        "the exact timesink: / timesink-capture: reference returned by a tool. For activity "
+        "Evidence references: record:<record_id>, event:<event_uid>, git:<repo path>:<sha>, "
+        "codex-session:<file path>, or the exact timesink: / timesink-capture: reference "
+        "returned by a tool. For activity "
         "evidence, copy values "
         "from source_refs, NOT the activity id (activity:... is a lookup ID, not a source "
         "reference)."

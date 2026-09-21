@@ -77,10 +77,12 @@ class DailyReportService:
         reporter: Reporter | None,
         model: str,
         tz: tzinfo | None = None,
+        codex_sessions_path: Path | None = None,
     ) -> None:
         """Bind store locations; nothing is opened until a run."""
         self._memory_path = memory_path
         self._timesink_path = timesink_path
+        self._codex_sessions_path = codex_sessions_path
         self._repos = tuple(repos)
         self._reporter = reporter
         self._model = model
@@ -147,6 +149,7 @@ class DailyReportService:
             zone_name=zone_name,
             zone=zone,
             now=moment,
+            codex_sessions_path=self._codex_sessions_path,
         )
         if evidence.empty:
             return {

@@ -41,6 +41,7 @@ _STATUS_LABELS = {
 # so a reader sees at once when a completed item leans on an unrelated commit or on nothing.
 # It never says the source supports the claim: only the report model can read a quote.
 _PROOF_NONE = {
+    "agent": "依据：仅 Codex 会话自述",
     "screen": "依据：仅屏幕/应用记录",
     "inferred": "依据：无有效引用",
 }
@@ -215,6 +216,12 @@ def render_material(evidence: DayEvidence) -> str:
         sections.get("git", []),
         "[{key}] 提交于 {committed}，观察于 {observed}，{sha} {subject}（{paths}）"
         "late={late} {main}",
+    )
+    out += _lines(
+        "代理会话（Codex 本机会话文件；代理说的「已完成」「已合并」是它的自述，不是核实结果；"
+        "Claude Code 会话未收录；原文用 request_details）",
+        sections.get("agent", []),
+        "[{key}] {first}-{last} {app} @ {cwd}，{turns}：首问「{ask}」末答「{answer}」",
     )
     out += _lines(
         "当天观察到的仓库状态",
@@ -409,6 +416,8 @@ class _Composer:
             if said:
                 parts.append("Allen 原话 " + "、".join(said))
             return "confirmed", "依据：" + "；".join(parts)
+        if any(r.startswith("codex-session:") for r in refs):
+            return "agent", _PROOF_NONE["agent"]
         if any(r.startswith("timesink") for r in refs):
             return "screen", _PROOF_NONE["screen"]
         return "inferred", _PROOF_NONE["inferred"]
