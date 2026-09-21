@@ -8,7 +8,9 @@ checks assert on the material it was handed and on what is persisted.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
+import subprocess
 from contextlib import closing
 from dataclasses import replace
 from datetime import UTC, date, datetime
@@ -112,6 +114,43 @@ def _reply(payload: dict[str, Any]) -> ChatResult:
         output_tokens=1,
         raw={},
     )
+
+
+def git_repo(path: Path, commits: list[tuple[str, str, str]]) -> dict[str, str]:
+    """A real repository with the given (subject, committed_at, branch) commits; subject -> sha."""
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@x",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@x",
+    }
+
+    def git(*args: str, when: str | None = None) -> str:
+        dated = {**env, "GIT_AUTHOR_DATE": when, "GIT_COMMITTER_DATE": when} if when else env
+        done = subprocess.run(  # noqa: S603 — test fixture over a temporary repository.
+            ["git", "-C", str(path), *args],  # noqa: S607
+            check=True,
+            capture_output=True,
+            text=True,
+            env=dated,
+        )
+        return done.stdout.strip()
+
+    path.mkdir()
+    git("init", "-q", "-b", "main")
+    shas = {}
+    for index, (subject, when, branch) in enumerate(commits):
+        if branch != "main":
+            git("checkout", "-q", "-B", branch, "main")
+        elif index:
+            git("checkout", "-q", "main")
+        (path / f"f{index}").write_text(subject, encoding="utf-8")
+        git("add", f"f{index}")
+        git("commit", "-q", "-m", subject, when=when)
+        shas[subject] = git("rev-parse", "HEAD")
+    git("checkout", "-q", "main")
+    return shas
 
 
 class CannedReporter:
@@ -350,7 +389,7 @@ def test_report_generates_saves_and_reads_back(rig: Rig) -> None:
     # Every saved source ref resolves in the stores the tools read.
     assert saved["source_refs"], "a report over real evidence must cite something"
     for ref in saved["source_refs"]:
-        assert ref.startswith(("event:", "record:", "timesink:", "timesink-capture:"))
+        assert ref.startswith(("event:", "record:", "git:", "timesink:", "timesink-capture:"))
     assert set(saved["coverage"]) == {
         "records",
         "git",
@@ -482,6 +521,85 @@ def test_same_commit_across_worktrees_counts_once(
             assert repo in material
         assert "dropped1" not in material
         assert "已不在被观察列表里，未列入：/repo/retired" in material
+    finally:
+        rig.fx.close()
+
+
+def test_commits_come_from_the_local_repository_not_only_the_observer(
+    tmp_path: Path, source: sqlite3.Connection
+) -> None:
+    """The day's commits are read from git itself: a repo the observer never saw still counts.
+
+    A same-day commit on main is proof with its SHA and lands in source_refs as
+    a git: reference the store checks for real; a branch commit says it is not
+    on main; a commit from another day is not listed; a path that is not a
+    repository is named in the limits instead of silently contributing nothing.
+    """
+    add_span(source, "2026-09-19 16:00:00.000", "2026-09-19 17:00:00.000")
+    repo = tmp_path / "repo"
+    shas = git_repo(
+        repo,
+        [
+            ("feat: on main today", "2026-09-19T10:00:00-07:00", "main"),
+            ("wip: on a branch today", "2026-09-19T12:00:00-07:00", "feature"),
+            ("chore: another day", "2026-09-10T09:00:00-07:00", "main"),
+        ],
+    )
+    rig = Rig(tmp_path, timesink=tmp_path / "timesink.sqlite", repos=(str(repo), "/no/such/repo"))
+    rig.reporter.report = _one_item("主线上的工作", "completed", ["g1"])
+    try:
+        result = rig.run()
+        assert result["outcome"] == "generated", result.get("error")
+        assert result["evidence_counts"]["git"] == 2
+        material = rig.reporter.last_material
+        main_sha, branch_sha = shas["feat: on main today"][:7], shas["wip: on a branch today"][:7]
+        assert (
+            f"[g1] 提交于 09-19 10:00，观察于 观察器未记录，{main_sha} feat: on main today"
+            f"（{repo}）late=False 已在 main"
+        ) in material
+        assert f"[g2] 提交于 09-19 12:00，观察于 观察器未记录，{branch_sha} wip:" in material
+        assert "late=False 未进 main" in material
+        assert "chore: another day" not in material
+        assert "无法读取 1 个仓库的本地 git 记录（路径不存在或不是仓库）：/no/such/repo" in (
+            material
+        )
+        assert result["coverage"]["git"] == "partial"
+        saved = rig.call("get_briefing", {"local_date": "2026-09-19", "timezone": ZONE})
+        assert f"主线上的工作 — 完成［依据：当天提交 {main_sha}］" in saved["content"]
+        assert saved["source_refs"] == [f"git:{repo}:{shas['feat: on main today']}"]
+    finally:
+        rig.fx.close()
+
+
+def test_an_observed_commit_keeps_its_observation_time_and_event_ref(
+    tmp_path: Path, source: sqlite3.Connection
+) -> None:
+    """When the observer did see a commit, the line says when and the ref stays the event."""
+    add_span(source, "2026-09-19 16:00:00.000", "2026-09-19 17:00:00.000")
+    repo = tmp_path / "repo"
+    shas = git_repo(repo, [("feat: seen by the observer", "2026-09-19T10:00:00-07:00", "main")])
+    rig = Rig(tmp_path, timesink=tmp_path / "timesink.sqlite", repos=(str(repo),))
+    rig.commit(
+        shas["feat: seen by the observer"],
+        "feat: seen by the observer",
+        str(repo),
+        committed="2026-09-19T10:00:00-07:00",
+        observed="2026-09-19T10:01:00-07:00",
+    )
+    rig.reporter.ask_details = ["g1"]
+    try:
+        result = rig.run()
+        assert result["outcome"] == "generated", result.get("error")
+        assert result["evidence_counts"]["git"] == 1
+        assert "观察于 10:01" in rig.reporter.materials[0]
+        assert result["coverage"]["git"] == "available"
+        saved = rig.call("get_briefing", {"local_date": "2026-09-19", "timezone": ZONE})
+        assert "event" in {ref.split(":")[0] for ref in saved["source_refs"]}
+        assert "git" not in {ref.split(":")[0] for ref in saved["source_refs"]}
+        # The original behind a commit key is the commit itself, from the repository.
+        detail = rig.reporter.materials[1]
+        assert "feat: seen by the observer" in detail
+        assert "f0 | 1 +" in detail, "git show --stat lists the changed file"
     finally:
         rig.fx.close()
 
@@ -642,9 +760,9 @@ def test_commits_the_observer_dropped_reach_the_material(rig: Rig) -> None:
         skipped=224,
     )
     assert rig.run()["outcome"] == "generated"
-    assert "有 224 个提交超出单次轮询上限" in rig.reporter.last_material
+    assert "Git 观察器追上积压时跳过了 224 个更早的提交" in rig.reporter.last_material
     content = rig.call("get_briefing", {"local_date": "2026-09-19", "timezone": ZONE})["content"]
-    assert "这一天的提交清单不完整" in content
+    assert "当天的提交清单以本地仓库记录为准" in content
 
 
 def test_details_round_reads_originals(rig: Rig) -> None:

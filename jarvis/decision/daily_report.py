@@ -210,10 +210,11 @@ def render_material(evidence: DayEvidence) -> str:
         "[{key}] {at} {who}: {text}",
     )
     out += _lines(
-        "当天观察到的 Git 提交（同一提交跨 worktree 已合并；"
+        "当天的 Git 提交（本地仓库记录，同一提交跨 worktree 已合并；"
         "late=True 表示当天才看到的旧提交，不算当天工作）",
         sections.get("git", []),
-        "[{key}] 提交于 {committed}，观察于 {observed}，{sha} {subject}（{paths}）late={late}",
+        "[{key}] 提交于 {committed}，观察于 {observed}，{sha} {subject}（{paths}）"
+        "late={late} {main}",
     )
     out += _lines(
         "当天观察到的仓库状态",

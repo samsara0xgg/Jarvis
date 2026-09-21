@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import subprocess
 from collections import defaultdict
 from contextlib import closing
 from dataclasses import dataclass, field
@@ -44,6 +45,17 @@ _MAX_TODOS = 20
 _MAX_KNOWLEDGE = 15
 _PREVIOUS_TEXT = 1200
 _LOCALTIME = Path("/etc/localtime")
+_GIT_TIMEOUT_S = 5.0
+_FIELD_SEP = "\x1f"
+_MAIN = "main"
+_GIT_WALK = "--max-count=5000"
+"""The newest commits walked per repository; the day is filtered here, not by ``--since``.
+
+``--since`` stops walking at the first commit older than the date, so one
+rebased or amended commit with an old date hides everything beneath it.
+ponytail: 5000 newest commits per walk; raise it if a repository ever holds
+more than that in one day.
+"""
 
 
 def resolve_zone(name: str | None, configured: tzinfo | None) -> tuple[str, tzinfo]:
@@ -391,10 +403,73 @@ def _fold_git_rows(
         )
     if dropped:
         g.limits.append(
-            f"Git 观察器当天有 {dropped} 个提交超出单次轮询上限，从未写进事件日志，"
-            "这一天的提交清单不完整"
+            f"Git 观察器追上积压时跳过了 {dropped} 个更早的提交，没有写进事件日志；"
+            "当天的提交清单以本地仓库记录为准"
         )
     return commits, states
+
+
+def _git(repo: str, args: Sequence[str]) -> str | None:
+    """One read-only git command in a watched repository; None when it cannot run."""
+    try:
+        done = subprocess.run(  # noqa: S603 — fixed argv; `repo` is a configured path.
+            ["git", "-C", repo, *args],  # noqa: S607 — git is resolved from PATH on purpose.
+            capture_output=True,
+            text=True,
+            timeout=_GIT_TIMEOUT_S,
+            check=False,
+            stdin=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return done.stdout if done.returncode == 0 else None
+
+
+def _local_commits(g: _Gather, repos: Sequence[str]) -> dict[str, dict[str, Any]]:
+    """Every commit on a local branch of a watched repository, committed inside the day.
+
+    The observer only writes what it saw between polls and never backfills a
+    repository it started watching that day, so the local repository is the
+    authority on what was committed; the observer contributes when it saw it.
+    """
+    start, end = int(g.start.timestamp()), int(g.end.timestamp())
+    found: dict[str, dict[str, Any]] = {}
+    unreadable = []
+    for repo in repos:
+        log = _git(
+            repo, ("log", "--branches", _GIT_WALK, f"--format=%H{_FIELD_SEP}%ct{_FIELD_SEP}%s")
+        )
+        if log is None:
+            unreadable.append(repo)
+            continue
+        merged = _git(repo, ("log", _MAIN, _GIT_WALK, "--format=%H"))
+        on_main = set(merged.split()) if merged is not None else None
+        for line in log.splitlines():
+            sha, _, rest = line.partition(_FIELD_SEP)
+            seconds, _, subject = rest.partition(_FIELD_SEP)
+            if not sha or not seconds.isdigit() or not start <= int(seconds) < end:
+                continue
+            entry = found.setdefault(
+                sha,
+                {
+                    "sha": sha,
+                    "subject": _squeeze(subject, 160),
+                    "committed_ms": int(seconds) * 1000,
+                    "paths": [],
+                    "on_main": None,
+                },
+            )
+            if repo not in entry["paths"]:
+                entry["paths"].append(repo)
+            if on_main is not None:
+                entry["on_main"] = sha in on_main
+    if unreadable:
+        g.limits.append(
+            f"无法读取 {len(unreadable)} 个仓库的本地 git 记录（路径不存在或不是仓库）："
+            + "、".join(unreadable)
+        )
+    g.coverage["git"] = "partial" if unreadable else "available"
+    return found
 
 
 def _git_sections(g: _Gather, conn: sqlite3.Connection, repos: Sequence[str]) -> None:
@@ -407,33 +482,48 @@ def _git_sections(g: _Gather, conn: sqlite3.Connection, repos: Sequence[str]) ->
             int(g.end.timestamp() * 1000),
         ),
     ).fetchall()
-    commits, states = _fold_git_rows(g, rows, repos)
-    ordered = sorted(commits.values(), key=lambda x: (x["committed_ms"], x["observed_ms"]))
+    observed, states = _fold_git_rows(g, rows, repos)
+    commits = _local_commits(g, repos)
+    for sha, seen in observed.items():
+        # The local log is the authority on what and when; the observer adds when it was seen.
+        entry = commits.setdefault(sha, {**seen, "on_main": None})
+        entry["uid"] = seen["uid"]
+        entry["observed_ms"] = seen["observed_ms"]
+        entry["paths"] = list(dict.fromkeys([*entry["paths"], *seen["paths"]]))
+    ordered = sorted(commits.values(), key=lambda x: (x["committed_ms"], x["sha"]))
     if len(ordered) > _MAX_COMMITS:
-        g.limits.append(
-            f"当天观察到的提交共 {len(ordered)} 个（去重后），只列出前 {_MAX_COMMITS} 个"
-        )
+        g.limits.append(f"当天的提交共 {len(ordered)} 个（去重后），只列出前 {_MAX_COMMITS} 个")
     git = []
     for index, entry in enumerate(ordered[:_MAX_COMMITS]):
         key = f"g{index + 1}"
-        ref = f"event:{entry['uid']}"
+        ref = (
+            f"event:{entry['uid']}"
+            if "uid" in entry
+            else f"git:{entry['paths'][0]}:{entry['sha']}"
+        )
         g.refs[key] = ref
         committed = datetime.fromtimestamp(entry["committed_ms"] / 1000, UTC).astimezone(g.zone)
         late = committed.date() != g.day
         if not late:
             # An older commit only seen today is evidence of its own day, not of this one.
             g.commits[ref] = entry["sha"][:7]
+        seen_at = (
+            datetime.fromtimestamp(entry["observed_ms"] / 1000, UTC).astimezone(g.zone)
+            if "observed_ms" in entry
+            else None
+        )
         git.append(
             {
                 "key": key,
                 "sha": entry["sha"][:7],
                 "subject": entry["subject"],
                 "committed": committed.strftime("%m-%d %H:%M"),
-                "observed": datetime.fromtimestamp(entry["observed_ms"] / 1000, UTC)
-                .astimezone(g.zone)
-                .strftime("%H:%M"),
+                "observed": seen_at.strftime("%H:%M") if seen_at else "观察器未记录",
                 "paths": ", ".join(entry["paths"]),
                 "late": late,
+                "main": {True: "已在 main", False: "未进 main", None: "main 未知"}[
+                    entry["on_main"]
+                ],
             }
         )
     g.sections["git"] = git
@@ -455,8 +545,8 @@ def _git_sections(g: _Gather, conn: sqlite3.Connection, repos: Sequence[str]) ->
             }
         )
     g.sections["repo_states"] = repo_states
-    g.coverage["git"] = "partial" if repos else "unavailable"
     if not repos:
+        g.coverage["git"] = "unavailable"
         g.limits.append("没有配置被观察的 Git 仓库：Git 活动只来自历史记录，可能为空")
 
 
@@ -542,6 +632,18 @@ def gather_day(  # noqa: PLR0913 — the configured stores plus the day, its zon
     )
 
 
+def _commit_detail(key: str, evidence: DayEvidence) -> str | None:
+    """The commit itself, from the repository it was found in, for a commit key."""
+    commit = next((row for row in evidence.sections.get("git", []) if row["key"] == key), None)
+    if commit is None:
+        return None
+    shown = _git(
+        commit["paths"].split(", ")[0],
+        ("show", "--stat", "--format=%H%n%an %ci%n%n%B", commit["sha"]),
+    )
+    return None if shown is None else f"[{key}]\n{shown[:DETAIL_TEXT]}"
+
+
 def read_detail(  # noqa: PLR0911 — one branch per reference kind.
     key: str,
     evidence: DayEvidence,
@@ -554,6 +656,9 @@ def read_detail(  # noqa: PLR0911 — one branch per reference kind.
     ref = evidence.refs.get(key)
     if ref is None:
         return f"[{key}] 不是材料里的键"
+    shown = _commit_detail(key, evidence)
+    if shown is not None:
+        return shown
     try:
         if ref.startswith("timesink-capture:"):
             row = timesink.read_capture(timesink_path, ref)
