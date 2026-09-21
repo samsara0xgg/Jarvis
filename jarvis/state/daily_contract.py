@@ -121,6 +121,13 @@ SCHEMAS: dict[str, dict[str, Any]] = {
             "force": {"type": "boolean"},
         }
     ),
+    "daily_work_report": object_fields(
+        {
+            "local_date": text_field(10),
+            "timezone": text_field(100),
+            "regenerate": {"type": "boolean"},
+        }
+    ),
     "search_knowledge": object_fields(
         {
             "query": text_field(500),

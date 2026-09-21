@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 from jarvis.execution.tools import Tool, ToolError
 from jarvis.shared import CallerPrincipal
+from jarvis.shared.skills import load_skill
 from jarvis.state import daily_activity, daily_records, daily_store
 from jarvis.state.daily_contract import SCHEMAS, DailyError, encoded, validate
 
@@ -13,7 +14,12 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
     from pathlib import Path
 
-    from jarvis.execution.tools import FlatHandler, ToolContext, WorkStateRefresh
+    from jarvis.execution.tools import (
+        DailyReportRun,
+        FlatHandler,
+        ToolContext,
+        WorkStateRefresh,
+    )
 
 _DESCRIPTIONS = {
     "search_records": (
@@ -167,6 +173,38 @@ def build_work_state_tool(refresh: WorkStateRefresh | None) -> tuple[Tool, ...]:
             name="refresh_work_state",
             description=_WORK_STATE_DESCRIPTION,
             input_schema=SCHEMAS["refresh_work_state"],
+            handler=handle,
+            allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
+            risk_level="L1",
+            read_only=False,
+            max_result_chars=_RESULT_CAP,
+        ),
+    )
+
+
+def build_daily_report_tool(run: DailyReportRun | None) -> tuple[Tool, ...]:
+    """ADR 0024: the conversation entry to the runtime's daily-report workflow.
+
+    The tool's description is the skill's own frontmatter description, so the
+    trigger text the decision model reads and the instructions the report model
+    follows cannot drift apart.
+    """
+    if run is None:
+        return ()
+
+    def handle(args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
+        values = dict(args)
+        try:
+            validate(values, SCHEMAS["daily_work_report"])
+            return run(values, ctx)
+        except DailyError as exc:
+            raise ToolError(str(exc), code=exc.code) from exc
+
+    return (
+        Tool(
+            name="daily_work_report",
+            description=load_skill("daily-work-report").description,
+            input_schema=SCHEMAS["daily_work_report"],
             handler=handle,
             allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
             risk_level="L1",

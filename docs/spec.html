@@ -551,6 +551,7 @@ the dispatcher alone owns action lifecycle events. Original conversation records
 <tr><td>save_briefing</td><td>local_date, timezone, content, source_refs, coverage, request_id; expected_version?</td><td>briefing_id, version, source_ref. Date + IANA timezone identifies one briefing with immutable revisions. No delivery or scheduling side effect.</td></tr>
 <tr><td>get_briefing</td><td>local_date, timezone, cursor?</td><td>Saved metadata plus content chunks, offset, total_chars, complete, next_cursor; delivery_status=not_tracked. Continuation stays on its initial revision.</td></tr>
 <tr><td>refresh_work_state</td><td>question?, note?, force?</td><td>The ADR 0023 work-state view: state (the saved record or null), data (latest timesink.state_observed head or null), refreshing, outcome (analyzed / reused / no_evidence / failed), error, joined?. Runs the runtime's one refresh workflow; L1 because it appends work_state.revised.</td></tr>
+<tr><td>daily_work_report</td><td>local_date?, timezone?, regenerate?</td><td>The ADR 0024 day report: local_date, timezone, outcome (generated / reused / no_evidence / failed), version, error, plus briefing_id, source_ref, saved_at, coverage, total_chars, summary and (when generated) evidence_counts, limits, source_refs_saved, model_calls. Runs the runtime's report workflow and saves through save_briefing; L1 because it appends briefing.revised.</td></tr>
 </tbody></table>
 <p>Query intervals are half-open [from,to); timestamp parameters require explicit UTC offsets.
 Paging limit defaults to 20 and is capped at 50. Cursors bind query arguments and storage identity;
@@ -637,7 +638,8 @@ between pages without changing the selected rows.</p>
 <p>Briefing coverage has records/git/app/screen/agent/todos/knowledge entries with values
 available/partial/unknown/unavailable/not_implemented; omitted entries default to unknown.
 coverage_basis=reported_by_generator distinguishes it from measured collector health. Saving a briefing
-never marks it delivered or heard. Background consolidation, skills, collectors, scheduler, wake-time
+never marks it delivered or heard. The daily work report below is the one writer that saves a briefing
+without the model choosing its fields. Background consolidation, collectors, scheduler, wake-time
 catch-up, delivery deduplication and Live write-policy integration are separate capabilities.</p>
 <p id="work-state"><strong>Current work state (ADR 0023).</strong> One record, folded as the latest
 <code>work_state.revised</code> event (owner L2, actor jarvis_llm, schema version 1; payload
@@ -691,6 +693,51 @@ activity. The read view reports three clocks apart: <code>freshness.checked_at_m
 and <code>freshness.analyzed_at</code>; a successful poll is not fresh data. The check clock is
 maintained in memory on every read, with the persisted observation as a fallback after restart. The head is a
 collector-health trail; it never triggers decide() and never calls a model.</p>
+
+<p id="task-skills"><strong>Task skills (ADR 0024).</strong> A skill is a directory
+<code>jarvis/shared/skills/&lt;name&gt;/</code> holding <code>SKILL.md</code> — frontmatter with
+<code>name</code> and <code>description</code>, then the instructions — plus optional
+<code>references/*.md</code> appended to those instructions in filename order.
+<code>load_skill(name)</code> reads it at import time, so a malformed skill fails at boot, not at
+use. The frontmatter description is the tool description the decision model reads and the body is
+the system prompt of the task's own model call, so the trigger text and the instructions cannot
+drift apart. A skill carries instructions only: the procedure, the evidence caps, the tool catalog
+and every rule enforced on save are code in L2/L3/runtime. Skills are not discovered dynamically,
+are not user-editable at runtime, and never carry credentials or executable steps.</p>
+
+<p id="daily-work-report"><strong>Daily work report (ADR 0024).</strong> One local calendar day,
+one saved briefing. <code>daily_work_report</code> and the runtime job behind it resolve the day
+in <code>work_state.timezone</code> (argument <code>timezone</code> overrides, unset falls back to
+the system IANA zone): no <code>local_date</code> means the previous local date, never now minus
+24 h, and a future date is rejected. The window is the local <code>[00:00, 24:00)</code>, cut at
+the request instant while the day is still running, and that cut is stated in the material and in
+the report. An existing briefing for that date and zone is returned unchanged
+(<code>outcome=reused</code>, no model call) unless <code>regenerate</code> is set, which writes
+the next version through <code>save_briefing</code>'s own <code>expected_version</code> check, so a
+stale writer gets <code>version_conflict</code> and the saved report stands. Evidence is gathered
+once per run: the day's TimeSink spans aggregated per app and per window, its captures grouped per
+window and per hour (the longest OCR text of each group), TimeSink state events, that day's
+memory.db records, that day's Git observations, plus open todos, active knowledge and the previous
+day's report as context that is labelled not-today. Commits are deduplicated by
+<code>commit_sha</code> across repository paths, each entry naming every path it was seen in, and
+carry both their commit time and their observation time with a <code>late</code> flag when the two
+fall on different local days. Every cap that clipped material names the omitted count and is
+written into the material and into the saved report. Empty evidence is <code>no_evidence</code>
+and writes nothing. The model receives the skill's instructions, the keyed material, and exactly
+two tools: <code>request_details</code>, which returns the originals behind up to ten keys (full
+OCR text, exact record text, the raw Git payload or the stored span row, whose bare GRDB times are
+labelled UTC), and <code>report_daily_work</code>. At most three model calls per run: a model that
+asks again instead of reporting is served its details and told to report. A malformed report fails
+the run without replacing the saved version, and a provider failure keeps it too
+(<code>outcome=failed</code> with the round and finish reason). The saved text is composed by
+code, not by the model: refs the model was not given are dropped and counted; an item marked
+<code>completed</code> whose refs hold no commit event and no Allen-authored record is written as
+完成（未证实）; a <code>user_next_steps</code> entry that cites no Allen-authored record becomes a
+suggestion; coverage, evidence counts and every material limit are appended as uncertainties. The
+first 20 cited references are saved as the briefing's <code>source_refs</code> and the rest stay
+in the per-section 引用 lines, so every claim is re-checkable through
+<code>read_activity</code> / <code>read_records</code>. Saving a report still delivers nothing, and
+a suggestion inside a report creates no todo and triggers no action.</p>
 
 <h4>3.3.6 Mode Runtime State vs Mode Preset Table</h4>
 
