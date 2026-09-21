@@ -14,14 +14,17 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from jarvis.decision.daily_report import (
     DETAILS_TOOL,
+    DETAILS_TOOL_NAME,
+    QUERY_MORE,
     REPORT_AGAIN,
     REPORT_NOW,
     REPORT_TOOL,
+    SEARCH_TOOL,
     DailyReportParseError,
     build_request,
     compose_report,
     parse_report,
-    requested_details,
+    requested_queries,
     summary_of,
 )
 from jarvis.state.daily_contract import DailyError
@@ -32,6 +35,7 @@ from jarvis.state.daily_report import (
     resolve_day,
     resolve_zone,
     save_report,
+    search_day,
 )
 
 if TYPE_CHECKING:
@@ -46,8 +50,10 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger(__name__)
 OUTCOMES = ("generated", "reused", "no_evidence", "failed")
 KIND = "daily_report"
-MAX_ROUNDS = 3
-"""Model calls per report: the first, plus up to two that serve details and require the report."""
+QUERY_ROUNDS = 2
+"""Rounds in which the model may search the day or ask for originals before it must report."""
+MAX_ROUNDS = 4
+"""Model calls per report: the query rounds, the report, and one retry of an unusable report."""
 
 
 class Reporter(Protocol):
@@ -207,19 +213,21 @@ class DailyReportService:
         """
         assert self._reporter is not None  # noqa: S101 — checked by the caller.
         system, messages = build_request(evidence)
-        tools: list[dict[str, Any]] = [DETAILS_TOOL, REPORT_TOOL]
+        tools: list[dict[str, Any]] = [SEARCH_TOOL, DETAILS_TOOL, REPORT_TOOL]
         for round_number in range(1, MAX_ROUNDS + 1):
             result = self._reporter.analyze(conn, system=system, messages=messages, tools=tools)
             last = round_number == MAX_ROUNDS
-            requests = requested_details(result)
-            if requests and not last:
+            queries = requested_queries(result)
+            if queries and round_number <= QUERY_ROUNDS:
                 messages.append(_assistant_turn(result))
-                for call_id, keys in requests.items():
-                    messages.append(
-                        _tool_reply(call_id, self._details(conn, evidence, keys) or "没有可读的键")
-                    )
-                messages.append({"role": "user", "content": REPORT_NOW})
-                tools = [REPORT_TOOL]
+                for call_id, name, argument in queries:
+                    reply = self._answer(conn, evidence, name, argument)
+                    messages.append(_tool_reply(call_id, reply))
+                if round_number == QUERY_ROUNDS:
+                    messages.append({"role": "user", "content": REPORT_NOW})
+                    tools = [REPORT_TOOL]
+                else:
+                    messages.append({"role": "user", "content": QUERY_MORE})
                 continue
             try:
                 return parse_report(result), round_number
@@ -235,6 +243,23 @@ class DailyReportService:
                 tools = [REPORT_TOOL]
         message = "report_daily_work was never produced"
         raise DailyReportParseError(message)
+
+    def _answer(
+        self,
+        conn: sqlite3.Connection,
+        evidence: DayEvidence,
+        name: str,
+        argument: Any,  # noqa: ANN401 — a query string or a list of keys.
+    ) -> str:
+        """One query's reply: search hits for a query, or the originals behind the keys."""
+        if name == DETAILS_TOOL_NAME:
+            return self._details(conn, evidence, argument) or "没有可读的键"
+        return search_day(
+            evidence,
+            str(argument),
+            timesink_path=self._timesink_path,
+            zone=resolve_zone(evidence.zone, self._tz)[1],
+        )
 
     def _details(
         self, conn: sqlite3.Connection, evidence: DayEvidence, keys: list[str]

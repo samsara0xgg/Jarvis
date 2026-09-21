@@ -30,6 +30,9 @@ if TYPE_CHECKING:
 ALLEN_SOURCE = "allen"
 MAX_DETAILS = 10
 DETAIL_TEXT = 2500
+MAX_HITS = 20
+_SNIPPET_BEFORE = 60
+_SNIPPET_AFTER = 100
 _ACTIVITY_TYPES = ("repo.state_observed", "project.commit_seen")
 _MAX_APPS = 15
 _MAX_WINDOWS = 40
@@ -128,9 +131,13 @@ class DayEvidence:
     observed_until: str | None
     sections: dict[str, list[dict[str, Any]]]
     refs: dict[str, str] = field(default_factory=dict)
+    """Every key the model may cite, rendered or not; search reaches the rest."""
     stated: frozenset[str] = frozenset()
     commits: dict[str, str] = field(default_factory=dict)
     """Same-day commit refs and their short SHAs: what a proof label may name."""
+    haystack: dict[str, str] = field(default_factory=dict)
+    """Key -> searchable text for windows, records, commits and sessions; captures are searched
+    in the store, whose text was never copied here."""
 
     @property
     def empty(self) -> bool:
@@ -166,6 +173,7 @@ class _Gather:
     limits: list[str] = field(default_factory=list)
     stated: set[str] = field(default_factory=set)
     commits: dict[str, str] = field(default_factory=dict)
+    haystack: dict[str, str] = field(default_factory=dict)
     latest: datetime | None = None
 
     def clock(self, value: str) -> str:
@@ -233,20 +241,23 @@ def _span_sections(g: _Gather, items: list[dict[str, Any]]) -> None:
             "只计入应用时长"
         )
     windows = []
-    for group in ranked[:_MAX_WINDOWS]:
+    for index, group in enumerate(ranked):
         key = f"a{group['_ref'].split(':')[2]}"
         g.refs[key] = group["_ref"]
-        windows.append(
-            {
-                "key": key,
-                "app": group["app"],
-                "title": group["title"],
-                "minutes": round(group["minutes"]),
-                "spans": group["spans"],
-                "first": g.clock(group["first"]),
-                "last": g.clock(group["last"]),
-            }
+        row = {
+            "key": key,
+            "app": group["app"],
+            "title": group["title"],
+            "minutes": round(group["minutes"]),
+            "spans": group["spans"],
+            "first": g.clock(group["first"]),
+            "last": g.clock(group["last"]),
+        }
+        g.haystack[key] = (
+            f"{row['first']}-{row['last']} {row['app']} — {row['title']}（{row['minutes']} 分钟）"
         )
+        if index < _MAX_WINDOWS:
+            windows.append(row)
     g.sections["windows"] = windows
 
 
@@ -254,6 +265,7 @@ def _screen_section(g: _Gather, items: list[dict[str, Any]]) -> None:
     groups: dict[tuple[str, str | None], list[dict[str, Any]]] = defaultdict(list)
     for item in items:
         g.saw(item["ended_at"])
+        g.refs[f"s{_row_id(item)}"] = item["source_refs"][0]
         groups[(item["app_name"], item["window_title"])].append(item)
     lines: list[dict[str, Any]] = []
     budget = _SCREEN_BUDGET
@@ -273,7 +285,6 @@ def _screen_section(g: _Gather, items: list[dict[str, Any]]) -> None:
             text = _ocr(longest, min(_SCREEN_TEXT, budget))
             budget -= len(text)
             key = f"s{_row_id(longest)}"
-            g.refs[key] = longest["source_refs"][0]
             lines.append(
                 {
                     "key": key,
@@ -343,20 +354,21 @@ def _record_section(g: _Gather, memory_path: Path | None) -> None:
     if len(rows) > _MAX_RECORDS:
         g.limits.append(f"当天的对话记录共 {len(rows)} 条，只列出前 {_MAX_RECORDS} 条")
     records = []
-    for index, (identity, ts, source, text) in enumerate(rows[:_MAX_RECORDS]):
+    for index, (identity, ts, source, text) in enumerate(rows):
         key = f"r{index + 1}"
         ref = f"record:{identity}"
         g.refs[key] = ref
         if source == ALLEN_SOURCE:
             g.stated.add(ref)
-        records.append(
-            {
-                "key": key,
-                "at": g.clock(str(ts)),
-                "who": str(source),
-                "text": _squeeze(str(text), _RECORD_TEXT),
-            }
-        )
+        row = {
+            "key": key,
+            "at": g.clock(str(ts)),
+            "who": str(source),
+            "text": _squeeze(str(text), _RECORD_TEXT),
+        }
+        g.haystack[key] = f"{row['at']} {row['who']}: {_squeeze(str(text), DETAIL_TEXT)}"
+        if index < _MAX_RECORDS:
+            records.append(row)
     g.sections["records"] = records
 
 
@@ -517,6 +529,7 @@ def _git_sections(g: _Gather, conn: sqlite3.Connection, repos: Sequence[str]) ->
             if "observed_ms" in entry
             else None
         )
+        g.haystack[key] = f"{entry['sha'][:7]} {entry['subject']}"
         git.append(
             {
                 "key": key,
@@ -690,6 +703,7 @@ def _agent_section(g: _Gather, sessions_root: Path | None) -> None:
     for index, session in enumerate(sessions[:_MAX_AGENT_SESSIONS]):
         key = f"c{index + 1}"
         g.refs[key] = f"codex-session:{session['path']}"
+        g.haystack[key] = _squeeze(" ".join([*session["asks"], *session["answers"]]), DETAIL_TEXT)
         g.saw(session["last"].isoformat())
         rows.append(
             {
@@ -748,7 +762,66 @@ def gather_day(  # noqa: PLR0913 — the configured stores plus the day, its zon
         refs=g.refs,
         stated=frozenset(g.stated),
         commits=dict(g.commits),
+        haystack=g.haystack,
     )
+
+
+def _snippet(text: str, needle: str) -> str:
+    """The match with a little of what surrounds it, on one line."""
+    flat = " ".join(text.split())
+    at = flat.casefold().find(needle)
+    if at < 0:
+        return flat[: _SNIPPET_BEFORE + _SNIPPET_AFTER]
+    stop = at + len(needle) + _SNIPPET_AFTER
+    head = "…" if at > _SNIPPET_BEFORE else ""
+    tail = "…" if stop < len(flat) else ""
+    return f"{head}{flat[max(0, at - _SNIPPET_BEFORE) : stop]}{tail}"
+
+
+def _capture_hits(
+    evidence: DayEvidence, needle: str, *, timesink_path: Path | None, zone: tzinfo
+) -> list[tuple[str, str]]:
+    """Captures of the day whose full OCR text contains the needle, oldest first."""
+    ids = [int(k[1:]) for k in evidence.refs if k[:1] == "s" and k[1:].isdigit()]
+    if not ids:
+        return []
+    hits = []
+    with timesink.snapshot(timesink_path) as snap:
+        if snap is None:
+            return []
+        marks = ",".join("?" * len(ids))
+        rows = snap.conn.execute(
+            f"SELECT id,at,appName,title,text FROM capture WHERE id IN ({marks}) "  # noqa: S608 — placeholders only.
+            "AND instr(lower(text), ?) > 0 ORDER BY at,id",
+            (*ids, needle),
+        ).fetchall()
+    for identity, at, app, title, text in rows:
+        when = datetime.fromisoformat(timesink.moment(at)).astimezone(zone).strftime("%H:%M")
+        line = f"{when} {app} — {title or ''}: {_snippet(str(text), needle)}"
+        hits.append((f"s{identity}", line))
+    return hits
+
+
+def search_day(
+    evidence: DayEvidence, query: str, *, timesink_path: Path | None, zone: tzinfo
+) -> str:
+    """Keys whose text contains the query, listed or not, with a line of context each."""
+    needle = " ".join(query.split()).casefold()
+    if not needle:
+        return "请给出要检索的关键字。"
+    hits = _capture_hits(evidence, needle, timesink_path=timesink_path, zone=zone)
+    hits += [
+        (key, _snippet(text, needle))
+        for key, text in evidence.haystack.items()
+        if needle in text.casefold()
+    ]
+    if not hits:
+        return f"「{query}」在这一天的材料里没有出现。"
+    shown = hits[:MAX_HITS]
+    rest = len(hits) - len(shown)
+    more = f"\n…另有 {rest} 处命中未列出，请换更具体的关键字。" if rest else ""
+    listed = "\n".join(f"[{k}] {line}" for k, line in shown)
+    return f"「{query}」命中 {len(hits)} 处：\n{listed}{more}"
 
 
 def _commit_detail(key: str, evidence: DayEvidence) -> str | None:

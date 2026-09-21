@@ -1,9 +1,10 @@
 """Daily work report request and reply handling (ADR 0024): the skill's model call.
 
 The skill's instructions are the system prompt; the day's evidence is keyed
-material; the model may ask once for the originals behind a few keys and must
-then report through ``report_daily_work``. The report's rules are enforced
-here when the saved text is composed, never by prompt alone.
+material; for two rounds the model may search the day and ask for the
+originals behind a few keys, then it must report through ``report_daily_work``.
+The report's rules are enforced here when the saved text is composed, never by
+prompt alone.
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ import json
 from typing import TYPE_CHECKING, Any, NoReturn
 
 from jarvis.shared.skills import load_skill
-from jarvis.state.daily_report import MAX_DETAILS
+from jarvis.state.daily_report import MAX_DETAILS, MAX_HITS
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -23,8 +24,14 @@ if TYPE_CHECKING:
 SKILL = load_skill("daily-work-report")
 REPORT_TOOL_NAME = "report_daily_work"
 DETAILS_TOOL_NAME = "request_details"
-REPORT_NOW = "以上就是你要的原文。材料到此为止，现在必须调用 report_daily_work 汇报这一天。"
-"""Served with the details: a model that keeps asking instead of reporting is told to report."""
+SEARCH_TOOL_NAME = "search_material"
+QUERY_MORE = (
+    "以上是查询结果。还可以再查询一轮（search_material、request_details 可同时调用），"
+    "或者直接调用 report_daily_work 汇报。"
+)
+"""Served after the first query round: one more round of questions is allowed."""
+REPORT_NOW = "以上是查询结果。材料到此为止，现在必须调用 report_daily_work 汇报这一天。"
+"""Served after the last query round: a model that keeps asking is told to report."""
 REPORT_AGAIN = "上一次汇报无法解析，请按 schema 重新调用 report_daily_work，内容可以更简短。"
 """Served after an unusable reply: providers malform or truncate long arguments now and then."""
 STATUSES = ("browsed", "discussed", "attempted", "completed")
@@ -149,8 +156,9 @@ REPORT_TOOL: dict[str, Any] = {
 DETAILS_TOOL: dict[str, Any] = {
     "name": DETAILS_TOOL_NAME,
     "description": (
-        f"索取至多 {MAX_DETAILS} 条关键条目的原文（屏幕 OCR 全文、对话原文、Git 载荷），"
-        "用材料里的方括号键。只能调用一次，之后必须用 report_daily_work 汇报。"
+        f"索取至多 {MAX_DETAILS} 条条目的原文（屏幕 OCR 全文、对话原文、提交内容与改动文件、"
+        "Codex 会话的提问与最后回复），用材料或检索结果里的方括号键。"
+        "最多两轮查询，之后必须用 report_daily_work 汇报。"
     ),
     "input_schema": {
         "type": "object",
@@ -158,6 +166,20 @@ DETAILS_TOOL: dict[str, Any] = {
             "keys": {"type": "array", "items": {"type": "string"}, "maxItems": MAX_DETAILS}
         },
         "required": ["keys"],
+    },
+}
+SEARCH_TOOL: dict[str, Any] = {
+    "name": SEARCH_TOOL_NAME,
+    "description": (
+        "在这一天的全部材料里按关键字检索——包括材料里因篇幅没列出的屏幕内容、窗口和对话记录——"
+        f"返回命中的键和一行上下文，最多 {MAX_HITS} 条。用来核对某个事实（某次提交、某句话、"
+        "某个页面、某个错误）当天是否真的出现过、出现在哪。可以和 request_details 同一轮调用；"
+        "最多两轮查询，之后必须用 report_daily_work 汇报。"
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {"query": {"type": "string", "description": "关键字或短语"}},
+        "required": ["query"],
     },
 }
 
@@ -249,29 +271,37 @@ def render_material(evidence: DayEvidence) -> str:
 def build_request(evidence: DayEvidence) -> tuple[str, list[dict[str, Any]]]:
     """The skill's instructions as the system prompt plus one user message of material."""
     content = (
-        f"以下是 {evidence.day} 的材料。可以先用 request_details 索取关键条目原文，"
-        "然后调用 report_daily_work 汇报。\n\n"
+        f"以下是 {evidence.day} 的材料。可以先用 search_material 核对事实、用 request_details "
+        "索取原文（最多两轮），然后调用 report_daily_work 汇报。\n\n"
         f"{render_material(evidence)}"
     )
     return SKILL.instructions, [{"role": "user", "content": content}]
 
 
-def requested_details(result: ChatResult) -> dict[str, list[str]] | None:
-    """Keys per ``request_details`` call, or None when the model already reported."""
+def requested_queries(result: ChatResult) -> list[tuple[str, str, Any]]:
+    """Each search or details call as (call id, tool, argument); empty once the model reported.
+
+    A search carries its query string, a details request its keys, bounded.
+    """
     if any(call.name == REPORT_TOOL_NAME for call in result.tool_calls):
-        return None
-    requests: dict[str, list[str]] = {}
+        return []
+    queries: list[tuple[str, str, Any]] = []
     for call in result.tool_calls:
-        if call.name != DETAILS_TOOL_NAME:
+        if call.name not in (DETAILS_TOOL_NAME, SEARCH_TOOL_NAME):
             continue
         try:
             raw = json.loads(call.arguments_json)
         except ValueError:
             raw = {}
-        keys = raw.get("keys") if isinstance(raw, dict) else None
+        if not isinstance(raw, dict):
+            raw = {}
+        if call.name == SEARCH_TOOL_NAME:
+            queries.append((call.call_id, call.name, str(raw.get("query") or "")))
+            continue
+        keys = raw.get("keys")
         wanted = [str(k) for k in keys if isinstance(k, str)] if isinstance(keys, list) else []
-        requests[call.call_id] = wanted[:MAX_DETAILS]
-    return requests or None
+        queries.append((call.call_id, call.name, wanted[:MAX_DETAILS]))
+    return queries
 
 
 def _text(value: Any, limit: int) -> str:  # noqa: ANN401 — model output.
