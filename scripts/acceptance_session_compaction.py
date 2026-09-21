@@ -95,17 +95,15 @@ def _summary(*cited: str) -> str:
 
 def _check_render_before_summary(db: Path) -> None:
     ctx = render_context(db, exclude_id=_rid(10), now=NOW)
-    _ok(
-        ctx.history.startswith("[关于 Allen]\n- (档案为空)\n[对话记录"),
-        "history leads with the profile",
-    )
+    _ok(ctx.profile == "", "an empty profile renders no block")
+    _ok(ctx.history.startswith("[对话记录"), "history leads with the records")
     _ok(
         all(RECORD_TEXT.format(i=i) in ctx.history for i in range(1, 10)),
         "every earlier record is verbatim before a summary",
     )
     _ok(RECORD_TEXT.format(i=10) not in ctx.history, "the current input is excluded")
     _ok("[对话摘要" not in ctx.history, "no summary block before a compaction")
-    _ok(ctx.now.startswith("[现在] 2026-09-14T12:00:00"), "the time line is separate")
+    _ok(ctx.now.startswith("时间：2026-09-14T12:00-"), "the time line is separate")  # noqa: RUF001 — Chinese punctuation is intentional.
     _ok("距上次交流 1 天" in ctx.now, "the gap suffix appears past 30 minutes")
     stats = verbatim_stats(db)
     _ok(stats.chars == sum(len(RECORD_TEXT.format(i=i)) for i in range(1, 11)), "verbatim chars")

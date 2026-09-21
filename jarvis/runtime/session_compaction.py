@@ -132,7 +132,12 @@ def run_compaction(  # noqa: PLR0913 — the store, the knobs, the client and th
     Blocking (one LLM call); the sweep runs it in a thread, which is why
     the call opens its own Event Log connection for the cost record.
     """
-    span = compaction_range(memory.db_path, window_days=settings.verbatim_window_days, now=now)
+    span = compaction_range(
+        memory.db_path,
+        window_days=settings.verbatim_window_days,
+        since=settings.history_since,
+        now=now,
+    )
     if span is None:
         return "nothing older than the verbatim window"
     with closing(open_runtime_event_log(event_log_path)) as conn:
@@ -218,7 +223,7 @@ class CompactionSweep:
             and (now - self._last_attempt).total_seconds() < self._settings.idle_before_compact_s
         ):
             return
-        stats = verbatim_stats(self._memory.db_path)
+        stats = verbatim_stats(self._memory.db_path, since=self._settings.history_since)
         reason = blocked_reason(
             stats,
             now=now,

@@ -518,6 +518,10 @@ session:
   summary_max_chars: 8000         # a longer summary is rejected and nothing is stored
                                   # (live 2026-09-14: deep wrote 4.5k-6.2k chars for 38k of history)
   live_brief_max_chars: 1500      # the GPT-Live startup brief budget
+  # Where the prompt's history starts. Records before this stay in memory.db
+  # for search_records / read_records and are never shown to the model or
+  # folded into a summary (2026-09-21: everything earlier was test noise).
+  history_since: "2026-09-14T00:00:00-07:00"
   # The summariser's whole system prompt. The nine "###" headings are
   # required: a summary missing one is rejected. Edit the text freely; the
   # headings are checked by name (jarvis/decision/compaction.py).

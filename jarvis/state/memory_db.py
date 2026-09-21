@@ -19,6 +19,7 @@ SQLite's ``datetime()``, which understands the offset.
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from collections.abc import Mapping, Sequence
 from contextlib import closing
@@ -56,6 +57,12 @@ DEFAULT_SEARCH_LIMIT: Final[int] = 20
 _WEEKDAYS: Final[str] = "一二三四五六日"
 # The [现在] line carries a "距上次交流" suffix once the gap passes this.
 _GAP_NOTE_AFTER: Final[timedelta] = timedelta(minutes=30)
+
+# Answers written before 2026-09-21 carry the retired <voice>/<document>
+# envelope; the store keeps them as written, the prompt shows the words.
+_ENVELOPE_TAG_RE: Final[re.Pattern[str]] = re.compile(
+    r"</?(?:voice|document)>[ \t]*\n?", re.IGNORECASE,
+)
 
 # One transcript row: (id, ts, source, text).
 Record = tuple[str, str, str, str]
@@ -95,6 +102,9 @@ class SessionSettings:
     verbatim, which preset writes the summary, and how large the Live brief
     may be. Every number is a knob; ``compact_prompt`` is the summariser's
     whole system prompt, and an empty one means no compaction ever runs.
+    ``history_since`` is the ISO timestamp the prompt's history starts at;
+    earlier records stay in the store for search and never reach the prompt
+    or a compaction.
     """
 
     idle_before_compact_s: float = 3600.0
@@ -104,6 +114,7 @@ class SessionSettings:
     summary_max_chars: int = 8000
     live_brief_max_chars: int = 1500
     compact_prompt: str = ""
+    history_since: str = ""
 
     @classmethod
     def from_config(cls, raw: object) -> SessionSettings:
@@ -119,6 +130,7 @@ class SessionSettings:
 
         preset = values.get("compact_preset")
         prompt = values.get("compact_prompt")
+        since = values.get("history_since")
         return cls(
             idle_before_compact_s=_positive(
                 "idle_before_compact_s", defaults.idle_before_compact_s,
@@ -137,14 +149,16 @@ class SessionSettings:
                 _positive("live_brief_max_chars", defaults.live_brief_max_chars),
             ),
             compact_prompt=prompt.strip() if isinstance(prompt, str) else "",
+            history_since=since.strip() if isinstance(since, str) else "",
         )
 
 
 class MemoryContext(NamedTuple):
-    """The two prompt blocks rendered from memory.db for one turn."""
+    """The prompt blocks rendered from memory.db for one turn."""
 
-    history: str  # profile, current summary, verbatim records: stable between turns
-    now: str  # the [现在] line: changes every turn, so it goes after the history
+    profile: str  # [关于 Allen] lines for the system prompt; "" when the profile is empty
+    history: str  # current summary, then verbatim records: stable between turns
+    now: str  # the time line: changes every turn, so it goes after the history
 
 
 class VerbatimStats(NamedTuple):
@@ -271,23 +285,45 @@ def _current_summary(conn: sqlite3.Connection) -> _Summary | None:
 
 def _profile_lines(conn: sqlite3.Connection) -> list[str]:
     rows = conn.execute("SELECT text FROM profile ORDER BY rowid").fetchall()
-    return [f"- {text}" for (text,) in rows] or ["- (档案为空)"]
+    return [f"- {text}" for (text,) in rows]
 
 
-def _records_after(conn: sqlite3.Connection, anchor_rowid: int | None) -> list[Record]:
-    """Every record after the anchor (all of them when there is no summary)."""
-    if anchor_rowid is None:
-        rows = conn.execute("SELECT id, ts, source, text FROM records ORDER BY rowid").fetchall()
-    else:
-        rows = conn.execute(
-            "SELECT id, ts, source, text FROM records WHERE rowid > ? ORDER BY rowid",
-            (anchor_rowid,),
-        ).fetchall()
+def _effective_anchor(conn: sqlite3.Connection, anchor_rowid: int | None, since: str) -> int:
+    """The rowid the prompt's verbatim records must come after.
+
+    The current summary's anchor, or the row before the first record on or
+    after ``since`` — whichever is later. With no record since the cutoff,
+    every row is before the start of history.
+    """
+    anchor = -1 if anchor_rowid is None else anchor_rowid
+    if since:
+        (first,) = conn.execute(
+            "SELECT MIN(rowid) FROM records WHERE datetime(ts) >= datetime(?)", (since,),
+        ).fetchone()
+        if first is None:
+            (last,) = conn.execute("SELECT COALESCE(MAX(rowid), 0) FROM records").fetchone()
+            floor = int(last)
+        else:
+            floor = int(first) - 1
+        anchor = max(anchor, floor)
+    return anchor
+
+
+def _records_after(conn: sqlite3.Connection, anchor: int) -> list[Record]:
+    """Every record after ``anchor`` (see :func:`_effective_anchor`)."""
+    rows = conn.execute(
+        "SELECT id, ts, source, text FROM records WHERE rowid > ? ORDER BY rowid", (anchor,),
+    ).fetchall()
     return [(str(i), str(ts), str(source), str(text)) for i, ts, source, text in rows]
 
 
+def _plain(text: str) -> str:
+    """A record's text without the retired envelope tags."""
+    return _ENVELOPE_TAG_RE.sub("", text).strip() if "<" in text else text
+
+
 def _now_line(moment: datetime, last_ts: str | None) -> str:
-    line = f"[现在] {iso_seconds(moment)} 周{_WEEKDAYS[moment.weekday()]}"
+    line = f"时间：{moment.isoformat(timespec='minutes')} 周{_WEEKDAYS[moment.weekday()]}"  # noqa: RUF001 — Chinese punctuation is intentional.
     if last_ts is None:
         return line
     gap = moment - datetime.fromisoformat(last_ts)
@@ -304,34 +340,39 @@ def _now_line(moment: datetime, last_ts: str | None) -> str:
     return f"{line} · 距上次交流 {' '.join(parts)}"
 
 
-def render_context(path: Path, *, exclude_id: str, now: datetime | None = None) -> MemoryContext:
+def render_context(
+    path: Path, *, exclude_id: str, since: str = "", now: datetime | None = None,
+) -> MemoryContext:
     """Render the decision-path prompt blocks in one consistent read.
 
-    ``history`` is the profile, the current summary (if any) and every record
-    after its anchor in full; it only grows at its end between compactions,
-    so the provider's prefix cache covers it. ``now`` is the per-turn time
-    line. ``exclude_id`` is the current turn's own utterance, which the
-    prompt already carries as the live user message.
+    ``profile`` goes to the system prompt. ``history`` is the current summary
+    (if any) and every record after its anchor and on or after ``since``, in
+    full; it only grows at its end between compactions, so the provider's
+    prefix cache covers it. ``now`` is the per-turn time line.
+    ``exclude_id`` is the current turn's own utterance, which the prompt
+    already carries as the live user message.
     """
     moment = now or local_now()
     with closing(open_memory_db(path)) as conn:
         profile = _profile_lines(conn)
         current = _current_summary(conn)
-        records = _records_after(conn, current.anchor_rowid if current else None)
-    lines = ["[关于 Allen]", *profile]
+        anchor = _effective_anchor(conn, current.anchor_rowid if current else None, since)
+        records = _records_after(conn, anchor)
+    profile_block = "\n".join(["[关于 Allen]", *profile]) if profile else ""
+    lines: list[str] = []
     if current is not None:
         lines.append(
             f"[对话摘要 · 覆盖到 {current.anchor_ts} · "
-            "措辞、数字、是否同意 用 search_records 按 record_id 回查原话]",
+            "措辞、数字、是否同意 用 read_records 按 record_id 回查原话]",
         )
         lines.append(current.summary)
     lines.append("[对话记录, 全文, 时间正序]")
     shown = [record for record in records if record[0] != exclude_id]
     if not shown:
         lines.append("(无)")
-    lines.extend(f"[{ts}] {source}: {text}" for _, ts, source, text in shown)
+    lines.extend(f"[{ts}] {source}: {_plain(text)}" for _, ts, source, text in shown)
     last_ts = shown[-1][1] if shown else (current.anchor_ts if current else None)
-    return MemoryContext("\n".join(lines), _now_line(moment, last_ts))
+    return MemoryContext(profile_block, "\n".join(lines), _now_line(moment, last_ts))
 
 
 def _summary_sections(summary: str) -> list[str]:
@@ -359,7 +400,7 @@ def brief_note(path: Path, *, max_chars: int, now: datetime | None = None) -> st
     with closing(open_memory_db(path)) as conn:
         profile = _profile_lines(conn)
         current = _current_summary(conn)
-        records = _records_after(conn, current.anchor_rowid if current else None)
+        records = _records_after(conn, -1 if current is None else current.anchor_rowid)
     summary_head = (
         [f"[对话摘要 · 覆盖到 {current.anchor_ts} · 原话细节请向后台查询]"] if current else []
     )
@@ -392,14 +433,14 @@ def brief_note(path: Path, *, max_chars: int, now: datetime | None = None) -> st
     return _assemble()
 
 
-def verbatim_stats(path: Path) -> VerbatimStats:
+def verbatim_stats(path: Path, *, since: str = "") -> VerbatimStats:
     """Size and time span of the records after the current anchor.
 
     Aggregated in SQL: the sweep calls this on every tick, on the loop thread.
     """
     with closing(open_memory_db(path)) as conn:
         current = _current_summary(conn)
-        anchor = current.anchor_rowid if current else -1
+        anchor = _effective_anchor(conn, current.anchor_rowid if current else None, since)
         chars, oldest, newest = conn.execute(
             "SELECT COALESCE(SUM(length(text)), 0), "
             "(SELECT ts FROM records WHERE rowid > ? ORDER BY rowid LIMIT 1), "
@@ -415,7 +456,7 @@ def verbatim_stats(path: Path) -> VerbatimStats:
 
 
 def compaction_range(
-    path: Path, *, window_days: int, now: datetime | None = None,
+    path: Path, *, window_days: int, since: str = "", now: datetime | None = None,
 ) -> CompactionRange | None:
     """The records a compaction would fold, or None when there are none.
 
@@ -426,7 +467,8 @@ def compaction_range(
     cutoff = (now or local_now()) - timedelta(days=window_days)
     with closing(open_memory_db(path)) as conn:
         current = _current_summary(conn)
-        records = _records_after(conn, current.anchor_rowid if current else None)
+        anchor = _effective_anchor(conn, current.anchor_rowid if current else None, since)
+        records = _records_after(conn, anchor)
     older: list[Record] = []
     for record in records:
         if datetime.fromisoformat(record[1]) >= cutoff:
