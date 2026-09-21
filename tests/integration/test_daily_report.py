@@ -87,6 +87,31 @@ _REPORT: dict[str, Any] = {
 }
 
 
+def _one_item(title: str, status: str, refs: list[str]) -> dict[str, Any]:
+    """A report of exactly one item, so a check reads one graded line."""
+    return {
+        "summary": "一句摘要。",
+        "items": [{"title": title, "status": status, "activity": "活动与进展。", "refs": refs}],
+        "decisions": [],
+        "open_items": [],
+        "user_next_steps": [],
+        "suggestions": [],
+        "uncertainties": [],
+    }
+
+
+def _reply(payload: dict[str, Any]) -> ChatResult:
+    """The provider's forced tool call around one report."""
+    return ChatResult(
+        text=None,
+        tool_calls=(ToolCall("c1", REPORT_TOOL_NAME, json.dumps(payload)),),
+        finish_reason="tool_calls",
+        input_tokens=1,
+        output_tokens=1,
+        raw={},
+    )
+
+
 class CannedReporter:
     """Return one fixed report and record what it was asked; ``fail`` raises like an outage."""
 
@@ -185,19 +210,31 @@ class Rig:
         self.sequence += 1
         return self.service.run(self.fx.conn, action_id=f"dr{self.sequence}", now=NOW, **kwargs)
 
-    def commit(self, sha: str, subject: str, repo: str, *, committed: str, observed: str) -> None:
+    def commit(  # noqa: PLR0913 — the observer's own payload fields.
+        self,
+        sha: str,
+        subject: str,
+        repo: str,
+        *,
+        committed: str,
+        observed: str,
+        skipped: int = 0,
+    ) -> None:
         """One Git observation exactly as the repo observer writes it."""
+        payload: dict[str, Any] = {
+            "repo_path": repo,
+            "commit_sha": sha,
+            "subject": subject,
+            "committed_at_ms": int(datetime.fromisoformat(committed).timestamp() * 1000),
+            "actor": "observer",
+        }
+        if skipped:
+            payload |= {"truncated": True, "skipped_count": skipped}
         emit_event(
             self.fx.conn,
             type="project.commit_seen",
             ts_epoch_ms=int(datetime.fromisoformat(observed).timestamp() * 1000),
-            payload={
-                "repo_path": repo,
-                "commit_sha": sha,
-                "subject": subject,
-                "committed_at_ms": int(datetime.fromisoformat(committed).timestamp() * 1000),
-                "actor": "observer",
-            },
+            payload=payload,
         )
 
     def record(self, identity: str, text: str, *, ts: str, source_name: str = "allen") -> None:
@@ -306,7 +343,8 @@ def test_report_generates_saves_and_reads_back(rig: Rig) -> None:
     assert content.startswith("# 工作日报 2026-09-19（America/Vancouver）")
     assert "## 核心摘要" in content
     assert "## 证据引用" in content
-    assert result["summary"] in content
+    summary_section = content.split("## 核心摘要\n")[1].split("\n## ")[0]
+    assert result["summary"] == " ".join(summary_section.split())
     # Every saved source ref resolves in the stores the tools read.
     assert saved["source_refs"], "a report over real evidence must cite something"
     for ref in saved["source_refs"]:
@@ -468,7 +506,7 @@ def test_screen_demo_text_does_not_become_a_completed_task(rig: Rig) -> None:
     assert rig.run()["outcome"] == "generated"
     content = rig.call("get_briefing", {"local_date": "2026-09-19", "timezone": ZONE})["content"]
     assert "演示界面显示已部署 — 完成（未证实）" in content
-    assert "每日工具的读取修复 — 完成［已证实" in content
+    assert "每日工具的读取修复 — 完成［有据" in content
     assert "已标为未证实" in content
 
 
@@ -482,6 +520,91 @@ def test_invented_keys_and_unstated_next_steps_are_demoted(rig: Rig) -> None:
     suggestions = content.split("## 建议（模型提出，非用户承诺）")[1].split("## 数据覆盖")[0]
     assert "顺手把 CI 修好。" in suggestions
     assert "没有 Allen 原话依据，已归入建议" in content
+
+
+def test_a_commit_written_earlier_cannot_verify_completion(rig: Rig) -> None:
+    """Today's proof is today's commits: an older commit merely observed today is not one."""
+    rig.commit(
+        "old9999",
+        "chore: older work",
+        "/repo/jarvis",
+        committed="2026-09-10T09:00:00-07:00",
+        observed="2026-09-19T12:00:00-07:00",
+    )
+    rig.reporter.report = _one_item("靠旧提交撑起的完成", "completed", ["g1"])
+    assert rig.run()["outcome"] == "generated"
+    assert "[g1] 提交于 09-10 09:00" in rig.reporter.last_material, "g1 is the late commit"
+    content = rig.call("get_briefing", {"local_date": "2026-09-19", "timezone": ZONE})["content"]
+    assert "靠旧提交撑起的完成 — 完成（未证实）［推断，无有效引用］" in content
+    assert "有 1 项标为完成的事项没有当天的 Git 提交" in content
+
+
+def test_the_summary_carries_the_bodys_verdicts(rig: Rig) -> None:
+    """核心摘要 is the only section served onward, so the body's verdicts ride inside it."""
+    result = rig.run()
+    assert result["outcome"] == "generated"
+    assert "核对提示" in result["summary"]
+    assert "1 项标为“完成”的事项没有当天提交或 Allen 原话佐证" in result["summary"]
+    assert "1 条“下一步”不是 Allen 本人说的" in result["summary"]
+    content = rig.call("get_briefing", {"local_date": "2026-09-19", "timezone": ZONE})["content"]
+    summary_section = content.split("## 核心摘要\n")[1].split("\n## ")[0]
+    assert summary_section.startswith("（核对提示："), summary_section
+
+
+def test_every_citation_reaches_the_report(tmp_path: Path, source: sqlite3.Connection) -> None:
+    """More refs than source_refs can hold: the body spells them all out, none are lost."""
+    for index in range(25):
+        add_span(
+            source,
+            f"2026-09-19 {8 + index // 4:02d}:{(index % 4) * 15:02d}:00.000",
+            f"2026-09-19 {8 + index // 4:02d}:{(index % 4) * 15 + 10:02d}:00.000",
+            title=f"window {index}",
+        )
+    rig = Rig(tmp_path, timesink=tmp_path / "timesink.sqlite")
+    try:
+        evidence = gather_day(
+            rig.fx.conn,
+            memory_path=rig.memory,
+            timesink_path=tmp_path / "timesink.sqlite",
+            repos=(),
+            day=DAY,
+            zone_name=ZONE,
+            zone=TZ,
+            now=NOW,
+        )
+        keys = [str(row["key"]) for row in evidence.sections["windows"]]
+        assert len(keys) == 25
+        content, refs, _ = compose_report(
+            parse_report(_reply(_one_item("引用很多的事项", "attempted", keys))),
+            evidence,
+            model="canned",
+            generated_at=NOW.astimezone(TZ),
+        )
+        cited = next(line for line in content.splitlines() if line.startswith("引用："))
+        assert len(cited.removeprefix("引用：").split(", ")) == 25
+        assert "等 25 个" not in content
+        assert "共引用 25 个来源" in content
+        assert len(refs) == 20, "the store's source_refs cap is unchanged"
+        for ref in cited.removeprefix("引用：").split(", "):
+            assert ref.startswith("timesink:")
+    finally:
+        rig.fx.close()
+
+
+def test_commits_the_observer_dropped_reach_the_material(rig: Rig) -> None:
+    """A burst-capped poll says how many commits it never wrote; the report repeats it."""
+    rig.commit(
+        "cap0001",
+        "feat: burst",
+        "/repo/jarvis",
+        committed="2026-09-19T13:00:00-07:00",
+        observed="2026-09-19T13:01:00-07:00",
+        skipped=224,
+    )
+    assert rig.run()["outcome"] == "generated"
+    assert "有 224 个提交超出单次轮询上限" in rig.reporter.last_material
+    content = rig.call("get_briefing", {"local_date": "2026-09-19", "timezone": ZONE})["content"]
+    assert "这一天的提交清单不完整" in content
 
 
 def test_details_round_reads_originals(rig: Rig) -> None:
@@ -643,13 +766,26 @@ def test_report_fits_the_save_limit(rig: Rig) -> None:
         zone=TZ,
         now=NOW,
     )
+    keys = [
+        str(row["key"])
+        for section in ("windows", "screen", "records", "git")
+        for row in evidence.sections[section]
+    ]
+    assert len(keys) > 3, "the trim path is only interesting with more refs than it keeps"
     huge = {
         **_REPORT,
+        "summary": "摘" * 1200,
         "items": [
-            {"title": f"事项 {i}", "status": "attempted", "activity": "一" * 400, "refs": ["g1"]}
+            {"title": f"事项 {i}", "status": "attempted", "activity": "一" * 400, "refs": keys}
             for i in range(12)
         ],
-        "open_items": [{"text": "二" * 240, "refs": []} for _ in range(10)],
+        "decisions": [
+            {"text": "二" * 400, "rationale": "三" * 240, "refs": keys} for _ in range(8)
+        ],
+        "open_items": [{"text": "四" * 400, "refs": []} for _ in range(10)],
+        "user_next_steps": [{"text": "五" * 400, "refs": keys} for _ in range(8)],
+        "suggestions": ["六" * 240 for _ in range(6)],
+        "uncertainties": ["七" * 240 for _ in range(10)],
     }
     content, refs, coverage = compose_report(
         parse_report(
@@ -667,5 +803,8 @@ def test_report_fits_the_save_limit(rig: Rig) -> None:
         generated_at=NOW.astimezone(TZ),
     )
     assert len(content) <= 16000
+    assert "超出保存上限" in content, "a trimmed report says it was trimmed"
+    # Over budget the citation lines shrink and are counted; they are never dropped outright.
+    assert f"等 {len(keys)} 个" in content
     assert len(refs) <= 20
     assert set(coverage) <= {"records", "git", "app", "screen", "agent", "todos", "knowledge"}

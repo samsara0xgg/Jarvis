@@ -342,19 +342,14 @@ def _record_section(g: _Gather, memory_path: Path | None) -> None:
     g.sections["records"] = records
 
 
-def _git_sections(g: _Gather, conn: sqlite3.Connection, repos: Sequence[str]) -> None:
-    rows = conn.execute(
-        "SELECT event_uid,type,ts_epoch_ms,payload_json FROM events "
-        "WHERE type IN (?,?) AND ts_epoch_ms>=? AND ts_epoch_ms<? ORDER BY ts_epoch_ms,id",
-        (
-            *_ACTIVITY_TYPES,
-            int(g.start.timestamp() * 1000),
-            int(g.end.timestamp() * 1000),
-        ),
-    ).fetchall()
+def _fold_git_rows(
+    g: _Gather, rows: list[Any], repos: Sequence[str]
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    """One entry per commit and per repo; what the day never saw is written into the limits."""
     commits: dict[str, dict[str, Any]] = {}
     states: dict[str, dict[str, Any]] = {}
     unwatched: set[str] = set()
+    dropped = 0
     for uid, kind, observed, raw in rows:
         payload = json.loads(raw)
         repo = str(payload.get("repo_path") or "")
@@ -363,6 +358,8 @@ def _git_sections(g: _Gather, conn: sqlite3.Connection, repos: Sequence[str]) ->
             unwatched.add(repo)
             continue
         if kind == "project.commit_seen":
+            # The observer burst-caps a poll; what it never emitted is missing from this day.
+            dropped += int(payload.get("skipped_count") or 0)
             sha = str(payload.get("commit_sha") or uid)
             entry = commits.setdefault(
                 sha,
@@ -386,6 +383,30 @@ def _git_sections(g: _Gather, conn: sqlite3.Connection, repos: Sequence[str]) ->
                 "head": str(payload.get("head_sha") or "")[:7],
                 "observed_ms": int(observed),
             }
+    if unwatched:
+        g.limits.append(
+            f"当天还观察到 {len(unwatched)} 个仓库的活动，但它们已不在被观察列表里，未列入："
+            + "、".join(sorted(unwatched))
+        )
+    if dropped:
+        g.limits.append(
+            f"Git 观察器当天有 {dropped} 个提交超出单次轮询上限，从未写进事件日志，"
+            "这一天的提交清单不完整"
+        )
+    return commits, states
+
+
+def _git_sections(g: _Gather, conn: sqlite3.Connection, repos: Sequence[str]) -> None:
+    rows = conn.execute(
+        "SELECT event_uid,type,ts_epoch_ms,payload_json FROM events "
+        "WHERE type IN (?,?) AND ts_epoch_ms>=? AND ts_epoch_ms<? ORDER BY ts_epoch_ms,id",
+        (
+            *_ACTIVITY_TYPES,
+            int(g.start.timestamp() * 1000),
+            int(g.end.timestamp() * 1000),
+        ),
+    ).fetchall()
+    commits, states = _fold_git_rows(g, rows, repos)
     ordered = sorted(commits.values(), key=lambda x: (x["committed_ms"], x["observed_ms"]))
     if len(ordered) > _MAX_COMMITS:
         g.limits.append(
@@ -396,8 +417,11 @@ def _git_sections(g: _Gather, conn: sqlite3.Connection, repos: Sequence[str]) ->
         key = f"g{index + 1}"
         ref = f"event:{entry['uid']}"
         g.refs[key] = ref
-        g.commits.add(ref)
         committed = datetime.fromtimestamp(entry["committed_ms"] / 1000, UTC).astimezone(g.zone)
+        late = committed.date() != g.day
+        if not late:
+            # An older commit only seen today is evidence of its own day, not of this one.
+            g.commits.add(ref)
         git.append(
             {
                 "key": key,
@@ -408,7 +432,7 @@ def _git_sections(g: _Gather, conn: sqlite3.Connection, repos: Sequence[str]) ->
                 .astimezone(g.zone)
                 .strftime("%H:%M"),
                 "paths": ", ".join(entry["paths"]),
-                "late": committed.date() != g.day,
+                "late": late,
             }
         )
     g.sections["git"] = git
@@ -433,11 +457,6 @@ def _git_sections(g: _Gather, conn: sqlite3.Connection, repos: Sequence[str]) ->
     g.coverage["git"] = "partial" if repos else "unavailable"
     if not repos:
         g.limits.append("没有配置被观察的 Git 仓库：Git 活动只来自历史记录，可能为空")
-    if unwatched:
-        g.limits.append(
-            f"当天还观察到 {len(unwatched)} 个仓库的活动，但它们已不在被观察列表里，未列入："
-            + "、".join(sorted(unwatched))
-        )
 
 
 def _folded_section(

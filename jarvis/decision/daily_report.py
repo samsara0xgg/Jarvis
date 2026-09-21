@@ -37,7 +37,9 @@ _STATUS_LABELS = {
     "completed": "完成",
 }
 _GRADE_LABELS = {
-    "confirmed": "已证实：Git 提交或 Allen 本人陈述",
+    # ponytail: the grade is the class of the cited source, never that the source supports the
+    # claim — only the report model can read a quote. Say what is checked, not "已证实".
+    "confirmed": "有据：当天的 Git 提交或 Allen 本人陈述",
     "screen": "仅屏幕/应用记录依据",
     "inferred": "推断，无有效引用",
 }
@@ -51,8 +53,10 @@ _TITLE = 80
 _TEXT = 400
 _SHORT = 240
 _SUMMARY = 1200
-_REFS_PER_LINE = 3
 _SUMMARY_HEADING = "## 核心摘要"
+_REF_PREFIX = "引用："
+_FALLBACK_REFS = 3
+"""Only when the whole report is over the save limit: a shortened citation line beats none."""
 
 
 def _claim_schema(*fields: tuple[str, dict[str, Any]]) -> dict[str, Any]:
@@ -260,7 +264,9 @@ def _malformed(what: str) -> NoReturn:
 def _refs(raw: Any) -> list[str]:  # noqa: ANN401 — model output.
     if not isinstance(raw, list) or not all(isinstance(r, str) for r in raw):
         _malformed("refs is not a list of keys")
-    return raw[:20]
+    # Every key is resolved against the day's material, so the material is the only bound
+    # that matters; truncating here would drop citations the report can never show again.
+    return list(raw)
 
 
 def _claim(raw: Any, *fields: str) -> dict[str, Any]:  # noqa: ANN401 — model output.
@@ -376,11 +382,8 @@ class _Composer:
 
 
 def _ref_line(refs: list[str]) -> str:
-    if not refs:
-        return "引用：无"
-    shown = ", ".join(refs[:_REFS_PER_LINE])
-    more = f" 等 {len(refs)} 个" if len(refs) > _REFS_PER_LINE else ""
-    return f"引用：{shown}{more}"
+    """Every ref, spelled out: only 20 reach ``source_refs``, so the body is the full record."""
+    return f"{_REF_PREFIX}{', '.join(refs)}" if refs else f"{_REF_PREFIX}无"
 
 
 def _bullets(rows: list[dict[str, Any]], composer: _Composer, empty: str) -> list[str]:
@@ -396,14 +399,41 @@ def _bullets(rows: list[dict[str, Any]], composer: _Composer, empty: str) -> lis
     return out
 
 
+def _shrink(line: str) -> str:
+    """Over budget a citation line keeps its first few refs, counted — never none of them."""
+    if not line.startswith(_REF_PREFIX):
+        return line
+    refs = line.removeprefix(_REF_PREFIX).split(", ")
+    if len(refs) <= _FALLBACK_REFS:
+        return line
+    return f"{_REF_PREFIX}{', '.join(refs[:_FALLBACK_REFS])} 等 {len(refs)} 个"
+
+
 def _fit(content: str) -> str:
     if len(content) <= CONTENT_LIMIT:
         return content
-    slim = "\n".join(line for line in content.splitlines() if not line.startswith("引用："))
-    if len(slim) <= CONTENT_LIMIT:
-        return slim
-    note = "\n…（报告超出保存上限，已截断；完整引用见 source_refs）"
-    return slim[: CONTENT_LIMIT - len(note)] + note
+    slim_note = f"\n…（报告超出保存上限，各条引用行只保留前 {_FALLBACK_REFS} 个来源。）"
+    cut_note = "\n…（报告超出保存上限，各条引用行已缩短，正文也已截断。）"
+    slim = "\n".join(_shrink(line) for line in content.splitlines())
+    if len(slim) + len(slim_note) <= CONTENT_LIMIT:
+        return slim + slim_note
+    return slim[: CONTENT_LIMIT - len(cut_note)] + cut_note
+
+
+def _caveat(unverified: int, moved: int) -> list[str]:
+    """The body's verdicts, restated inside 核心摘要.
+
+    ``summary_of`` serves this section alone to the conversation, so a summary
+    that claims what the body marked unverified would be read as the report.
+    """
+    notes = []
+    if unverified:
+        notes.append(f"{unverified} 项标为“完成”的事项没有当天提交或 Allen 原话佐证")
+    if moved:
+        notes.append(f"{moved} 条“下一步”不是 Allen 本人说的，已归入建议")
+    if not notes:
+        return []
+    return [f"（核对提示：{'；'.join(notes)}。摘要与正文标注冲突时以正文为准。）"]
 
 
 def compose_report(
@@ -416,21 +446,14 @@ def compose_report(
     """The saved content, its first 20 source refs and its coverage.
 
     Keys the model was not given are dropped and counted; a ``completed`` item
-    without a commit or an Allen-authored record behind it is marked unverified;
-    a next step that does not cite Allen's own words becomes a suggestion.
+    without a same-day commit or an Allen-authored record behind it is marked
+    unverified; a next step that does not cite Allen's own words becomes a
+    suggestion; both verdicts are restated inside 核心摘要, which is the only
+    section the conversation is served.
     """
     composer = _Composer(evidence)
     partial = "，这一天尚未结束" if evidence.window["partial"] else ""
-    lines = [
-        f"# 工作日报 {evidence.day}（{evidence.zone}）",
-        f"生成于 {generated_at.isoformat(timespec='seconds')}；证据窗口 "
-        f"{evidence.window['from']} 到 {evidence.window['to']}{partial}；模型 {model}。",
-        "",
-        _SUMMARY_HEADING,
-        report["summary"],
-        "",
-        "## 工作事项",
-    ]
+    lines = ["## 工作事项"]
     unverified = 0
     for index, item in enumerate(report["items"], 1):
         refs = composer.refs(item["refs"])
@@ -486,7 +509,8 @@ def compose_report(
         lines.append(f"- 有 {composer.unknown} 处引用不是材料里的键，已丢弃。")
     if unverified:
         lines.append(
-            f"- 有 {unverified} 项标为完成的事项没有 Git 提交或 Allen 本人陈述佐证，已标为未证实。"
+            f"- 有 {unverified} 项标为完成的事项没有当天的 Git 提交或 Allen 本人陈述佐证，"
+            "已标为未证实。"
         )
     if moved:
         lines.append(f"- 有 {len(moved)} 条“下一步”没有 Allen 原话依据，已归入建议。")
@@ -494,7 +518,23 @@ def compose_report(
     lines += [
         "",
         "## 证据引用",
-        f"- 共引用 {len(composer.cited)} 个来源；前 {min(len(composer.cited), MAX_SOURCE_REFS)} 个"
-        "保存为 source_refs，其余见各条引用行；用 read_activity / read_records 回查原文。",
+        f"- 共引用 {len(composer.cited)} 个来源，上方每条的引用行已逐个列出；其中前 "
+        f"{min(len(composer.cited), MAX_SOURCE_REFS)} 个另存为 source_refs（字段上限）；"
+        "用 read_activity / read_records 回查原文。",
     ]
-    return _fit("\n".join(lines)), composer.cited[:MAX_SOURCE_REFS], dict(evidence.coverage)
+    head = [
+        f"# 工作日报 {evidence.day}（{evidence.zone}）",
+        f"生成于 {generated_at.isoformat(timespec='seconds')}；证据窗口 "
+        f"{evidence.window['from']} 到 {evidence.window['to']}{partial}；模型 {model}。",
+        "",
+        _SUMMARY_HEADING,
+        # The caveat leads the section: downstream readers are served this section alone.
+        *_caveat(unverified, len(moved)),
+        report["summary"],
+        "",
+    ]
+    return (
+        _fit("\n".join([*head, *lines])),
+        composer.cited[:MAX_SOURCE_REFS],
+        dict(evidence.coverage),
+    )
