@@ -921,7 +921,12 @@ def test_search_reaches_material_the_summary_left_out(
     rig = Rig(tmp_path, timesink=tmp_path / "timesink.sqlite")
     rig.record("rec-1", "我说过 979 这个数是 Codex 报的。", ts="2026-09-19T11:00:00-07:00")
     rig.reporter.script = [
-        [(SEARCH_TOOL_NAME, {"query": "979"}), (SEARCH_TOOL_NAME, {"query": "没有这个词"})],
+        [
+            (SEARCH_TOOL_NAME, {"query": "979"}),
+            (SEARCH_TOOL_NAME, {"query": "没有这个词"}),
+            # Words match in any order, any case, anywhere: not one exact phrase.
+            (SEARCH_TOOL_NAME, {"query": "PASSED pytest"}),
+        ],
         [(DETAILS_TOOL_NAME, {"keys": [f"s{short}"]}), (SEARCH_TOOL_NAME, {"query": "RBC"})],
     ]
     rig.reporter.report = _one_item("核对测试通过数", "attempted", [f"s{short}", "r1"])
@@ -937,6 +942,8 @@ def test_search_reaches_material_the_summary_left_out(
         assert f"[s{short}] 09:20 Chrome — cc | rules: 终端里出现 pytest 979 passed 字样" in second
         assert "[r1] 11:00 allen: 我说过 979 这个数是 Codex 报的。" in second
         assert "「没有这个词」在这一天的材料里没有出现" in second
+        assert "「PASSED pytest」命中 1 处" in second, "every word, any order, any case"
+        assert second.count(f"[s{short}]") == 2, "found by both the phrase and the words"
         third = rig.reporter.materials[2]
         assert "终端里出现 pytest 979 passed 字样" in third, "details serve the found capture"
         assert "「RBC」命中 1 处" in third

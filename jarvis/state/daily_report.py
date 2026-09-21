@@ -766,9 +766,10 @@ def gather_day(  # noqa: PLR0913 — the configured stores plus the day, its zon
     )
 
 
-def _snippet(text: str, needle: str) -> str:
-    """The match with a little of what surrounds it, on one line."""
+def _snippet(text: str, terms: Sequence[str]) -> str:
+    """The first term's match with a little of what surrounds it, on one line."""
     flat = " ".join(text.split())
+    needle = terms[0]
     at = flat.casefold().find(needle)
     if at < 0:
         return flat[: _SNIPPET_BEFORE + _SNIPPET_AFTER]
@@ -779,9 +780,9 @@ def _snippet(text: str, needle: str) -> str:
 
 
 def _capture_hits(
-    evidence: DayEvidence, needle: str, *, timesink_path: Path | None, zone: tzinfo
+    evidence: DayEvidence, terms: Sequence[str], *, timesink_path: Path | None, zone: tzinfo
 ) -> list[tuple[str, str]]:
-    """Captures of the day whose full OCR text contains the needle, oldest first."""
+    """Captures of the day whose full OCR text contains every term, oldest first."""
     ids = [int(k[1:]) for k in evidence.refs if k[:1] == "s" and k[1:].isdigit()]
     if not ids:
         return []
@@ -790,14 +791,15 @@ def _capture_hits(
         if snap is None:
             return []
         marks = ",".join("?" * len(ids))
+        wanted = " AND ".join("instr(lower(text), ?) > 0" for _ in terms)
         rows = snap.conn.execute(
             f"SELECT id,at,appName,title,text FROM capture WHERE id IN ({marks}) "  # noqa: S608 — placeholders only.
-            "AND instr(lower(text), ?) > 0 ORDER BY at,id",
-            (*ids, needle),
+            f"AND {wanted} ORDER BY at,id",
+            (*ids, *terms),
         ).fetchall()
     for identity, at, app, title, text in rows:
         when = datetime.fromisoformat(timesink.moment(at)).astimezone(zone).strftime("%H:%M")
-        line = f"{when} {app} — {title or ''}: {_snippet(str(text), needle)}"
+        line = f"{when} {app} — {title or ''}: {_snippet(str(text), terms)}"
         hits.append((f"s{identity}", line))
     return hits
 
@@ -805,15 +807,20 @@ def _capture_hits(
 def search_day(
     evidence: DayEvidence, query: str, *, timesink_path: Path | None, zone: tzinfo
 ) -> str:
-    """Keys whose text contains the query, listed or not, with a line of context each."""
-    needle = " ".join(query.split()).casefold()
-    if not needle:
+    """Keys whose text contains every word of the query, listed or not, with context.
+
+    Words match anywhere and in any order, case-insensitively: a model that
+    asks for "RBC 申请 submitted" is looking for a page holding all three, not
+    for that exact phrase.
+    """
+    terms = [word.casefold() for word in query.split()]
+    if not terms:
         return "请给出要检索的关键字。"
-    hits = _capture_hits(evidence, needle, timesink_path=timesink_path, zone=zone)
+    hits = _capture_hits(evidence, terms, timesink_path=timesink_path, zone=zone)
     hits += [
-        (key, _snippet(text, needle))
+        (key, _snippet(text, terms))
         for key, text in evidence.haystack.items()
-        if needle in text.casefold()
+        if all(term in text.casefold() for term in terms)
     ]
     if not hits:
         return f"「{query}」在这一天的材料里没有出现。"
