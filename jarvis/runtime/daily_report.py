@@ -66,6 +66,7 @@ class Reporter(Protocol):
         system: str,
         messages: list[dict[str, Any]],
         tools: Sequence[dict[str, Any]],
+        tool_choice: str,
     ) -> ChatResult:
         """Send the request through the given log connection's cost accounting."""
         ...
@@ -215,7 +216,11 @@ class DailyReportService:
         system, messages = build_request(evidence)
         tools: list[dict[str, Any]] = [SEARCH_TOOL, DETAILS_TOOL, REPORT_TOOL]
         for round_number in range(1, MAX_ROUNDS + 1):
-            result = self._reporter.analyze(conn, system=system, messages=messages, tools=tools)
+            # auto, not required: DeepSeek's thinking presets reject a forced call, and every
+            # preset measured calls a tool anyway; a bare reply is retried like a malformed one.
+            result = self._reporter.analyze(
+                conn, system=system, messages=messages, tools=tools, tool_choice="auto"
+            )
             last = round_number == MAX_ROUNDS
             queries = requested_queries(result)
             if queries and round_number <= QUERY_ROUNDS:

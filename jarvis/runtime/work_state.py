@@ -88,8 +88,13 @@ class LLMAnalyst:
         system: str,
         messages: list[dict[str, Any]],
         tools: Sequence[dict[str, Any]] | None = None,
+        tool_choice: str = "required",
     ) -> ChatResult:
-        """Force a tool call; the model has nothing outside the given catalog to call."""
+        """One call over the given catalog; the model has nothing outside it to call.
+
+        ``required`` forces a tool call; a thinking preset (DeepSeek rejects
+        ``required`` with thinking on) needs ``auto`` and an instruction to call.
+        """
         catalog = [REPORT_TOOL] if tools is None else list(tools)
         client = self._factory.create(self._snapshot, response_id=new_response_id())
         cost_recorder = (
@@ -97,14 +102,14 @@ class LLMAnalyst:
         )
         if cost_recorder is None:
             return client.chat(
-                messages=messages, system=system, tools=catalog, tool_choice="required"
+                messages=messages, system=system, tools=catalog, tool_choice=tool_choice
             )
         return cost_recorder.chat(
             client,
             messages=messages,
             system=system,
             tools=catalog,
-            tool_choice="required",
+            tool_choice=tool_choice,
             kind=self._kind,
             turn_id=None,
         )
