@@ -933,6 +933,14 @@ get_projection_version()</code></pre>
 
 <p>本次否决 "turn 结束才一次性 emit 所有结果" 的纯方案。Read-only tool result 可以在 decision working memory 暂存，end-of-invocation batch emit；side-effect action 必须先 durable record lifecycle，再执行；action result / failure / timeout 必须写 event；projection snapshot 不在同一 invocation 内自动刷新。</p>
 
+<p>Tool budget and answer (ADR 0030). The Tier 2 loop allows at most <code>max_tool_iterations</code>
+model requests that may propose tools (default 5). When the last of them still proposes tools, the
+runtime dispatches them and then makes one more request with no tools, carrying a runtime note (marked as
+not the user's words) that asks for the answer from the tool results already held, facts with their
+evidence first, unknowns stated. That request runs under the same cost recording, admission and
+cancellation checks as the loop's calls and is not counted against the tool budget. If it fails or
+returns no text, the turn ends with a fixed Chinese limitation, never an internal English error.</p>
+
 <h4>3.4.10 Entity hallucination repair protocol</h4>
 
 <ol>
