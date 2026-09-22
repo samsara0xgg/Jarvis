@@ -72,6 +72,7 @@ from jarvis.decision.packet import (
     format_pending_confirmation_note,
 )
 from jarvis.decision.policy import EffectivePolicy, effective_policy, surface_for
+from jarvis.decision.response_run import ResponseCancelledError
 from jarvis.decision.stream_envelope import (
     StreamEnvelopeSplitter,
     compose_envelope,
@@ -253,7 +254,8 @@ def _run_llm_chat_with_cost_guard(  # noqa: PLR0913 - mirrors the provider call 
     _check_response_cancelled(ctx, "before provider request")
     cost_recorder = (
         CostRecorder(ctx.conn, pricing_table=_pricing_table())
-        if ctx.wave1_features.exactly_once_cost_accounting else None
+        if ctx.wave1_features.exactly_once_cost_accounting
+        else None
     )
     if ctx.request_admission is not None:
         ctx.request_admission(kind)
@@ -344,7 +346,10 @@ def _append_cost_recorded(
         correlation["run_id"] = run_id
     if run_id is not None:
         return record_run_cost_once(
-            ctx.conn, run_id=run_id, payload=payload, correlation=correlation or None,
+            ctx.conn,
+            run_id=run_id,
+            payload=payload,
+            correlation=correlation or None,
         )
     return emit_event(
         ctx.conn,
@@ -883,10 +888,21 @@ def _handle_utterance(
         if grammar_hit is not None:
             if grammar_hit.decision == "yes":
                 return _handle_confirmation_accepted(
-                    pending_slot, grammar_hit, transcript, packet, policy, ctx, scratch,
+                    pending_slot,
+                    grammar_hit,
+                    transcript,
+                    packet,
+                    policy,
+                    ctx,
+                    scratch,
                 )
             return _handle_confirmation_rejected(
-                pending_slot, grammar_hit, transcript, packet, ctx, scratch,
+                pending_slot,
+                grammar_hit,
+                transcript,
+                packet,
+                ctx,
+                scratch,
             )
 
     # Tier 0 deterministic shortcut (spec §17): hit → dispatch through
@@ -953,7 +969,10 @@ def _run_tool_use_loop(
         # cost.recorded-per-llm-call canary for the static guard.
         scratch.events.append(
             _emit_cost_recorded(
-                ctx, chat_result, kind="decision", turn_id=scratch.turn_id,
+                ctx,
+                chat_result,
+                kind="decision",
+                turn_id=scratch.turn_id,
             ),
         )
 
@@ -999,11 +1018,65 @@ def _run_tool_use_loop(
             scratch,
         )
 
-    # Loop bound hit without resolution — finalize with a safe limitation
-    # so the surface never sees an unbounded loop in production.
+    # Tool budget spent. The answer gets its own request: one more call with no
+    # tools, asked to sum up what the tool results already show (ADR 0030).
     LOGGER.warning("decide(): tool-use loop hit max_iterations=%d", ctx.max_tool_iterations)
-    fallback = "tool-use loop exhausted; turn incomplete."
-    return _finalize_response(fallback, packet, ctx, scratch)
+    answer = _answer_after_tool_budget(ctx, messages, scratch)
+    return _finalize_response(answer, packet, ctx, scratch)
+
+
+# ADR 0030: the tool budget and the answer are separate requests. When the loop
+# has spent its tool iterations, the model gets one last request without tools
+# to answer from what it already holds; this is the note that request carries.
+_TOOL_BUDGET_ANSWER_PROMPT: Final[str] = (
+    "【运行时提示，不是用户的话】工具调用次数已到上限，这一轮不能再调用工具。"  # noqa: RUF001 — fullwidth brackets/comma are intentional Chinese punctuation.
+    "请只根据上面已经拿到的工具结果直接回答：先给出已经查明的事实（带时间和依据），"  # noqa: RUF001 — fullwidth colon/parens are intentional Chinese punctuation.
+    "再明确说明哪些部分没有查到或无法确认。没有证据的内容不要编造。"
+)
+# Spoken when that last request fails or returns nothing. Chinese, no internal
+# vocabulary, and free of completion words (完成/done) by construction.
+_TOOL_BUDGET_EXHAUSTED_TEXT: Final[str] = (
+    "这一轮工具调用次数用完了，还没整理出答案。请把问题拆小一点再问一次。"  # noqa: RUF001 — fullwidth comma/period are intentional Chinese punctuation.
+)
+
+
+def _answer_after_tool_budget(
+    ctx: DecideContext,
+    messages: list[dict[str, Any]],
+    scratch: _Scratch,
+) -> str:
+    """One no-tool request for the answer once the tool iterations are spent.
+
+    The request rides the same cost guard, admission and cancellation checks
+    as the loop's calls; a provider failure or an empty reply falls back to a
+    fixed Chinese limitation instead of an internal English error. Cancellation
+    is never swallowed.
+    """
+    messages.append({"role": "user", "content": _TOOL_BUDGET_ANSWER_PROMPT})
+    iteration = ctx.max_tool_iterations + 1
+    try:
+        with realtime_trace_context(
+            turn_id=scratch.turn_id, request_kind="decision", iteration=iteration
+        ):
+            chat_result = _run_llm_chat_with_cost_guard(
+                ctx,
+                messages=messages,
+                system=ctx.system_prompt,
+                tools=None,
+                tool_choice=None,
+                kind="decision",
+                turn_id=scratch.turn_id,
+            )
+    except ResponseCancelledError:
+        raise
+    except Exception:
+        LOGGER.exception("decide(): answer request after the tool budget failed")
+        return _TOOL_BUDGET_EXHAUSTED_TEXT
+    scratch.events.append(
+        _emit_cost_recorded(ctx, chat_result, kind="decision", turn_id=scratch.turn_id),
+    )
+    _check_response_cancelled(ctx, "after provider response")
+    return (chat_result.text or "").strip() or _TOOL_BUDGET_EXHAUSTED_TEXT
 
 
 def _turn_ending_draft(scratch: _Scratch, llm_text: str | None) -> str | None:
@@ -1088,7 +1161,8 @@ def _spoken_preview_payload(
             continue
         value_bytes = value.encode("utf-8")
         text, undelivered, _lossy = truncate_utf8(
-            value_bytes[:max_bytes], len(value_bytes),
+            value_bytes[:max_bytes],
+            len(value_bytes),
         )
         preview[key] = f"{text}…[truncated {undelivered} bytes]" if undelivered > 0 else text
     return preview
@@ -1200,7 +1274,10 @@ def _run_tier0_path(
     )
     _check_response_cancelled(ctx, "before tool dispatch")
     bundle = ctx.tool_registry.dispatch(
-        action_request, ctx.conn, ctx.runtime_paths, ctx.lifecycle,
+        action_request,
+        ctx.conn,
+        ctx.runtime_paths,
+        ctx.lifecycle,
     )
     record_realtime_trace(
         "action_dispatch_returned",
@@ -1487,7 +1564,9 @@ def _dispatch_one_tool_call(  # noqa: PLR0915 — single-pass orchestration of r
     # 6b. ADR-0002 Step 3: when L4 returns RawResult.metadata["cost"],
     #     emit cost.recorded from L3 — the sole emit-site per spec §5.4.1.
     cost_event = _emit_cost_recorded_from_metadata(
-        ctx, primary_slot, turn_id=scratch.turn_id,
+        ctx,
+        primary_slot,
+        turn_id=scratch.turn_id,
     )
     if cost_event is not None:
         scratch.events.append(cost_event)
@@ -1518,9 +1597,7 @@ def _render_bundle_for_llm(bundle: RawResultBundle) -> str:
     rendered: dict[str, Any] = {}
     for slot in bundle.slots:
         rendered[slot.semantics] = (
-            json.loads(slot.tool_output)
-            if slot.tool_output
-            else dict(slot.payload)
+            json.loads(slot.tool_output) if slot.tool_output else dict(slot.payload)
         )
     return json.dumps(rendered, ensure_ascii=False)
 
@@ -1877,7 +1954,9 @@ def _run_routine_stream(
     if streamed.enveloped:
         text = compose_envelope(plan.text, document)
         plan = replace(
-            plan, text=text, response_hash=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+            plan,
+            text=text,
+            response_hash=hashlib.sha256(text.encode("utf-8")).hexdigest(),
         )
     return DecideResult(
         response_plan=plan,
@@ -2347,15 +2426,21 @@ def _record_confirmation_answer(
     correlation = {"turn_id": scratch.turn_id} if scratch.turn_id else None
     if ctx.wave1_features.confirmation_dispatch_outbox:
         return answer_confirmation_once(
-            ctx.conn, confirmation_id=slot.confirmation_id,
-            accepted=grammar_hit.decision == "yes", utterance_raw=transcript,
-            grammar_rule_id=grammar_hit.rule_id, correlation=correlation,
+            ctx.conn,
+            confirmation_id=slot.confirmation_id,
+            accepted=grammar_hit.decision == "yes",
+            utterance_raw=transcript,
+            grammar_rule_id=grammar_hit.rule_id,
+            correlation=correlation,
         )
     return emit_event(
         ctx.conn,
         type="confirmation.accepted" if grammar_hit.decision == "yes" else "confirmation.rejected",
-        payload={"confirmation_id": slot.confirmation_id, "utterance_raw": transcript,
-                 "grammar_rule_id": grammar_hit.rule_id},
+        payload={
+            "confirmation_id": slot.confirmation_id,
+            "utterance_raw": transcript,
+            "grammar_rule_id": grammar_hit.rule_id,
+        },
         source_event_id=_latest_event_uid_of_type(ctx.conn, event_type="confirmation.requested"),
         correlation=correlation,
     )
@@ -2464,9 +2549,7 @@ def _handle_confirmation_accepted(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR
         return _finalize_response(_CONFIRMATION_TOOL_GONE_TEXT, packet, ctx, scratch)
 
     target_entity_ref_raw = snapshot.get("target_entity_ref")
-    target_entity_ref = (
-        target_entity_ref_raw if isinstance(target_entity_ref_raw, str) else None
-    )
+    target_entity_ref = target_entity_ref_raw if isinstance(target_entity_ref_raw, str) else None
 
     # --- 3. Mint the lease (D2 nine fields) ---------------------------------
     # Cross-step contract #1 (Step 1 erratum): `allowed_targets` holds the
@@ -2558,8 +2641,11 @@ def _handle_confirmation_accepted(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR
     if atomic_dispatch and gate.outcome == "pass":
         try:
             authorization = authorize_confirmation_dispatch(
-                ctx.conn, source_confirmation_event_id=accepted_event.event_uid,
-                action_request=action_request, lease=lease, gate_payload=gate_payload,
+                ctx.conn,
+                source_confirmation_event_id=accepted_event.event_uid,
+                action_request=action_request,
+                lease=lease,
+                gate_payload=gate_payload,
                 correlation=_action_correlation(action_request),
             )
         except ConfirmationRevalidationError:
@@ -2569,12 +2655,12 @@ def _handle_confirmation_accepted(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR
         gate_event = authorization.gate_event
     else:
         gate_event = emit_event(
-        ctx.conn,
-        type="gate.evaluated",
-        payload=gate_payload,
-        source_event_id=proposed_event.event_uid,
-        correlation=_action_correlation(action_request),
-    )
+            ctx.conn,
+            type="gate.evaluated",
+            payload=gate_payload,
+            source_event_id=proposed_event.event_uid,
+            correlation=_action_correlation(action_request),
+        )
     scratch.events.append(gate_event)
 
     if gate.outcome != "pass":
@@ -2602,7 +2688,10 @@ def _handle_confirmation_accepted(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR
     _check_response_cancelled(ctx, "before tool dispatch")
     try:
         bundle = ctx.tool_registry.dispatch(
-            action_request, ctx.conn, ctx.runtime_paths, ctx.lifecycle,
+            action_request,
+            ctx.conn,
+            ctx.runtime_paths,
+            ctx.lifecycle,
         )
     except AuthorizedDispatchAlreadyStarted:
         return _finalize_response("该确认已接纳。执行状态请以结果为准。", packet, ctx, scratch)
@@ -2629,7 +2718,8 @@ def _handle_confirmation_accepted(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR
     path_written = primary_result_slot.payload.get("path", "?")
     bytes_written = primary_result_slot.payload.get("bytes_written", "?")
     draft = _CONFIRMED_WRITE_SUCCESS_TEMPLATE.format(
-        path=path_written, bytes_written=bytes_written,
+        path=path_written,
+        bytes_written=bytes_written,
     )
     return _finalize_response(draft, packet, ctx, scratch)
 

@@ -541,8 +541,8 @@ the dispatcher alone owns action lifecycle events. Original conversation records
 <tbody>
 <tr><td>search_records</td><td>keyword?, from?, to?, limit?, cursor?</td><td>records with id, ts, source, excerpt, text_chars, source_ref; count, snapshot, next_cursor. Replaces the former rendered-only output.</td></tr>
 <tr><td>read_records</td><td>record_ids (1–20 unique IDs), cursor?</td><td>Exact text chunks with offset, total_chars, complete; missing_ids and next_cursor. Continue until null.</td></tr>
-<tr><td>query_activity</td><td>from, to, sources? (git/app/screen/agent), project? (full repo path), limit?, cursor?</td><td>items with id, source, kind, observed_at, occurred_at, project, project_basis, ended_at, summary, source_refs, detail_available; coverage, count, snapshot, next_cursor. Git range uses observed_at, so late-discovered commits remain visible; app spans use overlap with [from,to).</td></tr>
-<tr><td>read_activity</td><td>activity_id, cursor?</td><td>Saved Git payload or revision-pinned TimeSink row as JSON text chunks, a <code>git:</code> reference as <code>git show --stat</code> text, a <code>codex-session:</code> reference as the session's dated turns; source_refs, kind, observed_at, offset, total_chars, complete, next_cursor. Never captures fresh state.</td></tr>
+<tr><td>query_activity</td><td>from, to, sources? (git/app/screen/agent), project? (full repo path), app? (case-insensitive substring of app name or bundle id), summary_only?, limit? (1–5000), cursor?</td><td>One compact table page (ADR 0029): date, utc_offset, store, apps (letter → [name, bundle id]), totals per letter over the whole window (foreground_s, spans, screen_rows, first, last), columns, rows as <code>[ref, start, end, app, text]</code>, count, total, offset, state_at_start, state_events, state_events_total, coverage, state_coverage, time_basis, snapshot, next_cursor, and notes on the first page only. Git range uses observed_at, so late-discovered commits remain visible; app spans and captures use overlap with [from,to).</td></tr>
+<tr><td>read_activity</td><td>activity_id (a row ref <code>s&lt;id&gt;:&lt;rev&gt;</code> / <code>c&lt;id&gt;:&lt;rev&gt;</code> / <code>g&lt;uid&gt;</code>, or a full timesink:, timesink-capture:, activity:, git:, codex-session: reference), cursor?</td><td>Saved Git payload or revision-pinned TimeSink row as JSON text chunks, a screen capture as its full OCR text, a <code>git:</code> reference as <code>git show --stat</code> text, a <code>codex-session:</code> reference as the session's dated turns; source_refs (always the full reference), kind, observed_at, offset, total_chars, complete, next_cursor. Never captures fresh state.</td></tr>
 <tr><td>search_knowledge</td><td>query?, project?, kind?, status?, limit?, cursor?</td><td>Full current knowledge items and source_ref; default active, also deprecated / needs_confirmation / all.</td></tr>
 <tr><td>save_knowledge</td><td>statement, kind, source_refs, basis, request_id; knowledge_id?, expected_version?, project?, status?</td><td>knowledge_id, version, source_ref. Kind: fact/decision/lesson/preference; basis: user_statement/observation/inference. Updates supersede a previous version of the same identity; supersedes points at the previous immutable event. No current activity state or verified-worker verdict.</td></tr>
 <tr><td>create_todo</td><td>title, request_id; project?, due_at?, priority?, source_refs?</td><td>todo_id, version, source_ref. New state open; priority low/normal/high, default normal. Local storage only, no reminder or remote sync.</td></tr>
@@ -554,14 +554,18 @@ the dispatcher alone owns action lifecycle events. Original conversation records
 <tr><td>daily_work_report</td><td>local_date?, timezone?, regenerate?</td><td>The ADR 0024 day report: local_date, timezone, outcome (generated / reused / no_evidence / failed), version, error, plus briefing_id, source_ref, saved_at, coverage, total_chars, summary and (when generated) evidence_counts, limits, source_refs_saved, model_calls. Runs the runtime's report workflow and saves through save_briefing; L1 because it appends briefing.revised.</td></tr>
 </tbody></table>
 <p>Query intervals are half-open [from,to); timestamp parameters require explicit UTC offsets.
-Paging limit defaults to 20 and is capped at 50. Cursors bind query arguments and storage identity;
+Paging limit defaults to 20 and is capped at 50, except query_activity, whose page is bounded by its
+character budget (limit is an optional row cap up to 5,000). Cursors bind query arguments and storage identity;
 list pages retain their initial append watermark, folding versions before filtering mutable fields.
-Late arrivals are available to a new query. Only returned next_cursor values may be used. History text
+Late arrivals are available to a new query. Only returned next_cursor values may be used: a well-formed
+cursor issued for other arguments is <code>cursor_mismatch</code> (the caller changed the query and restarts
+without a cursor), an unreadable one <code>invalid_cursor</code>. History text
 chunks preserve exact text, including escaped characters; exhaustion, missing IDs and failures are explicit.</p>
 <p>All tools are flat Tool definitions available to jarvis_llm. Reads are risk L0; save/create/update are
 L1 local reversible writes. The existing GPT Live read-only registry exposes reads only. Tool output cap
 is 16,384 characters, whole-row page budget 11,000, and detail chunks at most 3,500 text characters / 4,000
-JSON characters. Writes reject oversized item metadata before committing, so it remains retrievable.
+JSON characters; query_activity alone has a 48,000-character row budget per page and a 64,384-character
+output cap (characters of the serialized JSON, not tokens). Writes reject oversized item metadata before committing, so it remains retrievable.
 Knowledge statement limit is 4,000 characters, todo title 500, briefing content 16,000, and source refs at most 20.</p>
 <p>Each write checks request_id across these three revision event types inside BEGIN IMMEDIATE.
 An exact retry returns the original receipt; changed arguments yield request_conflict. New records expect
@@ -591,26 +595,38 @@ never strings of different length. The requested window is [from,to). A span is 
 and is selected when start&lt;to and end&gt;from; a capture is the closed set of observation instants
 [at,ended_at] and is selected when at&lt;to and ended_at&gt;=from (an instantaneous capture exactly at from
 is inside); a state event is selected when from&lt;=at&lt;to. Adjacent windows partition every row.
-Nonzero spans carry occurred_at=start, ended_at=end, observed_at=null, and duration_seconds_in_window
-clipped to the requested interval. Results include app_name, app_bundle_id, summary (title excerpt), url_excerpt, domain,
-project=null, project_basis=not_inferred, and revision-pinned source_refs usable in knowledge/todos/briefings.
-read_activity returns the exact saved row as paged JSON; stored_timestamp_timezone=UTC.
-Title/URL excerpts are bounded; full values remain in the detail reader. Jarvis collects no page contents,
+A nonzero span is one row <code>[ref, start, end, app, text]</code>: ref <code>s&lt;id&gt;:&lt;rev&gt;</code>
+(rev = the first 8 hex digits of the 32-hex row revision), start and end as local clock times
+(HH:MM:SS in the offset of <code>from</code>, prefixed MM-DD when not on the page's date and YYYY-MM-DD
+when not in its year), the app's dictionary letter, and text = window title plus the site domain in
+parentheses when the title does not contain it, at most 120 characters. The header is code-rendered
+and shared by every row of the page: apps maps letters A, B, ..., Z, AA, ... to [name, bundle id] in
+order of foreground_s; totals per letter cover the whole window regardless of paging: foreground_s is
+the seconds the app was frontmost per spans clipped to [from,to) with overlapping spans merged, spans and
+screen_rows count the matching rows, first/last are the clipped span bounds. An app filter keeps rows
+whose app name or bundle id contains the text case-insensitively, excludes Git rows (coverage.git says
+so) and reports app_filter_matches per source. summary_only returns the header, totals and state without
+rows. read_activity returns the exact saved row as paged JSON; stored_timestamp_timezone=UTC; its
+source_refs carries the full <code>timesink:&lt;store&gt;:&lt;id&gt;:&lt;rev&gt;</code> reference, which
+the row ref plus the page's store also yields; a saved reference may carry 8 to 32 revision digits
+(prefix match). Full values remain in the detail reader. Jarvis collects no page contents,
 screenshot or OCR itself. TimeSink's suppressed incognito fields remain suppressed.</p>
 <p>Screen captures are TimeSink's <code>capture</code> rows (ADR-0022): one row per distinct front-window
 content inside one continuous observation segment. TimeSink extends a row's lastSeenAt only while the same
 window stays in front; leaving the window and coming back, an excluded app, and every lock, sleep, stop,
 pause or resume signal (however short, with a 5 s tick silence as backstop) each start a new segment, so unchanged content seen again becomes a
-new row and the stretch in between is never attributed to the old one. Items carry kind screen.capture,
-provider timesink, time_basis=capture_overlap, occurred_at=at, ended_at and ended_at_basis: last_seen
-when ended_at is lastSeenAt, interrupted when a row written before segments existed crosses a recorded
-lock/sleep/pause/stop event or the start of another app's span, in which case ended_at is that recorded
-instant (the true end is no later; nothing is invented) and last_seen_at keeps the stored value. Items also carry summary = app + window title + a
-bounded OCR excerpt, text_chars, image_available, project=null, project_basis=not_inferred, and
-revision-pinned timesink-capture: source_refs. read_activity returns the full OCR text as paged
+new row and the stretch in between is never attributed to the old one. A capture is one row: ref
+<code>c&lt;id&gt;:&lt;rev&gt;</code>, start = at, end = ended_at, the app letter, and text = window title
+— the start of the OCR text, at most 200 characters (an excerpt; the page's notes say so, never
+presenting it as the full text). ended_at is lastSeenAt (basis last_seen) unless a row written before
+segments existed crosses a recorded lock/sleep/pause/stop event or the start of another app's span, in
+which case ended_at is that recorded instant (the true end is no later; nothing is invented), the row's
+end carries a trailing <code>!</code>, and read_activity reports ended_at_basis=interrupted with
+last_seen_at keeping the stored value. read_activity returns the full OCR text as paged
 content_format=text with app/window identity, span_id, ended_at, ended_at_basis, last_seen_at,
-image_available (the file exists now) and image_path (absolute, null once the image aged out or was
-deleted). A store without the capture tables reports screen coverage=unavailable without affecting app
+image_available (the file exists now), image_path (absolute, null once the image aged out or was
+deleted) and the full <code>timesink-capture:&lt;store&gt;:&lt;id&gt;:&lt;rev&gt;</code> source_refs. A
+store without the capture tables reports screen coverage=unavailable without affecting app
 results.</p>
 <p>App coverage=partial means saved spans are readable, not that the requested interval was continuously
 observed. Coverage includes latest_span_end, observations_in_window, time_basis=span_overlap and
@@ -618,20 +634,27 @@ gap_reason=unknown for spans. Any query touching app or screen also returns Time
 (idle/active, lock/unlock, sleep/wake, pause/resume, start/stop, screen_denied): state_at_start is the
 latest event before from of each independent group (start/stop; lock/unlock; sleep/wake; idle/active;
 pause/resume/screen_denied; a wake never implies an unlock), so a lock before from with no unlock inside explains an empty window;
-state_events are the events inside [from,to) in time order, paged with the items inside the same
-cursor and page budget, never truncated silently; state_coverage.status is partial with
+state_at_start and state_events are <code>[time, kind]</code> pairs in the page's clock; state_events
+are the events inside [from,to) in time order, paged with the rows inside the same cursor and page
+budget, never truncated silently, with state_events_total the window's count; state_coverage.status is partial with
 events_in_window when the stateEvent table is readable, unavailable when it is not, and unknown when
 neither app nor screen was requested. Spans, captures and state events of one page come from one read
 transaction. Gaps not explained by a state event remain unknown, and tracked durations
 cannot prove attention or task completion. Mixed queries report time_basis=source_specific, ordering Git
-by observed_at and app spans and captures by occurred_at.</p>
-<p>Activity cursors pin the append watermarks (snapshot for the event log; span, capture and state event
-IDs for TimeSink), the item and state event offsets, and check a digest of the selected TimeSink span and
+by observed_at and app spans and captures by occurred_at. A Git observation is one row: ref
+<code>g&lt;uid&gt;</code> (source reference <code>event:&lt;uid&gt;</code>), start = the observed time, end
+empty, app = git, text = repository path: subject, with the commit time appended when it differs.</p>
+<p>A page holds as many rows as its 48,000-character budget allows (rows first, then state events; a
+first page also carries notes explaining text, refs, times and totals once). Activity cursors pin the
+append watermarks (snapshot for the event log; span, capture and state event
+IDs for TimeSink), the row and state event offsets, and check a digest of the selected TimeSink span and
 capture revisions. Later inserts are omitted from continuation; changed/deleted rows or source replacement
-produce invalid_cursor and require restarting the query. TimeSink IDs bind database identity, row ID and
+produce invalid_cursor and require restarting the query; a cursor issued for other arguments is
+cursor_mismatch. TimeSink references bind database identity, row ID and
 content revision; a capture's revision covers its identity, the time basis it reports (at, lastSeenAt and
 the interruption a legacy row is clipped to), app, window, title, span and OCR text but not image retention, so a reference saved into knowledge, todos or a briefing stays
-readable after the image aged out. Changed detail reads return source_changed,
+readable after the image aged out. A short row ref names the configured store and is a lookup key, not
+a saved source reference. Changed detail reads return source_changed,
 deleted rows return not_found. This is revision validation, not historical version archival: a saved reference
 can become unavailable after the independent source changes. Coverage freshness metadata may advance
 between pages without changing the selected rows.</p>
@@ -909,6 +932,14 @@ get_projection_version()</code></pre>
 <h4>3.4.9 Tool-use intermediate results</h4>
 
 <p>本次否决 "turn 结束才一次性 emit 所有结果" 的纯方案。Read-only tool result 可以在 decision working memory 暂存，end-of-invocation batch emit；side-effect action 必须先 durable record lifecycle，再执行；action result / failure / timeout 必须写 event；projection snapshot 不在同一 invocation 内自动刷新。</p>
+
+<p>Tool budget and answer (ADR 0030). The Tier 2 loop allows at most <code>max_tool_iterations</code>
+model requests that may propose tools (default 5). When the last of them still proposes tools, the
+runtime dispatches them and then makes one more request with no tools, carrying a runtime note (marked as
+not the user's words) that asks for the answer from the tool results already held, facts with their
+evidence first, unknowns stated. That request runs under the same cost recording, admission and
+cancellation checks as the loop's calls and is not counted against the tool budget. If it fails or
+returns no text, the turn ends with a fixed Chinese limitation, never an internal English error.</p>
 
 <h4>3.4.10 Entity hallucination repair protocol</h4>
 
