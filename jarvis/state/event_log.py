@@ -725,6 +725,28 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         optional_payload=("reconciliation_summary",),
         schema_version=1,
     ),
+    # ADR 0026: a Live delegation's outcome is told to one session, recorded
+    # on the provider's ACK; ``kind == "withheld"`` settles a superseded result
+    # that no session will ever be told.
+    EventTypeSchema(
+        event_type="live.result_delivered",
+        owner_layer="L5",
+        actor="jarvis_runtime",
+        required_payload=("turn_id", "session_id", "kind"),
+        optional_payload=(),
+        schema_version=1,
+    ),
+    # ADR 0026: one row per Live session at close. ``final`` is false when the
+    # server's session.closed carried no usage; ``seconds`` is then the last
+    # usage.updated figure, or null.
+    EventTypeSchema(
+        event_type="live.session_usage",
+        owner_layer="L5",
+        actor="jarvis_runtime",
+        required_payload=("session_id", "reason", "final"),
+        optional_payload=("seconds", "server_reason"),
+        schema_version=1,
+    ),
     # --- ADR-0003 Inherent Text Surface extensions ---
     EventTypeSchema(
         # Watcher-level catch-all when drive_turn raises uncaught
@@ -1541,22 +1563,29 @@ def iter_events(conn: sqlite3.Connection) -> Iterator[Event]:
 def iter_events_of_types(
     conn: sqlite3.Connection,
     event_types: Iterable[str],
+    *,
+    since_epoch_ms: int | None = None,
 ) -> Iterator[Event]:
     """Yield selected event types in canonical append order.
 
     Values remain bound parameters; only the placeholder count is composed.
     CAS owners use this to avoid decoding unrelated history while holding a
-    SQLite writer reservation.
+    SQLite writer reservation.  ``since_epoch_ms`` keeps a scan to rows at or
+    after that time, on the ``(type, ts_epoch_ms)`` index.
     """
     selected = tuple(dict.fromkeys(event_types))
     if not selected:
         return
-    cursor = conn.execute(
+    sql = (
         "SELECT id, event_uid, type, schema_version, ts_epoch_ms, "
         "payload_json, source_event_id, correlation_json "
-        "FROM events WHERE type IN (SELECT value FROM json_each(?)) ORDER BY id ASC",
-        (json.dumps(selected),),
+        "FROM events WHERE type IN (SELECT value FROM json_each(?))"
     )
+    params: list[object] = [json.dumps(selected)]
+    if since_epoch_ms is not None:
+        sql += " AND ts_epoch_ms >= ?"
+        params.append(since_epoch_ms)
+    cursor = conn.execute(sql + " ORDER BY id ASC", params)
     for row in cursor:
         yield _row_to_event(row)
 

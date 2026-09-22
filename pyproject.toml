@@ -95,6 +95,8 @@ ignore = [
 "jarvis/state/work_state.py" = ["RUF001"]
 # Its acceptance test asserts on those Chinese strings verbatim.
 "tests/integration/test_work_state.py" = ["RUF001"]
+# Asserts on the Chinese commentary a Live session is sent (ADR 0026).
+"tests/integration/test_live_delivery.py" = ["RUF001"]
 # Tests use bare `assert` (pytest), don't need return-type annotations, and
 # carry magic numbers in assertion targets by design.
 "tests/**/*.py" = [
