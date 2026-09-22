@@ -4,6 +4,8 @@ contextBridge.exposeInMainWorld('jarvis', {
   focus: (enabled: boolean) => ipcRenderer.invoke('focus-input', enabled),
   hide: () => ipcRenderer.send('hide'),
   copy: (text: string) => ipcRenderer.invoke('copy', text),
+  openCodex: (threadId: string) => ipcRenderer.invoke('open-codex', threadId),
+  codexTitles: (ids: string[]) => ipcRenderer.invoke('codex-titles', ids),
   drag: (phase: 'start' | 'move' | 'end', point?: { x: number; y: number }) => ipcRenderer.send('drag', { phase, point }),
   passthrough: (enabled: boolean) => ipcRenderer.send('passthrough', enabled),
   material: (rects: unknown[], strength: number) => ipcRenderer.send('material', { rects, strength }),

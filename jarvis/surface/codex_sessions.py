@@ -11,17 +11,42 @@ from __future__ import annotations
 import json
 from typing import Any
 
-# ponytail: in-memory board, lost on daemon restart and capped at the newest
-# sessions; fold it from the event log if history ever matters.
-MAX_SESSIONS = 8
+# The surface retains pinned snapshots. Never evict active work for newer work.
+RETENTION_MS = 24 * 60 * 60 * 1000
 _DETAIL_CHARS = 160
 
 CodexSession = dict[str, Any]
 
 
+def prune_codex_sessions(board: dict[str, CodexSession], *, now_ms: int) -> None:
+    """Expire inactive rows; active turns are never evicted by list capacity."""
+    for key, old in list(board.items()):
+        inactive = old["state"] not in {"running", "needs_input"}
+        if inactive and now_ms - int(old["since_ms"]) >= RETENTION_MS:
+            board.pop(key)
+
+
+def _end_session(board: dict[str, CodexSession], session_id: str, now_ms: int) -> None:
+    row = board.get(session_id)
+    if row is None:
+        return
+    row["since_ms"] = now_ms
+    if row["state"] != "finished":
+        row.update(state="idle", detail="会话已结束")
+
+
 def _short(value: object) -> str:
     text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
     return text if len(text) <= _DETAIL_CHARS else text[: _DETAIL_CHARS - 1] + "…"
+
+
+def _prompt(value: object) -> str:
+    """Prefer the user request to desktop-injected ambient context."""
+    text = value if isinstance(value, str) else ""
+    marker = "## My request:"
+    if marker in text:
+        text = text.rsplit(marker, 1)[-1]
+    return _short(text.strip())
 
 
 def fold_codex_hook(
@@ -32,14 +57,20 @@ def fold_codex_hook(
     SessionStart opens an ``idle`` row, UserPromptSubmit flips it to
     ``running``, PermissionRequest to ``needs_input`` (PostToolUse takes it
     back to ``running`` once the approved tool ran), Stop to ``finished``
-    with the last assistant message, SessionEnd drops the row.
+    with the last assistant message. SessionEnd preserves the recent row.
     """
     session_id = payload.get("session_id")
     name = payload.get("hook_event_name")
     if not isinstance(session_id, str) or not isinstance(name, str):
         return
+    if name not in {
+        "SessionStart", "UserPromptSubmit", "PermissionRequest",
+        "PostToolUse", "Stop", "SessionEnd",
+    }:
+        return
+    prune_codex_sessions(board, now_ms=now_ms)
     if name == "SessionEnd":
-        board.pop(session_id, None)
+        _end_session(board, session_id, now_ms)
         return
     row = board.setdefault(
         session_id,
@@ -52,6 +83,7 @@ def fold_codex_hook(
             "detail": "",
             "last_message": "",
             "since_ms": now_ms,
+            "turn_started_ms": now_ms,
         },
     )
     row["since_ms"] = now_ms
@@ -60,7 +92,8 @@ def fold_codex_hook(
             row[key] = payload[key]
     if name == "UserPromptSubmit":
         row.update(
-            state="running", prompt=_short(payload.get("prompt", "")), detail="", last_message=""
+            state="running", prompt=_prompt(payload.get("prompt", "")), detail="", last_message="",
+            turn_started_ms=now_ms,
         )
     elif name == "PermissionRequest":
         row.update(
@@ -75,6 +108,3 @@ def fold_codex_hook(
             detail="",
             last_message=_short(payload.get("last_assistant_message") or ""),
         )
-    while len(board) > MAX_SESSIONS:
-        oldest = min(board.values(), key=lambda r: int(r["since_ms"]))
-        board.pop(str(oldest["session_id"]))

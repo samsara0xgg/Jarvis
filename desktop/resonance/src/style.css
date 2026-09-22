@@ -149,7 +149,7 @@ textarea:focus-visible { outline: none; }
 .feedback-setting [aria-checked=true] span { transform: translateX(11px); }
 
 .result.is-dismissing { opacity: 0; transform: translateX(8px); height: 0; min-height: 0; margin-bottom: -8px; overflow: hidden; pointer-events: none; }
-.shell:has(.inbox) .options:not(:focus-visible) { opacity: 0; pointer-events: none; }
+.shell:has(> .inbox) .options:not(:focus-visible) { opacity: 0; pointer-events: none; }
 .shell:has(.settings) .inbox { max-height: 120px; }
 
 .voice-presence { width: 90px; height: 36px; pointer-events: none; transition: opacity 140ms ease, filter 140ms ease; }

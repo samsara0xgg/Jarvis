@@ -1,0 +1,1 @@
+Claude, OpenAI and DeepSeek SVGs from https://github.com/lobehub/lobe-icons/tree/master/packages/static-svg/icons, retrieved 2026-09-13. See LICENSE. Brand names and marks belong to their respective owners.

@@ -2588,11 +2588,14 @@ Tool Surface 是由 effective_policy 为特定调用主体、mode、task 和风�
 </ul>
 
 <h3>15.2 Hooks：观察 Allen 的桌面 Codex 会话</h3>
+<p>会话卡片的展开与操作按钮显隐独立：自动展开时文字占满内容宽度，左上移除按钮及右侧回复／打断按钮仅在悬停或键盘聚焦交互时浮现。右侧按钮绝对定位覆盖文字区域，通过文字尾部渐隐让出视觉空间，不改变文字宽度或重新排版；移开恢复全宽文字，不因此收起尚待交互的活动卡片。</p>
+<p>Dashboard 缩略模块展开为详情时保留原卡片，在原窗口中连续改变位置和尺寸，返回时反向收回。摘要与详情的交接跟随卡片尺寸进度，不出现内容全空的中间帧；已显示面板因内部内容变化而调整高度时，不重播整块内容的入场淡入。</p>
 <ul>
 <li><code>~/.codex/hooks.json</code> 对 SessionStart / UserPromptSubmit / PermissionRequest / PostToolUse / Stop / SessionEnd 各挂一个 command handler：<code>scripts/codex_hook_log.py</code>（安装副本 <code>~/.jarvis/codex-hooks/log_hook.py</code>，路径独立于任何 worktree）。</li>
 <li>Handler 契约：payload 从 stdin 读；追加一行 <code>{ts, event}</code> 到 <code>~/.jarvis/codex-hooks/&lt;Event&gt;.jsonl</code>；POST 同一 payload 到 <code>/inherent/codex-hook</code>（<code>JARVIS_INHERENT_BRIDGE_PORT</code>，默认 8006）；<strong>stdout 永远为空</strong>——空输出即"不做决定"，Codex 按默认继续。daemon 不在时静默，jsonl 仍是记录。</li>
 <li>Codex 只运行 <code>[hooks.state]</code> 里有 trusted_hash 的 handler；hooks.json 每次修改后必须重新 trust（app-server <code>hooks/list</code> → <code>config/batchWrite</code>），否则静默跳过。</li>
-<li>L5 把 payload 折成每个 session 一行（<code>jarvis/surface/codex_sessions.py</code>）：SessionStart → idle，UserPromptSubmit → running，PermissionRequest → needs_input，PostToolUse → running，Stop → finished（带 last_assistant_message），SessionEnd → 删除。内存态，daemon 重启即清空，只保留最新 8 个。<code>GET /inherent/codex-sessions</code> 最新在前；Resonance 的 Codex 卡每 2 s 轮询。</li>
+<li>L5 把 payload 折成每个 session 一行（<code>jarvis/surface/codex_sessions.py</code>）：SessionStart → idle，UserPromptSubmit → running 并记录 <code>turn_started_ms</code>，PermissionRequest → needs_input，PostToolUse → running，Stop → finished（带 last_assistant_message），SessionEnd 保留近期记录并将未完成状态转为 idle。内存态，daemon 重启即清空；非活动记录按最近活动时间保留 24 小时，running / needs_input 不受数量限制。<code>GET /inherent/codex-sessions</code> 最新在前；Resonance 在上次请求结束后间隔 2 s 轮询，断线或失去观测时不把缓存活动状态当作实时状态。</li>
+<li>Resonance Codex 详情为固定高度的紧凑滚动区域，普通行 32px、展开胶囊 64px，不显示服务商图标、顶部说明和底部操作提示。相邻收起行之间显示淡分隔线，展开卡片周围隐藏分隔线。运行中、需要输入、完成尚未交互的任务自动展开；点击底座成功请求打开原会话或打开回复框，记录本轮状态已交互，退出 Hover／回复后收起；新轮次、新待处理请求或新完成状态重新展开，普通进度更新不重置。该交互标记仅控制展示，不表示原任务已完成或授权已处理。Hover 也可展开两行胶囊并推开邻行；左上小 × 仅移除 Jarvis 中本轮记录（可撤销），下一轮重新出现；长按 1 s 固定／取消固定，移动或滚动取消手势，固定记录免于 24 h 过期。近期快照、固定、交互和本轮移除标记存于本地 UI 存储。优先用 Codex 本地 session_index.jsonl 中的名称作为标题，未取得时回退到观察到的用户请求。点击底座通过 <code>codex://threads/{thread_id}</code> 请求系统打开原会话；系统接收链接不等于确认会话已读。回复按钮仅展开胶囊内输入框，输入时保持展开，Esc 收回并保留本次面板内草稿；外部桌面会话暂不支持直接回复／打断，输入框提示发送未接通，打断按钮明确标记不可用，不通过 worker app-server 操作它们（ADR 0022）。</li>
 <li>不做的事：不回复 PermissionRequest（决定权在 Allen）、不 attach 到桌面 session（stdio 单客户端）、不从 transcript 反推对话。</li>
 </ul>
 </section>
@@ -2740,6 +2743,8 @@ panel  =  evidence and action controls</code></pre>
 <li>recent events</li>
 </ul>
 
+<p>Resonance 桌面首页由胶囊中的 Dashboard 按钮展开／收起，不另设通知入口或顶部最小化按钮。通知复用原有卡片，位于首页四模块下方；通知取消叠层，固定区域最多容纳两条完整卡片，其他事项通过区域内滚动查看，无待办通知时不保留通知区域，窗口高度随内容平滑收起。额度摘要在同一行显示重置倒计时、使用进度和百分比；所有模块展开页移除顶部标题和返回箭头，使用底部主色短条点击或向下拖动返回首页；拖动仅从短条触发，不占用列表滚动或胶囊拖动手势。额度详情默认采用 B2 紧凑折叠视图，三个分区独立展开／收起，初始仅订阅额度展开，仍可在设置切换其他布局。Codex 订阅标题显示 Codex Pro，倍率标签显示 5X。首页卡片到详情的边框与尺寸、Dashboard 以约 200ms 整体淡入并从上方 6px 滑入，不做卷帘式裁切；通知引起的高度变化保持连续过渡；分区与标签切换保留轻量动画。胶囊、Dashboard 与 transcript 入口光缝共用外观主色和玻璃设置。光缝在中部 Live 与下方光缝组成的完整矩形区域悬停时显示，移出后隐藏。Resonance 的 macOS 桌面浮窗采用非激活 panel 与 floating 层级，配置为加入普通桌面及其他应用的全屏 Space，在显示和焦点切换后维持置顶，置顶操作不夺取其他应用的键盘焦点。</p>
+<p>Resonance 的文字输入在顶部胶囊下方打开，保持 Live 控件及其状态不变。文字输入、完整对话记录和 Dashboard 是同一浮窗内可组合的区域，初始依次排列；各自支持关闭、折叠和抓住标题栏拖动排序；拖动时保留占位并让相邻模块平滑让位，Escape 可取消，Alt 加上下方向键提供键盘排序。折叠使用独立箭头，拖动不触发折叠，切换或折叠不丢弃草稿。展开区默认使用 Dashboard 风格的中性黑色玻璃、灰白文字和边框，保留现有主题强调色；墨绿色处理保存为可复用预设。模块内容在尺寸就绪后渐入位移，退场完成后再释放高度；快速反向保留当前几何和速度，融合容器及原生玻璃随尺寸连续更新。减少动态效果时直接切换到最终状态，内容超过屏幕可用高度时在展开区内滚动。输入区下方左侧的附件按钮目前禁用，仅作占位，右侧发送保留真实文字链路。中央光缝触发区高度为原来的约 60%，释放的高度归还 Live 区域，总胶囊高度不变。</p>
 <p>Dashboard <strong>不是</strong> chat。它是"我现在有哪些事"的地图。</p>
 
 <p>当 Allen 问"我现在还有什么没收尾？"——Jarvis 可以 voice 给一句总结，dashboard 展示全量。</p>

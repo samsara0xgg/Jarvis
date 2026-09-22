@@ -9,7 +9,8 @@
 .presentation-edge[aria-pressed=true] { color: #8b919d; }
 .presentation-edge svg, .presentation-wing svg { width: 20px; height: 20px; flex-shrink: 0; }
 .presentation-divider { width: 1px; height: 20px; flex-shrink: 0; background: #ffffff20; }
-.presentation-center { position: relative; height: 36px; flex: 1; min-width: 0; padding: 0; display: grid; place-items: center; overflow: hidden; border-radius: 12px; }
+.presentation-center-region { position:relative; height:100%; flex:1; min-width:0; display:flex; align-items:center; }
+.presentation-center { position: relative; height: 36px; width:100%; flex: 1; min-width: 0; padding: 0; display: grid; place-items: center; overflow: hidden; border-radius: 12px; }
 .presentation-center .live-presence { position: absolute; width: 90px; height: 36px; left: 50%; top: 0; margin-left: -45px; pointer-events: none; }
 .presentation-capsule button { transition: none !important; }
 .presentation-capsule button:hover { background-color: #ffffff0a; }
@@ -30,6 +31,6 @@
 .presentation-divider { transition: opacity 100ms ease; }
 .presentation-core:has(> .presentation-edge:first-child:hover) > .presentation-divider:first-of-type,
 .presentation-core:has(> .presentation-edge:last-child:hover) > .presentation-divider:last-of-type,
-.presentation-core:has(> .presentation-center:hover) > .presentation-divider,
+.presentation-core:has(> .presentation-center-region:hover) > .presentation-divider,
 .presentation-capsule.is-collapsed:has(> .presentation-wing:first-child > button:hover) > .presentation-core > .presentation-divider:first-of-type,
 .presentation-capsule.is-collapsed:has(> .presentation-wing:last-child > button:hover) > .presentation-core > .presentation-divider:last-of-type { opacity: 0; }

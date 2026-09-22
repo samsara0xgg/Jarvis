@@ -30,7 +30,7 @@ export function useCapsuleDrag(enabled: boolean) {
       if (e.button !== 0 || !e.isPrimary) return;
       suppressClick = false;
       const target = e.target as Element;
-      if (target.closest('input, select, .detail-body') || !visibleSurface(target, e.clientX, e.clientY)) return;
+      if (target.closest('input, select, .detail-body, .shared-panel, .dashboard-home-bar') || !visibleSurface(target, e.clientX, e.clientY)) return;
       // Every capsule surface, including its buttons, accepts the same gesture.
       const capture = target.closest('button, textarea') ?? target.closest('[data-glass]')!;
       gesture = { pointer: e.pointerId, x: e.screenX, y: e.screenY, target: capture, moved: false };

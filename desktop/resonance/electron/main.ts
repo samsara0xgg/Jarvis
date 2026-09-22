@@ -1,7 +1,9 @@
-import { app, BrowserWindow, Menu, Tray, nativeImage, ipcMain, screen, globalShortcut, session, clipboard } from 'electron';
+import { app, BrowserWindow, Menu, Tray, nativeImage, ipcMain, screen, globalShortcut, session, clipboard, shell } from 'electron';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
+import { readFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { clampBounds } from './geometry.js';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const dashboard = process.argv.includes('--dashboard');
@@ -18,18 +20,28 @@ const locked = app.requestSingleInstanceLock();
 if (!locked) app.quit();
 let win: BrowserWindow;
 let tray: Tray;
+let codexTitles: Record<string, string> = {};
+let codexTitlesAt = 0;
 function openDashboard() {
   restore(true);
   win.webContents.send('command', 'dashboard');
 }
 let quitting = false;
 let dragGesture: { origin: { x: number; y: number }; bounds: Electron.Rectangle; moved: boolean } | null = null;
-function moveDrag(point: { x: number; y: number }) {
+function moveDrag() {
   if (!dragGesture || !win || win.isDestroyed()) return;
+  // Screen coordinates from forwarded DOM events can be stale or out of range.
+  // Both ends of the gesture use Electron's native DIP coordinate space.
+  const point = screen.getCursorScreenPoint();
   const dx = point.x - dragGesture.origin.x, dy = point.y - dragGesture.origin.y;
   if (Math.hypot(dx, dy) < 4 && !dragGesture.moved) return;
+  const x = Math.round(dragGesture.bounds.x + dx), y = Math.round(dragGesture.bounds.y + dy);
+  if (![x, y].every(value => Number.isInteger(value) && value >= -2147483648 && value <= 2147483647)) {
+    dragGesture = null;
+    return;
+  }
   dragGesture.moved = true;
-  win.setPosition(Math.round(dragGesture.bounds.x + dx), Math.round(dragGesture.bounds.y + dy));
+  win.setPosition(x, y);
 }
 function endDrag() {
   dragGesture = null;
@@ -38,6 +50,12 @@ function endDrag() {
     win.setBounds(clampBounds(b, screen.getDisplayMatching(b).workArea));
   }
 }
+function keepOnTop() {
+  if (lab || !win || win.isDestroyed()) return;
+  win.setAlwaysOnTop(true, process.platform === 'darwin' ? 'floating' : 'screen-saver');
+  // Raise without stealing keyboard focus from the user's active application.
+  if (win.isVisible()) win.moveTop();
+}
 function restore(focus = false) {
   if (!win || win.isDestroyed()) return;
   const bounds = win.getBounds();
@@ -45,6 +63,7 @@ function restore(focus = false) {
   win.setIgnoreMouseEvents(false);
   if (focus) { win.setFocusable(true); win.show(); win.focus(); }
   else win.showInactive();
+  keepOnTop();
 }
 app.on('second-instance', () => restore());
 if (locked) app.whenReady().then(() => {
@@ -55,16 +74,19 @@ if (locked) app.whenReady().then(() => {
   // without resizing/clipping the native window. Empty space passes through.
   win = new BrowserWindow({ title: dashboard ? 'Jarvis · Dashboard 设计预览' : lab ? 'Jarvis · 声纹切换预览' : 'Jarvis Resonance', width: lab ? 1040 : 372, height: dashboard ? 840 : lab ? 740 : 100,
     x: Math.round(area.x + (area.width - (lab ? 1040 : 372)) / 2), y: area.y + Math.round(area.height * .32),
+    type: !lab && process.platform === 'darwin' ? 'panel' : undefined,
     frame: lab, transparent: !lab, backgroundColor: lab ? '#151c19' : '#00000000', hasShadow: lab,
     resizable: lab, maximizable: lab, fullscreenable: lab, show: false, focusable: lab,
     alwaysOnTop: !lab, skipTaskbar: !lab, roundedCorners: false,
     webPreferences: { preload: path.join(here, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true }
   });
-  // Ordinary floating windows can sit below other apps' panels and overlays.
-  if (!lab) win.setAlwaysOnTop(true, 'screen-saver', process.platform === 'darwin' ? 1 : 0);
+  // Match the installed Codex pet: a nonactivating macOS panel at floating
+  // level. Raising an ordinary NSWindow cannot make it join fullscreen Spaces.
+  keepOnTop();
   if (!lab && process.platform === 'darwin') {
     app.dock?.hide();
     win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true });
+    keepOnTop();
   }
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   if (verification) win.webContents.setAudioMuted(true);
@@ -72,6 +94,8 @@ if (locked) app.whenReady().then(() => {
   // Lab and verification stay simulated; the desktop build talks to the daemon (same port env as the Swift card).
   win.loadFile(path.join(here, '../dist/index.html'), { query: dashboard ? { lab: '1', dashboard: '1' } : lab ? { lab: '1' } : verification ? {} : { port: process.env.JARVIS_INHERENT_BRIDGE_PORT ?? '8006' } });
   win.once('ready-to-show', () => restore(lab));
+  win.on('show', keepOnTop);
+  win.on('blur', () => { setImmediate(() => { if (win && !win.isDestroyed() && win.isVisible()) keepOnTop(); }); });
   win.on('close', event => { if (!quitting) { event.preventDefault(); win.hide(); } });
   win.on('moved', () => {
     if (dragGesture) return; // Crossing displays must not clamp mid-gesture.
@@ -84,13 +108,22 @@ if (locked) app.whenReady().then(() => {
     if (event.sender !== win.webContents || lab) return;
     if (!['voice', 'text', 'idle'].includes(payload?.mode) || !Number.isFinite(payload.height)) return;
     const b = win.getBounds();
-    const next = clampBounds({ ...b, height: Math.max(100, Math.min(560, Math.round(payload.height))) }, screen.getDisplayMatching(b).workArea);
+    const next = clampBounds({ ...b, height: Math.max(100, Math.min(screen.getDisplayMatching(b).workArea.height - 24, Math.round(payload.height))) }, screen.getDisplayMatching(b).workArea);
     if (b.x !== next.x || b.y !== next.y || b.height !== next.height) win.setBounds(next);
   });
   ipcMain.handle('focus-input', (event, enabled) => {
     if (event.sender !== win.webContents || typeof enabled !== 'boolean') return;
     win.setFocusable(lab || enabled);
-    if (enabled) { app.focus({ steal: true }); win.focus(); win.webContents.focus(); } else if (!lab) win.blur();
+    // Match the Legacy Pet handshake: revoke key focus eligibility without
+    // blur(), which orders the native macOS window out and then behind others.
+    if (enabled) {
+      if (process.platform !== 'darwin' || lab) app.focus({ steal: true });
+      win.focus(); win.webContents.focus();
+    }
+    if (!lab && process.platform === 'darwin') {
+      win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true });
+    }
+    keepOnTop();
   });
   ipcMain.handle('copy', (event, text) => {
     if (event.sender !== win.webContents || typeof text !== 'string' || text.length > 100000) return false;
@@ -98,14 +131,38 @@ if (locked) app.whenReady().then(() => {
     return true;
   });
   ipcMain.on('hide', event => { if (event.sender === win.webContents) win.hide(); });
+  ipcMain.handle('open-codex', async (event, threadId) => {
+    if (event.sender !== win.webContents || typeof threadId !== 'string'
+      || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(threadId)) return false;
+    // An OS handoff is not proof that the target conversation was displayed.
+    if (verification || lab) return false;
+    try { await shell.openExternal(`codex://threads/${threadId}`); return true; }
+    catch { return false; }
+  });
+  ipcMain.handle('codex-titles', async (event, ids) => {
+    if (event.sender !== win.webContents || !Array.isArray(ids) || ids.length > 10000 || !ids.every(id => typeof id === 'string')) return {};
+    if (verification || lab) return {};
+    if (Date.now() - codexTitlesAt > 10000) {
+      try {
+        const lines = await readFile(path.join(process.env.CODEX_HOME ?? path.join(homedir(), '.codex'), 'session_index.jsonl'), 'utf8');
+        const titles: Record<string, string> = {};
+        for (const line of lines.split('\n')) {
+          try { const row = JSON.parse(line); if (typeof row.id === 'string' && typeof row.thread_name === 'string') titles[row.id] = row.thread_name; } catch { /* Partially appended index line. */ }
+        }
+        codexTitles = titles;
+      } catch { /* Optional name index; the observed prompt is the fallback. */ }
+      codexTitlesAt = Date.now();
+    }
+    return Object.fromEntries(ids.filter(id => Object.hasOwn(codexTitles, id)).map(id => [id, codexTitles[id]]));
+  });
   ipcMain.on('drag', (event, payload) => {
     if (event.sender !== win.webContents || lab) return;
     const { phase, point } = payload ?? {};
     const validPoint = point && Number.isFinite(point.x) && Number.isFinite(point.y);
-    if (phase === 'end') { if (validPoint) moveDrag(point); endDrag(); return; }
+    if (phase === 'end') { if (validPoint) moveDrag(); endDrag(); return; }
     if (!validPoint || !win.isVisible()) return;
-    if (phase === 'start' && !dragGesture) dragGesture = { origin: point, bounds: win.getBounds(), moved: false };
-    else if (phase === 'move') moveDrag(point);
+    if (phase === 'start' && !dragGesture) dragGesture = { origin: screen.getCursorScreenPoint(), bounds: win.getBounds(), moved: false };
+    else if (phase === 'move') moveDrag();
   });
   win.on('hide', endDrag);
   win.webContents.on('render-process-gone', endDrag);

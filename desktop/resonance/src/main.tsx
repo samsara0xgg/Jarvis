@@ -1,8 +1,11 @@
 import React, { useEffect, useLayoutEffect, useReducer, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { IconContext, SquaresFour, Bell, X, ArrowUpRight, Copy, Check, ArrowCounterClockwise, Pause, Paperclip, DotsThree, GearSix, Phone, PhoneDisconnect } from '@phosphor-icons/react';
+import { IconContext, SquaresFour, Bell, X, ArrowUpRight, Copy, Check, ArrowCounterClockwise, Pause, DotsThree, GearSix, Phone, PhoneDisconnect } from '@phosphor-icons/react';
 import { initialState, reducer, examples, type Phase } from './model';
 import './style.css';
+import { activeSurfaceTheme, surfaceThemes } from './surface-themes';
+import { PanelStack, type PanelId } from './PanelStack';
+import './panel-stack.css';
 import { useCapsuleDrag } from './useCapsuleDrag';
 import { presenceLabels, type Presence } from './VoicePresence';
 import { PreviewLab, DashboardPreview } from './DashboardPreview';
@@ -16,6 +19,8 @@ import { connect, type Runtime } from './runtime';
 declare global { interface Window { jarvis?: {
   drag: (phase: 'start' | 'move' | 'end', point?: { x: number; y: number }) => void;
   copy: (text: string) => Promise<boolean>;
+  openCodex: (threadId: string) => Promise<boolean>;
+  codexTitles: (ids: string[]) => Promise<Record<string, string>>;
   layout: (mode: string, height: number) => void; focus: (enabled: boolean) => Promise<void>; hide: () => void; passthrough: (enabled: boolean) => void;
   material: (rects: {x:number;y:number;width:number;height:number;radius:number;opacity:number;occlusion?:GlassOcclusion}[], strength: number) => void;
   onCommand: (cb: (value: string) => void) => () => void;
@@ -47,13 +52,19 @@ function App() {
   const [background, setBackground] = useState('forest');
   const [scale, setScale] = useState(1.6);
   const [settings, setSettings] = useState(false);
-  const [panel, setPanel] = useState<'transcript' | 'dashboard' | null>(null);
-  const transcriptOpen = panel === 'transcript';
-  const setTranscriptOpen = (open: boolean) => setPanel(open ? 'transcript' : null);
-  const openDashboard = () => { setPanel('dashboard'); setSettings(false); if (s.inbox) dispatch({ type: 'inbox' }); void window.jarvis?.focus(true); };
-  const closePanel = () => { setPanel(null); void window.jarvis?.focus(false); };
-  const openTranscript = () => { setTranscriptOpen(true); setSettings(false); if (s.inbox) dispatch({ type: 'inbox' }); void window.jarvis?.focus(true); };
-  const closeTranscript = () => { setTranscriptOpen(false); void window.jarvis?.focus(false); };
+  const [panels, setPanels] = useState<Record<PanelId, boolean>>({ composer: false, transcript: false, dashboard: false });
+  const [collapsed, setCollapsed] = useState<Record<PanelId, boolean>>({ composer: false, transcript: false, dashboard: false });
+  const panel = Object.values(panels).some(Boolean);
+  const transcriptOpen = panels.transcript;
+  const setPanelOpen = (id: PanelId, open: boolean) => {
+    setPanels(previous => ({ ...previous, [id]: open }));
+    if (open) { setCollapsed(previous => ({ ...previous, [id]: false })); void window.jarvis?.focus(true); }
+  };
+  const openDashboard = () => { setPanelOpen('dashboard', true); setSettings(false); if (!s.inbox) dispatch({ type: 'inbox' }); };
+  const closePanel = () => { setPanelOpen('dashboard', false); if (s.inbox) dispatch({ type: 'inbox' }); };
+  const openTranscript = () => { setPanelOpen('transcript', true); setSettings(false); };
+  const closeTranscript = () => setPanelOpen('transcript', false);
+  useEffect(() => { if (!panel && !settings) void window.jarvis?.focus(false); }, [panel, settings]);
   const [presencePreview, setPresencePreview] = useState<Presence | 'auto' | 'cycle'>('auto');
   const [cyclePhase, setCyclePhase] = useState<Presence>('standby');
   useEffect(() => {
@@ -74,17 +85,18 @@ function App() {
   useEffect(() => { if (s.live.state !== 'active') return; const t = setInterval(tick, 1000); return () => clearInterval(t); }, [s.live.state]);
   const liveClock = s.live.since !== null ? mmss(Math.max(0, Math.floor((Date.now() - s.live.since) / 1000))) : '';
   const liveBusy = s.live.state === 'connecting' || s.live.state === 'closing';
-  const [added, setAdded] = useState(false);
   const [copied, setCopied] = useState(false);
   const [hidden, setHidden] = useState(false);
   const [retainInbox, setRetainInbox] = useState(false);
-  const [inboxExpanded, setInboxExpanded] = useState(false);
+  const [inboxExpanded, setInboxExpanded] = useState(true);
+  const [notificationScroll, setNotificationScroll] = useState(0);
+  const remainingNotifications = Math.max(0, s.results.length - 2 - Math.floor(notificationScroll / 63));
   const [replying, setReplying] = useState<string | null>(null);
   const [followup, setFollowup] = useState('');
   const [followupMessage, setFollowupMessage] = useState('');
   const followupInput = useRef<HTMLTextAreaElement>(null);
   const followupTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const stacked = s.results.length > 1 && !inboxExpanded && !s.detail;
+  const stacked = false;
   const openFollowup = (id: string) => {
     if (followupTimer.current) clearTimeout(followupTimer.current);
     setReplying(id); setFollowup(''); setFollowupMessage(''); setInboxExpanded(true);
@@ -113,18 +125,23 @@ function App() {
   const count = s.results.filter(r => !r.read).length;
   const detail = s.results.find(r => r.id === s.detail);
   const focusInput = async () => { await window.jarvis?.focus(true); input.current?.focus(); };
-  const composerReturn = useRef<'voice' | 'idle'>('idle');
-  const mode = (value: 'voice' | 'text' | 'idle') => { if (value === 'text' && s.mode !== 'text') composerReturn.current = s.mode; setPresencePreview('auto'); if (value === 'voice' && s.mode !== 'voice') feedback('voice-enter'); if (value !== 'voice' && s.mode === 'voice') feedback('voice-exit'); dispatch({ type: 'mode', mode: value }); setAdded(false); setSettings(false); if (value !== 'text') void window.jarvis?.focus(false); };
+  const mode = (value: 'voice' | 'text' | 'idle') => {
+    if (value === 'text') { setPanelOpen('composer', true); return; }
+    setPresencePreview('auto');
+    if (value === 'voice' && s.mode !== 'voice') feedback('voice-enter');
+    if (value !== 'voice' && s.mode === 'voice') feedback('voice-exit');
+    dispatch({ type: 'mode', mode: value }); setSettings(false);
+  };
   // Starting a GPT-Live session opens the capsule too, so the clock and subtitles have somewhere to live.
   const toggleLive = () => { if (!live || liveBusy) return; if (s.live.state !== 'active' && s.mode === 'idle') mode('voice'); void runtime.current?.controls({ live: s.live.state === 'active' ? 'stop' : 'start' }); };
-  useEffect(() => { if (s.mode !== 'text') return; const t = setTimeout(() => void focusInput(), 80); return () => clearTimeout(t); }, [s.mode]);
+  useEffect(() => { if (!panels.composer || collapsed.composer) return; const t = setTimeout(() => void focusInput(), 80); return () => clearTimeout(t); }, [panels.composer, collapsed.composer]);
   useEffect(() => window.jarvis?.onCommand(command => {
     setHidden(false);
     if (command === 'keyboard') document.querySelector<HTMLButtonElement>('.control-row button:not([inert])')?.focus();
     else if (command === 'dashboard') openDashboard();
     else if (command === 'settings') { setSettings(true); void window.jarvis?.focus(true); }
     else if (command === 'voice' || command === 'text') mode(command);
-  }), [s.mode, feedbackEnabled, feedbackVolume]);
+  }), [s.mode, s.inbox, panels, feedbackEnabled, feedbackVolume]);
   useEffect(() => () => { if (timer.current) clearTimeout(timer.current); for (const t of dismissTimers.current.values()) clearTimeout(t); }, []);
   const dismissResult = (id: string) => {
     if (replying === id) { setReplying(null); if (followupTimer.current) clearTimeout(followupTimer.current); }
@@ -136,8 +153,8 @@ function App() {
       dismissTimers.current.delete(id);
     }, 340));
   };
-  const closeDetail = () => { dispatch({ type: 'detail', id: null }); if (s.mode === 'text') void focusInput(); else if (s.inbox) void focusInbox(); else if (!settings) void window.jarvis?.focus(false); };
-  const closeSettings = () => { setSettings(false); if (s.mode === 'text') void focusInput(); else if (s.inbox) void focusInbox(); else if (!s.detail) void window.jarvis?.focus(false); };
+  const closeDetail = () => { dispatch({ type: 'detail', id: null }); if (panels.composer) void focusInput(); else if (s.inbox) void focusInbox(); else if (!settings) void window.jarvis?.focus(false); };
+  const closeSettings = () => { setSettings(false); if (panels.composer) void focusInput(); else if (s.inbox) void focusInbox(); else if (!s.detail) void window.jarvis?.focus(false); };
   const focusInbox = async () => {
     await window.jarvis?.focus(true);
     requestAnimationFrame(() => shell.current?.querySelector<HTMLButtonElement>('.inbox .result-main')?.focus({ preventScroll: true }));
@@ -154,7 +171,7 @@ function App() {
     if (!s.inbox && !retainInbox) setInboxExpanded(false);
     setReplying(null); dispatch({ type: 'inbox' });
     if (!s.inbox) void focusInbox();
-    else if (s.mode === 'text') void focusInput();
+    else if (panels.composer) void focusInput();
     else if (!settings) void window.jarvis?.focus(false);
   };
   useEffect(() => { if (!live && s.phase === 'speaking') { const t = setTimeout(() => dispatch({ type: 'interrupt' }), 6500); return () => clearTimeout(t); } }, [s.phase]);
@@ -163,7 +180,7 @@ function App() {
     if (!el) return;
     const update = () => {
       if (!lab) window.jarvis?.layout(s.mode, Math.ceil(el.getBoundingClientRect().height + 32));
-      const rects = [...el.querySelectorAll<HTMLElement>('[data-glass]')].map(e => {
+      const rects = [...el.querySelectorAll<HTMLElement>('[data-glass]')].filter(e => !e.parentElement?.closest('.panel-stack')).map(e => {
         const r = e.getBoundingClientRect();
         let visibleOpacity = 1;
         for (let node: HTMLElement | null = e; node && node !== el; node = node.parentElement) { const style = getComputedStyle(node); visibleOpacity *= style.visibility === 'hidden' || style.display === 'none' ? 0 : Number(style.opacity); }
@@ -184,7 +201,7 @@ function App() {
     el.addEventListener('capsule-motion', update);
     window.addEventListener('resize', update);
     return () => { el.removeEventListener('animationstart', transition); el.removeEventListener('scroll', update, true); el.removeEventListener('capsule-motion', update); el.removeEventListener('transitionrun', transition); cancelAnimationFrame(frame); observer.disconnect(); window.removeEventListener('resize', update); };
-  }, [s.mode, s.inbox, showInbox, s.detail, s.reply, s.phase, settings, added, opacity, glassStrength, s.results.length, s.attachment, dismissing.length, inboxExpanded, replying, followupMessage, s.subtitles.length, s.live.state, s.live.reason, s.live.notice, panel, s.soundMuted]);
+  }, [s.mode, s.inbox, showInbox, s.detail, s.reply, s.phase, settings, opacity, glassStrength, s.results.length, s.attachment, dismissing.length, inboxExpanded, replying, followupMessage, s.subtitles.length, s.live.state, s.live.reason, s.live.notice, panel, s.soundMuted]);
   useCapsuleDrag(!lab);
   const send = () => {
     if (!s.draft.trim() || s.phase === 'processing') return;
@@ -203,19 +220,33 @@ function App() {
   const end = () => { if (timer.current) clearTimeout(timer.current); dispatch({ type: 'end' }); hide(); };
   const copy = async (text: string) => { try { if (window.jarvis) setCopied(await window.jarvis.copy(text)); else { await navigator.clipboard.writeText(text); setCopied(true); } } catch { setCopied(false); } };
   const escape = () => {
-    if (panel) closePanel();
-    else if (settings) closeSettings();
-    else if (added) setAdded(false);
+    if (settings) closeSettings();
     else if (s.detail) closeDetail();
     else if (s.inbox && inboxExpanded && s.results.length > 1) collapseInbox();
     else if (replying) { setReplying(null); if (s.inbox) void focusInbox(); }
     else if (s.inbox) toggleInbox();
-    else if (s.mode === 'text') mode(composerReturn.current);
+    else if (panels.composer) setPanelOpen('composer', false);
+    else if (panels.transcript) closeTranscript();
+    else if (panels.dashboard) closePanel();
     else if (s.mode === 'voice') mode('idle');
     else hide();
   };
   const status = s.phase === 'error' ? '连接失败' : s.live.state === 'active' ? (s.live.speaking ? 'Live · 正在播报' : s.live.hearing ? 'Live · 正在听' : 'Live · 通话中') : s.micMuted && s.phase === 'listening' ? '麦克风已关闭' : labels[s.phase];
-  const surfaceStyle = { '--glass-opacity': opacity, '--glass-strength': glassStrength, '--preview-scale': lab ? scale : 1 } as React.CSSProperties;
+  const surfaceStyle = { ...surfaceThemes[activeSurfaceTheme], '--theme-color': themeColor, '--glass-opacity': opacity, '--glass-strength': glassStrength, '--preview-scale': lab ? scale : 1 } as React.CSSProperties & Record<`--${string}`, string | number>;
+  const notifications = <div className="dashboard-notification-content" onKeyDown={event => { if (event.key !== 'Escape') return; event.stopPropagation(); if (s.detail) closeDetail(); else if (replying) setReplying(null); else closePanel(); }}>
+        {<section className={`inbox is-open ${stacked ? 'is-stacked' : 'is-expanded'} ${s.detail ? 'has-detail' : ''}`} inert={!s.inbox} aria-hidden={!s.inbox} aria-label="示例通知" data-interactive onScroll={event => setNotificationScroll(event.currentTarget.scrollTop)}>
+          {s.results.length === 0 && <div className="empty glass"><Bell size={20}/><p>暂时没有待查看的事项</p><small>任务结果、待回应事项和你设定的提醒会出现在这里。</small></div>}
+          {s.results.map((r, index) => <article key={r.id} style={{ '--card-index': index } as React.CSSProperties} className={`result glass ${s.detail && s.detail !== r.id ? 'is-detail-hidden' : ''} ${dismissing.includes(r.id) ? 'is-dismissing' : ''} ${replying === r.id ? 'is-replying' : ''}`} inert={dismissing.includes(r.id) || (stacked && index > 0) || (!!s.detail && s.detail !== r.id)} aria-hidden={(stacked && index > 0) || (!!s.detail && s.detail !== r.id)} >
+            <button className="result-main" aria-label={stacked && index === 0 ? `展开 ${s.results.length} 条通知` : undefined} onClick={() => { if (stacked) { expandInbox(); return; } dispatch({ type: 'detail', id: r.id }); setCopied(false); void window.jarvis?.focus(true); }}><span className="result-copy"><strong>{r.title}</strong><small> · 示例 · </small><span className="summary">{r.summary}</span></span></button>
+            <Button label={r.kind === 'question' ? `回复${r.title}` : `标记${r.title}已查看`} className={`result-status kind-${r.kind}`} onClick={() => { if (r.kind === 'question') { openFollowup(r.id); } else dismissResult(r.id); }}>{r.kind === 'failure' ? <X size={18}/> : r.kind === 'question' ? <CapsuleIcon name="reply" width={16} height={16}/> : <Check size={19}/>}</Button>
+            <Button label={`移除${r.title}`} className="result-dismiss" onClick={() => dismissResult(r.id)}><X size={12}/></Button>
+            <div className="result-actions"><Button label={`继续讨论${r.title}`} onClick={() => openFollowup(r.id)}><CapsuleIcon name="reply" width={16} height={16}/></Button></div>
+            {replying === r.id && <>{followupMessage ? <p className="inline-reply-message" role="status">{followupMessage}</p> : <form className="inline-reply" onSubmit={e => { e.preventDefault(); sendFollowup(); }}><textarea ref={followupInput} rows={1} aria-label={`回复${r.title}的内容`} placeholder="继续回复…" value={followup} onChange={e => setFollowup(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); sendFollowup(); } }}/><Button label="发送通知回复（模拟）" type="submit" disabled={!followup.trim()}><CapsuleIcon name="send" width={15} height={15}/></Button></form>}</>}
+          </article>)}
+        </section>}
+        {remainingNotifications > 0 && !detail && <button className="notification-more" onClick={() => shell.current?.querySelector('.inbox')?.scrollBy({ top:63, behavior:'smooth' })}>还有 {remainingNotifications} 条 ↓</button>}
+        {detail && <section className="detail glass" data-interactive aria-label="结果详情"><div className="section-heading"><span>{detail.title}</span><Button label="关闭结果详情" onClick={closeDetail}><X size={17}/></Button></div><div className="detail-body">{detail.body}</div><div className="detail-actions"><button onClick={() => void copy(detail.body)}>{copied ? <Check size={14}/> : <Copy size={14}/>} {copied ? '已复制' : '复制'}</button>{detail.kind === 'question' && <button onClick={() => { dispatch({ type: 'detail', id: null }); mode('text'); dispatch({ type: 'draft', value: '明天上午十点' }); }}>回复 <ArrowUpRight size={14}/></button>}</div></section>}
+  </div>;
   return <IconContext.Provider value={{ size: 20, weight: 'regular' }}>
     <main className={lab ? `lab ${background}` : 'desktop'} style={surfaceStyle} onKeyDown={e => {
       if (e.key === 'Escape') { e.preventDefault(); if (!e.repeat) escape(); }
@@ -228,30 +259,16 @@ function App() {
           if ((e.target as Element).closest('textarea')) return;
           e.preventDefault(); setSettings(true); void window.jarvis?.focus(true);
         }}>
-          <div className="capsule-main-view" hidden={s.mode === 'text'}>
-            <PresentationCapsule presentation={s.mode === 'voice' ? 'expanded' : 'collapsed'} active={s.mode !== 'text'} nativeSurface
-              transcriptEntry={s.mode === 'voice' ? <TranscriptTrigger open={transcriptOpen} onOpen={() => transcriptOpen ? closeTranscript() : openTranscript()}/> : undefined}
+          <div className="capsule-main-view">
+            <PresentationCapsule presentation={s.mode === 'voice' ? 'expanded' : 'collapsed'} active nativeSurface
+              transcriptEntry={<TranscriptTrigger open={transcriptOpen} onOpen={() => transcriptOpen ? closeTranscript() : openTranscript()}/>}
               presence={presence} restState={s.phase === 'error' ? 'unavailable' : s.phase === 'processing' ? 'thinking' : count > 0 ? 'notification' : 'standby'}
-              color={themeColor} onActivate={() => mode('voice')} onCollapse={() => { if (s.live.state === 'active') void runtime.current?.controls({ live: 'stop' }); setTranscriptOpen(false); mode('idle'); }}
+              color={themeColor} onActivate={() => mode('voice')} onCollapse={() => { if (s.live.state === 'active') void runtime.current?.controls({ live: 'stop' }); mode('idle'); }}
               microphoneMuted={s.micMuted} speakerMuted={s.soundMuted}
               onMicrophoneToggle={() => { feedback(s.micMuted ? 'mic-on' : 'mic-off'); if (live) void runtime.current?.controls({ mic_muted: !s.micMuted }); else dispatch({ type: 'mic' }); }}
               onSpeakerToggle={() => { feedback(s.soundMuted ? 'speaker-on' : 'speaker-off'); if (live) void runtime.current?.controls({ speech_muted: !s.soundMuted }); else dispatch({ type: 'sound' }); }}
-              onCompose={() => mode('text')} onNotifications={toggleInbox} unreadCount={count} inboxOpen={s.inbox}/>
+              onCompose={() => panels.composer ? setPanelOpen('composer', false) : mode('text')} rightControl={<button className="presentation-wing-face dashboard-toggle" data-glass="20" data-glass-fade="--wing-reveal" data-interactive aria-label="Dashboard" aria-expanded={panels.dashboard} onClick={() => panels.dashboard ? closePanel() : openDashboard()}><SquaresFour size={20}/>{count > 0 && <span className="dashboard-unread"/>}</button>}/>
           </div>
-          {s.mode === 'text' && <>
-            <div className="entry-surface glass" data-glass="20" data-interactive>
-              <Button label="添加内容" className="entry-button" aria-expanded={added} onClick={() => setAdded(!added)}><CapsuleIcon name="plus"/></Button>
-              <div className="composer-fields">
-                <textarea ref={input} aria-label="文字输入" rows={1} placeholder="说不方便说的话…" value={s.draft} onChange={e => dispatch({ type: 'draft', value: e.target.value })} onKeyDown={e => {
-                  if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); send(); }
-                }}/>
-                <Button label={s.phase === 'processing' ? (live ? '正在处理' : '正在处理示例输入') : (live ? '发送' : '发送示例输入')} className="send" disabled={!s.draft.trim() || s.phase === 'processing'} onClick={send}><CapsuleIcon name="send"/></Button>
-              </div>
-            </div>
-            <Button label="收起文字输入" className="glass detached" data-glass="20" data-interactive onClick={() => mode(composerReturn.current)}><CapsuleIcon name="collapse"/></Button>
-            <Button label={s.inbox ? '收起通知' : '通知'} aria-expanded={s.inbox} className="glass detached notification" data-glass="20" data-interactive onClick={toggleInbox}><CapsuleIcon name={s.inbox ? 'collapse' : 'bell'}/>{count > 0 && !s.inbox && <span className="unread">{count > 9 ? '9+' : count}</span>}</Button>
-          </>}
-          <Button label="Dashboard" aria-expanded={panel === 'dashboard'} className="glass detached dashboard-toggle" data-glass="20" data-interactive onClick={() => panel === 'dashboard' ? closePanel() : openDashboard()}><SquaresFour size={19}/></Button>
         </div>
         <div className="status-line" data-interactive><span role="status" className="sr-only">{s.mode === 'idle' ? '待机' : status}{!live && <span className="demo-label"> · 演示</span>}</span>
           {s.phase === 'speaking' && <button className="text-action" onClick={interrupt}><Pause size={12}/>停止播报</button>}
@@ -265,34 +282,35 @@ function App() {
             <button onClick={() => { mode('voice'); setPresencePreview('cycle'); closeSettings(); }}>体验完整动效</button>
             <label>主题色<input aria-label="声纹主题色" type="color" value={themeColor} onChange={e => updatePreferences({ themeColor: e.target.value })}/></label>
           </div>
+          <label>额度页面布局<select aria-label="额度页面布局" value={preferences.quotaLayout} onChange={e => updatePreferences({ quotaLayout: e.target.value as 'category' | 'provider' | 'accordion' })}><option value="category">轻量标签 · 按类别</option><option value="provider">服务商切换 · 按服务商</option><option value="accordion">B2 · 紧凑折叠</option></select></label>
           <label className="range-label">玻璃不透明度 <output>{Math.round(opacity * 100)}%</output><input aria-label="玻璃不透明度" aria-valuetext={`${Math.round(opacity * 100)}%`} type="range" min=".08" max=".65" step=".01" value={opacity} onChange={e => setOpacity(Number(e.target.value))}/></label>
           <label className="range-label">毛玻璃强度 <output>{Math.round(glassStrength * 100)}%</output><input aria-label="毛玻璃强度" aria-valuetext={`${Math.round(glassStrength * 100)}%`} type="range" min="0" max="1" step=".01" value={glassStrength} onChange={e => updatePreferences({ glassStrength: Number(e.target.value) })}/></label>
           <div className="feedback-setting"><span>操作提示音</span><button role="switch" aria-label="操作提示音" aria-checked={feedbackEnabled} onClick={() => { stopFeedback(); updatePreferences({ feedbackEnabled: !feedbackEnabled }); }}><span/></button></div>
           <label className="range-label">提示音音量 <output>{Math.round(feedbackVolume * 100)}%</output><input aria-label="提示音音量" aria-valuetext={`${Math.round(feedbackVolume * 100)}%`} type="range" min="0" max="1" step=".01" value={feedbackVolume} disabled={!feedbackEnabled} onChange={e => updatePreferences({ feedbackVolume: Number(e.target.value) })}/></label>
-          <div className="settings-actions"><button onClick={openDashboard}>打开 Dashboard</button><button onClick={() => { closeSettings(); openTranscript(); }}>完整对话记录</button><button onClick={() => updatePreferences(defaultPreferences)}>恢复默认</button><button disabled={!feedbackEnabled} onClick={() => feedback('voice-enter')}>试听提示音</button><button onClick={() => { dispatch({ type: 'example', id: 'reminder' }); if (!s.inbox) dispatch({ type: 'inbox' }); setInboxExpanded(false); closeSettings(); }}>体验通知叠层</button><button onClick={hide}>隐藏浮窗</button><button onClick={end}>结束语音</button></div>
-          <p>声纹使用模拟节奏，未接入录音。主题色只影响声纹，外观与提示音设置自动保存。</p>
+          <div className="settings-actions"><button onClick={openDashboard}>打开 Dashboard</button><button onClick={() => { closeSettings(); openTranscript(); }}>完整对话记录</button><button onClick={() => updatePreferences(defaultPreferences)}>恢复默认</button><button disabled={!feedbackEnabled} onClick={() => feedback('voice-enter')}>试听提示音</button><button onClick={() => { dispatch({ type: 'example', id: 'result' }); dispatch({ type: 'example', id: 'reminder' }); dispatch({ type: 'example', id: 'question' }); setInboxExpanded(true); openDashboard(); }}>体验三条通知</button><button onClick={hide}>隐藏浮窗</button><button onClick={end}>结束语音</button></div>
+          <p>声纹使用模拟节奏，未接入录音。主题色统一用于声纹和 Dashboard，外观、额度布局与提示音设置自动保存。</p>
         </section>}
-        {added && <section className="addition glass" data-glass="18" data-interactive><button onClick={() => { dispatch({ type: 'attachment' }); setAdded(false); }}><Paperclip size={18}/>{s.attachment ? '移除示例附件' : '附加示例便笺'}</button><p>仅使用预置示例，不读取本地文件。</p></section>}
-        {s.attachment && <div className="attachment" data-interactive><Paperclip size={13}/>示例便笺.txt<Button label="移除示例附件" onClick={() => dispatch({ type: 'attachment' })}><X size={12}/></Button></div>}
         {s.phase === 'error' && <section className="error-panel glass" data-glass="18" data-interactive><div><strong>暂时没有连上</strong><p>{live ? 'Jarvis 服务没有响应，正在重连。' : '演示连接失败。你可以重试或继续打字。'}</p></div><Button label={live ? '立即重连' : '重试模拟连接'} onClick={retry}><ArrowCounterClockwise/></Button></section>}
-        {!s.inbox && <div className={`shared-panel ${panel ? 'shared-panel-open glass' : ''}`} data-glass={panel ? "20" : undefined} data-interactive={panel ? true : undefined}>{panel === 'dashboard' ? <DashboardPreview embedded port={runtimePort} onClose={closePanel}/> :<LiveTranscript embedded={!!panel} lines={s.subtitles} open={transcriptOpen} muted={s.soundMuted} active={s.live.state === 'active'} clock={liveClock} onClose={closeTranscript}/>}</div>}
-        {s.reply && !s.inbox && <section className="reply glass" data-glass="18" data-interactive><div className="section-heading"><span>{live ? '回复' : '示例回复'}</span><Button label="复制回复" onClick={() => void copy(visible(s.reply))}>{copied ? <Check size={16}/> : <Copy size={16}/>}</Button></div><p>{visible(s.reply)}</p></section>}
-        {showInbox && <section className={`inbox ${s.inbox ? 'is-open' : 'is-closing'} ${stacked ? 'is-stacked' : 'is-expanded'} ${s.detail ? 'has-detail' : ''}`} inert={!s.inbox} aria-hidden={!s.inbox} aria-label="示例通知" data-interactive>
-          {s.results.length === 0 && <div className="empty glass" data-glass="18"><Bell size={20}/><p>暂时没有待查看的事项</p><small>任务结果、待回应事项和你设定的提醒会出现在这里。</small></div>}
-          {s.results.map((r, index) => <article key={r.id} style={{ '--card-index': index } as React.CSSProperties} className={`result glass ${s.detail && s.detail !== r.id ? 'is-detail-hidden' : ''} ${dismissing.includes(r.id) ? 'is-dismissing' : ''} ${replying === r.id ? 'is-replying' : ''}`} inert={dismissing.includes(r.id) || (stacked && index > 0) || (!!s.detail && s.detail !== r.id)} aria-hidden={(stacked && index > 0) || (!!s.detail && s.detail !== r.id)} data-glass="28">
-            <button className="result-main" aria-label={stacked && index === 0 ? `展开 ${s.results.length} 条通知` : undefined} onClick={() => { if (stacked) { expandInbox(); return; } dispatch({ type: 'detail', id: r.id }); setCopied(false); void window.jarvis?.focus(true); }}><span className="result-copy"><strong>{r.title}</strong><small> · 示例 · </small><span className="summary">{r.summary}</span></span></button>
-            <Button label={r.kind === 'question' ? `回复${r.title}` : `标记${r.title}已查看`} className={`result-status kind-${r.kind}`} onClick={() => { if (r.kind === 'question') { openFollowup(r.id); } else dismissResult(r.id); }}>{r.kind === 'failure' ? <X size={18}/> : r.kind === 'question' ? <CapsuleIcon name="reply" width={16} height={16}/> : <Check size={19}/>}</Button>
-            <Button label={`移除${r.title}`} className="result-dismiss" data-glass="10" onClick={() => dismissResult(r.id)}><X size={12}/></Button>
-            <div className="result-actions"><Button label={`继续讨论${r.title}`} onClick={() => openFollowup(r.id)}><CapsuleIcon name="reply" width={16} height={16}/></Button></div>
-            {replying === r.id && <>{followupMessage ? <p className="inline-reply-message" role="status">{followupMessage}</p> : <form className="inline-reply" onSubmit={e => { e.preventDefault(); sendFollowup(); }}><textarea ref={followupInput} rows={1} aria-label={`回复${r.title}的内容`} placeholder="继续回复…" value={followup} onChange={e => setFollowup(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); sendFollowup(); } }}/><Button label="发送通知回复（模拟）" type="submit" disabled={!followup.trim()}><CapsuleIcon name="send" width={15} height={15}/></Button></form>}</>}
-          </article>)}
-          {s.results.length > 1 && <button className="stack-collapse" inert={!inboxExpanded || !!s.detail} aria-hidden={!inboxExpanded || !!s.detail} onClick={collapseInbox}>收起为叠层 · Esc</button>}
-        </section>}
-        {detail && <section className="detail glass" data-glass="18" data-interactive aria-label="结果详情"><div className="section-heading"><span>{detail.title}</span><Button label="关闭结果详情" onClick={closeDetail}><X size={17}/></Button></div><div className="detail-body">{detail.body}</div><div className="detail-actions"><button onClick={() => void copy(detail.body)}>{copied ? <Check size={14}/> : <Copy size={14}/>} {copied ? '已复制' : '复制'}</button>{detail.kind === 'question' && <button onClick={() => { dispatch({ type: 'detail', id: null }); mode('text'); dispatch({ type: 'draft', value: '明天上午十点' }); }}>回复 <ArrowUpRight size={14}/></button>}</div></section>}
+        <PanelStack open={panels} collapsed={collapsed} onCollapse={id => setCollapsed(previous => ({ ...previous, [id]: !previous[id] }))} onClose={id => id === 'dashboard' ? closePanel() : setPanelOpen(id, false)}>
+          {{ composer: <div className="text-composer">
+            <textarea ref={input} aria-label="文字输入" rows={3} placeholder="说不方便说的话…" value={s.draft} onChange={e => dispatch({ type: 'draft', value: e.target.value })} onKeyDown={e => {
+              if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); send(); }
+            }}/>
+            <div className="composer-actions"><Button label="添加附件（即将支持）" disabled><CapsuleIcon name="plus"/></Button>
+              <Button label={s.phase === 'processing' ? '正在处理' : live ? '发送' : '发送示例输入'} className="composer-send" disabled={!s.draft.trim() || s.phase === 'processing'} onClick={send}><CapsuleIcon name="send"/></Button></div>
+            {s.reply && <section className="reply glass"  data-interactive><div className="section-heading"><span>{live ? '回复' : '示例回复'}</span><Button label="复制回复" onClick={() => void copy(visible(s.reply))}>{copied ? <Check size={16}/> : <Copy size={16}/>}</Button></div><p>{visible(s.reply)}</p></section>}
+          </div>,
+          transcript: <LiveTranscript embedded lines={s.subtitles} open={true} muted={s.soundMuted} active={s.live.state === 'active'} clock={liveClock} onClose={closeTranscript}/>,
+          dashboard: <DashboardPreview embedded port={runtimePort} onClose={closePanel} notifications={s.results.length || detail ? notifications : null}/>
+          }}
+        </PanelStack>
+        {!transcriptOpen && <LiveTranscript embedded lines={s.subtitles} open={false} muted={s.soundMuted} active={s.live.state === 'active'} clock={liveClock} onClose={closeTranscript}/>}
+
+
       </div>}
       {hidden && lab && <button className="restore" onClick={() => setHidden(false)}>恢复胶囊</button>}
       </div>
-      {lab && <aside className="lab-controls" aria-label="独立开发测试台"><div><label>模拟阶段<select aria-label="模拟阶段" value={s.phase} onChange={e => dispatch({ type: 'phase', phase: e.target.value as Phase })}>{Object.entries(labels).map(([key, value]) => <option key={key} value={key}>{value}</option>)}</select></label><label>桌面背景<select aria-label="桌面背景" value={background} onChange={e => setBackground(e.target.value)}><option value="forest">森林</option><option value="light">浅灰</option><option value="dark">深灰</option></select></label><label>预览倍率<select aria-label="预览倍率" value={scale} onChange={e => setScale(Number(e.target.value))}><option value="1">实际尺寸</option><option value="1.6">1.6 倍</option></select></label></div><div><button onClick={() => mode('idle')}>待机</button><button onClick={() => mode('voice')}>语音</button>{examples.map(r => <button key={r.id} onClick={() => dispatch({ type: 'example', id: r.id })}>{({ result: '结果', question: '待回应', failure: '失败', reminder: '提醒' })[r.kind]}示例</button>)}<button onClick={() => { if (timer.current) clearTimeout(timer.current); dispatch({ type: 'reset' }); setHidden(false); setSettings(false); setAdded(false); }}>重置演示</button></div></aside>}
+      {lab && <aside className="lab-controls" aria-label="独立开发测试台"><div><label>模拟阶段<select aria-label="模拟阶段" value={s.phase} onChange={e => dispatch({ type: 'phase', phase: e.target.value as Phase })}>{Object.entries(labels).map(([key, value]) => <option key={key} value={key}>{value}</option>)}</select></label><label>桌面背景<select aria-label="桌面背景" value={background} onChange={e => setBackground(e.target.value)}><option value="forest">森林</option><option value="light">浅灰</option><option value="dark">深灰</option></select></label><label>预览倍率<select aria-label="预览倍率" value={scale} onChange={e => setScale(Number(e.target.value))}><option value="1">实际尺寸</option><option value="1.6">1.6 倍</option></select></label></div><div><button onClick={() => mode('idle')}>待机</button><button onClick={() => mode('voice')}>语音</button>{examples.map(r => <button key={r.id} onClick={() => dispatch({ type: 'example', id: r.id })}>{({ result: '结果', question: '待回应', failure: '失败', reminder: '提醒' })[r.kind]}示例</button>)}<button onClick={() => { if (timer.current) clearTimeout(timer.current); dispatch({ type: 'reset' }); setHidden(false); setSettings(false); }}>重置演示</button></div></aside>}
     </main>
   </IconContext.Provider>;
 }
