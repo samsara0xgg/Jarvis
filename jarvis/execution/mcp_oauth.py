@@ -68,6 +68,10 @@ class FileTokenStorage:
         value = self._read().get("expires_at")
         return float(value) if isinstance(value, int | float) else None
 
+    def has_tokens(self) -> bool:
+        """Whether a login ever completed; a stored registration alone is not one."""
+        return bool(self._read().get("tokens"))
+
     async def get_tokens(self) -> OAuthToken | None:
         """The stored tokens, if a login ever completed."""
         raw = self._read().get("tokens")

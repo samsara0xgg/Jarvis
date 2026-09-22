@@ -33,7 +33,12 @@ from mcp import Client, StdioServerParameters
 from mcp import types as mcp_types
 from mcp.client.streamable_http import streamable_http_client
 
-from jarvis.execution.mcp_oauth import DEFAULT_OAUTH_CALLBACK_PORT, LOGIN_HINT, build_oauth
+from jarvis.execution.mcp_oauth import (
+    DEFAULT_OAUTH_CALLBACK_PORT,
+    LOGIN_HINT,
+    FileTokenStorage,
+    build_oauth,
+)
 from jarvis.execution.tools import Tool, ToolContext, ToolError
 from jarvis.shared import CallerPrincipal
 
@@ -130,6 +135,10 @@ class McpServers:
             raise ValueError(msg)
         return self._token_dir / f"{re.sub(r'[^\w-]', '_', server)[:128]}.json"
 
+    def has_login(self, server: str) -> bool:
+        """Whether ``server``'s file holds a token set; a timed-out login leaves a registration."""
+        return FileTokenStorage(self.token_path(server)).has_tokens()
+
     def _run[T](self, coro: Coroutine[Any, Any, T]) -> T:
         """Run ``coro`` on the loop thread and wait for it here."""
         return asyncio.run_coroutine_threadsafe(coro, self._loop).result(
@@ -145,7 +154,7 @@ class McpServers:
         auth: httpx2.Auth | None = None
         if str(spec.get("auth") or "").lower() == "oauth":
             path = self.token_path(server)
-            if self._open_url is None and not path.exists():
+            if self._open_url is None and not self.has_login(server):
                 msg = f"{server}: not logged in; {LOGIN_HINT.format(server=server)}"
                 raise RuntimeError(msg)
             auth = build_oauth(

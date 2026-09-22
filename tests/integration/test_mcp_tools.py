@@ -8,6 +8,7 @@ reuses and refreshes the stored token and never opens a browser).
 from __future__ import annotations
 
 import json
+import logging
 import socket
 import subprocess
 import sys
@@ -133,14 +134,25 @@ def test_bearer_header_from_the_environment(
     assert _call(tmp_path, tools, "mcp__tok__whoami", "H1") == {"tokens_issued": 0, "refreshes": 0}
 
 
-def test_daemon_without_a_login_skips_the_oauth_server(tmp_path: Path) -> None:
-    """No token file: the server stays off the menu, no connection and no browser."""
-    daemon = McpServers(timeout_s=20, token_dir=tmp_path / "mcp", callback_port=_free_port())
+def test_daemon_without_a_login_skips_the_oauth_server(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """No token set: skipped before any connection; a registration alone is not a login."""
+    token_dir = tmp_path / "mcp"
+    spec = {"url": "http://127.0.0.1:9/mcp", "auth": "oauth"}
+    daemon = McpServers(timeout_s=20, token_dir=token_dir, callback_port=_free_port())
     try:
-        assert daemon.connect({"svc": {"url": "http://127.0.0.1:9/mcp", "auth": "oauth"}}) == ()
+        assert daemon.connect({"svc": spec}) == ()
+        assert not token_dir.exists()
+        # A timed-out login leaves the dynamic registration behind; still not a login.
+        token_dir.mkdir()
+        (token_dir / "svc.json").write_text(json.dumps({"client_info": {"client_id": "x"}}))
+        assert daemon.connect({"svc": spec}) == ()
     finally:
         daemon.stop()
-    assert not (tmp_path / "mcp").exists()
+    reasons = [str(r.exc_info[1]) for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(reasons) == 2
+    assert all("not logged in" in reason for reason in reasons)
 
 
 def test_oauth_login_then_the_daemon_reuses_and_refreshes(tmp_path: Path, oauth_url: str) -> None:
