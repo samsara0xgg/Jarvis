@@ -732,25 +732,30 @@ key whether listed or not.
 Empty evidence is <code>no_evidence</code> and writes nothing. The model receives the skill's
 instructions, the keyed material, and three tools: <code>search_material</code>, a keyword search
 over the whole day (capture text in the store; windows, records, commits and sessions in memory)
-returning up to twenty keys with a line of context; <code>request_details</code>, which returns
-the originals behind up to ten keys (full OCR text, exact record text, <code>git show --stat</code>
-of a commit, a session's prompts and last reply, or the stored span row, whose bare GRDB times are
-labelled UTC); and <code>report_daily_work</code>. Calls use <code>tool_choice=auto</code>. At
+returning up to twenty keys with a line of context, each marked with its length when it exceeds
+one detail; <code>request_details</code>, which returns the originals behind up to ten keys (full
+OCR text, exact record text, <code>git show --stat</code> of a commit, a session's prompts and last
+reply, or the stored span row, whose bare GRDB times are labelled UTC), the head of a long one
+unless <code>around</code> names a word, when the passage holding that word — for a session, the
+turn holding it — is served instead; and <code>report_daily_work</code>. Calls use <code>tool_choice=auto</code>. At
 most four model calls per run: two rounds in which the model may search or ask, after which it is
 told to report, and one retry of an unusable report. A malformed report fails the run without
 replacing the saved version, and a provider failure keeps it too (<code>outcome=failed</code> with
 the round and finish reason). The saved text is composed by
-code, not by the model: refs the model was not given are dropped and counted; every item is
-labelled with what it cites — each same-day commit by short SHA and each Allen-authored record by
-its material key, or else Codex session self-report alone, screen and app records alone, or no
-valid reference — which asserts nothing about whether that source
-supports the claim. A completed item that cites neither is named by number as an uncertainty,
-not relabelled; a <code>user_next_steps</code> entry that cites no Allen-authored record is
+code, not by the model: refs the model was not given are dropped and counted; an item's
+<code>progress</code> is one entry per part (code, tests, deployment, an application; a whole item
+is one unnamed entry), each with its own status and refs, so no single status covers development,
+tests and deployment; every part is labelled with what it cites — each same-day commit by short
+SHA and each Allen-authored record by its material key, or else Codex session self-report alone,
+screen and app records alone, or no valid reference — which asserts nothing about whether that
+source supports the claim. A completed part that cites neither is named by item number and part
+as an uncertainty, not relabelled; a <code>user_next_steps</code> entry that cites no Allen-authored record is
 removed from that section and quoted as an uncertainty; coverage, evidence counts and every
 material limit are appended as uncertainties. 核心摘要, the only section served onward, is the
-model's prose followed by the completed items by number and title, split by whether a same-day
-commit or an Allen-authored record stands behind each, and a count of the rest, so a summary
-cannot outrun the body unnoticed. Each cited source is written out once, in
+model's prose followed by the items with a completed part, by number and title, split by whether
+a same-day commit or an Allen-authored record stands behind that part, a mixed item carrying
+every part's status after its title (代码完成，部署进行中), and a count of the rest by their
+highest status, so a summary cannot outrun the body unnoticed. Each cited source is written out once, in
 证据引用, and the body cites it by number; the first 20 are also saved as the briefing's
 <code>source_refs</code>, which the store checks on save (<code>git:&lt;repo&gt;:&lt;sha&gt;</code>
 with <code>git cat-file</code>, <code>codex-session:&lt;file&gt;</code> as a file), so every claim

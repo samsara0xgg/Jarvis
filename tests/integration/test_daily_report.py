@@ -56,27 +56,23 @@ _REPORT: dict[str, Any] = {
     "items": [
         {
             "title": "每日工具的读取修复",
-            "status": "completed",
             "activity": "改完 TimeSink 读取边界并提交。",
-            "refs": ["g1"],
+            "progress": [{"part": None, "status": "completed", "refs": ["g1"]}],
         },
         {
             "title": "浏览招聘页面",
-            "status": "browsed",
             "activity": "在 Chrome 里翻了职位列表。",
-            "refs": ["a1", "s1"],
+            "progress": [{"part": None, "status": "browsed", "refs": ["a1", "s1"]}],
         },
         {
             "title": "演示界面显示已部署",
-            "status": "completed",
             "activity": "屏幕上出现“部署成功”。",
-            "refs": ["s1"],
+            "progress": [{"part": None, "status": "completed", "refs": ["s1"]}],
         },
         {
             "title": "没有依据的事项",
-            "status": "discussed",
             "activity": "引用了不存在的键。",
-            "refs": ["zz9"],
+            "progress": [{"part": None, "status": "discussed", "refs": ["zz9"]}],
         },
     ],
     "decisions": [
@@ -92,11 +88,22 @@ _REPORT: dict[str, Any] = {
 }
 
 
+def _whole_item(
+    title: str, status: str, refs: list[str], activity: str = "活动与进展。"
+) -> dict[str, Any]:
+    """An item with one unnamed part: the shape of anything that is not code-plus-deployment."""
+    return {
+        "title": title,
+        "activity": activity,
+        "progress": [{"part": None, "status": status, "refs": refs}],
+    }
+
+
 def _one_item(title: str, status: str, refs: list[str]) -> dict[str, Any]:
-    """A report of exactly one item, so a check reads one graded line."""
+    """A report of exactly one whole item, so a check reads one graded line."""
     return {
         "summary": "一句摘要。",
-        "items": [{"title": title, "status": status, "activity": "活动与进展。", "refs": refs}],
+        "items": [_whole_item(title, status, refs)],
         "decisions": [],
         "open_items": [],
         "user_next_steps": [],
@@ -868,7 +875,10 @@ def test_search_covers_what_the_listing_left_out(
             (SEARCH_TOOL_NAME, {"query": "第081条"}),
             (SEARCH_TOOL_NAME, {"query": "藏在很后面的词"}),
         ],
-        [(DETAILS_TOOL_NAME, {"keys": ["g41", "c21"]})],
+        [
+            (DETAILS_TOOL_NAME, {"keys": ["g41", "c21"]}),
+            (DETAILS_TOOL_NAME, {"keys": ["r82"], "around": "藏在很后面的词"}),
+        ],
     ]
     rig.reporter.report = _one_item("清单之外的证据", "attempted", ["g41", "c21", "r81"])
     try:
@@ -889,9 +899,15 @@ def test_search_covers_what_the_listing_left_out(
         assert "「第081条」命中 1 处" in second
         assert "[r81] " in second
         assert "「藏在很后面的词」命中 1 处" in second, "a record's whole text is searched"
+        assert "[r82] " in second
+        assert "藏在很后面的词（全文 3022 字）" in second, "a hit past one detail says how long"
         third = rig.reporter.materials[2]
         assert "change number 41" in third, "the unlisted commit's detail is served"
         assert "[c21] Codex 会话 sess-21" in third
+        assert "[r82] " in third
+        assert "（全文 3009 字，第 510-3009 字，含「藏在很后面的词」）…" in third, (
+            "the detail is the passage around the hit, not the head"
+        )
         saved = rig.call("get_briefing", {"local_date": "2026-09-19", "timezone": ZONE})
         assert (
             "清单之外的证据 — 尝试/进行中［依据：当天提交 0000000；Allen 原话 r81］"
@@ -1140,6 +1156,135 @@ def test_search_reaches_material_the_summary_left_out(
         rig.fx.close()
 
 
+def test_details_serve_the_passage_around_a_search_hit(
+    tmp_path: Path, source: sqlite3.Connection
+) -> None:
+    """A hit 3000 characters into a record, an OCR page or a session's early reply is readable.
+
+    A detail shows 2500 characters, so the head of a long text never holds a
+    hit past it. The search marks such a source with its length; a details
+    request that names the word is served the passage around it — for a
+    session, the turn holding it — and one that does not is served the head
+    and told so.
+    """
+    add_span(source, "2026-09-19 16:00:00.000", "2026-09-19 17:00:00.000")
+    page = "页首 " + "屏 " * 1500 + " 页尾的错误 ECONNRESET"
+    flat_page = " ".join(page.split())
+    capture = add_capture(source, "2026-09-19 16:10:00.000", "2026-09-19 16:12:00.000", text=page)
+    sessions = tmp_path / "sessions"
+    codex_session_file(
+        sessions,
+        "2026-09-19T18:00:00Z",
+        "sess-long",
+        [
+            ("2026-09-19T18:00:01Z", "user", "问"),
+            ("2026-09-19T18:00:02Z", "assistant", "第一轮回复"),
+            ("2026-09-19T18:00:03Z", "assistant", "第二轮：守护进程已部署，PID 34876"),
+            *[(f"2026-09-19T18:{n:02d}:00Z", "assistant", "后面的回复 " * 100) for n in (1, 2, 3)],
+            ("2026-09-19T18:30:00Z", "assistant", "最后回复没有那句话"),
+        ],
+        cwd="/elsewhere",
+    )
+    rig = Rig(tmp_path, timesink=tmp_path / "timesink.sqlite", codex_sessions=sessions)
+    rig.record("rec-long", "开头" + "字" * 3000 + "藏在很后面的词", ts="2026-09-19T20:00:00-07:00")
+    rig.reporter.script = [
+        [
+            (SEARCH_TOOL_NAME, {"query": "藏在很后面的词"}),
+            (SEARCH_TOOL_NAME, {"query": "ECONNRESET"}),
+            (SEARCH_TOOL_NAME, {"query": "PID 34876"}),
+            (DETAILS_TOOL_NAME, {"keys": ["r1", f"s{capture}", "c1"]}),
+        ],
+        [
+            (DETAILS_TOOL_NAME, {"keys": ["r1"], "around": "藏在很后面的词"}),
+            (DETAILS_TOOL_NAME, {"keys": [f"s{capture}"], "around": "ECONNRESET"}),
+            (DETAILS_TOOL_NAME, {"keys": ["c1"], "around": "PID 34876"}),
+        ],
+    ]
+    rig.reporter.report = _one_item("长文里的事", "attempted", ["r1", f"s{capture}", "c1"])
+    try:
+        result = rig.run()
+        assert result["outcome"] == "generated", result.get("error")
+        second = rig.reporter.materials[1]
+        # The search reaches every hit and says the source is longer than one detail.
+        assert "藏在很后面的词（全文 3022 字）" in second, "the searched line: clock, who, text"
+        assert f"[s{capture}] " in second
+        assert f"页尾的错误 ECONNRESET（全文 {len(flat_page)} 字）" in second
+        assert "[c1] " in second
+        assert "PID 34876" in second
+        # Details without the word: the head, and a note that the rest was cut.
+        assert "开头" + "字" * 2498 + "…（全文 3009 字，只列前 2500 字）" in second
+        assert second.count("藏在很后面的词") == 2, "the query echo and the snippet, no detail"
+        assert f"…（全文 {len(flat_page)} 字，只列前 2500 字）" in second
+        assert "最后回复：\n最后回复没有那句话" in second
+        assert second.count("PID 34876") == 2, "the query echo and the snippet, no turn"
+        # Details around the word: the passage holding it, or the session turn holding it.
+        third = rig.reporter.materials[2]
+        passage = "（全文 3009 字，第 510-3009 字，含「藏在很后面的词」）…" + "字" * 2493
+        assert passage + "藏在很后面的词" in third
+        n = len(flat_page)
+        assert f"（全文 {n} 字，第 {n - 2499}-{n} 字，含「ECONNRESET」）…" in third
+        assert (
+            "含「PID 34876」的轮次（2026-09-19T18:00:03+00:00 assistant）：\n"
+            "第二轮：守护进程已部署，PID 34876"
+        ) in third
+    finally:
+        rig.fx.close()
+
+
+def test_a_mixed_item_reports_each_part_on_its_own(rig: Rig) -> None:
+    """Code committed, deployment unconfirmed: one item, a status and a proof per part.
+
+    One status per item let "committed" read as "deployed" and, once
+    tightened, let an unconfirmed deployment drag committed code down to
+    "in progress". Each part carries its own status and refs; the summary
+    lists the item once, under its best-proven completed part, with every
+    part's status after the title; an item whose parts are all in progress
+    is only counted.
+    """
+    rig.reporter.report = {
+        **_one_item("仓库观察器", "completed", ["g1"]),
+        "items": [
+            {
+                "title": "仓库观察器",
+                "activity": "提交 abc1234（当天）；屏幕显示已部署（未核）。",
+                "progress": [
+                    {"part": "代码", "status": "completed", "refs": ["g1"]},
+                    {"part": "测试", "status": "completed", "refs": ["s1"]},
+                    {"part": "部署", "status": "attempted", "refs": ["s1"]},
+                ],
+            }
+        ],
+    }
+    result = rig.run()
+    assert result["outcome"] == "generated"
+    content = rig.call("get_briefing", {"local_date": DAY.isoformat(), "timezone": ZONE})["content"]
+    assert (
+        "### 1. 仓库观察器 — 代码：完成［依据：当天提交 abc1234］；"
+        "测试：完成［依据：仅屏幕/应用记录］；部署：尝试/进行中［依据：仅屏幕/应用记录］"
+    ) in content
+    assert "引用：#1, #2" in content, "the item cites each source once, in part order"
+    assert "有 1 项标为完成的事项没有当天提交或 Allen 原话依据：第 1 项（测试）。" in content
+    served = result["summary"]
+    assert (
+        "完成（有当天提交或 Allen 原话）：1 仓库观察器（代码完成，测试完成，部署进行中）"
+    ) in served
+    assert "另有" not in served, "a mixed item is listed once, not counted again as in progress"
+    # Every part still open: the item is counted, and each part keeps its own proof.
+    rig.reporter.report["items"][0]["progress"] = [
+        {"part": "代码", "status": "attempted", "refs": ["g1"]},
+        {"part": "部署", "status": "attempted", "refs": ["s1"]},
+    ]
+    again = rig.run(regenerate=True)
+    assert again["outcome"] == "generated"
+    assert "完成（" not in again["summary"]
+    assert "另有进行中 1 项，见工作事项。" in again["summary"]
+    content = rig.call("get_briefing", {"local_date": DAY.isoformat(), "timezone": ZONE})["content"]
+    assert (
+        "仓库观察器 — 代码：尝试/进行中［依据：当天提交 abc1234］；"
+        "部署：尝试/进行中［依据：仅屏幕/应用记录］"
+    ) in content
+
+
 def test_an_unusable_reply_is_retried_once(rig: Rig) -> None:
     """Providers malform long arguments now and then; one retry costs a round, not the day."""
     rig.reporter.malformed_once = True
@@ -1255,8 +1400,12 @@ def test_malformed_reports_are_rejected_field_by_field() -> None:
     for broken in (
         {**_REPORT, "summary": ""},
         {**_REPORT, "items": "not a list"},
-        {**_REPORT, "items": [{"title": "x", "status": "shipped", "activity": "y", "refs": []}]},
-        {**_REPORT, "items": [{"title": "x", "status": "browsed", "refs": []}]},
+        {**_REPORT, "items": [_whole_item("x", "shipped", [])]},
+        {**_REPORT, "items": [{"title": "x", "progress": [{"status": "browsed", "refs": []}]}]},
+        # One status for the whole item is the old shape; each part carries its own now.
+        {**_REPORT, "items": [{"title": "x", "activity": "y", "status": "completed", "refs": []}]},
+        {**_REPORT, "items": [{"title": "x", "activity": "y", "progress": []}]},
+        {**_REPORT, "items": [{"title": "x", "activity": "y", "progress": ["代码"]}]},
         # A bare string cannot supply a status or an activity; guessing one would be invention.
         {**_REPORT, "items": ["只写了一句话"]},
         {**_REPORT, "open_items": [{"text": "x", "refs": "no"}]},
@@ -1280,7 +1429,7 @@ def test_an_over_long_claim_is_cut_at_a_sentence_and_says_so() -> None:
     sentences = "提交 e17fbd2（当天，已在 main）修好了锁屏与睡眠状态的区分。" * 12
     long = parse_report(_reply(
         {**_one_item("很长的事项", "attempted", []), "items": [
-            {"title": "很长的事项", "status": "attempted", "activity": sentences, "refs": []}
+            _whole_item("很长的事项", "attempted", [], activity=sentences)
         ]}
     ))
     activity = long["items"][0]["activity"]
@@ -1290,7 +1439,7 @@ def test_an_over_long_claim_is_cut_at_a_sentence_and_says_so() -> None:
     # A wall of text with no sentence end is cut at the cap and marked.
     wall = parse_report(_reply(
         {**_one_item("无标点", "attempted", []), "items": [
-            {"title": "无标点", "status": "attempted", "activity": "字" * 500, "refs": []}
+            _whole_item("无标点", "attempted", [], activity="字" * 500)
         ]}
     ))["items"][0]["activity"]
     assert wall == "字" * 399 + "…"
@@ -1318,8 +1467,7 @@ def test_report_fits_the_save_limit(rig: Rig) -> None:
         **_REPORT,
         "summary": "摘" * 1200,
         "items": [
-            {"title": f"事项 {i}", "status": "attempted", "activity": "一" * 400, "refs": keys}
-            for i in range(12)
+            _whole_item(f"事项 {i}", "attempted", keys, activity="一" * 400) for i in range(12)
         ],
         "decisions": [
             {"text": "二" * 400, "rationale": "三" * 240, "refs": keys} for _ in range(8)
@@ -1411,8 +1559,7 @@ def test_overbudget_regeneration_preserves_saved_report(
     rig.reporter.report = {
         **_one_item("大报告", "attempted", keys),
         "items": [
-            {"title": f"事项{i}", "status": "attempted", "activity": "文" * 400, "refs": keys}
-            for i in range(12)
+            _whole_item(f"事项{i}", "attempted", keys, activity="文" * 400) for i in range(12)
         ],
         "decisions": [
             {"text": "文" * 400, "rationale": "理" * 240, "refs": keys} for _ in range(8)

@@ -13,7 +13,7 @@ import json
 from typing import TYPE_CHECKING, Any, NoReturn
 
 from jarvis.shared.skills import load_skill
-from jarvis.state.daily_report import MAX_DETAILS, MAX_HITS
+from jarvis.state.daily_report import DETAIL_TEXT, MAX_DETAILS, MAX_HITS
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -58,18 +58,23 @@ _PROVEN = (
 )
 _REST = (("attempted", "进行中"), ("discussed", "讨论"), ("browsed", "浏览"))
 """核心摘要 names each completed item after the model's prose and counts the rest."""
+_INLINE = {"completed": "完成", **dict(_REST)}
+"""A part's status inline after the item's title: 代码完成，部署进行中."""
 _NOT_VERIFIED = (
     "状态（浏览/讨论/尝试/完成）是报告作者的判断；"
     "运行时只标注每条引用的来源，既不核实来源是否支持这条结论，"
     "也不核实事情是否真的做完。"
 )
 _MAX_ITEMS = 12
+_MAX_PARTS = 4
+"""Parts of one item with a status each: code, tests, deployment, an application."""
 _MAX_DECISIONS = 8
 _MAX_OPEN = 10
 _MAX_NEXT = 8
 _MAX_SUGGESTIONS = 6
 _MAX_UNCERTAINTIES = 10
 _TITLE = 80
+_PART = 12
 _TEXT = 400
 _SHORT = 240
 _SUMMARY = 1200
@@ -100,14 +105,38 @@ REPORT_TOOL: dict[str, Any] = {
                 "type": "array",
                 "maxItems": _MAX_ITEMS,
                 "description": "按工作事项归并的活动、产出与进展。",
-                "items": _claim_schema(
-                    ("title", {"type": "string", "description": f"不超过 {_TITLE} 字。"}),
-                    ("status", {"type": "string", "enum": list(STATUSES)}),
-                    (
-                        "activity",
-                        {"type": "string", "description": f"不超过 {_TEXT} 字，超出会在句末截断。"},
-                    ),
-                ),
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string", "description": f"不超过 {_TITLE} 字。"},
+                        "activity": {
+                            "type": "string",
+                            "description": f"不超过 {_TEXT} 字，超出会在句末截断。",
+                        },
+                        "progress": {
+                            "type": "array",
+                            "minItems": 1,
+                            "maxItems": _MAX_PARTS,
+                            "description": (
+                                "这一项的进展，按部分分开：代码、测试、部署、申请等各一条，"
+                                "各带自己的 status 和 refs；单一事项只填一条，part 为 null。"
+                            ),
+                            "items": _claim_schema(
+                                (
+                                    "part",
+                                    {
+                                        "type": ["string", "null"],
+                                        "description": (
+                                            f"部分名，不超过 {_PART} 字；单一事项为 null。"
+                                        ),
+                                    },
+                                ),
+                                ("status", {"type": "string", "enum": list(STATUSES)}),
+                            ),
+                        },
+                    },
+                    "required": ["title", "activity", "progress"],
+                },
             },
             "decisions": {
                 "type": "array",
@@ -162,12 +191,18 @@ DETAILS_TOOL: dict[str, Any] = {
     "description": (
         f"索取至多 {MAX_DETAILS} 条条目的原文（屏幕 OCR 全文、对话原文、提交内容与改动文件、"
         "Codex 会话的提问与最后回复），用材料或检索结果里的方括号键。"
+        f"原文超过 {DETAIL_TEXT} 字时只给开头；要读检索命中的那一段，填 around，"
+        "就返回含该关键字的段落及前后文（Codex 会话则返回含它的那一轮）。"
         "最多两轮查询，之后必须用 report_daily_work 汇报。"
     ),
     "input_schema": {
         "type": "object",
         "properties": {
-            "keys": {"type": "array", "items": {"type": "string"}, "maxItems": MAX_DETAILS}
+            "keys": {"type": "array", "items": {"type": "string"}, "maxItems": MAX_DETAILS},
+            "around": {
+                "type": "string",
+                "description": "可选；检索结果标了「全文 N 字」的条目，填命中的关键字。",
+            },
         },
         "required": ["keys"],
     },
@@ -285,7 +320,8 @@ def build_request(evidence: DayEvidence) -> tuple[str, list[dict[str, Any]]]:
 def requested_queries(result: ChatResult) -> list[tuple[str, str, Any]]:
     """Each search or details call as (call id, tool, argument); empty once the model reported.
 
-    A search carries its query string, a details request its keys, bounded.
+    A search carries its query string, a details request its keys, bounded,
+    with the word to read around (or None).
     """
     if any(call.name == REPORT_TOOL_NAME for call in result.tool_calls):
         return []
@@ -304,7 +340,8 @@ def requested_queries(result: ChatResult) -> list[tuple[str, str, Any]]:
             continue
         keys = raw.get("keys")
         wanted = [str(k) for k in keys if isinstance(k, str)] if isinstance(keys, list) else []
-        queries.append((call.call_id, call.name, wanted[:MAX_DETAILS]))
+        around = str(raw.get("around") or "").strip() or None
+        queries.append((call.call_id, call.name, (wanted[:MAX_DETAILS], around)))
     return queries
 
 
@@ -345,8 +382,10 @@ def _claim(raw: Any, *fields: str) -> dict[str, Any]:  # noqa: ANN401 — model 
     claim: dict[str, Any] = {}
     for name in fields:
         value = raw.get(name)
-        if name == "rationale":
-            claim[name] = _text(value, _SHORT) if isinstance(value, str) and value.strip() else None
+        if name in ("rationale", "part"):
+            # Both are optional: a decision without a stated reason, a part of a whole item.
+            limit = _SHORT if name == "rationale" else _PART
+            claim[name] = _text(value, limit) if isinstance(value, str) and value.strip() else None
             continue
         if name == "status":
             if value not in STATUSES:
@@ -358,6 +397,27 @@ def _claim(raw: Any, *fields: str) -> dict[str, Any]:  # noqa: ANN401 — model 
         claim[name] = _text(value, _TITLE if name == "title" else _TEXT)
     claim["refs"] = _refs(raw.get("refs"))
     return claim
+
+
+def _item(raw: Any) -> dict[str, Any]:  # noqa: ANN401 — model output.
+    """One work item: its title and activity, and each part's status with its own refs.
+
+    A mixed item — code committed, deployment unconfirmed — is one entry per
+    part, so no single status can cover development, tests and deployment.
+    """
+    if not isinstance(raw, dict):
+        _malformed("item is not an object")
+    item: dict[str, Any] = {}
+    for name in ("title", "activity"):
+        value = raw.get(name)
+        if not isinstance(value, str) or not value.strip():
+            _malformed(f"{name} is missing")
+        item[name] = _text(value, _TITLE if name == "title" else _TEXT)
+    progress = raw.get("progress")
+    if not isinstance(progress, list) or not progress:
+        _malformed("progress is not a non-empty list")
+    item["progress"] = [_claim(part, "part", "status") for part in progress[:_MAX_PARTS]]
+    return item
 
 
 def _texts(raw: Any, limit: int) -> list[str]:  # noqa: ANN401 — model output.
@@ -398,7 +458,7 @@ def parse_report(result: ChatResult) -> dict[str, Any]:
             _malformed(f"{key} is not a list")
     report: dict[str, Any] = {
         "summary": _text(raw["summary"], _SUMMARY),
-        "items": [_claim(x, "title", "status", "activity") for x in raw["items"]][:_MAX_ITEMS],
+        "items": [_item(x) for x in raw["items"]][:_MAX_ITEMS],
         "decisions": [_claim(x, "text", "rationale") for x in raw["decisions"]][:_MAX_DECISIONS],
         "open_items": [_claim(x, "text") for x in raw["open_items"]][:_MAX_OPEN],
         "user_next_steps": [_claim(x, "text") for x in raw["user_next_steps"]][:_MAX_NEXT],
@@ -497,28 +557,62 @@ def _fit(content: str) -> str:
     return content
 
 
-def _status_lines(items: list[tuple[int, str, str, bool]]) -> list[str]:
+_Part = tuple[str | None, str, bool]
+"""A part's name (None for a whole item), its status, and whether it cites a commit or Allen."""
+
+
+def _finished(parts: list[_Part]) -> bool | None:
+    """Whether a completed part cites a commit or Allen; None when no part is completed.
+
+    False means something is called completed on screen text, agent words or
+    nothing, so the item is listed under the second heading.
+    """
+    done = [confirmed for _, status, confirmed in parts if status == "completed"]
+    return any(done) if done else None
+
+
+def _top(parts: list[_Part]) -> str:
+    return max((status for _, status, _ in parts), key=STATUSES.index)
+
+
+def _breakdown(parts: list[_Part]) -> str:
+    """The parts with their statuses after a mixed item's title, like 代码完成 and 部署进行中."""
+    if len(parts) == 1 and parts[0][0] is None:
+        return ""
+    return "（" + "，".join(f"{name or ''}{_INLINE[status]}" for name, status, _ in parts) + "）"
+
+
+def _status_lines(items: list[tuple[int, str, list[_Part]]]) -> list[str]:
     """Each completed item by number and title, then a count of the rest, after the prose.
 
     ``summary_of`` serves this section alone to the conversation, so the prose
     alone would be the whole report downstream. These lines travel with it: a
     summary that calls something finished is read next to the line that says
-    which items actually cite a same-day commit or Allen's own words. The
-    items still in progress are only counted here; they are read in the body.
+    which items actually cite a same-day commit or Allen's own words. A mixed
+    item is listed once, under its best-proven completed part, with every
+    part's status after its title, so "code committed" never reads as
+    "deployed". The items still in progress are only counted here; they are
+    read in the body.
     """
     out = []
     for proven, heading in _PROVEN:
         names = [
-            f"{index} {title}"
-            for index, title, status, confirmed in items
-            if status == "completed" and confirmed is proven
+            f"{index} {title}{_breakdown(parts)}"
+            for index, title, parts in items
+            if _finished(parts) is proven
         ]
         if names:
             out.append(f"{heading}：{'、'.join(names)}")
     counts = [
         f"{heading} {n} 项"
         for status, heading in _REST
-        if (n := sum(1 for _, _, item_status, _ in items if item_status == status))
+        if (
+            n := sum(
+                1
+                for _, _, parts in items
+                if _finished(parts) is None and _top(parts) == status
+            )
+        )
     ]
     if counts:
         out.append(f"另有{'、'.join(counts)}，见工作事项。")
@@ -534,30 +628,39 @@ def compose_report(
 ) -> tuple[str, list[str], dict[str, str]]:
     """The saved content, its first 20 source refs and its coverage.
 
-    Keys the model was not given are dropped and counted; every item is
-    labelled with the commits and Allen-authored records it cites, by name,
-    which never certifies the claim itself; a next step that does not cite
-    Allen's own words is removed from that section and named as an
+    Keys the model was not given are dropped and counted; every part of an
+    item is labelled with the commits and Allen-authored records it cites, by
+    name, which never certifies the claim itself; a next step that does not
+    cite Allen's own words is removed from that section and named as an
     uncertainty; 核心摘要 keeps the model's prose and lists every item under
-    its status, the only section the conversation is served; each cited
-    source is written out once, in 证据引用.
+    its parts' statuses, the only section the conversation is served; each
+    cited source is written out once, in 证据引用.
     """
     composer = _Composer(evidence)
     partial = "，这一天尚未结束" if evidence.window["partial"] else ""
     lines = ["## 工作事项"]
-    listed: list[tuple[int, str, str, bool]] = []
-    thin: list[int] = []
+    listed: list[tuple[int, str, list[_Part]]] = []
+    thin: dict[int, list[str]] = {}
     for index, item in enumerate(report["items"], 1):
-        refs = composer.refs(item["refs"])
-        grade, proof = composer.proof(refs)
-        label = _STATUS_LABELS[item["status"]]
-        if item["status"] == "completed" and grade != "confirmed":
-            thin.append(index)
-        listed.append((index, item["title"], item["status"], grade == "confirmed"))
+        numbers: list[int] = []
+        heads: list[str] = []
+        parts: list[_Part] = []
+        for part in item["progress"]:
+            found = composer.refs(part["refs"])
+            numbers += [n for n in found if n not in numbers]
+            grade, proof = composer.proof(found)
+            name = part["part"]
+            if part["status"] == "completed" and grade != "confirmed":
+                thin.setdefault(index, []).extend([name] if name else [])
+            heads.append(
+                (f"{name}：" if name else "") + f"{_STATUS_LABELS[part['status']]}［{proof}］"
+            )
+            parts.append((name, part["status"], grade == "confirmed"))
+        listed.append((index, item["title"], parts))
         lines += [
-            f"### {index}. {item['title']} — {label}［{proof}］",
+            f"### {index}. {item['title']} — {'；'.join(heads)}",
             item["activity"],
-            _ref_line(refs),
+            _ref_line(numbers),
             "",
         ]
     if not report["items"]:
@@ -600,10 +703,11 @@ def compose_report(
     if composer.unknown:
         lines.append(f"- 有 {composer.unknown} 处引用不是材料里的键，已丢弃。")
     if thin:
-        which = "、".join(str(index) for index in thin)
-        lines.append(
-            f"- 有 {len(thin)} 项标为完成的事项没有当天提交或 Allen 原话依据：第 {which} 项。"
+        which = "、".join(
+            f"第 {index} 项" + (f"（{'、'.join(names)}）" if names else "")
+            for index, names in thin.items()
         )
+        lines.append(f"- 有 {len(thin)} 项标为完成的事项没有当天提交或 Allen 原话依据：{which}。")
     if moved:
         quoted = "".join(f"「{text}」" for text in moved)
         lines.append(

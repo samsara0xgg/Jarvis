@@ -254,11 +254,12 @@ class DailyReportService:
         conn: sqlite3.Connection,
         evidence: DayEvidence,
         name: str,
-        argument: Any,  # noqa: ANN401 — a query string or a list of keys.
+        argument: Any,  # noqa: ANN401 — a query string, or a list of keys and a word.
     ) -> str:
         """One query's reply: search hits for a query, or the originals behind the keys."""
         if name == DETAILS_TOOL_NAME:
-            return self._details(conn, evidence, argument) or "没有可读的键"
+            keys, around = argument
+            return self._details(conn, evidence, keys, around) or "没有可读的键"
         return search_day(
             evidence,
             str(argument),
@@ -267,9 +268,13 @@ class DailyReportService:
         )
 
     def _details(
-        self, conn: sqlite3.Connection, evidence: DayEvidence, keys: list[str]
+        self,
+        conn: sqlite3.Connection,
+        evidence: DayEvidence,
+        keys: list[str],
+        around: str | None,
     ) -> str:
-        """The originals behind the keys the model asked for, each bounded."""
+        """The originals behind the keys, each bounded, served around a word when one is given."""
         return "\n\n".join(
             read_detail(
                 key,
@@ -277,6 +282,7 @@ class DailyReportService:
                 conn=conn,
                 memory_path=self._memory_path,
                 timesink_path=self._timesink_path,
+                around=around,
             )
             for key in keys
         )

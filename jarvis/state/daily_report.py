@@ -790,16 +790,42 @@ def gather_day(  # noqa: PLR0913 — the configured stores plus the day, its zon
 
 
 def _snippet(text: str, terms: Sequence[str]) -> str:
-    """The first term's match with a little of what surrounds it, on one line."""
+    """The first term's match with a little of what surrounds it, on one line.
+
+    A source longer than one detail shows is marked with its length: the
+    model then asks for the passage around the term, not the head.
+    """
     flat = " ".join(text.split())
     needle = terms[0]
     at = flat.casefold().find(needle)
+    length = f"（全文 {len(flat)} 字）" if len(flat) > DETAIL_TEXT else ""
     if at < 0:
-        return flat[: _SNIPPET_BEFORE + _SNIPPET_AFTER]
+        return flat[: _SNIPPET_BEFORE + _SNIPPET_AFTER] + length
     stop = at + len(needle) + _SNIPPET_AFTER
     head = "…" if at > _SNIPPET_BEFORE else ""
     tail = "…" if stop < len(flat) else ""
-    return f"{head}{flat[max(0, at - _SNIPPET_BEFORE) : stop]}{tail}"
+    return f"{head}{flat[max(0, at - _SNIPPET_BEFORE) : stop]}{tail}{length}"
+
+
+def _excerpt(text: str, around: str | None) -> str:
+    """The text when it fits one detail, else its head — or the passage holding ``around``.
+
+    A search finds a word anywhere in a record, a page of OCR or a session,
+    and the head alone never shows a hit past the first ``DETAIL_TEXT``
+    characters; the passage around the word is what a detail serves then.
+    """
+    if len(text) <= DETAIL_TEXT:
+        return text
+    at = text.casefold().find(around.casefold()) if around else -1
+    if at < 0:
+        missing = f"未找到「{around}」，" if around else ""
+        return f"{text[:DETAIL_TEXT]}…（全文 {len(text)} 字，{missing}只列前 {DETAIL_TEXT} 字）"
+    begin = max(0, min(at - DETAIL_TEXT // 3, len(text) - DETAIL_TEXT))
+    stop = begin + DETAIL_TEXT
+    return (
+        f"（全文 {len(text)} 字，第 {begin + 1}-{stop} 字，含「{around}」）"
+        f"{'…' if begin else ''}{text[begin:stop]}{'…' if stop < len(text) else ''}"
+    )
 
 
 def _capture_hits(
@@ -862,28 +888,43 @@ def git_show(repo: str, sha: str) -> str | None:
     return _git(repo, ("show", "--stat", "--format=%H%n%an %ci%n%n%B", sha))
 
 
-def _commit_detail(key: str, evidence: DayEvidence) -> str | None:
+def _commit_detail(key: str, evidence: DayEvidence, around: str | None) -> str | None:
     """The commit itself, from the repository it was found in, for a commit key."""
     commit = evidence.commit_rows.get(key)
     if commit is None:
         return None
     shown = git_show(commit["paths"].split(", ")[0], commit["sha"])
-    return None if shown is None else f"[{key}]\n{shown[:DETAIL_TEXT]}"
+    return None if shown is None else f"[{key}]\n{_excerpt(shown, around)}"
 
 
-def _session_detail(key: str, path: Path, start: datetime, end: datetime) -> str:
-    """A Codex session's prompts and last reply inside the window, marked as its own account."""
+def _session_detail(
+    key: str, path: Path, start: datetime, end: datetime, around: str | None
+) -> str:
+    """A Codex session's prompts and last reply inside the window, marked as its own account.
+
+    Given ``around``, the turn holding it replaces the last reply: a hit in
+    the fourth of thirty replies is unreachable otherwise.
+    """
     session = codex_session(path, start, end)
     asks = "\n".join(f"- {_squeeze(a, 160)}" for a in session["asks"] if a)[:DETAIL_TEXT]
-    last = session["answers"][-1] if session["answers"] else ""
-    return (
+    head = (
         f"[{key}] Codex 会话 {session['id']}（{session['originator']}，{session['cwd']}）"
-        f"——代理的自述，不是核实结果\n提问：\n{asks}\n最后回复：\n{_squeeze(last, DETAIL_TEXT)}"
+        f"——代理的自述，不是核实结果\n提问：\n{asks}\n"
     )
+    hit = next(
+        (turn for turn in session["turns"] if around and around.casefold() in turn[2].casefold()),
+        None,
+    )
+    if hit is None:
+        last = session["answers"][-1] if session["answers"] else ""
+        return f"{head}最后回复：\n{_excerpt(' '.join(last.split()), around)}"
+    when, role, text = hit
+    passage = _excerpt(" ".join(text.split()), around)
+    return f"{head}含「{around}」的轮次（{when} {role}）：\n{passage}"
 
 
 def _stored_detail(
-    key: str, ref: str, conn: sqlite3.Connection, memory_path: Path | None
+    key: str, ref: str, conn: sqlite3.Connection, memory_path: Path | None, around: str | None
 ) -> str | None:
     """A conversation record or an event-log row behind a key; None for other kinds."""
     identity = ref.partition(":")[2]
@@ -894,30 +935,35 @@ def _stored_detail(
             ).fetchone()
         if row is None:
             return f"[{key}] 记录已不存在"
-        return f"[{key}] {row[0]} {row[1]}: {_squeeze(str(row[2]), DETAIL_TEXT)}"
+        return f"[{key}] {row[0]} {row[1]}: {_excerpt(' '.join(str(row[2]).split()), around)}"
     if ref.startswith("event:"):
         row = conn.execute(
             "SELECT type,payload_json FROM events WHERE event_uid=?", (identity,)
         ).fetchone()
         if row is None:
             return f"[{key}] 事件已不存在"
-        return f"[{key}] {row[0]}: {str(row[1])[:DETAIL_TEXT]}"
+        return f"[{key}] {row[0]}: {_excerpt(str(row[1]), around)}"
     return None
 
 
-def read_detail(  # noqa: PLR0911 — one return per reference kind.
+def read_detail(  # noqa: PLR0911, PLR0913 — one return per reference kind; the stores plus the word.
     key: str,
     evidence: DayEvidence,
     *,
     conn: sqlite3.Connection,
     memory_path: Path | None,
     timesink_path: Path | None,
+    around: str | None = None,
 ) -> str:
-    """The original behind one material key, bounded; an unreadable source says so."""
+    """The original behind one material key, bounded; an unreadable source says so.
+
+    ``around`` names a word the model found by search: a long original is
+    then served around that word instead of from its head.
+    """
     ref = evidence.refs.get(key)
     if ref is None:
         return f"[{key}] 不是材料里的键"
-    shown = _commit_detail(key, evidence)
+    shown = _commit_detail(key, evidence, around)
     if shown is not None:
         return shown
     try:
@@ -925,7 +971,8 @@ def read_detail(  # noqa: PLR0911 — one return per reference kind.
             row = timesink.read_capture(timesink_path, ref)
             when = f"{timesink.moment(row['at'])}..{row['endedAt']}"
             head = f"{row['appName']} — {row['title'] or ''} {when}（UTC）"
-            return f"[{key}] {head}\n{_squeeze(str(row['text'] or ''), DETAIL_TEXT)}"
+            text = " ".join(str(row["text"] or "").split())
+            return f"[{key}] {head}\n{_excerpt(text, around)}"
         if ref.startswith("timesink:"):
             original = timesink.read_span(timesink_path, ref)
             # The stored row keeps GRDB's bare UTC text; unlabelled it reads as a local clock.
@@ -933,8 +980,8 @@ def read_detail(  # noqa: PLR0911 — one return per reference kind.
             return f"[{key}]（原始行，时间为 UTC）{body}"
         if ref.startswith("codex-session:"):
             start, end = (datetime.fromisoformat(evidence.window[k]) for k in ("from", "to"))
-            return _session_detail(key, Path(ref.partition(":")[2]), start, end)
-        shown = _stored_detail(key, ref, conn, memory_path)
+            return _session_detail(key, Path(ref.partition(":")[2]), start, end, around)
+        shown = _stored_detail(key, ref, conn, memory_path, around)
     except (DailyError, sqlite3.Error, OSError) as exc:
         return f"[{key}] 该条目当前不可读：{exc}"
     return shown if shown is not None else f"[{key}] 没有可读的原文"
