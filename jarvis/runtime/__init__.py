@@ -1519,7 +1519,7 @@ def mcp_login(
     if not tools:
         sys.stderr.write(f"mcp-login: {server} did not come up; see the warning above\n")
         return 1
-    if not token.exists():
+    if not mcp_servers.has_login(server):
         # Some servers answer tools/list unauthenticated; that is not a login.
         sys.stderr.write(
             f"mcp-login: {server} answered without asking for a login; no token stored\n"
