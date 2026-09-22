@@ -1,4 +1,4 @@
-# ADR 0027 — The daily report indexes the whole day and checks every completion claim before it summarizes
+# ADR 0028 — The daily report indexes the whole day and checks every completion claim before it summarizes
 
 **Status:** Accepted
 **Date:** 2026-09-21

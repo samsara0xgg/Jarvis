@@ -120,8 +120,8 @@ work_state:
 
 # ADR 0024 — 每日工作报告：一整天的材料比当前状态大得多，想换更强的模型就
 # 单独指定；不配置就沿用 work_state.preset。
-# daily_report:
-#   preset: deep
+daily_report:
+  preset: deep
 
 # ADR-0011 D7 — L4 只读工具配置（tools.py 不自己读 YAML，composition
 # root 在 build_default_registry() 时把值传进去）。

@@ -1,4 +1,4 @@
-"""The whole of one local calendar day as keyed evidence (ADR 0027) and the report's save path.
+"""The whole of one local calendar day as keyed evidence (ADR 0028) and the report's save path.
 
 The daily work report reads the same stores as the daily-loop tools, but as a
 runtime job: whole-day queries served whole — every window, capture, record,
@@ -55,6 +55,7 @@ MILESTONES = (
     "thank you for applying",
     "received your application",
     "successfully submitted",
+    "submitted successfully",
     "submission successful",
     "order placed",
     "order confirmed",
@@ -309,7 +310,6 @@ def _screen_section(g: _Gather, snap: timesink.Snapshot, items: list[dict[str, A
     kept: list[dict[str, Any]] = []
     last_in_window: dict[tuple[str, str | None], dict[str, Any]] = {}
     folded = 0
-    milestones: list[dict[str, Any]] = []
     for item in sorted(items, key=lambda x: (x["occurred_at"], _row_id(x))):
         g.saw(item["ended_at"])
         identity = int(_row_id(item))
@@ -326,14 +326,10 @@ def _screen_section(g: _Gather, snap: timesink.Snapshot, items: list[dict[str, A
             "text": text,
             "chars": len(text),
         }
-        if (phrase := _milestone(text)) is not None:
-            milestones.append({**row, "phrase": phrase, "text": _around(text, phrase)})
         window = (item["app_name"], item["window_title"])
         previous = last_in_window.get(window)
         if (
             previous is not None
-            and kept
-            and kept[-1] is previous
             and SequenceMatcher(None, previous["text"], text).quick_ratio() >= _NEAR_DUPLICATE
         ):
             previous["count"] += 1
@@ -345,7 +341,11 @@ def _screen_section(g: _Gather, snap: timesink.Snapshot, items: list[dict[str, A
         kept.append(row)
         last_in_window[window] = row
     g.sections["screen"] = kept
-    g.sections["milestones"] = milestones
+    g.sections["milestones"] = [
+        {**row, "phrase": phrase, "text": _around(row["text"], phrase)}
+        for row in kept
+        if (phrase := _milestone(row["text"])) is not None
+    ]
     g.served["screen"] = (
         f"屏幕内容：采集 {len(items)} 条，去掉同一窗口连续近似重复的 {folded} 条后 "
         f"{len(kept)} 条全文列出"
@@ -372,10 +372,9 @@ def _timesink_sections(g: _Gather, snap: timesink.Snapshot | None) -> None:
     spans = timesink.query_spans(snap, g.start, g.end)
     captures = timesink.query_captures(snap, g.start, g.end)
     state = timesink.query_state(snap, g.start, g.end)
-    g.coverage["app"] = "unavailable" if snap is None else ("whole" if spans["items"] else "none")
-    g.coverage["screen"] = (
-        "unavailable" if snap is None else ("whole" if captures["items"] else "none")
-    )
+    # The store's enum says whether the source could be read; ``served`` says what it held.
+    g.coverage["app"] = "unavailable" if snap is None else str(spans["coverage"]["status"])
+    g.coverage["screen"] = "unavailable" if snap is None else "available"
     if snap is None:
         g.served["app"] = g.served["screen"] = "TimeSink 不可读：没有应用、窗口和屏幕数据"
         g.sections["windows"] = g.sections["apps"] = g.sections["screen"] = []
@@ -402,7 +401,7 @@ def _record_section(g: _Gather, memory_path: Path | None) -> None:
         g.served["records"] = "对话记录：记录库不可读"
         g.sections["records"] = []
         return
-    g.coverage["records"] = "whole" if rows else "none"
+    g.coverage["records"] = "available"
     records = []
     for index, (identity, ts, source, text) in enumerate(rows):
         key = f"r{index + 1}"
@@ -774,7 +773,7 @@ def _agent_section(g: _Gather, sessions_root: Path | None) -> None:
             session["path"] = path
             sessions.append(session)
     sessions.sort(key=lambda x: (x["first"], str(x["path"])))
-    g.coverage["agent"] = "whole" if sessions else "none"
+    g.coverage["agent"] = "available"
     home = str(Path.home())
     rows = []
     shims = 0
@@ -813,6 +812,33 @@ def _agent_section(g: _Gather, sessions_root: Path | None) -> None:
         g.served["agent"] = "代理会话：这一天没有 Codex 会话"
 
 
+def _index_rows(rows: Iterable[dict[str, Any]]) -> tuple[int, int]:
+    """Cut each row's text to one index line; how many were cut and how much text that withheld."""
+    withheld = count = 0
+    for row in rows:
+        if len(row["text"]) <= _INDEX_TEXT:
+            continue
+        withheld += len(row["text"]) - _INDEX_TEXT
+        count += 1
+        row["text"] = row["text"][:_INDEX_TEXT]
+    return count, withheld
+
+
+def _fallback_rows(g: _Gather, source: str) -> tuple[list[dict[str, Any]], str]:
+    """The rows one fallback step cuts, and what the header calls them."""
+    if source == "screen":
+        return g.sections.get("screen", []), "屏幕内容"
+    if source == "records":
+        return g.sections.get("records", []), "对话记录"
+    role = "assistant" if source == "agent_answers" else "user"
+    rows: list[dict[str, Any]] = []
+    for session in g.sections.get("agent", []):
+        turns = session["turns"]
+        last_answer = max((i for i, t in enumerate(turns) if t["role"] == "assistant"), default=-1)
+        rows += [t for i, t in enumerate(turns) if t["role"] == role and i != last_answer]
+    return rows, "Codex 回复（每个会话最后一条除外）" if role == "assistant" else "Codex 提问"
+
+
 def _fit_budget(g: _Gather) -> None:
     """Whole text while the day fits the model; past the budget, one source at a time falls back.
 
@@ -821,40 +847,11 @@ def _fit_budget(g: _Gather) -> None:
     its time and title and ``_INDEX_TEXT`` characters; the header says what
     was withheld and how much, and the originals stay searchable and readable.
     """
-
-    def size() -> int:
-        return len(json.dumps(g.sections, ensure_ascii=False))
-
     for source in _FALLBACK_ORDER:
-        if size() <= MATERIAL_BUDGET:
+        if len(json.dumps(g.sections, ensure_ascii=False)) <= MATERIAL_BUDGET:
             return
-        withheld = count = 0
-        if source == "screen":
-            for row in g.sections.get("screen", []):
-                withheld += len(row["text"]) - min(len(row["text"]), _INDEX_TEXT)
-                count += 1
-                row["text"] = row["text"][:_INDEX_TEXT]
-            what = "屏幕内容"
-        elif source == "records":
-            for row in g.sections.get("records", []):
-                withheld += len(row["text"]) - min(len(row["text"]), _INDEX_TEXT)
-                count += 1
-                row["text"] = row["text"][:_INDEX_TEXT]
-            what = "对话记录"
-        else:
-            role = "assistant" if source == "agent_answers" else "user"
-            for session in g.sections.get("agent", []):
-                turns = session["turns"]
-                last_answer = max(
-                    (i for i, t in enumerate(turns) if t["role"] == "assistant"), default=-1
-                )
-                for i, turn in enumerate(turns):
-                    if turn["role"] != role or i == last_answer:
-                        continue
-                    withheld += len(turn["text"]) - min(len(turn["text"]), _INDEX_TEXT)
-                    count += 1
-                    turn["text"] = turn["text"][:_INDEX_TEXT]
-            what = "Codex 回复（每个会话最后一条除外）" if role == "assistant" else "Codex 提问"
+        rows, what = _fallback_rows(g, source)
+        count, withheld = _index_rows(rows)
         if count:
             g.limits.append(
                 f"材料超出模型容量（{MATERIAL_BUDGET} 字），{what}退到索引：{count} 条只保留"
@@ -885,7 +882,7 @@ def gather_day(  # noqa: PLR0913 — the configured stores plus the day, its zon
     _agent_section(g, codex_sessions_path)
     _folded_section(g, conn, "todo", "t")
     _folded_section(g, conn, "knowledge", "k")
-    g.coverage["todos"] = g.coverage["knowledge"] = "whole"
+    g.coverage["todos"] = g.coverage["knowledge"] = "available"
     _previous_section(g, conn, zone_name)
     _fit_budget(g)
     return DayEvidence(
@@ -1069,6 +1066,21 @@ def is_question(text: str) -> bool:
     return _QUESTION.search(_flat(text)) is not None
 
 
+def _session_original(ref: str, evidence: DayEvidence, terms: Sequence[str]) -> str:
+    """A session's first turn, every turn naming one of ``terms``, and its last reply, whole."""
+    start, end = (datetime.fromisoformat(evidence.window[k]) for k in ("from", "to"))
+    session = codex_session(Path(ref.partition(":")[2]), start, end)
+    turns = session["turns"]
+    chosen = [t for t in turns if any(term in t[2].casefold() for term in terms)]
+    if turns and turns[0] not in chosen:
+        chosen.insert(0, turns[0])
+    if session["answers"]:
+        last = next(t for t in reversed(turns) if t[1] == "assistant")
+        if last not in chosen:
+            chosen.append(last)
+    return "\n".join(f"{when} {role}: {_flat(body)}" for when, role, body in chosen)
+
+
 def claim_originals(  # noqa: PLR0913 — the stores and the words that pick a session's turns.
     keys: Sequence[str],
     evidence: DayEvidence,
@@ -1107,20 +1119,8 @@ def claim_originals(  # noqa: PLR0913 — the stores and the words that pick a s
                 kind = "screen"
                 text = f"{row['appName']} — {row['title'] or ''}\n{_flat(row['text'] or '')}"
             elif ref.startswith("codex-session:"):
-                start, end = (datetime.fromisoformat(evidence.window[k]) for k in ("from", "to"))
-                session = codex_session(Path(ref.partition(":")[2]), start, end)
-                turns = session["turns"]
-                chosen = [
-                    t for t in turns if any(term in t[2].casefold() for term in lowered)
-                ]
-                if turns and turns[0] not in chosen:
-                    chosen.insert(0, turns[0])
-                if session["answers"]:
-                    last = next(t for t in reversed(turns) if t[1] == "assistant")
-                    if last not in chosen:
-                        chosen.append(last)
                 kind = "agent_session"
-                text = "\n".join(f"{when} {role}: {_flat(body)}" for when, role, body in chosen)
+                text = _session_original(ref, evidence, lowered)
             elif ref.startswith("timesink:"):
                 kind = "window"
                 text = evidence.haystack.get(key, "")

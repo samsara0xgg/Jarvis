@@ -1,4 +1,4 @@
-"""Daily work report request, reply, check and composition (ADR 0027): the skill's model calls.
+"""Daily work report request, reply, check and composition (ADR 0028): the skill's model calls.
 
 The skill's instructions are the system prompt; the day's evidence is keyed
 material served whole; for three rounds the model may search the day and ask
@@ -64,7 +64,8 @@ _MAX_NEXT = 8
 _MAX_SUGGESTIONS = 6
 _MAX_UNCERTAINTIES = 10
 _TITLE = 80
-_PART = 12
+_PART = 24
+"""Part names the model writes run to a clause (2026-09-19: 执行层重构与 Codex 迁移)."""
 _TEXT = 400
 _SHORT = 240
 _SHOWS = 120
@@ -73,23 +74,27 @@ _SERVED = 3000
 """``summary_of`` serves the whole 核心摘要 section, digest included, not just the prose."""
 _SUMMARY_HEADING = "## 核心摘要"
 _REF_PREFIX = "引用："
-_DEPLOY = re.compile(r"部署|上线|常驻|重启|发布|上架|deploy|restart|launch|online", re.I)
-_MERGE = re.compile(r"合并|合入|merge|进 ?main", re.I)
-_SHA = re.compile(r"(?<![0-9a-zA-Z])[0-9a-f]{7,40}(?![0-9a-zA-Z])")
+_DEPLOY = re.compile(r"部署|上线|常驻|重启|发布|上架|deploy|restart|launch|online", re.IGNORECASE)
+_MERGE = re.compile(r"合并|合入|merge|进 ?main", re.IGNORECASE)
+_SHA = re.compile(r"(?<![0-9a-zA-Z])(?=[0-9]*[a-f])[0-9a-f]{7,40}(?![0-9a-zA-Z])")
+"""A commit number in prose: at least one hex letter, so a phone number or an id is not one."""
 _COMPLETION_WORDS = re.compile(
-    r"完成|已部署|已合并|已上线|已重启|通过|做完|搞定|done|deployed|merged|passed|shipped", re.I
+    r"完成|成功|已经|已部署|已合并|已上线|已重启|部署了|合并了|上线了|重启了|通过|做完|修好|搞定"
+    r"|done|deployed|merged|passed|shipped|fixed",
+    re.IGNORECASE,
 )
 """What the model's one summary sentence may not assert: completion is stated by the table."""
 
 JUDGE_SYSTEM = (
     "你是核查员。给你一条工作报告里的事项、它声称完成的部分，以及作者引用的原文。"
-    "只根据原文判断每个部分：supported = 原文确实显示这个部分（同一件事、同一范围）已经完成或产物已存在；"
-    "partial = 原文只显示其中一部分完成，或范围更小；unsupported = 原文与这个部分无关、只是计划/提问/讨论、"
-    "或只显示尝试而非完成。提交只证明改动已提交，不证明测试、部署、合并；代理（Codex、Claude）说的"
+    "只根据原文判断每个部分：supported = 原文确实显示这个部分（同一件事、同一范围）"
+    "已经完成或产物已存在；partial = 原文只显示其中一部分完成，或范围更小；"
+    "unsupported = 原文与这个部分无关、只是计划/提问/讨论、或只显示尝试而非完成。"
+    "提交只证明改动已提交，不证明测试、部署、合并；代理（Codex、Claude）说的"
     "「已完成」「已部署」「测试通过」是自述，不是核实结果——原文若只有这类话，shows 里写明是自述。"
-    "shows 用一句话写原文实际显示了什么。screen 字段：原文是屏幕文字时，写 page（第三方网页或应用页面，"
-    "如申请确认页）或 agent（终端/Codex/ChatGPT 里代理自己说的话）；不是屏幕文字时为 null。"
-    "必须调用 judge_claims 回答，每个部分一条。"
+    "shows 用一句话写原文实际显示了什么。screen 字段：原文是屏幕文字时，"
+    "写 page（第三方网页或应用页面，如申请确认页）或 agent（终端/Codex/ChatGPT 里代理自己说的话）；"
+    "不是屏幕文字时为 null。必须调用 judge_claims 回答，每个部分一条。"
 )
 SUMMARY_SYSTEM = (
     "你是日报撰写员。下面是这一天已经核查过的事项清单，每项的状态文字是核查结论，不可更改。"
@@ -110,7 +115,9 @@ def _claim_schema(*fields: tuple[str, dict[str, Any]]) -> dict[str, Any]:
 
 REPORT_TOOL: dict[str, Any] = {
     "name": REPORT_TOOL_NAME,
-    "description": "汇报这一天的工作报告草稿；字段含义见系统指令中的报告格式。摘要由运行时核查后另行生成。",
+    "description": (
+        "汇报这一天的工作报告草稿；字段含义见系统指令中的报告格式。摘要由运行时核查后另行生成。"
+    ),
     "input_schema": {
         "type": "object",
         "properties": {
@@ -216,7 +223,8 @@ DETAILS_TOOL: dict[str, Any] = {
 SEARCH_TOOL: dict[str, Any] = {
     "name": SEARCH_TOOL_NAME,
     "description": (
-        "在这一天的全部材料里按关键字检索（屏幕全文、窗口标题、对话记录、提交标题、Codex 会话全文），"
+        "在这一天的全部材料里按关键字检索"
+        "（屏幕全文、窗口标题、对话记录、提交标题、Codex 会话全文），"
         f"返回命中的键和一行上下文，最多 {MAX_HITS} 条。用来核对某个事实（某次提交、某句话、"
         "某个页面、某个错误）当天是否真的出现过、出现在哪。可以和 request_details 同一轮调用。"
     ),
@@ -557,10 +565,12 @@ class Claim:
 
     @property
     def claimed(self) -> bool:
+        """Whether the draft called this part completed."""
         return self.status == "completed"
 
     @property
     def needs_check(self) -> bool:
+        """Whether the program left this claim to the verification call and none has ruled yet."""
         return self.ruling == "check" and self.verdict is None and self.unchecked is None
 
 
@@ -574,11 +584,8 @@ def _kind_of(key: str, evidence: DayEvidence) -> str:
         if ref not in evidence.stated:
             return "jarvis"
         return "question" if is_question(evidence.haystack.get(key, "")) else "user"
-    if ref.startswith("timesink-capture:"):
-        return "screen"
-    if ref.startswith("codex-session:"):
-        return "agent"
-    return "other"
+    prefixes = {"timesink-capture:": "screen", "codex-session:": "agent"}
+    return next((kind for prefix, kind in prefixes.items() if ref.startswith(prefix)), "other")
 
 
 def _rule(claim: Claim, evidence: DayEvidence) -> None:
@@ -630,16 +637,19 @@ def screen_claims(report: dict[str, Any], evidence: DayEvidence) -> list[Claim]:
 
 def title_terms(title: str) -> list[str]:
     """Words of an item's title that pick a session's relevant turns: 3+ letters or 2+ CJK."""
-    return [
-        w for w in re.findall(r"[A-Za-z][A-Za-z0-9_.-]{2,}|[一-鿿]{2,}", title)
-    ]
+    return re.findall(r"[A-Za-z][A-Za-z0-9_.-]{2,}|[一-鿿]{2,}", title)
 
 
 def build_check_request(
     item: dict[str, Any], claims: list[Claim], originals: list[dict[str, Any]]
 ) -> tuple[str, list[dict[str, Any]]]:
     """The verification call for one item: the claims in order, then the cited originals."""
-    lines = [f"事项：{item['title']}", f"作者写的活动与进展：{item['activity']}", "", "声称完成的部分："]
+    lines = [
+        f"事项：{item['title']}",
+        f"作者写的活动与进展：{item['activity']}",
+        "",
+        "声称完成的部分：",
+    ]
     for number, claim in enumerate(claims, 1):
         lines.append(f"{number}. {claim.part or '整体'}（引用 {'、'.join(claim.refs) or '无'}）")
     lines += ["", "引用的原文："]
@@ -725,43 +735,63 @@ def _commits_named(claim: Claim, evidence: DayEvidence) -> str:
     if not rows:
         return ""
     mains = {row["main"] for row in rows}
-    flag = mains.pop() if len(mains) == 1 else "部分已在 main"
-    return f"提交 {'、'.join(row['sha'] for row in rows)}，{flag}"
+    if len(mains) == 1:
+        return f"提交 {'、'.join(row['sha'] for row in rows)}，{mains.pop()}"
+    # Mixed: each commit carries its own flag, so a merged one cannot vouch for a branch one.
+    return "提交 " + "、".join(f"{row['sha']}（{row['main']}）" for row in rows)
 
 
 def _keys_of(claim: Claim, kind: str) -> str:
     return "、".join(k for k, v in claim.kinds.items() if v == kind)
 
 
+def _settled(claim: Claim) -> str | None:
+    """The text a ruling or a non-supporting verdict settles; None once the check supported it."""
+    if claim.ruling == "invalid":
+        return f"声称完成，引用无效：{claim.reason}"
+    if claim.ruling == "self_report":
+        cited = _keys_of(claim, "agent") or _keys_of(claim, "screen")
+        return f"据代理自述已完成，尚未核实（{cited}）"
+    if claim.unchecked:
+        return f"声称完成，未核实（{claim.unchecked}）"
+    if claim.verdict == "unsupported":
+        return f"声称完成，引用不支持（原文显示：{claim.shows}）"
+    if claim.verdict == "partial":
+        return f"部分完成：{claim.shows}"
+    return None
+
+
 def wording(claim: Claim, evidence: DayEvidence) -> tuple[str, bool]:
     """The saved status text of a part, and whether it is evidenced (a commit, Allen, a page)."""
     if not claim.claimed:
         return _STATUS_LABELS[claim.status], False
-    if claim.ruling == "invalid":
-        return f"声称完成，引用无效：{claim.reason}", False
     if claim.ruling == "repo":
         return f"已合并到 main（{_commits_named(claim, evidence)}）", True
-    if claim.ruling == "self_report":
-        return f"据代理自述已完成，尚未核实（{_keys_of(claim, 'agent') or _keys_of(claim, 'screen')}）", False
-    if claim.unchecked:
-        return f"声称完成，未核实（{claim.unchecked}）", False
-    if claim.verdict == "unsupported":
-        return f"声称完成，引用不支持（原文显示：{claim.shows}）", False
-    if claim.verdict == "partial":
-        return f"部分完成：{claim.shows}", False
+    settled = _settled(claim)
+    if settled is not None:
+        return settled, False
+    return _supported_wording(claim, evidence)
+
+
+def _supported_wording(claim: Claim, evidence: DayEvidence) -> tuple[str, bool]:
+    """A supported claim is worded by what it cites: Allen's record, a commit, a page, an agent."""
     parts: list[str] = []
     if "user" in claim.kinds.values():
         parts.append(f"用户确认完成（{_keys_of(claim, 'user')}）")
     if named := _commits_named(claim, evidence):
         parts.append(f"已提交（{named}）")
     if "screen" in claim.kinds.values():
+        screen_keys = _keys_of(claim, "screen")
         if claim.screen == "agent":
-            parts.append(f"据代理自述已完成，尚未核实（{_keys_of(claim, 'screen')}）")
-        else:
-            parts.append(f"页面显示已完成（{_keys_of(claim, 'screen')}）")
+            parts.append(f"据代理自述已完成，尚未核实（{screen_keys}）")
+        elif claim.screen == "page":
+            parts.append(f"页面显示已完成（{screen_keys}）")
+        elif not parts:
+            # The judge did not say whose words the screen holds; it is not called a page.
+            parts.append(f"屏幕显示已完成（{screen_keys}）")
     if "agent" in claim.kinds.values() and not parts:
         parts.append(f"据代理自述已完成，尚未核实（{_keys_of(claim, 'agent')}）")
-    evidenced = any(p.startswith(("用户确认", "已提交", "页面显示")) for p in parts)
+    evidenced = any(p.startswith(("用户确认", "已提交", "页面显示", "屏幕显示")) for p in parts)
     return "；".join(parts) or "声称完成，引用不支持", evidenced
 
 
@@ -818,7 +848,8 @@ def _table(
         mine = [c for c in claims if c.item == index]
         words = [wording(c, evidence) for c in mine]
         breakdown = "；".join(
-            (f"{c.part}：" if c.part else "") + text for c, (text, _) in zip(mine, words, strict=True)
+            (f"{c.part}：" if c.part else "") + text
+            for c, (text, _) in zip(mine, words, strict=True)
         )
         line = f"{index} {item['title']}（{breakdown}）"
         table.append(line)
@@ -841,7 +872,7 @@ def _summary_lines(
     report: dict[str, Any], claims: list[Claim], evidence: DayEvidence, main_line: str | None
 ) -> list[str]:
     """核心摘要: one model sentence on the day's main line, then the program's verified lines."""
-    table, evidenced, unverified, counts = _table(report, claims, evidence)
+    _, evidenced, unverified, counts = _table(report, claims, evidence)
     if main_line is None:
         titles = "、".join(item["title"] for item in report["items"][:3])
         main_line = f"这一天的主要事项：{titles}。" if titles else "这一天没有归并出工作事项。"
@@ -886,7 +917,8 @@ def compose_report(  # noqa: PLR0913 — the draft, its rulings, the one model s
             text, proven = wording(claim, evidence)
             heads.append((f"{claim.part}：" if claim.part else "") + text)
             if claim.claimed and not proven:
-                unproven.append(f"第 {index} 项" + (f"（{claim.part}）" if claim.part else "") + f"：{text}")
+                where = f"第 {index} 项" + (f"（{claim.part}）" if claim.part else "")
+                unproven.append(f"{where}：{text}")
         lines += [
             f"### {index}. {item['title']} — {'；'.join(heads)}",
             item["activity"],
