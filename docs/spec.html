@@ -541,7 +541,7 @@ the dispatcher alone owns action lifecycle events. Original conversation records
 <tbody>
 <tr><td>search_records</td><td>keyword?, from?, to?, limit?, cursor?</td><td>records with id, ts, source, excerpt, text_chars, source_ref; count, snapshot, next_cursor. Replaces the former rendered-only output.</td></tr>
 <tr><td>read_records</td><td>record_ids (1–20 unique IDs), cursor?</td><td>Exact text chunks with offset, total_chars, complete; missing_ids and next_cursor. Continue until null.</td></tr>
-<tr><td>query_activity</td><td>from, to, sources? (git/app/screen/agent), project? (full repo path), app? (case-insensitive substring of app name or bundle id), summary_only?, limit? (1–5000), cursor?</td><td>One compact table page (ADR 0029): date, utc_offset, store, apps (letter → [name, bundle id]), totals per letter over the whole window (foreground_s, spans, screen_rows, first, last), columns, rows as <code>[ref, start, end, app, text]</code>, count, total, offset, state_at_start, state_events, state_events_total, coverage, state_coverage, time_basis, snapshot, next_cursor, and notes on the first page only. Git range uses observed_at, so late-discovered commits remain visible; app spans and captures use overlap with [from,to).</td></tr>
+<tr><td>query_activity</td><td>from, to, sources? (git/app/screen/agent), project? (full repo path), app? (case-insensitive substring of app name or bundle id), summary_only?, cursor?</td><td>One compact table page (ADR 0029): date, utc_offset, store, apps (letter → [name, bundle id]), totals per letter over the whole window (foreground_s, spans, screen_rows, first, last), columns, rows as <code>[ref, start, end, app, text]</code>, count, total, offset, state_at_start, state_events, state_events_total, coverage, state_coverage, time_basis, snapshot, next_cursor, and notes on the first page only. Git range uses observed_at, so late-discovered commits remain visible; app spans and captures use overlap with [from,to).</td></tr>
 <tr><td>read_activity</td><td>activity_id (a row ref <code>s&lt;id&gt;:&lt;rev&gt;</code> / <code>c&lt;id&gt;:&lt;rev&gt;</code> / <code>g&lt;uid&gt;</code>, or a full timesink:, timesink-capture:, activity:, git:, codex-session: reference), cursor?</td><td>Saved Git payload or revision-pinned TimeSink row as JSON text chunks, a screen capture as its full OCR text, a <code>git:</code> reference as <code>git show --stat</code> text, a <code>codex-session:</code> reference as the session's dated turns; source_refs (always the full reference), kind, observed_at, offset, total_chars, complete, next_cursor. Never captures fresh state.</td></tr>
 <tr><td>search_knowledge</td><td>query?, project?, kind?, status?, limit?, cursor?</td><td>Full current knowledge items and source_ref; default active, also deprecated / needs_confirmation / all.</td></tr>
 <tr><td>save_knowledge</td><td>statement, kind, source_refs, basis, request_id; knowledge_id?, expected_version?, project?, status?</td><td>knowledge_id, version, source_ref. Kind: fact/decision/lesson/preference; basis: user_statement/observation/inference. Updates supersede a previous version of the same identity; supersedes points at the previous immutable event. No current activity state or verified-worker verdict.</td></tr>
@@ -555,7 +555,7 @@ the dispatcher alone owns action lifecycle events. Original conversation records
 </tbody></table>
 <p>Query intervals are half-open [from,to); timestamp parameters require explicit UTC offsets.
 Paging limit defaults to 20 and is capped at 50, except query_activity, whose page is bounded by its
-character budget (limit is an optional row cap up to 5,000). Cursors bind query arguments and storage identity;
+character budget and takes no row limit. Cursors bind query arguments and storage identity;
 list pages retain their initial append watermark, folding versions before filtering mutable fields.
 Late arrivals are available to a new query. Only returned next_cursor values may be used: a well-formed
 cursor issued for other arguments is <code>cursor_mismatch</code> (the caller changed the query and restarts
@@ -603,7 +603,9 @@ parentheses when the title does not contain it, at most 120 characters. The head
 and shared by every row of the page: apps maps letters A, B, ..., Z, AA, ... to [name, bundle id] in
 order of foreground_s; totals per letter cover the whole window regardless of paging: foreground_s is
 the seconds the app was frontmost per spans clipped to [from,to) with overlapping spans merged, spans and
-screen_rows count the matching rows, first/last are the clipped span bounds. An app filter keeps rows
+screen_rows count the matching rows, first/last are the clipped span bounds. A total names only the
+sources the query read: foreground_s, spans, first and last appear only when app is among the sources and
+screen_rows only when screen is; an unqueried source has no total, never a zero. An app filter keeps rows
 whose app name or bundle id contains the text case-insensitively, excludes Git rows (coverage.git says
 so) and reports app_filter_matches per source. summary_only returns the header, totals and state without
 rows. read_activity returns the exact saved row as paged JSON; stored_timestamp_timezone=UTC; its

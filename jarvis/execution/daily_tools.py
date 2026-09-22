@@ -41,7 +41,8 @@ _DESCRIPTIONS = {
     "query_activity": (
         "Saved activity in [from,to) as one compact table. Header: date, utc_offset, store, "
         "apps dictionary (A, B, ...), totals per app over the WHOLE window (foreground_s, spans, "
-        "screen_rows, first, last), coverage and TimeSink state (idle/lock/sleep/pause). Rows: "
+        "first, last from app spans; screen_rows from screen captures; only the sources queried "
+        "appear), coverage and TimeSink state (idle/lock/sleep/pause). Rows: "
         "[ref, start, end, app, text] for Git observations (g<uid>), TimeSink app spans "
         "(s<id>:<rev>, front window title) and screen captures (c<id>:<rev>, window title — OCR "
         "excerpt). Filters: sources (git/app/screen), app (case-insensitive substring of app "

@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from jarvis.runtime import _register_workers, _timesink_db_path
+from jarvis.state import daily_activity
 from jarvis.state.daily_contract import ACTIVITY_PAGE_BUDGET
 from jarvis.state.event_log import emit_event
 from tests.integration.test_daily_tools import DailyHarness
@@ -51,6 +52,12 @@ def source(tmp_path: Path) -> Iterator[sqlite3.Connection]:
     conn.commit()
     yield conn
     conn.close()
+
+
+@pytest.fixture
+def one_row_pages(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A page budget below one row: a page still carries one row, so paging is cheap to test."""
+    monkeypatch.setattr(daily_activity, "ACTIVITY_PAGE_BUDGET", 1)
 
 
 @pytest.fixture
@@ -156,7 +163,6 @@ def test_compact_row_and_readback_round_trip(
     assert result["totals"]["A"] == {
         "foreground_s": 600,
         "spans": 1,
-        "screen_rows": 0,
         "first": "09:00:00",
         "last": "09:10:00",
     }
@@ -180,6 +186,7 @@ def test_compact_row_and_readback_round_trip(
     assert connected.call("query_activity", {**QUERY, "project": "/repos/jarvis"})["rows"] == []
 
 
+@pytest.mark.usefixtures("one_row_pages")
 def test_paging_excludes_new_rows_and_detects_corrections(
     connected: DailyHarness,
     source: sqlite3.Connection,
@@ -187,21 +194,20 @@ def test_paging_excludes_new_rows_and_detects_corrections(
     """An append watermark alone cannot freeze a TimeSink row's mutable end time."""
     first_id = add_span(source, "2026-09-19 09:00:00.000", "2026-09-19 09:10:00.000")
     add_span(source, "2026-09-19 09:20:00.000", "2026-09-19 09:30:00.000")
-    args = {**QUERY, "limit": 1}
-    page = connected.call("query_activity", args)
+    page = connected.call("query_activity", QUERY)
     assert page["count"] == 1
     assert page["total"] == 2
     assert page["next_cursor"] is not None
     assert "notes" in page
     add_span(source, "2026-09-19 09:15:00.000", "2026-09-19 09:16:00.000")
-    second = connected.call("query_activity", {**args, "cursor": page["next_cursor"]})
+    second = connected.call("query_activity", {**QUERY, "cursor": page["next_cursor"]})
     assert second["next_cursor"] is None
     assert second["offset"] == 1
     assert second["rows"][0][1] == "09:20:00"
     assert "notes" not in second, "continuation pages repeat only the data"
     source.execute("UPDATE span SET end='2026-09-19 09:05:00.000' WHERE id=?", (first_id,))
     source.commit()
-    stale = connected.call("query_activity", {**args, "cursor": page["next_cursor"]})
+    stale = connected.call("query_activity", {**QUERY, "cursor": page["next_cursor"]})
     assert stale["code"] == "invalid_cursor"
     assert "changed" in stale["error"]
     assert (
@@ -215,6 +221,7 @@ def test_paging_excludes_new_rows_and_detects_corrections(
     assert fresh["totals"]["A"]["spans"] == 3
 
 
+@pytest.mark.usefixtures("one_row_pages")
 def test_mixed_git_and_app_order_and_missing_source_isolation(
     connected: DailyHarness,
     source: sqlite3.Connection,
@@ -236,7 +243,7 @@ def test_mixed_git_and_app_order_and_missing_source_isolation(
             "skipped_count": 0,
         },
     )
-    args = {**QUERY, "sources": ["app", "git", "screen"], "limit": 1}
+    args = {**QUERY, "sources": ["app", "git", "screen"]}
     page = connected.call("query_activity", args)
     assert page["rows"][0][0].startswith("s1:")
     assert page["coverage"]["screen"]["status"] == "partial"
@@ -328,6 +335,7 @@ def test_exact_long_detail_and_revision_refs(
     )
 
 
+@pytest.mark.usefixtures("one_row_pages")
 def test_database_identity_pins_full_refs_and_cursors(
     connected: DailyHarness,
     source: sqlite3.Connection,
@@ -336,7 +344,7 @@ def test_database_identity_pins_full_refs_and_cursors(
     """Replacing a DB with identical rows must not silently reuse old evidence IDs."""
     add_span(source, "2026-09-19 09:00:00.000", "2026-09-19 09:10:00.000")
     add_span(source, "2026-09-19 09:20:00.000", "2026-09-19 09:30:00.000")
-    first = connected.call("query_activity", {**QUERY, "limit": 1})
+    first = connected.call("query_activity", QUERY)
     full_ref = connected.call("read_activity", {"activity_id": first["rows"][0][0]})["source_refs"][
         0
     ]
@@ -350,9 +358,7 @@ def test_database_identity_pins_full_refs_and_cursors(
         old.backup(new)
     assert connected.call("read_activity", {"activity_id": full_ref})["code"] == "source_changed"
     assert (
-        connected.call("query_activity", {**QUERY, "limit": 1, "cursor": first["next_cursor"]})[
-            "code"
-        ]
+        connected.call("query_activity", {**QUERY, "cursor": first["next_cursor"]})["code"]
         == "invalid_cursor"
     )
     # A short row ref names the configured store: it reads, and reports the new identity.
@@ -605,13 +611,12 @@ def test_budget_not_a_row_count_ends_a_page(
     assert [row[4] for row in rows] == [f"tab {i} (example.test)" for i in range(1200)]
     assert len({row[0] for row in rows}) == 1200
     assert first["totals"]["A"]["foreground_s"] == 1200 * 2
-    capped = connected.call("query_activity", {**QUERY, "limit": 5})
-    assert capped["count"] == 5
-    assert capped["next_cursor"] is not None
 
 
 def test_app_filter_totals_and_summary_only(
-    connected: DailyHarness, source: sqlite3.Connection
+    connected: DailyHarness,
+    source: sqlite3.Connection,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Totals merge overlapping spans per app; app filters by name or bundle substring."""
     add_span(source, "2026-09-19 09:00:00.000", "2026-09-19 09:10:00.000")
@@ -705,7 +710,8 @@ def test_app_filter_totals_and_summary_only(
     assert summary["next_cursor"] is None
     assert summary["totals"]["A"]["foreground_s"] == 720
 
-    paged = connected.call("query_activity", {**QUERY, "limit": 1})
+    monkeypatch.setattr(daily_activity, "ACTIVITY_PAGE_BUDGET", 1)
+    paged = connected.call("query_activity", QUERY)
     mismatch = connected.call(
         "query_activity", {**QUERY, "app": "wechat", "cursor": paged["next_cursor"]}
     )
@@ -714,6 +720,45 @@ def test_app_filter_totals_and_summary_only(
         connected.call("query_activity", {**QUERY, "cursor": "not-a-cursor"})["code"]
         == "invalid_cursor"
     )
+
+
+def test_totals_name_only_the_sources_queried(
+    connected: DailyHarness, source: sqlite3.Connection
+) -> None:
+    """A source the query did not read has no total: absent, never a zero."""
+    add_span(source, "2026-09-19 09:00:00.000", "2026-09-19 09:20:00.000", name="WeChat")
+    source.execute(
+        "INSERT INTO capture(at,lastSeenAt,appBundleID,appName,windowID,title,spanID,text,"
+        "imagePath) VALUES(?,?,?,?,?,?,?,?,?)",
+        (
+            "2026-09-19 09:05:00.000",
+            "2026-09-19 09:05:00.000",
+            "com.google.Chrome",
+            "WeChat",
+            5,
+            "Weixin",
+            None,
+            "hi",
+            None,
+        ),
+    )
+    source.commit()
+    both = connected.call("query_activity", SCREEN_QUERY)
+    assert both["totals"]["A"] == {
+        "foreground_s": 1200,
+        "spans": 1,
+        "first": "09:00:00",
+        "last": "09:20:00",
+        "screen_rows": 1,
+    }
+    screen_only = connected.call("query_activity", {**QUERY, "sources": ["screen"]})
+    assert screen_only["totals"]["A"] == {"screen_rows": 1}
+    assert connected.call("query_activity", QUERY)["totals"]["A"] == {
+        "foreground_s": 1200,
+        "spans": 1,
+        "first": "09:00:00",
+        "last": "09:20:00",
+    }
 
 
 def test_rows_before_the_page_date_carry_a_date_prefix(

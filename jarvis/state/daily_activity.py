@@ -196,9 +196,18 @@ def _app_key(item: dict[str, Any]) -> tuple[str, str]:
 
 
 def _app_dictionary(
-    items: list[dict[str, Any]], start: datetime, end: datetime, clock: _Clock
+    items: list[dict[str, Any]],
+    start: datetime,
+    end: datetime,
+    clock: _Clock,
+    sources: list[str],
 ) -> tuple[dict[tuple[str, str], str], dict[str, list[str]], dict[str, dict[str, Any]]]:
-    """Letters, names and whole-window totals per app, ordered by foreground time."""
+    """Letters, names and whole-window totals per app, ordered by foreground time.
+
+    A total carries only what this query read: no ``foreground_s`` without the app
+    source and no ``screen_rows`` without the screen source, so an unqueried source is
+    absent rather than a zero.
+    """
     per_app: dict[tuple[str, str], dict[str, Any]] = {}
     for item in items:
         if item["source"] == "git":
@@ -228,14 +237,15 @@ def _app_dictionary(
         letter = _letters(index)
         letters[name, bundle] = letter
         apps[letter] = [name, bundle]
-        total: dict[str, Any] = {
-            "foreground_s": round(_merged_seconds(entry["intervals"])),
-            "spans": entry["spans"],
-            "screen_rows": entry["screen_rows"],
-        }
-        if entry["first"] is not None:
-            total["first"] = clock.render(entry["first"].isoformat())
-            total["last"] = clock.render(entry["last"].isoformat())
+        total: dict[str, Any] = {}
+        if "app" in sources:
+            total["foreground_s"] = round(_merged_seconds(entry["intervals"]))
+            total["spans"] = entry["spans"]
+            if entry["first"] is not None:
+                total["first"] = clock.render(entry["first"].isoformat())
+                total["last"] = clock.render(entry["last"].isoformat())
+        if "screen" in sources:
+            total["screen_rows"] = entry["screen_rows"]
         totals[letter] = total
     return letters, apps, totals
 
@@ -278,12 +288,16 @@ def _sort_key(item: dict[str, Any]) -> tuple[str, str]:
 
 
 def _take(rows: list[Any], budget: int) -> list[Any]:
-    """Whole leading rows whose JSON stays within budget (linear in the rows taken)."""
+    """Whole leading rows whose JSON stays within budget (linear in the rows taken).
+
+    Never empty while rows remain: a row wider than the budget still goes out alone, so a
+    cursor always advances.
+    """
     used = 2  # the enclosing brackets
     taken: list[Any] = []
     for row in rows:
         cost = len(encoded(row)) + (2 if taken else 0)
-        if used + cost > budget:
+        if used + cost > budget and taken:
             break
         used += cost
         taken.append(row)
@@ -376,14 +390,13 @@ def query_activity(
     if not uses_timesink:
         state["coverage"] = {"status": "unknown", "reason": "Reported with app or screen sources."}
     items.sort(key=_sort_key)
-    letters, apps, totals = _app_dictionary(items, start, end, clock)
+    letters, apps, totals = _app_dictionary(items, start, end, clock, sources)
     rows = [_row(item, letters, clock) for item in items]
     if args.get("summary_only"):
         page: list[Any] = []
         row_end = len(rows)
     else:
-        limit = args.get("limit", len(rows))
-        page = _take(rows[offset : offset + limit], ACTIVITY_PAGE_BUDGET)
+        page = _take(rows[offset:], ACTIVITY_PAGE_BUDGET)
         row_end = offset + len(page)
     # State events share the page budget with the rows: never dropped, only paged.
     events = [[clock.render(e["at"]), e["kind"]] for e in state["events"]]
