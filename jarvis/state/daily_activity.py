@@ -172,6 +172,12 @@ def _timesink_source(  # noqa: PLR0913 — one paging pin per source, threaded f
         needle = str(args["app"]).casefold()
         items = [item for item in items if _app_matches(item, needle)]
         found["coverage"]["app_filter_matches"] = len(items)
+        if not items:
+            # The name the caller guessed matched nothing: list what it could have asked
+            # for, so a miss is retried with a real name instead of read as absence.
+            found["coverage"]["apps_in_window"] = sorted(
+                {_app_key(item) for item in found["items"]}
+            )
     coverage[name] = found["coverage"]
     return items, found["watermark"], found["revision"]
 
