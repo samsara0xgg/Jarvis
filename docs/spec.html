@@ -605,8 +605,9 @@ order of foreground_s; totals per letter cover the whole window regardless of pa
 the seconds the app was frontmost per spans clipped to [from,to) with overlapping spans merged, spans and
 screen_rows count the matching rows, first/last are the clipped span bounds. A total names only the
 sources the query read: foreground_s, spans, first and last appear only when app is among the sources and
-screen_rows only when screen is; an unqueried source has no total, never a zero. An app filter keeps rows
-whose app name or bundle id contains the text case-insensitively, excludes Git rows (coverage.git says
+screen_rows only when screen is; an unqueried source has no total, never a zero. An app filter reads both
+TimeSink sources (spans and captures) whatever sources lists, keeps rows whose app name or bundle id
+contains the text case-insensitively, excludes Git rows (coverage.git says
 so) and reports app_filter_matches per source; a filter that matches nothing also reports
 apps_in_window, the distinct [name, bundle id] pairs the source saw in the window, so a guessed
 name is retried rather than read as absence. summary_only returns the header, totals and state without

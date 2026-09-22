@@ -339,14 +339,17 @@ def query_activity(
         state_watermark,
         state_offset,
     ) = cursor_position(args.get("cursor"), binding, [high_water(conn), 0, 0, 0, 0, 0, 0, 0])
-    sources = args.get("sources", list(_ALL_SOURCES))
+    requested = args.get("sources", list(_ALL_SOURCES))
+    # An app filter asks about one app: what was in front (spans) and what was on its
+    # screen (captures) both answer it, whatever sources says, so neither can be skipped.
+    sources = ["app", "screen"] if "app" in args else requested
     coverage: dict[str, Any] = {
         source: {"status": "not_implemented"}
-        for source in sources
+        for source in requested
         if source not in {"git", "app", "screen"}
     }
     items: list[dict[str, Any]] = []
-    if "git" in sources and "app" not in args:
+    if "git" in requested and "app" not in args:
         items, skipped = _git_items(conn, args, snapshot, start, end)
         enabled = bool(repos) if "project" not in args else args["project"] in repos
         coverage["git"] = {
@@ -357,7 +360,7 @@ def query_activity(
             "last_observed_at_in_window": items[-1]["observed_at"] if items else None,
             "reason": "Historical collector health is not recorded; absence is not inactivity.",
         }
-    elif "git" in sources:
+    elif "git" in requested:
         coverage["git"] = {"status": "unknown", "reason": "app filter excludes Git observations."}
     uses_timesink = bool({"app", "screen"} & set(sources)) and timesink_path is not None
     store: str | None = None
