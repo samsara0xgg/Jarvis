@@ -5072,6 +5072,9 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             # open worker_edges rows become closed.
             if runtime.workers is not None:
                 await asyncio.to_thread(runtime.workers.stop)
+            # ADR 0031: every MCP client exits on its own task, then its loop thread ends.
+            if runtime.mcp_servers is not None:
+                await asyncio.to_thread(runtime.mcp_servers.stop)
             _shutdown_tts(tts_pipe)
             # Force-restore output volume in case a duck escaped a finally
             # block on the way down (best-effort; idempotent if depth == 0).

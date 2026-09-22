@@ -40,6 +40,7 @@ import re
 import sys
 import time
 import uuid
+import webbrowser
 from collections.abc import Mapping  # runtime use: isinstance in the config readers.
 from dataclasses import dataclass, field, replace
 from functools import partial
@@ -97,6 +98,8 @@ from jarvis.decision.response_run import (
 from jarvis.decision.stream_gate import routine_stream_policy
 from jarvis.decision.tier0 import Tier0ConfigError, load_tier0_table, validate_tier0_table
 from jarvis.deployment import RuntimePaths, bootstrap_runtime, load_env_file
+from jarvis.execution.mcp_oauth import DEFAULT_OAUTH_CALLBACK_PORT
+from jarvis.execution.mcp_tools import DEFAULT_MCP_TIMEOUT_S, McpServers
 from jarvis.execution.path_resolver import resolve as resolve_file_entity
 from jarvis.execution.path_resolver import resolve_write_target
 from jarvis.execution.tools import (
@@ -108,6 +111,7 @@ from jarvis.execution.tools import (
     DEFAULT_WEB_SEARCH_PROVIDER,
     DEFAULT_WEB_TIMEOUT_S,
     ActionLifecycle,
+    DuplicateToolError,
     ReadOnlyToolRegistry,
     ToolContext,
     ToolRegistry,
@@ -422,6 +426,8 @@ class JarvisRuntime:
     # ADR 0019: the resident codex app-server and the four worker tools bound
     # to it. None = a hand-assembled runtime without workers.
     workers: Workers | None = None
+    # ADR 0031: the MCP clients entered at boot. None = no `tools.mcp.servers`.
+    mcp_servers: McpServers | None = None
     # ADR 0023: the one current-work-state refresh workflow, shared by the
     # `refresh_work_state` tool and the Resonance dashboard routes.
     work_state: WorkStateService | None = None
@@ -1444,6 +1450,88 @@ def _register_workers(registry: ToolRegistry, paths: RuntimePaths) -> Workers:
     return workers
 
 
+def _mcp_block(config: Mapping[str, Any]) -> Mapping[str, Any]:
+    """The `tools.mcp` block, or an empty mapping."""
+    tools_block = config.get("tools")
+    block = tools_block.get("mcp") if isinstance(tools_block, Mapping) else None
+    return block if isinstance(block, Mapping) else {}
+
+
+def _mcp_servers(
+    block: Mapping[str, Any], paths: RuntimePaths, *, open_url: Callable[[str], object] | None
+) -> McpServers:
+    """One :class:`McpServers` per the block's knobs; tokens live under `<root>/mcp/`."""
+    return McpServers(
+        timeout_s=float(block.get("timeout_s", DEFAULT_MCP_TIMEOUT_S)),
+        token_dir=paths.root / "mcp",
+        callback_port=int(block.get("oauth_callback_port", DEFAULT_OAUTH_CALLBACK_PORT)),
+        open_url=open_url,
+    )
+
+
+def _register_mcp(
+    registry: ToolRegistry, config: Mapping[str, Any], paths: RuntimePaths
+) -> McpServers | None:
+    """ADR 0031: every `tools.mcp.servers` entry is entered now; its tools join the menu."""
+    block = _mcp_block(config)
+    servers = block.get("servers")
+    if not isinstance(servers, Mapping) or not servers:
+        return None
+    mcp_servers = _mcp_servers(block, paths, open_url=None)
+    for one in mcp_servers.connect(servers):
+        try:
+            registry.register(one)
+        except DuplicateToolError:
+            LOGGER.warning("mcp tool %r collides with a registered tool; skipped", one.name)
+    return mcp_servers
+
+
+def mcp_login(
+    server: str, *, config_path: Path | None = None, runtime_root: Path | None = None
+) -> int:
+    """ADR 0032: log one `auth: oauth` server in through the browser; the daemon reuses the token.
+
+    Returns a process exit code: 0 logged in, 1 the server refused or never
+    asked for a login, 2 the entry is missing or not an OAuth one.
+    """
+    if config_path is None:
+        config_path = _locate_repo_root(Path(__file__).parent) / _DEFAULT_CONFIG_FILENAME
+    paths = bootstrap_runtime(runtime_root)
+    load_env_file(paths.root)
+    block = _mcp_block(_load_full_config(config_path))
+    servers = block.get("servers")
+    spec = servers.get(server) if isinstance(servers, Mapping) else None
+    if not isinstance(spec, Mapping):
+        known = ", ".join(sorted(servers)) if isinstance(servers, Mapping) else "none"
+        sys.stderr.write(
+            f"mcp-login: no `tools.mcp.servers.{server}` in {config_path} (known: {known})\n"
+        )
+        return 2
+    if str(spec.get("auth") or "").lower() != "oauth":
+        sys.stderr.write(f"mcp-login: {server} has no `auth: oauth`; nothing to log in to\n")
+        return 2
+    mcp_servers = _mcp_servers(block, paths, open_url=webbrowser.open)
+    try:
+        tools = mcp_servers.connect({server: spec})
+    finally:
+        mcp_servers.stop()
+    token = mcp_servers.token_path(server)
+    if not tools:
+        sys.stderr.write(f"mcp-login: {server} did not come up; see the warning above\n")
+        return 1
+    if not token.exists():
+        # Some servers answer tools/list unauthenticated; that is not a login.
+        sys.stderr.write(
+            f"mcp-login: {server} answered without asking for a login; no token stored\n"
+        )
+        return 1
+    sys.stdout.write(
+        f"mcp-login: {server} logged in, {len(tools)} tools; token at {token}. "
+        "Restart the daemon to put them on the menu.\n"
+    )
+    return 0
+
+
 def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays explicit
     *,
     config_path: Path | None = None,
@@ -1593,6 +1681,7 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
         screen_max_width_px=screen_max_width_px,
     )
     workers = _register_workers(registry, paths)
+    mcp_servers = _register_mcp(registry, full_config, paths)
     lifecycle = ActionLifecycle()
 
     # 3b. Spec §17 Tier 0 whitelist — sits next to jarvis.yaml so Allen
@@ -1699,6 +1788,7 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
         memory=memory,
         session=session,
         workers=workers,
+        mcp_servers=mcp_servers,
         sensevoice_dir=_realtime_model_path(
             full_config,
             key="sensevoice_dir",
