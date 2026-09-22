@@ -761,6 +761,40 @@ def test_totals_name_only_the_sources_queried(
     }
 
 
+def test_app_filter_reads_spans_and_captures_whatever_sources_says(
+    connected: DailyHarness, source: sqlite3.Connection
+) -> None:
+    """A question about one app is answered from both what was in front and what was on screen."""
+    add_span(source, "2026-09-19 09:00:00.000", "2026-09-19 09:20:00.000", name="WeChat")
+    source.execute(
+        "INSERT INTO capture(at,lastSeenAt,appBundleID,appName,windowID,title,spanID,text,"
+        "imagePath) VALUES(?,?,?,?,?,?,?,?,?)",
+        (
+            "2026-09-19 09:05:00.000",
+            "2026-09-19 09:05:00.000",
+            "com.google.Chrome",
+            "WeChat",
+            5,
+            "Weixin",
+            None,
+            "hi",
+            None,
+        ),
+    )
+    source.commit()
+    for sources in (["app"], ["screen"]):
+        result = connected.call("query_activity", {**QUERY, "sources": sources, "app": "wechat"})
+        assert [row[0][0] for row in result["rows"]] == ["s", "c"]
+        assert result["totals"]["A"] == {
+            "foreground_s": 1200,
+            "spans": 1,
+            "first": "09:00:00",
+            "last": "09:20:00",
+            "screen_rows": 1,
+        }
+        assert set(result["coverage"]) == {"app", "screen"}
+
+
 def test_zero_app_matches_list_the_apps_in_window(
     connected: DailyHarness, source: sqlite3.Connection
 ) -> None:
