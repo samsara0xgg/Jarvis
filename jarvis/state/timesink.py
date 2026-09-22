@@ -14,8 +14,13 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
     from pathlib import Path
 
-_REF = re.compile(r"timesink:([0-9a-f]{16}):([1-9][0-9]*):([0-9a-f]{32})")
-_CAPTURE_REF = re.compile(r"timesink-capture:([0-9a-f]{16}):([1-9][0-9]*):([0-9a-f]{32})")
+# A revision is the first 8 to 32 hex digits of the row fingerprint: full references carry
+# 32, the compact activity table carries 8 (a changed row is still caught with probability
+# 1 - 2^-32), and the short row forms s<id>:<rev> / c<id>:<rev> name the configured store.
+_REF = re.compile(r"timesink:([0-9a-f]{16}):([1-9][0-9]*):([0-9a-f]{8,32})")
+_CAPTURE_REF = re.compile(r"timesink-capture:([0-9a-f]{16}):([1-9][0-9]*):([0-9a-f]{8,32})")
+_SHORT_REF = re.compile(r"([sc])([1-9][0-9]*):([0-9a-f]{8,32})")
+SHORT_REVISION_CHARS = 8
 # The cited revision covers identity, text and the time basis actually reported (including
 # the interruption a legacy row is clipped to); image retention is not evidence.
 _CAPTURE_VERSION_KEYS = (
@@ -118,13 +123,38 @@ def _sql_date(value: datetime, *, ceil: bool) -> str:
     return floor.isoformat(sep=" ", timespec="milliseconds").removesuffix("+00:00")
 
 
+def span_revision(row: dict[str, Any]) -> str:
+    """The 32-hex revision of a span row as selected by :func:`query_spans`."""
+    return fingerprint(row)[:32]
+
+
+def capture_revision(row: dict[str, Any]) -> str:
+    """The 32-hex revision of a capture row: identity, text and reported time basis."""
+    return fingerprint({key: row[key] for key in _CAPTURE_VERSION_KEYS})[:32]
+
+
 def _reference(identity: str, row: dict[str, Any]) -> str:
-    return f"timesink:{identity}:{row['id']}:{fingerprint(row)[:32]}"
+    return f"timesink:{identity}:{row['id']}:{span_revision(row)}"
 
 
 def _capture_reference(identity: str, row: dict[str, Any]) -> str:
-    version = fingerprint({key: row[key] for key in _CAPTURE_VERSION_KEYS})[:32]
-    return f"timesink-capture:{identity}:{row['id']}:{version}"
+    return f"timesink-capture:{identity}:{row['id']}:{capture_revision(row)}"
+
+
+def parse_reference(reference: str) -> tuple[str, str | None, int, str] | None:
+    """Split a span/capture reference into (kind s|c, store identity or None, row id, rev).
+
+    Accepts the full ``timesink:``/``timesink-capture:`` forms and the compact row forms
+    ``s<id>:<rev>`` / ``c<id>:<rev>`` that the activity table emits; the compact forms
+    name the configured store. ``None`` when the text is not a TimeSink reference.
+    """
+    if (match := _REF.fullmatch(reference)) is not None:
+        return "s", match[1], int(match[2]), match[3]
+    if (match := _CAPTURE_REF.fullmatch(reference)) is not None:
+        return "c", match[1], int(match[2]), match[3]
+    if (match := _SHORT_REF.fullmatch(reference)) is not None:
+        return match[1], None, int(match[2]), match[3]
+    return None
 
 
 def _unavailable(reason: str, watermark: int | None) -> dict[str, Any]:
@@ -371,29 +401,44 @@ def query_state(
     }
 
 
-def read_capture(path: Path | None, reference: str) -> dict[str, Any]:
-    """Resolve exactly the cited capture revision; image_path is absolute when still kept."""
-    match = _CAPTURE_REF.fullmatch(reference)
-    if match is None or int(match[2]) >= 2**63:
-        message = "Use the screen activity ID returned by query_activity"
+def _read_row(
+    path: Path | None, reference: str, kind: str, select: str, noun: str
+) -> tuple[dict[str, Any], str]:
+    """Fetch the cited row and the store identity, checking identity and revision prefix."""
+    parsed = parse_reference(reference)
+    if parsed is None or parsed[0] != kind or parsed[2] >= 2**63:
+        message = f"Use the {noun} reference returned by query_activity"
         raise DailyError(message, "invalid_source")
+    _, identity, row_id, revision = parsed
     with snapshot(path) as opened:
         snap = _require(opened)
-        if snap.identity != match[1]:
+        if identity is not None and snap.identity != identity:
             message = "TimeSink database identity changed; query again"
             raise DailyError(message, "source_changed")
         try:
-            row = snap.conn.execute(f"{_CAPTURE_SELECT} WHERE id=?", (int(match[2]),)).fetchone()
+            row = snap.conn.execute(f"{select} WHERE id=?", (row_id,)).fetchone()
         except sqlite3.Error as exc:
             message = "TimeSink database is missing, unreadable or incompatible"
             raise DailyError(message, "source_unavailable") from exc
     if row is None:
-        message = "TimeSink capture no longer exists"
+        message = f"TimeSink {noun} no longer exists"
         raise DailyError(message, "not_found")
     original = dict(row)
-    if _capture_reference(snap.identity, original) != reference:
-        message = "TimeSink capture was updated; query again for its current revision"
+    current = capture_revision(original) if kind == "c" else span_revision(original)
+    if not current.startswith(revision):
+        message = f"TimeSink {noun} was updated; query again for its current revision"
         raise DailyError(message, "source_changed")
+    return original, snap.identity
+
+
+def read_capture(path: Path | None, reference: str) -> dict[str, Any]:
+    """Resolve exactly the cited capture revision; image_path is absolute when still kept.
+
+    The result carries ``sourceRef``: the full 32-hex reference of the row as read, which
+    is what knowledge, todos and briefings should cite.
+    """
+    original, identity = _read_row(path, reference, "c", _CAPTURE_SELECT, "screen capture")
+    original["sourceRef"] = _capture_reference(identity, original)
     if original["imagePath"] is not None and path is not None:
         image = path.expanduser().resolve().parent / "captures" / str(original["imagePath"])
         original["imagePath"] = str(image) if image.is_file() else None
@@ -404,31 +449,13 @@ def read_capture(path: Path | None, reference: str) -> dict[str, Any]:
 
 
 def read_span(path: Path | None, reference: str) -> dict[str, Any]:
-    """Resolve exactly the cited row revision, never silently substitute updated data."""
-    match = _REF.fullmatch(reference)
-    if match is None or int(match[2]) >= 2**63:
-        message = "Use the TimeSink activity ID returned by query_activity"
-        raise DailyError(message, "invalid_source")
-    with snapshot(path) as opened:
-        snap = _require(opened)
-        if snap.identity != match[1]:
-            message = "TimeSink database identity changed; query again"
-            raise DailyError(message, "source_changed")
-        try:
-            row = snap.conn.execute(
-                "SELECT id,start,end,appBundleID,appName,title,url,domain FROM span WHERE id=?",
-                (int(match[2]),),
-            ).fetchone()
-        except sqlite3.Error as exc:
-            message = "TimeSink database is missing, unreadable or incompatible"
-            raise DailyError(message, "source_unavailable") from exc
-    if row is None:
-        message = "TimeSink span no longer exists"
-        raise DailyError(message, "not_found")
-    original = dict(row)
-    if _reference(snap.identity, original) != reference:
-        message = "TimeSink span was updated; query again for its current revision"
-        raise DailyError(message, "source_changed")
+    """Resolve exactly the cited row revision, never silently substitute updated data.
+
+    The result carries ``sourceRef`` like :func:`read_capture`.
+    """
+    select = "SELECT id,start,end,appBundleID,appName,title,url,domain FROM span"
+    original, identity = _read_row(path, reference, "s", select, "app span")
+    original["sourceRef"] = _reference(identity, original)
     return original
 
 

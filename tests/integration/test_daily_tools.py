@@ -52,7 +52,8 @@ class DailyHarness:
         assert result.slots[0].tool_output is not None
         output = json.loads(result.slots[0].tool_output)
         assert output.get("truncated") is not True
-        assert len(result.slots[0].tool_output) <= 16384
+        caps = {tool.name: tool.max_result_chars for tool in self.tools if isinstance(tool, Tool)}
+        assert len(result.slots[0].tool_output) <= caps[name]
         return dict(output)
 
     def record(self, identity: str, text: str = "Use local todos") -> None:
@@ -135,8 +136,9 @@ def test_record_pages_are_complete_and_snapshot_stable(daily: DailyHarness) -> N
     assert daily.call("search_records", {})["records"][0]["id"] == "late"
     assert (
         daily.call("search_records", {"keyword": "changed", "cursor": first["next_cursor"]})["code"]
-        == "invalid_cursor"
+        == "cursor_mismatch"
     )
+    assert daily.call("search_records", {"cursor": "%%%"})["code"] == "invalid_cursor"
 
 
 def test_long_original_is_losslessly_retrievable(daily: DailyHarness) -> None:
@@ -264,13 +266,18 @@ def test_activity_coverage_time_basis_and_details(daily: DailyHarness) -> None:
     assert result["coverage"]["git"]["configured_now"] is False
     assert result["coverage"]["git"]["skipped_count"] == 3
     assert result["coverage"]["screen"]["status"] == "unavailable"
-    activity = result["items"][0]
-    assert activity["occurred_at"] == "1970-01-01T00:00:01.000+00:00"
-    assert activity["source_refs"] == [f"event:{ev.event_uid}"]
-    detail = daily.call("read_activity", {"activity_id": activity["id"]})
+    assert result["store"] is None
+    ref, observed, end, app, text = result["rows"][0]
+    assert ref == f"g{ev.event_uid}"
+    assert (observed, end, app) == ("00:00:10", "", "git")
+    assert text == "/repos/jarvis: Add tools (committed 00:00:01)"
+    detail = daily.call("read_activity", {"activity_id": ref})
+    assert detail["source_refs"] == [f"event:{ev.event_uid}"]
     assert json.loads(detail["content"])["commit_sha"] == "abc"
-    assert daily.call("query_activity", {**args, "sources": ["screen"]})["items"] == []
-    assert daily.call("query_activity", {**args, "project": "/different"})["items"] == []
+    legacy = daily.call("read_activity", {"activity_id": f"activity:{ev.event_uid}"})
+    assert legacy["content"] == detail["content"]
+    assert daily.call("query_activity", {**args, "sources": ["screen"]})["rows"] == []
+    assert daily.call("query_activity", {**args, "project": "/different"})["rows"] == []
 
 
 def test_list_snapshot_preserves_pre_update_state(daily: DailyHarness) -> None:

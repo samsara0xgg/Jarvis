@@ -8,7 +8,13 @@ from jarvis.execution.tools import Tool, ToolError
 from jarvis.shared import CallerPrincipal
 from jarvis.shared.skills import load_skill
 from jarvis.state import daily_activity, daily_records, daily_store
-from jarvis.state.daily_contract import SCHEMAS, DailyError, encoded, validate
+from jarvis.state.daily_contract import (
+    ACTIVITY_PAGE_BUDGET,
+    SCHEMAS,
+    DailyError,
+    encoded,
+    validate,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -33,22 +39,28 @@ _DESCRIPTIONS = {
         "missing IDs."
     ),
     "query_activity": (
-        "Query saved activity in [from,to): Git by observed time, TimeSink app/window/Chrome "
-        "spans and screen captures (OCR text of the front window, summarized) by overlap. "
-        "For 'what was I doing at <time>' use sources=['app','screen'], then read_activity on "
-        "a screen item for its full text. App durations are estimates, not attention. agent is "
-        "not_implemented. project is a full repo path and excludes unmapped app/screen rows. "
-        "Check coverage, state_at_start and state_events (idle/lock/sleep/pause) before calling a "
-        "gap rest; state events page with the items, so follow next_cursor to the end. "
-        "Follow next_cursor with identical filters; invalid_cursor means a mutable TimeSink "
-        "row changed: restart the query."
+        "Saved activity in [from,to) as one compact table. Header: date, utc_offset, store, "
+        "apps dictionary (A, B, ...), totals per app over the WHOLE window (foreground_s, spans, "
+        "screen_rows, first, last), coverage and TimeSink state (idle/lock/sleep/pause). Rows: "
+        "[ref, start, end, app, text] for Git observations (g<uid>), TimeSink app spans "
+        "(s<id>:<rev>, front window title) and screen captures (c<id>:<rev>, window title — OCR "
+        "excerpt). Filters: sources (git/app/screen), app (case-insensitive substring of app "
+        "name or bundle id), project (full repo path; excludes app/screen rows). "
+        "summary_only=true returns header, totals and state without rows: use it for 'how long "
+        "did I use X'. A page holds as many rows as its budget allows; follow next_cursor with "
+        "identical arguments until null. cursor_mismatch = you changed the arguments, restart "
+        "without cursor; invalid_cursor = rows changed, restart. read_activity(<ref>) returns a "
+        "screen row's full OCR text. foreground_s is frontmost time with idle excluded, not "
+        "attention or background playback; a screen row shows content was on screen, not that "
+        "a message was sent. Gaps without a state event stay unknown."
     ),
     "read_activity": (
-        "Read a saved activity's original content in chunks by activity_id: JSON for Git and "
-        "app spans, the full OCR text for screen captures. Does not take a screenshot or "
-        "inspect today's diff. Follow next_cursor until null. TimeSink IDs pin a revision; "
-        "source_changed requires a fresh query. For saving evidence, copy the returned "
-        "source_refs, not the activity_id."
+        "Read one saved row by a query_activity ref: s<id>:<rev> app span (JSON), c<id>:<rev> "
+        "screen capture (full OCR text), g<uid> Git observation (JSON); full timesink:, "
+        "timesink-capture:, activity:, git: and codex-session: references also work. Chunks "
+        "with offset; follow next_cursor until null. Never takes a screenshot or inspects "
+        "today's diff. source_changed means the row changed since the query: query again. The "
+        "result's source_refs is the full reference to cite when saving."
     ),
     "search_knowledge": (
         "Find saved reusable facts, decisions, lessons and preferences. Defaults to active; "
@@ -92,6 +104,10 @@ _DESCRIPTIONS = {
     ),
 }
 _RESULT_CAP = 16384
+# One activity page is the row budget plus its header (dictionary, totals, coverage, notes);
+# the handler rejects anything larger instead of letting the dispatcher window strings.
+_ACTIVITY_RESULT_CAP = ACTIVITY_PAGE_BUDGET + 16384
+_RESULT_CAPS = {"query_activity": _ACTIVITY_RESULT_CAP}
 _WRITES = frozenset({"save_knowledge", "create_todo", "update_todo", "save_briefing"})
 _WORK_STATE_DESCRIPTION = (
     "Investigate and update Allen's persisted current work state. Call this when he asks what "
@@ -147,7 +163,7 @@ def _handler(
         except DailyError as exc:
             raise ToolError(str(exc), code=exc.code) from exc
         # IDs, source refs and cursors must never be damaged by generic string clipping.
-        if len(encoded(result)) > _RESULT_CAP:
+        if len(encoded(result)) > _RESULT_CAPS.get(name, _RESULT_CAP):
             message = "Result metadata exceeds the output budget; narrow the request"
             raise ToolError(message, code="result_too_large")
         return result
@@ -230,7 +246,7 @@ def build_daily_tools(
             allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
             risk_level="L1" if name in _WRITES else "L0",
             read_only=name not in _WRITES,
-            max_result_chars=_RESULT_CAP,
+            max_result_chars=_RESULT_CAPS.get(name, _RESULT_CAP),
         )
         for name, description in _DESCRIPTIONS.items()
         if memory_path is not None or name not in {"search_records", "read_records"}

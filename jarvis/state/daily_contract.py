@@ -9,6 +9,14 @@ from datetime import datetime
 from typing import Any
 
 PAGE_BUDGET = 11000
+# query_activity renders one compact table per page; this is the JSON character budget of
+# the rows and state events on that page (characters of the serialized result, not tokens:
+# CJK text tokenizes near one token per character, ASCII JSON near four characters per
+# token, so a full page is roughly 15k-45k tokens against the decision model's 1M window).
+ACTIVITY_PAGE_BUDGET = 48000
+# Rows the model may ask for on one page; the budget above, not this number, decides when
+# a page ends.
+ACTIVITY_MAX_LIMIT = 5000
 MAX_TEXT_JSON_CHARS = 4000
 _CURSOR_PARTS = 2
 DETAIL_CHARS = 3500
@@ -57,11 +65,11 @@ _REFS = {
     "uniqueItems": True,
     "description": (
         "Evidence references: record:<record_id>, event:<event_uid>, git:<repo path>:<sha>, "
-        "codex-session:<file path>, or the exact timesink: / timesink-capture: reference "
-        "returned by a tool. For activity "
-        "evidence, copy values "
-        "from source_refs, NOT the activity id (activity:... is a lookup ID, not a source "
-        "reference)."
+        "codex-session:<file path>, or the full timesink:<store>:<id>:<rev> / "
+        "timesink-capture:<store>:<id>:<rev> reference (read_activity returns it as "
+        "source_refs; a query_activity row ref s<id>:<rev> / c<id>:<rev> plus the page's "
+        "store gives the same). Short row refs and activity:... IDs are lookup keys, not "
+        "source references."
     ),
 }
 _PROJECT = text_field(512, nullable=True)
@@ -101,6 +109,7 @@ SCHEMAS: dict[str, dict[str, Any]] = {
             "from": text_field(50),
             "to": text_field(50),
             "project": text_field(512),
+            "app": text_field(200),
             "sources": {
                 "type": "array",
                 "items": enum_field("git", "app", "screen", "agent"),
@@ -108,7 +117,9 @@ SCHEMAS: dict[str, dict[str, Any]] = {
                 "maxItems": 4,
                 "uniqueItems": True,
             },
-            **_PAGE,
+            "summary_only": {"type": "boolean"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": ACTIVITY_MAX_LIMIT},
+            "cursor": _CURSOR,
         },
         "from",
         "to",
@@ -304,7 +315,12 @@ def make_cursor(binding: str, position: list[int]) -> str:
 
 
 def cursor_position(raw: str | None, binding: str, initial: list[int]) -> list[int]:
-    """Reject malformed or cross-query cursors before reading any rows."""
+    """Reject malformed or cross-query cursors before reading any rows.
+
+    A well-formed cursor issued for other arguments is ``cursor_mismatch``: the caller
+    changed the query (filters, sources, window) and must start again without a cursor.
+    Anything unreadable is ``invalid_cursor``.
+    """
     if raw is None:
         return initial
     try:
@@ -312,15 +328,20 @@ def cursor_position(raw: str | None, binding: str, initial: list[int]) -> list[i
         if (
             isinstance(token, list)
             and len(token) == _CURSOR_PARTS
-            and token[0] == binding
+            and isinstance(token[0], str)
             and isinstance(token[1], list)
-            and len(token[1]) == len(initial)
             and all(type(x) is int and 0 <= x < 2**63 for x in token[1])
         ):
-            return list(token[1])
+            if token[0] == binding and len(token[1]) == len(initial):
+                return list(token[1])
+            msg = (
+                "Cursor belongs to a different query (arguments changed); "
+                "repeat the new query without a cursor"
+            )
+            raise DailyError(msg, "cursor_mismatch")
     except (ValueError, UnicodeError):
         pass
-    msg = "Invalid cursor or changed query"
+    msg = "Invalid cursor"
     raise DailyError(msg, "invalid_cursor")
 
 
