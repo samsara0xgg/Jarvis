@@ -607,7 +607,9 @@ screen_rows count the matching rows, first/last are the clipped span bounds. A t
 sources the query read: foreground_s, spans, first and last appear only when app is among the sources and
 screen_rows only when screen is; an unqueried source has no total, never a zero. An app filter keeps rows
 whose app name or bundle id contains the text case-insensitively, excludes Git rows (coverage.git says
-so) and reports app_filter_matches per source. summary_only returns the header, totals and state without
+so) and reports app_filter_matches per source; a filter that matches nothing also reports
+apps_in_window, the distinct [name, bundle id] pairs the source saw in the window, so a guessed
+name is retried rather than read as absence. summary_only returns the header, totals and state without
 rows. read_activity returns the exact saved row as paged JSON; stored_timestamp_timezone=UTC; its
 source_refs carries the full <code>timesink:&lt;store&gt;:&lt;id&gt;:&lt;rev&gt;</code> reference, which
 the row ref plus the page's store also yields; a saved reference may carry 8 to 32 revision digits

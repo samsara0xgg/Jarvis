@@ -761,6 +761,31 @@ def test_totals_name_only_the_sources_queried(
     }
 
 
+def test_zero_app_matches_list_the_apps_in_window(
+    connected: DailyHarness, source: sqlite3.Connection
+) -> None:
+    """A guessed app name that matches nothing is answered with the names that would."""
+    add_span(source, "2026-09-19 09:00:00.000", "2026-09-19 09:10:00.000")
+    add_span(
+        source,
+        "2026-09-19 09:30:00.000",
+        "2026-09-19 09:30:07.000",
+        bundle="com.netease.163music",
+        name="NetEaseMusic",
+    )
+    missed = connected.call("query_activity", {**QUERY, "app": "cloudmusic"})
+    assert missed["rows"] == []
+    assert missed["totals"] == {}
+    assert missed["coverage"]["app"]["app_filter_matches"] == 0
+    assert missed["coverage"]["app"]["apps_in_window"] == [
+        ["Chrome", "com.google.Chrome"],
+        ["NetEaseMusic", "com.netease.163music"],
+    ]
+    hit = connected.call("query_activity", {**QUERY, "app": "163music"})
+    assert "apps_in_window" not in hit["coverage"]["app"]
+    assert hit["totals"]["A"]["foreground_s"] == 7
+
+
 def test_rows_before_the_page_date_carry_a_date_prefix(
     connected: DailyHarness, source: sqlite3.Connection
 ) -> None:
