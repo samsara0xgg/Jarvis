@@ -83,6 +83,13 @@ TIMEOUT_COMMENTARY = "刚才那个查询还没拿到结果，拿到后再说。"
 LONG_RESULT_COMMENTARY = (
     "查到了，但结果太长不适合口述，完整结果在界面上。"  # noqa: RUF001 — intentional Chinese punctuation.
 )
+# ADR 0026: what a new session is told about an outcome no session heard.
+UNDELIVERED_COMMENTARY = (
+    "上次连接关闭前没来得及说的结果。问的是：{request}。结果：{result}"  # noqa: RUF001 — Chinese punctuation.
+)
+UNDELIVERED_FAILED_COMMENTARY = (
+    "上次问的{request}，后台没有查到结果。"  # noqa: RUF001 — intentional Chinese punctuation.
+)
 
 LiveState = Literal["idle", "connecting", "active", "closing"]
 DeliveryKind = Literal["commentary", "thinking"]
@@ -202,6 +209,19 @@ class DelegationResult:
 
 
 @dataclasses.dataclass(frozen=True)
+class UndeliveredResult:
+    """A finished delegation that no session was told about (ADR 0026).
+
+    ``request`` is the ``surface.user_intent`` transcript the backend
+    answered; the composition root returns these oldest first.
+    """
+
+    turn_id: str
+    request: str
+    result: DelegationResult
+
+
+@dataclasses.dataclass(frozen=True)
 class _Fragment:
     """One transcript delta on the session timeline."""
 
@@ -260,6 +280,8 @@ class _Append:
     kind: str
     content: str
     retried: bool = False
+    # The backend turn this append tells; its ACK is the delivery mark (ADR 0026).
+    turn_id: str | None = None
 
 
 @dataclasses.dataclass
@@ -342,17 +364,24 @@ class LiveVoice:
         record: Callable[[str, str, str], None] | None = None,
         brief: Callable[[], str] | None = None,
         lookup_result: Callable[[str], DelegationResult | None] | None = None,
+        undelivered: Callable[[], list[UndeliveredResult]] | None = None,
+        mark_delivered: Callable[[str, str, str], None] | None = None,
+        record_usage: Callable[[str, float | None, str, str | None, bool], None] | None = None,
     ) -> None:
         """Bind the daemon-owned pieces; nothing connects until :meth:`start`.
 
-        The four ADR-0016 D9 callables are blocking (they touch SQLite) and
-        are always called through ``asyncio.to_thread``: ``delegate(text,
+        The ADR-0016 D9 callables are blocking (they touch SQLite) and are
+        always called through ``asyncio.to_thread``: ``delegate(text,
         delegation_id, session_id, record_id) -> turn_id`` submits one
         request through the idempotent inbox; ``record(source, text,
         record_id)`` appends one memory.db row; ``brief()`` renders the
         startup context; ``lookup_result(turn_id)`` reads the Event Log.
         Without ``delegate`` a delegation is answered with a fact that the
-        backend is not connected.
+        backend is not connected.  ADR 0026 adds ``undelivered()`` for the
+        outcomes no session was told, ``mark_delivered(turn_id, session_id,
+        kind)`` written on an append's ACK (or as ``withheld``), and
+        ``record_usage(session_id, seconds, reason, server_reason, final)``
+        written once per closed session.
         """
         self._config = config
         self._broadcaster = broadcaster
@@ -365,6 +394,10 @@ class LiveVoice:
         self._record = record
         self._brief = brief
         self._lookup_result = lookup_result
+        self._undelivered = undelivered
+        self._mark_delivered = mark_delivered
+        self._record_usage = record_usage
+        self._settle_tasks: set[asyncio.Task[None]] = set()
         self._lock = asyncio.Lock()
         self._state: LiveState = "idle"
         self._epoch = 0
@@ -500,6 +533,7 @@ class LiveVoice:
             ]
             LOGGER.info("gpt_live session %s started (epoch %d)", run.session_id, run.epoch)
             await self._broadcast("started")
+            await self._offer_undelivered(run)
             return self.status()
 
     async def stop(self, *, reason: str = "user") -> dict[str, object]:
@@ -674,10 +708,23 @@ class LiveVoice:
             "server_reason": run.server_reason,
             "error": run.last_error,
         }
+        await self._record_session_usage(run)
         self._run = None
         self._state = "idle"
         self._notify_owns_speech()
         await self._broadcast("closed")
+
+    async def _record_session_usage(self, run: _LiveRun) -> None:
+        """One ``live.session_usage`` row per session that got a session id (ADR 0026)."""
+        if self._record_usage is None or run.session_id is None:
+            return
+        try:
+            await asyncio.to_thread(
+                self._record_usage, run.session_id, run.usage_s, str(run.close_reason),
+                run.server_reason, run.usage_final,
+            )
+        except Exception:
+            LOGGER.exception("gpt_live could not record usage of session %s", run.session_id)
 
     async def _close_delegations(self, run: _LiveRun) -> None:
         """Cancel delegation tasks and flush the row buffers before the socket closes.
@@ -739,8 +786,17 @@ class LiveVoice:
                     await self._on_append_error(run, err)
                     await self._broadcast("error")
                 elif kind == "session.closed":
-                    run.usage_s = float(event["usage"]["seconds"])
-                    run.usage_final = True
+                    usage = event.get("usage") or {}
+                    if usage.get("seconds") is not None:
+                        run.usage_s = float(usage["seconds"])
+                        run.usage_final = True
+                    else:
+                        # A close without usage is still a close; the last
+                        # usage.updated figure stays, marked unconfirmed.
+                        LOGGER.warning(
+                            "gpt_live session.closed carried no usage; keeping %s unconfirmed",
+                            run.usage_s,
+                        )
                     # The server's own reason is kept even when Jarvis initiated the close.
                     run.server_reason = str(event.get("reason"))
                     if run.close_reason is None:
@@ -918,7 +974,10 @@ class LiveVoice:
             delegation_id=pending.delegation_id,
         )
         # D4/D5: one lookup now, then bus wakes plus a slow safety poll until the
-        # deadline; after the deadline a late result is only ever thinking.
+        # deadline. A result after the deadline is still spoken while this
+        # session is open (ADR 0026); one that is not in before the session
+        # closes is offered at the next start. The timeout notice is not an
+        # outcome, so it carries no turn_id and marks nothing delivered.
         deadline = pending.created + cfg.delegation_timeout_s
         result = await self._await_result(pending, turn_id, deadline)
         if result is None:
@@ -931,14 +990,12 @@ class LiveVoice:
         pending.state = "answered" if result.status == "answered" else "failed"
         if result.status == "failed":
             LOGGER.info("gpt_live delegation %s failed: %s", pending.delegation_id, result.reason)
-            await self._deliver(run, pending, "commentary", FAILED_COMMENTARY)
+            await self._deliver(run, pending, "commentary", FAILED_COMMENTARY, turn_id=turn_id)
             return
         content = _speech_cut(result.voice_text or result.text) or LONG_RESULT_COMMENTARY
         if pending.timed_out:
-            LOGGER.info("gpt_live delegation %s late result -> thinking", pending.delegation_id)
-            await self._deliver(run, pending, "thinking", content)
-        else:
-            await self._deliver(run, pending, "commentary", content)
+            LOGGER.info("gpt_live delegation %s late result -> commentary", pending.delegation_id)
+        await self._deliver(run, pending, "commentary", content, turn_id=turn_id)
 
     async def _settle_request(
         self, run: _LiveRun, pending: _Pending,
@@ -1005,9 +1062,20 @@ class LiveVoice:
         return result
 
     async def _deliver(
-        self, run: _LiveRun, pending: _Pending, kind: DeliveryKind, content: str,
+        self,
+        run: _LiveRun,
+        pending: _Pending,
+        kind: DeliveryKind,
+        content: str,
+        *,
+        turn_id: str | None = None,
     ) -> None:
-        """Send a result only into the session it belongs to (D4, D5)."""
+        """Send a result only into the session it belongs to (D4, D5).
+
+        ``turn_id`` names the backend turn whose outcome ``content`` is; its
+        ACK, or a withhold, settles that turn (ADR 0026). A notice that is not
+        an outcome passes ``None`` and settles nothing.
+        """
         current = self._run
         if current is not run or run.epoch != pending.epoch or run.session_id != pending.session_id:
             LOGGER.info(
@@ -1017,21 +1085,67 @@ class LiveVoice:
             return
         if not pending.foreground:
             # Superseded: memory.db and the UI keep the result, Live never hears
-            # of it. Even a quiet append can shape later speech.
+            # of it. Even a quiet append can shape later speech. Settled, so no
+            # later session is told either (ADR 0026).
             LOGGER.info(
                 "gpt_live delegation %s result withheld from Live (superseded, %d chars)",
                 pending.delegation_id, len(content),
             )
+            if turn_id is not None:
+                self._settle(turn_id, pending.session_id, "withheld")
             return
         LOGGER.info(
             "gpt_live delegation %s delivered as %s (%d chars)",
             pending.delegation_id, kind, len(content),
         )
-        await self._send_append(run, kind, content, delegation_id=pending.delegation_id)
+        await self._send_append(
+            run, kind, content, delegation_id=pending.delegation_id, turn_id=turn_id,
+        )
         await self._broadcast("state")
 
+    async def _offer_undelivered(self, run: _LiveRun) -> None:
+        """Tell a new session what finished while no session was open (ADR 0026)."""
+        if self._undelivered is None:
+            return
+        try:
+            items = await asyncio.to_thread(self._undelivered)
+        except Exception:
+            LOGGER.exception("gpt_live undelivered lookup failed; starting without it")
+            return
+        for item in items:
+            content = _undelivered_commentary(item)
+            LOGGER.info(
+                "gpt_live offering undelivered turn %s as commentary (%d chars)",
+                item.turn_id, len(content),
+            )
+            await self._send_append(
+                run, "commentary", content, delegation_id=None, turn_id=item.turn_id,
+            )
+
+    def _settle(self, turn_id: str, session_id: str, kind: str) -> None:
+        """Persist that ``turn_id``'s outcome reached, or was withheld from, ``session_id``."""
+        mark = self._mark_delivered
+        if mark is None:
+            return
+
+        async def _write() -> None:
+            try:
+                await asyncio.to_thread(mark, turn_id, session_id, kind)
+            except Exception:
+                LOGGER.exception("gpt_live could not record delivery of turn %s", turn_id)
+
+        task = asyncio.get_running_loop().create_task(_write(), name=f"gpt_live.settle.{turn_id}")
+        self._settle_tasks.add(task)
+        task.add_done_callback(self._settle_tasks.discard)
+
     async def _send_append(
-        self, run: _LiveRun, kind: str, content: str, *, delegation_id: str | None,
+        self,
+        run: _LiveRun,
+        kind: str,
+        content: str,
+        *,
+        delegation_id: str | None,
+        turn_id: str | None = None,
     ) -> None:
         event_id = await self._send_json(run, {
             "type": f"session.{kind}.append",
@@ -1039,7 +1153,9 @@ class LiveVoice:
             "delegation_id": delegation_id,
         })
         if event_id is not None:
-            run.appends[event_id] = _Append(delegation_id=delegation_id, kind=kind, content=content)
+            run.appends[event_id] = _Append(
+                delegation_id=delegation_id, kind=kind, content=content, turn_id=turn_id,
+            )
 
     def _on_ack(self, run: _LiveRun, kind: str, event: dict[str, Any]) -> None:
         """ACKs prove receipt only, never that speech stopped or content was used."""
@@ -1050,6 +1166,9 @@ class LiveVoice:
                 "gpt_live ack %s matched delegation %s kind=%s (%d chars)",
                 kind, sent.delegation_id, sent.kind, len(sent.content),
             )
+            # ADR 0026: the ACK is the receipt that the outcome reached this session.
+            if sent.turn_id is not None and run.session_id is not None:
+                self._settle(sent.turn_id, run.session_id, sent.kind)
             return
         LOGGER.info("gpt_live ack %s for %s %s", kind, client_event_id, event.get("message", ""))
 
@@ -1094,16 +1213,33 @@ class LiveVoice:
             LOGGER.exception("gpt_live memory row %s failed", record_id)
 
     async def _send_loop(self, run: _LiveRun) -> None:
-        while True:
-            await run.out_ready.wait()
-            run.out_ready.clear()
-            while run.out:
-                chunk = run.out.popleft()
-                run.out_bytes -= len(chunk)
-                await run.ws.send(json.dumps({
-                    "type": "session.input_audio.append",
-                    "audio": base64.b64encode(chunk).decode("ascii"),
-                }))
+        from websockets.exceptions import ConnectionClosed  # noqa: PLC0415
+
+        try:
+            while True:
+                await run.out_ready.wait()
+                run.out_ready.clear()
+                while run.out:
+                    chunk = run.out.popleft()
+                    run.out_bytes -= len(chunk)
+                    await run.ws.send(json.dumps({
+                        "type": "session.input_audio.append",
+                        "audio": base64.b64encode(chunk).decode("ascii"),
+                    }))
+        except ConnectionClosed as exc:
+            LOGGER.warning("gpt_live websocket closed while sending audio: %s", exc)
+            run.closed.set()
+            if self._state == "active":
+                self._schedule_auto_stop(run, "connection_lost")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # A silent end here leaves a deaf session that looks active; the
+            # close reason must say the upload died, not that Allen went quiet.
+            LOGGER.exception("gpt_live send loop failed")
+            run.last_error = f"send: {exc}"[:200]
+            if self._state == "active":
+                self._schedule_auto_stop(run, "send_failed")
 
     def _enqueue_out(self, run: _LiveRun, chunk: bytes) -> None:
         """Loop-thread side of the mic tee: bounded backlog, drop-oldest by clearing."""
@@ -1331,10 +1467,24 @@ def _speech_cut(text: str, *, budget: int = _COMMENTARY_BUDGET_CHARS) -> str:
     return head[: cut + 1].strip()
 
 
+def _undelivered_commentary(item: UndeliveredResult) -> str:
+    """One speech-sized fact per outcome no session was told (ADR 0026)."""
+    request = " ".join(item.request.split())[:40]
+    if item.result.status == "failed":
+        return UNDELIVERED_FAILED_COMMENTARY.format(request=request)
+    head = UNDELIVERED_COMMENTARY.format(request=request, result="")
+    body = _speech_cut(
+        item.result.voice_text or item.result.text,
+        budget=_COMMENTARY_BUDGET_CHARS - len(head),
+    )
+    return head + (body or LONG_RESULT_COMMENTARY)
+
+
 __all__ = [
     "DEFAULT_INSTRUCTIONS",
     "DelegationResult",
     "GptLiveConfig",
     "LiveVoice",
+    "UndeliveredResult",
     "gpt_live_config_from_mapping",
 ]

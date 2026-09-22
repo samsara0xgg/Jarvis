@@ -1,6 +1,6 @@
 // Live link to the Jarvis daemon over the Inherent v1 wire (ADR-0003/0005):
 // outbound-only WebSocket envelopes `{op, payload}` in, HTTP POSTs out. Audio never crosses this link; the daemon owns mic and speaker.
-import type { Action, Live, LiveState } from './model';
+import type { Action, Live, LiveState, Row } from './model';
 
 export interface Controls { mic_muted?: boolean; speech_muted?: boolean; live?: 'start' | 'stop' }
 const liveStates: LiveState[] = ['idle', 'connecting', 'active', 'closing', 'unavailable'];
@@ -17,7 +17,7 @@ const liveFrom = (p: Record<string, unknown>): Live => ({
   error: typeof p.error === 'string' ? p.error : null,
   notice: typeof p.notice === 'string' ? p.notice : null,
 });
-export interface Runtime { submit: (text: string) => Promise<void>; cancel: (responseId: string | null) => Promise<void>; controls: (patch: Controls) => Promise<void>; reconnect: () => void; close: () => void }
+export interface Runtime { submit: (text: string) => Promise<void>; cancel: (responseId: string | null) => Promise<void>; controls: (patch: Controls) => Promise<void>; conversation: (after: number) => Promise<Row[]>; reconnect: () => void; close: () => void }
 
 // Daemon `voice` phases → UI phases. Anything unlisted leaves the phase alone.
 const voicePhase: Record<string, Action> = {
@@ -80,6 +80,8 @@ export function connect(port: string, dispatch: (a: Action) => void): Runtime {
     // foreground_output stops what is audible now and lets the run finish (ADR-0008 D10).
     cancel: async responseId => { if (responseId) await post('/inherent/cancel-response', { response_id: responseId, scope: 'foreground_output' }); },
     controls,
+    // Rows past `after` (0 = the newest page); the log is memory.db, so it survives every reload.
+    conversation: async after => { const r = await fetch(`${http}/inherent/conversation?after=${after}`); if (!r.ok) throw new Error(`/inherent/conversation ${r.status}`); return ((await r.json()) as { rows: Row[] }).rows; },
     reconnect: () => { if (ws) ws.close(); else open(); },
     close: () => { closed = true; if (retry) clearTimeout(retry); ws?.close(); },
   };

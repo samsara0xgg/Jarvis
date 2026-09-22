@@ -28,6 +28,9 @@ _LLM_CLIENT_CONSTRUCTION_SITES: Final[frozenset[str]] = frozenset(
         "jarvis/decision/llm.py",
         "jarvis/decision/llm_session.py",
         "jarvis/runtime/__init__.py",
+        # ADR-0019: the compaction summariser's own preset-pinned client,
+        # built once in the composition root and never switched.
+        "jarvis/runtime/session_compaction.py",
     },
 )
 

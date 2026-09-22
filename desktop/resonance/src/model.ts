@@ -12,14 +12,17 @@ export const examples: Result[] = [
 export type LiveState = 'idle' | 'connecting' | 'active' | 'closing' | 'unavailable';
 export interface Live { state: LiveState; sessionId: string | null; since: number | null; usageS: number | null; usageFinal: boolean; reason: string | null; speaking: boolean; hearing: boolean; error: string | null; notice: string | null }
 export interface Subtitle { role: 'user' | 'assistant'; text: string; startMs: number; endMs: number }
+// One memory.db record: the conversation of record, the same rows the backend's history is built from. `seq` is the poll cursor.
+export interface Row { seq: number; id: string; ts: string; source: string; text: string }
 // A same-speaker pause longer than this starts a new caption row (docs/gpt-live/live-conversations.md, Display captions): an assistant resuming after an interruption must not extend the cut-off line. Application choice; tune against recordings.
 const SUBTITLE_GAP_MS = 1500;
 export const idleLive: Live = { state: 'idle', sessionId: null, since: null, usageS: null, usageFinal: false, reason: null, speaking: false, hearing: false, error: null, notice: null };
-export interface State { mode: Mode; phase: Phase; micMuted: boolean; soundMuted: boolean; inbox: boolean; detail: string | null; results: Result[]; reply: string; draft: string; attachment: boolean; turnId: string | null; responseId: string | null; live: Live; subtitles: Subtitle[] }
-export const initialState: State = { mode: 'voice', phase: 'listening', micMuted: false, soundMuted: false, inbox: false, detail: null, results: [examples[0], examples[3], examples[1]], reply: '', draft: '', attachment: false, turnId: null, responseId: null, live: idleLive, subtitles: [] };
+export interface State { mode: Mode; phase: Phase; micMuted: boolean; soundMuted: boolean; inbox: boolean; detail: string | null; results: Result[]; reply: string; draft: string; attachment: boolean; turnId: string | null; responseId: string | null; live: Live; subtitles: Subtitle[]; rows: Row[]; openSeq: number }
+export const initialState: State = { mode: 'voice', phase: 'listening', micMuted: false, soundMuted: false, inbox: false, detail: null, results: [examples[0], examples[3], examples[1]], reply: '', draft: '', attachment: false, turnId: null, responseId: null, live: idleLive, subtitles: [], rows: [], openSeq: 0 };
 export type Action = { type: 'mode'; mode: Mode } | { type: 'phase'; phase: Phase } | { type: 'mic' | 'sound' | 'inbox' | 'interrupt' | 'end' | 'attachment' | 'reset' } | { type: 'draft'; value: string } | { type: 'send' } | { type: 'answer' } | { type: 'detail'; id: string | null } | { type: 'dismiss'; id: string } | { type: 'example'; id: string }
   | { type: 'open'; turnId: string; responseId: string | null } | { type: 'append'; token: string } | { type: 'settle'; turnId: string } | { type: 'controls'; micMuted: boolean; soundMuted: boolean }
-  | { type: 'live'; live: Live } | { type: 'subtitle'; sessionId: string; role: 'user' | 'assistant'; delta: string; startMs: number; endMs: number } | { type: 'live_dismiss' };
+  | { type: 'live'; live: Live } | { type: 'subtitle'; sessionId: string; role: 'user' | 'assistant'; delta: string; startMs: number; endMs: number } | { type: 'live_dismiss' }
+  | { type: 'rows'; rows: Row[] };
 export function reducer(s: State, a: Action): State {
   switch (a.type) {
     case 'reset': return { ...initialState, results: examples.slice(0, 1) };
@@ -34,7 +37,8 @@ export function reducer(s: State, a: Action): State {
     case 'attachment': return { ...s, attachment: !s.attachment };
     case 'send': return s.draft.trim() && s.phase !== 'processing' ? { ...s, draft: '', attachment: false, phase: 'processing', reply: '' } : s;
     case 'answer': return { ...s, phase: 'speaking', reply: '演示回复：我接住了这段表达。正式连接后，可以从这里继续交流、保存和找回上下文。此处没有保存或执行真实任务。' };
-    case 'open': return { ...s, phase: 'processing', reply: '', turnId: a.turnId, responseId: a.responseId };
+    // `openSeq` remembers where the log stood when this turn opened: the streaming reply shows as a tail row until an answer row lands past it.
+    case 'open': return { ...s, phase: 'processing', reply: '', turnId: a.turnId, responseId: a.responseId, openSeq: s.rows.length ? s.rows[s.rows.length - 1].seq : 0 };
     case 'append': return { ...s, reply: s.reply + a.token, phase: 'speaking' };
     // The daemon's `done` carries fadeMs; runtime.ts turns it into this delayed settle for the same turn only.
     case 'settle': return s.turnId === a.turnId ? { ...s, reply: '', phase: s.phase === 'speaking' ? 'listening' : s.phase } : s;
@@ -50,6 +54,11 @@ export function reducer(s: State, a: Action): State {
       return { ...s, subtitles: merged.slice(-40) };
     }
     case 'live_dismiss': return { ...s, subtitles: [], live: { ...s.live, reason: null, error: null, notice: null, usageS: null, usageFinal: false } };
+    case 'rows': {
+      const last = s.rows.length ? s.rows[s.rows.length - 1].seq : 0;
+      const fresh = a.rows.filter(row => row.seq > last);
+      return fresh.length ? { ...s, rows: [...s.rows, ...fresh].slice(-400) } : s; // ponytail: 400 rows on screen; page backwards if Allen scrolls past that
+    }
     case 'detail': return { ...s, detail: a.id, results: s.results.map(r => r.id === a.id ? { ...r, read: true } : r) };
     case 'dismiss': return { ...s, detail: null, results: s.results.filter(r => r.id !== a.id) };
     case 'example': { const r = examples.find(r => r.id === a.id); return r ? { ...s, results: [...s.results.filter(i => i.id !== r.id), { ...r, read: false }] } : s; }

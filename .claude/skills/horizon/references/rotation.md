@@ -51,7 +51,7 @@ N+1 (yours plus one), `predecessor` is your own session id
     role: hub
     generation: 11
     predecessor: <your own session id>
-    written: 2026-09-07T10:00:00-07:00
+    written: 2026-09-07T10:00:00-07:00   # from `date -Iseconds`, never typed
     integration_branch: realtime-integration
     integration_head: 7c2df70   # verify: git rev-parse --short realtime-integration
     lanes:

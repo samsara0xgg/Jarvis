@@ -328,6 +328,9 @@ type FlatHandler = Callable[[Mapping[str, Any], ToolContext], Mapping[str, Any]]
 type WorkStateRefresh = Callable[[Mapping[str, Any], ToolContext], dict[str, Any]]
 """ADR 0023: the runtime's one refresh workflow, injected into ``refresh_work_state``."""
 
+type DailyReportRun = Callable[[Mapping[str, Any], ToolContext], dict[str, Any]]
+"""ADR 0024: the runtime's daily-report workflow, injected into ``daily_work_report``."""
+
 DEFAULT_MAX_RESULT_CHARS: Final[int] = 8192
 """Serialized-result budget of a flat tool that declares none (the 8 KiB every D5 tool used)."""
 
@@ -3450,6 +3453,7 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
     observed_repos: tuple[str, ...] = (),
     timesink_db_path: Path | None = None,
     work_state_refresh: WorkStateRefresh | None = None,
+    daily_report_run: DailyReportRun | None = None,
 ) -> ToolRegistry:
     """Assemble the default ToolRegistry.
 
@@ -3501,6 +3505,8 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
         work_state_refresh: ADR 0023 — the runtime's one work-state refresh
             workflow; `None` (hand-built registries) leaves `refresh_work_state`
             off the menu.
+        daily_report_run: ADR 0024 — the runtime's daily work report
+            workflow; `None` leaves `daily_work_report` off the menu.
         memory_db_path: `memory.db_path` — registers `search_records`
             over that memory.db. `None` (hand-built test registries)
             registers no memory tool.
@@ -3610,6 +3616,7 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
     )
     # Local import avoids a cycle: daily adapters use this module's flat Tool type.
     from jarvis.execution.daily_tools import (  # noqa: PLC0415
+        build_daily_report_tool,
         build_daily_tools,
         build_work_state_tool,
     )
@@ -3620,6 +3627,8 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
         registry.register(daily_tool)
     for state_tool in build_work_state_tool(work_state_refresh):
         registry.register(state_tool)
+    for report_tool in build_daily_report_tool(daily_report_run):
+        registry.register(report_tool)
     return registry
 
 

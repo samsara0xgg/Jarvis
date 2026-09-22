@@ -126,12 +126,25 @@ function App() {
   const detail = s.results.find(r => r.id === s.detail);
   const focusInput = async () => { await window.jarvis?.focus(true); input.current?.focus(); };
   const mode = (value: 'voice' | 'text' | 'idle') => {
-    if (value === 'text') { setPanelOpen('composer', true); return; }
+    // Text mode keeps the conversation in view: the log opens with the composer when no panel is up.
+    if (value === 'text') { if (!panel) setPanelOpen('transcript', true); setPanelOpen('composer', true); return; }
     setPresencePreview('auto');
     if (value === 'voice' && s.mode !== 'voice') feedback('voice-enter');
     if (value !== 'voice' && s.mode === 'voice') feedback('voice-exit');
     dispatch({ type: 'mode', mode: value }); setSettings(false);
   };
+  // The log polls memory.db while it is open: the first load takes the newest page, every later tick only the rows past the last one held.
+  const lastSeq = useRef(0);
+  lastSeq.current = s.rows.length ? s.rows[s.rows.length - 1].seq : 0;
+  useEffect(() => {
+    if (!live || !transcriptOpen) return;
+    let stop = false;
+    const load = async () => { try { const rows = await runtime.current?.conversation(lastSeq.current); if (rows && !stop) dispatch({ type: 'rows', rows }); } catch { /* daemon away; the next tick retries */ } };
+    void load();
+    const id = setInterval(() => void load(), 2000);
+    return () => { stop = true; clearInterval(id); };
+  }, [transcriptOpen]);
+  const tail = s.reply && !s.rows.some(row => row.seq > s.openSeq && row.source !== 'allen') ? visible(s.reply) : '';
   // Starting a GPT-Live session opens the capsule too, so the clock and subtitles have somewhere to live.
   const toggleLive = () => { if (!live || liveBusy) return; if (s.live.state !== 'active' && s.mode === 'idle') mode('voice'); void runtime.current?.controls({ live: s.live.state === 'active' ? 'stop' : 'start' }); };
   useEffect(() => { if (!panels.composer || collapsed.composer) return; const t = setTimeout(() => void focusInput(), 80); return () => clearTimeout(t); }, [panels.composer, collapsed.composer]);
@@ -201,7 +214,7 @@ function App() {
     el.addEventListener('capsule-motion', update);
     window.addEventListener('resize', update);
     return () => { el.removeEventListener('animationstart', transition); el.removeEventListener('scroll', update, true); el.removeEventListener('capsule-motion', update); el.removeEventListener('transitionrun', transition); cancelAnimationFrame(frame); observer.disconnect(); window.removeEventListener('resize', update); };
-  }, [s.mode, s.inbox, showInbox, s.detail, s.reply, s.phase, settings, opacity, glassStrength, s.results.length, s.attachment, dismissing.length, inboxExpanded, replying, followupMessage, s.subtitles.length, s.live.state, s.live.reason, s.live.notice, panel, s.soundMuted]);
+  }, [s.mode, s.inbox, showInbox, s.detail, s.reply, s.phase, settings, opacity, glassStrength, s.results.length, s.attachment, dismissing.length, inboxExpanded, replying, followupMessage, s.subtitles.length, s.rows.length, s.live.state, s.live.reason, s.live.notice, panel, s.soundMuted]);
   useCapsuleDrag(!lab);
   const send = () => {
     if (!s.draft.trim() || s.phase === 'processing') return;
@@ -300,11 +313,11 @@ function App() {
               <Button label={s.phase === 'processing' ? '正在处理' : live ? '发送' : '发送示例输入'} className="composer-send" disabled={!s.draft.trim() || s.phase === 'processing'} onClick={send}><CapsuleIcon name="send"/></Button></div>
             {s.reply && <section className="reply glass"  data-interactive><div className="section-heading"><span>{live ? '回复' : '示例回复'}</span><Button label="复制回复" onClick={() => void copy(visible(s.reply))}>{copied ? <Check size={16}/> : <Copy size={16}/>}</Button></div><p>{visible(s.reply)}</p></section>}
           </div>,
-          transcript: <LiveTranscript embedded lines={s.subtitles} open={true} muted={s.soundMuted} active={s.live.state === 'active'} clock={liveClock} onClose={closeTranscript}/>,
+          transcript: <LiveTranscript embedded rows={s.rows} tail={tail} sessionId={s.live.sessionId} lines={s.subtitles} open={true} muted={s.soundMuted} active={s.live.state === 'active'} clock={liveClock} onClose={closeTranscript}/>,
           dashboard: <DashboardPreview embedded port={runtimePort} onClose={closePanel} notifications={s.results.length || detail ? notifications : null}/>
           }}
         </PanelStack>
-        {!transcriptOpen && <LiveTranscript embedded lines={s.subtitles} open={false} muted={s.soundMuted} active={s.live.state === 'active'} clock={liveClock} onClose={closeTranscript}/>}
+        {!transcriptOpen && <LiveTranscript embedded rows={s.rows} tail={tail} sessionId={s.live.sessionId} lines={s.subtitles} open={false} muted={s.soundMuted} active={s.live.state === 'active'} clock={liveClock} onClose={closeTranscript}/>}
 
 
       </div>}
