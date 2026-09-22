@@ -1124,6 +1124,8 @@ CapabilityExecutor.execute(gated_action_request) -> RawResultBundle</code></pre>
 
 <p>Layer 4 只按 intrinsic caller principal 过滤。Layer 3 再按 EffectivePolicy、AuthorizationLease、mode、task scope 做 contextual filter。最终交集进入 Situation Packet。Layer 4 不接收完整 mode_context，避免它开始理解 policy。</p>
 
+<p>Tool 的来源不限于本仓库。<code>tools.mcp.servers</code> 下的每个 MCP server 在 registry 构建时连入，它列出的每个工具以 <code>mcp__&lt;server&gt;__&lt;tool&gt;</code> 注册为一个 flat Tool（ADR 0031）：server 声明的 readOnlyHint 为真则 read_only、L0，否则 L1；结果取 structuredContent，否则取文本块，非文本块只报类型。连不上的 server 不贡献工具，也不阻止启动。</p>
+
 <h4>3.5.7 post_action_check</h4>
 
 <p>Execution is not postcondition。比如 <code>hue_set_state(on=false)</code> 返回 ack，只能证明命令被接受，不能证明灯真的关了。ToolDefinition 可以声明自动 post-action check：</p>

@@ -97,6 +97,7 @@ from jarvis.decision.response_run import (
 from jarvis.decision.stream_gate import routine_stream_policy
 from jarvis.decision.tier0 import Tier0ConfigError, load_tier0_table, validate_tier0_table
 from jarvis.deployment import RuntimePaths, bootstrap_runtime, load_env_file
+from jarvis.execution.mcp_tools import DEFAULT_MCP_TIMEOUT_S, McpServers
 from jarvis.execution.path_resolver import resolve as resolve_file_entity
 from jarvis.execution.path_resolver import resolve_write_target
 from jarvis.execution.tools import (
@@ -108,6 +109,7 @@ from jarvis.execution.tools import (
     DEFAULT_WEB_SEARCH_PROVIDER,
     DEFAULT_WEB_TIMEOUT_S,
     ActionLifecycle,
+    DuplicateToolError,
     ReadOnlyToolRegistry,
     ToolContext,
     ToolRegistry,
@@ -422,6 +424,8 @@ class JarvisRuntime:
     # ADR 0019: the resident codex app-server and the four worker tools bound
     # to it. None = a hand-assembled runtime without workers.
     workers: Workers | None = None
+    # ADR 0031: the MCP clients entered at boot. None = no `tools.mcp.servers`.
+    mcp_servers: McpServers | None = None
     # ADR 0023: the one current-work-state refresh workflow, shared by the
     # `refresh_work_state` tool and the Resonance dashboard routes.
     work_state: WorkStateService | None = None
@@ -1444,6 +1448,24 @@ def _register_workers(registry: ToolRegistry, paths: RuntimePaths) -> Workers:
     return workers
 
 
+def _register_mcp(registry: ToolRegistry, config: Mapping[str, Any]) -> McpServers | None:
+    """ADR 0031: every `tools.mcp.servers` entry is entered now; its tools join the menu."""
+    tools_block = config.get("tools")
+    block = tools_block.get("mcp") if isinstance(tools_block, Mapping) else None
+    if not isinstance(block, Mapping):
+        return None
+    servers = block.get("servers")
+    if not isinstance(servers, Mapping) or not servers:
+        return None
+    mcp_servers = McpServers(timeout_s=float(block.get("timeout_s", DEFAULT_MCP_TIMEOUT_S)))
+    for one in mcp_servers.connect(servers):
+        try:
+            registry.register(one)
+        except DuplicateToolError:
+            LOGGER.warning("mcp tool %r collides with a registered tool; skipped", one.name)
+    return mcp_servers
+
+
 def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays explicit
     *,
     config_path: Path | None = None,
@@ -1593,6 +1615,7 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
         screen_max_width_px=screen_max_width_px,
     )
     workers = _register_workers(registry, paths)
+    mcp_servers = _register_mcp(registry, full_config)
     lifecycle = ActionLifecycle()
 
     # 3b. Spec §17 Tier 0 whitelist — sits next to jarvis.yaml so Allen
@@ -1699,6 +1722,7 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
         memory=memory,
         session=session,
         workers=workers,
+        mcp_servers=mcp_servers,
         sensevoice_dir=_realtime_model_path(
             full_config,
             key="sensevoice_dir",
