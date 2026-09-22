@@ -62,6 +62,7 @@ from jarvis.runtime import (
     RuntimeBootstrapError,
     TriggerWaitTimeout,
     bootstrap_runtime_app,
+    mcp_login,
     parse_response_channels,
     run_turn,
 )
@@ -935,6 +936,25 @@ def _main_oneshot(argv: list[str]) -> int:
     )
 
 
+def _main_mcp_login(argv: list[str]) -> int:
+    """ADR 0032: `jarvis mcp-login <server>` opens the browser once; the daemon reuses the token."""
+    parser = argparse.ArgumentParser(
+        prog=f"{_PROG} mcp-login",
+        description="Log an `auth: oauth` MCP server in through the browser.",
+    )
+    parser.add_argument("server", help="Key under tools.mcp.servers in jarvis.yaml.")
+    parser.add_argument("--config", type=Path, default=None, help="Path to jarvis.yaml.")
+    parser.add_argument(
+        "--runtime-root", type=Path, default=None, help="Override JARVIS_RUNTIME_ROOT."
+    )
+    args = parser.parse_args(argv)
+    try:
+        return mcp_login(args.server, config_path=args.config, runtime_root=args.runtime_root)
+    except (RuntimeBootstrapError, OSError, ValueError) as exc:
+        sys.stderr.write(f"jarvis mcp-login: {exc}\n")
+        return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI entry. Routes ``serve`` to the daemon; otherwise to one-shot.
 
@@ -959,6 +979,8 @@ def main(argv: list[str] | None = None) -> int:
         return _main_serve(argv[1:])
     if argv and argv[0] == "daemon":
         return _main_daemon(argv[1:])
+    if argv and argv[0] == "mcp-login":
+        return _main_mcp_login(argv[1:])
     return _main_oneshot(argv)
 
 

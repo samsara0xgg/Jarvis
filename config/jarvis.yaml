@@ -181,12 +181,20 @@ tools:
   # ADR 0031 — MCP servers。每个条目在启动时连上，它列出的工具以
   # mcp__<条目名>__<工具名> 进 LLM 菜单；连不上只告警、不影响启动。
   # 一个条目要么写 url（Streamable HTTP），要么写 command + args（stdio
-  # 子进程），可选 env / cwd；env 的值里可以写 $VAR，从守护进程环境
-  # （含 ~/.jarvis/env）展开，key 不进这个文件。readOnlyHint 为真的工具
-  # 记 L0/read_only，其余 L1。
+  # 子进程），可选 env / cwd。env 和 headers 的值里可以写 $VAR，从守护
+  # 进程环境（含 ~/.jarvis/env）展开，key 不进这个文件。readOnlyHint 为
+  # 真的工具记 L0/read_only，其余 L1。
+  #
+  # ADR 0032 — 远程认证。固定 token 写 headers；要浏览器登录的写
+  # auth: oauth，然后在终端跑一次 `python -m jarvis mcp-login <条目名>`，
+  # token 存在 ~/.jarvis/mcp/<条目名>.json（0600），守护进程只复用、会
+  # 自动刷新，永远不会自己弹浏览器；没登录过的 server 启动时跳过并告警。
   mcp:
     # 每次 list/call 的读超时（秒），也是启动时等一个 server 的上限。
     timeout_s: 30
+    # OAuth 登录时浏览器跳回本机的端口。它写进了向对方注册的 redirect
+    # URI，改了就要对该 server 重新 mcp-login。
+    oauth_callback_port: 8789
     servers: {}
     # 例：
     # servers:
@@ -195,6 +203,10 @@ tools:
     #     args: ["mcp-server-time", "--local-timezone", "America/Toronto"]
     #   github:
     #     url: "https://api.githubcopilot.com/mcp/"
+    #     headers: {Authorization: "Bearer $GITHUB_TOKEN"}
+    #   linear:
+    #     url: "https://mcp.linear.app/mcp"
+    #     auth: oauth
 
 # ADR-0012 §3 D4/V2 — confirm_required 询问（confirmation.requested）
 # 的存活时长。默认 10 分钟；live burn 验证 C3（TTL 过期）时把这里改短，

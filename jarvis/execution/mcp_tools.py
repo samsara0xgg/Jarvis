@@ -1,4 +1,4 @@
-"""L4 — MCP servers as flat tools (ADR 0031).
+"""L4 — MCP servers as flat tools (ADR 0031, remote auth per ADR 0032).
 
 Every server under ``tools.mcp.servers`` is entered once at registry build;
 each tool it lists becomes a :class:`Tool` named ``mcp__<server>__<tool>``.
@@ -7,9 +7,14 @@ entered and exited from one task, so :class:`McpServers` owns a private loop
 thread: one task per server holds the client open, and the synchronous
 handlers hop onto that loop for every call.
 
-Layer boundary (`.importlinter`): stdlib + ``mcp`` plus ``jarvis.shared`` and
-``jarvis.execution.tools``. No YAML is read here; the composition root passes
-the ``servers`` mapping down.
+A remote entry (``url``) authenticates with ``headers`` (``$VAR`` expanded
+from the daemon environment) or with ``auth: oauth``, whose token file lives
+under ``token_dir``; only a login command passes ``open_url``, so the daemon
+can never open a browser.
+
+Layer boundary (`.importlinter`): stdlib + ``mcp``/``httpx2`` plus
+``jarvis.shared`` and this layer's own modules. No YAML is read here; the
+composition root passes the ``servers`` mapping down.
 """
 
 from __future__ import annotations
@@ -20,17 +25,23 @@ import os
 import re
 import threading
 from concurrent.futures import Future
-from contextlib import suppress
+from contextlib import AsyncExitStack, suppress
 from typing import TYPE_CHECKING, Any, Final
 
+import httpx2
 from mcp import Client, StdioServerParameters
 from mcp import types as mcp_types
+from mcp.client.streamable_http import streamable_http_client
 
+from jarvis.execution.mcp_oauth import DEFAULT_OAUTH_CALLBACK_PORT, LOGIN_HINT, build_oauth
 from jarvis.execution.tools import Tool, ToolContext, ToolError
 from jarvis.shared import CallerPrincipal
 
 if TYPE_CHECKING:
-    from collections.abc import Coroutine, Mapping
+    from collections.abc import Callable, Coroutine, Mapping
+    from pathlib import Path
+
+    from mcp.client._transport import Transport
 
 LOGGER = logging.getLogger(__name__)
 
@@ -44,19 +55,19 @@ _MAX_NAME_CHARS: Final[int] = 64
 _JOIN_GRACE_S: Final[float] = 5.0
 """Slack past the SDK's own read timeout before a hop onto the loop gives up."""
 
+_LOGIN_WAIT_S: Final[float] = 300.0
+"""How long a login command waits for the browser before giving up."""
+
+_HTTP_TIMEOUT: Final = httpx2.Timeout(30.0, read=300.0)
+"""The SDK's own defaults: a server may hold the response stream open."""
+
 
 def mcp_tool_name(server: str, name: str) -> str:
     """``mcp__<server>__<tool>``, squeezed into the chat API's function-name alphabet."""
     return _NAME_CHARS.sub("_", f"mcp__{server}__{name}")[:_MAX_NAME_CHARS]
 
 
-def _target(spec: Mapping[str, Any]) -> str | StdioServerParameters:
-    """A ``url`` entry is Streamable HTTP; ``command`` (+ ``args``/``env``/``cwd``) is stdio."""
-    if spec.get("url"):
-        return str(spec["url"])
-    if not spec.get("command"):
-        msg = "an MCP server entry needs `url` or `command`"
-        raise ValueError(msg)
+def _stdio(spec: Mapping[str, Any]) -> StdioServerParameters:
     env = spec.get("env") or {}
     return StdioServerParameters(
         command=str(spec["command"]),
@@ -87,14 +98,37 @@ def _payload(result: mcp_types.CallToolResult) -> dict[str, Any]:
 class McpServers:
     """Every entered MCP client and the loop thread that keeps them open."""
 
-    def __init__(self, *, timeout_s: float = DEFAULT_MCP_TIMEOUT_S) -> None:
-        """Start the loop thread; nothing connects until :meth:`connect`."""
+    def __init__(
+        self,
+        *,
+        timeout_s: float = DEFAULT_MCP_TIMEOUT_S,
+        token_dir: Path | None = None,
+        callback_port: int = DEFAULT_OAUTH_CALLBACK_PORT,
+        open_url: Callable[[str], object] | None = None,
+    ) -> None:
+        """Start the loop thread; nothing connects until :meth:`connect`.
+
+        ``token_dir`` holds one OAuth token file per server. ``open_url`` is the
+        login command's browser; without it an OAuth server is only reused,
+        never logged in.
+        """
         self._timeout_s = timeout_s
+        self._token_dir = token_dir
+        self._callback_port = callback_port
+        self._open_url = open_url
+        self._wait_s = _LOGIN_WAIT_S if open_url else timeout_s + _JOIN_GRACE_S
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(target=self._loop.run_forever, name="mcp-loop", daemon=True)
         self._thread.start()
         self._stops: list[asyncio.Event] = []
         self._serving: list[Future[None]] = []
+
+    def token_path(self, server: str) -> Path:
+        """Where ``server``'s OAuth login lives; the login command reports it."""
+        if self._token_dir is None:
+            msg = "no token_dir: OAuth servers need one"
+            raise ValueError(msg)
+        return self._token_dir / f"{re.sub(r'[^\w-]', '_', server)[:128]}.json"
 
     def _run[T](self, coro: Coroutine[Any, Any, T]) -> T:
         """Run ``coro`` on the loop thread and wait for it here."""
@@ -102,14 +136,47 @@ class McpServers:
             self._timeout_s + _JOIN_GRACE_S
         )
 
-    def _open(self, spec: Mapping[str, Any]) -> Client:
+    def _remote(self, server: str, spec: Mapping[str, Any]) -> tuple[Transport, httpx2.AsyncClient]:
+        """Streamable HTTP with the entry's headers and, for ``auth: oauth``, its login."""
+        url = os.path.expandvars(str(spec["url"]))
+        headers = {
+            str(k): os.path.expandvars(str(v)) for k, v in (spec.get("headers") or {}).items()
+        }
+        auth: httpx2.Auth | None = None
+        if str(spec.get("auth") or "").lower() == "oauth":
+            path = self.token_path(server)
+            if self._open_url is None and not path.exists():
+                msg = f"{server}: not logged in; {LOGIN_HINT.format(server=server)}"
+                raise RuntimeError(msg)
+            auth = build_oauth(
+                server, url, path, callback_port=self._callback_port, open_url=self._open_url
+            )
+        http_client = httpx2.AsyncClient(headers=headers, auth=auth, timeout=_HTTP_TIMEOUT)
+        return streamable_http_client(url, http_client=http_client), http_client
+
+    def _open(self, server: str, spec: Mapping[str, Any]) -> Client:
         """Hold one client open in its own task until :meth:`stop`; return it once entered."""
+        target: Transport | StdioServerParameters
+        http_client: httpx2.AsyncClient | None = None
+        if spec.get("url"):
+            target, http_client = self._remote(server, spec)
+        elif spec.get("command"):
+            target = _stdio(spec)
+        else:
+            msg = "an MCP server entry needs `url` or `command`"
+            raise ValueError(msg)
         ready: Future[Client] = Future()
         stop = asyncio.Event()
+        read_timeout = _LOGIN_WAIT_S if self._open_url else self._timeout_s
 
         async def serve() -> None:
             try:
-                async with Client(_target(spec), read_timeout_seconds=self._timeout_s) as client:
+                async with AsyncExitStack() as stack:
+                    if http_client is not None:
+                        await stack.enter_async_context(http_client)
+                    client = await stack.enter_async_context(
+                        Client(target, read_timeout_seconds=read_timeout)
+                    )
                     ready.set_result(client)
                     await stop.wait()
             except Exception as exc:
@@ -119,7 +186,7 @@ class McpServers:
 
         self._stops.append(stop)
         self._serving.append(asyncio.run_coroutine_threadsafe(serve(), self._loop))
-        return ready.result(self._timeout_s + _JOIN_GRACE_S)
+        return ready.result(self._wait_s)
 
     async def _list(self, client: Client) -> list[mcp_types.Tool]:
         tools: list[mcp_types.Tool] = []
@@ -136,7 +203,7 @@ class McpServers:
         tools: list[Tool] = []
         for server, spec in servers.items():
             try:
-                client = self._open(spec)
+                client = self._open(server, spec)
                 listed = self._run(self._list(client))
             except Exception:  # noqa: BLE001 — a missing binary, a refused URL, a hung handshake: warn, never fail boot.
                 LOGGER.warning(
