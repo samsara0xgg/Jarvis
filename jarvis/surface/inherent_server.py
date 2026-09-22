@@ -422,6 +422,11 @@ class InherentDeps:
     # shape plus ``outcome``. ``None`` leaves both routes unregistered.
     work_state_read: Callable[[], dict[str, Any]] | None = None
     work_state_refresh: Callable[[], Awaitable[dict[str, Any]]] | None = None
+    # Spec §18.3: the conversation window reads the memory.db rows the
+    # backend's own history starts from, oldest first, past a ``seq``
+    # cursor. ``(after, limit) -> {"since", "rows"}``; ``None`` leaves the
+    # route unregistered.
+    conversation_read: Callable[[int, int], dict[str, Any]] | None = None
 
 
 class _FrameRateLimiter:
@@ -1098,6 +1103,14 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0915 — one cl
         async def work_state_refresh_now() -> dict[str, Any]:
             """ADR 0023: analyse now (or join the running analysis), then answer like ``GET``."""
             return await work_state_refresh()
+
+    if deps.conversation_read is not None:
+        conversation_read = deps.conversation_read
+
+        @app.get("/inherent/conversation")
+        async def conversation(after: int = 0, limit: int = 200) -> dict[str, Any]:
+            """Spec §18.3: the conversation of record past ``after`` (0 = the newest rows)."""
+            return conversation_read(after, limit)
 
     # ADR 0019 step 4: Allen's own Codex sessions, fed by scripts/codex_hook_log.py.
     codex_board: dict[str, CodexSession] = {}

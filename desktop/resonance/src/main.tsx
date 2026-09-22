@@ -114,7 +114,21 @@ function App() {
   const detail = s.results.find(r => r.id === s.detail);
   const focusInput = async () => { await window.jarvis?.focus(true); input.current?.focus(); };
   const composerReturn = useRef<'voice' | 'idle'>('idle');
-  const mode = (value: 'voice' | 'text' | 'idle') => { if (value === 'text' && s.mode !== 'text') composerReturn.current = s.mode; setPresencePreview('auto'); if (value === 'voice' && s.mode !== 'voice') feedback('voice-enter'); if (value !== 'voice' && s.mode === 'voice') feedback('voice-exit'); dispatch({ type: 'mode', mode: value }); setAdded(false); setSettings(false); if (value !== 'text') void window.jarvis?.focus(false); };
+  const mode = (value: 'voice' | 'text' | 'idle') => { if (value === 'text' && s.mode !== 'text') composerReturn.current = s.mode; setPresencePreview('auto'); if (value === 'voice' && s.mode !== 'voice') feedback('voice-enter'); if (value !== 'voice' && s.mode === 'voice') feedback('voice-exit'); dispatch({ type: 'mode', mode: value }); setAdded(false); setSettings(false); if (value !== 'text') void window.jarvis?.focus(false);
+    // Text mode keeps the conversation in view: the log opens with the composer unless another panel is up, and leaves with it.
+    if (value === 'text' && s.mode !== 'text') setPanel(p => p ?? 'transcript'); else if (value !== 'text' && s.mode === 'text' && panel === 'transcript') setPanel(null); };
+  // The log polls memory.db while it is open: the first load takes the newest page, every later tick only the rows past the last one held.
+  const lastSeq = useRef(0);
+  lastSeq.current = s.rows.length ? s.rows[s.rows.length - 1].seq : 0;
+  useEffect(() => {
+    if (!live || !transcriptOpen) return;
+    let stop = false;
+    const load = async () => { try { const rows = await runtime.current?.conversation(lastSeq.current); if (rows && !stop) dispatch({ type: 'rows', rows }); } catch { /* daemon away; the next tick retries */ } };
+    void load();
+    const id = setInterval(() => void load(), 2000);
+    return () => { stop = true; clearInterval(id); };
+  }, [transcriptOpen]);
+  const tail = s.reply && !s.rows.some(row => row.seq > s.openSeq && row.source !== 'allen') ? visible(s.reply) : '';
   // Starting a GPT-Live session opens the capsule too, so the clock and subtitles have somewhere to live.
   const toggleLive = () => { if (!live || liveBusy) return; if (s.live.state !== 'active' && s.mode === 'idle') mode('voice'); void runtime.current?.controls({ live: s.live.state === 'active' ? 'stop' : 'start' }); };
   useEffect(() => { if (s.mode !== 'text') return; const t = setTimeout(() => void focusInput(), 80); return () => clearTimeout(t); }, [s.mode]);
@@ -184,7 +198,7 @@ function App() {
     el.addEventListener('capsule-motion', update);
     window.addEventListener('resize', update);
     return () => { el.removeEventListener('animationstart', transition); el.removeEventListener('scroll', update, true); el.removeEventListener('capsule-motion', update); el.removeEventListener('transitionrun', transition); cancelAnimationFrame(frame); observer.disconnect(); window.removeEventListener('resize', update); };
-  }, [s.mode, s.inbox, showInbox, s.detail, s.reply, s.phase, settings, added, opacity, glassStrength, s.results.length, s.attachment, dismissing.length, inboxExpanded, replying, followupMessage, s.subtitles.length, s.live.state, s.live.reason, s.live.notice, panel, s.soundMuted]);
+  }, [s.mode, s.inbox, showInbox, s.detail, s.reply, s.phase, settings, added, opacity, glassStrength, s.results.length, s.attachment, dismissing.length, inboxExpanded, replying, followupMessage, s.subtitles.length, s.rows.length, s.live.state, s.live.reason, s.live.notice, panel, s.soundMuted]);
   useCapsuleDrag(!lab);
   const send = () => {
     if (!s.draft.trim() || s.phase === 'processing') return;
@@ -275,7 +289,7 @@ function App() {
         {added && <section className="addition glass" data-glass="18" data-interactive><button onClick={() => { dispatch({ type: 'attachment' }); setAdded(false); }}><Paperclip size={18}/>{s.attachment ? '移除示例附件' : '附加示例便笺'}</button><p>仅使用预置示例，不读取本地文件。</p></section>}
         {s.attachment && <div className="attachment" data-interactive><Paperclip size={13}/>示例便笺.txt<Button label="移除示例附件" onClick={() => dispatch({ type: 'attachment' })}><X size={12}/></Button></div>}
         {s.phase === 'error' && <section className="error-panel glass" data-glass="18" data-interactive><div><strong>暂时没有连上</strong><p>{live ? 'Jarvis 服务没有响应，正在重连。' : '演示连接失败。你可以重试或继续打字。'}</p></div><Button label={live ? '立即重连' : '重试模拟连接'} onClick={retry}><ArrowCounterClockwise/></Button></section>}
-        {!s.inbox && <div className={`shared-panel ${panel ? 'shared-panel-open glass' : ''}`} data-glass={panel ? "20" : undefined} data-interactive={panel ? true : undefined}>{panel === 'dashboard' ? <DashboardPreview embedded port={runtimePort} onClose={closePanel}/> :<LiveTranscript embedded={!!panel} lines={s.subtitles} open={transcriptOpen} muted={s.soundMuted} active={s.live.state === 'active'} clock={liveClock} onClose={closeTranscript}/>}</div>}
+        {!s.inbox && <div className={`shared-panel ${panel ? 'shared-panel-open glass' : ''}`} data-glass={panel ? "20" : undefined} data-interactive={panel ? true : undefined}>{panel === 'dashboard' ? <DashboardPreview embedded port={runtimePort} onClose={closePanel}/> :<LiveTranscript embedded={!!panel} rows={s.rows} tail={tail} sessionId={s.live.sessionId} lines={s.subtitles} open={transcriptOpen} muted={s.soundMuted} active={s.live.state === 'active'} clock={liveClock} onClose={closeTranscript}/>}</div>}
         {s.reply && !s.inbox && <section className="reply glass" data-glass="18" data-interactive><div className="section-heading"><span>{live ? '回复' : '示例回复'}</span><Button label="复制回复" onClick={() => void copy(visible(s.reply))}>{copied ? <Check size={16}/> : <Copy size={16}/>}</Button></div><p>{visible(s.reply)}</p></section>}
         {showInbox && <section className={`inbox ${s.inbox ? 'is-open' : 'is-closing'} ${stacked ? 'is-stacked' : 'is-expanded'} ${s.detail ? 'has-detail' : ''}`} inert={!s.inbox} aria-hidden={!s.inbox} aria-label="示例通知" data-interactive>
           {s.results.length === 0 && <div className="empty glass" data-glass="18"><Bell size={20}/><p>暂时没有待查看的事项</p><small>任务结果、待回应事项和你设定的提醒会出现在这里。</small></div>}

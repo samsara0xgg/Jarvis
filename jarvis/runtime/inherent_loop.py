@@ -180,7 +180,13 @@ from jarvis.state.input_submission_inbox import (
     submit_text_once,
 )
 from jarvis.state.lifecycle_terminal import terminalize_confirmation
-from jarvis.state.memory_db import MemorySettings, SessionSettings, append_record, brief_note
+from jarvis.state.memory_db import (
+    MemorySettings,
+    SessionSettings,
+    append_record,
+    brief_note,
+    conversation_rows,
+)
 from jarvis.state.projections import PendingConfirmations, rebuild_projections
 from jarvis.state.trigger_consumption import trigger_was_consumed
 from jarvis.surface import (
@@ -4717,6 +4723,18 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         # the loop thread) so the dashboard routes can hold its read model
         # and on-demand poll; its periodic task joins `watchers` below.
         usage_observer = _make_usage_observer(runtime)
+        window_memory = runtime.memory
+
+        def _read_conversation(after: int, limit: int) -> dict[str, Any]:
+            """Spec §18.3: the window's rows past ``after`` and the history floor they start at."""
+            since = runtime.session.history_since
+            rows = (
+                []
+                if window_memory is None
+                else conversation_rows(window_memory.db_path, since=since, after=after, limit=limit)
+            )
+            return {"since": since, "rows": rows}
+
         deps = InherentDeps(
             submit_callable=submit_callable,
             broadcaster=broadcaster,
@@ -4739,6 +4757,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 if runtime.work_state is None
                 else functools.partial(_refresh_work_state_now, runtime.work_state)
             ),
+            conversation_read=None if window_memory is None else _read_conversation,
             barge_in_confirm_callable=(
                 duplex_voice_session.confirm_ptt_barge_in
                 if duplex_voice_session is not None and duplex_voice_session.barge_in_armed

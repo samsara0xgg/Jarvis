@@ -444,6 +444,41 @@ def brief_note(path: Path, *, max_chars: int, now: datetime | None = None) -> st
     return _assemble()
 
 
+def conversation_rows(
+    path: Path, *, since: str = "", after: int = 0, limit: int = 200,
+) -> list[dict[str, object]]:
+    """Records for the conversation window, oldest first, each with its ``seq``.
+
+    ``after`` is the ``seq`` (rowid) the client already holds: 0 asks for
+    the newest ``limit`` rows, anything else for the rows past it. ``since``
+    is the floor the prompt's history uses; earlier rows never appear here.
+    """
+    clauses = ["rowid > ?"] if after else []
+    params: list[object] = [after] if after else []
+    if since:
+        clauses.append("datetime(ts) >= datetime(?)")
+        params.append(since)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    order = "ORDER BY rowid" if after else "ORDER BY rowid DESC"
+    params.append(max(1, limit))
+    with closing(open_memory_db(path)) as conn:
+        # S608: `where` / `order` are assembled from fixed literals; every value is bound.
+        sql = f"SELECT rowid, id, ts, source, text FROM records {where} {order} LIMIT ?"  # noqa: S608
+        rows = conn.execute(sql, params).fetchall()
+    if not after:
+        rows.reverse()
+    return [
+        {
+            "seq": int(seq),
+            "id": str(rid),
+            "ts": str(ts),
+            "source": str(source),
+            "text": _plain(str(text)),
+        }
+        for seq, rid, ts, source, text in rows
+    ]
+
+
 def verbatim_stats(path: Path, *, since: str = "") -> VerbatimStats:
     """Size and time span of the records after the current anchor.
 
