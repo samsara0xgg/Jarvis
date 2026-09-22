@@ -34,19 +34,29 @@
   message. Its per-turn state never becomes a separate message.
 - Two providers in use accept consecutive `user` messages; nothing
   guarantees the next one will.
+- Allen, 2026-09-21, on the assembled request read back offline: the
+  history follows hermes-agent's shape as far as roles go ("live 的算
+  live-assistant"); tool rows wait until large-context tools run in
+  subagents ("工具结果现在先不着急").
 
 ## Decision
 
 The backend request is four parts, in this order: the `system` field is the
 rules file plus the profile block (`[关于 Allen]`, one line per `profile`
-row, omitted when empty); the first `user` message is the history block —
-the current summary, then every `records` row after the summary anchor and
-on or after `session.history_since`, with the retired envelope tags removed
-from the text; the last `user` message is this turn's utterance with one
-`[当前状态｜程序提供，不是用户说的话]` block prepended, holding the time line,
-the interaction mode derived from the trigger's channel, a pending
+row, omitted when empty); the history is the `records` rows after the
+summary anchor and on or after `session.history_since`, replayed one
+message per row with the role read off `source` — `allen` is `user`,
+`jarvis` and `jarvis_live` are `assistant` — each line keeping its
+`[ts] source:` prefix so the model can tell Live's own words from the
+backend's, the retired envelope tags removed from the text, adjacent rows
+of one role joined into one message, and the current summary ahead of them
+as a `user` message; the last `user` message is this turn's utterance with
+one `[当前状态｜程序提供，不是用户说的话]` block prepended, holding the time
+line, the interaction mode derived from the trigger's channel, a pending
 confirmation ask if one is live, and a one-line count of actions still
-running; `tools` is the registry surface for `jarvis_llm`. No other note
+running — a history that ends on an unanswered `allen` row folds that row
+in ahead of the block, so no request carries two `user` messages in a row;
+`tools` is the registry surface for `jarvis_llm`. No other note
 enters the request: the Status Board card is retired (the observer keeps
 feeding the dashboard). Records before `history_since` stay in memory.db,
 reachable through `search_records` / `read_records`, and are never shown to
@@ -78,21 +88,38 @@ the model nor folded into a summary. The backend is not asked for
 - **Profile as the first `user` message** — the model sometimes answers it;
   spec §10.5 lists the stable profile in the cached head, which is the
   system field.
+- **The history as one text block in the first `user` message** (the shape
+  shipped earlier the same day) — the model reads its own answers as
+  reported speech inside a user message, and Live's answers as
+  indistinguishable from its own; the rows already are the conversation,
+  so replaying them by role costs nothing and removes the transcript
+  framing.
+- **A `role` column in `records`** — `source` already names the speaker;
+  the wire role is a rendering rule over it, and a column would have to
+  be kept in step with it.
+- **A distinct wire role for Live's answers** — providers accept only
+  `user` / `assistant` / `tool` / `system`; the `jarvis_live:` label
+  inside the line is what tells them apart.
+- **Tool calls and results as rows now** — the backend's tool results run
+  to thousands of characters (web pages, record searches), so rows of them
+  need the pruning hermes-agent applies before any summary; large-context
+  tools are to move into subagents whose returns are short, and the rows
+  wait for that.
 
 ## Consequences
 
 - The local MiniMax speech chain now receives the whole answer as speech
   until the voice provider boundary replaces it; that chain was already
   slated for replacement by Live.
-- The history block is still one text block, not one message per row; tool
-  calls and results are not in memory.db. The role-based history with
-  provenance columns is a separate decision.
+- Tool calls and results are still not in memory.db: the next turn's
+  request sees what the previous turn answered, not what it looked up.
+  Tool rows come after large-context tools move into subagents.
 - `history_since` is a hand-set date in `config/jarvis.yaml`; moving the
   start of history is an operator action, and the Live brief (ADR-0016 D7)
   does not read it.
 - The time line carries minutes and a "距上次交流" gap, so the tail of the
-  request changes every turn; only the system field and the history block
-  are cache-stable, by design.
+  request changes every turn; only the system field and the history
+  messages are cache-stable, by design.
 - The pending-confirmation and running-actions lines now render in Chinese
   inside the state block; ADR-0012 D4's wording and ADR-0009 D6's note
   rendering are replaced here, their files stay as written.

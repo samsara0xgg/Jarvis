@@ -93,16 +93,21 @@ def _summary(*cited: str) -> str:
     return "\n".join(lines)
 
 
+def _flat(history: tuple[dict[str, str], ...]) -> str:
+    return "\n".join(turn["content"] for turn in history)
+
+
 def _check_render_before_summary(db: Path) -> None:
     ctx = render_context(db, exclude_id=_rid(10), now=NOW)
     _ok(ctx.profile == "", "an empty profile renders no block")
-    _ok(ctx.history.startswith("[对话记录"), "history leads with the records")
+    _ok(bool(ctx.history) and ctx.history[0]["content"].startswith("[2026-"),
+        "history leads with the records")
     _ok(
-        all(RECORD_TEXT.format(i=i) in ctx.history for i in range(1, 10)),
+        all(RECORD_TEXT.format(i=i) in _flat(ctx.history) for i in range(1, 10)),
         "every earlier record is verbatim before a summary",
     )
-    _ok(RECORD_TEXT.format(i=10) not in ctx.history, "the current input is excluded")
-    _ok("[对话摘要" not in ctx.history, "no summary block before a compaction")
+    _ok(RECORD_TEXT.format(i=10) not in _flat(ctx.history), "the current input is excluded")
+    _ok("[对话摘要" not in _flat(ctx.history), "no summary block before a compaction")
     _ok(ctx.now.startswith("时间：2026-09-14T12:00-"), "the time line is separate")  # noqa: RUF001 — Chinese punctuation is intentional.
     _ok("距上次交流 1 天" in ctx.now, "the gap suffix appears past 30 minutes")
     stats = verbatim_stats(db)
@@ -150,11 +155,11 @@ def _check_summary_rows(db: Path) -> None:
     _ok(landed, "first summary lands")
     ctx = render_context(db, exclude_id=_rid(10), now=NOW)
     anchor_ts = iso_seconds(NOW - timedelta(days=12))
-    _ok(f"[对话摘要 · 覆盖到 {anchor_ts}" in ctx.history and first in ctx.history,
+    _ok(f"[对话摘要 · 覆盖到 {anchor_ts}" in _flat(ctx.history) and first in _flat(ctx.history),
         "render shows the summary with its anchor time")
     _ok(
-        all(RECORD_TEXT.format(i=i) in ctx.history for i in range(6, 10))
-        and not any(RECORD_TEXT.format(i=i) in ctx.history for i in range(1, 6)),
+        all(RECORD_TEXT.format(i=i) in _flat(ctx.history) for i in range(6, 10))
+        and not any(RECORD_TEXT.format(i=i) in _flat(ctx.history) for i in range(1, 6)),
         "render shows only the records after the anchor verbatim",
     )
     stale = append_summary(db, base_id=None, upto_record_id=_rid(7), summary=first,
@@ -169,10 +174,10 @@ def _check_summary_rows(db: Path) -> None:
                        model="test", input_chars=1000, output_chars=len(second)),
         "a summary extending the current one lands",
     )
-    before = render_context(db, exclude_id=_rid(10), now=NOW).history
+    before = _flat(render_context(db, exclude_id=_rid(10), now=NOW).history)
     with closing(open_memory_db(db)) as conn:
         conn.execute("VACUUM")
-    after = render_context(db, exclude_id=_rid(10), now=NOW).history
+    after = _flat(render_context(db, exclude_id=_rid(10), now=NOW).history)
     _ok(before == after and RECORD_TEXT.format(i=8) in after and second in after,
         "records after the anchor identical before and after VACUUM")
     with closing(open_memory_db(db)) as conn:
@@ -185,7 +190,7 @@ def _check_brief(db: Path) -> None:
         conn.execute("INSERT INTO profile (id, ts, text) VALUES ('p1', ?, '住多伦多')",
                      (iso_seconds(NOW),))
     full = brief_note(db, max_chars=100_000, now=NOW)
-    _ok(full.startswith("[关于 Allen]\n- 住多伦多\n[现在]"), "brief leads with profile and time")
+    _ok(full.startswith("[关于 Allen]\n- 住多伦多\n时间："), "brief leads with profile and time")  # noqa: RUF001 — Chinese punctuation is intentional.
     _ok("原话细节请向后台查询" in full and "search_records" not in full,
         "brief tells Live to ask the backend, not to call a tool")
     _ok(

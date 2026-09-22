@@ -55,7 +55,7 @@ CREATE TABLE IF NOT EXISTS summaries (
 
 DEFAULT_SEARCH_LIMIT: Final[int] = 20
 _WEEKDAYS: Final[str] = "一二三四五六日"
-# The [现在] line carries a "距上次交流" suffix once the gap passes this.
+# The 时间 line carries a "距上次交流" suffix once the gap passes this.
 _GAP_NOTE_AFTER: Final[timedelta] = timedelta(minutes=30)
 
 # Answers written before 2026-09-21 carry the retired <voice>/<document>
@@ -157,7 +157,7 @@ class MemoryContext(NamedTuple):
     """The prompt blocks rendered from memory.db for one turn."""
 
     profile: str  # [关于 Allen] lines for the system prompt; "" when the profile is empty
-    history: str  # current summary, then verbatim records: stable between turns
+    history: tuple[dict[str, str], ...]  # summary, then one message per record, by role
     now: str  # the time line: changes every turn, so it goes after the history
 
 
@@ -340,15 +340,25 @@ def _now_line(moment: datetime, last_ts: str | None) -> str:
     return f"{line} · 距上次交流 {' '.join(parts)}"
 
 
+def _append_turn(turns: list[dict[str, str]], role: str, content: str) -> None:
+    """Add one message; a repeated role joins the previous message instead."""
+    if turns and turns[-1]["role"] == role:
+        turns[-1]["content"] = f"{turns[-1]['content']}\n{content}"
+    else:
+        turns.append({"role": role, "content": content})
+
+
 def render_context(
     path: Path, *, exclude_id: str, since: str = "", now: datetime | None = None,
 ) -> MemoryContext:
     """Render the decision-path prompt blocks in one consistent read.
 
     ``profile`` goes to the system prompt. ``history`` is the current summary
-    (if any) and every record after its anchor and on or after ``since``, in
-    full; it only grows at its end between compactions, so the provider's
-    prefix cache covers it. ``now`` is the per-turn time line.
+    (if any) as a ``user`` message, then one message per record after its
+    anchor and on or after ``since``: ``allen`` rows are ``user``, every
+    other source is ``assistant``, and adjacent rows of one role join into
+    one message. It only grows at its end between compactions, so the
+    provider's prefix cache covers it. ``now`` is the per-turn time line.
     ``exclude_id`` is the current turn's own utterance, which the prompt
     already carries as the live user message.
     """
@@ -359,20 +369,21 @@ def render_context(
         anchor = _effective_anchor(conn, current.anchor_rowid if current else None, since)
         records = _records_after(conn, anchor)
     profile_block = "\n".join(["[关于 Allen]", *profile]) if profile else ""
-    lines: list[str] = []
+    turns: list[dict[str, str]] = []
     if current is not None:
-        lines.append(
+        _append_turn(
+            turns,
+            "user",
             f"[对话摘要 · 覆盖到 {current.anchor_ts} · "
-            "措辞、数字、是否同意 用 read_records 按 record_id 回查原话]",
+            "措辞、数字、是否同意 用 read_records 按 record_id 回查原话]\n"
+            f"{current.summary}",
         )
-        lines.append(current.summary)
-    lines.append("[对话记录, 全文, 时间正序]")
     shown = [record for record in records if record[0] != exclude_id]
-    if not shown:
-        lines.append("(无)")
-    lines.extend(f"[{ts}] {source}: {_plain(text)}" for _, ts, source, text in shown)
+    for _, ts, source, text in shown:
+        role = "user" if source == "allen" else "assistant"
+        _append_turn(turns, role, f"[{ts}] {source}: {_plain(text)}")
     last_ts = shown[-1][1] if shown else (current.anchor_ts if current else None)
-    return MemoryContext(profile_block, "\n".join(lines), _now_line(moment, last_ts))
+    return MemoryContext(profile_block, tuple(turns), _now_line(moment, last_ts))
 
 
 def _summary_sections(summary: str) -> list[str]:

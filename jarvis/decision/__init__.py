@@ -43,7 +43,7 @@ import logging
 import time
 import unicodedata
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
@@ -597,11 +597,11 @@ class DecideContext:
     wave1_features: Wave1FeatureFlags = field(default_factory=Wave1FeatureFlags)
     cancellation_checkpoint: Callable[[str], None] | None = None
     request_admission: Callable[[str], None] | None = None
-    # The history block (profile, current summary, verbatim records) and
-    # the per-turn time line, rendered by the composition root from
+    # The history (current summary, then one message per record, by role)
+    # and the per-turn time line, rendered by the composition root from
     # memory.db. The history goes first in the prompt and only grows at
     # its end between compactions; the time line goes after it.
-    memory_note: str | None = None
+    history: Sequence[Mapping[str, str]] = ()
     time_note: str | None = None
     # ADR-0008 Step 8. ``routine_stream`` is the pre-routed streaming seam the
     # runtime bound for this run (None on every other turn, so decide() keeps
@@ -719,13 +719,14 @@ def _insert_system_notes(
 ) -> None:
     """History ahead of the conversation; this turn's state on the user message.
 
-    The history block is byte-identical between turns except at its end,
-    so it sits at index 0 for the provider's prefix cache (spec §10.5).
-    Everything that changes per turn — the time line, the interaction
-    mode, a pending confirmation ask, actions still running — rides at
-    the head of this turn's own user message under a header that says it
-    is not the user's words, so a request never carries two user
-    messages in a row.
+    The history messages are byte-identical between turns except at their
+    end, so they sit at the front for the provider's prefix cache (spec
+    §10.5). Everything that changes per turn — the time line, the
+    interaction mode, a pending confirmation ask, actions still running —
+    rides at the head of this turn's own user message under a header that
+    says it is not the user's words. A history ending on an unanswered
+    user row folds that row in ahead of the header, so a request never
+    carries two user messages in a row.
     """
     status = _current_status_block(packet, ctx)
     if status is not None:
@@ -733,8 +734,10 @@ def _insert_system_notes(
             if message.get("role") == "user":
                 message["content"] = f"{status}\n\n{message['content']}"
                 break
-    if ctx.memory_note:
-        messages.insert(0, {"role": "user", "content": ctx.memory_note})
+    head = [dict(turn) for turn in ctx.history]
+    if head and head[-1]["role"] == "user" and messages and messages[0].get("role") == "user":
+        messages[0]["content"] = f"{head.pop()['content']}\n\n{messages[0]['content']}"
+    messages[0:0] = head
 
 
 # --- decide() entry point ---------------------------------------------------

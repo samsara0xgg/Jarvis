@@ -2409,7 +2409,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             # way tier0_table is threaded.
             confirm_grammar_table=runtime.confirm_grammar_table,
             wave1_features=runtime.wave1_features,
-            memory_note=memory_context.history if memory_context is not None else None,
+            history=memory_context.history if memory_context is not None else (),
             time_note=memory_context.now if memory_context is not None else None,
             cancellation_checkpoint=run.check_cancelled if run is not None else None,
             request_admission=(
