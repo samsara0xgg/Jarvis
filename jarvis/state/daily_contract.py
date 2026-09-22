@@ -56,8 +56,10 @@ _REFS = {
     "maxItems": 20,
     "uniqueItems": True,
     "description": (
-        "Evidence references: record:<record_id>, event:<event_uid>, or the exact timesink: / "
-        "timesink-capture: reference returned by a tool. For activity evidence, copy values "
+        "Evidence references: record:<record_id>, event:<event_uid>, git:<repo path>:<sha>, "
+        "codex-session:<file path>, or the exact timesink: / timesink-capture: reference "
+        "returned by a tool. For activity "
+        "evidence, copy values "
         "from source_refs, NOT the activity id (activity:... is a lookup ID, not a source "
         "reference)."
     ),
@@ -121,6 +123,13 @@ SCHEMAS: dict[str, dict[str, Any]] = {
             "force": {"type": "boolean"},
         }
     ),
+    "daily_work_report": object_fields(
+        {
+            "local_date": text_field(10),
+            "timezone": text_field(100),
+            "regenerate": {"type": "boolean"},
+        }
+    ),
     "search_knowledge": object_fields(
         {
             "query": text_field(500),
@@ -181,7 +190,8 @@ SCHEMAS: dict[str, dict[str, Any]] = {
         {
             "local_date": text_field(10),
             "timezone": text_field(100),
-            "content": text_field(16000),
+            # Read back in pages, so the day's citations fit without being dropped.
+            "content": text_field(48000),
             "source_refs": _REFS,
             "coverage": _COVERAGE,
             "expected_version": _VERSION,

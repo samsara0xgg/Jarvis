@@ -117,6 +117,7 @@ from jarvis.execution.tools import (
     turn_action_ids,
 )
 from jarvis.execution.workers import Workers, make_worker_tools
+from jarvis.runtime.daily_report import DailyReportService
 from jarvis.runtime.stream_bridge import LoopBoundTokenStream
 from jarvis.runtime.work_state import WorkStateService, build_analyst
 from jarvis.shared import CallerPrincipal, Event
@@ -848,6 +849,8 @@ def _timesink_db_path(full_config: Mapping[str, Any]) -> Path | None:
 
 _FALLBACK_TIMESINK_POLL_INTERVAL_S: Final[float] = 300.0
 _FALLBACK_WORK_STATE_PRESET: Final[str] = "fast"
+_DAILY_REPORT_TIMEOUT_S: Final[float] = 240.0
+"""ADR 0024 — a whole day of material and a long written report, not one short answer."""
 
 
 def _timesink_poll_interval_s(config: Mapping[str, Any]) -> float:
@@ -876,6 +879,38 @@ def _work_state_timezone(config: Mapping[str, Any]) -> tzinfo | None:
     except ZoneInfoNotFoundError as exc:
         message = f"work_state.timezone must be an IANA zone name: {raw!r}"
         raise ValueError(message) from exc
+
+
+def _daily_report_preset(config: Mapping[str, Any]) -> str:
+    """``daily_report.preset`` — the llm preset the report runs on (ADR 0024)."""
+    block = config.get("daily_report")
+    raw = block.get("preset") if isinstance(block, Mapping) else None
+    if isinstance(raw, str) and raw.strip():
+        return raw
+    return _work_state_preset(config)
+
+
+def _codex_sessions_path() -> Path | None:
+    """Codex's own session directory when this machine has one; ADR 0024's agent material."""
+    root = Path.home() / ".codex" / "sessions"
+    return root if root.is_dir() else None
+
+
+def _daily_report_tool_run(
+    service: DailyReportService,
+) -> Callable[[Mapping[str, Any], ToolContext], dict[str, Any]]:
+    """Bind the service to the flat tool's ``(args, ctx)`` handler shape."""
+
+    def run(args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
+        return service.run(
+            ctx.conn,
+            local_date=args.get("local_date"),
+            timezone=args.get("timezone"),
+            regenerate=bool(args.get("regenerate", False)),
+            action_id=ctx.action_id,
+        )
+
+    return run
 
 
 def _work_state_tool_refresh(
@@ -1515,11 +1550,28 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
         model=_work_state_preset(full_config),
         tz=_work_state_timezone(full_config),
     )
+    daily_report = DailyReportService(
+        memory_path=memory.db_path,
+        timesink_path=_timesink_db_path(full_config),
+        repos=_observer_repo_paths(full_config),
+        reporter=build_analyst(
+            full_config,
+            _daily_report_preset(full_config),
+            pricing_path=repo_root / "data" / "pricing.json",
+            account_cost=wave1_features.exactly_once_cost_accounting,
+            kind="daily_report",
+            timeout_s=_DAILY_REPORT_TIMEOUT_S,
+        ),
+        model=_daily_report_preset(full_config),
+        tz=_work_state_timezone(full_config),
+        codex_sessions_path=_codex_sessions_path(),
+    )
     registry = build_default_registry(
         memory_db_path=memory.db_path,
         observed_repos=_observer_repo_paths(full_config),
         timesink_db_path=_timesink_db_path(full_config),
         work_state_refresh=_work_state_tool_refresh(work_state),
+        daily_report_run=_daily_report_tool_run(daily_report),
         confirmation_dispatch_outbox=wave1_features.confirmation_dispatch_outbox,
         obsidian_vault_root=_obsidian_vault_root(full_config),
         web_search_max_results=web_search_max_results,

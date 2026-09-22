@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from jarvis.state import timesink
@@ -19,13 +20,13 @@ from jarvis.state.daily_contract import (
     text_chunk,
     window,
 )
+from jarvis.state.daily_report import codex_session, git_show
 from jarvis.state.daily_store import high_water
 from jarvis.state.event_log import read_log_epoch
 
 if TYPE_CHECKING:
     import sqlite3
     from collections.abc import Callable
-    from pathlib import Path
 
 _ACTIVITY_TYPES = ("repo.state_observed", "project.commit_seen")
 
@@ -216,6 +217,28 @@ def _timesink_source(  # noqa: PLR0913 — one paging pin per source, threaded f
     return found["watermark"], found["revision"]
 
 
+def _report_source(identity: str) -> tuple[str, str]:
+    """The commit or the Codex session behind a daily-report reference, as text."""
+    if identity.startswith("git:"):
+        repo, _, sha = identity.partition(":")[2].rpartition(":")
+        shown = git_show(repo, sha)
+        if shown is None:
+            msg = "Saved commit does not exist"
+            raise DailyError(msg, "not_found")
+        return shown, "git.commit"
+    path = Path(identity.partition(":")[2])
+    if not path.is_file():
+        msg = "Saved Codex session does not exist"
+        raise DailyError(msg, "not_found")
+    session = codex_session(path)
+    turns = "\n".join(f"{when} {who}: {text}" for when, who, text in session["turns"])
+    head = (
+        f"Codex session {session['id']} ({session['originator']}, {session['cwd']}); "
+        "the agent's own account, not a verified result\n"
+    )
+    return head + turns, "codex.session"
+
+
 def read_activity(
     conn: sqlite3.Connection,
     args: dict[str, Any],
@@ -266,6 +289,24 @@ def read_activity(
             "total_chars": len(original),
             "complete": end == len(original),
             "next_cursor": make_cursor(identity, [end]) if end < len(original) else None,
+        }
+    if identity.startswith(("git:", "codex-session:")):
+        # ADR 0025: a daily report cites commits and Codex sessions; the original behind
+        # either is read from where it lives, paged like every other saved observation.
+        text, kind = _report_source(identity)
+        [offset] = cursor_position(args.get("cursor"), identity, [0])
+        chunk, end = text_chunk(text, offset)
+        return {
+            "id": identity,
+            "source_refs": [identity],
+            "kind": kind,
+            "observed_at": None,
+            "content": chunk,
+            "content_format": "text",
+            "offset": offset,
+            "total_chars": len(text),
+            "complete": end == len(text),
+            "next_cursor": make_cursor(identity, [end]) if end < len(text) else None,
         }
     if not identity.startswith("activity:"):
         msg = "Use the activity ID returned by query_activity"

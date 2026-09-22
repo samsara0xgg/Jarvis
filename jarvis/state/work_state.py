@@ -523,6 +523,13 @@ def _git_section(
             continue
         key = f"g{index + 1}"
         g.refs[key] = f"event:{uid}"
+        text = _squeeze(
+            str(payload.get("subject") or payload.get("last_commit_subject") or ""), 160
+        )
+        if kind == "project.commit_seen":
+            # `at` is the observation time; a commit seen late still carries its own time.
+            committed = datetime.fromtimestamp(payload["committed_at_ms"] / 1000, UTC)
+            text = f"提交于 {committed.astimezone(g.tz):%m-%d %H:%M}：{text}"
         items.append(
             {
                 "key": key,
@@ -531,9 +538,7 @@ def _git_section(
                 ),
                 "repo": payload.get("repo_path"),
                 "kind": "commit" if kind == "project.commit_seen" else "repo",
-                "text": _squeeze(
-                    str(payload.get("subject") or payload.get("last_commit_subject") or ""), 160
-                ),
+                "text": text,
             }
         )
     items.reverse()

@@ -75,7 +75,15 @@ observer:
   poll_interval_s: 60
   # 被观察的 repo（绝对路径，`~` 会展开）。空列表 = 不启动观察器任务。
   # Allen 自己维护这份清单：观察器只读，不 fetch，不写外部世界。
-  repos: []
+  # 按路径观察：每个 checkout / worktree 单独一行，主仓库不覆盖其它 worktree。
+  # 只列当前在用的目录；worktree 删掉后要从这里移除，否则每轮都记一条跳过警告。
+  repos:
+    - ~/Projects/jarvis
+    - ~/Projects/jarvis/.claude/worktrees/timesink-fixes
+    - ~/.codex/worktrees/daily-loop-tools/jarvis
+    - ~/Projects/timesink
+    - ~/Projects/timesink-screen-capture
+    - ~/Projects/malibu-workshop
   # Read saved app/window/Chrome spans; TimeSink remains the only collector/writer.
   timesink:
     enabled: true
@@ -103,7 +111,13 @@ observer:
 work_state:
   preset: fast
   # 「今天」和时间显示按这个时区算；留空 = 系统本地时区。
+  # ADR 0024 的每日工作报告也用这个时区切「昨天」。
   timezone: America/Vancouver
+
+# ADR 0024 — 每日工作报告：一整天的材料比当前状态大得多，想换更强的模型就
+# 单独指定；不配置就沿用 work_state.preset。
+# daily_report:
+#   preset: deep
 
 # ADR-0011 D7 — L4 只读工具配置（tools.py 不自己读 YAML，composition
 # root 在 build_default_registry() 时把值传进去）。

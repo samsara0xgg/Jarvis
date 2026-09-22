@@ -1,0 +1,742 @@
+"""Daily work report request and reply handling (ADR 0024): the skill's model call.
+
+The skill's instructions are the system prompt; the day's evidence is keyed
+material; for two rounds the model may search the day and ask for the
+originals behind a few keys, then it must report through ``report_daily_work``.
+The report's rules are enforced here when the saved text is composed, never by
+prompt alone.
+"""
+
+from __future__ import annotations
+
+import json
+from typing import TYPE_CHECKING, Any, NoReturn
+
+from jarvis.shared.skills import load_skill
+from jarvis.state.daily_report import DETAIL_TEXT, MAX_DETAILS, MAX_HITS
+
+if TYPE_CHECKING:
+    from datetime import datetime
+
+    from jarvis.decision.llm import ChatResult
+    from jarvis.state.daily_report import DayEvidence
+
+SKILL = load_skill("daily-work-report")
+REPORT_TOOL_NAME = "report_daily_work"
+DETAILS_TOOL_NAME = "request_details"
+SEARCH_TOOL_NAME = "search_material"
+QUERY_MORE = (
+    "以上是查询结果。还可以再查询一轮（search_material、request_details 可同时调用），"
+    "或者直接调用 report_daily_work 汇报。"
+)
+"""Served after the first query round: one more round of questions is allowed."""
+REPORT_NOW = "以上是查询结果。材料到此为止，现在必须调用 report_daily_work 汇报这一天。"
+"""Served after the last query round: a model that keeps asking is told to report."""
+REPORT_AGAIN = "上一次汇报无法解析，请按 schema 重新调用 report_daily_work，内容可以更简短。"
+"""Served after an unusable reply: providers malform or truncate long arguments now and then."""
+STATUSES = ("browsed", "discussed", "attempted", "completed")
+CONTENT_LIMIT = 44000
+"""Reports exceeding this budget fail without saving or dropping their citation index."""
+MAX_SOURCE_REFS = 20
+_STATUS_LABELS = {
+    "browsed": "浏览",
+    "discussed": "讨论",
+    "attempted": "尝试/进行中",
+    "completed": "完成",
+}
+# The proof label names what the item actually cites — which commit, which of Allen's records —
+# so a reader sees at once when a completed item leans on an unrelated commit or on nothing.
+# It never says the source supports the claim: only the report model can read a quote.
+_PROOF_NONE = {
+    "agent": "依据：仅 Codex 会话自述",
+    "screen": "依据：仅屏幕/应用记录",
+    "inferred": "依据：无有效引用",
+}
+_PROVEN = (
+    (True, "完成（有当天提交或 Allen 原话）"),
+    (False, "完成（无当天提交或 Allen 原话）"),
+)
+_REST = (("attempted", "进行中"), ("discussed", "讨论"), ("browsed", "浏览"))
+"""核心摘要 names each completed item after the model's prose and counts the rest."""
+_INLINE = {"completed": "完成", **dict(_REST)}
+"""A part's status inline after the item's title: 代码完成，部署进行中."""
+_NOT_VERIFIED = (
+    "状态（浏览/讨论/尝试/完成）是报告作者的判断；"
+    "运行时只标注每条引用的来源，既不核实来源是否支持这条结论，"
+    "也不核实事情是否真的做完。"
+)
+_MAX_ITEMS = 12
+_MAX_PARTS = 4
+"""Parts of one item with a status each: code, tests, deployment, an application."""
+_MAX_DECISIONS = 8
+_MAX_OPEN = 10
+_MAX_NEXT = 8
+_MAX_SUGGESTIONS = 6
+_MAX_UNCERTAINTIES = 10
+_TITLE = 80
+_PART = 12
+_TEXT = 400
+_SHORT = 240
+_SUMMARY = 1200
+_SERVED = 3000
+"""``summary_of`` serves the whole 核心摘要 section, digest included, not just the prose."""
+_SUMMARY_HEADING = "## 核心摘要"
+_REF_PREFIX = "引用："
+
+
+def _claim_schema(*fields: tuple[str, dict[str, Any]]) -> dict[str, Any]:
+    properties = dict(fields)
+    properties["refs"] = {"type": "array", "items": {"type": "string"}}
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": [*properties],
+    }
+
+
+REPORT_TOOL: dict[str, Any] = {
+    "name": REPORT_TOOL_NAME,
+    "description": "汇报这一天的工作报告；字段含义见系统指令中的报告格式。",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "summary": {"type": "string", "description": f"核心摘要，三句，不超过 {_SUMMARY} 字。"},
+            "items": {
+                "type": "array",
+                "maxItems": _MAX_ITEMS,
+                "description": "按工作事项归并的活动、产出与进展。",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string", "description": f"不超过 {_TITLE} 字。"},
+                        "activity": {
+                            "type": "string",
+                            "description": f"不超过 {_TEXT} 字，超出会在句末截断。",
+                        },
+                        "progress": {
+                            "type": "array",
+                            "minItems": 1,
+                            "maxItems": _MAX_PARTS,
+                            "description": (
+                                "这一项的进展，按部分分开：代码、测试、部署、申请等各一条，"
+                                "各带自己的 status 和 refs；单一事项只填一条，part 为 null。"
+                            ),
+                            "items": _claim_schema(
+                                (
+                                    "part",
+                                    {
+                                        "type": ["string", "null"],
+                                        "description": (
+                                            f"部分名，不超过 {_PART} 字；单一事项为 null。"
+                                        ),
+                                    },
+                                ),
+                                ("status", {"type": "string", "enum": list(STATUSES)}),
+                            ),
+                        },
+                    },
+                    "required": ["title", "activity", "progress"],
+                },
+            },
+            "decisions": {
+                "type": "array",
+                "maxItems": _MAX_DECISIONS,
+                "description": "重要决定与方案变化；rationale 有依据才填，否则 null。",
+                "items": _claim_schema(
+                    ("text", {"type": "string", "description": f"不超过 {_TEXT} 字。"}),
+                    (
+                        "rationale",
+                        {"type": ["string", "null"], "description": f"不超过 {_SHORT} 字。"},
+                    ),
+                ),
+            },
+            "open_items": {
+                "type": "array",
+                "maxItems": _MAX_OPEN,
+                "description": "未完成事项、阻碍与待确认问题。",
+                "items": _claim_schema(("text", {"type": "string"})),
+            },
+            "user_next_steps": {
+                "type": "array",
+                "maxItems": _MAX_NEXT,
+                "description": "Allen 本人明确表达的下一步；refs 必须含 who=allen 的记录键。",
+                "items": _claim_schema(("text", {"type": "string"})),
+            },
+            "suggestions": {
+                "type": "array",
+                "maxItems": _MAX_SUGGESTIONS,
+                "items": {"type": "string"},
+                "description": "你提出的建议，与 Allen 的承诺分开。",
+            },
+            "uncertainties": {
+                "type": "array",
+                "maxItems": _MAX_UNCERTAINTIES,
+                "items": {"type": "string"},
+                "description": "不确定之处、证据冲突、材料缺口。",
+            },
+        },
+        "required": [
+            "summary",
+            "items",
+            "decisions",
+            "open_items",
+            "user_next_steps",
+            "suggestions",
+            "uncertainties",
+        ],
+    },
+}
+DETAILS_TOOL: dict[str, Any] = {
+    "name": DETAILS_TOOL_NAME,
+    "description": (
+        f"索取至多 {MAX_DETAILS} 条条目的原文（屏幕 OCR 全文、对话原文、提交内容与改动文件、"
+        "Codex 会话的提问与最后回复），用材料或检索结果里的方括号键。"
+        f"原文超过 {DETAIL_TEXT} 字时只给开头；要读检索命中的那一段，填 around，"
+        "就返回含该关键字的段落及前后文（Codex 会话则返回含它的那一轮）。"
+        "最多两轮查询，之后必须用 report_daily_work 汇报。"
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "keys": {"type": "array", "items": {"type": "string"}, "maxItems": MAX_DETAILS},
+            "around": {
+                "type": "string",
+                "description": "可选；检索结果标了「全文 N 字」的条目，填命中的关键字。",
+            },
+        },
+        "required": ["keys"],
+    },
+}
+SEARCH_TOOL: dict[str, Any] = {
+    "name": SEARCH_TOOL_NAME,
+    "description": (
+        "在这一天的全部材料里按关键字检索——包括材料里因篇幅没列出的屏幕内容、窗口和对话记录——"
+        f"返回命中的键和一行上下文，最多 {MAX_HITS} 条。用来核对某个事实（某次提交、某句话、"
+        "某个页面、某个错误）当天是否真的出现过、出现在哪。可以和 request_details 同一轮调用；"
+        "最多两轮查询，之后必须用 report_daily_work 汇报。"
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {"query": {"type": "string", "description": "关键字或短语"}},
+        "required": ["query"],
+    },
+}
+
+
+class DailyReportParseError(ValueError):
+    """The model's reply was not a usable report."""
+
+
+def _lines(section: str, rows: list[dict[str, Any]], render: str) -> list[str]:
+    if not rows:
+        return []
+    return [f"## {section}", *(render.format(**row) for row in rows), ""]
+
+
+def render_material(evidence: DayEvidence) -> str:
+    """Render the keyed day as the model's only material."""
+    sections = evidence.sections
+    partial = "（这一天尚未结束，材料只到当前为止）" if evidence.window["partial"] else ""
+    out: list[str] = [
+        f"报告日期：{evidence.day}（{evidence.zone}）；"
+        f"证据窗口 {evidence.window['from']} 到 {evidence.window['to']}{partial}。",
+        "来源覆盖：" + ", ".join(f"{k}={v}" for k, v in evidence.coverage.items()) + "。",
+        "",
+    ]
+    if evidence.limits:
+        out += ["## 材料范围说明", *(f"- {limit}" for limit in evidence.limits), ""]
+    out += _lines(
+        "各应用时长（分钟，TimeSink 估计；不是有效工作时长）",
+        sections.get("apps", []),
+        "- {app}: {minutes}（{spans} 段）",
+    )
+    out += _lines(
+        "主要窗口（应用 — 标题，分钟，首次-最后）",
+        sections.get("windows", []),
+        "[{key}] {first}-{last} {app} — {title}（{minutes} 分钟，{spans} 段）",
+    )
+    out += _lines(
+        "屏幕内容（同一窗口同一小时归并；×n = 该小时内容变化次数；"
+        "文字为 OCR 摘要，原文用 request_details）",
+        sections.get("screen", []),
+        "[{key}] {hour} ×{count} {app} — {title}: {text}",
+    )
+    out += _lines(
+        "TimeSink 状态事件（锁屏/睡眠/空闲/暂停等，解释空白时段）",
+        sections.get("state_events", []),
+        "- {at} {kind} {phase}",
+    )
+    out += _lines(
+        "当天的对话记录（时间顺序；who=allen 为 Allen 的原话）",
+        sections.get("records", []),
+        "[{key}] {at} {who}: {text}",
+    )
+    out += _lines(
+        "当天的 Git 提交（本地仓库记录，同一提交跨 worktree 已合并；"
+        "late=True 表示当天才看到的旧提交，不算当天工作）",
+        sections.get("git", []),
+        "[{key}] 提交于 {committed}，观察于 {observed}，{sha} {subject}（{paths}）"
+        "late={late} {main}",
+    )
+    out += _lines(
+        "代理会话（Codex 本机会话文件；代理说的「已完成」「已合并」是它的自述，不是核实结果；"
+        "Claude Code 会话未收录；原文用 request_details）",
+        sections.get("agent", []),
+        "[{key}] {first}-{last} {app} @ {cwd}，{turns}：首问「{ask}」末答「{answer}」",
+    )
+    out += _lines(
+        "当天观察到的仓库状态",
+        sections.get("repo_states", []),
+        "[{key}] {at} {repo} 分支 {branch}，未提交改动 {dirty} 个文件，HEAD {head}",
+    )
+    out += _lines(
+        "上下文：未完成的本地待办（不是当天活动）",
+        sections.get("todos", []),
+        "[{key}] {title}（due {due_at}, {priority}, project {project}）",
+    )
+    out += _lines(
+        "上下文：已保存的知识（不是当天活动）",
+        sections.get("knowledge", []),
+        "[{key}] {kind}: {statement}",
+    )
+    out += _lines(
+        "上下文：前一天报告的摘录（用于解释延续和变化，不是当天活动）",
+        sections.get("previous", []),
+        "[{key}] {date}：{text}",
+    )
+    return "\n".join(out)
+
+
+def build_request(evidence: DayEvidence) -> tuple[str, list[dict[str, Any]]]:
+    """The skill's instructions as the system prompt plus one user message of material."""
+    content = (
+        f"以下是 {evidence.day} 的材料。可以先用 search_material 核对事实、用 request_details "
+        "索取原文（最多两轮），然后调用 report_daily_work 汇报。\n\n"
+        f"{render_material(evidence)}"
+    )
+    return SKILL.instructions, [{"role": "user", "content": content}]
+
+
+def requested_queries(result: ChatResult) -> list[tuple[str, str, Any]]:
+    """Each search or details call as (call id, tool, argument); empty once the model reported.
+
+    A search carries its query string, a details request its keys, bounded,
+    with the word to read around (or None).
+    """
+    if any(call.name == REPORT_TOOL_NAME for call in result.tool_calls):
+        return []
+    queries: list[tuple[str, str, Any]] = []
+    for call in result.tool_calls:
+        if call.name not in (DETAILS_TOOL_NAME, SEARCH_TOOL_NAME):
+            continue
+        try:
+            raw = json.loads(call.arguments_json)
+        except ValueError:
+            raw = {}
+        if not isinstance(raw, dict):
+            raw = {}
+        if call.name == SEARCH_TOOL_NAME:
+            queries.append((call.call_id, call.name, str(raw.get("query") or "")))
+            continue
+        keys = raw.get("keys")
+        wanted = [str(k) for k in keys if isinstance(k, str)] if isinstance(keys, list) else []
+        around = str(raw.get("around") or "").strip() or None
+        queries.append((call.call_id, call.name, (wanted[:MAX_DETAILS], around)))
+    return queries
+
+
+_BREAKS = "。；！？.;!?\n"
+
+
+def _text(value: Any, limit: int) -> str:  # noqa: ANN401 — model output.
+    """One line, at most ``limit`` characters, cut at the last sentence end when too long."""
+    flat = " ".join(str(value).split())
+    if len(flat) <= limit:
+        return flat
+    head = flat[: limit - 1]
+    stop = max(head.rfind(mark) for mark in _BREAKS)
+    if stop >= limit // 2:
+        return head[: stop + 1] + "…"
+    return head + "…"
+
+
+def _malformed(what: str) -> NoReturn:
+    message = f"report_daily_work reply is malformed: {what}"
+    raise DailyReportParseError(message)
+
+
+def _refs(raw: Any) -> list[str]:  # noqa: ANN401 — model output.
+    if not isinstance(raw, list) or not all(isinstance(r, str) for r in raw):
+        _malformed("refs is not a list of keys")
+    return list(raw)
+
+
+
+
+def _claim(raw: Any, *fields: str) -> dict[str, Any]:  # noqa: ANN401 — model output.
+    if isinstance(raw, str) and "title" not in fields:
+        # A one-sentence entry sometimes comes back bare; it means the same, with no refs.
+        raw = {"text": raw, "refs": []}
+    if not isinstance(raw, dict):
+        _malformed("entry is not an object")
+    claim: dict[str, Any] = {}
+    for name in fields:
+        value = raw.get(name)
+        if name in ("rationale", "part"):
+            # Both are optional: a decision without a stated reason, a part of a whole item.
+            limit = _SHORT if name == "rationale" else _PART
+            claim[name] = _text(value, limit) if isinstance(value, str) and value.strip() else None
+            continue
+        if name == "status":
+            if value not in STATUSES:
+                _malformed("status is not browsed/discussed/attempted/completed")
+            claim[name] = value
+            continue
+        if not isinstance(value, str) or not value.strip():
+            _malformed(f"{name} is missing")
+        claim[name] = _text(value, _TITLE if name == "title" else _TEXT)
+    claim["refs"] = _refs(raw.get("refs"))
+    return claim
+
+
+def _item(raw: Any) -> dict[str, Any]:  # noqa: ANN401 — model output.
+    """One work item: its title and activity, and each part's status with its own refs.
+
+    A mixed item — code committed, deployment unconfirmed — is one entry per
+    part, so no single status can cover development, tests and deployment.
+    """
+    if not isinstance(raw, dict):
+        _malformed("item is not an object")
+    item: dict[str, Any] = {}
+    for name in ("title", "activity"):
+        value = raw.get(name)
+        if not isinstance(value, str) or not value.strip():
+            _malformed(f"{name} is missing")
+        item[name] = _text(value, _TITLE if name == "title" else _TEXT)
+    progress = raw.get("progress")
+    if not isinstance(progress, list) or not progress:
+        _malformed("progress is not a non-empty list")
+    item["progress"] = [_claim(part, "part", "status") for part in progress[:_MAX_PARTS]]
+    return item
+
+
+def _texts(raw: Any, limit: int) -> list[str]:  # noqa: ANN401 — model output.
+    if not isinstance(raw, list) or not all(isinstance(x, str) for x in raw):
+        _malformed("list is not text")
+    return [_text(x, _SHORT) for x in raw if x.strip()][:limit]
+
+
+def parse_report(result: ChatResult) -> dict[str, Any]:
+    """Normalize the forced tool call (or a bare JSON reply) into the report shape.
+
+    Every required field must be present with the schema's type; a partial
+    reply raises, so a malformed answer never becomes a saved report.
+    """
+    raw: Any = None
+    for call in result.tool_calls:
+        if call.name == REPORT_TOOL_NAME:
+            try:
+                raw = json.loads(call.arguments_json)
+            except ValueError as exc:
+                msg = "report_daily_work arguments are not JSON"
+                raise DailyReportParseError(msg) from exc
+            break
+    if raw is None and result.text:
+        text = result.text.strip().removeprefix("```json").removeprefix("```").removesuffix("```")
+        try:
+            raw = json.loads(text)
+        except ValueError as exc:
+            msg = "model replied without a report_daily_work call"
+            raise DailyReportParseError(msg) from exc
+    if not isinstance(raw, dict):
+        msg = "model replied without a report_daily_work call"
+        raise DailyReportParseError(msg)
+    if not isinstance(raw.get("summary"), str) or not raw["summary"].strip():
+        _malformed("summary is missing")
+    for key in ("items", "decisions", "open_items", "user_next_steps"):
+        if not isinstance(raw.get(key), list):
+            _malformed(f"{key} is not a list")
+    report: dict[str, Any] = {
+        "summary": _text(raw["summary"], _SUMMARY),
+        "items": [_item(x) for x in raw["items"]][:_MAX_ITEMS],
+        "decisions": [_claim(x, "text", "rationale") for x in raw["decisions"]][:_MAX_DECISIONS],
+        "open_items": [_claim(x, "text") for x in raw["open_items"]][:_MAX_OPEN],
+        "user_next_steps": [_claim(x, "text") for x in raw["user_next_steps"]][:_MAX_NEXT],
+        "suggestions": _texts(raw.get("suggestions"), _MAX_SUGGESTIONS),
+        "uncertainties": _texts(raw.get("uncertainties"), _MAX_UNCERTAINTIES),
+    }
+    return report
+
+
+def summary_of(content: str) -> str:
+    """The 核心摘要 section of a saved report, for a tool result's preview."""
+    _, found, rest = content.partition(_SUMMARY_HEADING)
+    if not found:
+        return content[:_SUMMARY]
+    body = rest.split("\n## ", 1)[0]
+    return " ".join(body.split())[:_SERVED]
+
+
+class _Composer:
+    """Turn a parsed report into the saved text, enforcing the evidence rules."""
+
+    def __init__(self, evidence: DayEvidence) -> None:
+        self.evidence = evidence
+        self.cited: list[str] = []
+        self.unknown = 0
+        self._number: dict[str, int] = {}
+        self._key_of = {ref: key for key, ref in evidence.refs.items()}
+
+    def refs(self, keys: list[str]) -> list[int]:
+        """Citation numbers into ``cited``; a key the model was never given is counted instead.
+
+        Numbers, not the references themselves: a reference is written out once,
+        in 证据引用, so a claim citing it many times cannot grow the report.
+        """
+        found: list[int] = []
+        for key in keys:
+            ref = self.evidence.refs.get(key)
+            if ref is None:
+                self.unknown += 1
+                continue
+            if ref not in self._number:
+                self.cited.append(ref)
+                self._number[ref] = len(self.cited)
+            if self._number[ref] not in found:
+                found.append(self._number[ref])
+        return found
+
+    def source(self, numbers: list[int]) -> list[str]:
+        return [self.cited[number - 1] for number in numbers]
+
+    def proof(self, numbers: list[int]) -> tuple[str, str]:
+        """The class of what an item cites, and a label naming the commits or records behind it."""
+        refs = self.source(numbers)
+        shas = [self.evidence.commits[r] for r in refs if r in self.evidence.commits]
+        said = [self._key_of[r] for r in refs if r in self.evidence.stated]
+        if shas or said:
+            parts = []
+            if shas:
+                parts.append("当天提交 " + "、".join(shas))
+            if said:
+                parts.append("Allen 原话 " + "、".join(said))
+            return "confirmed", "依据：" + "；".join(parts)
+        if any(r.startswith("codex-session:") for r in refs):
+            return "agent", _PROOF_NONE["agent"]
+        if any(r.startswith("timesink") for r in refs):
+            return "screen", _PROOF_NONE["screen"]
+        return "inferred", _PROOF_NONE["inferred"]
+
+    def stated(self, numbers: list[int]) -> bool:
+        return any(r in self.evidence.stated for r in self.source(numbers))
+
+
+def _ref_line(numbers: list[int]) -> str:
+    """Citation numbers; 证据引用 at the foot of the report resolves every one of them."""
+    return f"{_REF_PREFIX}{', '.join(f'#{n}' for n in numbers)}" if numbers else f"{_REF_PREFIX}无"
+
+
+def _bullets(rows: list[dict[str, Any]], composer: _Composer, empty: str) -> list[str]:
+    if not rows:
+        return [f"- {empty}"]
+    out = []
+    for row in rows:
+        refs = composer.refs(row["refs"])
+        line = f"- {row['text']}"
+        if row.get("rationale"):
+            line += f"　理由：{row['rationale']}"
+        out.append(f"{line}（{_ref_line(refs)}）")
+    return out
+
+
+def _fit(content: str) -> str:
+    """Never persist a report whose body or citation index would be cut off."""
+    if len(content) > CONTENT_LIMIT:
+        message = f"report exceeds {CONTENT_LIMIT} characters; nothing saved or truncated"
+        raise DailyReportParseError(message)
+    return content
+
+
+_Part = tuple[str | None, str, bool]
+"""A part's name (None for a whole item), its status, and whether it cites a commit or Allen."""
+
+
+def _finished(parts: list[_Part]) -> bool | None:
+    """Whether a completed part cites a commit or Allen; None when no part is completed.
+
+    False means something is called completed on screen text, agent words or
+    nothing, so the item is listed under the second heading.
+    """
+    done = [confirmed for _, status, confirmed in parts if status == "completed"]
+    return any(done) if done else None
+
+
+def _top(parts: list[_Part]) -> str:
+    return max((status for _, status, _ in parts), key=STATUSES.index)
+
+
+def _breakdown(parts: list[_Part]) -> str:
+    """The parts with their statuses after a mixed item's title, like 代码完成 and 部署进行中."""
+    if len(parts) == 1 and parts[0][0] is None:
+        return ""
+    return "（" + "，".join(f"{name or ''}{_INLINE[status]}" for name, status, _ in parts) + "）"
+
+
+def _status_lines(items: list[tuple[int, str, list[_Part]]]) -> list[str]:
+    """Each completed item by number and title, then a count of the rest, after the prose.
+
+    ``summary_of`` serves this section alone to the conversation, so the prose
+    alone would be the whole report downstream. These lines travel with it: a
+    summary that calls something finished is read next to the line that says
+    which items actually cite a same-day commit or Allen's own words. A mixed
+    item is listed once, under its best-proven completed part, with every
+    part's status after its title, so "code committed" never reads as
+    "deployed". The items still in progress are only counted here; they are
+    read in the body.
+    """
+    out = []
+    for proven, heading in _PROVEN:
+        names = [
+            f"{index} {title}{_breakdown(parts)}"
+            for index, title, parts in items
+            if _finished(parts) is proven
+        ]
+        if names:
+            out.append(f"{heading}：{'、'.join(names)}")
+    counts = [
+        f"{heading} {n} 项"
+        for status, heading in _REST
+        if (
+            n := sum(
+                1
+                for _, _, parts in items
+                if _finished(parts) is None and _top(parts) == status
+            )
+        )
+    ]
+    if counts:
+        out.append(f"另有{'、'.join(counts)}，见工作事项。")
+    return out or ["（本报告没有归并出工作事项。）"]
+
+
+def compose_report(
+    report: dict[str, Any],
+    evidence: DayEvidence,
+    *,
+    model: str,
+    generated_at: datetime,
+) -> tuple[str, list[str], dict[str, str]]:
+    """The saved content, its first 20 source refs and its coverage.
+
+    Keys the model was not given are dropped and counted; every part of an
+    item is labelled with the commits and Allen-authored records it cites, by
+    name, which never certifies the claim itself; a next step that does not
+    cite Allen's own words is removed from that section and named as an
+    uncertainty; 核心摘要 keeps the model's prose and lists every item under
+    its parts' statuses, the only section the conversation is served; each
+    cited source is written out once, in 证据引用.
+    """
+    composer = _Composer(evidence)
+    partial = "，这一天尚未结束" if evidence.window["partial"] else ""
+    lines = ["## 工作事项"]
+    listed: list[tuple[int, str, list[_Part]]] = []
+    thin: dict[int, list[str]] = {}
+    for index, item in enumerate(report["items"], 1):
+        numbers: list[int] = []
+        heads: list[str] = []
+        parts: list[_Part] = []
+        for part in item["progress"]:
+            found = composer.refs(part["refs"])
+            numbers += [n for n in found if n not in numbers]
+            grade, proof = composer.proof(found)
+            name = part["part"]
+            if part["status"] == "completed" and grade != "confirmed":
+                thin.setdefault(index, []).extend([name] if name else [])
+            heads.append(
+                (f"{name}：" if name else "") + f"{_STATUS_LABELS[part['status']]}［{proof}］"
+            )
+            parts.append((name, part["status"], grade == "confirmed"))
+        listed.append((index, item["title"], parts))
+        lines += [
+            f"### {index}. {item['title']} — {'；'.join(heads)}",
+            item["activity"],
+            _ref_line(numbers),
+            "",
+        ]
+    if not report["items"]:
+        lines += ["- 材料中未能归并出明确的工作事项。", ""]
+    lines += [
+        "## 重要决定与方案变化",
+        *_bullets(report["decisions"], composer, "材料中未见明确的决定或方案变化。"),
+        "",
+        "## 未完成、阻碍与待确认",
+        *_bullets(report["open_items"], composer, "材料中未见明确的未完成事项或阻碍。"),
+        "",
+    ]
+    kept: list[dict[str, Any]] = []
+    moved: list[str] = []
+    for step in report["user_next_steps"]:
+        if composer.stated(composer.refs(step["refs"])):
+            kept.append(step)
+        else:
+            moved.append(step["text"])
+    lines += [
+        "## 用户明确表达的下一步",
+        *_bullets(kept, composer, "材料中没有 Allen 本人明确表达的下一步。"),
+        "",
+        "## 建议（模型提出，非用户承诺）",
+    ]
+    lines += [f"- {text}" for text in report["suggestions"]] or ["- 无。"]
+    lines += ["", "## 数据覆盖与不确定性"]
+    covered = "，".join(f"{k}={v}" for k, v in evidence.coverage.items())
+    lines.append(f"- 来源覆盖：{covered}。")
+    counts = evidence.counts
+    lines.append(
+        f"- 材料规模：应用 {counts.get('apps', 0)} 个、窗口 {counts.get('windows', 0)} 个、"
+        f"屏幕时段 {counts.get('screen', 0)} 个、对话记录 {counts.get('records', 0)} 条、"
+        f"Git 提交 {counts.get('git', 0)} 个、状态事件 {counts.get('state_events', 0)} 条"
+        + (f"；最后观察到 {evidence.observed_until}" if evidence.observed_until else "")
+        + "。"
+    )
+    lines += [f"- 材料范围：{limit}" for limit in evidence.limits]
+    lines.append(f"- {_NOT_VERIFIED}")
+    if composer.unknown:
+        lines.append(f"- 有 {composer.unknown} 处引用不是材料里的键，已丢弃。")
+    if thin:
+        which = "、".join(
+            f"第 {index} 项" + (f"（{'、'.join(names)}）" if names else "")
+            for index, names in thin.items()
+        )
+        lines.append(f"- 有 {len(thin)} 项标为完成的事项没有当天提交或 Allen 原话依据：{which}。")
+    if moved:
+        quoted = "".join(f"「{text}」" for text in moved)
+        lines.append(
+            f"- 模型把 {len(moved)} 条内容当作 Allen 明确表达的下一步，但引用的不是他的原话，"
+            f"已从该节移除：{quoted}"
+        )
+    lines += [f"- {text}" for text in report["uncertainties"]]
+    lines += [
+        "",
+        "## 证据引用",
+        f"- 共 {len(composer.cited)} 个来源，正文按编号引用；其中前 "
+        f"{min(len(composer.cited), MAX_SOURCE_REFS)} 个另存为 source_refs（字段上限）；"
+        "用 read_activity / read_records 回查原文。",
+        *(f"#{number} {ref}" for number, ref in enumerate(composer.cited, 1)),
+    ]
+    head = [
+        f"# 工作日报 {evidence.day}（{evidence.zone}）",
+        f"生成于 {generated_at.isoformat(timespec='seconds')}；证据窗口 "
+        f"{evidence.window['from']} 到 {evidence.window['to']}{partial}；模型 {model}。",
+        "",
+        _SUMMARY_HEADING,
+        report["summary"],
+        # Downstream readers are served this section alone: the prose never travels without
+        # the list of what the report actually calls finished, and on what.
+        *_status_lines(listed),
+        "",
+    ]
+    return (
+        _fit("\n".join([*head, *lines])),
+        composer.cited[:MAX_SOURCE_REFS],
+        dict(evidence.coverage),
+    )
