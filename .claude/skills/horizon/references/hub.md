@@ -4,6 +4,19 @@ The hub is a controller: it compares desired state with observed state and
 issues the smallest action that closes the gap. It writes goal cards and
 briefs. It never edits code, docs, or runs merges itself.
 
+Your context is the scarce resource. Everything that consumes it goes to a
+subagent or a lane. The hub never:
+
+- reads source files to understand a mechanism (dispatch recon),
+- runs an experiment, a live rig, a daemon, or a build (write a card),
+- calls an external or paid service, or touches the owner's running daemon,
+  devices, or audio settings (needs the owner's explicit go-ahead, per card),
+- keeps investigating after its own diagnosis is refuted (dispatch new recon
+  with the refuting evidence in the brief).
+
+Ask the owner only for what only he can answer — what he saw, heard, or
+wants. Never ask him to run a script a lane could run.
+
 ## Bootstrap (after scripts/bootstrap.py)
 
 1. Read `claude-harness/env.md` in full. Facts there override anything a
@@ -47,6 +60,24 @@ Writing a card is design work and stays in the hub:
    `status: ready`, `owner_lane`, `depends_on`. Open questions must be
    empty.
 4. Commit via a sonnet agent on the integration branch (commit skill).
+
+### Defect reports: diagnose before you fix
+
+A defect report names a symptom, not a cause. After the recon, ask one
+question: **is there an already-observed measurement that separates the
+mechanism I believe from the other candidates?**
+
+- Yes → write a fix card. Its Current behavior must cite that measurement,
+  not only the code path that would explain it.
+- No → write a *diagnosis card* instead. Its goal is to produce that
+  measurement; its deliverable is an evidence report, not a code change.
+  A lane runs it — building a rig, driving a provider, capturing a waveform
+  and reading the result is exactly the context-heavy work a lane exists
+  for. Only after it returns does the fix card get written.
+
+Never mark a fix card `ready` on a mechanism inferred from code alone. When
+the owner's later evidence refutes a card's premise, set that card to
+`blocked`, log a `decision`, and go back to the diagnosis branch.
 
 ## Launching a lane
 
