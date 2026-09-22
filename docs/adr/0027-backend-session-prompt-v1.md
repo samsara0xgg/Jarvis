@@ -1,4 +1,4 @@
-# ADR 0024 — The backend session request: rules and profile, history, state on the user message
+# ADR 0027 — The backend session request: rules and profile, history, state on the user message
 
 **Status:** Accepted
 **Date:** 2026-09-21

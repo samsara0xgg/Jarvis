@@ -4160,8 +4160,14 @@ _LIVE_OUTCOME_TYPES: Final[tuple[str, ...]] = (
 )
 
 
+# ADR 0026: a new session is told at most this many finished delegations no
+# session was told, none older than this; the rest stay in memory.db and the UI.
+_UNDELIVERED_WINDOW_MS: Final[int] = 24 * 60 * 60 * 1000
+_UNDELIVERED_MAX: Final[int] = 3
+
+
 class _LiveBackend:
-    """ADR-0016 D9: the four blocking callables the composition root hands to LiveVoice.
+    """ADR-0016 D9 and ADR 0026: the blocking callables the composition root hands to LiveVoice.
 
     Every method opens its own SQLite connection because LiveVoice calls them
     through ``asyncio.to_thread``, never on the loop thread.
@@ -4209,36 +4215,119 @@ class _LiveBackend:
         return brief_note(self._memory.db_path, max_chars=self._session.live_brief_max_chars)
 
     def lookup_result(self, turn_id: str) -> voice_live.DelegationResult | None:
-        """The turn's final answer, its failure, or None while it is still running (D4, D5).
-
-        Only the ``phase == "final"`` emission counts: the ADR-0008 D6
-        lifecycle commentary renders under the same ``turn_id`` with
-        ``phase == "commentary"``.
-        """
+        """The turn's final answer, its failure, or None while it is still running (D4, D5)."""
         conn = open_event_log(self._event_log_path)
         try:
-            events = list(iter_events_for_turn(conn, turn_id, _LIVE_OUTCOME_TYPES))
+            return _turn_outcome(conn, turn_id)
         finally:
             with contextlib.suppress(sqlite3.Error):
                 conn.close()
-        for event in events:
-            if (
-                event.type == "surface.response_emitted"
-                and event.payload.get("phase", "final") == "final"
-            ):
-                voice_text = event.payload.get("voice_text")
-                return voice_live.DelegationResult(
-                    status="answered",
-                    text=str(event.payload.get("text", "")),
-                    voice_text=voice_text if isinstance(voice_text, str) and voice_text else None,
+
+    def undelivered_results(self) -> list[voice_live.UndeliveredResult]:
+        """Finished delegations of the last day that no session was told, oldest first."""
+        since = int(time.time() * 1000) - _UNDELIVERED_WINDOW_MS
+        conn = open_event_log(self._event_log_path)
+        found: list[voice_live.UndeliveredResult] = []
+        try:
+            intents = [
+                event
+                for event in iter_events_of_types(
+                    conn, ("surface.user_intent",), since_epoch_ms=since,
                 )
-        for event in events:
-            if event.type in ("response.failed", "response.cancelled", "turn.failed"):
-                reason = event.payload.get("reason") or event.payload.get("exception_repr")
-                return voice_live.DelegationResult(
-                    status="failed", reason=str(reason or event.type),
+                if event.payload.get("channel") == LIVE_PRINCIPAL
+            ]
+            for intent in reversed(intents):
+                turn_id = str(intent.payload.get("turn_id", ""))
+                if not turn_id or any(
+                    iter_events_for_turn(conn, turn_id, ("live.result_delivered",)),
+                ):
+                    continue
+                outcome = _turn_outcome(conn, turn_id)
+                if outcome is None:
+                    continue  # still running: no outcome yet; the next start looks again
+                found.append(
+                    voice_live.UndeliveredResult(
+                        turn_id=turn_id,
+                        request=str(intent.payload.get("transcript", "")),
+                        result=outcome,
+                    ),
                 )
-        return None
+                if len(found) == _UNDELIVERED_MAX:
+                    break
+        finally:
+            with contextlib.suppress(sqlite3.Error):
+                conn.close()
+        found.reverse()
+        return found
+
+    def mark_delivered(self, turn_id: str, session_id: str, kind: str) -> None:
+        """Persist that ``session_id`` was told ``turn_id``'s outcome, or that it was withheld."""
+        self._emit(
+            "live.result_delivered",
+            {"turn_id": turn_id, "session_id": session_id, "kind": kind},
+            correlation={"turn_id": turn_id},
+        )
+
+    def record_usage(
+        self,
+        session_id: str,
+        seconds: float | None,
+        reason: str,
+        server_reason: str | None,
+        final: bool,  # noqa: FBT001 - Callable shape fixed by LiveVoice
+    ) -> None:
+        """One ``live.session_usage`` row per closed session (ADR 0026)."""
+        self._emit(
+            "live.session_usage",
+            {
+                "session_id": session_id,
+                "seconds": seconds,
+                "final": final,
+                "reason": reason,
+                "server_reason": server_reason,
+            },
+        )
+
+    def _emit(
+        self,
+        event_type: str,
+        payload: dict[str, object],
+        *,
+        correlation: dict[str, str] | None = None,
+    ) -> None:
+        conn = open_event_log(self._event_log_path)
+        try:
+            emit_event(conn, type=event_type, payload=payload, correlation=correlation)
+        finally:
+            with contextlib.suppress(sqlite3.Error):
+                conn.close()
+
+
+def _turn_outcome(conn: sqlite3.Connection, turn_id: str) -> voice_live.DelegationResult | None:
+    """The turn's final answer, its failure, or None while it is still running.
+
+    Only the ``phase == "final"`` emission counts: the ADR-0008 D6 lifecycle
+    commentary renders under the same ``turn_id`` with ``phase == "commentary"``.
+    """
+    events = list(iter_events_for_turn(conn, turn_id, _LIVE_OUTCOME_TYPES))
+    for event in events:
+        if (
+            event.type == "surface.response_emitted"
+            and event.payload.get("phase", "final") == "final"
+        ):
+            voice_text = event.payload.get("voice_text")
+            return voice_live.DelegationResult(
+                status="answered",
+                text=str(event.payload.get("text", "")),
+                voice_text=voice_text if isinstance(voice_text, str) and voice_text else None,
+            )
+    for event in events:
+        if event.type in ("response.failed", "response.cancelled", "turn.failed"):
+            reason = event.payload.get("reason") or event.payload.get("exception_repr")
+            return voice_live.DelegationResult(
+                status="failed", reason=str(reason or event.type),
+            )
+    return None
 
 
 def _live_wake_subscriber(live_voice: voice_live.LiveVoice) -> Callable[[Event], None]:
@@ -4610,6 +4699,9 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 record=live_backend.record,
                 brief=live_backend.brief,
                 lookup_result=live_backend.lookup_result,
+                undelivered=live_backend.undelivered_results,
+                mark_delivered=live_backend.mark_delivered,
+                record_usage=live_backend.record_usage,
             )
             controls.on_mic_muted = live_voice.set_mic_muted
             if runtime.committed_event_bus is not None:

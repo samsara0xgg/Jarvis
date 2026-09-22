@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from contextlib import closing
 from datetime import date, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -28,7 +30,6 @@ from jarvis.state.event_log import append_event_in_transaction, read_log_epoch
 
 if TYPE_CHECKING:
     import sqlite3
-    from pathlib import Path
 
 EVENT_TYPES = ("todo.revised", "knowledge.revised", "briefing.revised")
 _OPERATIONS = {
@@ -55,6 +56,23 @@ def current_items(conn: sqlite3.Connection, kind: str, snapshot: int) -> list[di
         item["source_ref"] = f"event:{uid}"
         items[item["id"]] = item
     return sorted(items.values(), key=lambda item: item["id"])
+
+
+def commit_exists(repo: str, sha: str) -> bool:
+    """True when ``sha`` is a commit object in the repository at ``repo``."""
+    if len(sha) != 40 or not all(c in "0123456789abcdef" for c in sha):  # noqa: PLR2004 — a full SHA-1.
+        return False
+    try:
+        done = subprocess.run(  # noqa: S603 — fixed argv; `repo` came from a saved reference.
+            ["git", "-C", repo, "cat-file", "-e", f"{sha}^{{commit}}"],  # noqa: S607
+            capture_output=True,
+            timeout=5.0,
+            check=False,
+            stdin=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return done.returncode == 0
 
 
 def check_refs(
@@ -87,6 +105,11 @@ def check_refs(
         elif prefix == "timesink-capture":
             timesink.read_capture(timesink_path, ref)
             exists = True
+        elif prefix == "git":
+            repo, _, sha = identity.rpartition(":")
+            exists = bool(repo) and commit_exists(repo, sha)
+        elif prefix == "codex-session":
+            exists = identity.endswith(".jsonl") and Path(identity).is_file()
         if not exists:
             msg = f"Source does not exist: {ref}"
             raise DailyError(msg, "invalid_source")

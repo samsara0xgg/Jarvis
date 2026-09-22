@@ -9,7 +9,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _harness  # noqa: E402
 
-TYPES = {"user_feedback", "decision", "drift", "failure", "rotation"}
+TYPES = {"user_feedback", "report", "decision", "drift", "failure", "rotation"}
 
 
 def main() -> int:

@@ -12,7 +12,7 @@ import logging
 import sqlite3
 import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -59,7 +59,12 @@ class Analyst(Protocol):
 
 
 class LLMAnalyst:
-    """A dedicated preset-bound client per call, accounted like ``screen_look``'s vision call."""
+    """A dedicated preset-bound client per call, accounted like ``screen_look``'s vision call.
+
+    One analysis job per instance: ``kind`` is what its calls are accounted as,
+    and the default tool catalog is the work-state report tool. A caller with
+    its own catalog (ADR 0024's daily report) passes ``tools`` per call.
+    """
 
     def __init__(
         self,
@@ -67,61 +72,78 @@ class LLMAnalyst:
         *,
         pricing_path: Path | None,
         account_cost: bool,
+        kind: str = "work_state",
     ) -> None:
         """Freeze the preset; malformed presets raise here, at boot, not at use."""
         self._factory = LLMSessionFactory(llm_config)
         self._snapshot = self._factory.snapshot()
         self._pricing = {} if pricing_path is None else load_pricing_table(pricing_path)
         self._account_cost = account_cost
+        self._kind = kind
 
     def analyze(
-        self, conn: sqlite3.Connection, *, system: str, messages: list[dict[str, Any]]
+        self,
+        conn: sqlite3.Connection,
+        *,
+        system: str,
+        messages: list[dict[str, Any]],
+        tools: Sequence[dict[str, Any]] | None = None,
+        tool_choice: str = "required",
     ) -> ChatResult:
-        """Force the report tool; the model has nothing else to call."""
+        """One call over the given catalog; the model has nothing outside it to call.
+
+        ``required`` forces a tool call; a thinking preset (DeepSeek rejects
+        ``required`` with thinking on) needs ``auto`` and an instruction to call.
+        """
+        catalog = [REPORT_TOOL] if tools is None else list(tools)
         client = self._factory.create(self._snapshot, response_id=new_response_id())
         cost_recorder = (
             CostRecorder(conn, pricing_table=self._pricing) if self._account_cost else None
         )
         if cost_recorder is None:
             return client.chat(
-                messages=messages, system=system, tools=[REPORT_TOOL], tool_choice="required"
+                messages=messages, system=system, tools=catalog, tool_choice=tool_choice
             )
         return cost_recorder.chat(
             client,
             messages=messages,
             system=system,
-            tools=[REPORT_TOOL],
-            tool_choice="required",
-            kind="work_state",
+            tools=catalog,
+            tool_choice=tool_choice,
+            kind=self._kind,
             turn_id=None,
         )
 
 
-def build_analyst(
+def build_analyst(  # noqa: PLR0913 — the preset plus this job's accounting identity and budget.
     config: Mapping[str, Any],
     preset_name: str,
     *,
     pricing_path: Path | None,
     account_cost: bool,
+    kind: str = "work_state",
+    timeout_s: float = _CALL_TIMEOUT_S,
 ) -> LLMAnalyst | None:
-    """Build from ``llm.presets.<preset_name>``; ``None`` degrades every refresh to ``failed``."""
+    """Build from ``llm.presets.<preset_name>``; ``None`` degrades every run to ``failed``."""
     llm_block = config.get("llm")
     presets = llm_block.get("presets") if isinstance(llm_block, Mapping) else None
     preset = presets.get(preset_name) if isinstance(presets, Mapping) else None
     if not isinstance(preset, Mapping):
-        LOGGER.warning("work_state: llm.presets.%s missing; refresh reports failed", preset_name)
+        LOGGER.warning("%s: llm.presets.%s missing; the run reports failed", kind, preset_name)
         return None
     llm_config: dict[str, Any] = {
         "provider": "openai",
         "presets": {preset_name: dict(preset)},
         "default_preset": preset_name,
-        "timeout_s": _CALL_TIMEOUT_S,
+        "timeout_s": timeout_s,
         "max_retries": _CALL_MAX_RETRIES,
     }
     try:
-        return LLMAnalyst(llm_config, pricing_path=pricing_path, account_cost=account_cost)
+        return LLMAnalyst(
+            llm_config, pricing_path=pricing_path, account_cost=account_cost, kind=kind
+        )
     except (ValueError, TypeError, KeyError) as exc:
-        LOGGER.warning("work_state: llm.presets.%s malformed (%s); refresh fails", preset_name, exc)
+        LOGGER.warning("%s: llm.presets.%s malformed (%s); the run fails", kind, preset_name, exc)
         return None
 
 
