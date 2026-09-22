@@ -112,6 +112,7 @@ from jarvis.decision.response_run import (
     start_response_run,
 )
 from jarvis.deployment import inherent_v2_token_matches, rotate_inherent_v2_token
+from jarvis.deployment.launchd import repo_root
 from jarvis.deployment.process_lock import acquire_exclusive
 from jarvis.deployment.sleep_wake import install_power_observer, sweep_overdue_actions
 from jarvis.execution.tools import live_action_ids
@@ -137,7 +138,9 @@ from jarvis.runtime import (
     make_response_cancel_callable,
 )
 from jarvis.runtime.inherent_hub import start_inherent_view
+from jarvis.runtime.session_compaction import CompactionSweep, preset_context_length
 from jarvis.shared import Event
+from jarvis.shared.pricing import load_pricing_table
 from jarvis.shared.realtime import (
     AlreadyTerminal,
     StaleConfirmation,
@@ -177,7 +180,7 @@ from jarvis.state.input_submission_inbox import (
     submit_text_once,
 )
 from jarvis.state.lifecycle_terminal import terminalize_confirmation
-from jarvis.state.memory_db import MemorySettings, append_record, brief_note
+from jarvis.state.memory_db import MemorySettings, SessionSettings, append_record, brief_note
 from jarvis.state.projections import PendingConfirmations, rebuild_projections
 from jarvis.state.trigger_consumption import trigger_was_consumed
 from jarvis.surface import (
@@ -3515,18 +3518,25 @@ async def _supervisor_sweep_task(
     *,
     interval_s: float,
     default_budget_s: float,
+    compaction: CompactionSweep | None = None,
 ) -> None:
     """Background task: run the supervisor sweep every ``interval_s`` seconds.
 
     Sleeps FIRST — the one-shot bootstrap sweep in
     :func:`_start_sweep_control_plane` already covered t=0, and a second
-    pass one tick later would be pure noise.
+    pass one tick later would be pure noise. Each tick also asks the
+    session compaction whether it is due; the job itself runs off-loop.
     """
     LOGGER.info("supervisor_sweep started (interval=%.1fs)", interval_s)
     try:
         while True:
             await asyncio.sleep(interval_s)
             _run_supervisor_sweep(runtime, default_budget_s=default_budget_s)
+            if compaction is not None:
+                try:
+                    compaction.tick()
+                except Exception:
+                    LOGGER.exception("compaction check failed; daemon continues.")
     except asyncio.CancelledError:
         LOGGER.info("supervisor_sweep cancelled")
         raise
@@ -3563,6 +3573,7 @@ async def _start_sweep_control_plane(
     runtime: JarvisRuntime,
     *,
     poll_interval_s: float = _DEFAULT_POLL_INTERVAL_S,
+    compaction: CompactionSweep | None = None,
 ) -> list[asyncio.Task[None]]:
     """Wire the ADR-0009 D4 sweep control plane. Returns its two tasks.
 
@@ -3602,6 +3613,7 @@ async def _start_sweep_control_plane(
             runtime,
             interval_s=sweep_interval_s,
             default_budget_s=default_budget_s,
+            compaction=compaction,
         ),
         name="supervisor_sweep",
     )
@@ -4155,9 +4167,12 @@ class _LiveBackend:
     through ``asyncio.to_thread``, never on the loop thread.
     """
 
-    def __init__(self, *, event_log_path: Path, memory: MemorySettings | None) -> None:
+    def __init__(
+        self, *, event_log_path: Path, memory: MemorySettings | None, session: SessionSettings,
+    ) -> None:
         self._event_log_path = event_log_path
         self._memory = memory
+        self._session = session
 
     def delegate(self, text: str, delegation_id: str, session_id: str, record_id: str) -> str:
         """Submit one delegation through the D21 inbox; a replay returns the same turn."""
@@ -4191,7 +4206,7 @@ class _LiveBackend:
         """The budgeted startup history for ``session.start.input`` (D7)."""
         if self._memory is None:
             return ""
-        return brief_note(self._memory.db_path, max_chars=1500)
+        return brief_note(self._memory.db_path, max_chars=self._session.live_brief_max_chars)
 
     def lookup_result(self, turn_id: str) -> voice_live.DelegationResult | None:
         """The turn's final answer, its failure, or None while it is still running (D4, D5)."""
@@ -4664,6 +4679,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             live_backend = _LiveBackend(
                 event_log_path=runtime.runtime_paths.event_log,
                 memory=runtime.memory,
+                session=runtime.session,
             )
             live_voice = voice_live.LiveVoice(
                 config=gpt_live_config,
@@ -4938,8 +4954,31 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         # ADR-0009 D4 — the sweep control plane: anchor the system-trigger
         # watcher, THEN run the bootstrap sweep, THEN start the periodic
         # task. The ordering is load-bearing and lives inside the helper.
+        # The session compaction rides the same tick: eligible only while
+        # nothing is being written and no Live connection is open.
+        compaction = (
+            CompactionSweep(
+                memory=runtime.memory,
+                settings=runtime.session,
+                llm_config=(
+                    runtime.config["llm"]
+                    if isinstance(runtime.config.get("llm"), Mapping)
+                    else {}
+                ),
+                event_log_path=runtime.runtime_paths.event_log,
+                pricing_table=load_pricing_table(repo_root() / "data" / "pricing.json"),
+                context_length=lambda: preset_context_length(runtime.llm_client),
+                live_open=lambda: (
+                    live_voice is not None and live_voice.status().get("state") != "idle"
+                ),
+            )
+            if runtime.memory is not None
+            else None
+        )
         watchers.extend(
-            await _start_sweep_control_plane(runtime, poll_interval_s=poll_interval_s),
+            await _start_sweep_control_plane(
+                runtime, poll_interval_s=poll_interval_s, compaction=compaction,
+            ),
         )
 
         # ADR-0009 D5 — repo observer: baselines recovered from the log

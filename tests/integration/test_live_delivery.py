@@ -20,6 +20,7 @@ from websockets.asyncio import client as ws_client
 
 from jarvis.runtime.inherent_loop import _LiveBackend
 from jarvis.state.event_log import emit_event, iter_events_of_types, open_event_log
+from jarvis.state.memory_db import SessionSettings
 from jarvis.surface import voice_live, voice_tts
 from jarvis.surface.voice_live import (
     DelegationResult,
@@ -57,7 +58,7 @@ def test_backend_hooks_track_which_outcomes_a_session_was_told(tmp_path: Path) -
     """Undelivered = finished, Live-channel, last day, no delivery mark; usage is one row."""
     path = tmp_path / "mac_events.db"
     open_event_log(path).close()
-    backend = _LiveBackend(event_log_path=path, memory=None)
+    backend = _LiveBackend(event_log_path=path, memory=None, session=SessionSettings())
     conn = open_event_log(path)
 
     first = backend.delegate("明天温哥华天气", "d-1", "S-1", "rec-1")

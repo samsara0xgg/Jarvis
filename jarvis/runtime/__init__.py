@@ -137,7 +137,7 @@ from jarvis.shared.realtime_trace import (
 )
 from jarvis.state.committed_event_bus import CommittedEventBus
 from jarvis.state.event_log import open_event_log, open_runtime_event_log
-from jarvis.state.memory_db import MemorySettings, append_record, context_note
+from jarvis.state.memory_db import MemorySettings, SessionSettings, append_record, render_context
 from jarvis.state.stream_emission import committed_text_prefix
 from jarvis.state.trigger_consumption import mark_trigger_consumed
 from jarvis.surface.cli import (
@@ -413,6 +413,8 @@ class JarvisRuntime:
     # memory.db wiring (``memory:`` config block). None = no memory store:
     # hand-assembled runtimes write no records and inject no note.
     memory: MemorySettings | None = None
+    # ``session:`` config block: compaction thresholds and the Live brief budget.
+    session: SessionSettings = field(default_factory=SessionSettings)
     # ADR-0008 Step 8 — tool cues loaded from ``config/tool_cues.yaml``;
     # empty tuple = no cue can veto the routine route (the other pre-route
     # conditions still apply).
@@ -1536,6 +1538,7 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
     web_search_provider, web_search_api_key = _web_search_provider_config(full_config)
     vision_preset_name, screen_max_width_px = _screen_tools_config(full_config)
     memory = MemorySettings.from_config(full_config.get("memory"), runtime_root=paths.root)
+    session = SessionSettings.from_config(full_config.get("session"))
     work_state = WorkStateService(
         event_log_path=paths.event_log,
         memory_path=memory.db_path,
@@ -1694,6 +1697,7 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
         committed_event_bus=committed_event_bus,
         input_flags=_wave5_input_flags(full_config),
         memory=memory,
+        session=session,
         workers=workers,
         sensevoice_dir=_realtime_model_path(
             full_config,
@@ -2340,6 +2344,15 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             text=str(user_intent_event.payload.get("transcript", "")),
             audio_path=audio_ref if isinstance(audio_ref, str) else None,
         )
+    # One consistent read of memory.db for this turn's prompt: the history
+    # block goes ahead of every per-turn note, the time line after them.
+    memory_context = (
+        render_context(
+            memory.db_path, exclude_id=memory_exclude_id, since=runtime.session.history_since,
+        )
+        if memory is not None
+        else None
+    )
     # ADR-0008 Step 2 (Wave 4A) — open the durable ResponseRun before the
     # decide loop so the per-run request client, the terminal owner and the
     # L5 ids all name the same response. Returns None with the flag off, and
@@ -2425,13 +2438,14 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             # runs can never read each other's last-call metadata. With the
             # flag off this is the same shared client object as before.
             llm_client=run.request_client if run is not None else runtime.llm_client,
-            system_prompt=runtime.system_prompt,
+            # The profile rides the system prompt: stable across turns, so it
+            # sits in the cached prefix rather than in the per-turn context.
+            system_prompt=(
+                f"{runtime.system_prompt.rstrip()}\n\n{memory_context.profile}"
+                if memory_context is not None and memory_context.profile
+                else runtime.system_prompt
+            ),
             tier0_table=runtime.tier0_table,
-            # ADR-0009 D5/D6 — the Status Board note calls an observation
-            # "stale" at 3x the observer's poll interval. Read from the
-            # same config key the observer task polls on, so the two can
-            # never disagree about what "stale" means.
-            observer_poll_interval_s=int(_observer_poll_interval_s(runtime.config)),
             # ADR-0011 D4 — resolve-on-propose. Built fresh per turn (a
             # trivial closure) rather than stored on JarvisRuntime: it
             # closes over `runtime.conn`, which the JarvisRuntime fields
@@ -2447,15 +2461,8 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             # way tier0_table is threaded.
             confirm_grammar_table=runtime.confirm_grammar_table,
             wave1_features=runtime.wave1_features,
-            memory_note=(
-                context_note(
-                    memory.db_path,
-                    context_days=memory.context_days,
-                    exclude_id=memory_exclude_id,
-                )
-                if memory is not None
-                else None
-            ),
+            history=memory_context.history if memory_context is not None else (),
+            time_note=memory_context.now if memory_context is not None else None,
             cancellation_checkpoint=run.check_cancelled if run is not None else None,
             request_admission=(
                 partial(run.admit_request, runtime.conn) if run is not None else None
