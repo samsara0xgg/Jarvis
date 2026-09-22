@@ -14,9 +14,6 @@ PAGE_BUDGET = 11000
 # CJK text tokenizes near one token per character, ASCII JSON near four characters per
 # token, so a full page is roughly 15k-45k tokens against the decision model's 1M window).
 ACTIVITY_PAGE_BUDGET = 48000
-# Rows the model may ask for on one page; the budget above, not this number, decides when
-# a page ends.
-ACTIVITY_MAX_LIMIT = 5000
 MAX_TEXT_JSON_CHARS = 4000
 _CURSOR_PARTS = 2
 DETAIL_CHARS = 3500
@@ -118,7 +115,6 @@ SCHEMAS: dict[str, dict[str, Any]] = {
                 "uniqueItems": True,
             },
             "summary_only": {"type": "boolean"},
-            "limit": {"type": "integer", "minimum": 1, "maximum": ACTIVITY_MAX_LIMIT},
             "cursor": _CURSOR,
         },
         "from",
