@@ -1,6 +1,6 @@
 # ADR 0031 — MCP servers are tool sources
 
-**Status:** Accepted
+**Status:** Superseded-by-0033
 **Date:** 2026-09-22
 **Supersedes:** none
 

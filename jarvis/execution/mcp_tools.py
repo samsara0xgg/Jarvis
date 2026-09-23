@@ -1,7 +1,9 @@
-"""L4 — MCP servers as flat tools (ADR 0031, remote auth per ADR 0032).
+"""L4 — MCP servers as flat tools (ADR 0033, remote auth per ADR 0032).
 
-Every server under ``tools.mcp.servers`` is entered once at registry build;
-each tool it lists becomes a :class:`Tool` named ``mcp__<server>__<tool>``.
+Every configured or plugin server is entered once at registry build; each
+tool it lists becomes a deferred :class:`Tool` named ``mcp__<server>__<tool>``
+(ADR 0034), at ``L3`` with ``requires_confirmation`` when Codex's approval
+rule for its mode says the call must be confirmed first.
 The ``mcp`` SDK is asyncio-only and its client context manager must be
 entered and exited from one task, so :class:`McpServers` owns a private loop
 thread: one task per server holds the client open, and the synchronous
@@ -24,6 +26,7 @@ import logging
 import os
 import re
 import threading
+from collections.abc import Mapping
 from concurrent.futures import Future
 from contextlib import AsyncExitStack, suppress
 from typing import TYPE_CHECKING, Any, Final
@@ -43,7 +46,7 @@ from jarvis.execution.tools import Tool, ToolContext, ToolError
 from jarvis.shared import CallerPrincipal
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Coroutine, Mapping
+    from collections.abc import Callable, Coroutine
     from pathlib import Path
 
     from mcp.client._transport import Transport
@@ -67,9 +70,56 @@ _HTTP_TIMEOUT: Final = httpx2.Timeout(30.0, read=300.0)
 """The SDK's own defaults: a server may hold the response stream open."""
 
 
+APPROVAL_MODES: Final = frozenset({"auto", "prompt", "writes", "approve"})
+"""Codex's per-server / per-tool approval modes (ADR 0033); ``auto`` when unset."""
+
+
 def mcp_tool_name(server: str, name: str) -> str:
     """``mcp__<server>__<tool>``, squeezed into the chat API's function-name alphabet."""
     return _NAME_CHARS.sub("_", f"mcp__{server}__{name}")[:_MAX_NAME_CHARS]
+
+
+def is_oauth(spec: Mapping[str, Any]) -> bool:
+    """``auth: oauth``, or Codex's ``oauth`` / ``oauth_resource`` keys (ADR 0035)."""
+    return str(spec.get("auth") or "").lower() == "oauth" or bool(
+        spec.get("oauth") or spec.get("oauth_resource")
+    )
+
+
+def approval_mode(spec: Mapping[str, Any], tool_name: str) -> str:
+    """``tools.<tool>.approval_mode``, else ``default_tools_approval_mode``, else ``auto``."""
+    tools = spec.get("tools") or {}
+    per_tool = tools.get(tool_name) if isinstance(tools, Mapping) else None
+    mode = (
+        (per_tool or {}).get("approval_mode") or spec.get("default_tools_approval_mode") or "auto"
+    )
+    if mode not in APPROVAL_MODES:
+        msg = f"approval_mode {mode!r} for {tool_name!r}; expected one of {sorted(APPROVAL_MODES)}"
+        raise ValueError(msg)
+    return str(mode)
+
+
+def needs_approval(annotations: mcp_types.ToolAnnotations | None, mode: str) -> bool:
+    """Codex ``requires_mcp_tool_approval_for_mode``: must Allen confirm the call first?
+
+    ``auto`` asks unless the server marks the tool read-only; a destructive
+    tool always asks; a missing hint counts as the risky value, so only a
+    tool marked both non-destructive and closed-world runs unasked.
+    """
+    read_only = bool(annotations and annotations.read_only_hint)
+    if mode == "approve":
+        return False
+    if mode == "prompt":
+        return True
+    if mode == "writes":
+        return not read_only
+    destructive = annotations.destructive_hint if annotations else None
+    if destructive is True:
+        return True
+    if read_only:
+        return False
+    open_world = annotations.open_world_hint if annotations else None
+    return destructive is not False or open_world is not False
 
 
 def _stdio(spec: Mapping[str, Any]) -> StdioServerParameters:
@@ -146,13 +196,19 @@ class McpServers:
         )
 
     def _remote(self, server: str, spec: Mapping[str, Any]) -> tuple[Transport, httpx2.AsyncClient]:
-        """Streamable HTTP with the entry's headers and, for ``auth: oauth``, its login."""
+        """Streamable HTTP with the entry's headers and, for an OAuth entry, its login."""
         url = os.path.expandvars(str(spec["url"]))
         headers = {
-            str(k): os.path.expandvars(str(v)) for k, v in (spec.get("headers") or {}).items()
+            str(k): os.path.expandvars(str(v))
+            for k, v in {**(spec.get("http_headers") or {}), **(spec.get("headers") or {})}.items()
         }
+        # Codex's .mcp.json spellings (ADR 0035): a token or header value named by an env var.
+        if spec.get("bearer_token_env_var"):
+            headers["Authorization"] = f"Bearer {os.environ.get(spec['bearer_token_env_var'], '')}"
+        for header, var in (spec.get("env_http_headers") or {}).items():
+            headers[str(header)] = os.environ.get(str(var), "")
         auth: httpx2.Auth | None = None
-        if str(spec.get("auth") or "").lower() == "oauth":
+        if is_oauth(spec):
             path = self.token_path(server)
             if self._open_url is None and not self.has_login(server):
                 msg = f"{server}: not logged in; {LOGIN_HINT.format(server=server)}"
@@ -214,17 +270,22 @@ class McpServers:
             try:
                 client = self._open(server, spec)
                 listed = self._run(self._list(client))
-            except Exception:  # noqa: BLE001 — a missing binary, a refused URL, a hung handshake: warn, never fail boot.
+                modes = [approval_mode(spec, one.name) for one in listed]
+            except Exception:  # noqa: BLE001 — a missing binary, a refused URL, a hung handshake, a bad approval mode: warn, never fail boot.
                 LOGGER.warning(
                     "mcp server %r unavailable; its tools stay off the menu", server, exc_info=True
                 )
                 continue
-            tools.extend(self._wrap(server, client, one) for one in listed)
+            pairs = zip(listed, modes, strict=True)
+            tools.extend(self._wrap(server, client, one, mode) for one, mode in pairs)
             LOGGER.info("mcp server %r: %d tools", server, len(listed))
         return tuple(tools)
 
-    def _wrap(self, server: str, client: Client, listed: mcp_types.Tool) -> Tool:
+    def _wrap(self, server: str, client: Client, listed: mcp_types.Tool, mode: str) -> Tool:
         read_only = bool(listed.annotations and listed.annotations.read_only_hint)
+        # ADR 0033: a call that needs approval sits at the confirmation threshold,
+        # so the Pre-action Gate asks Allen before it runs.
+        ask = needs_approval(listed.annotations, mode)
 
         def call(args: Mapping[str, Any], _ctx: ToolContext) -> dict[str, Any]:
             try:
@@ -241,8 +302,10 @@ class McpServers:
             input_schema=listed.input_schema,
             handler=call,
             allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
-            risk_level="L0" if read_only else "L1",
+            risk_level="L3" if ask else ("L0" if read_only else "L1"),
             read_only=read_only,
+            requires_confirmation=ask,
+            deferred=True,
         )
 
     def stop(self) -> None:

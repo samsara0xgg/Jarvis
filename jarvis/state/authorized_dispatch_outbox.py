@@ -150,7 +150,7 @@ def answer_confirmation_once(  # noqa: PLR0913 - atomic validation and commit
         raise
 
 
-def admit_authorized_dispatch(  # noqa: C901, PLR0915 - atomic fail-closed validation
+def admit_authorized_dispatch(  # noqa: C901, PLR0912, PLR0915 - atomic fail-closed validation
     conn: sqlite3.Connection,
     action_request: ActionRequest,
     *,
@@ -167,12 +167,17 @@ def admit_authorized_dispatch(  # noqa: C901, PLR0915 - atomic fail-closed valid
     if lease is None:
         message = "authorized dispatch requires a lease"
         raise ConfirmationRevalidationError(message)
+    target = action_request.target_entity_ref
+    # The gate's scope table: a target-less action needs a target-less lease.
+    target_permitted = (
+        not lease["allowed_targets"] if target is None else target in lease["allowed_targets"]
+    )
     if (
         lease["granted_by"] != "allen"
         or lease["granted_to"] != action_request.caller_principal
         or action_request.caller_principal != CallerPrincipal.JARVIS_LLM
         or action_request.tool_name not in lease["allowed_tools"]
-        or action_request.target_entity_ref not in lease["allowed_targets"]
+        or not target_permitted
         or lease["max_uses"] != 1
     ):
         message = "dispatch lease expired or does not permit this action"
@@ -209,17 +214,20 @@ def admit_authorized_dispatch(  # noqa: C901, PLR0915 - atomic fail-closed valid
             message = "dispatch request differs from authorized request"
             raise ConfirmationRevalidationError(message)  # noqa: TRY301 - atomic transaction owns rollback
         metadata = cast("Mapping[str, object]", snapshot["args_meta"])
-        content = action_request.arguments.get("content")
-        if not isinstance(content, str) or (
-            hashlib.sha256(content.encode("utf-8")).hexdigest() != metadata["content_sha256"]
-            or len(content.encode("utf-8")) != metadata["content_bytes"]
-        ):
-            message = "dispatch content differs from authorized content"
-            raise ConfirmationRevalidationError(message)  # noqa: TRY301 - atomic transaction owns rollback
-        expected_arguments = {key: value for key, value in metadata.items() if key not in (
-            "content_sha256", "content_bytes", "content_artifact",
-        )}
-        expected_arguments["content"] = content
+        if _staged(metadata):
+            content = action_request.arguments.get("content")
+            if not isinstance(content, str) or (
+                hashlib.sha256(content.encode("utf-8")).hexdigest() != metadata["content_sha256"]
+                or len(content.encode("utf-8")) != metadata["content_bytes"]
+            ):
+                message = "dispatch content differs from authorized content"
+                raise ConfirmationRevalidationError(message)  # noqa: TRY301 - atomic transaction owns rollback
+            expected_arguments = {
+                key: value for key, value in metadata.items() if key not in _CONTENT_METADATA_KEYS
+            }
+            expected_arguments["content"] = content
+        else:
+            expected_arguments = dict(metadata)
         if dict(action_request.arguments) != expected_arguments:
             message = "dispatch arguments differ from authorization"
             raise ConfirmationRevalidationError(message)  # noqa: TRY301 - atomic transaction owns rollback
@@ -280,6 +288,27 @@ def _inject(injector: FailureInjector | None, stage: FailureStage) -> None:
         injector(stage)
 
 
+_CONTENT_METADATA_KEYS = frozenset({"content_sha256", "content_bytes", "content_artifact"})
+
+
+def _staged(args_meta: Mapping[str, object]) -> bool:
+    """Whether the confirmation staged content (``write_file``); others freeze arguments as is."""
+    return "content_artifact" in args_meta
+
+
+def _bounded_arguments(args_meta: Mapping[str, object]) -> dict[str, object]:
+    """The request's arguments as the outbox records them: staged content by reference only."""
+    if not _staged(args_meta):
+        return dict(args_meta)
+    bounded = {key: value for key, value in args_meta.items() if key not in _CONTENT_METADATA_KEYS}
+    bounded["content_ref"] = {
+        "artifact": args_meta.get("content_artifact"),
+        "sha256": args_meta.get("content_sha256"),
+        "bytes": args_meta.get("content_bytes"),
+    }
+    return bounded
+
+
 def _canonical_request_payload(
     action_request: ActionRequest,
     *,
@@ -292,15 +321,7 @@ def _canonical_request_payload(
     if not isinstance(args_meta_raw, dict):  # pragma: no cover - revalidated first
         msg = "frozen confirmation args_meta disappeared"
         raise ConfirmationRevalidationError(msg)
-    metadata_keys = {"content_sha256", "content_bytes", "content_artifact"}
-    bounded_arguments = {
-        key: value for key, value in args_meta_raw.items() if key not in metadata_keys
-    }
-    bounded_arguments["content_ref"] = {
-        "artifact": args_meta_raw.get("content_artifact"),
-        "sha256": args_meta_raw.get("content_sha256"),
-        "bytes": args_meta_raw.get("content_bytes"),
-    }
+    bounded_arguments = _bounded_arguments(args_meta_raw)
     return {
         "action_id": stable_action_id,
         "tool_name": action_request.tool_name,
@@ -507,15 +528,7 @@ def _load_valid_request(
     if not isinstance(args_meta, dict):
         msg = "authorized-dispatch frozen arguments are malformed"
         raise AuthorizedDispatchCorruptionError(msg)
-    metadata_keys = {"content_sha256", "content_bytes", "content_artifact"}
-    expected_arguments = {
-        key: value for key, value in args_meta.items() if key not in metadata_keys
-    }
-    expected_arguments["content_ref"] = {
-        "artifact": args_meta.get("content_artifact"),
-        "sha256": args_meta.get("content_sha256"),
-        "bytes": args_meta.get("content_bytes"),
-    }
+    expected_arguments = _bounded_arguments(args_meta)
     snapshot_bindings = {
         "tool_name": snapshot.get("tool_name"),
         "target_entity_ref": snapshot.get("target_entity_ref"),
@@ -696,6 +709,14 @@ def _revalidate_confirmation(  # noqa: C901, PLR0912, PLR0915 - fail-closed matr
     if not isinstance(args_meta, dict):
         msg = "frozen confirmation snapshot has malformed args_meta"
         raise ConfirmationRevalidationError(msg)
+    if not _staged(args_meta):
+        if dict(action_request.arguments) != args_meta:
+            msg = "ActionRequest arguments differ from the frozen confirmation snapshot"
+            raise ConfirmationRevalidationError(msg)
+        if action_request.payload is not None:
+            msg = "confirmation-backed ActionRequest cannot carry unapproved payload"
+            raise ConfirmationRevalidationError(msg)
+        return confirmation_id, accepted_event, snapshot
     content = action_request.arguments.get("content")
     expected_content_hash = args_meta.get("content_sha256")
     expected_content_bytes = args_meta.get("content_bytes")
@@ -717,9 +738,8 @@ def _revalidate_confirmation(  # noqa: C901, PLR0912, PLR0915 - fail-closed matr
     if expected_content_bytes != len(content_bytes):
         msg = "ActionRequest content length differs from the frozen confirmation snapshot"
         raise ConfirmationRevalidationError(msg)
-    metadata_keys = {"content_sha256", "content_bytes", "content_artifact"}
     expected_arguments = {
-        key: value for key, value in args_meta.items() if key not in metadata_keys
+        key: value for key, value in args_meta.items() if key not in _CONTENT_METADATA_KEYS
     }
     expected_arguments["content"] = content
     if dict(action_request.arguments) != expected_arguments:

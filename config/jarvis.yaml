@@ -178,12 +178,26 @@ tools:
     vision_preset: vision
     # 截图喂给 vision 模型前用 sips 缩到这个宽度以内（像素）。
     max_width_px: 1568
+  # ADR 0035 — 插件，目录格式照 Codex：plugins/<名字>/ 里有
+  # .codex-plugin/plugin.json、.mcp.json（它带的 MCP server）和 skills/。
+  # 这里列出的插件才启用；enabled: false 关掉。mcp_servers.<server> 下可按
+  # Codex 的写法改审批：default_tools_approval_mode 或
+  # tools.<工具名>.approval_mode，取值 auto（默认）/ prompt / writes / approve。
+  # github 需要 ~/.jarvis/env 里有 GITHUB_PAT_TOKEN；notion 要先跑一次
+  # `python -m jarvis mcp-login notion`。
+  plugins:
+    notion: {enabled: true}
+    github: {enabled: true}
   # ADR 0031 — MCP servers。每个条目在启动时连上，它列出的工具以
-  # mcp__<条目名>__<工具名> 进 LLM 菜单；连不上只告警、不影响启动。
+  # mcp__<条目名>__<工具名> 注册；连不上只告警、不影响启动。和插件里的
+  # server 同名时，这里的条目整条替换插件的。
   # 一个条目要么写 url（Streamable HTTP），要么写 command + args（stdio
   # 子进程），可选 env / cwd。env 和 headers 的值里可以写 $VAR，从守护
-  # 进程环境（含 ~/.jarvis/env）展开，key 不进这个文件。readOnlyHint 为
-  # 真的工具记 L0/read_only，其余 L1。
+  # 进程环境（含 ~/.jarvis/env）展开，key 不进这个文件。也认 Codex 的
+  # bearer_token_env_var / http_headers / env_http_headers 写法。
+  # ADR 0033 — 审批照 Codex 的 auto 档：readOnlyHint 为真的直接用（L0），
+  # 其余先问 Allen（L3，走确认），只有明确标了不破坏且不对外的才不问（L1）。
+  # ADR 0034 — 这些工具默认不进 LLM 菜单，模型用 tool_search 搜到才加进来。
   #
   # ADR 0032 — 远程认证。固定 token 写 headers；要浏览器登录的写
   # auth: oauth，然后在终端跑一次 `python -m jarvis mcp-login <条目名>`，
