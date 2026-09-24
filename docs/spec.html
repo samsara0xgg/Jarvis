@@ -500,7 +500,7 @@ Jarvis 是 <strong>6-layer state-centric personal runtime</strong>。Identity �
 <thead><tr><th>Projection</th><th>作用</th></tr></thead>
 <tbody>
 <tr><td><strong>Open Actions / Admissions</strong></td><td>已授权未终结的 action、gate / dispatch 关联、confirm 等待。</td></tr>
-<tr><td><strong>Pending Confirmations</strong></td><td>等待 Allen 回答的 confirmation request。</td></tr>
+<tr><td><strong>Pending Confirmations</strong></td><td>等待 Allen 回答的 confirmation request。只有紧接着的下一句能回答它：下一句不命中确认语法时，写 <code>confirmation.rejected</code>（<code>grammar_rule_id: superseded_by_turn</code>）关闭它，该回合按没有待确认处理（ADR 0039）；没人回答的询问按 TTL 过期。</td></tr>
 <tr><td><strong>Status Board</strong></td><td>Mac / home / action / tool / domain availability 的当前状态。</td></tr>
 <tr><td><strong>Mode Runtime State</strong></td><td>当前 durable mode、lenses、overrides。</td></tr>
 <tr><td><strong>Recent Trace</strong></td><td>最近 N turn 和相关 action / event 的近因上下文。</td></tr>

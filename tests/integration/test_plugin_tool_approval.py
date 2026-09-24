@@ -53,7 +53,7 @@ class _Paths:
 
 
 class _ScriptedClient:
-    """Searches for the adder, then calls it; records every tool list it was offered."""
+    """Searches for the adder, calls it, then only talks; records what it was offered."""
 
     model = "stub-model"
     last_input_tokens = 0
@@ -62,6 +62,7 @@ class _ScriptedClient:
 
     def __init__(self) -> None:
         self.offered: list[list[str]] = []
+        self.seen: list[str] = []
 
     @contextmanager
     def fresh_context(self) -> Iterator[_ScriptedClient]:
@@ -70,24 +71,24 @@ class _ScriptedClient:
     def chat(
         self,
         *,
-        messages: list[dict[str, Any]],  # noqa: ARG002
+        messages: list[dict[str, Any]],
         system: str,  # noqa: ARG002
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str | None = "auto",  # noqa: ARG002
     ) -> ChatResult:
         self.offered.append([t["name"] for t in tools or []])
-        if len(self.offered) == 1:
-            call = ToolCall(
+        self.seen.append(json.dumps(messages, ensure_ascii=False))
+        calls = {
+            1: ToolCall(
                 call_id="c1", name="tool_search", arguments_json='{"query": "add two integers"}'
-            )
-        else:
-            call = ToolCall(
-                call_id="c2", name="mcp__echo__add", arguments_json='{"a": 17, "b": 25}'
-            )
+            ),
+            2: ToolCall(call_id="c2", name="mcp__echo__add", arguments_json='{"a": 17, "b": 25}'),
+        }
+        call = calls.get(len(self.offered))
         return ChatResult(
-            text=None,
-            tool_calls=(call,),
-            finish_reason="tool_calls",
+            text=None if call else "现在是下午三点。要我顺便把明天的日程也念一下吗？",  # noqa: RUF001
+            tool_calls=(call,) if call else (),
+            finish_reason="tool_calls" if call else "stop",
             input_tokens=0,
             output_tokens=0,
             raw={},
@@ -187,6 +188,23 @@ def test_searched_plugin_tool_does_nothing_on_no(tmp_path: Path, servers: McpSer
     try:
         assert _say(ctx, "不要", "T2") == f"好，已取消：{ASK}"  # noqa: RUF001 — the fixed Chinese rejection.
         assert len(_rows(ctx.conn, "confirmation.rejected")) == 1
+        assert len(_rows(ctx.conn, "action.result_observed")) == 1  # still only the search
+    finally:
+        ctx.conn.close()
+
+
+def test_an_unrelated_turn_closes_the_ask(tmp_path: Path, servers: McpServers) -> None:
+    """ADR 0039: a 好 meant for the model's own question never fires the earlier ask."""
+    ctx, llm = _ask(tmp_path, servers)
+    try:
+        _say(ctx, "现在几点", "T2")
+        assert "等你答复" not in llm.seen[-1]  # the model is not told the ask is still open
+        assert [r["grammar_rule_id"] for r in _rows(ctx.conn, "confirmation.rejected")] == [
+            "superseded_by_turn"
+        ]
+        _say(ctx, "好", "T3")
+        assert len(llm.offered) == 4  # the 好 reached the model, not the grammar
+        assert _rows(ctx.conn, "confirmation.accepted") == []
         assert len(_rows(ctx.conn, "action.result_observed")) == 1  # still only the search
     finally:
         ctx.conn.close()

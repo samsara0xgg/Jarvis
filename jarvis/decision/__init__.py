@@ -36,6 +36,7 @@ Protocols that the runtime composition root satisfies structurally.
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import hashlib
 import json
@@ -48,7 +49,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
 
-from jarvis.decision.confirm_grammar import match_confirm_grammar
+from jarvis.decision.confirm_grammar import ConfirmGrammarHit, match_confirm_grammar
 from jarvis.decision.cost_guard import CostRecorder
 from jarvis.decision.gates import (
     AttentionChannel,
@@ -109,7 +110,7 @@ from jarvis.state.stream_emission import committed_text_prefix
 if TYPE_CHECKING:
     import sqlite3
 
-    from jarvis.decision.confirm_grammar import ConfirmGrammarHit, ConfirmGrammarTable
+    from jarvis.decision.confirm_grammar import ConfirmGrammarTable
     from jarvis.decision.llm import ChatResult, LLMClient
     from jarvis.decision.pre_route import RoutineStreamRoute, StreamCorrection
     from jarvis.decision.stream_sentences import SemanticCandidate
@@ -878,15 +879,12 @@ def _handle_utterance(
     #     turn falls through to ordinary Tier 0 / Tier 2 handling
     #     exactly as if no confirmation existed (D6 "expired pending ->
     #     ordinary turn"; C3).
-    #   - The LLM's only touchpoint with a pending ask is
-    #     `format_pending_confirmation_note` — an id-free system note
-    #     it can talk ABOUT (C4/C6) but that carries no
-    #     `confirmation_id`, no tool, and no argument it could use to
-    #     act on the ask. Its worst case (a paraphrase like "行吧那就写
-    #     进去吧", ADR's own C6 example) is proposing the action again
-    #     via the ordinary tool-call path, which produces a FRESH
+    #   - A grammar miss closes the slot (ADR 0039), so the LLM on this
+    #     turn sees no pending ask at all. Its worst case (a paraphrase
+    #     like "行吧那就写进去吧") is proposing the action again via the
+    #     ordinary tool-call path, which produces a FRESH
     #     `confirm_required` -> a fresh `confirmation.requested` that
-    #     supersedes this slot and re-asks — never a dispatch.
+    #     re-asks — never a dispatch.
     pending_slot = packet.pending_confirmation.slot
     if pending_slot is not None and pending_slot.is_live(_now_epoch_ms()):
         transcript_raw = trigger.payload.get("transcript", "")
@@ -911,6 +909,9 @@ def _handle_utterance(
                 ctx,
                 scratch,
             )
+        # ADR 0039: an ask binds only the next utterance. Anything else closes
+        # it, so a later 「好」 meant for another question can never fire it.
+        packet = _supersede_confirmation(pending_slot, transcript, packet, ctx, scratch)
 
     # Tier 0 deterministic shortcut (spec §17): hit → dispatch through
     # the full gate/audit chain with caller_principal=regex_router,
@@ -2521,6 +2522,36 @@ def _record_confirmation_answer(
         },
         source_event_id=_latest_event_uid_of_type(ctx.conn, event_type="confirmation.requested"),
         correlation=correlation,
+    )
+
+
+_SUPERSEDED_BY_TURN: Final[ConfirmGrammarHit] = ConfirmGrammarHit(
+    rule_id="superseded_by_turn",
+    decision="no",
+)
+
+
+def _supersede_confirmation(
+    slot: PendingConfirmationSlot,
+    transcript: str,
+    packet: SituationPacket,
+    ctx: DecideContext,
+    scratch: _Scratch,
+) -> SituationPacket:
+    """Close ``slot`` as rejected and return a packet that no longer shows it.
+
+    The turn then runs as an ordinary one: no pending note reaches the LLM,
+    and nothing announces the closure. A closed slot that another turn
+    already answered is simply left alone.
+    """
+    with contextlib.suppress(ConfirmationRevalidationError):
+        scratch.events.append(
+            _record_confirmation_answer(slot, _SUPERSEDED_BY_TURN, transcript, ctx, scratch),
+        )
+    closed = replace(slot, state="rejected")
+    return replace(
+        packet,
+        pending_confirmation=replace(packet.pending_confirmation, slot=closed),
     )
 
 
