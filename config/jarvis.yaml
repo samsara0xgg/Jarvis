@@ -209,7 +209,28 @@ tools:
     # OAuth 登录时浏览器跳回本机的端口。它写进了向对方注册的 redirect
     # URI，改了就要对该 server 重新 mcp-login。
     oauth_callback_port: 8789
-    servers: {}
+    servers:
+      # 微软 To Do + Outlook 日历，个人账号。社区版 Softeria
+      # ms-365-mcp-server，本机子进程；版本钉死，它几乎每天发版。
+      # PATH：LaunchAgent 只有系统路径，npx 走 mise 的 shim。
+      # TENANT_ID=consumers：个人账号不设这个，登录一小时后刷新失败。
+      # USE_KEYTAR=0：解密 key 放在 token 文件旁（0600），不进钥匙串——
+      # 钥匙串每次 node/版本变化都会弹窗，后台守护进程会卡在那里。
+      # ENABLED_TOOLS 只留待办、日历和读日历分类，去掉共享日历的权限工具；
+      # 登录时申请的权限由它决定（Tasks/Calendars.ReadWrite +
+      # MailboxSettings.Read），所以登录必须用同一份 env + args 加 --login；
+      # 没有 User.Read，登录自检读 /me 会报 403，不影响待办和日历。
+      microsoft:
+        command: npx
+        args: ["-y", "@softeria/ms-365-mcp-server@0.155.0"]
+        env:
+          PATH: "$HOME/.local/share/mise/shims:/usr/bin:/bin"
+          MS365_MCP_TENANT_ID: consumers
+          MS365_MCP_USE_KEYTAR: "0"
+          # 每次调用一行审计日志会灌进 daemon.err.log；静默 stderr，它自己的
+          # 错误/审计日志照写在 ~/.ms-365-mcp-server/logs/。
+          SILENT: "1"
+          ENABLED_TOOLS: '^(?!.*permission).*(todo|calendar)|^list-outlook-categories$'
     # 例：
     # servers:
     #   time:
