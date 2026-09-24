@@ -225,6 +225,10 @@ LOGGER = logging.getLogger("jarvis.runtime.inherent_loop")
 # render emission) and the watcher's reaction.
 _DEFAULT_POLL_INTERVAL_S: float = 0.01
 
+# How long a daemon loop waits after a failed poll before it tries again; long
+# enough that a persistent error writes one log line a second, not a hundred.
+_WATCHER_RETRY_S: float = 1.0
+
 # Default port the Inherent client connects to. Picked to NOT collide
 # with the legacy ``ui/web/server.py`` default (8000) or the
 # inherent-swift dev server (8001).
@@ -780,6 +784,12 @@ def _drop_for_silent_channel(  # noqa: PLR0913 - two verdict sources, one bookke
     return True
 
 
+def _log_watcher_death(task: asyncio.Task[None]) -> None:
+    """A daemon-lifetime task that ends with an exception is an outage until restart; log it."""
+    if not task.cancelled() and task.exception() is not None:
+        LOGGER.error("%s stopped; restart the daemon", task.get_name(), exc_info=task.exception())
+
+
 def _emit_turn_failed(
     conn: sqlite3.Connection,
     *,
@@ -791,20 +801,26 @@ def _emit_turn_failed(
     ``trigger_event_id`` is the originating ``surface.user_intent``
     event's ``event_uid`` so a future replay can join the failure back
     to the request that produced it.
+
+    Never raises: its callers are the catch-alls of the daemon's input loops,
+    and a failed write here must not end the loop that called it.
     """
     turn_id = intent_event.payload.get("turn_id", "<unknown>")
-    emit_event(
-        conn,
-        type="turn.failed",
-        payload={
-            "turn_id": str(turn_id),
-            "exception_repr": exception_repr,
-            "trigger_event_id": intent_event.event_uid,
-        },
-        # ADR-0016 D5: correlated so a Live delegation's lookup by turn finds it.
-        correlation={"turn_id": str(turn_id)},
-        ts_epoch_ms=int(time.time() * 1000),
-    )
+    try:
+        emit_event(
+            conn,
+            type="turn.failed",
+            payload={
+                "turn_id": str(turn_id),
+                "exception_repr": exception_repr,
+                "trigger_event_id": intent_event.event_uid,
+            },
+            # ADR-0016 D5: correlated so a Live delegation's lookup by turn finds it.
+            correlation={"turn_id": str(turn_id)},
+            ts_epoch_ms=int(time.time() * 1000),
+        )
+    except Exception:
+        LOGGER.exception("turn.failed could not be written for turn_id=%s", turn_id)
 
 
 def _reconcile_open_responses_in_thread(
@@ -1060,7 +1076,7 @@ def _claim_intent_in_thread(event_log_path: Path, trigger_event: Event) -> bool:
     conflicting-turn_id case: two different utterances asserting one turn
     identity is a bug upstream, and driving either would be a guess.
     """
-    conn = open_event_log(event_log_path)
+    conn = open_runtime_event_log(event_log_path)
     try:
         outcome = claim_input_once(conn, trigger_event=trigger_event)
     except ConflictingTurnClaimError:
@@ -1107,25 +1123,35 @@ async def _intent_pump_watcher(
     ``dispatched`` is the in-process guard against driving one turn twice:
     the boot scan and the poll loop deliberately overlap, and a restart
     re-examines everything after the adoption watermark.
+
+    A poll that raises (a claim that waited out the write lock) is logged and
+    retried from the same cursor: this task is the only reader of new input.
     """
     after_id = boot.live_cursor_id
+    recovered = list(boot.recovered)
     LOGGER.info(
         "intent_pump started (adoption_row_id=%d, after_id=%d, recovered=%d)",
         boot.adoption_row_id,
         after_id,
-        len(boot.recovered),
+        len(recovered),
     )
     try:
-        for event in boot.recovered:
-            await _offer_intent(runtime, queue, dispatched, event)
         while True:
-            for row_id, event in _fetch_events_after(
-                runtime.conn,
-                after_id=after_id,
-                event_types=_USER_INTENT_TRIGGER_TYPES,
-            ):
-                await _offer_intent(runtime, queue, dispatched, event)
-                after_id = max(after_id, row_id)
+            try:
+                while recovered:
+                    await _offer_intent(runtime, queue, dispatched, recovered[0])
+                    recovered.pop(0)
+                for row_id, event in _fetch_events_after(
+                    runtime.conn,
+                    after_id=after_id,
+                    event_types=_USER_INTENT_TRIGGER_TYPES,
+                ):
+                    await _offer_intent(runtime, queue, dispatched, event)
+                    after_id = max(after_id, row_id)
+            except Exception:
+                LOGGER.exception("intent_pump: poll failed at after_id=%d; retrying", after_id)
+                await asyncio.sleep(_WATCHER_RETRY_S)
+                continue
             await asyncio.sleep(poll_interval_s)
     except asyncio.CancelledError:
         LOGGER.info("intent_pump cancelled")
@@ -1397,27 +1423,32 @@ async def _response_watcher(
     LOGGER.info("response_watcher started (after_id=%d)", after_id)
     try:
         while True:
-            new_events = _fetch_response_events_after(
-                runtime.conn,
-                after_id=after_id,
-            )
-            for row_id, ev in new_events:
-                after_id = max(after_id, row_id)
-                turn_id = str(ev.payload.get("turn_id", ""))
-                if _drop_for_silent_channel(
-                    ev,
-                    turn_id=turn_id,
-                    silent_turns=silent_turns,
-                    silent_channels=_BROADCAST_SILENT_CHANNELS,
-                    consumer="response_watcher",
-                ):
-                    continue
-                if ev.type == "surface.response_open":
-                    await broadcaster.broadcast_open(ev)
-                elif ev.type == "surface.response_chunk":
-                    await broadcaster.broadcast_chunk(ev)
-                else:  # surface.response_emitted
-                    await broadcaster.broadcast_done(ev)
+            try:
+                new_events = _fetch_response_events_after(
+                    runtime.conn,
+                    after_id=after_id,
+                )
+                for row_id, ev in new_events:
+                    after_id = max(after_id, row_id)
+                    turn_id = str(ev.payload.get("turn_id", ""))
+                    if _drop_for_silent_channel(
+                        ev,
+                        turn_id=turn_id,
+                        silent_turns=silent_turns,
+                        silent_channels=_BROADCAST_SILENT_CHANNELS,
+                        consumer="response_watcher",
+                    ):
+                        continue
+                    if ev.type == "surface.response_open":
+                        await broadcaster.broadcast_open(ev)
+                    elif ev.type == "surface.response_chunk":
+                        await broadcaster.broadcast_chunk(ev)
+                    else:  # surface.response_emitted
+                        await broadcaster.broadcast_done(ev)
+            except Exception:
+                LOGGER.exception("response_watcher: poll failed at after_id=%d; retrying", after_id)
+                await asyncio.sleep(_WATCHER_RETRY_S)
+                continue
             await asyncio.sleep(poll_interval_s)
     except asyncio.CancelledError:
         LOGGER.info("response_watcher cancelled")
@@ -2131,7 +2162,7 @@ def _build_voice_pipeline(
     memory = runtime.memory
     artifacts_dir = memory.audio_dir if memory is not None and memory.retain_audio else None
     return voice_pipeline.VoicePipeline(
-        conn_factory=lambda: open_event_log(db_path),
+        conn_factory=lambda: open_runtime_event_log(db_path),
         recognizer=recognizer,
         normalizer=normalizer,
         broadcaster=broadcaster,
@@ -2248,7 +2279,7 @@ def _build_tts_pipeline(  # noqa: C901 - rollout/degradation capability boundary
             return voice_media.StreamingTTSPipeline(
                 provider=provider,
                 player=player,
-                conn_factory=lambda: open_event_log(runtime.runtime_paths.event_log),
+                conn_factory=lambda: open_runtime_event_log(runtime.runtime_paths.event_log),
                 boot_high_water_id=_latest_id(runtime.conn),
                 config=media_config,
                 broadcaster=broadcaster,
@@ -3477,42 +3508,47 @@ async def _system_trigger_watcher(
     anchored.set()
     try:
         while True:
-            new_events = _fetch_events_after(
-                runtime.conn,
-                after_id=after_id,
-                event_types=_SYSTEM_TRIGGER_TYPES,
-            )
-            for row_id, _ev in new_events:
-                after_id = max(after_id, row_id)
-            for _row_id, ev in new_events:
-                action_id = _event_action_id(ev)
-                if action_id is None:
-                    continue
-                if action_id in live_action_ids():
-                    # A live turn is driving it and will fold its own
-                    # terminal; a system turn would double-handle it.
-                    continue
-                if trigger_was_consumed(runtime.conn, ev.event_uid):
-                    continue
-                trigger = _system_trigger_event(ev)
-                try:
-                    await asyncio.to_thread(
-                        _drive_turn_in_worker_thread,
-                        runtime,
-                        user_intent_event=trigger,
-                    )
-                except Exception as exc:  # noqa: BLE001 — ADR-0003 D9 F3 catch-all: log + audit + continue.
-                    LOGGER.warning(
-                        "system_trigger_watcher: drive_turn raised for "
-                        "action_id=%s: %r",
-                        action_id,
-                        exc,
-                    )
-                    _emit_turn_failed(
-                        runtime.conn,
-                        intent_event=trigger,
-                        exception_repr=repr(exc),
-                    )
+            try:
+                new_events = _fetch_events_after(
+                    runtime.conn,
+                    after_id=after_id,
+                    event_types=_SYSTEM_TRIGGER_TYPES,
+                )
+                for row_id, _ev in new_events:
+                    after_id = max(after_id, row_id)
+                for _row_id, ev in new_events:
+                    action_id = _event_action_id(ev)
+                    if action_id is None:
+                        continue
+                    if action_id in live_action_ids():
+                        # A live turn is driving it and will fold its own
+                        # terminal; a system turn would double-handle it.
+                        continue
+                    if trigger_was_consumed(runtime.conn, ev.event_uid):
+                        continue
+                    trigger = _system_trigger_event(ev)
+                    try:
+                        await asyncio.to_thread(
+                            _drive_turn_in_worker_thread,
+                            runtime,
+                            user_intent_event=trigger,
+                        )
+                    except Exception as exc:  # noqa: BLE001 — ADR-0003 D9 F3 catch-all: log + audit + continue.
+                        LOGGER.warning(
+                            "system_trigger_watcher: drive_turn raised for "
+                            "action_id=%s: %r",
+                            action_id,
+                            exc,
+                        )
+                        _emit_turn_failed(
+                            runtime.conn,
+                            intent_event=trigger,
+                            exception_repr=repr(exc),
+                        )
+            except Exception:
+                LOGGER.exception("system_trigger_watcher: poll failed at after_id=%d", after_id)
+                await asyncio.sleep(_WATCHER_RETRY_S)
+                continue
             await asyncio.sleep(poll_interval_s)
     except asyncio.CancelledError:
         LOGGER.info("system_trigger_watcher cancelled")
@@ -4183,7 +4219,7 @@ class _LiveBackend:
     def delegate(self, text: str, delegation_id: str, session_id: str, record_id: str) -> str:
         """Submit one delegation through the D21 inbox; a replay returns the same turn."""
         key = SubmissionKey(LIVE_PRINCIPAL, session_id, delegation_id)
-        conn = open_event_log(self._event_log_path)
+        conn = open_runtime_event_log(self._event_log_path)
         try:
             receipt = submit_text_once(
                 conn,
@@ -4216,7 +4252,7 @@ class _LiveBackend:
 
     def lookup_result(self, turn_id: str) -> voice_live.DelegationResult | None:
         """The turn's final answer, its failure, or None while it is still running (D4, D5)."""
-        conn = open_event_log(self._event_log_path)
+        conn = open_runtime_event_log(self._event_log_path)
         try:
             return _turn_outcome(conn, turn_id)
         finally:
@@ -4226,7 +4262,7 @@ class _LiveBackend:
     def undelivered_results(self) -> list[voice_live.UndeliveredResult]:
         """Finished delegations of the last day that no session was told, oldest first."""
         since = int(time.time() * 1000) - _UNDELIVERED_WINDOW_MS
-        conn = open_event_log(self._event_log_path)
+        conn = open_runtime_event_log(self._event_log_path)
         found: list[voice_live.UndeliveredResult] = []
         try:
             intents = [
@@ -4295,7 +4331,7 @@ class _LiveBackend:
         *,
         correlation: dict[str, str] | None = None,
     ) -> None:
-        conn = open_event_log(self._event_log_path)
+        conn = open_runtime_event_log(self._event_log_path)
         try:
             emit_event(conn, type=event_type, payload=payload, correlation=correlation)
         finally:
@@ -4371,7 +4407,7 @@ def _submit_text_v2(
     opens its own connection exactly as ``submit_callable`` does.
     """
     key = SubmissionKey(V2_PRINCIPAL, client_instance_id, request_id)
-    inner_conn = open_event_log(event_log_path)
+    inner_conn = open_runtime_event_log(event_log_path)
     try:
         return _v2_accepted(submit_text_once(inner_conn, key=key, transcript=text))
     except PayloadConflictError:
@@ -4399,7 +4435,7 @@ def _submit_asr_v2(  # noqa: PLR0913 — the bound path and pipeline plus the fo
     retried at once rather than waiting out the TTL.
     """
     key = SubmissionKey(V2_PRINCIPAL, client_instance_id, request_id)
-    inner_conn = open_event_log(event_log_path)
+    inner_conn = open_runtime_event_log(event_log_path)
     try:
         try:
             claim = claim_asr_request(
@@ -4549,7 +4585,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             ``open`` envelope's ``q`` against its own utterance.
             """
             turn_id = _new_turn_id()
-            inner_conn = open_event_log(runtime.runtime_paths.event_log)
+            inner_conn = open_runtime_event_log(runtime.runtime_paths.event_log)
             try:
                 emit_surface_user_intent(
                     inner_conn,
@@ -5023,6 +5059,8 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         watchers.extend(_start_repo_observer(runtime))
         watchers.extend(_start_usage_observer(usage_observer, runtime.config))
         watchers.extend(_start_timesink_observer(runtime))
+        for watcher in watchers:
+            watcher.add_done_callback(_log_watcher_death)
 
         # ADR-0009 D3 — power observer, installed after the lock (which
         # stays the outermost scope) and immediately before the try/finally

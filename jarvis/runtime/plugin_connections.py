@@ -27,7 +27,7 @@ from jarvis.runtime.plugin_catalog import (
     resolve_credentials,
 )
 from jarvis.runtime.plugins import Plugins, load_plugins
-from jarvis.state.event_log import append_event_in_transaction, open_event_log
+from jarvis.state.event_log import append_event_in_transaction, open_runtime_event_log
 from jarvis.state.plugin_settings import PluginSettings
 
 if TYPE_CHECKING:
@@ -571,7 +571,7 @@ class PluginConnections:
     def _resume(self, request: dict[str, Any]) -> str:
         if not request.get("_origin") or not request.get("_transcript"):
             return "not_requested"
-        conn = open_event_log(self.event_log)
+        conn = open_runtime_event_log(self.event_log)
         try:
             conn.execute("BEGIN IMMEDIATE")
             latest = conn.execute(_LATEST_INPUT_SQL).fetchone()[0]

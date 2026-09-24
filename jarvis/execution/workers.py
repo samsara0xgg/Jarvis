@@ -31,7 +31,7 @@ from typing import TYPE_CHECKING, Any, Final
 from jarvis.execution.codex_app_server import CodexAppServer, CodexAppServerError, CodexClient
 from jarvis.execution.tools import FlatHandler, Tool, ToolContext, ToolError, tool
 from jarvis.shared import CallerPrincipal
-from jarvis.state.event_log import open_event_log
+from jarvis.state.event_log import open_runtime_event_log
 from jarvis.state.worker_edges import close_edges, open_edge
 
 if TYPE_CHECKING:
@@ -125,7 +125,7 @@ class Workers:
             client.close()
         self._server.stop()
         if open_ids:
-            conn = open_event_log(self._event_log)
+            conn = open_runtime_event_log(self._event_log)
             try:
                 close_edges(conn, open_ids)
             finally:

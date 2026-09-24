@@ -28,6 +28,7 @@ from jarvis.execution.tools import ActionLifecycle, build_default_registry
 from jarvis.runtime import JarvisRuntime, WaitingTurn, inherent_loop
 from jarvis.runtime.inherent_loop import (
     _boot_intent_pump_in_thread,
+    _claim_intent_in_thread,
     _intent_pump_watcher,
     _intent_worker,
     _IntentPumpBoot,
@@ -510,3 +511,58 @@ def test_a_full_queue_holds_the_cursor_instead_of_dropping(runtime: JarvisRuntim
 
     assert sorted(recorder.driven) == [f"T-{index}" for index in range(6)]
     assert _count(runtime.conn, "turn.started") == 6
+
+
+# --- a failure is survived and reported (audit 2026-09-23 S5-B05, F2-02) ----
+
+
+def test_a_claim_that_hits_a_locked_log_is_retried(runtime: JarvisRuntime) -> None:
+    """One sqlite error in the claim step no longer ends the pump.
+
+    The claim raises what a write lock held past busy_timeout raises; that
+    trigger and a later one both still get one ``turn.started`` and one dispatch.
+    """
+    recorder = _Recorder()
+    real_claim = _claim_intent_in_thread
+    attempts: list[str] = []
+
+    def _locked_once(path: Path, event: Event) -> bool:
+        attempts.append(str(event.payload["turn_id"]))
+        if len(attempts) == 1:
+            message = "database is locked"
+            raise sqlite3.OperationalError(message)
+        return real_claim(path, event)
+
+    async def _body() -> None:
+        with (
+            patch.object(inherent_loop, "_drive_turn_in_worker_thread", side_effect=recorder),
+            patch.object(inherent_loop, "_claim_intent_in_thread", side_effect=_locked_once),
+            patch.object(inherent_loop, "_WATCHER_RETRY_S", 0.01),
+        ):
+            tasks = await _start_intent_pump(
+                runtime, poll_interval_s=0.001, queue_capacity=8, max_concurrent_turns=2,
+            )
+            try:
+                await asyncio.sleep(0.02)
+                _emit_intent(runtime, "T-locked", "锁住时说的")
+                for _ in range(400):
+                    if recorder.driven:
+                        break
+                    await asyncio.sleep(0.005)
+                _emit_intent(runtime, "T-after", "之后说的")
+                for _ in range(400):
+                    if len(recorder.driven) >= 2:
+                        break
+                    await asyncio.sleep(0.005)
+                assert not any(task.done() for task in tasks)
+            finally:
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+    asyncio.run(_body())
+
+    assert attempts[:2] == ["T-locked", "T-locked"]
+    assert sorted(recorder.driven) == ["T-after", "T-locked"]
+    assert _count(runtime.conn, "turn.started") == 2
+
