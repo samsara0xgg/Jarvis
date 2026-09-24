@@ -102,8 +102,6 @@ from jarvis.execution.mcp_oauth import DEFAULT_OAUTH_CALLBACK_PORT
 from jarvis.execution.mcp_tools import DEFAULT_MCP_TIMEOUT_S, McpServers, is_oauth
 from jarvis.execution.path_resolver import resolve as resolve_file_entity
 from jarvis.execution.path_resolver import resolve_write_target
-from jarvis.execution.skill_reader import build_read_skill
-from jarvis.execution.tool_search import build_tool_search
 from jarvis.execution.tools import (
     DEFAULT_OBSIDIAN_VAULT_ROOT,
     DEFAULT_SCREEN_MAX_WIDTH_PX,
@@ -113,9 +111,7 @@ from jarvis.execution.tools import (
     DEFAULT_WEB_SEARCH_PROVIDER,
     DEFAULT_WEB_TIMEOUT_S,
     ActionLifecycle,
-    DuplicateToolError,
     ReadOnlyToolRegistry,
-    Tool,
     ToolContext,
     ToolRegistry,
     VisionClient,
@@ -125,6 +121,7 @@ from jarvis.execution.tools import (
 )
 from jarvis.execution.workers import Workers, make_worker_tools
 from jarvis.runtime.daily_report import DailyReportService
+from jarvis.runtime.plugin_connections import PluginConnections
 from jarvis.runtime.plugins import Plugins, load_plugins
 from jarvis.runtime.stream_bridge import LoopBoundTokenStream
 from jarvis.runtime.work_state import WorkStateService, build_analyst
@@ -432,6 +429,7 @@ class JarvisRuntime:
     workers: Workers | None = None
     # ADR 0031: the MCP clients entered at boot. None = no `tools.mcp.servers`.
     mcp_servers: McpServers | None = None
+    plugin_connections: PluginConnections | None = None
     # ADR 0023: the one current-work-state refresh workflow, shared by the
     # `refresh_work_state` tool and the Resonance dashboard routes.
     work_state: WorkStateService | None = None
@@ -1486,29 +1484,6 @@ def _all_mcp_servers(config: Mapping[str, Any], plugins: Plugins) -> dict[str, A
     return {**plugins.servers, **(dict(servers) if isinstance(servers, Mapping) else {})}
 
 
-def _register_mcp(
-    registry: ToolRegistry, config: Mapping[str, Any], paths: RuntimePaths, plugins: Plugins
-) -> McpServers | None:
-    """ADR 0031/0034/0035: every server is entered now; its tools wait behind `tool_search`."""
-    for skill_tool in build_read_skill(plugins.skills):
-        registry.register(skill_tool)
-    servers = _all_mcp_servers(config, plugins)
-    if not servers:
-        return None
-    mcp_servers = _mcp_servers(_mcp_block(config), paths, open_url=None)
-    registered: list[Tool] = []
-    for one in mcp_servers.connect(servers):
-        try:
-            registry.register(one)
-        except DuplicateToolError:
-            LOGGER.warning("mcp tool %r collides with a registered tool; skipped", one.name)
-            continue
-        registered.append(one)
-    for search_tool in build_tool_search(registered, plugins.sources):
-        registry.register(search_tool)
-    return mcp_servers
-
-
 def mcp_login(
     server: str, *, config_path: Path | None = None, runtime_root: Path | None = None
 ) -> int:
@@ -1709,8 +1684,11 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
         screen_max_width_px=screen_max_width_px,
     )
     workers = _register_workers(registry, paths)
-    plugins = _plugins(full_config, repo_root)
-    mcp_servers = _register_mcp(registry, full_config, paths, plugins)
+    plugin_connections = PluginConnections(
+        repo_root=repo_root, runtime_root=paths.root, event_log=paths.event_log,
+        registry=registry, config=full_config,
+    )
+    plugin_connections.initialize()
     lifecycle = ActionLifecycle()
 
     # 3b. Spec §17 Tier 0 whitelist — sits next to jarvis.yaml so Allen
@@ -1795,10 +1773,11 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
         ResponseRunRegistry() if response_flags.independent_response_cancel else None
     )
 
-    # 5. Prompt, then the plugin skills catalogue (ADR 0035), stable for the process.
+    # Plugin skills are sampled per turn so connections need no daemon restart.
     system_prompt = prompt_path.read_text(encoding="utf-8")
-    if skills_prompt := plugins.skills_prompt():
-        system_prompt = f"{system_prompt.rstrip()}\n\n{skills_prompt}\n"
+    plugin_connections.publish_event = (
+        committed_event_bus.publish if committed_event_bus is not None else None
+    )
 
     return JarvisRuntime(
         config=full_config,
@@ -1819,7 +1798,7 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
         memory=memory,
         session=session,
         workers=workers,
-        mcp_servers=mcp_servers,
+        plugin_connections=plugin_connections,
         sensevoice_dir=_realtime_model_path(
             full_config,
             key="sensevoice_dir",
@@ -2537,6 +2516,9 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
                 raise continuation.failure  # noqa: TRY301 — resume through the same failure owner
             if run is not None:
                 run.mark("generating")
+        turn_system_prompt = runtime.system_prompt
+        if runtime.plugin_connections is not None:
+            turn_system_prompt += "\n\n" + runtime.plugin_connections.skills_prompt()
         decide_ctx = DecideContext(
             conn=runtime.conn,
             runtime_paths=runtime.runtime_paths,
@@ -2550,7 +2532,10 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             tool_registry=cast(
                 "ToolRegistryLike",
                 ReadOnlyToolRegistry(runtime.tool_registry)
-                if user_intent_event.payload.get("channel") == "gpt_live"
+                if (
+                    user_intent_event.payload.get("channel") == "gpt_live"
+                    or user_intent_event.payload.get("plugin_origin_channel") == "gpt_live"
+                )
                 else runtime.tool_registry,
             ),
             lifecycle=cast("LifecycleLike", runtime.lifecycle),
@@ -2562,9 +2547,9 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             # The profile rides the system prompt: stable across turns, so it
             # sits in the cached prefix rather than in the per-turn context.
             system_prompt=(
-                f"{runtime.system_prompt.rstrip()}\n\n{memory_context.profile}"
+                f"{turn_system_prompt.rstrip()}\n\n{memory_context.profile}"
                 if memory_context is not None and memory_context.profile
-                else runtime.system_prompt
+                else turn_system_prompt
             ),
             tier0_table=runtime.tier0_table,
             # ADR-0011 D4 — resolve-on-propose. Built fresh per turn (a

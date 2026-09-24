@@ -177,6 +177,11 @@ class McpServers:
         self._thread.start()
         self._stops: list[asyncio.Event] = []
         self._serving: list[Future[None]] = []
+        self._tasks: set[asyncio.Task[None]] = set()
+        self._stop_lock = threading.Lock()
+        self._stopped = False
+        self.connected_servers: set[str] = set()
+        self._listed: list[tuple[str, Client, mcp_types.Tool]] = []
 
     def token_path(self, server: str) -> Path:
         """Where ``server``'s OAuth login lives; the login command reports it."""
@@ -191,9 +196,13 @@ class McpServers:
 
     def _run[T](self, coro: Coroutine[Any, Any, T]) -> T:
         """Run ``coro`` on the loop thread and wait for it here."""
-        return asyncio.run_coroutine_threadsafe(coro, self._loop).result(
-            self._timeout_s + _JOIN_GRACE_S
-        )
+        with self._stop_lock:
+            if self._stopped:
+                coro.close()
+                msg = "MCP client has stopped"
+                raise RuntimeError(msg)
+            future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        return future.result(self._timeout_s + _JOIN_GRACE_S)
 
     def _remote(self, server: str, spec: Mapping[str, Any]) -> tuple[Transport, httpx2.AsyncClient]:
         """Streamable HTTP with the entry's headers and, for an OAuth entry, its login."""
@@ -219,7 +228,9 @@ class McpServers:
         http_client = httpx2.AsyncClient(headers=headers, auth=auth, timeout=_HTTP_TIMEOUT)
         return streamable_http_client(url, http_client=http_client), http_client
 
-    def _open(self, server: str, spec: Mapping[str, Any]) -> Client:
+    def _open(  # noqa: C901 — transport selection and cancellation-aware client lifetime
+        self, server: str, spec: Mapping[str, Any]
+    ) -> Client:
         """Hold one client open in its own task until :meth:`stop`; return it once entered."""
         target: Transport | StdioServerParameters
         http_client: httpx2.AsyncClient | None = None
@@ -235,6 +246,9 @@ class McpServers:
         read_timeout = _LOGIN_WAIT_S if self._open_url else self._timeout_s
 
         async def serve() -> None:
+            task = asyncio.current_task()
+            if task is not None:
+                self._tasks.add(task)
             try:
                 async with AsyncExitStack() as stack:
                     if http_client is not None:
@@ -244,13 +258,21 @@ class McpServers:
                     )
                     ready.set_result(client)
                     await stop.wait()
-            except Exception as exc:
-                if ready.done():
+            except BaseException as exc:
+                if not ready.done():
+                    ready.set_exception(exc)
+                elif not isinstance(exc, asyncio.CancelledError):
                     raise
-                ready.set_exception(exc)
+            finally:
+                if task is not None:
+                    self._tasks.discard(task)
 
-        self._stops.append(stop)
-        self._serving.append(asyncio.run_coroutine_threadsafe(serve(), self._loop))
+        with self._stop_lock:
+            if self._stopped:
+                msg = "MCP connection cancelled"
+                raise RuntimeError(msg)
+            self._stops.append(stop)
+            self._serving.append(asyncio.run_coroutine_threadsafe(serve(), self._loop))
         return ready.result(self._wait_s)
 
     async def _list(self, client: Client) -> list[mcp_types.Tool]:
@@ -278,8 +300,17 @@ class McpServers:
                 continue
             pairs = zip(listed, modes, strict=True)
             tools.extend(self._wrap(server, client, one, mode) for one, mode in pairs)
+            self.connected_servers.add(server)
+            self._listed.extend((server, client, one) for one in listed)
             LOGGER.info("mcp server %r: %d tools", server, len(listed))
         return tuple(tools)
+
+    def configured_tools(self, servers: Mapping[str, Mapping[str, Any]]) -> tuple[Tool, ...]:
+        """Reapply approval preferences to live tools without another login."""
+        return tuple(
+            self._wrap(server, client, tool, approval_mode(servers[server], tool.name))
+            for server, client, tool in self._listed
+        )
 
     def _wrap(self, server: str, client: Client, listed: mcp_types.Tool, mode: str) -> Tool:
         read_only = bool(listed.annotations and listed.annotations.read_only_hint)
@@ -309,11 +340,21 @@ class McpServers:
         )
 
     def stop(self) -> None:
-        """Exit every client on its own task, then stop the loop thread."""
-        for stop in self._stops:
-            self._loop.call_soon_threadsafe(stop.set)
-        for serving in self._serving:
+        """Cancel pending authorization as well as entered clients, once."""
+        with self._stop_lock:
+            if self._stopped:
+                return
+            self._stopped = True
+
+            async def shutdown() -> None:
+                tasks = list(self._tasks)
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+
             with suppress(Exception):
-                serving.result(_JOIN_GRACE_S)
-        self._loop.call_soon_threadsafe(self._loop.stop)
-        self._thread.join(_JOIN_GRACE_S)
+                asyncio.run_coroutine_threadsafe(shutdown(), self._loop).result(_JOIN_GRACE_S)
+            self._loop.call_soon_threadsafe(self._loop.stop)
+            self._thread.join(_JOIN_GRACE_S)
+            if not self._thread.is_alive():
+                self._loop.close()

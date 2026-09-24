@@ -2,8 +2,8 @@ import { useLayoutEffect, useRef, useState, type ReactNode, type PointerEvent as
 import { CaretDown, DotsSixVertical, X } from '@phosphor-icons/react';
 import { usePanelMotion } from './usePanelMotion';
 
-export type PanelId = 'composer' | 'transcript' | 'dashboard';
-const titles: Record<PanelId, string> = { composer: '文字输入', transcript: '对话记录', dashboard: 'Dashboard' };
+export type PanelId = 'composer' | 'transcript' | 'dashboard' | 'plugins';
+const titles: Record<PanelId, string> = { composer: '文字输入', transcript: '对话记录', dashboard: 'Dashboard', plugins: '连接插件' };
 const reducedMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 const movement = { duration: 240, easing: 'cubic-bezier(.22,1,.36,1)' };
 
@@ -36,7 +36,7 @@ export function PanelStack({ open, collapsed, onCollapse, onClose, children }: {
   open: Record<PanelId, boolean>; collapsed: Record<PanelId, boolean>;
   onCollapse: (id: PanelId) => void; onClose: (id: PanelId) => void; children: Record<PanelId, ReactNode>;
 }) {
-  const [order, setOrder] = useState<PanelId[]>(['composer', 'transcript', 'dashboard']);
+  const [order, setOrder] = useState<PanelId[]>(['composer', 'plugins', 'transcript', 'dashboard']);
   const [dragging, setDragging] = useState<PanelId | null>(null);
   const root = useRef<HTMLDivElement>(null), gesture = useRef<Gesture | null>(null);
   const keyboardFocus = useRef<PanelId | null>(null);

@@ -75,6 +75,8 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
+# Plugin connection errors are user-facing Chinese text.
+"jarvis/runtime/plugin_connections.py" = ["RUF001"]
 # Exact upstream baseline; launcher migration is tracked in UPSTREAM_BASELINE.md.
 # L1 Constitution carries canonical Chinese principle/non-goal text copied
 # verbatim from spec §3.2; fullwidth CJK punctuation is intentional, not a

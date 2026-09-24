@@ -17,7 +17,7 @@ try {
  await click('发消息'); await settle();
  const input=page.locator('textarea[aria-label=文字输入]');await input.fill('临时测试草稿\n第二行\n第三行');await settle();
  check('composer preserves top capsule and disabled attachment', (await capsule.boundingBox()).width===width && await page.getByRole('button',{name:'添加附件（即将支持）'}).isDisabled());
- await click('打开完整对话记录');await click('Dashboard');await settle();
+ await click('外观与窗口选项');await click('完整对话记录');await click('Dashboard');await settle();
  check('all modules coexist in default order',JSON.stringify(await order())==='["composer","transcript","dashboard"]');
  check('sorting arrows removed',await page.getByRole('button',{name:/^[上下]移/}).count()===0);
  await page.screenshot({path:`${dir}/all-open.png`,omitBackground:true});

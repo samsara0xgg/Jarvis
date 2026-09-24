@@ -8,12 +8,16 @@ process exercises the ``headers`` path. Argv: the port to bind.
 
 from __future__ import annotations
 
+import base64
 import secrets
 import sys
 import time
-from typing import Any
-from urllib.parse import urlencode
+from typing import TYPE_CHECKING, Any
+from urllib.parse import unquote, urlencode
 
+import uvicorn
+from mcp.server.auth.handlers.token import TokenHandler
+from mcp.server.auth.middleware.client_auth import ClientAuthenticator
 from mcp.server.auth.provider import (
     AccessToken,
     AuthorizationCode,
@@ -24,6 +28,14 @@ from mcp.server.auth.provider import (
 from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions
 from mcp.server.mcpserver import MCPServer
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
+from starlette.requests import Request
+from starlette.responses import JSONResponse, Response
+from starlette.routing import Route
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
+    from starlette.types import Message
 
 STATIC_BEARER = "static-secret"
 
@@ -31,7 +43,7 @@ STATIC_BEARER = "static-secret"
 class Provider:
     """In-memory authorization server; every call is answered without a human."""
 
-    def __init__(self) -> None:
+    def __init__(self, auth_method: str) -> None:
         """Start with the fixed bearer already valid."""
         self.clients: dict[str, OAuthClientInformationFull] = {}
         self.codes: dict[str, AuthorizationCode] = {}
@@ -41,13 +53,18 @@ class Provider:
         self.refresh: dict[str, RefreshToken] = {}
         self.issued = 0
         self.refreshes = 0
+        self.auth_method = auth_method
 
     async def get_client(self, client_id: str) -> OAuthClientInformationFull | None:
         """A registered client, or None."""
         return self.clients.get(client_id)
 
     async def register_client(self, client_info: OAuthClientInformationFull) -> None:
-        """Accept every dynamic registration."""
+        """Select the authentication method as a third-party authorization server may."""
+        client_info.token_endpoint_auth_method = self.auth_method
+        if self.auth_method == "none":
+            client_info.client_secret = None
+            client_info.client_secret_expires_at = None
         self.clients[client_info.client_id] = client_info
 
     async def authorize(
@@ -128,9 +145,42 @@ class Provider:
         raise NotImplementedError
 
 
-def main(port: int) -> None:
+def strict_token_endpoint(provider: Provider) -> Callable[[Request], Awaitable[Response]]:
+    """Reject duplicate client authentication at the HTTP boundary, as Linear does."""
+    handler = TokenHandler(provider, ClientAuthenticator(provider))
+
+    async def token(request: Request) -> Response:
+        data = dict(await request.form())
+        authorization = request.headers.get("Authorization", "")
+        if authorization.startswith("Basic "):
+            if "client_id" in data or "client_secret" in data:
+                return JSONResponse(
+                    {
+                        "error": "invalid_request",
+                        "error_description": "Client must not use multiple authentication methods",
+                    },
+                    status_code=400,
+                )
+            # The SDK server requires a body client_id internally. Supply it only
+            # after checking the wire request; its handler still validates the
+            # Basic secret, PKCE, code ownership and refresh token normally.
+            credentials = base64.b64decode(authorization[6:]).decode()
+            data["client_id"] = unquote(credentials.split(":", 1)[0])
+        body = urlencode(data).encode()
+
+        async def receive() -> Message:
+            return {"type": "http.request", "body": body}
+
+        response = await handler.handle(Request(request.scope, receive))
+        assert isinstance(response, Response)
+        return response
+
+    return token
+
+
+def main(port: int, auth_method: str = "client_secret_post") -> None:
     """Serve the protected MCP endpoint and its authorization server on one port."""
-    provider = Provider()
+    provider = Provider(auth_method)
     server = MCPServer(
         "oauth-echo",
         auth_server_provider=provider,
@@ -148,8 +198,11 @@ def main(port: int) -> None:
         """How many token sets this server issued and how many came from a refresh."""
         return {"tokens_issued": provider.issued, "refreshes": provider.refreshes}
 
-    server.run("streamable-http", host="127.0.0.1", port=port)
+    app = server.streamable_http_app()
+    app.router.routes = [route for route in app.routes if getattr(route, "path", None) != "/token"]
+    app.router.routes.append(Route("/token", strict_token_endpoint(provider), methods=["POST"]))
+    uvicorn.run(app, host="127.0.0.1", port=port)
 
 
 if __name__ == "__main__":
-    main(int(sys.argv[1]))
+    main(int(sys.argv[1]), sys.argv[2] if len(sys.argv) > 2 else "client_secret_post")

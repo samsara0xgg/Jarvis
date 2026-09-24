@@ -16,6 +16,10 @@ npm start
 
 端口沿用 `JARVIS_INHERENT_BRIDGE_PORT`，默认 8006。
 
+插件通过对话打开连接面板，也可从菜单「插件…」或外观设置进入列表。点击连接后才开始浏览器授权或使用输入的令牌；收起保留连接，取消停止当前连接。连接成功即时提供工具和技能；有待完成任务且对话未更新时自动继续。连接和操作审批分开，可在插件管理中调整审批或停用。
+
+此功能需要同时更新后台和桌面应用。插件管理凭证由主进程从 `JARVIS_RUNTIME_ROOT`（默认 `~/.jarvis`）读取，启停和令牌另存于 runtime，不改写 YAML。`npm run build && node scripts/verify-plugins.mjs` 使用隔离的真实后台、MCP 和 OAuth 服务验证面板，截图与检查结果保存在 `evidence/plugins/`；不会登录个人账号。
+
 - `npm run lab`：圆点与 Live 形变预览，含高清放大模型及保留的六状态圆环。
 - `npm run package`：生成 `build/Jarvis Resonance.app`，用于本机打开；本地 ad-hoc 签名，未公证、未发布。
 - `npm run verify`：构建并运行真实 Electron 窗口验收脚本；独立验收资料目录，系统音频输出静音。

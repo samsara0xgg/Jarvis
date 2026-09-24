@@ -117,6 +117,7 @@ if (locked) app.whenReady().then(() => {
     // Match the Legacy Pet handshake: revoke key focus eligibility without
     // blur(), which orders the native macOS window out and then behind others.
     if (enabled) {
+      if (!win.isVisible()) win.show();
       if (process.platform !== 'darwin' || lab) app.focus({ steal: true });
       win.focus(); win.webContents.focus();
     }
@@ -129,6 +130,36 @@ if (locked) app.whenReady().then(() => {
     if (event.sender !== win.webContents || typeof text !== 'string' || text.length > 100000) return false;
     clipboard.writeText(text);
     return true;
+  });
+  // The renderer can request plugin operations but never read the daemon's
+  // management credential or choose an arbitrary URL/file/process to open.
+  ipcMain.handle('plugins', async (event, operation: string, data: Record<string, unknown> = {}) => {
+    if (event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame) throw new Error('无效的插件窗口');
+    const operations = ['read', 'open', 'connect', 'cancel', 'reopen', 'disable', 'approval'];
+    if (!operations.includes(operation) || !data || typeof data !== 'object' || Array.isArray(data)) throw new Error('无效的插件操作');
+    const testPort = verification ? process.env.RESONANCE_PLUGIN_TEST_PORT : undefined;
+    if (lab || (verification && (!testPort || testPort === '8006'))) throw new Error('此预览未连接插件服务');
+    const port = testPort ?? process.env.JARVIS_INHERENT_BRIDGE_PORT ?? '8006';
+    if (!/^\d{1,5}$/.test(port) || Number(port) > 65535) throw new Error('插件服务端口无效');
+    const root = (verification ? process.env.RESONANCE_PLUGIN_TEST_ROOT : undefined) ?? process.env.JARVIS_RUNTIME_ROOT ?? path.join(homedir(), '.jarvis');
+    let token: string;
+    try { token = JSON.parse(await readFile(path.join(root, 'plugin-access.json'), 'utf8')).token; }
+    catch { throw new Error('插件服务尚未就绪，请确认 Jarvis 后台已更新并启动'); }
+    if (typeof token !== 'string' || !token) throw new Error('插件服务凭证无效');
+    const body = JSON.stringify({ operation, data });
+    if (body.length > 32768) throw new Error('插件请求过长');
+    let response: Response;
+    try {
+      response = await fetch(`http://127.0.0.1:${port}/inherent/plugins${operation === 'read' ? '' : '/action'}`, {
+        method: operation === 'read' ? 'GET' : 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: operation === 'read' ? undefined : body,
+        signal: AbortSignal.timeout(15000),
+      });
+    } catch { throw new Error('暂时连不上 Jarvis，请稍后重试'); }
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(response.status === 401 ? '插件服务凭证已更新，请重试' : typeof result.detail === 'string' ? result.detail : '插件操作未完成，请重试');
+    return result;
   });
   ipcMain.on('hide', event => { if (event.sender === win.webContents) win.hide(); });
   ipcMain.handle('open-codex', async (event, threadId) => {
@@ -185,6 +216,7 @@ if (locked) app.whenReady().then(() => {
     { label: '显示胶囊', click: () => restore() }, { label: '开始语音演示', click: () => command('voice') },
     { label: '文字输入', click: () => command('text') }, { label: '键盘控制胶囊', click: () => restore(true) },
     { label: 'Dashboard…', click: openDashboard },
+    { label: '插件…', click: () => command('plugins') },
     { label: '外观与提示音…', click: () => command('settings') },
     { label: '隐藏浮窗', click: () => win.hide() }, { type: 'separator' },
     { label: '退出 Jarvis', click: () => { quitting = true; app.quit(); } }

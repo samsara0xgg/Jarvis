@@ -57,11 +57,16 @@ def servers() -> Iterator[McpServers]:
 
 
 @pytest.fixture
-def oauth_url() -> Iterator[str]:
+def oauth_url(request: pytest.FixtureRequest) -> Iterator[str]:
     """The OAuth-protected Streamable HTTP server, alive for one test."""
     port = _free_port()
     proc = subprocess.Popen(  # noqa: S603 — our own test server script.
-        [sys.executable, str(HERE / "mcp_oauth_server.py"), str(port)]
+        [
+            sys.executable,
+            str(HERE / "mcp_oauth_server.py"),
+            str(port),
+            getattr(request, "param", "client_secret_post"),
+        ]
     )
     try:
         _wait_listening(port)
@@ -179,6 +184,9 @@ def test_daemon_without_a_login_skips_the_oauth_server(
     assert all("not logged in" in reason for reason in reasons)
 
 
+@pytest.mark.parametrize(
+    "oauth_url", ["client_secret_basic", "client_secret_post", "none"], indirect=True
+)
 def test_oauth_login_then_the_daemon_reuses_and_refreshes(tmp_path: Path, oauth_url: str) -> None:
     """Login through the loopback redirect; the daemon reuses the file, refreshes on expiry."""
     token_dir, port = tmp_path / "mcp", _free_port()

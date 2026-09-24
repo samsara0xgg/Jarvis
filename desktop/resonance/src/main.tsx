@@ -16,11 +16,13 @@ import { playFeedback, stopFeedback, warmFeedback, type FeedbackCue } from './fe
 import { defaultPreferences, usePreferences } from './preferences';
 import { clipStackGlass, type GlassOcclusion } from './stackGlass';
 import { connect, type Runtime } from './runtime';
+import { PluginPanel, usePlugins, type PluginSnapshot } from './PluginPanel';
 declare global { interface Window { jarvis?: {
   drag: (phase: 'start' | 'move' | 'end', point?: { x: number; y: number }) => void;
   copy: (text: string) => Promise<boolean>;
   openCodex: (threadId: string) => Promise<boolean>;
   codexTitles: (ids: string[]) => Promise<Record<string, string>>;
+  plugins: (operation: string, data?: Record<string, unknown>) => Promise<PluginSnapshot>;
   layout: (mode: string, height: number) => void; focus: (enabled: boolean) => Promise<void>; hide: () => void; passthrough: (enabled: boolean) => void;
   material: (rects: {x:number;y:number;width:number;height:number;radius:number;opacity:number;occlusion?:GlassOcclusion}[], strength: number) => void;
   onCommand: (cb: (value: string) => void) => () => void;
@@ -52,10 +54,14 @@ function App() {
   const [background, setBackground] = useState('forest');
   const [scale, setScale] = useState(1.6);
   const [settings, setSettings] = useState(false);
-  const [panels, setPanels] = useState<Record<PanelId, boolean>>({ composer: false, transcript: false, dashboard: false });
-  const [collapsed, setCollapsed] = useState<Record<PanelId, boolean>>({ composer: false, transcript: false, dashboard: false });
+  const [panels, setPanels] = useState<Record<PanelId, boolean>>({ composer: false, transcript: false, dashboard: false, plugins: false });
+  const [collapsed, setCollapsed] = useState<Record<PanelId, boolean>>({ composer: false, transcript: false, dashboard: false, plugins: false });
   const panel = Object.values(panels).some(Boolean);
   const transcriptOpen = panels.transcript;
+  const plugins = usePlugins();
+  const [pluginPresentation, setPluginPresentation] = useState('catalog');
+  const lastPluginPresentation = useRef('');
+  const pluginRequest = plugins.snapshot?.request;
   const setPanelOpen = (id: PanelId, open: boolean) => {
     setPanels(previous => ({ ...previous, [id]: open }));
     if (open) { setCollapsed(previous => ({ ...previous, [id]: false })); void window.jarvis?.focus(true); }
@@ -64,6 +70,16 @@ function App() {
   const closePanel = () => { setPanelOpen('dashboard', false); if (s.inbox) dispatch({ type: 'inbox' }); };
   const openTranscript = () => { setPanelOpen('transcript', true); setSettings(false); };
   const closeTranscript = () => setPanelOpen('transcript', false);
+  const openPlugins = () => { setPluginPresentation('catalog'); setPanelOpen('plugins', true); setSettings(false); void plugins.refresh(); };
+  useEffect(() => {
+    if (!pluginRequest) return;
+    const key = `${pluginRequest.id}:${pluginRequest.presentation}`;
+    if (key !== lastPluginPresentation.current) {
+      lastPluginPresentation.current = key; setPluginPresentation(key);
+      setHidden(false); setPanelOpen('plugins', true); setSettings(false);
+    }
+  }, [pluginRequest?.id, pluginRequest?.presentation]);
+  useEffect(() => { if (pluginRequest?.state === 'ready' && pluginRequest.resume_status === 'continued') setPanelOpen('transcript', true); }, [pluginRequest?.id, pluginRequest?.state, pluginRequest?.resume_status]);
   useEffect(() => { if (!panel && !settings) void window.jarvis?.focus(false); }, [panel, settings]);
   const [presencePreview, setPresencePreview] = useState<Presence | 'auto' | 'cycle'>('auto');
   const [cyclePhase, setCyclePhase] = useState<Presence>('standby');
@@ -152,6 +168,7 @@ function App() {
     setHidden(false);
     if (command === 'keyboard') document.querySelector<HTMLButtonElement>('.control-row button:not([inert])')?.focus();
     else if (command === 'dashboard') openDashboard();
+    else if (command === 'plugins') openPlugins();
     else if (command === 'settings') { setSettings(true); void window.jarvis?.focus(true); }
     else if (command === 'voice' || command === 'text') mode(command);
   }), [s.mode, s.inbox, panels, feedbackEnabled, feedbackVolume]);
@@ -240,6 +257,7 @@ function App() {
     else if (s.inbox) toggleInbox();
     else if (panels.composer) setPanelOpen('composer', false);
     else if (panels.transcript) closeTranscript();
+    else if (panels.plugins) setPanelOpen('plugins', false);
     else if (panels.dashboard) closePanel();
     else if (s.mode === 'voice') mode('idle');
     else hide();
@@ -300,7 +318,7 @@ function App() {
           <label className="range-label">毛玻璃强度 <output>{Math.round(glassStrength * 100)}%</output><input aria-label="毛玻璃强度" aria-valuetext={`${Math.round(glassStrength * 100)}%`} type="range" min="0" max="1" step=".01" value={glassStrength} onChange={e => updatePreferences({ glassStrength: Number(e.target.value) })}/></label>
           <div className="feedback-setting"><span>操作提示音</span><button role="switch" aria-label="操作提示音" aria-checked={feedbackEnabled} onClick={() => { stopFeedback(); updatePreferences({ feedbackEnabled: !feedbackEnabled }); }}><span/></button></div>
           <label className="range-label">提示音音量 <output>{Math.round(feedbackVolume * 100)}%</output><input aria-label="提示音音量" aria-valuetext={`${Math.round(feedbackVolume * 100)}%`} type="range" min="0" max="1" step=".01" value={feedbackVolume} disabled={!feedbackEnabled} onChange={e => updatePreferences({ feedbackVolume: Number(e.target.value) })}/></label>
-          <div className="settings-actions"><button onClick={openDashboard}>打开 Dashboard</button><button onClick={() => { closeSettings(); openTranscript(); }}>完整对话记录</button><button onClick={() => updatePreferences(defaultPreferences)}>恢复默认</button><button disabled={!feedbackEnabled} onClick={() => feedback('voice-enter')}>试听提示音</button><button onClick={() => { dispatch({ type: 'example', id: 'result' }); dispatch({ type: 'example', id: 'reminder' }); dispatch({ type: 'example', id: 'question' }); setInboxExpanded(true); openDashboard(); }}>体验三条通知</button><button onClick={hide}>隐藏浮窗</button><button onClick={end}>结束语音</button></div>
+          <div className="settings-actions"><button onClick={openDashboard}>打开 Dashboard</button><button onClick={openPlugins}>插件</button><button onClick={() => { closeSettings(); openTranscript(); }}>完整对话记录</button><button onClick={() => updatePreferences(defaultPreferences)}>恢复默认</button><button disabled={!feedbackEnabled} onClick={() => feedback('voice-enter')}>试听提示音</button><button onClick={() => { dispatch({ type: 'example', id: 'result' }); dispatch({ type: 'example', id: 'reminder' }); dispatch({ type: 'example', id: 'question' }); setInboxExpanded(true); openDashboard(); }}>体验三条通知</button><button onClick={hide}>隐藏浮窗</button><button onClick={end}>结束语音</button></div>
           <p>声纹使用模拟节奏，未接入录音。主题色统一用于声纹和 Dashboard，外观、额度布局与提示音设置自动保存。</p>
         </section>}
         {s.phase === 'error' && <section className="error-panel glass" data-glass="18" data-interactive><div><strong>暂时没有连上</strong><p>{live ? 'Jarvis 服务没有响应，正在重连。' : '演示连接失败。你可以重试或继续打字。'}</p></div><Button label={live ? '立即重连' : '重试模拟连接'} onClick={retry}><ArrowCounterClockwise/></Button></section>}
@@ -313,6 +331,7 @@ function App() {
               <Button label={s.phase === 'processing' ? '正在处理' : live ? '发送' : '发送示例输入'} className="composer-send" disabled={!s.draft.trim() || s.phase === 'processing'} onClick={send}><CapsuleIcon name="send"/></Button></div>
             {s.reply && <section className="reply glass"  data-interactive><div className="section-heading"><span>{live ? '回复' : '示例回复'}</span><Button label="复制回复" onClick={() => void copy(visible(s.reply))}>{copied ? <Check size={16}/> : <Copy size={16}/>}</Button></div><p>{visible(s.reply)}</p></section>}
           </div>,
+          plugins: <PluginPanel controller={plugins} presentation={pluginPresentation} onHide={() => setPanelOpen('plugins', false)} onConversation={() => { setPanelOpen('plugins', false); openTranscript(); }}/>,
           transcript: <LiveTranscript embedded rows={s.rows} tail={tail} sessionId={s.live.sessionId} lines={s.subtitles} open={true} muted={s.soundMuted} active={s.live.state === 'active'} clock={liveClock} onClose={closeTranscript}/>,
           dashboard: <DashboardPreview embedded port={runtimePort} onClose={closePanel} notifications={s.results.length || detail ? notifications : null}/>
           }}

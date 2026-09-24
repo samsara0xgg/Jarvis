@@ -2984,6 +2984,18 @@ class ToolRegistry:
         with self._lock:
             return tuple(self._tools.values())
 
+    def replace_group(self, previous: frozenset[str], tools: tuple[Tool, ...]) -> None:
+        """Atomically publish a runtime-owned plugin group, preserving other tools."""
+        with self._lock:
+            names = [tool.name for tool in tools]
+            if len(set(names)) != len(names) or (set(names) & (self._tools.keys() - previous)):
+                msg = "plugin tools collide with another registered tool"
+                raise DuplicateToolError(msg)
+            self._tools = {
+                **{name: tool for name, tool in self._tools.items() if name not in previous},
+                **{tool.name: tool for tool in tools},
+            }
+
     def for_caller(self, caller_principal: CallerPrincipal) -> tuple[ToolDefinition | Tool, ...]:
         """Return only the tools `caller_principal` is allowed to dispatch."""
         with self._lock:

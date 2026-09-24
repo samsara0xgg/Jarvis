@@ -4850,6 +4850,11 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 else functools.partial(_refresh_work_state_now, runtime.work_state)
             ),
             conversation_read=None if window_memory is None else _read_conversation,
+            plugin_read=runtime.plugin_connections.read if runtime.plugin_connections else None,
+            plugin_action=runtime.plugin_connections.action if runtime.plugin_connections else None,
+            plugin_authorize=(
+                runtime.plugin_connections.settings.matches if runtime.plugin_connections else None
+            ),
             barge_in_confirm_callable=(
                 duplex_voice_session.confirm_ptt_barge_in
                 if duplex_voice_session is not None and duplex_voice_session.barge_in_armed
@@ -5073,6 +5078,8 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             if runtime.workers is not None:
                 await asyncio.to_thread(runtime.workers.stop)
             # ADR 0031: every MCP client exits on its own task, then its loop thread ends.
+            if runtime.plugin_connections is not None:
+                await asyncio.to_thread(runtime.plugin_connections.stop)
             if runtime.mcp_servers is not None:
                 await asyncio.to_thread(runtime.mcp_servers.stop)
             _shutdown_tts(tts_pipe)

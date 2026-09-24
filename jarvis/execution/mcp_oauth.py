@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any, Final
 from urllib.parse import parse_qs, urlparse
 
 from mcp.client.auth import OAuthClientProvider
+from mcp.client.auth.oauth2 import OAuthContext
 from mcp.shared.auth import (
     AuthorizationCodeResult,
     OAuthClientInformationFull,
@@ -37,6 +38,25 @@ DEFAULT_OAUTH_CALLBACK_PORT: Final[int] = 8789
 """``tools.mcp.oauth_callback_port`` when unset; the registered redirect URI carries it."""
 
 LOGIN_HINT: Final = "run `python -m jarvis mcp-login {server}` in a terminal"
+
+
+class _SingleMethodOAuthContext(OAuthContext):
+    """Keep Basic client credentials out of the token request body."""
+
+    def prepare_token_auth(
+        self, data: dict[str, str], headers: dict[str, str] | None = None
+    ) -> tuple[dict[str, str], dict[str, str]]:
+        # MCP 2.2 leaves client_id in the form when it adds Basic credentials.
+        # Linear rejects that as multiple authentication methods. Both initial
+        # exchange and refresh use this hook; other registered methods stay intact.
+        data, headers = super().prepare_token_auth(data, headers)
+        if headers.get("Authorization", "").startswith("Basic "):
+            data = {
+                key: value
+                for key, value in data.items()
+                if key not in {"client_id", "client_secret"}
+            }
+        return data, headers
 
 
 class FileTokenStorage:
@@ -120,8 +140,13 @@ class _CallbackHandler(BaseHTTPRequestHandler):
                         code=code, state=query.get("state"), iss=query.get("iss")
                     )
                 )
-        body = b"Jarvis: login received, you can close this tab."
-        self.send_response(200)
+        body = (
+            b"Jarvis received the authorization callback. Return to Jarvis to check "
+            b"whether the connection completed. You can close this tab."
+            if code is not None
+            else b"Authorization was not completed. Return to Jarvis to try again."
+        )
+        self.send_response(200 if code is not None else 400)
         self.send_header("Content-Type", "text/plain; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -200,6 +225,7 @@ def build_oauth(
             redirect_handler=login.redirect,
             callback_handler=login.callback,
         )
+    provider.context = _SingleMethodOAuthContext(**vars(provider.context))
     # The SDK reloads tokens without their expiry; seed it so a restart refreshes
     # instead of presenting a stale token and re-authorizing on the 401.
     expires_at = storage.expires_at()

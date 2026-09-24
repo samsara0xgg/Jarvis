@@ -65,6 +65,7 @@ import contextlib
 import functools
 import hashlib
 import io
+import json
 import logging
 import secrets
 import time
@@ -427,6 +428,11 @@ class InherentDeps:
     # cursor. ``(after, limit) -> {"since", "rows"}``; ``None`` leaves the
     # route unregistered.
     conversation_read: Callable[[int, int], dict[str, Any]] | None = None
+    # ADR 0036: desktop management uses a private local credential, unlike
+    # ordinary text submission. Secrets never travel on the public websocket.
+    plugin_read: Callable[[], dict[str, Any]] | None = None
+    plugin_action: Callable[[str, dict[str, Any]], dict[str, Any]] | None = None
+    plugin_authorize: Callable[[str | None], bool] | None = None
 
 
 class _FrameRateLimiter:
@@ -903,6 +909,9 @@ async def _run_asr_submit(
     }
 
 
+_MAX_PLUGIN_COMMAND_BYTES = 32_768
+
+
 def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0915 — one closed route table; the cancel and controls routes are registered only when injected.
     """Build the FastAPI app with all 5 endpoints registered.
 
@@ -1077,6 +1086,38 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0915 — one cl
     async def health() -> dict[str, str]:
         """Liveness probe — used by ops scripts to confirm the daemon is up."""
         return {"status": "ok"}
+
+    if deps.plugin_read and deps.plugin_action and deps.plugin_authorize:
+        plugin_read, plugin_action, plugin_authorize = (
+            deps.plugin_read,
+            deps.plugin_action,
+            deps.plugin_authorize,
+        )
+
+        @app.get("/inherent/plugins")
+        async def plugins(request: Request) -> dict[str, Any]:
+            if not plugin_authorize(request.headers.get("authorization")):
+                raise HTTPException(status_code=401, detail="desktop authorization required")
+            return await asyncio.to_thread(plugin_read)
+
+        @app.post("/inherent/plugins/action")
+        async def plugin_command(request: Request) -> dict[str, Any]:
+            if not plugin_authorize(request.headers.get("authorization")):
+                raise HTTPException(status_code=401, detail="desktop authorization required")
+            body = await request.body()
+            if len(body) > _MAX_PLUGIN_COMMAND_BYTES:
+                raise HTTPException(status_code=413, detail="plugin command too large")
+            try:
+                payload = json.loads(body)
+                if not isinstance(payload, dict) or not isinstance(payload.get("data", {}), dict):
+                    raise HTTPException(status_code=400, detail="invalid plugin request")
+                return await asyncio.to_thread(
+                    plugin_action, str(payload.get("operation", "")), payload.get("data", {})
+                )
+            except ValueError as exc:
+                # No Pydantic error echo: request bodies can contain credentials.
+                detail = "无效的插件请求" if isinstance(exc, json.JSONDecodeError) else str(exc)
+                raise HTTPException(status_code=400, detail=detail) from None
 
     if deps.usage_read is not None and deps.usage_refresh is not None:
         usage_read, usage_refresh = deps.usage_read, deps.usage_refresh
