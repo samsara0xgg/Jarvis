@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 
-_LEVEL = os.environ.get("JARVIS_LOG_LEVEL", "").upper()
+# The daemon always logs, at INFO unless overridden; one-shot commands stay quiet unless asked.
+_LEVEL = os.environ.get("JARVIS_LOG_LEVEL", "INFO" if sys.argv[1:2] == ["serve"] else "").upper()
 if _LEVEL:
     logging.basicConfig(
         level=getattr(logging, _LEVEL, logging.INFO),
