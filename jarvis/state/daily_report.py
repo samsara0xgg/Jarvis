@@ -30,7 +30,7 @@ from jarvis.state.daily_records import read_connection
 from jarvis.state.daily_store import current_items, high_water
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Sequence
+    from collections.abc import Iterable, Mapping, Sequence
 
 ALLEN_SOURCE = "allen"
 MAX_DETAILS = 10
@@ -632,25 +632,51 @@ def _git_sections(g: _Gather, conn: sqlite3.Connection, repos: Sequence[str]) ->
         g.served["git"] = "Git 提交：没有配置被观察的仓库，只有历史记录里观察到的提交"
 
 
-def _folded_section(g: _Gather, conn: sqlite3.Connection, kind: str, prefix: str) -> None:
-    status = "open" if kind == "todo" else "active"
-    items = [x for x in current_items(conn, kind, high_water(conn)) if x["status"] == status]
+def _knowledge_section(g: _Gather, conn: sqlite3.Connection) -> None:
+    items = current_items(conn, "knowledge", high_water(conn))
     rows = []
-    for index, item in enumerate(items):
-        key = f"{prefix}{index + 1}"
+    for index, item in enumerate(x for x in items if x["status"] == "active"):
+        key = f"k{index + 1}"
         g.refs[key] = item["source_ref"]
-        row: dict[str, Any] = {"key": key}
-        if kind == "todo":
-            row.update(
-                title=item["title"],
-                due_at=item.get("due_at"),
-                priority=item.get("priority"),
-                project=item.get("project"),
-            )
+        rows.append({"key": key, "statement": _flat(item["statement"]), "kind": item["kind"]})
+    g.sections["knowledge"] = rows
+    g.coverage["knowledge"] = "available"
+
+
+def _plan_section(g: _Gather, plan: Mapping[str, Any] | None) -> None:
+    """ADR 0036: Microsoft calendar (this day and the next) and To Do, context and not activity.
+
+    ``plan`` is the runtime's read: ``events`` (aware ISO ``start``/``end``, or a
+    ``date`` when ``all_day``) and ``todos`` (``due``/``completed`` are dates);
+    None when no reader is wired, ``{"error": ...}`` when the read failed.
+    """
+    g.sections["calendar"], g.sections["todos"] = [], []
+    if plan is None or plan.get("error"):
+        g.coverage["calendar"] = g.coverage["todos"] = "unavailable"
+        why = "未接入" if plan is None else f"读取失败（{plan['error']}）"
+        g.served["plan"] = f"微软日历与待办：{why}，没有日程和待办"
+        return
+    events = []
+    for event in plan["events"]:
+        row = {"subject": event["subject"], "location": event["location"]}
+        if event["all_day"]:
+            row.update(date=event["date"], time="全天")
         else:
-            row.update(statement=_flat(item["statement"]), kind=item["kind"])
-        rows.append(row)
-    g.sections["todos" if kind == "todo" else "knowledge"] = rows
+            start = datetime.fromisoformat(event["start"]).astimezone(g.zone)
+            end = datetime.fromisoformat(event["end"]).astimezone(g.zone)
+            row.update(date=start.date().isoformat(), time=f"{start:%H:%M}-{end:%H:%M}")
+        events.append(row)
+    events.sort(key=lambda r: (r["date"], r["time"] != "全天", r["time"]))
+    day = g.day.isoformat()
+    todos = [t for t in plan["todos"] if not t["done"] or t["completed"] == day]
+    todos.sort(key=lambda t: (t["done"], t["due"] is None, t["due"] or "", not t["important"]))
+    g.sections["calendar"], g.sections["todos"] = events, todos
+    g.coverage["calendar"] = g.coverage["todos"] = "available"
+    done = sum(t["done"] for t in todos)
+    g.served["plan"] = (
+        f"微软日历与待办：{len(events)} 个日程（{day} 与次日）、{len(todos) - done} 条未完成待办、"
+        f"{done} 条当天完成，全部给出"
+    )
 
 
 def _previous_section(g: _Gather, conn: sqlite3.Connection, zone_name: str) -> None:
@@ -871,6 +897,7 @@ def gather_day(  # noqa: PLR0913 — the configured stores plus the day, its zon
     zone: tzinfo,
     now: datetime,
     codex_sessions_path: Path | None = None,
+    plan: Mapping[str, Any] | None = None,
 ) -> DayEvidence:
     """Read every configured source once for the whole local day, whole and keyed."""
     start, end, partial = day_window(day, zone, now)
@@ -880,9 +907,8 @@ def gather_day(  # noqa: PLR0913 — the configured stores plus the day, its zon
     _record_section(g, memory_path)
     _git_sections(g, conn, repos)
     _agent_section(g, codex_sessions_path)
-    _folded_section(g, conn, "todo", "t")
-    _folded_section(g, conn, "knowledge", "k")
-    g.coverage["todos"] = g.coverage["knowledge"] = "available"
+    _plan_section(g, plan)
+    _knowledge_section(g, conn)
     _previous_section(g, conn, zone_name)
     _fit_budget(g)
     return DayEvidence(

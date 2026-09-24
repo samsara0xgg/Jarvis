@@ -71,50 +71,57 @@ def daily(tmp_path: Path) -> Iterator[DailyHarness]:
         harness.fx.close()
 
 
-def test_todos_dispatch_retries_revisions_and_restart(tmp_path: Path) -> None:
-    """Completion and reopening survive restart; retries never create duplicate events."""
+def _knowledge(daily: DailyHarness, statement: str, request_id: str) -> dict[str, Any]:
+    """A sourced knowledge save, the one local item type the model still writes (ADR 0036)."""
+    daily.record(f"src-{request_id}")
+    return {
+        "statement": statement,
+        "kind": "fact",
+        "basis": "user_statement",
+        "source_refs": [f"record:src-{request_id}"],
+        "request_id": request_id,
+    }
+
+
+def test_no_local_todo_tool_is_offered(daily: DailyHarness) -> None:
+    """ADR 0036: todos live in Microsoft To Do; the registry offers no local todo tool."""
+    names = {t.name for t in daily.tools}
+    assert not names & {"create_todo", "list_todos", "update_todo"}
+    assert {"save_knowledge", "search_knowledge", "save_briefing", "get_briefing"} <= names
+
+
+def test_revisions_retry_conflict_and_survive_restart(tmp_path: Path) -> None:
+    """Corrections survive restart; retries never create duplicate events."""
     h = DailyHarness(tmp_path)
     try:
-        args = {"title": "Connect activity query", "request_id": "create-one"}
-        first = h.call("create_todo", args)
-        assert first == h.call("create_todo", args)
-        assert h.call("create_todo", {**args, "title": "different"})["code"] == "request_conflict"
-        identity = first["todo_id"]
+        args = _knowledge(h, "Connect activity query", "create-one")
+        first = h.call("save_knowledge", args)
+        assert first == h.call("save_knowledge", args)
+        changed = {**args, "statement": "different"}
+        assert h.call("save_knowledge", changed)["code"] == "request_conflict"
         change = {
-            "todo_id": identity,
+            **args,
+            "knowledge_id": first["knowledge_id"],
             "expected_version": 1,
-            "patch": {"status": "done"},
+            "status": "deprecated",
             "request_id": "finish",
         }
-        assert h.call("update_todo", change)["version"] == 2
-        assert h.call("update_todo", change)["version"] == 2
-        assert h.call("list_todos", {})["items"] == []
-        assert (
-            h.call("update_todo", {**change, "request_id": "stale"})["code"] == "version_conflict"
-        )
-        assert (
-            h.call(
-                "update_todo",
-                {
-                    **change,
-                    "expected_version": 2,
-                    "patch": {"status": "open", "due_at": "2026-09-22T09:00:00-07:00"},
-                    "request_id": "reopen",
-                },
-            )["version"]
-            == 3
-        )
+        assert h.call("save_knowledge", change)["version"] == 2
+        assert h.call("save_knowledge", change)["version"] == 2
+        assert h.call("search_knowledge", {})["items"] == []
+        stale = {**change, "request_id": "stale"}
+        assert h.call("save_knowledge", stale)["code"] == "version_conflict"
+        reopen = {**change, "expected_version": 2, "status": "active", "request_id": "reopen"}
+        assert h.call("save_knowledge", reopen)["version"] == 3
         with closing(open_runtime_event_log(h.fx.paths.event_log)) as fresh:
             count = fresh.execute(
-                "SELECT count(*) FROM events WHERE type='todo.revised'"
+                "SELECT count(*) FROM events WHERE type='knowledge.revised'"
             ).fetchone()[0]
             assert count == 3
-            tool = next(t for t in h.tools if t.name == "list_todos")
+            tool = next(t for t in h.tools if t.name == "search_knowledge")
             assert isinstance(tool, Tool)
-
-            assert (
-                tool.handler({}, ToolContext(fresh, h.fx.paths, "read"))["items"][0]["version"] == 3
-            )
+            items = tool.handler({}, ToolContext(fresh, h.fx.paths, "read"))["items"]
+            assert items[0]["version"] == 3
     finally:
         h.fx.close()
 
@@ -282,31 +289,38 @@ def test_activity_coverage_time_basis_and_details(daily: DailyHarness) -> None:
 
 def test_list_snapshot_preserves_pre_update_state(daily: DailyHarness) -> None:
     """Filter after folding revisions, while retaining the first page's watermark."""
-    for i in range(3):
-        daily.call("create_todo", {"title": str(i), "request_id": f"t{i}"})
-    first = daily.call("list_todos", {"limit": 1})
-    targets = daily.call("list_todos", {})["items"]
-    for item in targets:
+    saved = [daily.call("save_knowledge", _knowledge(daily, str(i), f"k{i}")) for i in range(3)]
+    first = daily.call("search_knowledge", {"limit": 1})
+    for i, receipt in enumerate(saved):
         daily.call(
-            "update_todo",
+            "save_knowledge",
             {
-                "todo_id": item["id"],
+                **_knowledge(daily, str(i), f"deprecate{i}"),
+                "knowledge_id": receipt["knowledge_id"],
                 "expected_version": 1,
-                "patch": {"status": "done"},
-                "request_id": item["id"],
+                "status": "deprecated",
             },
         )
-    assert daily.call("list_todos", {})["items"] == []
-    second = daily.call("list_todos", {"limit": 1, "cursor": first["next_cursor"]})
-    assert second["items"][0]["status"] == "open"
+    assert daily.call("search_knowledge", {})["items"] == []
+    second = daily.call("search_knowledge", {"limit": 1, "cursor": first["next_cursor"]})
+    assert second["items"][0]["status"] == "active"
 
 
 @pytest.mark.parametrize(
     ("name", "args"),
     [
-        ("create_todo", {"title": "x", "request_id": "a", "extra": True}),
-        ("create_todo", {"title": "x", "request_id": "a", "due_at": "2026-09-20"}),
-        ("list_todos", {"limit": True}),
+        (
+            "save_knowledge",
+            {
+                "statement": "x",
+                "kind": "fact",
+                "basis": "inference",
+                "source_refs": [],
+                "request_id": "a",
+                "extra": True,
+            },
+        ),
+        ("search_knowledge", {"limit": True}),
         ("search_records", {"from": "2026-09-21T00:00:00Z", "to": "2026-09-20T00:00:00Z"}),
         ("query_activity", {"from": "yesterday", "to": "today"}),
         ("read_records", {"record_ids": ["a", "a"]}),
@@ -321,7 +335,6 @@ def test_list_snapshot_preserves_pre_update_state(daily: DailyHarness) -> None:
                 "request_id": "a",
             },
         ),
-        ("update_todo", {"todo_id": "x", "expected_version": 1, "patch": {}, "request_id": "a"}),
     ],
 )
 def test_invalid_inputs_are_terminal_tool_errors(
@@ -339,8 +352,9 @@ def test_invalid_inputs_are_terminal_tool_errors(
 
 def test_concurrent_revision_only_one_wins(daily: DailyHarness) -> None:
     """Two SQLite writers cannot both update the same version."""
-    created = daily.call("create_todo", {"title": "x", "request_id": "create"})
-    tool = next(t for t in daily.tools if t.name == "update_todo")
+    args = _knowledge(daily, "x", "create")
+    created = daily.call("save_knowledge", args)
+    tool = next(t for t in daily.tools if t.name == "save_knowledge")
     assert isinstance(tool, Tool)
 
     def update(request_id: str) -> str:
@@ -348,9 +362,10 @@ def test_concurrent_revision_only_one_wins(daily: DailyHarness) -> None:
             try:
                 tool.handler(
                     {
-                        "todo_id": created["todo_id"],
+                        **args,
+                        "knowledge_id": created["knowledge_id"],
                         "expected_version": 1,
-                        "patch": {"status": "done"},
+                        "status": "deprecated",
                         "request_id": request_id,
                     },
                     ToolContext(conn, daily.fx.paths, request_id),
@@ -368,21 +383,21 @@ def test_live_registry_still_refuses_writes(daily: DailyHarness) -> None:
     """Adding local state must not silently widen GPT Live's read-only permission."""
     view = ReadOnlyToolRegistry(daily.fx.registry)
     names = {t.name for t in view.get_definitions()}
-    assert {"query_activity", "search_knowledge", "list_todos", "get_briefing"} <= names
-    assert not names & {"create_todo", "update_todo", "save_knowledge", "save_briefing"}
+    assert {"query_activity", "search_knowledge", "get_briefing"} <= names
+    assert not names & {"save_knowledge", "save_briefing"}
 
 
 def test_failed_reference_write_rolls_back_and_can_retry(daily: DailyHarness) -> None:
     """A failed write leaves no receipt that could hide a later successful retry."""
-    args = {"title": "x", "request_id": "rollback", "source_refs": ["record:later"]}
-    assert daily.call("create_todo", args)["code"] == "invalid_source"
+    args = {**_knowledge(daily, "x", "rollback"), "source_refs": ["record:later"]}
+    assert daily.call("save_knowledge", args)["code"] == "invalid_source"
     assert not daily.fx.conn.in_transaction
     daily.record("later")
-    assert daily.call("create_todo", args)["version"] == 1
-    assert len(daily.call("list_todos", {})["items"]) == 1
+    assert daily.call("save_knowledge", args)["version"] == 1
+    assert len(daily.call("search_knowledge", {})["items"]) == 1
 
 
-def test_half_open_record_window_and_due_date_clearing(daily: DailyHarness) -> None:
+def test_half_open_record_window(daily: DailyHarness) -> None:
     """Offset-aware filters include the start but exclude the end, even across DST."""
     with closing(open_memory_db(daily.memory)) as conn, conn:
         conn.executemany(
@@ -396,20 +411,6 @@ def test_half_open_record_window_and_due_date_clearing(daily: DailyHarness) -> N
         "search_records", {"from": "2026-11-01T08:30:00Z", "to": "2026-11-01T09:30:00Z"}
     )
     assert [row["id"] for row in page["records"]] == ["start"]
-    todo = daily.call(
-        "create_todo", {"title": "x", "due_at": "2026-11-01T01:30:00-07:00", "request_id": "due"}
-    )
-    assert not daily.call("list_todos", {"due_before": "2026-11-01T08:30:00Z"})["items"]
-    daily.call(
-        "update_todo",
-        {
-            "todo_id": todo["todo_id"],
-            "expected_version": 1,
-            "patch": {"due_at": None},
-            "request_id": "clear",
-        },
-    )
-    assert daily.call("list_todos", {})["items"][0]["due_at"] is None
 
 
 def test_read_records_missing_set_is_stable(daily: DailyHarness) -> None:
@@ -442,8 +443,8 @@ def test_oversize_knowledge_never_becomes_unreadable(daily: DailyHarness) -> Non
 
 
 def test_request_id_namespace_crosses_local_domains(daily: DailyHarness) -> None:
-    """A request ID cannot accidentally become both a todo and a briefing."""
-    daily.call("create_todo", {"title": "x", "request_id": "shared"})
+    """A request ID cannot accidentally become both a knowledge item and a briefing."""
+    daily.call("save_knowledge", _knowledge(daily, "x", "shared"))
     result = daily.call(
         "save_briefing",
         {

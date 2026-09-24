@@ -124,7 +124,7 @@ from jarvis.execution.tools import (
     turn_action_ids,
 )
 from jarvis.execution.workers import Workers, make_worker_tools
-from jarvis.runtime.daily_report import DailyReportService
+from jarvis.runtime.daily_report import PLAN_SERVER, DailyReportService, microsoft_plan
 from jarvis.runtime.plugins import Plugins, load_plugins
 from jarvis.runtime.stream_bridge import LoopBoundTokenStream
 from jarvis.runtime.work_state import WorkStateService, build_analyst
@@ -1487,6 +1487,17 @@ def _all_mcp_servers(config: Mapping[str, Any], plugins: Plugins) -> dict[str, A
     return {**plugins.servers, **(dict(servers) if isinstance(servers, Mapping) else {})}
 
 
+def _wire_plan_reader(
+    service: DailyReportService,
+    servers: McpServers | None,
+    config: Mapping[str, Any],
+    plugins: Plugins,
+) -> None:
+    """ADR 0036: the report reads calendar and To Do itself, once the servers are up."""
+    if servers is not None and PLAN_SERVER in _all_mcp_servers(config, plugins):
+        service.plan_reader = partial(microsoft_plan, servers)
+
+
 def _register_mcp(
     registry: ToolRegistry, config: Mapping[str, Any], paths: RuntimePaths, plugins: Plugins
 ) -> McpServers | None:
@@ -1712,6 +1723,7 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
     workers = _register_workers(registry, paths)
     plugins = _plugins(full_config, repo_root)
     mcp_servers = _register_mcp(registry, full_config, paths, plugins)
+    _wire_plan_reader(daily_report, mcp_servers, full_config, plugins)
     lifecycle = ActionLifecycle()
 
     # 3b. Spec §17 Tier 0 whitelist — sits next to jarvis.yaml so Allen

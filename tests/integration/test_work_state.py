@@ -23,6 +23,7 @@ from jarvis.decision.work_state import REPORT_TOOL_NAME, build_request, parse_re
 from jarvis.execution.tools import build_default_registry
 from jarvis.runtime.inherent_loop import _poll_timesink_once
 from jarvis.runtime.work_state import WorkStateService
+from jarvis.state import daily_store
 from jarvis.state.daily_contract import DailyError
 from jarvis.state.event_log import iter_events_of_types, open_event_log
 from jarvis.state.memory_db import append_record, open_memory_db
@@ -162,7 +163,14 @@ def rig(tmp_path: Path, source: sqlite3.Connection) -> Iterator[Rig]:
     add_capture(source, _stamp(-30), _stamp(-5), text="rules for jarvis\nkeep todos local")
     built = Rig(tmp_path, timesink=tmp_path / "timesink.sqlite")
     append_record(built.memory, record_id="rec-1", source="allen", text="待办就留在本地")
-    built.call("create_todo", {"title": "把 TimeSink 修复合进 main", "request_id": "todo-1"})
+    # ADR 0036 retired the todo tools; work state still reads the local store they wrote.
+    daily_store.write_revision(
+        built.fx.conn,
+        built.memory,
+        "create_todo",
+        {"title": "把 TimeSink 修复合进 main", "request_id": "todo-1"},
+        "todo-1",
+    )
     yield built
     built.fx.close()
 
@@ -220,7 +228,7 @@ def test_refresh_persists_a_sourced_versioned_record(rig: Rig) -> None:
     assert reread["version"] == 1
     saved = rig.events("work_state.revised")
     assert saved[-1]["trigger"] == "conversation"
-    assert saved[-1]["action_id"] == "ws2"
+    assert saved[-1]["action_id"] == "ws1", "the refresh is the rig's first dispatched call"
     assert view["freshness"]["analyzed_at"] == state["analyzed_at"]
     assert view["freshness"]["checked_at_ms"] is not None
     assert view["freshness"]["latest_observed_at"] is not None

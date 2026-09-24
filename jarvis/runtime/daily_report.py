@@ -10,9 +10,10 @@ originals, and only then is the summary written from the checked table.
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time, timedelta
 from typing import TYPE_CHECKING, Any, Protocol
 
 from jarvis.decision.daily_report import (
@@ -53,13 +54,16 @@ from jarvis.state.daily_report import (
 
 if TYPE_CHECKING:
     import sqlite3
-    from collections.abc import Sequence
+    from collections.abc import Callable, Mapping, Sequence
     from datetime import tzinfo
     from pathlib import Path
 
     from jarvis.decision.daily_report import Claim
     from jarvis.decision.llm import ChatResult
+    from jarvis.execution.mcp_tools import McpServers
     from jarvis.state.daily_report import DayEvidence
+
+    type PlanReader = Callable[[datetime, datetime], dict[str, Any]]
 
 LOGGER = logging.getLogger(__name__)
 OUTCOMES = ("generated", "reused", "no_evidence", "failed")
@@ -72,6 +76,66 @@ CHECK_BUDGET = 12
 """Verification calls per report: one per item holding a claim the program could not rule on."""
 UNCHECKED_BUDGET = "核查预算耗尽"
 UNCHECKED_FAILED = "核查失败"
+PLAN_SERVER = "microsoft"
+"""ADR 0036: the configured MCP server whose calendar and To Do the report reads."""
+_EVENT_FIELDS = "subject,start,end,isAllDay,isCancelled,location"
+
+
+def _graph(servers: McpServers, tool: str, args: Mapping[str, Any]) -> list[dict[str, Any]]:
+    payload = servers.call(PLAN_SERVER, tool, args)
+    # The server returns Graph's JSON as a text block, not as structured content.
+    body = json.loads(payload["text"]) if "text" in payload else payload
+    return list(body.get("value", []))
+
+
+def _utc(stamp: Mapping[str, Any]) -> str:
+    """Graph's ``{dateTime, timeZone}``; calendarView answers in UTC unless asked otherwise."""
+    return datetime.fromisoformat(str(stamp["dateTime"])).replace(tzinfo=UTC).isoformat()
+
+
+def _date_of(stamp: Mapping[str, Any] | None) -> str | None:
+    """To Do keeps due and completion as a date at midnight, not an instant."""
+    return str(stamp["dateTime"])[:10] if stamp else None
+
+
+def microsoft_plan(servers: McpServers, start: datetime, end: datetime) -> dict[str, Any]:
+    """Calendar events in ``[start, end)`` and every To Do task, through read-only tools."""
+    view = {
+        "startDateTime": start.isoformat(),
+        "endDateTime": end.isoformat(),
+        "select": _EVENT_FIELDS,
+        "fetchAllPages": True,
+    }
+    events = []
+    for event in _graph(servers, "get-calendar-view", view):
+        if event.get("isCancelled"):
+            continue
+        row: dict[str, Any] = {
+            "subject": str(event.get("subject") or ""),
+            "location": str((event.get("location") or {}).get("displayName") or ""),
+            "all_day": bool(event.get("isAllDay")),
+        }
+        if row["all_day"]:
+            row["date"] = str(event["start"]["dateTime"])[:10]
+        else:
+            row.update(start=_utc(event["start"]), end=_utc(event["end"]))
+        events.append(row)
+    todos = []
+    for one in _graph(servers, "list-todo-task-lists", {"fetchAllPages": True}):
+        # No $select here: Graph answers 400 (RequestBroker--ParseUri) for To Do tasks.
+        tasks = {"todoTaskListId": one["id"], "fetchAllPages": True}
+        todos += [
+            {
+                "title": str(task.get("title") or ""),
+                "list": str(one.get("displayName") or ""),
+                "done": task.get("status") == "completed",
+                "important": task.get("importance") == "high",
+                "due": _date_of(task.get("dueDateTime")),
+                "completed": _date_of(task.get("completedDateTime")),
+            }
+            for task in _graph(servers, "list-todo-tasks", tasks)
+        ]
+    return {"events": events, "todos": todos}
 
 
 class Reporter(Protocol):
@@ -116,6 +180,8 @@ class DailyReportService:
         self._check_budget = check_budget
         # ponytail: one lock for all days; per-day locks only if two reports must run at once.
         self._lock = threading.Lock()
+        self.plan_reader: PlanReader | None = None
+        """Set by the runtime once MCP servers are up (ADR 0036); None means not wired."""
 
     def run(  # noqa: PLR0913 — one keyword per request field plus the writer and the clock.
         self,
@@ -177,6 +243,7 @@ class DailyReportService:
             zone=zone,
             now=moment,
             codex_sessions_path=self._codex_sessions_path,
+            plan=self._plan(day, zone),
         )
         if evidence.empty:
             return {
@@ -233,6 +300,18 @@ class DailyReportService:
             "checks": checks,
             "error": None,
         }
+
+    def _plan(self, day: date, zone: tzinfo) -> dict[str, Any] | None:
+        """This day's and the next day's calendar plus To Do; a failed read is stated, not fatal."""
+        if self.plan_reader is None:
+            return None
+        start = datetime.combine(day, time(), zone)
+        end = datetime.combine(day + timedelta(days=2), time(), zone)
+        try:
+            return self.plan_reader(start, end)
+        except Exception as exc:  # noqa: BLE001 — an unreadable plan never blocks the report.
+            LOGGER.warning("daily_report: plan unreadable: %s: %s", type(exc).__name__, exc)
+            return {"error": f"{type(exc).__name__}: {exc}"[:200]}
 
     def _draft(self, conn: sqlite3.Connection, evidence: DayEvidence) -> tuple[dict[str, Any], int]:
         """Serve queries, require the draft, retry an unusable one; bounded by ``MAX_ROUNDS``.

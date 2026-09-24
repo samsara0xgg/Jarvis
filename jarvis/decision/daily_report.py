@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
+from datetime import date, timedelta
 from typing import TYPE_CHECKING, Any, NoReturn
 
 from jarvis.shared.skills import load_skill
@@ -61,6 +62,8 @@ _MAX_PARTS = 4
 _MAX_DECISIONS = 8
 _MAX_OPEN = 10
 _MAX_NEXT = 8
+_PLAN_TODOS = 30
+"""Open (and completed) To Do lines written into the report; the material carries them all."""
 _MAX_SUGGESTIONS = 6
 _MAX_UNCERTAINTIES = 10
 _TITLE = 80
@@ -301,6 +304,53 @@ def _session_lines(rows: list[dict[str, Any]]) -> list[str]:
     return out
 
 
+def _next_day(evidence: DayEvidence) -> str:
+    return (date.fromisoformat(evidence.day) + timedelta(days=1)).isoformat()
+
+
+def _event_line(row: dict[str, Any]) -> str:
+    where = f"（{row['location']}）" if row["location"] else ""
+    return f"- {row['date']} {row['time']} {row['subject']}{where}"
+
+
+def _todo_line(row: dict[str, Any], today: str) -> str:
+    if row["done"]:
+        state = "已完成"
+    elif row["due"] is None:
+        state = "无截止日期"
+    elif row["due"] < today:
+        state = f"已逾期，截止 {row['due']}"
+    else:
+        state = f"截止 {row['due']}"
+    return f"- {row['title']}（{row['list']}，{state}{'，重要' if row['important'] else ''}）"
+
+
+def plan_lines(evidence: DayEvidence) -> list[str]:
+    """ADR 0036: the next day's calendar and open To Do, written by code from Microsoft's read."""
+    nxt = _next_day(evidence)
+    head = f"## {nxt} 的日程与待办（微软日历与 To Do，生成时读取）"
+    if evidence.coverage.get("calendar") != "available":
+        return [head, f"- {evidence.served.get('plan', '微软日历与待办：没有读取')}", ""]
+    sections = evidence.sections
+    events = [row for row in sections["calendar"] if row["date"] == nxt]
+    open_ = [row for row in sections["todos"] if not row["done"]]
+    done = [row for row in sections["todos"] if row["done"]]
+    lines = [head, "日程：", *(_event_line(row) for row in events)]
+    if not events:
+        lines.append("- 日历上没有日程。")
+    lines.append(f"待办（未完成 {len(open_)} 条）：")
+    # ponytail: the saved report has a hard size limit; the rest stay in To Do and the material.
+    lines += [_todo_line(row, nxt) for row in open_[:_PLAN_TODOS]]
+    if not open_:
+        lines.append("- 没有未完成的待办。")
+    if len(open_) > _PLAN_TODOS:
+        lines.append(f"- 另有 {len(open_) - _PLAN_TODOS} 条未列出，见 To Do。")
+    if done:
+        lines.append(f"{evidence.day} 完成的待办：")
+        lines += [f"- {row['title']}（{row['list']}）" for row in done[:_PLAN_TODOS]]
+    return [*lines, ""]
+
+
 def render_material(evidence: DayEvidence) -> str:
     """Render the whole keyed day as the model's material."""
     sections = evidence.sections
@@ -357,11 +407,20 @@ def render_material(evidence: DayEvidence) -> str:
         sections.get("repo_states", []),
         "[{key}] {at} {repo} 分支 {branch}，未提交改动 {dirty} 个文件，HEAD {head}",
     )
-    out += _lines(
-        "上下文：未完成的本地待办（不是当天活动）",
-        sections.get("todos", []),
-        "[{key}] {title}（due {due_at}, {priority}, project {project}）",
-    )
+    nxt = _next_day(evidence)
+    if sections.get("calendar"):
+        out += [
+            "## 上下文：微软日历（报告日与次日，本地时间；是安排，不是当天活动的证据）",
+            *(_event_line(row) for row in sections["calendar"]),
+            "",
+        ]
+    if sections.get("todos"):
+        out += [
+            f"## 上下文：微软 To Do（未完成的，以及报告日完成的；逾期按 {nxt} 算；"
+            "不是当天活动的证据）",
+            *(_todo_line(row, nxt) for row in sections["todos"]),
+            "",
+        ]
     out += _lines(
         "上下文：已保存的知识（不是当天活动）",
         sections.get("knowledge", []),
@@ -991,6 +1050,7 @@ def compose_report(  # noqa: PLR0913 — the draft, its rulings, the one model s
         # travels without the program's lines saying what was evidenced and what was not.
         *_summary_lines(report, claims, evidence, main_line),
         "",
+        *plan_lines(evidence),
     ]
     return (
         _fit("\n".join([*head, *lines])),

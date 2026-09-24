@@ -79,22 +79,6 @@ _DESCRIPTIONS = {
         "preserving history. Conflicting uncertain claims should use needs_confirmation. "
         "Reuse request_id only for exact retries."
     ),
-    "create_todo": (
-        "Create a LOCAL personal commitment, distinct from a memo or Codex execution. "
-        "Optional due_at requires an ISO timestamp with UTC offset. No reminder or Microsoft "
-        "sync is created. Choose a unique request_id; reuse it for exact retries only."
-    ),
-    "list_todos": (
-        "List LOCAL personal todos, default status=open; status=all includes done/cancelled. "
-        "due_before is exclusive and requires an offset. Returns IDs and versions for "
-        "update_todo."
-    ),
-    "update_todo": (
-        "Edit a local todo with its latest expected_version. patch may change title, project, "
-        "due_at (null clears), priority or status (open/done/cancelled). Only mark done on "
-        "the user's instruction, not an agent completion report. Reuse request_id for exact "
-        "retries."
-    ),
     "save_briefing": (
         "Save a daily briefing with source_refs and explicit coverage gaps. Copy source_refs "
         "from activity results exactly; activity:... IDs are NOT valid source refs. "
@@ -112,12 +96,12 @@ _RESULT_CAP = 16384
 # the handler rejects anything larger instead of letting the dispatcher window strings.
 _ACTIVITY_RESULT_CAP = ACTIVITY_PAGE_BUDGET + 16384
 _RESULT_CAPS = {"query_activity": _ACTIVITY_RESULT_CAP}
-_WRITES = frozenset({"save_knowledge", "create_todo", "update_todo", "save_briefing"})
+_WRITES = frozenset({"save_knowledge", "save_briefing"})
 _WORK_STATE_DESCRIPTION = (
     "Investigate and update Allen's persisted current work state. Call this when he asks what "
     "he is doing now, what he did today/recently, or how something discussed earlier is "
     "progressing. It reads the latest TimeSink app/window/screen data, recent conversation "
-    "records, open todos, knowledge and Git observations, runs one analysis and saves the "
+    "records, knowledge and Git observations, runs one analysis and saves the "
     "result; outcome=reused means nothing new was observed and the saved state still holds, "
     "no_evidence means there is no data, failed keeps the previous state. Pass the user's "
     "question verbatim and put facts he just stated into note (they count as new evidence). "

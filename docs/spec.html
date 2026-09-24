@@ -530,8 +530,11 @@ Run      = 在某个 task 上的一次推进尝试</code></pre>
 <p>Memory 写入不是 State Object 自己决定。Runtime Decision 产生 memory candidate，检查 memory policy、stability、evidence、secret boundary 后 emit event；State Object fold 成 Memory Projection。</p>
 
 <h4 id="daily-loop-tools">3.3.5a Local daily-loop tools</h4>
-<p>Personal todos, sourced knowledge and saved briefings are separate from engineering task/worker status.
-They are local, event-derived records: <code>todo.revised</code>, <code>knowledge.revised</code>, and
+<p>Personal todos and the calendar live in Microsoft To Do and Outlook calendar, reached through the
+configured <code>microsoft</code> MCP server's tools (§3.5.6, ADR 0036); there is no local todo tool, and
+the retired store's <code>todo.revised</code> events remain readable history.
+Sourced knowledge and saved briefings are separate from engineering task/worker status.
+They are local, event-derived records: <code>knowledge.revised</code> and
 <code>briefing.revised</code> (owner L4, actor jarvis_llm, schema version 1). Each event carries
 <code>request_id, request_hash, operation, item, action_id</code>; item carries <code>id, version,
 created_at, updated_at</code> plus the domain fields below. L2 appends the domain revision atomically;
@@ -545,9 +548,6 @@ the dispatcher alone owns action lifecycle events. Original conversation records
 <tr><td>read_activity</td><td>activity_id (a row ref <code>s&lt;id&gt;:&lt;rev&gt;</code> / <code>c&lt;id&gt;:&lt;rev&gt;</code> / <code>g&lt;uid&gt;</code>, or a full timesink:, timesink-capture:, activity:, git:, codex-session: reference), cursor?</td><td>Saved Git payload or revision-pinned TimeSink row as JSON text chunks, a screen capture as its full OCR text, a <code>git:</code> reference as <code>git show --stat</code> text, a <code>codex-session:</code> reference as the session's dated turns; source_refs (always the full reference), kind, observed_at, offset, total_chars, complete, next_cursor. Never captures fresh state.</td></tr>
 <tr><td>search_knowledge</td><td>query?, project?, kind?, status?, limit?, cursor?</td><td>Full current knowledge items and source_ref; default active, also deprecated / needs_confirmation / all.</td></tr>
 <tr><td>save_knowledge</td><td>statement, kind, source_refs, basis, request_id; knowledge_id?, expected_version?, project?, status?</td><td>knowledge_id, version, source_ref. Kind: fact/decision/lesson/preference; basis: user_statement/observation/inference. Updates supersede a previous version of the same identity; supersedes points at the previous immutable event. No current activity state or verified-worker verdict.</td></tr>
-<tr><td>create_todo</td><td>title, request_id; project?, due_at?, priority?, source_refs?</td><td>todo_id, version, source_ref. New state open; priority low/normal/high, default normal. Local storage only, no reminder or remote sync.</td></tr>
-<tr><td>list_todos</td><td>status?, project?, due_before?, limit?, cursor?</td><td>Current items and source_ref; default open, also done/cancelled/all. due_before excludes undated tasks and its upper boundary.</td></tr>
-<tr><td>update_todo</td><td>todo_id, expected_version, patch, request_id</td><td>todo_id, version, source_ref. Patch permits title/project/due_at/priority/status only; null clears due_at/project. User instruction can complete/reopen/cancel; worker completion alone does not update a todo.</td></tr>
 <tr><td>save_briefing</td><td>local_date, timezone, content, source_refs, coverage, request_id; expected_version?</td><td>briefing_id, version, source_ref. Date + IANA timezone identifies one briefing with immutable revisions. No delivery or scheduling side effect.</td></tr>
 <tr><td>get_briefing</td><td>local_date, timezone, cursor?</td><td>Saved metadata plus content chunks, offset, total_chars, complete, next_cursor; delivery_status=not_tracked. Continuation stays on its initial revision.</td></tr>
 <tr><td>refresh_work_state</td><td>question?, note?, force?</td><td>The ADR 0023 work-state view: state (the saved record or null), data (latest timesink.state_observed head or null), refreshing, outcome (analyzed / reused / no_evidence / failed), error, joined?. Runs the runtime's one refresh workflow; L1 because it appends work_state.revised.</td></tr>
@@ -561,12 +561,12 @@ Late arrivals are available to a new query. Only returned next_cursor values may
 cursor issued for other arguments is <code>cursor_mismatch</code> (the caller changed the query and restarts
 without a cursor), an unreadable one <code>invalid_cursor</code>. History text
 chunks preserve exact text, including escaped characters; exhaustion, missing IDs and failures are explicit.</p>
-<p>All tools are flat Tool definitions available to jarvis_llm. Reads are risk L0; save/create/update are
+<p>All tools are flat Tool definitions available to jarvis_llm. Reads are risk L0; saves are
 L1 local reversible writes. The existing GPT Live read-only registry exposes reads only. Tool output cap
 is 16,384 characters, whole-row page budget 11,000, and detail chunks at most 3,500 text characters / 4,000
 JSON characters; query_activity alone has a 48,000-character row budget per page and a 64,384-character
 output cap (characters of the serialized JSON, not tokens). Writes reject oversized item metadata before committing, so it remains retrievable.
-Knowledge statement limit is 4,000 characters, todo title 500, briefing content 16,000, and source refs at most 20.</p>
+Knowledge statement limit is 4,000 characters, briefing content 16,000, and source refs at most 20.</p>
 <p>Each write checks request_id across these three revision event types inside BEGIN IMMEDIATE.
 An exact retry returns the original receipt; changed arguments yield request_conflict. New records expect
 version zero; updates require the current version and otherwise return version_conflict with its number.
@@ -663,7 +663,7 @@ a saved source reference. Changed detail reads return source_changed,
 deleted rows return not_found. This is revision validation, not historical version archival: a saved reference
 can become unavailable after the independent source changes. Coverage freshness metadata may advance
 between pages without changing the selected rows.</p>
-<p>Briefing coverage has records/git/app/screen/agent/todos/knowledge entries with values
+<p>Briefing coverage has records/git/app/screen/agent/todos/calendar/knowledge entries with values
 available/partial/unknown/unavailable/not_implemented; omitted entries default to unknown.
 coverage_basis=reported_by_generator distinguishes it from measured collector health. Saving a briefing
 never marks it delivered or heard. The daily work report below is the one writer that saves a briefing
@@ -752,8 +752,10 @@ once) with the observer's <code>project.commit_seen</code> events folded in by S
 observation time, every Codex session with a turn inside the window
 (<code>~/.codex/sessions</code>, every file begun by that day and written since, cut to the window)
 with every user and assistant turn whole and Codex's own approval-shim sessions folded into one
-count, plus open todos, active knowledge and the previous day's report as context labelled
-not-today. Captures holding a milestone phrase (application submitted or received, order placed,
+count, plus, as context labelled not-today, the report day's and the next day's Outlook calendar
+events (cancelled ones dropped) with every open Microsoft To Do task and those completed on the report
+day, read once by the runtime through the <code>microsoft</code> server's read-only tools outside any
+model turn (ADR 0036), active knowledge and the previous day's report. Captures holding a milestone phrase (application submitted or received, order placed,
 sent, and their Chinese forms) are listed again at the head of the material. Commits carry their
 commit time and observation time (or 观察器未记录) with a <code>late</code> flag when the commit
 fell on another local day. No section is capped or excerpted. The material header states, per
@@ -804,7 +806,11 @@ the per-source header, evidence counts and every material limit are appended as 
 核心摘要, the only section served onward, is the main-line sentence followed by the program's
 lines: the evidenced items, the items claimed complete but unverified or unsupported, each with
 every part's status text after its title, and a count of the rest by their highest status, so a
-summary cannot outrun the checks. Each cited source is written out once, in 证据引用, and the body
+summary cannot outrun the checks. After it, code writes the next day's 日程与待办 from the same read:
+that day's events in local time (all-day first), open tasks ordered by due date with overdue and
+important marked (at most 30, the rest counted), and the tasks completed on the report day; an
+unwired or failed read is written there instead and sets coverage todos and calendar to
+unavailable, never failing the report. Each cited source is written out once, in 证据引用, and the body
 cites it by number; the first 20 are also saved as the briefing's <code>source_refs</code>, which
 the store checks on save (<code>git:&lt;repo&gt;:&lt;sha&gt;</code> with <code>git cat-file</code>,
 <code>codex-session:&lt;file&gt;</code> as a file), so every claim is re-checkable through
@@ -1146,7 +1152,7 @@ CapabilityExecutor.execute(gated_action_request) -> RawResultBundle</code></pre>
 
 <p>Layer 4 只按 intrinsic caller principal 过滤。Layer 3 再按 EffectivePolicy、AuthorizationLease、mode、task scope 做 contextual filter。最终交集进入 Situation Packet。Layer 4 不接收完整 mode_context，避免它开始理解 policy。</p>
 
-<p>Tool 的来源不限于本仓库。插件按 Codex 的目录格式放在 <code>plugins/&lt;name&gt;/</code>（<code>.codex-plugin/plugin.json</code>、<code>.mcp.json</code>、<code>skills/&lt;skill&gt;/SKILL.md</code>），由 <code>tools.plugins.&lt;name&gt;</code> 启用（ADR 0035）；插件的 server 与 <code>tools.mcp.servers</code> 合并，同名时后者整条替换插件的；server 条目也认 Codex 的 <code>bearer_token_env_var</code>、<code>http_headers</code>、<code>env_http_headers</code>、<code>oauth</code>/<code>oauth_resource</code>。插件 skill 以 <code>&lt;plugin&gt;:&lt;skill&gt;</code> 的名字和描述列在系统提示末尾的 Skills 段，正文与它引用的文件经只读的 <code>read_skill</code> 读取，读不到 skill 目录之外。每个 MCP server 在 registry 构建时连入，它列出的每个工具以 <code>mcp__&lt;server&gt;__&lt;tool&gt;</code> 注册为一个 flat Tool（ADR 0033）：按 Codex 的审批模式（server 的 <code>default_tools_approval_mode</code> 或 <code>tools.&lt;tool&gt;.approval_mode</code>，取值 auto / prompt / writes / approve，默认 auto）判断该调用需要批准的，登记为 L3 且 <code>requires_confirmation</code>，经确认路径先问 Allen；auto 下只有 readOnlyHint 为真、或同时声明 destructiveHint 为假与 openWorldHint 为假的工具不问；不需批准的，readOnlyHint 为真则 read_only、L0，否则 L1。确认冻结工具的原始参数，Allen 同意后原样重新提议；只有 <code>write_file</code> 暂存内容。结果取 structuredContent，否则取文本块，非文本块只报类型。连不上的 server 不贡献工具，也不阻止启动。MCP 工具都是 deferred（ADR 0034）：不进 LLM 的工具列表，存在时另注册只读的 <code>tool_search</code>（BM25，默认返回 8 个），它返回的 <code>loaded_tools</code> 在本回合之后的每次调用里加入列表；列表每次调用前按调用方的 surface 重建，所以只读的 GPT-Live 回合加载不到写工具。远程条目以 <code>headers</code> 携带固定凭证，或以 <code>auth: oauth</code> 走浏览器登录（ADR 0032）：登录只发生在 <code>mcp-login</code> 命令里，token 与客户端注册存于 <code>&lt;runtime root&gt;/mcp/&lt;server&gt;.json</code>（0600）；守护进程只复用并刷新它，缺失或失效时跳过该 server 并记下登录命令。</p>
+<p>Tool 的来源不限于本仓库。插件按 Codex 的目录格式放在 <code>plugins/&lt;name&gt;/</code>（<code>.codex-plugin/plugin.json</code>、<code>.mcp.json</code>、<code>skills/&lt;skill&gt;/SKILL.md</code>），由 <code>tools.plugins.&lt;name&gt;</code> 启用（ADR 0035）；插件的 server 与 <code>tools.mcp.servers</code> 合并，同名时后者整条替换插件的；server 条目也认 Codex 的 <code>bearer_token_env_var</code>、<code>http_headers</code>、<code>env_http_headers</code>、<code>oauth</code>/<code>oauth_resource</code>。插件 skill 以 <code>&lt;plugin&gt;:&lt;skill&gt;</code> 的名字和描述列在系统提示末尾的 Skills 段，正文与它引用的文件经只读的 <code>read_skill</code> 读取，读不到 skill 目录之外。每个 MCP server 在 registry 构建时连入，它列出的每个工具以 <code>mcp__&lt;server&gt;__&lt;tool&gt;</code> 注册为一个 flat Tool（ADR 0033）：按 Codex 的审批模式（server 的 <code>default_tools_approval_mode</code> 或 <code>tools.&lt;tool&gt;.approval_mode</code>，取值 auto / prompt / writes / approve，默认 auto）判断该调用需要批准的，登记为 L3 且 <code>requires_confirmation</code>，经确认路径先问 Allen；auto 下只有 readOnlyHint 为真、或同时声明 destructiveHint 为假与 openWorldHint 为假的工具不问；不需批准的，readOnlyHint 为真则 read_only、L0，否则 L1。确认冻结工具的原始参数，Allen 同意后原样重新提议；只有 <code>write_file</code> 暂存内容。结果取 structuredContent，否则取文本块，非文本块只报类型。连不上的 server 不贡献工具，也不阻止启动。MCP 工具都是 deferred（ADR 0034）：不进 LLM 的工具列表，存在时另注册只读的 <code>tool_search</code>（BM25，默认返回 8 个），它返回的 <code>loaded_tools</code> 在本回合之后的每次调用里加入列表；列表每次调用前按调用方的 surface 重建，所以只读的 GPT-Live 回合加载不到写工具。远程条目以 <code>headers</code> 携带固定凭证，或以 <code>auth: oauth</code> 走浏览器登录（ADR 0032）：登录只发生在 <code>mcp-login</code> 命令里，token 与客户端注册存于 <code>&lt;runtime root&gt;/mcp/&lt;server&gt;.json</code>（0600）；守护进程只复用并刷新它，缺失或失效时跳过该 server 并记下登录命令。运行时自己的后台读取可以不经模型回合直接调用已连入 server 的工具（ADR 0036：日报读取微软日历与待办）；它前面没有确认关口，所以只许调用只读工具。</p>
 
 <h4>3.5.7 post_action_check</h4>
 

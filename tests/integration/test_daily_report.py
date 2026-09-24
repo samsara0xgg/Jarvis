@@ -36,7 +36,7 @@ from jarvis.decision.daily_report import (
     screen_claims,
 )
 from jarvis.decision.llm import ChatResult, ToolCall
-from jarvis.execution.tools import build_default_registry
+from jarvis.execution.tools import ToolError, build_default_registry
 from jarvis.runtime.daily_report import CHECK_BUDGET, DailyReportService
 from jarvis.state.daily_contract import DailyError
 from jarvis.state.daily_report import gather_day, resolve_day, resolve_zone, save_report
@@ -548,10 +548,78 @@ def test_report_generates_saves_and_reads_back(rig: Rig) -> None:
         "screen",
         "agent",
         "todos",
+        "calendar",
         "knowledge",
     }
     assert saved["coverage"]["agent"] == "unavailable", "no Codex session directory was given"
     assert "- 代理会话：Codex 本机会话目录不可读" in content
+    assert "- 微软日历与待办：未接入，没有日程和待办" in content, "no plan reader was wired"
+
+
+def test_microsoft_plan_is_context_and_the_next_days_section(rig: Rig) -> None:
+    """ADR 0036: the next day's events and open To Do are written by code; the day's are context."""
+    windows: list[tuple[datetime, datetime]] = []
+
+    def reader(start: datetime, end: datetime) -> dict[str, Any]:
+        windows.append((start, end))
+        at = {"all_day": False, "location": ""}
+        return {
+            "events": [
+                {**at, "subject": "Co-op interview", "location": "Teams",
+                 "start": "2026-09-20T21:00:00+00:00", "end": "2026-09-20T21:30:00+00:00"},
+                {**at, "subject": "Info session",
+                 "start": "2026-09-19T23:00:00+00:00", "end": "2026-09-20T00:00:00+00:00"},
+                {"subject": "Career fair", "location": "", "all_day": True, "date": "2026-09-20"},
+            ],
+            "todos": [
+                {"title": "Repack jarvis", "list": "Tasks", "done": False, "important": False,
+                 "due": None, "completed": None},
+                {"title": "Send cover letter", "list": "Co-op", "done": False, "important": True,
+                 "due": "2026-09-18", "completed": None},
+                {"title": "Submit resume", "list": "Co-op", "done": True, "important": False,
+                 "due": None, "completed": "2026-09-19"},
+                {"title": "Old chore", "list": "Tasks", "done": True, "important": False,
+                 "due": None, "completed": "2026-09-01"},
+            ],
+        }
+
+    rig.service.plan_reader = reader
+    result = rig.run()
+    assert result["outcome"] == "generated", result.get("error")
+    assert windows == [(datetime(2026, 9, 19, tzinfo=TZ), datetime(2026, 9, 21, tzinfo=TZ))]
+    assert result["coverage"]["calendar"] == result["coverage"]["todos"] == "available"
+    material = rig.reporter.material
+    assert "- 2026-09-19 16:00-17:00 Info session" in material, "the day's events are context"
+    content = rig.saved()
+    plan = _section(content, "## 2026-09-20 的日程与待办（微软日历与 To Do，生成时读取）\n")
+    assert plan.strip().splitlines() == [
+        "日程：",
+        "- 2026-09-20 全天 Career fair",
+        "- 2026-09-20 14:00-14:30 Co-op interview（Teams）",
+        "待办（未完成 2 条）：",
+        "- Send cover letter（Co-op，已逾期，截止 2026-09-18，重要）",
+        "- Repack jarvis（Tasks，无截止日期）",
+        "2026-09-19 完成的待办：",
+        "- Submit resume（Co-op）",
+    ]
+    assert "Old chore" not in material, "only tasks completed on the report day are listed"
+    assert content.index("## 核心摘要") < content.index("## 2026-09-20 的日程与待办")
+
+
+def test_an_unreadable_plan_is_stated_and_the_report_still_saves(rig: Rig) -> None:
+    """A failed Microsoft read never blocks the report; the section and coverage say why."""
+
+    def broken(_start: datetime, _end: datetime) -> dict[str, Any]:
+        message = "microsoft: token expired"
+        raise ToolError(message, code="mcp_server")
+
+    rig.service.plan_reader = broken
+    result = rig.run()
+    assert result["outcome"] == "generated", result.get("error")
+    assert result["coverage"]["calendar"] == result["coverage"]["todos"] == "unavailable"
+    assert "- 微软日历与待办：读取失败（ToolError: microsoft: token expired），没有日程和待办" in (
+        rig.saved()
+    )
 
 
 def test_repeat_reuses_and_regenerate_makes_a_new_version(rig: Rig) -> None:
@@ -2005,7 +2073,9 @@ def test_report_fits_the_save_limit(rig: Rig) -> None:
     assert "超出保存上限" not in content
     assert all(f"#{n}" in content for n in range(1, len(keys) + 1))
     assert len(refs) <= 20
-    assert set(coverage) <= {"records", "git", "app", "screen", "agent", "todos", "knowledge"}
+    assert set(coverage) <= {
+        "records", "git", "app", "screen", "agent", "todos", "calendar", "knowledge"
+    }
 
 
 def test_overbudget_regeneration_preserves_saved_report(
