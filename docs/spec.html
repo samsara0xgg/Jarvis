@@ -721,6 +721,41 @@ activity. The read view reports three clocks apart: <code>freshness.checked_at_m
 and <code>freshness.analyzed_at</code>; a successful poll is not fresh data. The check clock is
 maintained in memory on every read, with the persisted observation as a fallback after restart. The head is a
 collector-health trail; it never triggers decide() and never calls a model.</p>
+<p id="projects"><strong>Projects (ADR 0037).</strong> The catalog is config <code>projects</code>, a
+list of <code>{id, name, repos?, hints?}</code>: id is a unique lowercase slug and the only identity of
+a catalog project (query_activity's <code>project</code> filter is a separate key, a repository
+path), repos are local checkouts (<code>~</code> expanded) whose commits count for the project,
+hints are free text telling the sorter what belongs. An empty or absent list leaves both routes
+unregistered. The catalog fingerprint covers id, name and hints, not their order. An activity is one TimeSink
+(app bundle id, domain, label), label = the span's document, else its title, else its domain, else
+the app name; its key is a hash of the three. Sorting is the runtime job behind
+<code>POST /inherent/projects/refresh</code>: over the last seven local days
+(<code>work_state.timezone</code>) it takes the activities with no answer under the current
+fingerprint, longest first, and sends them with the catalog in batches of at most 300 to the
+<code>work_state.preset</code> model through the forced tool <code>assign_projects</code> (groups of
+<code>{project, keys}</code>, project = a catalog id or <code>none</code>). Each batch that keeps at
+least one answer appends one
+<code>project.activity_classified</code> event (owner L2, actor jarvis_llm, schema version 1; payload
+<code>catalog, assignments[] {key, project|null, app, label}, model, trigger</code>). Keys the reply
+omits or did not receive and ids outside the catalog are dropped and stay unsorted; a reply that is
+not the tool's shape fails that batch, keeps the batches saved before it and ends the run with
+outcome=failed. With nothing unsorted the outcome is reused and no model is called; no readable
+TimeSink or no spans is no_evidence; otherwise classified. The latest answer for a key under the
+current fingerprint wins. A refresh while one runs joins it and answers with <code>joined=true</code>.
+<code>GET /inherent/projects</code>
+never calls a model and returns <code>days[]</code> (seven local dates, oldest first),
+<code>projects[]</code> ordered by the window's seconds, each <code>{id, name, seconds,
+today_seconds, days[] (seconds per local day), last_seen, commits {count, items[] {sha, subject,
+committed_at, on_main, repo}}, recent[] {app, label, seconds, last_seen}}</code>, <code>other</code>
+(sorted to none) and <code>unsorted</code>, each <code>{seconds, days[], count}</code>,
+<code>coverage {timesink, git}</code>, <code>latest_observed_at</code>, <code>sorted_at</code> (the
+newest classification event), <code>refreshing</code>, <code>outcome</code> and <code>error</code>;
+the POST answers the same view. Time is each span's overlap with each local day, summed per
+activity without merging overlapping spans (a TimeSink estimate). Commits are those on any local branch of the project's repos committed
+inside the window, newest eight listed, each marked on main or not. recent lists the project's
+activities with at least 60 s, latest first, at most eight. Nothing here is stored except the
+classification events. The dashboard asks for a refresh when the projects tile mounts and when its
+detail opens.</p>
 
 <p id="task-skills"><strong>Task skills (ADR 0024).</strong> A skill is a directory
 <code>jarvis/shared/skills/&lt;name&gt;/</code> holding <code>SKILL.md</code> — frontmatter with
@@ -1701,6 +1736,7 @@ CREATE INDEX idx_events_actor_ts      ON events(actor, ts_epoch_ms);</code></pre
 <li><strong>Mode / 注意力</strong>：<code>mode.transitioned</code> · <code>focus.changed</code> · <code>lens.enabled</code> · <code>override.applied</code> · <code>confirmation.accepted</code> · <code>confirmation.rejected</code></li>
 <li><strong>感知 / 环境</strong>：<code>sensor.observed</code> · <code>sensor.alert</code> · <code>presence.inferred</code> · <code>environment.snapshot</code> · <code>repo.state_observed</code> · <code>project.commit_seen</code> · <code>usage.state_observed</code> · <code>tts.usage_observed</code> · <code>timesink.state_observed</code>（observer 事件，只折叠不触发 decide，见 ADR-0009 / ADR-0018 / ADR 0023）</li>
 <li><strong>Work state</strong>：<code>work_state.revised</code>（ADR 0023，<a href="#work-state">§3.3.5a</a>；按需分析的持久记录，每条结论带 basis）</li>
+<li><strong>Projects</strong>：<code>project.activity_classified</code>（ADR 0037，<a href="#projects">§3.3.5a</a>；一批活动归到哪个项目，只在当前项目清单指纹下有效）</li>
 <li><strong>Surface</strong>：<code>surface.user_intent</code> · <code>surface.failed</code> · <code>surface.dismissed</code> · <code>surface.clarified</code></li>
 <li><strong>Live voice</strong>：<code>live.result_delivered</code> · <code>live.session_usage</code>（ADR 0026；委托结果的交付与会话用量是持久事实）</li>
 <li><strong>Cross-domain (discriminator pattern)</strong>：<code>cross_domain.request.dispatched</code> · <code>cross_domain.request.received</code> · <code>cross_domain.request.deferred</code> · <code>cross_domain.request.expired</code> · <code>cross_domain.response.sent</code> · <code>cross_domain.response.received</code> · <code>cross_domain.response.late</code> · <code>cross_domain.event_quarantined</code><br><em>Note:</em> 具体 action 在 <code>payload.action_type</code> 区分，不分裂成多个 event type（见 <a href="#layer-deployment-domains">§3.7.3</a>）。</li>
@@ -2884,7 +2920,7 @@ panel  =  evidence and action controls</code></pre>
 <li>当前工作状态（<a href="#work-state">§3.3.5a</a>，ADR 0023）：<code>GET /inherent/work-state</code> 每 60 s 轮询只读，刷新按钮 <code>POST /inherent/work-state/refresh</code> 与对话里的 refresh_work_state 走同一条分析；显示上次结果、数据时间、分析时间，更新中保留旧结果，失败标"未更新"，较旧的返回不覆盖较新的记录</li>
 <li>pending review</li>
 <li>evidence status</li>
-<li>current project state</li>
+<li>项目（ADR 0037，<a href="#projects">§3.3.5a</a>）：近七天每个项目的时间、最近提交和最近活动，另列未归入项目和尚未归类的时间；打开时只为新出现的活动归类</li>
 <li>blocked tasks</li>
 <li>queue</li>
 <li>mode / history</li>

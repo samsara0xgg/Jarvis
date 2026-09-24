@@ -126,6 +126,7 @@ from jarvis.execution.tools import (
 from jarvis.execution.workers import Workers, make_worker_tools
 from jarvis.runtime.daily_report import PLAN_SERVER, DailyReportService, microsoft_plan
 from jarvis.runtime.plugins import Plugins, load_plugins
+from jarvis.runtime.projects import ProjectsService
 from jarvis.runtime.stream_bridge import LoopBoundTokenStream
 from jarvis.runtime.work_state import WorkStateService, build_analyst
 from jarvis.shared import CallerPrincipal, Event
@@ -146,6 +147,7 @@ from jarvis.shared.realtime_trace import (
 from jarvis.state.committed_event_bus import CommittedEventBus
 from jarvis.state.event_log import open_event_log, open_runtime_event_log
 from jarvis.state.memory_db import MemorySettings, SessionSettings, append_record, render_context
+from jarvis.state.projects import parse_catalog
 from jarvis.state.stream_emission import committed_text_prefix
 from jarvis.state.trigger_consumption import mark_trigger_consumed
 from jarvis.surface.cli import (
@@ -435,6 +437,8 @@ class JarvisRuntime:
     # ADR 0023: the one current-work-state refresh workflow, shared by the
     # `refresh_work_state` tool and the Resonance dashboard routes.
     work_state: WorkStateService | None = None
+    # ADR 0037: the project view and its sorting job. None = no `projects` list.
+    projects: ProjectsService | None = None
 
 
 @dataclass(frozen=True)
@@ -1681,6 +1685,25 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
         model=_work_state_preset(full_config),
         tz=_work_state_timezone(full_config),
     )
+    catalog = parse_catalog(full_config.get("projects"))
+    projects = (
+        None
+        if not catalog
+        else ProjectsService(
+            event_log_path=paths.event_log,
+            timesink_path=_timesink_db_path(full_config),
+            projects=catalog,
+            sorter=build_analyst(
+                full_config,
+                _work_state_preset(full_config),
+                pricing_path=repo_root / "data" / "pricing.json",
+                account_cost=wave1_features.exactly_once_cost_accounting,
+                kind="projects",
+            ),
+            model=_work_state_preset(full_config),
+            tz=_work_state_timezone(full_config),
+        )
+    )
     daily_report = DailyReportService(
         memory_path=memory.db_path,
         timesink_path=_timesink_db_path(full_config),
@@ -1847,6 +1870,7 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
         ),
         tool_cues=tool_cues,
         work_state=work_state,
+        projects=projects,
     )
 
 

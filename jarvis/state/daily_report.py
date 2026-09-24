@@ -509,9 +509,23 @@ def _local_commits(g: _Gather, repos: Sequence[str]) -> dict[str, dict[str, Any]
     repository it started watching that day, so the local repository is the
     authority on what was committed; the observer contributes when it saw it.
     """
-    start, end = int(g.start.timestamp()), int(g.end.timestamp())
+    found, unreadable = local_commits(repos, g.start, g.end)
+    if unreadable:
+        g.limits.append(
+            f"无法读取 {len(unreadable)} 个仓库的本地 git 记录（路径不存在或不是仓库）："
+            + "、".join(unreadable)
+        )
+    g.coverage["git"] = "partial" if unreadable else "available"
+    return found
+
+
+def local_commits(
+    repos: Sequence[str], since: datetime, until: datetime
+) -> tuple[dict[str, dict[str, Any]], list[str]]:
+    """Commits on any local branch committed in [since, until), by SHA, plus unreadable paths."""
+    start, end = int(since.timestamp()), int(until.timestamp())
     found: dict[str, dict[str, Any]] = {}
-    unreadable = []
+    unreadable: list[str] = []
     for paths in repositories(repos).values():
         repo = paths[0]
         log = _git(
@@ -541,13 +555,7 @@ def _local_commits(g: _Gather, repos: Sequence[str]) -> dict[str, dict[str, Any]
                 entry["paths"].append(repo)
             if on_main is not None:
                 entry["on_main"] = sha in on_main
-    if unreadable:
-        g.limits.append(
-            f"无法读取 {len(unreadable)} 个仓库的本地 git 记录（路径不存在或不是仓库）："
-            + "、".join(unreadable)
-        )
-    g.coverage["git"] = "partial" if unreadable else "available"
-    return found
+    return found, unreadable
 
 
 def _git_sections(g: _Gather, conn: sqlite3.Connection, repos: Sequence[str]) -> None:

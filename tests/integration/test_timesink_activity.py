@@ -37,7 +37,7 @@ def source(tmp_path: Path) -> Iterator[sqlite3.Connection]:
     conn.execute(
         "CREATE TABLE span (id INTEGER PRIMARY KEY AUTOINCREMENT, start DATETIME NOT NULL, "
         "end DATETIME NOT NULL, appBundleID TEXT NOT NULL, appName TEXT NOT NULL, "
-        "title TEXT, url TEXT, domain TEXT)"
+        "title TEXT, url TEXT, domain TEXT, document TEXT)"
     )
     conn.execute(
         "CREATE TABLE stateEvent (id INTEGER PRIMARY KEY AUTOINCREMENT, at DATETIME NOT NULL, "

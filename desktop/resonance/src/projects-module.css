@@ -1,0 +1,21 @@
+/* 项目 (ADR 0037). Sized for the dashboard's detail panel; reuses the quota foot/status/refresh styles. */
+.projects-primary { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.projects-detail { display:flex; flex-direction:column; min-height:100%; font-size:12px; color:#d4d8e3; }
+.project-card { padding:0 0 12px; margin:0 0 12px; border-bottom:1px solid var(--dashboard-line,#ffffff13); }
+.project-head { display:flex; align-items:baseline; justify-content:space-between; gap:8px; }
+.project-head h4 { margin:0; font-size:13px; font-weight:500; color:#e4e8f1; }
+.project-head > span { text-align:right; font-size:13px; color:#e4e8f1; font-variant-numeric:tabular-nums; }
+.project-head small { display:block; margin-top:2px; font-size:10px; color:var(--dashboard-muted,#a1a8b6); }
+/* Columns: one per local day, <=14px wide, 4px rounded data end, square on the shared baseline. */
+.project-days { display:flex; align-items:flex-end; gap:2px; height:44px; margin:8px 0 4px; }
+.project-day { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:flex-end; height:100%; cursor:default; }
+.project-day i { display:block; width:min(14px,70%); border-radius:4px 4px 0 0; background:color-mix(in srgb,var(--theme-color,#abbce6) 45%,transparent); }
+.project-day i.is-today { background:var(--theme-color,#abbce6); }
+.project-day small { width:100%; padding-top:3px; border-top:1px solid var(--dashboard-line,#ffffff13); text-align:center; font-size:9px; line-height:1; color:var(--dashboard-muted,#a1a8b6); }
+.project-day:hover i { filter:brightness(1.15); }
+.project-list { margin:6px 0 0; padding:0; list-style:none; }
+.project-list li { padding:4px 0; line-height:1.5; }
+.project-list li > span { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.project-list small { display:block; font-size:10px; color:var(--dashboard-muted,#a1a8b6); }
+.project-list-title { font-size:10px; color:var(--dashboard-muted,#a1a8b6); padding-bottom:0!important; }
+.projects-idle { margin:0 0 6px; font-size:11px; color:var(--dashboard-muted,#a1a8b6); }

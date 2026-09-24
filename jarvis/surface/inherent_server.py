@@ -52,6 +52,8 @@ inherent-swift client's ``BridgeBackend`` keeps working unchanged):
 - ``GET /api/health``            — liveness; ``{"status": "ok"}``
 - ``GET /inherent/work-state``   — ADR 0023 saved current-work-state record + data head
 - ``POST /inherent/work-state/refresh`` — ADR 0023 on-demand analysis (single-flight)
+- ``GET /inherent/projects``     — ADR 0037 seven-day project view (no model call)
+- ``POST /inherent/projects/refresh`` — ADR 0037 sort new activities (single-flight)
 - ``POST /inherent/image-submit`` — Step 2 / ADR-0004 stub (501)
 - ``POST /inherent/asr-submit``   — ADR-0005 §5.2; multipart WAV in, transcript out.
   Falls back to 501 when ``InherentDeps.voice_pipeline_callable`` is unset
@@ -422,6 +424,11 @@ class InherentDeps:
     # shape plus ``outcome``. ``None`` leaves both routes unregistered.
     work_state_read: Callable[[], dict[str, Any]] | None = None
     work_state_refresh: Callable[[], Awaitable[dict[str, Any]]] | None = None
+    # ADR 0037: the project view (never a model call) and the sorting job that
+    # answers the same view plus ``outcome``; both run off the loop thread.
+    # ``None`` leaves both routes unregistered.
+    projects_read: Callable[[], Awaitable[dict[str, Any]]] | None = None
+    projects_refresh: Callable[[], Awaitable[dict[str, Any]]] | None = None
     # Spec §18.3: the conversation window reads the memory.db rows the
     # backend's own history starts from, oldest first, past a ``seq``
     # cursor. ``(after, limit) -> {"since", "rows"}``; ``None`` leaves the
@@ -1103,6 +1110,19 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0915 — one cl
         async def work_state_refresh_now() -> dict[str, Any]:
             """ADR 0023: analyse now (or join the running analysis), then answer like ``GET``."""
             return await work_state_refresh()
+
+    if deps.projects_read is not None and deps.projects_refresh is not None:
+        projects_read, projects_refresh = deps.projects_read, deps.projects_refresh
+
+        @app.get("/inherent/projects")
+        async def projects() -> dict[str, Any]:
+            """ADR 0037: seven days per project, commits and recent activities; no model call."""
+            return await projects_read()
+
+        @app.post("/inherent/projects/refresh", status_code=200)
+        async def projects_refresh_now() -> dict[str, Any]:
+            """ADR 0037: sort the activities that have no answer yet, then answer like ``GET``."""
+            return await projects_refresh()
 
     if deps.conversation_read is not None:
         conversation_read = deps.conversation_read

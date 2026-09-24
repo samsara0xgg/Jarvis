@@ -993,6 +993,17 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         optional_payload=("action_id",),
         schema_version=1,
     ),
+    # Projects (ADR 0037): one sorting batch. `assignments` are
+    # {key, project (catalog id or null), app, label}; an answer counts only
+    # while `catalog` equals the configured catalog's fingerprint.
+    EventTypeSchema(
+        event_type="project.activity_classified",
+        owner_layer="L2",
+        actor="jarvis_llm",
+        required_payload=("catalog", "assignments", "model", "trigger"),
+        optional_payload=(),
+        schema_version=1,
+    ),
     # ADR 0023: the 5-minute TimeSink head poll. Emitted only when the head
     # (max ids, latest span end / capture lastSeenAt, latest state event)
     # changed; never a decision trigger, never a model call.
