@@ -1,0 +1,63 @@
+/* Floating mode keeps the original hierarchy; docking gives it one black shell. */
+.notch-reveal,.notch-content,.notch-content-inner { display:contents; }
+.desktop.notch-docked { padding:0 16px 16px; }
+.desktop.notch-docked .shell {
+  --island-duration:300ms;
+  --island-ease:cubic-bezier(.4,0,.2,1);
+  width:var(--notch-compact-width); margin:0 auto; padding:0; gap:0;
+  background:#000; border-radius:0 0 calc(var(--notch-top) / 2) calc(var(--notch-top) / 2); overflow:hidden;
+  transition:width var(--island-duration) var(--island-ease),border-radius var(--island-duration) var(--island-ease);
+}
+.desktop.notch-docked .shell.island-open {
+  --island-duration:420ms;
+  --island-ease:linear(0,.054,.178,.329,.481,.617,.731,.82,.888,.936,.969,.99,1.003,1.01,1.014,1.015,1.014,1.012,1.01,1.008,1);
+  width:var(--notch-width); border-radius:0 0 22px 22px;
+}
+.desktop.notch-docked .glass,
+.desktop.notch-docked .presentation-wing-face::before,
+.desktop.notch-docked .presentation-core.glass {
+  background:#000; border-color:transparent; box-shadow:none; backdrop-filter:none;
+}
+/* The physical camera occupies the center. Reuse the same live canvas on its left. */
+.desktop.notch-docked .control-row,.desktop.notch-docked .capsule-main-view { width:100%; height:var(--notch-top); }
+.desktop.notch-docked .presentation-capsule { width:100%; height:var(--notch-top); }
+.desktop.notch-docked .presentation-core {
+  position:absolute; left:0; top:0; width:calc((100% - var(--notch-cutout)) / 2);
+  height:var(--notch-top); padding:0; border:0; border-radius:0; justify-content:center;
+}
+.desktop.notch-docked .presentation-center-region { flex:1; min-width:0; }
+.desktop.notch-docked .presentation-center { height:var(--notch-top); border-radius:8px; }
+.desktop.notch-docked .presentation-center .live-presence { top:50%; margin-top:-18px; }
+.desktop.notch-docked .presentation-divider { display:none; }
+.desktop.notch-docked .presentation-edge { display:none; width:30px; height:30px; }
+.desktop.notch-docked .island-open .is-expanded .presentation-edge { display:grid; }
+.desktop.notch-docked .shell:not(.island-open) .is-expanded .live-presence { transform:scale(.5); }
+.desktop.notch-docked .presentation-wing:first-child {
+  left:auto; right:0; top:0; margin:0; width:calc((100% - var(--notch-cutout)) / 2); height:var(--notch-top);
+  display:flex; align-items:center; justify-content:center;
+}
+.desktop.notch-docked .presentation-wing-face { width:36px; height:var(--notch-top); border-radius:8px; }
+.desktop.notch-docked .presentation-wing:last-child { display:none; }
+.desktop.notch-docked .notch-reveal {
+  display:grid; grid-template-rows:0fr; width:calc(var(--notch-width) - 44px); flex:none;
+  opacity:0; visibility:hidden;
+  transition:grid-template-rows var(--island-duration) var(--island-ease),opacity 180ms ease,visibility 0s 300ms;
+}
+.desktop.notch-docked .island-open .notch-reveal {
+  grid-template-rows:1fr; opacity:1; visibility:visible;
+  transition:grid-template-rows var(--island-duration) var(--island-ease),opacity 180ms ease 120ms,visibility 0s;
+}
+.desktop.notch-docked .notch-content { display:block; min-height:0; overflow:hidden; }
+.desktop.notch-docked .notch-content-inner { display:flex; flex-direction:column; align-items:center; gap:9px; height:var(--notch-content-height); padding:4px 0 8px; overflow:auto; scrollbar-width:thin; }
+.desktop.notch-docked .panel-stack.shared-panel { width:100%; flex:1; min-height:0; background:transparent; box-shadow:none; border-radius:0 0 18px 18px; }
+.desktop.notch-docked .settings,.desktop.notch-docked .error-panel { width:calc(100% - 24px); }
+.desktop.notch-docked .status-line { position:relative; top:auto; right:auto; align-self:flex-end; margin-right:12px; }
+.desktop.notch-docked .overview-usage-grid { gap:4px; }
+.desktop.notch-docked .overview-usage-grid .overview-meter { row-gap:2px; }
+.notch-material-note { font-size:10px; color:var(--surface-muted); align-self:center; }
+@media(prefers-reduced-transparency:reduce) {
+  .desktop.notch-docked .glass { background:#000!important; }
+}
+@media(prefers-reduced-motion:reduce) {
+  .desktop.notch-docked .shell,.desktop.notch-docked .notch-reveal { transition:none; }
+}

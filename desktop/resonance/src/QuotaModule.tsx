@@ -181,28 +181,29 @@ export function QuotaDetail({ usage, onRefresh, refreshing, layout = 'accordion'
   </div>;
 }
 
-function SummaryMeter({ window: w }: { window: UsageWindow }) {
+function SummaryMeter({ window: w, grid = false }: { window: UsageWindow; grid?: boolean }) {
   const reset = fmtReset(w.resets_at);
   const percent = Math.max(0, Math.min(100, w.percent));
   return <span className="overview-meter" title={`${w.label} · ${reset}`}>
+    {grid && <span className="overview-window">{w.label}</span>}
     <span className="overview-reset">{reset.replace('resets in ', '')}</span>
     <span className={`overview-quota ${percent >= 90 ? 'is-critical' : percent >= 75 ? 'is-warning' : ''}`} role="meter" aria-label={`${w.label}已用`} aria-valuenow={percent} aria-valuemin={0} aria-valuemax={100}><i style={{ width: `${percent}%` }}/></span>
-    <span className="overview-percent">{Math.round(percent)}%</span>
+    <span className="overview-percent">{grid ? '已用 ' : ''}{Math.round(percent)}%</span>
   </span>;
 }
 
-export function QuotaSummary({ usage }: { usage: Usage | null }) {
+export function QuotaSummary({ usage, grid = false }: { usage: Usage | null; grid?: boolean }) {
   const [, tick] = useState(0);
   useEffect(() => { const timer = setInterval(() => tick(value => value + 1), 30_000); return () => clearInterval(timer); }, []);
   const { claude, codex, openai } = usage?.services ?? {};
-  const claudeWindows = (claude?.data.windows ?? []).filter(w => w.key === 'five_hour' || w.key === 'seven_day');
-  const codexWindows = (codex?.data.windows ?? []).slice(0, 1);
-  return <span className="overview-usage">
+  const claudeWindows = grid ? claude?.data.windows ?? [] : (claude?.data.windows ?? []).filter(w => w.key === 'five_hour' || w.key === 'seven_day');
+  const codexWindows = grid ? codex?.data.windows ?? [] : (codex?.data.windows ?? []).slice(0, 1);
+  return <span className={`overview-usage ${grid ? 'overview-usage-grid' : ''}`}>
     <span className="overview-provider">Claude Max{claude?.data.plan && <span className="overview-plan">{claude.data.plan}</span>}</span>
-    {claude?.status === 'ok' && claudeWindows.length ? claudeWindows.map(w => <SummaryMeter key={w.key} window={w}/>) : <span className="overview-unavailable">{usage ? statusText(claude) : '正在同步…'}</span>}
+    {claude?.status === 'ok' && claudeWindows.length ? claudeWindows.map(w => <SummaryMeter key={w.key} window={w} grid={grid}/>) : <span className="overview-unavailable">{usage ? statusText(claude) : '正在同步…'}</span>}
     <span className="overview-rule"/>
-    <span className="overview-provider">Codex Pro{codex?.data.plan && <span className="overview-plan">5X</span>}</span>
-    {codex?.status === 'ok' && codexWindows.length ? codexWindows.map(w => <SummaryMeter key={w.key} window={w}/>) : <span className="overview-unavailable">{usage ? statusText(codex) : '正在同步…'}</span>}
+    <span className="overview-provider">Codex Pro{codex?.data.plan && <span className="overview-plan">{grid ? codex.data.plan.replace(/^Pro\s*/, '') : '5X'}</span>}</span>
+    {codex?.status === 'ok' && codexWindows.length ? codexWindows.map(w => <SummaryMeter key={w.key} window={w} grid={grid}/>) : <span className="overview-unavailable">{usage ? statusText(codex) : '正在同步…'}</span>}
     <span className="overview-rule"/>
     <span className="overview-spend"><span>OpenAI 今日</span><span>{fmtUsd(openai?.data.today_usd)}</span></span>
   </span>;

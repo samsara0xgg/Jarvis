@@ -1,6 +1,19 @@
 import { contextBridge, ipcRenderer } from 'electron';
 contextBridge.exposeInMainWorld('jarvis', {
-  layout: (mode: string, height: number) => ipcRenderer.send('layout', { mode, height }),
+  placement: () => ipcRenderer.invoke('placement'),
+  dock: (enabled: boolean) => ipcRenderer.invoke('dock', enabled),
+  onPlacement: (callback: (placement: { docked: boolean; topInset: number; surfaceWidth: number; compactWidth: number; notchWidth: number }) => void) => {
+    const listener = (_: unknown, placement: { docked: boolean; topInset: number; surfaceWidth: number; compactWidth: number; notchWidth: number }) => callback(placement);
+    ipcRenderer.on('placement', listener);
+    return () => ipcRenderer.removeListener('placement', listener);
+  },
+  onIslandHover: (callback: (inside: boolean) => void) => {
+    const listener = (_: unknown, inside: boolean) => callback(inside);
+    ipcRenderer.on('island-hover', listener);
+    ipcRenderer.send('track-island');
+    return () => ipcRenderer.removeListener('island-hover', listener);
+  },
+  layout: (mode: string, height: number, surface?: { x: number; y: number; width: number; height: number }) => ipcRenderer.send('layout', { mode, height, surface }),
   focus: (enabled: boolean) => ipcRenderer.invoke('focus-input', enabled),
   hide: () => ipcRenderer.send('hide'),
   copy: (text: string) => ipcRenderer.invoke('copy', text),

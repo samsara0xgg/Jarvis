@@ -1,0 +1,55 @@
+/* Shared material and overview appearance; the original treatment stays selectable. */
+.dashboard-preview.embedded-dashboard[data-dashboard-style="unified"] .dashboard-surface {
+  background:transparent;
+  backdrop-filter:none;
+  box-shadow:none;
+}
+.dashboard-overview[data-dashboard-style="unified"] {
+  --dashboard-muted:var(--surface-muted);
+  --dashboard-line:var(--surface-line);
+  color:var(--surface-ink);
+}
+.dashboard-preview.dashboard-overview[data-dashboard-style="unified"] .dashboard-module[data-module],
+.dashboard-preview[data-dashboard-style="unified"] .dashboard-module[data-module="4"] {
+  background:transparent;
+  border-color:transparent;
+  border-radius:12px;
+  box-shadow:none;
+}
+.dashboard-overview[data-dashboard-style="unified"] .module-summary:hover { background:var(--surface-hover); }
+.dashboard-overview[data-dashboard-style="unified"] .module-label { color:var(--surface-muted); gap:6px; }
+.dashboard-overview[data-dashboard-style="unified"] .module-label > svg { width:14px; height:14px; }
+.dashboard-overview[data-dashboard-style="unified"] .module-caption { color:var(--surface-muted); }
+.dashboard-overview[data-dashboard-style="unified"] [data-module="3"] .module-caption { font-size:10px; }
+.dashboard-overview[data-dashboard-style="unified"] .overview-provider,
+.dashboard-overview[data-dashboard-style="unified"] .overview-percent,
+.dashboard-overview[data-dashboard-style="unified"] .overview-spend > span:last-child { color:var(--surface-ink); }
+.dashboard-overview[data-dashboard-style="unified"] .overview-provider { font-size:11px; }
+.dashboard-overview[data-dashboard-style="unified"] .overview-window,
+.dashboard-overview[data-dashboard-style="unified"] .overview-reset { color:var(--surface-muted); }
+.dashboard-overview[data-dashboard-style="unified"] .overview-plan { background:var(--surface-hover); border-color:var(--surface-line); color:var(--surface-muted); }
+.dashboard-overview[data-dashboard-style="unified"] .overview-quota { background:var(--surface-line); }
+/* Hairlines separate the fixed cells without adding a second layer of glass. */
+.dashboard-overview[data-dashboard-style="unified"] [data-module="1"]::before,
+.dashboard-overview[data-dashboard-style="unified"] [data-module="4"]::before,
+.dashboard-overview[data-dashboard-style="unified"] [data-module="3"]::before {
+  content:''; position:absolute; top:0; left:10px; right:10px; height:1px; background:var(--surface-line); pointer-events:none;
+}
+.dashboard-overview[data-dashboard-style="unified"] [data-module="2"]::before {
+  content:''; position:absolute; top:10px; bottom:10px; left:0; width:1px; background:var(--surface-line); pointer-events:none;
+}
+.dashboard-overview[data-dashboard-style="unified"] .dashboard-viewport { scrollbar-color:var(--surface-line) transparent; }
+.dashboard-overview[data-dashboard-style="unified"] .dashboard-viewport::-webkit-scrollbar-thumb { background:var(--surface-line); }
+.dashboard-overview[data-dashboard-style="unified"] .module-summary:focus-visible { outline:1px solid var(--dashboard-accent); border-radius:12px; }
+.dashboard-overview[data-dashboard-style="unified"] .dashboard-composer-surface {
+  /* The parent supplies the configured native glass; never tint it twice. */
+  background:color-mix(in srgb,var(--surface-muted) calc((1 - var(--compose-progress)) * 100%),transparent);
+  box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--surface-line) calc(var(--compose-progress) * 100%),transparent),0 4px 12px rgb(0 0 0 / calc(.2 * var(--compose-progress)));
+}
+.dashboard-overview[data-dashboard-style="unified"] .dashboard-floating-form input { color:var(--surface-ink); font-size:12px; }
+.dashboard-overview[data-dashboard-style="unified"] .dashboard-floating-form input::placeholder,
+.dashboard-overview[data-dashboard-style="unified"] .dashboard-input-pin { color:var(--surface-muted); }
+.dashboard-overview[data-dashboard-style="unified"] .dashboard-input-pin:hover,
+.dashboard-overview[data-dashboard-style="unified"] .dashboard-input-pin[aria-pressed=true] { color:var(--dashboard-accent); background:var(--surface-hover); }
+.dashboard-overview[data-dashboard-style="unified"] .dashboard-input-send:disabled { background:var(--surface-hover); color:var(--surface-muted); }
+.dashboard-overview[data-dashboard-style="unified"] ::selection { background:color-mix(in srgb,var(--dashboard-accent) 30%,transparent); color:var(--surface-ink); }

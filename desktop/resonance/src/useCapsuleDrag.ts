@@ -7,7 +7,9 @@ function visibleSurface(target: Element, x: number, y: number): HTMLElement | nu
   if (!surface) return null;
   const r = surface.getBoundingClientRect();
   if (x < r.left || x > r.right || y < r.top || y > r.bottom) return null;
-  const radius = Math.min(Number(surface.dataset.glass), r.width / 2, r.height / 2);
+  // A docked surface is square against the screen edge and rounded only below.
+  const radius = surface.dataset.notchSurface && y < r.top + r.height / 2 ? 0
+    : Math.min(Number(surface.dataset.glass), r.width / 2, r.height / 2);
   const cx = Math.max(r.left + radius, Math.min(x, r.right - radius));
   const cy = Math.max(r.top + radius, Math.min(y, r.bottom - radius));
   return Math.hypot(x - cx, y - cy) <= radius ? surface : null;

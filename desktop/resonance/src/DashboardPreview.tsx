@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
-import { Database, Compass, ArrowDownLeft, ArrowUp, ArrowUpRight, CaretDown, ChatCircle, GitBranch, IconContext } from '@phosphor-icons/react';
+import { Database, Compass, ArrowDownLeft, ArrowUpRight, CaretDown, ChatCircle, GitBranch, Plugs, IconContext } from '@phosphor-icons/react';
 import { PresentationCapsule } from './PresentationCapsule';
 import { MotionPreview } from './MotionPreview';
 import type { Presence } from './VoicePresence';
@@ -9,11 +9,15 @@ import { usePreferences } from './preferences';
 import { QuotaDetail, QuotaSummary, useUsage } from './QuotaModule';
 import { CodexDetail, CodexSummary, useCodexSessions } from './CodexModule';
 import { WorkStateDetail, WorkStateSummary, useWorkState } from './WorkStateModule';
+import { DashboardComposer, type DashboardInput } from './DashboardComposer';
+import { PluginPanel, type usePlugins } from './PluginPanel';
 import './dashboard-preview.css';
+import './dashboard-unified.css';
 
 const modules = [
   { name: '对话', Icon: ChatCircle }, { name: 'Codex', Icon: GitBranch },
   { name: '模型额度', Icon: Database }, { name: '当前状态', Icon: Compass },
+  { name: '插件', Icon: Plugs },
 ];
 const accent = '#abbce6';
 
@@ -28,7 +32,11 @@ export function PreviewLab({ initialDashboard = false }: { initialDashboard?: bo
   </div>;
 }
 
-export function DashboardPreview({ standalone = false, embedded = false, port = null, onClose, notifications, visible = true }: { visible?: boolean; notifications?: ReactNode; standalone?: boolean; embedded?: boolean; port?: string | null; onClose?: () => void }) {
+export function DashboardPreview({ standalone = false, embedded = false, port = null, onClose, notifications, visible = true, composer, conversation, plugins }: {
+  visible?: boolean; notifications?: ReactNode; standalone?: boolean; embedded?: boolean; port?: string | null; onClose?: () => void;
+  composer?: DashboardInput; conversation?: { text: string; caption: string; pending: boolean };
+  plugins?: { controller: ReturnType<typeof usePlugins>; presentation: string; open: number; onCatalog: () => void; onConversation: () => void };
+}) {
   const [preferences] = usePreferences();
   // ADR-0018: live quotas when Electron passes the daemon port; demo data in the lab.
   const quota = useUsage(port);
@@ -53,12 +61,11 @@ export function DashboardPreview({ standalone = false, embedded = false, port = 
   const [demoPhase, setDemoPhase] = useState('等你开口');
   const [completed, setCompleted] = useState(false);
   const stage = useRef<HTMLDivElement>(null);
-  const input = useRef<HTMLInputElement>(null);
   const returnFocus = useRef<number | null>(null);
-  const returnGesture = useRef<{ id: number; y: number; distance: number } | null>(null);
-  const suppressReturnClick = useRef(false);
+  const viewport = useRef<HTMLDivElement>(null);
+  const scrollTop = useRef(0);
   const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
-  useDashboardMotion(stage, { open: open && visible, selected, wide, slow, providerLayout: preferences.quotaLayout === 'provider' });
+  useDashboardMotion(stage, { open: open && visible, selected, wide, slow, providerLayout: preferences.quotaLayout === 'provider', scrollOffset: scrollTop.current });
   useLayoutEffect(() => {
     if (!standalone || !stage.current) return;
     const surface = stage.current.querySelector<HTMLElement>('.dashboard-surface')!;
@@ -68,8 +75,10 @@ export function DashboardPreview({ standalone = false, embedded = false, port = 
   }, [standalone, preferences.glassStrength]);
   const cancelDemo = () => { timers.current.forEach(clearTimeout); timers.current = []; setCancelled(!answered); };
   useEffect(() => () => timers.current.forEach(clearTimeout), []);
-  const expand = (index: number) => { setSelected(index); setOpen(true); };
+  const expand = (index: number) => { if (selected === null) scrollTop.current = viewport.current?.scrollTop ?? 0; setSelected(index); setOpen(true); };
   const back = () => { returnFocus.current = selected; setSelected(null); };
+  useEffect(() => { if (plugins?.open) expand(4); }, [plugins?.open]);
+  useLayoutEffect(() => { if (viewport.current) viewport.current.scrollTop = scrollTop.current; }, [selected]);
   useEffect(() => {
     if (selected !== null && open) stage.current?.querySelector<HTMLButtonElement>('.dashboard-home-bar')?.focus({ preventScroll: true });
     else if (returnFocus.current !== null) {
@@ -90,10 +99,10 @@ export function DashboardPreview({ standalone = false, embedded = false, port = 
     timers.current.push(setTimeout(() => { setAnswered(true); setPresence('speaking'); setDemoPhase('已回复'); }, 2300));
     timers.current.push(setTimeout(() => { setPresence('standby'); setDemoPhase('等你开口'); setLive(false); }, 5600));
   };
-  const send = () => { if (!draft.trim()) return; simulate(draft.trim()); setDraft(''); setSelected(0); };
+  const send = () => { if (!draft.trim()) return; simulate(draft.trim()); setDraft(''); };
   const answer = completed ? '设计方向已经确认。下午的语音测试提醒，也已经排好了。' : '今天还有两件事，下午的提醒已经排好了。';
   return <IconContext.Provider value={{ size: 16, weight: 'regular' }}>
-    <main style={{ '--theme-color': preferences.themeColor, '--glass-opacity': preferences.opacity, '--glass-strength': preferences.glassStrength } as React.CSSProperties} className={`dashboard-preview ${standalone || embedded ? 'compact-dashboard' : ''} ${embedded ? 'embedded-dashboard' : ''} ${selected === 2 ? 'quota-dashboard' : ''} ${selected === null ? 'dashboard-overview' : ''}`}>
+    <main data-dashboard-style={preferences.dashboardStyle} style={{ '--theme-color': preferences.themeColor, '--glass-opacity': preferences.opacity, '--glass-strength': preferences.glassStrength } as React.CSSProperties} className={`dashboard-preview ${standalone || embedded ? 'compact-dashboard' : ''} ${embedded ? 'embedded-dashboard' : ''} ${selected === 2 ? 'quota-dashboard' : ''} ${selected === 4 ? 'plugins-dashboard' : ''} ${selected === null ? 'dashboard-overview' : ''}`}>
       <header className="dashboard-intro"><span>RESONANCE / DASHBOARD</span><h1>需要时，靠近一点。</h1><p>四个模块，一个随对话展开的空间。</p></header>
       <div className="dashboard-stage" ref={stage} data-selected={selected ?? 'overview'} data-open={open} onKeyDown={event => {
         if (event.key === 'Escape') { event.stopPropagation(); if (selected !== null) back(); else hide(); }
@@ -106,14 +115,16 @@ export function DashboardPreview({ standalone = false, embedded = false, port = 
             onCompose={() => { setOpen(value => !value); }} onNotifications={() => { setOpen(true); setSelected(1); }}/>
         </div>
         <section data-interactive className="dashboard-surface" inert={!open || !visible} aria-label="Resonance dashboard" aria-hidden={!open || !visible}>
+          <div className="dashboard-viewport" ref={viewport}>
           <div className="dashboard-board">
-            {modules.map(({ name, Icon }, index) => <article key={name} className={`dashboard-module ${selected === index ? 'is-selected' : ''}`} data-module={index} inert={selected !== null && selected !== index} aria-hidden={selected !== null && selected !== index}>
-              <button className="module-summary" inert={selected === index} aria-hidden={selected === index} aria-label={`展开${name}`} onClick={() => expand(index)}>
+            {modules.slice(0, plugins ? 5 : 4).map(({ name, Icon }, index) => <article key={name} className={`dashboard-module ${selected === index ? 'is-selected' : ''}`} data-module={index} inert={selected !== null && selected !== index} aria-hidden={selected !== null && selected !== index}>
+              <button className="module-summary" inert={selected === index} aria-hidden={selected === index} aria-label={index === 4 ? '打开插件列表' : `展开${name}`} onClick={() => index === 4 ? plugins?.onCatalog() : expand(index)}>
                 {index !== 2 && <span className="module-label"><Icon/>{name}<ArrowUpRight className="module-expand"/></span>}
-                {index === 0 && <><span className={`module-conversation ${answered ? '' : 'is-processing'}`}>{cancelled ? '对话已暂停，随时可以继续。' : answered ? answer : '正在整理今天的安排…'}</span><span className="module-caption">{cancelled ? '已停止 · 可重新开始' : answered ? '刚刚 · 1 次委派' : '模型 A · 处理中'}</span></>}
+                {index === 0 && <><span className={`module-conversation ${(conversation?.pending ?? !answered) ? 'is-processing' : ''}`}>{conversation ? conversation.text : cancelled ? '对话已暂停，随时可以继续。' : answered ? answer : '正在整理今天的安排…'}</span><span className="module-caption">{conversation ? conversation.caption : cancelled ? '已停止 · 可重新开始' : answered ? '刚刚 · 示例' : '模型 A · 处理中'}</span></>}
                 {index === 1 && <CodexSummary board={codex}/>}
-                {index === 2 && <QuotaSummary usage={quota.usage}/>}
+                {index === 2 && <QuotaSummary usage={quota.usage} grid/>}
                 {index === 3 && <WorkStateSummary view={work.view}/>}
+                {index === 4 && <><span className="module-primary">{plugins!.controller.snapshot?.plugins.filter(plugin => plugin.status === 'ready').length ?? 0} 个已连接</span><span className="module-caption">查看与管理插件</span></>}
               </button>
               <div className="module-detail" inert={selected !== index} aria-hidden={selected !== index}>
                 <div className="module-scroll">
@@ -121,38 +132,16 @@ export function DashboardPreview({ standalone = false, embedded = false, port = 
                   {index === 1 && <CodexDetail board={codex}/>}
                   {index === 2 && <QuotaDetail layout={preferences.quotaLayout} usage={quota.usage} onRefresh={() => void quota.refresh()} refreshing={quota.refreshing}/>}
                   {index === 3 && <WorkStateDetail view={work.view} onRefresh={work.refresh} refreshing={work.refreshing} notice={work.notice}/>}
+                  {index === 4 && <PluginPanel controller={plugins!.controller} presentation={plugins!.presentation} active={selected === 4 && visible}
+                    onCatalog={plugins!.onCatalog} onHide={back} onConversation={plugins!.onConversation}/>}
                 </div>
               </div>
             </article>)}
           </div>
-          <button className="dashboard-home-bar" aria-label="返回主界面" title="点击或向下拖动返回主界面" inert={selected === null} aria-hidden={selected === null}
-            onClick={() => { if (!suppressReturnClick.current) back(); suppressReturnClick.current = false; }}
-            onPointerDown={event => {
-              if (event.button !== 0) return;
-              suppressReturnClick.current = false;
-              returnGesture.current = { id: event.pointerId, y: event.clientY, distance: 0 };
-              event.currentTarget.setPointerCapture(event.pointerId);
-            }}
-            onPointerMove={event => {
-              const gesture = returnGesture.current;
-              if (!gesture || gesture.id !== event.pointerId) return;
-              gesture.distance = Math.max(0, event.clientY - gesture.y);
-              event.currentTarget.style.setProperty('--return-drag', `${Math.min(8, gesture.distance / 5)}px`);
-            }}
-            onPointerUp={event => {
-              const gesture = returnGesture.current;
-              if (!gesture || gesture.id !== event.pointerId) return;
-              suppressReturnClick.current = Math.abs(event.clientY - gesture.y) > 6;
-              if (gesture.distance >= 36) back();
-              returnGesture.current = null;
-              event.currentTarget.style.setProperty('--return-drag', '0px');
-              event.currentTarget.releasePointerCapture(event.pointerId);
-            }}
-            onPointerCancel={event => { returnGesture.current = null; suppressReturnClick.current = true; event.currentTarget.style.setProperty('--return-drag', '0px'); }}
-            onLostPointerCapture={event => { returnGesture.current = null; event.currentTarget.style.setProperty('--return-drag', '0px'); }}><span/></button>
           <div className="dashboard-notification-reveal" inert={selected !== null || !notifications} aria-hidden={selected !== null || !notifications}><div className="dashboard-notifications">{notifications}</div></div>
-          <div className="dashboard-status"><span>最近同步 · 刚刚</span><span aria-live="polite">{demoPhase}</span></div>
-          <form className="dashboard-composer" onSubmit={event => { event.preventDefault(); send(); }}><input ref={input} aria-label="给 Jarvis 发消息" value={draft} onChange={event => setDraft(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && event.nativeEvent.isComposing) event.preventDefault(); }} placeholder="和 Jarvis 说点什么…"/><button className="dashboard-send" type="submit" disabled={!draft.trim()} aria-label="发送演示消息"><ArrowUp/></button></form>
+          </div>
+          <button className="dashboard-home-bar" aria-label="返回主界面" title="点击返回主界面" inert={selected === null} aria-hidden={selected === null} onClick={back}><span/></button>
+          <DashboardComposer active={selected === null && open && visible} {...(composer ?? { value: draft, onChange: setDraft, onSend: send, busy: !answered })}/>
         </section>
       </div>
       <footer className="dashboard-lab-controls"><div><button onClick={() => simulate()}>模拟一轮对话<ArrowUpRight size={13}/></button><button onClick={() => { cancelDemo(); setLive(false); setPresence('standby'); setDemoPhase('等你开口'); hide(); }}>待机<ArrowDownLeft size={13}/></button><button aria-pressed={slow} onClick={() => setSlow(value => !value)}>慢放</button></div><p>设计预览 · 演示数据与本地交互<span>主色 #ABBCE6</span></p></footer>

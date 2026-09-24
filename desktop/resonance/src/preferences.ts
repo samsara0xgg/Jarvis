@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 
 export type QuotaLayout = 'category' | 'provider' | 'accordion';
-export const defaultPreferences = { opacity: .4, glassStrength: 1, feedbackEnabled: true, feedbackVolume: .35, themeColor: '#8be4bc', quotaLayout: 'accordion' as QuotaLayout, quotaLayoutVersion: 2 };
+export type DashboardStyle = 'unified' | 'cards';
+export const defaultPreferences = { opacity: .4, glassStrength: 1, feedbackEnabled: true, feedbackVolume: .35, themeColor: '#8be4bc', quotaLayout: 'accordion' as QuotaLayout, quotaLayoutVersion: 2, dashboardStyle: 'unified' as DashboardStyle };
 type Preferences = typeof defaultPreferences;
 const key = `resonance-appearance-v1${new URLSearchParams(location.search).has('lab') ? '-lab' : ''}`;
 const validNumber = (value: unknown, min: number, max: number, fallback: number) =>
@@ -18,6 +19,7 @@ export function usePreferences() {
         localStorage.setItem(key, JSON.stringify(value));
       }
       return {
+        dashboardStyle: value.dashboardStyle === 'cards' ? 'cards' as const : 'unified' as const,
         quotaLayoutVersion: 2,
         quotaLayout: value.quotaLayout === 'accordion' ? 'accordion' as const : value.quotaLayout === 'provider' ? 'provider' as const : 'category' as const,
         themeColor: typeof value.themeColor === 'string' && /^#[0-9a-f]{6}$/i.test(value.themeColor) ? value.themeColor : defaultPreferences.themeColor,

@@ -1,5 +1,6 @@
 #import <Cocoa/Cocoa.h>
 #import <QuartzCore/QuartzCore.h>
+#import <objc/runtime.h>
 #include <node_api.h>
 #include <cmath>
 // Public AppKit only. Neutral behind-window material, clipped to the actual controls.
@@ -14,6 +15,86 @@ static double number(napi_env env, napi_value obj, const char *key) {
   if (napi_get_named_property(env, obj, key, &value) != napi_ok ||
       napi_get_value_double(env, value, &result) != napi_ok) return 0;
   return std::isfinite(result) ? result : 0;
+}
+static void setNumber(napi_env env, napi_value obj, const char *key, double value) {
+  napi_value result; napi_create_double(env, value, &result);
+  napi_set_named_property(env, obj, key, result);
+}
+static NSWindow *windowForHandle(napi_env env, napi_value value) {
+  void *bytes = nullptr; size_t length = 0;
+  if (napi_get_buffer_info(env, value, &bytes, &length) != napi_ok || length != sizeof(void *)) return nil;
+  return ((__bridge NSView *)*reinterpret_cast<void **>(bytes)).window;
+}
+static napi_value setStationary(napi_env env, napi_callback_info info) {
+  size_t argc = 2; napi_value args[2]; napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  bool enabled = false;
+  NSWindow *window = argc == 2 ? windowForHandle(env, args[0]) : nil;
+  if (!window || napi_get_value_bool(env, args[1], &enabled) != napi_ok) {
+    napi_value result; napi_get_null(env, &result); return result;
+  }
+  // These two groups are mutually exclusive. Preserve Electron's other flags
+  // (Spaces/fullscreen) and restore the original groups when leaving the notch.
+  const NSWindowCollectionBehavior mask = NSWindowCollectionBehaviorManaged
+    | NSWindowCollectionBehaviorTransient | NSWindowCollectionBehaviorStationary
+    | NSWindowCollectionBehaviorParticipatesInCycle | NSWindowCollectionBehaviorIgnoresCycle;
+  static char originalBehaviorKey;
+  NSNumber *original = objc_getAssociatedObject(window, &originalBehaviorKey);
+  NSWindowCollectionBehavior behavior = window.collectionBehavior;
+  if (enabled) {
+    if (!original) objc_setAssociatedObject(window, &originalBehaviorKey, @(behavior & mask), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    window.collectionBehavior = (behavior & ~mask) | NSWindowCollectionBehaviorStationary | NSWindowCollectionBehaviorIgnoresCycle;
+  } else if (original) {
+    window.collectionBehavior = (behavior & ~mask) | original.unsignedIntegerValue;
+    objc_setAssociatedObject(window, &originalBehaviorKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+  }
+  napi_value result; napi_create_uint32(env, (uint32_t)window.collectionBehavior, &result); return result;
+}
+static napi_value windowFrame(napi_env env, NSWindow *window) {
+  napi_value result; napi_create_object(env, &result);
+  NSRect frame = window.frame;
+  // AppKit is bottom-left based; Electron uses the primary display's top-left.
+  CGFloat desktopTop = NSMaxY(NSScreen.screens.firstObject.frame);
+  setNumber(env, result, "x", frame.origin.x);
+  setNumber(env, result, "y", desktopTop - NSMaxY(frame));
+  setNumber(env, result, "width", frame.size.width);
+  setNumber(env, result, "height", frame.size.height);
+  return result;
+}
+static napi_value getFrame(napi_env env, napi_callback_info info) {
+  size_t argc = 1; napi_value args[1]; napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  NSWindow *window = argc == 1 ? windowForHandle(env, args[0]) : nil;
+  if (!window) { napi_value result; napi_get_null(env, &result); return result; }
+  return windowFrame(env, window);
+}
+static napi_value setFrame(napi_env env, napi_callback_info info) {
+  size_t argc = 2; napi_value args[2]; napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  NSWindow *window = argc == 2 ? windowForHandle(env, args[0]) : nil;
+  if (!window) { napi_value result; napi_get_null(env, &result); return result; }
+  double x = number(env,args[1],"x"), y = number(env,args[1],"y");
+  double w = number(env,args[1],"width"), h = number(env,args[1],"height");
+  if (w > 0 && h > 0) {
+    CGFloat desktopTop = NSMaxY(NSScreen.screens.firstObject.frame);
+    // Electron's public setBounds constrains y to the menu bar. A borderless
+    // panel can use the full screen through public AppKit, as notch apps do.
+    [window setFrame:NSMakeRect(x, desktopTop - y - h, w, h) display:YES];
+  }
+  return windowFrame(env, window);
+}
+static napi_value screens(napi_env env, napi_callback_info info) {
+  napi_value result; napi_create_array(env, &result); uint32_t index = 0;
+  for (NSScreen *screen in NSScreen.screens) {
+    napi_value item; napi_create_object(env, &item);
+    double top = 0, width = 0;
+    if (@available(macOS 12.0, *)) {
+      top = screen.safeAreaInsets.top;
+      if (top > 0) width = NSMinX(screen.auxiliaryTopRightArea) - NSMaxX(screen.auxiliaryTopLeftArea);
+    }
+    setNumber(env, item, "id", [screen.deviceDescription[@"NSScreenNumber"] doubleValue]);
+    setNumber(env, item, "topInset", top);
+    setNumber(env, item, "notchWidth", MAX(0, width));
+    napi_set_element(env, result, index++, item);
+  }
+  return result;
 }
 static napi_value update(napi_env env, napi_callback_info info) {
   size_t argc = 3; napi_value args[3]; napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
@@ -89,6 +170,11 @@ static napi_value update(napi_env env, napi_callback_info info) {
 }
 static napi_value init(napi_env env, napi_value exports) {
   napi_value fn; napi_create_function(env, "update", NAPI_AUTO_LENGTH, update, nullptr, &fn);
-  napi_set_named_property(env, exports, "update", fn); return exports;
+  napi_set_named_property(env, exports, "update", fn);
+  napi_create_function(env, "getFrame", NAPI_AUTO_LENGTH, getFrame, nullptr, &fn); napi_set_named_property(env, exports, "getFrame", fn);
+  napi_create_function(env, "setFrame", NAPI_AUTO_LENGTH, setFrame, nullptr, &fn); napi_set_named_property(env, exports, "setFrame", fn);
+  napi_create_function(env, "screens", NAPI_AUTO_LENGTH, screens, nullptr, &fn); napi_set_named_property(env, exports, "screens", fn);
+  napi_create_function(env, "setStationary", NAPI_AUTO_LENGTH, setStationary, nullptr, &fn); napi_set_named_property(env, exports, "setStationary", fn);
+  return exports;
 }
 NAPI_MODULE(NODE_GYP_MODULE_NAME, init)

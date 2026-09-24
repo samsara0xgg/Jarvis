@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, type RefObject } from 'react';
 
-type Target = { open: boolean; wide: boolean; selected: number | null; slow: boolean; providerLayout: boolean };
+type Target = { open: boolean; wide: boolean; selected: number | null; slow: boolean; providerLayout: boolean; scrollOffset: number };
 type Spring = { value: number; velocity: number };
 
 // Geometry, not scale: text keeps its actual raster size during every morph.
@@ -8,12 +8,13 @@ type Spring = { value: number; velocity: number };
 export function useDashboardMotion(root: RefObject<HTMLDivElement | null>, target: Target) {
   const latest = useRef(target);
   const wake = useRef(() => {});
-  useEffect(() => { latest.current = target; if (root.current) root.current.dataset.motion = 'moving'; wake.current(); }, [target.open, target.wide, target.selected, target.slow, target.providerLayout, root]);
+  useEffect(() => { latest.current = target; if (root.current) root.current.dataset.motion = 'moving'; wake.current(); }, [target.open, target.wide, target.selected, target.slow, target.providerLayout, target.scrollOffset, root]);
   useLayoutEffect(() => {
     const el = root.current;
     if (!el) return;
     const surface = el.querySelector<HTMLElement>('.dashboard-surface')!;
     const board = el.querySelector<HTMLElement>('.dashboard-board')!;
+    const viewport = el.querySelector<HTMLElement>('.dashboard-viewport')!;
     const notifications = el.querySelector<HTMLElement>('.dashboard-notification-reveal');
     const notificationContent = el.querySelector<HTMLElement>('.dashboard-notifications');
     const homeBar = el.querySelector<HTMLElement>('.dashboard-home-bar');
@@ -43,12 +44,15 @@ export function useDashboardMotion(root: RefObject<HTMLDivElement | null>, targe
       const dt = Math.min(last ? (now - last) / 1000 : 1 / 60, .05) / (t.slow ? 3 : 1);
       last = now; moving = false;
       const compact = !!el.closest('.compact-dashboard');
-      const width = step('width', el.closest('.embedded-dashboard') ? el.clientWidth : Math.min(t.wide ? (compact ? 330 : 600) : (compact ? 282 : 470), el.clientWidth), dt);
-      const narrow = width < 370;
-      const overviewHeight = compact ? 108 + Math.max(120, (quotaSummary?.offsetHeight ?? 132) + 24) : narrow ? 340 : 300;
+      // Fixed two-column grid: content never changes a tile's dimensions.
+      const docked = !!el.closest('.notch-docked');
+      const width = docked ? (Number.parseFloat(getComputedStyle(el).getPropertyValue('--notch-width')) || 540) - 44 : 300;
+      const gap = 8, cellWidth = (width - 24 - gap) / 2, innerWidth = cellWidth * 2 + gap;
+      const cellHeight = docked ? Math.max(70, (Number.parseFloat(getComputedStyle(el).getPropertyValue('--notch-content-height')) - 112) / 3) : cellWidth;
+      const overviewHeight = cellHeight * 3 + gap * 2;
       const accordion = el.querySelector<HTMLElement>('.quota-accordion');
       const quotaHeight = accordion ? Math.min(420, accordion.offsetHeight + 38) : t.providerLayout ? 365 : 420;
-      const height = step('height', t.selected === null ? overviewHeight : (t.selected === 1 ? 286 : t.selected === 2 ? quotaHeight : compact ? 296 : t.wide ? 414 : 366), dt);
+      const height = step('height', t.selected === null || t.selected === 4 ? overviewHeight : (t.selected === 1 ? 286 : t.selected === 2 ? quotaHeight : compact ? 296 : t.wide ? 414 : 366), dt);
       const goal = Number(t.open);
       if (reveal.goal !== goal) { reveal.from = reveal.value; reveal.goal = goal; reveal.elapsed = 0; }
       reveal.elapsed = Math.min(.2, reveal.elapsed + dt);
@@ -56,20 +60,20 @@ export function useDashboardMotion(root: RefObject<HTMLDivElement | null>, targe
       reveal.value = reveal.from + (reveal.goal - reveal.from) * eased;
       const opening = reveal.value;
       if (reveal.elapsed < .2) moving = true;
-      const innerWidth = width - (compact ? 24 : 34);
-      const gap = compact ? 8 : 10;
-      const cellWidth = (innerWidth - gap) / 2;
-      // Base positions remain stable while the selected module grows over them.
-      const baseHeight = overviewHeight;
-      const topHeight = compact ? 100 : (baseHeight - gap) / 2;
-      const bottomHeight = baseHeight - gap - topHeight;
+      el.style.setProperty('--dashboard-cell', `${cellWidth}px`);
+      el.style.setProperty('--dashboard-gap', `${gap}px`);
       surface.style.width = `${width}px`;
       // Embedded appearance is owned by PanelStack; this hook only morphs tiles.
       surface.style.opacity = embedded ? '1' : String(opening);
       surface.style.transform = embedded ? 'none' : `translateY(${(1 - opening) * -6}px)`;
       surface.style.clipPath = 'none';
       surface.style.visibility = opening === 0 ? 'hidden' : 'visible';
-      board.style.height = `${height}px`;
+      // Keep the viewport's scroll origin while a lower tile expands in place.
+      const contentHeight = t.selected === null ? cards.length > 4 ? cellHeight * 4 + gap * 3 : overviewHeight : height + t.scrollOffset;
+      board.style.height = `${contentHeight}px`;
+      viewport.style.height = `${height}px`;
+      viewport.style.overflowY = t.selected === null ? 'auto' : 'hidden';
+      if (t.selected !== null) viewport.scrollTop = t.scrollOffset;
       if (homeBar) {
         homeBar.style.opacity = String(step('returnOpacity', Number(t.selected !== null), dt));
         homeBar.style.visibility = t.selected === null ? 'hidden' : 'visible';
@@ -81,13 +85,15 @@ export function useDashboardMotion(root: RefObject<HTMLDivElement | null>, targe
       }
       cards.forEach((card, i) => {
         const active = t.selected === i;
-        const x = step(`${i}.x`, active ? 0 : (i % 2) * (cellWidth + gap), dt);
-        const y = step(`${i}.y`, active ? 0 : Math.floor(i / 2) * (topHeight + gap), dt);
-        const w = step(`${i}.w`, active ? innerWidth : cellWidth, dt);
-        const h = step(`${i}.h`, active ? height : i < 2 ? topHeight : bottomHeight, dt);
+        const baseX = i === 2 ? cellWidth + gap : 0;
+        const baseY = i === 4 ? 3 * (cellHeight + gap) : i === 1 ? 2 * (cellHeight + gap) : i === 3 ? cellHeight + gap : 0;
+        const x = step(`${i}.x`, active ? 0 : baseX, dt);
+        const y = step(`${i}.y`, active ? t.scrollOffset : baseY, dt);
+        const w = step(`${i}.w`, active || i === 1 ? innerWidth : cellWidth, dt);
+        const h = step(`${i}.h`, active ? height : i === 2 ? 2 * cellHeight + gap : cellHeight, dt);
         const opacity = step(`${i}.opacity`, t.selected === null || active ? 1 : 0, dt, 22);
-        // Content follows the actual card width, not a separate fade clock.
-        const detail = Math.max(0, Math.min(1, (w - cellWidth) / Math.max(1, innerWidth - cellWidth)));
+        // The Codex summary already spans both columns, so width is not a detail signal.
+        const detail = step(`${i}.detail`, Number(active), dt);
         card.style.transform = `translate(${x}px, ${y}px)`;
         card.style.width = `${w}px`; card.style.height = `${h}px`;
         card.style.opacity = `${opacity}`;

@@ -57,8 +57,9 @@ function PluginIcon({ plugin, small = false }: { plugin: Plugin; small?: boolean
 }
 const statusText = (p: Plugin) => !p.supported ? '暂不支持' : p.status === 'ready' ? '已连接' : p.status === 'authorizing' ? '等待授权' : p.status === 'connecting' ? '正在连接' : p.status === 'needs_auth' ? '待授权' : p.status === 'error' ? '连接异常' : p.status === 'disabled' ? '已停用' : '未连接';
 
-export function PluginPanel({ controller, onHide, onConversation, presentation }: {
+export function PluginPanel({ controller, onHide, onConversation, presentation, onCatalog, simulation = false, active = true }: {
   controller: ReturnType<typeof usePlugins>; onHide: () => void; onConversation: () => void; presentation: string;
+  onCatalog?: () => void; simulation?: boolean; active?: boolean;
 }) {
   const { snapshot, error, busy, action, refresh } = controller;
   const [catalog, setCatalog] = useState(true), [query, setQuery] = useState('');
@@ -68,9 +69,14 @@ export function PluginPanel({ controller, onHide, onConversation, presentation }
   const titleRef = useRef<HTMLHeadingElement>(null);
   useEffect(() => {
     setCatalog(presentation === 'catalog'); setDetails(false); setCredentials({});
-    if (presentation !== 'catalog') requestAnimationFrame(() => titleRef.current?.focus({ preventScroll: true }));
   }, [presentation]);
+  useEffect(() => {
+    if (!active || presentation === 'catalog') return;
+    const frame = requestAnimationFrame(() => titleRef.current?.focus({ preventScroll: true }));
+    return () => cancelAnimationFrame(frame);
+  }, [active, presentation]);
   useEffect(() => { setCredentials({}); }, [request?.id]);
+  useEffect(() => { if (!active) setCredentials({}); }, [active]);
   const command = (operation: string, data: Record<string, unknown> = {}) => action(operation, { request_id: request?.id, ...data });
   const cancel = async () => { if (await command('cancel')) { setCredentials({}); onHide(); } };
   const connect = async () => {
@@ -95,7 +101,7 @@ export function PluginPanel({ controller, onHide, onConversation, presentation }
         <PluginIcon plugin={p} small/><span><strong>{p.name}</strong><small>{statusText(p)}</small></span><CaretRight/>
       </button>)}</div>
     </> : <>
-      <button className="plugin-back" onClick={() => { setCatalog(true); setCredentials({}); }}><CaretLeft/>所有插件</button>
+      <button className="plugin-back" onClick={() => { setCredentials({}); if (onCatalog) onCatalog(); else setCatalog(true); }}><CaretLeft/>所有插件</button>
       {!ready && <div className="plugin-identity"><PluginIcon plugin={plugin}/><h2 ref={titleRef} tabIndex={-1}>{plugin.name}</h2><p>{plugin.description}</p></div>}
       {!plugin.supported ? <p className="plugin-empty">{plugin.unavailable_reason}</p> : ready ? <>
         <div className="plugin-success" role="status"><PluginIcon plugin={plugin} small/><h2 ref={titleRef} tabIndex={-1}>{plugin.name} 已连接</h2><Check weight="bold"/></div>
@@ -104,9 +110,9 @@ export function PluginPanel({ controller, onHide, onConversation, presentation }
         <button className="plugin-disclosure" aria-expanded={details} onClick={() => setDetails(v => !v)}>管理 {plugin.name}<CaretRight className={details ? 'is-open' : ''}/></button>
       </> : connecting ? <div className="plugin-progress" role="status" aria-live="polite">
         <span className="plugin-spinner" aria-hidden="true"/>
-        <h3>{request.state === 'authorizing' ? '等待你在浏览器中授权' : '正在接入插件'}</h3>
+        <h3>{simulation ? '等待模拟授权结果' : request.state === 'authorizing' ? '等待你在浏览器中授权' : '正在接入插件'}</h3>
         <p>{request.continue_task ? '完成后会自动继续刚才的任务' : '完成后，这个插件即可在对话中使用'}</p>
-        {request.state === 'authorizing' && <button className="plugin-secondary" disabled={busy} onClick={() => void command('reopen')}><ArrowSquareOut/>重新打开授权页面</button>}
+        {simulation ? <p>在左侧选择授权「成功」或「失败」，也可以先切换页面。</p> : request.state === 'authorizing' && <button className="plugin-secondary" disabled={busy} onClick={() => void command('reopen')}><ArrowSquareOut/>重新打开授权页面</button>}
         <div className="plugin-progress-actions"><button onClick={onHide}>收起</button><button disabled={busy} onClick={() => void cancel()}>取消连接</button></div>
       </div> : <>
         {request.purpose && <div className="plugin-purpose"><span>本次用途</span><p>{request.purpose}</p></div>}
@@ -116,7 +122,7 @@ export function PluginPanel({ controller, onHide, onConversation, presentation }
         <div className="plugin-explanation"><ShieldCheck/><span>{plugin.auth === 'oauth' || plugin.auth === 'mixed' ? '访问范围在授权页面确认' : '后续操作仍遵循你的审批设置'}</span></div>
         {plugin.credential_fields.length > 0 && <form className="plugin-credentials" onSubmit={e => { e.preventDefault(); void connect(); }}>
           {plugin.credential_fields.map(field => <label key={field}><span><Key/>{plugin.credential_fields.length === 1 ? '访问令牌' : field}</span><input type="password" autoComplete="off" aria-label={field} value={credentials[field] ?? ''} placeholder={plugin.credentials_saved ? '已有凭证；留空沿用' : '输入访问令牌'} onChange={e => setCredentials(v => ({ ...v, [field]: e.target.value }))}/></label>)}
-          <p>凭证仅保存在本机，不会发送到对话。</p>
+          <p>{simulation ? '仅用于本地演示，请填写任意测试文本，不要输入真实凭证。' : '凭证仅保存在本机，不会发送到对话。'}</p>
         </form>}
         <button className="plugin-disclosure" aria-expanded={details} onClick={() => setDetails(v => !v)}>查看插件能力<CaretRight className={details ? 'is-open' : ''}/></button>
         <button className="plugin-primary" disabled={busy || !!error} onClick={() => void connect()}>{request.state === 'error' ? '重新连接' : request.continue_task ? '连接并继续' : plugin.auth === 'none' ? '启用' : '连接'}</button>
