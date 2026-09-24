@@ -369,6 +369,7 @@ function App() {
           </div>,
           transcript: <LiveTranscript embedded rows={s.rows} tail={tail} sessionId={s.live.sessionId} lines={s.subtitles} open={true} muted={s.soundMuted} active={s.live.state === 'active'} clock={liveClock} onClose={closeTranscript}/>,
           dashboard: <DashboardPreview embedded port={runtimePort} onClose={closePanel} visible={panels.dashboard && !collapsed.dashboard}
+            shown={panels.dashboard && !collapsed.dashboard && (!placement.docked || island.open)}
             composer={{ value: s.draft, onChange: value => dispatch({ type: 'draft', value }), onSend: send, busy: s.phase === 'processing' }}
             conversation={{ text: tail || visible(s.rows.filter(row => row.source !== 'allen').at(-1)?.text ?? '') || (s.phase === 'processing' ? '正在处理你的消息…' : '和 Jarvis 说点什么，最近的回复会出现在这里。'), caption: s.phase === 'processing' ? '处理中' : s.phase === 'error' ? '连接失败' : tail || s.rows.length ? '最近回复' : '暂无对话', pending: s.phase === 'processing' }}
             plugins={{ controller: plugins, presentation: pluginPresentation, open: pluginOpen, onCatalog: openPlugins, onConversation: () => { closePanel(); openTranscript(); } }}

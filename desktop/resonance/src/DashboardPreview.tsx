@@ -33,8 +33,9 @@ export function PreviewLab({ initialDashboard = false }: { initialDashboard?: bo
   </div>;
 }
 
-export function DashboardPreview({ standalone = false, embedded = false, port = null, onClose, notifications, visible = true, composer, conversation, plugins }: {
-  visible?: boolean; notifications?: ReactNode; standalone?: boolean; embedded?: boolean; port?: string | null; onClose?: () => void;
+export function DashboardPreview({ standalone = false, embedded = false, port = null, onClose, notifications, visible = true, shown = visible, composer, conversation, plugins }: {
+  // shown: actually on screen; a folded notch keeps the panel visible but hides it.
+  visible?: boolean; shown?: boolean; notifications?: ReactNode; standalone?: boolean; embedded?: boolean; port?: string | null; onClose?: () => void;
   composer?: DashboardInput; conversation?: { text: string; caption: string; pending: boolean };
   plugins?: { controller: ReturnType<typeof usePlugins>; presentation: string; open: number; onCatalog: () => void; onConversation: () => void };
 }) {
@@ -45,7 +46,7 @@ export function DashboardPreview({ standalone = false, embedded = false, port = 
   // ADR 0023: the persisted work state; the same refresh the conversation tool runs.
   const work = useWorkState(port);
   // ADR 0037: the project view; opening its detail sorts whatever activity is new.
-  const projects = useProjects(port, visible);
+  const projects = useProjects(port, shown);
   const feedback = (cue: FeedbackCue) => { if (preferences.feedbackEnabled) void playFeedback(cue, preferences.feedbackVolume); };
   useEffect(() => { if (embedded) return; warmFeedback(); return stopFeedback; }, [embedded]);
   const [open, setOpen] = useState(true);
