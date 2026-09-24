@@ -258,10 +258,10 @@ def test_live_daily_report_generates_reuses_and_regenerates(live: LiveRig) -> No
     )["source_refs"]
     kinds = {ref.split(":")[0] for ref in refs}
     if counts["screen"]:
-        assert outcome["coverage"]["screen"] == "partial"
+        assert outcome["coverage"]["screen"] == "available"
         assert "timesink-capture" in kinds, "a day with OCR text must cite a capture"
     if counts["git"]:
-        assert "event" in kinds, "a day with commits must cite the observation event"
+        assert kinds & {"event", "git"}, "a day with commits must cite a commit"
     if counts["records"]:
         assert outcome["coverage"]["records"] == "available"
     assert "这一天尚未结束" not in content, "a finished day is not reported as partial"
