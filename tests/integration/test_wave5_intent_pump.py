@@ -32,6 +32,7 @@ from jarvis.runtime.inherent_loop import (
     _intent_pump_watcher,
     _intent_worker,
     _IntentPumpBoot,
+    _response_watcher,
     _start_intent_pump,
 )
 from jarvis.shared.realtime import Wave5InputFlags
@@ -44,6 +45,7 @@ from jarvis.state.input_claim import (
     claim_input_once,
     recoverable_inputs,
 )
+from jarvis.surface.inherent_output import InherentBroadcaster
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -566,3 +568,55 @@ def test_a_claim_that_hits_a_locked_log_is_retried(runtime: JarvisRuntime) -> No
     assert sorted(recorder.driven) == ["T-after", "T-locked"]
     assert _count(runtime.conn, "turn.started") == 2
 
+
+class _RecordingSocket:
+    """Stands in for one connected Resonance client; keeps every envelope."""
+
+    def __init__(self) -> None:
+        """Start with nothing received."""
+        self.sent: list[dict[str, Any]] = []
+
+    async def send_json(self, message: dict[str, Any]) -> None:
+        """Record one envelope."""
+        self.sent.append(message)
+
+
+def test_a_turn_that_raises_reaches_the_surface_as_failed(runtime: JarvisRuntime) -> None:
+    """The worker's ``turn.failed`` goes out on the v1 wire as ``{op: failed}``.
+
+    Before this the wire carried only open/append/done, so a failed turn sent
+    nothing and the surface stayed on "processing" until restart.
+    """
+
+    def _raises(_runtime: JarvisRuntime, **_: object) -> None:
+        message = "provider refused the connection"
+        raise ConnectionError(message)
+
+    socket = _RecordingSocket()
+
+    async def _body() -> None:
+        broadcaster = InherentBroadcaster()
+        await broadcaster.register(socket)  # type: ignore[arg-type]
+        with patch.object(inherent_loop, "_drive_turn_in_worker_thread", side_effect=_raises):
+            tasks = await _start_intent_pump(
+                runtime, poll_interval_s=0.001, queue_capacity=8, max_concurrent_turns=2,
+            )
+            tasks.append(asyncio.create_task(
+                _response_watcher(runtime, broadcaster, poll_interval_s=0.001),
+            ))
+            try:
+                await asyncio.sleep(0.02)
+                _emit_intent(runtime, "T-fails", "会失败的一句")
+                for _ in range(400):
+                    if socket.sent:
+                        break
+                    await asyncio.sleep(0.005)
+            finally:
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+    asyncio.run(_body())
+
+    assert _count(runtime.conn, "turn.failed") == 1
+    assert socket.sent == [{"op": "failed", "payload": {"turn_id": "T-fails"}}]

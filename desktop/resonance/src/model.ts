@@ -20,7 +20,7 @@ export const idleLive: Live = { state: 'idle', sessionId: null, since: null, usa
 export interface State { mode: Mode; phase: Phase; micMuted: boolean; soundMuted: boolean; inbox: boolean; detail: string | null; results: Result[]; reply: string; draft: string; attachment: boolean; turnId: string | null; responseId: string | null; live: Live; subtitles: Subtitle[]; rows: Row[]; openSeq: number }
 export const initialState: State = { mode: 'voice', phase: 'listening', micMuted: false, soundMuted: false, inbox: false, detail: null, results: [examples[0], examples[3], examples[1]], reply: '', draft: '', attachment: false, turnId: null, responseId: null, live: idleLive, subtitles: [], rows: [], openSeq: 0 };
 export type Action = { type: 'mode'; mode: Mode } | { type: 'phase'; phase: Phase } | { type: 'mic' | 'sound' | 'inbox' | 'interrupt' | 'end' | 'attachment' | 'reset' } | { type: 'draft'; value: string } | { type: 'send' } | { type: 'answer' } | { type: 'detail'; id: string | null } | { type: 'dismiss'; id: string } | { type: 'example'; id: string }
-  | { type: 'open'; turnId: string; responseId: string | null } | { type: 'append'; token: string } | { type: 'settle'; turnId: string } | { type: 'controls'; micMuted: boolean; soundMuted: boolean }
+  | { type: 'open'; turnId: string; responseId: string | null } | { type: 'append'; token: string } | { type: 'settle'; turnId: string } | { type: 'failed'; cancelled: boolean } | { type: 'controls'; micMuted: boolean; soundMuted: boolean }
   | { type: 'live'; live: Live } | { type: 'subtitle'; sessionId: string; role: 'user' | 'assistant'; delta: string; startMs: number; endMs: number } | { type: 'live_dismiss' }
   | { type: 'rows'; rows: Row[] };
 export function reducer(s: State, a: Action): State {
@@ -42,6 +42,9 @@ export function reducer(s: State, a: Action): State {
     case 'append': return { ...s, reply: s.reply + a.token, phase: 'speaking' };
     // The daemon's `done` carries fadeMs; runtime.ts turns it into this delayed settle for the same turn only.
     case 'settle': return s.turnId === a.turnId ? { ...s, reply: '', phase: s.phase === 'speaking' ? 'listening' : s.phase } : s;
+    // A turn that ends with no answer (daemon `failed` / `cancelled`) releases "processing"; a failure says so where the reply would be.
+    // ponytail: releases whichever turn is processing; match turn_id if two concurrent turns ever show the wrong one.
+    case 'failed': return s.phase === 'processing' ? { ...s, phase: 'listening', reply: a.cancelled ? '' : '这一轮出错了，没有完成。可以再说一次。', openSeq: s.rows.length ? s.rows[s.rows.length - 1].seq : 0 } : s;
     case 'controls': return { ...s, micMuted: a.micMuted, soundMuted: a.soundMuted };
     // A new session id starts a fresh transcript; a closed session keeps its lines on screen until dismissed.
     case 'live': return { ...s, live: a.live, subtitles: a.live.sessionId && a.live.sessionId !== s.live.sessionId ? [] : s.subtitles };

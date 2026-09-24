@@ -298,17 +298,17 @@ _SELECT_AFTER_ID_OF_TYPES_SQL_TEMPLATE = (
 )
 
 # Single-cursor SELECT for the three Step-2 Inherent response event
-# types. Static type list (no placeholders): asyncio's wakeup order
-# does NOT guarantee that three sibling watchers (one per type) would
-# fire in L2-insertion order, so we fold all three types into ONE
-# cursor ordered by SQLite row id — D16 race elimination by
-# construction.
+# types, plus the two ends that produce no answer. Static type list (no
+# placeholders): asyncio's wakeup order does NOT guarantee that sibling
+# watchers (one per type) would fire in L2-insertion order, so we fold
+# all types into ONE cursor ordered by SQLite row id — D16 race
+# elimination by construction.
 _SELECT_RESPONSE_EVENTS_AFTER_ID_SQL = (
     "SELECT id, event_uid, type, schema_version, ts_epoch_ms, "
     "payload_json, source_event_id, correlation_json "
     "FROM events WHERE id > ? AND type IN ("
     "'surface.response_open', 'surface.response_chunk', "
-    "'surface.response_emitted'"
+    "'surface.response_emitted', 'turn.failed', 'response.cancelled'"
     ") ORDER BY id ASC"
 )
 
@@ -1443,8 +1443,12 @@ async def _response_watcher(
                         await broadcaster.broadcast_open(ev)
                     elif ev.type == "surface.response_chunk":
                         await broadcaster.broadcast_chunk(ev)
-                    else:  # surface.response_emitted
+                    elif ev.type == "surface.response_emitted":
                         await broadcaster.broadcast_done(ev)
+                    elif ev.type == "turn.failed":
+                        await broadcaster.broadcast_op("failed", turn_id=turn_id)
+                    else:  # response.cancelled
+                        await broadcaster.broadcast_op("cancelled", turn_id=turn_id)
             except Exception:
                 LOGGER.exception("response_watcher: poll failed at after_id=%d; retrying", after_id)
                 await asyncio.sleep(_WATCHER_RETRY_S)

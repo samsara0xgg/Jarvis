@@ -2899,6 +2899,7 @@ Tool Surface 是由 effective_policy 为特定调用主体、mode、task 和风�
 <li>short checklist</li>
 <li>mode / state pill</li>
 <li>对话记录：memory.db <code>records</code> 自 <code>session.history_since</code> 起的行，与后台请求的历史同源（§10.5.1），经 <code>GET /inherent/conversation?after=&lt;seq&gt;</code> 增量拉取；文字模式默认展开；后台正在流式输出的回答作为末行显示，落库后由记录行接替；Live 会话进行中，该会话已落库的行让位给实时字幕，不重复显示</li>
+<li>没有回答的结束：一轮以 <code>turn.failed</code> 结束或回答以 <code>response.cancelled</code> 结束时，<code>/inherent/ws</code> 推送 <code>{op: "failed"}</code> 或 <code>{op: "cancelled"}</code>（payload 带 <code>turn_id</code>）；界面据此结束"处理中"，失败时在回复位置说明这一轮没有完成</li>
 </ul>
 
 <p>它是 voice 的搭档：</p>
