@@ -106,14 +106,14 @@ def _whole_item(
     }
 
 
-def _parts(
-    title: str, *parts: tuple[str, str, list[str]], activity: str = "活动与进展。"
-) -> dict[str, Any]:
-    """An item with named parts, each (part, status, refs)."""
+def _parts(title: str, *parts: tuple[Any, ...], activity: str = "活动与进展。") -> dict[str, Any]:
+    """An item with named parts, each (part, status, refs) or (part, status, refs, asserts)."""
     return {
         "title": title,
         "activity": activity,
-        "progress": [{"part": p, "status": s, "refs": r} for p, s, r in parts],
+        "progress": [
+            dict(zip(("part", "status", "refs", "asserts"), p, strict=False)) for p in parts
+        ],
     }
 
 
@@ -1217,10 +1217,10 @@ def test_a_branch_commit_is_committed_not_merged(
         _parts(
             "TimeSink 截屏采集",
             ("代码", "completed", ["g1", "g2"]),
-            ("合并", "completed", ["g1", "g2"]),
+            ("合并", "completed", ["g1", "g2"], "merged"),
             activity=f"提交 838a3ff 和 {docs} 改了采集器；电话 2365182216 不是提交号。",
         ),
-        _parts("文档", ("合并", "completed", ["g3"])),
+        _parts("文档", ("合并", "completed", ["g3"], "merged")),
         _parts("混合提交", ("代码", "completed", ["g1", "g3"])),
     )
     try:
@@ -1310,12 +1310,12 @@ def test_agent_claims_of_tests_and_deployment_are_self_report(
             "日报工具",
             ("代码", "completed", ["g1"]),
             ("测试", "completed", ["c1"]),
-            ("部署", "completed", ["g1", s]),
-            ("重启", "completed", ["c1"]),
+            ("部署", "completed", ["g1", s], "deployed"),
+            ("重启", "completed", ["c1"], "deployed"),
         ),
         _parts("测试数核对", ("测试", "completed", [s])),
-        _parts("守护进程部署", ("部署", "completed", ["g1"])),
-        _parts("用户确认的重启", ("重启", "completed", ["r1"])),
+        _parts("守护进程部署", ("部署", "completed", ["g1"], "deployed")),
+        _parts("用户确认的重启", ("重启", "completed", ["r1"], "deployed")),
     )
     rig.reporter.verdicts["测试数核对"] = ("supported", "终端里代理报告 248 tests pass", "agent")
     try:
@@ -1351,6 +1351,47 @@ def test_agent_claims_of_tests_and_deployment_are_self_report(
         rig.fx.close()
 
 
+def test_the_merge_and_deploy_rules_follow_the_declared_claim_not_the_name(
+    tmp_path: Path, source: sqlite3.Connection
+) -> None:
+    """F-LIVE-B-01: a part named for release work that claims only code is checked as committed.
+
+    The same name declared as a deployment cites only a commit and is ruled
+    invalid; words in a name, or the material's own 未进 main label copied into
+    it, never decide the rule.
+    """
+    add_span(source, "2026-09-19 16:00:00.000", "2026-09-19 17:00:00.000")
+    repo = tmp_path / "timesink"
+    shas = git_repo(
+        repo,
+        [
+            ("docs: on main", "2026-09-19T17:00:00-07:00", "main"),
+            ("perf: faster sync", "2026-09-19T16:44:00-07:00", "release"),
+        ],
+    )
+    perf = shas["perf: faster sync"][:7]
+    rig = Rig(tmp_path, timesink=tmp_path / "timesink.sqlite", repos=(str(repo),))
+    rig.reporter.report = _items(
+        _parts("TimeSink 发布", ("发布与性能新功能（未进 main）", "completed", ["g1"], "other")),
+        _parts("TimeSink 上架", ("发布与性能新功能", "completed", ["g1"], "deployed")),
+    )
+    try:
+        result = rig.run()
+        assert result["outcome"] == "generated", result.get("error")
+        assert result["checks"] == 1
+        content = rig.saved()
+        assert (
+            f"### 1. TimeSink 发布 — 发布与性能新功能（未进 main）："
+            f"已提交（提交 {perf}，未进 main）"
+        ) in content
+        assert (
+            "### 2. TimeSink 上架 — 发布与性能新功能："
+            "声称完成，引用无效：提交不能证明部署、上线或重启发生了"
+        ) in content
+    finally:
+        rig.fx.close()
+
+
 def test_an_old_commit_or_a_question_cannot_verify_completion(rig: Rig) -> None:
     """Scenario 4: a commit only observed today, or Allen's question, is an invalid citation."""
     rig.commit(
@@ -1365,8 +1406,10 @@ def test_an_old_commit_or_a_question_cannot_verify_completion(rig: Rig) -> None:
         _whole_item("靠旧提交撑起的完成", "completed", ["g1"]),
         _whole_item("Allen 问过的事", "completed", ["r2"]),
         _whole_item("Jarvis 自己说的事", "completed", ["r3"]),
+        _whole_item("Allen 请求过的事", "completed", ["r4"]),
     )
     rig.record("rec-3", "已经帮你记下了。", ts="2026-09-19T12:31:00-07:00", source_name="jarvis")
+    rig.record("rec-4", "帮我把日报部署到 daemon", ts="2026-09-19T12:32:00-07:00")
     result = rig.run()
     assert result["outcome"] == "generated"
     assert "[g1] 提交于 09-10 09:00" in rig.reporter.material, "g1 is the late commit"
@@ -1382,6 +1425,9 @@ def test_an_old_commit_or_a_question_cannot_verify_completion(rig: Rig) -> None:
         "### 3. Jarvis 自己说的事 — 声称完成，引用无效："
         "引用的记录不能证明完成（Jarvis 自己的话或窗口时段）"
     ) in content
+    assert (
+        "### 4. Allen 请求过的事 — 声称完成，引用无效：引用的是 Allen 的提问或请求，不是确认"
+    ) in content, "H2-02: a request that opens with 帮我 is a request, not a confirmation"
     served = result["summary"]
     assert "声称完成但未核实或不成立：1 靠旧提交撑起的完成（声称完成，引用无效：" in served
     assert "有实证" not in result["summary"]

@@ -46,6 +46,8 @@ REPORT_NOW = (
 REPORT_AGAIN = "上一次汇报无法解析，请按 schema 重新调用 report_daily_work，内容可以更简短。"
 """Served after an unusable reply: providers malform or truncate long arguments now and then."""
 STATUSES = ("browsed", "discussed", "attempted", "completed")
+ASSERTS = ("merged", "deployed", "other")
+"""What a completed part claims happened; the merge and deployment rules key on it."""
 CONTENT_LIMIT = 44000
 """Reports exceeding this budget fail without saving or dropping their citation index."""
 MAX_SOURCE_REFS = 20
@@ -77,8 +79,6 @@ _SERVED = 3000
 """``summary_of`` serves the whole 核心摘要 section, digest included, not just the prose."""
 _SUMMARY_HEADING = "## 核心摘要"
 _REF_PREFIX = "引用："
-_DEPLOY = re.compile(r"部署|上线|常驻|重启|发布|上架|deploy|restart|launch|online", re.IGNORECASE)
-_MERGE = re.compile(r"合并|合入|merge|进 ?main", re.IGNORECASE)
 _SHA = re.compile(r"(?<![0-9a-zA-Z])(?=[0-9]*[a-f])[0-9a-f]{7,40}(?![0-9a-zA-Z])")
 """A commit number in prose: at least one hex letter, so a phone number or an id is not one."""
 _COMPLETION_WORDS = re.compile(
@@ -156,6 +156,19 @@ REPORT_TOOL: dict[str, Any] = {
                                     },
                                 ),
                                 ("status", {"type": "string", "enum": list(STATUSES)}),
+                                (
+                                    "asserts",
+                                    {
+                                        "type": "string",
+                                        "enum": list(ASSERTS),
+                                        "description": (
+                                            "completed 声称发生了什么：merged = 已合并进 main；"
+                                            "deployed = 已部署、上线、发布或重启生效；"
+                                            "other = 其他（代码写完或已提交、申请已提交等）。"
+                                            "不是 completed 时填 other。"
+                                        ),
+                                    },
+                                ),
                             ),
                         },
                     },
@@ -515,6 +528,11 @@ def _claim(raw: Any, *fields: str) -> dict[str, Any]:  # noqa: ANN401 — model 
                 _malformed("status is not browsed/discussed/attempted/completed")
             claim[name] = value
             continue
+        if name == "asserts":
+            if value is not None and value not in ASSERTS:
+                _malformed("asserts is not merged/deployed/other")
+            claim[name] = value or "other"
+            continue
         if not isinstance(value, str) or not value.strip():
             _malformed(f"{name} is missing")
         claim[name] = _text(value, _TITLE if name == "title" else _TEXT)
@@ -539,7 +557,9 @@ def _item(raw: Any) -> dict[str, Any]:  # noqa: ANN401 — model output.
     progress = raw.get("progress")
     if not isinstance(progress, list) or not progress:
         _malformed("progress is not a non-empty list")
-    item["progress"] = [_claim(part, "part", "status") for part in progress[:_MAX_PARTS]]
+    item["progress"] = [
+        _claim(part, "part", "status", "asserts") for part in progress[:_MAX_PARTS]
+    ]
     return item
 
 
@@ -610,6 +630,8 @@ class Claim:
     part: str | None
     status: str
     refs: list[str]
+    asserts: str = "other"
+    """merged · deployed · other — what the draft says a completed part achieved."""
     kinds: dict[str, str] = field(default_factory=dict)
     """Cited key -> commit / late_commit / user / question / jarvis / screen / agent / other."""
     ruling: str = "unclaimed"
@@ -642,7 +664,9 @@ def _kind_of(key: str, evidence: DayEvidence) -> str:
     if ref.startswith("record:"):
         if ref not in evidence.stated:
             return "jarvis"
-        return "question" if is_question(evidence.haystack.get(key, "")) else "user"
+        # A record's haystack line is "HH:MM who: text"; the request test anchors on the text.
+        text = evidence.haystack.get(key, "").partition(": ")[2]
+        return "question" if is_question(text) else "user"
     prefixes = {"timesink-capture:": "screen", "codex-session:": "agent"}
     return next((kind for prefix, kind in prefixes.items() if ref.startswith(prefix)), "other")
 
@@ -663,8 +687,7 @@ def _rule(claim: Claim, evidence: DayEvidence) -> None:
             claim.reason = "引用的记录不能证明完成（Jarvis 自己的话或窗口时段）"
         claim.ruling = "invalid"
         return
-    name = claim.part or ""
-    if _MERGE.search(name) and "commit" in kinds:
+    if claim.asserts == "merged" and "commit" in kinds:
         shas = [evidence.commit_rows[k] for k, kind in claim.kinds.items() if kind == "commit"]
         off = [row["sha"] for row in shas if row["main"] != "已在 main"]
         if off:
@@ -672,7 +695,7 @@ def _rule(claim: Claim, evidence: DayEvidence) -> None:
         else:
             claim.ruling = "repo"
         return
-    if _DEPLOY.search(name) and "user" not in kinds:
+    if claim.asserts == "deployed" and "user" not in kinds:
         if evidential <= {"commit"}:
             claim.ruling, claim.reason = "invalid", "提交不能证明部署、上线或重启发生了"
         else:
@@ -686,7 +709,9 @@ def screen_claims(report: dict[str, Any], evidence: DayEvidence) -> list[Claim]:
     claims = []
     for index, item in enumerate(report["items"], 1):
         for part in item["progress"]:
-            claim = Claim(index, part["part"], part["status"], list(part["refs"]))
+            claim = Claim(
+                index, part["part"], part["status"], list(part["refs"]), part["asserts"]
+            )
             claim.kinds = {key: _kind_of(key, evidence) for key in claim.refs}
             if claim.claimed:
                 _rule(claim, evidence)

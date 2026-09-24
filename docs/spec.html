@@ -813,10 +813,12 @@ one retry of an unusable report. A malformed report fails the run without replac
 version, and a provider failure during drafting keeps it too (<code>outcome=failed</code> with the
 round and finish reason). A <code>completed</code> part of a drafted item is a claim, never a
 verdict. Program rules run first: a completed part with no material key, with only late commits,
-or with only a record that is Allen's question or request is 引用无效 with its reason; a part
-about merging whose cited commits are all on <code>main</code> is supported by the repository
-itself and one whose commits are not is 引用无效 naming them; a part about deployment, restart or
-going online is 引用无效 when it cites only commits and self-report when it cites no Allen record;
+or with only a record that is Allen's question or request is 引用无效 with its reason; each drafted
+part declares what its completion claims (<code>asserts</code>: merged, deployed or other, absent
+meaning other), and the next two rules read that declaration, never words in the part's name; a
+part claiming a merge whose cited commits are all on <code>main</code> is supported by the repository
+itself and one whose commits are not is 引用无效 naming them; a part claiming deployment, release,
+restart or going online is 引用无效 when it cites only commits and self-report when it cites no Allen record;
 a part citing only Codex sessions is self-report; a commit SHA in an item's prose that is not a
 same-day commit, or is one but is not cited, is named as an uncertainty. Every other claim is
 checked by one verification call per item, in item order, at most twelve per report
