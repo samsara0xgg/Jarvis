@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-09-24T03:53:33Z",
+  "title": "Design System: 字幕翻译",
+  "extensions": {
+    "typographyMeta": {
+      "translation": {
+        "displayName": "Chinese translation",
+        "purpose": "Native system font with Chinese fallback; the frontmatter gives the initial size. Users can adjust it within the implemented bounds."
+      },
+      "empty-state-title": {
+        "displayName": "Empty-state title",
+        "purpose": "Primary orientation before the first translated caption."
+      },
+      "english-source": {
+        "displayName": "English source",
+        "purpose": "Optional secondary text beneath the Chinese translation."
+      }
+    },
+    "shadows": [],
+    "motion": [],
+    "breakpoints": []
+  },
+  "components": [],
+  "narrative": {
+    "northStar": "Simple native Mac caption utility",
+    "overview": "Chinese captions form the main reading surface. SwiftUI system controls and AppKit window behavior provide the visual language. There are no custom branding assets, fonts, or authored animations. Native semantic colors and widgets are documented in DESIGN.md; browser HTML/CSS previews and synthetic tonal ramps are omitted because they would not represent the actual platform implementation.",
+    "keyCharacteristics": [
+      "Chinese-first, selectable caption text with optional English below",
+      "System typography, semantic foregrounds, and standard controls",
+      "Resizable floating window with a fixed-size crop sheet",
+      "Textual status and specific recovery actions"
+    ],
+    "rules": [
+      {
+        "name": "Native appearance",
+        "body": "Preserve SwiftUI semantic colors and platform control metrics; do not substitute an invented fixed palette.",
+        "section": "colors"
+      },
+      {
+        "name": "Chinese-first reading",
+        "body": "Keep Chinese translation visually primary and optional English below it in secondary foreground.",
+        "section": "typography"
+      }
+    ],
+    "dos": [
+      "Do preserve native keyboard, focus, and window behavior.",
+      "Do show state and recovery instructions in text.",
+      "Do preserve the crop preview's aspect ratio."
+    ],
+    "donts": [
+      "Don't replace native semantic colors with fabricated fixed tokens.",
+      "Don't introduce decorative branding, cards, fonts, or animation."
+    ]
+  }
+}
