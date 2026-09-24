@@ -5,6 +5,12 @@ llm:
   # 运行时可切换的模型预设（"小月，快速模式" / "小月，深度模式"）
   default_preset: fast
 
+  # 对话每次请求的上限（秒）与重试次数；不写就是 SDK 默认的 600 秒、重试 2 次。
+  # 对话只用 default_preset；日报、压缩、截屏、工作状态各自设了自己的上限，不读这里。
+  # 生产 decision 单次最长输出约 1100 token（2026-09-24 查 cost.recorded）。
+  timeout_s: 30
+  max_retries: 1
+
   presets:
     # DeepSeek 直连（2026-09-04 定案，全套）。本机实测 fast：短答首 token
     # 0.45s、总时长 0.72s，3k token 历史 0.43s，4 路并发最大 0.64s。
