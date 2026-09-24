@@ -754,8 +754,8 @@ the POST answers the same view. Time is each span's overlap with each local day,
 activity without merging overlapping spans (a TimeSink estimate). Commits are those on any local branch of the project's repos committed
 inside the window, newest eight listed, each marked on main or not. recent lists the project's
 activities with at least 60 s, latest first, at most eight. Nothing here is stored except the
-classification events. The dashboard asks for a refresh when the projects tile mounts and when its
-detail opens.</p>
+classification events. The dashboard asks for a refresh each time it is shown and when the projects
+detail opens, and polls the view only while shown.</p>
 
 <p id="task-skills"><strong>Task skills (ADR 0024).</strong> A skill is a directory
 <code>jarvis/shared/skills/&lt;name&gt;/</code> holding <code>SKILL.md</code> — frontmatter with

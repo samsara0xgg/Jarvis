@@ -38,7 +38,7 @@ export const demoProjects: ProjectsView = {
   refreshing: false, outcome: 'classified', error: null,
 };
 
-export function useProjects(port: string | null) {
+export function useProjects(port: string | null, active: boolean) {
   const [view, setView] = useState<ProjectsView | null>(port ? null : demoProjects);
   const [missing, setMissing] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -66,12 +66,14 @@ export function useProjects(port: string | null) {
       setNotice(next.outcome === 'failed' ? `归类没做完：${next.error ?? '模型调用失败'}` : null);
     } catch { setNotice('未更新：连不上 Jarvis'); } finally { setRefreshing(false); inFlight.current = false; }
   }, [port]);
+  // Each time the dashboard shows it sorts what is new (ADR 0037); hidden, it stops polling.
   useEffect(() => {
+    if (!active) return;
     void load(); void refresh();
     if (!port) return;
     const id = setInterval(() => void load(), 60_000);
     return () => clearInterval(id);
-  }, [load, refresh, port]);
+  }, [load, refresh, port, active]);
   return { view, missing, refresh, refreshing, notice };
 }
 

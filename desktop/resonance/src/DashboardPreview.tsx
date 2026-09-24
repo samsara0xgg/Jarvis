@@ -45,7 +45,7 @@ export function DashboardPreview({ standalone = false, embedded = false, port = 
   // ADR 0023: the persisted work state; the same refresh the conversation tool runs.
   const work = useWorkState(port);
   // ADR 0037: the project view; opening its detail sorts whatever activity is new.
-  const projects = useProjects(port);
+  const projects = useProjects(port, visible);
   const feedback = (cue: FeedbackCue) => { if (preferences.feedbackEnabled) void playFeedback(cue, preferences.feedbackVolume); };
   useEffect(() => { if (embedded) return; warmFeedback(); return stopFeedback; }, [embedded]);
   const [open, setOpen] = useState(true);
