@@ -32,6 +32,7 @@
 /* Hairlines separate the fixed cells without adding a second layer of glass. */
 .dashboard-overview[data-dashboard-style="unified"] [data-module="1"]::before,
 .dashboard-overview[data-dashboard-style="unified"] [data-module="4"]::before,
+.dashboard-overview[data-dashboard-style="unified"] [data-module="5"]::before,
 .dashboard-overview[data-dashboard-style="unified"] [data-module="3"]::before {
   content:''; position:absolute; top:0; left:10px; right:10px; height:1px; background:var(--surface-line); pointer-events:none;
 }

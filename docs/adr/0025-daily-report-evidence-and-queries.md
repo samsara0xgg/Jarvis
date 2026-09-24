@@ -1,6 +1,6 @@
 # ADR 0025 — The daily report reads Git and Codex itself and may search the day
 
-**Status:** Accepted
+**Status:** Superseded-by-0028
 **Date:** 2026-09-21
 **Supersedes:** 0024
 

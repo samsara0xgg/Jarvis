@@ -244,6 +244,22 @@ def query_spans(
     }
 
 
+def span_rows(snap: Snapshot, start: datetime, end: datetime) -> list[dict[str, Any]]:
+    """Spans overlapping [start, end) with the fields that name an activity (ADR 0037).
+
+    ``start``/``end`` come back as aware UTC datetimes; ``sqlite3.Error`` and
+    ``ValueError`` (a malformed timestamp) propagate to the caller.
+    """
+    rows = snap.conn.execute(
+        "SELECT start,end,appBundleID,appName,title,document,domain FROM span "
+        "WHERE start<? AND end>? AND end>start",
+        (_sql_date(end, ceil=True), _sql_date(start, ceil=False)),
+    )
+    return [
+        {**dict(row), "start": _moment(row["start"]), "end": _moment(row["end"])} for row in rows
+    ]
+
+
 def _capture_end(row: dict[str, Any]) -> tuple[datetime, str]:
     """When the content was last really seen: lastSeenAt, unless an older row crossed a break."""
     ended = _moment(row["lastSeenAt"])

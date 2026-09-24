@@ -120,8 +120,42 @@ work_state:
 
 # ADR 0024 — 每日工作报告：一整天的材料比当前状态大得多，想换更强的模型就
 # 单独指定；不配置就沿用 work_state.preset。
-# daily_report:
-#   preset: deep
+daily_report:
+  preset: deep
+
+# ADR 0037 — 项目清单，Allen 自己维护。Resonance 的「项目」模块只把 TimeSink
+# 里的活动归到这些 id（或「不属于任何项目」），用的是 work_state.preset。
+# id：小写字母、数字、连字符，是项目唯一的身份；name：显示名；
+# repos：本地仓库路径（`~` 会展开），它们的提交算作这个项目的产出；
+# hints：告诉归类模型什么算这个项目。改 id / name / hints 会让所有活动重新归类一次。
+projects:
+  - id: job-search
+    name: 求职
+    hints: co-op 和实习申请；招聘网站和岗位 JD（learninginmotion.uvic.ca、Workday、LinkedIn、Ashby、Teamtailor
+      等）；简历和求职信；面试准备；公司调研和背调；签证和工签
+  - id: school
+    name: 学业
+    hints: UVic 课程；作业、实验、考试复习；Brightspace、Crowdmark、PrairieLearn；课程讲义和题库（如 CSC370）
+  - id: jarvis
+    name: Jarvis
+    repos: [~/Projects/jarvis]
+    hints: Jarvis 个人运行时；Resonance 桌面面板；语音、daemon、ADR、spec；关于 Jarvis 的 Claude Code / Codex 会话
+  - id: timesink
+    name: TimeSink
+    repos: [~/Projects/timesink, ~/Projects/timesink-dist, ~/Projects/timesink-cloud]
+    hints: TimeSink macOS 时间追踪 App；屏幕采集、云同步（AWS）、发布和 Sparkle 更新
+  - id: typlus
+    name: Typlus
+    repos: [~/Projects/typeless-local]
+    hints: Typlus（原 Typeless Local，下一个名字 Syllo）语音输入 App；识别准确度、改写、发布
+  - id: malibu-workshop
+    name: Malibu Workshop
+    repos: [~/Projects/malibu-workshop]
+    hints: three.js 3D 场景网站；玻璃描边、模型和动效
+  - id: drum-machine-pro
+    name: Drum Machine Pro
+    repos: [~/Projects/drum-machine-pro]
+    hints: 鼓机网页 App；Docker、Railway 部署、CI
 
 # ADR-0011 D7 — L4 只读工具配置（tools.py 不自己读 YAML，composition
 # root 在 build_default_registry() 时把值传进去）。
@@ -209,7 +243,28 @@ tools:
     # OAuth 登录时浏览器跳回本机的端口。它写进了向对方注册的 redirect
     # URI，改了就要对该 server 重新 mcp-login。
     oauth_callback_port: 8789
-    servers: {}
+    servers:
+      # 微软 To Do + Outlook 日历，个人账号。社区版 Softeria
+      # ms-365-mcp-server，本机子进程；版本钉死，它几乎每天发版。
+      # PATH：LaunchAgent 只有系统路径，npx 走 mise 的 shim。
+      # TENANT_ID=consumers：个人账号不设这个，登录一小时后刷新失败。
+      # USE_KEYTAR=0：解密 key 放在 token 文件旁（0600），不进钥匙串——
+      # 钥匙串每次 node/版本变化都会弹窗，后台守护进程会卡在那里。
+      # ENABLED_TOOLS 只留待办、日历和读日历分类，去掉共享日历的权限工具；
+      # 登录时申请的权限由它决定（Tasks/Calendars.ReadWrite +
+      # MailboxSettings.Read），所以登录必须用同一份 env + args 加 --login；
+      # 没有 User.Read，登录自检读 /me 会报 403，不影响待办和日历。
+      microsoft:
+        command: npx
+        args: ["-y", "@softeria/ms-365-mcp-server@0.155.0"]
+        env:
+          PATH: "$HOME/.local/share/mise/shims:/usr/bin:/bin"
+          MS365_MCP_TENANT_ID: consumers
+          MS365_MCP_USE_KEYTAR: "0"
+          # 每次调用一行审计日志会灌进 daemon.err.log；静默 stderr，它自己的
+          # 错误/审计日志照写在 ~/.ms-365-mcp-server/logs/。
+          SILENT: "1"
+          ENABLED_TOOLS: '^(?!.*permission).*(todo|calendar)|^list-outlook-categories$'
     # 例：
     # servers:
     #   time:

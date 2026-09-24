@@ -83,10 +83,12 @@ export function useDashboardMotion(root: RefObject<HTMLDivElement | null>, targe
         notifications.style.height = `${notificationHeight}px`;
         notifications.style.opacity = String(step('notificationOpacity', Number(t.selected === null), dt, 22));
       }
-      cards.forEach((card, i) => {
+      cards.forEach(card => {
+        // Place by module id, not DOM order: the plugins cell is absent without a controller.
+        const i = Number(card.dataset.module);
         const active = t.selected === i;
-        const baseX = i === 2 ? cellWidth + gap : 0;
-        const baseY = i === 4 ? 3 * (cellHeight + gap) : i === 1 ? 2 * (cellHeight + gap) : i === 3 ? cellHeight + gap : 0;
+        const baseX = i === 2 || i === 5 ? cellWidth + gap : 0;
+        const baseY = i === 4 || i === 5 ? 3 * (cellHeight + gap) : i === 1 ? 2 * (cellHeight + gap) : i === 3 ? cellHeight + gap : 0;
         const x = step(`${i}.x`, active ? 0 : baseX, dt);
         const y = step(`${i}.y`, active ? t.scrollOffset : baseY, dt);
         const w = step(`${i}.w`, active || i === 1 ? innerWidth : cellWidth, dt);

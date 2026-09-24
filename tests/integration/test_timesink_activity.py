@@ -37,7 +37,7 @@ def source(tmp_path: Path) -> Iterator[sqlite3.Connection]:
     conn.execute(
         "CREATE TABLE span (id INTEGER PRIMARY KEY AUTOINCREMENT, start DATETIME NOT NULL, "
         "end DATETIME NOT NULL, appBundleID TEXT NOT NULL, appName TEXT NOT NULL, "
-        "title TEXT, url TEXT, domain TEXT)"
+        "title TEXT, url TEXT, domain TEXT, document TEXT)"
     )
     conn.execute(
         "CREATE TABLE stateEvent (id INTEGER PRIMARY KEY AUTOINCREMENT, at DATETIME NOT NULL, "
@@ -297,10 +297,6 @@ def test_exact_long_detail_and_revision_refs(
         )["version"]
         == 1
     )
-    todo = connected.call(
-        "create_todo",
-        {"title": "Follow up", "source_refs": detail["source_refs"], "request_id": "todo"},
-    )
     briefing = connected.call(
         "save_briefing",
         {
@@ -321,18 +317,6 @@ def test_exact_long_detail_and_revision_refs(
         == "source_changed"
     )
     assert connected.call("read_activity", {"activity_id": short_full})["code"] == "source_changed"
-    assert (
-        connected.call(
-            "update_todo",
-            {
-                "todo_id": todo["todo_id"],
-                "expected_version": 1,
-                "patch": {"status": "done"},
-                "request_id": "done",
-            },
-        )["version"]
-        == 2
-    )
 
 
 @pytest.mark.usefixtures("one_row_pages")
@@ -936,11 +920,6 @@ def test_text_evidence_outlives_the_image(
     assert detail["content"] == "evidence"
     assert connected.call("query_activity", SCREEN_QUERY)["rows"][0][0] == ref
     assert connected.call("save_knowledge", {**knowledge, "request_id": "k-after"})["version"] == 1
-    todo = connected.call(
-        "create_todo",
-        {"title": "Follow up", "source_refs": detail["source_refs"], "request_id": "t"},
-    )
-    assert "todo_id" in todo
     briefing = connected.call(
         "save_briefing",
         {

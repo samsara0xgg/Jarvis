@@ -4849,6 +4849,16 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 if runtime.work_state is None
                 else functools.partial(_refresh_work_state_now, runtime.work_state)
             ),
+            projects_read=(
+                None
+                if runtime.projects is None
+                else functools.partial(asyncio.to_thread, runtime.projects.read)
+            ),
+            projects_refresh=(
+                None
+                if runtime.projects is None
+                else functools.partial(asyncio.to_thread, runtime.projects.refresh)
+            ),
             conversation_read=None if window_memory is None else _read_conversation,
             plugin_read=runtime.plugin_connections.read if runtime.plugin_connections else None,
             plugin_action=runtime.plugin_connections.action if runtime.plugin_connections else None,

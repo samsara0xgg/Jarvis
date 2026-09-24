@@ -120,9 +120,10 @@ from jarvis.execution.tools import (
     turn_action_ids,
 )
 from jarvis.execution.workers import Workers, make_worker_tools
-from jarvis.runtime.daily_report import DailyReportService
+from jarvis.runtime.daily_report import PLAN_SERVER, DailyReportService, microsoft_plan
 from jarvis.runtime.plugin_connections import PluginConnections
 from jarvis.runtime.plugins import Plugins, load_plugins
+from jarvis.runtime.projects import ProjectsService
 from jarvis.runtime.stream_bridge import LoopBoundTokenStream
 from jarvis.runtime.work_state import WorkStateService, build_analyst
 from jarvis.shared import CallerPrincipal, Event
@@ -143,6 +144,7 @@ from jarvis.shared.realtime_trace import (
 from jarvis.state.committed_event_bus import CommittedEventBus
 from jarvis.state.event_log import open_event_log, open_runtime_event_log
 from jarvis.state.memory_db import MemorySettings, SessionSettings, append_record, render_context
+from jarvis.state.projects import parse_catalog
 from jarvis.state.stream_emission import committed_text_prefix
 from jarvis.state.trigger_consumption import mark_trigger_consumed
 from jarvis.surface.cli import (
@@ -433,6 +435,8 @@ class JarvisRuntime:
     # ADR 0023: the one current-work-state refresh workflow, shared by the
     # `refresh_work_state` tool and the Resonance dashboard routes.
     work_state: WorkStateService | None = None
+    # ADR 0037: the project view and its sorting job. None = no `projects` list.
+    projects: ProjectsService | None = None
 
 
 @dataclass(frozen=True)
@@ -859,8 +863,9 @@ def _timesink_db_path(full_config: Mapping[str, Any]) -> Path | None:
 
 _FALLBACK_TIMESINK_POLL_INTERVAL_S: Final[float] = 300.0
 _FALLBACK_WORK_STATE_PRESET: Final[str] = "fast"
-_DAILY_REPORT_TIMEOUT_S: Final[float] = 240.0
-"""ADR 0024 — a whole day of material and a long written report, not one short answer."""
+_DAILY_REPORT_TIMEOUT_S: Final[float] = 900.0
+"""ADR 0028 — a whole day served whole: the draft call read 300k tokens in 175 s on v4-pro
+(2026-09-12), and a retry after a timeout would resend it all."""
 
 
 def _timesink_poll_interval_s(config: Mapping[str, Any]) -> float:
@@ -1484,6 +1489,14 @@ def _all_mcp_servers(config: Mapping[str, Any], plugins: Plugins) -> dict[str, A
     return {**plugins.servers, **(dict(servers) if isinstance(servers, Mapping) else {})}
 
 
+def _wire_plan_reader(service: DailyReportService, connections: PluginConnections) -> None:
+    """ADR 0036: the report reads calendar and To Do itself, through the live connection."""
+    if any(PLAN_SERVER in package.servers for package in connections.packages.values()):
+        service.plan_reader = lambda start, end: microsoft_plan(
+            connections.client_for(PLAN_SERVER), start, end
+        )
+
+
 def mcp_login(
     server: str, *, config_path: Path | None = None, runtime_root: Path | None = None
 ) -> int:
@@ -1644,6 +1657,25 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
         model=_work_state_preset(full_config),
         tz=_work_state_timezone(full_config),
     )
+    catalog = parse_catalog(full_config.get("projects"))
+    projects = (
+        None
+        if not catalog
+        else ProjectsService(
+            event_log_path=paths.event_log,
+            timesink_path=_timesink_db_path(full_config),
+            projects=catalog,
+            sorter=build_analyst(
+                full_config,
+                _work_state_preset(full_config),
+                pricing_path=repo_root / "data" / "pricing.json",
+                account_cost=wave1_features.exactly_once_cost_accounting,
+                kind="projects",
+            ),
+            model=_work_state_preset(full_config),
+            tz=_work_state_timezone(full_config),
+        )
+    )
     daily_report = DailyReportService(
         memory_path=memory.db_path,
         timesink_path=_timesink_db_path(full_config),
@@ -1689,6 +1721,7 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
         registry=registry, config=full_config,
     )
     plugin_connections.initialize()
+    _wire_plan_reader(daily_report, plugin_connections)
     lifecycle = ActionLifecycle()
 
     # 3b. Spec §17 Tier 0 whitelist — sits next to jarvis.yaml so Allen
@@ -1813,6 +1846,7 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
         ),
         tool_cues=tool_cues,
         work_state=work_state,
+        projects=projects,
     )
 
 

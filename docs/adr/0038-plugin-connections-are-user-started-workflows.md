@@ -1,4 +1,4 @@
-# ADR 0036 — Plugin connections are user-started workflows
+# ADR 0038 — Plugin connections are user-started workflows
 
 **Status:** Accepted
 **Date:** 2026-09-23

@@ -1,6 +1,6 @@
 # ADR 0020 — Keep personal daily-loop state local and separate from worker execution
 
-**Status:** Accepted
+**Status:** Superseded-by-0036
 **Date:** 2026-09-20
 **Supersedes:** none
 

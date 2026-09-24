@@ -80,7 +80,7 @@ _TODO_FIELDS = {
 _COVERAGE = object_fields(
     {
         name: enum_field("available", "partial", "unknown", "unavailable", "not_implemented")
-        for name in ("records", "git", "app", "screen", "agent", "todos", "knowledge")
+        for name in ("records", "git", "app", "screen", "agent", "todos", "calendar", "knowledge")
     }
 )
 

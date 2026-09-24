@@ -182,6 +182,7 @@ class McpServers:
         self._stopped = False
         self.connected_servers: set[str] = set()
         self._listed: list[tuple[str, Client, mcp_types.Tool]] = []
+        self._clients: dict[str, Client] = {}
 
     def token_path(self, server: str) -> Path:
         """Where ``server``'s OAuth login lives; the login command reports it."""
@@ -298,6 +299,7 @@ class McpServers:
                     "mcp server %r unavailable; its tools stay off the menu", server, exc_info=True
                 )
                 continue
+            self._clients[server] = client
             pairs = zip(listed, modes, strict=True)
             tools.extend(self._wrap(server, client, one, mode) for one, mode in pairs)
             self.connected_servers.add(server)
@@ -319,13 +321,7 @@ class McpServers:
         ask = needs_approval(listed.annotations, mode)
 
         def call(args: Mapping[str, Any], _ctx: ToolContext) -> dict[str, Any]:
-            try:
-                result = self._run(client.call_tool(listed.name, dict(args)))
-            except Exception as exc:
-                # A dead or refusing server is a tool error, not a crash.
-                msg = f"{server}: {type(exc).__name__}: {exc}"
-                raise ToolError(msg, code="mcp_server") from exc
-            return _payload(result)
+            return self._call(server, client, listed.name, args)
 
         return Tool(
             name=mcp_tool_name(server, listed.name),
@@ -338,6 +334,28 @@ class McpServers:
             requires_confirmation=ask,
             deferred=True,
         )
+
+    def _call(
+        self, server: str, client: Client, tool: str, args: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        try:
+            result = self._run(client.call_tool(tool, dict(args)))
+        except Exception as exc:
+            # A dead or refusing server is a tool error, not a crash.
+            msg = f"{server}: {type(exc).__name__}: {exc}"
+            raise ToolError(msg, code="mcp_server") from exc
+        return _payload(result)
+
+    def call(self, server: str, tool: str, args: Mapping[str, Any]) -> dict[str, Any]:
+        """Call one tool of a connected server outside a model turn (ADR 0036's background reader).
+
+        No gate stands in front of this: callers pass read-only tools only.
+        """
+        client = self._clients.get(server)
+        if client is None:
+            msg = f"mcp server {server!r} is not connected"
+            raise ToolError(msg, code="mcp_server")
+        return self._call(server, client, tool, args)
 
     def stop(self) -> None:
         """Cancel pending authorization as well as entered clients, once."""

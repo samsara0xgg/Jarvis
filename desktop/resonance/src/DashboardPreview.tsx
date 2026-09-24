@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
-import { Database, Compass, ArrowDownLeft, ArrowUpRight, CaretDown, ChatCircle, GitBranch, Plugs, IconContext } from '@phosphor-icons/react';
+import { Database, Compass, ArrowDownLeft, ArrowUpRight, CaretDown, ChatCircle, FolderSimple, GitBranch, Plugs, IconContext } from '@phosphor-icons/react';
 import { PresentationCapsule } from './PresentationCapsule';
 import { MotionPreview } from './MotionPreview';
 import type { Presence } from './VoicePresence';
@@ -11,13 +11,14 @@ import { CodexDetail, CodexSummary, useCodexSessions } from './CodexModule';
 import { WorkStateDetail, WorkStateSummary, useWorkState } from './WorkStateModule';
 import { DashboardComposer, type DashboardInput } from './DashboardComposer';
 import { PluginPanel, type usePlugins } from './PluginPanel';
+import { ProjectsDetail, ProjectsSummary, useProjects } from './ProjectsModule';
 import './dashboard-preview.css';
 import './dashboard-unified.css';
 
 const modules = [
   { name: '对话', Icon: ChatCircle }, { name: 'Codex', Icon: GitBranch },
   { name: '模型额度', Icon: Database }, { name: '当前状态', Icon: Compass },
-  { name: '插件', Icon: Plugs },
+  { name: '插件', Icon: Plugs }, { name: '项目', Icon: FolderSimple },
 ];
 const accent = '#abbce6';
 
@@ -43,6 +44,8 @@ export function DashboardPreview({ standalone = false, embedded = false, port = 
   const codex = useCodexSessions(port);
   // ADR 0023: the persisted work state; the same refresh the conversation tool runs.
   const work = useWorkState(port);
+  // ADR 0037: the project view; opening its detail sorts whatever activity is new.
+  const projects = useProjects(port);
   const feedback = (cue: FeedbackCue) => { if (preferences.feedbackEnabled) void playFeedback(cue, preferences.feedbackVolume); };
   useEffect(() => { if (embedded) return; warmFeedback(); return stopFeedback; }, [embedded]);
   const [open, setOpen] = useState(true);
@@ -100,6 +103,7 @@ export function DashboardPreview({ standalone = false, embedded = false, port = 
     timers.current.push(setTimeout(() => { setPresence('standby'); setDemoPhase('等你开口'); setLive(false); }, 5600));
   };
   const send = () => { if (!draft.trim()) return; simulate(draft.trim()); setDraft(''); };
+  useEffect(() => { if (selected === 5) void projects.refresh(); }, [selected, projects.refresh]);
   const answer = completed ? '设计方向已经确认。下午的语音测试提醒，也已经排好了。' : '今天还有两件事，下午的提醒已经排好了。';
   return <IconContext.Provider value={{ size: 16, weight: 'regular' }}>
     <main data-dashboard-style={preferences.dashboardStyle} style={{ '--theme-color': preferences.themeColor, '--glass-opacity': preferences.opacity, '--glass-strength': preferences.glassStrength } as React.CSSProperties} className={`dashboard-preview ${standalone || embedded ? 'compact-dashboard' : ''} ${embedded ? 'embedded-dashboard' : ''} ${selected === 2 ? 'quota-dashboard' : ''} ${selected === 4 ? 'plugins-dashboard' : ''} ${selected === null ? 'dashboard-overview' : ''}`}>
@@ -117,13 +121,14 @@ export function DashboardPreview({ standalone = false, embedded = false, port = 
         <section data-interactive className="dashboard-surface" inert={!open || !visible} aria-label="Resonance dashboard" aria-hidden={!open || !visible}>
           <div className="dashboard-viewport" ref={viewport}>
           <div className="dashboard-board">
-            {modules.slice(0, plugins ? 5 : 4).map(({ name, Icon }, index) => <article key={name} className={`dashboard-module ${selected === index ? 'is-selected' : ''}`} data-module={index} inert={selected !== null && selected !== index} aria-hidden={selected !== null && selected !== index}>
+            {modules.map(({ name, Icon }, index) => index === 4 && !plugins ? null : <article key={name} className={`dashboard-module ${selected === index ? 'is-selected' : ''}`} data-module={index} inert={selected !== null && selected !== index} aria-hidden={selected !== null && selected !== index}>
               <button className="module-summary" inert={selected === index} aria-hidden={selected === index} aria-label={index === 4 ? '打开插件列表' : `展开${name}`} onClick={() => index === 4 ? plugins?.onCatalog() : expand(index)}>
                 {index !== 2 && <span className="module-label"><Icon/>{name}<ArrowUpRight className="module-expand"/></span>}
                 {index === 0 && <><span className={`module-conversation ${(conversation?.pending ?? !answered) ? 'is-processing' : ''}`}>{conversation ? conversation.text : cancelled ? '对话已暂停，随时可以继续。' : answered ? answer : '正在整理今天的安排…'}</span><span className="module-caption">{conversation ? conversation.caption : cancelled ? '已停止 · 可重新开始' : answered ? '刚刚 · 示例' : '模型 A · 处理中'}</span></>}
                 {index === 1 && <CodexSummary board={codex}/>}
                 {index === 2 && <QuotaSummary usage={quota.usage} grid/>}
                 {index === 3 && <WorkStateSummary view={work.view}/>}
+                {index === 5 && <ProjectsSummary view={projects.view} missing={projects.missing} refreshing={projects.refreshing} notice={projects.notice}/>}
                 {index === 4 && <><span className="module-primary">{plugins!.controller.snapshot?.plugins.filter(plugin => plugin.status === 'ready').length ?? 0} 个已连接</span><span className="module-caption">查看与管理插件</span></>}
               </button>
               <div className="module-detail" inert={selected !== index} aria-hidden={selected !== index}>
@@ -132,6 +137,7 @@ export function DashboardPreview({ standalone = false, embedded = false, port = 
                   {index === 1 && <CodexDetail board={codex}/>}
                   {index === 2 && <QuotaDetail layout={preferences.quotaLayout} usage={quota.usage} onRefresh={() => void quota.refresh()} refreshing={quota.refreshing}/>}
                   {index === 3 && <WorkStateDetail view={work.view} onRefresh={work.refresh} refreshing={work.refreshing} notice={work.notice}/>}
+                  {index === 5 && <ProjectsDetail view={projects.view} missing={projects.missing} onRefresh={() => void projects.refresh()} refreshing={projects.refreshing} notice={projects.notice}/>}
                   {index === 4 && <PluginPanel controller={plugins!.controller} presentation={plugins!.presentation} active={selected === 4 && visible}
                     onCatalog={plugins!.onCatalog} onHide={back} onConversation={plugins!.onConversation}/>}
                 </div>

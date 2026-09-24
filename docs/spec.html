@@ -530,8 +530,11 @@ Run      = 在某个 task 上的一次推进尝试</code></pre>
 <p>Memory 写入不是 State Object 自己决定。Runtime Decision 产生 memory candidate，检查 memory policy、stability、evidence、secret boundary 后 emit event；State Object fold 成 Memory Projection。</p>
 
 <h4 id="daily-loop-tools">3.3.5a Local daily-loop tools</h4>
-<p>Personal todos, sourced knowledge and saved briefings are separate from engineering task/worker status.
-They are local, event-derived records: <code>todo.revised</code>, <code>knowledge.revised</code>, and
+<p>Personal todos and the calendar live in Microsoft To Do and Outlook calendar, reached through the
+configured <code>microsoft</code> MCP server's tools (§3.5.6, ADR 0036); there is no local todo tool, and
+the retired store's <code>todo.revised</code> events remain readable history.
+Sourced knowledge and saved briefings are separate from engineering task/worker status.
+They are local, event-derived records: <code>knowledge.revised</code> and
 <code>briefing.revised</code> (owner L4, actor jarvis_llm, schema version 1). Each event carries
 <code>request_id, request_hash, operation, item, action_id</code>; item carries <code>id, version,
 created_at, updated_at</code> plus the domain fields below. L2 appends the domain revision atomically;
@@ -545,9 +548,6 @@ the dispatcher alone owns action lifecycle events. Original conversation records
 <tr><td>read_activity</td><td>activity_id (a row ref <code>s&lt;id&gt;:&lt;rev&gt;</code> / <code>c&lt;id&gt;:&lt;rev&gt;</code> / <code>g&lt;uid&gt;</code>, or a full timesink:, timesink-capture:, activity:, git:, codex-session: reference), cursor?</td><td>Saved Git payload or revision-pinned TimeSink row as JSON text chunks, a screen capture as its full OCR text, a <code>git:</code> reference as <code>git show --stat</code> text, a <code>codex-session:</code> reference as the session's dated turns; source_refs (always the full reference), kind, observed_at, offset, total_chars, complete, next_cursor. Never captures fresh state.</td></tr>
 <tr><td>search_knowledge</td><td>query?, project?, kind?, status?, limit?, cursor?</td><td>Full current knowledge items and source_ref; default active, also deprecated / needs_confirmation / all.</td></tr>
 <tr><td>save_knowledge</td><td>statement, kind, source_refs, basis, request_id; knowledge_id?, expected_version?, project?, status?</td><td>knowledge_id, version, source_ref. Kind: fact/decision/lesson/preference; basis: user_statement/observation/inference. Updates supersede a previous version of the same identity; supersedes points at the previous immutable event. No current activity state or verified-worker verdict.</td></tr>
-<tr><td>create_todo</td><td>title, request_id; project?, due_at?, priority?, source_refs?</td><td>todo_id, version, source_ref. New state open; priority low/normal/high, default normal. Local storage only, no reminder or remote sync.</td></tr>
-<tr><td>list_todos</td><td>status?, project?, due_before?, limit?, cursor?</td><td>Current items and source_ref; default open, also done/cancelled/all. due_before excludes undated tasks and its upper boundary.</td></tr>
-<tr><td>update_todo</td><td>todo_id, expected_version, patch, request_id</td><td>todo_id, version, source_ref. Patch permits title/project/due_at/priority/status only; null clears due_at/project. User instruction can complete/reopen/cancel; worker completion alone does not update a todo.</td></tr>
 <tr><td>save_briefing</td><td>local_date, timezone, content, source_refs, coverage, request_id; expected_version?</td><td>briefing_id, version, source_ref. Date + IANA timezone identifies one briefing with immutable revisions. No delivery or scheduling side effect.</td></tr>
 <tr><td>get_briefing</td><td>local_date, timezone, cursor?</td><td>Saved metadata plus content chunks, offset, total_chars, complete, next_cursor; delivery_status=not_tracked. Continuation stays on its initial revision.</td></tr>
 <tr><td>refresh_work_state</td><td>question?, note?, force?</td><td>The ADR 0023 work-state view: state (the saved record or null), data (latest timesink.state_observed head or null), refreshing, outcome (analyzed / reused / no_evidence / failed), error, joined?. Runs the runtime's one refresh workflow; L1 because it appends work_state.revised.</td></tr>
@@ -561,12 +561,12 @@ Late arrivals are available to a new query. Only returned next_cursor values may
 cursor issued for other arguments is <code>cursor_mismatch</code> (the caller changed the query and restarts
 without a cursor), an unreadable one <code>invalid_cursor</code>. History text
 chunks preserve exact text, including escaped characters; exhaustion, missing IDs and failures are explicit.</p>
-<p>All tools are flat Tool definitions available to jarvis_llm. Reads are risk L0; save/create/update are
+<p>All tools are flat Tool definitions available to jarvis_llm. Reads are risk L0; saves are
 L1 local reversible writes. The existing GPT Live read-only registry exposes reads only. Tool output cap
 is 16,384 characters, whole-row page budget 11,000, and detail chunks at most 3,500 text characters / 4,000
 JSON characters; query_activity alone has a 48,000-character row budget per page and a 64,384-character
 output cap (characters of the serialized JSON, not tokens). Writes reject oversized item metadata before committing, so it remains retrievable.
-Knowledge statement limit is 4,000 characters, todo title 500, briefing content 16,000, and source refs at most 20.</p>
+Knowledge statement limit is 4,000 characters, briefing content 16,000, and source refs at most 20.</p>
 <p>Each write checks request_id across these three revision event types inside BEGIN IMMEDIATE.
 An exact retry returns the original receipt; changed arguments yield request_conflict. New records expect
 version zero; updates require the current version and otherwise return version_conflict with its number.
@@ -663,7 +663,7 @@ a saved source reference. Changed detail reads return source_changed,
 deleted rows return not_found. This is revision validation, not historical version archival: a saved reference
 can become unavailable after the independent source changes. Coverage freshness metadata may advance
 between pages without changing the selected rows.</p>
-<p>Briefing coverage has records/git/app/screen/agent/todos/knowledge entries with values
+<p>Briefing coverage has records/git/app/screen/agent/todos/calendar/knowledge entries with values
 available/partial/unknown/unavailable/not_implemented; omitted entries default to unknown.
 coverage_basis=reported_by_generator distinguishes it from measured collector health. Saving a briefing
 never marks it delivered or heard. The daily work report below is the one writer that saves a briefing
@@ -721,6 +721,41 @@ activity. The read view reports three clocks apart: <code>freshness.checked_at_m
 and <code>freshness.analyzed_at</code>; a successful poll is not fresh data. The check clock is
 maintained in memory on every read, with the persisted observation as a fallback after restart. The head is a
 collector-health trail; it never triggers decide() and never calls a model.</p>
+<p id="projects"><strong>Projects (ADR 0037).</strong> The catalog is config <code>projects</code>, a
+list of <code>{id, name, repos?, hints?}</code>: id is a unique lowercase slug and the only identity of
+a catalog project (query_activity's <code>project</code> filter is a separate key, a repository
+path), repos are local checkouts (<code>~</code> expanded) whose commits count for the project,
+hints are free text telling the sorter what belongs. An empty or absent list leaves both routes
+unregistered. The catalog fingerprint covers id, name and hints, not their order. An activity is one TimeSink
+(app bundle id, domain, label), label = the span's document, else its title, else its domain, else
+the app name; its key is a hash of the three. Sorting is the runtime job behind
+<code>POST /inherent/projects/refresh</code>: over the last seven local days
+(<code>work_state.timezone</code>) it takes the activities with no answer under the current
+fingerprint, longest first, and sends them with the catalog in batches of at most 300 to the
+<code>work_state.preset</code> model through the forced tool <code>assign_projects</code> (groups of
+<code>{project, keys}</code>, project = a catalog id or <code>none</code>). Each batch that keeps at
+least one answer appends one
+<code>project.activity_classified</code> event (owner L2, actor jarvis_llm, schema version 1; payload
+<code>catalog, assignments[] {key, project|null, app, label}, model, trigger</code>). Keys the reply
+omits or did not receive and ids outside the catalog are dropped and stay unsorted; a reply that is
+not the tool's shape fails that batch, keeps the batches saved before it and ends the run with
+outcome=failed. With nothing unsorted the outcome is reused and no model is called; no readable
+TimeSink or no spans is no_evidence; otherwise classified. The latest answer for a key under the
+current fingerprint wins. A refresh while one runs joins it and answers with <code>joined=true</code>.
+<code>GET /inherent/projects</code>
+never calls a model and returns <code>days[]</code> (seven local dates, oldest first),
+<code>projects[]</code> ordered by the window's seconds, each <code>{id, name, seconds,
+today_seconds, days[] (seconds per local day), last_seen, commits {count, items[] {sha, subject,
+committed_at, on_main, repo}}, recent[] {app, label, seconds, last_seen}}</code>, <code>other</code>
+(sorted to none) and <code>unsorted</code>, each <code>{seconds, days[], count}</code>,
+<code>coverage {timesink, git}</code>, <code>latest_observed_at</code>, <code>sorted_at</code> (the
+newest classification event), <code>refreshing</code>, <code>outcome</code> and <code>error</code>;
+the POST answers the same view. Time is each span's overlap with each local day, summed per
+activity without merging overlapping spans (a TimeSink estimate). Commits are those on any local branch of the project's repos committed
+inside the window, newest eight listed, each marked on main or not. recent lists the project's
+activities with at least 60 s, latest first, at most eight. Nothing here is stored except the
+classification events. The dashboard asks for a refresh when the projects tile mounts and when its
+detail opens.</p>
 
 <p id="task-skills"><strong>Task skills (ADR 0024).</strong> A skill is a directory
 <code>jarvis/shared/skills/&lt;name&gt;/</code> holding <code>SKILL.md</code> — frontmatter with
@@ -733,7 +768,7 @@ drift apart. A skill carries instructions only: the procedure, the evidence caps
 and every rule enforced on save are code in L2/L3/runtime. Skills are not discovered dynamically,
 are not user-editable at runtime, and never carry credentials or executable steps.</p>
 
-<p id="daily-work-report"><strong>Daily work report (ADR 0025).</strong> One local calendar day,
+<p id="daily-work-report"><strong>Daily work report (ADR 0028).</strong> One local calendar day,
 one saved briefing. <code>daily_work_report</code> and the runtime job behind it resolve the day
 in <code>work_state.timezone</code> (argument <code>timezone</code> overrides, unset falls back to
 the system IANA zone): no <code>local_date</code> means the previous local date, never now minus
@@ -743,54 +778,82 @@ the report. An existing briefing for that date and zone is returned unchanged
 (<code>outcome=reused</code>, no model call) unless <code>regenerate</code> is set, which writes
 the next version through <code>save_briefing</code>'s own <code>expected_version</code> check, so a
 stale writer gets <code>version_conflict</code> and the saved report stands. Evidence is gathered
-once per run: the day's TimeSink spans aggregated per app and per window, its captures grouped per
-window and per hour (the longest OCR text of each group), TimeSink state events, that day's
-memory.db records, that day's commits read from every watched local repository (each local
-branch, filtered by committer time, marked on <code>main</code> or not) with the observer's
-<code>project.commit_seen</code> events folded in by SHA for the observation time, the Codex
-sessions with a turn inside the window (<code>~/.codex/sessions</code>, every file begun by that day
-and written since, cut to the window in the listing and in the details; first prompt and last
-reply, labelled as the agent's own account), plus open todos, active knowledge and the previous day's report as context that is
-labelled not-today. Commits are deduplicated by SHA across repository paths, each entry naming
-every path it was found in, and carry both their commit time and their observation time (or
-观察器未记录) with a <code>late</code> flag when the commit fell on another local day. Every cap
-that clipped material names the omitted count and is written into the material and into the saved
-report, and every capture, window, record, commit and session of the day is a citable, searchable
-key whether listed or not.
-Empty evidence is <code>no_evidence</code> and writes nothing. The model receives the skill's
-instructions, the keyed material, and three tools: <code>search_material</code>, a keyword search
-over the whole day (capture text in the store; windows, records, commits and sessions in memory)
-returning up to twenty keys with a line of context, each marked with its length when it exceeds
-one detail; <code>request_details</code>, which returns the originals behind up to ten keys (full
-OCR text, exact record text, <code>git show --stat</code> of a commit, a session's prompts and last
-reply, or the stored span row, whose bare GRDB times are labelled UTC), the head of a long one
-unless <code>around</code> names a word, when the passage holding that word — for a session, the
-turn holding it — is served instead; and <code>report_daily_work</code>. Calls use <code>tool_choice=auto</code>. At
-most four model calls per run: two rounds in which the model may search or ask, after which it is
-told to report, and one retry of an unusable report. A malformed report fails the run without
-replacing the saved version, and a provider failure keeps it too (<code>outcome=failed</code> with
-the round and finish reason). The saved text is composed by
-code, not by the model: refs the model was not given are dropped and counted; an item's
-<code>progress</code> is one entry per part (code, tests, deployment, an application; a whole item
-is one unnamed entry), each with its own status and refs, so no single status covers development,
-tests and deployment; every part is labelled with what it cites — each same-day commit by short
-SHA and each Allen-authored record by its material key, or else Codex session self-report alone,
-screen and app records alone, or no valid reference — which asserts nothing about whether that
-source supports the claim. A completed part that cites neither is named by item number and part
-as an uncertainty, not relabelled; a <code>user_next_steps</code> entry that cites no Allen-authored record is
-removed from that section and quoted as an uncertainty; coverage, evidence counts and every
-material limit are appended as uncertainties. 核心摘要, the only section served onward, is the
-model's prose followed by the items with a completed part, by number and title, split by whether
-a same-day commit or an Allen-authored record stands behind that part, a mixed item carrying
-every part's status after its title (代码完成，部署进行中), and a count of the rest by their
-highest status, so a summary cannot outrun the body unnoticed. Each cited source is written out once, in
-证据引用, and the body cites it by number; the first 20 are also saved as the briefing's
-<code>source_refs</code>, which the store checks on save (<code>git:&lt;repo&gt;:&lt;sha&gt;</code>
-with <code>git cat-file</code>, <code>codex-session:&lt;file&gt;</code> as a file), so every claim
-is re-checkable through <code>read_activity</code> / <code>read_records</code>, the repository or
-the session file. Saving a report still delivers nothing, and
-a suggestion inside a report creates no todo and triggers no action. Reports exceeding the composition
-budget fail without saving, preserving the previous version; no body or citation index is truncated.</p>
+once per run and served whole: every TimeSink span aggregated per app and per window, every
+capture with its whole OCR text read from the store (consecutive near-identical captures of one
+window are one entry that keeps every key), TimeSink state events, every memory.db record of the
+day, every commit of the day read from each watched local repository (each local branch, filtered
+by committer time, marked on <code>main</code> or not, configured paths of one repository listed
+once) with the observer's <code>project.commit_seen</code> events folded in by SHA for the
+observation time, every Codex session with a turn inside the window
+(<code>~/.codex/sessions</code>, every file begun by that day and written since, cut to the window)
+with every user and assistant turn whole and Codex's own approval-shim sessions folded into one
+count, plus, as context labelled not-today, the report day's and the next day's Outlook calendar
+events (cancelled ones dropped) with every open Microsoft To Do task and those completed on the report
+day, read once by the runtime through the <code>microsoft</code> server's read-only tools outside any
+model turn (ADR 0036), active knowledge and the previous day's report. Captures holding a milestone phrase (application submitted or received, order placed,
+sent, and their Chinese forms) are listed again at the head of the material. Commits carry their
+commit time and observation time (or 观察器未记录) with a <code>late</code> flag when the commit
+fell on another local day. No section is capped or excerpted. The material header states, per
+source, whether nothing was recorded, the store was unreadable, or everything was served; when
+the whole day exceeds the material budget (900k characters) the largest source falls back — screen
+text first, then Codex assistant turns other than each session's last, then Codex prompts, then
+records — to one line per entry (key, time, title, head of the text), and the header names the
+source, the count and the characters withheld; every entry of the day stays a citable, searchable
+key whether served whole or as a line.
+Empty evidence is <code>no_evidence</code> and writes nothing. Drafting: the model receives the
+skill's instructions, the keyed material, and three tools — <code>search_material</code>, a
+keyword search over the whole day (capture text in the store; windows, records, commits and
+sessions in memory) returning up to twenty keys with a line of context;
+<code>request_details</code>, which returns the whole originals behind up to ten keys (full OCR
+text, exact record text, <code>git show --stat</code> of a commit, every turn of a session, or the
+stored span row, whose bare GRDB times are labelled UTC); and <code>report_daily_work</code>,
+whose draft carries no summary. Calls use <code>tool_choice=auto</code>. At most five drafting
+calls: three rounds in which the model may search or ask, after which it is told to report, and
+one retry of an unusable report. A malformed report fails the run without replacing the saved
+version, and a provider failure during drafting keeps it too (<code>outcome=failed</code> with the
+round and finish reason). A <code>completed</code> part of a drafted item is a claim, never a
+verdict. Program rules run first: a completed part with no material key, with only late commits,
+or with only a record that is Allen's question or request is 引用无效 with its reason; a part
+about merging whose cited commits are all on <code>main</code> is supported by the repository
+itself and one whose commits are not is 引用无效 naming them; a part about deployment, restart or
+going online is 引用无效 when it cites only commits and self-report when it cites no Allen record;
+a part citing only Codex sessions is self-report; a commit SHA in an item's prose that is not a
+same-day commit, or is one but is not cited, is named as an uncertainty. Every other claim is
+checked by one verification call per item, in item order, at most twelve per report
+(<code>check_budget</code>): the call sees the item, its claimed parts and the cited originals
+(commit header and stat with its <code>main</code> and <code>late</code> flags, record text and
+author, capture text with its window, a session's first prompt, last reply and the turns naming
+the item's title words) and answers through <code>judge_claims</code> — per part
+<code>supported</code> / <code>partial</code> / <code>unsupported</code>, what the original shows,
+and for screen text whether it is a third-party page or an agent's own words. Past the budget, on
+a malformed verdict, or once the provider fails, the remaining claims are 未核实, never assumed,
+and the report is still saved. Then one summary call receives the checked table alone and returns
+one sentence on the day's main line; a sentence asserting completion, deployment, merge or
+passing is replaced by a program-built one. Eighteen model calls at most per report. The saved
+text is composed by code: refs the model was not given are dropped and counted; each part's
+status text is its ruling — 已提交（提交 …，已在/未进 main）, 用户确认完成（rN）,
+页面显示已完成（sN）, 据代理自述已完成，尚未核实, 部分完成：…, 声称完成，引用不支持,
+声称完成，引用无效：…, 声称完成，未核实（核查预算耗尽 / 核查失败）, while browsed, discussed
+and attempted parts keep 浏览 / 讨论 / 尝试/进行中 unverified; every claimed part without
+evidence is named by item number and part as an uncertainty; a <code>user_next_steps</code> entry
+that cites no Allen-authored record is removed from that section and quoted as an uncertainty;
+the per-source header, evidence counts and every material limit are appended as uncertainties.
+核心摘要, the only section served onward, is the main-line sentence followed by the program's
+lines: the evidenced items, the items claimed complete but unverified or unsupported, each with
+every part's status text after its title, and a count of the rest by their highest status, so a
+summary cannot outrun the checks. After it, code writes the next day's 日程与待办 from the same read:
+that day's events in local time (all-day first), open tasks ordered by due date with overdue and
+important marked (at most 30, the rest counted), and the tasks completed on the report day; an
+unwired or failed read is written there instead and sets coverage todos and calendar to
+unavailable, never failing the report. Each cited source is written out once, in 证据引用, and the body
+cites it by number; the first 20 are also saved as the briefing's <code>source_refs</code>, which
+the store checks on save (<code>git:&lt;repo&gt;:&lt;sha&gt;</code> with <code>git cat-file</code>,
+<code>codex-session:&lt;file&gt;</code> as a file), so every claim is re-checkable through
+<code>read_activity</code> / <code>read_records</code>, the repository or the session file. The
+report runs on <code>daily_report.preset</code> (deep). Saving a report still delivers nothing,
+and a suggestion inside a report creates no todo and triggers no action. Reports exceeding the
+composition budget fail without saving, preserving the previous version; no body or citation index
+is truncated.</p>
 
 <h4>3.3.6 Mode Runtime State vs Mode Preset Table</h4>
 
@@ -1124,8 +1187,8 @@ CapabilityExecutor.execute(gated_action_request) -> RawResultBundle</code></pre>
 
 <p>Layer 4 只按 intrinsic caller principal 过滤。Layer 3 再按 EffectivePolicy、AuthorizationLease、mode、task scope 做 contextual filter。最终交集进入 Situation Packet。Layer 4 不接收完整 mode_context，避免它开始理解 policy。</p>
 
-<p>Tool 的来源不限于本仓库。插件按 Codex 的目录格式放在 <code>plugins/&lt;name&gt;/</code>（<code>.codex-plugin/plugin.json</code>、<code>.mcp.json</code>、<code>skills/&lt;skill&gt;/SKILL.md</code>），由 <code>tools.plugins.&lt;name&gt;</code> 启用（ADR 0035）；插件的 server 与 <code>tools.mcp.servers</code> 合并，同名时后者整条替换插件的；server 条目也认 Codex 的 <code>bearer_token_env_var</code>、<code>http_headers</code>、<code>env_http_headers</code>、<code>oauth</code>/<code>oauth_resource</code>。插件 skill 以 <code>&lt;plugin&gt;:&lt;skill&gt;</code> 的名字和描述列在系统提示末尾的 Skills 段，正文与它引用的文件经只读的 <code>read_skill</code> 读取，读不到 skill 目录之外。每个 MCP server 在启动或用户连接成功时连入，它列出的每个工具以 <code>mcp__&lt;server&gt;__&lt;tool&gt;</code> 注册为一个 flat Tool（ADR 0033）：按 Codex 的审批模式（server 的 <code>default_tools_approval_mode</code> 或 <code>tools.&lt;tool&gt;.approval_mode</code>，取值 auto / prompt / writes / approve，默认 auto）判断该调用需要批准的，登记为 L3 且 <code>requires_confirmation</code>，经确认路径先问 Allen；auto 下只有 readOnlyHint 为真、或同时声明 destructiveHint 为假与 openWorldHint 为假的工具不问；不需批准的，readOnlyHint 为真则 read_only、L0，否则 L1。确认冻结工具的原始参数，Allen 同意后原样重新提议；只有 <code>write_file</code> 暂存内容。结果取 structuredContent，否则取文本块，非文本块只报类型。连不上的 server 不贡献工具，也不阻止启动。MCP 工具都是 deferred（ADR 0034）：不进 LLM 的工具列表，存在时另注册只读的 <code>tool_search</code>（BM25，默认返回 8 个），它返回的 <code>loaded_tools</code> 在本回合之后的每次调用里加入列表；列表每次调用前按调用方的 surface 重建，所以只读的 GPT-Live 回合加载不到写工具。远程条目以 <code>headers</code> 携带固定凭证，或以 <code>auth: oauth</code> 走浏览器登录（ADR 0036）：只有 <code>mcp-login</code> 命令或用户点击桌面连接按钮才能启动授权，token 与客户端注册存于 <code>&lt;runtime root&gt;/mcp/&lt;server&gt;.json</code>（0600）；守护进程启动时只复用并刷新它，缺失或失效时等待用户连接。</p>
-<p><strong>对话连接插件（ADR 0036）</strong>：常驻只读工具 <code>list_plugins</code> 列出本地目录中尚未连接的插件；<code>open_plugin</code> 在用户明确要求连接、管理或使用某个应用时打开 Resonance 面板，不进行安装、登录或授权。请求绑定真实原始输入，不能从模型生成的任务描述恢复工作。状态依次为 offered、connecting、authorizing、ready，失败为 error，取消为 cancelled；收起或关闭面板保留连接，取消使迟到结果无效。启动时发现仓库与 runtime 的插件、本机 Codex 目录及已安装缓存，<code>JARVIS_PLUGIN_CATALOG</code> 可替换外部目录来源；外部包只有在用户点击连接后才复制到 runtime。仅支持 MCP 和 skills 组件，只有网关连接器的包明确显示暂不支持，不伪造可连接状态。</p>
+<p>Tool 的来源不限于本仓库。插件按 Codex 的目录格式放在 <code>plugins/&lt;name&gt;/</code>（<code>.codex-plugin/plugin.json</code>、<code>.mcp.json</code>、<code>skills/&lt;skill&gt;/SKILL.md</code>），由 <code>tools.plugins.&lt;name&gt;</code> 启用（ADR 0035）；插件的 server 与 <code>tools.mcp.servers</code> 合并，同名时后者整条替换插件的；server 条目也认 Codex 的 <code>bearer_token_env_var</code>、<code>http_headers</code>、<code>env_http_headers</code>、<code>oauth</code>/<code>oauth_resource</code>。插件 skill 以 <code>&lt;plugin&gt;:&lt;skill&gt;</code> 的名字和描述列在系统提示末尾的 Skills 段，正文与它引用的文件经只读的 <code>read_skill</code> 读取，读不到 skill 目录之外。每个 MCP server 在启动或用户连接成功时连入，它列出的每个工具以 <code>mcp__&lt;server&gt;__&lt;tool&gt;</code> 注册为一个 flat Tool（ADR 0033）：按 Codex 的审批模式（server 的 <code>default_tools_approval_mode</code> 或 <code>tools.&lt;tool&gt;.approval_mode</code>，取值 auto / prompt / writes / approve，默认 auto）判断该调用需要批准的，登记为 L3 且 <code>requires_confirmation</code>，经确认路径先问 Allen；auto 下只有 readOnlyHint 为真、或同时声明 destructiveHint 为假与 openWorldHint 为假的工具不问；不需批准的，readOnlyHint 为真则 read_only、L0，否则 L1。确认冻结工具的原始参数，Allen 同意后原样重新提议；只有 <code>write_file</code> 暂存内容。结果取 structuredContent，否则取文本块，非文本块只报类型。连不上的 server 不贡献工具，也不阻止启动。MCP 工具都是 deferred（ADR 0034）：不进 LLM 的工具列表，存在时另注册只读的 <code>tool_search</code>（BM25，默认返回 8 个），它返回的 <code>loaded_tools</code> 在本回合之后的每次调用里加入列表；列表每次调用前按调用方的 surface 重建，所以只读的 GPT-Live 回合加载不到写工具。远程条目以 <code>headers</code> 携带固定凭证，或以 <code>auth: oauth</code> 走浏览器登录（ADR 0038）：只有 <code>mcp-login</code> 命令或用户点击桌面连接按钮才能启动授权，token 与客户端注册存于 <code>&lt;runtime root&gt;/mcp/&lt;server&gt;.json</code>（0600）；守护进程启动时只复用并刷新它，缺失或失效时等待用户连接。运行时自己的后台读取可以不经模型回合直接调用已连入 server 的工具（ADR 0036：日报读取微软日历与待办）；它前面没有确认关口，所以只许调用只读工具。</p>
+<p><strong>对话连接插件（ADR 0038）</strong>：常驻只读工具 <code>list_plugins</code> 列出本地目录中尚未连接的插件；<code>open_plugin</code> 在用户明确要求连接、管理或使用某个应用时打开 Resonance 面板，不进行安装、登录或授权。请求绑定真实原始输入，不能从模型生成的任务描述恢复工作。状态依次为 offered、connecting、authorizing、ready，失败为 error，取消为 cancelled；收起或关闭面板保留连接，取消使迟到结果无效。启动时发现仓库与 runtime 的插件、本机 Codex 目录及已安装缓存，<code>JARVIS_PLUGIN_CATALOG</code> 可替换外部目录来源；外部包只有在用户点击连接后才复制到 runtime。仅支持 MCP 和 skills 组件，只有网关连接器的包明确显示暂不支持，不伪造可连接状态。</p>
 <p>插件的启停与审批默认值保存在 <code>&lt;runtime root&gt;/plugin-settings.json</code>，覆盖 YAML 默认值而不改写 YAML；逐工具审批覆盖仍有效。用户填写的凭证保存在 <code>plugin-credentials.json</code>（0600），仅用于该插件的客户端，不进入 renderer 快照、模型上下文或事件日志。桌面主进程从 <code>plugin-access.json</code>（0600）读取管理凭证，通过 Bearer 校验访问 <code>GET /inherent/plugins</code> 和 <code>POST /inherent/plugins/action</code>；renderer 只持有窄 IPC 接口。命令包括 open、connect、cancel、reopen、disable、approval，除 open 外均须携带当前 request_id。授权链接只由后台的当前连接流程打开。连接成功后 runtime 原子替换插件工具、tool_search 索引与 read_skill；每个新回合读取当前 skills 列表。停用移除该插件的工具与 skills；账号授权需在原服务撤销。</p>
 <p>用户点击“连接并继续”后，成功连接只在原输入仍为最新人工输入时追加一次 <code>surface.user_intent</code>，channel 为 <code>plugin_resume</code>，使用原 transcript 和 record_id、新 turn_id 及唯一请求事件标识。保留 <code>plugin_origin_channel</code>，所以 GPT-Live 的只读限制不会因续接放宽；连接账号不等于批准后续操作。新输入优先，取消不续接，连接流程重启不重放。快照可跨 renderer 重连恢复当前流程；“已连接”代表最近一次接入完成，不代表持续的服务健康探测。</p>
 
@@ -1676,6 +1739,7 @@ CREATE INDEX idx_events_actor_ts      ON events(actor, ts_epoch_ms);</code></pre
 <li><strong>Mode / 注意力</strong>：<code>mode.transitioned</code> · <code>focus.changed</code> · <code>lens.enabled</code> · <code>override.applied</code> · <code>confirmation.accepted</code> · <code>confirmation.rejected</code></li>
 <li><strong>感知 / 环境</strong>：<code>sensor.observed</code> · <code>sensor.alert</code> · <code>presence.inferred</code> · <code>environment.snapshot</code> · <code>repo.state_observed</code> · <code>project.commit_seen</code> · <code>usage.state_observed</code> · <code>tts.usage_observed</code> · <code>timesink.state_observed</code>（observer 事件，只折叠不触发 decide，见 ADR-0009 / ADR-0018 / ADR 0023）</li>
 <li><strong>Work state</strong>：<code>work_state.revised</code>（ADR 0023，<a href="#work-state">§3.3.5a</a>；按需分析的持久记录，每条结论带 basis）</li>
+<li><strong>Projects</strong>：<code>project.activity_classified</code>（ADR 0037，<a href="#projects">§3.3.5a</a>；一批活动归到哪个项目，只在当前项目清单指纹下有效）</li>
 <li><strong>Surface</strong>：<code>surface.user_intent</code> · <code>surface.failed</code> · <code>surface.dismissed</code> · <code>surface.clarified</code></li>
 <li><strong>Live voice</strong>：<code>live.result_delivered</code> · <code>live.session_usage</code>（ADR 0026；委托结果的交付与会话用量是持久事实）</li>
 <li><strong>Cross-domain (discriminator pattern)</strong>：<code>cross_domain.request.dispatched</code> · <code>cross_domain.request.received</code> · <code>cross_domain.request.deferred</code> · <code>cross_domain.request.expired</code> · <code>cross_domain.response.sent</code> · <code>cross_domain.response.received</code> · <code>cross_domain.response.late</code> · <code>cross_domain.event_quarantined</code><br><em>Note:</em> 具体 action 在 <code>payload.action_type</code> 区分，不分裂成多个 event type（见 <a href="#layer-deployment-domains">§3.7.3</a>）。</li>
@@ -2862,14 +2926,14 @@ panel  =  evidence and action controls</code></pre>
 <li>当前工作状态（<a href="#work-state">§3.3.5a</a>，ADR 0023）：<code>GET /inherent/work-state</code> 每 60 s 轮询只读，刷新按钮 <code>POST /inherent/work-state/refresh</code> 与对话里的 refresh_work_state 走同一条分析；显示上次结果、数据时间、分析时间，更新中保留旧结果，失败标"未更新"，较旧的返回不覆盖较新的记录</li>
 <li>pending review</li>
 <li>evidence status</li>
-<li>current project state</li>
+<li>项目（ADR 0037，<a href="#projects">§3.3.5a</a>）：近七天每个项目的时间、最近提交和最近活动，另列未归入项目和尚未归类的时间；打开时只为新出现的活动归类</li>
 <li>blocked tasks</li>
 <li>queue</li>
 <li>mode / history</li>
 <li>recent events</li>
 </ul>
 
-<p>Resonance 自由悬浮模式的桌面首页由胶囊中的 Dashboard 按钮展开／收起，不另设通知入口或顶部最小化按钮。首页采用固定两列、三行的可见网格，单位格为正方形，尺寸不随摘要内容变化：对话位于左上、当前状态位于左中，模型额度纵跨右侧两行，Codex 任务横跨底部两列。插件入口和原有通知卡片位于后续内容中，超过三行时在 Dashboard 内滚动，不增加首页高度。额度摘要同时显示服务商返回的各项订阅限制、已用比例和重置倒计时。模块展开页继续沿用现有布局，底部短条仅点击返回首页，不提供下拉返回手势。额度详情默认采用 B2 紧凑折叠视图，三个分区独立展开／收起，初始仅订阅额度展开，仍可在设置切换其他布局。Codex 订阅标题显示 Codex Pro；首页摘要的套餐标签显示服务返回的值，详情继续沿用现有展示。首页卡片到详情的边框与尺寸、Dashboard 以约 200ms 整体淡入并从上方 6px 滑入，不做卷帘式裁切；通知数量变化不改变首页可见网格高度；分区与标签切换保留轻量动画。胶囊、Dashboard 与 transcript 入口光缝共用外观主色和玻璃设置。光缝在中部 Live 与下方光缝组成的完整矩形区域悬停时显示，移出后隐藏。Resonance 的 macOS 桌面浮窗采用非激活 panel，自由悬浮使用 floating 层级，配置为加入普通桌面及其他应用的全屏 Space，在显示和焦点切换后维持置顶，置顶操作不夺取其他应用的键盘焦点。</p>
+<p>Resonance 自由悬浮模式的桌面首页由胶囊中的 Dashboard 按钮展开／收起，不另设通知入口或顶部最小化按钮。首页采用固定两列、三行的可见网格，单位格为正方形，尺寸不随摘要内容变化：对话位于左上、当前状态位于左中，模型额度纵跨右侧两行，Codex 任务横跨底部两列。插件入口（左）与项目（右，ADR 0037）组成第四行，与原有通知卡片同在后续内容中，超过三行时在 Dashboard 内滚动，不增加首页高度。额度摘要同时显示服务商返回的各项订阅限制、已用比例和重置倒计时。模块展开页继续沿用现有布局，底部短条仅点击返回首页，不提供下拉返回手势。额度详情默认采用 B2 紧凑折叠视图，三个分区独立展开／收起，初始仅订阅额度展开，仍可在设置切换其他布局。Codex 订阅标题显示 Codex Pro；首页摘要的套餐标签显示服务返回的值，详情继续沿用现有展示。首页卡片到详情的边框与尺寸、Dashboard 以约 200ms 整体淡入并从上方 6px 滑入，不做卷帘式裁切；通知数量变化不改变首页可见网格高度；分区与标签切换保留轻量动画。胶囊、Dashboard 与 transcript 入口光缝共用外观主色和玻璃设置。光缝在中部 Live 与下方光缝组成的完整矩形区域悬停时显示，移出后隐藏。Resonance 的 macOS 桌面浮窗采用非激活 panel，自由悬浮使用 floating 层级，配置为加入普通桌面及其他应用的全屏 Space，在显示和焦点切换后维持置顶，置顶操作不夺取其他应用的键盘焦点。</p>
 <p>macOS Resonance 默认贴合刘海，外壳使用纯黑，不受玻璃透明度设置影响；Electron 保留现有 React 界面与 Live 链路，原生 AppKit 仅提供屏幕安全区及越过菜单栏限制的窗口定位。收起宽度为硬件刘海宽度加 4px 安全边距和左右各 44px，高度与刘海安全区一致；小球及原有 Live 声纹在左侧，文字入口在右侧，隐藏 Dashboard 按钮、分隔线和下方光缝。悬停 150ms 后展开，首次显示 Dashboard，后续恢复原面板；鼠标位于刘海或展开表面内时保持展开，移出 300ms 后收起，期间返回取消收起。展开使用约 420ms 弹性形变与延迟渐入，收起使用 300ms 平滑动画；减少动态效果时直接切换。展开顶部总宽度为 540px，左右内凹各 22px 后正文外框为 496px；当前高度为刘海安全区加 472px，并受屏幕可用高度约束。刘海模式网格保持两列三行与原模块顺序，列宽随外框扩展，行高适配受限高度，后续内容及组合面板内部滚动。悬停不抢键盘焦点，自动收起只隐藏展示，不清空草稿、关闭 Live 或取消后台工作。贴合时使用 status 层级及 stationary、ignoresCycle 原生窗口行为，在 Mission Control 中留在屏幕刘海原位，不作为普通窗口参与排列；获得文字输入焦点或更新跨桌面设置后仍维持该行为，脱离刘海时恢复原窗口行为。拖离刘海或通过窗口选项可恢复自由悬浮，拖回屏幕顶部中央可重新贴合。</p>
 <p>插件是 Dashboard 内的一个模块，首页插件格沿用小格展开为详情的连续形变；列表、连接授权状态和管理页都在 Dashboard 内展示，不追加独立的插件区域。对话请求、菜单和设置入口也导航到同一个插件模块。插件页沿用首页三行高的可见区域，长列表和详情内部滚动。底部短条或 Escape 返回首页并恢复原滚动位置及插件格焦点；返回、收起或关闭 Dashboard 不取消正在进行的授权，只有明确的取消操作停止连接。未提交的令牌在离开插件页时清空。</p>
 <p>Dashboard 默认复用文字输入的外层原生玻璃，底色、遮罩透明度与毛玻璃强度跟随统一外观设置；内部表面与悬浮输入框不重复叠加底色。首页使用同一套文字和细分隔线，保留固定网格，弱化各模块的独立卡片外框。「外观与提示音」中的「Dashboard 风格」保留「原卡片风格（备份）」供用户随时切回；选择跨重载保存，切换不改变网格尺寸、模块顺序、输入交互或详情页布局。</p>

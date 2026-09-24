@@ -1,6 +1,6 @@
 # ADR 0032 — Remote MCP login is a foreground command
 
-**Status:** Superseded-by-0036
+**Status:** Superseded-by-0038
 **Date:** 2026-09-22
 **Supersedes:** none
 

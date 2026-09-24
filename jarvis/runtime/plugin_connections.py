@@ -603,6 +603,15 @@ class PluginConnections:
             conn.close()
         return "continued"
 
+    def client_for(self, server: str) -> McpServers:
+        """The live client holding ``server``, for a background read-only caller (ADR 0036)."""
+        with self._lock:
+            for active in self._active.values():
+                if server in active.client.connected_servers:
+                    return active.client
+        msg = f"mcp server {server!r} is not connected"
+        raise ToolError(msg, code="mcp_server")
+
     def stop(self) -> None:
         """Invalidate completion before closing clients during daemon shutdown."""
         with self._lock:

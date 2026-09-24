@@ -108,6 +108,10 @@ ignore = [
 "tests/integration/test_daily_report_live.py" = ["RUF001"]
 # Its acceptance test asserts on those Chinese strings verbatim.
 "tests/integration/test_work_state.py" = ["RUF001"]
+# The project sorter's prompt and material are Chinese by design (ADR 0037).
+"jarvis/decision/projects.py" = ["RUF001"]
+"tests/integration/test_projects.py" = ["RUF001"]  # asserts on real Chinese labels verbatim
+"tests/integration/test_projects_live.py" = ["RUF001"]  # spot-checks real Chinese labels
 # Asserts on the Chinese commentary a Live session is sent (ADR 0026).
 "tests/integration/test_live_delivery.py" = ["RUF001"]
 # Tests use bare `assert` (pytest), don't need return-type annotations, and
