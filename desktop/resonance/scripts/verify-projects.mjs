@@ -41,7 +41,7 @@ try {
   });
   await page.goto(`${url}/?port=19099`);
   await page.getByRole('button', { name: 'Dashboard', exact: true }).click();
-  const tile = page.locator('[data-module="0"] .module-summary');
+  const tile = page.locator('[data-module="5"] .module-summary');
   await tile.getByText('求职 5.0 小时', { exact: false }).waitFor();
   check('tile reads the view and names the week', gets > 0 && (await tile.textContent()).includes('近 7 天'));
   await tile.getByText('正在归类新活动', { exact: false }).waitFor();
@@ -69,7 +69,7 @@ try {
   await bare.route('http://127.0.0.1:19099/**', route => route.request().url().includes('/inherent/projects') ? route.fulfill({ status: 404, body: '' }) : route.abort());
   await bare.goto(`${url}/?port=19099`);
   await bare.getByRole('button', { name: 'Dashboard', exact: true }).click();
-  await bare.locator('[data-module="0"] .module-summary').getByText('还没有配置项目').waitFor();
+  await bare.locator('[data-module="5"] .module-summary').getByText('还没有配置项目').waitFor();
   check('no configured projects says where to add them', true);
   check('no React runtime errors', errors.length === 0);
   writeFileSync(`${dir}/checks.json`, JSON.stringify({ checks, posts, gets, errors }, null, 2));
