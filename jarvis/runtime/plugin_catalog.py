@@ -63,7 +63,12 @@ def credential_fields(spec: dict[str, Any]) -> set[str]:
     fields = {str(v) for v in (spec.get("env_http_headers") or {}).values()}
     if spec.get("bearer_token_env_var"):
         fields.add(str(spec["bearer_token_env_var"]))
-    for mapping in (spec.get("env"), spec.get("headers"), spec.get("http_headers")):
+    # A whole-value `$VAR` in env passes a credential; one inside a longer value
+    # (PATH: "$HOME/...") is interpolation the daemon's environment supplies.
+    for value in (spec.get("env") or {}).values():
+        if whole := _ENV.fullmatch(str(value)):
+            fields.add(whole[1] or whole[2])
+    for mapping in (spec.get("headers"), spec.get("http_headers")):
         for value in (mapping or {}).values():
             fields.update(a or b for a, b in _ENV.findall(str(value)))
     return fields
