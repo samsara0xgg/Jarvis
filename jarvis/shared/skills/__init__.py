@@ -12,6 +12,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from importlib.resources import files
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 _FENCE = "---"
 
@@ -40,6 +44,15 @@ def _frontmatter(text: str) -> tuple[dict[str, str], str]:
             return head, "\n".join(lines[index + 1 :])
     message = "SKILL.md frontmatter is not closed"
     raise ValueError(message)
+
+
+def skill_head(skill_md: Path) -> dict[str, str]:
+    """The frontmatter of a ``SKILL.md`` outside this package (plugin skills, ADR 0035)."""
+    head, _ = _frontmatter(skill_md.read_text(encoding="utf-8"))
+    if not head.get("name") or not head.get("description"):
+        message = f"{skill_md}: frontmatter needs a name and a description"
+        raise ValueError(message)
+    return head
 
 
 def load_skill(name: str) -> Skill:

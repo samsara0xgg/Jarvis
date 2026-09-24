@@ -856,10 +856,11 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         # keys: tool_name (the proposed tool's name); caller (the
         # caller_principal value); canonical_target (the resolved
         # path/target); target_entity_ref (the resolved entity ref, or
-        # null); risk_level (one of L0 through L4); and args_meta,
-        # itself a dict of the tool's non-content arguments plus three
-        # always-present keys — content_sha256, content_bytes, and
-        # content_artifact (the staged content's path).
+        # null); risk_level (one of L0 through L4); and args_meta. For
+        # `write_file`, args_meta is the non-content arguments plus
+        # content_sha256, content_bytes and content_artifact (the staged
+        # content's path); for any other tool (ADR 0033) it is the
+        # proposed arguments, unchanged.
         # The `content` argument itself never rides the event payload
         # (§3.3.9 bounded payloads) — it is staged to
         # `artifacts_root/pending_writes/<confirmation_id>` at request

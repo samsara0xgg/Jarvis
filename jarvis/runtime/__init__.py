@@ -99,9 +99,11 @@ from jarvis.decision.stream_gate import routine_stream_policy
 from jarvis.decision.tier0 import Tier0ConfigError, load_tier0_table, validate_tier0_table
 from jarvis.deployment import RuntimePaths, bootstrap_runtime, load_env_file
 from jarvis.execution.mcp_oauth import DEFAULT_OAUTH_CALLBACK_PORT
-from jarvis.execution.mcp_tools import DEFAULT_MCP_TIMEOUT_S, McpServers
+from jarvis.execution.mcp_tools import DEFAULT_MCP_TIMEOUT_S, McpServers, is_oauth
 from jarvis.execution.path_resolver import resolve as resolve_file_entity
 from jarvis.execution.path_resolver import resolve_write_target
+from jarvis.execution.skill_reader import build_read_skill
+from jarvis.execution.tool_search import build_tool_search
 from jarvis.execution.tools import (
     DEFAULT_OBSIDIAN_VAULT_ROOT,
     DEFAULT_SCREEN_MAX_WIDTH_PX,
@@ -113,6 +115,7 @@ from jarvis.execution.tools import (
     ActionLifecycle,
     DuplicateToolError,
     ReadOnlyToolRegistry,
+    Tool,
     ToolContext,
     ToolRegistry,
     VisionClient,
@@ -122,6 +125,7 @@ from jarvis.execution.tools import (
 )
 from jarvis.execution.workers import Workers, make_worker_tools
 from jarvis.runtime.daily_report import DailyReportService
+from jarvis.runtime.plugins import Plugins, load_plugins
 from jarvis.runtime.stream_bridge import LoopBoundTokenStream
 from jarvis.runtime.work_state import WorkStateService, build_analyst
 from jarvis.shared import CallerPrincipal, Event
@@ -1469,20 +1473,39 @@ def _mcp_servers(
     )
 
 
+def _plugins(config: Mapping[str, Any], repo_root: Path) -> Plugins:
+    """ADR 0035: the plugins `tools.plugins` switches on, read from `<repo>/plugins/`."""
+    tools_block = config.get("tools")
+    block = tools_block.get("plugins") if isinstance(tools_block, Mapping) else None
+    return load_plugins(repo_root / "plugins", block if isinstance(block, Mapping) else {})
+
+
+def _all_mcp_servers(config: Mapping[str, Any], plugins: Plugins) -> dict[str, Any]:
+    """Plugin servers, then `tools.mcp.servers`, which replaces a plugin server of its name."""
+    servers = _mcp_block(config).get("servers")
+    return {**plugins.servers, **(dict(servers) if isinstance(servers, Mapping) else {})}
+
+
 def _register_mcp(
-    registry: ToolRegistry, config: Mapping[str, Any], paths: RuntimePaths
+    registry: ToolRegistry, config: Mapping[str, Any], paths: RuntimePaths, plugins: Plugins
 ) -> McpServers | None:
-    """ADR 0031: every `tools.mcp.servers` entry is entered now; its tools join the menu."""
-    block = _mcp_block(config)
-    servers = block.get("servers")
-    if not isinstance(servers, Mapping) or not servers:
+    """ADR 0031/0034/0035: every server is entered now; its tools wait behind `tool_search`."""
+    for skill_tool in build_read_skill(plugins.skills):
+        registry.register(skill_tool)
+    servers = _all_mcp_servers(config, plugins)
+    if not servers:
         return None
-    mcp_servers = _mcp_servers(block, paths, open_url=None)
+    mcp_servers = _mcp_servers(_mcp_block(config), paths, open_url=None)
+    registered: list[Tool] = []
     for one in mcp_servers.connect(servers):
         try:
             registry.register(one)
         except DuplicateToolError:
             LOGGER.warning("mcp tool %r collides with a registered tool; skipped", one.name)
+            continue
+        registered.append(one)
+    for search_tool in build_tool_search(registered, plugins.sources):
+        registry.register(search_tool)
     return mcp_servers
 
 
@@ -1495,20 +1518,25 @@ def mcp_login(
     asked for a login, 2 the entry is missing or not an OAuth one.
     """
     if config_path is None:
-        config_path = _locate_repo_root(Path(__file__).parent) / _DEFAULT_CONFIG_FILENAME
+        repo_root = _locate_repo_root(Path(__file__).parent)
+        config_path = repo_root / _DEFAULT_CONFIG_FILENAME
+    else:
+        repo_root = config_path.resolve().parent.parent
     paths = bootstrap_runtime(runtime_root)
     load_env_file(paths.root)
-    block = _mcp_block(_load_full_config(config_path))
-    servers = block.get("servers")
-    spec = servers.get(server) if isinstance(servers, Mapping) else None
+    config = _load_full_config(config_path)
+    block = _mcp_block(config)
+    servers = _all_mcp_servers(config, _plugins(config, repo_root))
+    spec = servers.get(server)
     if not isinstance(spec, Mapping):
-        known = ", ".join(sorted(servers)) if isinstance(servers, Mapping) else "none"
+        known = ", ".join(sorted(servers)) or "none"
         sys.stderr.write(
-            f"mcp-login: no `tools.mcp.servers.{server}` in {config_path} (known: {known})\n"
+            f"mcp-login: no server {server!r} in `tools.mcp.servers` or an enabled plugin"
+            f" of {config_path} (known: {known})\n"
         )
         return 2
-    if str(spec.get("auth") or "").lower() != "oauth":
-        sys.stderr.write(f"mcp-login: {server} has no `auth: oauth`; nothing to log in to\n")
+    if not is_oauth(spec):
+        sys.stderr.write(f"mcp-login: {server} does not log in with OAuth; nothing to do\n")
         return 2
     mcp_servers = _mcp_servers(block, paths, open_url=webbrowser.open)
     try:
@@ -1681,7 +1709,8 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
         screen_max_width_px=screen_max_width_px,
     )
     workers = _register_workers(registry, paths)
-    mcp_servers = _register_mcp(registry, full_config, paths)
+    plugins = _plugins(full_config, repo_root)
+    mcp_servers = _register_mcp(registry, full_config, paths, plugins)
     lifecycle = ActionLifecycle()
 
     # 3b. Spec §17 Tier 0 whitelist — sits next to jarvis.yaml so Allen
@@ -1766,8 +1795,10 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
         ResponseRunRegistry() if response_flags.independent_response_cancel else None
     )
 
-    # 5. Prompt.
+    # 5. Prompt, then the plugin skills catalogue (ADR 0035), stable for the process.
     system_prompt = prompt_path.read_text(encoding="utf-8")
+    if skills_prompt := plugins.skills_prompt():
+        system_prompt = f"{system_prompt.rstrip()}\n\n{skills_prompt}\n"
 
     return JarvisRuntime(
         config=full_config,

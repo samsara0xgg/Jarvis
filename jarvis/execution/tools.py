@@ -296,6 +296,8 @@ class ToolDefinition:
             risk_rank(confirmation_threshold)``; boot validation
             (``jarvis.decision.policy.validate_requires_confirmation``)
             enforces this so the two fields cannot drift.
+        deferred: True if the tool stays off the model's tool list until
+            ``tool_search`` finds it (ADR 0034).
     """
 
     name: str
@@ -308,6 +310,7 @@ class ToolDefinition:
     read_only: bool
     requires_entity: bool
     requires_confirmation: bool
+    deferred: bool = False
 
 
 # --- Tool (ADR 0019: the flat definition replacing ToolDefinition) ----------
@@ -359,7 +362,8 @@ class Tool:
     serialized result: the longest string values are windowed head+tail until
     it fits and the payload is marked ``truncated``. ``requires_entity`` and
     ``requires_confirmation`` feed the Pre-action Gate arms that still exist;
-    they leave with the audit chain.
+    they leave with the audit chain. A ``deferred`` tool stays off the model's
+    tool list until ``tool_search`` finds it (ADR 0034).
     """
 
     name: str
@@ -372,6 +376,7 @@ class Tool:
     requires_entity: bool = False
     requires_confirmation: bool = False
     max_result_chars: int = DEFAULT_MAX_RESULT_CHARS
+    deferred: bool = False
 
 
 def tool(  # noqa: PLR0913 — one keyword per Tool field.

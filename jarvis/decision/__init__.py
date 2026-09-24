@@ -421,6 +421,11 @@ class ToolDefinitionLike(Protocol):
         """
         ...
 
+    @property
+    def deferred(self) -> bool:
+        """ADR 0034: off the model's tool list until a search loads it."""
+        ...
+
 
 class ResolvedEntityLike(Protocol):
     """One resolved non-task entity handed back by the injected resolver.
@@ -683,6 +688,8 @@ class _Scratch:
     # silent_log/queue_review candidate. Same flag-to-finalize idiom as
     # `pending_confirmation_template_line` above.
     confirmation_answered_this_turn: bool = False
+    # ADR 0034: deferred tools a `loaded_tools` result put on this turn's menu.
+    loaded_tools: set[str] = field(default_factory=set)
 
 
 _STATUS_HEADER: Final[str] = "[当前状态｜程序提供，不是用户说的话]"  # noqa: RUF001 — Chinese punctuation is intentional.
@@ -930,11 +937,19 @@ def _run_tool_use_loop(
 
     messages = _loop_messages(packet, ctx)
     llm_surface = surface_for(policy, ctx.tool_registry, CallerPrincipal.JARVIS_LLM)
-    tools = tool_definitions_for_llm([_tool_to_dict(t) for t in llm_surface])
 
     iteration = 0
     while iteration < ctx.max_tool_iterations:
         iteration += 1
+        # ADR 0034: the menu is rebuilt per call, so a tool a search loaded is
+        # callable from the next call on; only this caller's surface can load.
+        tools = tool_definitions_for_llm(
+            [
+                _tool_to_dict(t)
+                for t in llm_surface
+                if not t.deferred or t.name in scratch.loaded_tools
+            ]
+        )
         record_realtime_trace(
             "llm_chat_call_started_upper_bound",
             turn_id=scratch.turn_id,
@@ -1130,6 +1145,27 @@ _CONFIRMATION_TEMPLATE_LINE: Final[str] = (
     "（{mode}，{content_bytes} 字节，风险 {risk_level}）。"  # noqa: RUF001 — fullwidth parens/comma/period are intentional Chinese punctuation.
     "回复「可以」执行，「不要」取消。"  # noqa: RUF001 — fullwidth comma/period are intentional Chinese punctuation.
 )
+
+# ADR 0033: the same runtime-rendered consent line for every other tool at the
+# threshold, rendered from the frozen arguments only.
+_TOOL_CONFIRMATION_TEMPLATE_LINE: Final[str] = (
+    "待确认：{tool}（{arguments}）。回复「可以」执行，「不要」取消。"  # noqa: RUF001 — fullwidth colon/parens/comma/period are intentional Chinese punctuation.
+)
+_ARGUMENTS_PREVIEW_CHARS: Final[int] = 160
+
+
+def _spoken_tool_name(tool_name: str) -> str:
+    """``mcp__notion__notion-fetch`` -> ``notion notion-fetch`` (spec §3.5.6 naming)."""
+    parts = tool_name.split("__")
+    return f"{parts[1]} {parts[2]}" if len(parts) == 3 and parts[0] == "mcp" else tool_name  # noqa: PLR2004
+
+
+def _arguments_preview(arguments: Mapping[str, Any]) -> str:
+    text = json.dumps(dict(arguments), ensure_ascii=False)
+    if len(text) <= _ARGUMENTS_PREVIEW_CHARS:
+        return text
+    return f"{text[:_ARGUMENTS_PREVIEW_CHARS]}…"
+
 
 _TIER0_SPOKEN_PREVIEW_MAX_BYTES: Final[int] = 200
 """MUST-FIX 2b (ADR-0011 §12): a Tier 0 template's tool-payload values
@@ -1570,6 +1606,11 @@ def _dispatch_one_tool_call(  # noqa: PLR0915 — single-pass orchestration of r
     )
     if cost_event is not None:
         scratch.events.append(cost_event)
+
+    # ADR 0034: a result naming `loaded_tools` puts them on this turn's menu.
+    loaded = primary_slot.payload.get("loaded_tools") if primary_slot.error is None else None
+    if isinstance(loaded, list):
+        scratch.loaded_tools.update(str(n) for n in loaded)
 
     # 7. Append the tool result back into the messages list so the LLM
     #    can see it on the next iteration.
@@ -2308,6 +2349,34 @@ def _stage_and_request_confirmation(  # noqa: PLR0913 — one keyword per D3 sna
         The emitted ``confirmation.requested`` :class:`Event`.
     """
     confirmation_id = _new_confirmation_id()
+    expires_at_ms = _now_epoch_ms() + ctx.confirmation_ttl_ms
+
+    if action_request.tool_name != "write_file":
+        # ADR 0033: any other tool at the threshold (an MCP tool that needs
+        # approval) freezes its arguments as proposed; nothing is staged.
+        generic_snapshot: dict[str, Any] = {
+            "tool_name": action_request.tool_name,
+            "caller": action_request.caller_principal.value,
+            "canonical_target": canonical_target,
+            "target_entity_ref": action_request.target_entity_ref,
+            "risk_level": tool_def.risk_level,
+            "args_meta": dict(arguments),
+        }
+        return emit_event(
+            ctx.conn,
+            type="confirmation.requested",
+            payload={
+                "confirmation_id": confirmation_id,
+                "action_snapshot": generic_snapshot,
+                "template_line": _TOOL_CONFIRMATION_TEMPLATE_LINE.format(
+                    tool=_spoken_tool_name(action_request.tool_name),
+                    arguments=_arguments_preview(arguments),
+                ),
+                "expires_at_ms": expires_at_ms,
+            },
+            source_event_id=source_event_id,
+            correlation=_action_correlation(action_request),
+        )
 
     content_raw = arguments.get("content")
     content_str = content_raw if isinstance(content_raw, str) else ""
@@ -2341,7 +2410,6 @@ def _stage_and_request_confirmation(  # noqa: PLR0913 — one keyword per D3 sna
         content_bytes=content_byte_count,
         risk_level=tool_def.risk_level,
     )
-    expires_at_ms = _now_epoch_ms() + ctx.confirmation_ttl_ms
 
     return emit_event(
         ctx.conn,
@@ -2386,7 +2454,7 @@ _CONFIRMATION_CONTENT_MISMATCH_TEXT: Final[str] = "暂存内容校验失败，�
 # `_check_entity_trusted`'s `tool_def is None` arm is kept — a handler must
 # be safe standing alone, not merely behind preconditions that happen to
 # always hold in production.
-_CONFIRMATION_TOOL_GONE_TEXT: Final[str] = "无法执行：工具已不可用，写入未执行。"  # noqa: RUF001 — fullwidth colon/comma/period are intentional Chinese punctuation.
+_CONFIRMATION_TOOL_GONE_TEXT: Final[str] = "无法执行：工具已不可用，未执行。"  # noqa: RUF001 — fullwidth colon/comma/period are intentional Chinese punctuation.
 
 # ADR-0012 §4: "gate refuses the re-proposal (policy/entity drift since ask)
 # -> fixed line reporting the refusal reason". Interpolates only the
@@ -2394,14 +2462,14 @@ _CONFIRMATION_TOOL_GONE_TEXT: Final[str] = "无法执行：工具已不可用，
 # `gate.reasons` strings, which are developer-facing audit text not vetted
 # against the Pre-emit Gate's completion-keyword scrub.
 _CONFIRMATION_REPROPOSAL_REFUSED_TEMPLATE: Final[str] = (
-    "已取消：重新检查未通过（{outcome}），写入未执行。"  # noqa: RUF001 — fullwidth parens/comma/period are intentional Chinese punctuation.
+    "已取消：重新检查未通过（{outcome}），未执行。"  # noqa: RUF001 — fullwidth parens/comma/period are intentional Chinese punctuation.
 )
 
 # ADR-0012 §4: "write_file handler I/O error -> error observation ->
 # Limitation routing (existing machinery)" — `result_interpreter` below
 # already emits the Limitation Claim; this is only the direct-reply text
 # for the turn that was Allen's own "可以".
-_CONFIRMATION_DISPATCH_ERROR_TEMPLATE: Final[str] = "写入执行出错，未写入：{error}"  # noqa: RUF001 — fullwidth comma is intentional Chinese punctuation.
+_CONFIRMATION_DISPATCH_ERROR_TEMPLATE: Final[str] = "执行出错：{error}"  # noqa: RUF001 — fullwidth comma is intentional Chinese punctuation.
 
 # ADR-0012 §3 D6 exact wording — "backed by ack semantics; the wording
 # deliberately stops at 已执行 and must not be strengthened" (no 完成/
@@ -2409,6 +2477,16 @@ _CONFIRMATION_DISPATCH_ERROR_TEMPLATE: Final[str] = "写入执行出错，未写
 _CONFIRMED_WRITE_SUCCESS_TEMPLATE: Final[str] = (
     "write_file 已执行：`{path}`（{bytes_written} 字节）"  # noqa: RUF001 — fullwidth colon/parens/comma are intentional Chinese punctuation.
 )
+
+
+# ADR 0033: the same ack-only wording for any other confirmed tool, followed by
+# the head of what the tool returned (machine truth, never the model's words).
+_CONFIRMED_TOOL_SUCCESS_TEMPLATE: Final[str] = "{tool} 已执行。结果：{result}"  # noqa: RUF001 — fullwidth colon/period are intentional Chinese punctuation.
+_RESULT_PREVIEW_CHARS: Final[int] = 300
+
+
+def _result_preview(text: str) -> str:
+    return text if len(text) <= _RESULT_PREVIEW_CHARS else f"{text[:_RESULT_PREVIEW_CHARS]}…"
 
 
 def _new_lease_id() -> str:
@@ -2531,19 +2609,22 @@ def _handle_confirmation_accepted(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR
     content_artifact_raw = args_meta.get("content_artifact")
     expected_sha256_raw = args_meta.get("content_sha256")
 
+    tool_name_raw = snapshot.get("tool_name")
+    tool_name = tool_name_raw if isinstance(tool_name_raw, str) else ""
+    # ADR 0033: only write_file stages content; any other tool re-proposes its
+    # frozen arguments unchanged.
+    staged = tool_name == "write_file"
+
     content_text: str | None = None
-    if isinstance(content_artifact_raw, str) and isinstance(expected_sha256_raw, str):
+    if staged and isinstance(content_artifact_raw, str) and isinstance(expected_sha256_raw, str):
         artifact_path = Path(content_artifact_raw)
         if artifact_path.is_file():
             content_bytes_data = artifact_path.read_bytes()
             if hashlib.sha256(content_bytes_data).hexdigest() == expected_sha256_raw:
                 content_text = content_bytes_data.decode("utf-8")
 
-    if content_text is None:
+    if staged and content_text is None:
         return _finalize_response(_CONFIRMATION_CONTENT_MISMATCH_TEXT, packet, ctx, scratch)
-
-    tool_name_raw = snapshot.get("tool_name")
-    tool_name = tool_name_raw if isinstance(tool_name_raw, str) else ""
     tool_def = _find_tool_def(ctx.tool_registry, tool_name)
     if tool_def is None:
         return _finalize_response(_CONFIRMATION_TOOL_GONE_TEXT, packet, ctx, scratch)
@@ -2562,7 +2643,8 @@ def _handle_confirmation_accepted(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR
         for k, v in args_meta.items()
         if k not in ("content_sha256", "content_bytes", "content_artifact")
     }
-    reproposal_arguments["content"] = content_text
+    if staged:
+        reproposal_arguments["content"] = content_text
 
     identity = stable_authorization_identity(accepted_event.event_uid)
     atomic_dispatch = ctx.wave1_features.confirmation_dispatch_outbox
@@ -2715,6 +2797,12 @@ def _handle_confirmation_accepted(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR
         draft = _CONFIRMATION_DISPATCH_ERROR_TEMPLATE.format(error=primary_result_slot.error)
         return _finalize_response(draft, packet, ctx, scratch)
 
+    if not staged:
+        draft = _CONFIRMED_TOOL_SUCCESS_TEMPLATE.format(
+            tool=_spoken_tool_name(tool_name),
+            result=_result_preview(_render_bundle_for_llm(bundle)),
+        )
+        return _finalize_response(draft, packet, ctx, scratch)
     path_written = primary_result_slot.payload.get("path", "?")
     bytes_written = primary_result_slot.payload.get("bytes_written", "?")
     draft = _CONFIRMED_WRITE_SUCCESS_TEMPLATE.format(

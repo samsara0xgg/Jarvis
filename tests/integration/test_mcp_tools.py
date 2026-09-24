@@ -84,13 +84,15 @@ def _call(tmp_path: Path, tools: tuple[Any, ...], name: str, action_id: str) -> 
 
 
 def test_listed_tools_dispatch_through_the_real_log(tmp_path: Path, servers: McpServers) -> None:
-    """echo/add/boom arrive named and risk-mapped; each call ends in one result_observed row."""
+    """echo/add/boom arrive named, deferred and approval-mapped; each call ends in one row."""
     tools = servers.connect(ECHO)
     by_name = {t.name: t for t in tools}
     assert set(by_name) == {"mcp__echo__echo", "mcp__echo__add", "mcp__echo__boom"}
     echo, add = by_name["mcp__echo__echo"], by_name["mcp__echo__add"]
-    assert (echo.read_only, echo.risk_level) == (True, "L0")
-    assert (add.read_only, add.risk_level) == (False, "L1")
+    # ADR 0033 auto mode: readOnlyHint runs unasked; a tool with no hints asks first.
+    assert (echo.read_only, echo.risk_level, echo.requires_confirmation) == (True, "L0", False)
+    assert (add.read_only, add.risk_level, add.requires_confirmation) == (False, "L3", True)
+    assert all(t.deferred for t in tools)  # ADR 0034
     assert add.input_schema["required"] == ["a", "b"]
 
     fx = _Fixture(tmp_path, tools=tools)
@@ -115,6 +117,25 @@ def test_listed_tools_dispatch_through_the_real_log(tmp_path: Path, servers: Mcp
         fx.close()
 
 
+def test_codex_approval_modes_move_the_risk(servers: McpServers) -> None:
+    """Server default and per-tool override, Codex's keys; an unknown mode keeps the server off."""
+    spec = ECHO["echo"]
+    approve_all = {
+        "echo": {
+            **spec,
+            "default_tools_approval_mode": "approve",
+            "tools": {"echo": {"approval_mode": "prompt"}},
+        }
+    }
+    risks = {t.name: (t.risk_level, t.requires_confirmation) for t in servers.connect(approve_all)}
+    assert risks == {
+        "mcp__echo__echo": ("L3", True),
+        "mcp__echo__add": ("L1", False),
+        "mcp__echo__boom": ("L1", False),
+    }
+    assert servers.connect({"echo": {**spec, "default_tools_approval_mode": "sometimes"}}) == ()
+
+
 def test_unreachable_server_contributes_nothing(servers: McpServers) -> None:
     """A missing binary is a warning, not a boot failure; the reachable server still lists."""
     tools = servers.connect({"ghost": {"command": "/nonexistent/mcp-server"}, **ECHO})
@@ -132,6 +153,9 @@ def test_bearer_header_from_the_environment(
     )
     assert {t.name for t in tools} == {"mcp__tok__whoami"}
     assert _call(tmp_path, tools, "mcp__tok__whoami", "H1") == {"tokens_issued": 0, "refreshes": 0}
+    # Codex's .mcp.json spelling of the same header (ADR 0035).
+    codex = servers.connect({"cdx": {"url": oauth_url, "bearer_token_env_var": "MCP_TEST_TOKEN"}})
+    assert {t.name for t in codex} == {"mcp__cdx__whoami"}
 
 
 def test_daemon_without_a_login_skips_the_oauth_server(

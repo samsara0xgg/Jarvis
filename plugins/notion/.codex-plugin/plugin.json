@@ -1,0 +1,31 @@
+{
+  "name": "notion",
+  "version": "0.1.7",
+  "description": "Notion workflows for implementation planning, research synthesis, meeting preparation, and knowledge capture.",
+  "homepage": "https://www.notion.so/",
+  "license": "MIT",
+  "keywords": [
+    "notion",
+    "wiki",
+    "notes",
+    "docs",
+    "projects",
+    "databases",
+    "documentation",
+    "research",
+    "meeting-prep",
+    "knowledge-management",
+    "planning"
+  ],
+  "interface": {
+    "displayName": "Notion",
+    "shortDescription": "Notion workflows for specs, research, meetings, and knowledge capture",
+    "developerName": "Notion",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ]
+  }
+}

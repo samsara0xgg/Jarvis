@@ -1,0 +1,32 @@
+{
+  "name": "github",
+  "version": "0.1.11",
+  "description": "Inspect repositories, triage pull requests and issues, and debug CI through GitHub's hosted MCP server.",
+  "homepage": "https://github.com/",
+  "license": "MIT",
+  "keywords": [
+    "github",
+    "microsoft",
+    "git",
+    "repositories",
+    "source control",
+    "pull requests",
+    "github actions",
+    "ci/cd",
+    "pull-request",
+    "code-review",
+    "issues",
+    "ci",
+    "actions"
+  ],
+  "interface": {
+    "displayName": "GitHub",
+    "shortDescription": "Triage PRs, issues, CI, and publish flows",
+    "developerName": "OpenAI",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ]
+  }
+}
