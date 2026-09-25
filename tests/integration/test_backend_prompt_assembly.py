@@ -54,7 +54,13 @@ ROWS = (
         "jarvis",
         "<voice>\n明天多云。\n</voice>\n<document>\n最高 18 度。\n</document>",
     ),
-    ("new-3", "2026-09-15T02:50:12-07:00", "jarvis_live", "记得带伞。"),
+    # An answer that copied the old history label into its own text.
+    (
+        "new-3",
+        "2026-09-15T02:50:12-07:00",
+        "jarvis_live",
+        "[2026-09-15T02:50:10-07:00] jarvis: 记得带伞。",
+    ),
     ("new-4", "2026-09-15T02:51:00-07:00", "allen", "好"),
     ("new-5", "2026-09-15T02:51:03-07:00", "allen", "还有呢"),
     ("new-6", "2026-09-21T15:00:00-07:00", "allen", "谢谢"),
@@ -95,28 +101,19 @@ def test_history_replays_records_by_role_from_since(tmp_path: Path) -> None:
     ctx = render_context(db, exclude_id="new-6", since=SINCE, now=NOW)
 
     assert ctx.profile == "[关于 Allen]\n- 用户叫 Allen。\n- 默认用中文。"
+    # ADR 0044: words only, no [ts] source: label; one date line opens a day.
     assert ctx.history == (
-        {"role": "user", "content": "[2026-09-15T02:50:02-07:00] allen: 明天天气怎么样"},
-        {
-            "role": "assistant",
-            "content": (
-                "[2026-09-15T02:50:09-07:00] jarvis: 明天多云。\n最高 18 度。\n"
-                "[2026-09-15T02:50:12-07:00] jarvis_live: 记得带伞。"
-            ),
-        },
-        {
-            "role": "user",
-            "content": (
-                "[2026-09-15T02:51:00-07:00] allen: 好\n"
-                "[2026-09-15T02:51:03-07:00] allen: 还有呢"
-            ),
-        },
+        {"role": "user", "content": "[9月15日 周二]\n明天天气怎么样"},
+        {"role": "assistant", "content": "明天多云。\n最高 18 度。\n记得带伞。"},
+        {"role": "user", "content": "好\n还有呢"},
     )
     assert ctx.now == "时间：2026-09-21T15:37-07:00 周一 · 距上次交流 6 天 12 小时"  # noqa: RUF001 — Chinese punctuation is intentional.
 
-    # The null surface: without the cutoff the same store shows the old rows.
+    # The null surface: without the cutoff the same store shows the old rows,
+    # and the next day's first user row gets its own date line.
     unbounded = render_context(db, exclude_id="new-6", since="", now=NOW).history
-    assert unbounded[0]["content"] == "[2026-09-12T07:18:51-07:00] allen: 1001夜赶一下"
+    assert unbounded[0]["content"] == "[9月12日 周六]\n1001夜赶一下"
+    assert unbounded[2]["content"] == "[9月15日 周二]\n明天天气怎么样"
     assert "<voice>" not in _flat(unbounded)
 
 

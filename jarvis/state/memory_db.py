@@ -63,6 +63,9 @@ _GAP_NOTE_AFTER: Final[timedelta] = timedelta(minutes=30)
 _ENVELOPE_TAG_RE: Final[re.Pattern[str]] = re.compile(
     r"</?(?:voice|document)>[ \t]*\n?", re.IGNORECASE,
 )
+# Six answers of 2026-09-22..25 open with the "[ts] source:" history label
+# the model copied from its prompt (ADR 0044); the prompt shows the words.
+_COPIED_LABEL_RE: Final[re.Pattern[str]] = re.compile(r"^\[\d{4}-\d\d-\d\dT[^\]\n]*\] \w+: ")
 
 # One transcript row: (id, ts, source, text).
 Record = tuple[str, str, str, str]
@@ -318,7 +321,8 @@ def _records_after(conn: sqlite3.Connection, anchor: int) -> list[Record]:
 
 
 def _plain(text: str) -> str:
-    """A record's text without the retired envelope tags."""
+    """A record's text without the retired envelope tags or a copied history label."""
+    text = _COPIED_LABEL_RE.sub("", text)
     return _ENVELOPE_TAG_RE.sub("", text).strip() if "<" in text else text
 
 
@@ -357,10 +361,13 @@ def render_context(
     (if any) as a ``user`` message, then one message per record after its
     anchor and on or after ``since``: ``allen`` rows are ``user``, every
     other source is ``assistant``, and adjacent rows of one role join into
-    one message. It only grows at its end between compactions, so the
-    provider's prefix cache covers it. ``now`` is the per-turn time line.
-    ``exclude_id`` is the current turn's own utterance, which the prompt
-    already carries as the live user message.
+    one message. Records carry their words only (ADR 0044): no timestamp or
+    source label, which the model copied into its answers; the first
+    ``user`` row of each day opens with a ``[9月24日 周四]`` line. It only
+    grows at its end between compactions, so the provider's prefix cache
+    covers it. ``now`` is the per-turn time line. ``exclude_id`` is the
+    current turn's own utterance, which the prompt already carries as the
+    live user message.
     """
     moment = now or local_now()
     with closing(open_memory_db(path)) as conn:
@@ -379,9 +386,15 @@ def render_context(
             f"{current.summary}",
         )
     shown = [record for record in records if record[0] != exclude_id]
+    marked_day = None
     for _, ts, source, text in shown:
         role = "user" if source == "allen" else "assistant"
-        _append_turn(turns, role, f"[{ts}] {source}: {_plain(text)}")
+        content = _plain(text)
+        day = datetime.fromisoformat(ts).date()
+        if role == "user" and day != marked_day:
+            content = f"[{day.month}月{day.day}日 周{_WEEKDAYS[day.weekday()]}]\n{content}"
+            marked_day = day
+        _append_turn(turns, role, content)
     last_ts = shown[-1][1] if shown else (current.anchor_ts if current else None)
     return MemoryContext(profile_block, tuple(turns), _now_line(moment, last_ts))
 

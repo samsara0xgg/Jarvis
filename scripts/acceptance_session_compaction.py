@@ -100,7 +100,7 @@ def _flat(history: tuple[dict[str, str], ...]) -> str:
 def _check_render_before_summary(db: Path) -> None:
     ctx = render_context(db, exclude_id=_rid(10), now=NOW)
     _ok(ctx.profile == "", "an empty profile renders no block")
-    _ok(bool(ctx.history) and ctx.history[0]["content"].startswith("[2026-"),
+    _ok(bool(ctx.history) and RECORD_TEXT.format(i=1) in ctx.history[0]["content"],
         "history leads with the records")
     _ok(
         all(RECORD_TEXT.format(i=i) in _flat(ctx.history) for i in range(1, 10)),

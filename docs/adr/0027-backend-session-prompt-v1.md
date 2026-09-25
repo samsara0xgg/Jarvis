@@ -1,6 +1,6 @@
 # ADR 0027 — The backend session request: rules and profile, history, state on the user message
 
-**Status:** Accepted
+**Status:** Superseded-by-0044
 **Date:** 2026-09-21
 **Supersedes:** none
 
