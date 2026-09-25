@@ -1,0 +1,77 @@
+/* The companion: one black ball at the notch; every panel opens from beneath her. */
+.companion {
+  --mint:#8be4bc;
+  --spring:linear(0,.054,.178,.329,.481,.617,.731,.82,.888,.936,.969,.99,1.003,1.01,1.014,1.015,1.014,1.012,1.01,1.008,1);
+  --glass:rgb(14 15 18 / .62);
+  --edge:inset 0 0 0 .5px rgb(255 255 255 / .16),inset 0 1px 0 rgb(255 255 255 / .05);
+  position:fixed; inset:0; overflow:hidden; color:#eceef2;
+}
+.companion-stage { position:absolute; left:0; top:0; z-index:4; pointer-events:none; overflow:visible; }
+.companion-hit { position:absolute; left:0; top:0; z-index:5; padding:0; border-radius:50%; background:transparent; transform-origin:50% 50%; cursor:pointer; }
+.companion-hit:focus-visible { outline:1.5px solid rgb(255 255 255 / .55); outline-offset:0; }
+
+.companion-chip {
+  position:absolute; z-index:3; width:32px; height:26px; border-radius:9px; background:var(--glass); box-shadow:var(--edge),0 6px 16px -8px #000a;
+  opacity:0; transform:translateX(-6px) scale(.84); transform-origin:0 50%; pointer-events:none;
+  transition:opacity 120ms ease,transform 160ms ease;
+}
+/* The delay is hover intent: passing over her does not flash the chip. */
+.companion-chip.is-open { opacity:1; transform:none; pointer-events:auto; transition:opacity 200ms ease 160ms,transform 380ms var(--spring) 160ms; }
+.companion-chip button { width:100%; height:100%; display:grid; place-items:center; padding:0; border-radius:inherit; color:#d9dce2; }
+.companion-chip button:hover { color:#fff; background:rgb(255 255 255 / .07); }
+
+.companion-composer {
+  position:absolute; z-index:3; width:300px; height:48px; display:flex; align-items:center; gap:6px; padding:0 8px; border-radius:17px;
+  background:var(--glass); box-shadow:var(--edge),0 14px 32px -16px #000c;
+  opacity:0; transform:translateY(-10px) scale(.4,.7); transform-origin:50% -18px; pointer-events:none;
+  transition:opacity 140ms ease,transform 180ms cubic-bezier(.4,0,1,1);
+}
+.companion-composer.is-open { opacity:1; transform:none; pointer-events:auto; transition:opacity 160ms ease,transform 420ms var(--spring); }
+.companion-composer > * { opacity:0; transition:opacity 90ms ease; }
+.companion-composer.is-open > * { opacity:1; transition:opacity 180ms ease 120ms; }
+.companion-composer input {
+  flex:1; min-width:0; height:32px; padding:0 10px; border:0; border-radius:10px; outline:none;
+  background:rgb(255 255 255 / .06); box-shadow:inset 0 0 0 .5px rgb(255 255 255 / .1); color:#f2f3f5; font-size:13px; caret-color:var(--mint);
+}
+.companion-composer input::placeholder { color:rgb(235 237 241 / .45); }
+.companion-composer input:focus-visible { outline:none; box-shadow:inset 0 0 0 .5px rgb(255 255 255 / .2); }
+.composer-attach { width:28px; height:28px; display:grid; place-items:center; padding:0; border-radius:9px; color:#b7bbc4; }
+.composer-send { width:30px; height:30px; display:grid; place-items:center; padding:0; border-radius:50%; background:var(--mint); color:#10231a; transition:transform 120ms ease,background 160ms ease; }
+.composer-send:disabled { background:rgb(255 255 255 / .08); color:#9da2ab; opacity:1; }
+.composer-send:active:not(:disabled) { transform:scale(.92); }
+
+.companion-strip,.companion-bubble {
+  position:absolute; z-index:3; display:flex; align-items:center; background:var(--glass); box-shadow:var(--edge),0 12px 28px -14px #000c;
+  opacity:0; transform:translateX(-50%) translateY(-8px) scale(.9); transform-origin:50% 0; pointer-events:none;
+  transition:opacity 140ms ease,transform 180ms ease;
+}
+.companion-strip.is-open,.companion-bubble.is-open { opacity:1; transform:translateX(-50%); pointer-events:auto; transition:opacity 180ms ease 60ms,transform 400ms var(--spring) 60ms; }
+.companion-bubble.is-open { pointer-events:none; }
+.companion-strip { width:256px; height:38px; gap:8px; padding:0 6px 0 9px; border-radius:19px; }
+.strip-mic { position:relative; flex:none; width:22px; height:22px; display:grid; place-items:center; color:var(--mint); }
+.strip-mic::before { content:''; position:absolute; inset:0; border-radius:50%; background:var(--mint); opacity:.14; animation:strip-breathe 2.4s ease-in-out infinite; }
+.companion-strip.is-hearing .strip-mic::before { opacity:.24; animation-duration:.9s; }
+@keyframes strip-breathe { 0%,100% { transform:scale(.8); } 50% { transform:scale(1.08); } }
+.strip-mic svg { position:relative; }
+.strip-text { flex:1; min-width:0; font-size:13px; line-height:18px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.strip-text.is-empty { color:rgb(235 237 241 / .48); }
+.strip-stop { flex:none; width:26px; height:26px; display:grid; place-items:center; padding:0; border-radius:9px; color:#e8e9ec; background:rgb(255 255 255 / .08); }
+.strip-stop:hover { background:rgb(255 255 255 / .15); }
+.companion-bubble { height:36px; padding:0 15px; border-radius:18px; font-size:13px; line-height:18px; }
+/* The full reply reserves the width up front, so typing never resizes the bubble. */
+.bubble-text { display:grid; }
+.bubble-text > span { grid-area:1 / 1; white-space:nowrap; }
+.bubble-ghost { visibility:hidden; }
+
+.companion-dashboard {
+  position:absolute; z-index:2; width:300px; padding-top:8px; border-radius:24px; background:rgb(10 11 13 / .66); box-shadow:var(--edge),0 22px 44px -22px #000d;
+  opacity:0; visibility:hidden; transform:translateY(-14px) scale(.96); transform-origin:50% 0; pointer-events:none;
+  transition:opacity 180ms ease,transform 220ms cubic-bezier(.4,0,1,1),visibility 0s 220ms;
+}
+.companion-dashboard.is-open { opacity:1; visibility:visible; transform:none; pointer-events:auto; transition:opacity 200ms ease,transform 460ms var(--spring),visibility 0s; }
+
+@media(prefers-reduced-motion:reduce) {
+  .companion-chip,.companion-chip.is-open,.companion-composer,.companion-composer.is-open,.companion-strip,.companion-strip.is-open,
+  .companion-bubble,.companion-bubble.is-open,.companion-dashboard,.companion-dashboard.is-open { transition-property:opacity,visibility; }
+  .strip-mic::before { animation:none; }
+}

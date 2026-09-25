@@ -13,6 +13,17 @@ contextBridge.exposeInMainWorld('jarvis', {
     ipcRenderer.send('track-island');
     return () => ipcRenderer.removeListener('island-hover', listener);
   },
+  onCursor: (callback: (point: { x: number; y: number }) => void) => {
+    const listener = (_: unknown, point: { x: number; y: number }) => callback(point);
+    ipcRenderer.on('cursor', listener);
+    return () => ipcRenderer.removeListener('cursor', listener);
+  },
+  onDisplayLeave: (callback: () => void) => {
+    const listener = () => callback();
+    ipcRenderer.on('display-leave', listener);
+    return () => ipcRenderer.removeListener('display-leave', listener);
+  },
+  displayReady: () => ipcRenderer.send('display-ready'),
   layout: (mode: string, height: number, surface?: { x: number; y: number; width: number; height: number }) => ipcRenderer.send('layout', { mode, height, surface }),
   focus: (enabled: boolean) => ipcRenderer.invoke('focus-input', enabled),
   hide: () => ipcRenderer.send('hide'),

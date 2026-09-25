@@ -23,6 +23,7 @@ npm start
 - `npm run lab`：圆点与 Live 形变预览，含高清放大模型及保留的六状态圆环。
 - `npm run workspace-preview`：独立 Electron 交互预览。一个限定高度的工作区切换 Dashboard、对话、插件、Codex、额度、状态与设置；切换保留草稿和滚动位置，输入框固定在对话底部。左侧可演示长回复、语音字幕和授权成功／失败，授权等待时可以离开页面。全部使用本地模拟数据，不连接 daemon、不读取真实账号、不录音、不保存令牌；独立资料目录，可与现有桌面界面同时运行。关闭预览窗口只退出预览进程。
   预览直接复用 `PresentationCapsule`、`PluginPanel`、`CodexDetail`、`QuotaDetail` 和现有表面主题。原版额度的三种布局仍可在设置中切换，Codex 的任务展开、固定、回复草稿、移除／撤销继续由原组件负责；本轮只重组页面入口与容器。macOS 生成单独应用标识的 `build/Resonance Workspace Preview.app`，便于与常驻版同时打开。
+- `npm run companion`：刘海小球交互原型（独立进程与资料目录，可与常驻版同时运行，测试时先 `Cmd+Shift+J` 收起常驻版刘海）。黑色小球住在刘海左侧的软件延伸里：靠近探头、悬停出来并显示键盘入口、轻戳开始／打断／结束语音、文字框在她正下方、刘海悬停打开 Dashboard 时她吸附到面板上沿、收起后回家。她只有一个，跟着鼠标换屏：先缩回当前的岛，再从另一块屏的岛里冒出来；没有刘海的屏幕上她住在顶部正中间的黑色胶囊里，悬停胶囊两翼打开 Dashboard。表情只做了待机、聆听、回应三种。转写、回复和 Dashboard 数据全部是本地模拟，不连 daemon、不录音、不播放语音。菜单栏 ● 可打开 Dashboard 或退出。`npm run build && node scripts/verify-companion.mjs` 在无头 Chrome 里走完七个场景（第七个是换到没有刘海的屏幕），截图在 `evidence/companion/`。
 - `npm run package`：生成 `build/Jarvis Resonance.app`，用于本机打开；本地 ad-hoc 签名，未公证、未发布。
 - `npm run verify`：构建并运行真实 Electron 窗口验收脚本；独立验收资料目录，系统音频输出静音。
 - `node scripts/inspect-desktop.mjs --focus --silent`：Computer Use 辅助验收入口。临时允许窗口聚焦，输出窗口自身的几何信息到 `evidence/live-desktop.json`，不抓取其他应用。

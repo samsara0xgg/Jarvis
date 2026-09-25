@@ -20,12 +20,16 @@ import { clipStackGlass, type GlassOcclusion } from './stackGlass';
 import { connect, type Runtime } from './runtime';
 import { usePlugins, type PluginSnapshot } from './PluginPanel';
 import { WorkspacePreview } from './WorkspacePreview';
-type WindowPlacement = { docked: boolean; topInset: number; surfaceWidth: number; compactWidth: number; notchWidth: number };
+import { Companion } from './Companion';
+type WindowPlacement = { docked: boolean; topInset: number; surfaceWidth: number; compactWidth: number; notchWidth: number; displayId?: number };
 declare global { interface Window { jarvis?: {
   placement: () => Promise<WindowPlacement>;
   dock: (enabled: boolean) => Promise<WindowPlacement>;
   onPlacement: (cb: (value: WindowPlacement) => void) => () => void;
   onIslandHover: (cb: (inside: boolean) => void) => () => void;
+  onCursor: (cb: (point: { x: number; y: number }) => void) => () => void;
+  onDisplayLeave: (cb: () => void) => () => void;
+  displayReady: () => void;
   drag: (phase: 'start' | 'move' | 'end', point?: { x: number; y: number }) => void;
   copy: (text: string) => Promise<boolean>;
   openCodex: (threadId: string) => Promise<boolean>;
@@ -391,4 +395,4 @@ function App() {
     </main>
   </IconContext.Provider>;
 }
-createRoot(document.getElementById('root')!).render(new URLSearchParams(location.search).has('workspace-preview') ? <WorkspacePreview/> : new URLSearchParams(location.search).has('dashboard-window') ? <DashboardPreview standalone/> : lab ? <PreviewLab initialDashboard={new URLSearchParams(location.search).has('dashboard')}/> : <App/>);
+createRoot(document.getElementById('root')!).render(new URLSearchParams(location.search).has('companion') ? <Companion/> : new URLSearchParams(location.search).has('workspace-preview') ? <WorkspacePreview/> : new URLSearchParams(location.search).has('dashboard-window') ? <DashboardPreview standalone/> : lab ? <PreviewLab initialDashboard={new URLSearchParams(location.search).has('dashboard')}/> : <App/>);
