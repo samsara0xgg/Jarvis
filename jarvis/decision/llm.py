@@ -472,7 +472,9 @@ class LLMClient:
             system: Rendered system prompt string (per ADR Q3 (a)).
             tools: Tool definitions in Anthropic shape (``input_schema``
                 key). Translated to OpenAI when provider is ``openai``.
-            tool_choice: OpenAI tool_choice hint. Anthropic ignores.
+            tool_choice: ``auto`` / ``required`` / ``none``, or one tool's name to force
+                that call while the tool list, and so the prompt cache, stays the same.
+                Anthropic ignores.
 
         Returns:
             A frozen :class:`ChatResult`.
@@ -684,7 +686,7 @@ class LLMClient:
         if openai_tools:
             kwargs["tools"] = openai_tools
             if tool_choice is not None:
-                kwargs["tool_choice"] = tool_choice
+                kwargs["tool_choice"] = _forced(tool_choice, {"function": {"name": tool_choice}})
         if self._reasoning_effort:
             kwargs["reasoning_effort"] = self._reasoning_effort
         if self._extra_body:
@@ -785,7 +787,7 @@ class LLMClient:
                 for tool in _tools_to_openai(tools)
             ]
             if tool_choice is not None:
-                kwargs["tool_choice"] = tool_choice
+                kwargs["tool_choice"] = _forced(tool_choice, {"name": tool_choice})
         if self._reasoning_effort:
             kwargs["reasoning"] = {"effort": self._reasoning_effort}
         if self._extra_body:
@@ -1238,6 +1240,13 @@ def _openai_token_key(base_url: str) -> str:
     """OpenAI's own host takes only max_completion_tokens on reasoning models; others max_tokens."""
     openai_host = "api.openai.com" in (base_url or "api.openai.com")
     return "max_completion_tokens" if openai_host else "max_tokens"
+
+
+def _forced(tool_choice: str, function: dict[str, Any]) -> str | dict[str, Any]:
+    """A keyword passes through; anything else names the one function the model must call."""
+    if tool_choice in ("auto", "required", "none"):
+        return tool_choice
+    return {"type": "function", **function}
 
 
 def _messages_to_responses_input(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:

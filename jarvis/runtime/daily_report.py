@@ -24,6 +24,7 @@ from jarvis.decision.daily_report import (
     REPORT_AGAIN,
     REPORT_NOW,
     REPORT_TOOL,
+    REPORT_TOOL_NAME,
     SEARCH_TOOL,
     SUMMARY_TOOL,
     DailyReportParseError,
@@ -323,12 +324,13 @@ class DailyReportService:
         """
         assert self._reporter is not None  # noqa: S101 — checked by the caller.
         system, messages = build_request(evidence)
+        # One catalog for every round: the tools lead the cached prompt prefix, so dropping the
+        # query tools re-bills the whole day's material. Report-only rounds force the call instead.
         tools: list[dict[str, Any]] = [SEARCH_TOOL, DETAILS_TOOL, REPORT_TOOL]
+        choice = "auto"
         for round_number in range(1, MAX_ROUNDS + 1):
-            # auto, not required: DeepSeek's thinking presets reject a forced call, and every
-            # preset measured calls a tool anyway; a bare reply is retried like a malformed one.
             result = self._reporter.analyze(
-                conn, system=system, messages=messages, tools=tools, tool_choice="auto"
+                conn, system=system, messages=messages, tools=tools, tool_choice=choice
             )
             last = round_number == MAX_ROUNDS
             queries = requested_queries(result)
@@ -339,7 +341,7 @@ class DailyReportService:
                     messages.append(_tool_reply(call_id, reply))
                 if round_number == QUERY_ROUNDS:
                     messages.append({"role": "user", "content": REPORT_NOW})
-                    tools = [REPORT_TOOL]
+                    choice = REPORT_TOOL_NAME
                 else:
                     messages.append({"role": "user", "content": QUERY_MORE})
                 continue
@@ -354,7 +356,7 @@ class DailyReportService:
                 # Every tool call must be answered before the next instruction.
                 messages += [_tool_reply(call.call_id, str(exc)) for call in result.tool_calls]
                 messages.append({"role": "user", "content": REPORT_AGAIN})
-                tools = [REPORT_TOOL]
+                choice = REPORT_TOOL_NAME
         message = "report_daily_work was never produced"
         raise DailyReportParseError(message)
 
