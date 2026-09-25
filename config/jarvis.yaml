@@ -542,7 +542,7 @@ realtime:
     # sends to the speakers is subtracted from every mic frame, so Jarvis does
     # not hear itself over the laptop speakers. The reSpeaker board does its
     # own; turn this off when it is the input.
-    echo_cancellation: true
+    echo_cancellation: false
     canonical_sample_rate_hz: 16000
     canonical_frame_samples: 512
     native_ring_capacity: 128
