@@ -67,6 +67,8 @@ class LLMPresetSnapshot:
     # reasoned through the whole ``max_tokens`` budget and answered nothing).
     reasoning_effort: str | None = None
     extra_body_json: str = "{}"
+    # ``"responses"`` routes chat() to /v1/responses; None keeps chat/completions.
+    api: str | None = None
 
 
 def _optional_str(value: object) -> str | None:
@@ -120,6 +122,7 @@ class LLMSessionFactory:
         api_key_env = str(api_key_env_raw) if api_key_env_raw else None
         reasoning_effort = _optional_str(self._config.get("reasoning_effort"))
         extra_body = dict(self._config.get("extra_body") or {})
+        api = _optional_str(self._config.get("api"))
 
         if resolved is not None:
             preset = presets.get(resolved)
@@ -137,6 +140,7 @@ class LLMSessionFactory:
             api_key_env = str(preset_key_env) if preset_key_env else None
             reasoning_effort = _optional_str(preset.get("reasoning_effort"))
             extra_body = dict(preset.get("extra_body") or {})
+            api = _optional_str(preset.get("api"))
         elif preset_name is not None:
             msg = f"preset {preset_name!r} is not configured under llm.presets"
             raise UnknownRequestPresetError(msg)
@@ -174,6 +178,8 @@ class LLMSessionFactory:
             "reasoning_effort": reasoning_effort,
             "extra_body": extra_body,
         }
+        if api is not None:  # absent keeps every existing preset's hash unchanged
+            fields["api"] = api
         return LLMPresetSnapshot(
             preset_name=resolved,
             provider=provider,
@@ -186,6 +192,7 @@ class LLMSessionFactory:
             snapshot_hash=_snapshot_hash(fields),
             reasoning_effort=reasoning_effort,
             extra_body_json=json.dumps(extra_body, sort_keys=True, separators=(",", ":")),
+            api=api,
         )
 
     def create(
@@ -228,6 +235,8 @@ class LLMRequestClient(LLMClient):
         extra_body = json.loads(snapshot.extra_body_json)
         if extra_body:
             preset["extra_body"] = extra_body
+        if snapshot.api is not None:
+            preset["api"] = snapshot.api
         request_config: dict[str, Any] = {
             "provider": snapshot.provider,
             "presets": {preset_name: preset},
