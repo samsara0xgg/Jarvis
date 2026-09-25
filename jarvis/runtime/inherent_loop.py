@@ -357,7 +357,11 @@ class _VoiceKnobs:
     composition root reads ``realtime:`` for these values.
     """
 
-    # openwakeword's detection probability gate.  BOTH input owners construct a
+    # Which wake engine both input owners construct (ADR-0042); one of
+    # :data:`voice_wake.WAKE_ENGINES`.  The default keeps a config that names
+    # nothing on the ADR-0005 engine.
+    wake_engine: str = "openwakeword"
+    # The engine's detection probability gate.  BOTH input owners construct a
     # listener with it, which is why it is a flat key and is threaded to both
     # rather than living under ``realtime.single_audio_ingress``.
     wake_threshold: float = 0.5
@@ -539,7 +543,15 @@ def _voice_knobs(config: Mapping[str, Any]) -> _VoiceKnobs:
     block = config.get("realtime")
     values: Mapping[str, Any] = block if isinstance(block, Mapping) else {}
     d = _VoiceKnobs()
+    wake_engine = _knob_text(values, "wake_engine", d.wake_engine)
+    if wake_engine not in voice_wake.WAKE_ENGINES:
+        LOGGER.warning(
+            "realtime.wake_engine must be one of %s; using %r.",
+            voice_wake.WAKE_ENGINES, d.wake_engine,
+        )
+        wake_engine = d.wake_engine
     return _VoiceKnobs(
+        wake_engine=wake_engine,
         wake_threshold=_knob_number(values, "wake_threshold", d.wake_threshold),
         wake_join_timeout_s=_knob_number(
             values, "wake_join_timeout_s", d.wake_join_timeout_s,
@@ -2495,10 +2507,10 @@ def _spawn_wake_listener(  # noqa: PLR0913 - composition boundary dependencies
         data, _overflow = stream.read(_WAKE_FRAME_SAMPLES)
         return bytes(data)
 
-    engine: voice_wake.WakeEngine | None = None
+    engine: voice_wake.AnyWakeEngine | None = None
     listener: voice_wake.WakeListener | None = None
     try:
-        engine = voice_wake.WakeEngine(model_name="hey_jarvis_v0.1")
+        engine = voice_wake.build_wake_engine(knobs.wake_engine)
         # Without start(), predict() silently returns no detection.
         engine.start()
         silero_vad = voice_audio.SileroVad(
@@ -3110,7 +3122,7 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
     if ingress_config is None or session_config is None:
         msg = "validated single ingress activation lacks parsed config"
         raise RuntimeError(msg)
-    engine = voice_wake.WakeEngine(model_name="hey_jarvis_v0.1")
+    engine = voice_wake.build_wake_engine(knobs.wake_engine)
     try:
         # Model construction/download happens before PortAudio owns the mic.
         engine.start()

@@ -218,7 +218,7 @@ class _PartialDecoderPort(Protocol):
 
 
 class _WakeEnginePort(Protocol):
-    """OpenWakeWord subset used by the realtime session."""
+    """Wake engine subset used by the realtime session (ADR-0042: any engine)."""
 
     @property
     def model_name(self) -> str:

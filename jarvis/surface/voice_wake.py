@@ -1,10 +1,14 @@
-"""L5 wake-word listener — openwakeword daemon thread (ADR-0005 §5.1).
+"""L5 wake-word listener — wake engine wrappers + daemon thread (ADR-0005 §5.1).
 
-Two classes:
+Three classes and one factory:
 
 - :class:`WakeEngine` — thin wrapper around ``openwakeword.Model`` so the
   rest of the module can talk to a single ``predict(frame_bytes) -> dict``
   contract (and so unit tests can substitute a ``MagicMock``).
+
+- :class:`MicroWakeWordEngine` — the same contract over pymicro-wakeword's
+  ``hey_jarvis`` model (ADR-0042). :func:`build_wake_engine` picks one by the
+  ``realtime.wake_engine`` config value so the engine is swappable per boot.
 
 - :class:`WakeListener` — daemon thread that polls the engine, gates on
   :data:`voice_pipeline.VOICE_INPUT_LOCK` and an optional
@@ -39,15 +43,16 @@ resumes (legacy parity self-heal).
 Layer rules: imports only stdlib and ``jarvis.surface.voice_pipeline``
 (sibling module). Does NOT name ``jarvis.decision``, ``jarvis.execution``,
 ``jarvis.deployment``, ``jarvis.runtime``, ``jarvis.cli``.
-``openwakeword``, ``sounddevice``, and ``numpy`` are lazy-imported inside
-methods so this module imports cleanly in test envs that omit those wheels.
+``openwakeword``, ``pymicro_wakeword``, ``sounddevice``, and ``numpy`` are
+lazy-imported inside methods so this module imports cleanly in test envs that
+omit those wheels.
 """
 from __future__ import annotations
 
 import logging
 import secrets
 import threading
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from jarvis.shared.realtime_trace import realtime_trace_context
 from jarvis.surface import voice_pipeline
@@ -227,6 +232,92 @@ class WakeEngine:
         """Release model handles (idempotent)."""
         self._model = None
         self._np_module = None
+
+
+class MicroWakeWordEngine:
+    """microWakeWord behind the same ``predict`` / ``reset`` / ``close`` contract.
+
+    pymicro-wakeword streams 10 ms feature windows and runs one INT8 inference
+    every three of them; an 80 ms frame therefore yields two or three
+    probabilities and :meth:`predict` reports the highest, so a caller's
+    per-frame threshold check sees the same peak the bench script scored.
+
+    Args:
+        model_name: a pymicro-wakeword builtin model id. Default
+            ``"hey_jarvis"`` (v2, ``probability_cutoff`` 0.97 upstream on a
+            5-inference average; the daemon applies ``realtime.wake_threshold``
+            to each raw inference instead).
+    """
+
+    def __init__(self, *, model_name: str = "hey_jarvis") -> None:
+        """Store config; model and feature frontend are built in :meth:`start`."""
+        self._model_name = model_name
+        self._model: Any = None
+        self._features: Any = None
+
+    @property
+    def model_name(self) -> str:
+        """The model id this engine reports against in ``predict`` output."""
+        return self._model_name
+
+    def start(self) -> None:
+        """Load the builtin tflite model and its feature frontend."""
+        import contextlib  # noqa: PLC0415
+        import io  # noqa: PLC0415
+
+        from pymicro_wakeword import (  # noqa: PLC0415
+            MicroWakeWord,
+            MicroWakeWordFeatures,
+        )
+        from pymicro_wakeword.const import (  # noqa: PLC0415
+            Model,
+        )
+
+        # The package prints its model config to stdout while loading.
+        with contextlib.redirect_stdout(io.StringIO()):
+            self._model = MicroWakeWord.from_builtin(Model(self._model_name))
+        self._features = MicroWakeWordFeatures()
+        LOGGER.info("wake: microwakeword engine started (model=%s)", self._model_name)
+
+    def predict(self, frame_bytes: bytes) -> dict[str, float]:
+        """Score one 80 ms PCM16 frame; the peak probability inside it."""
+        model, features = self._model, self._features
+        if model is None or features is None:
+            return {}
+        peak = 0.0
+        for window in features.process_streaming(frame_bytes):
+            prob = model.process_streaming_prob(window)
+            if prob is not None and prob > peak:
+                peak = float(prob)
+        return {self._model_name: peak}
+
+    def reset(self) -> None:
+        """Drop buffered features and the model's stride window (post-detection)."""
+        if self._model is not None:
+            self._model.reset()
+        if self._features is not None:
+            self._features.reset()
+
+    def close(self) -> None:
+        """Release model handles (idempotent)."""
+        if self._model is not None:
+            self._model.close()
+        self._model = None
+        self._features = None
+
+
+AnyWakeEngine = WakeEngine | MicroWakeWordEngine
+WAKE_ENGINES: tuple[str, ...] = ("openwakeword", "microwakeword")
+
+
+def build_wake_engine(kind: str) -> AnyWakeEngine:
+    """Construct (not start) the wake engine named by ``realtime.wake_engine``."""
+    if kind == "openwakeword":
+        return WakeEngine(model_name="hey_jarvis_v0.1")
+    if kind == "microwakeword":
+        return MicroWakeWordEngine(model_name="hey_jarvis")
+    msg = f"unknown wake engine {kind!r}; expected one of {WAKE_ENGINES}"
+    raise ValueError(msg)
 
 
 class WakeListener:

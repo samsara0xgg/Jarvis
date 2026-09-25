@@ -152,6 +152,8 @@ ignore = [
 # exist to exercise. Same posture as the other scripts/ entries.
 "scripts/burn_web_fetch.py" = ["ALL"]
 "scripts/burn_web_search.py" = ["ALL"]
+"scripts/replay_wake_engine.py" = ["T201"]  # ADR-0042 replay harness: operator-run, `print` is the interface
+"scripts/listen_wake.py" = ["T201"]  # ADR-0042 microphone listener: operator-run, `print` is the interface
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
@@ -177,7 +179,7 @@ module = "tests.*"
 disallow_untyped_defs = false
 
 # Voice-hardware wheels: sounddevice / onnxruntime / sherpa-onnx /
-# openwakeword / mlx-whisper / whisper are intentionally excluded from
+# openwakeword / pymicro-wakeword / mlx-whisper / whisper are intentionally excluded from
 # ``[project].dependencies`` (ADR-0005 §12 — daemon downgrades to
 # text-only when missing). When a developer installs them locally
 # (``uv pip install sounddevice onnxruntime sherpa-onnx openwakeword``)
@@ -198,6 +200,8 @@ module = [
     "sherpa_onnx",
     "openwakeword",
     "openwakeword.*",
+    "pymicro_wakeword",
+    "pymicro_wakeword.*",
     "soxr",
     "mlx_whisper",
     "whisper",
