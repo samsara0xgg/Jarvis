@@ -269,6 +269,9 @@ class LLMClient:
         # Provider-specific request fields merged verbatim into the OpenAI
         # request body (e.g. DeepSeek ``thinking: {type: disabled}``).
         self._extra_body: dict[str, Any] = dict(cfg.get("extra_body") or {})
+        # ``"responses"`` sends chat() to OpenAI's /v1/responses: GPT rejects
+        # function tools with reasoning on in chat/completions. Streams stay there.
+        self._api: str | None = cfg.get("api")
 
         # Transport-level knobs (MUST-FIX 2, ADR-0011 §12): flat top-level
         # config only — no preset ever overrides these. The decision loop
@@ -430,6 +433,7 @@ class LLMClient:
             self._max_tokens = int(preset["max_tokens"])
         self._reasoning_effort = preset.get("reasoning_effort")
         self._extra_body = dict(preset.get("extra_body") or {})
+        self._api = preset.get("api")
 
         api_key_env = preset.get("api_key_env")
         if api_key_env:
@@ -468,7 +472,9 @@ class LLMClient:
             system: Rendered system prompt string (per ADR Q3 (a)).
             tools: Tool definitions in Anthropic shape (``input_schema``
                 key). Translated to OpenAI when provider is ``openai``.
-            tool_choice: OpenAI tool_choice hint. Anthropic ignores.
+            tool_choice: ``auto`` / ``required`` / ``none``, or one tool's name to force
+                that call while the tool list, and so the prompt cache, stays the same.
+                Anthropic ignores.
 
         Returns:
             A frozen :class:`ChatResult`.
@@ -485,7 +491,14 @@ class LLMClient:
 
         component = f"llm.{self._provider}"
         try:
-            if self._provider == "openai":
+            if self._provider == "openai" and self._api == "responses":
+                result = self._chat_openai_responses(
+                    messages=messages,
+                    system=system,
+                    tools=tools,
+                    tool_choice=tool_choice,
+                )
+            elif self._provider == "openai":
                 result = self._chat_openai(
                     messages=messages,
                     system=system,
@@ -540,9 +553,8 @@ class LLMClient:
             options["max_retries"] = self._max_retries
         body: dict[str, Any] = {"model": self._model, "stream": True}
         if self._provider == "openai":
-            token_key = "max_completion_tokens" if self._model.startswith("gpt-5") else "max_tokens"
             body.update({
-                token_key: self._max_tokens,
+                _openai_token_key(self._base_url): self._max_tokens,
                 "messages": [{"role": "system", "content": system}, *copy.deepcopy(messages)],
                 "stream_options": {"include_usage": True},
             })
@@ -666,17 +678,15 @@ class LLMClient:
 
         openai_tools = _tools_to_openai(tools) if tools else None
 
-        # gpt-5 family uses max_completion_tokens; older models use max_tokens.
-        tok_key = "max_completion_tokens" if self._model.startswith("gpt-5") else "max_tokens"
         kwargs: dict[str, Any] = {
             "model": self._model,
-            tok_key: self._max_tokens,
+            _openai_token_key(self._base_url): self._max_tokens,
             "messages": oai_messages,
         }
         if openai_tools:
             kwargs["tools"] = openai_tools
             if tool_choice is not None:
-                kwargs["tool_choice"] = tool_choice
+                kwargs["tool_choice"] = _forced(tool_choice, {"function": {"name": tool_choice}})
         if self._reasoning_effort:
             kwargs["reasoning_effort"] = self._reasoning_effort
         if self._extra_body:
@@ -752,6 +762,88 @@ class LLMClient:
             usage_status=self.last_usage_status,
         )
 
+    def _chat_openai_responses(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        system: str,
+        tools: list[dict[str, Any]] | None,
+        tool_choice: str | None,
+    ) -> ChatResult:
+        """One /v1/responses round trip, reported in chat/completions' vocabulary."""
+        client = self._get_openai_client()
+        kwargs: dict[str, Any] = {
+            "model": self._model,
+            "instructions": system,
+            "input": _messages_to_responses_input(messages),
+            "max_output_tokens": self._max_tokens,
+            # chat/completions keeps nothing server-side by default; neither does this.
+            "store": False,
+        }
+        if tools:
+            # strict defaults to true here; the catalog's schemas are not strict-shaped.
+            kwargs["tools"] = [
+                {**tool["function"], "type": "function", "strict": False}
+                for tool in _tools_to_openai(tools)
+            ]
+            if tool_choice is not None:
+                kwargs["tool_choice"] = _forced(tool_choice, {"name": tool_choice})
+        if self._reasoning_effort:
+            kwargs["reasoning"] = {"effort": self._reasoning_effort}
+        if self._extra_body:
+            kwargs["extra_body"] = copy.deepcopy(self._extra_body)
+
+        LOGGER.info("Sending request to OpenAI responses (model=%s)", self._model)
+        record_realtime_trace(
+            "llm_sdk_request_call_started_upper_bound",
+            provider="openai",
+            model=self._model,
+            streaming=False,
+            measurement_semantics="immediately_before_sdk_call_not_network_send",
+        )
+        response = client.responses.create(**kwargs)
+
+        tool_calls = tuple(
+            ToolCall(call_id=item.call_id, name=item.name, arguments_json=item.arguments or "{}")
+            for item in response.output
+            if item.type == "function_call"
+        )
+        if response.status == "incomplete":
+            reason = getattr(response.incomplete_details, "reason", None)
+            finish = "length" if reason == "max_output_tokens" else str(reason or "incomplete")
+        else:
+            finish = "tool_calls" if tool_calls else "stop"
+        usage = response.usage
+        cache_read_in = int(usage.input_tokens_details.cached_tokens or 0) if usage else 0
+
+        self._last_metadata["response_id"] = response.id
+        self._last_finish_reason = finish
+        self._last_input_tokens = usage.input_tokens if usage else None
+        self._last_output_tokens = usage.output_tokens if usage else None
+        self._last_metadata["usage_status"] = _usage_status(
+            self._last_input_tokens,
+            self._last_output_tokens,
+        )
+        self._last_metadata["cache_read_tokens"] = cache_read_in if usage else None
+        self._last_metadata["cache_write_tokens"] = 0 if usage else None
+
+        return ChatResult(
+            text=response.output_text.strip() or None,
+            tool_calls=tool_calls,
+            finish_reason=finish,
+            input_tokens=self._last_input_tokens,
+            output_tokens=self._last_output_tokens,
+            raw=_safe_model_dump(response),
+            model_used=self._model,
+            tokens_in=self._last_input_tokens or 0,
+            tokens_out=self._last_output_tokens or 0,
+            cache_read_in=cache_read_in,
+            cache_write_in=0,
+            llm_request_id=str(self._last_metadata["llm_request_id"]),
+            provider_response_id=response.id,
+            usage_status=self.last_usage_status,
+        )
+
     def _chat_stream_openai(  # noqa: C901, PLR0915 - provider protocol normalization
         self,
         *,
@@ -775,10 +867,9 @@ class LLMClient:
         oai_messages.extend(messages)
         openai_tools = _tools_to_openai(tools) if tools else None
 
-        tok_key = "max_completion_tokens" if self._model.startswith("gpt-5") else "max_tokens"
         kwargs: dict[str, Any] = {
             "model": self._model,
-            tok_key: self._max_tokens,
+            _openai_token_key(self._base_url): self._max_tokens,
             "messages": oai_messages,
             "stream": True,
             "stream_options": {"include_usage": True},
@@ -1143,6 +1234,61 @@ def _tools_to_openai(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
         }
         for tool in tools
     ]
+
+
+def _openai_token_key(base_url: str) -> str:
+    """OpenAI's own host takes only max_completion_tokens on reasoning models; others max_tokens."""
+    openai_host = "api.openai.com" in (base_url or "api.openai.com")
+    return "max_completion_tokens" if openai_host else "max_tokens"
+
+
+def _forced(tool_choice: str, function: dict[str, Any]) -> str | dict[str, Any]:
+    """A keyword passes through; anything else names the one function the model must call."""
+    if tool_choice in ("auto", "required", "none"):
+        return tool_choice
+    return {"type": "function", **function}
+
+
+def _messages_to_responses_input(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Chat/completions history -> /v1/responses input items; callers keep one history shape.
+
+    ponytail: reasoning items are not echoed back (the history carries none), so each
+    round re-thinks from the visible turns; echo encrypted reasoning if multi-round
+    tool loops need the earlier thinking.
+    """
+    items: list[dict[str, Any]] = []
+    for message in messages:
+        if message.get("role") == "tool":
+            items.append({
+                "type": "function_call_output",
+                "call_id": message["tool_call_id"],
+                "output": message.get("content") or "",
+            })
+            continue
+        content = message.get("content")
+        if isinstance(content, list):
+            content = [
+                {"type": "input_text", "text": part["text"]}
+                if part.get("type") == "text"
+                else {
+                    "type": "input_image",
+                    "image_url": part["image_url"]["url"],
+                    "detail": part["image_url"].get("detail", "auto"),
+                }
+                for part in content
+            ]
+        if content:
+            items.append({"role": message["role"], "content": content})
+        items.extend(
+            {
+                "type": "function_call",
+                "call_id": call["id"],
+                "name": call["function"]["name"],
+                "arguments": call["function"]["arguments"],
+            }
+            for call in message.get("tool_calls") or ()
+        )
+    return items
 
 
 def _safe_model_dump(obj: object) -> Mapping[str, Any]:
