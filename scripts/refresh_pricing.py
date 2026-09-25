@@ -59,7 +59,7 @@ LLM_MAP: dict[str, str] = {
     "grok-4.1-fast-reasoning": "xai/grok-4-1-fast-reasoning",
     "grok-4.5": "xai/grok-4.5",
     "grok-4.3": "xai/grok-4.3",
-    # DeepSeek direct — the shipped fast/deep/vision presets (2026-09-04).
+    # DeepSeek direct — the fast/deep/vision presets (2026-09-04 to 2026-09-25); kept for past spend.
     "deepseek-v4-flash": "deepseek/deepseek-v4-flash",
     "deepseek-v4-pro": "deepseek/deepseek-v4-pro",
     "deepseek-v4-flash-vision-exp": "deepseek/deepseek-v4-flash-vision-exp",
@@ -81,6 +81,8 @@ LLM_MAP: dict[str, str] = {
     "gpt-5.4-nano": "gpt-5.4-nano",
     "gpt-5.5": "gpt-5.5",
     "gpt-5.6-luna": "gpt-5.6-luna",
+    "gpt-6-luna": "gpt-6-luna",
+    "gpt-6-sol": "gpt-6-sol",
     # Google (observer fallback)
     "gemini-2.5-flash": "gemini-2.5-flash",
 }
@@ -186,6 +188,14 @@ def build_pricing(src: dict[str, Any]) -> dict[str, Any]:
             "speech-2.8-turbo": (
                 "Not yet in LiteLLM; mapped to speech-2.6-turbo which shares the "
                 "same published rate ($0.06/1M chars). Re-verify when upstream lands."
+            ),
+            "openai-long-context": (
+                "OpenAI bills a request over 272K input tokens at 2x input and cache "
+                "rates and 1.5x output for the whole request, gpt-5.6+ bill uncached "
+                "input at the cache-write rate (1.25x input), and flex requests at half "
+                "of everything. Rows carry the plain standard rate, so cost.recorded "
+                "runs about 20% low on standard requests and about 2x high on flex "
+                "ones; the OpenAI Costs API is the real bill."
             ),
         },
         "llm": llm,

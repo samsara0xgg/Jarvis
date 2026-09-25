@@ -2,7 +2,7 @@ llm:
   # LLM 提供商：openai（兼容 xAI/Kimi/DeepSeek）或 anthropic。
   provider: openai
 
-  # 对话固定用 default_preset。"深度模式"口令切换还没做；deep 目前只给日报和压缩用。
+  # 对话固定用 default_preset。"深度模式"口令切换还没做。
   default_preset: luna
 
   # 对话每次请求的上限（秒）与重试次数；不写就是 SDK 默认的 600 秒、重试 2 次。
@@ -23,39 +23,34 @@ llm:
       max_tokens: 16384
       context_length: 1050000
       reasoning_effort: none
-    # DeepSeek 直连（2026-09-04 定案，全套；对话 2026-09-25 换成 luna，
-    # 工作状态和项目归类仍用 fast）。本机实测 fast：短答首 token
-    # 0.45s、总时长 0.72s，3k token 历史 0.43s，4 路并发最大 0.64s。
-    # v4 系列默认开思考；fast 关掉，deep 保留。
     # context_length：模型窗口（token）。session.compact_at_context_ratio
     # 按它算压缩门槛；决策预设缺了它就永远不压缩。
-    fast:
-      model: deepseek-v4-flash
-      base_url: "https://api.deepseek.com/v1"
-      api_key_env: DEEPSEEK_API_KEY
+    #
+    # 后台工作 2026-09-25 从 DeepSeek 换到 GPT-6，都开思考、走 /v1/responses
+    # （chat/completions 不许思考和工具同开）。离线对比（每项每模型 1 次，
+    # 中等思考）：工作状态、项目归类、截屏读图上 gpt6-luna 与贵的打平，最便宜；
+    # 日报 gpt6-sol 最好（10 件全有、0 处错）。gpt-6-luna 每分钟 20 万 token，
+    # 一份日报的单次请求就超，所以日报不能用它。脚本、输出、花费账本在
+    # ~/.jarvis-realtime-test/deep-bench-2026-09-25/r2/。
+    # 工作状态、项目归类、截屏（screen_look 在对话里调，读图约 5s）、对话摘要。
+    gpt6-luna:
+      model: gpt-6-luna
+      base_url: "https://api.openai.com/v1"
+      api_key_env: OPENAI_API_KEY
+      api: responses
       max_tokens: 16384
-      context_length: 1048576
-      extra_body:
-        thinking:
-          type: disabled
-    # 思考开：中等问题首个思考 token 约 1s、首个正文 2.6s；带工具调用 1.8s。
-    deep:
-      model: deepseek-v4-pro
-      base_url: "https://api.deepseek.com/v1"
-      api_key_env: DEEPSEEK_API_KEY
+      reasoning_effort: medium
+    # 日报。flex 是半价的慢速档（不急的活用），OpenAI 忙时回 429、不收费；
+    # 一份日报约 24 万 token 输入，标准档一份约 0.9 美元，flex 约一半。
+    gpt6-sol:
+      model: gpt-6-sol
+      base_url: "https://api.openai.com/v1"
+      api_key_env: OPENAI_API_KEY
+      api: responses
       max_tokens: 32768
-      context_length: 1048576
-    # screen_look 专用（ADR-0011 D7）：多模态模型。决策 LLM（deep/fast
-    # 两档）从不切到这个预设——vision 只在 jarvis.runtime 注入的独立
-    # LLMClient 实例上用一次。实验版模型，本机读图实测 1.3s。
-    vision:
-      model: deepseek-v4-flash-vision-exp
-      base_url: "https://api.deepseek.com/v1"
-      api_key_env: DEEPSEEK_API_KEY
-      max_tokens: 1024
+      reasoning_effort: medium
       extra_body:
-        thinking:
-          type: disabled
+        service_tier: flex
     # xAI 直连。实测 2026-09-04：首 token 1.4s，思考约 50 token，V9 1.5T 底座。
     grok-fast:
       model: grok-4.5
@@ -131,7 +126,7 @@ observer:
 # ADR 0023 — 当前工作状态：Dashboard 刷新和对话里的 refresh_work_state 共用
 # 一条分析流程，只在有新证据时调一次这里指定的预设；后台从不调模型。
 work_state:
-  preset: fast
+  preset: gpt6-luna
   # 「今天」和时间显示按这个时区算；留空 = 系统本地时区。
   # ADR 0024 的每日工作报告也用这个时区切「昨天」。
   timezone: America/Vancouver
@@ -139,7 +134,7 @@ work_state:
 # ADR 0024 — 每日工作报告：一整天的材料比当前状态大得多，想换更强的模型就
 # 单独指定；不配置就沿用 work_state.preset。
 daily_report:
-  preset: deep
+  preset: gpt6-sol
 
 # ADR 0037 — 项目清单，Allen 自己维护。Resonance 的「项目」模块只把 TimeSink
 # 里的活动归到这些 id（或「不属于任何项目」），用的是 work_state.preset。
@@ -227,7 +222,7 @@ tools:
     timeout_s: 20
   screen:
     # screen_look 用哪个 llm.presets.* 做 vision 调用。
-    vision_preset: vision
+    vision_preset: gpt6-luna
     # 截图喂给 vision 模型前用 sips 缩到这个宽度以内（像素）。
     max_width_px: 1568
   # ADR 0035 — 插件，目录格式照 Codex：plugins/<名字>/ 里有
@@ -666,7 +661,7 @@ session:
   compact_at_context_ratio: 0.4   # verbatim history estimated over this share of the
                                   # decision preset's context_length is eligible
   verbatim_window_days: 7         # records younger than this survive a compaction verbatim
-  compact_preset: deep            # the summariser; rare and off the latency path
+  compact_preset: gpt6-luna       # the summariser; rare and off the latency path
   summary_max_chars: 8000         # a longer summary is rejected and nothing is stored
                                   # (live 2026-09-14: deep wrote 4.5k-6.2k chars for 38k of history)
   live_brief_max_chars: 1500      # the GPT-Live startup brief budget
