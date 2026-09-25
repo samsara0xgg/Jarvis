@@ -1,6 +1,6 @@
 # ADR 0043 — The Spoken Form Starts Past Its Own Limit
 
-**Status:** Accepted
+**Status:** Superseded-by-0045
 **Date:** 2026-09-25
 **Supersedes:** 0040
 

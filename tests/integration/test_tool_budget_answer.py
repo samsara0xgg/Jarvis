@@ -137,7 +137,7 @@ def test_spent_budget_gets_one_no_tool_request_for_the_answer(tmp_path: Path) ->
     text, conn = _run(tmp_path, llm)
     try:
         # The answer is plain and within the spoken form's own 60-character
-        # limit, so ADR 0043 speaks it as written: no spoken-form request.
+        # limit, so ADR 0045 speaks it as written: no spoken-form request.
         assert split_envelope(text)[:2] == (ANSWER, ANSWER)
         assert len(llm.calls) == BUDGET + 1
         assert all(call["tools"] for call in llm.calls[:BUDGET])

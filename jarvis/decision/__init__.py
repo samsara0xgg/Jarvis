@@ -2120,7 +2120,7 @@ def _emit_pre_emit_gate_event(
     return gate_event
 
 
-# ADR 0043: a spoken answer is a short spoken form, not the written answer read
+# ADR 0045: a spoken answer is a short spoken form, not the written answer read
 # aloud. Plain text that already fits the spoken form's own limit (60 Chinese
 # characters, about 40 English words) is spoken as written; anything longer, or
 # with list / heading / quote / table / code / bold / bracket markup, gets one
@@ -2174,7 +2174,7 @@ def _with_spoken_form(
     ctx: DecideContext,
     scratch: _Scratch,
 ) -> ResponsePlan:
-    """ADR 0043: speak a short spoken form, in the language Allen used.
+    """ADR 0045: speak a short spoken form, in the language Allen used.
 
     Asked for when the answer is long or written, or in another language than
     Allen's words this turn. The whole answer moves unchanged to the document
