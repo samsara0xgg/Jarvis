@@ -3,7 +3,7 @@ llm:
   provider: openai
 
   # 对话固定用 default_preset。"深度模式"口令切换还没做；deep 目前只给日报和压缩用。
-  default_preset: fast
+  default_preset: luna
 
   # 对话每次请求的上限（秒）与重试次数；不写就是 SDK 默认的 600 秒、重试 2 次。
   # 对话只用 default_preset；日报、压缩、截屏、工作状态各自设了自己的上限，不读这里。
@@ -12,7 +12,19 @@ llm:
   max_retries: 1
 
   presets:
-    # DeepSeek 直连（2026-09-04 定案，全套）。本机实测 fast：短答首 token
+    # 对话（语音和文字）2026-09-25 起用它。同一段 14 句真实语音对话离线重放：
+    # 带全部历史 0/14 跑题（fast 13/14），首 token 约 1s（短历史 0.75s），
+    # 被打断的故事能接回来。不开思考。脚本和数据在
+    # ~/.jarvis-realtime-test/voice-replay-2026-09-25/。
+    luna:
+      model: gpt-5.6-luna
+      base_url: "https://api.openai.com/v1"
+      api_key_env: OPENAI_API_KEY
+      max_tokens: 16384
+      context_length: 1050000
+      reasoning_effort: none
+    # DeepSeek 直连（2026-09-04 定案，全套；对话 2026-09-25 换成 luna，
+    # 工作状态和项目归类仍用 fast）。本机实测 fast：短答首 token
     # 0.45s、总时长 0.72s，3k token 历史 0.43s，4 路并发最大 0.64s。
     # v4 系列默认开思考；fast 关掉，deep 保留。
     # context_length：模型窗口（token）。session.compact_at_context_ratio

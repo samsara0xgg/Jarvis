@@ -80,6 +80,7 @@ LLM_MAP: dict[str, str] = {
     "gpt-5.4-mini": "gpt-5.4-mini",
     "gpt-5.4-nano": "gpt-5.4-nano",
     "gpt-5.5": "gpt-5.5",
+    "gpt-5.6-luna": "gpt-5.6-luna",
     # Google (observer fallback)
     "gemini-2.5-flash": "gemini-2.5-flash",
 }
