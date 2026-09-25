@@ -1540,17 +1540,23 @@ async def _tts_watcher(  # noqa: C901, PLR0912 - ordered durable dispatch FSM
     LOGGER.info("tts_watcher started (after_id=%d)", after_id)
     try:
         while True:
-            new_events = _fetch_events_after(
-                conn,
-                after_id=after_id,
-                event_types=(
-                    "surface.response_open",
-                    "surface.response_chunk",
-                    "surface.response_emitted",
-                    "response.cancelled",
-                    "response.failed",
-                ),
-            )
+            try:
+                new_events = _fetch_events_after(
+                    conn,
+                    after_id=after_id,
+                    event_types=(
+                        "surface.response_open",
+                        "surface.response_chunk",
+                        "surface.response_emitted",
+                        "response.cancelled",
+                        "response.failed",
+                    ),
+                )
+            except Exception:
+                # A failed read must not end speech until a restart; retry from the same row.
+                LOGGER.exception("tts_watcher: poll failed at after_id=%d; retrying", after_id)
+                await asyncio.sleep(_WATCHER_RETRY_S)
+                continue
             for row_id, ev in new_events:
                 advance_cursor = True
                 try:
@@ -3608,15 +3614,18 @@ async def _system_trigger_watcher(
     anchored.set()
     try:
         while True:
+            resume_id = after_id
             try:
                 new_events = _fetch_events_after(
                     runtime.conn,
                     after_id=after_id,
                     event_types=_SYSTEM_TRIGGER_TYPES,
                 )
-                for row_id, _ev in new_events:
-                    after_id = max(after_id, row_id)
-                for _row_id, ev in new_events:
+                for row_id, ev in new_events:
+                    # drive_turn's own failures are caught below, so anything
+                    # reaching the outer handler came from this row's checks:
+                    # the next poll resumes at this row, not past the batch.
+                    resume_id, after_id = after_id, max(after_id, row_id)
                     action_id = _event_action_id(ev)
                     if action_id is None:
                         continue
@@ -3646,6 +3655,7 @@ async def _system_trigger_watcher(
                             exception_repr=repr(exc),
                         )
             except Exception:
+                after_id = resume_id
                 LOGGER.exception("system_trigger_watcher: poll failed at after_id=%d", after_id)
                 await asyncio.sleep(_WATCHER_RETRY_S)
                 continue

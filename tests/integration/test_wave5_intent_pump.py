@@ -34,6 +34,7 @@ from jarvis.runtime.inherent_loop import (
     _IntentPumpBoot,
     _response_watcher,
     _start_intent_pump,
+    _system_trigger_watcher,
 )
 from jarvis.shared.realtime import Wave5InputFlags
 from jarvis.state.event_log import emit_event, open_event_log
@@ -620,3 +621,57 @@ def test_a_turn_that_raises_reaches_the_surface_as_failed(runtime: JarvisRuntime
 
     assert _count(runtime.conn, "turn.failed") == 1
     assert socket.sent == [{"op": "failed", "payload": {"turn_id": "T-fails"}}]
+
+
+def test_a_failed_check_mid_batch_does_not_drop_the_rest(runtime: JarvisRuntime) -> None:
+    """A check that raises mid-batch retries that row; later rows in the batch still drive.
+
+    Two orphan ``action.failed`` rows land in one poll and the first row's
+    consumed-check raises once. Before, the cursor jumped past the whole batch
+    first, so the second row was dropped for good.
+    """
+    orphans = [
+        emit_event(
+            runtime.conn,
+            type="action.failed",
+            payload={"action_id": f"orphan-{n}", "error": "worker_crash", "reason": "fixture"},
+        )
+        for n in (1, 2)
+    ]
+    real_consumed = inherent_loop.trigger_was_consumed
+    checks: list[str] = []
+
+    def _locked_once(conn: sqlite3.Connection, uid: str) -> bool:
+        checks.append(uid)
+        if len(checks) == 1:
+            message = "database is locked"
+            raise sqlite3.OperationalError(message)
+        return real_consumed(conn, uid)
+
+    driven: list[str] = []
+
+    def _record(_runtime: JarvisRuntime, *, user_intent_event: Event, **_: object) -> None:
+        driven.append(user_intent_event.event_uid)
+
+    async def _body() -> None:
+        with (
+            patch.object(inherent_loop, "_drive_turn_in_worker_thread", side_effect=_record),
+            patch.object(inherent_loop, "trigger_was_consumed", side_effect=_locked_once),
+            patch.object(inherent_loop, "_WATCHER_RETRY_S", 0.01),
+        ):
+            task = asyncio.create_task(_system_trigger_watcher(
+                runtime, anchor_id=0, anchored=asyncio.Event(), poll_interval_s=0.001,
+            ))
+            try:
+                for _ in range(400):
+                    if len(driven) >= 2:
+                        break
+                    await asyncio.sleep(0.005)
+            finally:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(_body())
+
+    assert checks[:2] == [orphans[0].event_uid, orphans[0].event_uid]
+    assert driven == [orphan.event_uid for orphan in orphans]
