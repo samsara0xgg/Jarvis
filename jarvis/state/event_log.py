@@ -277,7 +277,9 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         owner_layer="L3",
         actor="jarvis_llm",
         required_payload=("action_id", "tool_name", "caller_principal", "risk_level"),
-        optional_payload=("target_entity_ref", "run_id", "turn_id", "arguments"),
+        # `lead_in` (ADR 0043): the model's one short sentence written with
+        # this call, spoken as the commentary acknowledge.
+        optional_payload=("target_entity_ref", "run_id", "turn_id", "arguments", "lead_in"),
         schema_version=1,
     ),
     EventTypeSchema(

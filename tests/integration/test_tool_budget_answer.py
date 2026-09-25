@@ -136,10 +136,10 @@ def test_spent_budget_gets_one_no_tool_request_for_the_answer(tmp_path: Path) ->
     llm = _ToolHungryClient(answer=ANSWER)
     text, conn = _run(tmp_path, llm)
     try:
-        # The answer is spoken, so ADR 0040 asks once more for its spoken
-        # form; the written answer stays whole in the document channel.
-        assert split_envelope(text)[1] == ANSWER
-        assert len(llm.calls) == BUDGET + 2
+        # The answer is plain and within the spoken form's own 60-character
+        # limit, so ADR 0043 speaks it as written: no spoken-form request.
+        assert split_envelope(text)[:2] == (ANSWER, ANSWER)
+        assert len(llm.calls) == BUDGET + 1
         assert all(call["tools"] for call in llm.calls[:BUDGET])
         final = llm.calls[BUDGET]
         assert final["tools"] is None
@@ -153,8 +153,8 @@ def test_spent_budget_gets_one_no_tool_request_for_the_answer(tmp_path: Path) ->
             "SELECT payload_json FROM events WHERE type='action.result_observed'"
         ).fetchall()
         assert all(json.loads(row[0])["semantics"] == "observation" for row in results)
-        # The answer and spoken-form requests are paid for like every other.
-        assert _count(conn, "cost.recorded") == BUDGET + 2
+        # The answer request is paid for like every other.
+        assert _count(conn, "cost.recorded") == BUDGET + 1
         assert _count(conn, "turn.ended") == 1
     finally:
         conn.close()

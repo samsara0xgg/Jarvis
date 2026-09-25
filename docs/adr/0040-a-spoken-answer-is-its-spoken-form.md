@@ -1,6 +1,6 @@
 # ADR 0040 — A Spoken Answer Is Its Spoken Form
 
-**Status:** Accepted
+**Status:** Superseded-by-0043
 **Date:** 2026-09-24
 **Supersedes:** none
 

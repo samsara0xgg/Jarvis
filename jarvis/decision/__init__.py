@@ -63,6 +63,7 @@ from jarvis.decision.gates import (
     pre_emit_gate,
 )
 from jarvis.decision.intent import (
+    LEAD_IN_ARGUMENT,
     build_llm_messages,
     tier_0_match,
     tool_definitions_for_llm,
@@ -1390,6 +1391,10 @@ def _dispatch_one_tool_call(  # noqa: PLR0915 — single-pass orchestration of r
 ) -> _DispatchOutcome:
     """Resolve, gate, and dispatch one LLM-proposed tool call.
 
+    The call's ``lead_in`` argument (ADR 0043) is not the tool's: it is taken
+    out before anything else reads the arguments and, when speakable, rides
+    on ``action.proposed`` for the commentary acknowledge.
+
     Returns:
         ``"continue"`` if the tool was dispatched or refused (the loop
         should continue with the next iteration). ``"confirm_required"``
@@ -1408,6 +1413,8 @@ def _dispatch_one_tool_call(  # noqa: PLR0915 — single-pass orchestration of r
         arguments: dict[str, Any] = json.loads(arguments_json or "{}")
     except (TypeError, ValueError):
         arguments = {}
+    raw_lead_in = arguments.pop(LEAD_IN_ARGUMENT, None) if isinstance(arguments, dict) else None
+    lead_in = _spoken_lead_in(raw_lead_in if isinstance(raw_lead_in, str) else None)
 
     # 1. Tool definition lookup.
     tool_def = _find_tool_def(ctx.tool_registry, name)
@@ -1482,6 +1489,7 @@ def _dispatch_one_tool_call(  # noqa: PLR0915 — single-pass orchestration of r
             "target_entity_ref": target_entity_ref,
             "turn_id": scratch.turn_id,
             "arguments": dict(arguments),
+            **({"lead_in": lead_in} if lead_in else {}),
         },
         correlation=_action_correlation(action_request),
     )
@@ -2090,14 +2098,14 @@ def _emit_pre_emit_gate_event(
     return gate_event
 
 
-# ADR 0040: a spoken answer is a short spoken form, not the written answer read
-# aloud. Plain text up to about 6 s of speech is already speakable; anything
-# longer, or with list / heading / quote / table / code / bold / bracket markup,
-# gets one no-tool request for a spoken form. Calibration knobs, not a contract:
-# a 41-character time answer with a bracketed aside played for 7.5 s on
-# 2026-09-24 and Allen heard it as long-winded.
-_SPOKEN_FORM_MAX_PLAIN_CHARS_ZH: Final[int] = 30
-_SPOKEN_FORM_MAX_PLAIN_CHARS_EN: Final[int] = 90
+# ADR 0043: a spoken answer is a short spoken form, not the written answer read
+# aloud. Plain text that already fits the spoken form's own limit (60 Chinese
+# characters, about 40 English words) is spoken as written; anything longer, or
+# with list / heading / quote / table / code / bold / bracket markup, gets one
+# no-tool request for a spoken form. A 38-character self-introduction sent to
+# the rewrite on 2026-09-25 came back missing its first sentence.
+_SPOKEN_FORM_MAX_PLAIN_CHARS_ZH: Final[int] = 60
+_SPOKEN_FORM_MAX_PLAIN_CHARS_EN: Final[int] = 240
 _WRITTEN_MARKUP_RE: Final[re.Pattern[str]] = re.compile(
     r"^\s*(?:[-*•+]\s|\d+[.)、]|#{1,6}\s|>|\|)|```|\*\*|[(（]",  # noqa: RUF001 — the fullwidth bracket is the Chinese aside being matched.
     re.MULTILINE,
@@ -2106,18 +2114,20 @@ _WRITTEN_MARKUP_RE: Final[re.Pattern[str]] = re.compile(
 # Chinese prompt asked to "keep the original language" still answered an
 # English answer in Chinese (smoke run 2026-09-24). ~60 Chinese characters and ~40
 # English words are both about 13 s of speech. Neither names Allen: with his
-# name in the prompt every spoken form opened with his name.
+# name in the prompt every spoken form opened with his name. The question goes
+# along so the rewrite knows which sentence answers it.
 _SPOKEN_FORM_PROMPT_ZH: Final[str] = (
     "把用户给你的这段回答改写成直接念出来的中文口语版："  # noqa: RUF001 — fullwidth colon is intentional Chinese punctuation.
-    "最多三句、不超过 60 个字，只留结论和一两个最关键的数字；"  # noqa: RUF001 — fullwidth comma/semicolon are intentional Chinese punctuation.
+    "最多三句、不超过 60 个字，只留直接回答问题的结论和一两个最关键的数字；"  # noqa: RUF001 — fullwidth comma/semicolon are intentional Chinese punctuation.
     "不要列表、标题、括号、链接、代码或任何格式符号；不要加原文没有的内容。"  # noqa: RUF001 — fullwidth semicolon is intentional Chinese punctuation.
     "只输出口语版本身。"
 )
 _SPOKEN_FORM_PROMPT_EN: Final[str] = (
     "Rewrite the answer the user gives you as a spoken English reply: "
-    "at most three sentences and 40 words, only the conclusion and the one or two "
-    "numbers that matter; no lists, headings, brackets, links, code or markup; add "
-    "nothing that is not in the answer. Output only the spoken reply."
+    "at most three sentences and 40 words, only the conclusion that answers the "
+    "question and the one or two numbers that matter; no lists, headings, brackets, "
+    "links, code or markup; add nothing that is not in the answer. Output only the "
+    "spoken reply."
 )
 
 
@@ -2127,13 +2137,38 @@ def _needs_spoken_form(text: str) -> bool:
     return len(text) > limit or _WRITTEN_MARKUP_RE.search(text) is not None
 
 
+# ADR 0043: the lead-in the model writes inside a tool call replaces the fixed
+# acknowledge phrase when it is one short plain sentence, about 6 s of
+# speech; anything longer or formatted falls back to the fixed phrase.
+_LEAD_IN_MAX_CHARS_ZH: Final[int] = 30
+_LEAD_IN_MAX_CHARS_EN: Final[int] = 90
+
+
+def _spoken_lead_in(text: str | None) -> str | None:
+    """The lead-in the model wrote in a tool call, if it can be spoken as is."""
+    lead_in = (text or "").strip()
+    limit = _LEAD_IN_MAX_CHARS_EN if is_english(lead_in) else _LEAD_IN_MAX_CHARS_ZH
+    if not lead_in or len(lead_in) > limit or _WRITTEN_MARKUP_RE.search(lead_in):
+        return None
+    return lead_in
+
+
+def _spoken_form_request(question: object, answer: str, *, english: bool) -> str:
+    """The rewrite's one user message: the question it answers, then the answer."""
+    if not isinstance(question, str) or not question.strip():
+        return answer
+    if english:
+        return f"Question: {question.strip()}\n\nAnswer:\n{answer}"
+    return f"问题：{question.strip()}\n\n回答：\n{answer}"  # noqa: RUF001 — fullwidth colon is intentional Chinese punctuation.
+
+
 def _with_spoken_form(
     plan: ResponsePlan,
     packet: SituationPacket,
     ctx: DecideContext,
     scratch: _Scratch,
 ) -> ResponsePlan:
-    """ADR 0040: speak a short spoken form, in the language Allen used.
+    """ADR 0043: speak a short spoken form, in the language Allen used.
 
     Asked for when the answer is long or written, or in another language than
     Allen's words this turn. The whole answer moves unchanged to the document
@@ -2162,7 +2197,9 @@ def _with_spoken_form(
         with realtime_trace_context(turn_id=scratch.turn_id, request_kind="spoken_form"):
             chat_result = _run_llm_chat_with_cost_guard(
                 ctx,
-                messages=[{"role": "user", "content": text}],
+                messages=[
+                    {"role": "user", "content": _spoken_form_request(heard, text, english=english)},
+                ],
                 system=_SPOKEN_FORM_PROMPT_EN if english else _SPOKEN_FORM_PROMPT_ZH,
                 tools=None,
                 tool_choice=None,

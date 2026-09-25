@@ -1806,7 +1806,8 @@ def _commentary_turn(conn: sqlite3.Connection, action_event: Event) -> tuple[str
 
 
 _SELECT_ACTION_TOOL_NAME_SQL = (
-    "SELECT json_extract(payload_json, '$.tool_name') FROM events "
+    "SELECT json_extract(payload_json, '$.tool_name'), json_extract(payload_json, '$.lead_in') "
+    "FROM events "
     "WHERE type = 'action.proposed' AND json_extract(payload_json, '$.action_id') = ? LIMIT 1"
 )
 
@@ -2037,6 +2038,7 @@ def _open_commentary_in_worker_thread(  # noqa: PLR0911 - one early return per s
             _SELECT_ACTION_TOOL_NAME_SQL, (action_event.payload.get("action_id"),)
         ).fetchone()
         tool_name = row[0] if row is not None and isinstance(row[0], str) else None
+        lead_in = row[1] if row is not None and isinstance(row[1], str) else None
         tool = next(
             (t for t in runtime.tool_registry.get_definitions() if t.name == tool_name), None
         )
@@ -2045,6 +2047,7 @@ def _open_commentary_in_worker_thread(  # noqa: PLR0911 - one early return per s
             user_text=user_text,
             tool_name=tool_name,
             tool_read_only=tool is not None and tool.read_only,
+            lead_in=lead_in,
         )
         if intent is None:  # pragma: no cover - same event, same answer as above
             return None

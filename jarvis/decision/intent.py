@@ -142,19 +142,42 @@ def tool_definitions_for_llm(
             ``description`` / ``input_schema`` keys.
 
     Returns:
-        A list of tool dicts. Day-1 is a near-passthrough.
+        A list of tool dicts: each schema gains the required
+        :data:`LEAD_IN_ARGUMENT` (ADR 0043), which L3 removes before the
+        tool sees its arguments.
     """
     return [
         {
             "name": tool["name"],
             "description": tool["description"],
-            "input_schema": dict(tool["input_schema"]),
+            "input_schema": _with_lead_in(tool["input_schema"]),
         }
         for tool in tools
     ]
 
 
+LEAD_IN_ARGUMENT = "lead_in"
+_LEAD_IN_PROPERTY: dict[str, Any] = {
+    "type": "string",
+    "description": (
+        "动手前先念给用户的一句很短的话，说你这就去做什么，比如“我查一下维多利亚明天的天气”；"  # noqa: RUF001 — Chinese punctuation is intentional.
+        "不说结果。用用户这一轮说话的语言。"
+    ),
+}
+
+
+def _with_lead_in(schema: Mapping[str, Any]) -> dict[str, Any]:
+    """``schema`` plus the required lead-in string every tool call carries."""
+    required = [name for name in schema.get("required", ()) if name != LEAD_IN_ARGUMENT]
+    return {
+        **schema,
+        "properties": {**schema.get("properties", {}), LEAD_IN_ARGUMENT: _LEAD_IN_PROPERTY},
+        "required": [LEAD_IN_ARGUMENT, *required],
+    }
+
+
 __all__ = [
+    "LEAD_IN_ARGUMENT",
     "build_llm_messages",
     "tier_0_match",
     "tool_definitions_for_llm",
