@@ -2848,13 +2848,17 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
         sys.stdout.flush()
         collected_events.append(render_event)
         if memory is not None:
-            # The full answer text, not the spoken cut; the audit event's
-            # uid is the record id.
+            # The full answer text, not the spoken form (ADR 0040), which
+            # lives only in the voice channel; the audit event's uid is the
+            # record id.
             append_record(
                 memory.db_path,
                 record_id=render_event.event_uid,
                 source="jarvis",
-                text=str(render_event.payload.get("text", "")),
+                text=str(
+                    render_event.payload.get("document_text")
+                    or render_event.payload.get("text", ""),
+                ),
             )
         record_realtime_trace(
             "response_completed",

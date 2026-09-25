@@ -41,6 +41,7 @@ import functools
 import hashlib
 import json
 import logging
+import re
 import time
 import unicodedata
 import uuid
@@ -2086,6 +2087,96 @@ def _emit_pre_emit_gate_event(
     return gate_event
 
 
+# ADR 0040: a spoken answer is a short spoken form, not the written answer read
+# aloud. Plain text up to this many characters is already speakable; anything
+# longer, or with list / heading / quote / table / code / bold markup, gets one
+# no-tool request for a spoken form. A calibration knob, not a contract.
+_SPOKEN_FORM_MAX_PLAIN_CHARS: Final[int] = 80
+_WRITTEN_MARKUP_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:[-*•+]\s|\d+[.)、]|#{1,6}\s|>|\|)|```|\*\*",
+    re.MULTILINE,
+)
+# One prompt per language, picked from the answer's own script: a Chinese
+# prompt asked to "keep the original language" still answered an English
+# answer in Chinese (smoke run 2026-09-24). ~60 Chinese characters and ~40
+# English words are both about 13 s of speech.
+_SPOKEN_FORM_PROMPT_ZH: Final[str] = (
+    "把用户给你的这段回答改写成直接念给 Allen 听的中文口语版："  # noqa: RUF001 — fullwidth colon is intentional Chinese punctuation.
+    "最多三句、不超过 60 个字，只留结论和一两个最关键的数字；"  # noqa: RUF001 — fullwidth comma/semicolon are intentional Chinese punctuation.
+    "不要列表、标题、链接、代码或任何格式符号；不要加原文没有的内容。"  # noqa: RUF001 — fullwidth semicolon is intentional Chinese punctuation.
+    "细节较多时，最后加一句“完整内容在屏幕上”。只输出口语版本身。"  # noqa: RUF001 — fullwidth comma/quotes are intentional Chinese punctuation.
+)
+_SPOKEN_FORM_PROMPT_EN: Final[str] = (
+    "Rewrite the answer the user gives you as a spoken English reply for Allen: "
+    "at most three sentences and 40 words, only the conclusion and the one or two "
+    "numbers that matter; no lists, headings, links, code or markup; add nothing "
+    'that is not in the answer. If there is more detail, end with "The full '
+    'details are on screen." Output only the spoken reply.'
+)
+
+
+def _spoken_form_prompt(text: str) -> str:
+    """The Chinese prompt when CJK characters outnumber Latin words, else English."""
+    cjk = sum(1 for ch in text if "一" <= ch <= "鿿")
+    words = len(re.findall(r"[A-Za-z]+", text))
+    return _SPOKEN_FORM_PROMPT_ZH if cjk >= words else _SPOKEN_FORM_PROMPT_EN
+
+
+def _with_spoken_form(
+    plan: ResponsePlan,
+    packet: SituationPacket,
+    ctx: DecideContext,
+    scratch: _Scratch,
+) -> ResponsePlan:
+    """ADR 0040: put a short spoken form in the voice channel of a long answer.
+
+    The whole answer moves unchanged to the document channel, so the screen,
+    memory.db and the backend history keep it while TTS speaks only the voice
+    span. Returned as is: a correction run (its prefix is already spoken), a
+    ``gpt_live`` turn (Live paraphrases the result itself), an answer the
+    model enveloped on its own, and a short plain answer. A failed or empty
+    request keeps the old behaviour of speaking the whole answer.
+    """
+    text = plan.text.strip()
+    if (
+        ctx.stream_correction is not None
+        or packet.trigger_event.payload.get("channel") == "gpt_live"
+        or split_envelope(text)[2]
+        or not text
+        or (len(text) <= _SPOKEN_FORM_MAX_PLAIN_CHARS and not _WRITTEN_MARKUP_RE.search(text))
+    ):
+        return plan
+    try:
+        with realtime_trace_context(turn_id=scratch.turn_id, request_kind="spoken_form"):
+            chat_result = _run_llm_chat_with_cost_guard(
+                ctx,
+                messages=[{"role": "user", "content": text}],
+                system=_spoken_form_prompt(text),
+                tools=None,
+                tool_choice=None,
+                kind="decision",
+                turn_id=scratch.turn_id,
+            )
+    except ResponseCancelledError:
+        raise
+    except Exception:
+        LOGGER.exception("decide(): spoken-form request failed; the whole answer is spoken")
+        return plan
+    scratch.events.append(
+        _emit_cost_recorded(ctx, chat_result, kind="decision", turn_id=scratch.turn_id),
+    )
+    _check_response_cancelled(ctx, "after provider response")
+    spoken = (chat_result.text or "").strip()
+    if not spoken:
+        return plan
+    enveloped = compose_envelope(spoken, text)
+    return replace(
+        plan,
+        text=enveloped,
+        response_hash=hashlib.sha256(enveloped.encode("utf-8")).hexdigest(),
+    )
+
+
 def _finalize_response(  # noqa: PLR0913 — draft + the three decide() handles + two keyword routing hints.
     draft_text: str,
     packet: SituationPacket,
@@ -2163,18 +2254,6 @@ def _finalize_response(  # noqa: PLR0913 — draft + the three decide() handles 
     # prefix unchanged, then its own continuation.
     plan = _with_correction_prefix(plan, ctx)
 
-    # turn.ended. ``source_event_id`` references the gate verdict.
-    if scratch.turn_id is not None:
-        scratch.events.append(
-            emit_turn_ended(
-                ctx.conn,
-                turn_id=scratch.turn_id,
-                final_response_hash=plan.response_hash,
-                consumed_trigger_event_uid=packet.trigger_event.event_uid,
-                source_event_id=last_gate_event.event_uid,
-            ),
-        )
-
     attention = attention_policy(packet, document_form=document_form)
 
     # ADR-0012 D5: a `confirmation.requested` emitted THIS turn always
@@ -2186,6 +2265,23 @@ def _finalize_response(  # noqa: PLR0913 — draft + the three decide() handles 
     # suppression set (`jarvis.runtime.inherent_loop._TTS_SILENT_CHANNELS`)
     # — the question must be spoken, not swallowed.
     attention = _confirmation_attention_override(scratch, attention)
+
+    # ADR 0040: only an answer that will be spoken gets a spoken form, and
+    # never a Tier 0 read-back (quoted tool output, not Jarvis's own words).
+    if attention == "voice_notify" and gate_text is None:
+        plan = _with_spoken_form(plan, packet, ctx, scratch)
+
+    # turn.ended. ``source_event_id`` references the gate verdict.
+    if scratch.turn_id is not None:
+        scratch.events.append(
+            emit_turn_ended(
+                ctx.conn,
+                turn_id=scratch.turn_id,
+                final_response_hash=plan.response_hash,
+                consumed_trigger_event_uid=packet.trigger_event.event_uid,
+                source_event_id=last_gate_event.event_uid,
+            ),
+        )
 
     return DecideResult(
         response_plan=plan,

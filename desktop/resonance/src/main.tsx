@@ -39,8 +39,8 @@ const lab = new URLSearchParams(location.search).has('lab');
 // A `port` query means Electron wants the live daemon link; without it every timer below is the simulation.
 const runtimePort = new URLSearchParams(location.search).get('port');
 const live = runtimePort !== null;
-// The render layer wraps speech in <voice> and card text in <document> (voice_tts.py:99); show both, drop the markup and any half-streamed tag.
-const visible = (reply: string) => reply.replace(/<\/voice>/g, '\n').replace(/<\/?(voice|document)>/g, '').replace(/<\/?[a-z]*$/, '').trim();
+// The render layer wraps speech in <voice> and card text in <document> (voice_tts.py:99). A document is the whole answer and the voice only its spoken form (ADR 0040), so once one arrives show it alone; drop the markup and any half-streamed tag.
+const visible = (reply: string) => reply.slice(Math.max(0, reply.indexOf('<document>'))).replace(/<\/voice>/g, '\n').replace(/<\/?(voice|document)>/g, '').replace(/<\/?[a-z]*$/, '').trim();
 const labels: Record<Phase, string> = { listening: '正在听取', hearing: '正在听', processing: '正在处理', speaking: '正在播报', error: '连接失败' };
 const mmss = (sec: number) => `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
 function Button({ label, children, className = '', ...props }: React.ButtonHTMLAttributes<HTMLButtonElement> & { label: string }) {
