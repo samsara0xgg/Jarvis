@@ -190,6 +190,7 @@ from jarvis.state.memory_db import (
 from jarvis.state.projections import PendingConfirmations, rebuild_projections
 from jarvis.state.trigger_consumption import trigger_was_consumed
 from jarvis.surface import (
+    voice_aec,
     voice_asr,
     voice_audio,
     voice_backend,
@@ -2206,12 +2207,24 @@ def _build_voice_pipeline(
     )
 
 
+def _build_echo_canceller(runtime: JarvisRuntime) -> voice_aec.EchoCanceller | None:
+    """One canceller for the streaming player and the mic ingress, when enabled."""
+    realtime_raw = runtime.config.get("realtime")
+    realtime = realtime_raw if isinstance(realtime_raw, Mapping) else {}
+    ingress_raw = realtime.get("single_audio_ingress")
+    ingress = ingress_raw if isinstance(ingress_raw, Mapping) else {}
+    if ingress.get("echo_cancellation") is not True:
+        return None
+    return voice_aec.EchoCanceller()
+
+
 def _build_tts_pipeline(  # noqa: C901 - rollout/degradation capability boundary
     runtime: JarvisRuntime,
     broadcaster: InherentBroadcaster,
     *,
     ducker: voice_ducking.SystemAudioDucker | None = None,
     voice: _VoiceKnobs | None = None,
+    echo_canceller: voice_aec.EchoCanceller | None = None,
 ) -> voice_tts.TTSPipeline | voice_media.StreamingTTSPipeline | None:
     """Build the TTS subsystem when ``MINIMAX_API_KEY`` is present.
 
@@ -2310,6 +2323,7 @@ def _build_tts_pipeline(  # noqa: C901 - rollout/degradation capability boundary
             lazy_open=True,
             generation_safe=True,
             device=output_device,
+            playback_tap=echo_canceller.add_playback if echo_canceller is not None else None,
         )
         try:
             return voice_media.StreamingTTSPipeline(
@@ -3065,6 +3079,7 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
     voice: _VoiceKnobs | None = None,
     mic_muted: Callable[[], bool] | None = None,
     conversation: Callable[[], bool] | None = None,
+    echo_canceller: voice_aec.EchoCanceller | None = None,
 ) -> tuple[voice_session.DuplexVoiceSession | None, bool]:
     """Start Wave 3 or return whether a device-open attempt was made.
 
@@ -3161,6 +3176,7 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
             backend=backend,
             config=ingress_config,
             capability_sink=_capability_changed,
+            echo_canceller=echo_canceller,
         )
         vad = voice_audio.SileroVad(
             mode="record",
@@ -3289,6 +3305,7 @@ def _spawn_voice_input_owners(  # noqa: PLR0913 - composition boundary dependenc
     voice: _VoiceKnobs | None = None,
     mic_muted: Callable[[], bool] | None = None,
     conversation: Callable[[], bool] | None = None,
+    echo_canceller: voice_aec.EchoCanceller | None = None,
 ) -> _VoiceInputOwners:
     """Select Wave 3 or legacy wake without ever opening both input owners."""
     knobs = _VoiceKnobs() if voice is None else voice
@@ -3301,6 +3318,7 @@ def _spawn_voice_input_owners(  # noqa: PLR0913 - composition boundary dependenc
         voice=knobs,
         mic_muted=mic_muted,
         conversation=conversation,
+        echo_canceller=echo_canceller,
     )
     wake_listener: voice_wake.WakeListener | None = None
     wake_stream: object | None = None
@@ -4713,11 +4731,13 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                     sensevoice_dir=sensevoice_dir,
                 )
                 voice_pipeline_callable = _build_voice_pipeline_callable(voice_pipe)
+                echo_canceller = _build_echo_canceller(runtime)
                 tts_pipe = _build_tts_pipeline(
                     runtime,
                     broadcaster,
                     ducker=shared_ducker,
                     voice=voice_knobs,
+                    echo_canceller=echo_canceller,
                 )
                 if os.environ.get("JARVIS_VOICE_DISABLE_WAKE") == "1":
                     voice_startup_reason = "wake_disabled_env"
@@ -4735,6 +4755,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                         voice=voice_knobs,
                         mic_muted=_old_chain_input_blocked,
                         conversation=controls.conversation_is_on,
+                        echo_canceller=echo_canceller,
                     )
                     duplex_voice_session = voice_input_owners.duplex_session
                     voice_startup_reason = voice_input_owners.reason

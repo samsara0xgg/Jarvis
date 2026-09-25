@@ -529,6 +529,11 @@ realtime:
   single_audio_ingress:
     enabled: true
     backend: sounddevice
+    # Software echo cancellation (WebRTC AEC3): what the streaming player
+    # sends to the speakers is subtracted from every mic frame, so Jarvis does
+    # not hear itself over the laptop speakers. The reSpeaker board does its
+    # own; turn this off when it is the input.
+    echo_cancellation: true
     canonical_sample_rate_hz: 16000
     canonical_frame_samples: 512
     native_ring_capacity: 128

@@ -660,8 +660,13 @@ class AudioStreamPlayer:
         generation_safe: bool = False,
         callback_max_frames: int = 4096,
         estimated_output_latency_s: float = 0.12,
+        playback_tap: Callable[[np.ndarray, int], None] | None = None,
     ) -> None:
-        """Construct an idle player; does not open the OutputStream by default."""
+        """Construct an idle player; does not open the OutputStream by default.
+
+        ``playback_tap`` sees every block handed to the device, with the sample
+        rate, on the output callback (the echo canceller's far end).
+        """
         if channels != 1:
             msg = "only mono supported for now"
             raise NotImplementedError(msg)
@@ -688,6 +693,7 @@ class AudioStreamPlayer:
         self._blocksize = int(blocksize)
         self._latency = latency
         self._device = device
+        self._playback_tap = playback_tap
 
         self._stream: Any | None = None
         self._lifecycle_lock = threading.Lock()
@@ -779,7 +785,7 @@ class AudioStreamPlayer:
                 blocksize=self._blocksize,
                 latency=self._latency,
                 device=self._device,
-                callback=self._callback,
+                callback=self._callback if self._playback_tap is None else self._tapped_callback,
             )
         except BaseException as exc:  # noqa: BLE001 - typed device boundary
             with self._lifecycle_lock:
@@ -1617,6 +1623,19 @@ class AudioStreamPlayer:
             )
         self._declick_remaining = remaining - tail
         view[tail:frames] = 0.0
+
+    def _tapped_callback(
+        self,
+        outdata: np.ndarray,
+        frames: int,
+        time_info: Any,  # noqa: ANN401
+        status: Any,  # noqa: ANN401
+    ) -> None:
+        """Fill the block, then hand exactly what the device will play to the tap."""
+        self._callback(outdata, frames, time_info, status)
+        tap = self._playback_tap
+        if tap is not None:
+            tap(outdata[:frames, 0] if outdata.ndim > 1 else outdata[:frames], self._sample_rate_hz)
 
     def _callback(  # noqa: C901, PLR0912, PLR0915 - realtime path stays inline
         self,

@@ -30,6 +30,7 @@ dependencies = [
     "ddgs",               # ADR-0011 D5/D7 — web_search backend (DuckDuckGo, no API key)
     "mcp>=2.2,<3",        # ADR 0031 — MCP client; every tools.mcp.servers entry becomes flat Tools
     "httpx2>=2",          # ADR 0032 — the HTTP client the mcp 2.x transports take; headers + OAuth ride on it
+    "livekit>=1.1.20",    # WebRTC AEC3 echo canceller: Jarvis does not hear itself over the laptop speakers
 ]
 
 [project.optional-dependencies]

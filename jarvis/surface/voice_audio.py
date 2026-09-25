@@ -43,6 +43,8 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
+    from jarvis.surface.voice_aec import EchoCanceller
+
 LOGGER = logging.getLogger(__name__)
 
 SILERO_CHUNK_SAMPLES = 512  # silero fixed-size per inference (32 ms @ 16 kHz)
@@ -1108,16 +1110,22 @@ class AudioSubscription:
 class AudioIngress:
     """The daemon's single logical owner of local input and its timeline."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0915 - explicit ingress state, one field per line
         self,
         *,
         backend: voice_backend.AudioDuplexBackend,
         config: AudioIngressConfig,
         capability_sink: _CapabilitySink | None = None,
+        echo_canceller: EchoCanceller | None = None,
     ) -> None:
-        """Build a stopped ingress; subscribers may register before ``start``."""
+        """Build a stopped ingress; subscribers may register before ``start``.
+
+        ``echo_canceller`` cleans every canonical frame before any subscriber
+        (wake, VAD, ASR) sees it.
+        """
         self._backend = backend
         self._config = config
+        self._echo_canceller = echo_canceller
         native_format = backend.input_format()
         self._native_format = native_format
         self._native_ring = _PreallocatedPcmRing(
@@ -1607,7 +1615,7 @@ class AudioIngress:
                     and native.stream_epoch == active_timeline.stream_epoch
                 ):
                     for frame in self._canonicalizer.feed(native):
-                        self._fan_out(frame)
+                        self._fan_out(self._without_echo(frame))
                 native = native_ring.read()
             timeline = self._active_timeline
             epoch = timeline.stream_epoch if timeline is not None else None
@@ -1821,6 +1829,18 @@ class AudioIngress:
                 stream_epoch=stream_epoch,
                 reason=reason,
             )
+
+    def _without_echo(self, frame: CanonicalAudioFrame) -> CanonicalAudioFrame:
+        if self._echo_canceller is None:
+            return frame
+        return replace(
+            frame,
+            pcm16_mono=self._echo_canceller.clean(
+                frame.pcm16_mono,
+                stream_epoch=frame.stream_epoch,
+                discontinuity=frame.discontinuity_before,
+            ),
+        )
 
     def _fan_out(self, frame: CanonicalAudioFrame) -> None:
         timeline = self._active_timeline
