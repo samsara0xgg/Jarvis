@@ -2227,7 +2227,10 @@ def _build_echo_canceller(runtime: JarvisRuntime) -> voice_aec.EchoCanceller | N
     ingress = ingress_raw if isinstance(ingress_raw, Mapping) else {}
     if ingress.get("echo_cancellation") is not True:
         return None
-    return voice_aec.EchoCanceller()
+    # Diagnostics keep the last 8 s of mic / played / cleaned audio in memory;
+    # every conversation barge-in writes them under <runtime>/aec-diagnostics.
+    diagnostics = ingress.get("echo_diagnostics") is True
+    return voice_aec.EchoCanceller(history_s=8.0 if diagnostics else 0.0)
 
 
 def _build_tts_pipeline(  # noqa: C901 - rollout/degradation capability boundary
@@ -3210,6 +3213,14 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
             LOGGER.info(
                 "conversation barge-in: playback=%s generation=%s", playback, generation,
             )
+            if echo_canceller is not None:
+                # One second on, so the recording also holds what followed the onset.
+                threading.Timer(1.0, _dump_echo_history, args=(echo_canceller,)).start()
+
+        def _dump_echo_history(canceller: voice_aec.EchoCanceller) -> None:
+            path = canceller.dump(runtime.runtime_paths.root / "aec-diagnostics")
+            if path is not None:
+                LOGGER.info("echo diagnostics written: %s", path)
 
         session = voice_session.DuplexVoiceSession(
             ingress=ingress,

@@ -10,10 +10,16 @@ real exercise; this pins the plumbing and the WebRTC module underneath it.
 
 from __future__ import annotations
 
+import wave
+from typing import TYPE_CHECKING
+
 import numpy as np
 import soxr
 
 from jarvis.surface.voice_aec import EchoCanceller
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 MIC_HZ = 16_000
 PLAY_HZ = 48_000
@@ -36,8 +42,8 @@ def _db(x: np.ndarray) -> float:
     return float(20 * np.log10(np.sqrt(np.mean(np.square(x.astype(np.float64)))) + 1e-9))
 
 
-def test_echo_is_removed_and_talk_over_survives() -> None:
-    """Echo-only stretch drops >= 20 dB; the talk-over keeps within 8 dB."""
+def test_echo_is_removed_and_talk_over_survives(tmp_path: Path) -> None:
+    """Echo-only stretch drops >= 20 dB; talk-over keeps within 8 dB; dump holds all three."""
     seconds = 8.0
     far = 0.25 * _voice(seconds, 190.0, seed=1)  # what Jarvis plays, full scale = 1.0
     room = np.zeros(int(0.06 * MIC_HZ) + 400, dtype=np.float32)
@@ -50,7 +56,7 @@ def test_echo_is_removed_and_talk_over_survives() -> None:
     mic = np.clip((echo + near) * 32767, -32768, 32767).astype("<i2")
     playback = soxr.resample(far, MIC_HZ, PLAY_HZ).astype(np.float32)
 
-    canceller = EchoCanceller()
+    canceller = EchoCanceller(history_s=seconds)
     cleaned = bytearray()
     played = 0
     for start in range(0, mic.size - MIC_FRAME + 1, MIC_FRAME):
@@ -74,3 +80,13 @@ def test_echo_is_removed_and_talk_over_survives() -> None:
     kept = _db(result[talk]) - _db(near[talk])
     assert reduction >= 20.0, f"echo only reduced {reduction:.1f} dB"
     assert kept >= -8.0, f"talk-over lost {-kept:.1f} dB"
+
+    # The barge-in diagnostic: one 16 kHz WAV, ch0 mic, ch1 played, ch2 cleaned.
+    path = canceller.dump(tmp_path)
+    assert path is not None
+    with wave.open(str(path)) as dumped:
+        assert (dumped.getnchannels(), dumped.getframerate()) == (3, MIC_HZ)
+        tracks = np.frombuffer(dumped.readframes(dumped.getnframes()), dtype="<i2")
+    mic_ch, played_ch, cleaned_ch = (tracks.reshape(-1, 3)[echo_only, i] / 32767 for i in range(3))
+    assert _db(played_ch) > -30.0, "the played track is silent"
+    assert _db(mic_ch) - _db(cleaned_ch) >= 20.0, "the dump's mic and cleaned tracks match"
