@@ -542,7 +542,7 @@ realtime:
     # sends to the speakers is subtracted from every mic frame, so Jarvis does
     # not hear itself over the laptop speakers. The reSpeaker board does its
     # own; turn this off when it is the input.
-    echo_cancellation: true
+    echo_cancellation: false
     # Every conversation barge-in writes the last 8 s as a 3-channel WAV (mic,
     # what Jarvis played, mic after cancellation) to <runtime>/aec-diagnostics.
     echo_diagnostics: true
