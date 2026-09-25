@@ -3,7 +3,8 @@
 D6 splits a response into two phases: a short ``commentary`` while real work
 continues, and the ``final`` answer once the evidence is in.  V1 commentary is
 lifecycle-driven, and this module is the whole of that decision: one pure
-function from a single committed action event to the ephemeral
+function from a single committed action event (plus the turn's own words and
+the dispatched tool's registry facts, which pick the wording) to the ephemeral
 :class:`~jarvis.shared.realtime.PresentationIntent` spec §3.6.3 defines.
 
 The function is deliberately total and side-effect free — no clock, no DB
@@ -25,6 +26,7 @@ import hashlib
 from typing import TYPE_CHECKING, Final
 
 from jarvis.shared.realtime import PresentationIntent, PresentationIntentType
+from jarvis.shared.text import is_english
 
 if TYPE_CHECKING:
     from jarvis.shared import Event
@@ -38,27 +40,54 @@ constant through to L5 rather than picking one itself.  It matches
 is routine by definition — short, interruptible, independently permitted.
 """
 
-_D6_ROWS: Final[dict[str, tuple[PresentationIntentType, tuple[str, ...]]]] = {
-    "action.dispatched": ("acknowledge", ("我去查一下。", "这就去办。", "我去看看。")),
-    "action.running": ("progress", ("任务已经在运行。", "这件事正在做。", "还在跑着。")),
+_D6_ROWS: Final[dict[str, tuple[PresentationIntentType, dict[str, tuple[str, ...]]]]] = {
+    "action.dispatched": (
+        "acknowledge",
+        {
+            "zh": ("这就去办。", "好，我来办。"),  # noqa: RUF001 — fullwidth comma is intentional Chinese punctuation.
+            "en": ("On it.", "I'll take care of it."),
+        },
+    ),
+    "action.running": (
+        "progress",
+        {
+            "zh": ("任务已经在运行。", "这件事正在做。", "还在跑着。"),
+            "en": ("It's running now.", "That's in progress.", "Still working on it."),
+        },
+    ),
     "action.result_observed": (
         "progress",
-        (
-            "结果回来了，我整理一下。",  # noqa: RUF001 — fullwidth comma is intentional Chinese punctuation.
-            "拿到结果了，我看一下。",  # noqa: RUF001 — fullwidth comma is intentional Chinese punctuation.
-            "数据回来了，我过一遍。",  # noqa: RUF001 — fullwidth comma is intentional Chinese punctuation.
-        ),
+        {
+            "zh": (
+                "结果回来了，我整理一下。",  # noqa: RUF001 — fullwidth comma is intentional Chinese punctuation.
+                "拿到结果了，我看一下。",  # noqa: RUF001 — fullwidth comma is intentional Chinese punctuation.
+                "数据回来了，我过一遍。",  # noqa: RUF001 — fullwidth comma is intentional Chinese punctuation.
+            ),
+            "en": (
+                "The results are back, one moment.",
+                "Got the results, let me look.",
+                "The data is in, going through it.",
+            ),
+        },
     ),
     "action.failed": (
         "error",
-        (
-            "这一步失败了，我告诉你具体原因。",  # noqa: RUF001 — fullwidth comma is intentional Chinese punctuation.
-            "这一步没成，我说说原因。",  # noqa: RUF001 — fullwidth comma is intentional Chinese punctuation.
-            "这里出错了，我讲一下怎么回事。",  # noqa: RUF001 — fullwidth comma is intentional Chinese punctuation.
-        ),
+        {
+            "zh": (
+                "这一步失败了，我告诉你具体原因。",  # noqa: RUF001 — fullwidth comma is intentional Chinese punctuation.
+                "这一步没成，我说说原因。",  # noqa: RUF001 — fullwidth comma is intentional Chinese punctuation.
+                "这里出错了，我讲一下怎么回事。",  # noqa: RUF001 — fullwidth comma is intentional Chinese punctuation.
+            ),
+            "en": (
+                "That step failed; I'll tell you why.",
+                "That didn't work, here's why.",
+                "Something went wrong there; let me explain.",
+            ),
+        },
     ),
 }
-"""ADR-0008 D6's four action rows: observed truth -> the phrases it permits.
+"""ADR-0008 D6's four action rows: observed truth -> the phrases it permits,
+in Chinese and in English.
 
 Each row carries a small set rather than one sentence because the per-turn cap
 makes the acknowledge the phrase actually heard, and one fixed acknowledge
@@ -70,6 +99,23 @@ make any of them less true.
 The "utterance accepted, route selected" row of the same D6 table is not here;
 it is not an action lifecycle event and is out of this slice's scope.
 """
+
+_ACKNOWLEDGE_BY_TOOL: Final[dict[str, dict[str, tuple[str, ...]]]] = {
+    "lookup": {
+        "zh": ("我查一下。", "我去看看。", "稍等，我查查。"),  # noqa: RUF001 — fullwidth comma is intentional Chinese punctuation.
+        "en": ("Let me check.", "Looking it up.", "One sec, checking."),
+    },
+    "codex": {
+        "zh": ("我让 Codex 去做。", "交给 Codex 去办。"),
+        "en": ("I'll hand this to Codex.", "Passing this to Codex."),
+    },
+}
+"""The acknowledge row narrowed by what the dispatched tool does: a read-only
+tool is looking something up, ``spawn_worker`` hands the work to Codex, and
+anything else keeps the generic row. Still observed truth: the tool's own
+registry flag and name, never a guess about the answer."""
+
+_CODEX_TOOL: Final = "spawn_worker"
 
 
 def _phrase_for(action_id: str, phrases: tuple[str, ...]) -> str:
@@ -84,13 +130,22 @@ def _phrase_for(action_id: str, phrases: tuple[str, ...]) -> str:
     return phrases[hashlib.sha256(action_id.encode("utf-8")).digest()[0] % len(phrases)]
 
 
-def commentary_intent_for(event: Event) -> PresentationIntent | None:
+def commentary_intent_for(
+    event: Event,
+    *,
+    user_text: str = "",
+    tool_name: str | None = None,
+    tool_read_only: bool = False,
+) -> PresentationIntent | None:
     """Return the D6 intent this action event permits, or ``None``.
 
     ``None`` for every event type outside the four-row table — including
     ``run.started``, ``gate.evaluated`` and ``action.cancelled`` — and for a
     mapped row that carries no usable ``action_id``, since ``subject_ref`` is
     that id and an intent about nothing cannot be coalesced or superseded.
+
+    The phrase is English when ``user_text`` (what Allen said or typed this
+    turn) reads as English, and an acknowledge names what ``tool_name`` does.
     """
     row = _D6_ROWS.get(event.type)
     if row is None:
@@ -98,7 +153,13 @@ def commentary_intent_for(event: Event) -> PresentationIntent | None:
     action_id = event.payload.get("action_id")
     if not isinstance(action_id, str) or not action_id:
         return None
-    intent_type, phrases = row
+    intent_type, by_language = row
+    language = "en" if is_english(user_text) else "zh"
+    phrases = by_language[language]
+    if intent_type == "acknowledge":
+        kind = "codex" if tool_name == _CODEX_TOOL else "lookup" if tool_read_only else None
+        if kind is not None:
+            phrases = _ACKNOWLEDGE_BY_TOOL[kind][language]
     return PresentationIntent(
         intent_type=intent_type,
         surface_hint="speech",

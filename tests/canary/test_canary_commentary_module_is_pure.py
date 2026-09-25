@@ -77,9 +77,10 @@ def test_commentary_never_calls_builtin_hash() -> None:
 def test_commentary_defines_no_module_level_mutable_state() -> None:
     """Every module-level binding is a constant, a tuple, or a frozen mapping.
 
-    The one dict is `_D6_ROWS`, whose values are tuples: it is read-only by
-    convention and by `Final`, and nothing in the module rebinds or mutates
-    it; `__all__` is an export declaration. Any *other* module-level dict,
+    The two dicts are the phrase tables `_D6_ROWS` and `_ACKNOWLEDGE_BY_TOOL`,
+    whose leaves are tuples: read-only by convention and by `Final`, and
+    nothing in the module rebinds or mutates them; `__all__` is an export
+    declaration. Any *other* module-level dict,
     list or set is a stored index, which is what "no stored index" forbids.
     """
     offenders: list[str] = []
@@ -88,9 +89,11 @@ def test_commentary_defines_no_module_level_mutable_state() -> None:
             continue
         targets = node.targets if isinstance(node, ast.Assign) else [node.target]
         names = [t.id for t in targets if isinstance(t, ast.Name)]
-        if names == ["_D6_ROWS"] or all(n.startswith("__") for n in names):
-            # `_D6_ROWS`'s values are tuples and nothing rebinds it; `__all__`
-            # is an export declaration, not state.
+        if names in (["_D6_ROWS"], ["_ACKNOWLEDGE_BY_TOOL"]) or all(
+            n.startswith("__") for n in names
+        ):
+            # The phrase tables' leaves are tuples and nothing rebinds them;
+            # `__all__` is an export declaration, not state.
             continue
         if node.value is None or isinstance(node.value, _IMMUTABLE_LITERALS):
             continue
@@ -103,7 +106,7 @@ def test_commentary_defines_no_module_level_mutable_state() -> None:
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
         and isinstance(node.func.value, ast.Name)
-        and node.func.value.id == "_D6_ROWS"
+        and node.func.value.id in {"_D6_ROWS", "_ACKNOWLEDGE_BY_TOOL"}
         and node.func.attr in _MUTATING_METHODS
     ]
     assert mutating == [], mutating

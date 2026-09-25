@@ -20,10 +20,23 @@ without crossing the decision/execution sibling boundary — the cap
 itself lives in the caller (`jarvis.decision.__init__`), not in
 `tier0.py`.
 
+`is_english` is the script test L3 uses to speak in the language Allen
+used (the spoken form, the commentary phrase).
+
 Layer rules: stdlib only.
 """
 
 from __future__ import annotations
+
+import re
+
+_LATIN_WORD = re.compile(r"[A-Za-z]+")
+
+
+def is_english(text: str) -> bool:
+    """True when Latin words outnumber CJK characters, so the text reads as English."""
+    cjk = sum(1 for ch in text if "\u4e00" <= ch <= "\u9fff")
+    return len(_LATIN_WORD.findall(text)) > cjk
 
 
 def truncate_utf8(data: bytes, total_bytes: int) -> tuple[str, int, bool]:
@@ -72,4 +85,4 @@ def truncate_utf8(data: bytes, total_bytes: int) -> tuple[str, int, bool]:
     return text, max(0, total_bytes - len(data)), False
 
 
-__all__ = ["truncate_utf8"]
+__all__ = ["is_english", "truncate_utf8"]

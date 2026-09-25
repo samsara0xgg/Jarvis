@@ -1757,8 +1757,8 @@ def _commentary_action_turn_id(conn: sqlite3.Connection, action_event: Event) ->
     return dispatched_turn if isinstance(dispatched_turn, str) and dispatched_turn else None
 
 
-def _commentary_turn_id(conn: sqlite3.Connection, action_event: Event) -> str | None:
-    """Return the user-originated turn this action belongs to, or ``None``.
+def _commentary_turn(conn: sqlite3.Connection, action_event: Event) -> tuple[str, str] | None:
+    """Return this action's user-originated turn and Allen's words, or ``None``.
 
     Durable reads and no heuristics: the action names its turn, that turn's
     ``turn.started`` names the trigger it was claimed from, and the trigger's
@@ -1780,7 +1780,14 @@ def _commentary_turn_id(conn: sqlite3.Connection, action_event: Event) -> str | 
     trigger = get_event(conn, started.source_event_id)
     if trigger is None or trigger.type not in _COMMENTARY_ORIGIN_TRIGGER_TYPES:
         return None
-    return turn_id
+    transcript = trigger.payload.get("transcript")
+    return turn_id, transcript if isinstance(transcript, str) else ""
+
+
+_SELECT_ACTION_TOOL_NAME_SQL = (
+    "SELECT json_extract(payload_json, '$.tool_name') FROM events "
+    "WHERE type = 'action.proposed' AND json_extract(payload_json, '$.action_id') = ? LIMIT 1"
+)
 
 
 _SELECT_COMMENTARY_PLAYBACK_SQL = (
@@ -1804,6 +1811,11 @@ def _commentary_reached_the_speaker(conn: sqlite3.Connection, response_id: str) 
     """
     return conn.execute(_SELECT_COMMENTARY_PLAYBACK_SQL, (response_id,)).fetchone() is not None
 
+
+_SELECT_TURN_ENDED_SQL = (
+    "SELECT 1 FROM events WHERE type = 'turn.ended' "
+    "AND json_extract(payload_json, '$.turn_id') = ? LIMIT 1"
+)
 
 _SELECT_COMMENTARY_IN_TURN_SQL = (
     "SELECT 1 FROM events WHERE type = 'response.started' "
@@ -1987,17 +1999,33 @@ def _open_commentary_in_worker_thread(  # noqa: PLR0911 - one early return per s
 
     Returns ``None`` — writing nothing at all — when the row maps to no D6
     intent, when the turn is not user-originated, when the turn came from
-    GPT-Live, when this turn already opened its one commentary, when a
+    GPT-Live, when the turn already ended, when this turn already opened its
+    one commentary, when a
     confirmation is still awaiting an answer, or when a non-terminal row's
     action already reached its terminal.
     """
-    intent = commentary_intent_for(action_event)
-    if intent is None:
+    if commentary_intent_for(action_event) is None:
         return None
     conn = open_runtime_event_log(runtime.runtime_paths.event_log)
     try:
-        turn_id = _commentary_turn_id(conn, action_event)
-        if turn_id is None:
+        turn = _commentary_turn(conn, action_event)
+        if turn is None:
+            return None
+        turn_id, user_text = turn
+        row = conn.execute(
+            _SELECT_ACTION_TOOL_NAME_SQL, (action_event.payload.get("action_id"),)
+        ).fetchone()
+        tool_name = row[0] if row is not None and isinstance(row[0], str) else None
+        tool = next(
+            (t for t in runtime.tool_registry.get_definitions() if t.name == tool_name), None
+        )
+        intent = commentary_intent_for(
+            action_event,
+            user_text=user_text,
+            tool_name=tool_name,
+            tool_read_only=tool is not None and tool.read_only,
+        )
+        if intent is None:  # pragma: no cover - same event, same answer as above
             return None
         if _turn_intent_channel(conn, turn_id) == LIVE_PRINCIPAL:
             # ADR-0016 D8. Suppressed at the source, not by the TTS filter:
@@ -2012,6 +2040,10 @@ def _open_commentary_in_worker_thread(  # noqa: PLR0911 - one early return per s
                 LIVE_PRINCIPAL,
                 action_event.type,
             )
+            return None
+        if conn.execute(_SELECT_TURN_ENDED_SQL, (turn_id,)).fetchone() is not None:
+            # The answer is already out (a Tier 0 turn ends before its tool's
+            # rows reach this watcher): a phrase now would follow the answer.
             return None
         if _turn_already_spoke_commentary(conn, turn_id):
             # One phrase per turn. Checked here, after the origin filter and
