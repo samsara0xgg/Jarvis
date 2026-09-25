@@ -410,8 +410,10 @@ realtime:
   # never dropped or superseded by it.  It additionally requires
   # realtime.enabled and response.response_run_lifecycle and downgrades once,
   # with one warning, without them.
+  # On since ADR 0040: the local voice chain says one short phrase when a
+  # turn's first tool starts, instead of staying silent until the answer.
   commentary:
-    enabled: false
+    enabled: true
   # ADR-0008 D8 (Wave 5).  intent_pump replaces the daemon's "poll one
   # event, await its whole turn" watcher with a durable-claim queue: each
   # trigger is claimed once by an idempotent turn.started, the cursor

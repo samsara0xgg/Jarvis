@@ -210,11 +210,11 @@ def _config(*, enabled: bool, lifecycle: bool, commentary: bool) -> dict[str, ob
     }
 
 
-def test_shipped_config_leaves_commentary_off() -> None:
-    """config/jarvis.yaml ships the switch off, like every other realtime flag."""
+def test_shipped_config_turns_commentary_on() -> None:
+    """ADR 0040: the shipped switch is on and survives the combination rules."""
     shipped = yaml.safe_load((repo_root() / "config" / "jarvis.yaml").read_text())
-    assert shipped["realtime"]["commentary"] == {"enabled": False}
-    assert _wave4_response_activation(shipped).flags.lifecycle_commentary is False
+    assert shipped["realtime"]["commentary"] == {"enabled": True}
+    assert _wave4_response_activation(shipped).flags.lifecycle_commentary is True
 
 
 def test_commentary_requires_the_response_run_lifecycle() -> None:

@@ -19,6 +19,9 @@ has a recorded reason it must stay off.
 
 The evidence for tier A is docs/live-burn-2026-09-03-realtime-wave4.md (4/4),
 -wave5.md (3/3) and docs/live-burn-2026-09-04-realtime-post6ed7280.md (10/10).
+
+``commentary`` left tier B with ADR 0040 (2026-09-24): Allen had it built
+before its live run, which he takes himself before the branch merges.
 """
 
 from __future__ import annotations
@@ -39,11 +42,11 @@ _TIER_A_ENABLED = (
     "input.intent_pump",
     "streaming_output.enabled",
     "single_audio_ingress.enabled",
+    "commentary.enabled",
 )
 
 _TIER_B_AND_C_DISABLED = (
     "response.routine_streaming.enabled",
-    "commentary.enabled",
     "confirmation.durable_expiry.enabled",
     "streaming_output.speak_from_segments",
     "single_audio_ingress.partial_asr.enabled",
@@ -68,14 +71,14 @@ def _lookup(block: dict[str, object], dotted: str) -> object:
 
 
 def test_canary_tier_a_switches_ship_enabled() -> None:
-    """The ten live-burned switches are on in the shipped config."""
+    """The ten live-burned switches and commentary are on in the shipped config."""
     realtime = _shipped_realtime()
     off = [path for path in _TIER_A_ENABLED if _lookup(realtime, path) is not True]
     assert not off, f"tier-A switches unexpectedly off: {off}"
 
 
 def test_canary_tier_b_and_c_switches_ship_disabled() -> None:
-    """The eight switches with no live evidence stay off in the shipped config."""
+    """The seven switches with no live evidence stay off in the shipped config."""
     realtime = _shipped_realtime()
     on = [path for path in _TIER_B_AND_C_DISABLED if _lookup(realtime, path) is not False]
     assert not on, f"switches enabled without a live run: {on}"
