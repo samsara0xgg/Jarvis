@@ -710,6 +710,35 @@ def _interaction_line(packet: SituationPacket) -> str | None:
     return "交互方式：语音" if channel in _VOICE_CHANNELS else "交互方式：文字"  # noqa: RUF001 — Chinese punctuation is intentional.
 
 
+_HEARD_QUOTE_MAX_CHARS: Final[int] = 40
+
+
+def _previous_answer_line(packet: SituationPacket) -> str | None:
+    """Where the previous turn's spoken answer stopped, or None when it was heard whole.
+
+    Read from the playback evidence the conversation projection already
+    validates. Only the fact goes in; whether to continue or take up the
+    new words is the model's call.
+    """
+    history = packet.conversation_history
+    turns = history.turns if history is not None else ()
+    index = next((i for i, t in enumerate(turns) if t.turn_id == packet.current_turn_id), 0)
+    finals = [r for r in turns[index - 1].responses if r.phase == "final"] if index else []
+    spoken = [r for r in finals if r.panel_available.strip()]
+    if not spoken:
+        return "上一句：还没回答就中断了" if finals else None  # noqa: RUF001 — Chinese punctuation is intentional.
+    voice = split_envelope(spoken[-1].panel_available)[0].strip()
+    prefix = spoken[-1].spoken_heard
+    if prefix is None or not voice or prefix.text.strip() == voice:
+        return None
+    heard = prefix.text.strip()
+    if not heard:
+        return "上一条回答：还没念出来就被打断了"  # noqa: RUF001 — Chinese punctuation is intentional.
+    if len(heard) > _HEARD_QUOTE_MAX_CHARS:
+        heard = "…" + heard[-_HEARD_QUOTE_MAX_CHARS:]
+    return f"上一条回答：念到「{heard}」时被打断，后面的没念出来"  # noqa: RUF001 — Chinese punctuation is intentional.
+
+
 def _current_status_block(packet: SituationPacket, ctx: DecideContext) -> str | None:
     """This turn's state under one header, or None when there is nothing to say."""
     lines = [
@@ -717,6 +746,7 @@ def _current_status_block(packet: SituationPacket, ctx: DecideContext) -> str | 
         for line in (
             ctx.time_note,
             _interaction_line(packet),
+            _previous_answer_line(packet),
             format_pending_confirmation_note(packet),
             _format_open_actions_note(packet),
         )
