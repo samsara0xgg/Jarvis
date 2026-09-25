@@ -63,8 +63,8 @@ export function connect(port: string, dispatch: (a: Action) => void): Runtime {
       else if (msg.op === 'append') dispatch({ type: 'append', token: String(p.token ?? '') });
       // ponytail: text fades fadeMs after `done`; a long TTS tail can outlive it. Key the fade on `spoken` if that shows.
       else if (msg.op === 'done') setTimeout(() => dispatch({ type: 'settle', turnId }), Number(p.fadeMs ?? 5000));
-      else if (msg.op === 'failed' || msg.op === 'cancelled') dispatch({ type: 'failed', cancelled: msg.op === 'cancelled' });
-      else if (msg.op === 'voice') { const a = voicePhase[String(p.phase)]; if (a) dispatch(a); }
+      else if (msg.op === 'failed' || msg.op === 'cancelled') dispatch({ type: 'failed', turnId, cancelled: msg.op === 'cancelled' });
+      else if (msg.op === 'voice') { const a = voicePhase[String(p.phase)]; if (a) dispatch(a); if (p.phase === 'accepted' && turnId) dispatch({ type: 'pending', turnId }); }
       else if (msg.op === 'live') dispatch({ type: 'live', live: liveFrom(p) });
       else if (msg.op === 'subtitle') dispatch({ type: 'subtitle', sessionId: String(p.session_id ?? ''), role: p.role === 'user' ? 'user' : 'assistant', delta: String(p.delta ?? ''), startMs: Number(p.start_ms ?? 0), endMs: Number(p.end_ms ?? 0) });
     };
@@ -77,7 +77,8 @@ export function connect(port: string, dispatch: (a: Action) => void): Runtime {
   };
   open();
   return {
-    submit: async text => { await post('/inherent/submit', { text }); },
+    // The answer names the turn this text started; it is the one whose failure releases "processing".
+    submit: async text => { const r = await post('/inherent/submit', { text }); if (typeof r.turn_id === 'string' && r.turn_id) dispatch({ type: 'pending', turnId: r.turn_id }); },
     // foreground_output stops what is audible now and lets the run finish (ADR-0008 D10).
     cancel: async responseId => { if (responseId) await post('/inherent/cancel-response', { response_id: responseId, scope: 'foreground_output' }); },
     controls,

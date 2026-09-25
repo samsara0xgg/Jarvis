@@ -17,10 +17,10 @@ export interface Row { seq: number; id: string; ts: string; source: string; text
 // A same-speaker pause longer than this starts a new caption row (docs/gpt-live/live-conversations.md, Display captions): an assistant resuming after an interruption must not extend the cut-off line. Application choice; tune against recordings.
 const SUBTITLE_GAP_MS = 1500;
 export const idleLive: Live = { state: 'idle', sessionId: null, since: null, usageS: null, usageFinal: false, reason: null, speaking: false, hearing: false, error: null, notice: null };
-export interface State { mode: Mode; phase: Phase; micMuted: boolean; soundMuted: boolean; inbox: boolean; detail: string | null; results: Result[]; reply: string; draft: string; attachment: boolean; turnId: string | null; responseId: string | null; live: Live; subtitles: Subtitle[]; rows: Row[]; openSeq: number }
-export const initialState: State = { mode: 'voice', phase: 'listening', micMuted: false, soundMuted: false, inbox: false, detail: null, results: [examples[0], examples[3], examples[1]], reply: '', draft: '', attachment: false, turnId: null, responseId: null, live: idleLive, subtitles: [], rows: [], openSeq: 0 };
+export interface State { mode: Mode; phase: Phase; micMuted: boolean; soundMuted: boolean; inbox: boolean; detail: string | null; results: Result[]; reply: string; draft: string; attachment: boolean; turnId: string | null; responseId: string | null; waiting: string | null; live: Live; subtitles: Subtitle[]; rows: Row[]; openSeq: number }
+export const initialState: State = { mode: 'voice', phase: 'listening', micMuted: false, soundMuted: false, inbox: false, detail: null, results: [examples[0], examples[3], examples[1]], reply: '', draft: '', attachment: false, turnId: null, responseId: null, waiting: null, live: idleLive, subtitles: [], rows: [], openSeq: 0 };
 export type Action = { type: 'mode'; mode: Mode } | { type: 'phase'; phase: Phase } | { type: 'mic' | 'sound' | 'inbox' | 'interrupt' | 'end' | 'attachment' | 'reset' } | { type: 'draft'; value: string } | { type: 'send' } | { type: 'answer' } | { type: 'detail'; id: string | null } | { type: 'dismiss'; id: string } | { type: 'example'; id: string }
-  | { type: 'open'; turnId: string; responseId: string | null } | { type: 'append'; token: string } | { type: 'settle'; turnId: string } | { type: 'failed'; cancelled: boolean } | { type: 'controls'; micMuted: boolean; soundMuted: boolean }
+  | { type: 'open'; turnId: string; responseId: string | null } | { type: 'append'; token: string } | { type: 'settle'; turnId: string } | { type: 'pending'; turnId: string } | { type: 'failed'; turnId: string; cancelled: boolean } | { type: 'controls'; micMuted: boolean; soundMuted: boolean }
   | { type: 'live'; live: Live } | { type: 'subtitle'; sessionId: string; role: 'user' | 'assistant'; delta: string; startMs: number; endMs: number } | { type: 'live_dismiss' }
   | { type: 'rows'; rows: Row[] };
 export function reducer(s: State, a: Action): State {
@@ -35,16 +35,17 @@ export function reducer(s: State, a: Action): State {
     case 'inbox': return { ...s, inbox: !s.inbox, detail: null };
     case 'draft': return { ...s, draft: a.value };
     case 'attachment': return { ...s, attachment: !s.attachment };
-    case 'send': return s.draft.trim() && s.phase !== 'processing' ? { ...s, draft: '', attachment: false, phase: 'processing', reply: '' } : s;
+    case 'send': return s.draft.trim() && s.phase !== 'processing' ? { ...s, draft: '', attachment: false, phase: 'processing', reply: '', waiting: null } : s;
     case 'answer': return { ...s, phase: 'speaking', reply: '演示回复：我接住了这段表达。正式连接后，可以从这里继续交流、保存和找回上下文。此处没有保存或执行真实任务。' };
     // `openSeq` remembers where the log stood when this turn opened: the streaming reply shows as a tail row until an answer row lands past it.
     case 'open': return { ...s, phase: 'processing', reply: '', turnId: a.turnId, responseId: a.responseId, openSeq: s.rows.length ? s.rows[s.rows.length - 1].seq : 0 };
     case 'append': return { ...s, reply: s.reply + a.token, phase: 'speaking' };
     // The daemon's `done` carries fadeMs; runtime.ts turns it into this delayed settle for the same turn only.
     case 'settle': return s.turnId === a.turnId ? { ...s, reply: '', phase: s.phase === 'speaking' ? 'listening' : s.phase } : s;
-    // A turn that ends with no answer (daemon `failed` / `cancelled`) releases "processing"; a failure says so where the reply would be.
-    // ponytail: releases whichever turn is processing; match turn_id if two concurrent turns ever show the wrong one.
-    case 'failed': return s.phase === 'processing' ? { ...s, phase: 'listening', reply: a.cancelled ? '' : '这一轮出错了，没有完成。可以再说一次。', openSeq: s.rows.length ? s.rows[s.rows.length - 1].seq : 0 } : s;
+    // `waiting` is the turn this surface started (submit answer or voice `accepted`); only its end without an answer
+    // (daemon `failed` / `cancelled`) releases "processing", so a background turn failing meanwhile changes nothing.
+    case 'pending': return { ...s, waiting: a.turnId };
+    case 'failed': return s.phase === 'processing' && a.turnId === s.waiting ? { ...s, phase: 'listening', reply: a.cancelled ? '' : '这一轮出错了，没有完成。可以再说一次。', openSeq: s.rows.length ? s.rows[s.rows.length - 1].seq : 0 } : s;
     case 'controls': return { ...s, micMuted: a.micMuted, soundMuted: a.soundMuted };
     // A new session id starts a fresh transcript; a closed session keeps its lines on screen until dismissed.
     case 'live': return { ...s, live: a.live, subtitles: a.live.sessionId && a.live.sessionId !== s.live.sessionId ? [] : s.subtitles };
