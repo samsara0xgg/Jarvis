@@ -3064,6 +3064,7 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
     tts: voice_tts.TTSPipeline | voice_media.StreamingTTSPipeline | None,
     voice: _VoiceKnobs | None = None,
     mic_muted: Callable[[], bool] | None = None,
+    conversation: Callable[[], bool] | None = None,
 ) -> tuple[voice_session.DuplexVoiceSession | None, bool]:
     """Start Wave 3 or return whether a device-open attempt was made.
 
@@ -3166,6 +3167,22 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
             model_path=silero_path,
             profiles=knobs.vad_profiles,
         )
+        barge_in_interrupt = make_barge_in_interrupt_callable(runtime)
+
+        def _stop_speaking() -> None:
+            # ADR 0041: Allen talked over Jarvis in conversation mode. Stop
+            # what is audible now, then cancel an answer still being written
+            # so it cannot start speaking over his new question.
+            playback = (
+                tts.stop_foreground_output(None, reason="barge_in")
+                if isinstance(tts, voice_media.StreamingTTSPipeline)
+                else "no_streaming_player"
+            )
+            generation = barge_in_interrupt("conversation_speech")
+            LOGGER.info(
+                "conversation barge-in: playback=%s generation=%s", playback, generation,
+            )
+
         session = voice_session.DuplexVoiceSession(
             ingress=ingress,
             wake_engine=engine,
@@ -3175,8 +3192,10 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
             output_active=(tts.is_output_active if tts is not None else None),
             wake_threshold=knobs.wake_threshold,
             config=session_config,
-            barge_in_interrupt=make_barge_in_interrupt_callable(runtime),
+            barge_in_interrupt=barge_in_interrupt,
             mic_muted=mic_muted,
+            conversation=conversation,
+            stop_speaking=_stop_speaking,
         )
     except Exception:
         LOGGER.exception(
@@ -3269,6 +3288,7 @@ def _spawn_voice_input_owners(  # noqa: PLR0913 - composition boundary dependenc
     ducker: voice_ducking.SystemAudioDucker,
     voice: _VoiceKnobs | None = None,
     mic_muted: Callable[[], bool] | None = None,
+    conversation: Callable[[], bool] | None = None,
 ) -> _VoiceInputOwners:
     """Select Wave 3 or legacy wake without ever opening both input owners."""
     knobs = _VoiceKnobs() if voice is None else voice
@@ -3280,6 +3300,7 @@ def _spawn_voice_input_owners(  # noqa: PLR0913 - composition boundary dependenc
         tts=tts,
         voice=knobs,
         mic_muted=mic_muted,
+        conversation=conversation,
     )
     wake_listener: voice_wake.WakeListener | None = None
     wake_stream: object | None = None
@@ -4713,6 +4734,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                         ducker=shared_ducker,
                         voice=voice_knobs,
                         mic_muted=_old_chain_input_blocked,
+                        conversation=controls.conversation_is_on,
                     )
                     duplex_voice_session = voice_input_owners.duplex_session
                     voice_startup_reason = voice_input_owners.reason

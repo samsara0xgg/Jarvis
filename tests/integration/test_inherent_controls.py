@@ -38,14 +38,17 @@ def test_controls_wire_reads_and_flips_each_switch_independently() -> None:
     assert client.post("/inherent/controls", json={}).json() == {
         "mic_muted": False,
         "speech_muted": False,
+        "conversation": False,
     }
     assert client.post("/inherent/controls", json={"mic_muted": True}).json() == {
         "mic_muted": True,
         "speech_muted": False,
+        "conversation": False,
     }
     assert client.post("/inherent/controls", json={"speech_muted": True}).json() == {
         "mic_muted": True,
         "speech_muted": True,
+        "conversation": False,
     }
     # The voice owners read through the bound methods the runtime hands them.
     assert controls.mic_is_muted()
@@ -53,6 +56,7 @@ def test_controls_wire_reads_and_flips_each_switch_independently() -> None:
     assert client.post("/inherent/controls", json={"mic_muted": False}).json() == {
         "mic_muted": False,
         "speech_muted": True,
+        "conversation": False,
     }
     assert client.post("/inherent/controls", json={"mic_muted": "loud"}).status_code == 422
 

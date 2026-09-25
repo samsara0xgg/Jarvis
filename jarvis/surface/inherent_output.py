@@ -126,6 +126,11 @@ class InherentBroadcaster:
                     async with self._lock:
                         self._clients.discard(ws)
 
+    @property
+    def has_clients(self) -> bool:
+        """Whether any v1 client is still connected."""
+        return bool(self._clients)
+
     async def unregister(self, ws: WebSocket) -> None:
         """Remove a disconnected WS client from the registry. Idempotent."""
         async with self._lock:

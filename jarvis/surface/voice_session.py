@@ -22,6 +22,7 @@ import logging
 import os
 import queue
 import secrets
+import sys
 import threading
 import time
 from collections import deque
@@ -548,8 +549,14 @@ class UtteranceAssembler:
     def arm(
         self,
         detection: WakeDetection,
+        *,
+        expires: bool = True,
     ) -> tuple[CapturedUtterance | UtteranceCaptureFailure | WakeArmExpired, ...]:
-        """Arm from the exact wake cursor and replay only already-consumed suffix."""
+        """Arm from the exact wake cursor and replay only already-consumed suffix.
+
+        ``expires=False`` is conversation mode's arm: it waits for speech with
+        no ``armed_no_speech_timeout_s`` deadline, until the owner resets it.
+        """
         self._state = _AssemblerState.ARMED
         self._stream_epoch = detection.stream_epoch
         self._expected_cursor = detection.input_sample_cursor
@@ -558,9 +565,14 @@ class UtteranceAssembler:
         self._wake_cursor = detection.input_sample_cursor
         self._armed_deadline_cursor = (
             detection.input_sample_cursor + self._armed_timeout_samples
+            if expires
+            else sys.maxsize
         )
-        self._armed_deadline_monotonic_ns = detection.observed_monotonic_ns + int(
-            self._config.armed_no_speech_timeout_s * 1_000_000_000,
+        self._armed_deadline_monotonic_ns = (
+            detection.observed_monotonic_ns
+            + int(self._config.armed_no_speech_timeout_s * 1_000_000_000)
+            if expires
+            else 0
         )
         self._audio_frames.clear()
         self._speech_pre_roll.clear()
@@ -900,14 +912,26 @@ class DuplexVoiceSession:
         config: RealtimeInputSessionConfig,
         barge_in_interrupt: Callable[[str], str] | None = None,
         mic_muted: Callable[[], bool] | None = None,
+        conversation: Callable[[], bool] | None = None,
+        stop_speaking: Callable[[], object] | None = None,
     ) -> None:
-        """Register all bounded subscribers before any hardware starts."""
+        """Register all bounded subscribers before any hardware starts.
+
+        ``conversation`` reads the surface's conversation switch (ADR 0041):
+        while it is on and the mic is live, capture stays armed without a
+        wake hit, and speech that starts while Jarvis is speaking calls
+        ``stop_speaking`` on a thread of its own.
+        """
         self._ingress = ingress
         self._wake_engine = wake_engine
         self._pipeline = pipeline
         self._broadcaster = broadcaster
         self._output_active = output_active
         self._mic_muted = mic_muted
+        self._conversation = conversation
+        self._stop_speaking = stop_speaking
+        # True while the assembler's arm is conversation mode's, not a wake's.
+        self._conversation_armed = False
         self._wake_threshold = wake_threshold
         self._config = config
         self._session_id = "S" + secrets.token_hex(8)
@@ -1209,6 +1233,53 @@ class DuplexVoiceSession:
                 measurement_boundary="software_openwakeword_decision",
             )
 
+    def _conversation_open(self) -> bool:
+        """Conversation mode is on and nothing blocks the mic (mute, GPT-Live)."""
+        try:
+            return (
+                self._conversation is not None
+                and self._conversation()
+                and not (self._mic_muted is not None and self._mic_muted())
+            )
+        except Exception:  # noqa: BLE001 - an unreadable switch is off, never always-listening
+            return False
+
+    def _keep_conversation_armed(self, frame: voice_audio.CanonicalAudioFrame) -> None:
+        """ADR 0041: arm on every idle frame while conversation mode is open.
+
+        Arming at this frame's own cursor replays nothing, and the arm never
+        expires; turning the mode off (or muting) drops an arm that has not
+        heard speech yet, so no later speech commits without a wake hit.
+        """
+        if self._conversation_open():
+            if not self._assembler.armed:
+                self._assembler.arm(
+                    WakeDetection(
+                        stream_epoch=frame.stream_epoch,
+                        input_sample_cursor=frame.sample_cursor,
+                        observed_monotonic_ns=frame.captured_monotonic_ns,
+                        probability=1.0,
+                    ),
+                    expires=False,
+                )
+                self._conversation_armed = True
+        elif self._conversation_armed and not self._assembler.active:
+            self._assembler.reset_to_idle()
+            self._conversation_armed = False
+
+    def _barge_in_on_speech(self) -> None:
+        """Speech started while Jarvis speaks in conversation mode: stop it."""
+        try:
+            speaking = self._output_active is not None and self._output_active()
+        except Exception:  # noqa: BLE001 - unknown output state stops nothing
+            return
+        if not speaking or self._stop_speaking is None:
+            return
+        record_realtime_trace("conversation_barge_in", session_id=self._session_id)
+        threading.Thread(
+            target=self._stop_speaking, name="conversation-barge-in", daemon=True,
+        ).start()
+
     def _capture_loop(self) -> None:
         while not self._stop.is_set():
             self._drain_detection_commands()
@@ -1217,6 +1288,7 @@ class DuplexVoiceSession:
             frame = self._capture_subscription.read(timeout_s=self._config.worker_poll_s)
             if frame is None:
                 continue
+            self._keep_conversation_armed(frame)
             was_active = self._assembler.active
             outcome = self._assembler.feed(frame)
             is_active = self._assembler.active
@@ -1231,7 +1303,13 @@ class DuplexVoiceSession:
                         input_sample_cursor=frame.sample_cursor,
                         measurement_boundary="software_vad_speech_onset",
                     )
+                    if self._conversation_armed:
+                        # A wake arm says "listening" at the wake; a
+                        # conversation arm has no wake, so it says it here.
+                        self._broadcast("listening", turn_id=self._assembler.turn_id)
+                        self._barge_in_on_speech()
             if outcome is not None:
+                self._conversation_armed = False
                 self._handle_capture_outcome(outcome)
 
     def _drain_detection_commands(self) -> None:

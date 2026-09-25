@@ -215,11 +215,13 @@ class ControlsRequest(BaseModel):
 
     Each field is optional; ``None`` leaves that switch untouched, so ``{}``
     is a pure read the surface uses to sync on connect. The response is
-    always the full current state ``{"mic_muted": bool, "speech_muted": bool}``.
+    always the full current state ``{"mic_muted", "speech_muted", "conversation"}``.
     """
 
     mic_muted: bool | None = None
     speech_muted: bool | None = None
+    # ADR 0041: the surface's wave mode, listening without a wake word.
+    conversation: bool | None = None
     # GPT-Live phase A: ``start`` opens a session (refused with a reason when
     # the ingress or the API key is missing), ``stop`` hangs up.  The response
     # then also carries ``"live": {...}`` (``LiveVoice.status``), on every request.
@@ -990,14 +992,21 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0915 — one cl
         @app.post("/inherent/controls", status_code=200)
         async def set_controls(req: ControlsRequest) -> dict[str, object]:
             """Flip the mute switches and drive GPT-Live; answer with the full state."""
+            before = controls.conversation
             state: dict[str, object] = dict(
-                controls.update(mic_muted=req.mic_muted, speech_muted=req.speech_muted),
+                controls.update(
+                    mic_muted=req.mic_muted,
+                    speech_muted=req.speech_muted,
+                    conversation=req.conversation,
+                ),
             )
             if req.mic_muted is not None or req.speech_muted is not None:
                 LOGGER.info(
                     "controls: mic_muted=%s speech_muted=%s",
                     state["mic_muted"], state["speech_muted"],
                 )
+            if state["conversation"] != before:
+                LOGGER.info("controls: conversation=%s", state["conversation"])
             if deps.live is None:
                 if req.live is not None:
                     state["live"] = {"state": "unavailable", "reason": "gpt_live_disabled"}
@@ -1047,6 +1056,13 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0915 — one cl
             pass
         finally:
             await deps.broadcaster.unregister(ws)
+            # ADR 0041: with no surface left to leave wave mode, stop
+            # listening without a wake word.
+            if deps.controls is not None and deps.controls.conversation and not (
+                deps.broadcaster.has_clients
+            ):
+                deps.controls.update(conversation=False)
+                LOGGER.info("controls: conversation=False (last surface disconnected)")
 
     if deps.v2 is not None:
         v2_deps = deps.v2

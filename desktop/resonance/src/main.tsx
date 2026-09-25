@@ -174,6 +174,12 @@ function App() {
     if (value !== 'voice' && s.mode === 'voice') feedback('voice-exit');
     dispatch({ type: 'mode', mode: value }); setSettings(false);
   };
+  // ADR 0041: wave mode is conversation mode, listening without a wake word. Resent after
+  // every reconnect, because a restarted daemon comes back out of it.
+  const connected = s.phase !== 'error';
+  useEffect(() => { if (live && connected) void runtime.current?.controls({ conversation: s.mode === 'voice' }).catch(() => undefined); }, [s.mode, connected]);
+  // The wake word opens wave mode too, so the talk goes on without saying it again.
+  useEffect(() => { if (live && s.phase === 'hearing' && s.mode === 'idle') mode('voice'); }, [s.phase]);
   // The log polls memory.db while it is open: the first load takes the newest page, every later tick only the rows past the last one held.
   const lastSeq = useRef(0);
   lastSeq.current = s.rows.length ? s.rows[s.rows.length - 1].seq : 0;

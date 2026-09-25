@@ -747,8 +747,11 @@ class StreamingTTSPipeline:
         )
         return await asyncio.wrap_future(future)
 
-    def stop_foreground_output(self, response_id: str) -> str:
+    def stop_foreground_output(self, response_id: str | None, *, reason: str = "user_stop") -> str:
         """Stop the speech audible right now, leaving its ResponseRun alone.
+
+        ``response_id=None`` stops whatever is speaking: a spoken interruption
+        in conversation mode (ADR 0041, ``reason="barge_in"``) knows no id.
 
         ADR-0014 D20 step 4, callable from any non-actor thread. The target
         is resolved on the actor against ``self._active``'s own playback
@@ -765,15 +768,15 @@ class StreamingTTSPipeline:
         budget; ``realtime.response.cancel_timeout_ms`` bounds the SQLite
         CAS of the ``generation`` scope and has nothing to bound here.
 
-        The caller's ``reason`` is not carried: a stop through this method
-        is a user stop, and its terminal always says ``user_stop``.
+        The terminal says ``reason``: ``user_stop`` for the surface's stop
+        button, ``barge_in`` when Allen talked over Jarvis.
         """
         loop = self._loop
         if loop is None or self._closed.is_set():
             return "stale"
         try:
             future = asyncio.run_coroutine_threadsafe(
-                self._stop_foreground_output_owned(response_id),
+                self._stop_foreground_output_owned(response_id, reason),
                 loop,
             )
         except RuntimeError:
@@ -1464,12 +1467,12 @@ class StreamingTTSPipeline:
         self._output_active.clear()
         return not self._lane_isolated and self._active is None
 
-    async def _stop_foreground_output_owned(self, response_id: str) -> str:
-        """Actor-owned stop of one named response's audible output."""
+    async def _stop_foreground_output_owned(self, response_id: str | None, reason: str) -> str:
+        """Actor-owned stop of one named (or, for ``None``, the current) response's output."""
         active = self._active
         if (
             active is None
-            or active.response.response_id != response_id
+            or (response_id is not None and active.response.response_id != response_id)
             or active.terminal_commit_pending
         ):
             record_realtime_trace(
@@ -1479,7 +1482,7 @@ class StreamingTTSPipeline:
                 terminal_commit_pending=active is not None and active.terminal_commit_pending,
             )
             return "stale"
-        if not await self._interrupt_active(reason="user_stop"):
+        if not await self._interrupt_active(reason=reason):
             return "uncertain"
         # ADR-0006 D4: a user stop covers the queued speech of that group
         # too, and `_release_active(start_successor=False)` never advances
