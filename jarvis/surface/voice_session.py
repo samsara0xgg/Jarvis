@@ -16,6 +16,7 @@ Wave-2 playback flush/CAS, ResponseRun cancellation, or action cancellation.
 
 from __future__ import annotations
 
+import contextlib
 import enum
 import logging
 import os
@@ -1366,6 +1367,20 @@ class DuplexVoiceSession:
                         endpoint_reason=utterance.endpoint_reason,
                     )
                 self._assembler.mark_committed(utterance.utterance_id)
+            except voice_pipeline.VoicePipelineWakeOnlyError:
+                # Allen paused after "Hey Jarvis": listen for the question
+                # from where the wake phrase ended, as if the wake hit had
+                # landed there, instead of answering an empty turn.
+                LOGGER.info("realtime wake: wake phrase only turn_id=%s", utterance.turn_id)
+                with contextlib.suppress(queue.Full):  # a newer wake is already queued
+                    self._detections.put_nowait(
+                        WakeDetection(
+                            stream_epoch=utterance.stream_epoch,
+                            input_sample_cursor=utterance.end_sample_cursor,
+                            observed_monotonic_ns=time.monotonic_ns(),
+                            probability=1.0,
+                        ),
+                    )
             except voice_pipeline.VoicePipelineEmptyError:
                 LOGGER.info("realtime wake: empty utterance turn_id=%s", utterance.turn_id)
             except voice_pipeline.VoiceInputBusyError:

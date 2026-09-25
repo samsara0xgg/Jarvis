@@ -740,6 +740,17 @@ def _is_punctuation_only(text: str) -> bool:
     return all(c in punct or c.isspace() for c in text)
 
 
+# A wake-channel transcript that is nothing but the wake phrase: Allen said
+# "Hey Jarvis", paused, and the acoustic endpoint closed before his question.
+# Seen live as "Hey, Ja he.", "Hey, Javis hey.", "Hey, Ja, hey, Jara.".
+_WAKE_ONLY_RE = re.compile(r"(?:hey|hay|hi|he|ja[rv]?\w{0,4}|嘿|嗨|贾维斯|[\W_])*", re.IGNORECASE)
+
+
+def is_wake_only(text: str) -> bool:
+    """True when ``text`` holds only wake-phrase fragments and punctuation."""
+    return _WAKE_ONLY_RE.fullmatch(text.strip()) is not None
+
+
 def is_empty_or_too_short(text: str, *, audio_pcm: bytes) -> bool:
     """Unified empty-utterance filter for wake + PTT (ADR-0005 §8 fix #3)."""
     stripped = text.strip()
@@ -758,6 +769,7 @@ __all__ = [
     "SenseVoiceRecognizer",
     "TranscriptionResult",
     "is_empty_or_too_short",
+    "is_wake_only",
     "looks_complete",
     "normalize_partial_text",
 ]

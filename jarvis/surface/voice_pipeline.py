@@ -48,6 +48,10 @@ class VoicePipelineEmptyError(VoicePipelineError):
     """Transcript was empty / silent / punctuation-only after ASR."""
 
 
+class VoicePipelineWakeOnlyError(VoicePipelineEmptyError):
+    """A wake-channel transcript held only the wake phrase; the question is still to come."""
+
+
 class _BroadcasterProtocol(Protocol):
     """Subset of InherentBroadcaster that voice_pipeline calls."""
 
@@ -148,6 +152,9 @@ class VoicePipeline:
             VoiceInputBusyError: VOICE_INPUT_LOCK contention (PTT path: 503).
                 Only raised when ``lock_already_held`` is False.
             VoicePipelineEmptyError: transcript empty / too short / silent.
+            VoicePipelineWakeOnlyError: a wake transcript held only the wake
+                phrase (a subclass, so an owner that cannot re-listen treats
+                it as empty).
             Exception: any unexpected ASR failure (caller decides reaction).
         """
         utterance_id = utterance_id or "U" + secrets.token_hex(8)
@@ -187,6 +194,11 @@ class VoicePipeline:
                     )
                 msg = f"empty utterance for turn_id={turn_id}"
                 raise VoicePipelineEmptyError(msg)
+            if channel == "inherent_wake" and voice_asr.is_wake_only(tr.text):
+                # Not a question: the wake owner keeps listening for the next
+                # utterance and says so on the wire itself.
+                msg = f"wake phrase only for turn_id={turn_id}: {tr.text!r}"
+                raise VoicePipelineWakeOnlyError(msg)
 
             # 3. Normalize BEFORE emit — ADR §8 fix #1 (spec §3.6.2).
             normalized = self._normalizer.normalize(tr.text)
@@ -264,4 +276,5 @@ __all__ = [
     "VoicePipeline",
     "VoicePipelineEmptyError",
     "VoicePipelineError",
+    "VoicePipelineWakeOnlyError",
 ]

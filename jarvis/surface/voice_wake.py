@@ -421,6 +421,9 @@ class WakeListener:
                     language="zh-CN",
                     lock_already_held=True,
                 )
+            except voice_pipeline.VoicePipelineWakeOnlyError:
+                # This owner cannot re-listen mid-turn; end the card as empty.
+                self._broadcast("empty", turn_id=turn_id, reason="wake_only")
             except voice_pipeline.VoicePipelineEmptyError:
                 # Pipeline already broadcast voice("empty", ...) internally.
                 LOGGER.info("wake: empty utterance; turn_id=%s", turn_id)
