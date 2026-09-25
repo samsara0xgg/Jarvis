@@ -555,7 +555,10 @@ realtime:
     commit_queue_capacity: 2
     wake_failure_threshold: 3
     pre_roll_ms: 500
-    min_voiced_s: 1.0
+    # Voiced time an utterance needs before a pause may end it. At 1.0 a short
+    # question ("你是谁", 0.6 s voiced) never ended: conversation mode waited
+    # until Allen spoke again and merged both (live test 2026-09-24).
+    min_voiced_s: 0.3
     max_utterance_s: 30.0
     armed_no_speech_timeout_s: 3.0
     worker_poll_s: 0.002
