@@ -35,10 +35,11 @@ if TYPE_CHECKING:
 ALLEN_SOURCE = "allen"
 MAX_DETAILS = 10
 MAX_HITS = 20
-MATERIAL_BUDGET = 900_000
-"""Characters of material one request may carry: DeepSeek v4-pro's 1M-token context less the
-room the tool results and the report need. Nothing is cut below it; above it, whole sources fall
-back to index lines in ``_FALLBACK_ORDER`` and the header says so."""
+MATERIAL_BUDGET = 850_000
+"""Characters of material (as JSON) one request may carry. OpenAI bills a request over 272K
+input tokens at double rate; this material runs about 3.3 characters a token (2026-09-23/24:
+~800K characters, ~244K tokens), so the first request stays near 260K. Nothing is cut below it;
+above it, whole sources fall back to index lines in ``_FALLBACK_ORDER`` and the header says so."""
 _FALLBACK_ORDER = ("screen", "agent_answers", "agent_asks", "records")
 _NEAR_DUPLICATE = 0.9
 """Consecutive captures of one window whose text matches this closely are one screen state."""
