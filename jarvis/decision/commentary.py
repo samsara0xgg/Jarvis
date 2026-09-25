@@ -6,8 +6,6 @@ lifecycle-driven, and this module is the whole of that decision: one pure
 function from a single committed action event (plus the turn's own words and
 the dispatched tool's registry facts, which pick the wording) to the ephemeral
 :class:`~jarvis.shared.realtime.PresentationIntent` spec §3.6.3 defines.
-Since ADR 0043 an acknowledge speaks the model's own lead-in when the call
-that proposed the tool wrote one; the fixed phrases are the fallback.
 
 The function is deliberately total and side-effect free — no clock, no DB
 read, no LLM, no timer.  D6 forbids exactly the three things a stateful
@@ -138,7 +136,6 @@ def commentary_intent_for(
     user_text: str = "",
     tool_name: str | None = None,
     tool_read_only: bool = False,
-    lead_in: str | None = None,
 ) -> PresentationIntent | None:
     """Return the D6 intent this action event permits, or ``None``.
 
@@ -149,9 +146,6 @@ def commentary_intent_for(
 
     The phrase is English when ``user_text`` (what Allen said or typed this
     turn) reads as English, and an acknowledge names what ``tool_name`` does.
-    ``lead_in`` (ADR 0043) is the sentence the model wrote in the same
-    response as the tool call; an acknowledge speaks it instead of a fixed
-    phrase, so no model is ever called for it.
     """
     row = _D6_ROWS.get(event.type)
     if row is None:
@@ -166,12 +160,11 @@ def commentary_intent_for(
         kind = "codex" if tool_name == _CODEX_TOOL else "lookup" if tool_read_only else None
         if kind is not None:
             phrases = _ACKNOWLEDGE_BY_TOOL[kind][language]
-    own_words = lead_in if intent_type == "acknowledge" else None
     return PresentationIntent(
         intent_type=intent_type,
         surface_hint="speech",
         subject_ref=action_id,
-        content_hint=own_words or _phrase_for(action_id, phrases),
+        content_hint=_phrase_for(action_id, phrases),
         freshness_required=True,
     )
 

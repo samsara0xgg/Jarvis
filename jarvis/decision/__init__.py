@@ -63,7 +63,6 @@ from jarvis.decision.gates import (
     pre_emit_gate,
 )
 from jarvis.decision.intent import (
-    LEAD_IN_ARGUMENT,
     build_llm_messages,
     tier_0_match,
     tool_definitions_for_llm,
@@ -1421,10 +1420,6 @@ def _dispatch_one_tool_call(  # noqa: PLR0915 — single-pass orchestration of r
 ) -> _DispatchOutcome:
     """Resolve, gate, and dispatch one LLM-proposed tool call.
 
-    The call's ``lead_in`` argument (ADR 0043) is not the tool's: it is taken
-    out before anything else reads the arguments and, when speakable, rides
-    on ``action.proposed`` for the commentary acknowledge.
-
     Returns:
         ``"continue"`` if the tool was dispatched or refused (the loop
         should continue with the next iteration). ``"confirm_required"``
@@ -1443,8 +1438,6 @@ def _dispatch_one_tool_call(  # noqa: PLR0915 — single-pass orchestration of r
         arguments: dict[str, Any] = json.loads(arguments_json or "{}")
     except (TypeError, ValueError):
         arguments = {}
-    raw_lead_in = arguments.pop(LEAD_IN_ARGUMENT, None) if isinstance(arguments, dict) else None
-    lead_in = _spoken_lead_in(raw_lead_in if isinstance(raw_lead_in, str) else None)
 
     # 1. Tool definition lookup.
     tool_def = _find_tool_def(ctx.tool_registry, name)
@@ -1519,7 +1512,6 @@ def _dispatch_one_tool_call(  # noqa: PLR0915 — single-pass orchestration of r
             "target_entity_ref": target_entity_ref,
             "turn_id": scratch.turn_id,
             "arguments": dict(arguments),
-            **({"lead_in": lead_in} if lead_in else {}),
         },
         correlation=_action_correlation(action_request),
     )
@@ -2165,22 +2157,6 @@ def _needs_spoken_form(text: str) -> bool:
     """True for an answer too long or too written to be read aloud as is."""
     limit = _SPOKEN_FORM_MAX_PLAIN_CHARS_EN if is_english(text) else _SPOKEN_FORM_MAX_PLAIN_CHARS_ZH
     return len(text) > limit or _WRITTEN_MARKUP_RE.search(text) is not None
-
-
-# ADR 0043: the lead-in the model writes inside a tool call replaces the fixed
-# acknowledge phrase when it is one short plain sentence, about 6 s of
-# speech; anything longer or formatted falls back to the fixed phrase.
-_LEAD_IN_MAX_CHARS_ZH: Final[int] = 30
-_LEAD_IN_MAX_CHARS_EN: Final[int] = 90
-
-
-def _spoken_lead_in(text: str | None) -> str | None:
-    """The lead-in the model wrote in a tool call, if it can be spoken as is."""
-    lead_in = (text or "").strip()
-    limit = _LEAD_IN_MAX_CHARS_EN if is_english(lead_in) else _LEAD_IN_MAX_CHARS_ZH
-    if not lead_in or len(lead_in) > limit or _WRITTEN_MARKUP_RE.search(lead_in):
-        return None
-    return lead_in
 
 
 def _spoken_form_request(question: object, answer: str, *, english: bool) -> str:
