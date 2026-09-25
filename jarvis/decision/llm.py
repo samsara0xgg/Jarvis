@@ -270,12 +270,11 @@ class LLMClient:
         # request body (e.g. DeepSeek ``thinking: {type: disabled}``).
         self._extra_body: dict[str, Any] = dict(cfg.get("extra_body") or {})
 
-        # Transport-level knobs (MUST-FIX 2, ADR-0011 §12): opt-in, flat
-        # top-level config only — no preset ever overrides these, so a
-        # caller that wants a bounded client (e.g. `screen_look`'s vision
-        # preset, via `jarvis.runtime._build_vision_client`) passes them
-        # in its config dict, and every other `LLMClient` (the decision
-        # loop's own) keeps the SDK's own default (unset -> not passed).
+        # Transport-level knobs (MUST-FIX 2, ADR-0011 §12): flat top-level
+        # config only — no preset ever overrides these. The decision loop
+        # reads them from `llm:` in config/jarvis.yaml; each dedicated client
+        # (vision, analyst, compaction) passes its own. Unset -> not passed,
+        # so the SDK default applies.
         raw_timeout = cfg.get("timeout_s")
         self._timeout_s: float | None = (
             float(raw_timeout)
@@ -640,8 +639,7 @@ class LLMClient:
         # base_url=None is the SDK's "use the default OpenAI host" sentinel.
         # `timeout`/`max_retries` are omitted entirely (SDK defaults apply)
         # unless the config set `timeout_s`/`max_retries` explicitly
-        # (MUST-FIX 2, ADR-0011 §12) — today only the vision preset's
-        # dedicated client does.
+        # (MUST-FIX 2, ADR-0011 §12).
         client_kwargs: dict[str, Any] = {
             "api_key": self._api_key,
             "base_url": self._base_url or None,

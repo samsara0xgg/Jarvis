@@ -2,7 +2,7 @@ llm:
   # LLM 提供商：openai（兼容 xAI/Kimi/DeepSeek）或 anthropic。
   provider: openai
 
-  # 运行时可切换的模型预设（"小月，快速模式" / "小月，深度模式"）
+  # 对话固定用 default_preset。"深度模式"口令切换还没做；deep 目前只给日报和压缩用。
   default_preset: fast
 
   # 对话每次请求的上限（秒）与重试次数；不写就是 SDK 默认的 600 秒、重试 2 次。

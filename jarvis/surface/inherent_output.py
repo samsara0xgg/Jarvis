@@ -13,7 +13,9 @@ Inherent client. Single instance per daemon process:
 
 Step 2 wire schema (three envelopes per turn, mirrored from
 ``jarvis-legacy/ui/web/server.py:357-414``), each payload carrying the
-``turn_id`` added by ADR-0009 D2:
+``turn_id`` added by ADR-0009 D2. A turn that ends with no answer gets
+``{"op": "failed" | "cancelled", "payload": {"turn_id": <id>}}`` instead
+(from ``turn.failed`` / ``response.cancelled``, sent via :meth:`broadcast_op`):
 
 1. ``{"op": "open",   "payload": {"content": "", "streaming": True,
    "kind": "text", "q": <query>, "turn_id": <id>}}``

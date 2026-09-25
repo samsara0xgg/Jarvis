@@ -1403,8 +1403,9 @@ async def _response_watcher(
 
     Single watcher with ONE cursor (``WHERE type IN
     ('surface.response_open', 'surface.response_chunk',
-    'surface.response_emitted') ORDER BY id``) so the three event
-    types are dispatched in their L2-insertion order. Per ADR-0003
+    'surface.response_emitted', 'turn.failed', 'response.cancelled')
+    ORDER BY id``) so the event types are dispatched in their
+    L2-insertion order. Per ADR-0003
     Step 2 D16: three sibling watchers would race against asyncio's
     wakeup order and could send ``op:append`` before ``op:open``;
     single-cursor + monotonic SQLite row id eliminates the race by
@@ -1415,6 +1416,7 @@ async def _response_watcher(
     - ``surface.response_open``    -> :meth:`InherentBroadcaster.broadcast_open`
     - ``surface.response_chunk``   -> :meth:`InherentBroadcaster.broadcast_chunk`
     - ``surface.response_emitted`` -> :meth:`InherentBroadcaster.broadcast_done`
+    - ``turn.failed`` / ``response.cancelled`` -> ``broadcast_op("failed" | "cancelled")``
 
     The broadcaster handles per-envelope wire translation and the F4 /
     F5 failure modes (per-client send failure isolation + no-clients

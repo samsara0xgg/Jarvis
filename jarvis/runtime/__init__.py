@@ -1187,11 +1187,9 @@ every other seam in `screen_look` is bounded (`_SCREEN_CAPTURE_TIMEOUT_S`
 / `_SIPS_TIMEOUT_S` = 10 s each), yet without this the one network call
 had NO timeout: the SDK's own default is `Timeout(connect=5, read=600,
 write=600, pool=600)` with `max_retries=2`, i.e. up to ~1800 s blocking
-the synchronous `decide()` loop on a hung proxy. Deliberately scoped to
-ONLY the vision client — the decision loop's own `LLMClient` (built
-separately, below) shares the same unbounded-timeout omission, but a
-`deep` preset with a large `max_tokens` can legitimately run long;
-bounding it is a separate decision, out of this ADR's scope."""
+the synchronous `decide()` loop on a hung proxy. Scoped to the vision
+client; the decision loop's own bound is `llm.timeout_s` in
+config/jarvis.yaml."""
 
 _VISION_CALL_MAX_RETRIES: Final[int] = 1
 """Paired with `_VISION_CALL_TIMEOUT_S` so the worst case is a small
