@@ -21,6 +21,7 @@ from jarvis.decision import (
     decide,
 )
 from jarvis.decision.llm import ChatResult, LLMClient, ToolCall
+from jarvis.decision.stream_envelope import split_envelope
 from jarvis.execution.tools import ActionLifecycle, build_default_registry
 from jarvis.state.event_log import emit_event, open_event_log
 
@@ -135,10 +136,12 @@ def test_spent_budget_gets_one_no_tool_request_for_the_answer(tmp_path: Path) ->
     llm = _ToolHungryClient(answer=ANSWER)
     text, conn = _run(tmp_path, llm)
     try:
-        assert text == ANSWER
-        assert len(llm.calls) == BUDGET + 1
+        # The answer is spoken, so ADR 0040 asks once more for its spoken
+        # form; the written answer stays whole in the document channel.
+        assert split_envelope(text)[1] == ANSWER
+        assert len(llm.calls) == BUDGET + 2
         assert all(call["tools"] for call in llm.calls[:BUDGET])
-        final = llm.calls[-1]
+        final = llm.calls[BUDGET]
         assert final["tools"] is None
         assert final["tool_choice"] is None
         assert final["last"]["role"] == "user"
@@ -150,8 +153,8 @@ def test_spent_budget_gets_one_no_tool_request_for_the_answer(tmp_path: Path) ->
             "SELECT payload_json FROM events WHERE type='action.result_observed'"
         ).fetchall()
         assert all(json.loads(row[0])["semantics"] == "observation" for row in results)
-        # The answer request is paid for like every other request.
-        assert _count(conn, "cost.recorded") == BUDGET + 1
+        # The answer and spoken-form requests are paid for like every other.
+        assert _count(conn, "cost.recorded") == BUDGET + 2
         assert _count(conn, "turn.ended") == 1
     finally:
         conn.close()

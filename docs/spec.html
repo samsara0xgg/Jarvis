@@ -1369,7 +1369,7 @@ PresentationIntent.intent_type:
 <ul>
 <li><strong>Input:</strong> audio -> VAD / ASR -> corrections -> <code>utterance.received</code>。Intent routing 不在 voice layer。</li>
 <li><strong>Output:</strong> TTS 只能播放经过 Layer 3 pre-emit gate 或 ResponsePlan 允许的文本。例外：Live voice provider 的原生音频直接播放，不经 pre-emit gate；后台答案仍先过 Layer 3 再交给 Live（ADR-0016 D1）。后台答案是持久事实：交付给它所属且仍开着的 Live 会话（不论迟到多久），否则在下一次会话开始时补投（最多 3 条、最近 24 小时）；交付以 provider 的 ACK 记为 <code>live.result_delivered</code>，被新请求取代的结果记为 <code>withheld</code> 且不再补投；每次会话关闭记一条 <code>live.session_usage</code>。交付不等于听到（ADR 0026）。</li>
-<li><strong>Spoken form:</strong> 本地语音链念的是口语版，不是书面答案：要念出来（<code>voice_notify</code>）且超过 80 字或带列表、标题等格式的回答，Layer 3 另写一到三句口语版放进 voice 通道，完整答案原样放进 document 通道，屏幕和 memory.db 只留 document；调工具的一轮在第一个工具开始时先说一句固定短语（commentary）（ADR 0040）。</li>
+<li><strong>Spoken form:</strong> 本地语音链念的是口语版，不是书面答案：模型自己写的、要念出来（<code>voice_notify</code>）且超过约 6 秒（中文 30 字、英文 90 字符）或带列表、标题、括号等格式的回答，或者语言和 Allen 这一轮说的话不一样的回答，Layer 3 另写一到三句口语版放进 voice 通道，语言跟随 Allen 说的话，完整答案原样放进 document 通道，屏幕和 memory.db 只留 document；Layer 3 的固定文字和确认提问照原文念；调工具的一轮在第一个工具开始时先说一句固定短语（commentary），短语按工具类型（只读工具说“查一下”，<code>spawn_worker</code> 说交给 Codex，其余说“去办”）和 Allen 这一轮用的语言挑选（ADR 0040）。</li>
 <li><strong>Interrupt:</strong> Voice 只执行 speak、suppress、duck、stop、resume；“该不该打断 Allen”属于 Attention Policy。</li>
 <li><strong>Fallback:</strong> TTS provider failure 必须走 surface fallback chain，不应吞掉 message。</li>
 </ul>

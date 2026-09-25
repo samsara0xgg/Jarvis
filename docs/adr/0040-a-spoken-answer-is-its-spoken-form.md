@@ -24,17 +24,27 @@
   when a turn's first tool starts. It was tier B on 2026-09-07, off until a
   live run. On 2026-09-24 Allen asked for it to be built now and will take
   that run himself before the branch merges.
+- That run, 20:40 on 2026-09-24: a 41-character time answer with a bracketed
+  aside played for 7.5 s and read as long-winded; every spoken form opened
+  with "Allen，" because the prompt named him; an English web search heard
+  "这就去办。". "What time is it?" was answered "现在是晚上9点15分。": the
+  model copies `get_current_time`'s Chinese `spoken_time`, whatever the
+  profile says about language.
 
 ## Decision
 
-An answer that will be spoken (`voice_notify`) and is longer than 80
-characters, or carries list, heading, quote, table, code or bold markup, gets
-one no-tool request for a spoken form of one to three sentences. The spoken
+An answer that will be spoken (`voice_notify`) and runs longer than about six
+seconds of speech (30 Chinese characters, 90 English characters), or carries
+list, heading, quote, table, code, bold or bracket markup, gets one no-tool
+request for a spoken form of one to three sentences in the language of Allen's
+words that turn; so does an answer in the other language. The spoken
 form goes in the voice channel and the unchanged answer in the document
-channel. Commentary ships on.
+channel. Commentary ships on, its phrase picked by the dispatched tool
+(read-only, `spawn_worker`, other) and by the language of Allen's words.
 
-Limits: not for a Tier 0 read-back, a stream correction run, a `gpt_live`
-turn, or an answer the model enveloped itself. A failed or empty request
+Limits: only the model's own answer, never fixed Layer 3 text, a
+confirmation ask (heard word for word), a Tier 0 read-back, a stream
+correction run, a `gpt_live` turn, or an answer the model enveloped itself. A failed or empty request
 speaks the whole answer as before. memory.db and the screen keep the document.
 
 ## Alternatives rejected
@@ -58,12 +68,15 @@ speaks the whole answer as before. memory.db and the screen keep the document.
 
 ## Consequences
 
-- A long spoken answer pays one more fast-model request before it is spoken
-  or shown: 0.72 s median on the 2026-09-04 bench. Typed turns pay it too,
+- Any spoken answer past about six seconds, a two-sentence reply included,
+  pays one more fast-model request before it is spoken or shown: 0.72 s median
+  on the 2026-09-04 bench. Typed turns pay it too,
   because their answers are spoken.
 - The spoken form is a paraphrase and can drop or blur a detail. Only the
   document is on record; what Allen heard exists nowhere but the event log's
   voice span.
-- Commentary's phrases are Chinese, so an English turn hears "我去查一下".
+- Commentary's language follows Allen's words, not the answer's: a turn he
+  starts in English hears an English phrase even if the answer comes back in
+  Chinese.
 - A model-written envelope now shows only its document on Resonance and in
   memory.db, so a conclusion placed only in its voice span is lost there.

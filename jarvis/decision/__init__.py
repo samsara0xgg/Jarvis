@@ -96,7 +96,7 @@ from jarvis.shared import (
 from jarvis.shared.pricing import compute_cost_usd, load_pricing_table
 from jarvis.shared.realtime import AlreadyConsumed, Wave1FeatureFlags, stable_authorization_identity
 from jarvis.shared.realtime_trace import realtime_trace_context, record_realtime_trace
-from jarvis.shared.text import truncate_utf8
+from jarvis.shared.text import is_english, truncate_utf8
 from jarvis.state.authorized_dispatch_outbox import (
     AuthorizedDispatchAlreadyStarted,
     ConfirmationRevalidationError,
@@ -1033,13 +1033,16 @@ def _run_tool_use_loop(
             packet,
             ctx,
             scratch,
+            model_answer=True,
         )
 
     # Tool budget spent. The answer gets its own request: one more call with no
     # tools, asked to sum up what the tool results already show (ADR 0030).
     LOGGER.warning("decide(): tool-use loop hit max_iterations=%d", ctx.max_tool_iterations)
     answer = _answer_after_tool_budget(ctx, messages, scratch)
-    return _finalize_response(answer, packet, ctx, scratch)
+    return _finalize_response(
+        answer, packet, ctx, scratch, model_answer=answer != _TOOL_BUDGET_EXHAUSTED_TEXT,
+    )
 
 
 # ADR 0030: the tool budget and the answer are separate requests. When the loop
@@ -1946,7 +1949,7 @@ def _run_routine_stream(
             response_id=route.context.response_id,
             text_characters=len(draft),
         )
-        return _finalize_response(draft, packet, ctx, scratch)
+        return _finalize_response(draft, packet, ctx, scratch, model_answer=True)
     attention = attention_policy(packet)
     response_id = route.context.response_id
     document = streamed.document
@@ -2088,38 +2091,40 @@ def _emit_pre_emit_gate_event(
 
 
 # ADR 0040: a spoken answer is a short spoken form, not the written answer read
-# aloud. Plain text up to this many characters is already speakable; anything
-# longer, or with list / heading / quote / table / code / bold markup, gets one
-# no-tool request for a spoken form. A calibration knob, not a contract.
-_SPOKEN_FORM_MAX_PLAIN_CHARS: Final[int] = 80
+# aloud. Plain text up to about 6 s of speech is already speakable; anything
+# longer, or with list / heading / quote / table / code / bold / bracket markup,
+# gets one no-tool request for a spoken form. Calibration knobs, not a contract:
+# a 41-character time answer with a bracketed aside played for 7.5 s on
+# 2026-09-24 and Allen heard it as long-winded.
+_SPOKEN_FORM_MAX_PLAIN_CHARS_ZH: Final[int] = 30
+_SPOKEN_FORM_MAX_PLAIN_CHARS_EN: Final[int] = 90
 _WRITTEN_MARKUP_RE: Final[re.Pattern[str]] = re.compile(
-    r"^\s*(?:[-*•+]\s|\d+[.)、]|#{1,6}\s|>|\|)|```|\*\*",
+    r"^\s*(?:[-*•+]\s|\d+[.)、]|#{1,6}\s|>|\|)|```|\*\*|[(（]",  # noqa: RUF001 — the fullwidth bracket is the Chinese aside being matched.
     re.MULTILINE,
 )
-# One prompt per language, picked from the answer's own script: a Chinese
-# prompt asked to "keep the original language" still answered an English
-# answer in Chinese (smoke run 2026-09-24). ~60 Chinese characters and ~40
-# English words are both about 13 s of speech.
+# One prompt per language, picked from the script of Allen's own words: a
+# Chinese prompt asked to "keep the original language" still answered an
+# English answer in Chinese (smoke run 2026-09-24). ~60 Chinese characters and ~40
+# English words are both about 13 s of speech. Neither names Allen: with his
+# name in the prompt every spoken form opened with his name.
 _SPOKEN_FORM_PROMPT_ZH: Final[str] = (
-    "把用户给你的这段回答改写成直接念给 Allen 听的中文口语版："  # noqa: RUF001 — fullwidth colon is intentional Chinese punctuation.
+    "把用户给你的这段回答改写成直接念出来的中文口语版："  # noqa: RUF001 — fullwidth colon is intentional Chinese punctuation.
     "最多三句、不超过 60 个字，只留结论和一两个最关键的数字；"  # noqa: RUF001 — fullwidth comma/semicolon are intentional Chinese punctuation.
-    "不要列表、标题、链接、代码或任何格式符号；不要加原文没有的内容。"  # noqa: RUF001 — fullwidth semicolon is intentional Chinese punctuation.
-    "细节较多时，最后加一句“完整内容在屏幕上”。只输出口语版本身。"  # noqa: RUF001 — fullwidth comma/quotes are intentional Chinese punctuation.
+    "不要列表、标题、括号、链接、代码或任何格式符号；不要加原文没有的内容。"  # noqa: RUF001 — fullwidth semicolon is intentional Chinese punctuation.
+    "只输出口语版本身。"
 )
 _SPOKEN_FORM_PROMPT_EN: Final[str] = (
-    "Rewrite the answer the user gives you as a spoken English reply for Allen: "
+    "Rewrite the answer the user gives you as a spoken English reply: "
     "at most three sentences and 40 words, only the conclusion and the one or two "
-    "numbers that matter; no lists, headings, links, code or markup; add nothing "
-    'that is not in the answer. If there is more detail, end with "The full '
-    'details are on screen." Output only the spoken reply.'
+    "numbers that matter; no lists, headings, brackets, links, code or markup; add "
+    "nothing that is not in the answer. Output only the spoken reply."
 )
 
 
-def _spoken_form_prompt(text: str) -> str:
-    """The Chinese prompt when CJK characters outnumber Latin words, else English."""
-    cjk = sum(1 for ch in text if "一" <= ch <= "鿿")
-    words = len(re.findall(r"[A-Za-z]+", text))
-    return _SPOKEN_FORM_PROMPT_ZH if cjk >= words else _SPOKEN_FORM_PROMPT_EN
+def _needs_spoken_form(text: str) -> bool:
+    """True for an answer too long or too written to be read aloud as is."""
+    limit = _SPOKEN_FORM_MAX_PLAIN_CHARS_EN if is_english(text) else _SPOKEN_FORM_MAX_PLAIN_CHARS_ZH
+    return len(text) > limit or _WRITTEN_MARKUP_RE.search(text) is not None
 
 
 def _with_spoken_form(
@@ -2128,22 +2133,29 @@ def _with_spoken_form(
     ctx: DecideContext,
     scratch: _Scratch,
 ) -> ResponsePlan:
-    """ADR 0040: put a short spoken form in the voice channel of a long answer.
+    """ADR 0040: speak a short spoken form, in the language Allen used.
 
-    The whole answer moves unchanged to the document channel, so the screen,
-    memory.db and the backend history keep it while TTS speaks only the voice
-    span. Returned as is: a correction run (its prefix is already spoken), a
-    ``gpt_live`` turn (Live paraphrases the result itself), an answer the
-    model enveloped on its own, and a short plain answer. A failed or empty
-    request keeps the old behaviour of speaking the whole answer.
+    Asked for when the answer is long or written, or in another language than
+    Allen's words this turn. The whole answer moves unchanged to the document
+    channel, so the screen, memory.db and the backend history keep it while
+    TTS speaks only the voice span. Returned as is: a correction run (its
+    prefix is already spoken), a ``gpt_live`` turn (Live paraphrases the
+    result itself), an answer the model enveloped on its own, and a short
+    plain answer in his language. A failed or empty request keeps the old
+    behaviour of speaking the whole answer.
     """
     text = plan.text.strip()
+    # Spoken in the language Allen used this turn: the answer may not be
+    # (2026-09-24, "What time is it?" copied get_current_time's Chinese
+    # spoken_time into a Chinese answer).
+    heard = packet.trigger_event.payload.get("transcript")
+    english = is_english(heard if isinstance(heard, str) and heard else text)
     if (
         ctx.stream_correction is not None
         or packet.trigger_event.payload.get("channel") == "gpt_live"
         or split_envelope(text)[2]
         or not text
-        or (len(text) <= _SPOKEN_FORM_MAX_PLAIN_CHARS and not _WRITTEN_MARKUP_RE.search(text))
+        or (is_english(text) == english and not _needs_spoken_form(text))
     ):
         return plan
     try:
@@ -2151,7 +2163,7 @@ def _with_spoken_form(
             chat_result = _run_llm_chat_with_cost_guard(
                 ctx,
                 messages=[{"role": "user", "content": text}],
-                system=_spoken_form_prompt(text),
+                system=_SPOKEN_FORM_PROMPT_EN if english else _SPOKEN_FORM_PROMPT_ZH,
                 tools=None,
                 tool_choice=None,
                 kind="decision",
@@ -2177,7 +2189,7 @@ def _with_spoken_form(
     )
 
 
-def _finalize_response(  # noqa: PLR0913 — draft + the three decide() handles + two keyword routing hints.
+def _finalize_response(  # noqa: PLR0913 — draft + the three decide() handles + three keyword routing hints.
     draft_text: str,
     packet: SituationPacket,
     ctx: DecideContext,
@@ -2185,8 +2197,13 @@ def _finalize_response(  # noqa: PLR0913 — draft + the three decide() handles 
     *,
     gate_text: str | None = None,
     document_form: bool = False,
+    model_answer: bool = False,
 ) -> DecideResult:
     """Apply the Pre-emit Gate to a draft, emit gate + turn.ended, return.
+
+    ``model_answer`` marks a draft the model wrote as its answer. Only that
+    draft may get a spoken form (ADR 0040): fixed L3 text is already written
+    to be spoken, and a confirmation ask must be heard word for word.
 
     ``gate_text`` (ADR-0011 §12, MUST-FIX 2a): the Tier 0 path
     (`_run_tier0_path`) renders `draft_text` by interpolating TOOL
@@ -2266,9 +2283,10 @@ def _finalize_response(  # noqa: PLR0913 — draft + the three decide() handles 
     # — the question must be spoken, not swallowed.
     attention = _confirmation_attention_override(scratch, attention)
 
-    # ADR 0040: only an answer that will be spoken gets a spoken form, and
-    # never a Tier 0 read-back (quoted tool output, not Jarvis's own words).
-    if attention == "voice_notify" and gate_text is None:
+    # ADR 0040: only the model's own answer that will be spoken gets a spoken
+    # form, never a Tier 0 read-back (quoted tool output), fixed L3 text or a
+    # confirmation ask.
+    if attention == "voice_notify" and model_answer:
         plan = _with_spoken_form(plan, packet, ctx, scratch)
 
     # turn.ended. ``source_event_id`` references the gate verdict.
