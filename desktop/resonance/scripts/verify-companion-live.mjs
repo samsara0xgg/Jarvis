@@ -64,7 +64,11 @@ try {
     '/inherent/codex-sessions': { sessions: [{ session_id: codexId, state: 'running', cwd: '/Users/x/Projects/typlus', model: 'gpt', prompt: 'fix the overlay', detail: 'Editing Overlay.swift', last_message: '', since_ms: now - 120_000 }] },
     '/inherent/usage': { services: { claude: { status: 'ok', observed_at_ms: now, data: { plan: '20X', windows: [{ key: 'five_hour', label: '5 hours', percent: 41, resets_at: iso(now + 3_600_000) }] } },
       codex: { status: 'ok', observed_at_ms: now, data: { plan: 'Pro Lite', windows: [{ key: 'primary_window', label: '7 d', percent: 64, resets_at: iso(now + 86_400_000) }], reset_credits: 1 } },
-      deepseek: { status: 'ok', observed_at_ms: now, data: { balance: 4.2, currency: 'USD', is_available: true } } } },
+      deepseek: { status: 'ok', observed_at_ms: now, data: { balance: 4.2, currency: 'USD', is_available: true } },
+      openai: { status: 'ok', observed_at_ms: now, data: { today_usd: 0.32, month_usd: 14.53, by_key: [], balance_usd: 23.25, balance_recorded_usd: 25, balance_recorded_at: '2026-09-25T18:00:00+00:00',
+        by_model: [{ model: 'gpt-5.6-sol', today_usd: 0, month_usd: 4.37 }, { model: 'gpt-5.6-luna', today_usd: 0.2817, month_usd: 1.8 }, { model: 'gpt-5.4-mini', today_usd: 0.0356, month_usd: 0.88 },
+          { model: 'gpt-6-luna', today_usd: 0.0034, month_usd: 0.27 }, { model: 'gpt-live-1', today_usd: 0, month_usd: 2.16 }] } },
+      minimax: { status: 'ok', observed_at_ms: now, data: { anchor_usd: 17.82, anchor_at: '2026-09-13T20:24:00-07:00', characters_since_anchor: 41000, usd_per_million_chars: 60, estimate_usd: 15.36 } } } },
     '/inherent/work-state': { state: { version: 1, analyzed_at: iso(now - 60_000), observed_until: iso(now - 60_000), evidence: { coverage: {}, counts: {}, limits: [] }, now: { text: 'Wiring the companion to the daemon.', basis: 'observed', refs: [] }, activities: [], links: [], uncertainties: [], note: null },
       data: null, freshness: { checked_at_ms: now, latest_observed_at: iso(now - 60_000), analyzed_at: iso(now - 60_000), analysis_observed_until: iso(now - 60_000) }, refreshing: false, outcome: 'analyzed', error: null },
     '/inherent/projects': { days: Array.from({ length: 7 }, (_, i) => iso(now - (6 - i) * 86_400_000).slice(0, 10)), projects: [{ id: 'jarvis', name: 'jarvis', seconds: 7200, today_seconds: 3600, days: [0, 0, 0, 0, 0, 3600, 3600], last_seen: null, commits: { count: 2, items: [] }, recent: [] }],
@@ -74,7 +78,8 @@ try {
   const LOGO = `data:image/svg+xml;base64,${Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8"><circle cx="4" cy="4" r="4" fill="#5e6ad2"/></svg>').toString('base64')}`;
   fixtures['/inherent/usage/refresh'] = fixtures['/inherent/usage'];
   // What the Usage page asked main to spend; `resetFails` makes the next call fail like a lost daemon.
-  const resets = [], refreshes = [];
+  const resets = [], refreshes = [], balances = [];
+  await page.exposeFunction('__usageBalance', async (service, usd) => { balances.push({ service, usd }); return { recorded: true }; });
   let resetFails = 0;
   await page.exposeFunction('__usageReset', async (service, id) => {
     resets.push({ service, id });
@@ -108,6 +113,7 @@ try {
       passthrough: () => {}, focus: async () => {}, material: () => {},
       codexTitles: async () => ({}), openCodex: async id => { window.__state.opened.push(id); return true; },
       openAccount: async id => { window.__state.accounts.push(id); return true; }, usageReset: (service, id) => window.__usageReset(service, id),
+      usageBalance: (service, usd) => window.__usageBalance(service, usd),
       plugins: (operation, data = {}) => window.__plugins(operation, data),
     };
     if (!fake) return;
@@ -400,6 +406,31 @@ try {
     await page.locator('.ad .us-confirm .btn-glow').click(); await page.waitForTimeout(400);
     check('L12 Try again resends the same request id for Codex, so it cannot spend twice', resets.length === 2 && resets[1].id === resets[0].id && /^[0-9a-f]{8}-[0-9a-f]{4}-/.test(resets[0].id) && resets.every(r => r.service === 'codex'));
     check('L12 a reset closes the question, says so, and re-reads usage', await page.locator('.ad .us-confirm').count() === 0 && (await text('.ad .toast')) === 'Codex limits reset' && refreshes.length > before);
+
+    // OpenAI: only the models that cost money today; balances Allen records himself (ADR 0050).
+    const listed = () => page.locator('.ad .spend li:not(:has(.more))').allTextContents();
+    check('L13 OpenAI lists only the models that cost a cent today, the rest fold', (await listed()).join('|') === 'gpt-5.6-luna$0.28|gpt-5.4-mini$0.04' && (await text('.ad .spend .more')) === '3 more at $0.00');
+    await page.locator('.ad .spend .more').click();
+    check('L13 the fold opens every model', (await listed()).length === 5 && (await text('.ad .spend .more')) === 'Show less');
+    const balanceCard = name => page.locator('.ad .bal-card', { hasText: name });
+    check('L13 OpenAI and MiniMax balances say since when, with Update', (await balanceCard('OpenAI').locator('b').textContent()) === '≈ $23.25' && (await balanceCard('OpenAI').locator('small').textContent()) === 'since Sep 25' && (await balanceCard('OpenAI').locator('.bal-set').textContent()) === 'Update'
+      && (await balanceCard('MiniMax').locator('small').textContent()).startsWith('since Sep 1'));
+    await page.locator('.ad .pg-body').evaluate(b => { b.scrollTop = b.scrollHeight; }); await page.waitForTimeout(300);
+    await panelShot('L13-usage-balances');
+    await balanceCard('OpenAI').locator('.bal-set').click(); await page.waitForTimeout(300);
+    const save = page.locator('.ad .bal-card.is-editing .btn-glow');
+    const emptyDisabled = await save.isDisabled();
+    await page.locator('.ad .bal-card.is-editing input').fill('30.5'); await page.waitForTimeout(400);
+    await panelShot('L13-usage-typing');
+    const beforeSave = refreshes.length;
+    await page.locator('.ad .bal-card.is-editing input').press('Enter'); await page.waitForTimeout(500);
+    check('L13 typing a balance and Enter records it once, then re-reads usage', emptyDisabled && JSON.stringify(balances) === '[{"service":"openai","usd":30.5}]'
+      && await page.locator('.ad .bal-card.is-editing').count() === 0 && refreshes.length > beforeSave && (await text('.ad .toast')) === 'Balance saved');
+    await balanceCard('MiniMax').locator('.bal-set').click(); await page.waitForTimeout(300);
+    await page.locator('.ad .bal-card.is-editing input').fill('abc'); await page.waitForTimeout(100);
+    const lettersIgnored = await page.locator('.ad .bal-card.is-editing input').inputValue() === '' && await save.isDisabled();
+    await page.locator('.ad .bal-card.is-editing input').press('Escape'); await page.waitForTimeout(200);
+    check('L13 letters are not a balance, and Esc leaves without saving', lettersIgnored && balances.length === 1 && await page.locator('.ad .bal-card.is-editing').count() === 0);
     await back();
     await hit.dblclick({ force: true });
     await page.waitForFunction(() => !document.querySelector('.companion-dashboard.is-open'), null, { timeout: 3000 });
@@ -502,7 +533,7 @@ try {
     check('no page errors', errors.length === 0);
   }
   await context.close();
-  writeFileSync(path.join(dir, 'verification.json'), JSON.stringify({ checks, errors, posts, pluginOps: pluginOps.filter(o => o.operation !== 'read'), resets }, null, 2));
+  writeFileSync(path.join(dir, 'verification.json'), JSON.stringify({ checks, errors, posts, pluginOps: pluginOps.filter(o => o.operation !== 'read'), resets, balances }, null, 2));
   console.log(`${checks.length} checks passed; evidence in ${dir}`);
 } finally {
   await browser.close();

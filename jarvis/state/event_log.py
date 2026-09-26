@@ -804,6 +804,18 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         schema_version=1,
     ),
     EventTypeSchema(
+        # ADR 0050: a balance Allen read off a provider's billing page and typed
+        # into the Usage page (openai / minimax report none). The usage observer
+        # subtracts the spend since; the event's own time is the anchor. Never a
+        # decision trigger.
+        event_type="usage.balance_recorded",
+        owner_layer="L5",
+        actor="user",
+        required_payload=("service", "usd"),
+        optional_payload=(),
+        schema_version=1,
+    ),
+    EventTypeSchema(
         event_type="repo.state_observed",
         owner_layer="L5",
         actor="observer",

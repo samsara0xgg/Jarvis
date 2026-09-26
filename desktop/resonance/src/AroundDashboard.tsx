@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode, type WheelEvent } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode, type WheelEvent } from 'react';
 import { ArrowSquareOut, ArrowUp, ArrowsClockwise, CaretDown, CaretLeft, CaretRight, CaretUp, GitBranch, MagnifyingGlass, ShieldCheck, X } from '@phosphor-icons/react';
 import { TAKES, pick, type ExprId } from './starCore';
 import { useUsage, type UsageWindow } from './QuotaModule';
@@ -373,6 +373,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
   const { claude, codex: codexUsage, openai, deepseek, minimax } = quota.usage?.services ?? {};
   const synced = Math.max(0, ...[claude, codexUsage, openai, deepseek, minimax].map(s => s?.observed_at_ms ?? 0));
   const codexResets = codexUsage?.status === 'ok' ? codexUsage.data.reset_credits ?? 0 : 0;
+  const balanceSaved = () => { notify('Balance saved'); void quota.refresh(); };
   const askReset = () => {
     const id = crypto.randomUUID();
     setReset({ id, state: 'ask', armed: false });
@@ -459,8 +460,9 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
       <div className="pg-sec"><div className="us-plan"><Account id="openai">OpenAI <em>API</em></Account>{openai?.status === 'ok' && <span className="meta">this month {usd(openai.data.month_usd)}</span>}</div>
         {openai?.status === 'ok' ? <Spend total={openai.data.today_usd ?? 0} models={openai.data.by_model ?? []}/> : <p className="muted">{openai?.error ?? 'Needs an admin key'}</p>}</div>
       <div className="pg-sec"><h4>Balances</h4><div className="bal">
-        <Account id="deepseek"><span>DeepSeek</span><b>{deepseek?.status === 'ok' ? usd(deepseek.data.balance) : '—'}</b></Account>
-        <Account id="minimax"><span>MiniMax</span><b>{minimax?.status === 'ok' ? `≈ ${usd(minimax.data.estimate_usd)}` : '—'}</b><small>estimated from use</small></Account>
+        <div className="bal-card"><Account id="deepseek">DeepSeek</Account><b>{deepseek?.status === 'ok' ? usd(deepseek.data.balance) : '—'}</b></div>
+        <Balance id="openai" name="OpenAI" left={openai?.status === 'ok' ? openai.data.balance_usd : undefined} since={openai?.data.balance_recorded_at} live={!!port} onSaved={balanceSaved}/>
+        <Balance id="minimax" name="MiniMax" left={minimax?.status === 'ok' ? minimax.data.estimate_usd : undefined} since={minimax?.data.anchor_at} live={!!port} onSaved={balanceSaved}/>
       </div></div></div>
     </>,
     plugins: () => {
@@ -584,13 +586,48 @@ function UsageGroup({ name, plan, ok, windows, synced }: { name: string; plan?: 
 }
 // Today's spend as one ring cut by model, biggest first; the list beside it names each cut.
 // The cuts sit on their own element so the fill animation reaches the gradient.
+// Only models that cost a cent today are listed; the rest fold into one line that opens them.
 function Spend({ total, models }: { total: number; models: { model: string; today_usd: number }[] }) {
+  const [all, setAll] = useState(false);
   const sorted = [...models].sort((a, b) => b.today_usd - a.today_usd), tint = (i: number) => `rgb(var(--glow) / ${Math.max(.2, 1 - i * .55)})`;
+  const paid = sorted.filter(m => m.today_usd >= .005), free = sorted.length - paid.length;
   let edge = 0;
   const stops = sorted.map((m, i) => { const from = edge; edge += total ? m.today_usd / total : 0; return `${tint(i)} calc(var(--fill) * ${from}%) calc(var(--fill) * ${edge}%)`; });
   return <div className="spend">
     <span className="ring"><span className="dial donut"><i style={{ background: `conic-gradient(${[...stops, 'rgb(var(--glow) / .12) 0'].join(',')})` }}/><b>{usd(total)}<small>today</small></b></span></span>
-    <ul>{sorted.map((m, i) => <li key={m.model}><i style={{ background: tint(i) }}/>{m.model}<span>{usd(m.today_usd)}</span></li>)}</ul>
+    <ul>{(all ? sorted : paid).map((m, i) => <li key={m.model}><i style={{ background: tint(i) }}/>{m.model}<span>{usd(m.today_usd)}</span></li>)}
+      {free > 0 && <li><button className="more" aria-expanded={all} onClick={() => setAll(v => !v)}>{all ? 'Show less' : `${free} more at $0.00`}</button></li>}</ul>
+  </div>;
+}
+// OpenAI and MiniMax report no balance (ADR 0050): Allen types the one on their billing page and
+// the daemon subtracts what is spent after it, so the number shown is an estimate since then.
+function Balance({ id, name, left, since, live, onSaved }: { id: 'openai' | 'minimax'; name: string; left?: number; since?: string | null; live: boolean; onSaved: () => void }) {
+  const [draft, setDraft] = useState<string | null>(null), [saving, setSaving] = useState(false), [error, setError] = useState('');
+  const amount = Number(draft), valid = !!draft?.trim() && Number.isFinite(amount) && amount >= 0;
+  const input = useCallback((el: HTMLInputElement | null) => {
+    if (!el) return;
+    el.closest('form')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    void window.jarvis?.focus(true).then(() => el.focus({ preventScroll: true }));
+  }, []);
+  const save = async () => {
+    if (!valid || saving) return;
+    setSaving(true); setError('');
+    try { await window.jarvis!.usageBalance(id, amount); setDraft(null); onSaved(); }
+    catch (e) { setError(cleanError(e)); }
+    finally { setSaving(false); }
+  };
+  if (draft !== null) return <form className="bal-card is-editing" onSubmit={e => { e.preventDefault(); void save(); }}>
+    <span className="bal-name">{name} balance now</span>
+    <label className="bal-input">$<input ref={input} aria-label={`${name} balance`} inputMode="decimal" autoComplete="off" placeholder="0.00" value={draft}
+      onChange={e => setDraft(e.target.value.replace(/[^\d.]/g, ''))} onPointerDown={focusWindow} onKeyDown={e => { if (e.key === 'Escape') setDraft(null); }}/></label>
+    {error && <p className="is-alert">{error}</p>}
+    <div><button type="button" className="btn btn-text" onClick={() => setDraft(null)}>Cancel</button><button className="btn btn-glow" disabled={!valid || saving}>{saving ? 'Saving…' : 'Save'}</button></div>
+  </form>;
+  return <div className="bal-card">
+    <Account id={id}>{name}</Account>
+    <b>{left === undefined ? '—' : `≈ ${usd(left)}`}</b>
+    <small>{since ? `since ${new Date(since).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}` : 'not set'}</small>
+    {live && <button className="bal-set" onClick={() => setDraft('')}>{since ? 'Update' : 'Set'}</button>}
   </div>;
 }
 // One column per day, today last. With dates, hovering a column tells its day and hours.

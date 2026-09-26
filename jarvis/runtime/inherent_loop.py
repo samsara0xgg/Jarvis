@@ -4840,6 +4840,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 else functools.partial(_refresh_usage_now, usage_observer, runtime.conn)
             ),
             usage_codex_reset=None if usage_observer is None else redeem_codex_reset,
+            usage_record_balance=None if usage_observer is None else usage_observer.record_balance,
             work_state_read=(
                 None
                 if runtime.work_state is None
