@@ -1,5 +1,5 @@
-import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from 'react';
-import { ArrowSquareOut, ArrowUp, ArrowsClockwise, CaretDown, CaretLeft, CaretRight, GitBranch, MagnifyingGlass, ShieldCheck, X } from '@phosphor-icons/react';
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode, type WheelEvent } from 'react';
+import { ArrowSquareOut, ArrowUp, ArrowsClockwise, CaretDown, CaretLeft, CaretRight, CaretUp, GitBranch, MagnifyingGlass, ShieldCheck, X } from '@phosphor-icons/react';
 import { TAKES, pick, type ExprId } from './starCore';
 import { useUsage, type UsageWindow } from './QuotaModule';
 import { useCodexSessions, type CodexSession } from './CodexModule';
@@ -106,7 +106,7 @@ const pluginStatus = (p: DemoPlugin): [string, string] => p.unsupported ? ['', '
   : p.state === 'off' ? ['', 'Off'] : p.state === 'token' ? ['is-need', 'Needs an access token']
   : ['is-need', p.ask ? 'Jarvis asked · needs sign-in' : 'Needs sign-in'];
 
-type Turn = { you: string; at: string; jarvis?: string; jarvisAt?: string; work?: [string, string] };
+type Turn = { you: string; at: string; jarvis?: string; jarvisAt?: string; work?: [string, string]; day?: string };
 const DEMO_TURNS: Turn[] = [
   { you: 'Remind me to test the mic at four.', at: '11:05', jarvis: 'Done. I’ll remind you at 4 PM.', jarvisAt: '11:05' },
   { you: 'What’s left on my plate today?', at: '14:32', jarvisAt: 'just now',
@@ -116,20 +116,22 @@ const DEMO_TURNS: Turn[] = [
 const ANSWER = 'Got it. I’ll take care of it and tell you when it’s done.';
 const BASIS: Record<Basis, string> = { observed: 'Observed', stated: 'You said', inferred: 'A guess' };
 // Live conversation: the memory.db rows and the answer still streaming, from the companion's daemon link.
-type Talk = { rows: Row[]; tail: string; busy: boolean; offline: boolean; submit: (text: string) => void };
+// `older` fetches a longer page and says whether it brought earlier rows; `floor` means the history's start is on hand.
+type Talk = { rows: Row[]; tail: string; busy: boolean; offline: boolean; floor: boolean; submit: (text: string) => void; older: () => Promise<boolean> };
 const when = (ts: string) => { const d = new Date(ts); return Number.isNaN(d.getTime()) ? '' : d.toDateString() === new Date().toDateString() ? hm(d.getTime()) : `${d.getMonth() + 1}/${d.getDate()} ${hm(d.getTime())}`; };
-// The conversation of record as turns: each of your rows opens one, and Jarvis's rows after it answer it.
-const toTurns = (rows: Row[], tail: string): Turn[] => {
+const dayLabel = (day: string) => { const d = new Date(day); return d.toDateString() === new Date(Date.now() - 86_400_000).toDateString() ? 'yesterday' : `${d.toLocaleDateString('en-US', { weekday: 'short' })} ${d.getMonth() + 1}/${d.getDate()}`; };
+// The conversation of record as turns, each dated by the row that opens it: your rows open one, and Jarvis's rows after it answer it.
+const toTurns = (rows: Row[]): Turn[] => {
   const turns: Turn[] = [];
-  const answer = (text: string, at: string) => {
-    const t = turns.at(-1);
-    if (!t) turns.push({ you: '', at: '', jarvis: text, jarvisAt: at });
+  for (const row of rows) {
+    const t = turns.at(-1), text = visible(row.text), at = when(row.ts), day = new Date(row.ts).toDateString();
+    if (row.source === 'allen') turns.push({ you: row.text, at, day });
+    else if (!t) turns.push({ you: '', at: '', jarvis: text, jarvisAt: at, day });
     else Object.assign(t, { jarvis: t.jarvis ? `${t.jarvis}\n\n${text}` : text, jarvisAt: at });
-  };
-  for (const row of rows.slice(-60)) { if (row.source === 'allen') turns.push({ you: row.text, at: when(row.ts) }); else answer(visible(row.text), when(row.ts)); }
-  if (tail) answer(tail, 'now');
+  }
   return turns;
 };
+const PULL = 240; // px of fresh upward scroll at the top that adds the day before
 
 export function AroundDashboard({ open, port = null, onClose, onMood, onHop, talk, plugins: live, pluginFocus = null }: {
   open: boolean; port?: string | null; onClose: () => void; onMood: (expr: ExprId | null) => void; onHop: (height: number) => void;
@@ -147,6 +149,10 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
   const [token, setToken] = useState('');
   const [said, setSaid] = useState({ text: 'Two things left today. Your 4 PM reminder is set.', caption: 'Jarvis · just now', busy: false });
   const [turns, setTurns] = useState(DEMO_TURNS);
+  // The Conversation page opens on the newest day; at the top, a fresh scroll up past PULL adds the day before.
+  const [days, setDays] = useState(1), [pull, setPull] = useState(0);
+  const wheel = useRef({ acc: 0, last: 0, armed: false, busy: false, timer: undefined as ReturnType<typeof setTimeout> | undefined });
+  const anchor = useRef<number | null>(null);
   const [moved, setMoved] = useState<Record<string, Partial<Agent> & { at: number }>>({});
   // Agent cards show only name, state and tags; one card at a time opens to show the rest.
   const [unfolded, setUnfolded] = useState<string | null>(null);
@@ -190,7 +196,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
   const openPage = (name: Page) => {
     if (page || closing.current) return;
     setPage(name); setPlugin(null);
-    if (name === 'conversation') react(pick(TAKES.reply), 2600);
+    if (name === 'conversation') { setDays(1); react(pick(TAKES.reply), 2600); }
     else if (name === 'now') react('37', 2400);
     else if (name === 'projects') { react('40', 1500); void projects.refresh(); }
     else { react('02', 0); if (name === 'agents') onHop(.2); }
@@ -203,7 +209,9 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
     if (page === 'conversation') { const b = el.querySelector('.pg-body')!; b.scrollTop = b.scrollHeight; } // it opens on the newest turn
     el.animate([{ clipPath: insetOf(from) }, { clipPath: 'inset(0 0 0 0 round 14px)' }], { duration: dur(560), easing: SPRING });
     el.querySelector('.pg-head')?.animate([{ transform: `translateY(${dy}px)`, opacity: .3 }, { transform: 'none', opacity: 1 }], { duration: dur(560), easing: SPRING });
-    el.querySelectorAll('.pg-sec, .pg-foot, .pg-input').forEach((s, i) => s.animate([{ opacity: 0, transform: 'translateY(6px)' }, { opacity: 1, transform: 'none' }],
+    // Only what is on screen fades in, in order; a long page would otherwise hold its newest words back.
+    const box = el.getBoundingClientRect();
+    [...el.querySelectorAll('.pg-sec, .pg-foot, .pg-input')].filter(s => { const r = s.getBoundingClientRect(); return r.bottom > box.top && r.top < box.bottom; }).forEach((s, i) => s.animate([{ opacity: 0, transform: 'translateY(6px)' }, { opacity: 1, transform: 'none' }],
       { duration: dur(260), delay: dur(170 + i * 45), easing: 'cubic-bezier(.2,.7,.2,1)', fill: 'backwards' }));
     stopMotion(home.current!);
     home.current!.animate([{ opacity: 1 }, { opacity: 0 }], { duration: dur(150), fill: 'forwards' });
@@ -248,12 +256,37 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
     });
   };
   const body = () => pageEl.current?.querySelector('.pg-body');
-  const shownTurns = talk ? toTurns(talk.rows, talk.tail) : turns;
+  const allTurns = talk ? toTurns(talk.rows) : turns, dayList = [...new Set(allTurns.map(t => t.day))];
+  const shownTurns = talk ? allTurns.filter(t => dayList.slice(-days).includes(t.day)) : allTurns;
+  const before = dayList.length > days ? dayList[dayList.length - days - 1]! : null, more = !!talk && (before !== null || !talk.floor);
+  const loadEarlier = async () => {
+    const b = body();
+    anchor.current = b ? b.scrollHeight - b.scrollTop : null;
+    // The oldest day on hand may be cut off by the page the daemon sent, so fetch before showing it.
+    if (dayList.length <= days + 1 && !talk!.floor && !(await talk!.older()) && before === null) { anchor.current = null; return; }
+    setDays(d => d + 1);
+  };
+  const onWheel = (e: WheelEvent<HTMLDivElement>) => {
+    const w = wheel.current, fresh = e.timeStamp - w.last > 180;
+    w.last = e.timeStamp;
+    if (!more || w.busy || e.deltaY >= 0 || e.currentTarget.scrollTop > 0) { w.armed = false; if (w.acc) { w.acc = 0; setPull(0); } return; }
+    if (fresh) w.armed = true; // momentum that carried the page to the top does not count
+    if (!w.armed) return;
+    w.acc -= e.deltaY;
+    clearTimeout(w.timer);
+    if (w.acc < PULL) { setPull(w.acc / PULL); w.timer = setTimeout(() => { Object.assign(w, { acc: 0, armed: false }); setPull(0); }, 400); return; }
+    Object.assign(w, { acc: 0, armed: false, busy: true });
+    setPull(0);
+    void loadEarlier().finally(() => { w.busy = false; });
+  };
+  // The day added above keeps the words you were reading where they were.
+  useLayoutEffect(() => { const b = body(); if (anchor.current !== null && b) b.scrollTop = b.scrollHeight - anchor.current; anchor.current = null; }, [days]);
   const lastAnswer = talk && [...talk.rows].reverse().find(row => row.source !== 'allen');
   const saying = !talk ? said : { busy: talk.busy,
     text: plain(talk.tail) || (lastAnswer ? plain(lastAnswer.text) : 'Say something and Jarvis answers here.'),
     caption: talk.offline ? 'Offline · reconnecting' : talk.busy ? 'Thinking' : talk.tail ? 'Jarvis · now' : lastAnswer ? `Jarvis · ${when(lastAnswer.ts)}` : 'Jarvis' };
-  useEffect(() => { if (page === 'conversation') body()?.scrollTo({ top: body()!.scrollHeight, behavior: reduced.matches ? 'auto' : 'smooth' }); }, [shownTurns.length, shownTurns.at(-1)?.jarvis]);
+  const newest = shownTurns.at(-1);
+  useEffect(() => { if (page === 'conversation') body()?.scrollTo({ top: body()!.scrollHeight, behavior: reduced.matches ? 'auto' : 'smooth' }); }, [newest?.at, newest?.you, newest?.jarvis]);
 
   // Agents, grouped the way you act on them. A row you moved goes to the top of its new group.
   const agents = (port ? [...claudeRows.map(fromClaude), ...codex.rows.map(fromCodex)] : DEMO_AGENTS).filter(s => hidden[s.id] !== s.you).map(s => ({ ...s, ...moved[s.id] }));
@@ -352,7 +385,10 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
   const pages: Record<Page, () => ReactNode> = {
     conversation: () => <>
       {back('Conversation', talk ? undefined : 'today')}
-      <div className="pg-body">{shownTurns.map((t, i) => <div className="pg-sec tr" key={i}>
+      <div className="pg-body" onWheel={talk ? onWheel : undefined}>
+      {talk && <div className={`pg-earlier${pull ? ' is-pulling' : ''}`} style={{ '--pull': pull } as CSSProperties}>
+        {more ? <><CaretUp size={10} weight="bold"/>Scroll up for {before ? dayLabel(before) : 'earlier'}</> : 'Start of the conversation'}</div>}
+      {shownTurns.map((t, i) => <div className="pg-sec tr" key={i} data-day={t.day}>
         {t.you && <div className="tr-you"><span className="who">You · {t.at}</span><p>{t.you}</p></div>}
         {t.jarvis && <div className="tr-jarvis"><span className="who"><span className="dot"/>Jarvis · {t.jarvisAt}</span><Markdown text={t.jarvis}/>
           {t.work && <Fold label={t.work[0]}><pre>{t.work[1]}</pre></Fold>}</div>}

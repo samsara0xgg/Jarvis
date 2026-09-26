@@ -200,7 +200,9 @@ export function Companion() {
   const submit = (text: string) => link.current?.submit(text).catch(() => dispatch({ type: 'phase', phase: 'error' }));
   // A heard utterance is a task she takes in, as a typed one is.
   useEffect(() => { if (port && s.heard) receive(); }, [s.heard]);
-  // The conversation of record, polled while the Dashboard shows it; the streaming answer rides as a tail until its row lands.
+  // The conversation of record, polled while the Dashboard shows it. The streaming answer rides as a tail on the home row
+  // until its row lands; the Conversation page waits for the row, since the stream's chunks lose the answer's line breaks.
+  const tail = s.reply && !s.rows.some(row => row.seq > s.openSeq && row.source !== 'allen') ? visible(s.reply) : '';
   const lastSeq = useRef(0);
   lastSeq.current = s.rows.length ? s.rows[s.rows.length - 1].seq : 0;
   useEffect(() => {
@@ -210,8 +212,20 @@ export function Companion() {
     void load();
     const id = setInterval(() => void load(), 2000);
     return () => { stop = true; clearInterval(id); };
-  }, [dashboard]);
-  const tail = s.reply && !s.rows.some(row => row.seq > s.openSeq && row.source !== 'allen') ? visible(s.reply) : '';
+  }, [dashboard, !!tail]); // and at once when an answer starts: its row is written before it streams
+  // Older days for the Conversation page: a longer page of the newest rows; a short answer means the history's start.
+  // ponytail: re-fetches the newest rows each time; a `before` cursor on the route if the history outgrows a few pages.
+  const [floor, setFloor] = useState(false);
+  const older = async () => {
+    const want = s.rows.length + 200, first = s.rows[0]?.seq ?? Infinity;
+    try {
+      const rows = await link.current?.conversation(0, want);
+      if (!rows) return false;
+      if (rows.length < want) setFloor(true);
+      dispatch({ type: 'older', rows });
+      return rows.some(row => row.seq < first);
+    } catch { return false; }
+  };
   // When Jarvis asks for a plugin mid-conversation, the Dashboard opens on it.
   const plugins = usePlugins(), request = plugins.snapshot?.request, shownRequest = useRef('');
   const [pluginFocus, setPluginFocus] = useState<{ plugin: string; key: string } | null>(null);
@@ -369,7 +383,7 @@ export function Companion() {
         style={{ left: geo.center - PANEL / 2, top: geo.panelTop }} inert={!dashboard}>
         {wardrobe.layout === 'around'
           ? <AroundDashboard open={dashboard} port={port} onClose={() => setDashboard(false)} onMood={setDashMood} onHop={height => ball.current?.hop(height)}
-            talk={port ? { rows: s.rows, tail, busy: s.phase === 'processing', offline: s.phase === 'error', submit } : undefined}
+            talk={port ? { rows: s.rows, tail, busy: s.phase === 'processing', offline: s.phase === 'error', floor, submit, older } : undefined}
             plugins={port ? plugins : undefined} pluginFocus={pluginFocus}/>
           : <DashboardPreview embedded port={port} visible={dashboard} shown={dashboard} onClose={() => setDashboard(false)}/>}
       </div>

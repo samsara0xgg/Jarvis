@@ -143,6 +143,11 @@
 .ad .tr-jarvis { display:flex; flex-direction:column; gap:5px; }
 .ad .tr-jarvis .who { color:rgb(var(--glow)); }
 .ad .tr-jarvis p { font-size:14px; line-height:1.55; }
+/* Above the first day shown: keep scrolling up and it fills, then the day before loads. */
+.ad .pg-earlier { position:relative; isolation:isolate; align-self:center; display:inline-flex; align-items:center; gap:5px; flex:none; padding:3px 10px; border-radius:999px; overflow:hidden; font-size:10.5px; line-height:14px; color:var(--p-faint); transform:translateY(calc(var(--pull, 0) * 8px)); transition:color .2s, transform .25s cubic-bezier(.2,.7,.2,1); }
+.ad .pg-earlier::before { content:''; position:absolute; inset:0; z-index:-1; background:rgb(var(--glow) / .16); transform-origin:left; transform:scaleX(var(--pull, 0)); transition:transform .25s cubic-bezier(.2,.7,.2,1); }
+.ad .pg-earlier.is-pulling { color:var(--p-ink); transition-duration:.08s; }
+.ad .pg-earlier.is-pulling::before { transition-duration:.08s; }
 /* Jarvis's answer as markdown: headings, lists and tables sized for the narrow column. */
 .ad .md { display:flex; flex-direction:column; gap:8px; font-size:14px; line-height:1.55; }
 .ad .md p { white-space:pre-line; }

@@ -23,7 +23,7 @@ export const initialState: State = { mode: 'voice', phase: 'listening', micMuted
 export type Action = { type: 'mode'; mode: Mode } | { type: 'phase'; phase: Phase } | { type: 'mic' | 'sound' | 'inbox' | 'interrupt' | 'end' | 'attachment' | 'reset' } | { type: 'draft'; value: string } | { type: 'send' } | { type: 'answer' } | { type: 'detail'; id: string | null } | { type: 'dismiss'; id: string } | { type: 'example'; id: string }
   | { type: 'open'; turnId: string; responseId: string | null } | { type: 'append'; token: string } | { type: 'settle'; turnId: string } | { type: 'pending'; turnId: string } | { type: 'failed'; turnId: string; cancelled: boolean } | { type: 'controls'; micMuted: boolean; soundMuted: boolean; conversation: boolean } | { type: 'heard'; text: string }
   | { type: 'live'; live: Live } | { type: 'subtitle'; sessionId: string; role: 'user' | 'assistant'; delta: string; startMs: number; endMs: number } | { type: 'live_dismiss' }
-  | { type: 'rows'; rows: Row[] };
+  | { type: 'rows'; rows: Row[] } | { type: 'older'; rows: Row[] };
 export function reducer(s: State, a: Action): State {
   switch (a.type) {
     case 'reset': return { ...initialState, results: examples.slice(0, 1) };
@@ -63,8 +63,9 @@ export function reducer(s: State, a: Action): State {
     case 'rows': {
       const last = s.rows.length ? s.rows[s.rows.length - 1].seq : 0;
       const fresh = a.rows.filter(row => row.seq > last);
-      return fresh.length ? { ...s, rows: [...s.rows, ...fresh].slice(-400) } : s; // ponytail: 400 rows on screen; page backwards if Allen scrolls past that
+      return fresh.length ? { ...s, rows: [...s.rows, ...fresh].slice(-400) } : s; // ponytail: the newest 400 held (the main app's transcript shows every row); the companion fetches older days again through 'older'
     }
+    case 'older': { const first = s.rows[0]?.seq ?? Infinity, old = a.rows.filter(row => row.seq < first); return old.length ? { ...s, rows: [...old, ...s.rows] } : s; }
     case 'detail': return { ...s, detail: a.id, results: s.results.map(r => r.id === a.id ? { ...r, read: true } : r) };
     case 'dismiss': return { ...s, detail: null, results: s.results.filter(r => r.id !== a.id) };
     case 'example': { const r = examples.find(r => r.id === a.id); return r ? { ...s, results: [...s.results.filter(i => i.id !== r.id), { ...r, read: false }] } : s; }

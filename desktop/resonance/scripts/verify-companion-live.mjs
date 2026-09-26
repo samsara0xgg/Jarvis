@@ -36,6 +36,11 @@ try {
   // The fake daemon: what the companion posts, and what it is told.
   const posts = [], pluginOps = [];
   const now = Date.now(), iso = ms => new Date(ms).toISOString();
+  // Yesterday's turn sits past the fake daemon's page of two rows, so only a longer page brings it.
+  const yesterday = [
+    { seq: 9, id: 'y1', ts: iso(now - 86_400_000), source: 'allen', text: 'Is the reSpeaker plugged in?' },
+    { seq: 10, id: 'y2', ts: iso(now - 86_400_000 + 3000), source: 'jarvis', text: 'Yes, on the left USB-C port.' },
+  ], reads = [];
   const rows = [
     { seq: 11, id: 'a', ts: iso(now - 9 * 60_000), source: 'allen', text: 'What’s on my plate today?' },
     { seq: 12, id: 'b', ts: iso(now - 9 * 60_000 + 4000), source: 'jarvis', text: 'Two things: the **voice test** at four, and `the demo cut`.' },
@@ -105,7 +110,11 @@ try {
     if (url.pathname === '/inherent/controls') { controls = { ...controls, ...body }; return json(controls); }
     if (url.pathname === '/inherent/submit') return json({ turn_id: 'typed-1' });
     if (url.pathname === '/inherent/cancel-response') return json({});
-    if (url.pathname === '/inherent/conversation') { const after = Number(url.searchParams.get('after') ?? 0); return json({ since: after, rows: rows.filter(r => r.seq > after) }); }
+    if (url.pathname === '/inherent/conversation') {
+      const after = Number(url.searchParams.get('after') ?? 0), limit = Number(url.searchParams.get('limit') ?? 2), all = [...yesterday, ...rows];
+      reads.push({ at: Date.now(), after, limit });
+      return json({ since: after, rows: after ? all.filter(r => r.seq > after) : all.slice(-limit) });
+    }
     if (fixtures[url.pathname]) return json(fixtures[url.pathname]);
     return route.fulfill({ status: 404, contentType: 'application/json', body: '{"detail":"Not Found"}' });
   });
@@ -121,6 +130,19 @@ try {
   const openRow = name => page.locator(`.ad [data-row="${name}"]`).evaluate(el => (el.matches('button') ? el : el.querySelector('button')).click());
   const back = async () => { await page.locator('.ad .pg-back').click(); await page.waitForTimeout(700); };
   const text = selector => page.locator(selector).first().textContent();
+  // At the top of the Conversation page, a fresh scroll up past the resistance; true when the words in view stayed put.
+  const pullUp = async () => {
+    const pageBody = page.locator('.ad .pg-body');
+    await pageBody.evaluate(b => { b.scrollTop = 0; });
+    const fromBottom = () => pageBody.evaluate(b => b.scrollHeight - b.scrollTop), before = await fromBottom(), box = await pageBody.boundingBox();
+    await page.mouse.move(box.x + box.width / 2, box.y + 80); await page.waitForTimeout(250);
+    // Wheel until the day before shows (45 px a notch at 2x), then stop: further notches would scroll into it.
+    const dayCount = () => page.locator('.ad .tr').evaluateAll(els => new Set(els.map(e => e.dataset.day)).size), start = await dayCount();
+    for (let i = 0; i < 12 && await dayCount() === start; i++) { await page.mouse.wheel(0, -90); await page.waitForTimeout(40); }
+    await page.waitForTimeout(800);
+    // The notch that loads it still glides on into the new day, so one notch of drift is allowed.
+    return Math.abs(await fromBottom() - before) <= 50;
+  };
   const out = { x: 195.5, y: 72 };
   await page.waitForTimeout(800);
 
@@ -154,12 +176,31 @@ try {
     const catalog = pluginToken ? (await (await fetch(`${daemon}/inherent/plugins`, { headers: { Authorization: `Bearer ${pluginToken}` } })).json()).plugins.map(p => p.name) : [];
     check(`R Plugins is the daemon's catalog (${names.join(', ') || 'no token'}), read only`, pluginToken ? names.length > 0 && [...names].sort().join() === [...catalog].sort().join() && pluginOps.every(o => o.operation === 'read') : true);
     await panelShot('R-plugins'); await back();
-    await openRow('conversation'); await page.waitForTimeout(2500);
+    // Opened the way a click opens it, timing when the words on screen have faded in.
+    const litMs = await page.evaluate(async () => {
+      const t0 = performance.now();
+      document.querySelector('.ad [data-row="conversation"] button').click();
+      while (performance.now() - t0 < 4000) {
+        await new Promise(r => requestAnimationFrame(r));
+        const body = document.querySelector('.ad .pg-body'), box = body?.getBoundingClientRect();
+        const shown = body ? [...body.querySelectorAll('.pg-sec, .pg-input')].filter(e => { const r = e.getBoundingClientRect(); return r.bottom > box.top && r.top < box.bottom; }) : [];
+        if (shown.length && shown.every(e => Number(getComputedStyle(e).opacity) > .95)) return Math.round(performance.now() - t0);
+      }
+      return null;
+    });
+    await page.waitForTimeout(2500);
     // Re-read the record: a turn may have landed since the start (the page polls every 2 s).
     const newest = [...(await get('/inherent/conversation?after=0')).rows].reverse().find(r => r.source !== 'allen');
     check(`R the Conversation page is the record, newest last (${newest.seq})`, words(await page.locator('.ad .tr-jarvis .md').last().textContent()).endsWith(words(newest.text)));
     const scroll = await page.locator('.ad .pg-body').evaluate(b => ({ top: b.scrollTop, view: b.clientHeight, height: b.scrollHeight }));
     check(`R it opens on the newest turn, not the top (${Math.round(scroll.top)} + ${scroll.view} of ${scroll.height} px)`, scroll.height > scroll.view && scroll.top + scroll.view >= scroll.height - 2);
+    check(`R the words on screen are in within 800 ms of the click (${litMs} ms)`, litMs !== null && litMs < 800);
+    const shownDays = () => page.locator('.ad .tr').evaluateAll(els => [...new Set(els.map(e => e.dataset.day))]);
+    const opening = await shownDays();
+    check(`R it holds the newest day only (${opening.join()})`, opening.length === 1 && opening[0] === new Date(newest.ts).toDateString());
+    const held = await pullUp();
+    const pulled = await shownDays();
+    check(`R a fresh scroll up at the top adds the day before, the words in view staying put (${pulled.join(' + ')})`, pulled.length === 2 && pulled[1] === opening[0] && held);
     await panelShot('R-conversation'); await back();
     check(`R nothing was written to the daemon (${posts.length} POSTs refused: ${[...new Set(posts)].join(', ')})`, pluginOps.every(o => o.operation === 'read'));
     check('no page errors', errors.length === 0);
@@ -233,16 +274,31 @@ try {
     await page.locator('.ad .pg-input input').press('Enter');
     await page.waitForTimeout(2600);
     check('L8 its text box submits, and the new row arrives from the record', posts.at(-1)?.path === '/inherent/submit' && posts.at(-1).body.text === 'Move the test to five' && await page.locator('.ad .tr').count() === 2);
-    const moved = '<voice>Moved to five.</voice>\n<document>## Moved\n\n- **5 PM** voice test\n  - bring `reSpeaker`\n\n| When | What |\n|---|---|\n| 17:00 | voice test |</document>';
-    await page.evaluate(token => { window.__emit('open', { turn_id: 'typed-1', response_id: 'resp-3' }); window.__emit('append', { turn_id: 'typed-1', token }); }, moved);
-    await page.waitForTimeout(200);
-    const md = page.locator('.ad .tr-jarvis .md').last();
-    check('L8 the streaming answer shows under your turn until its row lands, its document only', words(await md.textContent()) === words('Moved5 PM voice test bring reSpeaker When What 17:00 voice test'));
+    // As the daemon does it: the record is written first, then the answer streams as spoken segments without its line breaks.
+    const doc = '## Moved\n\n- **5 PM** voice test\n  - bring `reSpeaker`\n\n| When | What |\n|---|---|\n| 17:00 | voice test |';
+    rows.push({ seq: 14, id: 'd', ts: iso(Date.now()), source: 'jarvis', text: doc });
+    await page.evaluate(() => { window.__seen = []; new MutationObserver(() => window.__seen.push(document.querySelector('.ad .pg-body').textContent)).observe(document.querySelector('.ad .pg-body'), { subtree: true, childList: true, characterData: true }); });
+    const emitted = Date.now();
+    await page.evaluate(tokens => { window.__emit('open', { turn_id: 'typed-1', response_id: 'resp-3' }); for (const token of tokens) window.__emit('append', { turn_id: 'typed-1', token }); },
+      ['<voice>', 'Moved to five.', '</voice>', '<document>', '## Moved', '- **5 PM** voice test', '- bring `reSpeaker`', '| When | What |', '|---|---|', '| 17:00 | voice test |', '</document>']);
+    await page.waitForTimeout(500);
+    const md = page.locator('.ad .tr-jarvis .md').last(), asked = reads.find(r => r.at >= emitted), seen = await page.evaluate(() => window.__seen);
+    check(`L8 the answer comes from its row, asked for as it starts (${asked ? asked.at - emitted : '-'} ms), never the run-together stream`, !!asked && asked.at - emitted < 150
+      && words(await md.textContent()) === words(doc) && await page.locator('.ad .tr').count() === 2 && !seen.some(t => /Moved to five|##|voice test- bring/.test(t)));
     check('L8 the answer\'s markdown renders: heading, bold, nested list, code, table', await md.locator('h5').textContent() === 'Moved' && await md.locator('li strong').textContent() === '5 PM'
       && await md.locator('li > ul > li code').textContent() === 'reSpeaker' && (await md.locator('th').allTextContents()).join() === 'When,What'
       && (await md.locator('td').allTextContents()).join() === '17:00,voice test' && !/\*\*|##|\|/.test(await md.textContent()));
     await panelShot('L8-conversation');
     await page.evaluate(() => window.__emit('done', { turn_id: 'typed-1', fadeMs: 100 }));
+    const days = () => page.locator('.ad .tr').evaluateAll(els => [...new Set(els.map(e => e.dataset.day))].length);
+    check('L8 it holds today only, and offers earlier', await days() === 1 && (await text('.ad .pg-earlier')).includes('earlier'));
+    const held = await pullUp(), longer = reads.some(r => r.limit > 2), shown = await days(), first = await text('.ad .tr-you p'), top = await text('.ad .pg-earlier');
+    check(`L8 a fresh scroll up at the top fetches a longer page and adds yesterday, the words in view staying put (longer page ${longer}, ${shown} days, held ${held}, top "${top}")`,
+      longer && shown === 2 && held && first === yesterday[0].text && top === 'Start of the conversation');
+    await panelShot('L8-yesterday');
+    await back();
+    await openRow('conversation'); await page.waitForTimeout(900);
+    check('L8 opened again it holds today only, yesterday one scroll up', await days() === 1 && (await text('.ad .pg-earlier')) === 'Scroll up for yesterday');
     await back();
 
     await openRow('agents'); await page.waitForTimeout(900);
