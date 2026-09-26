@@ -152,8 +152,10 @@ try {
     const catalog = pluginToken ? (await (await fetch(`${daemon}/inherent/plugins`, { headers: { Authorization: `Bearer ${pluginToken}` } })).json()).plugins.map(p => p.name) : [];
     check(`R Plugins is the daemon's catalog (${names.join(', ') || 'no token'}), read only`, pluginToken ? names.length > 0 && [...names].sort().join() === [...catalog].sort().join() && pluginOps.every(o => o.operation === 'read') : true);
     await panelShot('R-plugins'); await back();
-    await openRow('conversation'); await page.waitForTimeout(900);
-    check('R the Conversation page is the record, newest last', (await page.locator('.ad .tr-jarvis p').last().textContent()) === plain(answer.text));
+    await openRow('conversation'); await page.waitForTimeout(2500);
+    // Re-read the record: a turn may have landed since the start (the page polls every 2 s).
+    const newest = [...(await get('/inherent/conversation?after=0')).rows].reverse().find(r => r.source !== 'allen');
+    check(`R the Conversation page is the record, newest last (${newest.seq})`, (await page.locator('.ad .tr-jarvis p').last().textContent()).endsWith(plain(newest.text)));
     await panelShot('R-conversation'); await back();
     check(`R nothing was written to the daemon (${posts.length} POSTs refused: ${[...new Set(posts)].join(', ')})`, pluginOps.every(o => o.operation === 'read'));
     check('no page errors', errors.length === 0);
