@@ -883,7 +883,7 @@ def _timesink_db_path(full_config: Mapping[str, Any]) -> Path | None:
 
 
 _FALLBACK_TIMESINK_POLL_INTERVAL_S: Final[float] = 300.0
-_FALLBACK_WORK_STATE_PRESET: Final[str] = "fast"
+_FALLBACK_WORK_STATE_PRESET: Final[str] = "gpt6-luna"
 _DAILY_REPORT_TIMEOUT_S: Final[float] = 900.0
 """ADR 0028 — a whole day served whole: the draft call read 300k tokens in 175 s on v4-pro
 (2026-09-12), and a retry after a timeout would resend it all."""
