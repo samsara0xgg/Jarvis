@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { IconContext, Keyboard, Paperclip, ArrowUp, Microphone, Stop } from '@phosphor-icons/react';
 import { CompanionBall, HOLD_MS, R, type BallHandle, type Lobe, type Place, type Point } from './CompanionBall';
 import { EXPRESSIONS, PREVIEW, SKINS, SKIN_KEYS, TAKES, isSkin, pick, type ExprId, type Skin } from './starCore';
@@ -6,6 +6,9 @@ import { DashboardPreview } from './DashboardPreview';
 import { AroundDashboard } from './AroundDashboard';
 import { playFeedback, stopFeedback, warmFeedback, type FeedbackCue } from './feedback';
 import { usePreferences } from './preferences';
+import { initialState, plain, reducer } from './model';
+import { connect, type Runtime } from './runtime';
+import { usePlugins } from './PluginPanel';
 import './companion.css';
 
 type Placement = { topInset: number; notchWidth: number; surfaceWidth: number; displayId?: number };
@@ -13,6 +16,11 @@ type Rect = { x: number; y: number; w: number; h: number };
 type Zone = 'none' | 'lobe' | 'ball';
 const within = (p: Point, r: Rect) => p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h;
 const PANEL = 300;
+// With a `port` she is live: the daemon's turns drive her voice, faces and words. Without one (the design
+// checks, `--demo`) the scripted demo below plays instead.
+const port = new URLSearchParams(location.search).get('port');
+// Her bubble carries what she says aloud: the spoken form when the answer has one (ADR 0040), else its text.
+const spoken = (reply: string) => { const voice = /<voice>([\s\S]*?)(?:<\/voice>|$)/.exec(reply); return voice ? plain(voice[1]) : plain(reply); };
 const DOUBLE_CLICK_MS = 300;
 // around: one column under her, her words first (the default). grid: the main app's two columns of tiles.
 type DashboardLayout = 'grid' | 'around';
@@ -69,11 +77,20 @@ export function Companion() {
   const [dashboard, setDashboard] = useState(false);
   const [composer, setComposer] = useState(false);
   const [draft, setDraft] = useState('');
-  const [voice, setVoice] = useState<'off' | 'listening' | 'thinking' | 'speaking'>('off');
-  const [caption, setCaption] = useState('');
-  const [hearing, setHearing] = useState(false);
-  const [reply, setReply] = useState({ text: '', shown: 0 });
-  const [talking, setTalking] = useState(false);
+  const [simVoice, setVoice] = useState<'off' | 'listening' | 'thinking' | 'speaking'>('off');
+  const [simCaption, setCaption] = useState('');
+  const [simHearing, setHearing] = useState(false);
+  const [simReply, setReply] = useState({ text: '', shown: 0 });
+  const [simTalking, setTalking] = useState(false);
+  const [s, dispatch] = useReducer(reducer, initialState);
+  const link = useRef<Runtime | null>(null);
+  useEffect(() => { if (!port) return; link.current = connect(port, dispatch); return () => { link.current?.close(); link.current = null; }; }, []);
+  // Live, the daemon's phase is her voice; standby counts as listening only in wave mode (ADR 0041).
+  const voice = !port ? simVoice : s.phase === 'speaking' ? 'speaking' : s.phase === 'processing' ? 'thinking'
+    : s.phase === 'hearing' || (s.conversation && s.phase !== 'error') ? 'listening' : 'off';
+  const caption = port ? s.heard : simCaption, hearing = port ? s.phase === 'hearing' : simHearing, talking = port ? false : simTalking;
+  const said = port ? spoken(s.reply) : '';
+  const reply = port ? { text: said, shown: said.length } : simReply;
   const [pressed, setPressed] = useState(false);
   const [wardrobe, setWardrobe] = useState(loadWardrobe);
   // A skin change or an expression from the tray brings her out of the island for a moment.
@@ -86,6 +103,10 @@ export function Companion() {
   const place: Place = moving ? 'home' : dashboard ? 'dock' : busy || zone === 'ball' || outing ? 'out' : zone === 'lobe' ? 'peek' : 'home';
   // A finished text reply stays up briefly: that is her "done" face.
   const listenFace = useRef<ExprId>('35'), receiveFace = useRef<ExprId>('31'), replyFace = useRef<ExprId>('39');
+  // Live turns pick her takes as they begin; the scripted demo picks its own in listen() and say().
+  const lastVoice = useRef(voice);
+  if (port && voice !== lastVoice.current) { if (voice === 'listening') listenFace.current = pick(TAKES.listen); else if (voice === 'speaking') replyFace.current = pick(TAKES.reply); }
+  lastVoice.current = voice;
   const expr: ExprId = preview ?? (receiving ? receiveFace.current : voice === 'listening' ? listenFace.current : voice === 'thinking' ? '30' : voice === 'speaking' || talking ? replyFace.current : dashboard && dashMood ? dashMood : reply.text ? '33' : '02');
   const chip = place === 'out' && zone === 'ball' && !busy;
   const live = useRef({ geo, dashboard, chip, composer, place, wardrobe });
@@ -118,10 +139,23 @@ export function Companion() {
     after(end + 250, () => { setHearing(false); setVoice('thinking'); receive(); });
     after(end + 1700, () => { setVoice('speaking'); say('好，我来整理。', () => listen(false)); });
   };
-  const endVoice = () => { stopScript(); setReceiving(false); feedback('voice-exit'); setVoice('off'); setCaption(''); setHearing(false); setReply({ text: '', shown: 0 }); setTalking(false); };
+  const endVoice = () => {
+    if (port) {
+      feedback('voice-exit');
+      void link.current?.controls({ conversation: false }).catch(() => undefined);
+      if (s.phase === 'speaking' || s.phase === 'processing') void link.current?.cancel(s.responseId).catch(() => undefined);
+      return;
+    }
+    stopScript(); setReceiving(false); feedback('voice-exit'); setVoice('off'); setCaption(''); setHearing(false); setReply({ text: '', shown: 0 }); setTalking(false); };
   const closeComposer = () => { setComposer(false); void window.jarvis?.focus(false); };
   // Poke: start a voice turn, interrupt playback, or end the session.
   const poke = () => {
+    if (port) {
+      if (voice === 'off') { closeComposer(); feedback('voice-enter'); void link.current?.controls({ conversation: true }).catch(() => undefined); }
+      else if (voice === 'speaking') void link.current?.cancel(s.responseId).catch(() => undefined);
+      else endVoice();
+      return;
+    }
     if (voice === 'off') { closeComposer(); feedback('voice-enter'); listen(true); }
     else if (voice === 'speaking') listen(false);
     else endVoice();
@@ -159,8 +193,35 @@ export function Companion() {
     if (!text) return;
     setDraft(''); closeComposer(); stopScript();
     receive();
+    if (port) { void submit(text); return; }
     after(700, () => say(text.includes('整理') ? '好，我来整理。' : '收到，我来处理。', () => after(1800, () => setReply({ text: '', shown: 0 }))));
   };
+  // Typed text goes to the daemon like the capsule's; the answer comes back on the same link as a voice turn's.
+  const submit = (text: string) => link.current?.submit(text).catch(() => dispatch({ type: 'phase', phase: 'error' }));
+  // A heard utterance is a task she takes in, as a typed one is.
+  useEffect(() => { if (port && s.heard) receive(); }, [s.heard]);
+  // The conversation of record, polled while the Dashboard shows it; the streaming answer rides as a tail until its row lands.
+  const lastSeq = useRef(0);
+  lastSeq.current = s.rows.length ? s.rows[s.rows.length - 1].seq : 0;
+  useEffect(() => {
+    if (!port || !dashboard) return;
+    let stop = false;
+    const load = async () => { try { const rows = await link.current?.conversation(lastSeq.current); if (rows && !stop) dispatch({ type: 'rows', rows }); } catch { /* daemon away; the next tick retries */ } };
+    void load();
+    const id = setInterval(() => void load(), 2000);
+    return () => { stop = true; clearInterval(id); };
+  }, [dashboard]);
+  const tail = s.reply && !s.rows.some(row => row.seq > s.openSeq && row.source !== 'allen') ? plain(s.reply) : '';
+  // When Jarvis asks for a plugin mid-conversation, the Dashboard opens on it.
+  const plugins = usePlugins(), request = plugins.snapshot?.request, shownRequest = useRef('');
+  const [pluginFocus, setPluginFocus] = useState<{ plugin: string; key: string } | null>(null);
+  useEffect(() => {
+    if (!port || !request) return;
+    const key = `${request.id}:${request.presentation}`;
+    if (key === shownRequest.current) return;
+    shownRequest.current = key;
+    if (request.purpose && (request.state === 'offered' || request.state === 'error')) { openDashboard(false); pinned.current = true; setPluginFocus({ plugin: request.plugin_id, key }); }
+  }, [request?.id, request?.presentation]);
   const openDashboard = (hovered: boolean) => { pinned.current = false; dashEntered.current = hovered; setDashboard(true); setComposer(false); void window.jarvis?.focus(false); };
   // Opened by a double click, the Dashboard stays when the cursor leaves; another double click on her closes it.
   const toggleDashboard = () => { if (live.current.dashboard) setDashboard(false); else { openDashboard(false); pinned.current = true; } };
@@ -307,12 +368,14 @@ export function Companion() {
       <div className={`companion-dashboard ${dashboard ? 'is-open' : ''}`} data-hit={dashboard || undefined} data-glass="24"
         style={{ left: geo.center - PANEL / 2, top: geo.panelTop }} inert={!dashboard}>
         {wardrobe.layout === 'around'
-          ? <AroundDashboard open={dashboard} onClose={() => setDashboard(false)} onMood={setDashMood} onHop={height => ball.current?.hop(height)}/>
-          : <DashboardPreview embedded visible={dashboard} shown={dashboard} onClose={() => setDashboard(false)}/>}
+          ? <AroundDashboard open={dashboard} port={port} onClose={() => setDashboard(false)} onMood={setDashMood} onHop={height => ball.current?.hop(height)}
+            talk={port ? { rows: s.rows, tail, busy: s.phase === 'processing', offline: s.phase === 'error', submit } : undefined}
+            plugins={port ? plugins : undefined} pluginFocus={pluginFocus}/>
+          : <DashboardPreview embedded port={port} visible={dashboard} shown={dashboard} onClose={() => setDashboard(false)}/>}
       </div>
       <CompanionBall width={geo.width} height={placement.topInset + 560} lobe={geo.lobe} look={look} handle={ball} skin={worn.current}
         target={{ place, expr, pressed, anchors: geo.anchors, homeGlass: wardrobe.homeGlass }}
-        label={voice === 'off' ? '戳一下，开始语音（演示）' : voice === 'speaking' ? '戳一下，打断播报' : '戳一下，结束语音'}
+        label={voice === 'off' ? `戳一下，开始语音${port ? '' : '（演示）'}` : voice === 'speaking' ? '戳一下，打断播报' : '戳一下，结束语音'}
         onPress={press} onRelease={release} onCancel={cancel} onMove={refreshHit}/>
     </main>
   </IconContext.Provider>;

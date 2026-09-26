@@ -58,10 +58,11 @@
 .strip-text.is-empty { color:rgb(235 237 241 / .48); }
 .strip-stop { flex:none; width:26px; height:26px; display:grid; place-items:center; padding:0; border-radius:9px; color:#e8e9ec; background:rgb(255 255 255 / .08); }
 .strip-stop:hover { background:rgb(255 255 255 / .15); }
-.companion-bubble { height:36px; padding:0 15px; border-radius:18px; font-size:13px; line-height:18px; }
-/* The full reply reserves the width up front, so typing never resizes the bubble. */
+.companion-bubble { min-height:36px; max-width:280px; padding:9px 15px; border-radius:18px; font-size:13px; line-height:18px; }
+/* The full reply reserves the size up front, so typing never resizes the bubble. A longer answer
+   wraps to three lines; the whole of it is in the Dashboard's conversation. */
 .bubble-text { display:grid; }
-.bubble-text > span { grid-area:1 / 1; white-space:nowrap; }
+.bubble-text > span { grid-area:1 / 1; display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:3; overflow:hidden; }
 .bubble-ghost { visibility:hidden; }
 
 /* Her light as "r g b", written by the ball whenever it changes. */

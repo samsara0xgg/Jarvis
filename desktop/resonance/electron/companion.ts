@@ -2,8 +2,10 @@ import { app, BrowserWindow, Menu, Tray, nativeImage, ipcMain, screen, session }
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
-// Companion prototype: the black ball that lives beside the notch. Everything it
-// shows is simulated; it never talks to the daemon, records audio, or plays speech.
+import { registerDaemonBridge } from './bridge.js';
+// The companion: 星核, who lives beside the notch, with her Dashboard. She talks to the daemon on
+// JARVIS_INHERENT_BRIDGE_PORT like the capsule does; the daemon owns mic and speaker, so she never
+// records audio or plays speech herself. `--demo` runs her on the built-in demo data instead.
 const here = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
 const material = process.platform === 'darwin' ? require('../dist-native/material.node') : null;
@@ -11,6 +13,7 @@ type NotchScreen = { id: number; topInset: number; notchWidth: number };
 app.setName('Jarvis Companion');
 // Its own profile, so it runs beside the live Resonance and its single-instance lock.
 app.setPath('userData', path.resolve(here, '../.electron-profile/companion'));
+const demo = process.argv.includes('--demo');
 const locked = app.requestSingleInstanceLock();
 if (!locked) app.quit();
 const WIDTH = 640;
@@ -55,7 +58,8 @@ if (locked) app.whenReady().then(() => {
   win.setIgnoreMouseEvents(true, { forward: true });
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.webContents.on('will-navigate', event => event.preventDefault());
-  win.loadFile(path.join(here, '../dist/index.html'), { query: { companion: '1' } });
+  registerDaemonBridge(win, { lab: demo });
+  win.loadFile(path.join(here, '../dist/index.html'), { query: demo ? { companion: '1' } : { companion: '1', port: process.env.JARVIS_INHERENT_BRIDGE_PORT ?? '8006' } });
   win.webContents.on('did-finish-load', place);
   win.once('ready-to-show', () => { place(); win.showInactive(); keepOnTop(); });
   win.on('blur', () => setImmediate(() => { if (!win.isDestroyed()) keepOnTop(); }));
@@ -95,12 +99,12 @@ if (locked) app.whenReady().then(() => {
     material.update(win.getNativeWindowHandle(), rects, 1);
   });
   tray = new Tray(nativeImage.createEmpty());
-  tray.setTitle('●'); tray.setToolTip('Jarvis 小球 · 交互原型');
+  tray.setTitle('●'); tray.setToolTip(demo ? 'Jarvis 小球 · 演示数据' : 'Jarvis 小球');
   // The renderer owns her skins and expressions and reports them; every item just sends a command back.
   const send = (command: string) => () => win.webContents.send('command', command);
   type MenuModel = { skins: { key: string; name: string; on: boolean }[]; auto: boolean; layout?: string; homeGlass?: boolean; exprs: { id: string; name: string }[] };
   const menu = (model: MenuModel) => tray.setContextMenu(Menu.buildFromTemplate([
-    { label: 'Jarvis 小球 · 交互原型（全部模拟）', enabled: false },
+    { label: demo ? 'Jarvis 小球 · 演示数据' : 'Jarvis 小球', enabled: false },
     { label: '打开 Dashboard', click: send('dashboard') },
     { label: 'Dashboard 布局', submenu: [
       { label: '围着她（一列）', type: 'radio', checked: model.layout !== 'grid', click: send('layout:around') },
@@ -117,7 +121,7 @@ if (locked) app.whenReady().then(() => {
     ] },
     { label: '看表情', enabled: model.exprs.length > 0, submenu: model.exprs.map(x => ({ label: `${x.id} ${x.name}`, click: send(`expr:${x.id}`) })) },
     { type: 'separator' },
-    { label: '退出小球原型', click: () => app.quit() },
+    { label: '退出小球', click: () => app.quit() },
   ]));
   menu({ skins: [], auto: false, exprs: [] });
   ipcMain.on('companion-menu', (event, model: MenuModel) => {

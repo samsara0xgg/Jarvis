@@ -6,6 +6,8 @@ import { useCodexSessions, type CodexSession } from './CodexModule';
 import { freshnessLine, nowLine, useWorkState, type Basis } from './WorkStateModule';
 import { duration, useProjects } from './ProjectsModule';
 import { fmtReset } from './quota-time';
+import { plain, type Row } from './model';
+import type { Plugin, PluginRequest, usePlugins } from './PluginPanel';
 import './dashboard-around.css';
 
 // The Dashboard around her: one column under the companion, her words first. A row grows into its
@@ -22,8 +24,9 @@ const hm = (ms: number) => { const d = new Date(ms); return `${pad(d.getHours())
 const resetsLeft = (n: number, until?: string | null) =>
   `${n} reset${n === 1 ? '' : 's'} left${n && until ? ` · until ${new Date(until).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}` : ''}`;
 
-// Agents: Claude Code and Codex sessions together. Codex rows are live once the companion has a
-// daemon port; Claude rows wait for the Claude Code bridge. Without a port every row is a demo.
+// Agents: Claude Code and Codex sessions together. With a daemon port, Codex rows come from its
+// Codex hook and Claude rows from /inherent/claude-sessions (ADR 0046) once the daemon serves it.
+// Without a port every row is a demo.
 type AgentState = 'wait' | 'work' | 'done';
 type Agent = { id: string; agent: 'claude' | 'codex'; state: AgentState; title: string; project: string; branch?: string; where: string; age: string; you: string; last: string; sub?: boolean };
 const AGENT_NAME = { claude: 'Claude', codex: 'Codex' };
@@ -42,10 +45,53 @@ const fromCodex = (r: CodexSession): Agent => ({
   title: r.title || r.prompt || 'Codex session', project: r.cwd.split('/').filter(Boolean).pop() ?? '', where: 'Codex',
   age: ago(r.since_ms), you: r.prompt, last: r.state === 'finished' ? r.last_message : r.detail,
 });
+type ClaudeSession = { session_id: string; phase: 'needs_input' | 'working' | 'done'; title: string; project: string; branch: string; where: string; prompt: string; activity: string; last_message: string; updated_ms: number };
+const fromClaude = (r: ClaudeSession): Agent => ({
+  id: r.session_id, agent: 'claude', state: r.phase === 'needs_input' ? 'wait' : r.phase === 'working' ? 'work' : 'done',
+  title: r.title || r.prompt || 'Claude session', project: r.project, branch: r.branch || undefined,
+  where: r.where === 'background' ? 'Background' : r.where, age: ago(r.updated_ms), you: r.prompt,
+  last: r.phase === 'done' ? r.last_message : r.activity || r.last_message,
+});
+// Polled while the panel is open. A daemon that does not serve the route yet simply has no Claude rows.
+function useClaudeSessions(port: string | null, open: boolean) {
+  const [rows, setRows] = useState<ClaudeSession[]>([]);
+  useEffect(() => {
+    if (!port || !open) return;
+    let stop = false, timer: ReturnType<typeof setTimeout>;
+    const load = async () => {
+      try {
+        const r = await fetch(`http://127.0.0.1:${port}/inherent/claude-sessions`, { signal: AbortSignal.timeout(5000) });
+        const data = r.ok ? await r.json() : null;
+        if (!stop && Array.isArray(data?.sessions)) setRows(data.sessions.filter((x: ClaudeSession) => typeof x?.session_id === 'string' && typeof x.phase === 'string'));
+      } catch { /* daemon away; the next tick retries */ }
+      if (!stop) timer = setTimeout(load, 3000);
+    };
+    void load();
+    return () => { stop = true; clearTimeout(timer); };
+  }, [port, open]);
+  return rows;
+}
+// Hidden rows stay hidden until the session is given a new prompt.
+const HIDDEN = 'companion-hidden-agents-v1';
 
-// Plugins: a demo catalog until the companion talks to the daemon's plugin bridge.
+// Plugins: the daemon's catalog through the window's plugin bridge when live, a demo catalog otherwise.
+// Both are drawn from one shape; a live plugin's request adds what Jarvis asked and how far sign-in got.
 type PluginState = 'on' | 'off' | 'token' | 'signin' | 'connecting';
-type DemoPlugin = { name: string; mark: string; kind: 'oauth' | 'token' | 'none'; about: string; state: PluginState; was?: PluginState; ask?: string; resumed?: string; toolCount: number; tools: string[] };
+type DemoPlugin = { name: string; mark: string; kind: 'oauth' | 'token' | 'none'; about: string; state: PluginState; was?: PluginState; ask?: string; resumed?: string; toolCount: number; tools: string[];
+  error?: string; unsupported?: string; approval?: string; can?: string[]; saved?: boolean };
+type PluginController = ReturnType<typeof usePlugins>;
+const fromPlugin = (p: Plugin, r: PluginRequest | null): DemoPlugin => {
+  const mine = r?.plugin_id === p.id ? r : null;
+  const kind = p.auth === 'oauth' || p.auth === 'mixed' ? 'oauth' : p.credential_fields.length ? 'token' : 'none';
+  const state: PluginState = p.status === 'ready' ? 'on'
+    : mine?.state === 'connecting' || mine?.state === 'authorizing' || p.status === 'connecting' || p.status === 'authorizing' ? 'connecting'
+    : kind === 'oauth' ? 'signin' : kind === 'token' ? 'token' : 'off';
+  return { name: p.name, mark: p.name.slice(0, 1).toUpperCase(), kind, about: p.description, state, ask: mine?.purpose || undefined,
+    resumed: mine?.state === 'ready' && mine.resume_status === 'continued' ? 'Picking up the task you asked for.' : undefined,
+    toolCount: p.tools.length, tools: p.tools.map(t => t.name.replace(/^mcp__[^_]+__/, '')),
+    error: mine?.state === 'error' ? mine.error ?? 'The connection didn’t go through.' : p.status === 'error' ? p.error ?? 'Connection problem.' : undefined,
+    unsupported: p.supported ? undefined : p.unavailable_reason ?? 'Not supported on this Mac.', approval: p.approval_mode, can: p.capabilities, saved: p.credentials_saved };
+};
 const PLUGIN_ORDER = ['notion', 'microsoft', 'github', 'linear'];
 const DEMO_PLUGINS: Record<string, DemoPlugin> = {
   notion: { name: 'Notion', mark: 'N', kind: 'oauth', about: 'Pages and databases in your workspace.', state: 'signin', ask: 'Find last week’s meeting notes and sum them up.', toolCount: 9, tools: ['search', 'fetch_page', 'create_page', 'update_page', 'query_database'] },
@@ -53,7 +99,8 @@ const DEMO_PLUGINS: Record<string, DemoPlugin> = {
   github: { name: 'GitHub', mark: 'G', kind: 'token', about: 'Repositories, issues and pull requests.', state: 'token', toolCount: 21, tools: ['search_issues', 'get_pull_request', 'create_issue', 'list_commits', '…17 more'] },
   linear: { name: 'Linear', mark: 'L', kind: 'none', about: 'Issues and projects.', state: 'off', toolCount: 8, tools: ['list_issues', 'create_issue', 'update_issue', '…5 more'] },
 };
-const pluginStatus = (p: DemoPlugin): [string, string] => p.state === 'on' ? ['is-on', 'Connected']
+const pluginStatus = (p: DemoPlugin): [string, string] => p.unsupported ? ['', 'Not supported'] : p.state === 'on' ? ['is-on', 'Connected']
+  : p.error && p.state !== 'connecting' ? ['is-need', 'Connection problem']
   : p.state === 'connecting' ? ['is-need', p.kind === 'oauth' ? 'Waiting for sign-in…' : 'Connecting…']
   : p.state === 'off' ? ['', 'Off'] : p.state === 'token' ? ['is-need', 'Needs an access token']
   : ['is-need', p.ask ? 'Jarvis asked · needs sign-in' : 'Needs sign-in'];
@@ -67,14 +114,34 @@ const DEMO_TURNS: Turn[] = [
 ];
 const ANSWER = 'Got it. I’ll take care of it and tell you when it’s done.';
 const BASIS: Record<Basis, string> = { observed: 'Observed', stated: 'You said', inferred: 'A guess' };
+// Live conversation: the memory.db rows and the answer still streaming, from the companion's daemon link.
+type Talk = { rows: Row[]; tail: string; busy: boolean; offline: boolean; submit: (text: string) => void };
+const when = (ts: string) => { const d = new Date(ts); return Number.isNaN(d.getTime()) ? '' : d.toDateString() === new Date().toDateString() ? hm(d.getTime()) : `${d.getMonth() + 1}/${d.getDate()} ${hm(d.getTime())}`; };
+// The conversation of record as turns: each of your rows opens one, and Jarvis's rows after it answer it.
+const toTurns = (rows: Row[], tail: string): Turn[] => {
+  const turns: Turn[] = [];
+  const answer = (text: string, at: string) => {
+    const t = turns.at(-1);
+    if (!t) turns.push({ you: '', at: '', jarvis: text, jarvisAt: at });
+    else Object.assign(t, { jarvis: t.jarvis ? `${t.jarvis}\n\n${text}` : text, jarvisAt: at });
+  };
+  for (const row of rows.slice(-60)) { if (row.source === 'allen') turns.push({ you: row.text, at: when(row.ts) }); else answer(plain(row.text), when(row.ts)); }
+  if (tail) answer(tail, 'now');
+  return turns;
+};
 
-export function AroundDashboard({ open, port = null, onClose, onMood, onHop }: {
+export function AroundDashboard({ open, port = null, onClose, onMood, onHop, talk, plugins: live, pluginFocus = null }: {
   open: boolean; port?: string | null; onClose: () => void; onMood: (expr: ExprId | null) => void; onHop: (height: number) => void;
+  talk?: Talk; plugins?: PluginController; pluginFocus?: { plugin: string; key: string } | null;
 }) {
-  const quota = useUsage(port), codex = useCodexSessions(port), work = useWorkState(port), projects = useProjects(port, open);
+  const quota = useUsage(port), codex = useCodexSessions(port), work = useWorkState(port), projects = useProjects(port, open), claudeRows = useClaudeSessions(port, open);
   const [page, setPage] = useState<Page | null>(null);
   const [plugin, setPlugin] = useState<string | null>(null);
-  const [plugins, setPlugins] = useState(DEMO_PLUGINS);
+  const [demoPlugins, setPlugins] = useState(DEMO_PLUGINS);
+  const snapshot = live?.snapshot;
+  const plugins: Record<string, DemoPlugin> = !live ? demoPlugins : Object.fromEntries((snapshot?.plugins ?? []).map(p => [p.id, fromPlugin(p, snapshot!.request)]));
+  const pluginIds = !live ? PLUGIN_ORDER : [...snapshot?.plugins ?? []].sort((a, b) => Number(b.status === 'ready') - Number(a.status === 'ready')
+    || Number(b.supported) - Number(a.supported) || a.name.localeCompare(b.name)).map(p => p.id);
   const [query, setQuery] = useState('');
   const [token, setToken] = useState('');
   const [said, setSaid] = useState({ text: 'Two things left today. Your 4 PM reminder is set.', caption: 'Jarvis · just now', busy: false });
@@ -82,7 +149,8 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop }: {
   const [moved, setMoved] = useState<Record<string, Partial<Agent> & { at: number }>>({});
   // Agent cards show only name, state and tags; one card at a time opens to show the rest.
   const [unfolded, setUnfolded] = useState<string | null>(null);
-  const [hidden, setHidden] = useState<string[]>([]);
+  const [hidden, setHidden] = useState<Record<string, string>>(() => { if (!port) return {}; try { return JSON.parse(localStorage.getItem(HIDDEN) ?? '{}') ?? {}; } catch { return {}; } });
+  useEffect(() => { if (port) try { localStorage.setItem(HIDDEN, JSON.stringify(hidden)); } catch { /* not remembered across restarts */ } }, [hidden]);
   const [toast, setToast] = useState<{ text: string; undo?: () => void } | null>(null);
   const [mood, setMood] = useState<ExprId>('02');
   const view = useRef<HTMLDivElement>(null), home = useRef<HTMLDivElement>(null), pageEl = useRef<HTMLElement>(null);
@@ -168,6 +236,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop }: {
   };
 
   const ask = (text: string) => {
+    if (talk) { talk.submit(text); return; }
     setTurns(value => [...value, { you: text, at: 'now' }]);
     const reply = pick(TAKES.reply);
     setSaid({ text: 'Thinking…', caption: 'Thinking', busy: true }); react('30', 1300, reply);
@@ -177,10 +246,15 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop }: {
     });
   };
   const body = () => pageEl.current?.querySelector('.pg-body');
-  useEffect(() => { if (page === 'conversation') body()?.scrollTo({ top: body()!.scrollHeight, behavior: reduced.matches ? 'auto' : 'smooth' }); }, [turns]);
+  const shownTurns = talk ? toTurns(talk.rows, talk.tail) : turns;
+  const lastAnswer = talk && [...talk.rows].reverse().find(row => row.source !== 'allen');
+  const saying = !talk ? said : { busy: talk.busy,
+    text: talk.tail || (lastAnswer ? plain(lastAnswer.text) : 'Say something and Jarvis answers here.'),
+    caption: talk.offline ? 'Offline · reconnecting' : talk.busy ? 'Thinking' : talk.tail ? 'Jarvis · now' : lastAnswer ? `Jarvis · ${when(lastAnswer.ts)}` : 'Jarvis' };
+  useEffect(() => { if (page === 'conversation') body()?.scrollTo({ top: body()!.scrollHeight, behavior: reduced.matches ? 'auto' : 'smooth' }); }, [shownTurns.length, shownTurns.at(-1)?.jarvis]);
 
   // Agents, grouped the way you act on them. A row you moved goes to the top of its new group.
-  const agents = (port ? codex.rows.map(fromCodex) : DEMO_AGENTS).filter(s => !hidden.includes(s.id)).map(s => ({ ...s, ...moved[s.id] }));
+  const agents = (port ? [...claudeRows.map(fromClaude), ...codex.rows.map(fromCodex)] : DEMO_AGENTS).filter(s => hidden[s.id] !== s.you).map(s => ({ ...s, ...moved[s.id] }));
   const group = (state: AgentState) => agents.filter(s => s.state === state).sort((a, b) => (moved[b.id]?.at ?? 0) - (moved[a.id]?.at ?? 0));
   const waiting = group('wait'), working = group('work'), earlier = group('done');
   const move = (s: Agent, change: Partial<Agent>) => {
@@ -194,9 +268,12 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop }: {
     if (f && el) el.animate([{ transform: `translateY(${f.top - el.getBoundingClientRect().top}px)` }, { transform: 'none' }], { duration: dur(460), easing: SPRING });
   }, [moved]);
   const hide = (s: Agent) => {
-    setHidden(value => [...value, s.id]);
-    notify('Hidden from this list.', () => setHidden(value => value.filter(id => id !== s.id)));
+    setHidden(value => ({ ...value, [s.id]: s.you }));
+    notify('Hidden from this list.', () => setHidden(({ [s.id]: _, ...rest }) => rest));
   };
+  // Claude sessions have no jump yet; their cards leave the button out rather than offer one that cannot work.
+  const agentRow = (s: Agent, actions?: ReactNode) => <AgentRow key={s.id} s={s} open={unfolded === s.id} onToggle={() => setUnfolded(v => v === s.id ? null : s.id)}
+    onOpen={!port || s.agent === 'codex' ? () => void openAgent(s) : undefined} onHide={() => hide(s)} actions={actions}/>;
   const openAgent = async (s: Agent) => {
     if (port && s.agent === 'codex' && await window.jarvis?.openCodex?.(s.id).catch(() => false)) notify('Opening in Codex…');
     else notify(port ? `Can’t open ${s.where} from here yet.` : 'Demo session, nothing to open.');
@@ -212,10 +289,39 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop }: {
     if (plugin) body()?.scrollTo({ top: 0 });
     else pageEl.current?.querySelector<HTMLElement>(`[data-plugin="${prev}"]`)?.focus({ preventScroll: true });
   }, [plugin, page]);
-  const pluginAct = (act: string) => {
+  const openPlugin = async (id: string) => { if (!live || await live.action('open', { plugin_id: id })) setPlugin(id); };
+  // Live, every act is an operation on this plugin's request; the next snapshot redraws the page.
+  const liveAct = async (id: string, act: string, value?: string) => {
+    const request = snapshot?.request, mine = request?.plugin_id === id ? request : null;
+    const run = (operation: string, data: Record<string, unknown> = {}) => live!.action(operation, { request_id: mine?.id, ...data });
+    if (act === 'later') { if (mine?.state === 'offered' || mine?.state === 'error') void run('cancel'); setPlugin(null); }
+    else if (act === 'reopen' || act === 'cancel') void run(act);
+    else if (act === 'off') { if (await run('disable')) notify(`${plugins[id].name} is off.`); }
+    else if (act === 'approval') { if (await run('approval', { mode: value })) notify('Saved.'); }
+    else if (act === 'connect') {
+      // ponytail: one token box; a plugin with several credential fields needs one box per field.
+      const field = snapshot?.plugins.find(p => p.id === id)?.credential_fields[0];
+      if (field && !token.trim() && !plugins[id].saved) { notify('Paste an access token first.'); return; }
+      const credentials = field && token.trim() ? { [field]: token.trim() } : {};
+      setToken('');
+      if (await run('connect', { credentials })) react('36', 60_000);
+    }
+  };
+  // Her waiting face ends when the sign-in does.
+  const shownState = plugin ? plugins[plugin]?.state : undefined;
+  useEffect(() => { if (live && mood === '36' && shownState !== 'connecting') react(shownState === 'on' ? '10' : '02', shownState === 'on' ? 1800 : 0); }, [shownState]);
+  // Jarvis asked for a plugin: the companion opened the panel, and it lands on that plugin.
+  useEffect(() => {
+    if (!pluginFocus || !open) return;
+    if (!page) openPage('plugins'); else if (page !== 'plugins') setPage('plugins');
+    setPlugin(pluginFocus.plugin);
+  }, [pluginFocus?.key]);
+  const pluginAct = (act: string, value?: string) => {
     const id = plugin!, p = plugins[id];
+    if (live) { void liveAct(id, act, value); return; }
     if (act === 'later') setPlugin(null);
     else if (act === 'reopen') notify('Opened the sign-in page again.');
+    else if (act === 'approval') { setPluginState(id, { approval: value }); notify('Saved.'); }
     else if (act === 'cancel') { clearTimeout(pluginTimer.current); setPluginState(id, { state: p.was }); react('02', 0); }
     else if (act === 'off') { setPluginState(id, { state: p.kind === 'oauth' ? 'signin' : p.kind === 'token' ? 'token' : 'off', resumed: undefined }); notify(`${p.name} is off.`); }
     else if (act === 'connect') {
@@ -243,9 +349,9 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop }: {
   </header>;
   const pages: Record<Page, () => ReactNode> = {
     conversation: () => <>
-      {back('Conversation', 'today')}
-      <div className="pg-body">{turns.map((t, i) => <div className="pg-sec tr" key={i}>
-        <div className="tr-you"><span className="who">You · {t.at}</span><p>{t.you}</p></div>
+      {back('Conversation', talk ? undefined : 'today')}
+      <div className="pg-body">{shownTurns.map((t, i) => <div className="pg-sec tr" key={i}>
+        {t.you && <div className="tr-you"><span className="who">You · {t.at}</span><p>{t.you}</p></div>}
         {t.jarvis && <div className="tr-jarvis"><span className="who"><span className="dot"/>Jarvis · {t.jarvisAt}</span><p>{t.jarvis}</p>
           {t.work && <Fold label={t.work[0]}><pre>{t.work[1]}</pre></Fold>}</div>}
       </div>)}
@@ -268,12 +374,12 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop }: {
     agents: () => <>
       {back('Agents', `${waiting.length + working.length} live`)}
       <div className="pg-body">{!agents.length && <p className="pg-sec muted">Sessions show up once you start one.</p>}
-      {waiting.length > 0 && <div className="pg-sec"><h4 className="is-warm"><span className="dot"/>Needs you</h4>{waiting.map(s => <AgentRow key={s.id} s={s} open={unfolded === s.id} onToggle={() => setUnfolded(v => v === s.id ? null : s.id)} onOpen={() => void openAgent(s)} onHide={() => hide(s)}
-        actions={!port && <><button className="btn btn-glow" onClick={() => { move(s, { state: 'work', last: 'Approved · running it now…' }); react('33', 1900); }}>Approve</button>
-          <button className="btn btn-ghost" onClick={() => move(s, { state: 'done', last: 'You denied it. It stopped there.', age: 'now' })}>Deny</button></>}/>)}</div>}
-      {working.length > 0 && <div className="pg-sec"><h4>Working · {working.length}</h4>{working.map(s => <AgentRow key={s.id} s={s} open={unfolded === s.id} onToggle={() => setUnfolded(v => v === s.id ? null : s.id)} onOpen={() => void openAgent(s)} onHide={() => hide(s)}/>)}</div>}
-      {earlier.length > 0 && <div className="pg-sec"><h4>Earlier today · {earlier.length}</h4>{earlier.map(s => <AgentRow key={s.id} s={s} open={unfolded === s.id} onToggle={() => setUnfolded(v => v === s.id ? null : s.id)} onOpen={() => void openAgent(s)} onHide={() => hide(s)}/>)}</div>}
-      {agents.length > 0 && <p className="pg-sec muted">Click a session to jump to it.</p>}</div>
+      {waiting.length > 0 && <div className="pg-sec"><h4 className="is-warm"><span className="dot"/>Needs you</h4>{waiting.map(s => agentRow(s,
+        !port && <><button className="btn btn-glow" onClick={() => { move(s, { state: 'work', last: 'Approved · running it now…' }); react('33', 1900); }}>Approve</button>
+          <button className="btn btn-ghost" onClick={() => move(s, { state: 'done', last: 'You denied it. It stopped there.', age: 'now' })}>Deny</button></>))}</div>}
+      {working.length > 0 && <div className="pg-sec"><h4>Working · {working.length}</h4>{working.map(s => agentRow(s))}</div>}
+      {earlier.length > 0 && <div className="pg-sec"><h4>{port ? 'Last 24 hours' : 'Earlier today'} · {earlier.length}</h4>{earlier.map(s => agentRow(s))}</div>}
+      {agents.length > 0 && <p className="pg-sec muted">Click a session to see what it’s doing.</p>}</div>
     </>,
     usage: () => <>
       {back('Usage', synced ? `synced ${hm(synced)}` : 'syncing…')}
@@ -290,15 +396,17 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop }: {
     </>,
     plugins: () => {
       const p = plugin ? plugins[plugin] : null;
-      const shown = PLUGIN_ORDER.filter(id => plugins[id].name.toLowerCase().includes(query.trim().toLowerCase()));
+      const shown = pluginIds.filter(id => plugins[id].name.toLowerCase().includes(query.trim().toLowerCase()));
       return <>
         {back(p ? p.name : 'Plugins', !p && `${pluginsOn} connected`)}
-        <div className="pg-body">{p ? <div className="pl-det" key={plugin}><PluginDetail id={plugin!} p={p} token={token} onToken={setToken} onAct={pluginAct} onSaved={() => notify('Saved.')}/></div>
+        <div className="pg-body">{p ? <div className="pl-det" key={plugin}>{live?.error && <p className="pg-sec is-warm">{live.error}</p>}<PluginDetail id={plugin!} p={p} token={token} onToken={setToken} onAct={pluginAct}/></div>
           : <div className="pl-cat">
             <label className="pg-sec search"><MagnifyingGlass size={13}/><input type="search" aria-label="Search plugins" placeholder="Search plugins" autoComplete="off" value={query} onChange={e => setQuery(e.target.value)} onPointerDown={focusWindow}/></label>
+            {live?.error && <p className="pg-sec is-warm">{live.error}</p>}
+            {live && !snapshot && !live.error && <p className="pg-sec muted">Loading plugins…</p>}
             <div className="pg-sec pl-list">{shown.map(id => { const [cls, text] = pluginStatus(plugins[id]);
-              return <button key={id} className="pl-row" data-plugin={id} onClick={() => setPlugin(id)}><span className={`pl-ic mk-${id}`}>{plugins[id].mark}</span><span className="pl-name">{plugins[id].name}<small className={cls}>{text}</small></span><CaretRight size={12}/></button>; })}</div>
-            {!shown.length && <p className="muted">No plugins match.</p>}
+              return <button key={id} className="pl-row" data-plugin={id} disabled={live?.busy} onClick={() => void openPlugin(id)}><span className={`pl-ic mk-${id}`}>{plugins[id].mark}</span><span className="pl-name">{plugins[id].name}<small className={cls}>{text}</small></span><CaretRight size={12}/></button>; })}</div>
+            {!shown.length && (!live || snapshot) && <p className="muted">No plugins match.</p>}
             <p className="pg-sec muted">Plugins let Jarvis read and act in your apps. It asks before it writes, unless you change that.</p>
           </div>}</div>
       </>;
@@ -323,8 +431,8 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop }: {
       <div className="overview" ref={home} inert={!!page}>
         <div className="row r-voice" data-row="conversation">
           <button className="voice-open" aria-label="Open Conversation" onClick={() => openPage('conversation')}>
-            <span className="say" key={said.text}>{said.text}</span>
-            <span className={`cap ${said.busy ? 'is-busy' : ''}`}><i/><span>{said.caption}</span></span>
+            <span className="say" key={saying.text}>{saying.text}</span>
+            <span className={`cap ${saying.busy ? 'is-busy' : ''}`}><i/><span>{saying.caption}</span></span>
           </button>
         </div>
         <button className="row r-now" data-row="now" aria-label="Open Right now" onClick={() => openPage('now')}>
@@ -349,7 +457,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop }: {
         <div className="tiles">
           <button className="row tile" data-row="plugins" aria-label="Open Plugins" onClick={() => openPage('plugins')}>
             <span className="head"><span className="label">Plugins</span><span className="meta">{pluginsOn} on</span></span>
-            <span className="pl-mini">{PLUGIN_ORDER.map(id => <i key={id} className={`mk-${id} ${plugins[id].state === 'on' ? 'on' : plugins[id].state === 'off' ? 'off' : 'need'}`} title={`${plugins[id].name}: ${pluginStatus(plugins[id])[1]}`}>{plugins[id].mark}</i>)}</span>
+            <span className="pl-mini">{pluginIds.slice(0, 4).map(id => <i key={id} className={`mk-${id} ${plugins[id].state === 'on' ? 'on' : plugins[id].state === 'off' ? 'off' : 'need'}`} title={`${plugins[id].name}: ${pluginStatus(plugins[id])[1]}`}>{plugins[id].mark}</i>)}</span>
           </button>
           <button className="row tile" data-row="projects" aria-label="Open Projects" onClick={() => openPage('projects')}>
             <span className="head"><span className="label">Projects</span><span className="meta">7 d</span></span>
@@ -424,7 +532,7 @@ function Cols({ days, dates }: { days: number[]; dates?: string[] }) {
 
 // Folded: the state orb, the session's name and its tags. A click opens it to what you said, what it is
 // doing, and the actions; the jump to its terminal or Codex thread lives there too.
-function AgentRow({ s, open, onToggle, onOpen, onHide, actions }: { s: Agent; open: boolean; onToggle: () => void; onOpen: () => void; onHide: () => void; actions?: ReactNode }) {
+function AgentRow({ s, open, onToggle, onOpen, onHide, actions }: { s: Agent; open: boolean; onToggle: () => void; onOpen?: () => void; onHide: () => void; actions?: ReactNode }) {
   return <article className={`ag is-${s.state} ${open ? 'is-open' : ''}`} data-id={s.id}>
     <span className={`orb is-${s.state}`}/>
     <div className="ag-body">
@@ -437,7 +545,7 @@ function AgentRow({ s, open, onToggle, onOpen, onHide, actions }: { s: Agent; op
         {s.branch && <span className="ag-meta"><GitBranch size={10}/>{s.branch}</span>}
         {s.you && <span className="ag-you"><b>You</b>{s.you}</span>}
         {s.last && <span className="ag-last">{s.last}</span>}
-        <span className="ag-actions">{s.state === 'wait' && actions}<button className="ag-go" onClick={onOpen}>Open in {s.where}<ArrowSquareOut size={11}/></button></span>
+        <span className="ag-actions">{s.state === 'wait' && actions}{onOpen && <button className="ag-go" onClick={onOpen}>Open in {s.where}<ArrowSquareOut size={11}/></button>}</span>
       </div></div>
     </div>
     <button className="ag-x" aria-label={`Hide ${s.title}`} onClick={onHide}><X size={11}/></button>
@@ -445,8 +553,10 @@ function AgentRow({ s, open, onToggle, onOpen, onHide, actions }: { s: Agent; op
   </article>;
 }
 
-function PluginDetail({ id, p, token, onToken, onAct, onSaved }: { id: string; p: DemoPlugin; token: string; onToken: (value: string) => void; onAct: (act: string) => void; onSaved: () => void }) {
-  const top = <div className="pg-sec pl-id"><span className={`pl-ic lg mk-${id}`}>{p.mark}</span><h5>{p.name}</h5><p>{p.about}</p>{p.state === 'on' && <span className="pill is-new">Connected</span>}</div>;
+function PluginDetail({ id, p, token, onToken, onAct }: { id: string; p: DemoPlugin; token: string; onToken: (value: string) => void; onAct: (act: string, value?: string) => void }) {
+  const top = <><div className="pg-sec pl-id"><span className={`pl-ic lg mk-${id}`}>{p.mark}</span><h5>{p.name}</h5><p>{p.about}</p>{p.state === 'on' && <span className="pill is-new">Connected</span>}</div>
+    {p.error && p.state !== 'on' && p.state !== 'connecting' && <p className="pg-sec is-warm" role="alert">{p.error}</p>}</>;
+  if (p.unsupported) return <>{top}<p className="pg-sec muted">{p.unsupported}</p></>;
   const act = (name: string, label: string, className = 'btn-text') => <button className={className} onClick={() => onAct(name)}>{label}</button>;
   if (p.state === 'connecting') return <>{top}
     <div className="pg-sec waiting" role="status"><span className="spin-ring"/><p>{p.kind === 'oauth' ? 'Waiting for you in the browser…' : 'Connecting…'}</p><p className="muted">{p.ask ? 'Jarvis picks the task back up once you’re in.' : 'You can close the panel. It keeps waiting.'}</p></div>
@@ -454,13 +564,15 @@ function PluginDetail({ id, p, token, onToken, onAct, onSaved }: { id: string; p
   </>;
   if (p.state === 'on') return <>{top}
     {p.resumed && <div className="pg-sec ask-card is-ok"><span>Back to your task</span>{p.resumed}</div>}
-    <div className="pg-sec"><div><div className="kv"><span>Tools</span><span>{p.toolCount}</span></div><div className="kv"><span>Can</span><span>Read · Write</span></div></div></div>
-    <label className="pg-sec field">Ask before acting<select aria-label="Ask before acting" onChange={onSaved}><option>Let Jarvis decide (default)</option><option>Ask every time</option><option>Ask before it writes</option><option>Don’t ask</option></select><small>A tool’s own setting wins over this.</small></label>
-    <div className="pg-sec"><Fold label="Show tools"><pre>{p.tools.join('\n')}</pre></Fold></div>
+    <div className="pg-sec"><div><div className="kv"><span>Tools</span><span>{p.toolCount}</span></div><div className="kv"><span>Can</span><span>{p.can?.length ? p.can.join(' · ') : 'Read · Write'}</span></div></div></div>
+    <label className="pg-sec field">Ask before acting<select aria-label="Ask before acting" value={p.approval ?? 'auto'} onChange={e => onAct('approval', e.target.value)}>
+      {p.approval === 'configured' && <option value="configured" disabled>Each service’s own setting</option>}
+      <option value="auto">Let Jarvis decide (default)</option><option value="prompt">Ask every time</option><option value="writes">Ask before it writes</option><option value="approve">Don’t ask</option></select><small>A tool’s own setting wins over this.</small></label>
+    {p.tools.length > 0 && <div className="pg-sec"><Fold label="Show tools"><pre>{p.tools.join('\n')}</pre></Fold></div>}
     <footer className="pg-foot"><span>Turning it off removes its tools.</span>{act('off', 'Turn off', 'btn-text is-alert')}</footer>
   </>;
   if (p.state === 'token') return <>{top}
-    <label className="pg-sec field">Access token<input type="password" placeholder="ghp_…" autoComplete="off" aria-label={`${p.name} access token`} value={token} onChange={e => onToken(e.target.value)} onPointerDown={focusWindow}/><small>Stays on this Mac. It never goes into the conversation.</small></label>
+    <label className="pg-sec field">Access token<input type="password" placeholder={p.saved ? 'Saved · leave empty to keep it' : 'ghp_…'} autoComplete="off" aria-label={`${p.name} access token`} value={token} onChange={e => onToken(e.target.value)} onPointerDown={focusWindow}/><small>Stays on this Mac. It never goes into the conversation.</small></label>
     <div className="pg-sec acts">{act('connect', 'Connect', 'btn btn-glow wide')}{act('later', 'Not now')}</div>
   </>;
   if (p.state === 'off') return <>{top}

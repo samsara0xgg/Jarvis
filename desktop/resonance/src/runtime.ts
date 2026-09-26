@@ -43,7 +43,7 @@ export function connect(port: string, dispatch: (a: Action) => void): Runtime {
   // let a slow HTTP response overwrite a newer push.
   const controls = async (patch: Controls) => {
     const c = await post('/inherent/controls', patch);
-    dispatch({ type: 'controls', micMuted: c.mic_muted === true, soundMuted: c.speech_muted === true });
+    dispatch({ type: 'controls', micMuted: c.mic_muted === true, soundMuted: c.speech_muted === true, conversation: c.conversation === true });
   };
   let ws: WebSocket | null = null;
   let attempt = 0;
@@ -64,7 +64,7 @@ export function connect(port: string, dispatch: (a: Action) => void): Runtime {
       // ponytail: text fades fadeMs after `done`; a long TTS tail can outlive it. Key the fade on `spoken` if that shows.
       else if (msg.op === 'done') setTimeout(() => dispatch({ type: 'settle', turnId }), Number(p.fadeMs ?? 5000));
       else if (msg.op === 'failed' || msg.op === 'cancelled') dispatch({ type: 'failed', turnId, cancelled: msg.op === 'cancelled' });
-      else if (msg.op === 'voice') { const a = voicePhase[String(p.phase)]; if (a) dispatch(a); if (p.phase === 'accepted' && turnId) dispatch({ type: 'pending', turnId }); }
+      else if (msg.op === 'voice') { const a = voicePhase[String(p.phase)]; if (a) dispatch(a); if (p.phase === 'accepted' && turnId) dispatch({ type: 'pending', turnId }); if (p.phase === 'accepted' && typeof p.text === 'string') dispatch({ type: 'heard', text: p.text }); }
       else if (msg.op === 'live') dispatch({ type: 'live', live: liveFrom(p) });
       else if (msg.op === 'subtitle') dispatch({ type: 'subtitle', sessionId: String(p.session_id ?? ''), role: p.role === 'user' ? 'user' : 'assistant', delta: String(p.delta ?? ''), startMs: Number(p.start_ms ?? 0), endMs: Number(p.end_ms ?? 0) });
     };
