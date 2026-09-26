@@ -2613,6 +2613,14 @@ class _VoicePowerTransition:
     input_skipped_reason: str | None = None
 
 
+# ADR 0054: asleep, or a close not proven, so re-initialising PortAudio could
+# free a stream still open.
+_NOT_REFRESHABLE = frozenset({
+    voice_audio.InputCapabilityState.SUSPENDED,
+    voice_audio.InputCapabilityState.CLOSE_UNCERTAIN,
+})
+
+
 class _VoicePowerCoordinator:
     """Serialize power lifecycle without exposing a speech-cancel seam."""
 
@@ -3007,6 +3015,64 @@ class _VoicePowerCoordinator:
         except RuntimeError:
             done.set()
             LOGGER.exception("failed to start pending wake continuation")
+
+    def quiet(self) -> bool:
+        """Nothing plays, Allen is not mid-sentence, and the mic is not asleep or in doubt."""
+        ingress = self._session.ingress
+        return (
+            not self._media.is_output_active()
+            and not ingress.capture_active
+            and ingress.capability.state not in _NOT_REFRESHABLE
+        )
+
+    def refresh_devices(self, *, input_device: str | None, output_device: str | None) -> str:
+        """Close every stream, re-read PortAudio's devices, reopen on these (ADR 0054).
+
+        Starts only while :meth:`quiet`; an answer arriving meanwhile parks and
+        starts afterwards. The caller has already closed any GPT-Live speaker.
+        Answers ``refreshed ...`` only when PortAudio initialised again.
+        """
+        ingress = self._session.ingress
+        if not self._lock.acquire(timeout=self._TOTAL_TRANSITION_BOUND_S):
+            return "busy:power_transition"
+        try:
+            if self._shutdown.is_set():
+                return "closed"
+            state = ingress.capability.state
+            if state in _NOT_REFRESHABLE:
+                return f"skipped:{state.value}"
+            nothing_playing = self._media.hold_for_devices(held=True)
+            try:
+                if not nothing_playing:
+                    return "busy:speaking"
+                if ingress.capture_active:
+                    return "busy:listening"
+                stopped = ingress.stop_for_sleep(
+                    deadline=time.monotonic() + self._TOTAL_TRANSITION_BOUND_S,
+                )
+                player = self._media.player
+                closed = player.stop()
+                if (stopped is None or stopped.definitively_closed) and closed.definitively_closed:
+                    voice_backend.reinitialize_portaudio()
+                    outcome = "refreshed"
+                else:
+                    outcome = "not_refreshed:close_uncertain"
+                player.set_device(output_device)
+                started = player.start()
+                ingress.set_input_device(input_device)
+                resumed = ingress.resume_after_wake(
+                    deadline=time.monotonic() + self._TOTAL_TRANSITION_BOUND_S,
+                )
+                if not started.started:
+                    ingress.report_output_unavailable(reason=f"device_refresh:{started.reason}")
+                return (
+                    f"{outcome} speaker={started.status}:{started.reason} "
+                    f"microphone={self._input_resume_reason(resumed)}"
+                )
+            finally:
+                self._media.hold_for_devices(held=False)
+        finally:
+            self._lock.release()
 
     def close(self, *, timeout_s: float | None = None) -> bool:
         """Revoke any pending wake before input/output owner shutdown."""
@@ -3944,6 +4010,103 @@ def _restart_soon() -> None:
 async def _refresh_work_state_now(service: WorkStateService) -> dict[str, Any]:
     """``POST /inherent/work-state/refresh``: the single-flight analysis on its own connection."""
     return await asyncio.to_thread(service.refresh_in_own_connection, trigger="dashboard")
+
+
+@dataclasses.dataclass
+class _AudioDeviceChoice:
+    """The microphone and speaker to be on; the Settings page changes them live (ADR 0054)."""
+
+    input_device: str | None
+    output_device: str | None
+    changed: bool = False
+
+    def choose(self, input_device: str | None, output_device: str | None) -> None:
+        self.input_device, self.output_device, self.changed = input_device, output_device, True
+
+
+_AUDIO_DEVICE_POLL_S = 1.0
+
+
+def _device_targets(choice: _AudioDeviceChoice) -> tuple[int | None, int | None] | None:
+    """The CoreAudio ids Jarvis should be on now: each default it follows, or its pick if in."""
+    inputs = voice_backend.coreaudio_devices("input")
+    outputs = voice_backend.coreaudio_devices("output")
+    if inputs is None or outputs is None:
+        return None
+    return (
+        inputs[0] if choice.input_device is None else inputs[1].get(choice.input_device),
+        outputs[0] if choice.output_device is None else outputs[1].get(choice.output_device),
+    )
+
+
+async def _watch_audio_devices(
+    coordinator: _VoicePowerCoordinator,
+    ingress: voice_audio.AudioIngress,
+    live_voice: voice_live.LiveVoice | None,
+    choice: _AudioDeviceChoice,
+) -> None:
+    """ADR 0054: re-read the devices when the ones to be on change, the mic is lost, or on a pick.
+
+    PortAudio lists only the devices there were when it initialised, so a
+    microphone plugged back in stays invisible to every reopen until then.
+    Other devices coming and going (a phone's microphone does, every minute or
+    so) are not a reason: each re-read leaves the microphone deaf for a moment.
+    """
+    seen = await asyncio.to_thread(_device_targets, choice)
+    if seen is None:
+        return
+    handled_loss = -1
+    while True:
+        await asyncio.sleep(_AUDIO_DEVICE_POLL_S)
+        now = await asyncio.to_thread(_device_targets, choice)
+        capability = ingress.capability
+        lost = (
+            capability.state is voice_audio.InputCapabilityState.LOCAL_CAPTURE_UNAVAILABLE
+            and capability.version != handled_loss
+        )
+        if now is None or not (now != seen or lost or choice.changed) or not coordinator.quiet():
+            continue
+        wanted = (choice.input_device, choice.output_device)
+        paused = (
+            live_voice.output_paused(wanted[1])
+            if live_voice is not None
+            else contextlib.nullcontext(enter_result=True)
+        )
+        async with paused as free:
+            if not free:
+                continue
+            outcome = await asyncio.to_thread(
+                functools.partial(
+                    coordinator.refresh_devices, input_device=wanted[0], output_device=wanted[1],
+                ),
+            )
+        LOGGER.log(
+            logging.DEBUG if outcome.startswith("busy") else logging.INFO,
+            "audio devices re-read: %s (asked microphone=%s speaker=%s)",
+            outcome, wanted[0] or "default", wanted[1] or "default",
+        )
+        if outcome.startswith("refreshed"):
+            seen = now
+            handled_loss = ingress.capability.version
+            if (choice.input_device, choice.output_device) == wanted:
+                choice.changed = False
+
+
+def _start_audio_device_watch(
+    runtime: JarvisRuntime,
+    coordinator: _VoicePowerCoordinator,
+    ingress: voice_audio.AudioIngress,
+    live_voice: voice_live.LiveVoice | None,
+) -> asyncio.Task[None]:
+    """Start the ADR 0054 device watch and let the Settings page's device picks reach it."""
+    realtime = runtime.config.get("realtime") or {}
+    choice = _AudioDeviceChoice(realtime.get("input_device"), realtime.get("output_device"))
+    if runtime.settings is not None:
+        runtime.settings.on_devices = choice.choose
+    return asyncio.create_task(
+        _watch_audio_devices(coordinator, ingress, live_voice, choice),
+        name="audio_device_watch",
+    )
 
 
 def _install_power_observer_or_degrade(
@@ -5094,6 +5257,12 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             and isinstance(tts_pipe, voice_media.StreamingTTSPipeline)
             else None
         )
+        if power_coordinator is not None and duplex_voice_session is not None:
+            device_watch = _start_audio_device_watch(
+                runtime, power_coordinator, duplex_voice_session.ingress, live_voice,
+            )
+            device_watch.add_done_callback(_log_watcher_death)
+            watchers.append(device_watch)
         before_sleep_hook = (
             power_coordinator.before_sleep if power_coordinator is not None else None
         )

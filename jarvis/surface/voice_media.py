@@ -670,6 +670,8 @@ class StreamingTTSPipeline:
         # ADR 0053: while Allen's words are coming in no answer starts; it
         # parks here. A turn that ever started playing is never dropped.
         self._held = False
+        # ADR 0054: the same parking while the audio devices are re-read.
+        self._device_held = False
         self._parked: deque[_ResponseBuffer] = deque()
         # ponytail: only grows, one short id per spoken turn; trim it if a
         # daemon ever runs for months.
@@ -806,6 +808,33 @@ class StreamingTTSPipeline:
             return
         with contextlib.suppress(RuntimeError):
             asyncio.run_coroutine_threadsafe(self._hold_output_owned(held=held), loop)
+
+    def hold_for_devices(self, *, held: bool) -> bool:
+        """Hold or release answer starts around an audio device refresh (ADR 0054).
+
+        Answers whether nothing is playing once the hold is in place, so the
+        caller may close the player; a closed or unresponsive actor answers
+        ``False``. The caller always releases, which starts the parked answers
+        unless Allen's own hold (ADR 0053) still stands.
+        """
+        loop = self._loop
+        if loop is None or self._closed.is_set():
+            return False
+        try:
+            future = asyncio.run_coroutine_threadsafe(
+                self._hold_for_devices_owned(held=held), loop,
+            )
+        except RuntimeError:
+            return False
+        try:
+            return future.result(timeout=self._config.shutdown_timeout_s)
+        except (TimeoutError, asyncio.CancelledError):
+            return False
+
+    @property
+    def player(self) -> AudioStreamPlayer:
+        """The persistent player, which a device refresh closes and reopens (ADR 0054)."""
+        return self._player
 
     def drop_unspoken(self, turn_ids: frozenset[str]) -> frozenset[str]:
         """Drop the answers of ``turn_ids`` that never reached the speaker (ADR 0053).
@@ -1530,11 +1559,19 @@ class StreamingTTSPipeline:
 
     async def _hold_output_owned(self, *, held: bool) -> None:
         self._held = held
-        if held:
+        if held or self._device_held:
             return
         parked, self._parked = self._parked, deque()
         for response in parked:
             await self._schedule_response(response)
+
+    async def _hold_for_devices_owned(self, *, held: bool) -> bool:
+        self._device_held = held
+        if not held and not self._held:
+            parked, self._parked = self._parked, deque()
+            for response in parked:
+                await self._schedule_response(response)
+        return self._active is None
 
     async def _drop_unspoken_owned(self, turn_ids: frozenset[str]) -> frozenset[str]:
         dropped = turn_ids - self._started_turns
@@ -2236,8 +2273,9 @@ class StreamingTTSPipeline:
             self._registry.terminalize(response.response_id)
             self._responses.pop(response.response_id, None)
             return
-        if self._held:
+        if self._held or self._device_held:
             # ADR 0053: Allen is talking; the answer starts when he stops.
+            # ADR 0054: or the player is closed while the devices are re-read.
             self._parked.append(response)
             self._output_active.clear()
             return

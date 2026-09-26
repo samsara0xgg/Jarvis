@@ -43,7 +43,7 @@ from jarvis.shared.lang import t
 from jarvis.surface import voice_audio, voice_tts
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import AsyncIterator, Callable, Mapping
 
     from jarvis.surface.inherent_output import InherentBroadcaster
 
@@ -534,6 +534,35 @@ class LiveVoice:
         run = self._run
         if run is not None:
             run.player.set_gain(0.0 if muted else 1.0)
+
+    @contextlib.asynccontextmanager
+    async def output_paused(self, output_device: object | None) -> AsyncIterator[bool]:
+        """Hold the session lock with the Live speaker closed for a device refresh (ADR 0054).
+
+        Yields ``False`` while Live is speaking, or when its stream did not
+        provably close. On exit the speaker reopens on ``output_device``, which
+        later sessions use too; no session starts or ends in between.
+        """
+        async with self._lock:
+            self._output_device = output_device
+            run = self._run
+            closed = True
+            if run is not None:
+                if run.writer_busy or run.player.bytes_pending() > 0:
+                    yield False
+                    return
+                closed = (await asyncio.to_thread(run.player.stop)).definitively_closed
+            try:
+                yield closed
+            finally:
+                if run is not None:
+                    run.player.set_device(output_device)
+                    started = await asyncio.to_thread(run.player.start)
+                    if not started.started:
+                        LOGGER.warning(
+                            "gpt_live speaker did not reopen after a device refresh: %s",
+                            started.reason,
+                        )
 
     # ------------------------------------------------------------------
     # Session bring-up / teardown
