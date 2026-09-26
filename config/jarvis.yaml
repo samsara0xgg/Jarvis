@@ -312,15 +312,11 @@ realtime:
   # for that boot; the process keeps running text-only.
   tts_volume: null
   # ADR-0006 §5.  Where the daemon looks for its SenseVoice directory and its
-  # Silero ONNX.  Commented out on purpose: a value here is anchored at THIS
-  # file's directory, so `data/sensevoice-small-int8` would mean
-  # `<repo>/config/data/...`, which is not where the artifacts are.  Absent,
-  # both fall back to the module constants `data/sensevoice-small-int8` and
-  # `data/silero_vad.onnx`, still resolved against the daemon's working
-  # directory — today's behavior, unchanged.  Set them in the config you point
-  # `--config` at; an absolute path or a `~` path is anchored nowhere else, and
-  # a relative one is anchored at that file's own directory, never at cwd.
-  # A missing artifact stays soft: one ERROR and a live text path.
+  # Silero ONNX.  Absent, both live under `<runtime root>/models/`, and a
+  # daemon that finds them missing downloads them in the background (checked
+  # against their SHA-256), then restarts itself once so voice comes up; until
+  # then it runs text-only.  A value here that is relative is anchored at this
+  # file's own directory, never at cwd; `~` and absolute paths as written.
   # sensevoice_dir: ~/Models/sensevoice-small-int8
   # silero_vad_path: ~/Models/silero_vad.onnx
   # ADR-0042.  Which wake engine listens: `microwakeword` (pymicro-wakeword

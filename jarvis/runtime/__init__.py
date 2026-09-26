@@ -99,6 +99,7 @@ from jarvis.decision.stream_gate import routine_stream_policy
 from jarvis.decision.tier0 import Tier0ConfigError, load_tier0_table, validate_tier0_table
 from jarvis.deployment import RuntimePaths, bootstrap_runtime, load_env_file
 from jarvis.execution.mcp_oauth import DEFAULT_OAUTH_CALLBACK_PORT
+from jarvis.deployment.models import default_sensevoice_dir, default_silero_vad_path
 from jarvis.execution.mcp_tools import DEFAULT_MCP_TIMEOUT_S, McpServers, is_oauth
 from jarvis.execution.path_resolver import resolve as resolve_file_entity
 from jarvis.execution.path_resolver import resolve_write_target
@@ -182,10 +183,9 @@ LOGGER = logging.getLogger("jarvis.runtime")
 _DEFAULT_CONFIG_FILENAME = Path("config") / "jarvis.yaml"
 _DEFAULT_PROMPT_FILENAME = Path("prompts") / "jarvis_v1.md"
 
-# ADR-0005 §12 pre-flight artifacts.  These two relative paths are the
-# absent-key fallback and stay cwd-relative on purpose: the owner's running
-# daemon resolves them against its working directory today, and moving the
-# default would silently relocate a live system's model lookup.
+# ADR-0005 §12 pre-flight artifacts for hand-assembled runtimes (tests).
+# ``bootstrap_runtime_app`` anchors the absent-key default at
+# ``<runtime root>/models`` instead (``jarvis.deployment.models``).
 DEFAULT_SENSEVOICE_DIR = Path("data/sensevoice-small-int8")
 DEFAULT_SILERO_VAD_PATH = Path("data/silero_vad.onnx")
 
@@ -1855,13 +1855,13 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
             full_config,
             key="sensevoice_dir",
             config_dir=config_dir,
-            fallback=DEFAULT_SENSEVOICE_DIR,
+            fallback=default_sensevoice_dir(paths.root),
         ),
         silero_vad_path=_realtime_model_path(
             full_config,
             key="silero_vad_path",
             config_dir=config_dir,
-            fallback=DEFAULT_SILERO_VAD_PATH,
+            fallback=default_silero_vad_path(paths.root),
         ),
         tool_cues=tool_cues,
         work_state=work_state,

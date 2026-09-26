@@ -58,7 +58,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from jarvis.deployment import sleep_wake
+from jarvis.deployment import models, sleep_wake
 from jarvis.runtime import inherent_loop
 from jarvis.surface import (
     notify,
@@ -203,6 +203,17 @@ def _no_real_power_observer(monkeypatch: pytest.MonkeyPatch) -> None:
     production code.
     """
     monkeypatch.setattr(sleep_wake, "_real_observer_factory", _InertPowerObserver)
+
+
+def _block_model_download(*_args: object, **_kwargs: object) -> None:
+    msg = "tests never download speech models"
+    raise RuntimeError(msg)
+
+
+@pytest.fixture(autouse=True)
+def _no_model_download(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A daemon booted without models would fetch 240 MB; tests stay offline."""
+    monkeypatch.setattr(models, "download", _block_model_download)
 
 
 @pytest.fixture(autouse=True)

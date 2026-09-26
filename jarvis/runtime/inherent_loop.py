@@ -114,7 +114,7 @@ from jarvis.decision.response_run import (
     request_response_cancel,
     start_response_run,
 )
-from jarvis.deployment import inherent_v2_token_matches, rotate_inherent_v2_token
+from jarvis.deployment import inherent_v2_token_matches, models, rotate_inherent_v2_token
 from jarvis.deployment.launchd import repo_root, spawned_by_agent
 from jarvis.deployment.process_lock import acquire_exclusive
 from jarvis.deployment.sleep_wake import install_power_observer, sweep_overdue_actions
@@ -3929,6 +3929,26 @@ async def _set_todo(home: Home, todo_id: str, done: bool) -> None:  # noqa: FBT0
     await asyncio.to_thread(functools.partial(home.set_todo, todo_id, done=done))
 
 
+def _fetch_models_then_restart(
+    sensevoice_dir: Path, silero_path: Path, loop: asyncio.AbstractEventLoop,
+) -> None:
+    """First boot: fetch the speech models in the background, then come back with voice."""
+
+    def run() -> None:
+        try:
+            models.fetch_missing(sensevoice_dir, silero_path)
+        except Exception:
+            LOGGER.exception("models: download failed; voice stays off until the next boot")
+            return
+        if spawned_by_agent():
+            LOGGER.info("models: ready; restarting so voice comes up")
+            loop.call_soon_threadsafe(_restart_soon)
+        else:
+            LOGGER.warning("models: ready; restart Jarvis to turn voice on")
+
+    threading.Thread(target=run, name="jarvis-models", daemon=True).start()
+
+
 async def _save_settings(settings: Settings, changes: dict[str, Any]) -> dict[str, Any]:
     """``POST /inherent/settings``: one file write, off the loop thread."""
     return await asyncio.to_thread(settings.update, changes)
@@ -4654,6 +4674,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             silero_path=silero_path,
         )
         voice_startup_reason = "models_missing"
+            _fetch_models_then_restart(sensevoice_dir, silero_path, asyncio.get_running_loop())
         if not models_ok:
             LOGGER.error(
                 "voice models missing; running text-only. Missing: %s",

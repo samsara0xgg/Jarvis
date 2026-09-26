@@ -108,26 +108,7 @@ PY
     fi
 fi
 
-# 6. Model artifacts. .gitignore owns the list, so a new artifact is checked the
-#    day it is ignored rather than the day someone remembers to edit this script.
-for name in $(grep '^/data/' .gitignore | sed 's|^/data/||'); do
-    if [ -e "data/$name" ]; then
-        ok "data/$name resolves"
-    else
-        src="$PRIMARY/data/$name"
-        target="$(readlink "$src" 2>/dev/null || echo "$src")"
-        if [ ! -e "$src" ]; then
-            bad "data/$name missing, and the primary checkout has none either" \
-                "download the artifact, then symlink it into data/"
-        elif [ "$FIX" = 1 ]; then
-            ln -sfn "$target" "data/$name" && ok "data/$name linked -> $target (fixed)"
-        else
-            bad "data/$name missing" "ln -sfn $target data/$name"
-        fi
-    fi
-done
-
-# 7. The logging contract the run recipe below depends on. If this moves, the
+# 6. The logging contract the run recipe below depends on. If this moves, the
 #    recipe becomes a lie that silently produces empty logs.
 if grep -q 'JARVIS_LOG_LEVEL' jarvis/__main__.py; then
     ok "JARVIS_LOG_LEVEL still gates logging setup"
