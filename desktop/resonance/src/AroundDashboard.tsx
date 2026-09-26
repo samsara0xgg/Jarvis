@@ -29,7 +29,7 @@ const WX: Record<WxKind, ReactNode> = { sun: <Sun/>, cloud: <Cloud/>, rain: <Clo
 const SPRING = 'linear(0,.054,.178,.329,.481,.617,.731,.82,.888,.936,.969,.99,1.003,1.01,1.014,1.015,1.014,1.012,1.01,1.008,1)';
 const reduced = matchMedia('(prefers-reduced-motion: reduce)');
 const dur = (ms: number) => reduced.matches ? 0 : ms;
-const usd = (n?: number) => n === undefined ? '—' : `$${n.toFixed(2)}`;
+const usd = (n?: number) => n === undefined ? '—' : `${n <= -.005 ? '-' : ''}$${Math.abs(n).toFixed(2)}`;
 const pad = (n: number) => String(n).padStart(2, '0');
 const hm = (ms: number) => { const d = new Date(ms); return `${pad(d.getHours())}:${pad(d.getMinutes())}`; };
 // Claude and Codex both hand out limit resets; one wording for both.
@@ -569,7 +569,12 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
     usage: () => <>
       {back(t(TITLES.usage), <button className="us-sync" aria-label={t(['Refresh', '刷新'])} disabled={quota.refreshing} onClick={() => void quota.refresh()}>
         {!quota.refreshing && synced ? t([`synced ${hm(synced)}`, `${hm(synced)} 同步`]) : t(['syncing…', '同步中…'])}<ArrowsClockwise size={11} className={quota.refreshing ? 'is-spinning' : ''}/></button>)}
-      <div className="pg-body"><div className="pg-sec"><div className="us-plan"><Account id="claude">Claude Max <em>{claude?.data.plan}</em></Account>{claude?.status === 'ok' && claude.data.reset_credits !== undefined && <span className="meta">{resetsLeft(lang, claude.data.reset_credits, claude.data.reset_ends_at)}</span>}</div>
+      <div className="pg-body"><div className="pg-sec"><h4>{t(['Balances', '余额'])}</h4><div className="bal">
+        <div className="bal-card"><Account id="deepseek">DeepSeek</Account><b>{deepseek?.status === 'ok' ? usd(deepseek.data.balance) : '—'}</b></div>
+        <Balance id="openai" name="OpenAI" left={openai?.status === 'ok' ? openai.data.balance_usd : undefined} since={openai?.data.balance_recorded_at} live={!!port} onSaved={balanceSaved}/>
+        <Balance id="minimax" name="MiniMax" left={minimax?.status === 'ok' ? minimax.data.estimate_usd : undefined} since={minimax?.data.anchor_at} live={!!port} onSaved={balanceSaved}/>
+      </div></div>
+      <div className="pg-sec"><div className="us-plan"><Account id="claude">Claude Max <em>{claude?.data.plan}</em></Account>{claude?.status === 'ok' && claude.data.reset_credits !== undefined && <span className="meta">{resetsLeft(lang, claude.data.reset_credits, claude.data.reset_ends_at)}</span>}</div>
         {claude?.status === 'ok' ? <div className="bigrings">{(claude.data.windows ?? []).map(w => <Ring key={w.key} w={w} name={w.label} sub={fmtReset(w.resets_at)}/>)}</div> : <p className="muted">{claude?.error ?? t(['Not signed in to Claude Code', '没登录 Claude Code'])}</p>}</div>
       <div className="pg-sec"><div className="us-plan"><Account id="codex">Codex <em>{codexUsage?.data.plan}</em></Account>{codexUsage?.status === 'ok' && <span className="meta">{resetsLeft(lang, codexResets)}</span>}
           {port && codexResets > 0 && !reset && <button className="us-use" onClick={askReset}>{t(['Use reset', '用一次重置'])}</button>}</div>
@@ -582,12 +587,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
         </div>}
         {codexUsage?.status === 'ok' ? <div className="bigrings">{(codexUsage.data.windows ?? []).map(w => <Ring key={w.key} w={w} name={w.label} sub={fmtReset(w.resets_at)}/>)}</div> : <p className="muted">{codexUsage?.error ?? t(['Not signed in to Codex', '没登录 Codex'])}</p>}</div>
       <div className="pg-sec"><div className="us-plan"><Account id="openai">OpenAI <em>API</em></Account>{openai?.status === 'ok' && <span className="meta">{t(['this month', '本月'])} {usd(openai.data.month_usd)}</span>}</div>
-        {openai?.status === 'ok' ? <Spend total={openai.data.today_usd ?? 0} models={openai.data.by_model ?? []}/> : <p className="muted">{openai?.error ?? t(['Needs an admin key', '缺管理密钥'])}</p>}</div>
-      <div className="pg-sec"><h4>{t(['Balances', '余额'])}</h4><div className="bal">
-        <div className="bal-card"><Account id="deepseek">DeepSeek</Account><b>{deepseek?.status === 'ok' ? usd(deepseek.data.balance) : '—'}</b></div>
-        <Balance id="openai" name="OpenAI" left={openai?.status === 'ok' ? openai.data.balance_usd : undefined} since={openai?.data.balance_recorded_at} live={!!port} onSaved={balanceSaved}/>
-        <Balance id="minimax" name="MiniMax" left={minimax?.status === 'ok' ? minimax.data.estimate_usd : undefined} since={minimax?.data.anchor_at} live={!!port} onSaved={balanceSaved}/>
-      </div></div></div>
+        {openai?.status === 'ok' ? <Spend total={openai.data.today_usd ?? 0} models={openai.data.by_model ?? []}/> : <p className="muted">{openai?.error ?? t(['Needs an admin key', '缺管理密钥'])}</p>}</div></div>
     </>,
     plugins: () => {
       const p = plugin ? plugins[plugin] : null;

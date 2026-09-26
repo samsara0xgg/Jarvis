@@ -67,7 +67,7 @@ try {
     '/inherent/codex-sessions': { sessions: [{ session_id: codexId, state: 'running', cwd: '/Users/x/Projects/typlus', model: 'gpt', prompt: 'fix the overlay', detail: 'Editing Overlay.swift', last_message: '', since_ms: now - 120_000 }] },
     '/inherent/usage': { services: { claude: { status: 'ok', observed_at_ms: now, data: { plan: '20X', windows: [{ key: 'five_hour', label: '5 hours', percent: 41, resets_at: iso(now + 3_600_000) }] } },
       codex: { status: 'ok', observed_at_ms: now, data: { plan: 'Pro Lite', windows: [{ key: 'primary_window', label: '7 d', percent: 64, resets_at: iso(now + 86_400_000) }], reset_credits: 1 } },
-      deepseek: { status: 'ok', observed_at_ms: now, data: { balance: 4.2, currency: 'USD', is_available: true } },
+      deepseek: { status: 'ok', observed_at_ms: now, data: { balance: -0.1, currency: 'USD', is_available: true } },
       openai: { status: 'ok', observed_at_ms: now, data: { today_usd: 0.32, month_usd: 14.53, by_key: [], balance_usd: 23.25, balance_recorded_usd: 25, balance_recorded_at: '2026-09-25T18:00:00+00:00',
         by_model: [{ model: 'gpt-5.6-sol', today_usd: 0, month_usd: 4.37 }, { model: 'gpt-5.6-luna', today_usd: 0.2817, month_usd: 1.8 }, { model: 'gpt-5.4-mini', today_usd: 0.0356, month_usd: 0.88 },
           { model: 'gpt-6-luna', today_usd: 0.0034, month_usd: 0.27 }, { model: 'gpt-live-1', today_usd: 0, month_usd: 2.16 }] } },
@@ -444,7 +444,10 @@ try {
     const balanceCard = name => page.locator('.ad .bal-card', { hasText: name });
     check('L13 OpenAI and MiniMax balances say since when, with Update', (await balanceCard('OpenAI').locator('b').textContent()) === '≈ $23.25' && (await balanceCard('OpenAI').locator('small').textContent()) === 'since Sep 25' && (await balanceCard('OpenAI').locator('.bal-set').textContent()) === 'Update'
       && (await balanceCard('MiniMax').locator('small').textContent()).startsWith('since Sep 1'));
-    await page.locator('.ad .pg-body').evaluate(b => { b.scrollTop = b.scrollHeight; }); await page.waitForTimeout(300);
+    await page.locator('.ad .pg-body').evaluate(b => { b.scrollTop = 0; }); await page.waitForTimeout(300);
+    check('L13 balances open the page, Set in view without scrolling, and a debt reads -$0.10', await page.locator('.ad .pg-body > .pg-sec').first().locator('.bal').count() === 1
+      && await balanceCard('OpenAI').locator('.bal-set').evaluate(el => { const r = el.getBoundingClientRect(), b = el.closest('.pg-body').getBoundingClientRect(); return r.bottom <= b.bottom && r.top >= b.top; })
+      && (await balanceCard('DeepSeek').locator('b').textContent()) === '-$0.10');
     await panelShot('L13-usage-balances');
     await balanceCard('OpenAI').locator('.bal-set').click(); await page.waitForTimeout(300);
     const save = page.locator('.ad .bal-card.is-editing .btn-glow');
