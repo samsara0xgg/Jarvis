@@ -264,6 +264,13 @@ tools:
     #     url: "https://mcp.linear.app/mcp"
     #     auth: oauth
 
+  # ADR 0019 Codex workers that write code. Off by default. When on, the user
+  # confirms every new worker before it starts, and a worker may only be
+  # started in one of `roots` (subfolders included; `~` expands).
+  workers:
+    enabled: false
+    roots: []
+
 # ADR-0012 §3 D4/V2 — confirm_required 询问（confirmation.requested）
 # 的存活时长。默认 10 分钟；live burn 验证 C3（TTL 过期）时把这里改短，
 # 不用碰代码。

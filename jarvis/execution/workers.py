@@ -11,12 +11,11 @@ from ``turn/started``, ``item/completed``, ``turn/completed`` and ``error``.
 The final message is the last ``agentMessage`` of the last turn, passed
 through verbatim: no schema, no parser, no verdict.
 
-Approval requests the server raises for a worker
-(``item/*/requestApproval``) are not decided here. They sit on the worker
-as ``pending_approval``; ``wait_worker`` returns them so the parent can put
-them to Allen, and Allen's answer comes back through
-``send_input(approval=...)``. The one durable table, ``worker_edges``
-(parent, child, status), holds topology only.
+A worker runs with approval policy ``never``: it cannot widen its own
+sandbox, and nothing (the parent model included) can approve a request for
+it. ``spawn_worker`` is L3, so the user confirms every new worker, and its
+``cwd`` must sit inside one of the configured roots. The one durable
+table, ``worker_edges`` (parent, child, status), holds topology only.
 """
 
 from __future__ import annotations
@@ -41,12 +40,6 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger(__name__)
 
 _FINAL: Final = frozenset({"completed", "errored", "shutdown", "not_found"})
-_APPROVAL_METHODS: Final = frozenset({
-    "item/commandExecution/requestApproval",
-    "item/fileChange/requestApproval",
-    "item/permissions/requestApproval",
-})
-DECISIONS: Final = ("accept", "acceptForSession", "decline", "cancel")
 DEFAULT_WAIT_S: Final = 60.0
 MAX_WAIT_S: Final = 600.0
 _INTERRUPT_SETTLE_S: Final = 15.0
@@ -60,7 +53,6 @@ class Worker:
     status: str = "pending_init"
     final_message: str | None = None
     error: str | None = None
-    pending_approval: dict[str, Any] | None = None
 
     def view(self) -> dict[str, Any]:
         """The status as the parent model reads it."""
@@ -69,17 +61,12 @@ class Worker:
             out["final_message"] = self.final_message
         if self.status == "errored":
             out["error"] = self.error
-        if self.pending_approval is not None:
-            out["pending_approval"] = {
-                "method": self.pending_approval["method"],
-                **self.pending_approval["params"],
-            }
         return out
 
     @property
     def ready(self) -> bool:
         """True when ``wait_worker`` should return this worker."""
-        return self.status in _FINAL or self.pending_approval is not None
+        return self.status in _FINAL
 
 
 class Workers:
@@ -158,7 +145,6 @@ class Workers:
                 if w.turn_id not in (None, turn["id"]):
                     return
                 w.turn_id = turn["id"]
-                w.pending_approval = None
                 if turn["status"] == "failed":
                     w.status = "errored"
                     w.error = (turn.get("error") or {}).get("message", "turn failed")
@@ -175,18 +161,11 @@ class Workers:
             self._cv.notify_all()
 
     def _on_server_request(self, msg: Mapping[str, Any]) -> None:
-        method = str(msg.get("method"))
-        params = msg.get("params") or {}
+        """Approval policy ``never`` means no request is expected; refuse any that comes."""
         with self._cv:
             client = self._client
-            w = self._workers.get(params.get("threadId", ""))
-            if w is None or method not in _APPROVAL_METHODS:
-                if client is not None:
-                    client.respond_error(msg["id"], f"{method} is not routed by jarvis")
-                return
-            w.pending_approval = {"request_id": msg["id"], "method": method, "params": params}
-            LOGGER.info("worker %s asks approval via %s", w.thread_id, method)
-            self._cv.notify_all()
+        if client is not None:
+            client.respond_error(msg["id"], f"{msg.get('method')} is not routed by jarvis")
 
     # --- operations (turn thread) -----------------------------------------
 
@@ -210,7 +189,7 @@ class Workers:
         client = self._ensure()
         thread = client.request(
             "thread/start",
-            {"cwd": str(cwd), "sandbox": "workspace-write", "approvalPolicy": "on-request"},
+            {"cwd": str(cwd), "sandbox": "workspace-write", "approvalPolicy": "never"},
         )["thread"]
         w = Worker(thread_id=thread["id"])
         with self._cv:
@@ -221,7 +200,7 @@ class Workers:
         return w.thread_id
 
     def wait(self, ids: list[str], timeout_s: float) -> dict[str, Any]:
-        """Block until any worker in ``ids`` is final or asks approval; then drain the rest."""
+        """Block until any worker in ``ids`` is final; then drain the rest."""
         deadline = time.monotonic() + timeout_s
         with self._cv:
             while True:
@@ -264,22 +243,6 @@ class Workers:
         delivered = "steer" if running_turn is not None else "turn"
         return {"worker_id": worker_id, "previous": previous, "delivered": delivered}
 
-    def answer_approval(self, worker_id: str, decision: str) -> dict[str, Any]:
-        """Reply to the worker's pending approval request with Allen's decision."""
-        if decision not in DECISIONS:
-            msg = f"send_input: approval must be one of {', '.join(DECISIONS)}"
-            raise ToolError(msg, code="bad_approval")
-        with self._cv:
-            w = self._get(worker_id)
-            pending, w.pending_approval = w.pending_approval, None
-            client = self._client
-        if pending is None or client is None:
-            msg = f"worker {worker_id} has no approval pending"
-            raise ToolError(msg, code="no_pending_approval")
-        client.respond(pending["request_id"], {"decision": decision})
-        LOGGER.info("worker %s approval %s: %s", worker_id, pending["method"], decision)
-        return {"worker_id": worker_id, "answered": pending["method"], "decision": decision}
-
     def close(self, worker_id: str, *, conn: sqlite3.Connection) -> dict[str, Any]:
         """Interrupt if running, unsubscribe, mark the edge closed; return the previous status."""
         with self._cv:
@@ -293,7 +256,6 @@ class Workers:
             client.request("thread/unsubscribe", {"threadId": worker_id})
         with self._cv:
             w.status = "shutdown"
-            w.pending_approval = None
             self._cv.notify_all()
         close_edges(conn, (worker_id,))
         LOGGER.info("worker %s closed", worker_id)
@@ -316,16 +278,21 @@ def _codex_errors(fn: FlatHandler) -> FlatHandler:
     return wrapped
 
 
-def make_worker_tools(workers: Workers) -> tuple[Tool, ...]:
-    """Bind the four worker tools to one :class:`Workers`."""
+def make_worker_tools(workers: Workers, roots: tuple[Path, ...]) -> tuple[Tool, ...]:
+    """Bind the four worker tools to one :class:`Workers`.
+
+    ``roots`` are the folders a worker may be started in (subfolders
+    included), already resolved; empty means none.
+    """
     llm = frozenset({CallerPrincipal.JARVIS_LLM})
+    allowed = ", ".join(str(r) for r in roots) or "none configured"
 
     @tool(
         description=(
-            "Start a Codex worker on a task and return its worker_id at once. The worker "
-            "runs in its own thread with a workspace-write sandbox rooted at cwd and asks "
-            "for approval before anything outside it. Use wait_worker to get its final "
-            "message; close_worker when you are done with it."
+            "Start a Codex worker on a task and return its worker_id at once. The user "
+            "confirms every new worker before it starts. The worker runs in its own thread "
+            "with a workspace-write sandbox rooted at cwd and cannot act outside it. Use "
+            "wait_worker to get its final message; close_worker when you are done with it."
         ),
         input_schema={
             "type": "object",
@@ -335,15 +302,16 @@ def make_worker_tools(workers: Workers) -> tuple[Tool, ...]:
                     "type": "string",
                     "description": (
                         "Absolute path of the project directory the worker may write in. "
-                        "Defaults to the home directory."
+                        f"Must be inside one of: {allowed}."
                     ),
                 },
             },
-            "required": ["message"],
+            "required": ["message", "cwd"],
         },
         allowed_callers=llm,
-        risk_level="L2",
+        risk_level="L3",
         read_only=False,
+        requires_confirmation=True,
     )
     @_codex_errors
     def spawn_worker(args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
@@ -351,7 +319,10 @@ def make_worker_tools(workers: Workers) -> tuple[Tool, ...]:
         if not message:
             msg = "spawn_worker: message is empty"
             raise ToolError(msg, code="empty_message")
-        cwd = Path(str(args.get("cwd") or Path.home())).expanduser()
+        cwd = Path(str(args.get("cwd") or "")).expanduser().resolve()
+        if not any(cwd.is_relative_to(root) for root in roots):
+            msg = f"spawn_worker: cwd {cwd} is outside the allowed folders ({allowed})"
+            raise ToolError(msg, code="cwd_not_allowed")
         if not cwd.is_dir():
             msg = f"spawn_worker: cwd {cwd} is not a directory"
             raise ToolError(msg, code="bad_cwd")
@@ -361,10 +332,8 @@ def make_worker_tools(workers: Workers) -> tuple[Tool, ...]:
     @tool(
         description=(
             "Wait until any of the given workers reaches a final status (completed with its "
-            "final_message, errored, shutdown, not_found) or asks for approval "
-            "(pending_approval, to be put to Allen and answered with send_input). Returns "
-            "the ones that are ready; timed_out=true and an empty status when none is. "
-            "Prefer long waits over polling."
+            "final_message, errored, shutdown, not_found). Returns the ones that are ready; "
+            "timed_out=true and an empty status when none is. Prefer long waits over polling."
         ),
         input_schema={
             "type": "object",
@@ -399,9 +368,7 @@ def make_worker_tools(workers: Workers) -> tuple[Tool, ...]:
     @tool(
         description=(
             "Send a message to an existing worker: a follow-up task if it is idle, delivered "
-            "into the running turn otherwise. interrupt=true stops the running turn first. "
-            "With approval set, instead answers the worker's pending approval request with "
-            "Allen's decision and sends no message."
+            "into the running turn otherwise. interrupt=true stops the running turn first."
         ),
         input_schema={
             "type": "object",
@@ -412,13 +379,8 @@ def make_worker_tools(workers: Workers) -> tuple[Tool, ...]:
                     "type": "boolean",
                     "description": "Stop the running turn before delivering. Default false.",
                 },
-                "approval": {
-                    "type": "string",
-                    "enum": list(DECISIONS),
-                    "description": "Allen's answer to the worker's pending_approval.",
-                },
             },
-            "required": ["id"],
+            "required": ["id", "message"],
         },
         allowed_callers=llm,
         risk_level="L2",
@@ -427,9 +389,6 @@ def make_worker_tools(workers: Workers) -> tuple[Tool, ...]:
     @_codex_errors
     def send_input(args: Mapping[str, Any], _ctx: ToolContext) -> dict[str, Any]:
         worker_id = str(args.get("id", ""))
-        approval = args.get("approval")
-        if approval is not None:
-            return workers.answer_approval(worker_id, str(approval))
         message = str(args.get("message", "")).strip()
         if not message:
             msg = "send_input: message is empty"

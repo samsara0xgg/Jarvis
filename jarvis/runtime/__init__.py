@@ -1420,14 +1420,23 @@ def _load_runtime_env_and_trace(paths: RuntimePaths) -> None:
     _configure_realtime_trace_export(paths)
 
 
-def _register_workers(registry: ToolRegistry, paths: RuntimePaths) -> Workers:
+def _register_workers(
+    registry: ToolRegistry, paths: RuntimePaths, config: Mapping[str, Any]
+) -> Workers | None:
     """ADR 0019: workers are threads on one ``codex app-server``.
 
-    The server starts lazily on the first spawn, so a one-shot CLI turn
-    pays nothing; the daemon stops it at shutdown.
+    Off unless ``tools.workers.enabled``; ``tools.workers.roots`` lists the
+    folders a worker may be started in. The server starts lazily on the
+    first spawn, so a one-shot CLI turn pays nothing; the daemon stops it
+    at shutdown.
     """
+    tools_block = config.get("tools")
+    block = tools_block.get("workers") if isinstance(tools_block, Mapping) else None
+    if not isinstance(block, Mapping) or block.get("enabled") is not True:
+        return None
+    roots = tuple(Path(str(r)).expanduser().resolve() for r in block.get("roots") or ())
     workers = Workers(paths.root / "codex.sock", paths.event_log)
-    for worker_tool in make_worker_tools(workers):
+    for worker_tool in make_worker_tools(workers, roots):
         registry.register(worker_tool)
     return workers
 
@@ -1690,7 +1699,7 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
         ),
         screen_max_width_px=screen_max_width_px,
     )
-    workers = _register_workers(registry, paths)
+    workers = _register_workers(registry, paths, full_config)
     plugin_connections = PluginConnections(
         repo_root=repo_root, runtime_root=paths.root, event_log=paths.event_log,
         registry=registry, config=full_config,
