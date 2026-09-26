@@ -54,11 +54,12 @@ details are needed rather than preloading the entire specification.
 ## Git
 
 - When a task is done and verified, land it without asking first: commit,
-  merge into `main`, and restart whatever the change touches
+  merge into `main`, restart whatever the change touches, and push `main`
   (`docs/git-guide.md` §3). A permission prompt on the way is fine; stopping
   to ask in chat is not. Stop only on a red gate, a merge conflict you cannot
   resolve mechanically, or work Allen said to keep off `main`.
-- Never push unless Allen explicitly asks. Never force-push `main`.
+- Push only as plain `git push origin main`: its permission prompt is
+  Allen's approval, and a declined push stays local. Never force-push `main`.
 - Never bypass hooks.
 - Keep the `Co-Authored-By` trailer Claude Code adds.
 - Stage explicit paths only; never use `git add .`, `git add -A`, or
