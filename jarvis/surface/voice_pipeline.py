@@ -101,6 +101,13 @@ class VoicePipeline:
         text: str = partial(audio_bytes)
         return text
 
+    def transcribe(self, audio_bytes: bytes) -> str:
+        """ADR 0058 dictation: a turn's ears and corrections, no emit; ``""`` for no speech."""
+        tr = self._recognizer.recognize(audio_bytes)
+        if voice_asr.is_empty_or_too_short(tr.text, audio_pcm=audio_bytes):
+            return ""
+        return self._normalizer.normalize(tr.text)
+
     def run_turn(  # noqa: C901, PLR0912, PLR0913 — wake/PTT toggles widen the signature; splitting would shred the single locked critical section.
         self,
         *,

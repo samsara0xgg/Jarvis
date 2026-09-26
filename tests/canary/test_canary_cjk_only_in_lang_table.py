@@ -40,6 +40,9 @@ _MATCHERS: Final[dict[str, frozenset[str]]] = {
         {"_SENTENCE_ENDS", "_CLAUSE_ENDS", "_CLOSERS", "_balanced_prose"}
     ),
     "jarvis/execution/path_resolver.py": frozenset({"_TRAILING_NOUN_RE", "_CONNECTIVE_CHAR"}),
+    # Typlus's polish prompt (ADR 0058) names the Chinese phantoms the recognizer emits
+    # and Chinese dictations that must not be answered, as the words the model will read.
+    "jarvis/runtime/dictation.py": frozenset({"POLISH_PROMPT"}),
     "jarvis/execution/tool_search.py": frozenset({"_TOKEN"}),
     "jarvis/shared/text.py": frozenset({"is_english"}),
     "jarvis/state/daily_report.py": frozenset({"MILESTONES", "_QUESTION"}),
