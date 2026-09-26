@@ -6,7 +6,7 @@ import { fmtReset } from '../src/quota-time.ts';
 const dir = 'evidence/quota-layouts';
 mkdirSync(dir, { recursive: true });
 const now = new Date('2026-09-14T05:00:00Z');
-for (const [minutes, expected] of [[222, 'resets in 3h 42m'], [1860, 'resets in 1d 7h'], [59, 'resets in 59m'], [60, 'resets in 1h 0m'], [1440, 'resets in 1d 0h'], [0, '等待额度更新'], [-1, '等待额度更新']]) {
+for (const [minutes, expected] of [[222, 'resets in 3h 42m'], [1860, 'resets in 1d 7h'], [59, 'resets in 59m'], [60, 'resets in 1h 0m'], [1440, 'resets in 1d 0h'], [0, 'resetting'], [-1, 'resetting']]) {
   assert.equal(fmtReset(new Date(+now + minutes * 60_000).toISOString(), now), expected);
 }
 assert.equal(fmtReset(null, now), '—');

@@ -1,7 +1,9 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { IconContext, Keyboard, Paperclip, ArrowUp, Microphone, Stop } from '@phosphor-icons/react';
-import { CompanionBall, R, type BallHandle, type Lobe, type Mood, type Place, type Point } from './CompanionBall';
+import { CompanionBall, HOLD_MS, R, type BallHandle, type Lobe, type Place, type Point } from './CompanionBall';
+import { EXPRESSIONS, PREVIEW, SKINS, SKIN_KEYS, TAKES, isSkin, pick, type ExprId, type Skin } from './starCore';
 import { DashboardPreview } from './DashboardPreview';
+import { AroundDashboard } from './AroundDashboard';
 import { playFeedback, stopFeedback, warmFeedback, type FeedbackCue } from './feedback';
 import { usePreferences } from './preferences';
 import './companion.css';
@@ -11,8 +13,19 @@ type Rect = { x: number; y: number; w: number; h: number };
 type Zone = 'none' | 'lobe' | 'ball';
 const within = (p: Point, r: Rect) => p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h;
 const PANEL = 300;
+// around: one column under her, her words first (the default). grid: the main app's two columns of tiles.
+type DashboardLayout = 'grid' | 'around';
 // Prototype script: every transcript and reply below is simulated.
 const HEARD = '把今天的任务整理一下';
+// Her skin, whether she changes it herself, and how the Dashboard is laid out live in this companion's own profile.
+const WARDROBE = 'companion-wardrobe-v1';
+function loadWardrobe(): { skin: Skin; auto: boolean; layout: DashboardLayout; homeGlass: boolean } {
+  try {
+    const value = JSON.parse(localStorage.getItem(WARDROBE) ?? '{}');
+    return { skin: isSkin(value.skin) ? value.skin : 'glass', auto: value.auto !== false, layout: value.layout === 'grid' ? 'grid' : 'around', homeGlass: value.homeGlass !== false };
+  } catch { return { skin: 'glass', auto: true, layout: 'around', homeGlass: true }; }
+}
+const isPreview = (value: string): value is ExprId => (PREVIEW as string[]).includes(value);
 
 function layout({ topInset, notchWidth, surfaceWidth: width }: Placement) {
   const center = width / 2, notchLeft = center - notchWidth / 2;
@@ -27,7 +40,7 @@ function layout({ topInset, notchWidth, surfaceWidth: width }: Placement) {
     chip: { x: x + R + 4, y: out.y - 18, w: 44, h: 36 },
     dash: notchWidth ? [{ x: notchLeft, y: 0, w: notchWidth, h: topInset + 4 }]
       : [{ x: lobe.left, y: 0, w: 30, h: topInset + 4 }, { x: center + 36, y: 0, w: 30, h: topInset + 4 }],
-    panel: { x: center - PANEL / 2 - 10, y: 0, w: PANEL + 20, h: panelTop + 470 },
+    panel: { x: center - PANEL / 2 - 10, y: 0, w: PANEL + 20, h: panelTop + 520 },
   } };
 }
 
@@ -55,18 +68,27 @@ export function Companion() {
   const [dashboard, setDashboard] = useState(false);
   const [composer, setComposer] = useState(false);
   const [draft, setDraft] = useState('');
-  const [voice, setVoice] = useState<'off' | 'listening' | 'speaking'>('off');
+  const [voice, setVoice] = useState<'off' | 'listening' | 'thinking' | 'speaking'>('off');
   const [caption, setCaption] = useState('');
   const [hearing, setHearing] = useState(false);
   const [reply, setReply] = useState({ text: '', shown: 0 });
   const [talking, setTalking] = useState(false);
   const [pressed, setPressed] = useState(false);
-  const busy = composer || voice !== 'off' || !!reply.text;
-  const place: Place = moving ? 'home' : dashboard ? 'dock' : busy || zone === 'ball' ? 'out' : zone === 'lobe' ? 'peek' : 'home';
-  const mood: Mood = voice === 'listening' ? 'listening' : voice === 'speaking' || talking ? 'speaking' : 'idle';
+  const [wardrobe, setWardrobe] = useState(loadWardrobe);
+  // A skin change or an expression from the tray brings her out of the island for a moment.
+  const [outing, setOuting] = useState(false);
+  const [preview, setPreview] = useState<ExprId | null>(null);
+  // The page open in the Dashboard sets her face while nothing else is going on.
+  const [dashMood, setDashMood] = useState<ExprId | null>(null);
+  const [receiving, setReceiving] = useState(false);
+  const busy = composer || voice !== 'off' || !!reply.text || receiving;
+  const place: Place = moving ? 'home' : dashboard ? 'dock' : busy || zone === 'ball' || outing ? 'out' : zone === 'lobe' ? 'peek' : 'home';
+  // A finished text reply stays up briefly: that is her "done" face.
+  const listenFace = useRef<ExprId>('35'), receiveFace = useRef<ExprId>('31'), replyFace = useRef<ExprId>('39');
+  const expr: ExprId = preview ?? (receiving ? receiveFace.current : voice === 'listening' ? listenFace.current : voice === 'thinking' ? '30' : voice === 'speaking' || talking ? replyFace.current : dashboard && dashMood ? dashMood : reply.text ? '33' : '02');
   const chip = place === 'out' && zone === 'ball' && !busy;
-  const live = useRef({ geo, dashboard, chip, composer });
-  live.current = { geo, dashboard, chip, composer };
+  const live = useRef({ geo, dashboard, chip, composer, place, wardrobe });
+  live.current = { geo, dashboard, chip, composer, place, wardrobe };
   const ball = useRef<BallHandle | null>(null), look = useRef<Point | null>(null), cursor = useRef<Point>({ x: -1e4, y: -1e4 });
   const input = useRef<HTMLInputElement>(null), root = useRef<HTMLElement>(null), pressing = useRef(false);
 
@@ -77,20 +99,25 @@ export function Companion() {
   const stopScript = () => { script.current.forEach(clearTimeout); script.current = []; };
   useEffect(() => stopScript, []);
   const say = (text: string, done: () => void) => {
+    replyFace.current = pick(TAKES.reply);
     setReply({ text, shown: 0 }); setTalking(true);
     for (let i = 1; i <= text.length; i++) after(i * 115, () => setReply({ text, shown: i }));
     after(text.length * 115 + 450, () => { setTalking(false); done(); });
   };
+  // She takes the task in for a moment before she thinks or answers.
+  const receive = () => { receiveFace.current = pick(TAKES.receive); setReceiving(true); after(700, () => setReceiving(false)); };
   const listen = (scripted: boolean) => {
-    stopScript(); setVoice('listening'); setCaption(''); setHearing(false); setReply({ text: '', shown: 0 }); setTalking(false);
+    // Each turn she picks one of her takes for listening, receiving and replying.
+    listenFace.current = pick(TAKES.listen);
+    stopScript(); setReceiving(false); setVoice('listening'); setCaption(''); setHearing(false); setReply({ text: '', shown: 0 }); setTalking(false);
     if (!scripted) return;
     const end = 650 + HEARD.length * 115;
     after(650, () => setHearing(true));
     for (let i = 1; i <= HEARD.length; i++) after(650 + i * 115, () => setCaption(HEARD.slice(0, i)));
-    after(end + 250, () => setHearing(false));
-    after(end + 800, () => { setVoice('speaking'); say('好，我来整理。', () => listen(false)); });
+    after(end + 250, () => { setHearing(false); setVoice('thinking'); receive(); });
+    after(end + 1700, () => { setVoice('speaking'); say('好，我来整理。', () => listen(false)); });
   };
-  const endVoice = () => { stopScript(); feedback('voice-exit'); setVoice('off'); setCaption(''); setHearing(false); setReply({ text: '', shown: 0 }); setTalking(false); };
+  const endVoice = () => { stopScript(); setReceiving(false); feedback('voice-exit'); setVoice('off'); setCaption(''); setHearing(false); setReply({ text: '', shown: 0 }); setTalking(false); };
   const closeComposer = () => { setComposer(false); void window.jarvis?.focus(false); };
   // Poke: start a voice turn, interrupt playback, or end the session.
   const poke = () => {
@@ -98,8 +125,15 @@ export function Companion() {
     else if (voice === 'speaking') listen(false);
     else endVoice();
   };
-  const press = () => { pressing.current = true; setPressed(true); };
-  const release = () => { if (!pressing.current) return; pressing.current = false; setPressed(false); poke(); };
+  const pressAt = useRef(0);
+  const press = () => { pressing.current = true; pressAt.current = performance.now(); setPressed(true); };
+  // A short poke talks to her; holding her until she shivers changes her into the next skin.
+  const release = () => {
+    if (!pressing.current) return;
+    pressing.current = false; setPressed(false);
+    if (performance.now() - pressAt.current < HOLD_MS) poke();
+    else choose(SKIN_KEYS[(SKIN_KEYS.indexOf(worn.current) + 1) % SKIN_KEYS.length]);
+  };
   const cancel = () => { pressing.current = false; setPressed(false); };
 
   const measure = useRef<CanvasRenderingContext2D | null>(null);
@@ -113,17 +147,63 @@ export function Companion() {
     look.current = { x: Math.min(r.right - pad, r.left + pad + width - el.scrollLeft), y: r.top + r.height / 2 };
   };
   const openComposer = () => {
-    stopScript(); setReply({ text: '', shown: 0 }); setTalking(false); setComposer(true);
+    stopScript(); setReceiving(false); setReply({ text: '', shown: 0 }); setTalking(false); setComposer(true);
     void window.jarvis?.focus(true).then(() => requestAnimationFrame(() => { input.current?.focus(); aimAtCaret(); }));
   };
   const send = () => {
     const text = draft.trim();
     if (!text) return;
     setDraft(''); closeComposer(); stopScript();
-    after(280, () => say(text.includes('整理') ? '好，我来整理。' : '收到，我来处理。', () => after(1800, () => setReply({ text: '', shown: 0 }))));
+    receive();
+    after(700, () => say(text.includes('整理') ? '好，我来整理。' : '收到，我来处理。', () => after(1800, () => setReply({ text: '', shown: 0 }))));
   };
   const openDashboard = (hovered: boolean) => { dashEntered.current = hovered; setDashboard(true); setComposer(false); void window.jarvis?.focus(false); };
-  useEffect(() => window.jarvis?.onCommand(command => { if (command === 'dashboard') openDashboard(false); }), []);
+
+  // What she wears now; it differs from the saved pick while she tries another skin on her own.
+  const worn = useRef<Skin>(wardrobe.skin);
+  const outingTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
+  // Out of the island first when she rests there, do the thing, and home again after `stay`.
+  const appear = (run: () => void, stay: number) => {
+    outingTimers.current.forEach(clearTimeout);
+    const lead = live.current.place === 'home' || live.current.place === 'peek' ? 650 : 0;
+    setOuting(true);
+    outingTimers.current = [setTimeout(run, lead), setTimeout(() => { setOuting(false); setPreview(null); }, lead + stay)];
+  };
+  useEffect(() => () => outingTimers.current.forEach(clearTimeout), []);
+  const wear = (skin: Skin) => { if (skin === worn.current) return; worn.current = skin; appear(() => ball.current?.change(skin), 2600); };
+  const choose = (skin: Skin) => { setWardrobe(value => ({ ...value, skin })); wear(skin); };
+  // On her own she tries another skin, and the next time changes back to yours.
+  const selfChange = () => {
+    const mine = live.current.wardrobe.skin, others = SKIN_KEYS.filter(key => key !== mine);
+    wear(worn.current === mine ? others[Math.floor(Math.random() * others.length)] : mine);
+  };
+  useEffect(() => {
+    try { localStorage.setItem(WARDROBE, JSON.stringify(wardrobe)); } catch { /* the pick just is not remembered */ }
+    window.jarvis?.companionMenu({ skins: SKIN_KEYS.map(key => ({ key, name: SKINS[key].name, on: key === wardrobe.skin })), auto: wardrobe.auto, layout: wardrobe.layout, homeGlass: wardrobe.homeGlass,
+      exprs: PREVIEW.map(id => ({ id, name: EXPRESSIONS[id].name })) });
+  }, [wardrobe]);
+  useEffect(() => {
+    if (!wardrobe.auto) return;
+    let timer: ReturnType<typeof setTimeout>;
+    // Every 6 to 14 minutes, while she rests in the island, she changes on her own.
+    const plan = () => { timer = setTimeout(() => { if (live.current.place === 'home') selfChange(); plan(); }, (6 + Math.random() * 8) * 60_000); };
+    plan();
+    return () => clearTimeout(timer);
+  }, [wardrobe.auto]);
+  useEffect(() => window.jarvis?.onCommand(command => {
+    const [name, value = ''] = command.split(':');
+    if (command === 'dashboard') openDashboard(false);
+    else if (name === 'skin' && isSkin(value)) choose(value);
+    else if (command === 'outing') selfChange();
+    else if (name === 'layout' && (value === 'grid' || value === 'around')) setWardrobe(current => ({ ...current, layout: value }));
+    else if (name === 'expr' && isPreview(value)) appear(() => setPreview(value), 4200);
+    else if (command === 'homeGlass') setWardrobe(current => ({ ...current, homeGlass: !current.homeGlass }));
+    else if (command === 'auto') {
+      const auto = !live.current.wardrobe.auto;
+      setWardrobe(current => ({ ...current, auto }));
+      if (!auto) wear(live.current.wardrobe.skin);
+    }
+  }), []);
   useEffect(() => window.jarvis?.onDisplayLeave(() => {
     closeComposer(); setDashboard(false); clearTimeout(zoneTimer.current); pending.current = 'none'; setZone('none'); setMoving(true);
     // Long enough to look up, fly home and merge before the window leaves this screen.
@@ -194,7 +274,7 @@ export function Companion() {
   useEffect(() => kickGlass.current(), [place, chip, composer, dashboard, voice, reply.text, caption]);
 
   const { out } = geo;
-  const strip = place === 'out' && voice === 'listening', bubble = place === 'out' && !!reply.text;
+  const strip = place === 'out' && (voice === 'listening' || voice === 'thinking'), bubble = place === 'out' && !!reply.text;
   return <IconContext.Provider value={{ size: 16, weight: 'regular' }}>
     <main ref={root} className="companion" style={{ '--mint': preferences.themeColor } as React.CSSProperties}>
       <div className={`companion-chip ${chip ? 'is-open' : ''}`} data-hit={chip || undefined} data-glass="9" style={{ left: out.x + R + 12, top: out.y - 13 }}>
@@ -220,10 +300,12 @@ export function Companion() {
       </div>
       <div className={`companion-dashboard ${dashboard ? 'is-open' : ''}`} data-hit={dashboard || undefined} data-glass="24"
         style={{ left: geo.center - PANEL / 2, top: geo.panelTop }} inert={!dashboard}>
-        <DashboardPreview embedded visible={dashboard} shown={dashboard} onClose={() => setDashboard(false)}/>
+        {wardrobe.layout === 'around'
+          ? <AroundDashboard open={dashboard} onClose={() => setDashboard(false)} onMood={setDashMood} onHop={height => ball.current?.hop(height)}/>
+          : <DashboardPreview embedded visible={dashboard} shown={dashboard} onClose={() => setDashboard(false)}/>}
       </div>
-      <CompanionBall width={geo.width} height={placement.topInset + 560} lobe={geo.lobe} look={look} handle={ball}
-        target={{ place, mood, pressed, hearing, anchors: geo.anchors }}
+      <CompanionBall width={geo.width} height={placement.topInset + 560} lobe={geo.lobe} look={look} handle={ball} skin={worn.current}
+        target={{ place, expr, pressed, anchors: geo.anchors, homeGlass: wardrobe.homeGlass }}
         label={voice === 'off' ? '戳一下，开始语音（演示）' : voice === 'speaking' ? '戳一下，打断播报' : '戳一下，结束语音'}
         onPress={press} onRelease={release} onCancel={cancel} onMove={refreshHit}/>
     </main>

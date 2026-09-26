@@ -8,21 +8,21 @@ type Saved = { rows: CodexSession[]; pins: string[]; archived: Record<string, st
 const day = 86_400_000;
 const demoAt = Date.now();
 export const demoSessions: CodexSession[] = [
-  ['设计 Resonance 监控模块', 'running', '正在检查会话状态…'],
-  ['修复语音重连', 'running', '正在检查连接恢复逻辑…'],
-  ['评估 Jarvis 最小闭环', 'finished', '已整理当前闭环与剩余事项。'],
-  ['整理安装文档', 'finished', '安装说明已更新。'],
-  ['调整额度页面', 'needs_input', '等待批准执行构建'],
-  ['排查签名失败', 'finished', '已找到签名配置问题。'],
-  ['检查麦克风设置', 'idle', ''],
-  ['检查连接日志', 'finished', '日志检查完成。'],
-  ['更新快捷键说明', 'finished', '快捷键说明已更新。'],
+  ['Design the Resonance monitor module', 'running', 'Checking session state…'],
+  ['Fix voice reconnect', 'running', 'Reading the reconnect logic…'],
+  ['Evaluate the Jarvis minimal loop', 'finished', 'Summarized the loop and what is left.'],
+  ['Clean up the install guide', 'finished', 'Install guide updated.'],
+  ['Adjust the usage page', 'needs_input', 'Waiting for approval to run the build'],
+  ['Investigate the signing failure', 'finished', 'Found the signing config problem.'],
+  ['Check microphone settings', 'idle', ''],
+  ['Check connection logs', 'finished', 'Log check complete.'],
+  ['Update the shortcut guide', 'finished', 'Shortcut guide updated.'],
 ].map(([prompt, state, detail], index) => ({ session_id: `demo-${index + 1}`, state: state as CodexState, cwd: '/Projects/jarvis', model: '', prompt, detail, last_message: state === 'finished' ? detail : '', since_ms: demoAt - index * 60_000, turn_started_ms: demoAt - index * 60_000 }));
 const empty: Saved = { rows: [], pins: [], archived: {}, acknowledged: {} };
 const token = (row: CodexSession) => String(row.turn_started_ms ?? row.prompt);
 const activityToken = (row: CodexSession) => `${token(row)}:${row.state}${row.state === 'needs_input' ? `:${row.since_ms}` : ''}`;
 const active = (row: CodexSession) => row.state === 'running' || row.state === 'needs_input';
-const title = (row: CodexSession) => row.title || row.prompt || row.cwd.split('/').filter(Boolean).pop() || 'Codex 会话';
+const title = (row: CodexSession) => row.title || row.prompt || row.cwd.split('/').filter(Boolean).pop() || 'Codex session';
 const stateText: Record<CodexState, string> = { idle: '空闲', running: 'Thinking…', needs_input: '等你处理', finished: '已完成' };
 const valid = (row: unknown): row is CodexSession => {
   if (!row || typeof row !== 'object') return false;
@@ -105,9 +105,9 @@ export function useCodexSessions(port: string | null) {
 type Board = ReturnType<typeof useCodexSessions>;
 
 export function CodexSummary({ board }: { board: Board }) {
-  const waiting = board.rows.filter(r => board.fresh.has(r.session_id) && r.state === 'needs_input').length;
-  const running = board.rows.filter(r => board.fresh.has(r.session_id) && r.state === 'running').length;
-  return <><span className={`module-primary ${waiting ? 'needs-attention' : ''}`}>{board.error ? '暂时无法同步' : waiting ? `${waiting} 个等你处理` : running ? `${running} 个运行中` : board.rows.length ? `${board.rows.length} 个最近会话` : '没有最近会话'}</span><span className="module-caption">{board.rows[0] ? title(board.rows[0]) : '开始工作后自动出现'}</span></>;
+  const fresh = (state: CodexState) => board.rows.filter(r => board.fresh.has(r.session_id) && r.state === state);
+  const waiting = fresh('needs_input'), running = fresh('running');
+  return <><span className={`module-primary ${waiting.length ? 'needs-attention' : ''}`}>{board.error ? 'Can’t sync right now' : waiting.length ? `${waiting.length} waiting for you` : running.length ? `${running.length} running` : board.rows.length ? `${board.rows.length} recent sessions` : 'No recent sessions'}</span><span className="module-caption">{board.rows[0] ? title(board.rows[0]) : 'Sessions appear once you start working'}</span></>;
 }
 
 export function CodexDetail({ board }: { board: Board }) {

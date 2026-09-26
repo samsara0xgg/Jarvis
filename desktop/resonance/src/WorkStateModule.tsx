@@ -25,14 +25,14 @@ export const demoWorkState: WorkState = {
   state: {
     version: 3, analyzed_at: iso(demoAt - 4 * 60_000), observed_until: iso(demoAt - 6 * 60_000),
     evidence: { coverage: { app: 'partial', screen: 'partial', records: 'available', todos: 'available', git: 'unavailable' }, counts: { recent: 12, records: 5, todos: 2 }, limits: ['没有配置被观察的 Git 仓库：没有 Git 活动数据'] },
-    now: { text: '在 Resonance 里给 Dashboard 加「当前状态」模块，正在改 React 组件。', basis: 'observed', refs: ['s1'], as_of: iso(demoAt - 6 * 60_000) },
+    now: { text: 'Adding a “Now” card to the Resonance dashboard.', basis: 'observed', refs: ['s1'], as_of: iso(demoAt - 6 * 60_000) },
     activities: [
-      { text: '上午看 TimeSink 的屏幕采集代码，处理锁屏和睡眠的分段。', basis: 'observed', progress: '相关修复已提交到 screen-capture 分支。', refs: ['s2'] },
-      { text: '中午和 Jarvis 讨论了工作状态记录的数据结构。', basis: 'stated', progress: null, refs: ['r1'] },
-      { text: '可能在准备晚上的 Typlus 发布。', basis: 'inferred', progress: null, refs: [] },
+      { text: 'Morning: TimeSink screen-capture code, splitting lock and sleep segments.', basis: 'observed', progress: 'Fix committed to the screen-capture branch.', refs: ['s2'] },
+      { text: 'Noon: talked with Jarvis about the work-state record format.', basis: 'stated', progress: null, refs: ['r1'] },
+      { text: 'Maybe getting tonight’s Typlus release ready.', basis: 'inferred', progress: null, refs: [] },
     ],
-    links: [{ kind: 'todo', ref: 'todo_1', title: '把 TimeSink 修复合进 main', note: '今天的改动都围绕它，还没合并。', basis: 'inferred' }],
-    uncertainties: ['13:00–14:10 屏幕被锁，这段时间做了什么没有数据。'],
+    links: [{ kind: 'todo', ref: 'todo_1', title: 'Merge the TimeSink fix into main', note: 'Today’s changes all lead here; not merged yet.', basis: 'inferred' }],
+    uncertainties: ['13:00–14:10 the screen was locked, so there is no data for it.'],
     note: null,
   },
   data: { status: 'ok', capture_latest_seen: iso(demoAt - 90_000), span_latest_end: iso(demoAt - 30_000), observed_at_ms: demoAt - 60_000 },
@@ -88,27 +88,28 @@ export function freshnessLine(view: WorkState | null): { text: string; stale: bo
   const unavailable = view?.data?.status === 'unavailable';
   const age = ageMinutes(f?.latest_observed_at);
   const stale = unavailable || age === null || age > STALE_MINUTES;
-  const data = unavailable ? 'TimeSink 不可用' : f?.latest_observed_at ? `最新观察 ${hm(f.latest_observed_at)}` : '暂无观察数据';
-  const checked = f?.checked_at_ms ? `检查 ${hm(f.checked_at_ms)}` : '未检查';
-  const analysed = f?.analyzed_at ? `分析 ${hm(f.analyzed_at)}` : '未分析';
+  const data = unavailable ? 'TimeSink unavailable' : f?.latest_observed_at ? `Seen ${hm(f.latest_observed_at)}` : 'Nothing observed yet';
+  const checked = f?.checked_at_ms ? `checked ${hm(f.checked_at_ms)}` : 'not checked';
+  const analysed = f?.analyzed_at ? `analyzed ${hm(f.analyzed_at)}` : 'not analyzed';
   return { text: `${data} · ${checked} · ${analysed}`, stale };
 }
 
 // "最近在做" is only ever shown with the instant it is true for; past the recent window it is
 // history, not the present.
-export function nowLine(now: Claim | null | undefined, analyzedAt: string | null | undefined, at = Date.now()): { text: string; current: boolean } | null {
+export function nowLine(now: Claim | null | undefined, analyzedAt: string | null | undefined, at = Date.now()): { text: string; current: boolean; at: string; claim: string } | null {
   if (!now) return null;
   const asOf = now.as_of ?? analyzedAt ?? null;
   const age = ageMinutes(asOf, at);
   const current = age !== null && age <= RECENT_MINUTES;
-  return { text: current ? `截至 ${hm(asOf)}：${now.text}` : `${hm(asOf)} 时在做：${now.text}`, current };
+  return { text: current ? `As of ${hm(asOf)}: ${now.text}` : `At ${hm(asOf)}: ${now.text}`, current, at: hm(asOf), claim: now.text };
 }
 
 export function WorkStateSummary({ view }: { view: WorkState | null }) {
   const fresh = freshnessLine(view);
   const now = nowLine(view?.state?.now, view?.state?.analyzed_at);
+  const idle = view === null ? 'Syncing…' : view.state ? 'No recent activity observed' : 'No status yet';
   return <>
-    <span className="module-primary">{view === null ? '正在同步…' : now ? now.text : view.state ? '最近没有观察到活动，未知' : '还没有整理过状态'}</span>
+    <span className="module-primary">{now ? now.text : idle}</span>
     <span className={`module-caption ${fresh.stale ? 'needs-attention' : ''}`}>{fresh.text}</span>
   </>;
 }

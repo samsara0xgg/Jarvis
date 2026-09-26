@@ -28,6 +28,7 @@ try {
       onPlacement: callback => { window.__placement = callback; return () => {}; },
       onDisplayLeave: callback => { window.__leave = callback; return () => {}; },
       displayReady: () => { window.__state.ready++; },
+      companionMenu: menu => { window.__state.menu = menu; },
       onCursor: callback => { window.__cursor = callback; return () => {}; },
       onCommand: callback => { window.__command = callback; return () => {}; },
       passthrough: value => { window.__state.passthrough = value; },
@@ -51,6 +52,15 @@ try {
   await page.waitForTimeout(800);
   check('01 rests in the island', await place() === 'home');
   await shot('01-home');
+  const alphaAt = (x, y) => page.evaluate(([x, y]) => { const c = document.querySelector('.companion-canvas'), k = c.width / c.clientWidth;
+    return c.getContext('2d').getImageData(Math.round(x * k), Math.round(y * k), 1, 1).data[3]; }, [x, y]);
+  check('01 at home her glass ball shows in the island', await alphaAt(lobe.x, 24) > 200);
+  await page.evaluate(() => window.__command('homeGlass'));
+  await page.waitForTimeout(1500);
+  check('01 the tray switch sinks her back so only her eyes show', await alphaAt(lobe.x, 24) < 30 && await page.evaluate(() => window.__state.menu?.homeGlass === false));
+  await shot('01-home-eyes');
+  await page.evaluate(() => window.__command('homeGlass'));
+  await page.waitForTimeout(1500);
   await move(170, 10);
   await page.waitForTimeout(80);
   check('01 the island takes clicks, so menu bar items hidden behind it are never hit', await page.evaluate(() => window.__state.passthrough === false));
@@ -95,13 +105,17 @@ try {
   await shot('02-press');
   await page.mouse.up();
   await page.locator('.companion-strip.is-open').waitFor();
-  check('04 poke starts listening with a live caption strip', true);
+  // Her face follows on the next animation frame.
+  const face = (...ids) => page.waitForFunction(v => v.includes(document.querySelector('.companion-canvas')?.dataset.face), ids, { timeout: 1500 }).then(() => ids[0], () => null);
+  check('04 poke starts listening with a live caption strip and one of her two listening faces', await face('35', '35b') === '35');
   await page.waitForFunction(() => document.querySelector('.strip-text')?.textContent === '把今天的任务整理一下', null, { timeout: 5000 });
   await page.waitForTimeout(250);
-  await shot('04-listening');
+  check('04 once the caption ends she takes the task in, one of four takes', await face('31', '31b', '31c', '31d') === '31');
+  check('04 then she thinks before answering', await face('30') === '30');
+  await shot('04-thinking');
   await page.locator('.companion-bubble.is-open').waitFor({ timeout: 5000 });
   await page.waitForTimeout(500);
-  check('05 she answers in a bubble beneath her', (await page.locator('.companion-bubble').textContent()).includes('好，我来整理。'));
+  check('05 she answers in a bubble beneath her, with her replying face', (await page.locator('.companion-bubble').textContent()).includes('好，我来整理。') && await face('39', '39b', '39c') === '39');
   await shot('05-speaking');
   await hit.click({ force: true });
   await page.waitForTimeout(300);
@@ -122,6 +136,171 @@ try {
   await waitPlace('home');
   check('06 closing the dashboard sends her home', true);
   await shot('06-home-again');
+
+  // 09: the Dashboard around her. Five home rows fit without scrolling; each row grows into its page
+  // at the same panel height, her face follows the page, and ‹ or Esc goes back one level.
+  const panel = page.locator('.companion-dashboard');
+  const panelShot = name => shot(name, { x: 150, y: 0, width: 340, height: 592 });
+  const openRow = name => page.locator(`.ad [data-row="${name}"]`).evaluate(el => (el.matches('button') ? el : el.querySelector('button')).click());
+  const title = () => page.locator('.ad .pg-head h3').textContent();
+  const settle = () => page.waitForTimeout(700);
+  const overlaps = {};
+  await move(320, 14);
+  await panel.locator('.ad').waitFor();
+  await move(320, 200);
+  await page.waitForTimeout(900);
+  const homeHeight = (await panel.boundingBox()).height;
+  check('09 home has her words, Now, Agents, Usage and the Plugins | Projects tiles, all without scrolling',
+    await page.locator('.ad .overview > .row, .ad .overview .tile').count() === 6 && await page.locator('.ad .overview').evaluate(e => e.scrollHeight <= e.clientHeight));
+  check('09 usage on the home page is four rings', await page.locator('.ad .r-usage .dial').count() === 4);
+  await panelShot('09-home');
+  for (const [name, heading, want] of [['conversation', 'Conversation', ['39', '39b', '39c']], ['now', 'Right now', '37'], ['agents', 'Agents', null], ['usage', 'Usage', null], ['plugins', 'Plugins', null], ['projects', 'Projects', '40']]) {
+    await openRow(name);
+    await settle();
+    const faceNow = await page.locator('.companion-canvas').getAttribute('data-face');
+    check(`09 ${name} opens in place at the same panel height${want ? ` and she wears ${[want].flat().join(' or ')}` : ''} (face ${faceNow})`,
+      await title() === heading && Math.abs((await panel.boundingBox()).height - homeHeight) < 1 && (!want || [want].flat().includes(faceNow)));
+    await panelShot(`09-${name}`);
+    if (name === 'usage') check('09 usage shows how many limit resets Claude and Codex have left',
+      (await page.locator('.ad .us-plan .meta').allTextContents()).filter(t => /resets? left/.test(t)).length === 2);
+    if (name === 'projects') {
+      await page.locator('.ad .pj').first().locator('.cols > span').last().hover();
+      await page.waitForTimeout(250);
+      const tip = page.locator('.ad .pj').first().locator('.cols > span:last-child .tip');
+      check('09 hovering a project day shows its day and hours', await tip.textContent() === 'Today · 2.0 h' && await tip.evaluate(e => getComputedStyle(e).opacity === '1'));
+      await panelShot('09-projects-hover');
+    }
+    // Going back, the page's words must be gone before any home row shows again: never text on text.
+    overlaps[name] = await page.evaluate(() => new Promise(done => {
+      const body = document.querySelector('.ad .pg-body'), home = document.querySelector('.ad .overview');
+      const seen = el => Number(getComputedStyle(el).opacity);
+      document.querySelector('.ad .pg-back').click();
+      let worst = 0; const t0 = performance.now();
+      const tick = () => {
+        const words = body.isConnected ? seen(body) : 0, rows = seen(home) * Math.max(...[...home.children].map(seen));
+        worst = Math.max(worst, Math.min(words, rows));
+        if (performance.now() - t0 < 500) requestAnimationFrame(tick); else done(Math.round(worst * 100) / 100);
+      };
+      requestAnimationFrame(tick);
+    }));
+    await page.waitForFunction(() => !document.querySelector('.ad .page'));
+  }
+  check('09 ‹ goes back home', await page.locator('.ad .overview').evaluate(e => !e.inert));
+  check(`09 going back, the page's words leave before the home rows return (overlap ${JSON.stringify(overlaps)})`, Object.values(overlaps).every(v => v < .15));
+
+  await openRow('agents');
+  await settle();
+  check('09 Agents groups Claude and Codex sessions into Needs you, Working and Earlier today',
+    (await page.locator('.ad .pg-sec h4').allTextContents()).join('|') === 'Needs you|Working · 3|Earlier today · 3' && await page.locator('.ad .ag .tagc.claude').count() === 4);
+  const detailHeights = () => page.locator('.ad .ag-more').evaluateAll(els => els.map(e => Math.round(e.getBoundingClientRect().height)));
+  check('09 every card starts folded to its name, state and tags (agent, project, terminal, subagent)',
+    (await detailHeights()).every(h => h === 0) && (await page.locator('.ad .ag[data-id="review"] .tagc').allTextContents()).join('|') === 'Claude|jarvis|Ghostty|Subagent');
+  await page.locator('.ad .ag[data-id="inner"] .ag-head').click();
+  await page.waitForTimeout(400);
+  await page.locator('.ad .ag.is-wait .ag-head').click();
+  await page.waitForTimeout(400);
+  check('09 a click opens one card and folds the one before', (await detailHeights()).filter(h => h > 20).length === 1
+    && await page.locator('.ad .ag.is-wait.is-open .ag-last').textContent() === 'Wants to run npm run build');
+  await panelShot('09-agents-open');
+  await page.locator('.ad .ag.is-wait').getByRole('button', { name: 'Approve' }).click();
+  check('09 approving moves the session to the top of Working and she is pleased',
+    await face('33') === '33' && await page.locator('.ad .ag.is-work .ag-title').first().textContent() === 'Adjust the usage page');
+  await page.locator('.ad .ag.is-done').first().hover();
+  await page.locator('.ad .ag.is-done .ag-x').first().click();
+  await page.waitForTimeout(200);
+  check('09 × hides a session and offers undo', await page.locator('.ad .ag.is-done').count() === 2 && await page.locator('.ad .toast.is-on button').count() === 1);
+  await page.locator('.ad .toast button').click();
+  check('09 undo brings it back', await page.locator('.ad .ag.is-done').count() === 3);
+  await page.locator('.ad .pg-back').click();
+  await page.waitForFunction(() => !document.querySelector('.ad .page'));
+  check('09 the home Agents row follows the page', (await page.locator('.ad .r-agents .pill').textContent()) === '4 working');
+
+  await openRow('plugins');
+  await settle();
+  await page.locator('.ad [data-plugin="notion"]').click();
+  await settle();
+  check('09 a plugin opens its own page, titled with its name', await title() === 'Notion' && await page.locator('.ad .ask-card').count() === 1);
+  await page.getByRole('button', { name: 'Sign in and continue' }).click();
+  check('09 while sign-in waits she wears her loading face', await face('36') === '36');
+  await page.locator('.ad .ask-card.is-ok').waitFor({ timeout: 4000 });
+  check('09 once signed in, Notion is connected and Jarvis picks the task back up',
+    await face('10') === '10' && (await page.locator('.ad .say').textContent()).startsWith('Signed in to Notion'));
+  await panelShot('09-plugin-connected');
+  await page.locator('.ad .pg-back').focus();
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(450);
+  check('09 Esc in a plugin goes back to the plugin list', await title() === 'Plugins' && (await page.locator('.ad .pl-row[data-plugin="notion"] small').textContent()) === 'Connected');
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(() => !document.querySelector('.ad .page'));
+  check('09 Esc again goes home', await page.locator('.ad .pl-mini .on').count() === 2);
+
+  await page.locator('.ad .cmp-hit').hover();
+  await page.waitForTimeout(500);
+  await page.locator('.ad .cmp input').fill('Move the voice test to five');
+  await page.keyboard.press('Enter');
+  check('09 the bottom bar sends: her words turn to Thinking and she thinks', await face('30') === '30' && await page.locator('.ad .say').textContent() === 'Thinking…');
+  await page.waitForFunction(() => document.querySelector('.ad .say')?.textContent.startsWith('Got it'), null, { timeout: 3000 });
+  check('09 then she answers with her speaking face', await face('39', '39b', '39c') === '39');
+  await openRow('conversation');
+  await settle();
+  check('09 the new turn is in the conversation, which has its own text box', (await page.locator('.ad .tr-you p').last().textContent()) === 'Move the voice test to five' && await page.locator('.ad .pg-input input').count() === 1);
+  await move(600, 560);
+  await page.waitForFunction(() => !document.querySelector('.companion-dashboard.is-open'), null, { timeout: 3000 });
+  check('09 closing the panel returns it to the home page', await page.locator('.ad .page').count() === 0);
+  await waitPlace('home');
+
+  // 08: skins. She starts in deep-space glass; holding her past a poke changes her into the next skin,
+  // the tray picks any skin, and on her own she comes out of the island, changes, and goes home.
+  const skinOn = () => page.evaluate(() => window.__state.menu?.skins.find(s => s.on)?.key);
+  const wearing = () => page.locator('.companion-canvas').getAttribute('data-skin');
+  const wearsSoon = key => page.waitForFunction(k => document.querySelector('.companion-canvas')?.dataset.skin === k, key, { timeout: 4000 });
+  check('08 she starts in deep-space glass', await skinOn() === 'glass' && await wearing() === 'glass');
+  await move(out.x, out.y);
+  await waitPlace('out');
+  // Her glass body is opaque at the centre-left of the ball, where the eyes are not.
+  const body = await page.evaluate(({ x, y }) => { const c = document.querySelector('.companion-canvas'), k = c.width / c.clientWidth;
+    return c.getContext('2d').getImageData(Math.round((x - 16) * k), Math.round(y * k), 1, 1).data[3]; }, out);
+  check('08 her glass body renders', body > 200);
+  const face0 = await page.locator('.companion-canvas').getAttribute('data-face');
+  check(`08 out and idle she wears the idle face (saw ${face0})`, face0 === '02');
+  await shot('08-start');
+  const held = await hit.boundingBox();
+  await page.mouse.move(held.x + held.width / 2, held.y + held.height / 2);
+  await page.mouse.down();
+  await page.waitForTimeout(800);
+  await shot('08-charged');
+  await page.mouse.up();
+  await page.waitForTimeout(520);
+  await shot('08-flash');
+  await wearsSoon('nebula');
+  check('08 holding her changes her into the next skin instead of starting voice', await page.locator('.companion-strip.is-open').count() === 0 && await skinOn() === 'nebula');
+  await page.waitForTimeout(1400);
+  await shot('08-nebula');
+  for (const key of ['galaxy', 'frost', 'glass', 'aurora']) {
+    await page.evaluate(k => window.__command(`skin:${k}`), key);
+    await wearsSoon(key);
+    await page.waitForTimeout(1400);
+    await shot(`08-${key}`);
+  }
+  check('08 the tray picks any skin and she wears it', await skinOn() === 'aurora');
+  await move(600, 560);
+  await waitPlace('home');
+  await page.evaluate(() => window.__command('outing'));
+  await waitPlace('out');
+  await page.waitForFunction(() => document.querySelector('.companion-canvas')?.dataset.skin !== 'aurora', null, { timeout: 4000 });
+  await shot('08-own-change');
+  await waitPlace('home');
+  check('08 on her own she comes out, changes skin and goes home, keeping your pick', await skinOn() === 'aurora');
+  await page.evaluate(() => window.__command('outing'));
+  await wearsSoon('aurora');
+  await waitPlace('home');
+  check('08 her next change on her own returns to your pick', true);
+  await page.evaluate(() => window.__command('expr:30'));
+  await waitPlace('out');
+  await page.waitForTimeout(1200);
+  await shot('08-thinking');
+  await waitPlace('home');
+  check('08 the tray plays an expression out of the island and she goes home', true);
 
   // 07: the cursor rests on an external screen with no notch. She sinks into this island,
   // Electron moves the window only after display-ready, and she comes up dead centre there.
@@ -152,6 +331,9 @@ try {
   await shot('07-external-dock', { x: 120, y: 0, width: 400, height: 300 });
   await move(600, 560);
   await waitPlace('home');
+  await page.reload();
+  await page.waitForTimeout(800);
+  check('08 her skin survives a restart', await skinOn() === 'aurora' && await wearing() === 'aurora');
   check('no page errors', errors.length === 0);
   await context.close();
   writeFileSync(path.join(dir, 'verification.json'), JSON.stringify({ checks, errors }, null, 2));

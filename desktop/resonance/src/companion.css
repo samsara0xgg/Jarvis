@@ -7,6 +7,7 @@
   position:fixed; inset:0; overflow:hidden; color:#eceef2;
 }
 .companion-stage { position:absolute; left:0; top:0; z-index:4; pointer-events:none; overflow:visible; }
+.companion-canvas { position:absolute; left:0; top:0; z-index:4; pointer-events:none; }
 .companion-hit { position:absolute; left:0; top:0; z-index:5; padding:0; border-radius:50%; background:transparent; transform-origin:50% 50%; cursor:pointer; }
 .companion-hit:focus-visible { outline:1.5px solid rgb(255 255 255 / .55); outline-offset:0; }
 
@@ -63,12 +64,34 @@
 .bubble-text > span { grid-area:1 / 1; white-space:nowrap; }
 .bubble-ghost { visibility:hidden; }
 
+/* Her light as "r g b", written by the ball whenever it changes. */
+:root { --glow:157 180 255; }
+/* The Dashboard is cut from her glass: deep blue, a little of her nebula in the corners, her light pooled beneath her. */
 .companion-dashboard {
-  position:absolute; z-index:2; width:300px; padding-top:8px; border-radius:24px; background:rgb(10 11 13 / .66); box-shadow:var(--edge),0 22px 44px -22px #000d;
+  --surface-ink:#eef0fb; --surface-muted:rgb(196 204 238 / .62); --surface-line:rgb(157 180 255 / .12); --surface-hover:rgb(var(--glow) / .07);
+  position:absolute; z-index:2; width:300px; padding-top:8px; border-radius:24px;
+  background:
+    radial-gradient(200px 110px at 50% 0,rgb(var(--glow) / .3),transparent 72%),
+    radial-gradient(110% 55% at 0 100%,rgb(91 58 168 / .2),transparent 62%),
+    radial-gradient(80% 45% at 100% 62%,rgb(31 90 138 / .16),transparent 62%),
+    linear-gradient(180deg,rgb(21 23 50 / .8),rgb(10 11 25 / .86));
+  box-shadow:inset 0 0 0 .5px rgb(var(--glow) / .28),inset 0 1px 0 rgb(255 255 255 / .08),0 28px 56px -28px #000,0 0 64px -34px rgb(var(--glow) / .7);
   opacity:0; visibility:hidden; transform:translateY(-14px) scale(.96); transform-origin:50% 0; pointer-events:none;
   transition:opacity 180ms ease,transform 220ms cubic-bezier(.4,0,1,1),visibility 0s 220ms;
 }
 .companion-dashboard.is-open { opacity:1; visibility:visible; transform:none; pointer-events:auto; transition:opacity 200ms ease,transform 460ms var(--spring),visibility 0s; }
+/* A few faint stars near the edges, under the content. */
+.companion-dashboard::before {
+  content:''; position:absolute; inset:0; z-index:-1; border-radius:inherit; pointer-events:none; opacity:.45;
+  background-image:radial-gradient(1.4px 1.4px at 4% 16%,#fff,transparent),radial-gradient(1.2px 1.2px at 96% 11%,#fff,transparent),
+    radial-gradient(1.5px 1.5px at 97% 38%,#dfe6ff,transparent),radial-gradient(1.2px 1.2px at 3% 52%,#fff,transparent),
+    radial-gradient(1.4px 1.4px at 96% 71%,#e9e1ff,transparent),radial-gradient(1.5px 1.5px at 4% 86%,#dfe6ff,transparent),
+    radial-gradient(1.2px 1.2px at 28% 98.6%,#fff,transparent),radial-gradient(1.2px 1.2px at 74% 98.8%,#fff,transparent);
+}
+.companion-dashboard .dashboard-preview { --dashboard-accent:rgb(var(--glow)); }
+.companion-dashboard .dashboard-overview[data-dashboard-style="unified"] .dashboard-composer-surface {
+  background:color-mix(in srgb,rgb(var(--glow) / .55) calc((1 - var(--compose-progress)) * 100%),rgb(255 255 255 / .05));
+}
 
 @media(prefers-reduced-motion:reduce) {
   .companion-chip,.companion-chip.is-open,.companion-composer,.companion-composer.is-open,.companion-strip,.companion-strip.is-open,

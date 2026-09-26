@@ -24,6 +24,7 @@ contextBridge.exposeInMainWorld('jarvis', {
     return () => ipcRenderer.removeListener('display-leave', listener);
   },
   displayReady: () => ipcRenderer.send('display-ready'),
+  companionMenu: (menu: unknown) => ipcRenderer.send('companion-menu', menu),
   layout: (mode: string, height: number, surface?: { x: number; y: number; width: number; height: number }) => ipcRenderer.send('layout', { mode, height, surface }),
   focus: (enabled: boolean) => ipcRenderer.invoke('focus-input', enabled),
   hide: () => ipcRenderer.send('hide'),

@@ -38,7 +38,7 @@ try {
   });
   await page.goto(`${url}/?port=19099`);
   await page.getByRole('button', { name: 'Dashboard', exact: true }).click();
-  await page.getByRole('button', { name: '展开当前状态', exact: true }).click();
+  await page.getByRole('button', { name: 'Open Right now', exact: true }).click();
   const panel = page.locator('.work-detail');
   await panel.getByText('核对工作状态数据', { exact: false }).waitFor();
   check('opening dashboard only reads', posts === 0 && gets > 0);
@@ -56,7 +56,7 @@ try {
   await button.click();
   await panel.getByText('未更新：验收模拟模型不可用').waitFor();
   check('failure preserves the last successful state', (await panel.textContent()).includes('已经读取最新活动'));
-  check('three separate freshness clocks shown', (await page.locator('[data-module="3"]').textContent()).includes('最新观察'));
+  check('three separate freshness clocks shown', (await page.locator('[data-module="3"]').textContent()).includes('Seen'));
   check('no React runtime errors', errors.length === 0);
   await page.screenshot({ path: `${dir}/current-state.png`, fullPage: true });
   writeFileSync(`${dir}/checks.json`, JSON.stringify({ checks, posts, gets, errors }, null, 2));

@@ -58,8 +58,8 @@ try {
   await list.screenshot({ path: `${dir}/hover.png` });
   // A locator screenshot can scroll the list away from the desktop pointer.
   await row('demo-2').locator('.codex-open').hover();
-  await row('demo-2').getByRole('button', { name: '回复 修复语音重连', exact: true }).click();
-  const reply = page.getByRole('textbox', { name: '回复 修复语音重连 的内容' });
+  await row('demo-2').getByRole('button', { name: '回复 Fix voice reconnect', exact: true }).click();
+  const reply = page.getByRole('textbox', { name: '回复 Fix voice reconnect 的内容' });
   await reply.fill('先检查断网后恢复');
   await page.mouse.move(0, 0); await page.waitForTimeout(300);
   check('reply opens inline and remains expanded when pointer leaves', await reply.isVisible() && await row('demo-2').getAttribute('class').then(c => c.includes('is-replying')));
@@ -68,7 +68,7 @@ try {
   check('unsupported send never reports success', (await page.locator('.codex-toast').innerText()).includes('尚未接通'));
   await reply.press('Escape');
   check('Escape closes only the reply field', await reply.count() === 0 && await list.isVisible());
-  await row('demo-2').getByRole('button', { name: '回复 修复语音重连', exact: true }).click();
+  await row('demo-2').getByRole('button', { name: '回复 Fix voice reconnect', exact: true }).click();
   check('reply draft survives collapse', await reply.inputValue() === '先检查断网后恢复');
   await reply.press('Escape');
   await row('demo-2').locator('.codex-open').click({ delay: 1100 });
@@ -113,8 +113,8 @@ try {
   check('ordinary progress does not reopen an acknowledged task', !(await row('demo-1').getAttribute('class')).includes('is-expanded'));
   check('new attention and new turns automatically expand', (await row('demo-2').getAttribute('class')).includes('is-expanded') && (await row('demo-8').getAttribute('class')).includes('is-expanded'));
   await row('demo-2').locator('.codex-open').hover();
-  await row('demo-2').getByRole('button', { name: '回复 修复语音重连', exact: true }).click();
-  await page.getByRole('textbox', { name: '回复 修复语音重连 的内容' }).press('Escape');
+  await row('demo-2').getByRole('button', { name: '回复 Fix voice reconnect', exact: true }).click();
+  await page.getByRole('textbox', { name: '回复 Fix voice reconnect 的内容' }).press('Escape');
   await page.mouse.move(0, 0); await page.waitForTimeout(350);
   check('task collapses after reply interaction ends', !(await row('demo-2').getAttribute('class')).includes('is-expanded'));
   check('no renderer errors', errors.length === 0);

@@ -14,7 +14,8 @@ import './quota-module.css';
 export type UsageWindow = { key: string; label: string; percent: number; resets_at: string | null };
 export type ServiceStatus = 'ok' | 'error' | 'unconfigured';
 export type UsageService<T> = { status: ServiceStatus; error?: string | null; observed_at_ms?: number | null; data: Partial<T> };
-export type ClaudeData = { plan: string; windows: UsageWindow[] };
+// Limit resets Claude grants (claude.ai's cedar_ember block): how many are left and the last day to use them.
+export type ClaudeData = { plan: string; windows: UsageWindow[]; reset_credits?: number; reset_ends_at?: string | null };
 export type CodexData = { plan: string; windows: UsageWindow[]; reset_credits: number };
 export type SpendRow = { model: string; today_usd: number; month_usd: number };
 export type KeyRow = { key_id: string; name: string; today_tokens: number; month_tokens: number };
@@ -28,13 +29,13 @@ export type Usage = { services: {
 
 const demoAt = Date.now();
 export const demoUsage: Usage = { services: {
-  claude: { status: 'ok', observed_at_ms: demoAt, data: { plan: '20X', windows: [
-    { key: 'five_hour', label: '5 小时', percent: 38, resets_at: new Date(demoAt + (3 * 60 + 42) * 60_000).toISOString() },
-    { key: 'seven_day', label: '7 天 · 总', percent: 62, resets_at: new Date(demoAt + 31 * 3_600_000).toISOString() },
-    { key: 'seven_day_fable', label: '7 天 · Fable', percent: 24, resets_at: new Date(demoAt + 31 * 3_600_000).toISOString() },
+  claude: { status: 'ok', observed_at_ms: demoAt, data: { plan: '20X', reset_credits: 1, reset_ends_at: new Date(demoAt + 8 * 86_400_000).toISOString(), windows: [
+    { key: 'five_hour', label: '5 hours', percent: 38, resets_at: new Date(demoAt + (3 * 60 + 42) * 60_000).toISOString() },
+    { key: 'seven_day', label: '7 days', percent: 62, resets_at: new Date(demoAt + 31 * 3_600_000).toISOString() },
+    { key: 'seven_day_fable', label: '7 days · Fable', percent: 24, resets_at: new Date(demoAt + 31 * 3_600_000).toISOString() },
   ] } },
   codex: { status: 'ok', observed_at_ms: demoAt - 60_000, data: { plan: 'Pro 5X', reset_credits: 0, windows: [
-    { key: 'primary_window', label: '7 天', percent: 46, resets_at: new Date(demoAt + 47 * 3_600_000).toISOString() },
+    { key: 'primary_window', label: '7 days', percent: 46, resets_at: new Date(demoAt + 47 * 3_600_000).toISOString() },
   ] } },
   openai: { status: 'ok', observed_at_ms: demoAt, data: { today_usd: 0.84, month_usd: 12.6,
     by_model: [{ model: 'gpt-live-1', today_usd: 0.61, month_usd: 9.2 }, { model: 'gpt-5.4-mini', today_usd: 0.23, month_usd: 3.4 }],
@@ -72,6 +73,7 @@ const fmtUsd = (n?: number) => (n === undefined ? '—' : `$${n.toFixed(2)}`);
 const fmtTokens = (n?: number) => (n === undefined ? '—' : n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(0)}K` : String(n));
 const tone = (s?: UsageService<unknown>) => (!s || s.status === 'unconfigured' ? 'muted' : s.status === 'ok' ? 'ok' : 'warn');
 const statusText = (s?: UsageService<unknown>) => (!s || s.status === 'unconfigured' ? '未配置' : s.status === 'ok' ? '正常' : '同步异常');
+const overviewStatus = (s?: UsageService<unknown>) => (!s || s.status === 'unconfigured' ? 'Not set up' : s.status === 'ok' ? 'OK' : 'Sync error');
 
 const glyphs = {
   claude: <span className="quota-brand" style={{ maskImage: `url(${JSON.stringify(claudeLogo)})` }}/>,
@@ -187,8 +189,8 @@ function SummaryMeter({ window: w, grid = false }: { window: UsageWindow; grid?:
   return <span className="overview-meter" title={`${w.label} · ${reset}`}>
     {grid && <span className="overview-window">{w.label}</span>}
     <span className="overview-reset">{reset.replace('resets in ', '')}</span>
-    <span className={`overview-quota ${percent >= 90 ? 'is-critical' : percent >= 75 ? 'is-warning' : ''}`} role="meter" aria-label={`${w.label}已用`} aria-valuenow={percent} aria-valuemin={0} aria-valuemax={100}><i style={{ width: `${percent}%` }}/></span>
-    <span className="overview-percent">{grid ? '已用 ' : ''}{Math.round(percent)}%</span>
+    <span className={`overview-quota ${percent >= 90 ? 'is-critical' : percent >= 75 ? 'is-warning' : ''}`} role="meter" aria-label={`${w.label} used`} aria-valuenow={percent} aria-valuemin={0} aria-valuemax={100}><i style={{ width: `${percent}%` }}/></span>
+    <span className="overview-percent">{Math.round(percent)}%</span>
   </span>;
 }
 
@@ -200,11 +202,11 @@ export function QuotaSummary({ usage, grid = false }: { usage: Usage | null; gri
   const codexWindows = grid ? codex?.data.windows ?? [] : (codex?.data.windows ?? []).slice(0, 1);
   return <span className={`overview-usage ${grid ? 'overview-usage-grid' : ''}`}>
     <span className="overview-provider">Claude Max{claude?.data.plan && <span className="overview-plan">{claude.data.plan}</span>}</span>
-    {claude?.status === 'ok' && claudeWindows.length ? claudeWindows.map(w => <SummaryMeter key={w.key} window={w} grid={grid}/>) : <span className="overview-unavailable">{usage ? statusText(claude) : '正在同步…'}</span>}
+    {claude?.status === 'ok' && claudeWindows.length ? claudeWindows.map(w => <SummaryMeter key={w.key} window={w} grid={grid}/>) : <span className="overview-unavailable">{usage ? overviewStatus(claude) : 'Syncing…'}</span>}
     <span className="overview-rule"/>
     <span className="overview-provider">Codex Pro{codex?.data.plan && <span className="overview-plan">{grid ? codex.data.plan.replace(/^Pro\s*/, '') : '5X'}</span>}</span>
-    {codex?.status === 'ok' && codexWindows.length ? codexWindows.map(w => <SummaryMeter key={w.key} window={w} grid={grid}/>) : <span className="overview-unavailable">{usage ? statusText(codex) : '正在同步…'}</span>}
+    {codex?.status === 'ok' && codexWindows.length ? codexWindows.map(w => <SummaryMeter key={w.key} window={w} grid={grid}/>) : <span className="overview-unavailable">{usage ? overviewStatus(codex) : 'Syncing…'}</span>}
     <span className="overview-rule"/>
-    <span className="overview-spend"><span>OpenAI 今日</span><span>{fmtUsd(openai?.data.today_usd)}</span></span>
+    <span className="overview-spend"><span>OpenAI today</span><span>{fmtUsd(openai?.data.today_usd)}</span></span>
   </span>;
 }

@@ -22,15 +22,15 @@ const demoDays = Array.from({ length: 7 }, (_, i) => new Date(demoNow - (6 - i) 
 export const demoProjects: ProjectsView = {
   days: demoDays,
   projects: [
-    { id: 'job-search', name: '求职', seconds: 64_800, today_seconds: 7_200, days: [3_600, 10_800, 14_400, 9_000, 12_600, 7_200, 7_200], last_seen: demoIso(0.5), commits: { count: 0, items: [] }, recent: [
-      { app: 'ChatGPT', label: '分析公司背调岗位和JD', seconds: 3_060, last_seen: demoIso(0.5) },
-      { app: 'Google Chrome', label: 'Yilun Shi Resume sku.docx', seconds: 2_090, last_seen: demoIso(3) },
+    { id: 'typlus', name: 'Typlus', seconds: 64_800, today_seconds: 7_200, days: [3_600, 10_800, 14_400, 9_000, 12_600, 7_200, 7_200], last_seen: demoIso(0.5), commits: { count: 0, items: [] }, recent: [
+      { app: 'Xcode', label: 'Typlus overlay polish', seconds: 3_060, last_seen: demoIso(0.5) },
+      { app: 'Google Chrome', label: 'Typlus release notes', seconds: 2_090, last_seen: demoIso(3) },
     ] },
     { id: 'jarvis', name: 'Jarvis', seconds: 41_400, today_seconds: 5_400, days: [7_200, 3_600, 9_000, 5_400, 7_200, 3_600, 5_400], last_seen: demoIso(1), commits: { count: 12, items: [
       { sha: '355fdb3', subject: 'feat(execution,decision,state,runtime): report reads To Do and calendar', committed_at: demoIso(2), on_main: true, repo: 'jarvis' },
       { sha: '188d4ea', subject: 'feat(execution,decision,state,runtime): Codex plugins, search, approval', committed_at: demoIso(26), on_main: true, repo: 'jarvis' },
     ] }, recent: [{ app: 'Ghostty', label: 'cc | jarvis full audit', seconds: 1_260, last_seen: demoIso(1) }] },
-    { id: 'school', name: '学业', seconds: 0, today_seconds: 0, days: [0, 0, 0, 0, 0, 0, 0], last_seen: null, commits: { count: 0, items: [] }, recent: [] },
+    { id: 'school', name: 'School', seconds: 0, today_seconds: 0, days: [0, 0, 0, 0, 0, 0, 0], last_seen: null, commits: { count: 0, items: [] }, recent: [] },
   ],
   other: { seconds: 21_600, days: [3_000, 3_000, 3_000, 3_000, 3_000, 3_000, 3_600], count: 140 },
   unsorted: { seconds: 900, days: [0, 0, 0, 0, 0, 0, 900], count: 6 },
@@ -78,33 +78,34 @@ export function useProjects(port: string | null, active: boolean) {
 }
 
 const pad = (n: number) => String(n).padStart(2, '0');
-export const duration = (seconds: number) => seconds < 3_600 ? `${Math.max(1, Math.round(seconds / 60))} 分钟` : `${(seconds / 3_600).toFixed(1)} 小时`;
+export const duration = (seconds: number) => seconds < 3_600 ? `${Math.max(1, Math.round(seconds / 60))} min` : `${(seconds / 3_600).toFixed(1)} h`;
 const clock = (d: Date) => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
 export function when(value: string | null, now = Date.now()): string {
   if (!value) return '—';
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return '—';
   const days = Math.round((new Date(new Date(now).toDateString()).getTime() - new Date(d.toDateString()).getTime()) / 86_400_000);
-  return days <= 0 ? `今天 ${clock(d)}` : days === 1 ? `昨天 ${clock(d)}` : `${days} 天前`;
+  return days <= 0 ? `today ${clock(d)}` : days === 1 ? `yesterday ${clock(d)}` : `${days} days ago`;
 }
 const weekday = (iso: string) => '日一二三四五六'[new Date(`${iso}T12:00:00`).getDay()];
 
 function statusLine(view: ProjectsView | null, refreshing: boolean, notice: string | null): { text: string; warn: boolean } {
-  if (refreshing || view?.refreshing) return { text: '正在归类新活动，先显示上次结果', warn: false };
+  if (refreshing || view?.refreshing) return { text: 'Sorting new activity', warn: false };
   if (notice) return { text: notice, warn: true };
-  if (view?.coverage.timesink === 'unavailable') return { text: 'TimeSink 读不到，时间未知', warn: true };
-  if (view && view.unsorted.seconds > 0) return { text: `还有 ${duration(view.unsorted.seconds)}没归类`, warn: true };
-  return { text: view?.sorted_at ? `归类于 ${when(view.sorted_at)}` : '还没有归类过', warn: false };
+  if (view?.coverage.timesink === 'unavailable') return { text: 'TimeSink unreadable', warn: true };
+  if (view && view.unsorted.seconds > 0) return { text: `${duration(view.unsorted.seconds)} unsorted`, warn: true };
+  return { text: view?.sorted_at ? `sorted ${when(view.sorted_at)}` : 'never sorted', warn: false };
 }
 
 export function ProjectsSummary({ view, missing, refreshing, notice }: { view: ProjectsView | null; missing: boolean; refreshing: boolean; notice: string | null }) {
-  if (missing) return <><span className="module-primary">还没有配置项目</span><span className="module-caption">config/jarvis.yaml → projects</span></>;
   // The tile fits one line: the week's leading project. Every project is in the detail.
   const top = (view?.projects ?? []).find(p => p.seconds > 0);
   const status = statusLine(view, refreshing, notice);
+  const line = missing ? 'No projects set up' : view === null ? 'Syncing…' : top ? `${top.name} · ${duration(top.seconds)}` : 'No project time yet';
+  if (missing) return <><span className="module-primary">{line}</span><span className="module-caption">config/jarvis.yaml → projects</span></>;
   return <>
-    <span className="module-primary projects-primary">{view === null ? '正在同步…' : top ? `${top.name} ${duration(top.seconds)}` : '还没有项目时间'}</span>
-    <span className={`module-caption ${status.warn ? 'needs-attention' : ''}`}>近 7 天 · {status.text}</span>
+    <span className="module-primary projects-primary">{line}</span>
+    <span className={`module-caption ${status.warn ? 'needs-attention' : ''}`}>Last 7 days · {status.text}</span>
   </>;
 }
 

@@ -34,7 +34,7 @@ try {
   const selected = value => page.waitForFunction(expected => document.querySelector('.dashboard-stage')?.dataset.selected === expected, value);
   const shot = async name => { await settle(); await page.screenshot({ path: `${dir}/${name}.png`, omitBackground: true }); };
   await click('Dashboard'); await selected('overview'); await settle();
-  const tile = page.getByRole('button', { name: '打开插件列表', exact: true });
+  const tile = page.getByRole('button', { name: 'Open plugins', exact: true });
   await tile.scrollIntoViewIfNeeded();
   const origin = await page.locator('.dashboard-viewport').evaluate(node => ({ scroll: node.scrollTop, height: node.clientHeight }));
   const windowBefore = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getBounds());

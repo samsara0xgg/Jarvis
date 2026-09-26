@@ -96,11 +96,32 @@ if (locked) app.whenReady().then(() => {
   });
   tray = new Tray(nativeImage.createEmpty());
   tray.setTitle('●'); tray.setToolTip('Jarvis 小球 · 交互原型');
-  tray.setContextMenu(Menu.buildFromTemplate([
+  // The renderer owns her skins and expressions and reports them; every item just sends a command back.
+  const send = (command: string) => () => win.webContents.send('command', command);
+  type MenuModel = { skins: { key: string; name: string; on: boolean }[]; auto: boolean; layout?: string; homeGlass?: boolean; exprs: { id: string; name: string }[] };
+  const menu = (model: MenuModel) => tray.setContextMenu(Menu.buildFromTemplate([
     { label: 'Jarvis 小球 · 交互原型（全部模拟）', enabled: false },
-    { label: '打开 Dashboard', click: () => win.webContents.send('command', 'dashboard') },
+    { label: '打开 Dashboard', click: send('dashboard') },
+    { label: 'Dashboard 布局', submenu: [
+      { label: '围着她（一列）', type: 'radio', checked: model.layout !== 'grid', click: send('layout:around') },
+      { label: '两栏（原来的排法）', type: 'radio', checked: model.layout === 'grid', click: send('layout:grid') },
+    ] },
+    { type: 'separator' },
+    { label: '皮肤', enabled: model.skins.length > 0, submenu: [
+      ...model.skins.map(skin => ({ label: String(skin.name), type: 'radio' as const, checked: !!skin.on, click: send(`skin:${skin.key}`) })),
+      { type: 'separator' },
+      { label: '自己换装', type: 'checkbox', checked: !!model.auto, click: send('auto') },
+      { label: '现在换一套', click: send('outing') },
+      { type: 'separator' },
+      { label: '在家露出玻璃球', type: 'checkbox', checked: !!model.homeGlass, click: send('homeGlass') },
+    ] },
+    { label: '看表情', enabled: model.exprs.length > 0, submenu: model.exprs.map(x => ({ label: `${x.id} ${x.name}`, click: send(`expr:${x.id}`) })) },
     { type: 'separator' },
     { label: '退出小球原型', click: () => app.quit() },
   ]));
+  menu({ skins: [], auto: false, exprs: [] });
+  ipcMain.on('companion-menu', (event, model: MenuModel) => {
+    if (event.sender === win.webContents && Array.isArray(model?.skins) && Array.isArray(model?.exprs)) menu(model);
+  });
 });
 app.on('window-all-closed', () => {});

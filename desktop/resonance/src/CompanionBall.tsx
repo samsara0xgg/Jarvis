@@ -1,45 +1,21 @@
 import { useEffect, useRef, type RefObject } from 'react';
+import { Core, spring, step, type ExprId, type Skin } from './starCore';
 
 export const R = 26;
+// Held this long, a poke becomes a costume change instead.
+export const HOLD_MS = 650;
 const HOME_SCALE = .5;
 export type Place = 'home' | 'peek' | 'out' | 'dock';
-export type Mood = 'idle' | 'listening' | 'speaking';
 export type Point = { x: number; y: number };
 export type Lobe = { left: number; right: number; height: number; notched: boolean };
-export type BallTarget = { place: Place; mood: Mood; pressed: boolean; hearing: boolean; anchors: Record<Place, Point> };
-export type BallHandle = { nudge: () => void; arrive: () => void };
+export type BallTarget = { place: Place; expr: ExprId; pressed: boolean; anchors: Record<Place, Point>; homeGlass: boolean };
+// With her glass showing at home, this long without the cursor moving sends her to sleep there.
+const DOZE_MS = 10 * 60_000;
+export type BallHandle = { nudge: () => void; arrive: () => void; change: (skin: Skin) => void; hop: (height: number) => void };
 
-type Eyes = { sep: number; y: number; length: number; width: number; tilt: number };
-// Capsule eyes in ball radii. Tilt 90 lays both flat ("— —"), 0 stands them upright;
-// between the two they rotate through "/ \" like the physical ball's display.
-const eyes = {
-  slit: { sep: .44, y: .02, length: .34, width: .13, tilt: 90 },
-  glance: { sep: .36, y: .02, length: .18, width: .18, tilt: 0 },
-  peek: { sep: .25, y: .32, length: .16, width: .18, tilt: 14 },
-  idle: { sep: .25, y: -.02, length: .3, width: .19, tilt: 20 },
-  listening: { sep: .24, y: .04, length: .4, width: .2, tilt: 0 },
-  speaking: { sep: .25, y: .01, length: .24, width: .2, tilt: 0 },
-} satisfies Record<string, Eyes>;
 // x Hz, x damping, y Hz, y damping. A slower x than y bends every flight into a curve.
 const travel: Record<Place, [number, number, number, number]> = {
   home: [2.4, .92, 2.6, .9], peek: [3, .8, 3.2, .7], out: [2.6, .75, 2.6, .62], dock: [1.5, .85, 2.2, .72],
-};
-type Spring = { value: number; velocity: number };
-const spring = (value: number): Spring => ({ value, velocity: 0 });
-// Damped harmonic spring; damping 1 never overshoots. Returns whether it still moves.
-function step(s: Spring, goal: number, hz: number, damping: number, dt: number) {
-  const w = 2 * Math.PI * hz;
-  for (let left = dt; left > 1e-6; left -= 1 / 240) {
-    const h = Math.min(left, 1 / 240);
-    s.velocity += (-w * w * (s.value - goal) - 2 * damping * w * s.velocity) * h;
-    s.value += s.velocity * h;
-  }
-  if (Math.abs(s.value - goal) < 1e-3 && Math.abs(s.velocity) < 1e-2) { s.value = goal; s.velocity = 0; return false; }
-  return true;
-}
-const arc = (r: number, from: number, to: number) => {
-  const p = (a: number) => `${(r * Math.cos(a * Math.PI / 180)).toFixed(2)} ${(r * Math.sin(a * Math.PI / 180)).toFixed(2)}`;
-  return `M ${p(from)} A ${r} ${r} 0 0 1 ${p(to)}`;
 };
 // The software extension left of the camera: flush with the hardware cutout, concave
 // shoulders at the screen edge, and its right side tucked under the cutout.
@@ -50,113 +26,137 @@ function lobePath({ left, right, height: h, notched }: Lobe) {
     : `${side} L ${right - r} ${h} Q ${right} ${h} ${right} ${h - r} L ${right} ${s} Q ${right} 0 ${right + s} 0 L ${right + s} -20 Z`;
 }
 
-export function CompanionBall({ width, height, lobe, target, look, handle, label, onPress, onRelease, onCancel, onMove }: {
+export function CompanionBall({ width, height, lobe, target, look, handle, skin, label, onPress, onRelease, onCancel, onMove }: {
   width: number; height: number; lobe: Lobe; target: BallTarget; look: RefObject<Point | null>; handle: RefObject<BallHandle | null>;
-  label: string; onPress: () => void; onRelease: () => void; onCancel: () => void; onMove: () => void;
+  skin: Skin; label: string; onPress: () => void; onRelease: () => void; onCancel: () => void; onMove: () => void;
 }) {
-  const latest = useRef(target), island = useRef(lobe), moved = useRef(onMove);
-  island.current = lobe; moved.current = onMove;
+  const latest = useRef(target), moved = useRef(onMove), firstSkin = useRef(skin), size = useRef({ width, height });
+  const lobeD = lobePath(lobe), island = useRef({ lobe, path: new Path2D(lobeD) });
+  if (island.current.lobe !== lobe) island.current = { lobe, path: new Path2D(lobeD) };
+  moved.current = onMove; size.current = { width, height };
   const wake = useRef(() => {});
   useEffect(() => { latest.current = target; wake.current(); });
-  const silhouette = useRef<SVGCircleElement>(null), body = useRef<SVGGElement>(null), float = useRef<SVGCircleElement>(null);
-  const contact = useRef<SVGEllipseElement>(null), mint = useRef<SVGGElement>(null), face = useRef<SVGGElement>(null);
-  const eyeL = useRef<SVGGElement>(null), eyeR = useRef<SVGGElement>(null), lineL = useRef<SVGLineElement>(null), lineR = useRef<SVGLineElement>(null);
-  const hit = useRef<HTMLButtonElement>(null);
+  const silhouette = useRef<SVGCircleElement>(null), canvas = useRef<HTMLCanvasElement>(null), hit = useRef<HTMLButtonElement>(null);
   useEffect(() => {
+    const cv = canvas.current!, ctx = cv.getContext('2d')!, core = new Core(firstSkin.current);
+    // The eyes are drawn apart first, so one blur gives them their glow.
+    const eyes = document.createElement('canvas'), ectx = eyes.getContext('2d')!;
     const start = latest.current.anchors.home;
-    const s = {
-      x: spring(start.x), y: spring(start.y), scale: spring(HOME_SCALE), shine: spring(0), stretch: spring(1), pivot: spring(0),
-      dock: spring(0), mint: spring(0), squint: spring(1), gx: spring(0), gy: spring(0),
-      sep: spring(eyes.slit.sep), ey: spring(eyes.slit.y), length: spring(eyes.slit.length), width: spring(eyes.slit.width), left: spring(180), right: spring(0),
-    };
+    const s = { x: spring(start.x), y: spring(start.y), scale: spring(HOME_SCALE), shine: spring(0), pivot: spring(0), dock: spring(0) };
     const reduced = matchMedia('(prefers-reduced-motion: reduce)');
-    let frame = 0, last = 0, time = 0, wanted: Place = 'home', shown: Place = 'home', switchAt = 0;
-    let blinkAt = performance.now() + 2500, blinkStart = -1, glanceUntil = 0, sleep: ReturnType<typeof setTimeout> | undefined;
+    let frame = 0, last = 0, d = 0, wanted: Place = 'home', shown: Place = 'home', switchAt = 0, pressedAt = -1;
+    let glanceUntil = 0, sleep: ReturnType<typeof setTimeout> | undefined, tick: ReturnType<typeof setTimeout> | undefined, lit = '';
+    let movedAt = performance.now(), px = NaN, py = NaN;
+    const fit = () => {
+      const k = Math.min(2, devicePixelRatio || 1), w = Math.round(size.current.width * k), h = Math.round(size.current.height * k);
+      if (k === d && cv.width === w && cv.height === h) return;
+      d = k; cv.width = w; cv.height = h;
+      eyes.width = eyes.height = Math.ceil(3.4 * R * k);
+    };
     const draw = (now: number) => {
-      frame = 0;
-      const t = latest.current, calm = reduced.matches ? 0 : 1, firm = reduced.matches;
+      frame = 0; fit();
+      const t = latest.current, firm = reduced.matches;
       const dt = Math.min(last ? (now - last) / 1000 : 1 / 60, 1 / 20);
-      last = now; time += dt;
+      last = now;
       // Going home: look up at the island for a beat, then fly.
       if (t.place !== wanted) { wanted = t.place; switchAt = now + (wanted === 'home' && shown !== 'home' ? 170 : 0); }
       if (now >= switchAt) shown = wanted;
       const atHome = shown === 'home', leaving = wanted === 'home' && !atHome, docked = shown === 'dock';
-      const mood: Mood = atHome || shown === 'peek' ? 'idle' : t.mood;
       const glance = atHome && now < glanceUntil;
-      const shape: Eyes = atHome ? (glance ? eyes.glance : eyes.slit) : shown === 'peek' ? eyes.peek : eyes[mood];
-      const anchor = t.anchors[shown], [xHz, xDamp, yHz, yDamp] = travel[shown], eyeDamp = firm ? 1 : .62;
+      // With her glass showing at home she stays awake there: she blinks, watches a nearby cursor, and dozes after a long quiet spell.
+      const glassHome = t.homeGlass, p = look.current;
+      if (p && (p.x !== px || p.y !== py)) { px = p.x; py = p.y; movedAt = now; }
+      const dozing = glassHome && atHome && now - movedAt > DOZE_MS;
+      const anchor = t.anchors[shown], [xHz, xDamp, yHz, yDamp] = travel[shown];
       const moving = [
         step(s.x, anchor.x, xHz, firm ? 1 : xDamp, dt), step(s.y, anchor.y, yHz, firm ? 1 : yDamp, dt),
-        step(s.scale, atHome ? HOME_SCALE : 1, 2.6, .95, dt), step(s.shine, atHome ? 0 : 1, 3, 1, dt),
-        // Press flattens fast; release rebounds on a soft, slightly wobbly spring.
-        step(s.stretch, t.pressed ? .88 : (mood === 'listening' ? 1.04 : 1) * (docked ? .95 : 1), t.pressed ? 10 : 4.2, t.pressed ? .9 : firm ? 1 : .45, dt),
+        step(s.scale, atHome ? HOME_SCALE : 1, 2.6, .95, dt), step(s.shine, atHome && !glassHome ? 0 : 1, 3, 1, dt),
         step(s.pivot, docked ? 1 : 0, 3, 1, dt), step(s.dock, docked ? 1 : 0, 3, 1, dt),
-        step(s.mint, mood === 'speaking' ? 1 : 0, 2.5, 1, dt), step(s.squint, t.pressed ? .38 : 1, 9, .8, dt),
-        step(s.sep, shape.sep, 5.2, eyeDamp, dt), step(s.ey, shape.y, 5.2, eyeDamp, dt),
-        step(s.length, shape.length, 5.2, eyeDamp, dt), step(s.width, shape.width, 5.2, eyeDamp, dt),
-        step(s.left, 90 + shape.tilt, 5.2, eyeDamp, dt), step(s.right, 90 - shape.tilt, 5.2, eyeDamp, dt),
       ].some(Boolean);
       // Gaze: toward the cursor or caret, softer with distance; straight ahead in the island.
-      let gx = 0, gy = 0;
-      const point = leaving ? { x: s.x.value, y: -400 } : atHome && !glance ? null : look.current;
+      let gaze: [number, number] | null = null;
+      const point = leaving ? { x: s.x.value, y: -400 } : atHome && !glance && !glassHome ? null : look.current;
       if (point) {
-        const dx = point.x - s.x.value, dy = point.y - s.y.value, d = Math.hypot(dx, dy) || 1;
-        const k = d / (d + 90) * (d < 280 ? 1 : Math.max(.35, 1 - (d - 280) / 700));
-        gx = dx / d * k; gy = dy / d * k;
+        const dx = point.x - s.x.value, dy = point.y - s.y.value, dist = Math.hypot(dx, dy) || 1;
+        const k = dist / (dist + 90) * (dist < 280 ? 1 : Math.max(.35, 1 - (dist - 280) / 700));
+        // Resting at home she only follows a cursor that comes near; otherwise she looks around on her own.
+        if (!(atHome && !leaving && glassHome && dist > 260)) gaze = [dx / dist * k, shown === 'peek' ? Math.max(0, dy / dist * k) : dy / dist * k];
       }
-      if (mood === 'listening') { gx *= .5; gy *= .5; }
-      if (shown === 'peek') gy = Math.max(gy, 0);
-      const gazing = [step(s.gx, gx, 3.2, .9, dt), step(s.gy, gy, 3.2, .9, dt)].some(Boolean);
-      // Blink now and then while the eyes are open: quick close, slower open, sometimes twice.
-      if (atHome && !glance || t.pressed) { if (blinkStart < 0) blinkAt = Math.max(blinkAt, now + 1200); }
-      else if (blinkStart < 0 && now >= blinkAt) blinkStart = now;
-      let lid = 1;
-      if (blinkStart >= 0) {
-        const k = (now - blinkStart) / 1000;
-        if (k >= .26) { blinkStart = -1; blinkAt = now + (Math.random() < .18 ? 140 : 2600 + Math.random() * 4200); }
-        else lid = k < .075 ? 1 - .92 * (k / .075) ** 2 : k < .11 ? .08 : .08 + .92 * (1 - (1 - (k - .11) / .15) ** 3);
-      }
-      // Life outside the island: breathing, a slow float, and speech moving the whole body.
-      const phrase = (.5 + .5 * Math.sin(time * 1.7 - .8)) ** 2, syllable = (.5 + .5 * Math.sin(time * 7.3 + 1.3 * Math.sin(time * 2.1))) ** 2;
-      const env = s.mint.value * phrase * (.35 + .65 * syllable);
-      const breath = mood === 'listening' ? .012 * Math.sin(time * 2 * Math.PI / 2.8) + (t.hearing ? .012 * syllable : 0) : .007 * Math.sin(time * 2 * Math.PI / 4.2);
-      const bob = docked ? 0 : .9 * Math.sin(time * 2 * Math.PI / 3.3 + 1);
-      const alive = calm * s.shine.value;
-      const scale = s.scale.value, stretch = s.stretch.value * (1 + alive * (breath + .028 * env));
-      const sx = (1 + alive * .012 * env) / Math.sqrt(stretch), sy = stretch;
-      // Squash and stretch along the flight path, capped so it reads as soft, not liquid.
-      const speed = Math.hypot(s.x.velocity, s.y.velocity), flight = calm * Math.min(.09, speed / 4000);
-      const angle = Math.atan2(s.y.velocity, s.x.velocity) * 180 / Math.PI;
-      const x = s.x.value, y = s.y.value + alive * (bob - 1.4 * env), pivot = s.pivot.value * R;
-      const transform = `translate(${x} ${y + pivot * scale}) rotate(${angle}) scale(${1 + flight} ${1 / Math.sqrt(1 + flight)}) rotate(${-angle}) scale(${scale * sx} ${scale * sy}) translate(0 ${-pivot})`;
-      silhouette.current!.setAttribute('transform', transform);
+      // Holding her charges a costume change: she squashes further, shivers and her stars speed up.
+      if (!t.pressed) pressedAt = -1; else if (pressedAt < 0) pressedAt = now;
+      const charge = pressedAt < 0 ? 0 : Math.min(1, Math.max(0, (now - pressedAt - 200) / (HOLD_MS - 200)));
+      const face: ExprId = atHome ? (glassHome ? (dozing ? 'doze' : 'rest') : glance ? 'glance' : 'home') : shown === 'peek' ? 'peek' : t.expr;
+      const busy = core.update(now, dt, { expr: face, look: gaze, still: atHome && !glance && !glassHome, pressed: t.pressed, charge });
+
+      // Where she is (spring position, flight squash, the pivot on the Dashboard edge), then her own motion.
+      const a = s.shine.value, scale = s.scale.value, x = s.x.value, y = s.y.value, pivot = s.pivot.value * R;
+      const speed = Math.hypot(s.x.velocity, s.y.velocity), flight = firm ? 0 : Math.min(.09, speed / 4000);
+      const angle = Math.atan2(s.y.velocity, s.x.velocity), squat = 1 - .05 * s.dock.value;
+      const [jx, jy, bx, by] = core.pose(a);
+      const pose = (c: CanvasRenderingContext2D, cx: number, cy: number) => {
+        c.translate(cx, cy + pivot * scale); c.rotate(angle); c.scale(1 + flight, 1 / Math.sqrt(1 + flight)); c.rotate(-angle);
+        c.scale(scale, scale * squat); c.translate(jx * R, jy * R - pivot); c.scale(bx, by);
+      };
+      const deg = angle * 180 / Math.PI;
+      silhouette.current!.setAttribute('transform', `translate(${x} ${y + pivot * scale}) rotate(${deg}) scale(${1 + flight} ${1 / Math.sqrt(1 + flight)}) rotate(${-deg}) scale(${scale} ${scale * squat}) translate(${jx * R} ${jy * R - pivot}) scale(${bx} ${by})`);
       // The goo only matters where the ball meets the island.
-      silhouette.current!.style.display = y - R * scale - island.current.height < 26 ? '' : 'none';
-      body.current!.setAttribute('transform', transform);
-      body.current!.style.opacity = String(s.shine.value);
-      float.current!.style.opacity = String(.45 * (1 - s.dock.value));
-      contact.current!.style.opacity = String(.6 * s.dock.value);
-      mint.current!.style.opacity = String(.45 * s.mint.value + .55 * env);
-      face.current!.setAttribute('transform', transform);
-      const fx = 1 - .16 * Math.abs(s.gx.value), lidY = lid * s.squint.value, length = s.length.value * R;
-      for (const [eye, line, side, rotation] of [[eyeL, lineL, -1, s.left.value], [eyeR, lineR, 1, s.right.value]] as const) {
-        eye.current!.setAttribute('transform', `translate(${(side * s.sep.value + .17 * s.gx.value) * R} ${(s.ey.value + .13 * s.gy.value) * R}) scale(${fx} ${lidY}) rotate(${rotation})`);
-        line.current!.setAttribute('x1', String(-length / 2)); line.current!.setAttribute('x2', String(length / 2));
-        line.current!.setAttribute('stroke-width', String(s.width.value * R));
+      silhouette.current!.style.display = y - R * scale - island.current.lobe.height < 26 ? '' : 'none';
+
+      const { lobe, path } = island.current, S = Math.round(2 * 1.3 * R * d);
+      ctx.setTransform(d, 0, 0, d, 0, 0); ctx.clearRect(0, 0, size.current.width, size.current.height);
+      if (a > .01 && core.render(S, 3)) {
+        ctx.save(); ctx.globalAlpha = a;
+        ctx.save(); ctx.translate(x, y); ctx.scale(scale, scale); core.orbit(ctx, R, -1); ctx.restore();
+        ctx.save(); pose(ctx, x, y);
+        // A soft shadow while she floats; a contact shadow once she sits on the Dashboard.
+        const g = ctx.createRadialGradient(0, .28 * R, 0, 0, .28 * R, 1.15 * R);
+        g.addColorStop(0, `rgba(0,0,0,${.45 * (1 - s.dock.value)})`); g.addColorStop(.6, `rgba(0,0,0,${.3 * (1 - s.dock.value)})`); g.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, .28 * R, 1.15 * R, 0, 2 * Math.PI); ctx.fill();
+        if (s.dock.value > .01) {
+          ctx.save(); ctx.translate(0, .98 * R); ctx.scale(1, .18);
+          const c = ctx.createRadialGradient(0, 0, 0, 0, 0, .8 * R);
+          c.addColorStop(0, `rgba(0,0,0,${.6 * s.dock.value})`); c.addColorStop(1, 'rgba(0,0,0,0)');
+          ctx.fillStyle = c; ctx.beginPath(); ctx.arc(0, 0, .8 * R, 0, 2 * Math.PI); ctx.fill(); ctx.restore();
+        }
+        core.inside(ctx, R, S); core.glass(ctx, R, S);
+        ctx.restore(); ctx.restore();
+        // The island hides her body above its edge (unless her glass shows at home); a short fade keeps that edge from reading as a seam.
+        if (!glassHome) {
+          ctx.save(); ctx.globalCompositeOperation = 'destination-out'; ctx.fillStyle = '#000'; ctx.fill(path);
+          const fade = ctx.createLinearGradient(0, lobe.height, 0, lobe.height + 9);
+          fade.addColorStop(0, '#000'); fade.addColorStop(1, 'rgba(0,0,0,0)');
+          ctx.fillStyle = fade; ctx.fillRect(lobe.left, lobe.height, lobe.right - lobe.left, 9); ctx.restore();
+        }
       }
+      // The eyes stay on top everywhere, the island included.
+      const E = eyes.width, [glow, blur] = core.glow();
+      ectx.setTransform(d, 0, 0, d, 0, 0); ectx.clearRect(0, 0, E, E);
+      pose(ectx, E / 2 / d, E / 2 / d); core.eyes(ectx, R);
+      ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.shadowColor = glow; ctx.shadowBlur = blur * R * scale * d;
+      ctx.drawImage(eyes, x * d - E / 2, y * d - E / 2); ctx.restore();
+      if (a > .01) { ctx.save(); ctx.globalAlpha = a; ctx.translate(x, y); ctx.scale(scale, scale); core.orbit(ctx, R, 1); core.particles(ctx, R, d); ctx.restore(); }
+      if (cv.dataset.skin !== core.skin) cv.dataset.skin = core.skin;
+      if (cv.dataset.face !== core.expr) cv.dataset.face = core.expr ?? '';
+      // Her light, for the Dashboard hanging under her.
+      const light = core.light.glow.map(v => Math.round(v * 255)).join(' ');
+      if (light !== lit) { lit = light; document.documentElement.style.setProperty('--glow', light); }
+
       hit.current!.style.transform = `translate(${x - R - 4}px, ${y - R - 4}px) scale(${scale})`;
       if (hit.current!.dataset.place !== shown) hit.current!.dataset.place = shown;
       // She can slide under a resting cursor; hit testing must follow her, not only the mouse.
       if (moving) moved.current();
-      if (!atHome || moving || gazing || blinkStart >= 0 || glance || now < switchAt) frame = requestAnimationFrame(draw);
+      if (!atHome || moving || now < switchAt || busy && !glassHome) frame = requestAnimationFrame(draw);
+      // Awake at home she needs no more than 30 frames a second, dozing 10.
+      else if (glassHome) tick = setTimeout(() => { tick = undefined; frame = requestAnimationFrame(draw); }, dozing ? 100 : 33);
       else sleep ??= setTimeout(() => { sleep = undefined; glanceUntil = performance.now() + 1500; wake.current(); }, 22000 + Math.random() * 18000);
     };
     wake.current = () => {
       if (sleep) { clearTimeout(sleep); sleep = undefined; }
+      if (tick) { clearTimeout(tick); tick = undefined; }
       if (!frame) { last = 0; frame = requestAnimationFrame(draw); }
     };
     handle.current = {
-      nudge: () => { s.gy.velocity += 1.6; wake.current(); },
+      nudge: () => { core.s.gy.velocity += 1.6; wake.current(); },
       // A new screen: already in its island, with a small bump out of it and a look around.
       arrive: () => {
         const a = latest.current.anchors.home;
@@ -165,11 +165,12 @@ export function CompanionBall({ width, height, lobe, target, look, handle, label
         wanted = shown = 'home'; switchAt = 0; glanceUntil = performance.now() + 1400;
         wake.current();
       },
+      change: next => { core.change(next, performance.now()); wake.current(); },
+      hop: height => { core.hop(performance.now(), height); wake.current(); },
     };
     wake.current();
-    return () => { cancelAnimationFrame(frame); clearTimeout(sleep); wake.current = () => {}; handle.current = null; };
+    return () => { cancelAnimationFrame(frame); clearTimeout(sleep); clearTimeout(tick); wake.current = () => {}; handle.current = null; };
   }, []);
-  const lobeD = lobePath(lobe);
   return <>
     <svg className="companion-stage" width={width} height={height} viewBox={`0 0 ${width} ${height}`} aria-hidden="true">
       <defs>
@@ -178,54 +179,10 @@ export function CompanionBall({ width, height, lobe, target, look, handle, label
           <feGaussianBlur stdDeviation="4"/>
           <feColorMatrix values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 18 -8"/>
         </filter>
-        <filter id="cb-blur-5" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="5"/></filter>
-        <filter id="cb-blur-2" x="-60%" y="-100%" width="220%" height="300%"><feGaussianBlur stdDeviation="2"/></filter>
-        <filter id="cb-glow" x="-100%" y="-100%" width="300%" height="300%"><feGaussianBlur stdDeviation="1.3"/></filter>
-        <filter id="cb-soften" x="-100%" y="-100%" width="300%" height="300%"><feGaussianBlur stdDeviation=".45"/></filter>
-        <radialGradient id="cb-body" gradientUnits="userSpaceOnUse" cx={-.28 * R} cy={-.38 * R} r={1.5 * R}>
-          <stop offset="0" stopColor="#34373f"/><stop offset=".18" stopColor="#1b1d22"/><stop offset=".45" stopColor="#0a0b0d"/>
-          <stop offset=".75" stopColor="#030304"/><stop offset="1" stopColor="#000"/>
-        </radialGradient>
-        {/* Glass thickness catches the room along the lower edge. */}
-        <radialGradient id="cb-rim" gradientUnits="userSpaceOnUse" cx="0" cy={-.3 * R} r={1.3 * R}>
-          <stop offset=".74" stopColor="#96a0b4" stopOpacity="0"/><stop offset=".9" stopColor="#96a0b4" stopOpacity=".1"/>
-          <stop offset="1" stopColor="#cdd4e4" stopOpacity=".36"/>
-        </radialGradient>
-        <radialGradient id="cb-sheen"><stop offset="0" stopColor="#fff" stopOpacity=".5"/><stop offset="1" stopColor="#fff" stopOpacity="0"/></radialGradient>
-        <linearGradient id="cb-edge" gradientUnits="userSpaceOnUse" x1={-R} y1="0" x2={.4 * R} y2={-R}>
-          <stop offset="0" stopColor="#fff" stopOpacity="0"/><stop offset=".45" stopColor="#fff" stopOpacity=".3"/><stop offset="1" stopColor="#fff" stopOpacity="0"/>
-        </linearGradient>
-        <linearGradient id="cb-fade" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#000"/><stop offset="1" stopColor="#000" stopOpacity="0"/></linearGradient>
-        {/* The island hides the glass above its edge; the fade keeps that edge from reading as a seam. */}
-        <mask id="cb-mask" maskUnits="userSpaceOnUse" x="0" y="0" width={width} height={height}>
-          <rect width={width} height={height} fill="#fff"/>
-          <path d={lobeD} fill="#000"/>
-          <rect x={lobe.left} y={lobe.height} width={lobe.right - lobe.left} height="9" fill="url(#cb-fade)"/>
-        </mask>
       </defs>
       <g filter="url(#cb-goo)"><path d={lobeD}/><circle ref={silhouette} r={R}/></g>
-      <g mask="url(#cb-mask)">
-        <g ref={body} opacity="0">
-          <circle ref={float} cy={.28 * R} r={.92 * R} fill="#000" filter="url(#cb-blur-5)"/>
-          <ellipse ref={contact} cy={.98 * R} rx={.72 * R} ry={.13 * R} fill="#000" opacity="0" filter="url(#cb-blur-2)"/>
-          <circle r={R} fill="url(#cb-body)"/>
-          <circle r={R} fill="url(#cb-rim)"/>
-          <ellipse cx={-.34 * R} cy={-.46 * R} rx={.4 * R} ry={.24 * R} transform={`rotate(-32 ${-.34 * R} ${-.46 * R})`} fill="url(#cb-sheen)"/>
-          <ellipse cx={-.47 * R} cy={-.56 * R} rx={.11 * R} ry={.06 * R} transform={`rotate(-38 ${-.47 * R} ${-.56 * R})`} fill="#fff" opacity=".85" filter="url(#cb-soften)"/>
-          <path d={arc(R - .8, 195, 290)} fill="none" stroke="url(#cb-edge)" strokeWidth=".9" strokeLinecap="round"/>
-          <g ref={mint} opacity="0" fill="none" strokeLinecap="round" style={{ stroke: 'var(--mint)' }}>
-            <path d={arc(R - 1.4, 100, 145)} strokeWidth="3.5" opacity=".6" filter="url(#cb-glow)"/>
-            <path d={arc(R - 1.4, 100, 145)} strokeWidth="1.2" opacity=".85"/>
-          </g>
-        </g>
-      </g>
-      <g ref={face}>
-        <use href="#cb-eyes" filter="url(#cb-glow)" opacity=".5"/>
-        <g id="cb-eyes" stroke="#f4f1ea" strokeLinecap="round">
-          <g ref={eyeL}><line ref={lineL}/></g><g ref={eyeR}><line ref={lineR}/></g>
-        </g>
-      </g>
     </svg>
+    <canvas ref={canvas} className="companion-canvas" style={{ width, height }} aria-hidden="true"/>
     <button ref={hit} className="companion-hit" data-hit aria-label={label} style={{ width: 2 * R + 8, height: 2 * R + 8 }}
       onPointerDown={event => { if (event.button !== 0) return; event.currentTarget.setPointerCapture(event.pointerId); onPress(); }}
       onPointerUp={onRelease} onPointerCancel={onCancel} onLostPointerCapture={onCancel}

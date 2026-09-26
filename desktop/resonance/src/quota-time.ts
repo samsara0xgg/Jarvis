@@ -3,7 +3,7 @@ export function fmtReset(iso: string | null | undefined, now = new Date()): stri
   const reset = new Date(iso).getTime();
   if (!Number.isFinite(reset)) return '—';
   const minutes = Math.ceil((reset - now.getTime()) / 60_000);
-  if (minutes <= 0) return '等待额度更新';
+  if (minutes <= 0) return 'resetting';
   const hours = Math.floor(minutes / 60);
   return hours >= 24
     ? `resets in ${Math.floor(hours / 24)}d ${hours % 24}h`

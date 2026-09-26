@@ -93,7 +93,7 @@ try {
   check('conversation and work-state tiles are fixed 134px squares', chat.w === 134 && chat.h === 134 && work.w === 134 && work.h === 134);
   check('quota occupies the right two rows; Codex occupies the full bottom row', quota.w === 134 && quota.h === 276 && quota.x === chat.x + 142 && quota.y === chat.y && work.y === chat.y + 142 && codex.w === 276 && codex.h === 134 && codex.x === chat.x && codex.y === chat.y + 284);
   check('default viewport fits exactly three square rows and two gaps', viewport.height === 418 && codex.y + codex.h === viewport.y + viewport.height);
-  check('all four demo quota limits are visible with usage labels', await page.locator('.overview-usage-grid .overview-meter').count() === 4 && await page.locator('.overview-usage-grid').evaluate(node => node.scrollHeight <= node.closest('.module-summary').clientHeight - 20 && node.textContent.includes('已用')));
+  check('all four demo quota limits are visible with usage labels', await page.locator('.overview-usage-grid .overview-meter').count() === 4 && await page.locator('.overview-usage-grid').evaluate(node => node.scrollHeight <= node.closest('.module-summary').clientHeight - 20 && node.textContent.includes('7 days · Fable')));
   await page.locator('.shell').screenshot({ path: `${dir}/overview.png` });
 
   await hit.hover(); await composeSettled();
@@ -148,7 +148,7 @@ try {
   check('dragging down does not navigate from detail', await page.locator('.dashboard-stage').getAttribute('data-selected') === '2');
   await page.getByRole('button', { name: '返回主界面', exact: true }).click(); await settle();
   check('clicking the existing bar returns to the same square grid', JSON.stringify(await geometry()) === JSON.stringify(before));
-  await page.getByRole('button', { name: '打开插件列表', exact: true }).scrollIntoViewIfNeeded();
+  await page.getByRole('button', { name: 'Open plugins', exact: true }).scrollIntoViewIfNeeded();
   check('additional modules scroll inside the fixed viewport', await page.locator('.dashboard-viewport').evaluate(node => node.scrollTop > 0 && node.clientHeight === 418));
   check('scrolling overflow does not grow the native window', JSON.stringify(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getBounds())) === JSON.stringify(nativeBefore));
   await page.locator('.dashboard-viewport').evaluate(node => { node.scrollTop = 0; });

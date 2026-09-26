@@ -16,9 +16,9 @@ import './dashboard-preview.css';
 import './dashboard-unified.css';
 
 const modules = [
-  { name: '对话', Icon: ChatCircle }, { name: 'Codex', Icon: GitBranch },
-  { name: '模型额度', Icon: Database }, { name: '当前状态', Icon: Compass },
-  { name: '插件', Icon: Plugs }, { name: '项目', Icon: FolderSimple },
+  { name: 'Conversation', Icon: ChatCircle }, { name: 'Codex', Icon: GitBranch },
+  { name: 'Usage', Icon: Database }, { name: 'Right now', Icon: Compass },
+  { name: 'Plugins', Icon: Plugs }, { name: 'Projects', Icon: FolderSimple },
 ];
 const accent = '#abbce6';
 
@@ -105,7 +105,10 @@ export function DashboardPreview({ standalone = false, embedded = false, port = 
   };
   const send = () => { if (!draft.trim()) return; simulate(draft.trim()); setDraft(''); };
   useEffect(() => { if (selected === 5) void projects.refresh(); }, [selected, projects.refresh]);
-  const answer = completed ? '设计方向已经确认。下午的语音测试提醒，也已经排好了。' : '今天还有两件事，下午的提醒已经排好了。';
+  const answer = completed ? 'Design direction confirmed. The afternoon voice test reminder is set too.' : 'Two things left today. Your 4 PM reminder is set.';
+  const processing = conversation?.pending ?? !answered;
+  const said = conversation ? conversation.text : cancelled ? 'Conversation paused. Pick it up anytime.' : answered ? answer : 'Sorting out today’s plan…';
+  const saidCaption = conversation ? conversation.caption : cancelled ? 'Stopped · start again anytime' : answered ? 'Jarvis · just now' : 'Thinking';
   return <IconContext.Provider value={{ size: 16, weight: 'regular' }}>
     <main data-dashboard-style={preferences.dashboardStyle} style={{ '--theme-color': preferences.themeColor, '--glass-opacity': preferences.opacity, '--glass-strength': preferences.glassStrength } as React.CSSProperties} className={`dashboard-preview ${standalone || embedded ? 'compact-dashboard' : ''} ${embedded ? 'embedded-dashboard' : ''} ${selected === 2 ? 'quota-dashboard' : ''} ${selected === 4 ? 'plugins-dashboard' : ''} ${selected === null ? 'dashboard-overview' : ''}`}>
       <header className="dashboard-intro"><span>RESONANCE / DASHBOARD</span><h1>需要时，靠近一点。</h1><p>四个模块，一个随对话展开的空间。</p></header>
@@ -123,18 +126,18 @@ export function DashboardPreview({ standalone = false, embedded = false, port = 
           <div className="dashboard-viewport" ref={viewport}>
           <div className="dashboard-board">
             {modules.map(({ name, Icon }, index) => index === 4 && !plugins ? null : <article key={name} className={`dashboard-module ${selected === index ? 'is-selected' : ''}`} data-module={index} inert={selected !== null && selected !== index} aria-hidden={selected !== null && selected !== index}>
-              <button className="module-summary" inert={selected === index} aria-hidden={selected === index} aria-label={index === 4 ? '打开插件列表' : `展开${name}`} onClick={() => index === 4 ? plugins?.onCatalog() : expand(index)}>
+              <button className="module-summary" inert={selected === index} aria-hidden={selected === index} aria-label={index === 4 ? 'Open plugins' : `Open ${name}`} onClick={() => index === 4 ? plugins?.onCatalog() : expand(index)}>
                 {index !== 2 && <span className="module-label"><Icon/>{name}<ArrowUpRight className="module-expand"/></span>}
-                {index === 0 && <><span className={`module-conversation ${(conversation?.pending ?? !answered) ? 'is-processing' : ''}`}>{conversation ? conversation.text : cancelled ? '对话已暂停，随时可以继续。' : answered ? answer : '正在整理今天的安排…'}</span><span className="module-caption">{conversation ? conversation.caption : cancelled ? '已停止 · 可重新开始' : answered ? '刚刚 · 示例' : '模型 A · 处理中'}</span></>}
+                {index === 0 && <><span className={`module-conversation ${processing ? 'is-processing' : ''}`}>{said}</span><span className="module-caption">{saidCaption}</span></>}
                 {index === 1 && <CodexSummary board={codex}/>}
                 {index === 2 && <QuotaSummary usage={quota.usage} grid/>}
                 {index === 3 && <WorkStateSummary view={work.view}/>}
                 {index === 5 && <ProjectsSummary view={projects.view} missing={projects.missing} refreshing={projects.refreshing} notice={projects.notice}/>}
-                {index === 4 && <><span className="module-primary">{plugins!.controller.snapshot?.plugins.filter(plugin => plugin.status === 'ready').length ?? 0} 个已连接</span><span className="module-caption">查看与管理插件</span></>}
+                {index === 4 && <><span className="module-primary">{plugins!.controller.snapshot?.plugins.filter(plugin => plugin.status === 'ready').length ?? 0} connected</span><span className="module-caption">See and manage plugins</span></>}
               </button>
               <div className="module-detail" inert={selected !== index} aria-hidden={selected !== index}>
                 <div className="module-scroll">
-                  {index === 0 && <><div className="transcript-label">你<span>14:32</span></div><p className="transcript-user">{message}</p><div className="transcript-label jarvis-label"><span className="jarvis-dot"/>Jarvis<span>刚刚</span></div><p className="transcript-answer" aria-live="polite">{cancelled ? '这次演示已停止，没有生成新的回复。' : answered ? `${answer} ${completed ? '' : '你可以先确认 Resonance dashboard 的方向，下午 4 点再查看语音连接测试结果。'}` : '正在整理今天的安排…'}</p><div className="delegation"><button className="delegation-toggle" aria-expanded={raw} aria-controls="delegate-original" onClick={() => setRaw(value => !value)}><GitBranch/><span>模型 A <small>· {cancelled ? '已停止' : answered ? '已完成' : '处理中'}</small></span><CaretDown className={raw ? 'rotated' : ''}/></button><div className={`delegation-reveal ${raw ? 'is-open' : ''}`} id="delegate-original" inert={!raw}><div><div className="delegate-output"><span>原始输出 · 示例</span><p>{cancelled ? '本次演示已停止，没有模型结果。' : answered ? '已检查当前待办：\n1. 确认 Resonance dashboard 设计方向，等待 Allen 选择。\n2. 今天 16:00 查看语音连接测试结果，提醒已安排。\n\n后台任务：整理两种 dashboard 布局。' : '等待模型返回…'}</p></div></div></div></div></>}
+                  {index === 0 && <><div className="transcript-label">你<span>14:32</span></div><p className="transcript-user">{message}</p><div className="transcript-label jarvis-label"><span className="jarvis-dot"/>Jarvis<span>刚刚</span></div><p className="transcript-answer" aria-live="polite">{cancelled ? '这次演示已停止，没有生成新的回复。' : answered ? `${answer} ${completed ? '' : 'You can confirm the Resonance dashboard direction first, then check the voice test at 4 PM.'}` : '正在整理今天的安排…'}</p><div className="delegation"><button className="delegation-toggle" aria-expanded={raw} aria-controls="delegate-original" onClick={() => setRaw(value => !value)}><GitBranch/><span>模型 A <small>· {cancelled ? '已停止' : answered ? '已完成' : '处理中'}</small></span><CaretDown className={raw ? 'rotated' : ''}/></button><div className={`delegation-reveal ${raw ? 'is-open' : ''}`} id="delegate-original" inert={!raw}><div><div className="delegate-output"><span>原始输出 · 示例</span><p>{cancelled ? '本次演示已停止，没有模型结果。' : answered ? '已检查当前待办：\n1. 确认 Resonance dashboard 设计方向，等待 Allen 选择。\n2. 今天 16:00 查看语音连接测试结果，提醒已安排。\n\n后台任务：整理两种 dashboard 布局。' : '等待模型返回…'}</p></div></div></div></div></>}
                   {index === 1 && <CodexDetail board={codex}/>}
                   {index === 2 && <QuotaDetail layout={preferences.quotaLayout} usage={quota.usage} onRefresh={() => void quota.refresh()} refreshing={quota.refreshing}/>}
                   {index === 3 && <WorkStateDetail view={work.view} onRefresh={work.refresh} refreshing={work.refreshing} notice={work.notice}/>}
