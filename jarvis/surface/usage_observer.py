@@ -22,6 +22,8 @@ Secrets never enter a payload: only percentages, dollars, timestamps and
 plan labels are stored. Every remote failure collapses to a snapshot with
 ``status`` ``error`` (or ``unconfigured`` when a credential is absent), so
 the dashboard can show *why* a row is stale instead of silently freezing.
+The one exception is Claude's 429 (polled too soon), which keeps the last
+reading.
 """
 
 from __future__ import annotations
@@ -37,6 +39,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
+from http import HTTPStatus
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 
@@ -193,8 +196,12 @@ def _claude_resets(block: object) -> dict[str, Any]:
     }
 
 
-def collect_claude(*, timeout_s: float) -> UsageSnapshot:
-    """claude.ai subscription windows (5h, 7d total, 7d per model) and the limit resets left."""
+def collect_claude(*, timeout_s: float) -> UsageSnapshot | None:
+    """claude.ai subscription windows (5h, 7d total, 7d per model) and the limit resets left.
+
+    ``None`` when the route answers 429: it refuses polls closer than about five minutes
+    apart, which says nothing about the account, so the last reading stands.
+    """
     creds = _read_claude_credentials()
     oauth = (creds or {}).get("claudeAiOauth") if creds else None
     if not oauth or not oauth.get("accessToken"):
@@ -209,6 +216,11 @@ def collect_claude(*, timeout_s: float) -> UsageSnapshot:
             },
             timeout_s=timeout_s,
         )
+    except urllib.error.HTTPError as exc:
+        if exc.code == HTTPStatus.TOO_MANY_REQUESTS:
+            LOGGER.info("usage_observer: claude polled too soon (429); keeping the last reading")
+            return None
+        return _error("claude", exc)
     except (urllib.error.URLError, OSError, ValueError) as exc:
         return _error("claude", exc)
     windows: list[dict[str, Any]] = []
@@ -597,7 +609,7 @@ class UsageObserver:
         the whole cycle's.
         """
         timeout_s = self._config.http_timeout_s
-        collectors: tuple[tuple[str, Callable[..., UsageSnapshot]], ...] = (
+        collectors: tuple[tuple[str, Callable[..., UsageSnapshot | None]], ...] = (
             ("claude", collect_claude),
             ("codex", collect_codex),
             ("openai", collect_openai),
@@ -606,9 +618,11 @@ class UsageObserver:
         snapshots: list[UsageSnapshot] = []
         for service, collector in collectors:
             try:
-                snapshots.append(collector(timeout_s=timeout_s))
+                snapshot = collector(timeout_s=timeout_s)
             except Exception as exc:  # noqa: BLE001 - the docstring's promise.
-                snapshots.append(_error(service, exc))
+                snapshot = _error(service, exc)
+            if snapshot is not None:  # None: nothing new observed, the last reading stands.
+                snapshots.append(snapshot)
         return snapshots
 
     def emit(self, snapshots: list[UsageSnapshot]) -> list[Event]:

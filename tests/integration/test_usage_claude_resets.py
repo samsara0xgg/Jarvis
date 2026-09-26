@@ -1,5 +1,6 @@
 """ADR-0018 Claude collector — limit resets, from the route's recorded answers.
 
+A 429 (polled too soon) keeps the last reading instead of an error row.
 The two bodies are the route's real ``cedar_ember`` blocks of 2026-09-25:
 without Claude Code's client headers it answers ``ineligible_reason:
 "surface"``; with them it lists the Opus 5.5 launch grant. Each check
@@ -9,12 +10,17 @@ page reads) or the request the collector sent.
 
 from __future__ import annotations
 
+import contextlib
+import email.message
+import urllib.error
 from typing import TYPE_CHECKING, Any
 
+from jarvis.state.event_log import open_event_log
 from jarvis.surface import usage_observer
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
+    from pathlib import Path
 
     import pytest
 
@@ -56,6 +62,7 @@ def _collect(
     monkeypatch.setattr(usage_observer, "_read_claude_credentials", lambda: CREDENTIALS)
     monkeypatch.setattr(usage_observer, "_get_json", answer)
     snapshot = usage_observer.collect_claude(timeout_s=1)
+    assert snapshot is not None
     assert snapshot.status == "ok"
     return snapshot.data, sent
 
@@ -82,3 +89,42 @@ def test_ineligible_surface_shows_no_resets(monkeypatch: pytest.MonkeyPatch) -> 
     data, _ = _collect(monkeypatch, INELIGIBLE)
     assert "reset_credits" not in data
     assert "reset_ends_at" not in data
+
+
+def test_claude_429_keeps_the_last_reading(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A poll the route refuses as too soon leaves the Claude rings as they were, not an error."""
+    monkeypatch.setattr(
+        usage_observer,
+        "_read_claude_credentials",
+        lambda: {"claudeAiOauth": {"accessToken": "t", "rateLimitTier": "default_claude_max_20x"}},
+    )
+
+    def unconfigured(*, timeout_s: float) -> usage_observer.UsageSnapshot:
+        del timeout_s
+        return usage_observer.UsageSnapshot("x", "unconfigured", {})
+
+    for other in ("collect_codex", "collect_openai", "collect_deepseek"):
+        monkeypatch.setattr(usage_observer, other, unconfigured)
+    answers: list[Any] = [
+        {"five_hour": {"utilization": 27.0, "resets_at": None}},
+        urllib.error.HTTPError(
+            "https://api.anthropic.com", 429, "Too Many Requests", email.message.Message(), None
+        ),
+    ]
+
+    def get(url: str, headers: Mapping[str, str], *, timeout_s: float) -> dict[str, Any]:
+        del url, headers, timeout_s
+        reply = answers.pop(0)
+        if isinstance(reply, Exception):
+            raise reply
+        return dict(reply)
+
+    monkeypatch.setattr(usage_observer, "_get_json", get)
+    with contextlib.closing(open_event_log(tmp_path / "events.db")) as conn:
+        observer = usage_observer.UsageObserver(conn, usage_observer.UsageConfig())
+        observer.poll_once()
+        observer.poll_once()
+        claude = usage_observer.latest_usage(conn)["services"]["claude"]
+        assert claude["status"] == "ok"
+        assert claude["data"]["windows"][0]["percent"] == 27.0
+        assert answers == []
