@@ -140,10 +140,12 @@ try {
     const projects = await get('/inherent/projects'), top = projects.projects?.find(p => p.seconds > 0);
     check(`R the Projects tile is the daemon's (${top?.name ?? 'none'})`, top ? (await text('.ad .pj-mini b')) === top.name : true);
     const codex = (await get('/inherent/codex-sessions')).sessions ?? [];
-    const claudeStatus = (await fetch(`${daemon}/inherent/claude-sessions`)).status;
-    await openRow('agents'); await page.waitForTimeout(900);
-    check(`R Agents lists the daemon's sessions (${codex.length} Codex, Claude route ${claudeStatus}) and no demo rows`,
-      await page.locator('.ad .ag').count() >= Math.min(1, codex.length) && !(await page.locator('.ad .ag-title').allTextContents()).includes('Dashboard inner pages'));
+    const claudeRoute = await fetch(`${daemon}/inherent/claude-sessions`);
+    const claudeIds = claudeRoute.ok ? (await claudeRoute.json()).sessions.map(r => r.session_id) : [];
+    await openRow('agents'); await page.waitForTimeout(3500);
+    const shownIds = await page.locator('.ad .ag').evaluateAll(els => els.map(e => e.dataset.id));
+    check(`R Agents lists the daemon's sessions (${codex.length} Codex; Claude route ${claudeRoute.status}, ${claudeIds.length} sessions, ${claudeIds.filter(id => shownIds.includes(id)).length} shown) and no demo rows`,
+      shownIds.length >= Math.min(1, codex.length) && claudeIds.every(id => shownIds.includes(id)) && !(await page.locator('.ad .ag-title').allTextContents()).includes('Dashboard inner pages'));
     await panelShot('R-agents'); await back();
     await openRow('plugins'); await page.waitForTimeout(2200);
     const names = await page.locator('.ad .pl-name').evaluateAll(els => els.map(e => e.firstChild.textContent));
