@@ -158,6 +158,8 @@ try {
     // Re-read the record: a turn may have landed since the start (the page polls every 2 s).
     const newest = [...(await get('/inherent/conversation?after=0')).rows].reverse().find(r => r.source !== 'allen');
     check(`R the Conversation page is the record, newest last (${newest.seq})`, words(await page.locator('.ad .tr-jarvis .md').last().textContent()).endsWith(words(newest.text)));
+    const scroll = await page.locator('.ad .pg-body').evaluate(b => ({ top: b.scrollTop, view: b.clientHeight, height: b.scrollHeight }));
+    check(`R it opens on the newest turn, not the top (${Math.round(scroll.top)} + ${scroll.view} of ${scroll.height} px)`, scroll.height > scroll.view && scroll.top + scroll.view >= scroll.height - 2);
     await panelShot('R-conversation'); await back();
     check(`R nothing was written to the daemon (${posts.length} POSTs refused: ${[...new Set(posts)].join(', ')})`, pluginOps.every(o => o.operation === 'read'));
     check('no page errors', errors.length === 0);

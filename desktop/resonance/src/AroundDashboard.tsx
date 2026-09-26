@@ -200,6 +200,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
     const el = pageEl.current;
     if (!page || !el) return;
     const from = row(page), dy = from.getBoundingClientRect().top - view.current!.getBoundingClientRect().top;
+    if (page === 'conversation') { const b = el.querySelector('.pg-body')!; b.scrollTop = b.scrollHeight; } // it opens on the newest turn
     el.animate([{ clipPath: insetOf(from) }, { clipPath: 'inset(0 0 0 0 round 14px)' }], { duration: dur(560), easing: SPRING });
     el.querySelector('.pg-head')?.animate([{ transform: `translateY(${dy}px)`, opacity: .3 }, { transform: 'none', opacity: 1 }], { duration: dur(560), easing: SPRING });
     el.querySelectorAll('.pg-sec, .pg-foot, .pg-input').forEach((s, i) => s.animate([{ opacity: 0, transform: 'translateY(6px)' }, { opacity: 1, transform: 'none' }],
