@@ -37,6 +37,7 @@ import json
 import logging
 import os
 import re
+import subprocess
 import sys
 import time
 import uuid
@@ -126,8 +127,9 @@ from jarvis.runtime.plugins import Plugins, load_plugins
 from jarvis.runtime.projects import ProjectsService
 from jarvis.runtime.stream_bridge import LoopBoundTokenStream
 from jarvis.runtime.work_state import WorkStateService, build_analyst
-from jarvis.shared import CallerPrincipal, Event
+from jarvis.shared import CallerPrincipal, Event, lang
 from jarvis.shared.action_admission import bind_action_admission
+from jarvis.shared.lang import language_name
 from jarvis.shared.pricing import load_pricing_table
 from jarvis.shared.realtime import (
     RESPONSE_CANCEL_REASONS,
@@ -239,14 +241,11 @@ _FALLBACK_CANCEL_TIMEOUT_MS: int = 500
 _DEFAULT_VISION_PRESET_NAME: str = "vision"
 
 # System prompt for the injected vision client (`_LLMVisionClient` below).
-# Directed at the vision model, not Allen, so it stays English; asking for
-# a Chinese answer means `screen_look`'s text observation slots straight
-# into the rest of Jarvis's Chinese-speaking pipeline without a translation
-# hop.
+# Asking for the user's language means `screen_look`'s text observation
+# slots straight into a Tier 0 reply without a translation hop.
 _VISION_SYSTEM_PROMPT: str = (
     "You are a screen-reading assistant. Describe what is currently "
-    "visible in the screenshot factually and concisely. Respond in "
-    "Chinese (中文)."
+    "visible in the screenshot factually and concisely. Respond in {language}."
 )
 
 # Fallback ``tools.obsidian.vault_root`` (ADR-0011 D7) for a runtime
@@ -539,6 +538,49 @@ def _assistant_name(config: Mapping[str, Any]) -> str:
     """``assistant_name`` — what the user calls the assistant; ``Jarvis`` when unset."""
     name = config.get("assistant_name")
     return name.strip() if isinstance(name, str) and name.strip() else "Jarvis"
+
+
+def _language(config: Mapping[str, Any]) -> lang.Language:
+    """``language`` from the user's settings, else the system language."""
+    raw = config.get("language")
+    chosen = lang.normalize(raw)
+    if chosen is None and raw not in (None, ""):
+        LOGGER.warning("settings: language %r is not zh or en; using the system language", raw)
+    return chosen or _system_language()
+
+
+def _system_language() -> lang.Language:
+    """The first of macOS's preferred languages (then ``$LANG``): Chinese or English."""
+    try:
+        out = subprocess.run(
+            ["/usr/bin/defaults", "read", "-g", "AppleLanguages"],
+            capture_output=True, text=True, timeout=2, check=False,
+        ).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        out = ""
+    first = out.strip().strip("()").split(",")[0].strip().strip('"')
+    return lang.normalize(first) or lang.normalize(os.environ.get("LANG")) or "en"
+
+
+def save_language(settings_path: Path, code: str) -> lang.Language:
+    """Switch every fixed sentence to ``code`` now and keep it in ``settings.yaml``.
+
+    Only the top-level ``language:`` line changes (or is appended); the rest
+    of the user's file, comments included, stays as written.
+    """
+    chosen = lang.normalize(code)
+    if chosen is None:
+        msg = f"language must be one of {', '.join(lang.LANGUAGES)}"
+        raise ValueError(msg)
+    text = settings_path.read_text(encoding="utf-8") if settings_path.is_file() else ""
+    line = f"language: {chosen}\n"
+    text, found = re.subn(r"(?m)^language:.*(?:\n|$)", line, text)
+    if not found:
+        text += ("\n" if text and not text.endswith("\n") else "") + line
+    staged = settings_path.with_suffix(".yaml.tmp")
+    staged.write_text(text, encoding="utf-8")
+    staged.replace(settings_path)
+    return lang.set_language(chosen)
 
 
 def _named(value: Any, name: str) -> Any:  # noqa: ANN401 — any YAML value.
@@ -1265,13 +1307,13 @@ class _LLMVisionClient:
             if self._cost_recorder is None:
                 result = self._llm_client.chat(
                     messages=messages,
-                    system=_VISION_SYSTEM_PROMPT,
+                    system=_VISION_SYSTEM_PROMPT.format(language=language_name()),
                 )
             else:
                 result = self._cost_recorder.chat(
                     self._llm_client,
                     messages=messages,
-                    system=_VISION_SYSTEM_PROMPT,
+                    system=_VISION_SYSTEM_PROMPT.format(language=language_name()),
                     kind="vision",
                     turn_id=None,
                 )
@@ -1607,6 +1649,7 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
     #    the registry at build time (ADR-0011 D7) — L4 handlers do not
     #    load YAML themselves.
     full_config = _load_full_config(config_path, paths.settings)
+    lang.set_language(_language(full_config))
     wave1_features = _wave1_feature_flags(full_config)
     (
         web_search_max_results,

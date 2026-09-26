@@ -58,8 +58,10 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
+import jarvis.runtime as runtime_pkg
 from jarvis.deployment import sleep_wake
 from jarvis.runtime import inherent_loop
+from jarvis.shared import lang
 from jarvis.surface import (
     notify,
     voice_audio,
@@ -203,6 +205,20 @@ def _no_real_power_observer(monkeypatch: pytest.MonkeyPatch) -> None:
     production code.
     """
     monkeypatch.setattr(sleep_wake, "_real_observer_factory", _InertPowerObserver)
+
+
+@pytest.fixture(autouse=True)
+def _chinese_unless_a_test_says_otherwise(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Pin the fixed-text language to zh, whatever this Mac's system language.
+
+    A booted runtime with no ``language`` setting reads the system language,
+    and the choice is process-wide, so one test's boot would otherwise leak
+    its language into every later test.
+    """
+    monkeypatch.setattr(runtime_pkg, "_system_language", lambda: "zh")
+    lang.set_language("zh")
+    yield
+    lang.set_language("zh")
 
 
 @pytest.fixture(autouse=True)

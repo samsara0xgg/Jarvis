@@ -134,6 +134,7 @@ from jarvis.runtime import (
     make_barge_in_interrupt_callable,
     make_foreground_decision_callable,
     make_response_cancel_callable,
+    save_language,
 )
 from jarvis.runtime.inherent_hub import start_inherent_view
 from jarvis.runtime.session_compaction import CompactionSweep, preset_context_length
@@ -4867,6 +4868,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 runtime.plugin_connections.settings.matches if runtime.plugin_connections else None
             ),
             plugin_icon=runtime.plugin_connections.icon if runtime.plugin_connections else None,
+            language_save=functools.partial(save_language, runtime.runtime_paths.settings),
             cancel_response_callable=cancel_response_callable,
             controls=controls,
             live=live_voice,

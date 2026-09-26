@@ -76,6 +76,9 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
+# The zh + en language table: its Chinese sentences carry fullwidth
+# punctuation on purpose, and each sentence stays on one line per language.
+"jarvis/shared/lang.py" = ["RUF001", "E501"]
 # Plugin connection errors are user-facing Chinese text.
 "jarvis/runtime/plugin_connections.py" = ["RUF001"]
 # Exact upstream baseline; launcher migration is tracked in UPSTREAM_BASELINE.md.
