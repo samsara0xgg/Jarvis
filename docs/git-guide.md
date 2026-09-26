@@ -11,6 +11,9 @@ details and examples live here.
    - `ruff check .`
    - `mypy --strict jarvis tests scripts tools`
    - `pytest tests -m "not live_llm and not live_codex" -x`
+   - `uv audit --frozen --preview-features audit` (known vulnerabilities in
+     `uv.lock`; a finding means upgrade the package with
+     `uv lock --upgrade-package <name>`, never skip it)
 
    Why these exact forms (hermetic-gate contract, 2026-08-25):
    - ruff: NO `--select ALL` — the CLI flag discards the
