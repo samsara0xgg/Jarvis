@@ -17,7 +17,7 @@ const dir = path.join(root, 'evidence', real ? 'companion-live-real' : 'companio
 mkdirSync(dir, { recursive: true });
 const port = real ? (process.env.JARVIS_INHERENT_BRIDGE_PORT ?? '8006') : '8799';
 const daemon = `http://127.0.0.1:${port}`;
-const web = 5192;
+const web = Number(process.env.COMPANION_PORT ?? 5192);
 const server = spawn(path.join(root, 'node_modules/.bin/vite'), ['preview', '--port', String(web), '--strictPort'], { cwd: root, stdio: 'ignore' });
 const checks = [], check = (name, pass) => { assert.ok(pass, name); checks.push(name); console.log(`PASS ${name}`); };
 // The page is served from vite, the daemon from another origin; the Electron window has no such wall.
@@ -28,7 +28,7 @@ const words = text => text.replace(/<\/?(voice|document)>/g, '').replace(/^\s*(\
 const hm = ms => { const d = new Date(ms); return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
 try {
   for (let i = 0; i < 50; i++) { try { await fetch(`http://127.0.0.1:${web}/`); break; } catch { await new Promise(r => setTimeout(r, 100)); } }
-  const context = await browser.newContext({ viewport: { width: 640, height: 592 }, deviceScaleFactor: 2 });
+  const context = await browser.newContext({ viewport: { width: 640, height: 722 }, deviceScaleFactor: 2 });
   const page = await context.newPage();
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
@@ -133,6 +133,9 @@ try {
       reads.push({ at: Date.now(), after, limit });
       return json({ since: after, rows: after ? all.filter(r => r.seq > after) : all.slice(-limit) });
     }
+    // The home's new writes: a to-do checked off, and Jarvis's own settings once it serves them.
+    if (method === 'POST' && url.pathname === '/inherent/today/todo') return json({ ok: true });
+    if (method === 'POST' && url.pathname === '/inherent/settings' && fixtures['/inherent/settings']) { Object.assign(fixtures['/inherent/settings'].values, body.changes); return json(fixtures['/inherent/settings']); }
     if (fixtures[url.pathname]) return json(fixtures[url.pathname]);
     return route.fulfill({ status: 404, contentType: 'application/json', body: '{"detail":"Not Found"}' });
   });
@@ -144,7 +147,7 @@ try {
   const waitPlace = async value => { await page.waitForFunction(v => document.querySelector('.companion-hit')?.dataset.place === v, value, { timeout: 5000 }); await page.waitForTimeout(700); };
   const face = (...ids) => page.waitForFunction(v => v.includes(document.querySelector('.companion-canvas')?.dataset.face), ids, { timeout: 2500 }).then(() => ids[0], () => null);
   const shot = (name, clip = { x: 120, y: 0, width: 400, height: 240 }) => page.screenshot({ path: path.join(dir, `${name}.png`), clip });
-  const panelShot = name => shot(name, { x: 150, y: 0, width: 340, height: 592 });
+  const panelShot = name => shot(name, { x: 150, y: 0, width: 340, height: 722 });
   const openRow = name => page.locator(`.ad [data-row="${name}"]`).evaluate(el => (el.matches('button') ? el : el.querySelector('button')).click());
   const back = async () => { await page.locator('.ad .pg-back').click(); await page.waitForTimeout(700); };
   const text = selector => page.locator(selector).first().textContent();
@@ -171,8 +174,13 @@ try {
     await page.waitForTimeout(2500);
     const conversation = await get('/inherent/conversation?after=0');
     const answer = [...conversation.rows].reverse().find(r => r.source !== 'allen');
-    const say = await text('.ad .say');
-    check(`R her words are the last answer on record (${answer?.seq})`, !!answer && say === plain(answer.text) && (await text('.ad .cap')).includes(hm(Date.parse(answer.ts))));
+    const lastYou = [...conversation.rows].reverse().find(r => r.source === 'allen'), since = lastYou ? Date.now() - Date.parse(lastYou.ts) : Infinity;
+    const talkShown = await page.locator('.ad [data-block="talk"]').count() === 1;
+    check(`R the conversation is on top only within 10 min of your last turn (${Number.isFinite(since) ? Math.round(since / 60_000) : '-'} min ago, ${talkShown ? 'shown' : 'not shown'})`,
+      talkShown === since < 10 * 60_000 && (!talkShown || !answer || answer.seq < lastYou.seq || await text('.ad .r-talk .say') === plain(answer.text)));
+    const todayRoute = await fetch(`${daemon}/inherent/today`).then(r => r.status, () => 0);
+    check(`R Today says the calendar is not connected while the daemon has no /inherent/today (${todayRoute})`,
+      todayRoute !== 404 || (await text('.ad [data-block="today"] .muted')) === 'Calendar and to-dos aren’t connected yet.');
     const work = await get('/inherent/work-state');
     const nowText = await text('.ad .r-now .text');
     check(`R Now is the daemon's work state (${work.state?.now ? 'claim' : 'none'})`, work.state?.now ? nowText === work.state.now.text : /No recent activity|Syncing/.test(nowText));
@@ -197,7 +205,8 @@ try {
     // Opened the way a click opens it, timing when the words on screen have faded in.
     const litMs = await page.evaluate(async () => {
       const t0 = performance.now();
-      document.querySelector('.ad [data-row="conversation"] button').click();
+      const opener = document.querySelector('.ad [data-row="conversation"]');
+      (opener.matches('button') ? opener : opener.querySelector('button')).click();
       while (performance.now() - t0 < 4000) {
         await new Promise(r => requestAnimationFrame(r));
         const body = document.querySelector('.ad .pg-body'), box = body?.getBoundingClientRect();
@@ -280,7 +289,8 @@ try {
     await page.evaluate(() => window.__command('dashboard'));
     await page.locator('.companion-dashboard.is-open').waitFor();
     await page.waitForTimeout(1500);
-    check('L8 her words are the last answer on record, plain, with its time', await text('.ad .say') === 'Two things: the voice test at four, and the demo cut.' && (await text('.ad .cap')).includes(hm(Date.parse(rows[1].ts))));
+    check('L8 your turn 9 min ago keeps the conversation on top: your words, then the answer on record, plain',
+      (await text('.ad .r-talk .you')).endsWith(rows[0].text) && await text('.ad .r-talk .say') === 'Two things: the voice test at four, and the demo cut.');
     check('L8 Now, Usage and Projects come from the daemon', await text('.ad .r-now .text') === 'Wiring the companion to the daemon.' && (await text('.ad .r-usage .dial b')).startsWith('41') && await text('.ad .pj-mini b') === 'jarvis');
     check('L8 the Agents row counts live sessions', (await text('.ad .r-agents .pill')) === '1 needs you' && (await text('.ad .r-agents .text')).includes('Wire the companion'));
     check('L8 the Plugins tile is the live catalog, connected first, with a manifest logo where there is one', (await page.locator('.ad .pl-mini i').allTextContents()).join('') === 'N' && await page.locator('.ad .pl-mini i:first-child img[src^="data:image/svg"]').count() === 1 && (await text('.ad [data-row="plugins"] .meta')) === '1 on');
@@ -366,6 +376,56 @@ try {
     check('L12 Try again resends the same request id for Codex, so it cannot spend twice', resets.length === 2 && resets[1].id === resets[0].id && /^[0-9a-f]{8}-[0-9a-f]{4}-/.test(resets[0].id) && resets.every(r => r.service === 'codex'));
     check('L12 a reset closes the question, says so, and re-reads usage', await page.locator('.ad .us-confirm').count() === 0 && (await text('.ad .toast')) === 'Codex limits reset' && refreshes.length > before);
     await back();
+
+    // The home's new sources. Until the daemon serves them, Today says so, the pop-ups stay away and Jarvis's own
+    // settings are greyed out; once it does, each block shows what it answers and the writes go where the contract says.
+    check('L14 without /inherent/today, Today says the calendar is not connected, and no brief, mail or reminder shows',
+      (await text('.ad [data-block="today"] .muted')) === 'Calendar and to-dos aren’t connected yet.' && await page.locator('.ad [data-block="brief"], .ad [data-block="mail"], .ad [data-block="foryou"]').count() === 0);
+    await page.locator('.ad .corner .cb').nth(1).click(); await page.waitForTimeout(300);
+    check('L14 the corner mute sets speech_muted on the daemon', posts.at(-1)?.path === '/inherent/controls' && posts.at(-1).body.speech_muted === true && await page.locator('.ad .cb.is-muted').count() === 1);
+    await page.locator('.ad .corner .cb').nth(1).click(); await page.waitForTimeout(300);
+    check('L14 and the second press unmutes it', posts.at(-1)?.body.speech_muted === false && await page.locator('.ad .cb.is-muted').count() === 0);
+    await page.locator('.ad .corner [data-row="settings"]').click(); await page.waitForTimeout(900);
+    await page.locator('.ad [data-cat="voice"]').click(); await page.waitForTimeout(500);
+    check('L14 without /inherent/settings, Jarvis’s own voice settings are greyed out and say they still live in jarvis.yaml',
+      (await text('.ad .st-warn')).includes('jarvis.yaml') && await page.locator('.ad .st.is-off').count() === 7);
+    await panelShot('L14-settings-missing');
+    await back(); await back();
+    const today = new Date().toLocaleDateString('en-CA');
+    fixtures['/inherent/today'] = { weather: { now_c: 12, summary: 'Rain from 9 PM' },
+      events: [{ id: 'e1', title: 'Office hours', start: iso(Date.now() - 60_000), end: iso(Date.now() + 30 * 60_000) }],
+      todos: [{ id: 't1', title: 'Send the A3 draft', due: iso(Date.now() + 60_000) }] };
+    fixtures['/inherent/brief'] = { date: today, summary: 'Two agents finished overnight.', body: '**Overnight**\n\n- Two agents finished.', items: 1 };
+    fixtures['/inherent/mail'] = { unread: [{ id: 'm1', from: 'Prof. Lee', subject: 'Office hours moved', received: iso(Date.now() - 600_000) }] };
+    fixtures['/inherent/notices'] = { notices: [{ id: 'n1', text: 'Reminder: call the dentist', at: iso(Date.now()) }] };
+    fixtures['/inherent/settings'] = { values: { reply_language: 'follow', wake_threshold: .95, tts_voice: 'Warm Bestie', tts_volume: 1, output_device: 'System default', input_device: 'System default',
+      gpt_live: true, mac_aec: false, timesink: true, keep_audio: true, repos: ['jarvis'], model_conversation: 'gpt-5.6-luna', model_background: 'GPT-6 luna', model_report: 'GPT-6 sol' },
+      options: { tts_voice: ['Warm Bestie', 'Explorative Girl'], output_device: ['System default'], input_device: ['System default'] } };
+    await hit.dblclick({ force: true });
+    await page.waitForFunction(() => !document.querySelector('.companion-dashboard.is-open'), null, { timeout: 3000 });
+    await page.evaluate(() => window.__command('dashboard'));
+    await page.locator('.companion-dashboard.is-open').waitFor();
+    await page.waitForTimeout(1500);
+    check('L14 once the daemon answers, Today shows its weather, event and to-do',
+      (await text('.ad [data-block="today"] .ev span')) === 'Office hours' && (await text('.ad [data-block="today"] .wx')).includes('12°') && (await text('.ad [data-block="today"] .td span')) === 'Send the A3 draft');
+    check('L14 the brief, the mail and Jarvis’s reminder show up', await page.locator('.ad [data-block="brief"]').count() === 1
+      && (await text('.ad [data-block="mail"] .ml b')) === 'Prof. Lee' && (await text('.ad [data-block="foryou"]')).includes('call the dentist'));
+    await panelShot('L14-home');
+    await page.locator('.ad [data-block="today"] .td').click(); await page.waitForTimeout(400);
+    check('L14 checking a to-do posts { id, done } to /inherent/today/todo', posts.at(-1)?.path === '/inherent/today/todo' && posts.at(-1).body.id === 't1' && posts.at(-1).body.done === true
+      && await page.locator('.ad .td[aria-pressed="true"]').count() === 1);
+    await page.locator('.ad .brief-go').click(); await page.waitForTimeout(900);
+    check('L14 Read the brief opens its page', await text('.ad .pg-head h3') === 'Morning brief' && (await text('.ad .pg-body')).includes('Two agents finished'));
+    await back();
+    check('L14 a brief you read does not come back today', await page.locator('.ad [data-block="brief"]').count() === 0);
+    await page.locator('.ad .corner [data-row="settings"]').click(); await page.waitForTimeout(900);
+    await page.locator('.ad [data-cat="voice"]').click(); await page.waitForTimeout(500);
+    await page.locator('.ad .st-opts button', { hasText: 'Explorative Girl' }).click(); await page.waitForTimeout(600);
+    check('L14 with /inherent/settings they are live, and a change posts { changes }', await page.locator('.ad .st.is-off').count() === 0
+      && posts.at(-1)?.path === '/inherent/settings' && posts.at(-1).body.changes?.tts_voice === 'Explorative Girl'
+      && await page.locator('.ad .st-opts button[aria-checked="true"]', { hasText: 'Explorative Girl' }).count() === 1);
+    await panelShot('L14-settings-voice');
+    await back(); await back();
     await hit.dblclick({ force: true });
     await page.waitForFunction(() => !document.querySelector('.companion-dashboard.is-open'), null, { timeout: 3000 });
     // Jarvis asks for a plugin mid-conversation: the closed panel opens and lands on it.
