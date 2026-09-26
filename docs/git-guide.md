@@ -30,9 +30,8 @@ details and examples live here.
 2. `git status` + `git diff --stat` to glance at the change set.
 3. One thing per commit (no mixing `fix` with `feat`, no new
    functionality inside a `refactor`).
-4. Do not push proactively (default is never push unless Allen
-   explicitly asks). Do not bypass any hook that exists. Do not
-   force-push to `main`.
+4. Land it without asking first (§3). Do not bypass any hook that
+   exists. Do not force-push to `main`.
 
 Tier 2 scenario tests (`pytest tests/scenarios/ --live-llm`) are
 **not** part of the commit gate — they fire real LLM calls and are run
@@ -82,7 +81,7 @@ genuinely cross-cutting.
 - Title ≤ 72 characters.
 - Title writes **what** at a high level; body writes **why** and
   the per-file breakdown.
-- No `Co-Authored-By`.
+- The last line is the `Co-Authored-By` trailer Claude Code adds.
 
 ### Body structure
 
@@ -231,14 +230,42 @@ for Result Interpreter table only; legacy parsing helpers
 intentionally skipped per ADR § Reference sources Day-1 scope).
 ```
 
-## 3. Branches
+## 3. Branches and landing
 
-- Daily development → directly on `main`.
-- Big refactors / experiments / likely-to-fail work → `feat/xxx`
-  branch, merged back to `main` when done. Prefer `git merge --no-ff`
-  to preserve the branch in history.
-- `push origin main` happens **only when Allen explicitly asks** —
-  default is no push. **Never** `push --force` to `main`.
+Work on a branch (background sessions get a Claude Code worktree) or
+directly on `main`. When the task is done and verified, land it
+**without asking first**. A permission prompt on the way is fine;
+stopping to ask in chat is not.
+
+1. Commit with the commit skill.
+2. Merge into `main` from the main checkout with `git merge --no-ff
+   <branch>`. Claude Code's worktree isolation refuses git commands
+   aimed at the main checkout from inside a worktree; call
+   `ExitWorktree` with action `keep` first.
+3. Do not push. `push origin main` happens only when Allen asks;
+   **never** `push --force` to `main`.
+4. Restart what the change touches, from the main checkout root:
+   - Daemon (Python, `config/`, plugins, `uv.lock`); it runs from the
+     main checkout, so the merge is what it picks up:
+     `launchctl kickstart -k gui/$(id -u)/com.allen.jarvis`
+   - Companion (`desktop/resonance/`); it runs from the detached
+     worktree `companion-live`:
+
+     ```bash
+     git archive main desktop/resonance | tar -x -C .claude/worktrees/companion-live
+     (cd .claude/worktrees/companion-live/desktop/resonance && npm run build)
+     pkill -f companion-live/desktop/resonance/dist-electron/companion.js
+     nohup .claude/worktrees/companion-live/desktop/resonance/node_modules/.bin/electron \
+       .claude/worktrees/companion-live/desktop/resonance/dist-electron/companion.js \
+       > ~/.jarvis/logs/companion.log 2>&1 &
+     ```
+   - Docs, tests and ADRs only: nothing to restart.
+5. Remove the task's worktree and branch (`git worktree remove`,
+   `git branch -d`), then report what landed and what Allen should look
+   at.
+
+Stop and report instead of landing on a red gate, a merge conflict that
+needs a judgment call, or work Allen said to keep off `main`.
 
 ## 4. gitignore principles
 
