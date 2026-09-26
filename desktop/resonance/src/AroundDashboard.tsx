@@ -111,11 +111,11 @@ const toTurns = (rows: Row[]): Turn[] => {
 };
 const PULL = 240; // px of fresh upward scroll at the top that adds the day before
 
-export function AroundDashboard({ open, port = null, onClose, onMood, onHop, talk, plugins: live, pluginFocus = null, marks = 'spark', onAgents, agentsFocus = 0, onAnswer, seen, ctl, settingsFocus = 0 }: {
+export function AroundDashboard({ open, port = null, onClose, onMood, onHop, talk, plugins: live, pluginFocus = null, marks = 'spark', onAgents, agentsFocus = 0, onAnswer, unread, ctl, settingsFocus = 0 }: {
   open: boolean; port?: string | null; onClose: () => void; onMood: (expr: ExprId | null) => void; onHop: (height: number) => void;
   talk?: Talk; plugins?: PluginController; pluginFocus?: { plugin: string; key: string } | null;
   marks?: MarkLook; onAgents?: (agents: ShownAgent[]) => void; agentsFocus?: number; onAnswer?: (id: string) => void;
-  seen?: { ids: string[]; at: number }; ctl: Controls; settingsFocus?: number;
+  unread?: ReadonlySet<string>; ctl: Controls; settingsFocus?: number;
 }) {
   const [settings, updateSettings] = useCompanionSettings(), lang = settings.lang;
   const t = (l: L) => tr(lang, l);
@@ -287,27 +287,12 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
     .map(s => ({ ...s, ...moved[s.id] })).map(s => s.state === 'wait' && !s.request && s.at && tick - s.at > STALE_MS[settings.stale] ? { ...s, state: 'done' as const } : s);
   const group = (state: AgentState) => agents.filter(s => s.state === state).sort((a, b) => (moved[b.id]?.at ?? 0) - (moved[a.id]?.at ?? 0));
   const waiting = group('wait'), stopped = group('err'), working = [...group('work'), ...group('pack')], earlier = group('done');
-  // A session that finishes while she watches stays "finished" until you have been on the Agents page;
-  // what was already done when she started, or has been looked at since, is quiet.
-  const [unseen, setUnseen] = useState<ReadonlySet<string>>(new Set());
-  const seenStates = useRef<Record<string, AgentState>>({}), onAgentsPage = open && page === 'agents', wasOnPage = useRef(false);
-  const statesKey = agents.map(s => `${s.id}:${s.state}`).join('|');
-  useEffect(() => {
-    const was = seenStates.current, now = seenStates.current = Object.fromEntries(agents.map(s => [s.id, s.state]));
-    setUnseen(current => {
-      const next = new Set([...current].filter(id => now[id] === 'done'));
-      agents.forEach(s => { if (s.state === 'done' && ['work', 'pack', 'wait'].includes(was[s.id])) next.add(s.id); });
-      return next.size === current.size && [...next].every(id => current.has(id)) ? current : next;
-    });
-  }, [statesKey]);
-  useEffect(() => { if (wasOnPage.current && !onAgentsPage) setUnseen(new Set()); wasOnPage.current = onAgentsPage; }, [onAgentsPage]);
-  // A finished card closed by hand counts as looked at.
-  useEffect(() => { if (seen?.ids.length) setUnseen(current => new Set([...current].filter(id => !seen.ids.includes(id)))); }, [seen?.at]);
-  const markOf = (s: Agent): MarkState => s.state === 'done' ? unseen.has(s.id) ? 'done' : 'seen' : s.state;
-  const finished = earlier.filter(s => unseen.has(s.id));
+  // Finished and not looked at yet: the companion keeps that list (ADR 0057); what is done and seen is quiet.
+  const markOf = (s: Agent): MarkState => s.state === 'done' && !unread?.has(s.id) ? 'seen' : s.state;
+  const finished = earlier.filter(s => unread?.has(s.id));
   // Every row goes up to the companion: the wing draws the live ones, the notices watch them all change.
   const shown: ShownAgent[] = agents.map(s => ({ ...s, mark: markOf(s),
-    line: s.state === 'done' ? unseen.has(s.id) ? 'Finished · not opened yet' : s.last : s.state === 'err' ? `Stopped · ${s.error}` : s.last || (s.state === 'wait' ? 'Needs you' : 'Working') }));
+    line: s.state === 'done' ? unread?.has(s.id) ? 'Finished · not opened yet' : s.last : s.state === 'err' ? `Stopped · ${s.error}` : s.last || (s.state === 'wait' ? 'Needs you' : 'Working') }));
   const shownKey = JSON.stringify(shown);
   useEffect(() => onAgents?.(shown), [shownKey]);
   // The marks beside the notch were clicked: the companion opened the panel, and it lands on Agents.

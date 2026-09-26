@@ -35,6 +35,14 @@ contextBridge.exposeInMainWorld('jarvis', {
   hide: () => ipcRenderer.send('hide'),
   copy: (text: string) => ipcRenderer.invoke('copy', text),
   openCodex: (threadId: string) => ipcRenderer.invoke('open-codex', threadId),
+  // ADR 0057: Ghostty's front terminal while asked, and going to a session's terminal.
+  watchGhostty: (on: boolean) => ipcRenderer.send('ghostty-watch', on),
+  onGhostty: (callback: (seen: { front: boolean; title: string }) => void) => {
+    const listener = (_: unknown, seen: { front: boolean; title: string }) => callback(seen);
+    ipcRenderer.on('ghostty', listener);
+    return () => ipcRenderer.removeListener('ghostty', listener);
+  },
+  jumpGhostty: (title: string, job: string) => ipcRenderer.invoke('ghostty-jump', title, job),
   codexTitles: (ids: string[]) => ipcRenderer.invoke('codex-titles', ids),
   openAccount: (service: string) => ipcRenderer.invoke('open-account', service),
   usageReset: (service: string, requestId: string) => ipcRenderer.invoke('usage-reset', service, requestId),

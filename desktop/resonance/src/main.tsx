@@ -35,6 +35,9 @@ declare global { interface Window { jarvis?: {
   drag: (phase: 'start' | 'move' | 'end', point?: { x: number; y: number }) => void;
   copy: (text: string) => Promise<boolean>;
   openCodex: (threadId: string) => Promise<boolean>;
+  watchGhostty?: (on: boolean) => void;
+  onGhostty?: (cb: (seen: { front: boolean; title: string }) => void) => () => void;
+  jumpGhostty?: (title: string, job: string) => Promise<boolean>;
   codexTitles: (ids: string[]) => Promise<Record<string, string>>;
   openAccount: (service: string) => Promise<boolean>;
   usageReset: (service: 'codex', requestId: string) => Promise<{ code: string; windows_reset: number }>;
