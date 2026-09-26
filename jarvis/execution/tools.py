@@ -2870,7 +2870,7 @@ def _make_screen_look(*, vision_client: VisionClient | None, max_width_px: int) 
     return Tool(
         name="screen_look",
         description=(
-            "Take a screenshot of Allen's screen and describe what's on "
+            "Take a screenshot of the user's screen and describe what's on "
             "it via a vision model; an optional `question` focuses the "
             "description on something specific. The decision LLM never "
             "sees the screenshot pixels — only this tool's returned "
@@ -3481,7 +3481,7 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
             ToolDefinition(
                 name="search_notes",
                 description=(
-                    "Case-insensitive full-text search over Allen's Obsidian vault "
+                    "Case-insensitive full-text search over the user's Obsidian vault "
                     "(*.md files only). Returns matching lines with their source "
                     "file. No index — brute-force scan, fine for a small vault."
                 ),
@@ -3566,7 +3566,7 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
                 "or path. The target is resolved to a canonical path before "
                 "writing — never pass a raw filesystem path. mode='create' "
                 "refuses an existing file; 'overwrite'/'append' both require "
-                "one. Risk L3 — every dispatch requires Allen's explicit "
+                "one. Risk L3 — every dispatch requires the user's explicit "
                 "confirmation."
             ),
             # frozen 2026-09-12: engineering is off the LLM menu; no caller may reach this.
