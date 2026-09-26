@@ -1,6 +1,6 @@
 # ADR 0036 — Todos and calendar live in Microsoft; the daily report reads them
 
-**Status:** Accepted
+**Status:** Superseded-by-0050
 **Date:** 2026-09-23
 **Supersedes:** 0020
 

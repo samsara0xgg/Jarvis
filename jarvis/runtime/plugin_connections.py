@@ -609,7 +609,7 @@ class PluginConnections:
         return "continued"
 
     def client_for(self, server: str) -> McpServers:
-        """The live client holding ``server``, for a background read-only caller (ADR 0036)."""
+        """The live client holding ``server``, outside a model turn (ADR 0036, 0050)."""
         with self._lock:
             for active in self._active.values():
                 if server in active.client.connected_servers:

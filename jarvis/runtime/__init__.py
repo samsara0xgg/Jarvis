@@ -121,6 +121,7 @@ from jarvis.execution.tools import (
 )
 from jarvis.execution.workers import Workers, make_worker_tools
 from jarvis.runtime.daily_report import PLAN_SERVER, DailyReportService, microsoft_plan
+from jarvis.runtime.home import Home
 from jarvis.runtime.plugin_connections import PluginConnections
 from jarvis.runtime.plugins import Plugins, load_plugins
 from jarvis.runtime.projects import ProjectsService
@@ -142,6 +143,7 @@ from jarvis.shared.realtime_trace import (
     record_realtime_trace,
 )
 from jarvis.state.committed_event_bus import CommittedEventBus
+from jarvis.state.daily_report import resolve_zone
 from jarvis.state.event_log import open_event_log, open_runtime_event_log
 from jarvis.state.memory_db import MemorySettings, SessionSettings, append_record, render_context
 from jarvis.state.projects import parse_catalog
@@ -429,6 +431,8 @@ class JarvisRuntime:
     work_state: WorkStateService | None = None
     # ADR 0037: the project view and its sorting job. None = no `projects` list.
     projects: ProjectsService | None = None
+    # ADR 0050: the companion home's Today, mail and brief reads. None = hand-assembled.
+    home: Home | None = None
 
 
 @dataclass(frozen=True)
@@ -829,6 +833,13 @@ def _work_state_timezone(config: Mapping[str, Any]) -> tzinfo | None:
     except ZoneInfoNotFoundError as exc:
         message = f"work_state.timezone must be an IANA zone name: {raw!r}"
         raise ValueError(message) from exc
+
+
+def _home_weather(config: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """``home.weather`` — where the home's forecast is for (``latitude``, ``longitude``)."""
+    block = config.get("home")
+    place = block.get("weather") if isinstance(block, Mapping) else None
+    return place if isinstance(place, Mapping) else None
 
 
 def _daily_report_preset(config: Mapping[str, Any]) -> str:
@@ -1780,6 +1791,11 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
         tool_cues=tool_cues,
         work_state=work_state,
         projects=projects,
+        home=Home(
+            plugin_connections,
+            resolve_zone(None, _work_state_timezone(full_config)),
+            _home_weather(full_config),
+        ),
     )
 
 

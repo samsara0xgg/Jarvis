@@ -75,6 +75,7 @@ import json
 import logging
 import math
 import os
+import signal
 import sqlite3
 import threading
 import time
@@ -89,6 +90,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from jarvis.deployment.sleep_wake import PowerObserver
+    from jarvis.runtime.home import Home
     from jarvis.runtime.work_state import WorkStateService
     from jarvis.shared.realtime import PresentationIntent
     from jarvis.state.committed_event_bus import CommittedEventBus
@@ -112,7 +114,7 @@ from jarvis.decision.response_run import (
     start_response_run,
 )
 from jarvis.deployment import inherent_v2_token_matches, rotate_inherent_v2_token
-from jarvis.deployment.launchd import repo_root
+from jarvis.deployment.launchd import repo_root, spawned_by_agent
 from jarvis.deployment.process_lock import acquire_exclusive
 from jarvis.deployment.sleep_wake import install_power_observer, sweep_overdue_actions
 from jarvis.execution.tools import live_action_ids
@@ -3901,6 +3903,16 @@ def _start_timesink_observer(runtime: JarvisRuntime) -> list[asyncio.Task[None]]
     ]
 
 
+async def _set_todo(home: Home, todo_id: str, done: bool) -> None:  # noqa: FBT001 — the route's body.
+    """``POST /inherent/today/todo``: one To Do write, off the loop thread."""
+    await asyncio.to_thread(functools.partial(home.set_todo, todo_id, done=done))
+
+
+def _restart_soon() -> None:
+    """``POST /inherent/restart``: TERM ourselves once the answer is out; KeepAlive respawns us."""
+    asyncio.get_running_loop().call_later(0.5, os.kill, os.getpid(), signal.SIGTERM)
+
+
 async def _refresh_work_state_now(service: WorkStateService) -> dict[str, Any]:
     """``POST /inherent/work-state/refresh``: the single-flight analysis on its own connection."""
     return await asyncio.to_thread(service.refresh_in_own_connection, trigger="dashboard")
@@ -4861,6 +4873,20 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 else functools.partial(asyncio.to_thread, runtime.projects.refresh)
             ),
             conversation_read=None if window_memory is None else _read_conversation,
+            today_read=(
+                None if runtime.home is None
+                else functools.partial(asyncio.to_thread, runtime.home.today)
+            ),
+            todo_set=None if runtime.home is None else functools.partial(_set_todo, runtime.home),
+            mail_read=(
+                None if runtime.home is None
+                else functools.partial(asyncio.to_thread, runtime.home.mail)
+            ),
+            brief_read=(
+                None if runtime.home is None
+                else functools.partial(runtime.home.brief, runtime.conn)
+            ),
+            restart=_restart_soon if spawned_by_agent() else None,
             plugin_read=runtime.plugin_connections.read if runtime.plugin_connections else None,
             plugin_action=runtime.plugin_connections.action if runtime.plugin_connections else None,
             plugin_authorize=(

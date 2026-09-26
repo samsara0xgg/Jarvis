@@ -136,6 +136,12 @@ work_state:
 daily_report:
   preset: gpt6-sol
 
+# ADR 0050 — 小球首页：日程和待办直接读 Microsoft，邮件读 Gmail（~/.jarvis/env 里的
+# GMAIL_ADDRESS + GMAIL_APP_PASSWORD），都不经过模型；天气来自 Open-Meteo（不用 key），
+# 按这里的经纬度（Saanich）。删掉 weather 就不显示天气。
+home:
+  weather: {latitude: 48.48, longitude: -123.38}
+
 # ADR 0037 — 项目清单，Allen 自己维护。Resonance 的「项目」模块只把 TimeSink
 # 里的活动归到这些 id（或「不属于任何项目」），用的是 work_state.preset。
 # id：小写字母、数字、连字符，是项目唯一的身份；name：显示名；
