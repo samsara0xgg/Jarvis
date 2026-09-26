@@ -41,11 +41,11 @@ function loadWardrobe(): { skin: Skin; auto: boolean; layout: DashboardLayout; h
 }
 const isPreview = (value: string): value is ExprId => (PREVIEW as string[]).includes(value);
 
-function layout({ topInset, notchWidth, surfaceWidth: width }: Placement) {
+function layout({ topInset, notchWidth, surfaceWidth: width }: Placement, tucked: boolean) {
   const center = width / 2, notchLeft = center - notchWidth / 2;
   // Without a notch she lives dead centre in a pill; its two wings open the Dashboard, as the camera does beside a notch.
-  const lobe: Lobe = notchWidth ? { left: notchLeft - 64, right: notchLeft + 24, height: topInset, notched: true }
-    : { left: center - 66, right: center + 66, height: topInset, notched: false };
+  const lobe: Lobe = notchWidth ? { left: notchLeft - 64, right: notchLeft + 24, height: topInset, notched: true, tucked }
+    : { left: center - 66, right: center + 66, height: topInset, notched: false, tucked };
   const x = notchWidth ? notchLeft - 32 : center, out = { x, y: topInset + R + 14 }, panelTop = topInset + 44;
   const anchors: Record<Place, Point> = { home: { x, y: topInset / 2 }, peek: { x, y: topInset + R * .1 }, out, dock: { x: center, y: panelTop - R * .5 } };
   // The agent marks' wing grows from the notch's right edge, or the pill's.
@@ -55,7 +55,7 @@ function layout({ topInset, notchWidth, surfaceWidth: width }: Placement) {
     ball: { x: x - R - 12, y: topInset, w: 2 * R + 24, h: out.y + R + 12 - topInset },
     chip: { x: x + R + 4, y: out.y - 18, w: 44, h: 36 },
     dash: notchWidth ? [{ x: notchLeft, y: 0, w: notchWidth, h: topInset + 4 }]
-      : [{ x: lobe.left, y: 0, w: 30, h: topInset + 4 }, { x: center + 36, y: 0, w: 30, h: topInset + 4 }],
+      : tucked ? [] : [{ x: lobe.left, y: 0, w: 30, h: topInset + 4 }, { x: center + 36, y: 0, w: 30, h: topInset + 4 }],
     panel: { x: center - PANEL / 2 - 10, y: 0, w: PANEL + 20, h: panelTop + 520 },
   } };
 }
@@ -76,7 +76,10 @@ export function Companion() {
     void window.jarvis.placement().then(receive);
     return window.jarvis.onPlacement(receive);
   }, []);
-  const geo = useMemo(() => layout(placement), [placement]);
+  // ⌘ in the menu bar row tucks her away on that side of the camera for a moment (electron/companion.ts).
+  const [tuck, setTuck] = useState({ left: false, right: false });
+  useEffect(() => window.jarvis?.onTuck?.(setTuck), []);
+  const geo = useMemo(() => layout(placement, tuck.left), [placement, tuck.left]);
   const [preferences] = usePreferences();
   const feedback = (cue: FeedbackCue) => { if (preferences.feedbackEnabled) void playFeedback(cue, preferences.feedbackVolume); };
   useEffect(() => { warmFeedback(); return stopFeedback; }, []);
@@ -119,7 +122,8 @@ export function Companion() {
     answer: (req, body) => port ? answerRequest(port, req.id, body) : Promise.resolve(true),
     onSeen: ids => setSeen({ ids, at: Date.now() }) });
   const notice = notices.current;
-  const place: Place = moving ? 'home' : dashboard || notice ? 'dock' : busy || zone === 'ball' || outing ? 'out' : zone === 'lobe' || notices.peek ? 'peek' : 'home';
+  // Tucked, she stays up with the island until it comes back; only the Dashboard and a notice card, below the menu bar, keep her out.
+  const place: Place = moving ? 'home' : dashboard || notice ? 'dock' : tuck.left ? 'home' : busy || zone === 'ball' || outing ? 'out' : zone === 'lobe' || notices.peek ? 'peek' : 'home';
   // A finished text reply stays up briefly: that is her "done" face.
   const listenFace = useRef<ExprId>('35'), receiveFace = useRef<ExprId>('31'), replyFace = useRef<ExprId>('39');
   // Live turns pick her takes as they begin; the scripted demo picks its own in listen() and say().
@@ -134,9 +138,13 @@ export function Companion() {
   useEffect(() => { if (notice?.kind !== 'err') return; const t = setTimeout(notices.bump, 1750); return () => clearTimeout(t); }, [notice?.key]);
   const expr: ExprId = preview ?? noticeFace ?? (receiving ? receiveFace.current : voice === 'listening' ? listenFace.current : voice === 'thinking' ? '30' : voice === 'speaking' || talking ? replyFace.current : dashboard && dashMood ? dashMood : reply.text ? '33' : '02');
   const chip = place === 'out' && zone === 'ball' && !busy;
-  const wing = useMemo(() => wingSlots(agents, wardrobe.marks), [agents, wardrobe.marks]);
+  // Beside a notch the tucked marks go under it; without one they ride up with the pill.
+  const wing = useMemo(() => { const all = wingSlots(agents, wardrobe.marks); return tuck.right && placement.notchWidth ? { ...all, width: 0 } : all; }, [agents, wardrobe.marks, tuck.right, placement.notchWidth]);
+  // Tucked, the island and she slide up in one motion, far enough to clear her from where she comes out,
+  // so nothing of her trails behind; the Dashboard and a notice card keep her (dock).
+  const lift = tuck.left ? geo.out.y + 2 * R : 0;
   const [wingTip, setWingTip] = useState(false), [agentsFocus, setAgentsFocus] = useState(0);
-  const wingRect = { x: geo.wingX, y: 0, w: wing.width, h: placement.topInset };
+  const wingRect = { x: geo.wingX, y: 0, w: tuck.right ? 0 : wing.width, h: placement.topInset };
   const live = useRef({ geo, dashboard, chip, composer, place, wardrobe, wingRect });
   live.current = { geo, dashboard, chip, composer, place, wardrobe, wingRect };
   const ball = useRef<BallHandle | null>(null), look = useRef<Point | null>(null), cursor = useRef<Point>({ x: -1e4, y: -1e4 });
@@ -339,7 +347,7 @@ export function Companion() {
   // The island counts: it is opaque, and a click on it must not reach a menu bar item hidden behind it.
   const refreshHit = () => {
     const p = cursor.current, { lobe } = live.current.geo;
-    const island = p.y >= 0 && p.y <= lobe.height && p.x >= lobe.left - 6 && p.x <= lobe.right + (lobe.notched ? 0 : 6);
+    const island = !lobe.tucked && p.y >= 0 && p.y <= lobe.height && p.x >= lobe.left - 6 && p.x <= lobe.right + (lobe.notched ? 0 : 6);
     const hit = island || !!document.elementFromPoint(p.x, p.y)?.closest('[data-hit]');
     if (hit !== interactive.current && !pressing.current) { interactive.current = hit; window.jarvis?.passthrough(!hit); }
   };
@@ -348,7 +356,7 @@ export function Companion() {
     cursor.current = point;
     if (!composer) look.current = point;
     refreshHit();
-    const next: Zone = within(point, z.ball) || (chip && within(point, z.chip)) ? 'ball' : within(point, z.lobe) ? 'lobe' : 'none';
+    const next: Zone = within(point, z.ball) || (chip && within(point, z.chip)) ? 'ball' : !geo.lobe.tucked && within(point, z.lobe) ? 'lobe' : 'none';
     // Resting on the marks lists the sessions under them.
     const wingNow = live.current.wingRect.w > 0 && within(point, live.current.wingRect);
     if (wingNow !== overWing.current) { overWing.current = wingNow; clearTimeout(tipTimer.current); tipTimer.current = setTimeout(() => setWingTip(wingNow), wingNow ? 120 : 200); }
@@ -369,7 +377,7 @@ export function Companion() {
     } else if (!over && dashTimer.current) { clearTimeout(dashTimer.current); dashTimer.current = undefined; }
   }), []);
   useEffect(() => () => { clearTimeout(zoneTimer.current); clearTimeout(dashTimer.current); clearTimeout(firstClick.current); clearTimeout(tipTimer.current); }, []);
-  useEffect(refreshHit, [place, chip, composer, dashboard, voice, reply.text, wing.width, notice?.key]);
+  useEffect(refreshHit, [place, chip, composer, dashboard, voice, reply.text, wing.width, notice?.key, tuck.left]);
 
   // Native frosted glass behind every visible panel, following its transitions.
   const kickGlass = useRef(() => {});
@@ -444,9 +452,9 @@ export function Companion() {
             if (body.decision !== 'deny') ball.current?.hop(.14);
           }}/>}
       </div>
-      <AgentWing look={wardrobe.marks} wing={wing} x={geo.wingX} height={placement.topInset} limit={geo.width} tip={wingTip && !dashboard} onOpen={openAgents}/>
-      <CompanionBall width={geo.width} height={placement.topInset + 560} lobe={geo.lobe} look={look} handle={ball} skin={worn.current}
-        target={{ place, expr, pressed, anchors: geo.anchors, homeGlass: wardrobe.homeGlass }}
+      <AgentWing look={wardrobe.marks} wing={wing} lift={placement.notchWidth ? 0 : lift} x={geo.wingX} height={placement.topInset} limit={geo.width} tip={wingTip && !dashboard} onOpen={openAgents}/>
+      <CompanionBall width={geo.width} height={placement.topInset + 560} lobe={geo.lobe} lift={lift} look={look} handle={ball} skin={worn.current}
+        target={{ place, expr, pressed, anchors: geo.anchors, homeGlass: wardrobe.homeGlass, lift: place === 'home' ? lift : 0 }}
         label={voice === 'off' ? `戳一下，开始语音${port ? '' : '（演示）'}` : voice === 'speaking' ? '戳一下，打断播报' : '戳一下，结束语音'}
         onPress={press} onRelease={release} onCancel={cancel} onMove={refreshHit}/>
     </main>

@@ -72,18 +72,33 @@ if (locked) app.whenReady().then(() => {
   // She follows the cursor to another screen once it has rested there briefly: the renderer
   // sinks her into this island first, answers display-ready, and only then the window moves.
   const move = () => { clearTimeout(moving); moving = undefined; pending = null; current = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()); place(); };
+  // ⌘ with the cursor in the menu bar row tucks her away on that side of the camera, so the menu bar items
+  // and macOS's overflow arrow under her can be clicked; she comes back 3 s after ⌘ is let go.
+  // Without a notch she is one pill, and all of her goes.
+  let command = false, tucked = { left: false, right: false }, untuck: ReturnType<typeof setTimeout> | undefined;
+  const tuck = (next: typeof tucked) => { tucked = next; win.webContents.send('tuck', next); };
   const cursor = setInterval(() => {
     if (win.isDestroyed() || !win.isVisible()) return;
     const point = screen.getCursorScreenPoint(), bounds = frame();
     const value = { x: point.x - bounds.x, y: point.y - bounds.y }, key = `${value.x},${value.y}`;
     if (key !== last) { last = key; win.webContents.send('cursor', value); }
+    const down = !!material?.commandDown();
+    if (down !== command) {
+      command = down;
+      const d = current, spot = d && placement(d);
+      if (down && d && spot && point.x >= d.bounds.x && point.x < d.bounds.x + d.bounds.width && point.y >= d.bounds.y && point.y <= d.bounds.y + spot.topInset) {
+        clearTimeout(untuck);
+        const left = !spot.notchWidth || point.x < d.bounds.x + d.bounds.width / 2, right = !spot.notchWidth || !left;
+        tuck({ left: tucked.left || left, right: tucked.right || right });
+      } else if (!down && (tucked.left || tucked.right)) untuck = setTimeout(() => tuck({ left: false, right: false }), 3000);
+    }
     const under = screen.getDisplayNearestPoint(point);
     if (moving) return;
     if (!current || under.id === current.id) pending = null;
     else if (pending?.id !== under.id) pending = { id: under.id, since: Date.now() };
     else if (Date.now() - pending.since > 250) { win.webContents.send('display-leave'); moving = setTimeout(move, 900); }
   }, 16);
-  win.on('closed', () => { clearInterval(cursor); clearTimeout(moving); });
+  win.on('closed', () => { clearInterval(cursor); clearTimeout(moving); clearTimeout(untuck); });
   ipcMain.on('display-ready', event => { if (event.sender === win.webContents && moving) move(); });
   ipcMain.handle('placement', event => event.sender === win.webContents ? placement(target()) : null);
   ipcMain.on('passthrough', (event, enabled) => { if (event.sender === win.webContents && typeof enabled === 'boolean') win.setIgnoreMouseEvents(enabled, { forward: true }); });
