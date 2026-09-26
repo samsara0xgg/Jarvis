@@ -247,9 +247,44 @@ try {
     await page.waitForTimeout(500); await shot('L3-reply', { x: 0, y: 0, width: 400, height: 240 });
     await hit.click({ force: true }); await page.waitForTimeout(600);
     check('L4 a poke while she speaks cuts the answer off', posts.at(-1)?.path === '/inherent/cancel-response' && posts.at(-1).body.response_id === 'resp-1');
-    await page.evaluate(() => { window.__emit('done', { turn_id: 'v1', fadeMs: 200 }); });
+    await page.evaluate(() => { window.__emit('done', { turn_id: 'v1', fadeMs: 200 }); window.__emit('voice', { phase: 'spoken', turn_id: 'v1' }); });
     await page.waitForFunction(() => !document.querySelector('.companion-bubble.is-open'), null, { timeout: 3000 });
     check('L4 after the answer settles she is back to listening', await page.locator('.companion-strip.is-open').count() === 1);
+    const only = async () => [await page.locator('.companion-bubble.is-open').count(), await page.locator('.companion-strip.is-open').count()].join();
+    const turn = (id, heard, said) => page.evaluate(([id, heard, said]) => { window.__emit('voice', { phase: 'listening', turn_id: id }); window.__emit('voice', { phase: 'accepted', turn_id: id, text: heard });
+      window.__emit('open', { turn_id: id, response_id: `resp-${id}` }); window.__emit('append', { turn_id: id, token: `<voice>${said}</voice>` }); }, [id, heard, said]);
+    // A long answer: its fade (`done` + fadeMs) is over while she is still saying it.
+    await turn('v1b', '讲讲今天的安排', '上午十点有组会，下午两点和导师见面，晚上七点健身。');
+    await page.evaluate(() => window.__emit('done', { turn_id: 'v1b', fadeMs: 150 }));
+    await page.waitForTimeout(500);
+    check('L4 a long answer stays up while she still says it, the strip shut', await only() === '1,0' && await face('39', '39b', '39c') === '39');
+    await page.evaluate(() => window.__emit('voice', { phase: 'spoken', turn_id: 'v1b' }));
+    await page.waitForTimeout(150);
+    check('L4 it goes when she stops talking, and she listens again', await only() === '0,1');
+    // A short answer: she stops talking before its fade is over; it keeps the spot until then.
+    await turn('v1c', '能听到我说话吗', '能听到，Allen。我在。');
+    await page.evaluate(() => { window.__emit('done', { turn_id: 'v1c', fadeMs: 150 }); window.__emit('voice', { phase: 'spoken', turn_id: 'v1c' }); });
+    await page.waitForTimeout(50);
+    check('L4 a short answer keeps the spot while it fades, the strip shut', await only() === '1,0');
+    await page.waitForFunction(() => !document.querySelector('.companion-bubble.is-open'), null, { timeout: 3000 });
+    // Cutting in: the daemon hears you, stops her (`spoken`), then transcribes; her words hold until yours are in.
+    await turn('v1d', '再讲一遍', '好的，上午十点有组会，下午两点和导师见面……');
+    await page.evaluate(() => window.__emit('done', { turn_id: 'v1d', fadeMs: 100 }));
+    await page.waitForTimeout(300);
+    await page.evaluate(() => { window.__emit('voice', { phase: 'listening', turn_id: 'v1e' }); window.__emit('voice', { phase: 'spoken', turn_id: 'v1d' }); });
+    await page.waitForTimeout(150);
+    const cutIn = await only();
+    await page.evaluate(() => window.__emit('voice', { phase: 'transcribing', turn_id: 'v1e' }));
+    await page.waitForTimeout(150);
+    check('L4 cutting in, her words stay while yours come in', cutIn === '1,0' && await only() === '1,0');
+    await page.evaluate(() => window.__emit('voice', { phase: 'accepted', turn_id: 'v1e', text: '等一下，下午那个改到三点' }));
+    await page.waitForTimeout(150);
+    check('L4 once yours are in, the strip shows them whole', await only() === '0,1' && await text('.strip-text') === '等一下，下午那个改到三点');
+    await page.evaluate(() => { window.__emit('open', { turn_id: 'v1e', response_id: 'resp-v1e' }); window.__emit('append', { turn_id: 'v1e', token: '<voice>好，改到三点。</voice>' }); });
+    await page.waitForTimeout(150);
+    check('L4 then her answer', await only() === '1,0' && await text('.bubble-text span:last-child') === '好，改到三点。');
+    await page.evaluate(() => { window.__emit('done', { turn_id: 'v1e', fadeMs: 100 }); window.__emit('voice', { phase: 'spoken', turn_id: 'v1e' }); });
+    await page.waitForFunction(() => document.querySelector('.companion-strip.is-open') && !document.querySelector('.companion-bubble.is-open'), null, { timeout: 3000 });
     await page.locator('.strip-stop').click(); await page.waitForTimeout(300);
     check('L5 the strip’s stop ends wave mode', posts.at(-1)?.path === '/inherent/controls' && posts.at(-1).body.conversation === false && await page.locator('.companion-strip.is-open').count() === 0);
     await move(600, 560); await waitPlace('home');
@@ -307,7 +342,7 @@ try {
       && await md.locator('li > ul > li code').textContent() === 'reSpeaker' && (await md.locator('th').allTextContents()).join() === 'When,What'
       && (await md.locator('td').allTextContents()).join() === '17:00,voice test' && !/\*\*|##|\|/.test(await md.textContent()));
     await panelShot('L8-conversation');
-    await page.evaluate(() => window.__emit('done', { turn_id: 'typed-1', fadeMs: 100 }));
+    await page.evaluate(() => { window.__emit('done', { turn_id: 'typed-1', fadeMs: 100 }); window.__emit('voice', { phase: 'spoken', turn_id: 'typed-1' }); });
     const days = () => page.locator('.ad .tr').evaluateAll(els => [...new Set(els.map(e => e.dataset.day))].length);
     check('L8 it holds today only, and offers earlier', await days() === 1 && (await text('.ad .pg-earlier')).includes('earlier'));
     const held = await pullUp(), longer = reads.some(r => r.limit > 2), shown = await days(), first = await text('.ad .tr-you p'), top = await text('.ad .pg-earlier');
