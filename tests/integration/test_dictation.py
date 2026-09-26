@@ -110,6 +110,7 @@ def _dictation(
         ingress=ingress,  # type: ignore[arg-type]
         transcribe=ears,
         client=client,
+        vocab_path=tmp_path / "vocab.yaml",
         event_log_path=tmp_path / "events.db",
         pricing_table=load_pricing_table(repo_root() / "data" / "pricing.json"),
     ), ingress
@@ -169,6 +170,11 @@ def test_dictation_streams_levels_then_the_polished_words(tmp_path: Path) -> Non
 
     provider = _Provider(POLISHED)
     dictation, ingress = _dictation(tmp_path, ears, provider)
+    # Typlus's vocab.yaml: user terms, then auto ones, a repeat dropped.
+    (tmp_path / "vocab.yaml").write_text(
+        "user:\n- Typlus\n- 星核\nauto:\n- 星核\n- worktree\nrejected:\n- chless\n",
+        encoding="utf-8",
+    )
     client = _app(dictation)
     context = {"app": "Ghostty", "window": "claude", "selected": ""}
     seen: dict[str, object] = {}
@@ -197,6 +203,8 @@ def test_dictation_streams_levels_then_the_polished_words(tmp_path: Path) -> Non
     assert request["model"] == "gpt-5.4-mini"
     sent = json.dumps(request["messages"], ensure_ascii=False)
     assert json.dumps(POLISH_PROMPT, ensure_ascii=False)[1:-1] in sent
+    assert "by this user):\\nTyplus, 星核, worktree\\n" in sent
+    assert "chless" not in sent
     assert f"Raw transcript:\\n{RAW}" in sent
     assert "- app: Ghostty\\n- window: claude\\n- selected text: (none)\\n" in sent
     # The spend is on the ledger; the words are nowhere in it.
@@ -216,8 +224,11 @@ def test_dictation_without_speech_and_with_a_failing_polish(tmp_path: Path) -> N
     assert provider.requests == []
 
     (tmp_path / "b").mkdir()
-    broken, _ = _dictation(tmp_path / "b", lambda _pcm: "原话", _Provider(TimeoutError("slow")))
+    failing = _Provider(TimeoutError("slow"))
+    broken, _ = _dictation(tmp_path / "b", lambda _pcm: "原话", failing)
     last = _dictate(_app(broken), {})[-1]
+    # No vocab.yaml, no vocabulary block.
+    assert "User vocabulary" not in json.dumps(failing.requests)
     assert set(last) == {"error", "raw"}
     assert last["raw"] == "原话"
     assert "slow" in last["error"]
