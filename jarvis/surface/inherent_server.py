@@ -90,6 +90,7 @@ from fastapi import (
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ValidationError
 
+from jarvis.surface.claude_sessions import ClaudeSessions
 from jarvis.surface.codex_sessions import CodexSession, fold_codex_hook, prune_codex_sessions
 from jarvis.surface.inherent_protocol import (
     HELLO_TIMEOUT_S,
@@ -1176,6 +1177,14 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0915 — one cl
         prune_codex_sessions(codex_board, now_ms=int(time.time() * 1000))
         rows = sorted(codex_board.values(), key=lambda r: int(r["since_ms"]), reverse=True)
         return {"sessions": rows}
+
+    # ADR 0046: Allen's own Claude Code sessions, read from Claude Code's own state.
+    claude_board = ClaudeSessions()
+
+    @app.get("/inherent/claude-sessions")
+    async def claude_sessions() -> dict[str, Any]:
+        """Newest-first Claude Code session rows for the Resonance Agents page."""
+        return await asyncio.to_thread(claude_board.read)
 
     @app.post("/inherent/image-submit", status_code=501)
     async def image_submit() -> None:
