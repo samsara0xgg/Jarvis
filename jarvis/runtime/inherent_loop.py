@@ -91,6 +91,7 @@ if TYPE_CHECKING:
 
     from jarvis.deployment.sleep_wake import PowerObserver
     from jarvis.runtime.home import Home
+    from jarvis.runtime.settings import Settings
     from jarvis.runtime.work_state import WorkStateService
     from jarvis.shared.realtime import PresentationIntent
     from jarvis.state.committed_event_bus import CommittedEventBus
@@ -2285,6 +2286,8 @@ def _build_tts_pipeline(  # noqa: C901 - rollout/degradation capability boundary
     # Deliberately unvalidated: a type guard here would turn a mistyped key into
     # a silent fall back to the system default, out of the owner's speakers.
     output_device = realtime.get("output_device")
+    # ADR 0051: the Settings page's voice volume, applied in the player.
+    playback_volume = float(realtime.get("playback_volume") or 1.0)
     streaming_raw = realtime.get("streaming_output")
     streaming = streaming_raw if isinstance(streaming_raw, Mapping) else {}
     streaming_requested = realtime.get("enabled") is True and streaming.get("enabled") is True
@@ -2348,6 +2351,7 @@ def _build_tts_pipeline(  # noqa: C901 - rollout/degradation capability boundary
             generation_safe=True,
             device=output_device,
             playback_tap=echo_canceller.add_playback if echo_canceller is not None else None,
+            volume=playback_volume,
         )
         try:
             return voice_media.StreamingTTSPipeline(
@@ -2397,6 +2401,7 @@ def _build_tts_pipeline(  # noqa: C901 - rollout/degradation capability boundary
             ring_seconds=knobs.tts_ring_seconds,
             lazy_open=False,
             device=output_device,
+            volume=playback_volume,
         )
         return voice_tts.TTSPipeline(
             provider=provider,
@@ -3195,6 +3200,8 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
             ),
             open_timeout_s=ingress_config.backend_open_timeout_s,
             close_timeout_s=ingress_config.backend_close_timeout_s,
+            # ADR 0051: the Settings page's microphone; null = the system default.
+            device=(runtime.config.get("realtime") or {}).get("input_device"),
         )
         ingress = voice_audio.AudioIngress(
             backend=backend,
@@ -3906,6 +3913,11 @@ def _start_timesink_observer(runtime: JarvisRuntime) -> list[asyncio.Task[None]]
 async def _set_todo(home: Home, todo_id: str, done: bool) -> None:  # noqa: FBT001 — the route's body.
     """``POST /inherent/today/todo``: one To Do write, off the loop thread."""
     await asyncio.to_thread(functools.partial(home.set_todo, todo_id, done=done))
+
+
+async def _save_settings(settings: Settings, changes: dict[str, Any]) -> dict[str, Any]:
+    """``POST /inherent/settings``: one file write, off the loop thread."""
+    return await asyncio.to_thread(settings.update, changes)
 
 
 def _restart_soon() -> None:
@@ -4719,6 +4731,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 mic_muted=controls.mic_is_muted,
                 speech_muted=lambda: controls.speech_muted,
                 output_device=realtime_map.get("output_device"),
+                volume=float(realtime_map.get("playback_volume") or 1.0),
                 on_owns_speech=lambda _owns: _apply_speech_mute(controls.speech_muted),
                 delegate=live_backend.delegate,
                 record=live_backend.record,
@@ -4885,6 +4898,14 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             brief_read=(
                 None if runtime.home is None
                 else functools.partial(runtime.home.brief, runtime.conn)
+            ),
+            settings_read=(
+                None if runtime.settings is None
+                else functools.partial(asyncio.to_thread, runtime.settings.read)
+            ),
+            settings_update=(
+                None if runtime.settings is None
+                else functools.partial(_save_settings, runtime.settings)
             ),
             restart=_restart_soon if spawned_by_agent() else None,
             plugin_read=runtime.plugin_connections.read if runtime.plugin_connections else None,

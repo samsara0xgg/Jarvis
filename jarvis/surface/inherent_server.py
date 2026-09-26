@@ -440,6 +440,10 @@ class InherentDeps:
     todo_set: Callable[[str, bool], Awaitable[None]] | None = None
     mail_read: Callable[[], Awaitable[dict[str, Any]]] | None = None
     brief_read: Callable[[], dict[str, Any] | None] | None = None
+    # ADR 0051: the Settings page's file, read and saved off the loop thread;
+    # a ValueError from saving is a 400. ``None`` leaves the routes unregistered.
+    settings_read: Callable[[], Awaitable[dict[str, Any]]] | None = None
+    settings_update: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]] | None = None
     # Settings > Restart: answer, then TERM this process; registered only when
     # launchd's KeepAlive is there to bring the daemon back.
     restart: Callable[[], None] | None = None
@@ -908,6 +912,12 @@ async def _run_asr_submit(
     }
 
 
+class SettingsRequest(BaseModel):
+    """Body of ``POST /inherent/settings`` (ADR 0051): the page's changed values by key."""
+
+    changes: dict[str, Any]
+
+
 class TodoRequest(BaseModel):
     """Body of ``POST /inherent/today/todo`` (ADR 0050): the home's checkbox."""
 
@@ -929,7 +939,7 @@ async def _home_call[T](call: Awaitable[T]) -> T:
 
 
 def _register_home_routes(app: FastAPI, deps: InherentDeps) -> None:  # noqa: C901 — one closed route table.
-    """ADR 0050: Today, its to-do checkbox, mail, the morning brief and Settings > Restart."""
+    """ADR 0050/0051: Today, its to-do checkbox, mail, the morning brief and Settings."""
     if deps.today_read is not None and deps.todo_set is not None:
         today_read, todo_set = deps.today_read, deps.todo_set
 
@@ -962,6 +972,19 @@ def _register_home_routes(app: FastAPI, deps: InherentDeps) -> None:  # noqa: C9
             if found is None:
                 raise HTTPException(status_code=404, detail="no brief for today yet")
             return found
+
+    if deps.settings_read is not None and deps.settings_update is not None:
+        settings_read, settings_update = deps.settings_read, deps.settings_update
+
+        @app.get("/inherent/settings")
+        async def settings() -> dict[str, Any]:
+            """``{values, options, restart_pending}`` for the Settings page."""
+            return await settings_read()
+
+        @app.post("/inherent/settings", status_code=200)
+        async def settings_save(req: SettingsRequest) -> dict[str, Any]:
+            """Save the changed values for the next boot; answers like ``GET``."""
+            return await _home_call(settings_update(req.changes))
 
     if deps.restart is not None:
         restart = deps.restart

@@ -311,6 +311,14 @@ realtime:
   # sounddevice.  Null means the CoreAudio system default output.  An
   # unresolvable name fails the open closed rather than falling back.
   output_device: null
+  # Input device name the single audio ingress opens (ADR 0051), e.g.
+  # "reSpeaker XVF3800 4-Mic Array".  Null means the system default input and
+  # follows it when it changes; a name that does not resolve fails the open.
+  # The Settings page writes its choice to ~/.jarvis/settings.json, which wins.
+  input_device: null
+  # Her voice's playback level, 0.3-1, applied in our player (ADR 0051);
+  # MiniMax's own vol below 1 does not lower the audio.  Null means 1.
+  playback_volume: null
   # MiniMax `voice_setting.vol` on every TTS request; the provider documents
   # the range as (0, 10] and we narrow it to an integer.  Null means the
   # default of 1.  Measured 2026-09-07 on the same sentences: RMS scales

@@ -496,17 +496,34 @@ def _coreaudio_default_output_route() -> OutputRoute | None:
     )
 
 
-def _default_input_device_profile(input_format: AudioInputFormat) -> InputDeviceProfile:
-    """Resolve sounddevice's default input outside the realtime callback."""
+def device_names(kind: str) -> list[str]:
+    """Names of the devices that can ``kind`` (``input`` / ``output``), as PortAudio lists them."""
     import sounddevice as sd  # noqa: PLC0415
 
-    default_device = sd.default.device
-    try:
-        # sounddevice 0.5.x exposes a private ``_InputOutputPair``: it is
-        # indexable but intentionally not a tuple/list subclass.
-        input_index = int(default_device[0])
-    except (IndexError, TypeError):
-        input_index = int(default_device)
+    channels = f"max_{kind}_channels"
+    return [str(one["name"]) for one in sd.query_devices() if one[channels] > 0]
+
+
+def _default_input_device_profile(
+    input_format: AudioInputFormat, device: str | None = None
+) -> InputDeviceProfile:
+    """Resolve the chosen input (ADR 0051), else sounddevice's default, outside the callback.
+
+    A chosen name that no longer resolves raises, like ``output_device``: the
+    open fails closed instead of quietly listening on another microphone.
+    """
+    import sounddevice as sd  # noqa: PLC0415
+
+    if device is not None:
+        input_index = int(sd.query_devices(device, "input")["index"])
+    else:
+        default_device = sd.default.device
+        try:
+            # sounddevice 0.5.x exposes a private ``_InputOutputPair``: it is
+            # indexable but intentionally not a tuple/list subclass.
+            input_index = int(default_device[0])
+        except (IndexError, TypeError):
+            input_index = int(default_device)
     raw = sd.query_devices(input_index, "input")
     name = str(raw.get("name", f"input-{input_index}"))
     return InputDeviceProfile(
@@ -610,12 +627,15 @@ class SoundDeviceDuplexBackend:
         input_format: AudioInputFormat,
         open_timeout_s: float,
         close_timeout_s: float,
+        device: str | None = None,
     ) -> None:
         """Configure one backend; no hardware is opened until ``start``."""
         if open_timeout_s <= 0 or close_timeout_s <= 0:
             msg = "sounddevice backend timeouts must be positive"
             raise ValueError(msg)
         self._input_format = input_format
+        # ADR 0051: the Settings page's microphone; None follows the system default.
+        self._device = device
         self._open_timeout_s = open_timeout_s
         self._close_timeout_s = close_timeout_s
         self._owner_token = object()
@@ -829,7 +849,7 @@ class SoundDeviceDuplexBackend:
         def _open() -> None:  # noqa: C901 - exact foreign-open cleanup FSM
             stream: Any | None = None
             try:
-                profile = _default_input_device_profile(self._input_format)
+                profile = _default_input_device_profile(self._input_format, self._device)
                 stream = _open_sounddevice_input_stream(
                     input_format=self._input_format,
                     device_index=profile.device_index,
@@ -839,7 +859,7 @@ class SoundDeviceDuplexBackend:
                 # RawInputStream is pinned to the resolved index. Re-read the
                 # default before callbacks begin so an open-time route switch
                 # cannot attach the old device to the new device's profile.
-                current_profile = _default_input_device_profile(self._input_format)
+                current_profile = _default_input_device_profile(self._input_format, self._device)
                 _assert_default_profile_unchanged(profile, current_profile)
                 stream.start()
                 with self._lock:
@@ -1299,6 +1319,7 @@ class SoundDeviceDuplexBackend:
                     try:
                         attempt.device_uid = _default_input_device_profile(
                             self._input_format,
+                            self._device,
                         ).device_uid
                     except Exception:  # noqa: BLE001 - provider boundary
                         attempt.device_uid = None

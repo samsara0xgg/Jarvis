@@ -125,6 +125,7 @@ from jarvis.runtime.home import Home
 from jarvis.runtime.plugin_connections import PluginConnections
 from jarvis.runtime.plugins import Plugins, load_plugins
 from jarvis.runtime.projects import ProjectsService
+from jarvis.runtime.settings import REPLY_LINES, Settings, apply_settings
 from jarvis.runtime.stream_bridge import LoopBoundTokenStream
 from jarvis.runtime.work_state import WorkStateService, build_analyst
 from jarvis.shared import CallerPrincipal, Event
@@ -433,6 +434,8 @@ class JarvisRuntime:
     projects: ProjectsService | None = None
     # ADR 0050: the companion home's Today, mail and brief reads. None = hand-assembled.
     home: Home | None = None
+    # ADR 0051: the Settings page's file. None = hand-assembled.
+    settings: Settings | None = None
 
 
 @dataclass(frozen=True)
@@ -833,6 +836,17 @@ def _work_state_timezone(config: Mapping[str, Any]) -> tzinfo | None:
     except ZoneInfoNotFoundError as exc:
         message = f"work_state.timezone must be an IANA zone name: {raw!r}"
         raise ValueError(message) from exc
+
+
+def _audio_devices(kind: str) -> list[str]:
+    """The Settings page's speaker / microphone choices; none when PortAudio cannot list them."""
+    try:
+        from jarvis.surface.voice_backend import device_names  # noqa: PLC0415 — loaded on demand.
+
+        return device_names(kind)
+    except Exception as exc:  # noqa: BLE001 — a text-only checkout has no audio stack.
+        LOGGER.warning("settings: no %s devices: %s: %s", kind, type(exc).__name__, exc)
+        return []
 
 
 def _home_weather(config: Mapping[str, Any]) -> Mapping[str, Any] | None:
@@ -1575,7 +1589,8 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
     #    need `tools.obsidian.vault_root` / `tools.web.*` threaded into
     #    the registry at build time (ADR-0011 D7) — L4 handlers do not
     #    load YAML themselves.
-    full_config = _load_full_config(config_path)
+    # ADR 0051: the Settings page's saved values lie over the YAML for this boot.
+    full_config = apply_settings(_load_full_config(config_path), paths.root)
     wave1_features = _wave1_feature_flags(full_config)
     (
         web_search_max_results,
@@ -1752,6 +1767,9 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
 
     # Plugin skills are sampled per turn so connections need no daemon restart.
     system_prompt = prompt_path.read_text(encoding="utf-8")
+    if full_config.get("reply_language") in REPLY_LINES:
+        reply_line = REPLY_LINES[full_config["reply_language"]]
+        system_prompt = f"{system_prompt.rstrip()}\n\n{reply_line}\n"
     plugin_connections.publish_event = (
         committed_event_bus.publish if committed_event_bus is not None else None
     )
@@ -1796,6 +1814,7 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
             resolve_zone(None, _work_state_timezone(full_config)),
             _home_weather(full_config),
         ),
+        settings=Settings(paths.root, full_config, _audio_devices),
     )
 
 
