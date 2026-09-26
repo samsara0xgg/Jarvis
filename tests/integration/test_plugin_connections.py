@@ -115,10 +115,12 @@ def test_connect_publishes_real_tools_skills_and_disable_removes_them(
             "list_plugins",
             "open_plugin",
         }
+        assert service.connected_apps_line() is None
         request_id = _open(service, "echo")
         service.action("connect", {"request_id": request_id})
         _wait(service, "ready")
         assert "echo:workflow" in service.skills_prompt()
+        assert service.connected_apps_line() == "Connected apps: echo"
         fixture.dispatch(_request("mcp__echo__echo", "E1", arguments={"text": "connected live"}))
         assert json.loads(_chain(fixture, "E1")["tool_output"])["result"] == "connected live"
         service.action("approval", {"request_id": request_id, "mode": "prompt"})
@@ -133,6 +135,7 @@ def test_connect_publishes_real_tools_skills_and_disable_removes_them(
             "open_plugin",
         }
         assert service.skills_prompt() == ""
+        assert service.connected_apps_line() is None
         assert (
             json.loads((fixture.paths.root / "plugin-settings.json").read_text())["echo"]["enabled"]
             is False

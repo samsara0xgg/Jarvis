@@ -236,6 +236,18 @@ class PluginConnections:
         with self._lock:
             return self._skills().skills_prompt()
 
+    def connected_apps_line(self) -> str | None:
+        """The plugins connected right now, for this turn's state block; None when none is."""
+        with self._lock:
+            names = []
+            for plugin_id in self._active:
+                manifest = self.packages[plugin_id].manifest
+                interface = manifest.get("interface") or {}
+                name = str(interface.get("displayName") or manifest.get("name") or plugin_id)
+                short = interface.get("shortDescription")
+                names.append(f"{name} ({short})" if short else name)
+        return "Connected apps: " + "; ".join(sorted(names)) if names else None
+
     def _skills(self) -> Plugins:
         combined = Plugins()
         for active in self._active.values():

@@ -181,7 +181,7 @@ class _CapturingLLMClient:
 
 
 def _drive_one_turn(
-    tmp_path: Path, history: Sequence[dict[str, str]],
+    tmp_path: Path, history: Sequence[dict[str, str]], connected_apps: str | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Run one ``surface.user_intent`` turn; return the ``system`` and ``messages`` sent."""
     conn = open_event_log(tmp_path / "events.db")
@@ -199,6 +199,7 @@ def _drive_one_turn(
         system_prompt="stub system prompt\n\n[About the user]\n- 用户叫 Allen。",
         history=history,
         time_note="Time: 2026-09-21T15:37-07:00 Monday",
+        connected_apps=connected_apps,
     )
     try:
         trigger = emit_event(
@@ -227,6 +228,20 @@ def test_turn_request_is_history_by_role_then_one_user_message_with_status(
     assert messages[:2] == list(HISTORY)
     assert messages[2]["content"] == f"{STATUS}\n后天呢"
     assert not any("[system context]" in message["content"] for message in messages)
+
+
+def test_connected_apps_ride_this_turns_state_after_the_history(tmp_path: Path) -> None:
+    """The apps connected now sit in this turn's state, after any older answer about them."""
+    stale = (
+        {"role": "user", "content": "开灯"},
+        {"role": "assistant", "content": "我没有控制灯的能力。"},
+    )
+    apps = "Connected apps: Philips Hue (Control your Hue lights)"
+
+    _, messages = _drive_one_turn(tmp_path, stale, connected_apps=apps)
+
+    assert messages[:2] == list(stale)
+    assert messages[2]["content"] == f"{STATUS}{apps}\n\n后天呢"
 
 
 def test_history_ending_on_a_user_row_folds_into_this_turn(tmp_path: Path) -> None:

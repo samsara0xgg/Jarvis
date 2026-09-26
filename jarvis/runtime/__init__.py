@@ -2761,6 +2761,11 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             wave1_features=runtime.wave1_features,
             history=memory_context.history if memory_context is not None else (),
             time_note=memory_context.now if memory_context is not None else None,
+            connected_apps=(
+                runtime.plugin_connections.connected_apps_line()
+                if runtime.plugin_connections is not None
+                else None
+            ),
             cancellation_checkpoint=run.check_cancelled if run is not None else None,
             request_admission=(
                 partial(run.admit_request, runtime.conn) if run is not None else None

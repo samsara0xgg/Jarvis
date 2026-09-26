@@ -616,6 +616,10 @@ class DecideContext:
     # its end between compactions; the time line goes after it.
     history: Sequence[Mapping[str, str]] = ()
     time_note: str | None = None
+    # The plugins connected at this turn, one line. History replays older
+    # answers that said an app was not connected; this line is the current
+    # fact beside them.
+    connected_apps: str | None = None
     # ADR-0008 Step 8. ``routine_stream`` is the pre-routed streaming seam the
     # runtime bound for this run (None on every other turn, so decide() keeps
     # the batch tool loop). ``stream_correction`` marks a full-text run that
@@ -746,6 +750,7 @@ def _current_status_block(packet: SituationPacket, ctx: DecideContext) -> str | 
         for line in (
             ctx.time_note,
             _interaction_line(packet),
+            ctx.connected_apps,
             _previous_answer_line(packet),
             format_pending_confirmation_note(packet),
             _format_open_actions_note(packet),
