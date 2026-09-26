@@ -62,7 +62,7 @@ class VoicePipeline:
     """Run one voice turn from raw audio bytes to utterance.received emit.
 
     The pipeline does NOT capture audio itself — the wake listener and
-    the ``/inherent/asr-submit`` handler each capture (or receive) audio
+    the ``/inherent/asr-submit/v2`` handler each capture (or receive) audio
     and call ``run_turn(...)`` for the ASR-and-emit phase.
     """
 
@@ -114,7 +114,6 @@ class VoicePipeline:
         session_id: str | None = None,
         utterance_id: str | None = None,
         endpoint_reason: str | None = None,
-        transcript_prefix: str = "",
     ) -> Event:
         """Execute one voice turn end-to-end. Returns the emitted Event row.
 
@@ -144,9 +143,6 @@ class VoicePipeline:
                 endpointed utterance); the PTT path does not, so an unsupplied
                 id is minted here — one press-to-release is one utterance.
             endpoint_reason: Optional typed acoustic endpoint reason.
-            transcript_prefix: Literal text prepended to the normalized
-                transcript before emit (the Shift+Return memo path sends
-                ``/note `` so Tier 0 routes it without the LLM).
 
         Raises:
             VoiceInputBusyError: VOICE_INPUT_LOCK contention (PTT path: 503).
@@ -202,8 +198,6 @@ class VoicePipeline:
 
             # 3. Normalize BEFORE emit — ADR §8 fix #1 (spec §3.6.2).
             normalized = self._normalizer.normalize(tr.text)
-            if transcript_prefix:
-                normalized = transcript_prefix + normalized
 
             # 4. Audio retention for memory.db (None = off).
             artifact_ref = voice_artifact_store.persist(

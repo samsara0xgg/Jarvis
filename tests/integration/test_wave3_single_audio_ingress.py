@@ -29,7 +29,6 @@ from jarvis.surface import (
     voice_wake,
 )
 from jarvis.surface.inherent_output import InherentBroadcaster
-from jarvis.surface.inherent_server import InherentDeps
 from scripts import bench_voice_audio_ingress as voice_input_bench
 from tools.realtime_trace_report import TraceRow, summarize_trace
 
@@ -4163,12 +4162,6 @@ def test_legacy_listener_start_failure_is_local_and_ptt_remains_wired() -> None:
             ducker=MagicMock(),
         )
     ptt = inherent_loop._build_voice_pipeline_callable(pipeline)
-    deps = InherentDeps(
-        submit_callable=lambda _text: "T-submit",
-        broadcaster=broadcaster,
-        voice_pipeline_callable=ptt,
-    )
-    assert deps.voice_pipeline_callable is ptt
     ptt(b"RIFF", "T-ptt-after-wake-failure", "U-ptt", "S-ptt")
     pipeline.run_turn.assert_called_once()
     assert owners.wake_listener is None

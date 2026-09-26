@@ -67,6 +67,7 @@ from jarvis.runtime import (
     run_turn,
 )
 from jarvis.runtime.inherent_loop import serve_inherent
+from jarvis.state.plugin_settings import local_key
 
 LOGGER = logging.getLogger("jarvis.cli")
 
@@ -163,7 +164,7 @@ class _ResponseTimeoutError(RuntimeError):
         self.turn_id = turn_id
 
 
-def _post_submit(url: str, utterance: str) -> str:
+def _post_submit(url: str, utterance: str, key: str) -> str:
     """POST the utterance to ``/inherent/submit``; return the minted ``turn_id``.
 
     stdlib ``urllib`` on purpose — ADR-0009 adds zero runtime
@@ -178,7 +179,7 @@ def _post_submit(url: str, utterance: str) -> str:
     request = urllib.request.Request(  # noqa: S310 — fixed http://127.0.0.1 URL built above.
         url,
         data=payload,
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
         method="POST",
     )
     try:
@@ -286,27 +287,37 @@ async def _drain_ws(ws: object, queue: asyncio.Queue[dict[str, object]]) -> None
                 queue.put_nowait(decoded)
 
 
-async def _forward_attempt(utterance: str, *, timeout_s: float) -> str:
+async def _forward_attempt(utterance: str, *, timeout_s: float, key: str) -> str:
     """One WS-connect → POST → collect cycle. Returns the response text."""
     from websockets.asyncio.client import connect  # noqa: PLC0415 — keeps CLI import cheap.
+    from websockets.exceptions import InvalidStatus  # noqa: PLC0415 — same.
 
     ws_url = f"ws://{_DAEMON_HOST}:{_DAEMON_PORT}/inherent/ws"
     post_url = f"http://{_DAEMON_HOST}:{_DAEMON_PORT}/inherent/submit"
 
     # WS FIRST. Reversing these two lines loses the response on any turn
     # that finishes before the POST's HTTP response is read.
-    async with connect(ws_url, open_timeout=_WS_OPEN_TIMEOUT_S) as ws:
-        queue: asyncio.Queue[dict[str, object]] = asyncio.Queue()
-        reader = asyncio.create_task(_drain_ws(ws, queue))
-        try:
-            turn_id = await asyncio.to_thread(_post_submit, post_url, utterance)
-            return await _collect_response(
-                queue, utterance=utterance, turn_id=turn_id, timeout_s=timeout_s
-            )
-        finally:
-            reader.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await reader
+    try:
+        async with connect(
+            ws_url,
+            open_timeout=_WS_OPEN_TIMEOUT_S,
+            additional_headers={"Authorization": f"Bearer {key}"},
+        ) as ws:
+            queue: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+            reader = asyncio.create_task(_drain_ws(ws, queue))
+            try:
+                turn_id = await asyncio.to_thread(_post_submit, post_url, utterance, key)
+                return await _collect_response(
+                    queue, utterance=utterance, turn_id=turn_id, timeout_s=timeout_s
+                )
+            finally:
+                reader.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await reader
+    except InvalidStatus as exc:
+        # 403: the daemon runs from another runtime root, so its key differs.
+        msg = f"daemon refused the connection: HTTP {exc.response.status_code}"
+        raise _SubmitRejectedError(msg) from None
 
 
 def _stdout_text(text: str) -> str:
@@ -333,12 +344,12 @@ def _stdout_text(text: str) -> str:
     return channels.document or channels.voice
 
 
-async def _forward(utterance: str, *, timeout_s: float) -> int:
+async def _forward(utterance: str, *, timeout_s: float, key: str) -> int:
     """D2 forward mode with the pinned retry / exit-code contract."""
     last_error = ""
     for attempt in range(1, _FORWARD_ATTEMPTS + 1):
         try:
-            text = await _forward_attempt(utterance, timeout_s=timeout_s)
+            text = await _forward_attempt(utterance, timeout_s=timeout_s, key=key)
         except (ConnectionRefusedError, _DaemonUnreachableError) as exc:
             last_error = str(exc)
             if attempt < _FORWARD_ATTEMPTS:
@@ -365,9 +376,9 @@ async def _forward(utterance: str, *, timeout_s: float) -> int:
     return _EXIT_DAEMON_UNREACHABLE
 
 
-def _forward_to_daemon(utterance: str, *, timeout_s: float) -> int:
+def _forward_to_daemon(utterance: str, *, timeout_s: float, key: str) -> int:
     """Sync wrapper — the one-shot CLI has no running event loop."""
-    return asyncio.run(_forward(utterance, timeout_s=timeout_s))
+    return asyncio.run(_forward(utterance, timeout_s=timeout_s, key=key))
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -925,7 +936,9 @@ def _main_oneshot(argv: list[str]) -> int:
         # D2 — thin client. The agent-installed half also covers the
         # ThrottleInterval respawn window, where the lock is momentarily
         # free but a daemon is about to own it again.
-        return _forward_to_daemon(args.utterance, timeout_s=args.timeout)
+        return _forward_to_daemon(
+            args.utterance, timeout_s=args.timeout, key=local_key(requested_root)
+        )
 
     return main_with_detach(
         args.utterance,

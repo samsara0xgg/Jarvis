@@ -17,6 +17,9 @@ const dir = path.join(root, 'evidence', real ? 'companion-live-real' : 'companio
 mkdirSync(dir, { recursive: true });
 const port = real ? (process.env.JARVIS_INHERENT_BRIDGE_PORT ?? '8006') : '8799';
 const daemon = `http://127.0.0.1:${port}`;
+// Every daemon route needs the local key; the page gets it as a header on each request.
+const pluginToken = real ? (() => { try { return JSON.parse(readFileSync(path.join(homedir(), '.jarvis/plugin-access.json'), 'utf8')).token; } catch { return null; } })() : null;
+const daemonHeaders = pluginToken ? { Authorization: `Bearer ${pluginToken}` } : {};
 const web = 5192;
 const server = spawn(path.join(root, 'node_modules/.bin/vite'), ['preview', '--port', String(web), '--strictPort'], { cwd: root, stdio: 'ignore' });
 const checks = [], check = (name, pass) => { assert.ok(pass, name); checks.push(name); console.log(`PASS ${name}`); };
@@ -28,7 +31,7 @@ const words = text => text.replace(/<\/?(voice|document)>/g, '').replace(/^\s*(\
 const hm = ms => { const d = new Date(ms); return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
 try {
   for (let i = 0; i < 50; i++) { try { await fetch(`http://127.0.0.1:${web}/`); break; } catch { await new Promise(r => setTimeout(r, 100)); } }
-  const context = await browser.newContext({ viewport: { width: 640, height: 592 }, deviceScaleFactor: 2 });
+  const context = await browser.newContext({ viewport: { width: 640, height: 592 }, deviceScaleFactor: 2, extraHTTPHeaders: daemonHeaders });
   const page = await context.newPage();
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
@@ -81,7 +84,6 @@ try {
     if (resetFails) { resetFails--; throw new Error("Error invoking remote method 'usage-reset': Error: Could not reach Jarvis. Try again."); }
     return { code: 'reset', windows_reset: 1 };
   });
-  const pluginToken = real ? (() => { try { return JSON.parse(readFileSync(path.join(homedir(), '.jarvis/plugin-access.json'), 'utf8')).token; } catch { return null; } })() : null;
   await page.exposeFunction('__plugins', async (operation, data) => {
     pluginOps.push({ operation, data });
     if (real) {
@@ -165,7 +167,7 @@ try {
   await page.waitForTimeout(800);
 
   if (real) {
-    const get = async p => (await fetch(`${daemon}${p}`)).json();
+    const get = async p => (await fetch(`${daemon}${p}`, { headers: daemonHeaders })).json();
     await page.evaluate(() => window.__command('dashboard'));
     await page.locator('.companion-dashboard.is-open').waitFor();
     await page.waitForTimeout(2500);
@@ -182,7 +184,7 @@ try {
     const projects = await get('/inherent/projects'), top = projects.projects?.find(p => p.seconds > 0);
     check(`R the Projects tile is the daemon's (${top?.name ?? 'none'})`, top ? (await text('.ad .pj-mini b')) === top.name : true);
     const codex = (await get('/inherent/codex-sessions')).sessions ?? [];
-    const claudeRoute = await fetch(`${daemon}/inherent/claude-sessions`);
+    const claudeRoute = await fetch(`${daemon}/inherent/claude-sessions`, { headers: daemonHeaders });
     const claudeIds = claudeRoute.ok ? (await claudeRoute.json()).sessions.map(r => r.session_id) : [];
     await openRow('agents'); await page.waitForTimeout(3500);
     const shownIds = await page.locator('.ad .ag').evaluateAll(els => els.map(e => e.dataset.id));

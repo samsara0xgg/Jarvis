@@ -181,6 +181,7 @@ from jarvis.state.memory_db import (
     brief_note,
     conversation_rows,
 )
+from jarvis.state.plugin_settings import local_key, local_key_matches
 from jarvis.state.projections import rebuild_projections
 from jarvis.state.trigger_consumption import trigger_was_consumed
 from jarvis.surface import (
@@ -206,6 +207,7 @@ from jarvis.surface.inherent_server import (
     InherentV2Deps,
     InputSubmissionOutcome,
     create_app,
+    require_local_key,
 )
 from jarvis.surface.playback_recovery import reconcile_open_playback
 from jarvis.surface.repo_observer import RepoObserver
@@ -2408,25 +2410,19 @@ def _build_tts_pipeline(  # noqa: C901 - rollout/degradation capability boundary
         return None
 
 
-# Shift+Return on the card records a memo instead of asking a question: the
-# ASR transcript gets the `/note ` prefix so the Tier 0 `note_capture` row
-# (config/tier0_patterns.yaml) routes it straight to `create_memo`.
-_TRANSCRIPT_PREFIX_BY_CHANNEL: Final[Mapping[str, str]] = {"inherent_note": "/note "}
-
-
 def _build_voice_pipeline_callable(
     pipeline: voice_pipeline.VoicePipeline,
 ) -> Callable[[bytes, str, str, str], Event]:
-    """Adapt :meth:`VoicePipeline.run_turn` to the InherentDeps callable shape.
+    """Adapt :meth:`VoicePipeline.run_turn` to the PTT callable shape.
 
-    ``InherentDeps.voice_pipeline_callable`` takes positional
-    ``(audio_bytes, turn_id, channel, language)`` and returns the
+    ``_submit_asr_v2`` calls it with positional
+    ``(audio_bytes, turn_id, channel, language)`` and gets back the
     emitted ``utterance.received`` :class:`Event`; the pipeline
     itself is keyword-only, so this thin closure does the rewrite.
 
     The closure forces ``broadcast=False`` — this callable is the PTT
-    path (``/inherent/asr-submit``), and per ADR-0005 §6 the inherent-
-    swift card drives its state from the HTTP response body, not from
+    path (``/inherent/asr-submit/v2``), and per ADR-0005 §6 the client
+    drives its state from the HTTP response body, not from
     WS ``op:voice`` envelopes. The shared :class:`VoicePipeline`
     instance keeps its broadcaster wired for the wake path; this
     adapter just silences phase envelopes for PTT.
@@ -2439,7 +2435,6 @@ def _build_voice_pipeline_callable(
             channel=channel,
             language=language,
             broadcast=False,
-            transcript_prefix=_TRANSCRIPT_PREFIX_BY_CHANNEL.get(channel, ""),
         )
 
     return _call
@@ -4478,8 +4473,8 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
        failure: log ERROR and continue text-only — the text path stays
        healthy.
     4. Build the FastAPI app via :func:`create_app` with
-       :class:`InherentDeps` (carries ``voice_pipeline_callable`` so
-       ``/inherent/asr-submit`` can do PTT ASR even without a wake
+       :class:`InherentDeps` (carries ``submit_asr`` so
+       ``/inherent/asr-submit/v2`` can do PTT ASR even without a wake
        listener; falls through to 501 when the pipeline is None).
     5. Configure :class:`uvicorn.Config` (``lifespan="off"`` because
        this module owns the lifecycle, ``log_level="warning"`` to
@@ -4830,7 +4825,6 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         deps = InherentDeps(
             submit_callable=submit_callable,
             broadcaster=broadcaster,
-            voice_pipeline_callable=voice_pipeline_callable,
             usage_read=(
                 None if usage_observer is None else functools.partial(latest_usage, runtime.conn)
             ),
@@ -4898,6 +4892,12 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             ),
         )
         app = create_app(deps)
+        # The desktop, the CLI and the Claude Code / Codex hooks read this key
+        # from the runtime root; nothing else on the machine can call the daemon.
+        require_local_key(
+            app,
+            functools.partial(local_key_matches, local_key(runtime.runtime_paths.root)),
+        )
 
         config = uvicorn.Config(
             app=app,
