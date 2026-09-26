@@ -661,11 +661,14 @@ class AudioStreamPlayer:
         callback_max_frames: int = 4096,
         estimated_output_latency_s: float = 0.12,
         playback_tap: Callable[[np.ndarray, int], None] | None = None,
+        volume: float = 1.0,
     ) -> None:
         """Construct an idle player; does not open the OutputStream by default.
 
         ``playback_tap`` sees every block handed to the device, with the sample
-        rate, on the output callback (the echo canceller's far end).
+        rate, on the output callback (the echo canceller's far end). ``volume``
+        scales every written sample before the ring, so the tap and the device
+        hear the same level.
         """
         if channels != 1:
             msg = "only mono supported for now"
@@ -694,6 +697,7 @@ class AudioStreamPlayer:
         self._latency = latency
         self._device = device
         self._playback_tap = playback_tap
+        self._volume = float(volume)
 
         self._stream: Any | None = None
         self._lifecycle_lock = threading.Lock()
@@ -1085,7 +1089,7 @@ class AudioStreamPlayer:
         abort signal at entry; re-checks it on each ring-full retry so a
         mid-write abort exits promptly.
         """
-        samples = np.frombuffer(pcm, dtype=np.float32)
+        samples = self._scaled(pcm)
         # Initialization shares the publication lock with flush. A close that
         # sets ``cancel_event`` before taking this lock cannot have its abort
         # signal cleared by a writer that resumes after close.
@@ -1130,6 +1134,11 @@ class AudioStreamPlayer:
                 return offset
             time.sleep(0.01)
         return offset
+
+    def _scaled(self, pcm: bytes) -> np.ndarray:
+        """Float32 samples at the Settings page's voice volume (ADR 0052), before the ring."""
+        samples = np.frombuffer(pcm, dtype=np.float32)
+        return samples if self._volume == 1.0 else samples * np.float32(self._volume)
 
     def activate_generation(
         self,
@@ -1204,7 +1213,7 @@ class AudioStreamPlayer:
             or lease.playback_generation_id != expected_playback_generation_id
         ):
             return self._stale(expected_playback_generation_id)
-        samples = np.frombuffer(pcm, dtype=np.float32)
+        samples = self._scaled(pcm)
         if samples.size == 0:
             return None
         ledger = self._ledgers[expected_playback_generation_id]

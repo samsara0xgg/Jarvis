@@ -75,6 +75,7 @@ import json
 import logging
 import math
 import os
+import signal
 import sqlite3
 import threading
 import time
@@ -89,6 +90,8 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from jarvis.deployment.sleep_wake import PowerObserver
+    from jarvis.runtime.home import Home
+    from jarvis.runtime.settings import Settings
     from jarvis.runtime.work_state import WorkStateService
     from jarvis.shared.realtime import PresentationIntent
     from jarvis.state.committed_event_bus import CommittedEventBus
@@ -112,7 +115,7 @@ from jarvis.decision.response_run import (
     start_response_run,
 )
 from jarvis.deployment import inherent_v2_token_matches, rotate_inherent_v2_token
-from jarvis.deployment.launchd import repo_root
+from jarvis.deployment.launchd import repo_root, spawned_by_agent
 from jarvis.deployment.process_lock import acquire_exclusive
 from jarvis.deployment.sleep_wake import install_power_observer, sweep_overdue_actions
 from jarvis.execution.tools import live_action_ids
@@ -135,6 +138,7 @@ from jarvis.runtime import (
     make_barge_in_interrupt_callable,
     make_foreground_decision_callable,
     make_response_cancel_callable,
+    make_supersede_unspoken_callable,
     save_language,
 )
 from jarvis.runtime.inherent_hub import start_inherent_view
@@ -183,6 +187,7 @@ from jarvis.state.memory_db import (
     brief_note,
     conversation_rows,
 )
+from jarvis.state.plugin_settings import local_key, local_key_matches
 from jarvis.state.projections import rebuild_projections
 from jarvis.state.trigger_consumption import trigger_was_consumed
 from jarvis.surface import (
@@ -208,6 +213,7 @@ from jarvis.surface.inherent_server import (
     InherentV2Deps,
     InputSubmissionOutcome,
     create_app,
+    require_local_key,
 )
 from jarvis.surface.playback_recovery import reconcile_open_playback
 from jarvis.surface.repo_observer import RepoObserver
@@ -2285,6 +2291,8 @@ def _build_tts_pipeline(  # noqa: C901 - rollout/degradation capability boundary
     # Deliberately unvalidated: a type guard here would turn a mistyped key into
     # a silent fall back to the system default, out of the owner's speakers.
     output_device = realtime.get("output_device")
+    # ADR 0052: the Settings page's voice volume, applied in the player.
+    playback_volume = float(realtime.get("playback_volume") or 1.0)
     streaming_raw = realtime.get("streaming_output")
     streaming = streaming_raw if isinstance(streaming_raw, Mapping) else {}
     streaming_requested = realtime.get("enabled") is True and streaming.get("enabled") is True
@@ -2348,6 +2356,7 @@ def _build_tts_pipeline(  # noqa: C901 - rollout/degradation capability boundary
             generation_safe=True,
             device=output_device,
             playback_tap=echo_canceller.add_playback if echo_canceller is not None else None,
+            volume=playback_volume,
         )
         try:
             return voice_media.StreamingTTSPipeline(
@@ -2397,6 +2406,7 @@ def _build_tts_pipeline(  # noqa: C901 - rollout/degradation capability boundary
             ring_seconds=knobs.tts_ring_seconds,
             lazy_open=False,
             device=output_device,
+            volume=playback_volume,
         )
         return voice_tts.TTSPipeline(
             provider=provider,
@@ -2410,25 +2420,19 @@ def _build_tts_pipeline(  # noqa: C901 - rollout/degradation capability boundary
         return None
 
 
-# Shift+Return on the card records a memo instead of asking a question: the
-# ASR transcript gets the `/note ` prefix so the Tier 0 `note_capture` row
-# (config/tier0_patterns.yaml) routes it straight to `create_memo`.
-_TRANSCRIPT_PREFIX_BY_CHANNEL: Final[Mapping[str, str]] = {"inherent_note": "/note "}
-
-
 def _build_voice_pipeline_callable(
     pipeline: voice_pipeline.VoicePipeline,
 ) -> Callable[[bytes, str, str, str], Event]:
-    """Adapt :meth:`VoicePipeline.run_turn` to the InherentDeps callable shape.
+    """Adapt :meth:`VoicePipeline.run_turn` to the PTT callable shape.
 
-    ``InherentDeps.voice_pipeline_callable`` takes positional
-    ``(audio_bytes, turn_id, channel, language)`` and returns the
+    ``_submit_asr_v2`` calls it with positional
+    ``(audio_bytes, turn_id, channel, language)`` and gets back the
     emitted ``utterance.received`` :class:`Event`; the pipeline
     itself is keyword-only, so this thin closure does the rewrite.
 
     The closure forces ``broadcast=False`` — this callable is the PTT
-    path (``/inherent/asr-submit``), and per ADR-0005 §6 the inherent-
-    swift card drives its state from the HTTP response body, not from
+    path (``/inherent/asr-submit/v2``), and per ADR-0005 §6 the client
+    drives its state from the HTTP response body, not from
     WS ``op:voice`` envelopes. The shared :class:`VoicePipeline`
     instance keeps its broadcaster wired for the wake path; this
     adapter just silences phase envelopes for PTT.
@@ -2441,7 +2445,6 @@ def _build_voice_pipeline_callable(
             channel=channel,
             language=language,
             broadcast=False,
-            transcript_prefix=_TRANSCRIPT_PREFIX_BY_CHANNEL.get(channel, ""),
         )
 
     return _call
@@ -3195,6 +3198,8 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
             ),
             open_timeout_s=ingress_config.backend_open_timeout_s,
             close_timeout_s=ingress_config.backend_close_timeout_s,
+            # ADR 0052: the Settings page's microphone; null = the system default.
+            device=(runtime.config.get("realtime") or {}).get("input_device"),
         )
         ingress = voice_audio.AudioIngress(
             backend=backend,
@@ -3226,6 +3231,22 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
                 # One second on, so the recording also holds what followed the onset.
                 threading.Timer(1.0, _dump_echo_history, args=(echo_canceller,)).start()
 
+        streaming = tts if isinstance(tts, voice_media.StreamingTTSPipeline) else None
+
+        def _hold_output(held: bool) -> None:  # noqa: FBT001 - the capture side's one bit
+            # ADR 0053: while Allen's words are coming in, no run completes and
+            # no queued answer starts playing.
+            if runtime.response_runs is not None:
+                runtime.response_runs.hold_completion(held=held)
+            if streaming is not None:
+                streaming.hold_output(held=held)
+
+        supersede_unspoken = (
+            make_supersede_unspoken_callable(runtime, streaming.drop_unspoken)
+            if streaming is not None and runtime.response_runs is not None
+            else None
+        )
+
         def _dump_echo_history(canceller: voice_aec.EchoCanceller) -> None:
             path = canceller.dump(runtime.runtime_paths.root / "aec-diagnostics")
             if path is not None:
@@ -3243,6 +3264,8 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
             mic_muted=mic_muted,
             conversation=conversation,
             stop_speaking=_stop_speaking,
+            hold_output=_hold_output,
+            supersede_unspoken=supersede_unspoken,
         )
     except Exception:
         LOGGER.exception(
@@ -3903,6 +3926,21 @@ def _start_timesink_observer(runtime: JarvisRuntime) -> list[asyncio.Task[None]]
     ]
 
 
+async def _set_todo(home: Home, todo_id: str, done: bool) -> None:  # noqa: FBT001 — the route's body.
+    """``POST /inherent/today/todo``: one To Do write, off the loop thread."""
+    await asyncio.to_thread(functools.partial(home.set_todo, todo_id, done=done))
+
+
+async def _save_settings(settings: Settings, changes: dict[str, Any]) -> dict[str, Any]:
+    """``POST /inherent/settings``: one file write, off the loop thread."""
+    return await asyncio.to_thread(settings.update, changes)
+
+
+def _restart_soon() -> None:
+    """``POST /inherent/restart``: TERM ourselves once the answer is out; KeepAlive respawns us."""
+    asyncio.get_running_loop().call_later(0.5, os.kill, os.getpid(), signal.SIGTERM)
+
+
 async def _refresh_work_state_now(service: WorkStateService) -> dict[str, Any]:
     """``POST /inherent/work-state/refresh``: the single-flight analysis on its own connection."""
     return await asyncio.to_thread(service.refresh_in_own_connection, trigger="dashboard")
@@ -4480,8 +4518,8 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
        failure: log ERROR and continue text-only — the text path stays
        healthy.
     4. Build the FastAPI app via :func:`create_app` with
-       :class:`InherentDeps` (carries ``voice_pipeline_callable`` so
-       ``/inherent/asr-submit`` can do PTT ASR even without a wake
+       :class:`InherentDeps` (carries ``submit_asr`` so
+       ``/inherent/asr-submit/v2`` can do PTT ASR even without a wake
        listener; falls through to 501 when the pipeline is None).
     5. Configure :class:`uvicorn.Config` (``lifespan="off"`` because
        this module owns the lifecycle, ``log_level="warning"`` to
@@ -4711,6 +4749,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 mic_muted=controls.mic_is_muted,
                 speech_muted=lambda: controls.speech_muted,
                 output_device=realtime_map.get("output_device"),
+                volume=float(realtime_map.get("playback_volume") or 1.0),
                 on_owns_speech=lambda _owns: _apply_speech_mute(controls.speech_muted),
                 delegate=live_backend.delegate,
                 record=live_backend.record,
@@ -4834,7 +4873,6 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         deps = InherentDeps(
             submit_callable=submit_callable,
             broadcaster=broadcaster,
-            voice_pipeline_callable=voice_pipeline_callable,
             usage_read=(
                 None if usage_observer is None else functools.partial(latest_usage, runtime.conn)
             ),
@@ -4844,6 +4882,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 else functools.partial(_refresh_usage_now, usage_observer, runtime.conn)
             ),
             usage_codex_reset=None if usage_observer is None else redeem_codex_reset,
+            usage_record_balance=None if usage_observer is None else usage_observer.record_balance,
             work_state_read=(
                 None
                 if runtime.work_state is None
@@ -4865,6 +4904,28 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 else functools.partial(asyncio.to_thread, runtime.projects.refresh)
             ),
             conversation_read=None if window_memory is None else _read_conversation,
+            today_read=(
+                None if runtime.home is None
+                else functools.partial(asyncio.to_thread, runtime.home.today)
+            ),
+            todo_set=None if runtime.home is None else functools.partial(_set_todo, runtime.home),
+            mail_read=(
+                None if runtime.home is None
+                else functools.partial(asyncio.to_thread, runtime.home.mail)
+            ),
+            brief_read=(
+                None if runtime.home is None
+                else functools.partial(runtime.home.brief, runtime.conn)
+            ),
+            settings_read=(
+                None if runtime.settings is None
+                else functools.partial(asyncio.to_thread, runtime.settings.read)
+            ),
+            settings_update=(
+                None if runtime.settings is None
+                else functools.partial(_save_settings, runtime.settings)
+            ),
+            restart=_restart_soon if spawned_by_agent() else None,
             plugin_read=runtime.plugin_connections.read if runtime.plugin_connections else None,
             plugin_action=runtime.plugin_connections.action if runtime.plugin_connections else None,
             plugin_authorize=(
@@ -4903,6 +4964,12 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             ),
         )
         app = create_app(deps)
+        # The desktop, the CLI and the Claude Code / Codex hooks read this key
+        # from the runtime root; nothing else on the machine can call the daemon.
+        require_local_key(
+            app,
+            functools.partial(local_key_matches, local_key(runtime.runtime_paths.root)),
+        )
 
         config = uvicorn.Config(
             app=app,

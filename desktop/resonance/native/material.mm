@@ -168,6 +168,10 @@ static napi_value update(napi_env env, napi_callback_info info) {
   [CATransaction commit];
   napi_value result; napi_get_boolean(env, true, &result); return result;
 }
+// Whether ⌘ is held right now; AppKit answers this without any input permission.
+static napi_value commandDown(napi_env env, napi_callback_info info) {
+  napi_value result; napi_get_boolean(env, (NSEvent.modifierFlags & NSEventModifierFlagCommand) != 0, &result); return result;
+}
 static napi_value init(napi_env env, napi_value exports) {
   napi_value fn; napi_create_function(env, "update", NAPI_AUTO_LENGTH, update, nullptr, &fn);
   napi_set_named_property(env, exports, "update", fn);
@@ -175,6 +179,7 @@ static napi_value init(napi_env env, napi_value exports) {
   napi_create_function(env, "setFrame", NAPI_AUTO_LENGTH, setFrame, nullptr, &fn); napi_set_named_property(env, exports, "setFrame", fn);
   napi_create_function(env, "screens", NAPI_AUTO_LENGTH, screens, nullptr, &fn); napi_set_named_property(env, exports, "screens", fn);
   napi_create_function(env, "setStationary", NAPI_AUTO_LENGTH, setStationary, nullptr, &fn); napi_set_named_property(env, exports, "setStationary", fn);
+  napi_create_function(env, "commandDown", NAPI_AUTO_LENGTH, commandDown, nullptr, &fn); napi_set_named_property(env, exports, "commandDown", fn);
   return exports;
 }
 NAPI_MODULE(NODE_GYP_MODULE_NAME, init)

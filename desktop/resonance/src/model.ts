@@ -18,17 +18,19 @@ export interface Row { seq: number; id: string; ts: string; source: string; text
 const SUBTITLE_GAP_MS = 1500;
 export const idleLive: Live = { state: 'idle', sessionId: null, since: null, usageS: null, usageFinal: false, reason: null, speaking: false, hearing: false, error: null, notice: null };
 // `conversation` is the daemon's wave mode (ADR 0041), from every controls answer; `heard` is the last accepted transcript.
-export interface State { mode: Mode; phase: Phase; micMuted: boolean; soundMuted: boolean; conversation: boolean; heard: string; inbox: boolean; detail: string | null; results: Result[]; reply: string; draft: string; attachment: boolean; turnId: string | null; responseId: string | null; waiting: string | null; live: Live; subtitles: Subtitle[]; rows: Row[]; openSeq: number }
-export const initialState: State = { mode: 'voice', phase: 'listening', micMuted: false, soundMuted: false, conversation: false, heard: '', inbox: false, detail: null, results: [examples[0], examples[3], examples[1]], reply: '', draft: '', attachment: false, turnId: null, responseId: null, waiting: null, live: idleLive, subtitles: [], rows: [], openSeq: 0 };
+export interface State { mode: Mode; phase: Phase; micMuted: boolean; soundMuted: boolean; conversation: boolean; heard: string; inbox: boolean; detail: string | null; results: Result[]; reply: string; draft: string; attachment: boolean; turnId: string | null; responseId: string | null; waiting: string | null; faded: boolean; played: boolean; inFlight: boolean; live: Live; subtitles: Subtitle[]; rows: Row[]; openSeq: number }
+export const initialState: State = { mode: 'voice', phase: 'listening', micMuted: false, soundMuted: false, conversation: false, heard: '', inbox: false, detail: null, results: [examples[0], examples[3], examples[1]], reply: '', draft: '', attachment: false, turnId: null, responseId: null, waiting: null, faded: false, played: false, inFlight: false, live: idleLive, subtitles: [], rows: [], openSeq: 0 };
 export type Action = { type: 'mode'; mode: Mode } | { type: 'phase'; phase: Phase } | { type: 'mic' | 'sound' | 'inbox' | 'interrupt' | 'end' | 'attachment' | 'reset' } | { type: 'draft'; value: string } | { type: 'send' } | { type: 'answer' } | { type: 'detail'; id: string | null } | { type: 'dismiss'; id: string } | { type: 'example'; id: string }
-  | { type: 'open'; turnId: string; responseId: string | null } | { type: 'append'; token: string } | { type: 'settle'; turnId: string } | { type: 'pending'; turnId: string } | { type: 'failed'; turnId: string; cancelled: boolean } | { type: 'controls'; micMuted: boolean; soundMuted: boolean; conversation: boolean } | { type: 'heard'; text: string }
+  | { type: 'open'; turnId: string; responseId: string | null } | { type: 'append'; token: string } | { type: 'settle'; turnId: string } | { type: 'pending'; turnId: string } | { type: 'failed'; turnId: string; cancelled: boolean } | { type: 'controls'; micMuted: boolean; soundMuted: boolean; conversation: boolean } | { type: 'heard'; text: string } | { type: 'spoken'; turnId: string }
   | { type: 'live'; live: Live } | { type: 'subtitle'; sessionId: string; role: 'user' | 'assistant'; delta: string; startMs: number; endMs: number } | { type: 'live_dismiss' }
   | { type: 'rows'; rows: Row[] } | { type: 'older'; rows: Row[] };
 export function reducer(s: State, a: Action): State {
   switch (a.type) {
     case 'reset': return { ...initialState, results: examples.slice(0, 1) };
     case 'mode': return { ...s, mode: a.mode };
-    case 'phase': return { ...s, phase: a.phase, reply: a.phase === 'error' ? '' : s.reply, heard: a.phase === 'hearing' ? '' : s.heard };
+    // `inFlight`: Allen's words are coming in, from speech onset until they are accepted or come to nothing.
+    case 'phase': return { ...s, phase: a.phase, reply: a.phase === 'error' ? '' : s.reply, heard: a.phase === 'hearing' ? '' : s.heard,
+      inFlight: a.phase === 'hearing' || (s.inFlight && a.phase === 'processing') };
     case 'mic': return { ...s, micMuted: !s.micMuted };
     case 'sound': return { ...s, soundMuted: !s.soundMuted };
     case 'interrupt': return { ...s, phase: 'listening' };
@@ -39,16 +41,18 @@ export function reducer(s: State, a: Action): State {
     case 'send': return s.draft.trim() && s.phase !== 'processing' ? { ...s, draft: '', attachment: false, phase: 'processing', reply: '', waiting: null } : s;
     case 'answer': return { ...s, phase: 'speaking', reply: '演示回复：我接住了这段表达。正式连接后，可以从这里继续交流、保存和找回上下文。此处没有保存或执行真实任务。' };
     // `openSeq` remembers where the log stood when this turn opened: the streaming reply shows as a tail row until an answer row lands past it.
-    case 'open': return { ...s, phase: 'processing', reply: '', turnId: a.turnId, responseId: a.responseId, openSeq: s.rows.length ? s.rows[s.rows.length - 1].seq : 0 };
+    case 'open': return { ...s, phase: 'processing', reply: '', turnId: a.turnId, responseId: a.responseId, faded: false, played: false, openSeq: s.rows.length ? s.rows[s.rows.length - 1].seq : 0 };
     case 'append': return { ...s, reply: s.reply + a.token, phase: 'speaking' };
-    // The daemon's `done` carries fadeMs; runtime.ts turns it into this delayed settle for the same turn only.
-    case 'settle': return s.turnId === a.turnId ? { ...s, reply: '', phase: s.phase === 'speaking' ? 'listening' : s.phase } : s;
+    // An answer leaves once its fade is over (`done` + fadeMs, which runtime.ts turns into a delayed settle) and she has
+    // stopped saying it (`spoken`, also when cut off), whichever comes last. Until `spoken` she is still speaking.
+    case 'settle': return s.turnId !== a.turnId ? s : s.played ? { ...s, reply: '' } : { ...s, faded: true };
+    case 'spoken': return s.turnId !== a.turnId ? s : { ...s, played: true, reply: s.faded ? '' : s.reply, phase: s.phase === 'speaking' || s.phase === 'processing' ? 'listening' : s.phase };
     // `waiting` is the turn this surface started (submit answer or voice `accepted`); only its end without an answer
     // (daemon `failed` / `cancelled`) releases "processing", so a background turn failing meanwhile changes nothing.
     case 'pending': return { ...s, waiting: a.turnId };
     case 'failed': return s.phase === 'processing' && a.turnId === s.waiting ? { ...s, phase: 'listening', reply: a.cancelled ? '' : '这一轮出错了，没有完成。可以再说一次。', openSeq: s.rows.length ? s.rows[s.rows.length - 1].seq : 0 } : s;
     case 'controls': return { ...s, micMuted: a.micMuted, soundMuted: a.soundMuted, conversation: a.conversation };
-    case 'heard': return { ...s, heard: a.text };
+    case 'heard': return { ...s, heard: a.text, inFlight: false };
     // A new session id starts a fresh transcript; a closed session keeps its lines on screen until dismissed.
     case 'live': return { ...s, live: a.live, subtitles: a.live.sessionId && a.live.sessionId !== s.live.sessionId ? [] : s.subtitles };
     case 'subtitle': {

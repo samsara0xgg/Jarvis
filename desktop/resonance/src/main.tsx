@@ -30,13 +30,15 @@ declare global { interface Window { jarvis?: {
   onCursor: (cb: (point: { x: number; y: number }) => void) => () => void;
   onDisplayLeave: (cb: () => void) => () => void;
   displayReady: () => void;
-  companionMenu: (menu: { skins: { key: string; name: string; on: boolean }[]; auto: boolean; layout: string; homeGlass: boolean; marks: string; exprs: { id: string; name: string }[] }) => void;
+  onTuck?: (cb: (tucked: { left: boolean; right: boolean }) => void) => () => void;
+  companionMenu: (menu: { skins: { key: string; name: string; on: boolean }[]; auto: boolean; layout: string; homeGlass: boolean; marks: string; follow: boolean; lang: string; exprs: { id: string; name: string }[] }) => void;
   drag: (phase: 'start' | 'move' | 'end', point?: { x: number; y: number }) => void;
   copy: (text: string) => Promise<boolean>;
   openCodex: (threadId: string) => Promise<boolean>;
   codexTitles: (ids: string[]) => Promise<Record<string, string>>;
   openAccount: (service: string) => Promise<boolean>;
   usageReset: (service: 'codex', requestId: string) => Promise<{ code: string; windows_reset: number }>;
+  usageBalance: (service: 'openai' | 'minimax', usd: number) => Promise<{ recorded: boolean }>;
   plugins: (operation: string, data?: Record<string, unknown>) => Promise<PluginSnapshot>;
   layout: (mode: string, height: number, surface?: { x: number; y: number; width: number; height: number }) => void; focus: (enabled: boolean) => Promise<void>; hide: () => void; passthrough: (enabled: boolean) => void;
   material: (rects: {x:number;y:number;width:number;height:number;radius:number;opacity:number;occlusion?:GlassOcclusion}[], strength: number) => void;

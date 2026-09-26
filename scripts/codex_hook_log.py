@@ -8,8 +8,9 @@ writes to stdout. Every payload lands in
 ``~/.jarvis/codex-hooks/<hook_event_name>.jsonl`` with a UTC timestamp,
 one line per event, and is then POSTed to the daemon's
 ``/inherent/codex-hook`` (port ``JARVIS_INHERENT_BRIDGE_PORT``, default
-8006) so the Resonance Codex card sees it; a daemon that is away is
-ignored. Installed copy: ``~/.jarvis/codex-hooks/log_hook.py``
+8006, with the key from ``plugin-access.json`` under ``JARVIS_RUNTIME_ROOT``)
+so the Resonance Codex card sees it; a daemon that is away is ignored.
+Installed copy: ``~/.jarvis/codex-hooks/log_hook.py``
 (ADR 0019 step 4 — the listener that lets Jarvis see what Allen's
 own ChatGPT.app sessions do).
 """
@@ -24,6 +25,7 @@ from pathlib import Path
 
 LOG_DIR = Path.home() / ".jarvis" / "codex-hooks"
 PORT = os.environ.get("JARVIS_INHERENT_BRIDGE_PORT", "8006")
+ROOT = Path(os.environ.get("JARVIS_RUNTIME_ROOT") or Path.home() / ".jarvis").expanduser()
 
 
 def main() -> int:
@@ -43,12 +45,14 @@ def main() -> int:
     with target.open("a", encoding="utf-8") as fh:
         fh.write(line + "\n")
     if isinstance(event, dict):
-        req = urllib.request.Request(
-            f"http://127.0.0.1:{PORT}/inherent/codex-hook",
-            data=json.dumps(event).encode(),
-            headers={"content-type": "application/json"},
-        )
-        with contextlib.suppress(OSError):  # daemon away; the JSONL line is the record
+        # No key yet or daemon away: the JSONL line is the record.
+        with contextlib.suppress(OSError, ValueError, KeyError, TypeError):
+            key = json.loads((ROOT / "plugin-access.json").read_text())["token"]
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{PORT}/inherent/codex-hook",
+                data=json.dumps(event).encode(),
+                headers={"content-type": "application/json", "authorization": f"Bearer {key}"},
+            )
             urllib.request.urlopen(req, timeout=1).close()  # noqa: S310 — loopback only
     return 0
 

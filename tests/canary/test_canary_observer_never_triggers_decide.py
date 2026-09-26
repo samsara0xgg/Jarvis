@@ -42,7 +42,9 @@ from tests.canary._helpers import iter_jarvis_py_files, parse, relative_to_repo,
 # here is ``evidence_semantics=observation``; none is a trigger.
 _OBSERVER_MODULES: dict[str, frozenset[str]] = {
     "jarvis/surface/repo_observer.py": frozenset({"repo.state_observed", "project.commit_seen"}),
-    "jarvis/surface/usage_observer.py": frozenset({"usage.state_observed"}),
+    "jarvis/surface/usage_observer.py": frozenset(
+        {"usage.state_observed", "usage.balance_recorded"}
+    ),
     "jarvis/surface/timesink_observer.py": frozenset({"timesink.state_observed"}),
 }
 

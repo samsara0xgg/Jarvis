@@ -34,7 +34,8 @@ Scopes are layer or subsystem names; the list and examples are in
     - <path> — <what this file contributes>
 
     Tier 1: lint-imports KEPT (1/1) · ruff clean (N files) · mypy strict clean
-    (N files) · M/M acceptance checks pass · wall <t>s (< 30s budget).
+    (N files) · M/M acceptance checks pass · uv audit clean (N packages) ·
+    wall <t>s (< 30s budget).
 
     Legacy-bypass: <legacy/path> — <why it was not reused>.
     Legacy consulted: <legacy/path> (<what slice was borrowed>).

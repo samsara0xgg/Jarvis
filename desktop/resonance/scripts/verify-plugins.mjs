@@ -48,6 +48,8 @@ try {
   await page.locator('.plugin-row', { hasText: 'GitHub' }).locator('img[src^="data:image/png;base64,"]').waitFor();
   check('a plugin with a manifest logo shows it; one without keeps the built-in mark', await page.locator('.plugin-row', { hasText: 'Linear' }).locator('img').count() === 0
     && await page.locator('.plugin-row', { hasText: 'GitHub' }).locator('img').evaluate(img => img.naturalWidth === 256));
+  check('a package with no logo shows the icon picked for its id', (await state()).plugins.find(p => p.id === 'lovable') !== undefined
+    && await page.locator('.plugin-row', { hasText: 'lovable' }).locator('img').evaluate(img => img.complete && img.naturalWidth === 128));
   await shot('dashboard-catalog');
   await click('返回主界面'); await selected('overview'); await settle();
   check('return restores the scrolled grid and plugin tile focus', await page.locator('.dashboard-viewport').evaluate((node, expected) => node.scrollTop === expected.scroll && node.clientHeight === expected.height, origin) && await tile.evaluate(node => node === document.activeElement));
@@ -87,7 +89,7 @@ try {
   await click('所有插件'); await shot('catalog');
   await page.getByLabel('搜索插件').fill('zz-no-match');
   check('catalog has an explicit no-match state', await page.getByText('没有匹配的插件', { exact: true }).isVisible());
-  await click('清空插件搜索'); await page.locator('.plugin-row').filter({ hasText: 'gateway' }).click();
+  await click('清空插件搜索'); await page.locator('.plugin-row').filter({ hasText: 'lovable' }).click();
   await page.getByText('此插件依赖尚未接入的连接器网关', { exact: true }).waitFor();
   check('gateway-only packages have no connect action', await page.getByText('此插件依赖尚未接入的连接器网关', { exact: true }).isVisible() && !await page.getByRole('button', { name: '连接', exact: true }).count());
   await click('所有插件'); await page.locator('.plugin-row').filter({ hasText: 'GitHub' }).click();

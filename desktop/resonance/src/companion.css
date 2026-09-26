@@ -7,6 +7,7 @@
   position:fixed; inset:0; overflow:hidden; color:#eceef2;
 }
 .companion-stage { position:absolute; left:0; top:0; z-index:4; pointer-events:none; overflow:visible; }
+.companion-island,.companion-canvas,.agent-wing { transition:transform .3s cubic-bezier(.3,.7,.4,1); }
 .companion-canvas { position:absolute; left:0; top:0; z-index:4; pointer-events:none; }
 .companion-hit { position:absolute; left:0; top:0; z-index:5; padding:0; border-radius:50%; background:transparent; transform-origin:50% 50%; cursor:pointer; }
 .companion-hit:focus-visible { outline:1.5px solid rgb(255 255 255 / .55); outline-offset:0; }
@@ -111,4 +112,5 @@
   .companion-chip,.companion-chip.is-open,.companion-composer,.companion-composer.is-open,.companion-strip,.companion-strip.is-open,
   .companion-bubble,.companion-bubble.is-open,.companion-dashboard,.companion-dashboard.is-open,.companion-notice,.companion-notice.is-open { transition-property:opacity,visibility; }
   .strip-mic::before { animation:none; }
+  .companion-island,.companion-canvas,.agent-wing { transition:none; }
 }

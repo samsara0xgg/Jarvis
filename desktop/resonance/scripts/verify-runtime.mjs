@@ -1,12 +1,18 @@
 // Live acceptance for the daemon link: a real Electron window against a running `python -m jarvis serve`.
 //   JARVIS_INHERENT_BRIDGE_PORT  daemon port (default 8016 — keep the real 8006 daemon out of tests)
-//   RESONANCE_TEST_WAV           optional 16 kHz mono WAV utterance; exercises the voice phases via /inherent/asr-submit
+//   JARVIS_RUNTIME_ROOT          the daemon's runtime root (default ~/.jarvis); its key files authorize the direct calls
+//   RESONANCE_TEST_WAV           optional 16 kHz mono WAV utterance; exercises the voice phases via /inherent/asr-submit/v2
 //   RESONANCE_TEST_DAEMON_PID    optional; when set the daemon is SIGTERMed at the end to prove the reconnect panel
 import { _electron as electron } from 'playwright';
 import assert from 'node:assert/strict';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import { homedir } from 'node:os';
+import path from 'node:path';
 const port = process.env.JARVIS_INHERENT_BRIDGE_PORT ?? '8016';
 const http = `http://127.0.0.1:${port}`;
+const root = process.env.JARVIS_RUNTIME_ROOT ?? path.join(homedir(), '.jarvis');
+const auth = { Authorization: `Bearer ${JSON.parse(readFileSync(path.join(root, 'plugin-access.json'), 'utf8')).token}` };
 mkdirSync('evidence', { recursive: true });
 const checks = [];
 const check = (name, ok) => { assert.ok(ok, name); checks.push(name); console.log(`PASS ${name}`); };
@@ -53,9 +59,13 @@ try {
     await page.waitForSelector('.voice-presence');
     statuses.length = 0; presences.length = 0;
     const form = new FormData();
-    form.append('audio', new Blob([readFileSync(wav)], { type: 'audio/wav' }), 'utterance.wav');
-    form.append('language', 'zh-CN'); form.append('channel', 'inherent_ptt');
-    const r = await fetch(`${http}/inherent/asr-submit`, { method: 'POST', body: form });
+    const audio = readFileSync(wav);
+    form.append('audio', new Blob([audio], { type: 'audio/wav' }), 'utterance.wav');
+    form.append('request_id', randomUUID()); form.append('client_instance_id', 'verify-runtime');
+    form.append('client_created_at_ms', String(Date.now())); form.append('language', 'zh-CN');
+    form.append('audio_sha256', createHash('sha256').update(audio).digest('hex'));
+    const v2 = readFileSync(path.join(root, 'inherent-v2.token'), 'utf8').trim();
+    const r = await fetch(`${http}/inherent/asr-submit/v2`, { method: 'POST', body: form, headers: { Authorization: `Bearer ${v2}` } });
     console.log(`asr-submit: ${r.status} ${await r.text()}`);
     check('daemon accepts the utterance upload', r.ok);
     await page.waitForSelector('.reply p', { timeout: 120000 });
@@ -68,7 +78,7 @@ try {
   } else console.log('SKIP voice turn (set RESONANCE_TEST_WAV)');
 
   // Mute controls live in the daemon: each click POSTs /inherent/controls and the answer drives the button.
-  const controls = async (patch = {}) => (await fetch(`${http}/inherent/controls`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch) })).json();
+  const controls = async (patch = {}) => (await fetch(`${http}/inherent/controls`, { method: 'POST', headers: { 'content-type': 'application/json', ...auth }, body: JSON.stringify(patch) })).json();
   if (await page.locator('.voice-presence').count() === 0) await page.getByRole('button', { name: '收起文字，返回语音' }).click();
   await page.getByRole('button', { name: '关闭麦克风', exact: true }).click();
   await page.getByRole('button', { name: '开启麦克风', exact: true }).waitFor();
@@ -85,7 +95,7 @@ try {
   check('a fresh window syncs both mute states from the daemon', true);
   await observe();
   statuses.length = 0;
-  await fetch(`${http}/inherent/submit`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: '请只回答两个字：好的' }) });
+  await fetch(`${http}/inherent/submit`, { method: 'POST', headers: { 'content-type': 'application/json', ...auth }, body: JSON.stringify({ text: '请只回答两个字：好的' }) });
   await page.waitForSelector('.reply p', { timeout: 120000 });
   await page.waitForFunction(() => document.querySelector('.reply p')?.textContent.trim().length > 0, null, { timeout: 60000 });
   check('a speech-muted turn still runs through speaking (mute is the player gain, not the turn)', statuses.includes('正在播报'));

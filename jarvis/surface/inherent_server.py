@@ -1,11 +1,10 @@
 """Inherent FastAPI app factory — ADR-0003 Step 7 + ADR-0005 §5.2.
 
-L5 surface module. Hosts the daemon's HTTP+WS endpoints the
-inherent-swift client (legacy ``desktop/inherent-swift/``) speaks. The
-ADR-0003 wave shipped text + WS. ADR-0005 §5.2 lights up the
-``/inherent/asr-submit`` endpoint with a real handler (multipart WAV in,
-normalized transcript out); ``/inherent/image-submit`` remains a 501
-stub until ADR-0004 lands.
+L5 surface module. Hosts the daemon's HTTP+WS endpoints the desktop
+surface speaks. The ADR-0003 wave shipped text + WS; push-to-talk audio
+arrives on ``/inherent/asr-submit/v2``; ``/inherent/image-submit`` remains
+a 501 stub until ADR-0004 lands. :func:`require_local_key` puts every
+route except the liveness probe behind the local key and a local Host.
 
 The runtime wires this app via ``runtime/inherent_loop.serve_inherent``
 in Step 8, injecting an :class:`InherentDeps` with:
@@ -27,10 +26,10 @@ Layer rules (L5): may import from stdlib, ``fastapi`` / ``pydantic`` /
 ``jarvis.surface.voice_pipeline`` (intra-layer — the ASR endpoint
 catches the pipeline's typed exceptions to map to HTTP status codes).
 Never names :mod:`jarvis.runtime`, :mod:`jarvis.decision`,
-:mod:`jarvis.execution`, or :mod:`jarvis.deployment`. The
-``submit_callable`` and ``voice_pipeline_callable`` are **injected**
-so the module never needs to import :mod:`jarvis.state` either —
-runtime is the only place wiring across layers.
+:mod:`jarvis.execution`, or :mod:`jarvis.deployment`. The submit and
+ASR callables are **injected** so the module never needs to import
+:mod:`jarvis.state` either — runtime is the only place wiring across
+layers.
 
 Wire contract (preserved from legacy ``ui/web/server.py`` so the
 inherent-swift client's ``BridgeBackend`` keeps working unchanged):
@@ -55,9 +54,6 @@ inherent-swift client's ``BridgeBackend`` keeps working unchanged):
 - ``GET /inherent/projects``     — ADR 0037 seven-day project view (no model call)
 - ``POST /inherent/projects/refresh`` — ADR 0037 sort new activities (single-flight)
 - ``POST /inherent/image-submit`` — Step 2 / ADR-0004 stub (501)
-- ``POST /inherent/asr-submit``   — ADR-0005 §5.2; multipart WAV in, transcript out.
-  Falls back to 501 when ``InherentDeps.voice_pipeline_callable`` is unset
-  (preserves the ADR-0003 text-only smoke test path).
 """
 
 from __future__ import annotations
@@ -70,7 +66,6 @@ import io
 import json
 import logging
 import re
-import secrets
 import time
 import wave
 from dataclasses import dataclass
@@ -90,6 +85,9 @@ from fastapi import (
 )
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ValidationError
+from starlette.datastructures import Headers
+from starlette.middleware.trustedhost import TrustedHostMiddleware
+from starlette.websockets import WebSocketClose
 
 from jarvis.shared.lang import language, t
 from jarvis.surface.claude_hooks import ClaudeHooks
@@ -117,19 +115,19 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
     from starlette.responses import Response
+    from starlette.types import ASGIApp, Receive, Scope, Send
 
     from jarvis.surface.voice_controls import VoiceControls
     from jarvis.surface.voice_live import LiveVoice
 
     _CallNext = Callable[[Request], Awaitable[Response]]
 
-    from jarvis.shared import Event
     from jarvis.surface.inherent_output import InherentBroadcaster
 
 
 LOGGER = logging.getLogger("jarvis.surface.inherent_server")
 
-# ADR-0005 §5.2: hard cap on uploaded WAV size for /inherent/asr-submit.
+# ADR-0005 §5.2: hard cap on uploaded WAV size for /inherent/asr-submit/v2.
 _ASR_MAX_BYTES = 5 * 1024 * 1024
 _ASR_ACCEPTED_CONTENT_TYPES = frozenset({"audio/wav", "audio/wave", "audio/x-wav"})
 _ASR_TARGET_SAMPLE_RATE_HZ = 16000
@@ -139,6 +137,14 @@ _V2_INPUT_PATHS: Final[frozenset[str]] = frozenset(
     {"/inherent/submit/v2", "/inherent/asr-submit/v2"},
 )
 _PCM16_SAMPLE_WIDTH_BYTES = 2
+# A page that rebinds its own domain to 127.0.0.1 still sends that domain as
+# Host, so only requests addressed to this machine reach a route.
+_LOCAL_HOSTS: Final[tuple[str, ...]] = ("127.0.0.1", "localhost")
+# Open without the local key: the liveness probe, and the v2 routes, which
+# check their own per-boot token.
+_KEYLESS_PATHS: Final[frozenset[str]] = frozenset(
+    {"/api/health", "/inherent/ws/v2", *_V2_INPUT_PATHS},
+)
 
 
 def _decode_wav_to_pcm16_mono_16k(wav_bytes: bytes) -> bytes:
@@ -316,12 +322,12 @@ class InherentV2Deps:
             IMMEDIATE``) and offloaded via ``asyncio.to_thread`` exactly as
             ``submit_callable`` is. ``None`` makes the route answer 501.
         submit_asr: ADR-0014 D21 — the ASR half, bound to the inbox's
-            processing lease around ``voice_pipeline_callable``. Takes
+            processing lease around the voice pipeline. Takes
             ``(pcm, request_id, client_instance_id, audio_sha256,
             language)``; the decode and the HTTP bounds stay here, the
             lease/append/resolve sequence stays in the runtime. It raises
-            the same :mod:`jarvis.surface.voice_pipeline` exceptions the v1
-            handler maps, so 422 and 503 mean what they already mean.
+            the :mod:`jarvis.surface.voice_pipeline` exceptions the route
+            maps to 422 (empty) and 503 (busy).
             ``None`` makes the route answer 501.
     """
 
@@ -368,14 +374,6 @@ class InherentDeps:
             ``surface.response_{open,chunk,emitted}`` types, dispatched
             by ``event.type``); the WS endpoint here registers /
             unregisters client sockets on connect / disconnect.
-        voice_pipeline_callable: ADR-0005 §5.2 — bound to
-            ``voice_pipeline.VoicePipeline.run_turn`` (keyword args
-            packed into positional ``(audio_bytes, turn_id, channel,
-            language)``). Returns the emitted ``utterance.received``
-            :class:`Event` row. Defaults to ``None`` so ADR-0003
-            text-only fixtures stay backward compatible — when unset
-            the ``/inherent/asr-submit`` handler 501s instead of
-            attempting ASR.
         cancel_response_callable: ADR-0008 D10 — bound to the runtime's
             ``make_response_cancel_callable`` when
             ``realtime.response.independent_response_cancel`` is on.
@@ -400,7 +398,6 @@ class InherentDeps:
 
     submit_callable: Callable[[str], str | None]
     broadcaster: InherentBroadcaster
-    voice_pipeline_callable: Callable[[bytes, str, str, str], Event] | None = None
     cancel_response_callable: Callable[[str, str, str], str] | None = None
     v2: InherentV2Deps | None = None
     # ADR-0015: the mute switches behind ``POST /inherent/controls``. ``None``
@@ -418,6 +415,10 @@ class InherentDeps:
     # (blocking network, run off the loop). Registered only with ``plugin_authorize``:
     # it spends account credit, so only the desktop's private credential may call it.
     usage_codex_reset: Callable[[str], dict[str, Any]] | None = None
+    # ADR 0050: record a balance a provider will not report, ``(service, usd)``;
+    # raises ``ValueError`` for a bad pair. Loop thread (it emits). Desktop
+    # credential only, like the reset.
+    usage_record_balance: Callable[[str, float], object] | None = None
     # ADR 0023: the current-work-state record. ``work_state_read`` is a small
     # SQLite fold on the loop thread; ``work_state_refresh`` awaits the
     # runtime's single-flight analysis (off-thread) and answers the same
@@ -434,6 +435,20 @@ class InherentDeps:
     # cursor. ``(after, limit) -> {"since", "rows"}``; ``None`` leaves the
     # route unregistered.
     conversation_read: Callable[[int, int], dict[str, Any]] | None = None
+    # ADR 0051: the companion home's reads and its one write, all off the loop
+    # thread. A LookupError is "not connected" (404, the home's fallback), any
+    # other failure 502. ``None`` leaves the routes unregistered.
+    today_read: Callable[[], Awaitable[dict[str, Any]]] | None = None
+    todo_set: Callable[[str, bool], Awaitable[None]] | None = None
+    mail_read: Callable[[], Awaitable[dict[str, Any]]] | None = None
+    brief_read: Callable[[], dict[str, Any] | None] | None = None
+    # ADR 0052: the Settings page's file, read and saved off the loop thread;
+    # a ValueError from saving is a 400. ``None`` leaves the routes unregistered.
+    settings_read: Callable[[], Awaitable[dict[str, Any]]] | None = None
+    settings_update: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]] | None = None
+    # Settings > Restart: answer, then TERM this process; registered only when
+    # launchd's KeepAlive is there to bring the daemon back.
+    restart: Callable[[], None] | None = None
     # ADR 0038: desktop management uses a private local credential, unlike
     # ordinary text submission. Secrets never travel on the public websocket.
     plugin_read: Callable[[], dict[str, Any]] | None = None
@@ -615,7 +630,7 @@ async def _run_v2_session(deps: InherentV2Deps, ws: WebSocket) -> None:
     """Serve one ``/inherent/ws/v2`` connection end to end (ADR-0014 D5-D7).
 
     Split out of ``create_app`` so the factory stays under ruff's
-    complexity cap, exactly as ``_run_asr_submit`` is.
+    complexity cap, exactly as ``_run_asr_submit_v2`` is.
 
     The authorization check runs BEFORE ``accept``: closing a
     still-connecting socket makes the ASGI server answer the upgrade with
@@ -681,6 +696,45 @@ def _v2_input_auth_middleware(
     return gate
 
 
+class _LocalKeyMiddleware:
+    """Refuse every HTTP request and socket upgrade that lacks the local key.
+
+    Pure ASGI rather than ``app.middleware("http")`` so ``/inherent/ws`` is
+    covered too: a socket without the key is closed before ``accept``, which
+    the server answers with HTTP 403.
+    """
+
+    def __init__(self, app: ASGIApp, authorize: Callable[[str | None], bool]) -> None:
+        self.app = app
+        self.authorize = authorize
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if (
+            scope["type"] in {"http", "websocket"}
+            and scope["path"] not in _KEYLESS_PATHS
+            and not self.authorize(Headers(scope=scope).get("authorization"))
+        ):
+            if scope["type"] == "websocket":
+                await WebSocketClose(code=1008)(scope, receive, send)
+            else:
+                await JSONResponse({"detail": "unauthorized"}, status_code=401)(
+                    scope, receive, send
+                )
+            return
+        await self.app(scope, receive, send)
+
+
+def require_local_key(app: FastAPI, authorize: Callable[[str | None], bool]) -> None:
+    """Serve only requests addressed to this machine that carry the local key.
+
+    ``authorize`` checks an ``Authorization`` header value (``Bearer <key>``).
+    The host check runs first, so a rebound page is refused before anything
+    reads its headers.
+    """
+    app.add_middleware(_LocalKeyMiddleware, authorize=authorize)
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(_LOCAL_HOSTS))
+
+
 def _v2_refusal(outcome: InputSubmissionOutcome) -> None:
     """Map the inbox's two refusals to their status codes (D21)."""
     if outcome.outcome == "payload_conflict":
@@ -740,7 +794,7 @@ def _asr_v2_fields(
 
 
 async def _asr_v2_audio(audio: UploadFile | None, expected_sha256: str) -> tuple[bytes, str]:
-    """Re-check ``_run_asr_submit``'s bounds and decode, in the same order.
+    """Check the upload's type, size and digest, then decode it.
 
     Returns the decoded PCM16 mono 16 kHz frames and the digest of the exact
     uploaded bytes, which is the receipt's payload hash.
@@ -773,15 +827,13 @@ async def _run_asr_submit_v2(
 ) -> AsrSubmitV2Response:
     """ADR-0014 D21 — body of ``POST /inherent/asr-submit/v2``.
 
-    The bounds and status codes are ``_run_asr_submit``'s, re-checked in the
-    same order against the same module-level constants and decoder.  They are
-    duplicated rather than factored out on purpose: v1 is a byte-compatible
-    contract with a shipped Swift client, and rewriting its body to share a
-    validator would put that contract at risk for no behavior gained.
+    Status codes (ADR-0005 §5.2): 400 missing / empty audio, 413 above the
+    5 MB cap, 415 not a PCM16 WAV, 422 nothing recognized, 503 the voice
+    input is busy, 500 anything else.
 
-    The one addition is the advertised ``audio_sha256`` — the receipt's
-    payload hash.  The server recomputes it and refuses a mismatch, so a
-    truncated upload cannot resolve a receipt against audio nobody heard.
+    The advertised ``audio_sha256`` is the receipt's payload hash.  The
+    server recomputes it and refuses a mismatch, so a truncated upload
+    cannot resolve a receipt against audio nobody heard.
     """
     if deps.submit_asr is None:
         raise HTTPException(status_code=501, detail="asr voice pipeline not wired (ADR-0005)")
@@ -816,91 +868,88 @@ async def _run_asr_submit_v2(
     )
 
 
-_ASR_CHANNELS: Final[frozenset[str]] = frozenset({"inherent_ptt", "inherent_note"})
+class SettingsRequest(BaseModel):
+    """Body of ``POST /inherent/settings`` (ADR 0052): the page's changed values by key."""
+
+    changes: dict[str, Any]
 
 
-async def _run_asr_submit(
-    deps: InherentDeps,
-    audio: UploadFile | None,
-    language: str,
-    channel: str = "inherent_ptt",
-) -> dict[str, str]:
-    """ADR-0005 §5.2 — body of ``POST /inherent/asr-submit``.
+class TodoRequest(BaseModel):
+    """Body of ``POST /inherent/today/todo`` (ADR 0051): the home's checkbox."""
 
-    Split out of ``create_app`` so the closure stays under ruff's
-    cyclomatic-complexity cap. The handler validates the multipart
-    upload, mints the ``turn_id``, and offloads
-    ``voice_pipeline_callable`` to a worker thread.
+    id: str
+    done: bool
 
-    Status codes (per ADR §5.2):
 
-    - 200 — ``{"status": "accepted", "transcript": <normalized>,
-      "turn_id": "T<hex>"}``.
-    - 400 — empty body / missing audio field.
-    - 413 — audio above the 5 MB cap.
-    - 415 — unsupported content type.
-    - 422 — ASR returned empty after the unified filter
-      (``VoicePipelineEmptyError``).
-    - 500 — internal error (logged with ``turn_id``).
-    - 501 — ``deps.voice_pipeline_callable`` not wired (text-only
-      deployments such as the ADR-0003 smoke tests).
-    - 503 — ``VOICE_INPUT_LOCK`` busy (wake listener mid-turn).
-    """
-    if deps.voice_pipeline_callable is None:
-        raise HTTPException(
-            status_code=501,
-            detail="asr voice pipeline not wired (ADR-0005)",
-        )
-    if audio is None:
-        raise HTTPException(status_code=400, detail="audio file required")
-    if audio.content_type not in _ASR_ACCEPTED_CONTENT_TYPES:
-        raise HTTPException(
-            status_code=415,
-            detail=f"unsupported content type: {audio.content_type}",
-        )
-
-    body = await audio.read()
-    if len(body) > _ASR_MAX_BYTES:
-        raise HTTPException(status_code=413, detail="audio too large (max 5MB)")
-    if not body:
-        raise HTTPException(status_code=400, detail="empty body")
-
-    # WAV container → raw PCM16 mono 16 kHz (the recognizer's expected
-    # input format). Without this the entire WAV (RIFF header + PCM)
-    # is treated as raw int16 samples, which either raises ValueError
-    # on odd-length files or recognizes garbage on even-length ones.
-    pcm = _decode_wav_to_pcm16_mono_16k(body)
-    if not pcm:
-        raise HTTPException(status_code=400, detail="empty audio after decode")
-
-    # ADR §5.2: server-mint turn_id, ignore any client-supplied value (Day-1 trust posture).
-    turn_id = "T" + secrets.token_hex(4)
+async def _home_call[T](call: Awaitable[T]) -> T:
+    """ADR 0051: not connected is 404 (the home's fallback), a bad id 400, anything else 502."""
     try:
-        ev = await asyncio.to_thread(
-            deps.voice_pipeline_callable,
-            pcm,
-            turn_id,
-            channel,
-            language,
-        )
-    except VoicePipelineEmptyError:
-        raise HTTPException(status_code=422, detail="empty") from None
-    except VoiceInputBusyError:
-        raise HTTPException(status_code=503, detail="busy") from None
-    except Exception:
-        LOGGER.exception("asr_submit failed for turn_id=%s", turn_id)
-        raise HTTPException(status_code=500, detail="internal") from None
+        return await call
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)[:200]) from None
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)[:200]) from None
+    except Exception as exc:  # noqa: BLE001 — Microsoft or the network failing is the home's 502.
+        LOGGER.warning("home route failed: %s: %s", type(exc).__name__, exc)
+        raise HTTPException(status_code=502, detail=str(exc)[:200]) from None
 
-    # Wire shape matches legacy ui/web/server.py:1268 — the inherent-swift
-    # client (BridgeBackend.swift:345) reads ``text`` and ``emotion`` fields.
-    # ADR-0005 §5.2 listed ``transcript`` but that diverged from the existing
-    # Swift contract; the Day-1 add ``turn_id`` rides alongside.
-    return {
-        "status": "accepted",
-        "text": str(ev.payload.get("transcript", "")),
-        "emotion": str(ev.payload.get("emotion", "") or ""),
-        "turn_id": turn_id,
-    }
+
+def _register_home_routes(app: FastAPI, deps: InherentDeps) -> None:  # noqa: C901 — one closed route table.
+    """ADR 0051/0052: Today, its to-do checkbox, mail, the morning brief and Settings."""
+    if deps.today_read is not None and deps.todo_set is not None:
+        today_read, todo_set = deps.today_read, deps.todo_set
+
+        @app.get("/inherent/today")
+        async def today() -> dict[str, Any]:
+            """Today's calendar, open to-dos and the weather; no model call."""
+            return await _home_call(today_read())
+
+        @app.post("/inherent/today/todo", status_code=200)
+        async def todo(req: TodoRequest) -> dict[str, bool]:
+            """Check a to-do off in Microsoft To Do, or open it again."""
+            await _home_call(todo_set(req.id, req.done))
+            return {"ok": True}
+
+    if deps.mail_read is not None:
+        mail_read = deps.mail_read
+
+        @app.get("/inherent/mail")
+        async def mail() -> dict[str, Any]:
+            """Unread mail from people, newest first."""
+            return await _home_call(mail_read())
+
+    if deps.brief_read is not None:
+        brief_read = deps.brief_read
+
+        @app.get("/inherent/brief")
+        async def brief() -> dict[str, Any]:
+            """This morning's brief; 404 until yesterday's report is saved."""
+            found = brief_read()
+            if found is None:
+                raise HTTPException(status_code=404, detail="no brief for today yet")
+            return found
+
+    if deps.settings_read is not None and deps.settings_update is not None:
+        settings_read, settings_update = deps.settings_read, deps.settings_update
+
+        @app.get("/inherent/settings")
+        async def settings() -> dict[str, Any]:
+            """``{values, options, restart_pending}`` for the Settings page."""
+            return await settings_read()
+
+        @app.post("/inherent/settings", status_code=200)
+        async def settings_save(req: SettingsRequest) -> dict[str, Any]:
+            """Save the changed values for the next boot; answers like ``GET``."""
+            return await _home_call(settings_update(req.changes))
+
+    if deps.restart is not None:
+        restart = deps.restart
+
+        @app.post("/inherent/restart", status_code=202)
+        async def restart_now() -> dict[str, bool]:
+            """Settings > Restart: the answer leaves first, then launchd brings Jarvis back."""
+            restart()
+            return {"ok": True}
 
 
 _MAX_PLUGIN_COMMAND_BYTES = 32_768
@@ -1192,6 +1241,28 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0915 — one cl
             except (OSError, ValueError) as exc:  # urllib errors are OSError.
                 raise HTTPException(status_code=502, detail=str(exc)[:200]) from None
 
+    if deps.usage_record_balance is not None and deps.plugin_authorize is not None:
+        record_balance, balance_authorize = deps.usage_record_balance, deps.plugin_authorize
+
+        @app.post("/inherent/usage/balance", status_code=200)
+        async def usage_balance(request: Request) -> dict[str, Any]:
+            """ADR 0050: record a balance; the next usage poll subtracts the spend since."""
+            if not balance_authorize(request.headers.get("authorization")):
+                raise HTTPException(status_code=401, detail="desktop authorization required")
+            try:
+                body = json.loads(await request.body())
+                service, usd = body.get("service"), body.get("usd")
+            except (ValueError, AttributeError):
+                service = usd = None
+            amount = isinstance(usd, int | float) and not isinstance(usd, bool)
+            if not isinstance(service, str) or not amount:
+                raise HTTPException(status_code=400, detail="needs a service and a usd amount")
+            try:
+                record_balance(service, float(usd))
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from None
+            return {"recorded": True}
+
     if deps.work_state_read is not None and deps.work_state_refresh is not None:
         work_state_read, work_state_refresh = deps.work_state_read, deps.work_state_refresh
 
@@ -1225,6 +1296,8 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0915 — one cl
         async def conversation(after: int = 0, limit: int = 200) -> dict[str, Any]:
             """Spec §18.3: the conversation of record past ``after`` (0 = the newest rows)."""
             return conversation_read(after, limit)
+
+    _register_home_routes(app, deps)
 
     # ADR 0019 step 4: Allen's own Codex sessions, fed by scripts/codex_hook_log.py.
     codex_board: dict[str, CodexSession] = {}
@@ -1275,25 +1348,6 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0915 — one cl
             detail="image not implemented in step 1 (ADR-0004)",
         )
 
-    @app.post("/inherent/asr-submit", status_code=200)
-    async def asr_submit(
-        audio: Annotated[UploadFile | None, File()] = None,
-        language: Annotated[str, Form()] = "zh-CN",
-        channel: Annotated[str, Form()] = "inherent_ptt",
-    ) -> dict[str, str]:
-        """ADR-0005 §5.2 — PTT WAV in, normalized transcript out.
-
-        ``channel`` is ``inherent_ptt`` (a question) or ``inherent_note``
-        (Shift+Return: the transcript becomes a ``/note`` memo).
-
-        See :func:`_run_asr_submit` for the full status-code contract.
-        Split out so ``create_app`` stays under the cyclomatic-complexity
-        cap; the route handler only forwards to the helper.
-        """
-        if channel not in _ASR_CHANNELS:
-            raise HTTPException(status_code=422, detail=f"unknown channel: {channel}")
-        return await _run_asr_submit(deps, audio, language, channel)
-
     return app
 
 
@@ -1305,4 +1359,5 @@ __all__ = [
     "V2ClientHandle",
     "V2Session",
     "create_app",
+    "require_local_key",
 ]

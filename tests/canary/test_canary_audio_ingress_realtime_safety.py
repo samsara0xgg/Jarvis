@@ -85,7 +85,8 @@ def test_input_session_can_only_stop_speech_through_the_injected_stop() -> None:
 
     Conversation mode (ADR 0041) is the session's one way to stop speech: it
     hands the injected ``stop_speaking`` callable to a thread of its own.
-    ``output_active`` alone, a wake hit alone, and any VAD verdict alone still
+    ADR 0053's answer hold and unspoken-answer drop are injected runtime
+    callables as well. ``output_active`` alone, a wake hit alone, and any VAD verdict alone still
     cancel nothing — so the module must stay free of every direct stop entry
     point, and the wake-during-output suppression must keep emitting its trace.
     """
@@ -106,3 +107,6 @@ def test_input_session_can_only_stop_speech_through_the_injected_stop() -> None:
     assert "wave3_no_interrupt_policy_during_output" in source
     # The only stop path: the runtime's callable, never a call from here.
     assert "target=self._stop_speaking" in source
+    # ADR 0053's hold and supersede are the runtime's callables too.
+    assert "self._hold_output(after)" in source
+    assert "self._supersede_unspoken(turn_id)" in source

@@ -423,6 +423,22 @@ class ResponseRunRegistry:
         """Create an empty registry."""
         self._lock = threading.Lock()
         self._runs: dict[str, ResponseRun] = {}
+        # ADR 0053: set while none of Allen's utterances is in flight. A run
+        # completes only then, so his next sentence can still drop it before
+        # it is written or heard.
+        self._allen_quiet = threading.Event()
+        self._allen_quiet.set()
+
+    def hold_completion(self, *, held: bool) -> None:
+        """Hold, or release, every run's completion while Allen is talking."""
+        if held:
+            self._allen_quiet.clear()
+        else:
+            self._allen_quiet.set()
+
+    def wait_completion_allowed(self, timeout_s: float) -> bool:
+        """Wait up to ``timeout_s`` for Allen to stop; True once no hold is on."""
+        return self._allen_quiet.wait(timeout_s)
 
     def register(self, run: ResponseRun) -> None:
         """Add ``run`` under its response id."""

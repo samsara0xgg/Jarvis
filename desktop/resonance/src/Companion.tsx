@@ -12,6 +12,8 @@ import { usePlugins } from './PluginPanel';
 import { AgentWing, isMarkLook, wingSlots, type MarkLook } from './AgentMarks';
 import { answerRequest, type ShownAgent } from './agents';
 import { NoticeCard, noticeCue, useNotices, type Notice } from './Notices';
+import { tr, useCompanionSettings, type L } from './companionSettings';
+import type { Controls as DashControls, Look } from './SettingsPage';
 import './companion.css';
 
 type Placement = { topInset: number; notchWidth: number; surfaceWidth: number; displayId?: number };
@@ -41,11 +43,11 @@ function loadWardrobe(): { skin: Skin; auto: boolean; layout: DashboardLayout; h
 }
 const isPreview = (value: string): value is ExprId => (PREVIEW as string[]).includes(value);
 
-function layout({ topInset, notchWidth, surfaceWidth: width }: Placement) {
+function layout({ topInset, notchWidth, surfaceWidth: width }: Placement, tucked: boolean) {
   const center = width / 2, notchLeft = center - notchWidth / 2;
   // Without a notch she lives dead centre in a pill; its two wings open the Dashboard, as the camera does beside a notch.
-  const lobe: Lobe = notchWidth ? { left: notchLeft - 64, right: notchLeft + 24, height: topInset, notched: true }
-    : { left: center - 66, right: center + 66, height: topInset, notched: false };
+  const lobe: Lobe = notchWidth ? { left: notchLeft - 64, right: notchLeft + 24, height: topInset, notched: true, tucked }
+    : { left: center - 66, right: center + 66, height: topInset, notched: false, tucked };
   const x = notchWidth ? notchLeft - 32 : center, out = { x, y: topInset + R + 14 }, panelTop = topInset + 44;
   const anchors: Record<Place, Point> = { home: { x, y: topInset / 2 }, peek: { x, y: topInset + R * .1 }, out, dock: { x: center, y: panelTop - R * .5 } };
   // The agent marks' wing grows from the notch's right edge, or the pill's.
@@ -55,8 +57,8 @@ function layout({ topInset, notchWidth, surfaceWidth: width }: Placement) {
     ball: { x: x - R - 12, y: topInset, w: 2 * R + 24, h: out.y + R + 12 - topInset },
     chip: { x: x + R + 4, y: out.y - 18, w: 44, h: 36 },
     dash: notchWidth ? [{ x: notchLeft, y: 0, w: notchWidth, h: topInset + 4 }]
-      : [{ x: lobe.left, y: 0, w: 30, h: topInset + 4 }, { x: center + 36, y: 0, w: 30, h: topInset + 4 }],
-    panel: { x: center - PANEL / 2 - 10, y: 0, w: PANEL + 20, h: panelTop + 520 },
+      : tucked ? [] : [{ x: lobe.left, y: 0, w: 30, h: topInset + 4 }, { x: center + 36, y: 0, w: 30, h: topInset + 4 }],
+    panel: { x: center - PANEL / 2 - 10, y: 0, w: PANEL + 20, h: panelTop + 660 },
   } };
 }
 
@@ -76,9 +78,13 @@ export function Companion() {
     void window.jarvis.placement().then(receive);
     return window.jarvis.onPlacement(receive);
   }, []);
-  const geo = useMemo(() => layout(placement), [placement]);
-  const [preferences] = usePreferences();
-  const feedback = (cue: FeedbackCue) => { if (preferences.feedbackEnabled) void playFeedback(cue, preferences.feedbackVolume); };
+  // ⌘ in the menu bar row tucks her away on that side of the camera for a moment (electron/companion.ts).
+  const [tuck, setTuck] = useState({ left: false, right: false });
+  useEffect(() => window.jarvis?.onTuck?.(setTuck), []);
+  const geo = useMemo(() => layout(placement, tuck.left), [placement, tuck.left]);
+  const [preferences, setPreferences] = usePreferences();
+  const [companion] = useCompanionSettings();
+  const t = (l: L) => tr(companion.lang, l);
   useEffect(() => { warmFeedback(); return stopFeedback; }, []);
   const [zone, setZone] = useState<Zone>('none');
   const [dashboard, setDashboard] = useState(false);
@@ -90,14 +96,21 @@ export function Companion() {
   const [simReply, setReply] = useState({ text: '', shown: 0 });
   const [simTalking, setTalking] = useState(false);
   const [s, dispatch] = useReducer(reducer, initialState);
+  // Muting Jarvis silences her cues as well as its voice.
+  const feedback = (cue: FeedbackCue) => { if (preferences.feedbackEnabled && !s.soundMuted) void playFeedback(cue, preferences.feedbackVolume); };
   const link = useRef<Runtime | null>(null);
   useEffect(() => { if (!port) return; link.current = connect(port, dispatch); return () => { link.current?.close(); link.current = null; }; }, []);
   // Live, the daemon's phase is her voice; standby counts as listening only in wave mode (ADR 0041).
-  const voice = !port ? simVoice : s.phase === 'speaking' ? 'speaking' : s.phase === 'processing' ? 'thinking'
+  // While your words are coming in she only listens: no answer starts then (ADR 0053), whatever text arrives.
+  const inFlight = !!port && s.inFlight;
+  const voice = !port ? simVoice : inFlight ? 'listening' : s.phase === 'speaking' ? 'speaking' : s.phase === 'processing' ? 'thinking'
     : s.phase === 'hearing' || (s.conversation && s.phase !== 'error') ? 'listening' : 'off';
-  const caption = port ? s.heard : simCaption, hearing = port ? s.phase === 'hearing' : simHearing, talking = port ? false : simTalking;
+  const caption = port ? s.heard : simCaption, hearing = port ? inFlight : simHearing, talking = port ? false : simTalking;
   const said = port ? spoken(s.reply) : '';
-  const reply = port ? { text: said, shown: said.length } : simReply;
+  // Her words on screen stay as they were while yours are still coming in: cut off, or none.
+  const held = useRef('');
+  if (!inFlight) held.current = said;
+  const reply = port ? { text: held.current, shown: held.current.length } : simReply;
   const [pressed, setPressed] = useState(false);
   const [wardrobe, setWardrobe] = useState(loadWardrobe);
   // A skin change or an expression from the tray brings her out of the island for a moment.
@@ -112,11 +125,12 @@ export function Companion() {
   const [seen, setSeen] = useState<{ ids: string[]; at: number }>({ ids: [], at: 0 });
   // No notice while she talks, while you type to her or while the Dashboard is open; they come up after.
   const notices = useNotices({ agents, hold: busy || dashboard || moving,
-    cue: (name, gain) => { if (preferences.feedbackEnabled) noticeCue(name, preferences.feedbackVolume, gain); },
+    cue: (name, gain) => { if (preferences.feedbackEnabled && !s.soundMuted) noticeCue(name, preferences.feedbackVolume, gain); },
     answer: (req, body) => port ? answerRequest(port, req.id, body) : Promise.resolve(true),
     onSeen: ids => setSeen({ ids, at: Date.now() }) });
   const notice = notices.current;
-  const place: Place = moving ? 'home' : dashboard || notice ? 'dock' : busy || zone === 'ball' || outing ? 'out' : zone === 'lobe' || notices.peek ? 'peek' : 'home';
+  // Tucked, she stays up with the island until it comes back; only the Dashboard and a notice card, below the menu bar, keep her out.
+  const place: Place = moving ? 'home' : dashboard || notice ? 'dock' : tuck.left ? 'home' : busy || zone === 'ball' || outing ? 'out' : zone === 'lobe' || notices.peek ? 'peek' : 'home';
   // A finished text reply stays up briefly: that is her "done" face.
   const listenFace = useRef<ExprId>('35'), receiveFace = useRef<ExprId>('31'), replyFace = useRef<ExprId>('39');
   // Live turns pick her takes as they begin; the scripted demo picks its own in listen() and say().
@@ -131,11 +145,15 @@ export function Companion() {
   useEffect(() => { if (notice?.kind !== 'err') return; const t = setTimeout(notices.bump, 1750); return () => clearTimeout(t); }, [notice?.key]);
   const expr: ExprId = preview ?? noticeFace ?? (receiving ? receiveFace.current : voice === 'listening' ? listenFace.current : voice === 'thinking' ? '30' : voice === 'speaking' || talking ? replyFace.current : dashboard && dashMood ? dashMood : reply.text ? '33' : '02');
   const chip = place === 'out' && zone === 'ball' && !busy;
-  const wing = useMemo(() => wingSlots(agents, wardrobe.marks), [agents, wardrobe.marks]);
+  // Beside a notch the tucked marks go under it; without one they ride up with the pill.
+  const wing = useMemo(() => { const all = wingSlots(agents, wardrobe.marks); return tuck.right && placement.notchWidth ? { ...all, width: 0 } : all; }, [agents, wardrobe.marks, tuck.right, placement.notchWidth]);
+  // Tucked, the island and she slide up in one motion, far enough to clear her from where she comes out,
+  // so nothing of her trails behind; the Dashboard and a notice card keep her (dock).
+  const lift = tuck.left ? geo.out.y + 2 * R : 0;
   const [wingTip, setWingTip] = useState(false), [agentsFocus, setAgentsFocus] = useState(0);
-  const wingRect = { x: geo.wingX, y: 0, w: wing.width, h: placement.topInset };
-  const live = useRef({ geo, dashboard, chip, composer, place, wardrobe, wingRect });
-  live.current = { geo, dashboard, chip, composer, place, wardrobe, wingRect };
+  const wingRect = { x: geo.wingX, y: 0, w: tuck.right ? 0 : wing.width, h: placement.topInset };
+  const live = useRef({ geo, dashboard, chip, composer, place, wardrobe, wingRect, openBy: companion.openBy });
+  live.current = { geo, dashboard, chip, composer, place, wardrobe, wingRect, openBy: companion.openBy };
   const ball = useRef<BallHandle | null>(null), look = useRef<Point | null>(null), cursor = useRef<Point>({ x: -1e4, y: -1e4 });
   const input = useRef<HTMLInputElement>(null), root = useRef<HTMLElement>(null), pressing = useRef(false);
 
@@ -197,6 +215,7 @@ export function Companion() {
     if (!pressing.current) return;
     pressing.current = false; setPressed(false);
     if (performance.now() - pressAt.current >= HOLD_MS) choose(SKIN_KEYS[(SKIN_KEYS.indexOf(worn.current) + 1) % SKIN_KEYS.length]);
+    else if (live.current.openBy === 'hover') latestPoke.current();
     else if (firstClick.current) { clearTimeout(firstClick.current); firstClick.current = undefined; toggleDashboard(); }
     else firstClick.current = setTimeout(() => { firstClick.current = undefined; latestPoke.current(); }, DOUBLE_CLICK_MS);
   };
@@ -293,8 +312,8 @@ export function Companion() {
   useEffect(() => {
     try { localStorage.setItem(WARDROBE, JSON.stringify(wardrobe)); } catch { /* the pick just is not remembered */ }
     window.jarvis?.companionMenu({ skins: SKIN_KEYS.map(key => ({ key, name: SKINS[key].name, on: key === wardrobe.skin })), auto: wardrobe.auto, layout: wardrobe.layout, homeGlass: wardrobe.homeGlass, marks: wardrobe.marks,
-      exprs: PREVIEW.map(id => ({ id, name: EXPRESSIONS[id].name })) });
-  }, [wardrobe]);
+      follow: companion.screen === 'follow', lang: companion.lang, exprs: PREVIEW.map(id => ({ id, name: EXPRESSIONS[id].name })) });
+  }, [wardrobe, companion.screen, companion.lang]);
   useEffect(() => {
     if (!wardrobe.auto) return;
     let timer: ReturnType<typeof setTimeout>;
@@ -306,6 +325,7 @@ export function Companion() {
   useEffect(() => window.jarvis?.onCommand(command => {
     const [name, value = ''] = command.split(':');
     if (command === 'dashboard') openDashboard(false);
+    else if (command === 'settings') { openDashboard(false); pinned.current = true; setSettingsFocus(n => n + 1); }
     else if (name === 'skin' && isSkin(value)) choose(value);
     else if (command === 'outing') selfChange();
     else if (name === 'layout' && (value === 'grid' || value === 'around')) setWardrobe(current => ({ ...current, layout: value }));
@@ -336,7 +356,7 @@ export function Companion() {
   // The island counts: it is opaque, and a click on it must not reach a menu bar item hidden behind it.
   const refreshHit = () => {
     const p = cursor.current, { lobe } = live.current.geo;
-    const island = p.y >= 0 && p.y <= lobe.height && p.x >= lobe.left - 6 && p.x <= lobe.right + (lobe.notched ? 0 : 6);
+    const island = !lobe.tucked && p.y >= 0 && p.y <= lobe.height && p.x >= lobe.left - 6 && p.x <= lobe.right + (lobe.notched ? 0 : 6);
     const hit = island || !!document.elementFromPoint(p.x, p.y)?.closest('[data-hit]');
     if (hit !== interactive.current && !pressing.current) { interactive.current = hit; window.jarvis?.passthrough(!hit); }
   };
@@ -345,7 +365,7 @@ export function Companion() {
     cursor.current = point;
     if (!composer) look.current = point;
     refreshHit();
-    const next: Zone = within(point, z.ball) || (chip && within(point, z.chip)) ? 'ball' : within(point, z.lobe) ? 'lobe' : 'none';
+    const next: Zone = within(point, z.ball) || (chip && within(point, z.chip)) ? 'ball' : !geo.lobe.tucked && within(point, z.lobe) ? 'lobe' : 'none';
     // Resting on the marks lists the sessions under them.
     const wingNow = live.current.wingRect.w > 0 && within(point, live.current.wingRect);
     if (wingNow !== overWing.current) { overWing.current = wingNow; clearTimeout(tipTimer.current); tipTimer.current = setTimeout(() => setWingTip(wingNow), wingNow ? 120 : 200); }
@@ -361,12 +381,12 @@ export function Companion() {
     if (dashboard) {
       if (over || pinned.current) { dashEntered.current = true; clearTimeout(dashTimer.current); dashTimer.current = undefined; }
       else if (dashEntered.current && !dashTimer.current) dashTimer.current = setTimeout(() => { dashTimer.current = undefined; setDashboard(false); }, 450);
-    } else if (over && !dashTimer.current) {
+    } else if (over && !dashTimer.current && live.current.openBy !== 'click') {
       dashTimer.current = setTimeout(() => { dashTimer.current = undefined; if (live.current.geo.zones.dash.some(r => within(cursor.current, r))) openDashboard(true); }, 200);
     } else if (!over && dashTimer.current) { clearTimeout(dashTimer.current); dashTimer.current = undefined; }
   }), []);
   useEffect(() => () => { clearTimeout(zoneTimer.current); clearTimeout(dashTimer.current); clearTimeout(firstClick.current); clearTimeout(tipTimer.current); }, []);
-  useEffect(refreshHit, [place, chip, composer, dashboard, voice, reply.text, wing.width, notice?.key]);
+  useEffect(refreshHit, [place, chip, composer, dashboard, voice, reply.text, wing.width, notice?.key, tuck.left]);
 
   // Native frosted glass behind every visible panel, following its transitions.
   const kickGlass = useRef(() => {});
@@ -394,27 +414,59 @@ export function Companion() {
   }, []);
   useEffect(() => kickGlass.current(), [place, chip, composer, dashboard, voice, reply.text, caption, notice?.key]);
 
+  // What Settings in the panel reads and changes here: the daemon's switches, her look, her cues.
+  const [settingsFocus, setSettingsFocus] = useState(0);
+  const control = (patch: { mic_muted?: boolean; speech_muted?: boolean; conversation?: boolean }) => void link.current?.controls(patch).catch(() => undefined);
+  const handsFree = port ? s.conversation : voice !== 'off';
+  const ctl: DashControls = {
+    micMuted: s.micMuted, speechMuted: s.soundMuted, handsFree,
+    setMic: muted => { if (muted === s.micMuted) return; feedback(muted ? 'mic-off' : 'mic-on'); if (port) control({ mic_muted: muted }); else dispatch({ type: 'mic' }); },
+    setSpeech: muted => {
+      if (muted === s.soundMuted) return;
+      if (muted) stopFeedback(); else if (preferences.feedbackEnabled) void playFeedback('speaker-on', preferences.feedbackVolume);
+      if (port) control({ speech_muted: muted }); else dispatch({ type: 'sound' });
+    },
+    setHandsFree: on => {
+      if (on === handsFree) return;
+      if (!on) { endVoice(); return; }
+      closeComposer(); feedback('voice-enter');
+      if (port) control({ conversation: true }); else listen(false);
+    },
+    look: wardrobe,
+    setLook: (change: Partial<Look>) => {
+      if (change.skin) choose(change.skin);
+      if (change.auto === false) wear(wardrobe.skin);
+      const { skin: _, ...rest } = change;
+      if (Object.keys(rest).length) setWardrobe(current => ({ ...current, ...rest }));
+    },
+    playFaces: () => { stopScript(); PREVIEW.forEach((id, i) => after(i * 1100, () => setPreview(id))); after(PREVIEW.length * 1100, () => setPreview(null)); },
+    cues: { on: preferences.feedbackEnabled, volume: preferences.feedbackVolume },
+    setCues: change => setPreferences({ ...change.on !== undefined && { feedbackEnabled: change.on }, ...change.volume !== undefined && { feedbackVolume: change.volume } }),
+  };
+
   const { out } = geo;
-  const strip = place === 'out' && (voice === 'listening' || voice === 'thinking'), bubble = place === 'out' && !!reply.text;
+  // The strip and her bubble share one spot: her words keep it until yours are in, then the strip shows them whole.
+  const yours = voice === 'thinking' && !!caption;
+  const strip = place === 'out' && (yours || ((voice === 'listening' || voice === 'thinking') && !reply.text)), bubble = place === 'out' && !!reply.text && !yours;
   return <IconContext.Provider value={{ size: 16, weight: 'regular' }}>
     <main ref={root} className="companion" style={{ '--mint': preferences.themeColor } as React.CSSProperties}>
       <div className={`companion-chip ${chip ? 'is-open' : ''}`} data-hit={chip || undefined} data-glass="9" style={{ left: out.x + R + 12, top: out.y - 13 }}>
-        <button aria-label="文字输入" tabIndex={chip ? 0 : -1} onClick={openComposer}><Keyboard/></button>
+        <button aria-label={t(['Type to her', '文字输入'])} tabIndex={chip ? 0 : -1} onClick={openComposer}><Keyboard/></button>
       </div>
       <form className={`companion-composer ${composer && place === 'out' ? 'is-open' : ''}`} data-hit={composer || undefined} data-glass="17"
         style={{ left: out.x - PANEL / 2, top: out.y + R + 11 }} inert={!composer} onTransitionEnd={aimAtCaret}
         onSubmit={event => { event.preventDefault(); send(); }}>
-        <button type="button" className="composer-attach" disabled aria-label="添加附件（原型未接入）"><Paperclip/></button>
-        <input ref={input} aria-label="文字输入" placeholder="和她说点什么…" value={draft}
+        <button type="button" className="composer-attach" disabled aria-label={t(['Attach (not wired yet)', '添加附件（还没接）'])}><Paperclip/></button>
+        <input ref={input} aria-label={t(['Type to her', '文字输入'])} placeholder={t(['Say something…', '和她说点什么…'])} value={draft}
           onChange={event => { setDraft(event.target.value); ball.current?.nudge(); requestAnimationFrame(aimAtCaret); }}
           onSelect={aimAtCaret} onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); closeComposer(); } }}/>
-        <button type="submit" className="composer-send" disabled={!draft.trim()} aria-label="发送"><ArrowUp weight="bold"/></button>
+        <button type="submit" className="composer-send" disabled={!draft.trim()} aria-label={t(['Send', '发送'])}><ArrowUp weight="bold"/></button>
       </form>
       <div className={`companion-strip ${strip ? 'is-open' : ''} ${hearing ? 'is-hearing' : ''}`} data-hit={strip || undefined} data-glass="19"
         style={{ left: out.x, top: out.y + R + 11 }} inert={!strip} role="status">
         <span className="strip-mic"><Microphone size={14} weight="fill"/></span>
-        <span className={`strip-text ${caption ? '' : 'is-empty'}`}>{caption || '在听…'}</span>
-        <button className="strip-stop" aria-label="结束语音" onClick={endVoice}><Stop size={11} weight="fill"/></button>
+        <span className={`strip-text ${caption ? '' : 'is-empty'}`}>{caption || t(['Listening…', '在听…'])}</span>
+        <button className="strip-stop" aria-label={t(['End voice', '结束语音'])} onClick={endVoice}><Stop size={11} weight="fill"/></button>
       </div>
       <div className={`companion-bubble ${bubble ? 'is-open' : ''}`} data-glass="18" style={{ left: out.x, top: out.y + R + 11 }} role="status">
         <span className="bubble-text"><span className="bubble-ghost">{reply.text}</span><span>{reply.text.slice(0, reply.shown)}</span></span>
@@ -425,7 +477,7 @@ export function Companion() {
           ? <AroundDashboard open={dashboard} port={port} onClose={() => setDashboard(false)} onMood={setDashMood} onHop={height => ball.current?.hop(height)}
             talk={port ? { rows: s.rows, tail, busy: s.phase === 'processing', offline: s.phase === 'error', floor, submit, older } : undefined}
             plugins={port ? plugins : undefined} pluginFocus={pluginFocus} marks={wardrobe.marks} onAgents={setAgents} agentsFocus={agentsFocus} seen={seen}
-            onAnswer={id => { setDashboard(false); notices.focus(id); }}/>
+            onAnswer={id => { setDashboard(false); notices.focus(id); }} ctl={ctl} settingsFocus={settingsFocus}/>
           : <DashboardPreview embedded port={port} visible={dashboard} shown={dashboard} onClose={() => setDashboard(false)}/>}
       </div>
       <div ref={noticeEl} className={`companion-notice ${notice ? 'is-open' : ''}`} data-hit={notice ? true : undefined} data-glass="24"
@@ -439,10 +491,10 @@ export function Companion() {
             if (body.decision !== 'deny') ball.current?.hop(.14);
           }}/>}
       </div>
-      <AgentWing look={wardrobe.marks} wing={wing} x={geo.wingX} height={placement.topInset} limit={geo.width} tip={wingTip && !dashboard} onOpen={openAgents}/>
-      <CompanionBall width={geo.width} height={placement.topInset + 560} lobe={geo.lobe} look={look} handle={ball} skin={worn.current}
-        target={{ place, expr, pressed, anchors: geo.anchors, homeGlass: wardrobe.homeGlass }}
-        label={voice === 'off' ? `戳一下，开始语音${port ? '' : '（演示）'}` : voice === 'speaking' ? '戳一下，打断播报' : '戳一下，结束语音'}
+      <AgentWing look={wardrobe.marks} wing={wing} lift={placement.notchWidth ? 0 : lift} x={geo.wingX} height={placement.topInset} limit={geo.width} tip={wingTip && !dashboard} onOpen={openAgents}/>
+      <CompanionBall width={geo.width} height={placement.topInset + 560} lobe={geo.lobe} lift={lift} look={look} handle={ball} skin={worn.current}
+        target={{ place, expr, pressed, anchors: geo.anchors, homeGlass: wardrobe.homeGlass, lift: place === 'home' ? lift : 0 }}
+        label={voice === 'off' ? t([`Poke to talk${port ? '' : ' (demo)'}`, `戳一下，开始语音${port ? '' : '（演示）'}`]) : voice === 'speaking' ? t(['Poke to interrupt', '戳一下，打断播报']) : t(['Poke to stop', '戳一下，结束语音'])}
         onPress={press} onRelease={release} onCancel={cancel} onMove={refreshHit}/>
     </main>
   </IconContext.Provider>;
