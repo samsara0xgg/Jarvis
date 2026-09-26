@@ -1,21 +1,19 @@
-"""The companion home's reads (ADR 0051): Today, unread mail and the morning brief.
+"""The companion home's reads (ADR 0055): Today, unread mail and the morning brief.
 
-Calendar and To Do come through the live ``microsoft`` connection's tools outside
-any model turn, mail from Gmail over IMAP, the weather from Open-Meteo. The one
-write is a to-do's status, and only because Allen clicked its checkbox on the home.
+Calendar and To Do come through the live ``microsoft`` connection's tools and mail
+through the live ``gmail`` connection's, outside any model turn; the weather from
+Open-Meteo. The one write is a to-do's status, and only because Allen clicked its
+checkbox on the home.
 """
 
 from __future__ import annotations
 
-import email
-import email.policy
-import imaplib
 import json
 import logging
-import os
 import re
 import urllib.request
 from datetime import UTC, date, datetime, time, timedelta
+from email.utils import parseaddr, parsedate_to_datetime
 from typing import TYPE_CHECKING, Any
 
 from jarvis.decision.daily_report import summary_of
@@ -46,10 +44,9 @@ _WMO = (
 )
 _ID_SEP = "|"
 """A to-do's id is ``<list id>|<task id>``; Graph ids are base64 and never hold a bar."""
+MAIL_SERVER = "gmail"
+"""Google's Workspace MCP server with only Gmail switched on (ADR 0055)."""
 _MAIL_LIMIT = 20
-_MAIL_TIMEOUT_S = 8.0
-_GMAIL_IMAP = "imap.gmail.com"
-_MAIL_FIELDS = "(INTERNALDATE BODY.PEEK[HEADER.FIELDS (FROM SUBJECT)])"
 _NOT_A_PERSON = re.compile(r"no-?reply|notification|mailer-daemon|bounce", re.IGNORECASE)
 
 
@@ -100,10 +97,10 @@ class Home:
         self._zone_name, self._zone = zone
         self._weather_at = weather_at
 
-    def _servers(self) -> McpServers:
-        """The live Microsoft client; LookupError (the routes' 404) when it is not connected."""
+    def _servers(self, server: str = PLAN_SERVER) -> McpServers:
+        """The live client of ``server``; LookupError (the routes' 404) when it is not connected."""
         try:
-            return self._connections.client_for(PLAN_SERVER)
+            return self._connections.client_for(server)
         except ToolError as exc:
             raise LookupError(str(exc)) from exc
 
@@ -161,23 +158,16 @@ class Home:
     def mail(self) -> dict[str, Any]:
         """Unread Primary mail in Gmail, newest first, without no-reply and notification senders.
 
-        IMAP with an app password (``GMAIL_ADDRESS``, ``GMAIL_APP_PASSWORD`` in the
-        runtime env); the inbox is opened read-only, so nothing is marked read.
+        Two read-only tools of the ``gmail`` server: a search in Gmail's own terms,
+        then each hit's headers; nothing is marked read.
         """
-        address, password = os.environ.get("GMAIL_ADDRESS"), os.environ.get("GMAIL_APP_PASSWORD")
-        if not address or not password:
-            msg = "Gmail is not set up: GMAIL_ADDRESS and GMAIL_APP_PASSWORD"
-            raise LookupError(msg)
-        with imaplib.IMAP4_SSL(_GMAIL_IMAP, timeout=_MAIL_TIMEOUT_S) as box:
-            box.login(address, password)
-            box.select("INBOX", readonly=True)
-            # Gmail's own sort into Primary is the "from people" filter.
-            _, found = box.uid("SEARCH", "X-GM-RAW", '"category:primary is:unread"')
-            uids = found[0].split()[-_MAIL_LIMIT:]
-            if not uids:
-                return {"unread": []}
-            _, rows = box.uid("FETCH", b",".join(uids).decode(), _MAIL_FIELDS)
-        unread = [_letter(*row) for row in rows if isinstance(row, tuple)]
+        servers = self._servers(MAIL_SERVER)
+        # Gmail's own sort into Primary is the "from people" filter.
+        query = {"query": "category:primary is:unread", "maxResults": _MAIL_LIMIT}
+        unread = [
+            _letter(_gmail(servers, "gmail_get", {"messageId": hit["id"], "format": "metadata"}))
+            for hit in _gmail(servers, "gmail_search", query).get("messages") or []
+        ]
         people = [one for one in unread if not _NOT_A_PERSON.search(one.pop("address"))]
         return {"unread": sorted(people, key=lambda one: one["received"], reverse=True)}
 
@@ -202,23 +192,34 @@ class Home:
         return {"date": today.isoformat(), "summary": summary_of(body), "body": body}
 
 
-def _letter(meta: bytes, header: bytes) -> dict[str, str]:
-    """One FETCH answer: UID and INTERNALDATE from its line, From and Subject from its header."""
-    uid = re.search(rb"UID (\d+)", meta)
-    received = re.search(rb'INTERNALDATE "([^"]+)"', meta)
-    if uid is None or received is None:
-        msg = f"unexpected IMAP answer: {meta[:80]!r}"
-        raise ValueError(msg)
-    letter = email.message_from_bytes(header, policy=email.policy.default)
-    sender = letter["From"].addresses[0] if letter["From"] and letter["From"].addresses else None
+def _gmail(servers: McpServers, tool: str, args: Mapping[str, Any]) -> dict[str, Any]:
+    payload = servers.call(MAIL_SERVER, tool, args)
+    # The server answers JSON in a text block and reports a failure as {"error": ...} there;
+    # either kind of failure is the route's 502, never a ValueError's 400.
+    try:
+        body = json.loads(payload.get("text", ""))
+    except ValueError as exc:
+        msg = f"{tool}: answer is not JSON"
+        raise ToolError(msg, code="mcp_tool_error") from exc
+    if not isinstance(body, dict) or "error" in body:
+        msg = f"{tool}: {body.get('error') if isinstance(body, dict) else body!r}"
+        raise ToolError(msg, code="mcp_tool_error")
+    return body
+
+
+def _letter(message: Mapping[str, Any]) -> dict[str, str]:
+    """One ``gmail_get`` answer in metadata format: its id, sender, subject and Date header."""
+    name, address = parseaddr(str(message.get("from") or ""))
+    try:
+        received = parsedate_to_datetime(str(message["date"])).astimezone(UTC).isoformat()
+    except (KeyError, TypeError, ValueError):
+        received = ""  # no usable Date header: the letter still shows, sorted last
     return {
-        "id": uid.group(1).decode(),
-        "from": (sender.display_name or sender.addr_spec) if sender else "",
-        "address": sender.addr_spec if sender else "",
-        "subject": str(letter["Subject"] or ""),
-        "received": datetime.strptime(received.group(1).decode(), "%d-%b-%Y %H:%M:%S %z")
-        .astimezone(UTC)
-        .isoformat(),
+        "id": str(message["id"]),
+        "from": name or address,
+        "address": address,
+        "subject": str(message.get("subject") or ""),
+        "received": received,
     }
 
 

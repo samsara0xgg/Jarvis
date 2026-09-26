@@ -225,7 +225,6 @@ def _build_overlay(root: Path) -> Path:
     for relative in (
         Path("config") / "tier0_patterns.yaml",
         Path("config") / "confirm_grammar.yaml",
-        Path("config") / "file_targets.yaml",
         Path("config") / "tool_cues.yaml",
         Path("prompts") / "jarvis_v1.md",
         Path("data") / "pricing.json",

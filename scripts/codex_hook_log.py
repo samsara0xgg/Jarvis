@@ -6,7 +6,8 @@ reads stdout for a decision; an empty stdout means "no decision"
 (`codex-rs/hooks/src/engine/output_parser.rs`), so this script never
 writes to stdout. Every payload lands in
 ``~/.jarvis/codex-hooks/<hook_event_name>.jsonl`` with a UTC timestamp,
-one line per event, and is then POSTed to the daemon's
+one line per event (past 10 MB a file rolls over to ``.1``, ``.1`` to
+``.2``, and the older ``.2`` is dropped), and is then POSTed to the daemon's
 ``/inherent/codex-hook`` (port ``JARVIS_INHERENT_BRIDGE_PORT``, default
 8006, with the key from ``plugin-access.json`` under ``JARVIS_RUNTIME_ROOT``)
 so the Resonance Codex card sees it; a daemon that is away is ignored.
@@ -24,6 +25,8 @@ import urllib.request
 from pathlib import Path
 
 LOG_DIR = Path.home() / ".jarvis" / "codex-hooks"
+MAX_BYTES = 10 * 1024 * 1024
+KEEP = 2  # rolled-over files kept beside the live one
 PORT = os.environ.get("JARVIS_INHERENT_BRIDGE_PORT", "8006")
 ROOT = Path(os.environ.get("JARVIS_RUNTIME_ROOT") or Path.home() / ".jarvis").expanduser()
 
@@ -42,6 +45,12 @@ def main() -> int:
         {"ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "event": event},
         ensure_ascii=False,
     )
+    if target.exists() and target.stat().st_size > MAX_BYTES:
+        for i in range(KEEP, 1, -1):
+            older = target.with_name(f"{target.name}.{i - 1}")
+            if older.exists():
+                older.replace(target.with_name(f"{target.name}.{i}"))
+        target.replace(target.with_name(f"{target.name}.1"))
     with target.open("a", encoding="utf-8") as fh:
         fh.write(line + "\n")
     if isinstance(event, dict):

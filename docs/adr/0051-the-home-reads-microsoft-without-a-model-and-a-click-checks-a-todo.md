@@ -1,6 +1,6 @@
 # ADR 0051 — The home reads Microsoft without a model, and a click checks a to-do off
 
-**Status:** Accepted
+**Status:** Superseded-by-0055
 **Date:** 2026-09-25
 **Supersedes:** 0036
 

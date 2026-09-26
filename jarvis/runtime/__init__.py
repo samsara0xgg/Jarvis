@@ -37,6 +37,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -99,17 +100,20 @@ from jarvis.decision.response_run import (
 from jarvis.decision.stream_gate import routine_stream_policy
 from jarvis.decision.tier0 import Tier0ConfigError, load_tier0_table, validate_tier0_table
 from jarvis.deployment import RuntimePaths, bootstrap_runtime, load_env_file
+from jarvis.deployment.models import default_sensevoice_dir, default_silero_vad_path
 from jarvis.execution.mcp_oauth import DEFAULT_OAUTH_CALLBACK_PORT
-from jarvis.execution.mcp_tools import DEFAULT_MCP_TIMEOUT_S, McpServers, is_oauth
+from jarvis.execution.mcp_tools import DEFAULT_MCP_TIMEOUT_S, McpServers, is_oauth, stdio_env
+from jarvis.execution.path_resolver import (
+    FileTargetsConfigError,
+    configure_file_targets,
+    resolve_write_target,
+)
 from jarvis.execution.path_resolver import resolve as resolve_file_entity
-from jarvis.execution.path_resolver import resolve_write_target
 from jarvis.execution.tools import (
-    DEFAULT_OBSIDIAN_VAULT_ROOT,
     DEFAULT_SCREEN_MAX_WIDTH_PX,
     DEFAULT_WEB_FETCH_MAX_BYTES,
     DEFAULT_WEB_FETCH_MAX_TEXT_BYTES,
     DEFAULT_WEB_SEARCH_MAX_RESULTS,
-    DEFAULT_WEB_SEARCH_PROVIDER,
     DEFAULT_WEB_TIMEOUT_S,
     ActionLifecycle,
     ReadOnlyToolRegistry,
@@ -184,10 +188,9 @@ LOGGER = logging.getLogger("jarvis.runtime")
 _DEFAULT_CONFIG_FILENAME = Path("config") / "jarvis.yaml"
 _DEFAULT_PROMPT_FILENAME = Path("prompts") / "jarvis_v1.md"
 
-# ADR-0005 §12 pre-flight artifacts.  These two relative paths are the
-# absent-key fallback and stay cwd-relative on purpose: the owner's running
-# daemon resolves them against its working directory today, and moving the
-# default would silently relocate a live system's model lookup.
+# ADR-0005 §12 pre-flight artifacts for hand-assembled runtimes (tests).
+# ``bootstrap_runtime_app`` anchors the absent-key default at
+# ``<runtime root>/models`` instead (``jarvis.deployment.models``).
 DEFAULT_SENSEVOICE_DIR = Path("data/sensevoice-small-int8")
 DEFAULT_SILERO_VAD_PATH = Path("data/silero_vad.onnx")
 
@@ -251,14 +254,6 @@ _VISION_SYSTEM_PROMPT: str = (
     "visible in the screenshot factually and concisely. Respond in {language}."
 )
 
-# Fallback ``tools.obsidian.vault_root`` (ADR-0011 D7) for a runtime
-# whose config carries no ``tools:`` block. NIT-FIX 8 (ADR-0011 §12):
-# unlike ``_FALLBACK_OBSERVER_POLL_INTERVAL_S`` above, this one does
-# NOT hold its own copy of the literal — two copies of the same vault
-# path in two layers can silently drift. `jarvis.execution.tools`
-# (L4, the layer this fallback exists for) owns
-# ``DEFAULT_OBSIDIAN_VAULT_ROOT``; `jarvis.runtime` just imports it —
-# a higher-layer-imports-lower-layer edge `.importlinter` allows.
 
 
 # --- Exceptions -------------------------------------------------------------
@@ -949,8 +944,11 @@ def _daily_report_preset(config: Mapping[str, Any]) -> str:
     return _work_state_preset(config)
 
 
-def _codex_sessions_path() -> Path | None:
-    """Codex's own session directory when this machine has one; ADR 0024's agent material."""
+def _codex_sessions_path(config: Mapping[str, Any]) -> Path | None:
+    """Codex's own session directory, only when ``daily_report.codex_sessions`` opts in."""
+    block = config.get("daily_report")
+    if not isinstance(block, Mapping) or block.get("codex_sessions") is not True:
+        return None
     root = Path.home() / ".codex" / "sessions"
     return root if root.is_dir() else None
 
@@ -1011,17 +1009,13 @@ def _observer_repo_paths(config: Mapping[str, Any]) -> tuple[str, ...]:
     )
 
 
-def _obsidian_vault_root(config: Mapping[str, Any]) -> Path:
-    """Return `tools.obsidian.vault_root`, `~`-expanded (ADR-0011 D7).
+def _obsidian_vault_root(config: Mapping[str, Any]) -> Path | None:
+    """Return `tools.obsidian.vault_root`, `~`-expanded (ADR-0011 D7); blank is None.
 
     Threaded into `build_default_registry`'s `search_notes` closure at
-    registry-build time — L4 handlers do not load YAML themselves
-    (same reason `tier0_table` / `observer_poll_interval_s` are read
-    here and threaded down rather than re-parsed inside `jarvis.decision`
-    or `jarvis.execution`). A missing/malformed `tools:` or `obsidian:`
-    block degrades to the shipped default rather than failing boot —
-    `search_notes` on a misconfigured key still resolves quietly to
-    "vault not found" (same posture as `_observer_poll_interval_s`).
+    registry-build time — L4 handlers do not load YAML themselves. None
+    registers no `search_notes`, so a user who named no vault never has a
+    folder such as `~/Documents` touched on their behalf.
     """
     block = config.get("tools")
     if isinstance(block, Mapping):
@@ -1030,7 +1024,18 @@ def _obsidian_vault_root(config: Mapping[str, Any]) -> Path:
             raw = obsidian_block.get("vault_root")
             if isinstance(raw, str) and raw.strip():
                 return Path(raw).expanduser()
-    return DEFAULT_OBSIDIAN_VAULT_ROOT
+    return None
+
+
+def _install_open_path(config: Mapping[str, Any]) -> None:
+    """Hand `tools.open_path` to L4's resolver; malformed bookmarks fail the boot."""
+    block = config.get("tools")
+    raw = block.get("open_path") if isinstance(block, Mapping) else None
+    try:
+        configure_file_targets(raw if isinstance(raw, Mapping) else {})
+    except FileTargetsConfigError as exc:
+        msg = f"runtime: tools.open_path invalid: {exc}"
+        raise RuntimeBootstrapError(msg) from exc
 
 
 def _realtime_model_path(
@@ -1084,8 +1089,12 @@ def _realtime_model_path(
     return (config_dir / candidate).resolve()
 
 
-def _web_search_provider_config(config: Mapping[str, Any]) -> tuple[str, str | None]:
+def _web_search_provider_config(config: Mapping[str, Any]) -> tuple[str | None, str | None]:
     """Return `(search_provider, api_key)` from `tools.web.*`.
+
+    A blank `search_provider` picks by which key the environment holds,
+    `TAVILY_API_KEY` first, then `EXA_API_KEY`; with neither it returns
+    `(None, None)` and no `web_search` is registered.
 
     The key is resolved HERE, from the env var named by
     `tools.web.search_api_key_env` — same indirection the LLM presets
@@ -1105,16 +1114,22 @@ def _web_search_provider_config(config: Mapping[str, Any]) -> tuple[str, str | N
     unknown provider name, or an unset variable all degrade inside
     `_resolve_search_backend` rather than failing boot.
     """
-    provider = DEFAULT_WEB_SEARCH_PROVIDER
+    provider = ""
     raw_key_env: object = None
     block = config.get("tools")
     if isinstance(block, Mapping):
         web_block = block.get("web")
         if isinstance(web_block, Mapping):
             raw_provider = web_block.get("search_provider")
-            if isinstance(raw_provider, str) and raw_provider.strip():
+            if isinstance(raw_provider, str):
                 provider = raw_provider.strip()
             raw_key_env = web_block.get("search_api_key_env")
+    if not provider:
+        for name in ("tavily", "exa"):
+            found = os.environ.get(f"{name.upper()}_API_KEY", "").strip()
+            if found:
+                return name, found
+        return None, None
 
     key_env = f"{provider.strip().upper()}_API_KEY"
     if isinstance(raw_key_env, str) and raw_key_env.strip():
@@ -1492,17 +1507,21 @@ def _register_workers(
 ) -> Workers | None:
     """ADR 0019: workers are threads on one ``codex app-server``.
 
-    Off unless ``tools.workers.enabled``; ``tools.workers.roots`` lists the
-    folders a worker may be started in. The server starts lazily on the
-    first spawn, so a one-shot CLI turn pays nothing; the daemon stops it
-    at shutdown.
+    Off unless ``tools.workers.enabled`` and ``codex`` is on this machine;
+    ``tools.workers.roots`` lists the folders a worker may be started in.
+    The server starts lazily on the first spawn, so a one-shot CLI turn
+    pays nothing; the daemon stops it at shutdown.
     """
     tools_block = config.get("tools")
     block = tools_block.get("workers") if isinstance(tools_block, Mapping) else None
     if not isinstance(block, Mapping) or block.get("enabled") is not True:
         return None
+    codex = shutil.which("codex")
+    if codex is None:
+        LOGGER.warning("tools.workers is on but codex is not on PATH; no workers this boot")
+        return None
     roots = tuple(Path(str(r)).expanduser().resolve() for r in block.get("roots") or ())
-    workers = Workers(paths.root / "codex.sock", paths.event_log)
+    workers = Workers(paths.root / "codex.sock", paths.event_log, codex_bin=codex)
     for worker_tool in make_worker_tools(workers, roots):
         registry.register(worker_tool)
     return workers
@@ -1553,8 +1572,12 @@ def mcp_login(
 ) -> int:
     """ADR 0032: log one `auth: oauth` server in through the browser; the daemon reuses the token.
 
-    Returns a process exit code: 0 logged in, 1 the server refused or never
-    asked for a login, 2 the entry is missing or not an OAuth one.
+    A local server that keeps its own login names its login command in
+    ``login_args`` (ADR 0055); that command runs here, in the terminal, with the
+    entry's command and environment, so it asks for exactly what the daemon's
+    server will use. Returns a process exit code: 0 logged in, 1 the server
+    refused or never asked for a login, 2 the entry is missing or has no login;
+    a login command's own exit code otherwise.
     """
     if config_path is None:
         repo_root = _locate_repo_root(Path(__file__).parent)
@@ -1574,6 +1597,10 @@ def mcp_login(
             f" of {config_path} (known: {known})\n"
         )
         return 2
+    if spec.get("command") and spec.get("login_args"):
+        login = [str(spec["command"]), *(os.path.expandvars(str(a)) for a in spec["login_args"])]
+        env = {**os.environ, **stdio_env(spec)}
+        return subprocess.run(login, env=env, cwd=spec.get("cwd"), check=False).returncode  # noqa: S603 — Allen's own config names the command.
     if not is_oauth(spec):
         sys.stderr.write(f"mcp-login: {server} does not log in with OAuth; nothing to do\n")
         return 2
@@ -1694,6 +1721,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         web_timeout_s,
     ) = _web_tools_config(full_config)
     web_search_provider, web_search_api_key = _web_search_provider_config(full_config)
+    _install_open_path(full_config)
     vision_preset_name, screen_max_width_px = _screen_tools_config(full_config)
     memory = MemorySettings.from_config(full_config.get("memory"), runtime_root=paths.root)
     session = SessionSettings.from_config(full_config.get("session"))
@@ -1744,7 +1772,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         ),
         model=_daily_report_preset(full_config),
         tz=_work_state_timezone(full_config),
-        codex_sessions_path=_codex_sessions_path(),
+        codex_sessions_path=_codex_sessions_path(full_config),
     )
     registry = build_default_registry(
         memory_db_path=memory.db_path,
@@ -1898,13 +1926,13 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
             full_config,
             key="sensevoice_dir",
             config_dir=config_dir,
-            fallback=DEFAULT_SENSEVOICE_DIR,
+            fallback=default_sensevoice_dir(paths.root),
         ),
         silero_vad_path=_realtime_model_path(
             full_config,
             key="silero_vad_path",
             config_dir=config_dir,
-            fallback=DEFAULT_SILERO_VAD_PATH,
+            fallback=default_silero_vad_path(paths.root),
         ),
         tool_cues=tool_cues,
         work_state=work_state,

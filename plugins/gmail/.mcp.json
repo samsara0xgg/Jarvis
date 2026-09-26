@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "gmail": {
+      "command": "node",
+      "args": ["$HOME/Projects/external/gemini-workspace/workspace-server/dist/index.js"],
+      "login_args": ["$HOME/Projects/external/gemini-workspace/workspace-server/dist/headless-login.js"],
+      "env": {
+        "PATH": "$HOME/.local/share/mise/shims:/usr/bin:/bin",
+        "GEMINI_CLI_WORKSPACE_FORCE_FILE_STORAGE": "true",
+        "CI": "1",
+        "WORKSPACE_FEATURE_OVERRIDES": "docs.read:off,docs.write:off,drive.read:off,drive.write:off,calendar.read:off,calendar.write:off,chat.read:off,chat.write:off,people.read:off,slides.read:off,sheets.read:off,time.read:off"
+      }
+    }
+  }
+}

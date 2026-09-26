@@ -144,8 +144,8 @@ def check_keyed_live() -> bool | None:
     config = yaml.safe_load(pathlib.Path("config/jarvis.yaml").read_text(encoding="utf-8"))
     provider, api_key = _web_search_provider_config(config)
     print(f"  config provider = {provider!r}, key = {'resolved' if api_key else 'MISSING'}")
-    if not api_key:
-        print("  -> SKIP: no credential resolved (this is the ddgs-degrade path)")
+    if provider is None or not api_key:
+        print("  -> SKIP: no credential resolved (no web_search is registered)")
         return None
 
     backend, used = _resolve_search_backend(provider, api_key)

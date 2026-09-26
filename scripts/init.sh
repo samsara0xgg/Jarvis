@@ -14,12 +14,6 @@ FIX=0
 [ "${1:-}" = "--fix" ] && FIX=1
 
 FAILED=0
-# sherpa-onnx is deliberately absent from uv.lock — pyproject keeps the voice
-# wheels out of [project].dependencies so the daemon can downgrade to text-only
-# (ADR-0005 §12). Consequence: every `uv sync` here must pass --inexact, or the
-# sync uninstalls it as extraneous and the next daemon run is silently deaf.
-# ponytail: bump this pin by hand when the ASR wheel moves.
-SHERPA_PIN=1.13.2
 
 ok()   { printf '  \033[32mOK\033[0m    %s\n' "$1"; }
 bad()  { printf '  \033[31mFAIL\033[0m  %s\n        fix: %s\n' "$1" "$2"; FAILED=1; }
@@ -89,7 +83,7 @@ if [ -x "$PY" ]; then
     missing_voice() {
         "$PY" - <<'PY' 2>/dev/null
 import importlib.util
-mods = ("sounddevice", "onnxruntime", "sherpa_onnx", "openwakeword", "soxr")
+mods = ("sounddevice", "onnxruntime", "sherpa_onnx", "pymicro_wakeword", "soxr")
 print(" ".join(m for m in mods if importlib.util.find_spec(m) is None))
 PY
     }
@@ -97,37 +91,17 @@ PY
     if [ -n "$MISSING" ] && [ "$FIX" = 1 ]; then
         note "installing voice wheels…"
         uv sync --inexact --frozen --extra dev >/dev/null 2>&1
-        uv pip install "sherpa-onnx==$SHERPA_PIN" >/dev/null 2>&1
         MISSING="$(missing_voice)"   # re-probe: believe imports, not exit codes
     fi
     if [ -z "$MISSING" ]; then
         ok "voice stack importable (sherpa-onnx $("$PY" -c "import importlib.metadata as m; print(m.version('sherpa-onnx'))"))"
     else
         bad "voice stack incomplete — daemon would silently run text-only:$MISSING" \
-            "uv sync --inexact --frozen --extra dev && uv pip install sherpa-onnx==$SHERPA_PIN"
+            "uv sync --inexact --frozen --extra dev"
     fi
 fi
 
-# 6. Model artifacts. .gitignore owns the list, so a new artifact is checked the
-#    day it is ignored rather than the day someone remembers to edit this script.
-for name in $(grep '^/data/' .gitignore | sed 's|^/data/||'); do
-    if [ -e "data/$name" ]; then
-        ok "data/$name resolves"
-    else
-        src="$PRIMARY/data/$name"
-        target="$(readlink "$src" 2>/dev/null || echo "$src")"
-        if [ ! -e "$src" ]; then
-            bad "data/$name missing, and the primary checkout has none either" \
-                "download the artifact, then symlink it into data/"
-        elif [ "$FIX" = 1 ]; then
-            ln -sfn "$target" "data/$name" && ok "data/$name linked -> $target (fixed)"
-        else
-            bad "data/$name missing" "ln -sfn $target data/$name"
-        fi
-    fi
-done
-
-# 7. The logging contract the run recipe below depends on. If this moves, the
+# 6. The logging contract the run recipe below depends on. If this moves, the
 #    recipe becomes a lie that silently produces empty logs.
 if grep -q 'JARVIS_LOG_LEVEL' jarvis/__main__.py; then
     ok "JARVIS_LOG_LEVEL still gates logging setup"
