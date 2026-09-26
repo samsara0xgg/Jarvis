@@ -11,6 +11,19 @@
 .companion-hit { position:absolute; left:0; top:0; z-index:5; padding:0; border-radius:50%; background:transparent; transform-origin:50% 50%; cursor:pointer; }
 .companion-hit:focus-visible { outline:1.5px solid rgb(255 255 255 / .55); outline-offset:0; }
 
+/* The agent marks: a black wing out from under the notch; resting on it lists the live sessions. */
+.agent-wing { position:absolute; top:0; z-index:3; pointer-events:none; }
+.agent-wing-hit { position:absolute; top:0; z-index:5; padding:0; border-radius:0 0 10px 0; background:transparent; cursor:pointer; }
+.agent-wing-hit:focus-visible { outline:1.5px solid rgb(255 255 255 / .55); outline-offset:-2px; }
+.agent-wing-tip { position:absolute; z-index:6; width:250px; padding:6px; border-radius:14px; background:rgb(12 14 28 / .95); color:#eef0fb;
+  box-shadow:inset 0 0 0 .5px rgb(157 180 255 / .25),0 12px 28px -12px #000; opacity:0; transform:translateY(-4px); pointer-events:none;
+  transition:opacity 120ms ease,transform 160ms ease; }
+.agent-wing-tip.is-open { opacity:1; transform:none; transition:opacity 160ms ease,transform 300ms var(--spring); }
+.wt-row { display:grid; grid-template-columns:12px minmax(0,1fr); gap:1px 8px; align-items:center; padding:5px 8px; border-radius:9px; font-size:12px; line-height:16px; }
+.wt-row b { font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.wt-row > span:last-child { grid-column:2; font-size:11px; color:rgb(196 204 238 / .62); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.wt-foot { padding:4px 8px 2px; font-size:10.5px; color:rgb(196 204 238 / .44); }
+
 .companion-chip {
   position:absolute; z-index:3; width:32px; height:26px; border-radius:9px; background:var(--glass); box-shadow:var(--edge),0 6px 16px -8px #000a;
   opacity:0; transform:translateX(-6px) scale(.84); transform-origin:0 50%; pointer-events:none;
@@ -68,7 +81,7 @@
 /* Her light as "r g b", written by the ball whenever it changes. */
 :root { --glow:157 180 255; }
 /* The Dashboard is cut from her glass: deep blue, a little of her nebula in the corners, her light pooled beneath her. */
-.companion-dashboard {
+.companion-dashboard,.companion-notice {
   --surface-ink:#eef0fb; --surface-muted:rgb(196 204 238 / .62); --surface-line:rgb(157 180 255 / .12); --surface-hover:rgb(var(--glow) / .07);
   position:absolute; z-index:2; width:300px; padding-top:8px; border-radius:24px;
   background:
@@ -80,9 +93,9 @@
   opacity:0; visibility:hidden; transform:translateY(-14px) scale(.96); transform-origin:50% 0; pointer-events:none;
   transition:opacity 180ms ease,transform 220ms cubic-bezier(.4,0,1,1),visibility 0s 220ms;
 }
-.companion-dashboard.is-open { opacity:1; visibility:visible; transform:none; pointer-events:auto; transition:opacity 200ms ease,transform 460ms var(--spring),visibility 0s; }
+.companion-dashboard.is-open,.companion-notice.is-open { opacity:1; visibility:visible; transform:none; pointer-events:auto; transition:opacity 200ms ease,transform 460ms var(--spring),visibility 0s; }
 /* A few faint stars near the edges, under the content. */
-.companion-dashboard::before {
+.companion-dashboard::before,.companion-notice::before {
   content:''; position:absolute; inset:0; z-index:-1; border-radius:inherit; pointer-events:none; opacity:.45;
   background-image:radial-gradient(1.4px 1.4px at 4% 16%,#fff,transparent),radial-gradient(1.2px 1.2px at 96% 11%,#fff,transparent),
     radial-gradient(1.5px 1.5px at 97% 38%,#dfe6ff,transparent),radial-gradient(1.2px 1.2px at 3% 52%,#fff,transparent),
@@ -96,6 +109,6 @@
 
 @media(prefers-reduced-motion:reduce) {
   .companion-chip,.companion-chip.is-open,.companion-composer,.companion-composer.is-open,.companion-strip,.companion-strip.is-open,
-  .companion-bubble,.companion-bubble.is-open,.companion-dashboard,.companion-dashboard.is-open { transition-property:opacity,visibility; }
+  .companion-bubble,.companion-bubble.is-open,.companion-dashboard,.companion-dashboard.is-open,.companion-notice,.companion-notice.is-open { transition-property:opacity,visibility; }
   .strip-mic::before { animation:none; }
 }

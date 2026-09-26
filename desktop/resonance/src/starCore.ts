@@ -92,7 +92,7 @@ const SMILE = { sep: .31, y: .1, len: .46, w: .15, tilt: 90, bend: .17 };
 const TILT = { sep: .28, y: .06, len: .42, w: .22, tilt: 0, head: 12, lenR: .3 };
 const ODD = { sep: .29, y: .04, len: .04, w: .27, wR: .33, tilt: 0, head: -10 };
 const LINES = { sep: .42, y: .04, len: .42, w: .19, tilt: 90 };
-export type ExprId = '00' | '02' | '10' | '13' | '14' | '21' | '30' | '31' | '31b' | '31c' | '31d' | '32' | '33' | '34' | '35' | '35b' | '36' | '37' | '38' | '39' | '39b' | '39c' | '40' | '41' | 'home' | 'rest' | 'doze' | 'glance' | 'peek';
+export type ExprId = '00' | '02' | '10' | '13' | '14' | '21' | '30' | '31' | '31b' | '31c' | '31d' | '32' | '33' | '34' | '35' | '35b' | '36' | '37' | '38' | '39' | '39b' | '39c' | '40' | '41' | 'ask' | 'fin' | 'home' | 'rest' | 'doze' | 'glance' | 'peek';
 export const EXPRESSIONS: Record<ExprId, Expr> = {
   // Where she is decides her face first: flat "— —" in the island, round dots when she glances out, low eyes when she peeks.
   home: { name: '', eyes: LINES, gaze: 'still' },
@@ -141,6 +141,12 @@ export const EXPRESSIONS: Record<ExprId, Expr> = {
     { at: 350, eyes: { len: .32, w: .17, cut: .3 }, light: 'base', bright: .6 },
     { at: 800, light: 'off', lightK: 3 },
   ], end: 1600 } },
+  // Agent notices (the notice lab): warm and looking down at the card when a session needs you; the done face
+  // in green when one has finished. Her light is the card's light, so the panel takes the event's colour.
+  ask: { name: '等你', eyes: TILT, light: 'warm', gaze: 'still', gx: 0, gy: .32, sway: [3, 3.2], blink: [2400, 6000], spin: .35, breathe: [.012, 2.8], enter: ['hop'] },
+  fin: { name: '做完了', eyes: SMILE, light: 'speak', spin: .5, enter: ['hop', 'burst'], seq: { frames: [
+    { at: 0, light: 'gold', bright: 1.4, spin: 3 }, { at: 1400, light: 'speak', bright: 1, spin: .5 },
+  ], end: 1500 } },
 };
 // The twelve work states first, then five feelings: what the tray can play on demand.
 export const PREVIEW: ExprId[] = ['30', '31', '31b', '31c', '31d', '32', '33', '34', '35', '35b', '36', '37', '38', '39', '39b', '39c', '40', '41', '10', '14', '13', '00', '21'];

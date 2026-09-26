@@ -127,6 +127,7 @@ try {
     if (url.pathname === '/inherent/submit') return json({ turn_id: 'typed-1' });
     if (url.pathname === '/inherent/cancel-response') return json({});
     if (url.pathname === '/inherent/usage/refresh') refreshes.push(Date.now());
+    if (url.pathname.startsWith('/inherent/claude-requests/')) return json({ ok: true });
     if (url.pathname === '/inherent/conversation') {
       const after = Number(url.searchParams.get('after') ?? 0), limit = Number(url.searchParams.get('limit') ?? 2), all = [...yesterday, ...rows];
       reads.push({ at: Date.now(), after, limit });
@@ -372,6 +373,97 @@ try {
     await page.waitForFunction(() => document.querySelector('.ad .ask-card')?.textContent.includes('last week'), null, { timeout: 4000 });
     check('L11 when Jarvis asks for a plugin the Dashboard opens on it with the reason', await page.locator('.companion-dashboard.is-open').count() === 1 && (await text('.ad .pl-det .btn-glow')) === 'Sign in and continue');
     await page.waitForTimeout(900); await panelShot('L11-asked');
+
+    // L13: agent notices (ADR 0049). The fake board changes under her: sessions finish, ask, stop; she docks on a
+    // card at one event's height, and every answer goes back as a POST for the held prompt.
+    await hit.dblclick({ force: true });
+    await page.waitForFunction(() => !document.querySelector('.companion-dashboard.is-open'), null, { timeout: 3000 });
+    await waitPlace('home');
+    const session = (id, over = {}) => ({ agent: 'claude', session_id: id, kind: 'interactive', phase: 'working', title: id, project: 'jarvis', branch: '', cwd: '/x', where: 'Ghostty',
+      prompt: `do ${id}`, activity: 'Working', last_message: '', started_ms: now, updated_ms: now, ...over });
+    const board = { 'c-wait': claude[0], 'n-build': session('n-build', { title: 'Build the notices' }), 'n-a': session('n-a', { title: 'Port the sounds' }),
+      'n-b': session('n-b', { title: 'Port the faces' }), 'n-plan': session('n-plan', { title: 'Plan the wing' }), 'n-x': session('n-x', { title: 'Check the queue' }) };
+    const setBoard = (id, over) => { if (id) board[id] = { ...board[id], ...over }; fixtures['/inherent/claude-sessions'] = { sessions: Object.values(board), error: null }; };
+    const card = () => page.locator('.companion-notice.is-open');
+    const cardUp = () => card().waitFor({ timeout: 5000 });
+    const cardGone = () => page.waitForFunction(() => !document.querySelector('.companion-notice.is-open'), null, { timeout: 5000 });
+    const marks = () => page.locator('.agent-wing').getAttribute('data-marks');
+    const answered = path => posts.filter(p => p.path === `/inherent/claude-requests/${path}`).map(p => p.body);
+    setBoard(); await page.waitForTimeout(2500);
+    check('L13 sessions met for the first time wear their marks and pop nothing', await card().count() === 0 && (await marks()) === 'wait workx6');
+    setBoard('n-build', { phase: 'done', last_message: '**Done.** The wing and the cards are in.\n- 72 checks pass' });
+    await cardUp(); await waitPlace('dock');
+    check('L13 a finished session opens a card she docks on, in her done face, with its summary',
+      (await text('.companion-notice .nc-label')) === 'Finished' && (await text('.companion-notice .nc-top b')) === 'Build the notices'
+      && (await text('.companion-notice .nc-sum')).includes('The wing and the cards are in') && await face('fin') === 'fin' && (await marks()).startsWith('wait done'));
+    await panelShot('L13-finished');
+    await page.locator('.companion-notice .nc-x').click(); await cardGone(); await page.waitForTimeout(400);
+    check(`L13 closed by hand it counts as seen: the green mark goes (${await marks()})`, !(await marks()).includes('done'));
+    setBoard('n-a', { phase: 'done', last_message: 'Sounds ported.' }); setBoard('n-b', { phase: 'done', last_message: 'Faces ported.' });
+    await cardUp(); await page.waitForTimeout(600);
+    check('L13 two finishes together share one card', (await text('.companion-notice .nc-label')).startsWith('2 finished') && await page.locator('.companion-notice .nc-row').count() === 2);
+    await page.locator('.companion-notice .nc-x').click(); await cardGone();
+
+    setBoard('c-wait', { request: { id: 'r-bash', tool: 'Bash', input: { command: 'npm run build', description: 'Build the desktop app' }, cwd: '/x/jarvis/desktop/resonance', always: "Don't ask again for Bash(npm run build:*)" } });
+    await cardUp(); await waitPlace('dock');
+    check('L13 a held Bash prompt shows its command with Deny, Always and Allow, and she waits on you',
+      (await text('.companion-notice .nc-label')) === 'Needs your OK' && (await text('.companion-notice .nc-cmd')).includes('npm run build')
+      && (await page.locator('.companion-notice .nc-choice .btn').allTextContents()).join('|') === 'Deny|Always|Allow' && await face('ask') === 'ask');
+    await panelShot('L13-bash');
+    await page.locator('.companion-notice .btn-warm').click();
+    await page.waitForTimeout(200);
+    check('L13 Allow goes back for that prompt and the card confirms', JSON.stringify(answered('r-bash')) === '[{"decision":"allow"}]' && (await text('.companion-notice .nc-ok')) === 'Allowed · Claude continues');
+    setBoard('c-wait', { request: null }); await cardGone();
+
+    const questions = [{ question: 'Where do the marks go?', header: 'Side', multiSelect: false, options: [{ label: 'Right of the notch', description: 'Recommended' }, { label: 'Left of her island' }] },
+      { question: 'Finished cards?', header: 'Finish', multiSelect: false, options: [{ label: 'Expand' }, { label: 'Compact' }] }];
+    setBoard('c-wait', { request: { id: 'r-ask', tool: 'AskUserQuestion', input: { questions }, cwd: '/x', always: '' } });
+    await cardUp();
+    check('L13 a question card asks the first of two', (await text('.companion-notice .nc-label')) === 'Claude asks' && (await text('.companion-notice .nc-qt')).includes('Where do the marks go?'));
+    await panelShot('L13-ask');
+    await page.locator('.companion-notice .opt').first().click(); await page.waitForTimeout(500);
+    await page.locator('.companion-notice .opt').first().click(); await page.waitForTimeout(500);
+    check('L13 each pick moves on, and the last step shows every answer', (await page.locator('.companion-notice .nc-review li').allTextContents()).join('|') === 'SideRight of the notch|FinishExpand');
+    await page.locator('.companion-notice .btn-warm').click(); await page.waitForTimeout(200);
+    check('L13 the answers go back keyed by question', JSON.stringify(answered('r-ask')) === JSON.stringify([{ decision: 'allow', answers: { 'Where do the marks go?': 'Right of the notch', 'Finished cards?': 'Expand' } }]));
+    setBoard('c-wait', { request: null }); await cardGone();
+
+    setBoard('c-wait', { request: { id: 'r-plan', tool: 'ExitPlanMode', input: { plan: '## Plan\n1. Marks\n2. Cards' }, cwd: '/x', always: '' } });
+    await cardUp();
+    check('L13 a plan card shows the plan with Keep planning and Approve', (await text('.companion-notice .nc-label')) === 'Plan to review' && (await text('.companion-notice .nc-plan')).includes('Marks'));
+    await page.locator('.companion-notice .btn-ghost').click();
+    await page.locator('.companion-notice .pg-input input').fill('Cards first');
+    await page.locator('.companion-notice .pg-input .send').click(); await page.waitForTimeout(200);
+    check('L13 keep planning sends what to change as a deny', JSON.stringify(answered('r-plan')) === '[{"decision":"deny","message":"Cards first"}]');
+    setBoard('c-wait', { request: null }); await cardGone();
+
+    setBoard('n-plan', { phase: 'done', error: 'Rate limited: 429 Too Many Requests' });
+    await cardUp();
+    check('L13 a stopped session says why, with her error face', (await text('.companion-notice .nc-label')) === 'Stopped' && (await text('.companion-notice .nc-err b')) === 'Rate limited' && await face('34') === '34');
+    await page.locator('.companion-notice .nc-x').click(); await cardGone();
+
+    await page.evaluate(() => window.__command('dashboard'));
+    await page.locator('.companion-dashboard.is-open').waitFor();
+    setBoard('n-x', { phase: 'done', last_message: 'Queue checked.' }); await page.waitForTimeout(2500);
+    check('L13 nothing pops while the Dashboard is open', await card().count() === 0);
+    await hit.dblclick({ force: true }); await cardUp();
+    check('L13 and it comes up once the Dashboard closes', (await text('.companion-notice .nc-top b')) === 'Check the queue');
+    await page.locator('.companion-notice .nc-x').click(); await cardGone();
+
+    setBoard('c-wait', { request: { id: 'r-edit', tool: 'Edit', input: { file_path: '/x/jarvis/src/Notices.tsx', old_string: 'const a = 1;', new_string: 'const a = 2;\nconst b = 3;' }, cwd: '/x', always: 'Allow edits for the rest of this session' } });
+    await cardUp();
+    check('L13 an edit prompt shows the file and its diff', (await text('.companion-notice .nc-file')).includes('src/Notices.tsx') && await page.locator('.companion-notice .nc-diff code.add').count() === 2);
+    await page.locator('.companion-notice .nc-x').click(); await cardGone();
+    check('L13 Later puts a needs-you card away; its mark still waits', await card().count() === 0 && (await marks()).startsWith('wait'));
+    await page.locator('.agent-wing-hit').click();
+    await page.locator('.companion-dashboard.is-open').waitFor(); await page.waitForTimeout(1200);
+    await page.locator('.ad [data-id="c-wait"] .ag-head').click(); await page.waitForTimeout(500);
+    await page.locator('.ad [data-id="c-wait"] .btn-glow').click();
+    await cardUp();
+    check('L13 Answer on the Agents page closes the Dashboard and brings the card back', await page.locator('.companion-dashboard.is-open').count() === 0 && (await text('.companion-notice .nc-file')).includes('Notices.tsx'));
+    await page.locator('.companion-notice .btn-ghost', { hasText: 'Always' }).click(); await page.waitForTimeout(200);
+    check('L13 Always goes back as always', JSON.stringify(answered('r-edit')) === '[{"decision":"always"}]');
+    setBoard('c-wait', { request: null }); await cardGone();
     check('no page errors', errors.length === 0);
   }
   await context.close();

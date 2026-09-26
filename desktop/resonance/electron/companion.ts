@@ -51,7 +51,9 @@ if (locked) app.whenReady().then(() => {
     fullscreenable: false, show: false, focusable: false, alwaysOnTop: true, skipTaskbar: true, roundedCorners: false,
     // AppKit pushes a window below the menu bar when it is shown on the main screen; this keeps the frame we set.
     enableLargerThanScreen: true,
-    webPreferences: { preload: path.join(here, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true } });
+    webPreferences: { preload: path.join(here, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true,
+      // A notice sounds when it comes, not only after a click.
+      autoplayPolicy: 'no-user-gesture-required' } });
   app.dock?.hide();
   win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true });
   // Transparent space passes clicks through; the renderer turns input on over its own shapes.
@@ -102,13 +104,17 @@ if (locked) app.whenReady().then(() => {
   tray.setTitle('●'); tray.setToolTip(demo ? 'Jarvis 小球 · 演示数据' : 'Jarvis 小球');
   // The renderer owns her skins and expressions and reports them; every item just sends a command back.
   const send = (command: string) => () => win.webContents.send('command', command);
-  type MenuModel = { skins: { key: string; name: string; on: boolean }[]; auto: boolean; layout?: string; homeGlass?: boolean; exprs: { id: string; name: string }[] };
+  type MenuModel = { skins: { key: string; name: string; on: boolean }[]; auto: boolean; layout?: string; homeGlass?: boolean; marks?: string; exprs: { id: string; name: string }[] };
   const menu = (model: MenuModel) => tray.setContextMenu(Menu.buildFromTemplate([
     { label: demo ? 'Jarvis 小球 · 演示数据' : 'Jarvis 小球', enabled: false },
     { label: '打开 Dashboard', click: send('dashboard') },
     { label: 'Dashboard 布局', submenu: [
       { label: '围着她（一列）', type: 'radio', checked: model.layout !== 'grid', click: send('layout:around') },
       { label: '两栏（原来的排法）', type: 'radio', checked: model.layout === 'grid', click: send('layout:grid') },
+    ] },
+    { label: '状态点', submenu: [
+      { label: '星芒', type: 'radio', checked: model.marks !== 'pixel', click: send('marks:spark') },
+      { label: '像素', type: 'radio', checked: model.marks === 'pixel', click: send('marks:pixel') },
     ] },
     { type: 'separator' },
     { label: '皮肤', enabled: model.skins.length > 0, submenu: [

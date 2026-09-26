@@ -9,6 +9,9 @@ import { usePreferences } from './preferences';
 import { initialState, plain, reducer, visible } from './model';
 import { connect, type Runtime } from './runtime';
 import { usePlugins } from './PluginPanel';
+import { AgentWing, isMarkLook, wingSlots, type MarkLook } from './AgentMarks';
+import { answerRequest, type ShownAgent } from './agents';
+import { NoticeCard, noticeCue, useNotices, type Notice } from './Notices';
 import './companion.css';
 
 type Placement = { topInset: number; notchWidth: number; surfaceWidth: number; displayId?: number };
@@ -26,13 +29,15 @@ const DOUBLE_CLICK_MS = 300;
 type DashboardLayout = 'grid' | 'around';
 // Prototype script: every transcript and reply below is simulated.
 const HEARD = '把今天的任务整理一下';
-// Her skin, whether she changes it herself, and how the Dashboard is laid out live in this companion's own profile.
+// Her skin, whether she changes it herself, how the Dashboard is laid out and the look of the agent marks
+// live in this companion's own profile.
 const WARDROBE = 'companion-wardrobe-v1';
-function loadWardrobe(): { skin: Skin; auto: boolean; layout: DashboardLayout; homeGlass: boolean } {
+function loadWardrobe(): { skin: Skin; auto: boolean; layout: DashboardLayout; homeGlass: boolean; marks: MarkLook } {
   try {
     const value = JSON.parse(localStorage.getItem(WARDROBE) ?? '{}');
-    return { skin: isSkin(value.skin) ? value.skin : 'glass', auto: value.auto !== false, layout: value.layout === 'grid' ? 'grid' : 'around', homeGlass: value.homeGlass !== false };
-  } catch { return { skin: 'glass', auto: true, layout: 'around', homeGlass: true }; }
+    return { skin: isSkin(value.skin) ? value.skin : 'glass', auto: value.auto !== false, layout: value.layout === 'grid' ? 'grid' : 'around', homeGlass: value.homeGlass !== false,
+      marks: isMarkLook(value.marks) ? value.marks : 'spark' };
+  } catch { return { skin: 'glass', auto: true, layout: 'around', homeGlass: true, marks: 'spark' }; }
 }
 const isPreview = (value: string): value is ExprId => (PREVIEW as string[]).includes(value);
 
@@ -43,7 +48,9 @@ function layout({ topInset, notchWidth, surfaceWidth: width }: Placement) {
     : { left: center - 66, right: center + 66, height: topInset, notched: false };
   const x = notchWidth ? notchLeft - 32 : center, out = { x, y: topInset + R + 14 }, panelTop = topInset + 44;
   const anchors: Record<Place, Point> = { home: { x, y: topInset / 2 }, peek: { x, y: topInset + R * .1 }, out, dock: { x: center, y: panelTop - R * .5 } };
-  return { width, lobe, anchors, out, center, panelTop, zones: {
+  // The agent marks' wing grows from the notch's right edge, or the pill's.
+  const wingX = notchWidth ? notchLeft + notchWidth : lobe.right;
+  return { width, lobe, anchors, out, center, panelTop, wingX, zones: {
     lobe: notchWidth ? { x: lobe.left - 26, y: 0, w: notchLeft - lobe.left + 26, h: topInset + 16 } : { x: center - 36, y: 0, w: 72, h: topInset + 16 },
     ball: { x: x - R - 12, y: topInset, w: 2 * R + 24, h: out.y + R + 12 - topInset },
     chip: { x: x + R + 4, y: out.y - 18, w: 44, h: 36 },
@@ -100,21 +107,42 @@ export function Companion() {
   const [dashMood, setDashMood] = useState<ExprId | null>(null);
   const [receiving, setReceiving] = useState(false);
   const busy = composer || voice !== 'off' || !!reply.text || receiving;
-  const place: Place = moving ? 'home' : dashboard ? 'dock' : busy || zone === 'ball' || outing ? 'out' : zone === 'lobe' ? 'peek' : 'home';
+  // Every session the Dashboard's Agents data knows: marks on the wing beside the notch, and the notices.
+  const [agents, setAgents] = useState<ShownAgent[]>([]);
+  const [seen, setSeen] = useState<{ ids: string[]; at: number }>({ ids: [], at: 0 });
+  // No notice while she talks, while you type to her or while the Dashboard is open; they come up after.
+  const notices = useNotices({ agents, hold: busy || dashboard || moving,
+    cue: (name, gain) => { if (preferences.feedbackEnabled) noticeCue(name, preferences.feedbackVolume, gain); },
+    answer: (req, body) => port ? answerRequest(port, req.id, body) : Promise.resolve(true),
+    onSeen: ids => setSeen({ ids, at: Date.now() }) });
+  const notice = notices.current;
+  const place: Place = moving ? 'home' : dashboard || notice ? 'dock' : busy || zone === 'ball' || outing ? 'out' : zone === 'lobe' || notices.peek ? 'peek' : 'home';
   // A finished text reply stays up briefly: that is her "done" face.
   const listenFace = useRef<ExprId>('35'), receiveFace = useRef<ExprId>('31'), replyFace = useRef<ExprId>('39');
   // Live turns pick her takes as they begin; the scripted demo picks its own in listen() and say().
   const lastVoice = useRef(voice);
   if (port && voice !== lastVoice.current) { if (voice === 'listening') listenFace.current = pick(TAKES.listen); else if (voice === 'speaking') replyFace.current = pick(TAKES.reply); }
   lastVoice.current = voice;
-  const expr: ExprId = preview ?? (receiving ? receiveFace.current : voice === 'listening' ? listenFace.current : voice === 'thinking' ? '30' : voice === 'speaking' || talking ? replyFace.current : dashboard && dashMood ? dashMood : reply.text ? '33' : '02');
+  // A notice sets her face: waiting on you, pleased it is done, a jolt on an error; after you answer, a moment of
+  // pleasure or refusal.
+  const moment = performance.now();
+  const noticeFace: ExprId | null = !notice ? null : notices.over && moment < notices.over.until ? notices.over.face
+    : notice.kind === 'done' || notice.kind === 'dones' ? 'fin' : notice.kind === 'err' ? moment - notices.openedAt < 1700 ? '34' : '02' : notices.card?.ok ? '02' : 'ask';
+  useEffect(() => { if (notice?.kind !== 'err') return; const t = setTimeout(notices.bump, 1750); return () => clearTimeout(t); }, [notice?.key]);
+  const expr: ExprId = preview ?? noticeFace ?? (receiving ? receiveFace.current : voice === 'listening' ? listenFace.current : voice === 'thinking' ? '30' : voice === 'speaking' || talking ? replyFace.current : dashboard && dashMood ? dashMood : reply.text ? '33' : '02');
   const chip = place === 'out' && zone === 'ball' && !busy;
-  const live = useRef({ geo, dashboard, chip, composer, place, wardrobe });
-  live.current = { geo, dashboard, chip, composer, place, wardrobe };
+  const wing = useMemo(() => wingSlots(agents, wardrobe.marks), [agents, wardrobe.marks]);
+  const [wingTip, setWingTip] = useState(false), [agentsFocus, setAgentsFocus] = useState(0);
+  const wingRect = { x: geo.wingX, y: 0, w: wing.width, h: placement.topInset };
+  const live = useRef({ geo, dashboard, chip, composer, place, wardrobe, wingRect });
+  live.current = { geo, dashboard, chip, composer, place, wardrobe, wingRect };
   const ball = useRef<BallHandle | null>(null), look = useRef<Point | null>(null), cursor = useRef<Point>({ x: -1e4, y: -1e4 });
   const input = useRef<HTMLInputElement>(null), root = useRef<HTMLElement>(null), pressing = useRef(false);
 
   const zoneTimer = useRef<ReturnType<typeof setTimeout>>(undefined), pending = useRef<Zone>('none');
+  const tipTimer = useRef<ReturnType<typeof setTimeout>>(undefined), overWing = useRef(false);
+  const noticeEl = useRef<HTMLDivElement>(null), overNotice = useRef(false), shownNotice = useRef<{ n: Notice; card: NonNullable<typeof notices.card> } | null>(null);
+  if (notice && notices.card) shownNotice.current = { n: notice, card: notices.card };
   const dashTimer = useRef<ReturnType<typeof setTimeout>>(undefined), dashEntered = useRef(false), pinned = useRef(false), interactive = useRef(false);
   const script = useRef<ReturnType<typeof setTimeout>[]>([]);
   const after = (ms: number, run: () => void) => { script.current.push(setTimeout(run, ms)); };
@@ -239,6 +267,10 @@ export function Companion() {
   const openDashboard = (hovered: boolean) => { pinned.current = false; dashEntered.current = hovered; setDashboard(true); setComposer(false); void window.jarvis?.focus(false); };
   // Opened by a double click, the Dashboard stays when the cursor leaves; another double click on her closes it.
   const toggleDashboard = () => { if (live.current.dashboard) setDashboard(false); else { openDashboard(false); pinned.current = true; } };
+  // A click on the marks opens the Dashboard on Agents, and it stays like a double-clicked one.
+  const openAgents = () => { setWingTip(false); if (!live.current.dashboard) openDashboard(false); pinned.current = true; setAgentsFocus(n => n + 1); };
+  // Only a Codex thread can be opened from a card; the card goes, and the session counts as looked at.
+  const openSession = (id: string) => { void window.jarvis?.openCodex?.(id); notices.next(true); };
 
   // What she wears now; it differs from the saved pick while she tries another skin on her own.
   const worn = useRef<Skin>(wardrobe.skin);
@@ -260,7 +292,7 @@ export function Companion() {
   };
   useEffect(() => {
     try { localStorage.setItem(WARDROBE, JSON.stringify(wardrobe)); } catch { /* the pick just is not remembered */ }
-    window.jarvis?.companionMenu({ skins: SKIN_KEYS.map(key => ({ key, name: SKINS[key].name, on: key === wardrobe.skin })), auto: wardrobe.auto, layout: wardrobe.layout, homeGlass: wardrobe.homeGlass,
+    window.jarvis?.companionMenu({ skins: SKIN_KEYS.map(key => ({ key, name: SKINS[key].name, on: key === wardrobe.skin })), auto: wardrobe.auto, layout: wardrobe.layout, homeGlass: wardrobe.homeGlass, marks: wardrobe.marks,
       exprs: PREVIEW.map(id => ({ id, name: EXPRESSIONS[id].name })) });
   }, [wardrobe]);
   useEffect(() => {
@@ -279,6 +311,7 @@ export function Companion() {
     else if (name === 'layout' && (value === 'grid' || value === 'around')) setWardrobe(current => ({ ...current, layout: value }));
     else if (name === 'expr' && isPreview(value)) appear(() => setPreview(value), 4200);
     else if (command === 'homeGlass') setWardrobe(current => ({ ...current, homeGlass: !current.homeGlass }));
+    else if (name === 'marks' && isMarkLook(value)) setWardrobe(current => ({ ...current, marks: value }));
     else if (command === 'auto') {
       const auto = !live.current.wardrobe.auto;
       setWardrobe(current => ({ ...current, auto }));
@@ -313,10 +346,17 @@ export function Companion() {
     if (!composer) look.current = point;
     refreshHit();
     const next: Zone = within(point, z.ball) || (chip && within(point, z.chip)) ? 'ball' : within(point, z.lobe) ? 'lobe' : 'none';
+    // Resting on the marks lists the sessions under them.
+    const wingNow = live.current.wingRect.w > 0 && within(point, live.current.wingRect);
+    if (wingNow !== overWing.current) { overWing.current = wingNow; clearTimeout(tipTimer.current); tipTimer.current = setTimeout(() => setWingTip(wingNow), wingNow ? 120 : 200); }
     if (next !== pending.current) {
       pending.current = next; clearTimeout(zoneTimer.current);
       zoneTimer.current = setTimeout(() => setZone(next), next === 'ball' ? 0 : next === 'lobe' ? 90 : 600);
     }
+    // A hand on a notice card holds its timers.
+    const card = noticeEl.current?.classList.contains('is-open') ? noticeEl.current.getBoundingClientRect() : null;
+    const onCard = !!card && point.x >= card.left && point.x <= card.right && point.y >= card.top && point.y <= card.bottom;
+    if (onCard !== overNotice.current) { overNotice.current = onCard; notices.setHover(onCard); }
     const over = z.dash.some(r => within(point, r)) || (dashboard && within(point, z.panel));
     if (dashboard) {
       if (over || pinned.current) { dashEntered.current = true; clearTimeout(dashTimer.current); dashTimer.current = undefined; }
@@ -325,8 +365,8 @@ export function Companion() {
       dashTimer.current = setTimeout(() => { dashTimer.current = undefined; if (live.current.geo.zones.dash.some(r => within(cursor.current, r))) openDashboard(true); }, 200);
     } else if (!over && dashTimer.current) { clearTimeout(dashTimer.current); dashTimer.current = undefined; }
   }), []);
-  useEffect(() => () => { clearTimeout(zoneTimer.current); clearTimeout(dashTimer.current); clearTimeout(firstClick.current); }, []);
-  useEffect(refreshHit, [place, chip, composer, dashboard, voice, reply.text]);
+  useEffect(() => () => { clearTimeout(zoneTimer.current); clearTimeout(dashTimer.current); clearTimeout(firstClick.current); clearTimeout(tipTimer.current); }, []);
+  useEffect(refreshHit, [place, chip, composer, dashboard, voice, reply.text, wing.width, notice?.key]);
 
   // Native frosted glass behind every visible panel, following its transitions.
   const kickGlass = useRef(() => {});
@@ -352,7 +392,7 @@ export function Companion() {
     kick();
     return () => { cancelAnimationFrame(frame); observer.disconnect(); el.removeEventListener('transitionrun', kick); };
   }, []);
-  useEffect(() => kickGlass.current(), [place, chip, composer, dashboard, voice, reply.text, caption]);
+  useEffect(() => kickGlass.current(), [place, chip, composer, dashboard, voice, reply.text, caption, notice?.key]);
 
   const { out } = geo;
   const strip = place === 'out' && (voice === 'listening' || voice === 'thinking'), bubble = place === 'out' && !!reply.text;
@@ -384,9 +424,22 @@ export function Companion() {
         {wardrobe.layout === 'around'
           ? <AroundDashboard open={dashboard} port={port} onClose={() => setDashboard(false)} onMood={setDashMood} onHop={height => ball.current?.hop(height)}
             talk={port ? { rows: s.rows, tail, busy: s.phase === 'processing', offline: s.phase === 'error', floor, submit, older } : undefined}
-            plugins={port ? plugins : undefined} pluginFocus={pluginFocus}/>
+            plugins={port ? plugins : undefined} pluginFocus={pluginFocus} marks={wardrobe.marks} onAgents={setAgents} agentsFocus={agentsFocus} seen={seen}
+            onAnswer={id => { setDashboard(false); notices.focus(id); }}/>
           : <DashboardPreview embedded port={port} visible={dashboard} shown={dashboard} onClose={() => setDashboard(false)}/>}
       </div>
+      <div ref={noticeEl} className={`companion-notice ${notice ? 'is-open' : ''}`} data-hit={notice ? true : undefined} data-glass="24"
+        style={{ left: geo.center - PANEL / 2, top: geo.panelTop }} inert={!notice} role="alertdialog" aria-label="Agent notice">
+        {shownNotice.current && <NoticeCard key={shownNotice.current.n.key} n={shownNotice.current.n} card={shownNotice.current.card} agent={agents.find(a => a.id === shownNotice.current!.n.id)}
+          count={notices.count} total={agents.length} look={wardrobe.marks} onClose={() => notices.next(true)} onLater={notices.fold} onOpen={openSession} onAll={openAgents}
+          onChange={notices.bump} onResolve={(text, body) => {
+            const n = shownNotice.current!.n;
+            if (n.kind !== 'req') return;
+            void notices.resolve(n, text, body);
+            if (body.decision !== 'deny') ball.current?.hop(.14);
+          }}/>}
+      </div>
+      <AgentWing look={wardrobe.marks} wing={wing} x={geo.wingX} height={placement.topInset} limit={geo.width} tip={wingTip && !dashboard} onOpen={openAgents}/>
       <CompanionBall width={geo.width} height={placement.topInset + 560} lobe={geo.lobe} look={look} handle={ball} skin={worn.current}
         target={{ place, expr, pressed, anchors: geo.anchors, homeGlass: wardrobe.homeGlass }}
         label={voice === 'off' ? `戳一下，开始语音${port ? '' : '（演示）'}` : voice === 'speaking' ? '戳一下，打断播报' : '戳一下，结束语音'}

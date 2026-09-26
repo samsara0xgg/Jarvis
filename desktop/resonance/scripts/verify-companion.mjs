@@ -316,6 +316,38 @@ try {
   await waitPlace('home');
   check('08 the tray plays an expression out of the island and she goes home', true);
 
+  // 10: the agent marks. A black wing out of the notch's right edge carries one mark per live session, in the
+  // look picked in the tray (星芒 or 像素); resting on it lists them, and a click opens Agents in the same marks.
+  const wingEl = page.locator('.agent-wing');
+  const wingAlpha = (x, y) => page.evaluate(([x, y]) => { const c = document.querySelector('.agent-wing'), r = c.getBoundingClientRect(), k = c.width / r.width;
+    return c.getContext('2d').getImageData(Math.round((x - r.left) * k), Math.round(y * k), 1, 1).data[3]; }, [x, y]);
+  const looks = sel => page.locator(sel).evaluateAll(els => [...new Set(els.map(e => e.dataset.look))].join());
+  check('10 a black wing right of the notch carries one star per live session (09 approved the one that waited)',
+    await wingEl.getAttribute('data-look') === 'spark' && await wingEl.getAttribute('data-marks') === 'work work work work' && await wingAlpha(416, 30) > 200 && await wingAlpha(500, 16) === 0);
+  await move(440, 14);
+  await page.waitForTimeout(500);
+  check('10 resting on the marks lists the live sessions under them', await page.locator('.agent-wing-tip.is-open .wt-row').count() === 4
+    && (await page.locator('.agent-wing-tip .wt-row b').first().textContent()) === 'Adjust the usage page');
+  await shot('10-wing-spark', { x: 320, y: 0, width: 320, height: 220 });
+  await page.evaluate(() => window.__command('marks:pixel'));
+  await page.waitForTimeout(500);
+  check('10 the tray turns every mark into pixels', await wingEl.getAttribute('data-look') === 'pixel' && await looks('.agent-wing-tip canvas, .ad .r-agents canvas') === 'pixel'
+    && await page.evaluate(() => window.__state.menu?.marks === 'pixel'));
+  await shot('10-wing-pixel', { x: 320, y: 0, width: 320, height: 220 });
+  await page.locator('.agent-wing-hit').click();
+  await page.locator('.companion-dashboard.is-open').waitFor();
+  await page.waitForTimeout(900);
+  check('10 a click on the marks opens Agents, whose rows wear the same marks',
+    await title() === 'Agents' && await looks('.ad .ag canvas') === 'pixel' && (await page.locator('.ad .ag canvas').evaluateAll(els => els.map(e => e.dataset.state))).join() === 'work,work,work,work,seen,seen,seen');
+  await panelShot('10-agents-pixel');
+  await move(600, 560);
+  await page.waitForTimeout(600);
+  check('10 opened from the marks, the Dashboard stays when the cursor leaves', await page.locator('.companion-dashboard.is-open').count() === 1);
+  await page.evaluate(() => window.__command('marks:spark'));
+  await hit.dblclick({ force: true });
+  await page.waitForFunction(() => !document.querySelector('.companion-dashboard.is-open'), null, { timeout: 3000 });
+  await waitPlace('home');
+
   // 07: the cursor rests on an external screen with no notch. She sinks into this island,
   // Electron moves the window only after display-ready, and she comes up dead centre there.
   const centre = async () => { const b = await hit.boundingBox(); return b.x + b.width / 2; };

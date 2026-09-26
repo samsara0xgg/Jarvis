@@ -198,25 +198,17 @@
 .ad .link small { font-size:11px; color:var(--p-muted); }
 .ad .chip { align-self:flex-start; padding:0 6px; border-radius:5px; font-size:9.5px; font-weight:600; letter-spacing:.06em; text-transform:uppercase; background:rgb(var(--glow) / .12); color:rgb(var(--glow)); }
 
-/* Agents: a small star core per session. Turning = working, warm breathing = waiting for you, grey = done. */
-.ad .orb { --c:var(--glow); position:relative; display:block; flex:none; width:12px; height:12px; border-radius:50%;
-  background:radial-gradient(circle at 34% 30%,rgb(255 255 255 / .8),transparent 40%),radial-gradient(circle,rgb(var(--c)) 0,rgb(var(--c) / .4) 72%); box-shadow:0 0 8px rgb(var(--c) / .55); }
-.ad .orb.is-work::after { content:''; position:absolute; inset:-3px; border-radius:50%; background:conic-gradient(rgb(var(--c)) 0 22%,transparent 0);
-  -webkit-mask:radial-gradient(farthest-side,transparent calc(100% - 1.5px),#000 calc(100% - 1px)); mask:radial-gradient(farthest-side,transparent calc(100% - 1.5px),#000 calc(100% - 1px)); animation:ad-spin 1.1s linear infinite; }
-.ad .orb.is-wait { --c:255 201 143; animation:ad-breathe 2.4s ease-in-out infinite; }
-.ad .orb.is-done { --c:170 178 210; box-shadow:none; opacity:.5; }
-.ad .orb.sm { width:7px; height:7px; }
-.ad .orb.sm::after { display:none; }
+/* Agents: each session's mark (AgentMarks.tsx), the same one as beside the notch. */
 .ad .orbs { display:inline-flex; align-items:center; gap:4px; }
 .ad .tagc { flex:none; padding:0 5px; border-radius:5px; font-size:9.5px; font-weight:600; letter-spacing:.02em; line-height:15px; white-space:nowrap; color:var(--p-muted); background:rgb(255 255 255 / .06); }
 .ad .tagc.claude { color:#f2b596; background:rgb(232 140 100 / .16); }
 .ad .tagc.codex { color:#a9bfff; background:rgb(120 150 255 / .16); }
 .ad .tagc.sub { color:rgb(var(--glow)); background:rgb(var(--glow) / .12); }
 .ad .text .tagc { margin-right:6px; vertical-align:1px; }
-.ad .ag { position:relative; display:grid; grid-template-columns:12px 1fr; gap:0 9px; padding:9px 10px 9px 9px; border-radius:11px; background:rgb(255 255 255 / .035); overflow:hidden; transition:background .15s; }
+.ad .ag { position:relative; display:grid; grid-template-columns:14px 1fr; gap:0 9px; padding:9px 10px 9px 9px; border-radius:11px; background:rgb(255 255 255 / .035); overflow:hidden; transition:background .15s; }
 .ad .ag + .ag { margin-top:-2px; }
 .ad .ag:hover { background:rgb(var(--glow) / .08); }
-.ad .ag > .orb { margin-top:3px; }
+.ad .ag > .agent-mark { margin-top:2px; }
 .ad .ag-body { min-width:0; display:flex; flex-direction:column; }
 .ad .ag.is-open { background:rgb(var(--glow) / .07); }
 .ad .ag-head { display:flex; flex-direction:column; width:100%; padding:0; text-align:left; }

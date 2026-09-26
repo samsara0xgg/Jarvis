@@ -2,12 +2,14 @@ import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type 
 import { ArrowSquareOut, ArrowUp, ArrowsClockwise, CaretDown, CaretLeft, CaretRight, CaretUp, GitBranch, MagnifyingGlass, ShieldCheck, X } from '@phosphor-icons/react';
 import { TAKES, pick, type ExprId } from './starCore';
 import { useUsage, type UsageWindow } from './QuotaModule';
-import { useCodexSessions, type CodexSession } from './CodexModule';
+import { useCodexSessions } from './CodexModule';
+import { AGENT_NAME, DEMO_AGENTS, fromClaude, fromCodex, useClaudeSessions, type Agent, type AgentState, type ShownAgent } from './agents';
 import { freshnessLine, nowLine, useWorkState, type Basis } from './WorkStateModule';
 import { duration, useProjects } from './ProjectsModule';
 import { fmtReset } from './quota-time';
 import { plain, visible, type Row } from './model';
 import { Markdown } from './Markdown';
+import { AgentMark, type MarkLook, type MarkState } from './AgentMarks';
 import { cleanError, usePluginIcon, type Plugin, type PluginRequest, type usePlugins } from './PluginPanel';
 import './dashboard-around.css';
 
@@ -32,53 +34,6 @@ const RESET_ANSWERS: Record<string, string> = {
   no_credit: 'No resets left', already_redeemed: 'That reset already went through',
 };
 
-// Agents: Claude Code and Codex sessions together. With a daemon port, Codex rows come from its
-// Codex hook and Claude rows from /inherent/claude-sessions (ADR 0046) once the daemon serves it.
-// Without a port every row is a demo.
-type AgentState = 'wait' | 'work' | 'done';
-type Agent = { id: string; agent: 'claude' | 'codex'; state: AgentState; title: string; project: string; branch?: string; where: string; age: string; you: string; last: string; sub?: boolean };
-const AGENT_NAME = { claude: 'Claude', codex: 'Codex' };
-const DEMO_AGENTS: Agent[] = [
-  { id: 'usage', state: 'wait', agent: 'codex', project: 'jarvis', title: 'Adjust the usage page', where: 'Codex', age: '2m', you: 'make the usage rings match', last: 'Wants to run npm run build' },
-  { id: 'inner', state: 'work', agent: 'claude', project: 'jarvis', branch: 'companion-ball', title: 'Dashboard inner pages', where: 'Ghostty', age: '4m', you: 'add the plugins page and fix the bottom bar', last: 'Editing the design page…' },
-  { id: 'review', state: 'work', agent: 'claude', sub: true, project: 'jarvis', branch: 'companion-ball', title: 'Check the panel pages', where: 'Ghostty', age: '1m', you: 'check every page against the design', last: 'Comparing the Usage page…' },
-  { id: 'voice', state: 'work', agent: 'codex', project: 'jarvis', title: 'Fix voice reconnect', where: 'Codex', age: '9m', you: 'the voice drops after the Mac sleeps', last: 'Reading the reconnect logic…' },
-  { id: 'aec', state: 'done', agent: 'claude', project: 'jarvis', title: 'Mac echo cancel', where: 'zellij', age: '1h', you: 'why does it keep saying “mm”?', last: 'Found it: a search result was read aloud.' },
-  { id: 'loop', state: 'done', agent: 'codex', project: 'jarvis', title: 'Evaluate the minimal loop', where: 'Codex', age: '2h', you: 'what’s the smallest loop that works?', last: 'Summarized the loop and what’s left.' },
-  { id: 'cap', state: 'done', agent: 'claude', project: 'typlus', title: 'Long dictation cap', where: 'Ghostty', age: '3h', you: 'long notes get cut off', last: 'Raised the cap and installed the build.' },
-];
-const ago = (ms: number) => { const m = Math.round((Date.now() - ms) / 60_000); return m < 1 ? 'now' : m < 60 ? `${m}m` : m < 1440 ? `${Math.floor(m / 60)}h` : `${Math.floor(m / 1440)}d`; };
-const fromCodex = (r: CodexSession): Agent => ({
-  id: r.session_id, agent: 'codex', state: r.state === 'needs_input' ? 'wait' : r.state === 'running' ? 'work' : 'done',
-  title: r.title || r.prompt || 'Codex session', project: r.cwd.split('/').filter(Boolean).pop() ?? '', where: 'Codex',
-  age: ago(r.since_ms), you: r.prompt, last: r.state === 'finished' ? r.last_message : r.detail,
-});
-type ClaudeSession = { session_id: string; phase: 'needs_input' | 'working' | 'done'; title: string; project: string; branch: string; where: string; prompt: string; activity: string; last_message: string; updated_ms: number };
-const fromClaude = (r: ClaudeSession): Agent => ({
-  id: r.session_id, agent: 'claude', state: r.phase === 'needs_input' ? 'wait' : r.phase === 'working' ? 'work' : 'done',
-  title: r.title || r.prompt || 'Claude session', project: r.project, branch: r.branch || undefined,
-  where: r.where === 'background' ? 'Background' : r.where, age: ago(r.updated_ms), you: r.prompt,
-  last: r.phase === 'done' ? r.last_message : r.activity || r.last_message,
-});
-// Polled while the panel is open. A daemon that does not serve the route yet simply has no Claude rows.
-function useClaudeSessions(port: string | null, open: boolean) {
-  const [rows, setRows] = useState<ClaudeSession[]>([]);
-  useEffect(() => {
-    if (!port || !open) return;
-    let stop = false, timer: ReturnType<typeof setTimeout>;
-    const load = async () => {
-      try {
-        const r = await fetch(`http://127.0.0.1:${port}/inherent/claude-sessions`, { signal: AbortSignal.timeout(5000) });
-        const data = r.ok ? await r.json() : null;
-        if (!stop && Array.isArray(data?.sessions)) setRows(data.sessions.filter((x: ClaudeSession) => typeof x?.session_id === 'string' && typeof x.phase === 'string'));
-      } catch { /* daemon away; the next tick retries */ }
-      if (!stop) timer = setTimeout(load, 3000);
-    };
-    void load();
-    return () => { stop = true; clearTimeout(timer); };
-  }, [port, open]);
-  return rows;
-}
 // Hidden rows stay hidden until the session is given a new prompt.
 const HIDDEN = 'companion-hidden-agents-v1';
 
@@ -144,11 +99,13 @@ const toTurns = (rows: Row[]): Turn[] => {
 };
 const PULL = 240; // px of fresh upward scroll at the top that adds the day before
 
-export function AroundDashboard({ open, port = null, onClose, onMood, onHop, talk, plugins: live, pluginFocus = null }: {
+export function AroundDashboard({ open, port = null, onClose, onMood, onHop, talk, plugins: live, pluginFocus = null, marks = 'spark', onAgents, agentsFocus = 0, onAnswer, seen }: {
   open: boolean; port?: string | null; onClose: () => void; onMood: (expr: ExprId | null) => void; onHop: (height: number) => void;
   talk?: Talk; plugins?: PluginController; pluginFocus?: { plugin: string; key: string } | null;
+  marks?: MarkLook; onAgents?: (agents: ShownAgent[]) => void; agentsFocus?: number; onAnswer?: (id: string) => void;
+  seen?: { ids: string[]; at: number };
 }) {
-  const quota = useUsage(port), codex = useCodexSessions(port), work = useWorkState(port), projects = useProjects(port, open), claudeRows = useClaudeSessions(port, open);
+  const quota = useUsage(port), codex = useCodexSessions(port), work = useWorkState(port), projects = useProjects(port, open), claudeRows = useClaudeSessions(port);
   const [page, setPage] = useState<Page | null>(null);
   const [plugin, setPlugin] = useState<string | null>(null);
   const [demoPlugins, setPlugins] = useState(DEMO_PLUGINS);
@@ -305,7 +262,35 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
   // Agents, grouped the way you act on them. A row you moved goes to the top of its new group.
   const agents = (port ? [...claudeRows.map(fromClaude), ...codex.rows.map(fromCodex)] : DEMO_AGENTS).filter(s => hidden[s.id] !== s.you).map(s => ({ ...s, ...moved[s.id] }));
   const group = (state: AgentState) => agents.filter(s => s.state === state).sort((a, b) => (moved[b.id]?.at ?? 0) - (moved[a.id]?.at ?? 0));
-  const waiting = group('wait'), working = group('work'), earlier = group('done');
+  const waiting = group('wait'), stopped = group('err'), working = [...group('work'), ...group('pack')], earlier = group('done');
+  // A session that finishes while she watches stays "finished" until you have been on the Agents page;
+  // what was already done when she started, or has been looked at since, is quiet.
+  const [unseen, setUnseen] = useState<ReadonlySet<string>>(new Set());
+  const seenStates = useRef<Record<string, AgentState>>({}), onAgentsPage = open && page === 'agents', wasOnPage = useRef(false);
+  const statesKey = agents.map(s => `${s.id}:${s.state}`).join('|');
+  useEffect(() => {
+    const was = seenStates.current, now = seenStates.current = Object.fromEntries(agents.map(s => [s.id, s.state]));
+    setUnseen(current => {
+      const next = new Set([...current].filter(id => now[id] === 'done'));
+      agents.forEach(s => { if (s.state === 'done' && ['work', 'pack', 'wait'].includes(was[s.id])) next.add(s.id); });
+      return next.size === current.size && [...next].every(id => current.has(id)) ? current : next;
+    });
+  }, [statesKey]);
+  useEffect(() => { if (wasOnPage.current && !onAgentsPage) setUnseen(new Set()); wasOnPage.current = onAgentsPage; }, [onAgentsPage]);
+  // A finished card closed by hand counts as looked at.
+  useEffect(() => { if (seen?.ids.length) setUnseen(current => new Set([...current].filter(id => !seen.ids.includes(id)))); }, [seen?.at]);
+  const markOf = (s: Agent): MarkState => s.state === 'done' ? unseen.has(s.id) ? 'done' : 'seen' : s.state;
+  const finished = earlier.filter(s => unseen.has(s.id));
+  // Every row goes up to the companion: the wing draws the live ones, the notices watch them all change.
+  const shown: ShownAgent[] = agents.map(s => ({ ...s, mark: markOf(s),
+    line: s.state === 'done' ? unseen.has(s.id) ? 'Finished · not opened yet' : s.last : s.state === 'err' ? `Stopped · ${s.error}` : s.last || (s.state === 'wait' ? 'Needs you' : 'Working') }));
+  const shownKey = JSON.stringify(shown);
+  useEffect(() => onAgents?.(shown), [shownKey]);
+  // The marks beside the notch were clicked: the companion opened the panel, and it lands on Agents.
+  useEffect(() => {
+    if (!agentsFocus || !open) return;
+    if (!page) openPage('agents'); else if (page !== 'agents') setPage('agents');
+  }, [agentsFocus]);
   const move = (s: Agent, change: Partial<Agent>) => {
     const el = pageEl.current?.querySelector<HTMLElement>(`[data-id="${s.id}"]`);
     if (el) flip.current = { id: s.id, top: el.getBoundingClientRect().top };
@@ -321,7 +306,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
     notify('Hidden from this list.', () => setHidden(({ [s.id]: _, ...rest }) => rest));
   };
   // Claude sessions have no jump yet; their cards leave the button out rather than offer one that cannot work.
-  const agentRow = (s: Agent, actions?: ReactNode) => <AgentRow key={s.id} s={s} open={unfolded === s.id} onToggle={() => setUnfolded(v => v === s.id ? null : s.id)}
+  const agentRow = (s: Agent, actions?: ReactNode) => <AgentRow key={s.id} s={s} look={marks} mark={markOf(s)} open={unfolded === s.id} onToggle={() => setUnfolded(v => v === s.id ? null : s.id)}
     onOpen={!port || s.agent === 'codex' ? () => void openAgent(s) : undefined} onHide={() => hide(s)} actions={actions}/>;
   const openAgent = async (s: Agent) => {
     if (port && s.agent === 'codex' && await window.jarvis?.openCodex?.(s.id).catch(() => false)) notify('Opening in Codex…');
@@ -448,8 +433,10 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
       {back('Agents', `${waiting.length + working.length} live`)}
       <div className="pg-body">{!agents.length && <p className="pg-sec muted">Sessions show up once you start one.</p>}
       {waiting.length > 0 && <div className="pg-sec"><h4 className="is-warm"><span className="dot"/>Needs you</h4>{waiting.map(s => agentRow(s,
-        !port && <><button className="btn btn-glow" onClick={() => { move(s, { state: 'work', last: 'Approved · running it now…' }); react('33', 1900); }}>Approve</button>
-          <button className="btn btn-ghost" onClick={() => move(s, { state: 'done', last: 'You denied it. It stopped there.', age: 'now' })}>Deny</button></>))}</div>}
+        !port ? <><button className="btn btn-glow" onClick={() => { move(s, { state: 'work', last: 'Approved · running it now…' }); react('33', 1900); }}>Approve</button>
+          <button className="btn btn-ghost" onClick={() => move(s, { state: 'done', last: 'You denied it. It stopped there.', age: 'now' })}>Deny</button></>
+          : s.request && <button className="btn btn-glow" onClick={() => onAnswer?.(s.id)}>Answer</button>))}</div>}
+      {stopped.length > 0 && <div className="pg-sec"><h4 className="is-alert">Stopped · {stopped.length}</h4>{stopped.map(s => agentRow(s))}</div>}
       {working.length > 0 && <div className="pg-sec"><h4>Working · {working.length}</h4>{working.map(s => agentRow(s))}</div>}
       {earlier.length > 0 && <div className="pg-sec"><h4>{port ? 'Last 24 hours' : 'Earlier today'} · {earlier.length}</h4>{earlier.map(s => agentRow(s))}</div>}
       {agents.length > 0 && <p className="pg-sec muted">Click a session to see what it’s doing.</p>}</div>
@@ -519,7 +506,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
         </div>
         <button className="row r-agents" data-row="agents" aria-label="Open Agents" onClick={() => openPage('agents')}>
           <span className="head"><span className="label">Agents</span><span className="head-r">
-            <span className="orbs">{waiting.map(s => <i key={s.id} className="orb sm is-wait"/>)}{working.slice(0, 4).map(s => <i key={s.id} className="orb sm is-work"/>)}</span>
+            <span className="orbs">{[...waiting, ...stopped, ...finished, ...working].slice(0, 5).map(s => <AgentMark key={s.id} id={s.id} look={marks} state={markOf(s)} size={12}/>)}</span>
             {(waiting.length > 0 || working.length > 0) && <span className={`pill ${waiting.length ? 'is-waiting' : ''}`}>{waiting.length ? `${waiting.length} ${waiting.length > 1 ? 'need' : 'needs'} you` : `${working.length} working`}</span>}
           </span></span>
           <span className="text one">{lead ? <><span className={`tagc ${lead.agent}`}>{AGENT_NAME[lead.agent]}</span>{lead.title}{lead.state === 'wait' && lead.last ? ` · ${lead.last.replace(/^Wants/, 'wants')}` : ''}</> : 'Sessions show up once you start one.'}</span>
@@ -616,11 +603,11 @@ function Cols({ days, dates }: { days: number[]; dates?: string[] }) {
   </span>;
 }
 
-// Folded: the state orb, the session's name and its tags. A click opens it to what you said, what it is
+// Folded: the state mark, the session's name and its tags. A click opens it to what you said, what it is
 // doing, and the actions; the jump to its terminal or Codex thread lives there too.
-function AgentRow({ s, open, onToggle, onOpen, onHide, actions }: { s: Agent; open: boolean; onToggle: () => void; onOpen?: () => void; onHide: () => void; actions?: ReactNode }) {
+function AgentRow({ s, look, mark, open, onToggle, onOpen, onHide, actions }: { s: Agent; look: MarkLook; mark: MarkState; open: boolean; onToggle: () => void; onOpen?: () => void; onHide: () => void; actions?: ReactNode }) {
   return <article className={`ag is-${s.state} ${open ? 'is-open' : ''}`} data-id={s.id}>
-    <span className={`orb is-${s.state}`}/>
+    <AgentMark look={look} state={mark} id={s.id} size={14}/>
     <div className="ag-body">
       <button className="ag-head" aria-expanded={open} onClick={onToggle}>
         <span className="ag-top"><span className="ag-title">{s.title}</span><span className="age">{s.age}</span></span>
