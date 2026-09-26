@@ -247,7 +247,7 @@
 .ad .shimmer { position:absolute; left:0; right:0; bottom:0; height:2px; background:linear-gradient(90deg,transparent,rgb(var(--glow)) 50%,transparent) 0 0 / 40% 100% no-repeat; animation:ad-shimmer 1.6s linear infinite; }
 
 /* Usage: every limit is the same ring; spend is one ring cut by model; balances have no ceiling, so just numbers. */
-.ad .us-plan { display:flex; align-items:baseline; gap:6px; font-size:13px; }
+.ad .us-plan { display:flex; align-items:baseline; gap:6px; font-size:13px; user-select:none; }
 .ad .us-plan em { font-size:11px; }
 .ad .us-plan .meta { margin-left:auto; }
 .ad .bigrings, .ad .spend { display:grid; grid-template-columns:repeat(3,1fr); gap:4px; }
@@ -263,7 +263,23 @@
 .ad .spend li span { margin-left:auto; font-variant-numeric:tabular-nums; }
 .ad .spend li i { width:7px; height:7px; border-radius:50%; flex:none; }
 .ad .bal { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
-.ad .bal div { display:flex; flex-direction:column; padding:8px 10px; border-radius:10px; background:rgb(255 255 255 / .04); }
+.ad .bal .us-link { position:relative; display:flex; flex-direction:column; align-items:flex-start; padding:8px 10px; border-radius:10px; background:rgb(255 255 255 / .04); text-align:left; transition:background-color .15s; }
+.ad .bal .us-link:hover { background:rgb(var(--glow) / .1); }
+.ad .bal .us-out { position:absolute; top:9px; right:9px; }
+/* Each service's name opens its own page; the arrow stays faint until hovered. */
+.ad .us-link { display:inline-flex; align-items:baseline; gap:6px; padding:0; font:inherit; color:inherit; }
+.ad .us-out { align-self:center; flex:none; color:var(--p-faint); transition:color .15s; }
+.ad .us-link:hover .us-out, .ad .us-link:focus-visible .us-out { color:rgb(var(--glow)); }
+.ad .us-sync { display:inline-flex; align-items:center; gap:5px; padding:3px 5px; border-radius:6px; font:inherit; color:inherit; }
+.ad .us-sync:hover:not(:disabled) { color:var(--p-ink); background:rgb(var(--glow) / .1); }
+.ad .us-use { align-self:center; padding:1px 8px; border-radius:6px; font-size:11px; font-weight:500; color:rgb(var(--glow)); background:rgb(var(--glow) / .1); }
+.ad .us-use:hover { background:rgb(var(--glow) / .18); }
+/* The question sits below "Use reset", so the second click needs the pointer to move. */
+.ad .us-confirm { display:flex; flex-direction:column; gap:3px; padding:10px 10px 8px; border-radius:10px; background:rgb(var(--glow) / .08); box-shadow:inset 0 0 0 .5px rgb(var(--glow) / .3); font-size:12.5px; animation:ad-fade .2s both; }
+.ad .us-confirm p { font-size:12px; line-height:1.45; color:var(--p-muted); }
+.ad .us-confirm p.is-alert { color:var(--alert-c); }
+.ad .us-confirm div { display:flex; justify-content:flex-end; gap:6px; margin-top:6px; }
+.ad .us-confirm .btn:disabled { opacity:.45; }
 .ad .bal span { font-size:11px; color:var(--p-muted); }
 .ad .bal b { font-size:15px; font-weight:600; font-variant-numeric:tabular-nums; }
 .ad .bal small { font-size:10px; color:var(--p-faint); }

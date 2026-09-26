@@ -14,7 +14,7 @@ export type PluginRequest = {
   error: string | null; resume_status: string;
 };
 export type PluginSnapshot = { plugins: Plugin[]; request: PluginRequest | null };
-const cleanError = (error: unknown) => String(error instanceof Error ? error.message : error).replace(/^Error invoking remote method '[^']+': (?:Error: )?/, '');
+export const cleanError = (error: unknown) => String(error instanceof Error ? error.message : error).replace(/^Error invoking remote method '[^']+': (?:Error: )?/, '');
 
 export function usePlugins() {
   const [snapshot, setSnapshot] = useState<PluginSnapshot | null>(null);

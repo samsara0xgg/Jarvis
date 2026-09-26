@@ -210,7 +210,12 @@ from jarvis.surface.inherent_server import (
 from jarvis.surface.playback_recovery import reconcile_open_playback
 from jarvis.surface.repo_observer import RepoObserver
 from jarvis.surface.timesink_observer import TimesinkHead, TimesinkObserver
-from jarvis.surface.usage_observer import UsageConfig, UsageObserver, latest_usage
+from jarvis.surface.usage_observer import (
+    UsageConfig,
+    UsageObserver,
+    latest_usage,
+    redeem_codex_reset,
+)
 
 LOGGER = logging.getLogger("jarvis.runtime.inherent_loop")
 
@@ -4834,6 +4839,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 if usage_observer is None
                 else functools.partial(_refresh_usage_now, usage_observer, runtime.conn)
             ),
+            usage_codex_reset=None if usage_observer is None else redeem_codex_reset,
             work_state_read=(
                 None
                 if runtime.work_state is None

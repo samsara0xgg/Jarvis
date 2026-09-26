@@ -8,7 +8,7 @@ import { duration, useProjects } from './ProjectsModule';
 import { fmtReset } from './quota-time';
 import { plain, visible, type Row } from './model';
 import { Markdown } from './Markdown';
-import { usePluginIcon, type Plugin, type PluginRequest, type usePlugins } from './PluginPanel';
+import { cleanError, usePluginIcon, type Plugin, type PluginRequest, type usePlugins } from './PluginPanel';
 import './dashboard-around.css';
 
 // The Dashboard around her: one column under the companion, her words first. A row grows into its
@@ -24,6 +24,13 @@ const hm = (ms: number) => { const d = new Date(ms); return `${pad(d.getHours())
 // Claude and Codex both hand out limit resets; one wording for both.
 const resetsLeft = (n: number, until?: string | null) =>
   `${n} reset${n === 1 ? '' : 's'} left${n && until ? ` · until ${new Date(until).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}` : ''}`;
+// "Yes" wakes ARM_MS after the question, so a double click on "Use reset" cannot land on it;
+// an unanswered question folds away after ASK_MS. The answers are Codex's own words.
+const ARM_MS = 600, ASK_MS = 10_000;
+const RESET_ANSWERS: Record<string, string> = {
+  reset: 'Codex limits reset', nothing_to_reset: 'Your usage does not need a reset right now',
+  no_credit: 'No resets left', already_redeemed: 'That reset already went through',
+};
 
 // Agents: Claude Code and Codex sessions together. With a daemon port, Codex rows come from its
 // Codex hook and Claude rows from /inherent/claude-sessions (ADR 0046) once the daemon serves it.
@@ -163,6 +170,9 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
   const [hidden, setHidden] = useState<Record<string, string>>(() => { if (!port) return {}; try { return JSON.parse(localStorage.getItem(HIDDEN) ?? '{}') ?? {}; } catch { return {}; } });
   useEffect(() => { if (port) try { localStorage.setItem(HIDDEN, JSON.stringify(hidden)); } catch { /* not remembered across restarts */ } }, [hidden]);
   const [toast, setToast] = useState<{ text: string; undo?: () => void } | null>(null);
+  // ADR 0048: a Codex reset takes two clicks on two buttons in different places, the second one
+  // live only after ARM_MS. The id is minted with the question, so "Try again" cannot spend twice.
+  const [reset, setReset] = useState<{ id: string; state: 'ask' | 'using' | 'error'; armed: boolean; error?: string } | null>(null);
   const [mood, setMood] = useState<ExprId>('02');
   const view = useRef<HTMLDivElement>(null), home = useRef<HTMLDivElement>(null), pageEl = useRef<HTMLElement>(null);
   const closing = useRef(false), flip = useRef<{ id: string; top: number } | null>(null), shownPlugin = useRef<string | null>(null);
@@ -185,7 +195,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
   // Closing the panel puts everything back on the home page, without animation.
   useEffect(() => {
     if (open) return;
-    closing.current = false; setPage(null); setPlugin(null); setUnfolded(null); react('02', 0);
+    closing.current = false; setPage(null); setPlugin(null); setUnfolded(null); setReset(null); react('02', 0);
     if (home.current) stopMotion(home.current);
     if (view.current?.contains(document.activeElement)) { (document.activeElement as HTMLElement).blur(); void window.jarvis?.focus(false); }
   }, [open]);
@@ -377,6 +387,27 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
 
   const { claude, codex: codexUsage, openai, deepseek, minimax } = quota.usage?.services ?? {};
   const synced = Math.max(0, ...[claude, codexUsage, openai, deepseek, minimax].map(s => s?.observed_at_ms ?? 0));
+  const codexResets = codexUsage?.status === 'ok' ? codexUsage.data.reset_credits ?? 0 : 0;
+  const askReset = () => {
+    const id = crypto.randomUUID();
+    setReset({ id, state: 'ask', armed: false });
+    later(ARM_MS, () => setReset(r => r?.id === id ? { ...r, armed: true } : r));
+    later(ASK_MS, () => setReset(r => r?.id === id && r.state === 'ask' ? null : r));
+  };
+  const spendReset = async () => {
+    const r = reset;
+    if (!r?.armed || r.state === 'using') return;
+    setReset({ ...r, state: 'using' });
+    try {
+      const answer = await window.jarvis!.usageReset('codex', r.id);
+      setReset(v => v?.id === r.id ? null : v);
+      notify(RESET_ANSWERS[answer.code] ?? `Codex answered ${answer.code}`);
+      if (answer.code === 'reset') react('33', 1900);
+      void quota.refresh();
+    } catch (error) {
+      setReset(v => v?.id === r.id ? { ...v, state: 'error', error: cleanError(error) } : v);
+    }
+  };
   const workView = work.view, state = workView?.state ?? null, fresh = freshnessLine(workView), now = nowLine(state?.now, state?.analyzed_at);
   const projectsView = projects.view, activeProjects = (projectsView?.projects ?? []).filter(p => p.seconds > 0 || p.commits.count > 0);
   const topProject = (projectsView?.projects ?? []).find(p => p.seconds > 0);
@@ -424,16 +455,25 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
       {agents.length > 0 && <p className="pg-sec muted">Click a session to see what it’s doing.</p>}</div>
     </>,
     usage: () => <>
-      {back('Usage', synced ? `synced ${hm(synced)}` : 'syncing…')}
-      <div className="pg-body"><div className="pg-sec"><div className="us-plan">Claude Max <em>{claude?.data.plan}</em>{claude?.status === 'ok' && claude.data.reset_credits !== undefined && <span className="meta">{resetsLeft(claude.data.reset_credits, claude.data.reset_ends_at)}</span>}</div>
+      {back('Usage', <button className="us-sync" aria-label="Refresh" disabled={quota.refreshing} onClick={() => void quota.refresh()}>
+        {!quota.refreshing && synced ? `synced ${hm(synced)}` : 'syncing…'}<ArrowsClockwise size={11} className={quota.refreshing ? 'is-spinning' : ''}/></button>)}
+      <div className="pg-body"><div className="pg-sec"><div className="us-plan"><Account id="claude">Claude Max <em>{claude?.data.plan}</em></Account>{claude?.status === 'ok' && claude.data.reset_credits !== undefined && <span className="meta">{resetsLeft(claude.data.reset_credits, claude.data.reset_ends_at)}</span>}</div>
         {claude?.status === 'ok' ? <div className="bigrings">{(claude.data.windows ?? []).map(w => <Ring key={w.key} w={w} name={w.label} sub={fmtReset(w.resets_at)}/>)}</div> : <p className="muted">{claude?.error ?? 'Not signed in to Claude Code'}</p>}</div>
-      <div className="pg-sec"><div className="us-plan">Codex <em>{codexUsage?.data.plan}</em>{codexUsage?.status === 'ok' && <span className="meta">{resetsLeft(codexUsage.data.reset_credits ?? 0)}</span>}</div>
+      <div className="pg-sec"><div className="us-plan"><Account id="codex">Codex <em>{codexUsage?.data.plan}</em></Account>{codexUsage?.status === 'ok' && <span className="meta">{resetsLeft(codexResets)}</span>}
+          {port && codexResets > 0 && !reset && <button className="us-use" onClick={askReset}>Use reset</button>}</div>
+        {reset && <div className="us-confirm" role="alertdialog" aria-label="Use this reset?">
+          <b>{reset.state === 'using' ? 'Using a reset…' : 'Use this reset?'}</b>
+          {reset.state === 'error' ? <p className="is-alert">{reset.error}</p>
+            : <p>Clears your Codex limits now. {codexResets === 1 ? 'It is your only reset.' : `Uses 1 of your ${codexResets}.`}</p>}
+          <div><button className="btn btn-text" disabled={reset.state === 'using'} onClick={() => setReset(null)}>No, go back</button>
+            <button className="btn btn-glow" disabled={!reset.armed || reset.state === 'using'} onClick={() => void spendReset()}>{reset.state === 'error' ? 'Try again' : 'Yes, use reset'}</button></div>
+        </div>}
         {codexUsage?.status === 'ok' ? <div className="bigrings">{(codexUsage.data.windows ?? []).map(w => <Ring key={w.key} w={w} name={w.label} sub={fmtReset(w.resets_at)}/>)}</div> : <p className="muted">{codexUsage?.error ?? 'Not signed in to Codex'}</p>}</div>
-      <div className="pg-sec"><div className="us-plan">OpenAI <em>API</em>{openai?.status === 'ok' && <span className="meta">this month {usd(openai.data.month_usd)}</span>}</div>
+      <div className="pg-sec"><div className="us-plan"><Account id="openai">OpenAI <em>API</em></Account>{openai?.status === 'ok' && <span className="meta">this month {usd(openai.data.month_usd)}</span>}</div>
         {openai?.status === 'ok' ? <Spend total={openai.data.today_usd ?? 0} models={openai.data.by_model ?? []}/> : <p className="muted">{openai?.error ?? 'Needs an admin key'}</p>}</div>
       <div className="pg-sec"><h4>Balances</h4><div className="bal">
-        <div><span>DeepSeek</span><b>{deepseek?.status === 'ok' ? usd(deepseek.data.balance) : '—'}</b></div>
-        <div><span>MiniMax</span><b>{minimax?.status === 'ok' ? `≈ ${usd(minimax.data.estimate_usd)}` : '—'}</b><small>estimated from use</small></div>
+        <Account id="deepseek"><span>DeepSeek</span><b>{deepseek?.status === 'ok' ? usd(deepseek.data.balance) : '—'}</b></Account>
+        <Account id="minimax"><span>MiniMax</span><b>{minimax?.status === 'ok' ? `≈ ${usd(minimax.data.estimate_usd)}` : '—'}</b><small>estimated from use</small></Account>
       </div></div></div>
     </>,
     plugins: () => {
@@ -536,6 +576,10 @@ function Fold({ label, children }: { label: string; children: ReactNode }) {
     <div className="fold-body" inert={!open}><div>{children}</div></div></>;
 }
 
+// The service's own usage or billing page, in the browser; main keeps the list of pages.
+function Account({ id, children }: { id: string; children: ReactNode }) {
+  return <button className="us-link" title="Open in the browser" onClick={() => void window.jarvis?.openAccount?.(id)}>{children}<ArrowSquareOut size={11} className="us-out"/></button>;
+}
 // Short names fit under a small ring on the home page; the Usage page spells them out.
 const RING_NAME: Record<string, string> = { five_hour: '5 h', seven_day: '7 d', seven_day_fable: 'Fable', primary_window: '7 d' };
 function Ring({ w, name, sub }: { w: UsageWindow; name: string; sub: string }) {

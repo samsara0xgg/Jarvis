@@ -23,7 +23,8 @@ plan labels are stored. Every remote failure collapses to a snapshot with
 ``status`` ``error`` (or ``unconfigured`` when a credential is absent), so
 the dashboard can show *why* a row is stale instead of silently freezing.
 The one exception is Claude's 429 (polled too soon), which keeps the last
-reading.
+reading. :func:`redeem_codex_reset` is the one write: it spends a Codex
+limit reset when Allen confirms it on the Usage page (ADR 0048).
 """
 
 from __future__ import annotations
@@ -133,6 +134,23 @@ def _get_json(url: str, headers: Mapping[str, str], *, timeout_s: float) -> dict
     with urllib.request.urlopen(request, timeout=timeout_s) as response:  # noqa: S310
         body = json.loads(response.read())
     return body if isinstance(body, dict) else {}
+
+
+def _post_json(
+    url: str, headers: Mapping[str, str], body: Mapping[str, Any], *, timeout_s: float
+) -> dict[str, Any]:
+    if not url.startswith("https://"):
+        msg = f"refusing non-https URL: {url}"
+        raise ValueError(msg)
+    request = urllib.request.Request(  # noqa: S310 — https enforced above.
+        url,
+        data=json.dumps(body).encode(),
+        headers={"Accept": "application/json", "Content-Type": "application/json", **headers},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=timeout_s) as response:  # noqa: S310
+        answer = json.loads(response.read())
+    return answer if isinstance(answer, dict) else {}
 
 
 # --- Claude --------------------------------------------------------------
@@ -284,24 +302,28 @@ def _codex_window_label(seconds: int) -> str:
     return f"{seconds // 3600} 小时"
 
 
-def collect_codex(*, timeout_s: float) -> UsageSnapshot:
-    """ChatGPT/Codex rate-limit windows plus the reset-credit counter."""
+def _codex_headers() -> dict[str, str] | None:
+    """The Codex login's request headers; ``None`` without a login."""
     try:
         auth = json.loads((Path.home() / ".codex" / "auth.json").read_text())
         tokens = auth["tokens"]
         access, account = tokens["access_token"], tokens.get("account_id", "")
     except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return {
+        "Authorization": f"Bearer {access}",
+        "ChatGPT-Account-Id": account,
+        "User-Agent": "codex-cli",
+    }
+
+
+def collect_codex(*, timeout_s: float) -> UsageSnapshot:
+    """ChatGPT/Codex rate-limit windows plus the reset-credit counter."""
+    headers = _codex_headers()
+    if headers is None:
         return UsageSnapshot("codex", "unconfigured", {}, "no Codex login")
     try:
-        body = _get_json(
-            "https://chatgpt.com/backend-api/wham/usage",
-            {
-                "Authorization": f"Bearer {access}",
-                "ChatGPT-Account-Id": account,
-                "User-Agent": "codex-cli",
-            },
-            timeout_s=timeout_s,
-        )
+        body = _get_json("https://chatgpt.com/backend-api/wham/usage", headers, timeout_s=timeout_s)
     except (urllib.error.URLError, OSError, ValueError) as exc:
         return _error("codex", exc)
     windows: list[dict[str, Any]] = []
@@ -329,6 +351,36 @@ def collect_codex(*, timeout_s: float) -> UsageSnapshot:
             "reset_credits": int(reset_credits.get("available_count") or 0),
         },
     )
+
+
+# Where Codex's own client spends a reset (openai/codex, codex-rs/backend-client
+# rate_limit_resets.rs). The request id is its idempotency key: a retried request answers
+# already_redeemed instead of spending a second reset.
+_CODEX_RESET_URL: Final[str] = (
+    "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume"
+)
+
+
+def redeem_codex_reset(
+    request_id: str, *, timeout_s: float = DEFAULT_HTTP_TIMEOUT_S
+) -> dict[str, Any]:
+    """Spend one Codex limit reset (ADR 0048).
+
+    Returns ``{code, windows_reset}``; code is reset, nothing_to_reset, no_credit or
+    already_redeemed. Raises ``ValueError`` without a login and lets network errors out.
+    """
+    headers = _codex_headers()
+    if headers is None:
+        msg = "no Codex login"
+        raise ValueError(msg)
+    body = _post_json(
+        _CODEX_RESET_URL, headers, {"redeem_request_id": request_id}, timeout_s=timeout_s
+    )
+    LOGGER.info("usage_observer: codex reset %s answered %s", request_id, body.get("code"))
+    return {
+        "code": str(body.get("code") or "unknown"),
+        "windows_reset": int(body.get("windows_reset") or 0),
+    }
 
 
 # --- OpenAI API spend ------------------------------------------------------
@@ -669,5 +721,6 @@ __all__ = [
     "estimate_minimax",
     "latest_usage",
     "recover_baselines",
+    "redeem_codex_reset",
     "tts_characters_since",
 ]

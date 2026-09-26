@@ -6,6 +6,15 @@ import { homedir } from 'node:os';
 // thread, and Codex thread titles. The design lab and verification runs stay offline.
 let codexTitles: Record<string, string> = {};
 let codexTitlesAt = 0;
+// The Usage page names a service; only these pages open. The renderer never passes a URL.
+const ACCOUNT_PAGES: Record<string, string> = {
+  claude: 'https://claude.ai/settings/usage',
+  codex: 'https://chatgpt.com/codex/settings/usage',
+  openai: 'https://platform.openai.com/settings/organization/billing/overview',
+  deepseek: 'https://platform.deepseek.com/top_up',
+  minimax: 'https://platform.minimax.io/user-center/payment/balance',
+};
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 export function registerDaemonBridge(win: BrowserWindow, { lab = false, verification = false } = {}) {
   // The renderer can request plugin operations but never read the daemon's
   // management credential or choose an arbitrary URL/file/process to open.
@@ -37,6 +46,36 @@ export function registerDaemonBridge(win: BrowserWindow, { lab = false, verifica
     } catch { throw new Error('暂时连不上 Jarvis，请稍后重试'); }
     const result = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(response.status === 401 ? '插件服务凭证已更新，请重试' : typeof result.detail === 'string' ? result.detail : '插件操作未完成，请重试');
+    return result;
+  });
+  ipcMain.handle('open-account', async (event, service) => {
+    if (event.sender !== win.webContents || typeof service !== 'string' || !Object.hasOwn(ACCOUNT_PAGES, service)) return false;
+    if (verification) return false;
+    try { await shell.openExternal(ACCOUNT_PAGES[service]); return true; }
+    catch { return false; }
+  });
+  // ADR 0048: spend one Codex limit reset. The page confirms twice before it calls this; the
+  // request id is minted once per confirmation, so a retry cannot spend a second reset.
+  ipcMain.handle('usage-reset', async (event, service, requestId) => {
+    if (event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame) throw new Error('Not this window');
+    if (service !== 'codex' || typeof requestId !== 'string' || !UUID.test(requestId)) throw new Error('Invalid reset request');
+    if (lab || verification) throw new Error('This preview is not connected to Jarvis');
+    const port = process.env.JARVIS_INHERENT_BRIDGE_PORT ?? '8006';
+    const root = process.env.JARVIS_RUNTIME_ROOT ?? path.join(homedir(), '.jarvis');
+    let token: unknown;
+    try { token = JSON.parse(await readFile(path.join(root, 'plugin-access.json'), 'utf8')).token; } catch { /* checked below */ }
+    if (typeof token !== 'string' || !token) throw new Error('Jarvis is not ready yet. Try again in a moment.');
+    let response: Response;
+    try {
+      response = await fetch(`http://127.0.0.1:${port}/inherent/usage/codex/reset`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ request_id: requestId }),
+        signal: AbortSignal.timeout(30000),
+      });
+    } catch { throw new Error('Could not reach Jarvis. Try again.'); }
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(response.status === 404 ? 'Jarvis needs a restart to use resets' : typeof result.detail === 'string' ? result.detail : 'The reset did not go through. Try again.');
     return result;
   });
   ipcMain.handle('open-codex', async (event, threadId) => {

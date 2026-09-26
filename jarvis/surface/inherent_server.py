@@ -69,6 +69,7 @@ import hashlib
 import io
 import json
 import logging
+import re
 import secrets
 import time
 import wave
@@ -411,6 +412,10 @@ class InherentDeps:
     # the same read model. ``None`` leaves both routes unregistered.
     usage_read: Callable[[], dict[str, Any]] | None = None
     usage_refresh: Callable[[], Awaitable[dict[str, Any]]] | None = None
+    # ADR 0048: spend one Codex limit reset, ``request_id -> {code, windows_reset}``
+    # (blocking network, run off the loop). Registered only with ``plugin_authorize``:
+    # it spends account credit, so only the desktop's private credential may call it.
+    usage_codex_reset: Callable[[str], dict[str, Any]] | None = None
     # ADR 0023: the current-work-state record. ``work_state_read`` is a small
     # SQLite fold on the loop thread; ``work_state_refresh`` awaits the
     # runtime's single-flight analysis (off-thread) and answers the same
@@ -893,6 +898,9 @@ async def _run_asr_submit(
 
 
 _MAX_PLUGIN_COMMAND_BYTES = 32_768
+_REQUEST_ID: Final[re.Pattern[str]] = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+)
 
 
 def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0915 — one closed route table; the cancel and controls routes are registered only when injected.
@@ -1137,6 +1145,25 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0915 — one cl
         async def usage_refresh_now() -> dict[str, Any]:
             """ADR-0018: poll every source now, then answer like ``GET``."""
             return await usage_refresh()
+
+    if deps.usage_codex_reset is not None and deps.plugin_authorize is not None:
+        codex_reset, desktop_authorize = deps.usage_codex_reset, deps.plugin_authorize
+
+        @app.post("/inherent/usage/codex/reset", status_code=200)
+        async def usage_codex_reset(request: Request) -> dict[str, Any]:
+            """ADR 0048: spend one Codex limit reset; the request id makes a retry a no-op."""
+            if not desktop_authorize(request.headers.get("authorization")):
+                raise HTTPException(status_code=401, detail="desktop authorization required")
+            try:
+                request_id = json.loads(await request.body()).get("request_id")
+            except (ValueError, AttributeError):
+                request_id = None
+            if not isinstance(request_id, str) or not _REQUEST_ID.fullmatch(request_id):
+                raise HTTPException(status_code=400, detail="request_id must be a UUID")
+            try:
+                return await asyncio.to_thread(codex_reset, request_id)
+            except (OSError, ValueError) as exc:  # urllib errors are OSError.
+                raise HTTPException(status_code=502, detail=str(exc)[:200]) from None
 
     if deps.work_state_read is not None and deps.work_state_refresh is not None:
         work_state_read, work_state_refresh = deps.work_state_read, deps.work_state_refresh

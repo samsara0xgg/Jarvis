@@ -62,7 +62,9 @@ try {
   const fixtures = {
     '/inherent/claude-sessions': { sessions: claude, error: null },
     '/inherent/codex-sessions': { sessions: [{ session_id: codexId, state: 'running', cwd: '/Users/x/Projects/typlus', model: 'gpt', prompt: 'fix the overlay', detail: 'Editing Overlay.swift', last_message: '', since_ms: now - 120_000 }] },
-    '/inherent/usage': { services: { claude: { status: 'ok', observed_at_ms: now, data: { plan: '20X', windows: [{ key: 'five_hour', label: '5 hours', percent: 41, resets_at: iso(now + 3_600_000) }] } }, codex: { status: 'unconfigured', data: {} } } },
+    '/inherent/usage': { services: { claude: { status: 'ok', observed_at_ms: now, data: { plan: '20X', windows: [{ key: 'five_hour', label: '5 hours', percent: 41, resets_at: iso(now + 3_600_000) }] } },
+      codex: { status: 'ok', observed_at_ms: now, data: { plan: 'Pro Lite', windows: [{ key: 'primary_window', label: '7 d', percent: 64, resets_at: iso(now + 86_400_000) }], reset_credits: 1 } },
+      deepseek: { status: 'ok', observed_at_ms: now, data: { balance: 4.2, currency: 'USD', is_available: true } } } },
     '/inherent/work-state': { state: { version: 1, analyzed_at: iso(now - 60_000), observed_until: iso(now - 60_000), evidence: { coverage: {}, counts: {}, limits: [] }, now: { text: 'Wiring the companion to the daemon.', basis: 'observed', refs: [] }, activities: [], links: [], uncertainties: [], note: null },
       data: null, freshness: { checked_at_ms: now, latest_observed_at: iso(now - 60_000), analyzed_at: iso(now - 60_000), analysis_observed_until: iso(now - 60_000) }, refreshing: false, outcome: 'analyzed', error: null },
     '/inherent/projects': { days: Array.from({ length: 7 }, (_, i) => iso(now - (6 - i) * 86_400_000).slice(0, 10)), projects: [{ id: 'jarvis', name: 'jarvis', seconds: 7200, today_seconds: 3600, days: [0, 0, 0, 0, 0, 3600, 3600], last_seen: null, commits: { count: 2, items: [] }, recent: [] }],
@@ -70,6 +72,15 @@ try {
   };
   fixtures['/inherent/projects/refresh'] = fixtures['/inherent/projects'];
   const LOGO = `data:image/svg+xml;base64,${Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8"><circle cx="4" cy="4" r="4" fill="#5e6ad2"/></svg>').toString('base64')}`;
+  fixtures['/inherent/usage/refresh'] = fixtures['/inherent/usage'];
+  // What the Usage page asked main to spend; `resetFails` makes the next call fail like a lost daemon.
+  const resets = [], refreshes = [];
+  let resetFails = 0;
+  await page.exposeFunction('__usageReset', async (service, id) => {
+    resets.push({ service, id });
+    if (resetFails) { resetFails--; throw new Error("Error invoking remote method 'usage-reset': Error: Could not reach Jarvis. Try again."); }
+    return { code: 'reset', windows_reset: 1 };
+  });
   const pluginToken = real ? (() => { try { return JSON.parse(readFileSync(path.join(homedir(), '.jarvis/plugin-access.json'), 'utf8')).token; } catch { return null; } })() : null;
   await page.exposeFunction('__plugins', async (operation, data) => {
     pluginOps.push({ operation, data });
@@ -88,7 +99,7 @@ try {
     return structuredClone(snapshot);
   });
   await page.addInitScript(fake => {
-    window.__state = { opened: [] };
+    window.__state = { opened: [], accounts: [] };
     window.jarvis = {
       placement: async () => ({ docked: false, topInset: 32, notchWidth: 185, surfaceWidth: 640, compactWidth: 0, displayId: 1 }),
       onPlacement: () => () => {}, onDisplayLeave: () => () => {}, displayReady: () => {}, companionMenu: () => {},
@@ -96,6 +107,7 @@ try {
       onCommand: callback => { window.__command = callback; return () => {}; },
       passthrough: () => {}, focus: async () => {}, material: () => {},
       codexTitles: async () => ({}), openCodex: async id => { window.__state.opened.push(id); return true; },
+      openAccount: async id => { window.__state.accounts.push(id); return true; }, usageReset: (service, id) => window.__usageReset(service, id),
       plugins: (operation, data = {}) => window.__plugins(operation, data),
     };
     if (!fake) return;
@@ -114,6 +126,7 @@ try {
     if (url.pathname === '/inherent/controls') { controls = { ...controls, ...body }; return json(controls); }
     if (url.pathname === '/inherent/submit') return json({ turn_id: 'typed-1' });
     if (url.pathname === '/inherent/cancel-response') return json({});
+    if (url.pathname === '/inherent/usage/refresh') refreshes.push(Date.now());
     if (url.pathname === '/inherent/conversation') {
       const after = Number(url.searchParams.get('after') ?? 0), limit = Number(url.searchParams.get('limit') ?? 2), all = [...yesterday, ...rows];
       reads.push({ at: Date.now(), after, limit });
@@ -327,6 +340,31 @@ try {
     await page.locator('.ad .pl-det .btn-text').click(); await page.waitForTimeout(2000);
     check('L10 cancel cancels it', pluginOps.some(o => o.operation === 'cancel' && o.data.request_id === snapshot.request.id));
     await back(); await back();
+
+    // The Usage page: each service opens its own page, and a Codex reset takes two clicks, never one.
+    await openRow('usage'); await page.waitForTimeout(900);
+    await page.locator('.ad .us-plan .us-link', { hasText: 'Codex' }).click();
+    await page.locator('.ad .bal .us-link', { hasText: 'DeepSeek' }).click();
+    check('L12 a service name and a balance open that service\'s own page', (await page.evaluate(() => window.__state.accounts)).join() === 'codex,deepseek');
+    const synced = refreshes.length;
+    await page.locator('.ad .us-sync').click(); await page.waitForTimeout(400);
+    check('L12 the synced time refreshes every source', refreshes.length === synced + 1);
+    await page.locator('.ad .us-use').dblclick(); await page.waitForTimeout(100);
+    await page.locator('.ad .us-confirm .btn-glow').click({ force: true });
+    check('L12 a double click on Use reset, then Yes right away, spends nothing and asks', resets.length === 0 && (await text('.ad .us-confirm b')) === 'Use this reset?' && (await text('.ad .us-confirm p')).includes('only reset'));
+    await page.waitForTimeout(700); await panelShot('L12-usage-ask');
+    await page.locator('.ad .us-confirm .btn-text').click(); await page.waitForTimeout(200);
+    check('L12 No, go back closes it without spending', resets.length === 0 && await page.locator('.ad .us-confirm').count() === 0 && await page.locator('.ad .us-use').count() === 1);
+    resetFails = 1;
+    await page.locator('.ad .us-use').click(); await page.waitForTimeout(700);
+    await page.locator('.ad .us-confirm .btn-glow').click(); await page.waitForTimeout(300);
+    check('L12 a failed reset says why and offers Try again', resets.length === 1 && (await text('.ad .us-confirm p')) === 'Could not reach Jarvis. Try again.' && (await text('.ad .us-confirm .btn-glow')) === 'Try again');
+    await panelShot('L12-usage-failed');
+    const before = refreshes.length;
+    await page.locator('.ad .us-confirm .btn-glow').click(); await page.waitForTimeout(400);
+    check('L12 Try again resends the same request id for Codex, so it cannot spend twice', resets.length === 2 && resets[1].id === resets[0].id && /^[0-9a-f]{8}-[0-9a-f]{4}-/.test(resets[0].id) && resets.every(r => r.service === 'codex'));
+    check('L12 a reset closes the question, says so, and re-reads usage', await page.locator('.ad .us-confirm').count() === 0 && (await text('.ad .toast')) === 'Codex limits reset' && refreshes.length > before);
+    await back();
     await hit.dblclick({ force: true });
     await page.waitForFunction(() => !document.querySelector('.companion-dashboard.is-open'), null, { timeout: 3000 });
     // Jarvis asks for a plugin mid-conversation: the closed panel opens and lands on it.
@@ -337,7 +375,7 @@ try {
     check('no page errors', errors.length === 0);
   }
   await context.close();
-  writeFileSync(path.join(dir, 'verification.json'), JSON.stringify({ checks, errors, posts, pluginOps: pluginOps.filter(o => o.operation !== 'read') }, null, 2));
+  writeFileSync(path.join(dir, 'verification.json'), JSON.stringify({ checks, errors, posts, pluginOps: pluginOps.filter(o => o.operation !== 'read'), resets }, null, 2));
   console.log(`${checks.length} checks passed; evidence in ${dir}`);
 } finally {
   await browser.close();

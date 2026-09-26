@@ -31,6 +31,8 @@ contextBridge.exposeInMainWorld('jarvis', {
   copy: (text: string) => ipcRenderer.invoke('copy', text),
   openCodex: (threadId: string) => ipcRenderer.invoke('open-codex', threadId),
   codexTitles: (ids: string[]) => ipcRenderer.invoke('codex-titles', ids),
+  openAccount: (service: string) => ipcRenderer.invoke('open-account', service),
+  usageReset: (service: string, requestId: string) => ipcRenderer.invoke('usage-reset', service, requestId),
   plugins: (operation: string, data: Record<string, unknown> = {}) => ipcRenderer.invoke('plugins', operation, data),
   drag: (phase: 'start' | 'move' | 'end', point?: { x: number; y: number }) => ipcRenderer.send('drag', { phase, point }),
   passthrough: (enabled: boolean) => ipcRenderer.send('passthrough', enabled),
