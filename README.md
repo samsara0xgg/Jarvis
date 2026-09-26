@@ -116,7 +116,7 @@ Review [config/jarvis.yaml](config/jarvis.yaml):
 2. GPT-Live uses `OPENAI_API_KEY` and requires access to the configured Live model.
 3. Review the local voice model/device settings and any optional provider keys.
 4. Set `observer.repos` to the repositories you want to observe.
-5. Review [file targets](config/file_targets.yaml) for your own machine.
+5. Put your own file bookmarks under `tools.open_path` in `~/.jarvis/settings.yaml`.
 
 Keep credentials outside the repository. The runtime supports a local `~/.jarvis/env` file for resident service credentials.
 

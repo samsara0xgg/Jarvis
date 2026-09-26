@@ -7,14 +7,9 @@ in :mod:`jarvis.execution.tools` is the only caller; it owns the
 subprocess call. This module owns only "given a spoken fragment, which
 file/folder on disk did Allen mean".
 
-Config: ``config/file_targets.yaml`` (schema documented in-file). Located
-by walking up from this module's own file looking for ``config/jarvis.yaml``
-— the same strategy :func:`jarvis.runtime._locate_repo_root` uses for
-``tier0_patterns.yaml``. This module cannot import ``jarvis.runtime``
-(sibling-layer restriction, `.importlinter`: `execution` and `runtime` are
-not on the same tier — `runtime` sits ABOVE the middle four and is the only
-layer allowed to cross them), so the walk-up is duplicated here rather than
-imported.
+Config: ``tools.open_path`` in the merged runtime config (shipped
+``config/jarvis.yaml`` under the user's ``settings.yaml``), installed once at
+boot by :func:`configure_file_targets`; this layer never reads YAML itself.
 
 Query normalization + matching (spec: this module is the whole spec for
 these rules — there is no external doc):
@@ -84,7 +79,7 @@ these rules — there is no external doc):
    ranks `CLAUDE.md` — stem "claude" — above `claude_notes.md` — stem
    "claude_notes").
 
-Layer rules (`.importlinter`): stdlib + `yaml` (external) + `jarvis.state`
+Layer rules (`.importlinter`): stdlib + `jarvis.state`
 (L2, permitted from L4). No imports from `jarvis.constitution`,
 `jarvis.decision`, `jarvis.surface`, `jarvis.deployment`, `jarvis.runtime`,
 `jarvis.cli`.
@@ -96,12 +91,9 @@ import json
 import logging
 import re
 import subprocess
-import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Literal
-
-import yaml
 
 from jarvis.state.event_log import iter_events
 
@@ -140,7 +132,7 @@ class ResolvedTarget:
 
 @dataclass(frozen=True)
 class FileTargetsConfig:
-    """Parsed, `~`-expanded contents of `config/file_targets.yaml`."""
+    """Parsed, `~`-expanded contents of `tools.open_path`."""
 
     search_roots: tuple[Path, ...]
     bookmarks: Mapping[str, Path]
@@ -148,12 +140,7 @@ class FileTargetsConfig:
     editor_app: str
 
 
-# --- Config location + loading (mirrors jarvis.runtime._locate_repo_root) ---
-
-_JARVIS_CONFIG_RELATIVE: Final[Path] = Path("config") / "jarvis.yaml"
-"""Repo-root marker file — same one `jarvis.runtime` walks up to find."""
-
-_FILE_TARGETS_RELATIVE: Final[Path] = Path("config") / "file_targets.yaml"
+# --- Config ---
 
 _DEFAULT_EDITOR_APP: Final[str] = "Visual Studio Code"
 
@@ -166,23 +153,7 @@ _EMPTY_CONFIG: Final[FileTargetsConfig] = FileTargetsConfig(
 
 
 class FileTargetsConfigError(ValueError):
-    """Raised when `config/file_targets.yaml` exists but is malformed."""
-
-
-def _locate_repo_root(start: Path) -> Path | None:
-    """Walk up from `start` until `config/jarvis.yaml` exists; return that dir.
-
-    Returns `None` instead of raising when no such directory is found —
-    `open_path` degrading to "no config, no matches" is preferable to a
-    hard crash for a voice-assistant convenience tool (contrast with
-    `jarvis.runtime._locate_repo_root`, which raises because a missing
-    `jarvis.yaml` there means the WHOLE daemon cannot boot).
-    """
-    current = start.resolve()
-    for candidate in (current, *current.parents):
-        if (candidate / _JARVIS_CONFIG_RELATIVE).is_file():
-            return candidate
-    return None
+    """Raised when `tools.open_path` is malformed."""
 
 
 def _parse_config(raw: Mapping[str, Any]) -> FileTargetsConfig:
@@ -217,54 +188,22 @@ def _parse_config(raw: Mapping[str, Any]) -> FileTargetsConfig:
     )
 
 
-_CONFIG_LOCK: Final[threading.Lock] = threading.Lock()
-_CONFIG_CACHE: FileTargetsConfig | None = None
+_CONFIG: FileTargetsConfig = _EMPTY_CONFIG
 
 
-def load_file_targets_config(*, force_reload: bool = False) -> FileTargetsConfig:
-    """Load + cache `config/file_targets.yaml` for the process lifetime.
+def configure_file_targets(raw: Mapping[str, Any]) -> None:
+    """Install ``tools.open_path`` for the process; malformed bookmarks raise.
 
-    Missing file (or unlocatable repo root) -> `_EMPTY_CONFIG` (`open_path`
-    then never resolves anything, same "off, not broken" posture as Tier 0's
-    missing-file handling). A YAML syntax error or a malformed `bookmarks`
-    mapping raises `FileTargetsConfigError` — unlike the missing-file case,
-    a file that exists but is wrong should not fail silently.
-
-    Args:
-        force_reload: Bypass the cache (tests / smoke scripts that edit the
-            config file mid-process). Production code never needs this —
-            the file does not change while the daemon is running.
+    Empty (the shipped default has no bookmarks) leaves ``open_path`` with
+    the shipped search roots only.
     """
-    global _CONFIG_CACHE  # noqa: PLW0603 — process-lifetime cache; a module-level dict-of-one is heavier for no benefit.
-    with _CONFIG_LOCK:
-        if _CONFIG_CACHE is not None and not force_reload:
-            return _CONFIG_CACHE
+    global _CONFIG  # noqa: PLW0603 — one process-wide value, set once at boot.
+    _CONFIG = _parse_config(raw)
 
-        repo_root = _locate_repo_root(Path(__file__).parent)
-        if repo_root is None:
-            _CONFIG_CACHE = _EMPTY_CONFIG
-            return _CONFIG_CACHE
 
-        config_path = repo_root / _FILE_TARGETS_RELATIVE
-        if not config_path.is_file():
-            _CONFIG_CACHE = _EMPTY_CONFIG
-            return _CONFIG_CACHE
-
-        try:
-            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-        except yaml.YAMLError as exc:
-            msg = f"file_targets: {config_path} is not valid YAML: {exc}"
-            raise FileTargetsConfigError(msg) from exc
-        if raw is None:
-            _CONFIG_CACHE = _EMPTY_CONFIG
-            return _CONFIG_CACHE
-        if not isinstance(raw, dict):
-            msg = f"file_targets: top-level YAML must be a mapping, got {type(raw).__name__}"
-            raise FileTargetsConfigError(msg)
-
-        config = _parse_config(raw)
-        _CONFIG_CACHE = config
-        return config
+def load_file_targets_config() -> FileTargetsConfig:
+    """The ``tools.open_path`` config :func:`configure_file_targets` installed."""
+    return _CONFIG
 
 
 # --- Query normalization + tokenization --------------------------------------

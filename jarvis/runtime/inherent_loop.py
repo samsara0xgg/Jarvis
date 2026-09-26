@@ -114,7 +114,7 @@ from jarvis.decision.response_run import (
     request_response_cancel,
     start_response_run,
 )
-from jarvis.deployment import inherent_v2_token_matches, rotate_inherent_v2_token
+from jarvis.deployment import inherent_v2_token_matches, models, rotate_inherent_v2_token
 from jarvis.deployment.launchd import repo_root, spawned_by_agent
 from jarvis.deployment.process_lock import acquire_exclusive
 from jarvis.deployment.sleep_wake import install_power_observer, sweep_overdue_actions
@@ -335,10 +335,10 @@ _SELECT_RESPONSE_EVENTS_AFTER_ID_SQL = (
 # owner and ignored by the other.
 _DEFAULT_CAPTURE_MAX_DURATION_S: float = 5.0
 _DEFAULT_CAPTURE_MIN_VOICED_S: float = 1.0
-# Wake input stream params — ADR §5.1 (openwakeword expects 16 kHz mono PCM16
+# Wake input stream params — ADR §5.1 (the wake engine reads 16 kHz mono PCM16
 # at 1280-sample / 80 ms blocks). A SEPARATE stream from the recorder's per
 # legacy ``core/inherent_wake_listener.py`` parity (the recorder's 32-ms VAD
-# chunks would force openwakeword to buffer across reads).
+# chunks would force the engine to buffer across reads).
 _WAKE_SAMPLE_RATE_HZ: int = 16000
 _WAKE_FRAME_SAMPLES: int = 1280
 
@@ -364,10 +364,6 @@ class _VoiceKnobs:
     composition root reads ``realtime:`` for these values.
     """
 
-    # Which wake engine both input owners construct (ADR-0042); one of
-    # :data:`voice_wake.WAKE_ENGINES`.  The default keeps a config that names
-    # nothing on the ADR-0005 engine.
-    wake_engine: str = "openwakeword"
     # The engine's detection probability gate.  BOTH input owners construct a
     # listener with it, which is why it is a flat key and is threaded to both
     # rather than living under ``realtime.single_audio_ingress``.
@@ -550,15 +546,7 @@ def _voice_knobs(config: Mapping[str, Any]) -> _VoiceKnobs:
     block = config.get("realtime")
     values: Mapping[str, Any] = block if isinstance(block, Mapping) else {}
     d = _VoiceKnobs()
-    wake_engine = _knob_text(values, "wake_engine", d.wake_engine)
-    if wake_engine not in voice_wake.WAKE_ENGINES:
-        LOGGER.warning(
-            "realtime.wake_engine must be one of %s; using %r.",
-            voice_wake.WAKE_ENGINES, d.wake_engine,
-        )
-        wake_engine = d.wake_engine
     return _VoiceKnobs(
-        wake_engine=wake_engine,
         wake_threshold=_knob_number(values, "wake_threshold", d.wake_threshold),
         wake_join_timeout_s=_knob_number(
             values, "wake_join_timeout_s", d.wake_join_timeout_s,
@@ -2497,7 +2485,7 @@ def _spawn_wake_listener(  # noqa: PLR0913 - composition boundary dependencies
 
     Also opens the 16 kHz / 80 ms PortAudio input stream that backs the
     listener's ``frame_factory``. Without this stream the listener
-    reads silent zero frames and openwakeword's probability never
+    reads silent zero frames and the wake probability never
     crosses threshold — wake silently never fires in production.
 
     Returns ``(listener, stream)`` on success so the daemon shutdown
@@ -2522,10 +2510,10 @@ def _spawn_wake_listener(  # noqa: PLR0913 - composition boundary dependencies
         data, _overflow = stream.read(_WAKE_FRAME_SAMPLES)
         return bytes(data)
 
-    engine: voice_wake.AnyWakeEngine | None = None
+    engine: voice_wake.MicroWakeWordEngine | None = None
     listener: voice_wake.WakeListener | None = None
     try:
-        engine = voice_wake.build_wake_engine(knobs.wake_engine)
+        engine = voice_wake.MicroWakeWordEngine()
         # Without start(), predict() silently returns no detection.
         engine.start()
         silero_vad = voice_audio.SileroVad(
@@ -3203,7 +3191,7 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
     if ingress_config is None or session_config is None:
         msg = "validated single ingress activation lacks parsed config"
         raise RuntimeError(msg)
-    engine = voice_wake.build_wake_engine(knobs.wake_engine)
+    engine = voice_wake.MicroWakeWordEngine()
     try:
         # Model construction/download happens before PortAudio owns the mic.
         engine.start()
@@ -3838,6 +3826,13 @@ _FALLBACK_USAGE_POLL_INTERVAL_S: Final[float] = 300.0
 _FALLBACK_MINIMAX_USD_PER_MILLION_CHARS: Final[float] = 60.0
 
 
+def _claude_sessions_read(config: Mapping[str, Any]) -> bool:
+    """``observer.claude_sessions.enabled``: may the Agents page read Claude Code's files."""
+    block = config.get("observer")
+    sessions = block.get("claude_sessions") if isinstance(block, Mapping) else None
+    return isinstance(sessions, Mapping) and sessions.get("enabled") is True
+
+
 def _usage_observer_block(config: Mapping[str, Any]) -> Mapping[str, Any] | None:
     """Return ``observer.usage`` when ``enabled: true``; None means off."""
     block = config.get("observer")
@@ -4000,6 +3995,26 @@ async def _set_todo(home: Home, todo_id: str, done: bool) -> None:  # noqa: FBT0
 async def _save_settings(settings: Settings, changes: dict[str, Any]) -> dict[str, Any]:
     """``POST /inherent/settings``: one file write, off the loop thread."""
     return await asyncio.to_thread(settings.update, changes)
+
+
+def _fetch_models_then_restart(
+    sensevoice_dir: Path, silero_path: Path, loop: asyncio.AbstractEventLoop,
+) -> None:
+    """First boot: fetch the speech models in the background, then come back with voice."""
+
+    def run() -> None:
+        try:
+            models.fetch_missing(sensevoice_dir, silero_path)
+        except Exception:
+            LOGGER.exception("models: download failed; voice stays off until the next boot")
+            return
+        if spawned_by_agent():
+            LOGGER.info("models: ready; restarting so voice comes up")
+            loop.call_soon_threadsafe(_restart_soon)
+        else:
+            LOGGER.warning("models: ready; restart Jarvis to turn voice on")
+
+    threading.Thread(target=run, name="jarvis-models", daemon=True).start()
 
 
 def _restart_soon() -> None:
@@ -4824,6 +4839,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 "voice models missing; running text-only. Missing: %s",
                 "; ".join(missing),
             )
+            _fetch_models_then_restart(sensevoice_dir, silero_path, asyncio.get_running_loop())
         else:
             try:
                 voice_pipe = _build_voice_pipeline(
@@ -5089,6 +5105,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 else functools.partial(_save_settings, runtime.settings)
             ),
             restart=_restart_soon if spawned_by_agent() else None,
+            claude_sessions_read=_claude_sessions_read(runtime.config),
             plugin_read=runtime.plugin_connections.read if runtime.plugin_connections else None,
             plugin_action=runtime.plugin_connections.action if runtime.plugin_connections else None,
             plugin_authorize=(

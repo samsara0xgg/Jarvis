@@ -384,8 +384,12 @@ def render_plist(
         "ProgramArguments": [str(interp), "-m", "jarvis", "serve"],
         "WorkingDirectory": str(workdir),
         # The one key that tells the spawned daemon it IS the agent.
-        # See :data:`AGENT_ENV_MARKER`.
-        "EnvironmentVariables": {AGENT_ENV_MARKER: AGENT_LABEL},
+        # See :data:`AGENT_ENV_MARKER`. PATH is the installing shell's, so the
+        # daemon finds the same `codex` / `claude` / `npx` the user does.
+        "EnvironmentVariables": {
+            AGENT_ENV_MARKER: AGENT_LABEL,
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin:/usr/sbin:/sbin"),
+        },
         "RunAtLoad": True,
         # Plain ``true`` — see the module docstring. Do NOT "improve"
         # this into {"SuccessfulExit": False}.

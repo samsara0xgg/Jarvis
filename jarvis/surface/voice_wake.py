@@ -1,14 +1,10 @@
 """L5 wake-word listener — wake engine wrappers + daemon thread (ADR-0005 §5.1).
 
-Three classes and one factory:
+Two classes:
 
-- :class:`WakeEngine` — thin wrapper around ``openwakeword.Model`` so the
-  rest of the module can talk to a single ``predict(frame_bytes) -> dict``
-  contract (and so unit tests can substitute a ``MagicMock``).
-
-- :class:`MicroWakeWordEngine` — the same contract over pymicro-wakeword's
-  ``hey_jarvis`` model (ADR-0042). :func:`build_wake_engine` picks one by the
-  ``realtime.wake_engine`` config value so the engine is swappable per boot.
+- :class:`MicroWakeWordEngine` — pymicro-wakeword's ``hey_jarvis`` model
+  (ADR-0042) behind a single ``predict(frame_bytes) -> dict`` contract (so
+  tests can substitute a ``MagicMock``).
 
 - :class:`WakeListener` — daemon thread that polls the engine, gates on
   :data:`voice_pipeline.VOICE_INPUT_LOCK` and an optional
@@ -43,7 +39,7 @@ resumes (legacy parity self-heal).
 Layer rules: imports only stdlib and ``jarvis.surface.voice_pipeline``
 (sibling module). Does NOT name ``jarvis.decision``, ``jarvis.execution``,
 ``jarvis.deployment``, ``jarvis.runtime``, ``jarvis.cli``.
-``openwakeword``, ``pymicro_wakeword``, ``sounddevice``, and ``numpy`` are
+``pymicro_wakeword``, ``sounddevice``, and ``numpy`` are
 lazy-imported inside methods so this module imports cleanly in test envs that
 omit those wheels.
 """
@@ -65,7 +61,7 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger("jarvis.surface.voice_wake")
 
-# 80 ms at 16 kHz, the frame size openwakeword expects (legacy
+# 80 ms at 16 kHz, the frame the listener reads per poll (legacy
 # core/wake_word.py:113 — `frame_length` property).
 _FRAME_SAMPLES = 1280
 _FRAME_BYTES = _FRAME_SAMPLES * 2  # int16
@@ -80,7 +76,7 @@ _HEAL_SLEEP_S = 2.0
 
 
 class _EnginePort(Protocol):
-    """Subset of :class:`WakeEngine` that :class:`WakeListener` calls."""
+    """Subset of :class:`MicroWakeWordEngine` that :class:`WakeListener` calls."""
 
     def predict(self, frame_bytes: bytes) -> dict[str, float]: ...
     def reset(self) -> None: ...
@@ -112,126 +108,6 @@ class _BroadcasterPort(Protocol):
     def broadcast_voice_sync(
         self, phase: str, *, turn_id: str, **payload: object,
     ) -> None: ...
-
-
-class WakeEngine:
-    """Thin wrapper over :class:`openwakeword.Model`.
-
-    ``openwakeword`` is **lazy-imported** in :meth:`start` so module
-    imports (including unit-test collection) do not require the wheel.
-    The Model file itself is downloaded by openwakeword's bootstrap on
-    first call if missing (legacy ``core/wake_word.py:WakeWordDetector.start``
-    parity).
-
-    Args:
-        model_name: openwakeword model id. Default ``"hey_jarvis_v0.1"``
-            matches ADR §4.2 / §5.1.
-        inference_framework: ``"onnx"`` (default) or ``"tflite"``.
-    """
-
-    def __init__(
-        self,
-        *,
-        model_name: str = "hey_jarvis_v0.1",
-        inference_framework: str = "onnx",
-    ) -> None:
-        """Store config; model itself is constructed in :meth:`start`."""
-        self._model_name = model_name
-        self._inference_framework = inference_framework
-        self._model: object | None = None  # openwakeword.Model lazy
-        self._np_module: object | None = None  # numpy lazy
-
-    @property
-    def model_name(self) -> str:
-        """The model id this engine reports against in ``predict`` output."""
-        return self._model_name
-
-    def start(self) -> None:
-        """Initialize the underlying openwakeword model.
-
-        Downloads the model assets on first run if not already cached
-        (matches legacy ``core/wake_word.py`` behavior). Raises
-        ``RuntimeError`` if the model still cannot be located after a
-        download attempt (ADR §F1 — caller logs ERROR and skips wake
-        thread).
-        """
-        from pathlib import Path  # noqa: PLC0415
-
-        import numpy as np  # noqa: PLC0415
-        import openwakeword  # noqa: PLC0415
-        from openwakeword.model import (  # noqa: PLC0415
-            Model,
-        )
-        from openwakeword.utils import (  # noqa: PLC0415
-            download_models,
-        )
-
-        def _find_model_path() -> str | None:
-            for path in openwakeword.get_pretrained_model_paths(
-                self._inference_framework,
-            ):
-                if self._model_name in path and Path(path).exists():
-                    return str(path)
-            return None
-
-        model_path = _find_model_path()
-        if model_path is None:
-            LOGGER.info(
-                "wake: downloading openwakeword model assets for %s",
-                self._model_name,
-            )
-            download_models([self._model_name])
-            model_path = _find_model_path()
-        if model_path is None:
-            msg = (
-                f"openwakeword model {self._model_name!r} not found for "
-                f"framework={self._inference_framework!r}"
-            )
-            raise RuntimeError(msg)
-
-        self._model = Model(
-            wakeword_models=[model_path],
-            inference_framework=self._inference_framework,
-        )
-        self._np_module = np
-        LOGGER.info(
-            "wake: openwakeword engine started (model=%s, framework=%s)",
-            self._model_name,
-            self._inference_framework,
-        )
-
-    def predict(self, frame_bytes: bytes) -> dict[str, float]:
-        """Run one inference frame through the model.
-
-        Args:
-            frame_bytes: 1280 ``int16`` little-endian PCM samples
-                (2560 bytes; 80 ms at 16 kHz).
-
-        Returns:
-            ``{model_name: probability, ...}`` mapping for every model
-            this engine carries. Empty dict if the engine has not been
-            started (paranoid fallback so the caller's threshold check
-            cleanly returns ``0.0``).
-        """
-        model = self._model
-        np_module = self._np_module
-        if model is None or np_module is None:
-            return {}
-        # ``predict`` accepts a numpy int16 array shaped ``(N,)``.
-        audio = np_module.frombuffer(frame_bytes, dtype=np_module.int16)  # type: ignore[attr-defined]
-        result = model.predict(audio)  # type: ignore[attr-defined]
-        return {str(k): float(v) for k, v in dict(result).items()}
-
-    def reset(self) -> None:
-        """Clear the model's accumulated audio features (post-detection)."""
-        model = self._model
-        if model is not None:
-            model.reset()  # type: ignore[attr-defined]
-
-    def close(self) -> None:
-        """Release model handles (idempotent)."""
-        self._model = None
-        self._np_module = None
 
 
 class MicroWakeWordEngine:
@@ -306,20 +182,6 @@ class MicroWakeWordEngine:
         self._features = None
 
 
-AnyWakeEngine = WakeEngine | MicroWakeWordEngine
-WAKE_ENGINES: tuple[str, ...] = ("openwakeword", "microwakeword")
-
-
-def build_wake_engine(kind: str) -> AnyWakeEngine:
-    """Construct (not start) the wake engine named by ``realtime.wake_engine``."""
-    if kind == "openwakeword":
-        return WakeEngine(model_name="hey_jarvis_v0.1")
-    if kind == "microwakeword":
-        return MicroWakeWordEngine(model_name="hey_jarvis")
-    msg = f"unknown wake engine {kind!r}; expected one of {WAKE_ENGINES}"
-    raise ValueError(msg)
-
-
 class WakeListener:
     """Daemon thread that turns wake detections into voice pipeline turns.
 
@@ -335,7 +197,7 @@ class WakeListener:
 
     Args:
         engine: anything implementing :class:`_EnginePort` (the
-            production wiring uses :class:`WakeEngine`).
+            production wiring uses :class:`MicroWakeWordEngine`).
         pipeline: anything implementing :class:`_PipelinePort` (the
             production wiring uses :class:`voice_pipeline.VoicePipeline`).
         broadcaster: optional :class:`_BroadcasterPort`. ``None`` disables
@@ -349,7 +211,7 @@ class WakeListener:
             returns ``True``, the loop sleeps without polling — ADR §2
             no-barge-in rule.
         model_name: the key into the engine's ``predict`` output dict.
-            Default matches :class:`WakeEngine` default.
+            Must match the engine's :attr:`model_name`.
         frame_factory: optional ``() -> bytes`` returning one frame for
             the engine. Default produces 2560 zero bytes (test-safe; the
             engine's mock decides detections regardless of content).
@@ -372,7 +234,7 @@ class WakeListener:
         capture_callable: Callable[[], bytes],
         threshold: float = 0.5,
         is_speaking_callable: Callable[[], bool] | None = None,
-        model_name: str = "hey_jarvis_v0.1",
+        model_name: str = "hey_jarvis",
         frame_factory: Callable[[], bytes] | None = None,
         ducker: voice_ducking.SystemAudioDucker | None = None,
         mic_muted: Callable[[], bool] | None = None,
@@ -524,8 +386,8 @@ class WakeListener:
         finally:
             # Reset the engine's accumulated features so the next utterance
             # starts clean — this must run on EVERY exit path (capture
-            # failure, pipeline error, or success) so openwakeword's
-            # 16-frame window is never left primed near the wake threshold
+            # failure, pipeline error, or success) so the engine's feature
+            # window is never left primed near the wake threshold
             # (legacy parity: core/inherent_wake_listener.py:117).
             try:
                 self._engine.reset()
@@ -577,4 +439,4 @@ def _interruptible_sleep(stop_event: threading.Event, total_s: float) -> None:
     stop_event.wait(timeout=total_s)
 
 
-__all__ = ["WakeEngine", "WakeListener"]
+__all__ = ["MicroWakeWordEngine", "WakeListener"]
