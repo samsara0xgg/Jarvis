@@ -79,6 +79,8 @@ ignore = [
 # The zh + en language table: its Chinese sentences carry fullwidth
 # punctuation on purpose, and each sentence stays on one line per language.
 "jarvis/shared/lang.py" = ["RUF001", "E501"]
+# The work-state material marks repeat counts with ×, which RUF001 reads as an x.
+"jarvis/decision/work_state.py" = ["RUF001"]
 # Plugin connection errors are user-facing Chinese text.
 "jarvis/runtime/plugin_connections.py" = ["RUF001"]
 # Exact upstream baseline; launcher migration is tracked in UPSTREAM_BASELINE.md.
@@ -95,12 +97,6 @@ ignore = [
 # characters that ASR output contains, so the ambiguous-char lints are
 # noise here (same rationale as sentence_splitter).
 "jarvis/surface/voice_asr.py" = ["RUF001", "RUF003"]
-# The work-state analysis prompt and material headings are Chinese by
-# design (ADR 0023); fullwidth punctuation there is text, not a typo.
-"jarvis/decision/work_state.py" = ["RUF001"]
-# The evidence gather writes its material-limit notes in Chinese (ADR 0023);
-# same fullwidth-punctuation rationale as the prompt above.
-"jarvis/state/work_state.py" = ["RUF001"]
 # The daily report cuts text at Chinese sentence ends and reads Chinese
 # questions; the fullwidth punctuation there is what it matches.
 "jarvis/decision/daily_report.py" = ["RUF001"]
@@ -111,8 +107,6 @@ ignore = [
 "tests/integration/test_daily_report_live.py" = ["RUF001"]
 # Its acceptance test asserts on those Chinese strings verbatim.
 "tests/integration/test_work_state.py" = ["RUF001"]
-# The project sorter's prompt and material are Chinese by design (ADR 0037).
-"jarvis/decision/projects.py" = ["RUF001"]
 "tests/integration/test_projects.py" = ["RUF001"]  # asserts on real Chinese labels verbatim
 "tests/integration/test_projects_live.py" = ["RUF001"]  # spot-checks real Chinese labels
 # Asserts on the Chinese commentary a Live session is sent (ADR 0026).
