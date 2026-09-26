@@ -10,6 +10,7 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import replace
+from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 import pytest
@@ -28,13 +29,24 @@ from tests.integration.test_wave3_single_audio_ingress import (
     _wait_until,
 )
 
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
 _SPEECH = [0, 0, 10_000, 11_000, 12_000, 0, 0, 0, 0, 0]
 
 
 class _Session:
     """One duplex session whose switches the test flips while it runs."""
 
-    def __init__(self, monkeypatch: pytest.MonkeyPatch, *, speaking: bool = False) -> None:
+    def __init__(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        speaking: bool = False,
+        pipeline: _RecordingPipeline | None = None,
+        hold_output: Callable[[bool], None] | None = None,
+        supersede_unspoken: Callable[[str], None] | None = None,
+    ) -> None:
         monkeypatch.setitem(
             voice_audio._MODE_THRESHOLDS,  # noqa: SLF001 - loosened for one-frame onsets
             "record",
@@ -47,7 +59,7 @@ class _Session:
         self.backend = _FakeBackend()
         self.ingress = _ingress(self.backend)
         self.wake_engine = _FakeWakeEngine(detections=set())
-        self.pipeline = _RecordingPipeline()
+        self.pipeline = pipeline or _RecordingPipeline()
         with patch.object(voice_audio, "_load_silero_session", return_value=_EnergySession()):
             self.session = voice_session.DuplexVoiceSession(
                 ingress=self.ingress,
@@ -68,6 +80,8 @@ class _Session:
                 mic_muted=lambda: self.muted,
                 conversation=lambda: self.conversation,
                 stop_speaking=self.stopped.set,
+                hold_output=hold_output,
+                supersede_unspoken=supersede_unspoken,
             )
             assert self.session.start().started
 

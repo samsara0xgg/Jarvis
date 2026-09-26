@@ -137,6 +137,7 @@ from jarvis.runtime import (
     make_barge_in_interrupt_callable,
     make_foreground_decision_callable,
     make_response_cancel_callable,
+    make_supersede_unspoken_callable,
 )
 from jarvis.runtime.inherent_hub import start_inherent_view
 from jarvis.runtime.session_compaction import CompactionSweep, preset_context_length
@@ -3233,6 +3234,22 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
                 # One second on, so the recording also holds what followed the onset.
                 threading.Timer(1.0, _dump_echo_history, args=(echo_canceller,)).start()
 
+        streaming = tts if isinstance(tts, voice_media.StreamingTTSPipeline) else None
+
+        def _hold_output(held: bool) -> None:  # noqa: FBT001 - the capture side's one bit
+            # ADR 0053: while Allen's words are coming in, no run completes and
+            # no queued answer starts playing.
+            if runtime.response_runs is not None:
+                runtime.response_runs.hold_completion(held=held)
+            if streaming is not None:
+                streaming.hold_output(held=held)
+
+        supersede_unspoken = (
+            make_supersede_unspoken_callable(runtime, streaming.drop_unspoken)
+            if streaming is not None and runtime.response_runs is not None
+            else None
+        )
+
         def _dump_echo_history(canceller: voice_aec.EchoCanceller) -> None:
             path = canceller.dump(runtime.runtime_paths.root / "aec-diagnostics")
             if path is not None:
@@ -3250,6 +3267,8 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
             mic_muted=mic_muted,
             conversation=conversation,
             stop_speaking=_stop_speaking,
+            hold_output=_hold_output,
+            supersede_unspoken=supersede_unspoken,
         )
     except Exception:
         LOGGER.exception(

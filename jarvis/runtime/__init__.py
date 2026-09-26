@@ -2055,6 +2055,71 @@ def make_barge_in_interrupt_callable(
     return _interrupt
 
 
+# ADR 0053: a hold that is never released (a lost release) delays an answer by
+# at most this; an utterance itself ends by max_utterance_s (30 s).
+_ALLEN_TALKING_CEILING_S: Final[float] = 60.0
+# How far back a voice sentence still counts as the first half of a split one.
+_SUPERSEDE_WINDOW_S: Final[float] = 10.0
+
+
+def make_supersede_unspoken_callable(
+    runtime: JarvisRuntime,
+    drop_unspoken: Callable[[frozenset[str]], frozenset[str]],
+) -> Callable[[str], None]:
+    """Build the ADR 0053 ``(accepted_turn_id) -> None`` seam.
+
+    Called for a voice utterance just accepted, before its
+    ``utterance.received`` is written. Every other voice turn of the last
+    ``_SUPERSEDE_WINDOW_S`` whose run is still open, whose policy lets its
+    generation be cancelled, and whose answer never reached the speaker is
+    dropped: L5 discards its queued audio (``drop_unspoken``), then the run is
+    cancelled with reason ``superseded``. Its run is open because no run
+    completes while Allen is talking, so nothing of it reaches memory.db and
+    the new turn's prompt folds its words in (ADR 0044).
+    """
+    cancel = make_response_cancel_callable(runtime)
+    registry = runtime.response_runs
+    event_log_path = runtime.runtime_paths.event_log
+
+    def _supersede(turn_id: str) -> None:
+        if registry is None:  # pragma: no cover - wiring pairs the two flags
+            return
+        runs = [
+            run
+            for run in registry.open_runs()
+            if run.phase == "final"
+            and run.turn_id != turn_id
+            and run.interrupt_policy.generation_action == "cancel"
+        ]
+        if not runs:
+            return
+        since_ms = int((time.time() - _SUPERSEDE_WINDOW_S) * 1000)
+        with contextlib.closing(
+            open_runtime_event_log(event_log_path, deadline=time.monotonic() + 1.0),
+        ) as conn:
+            recent = {
+                str(row[0])
+                for row in conn.execute(
+                    "SELECT json_extract(payload_json, '$.turn_id') FROM events "
+                    "WHERE type = 'utterance.received' AND ts_epoch_ms >= ?",
+                    (since_ms,),
+                )
+            }
+        # ponytail: a run that passed the completion hold just before Allen
+        # started talking can complete between this drop and its cancel; its
+        # queued audio is then lost while its row stays. A millisecond window.
+        dropped = drop_unspoken(frozenset(run.turn_id for run in runs) & recent)
+        for run in runs:
+            if run.turn_id in dropped:
+                outcome = cancel(run.response_id, "generation", "superseded")
+                LOGGER.info(
+                    "unspoken answer superseded by %s: turn %s response %s -> %s",
+                    turn_id, run.turn_id, run.response_id, outcome,
+                )
+
+    return _supersede
+
+
 # --- run_turn ---------------------------------------------------------------
 
 
@@ -2754,6 +2819,16 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
         # surface.response_emitted. The opposite ordering is unrecoverable —
         # it would let a cancel land after the words were already spoken.
         if run is not None and terminalizer is not None:
+            # ADR 0053: no answer completes while Allen's words are coming in,
+            # so his next sentence can still drop it unwritten and unheard.
+            registry = runtime.response_runs
+            if registry is not None:
+                hold_ends = time.monotonic() + _ALLEN_TALKING_CEILING_S
+                while (
+                    not registry.wait_completion_allowed(0.05)
+                    and time.monotonic() < hold_ends
+                ):
+                    _raise_if_cancelled("while Allen was talking")
             _raise_if_cancelled("before finalizing")
             run.mark("finalizing")
             completion = terminalizer.complete(
