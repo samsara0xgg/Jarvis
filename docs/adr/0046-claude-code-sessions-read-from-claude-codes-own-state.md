@@ -1,6 +1,6 @@
 # ADR 0046 — Claude Code Sessions Are Read From Claude Code's Own State
 
-**Status:** Accepted
+**Status:** Superseded-by-0049
 **Date:** 2026-09-25
 **Supersedes:** none
 

@@ -91,6 +91,7 @@ from fastapi import (
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ValidationError
 
+from jarvis.surface.claude_hooks import ClaudeHooks
 from jarvis.surface.claude_sessions import ClaudeSessions
 from jarvis.surface.codex_sessions import CodexSession, fold_codex_hook, prune_codex_sessions
 from jarvis.surface.inherent_protocol import (
@@ -1215,13 +1216,30 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0915 — one cl
         rows = sorted(codex_board.values(), key=lambda r: int(r["since_ms"]), reverse=True)
         return {"sessions": rows}
 
-    # ADR 0046: Allen's own Claude Code sessions, read from Claude Code's own state.
+    # ADR 0046: Allen's own Claude Code sessions, read from Claude Code's own state;
+    # ADR 0049: with the prompts Jarvis holds for them and their compacting / stopped marks.
     claude_board = ClaudeSessions()
+    claude_hooks = ClaudeHooks()
 
     @app.get("/inherent/claude-sessions")
     async def claude_sessions() -> dict[str, Any]:
         """Newest-first Claude Code session rows for the Resonance Agents page."""
-        return await asyncio.to_thread(claude_board.read)
+        return claude_hooks.merge(await asyncio.to_thread(claude_board.read))
+
+    @app.post("/inherent/claude-hook", status_code=200)
+    async def claude_hook(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+        """ADR 0049: the body is the hook's stdout; ``{}`` is no decision."""
+        if payload.get("hook_event_name") == "PermissionRequest":
+            return await claude_hooks.permission(payload, request.is_disconnected)
+        claude_hooks.event(payload)
+        return {}
+
+    @app.post("/inherent/claude-requests/{request_id}", status_code=200)
+    async def claude_request_answer(request_id: str, body: dict[str, Any]) -> dict[str, bool]:
+        """ADR 0049: Allen's answer from the notice card; 404 once the prompt is gone."""
+        if not claude_hooks.answer(request_id, body):
+            raise HTTPException(status_code=404, detail="that prompt is no longer waiting")
+        return {"ok": True}
 
     @app.post("/inherent/image-submit", status_code=501)
     async def image_submit() -> None:
