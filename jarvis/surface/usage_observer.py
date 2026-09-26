@@ -167,18 +167,45 @@ def _claude_plan_label(oauth: Mapping[str, Any]) -> str:
     return str(oauth.get("subscriptionType") or "").title() or "?"
 
 
+# The route reports limit resets (its `cedar_ember` block) only to the claude_code_cli surface,
+# which it reads from Claude Code's own client headers; without them the block says
+# `ineligible_reason: "surface"`. ponytail: the version is pinned; read it from the installed
+# Claude Code if the route ever starts gating on it.
+CLAUDE_CLI_HEADERS: Final[dict[str, str]] = {
+    "User-Agent": "claude-cli/2.1.283 (external, cli)",
+    "x-app": "cli",
+}
+
+
+def _claude_resets(block: object) -> dict[str, Any]:
+    """Limit resets left and the last day to use them; nothing when none are on offer."""
+    if not isinstance(block, dict) or not block.get("eligible"):
+        return {}
+    grants = [
+        grant
+        for grant in block.get("grants") or []
+        if isinstance(grant, dict) and int(grant.get("resets_left") or 0) > 0
+    ]
+    ends = [end for grant in grants if (end := _iso_seconds(grant.get("ends_at")))]
+    return {
+        "reset_credits": sum(int(grant["resets_left"]) for grant in grants),
+        "reset_ends_at": min(ends, default=None),
+    }
+
+
 def collect_claude(*, timeout_s: float) -> UsageSnapshot:
-    """claude.ai subscription windows: 5h, 7d total, 7d per model."""
+    """claude.ai subscription windows (5h, 7d total, 7d per model) and the limit resets left."""
     creds = _read_claude_credentials()
     oauth = (creds or {}).get("claudeAiOauth") if creds else None
     if not oauth or not oauth.get("accessToken"):
         return UsageSnapshot("claude", "unconfigured", {}, "no Claude Code login")
     try:
         body = _get_json(
-            "https://api.anthropic.com/api/oauth/usage",
+            "https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1",
             {
                 "Authorization": f"Bearer {oauth['accessToken']}",
                 "anthropic-beta": "oauth-2025-04-20",
+                **CLAUDE_CLI_HEADERS,
             },
             timeout_s=timeout_s,
         )
@@ -212,7 +239,13 @@ def collect_claude(*, timeout_s: float) -> UsageSnapshot:
             }
         )
     return UsageSnapshot(
-        "claude", "ok", {"plan": _claude_plan_label(oauth), "windows": windows[:MAX_ROWS]}
+        "claude",
+        "ok",
+        {
+            "plan": _claude_plan_label(oauth),
+            "windows": windows[:MAX_ROWS],
+            **_claude_resets(body.get("cedar_ember")),
+        },
     )
 
 
