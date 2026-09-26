@@ -3,8 +3,8 @@
 ## Status
 
 Active. This is the current operating scope of Jarvis — single Mac domain,
-no RPi / smart-home / cross-domain. RPi expansion is reserved for after the
-Mac loop stabilises.
+no RPi / cross-domain; smart home is only Hue lights through the Mac's hue
+plugin (ADR 0058). RPi expansion is reserved for after the Mac loop stabilises.
 
 See [`spec.html`](spec.html) for the canonical federated 6-layer specification.
 

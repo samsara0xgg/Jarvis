@@ -250,6 +250,11 @@ tools:
   # 没登录时直接报错，不从守护进程弹浏览器。在 settings.yaml 的
   # tools.plugins 里打开后跑一次 `python -m jarvis mcp-login gmail`，浏览器里
   # 授权后把页面上的 JSON 粘回终端。
+  # hue（ADR 0058）用 uvx 跑 PyPI 的 huemcp，只连局域网里的 bridge，要
+  # HUE_BRIDGE_HOST 和 HUE_APPLICATION_KEY（插件页填或写进 ~/.jarvis/env）。
+  # 没有 key 就按一下 bridge 上的配对键，再 30 秒内
+  # `curl -k -X POST https://<bridge>/api -d '{"devicetype":"jarvis#mac","generatekey":true}'`，
+  # 回来的 username 就是 key。
   # 出厂一个都不开，用户自己在 settings.yaml 或桌面插件页打开。
   plugins: {}
   # ADR 0031 — MCP servers。每个条目在启动时连上，它列出的工具以

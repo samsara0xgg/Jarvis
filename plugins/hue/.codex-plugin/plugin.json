@@ -1,0 +1,28 @@
+{
+  "name": "hue",
+  "version": "0.1.0",
+  "description": "Turn Philips Hue lights, rooms and zones on and off, dim them, change their colour and recall scenes, through the bridge on your home network.",
+  "homepage": "https://github.com/mbruton/HueMCP",
+  "license": "MIT",
+  "keywords": [
+    "hue",
+    "philips hue",
+    "lights",
+    "lamp",
+    "smart home",
+    "scene",
+    "brightness",
+    "colour"
+  ],
+  "interface": {
+    "displayName": "Philips Hue",
+    "shortDescription": "Control your Hue lights",
+    "developerName": "HueMCP",
+    "category": "Home",
+    "logo": "./assets/hue.png",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ]
+  }
+}
