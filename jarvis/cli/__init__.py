@@ -72,7 +72,7 @@ LOGGER = logging.getLogger("jarvis.cli")
 
 _PROG = "python -m jarvis"
 _DESC = (
-    "Allen's state-centric personal runtime — Day-2 fork-detach CLI. "
+    "A state-centric personal runtime — Day-2 fork-detach CLI. "
     "Long-run utterances ack then fork-detach; synchronous utterances "
     "run inline as in Day-1. Pass an utterance string; Jarvis emits "
     "surface.user_intent, drives the decide() loop, and writes the "

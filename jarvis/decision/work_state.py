@@ -23,11 +23,11 @@ _MAX_LINKS = 8
 _MAX_UNCERTAINTIES = 6
 _MAX_TEXT = 300
 
-SYSTEM_PROMPT = """你是 Jarvis 的工作状态分析员。根据给定材料判断 Allen 最近在做什么、\
+SYSTEM_PROMPT = """你是 Jarvis 的工作状态分析员。根据给定材料判断用户最近在做什么、\
 今天主要做了什么、以及哪些待办或先前讨论与之相关，并用 report_work_state 汇报。
 
 规则：
-- 每条结论都必须标明依据类型 basis：stated = Allen 自己在对话记录或补充说明里明确说过；\
+- 每条结论都必须标明依据类型 basis：stated = 用户自己在对话记录或补充说明里明确说过；\
 observed = 应用、窗口、屏幕文字等实际观察；inferred = 你根据上下文做的推断。
 - refs 只能填材料里出现过的方括号键（如 s12、a3、r2、t1、k1、g1、u1），不要编造。
 - 打开过某个窗口不等于完成任务；不要宣称任何待办已完成，只描述有证据的进展。
@@ -122,7 +122,7 @@ def render_material(evidence: Evidence, *, previous: dict[str, Any] | None) -> s
     if evidence.limits:
         out += ["## 材料范围说明", *(f"- {limit}" for limit in evidence.limits), ""]
     if evidence.note:
-        out += ["## Allen 的补充说明（stated）", f"[u1] {evidence.note}", ""]
+        out += ["## 用户的补充说明（stated）", f"[u1] {evidence.note}", ""]
     out += _lines("今天各应用时长（分钟，估计）", sections.get("apps", []), "- {app}: {minutes}")
     out += _lines(
         "今天的主要窗口（应用 — 窗口标题，分钟，首次-最后）",
@@ -155,7 +155,7 @@ def render_material(evidence: Evidence, *, previous: dict[str, Any] | None) -> s
         "[{key}] {at} {who}: {text}",
     )
     out += _lines(
-        "近两天的对话记录（时间顺序；who=allen 为 Allen 的原话）",
+        "近两天的对话记录（时间顺序；who=allen 为用户的原话）",
         sections.get("records", []),
         "[{key}] {at} {who}: {text}",
     )
@@ -182,7 +182,7 @@ def build_request(
     evidence: Evidence, *, question: str | None, previous: dict[str, Any] | None
 ) -> tuple[str, list[dict[str, Any]]]:
     """System prompt plus the single user message; the caller supplies ``REPORT_TOOL``."""
-    ask = f"\n\nAllen 现在问的是：{question}" if question else ""
+    ask = f"\n\n用户现在问的是：{question}" if question else ""
     if question and evidence.terms:
         ask += f"（检索关键词：{'、'.join(evidence.terms)}）"
     content = (

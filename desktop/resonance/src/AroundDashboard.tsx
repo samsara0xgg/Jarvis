@@ -482,7 +482,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
     },
     projects: () => <>
       {back('Projects', 'last 7 days')}
-      <div className="pg-body">{projects.missing ? <p className="pg-sec muted">No projects set up. List them under projects in config/jarvis.yaml.</p> : !projectsView ? <p className="pg-sec muted">Syncing…</p> : <>
+      <div className="pg-body">{projects.missing ? <p className="pg-sec muted">No projects set up. List them under projects in ~/.jarvis/settings.yaml.</p> : !projectsView ? <p className="pg-sec muted">Syncing…</p> : <>
         {activeProjects.map(p => <article className="pg-sec pj" key={p.id}>
           <div className="pj-top"><b>{p.name}</b><span>{duration(p.seconds)}{p.commits.count ? ` · ${p.commits.count} commits` : ''}</span></div>
           <Cols days={p.days} dates={projectsView.days}/>

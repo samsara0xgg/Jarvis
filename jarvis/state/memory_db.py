@@ -55,6 +55,8 @@ CREATE TABLE IF NOT EXISTS summaries (
 
 DEFAULT_SEARCH_LIMIT: Final[int] = 20
 _WEEKDAYS: Final[str] = "一二三四五六日"
+# The Live brief's label for the user's own rows; the stored source stays ``allen``.
+_USER_LABEL: Final[str] = "用户"
 # The 时间 line carries a "距上次交流" suffix once the gap passes this.
 _GAP_NOTE_AFTER: Final[timedelta] = timedelta(minutes=30)
 
@@ -159,7 +161,7 @@ class SessionSettings:
 class MemoryContext(NamedTuple):
     """The prompt blocks rendered from memory.db for one turn."""
 
-    profile: str  # [关于 Allen] lines for the system prompt; "" when the profile is empty
+    profile: str  # [关于用户] lines for the system prompt; "" when the profile is empty
     history: tuple[dict[str, str], ...]  # summary, then one message per record, by role
     now: str  # the time line: changes every turn, so it goes after the history
 
@@ -375,7 +377,7 @@ def render_context(
         current = _current_summary(conn)
         anchor = _effective_anchor(conn, current.anchor_rowid if current else None, since)
         records = _records_after(conn, anchor)
-    profile_block = "\n".join(["[关于 Allen]", *profile]) if profile else ""
+    profile_block = "\n".join(["[关于用户]", *profile]) if profile else ""
     turns: list[dict[str, str]] = []
     if current is not None:
         _append_turn(
@@ -429,13 +431,16 @@ def brief_note(path: Path, *, max_chars: int, now: datetime | None = None) -> st
         [f"[对话摘要 · 覆盖到 {current.anchor_ts} · 原话细节请向后台查询]"] if current else []
     )
     sections = _summary_sections(current.summary) if current else []
-    record_lines = [f"[{ts}] {source}: {text}" for _, ts, source, text in records]
+    record_lines = [
+        f"[{ts}] {_USER_LABEL if source == 'allen' else source}: {text}"
+        for _, ts, source, text in records
+    ]
     now_line = _now_line(moment, records[-1][1] if records else None)
 
     def _assemble() -> str:
         return "\n".join(
             [
-                "[关于 Allen]",
+                "[关于用户]",
                 *profile,
                 now_line,
                 *summary_head,

@@ -670,7 +670,7 @@ def _revalidate_confirmation(  # noqa: C901, PLR0912, PLR0915 - fail-closed matr
         msg = "authorization lease expired before claim"
         raise ConfirmationRevalidationError(msg)
     if lease["granted_by"] != "allen":
-        msg = "authorization lease was not granted by Allen"
+        msg = "authorization lease was not granted by the user"
         raise ConfirmationRevalidationError(msg)
     if lease["reason"] != slot.template_line:
         msg = "authorization lease reason differs from the confirmed template"

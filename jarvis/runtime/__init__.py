@@ -61,7 +61,7 @@ from jarvis.decision import (
 )
 from jarvis.decision.confirm_grammar import ConfirmGrammarConfigError, load_confirm_grammar
 from jarvis.decision.cost_guard import CostRecorder
-from jarvis.decision.llm import LLMClient, load_llm_config
+from jarvis.decision.llm import LLMClient
 from jarvis.decision.llm_session import LLMSessionFactory
 from jarvis.decision.packet import assemble_packet
 from jarvis.decision.policy import (
@@ -500,14 +500,56 @@ def _locate_repo_root(start: Path) -> Path:
     raise RuntimeBootstrapError(msg)
 
 
-def _load_full_config(path: Path) -> Mapping[str, Any]:
-    """Parse the entire YAML config file (not just the ``llm:`` block)."""
+def _read_yaml_mapping(path: Path) -> dict[str, Any]:
     with path.open("r", encoding="utf-8") as fh:
         raw = yaml.safe_load(fh) or {}
     if not isinstance(raw, dict):
         msg = f"config at {path} is not a YAML mapping"
         raise RuntimeBootstrapError(msg)
     return raw
+
+
+def _overlay(base: Mapping[str, Any], top: Mapping[str, Any]) -> dict[str, Any]:
+    """``top`` over ``base``: mappings merge key by key, any other value replaces."""
+    merged = dict(base)
+    for key, value in top.items():
+        below = merged.get(key)
+        if isinstance(below, Mapping) and isinstance(value, Mapping):
+            merged[key] = _overlay(below, value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _load_full_config(path: Path, settings_path: Path | None = None) -> Mapping[str, Any]:
+    """The shipped config at ``path`` with the user's own settings laid over it.
+
+    ``config/jarvis.yaml`` holds what every install shares; the runtime
+    root's ``settings.yaml`` holds this user's values (projects, watched
+    repos, timezone, vault, ...). A missing settings file changes nothing.
+    """
+    raw = _read_yaml_mapping(path)
+    if settings_path is not None and settings_path.is_file():
+        raw = _overlay(raw, _read_yaml_mapping(settings_path))
+    name = _assistant_name(raw)
+    return {key: _named(value, name) for key, value in raw.items()}
+
+
+def _assistant_name(config: Mapping[str, Any]) -> str:
+    """``assistant_name`` — what the user calls the assistant; ``Jarvis`` when unset."""
+    name = config.get("assistant_name")
+    return name.strip() if isinstance(name, str) and name.strip() else "Jarvis"
+
+
+def _named(value: Any, name: str) -> Any:  # noqa: ANN401 — any YAML value.
+    """Put the assistant's name in for every ``{assistant}`` in the config's strings."""
+    if isinstance(value, str):
+        return value.replace("{assistant}", name)
+    if isinstance(value, Mapping):
+        return {key: _named(item, name) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_named(item, name) for item in value]
+    return value
 
 
 def _positive_float(value: object, fallback: float) -> float:
@@ -1445,7 +1487,7 @@ def mcp_login(
         repo_root = config_path.resolve().parent.parent
     paths = bootstrap_runtime(runtime_root)
     load_env_file(paths.root)
-    config = _load_full_config(config_path)
+    config = _load_full_config(config_path, paths.settings)
     block = _mcp_block(config)
     servers = _all_mcp_servers(config, _plugins(config, repo_root))
     spec = servers.get(server)
@@ -1564,7 +1606,7 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
     #    need `tools.obsidian.vault_root` / `tools.web.*` threaded into
     #    the registry at build time (ADR-0011 D7) — L4 handlers do not
     #    load YAML themselves.
-    full_config = _load_full_config(config_path)
+    full_config = _load_full_config(config_path, paths.settings)
     wave1_features = _wave1_feature_flags(full_config)
     (
         web_search_max_results,
@@ -1715,7 +1757,10 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
         raise RuntimeBootstrapError(msg) from exc
 
     # 4. L3 LLM client. `full_config` was already loaded at step 3 above.
-    llm_config = load_llm_config(config_path)
+    llm_config = full_config.get("llm")
+    if not isinstance(llm_config, Mapping):
+        msg = f"runtime: {config_path} has no 'llm' section"
+        raise RuntimeBootstrapError(msg)
     llm_client = LLMClient(llm_config)
 
     # 4b. ADR-0008 Step 2 (Wave 4A). The whole flag graph is resolved once,
@@ -1740,7 +1785,9 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
     )
 
     # Plugin skills are sampled per turn so connections need no daemon restart.
-    system_prompt = prompt_path.read_text(encoding="utf-8")
+    system_prompt = prompt_path.read_text(encoding="utf-8").replace(
+        "{assistant}", _assistant_name(full_config)
+    )
     plugin_connections.publish_event = (
         committed_event_bus.publish if committed_event_bus is not None else None
     )

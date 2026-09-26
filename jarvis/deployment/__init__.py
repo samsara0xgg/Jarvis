@@ -70,6 +70,11 @@ class RuntimePaths:
     registry: Path
     inherent_v2_token: Path
 
+    @property
+    def settings(self) -> Path:
+        """This user's own settings at `${root}/settings.yaml`, laid over the shipped config."""
+        return self.root / "settings.yaml"
+
     def pending_write_path(self, confirmation_id: str) -> Path:
         """Return the staging path for a pending write's content (ADR-0012 §3 D3).
 

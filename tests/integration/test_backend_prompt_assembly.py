@@ -100,7 +100,7 @@ def test_history_replays_records_by_role_from_since(tmp_path: Path) -> None:
 
     ctx = render_context(db, exclude_id="new-6", since=SINCE, now=NOW)
 
-    assert ctx.profile == "[关于 Allen]\n- 用户叫 Allen。\n- 默认用中文。"
+    assert ctx.profile == "[关于用户]\n- 用户叫 Allen。\n- 默认用中文。"
     # ADR 0044: words only, no [ts] source: label; one date line opens a day.
     assert ctx.history == (
         {"role": "user", "content": "[9月15日 周二]\n明天天气怎么样"},
@@ -196,7 +196,7 @@ def _drive_one_turn(
         tool_registry=cast("ToolRegistryLike", build_default_registry()),
         lifecycle=cast("LifecycleLike", ActionLifecycle()),
         llm_client=cast("LLMClient", llm),
-        system_prompt="stub system prompt\n\n[关于 Allen]\n- 用户叫 Allen。",
+        system_prompt="stub system prompt\n\n[关于用户]\n- 用户叫 Allen。",
         history=history,
         time_note="时间：2026-09-21T15:37-07:00 周一",  # noqa: RUF001 — Chinese punctuation is intentional.
     )
@@ -222,7 +222,7 @@ def test_turn_request_is_history_by_role_then_one_user_message_with_status(
     """One turn hands the model the history as turns, then one user message with the state."""
     system, messages = _drive_one_turn(tmp_path, HISTORY)
 
-    assert system.endswith("[关于 Allen]\n- 用户叫 Allen。")
+    assert system.endswith("[关于用户]\n- 用户叫 Allen。")
     assert [message["role"] for message in messages] == ["user", "assistant", "user"]
     assert messages[:2] == list(HISTORY)
     assert messages[2]["content"] == f"{STATUS}\n后天呢"

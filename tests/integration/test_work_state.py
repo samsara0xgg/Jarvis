@@ -429,7 +429,7 @@ def test_different_question_during_analysis_is_answered_separately(rig: Rig) -> 
     assert rig.analyst.calls == 2
     assert sorted(r["state"]["version"] for r in results) == [1, 2]
     assert not any(r.get("joined") for r in results)
-    assert "Allen 现在问的是：之前说的 TimeSink 进展如何" in rig.analyst.materials[1]
+    assert "用户现在问的是：之前说的 TimeSink 进展如何" in rig.analyst.materials[1]
     assert current_state(rig.fx.conn)["question"] == "之前说的 TimeSink 进展如何"  # type: ignore[index]
 
 
@@ -531,7 +531,7 @@ def test_request_and_parse_round_trip(rig: Rig) -> None:
     evidence = rig.evidence(question="进展如何")
     system, messages = build_request(evidence, question="进展如何", previous=None)
     assert "report_work_state" in system
-    assert "Allen 现在问的是：进展如何" in messages[0]["content"]
+    assert "用户现在问的是：进展如何" in messages[0]["content"]
     assert len(messages[0]["content"]) < 20000
     text_only = ChatResult(
         text='```json\n{"now": null, "activities": [], "links": [], "uncertainties": ["无"]}\n```',

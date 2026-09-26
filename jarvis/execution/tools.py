@@ -662,8 +662,8 @@ _MEMO_MAX_CHARS: Final[int] = 2000
 
 @tool(
     description=(
-        "Save a short memo to Allen's memo inbox for later review. "
-        "Use when Allen says '记一下 X' / '备忘 X'."
+        "Save a short memo to the user's memo inbox for later review. "
+        "Use when the user says '记一下 X' / '备忘 X'."
     ),
     input_schema={
         "type": "object",
@@ -814,7 +814,7 @@ _OPEN_PATH_INPUT_SCHEMA: Final[Mapping[str, Any]] = {
 
 @tool(
     description=(
-        "Open a file or folder on Allen's Mac by spoken name (bookmark "
+        "Open a file or folder on the user's Mac by spoken name (bookmark "
         "alias, partial filename, or description). Use for '打开 X' / "
         "'用 VS Code 打开 X' requests."
     ),
@@ -826,7 +826,7 @@ _OPEN_PATH_INPUT_SCHEMA: Final[Mapping[str, Any]] = {
     # resolve-then-act contract internally — it *is* a resolver caller.
 )
 def open_path(args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
-    """Open a file or folder on Allen's Mac by spoken name (spec §17 companion tool).
+    """Open a file or folder on the user's Mac by spoken name (spec §17 companion tool).
 
     "打开 X" / "用 VS Code 打开 X" — the query is resolved via
     :func:`jarvis.execution.path_resolver.resolve` (pure, no events; see
@@ -1145,7 +1145,7 @@ def _make_search_notes_handler(vault_root: Path) -> ToolHandler:  # noqa: C901 �
         if not vault_root.is_dir():
             payload: dict[str, Any] = {
                 "results": [],
-                "note": f"vault root not found: {vault_root} (Allen may have renamed it)",
+                "note": f"vault root not found: {vault_root} (the vault may have been renamed)",
             }
             return _emit_tool_observation(
                 conn=conn,
