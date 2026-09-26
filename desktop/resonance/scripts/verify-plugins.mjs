@@ -45,6 +45,9 @@ try {
     return card.width === 276 && card.height === 418 && Math.abs(card.y - viewport.y) < 1;
   }));
   check('opening plugins does not grow the native window', JSON.stringify(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getBounds())) === JSON.stringify(windowBefore));
+  await page.locator('.plugin-row', { hasText: 'GitHub' }).locator('img[src^="data:image/png;base64,"]').waitFor();
+  check('a plugin with a manifest logo shows it; one without keeps the built-in mark', await page.locator('.plugin-row', { hasText: 'Linear' }).locator('img').count() === 0
+    && await page.locator('.plugin-row', { hasText: 'GitHub' }).locator('img').evaluate(img => img.naturalWidth === 256));
   await shot('dashboard-catalog');
   await click('返回主界面'); await selected('overview'); await settle();
   check('return restores the scrolled grid and plugin tile focus', await page.locator('.dashboard-viewport').evaluate((node, expected) => node.scrollTop === expected.scroll && node.clientHeight === expected.height, origin) && await tile.evaluate(node => node === document.activeElement));

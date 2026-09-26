@@ -50,9 +50,24 @@ export function usePlugins() {
   return { snapshot, error, busy, action, refresh: load };
 }
 
+// A plugin's own logo from its manifest, fetched once per session rather than on every poll.
+const icons = new Map<string, Promise<string | null>>();
+export function usePluginIcon(id: string) {
+  const [src, setSrc] = useState<string | null>(null);
+  useEffect(() => {
+    if (!window.jarvis?.plugins) return;
+    let live = true;
+    if (!icons.has(id)) icons.set(id, window.jarvis.plugins('icon', { plugin_id: id }).then(r => (r as unknown as { icon: string | null }).icon, () => { icons.delete(id); return null; }));
+    void icons.get(id)!.then(icon => { if (live) setSrc(icon); });
+    return () => { live = false; };
+  }, [id]);
+  return src;
+}
+
 function PluginIcon({ plugin, small = false }: { plugin: Plugin; small?: boolean }) {
+  const src = usePluginIcon(plugin.id);
   return <span className={`plugin-icon ${small ? 'is-small' : ''} plugin-icon-${plugin.id}`} aria-hidden="true">
-    {plugin.id === 'github' ? <GithubLogo weight="fill"/> : plugin.id === 'linear' ? <svg viewBox="0 0 32 32"><defs><clipPath id={`linear-${small}`}><circle cx="16" cy="16" r="14"/></clipPath></defs><circle cx="16" cy="16" r="14" fill="currentColor"/><g clipPath={`url(#linear-${small})`} stroke="var(--surface-drag)" strokeWidth="2.3"><path d="M-2 7 25 34M-5 12 20 37M-8 17 15 40M-11 22 10 43"/></g></svg> : plugin.id === 'notion' ? <span className="notion-letter">N</span> : <Plugs/>}
+    {src ? <img src={src} alt=""/> : plugin.id === 'github' ? <GithubLogo weight="fill"/> : plugin.id === 'linear' ? <svg viewBox="0 0 32 32"><defs><clipPath id={`linear-${small}`}><circle cx="16" cy="16" r="14"/></clipPath></defs><circle cx="16" cy="16" r="14" fill="currentColor"/><g clipPath={`url(#linear-${small})`} stroke="var(--surface-drag)" strokeWidth="2.3"><path d="M-2 7 25 34M-5 12 20 37M-8 17 15 40M-11 22 10 43"/></g></svg> : plugin.id === 'notion' ? <span className="notion-letter">N</span> : <Plugs/>}
   </span>;
 }
 const statusText = (p: Plugin) => !p.supported ? '暂不支持' : p.status === 'ready' ? '已连接' : p.status === 'authorizing' ? '等待授权' : p.status === 'connecting' ? '正在连接' : p.status === 'needs_auth' ? '待授权' : p.status === 'error' ? '连接异常' : p.status === 'disabled' ? '已停用' : '未连接';

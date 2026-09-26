@@ -8,7 +8,7 @@ import { duration, useProjects } from './ProjectsModule';
 import { fmtReset } from './quota-time';
 import { plain, visible, type Row } from './model';
 import { Markdown } from './Markdown';
-import type { Plugin, PluginRequest, usePlugins } from './PluginPanel';
+import { usePluginIcon, type Plugin, type PluginRequest, type usePlugins } from './PluginPanel';
 import './dashboard-around.css';
 
 // The Dashboard around her: one column under the companion, her words first. A row grows into its
@@ -100,6 +100,10 @@ const DEMO_PLUGINS: Record<string, DemoPlugin> = {
   github: { name: 'GitHub', mark: 'G', kind: 'token', about: 'Repositories, issues and pull requests.', state: 'token', toolCount: 21, tools: ['search_issues', 'get_pull_request', 'create_issue', 'list_commits', '…17 more'] },
   linear: { name: 'Linear', mark: 'L', kind: 'none', about: 'Issues and projects.', state: 'off', toolCount: 8, tools: ['list_issues', 'create_issue', 'update_issue', '…5 more'] },
 };
+function Mark({ id, mark }: { id: string; mark: string }) {
+  const src = usePluginIcon(id);
+  return src ? <img src={src} alt=""/> : <>{mark}</>;
+}
 const pluginStatus = (p: DemoPlugin): [string, string] => p.unsupported ? ['', 'Not supported'] : p.state === 'on' ? ['is-on', 'Connected']
   : p.error && p.state !== 'connecting' ? ['is-need', 'Connection problem']
   : p.state === 'connecting' ? ['is-need', p.kind === 'oauth' ? 'Waiting for sign-in…' : 'Connecting…']
@@ -443,7 +447,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
             {live?.error && <p className="pg-sec is-warm">{live.error}</p>}
             {live && !snapshot && !live.error && <p className="pg-sec muted">Loading plugins…</p>}
             <div className="pg-sec pl-list">{shown.map(id => { const [cls, text] = pluginStatus(plugins[id]);
-              return <button key={id} className="pl-row" data-plugin={id} disabled={live?.busy} onClick={() => void openPlugin(id)}><span className={`pl-ic mk-${id}`}>{plugins[id].mark}</span><span className="pl-name">{plugins[id].name}<small className={cls}>{text}</small></span><CaretRight size={12}/></button>; })}</div>
+              return <button key={id} className="pl-row" data-plugin={id} disabled={live?.busy} onClick={() => void openPlugin(id)}><span className={`pl-ic mk-${id}`}><Mark id={id} mark={plugins[id].mark}/></span><span className="pl-name">{plugins[id].name}<small className={cls}>{text}</small></span><CaretRight size={12}/></button>; })}</div>
             {!shown.length && (!live || snapshot) && <p className="muted">No plugins match.</p>}
             <p className="pg-sec muted">Plugins let Jarvis read and act in your apps. It asks before it writes, unless you change that.</p>
           </div>}</div>
@@ -495,7 +499,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
         <div className="tiles">
           <button className="row tile" data-row="plugins" aria-label="Open Plugins" onClick={() => openPage('plugins')}>
             <span className="head"><span className="label">Plugins</span><span className="meta">{pluginsOn} on</span></span>
-            <span className="pl-mini">{pluginIds.slice(0, 4).map(id => <i key={id} className={`mk-${id} ${plugins[id].state === 'on' ? 'on' : plugins[id].state === 'off' ? 'off' : 'need'}`} title={`${plugins[id].name}: ${pluginStatus(plugins[id])[1]}`}>{plugins[id].mark}</i>)}</span>
+            <span className="pl-mini">{pluginIds.slice(0, 4).map(id => <i key={id} className={`mk-${id} ${plugins[id].state === 'on' ? 'on' : plugins[id].state === 'off' ? 'off' : 'need'}`} title={`${plugins[id].name}: ${pluginStatus(plugins[id])[1]}`}><Mark id={id} mark={plugins[id].mark}/></i>)}</span>
           </button>
           <button className="row tile" data-row="projects" aria-label="Open Projects" onClick={() => openPage('projects')}>
             <span className="head"><span className="label">Projects</span><span className="meta">7 d</span></span>
@@ -592,7 +596,7 @@ function AgentRow({ s, open, onToggle, onOpen, onHide, actions }: { s: Agent; op
 }
 
 function PluginDetail({ id, p, token, onToken, onAct }: { id: string; p: DemoPlugin; token: string; onToken: (value: string) => void; onAct: (act: string, value?: string) => void }) {
-  const top = <><div className="pg-sec pl-id"><span className={`pl-ic lg mk-${id}`}>{p.mark}</span><h5>{p.name}</h5><p>{p.about}</p>{p.state === 'on' && <span className="pill is-new">Connected</span>}</div>
+  const top = <><div className="pg-sec pl-id"><span className={`pl-ic lg mk-${id}`}><Mark id={id} mark={p.mark}/></span><h5>{p.name}</h5><p>{p.about}</p>{p.state === 'on' && <span className="pill is-new">Connected</span>}</div>
     {p.error && p.state !== 'on' && p.state !== 'connecting' && <p className="pg-sec is-warm" role="alert">{p.error}</p>}</>;
   if (p.unsupported) return <>{top}<p className="pg-sec muted">{p.unsupported}</p></>;
   const act = (name: string, label: string, className = 'btn-text') => <button className={className} onClick={() => onAct(name)}>{label}</button>;

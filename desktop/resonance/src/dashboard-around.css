@@ -83,6 +83,9 @@
 .ad .mk-microsoft { --bg:#2f63d0; }
 .ad .mk-github { --bg:#2b3038; }
 .ad .mk-linear { --bg:#5e6ad2; }
+/* A manifest logo replaces the letter; logos are drawn for a light tile. */
+.ad :is(.pl-ic, .pl-mini i):has(> img) { background:#fff; }
+.ad :is(.pl-ic, .pl-mini i) > img { width:80%; height:80%; object-fit:contain; }
 /* Home rows arrive one after another when the Dashboard opens. */
 .companion-dashboard.is-open .ad .overview > * { animation:ad-rise .32s cubic-bezier(.2,.7,.2,1) backwards; }
 .companion-dashboard.is-open .ad .overview > :nth-child(2) { animation-delay:40ms; }

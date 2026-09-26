@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import time
 import urllib.request
@@ -334,5 +335,44 @@ def test_desktop_routes_require_local_credential_and_reject_stale_commands(
                 json={"operation": "connect", "data": {"request_id": "old"}},
             )
             assert bad.status_code == 400
+    finally:
+        service.stop()
+
+
+def test_icon_route_serves_the_manifest_logo_from_inside_the_package(
+    tmp_path: Path, fixture: _Fixture
+) -> None:
+    """The panel gets each package's own logo; a logo path out of the package reads nothing."""
+    png = b"\x89PNG\r\n\x1a\nlogo"
+    (tmp_path / "outside.png").write_bytes(b"\x89PNG\r\n\x1a\nnot the plugin's")
+    for name, logo in (("shown", "./assets/logo.png"), ("escape", "../../outside.png")):
+        _package(tmp_path, name, {})
+        manifest = tmp_path / "plugins" / name / ".codex-plugin/plugin.json"
+        manifest.write_text(json.dumps({"name": name, "interface": {"logo": logo}}))
+    (tmp_path / "plugins/shown/assets").mkdir()
+    (tmp_path / "plugins/shown/assets/logo.png").write_bytes(png)
+    service = _service(tmp_path, fixture)
+    deps = InherentDeps(
+        submit_callable=lambda _text: None,
+        broadcaster=InherentBroadcaster(),
+        plugin_read=service.read,
+        plugin_action=service.action,
+        plugin_authorize=service.settings.matches,
+        plugin_icon=service.icon,
+    )
+    try:
+        with TestClient(create_app(deps)) as client:
+            assert client.get("/inherent/plugins/shown/icon").status_code == 401
+            token = json.loads((fixture.paths.root / "plugin-access.json").read_text())["token"]
+            headers = {"Authorization": f"Bearer {token}"}
+
+            def icon(plugin_id: str) -> object:
+                response = client.get(f"/inherent/plugins/{plugin_id}/icon", headers=headers)
+                assert response.status_code == 200
+                return response.json()["icon"]
+
+            assert icon("shown") == f"data:image/png;base64,{base64.b64encode(png).decode()}"
+            assert icon("escape") is None
+            assert icon("nobody") is None
     finally:
         service.stop()

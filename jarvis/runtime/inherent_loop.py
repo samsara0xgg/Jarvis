@@ -4860,6 +4860,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             plugin_authorize=(
                 runtime.plugin_connections.settings.matches if runtime.plugin_connections else None
             ),
+            plugin_icon=runtime.plugin_connections.icon if runtime.plugin_connections else None,
             cancel_response_callable=cancel_response_callable,
             controls=controls,
             live=live_voice,

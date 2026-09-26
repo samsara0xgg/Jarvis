@@ -206,6 +206,11 @@ class PluginConnections:
             )
             return {"plugins": [self._public(n) for n in sorted(self.packages)], "request": request}
 
+    def icon(self, plugin_id: str) -> str | None:
+        """One plugin's logo, fetched once per desktop session instead of every poll."""
+        package = self.packages.get(plugin_id)
+        return package.icon() if package else None
+
     def catalog(self) -> dict[str, Any]:
         """Small model-facing catalogue, including unavailable packages."""
         return {

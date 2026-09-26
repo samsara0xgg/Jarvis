@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -13,6 +14,14 @@ from jarvis.execution.mcp_tools import is_oauth
 
 _NAME = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}\Z")
 _ENV = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))")
+_ICON_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".svg": "image/svg+xml",
+    ".webp": "image/webp",
+}
+_ICON_MAX_BYTES = 2 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -56,6 +65,23 @@ class PluginPackage:
             "supported": self.unsupported is None,
             "unavailable_reason": self.unsupported,
         }
+
+    def icon(self) -> str | None:
+        """The manifest's ``interface.logo`` as a data URL, read only from inside the package."""
+        logo = (self.manifest.get("interface") or {}).get("logo")
+        if self.directory is None or not isinstance(logo, str):
+            return None
+        root = self.directory.resolve()
+        path = (root / logo).resolve()
+        media = _ICON_TYPES.get(path.suffix.lower())
+        if (
+            not media
+            or not path.is_relative_to(root)
+            or not path.is_file()
+            or path.stat().st_size > _ICON_MAX_BYTES
+        ):
+            return None
+        return f"data:{media};base64,{base64.b64encode(path.read_bytes()).decode()}"
 
 
 def credential_fields(spec: dict[str, Any]) -> set[str]:

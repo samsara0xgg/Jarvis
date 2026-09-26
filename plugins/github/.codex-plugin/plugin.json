@@ -24,6 +24,7 @@
     "shortDescription": "Triage PRs, issues, CI, and publish flows",
     "developerName": "OpenAI",
     "category": "Developer Tools",
+    "logo": "./assets/github.png",
     "capabilities": [
       "Interactive",
       "Write"

@@ -11,7 +11,7 @@ export function registerDaemonBridge(win: BrowserWindow, { lab = false, verifica
   // management credential or choose an arbitrary URL/file/process to open.
   ipcMain.handle('plugins', async (event, operation: string, data: Record<string, unknown> = {}) => {
     if (event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame) throw new Error('无效的插件窗口');
-    const operations = ['read', 'open', 'connect', 'cancel', 'reopen', 'disable', 'approval'];
+    const operations = ['read', 'icon', 'open', 'connect', 'cancel', 'reopen', 'disable', 'approval'];
     if (!operations.includes(operation) || !data || typeof data !== 'object' || Array.isArray(data)) throw new Error('无效的插件操作');
     const testPort = verification ? process.env.RESONANCE_PLUGIN_TEST_PORT : undefined;
     if (lab || (verification && (!testPort || testPort === '8006'))) throw new Error('此预览未连接插件服务');
@@ -24,12 +24,14 @@ export function registerDaemonBridge(win: BrowserWindow, { lab = false, verifica
     if (typeof token !== 'string' || !token) throw new Error('插件服务凭证无效');
     const body = JSON.stringify({ operation, data });
     if (body.length > 32768) throw new Error('插件请求过长');
+    const get = operation === 'read' || operation === 'icon';
+    const route = operation === 'read' ? '' : operation === 'icon' ? `/${encodeURIComponent(String(data.plugin_id))}/icon` : '/action';
     let response: Response;
     try {
-      response = await fetch(`http://127.0.0.1:${port}/inherent/plugins${operation === 'read' ? '' : '/action'}`, {
-        method: operation === 'read' ? 'GET' : 'POST',
+      response = await fetch(`http://127.0.0.1:${port}/inherent/plugins${route}`, {
+        method: get ? 'GET' : 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: operation === 'read' ? undefined : body,
+        body: get ? undefined : body,
         signal: AbortSignal.timeout(15000),
       });
     } catch { throw new Error('暂时连不上 Jarvis，请稍后重试'); }

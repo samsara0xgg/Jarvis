@@ -69,15 +69,19 @@ try {
       other: { seconds: 0, days: [0, 0, 0, 0, 0, 0, 0], count: 0 }, unsorted: { seconds: 0, days: [0, 0, 0, 0, 0, 0, 0], count: 0 }, coverage: { timesink: 'ok', git: 'ok' }, latest_observed_at: null, sorted_at: null, refreshing: false, outcome: null, error: null },
   };
   fixtures['/inherent/projects/refresh'] = fixtures['/inherent/projects'];
+  const LOGO = `data:image/svg+xml;base64,${Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8"><circle cx="4" cy="4" r="4" fill="#5e6ad2"/></svg>').toString('base64')}`;
   const pluginToken = real ? (() => { try { return JSON.parse(readFileSync(path.join(homedir(), '.jarvis/plugin-access.json'), 'utf8')).token; } catch { return null; } })() : null;
   await page.exposeFunction('__plugins', async (operation, data) => {
     pluginOps.push({ operation, data });
     if (real) {
       // Read only: the live catalog, never an action.
-      if (operation !== 'read' || !pluginToken) throw new Error('read only');
-      const r = await fetch(`${daemon}/inherent/plugins`, { headers: { Authorization: `Bearer ${pluginToken}` } });
+      if (!['read', 'icon'].includes(operation) || !pluginToken) throw new Error('read only');
+      const route = operation === 'icon' ? `/${encodeURIComponent(data.plugin_id)}/icon` : '';
+      const r = await fetch(`${daemon}/inherent/plugins${route}`, { headers: { Authorization: `Bearer ${pluginToken}` } });
+      if (!r.ok) throw new Error(`plugins ${r.status}`);
       return r.json();
     }
+    if (operation === 'icon') return { icon: data.plugin_id === 'linear' ? LOGO : null };
     if (operation === 'open') snapshot = { ...snapshot, request: request(data.plugin_id) };
     else if (operation === 'connect') snapshot = { ...snapshot, request: { ...snapshot.request, state: 'authorizing' } };
     else if (operation === 'cancel') snapshot = { ...snapshot, request: { ...snapshot.request, state: 'cancelled' } };
@@ -174,7 +178,7 @@ try {
     await openRow('plugins'); await page.waitForTimeout(2200);
     const names = await page.locator('.ad .pl-name').evaluateAll(els => els.map(e => e.firstChild.textContent));
     const catalog = pluginToken ? (await (await fetch(`${daemon}/inherent/plugins`, { headers: { Authorization: `Bearer ${pluginToken}` } })).json()).plugins.map(p => p.name) : [];
-    check(`R Plugins is the daemon's catalog (${names.join(', ') || 'no token'}), read only`, pluginToken ? names.length > 0 && [...names].sort().join() === [...catalog].sort().join() && pluginOps.every(o => o.operation === 'read') : true);
+    check(`R Plugins is the daemon's catalog (${names.join(', ') || 'no token'}), read only`, pluginToken ? names.length > 0 && [...names].sort().join() === [...catalog].sort().join() && pluginOps.every(o => ['read', 'icon'].includes(o.operation)) : true);
     await panelShot('R-plugins'); await back();
     // Opened the way a click opens it, timing when the words on screen have faded in.
     const litMs = await page.evaluate(async () => {
@@ -202,7 +206,7 @@ try {
     const pulled = await shownDays();
     check(`R a fresh scroll up at the top adds the day before, the words in view staying put (${pulled.join(' + ')})`, pulled.length === 2 && pulled[1] === opening[0] && held);
     await panelShot('R-conversation'); await back();
-    check(`R nothing was written to the daemon (${posts.length} POSTs refused: ${[...new Set(posts)].join(', ')})`, pluginOps.every(o => o.operation === 'read'));
+    check(`R nothing was written to the daemon (${posts.length} POSTs refused: ${[...new Set(posts)].join(', ')})`, pluginOps.every(o => ['read', 'icon'].includes(o.operation)));
     check('no page errors', errors.length === 0);
   } else {
     await page.waitForFunction(() => window.__sockets?.length === 1);
@@ -265,7 +269,7 @@ try {
     check('L8 her words are the last answer on record, plain, with its time', await text('.ad .say') === 'Two things: the voice test at four, and the demo cut.' && (await text('.ad .cap')).includes(hm(Date.parse(rows[1].ts))));
     check('L8 Now, Usage and Projects come from the daemon', await text('.ad .r-now .text') === 'Wiring the companion to the daemon.' && (await text('.ad .r-usage .dial b')).startsWith('41') && await text('.ad .pj-mini b') === 'jarvis');
     check('L8 the Agents row counts live sessions', (await text('.ad .r-agents .pill')) === '1 needs you' && (await text('.ad .r-agents .text')).includes('Wire the companion'));
-    check('L8 the Plugins tile is the live catalog, connected first', (await page.locator('.ad .pl-mini i').allTextContents()).join('') === 'LN' && (await text('.ad [data-row="plugins"] .meta')) === '1 on');
+    check('L8 the Plugins tile is the live catalog, connected first, with a manifest logo where there is one', (await page.locator('.ad .pl-mini i').allTextContents()).join('') === 'N' && await page.locator('.ad .pl-mini i:first-child img[src^="data:image/svg"]').count() === 1 && (await text('.ad [data-row="plugins"] .meta')) === '1 on');
     await panelShot('L8-home');
     await openRow('conversation'); await page.waitForTimeout(900);
     check('L8 the Conversation page shows the record as turns', await page.locator('.ad .tr').count() === 1 && (await text('.ad .tr-you p')) === rows[0].text);

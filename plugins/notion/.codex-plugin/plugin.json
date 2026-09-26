@@ -22,6 +22,7 @@
     "shortDescription": "Notion workflows for specs, research, meetings, and knowledge capture",
     "developerName": "Notion",
     "category": "Productivity",
+    "logo": "./assets/notion.png",
     "capabilities": [
       "Interactive",
       "Read",

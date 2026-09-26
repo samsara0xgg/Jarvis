@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import urllib.request
@@ -50,10 +51,15 @@ def main() -> None:
                     "interface": {
                         "displayName": "Linear" if name == "linear" else "GitHub",
                         "shortDescription": description,
+                        # GitHub ships its manifest logo; Linear shows the built-in fallback.
+                        **({"logo": "./logo.png"} if name == "github" else {}),
                     },
                 }
             )
         )
+    shutil.copy(
+        HERE.parent.parent / "plugins/github/assets/github.png", root / "plugins/github/logo.png"
+    )
     fx = _Fixture(root / "runtime", tools=())
     opened: list[str] = []
     service = PluginConnections(
@@ -72,6 +78,7 @@ def main() -> None:
             plugin_read=service.read,
             plugin_action=service.action,
             plugin_authorize=service.settings.matches,
+            plugin_icon=service.icon,
         )
     )
 

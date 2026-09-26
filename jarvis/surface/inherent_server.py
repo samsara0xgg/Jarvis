@@ -432,6 +432,7 @@ class InherentDeps:
     plugin_read: Callable[[], dict[str, Any]] | None = None
     plugin_action: Callable[[str, dict[str, Any]], dict[str, Any]] | None = None
     plugin_authorize: Callable[[str | None], bool] | None = None
+    plugin_icon: Callable[[str], str | None] | None = None
 
 
 class _FrameRateLimiter:
@@ -1095,6 +1096,15 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0915 — one cl
             if not plugin_authorize(request.headers.get("authorization")):
                 raise HTTPException(status_code=401, detail="desktop authorization required")
             return await asyncio.to_thread(plugin_read)
+
+        if deps.plugin_icon is not None:
+            plugin_icon = deps.plugin_icon
+
+            @app.get("/inherent/plugins/{plugin_id}/icon")
+            async def plugin_logo(plugin_id: str, request: Request) -> dict[str, str | None]:
+                if not plugin_authorize(request.headers.get("authorization")):
+                    raise HTTPException(status_code=401, detail="desktop authorization required")
+                return {"icon": await asyncio.to_thread(plugin_icon, plugin_id)}
 
         @app.post("/inherent/plugins/action")
         async def plugin_command(request: Request) -> dict[str, Any]:
