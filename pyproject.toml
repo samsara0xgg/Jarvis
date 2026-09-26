@@ -20,10 +20,11 @@ dependencies = [
     # ADR-0005 voice stack — lazy-imported inside jarvis.surface.voice_* so
     # non-voice contexts run without PortAudio, but genuinely required at
     # runtime (wake word, audio I/O, SenseVoice ONNX inference) and by the
-    # wake-listener integration tests. Previously installed by hand and
-    # undeclared — a fresh venv failed 3 integration tests (hermetic-gate
-    # fix, 2026-08-25). mlx-whisper stays undeclared: optional ASR backend.
-    "openwakeword>=0.6.0",  # ADR-0005 §3 — wake word detection; 0.4.x lacks utils.download_models
+    # wake-listener integration tests. Pinned to the versions live-tested on
+    # the owner's Mac. mlx-whisper stays undeclared: optional ASR backend.
+    "pymicro-wakeword==2.4.1",  # ADR-0042 — "Hey Jarvis" wake word (microWakeWord)
+    "sherpa-onnx==1.13.2",      # ADR-0005 §5 — SenseVoice ASR
+    "sherpa-onnx-core==1.13.2", # its onnxruntime dylib; the wheel needs it, the sdist metadata omits it
     "sounddevice",        # ADR-0005 — PortAudio input/output streams
     "onnxruntime",        # ADR-0005 §5 — SenseVoice + Silero VAD inference
     "httpx",              # ADR-0011 D5/D7 — web_fetch GET; promoted from transitive (openai/anthropic)
@@ -47,10 +48,7 @@ packages = ["jarvis"]
 
 [tool.uv]
 # Mac-only scope (docs/architecture-mac-only.md; RPi deferred): resolve the
-# lockfile for macOS only. openwakeword 0.6.0's linux-marker dependency
-# (tflite-runtime) ships no cp312 wheels, which breaks uv's universal
-# resolution; the linux branch becomes relevant only when the RPi domain
-# lands, and gets revisited then.
+# lockfile for macOS only.
 environments = ["sys_platform == 'darwin'"]
 
 [tool.pytest.ini_options]
@@ -175,28 +173,16 @@ check_untyped_defs = true
 module = "tests.*"
 disallow_untyped_defs = false
 
-# Voice-hardware wheels: sounddevice / onnxruntime / sherpa-onnx /
-# openwakeword / pymicro-wakeword / mlx-whisper / whisper are intentionally excluded from
-# ``[project].dependencies`` (ADR-0005 §12 — daemon downgrades to
-# text-only when missing). When a developer installs them locally
-# (``uv pip install sounddevice onnxruntime sherpa-onnx openwakeword``)
-# mypy promotes the error code from ``import-not-found`` to
-# ``import-untyped`` because the wheels carry no ``py.typed`` marker.
-# Listing them here as ``ignore_missing_imports`` collapses both states
-# so the per-call-site ``# type: ignore[import-not-found]`` works the
-# same in CI (wheels absent) and in dev (wheels present), without
-# flipping ``warn_unused_ignores`` for the rest of the codebase.
-#
-# soxr is a hard runtime dependency (see ``[project].dependencies``)
-# and is kept in the override below ONLY because its wheel ships no
-# ``py.typed`` marker — same mypy concern, different install posture.
+# Voice wheels ship no ``py.typed`` marker, and mlx-whisper / whisper are
+# optional and usually absent. Listing them as ``ignore_missing_imports``
+# collapses ``import-not-found`` and ``import-untyped`` so the per-call-site
+# ``# type: ignore[import-not-found]`` works whether a wheel is present or
+# not, without flipping ``warn_unused_ignores`` for the rest of the codebase.
 [[tool.mypy.overrides]]
 module = [
     "sounddevice",
     "onnxruntime",
     "sherpa_onnx",
-    "openwakeword",
-    "openwakeword.*",
     "pymicro_wakeword",
     "pymicro_wakeword.*",
     "soxr",

@@ -14,12 +14,6 @@ FIX=0
 [ "${1:-}" = "--fix" ] && FIX=1
 
 FAILED=0
-# sherpa-onnx is deliberately absent from uv.lock — pyproject keeps the voice
-# wheels out of [project].dependencies so the daemon can downgrade to text-only
-# (ADR-0005 §12). Consequence: every `uv sync` here must pass --inexact, or the
-# sync uninstalls it as extraneous and the next daemon run is silently deaf.
-# ponytail: bump this pin by hand when the ASR wheel moves.
-SHERPA_PIN=1.13.2
 
 ok()   { printf '  \033[32mOK\033[0m    %s\n' "$1"; }
 bad()  { printf '  \033[31mFAIL\033[0m  %s\n        fix: %s\n' "$1" "$2"; FAILED=1; }
@@ -89,7 +83,7 @@ if [ -x "$PY" ]; then
     missing_voice() {
         "$PY" - <<'PY' 2>/dev/null
 import importlib.util
-mods = ("sounddevice", "onnxruntime", "sherpa_onnx", "openwakeword", "soxr")
+mods = ("sounddevice", "onnxruntime", "sherpa_onnx", "pymicro_wakeword", "soxr")
 print(" ".join(m for m in mods if importlib.util.find_spec(m) is None))
 PY
     }
@@ -97,14 +91,13 @@ PY
     if [ -n "$MISSING" ] && [ "$FIX" = 1 ]; then
         note "installing voice wheels…"
         uv sync --inexact --frozen --extra dev >/dev/null 2>&1
-        uv pip install "sherpa-onnx==$SHERPA_PIN" >/dev/null 2>&1
         MISSING="$(missing_voice)"   # re-probe: believe imports, not exit codes
     fi
     if [ -z "$MISSING" ]; then
         ok "voice stack importable (sherpa-onnx $("$PY" -c "import importlib.metadata as m; print(m.version('sherpa-onnx'))"))"
     else
         bad "voice stack incomplete — daemon would silently run text-only:$MISSING" \
-            "uv sync --inexact --frozen --extra dev && uv pip install sherpa-onnx==$SHERPA_PIN"
+            "uv sync --inexact --frozen --extra dev"
     fi
 fi
 

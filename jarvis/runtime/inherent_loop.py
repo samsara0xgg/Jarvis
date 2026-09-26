@@ -333,10 +333,10 @@ _SELECT_RESPONSE_EVENTS_AFTER_ID_SQL = (
 # owner and ignored by the other.
 _DEFAULT_CAPTURE_MAX_DURATION_S: float = 5.0
 _DEFAULT_CAPTURE_MIN_VOICED_S: float = 1.0
-# Wake input stream params — ADR §5.1 (openwakeword expects 16 kHz mono PCM16
+# Wake input stream params — ADR §5.1 (the wake engine reads 16 kHz mono PCM16
 # at 1280-sample / 80 ms blocks). A SEPARATE stream from the recorder's per
 # legacy ``core/inherent_wake_listener.py`` parity (the recorder's 32-ms VAD
-# chunks would force openwakeword to buffer across reads).
+# chunks would force the engine to buffer across reads).
 _WAKE_SAMPLE_RATE_HZ: int = 16000
 _WAKE_FRAME_SAMPLES: int = 1280
 
@@ -362,10 +362,6 @@ class _VoiceKnobs:
     composition root reads ``realtime:`` for these values.
     """
 
-    # Which wake engine both input owners construct (ADR-0042); one of
-    # :data:`voice_wake.WAKE_ENGINES`.  The default keeps a config that names
-    # nothing on the ADR-0005 engine.
-    wake_engine: str = "openwakeword"
     # The engine's detection probability gate.  BOTH input owners construct a
     # listener with it, which is why it is a flat key and is threaded to both
     # rather than living under ``realtime.single_audio_ingress``.
@@ -548,15 +544,7 @@ def _voice_knobs(config: Mapping[str, Any]) -> _VoiceKnobs:
     block = config.get("realtime")
     values: Mapping[str, Any] = block if isinstance(block, Mapping) else {}
     d = _VoiceKnobs()
-    wake_engine = _knob_text(values, "wake_engine", d.wake_engine)
-    if wake_engine not in voice_wake.WAKE_ENGINES:
-        LOGGER.warning(
-            "realtime.wake_engine must be one of %s; using %r.",
-            voice_wake.WAKE_ENGINES, d.wake_engine,
-        )
-        wake_engine = d.wake_engine
     return _VoiceKnobs(
-        wake_engine=wake_engine,
         wake_threshold=_knob_number(values, "wake_threshold", d.wake_threshold),
         wake_join_timeout_s=_knob_number(
             values, "wake_join_timeout_s", d.wake_join_timeout_s,
@@ -2495,7 +2483,7 @@ def _spawn_wake_listener(  # noqa: PLR0913 - composition boundary dependencies
 
     Also opens the 16 kHz / 80 ms PortAudio input stream that backs the
     listener's ``frame_factory``. Without this stream the listener
-    reads silent zero frames and openwakeword's probability never
+    reads silent zero frames and the wake probability never
     crosses threshold — wake silently never fires in production.
 
     Returns ``(listener, stream)`` on success so the daemon shutdown
@@ -2520,10 +2508,10 @@ def _spawn_wake_listener(  # noqa: PLR0913 - composition boundary dependencies
         data, _overflow = stream.read(_WAKE_FRAME_SAMPLES)
         return bytes(data)
 
-    engine: voice_wake.AnyWakeEngine | None = None
+    engine: voice_wake.MicroWakeWordEngine | None = None
     listener: voice_wake.WakeListener | None = None
     try:
-        engine = voice_wake.build_wake_engine(knobs.wake_engine)
+        engine = voice_wake.MicroWakeWordEngine()
         # Without start(), predict() silently returns no detection.
         engine.start()
         silero_vad = voice_audio.SileroVad(
@@ -3135,7 +3123,7 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
     if ingress_config is None or session_config is None:
         msg = "validated single ingress activation lacks parsed config"
         raise RuntimeError(msg)
-    engine = voice_wake.build_wake_engine(knobs.wake_engine)
+    engine = voice_wake.MicroWakeWordEngine()
     try:
         # Model construction/download happens before PortAudio owns the mic.
         engine.start()

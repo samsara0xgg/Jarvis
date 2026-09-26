@@ -319,20 +319,14 @@ realtime:
   # file's own directory, never at cwd; `~` and absolute paths as written.
   # sensevoice_dir: ~/Models/sensevoice-small-int8
   # silero_vad_path: ~/Models/silero_vad.onnx
-  # ADR-0042.  Which wake engine listens: `microwakeword` (pymicro-wakeword
-  # hey_jarvis v2) or `openwakeword` (hey_jarvis_v0.1).  Both read the same
-  # 80 ms frames and both are gated by wake_threshold below, but their scores
-  # are not on one scale: microwakeword is near-binary (bare "Jarvis" <= 0.03,
-  # a connected "Hey Jarvis" 0.80-0.996; 0.95 is Allen's choice, close to the
-  # model's own 0.97 cutoff and trading the quiet/far takes at 0.80-0.95 for
-  # margin), while openwakeword scores a bare "Jarvis" 0.98+ and needs 0.5.
-  # Change both keys together.
-  wake_engine: microwakeword
-  # The engine's detection probability gate.  Read by BOTH input owners --
-  # the legacy wake listener and the single-ingress duplex session -- so it
-  # lives here and not under single_audio_ingress, which the legacy owner
-  # cannot read.
-  wake_threshold: 0.95
+  # ADR-0042.  The wake word is microWakeWord's "Hey Jarvis" (pymicro-wakeword
+  # hey_jarvis v2).  Its score is near-binary: a bare "Jarvis" <= 0.03, a
+  # connected "Hey Jarvis" 0.80-0.996.  The gate below defaults to the model's
+  # own 0.97 cutoff; lower it (0.95 trades the quiet/far takes for margin) in
+  # your settings.yaml.  Read by BOTH input owners -- the legacy wake listener
+  # and the single-ingress duplex session -- so it lives here and not under
+  # single_audio_ingress, which the legacy owner cannot read.
+  wake_threshold: 0.97
   # How long shutdown waits for the legacy wake thread before closing its
   # PortAudio stream anyway.  Closing before the thread leaves its blocking
   # read is the historical segfault; a slow machine can buy more room here.
