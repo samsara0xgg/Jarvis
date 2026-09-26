@@ -81,13 +81,7 @@ ignore = [
 "jarvis/shared/lang.py" = ["RUF001", "E501"]
 # The work-state material marks repeat counts with ×, which RUF001 reads as an x.
 "jarvis/decision/work_state.py" = ["RUF001"]
-# Plugin connection errors are user-facing Chinese text.
-"jarvis/runtime/plugin_connections.py" = ["RUF001"]
 # Exact upstream baseline; launcher migration is tracked in UPSTREAM_BASELINE.md.
-# L1 Constitution carries canonical Chinese principle/non-goal text copied
-# verbatim from spec §3.2; fullwidth CJK punctuation is intentional, not a
-# transcription mistake. RUF001 flags those characters.
-"jarvis/constitution/__init__.py" = ["RUF001"]
 # Sentence splitter (ADR-0003 Step 2) needs CJK ``。！？`` literals as part
 # of its boundary detection contract: RUF001/RUF002/RUF003 ambiguous-char
 # warnings are the whole point of the module and must be silenced.

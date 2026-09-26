@@ -6,20 +6,29 @@
 #   pattern:  full-sentence anchored regex — MUST start with ^ and end with $
 #   tool:     a tool the regex_router principal may call (validated at boot)
 #   args:     optional str->str map; "$N" pulls regex capture group N
-#   template: response text; {name} fills from tool payload keys + args.
-#             NEVER use completion-class words (完成/已完成/done/verified) —
-#             the Pre-emit Gate downgrades them.
+#   template: key of the reply in jarvis/shared/lang.py (zh + en, spoken in
+#             the `language` setting); {name} fills from tool payload keys +
+#             args. NEVER use completion-class words (完成/已完成/done/verified).
+#   Chinese and English rows sit side by side and share one reply key.
 #   max_spoken_bytes: optional positive int; raises the 200-byte cap applied
 #             to each string payload value before it is rendered/spoken. Only
 #             for rows whose payload IS the answer (e.g. /notelist).
 - id: time_now
   pattern: "^现在几点了?[?？。.!！]?$"
   tool: get_current_time
-  template: "现在是{spoken_time}。"
+  template: tier0.time_now
+- id: time_now_en
+  pattern: "^(?i:what'?s the time|what is the time|what time is it)(?i:\\s+(?:now|right now))?[?？。.!！]?$"
+  tool: get_current_time
+  template: tier0.time_now
 - id: date_today
   pattern: "^今天(?:几号|星期几|周几)[?？。.!！]?$"
   tool: get_current_time
-  template: "今天是{spoken_date}。"
+  template: tier0.date_today
+- id: date_today_en
+  pattern: "^(?i:what'?s the date|what is the date|what'?s today'?s date|what is today'?s date|what day is (?:it|today))(?i:\\s+today)?[?？。.!！]?$"
+  tool: get_current_time
+  template: tier0.date_today
 # ADR-0011 D6: fixed-argument tool (no input) — read_clipboard takes no
 # parameters, so an exact-sentence Tier 0 row is possible (unlike
 # search_notes/read_file, which need a query/target no fixed sentence
@@ -27,13 +36,21 @@
 - id: read_clipboard
   pattern: "^(?:剪贴板里有什么|读一下剪贴板)[?？。.!！]?$"
   tool: read_clipboard
-  template: "剪贴板里是：{content}。"
+  template: tier0.read_clipboard
+- id: read_clipboard_en
+  pattern: "^(?i:what'?s on my clipboard|what is on my clipboard|read (?:my|the) clipboard)[?？。.!！]?$"
+  tool: read_clipboard
+  template: tier0.read_clipboard
 # ADR-0011 D6: fixed-argument tool (question is optional and omitted
 # here, so it resolves to None) — same shape as read_clipboard above.
 - id: screen_look
   pattern: "^(?:看一下我的屏幕|看一眼屏幕)[?？。.!！]?$"
   tool: screen_look
-  template: "屏幕上：{description}。"
+  template: tier0.screen_look
+- id: screen_look_en
+  pattern: "^(?i:look at my screen|take a look at my screen|what'?s on my screen|what is on my screen)[?？。.!！]?$"
+  tool: screen_look
+  template: tier0.screen_look
 # Exact-sentence whitelist for open_path: each entry matches ONE literal
 # spoken sentence (tolerating only whitespace, ASCII case, claude/cloud ASR
 # spelling, and trailing punctuation). Anything else falls through to the
@@ -45,20 +62,20 @@
   tool: open_path
   args:
     query: "jarvis claude md"
-  template: "正在打开{opened_name}。"
+  template: tier0.opening
 - id: open_root_claude_md
   pattern: "^帮我打开\\s*根目录的\\s*(?i:claude|cloud)\\s*[.。]?\\s*(?i:md)\\s*文件[。.!！]?$"
   tool: open_path
   args:
     query: "root claude md"
-  template: "正在打开{opened_name}。"
+  template: tier0.opening
 - id: open_jarvis_vscode
   pattern: "^帮我用\\s*(?i:vs\\s?code)\\s*打开\\s*(?i:jarvis)[。.!！]?$"
   tool: open_path
   args:
     query: "jarvis"
     app: "vscode"
-  template: "正在用 VS Code 打开{opened_name}。"
+  template: tier0.opening_in_vscode
 # Memo inbox slash commands. Both skip the LLM: `/note` captures the
 # rest of the line verbatim (the Shift+Return voice path arrives already
 # prefixed by the daemon), `/notelist` renders the whole inbox — its
@@ -68,9 +85,9 @@
   tool: create_memo
   args:
     text: "$1"
-  template: "已录入。"
+  template: tier0.note_captured
 - id: note_list
   pattern: "^/notelist$"
   tool: list_memos
-  template: "{rendered}"
+  template: tier0.note_list
   max_spoken_bytes: 20000

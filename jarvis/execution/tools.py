@@ -63,6 +63,7 @@ from jarvis.shared import (
     RawResultBundle,
     ResultSemantics,
     RiskLevel,
+    lang,
 )
 from jarvis.shared.action_admission import action_admission_guard
 from jarvis.shared.text import truncate_utf8
@@ -576,59 +577,6 @@ _OUTPUT_TAIL_BYTES: Final[int] = 2048
 # --- get_current_time (F-Tier0) ---------------------------------------------
 
 
-_WEEKDAYS_ZH: Final[tuple[str, ...]] = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
-"""`datetime.weekday()` (Mon=0) indexed into the zh-CN weekday names."""
-
-_DAY_PERIODS: Final[tuple[tuple[int, str], ...]] = (
-    (6, "凌晨"),
-    (9, "早上"),
-    (12, "上午"),
-    (13, "中午"),
-    (18, "下午"),
-    (24, "晚上"),
-)
-"""`(exclusive upper-bound hour, zh-CN day-period label)`, ascending."""
-
-_SPOKEN_MINUTE_FILLER_BELOW: Final[int] = 10
-"""Minutes below this take the spoken `零` filler (`10点零2分`)."""
-
-
-def _spoken_day_period(hour: int) -> str:
-    """Map a 24h hour to the zh-CN day-period prefix used by TTS."""
-    for upper_bound, label in _DAY_PERIODS:
-        if hour < upper_bound:
-            return label
-    return "晚上"
-
-
-def _spoken_clock(hour: int, minute: int) -> str:
-    """Render a 24h `(hour, minute)` as one idiomatic zh-CN spoken clock string.
-
-    This field exists only to be spoken by TTS, so it follows speech
-    convention rather than digit-for-digit transcription:
-
-    - minute 0 says ``整`` (``上午10点整``), never ``10点0分``;
-    - minutes 1-9 take the ``零`` filler (``10点零2分``) — dropping it
-      makes the utterance wrong, not merely terse;
-    - hour 0 is ``零点`` (``凌晨零点30分``); the naive 12h wrap would say
-      ``凌晨12点``, which contradicts itself since ``12点`` reads as noon.
-
-    Args:
-        hour: Hour in 24h form, 0-23.
-        minute: Minute, 0-59.
-
-    Returns:
-        The day-period prefix followed by the spoken clock reading.
-    """
-    period = _spoken_day_period(hour)
-    hour_label = "零" if hour == 0 else str(hour % 12 or 12)
-    if minute == 0:
-        return f"{period}{hour_label}点整"
-    if minute < _SPOKEN_MINUTE_FILLER_BELOW:
-        return f"{period}{hour_label}点零{minute}分"
-    return f"{period}{hour_label}点{minute}分"
-
-
 @tool(
     description="Read the current local date and time (observation only).",
     input_schema={"type": "object", "properties": {}, "required": []},
@@ -640,18 +588,17 @@ def get_current_time(_args: Mapping[str, Any], _ctx: ToolContext) -> dict[str, A
     """Read the system clock (spec §3.5.4); Tier 0's tool, jarvis_llm may call it too.
 
     The payload carries the machine keys ``iso`` / ``date`` / ``time`` /
-    ``weekday`` plus the TTS-ready ``spoken_time`` / ``spoken_date`` the L5
-    templates read.
+    ``weekday`` (English) plus the TTS-ready ``spoken_time`` / ``spoken_date``,
+    in the language setting, that the Tier 0 replies read.
     """
     now = datetime.now().astimezone()
-    weekday = _WEEKDAYS_ZH[now.weekday()]
     return {
         "iso": now.isoformat(timespec="seconds"),
         "date": now.strftime("%Y-%m-%d"),
         "time": now.strftime("%H:%M"),
-        "weekday": weekday,
-        "spoken_time": _spoken_clock(now.hour, now.minute),
-        "spoken_date": f"{now.month}月{now.day}日{weekday}",
+        "weekday": lang.weekday(now, "en"),
+        "spoken_time": lang.spoken_time(now),
+        "spoken_date": lang.spoken_date(now),
     }
 
 
@@ -663,7 +610,7 @@ _MEMO_MAX_CHARS: Final[int] = 2000
 @tool(
     description=(
         "Save a short memo to the user's memo inbox for later review. "
-        "Use when the user says '记一下 X' / '备忘 X'."
+        "Use when the user asks to jot something down or keep a note of it."
     ),
     input_schema={
         "type": "object",
@@ -707,7 +654,7 @@ def list_memos(_args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
     for event in iter_events_of_types(ctx.conn, ("memo.captured",)):
         stamp = datetime.fromtimestamp(event.ts_epoch_ms / 1000).astimezone()
         lines.append(f"{len(lines) + 1}. [{stamp:%m-%d %H:%M}] {event.payload.get('text', '')}")
-    return {"count": len(lines), "rendered": "\n".join(lines) if lines else "还没有备忘录。"}
+    return {"count": len(lines), "rendered": "\n".join(lines) if lines else lang.t("memo.none")}
 
 
 # --- open_path handler --------------------------------------------------------
@@ -815,8 +762,8 @@ _OPEN_PATH_INPUT_SCHEMA: Final[Mapping[str, Any]] = {
 @tool(
     description=(
         "Open a file or folder on the user's Mac by spoken name (bookmark "
-        "alias, partial filename, or description). Use for '打开 X' / "
-        "'用 VS Code 打开 X' requests."
+        "alias, partial filename, or description). Use when the user asks to "
+        "open X, or to open X in VS Code."
     ),
     input_schema=_OPEN_PATH_INPUT_SCHEMA,
     allowed_callers=frozenset({CallerPrincipal.REGEX_ROUTER, CallerPrincipal.JARVIS_LLM}),
@@ -3595,7 +3542,10 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
     registry.register(
         ToolDefinition(
             name="open_url",
-            description="Open a URL in the default browser. Use for '用浏览器打开 X' requests.",
+            description=(
+                "Open a URL in the default browser. Use when the user asks to open X"
+                " in the browser."
+            ),
             allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
             risk_level="L1",
             result_semantics="ack",

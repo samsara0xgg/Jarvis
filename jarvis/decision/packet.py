@@ -174,9 +174,10 @@ def format_pending_confirmation_note(
     target = slot.snapshot.get("canonical_target", "?")
     remaining_s = max(0, (slot.expires_at_ms - resolved_now_ms) // _MS_PER_SECOND)
     return (
-        f"等你答复：{tool_name} → {target}，还剩 {remaining_s} 秒。"  # noqa: RUF001 — Chinese punctuation is intentional.
-        "你不能自己执行或授权它；只有 Allen 直接回答运行时的提问才算数。"  # noqa: RUF001 — Chinese punctuation is intentional.
-        "Allen 问起就描述这个操作，不要声称能执行，也不要重新提出同一个操作。"  # noqa: RUF001 — Chinese punctuation is intentional.
+        f"Awaiting the user's answer: {tool_name} → {target}, {remaining_s} s left. "
+        "You cannot run or authorize it yourself; only the user's direct answer to the "
+        "runtime's question counts. If the user asks about it, describe this action; do "
+        "not claim you can run it and do not propose the same action again."
     )
 
 

@@ -44,6 +44,7 @@ from http import HTTPStatus
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 
+from jarvis.shared.lang import t
 from jarvis.state.event_log import emit_event
 
 if TYPE_CHECKING:
@@ -242,7 +243,10 @@ def collect_claude(*, timeout_s: float) -> UsageSnapshot | None:
     except (urllib.error.URLError, OSError, ValueError) as exc:
         return _error("claude", exc)
     windows: list[dict[str, Any]] = []
-    for key, label in (("five_hour", "5 小时"), ("seven_day", "7 天 · 总")):
+    for key, label in (
+        ("five_hour", t("usage.window_hours", hours=5)),
+        ("seven_day", t("usage.window_week_total")),
+    ):
         window = body.get(key) or {}
         if window.get("utilization") is not None:
             windows.append(
@@ -263,7 +267,7 @@ def collect_claude(*, timeout_s: float) -> UsageSnapshot | None:
         windows.append(
             {
                 "key": f"seven_day_{name.lower()}",
-                "label": f"7 天 · {name}",
+                "label": t("usage.window_week_model", name=name),
                 "percent": float(limit["percent"]),
                 "resets_at": _iso_seconds(limit.get("resets_at")),
             }
@@ -295,11 +299,9 @@ _SEVEN_DAYS_S: Final[int] = 7 * 86400
 
 
 def _codex_window_label(seconds: int) -> str:
-    if seconds == _FIVE_HOURS_S:
-        return "5 小时"
     if seconds == _SEVEN_DAYS_S:
-        return "7 天"
-    return f"{seconds // 3600} 小时"
+        return t("usage.window_days", days=7)
+    return t("usage.window_hours", hours=seconds // 3600)
 
 
 def _codex_headers() -> dict[str, str] | None:
@@ -478,7 +480,7 @@ def collect_openai(*, timeout_s: float, now: dt.datetime | None = None) -> Usage
     """Today / month-to-date USD by model, plus tokens by API key."""
     key = os.environ.get("OPENAI_ADMIN_KEY", "").strip()
     if not key:
-        return UsageSnapshot("openai", "unconfigured", {}, "需要 Admin key")
+        return UsageSnapshot("openai", "unconfigured", {}, t("usage.needs_admin_key"))
     now = now or dt.datetime.now().astimezone()
     month_s = _local_month_start_s(now)
     try:

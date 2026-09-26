@@ -28,6 +28,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Final, NamedTuple
 
+from jarvis.shared import lang
+
 _SCHEMA: Final[str] = """
 CREATE TABLE IF NOT EXISTS records (
     id         TEXT PRIMARY KEY,
@@ -54,10 +56,9 @@ CREATE TABLE IF NOT EXISTS summaries (
 """
 
 DEFAULT_SEARCH_LIMIT: Final[int] = 20
-_WEEKDAYS: Final[str] = "一二三四五六日"
 # The Live brief's label for the user's own rows; the stored source stays ``allen``.
-_USER_LABEL: Final[str] = "用户"
-# The 时间 line carries a "距上次交流" suffix once the gap passes this.
+_USER_LABEL: Final[str] = "user"
+# The time line carries a "since the last exchange" suffix once the gap passes this.
 _GAP_NOTE_AFTER: Final[timedelta] = timedelta(minutes=30)
 
 # Answers written before 2026-09-21 carry the retired <voice>/<document>
@@ -161,7 +162,7 @@ class SessionSettings:
 class MemoryContext(NamedTuple):
     """The prompt blocks rendered from memory.db for one turn."""
 
-    profile: str  # [关于用户] lines for the system prompt; "" when the profile is empty
+    profile: str  # [About the user] lines for the system prompt; "" when the profile is empty
     history: tuple[dict[str, str], ...]  # summary, then one message per record, by role
     now: str  # the time line: changes every turn, so it goes after the history
 
@@ -329,7 +330,7 @@ def _plain(text: str) -> str:
 
 
 def _now_line(moment: datetime, last_ts: str | None) -> str:
-    line = f"时间：{moment.isoformat(timespec='minutes')} 周{_WEEKDAYS[moment.weekday()]}"  # noqa: RUF001 — Chinese punctuation is intentional.
+    line = f"Time: {moment.isoformat(timespec='minutes')} {lang.weekday(moment, 'en')}"
     if last_ts is None:
         return line
     gap = moment - datetime.fromisoformat(last_ts)
@@ -338,12 +339,12 @@ def _now_line(moment: datetime, last_ts: str | None) -> str:
     minutes = int(gap.total_seconds() // 60)
     days, minutes = divmod(minutes, 24 * 60)
     hours, minutes = divmod(minutes, 60)
-    parts = [f"{days} 天"] if days else []
+    parts = [f"{days} d"] if days else []
     if hours:
-        parts.append(f"{hours} 小时")
+        parts.append(f"{hours} h")
     if minutes and not days:
-        parts.append(f"{minutes} 分")
-    return f"{line} · 距上次交流 {' '.join(parts)}"
+        parts.append(f"{minutes} min")
+    return f"{line} · {' '.join(parts)} since the last exchange"
 
 
 def _append_turn(turns: list[dict[str, str]], role: str, content: str) -> None:
@@ -365,7 +366,8 @@ def render_context(
     other source is ``assistant``, and adjacent rows of one role join into
     one message. Records carry their words only (ADR 0044): no timestamp or
     source label, which the model copied into its answers; the first
-    ``user`` row of each day opens with a ``[9月24日 周四]`` line. It only
+    ``user`` row of each day opens with a day marker (``[9月24日 周四]`` /
+    ``[Thursday, September 24]``, in the language setting). It only
     grows at its end between compactions, so the provider's prefix cache
     covers it. ``now`` is the per-turn time line. ``exclude_id`` is the
     current turn's own utterance, which the prompt already carries as the
@@ -377,14 +379,14 @@ def render_context(
         current = _current_summary(conn)
         anchor = _effective_anchor(conn, current.anchor_rowid if current else None, since)
         records = _records_after(conn, anchor)
-    profile_block = "\n".join(["[关于用户]", *profile]) if profile else ""
+    profile_block = "\n".join(["[About the user]", *profile]) if profile else ""
     turns: list[dict[str, str]] = []
     if current is not None:
         _append_turn(
             turns,
             "user",
-            f"[对话摘要 · 覆盖到 {current.anchor_ts} · "
-            "措辞、数字、是否同意 用 read_records 按 record_id 回查原话]\n"
+            f"[Conversation summary · up to {current.anchor_ts} · look up exact wording, "
+            "numbers and agreement with read_records by record_id]\n"
             f"{current.summary}",
         )
     shown = [record for record in records if record[0] != exclude_id]
@@ -394,7 +396,7 @@ def render_context(
         content = _plain(text)
         day = datetime.fromisoformat(ts).date()
         if role == "user" and day != marked_day:
-            content = f"[{day.month}月{day.day}日 周{_WEEKDAYS[day.weekday()]}]\n{content}"
+            content = f"{lang.day_marker(day)}\n{content}"
             marked_day = day
         _append_turn(turns, role, content)
     last_ts = shown[-1][1] if shown else (current.anchor_ts if current else None)
@@ -428,7 +430,9 @@ def brief_note(path: Path, *, max_chars: int, now: datetime | None = None) -> st
         current = _current_summary(conn)
         records = _records_after(conn, -1 if current is None else current.anchor_rowid)
     summary_head = (
-        [f"[对话摘要 · 覆盖到 {current.anchor_ts} · 原话细节请向后台查询]"] if current else []
+        [f"[Conversation summary · up to {current.anchor_ts} · ask the backend for exact words]"]
+        if current
+        else []
     )
     sections = _summary_sections(current.summary) if current else []
     record_lines = [
@@ -440,13 +444,13 @@ def brief_note(path: Path, *, max_chars: int, now: datetime | None = None) -> st
     def _assemble() -> str:
         return "\n".join(
             [
-                "[关于用户]",
+                "[About the user]",
                 *profile,
                 now_line,
                 *summary_head,
                 *sections,
-                "[对话记录, 时间正序]",
-                *(record_lines or ["(无)"]),
+                "[Conversation records, oldest first]",
+                *(record_lines or ["(none)"]),
             ],
         )
 

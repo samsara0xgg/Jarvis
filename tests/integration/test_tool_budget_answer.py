@@ -145,8 +145,8 @@ def test_spent_budget_gets_one_no_tool_request_for_the_answer(tmp_path: Path) ->
         assert final["tools"] is None
         assert final["tool_choice"] is None
         assert final["last"]["role"] == "user"
-        assert "不能再调用工具" in final["last"]["content"]
-        assert "不是用户的话" in final["last"]["content"]
+        assert "no more tools can be called" in final["last"]["content"]
+        assert "not the user's words" in final["last"]["content"]
         # Every tool the model asked for ran and left its observation before the answer.
         assert _count(conn, "action.result_observed") == BUDGET
         results = conn.execute(

@@ -39,8 +39,11 @@ bookmarks:
   "root claude md": "~/.claude/CLAUDE.md"
   jarvis: ~/Projects/jarvis
   下载: ~/Downloads
+  downloads: ~/Downloads
   桌面: ~/Desktop
+  desktop: ~/Desktop
   文档: ~/Documents
+  documents: ~/Documents
   projects: ~/Projects
 
 editor_extensions:
