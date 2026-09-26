@@ -507,7 +507,7 @@ def device_names(kind: str) -> list[str]:
 def _default_input_device_profile(
     input_format: AudioInputFormat, device: str | None = None
 ) -> InputDeviceProfile:
-    """Resolve the chosen input (ADR 0051), else sounddevice's default, outside the callback.
+    """Resolve the chosen input (ADR 0052), else sounddevice's default, outside the callback.
 
     A chosen name that no longer resolves raises, like ``output_device``: the
     open fails closed instead of quietly listening on another microphone.
@@ -634,7 +634,7 @@ class SoundDeviceDuplexBackend:
             msg = "sounddevice backend timeouts must be positive"
             raise ValueError(msg)
         self._input_format = input_format
-        # ADR 0051: the Settings page's microphone; None follows the system default.
+        # ADR 0052: the Settings page's microphone; None follows the system default.
         self._device = device
         self._open_timeout_s = open_timeout_s
         self._close_timeout_s = close_timeout_s

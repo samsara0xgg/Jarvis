@@ -1,4 +1,4 @@
-"""ADR 0050 — the companion home's routes over replayed Microsoft, Gmail and Open-Meteo answers.
+"""ADR 0051 — the companion home's routes over replayed Microsoft, Gmail and Open-Meteo answers.
 
 The To Do list and task and the weather are the services' answers of
 2026-09-25 (ids shortened, one forecast hour turned to rain so the icon

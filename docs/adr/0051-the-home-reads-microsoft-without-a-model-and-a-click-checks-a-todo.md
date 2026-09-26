@@ -1,4 +1,4 @@
-# ADR 0050 — The home reads Microsoft without a model, and a click checks a to-do off
+# ADR 0051 — The home reads Microsoft without a model, and a click checks a to-do off
 
 **Status:** Accepted
 **Date:** 2026-09-25

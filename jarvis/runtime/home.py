@@ -1,4 +1,4 @@
-"""The companion home's reads (ADR 0050): Today, unread mail and the morning brief.
+"""The companion home's reads (ADR 0051): Today, unread mail and the morning brief.
 
 Calendar and To Do come through the live ``microsoft`` connection's tools outside
 any model turn, mail from Gmail over IMAP, the weather from Open-Meteo. The one

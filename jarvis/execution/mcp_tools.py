@@ -347,10 +347,10 @@ class McpServers:
         return _payload(result)
 
     def call(self, server: str, tool: str, args: Mapping[str, Any]) -> dict[str, Any]:
-        """Call one tool of a connected server outside a model turn (ADR 0036 and 0050 readers).
+        """Call one tool of a connected server outside a model turn (ADR 0036 and 0051 readers).
 
         No gate stands in front of this: callers pass read-only tools, and the one write is the
-        to-do status Allen clicked on the home (ADR 0050).
+        to-do status Allen clicked on the home (ADR 0051).
         """
         client = self._clients.get(server)
         if client is None:

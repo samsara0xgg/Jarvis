@@ -1136,7 +1136,7 @@ class AudioStreamPlayer:
         return offset
 
     def _scaled(self, pcm: bytes) -> np.ndarray:
-        """Float32 samples at the Settings page's voice volume (ADR 0051), before the ring."""
+        """Float32 samples at the Settings page's voice volume (ADR 0052), before the ring."""
         samples = np.frombuffer(pcm, dtype=np.float32)
         return samples if self._volume == 1.0 else samples * np.float32(self._volume)
 

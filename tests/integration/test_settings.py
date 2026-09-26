@@ -1,4 +1,4 @@
-"""ADR 0051 — the Settings page's routes, the file they keep, and the voice volume at the device.
+"""ADR 0052 — the Settings page's routes, the file they keep, and the voice volume at the device.
 
 Each check asserts what ``/inherent/settings`` serves (what the page shows),
 what lands in ``<runtime root>/settings.json`` and what the next boot's view

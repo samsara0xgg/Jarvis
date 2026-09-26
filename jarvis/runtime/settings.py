@@ -1,4 +1,4 @@
-"""Jarvis's own settings (ADR 0051): a daemon-owned file laid over config/jarvis.yaml at boot.
+"""Jarvis's own settings (ADR 0052): a daemon-owned file laid over config/jarvis.yaml at boot.
 
 The desktop Settings page reads and writes ``<runtime root>/settings.json``
 through ``/inherent/settings``. Every value is read once at boot, so a saved

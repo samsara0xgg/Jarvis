@@ -2286,7 +2286,7 @@ def _build_tts_pipeline(  # noqa: C901 - rollout/degradation capability boundary
     # Deliberately unvalidated: a type guard here would turn a mistyped key into
     # a silent fall back to the system default, out of the owner's speakers.
     output_device = realtime.get("output_device")
-    # ADR 0051: the Settings page's voice volume, applied in the player.
+    # ADR 0052: the Settings page's voice volume, applied in the player.
     playback_volume = float(realtime.get("playback_volume") or 1.0)
     streaming_raw = realtime.get("streaming_output")
     streaming = streaming_raw if isinstance(streaming_raw, Mapping) else {}
@@ -3200,7 +3200,7 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
             ),
             open_timeout_s=ingress_config.backend_open_timeout_s,
             close_timeout_s=ingress_config.backend_close_timeout_s,
-            # ADR 0051: the Settings page's microphone; null = the system default.
+            # ADR 0052: the Settings page's microphone; null = the system default.
             device=(runtime.config.get("realtime") or {}).get("input_device"),
         )
         ingress = voice_audio.AudioIngress(
@@ -4865,6 +4865,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 else functools.partial(_refresh_usage_now, usage_observer, runtime.conn)
             ),
             usage_codex_reset=None if usage_observer is None else redeem_codex_reset,
+            usage_record_balance=None if usage_observer is None else usage_observer.record_balance,
             work_state_read=(
                 None
                 if runtime.work_state is None

@@ -417,6 +417,10 @@ class InherentDeps:
     # (blocking network, run off the loop). Registered only with ``plugin_authorize``:
     # it spends account credit, so only the desktop's private credential may call it.
     usage_codex_reset: Callable[[str], dict[str, Any]] | None = None
+    # ADR 0050: record a balance a provider will not report, ``(service, usd)``;
+    # raises ``ValueError`` for a bad pair. Loop thread (it emits). Desktop
+    # credential only, like the reset.
+    usage_record_balance: Callable[[str, float], object] | None = None
     # ADR 0023: the current-work-state record. ``work_state_read`` is a small
     # SQLite fold on the loop thread; ``work_state_refresh`` awaits the
     # runtime's single-flight analysis (off-thread) and answers the same
@@ -433,14 +437,14 @@ class InherentDeps:
     # cursor. ``(after, limit) -> {"since", "rows"}``; ``None`` leaves the
     # route unregistered.
     conversation_read: Callable[[int, int], dict[str, Any]] | None = None
-    # ADR 0050: the companion home's reads and its one write, all off the loop
+    # ADR 0051: the companion home's reads and its one write, all off the loop
     # thread. A LookupError is "not connected" (404, the home's fallback), any
     # other failure 502. ``None`` leaves the routes unregistered.
     today_read: Callable[[], Awaitable[dict[str, Any]]] | None = None
     todo_set: Callable[[str, bool], Awaitable[None]] | None = None
     mail_read: Callable[[], Awaitable[dict[str, Any]]] | None = None
     brief_read: Callable[[], dict[str, Any] | None] | None = None
-    # ADR 0051: the Settings page's file, read and saved off the loop thread;
+    # ADR 0052: the Settings page's file, read and saved off the loop thread;
     # a ValueError from saving is a 400. ``None`` leaves the routes unregistered.
     settings_read: Callable[[], Awaitable[dict[str, Any]]] | None = None
     settings_update: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]] | None = None
@@ -913,20 +917,20 @@ async def _run_asr_submit(
 
 
 class SettingsRequest(BaseModel):
-    """Body of ``POST /inherent/settings`` (ADR 0051): the page's changed values by key."""
+    """Body of ``POST /inherent/settings`` (ADR 0052): the page's changed values by key."""
 
     changes: dict[str, Any]
 
 
 class TodoRequest(BaseModel):
-    """Body of ``POST /inherent/today/todo`` (ADR 0050): the home's checkbox."""
+    """Body of ``POST /inherent/today/todo`` (ADR 0051): the home's checkbox."""
 
     id: str
     done: bool
 
 
 async def _home_call[T](call: Awaitable[T]) -> T:
-    """ADR 0050: not connected is 404 (the home's fallback), a bad id 400, anything else 502."""
+    """ADR 0051: not connected is 404 (the home's fallback), a bad id 400, anything else 502."""
     try:
         return await call
     except LookupError as exc:
@@ -939,7 +943,7 @@ async def _home_call[T](call: Awaitable[T]) -> T:
 
 
 def _register_home_routes(app: FastAPI, deps: InherentDeps) -> None:  # noqa: C901 — one closed route table.
-    """ADR 0050/0051: Today, its to-do checkbox, mail, the morning brief and Settings."""
+    """ADR 0051/0052: Today, its to-do checkbox, mail, the morning brief and Settings."""
     if deps.today_read is not None and deps.todo_set is not None:
         today_read, todo_set = deps.today_read, deps.todo_set
 
@@ -1263,6 +1267,28 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0915 — one cl
                 return await asyncio.to_thread(codex_reset, request_id)
             except (OSError, ValueError) as exc:  # urllib errors are OSError.
                 raise HTTPException(status_code=502, detail=str(exc)[:200]) from None
+
+    if deps.usage_record_balance is not None and deps.plugin_authorize is not None:
+        record_balance, balance_authorize = deps.usage_record_balance, deps.plugin_authorize
+
+        @app.post("/inherent/usage/balance", status_code=200)
+        async def usage_balance(request: Request) -> dict[str, Any]:
+            """ADR 0050: record a balance; the next usage poll subtracts the spend since."""
+            if not balance_authorize(request.headers.get("authorization")):
+                raise HTTPException(status_code=401, detail="desktop authorization required")
+            try:
+                body = json.loads(await request.body())
+                service, usd = body.get("service"), body.get("usd")
+            except (ValueError, AttributeError):
+                service = usd = None
+            amount = isinstance(usd, int | float) and not isinstance(usd, bool)
+            if not isinstance(service, str) or not amount:
+                raise HTTPException(status_code=400, detail="needs a service and a usd amount")
+            try:
+                record_balance(service, float(usd))
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from None
+            return {"recorded": True}
 
     if deps.work_state_read is not None and deps.work_state_refresh is not None:
         work_state_read, work_state_refresh = deps.work_state_read, deps.work_state_refresh

@@ -102,7 +102,10 @@ export function Companion() {
     : s.phase === 'hearing' || (s.conversation && s.phase !== 'error') ? 'listening' : 'off';
   const caption = port ? s.heard : simCaption, hearing = port ? s.phase === 'hearing' : simHearing, talking = port ? false : simTalking;
   const said = port ? spoken(s.reply) : '';
-  const reply = port ? { text: said, shown: said.length } : simReply;
+  // Cutting in stops her voice, and with it her answer; her words stay up while yours are still coming in.
+  const held = useRef('');
+  if (said || !(s.phase === 'hearing' || (s.phase === 'processing' && !s.heard))) held.current = said;
+  const reply = port ? { text: held.current, shown: held.current.length } : simReply;
   const [pressed, setPressed] = useState(false);
   const [wardrobe, setWardrobe] = useState(loadWardrobe);
   // A skin change or an expression from the tray brings her out of the island for a moment.
@@ -432,7 +435,9 @@ export function Companion() {
   };
 
   const { out } = geo;
-  const strip = place === 'out' && (voice === 'listening' || voice === 'thinking'), bubble = place === 'out' && !!reply.text;
+  // The strip and her bubble share one spot: her words keep it until yours are in, then the strip shows them whole.
+  const yours = voice === 'thinking' && !!caption;
+  const strip = place === 'out' && (yours || ((voice === 'listening' || voice === 'thinking') && !reply.text)), bubble = place === 'out' && !!reply.text && !yours;
   return <IconContext.Provider value={{ size: 16, weight: 'regular' }}>
     <main ref={root} className="companion" style={{ '--mint': preferences.themeColor } as React.CSSProperties}>
       <div className={`companion-chip ${chip ? 'is-open' : ''}`} data-hit={chip || undefined} data-glass="9" style={{ left: out.x + R + 12, top: out.y - 13 }}>

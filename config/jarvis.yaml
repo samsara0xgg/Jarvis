@@ -136,7 +136,7 @@ work_state:
 daily_report:
   preset: gpt6-sol
 
-# ADR 0050 — 小球首页：日程和待办直接读 Microsoft，邮件读 Gmail（~/.jarvis/env 里的
+# ADR 0051 — 小球首页：日程和待办直接读 Microsoft，邮件读 Gmail（~/.jarvis/env 里的
 # GMAIL_ADDRESS + GMAIL_APP_PASSWORD），都不经过模型；天气来自 Open-Meteo（不用 key），
 # 按这里的经纬度（Saanich）。删掉 weather 就不显示天气。
 home:
@@ -311,12 +311,12 @@ realtime:
   # sounddevice.  Null means the CoreAudio system default output.  An
   # unresolvable name fails the open closed rather than falling back.
   output_device: null
-  # Input device name the single audio ingress opens (ADR 0051), e.g.
+  # Input device name the single audio ingress opens (ADR 0052), e.g.
   # "reSpeaker XVF3800 4-Mic Array".  Null means the system default input and
   # follows it when it changes; a name that does not resolve fails the open.
   # The Settings page writes its choice to ~/.jarvis/settings.json, which wins.
   input_device: null
-  # Her voice's playback level, 0.3-1, applied in our player (ADR 0051);
+  # Her voice's playback level, 0.3-1, applied in our player (ADR 0052);
   # MiniMax's own vol below 1 does not lower the audio.  Null means 1.
   playback_volume: null
   # MiniMax `voice_setting.vol` on every TTS request; the provider documents
@@ -385,8 +385,9 @@ realtime:
   tts_total_timeout_s: 30.0
   tts_session_close_timeout_s: 1.0
   # Silero VAD profiles, read by both input owners.  "record" is the profile
-  # every capture uses; "tts" is stricter so playback bleed cannot false-trigger
-  # a barge-in, and is inert until realtime.single_audio_ingress.barge_in is on.
+  # every capture uses; "tts" runs while Jarvis is speaking
+  # (single_audio_ingress.output_active_vad_mode), stricter so a quiet sound
+  # cannot stop her mid-sentence.
   # The session switches between them mid-utterance, which is only safe while
   # both profiles agree on smoothing_window / required_hits / required_misses:
   # a config where they disagree is refused whole, with one warning, and both
@@ -399,8 +400,8 @@ realtime:
       required_hits: 3
       required_misses: 24
     tts:
-      prob_threshold: 0.5
-      db_threshold: -22.0
+      prob_threshold: 0.4
+      db_threshold: -36.0
       smoothing_window: 5
       required_hits: 3
       required_misses: 24
@@ -582,12 +583,13 @@ realtime:
     shutdown_timeout_s: 2.0
     session_shutdown_timeout_s: 3.0
     # Capture VAD profile (_MODE_THRESHOLDS key) used while Jarvis is producing
-    # audio. "record" is the one profile that ran everywhere before and is the
-    # default because the 2026-09-05 A/B could not measure "tts" at all, not
-    # because "tts" lost: no frame is classified while output is active today,
-    # so the stricter prob+dB gate never engaged. Whoever makes capture arm
-    # during output measures "tts" then and adopts it deliberately.
-    output_active_vad_mode: record
+    # audio; in conversation mode its onset stops her (ADR 0041). Measured
+    # 2026-09-25 on the reSpeaker by replaying that day's captures through
+    # Silero: three stops with nobody talking yet began on short sounds around
+    # -40 dBFS that record's -45 dB gate lets through; at tts -36 dB none of
+    # them starts speech, and all 16 real cut-ins still start within 0.03 s.
+    # -40 lets one through; -32 misses a quiet "你怎么".
+    output_active_vad_mode: tts
     # ADR-0006 D7. Rolling partial SenseVoice decode plus a semantic endpoint
     # hold. Off by default (acoustic endpointing only); the values are the
     # D7 calibration candidates, not promises.

@@ -19,7 +19,9 @@ export type ClaudeData = { plan: string; windows: UsageWindow[]; reset_credits?:
 export type CodexData = { plan: string; windows: UsageWindow[]; reset_credits: number };
 export type SpendRow = { model: string; today_usd: number; month_usd: number };
 export type KeyRow = { key_id: string; name: string; today_tokens: number; month_tokens: number };
-export type OpenAIData = { today_usd: number; month_usd: number; by_model: SpendRow[]; by_key: KeyRow[] };
+// ADR 0050: OpenAI reports no balance; with one recorded on the Usage page, balance_usd = it minus the spend since.
+export type OpenAIData = { today_usd: number; month_usd: number; by_model: SpendRow[]; by_key: KeyRow[];
+  balance_usd?: number; balance_recorded_usd?: number; balance_recorded_at?: string | null };
 export type DeepSeekData = { balance: number; currency: string };
 export type MiniMaxData = { anchor_usd: number; anchor_at: string | null; characters_since_anchor: number; usd_per_million_chars: number; estimate_usd: number };
 export type Usage = { services: {

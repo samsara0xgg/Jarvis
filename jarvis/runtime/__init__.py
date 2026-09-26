@@ -432,9 +432,9 @@ class JarvisRuntime:
     work_state: WorkStateService | None = None
     # ADR 0037: the project view and its sorting job. None = no `projects` list.
     projects: ProjectsService | None = None
-    # ADR 0050: the companion home's Today, mail and brief reads. None = hand-assembled.
+    # ADR 0051: the companion home's Today, mail and brief reads. None = hand-assembled.
     home: Home | None = None
-    # ADR 0051: the Settings page's file. None = hand-assembled.
+    # ADR 0052: the Settings page's file. None = hand-assembled.
     settings: Settings | None = None
 
 
@@ -1589,7 +1589,7 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
     #    need `tools.obsidian.vault_root` / `tools.web.*` threaded into
     #    the registry at build time (ADR-0011 D7) — L4 handlers do not
     #    load YAML themselves.
-    # ADR 0051: the Settings page's saved values lie over the YAML for this boot.
+    # ADR 0052: the Settings page's saved values lie over the YAML for this boot.
     full_config = apply_settings(_load_full_config(config_path), paths.root)
     wave1_features = _wave1_feature_flags(full_config)
     (

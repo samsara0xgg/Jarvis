@@ -1,4 +1,4 @@
-# ADR 0051 — The Settings page writes a file laid over the YAML at boot
+# ADR 0052 — The Settings page writes a file laid over the YAML at boot
 
 **Status:** Accepted
 **Date:** 2026-09-25
@@ -18,7 +18,7 @@
   becoming the shipped defaults of a public app (2026-09-25). A YAML
   round-trip through PyYAML drops every comment.
 - The daemon restarts in seconds under launchd's KeepAlive, and the page
-  already has a Restart button (ADR 0050).
+  already has a Restart button (ADR 0051).
 - The input stream opens the system default input and reopens when that
   default changes; the reSpeaker and the MacBook microphone are both
   present. MiniMax's `vol` below 1 did not lower the audio it returned
