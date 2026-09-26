@@ -473,16 +473,16 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
             <span className={`cap ${saying.busy ? 'is-busy' : ''}`}><i/><span>{saying.caption}</span></span>
           </button>
         </div>
-        <button className="row r-now" data-row="now" aria-label="Open Right now" onClick={() => openPage('now')}>
-          <span className="head"><span className="label">Now</span><span className={`meta ${fresh.stale ? 'is-warm' : ''}`} title={fresh.text}>{now ? `${now.current ? 'as of' : 'at'} ${now.at}` : ''}</span></span>
-          <span className="text">{now ? now.claim : workView === null ? 'Syncing…' : 'No recent activity observed'}</span>
-        </button>
         <button className="row r-agents" data-row="agents" aria-label="Open Agents" onClick={() => openPage('agents')}>
           <span className="head"><span className="label">Agents</span><span className="head-r">
             <span className="orbs">{waiting.map(s => <i key={s.id} className="orb sm is-wait"/>)}{working.slice(0, 4).map(s => <i key={s.id} className="orb sm is-work"/>)}</span>
             {(waiting.length > 0 || working.length > 0) && <span className={`pill ${waiting.length ? 'is-waiting' : ''}`}>{waiting.length ? `${waiting.length} ${waiting.length > 1 ? 'need' : 'needs'} you` : `${working.length} working`}</span>}
           </span></span>
           <span className="text one">{lead ? <><span className={`tagc ${lead.agent}`}>{AGENT_NAME[lead.agent]}</span>{lead.title}{lead.state === 'wait' && lead.last ? ` · ${lead.last.replace(/^Wants/, 'wants')}` : ''}</> : 'Sessions show up once you start one.'}</span>
+        </button>
+        <button className="row r-now" data-row="now" aria-label="Open Right now" onClick={() => openPage('now')}>
+          <span className="head"><span className="label">Now</span><span className={`meta ${fresh.stale ? 'is-warm' : ''}`} title={fresh.text}>{now ? `${now.current ? 'as of' : 'at'} ${now.at}` : ''}</span></span>
+          <span className="text">{now ? now.claim : workView === null ? 'Syncing…' : 'No recent activity observed'}</span>
         </button>
         <button className="row r-usage" data-row="usage" aria-label="Open Usage" onClick={() => openPage('usage')}>
           <span className="head"><span className="label">Usage</span><span className="meta">OpenAI today <b>{usd(openai?.data.today_usd)}</b></span></span>
