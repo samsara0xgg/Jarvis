@@ -227,14 +227,6 @@ _FALLBACK_OBSERVER_POLL_INTERVAL_S: float = 60.0
 # rather than importing ``packet.DEFAULT_OBSERVER_POLL_INTERVAL_S``).
 _FALLBACK_CONFIRMATION_TTL_MS: int = 600_000
 
-# ADR-0014 D14 expiry sweep cadence, and the floor it is clamped to. The
-# floor exists because the sweep opens a write transaction on a worker
-# thread: a sub-second interval would contend with real turns for the
-# SQLite writer for no gain, since `confirmation.ttl_ms` defaults to ten
-# minutes and the live burn's shortest useful value is seconds.
-_FALLBACK_CONFIRMATION_EXPIRY_SWEEP_INTERVAL_S: float = 30.0
-_MIN_CONFIRMATION_EXPIRY_SWEEP_INTERVAL_S: float = 5.0
-
 # ADR-0008 §6 `realtime.response.cancel_timeout_ms` default. Implemented as
 # the cancel connection's SQLite `busy_timeout`, so it bounds how long the
 # terminal CAS waits for a contended writer — never an in-flight provider
@@ -565,63 +557,6 @@ def _confirmation_ttl_ms(config: Mapping[str, Any]) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         return _FALLBACK_CONFIRMATION_TTL_MS
     return value if value > 0 else _FALLBACK_CONFIRMATION_TTL_MS
-
-
-def _confirmation_expiry_sweep_interval_s(config: Mapping[str, Any]) -> float:
-    """Return ``confirmation.expiry_sweep_interval_s``, clamped to its floor.
-
-    Reuses the existing top-level ``confirmation:`` block that already owns
-    ``ttl_ms`` — the deadline and the cadence that notices it belong
-    together. A value under the floor downgrades once, with one warning,
-    rather than being honored.
-    """
-    block = config.get("confirmation")
-    if not isinstance(block, Mapping):
-        return _FALLBACK_CONFIRMATION_EXPIRY_SWEEP_INTERVAL_S
-    interval = _positive_float(
-        block.get("expiry_sweep_interval_s"),
-        _FALLBACK_CONFIRMATION_EXPIRY_SWEEP_INTERVAL_S,
-    )
-    if interval < _MIN_CONFIRMATION_EXPIRY_SWEEP_INTERVAL_S:
-        LOGGER.warning(
-            "confirmation.expiry_sweep_interval_s clamped: requested %.3fs, "
-            "effective %.1fs (floor)",
-            interval,
-            _MIN_CONFIRMATION_EXPIRY_SWEEP_INTERVAL_S,
-        )
-        return _MIN_CONFIRMATION_EXPIRY_SWEEP_INTERVAL_S
-    return interval
-
-
-def _durable_confirmation_expiry_enabled(config: Mapping[str, Any]) -> bool:
-    """Resolve ``realtime.confirmation.durable_expiry.enabled`` (ADR-0014 D14).
-
-    This flag writes durable ``confirmation.expired`` rows, and a row cannot
-    be unwritten, so it defaults false and additionally requires
-    ``realtime.enabled``; requesting it without the parent downgrades once,
-    with one warning, to today's lazy read-time expiry.
-    """
-    realtime = config.get("realtime")
-    if not isinstance(realtime, Mapping):
-        return False
-    block = realtime.get("confirmation")
-    durable = block.get("durable_expiry") if isinstance(block, Mapping) else None
-    requested = (
-        durable.get("enabled") is True if isinstance(durable, Mapping) else False
-    )
-    if not requested:
-        return False
-    if realtime.get("enabled") is not True:
-        LOGGER.warning(
-            "realtime.confirmation.durable_expiry downgraded "
-            "(realtime_parent_disabled): requested enabled=True; effective False",
-        )
-        record_realtime_trace(
-            "confirmation_expiry_activation_downgraded",
-            reason="realtime_parent_disabled",
-        )
-        return False
-    return True
 
 
 def _wave1_feature_flags(config: Mapping[str, Any]) -> Wave1FeatureFlags:
