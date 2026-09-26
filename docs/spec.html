@@ -792,7 +792,7 @@ events (cancelled ones dropped) with every open Microsoft To Do task and those c
 day, read once by the runtime through the <code>microsoft</code> server's read-only tools outside any
 model turn (ADR 0036), active knowledge and the previous day's report. Captures holding a milestone phrase (application submitted or received, order placed,
 sent, and their Chinese forms) are listed again at the head of the material. Commits carry their
-commit time and observation time (or 观察器未记录) with a <code>late</code> flag when the commit
+commit time and observation time (or a note that the observer did not record it) with a <code>late</code> flag when the commit
 fell on another local day. No section is capped or excerpted. The material header states, per
 source, whether nothing was recorded, the store was unreadable, or everything was served; when
 the whole day exceeds the material budget (900k characters) the largest source falls back — screen
@@ -1009,7 +1009,7 @@ runtime dispatches them and then makes one more request with no tools, carrying 
 not the user's words) that asks for the answer from the tool results already held, facts with their
 evidence first, unknowns stated. That request runs under the same cost recording, admission and
 cancellation checks as the loop's calls and is not counted against the tool budget. If it fails or
-returns no text, the turn ends with a fixed Chinese limitation, never an internal English error.</p>
+returns no text, the turn ends with a fixed limitation in the language setting, never an internal English error.</p>
 
 <h4>3.4.10 Entity hallucination repair protocol</h4>
 
@@ -1370,7 +1370,7 @@ PresentationIntent.intent_type:
 <ul>
 <li><strong>Input:</strong> audio -> VAD / ASR -> corrections -> <code>utterance.received</code>。Intent routing 不在 voice layer。</li>
 <li><strong>Output:</strong> TTS 只能播放经过 Layer 3 pre-emit gate 或 ResponsePlan 允许的文本。例外：Live voice provider 的原生音频直接播放，不经 pre-emit gate；后台答案仍先过 Layer 3 再交给 Live（ADR-0016 D1）。后台答案是持久事实：交付给它所属且仍开着的 Live 会话（不论迟到多久），否则在下一次会话开始时补投（最多 3 条、最近 24 小时）；交付以 provider 的 ACK 记为 <code>live.result_delivered</code>，被新请求取代的结果记为 <code>withheld</code> 且不再补投；每次会话关闭记一条 <code>live.session_usage</code>。交付不等于听到（ADR 0026）。</li>
-<li><strong>Spoken form:</strong> 本地语音链念的是口语版，不是书面答案：模型自己写的、要念出来（<code>voice_notify</code>）且超过口语版自己的上限（中文 60 字、英文 240 字符，约 13 秒）或带列表、标题、括号等格式的回答，或者语言和 Allen 这一轮说的话不一样的回答，Layer 3 另写一到三句口语版放进 voice 通道，改写时同时给出 Allen 这一轮的原话，语言跟随 Allen 说的话，完整答案原样放进 document 通道，屏幕和 memory.db 只留 document；Layer 3 的固定文字和确认提问照原文念；调工具的一轮不说过渡语：commentary 关闭（<code>realtime.commentary.enabled: false</code>），等待只在 Resonance 上显示（ADR 0045）。</li>
+<li><strong>Spoken form:</strong> 本地语音链念的是口语版，不是书面答案：模型自己写的、要念出来（<code>voice_notify</code>）且超过口语版自己的上限（中文 60 字、英文 240 字符，约 13 秒）或带列表、标题、括号等格式的回答，或者语言和 Allen 这一轮说的话不一样的回答，Layer 3 另写一到三句口语版放进 voice 通道，改写时同时给出 Allen 这一轮的原话，语言跟随 Allen 说的话，完整答案原样放进 document 通道，屏幕和 memory.db 只留 document；Layer 3 的固定文字和确认提问照原文念，它们的语言由 <code>settings.yaml</code> 的 <code>language</code>（<code>zh</code> 或 <code>en</code>，缺省跟随系统语言）决定，桌面设置经 <code>POST /inherent/language</code> 即时切换；调工具的一轮不说过渡语：commentary 关闭（<code>realtime.commentary.enabled: false</code>），等待只在 Resonance 上显示（ADR 0045）。</li>
 <li><strong>Interrupt:</strong> Voice 只执行 speak、suppress、duck、stop、resume；“该不该打断 Allen”属于 Attention Policy。</li>
 <li><strong>Conversation mode:</strong> Resonance 处于波浪形态（点中间圆点或说唤醒词进入）时，经 <code>POST /inherent/controls</code> 的 <code>conversation</code> 开关告知 daemon：不需要唤醒词，本地语音链一直在听；Jarvis 正在说话时 Allen 一开口，就停掉正在播放的声音，并取消还在生成的答案（<code>surface.playback_interrupted</code> reason <code>barge_in</code>）。麦克风静音和 GPT-Live 会关闭它；开关只存在 daemon 内存里，最后一个 surface 断开时自动关闭。该模式不检查音频设备，只适合耳机或带参考信号的 reSpeaker（ADR 0041）。</li>
 <li><strong>Fallback:</strong> TTS provider failure 必须走 surface fallback chain，不应吞掉 message。</li>
