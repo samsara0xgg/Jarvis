@@ -6,7 +6,7 @@ import { DashboardPreview } from './DashboardPreview';
 import { AroundDashboard } from './AroundDashboard';
 import { playFeedback, stopFeedback, warmFeedback, type FeedbackCue } from './feedback';
 import { usePreferences } from './preferences';
-import { initialState, plain, reducer } from './model';
+import { initialState, plain, reducer, visible } from './model';
 import { connect, type Runtime } from './runtime';
 import { usePlugins } from './PluginPanel';
 import './companion.css';
@@ -211,7 +211,7 @@ export function Companion() {
     const id = setInterval(() => void load(), 2000);
     return () => { stop = true; clearInterval(id); };
   }, [dashboard]);
-  const tail = s.reply && !s.rows.some(row => row.seq > s.openSeq && row.source !== 'allen') ? plain(s.reply) : '';
+  const tail = s.reply && !s.rows.some(row => row.seq > s.openSeq && row.source !== 'allen') ? visible(s.reply) : '';
   // When Jarvis asks for a plugin mid-conversation, the Dashboard opens on it.
   const plugins = usePlugins(), request = plugins.snapshot?.request, shownRequest = useRef('');
   const [pluginFocus, setPluginFocus] = useState<{ plugin: string; key: string } | null>(null);

@@ -143,6 +143,21 @@
 .ad .tr-jarvis { display:flex; flex-direction:column; gap:5px; }
 .ad .tr-jarvis .who { color:rgb(var(--glow)); }
 .ad .tr-jarvis p { font-size:14px; line-height:1.55; }
+/* Jarvis's answer as markdown: headings, lists and tables sized for the narrow column. */
+.ad .md { display:flex; flex-direction:column; gap:8px; font-size:14px; line-height:1.55; }
+.ad .md p { white-space:pre-line; }
+.ad .md h5 { margin-top:4px; font-size:14px; font-weight:600; }
+.ad .md strong { font-weight:600; color:#fff; }
+.ad .md code { padding:1px 4px; border-radius:4px; font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace; background:rgb(255 255 255 / .08); overflow-wrap:anywhere; }
+.ad .md pre { margin:0; padding:8px 10px; border-radius:8px; font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; background:rgb(255 255 255 / .06); white-space:pre; overflow-x:auto; }
+.ad .md ul, .ad .md ol { display:flex; flex-direction:column; gap:3px; margin:0; padding-left:18px; }
+.ad .md li { white-space:pre-line; }
+.ad .md li::marker { color:rgb(var(--glow)); }
+.ad .md li > ul, .ad .md li > ol { margin-top:3px; }
+.ad .md-table { overflow-x:auto; scrollbar-width:thin; }
+.ad .md table { border-collapse:collapse; font-size:12.5px; line-height:1.45; }
+.ad .md th, .ad .md td { padding:5px 8px; border-bottom:1px solid var(--p-line); text-align:left; vertical-align:top; }
+.ad .md th { font-weight:600; color:var(--p-muted); white-space:nowrap; }
 .ad .fold { display:flex; align-items:center; gap:6px; width:100%; margin-top:4px; padding:6px 8px; border-radius:9px; background:rgb(var(--glow) / .07); font-size:11px; color:var(--p-muted); text-align:left; }
 .ad .fold svg { margin-left:auto; transition:transform .2s; }
 .ad .fold[aria-expanded=true] svg { transform:rotate(180deg); }

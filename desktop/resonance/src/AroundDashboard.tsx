@@ -6,7 +6,8 @@ import { useCodexSessions, type CodexSession } from './CodexModule';
 import { freshnessLine, nowLine, useWorkState, type Basis } from './WorkStateModule';
 import { duration, useProjects } from './ProjectsModule';
 import { fmtReset } from './quota-time';
-import { plain, type Row } from './model';
+import { plain, visible, type Row } from './model';
+import { Markdown } from './Markdown';
 import type { Plugin, PluginRequest, usePlugins } from './PluginPanel';
 import './dashboard-around.css';
 
@@ -125,7 +126,7 @@ const toTurns = (rows: Row[], tail: string): Turn[] => {
     if (!t) turns.push({ you: '', at: '', jarvis: text, jarvisAt: at });
     else Object.assign(t, { jarvis: t.jarvis ? `${t.jarvis}\n\n${text}` : text, jarvisAt: at });
   };
-  for (const row of rows.slice(-60)) { if (row.source === 'allen') turns.push({ you: row.text, at: when(row.ts) }); else answer(plain(row.text), when(row.ts)); }
+  for (const row of rows.slice(-60)) { if (row.source === 'allen') turns.push({ you: row.text, at: when(row.ts) }); else answer(visible(row.text), when(row.ts)); }
   if (tail) answer(tail, 'now');
   return turns;
 };
@@ -249,7 +250,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
   const shownTurns = talk ? toTurns(talk.rows, talk.tail) : turns;
   const lastAnswer = talk && [...talk.rows].reverse().find(row => row.source !== 'allen');
   const saying = !talk ? said : { busy: talk.busy,
-    text: talk.tail || (lastAnswer ? plain(lastAnswer.text) : 'Say something and Jarvis answers here.'),
+    text: plain(talk.tail) || (lastAnswer ? plain(lastAnswer.text) : 'Say something and Jarvis answers here.'),
     caption: talk.offline ? 'Offline · reconnecting' : talk.busy ? 'Thinking' : talk.tail ? 'Jarvis · now' : lastAnswer ? `Jarvis · ${when(lastAnswer.ts)}` : 'Jarvis' };
   useEffect(() => { if (page === 'conversation') body()?.scrollTo({ top: body()!.scrollHeight, behavior: reduced.matches ? 'auto' : 'smooth' }); }, [shownTurns.length, shownTurns.at(-1)?.jarvis]);
 
@@ -352,7 +353,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
       {back('Conversation', talk ? undefined : 'today')}
       <div className="pg-body">{shownTurns.map((t, i) => <div className="pg-sec tr" key={i}>
         {t.you && <div className="tr-you"><span className="who">You · {t.at}</span><p>{t.you}</p></div>}
-        {t.jarvis && <div className="tr-jarvis"><span className="who"><span className="dot"/>Jarvis · {t.jarvisAt}</span><p>{t.jarvis}</p>
+        {t.jarvis && <div className="tr-jarvis"><span className="who"><span className="dot"/>Jarvis · {t.jarvisAt}</span><Markdown text={t.jarvis}/>
           {t.work && <Fold label={t.work[0]}><pre>{t.work[1]}</pre></Fold>}</div>}
       </div>)}
       <Ask className="pg-input" onAsk={ask}/></div>

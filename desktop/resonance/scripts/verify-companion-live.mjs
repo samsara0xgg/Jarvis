@@ -23,6 +23,8 @@ const checks = [], check = (name, pass) => { assert.ok(pass, name); checks.push(
 // The page is served from vite, the daemon from another origin; the Electron window has no such wall.
 const browser = await chromium.launch({ headless: true, channel: 'chrome', args: ['--disable-web-security'] });
 const plain = text => text.replace(/<\/?(voice|document)>/g, '').replace(/\*\*|`/g, '').trim();
+// An answer's words with its markdown and spacing gone, to compare the source with the rendered page.
+const words = text => text.replace(/<\/?(voice|document)>/g, '').replace(/^\s*(\d+[.)]|[-*•])\s+/gm, '').replace(/[\s*`#|:-]/g, '');
 const hm = ms => { const d = new Date(ms); return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
 try {
   for (let i = 0; i < 50; i++) { try { await fetch(`http://127.0.0.1:${web}/`); break; } catch { await new Promise(r => setTimeout(r, 100)); } }
@@ -155,7 +157,7 @@ try {
     await openRow('conversation'); await page.waitForTimeout(2500);
     // Re-read the record: a turn may have landed since the start (the page polls every 2 s).
     const newest = [...(await get('/inherent/conversation?after=0')).rows].reverse().find(r => r.source !== 'allen');
-    check(`R the Conversation page is the record, newest last (${newest.seq})`, (await page.locator('.ad .tr-jarvis p').last().textContent()).endsWith(plain(newest.text)));
+    check(`R the Conversation page is the record, newest last (${newest.seq})`, words(await page.locator('.ad .tr-jarvis .md').last().textContent()).endsWith(words(newest.text)));
     await panelShot('R-conversation'); await back();
     check(`R nothing was written to the daemon (${posts.length} POSTs refused: ${[...new Set(posts)].join(', ')})`, pluginOps.every(o => o.operation === 'read'));
     check('no page errors', errors.length === 0);
@@ -229,9 +231,14 @@ try {
     await page.locator('.ad .pg-input input').press('Enter');
     await page.waitForTimeout(2600);
     check('L8 its text box submits, and the new row arrives from the record', posts.at(-1)?.path === '/inherent/submit' && posts.at(-1).body.text === 'Move the test to five' && await page.locator('.ad .tr').count() === 2);
-    await page.evaluate(() => { window.__emit('open', { turn_id: 'typed-1', response_id: 'resp-3' }); window.__emit('append', { turn_id: 'typed-1', token: 'Moved to 5 PM.' }); });
+    const moved = '<voice>Moved to five.</voice>\n<document>## Moved\n\n- **5 PM** voice test\n  - bring `reSpeaker`\n\n| When | What |\n|---|---|\n| 17:00 | voice test |</document>';
+    await page.evaluate(token => { window.__emit('open', { turn_id: 'typed-1', response_id: 'resp-3' }); window.__emit('append', { turn_id: 'typed-1', token }); }, moved);
     await page.waitForTimeout(200);
-    check('L8 the streaming answer shows under your turn until its row lands', (await page.locator('.ad .tr-jarvis p').last().textContent()) === 'Moved to 5 PM.');
+    const md = page.locator('.ad .tr-jarvis .md').last();
+    check('L8 the streaming answer shows under your turn until its row lands, its document only', words(await md.textContent()) === words('Moved5 PM voice test bring reSpeaker When What 17:00 voice test'));
+    check('L8 the answer\'s markdown renders: heading, bold, nested list, code, table', await md.locator('h5').textContent() === 'Moved' && await md.locator('li strong').textContent() === '5 PM'
+      && await md.locator('li > ul > li code').textContent() === 'reSpeaker' && (await md.locator('th').allTextContents()).join() === 'When,What'
+      && (await md.locator('td').allTextContents()).join() === '17:00,voice test' && !/\*\*|##|\|/.test(await md.textContent()));
     await panelShot('L8-conversation');
     await page.evaluate(() => window.__emit('done', { turn_id: 'typed-1', fadeMs: 100 }));
     await back();
