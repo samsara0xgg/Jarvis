@@ -162,7 +162,9 @@ def bootstrap_runtime(root: Path | None = None) -> RuntimePaths:
         3. Built-in default `~/.jarvis/` (expanded via `Path.expanduser()`).
 
     Directory creation:
-        - `${root}` created with `parents=True, exist_ok=True`.
+        - `${root}` created with `parents=True, exist_ok=True`, then
+          set to 0700 on every call, so other accounts on this Mac can
+          read none of the conversations, audio or keys under it.
         - `${root}/artifacts/` created with `parents=True, exist_ok=True`.
         - `mac_events.db` and `registry.json` are NOT created here;
           they are L2's responsibility at first write.
@@ -181,6 +183,7 @@ def bootstrap_runtime(root: Path | None = None) -> RuntimePaths:
     artifacts_root = resolved_root / "artifacts"
 
     resolved_root.mkdir(parents=True, exist_ok=True)
+    resolved_root.chmod(0o700)
     artifacts_root.mkdir(parents=True, exist_ok=True)
 
     return RuntimePaths(
