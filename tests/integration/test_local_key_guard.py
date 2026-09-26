@@ -31,6 +31,14 @@ async def _empty() -> dict[str, Any]:
     return {}
 
 
+async def _set_todo(_todo_id: str, _done: bool) -> None:  # noqa: FBT001 — the deps signature
+    return None
+
+
+async def _save_settings(_changes: dict[str, Any]) -> dict[str, Any]:
+    return {}
+
+
 def _client(tmp_path: Any) -> tuple[TestClient, str, list[str]]:  # noqa: ANN401 — pytest tmp_path
     key = local_key(tmp_path)
     matches = functools.partial(local_key_matches, key)
@@ -43,6 +51,7 @@ def _client(tmp_path: Any) -> tuple[TestClient, str, list[str]]:  # noqa: ANN401
             usage_read=dict,
             usage_refresh=_empty,
             usage_codex_reset=lambda _request_id: {},
+            usage_record_balance=lambda _provider, _usd: None,
             work_state_read=dict,
             work_state_refresh=_empty,
             projects_read=_empty,
@@ -52,6 +61,13 @@ def _client(tmp_path: Any) -> tuple[TestClient, str, list[str]]:  # noqa: ANN401
             plugin_action=lambda _operation, _data: {},
             plugin_authorize=matches,
             plugin_icon=lambda _plugin_id: None,
+            today_read=_empty,
+            todo_set=_set_todo,
+            mail_read=_empty,
+            brief_read=dict,
+            settings_read=_empty,
+            settings_update=_save_settings,
+            restart=lambda: None,
         )
     )
     require_local_key(app, matches)
@@ -81,12 +97,12 @@ def _call(client: TestClient, route: str, headers: dict[str, str]) -> int:
 def test_the_route_table_is_the_one_this_test_walks(tmp_path: Any) -> None:  # noqa: ANN401
     """Pin the count, so a route added later is walked, not silently skipped.
 
-    21 HTTP method/path pairs, the four FastAPI docs pairs (GET and HEAD of
+    29 HTTP method/path pairs, the four FastAPI docs pairs (GET and HEAD of
     ``/openapi.json``, ``/docs``, ``/docs/oauth2-redirect``, ``/redoc``) and
     the ``/inherent/ws`` socket.
     """
     _, _, routes = _client(tmp_path)
-    assert len(routes) == 30, routes
+    assert len(routes) == 38, routes
 
 
 @pytest.mark.parametrize(

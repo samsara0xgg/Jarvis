@@ -39,7 +39,8 @@ def main() -> None:
     endpoint = f"http://127.0.0.1:{oauth_port}/mcp"
     _package(root, "linear", {"linear": {"url": endpoint, "auth": "oauth"}})
     _package(root, "github", {"github": {"url": endpoint, "bearer_token_env_var": "GITHUB_TOKEN"}})
-    _package(root, "gateway", {}, app_only=True)
+    # Like the real Lovable package: connector-gateway only, no manifest logo.
+    _package(root, "lovable", {}, app_only=True)
     for name, description in (
         ("linear", "Manage issues, projects and team workflows"),
         ("github", "Access repositories, issues and pull requests"),

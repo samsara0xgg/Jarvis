@@ -24,6 +24,11 @@ contextBridge.exposeInMainWorld('jarvis', {
     return () => ipcRenderer.removeListener('display-leave', listener);
   },
   displayReady: () => ipcRenderer.send('display-ready'),
+  onTuck: (callback: (tucked: { left: boolean; right: boolean }) => void) => {
+    const listener = (_: unknown, tucked: { left: boolean; right: boolean }) => callback(tucked);
+    ipcRenderer.on('tuck', listener);
+    return () => ipcRenderer.removeListener('tuck', listener);
+  },
   companionMenu: (menu: unknown) => ipcRenderer.send('companion-menu', menu),
   layout: (mode: string, height: number, surface?: { x: number; y: number; width: number; height: number }) => ipcRenderer.send('layout', { mode, height, surface }),
   focus: (enabled: boolean) => ipcRenderer.invoke('focus-input', enabled),
@@ -33,6 +38,7 @@ contextBridge.exposeInMainWorld('jarvis', {
   codexTitles: (ids: string[]) => ipcRenderer.invoke('codex-titles', ids),
   openAccount: (service: string) => ipcRenderer.invoke('open-account', service),
   usageReset: (service: string, requestId: string) => ipcRenderer.invoke('usage-reset', service, requestId),
+  usageBalance: (service: string, usd: number) => ipcRenderer.invoke('usage-balance', service, usd),
   plugins: (operation: string, data: Record<string, unknown> = {}) => ipcRenderer.invoke('plugins', operation, data),
   drag: (phase: 'start' | 'move' | 'end', point?: { x: number; y: number }) => ipcRenderer.send('drag', { phase, point }),
   passthrough: (enabled: boolean) => ipcRenderer.send('passthrough', enabled),

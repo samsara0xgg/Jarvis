@@ -10,12 +10,17 @@ assistant output is suppressed as typed telemetry.  The one stop path is
 conversation mode's injected ``stop_speaking`` (ADR 0041), never a call from
 this module: neither echo, nor ordinary speech, nor any VAD verdict can reach
 Wave-2 playback flush/CAS, ResponseRun cancellation, or action cancellation.
+ADR 0053 adds two more injected runtime callables of the same kind:
+``hold_output`` keeps answers from starting while Allen is talking, and
+``supersede_unspoken`` lets an accepted utterance drop the unspoken answer to
+his previous one.
 """
 
 from __future__ import annotations
 
 import contextlib
 import enum
+import functools
 import logging
 import os
 import queue
@@ -246,6 +251,7 @@ class _PipelinePort(Protocol):
         session_id: str | None = ...,
         utterance_id: str | None = ...,
         endpoint_reason: str | None = ...,
+        before_emit: Callable[[], None] | None = ...,
     ) -> Event:
         """Run final ASR and commit ``utterance.received``."""
         ...
@@ -898,6 +904,8 @@ class DuplexVoiceSession:
         mic_muted: Callable[[], bool] | None = None,
         conversation: Callable[[], bool] | None = None,
         stop_speaking: Callable[[], object] | None = None,
+        hold_output: Callable[[bool], None] | None = None,
+        supersede_unspoken: Callable[[str], None] | None = None,
     ) -> None:
         """Register all bounded subscribers before any hardware starts.
 
@@ -905,6 +913,11 @@ class DuplexVoiceSession:
         while it is on and the mic is live, capture stays armed without a
         wake hit, and speech that starts while Jarvis is speaking calls
         ``stop_speaking`` on a thread of its own.
+
+        ADR 0053: ``hold_output(True)`` from an utterance's speech onset
+        until it is accepted or comes to nothing, so no answer starts while
+        Allen is talking; ``supersede_unspoken(turn_id)`` once it is
+        accepted, before ``utterance.received`` is written.
         """
         self._ingress = ingress
         self._wake_engine = wake_engine
@@ -914,6 +927,11 @@ class DuplexVoiceSession:
         self._mic_muted = mic_muted
         self._conversation = conversation
         self._stop_speaking = stop_speaking
+        self._hold_output = hold_output
+        self._supersede_unspoken = supersede_unspoken
+        # Turns whose words are still coming in: spoken, or waiting on ASR.
+        self._in_flight: set[str] = set()
+        self._in_flight_lock = threading.Lock()
         # True while the assembler's arm is conversation mode's, not a wake's.
         self._conversation_armed = False
         self._wake_threshold = wake_threshold
@@ -1200,6 +1218,30 @@ class DuplexVoiceSession:
             target=self._stop_speaking, name="conversation-barge-in", daemon=True,
         ).start()
 
+    def _mark_in_flight(self, turn_id: str, *, active: bool) -> None:
+        """Hold answers while any of Allen's utterances is in flight (ADR 0053)."""
+        with self._in_flight_lock:
+            before = bool(self._in_flight)
+            if active:
+                self._in_flight.add(turn_id)
+            else:
+                self._in_flight.discard(turn_id)
+            after = bool(self._in_flight)
+            # Inside the lock, so the holds reach the output in the order decided.
+            if before != after and self._hold_output is not None:
+                try:
+                    self._hold_output(after)
+                except Exception:  # noqa: BLE001 - output state cannot break capture
+                    LOGGER.debug("realtime hold_output failed", exc_info=True)
+
+    def _supersede(self, turn_id: str) -> None:
+        if self._supersede_unspoken is None:
+            return
+        try:
+            self._supersede_unspoken(turn_id)
+        except Exception:  # an unspoken answer left alone never loses Allen's words
+            LOGGER.exception("realtime supersede_unspoken failed turn_id=%s", turn_id)
+
     def _capture_loop(self) -> None:
         while not self._stop.is_set():
             self._drain_detection_commands()
@@ -1213,6 +1255,7 @@ class DuplexVoiceSession:
             if is_active != was_active:
                 self._capture_subscription.set_active_utterance(active=is_active)
                 if is_active:
+                    self._mark_in_flight(self._assembler.turn_id, active=True)
                     self._capture_starts += 1
                     record_realtime_trace(
                         "audio_input_capture_started",
@@ -1255,6 +1298,8 @@ class DuplexVoiceSession:
                     # minted turn id just before that reset, so it is the
                     # reliable reader whenever replay produced one.
                     turn_id = outcomes[0].turn_id if outcomes else self._assembler.turn_id
+                    if self._assembler.active:
+                        self._mark_in_flight(self._assembler.turn_id, active=True)
                     self._broadcast("listening", turn_id=turn_id)
                     for outcome in outcomes:
                         self._handle_capture_outcome(outcome)
@@ -1270,6 +1315,8 @@ class DuplexVoiceSession:
             # partial work before final ASR can be enqueued.
             self._partial_lane.cancel(outcome.utterance_id)
         self._capture_subscription.set_active_utterance(active=False)
+        # A committed utterance stays in flight until its ASR answers.
+        self._mark_in_flight(outcome.turn_id, active=isinstance(outcome, CapturedUtterance))
         if isinstance(outcome, WakeArmExpired):
             self._armed_no_speech_timeouts += 1
             record_realtime_trace(
@@ -1323,6 +1370,7 @@ class DuplexVoiceSession:
         try:
             self._commits.put_nowait(outcome)
         except queue.Full:
+            self._mark_in_flight(outcome.turn_id, active=False)
             self._commit_queue_full += 1
             record_realtime_trace(
                 "audio_input_commit_queue_full",
@@ -1361,6 +1409,7 @@ class DuplexVoiceSession:
                         session_id=utterance.session_id,
                         utterance_id=utterance.utterance_id,
                         endpoint_reason=utterance.endpoint_reason,
+                        before_emit=functools.partial(self._supersede, utterance.turn_id),
                     )
                 self._assembler.mark_committed(utterance.utterance_id)
             except voice_pipeline.VoicePipelineWakeOnlyError:
@@ -1386,6 +1435,7 @@ class DuplexVoiceSession:
                 LOGGER.exception("realtime wake: ASR commit failed turn_id=%s", utterance.turn_id)
                 self._broadcast("error", turn_id=utterance.turn_id, reason="asr_error")
             finally:
+                self._mark_in_flight(utterance.turn_id, active=False)
                 self._commits.task_done()
 
     def _partial_loop(self) -> None:

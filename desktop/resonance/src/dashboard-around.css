@@ -254,10 +254,22 @@
 .ad .spend li { display:flex; align-items:center; gap:6px; }
 .ad .spend li span { margin-left:auto; font-variant-numeric:tabular-nums; }
 .ad .spend li i { width:7px; height:7px; border-radius:50%; flex:none; }
-.ad .bal { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
-.ad .bal .us-link { position:relative; display:flex; flex-direction:column; align-items:flex-start; padding:8px 10px; border-radius:10px; background:rgb(255 255 255 / .04); text-align:left; transition:background-color .15s; }
-.ad .bal .us-link:hover { background:rgb(var(--glow) / .1); }
-.ad .bal .us-out { position:absolute; top:9px; right:9px; }
+.ad .bal { display:grid; grid-template-columns:repeat(3,1fr); gap:6px; }
+.ad .bal-card { display:flex; flex-direction:column; align-items:flex-start; gap:1px; min-width:0; padding:8px 9px; border-radius:10px; background:rgb(255 255 255 / .04); }
+.ad .bal-card .us-link { gap:4px; font-size:11px; color:var(--p-muted); }
+.ad .bal-card .us-link:hover { color:var(--p-ink); }
+.ad .bal-set { margin-top:2px; padding:0; font-size:11px; color:rgb(var(--glow)); }
+.ad .bal-set:hover { text-decoration:underline; }
+/* Typing a balance takes the whole row: the amount, then Cancel and Save. */
+.ad .bal-card.is-editing { grid-column:1 / -1; gap:6px; padding:10px; background:rgb(var(--glow) / .08); box-shadow:inset 0 0 0 .5px rgb(var(--glow) / .3); animation:ad-fade .2s both; }
+.ad .bal-name { font-size:11px; color:var(--p-muted); }
+.ad .bal-input { display:flex; align-items:center; gap:4px; width:100%; padding:4px 8px; border-radius:8px; background:rgb(0 0 0 / .25); font-size:15px; font-weight:600; }
+.ad .bal-input input { flex:1; min-width:0; border:0; background:none; color:var(--p-ink); font:inherit; font-variant-numeric:tabular-nums; outline:none; }
+.ad .bal-card.is-editing div { display:flex; justify-content:flex-end; gap:6px; width:100%; }
+.ad .bal-card .is-alert { font-size:11px; color:var(--alert-c); }
+.ad .bal-card .btn:disabled { opacity:.45; }
+.ad .spend .more { padding:0; font:inherit; font-size:11.5px; color:var(--p-faint); }
+.ad .spend .more:hover { color:var(--p-ink); }
 /* Each service's name opens its own page; the arrow stays faint until hovered. */
 .ad .us-link { display:inline-flex; align-items:baseline; gap:6px; padding:0; font:inherit; color:inherit; }
 .ad .us-out { align-self:center; flex:none; color:var(--p-faint); transition:color .15s; }
@@ -272,8 +284,7 @@
 .ad .us-confirm p.is-alert { color:var(--alert-c); }
 .ad .us-confirm div { display:flex; justify-content:flex-end; gap:6px; margin-top:6px; }
 .ad .us-confirm .btn:disabled { opacity:.45; }
-.ad .bal span { font-size:11px; color:var(--p-muted); }
-.ad .bal b { font-size:15px; font-weight:600; font-variant-numeric:tabular-nums; }
+.ad .bal b { font-size:14px; font-weight:600; font-variant-numeric:tabular-nums; white-space:nowrap; }
 .ad .bal small { font-size:10px; color:var(--p-faint); }
 .ad .kv { display:flex; justify-content:space-between; gap:8px; padding:6px 0; border-top:1px solid var(--p-line); font-size:12.5px; font-variant-numeric:tabular-nums; }
 .ad .kv:first-child { border-top:0; }

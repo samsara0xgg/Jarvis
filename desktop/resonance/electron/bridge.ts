@@ -63,11 +63,9 @@ export function registerDaemonBridge(win: BrowserWindow, { lab = false, verifica
     try { await shell.openExternal(ACCOUNT_PAGES[service]); return true; }
     catch { return false; }
   });
-  // ADR 0048: spend one Codex limit reset. The page confirms twice before it calls this; the
-  // request id is minted once per confirmation, so a retry cannot spend a second reset.
-  ipcMain.handle('usage-reset', async (event, service, requestId) => {
-    if (event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame) throw new Error('Not this window');
-    if (service !== 'codex' || typeof requestId !== 'string' || !UUID.test(requestId)) throw new Error('Invalid reset request');
+  // A Usage page write (ADR 0048/0050): main reads the desktop credential and posts to the
+  // daemon; the renderer only names what to do.
+  const usagePost = async (route: string, body: Record<string, unknown>, failed: string) => {
     if (lab || verification) throw new Error('This preview is not connected to Jarvis');
     const port = process.env.JARVIS_INHERENT_BRIDGE_PORT ?? '8006';
     const root = process.env.JARVIS_RUNTIME_ROOT ?? path.join(homedir(), '.jarvis');
@@ -76,16 +74,30 @@ export function registerDaemonBridge(win: BrowserWindow, { lab = false, verifica
     if (typeof token !== 'string' || !token) throw new Error('Jarvis is not ready yet. Try again in a moment.');
     let response: Response;
     try {
-      response = await fetch(`http://127.0.0.1:${port}/inherent/usage/codex/reset`, {
+      response = await fetch(`http://127.0.0.1:${port}/inherent/usage/${route}`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ request_id: requestId }),
+        body: JSON.stringify(body),
         signal: AbortSignal.timeout(30000),
       });
     } catch { throw new Error('Could not reach Jarvis. Try again.'); }
     const result = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(response.status === 404 ? 'Jarvis needs a restart to use resets' : typeof result.detail === 'string' ? result.detail : 'The reset did not go through. Try again.');
+    if (!response.ok) throw new Error(response.status === 404 ? 'Jarvis needs a restart for this' : typeof result.detail === 'string' ? result.detail : failed);
     return result;
+  };
+  const fromThisWindow = (event: Electron.IpcMainInvokeEvent) => event.sender === win.webContents && event.senderFrame === win.webContents.mainFrame;
+  // ADR 0048: spend one Codex limit reset. The page confirms twice before it calls this; the
+  // request id is minted once per confirmation, so a retry cannot spend a second reset.
+  ipcMain.handle('usage-reset', async (event, service, requestId) => {
+    if (!fromThisWindow(event)) throw new Error('Not this window');
+    if (service !== 'codex' || typeof requestId !== 'string' || !UUID.test(requestId)) throw new Error('Invalid reset request');
+    return usagePost('codex/reset', { request_id: requestId }, 'The reset did not go through. Try again.');
+  });
+  // ADR 0050: record a balance OpenAI or MiniMax will not report.
+  ipcMain.handle('usage-balance', async (event, service, usd) => {
+    if (!fromThisWindow(event)) throw new Error('Not this window');
+    if ((service !== 'openai' && service !== 'minimax') || typeof usd !== 'number' || !Number.isFinite(usd) || usd < 0) throw new Error('Invalid balance');
+    return usagePost('balance', { service, usd }, 'The balance was not saved. Try again.');
   });
   ipcMain.handle('open-codex', async (event, threadId) => {
     if (event.sender !== win.webContents || typeof threadId !== 'string'

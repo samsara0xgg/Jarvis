@@ -114,6 +114,7 @@ class VoicePipeline:
         session_id: str | None = None,
         utterance_id: str | None = None,
         endpoint_reason: str | None = None,
+        before_emit: Callable[[], None] | None = None,
     ) -> Event:
         """Execute one voice turn end-to-end. Returns the emitted Event row.
 
@@ -143,6 +144,10 @@ class VoicePipeline:
                 endpointed utterance); the PTT path does not, so an unsupplied
                 id is minted here — one press-to-release is one utterance.
             endpoint_reason: Optional typed acoustic endpoint reason.
+            before_emit: Called once the transcript is accepted, before
+                ``utterance.received`` is written: conversation mode drops
+                the unspoken answer to Allen's previous sentence there, so
+                the new turn can never see it (ADR 0053).
 
         Raises:
             VoiceInputBusyError: VOICE_INPUT_LOCK contention (PTT path: 503).
@@ -206,6 +211,9 @@ class VoicePipeline:
                 sample_rate_hz=self._sample_rate_hz,
                 artifacts_dir=self._artifacts_dir,
             )
+
+            if before_emit is not None:
+                before_emit()
 
             # 5. Emit utterance.received via fresh connection (worker thread).
             payload: dict[str, object] = {

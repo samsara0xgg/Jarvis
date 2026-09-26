@@ -162,9 +162,10 @@ const TIP_ROWS = 8;
 // A black wing grows out from under the notch's right edge (the pill's, on a screen without a notch), the
 // same black as her island, with its bottom corner rounded and a concave shoulder at the screen edge.
 // Hovering it lists the live sessions under it; a click opens Agents.
-export function AgentWing({ look, wing, x, height, limit, tip, onOpen }: {
-  look: MarkLook; wing: Wing; x: number; height: number; limit: number; tip: boolean; onOpen: () => void;
+export function AgentWing({ look, wing, lift, x, height, limit, tip, onOpen }: {
+  look: MarkLook; wing: Wing; lift: number; x: number; height: number; limit: number; tip: boolean; onOpen: () => void;
 }) {
+  const up = lift ? `translateY(${-lift}px)` : undefined;
   const ref = useRef<HTMLCanvasElement>(null), width = useRef(spring(0)), last = useRef(0);
   const changed = useRef(new Map<string, { st: MarkState; at: number }>());
   const now0 = performance.now();
@@ -202,8 +203,8 @@ export function AgentWing({ look, wing, x, height, limit, tip, onOpen }: {
   const more = wing.live.length - TIP_ROWS;
   return <>
     <canvas ref={ref} className="agent-wing" data-look={look} data-marks={wing.slots.map(s => s.n > 1 ? `${s.st}x${s.n}` : s.st).join(' ')} aria-hidden="true"
-      style={{ left: x - TUCK, width: W, height }}/>
-    {wing.width > 0 && <button className="agent-wing-hit" data-hit aria-label={`Agents: ${wing.live.length} live`} style={{ left: x, width: wing.width, height }} onClick={onOpen}/>}
+      style={{ left: x - TUCK, width: W, height, transform: up }}/>
+    {wing.width > 0 && <button className="agent-wing-hit" data-hit aria-label={`Agents: ${wing.live.length} live`} style={{ left: x, width: wing.width, height, transform: up }} onClick={onOpen}/>}
     <div className={`agent-wing-tip ${tip && wing.live.length ? 'is-open' : ''}`} role="tooltip" style={{ left: Math.min(x - 4, limit - 258), top: height + 6 }}>
       {wing.live.slice(0, TIP_ROWS).map(a => <div className="wt-row" key={a.id}><AgentMark look={look} state={a.mark} id={a.id} size={12}/><b>{a.title}</b><span>{a.line}</span></div>)}
       <div className="wt-foot">{more > 0 ? `${more} more · ` : ''}Click for all sessions</div>

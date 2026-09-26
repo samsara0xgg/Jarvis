@@ -20,7 +20,7 @@ const daemon = `http://127.0.0.1:${port}`;
 // Every daemon route needs the local key; the page gets it as a header on each request.
 const pluginToken = real ? (() => { try { return JSON.parse(readFileSync(path.join(homedir(), '.jarvis/plugin-access.json'), 'utf8')).token; } catch { return null; } })() : null;
 const daemonHeaders = pluginToken ? { Authorization: `Bearer ${pluginToken}` } : {};
-const web = 5192;
+const web = Number(process.env.COMPANION_PORT ?? 5192);
 const server = spawn(path.join(root, 'node_modules/.bin/vite'), ['preview', '--port', String(web), '--strictPort'], { cwd: root, stdio: 'ignore' });
 const checks = [], check = (name, pass) => { assert.ok(pass, name); checks.push(name); console.log(`PASS ${name}`); };
 // The page is served from vite, the daemon from another origin; the Electron window has no such wall.
@@ -31,7 +31,7 @@ const words = text => text.replace(/<\/?(voice|document)>/g, '').replace(/^\s*(\
 const hm = ms => { const d = new Date(ms); return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
 try {
   for (let i = 0; i < 50; i++) { try { await fetch(`http://127.0.0.1:${web}/`); break; } catch { await new Promise(r => setTimeout(r, 100)); } }
-  const context = await browser.newContext({ viewport: { width: 640, height: 592 }, deviceScaleFactor: 2, extraHTTPHeaders: daemonHeaders });
+  const context = await browser.newContext({ viewport: { width: 640, height: 722 }, deviceScaleFactor: 2, extraHTTPHeaders: daemonHeaders });
   const page = await context.newPage();
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
@@ -67,7 +67,11 @@ try {
     '/inherent/codex-sessions': { sessions: [{ session_id: codexId, state: 'running', cwd: '/Users/x/Projects/typlus', model: 'gpt', prompt: 'fix the overlay', detail: 'Editing Overlay.swift', last_message: '', since_ms: now - 120_000 }] },
     '/inherent/usage': { services: { claude: { status: 'ok', observed_at_ms: now, data: { plan: '20X', windows: [{ key: 'five_hour', label: '5 hours', percent: 41, resets_at: iso(now + 3_600_000) }] } },
       codex: { status: 'ok', observed_at_ms: now, data: { plan: 'Pro Lite', windows: [{ key: 'primary_window', label: '7 d', percent: 64, resets_at: iso(now + 86_400_000) }], reset_credits: 1 } },
-      deepseek: { status: 'ok', observed_at_ms: now, data: { balance: 4.2, currency: 'USD', is_available: true } } } },
+      deepseek: { status: 'ok', observed_at_ms: now, data: { balance: 4.2, currency: 'USD', is_available: true } },
+      openai: { status: 'ok', observed_at_ms: now, data: { today_usd: 0.32, month_usd: 14.53, by_key: [], balance_usd: 23.25, balance_recorded_usd: 25, balance_recorded_at: '2026-09-25T18:00:00+00:00',
+        by_model: [{ model: 'gpt-5.6-sol', today_usd: 0, month_usd: 4.37 }, { model: 'gpt-5.6-luna', today_usd: 0.2817, month_usd: 1.8 }, { model: 'gpt-5.4-mini', today_usd: 0.0356, month_usd: 0.88 },
+          { model: 'gpt-6-luna', today_usd: 0.0034, month_usd: 0.27 }, { model: 'gpt-live-1', today_usd: 0, month_usd: 2.16 }] } },
+      minimax: { status: 'ok', observed_at_ms: now, data: { anchor_usd: 17.82, anchor_at: '2026-09-13T20:24:00-07:00', characters_since_anchor: 41000, usd_per_million_chars: 60, estimate_usd: 15.36 } } } },
     '/inherent/work-state': { state: { version: 1, analyzed_at: iso(now - 60_000), observed_until: iso(now - 60_000), evidence: { coverage: {}, counts: {}, limits: [] }, now: { text: 'Wiring the companion to the daemon.', basis: 'observed', refs: [] }, activities: [], links: [], uncertainties: [], note: null },
       data: null, freshness: { checked_at_ms: now, latest_observed_at: iso(now - 60_000), analyzed_at: iso(now - 60_000), analysis_observed_until: iso(now - 60_000) }, refreshing: false, outcome: 'analyzed', error: null },
     '/inherent/projects': { days: Array.from({ length: 7 }, (_, i) => iso(now - (6 - i) * 86_400_000).slice(0, 10)), projects: [{ id: 'jarvis', name: 'jarvis', seconds: 7200, today_seconds: 3600, days: [0, 0, 0, 0, 0, 3600, 3600], last_seen: null, commits: { count: 2, items: [] }, recent: [] }],
@@ -77,7 +81,8 @@ try {
   const LOGO = `data:image/svg+xml;base64,${Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8"><circle cx="4" cy="4" r="4" fill="#5e6ad2"/></svg>').toString('base64')}`;
   fixtures['/inherent/usage/refresh'] = fixtures['/inherent/usage'];
   // What the Usage page asked main to spend; `resetFails` makes the next call fail like a lost daemon.
-  const resets = [], refreshes = [];
+  const resets = [], refreshes = [], balances = [];
+  await page.exposeFunction('__usageBalance', async (service, usd) => { balances.push({ service, usd }); return { recorded: true }; });
   let resetFails = 0;
   await page.exposeFunction('__usageReset', async (service, id) => {
     resets.push({ service, id });
@@ -110,6 +115,7 @@ try {
       passthrough: () => {}, focus: async () => {}, material: () => {},
       codexTitles: async () => ({}), openCodex: async id => { window.__state.opened.push(id); return true; },
       openAccount: async id => { window.__state.accounts.push(id); return true; }, usageReset: (service, id) => window.__usageReset(service, id),
+      usageBalance: (service, usd) => window.__usageBalance(service, usd),
       plugins: (operation, data = {}) => window.__plugins(operation, data),
     };
     if (!fake) return;
@@ -135,6 +141,9 @@ try {
       reads.push({ at: Date.now(), after, limit });
       return json({ since: after, rows: after ? all.filter(r => r.seq > after) : all.slice(-limit) });
     }
+    // The home's new writes: a to-do checked off, and Jarvis's own settings once it serves them.
+    if (method === 'POST' && url.pathname === '/inherent/today/todo') return json({ ok: true });
+    if (method === 'POST' && url.pathname === '/inherent/settings' && fixtures['/inherent/settings']) { Object.assign(fixtures['/inherent/settings'].values, body.changes); return json(fixtures['/inherent/settings']); }
     if (fixtures[url.pathname]) return json(fixtures[url.pathname]);
     return route.fulfill({ status: 404, contentType: 'application/json', body: '{"detail":"Not Found"}' });
   });
@@ -146,7 +155,7 @@ try {
   const waitPlace = async value => { await page.waitForFunction(v => document.querySelector('.companion-hit')?.dataset.place === v, value, { timeout: 5000 }); await page.waitForTimeout(700); };
   const face = (...ids) => page.waitForFunction(v => v.includes(document.querySelector('.companion-canvas')?.dataset.face), ids, { timeout: 2500 }).then(() => ids[0], () => null);
   const shot = (name, clip = { x: 120, y: 0, width: 400, height: 240 }) => page.screenshot({ path: path.join(dir, `${name}.png`), clip });
-  const panelShot = name => shot(name, { x: 150, y: 0, width: 340, height: 592 });
+  const panelShot = name => shot(name, { x: 150, y: 0, width: 340, height: 722 });
   const openRow = name => page.locator(`.ad [data-row="${name}"]`).evaluate(el => (el.matches('button') ? el : el.querySelector('button')).click());
   const back = async () => { await page.locator('.ad .pg-back').click(); await page.waitForTimeout(700); };
   const text = selector => page.locator(selector).first().textContent();
@@ -173,8 +182,13 @@ try {
     await page.waitForTimeout(2500);
     const conversation = await get('/inherent/conversation?after=0');
     const answer = [...conversation.rows].reverse().find(r => r.source !== 'allen');
-    const say = await text('.ad .say');
-    check(`R her words are the last answer on record (${answer?.seq})`, !!answer && say === plain(answer.text) && (await text('.ad .cap')).includes(hm(Date.parse(answer.ts))));
+    const lastYou = [...conversation.rows].reverse().find(r => r.source === 'allen'), since = lastYou ? Date.now() - Date.parse(lastYou.ts) : Infinity;
+    const talkShown = await page.locator('.ad [data-block="talk"]').count() === 1;
+    check(`R the conversation is on top only within 10 min of your last turn (${Number.isFinite(since) ? Math.round(since / 60_000) : '-'} min ago, ${talkShown ? 'shown' : 'not shown'})`,
+      talkShown === since < 10 * 60_000 && (!talkShown || !answer || answer.seq < lastYou.seq || await text('.ad .r-talk .say') === plain(answer.text)));
+    const todayRoute = await fetch(`${daemon}/inherent/today`).then(r => r.status, () => 0);
+    check(`R Today says the calendar is not connected while the daemon has no /inherent/today (${todayRoute})`,
+      todayRoute !== 404 || (await text('.ad [data-block="today"] .muted')) === 'Calendar and to-dos aren’t connected yet.');
     const work = await get('/inherent/work-state');
     const nowText = await text('.ad .r-now .text');
     check(`R Now is the daemon's work state (${work.state?.now ? 'claim' : 'none'})`, work.state?.now ? nowText === work.state.now.text : /No recent activity|Syncing/.test(nowText));
@@ -199,7 +213,8 @@ try {
     // Opened the way a click opens it, timing when the words on screen have faded in.
     const litMs = await page.evaluate(async () => {
       const t0 = performance.now();
-      document.querySelector('.ad [data-row="conversation"] button').click();
+      const opener = document.querySelector('.ad [data-row="conversation"]');
+      (opener.matches('button') ? opener : opener.querySelector('button')).click();
       while (performance.now() - t0 < 4000) {
         await new Promise(r => requestAnimationFrame(r));
         const body = document.querySelector('.ad .pg-body'), box = body?.getBoundingClientRect();
@@ -249,9 +264,58 @@ try {
     await page.waitForTimeout(500); await shot('L3-reply', { x: 0, y: 0, width: 400, height: 240 });
     await hit.click({ force: true }); await page.waitForTimeout(600);
     check('L4 a poke while she speaks cuts the answer off', posts.at(-1)?.path === '/inherent/cancel-response' && posts.at(-1).body.response_id === 'resp-1');
-    await page.evaluate(() => { window.__emit('done', { turn_id: 'v1', fadeMs: 200 }); });
+    await page.evaluate(() => { window.__emit('done', { turn_id: 'v1', fadeMs: 200 }); window.__emit('voice', { phase: 'spoken', turn_id: 'v1' }); });
     await page.waitForFunction(() => !document.querySelector('.companion-bubble.is-open'), null, { timeout: 3000 });
     check('L4 after the answer settles she is back to listening', await page.locator('.companion-strip.is-open').count() === 1);
+    const only = async () => [await page.locator('.companion-bubble.is-open').count(), await page.locator('.companion-strip.is-open').count()].join();
+    const turn = (id, heard, said) => page.evaluate(([id, heard, said]) => { window.__emit('voice', { phase: 'listening', turn_id: id }); window.__emit('voice', { phase: 'accepted', turn_id: id, text: heard });
+      window.__emit('open', { turn_id: id, response_id: `resp-${id}` }); window.__emit('append', { turn_id: id, token: `<voice>${said}</voice>` }); }, [id, heard, said]);
+    // A long answer: its fade (`done` + fadeMs) is over while she is still saying it.
+    await turn('v1b', '讲讲今天的安排', '上午十点有组会，下午两点和导师见面，晚上七点健身。');
+    await page.evaluate(() => window.__emit('done', { turn_id: 'v1b', fadeMs: 150 }));
+    await page.waitForTimeout(500);
+    check('L4 a long answer stays up while she still says it, the strip shut', await only() === '1,0' && await face('39', '39b', '39c') === '39');
+    await page.evaluate(() => window.__emit('voice', { phase: 'spoken', turn_id: 'v1b' }));
+    await page.waitForTimeout(150);
+    check('L4 it goes when she stops talking, and she listens again', await only() === '0,1');
+    // A short answer: she stops talking before its fade is over; it keeps the spot until then.
+    await turn('v1c', '能听到我说话吗', '能听到，Allen。我在。');
+    await page.evaluate(() => { window.__emit('done', { turn_id: 'v1c', fadeMs: 150 }); window.__emit('voice', { phase: 'spoken', turn_id: 'v1c' }); });
+    await page.waitForTimeout(50);
+    check('L4 a short answer keeps the spot while it fades, the strip shut', await only() === '1,0');
+    await page.waitForFunction(() => !document.querySelector('.companion-bubble.is-open'), null, { timeout: 3000 });
+    // Cutting in: the daemon hears you, stops her (`spoken`), then transcribes; her words hold until yours are in.
+    await turn('v1d', '再讲一遍', '好的，上午十点有组会，下午两点和导师见面……');
+    await page.evaluate(() => window.__emit('done', { turn_id: 'v1d', fadeMs: 100 }));
+    await page.waitForTimeout(300);
+    await page.evaluate(() => { window.__emit('voice', { phase: 'listening', turn_id: 'v1e' }); window.__emit('voice', { phase: 'spoken', turn_id: 'v1d' }); });
+    await page.waitForTimeout(150);
+    const cutIn = await only();
+    await page.evaluate(() => window.__emit('voice', { phase: 'transcribing', turn_id: 'v1e' }));
+    await page.waitForTimeout(150);
+    check('L4 cutting in, her words stay while yours come in', cutIn === '1,0' && await only() === '1,0');
+    await page.evaluate(() => window.__emit('voice', { phase: 'accepted', turn_id: 'v1e', text: '等一下，下午那个改到三点' }));
+    await page.waitForTimeout(150);
+    check('L4 once yours are in, the strip shows them whole', await only() === '0,1' && await text('.strip-text') === '等一下，下午那个改到三点');
+    await page.evaluate(() => { window.__emit('open', { turn_id: 'v1e', response_id: 'resp-v1e' }); window.__emit('append', { turn_id: 'v1e', token: '<voice>好，改到三点。</voice>' }); });
+    await page.waitForTimeout(150);
+    check('L4 then her answer', await only() === '1,0' && await text('.bubble-text span:last-child') === '好，改到三点。');
+    await page.evaluate(() => { window.__emit('done', { turn_id: 'v1e', fadeMs: 100 }); window.__emit('voice', { phase: 'spoken', turn_id: 'v1e' }); });
+    await page.waitForFunction(() => document.querySelector('.companion-strip.is-open') && !document.querySelector('.companion-bubble.is-open'), null, { timeout: 3000 });
+    // A split sentence (ADR 0053): the first half's answer text lands while he says the second half; she only listens.
+    await page.evaluate(() => { window.__emit('voice', { phase: 'listening', turn_id: 'v1f' }); window.__emit('voice', { phase: 'accepted', turn_id: 'v1f', text: '怎么说' }); });
+    await page.waitForTimeout(300); // live, the second half starts after the first is accepted
+    await page.evaluate(() => { window.__emit('voice', { phase: 'listening', turn_id: 'v1g' }); window.__emit('open', { turn_id: 'v1f', response_id: 'resp-v1f' }); window.__emit('append', { turn_id: 'v1f', token: '<voice>你想让我怎么说？</voice>' }); });
+    await page.waitForTimeout(150);
+    check('L4 an answer written while he still talks stays off screen; she listens', await only() === '0,1' && await page.locator('.companion-strip.is-hearing').count() === 1 && await face('35', '35b') === '35');
+    await page.evaluate(() => { window.__emit('voice', { phase: 'transcribing', turn_id: 'v1g' }); window.__emit('voice', { phase: 'accepted', turn_id: 'v1g', text: '到一半停了' }); window.__emit('cancelled', { turn_id: 'v1f' }); });
+    await page.waitForTimeout(150);
+    check('L4 then the strip shows his second half, still no bubble', await only() === '0,1' && await text('.strip-text') === '到一半停了');
+    await page.evaluate(() => { window.__emit('open', { turn_id: 'v1g', response_id: 'resp-v1g' }); window.__emit('append', { turn_id: 'v1g', token: '<voice>刚才是我说到一半断了。</voice>' }); });
+    await page.waitForTimeout(150);
+    check('L4 and one answer to both halves', await only() === '1,0' && await text('.bubble-text span:last-child') === '刚才是我说到一半断了。');
+    await page.evaluate(() => { window.__emit('done', { turn_id: 'v1g', fadeMs: 100 }); window.__emit('voice', { phase: 'spoken', turn_id: 'v1g' }); });
+    await page.waitForFunction(() => document.querySelector('.companion-strip.is-open') && !document.querySelector('.companion-bubble.is-open'), null, { timeout: 3000 });
     await page.locator('.strip-stop').click(); await page.waitForTimeout(300);
     check('L5 the strip’s stop ends wave mode', posts.at(-1)?.path === '/inherent/controls' && posts.at(-1).body.conversation === false && await page.locator('.companion-strip.is-open').count() === 0);
     await move(600, 560); await waitPlace('home');
@@ -282,7 +346,8 @@ try {
     await page.evaluate(() => window.__command('dashboard'));
     await page.locator('.companion-dashboard.is-open').waitFor();
     await page.waitForTimeout(1500);
-    check('L8 her words are the last answer on record, plain, with its time', await text('.ad .say') === 'Two things: the voice test at four, and the demo cut.' && (await text('.ad .cap')).includes(hm(Date.parse(rows[1].ts))));
+    check('L8 your turn 9 min ago keeps the conversation on top: your words, then the answer on record, plain',
+      (await text('.ad .r-talk .you')).endsWith(rows[0].text) && await text('.ad .r-talk .say') === 'Two things: the voice test at four, and the demo cut.');
     check('L8 Now, Usage and Projects come from the daemon', await text('.ad .r-now .text') === 'Wiring the companion to the daemon.' && (await text('.ad .r-usage .dial b')).startsWith('41') && await text('.ad .pj-mini b') === 'jarvis');
     check('L8 the Agents row counts live sessions', (await text('.ad .r-agents .pill')) === '1 needs you' && (await text('.ad .r-agents .text')).includes('Wire the companion'));
     check('L8 the Plugins tile is the live catalog, connected first, with a manifest logo where there is one', (await page.locator('.ad .pl-mini i').allTextContents()).join('') === 'N' && await page.locator('.ad .pl-mini i:first-child img[src^="data:image/svg"]').count() === 1 && (await text('.ad [data-row="plugins"] .meta')) === '1 on');
@@ -309,7 +374,7 @@ try {
       && await md.locator('li > ul > li code').textContent() === 'reSpeaker' && (await md.locator('th').allTextContents()).join() === 'When,What'
       && (await md.locator('td').allTextContents()).join() === '17:00,voice test' && !/\*\*|##|\|/.test(await md.textContent()));
     await panelShot('L8-conversation');
-    await page.evaluate(() => window.__emit('done', { turn_id: 'typed-1', fadeMs: 100 }));
+    await page.evaluate(() => { window.__emit('done', { turn_id: 'typed-1', fadeMs: 100 }); window.__emit('voice', { phase: 'spoken', turn_id: 'typed-1' }); });
     const days = () => page.locator('.ad .tr').evaluateAll(els => [...new Set(els.map(e => e.dataset.day))].length);
     check('L8 it holds today only, and offers earlier', await days() === 1 && (await text('.ad .pg-earlier')).includes('earlier'));
     const held = await pullUp(), longer = reads.some(r => r.limit > 2), shown = await days(), first = await text('.ad .tr-you p'), top = await text('.ad .pg-earlier');
@@ -367,7 +432,82 @@ try {
     await page.locator('.ad .us-confirm .btn-glow').click(); await page.waitForTimeout(400);
     check('L12 Try again resends the same request id for Codex, so it cannot spend twice', resets.length === 2 && resets[1].id === resets[0].id && /^[0-9a-f]{8}-[0-9a-f]{4}-/.test(resets[0].id) && resets.every(r => r.service === 'codex'));
     check('L12 a reset closes the question, says so, and re-reads usage', await page.locator('.ad .us-confirm').count() === 0 && (await text('.ad .toast')) === 'Codex limits reset' && refreshes.length > before);
+
+    // OpenAI: only the models that cost money today; balances Allen records himself (ADR 0050).
+    const listed = () => page.locator('.ad .spend li:not(:has(.more))').allTextContents();
+    check('L13 OpenAI lists only the models that cost a cent today, the rest fold', (await listed()).join('|') === 'gpt-5.6-luna$0.28|gpt-5.4-mini$0.04' && (await text('.ad .spend .more')) === '3 more at $0.00');
+    await page.locator('.ad .spend .more').click();
+    check('L13 the fold opens every model', (await listed()).length === 5 && (await text('.ad .spend .more')) === 'Show less');
+    const balanceCard = name => page.locator('.ad .bal-card', { hasText: name });
+    check('L13 OpenAI and MiniMax balances say since when, with Update', (await balanceCard('OpenAI').locator('b').textContent()) === '≈ $23.25' && (await balanceCard('OpenAI').locator('small').textContent()) === 'since Sep 25' && (await balanceCard('OpenAI').locator('.bal-set').textContent()) === 'Update'
+      && (await balanceCard('MiniMax').locator('small').textContent()).startsWith('since Sep 1'));
+    await page.locator('.ad .pg-body').evaluate(b => { b.scrollTop = b.scrollHeight; }); await page.waitForTimeout(300);
+    await panelShot('L13-usage-balances');
+    await balanceCard('OpenAI').locator('.bal-set').click(); await page.waitForTimeout(300);
+    const save = page.locator('.ad .bal-card.is-editing .btn-glow');
+    const emptyDisabled = await save.isDisabled();
+    await page.locator('.ad .bal-card.is-editing input').fill('30.5'); await page.waitForTimeout(400);
+    await panelShot('L13-usage-typing');
+    const beforeSave = refreshes.length;
+    await page.locator('.ad .bal-card.is-editing input').press('Enter'); await page.waitForTimeout(500);
+    check('L13 typing a balance and Enter records it once, then re-reads usage', emptyDisabled && JSON.stringify(balances) === '[{"service":"openai","usd":30.5}]'
+      && await page.locator('.ad .bal-card.is-editing').count() === 0 && refreshes.length > beforeSave && (await text('.ad .toast')) === 'Balance saved');
+    await balanceCard('MiniMax').locator('.bal-set').click(); await page.waitForTimeout(300);
+    await page.locator('.ad .bal-card.is-editing input').fill('abc'); await page.waitForTimeout(100);
+    const lettersIgnored = await page.locator('.ad .bal-card.is-editing input').inputValue() === '' && await save.isDisabled();
+    await page.locator('.ad .bal-card.is-editing input').press('Escape'); await page.waitForTimeout(200);
+    check('L13 letters are not a balance, and Esc leaves without saving', lettersIgnored && balances.length === 1 && await page.locator('.ad .bal-card.is-editing').count() === 0);
     await back();
+
+    // The home's new sources. Until the daemon serves them, Today says so, the pop-ups stay away and Jarvis's own
+    // settings are greyed out; once it does, each block shows what it answers and the writes go where the contract says.
+    check('L14 without /inherent/today, Today says the calendar is not connected, and no brief, mail or reminder shows',
+      (await text('.ad [data-block="today"] .muted')) === 'Calendar and to-dos aren’t connected yet.' && await page.locator('.ad [data-block="brief"], .ad [data-block="mail"], .ad [data-block="foryou"]').count() === 0);
+    await page.locator('.ad .corner .cb').nth(1).click(); await page.waitForTimeout(300);
+    check('L14 the corner mute sets speech_muted on the daemon', posts.at(-1)?.path === '/inherent/controls' && posts.at(-1).body.speech_muted === true && await page.locator('.ad .cb.is-muted').count() === 1);
+    await page.locator('.ad .corner .cb').nth(1).click(); await page.waitForTimeout(300);
+    check('L14 and the second press unmutes it', posts.at(-1)?.body.speech_muted === false && await page.locator('.ad .cb.is-muted').count() === 0);
+    await page.locator('.ad .corner [data-row="settings"]').click(); await page.waitForTimeout(900);
+    await page.locator('.ad [data-cat="voice"]').click(); await page.waitForTimeout(500);
+    check('L14 without /inherent/settings, Jarvis’s own voice settings are greyed out and say they still live in jarvis.yaml',
+      (await text('.ad .st-warn')).includes('jarvis.yaml') && await page.locator('.ad .st.is-off').count() === 7);
+    await panelShot('L14-settings-missing');
+    await back(); await back();
+    const today = new Date().toLocaleDateString('en-CA');
+    fixtures['/inherent/today'] = { weather: { now_c: 12, summary: 'Rain from 9 PM' },
+      events: [{ id: 'e1', title: 'Office hours', start: iso(Date.now() - 60_000), end: iso(Date.now() + 30 * 60_000) }],
+      todos: [{ id: 't1', title: 'Send the A3 draft', due: iso(Date.now() + 60_000) }] };
+    fixtures['/inherent/brief'] = { date: today, summary: 'Two agents finished overnight.', body: '**Overnight**\n\n- Two agents finished.', items: 1 };
+    fixtures['/inherent/mail'] = { unread: [{ id: 'm1', from: 'Prof. Lee', subject: 'Office hours moved', received: iso(Date.now() - 600_000) }] };
+    fixtures['/inherent/notices'] = { notices: [{ id: 'n1', text: 'Reminder: call the dentist', at: iso(Date.now()) }] };
+    fixtures['/inherent/settings'] = { values: { reply_language: 'follow', wake_threshold: .95, tts_voice: 'Warm Bestie', tts_volume: 1, output_device: 'System default', input_device: 'System default',
+      gpt_live: true, mac_aec: false, timesink: true, keep_audio: true, repos: ['jarvis'], model_conversation: 'gpt-5.6-luna', model_background: 'GPT-6 luna', model_report: 'GPT-6 sol' },
+      options: { tts_voice: ['Warm Bestie', 'Explorative Girl'], output_device: ['System default'], input_device: ['System default'] } };
+    await hit.dblclick({ force: true });
+    await page.waitForFunction(() => !document.querySelector('.companion-dashboard.is-open'), null, { timeout: 3000 });
+    await page.evaluate(() => window.__command('dashboard'));
+    await page.locator('.companion-dashboard.is-open').waitFor();
+    await page.waitForTimeout(1500);
+    check('L14 once the daemon answers, Today shows its weather, event and to-do',
+      (await text('.ad [data-block="today"] .ev span')) === 'Office hours' && (await text('.ad [data-block="today"] .wx')).includes('12°') && (await text('.ad [data-block="today"] .td span')) === 'Send the A3 draft');
+    check('L14 the brief, the mail and Jarvis’s reminder show up', await page.locator('.ad [data-block="brief"]').count() === 1
+      && (await text('.ad [data-block="mail"] .ml b')) === 'Prof. Lee' && (await text('.ad [data-block="foryou"]')).includes('call the dentist'));
+    await panelShot('L14-home');
+    await page.locator('.ad [data-block="today"] .td').click(); await page.waitForTimeout(400);
+    check('L14 checking a to-do posts { id, done } to /inherent/today/todo', posts.at(-1)?.path === '/inherent/today/todo' && posts.at(-1).body.id === 't1' && posts.at(-1).body.done === true
+      && await page.locator('.ad .td[aria-pressed="true"]').count() === 1);
+    await page.locator('.ad .brief-go').click(); await page.waitForTimeout(900);
+    check('L14 Read the brief opens its page', await text('.ad .pg-head h3') === 'Morning brief' && (await text('.ad .pg-body')).includes('Two agents finished'));
+    await back();
+    check('L14 a brief you read does not come back today', await page.locator('.ad [data-block="brief"]').count() === 0);
+    await page.locator('.ad .corner [data-row="settings"]').click(); await page.waitForTimeout(900);
+    await page.locator('.ad [data-cat="voice"]').click(); await page.waitForTimeout(500);
+    await page.locator('.ad .st-opts button', { hasText: 'Explorative Girl' }).click(); await page.waitForTimeout(600);
+    check('L14 with /inherent/settings they are live, and a change posts { changes }', await page.locator('.ad .st.is-off').count() === 0
+      && posts.at(-1)?.path === '/inherent/settings' && posts.at(-1).body.changes?.tts_voice === 'Explorative Girl'
+      && await page.locator('.ad .st-opts button[aria-checked="true"]', { hasText: 'Explorative Girl' }).count() === 1);
+    await panelShot('L14-settings-voice');
+    await back(); await back();
     await hit.dblclick({ force: true });
     await page.waitForFunction(() => !document.querySelector('.companion-dashboard.is-open'), null, { timeout: 3000 });
     // Jarvis asks for a plugin mid-conversation: the closed panel opens and lands on it.
@@ -469,7 +609,7 @@ try {
     check('no page errors', errors.length === 0);
   }
   await context.close();
-  writeFileSync(path.join(dir, 'verification.json'), JSON.stringify({ checks, errors, posts, pluginOps: pluginOps.filter(o => o.operation !== 'read'), resets }, null, 2));
+  writeFileSync(path.join(dir, 'verification.json'), JSON.stringify({ checks, errors, posts, pluginOps: pluginOps.filter(o => o.operation !== 'read'), resets, balances }, null, 2));
   console.log(`${checks.length} checks passed; evidence in ${dir}`);
 } finally {
   await browser.close();

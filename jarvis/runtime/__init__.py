@@ -121,9 +121,11 @@ from jarvis.execution.tools import (
 )
 from jarvis.execution.workers import Workers, make_worker_tools
 from jarvis.runtime.daily_report import PLAN_SERVER, DailyReportService, microsoft_plan
+from jarvis.runtime.home import Home
 from jarvis.runtime.plugin_connections import PluginConnections
 from jarvis.runtime.plugins import Plugins, load_plugins
 from jarvis.runtime.projects import ProjectsService
+from jarvis.runtime.settings import REPLY_LINES, Settings, apply_settings
 from jarvis.runtime.stream_bridge import LoopBoundTokenStream
 from jarvis.runtime.work_state import WorkStateService, build_analyst
 from jarvis.shared import CallerPrincipal, Event
@@ -142,6 +144,7 @@ from jarvis.shared.realtime_trace import (
     record_realtime_trace,
 )
 from jarvis.state.committed_event_bus import CommittedEventBus
+from jarvis.state.daily_report import resolve_zone
 from jarvis.state.event_log import open_event_log, open_runtime_event_log
 from jarvis.state.memory_db import MemorySettings, SessionSettings, append_record, render_context
 from jarvis.state.projects import parse_catalog
@@ -429,6 +432,10 @@ class JarvisRuntime:
     work_state: WorkStateService | None = None
     # ADR 0037: the project view and its sorting job. None = no `projects` list.
     projects: ProjectsService | None = None
+    # ADR 0051: the companion home's Today, mail and brief reads. None = hand-assembled.
+    home: Home | None = None
+    # ADR 0052: the Settings page's file. None = hand-assembled.
+    settings: Settings | None = None
 
 
 @dataclass(frozen=True)
@@ -871,6 +878,24 @@ def _work_state_timezone(config: Mapping[str, Any]) -> tzinfo | None:
     except ZoneInfoNotFoundError as exc:
         message = f"work_state.timezone must be an IANA zone name: {raw!r}"
         raise ValueError(message) from exc
+
+
+def _audio_devices(kind: str) -> list[str]:
+    """The Settings page's speaker / microphone choices; none when PortAudio cannot list them."""
+    try:
+        from jarvis.surface.voice_backend import device_names  # noqa: PLC0415 — loaded on demand.
+
+        return device_names(kind)
+    except Exception as exc:  # noqa: BLE001 — a text-only checkout has no audio stack.
+        LOGGER.warning("settings: no %s devices: %s: %s", kind, type(exc).__name__, exc)
+        return []
+
+
+def _home_weather(config: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """``home.weather`` — where the home's forecast is for (``latitude``, ``longitude``)."""
+    block = config.get("home")
+    place = block.get("weather") if isinstance(block, Mapping) else None
+    return place if isinstance(place, Mapping) else None
 
 
 def _daily_report_preset(config: Mapping[str, Any]) -> str:
@@ -1532,7 +1557,7 @@ def mcp_login(
     return 0
 
 
-def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays explicit
+def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stays explicit
     *,
     config_path: Path | None = None,
     prompt_path: Path | None = None,
@@ -1615,7 +1640,9 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
     #    need `tools.obsidian.vault_root` / `tools.web.*` threaded into
     #    the registry at build time (ADR-0011 D7) — L4 handlers do not
     #    load YAML themselves.
-    full_config = _load_full_config(config_path, paths.settings)
+    # ADR 0052: the Settings page's saved values lie over the YAML and the
+    # user's settings.yaml for this boot.
+    full_config = apply_settings(_load_full_config(config_path, paths.settings), paths.root)
     wave1_features = _wave1_feature_flags(full_config)
     (
         web_search_max_results,
@@ -1797,6 +1824,9 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
     system_prompt = prompt_path.read_text(encoding="utf-8").replace(
         "{assistant}", _assistant_name(full_config)
     )
+    if full_config.get("reply_language") in REPLY_LINES:
+        reply_line = REPLY_LINES[full_config["reply_language"]]
+        system_prompt = f"{system_prompt.rstrip()}\n\n{reply_line}\n"
     plugin_connections.publish_event = (
         committed_event_bus.publish if committed_event_bus is not None else None
     )
@@ -1836,6 +1866,12 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
         tool_cues=tool_cues,
         work_state=work_state,
         projects=projects,
+        home=Home(
+            plugin_connections,
+            resolve_zone(None, _work_state_timezone(full_config)),
+            _home_weather(full_config),
+        ),
+        settings=Settings(paths.root, full_config, _audio_devices),
     )
 
 
@@ -2074,6 +2110,71 @@ def make_barge_in_interrupt_callable(
         return cancel(run.response_id, "generation", "barge_in")
 
     return _interrupt
+
+
+# ADR 0053: a hold that is never released (a lost release) delays an answer by
+# at most this; an utterance itself ends by max_utterance_s (30 s).
+_ALLEN_TALKING_CEILING_S: Final[float] = 60.0
+# How far back a voice sentence still counts as the first half of a split one.
+_SUPERSEDE_WINDOW_S: Final[float] = 10.0
+
+
+def make_supersede_unspoken_callable(
+    runtime: JarvisRuntime,
+    drop_unspoken: Callable[[frozenset[str]], frozenset[str]],
+) -> Callable[[str], None]:
+    """Build the ADR 0053 ``(accepted_turn_id) -> None`` seam.
+
+    Called for a voice utterance just accepted, before its
+    ``utterance.received`` is written. Every other voice turn of the last
+    ``_SUPERSEDE_WINDOW_S`` whose run is still open, whose policy lets its
+    generation be cancelled, and whose answer never reached the speaker is
+    dropped: L5 discards its queued audio (``drop_unspoken``), then the run is
+    cancelled with reason ``superseded``. Its run is open because no run
+    completes while Allen is talking, so nothing of it reaches memory.db and
+    the new turn's prompt folds its words in (ADR 0044).
+    """
+    cancel = make_response_cancel_callable(runtime)
+    registry = runtime.response_runs
+    event_log_path = runtime.runtime_paths.event_log
+
+    def _supersede(turn_id: str) -> None:
+        if registry is None:  # pragma: no cover - wiring pairs the two flags
+            return
+        runs = [
+            run
+            for run in registry.open_runs()
+            if run.phase == "final"
+            and run.turn_id != turn_id
+            and run.interrupt_policy.generation_action == "cancel"
+        ]
+        if not runs:
+            return
+        since_ms = int((time.time() - _SUPERSEDE_WINDOW_S) * 1000)
+        with contextlib.closing(
+            open_runtime_event_log(event_log_path, deadline=time.monotonic() + 1.0),
+        ) as conn:
+            recent = {
+                str(row[0])
+                for row in conn.execute(
+                    "SELECT json_extract(payload_json, '$.turn_id') FROM events "
+                    "WHERE type = 'utterance.received' AND ts_epoch_ms >= ?",
+                    (since_ms,),
+                )
+            }
+        # ponytail: a run that passed the completion hold just before Allen
+        # started talking can complete between this drop and its cancel; its
+        # queued audio is then lost while its row stays. A millisecond window.
+        dropped = drop_unspoken(frozenset(run.turn_id for run in runs) & recent)
+        for run in runs:
+            if run.turn_id in dropped:
+                outcome = cancel(run.response_id, "generation", "superseded")
+                LOGGER.info(
+                    "unspoken answer superseded by %s: turn %s response %s -> %s",
+                    turn_id, run.turn_id, run.response_id, outcome,
+                )
+
+    return _supersede
 
 
 # --- run_turn ---------------------------------------------------------------
@@ -2775,6 +2876,16 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
         # surface.response_emitted. The opposite ordering is unrecoverable —
         # it would let a cancel land after the words were already spoken.
         if run is not None and terminalizer is not None:
+            # ADR 0053: no answer completes while Allen's words are coming in,
+            # so his next sentence can still drop it unwritten and unheard.
+            registry = runtime.response_runs
+            if registry is not None:
+                hold_ends = time.monotonic() + _ALLEN_TALKING_CEILING_S
+                while (
+                    not registry.wait_completion_allowed(0.05)
+                    and time.monotonic() < hold_ends
+                ):
+                    _raise_if_cancelled("while Allen was talking")
             _raise_if_cancelled("before finalizing")
             run.mark("finalizing")
             completion = terminalizer.complete(

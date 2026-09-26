@@ -11,7 +11,7 @@ export type AgentState = 'wait' | 'work' | 'pack' | 'done' | 'err';
 export type AgentRequest = { id: string; tool: string; input: Record<string, unknown>; cwd: string; always: string };
 export type Agent = {
   id: string; agent: 'claude' | 'codex'; state: AgentState; title: string; project: string; branch?: string; where: string; age: string;
-  you: string; last: string; sub?: boolean; request?: AgentRequest; error?: string;
+  you: string; last: string; sub?: boolean; request?: AgentRequest; error?: string; at?: number; // last change, for Settings › Agents' stale limit
 };
 // A row as the companion sees it: with the mark it wears and its one line for the hover list.
 export type ShownAgent = Agent & { mark: MarkState; line: string };
@@ -29,7 +29,7 @@ const ago = (ms: number) => { const m = Math.round((Date.now() - ms) / 60_000); 
 export const fromCodex = (r: CodexSession): Agent => ({
   id: r.session_id, agent: 'codex', state: r.state === 'needs_input' ? 'wait' : r.state === 'running' ? 'work' : 'done',
   title: r.title || r.prompt || 'Codex session', project: r.cwd.split('/').filter(Boolean).pop() ?? '', where: 'Codex',
-  age: ago(r.since_ms), you: r.prompt, last: r.state === 'finished' ? r.last_message : r.detail,
+  age: ago(r.since_ms), you: r.prompt, last: r.state === 'finished' ? r.last_message : r.detail, at: r.since_ms,
 });
 const base = (path: string) => path.split('/').filter(Boolean).pop() ?? path;
 // One line for what a request wants, for the Agents rows and the hover list.
@@ -50,7 +50,7 @@ export const fromClaude = (r: ClaudeSession): Agent => ({
   state: r.request || r.phase === 'needs_input' ? 'wait' : r.error ? 'err' : r.phase === 'working' ? r.compacting ? 'pack' : 'work' : 'done',
   where: r.where === 'background' ? 'Background' : r.where, age: ago(r.updated_ms), you: r.prompt,
   last: r.request ? requestLine(r.request) : r.compacting ? 'Compacting its context' : r.phase === 'done' ? r.last_message : r.activity || r.last_message,
-  request: r.request ?? undefined, error: r.error || undefined,
+  request: r.request ?? undefined, error: r.error || undefined, at: r.updated_ms,
 });
 // Polled all the time: the marks beside the notch and the notices read them too. A daemon that does not serve
 // the route yet simply has no Claude rows.
