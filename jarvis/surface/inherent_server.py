@@ -92,7 +92,12 @@ from starlette.websockets import WebSocketClose
 from jarvis.shared.lang import language, t
 from jarvis.surface.claude_hooks import ClaudeHooks
 from jarvis.surface.claude_sessions import ClaudeSessions
-from jarvis.surface.codex_sessions import CodexSession, fold_codex_hook, prune_codex_sessions
+from jarvis.surface.codex_sessions import (
+    CodexSession,
+    fold_codex_hook,
+    prune_codex_sessions,
+    settle_codex_sessions,
+)
 from jarvis.surface.inherent_protocol import (
     HELLO_TIMEOUT_S,
     INITIAL_MAX_FRAMES_PER_S,
@@ -1442,6 +1447,7 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0915 — one cl
     async def codex_sessions() -> dict[str, Any]:
         """Newest-first rows for the Resonance Codex card."""
         prune_codex_sessions(codex_board, now_ms=int(time.time() * 1000))
+        settle_codex_sessions(codex_board)
         rows = sorted(codex_board.values(), key=lambda r: int(r["since_ms"]), reverse=True)
         return {"sessions": rows}
 

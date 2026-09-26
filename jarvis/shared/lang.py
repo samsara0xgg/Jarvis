@@ -717,6 +717,7 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
     "cli.quick_ack": {"zh": "好的，跑起来了。", "en": "OK, it's running."},
     # Desktop panels.
     "codex.session_ended": {"zh": "会话已结束", "en": "Session ended"},
+    "codex.turn_stopped": {"zh": "已停下", "en": "Stopped"},
     "usage.window_hours": {"zh": "{hours} 小时", "en": "{hours} h"},
     "usage.window_days": {"zh": "{days} 天", "en": "{days} days"},
     "usage.window_week_total": {"zh": "7 天 · 总", "en": "7 days · total"},
