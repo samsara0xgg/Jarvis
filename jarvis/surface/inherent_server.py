@@ -83,8 +83,8 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
-from fastapi.responses import JSONResponse, Response
-from pydantic import BaseModel, ValidationError
+from fastapi.responses import JSONResponse, Response, StreamingResponse
+from pydantic import BaseModel, Field, ValidationError
 from starlette.datastructures import Headers
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.websockets import WebSocketClose
@@ -112,7 +112,7 @@ from jarvis.surface.inherent_protocol import (
 from jarvis.surface.voice_pipeline import VoiceInputBusyError, VoicePipelineEmptyError
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import AsyncIterator, Awaitable, Callable
 
     from starlette.types import ASGIApp, Receive, Scope, Send
 
@@ -268,6 +268,18 @@ class SetupRoutes(Protocol):
 
     def done(self) -> dict[str, Any]:
         """``POST /inherent/setup/done``."""
+
+
+class DictationRoutes(Protocol):
+    """ADR 0058 dictation (``jarvis.runtime.dictation.Dictation``)."""
+
+    active: bool
+
+    def begin(self, context: dict[str, str]) -> AsyncIterator[dict[str, Any]]:
+        """Start recording; RuntimeError while one is running."""
+
+    def stop(self) -> bool:
+        """Finish recording; the running stream goes on to the result."""
 
 
 class V2ClientHandle(Protocol):
@@ -485,6 +497,9 @@ class InherentDeps:
     # check_key and preview block (run off the loop thread; ValueError is a
     # 400), done runs on the loop because it schedules the restart.
     setup: SetupRoutes | None = None
+    # ADR 0058: dictation from the live mic, heard and polished for the text
+    # caret. ``None`` (no voice stack) leaves both routes unregistered.
+    dictation: DictationRoutes | None = None
 
 
 class _FrameRateLimiter:
@@ -978,6 +993,40 @@ def _register_home_routes(app: FastAPI, deps: InherentDeps) -> None:  # noqa: C9
             return {"ok": True}
 
 
+class DictationRequest(BaseModel):
+    """Body of ``POST /inherent/dictation``: where the words will land, for the polish."""
+
+    app: str = Field(default="", max_length=200)
+    window: str = Field(default="", max_length=500)
+    selected: str = Field(default="", max_length=20000)
+
+
+def _register_dictation_routes(app: FastAPI, deps: InherentDeps) -> None:
+    """ADR 0058: one dictation at a time, streamed as NDJSON until its result."""
+    if deps.dictation is None:
+        return
+    dictation = deps.dictation
+
+    @app.post("/inherent/dictation")
+    async def dictate(req: DictationRequest) -> StreamingResponse:
+        """Record now; stream ``{level}`` lines, ``{state: thinking}``, then the result."""
+        try:
+            lines = dictation.begin(req.model_dump())
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)[:200]) from None
+
+        async def body() -> AsyncIterator[bytes]:
+            async for line in lines:
+                yield (json.dumps(line, ensure_ascii=False) + "\n").encode()
+
+        return StreamingResponse(body(), media_type="application/x-ndjson")
+
+    @app.post("/inherent/dictation/stop", status_code=200)
+    async def dictate_stop() -> dict[str, bool]:
+        """Finish recording; the open stream answers with the result."""
+        return {"ok": dictation.stop()}
+
+
 _MAX_SETUP_BODY_BYTES = 4096
 
 
@@ -1378,6 +1427,7 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0915 — one cl
 
     _register_home_routes(app, deps)
     _register_setup_routes(app, deps)
+    _register_dictation_routes(app, deps)
 
     # ADR 0019 step 4: Allen's own Codex sessions, fed by scripts/codex_hook_log.py.
     codex_board: dict[str, CodexSession] = {}

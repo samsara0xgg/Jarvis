@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { daemonToken, registerDaemonBridge, sendDaemonKey } from './bridge.js';
+import { setupDictation } from './dictation.js';
 // The companion: 星核, who lives beside the notch, with her Dashboard. She talks to the daemon on
 // JARVIS_INHERENT_BRIDGE_PORT like the capsule does; the daemon owns mic and speaker, so she never
 // records audio or plays speech herself. `--demo` runs her on the built-in demo data instead.
@@ -197,6 +198,9 @@ function companion(shown?: () => void) {
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.webContents.on('will-navigate', event => event.preventDefault());
   registerDaemonBridge(win, { lab: demo });
+  // ADR 0058: the right ⌥ dictates at the text caret; she goes there from the notch. Live only: it needs the daemon's mic.
+  const dictation = demo || !material ? null : setupDictation({ companion: win, native: material, preload: path.join(here, 'preload.cjs'),
+    page: path.join(here, '../dist/dictation.html'), port, topInset: display => placement(display).topInset });
   win.loadFile(path.join(here, '../dist/index.html'), { query: demo ? { companion: '1' } : { companion: '1', port: process.env.JARVIS_INHERENT_BRIDGE_PORT ?? '8006' } });
   win.webContents.on('did-finish-load', place);
   win.once('ready-to-show', () => { place(); win.showInactive(); keepOnTop(); shown?.(); });
@@ -215,8 +219,10 @@ function companion(shown?: () => void) {
   let command = false, tucked = { left: false, right: false }, untuck: ReturnType<typeof setTimeout> | undefined;
   const tuck = (next: typeof tucked) => { tucked = next; win.webContents.send('tuck', next); };
   const cursor = setInterval(() => {
+    const point = screen.getCursorScreenPoint();
+    dictation?.tick(point);
     if (win.isDestroyed() || !win.isVisible()) return;
-    const point = screen.getCursorScreenPoint(), bounds = frame();
+    const bounds = frame();
     const value = { x: point.x - bounds.x, y: point.y - bounds.y }, key = `${value.x},${value.y}`;
     if (key !== last) { last = key; win.webContents.send('cursor', value); }
     const down = !!material?.commandDown();
@@ -235,7 +241,7 @@ function companion(shown?: () => void) {
     else if (pending?.id !== under.id) pending = { id: under.id, since: Date.now() };
     else if (Date.now() - pending.since > 250) leave();
   }, 16);
-  win.on('closed', () => { clearInterval(cursor); clearTimeout(moving); clearTimeout(untuck); });
+  win.on('closed', () => { clearInterval(cursor); clearTimeout(moving); clearTimeout(untuck); dictation?.close(); });
   ipcMain.on('display-ready', event => { if (event.sender === win.webContents && moving) move(); });
   ipcMain.handle('placement', event => event.sender === win.webContents ? placement(target()) : null);
   ipcMain.on('passthrough', (event, enabled) => { if (event.sender === win.webContents && typeof enabled === 'boolean') win.setIgnoreMouseEvents(enabled, { forward: true }); });
@@ -310,6 +316,7 @@ function companion(shown?: () => void) {
   ipcMain.on('companion-menu', (event, model: MenuModel) => {
     if (event.sender !== win.webContents || !Array.isArray(model?.skins) || !Array.isArray(model?.exprs)) return;
     menu(model);
+    dictation?.language(model.lang);
     // Pinned to the main screen while she is on another one: she sinks here and comes up there.
     if (typeof model.follow === 'boolean' && model.follow !== follow) { follow = model.follow; if (!follow && current?.id !== screen.getPrimaryDisplay().id && !moving) leave(); }
   });

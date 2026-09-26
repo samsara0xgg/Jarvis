@@ -51,11 +51,32 @@ contextBridge.exposeInMainWorld('jarvis', {
   drag: (phase: 'start' | 'move' | 'end', point?: { x: number; y: number }) => ipcRenderer.send('drag', { phase, point }),
   passthrough: (enabled: boolean) => ipcRenderer.send('passthrough', enabled),
   material: (rects: unknown[], strength: number) => ipcRenderer.send('material', { rects, strength }),
+  // ADR 0058: out at the caret for dictation ('out'), back home ('home', or 'happy' when the words went in); and
+  // the skin she wears, for that trip.
+  onDictation: (callback: (trip: string) => void) => {
+    const listener = (_: unknown, trip: string) => callback(trip);
+    ipcRenderer.on('dictation', listener);
+    return () => ipcRenderer.removeListener('dictation', listener);
+  },
+  wearing: (skin: string) => ipcRenderer.send('companion-skin', skin),
   onCommand: (callback: (command: string) => void) => {
     const listener = (_: unknown, command: string) => callback(command);
     ipcRenderer.on('command', listener);
     return () => ipcRenderer.removeListener('command', listener);
   },
+});
+// ADR 0058: the dictation window beside the text caret (companion.ts answers only that window).
+const listen = (channel: string) => (callback: (value: unknown) => void) => { ipcRenderer.on(channel, (_event, value: unknown) => callback(value)); };
+contextBridge.exposeInMainWorld('dictation', {
+  onStart: listen('dictation-start'),
+  onFinish: listen('dictation-finish'),
+  onCancel: listen('dictation-cancel'),
+  onCursor: listen('dictation-cursor'),
+  paste: (text: string) => ipcRenderer.send('dictation-paste', text),
+  copy: (text: string) => ipcRenderer.send('dictation-copy', text),
+  home: (happy: boolean) => ipcRenderer.send('dictation-home', happy),
+  done: () => ipcRenderer.send('dictation-done'),
+  passthrough: (on: boolean) => ipcRenderer.send('dictation-passthrough', on),
 });
 // The first launch's window (companion.ts answers only that window).
 contextBridge.exposeInMainWorld('firstRun', {

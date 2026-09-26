@@ -28,6 +28,8 @@ try {
       onPlacement: callback => { window.__placement = callback; return () => {}; },
       onDisplayLeave: callback => { window.__leave = callback; return () => {}; },
       onTuck: callback => { window.__tuck = callback; return () => {}; },
+      onDictation: callback => { window.__trip = callback; return () => {}; },
+      wearing: skin => { window.__state.wearing = skin; },
       displayReady: () => { window.__state.ready++; },
       companionMenu: menu => { window.__state.menu = menu; },
       onCursor: callback => { window.__cursor = callback; return () => {}; },
@@ -62,6 +64,21 @@ try {
   await shot('01-home-eyes');
   await page.evaluate(() => window.__command('homeGlass'));
   await page.waitForTimeout(1500);
+  // ADR 0058: dictation takes her out through the notch to the text caret (another window draws her there) and back.
+  check('13 she tells the caret window which skin she wears', await page.evaluate(() => window.__state.wearing) === 'glass');
+  const fold = async () => { const t = await page.locator('.companion-island').getAttribute('transform'); return t === null ? 1 : Number(/scale\(([^ )]+)/.exec(t)[1]); };
+  await page.evaluate(() => window.__trip('out'));
+  await page.waitForTimeout(110);
+  await shot('13-slipping');
+  await page.waitForTimeout(500);
+  check('13 out for dictation she has slipped into the notch and the island folded after her', await alphaAt(lobe.x, 24) < 30 && await fold() < .05);
+  await shot('13-away');
+  await page.evaluate(() => window.__trip('happy'));
+  await page.waitForTimeout(500);
+  check('13 back from pasting she slides out of the notch smiling, the island open again',
+    await alphaAt(lobe.x, 24) > 200 && await fold() === 1 && await page.locator('.companion-canvas').getAttribute('data-face') === '10');
+  await shot('13-back');
+  await page.waitForTimeout(1200);
   await move(170, 10);
   await page.waitForTimeout(80);
   check('01 the island takes clicks, so menu bar items hidden behind it are never hit', await page.evaluate(() => window.__state.passthrough === false));

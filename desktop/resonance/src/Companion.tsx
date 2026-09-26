@@ -86,6 +86,9 @@ export function Companion() {
   // ⌘ in the menu bar row tucks her away on that side of the camera for a moment (electron/companion.ts).
   const [tuck, setTuck] = useState({ left: false, right: false });
   useEffect(() => window.jarvis?.onTuck?.(setTuck), []);
+  // ADR 0058: out at the text caret for dictation, drawn by its own window; she comes back happy when the words went in.
+  const [trip, setTrip] = useState('home');
+  useEffect(() => window.jarvis?.onDictation?.(setTrip), []);
   const geo = useMemo(() => layout(placement, tuck.left), [placement, tuck.left]);
   const [preferences, setPreferences] = usePreferences();
   const [companion, updateCompanion] = useCompanionSettings();
@@ -314,7 +317,9 @@ export function Companion() {
     outingTimers.current = [setTimeout(run, lead), setTimeout(() => { setOuting(false); setPreview(null); }, lead + stay)];
   };
   useEffect(() => () => outingTimers.current.forEach(clearTimeout), []);
-  const wear = (skin: Skin) => { if (skin === worn.current) return; worn.current = skin; appear(() => ball.current?.change(skin), 2600); };
+  const wear = (skin: Skin) => { if (skin === worn.current) return; worn.current = skin; window.jarvis?.wearing?.(skin); appear(() => ball.current?.change(skin), 2600); };
+  // At the caret she wears what she wears here.
+  useEffect(() => window.jarvis?.wearing?.(worn.current), []);
   const choose = (skin: Skin) => { setWardrobe(value => ({ ...value, skin })); wear(skin); };
   // On her own she tries another skin, and the next time changes back to yours.
   const selfChange = () => {
@@ -497,7 +502,8 @@ export function Companion() {
           lift: placement.notchWidth ? 0 : lift, hidden: tuck.right && !!placement.notchWidth }}
         act={{ jump, answer: notices.focus, read: notices.read, clear: notices.clear }} note={note}/>
       <CompanionBall width={geo.width} height={placement.topInset + 560} lobe={geo.lobe} lift={lift} look={look} handle={ball} skin={worn.current}
-        target={{ place, expr, pressed, anchors: geo.anchors, homeGlass: wardrobe.homeGlass, lift: place === 'home' ? lift : 0, homeFace: !!notice }}
+        target={{ place, expr, pressed, anchors: geo.anchors, homeGlass: wardrobe.homeGlass, lift: place === 'home' ? lift : 0, homeFace: !!notice,
+          away: trip === 'out', happy: trip === 'happy' }}
         label={voice === 'off' ? t([`Poke to talk${port ? '' : ' (demo)'}`, `戳一下，开始语音${port ? '' : '（演示）'}`]) : voice === 'speaking' ? t(['Poke to interrupt', '戳一下，打断播报']) : t(['Poke to stop', '戳一下，结束语音'])}
         onPress={press} onRelease={release} onCancel={cancel} onMove={refreshHit}/>
     </main>

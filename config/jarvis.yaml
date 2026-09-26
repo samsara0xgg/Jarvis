@@ -72,6 +72,13 @@ llm:
       api_key_env: XAI_API_KEY
       max_tokens: 2048
       reasoning_effort: none
+    # 听写润色（ADR 0058），和 Typlus 用的同一个。2026-09-12 同一段 10 秒中文
+    # 实测：中位 0.74s，10/10 不跑题；gpt-5.6-luna 不思考 4/5 把听写当问题回答。
+    gpt54-mini:
+      model: gpt-5.4-mini
+      base_url: "https://api.openai.com/v1"
+      api_key_env: OPENAI_API_KEY
+      max_tokens: 4096
 
   # 流式回复的句子切分调优
   sentence_divider:
@@ -617,6 +624,11 @@ memory:
   # db_path: ~/.jarvis/memory.db          # default: <runtime root>/memory.db
   # audio_dir: ~/.jarvis/memory/audio     # default: <runtime root>/memory/audio
   retain_audio: false    # true keeps each utterance's audio (AAC via afconvert, WAV fallback)
+
+# Dictation (ADR 0058): the companion's typing tool. Recorded from the live mic,
+# heard by the voice path's SenseVoice, polished by this preset, never stored.
+dictation:
+  polish_preset: gpt54-mini
 
 # The running conversation and its compaction (ADR-0019). Every record stays
 # in the prompt word for word until a compaction; a compaction runs only on

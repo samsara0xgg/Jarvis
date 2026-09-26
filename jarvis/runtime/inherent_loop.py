@@ -142,6 +142,7 @@ from jarvis.runtime import (
     make_supersede_unspoken_callable,
     save_language,
 )
+from jarvis.runtime.dictation import Dictation, polish_client
 from jarvis.runtime.inherent_hub import start_inherent_view
 from jarvis.runtime.session_compaction import CompactionSweep, preset_context_length
 from jarvis.runtime.setup import Setup
@@ -4817,11 +4818,17 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         shared_ducker: voice_ducking.SystemAudioDucker = voice_ducking.SystemAudioDucker()
 
         live_voice: voice_live.LiveVoice | None = None
+        dictation: Dictation | None = None
 
         def _old_chain_input_blocked() -> bool:
             # ADR-0015 mic mute, plus: while GPT-Live owns speech the local chain
-            # arms no new wake, so one utterance cannot be answered twice.
-            return controls.mic_is_muted() or (live_voice is not None and live_voice.owns_speech)
+            # arms no new wake, so one utterance cannot be answered twice; and
+            # while Allen dictates (ADR 0058) his words are text, not a turn.
+            return (
+                controls.mic_is_muted()
+                or (live_voice is not None and live_voice.owns_speech)
+                or (dictation is not None and dictation.active)
+            )
 
         def _apply_speech_mute(muted: bool) -> None:  # noqa: FBT001 - Callable[[bool], None] shape
             # ADR-0015 D2: speech mute is the player's output gain, 0.0 muted and
@@ -5070,6 +5077,25 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 restart=_restart_soon if spawned_by_agent() else None,
             )
 
+        # ADR 0058: dictation hears through the live mic and the voice path's ears.
+        ingress = duplex_voice_session.ingress if duplex_voice_session is not None else None
+        if ingress is not None and voice_pipe is not None:
+            try:
+                client = polish_client(
+                    runtime.config.get("llm") or {},
+                    str((runtime.config.get("dictation") or {}).get("polish_preset", "")),
+                )
+            except ValueError:
+                LOGGER.exception("dictation off: its polish preset is not configured")
+            else:
+                dictation = Dictation(
+                    ingress=ingress,
+                    transcribe=voice_pipe.transcribe,
+                    client=client,
+                    event_log_path=runtime.runtime_paths.event_log,
+                    pricing_table=load_pricing_table(repo_root() / "data" / "pricing.json"),
+                )
+
         deps = InherentDeps(
             submit_callable=submit_callable,
             broadcaster=broadcaster,
@@ -5135,6 +5161,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             plugin_icon=runtime.plugin_connections.icon if runtime.plugin_connections else None,
             language_save=functools.partial(save_language, runtime.runtime_paths.settings),
             setup=setup,
+            dictation=dictation,
             cancel_response_callable=cancel_response_callable,
             controls=controls,
             live=live_voice,
