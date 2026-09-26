@@ -101,11 +101,10 @@ ignore = [
 # The evidence gather writes its material-limit notes in Chinese (ADR 0023);
 # same fullwidth-punctuation rationale as the prompt above.
 "jarvis/state/work_state.py" = ["RUF001"]
-# The daily report's prompt, tool schema and saved layout are Chinese by
-# design (ADR 0024); fullwidth punctuation there is text, not a typo.
+# The daily report cuts text at Chinese sentence ends and reads Chinese
+# questions; the fullwidth punctuation there is what it matches.
 "jarvis/decision/daily_report.py" = ["RUF001"]
-# Its day gather writes the material-limit notes in Chinese; same rationale.
-"jarvis/state/daily_report.py" = ["RUF001"]
+"jarvis/state/daily_report.py" = ["RUF001"]  # its question matcher, same rationale
 # Its acceptance test asserts on those Chinese strings verbatim.
 "tests/integration/test_daily_report.py" = ["RUF001"]
 # The live acceptance asserts on the saved report's Chinese headings verbatim.

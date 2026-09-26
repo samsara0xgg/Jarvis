@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from jarvis.shared.lang import TEXT, t
 from jarvis.state import daily_store, timesink
 from jarvis.state.daily_contract import DailyError, fingerprint
 from jarvis.state.daily_records import read_connection
@@ -270,14 +271,14 @@ def _span_sections(g: _Gather, items: list[dict[str, Any]]) -> None:
             "last": g.clock(group["last"]),
         }
         g.haystack[key] = (
-            f"{row['first']}-{row['last']} {row['app']} — {row['title']}（{row['minutes']} 分钟）"
+            f"{row['first']}-{row['last']} {row['app']} — {row['title']} ({row['minutes']} min)"
         )
         windows.append(row)
     g.sections["windows"] = windows
     g.served["app"] = (
-        f"应用/窗口：{len(items)} 段、{len(windows)} 个窗口，全部列出"
+        t("report.served.app", spans=len(items), windows=len(windows))
         if items
-        else "应用/窗口：这一天没有记录"
+        else t("report.served.app_none")
     )
 
 
@@ -348,10 +349,9 @@ def _screen_section(g: _Gather, snap: timesink.Snapshot, items: list[dict[str, A
         if (phrase := _milestone(row["text"])) is not None
     ]
     g.served["screen"] = (
-        f"屏幕内容：采集 {len(items)} 条，去掉同一窗口连续近似重复的 {folded} 条后 "
-        f"{len(kept)} 条全文列出"
+        t("report.served.screen", total=len(items), folded=folded, kept=len(kept))
         if items
-        else "屏幕内容：这一天没有采集到（截屏未运行或不可用）"
+        else t("report.served.screen_none")
     )
 
 
@@ -362,7 +362,7 @@ def _around(text: str, phrase: str) -> str:
 
 def _state_section(g: _Gather, state: dict[str, Any]) -> None:
     rows = [
-        {"at": g.day_clock(e["at"]), "kind": e["kind"], "phase": "起始状态"}
+        {"at": g.day_clock(e["at"]), "kind": e["kind"], "phase": "at start"}
         for e in state["at_start"]
     ]
     rows += [{"at": g.clock(e["at"]), "kind": e["kind"], "phase": ""} for e in state["events"]]
@@ -377,7 +377,7 @@ def _timesink_sections(g: _Gather, snap: timesink.Snapshot | None) -> None:
     g.coverage["app"] = "unavailable" if snap is None else str(spans["coverage"]["status"])
     g.coverage["screen"] = "unavailable" if snap is None else "available"
     if snap is None:
-        g.served["app"] = g.served["screen"] = "TimeSink 不可读：没有应用、窗口和屏幕数据"
+        g.served["app"] = g.served["screen"] = t("timesink.unreadable")
         g.sections["windows"] = g.sections["apps"] = g.sections["screen"] = []
         g.sections["milestones"] = g.sections["state_events"] = []
         return
@@ -399,7 +399,7 @@ def _record_section(g: _Gather, memory_path: Path | None) -> None:
             ).fetchall()
     except (DailyError, sqlite3.Error):
         g.coverage["records"] = "unavailable"
-        g.served["records"] = "对话记录：记录库不可读"
+        g.served["records"] = t("report.served.records_unreadable")
         g.sections["records"] = []
         return
     g.coverage["records"] = "available"
@@ -415,7 +415,9 @@ def _record_section(g: _Gather, memory_path: Path | None) -> None:
         records.append(row)
     g.sections["records"] = records
     g.served["records"] = (
-        f"对话记录：{len(records)} 条，全文列出" if records else "对话记录：这一天没有记录"
+        t("report.served.records", count=len(records))
+        if records
+        else t("report.served.records_none")
     )
 
 
@@ -462,14 +464,14 @@ def _fold_git_rows(
             }
     if unwatched:
         g.limits.append(
-            f"当天还观察到 {len(unwatched)} 个仓库的活动，但它们已不在被观察列表里，未列入："
-            + "、".join(sorted(unwatched))
+            t(
+                "report.limit.unwatched",
+                count=len(unwatched),
+                repos=t("sep.list").join(sorted(unwatched)),
+            )
         )
     if dropped:
-        g.limits.append(
-            f"Git 观察器追上积压时跳过了 {dropped} 个更早的提交，没有写进事件日志；"
-            "当天的提交清单以本地仓库记录为准"
-        )
+        g.limits.append(t("report.limit.dropped", count=dropped))
     return commits, states
 
 
@@ -513,8 +515,11 @@ def _local_commits(g: _Gather, repos: Sequence[str]) -> dict[str, dict[str, Any]
     found, unreadable = local_commits(repos, g.start, g.end)
     if unreadable:
         g.limits.append(
-            f"无法读取 {len(unreadable)} 个仓库的本地 git 记录（路径不存在或不是仓库）："
-            + "、".join(unreadable)
+            t(
+                "report.limit.unreadable_repos",
+                count=len(unreadable),
+                repos=t("sep.list").join(unreadable),
+            )
         )
     g.coverage["git"] = "partial" if unreadable else "available"
     return found
@@ -604,19 +609,20 @@ def _git_sections(g: _Gather, conn: sqlite3.Connection, repos: Sequence[str]) ->
             "sha": entry["sha"][:7],
             "subject": entry["subject"],
             "committed": committed.strftime("%m-%d %H:%M"),
-            "observed": seen_at.strftime("%H:%M") if seen_at else "观察器未记录",
+            "observed": seen_at.strftime("%H:%M") if seen_at else "not recorded by the observer",
             "paths": ", ".join(entry["paths"]),
             "late": late,
-            "main": {True: "已在 main", False: "未进 main", None: "main 未知"}[entry["on_main"]],
+            "main": t(_MAIN_KEYS[entry["on_main"]]),
+            "on_main": entry["on_main"],
         }
         g.commit_rows[key] = row
         git.append(row)
     g.sections["git"] = git
     same_day = sum(1 for row in git if not row["late"])
     g.served["git"] = (
-        f"Git 提交：当天 {same_day} 个，另有 {len(git) - same_day} 个当天才看到的旧提交，全部列出"
+        t("report.served.git", same=same_day, late=len(git) - same_day)
         if git
-        else "Git 提交：这一天没有提交"
+        else t("report.served.git_none")
     )
     repo_states = []
     ranked_states = sorted(states.values(), key=lambda x: x["repo"])
@@ -638,7 +644,11 @@ def _git_sections(g: _Gather, conn: sqlite3.Connection, repos: Sequence[str]) ->
     g.sections["repo_states"] = repo_states
     if not repos:
         g.coverage["git"] = "unavailable"
-        g.served["git"] = "Git 提交：没有配置被观察的仓库，只有历史记录里观察到的提交"
+        g.served["git"] = t("report.served.git_no_repos")
+
+
+_MAIN_KEYS = {True: "report.main.on", False: "report.main.off", None: "report.main.unknown"}
+"""Whether a commit is on main, as the language table names it."""
 
 
 def _knowledge_section(g: _Gather, conn: sqlite3.Connection) -> None:
@@ -662,34 +672,38 @@ def _plan_section(g: _Gather, plan: Mapping[str, Any] | None) -> None:
     g.sections["calendar"], g.sections["todos"] = [], []
     if plan is None or plan.get("error"):
         g.coverage["calendar"] = g.coverage["todos"] = "unavailable"
-        why = "未接入" if plan is None else f"读取失败（{plan['error']}）"
-        g.served["plan"] = f"微软日历与待办：{why}，没有日程和待办"
+        why = (
+            t("report.plan.not_connected")
+            if plan is None
+            else t("report.plan.read_failed", error=plan["error"])
+        )
+        g.served["plan"] = t("report.served.plan_missing", why=why)
         return
     events = []
     for event in plan["events"]:
         row = {"subject": event["subject"], "location": event["location"]}
         if event["all_day"]:
-            row.update(date=event["date"], time="全天")
+            row.update(date=event["date"], time=t("report.all_day"))
         else:
             start = datetime.fromisoformat(event["start"]).astimezone(g.zone)
             end = datetime.fromisoformat(event["end"]).astimezone(g.zone)
             row.update(date=start.date().isoformat(), time=f"{start:%H:%M}-{end:%H:%M}")
         events.append(row)
-    events.sort(key=lambda r: (r["date"], r["time"] != "全天", r["time"]))
+    all_day = t("report.all_day")
+    events.sort(key=lambda r: (r["date"], r["time"] != all_day, r["time"]))
     day = g.day.isoformat()
     todos = [t for t in plan["todos"] if not t["done"] or t["completed"] == day]
     todos.sort(key=lambda t: (t["done"], t["due"] is None, t["due"] or "", not t["important"]))
     g.sections["calendar"], g.sections["todos"] = events, todos
     g.coverage["calendar"] = g.coverage["todos"] = "available"
     done = sum(t["done"] for t in todos)
-    g.served["plan"] = (
-        f"微软日历与待办：{len(events)} 个日程（{day} 与次日）、{len(todos) - done} 条未完成待办、"
-        f"{done} 条当天完成，全部给出"
+    g.served["plan"] = t(
+        "report.served.plan", events=len(events), day=day, open=len(todos) - done, done=done
     )
 
 
 def _previous_section(g: _Gather, conn: sqlite3.Connection, zone_name: str) -> None:
-    """The previous day's served summary (its 核心摘要), as context that is not today."""
+    """The previous day's served summary (its summary section), as context that is not today."""
     prior = (g.day - timedelta(days=1)).isoformat()
     item = existing_report(conn, prior, zone_name)
     if item is None:
@@ -697,8 +711,8 @@ def _previous_section(g: _Gather, conn: sqlite3.Connection, zone_name: str) -> N
         return
     g.refs["b1"] = item["source_ref"]
     content = str(item["content"])
-    _, found, rest = content.partition("## 核心摘要")
-    summary = rest.split("\n## ", 1)[0] if found else content
+    summary = summary_section(content)
+    summary = content if summary is None else summary
     g.sections["previous"] = [{"key": "b1", "date": prior, "text": _flat(summary)}]
 
 
@@ -796,7 +810,7 @@ def _agent_section(g: _Gather, sessions_root: Path | None) -> None:
     if sessions_root is None or not sessions_root.is_dir():
         g.coverage["agent"] = "unavailable"
         g.sections["agent"] = []
-        g.served["agent"] = "代理会话：Codex 本机会话目录不可读"
+        g.served["agent"] = t("report.served.agent_unreadable")
         return
     sessions = []
     for path in _session_files(sessions_root, g.day, g.start):
@@ -839,12 +853,14 @@ def _agent_section(g: _Gather, sessions_root: Path | None) -> None:
         )
     g.sections["agent"] = rows
     if sessions:
-        g.served["agent"] = (
-            f"代理会话：Codex {len(sessions)} 个会话，{len(rows)} 个逐轮全文列出"
-            + (f"，另 {shims} 个是 Codex 自动生成的审批会话，只记数不列出" if shims else "")
+        g.served["agent"] = t(
+            "report.served.agent",
+            sessions=len(sessions),
+            rows=len(rows),
+            shims=t("report.served.agent_shims", count=shims) if shims else "",
         )
     else:
-        g.served["agent"] = "代理会话：这一天没有 Codex 会话"
+        g.served["agent"] = t("report.served.agent_none")
 
 
 def _index_rows(rows: Iterable[dict[str, Any]]) -> tuple[int, int]:
@@ -862,16 +878,16 @@ def _index_rows(rows: Iterable[dict[str, Any]]) -> tuple[int, int]:
 def _fallback_rows(g: _Gather, source: str) -> tuple[list[dict[str, Any]], str]:
     """The rows one fallback step cuts, and what the header calls them."""
     if source == "screen":
-        return g.sections.get("screen", []), "屏幕内容"
+        return g.sections.get("screen", []), t("report.fallback.screen")
     if source == "records":
-        return g.sections.get("records", []), "对话记录"
+        return g.sections.get("records", []), t("report.fallback.records")
     role = "assistant" if source == "agent_answers" else "user"
     rows: list[dict[str, Any]] = []
     for session in g.sections.get("agent", []):
         turns = session["turns"]
         last_answer = max((i for i, t in enumerate(turns) if t["role"] == "assistant"), default=-1)
         rows += [t for i, t in enumerate(turns) if t["role"] == role and i != last_answer]
-    return rows, "Codex 回复（每个会话最后一条除外）" if role == "assistant" else "Codex 提问"
+    return rows, t(f"report.fallback.agent_{'answers' if role == 'assistant' else 'prompts'}")
 
 
 def _fit_budget(g: _Gather) -> None:
@@ -889,9 +905,14 @@ def _fit_budget(g: _Gather) -> None:
         count, withheld = _index_rows(rows)
         if count:
             g.limits.append(
-                f"材料超出模型容量（{MATERIAL_BUDGET} 字），{what}退到索引：{count} 条只保留"
-                f"开头 {_INDEX_TEXT} 字，共 {withheld} 字采集到了但没有给全，"
-                "可用 search_material 检索、request_details 取原文"
+                t(
+                    "report.limit.budget",
+                    budget=MATERIAL_BUDGET,
+                    what=what,
+                    count=count,
+                    chars=_INDEX_TEXT,
+                    withheld=withheld,
+                )
             )
 
 
@@ -993,7 +1014,7 @@ def search_day(
     """
     terms = [word.casefold() for word in query.split()]
     if not terms:
-        return "请给出要检索的关键字。"
+        return "Give the keywords to search for."
     hits = _capture_hits(evidence, terms, timesink_path=timesink_path, zone=zone)
     hits += [
         (key, _snippet(text, terms))
@@ -1002,14 +1023,15 @@ def search_day(
     ]
     if not hits:
         return (
-            f"「{query}」在这一天可检索的材料里没有出现"
-            "（检索范围：当天全部截屏文字、窗口标题、对话记录全文、提交标题、Codex 会话全文）。"
+            f"\"{query}\" does not appear in the day's searchable material (searched: all screen"
+            " text, window titles, full conversation records, commit subjects and full Codex"
+            " sessions)."
         )
     shown = hits[:MAX_HITS]
     rest = len(hits) - len(shown)
-    more = f"\n…另有 {rest} 处命中未列出，请换更具体的关键字。" if rest else ""
+    more = f"\n…{rest} more hits not listed; use more specific keywords." if rest else ""
     listed = "\n".join(f"[{k}] {line}" for k, line in shown)
-    return f"「{query}」命中 {len(hits)} 处：\n{listed}{more}"
+    return f'"{query}": {len(hits)} hits:\n{listed}{more}'
 
 
 def git_show(repo: str, sha: str) -> str | None:
@@ -1023,7 +1045,7 @@ def _commit_detail(key: str, evidence: DayEvidence) -> str | None:
     if commit is None:
         return None
     shown = git_show(commit["paths"].split(", ")[0], commit["sha"])
-    return None if shown is None else f"[{key}] {commit['main']}，late={commit['late']}\n{shown}"
+    return None if shown is None else f"[{key}] {commit['main']}, late={commit['late']}\n{shown}"
 
 
 def _session_detail(key: str, path: Path, start: datetime, end: datetime) -> str:
@@ -1031,8 +1053,8 @@ def _session_detail(key: str, path: Path, start: datetime, end: datetime) -> str
     session = codex_session(path, start, end)
     turns = "\n".join(f"{when} {role}: {_flat(text)}" for when, role, text in session["turns"])
     return (
-        f"[{key}] Codex 会话 {session['id']}（{session['originator']}，{session['cwd']}）"
-        f"——代理的自述，不是核实结果\n{turns}"
+        f"[{key}] Codex session {session['id']} ({session['originator']}, {session['cwd']})"
+        f" — the agent's own account, not a verified result\n{turns}"
     )
 
 
@@ -1047,14 +1069,14 @@ def _stored_detail(
                 "SELECT ts,source,text FROM records WHERE id=?", (identity,)
             ).fetchone()
         if row is None:
-            return f"[{key}] 记录已不存在"
+            return f"[{key}] the record no longer exists"
         return f"[{key}] {row[0]} {row[1]}: {_flat(row[2])}"
     if ref.startswith("event:"):
         row = conn.execute(
             "SELECT type,payload_json FROM events WHERE event_uid=?", (identity,)
         ).fetchone()
         if row is None:
-            return f"[{key}] 事件已不存在"
+            return f"[{key}] the event no longer exists"
         return f"[{key}] {row[0]}: {row[1]}"
     return None
 
@@ -1070,7 +1092,7 @@ def read_detail(  # noqa: PLR0911 — one return per reference kind.
     """The whole original behind one material key; an unreadable source says so."""
     ref = evidence.refs.get(key)
     if ref is None:
-        return f"[{key}] 不是材料里的键"
+        return f"[{key}] is not a key in the material"
     shown = _commit_detail(key, evidence)
     if shown is not None:
         return shown
@@ -1078,22 +1100,34 @@ def read_detail(  # noqa: PLR0911 — one return per reference kind.
         if ref.startswith("timesink-capture:"):
             row = timesink.read_capture(timesink_path, ref)
             when = f"{timesink.moment(row['at'])}..{row['endedAt']}"
-            head = f"{row['appName']} — {row['title'] or ''} {when}（UTC）"
+            head = f"{row['appName']} — {row['title'] or ''} {when} (UTC)"
             return f"[{key}] {head}\n{_flat(row['text'] or '')}"
         if ref.startswith("timesink:"):
             original = timesink.read_span(timesink_path, ref)
             # The stored row keeps GRDB's bare UTC text; unlabelled it reads as a local clock.
-            return f"[{key}]（原始行，时间为 UTC）{json.dumps(original, ensure_ascii=False)}"
+            return f"[{key}] (raw row, times in UTC) {json.dumps(original, ensure_ascii=False)}"
         if ref.startswith("codex-session:"):
             start, end = (datetime.fromisoformat(evidence.window[k]) for k in ("from", "to"))
             return _session_detail(key, Path(ref.partition(":")[2]), start, end)
         shown = _stored_detail(key, ref, conn, memory_path)
     except (DailyError, sqlite3.Error, OSError) as exc:
-        return f"[{key}] 该条目当前不可读：{exc}"
-    return shown if shown is not None else f"[{key}] 没有可读的原文"
+        return f"[{key}] this entry cannot be read right now: {exc}"
+    return shown if shown is not None else f"[{key}] has no readable original"
 
 
-_QUESTION = re.compile(r"[?？]\s*$|(吗|呢|么)[?？。！]?\s*$|^(请|帮我|麻烦|能不能|可不可以|要不要)")
+_QUESTION = re.compile(
+    r"[?？]\s*$|(吗|呢|么)[?？。！]?\s*$|^(请|帮我|麻烦|能不能|可不可以|要不要)"
+    r"|^(?i:please|can you|could you|would you|will you|help me)\b"
+)
+
+
+def summary_section(content: str) -> str | None:
+    """The summary section of a saved report, whichever language it was saved in."""
+    for heading in TEXT["report.h.summary"].values():
+        _, found, rest = content.partition(heading)
+        if found:
+            return rest.split("\n## ", 1)[0]
+    return None
 
 
 def is_question(text: str) -> bool:
