@@ -437,6 +437,20 @@ class InherentDeps:
     # cursor. ``(after, limit) -> {"since", "rows"}``; ``None`` leaves the
     # route unregistered.
     conversation_read: Callable[[int, int], dict[str, Any]] | None = None
+    # ADR 0051: the companion home's reads and its one write, all off the loop
+    # thread. A LookupError is "not connected" (404, the home's fallback), any
+    # other failure 502. ``None`` leaves the routes unregistered.
+    today_read: Callable[[], Awaitable[dict[str, Any]]] | None = None
+    todo_set: Callable[[str, bool], Awaitable[None]] | None = None
+    mail_read: Callable[[], Awaitable[dict[str, Any]]] | None = None
+    brief_read: Callable[[], dict[str, Any] | None] | None = None
+    # ADR 0052: the Settings page's file, read and saved off the loop thread;
+    # a ValueError from saving is a 400. ``None`` leaves the routes unregistered.
+    settings_read: Callable[[], Awaitable[dict[str, Any]]] | None = None
+    settings_update: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]] | None = None
+    # Settings > Restart: answer, then TERM this process; registered only when
+    # launchd's KeepAlive is there to bring the daemon back.
+    restart: Callable[[], None] | None = None
     # ADR 0038: desktop management uses a private local credential, unlike
     # ordinary text submission. Secrets never travel on the public websocket.
     plugin_read: Callable[[], dict[str, Any]] | None = None
@@ -902,6 +916,90 @@ async def _run_asr_submit(
     }
 
 
+class SettingsRequest(BaseModel):
+    """Body of ``POST /inherent/settings`` (ADR 0052): the page's changed values by key."""
+
+    changes: dict[str, Any]
+
+
+class TodoRequest(BaseModel):
+    """Body of ``POST /inherent/today/todo`` (ADR 0051): the home's checkbox."""
+
+    id: str
+    done: bool
+
+
+async def _home_call[T](call: Awaitable[T]) -> T:
+    """ADR 0051: not connected is 404 (the home's fallback), a bad id 400, anything else 502."""
+    try:
+        return await call
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)[:200]) from None
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)[:200]) from None
+    except Exception as exc:  # noqa: BLE001 — Microsoft or the network failing is the home's 502.
+        LOGGER.warning("home route failed: %s: %s", type(exc).__name__, exc)
+        raise HTTPException(status_code=502, detail=str(exc)[:200]) from None
+
+
+def _register_home_routes(app: FastAPI, deps: InherentDeps) -> None:  # noqa: C901 — one closed route table.
+    """ADR 0051/0052: Today, its to-do checkbox, mail, the morning brief and Settings."""
+    if deps.today_read is not None and deps.todo_set is not None:
+        today_read, todo_set = deps.today_read, deps.todo_set
+
+        @app.get("/inherent/today")
+        async def today() -> dict[str, Any]:
+            """Today's calendar, open to-dos and the weather; no model call."""
+            return await _home_call(today_read())
+
+        @app.post("/inherent/today/todo", status_code=200)
+        async def todo(req: TodoRequest) -> dict[str, bool]:
+            """Check a to-do off in Microsoft To Do, or open it again."""
+            await _home_call(todo_set(req.id, req.done))
+            return {"ok": True}
+
+    if deps.mail_read is not None:
+        mail_read = deps.mail_read
+
+        @app.get("/inherent/mail")
+        async def mail() -> dict[str, Any]:
+            """Unread mail from people, newest first."""
+            return await _home_call(mail_read())
+
+    if deps.brief_read is not None:
+        brief_read = deps.brief_read
+
+        @app.get("/inherent/brief")
+        async def brief() -> dict[str, Any]:
+            """This morning's brief; 404 until yesterday's report is saved."""
+            found = brief_read()
+            if found is None:
+                raise HTTPException(status_code=404, detail="no brief for today yet")
+            return found
+
+    if deps.settings_read is not None and deps.settings_update is not None:
+        settings_read, settings_update = deps.settings_read, deps.settings_update
+
+        @app.get("/inherent/settings")
+        async def settings() -> dict[str, Any]:
+            """``{values, options, restart_pending}`` for the Settings page."""
+            return await settings_read()
+
+        @app.post("/inherent/settings", status_code=200)
+        async def settings_save(req: SettingsRequest) -> dict[str, Any]:
+            """Save the changed values for the next boot; answers like ``GET``."""
+            return await _home_call(settings_update(req.changes))
+
+    if deps.restart is not None:
+        restart = deps.restart
+
+        @app.post("/inherent/restart", status_code=202)
+        async def restart_now() -> dict[str, bool]:
+            """Settings > Restart: the answer leaves first, then launchd brings Jarvis back."""
+            restart()
+            return {"ok": True}
+
+
 _MAX_PLUGIN_COMMAND_BYTES = 32_768
 _REQUEST_ID: Final[re.Pattern[str]] = re.compile(
     r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
@@ -1225,6 +1323,8 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0915 — one cl
         async def conversation(after: int = 0, limit: int = 200) -> dict[str, Any]:
             """Spec §18.3: the conversation of record past ``after`` (0 = the newest rows)."""
             return conversation_read(after, limit)
+
+    _register_home_routes(app, deps)
 
     # ADR 0019 step 4: Allen's own Codex sessions, fed by scripts/codex_hook_log.py.
     codex_board: dict[str, CodexSession] = {}

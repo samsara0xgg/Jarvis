@@ -19,10 +19,12 @@ if (!locked) app.quit();
 const WIDTH = 640;
 let win: BrowserWindow;
 let tray: Tray;
-// One companion, on the screen you are using: `current` is the display she lives on now.
-let current: Electron.Display | null = null;
+// One companion, on the screen you are using: `current` is the display she lives on now. With `follow`
+// off (her Settings › General) she stays on the main screen.
+let current: Electron.Display | null = null, follow = true;
+const home = () => follow ? screen.getDisplayNearestPoint(screen.getCursorScreenPoint()) : screen.getPrimaryDisplay();
 function target() {
-  return screen.getAllDisplays().find(item => item.id === current?.id) ?? screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+  return screen.getAllDisplays().find(item => item.id === current?.id) ?? home();
 }
 function placement(display: Electron.Display) {
   const notches: NotchScreen[] = material?.screens() ?? [];
@@ -34,7 +36,7 @@ function placement(display: Electron.Display) {
 function frame(): Electron.Rectangle { return material?.getFrame(win.getNativeWindowHandle()) ?? win.getBounds(); }
 function place() {
   const display = current = target(), value = placement(display);
-  const bounds = { x: Math.round(display.bounds.x + (display.bounds.width - WIDTH) / 2), y: display.bounds.y, width: WIDTH, height: Math.min(display.bounds.height, value.topInset + 560) };
+  const bounds = { x: Math.round(display.bounds.x + (display.bounds.width - WIDTH) / 2), y: display.bounds.y, width: WIDTH, height: Math.min(display.bounds.height, value.topInset + 690) };
   // A borderless panel may cover the menu bar only through AppKit, like the notch dock.
   if (material) material.setFrame(win.getNativeWindowHandle(), bounds); else win.setBounds(bounds);
   win.webContents.send('placement', value);
@@ -71,7 +73,8 @@ if (locked) app.whenReady().then(() => {
   let last = '', pending: { id: number; since: number } | null = null, moving: ReturnType<typeof setTimeout> | undefined;
   // She follows the cursor to another screen once it has rested there briefly: the renderer
   // sinks her into this island first, answers display-ready, and only then the window moves.
-  const move = () => { clearTimeout(moving); moving = undefined; pending = null; current = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()); place(); };
+  const move = () => { clearTimeout(moving); moving = undefined; pending = null; current = home(); place(); };
+  const leave = () => { win.webContents.send('display-leave'); moving = setTimeout(move, 900); };
   // ⌘ with the cursor in the menu bar row tucks her away on that side of the camera, so the menu bar items
   // and macOS's overflow arrow under her can be clicked; she comes back 3 s after ⌘ is let go.
   // Without a notch she is one pill, and all of her goes.
@@ -93,10 +96,10 @@ if (locked) app.whenReady().then(() => {
       } else if (!down && (tucked.left || tucked.right)) untuck = setTimeout(() => tuck({ left: false, right: false }), 3000);
     }
     const under = screen.getDisplayNearestPoint(point);
-    if (moving) return;
+    if (moving || !follow) return;
     if (!current || under.id === current.id) pending = null;
     else if (pending?.id !== under.id) pending = { id: under.id, since: Date.now() };
-    else if (Date.now() - pending.since > 250) { win.webContents.send('display-leave'); moving = setTimeout(move, 900); }
+    else if (Date.now() - pending.since > 250) leave();
   }, 16);
   win.on('closed', () => { clearInterval(cursor); clearTimeout(moving); clearTimeout(untuck); });
   ipcMain.on('display-ready', event => { if (event.sender === win.webContents && moving) move(); });
@@ -119,34 +122,39 @@ if (locked) app.whenReady().then(() => {
   tray.setTitle('●'); tray.setToolTip(demo ? 'Jarvis 小球 · 演示数据' : 'Jarvis 小球');
   // The renderer owns her skins and expressions and reports them; every item just sends a command back.
   const send = (command: string) => () => win.webContents.send('command', command);
-  type MenuModel = { skins: { key: string; name: string; on: boolean }[]; auto: boolean; layout?: string; homeGlass?: boolean; marks?: string; exprs: { id: string; name: string }[] };
-  const menu = (model: MenuModel) => tray.setContextMenu(Menu.buildFromTemplate([
-    { label: demo ? 'Jarvis 小球 · 演示数据' : 'Jarvis 小球', enabled: false },
-    { label: '打开 Dashboard', click: send('dashboard') },
-    { label: 'Dashboard 布局', submenu: [
-      { label: '围着她（一列）', type: 'radio', checked: model.layout !== 'grid', click: send('layout:around') },
-      { label: '两栏（原来的排法）', type: 'radio', checked: model.layout === 'grid', click: send('layout:grid') },
+  type MenuModel = { skins: { key: string; name: string; on: boolean }[]; auto: boolean; layout?: string; homeGlass?: boolean; marks?: string; follow?: boolean; lang?: string; exprs: { id: string; name: string }[] };
+  // Her menu speaks the panel's language (Settings › General).
+  const menu = (model: MenuModel) => { const t = (en: string, zh: string) => model.lang === 'zh' ? zh : en; tray.setContextMenu(Menu.buildFromTemplate([
+    { label: demo ? t('Jarvis companion · demo data', 'Jarvis 小球 · 演示数据') : t('Jarvis companion', 'Jarvis 小球'), enabled: false },
+    { label: t('Open Dashboard', '打开 Dashboard'), click: send('dashboard') },
+    { label: t('Settings…', '设置…'), click: send('settings') },
+    { label: t('Dashboard layout', 'Dashboard 布局'), submenu: [
+      { label: t('Around her (one column)', '围着她（一列）'), type: 'radio', checked: model.layout !== 'grid', click: send('layout:around') },
+      { label: t('Two columns (the old layout)', '两栏（原来的排法）'), type: 'radio', checked: model.layout === 'grid', click: send('layout:grid') },
     ] },
-    { label: '状态点', submenu: [
-      { label: '星芒', type: 'radio', checked: model.marks !== 'pixel', click: send('marks:spark') },
-      { label: '像素', type: 'radio', checked: model.marks === 'pixel', click: send('marks:pixel') },
+    { label: t('Agent marks', '状态点'), submenu: [
+      { label: t('Spark', '星芒'), type: 'radio', checked: model.marks !== 'pixel', click: send('marks:spark') },
+      { label: t('Pixel', '像素'), type: 'radio', checked: model.marks === 'pixel', click: send('marks:pixel') },
     ] },
     { type: 'separator' },
-    { label: '皮肤', enabled: model.skins.length > 0, submenu: [
+    { label: t('Skin', '皮肤'), enabled: model.skins.length > 0, submenu: [
       ...model.skins.map(skin => ({ label: String(skin.name), type: 'radio' as const, checked: !!skin.on, click: send(`skin:${skin.key}`) })),
       { type: 'separator' },
-      { label: '自己换装', type: 'checkbox', checked: !!model.auto, click: send('auto') },
-      { label: '现在换一套', click: send('outing') },
+      { label: t('Change outfit by herself', '自己换装'), type: 'checkbox', checked: !!model.auto, click: send('auto') },
+      { label: t('Change now', '现在换一套'), click: send('outing') },
       { type: 'separator' },
-      { label: '在家露出玻璃球', type: 'checkbox', checked: !!model.homeGlass, click: send('homeGlass') },
+      { label: t('Show the glass ball at home', '在家露出玻璃球'), type: 'checkbox', checked: !!model.homeGlass, click: send('homeGlass') },
     ] },
-    { label: '看表情', enabled: model.exprs.length > 0, submenu: model.exprs.map(x => ({ label: `${x.id} ${x.name}`, click: send(`expr:${x.id}`) })) },
+    { label: t('Expressions', '看表情'), enabled: model.exprs.length > 0, submenu: model.exprs.map(x => ({ label: `${x.id} ${x.name}`, click: send(`expr:${x.id}`) })) },
     { type: 'separator' },
-    { label: '退出小球', click: () => app.quit() },
-  ]));
+    { label: t('Quit the companion', '退出小球'), click: () => app.quit() },
+  ])); };
   menu({ skins: [], auto: false, exprs: [] });
   ipcMain.on('companion-menu', (event, model: MenuModel) => {
-    if (event.sender === win.webContents && Array.isArray(model?.skins) && Array.isArray(model?.exprs)) menu(model);
+    if (event.sender !== win.webContents || !Array.isArray(model?.skins) || !Array.isArray(model?.exprs)) return;
+    menu(model);
+    // Pinned to the main screen while she is on another one: she sinks here and comes up there.
+    if (typeof model.follow === 'boolean' && model.follow !== follow) { follow = model.follow; if (!follow && current?.id !== screen.getPrimaryDisplay().id && !moving) leave(); }
   });
 });
 app.on('window-all-closed', () => {});

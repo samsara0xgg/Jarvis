@@ -136,6 +136,12 @@ work_state:
 daily_report:
   preset: gpt6-sol
 
+# ADR 0051 — 小球首页：日程和待办直接读 Microsoft，邮件读 Gmail（~/.jarvis/env 里的
+# GMAIL_ADDRESS + GMAIL_APP_PASSWORD），都不经过模型；天气来自 Open-Meteo（不用 key），
+# 按这里的经纬度（Saanich）。删掉 weather 就不显示天气。
+home:
+  weather: {latitude: 48.48, longitude: -123.38}
+
 # ADR 0037 — 项目清单，Allen 自己维护。Resonance 的「项目」模块只把 TimeSink
 # 里的活动归到这些 id（或「不属于任何项目」），用的是 work_state.preset。
 # id：小写字母、数字、连字符，是项目唯一的身份；name：显示名；
@@ -305,6 +311,14 @@ realtime:
   # sounddevice.  Null means the CoreAudio system default output.  An
   # unresolvable name fails the open closed rather than falling back.
   output_device: null
+  # Input device name the single audio ingress opens (ADR 0052), e.g.
+  # "reSpeaker XVF3800 4-Mic Array".  Null means the system default input and
+  # follows it when it changes; a name that does not resolve fails the open.
+  # The Settings page writes its choice to ~/.jarvis/settings.json, which wins.
+  input_device: null
+  # Her voice's playback level, 0.3-1, applied in our player (ADR 0052);
+  # MiniMax's own vol below 1 does not lower the audio.  Null means 1.
+  playback_volume: null
   # MiniMax `voice_setting.vol` on every TTS request; the provider documents
   # the range as (0, 10] and we narrow it to an integer.  Null means the
   # default of 1.  Measured 2026-09-07 on the same sentences: RMS scales

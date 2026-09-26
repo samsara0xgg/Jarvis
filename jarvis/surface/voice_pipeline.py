@@ -115,6 +115,7 @@ class VoicePipeline:
         utterance_id: str | None = None,
         endpoint_reason: str | None = None,
         transcript_prefix: str = "",
+        before_emit: Callable[[], None] | None = None,
     ) -> Event:
         """Execute one voice turn end-to-end. Returns the emitted Event row.
 
@@ -147,6 +148,10 @@ class VoicePipeline:
             transcript_prefix: Literal text prepended to the normalized
                 transcript before emit (the Shift+Return memo path sends
                 ``/note `` so Tier 0 routes it without the LLM).
+            before_emit: Called once the transcript is accepted, before
+                ``utterance.received`` is written: conversation mode drops
+                the unspoken answer to Allen's previous sentence there, so
+                the new turn can never see it (ADR 0053).
 
         Raises:
             VoiceInputBusyError: VOICE_INPUT_LOCK contention (PTT path: 503).
@@ -212,6 +217,9 @@ class VoicePipeline:
                 sample_rate_hz=self._sample_rate_hz,
                 artifacts_dir=self._artifacts_dir,
             )
+
+            if before_emit is not None:
+                before_emit()
 
             # 5. Emit utterance.received via fresh connection (worker thread).
             payload: dict[str, object] = {

@@ -11,13 +11,13 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const dir = process.env.COMPANION_EVIDENCE_DIR ?? path.join(root, 'evidence/companion');
 mkdirSync(dir, { recursive: true });
-const port = 5191;
+const port = Number(process.env.COMPANION_PORT ?? 5191); // another checkout may be previewing on the default
 const server = spawn(path.join(root, 'node_modules/.bin/vite'), ['preview', '--port', String(port), '--strictPort'], { cwd: root, stdio: 'ignore' });
 const checks = [], check = (name, pass) => { assert.ok(pass, name); checks.push(name); };
 const browser = await chromium.launch({ headless: true, channel: 'chrome' });
 try {
   for (let i = 0; i < 50; i++) { try { await fetch(`http://127.0.0.1:${port}/`); break; } catch { await new Promise(r => setTimeout(r, 100)); } }
-  const context = await browser.newContext({ viewport: { width: 640, height: 592 }, deviceScaleFactor: 2 });
+  const context = await browser.newContext({ viewport: { width: 640, height: 722 }, deviceScaleFactor: 2 });
   const page = await context.newPage();
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
@@ -152,10 +152,10 @@ try {
   await page.waitForTimeout(400);
   check('06 another double click on her closes it, and neither double click starts voice', await page.locator('.companion-strip.is-open').count() === 0);
 
-  // 09: the Dashboard around her. Five home rows fit without scrolling; each row grows into its page
+  // 09: the Dashboard around her. The home's blocks in their default order; each row grows into its page
   // at the same panel height, her face follows the page, and ‹ or Esc goes back one level.
   const panel = page.locator('.companion-dashboard');
-  const panelShot = name => shot(name, { x: 150, y: 0, width: 340, height: 592 });
+  const panelShot = name => shot(name, { x: 150, y: 0, width: 340, height: 722 });
   const openRow = name => page.locator(`.ad [data-row="${name}"]`).evaluate(el => (el.matches('button') ? el : el.querySelector('button')).click());
   const title = () => page.locator('.ad .pg-head h3').textContent();
   const settle = () => page.waitForTimeout(700);
@@ -165,8 +165,14 @@ try {
   await move(320, 200);
   await page.waitForTimeout(900);
   const homeHeight = (await panel.boundingBox()).height;
-  check('09 home has her words, Now, Agents, Usage and the Plugins | Projects tiles, all without scrolling',
-    await page.locator('.ad .overview > .row, .ad .overview .tile').count() === 6 && await page.locator('.ad .overview').evaluate(e => e.scrollHeight <= e.clientHeight));
+  const blocks = () => page.locator('.ad .home-inner > [data-block]').evaluateAll(els => els.map(e => e.dataset.block).join());
+  check(`09 home: For you, the brief, Today, Mail, Agents, Now, Usage and Plugins | Projects in order, no conversation before you talk (${await blocks()})`,
+    await blocks() === 'foryou,brief,today,mail,agents,now,usage,tiles');
+  check('09 the panel grows with its blocks to 600 px, and the rest scrolls inside it',
+    await page.locator('.ad .view').evaluate(e => Math.round(e.getBoundingClientRect().height)) === 600 && await page.locator('.ad .home-list').evaluate(e => e.scrollHeight > e.clientHeight + 40));
+  check('09 Today has the weather, the next event and the to-dos, with no heads-up lines and no Duolingo',
+    /°/.test(await page.locator('.ad .r-today .wx').textContent()) && await page.locator('.ad .r-today .ev').count() >= 1 && await page.locator('.ad .r-today .td').count() === 2
+    && await page.locator('.ad .hu, .ad .duo').count() === 0);
   check('09 usage on the home page is four rings', await page.locator('.ad .r-usage .dial').count() === 4);
   await panelShot('09-home');
   for (const [name, heading, want] of [['conversation', 'Conversation', ['39', '39b', '39c']], ['now', 'Right now', '37'], ['agents', 'Agents', null], ['usage', 'Usage', null], ['plugins', 'Plugins', null], ['projects', 'Projects', '40']]) {
@@ -192,7 +198,7 @@ try {
       document.querySelector('.ad .pg-back').click();
       let worst = 0; const t0 = performance.now();
       const tick = () => {
-        const words = body.isConnected ? seen(body) : 0, rows = seen(home) * Math.max(...[...home.children].map(seen));
+        const words = body.isConnected ? seen(body) : 0, rows = seen(home) * Math.max(...[...home.querySelectorAll(':scope > .corner, .home-inner > *')].map(seen));
         worst = Math.max(worst, Math.min(words, rows));
         if (performance.now() - t0 < 500) requestAnimationFrame(tick); else done(Math.round(worst * 100) / 100);
       };
@@ -262,6 +268,102 @@ try {
   await move(600, 560);
   await page.waitForFunction(() => !document.querySelector('.companion-dashboard.is-open'), null, { timeout: 3000 });
   check('09 closing the panel returns it to the home page', await page.locator('.ad .page').count() === 0);
+  await waitPlace('home');
+
+  // 11: the home you arrange. The corner beside her, muting Jarvis, Settings, the language, holding a block
+  // to arrange the home, dragging, hiding, the pop-ups' ×, and putting it all back.
+  await move(320, 14);
+  await page.locator('.companion-dashboard.is-open').waitFor();
+  await move(320, 200);
+  await page.waitForTimeout(900);
+  const corner = page.locator('.ad .corner .cb');
+  check('11 beside her: the time, then Conversation, Mute and Settings', await corner.count() === 3 && /\d:\d\d/.test(await page.locator('.ad .clock').textContent()));
+  check('11 the conversation you just had sits on top, your words over her answer',
+    (await blocks()).startsWith('talk,') && (await page.locator('.ad .r-talk .you').textContent()).endsWith('Move the voice test to five'));
+  await page.evaluate(() => { window.__cues = []; window.addEventListener('jarvis:feedback', e => window.__cues.push(e.detail.cue)); });
+  await page.locator('.ad .corner [data-row="settings"]').click();
+  await settle();
+  const tile = name => page.locator('.ad .st-q', { hasText: name });
+  check('11 the gear opens Settings: Mic, Voice, Hands-free, then ten categories', await title() === 'Settings' && await page.locator('.ad .st-q').count() === 3 && await page.locator('.ad .st-cat').count() === 10);
+  await tile('Hands-free').click(); await page.waitForTimeout(250); await tile('Hands-free').click(); await page.waitForTimeout(400);
+  const loud = await page.evaluate(() => window.__cues.splice(0));
+  check(`11 unmuted, hands-free on and off plays her cues (${loud.join()})`, loud.join() === 'voice-enter,voice-exit');
+  await page.locator('.ad .pg-back').click();
+  await page.waitForFunction(() => !document.querySelector('.ad .page'));
+  await corner.nth(1).click();
+  check('11 the corner mute mutes Jarvis and says so', await page.locator('.ad .cb.is-muted[aria-pressed="true"]').count() === 1
+    && (await page.locator('.ad .toast').textContent()).startsWith('Jarvis is muted'));
+  await page.locator('.ad .corner [data-row="settings"]').click();
+  await settle();
+  check('11 Settings shows the same switch: Voice muted', (await tile('Voice').textContent()).includes('Muted'));
+  await tile('Hands-free').click(); await page.waitForTimeout(250); await tile('Hands-free').click(); await page.waitForTimeout(400);
+  const quiet = await page.evaluate(() => window.__cues.splice(0));
+  check(`11 muted, the same switches make no sound (${quiet.join() || 'none'})`, quiet.length === 0);
+  await tile('Voice').click(); await page.waitForTimeout(400);
+  check('11 unmuting brings the sound back', (await page.evaluate(() => window.__cues.splice(0))).join() === 'speaker-on' && await page.locator('.ad .cb.is-muted').count() === 0);
+  await page.locator('.ad [data-cat="general"]').click();
+  await page.waitForTimeout(500);
+  await page.locator('.ad .st-seg button', { hasText: '中文' }).first().click();
+  check('11 the interface language switches the panel at once', await title() === '通用');
+  await page.locator('.ad .pg-back').click(); await page.waitForTimeout(450);
+  check('11 …Settings too', await title() === '设置' && (await page.locator('.ad .st-cat b').allTextContents()).includes('隐私与数据'));
+  await page.locator('.ad .pg-back').click();
+  await page.waitForFunction(() => !document.querySelector('.ad .page'));
+  check('11 …and the home', await page.locator('.ad [data-block="today"] .label').textContent() === '今天' && await page.evaluate(() => window.__state.menu?.lang === 'zh'));
+  await panelShot('11-home-zh');
+  await page.locator('.ad .corner [data-row="settings"]').click(); await settle();
+  await page.locator('.ad [data-cat="general"]').click(); await page.waitForTimeout(500);
+  await page.locator('.ad .st-seg button', { hasText: 'English' }).first().click();
+  await page.locator('.ad .pg-back').click(); await page.waitForTimeout(450);
+  await page.locator('.ad .pg-back').click();
+  await page.waitForFunction(() => !document.querySelector('.ad .page'));
+
+  // Hold a block past the hold time: the home opens for arranging, and the release clicks nothing.
+  const held10 = await page.locator('.ad [data-block="agents"]').boundingBox();
+  await page.mouse.move(held10.x + 150, held10.y + 30);
+  await page.mouse.down(); await page.waitForTimeout(750); await page.mouse.up();
+  await settle();
+  check('11 holding a block opens Arrange the home, and letting go opens nothing else', await title() === 'Arrange the home');
+  const arranged = () => page.locator('.ad .ar-body .ar-list').first().locator('.ar-row').evaluateAll(els => els.map(e => e.dataset.block).join());
+  await page.locator('.ad .ar-row[data-block="now"] .ar-b').click();
+  check('11 − hides a block that is always there, into Hidden', !(await arranged()).includes('now') && await page.locator('.ad .ar-row.is-off[data-block="now"] .ar-b.is-add').count() === 1);
+  await page.locator('.ad .ar-row[data-block="mail"] .sw').click();
+  check('11 a pop-up has a switch instead', await page.locator('.ad .ar-row[data-block="mail"] .sw').getAttribute('aria-checked') === 'false');
+  await page.locator('.ad [data-grip="agents"]').focus();
+  await page.keyboard.press('Alt+ArrowUp'); await page.keyboard.press('Alt+ArrowUp');
+  check(`11 Alt + ↑ moves a block up (${await arranged()})`, await arranged() === 'talk,foryou,brief,agents,today,mail,usage,tiles');
+  const grip = await page.locator('.ad [data-grip="tiles"]').boundingBox(), step = (await page.locator('.ad .ar-row[data-block="tiles"]').boundingBox()).height;
+  await page.mouse.move(grip.x + grip.width / 2, grip.y + grip.height / 2);
+  await page.mouse.down();
+  for (let i = 1; i <= 8; i++) { await page.mouse.move(grip.x + grip.width / 2, grip.y + grip.height / 2 - i * step * 2 / 8); await page.waitForTimeout(20); }
+  await panelShot('11-arrange-drag');
+  await page.mouse.up(); await page.waitForTimeout(300);
+  check(`11 dragging the dots moves a block two rows up (${await arranged()})`, await arranged() === 'talk,foryou,brief,agents,today,tiles,mail,usage');
+  await panelShot('11-arrange');
+  await page.locator('.ad .pg-back').click();
+  await page.waitForFunction(() => !document.querySelector('.ad .page'));
+  check(`11 the home follows: hidden and switched-off blocks gone, the rest in the new order (${await blocks()})`, await blocks() === 'talk,foryou,brief,agents,today,tiles,usage');
+
+  // A pop-up closes with ×; undo brings it back; the always-there blocks have no ×.
+  check('11 only pop-ups have a ×', await page.locator('.ad [data-block] > .mx').count() === 3 && await page.locator('.ad [data-block="today"] > .mx, .ad [data-block="agents"] > .mx').count() === 0);
+  await page.locator('.ad [data-block="brief"]').hover();
+  await page.locator('.ad [data-block="brief"] > .mx').click();
+  await page.waitForTimeout(450);
+  check('11 × closes the brief and offers undo', !(await blocks()).includes('brief') && (await page.locator('.ad .toast.is-on').textContent()).includes('Undo'));
+  await page.locator('.ad .toast button').click(); await page.waitForTimeout(300);
+  check('11 undo brings it back', (await blocks()).includes('brief'));
+  const fits = await page.evaluate(() => { const v = document.querySelector('.ad .view').getBoundingClientRect().height, h = 30 + document.querySelector('.ad .home-inner').getBoundingClientRect().height;
+    return [Math.round(v), Math.round(Math.min(600, Math.max(466, h)))]; });
+  check(`11 the panel is as tall as its blocks, between 466 and 600 px (${fits.join(' = ')})`, fits[0] === fits[1]);
+  await page.locator('.ad .corner [data-row="settings"]').click(); await settle();
+  await page.locator('.ad [data-cat="home"]').click(); await page.waitForTimeout(500);
+  await page.locator('.ad .st[data-item="reset"] button').click(); await page.waitForTimeout(300);
+  await page.locator('.ad .pg-back').click(); await page.waitForTimeout(450);
+  await page.locator('.ad .pg-back').click();
+  await page.waitForFunction(() => !document.querySelector('.ad .page'));
+  check(`11 Settings › Home › Reset puts the home back (${await blocks()})`, await blocks() === 'talk,foryou,brief,today,mail,agents,now,usage,tiles');
+  await move(600, 560);
+  await page.waitForFunction(() => !document.querySelector('.companion-dashboard.is-open'), null, { timeout: 3000 });
   await waitPlace('home');
 
   // 08: skins. She starts in deep-space glass; holding her past a poke changes her into the next skin,

@@ -31,7 +31,7 @@ declare global { interface Window { jarvis?: {
   onDisplayLeave: (cb: () => void) => () => void;
   displayReady: () => void;
   onTuck?: (cb: (tucked: { left: boolean; right: boolean }) => void) => () => void;
-  companionMenu: (menu: { skins: { key: string; name: string; on: boolean }[]; auto: boolean; layout: string; homeGlass: boolean; marks: string; exprs: { id: string; name: string }[] }) => void;
+  companionMenu: (menu: { skins: { key: string; name: string; on: boolean }[]; auto: boolean; layout: string; homeGlass: boolean; marks: string; follow: boolean; lang: string; exprs: { id: string; name: string }[] }) => void;
   drag: (phase: 'start' | 'move' | 'end', point?: { x: number; y: number }) => void;
   copy: (text: string) => Promise<boolean>;
   openCodex: (threadId: string) => Promise<boolean>;

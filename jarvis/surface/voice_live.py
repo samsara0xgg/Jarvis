@@ -359,6 +359,7 @@ class LiveVoice:
         mic_muted: Callable[[], bool],
         speech_muted: Callable[[], bool],
         output_device: object | None = None,
+        volume: float = 1.0,
         on_owns_speech: Callable[[bool], None] | None = None,
         delegate: Callable[[str, str, str, str], str] | None = None,
         record: Callable[[str, str, str], None] | None = None,
@@ -389,6 +390,7 @@ class LiveVoice:
         self._mic_muted = mic_muted
         self._speech_muted = speech_muted
         self._output_device = output_device
+        self._volume = volume
         self._on_owns_speech = on_owns_speech
         self._delegate = delegate
         self._record = record
@@ -577,6 +579,7 @@ class LiveVoice:
             ring_seconds=cfg.player_ring_seconds,
             device=self._output_device,
             lazy_open=True,
+            volume=self._volume,
         )
         subscription: voice_audio.AudioSubscription | None = None
         ws: Any = None

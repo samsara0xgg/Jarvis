@@ -667,6 +667,13 @@ class StreamingTTSPipeline:
         self._responses: dict[str, _ResponseBuffer] = {}
         self._after_drain: deque[_ResponseBuffer] = deque()
         self._active: _ActiveResponse | None = None
+        # ADR 0053: while Allen's words are coming in no answer starts; it
+        # parks here. A turn that ever started playing is never dropped.
+        self._held = False
+        self._parked: deque[_ResponseBuffer] = deque()
+        # ponytail: only grows, one short id per spoken turn; trim it if a
+        # daemon ever runs for months.
+        self._started_turns: set[str] = set()
         self._thread = threading.Thread(
             target=self._thread_main,
             name="jarvis-media-owner",
@@ -787,6 +794,37 @@ class StreamingTTSPipeline:
             # The actor took the request; whether the tombstone landed is
             # exactly what this caller cannot know.
             return "uncertain"
+
+    def hold_output(self, *, held: bool) -> None:
+        """Hold or release answer starts while Allen is talking (ADR 0053).
+
+        Fire and forget from the capture threads; the actor applies the holds
+        in call order. An answer already speaking is barge-in's, not the hold's.
+        """
+        loop = self._loop
+        if loop is None or self._closed.is_set():
+            return
+        with contextlib.suppress(RuntimeError):
+            asyncio.run_coroutine_threadsafe(self._hold_output_owned(held=held), loop)
+
+    def drop_unspoken(self, turn_ids: frozenset[str]) -> frozenset[str]:
+        """Drop the answers of ``turn_ids`` that never reached the speaker (ADR 0053).
+
+        Returns the turns dropped: those of ``turn_ids`` none of whose answers
+        ever started playing. Their runs are the caller's to cancel. A closed
+        or unresponsive actor drops nothing.
+        """
+        loop = self._loop
+        if loop is None or self._closed.is_set() or not turn_ids:
+            return frozenset()
+        try:
+            future = asyncio.run_coroutine_threadsafe(self._drop_unspoken_owned(turn_ids), loop)
+        except RuntimeError:
+            return frozenset()
+        try:
+            return future.result(timeout=self._config.shutdown_timeout_s)
+        except (TimeoutError, asyncio.CancelledError):
+            return frozenset()
 
     def request_close(self) -> None:
         """Stop admission and publish shutdown outside the normal command lane."""
@@ -1490,6 +1528,24 @@ class StreamingTTSPipeline:
         self._purge_after_drain()
         return "applied"
 
+    async def _hold_output_owned(self, *, held: bool) -> None:
+        self._held = held
+        if held:
+            return
+        parked, self._parked = self._parked, deque()
+        for response in parked:
+            await self._schedule_response(response)
+
+    async def _drop_unspoken_owned(self, turn_ids: frozenset[str]) -> frozenset[str]:
+        dropped = turn_ids - self._started_turns
+        for response in list(self._responses.values()):
+            if response.turn_id in dropped:
+                self._unschedule(response)
+                self._responses.pop(response.response_id, None)
+                self._registry.terminalize(response.response_id)
+        record_realtime_trace("media_unspoken_dropped", turns=",".join(sorted(dropped)))
+        return dropped
+
     async def _resume_after_wake_owned(
         self,
         *,
@@ -2069,6 +2125,8 @@ class StreamingTTSPipeline:
         response.scheduled = False
         if response in self._after_drain:
             self._after_drain.remove(response)
+        if response in self._parked:
+            self._parked.remove(response)
 
     async def _schedule_response(  # noqa: C901, PLR0911 - explicit lane disposition table
         self,
@@ -2178,6 +2236,12 @@ class StreamingTTSPipeline:
             self._registry.terminalize(response.response_id)
             self._responses.pop(response.response_id, None)
             return
+        if self._held:
+            # ADR 0053: Allen is talking; the answer starts when he stops.
+            self._parked.append(response)
+            self._output_active.clear()
+            return
+        self._started_turns.add(response.turn_id)
         result = self._player.activate_generation(
             session_id=self._registry.boot_id,
             response_id=response.response_id,
