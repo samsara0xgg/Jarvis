@@ -629,6 +629,7 @@ memory:
 # heard by the voice path's SenseVoice, polished by this preset, never stored.
 dictation:
   polish_preset: gpt54-mini
+  vocab_path: ~/.typlus/vocab.yaml   # Typlus's word list, read on every dictation; absent = none
 
 # The running conversation and its compaction (ADR-0019). Every record stays
 # in the prompt word for word until a compaction; a compaction runs only on

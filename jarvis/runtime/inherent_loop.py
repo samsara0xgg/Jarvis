@@ -81,13 +81,13 @@ import threading
 import time
 import uuid
 from collections.abc import Mapping
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Literal
 
 import uvicorn
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from pathlib import Path
 
     from jarvis.deployment.sleep_wake import PowerObserver
     from jarvis.runtime.home import Home
@@ -5080,10 +5080,11 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         # ADR 0058: dictation hears through the live mic and the voice path's ears.
         ingress = duplex_voice_session.ingress if duplex_voice_session is not None else None
         if ingress is not None and voice_pipe is not None:
+            dictation_config = runtime.config.get("dictation") or {}
             try:
                 client = polish_client(
                     runtime.config.get("llm") or {},
-                    str((runtime.config.get("dictation") or {}).get("polish_preset", "")),
+                    str(dictation_config.get("polish_preset", "")),
                 )
             except ValueError:
                 LOGGER.exception("dictation off: its polish preset is not configured")
@@ -5092,6 +5093,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                     ingress=ingress,
                     transcribe=voice_pipe.transcribe,
                     client=client,
+                    vocab_path=Path(str(dictation_config.get("vocab_path", ""))),
                     event_log_path=runtime.runtime_paths.event_log,
                     pricing_table=load_pricing_table(repo_root() / "data" / "pricing.json"),
                 )

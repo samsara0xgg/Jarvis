@@ -75,5 +75,6 @@ Nothing of a dictation is written to the event log or memory.db.
   focused text box, beside the mouse, and the words are copied.
 - The companion process needs Accessibility; until macOS grants it, every
   dictation ends as copied text.
-- Names SenseVoice does not know ("Typlus", "星核") come back misheard;
-  Typlus's vocabulary list does not reach this tool.
+- Names SenseVoice does not know ("Typlus", "星核") come back misheard,
+  and only the polish can mend them, with the word list read from Typlus's
+  own folder; if Typlus moves that file, the tool loses the list.
