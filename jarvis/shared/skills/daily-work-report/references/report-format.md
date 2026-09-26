@@ -1,89 +1,113 @@
-# 报告格式
+# Report format
 
-## `report_daily_work` 各字段
+## The fields of `report_daily_work`
 
-草稿没有摘要字段：核心摘要由运行时在核查完每个完成声称之后生成。
+The draft has no summary field: the summary is written by the runtime after it has
+checked every claim of completion.
 
-- `items`：按工作事项归并，同一件事的多次活动合成一项。每项：
-  - `title`：事项名（不超过 60 字）。
-  - `activity`：做了什么、产出了什么、进展到哪一步；写事实，不写评价。每个关键事实
-    带上它的来源写法，见下。正文里写到的提交号必须是材料里当天的提交，并出现在这条的
-    `refs` 里；运行时会核对，编号不对或没引用都会在不确定性里点名。
-  - `progress`：这一项的进展，按部分分开，每条一个部分：
-    - `part`：部分名，如 代码、测试、部署、合并、申请；事项只有一个部分时为 null。
-    - `status`：`browsed` 浏览 / `discussed` 讨论 / `attempted` 尝试或进行中 /
-      `completed` 完成。`completed` 是声称：这个部分的产物已经存在——当天的提交、
-      发出的申请、Allen 本人说做完了、页面显示已提交——并且这条的 `refs` 引用了支持它的
-      那条材料。
-    - `refs`：支撑这个部分的材料键。
+- `items`: merged by work item; several activities on one thing make one item. Each has:
+  - `title`: the item's name (at most 60 characters).
+  - `activity`: what was done, what was produced, how far it got; facts, not judgments.
+    Every key fact carries how its source is named, see below. Any commit number written
+    in the text must be one of that day's commits in the material and must appear in this
+    item's `refs`; the runtime checks, and a wrong or uncited number is named under
+    uncertainty.
+  - `progress`: the item's progress, split by part, one part per entry:
+    - `part`: the part's name, such as code, tests, deployment, merge, application; null
+      when the item has only one part.
+    - `status`: `browsed` / `discussed` / `attempted` (tried or in progress) /
+      `completed`. `completed` is a claim: this part's product exists — a commit of that
+      day, a sent application, the user saying it is done, a page showing it submitted —
+      and this entry's `refs` cite the material that supports it.
+    - `refs`: the material keys behind this part.
 
-    一件事同时有开发、测试、部署时分成几条，各自定状态和引用。提交只证明对应改动已提交，
-    不证明测试、部署、合并；部署、上线、重启是否发生只有 Allen 本人的话能证明。
-    不要因为部署没证据就把有提交的代码也写成 `attempted`，也不要用一个 `completed`
-    盖住没证据的部署。
-- `decisions`：重要决定和方案变化。`rationale` 只在材料里有依据时填，否则为 null。
-- `open_items`：未完成事项、阻碍、待确认的问题。
-- `user_next_steps`：Allen 明确表达过的下一步，必须引用他本人的记录键。
-- `suggestions`：你根据材料提出的建议，和 Allen 的承诺分开。
-- `uncertainties`：不确定之处、证据冲突、材料缺口。
+    When one thing has development, tests and deployment, split it into entries, each
+    with its own status and citations. A commit proves only that its change was
+    committed, not tests, a deployment or a merge; only the user's own words can prove a
+    deployment, release or restart happened. Do not write committed code as `attempted`
+    because the deployment lacks evidence, and do not let one `completed` cover a
+    deployment without evidence.
+- `decisions`: important decisions and changes of plan. `rationale` only when the
+  material gives grounds, otherwise null.
+- `open_items`: unfinished items, blockers, questions to confirm.
+- `user_next_steps`: next steps the user stated outright; must cite the user's own
+  record keys.
+- `suggestions`: your own suggestions from the material, kept apart from the user's
+  commitments.
+- `uncertainties`: what is uncertain, conflicting evidence, gaps in the material.
 
-## 正文里的来源写法
+## Naming sources in the text
 
-正文陈述一个事实时，把来源写进句子，让只读正文的人也能分辨：
+When the text states a fact, put its source in the sentence, so someone reading only the
+text can tell:
 
-- 提交：`提交 e17fbd2（当天，已在 main）` / `提交 53a8e97（当天，未进 main）`。
-- Allen 的原话：`Allen 说……（r3）`。
-- 代理（Codex、Claude 等）在终端或会话里的自述：`据 Codex 自述，979 项测试通过（未核）`。
-- 屏幕上看到的：`屏幕显示……`。
+- A commit: `commit e17fbd2 (that day, on main)` / `commit 53a8e97 (that day, not on
+  main)`.
+- The user's own words: `the user said … (r3)`.
+- An agent's (Codex, Claude …) own account in a terminal or session: `according to
+  Codex, 979 tests passed (unchecked)`.
+- What was seen on screen: `the screen showed …`.
 
-## 运行时对 `completed` 的核查
+## How the runtime checks `completed`
 
-每个标为 `completed` 的部分，运行时先按程序规则判：没有引用材料里的键、只引用当天才看到的
-旧提交、引用的是 Allen 的提问或请求、用提交当部署/上线/重启的证据，都是"引用无效"；
-"合并"类部分引用的提交全部已在 main 由仓库直接证明；只引用 Codex 会话的部分是
-"据代理自述，尚未核实"。其余的部分逐事项交给一次独立的核查调用，核查员只看这个事项、
-它声称的部分和引用的原文（提交内容、记录原文、截屏全文、会话相关轮次），判 supported /
-partial / unsupported，并区分屏幕文字是第三方页面还是代理自述。保存的状态文字来自这个
-核查，不是你填的 `status`：
+For every part marked `completed`, the runtime first rules by program: citing no key from
+the material, citing only an old commit first seen that day, citing the user's question
+or request, or using a commit as evidence of a deployment / release / restart are all
+"citation invalid"; a "merge" part whose cited commits are all on main is proven by the
+repository itself; a part citing only Codex sessions is "by the agent's own account, not
+yet verified". Every other part goes, item by item, to an independent check call: the
+checker sees only this item, the parts it claims and the cited originals (commit content,
+record text, full capture text, the session's relevant turns), rules supported / partial
+/ unsupported, and tells a third-party page from an agent's own account on screen. The
+saved status text comes from this check, not from the `status` you filled in:
 
-- 已提交（提交 …，已在 main / 未进 main）· 用户确认完成（rN）· 页面显示已完成（sN）
-- 据代理自述已完成，尚未核实（cN / sN）
-- 部分完成：<原文实际显示的范围>
-- 声称完成，引用不支持（原文显示：…）· 声称完成，引用无效：<原因>
-- 声称完成，未核实（核查预算耗尽 / 核查失败）
+- committed (commits …, on main / not on main) · the user confirmed it done (rN) · a page
+  shows it done (sN)
+- done by the agent's own account, not yet verified (cN / sN)
+- partly done: <the scope the originals actually show>
+- claimed done, the citation does not support it (the original shows: …) · claimed done,
+  citation invalid: <reason>
+- claimed done, not verified (check budget used up / check failed)
 
-`browsed` / `discussed` / `attempted` 不核实，照写为 浏览 / 讨论 / 尝试/进行中。
+`browsed` / `discussed` / `attempted` are not checked and are written as browsed /
+discussed / attempted or in progress.
 
-## 保存的报告版式（由运行时组装）
+## The saved report (assembled by the runtime)
+
+Headings and the runtime's fixed wording follow the user's language setting:
 
 ```
-# 工作日报 <日期>（<时区>）
-生成时间、证据窗口、模型
+# Work report <date> (<zone>)
+generation time, evidence window, model
 
-## 核心摘要
-<一句主线，核查后由模型写，含"完成/部署/合并/通过"类断言时由程序改写>
-有实证：1 <事项>（已提交（提交 e17fbd2，已在 main）；用户确认完成（r3））、…
-声称完成但未核实或不成立：2 <事项>（测试：据代理自述已完成，尚未核实（c4））、…
-另有进行中 N 项、讨论 N 项、浏览 N 项，见工作事项。
-## 工作事项
-### 1. <事项> — 已提交（提交 e17fbd2，已在 main）；用户确认完成（r3）
-<活动与进展>
-引用：<来源引用>
-### 2. <事项> — 代码：已提交（提交 53a8e97，未进 main）；测试：据代理自述已完成，尚未核实（c4）；合并：声称完成，引用无效：提交 53a8e97 未进 main
-## 重要决定与方案变化
-## 未完成、阻碍与待确认
-## 用户明确表达的下一步
-## 建议（模型提出，非用户承诺）
-## 数据覆盖与不确定性
-## 证据引用
+## Summary
+<one main-line sentence, written by the model after the checks; rewritten by the program when it asserts done / deployed / merged / passed>
+Evidenced: 1 <item> (committed (commits e17fbd2, on main); the user confirmed it done (r3)); …
+Claimed done but unverified or not upheld: 2 <item> (tests: done by the agent's own account, not yet verified (c4)); …
+Also N in progress, N discussed, N browsed; see Work items.
+## Work items
+### 1. <item> — committed (commits e17fbd2, on main); the user confirmed it done (r3)
+<activity and progress>
+Sources: <citations>
+### 2. <item> — code: committed (commits 53a8e97, not on main); tests: done by the agent's own account, not yet verified (c4); merge: claimed done, citation invalid: commits 53a8e97 are not on main
+## Decisions and changes of plan
+## Unfinished, blocked and to confirm
+## Next steps the user stated
+## Suggestions (from the model, not the user's commitments)
+## Data coverage and uncertainty
+## Sources
 ```
 
-核心摘要里只列有实证的事项和声称完成但未核实或不成立的事项，混合事项列一次，标题后面跟每个
-部分的状态文字；其余按最高状态计数。声称完成但没有实证的部分，运行时还会在"数据覆盖与
-不确定性"里按事项编号和部分名点名。
+The summary lists only the evidenced items and the items claimed done but unverified or
+not upheld; a mixed item is listed once, its title followed by each part's status text;
+the rest are counted by their highest status. Parts claimed done without evidence are also
+named, by item number and part name, under data coverage and uncertainty.
 
-`user_next_steps` 里引用不到 Allen 原话的条目会从该节移除，并在不确定性里原文点名。
+Entries of `user_next_steps` that cite none of the user's own words are removed from that
+section and quoted under uncertainty.
 
-引用按编号写在正文（`引用：#3, #7`），完整来源在报告末尾的"证据引用"里逐个列出。
+Citations are numbers in the text (`Sources: #3, #7`); the full sources are listed one by
+one at the end of the report.
 
-报告超出正文预算时返回失败并保留旧版本，不截断正文或证据索引后保存。
+A report over the text budget fails and the old version stays; the text and the source
+index are never cut to save it.

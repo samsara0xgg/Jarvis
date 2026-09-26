@@ -1,4 +1,4 @@
-# ADR 0054 — Gmail comes through Google's Workspace MCP server
+# ADR 0055 — Gmail comes through Google's Workspace MCP server
 
 **Status:** Accepted
 **Date:** 2026-09-26

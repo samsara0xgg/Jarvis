@@ -1049,6 +1049,11 @@ class AudioStreamPlayer:
         """Alias for :meth:`stop` — matches ADR-0005 §4.2 surface."""
         return self.stop(timeout_s=timeout_s)
 
+    def set_device(self, device: Any | None) -> None:  # noqa: ANN401 - sd.OutputStream's device
+        """Choose the speaker the next :meth:`start` opens (ADR 0054); ``None`` is the default."""
+        with self._lifecycle_lock:
+            self._device = device
+
     def restart(self, *, timeout_s: float | None = None) -> PlayerStartResult:
         """Close + reopen — used by watchdog when device change detected."""
         LOGGER.warning("AudioStreamPlayer restart (likely device change)")

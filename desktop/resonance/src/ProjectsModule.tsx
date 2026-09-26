@@ -102,7 +102,7 @@ export function ProjectsSummary({ view, missing, refreshing, notice }: { view: P
   const top = (view?.projects ?? []).find(p => p.seconds > 0);
   const status = statusLine(view, refreshing, notice);
   const line = missing ? 'No projects set up' : view === null ? 'Syncing…' : top ? `${top.name} · ${duration(top.seconds)}` : 'No project time yet';
-  if (missing) return <><span className="module-primary">{line}</span><span className="module-caption">config/jarvis.yaml → projects</span></>;
+  if (missing) return <><span className="module-primary">{line}</span><span className="module-caption">~/.jarvis/settings.yaml → projects</span></>;
   return <>
     <span className="module-primary projects-primary">{line}</span>
     <span className={`module-caption ${status.warn ? 'needs-attention' : ''}`}>Last 7 days · {status.text}</span>
@@ -146,7 +146,7 @@ export function ProjectsDetail({ view, missing, onRefresh, refreshing, notice }:
   const active = (view?.projects ?? []).filter(p => p.seconds > 0 || p.commits.count > 0);
   const idle = (view?.projects ?? []).filter(p => p.seconds === 0 && p.commits.count === 0);
   return <div className="projects-detail">
-    {missing ? <p className="quota-note">还没有配置项目<small>在 config/jarvis.yaml 的 projects 里列出项目，Jarvis 只会把活动归到这些项目。</small></p>
+    {missing ? <p className="quota-note">还没有配置项目<small>在 ~/.jarvis/settings.yaml 的 projects 里列出项目，Jarvis 只会把活动归到这些项目。</small></p>
       : view === null ? <p className="quota-note">正在同步…</p> : <>
         {active.map(p => <ProjectCard key={p.id} project={p} days={view.days}/>)}
         {idle.length > 0 && <p className="projects-idle">近 7 天没碰：{idle.map(p => p.name).join('、')}</p>}

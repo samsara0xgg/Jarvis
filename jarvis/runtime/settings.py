@@ -2,7 +2,9 @@
 
 The desktop Settings page reads and writes ``<runtime root>/settings.json``
 through ``/inherent/settings``. Every value is read once at boot, so a saved
-change waits for a restart; ``restart_pending`` says whether one does.
+change waits for a restart; ``restart_pending`` says whether one does. The
+microphone and speaker are the exception: a running voice chain takes them at
+once (ADR 0054).
 """
 
 from __future__ import annotations
@@ -127,10 +129,14 @@ class Settings:
         self._root = root
         self._config = config
         self._devices = devices
+        # What this process runs with: the boot values, and a device picked
+        # since when a voice chain took it live.
         self._booted = {
             key: _get(config, path) if _get(config, path) is not None else _DEFAULTS.get(key)
             for key, path in PATHS.items()
         }
+        # ADR 0054: set by the voice chain; takes (microphone, speaker) at once.
+        self.on_devices: Callable[[str | None, str | None], None] | None = None
 
     def read(self) -> dict[str, Any]:
         """``{values, options, restart_pending}`` in the shapes the Settings page shows."""
@@ -159,6 +165,11 @@ class Settings:
         """Save the page's changes, then answer like :meth:`read`; ValueError names a bad one."""
         stored = {key: self._stored(key, value) for key, value in changes.items()}
         write_private_json(self._root / SETTINGS_FILE, {**_saved(self._root), **stored})
+        picked = stored.keys() & _DEVICES.keys()
+        if picked and self.on_devices is not None:
+            for key in picked:
+                self._booted[key] = stored[key]
+            self.on_devices(self._booted["input_device"], self._booted["output_device"])
         return self.read()
 
     def _shown(self, key: str, value: object) -> object:

@@ -151,7 +151,7 @@ def test_unreachable_server_contributes_nothing(servers: McpServers) -> None:
 def test_stdio_args_expand_from_the_environment(
     servers: McpServers, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """ADR 0054: `$HOME`-style paths in args, so the install location stays out of the config."""
+    """ADR 0055: `$HOME`-style paths in args, so the install location stays out of the config."""
     monkeypatch.setenv("ECHO_DIR", str(HERE))
     entry = {"echo": {"command": sys.executable, "args": ["$ECHO_DIR/mcp_echo_server.py"]}}
     assert {t.name for t in servers.connect(entry)} == {
@@ -162,7 +162,7 @@ def test_stdio_args_expand_from_the_environment(
 def test_mcp_login_runs_a_local_servers_own_login(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """ADR 0054: login_args runs with the entry's command and env; its exit code is the answer."""
+    """ADR 0055: login_args runs with the entry's command and env; its exit code is the answer."""
     (tmp_path / "login.py").write_text(
         "import os, pathlib, sys\n"
         "pathlib.Path(sys.argv[1]).write_text(os.environ['FEATURES'])\n"

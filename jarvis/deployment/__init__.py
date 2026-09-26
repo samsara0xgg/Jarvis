@@ -70,6 +70,11 @@ class RuntimePaths:
     registry: Path
     inherent_v2_token: Path
 
+    @property
+    def settings(self) -> Path:
+        """This user's own settings at `${root}/settings.yaml`, laid over the shipped config."""
+        return self.root / "settings.yaml"
+
     def pending_write_path(self, confirmation_id: str) -> Path:
         """Return the staging path for a pending write's content (ADR-0012 §3 D3).
 
@@ -157,7 +162,9 @@ def bootstrap_runtime(root: Path | None = None) -> RuntimePaths:
         3. Built-in default `~/.jarvis/` (expanded via `Path.expanduser()`).
 
     Directory creation:
-        - `${root}` created with `parents=True, exist_ok=True`.
+        - `${root}` created with `parents=True, exist_ok=True`, then
+          set to 0700 on every call, so other accounts on this Mac can
+          read none of the conversations, audio or keys under it.
         - `${root}/artifacts/` created with `parents=True, exist_ok=True`.
         - `mac_events.db` and `registry.json` are NOT created here;
           they are L2's responsibility at first write.
@@ -176,6 +183,7 @@ def bootstrap_runtime(root: Path | None = None) -> RuntimePaths:
     artifacts_root = resolved_root / "artifacts"
 
     resolved_root.mkdir(parents=True, exist_ok=True)
+    resolved_root.chmod(0o700)
     artifacts_root.mkdir(parents=True, exist_ok=True)
 
     return RuntimePaths(

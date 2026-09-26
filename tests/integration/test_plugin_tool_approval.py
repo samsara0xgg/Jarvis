@@ -159,7 +159,7 @@ def _ask(tmp_path: Path, servers: McpServers) -> tuple[DecideContext, _ScriptedC
     assert "tool_search" in first
     assert not [name for name in first if name.startswith("mcp__")]
     assert "mcp__echo__add" in second
-    # ADR 0055: the hit's server brings its read-only echo along; boom has no hint, so it stays off.
+    # ADR 0056: the hit's server brings its read-only echo along; boom has no hint, so it stays off.
     assert "mcp__echo__echo" in second
     assert "mcp__echo__boom" not in second
     assert _rows(ctx.conn, "confirmation.requested")[0]["template_line"] == ASK

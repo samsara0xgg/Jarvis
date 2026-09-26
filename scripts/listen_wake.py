@@ -1,9 +1,9 @@
 """Listen on the default microphone; print ``unlock <probability>`` on each wake detection.
 
     PYTHONPATH=. python scripts/listen_wake.py
-    PYTHONPATH=. python scripts/listen_wake.py --engine openwakeword --threshold 0.5
+    PYTHONPATH=. python scripts/listen_wake.py --threshold 0.97
 
-Same engine classes and the same 80 ms / 1280-sample PCM16 frames as the
+Same engine class and the same 80 ms / 1280-sample PCM16 frames as the
 daemon (ADR-0042); nothing else is printed.  Type a number and Enter while it
 runs to change the threshold on the spot.  Ctrl-C stops it.
 """
@@ -35,13 +35,12 @@ def watch_stdin(threshold: list[float]) -> None:
 def main() -> None:
     """Run the microphone loop until Ctrl-C."""
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--engine", default="microwakeword", choices=voice_wake.WAKE_ENGINES)
     ap.add_argument("--threshold", type=float, default=0.95)
     args = ap.parse_args()
 
     import sounddevice as sd  # noqa: PLC0415
 
-    engine = voice_wake.build_wake_engine(args.engine)
+    engine = voice_wake.MicroWakeWordEngine()
     engine.start()
     frames: queue.Queue[bytes] = queue.Queue()
     stream = sd.InputStream(
@@ -51,7 +50,7 @@ def main() -> None:
     threshold = [args.threshold]
     threading.Thread(target=watch_stdin, args=(threshold,), daemon=True).start()
     print(
-        f"listening ({args.engine} >= {threshold[0]}); type a number + Enter to change it; "
+        f"listening (microwakeword >= {threshold[0]}); type a number + Enter to change it; "
         "Ctrl-C to stop",
         file=sys.stderr,
     )

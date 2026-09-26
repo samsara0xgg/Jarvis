@@ -1,7 +1,8 @@
 """L3 Tier 0 deterministic pattern table (spec §17).
 
 The closed regex whitelist lives in ``config/tier0_patterns.yaml`` so
-Allen can add patterns without touching code. The file is routing data,
+patterns can be added without touching code; each row's reply is a key
+of the language table (``jarvis.shared.lang``). The file is routing data,
 NOT a capability grant — three code-side layers still enforce what the
 regex_router principal may dispatch (registry ``allowed_callers``
 filter, Pre-action Gate ``caller_allowed`` check, L4 dispatch
@@ -10,8 +11,8 @@ re-check). Spec anchors: §17 "Tier 0 命中 → 直接 tool_registry.execute",
 "regex_router tiny L0-L1 不升级".
 
 Layer rules: stdlib + ``yaml`` (L3 precedent: ``jarvis.decision.llm``).
-No jarvis imports at all — this module is pure data/logic so the
-loader/matcher stay trivially unit-testable.
+The only jarvis import is the stdlib-only language table, so the
+loader/matcher stay pure data/logic.
 """  # noqa: RUF002 — fullwidth punctuation is verbatim spec §3.5.2 Chinese quotation.
 
 from __future__ import annotations
@@ -22,6 +23,8 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import yaml
+
+from jarvis.shared.lang import TEXT, t
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -117,6 +120,12 @@ def load_tier0_table(path: Path) -> Tier0Table:  # noqa: C901, PLR0912 — one l
             msg = f"tier0 patterns: duplicate id {pattern_id!r}"
             raise Tier0ConfigError(msg)
         seen_ids.add(pattern_id)
+        if entry["template"] not in TEXT:
+            msg = (
+                f"tier0 patterns: {pattern_id!r} template {entry['template']!r} is not a key"
+                " of jarvis/shared/lang.py"
+            )
+            raise Tier0ConfigError(msg)
         pattern_src = entry["pattern"]
         if not (pattern_src.startswith("^") and pattern_src.endswith("$")):
             msg = (
@@ -268,7 +277,7 @@ def match_tier0(transcript: str, table: Tier0Table) -> Tier0Hit | None:
 
 
 def render_tier0_response(hit: Tier0Hit, payload: Mapping[str, Any]) -> str:
-    """Fill the hit's template from tool payload scalars + captured args.
+    """Fill the hit's reply, in the current language, from tool payload scalars + captured args.
 
     An unusable template must not crash the turn. Every value is
     stringified first, so the reachable ``str.format`` failure family is
@@ -285,14 +294,14 @@ def render_tier0_response(hit: Tier0Hit, payload: Mapping[str, Any]) -> str:
     }
     variables.update(hit.tool_args)
     try:
-        return hit.response_template.format(**variables)
+        return t(hit.response_template).format(**variables)
     except (KeyError, IndexError, ValueError, AttributeError, TypeError) as exc:
         LOGGER.warning(
             "tier0 render: template for %r is unusable: %r",
             hit.pattern_id,
             exc,
         )
-        return f"指令 {hit.pattern_id} 已执行，但响应模板变量缺失。"  # noqa: RUF001 — fullwidth comma/period are intentional Chinese punctuation.
+        return t("tier0.template_broken", pattern_id=hit.pattern_id)
 
 
 __all__ = [

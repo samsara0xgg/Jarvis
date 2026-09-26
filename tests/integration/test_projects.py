@@ -22,6 +22,7 @@ from fastapi.testclient import TestClient
 
 from jarvis.decision.llm import ChatResult, ToolCall
 from jarvis.decision.projects import ASSIGN_TOOL_NAME
+from jarvis.runtime import _load_full_config
 from jarvis.runtime.projects import ProjectsService
 from jarvis.state.event_log import iter_events_of_types, open_event_log
 from jarvis.state.projects import Project, parse_catalog
@@ -390,10 +391,16 @@ def test_http_routes_serve_the_view(rig: Rig) -> None:
         assert client.get("/inherent/projects").status_code == 404
 
 
-def test_shipped_catalog_boots() -> None:
-    raw = yaml.safe_load(Path("config/jarvis.yaml").read_text(encoding="utf-8"))["projects"]
-    catalog = parse_catalog(raw)
-    assert [p.id for p in catalog][:3] == ["job-search", "school", "jarvis"]
+def test_projects_come_from_the_users_settings(tmp_path: Path) -> None:
+    shipped = Path("config/jarvis.yaml")
+    assert "projects" not in yaml.safe_load(shipped.read_text(encoding="utf-8"))
+    settings = tmp_path / "settings.yaml"
+    settings.write_text(
+        "projects:\n  - {id: jarvis, name: Jarvis, repos: [~/Projects/jarvis]}\n",
+        encoding="utf-8",
+    )
+    catalog = parse_catalog(_load_full_config(shipped, settings)["projects"])
+    assert [p.id for p in catalog] == ["jarvis"]
     assert all(not r.startswith("~") for p in catalog for r in p.repos)
     cases = (
         [{"id": "Jarvis", "name": "x"}],  # not a lowercase slug

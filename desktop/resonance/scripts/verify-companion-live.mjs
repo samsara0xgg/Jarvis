@@ -17,6 +17,9 @@ const dir = path.join(root, 'evidence', real ? 'companion-live-real' : 'companio
 mkdirSync(dir, { recursive: true });
 const port = real ? (process.env.JARVIS_INHERENT_BRIDGE_PORT ?? '8006') : '8799';
 const daemon = `http://127.0.0.1:${port}`;
+// Every daemon route needs the local key; the page gets it as a header on each request.
+const pluginToken = real ? (() => { try { return JSON.parse(readFileSync(path.join(homedir(), '.jarvis/plugin-access.json'), 'utf8')).token; } catch { return null; } })() : null;
+const daemonHeaders = pluginToken ? { Authorization: `Bearer ${pluginToken}` } : {};
 const web = Number(process.env.COMPANION_PORT ?? 5192);
 const server = spawn(path.join(root, 'node_modules/.bin/vite'), ['preview', '--port', String(web), '--strictPort'], { cwd: root, stdio: 'ignore' });
 const checks = [], check = (name, pass) => { assert.ok(pass, name); checks.push(name); console.log(`PASS ${name}`); };
@@ -28,7 +31,7 @@ const words = text => text.replace(/<\/?(voice|document)>/g, '').replace(/^\s*(\
 const hm = ms => { const d = new Date(ms); return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
 try {
   for (let i = 0; i < 50; i++) { try { await fetch(`http://127.0.0.1:${web}/`); break; } catch { await new Promise(r => setTimeout(r, 100)); } }
-  const context = await browser.newContext({ viewport: { width: 640, height: 722 }, deviceScaleFactor: 2 });
+  const context = await browser.newContext({ viewport: { width: 640, height: 722 }, deviceScaleFactor: 2, extraHTTPHeaders: daemonHeaders });
   const page = await context.newPage();
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
@@ -86,7 +89,6 @@ try {
     if (resetFails) { resetFails--; throw new Error("Error invoking remote method 'usage-reset': Error: Could not reach Jarvis. Try again."); }
     return { code: 'reset', windows_reset: 1 };
   });
-  const pluginToken = real ? (() => { try { return JSON.parse(readFileSync(path.join(homedir(), '.jarvis/plugin-access.json'), 'utf8')).token; } catch { return null; } })() : null;
   await page.exposeFunction('__plugins', async (operation, data) => {
     pluginOps.push({ operation, data });
     if (real) {
@@ -142,6 +144,7 @@ try {
     // The home's new writes: a to-do checked off, and Jarvis's own settings once it serves them.
     if (method === 'POST' && url.pathname === '/inherent/today/todo') return json({ ok: true });
     if (method === 'POST' && url.pathname === '/inherent/settings' && fixtures['/inherent/settings']) { Object.assign(fixtures['/inherent/settings'].values, body.changes); return json(fixtures['/inherent/settings']); }
+    if (method === 'POST' && url.pathname === '/inherent/language') { fixtures['/inherent/language'] = { language: body.language }; return json(fixtures['/inherent/language']); }
     if (fixtures[url.pathname]) return json(fixtures[url.pathname]);
     return route.fulfill({ status: 404, contentType: 'application/json', body: '{"detail":"Not Found"}' });
   });
@@ -174,7 +177,7 @@ try {
   await page.waitForTimeout(800);
 
   if (real) {
-    const get = async p => (await fetch(`${daemon}${p}`)).json();
+    const get = async p => (await fetch(`${daemon}${p}`, { headers: daemonHeaders })).json();
     await page.evaluate(() => window.__command('dashboard'));
     await page.locator('.companion-dashboard.is-open').waitFor();
     await page.waitForTimeout(2500);
@@ -196,7 +199,7 @@ try {
     const projects = await get('/inherent/projects'), top = projects.projects?.find(p => p.seconds > 0);
     check(`R the Projects tile is the daemon's (${top?.name ?? 'none'})`, top ? (await text('.ad .pj-mini b')) === top.name : true);
     const codex = (await get('/inherent/codex-sessions')).sessions ?? [];
-    const claudeRoute = await fetch(`${daemon}/inherent/claude-sessions`);
+    const claudeRoute = await fetch(`${daemon}/inherent/claude-sessions`, { headers: daemonHeaders });
     const claudeIds = claudeRoute.ok ? (await claudeRoute.json()).sessions.map(r => r.session_id) : [];
     await openRow('agents'); await page.waitForTimeout(3500);
     const shownIds = await page.locator('.ad .ag').evaluateAll(els => els.map(e => e.dataset.id));
@@ -505,6 +508,14 @@ try {
       && posts.at(-1)?.path === '/inherent/settings' && posts.at(-1).body.changes?.tts_voice === 'Explorative Girl'
       && await page.locator('.ad .st-opts button[aria-checked="true"]', { hasText: 'Explorative Girl' }).count() === 1);
     await panelShot('L14-settings-voice');
+    // One language switch: Interface language flips her panel and tells Jarvis to say its own phrases in it.
+    const langName = () => text('.ad [data-item="lang"] .st-name');
+    await back(); await page.locator('.ad [data-cat="general"]').click(); await page.waitForTimeout(500);
+    await page.locator('.ad [data-item="lang"] .st-seg button', { hasText: '中文' }).click(); await page.waitForTimeout(600);
+    check('L15 Interface language 中文 posts { language: zh } and her panel turns Chinese',
+      posts.at(-1)?.path === '/inherent/language' && posts.at(-1).body.language === 'zh' && await langName() === '界面语言');
+    await page.locator('.ad [data-item="lang"] .st-seg button', { hasText: 'English' }).click(); await page.waitForTimeout(600);
+    check('L15 English posts { language: en } and turns it back', posts.at(-1)?.body.language === 'en' && await langName() === 'Interface language');
     await back(); await back();
     await hit.dblclick({ force: true });
     await page.waitForFunction(() => !document.querySelector('.companion-dashboard.is-open'), null, { timeout: 3000 });
@@ -604,6 +615,11 @@ try {
     await page.locator('.companion-notice .btn-ghost', { hasText: 'Always' }).click(); await page.waitForTimeout(200);
     check('L13 Always goes back as always', JSON.stringify(answered('r-edit')) === '[{"decision":"always"}]');
     setBoard('c-wait', { request: null }); await cardGone();
+    // Jarvis's language wins when she starts: a daemon speaking Chinese turns her panel Chinese.
+    fixtures['/inherent/language'] = { language: 'zh' };
+    await page.reload(); await page.waitForTimeout(2500);
+    check('L15 at start her panel follows the language Jarvis speaks in',
+      await page.evaluate(() => JSON.parse(localStorage.getItem('companion-settings-v1') ?? '{}').lang) === 'zh');
     check('no page errors', errors.length === 0);
   }
   await context.close();

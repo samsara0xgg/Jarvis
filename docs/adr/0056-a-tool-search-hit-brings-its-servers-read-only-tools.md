@@ -1,4 +1,4 @@
-# ADR 0055 — A tool_search hit brings its server's read-only tools
+# ADR 0056 — A tool_search hit brings its server's read-only tools
 
 **Status:** Accepted
 **Date:** 2026-09-26

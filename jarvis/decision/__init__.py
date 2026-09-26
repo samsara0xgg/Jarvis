@@ -93,6 +93,7 @@ from jarvis.shared import (
     RawResult,
     RawResultBundle,
 )
+from jarvis.shared.lang import t
 from jarvis.shared.pricing import compute_cost_usd, load_pricing_table
 from jarvis.shared.realtime import AlreadyConsumed, Wave1FeatureFlags, stable_authorization_identity
 from jarvis.shared.realtime_trace import realtime_trace_context, record_realtime_trace
@@ -694,7 +695,7 @@ class _Scratch:
     loaded_tools: set[str] = field(default_factory=set)
 
 
-_STATUS_HEADER: Final[str] = "[当前状态｜程序提供，不是用户说的话]"  # noqa: RUF001 — Chinese punctuation is intentional.
+_STATUS_HEADER: Final[str] = "[Current state | from the program, not the user's words]"
 # Channels whose transcript came in by voice; anything else is typed text.
 _VOICE_CHANNELS: Final[frozenset[str]] = frozenset({"inherent_ptt", "inherent_wake", "speech"})
 
@@ -705,8 +706,8 @@ def _interaction_line(packet: SituationPacket) -> str | None:
     if not isinstance(channel, str) or not channel:
         return None
     if channel == "gpt_live":
-        return "交互方式：语音（由 Live 转述，回答要适合念出来）"  # noqa: RUF001 — Chinese punctuation is intentional.
-    return "交互方式：语音" if channel in _VOICE_CHANNELS else "交互方式：文字"  # noqa: RUF001 — Chinese punctuation is intentional.
+        return "Channel: voice (relayed by Live; the answer will be read aloud)"
+    return "Channel: voice" if channel in _VOICE_CHANNELS else "Channel: text"
 
 
 _HEARD_QUOTE_MAX_CHARS: Final[int] = 40
@@ -725,17 +726,17 @@ def _previous_answer_line(packet: SituationPacket) -> str | None:
     finals = [r for r in turns[index - 1].responses if r.phase == "final"] if index else []
     spoken = [r for r in finals if r.panel_available.strip()]
     if not spoken:
-        return "上一句：还没回答就中断了" if finals else None  # noqa: RUF001 — Chinese punctuation is intentional.
+        return "Previous turn: interrupted before it was answered" if finals else None
     voice = split_envelope(spoken[-1].panel_available)[0].strip()
     prefix = spoken[-1].spoken_heard
     if prefix is None or not voice or prefix.text.strip() == voice:
         return None
     heard = prefix.text.strip()
     if not heard:
-        return "上一条回答：还没念出来就被打断了"  # noqa: RUF001 — Chinese punctuation is intentional.
+        return "Previous answer: interrupted before any of it was spoken"
     if len(heard) > _HEARD_QUOTE_MAX_CHARS:
         heard = "…" + heard[-_HEARD_QUOTE_MAX_CHARS:]
-    return f"上一条回答：念到「{heard}」时被打断，后面的没念出来"  # noqa: RUF001 — Chinese punctuation is intentional.
+    return f'Previous answer: interrupted after "{heard}"; the rest was not spoken'
 
 
 def _current_status_block(packet: SituationPacket, ctx: DecideContext) -> str | None:
@@ -1071,7 +1072,7 @@ def _run_tool_use_loop(
     LOGGER.warning("decide(): tool-use loop hit max_iterations=%d", ctx.max_tool_iterations)
     answer = _answer_after_tool_budget(ctx, messages, scratch)
     return _finalize_response(
-        answer, packet, ctx, scratch, model_answer=answer != _TOOL_BUDGET_EXHAUSTED_TEXT,
+        answer, packet, ctx, scratch, model_answer=answer != t("tool_budget.exhausted"),
     )
 
 
@@ -1079,15 +1080,14 @@ def _run_tool_use_loop(
 # has spent its tool iterations, the model gets one last request without tools
 # to answer from what it already holds; this is the note that request carries.
 _TOOL_BUDGET_ANSWER_PROMPT: Final[str] = (
-    "【运行时提示，不是用户的话】工具调用次数已到上限，这一轮不能再调用工具。"  # noqa: RUF001 — fullwidth brackets/comma are intentional Chinese punctuation.
-    "请只根据上面已经拿到的工具结果直接回答：先给出已经查明的事实（带时间和依据），"  # noqa: RUF001 — fullwidth colon/parens are intentional Chinese punctuation.
-    "再明确说明哪些部分没有查到或无法确认。没有证据的内容不要编造。"
+    "[Runtime note, not the user's words] This turn has used all its tool calls; no more "
+    "tools can be called. Answer now from the tool results above only: first the facts "
+    "you established (with their time and source), then say plainly which parts you "
+    "could not find or confirm. Make up nothing without evidence. Answer in the "
+    "language the user wrote in."
 )
-# Spoken when that last request fails or returns nothing. Chinese, no internal
-# vocabulary, and free of completion words (完成/done) by construction.
-_TOOL_BUDGET_EXHAUSTED_TEXT: Final[str] = (
-    "这一轮工具调用次数用完了，还没整理出答案。请把问题拆小一点再问一次。"  # noqa: RUF001 — fullwidth comma/period are intentional Chinese punctuation.
-)
+# Spoken when that last request fails or returns nothing (``tool_budget.exhausted``
+# in the language table): no internal vocabulary, no completion words.
 
 
 def _answer_after_tool_budget(
@@ -1121,12 +1121,12 @@ def _answer_after_tool_budget(
         raise
     except Exception:
         LOGGER.exception("decide(): answer request after the tool budget failed")
-        return _TOOL_BUDGET_EXHAUSTED_TEXT
+        return t("tool_budget.exhausted")
     scratch.events.append(
         _emit_cost_recorded(ctx, chat_result, kind="decision", turn_id=scratch.turn_id),
     )
     _check_response_cancelled(ctx, "after provider response")
-    return (chat_result.text or "").strip() or _TOOL_BUDGET_EXHAUSTED_TEXT
+    return (chat_result.text or "").strip() or t("tool_budget.exhausted")
 
 
 def _turn_ending_draft(scratch: _Scratch, llm_text: str | None) -> str | None:
@@ -1147,24 +1147,23 @@ def _turn_ending_draft(scratch: _Scratch, llm_text: str | None) -> str | None:
     return None
 
 
-_TIER0_GATE_REFUSED_TEXT: Final[str] = "这条指令被 Pre-action Gate 拦下，未执行。"  # noqa: RUF001 — fullwidth comma/period are intentional Chinese punctuation.
-
-# Fixed, scrub-safe text for an erroring Tier 0 tool. MUST stay free of
+# ``tier0.tool_error``: fixed, scrub-safe text for an erroring Tier 0 tool. MUST stay free of
 # completion-class keywords (完成 / 已完成 / done / verified): a Tier 0
 # draft that trips the Pre-emit Gate's downgrade path would re-prompt
 # the LLM, which is exactly what this path exists to avoid. The
 # handler's own error tag is a developer string and goes to the log,
 # never to the voice surface.
-_TIER0_TOOL_ERROR_TEXT: Final[str] = "这条指令执行出错，未产生结果。"  # noqa: RUF001 — fullwidth comma/period are intentional Chinese punctuation.
 
 # ADR-0012 §3 D5 — synthetic tool result injected on the FIRST
 # `confirm_required` this turn (the ask). Never sent to the LLM within
 # THIS `decide()` call (the tool loop ends right after), but kept
 # JSON-shaped for consistency with every other synthetic tool result
 # in this module.
-_CONFIRM_REQUIRED_TOOL_RESULT_TEXT: Final[str] = "等待 Allen 确认，本回合不可执行"  # noqa: RUF001 — fullwidth comma is intentional Chinese punctuation.
+_CONFIRM_REQUIRED_TOOL_RESULT_TEXT: Final[str] = (
+    "Waiting for the user's confirmation; it cannot run this turn"
+)
 
-# ADR-0012 §3 D5 — the exact rendered action line, appended by the
+# ADR-0012 §3 D5 — the exact rendered action line (``confirm.ask_write``), appended by the
 # RUNTIME to the draft, never composed by the LLM (§13.4; consent
 # binds machine truth). Rendered ONLY from the frozen action_snapshot
 # (`_stage_and_request_confirmation`) — `canonical_target` is the
@@ -1175,17 +1174,8 @@ _CONFIRM_REQUIRED_TOOL_RESULT_TEXT: Final[str] = "等待 Allen 确认，本回�
 # rather than hardcoded to "write_file"/"L3" even though that is the
 # only L3 tool today (D1) — byte-identical output for the one case
 # that exists, forward-compatible if a second L3 tool ever lands.
-_CONFIRMATION_TEMPLATE_LINE: Final[str] = (
-    "待确认：{tool_name} → `{canonical_target}`"  # noqa: RUF001 — fullwidth colon is intentional Chinese punctuation.
-    "（{mode}，{content_bytes} 字节，风险 {risk_level}）。"  # noqa: RUF001 — fullwidth parens/comma/period are intentional Chinese punctuation.
-    "回复「可以」执行，「不要」取消。"  # noqa: RUF001 — fullwidth comma/period are intentional Chinese punctuation.
-)
-
-# ADR 0033: the same runtime-rendered consent line for every other tool at the
-# threshold, rendered from the frozen arguments only.
-_TOOL_CONFIRMATION_TEMPLATE_LINE: Final[str] = (
-    "待确认：{tool}（{arguments}）。回复「可以」执行，「不要」取消。"  # noqa: RUF001 — fullwidth colon/parens/comma/period are intentional Chinese punctuation.
-)
+# ADR 0033: ``confirm.ask_tool`` is the same runtime-rendered consent line for
+# every other tool at the threshold, rendered from the frozen arguments only.
 _ARGUMENTS_PREVIEW_CHARS: Final[int] = 160
 
 
@@ -1324,7 +1314,7 @@ def _run_tier0_path(
         # LLM to ask/answer a confirmation, so if a misconfiguration
         # ever slipped past the boot check, refusing here (rather than
         # e.g. crashing) is still the correct, safe behavior.
-        return _finalize_response(_TIER0_GATE_REFUSED_TEXT, packet, ctx, scratch)
+        return _finalize_response(t("tier0.gate_refused"), packet, ctx, scratch)
 
     authorized_event = emit_event(
         ctx.conn,
@@ -1377,7 +1367,7 @@ def _run_tier0_path(
             hit.tool_name,
             primary_slot.error,
         )
-        draft = _TIER0_TOOL_ERROR_TEXT
+        draft = t("tier0.tool_error")
         return _finalize_response(draft, packet, ctx, scratch)
 
     # MUST-FIX 2 (ADR-0011 §12): `primary_slot.payload` may carry
@@ -1710,19 +1700,14 @@ def _handle_result_observed(
 
 # --- action.timeout_assumed / action.failed branch -------------------------
 
-# Canonical user-facing limitation phrasings for the action
-# terminal-failure paths (B-0003c / ADR-0002 Negative-path appendix).
-_TIMEOUT_LIMITATION_TEXT: Final[str] = "Codex 超时，未完成"  # noqa: RUF001 — fullwidth comma is intentional Chinese punctuation.
-_FAILED_LIMITATION_TEXT: Final[str] = "Codex 跑挂了，没新 diff"  # noqa: RUF001 — fullwidth comma is intentional Chinese punctuation.
-# ADR-0008 D9 (Step 4). A cancelled run is a limitation with a different
-# cause: nothing broke, somebody stopped it. Matched by the ``r"已停止"``
-# pattern added alongside the two above.
-_CANCELLED_LIMITATION_TEXT: Final[str] = "任务已停止，未完成"  # noqa: RUF001 — fullwidth comma is intentional Chinese punctuation.
-
-_ACTION_TERMINAL_LIMITATION_TEXT: Final[Mapping[str, str]] = {
-    "action.timeout_assumed": _TIMEOUT_LIMITATION_TEXT,
-    "action.failed": _FAILED_LIMITATION_TEXT,
-    "action.cancelled": _CANCELLED_LIMITATION_TEXT,
+# Canonical user-facing limitation phrasings (language-table keys) for the
+# action terminal-failure paths (B-0003c / ADR-0002 Negative-path appendix).
+# ADR-0008 D9 (Step 4): a cancelled run is a limitation with a different
+# cause: nothing broke, somebody stopped it.
+_ACTION_TERMINAL_LIMITATION_KEY: Final[Mapping[str, str]] = {
+    "action.timeout_assumed": "limitation.timeout",
+    "action.failed": "limitation.failed",
+    "action.cancelled": "limitation.cancelled",
 }
 
 
@@ -1744,10 +1729,7 @@ def _handle_action_terminal_failure(
     turn_id_corr = correlation.get("turn_id") or packet.current_turn_id
     scratch.turn_id = turn_id_corr if isinstance(turn_id_corr, str) else None
 
-    canonical_text = _ACTION_TERMINAL_LIMITATION_TEXT.get(
-        trigger.type,
-        _FAILED_LIMITATION_TEXT,
-    )
+    canonical_text = t(_ACTION_TERMINAL_LIMITATION_KEY.get(trigger.type, "limitation.failed"))
 
     return _finalize_response(canonical_text, packet, ctx, scratch)
 
@@ -2132,17 +2114,18 @@ _WRITTEN_MARKUP_RE: Final[re.Pattern[str]] = re.compile(
     r"^\s*(?:[-*•+]\s|\d+[.)、]|#{1,6}\s|>|\|)|```|\*\*|[(（]",  # noqa: RUF001 — the fullwidth bracket is the Chinese aside being matched.
     re.MULTILINE,
 )
-# One prompt per language, picked from the script of Allen's own words: a
-# Chinese prompt asked to "keep the original language" still answered an
-# English answer in Chinese (smoke run 2026-09-24). ~60 Chinese characters and ~40
+# One prompt per language, picked from the script of the user's own words: a
+# prompt asked to "keep the original language" still answered an English
+# answer in Chinese (smoke run 2026-09-24). ~60 Chinese characters and ~40
 # English words are both about 13 s of speech. Neither names Allen: with his
 # name in the prompt every spoken form opened with his name. The question goes
 # along so the rewrite knows which sentence answers it.
 _SPOKEN_FORM_PROMPT_ZH: Final[str] = (
-    "把用户给你的这段回答改写成直接念出来的中文口语版："  # noqa: RUF001 — fullwidth colon is intentional Chinese punctuation.
-    "最多三句、不超过 60 个字，只留直接回答问题的结论和一两个最关键的数字；"  # noqa: RUF001 — fullwidth comma/semicolon are intentional Chinese punctuation.
-    "不要列表、标题、括号、链接、代码或任何格式符号；不要加原文没有的内容。"  # noqa: RUF001 — fullwidth semicolon is intentional Chinese punctuation.
-    "只输出口语版本身。"
+    "Rewrite the answer the user gives you as a spoken reply in Mandarin Chinese, "
+    "to be read aloud as is: at most three sentences and 60 Chinese characters, only "
+    "the conclusion that answers the question and the one or two numbers that matter "
+    "most; no lists, headings, brackets, links, code or any markup; add nothing that "
+    "is not in the answer. Output only the spoken reply, in Chinese."
 )
 _SPOKEN_FORM_PROMPT_EN: Final[str] = (
     "Rewrite the answer the user gives you as a spoken English reply: "
@@ -2159,13 +2142,11 @@ def _needs_spoken_form(text: str) -> bool:
     return len(text) > limit or _WRITTEN_MARKUP_RE.search(text) is not None
 
 
-def _spoken_form_request(question: object, answer: str, *, english: bool) -> str:
+def _spoken_form_request(question: object, answer: str) -> str:
     """The rewrite's one user message: the question it answers, then the answer."""
     if not isinstance(question, str) or not question.strip():
         return answer
-    if english:
-        return f"Question: {question.strip()}\n\nAnswer:\n{answer}"
-    return f"问题：{question.strip()}\n\n回答：\n{answer}"  # noqa: RUF001 — fullwidth colon is intentional Chinese punctuation.
+    return f"Question: {question.strip()}\n\nAnswer:\n{answer}"
 
 
 def _with_spoken_form(
@@ -2204,7 +2185,7 @@ def _with_spoken_form(
             chat_result = _run_llm_chat_with_cost_guard(
                 ctx,
                 messages=[
-                    {"role": "user", "content": _spoken_form_request(heard, text, english=english)},
+                    {"role": "user", "content": _spoken_form_request(heard, text)},
                 ],
                 system=_SPOKEN_FORM_PROMPT_EN if english else _SPOKEN_FORM_PROMPT_ZH,
                 tools=None,
@@ -2402,7 +2383,10 @@ def _format_open_actions_note(packet: SituationPacket) -> str | None:
         return None
     now_ms = int(time.time() * 1000)
     oldest_s = max(0, (now_ms - min(action.dispatched_ts_ms for action in open_actions)) // 1000)
-    return f"后台在跑：{len(open_actions)} 个操作还没回报（最早的 {oldest_s} 秒前派出）"  # noqa: RUF001 — Chinese punctuation is intentional.
+    return (
+        f"Running in the background: {len(open_actions)} actions have not reported back"
+        f" (the oldest was sent {oldest_s} s ago)"
+    )
 
 
 def _new_turn_id() -> str:
@@ -2526,7 +2510,8 @@ def _stage_and_request_confirmation(  # noqa: PLR0913 — one keyword per D3 sna
             payload={
                 "confirmation_id": confirmation_id,
                 "action_snapshot": generic_snapshot,
-                "template_line": _TOOL_CONFIRMATION_TEMPLATE_LINE.format(
+                "template_line": t(
+                    "confirm.ask_tool",
                     tool=_spoken_tool_name(action_request.tool_name),
                     arguments=_arguments_preview(arguments),
                 ),
@@ -2561,7 +2546,8 @@ def _stage_and_request_confirmation(  # noqa: PLR0913 — one keyword per D3 sna
         "args_meta": args_meta,
     }
 
-    template_line = _CONFIRMATION_TEMPLATE_LINE.format(
+    template_line = t(
+        "confirm.ask_write",
         tool_name=action_request.tool_name,
         canonical_target=canonical_target,
         mode=mode_str,
@@ -2597,49 +2583,36 @@ _LEASE_TTL_MS: Final[int] = 60_000
 """ADR-0012 D2/D6: the lease need only outlive gate + dispatch (seconds, not
 the confirmation ask's own minutes-scale TTL)."""
 
-_CONFIRMATION_REJECTED_TEMPLATE: Final[str] = "好，已取消：{template_line}"  # noqa: RUF001 — fullwidth comma/colon are intentional Chinese punctuation.
-
-# ADR-0012 §4 failure-mode table: "content artifact missing/hash mismatch at
-# accept -> abort re-proposal, fixed error line". Scrub-safe (no
-# 完成/已完成/done/verified) by construction, same discipline as every other
-# fixed line in this module.
-_CONFIRMATION_CONTENT_MISMATCH_TEXT: Final[str] = "暂存内容校验失败，写入未执行。"  # noqa: RUF001 — fullwidth comma/period are intentional Chinese punctuation.
-
-# Defensive-only: the tool named in a frozen snapshot is no longer
+# The confirmation replies live in the language table under ``confirm.*``.
+# ``confirm.content_mismatch`` — ADR-0012 §4 failure-mode table: "content
+# artifact missing/hash mismatch at accept -> abort re-proposal, fixed error
+# line". Scrub-safe (no completion words) by construction, same discipline as
+# every other fixed line in this module.
+#
+# ``confirm.tool_gone`` — defensive-only: the tool named in a frozen snapshot is no longer
 # registered (e.g. the daemon restarted with the tool removed between ask
 # and answer). Unreachable in the Day-1 scenario (write_file is the only L3
 # tool and registries don't shrink mid-process), kept for the same reason
 # `_check_entity_trusted`'s `tool_def is None` arm is kept — a handler must
 # be safe standing alone, not merely behind preconditions that happen to
 # always hold in production.
-_CONFIRMATION_TOOL_GONE_TEXT: Final[str] = "无法执行：工具已不可用，未执行。"  # noqa: RUF001 — fullwidth colon/comma/period are intentional Chinese punctuation.
-
-# ADR-0012 §4: "gate refuses the re-proposal (policy/entity drift since ask)
-# -> fixed line reporting the refusal reason". Interpolates only the
+#
+# ``confirm.reproposal_refused`` — ADR-0012 §4: "gate refuses the re-proposal
+# (policy/entity drift since ask) -> fixed line reporting the refusal reason". Interpolates only the
 # GateOutcome literal ("refuse" / "confirm_required") — never raw
 # `gate.reasons` strings, which are developer-facing audit text not vetted
 # against the Pre-emit Gate's completion-keyword scrub.
-_CONFIRMATION_REPROPOSAL_REFUSED_TEMPLATE: Final[str] = (
-    "已取消：重新检查未通过（{outcome}），未执行。"  # noqa: RUF001 — fullwidth parens/comma/period are intentional Chinese punctuation.
-)
-
-# ADR-0012 §4: "write_file handler I/O error -> error observation ->
+#
+# ``confirm.dispatch_error`` — ADR-0012 §4: "write_file handler I/O error -> error observation ->
 # Limitation routing (existing machinery)" — `result_interpreter` below
 # already emits the Limitation Claim; this is only the direct-reply text
-# for the turn that was Allen's own "可以".
-_CONFIRMATION_DISPATCH_ERROR_TEMPLATE: Final[str] = "执行出错：{error}"  # noqa: RUF001 — fullwidth comma is intentional Chinese punctuation.
-
-# ADR-0012 §3 D6 exact wording — "backed by ack semantics; the wording
-# deliberately stops at 已执行 and must not be strengthened" (no 完成/
-# 已完成/verified/done; "已执行" is exactly what the ack proves).
-_CONFIRMED_WRITE_SUCCESS_TEMPLATE: Final[str] = (
-    "write_file 已执行：`{path}`（{bytes_written} 字节）"  # noqa: RUF001 — fullwidth colon/parens/comma are intentional Chinese punctuation.
-)
-
-
-# ADR 0033: the same ack-only wording for any other confirmed tool, followed by
+# for the turn that was the user's own "yes".
+#
+# ``confirm.write_ran`` — ADR-0012 §3 D6 exact wording: "backed by ack semantics; the wording
+# deliberately stops at 已执行 and must not be strengthened" (no completion or
+# verification words; "ran" is exactly what the ack proves). ``confirm.tool_ran``
+# (ADR 0033) is the same ack-only wording for any other confirmed tool, followed by
 # the head of what the tool returned (machine truth, never the model's words).
-_CONFIRMED_TOOL_SUCCESS_TEMPLATE: Final[str] = "{tool} 已执行。结果：{result}"  # noqa: RUF001 — fullwidth colon/period are intentional Chinese punctuation.
 _RESULT_PREVIEW_CHARS: Final[int] = 300
 
 
@@ -2736,11 +2709,11 @@ def _handle_confirmation_rejected(  # noqa: PLR0913 — one keyword per D6 answe
         rejected_event = _record_confirmation_answer(slot, grammar_hit, transcript, ctx, scratch)
     except ConfirmationRevalidationError:
         scratch.confirmation_answered_this_turn = True
-        return _finalize_response("确认已被处理或失效。未接纳新的写入。", packet, ctx, scratch)
+        return _finalize_response(t("confirm.stale"), packet, ctx, scratch)
     scratch.events.append(rejected_event)
     scratch.confirmation_answered_this_turn = True
 
-    draft = _CONFIRMATION_REJECTED_TEMPLATE.format(template_line=slot.template_line)
+    draft = t("confirm.rejected", template_line=slot.template_line)
     return _finalize_response(draft, packet, ctx, scratch)
 
 
@@ -2786,7 +2759,7 @@ def _handle_confirmation_accepted(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR
         accepted_event = _record_confirmation_answer(slot, grammar_hit, transcript, ctx, scratch)
     except ConfirmationRevalidationError:
         scratch.confirmation_answered_this_turn = True
-        return _finalize_response("确认已被处理或失效。未接纳新的写入。", packet, ctx, scratch)
+        return _finalize_response(t("confirm.stale"), packet, ctx, scratch)
     scratch.events.append(accepted_event)
     scratch.confirmation_answered_this_turn = True
 
@@ -2812,10 +2785,10 @@ def _handle_confirmation_accepted(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR
                 content_text = content_bytes_data.decode("utf-8")
 
     if staged and content_text is None:
-        return _finalize_response(_CONFIRMATION_CONTENT_MISMATCH_TEXT, packet, ctx, scratch)
+        return _finalize_response(t("confirm.content_mismatch"), packet, ctx, scratch)
     tool_def = _find_tool_def(ctx.tool_registry, tool_name)
     if tool_def is None:
-        return _finalize_response(_CONFIRMATION_TOOL_GONE_TEXT, packet, ctx, scratch)
+        return _finalize_response(t("confirm.tool_gone"), packet, ctx, scratch)
 
     target_entity_ref_raw = snapshot.get("target_entity_ref")
     target_entity_ref = target_entity_ref_raw if isinstance(target_entity_ref_raw, str) else None
@@ -2919,9 +2892,9 @@ def _handle_confirmation_accepted(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR
                 correlation=_action_correlation(action_request),
             )
         except ConfirmationRevalidationError:
-            return _finalize_response("确认已被处理或失效。未接纳新的写入。", packet, ctx, scratch)
+            return _finalize_response(t("confirm.stale"), packet, ctx, scratch)
         if isinstance(authorization, AlreadyConsumed):
-            return _finalize_response("该确认已接纳。执行状态请以结果为准。", packet, ctx, scratch)
+            return _finalize_response(t("confirm.accepted"), packet, ctx, scratch)
         gate_event = authorization.gate_event
     else:
         gate_event = emit_event(
@@ -2934,7 +2907,7 @@ def _handle_confirmation_accepted(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR
     scratch.events.append(gate_event)
 
     if gate.outcome != "pass":
-        draft = _CONFIRMATION_REPROPOSAL_REFUSED_TEMPLATE.format(outcome=gate.outcome)
+        draft = t("confirm.reproposal_refused", outcome=gate.outcome)
         return _finalize_response(draft, packet, ctx, scratch)
 
     # --- 6. action.authorized + lifecycle, dispatch, interpret -------------
@@ -2964,7 +2937,7 @@ def _handle_confirmation_accepted(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR
             ctx.lifecycle,
         )
     except AuthorizedDispatchAlreadyStarted:
-        return _finalize_response("该确认已接纳。执行状态请以结果为准。", packet, ctx, scratch)
+        return _finalize_response(t("confirm.accepted"), packet, ctx, scratch)
     record_realtime_trace(
         "action_dispatch_returned",
         turn_id=scratch.turn_id,
@@ -2982,18 +2955,20 @@ def _handle_confirmation_accepted(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR
     primary_result_slot = bundle.slots[0]
 
     if primary_result_slot.error is not None:
-        draft = _CONFIRMATION_DISPATCH_ERROR_TEMPLATE.format(error=primary_result_slot.error)
+        draft = t("confirm.dispatch_error", error=primary_result_slot.error)
         return _finalize_response(draft, packet, ctx, scratch)
 
     if not staged:
-        draft = _CONFIRMED_TOOL_SUCCESS_TEMPLATE.format(
+        draft = t(
+            "confirm.tool_ran",
             tool=_spoken_tool_name(tool_name),
             result=_result_preview(_render_bundle_for_llm(bundle)),
         )
         return _finalize_response(draft, packet, ctx, scratch)
     path_written = primary_result_slot.payload.get("path", "?")
     bytes_written = primary_result_slot.payload.get("bytes_written", "?")
-    draft = _CONFIRMED_WRITE_SUCCESS_TEMPLATE.format(
+    draft = t(
+        "confirm.write_ran",
         path=path_written,
         bytes_written=bytes_written,
     )

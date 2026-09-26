@@ -1,4 +1,4 @@
-"""The companion home's reads (ADR 0054): Today, unread mail and the morning brief.
+"""The companion home's reads (ADR 0055): Today, unread mail and the morning brief.
 
 Calendar and To Do come through the live ``microsoft`` connection's tools and mail
 through the live ``gmail`` connection's, outside any model turn; the weather from
@@ -45,7 +45,7 @@ _WMO = (
 _ID_SEP = "|"
 """A to-do's id is ``<list id>|<task id>``; Graph ids are base64 and never hold a bar."""
 MAIL_SERVER = "gmail"
-"""Google's Workspace MCP server with only Gmail switched on (ADR 0054)."""
+"""Google's Workspace MCP server with only Gmail switched on (ADR 0055)."""
 _MAIL_LIMIT = 20
 _NOT_A_PERSON = re.compile(r"no-?reply|notification|mailer-daemon|bounce", re.IGNORECASE)
 

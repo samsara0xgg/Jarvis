@@ -37,6 +37,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -62,7 +63,7 @@ from jarvis.decision import (
 )
 from jarvis.decision.confirm_grammar import ConfirmGrammarConfigError, load_confirm_grammar
 from jarvis.decision.cost_guard import CostRecorder
-from jarvis.decision.llm import LLMClient, load_llm_config
+from jarvis.decision.llm import LLMClient
 from jarvis.decision.llm_session import LLMSessionFactory
 from jarvis.decision.packet import assemble_packet
 from jarvis.decision.policy import (
@@ -99,17 +100,20 @@ from jarvis.decision.response_run import (
 from jarvis.decision.stream_gate import routine_stream_policy
 from jarvis.decision.tier0 import Tier0ConfigError, load_tier0_table, validate_tier0_table
 from jarvis.deployment import RuntimePaths, bootstrap_runtime, load_env_file
+from jarvis.deployment.models import default_sensevoice_dir, default_silero_vad_path
 from jarvis.execution.mcp_oauth import DEFAULT_OAUTH_CALLBACK_PORT
 from jarvis.execution.mcp_tools import DEFAULT_MCP_TIMEOUT_S, McpServers, is_oauth, stdio_env
+from jarvis.execution.path_resolver import (
+    FileTargetsConfigError,
+    configure_file_targets,
+    resolve_write_target,
+)
 from jarvis.execution.path_resolver import resolve as resolve_file_entity
-from jarvis.execution.path_resolver import resolve_write_target
 from jarvis.execution.tools import (
-    DEFAULT_OBSIDIAN_VAULT_ROOT,
     DEFAULT_SCREEN_MAX_WIDTH_PX,
     DEFAULT_WEB_FETCH_MAX_BYTES,
     DEFAULT_WEB_FETCH_MAX_TEXT_BYTES,
     DEFAULT_WEB_SEARCH_MAX_RESULTS,
-    DEFAULT_WEB_SEARCH_PROVIDER,
     DEFAULT_WEB_TIMEOUT_S,
     ActionLifecycle,
     ReadOnlyToolRegistry,
@@ -129,8 +133,9 @@ from jarvis.runtime.projects import ProjectsService
 from jarvis.runtime.settings import REPLY_LINES, Settings, apply_settings
 from jarvis.runtime.stream_bridge import LoopBoundTokenStream
 from jarvis.runtime.work_state import WorkStateService, build_analyst
-from jarvis.shared import CallerPrincipal, Event
+from jarvis.shared import CallerPrincipal, Event, lang
 from jarvis.shared.action_admission import bind_action_admission
+from jarvis.shared.lang import language_name
 from jarvis.shared.pricing import load_pricing_table
 from jarvis.shared.realtime import (
     RESPONSE_CANCEL_REASONS,
@@ -183,10 +188,9 @@ LOGGER = logging.getLogger("jarvis.runtime")
 _DEFAULT_CONFIG_FILENAME = Path("config") / "jarvis.yaml"
 _DEFAULT_PROMPT_FILENAME = Path("prompts") / "jarvis_v1.md"
 
-# ADR-0005 §12 pre-flight artifacts.  These two relative paths are the
-# absent-key fallback and stay cwd-relative on purpose: the owner's running
-# daemon resolves them against its working directory today, and moving the
-# default would silently relocate a live system's model lookup.
+# ADR-0005 §12 pre-flight artifacts for hand-assembled runtimes (tests).
+# ``bootstrap_runtime_app`` anchors the absent-key default at
+# ``<runtime root>/models`` instead (``jarvis.deployment.models``).
 DEFAULT_SENSEVOICE_DIR = Path("data/sensevoice-small-int8")
 DEFAULT_SILERO_VAD_PATH = Path("data/silero_vad.onnx")
 
@@ -243,24 +247,13 @@ _FALLBACK_CANCEL_TIMEOUT_MS: int = 500
 _DEFAULT_VISION_PRESET_NAME: str = "vision"
 
 # System prompt for the injected vision client (`_LLMVisionClient` below).
-# Directed at the vision model, not Allen, so it stays English; asking for
-# a Chinese answer means `screen_look`'s text observation slots straight
-# into the rest of Jarvis's Chinese-speaking pipeline without a translation
-# hop.
+# Asking for the user's language means `screen_look`'s text observation
+# slots straight into a Tier 0 reply without a translation hop.
 _VISION_SYSTEM_PROMPT: str = (
     "You are a screen-reading assistant. Describe what is currently "
-    "visible in the screenshot factually and concisely. Respond in "
-    "Chinese (中文)."
+    "visible in the screenshot factually and concisely. Respond in {language}."
 )
 
-# Fallback ``tools.obsidian.vault_root`` (ADR-0011 D7) for a runtime
-# whose config carries no ``tools:`` block. NIT-FIX 8 (ADR-0011 §12):
-# unlike ``_FALLBACK_OBSERVER_POLL_INTERVAL_S`` above, this one does
-# NOT hold its own copy of the literal — two copies of the same vault
-# path in two layers can silently drift. `jarvis.execution.tools`
-# (L4, the layer this fallback exists for) owns
-# ``DEFAULT_OBSIDIAN_VAULT_ROOT``; `jarvis.runtime` just imports it —
-# a higher-layer-imports-lower-layer edge `.importlinter` allows.
 
 
 # --- Exceptions -------------------------------------------------------------
@@ -508,14 +501,99 @@ def _locate_repo_root(start: Path) -> Path:
     raise RuntimeBootstrapError(msg)
 
 
-def _load_full_config(path: Path) -> Mapping[str, Any]:
-    """Parse the entire YAML config file (not just the ``llm:`` block)."""
+def _read_yaml_mapping(path: Path) -> dict[str, Any]:
     with path.open("r", encoding="utf-8") as fh:
         raw = yaml.safe_load(fh) or {}
     if not isinstance(raw, dict):
         msg = f"config at {path} is not a YAML mapping"
         raise RuntimeBootstrapError(msg)
     return raw
+
+
+def _overlay(base: Mapping[str, Any], top: Mapping[str, Any]) -> dict[str, Any]:
+    """``top`` over ``base``: mappings merge key by key, any other value replaces."""
+    merged = dict(base)
+    for key, value in top.items():
+        below = merged.get(key)
+        if isinstance(below, Mapping) and isinstance(value, Mapping):
+            merged[key] = _overlay(below, value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _load_full_config(path: Path, settings_path: Path | None = None) -> Mapping[str, Any]:
+    """The shipped config at ``path`` with the user's own settings laid over it.
+
+    ``config/jarvis.yaml`` holds what every install shares; the runtime
+    root's ``settings.yaml`` holds this user's values (projects, watched
+    repos, timezone, vault, ...). A missing settings file changes nothing.
+    """
+    raw = _read_yaml_mapping(path)
+    if settings_path is not None and settings_path.is_file():
+        raw = _overlay(raw, _read_yaml_mapping(settings_path))
+    name = _assistant_name(raw)
+    return {key: _named(value, name) for key, value in raw.items()}
+
+
+def _assistant_name(config: Mapping[str, Any]) -> str:
+    """``assistant_name`` — what the user calls the assistant; ``Jarvis`` when unset."""
+    name = config.get("assistant_name")
+    return name.strip() if isinstance(name, str) and name.strip() else "Jarvis"
+
+
+def _language(config: Mapping[str, Any]) -> lang.Language:
+    """``language`` from the user's settings, else the system language."""
+    raw = config.get("language")
+    chosen = lang.normalize(raw)
+    if chosen is None and raw not in (None, ""):
+        LOGGER.warning("settings: language %r is not zh or en; using the system language", raw)
+    return chosen or _system_language()
+
+
+def _system_language() -> lang.Language:
+    """The first of macOS's preferred languages (then ``$LANG``): Chinese or English."""
+    try:
+        out = subprocess.run(
+            ["/usr/bin/defaults", "read", "-g", "AppleLanguages"],
+            capture_output=True, text=True, timeout=2, check=False,
+        ).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        out = ""
+    first = out.strip().strip("()").split(",")[0].strip().strip('"')
+    return lang.normalize(first) or lang.normalize(os.environ.get("LANG")) or "en"
+
+
+def save_language(settings_path: Path, code: str) -> lang.Language:
+    """Switch every fixed sentence to ``code`` now and keep it in ``settings.yaml``.
+
+    Only the top-level ``language:`` line changes (or is appended); the rest
+    of the user's file, comments included, stays as written.
+    """
+    chosen = lang.normalize(code)
+    if chosen is None:
+        msg = f"language must be one of {', '.join(lang.LANGUAGES)}"
+        raise ValueError(msg)
+    text = settings_path.read_text(encoding="utf-8") if settings_path.is_file() else ""
+    line = f"language: {chosen}\n"
+    text, found = re.subn(r"(?m)^language:.*(?:\n|$)", line, text)
+    if not found:
+        text += ("\n" if text and not text.endswith("\n") else "") + line
+    staged = settings_path.with_suffix(".yaml.tmp")
+    staged.write_text(text, encoding="utf-8")
+    staged.replace(settings_path)
+    return lang.set_language(chosen)
+
+
+def _named(value: Any, name: str) -> Any:  # noqa: ANN401 — any YAML value.
+    """Put the assistant's name in for every ``{assistant}`` in the config's strings."""
+    if isinstance(value, str):
+        return value.replace("{assistant}", name)
+    if isinstance(value, Mapping):
+        return {key: _named(item, name) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_named(item, name) for item in value]
+    return value
 
 
 def _positive_float(value: object, fallback: float) -> float:
@@ -866,8 +944,11 @@ def _daily_report_preset(config: Mapping[str, Any]) -> str:
     return _work_state_preset(config)
 
 
-def _codex_sessions_path() -> Path | None:
-    """Codex's own session directory when this machine has one; ADR 0024's agent material."""
+def _codex_sessions_path(config: Mapping[str, Any]) -> Path | None:
+    """Codex's own session directory, only when ``daily_report.codex_sessions`` opts in."""
+    block = config.get("daily_report")
+    if not isinstance(block, Mapping) or block.get("codex_sessions") is not True:
+        return None
     root = Path.home() / ".codex" / "sessions"
     return root if root.is_dir() else None
 
@@ -928,17 +1009,13 @@ def _observer_repo_paths(config: Mapping[str, Any]) -> tuple[str, ...]:
     )
 
 
-def _obsidian_vault_root(config: Mapping[str, Any]) -> Path:
-    """Return `tools.obsidian.vault_root`, `~`-expanded (ADR-0011 D7).
+def _obsidian_vault_root(config: Mapping[str, Any]) -> Path | None:
+    """Return `tools.obsidian.vault_root`, `~`-expanded (ADR-0011 D7); blank is None.
 
     Threaded into `build_default_registry`'s `search_notes` closure at
-    registry-build time — L4 handlers do not load YAML themselves
-    (same reason `tier0_table` / `observer_poll_interval_s` are read
-    here and threaded down rather than re-parsed inside `jarvis.decision`
-    or `jarvis.execution`). A missing/malformed `tools:` or `obsidian:`
-    block degrades to the shipped default rather than failing boot —
-    `search_notes` on a misconfigured key still resolves quietly to
-    "vault not found" (same posture as `_observer_poll_interval_s`).
+    registry-build time — L4 handlers do not load YAML themselves. None
+    registers no `search_notes`, so a user who named no vault never has a
+    folder such as `~/Documents` touched on their behalf.
     """
     block = config.get("tools")
     if isinstance(block, Mapping):
@@ -947,7 +1024,18 @@ def _obsidian_vault_root(config: Mapping[str, Any]) -> Path:
             raw = obsidian_block.get("vault_root")
             if isinstance(raw, str) and raw.strip():
                 return Path(raw).expanduser()
-    return DEFAULT_OBSIDIAN_VAULT_ROOT
+    return None
+
+
+def _install_open_path(config: Mapping[str, Any]) -> None:
+    """Hand `tools.open_path` to L4's resolver; malformed bookmarks fail the boot."""
+    block = config.get("tools")
+    raw = block.get("open_path") if isinstance(block, Mapping) else None
+    try:
+        configure_file_targets(raw if isinstance(raw, Mapping) else {})
+    except FileTargetsConfigError as exc:
+        msg = f"runtime: tools.open_path invalid: {exc}"
+        raise RuntimeBootstrapError(msg) from exc
 
 
 def _realtime_model_path(
@@ -1001,8 +1089,12 @@ def _realtime_model_path(
     return (config_dir / candidate).resolve()
 
 
-def _web_search_provider_config(config: Mapping[str, Any]) -> tuple[str, str | None]:
+def _web_search_provider_config(config: Mapping[str, Any]) -> tuple[str | None, str | None]:
     """Return `(search_provider, api_key)` from `tools.web.*`.
+
+    A blank `search_provider` picks by which key the environment holds,
+    `TAVILY_API_KEY` first, then `EXA_API_KEY`; with neither it returns
+    `(None, None)` and no `web_search` is registered.
 
     The key is resolved HERE, from the env var named by
     `tools.web.search_api_key_env` — same indirection the LLM presets
@@ -1022,16 +1114,22 @@ def _web_search_provider_config(config: Mapping[str, Any]) -> tuple[str, str | N
     unknown provider name, or an unset variable all degrade inside
     `_resolve_search_backend` rather than failing boot.
     """
-    provider = DEFAULT_WEB_SEARCH_PROVIDER
+    provider = ""
     raw_key_env: object = None
     block = config.get("tools")
     if isinstance(block, Mapping):
         web_block = block.get("web")
         if isinstance(web_block, Mapping):
             raw_provider = web_block.get("search_provider")
-            if isinstance(raw_provider, str) and raw_provider.strip():
+            if isinstance(raw_provider, str):
                 provider = raw_provider.strip()
             raw_key_env = web_block.get("search_api_key_env")
+    if not provider:
+        for name in ("tavily", "exa"):
+            found = os.environ.get(f"{name.upper()}_API_KEY", "").strip()
+            if found:
+                return name, found
+        return None, None
 
     key_env = f"{provider.strip().upper()}_API_KEY"
     if isinstance(raw_key_env, str) and raw_key_env.strip():
@@ -1249,13 +1347,13 @@ class _LLMVisionClient:
             if self._cost_recorder is None:
                 result = self._llm_client.chat(
                     messages=messages,
-                    system=_VISION_SYSTEM_PROMPT,
+                    system=_VISION_SYSTEM_PROMPT.format(language=language_name()),
                 )
             else:
                 result = self._cost_recorder.chat(
                     self._llm_client,
                     messages=messages,
-                    system=_VISION_SYSTEM_PROMPT,
+                    system=_VISION_SYSTEM_PROMPT.format(language=language_name()),
                     kind="vision",
                     turn_id=None,
                 )
@@ -1404,14 +1502,27 @@ def _load_runtime_env_and_trace(paths: RuntimePaths) -> None:
     _configure_realtime_trace_export(paths)
 
 
-def _register_workers(registry: ToolRegistry, paths: RuntimePaths) -> Workers:
+def _register_workers(
+    registry: ToolRegistry, paths: RuntimePaths, config: Mapping[str, Any]
+) -> Workers | None:
     """ADR 0019: workers are threads on one ``codex app-server``.
 
+    Off unless ``tools.workers.enabled`` and ``codex`` is on this machine;
+    ``tools.workers.roots`` lists the folders a worker may be started in.
     The server starts lazily on the first spawn, so a one-shot CLI turn
     pays nothing; the daemon stops it at shutdown.
     """
-    workers = Workers(paths.root / "codex.sock", paths.event_log)
-    for worker_tool in make_worker_tools(workers):
+    tools_block = config.get("tools")
+    block = tools_block.get("workers") if isinstance(tools_block, Mapping) else None
+    if not isinstance(block, Mapping) or block.get("enabled") is not True:
+        return None
+    codex = shutil.which("codex")
+    if codex is None:
+        LOGGER.warning("tools.workers is on but codex is not on PATH; no workers this boot")
+        return None
+    roots = tuple(Path(str(r)).expanduser().resolve() for r in block.get("roots") or ())
+    workers = Workers(paths.root / "codex.sock", paths.event_log, codex_bin=codex)
+    for worker_tool in make_worker_tools(workers, roots):
         registry.register(worker_tool)
     return workers
 
@@ -1462,7 +1573,7 @@ def mcp_login(
     """ADR 0032: log one `auth: oauth` server in through the browser; the daemon reuses the token.
 
     A local server that keeps its own login names its login command in
-    ``login_args`` (ADR 0054); that command runs here, in the terminal, with the
+    ``login_args`` (ADR 0055); that command runs here, in the terminal, with the
     entry's command and environment, so it asks for exactly what the daemon's
     server will use. Returns a process exit code: 0 logged in, 1 the server
     refused or never asked for a login, 2 the entry is missing or has no login;
@@ -1475,7 +1586,7 @@ def mcp_login(
         repo_root = config_path.resolve().parent.parent
     paths = bootstrap_runtime(runtime_root)
     load_env_file(paths.root)
-    config = _load_full_config(config_path)
+    config = _load_full_config(config_path, paths.settings)
     block = _mcp_block(config)
     servers = _all_mcp_servers(config, _plugins(config, repo_root))
     spec = servers.get(server)
@@ -1515,7 +1626,7 @@ def mcp_login(
     return 0
 
 
-def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays explicit
+def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stays explicit
     *,
     config_path: Path | None = None,
     prompt_path: Path | None = None,
@@ -1598,8 +1709,10 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
     #    need `tools.obsidian.vault_root` / `tools.web.*` threaded into
     #    the registry at build time (ADR-0011 D7) — L4 handlers do not
     #    load YAML themselves.
-    # ADR 0052: the Settings page's saved values lie over the YAML for this boot.
-    full_config = apply_settings(_load_full_config(config_path), paths.root)
+    # ADR 0052: the Settings page's saved values lie over the YAML and the
+    # user's settings.yaml for this boot.
+    full_config = apply_settings(_load_full_config(config_path, paths.settings), paths.root)
+    lang.set_language(_language(full_config))
     wave1_features = _wave1_feature_flags(full_config)
     (
         web_search_max_results,
@@ -1608,6 +1721,7 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
         web_timeout_s,
     ) = _web_tools_config(full_config)
     web_search_provider, web_search_api_key = _web_search_provider_config(full_config)
+    _install_open_path(full_config)
     vision_preset_name, screen_max_width_px = _screen_tools_config(full_config)
     memory = MemorySettings.from_config(full_config.get("memory"), runtime_root=paths.root)
     session = SessionSettings.from_config(full_config.get("session"))
@@ -1658,7 +1772,7 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
         ),
         model=_daily_report_preset(full_config),
         tz=_work_state_timezone(full_config),
-        codex_sessions_path=_codex_sessions_path(),
+        codex_sessions_path=_codex_sessions_path(full_config),
     )
     registry = build_default_registry(
         memory_db_path=memory.db_path,
@@ -1683,7 +1797,7 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
         ),
         screen_max_width_px=screen_max_width_px,
     )
-    workers = _register_workers(registry, paths)
+    workers = _register_workers(registry, paths, full_config)
     plugin_connections = PluginConnections(
         repo_root=repo_root, runtime_root=paths.root, event_log=paths.event_log,
         registry=registry, config=full_config,
@@ -1750,7 +1864,10 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
         raise RuntimeBootstrapError(msg) from exc
 
     # 4. L3 LLM client. `full_config` was already loaded at step 3 above.
-    llm_config = load_llm_config(config_path)
+    llm_config = full_config.get("llm")
+    if not isinstance(llm_config, Mapping):
+        msg = f"runtime: {config_path} has no 'llm' section"
+        raise RuntimeBootstrapError(msg)
     llm_client = LLMClient(llm_config)
 
     # 4b. ADR-0008 Step 2 (Wave 4A). The whole flag graph is resolved once,
@@ -1775,7 +1892,9 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
     )
 
     # Plugin skills are sampled per turn so connections need no daemon restart.
-    system_prompt = prompt_path.read_text(encoding="utf-8")
+    system_prompt = prompt_path.read_text(encoding="utf-8").replace(
+        "{assistant}", _assistant_name(full_config)
+    )
     if full_config.get("reply_language") in REPLY_LINES:
         reply_line = REPLY_LINES[full_config["reply_language"]]
         system_prompt = f"{system_prompt.rstrip()}\n\n{reply_line}\n"
@@ -1807,13 +1926,13 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
             full_config,
             key="sensevoice_dir",
             config_dir=config_dir,
-            fallback=DEFAULT_SENSEVOICE_DIR,
+            fallback=default_sensevoice_dir(paths.root),
         ),
         silero_vad_path=_realtime_model_path(
             full_config,
             key="silero_vad_path",
             config_dir=config_dir,
-            fallback=DEFAULT_SILERO_VAD_PATH,
+            fallback=default_silero_vad_path(paths.root),
         ),
         tool_cues=tool_cues,
         work_state=work_state,

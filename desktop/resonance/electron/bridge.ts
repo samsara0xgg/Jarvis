@@ -16,6 +16,15 @@ const ACCOUNT_PAGES: Record<string, string> = {
 };
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 export function registerDaemonBridge(win: BrowserWindow, { lab = false, verification = false } = {}) {
+  // Every daemon route needs the local key. The renderer never holds it: its requests and
+  // sockets to the daemon get the header here, read fresh so a first boot's key is picked up.
+  const daemonPort = process.env.JARVIS_INHERENT_BRIDGE_PORT ?? '8006';
+  const keyFile = path.join(process.env.JARVIS_RUNTIME_ROOT ?? path.join(homedir(), '.jarvis'), 'plugin-access.json');
+  win.webContents.session.webRequest.onBeforeSendHeaders({ urls: ['http://127.0.0.1/*', 'ws://127.0.0.1/*'] }, (details, callback) => {
+    if (new URL(details.url).port !== daemonPort) { callback({}); return; }
+    void readFile(keyFile, 'utf8').then(text => JSON.parse(text).token as unknown).catch(() => undefined).then(token =>
+      callback({ requestHeaders: typeof token === 'string' && token ? { ...details.requestHeaders, Authorization: `Bearer ${token}` } : details.requestHeaders }));
+  });
   // The renderer can request plugin operations but never read the daemon's
   // management credential or choose an arbitrary URL/file/process to open.
   ipcMain.handle('plugins', async (event, operation: string, data: Record<string, unknown> = {}) => {

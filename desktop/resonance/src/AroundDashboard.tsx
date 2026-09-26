@@ -633,7 +633,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
     </>,
     projects: () => <>
       {back(t(TITLES.projects), t(['last 7 days', '最近 7 天']))}
-      <div className="pg-body">{projects.missing ? <p className="pg-sec muted">{t(['No projects set up. List them under projects in config/jarvis.yaml.', '还没设置项目。在 config/jarvis.yaml 的 projects 下列出来。'])}</p> : !projectsView ? <p className="pg-sec muted">{t(['Syncing…', '同步中…'])}</p> : <>
+      <div className="pg-body">{projects.missing ? <p className="pg-sec muted">{t(['No projects set up. List them under projects in ~/.jarvis/settings.yaml.', '还没设置项目。在 ~/.jarvis/settings.yaml 的 projects 下列出来。'])}</p> : !projectsView ? <p className="pg-sec muted">{t(['Syncing…', '同步中…'])}</p> : <>
         {activeProjects.map(p => <article className="pg-sec pj" key={p.id}>
           <div className="pj-top"><b>{p.name}</b><span>{duration(p.seconds)}{p.commits.count ? t([` · ${p.commits.count} commits`, ` · ${p.commits.count} 次提交`]) : ''}</span></div>
           <Cols days={p.days} dates={projectsView.days}/>

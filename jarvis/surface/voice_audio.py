@@ -2452,6 +2452,16 @@ class AudioIngress:
             return self._capability
 
     @property
+    def capture_active(self) -> bool:
+        """Whether a capture lane is inside an utterance: Allen is mid-sentence."""
+        return self._capture_active
+
+    def set_input_device(self, device: str | None) -> None:
+        """Choose the microphone the next epoch opens (ADR 0054); ``None`` follows the default."""
+        if isinstance(self._backend, voice_backend.SoundDeviceDuplexBackend):
+            self._backend.set_device(device)
+
+    @property
     def device_profile(self) -> voice_backend.DeviceProfileSnapshot | None:
         """Return the D9 snapshot of the active epoch, ``None`` while revoked."""
         return self._device_profile

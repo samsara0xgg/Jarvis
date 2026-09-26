@@ -122,7 +122,9 @@ def test_claude_sessions_rows_over_http(tmp_path: Path, monkeypatch: pytest.Monk
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
     client = TestClient(
-        create_app(InherentDeps(submit_callable=_noop, broadcaster=InherentBroadcaster()))
+        create_app(InherentDeps(
+            submit_callable=_noop, broadcaster=InherentBroadcaster(), claude_sessions_read=True
+        ))
     )
 
     body = client.get("/inherent/claude-sessions").json()
@@ -160,7 +162,9 @@ def test_claude_sessions_missing_binary_reports_why(
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("PATH", str(tmp_path))
     client = TestClient(
-        create_app(InherentDeps(submit_callable=_noop, broadcaster=InherentBroadcaster()))
+        create_app(InherentDeps(
+            submit_callable=_noop, broadcaster=InherentBroadcaster(), claude_sessions_read=True
+        ))
     )
 
     body = client.get("/inherent/claude-sessions").json()

@@ -79,7 +79,10 @@ export function SettingsPage({ lang, port, open, cat, onCat, ctl, accounts, hidd
   const replyName = t(reply.find(([k]) => k === v('reply_language'))?.[1] ?? ['—', '—']);
   const cats: Cat[] = [
     { id: 'general', icon: <Globe/>, name: ['General', '通用'], sum: `${lang === 'zh' ? '中文' : 'English'} · ${t(['answers', '回答'])} ${replyName}`, items: [
-      { id: 'lang', name: ['Interface language', '界面语言'], note: ['Her panel and menus', '她的面板和菜单'], ctl: { k: 'seg', value: lang, opts: [['en', ['English', 'English']], ['zh', ['中文', '中文']]], set: value => update({ lang: value as Lang }) } },
+      { id: 'lang', name: ['Interface language', '界面语言'], note: ['Her panel, and what Jarvis says on its own: the time, confirmations, reports', '她的面板，和 Jarvis 自己说的固定句子：报时、确认、日报'], ctl: { k: 'seg', value: lang, opts: [['en', ['English', 'English']], ['zh', ['中文', '中文']]], set: value => {
+        update({ lang: value as Lang });
+        if (port) postRoute(port, '/inherent/language', { language: value }).catch(() => notify(t(['Jarvis’s own phrases didn’t switch.', 'Jarvis 的固定句子没切换过去。'])));
+      } } },
       { id: 'reply', name: ['Jarvis answers in', 'Jarvis 用什么语言回答'], note: ['Follow me = the language you spoke in', '跟着我 = 你用什么语言说，它就用什么回答'], ctl: { k: 'seg', value: String(v('reply_language') ?? ''), opts: reply, set: value => void save('reply_language', value) }, off },
       { id: 'asr', name: ['Speech recognition', '语音识别'], ctl: { k: 'info', text: t(['Chinese + English', '中英文自动']), tone: 'ok' } },
       { id: 'open-by', name: ['Open the Dashboard', '打开面板'], ctl: { k: 'seg', value: s.openBy, opts: [['both', ['Both', '都行']], ['click', ['Double-click', '双击她']], ['hover', ['Hover', '悬停刘海']]], set: value => update({ openBy: value as typeof s.openBy }) } },

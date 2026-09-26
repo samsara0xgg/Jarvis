@@ -49,7 +49,7 @@ from jarvis.runtime import (
     make_barge_in_interrupt_callable,
     make_response_cancel_callable,
 )
-from jarvis.shared import Event
+from jarvis.shared import Event, lang
 from jarvis.shared.realtime import (
     Wave1FeatureFlags,
     new_response_id,
@@ -117,7 +117,7 @@ def test_four_d6_rows_map_to_their_declared_intent_and_variant_set() -> None:
         intent = commentary_intent_for(_action_event(event_type, action_id="ACT-7"))
         assert intent is not None, event_type
         assert intent.intent_type == intent_type
-        assert intent.content_hint in _D6_ROWS[event_type][1]["zh"], event_type
+        assert intent.content_hint in lang.variants(_D6_ROWS[event_type][1], "zh"), event_type
         assert intent.subject_ref == "ACT-7"
         assert intent.surface_hint == "speech"
         assert intent.freshness_required is True
@@ -523,7 +523,7 @@ def test_action_row_speaks_one_commentary_run_in_the_turn_group(tmp_path: Path) 
     assert _spoken(reader) == [
         commentary_intent_for(dispatched).content_hint,  # type: ignore[union-attr]
     ]
-    assert _spoken(reader)[0] in _D6_ROWS["action.dispatched"][1]["zh"]
+    assert _spoken(reader)[0] in lang.variants(_D6_ROWS["action.dispatched"][1], "zh")
     assert _typed_payloads(reader, "surface.response_open")[0]["attention_channel"] == (
         COMMENTARY_ATTENTION_CHANNEL
     )
@@ -656,7 +656,7 @@ def test_live_pending_confirmation_silences_commentary(tmp_path: Path) -> None:
         _wait_until(lambda: _count(reader, "surface.response_emitted") == 1)
     # `_only_phrase` asserts there is exactly one; the running row spoke and
     # the silenced dispatched row did not take the turn's slot with it.
-    assert _only_phrase(reader) in _D6_ROWS["action.running"][1]["zh"]
+    assert _only_phrase(reader) in lang.variants(_D6_ROWS["action.running"][1], "zh")
 
 
 # --- observer: one phrase per turn -----------------------------------------
@@ -745,7 +745,7 @@ def test_six_turns_speak_variants_from_the_acknowledge_set(tmp_path: Path) -> No
 
     spoken = _spoken(reader)
     assert len(spoken) == len(action_ids)
-    variants = _D6_ROWS["action.dispatched"][1]["zh"]
+    variants = lang.variants(_D6_ROWS["action.dispatched"][1], "zh")
     assert all(phrase in variants for phrase in spoken), spoken
     assert len(set(spoken)) >= 2, spoken
 
@@ -761,10 +761,13 @@ def test_the_acknowledge_follows_the_tool_and_the_language_allen_used(tmp_path: 
     reader = _reader(runtime)
     cases = [
         ("T-en", "Search the web for today's weather in Vancouver.", "web_search",
-         _ACKNOWLEDGE_BY_TOOL["lookup"]["en"]),
-        ("T-zh", "帮我搜一下今天温哥华的天气", "web_search", _ACKNOWLEDGE_BY_TOOL["lookup"]["zh"]),
-        ("T-cx", "让 Codex 把测试修好", "spawn_worker", _ACKNOWLEDGE_BY_TOOL["codex"]["zh"]),
-        ("T-wr", "把这段写进文件", "write_file", _D6_ROWS["action.dispatched"][1]["zh"]),
+         lang.variants(_ACKNOWLEDGE_BY_TOOL["lookup"], "en")),
+        ("T-zh", "帮我搜一下今天温哥华的天气", "web_search",
+         lang.variants(_ACKNOWLEDGE_BY_TOOL["lookup"], "zh")),
+        ("T-cx", "让 Codex 把测试修好", "spawn_worker",
+         lang.variants(_ACKNOWLEDGE_BY_TOOL["codex"], "zh")),
+        ("T-wr", "把这段写进文件", "write_file",
+         lang.variants(_D6_ROWS["action.dispatched"][1], "zh")),
     ]
     with _Observer(runtime):
         for turn_id, transcript, tool_name, _ in cases:
@@ -1171,7 +1174,7 @@ def test_a_terminal_row_with_no_correlation_finds_its_turn_through_dispatch(
 
     started = _typed_payloads(reader, "response.started")
     assert [payload["turn_id"] for payload in started] == ["T-join"]
-    assert _only_phrase(reader) in _D6_ROWS["action.result_observed"][1]["zh"]
+    assert _only_phrase(reader) in lang.variants(_D6_ROWS["action.result_observed"][1], "zh")
 
 
 # --- the per-turn assumption the card asked the lane to prove ---------------

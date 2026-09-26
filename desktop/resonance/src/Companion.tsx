@@ -12,7 +12,8 @@ import { usePlugins } from './PluginPanel';
 import { AgentWing, isMarkLook, wingSlots, type MarkLook } from './AgentMarks';
 import { answerRequest, type ShownAgent } from './agents';
 import { NoticeCard, noticeCue, useNotices, type Notice } from './Notices';
-import { tr, useCompanionSettings, type L } from './companionSettings';
+import { tr, useCompanionSettings, type L, type Lang } from './companionSettings';
+import { useRoute } from './homeData';
 import type { Controls as DashControls, Look } from './SettingsPage';
 import './companion.css';
 
@@ -83,7 +84,10 @@ export function Companion() {
   useEffect(() => window.jarvis?.onTuck?.(setTuck), []);
   const geo = useMemo(() => layout(placement, tuck.left), [placement, tuck.left]);
   const [preferences, setPreferences] = usePreferences();
-  const [companion] = useCompanionSettings();
+  const [companion, updateCompanion] = useCompanionSettings();
+  // One language switch (Settings → Interface language): her panel follows the language Jarvis speaks in.
+  const jarvisLang = useRoute<{ language: Lang }>(port, '/inherent/language', true, 3_600_000).data?.language;
+  useEffect(() => { if (jarvisLang === 'en' || jarvisLang === 'zh') updateCompanion({ lang: jarvisLang }); }, [jarvisLang]);
   const t = (l: L) => tr(companion.lang, l);
   useEffect(() => { warmFeedback(); return stopFeedback; }, []);
   const [zone, setZone] = useState<Zone>('none');

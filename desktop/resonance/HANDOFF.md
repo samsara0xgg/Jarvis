@@ -55,7 +55,7 @@ Generated evidence is local and is not required to run the current checks.
 Live link: start a daemon on a test port and run
 `JARVIS_INHERENT_BRIDGE_PORT=8016 RESONANCE_TEST_WAV=<16 kHz mono wav>
 RESONANCE_TEST_DAEMON_PID=<pid> node scripts/verify-runtime.mjs`. It types a
-turn through the real composer, uploads the utterance to `/inherent/asr-submit`,
+turn through the real composer, uploads the utterance to `/inherent/asr-submit/v2`,
 and SIGTERMs the daemon to prove the reconnect panel. Never point it at the
 real 8006 daemon.
 
