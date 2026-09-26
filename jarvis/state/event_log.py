@@ -763,7 +763,8 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         owner_layer="L5",
         actor="jarvis_runtime",
         required_payload=("turn_id", "exception_repr"),
-        optional_payload=("trigger_event_id",),
+        # reason: why, in words the desktop can show (llm.failure_reason).
+        optional_payload=("trigger_event_id", "reason"),
         schema_version=1,
     ),
     # --- ADR-0009 residency & perception extensions (§4 registry table) ---

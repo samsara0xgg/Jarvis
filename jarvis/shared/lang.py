@@ -62,6 +62,11 @@ def language_name(lang: Language | None = None) -> str:
     return {"zh": "Simplified Chinese", "en": "English"}[lang or _current]
 
 
+def say_voice() -> str:
+    """The macOS ``say`` voice for the current language (the no-network fallback)."""
+    return {"zh": "Tingting", "en": "Samantha"}[_current]
+
+
 def t(key: str, /, *, lang: Language | None = None, **fields: object) -> str:
     """The sentence ``key`` in ``lang`` (default: the current language), formatted."""
     text = TEXT[key][lang or _current]
@@ -723,6 +728,70 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
         "en": "I used up this turn's tool calls before I had an answer. Try asking a smaller"
         " part of the question.",
     },
+    # Why a turn failed, one per llm.failure_reason; the desktop shows it in
+    # place of an answer.
+    "failure.missing_key": {
+        "zh": "还没有填模型的 API 密钥，我没法回答。请在设置里填一个。",
+        "en": "There is no API key for the model yet, so I can't answer. Add one in Settings.",
+    },
+    "failure.unauthorized": {
+        "zh": "模型服务拒绝了这个密钥（401），可能填错了或已失效。请在设置里换一个。",
+        "en": "The model service rejected the key (401). It may be mistyped or revoked;"
+        " replace it in Settings.",
+    },
+    "failure.model_denied": {
+        "zh": "这个密钥没有使用这个模型的权限。",
+        "en": "This key is not allowed to use this model.",
+    },
+    "failure.quota": {
+        "zh": "账户额度用完了，充值后再试。",
+        "en": "The account is out of credit. Add credit, then try again.",
+    },
+    "failure.rate_limited": {
+        "zh": "请求太频繁，被限流了。稍等一下再试。",
+        "en": "Too many requests right now. Wait a moment, then try again.",
+    },
+    "failure.network": {
+        "zh": "连不上模型服务，检查一下网络。",
+        "en": "I can't reach the model service. Check the network.",
+    },
+    "failure.timeout": {
+        "zh": "模型太久没有回应，这一轮放弃了。可以再说一次。",
+        "en": "The model took too long to answer. Try again.",
+    },
+    "failure.error": {
+        "zh": "这一轮出错了，没有完成。可以再说一次。",
+        "en": "Something went wrong and this turn did not finish. Try again.",
+    },
+    # First-run setup: the line a picked voice says when previewed.
+    "setup.preview": {
+        "zh": "你好，我是 {assistant}。今天想先做点什么？",
+        "en": "Hi, I'm {assistant}. What would you like to do first today?",
+    },
+    # The voices first-run setup offers, per language (runtime/settings.py
+    # SETUP_VOICES): a name and a few words on how each sounds.
+    "voice.Chinese (Mandarin)_Warm_Bestie": {"zh": "暖心闺蜜", "en": "Warm Bestie"},
+    "voice.Chinese (Mandarin)_Warm_Bestie.note": {"zh": "温暖，清楚", "en": "warm, clear"},
+    "voice.Chinese (Mandarin)_Sweet_Lady": {"zh": "甜美女声", "en": "Sweet Lady"},
+    "voice.Chinese (Mandarin)_Sweet_Lady.note": {"zh": "温柔，甜", "en": "tender, sweet"},
+    "voice.Chinese (Mandarin)_Mature_Woman": {"zh": "御姐音", "en": "Mature Woman"},
+    "voice.Chinese (Mandarin)_Mature_Woman.note": {"zh": "成熟，有魅力", "en": "mature, charming"},
+    "voice.Chinese (Mandarin)_Reliable_Executive": {"zh": "稳重精英", "en": "Reliable Executive"},
+    "voice.Chinese (Mandarin)_Reliable_Executive.note": {
+        "zh": "沉稳，可靠", "en": "steady, reliable",
+    },
+    "voice.Chinese (Mandarin)_Gentle_Youth": {"zh": "温和青年", "en": "Gentle Youth"},
+    "voice.Chinese (Mandarin)_Gentle_Youth.note": {"zh": "轻松，像朋友", "en": "easy, like a friend"},
+    "voice.English_SereneWoman": {"zh": "沉静女声", "en": "Serene Woman"},
+    "voice.English_SereneWoman.note": {"zh": "平静，友好", "en": "calm, friendly"},
+    "voice.English_radiant_girl": {"zh": "明亮女孩", "en": "Radiant Girl"},
+    "voice.English_radiant_girl.note": {"zh": "活泼，明亮", "en": "lively, bright"},
+    "voice.English_CalmWoman": {"zh": "舒缓女声", "en": "Calm Woman"},
+    "voice.English_CalmWoman.note": {"zh": "平和，舒缓", "en": "soothing"},
+    "voice.English_FriendlyPerson": {"zh": "友好男声", "en": "Friendly Guy"},
+    "voice.English_FriendlyPerson.note": {"zh": "自然，像朋友", "en": "natural, like a friend"},
+    "voice.English_Trustworth_Man": {"zh": "可靠男声", "en": "Trustworthy Man"},
+    "voice.English_Trustworth_Man.note": {"zh": "浑厚，真诚", "en": "resonant, sincere"},
 }
 
 # Sentences with several wordings of one observed truth; the caller picks one

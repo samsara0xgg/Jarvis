@@ -14,6 +14,8 @@ from __future__ import annotations
 import subprocess
 from typing import Final
 
+from jarvis.shared import lang
+
 # Per ADR § Attention channel → physical surface mapping (Day-2 Mac-only:
 # 9 logical channels mapped to physical surfaces). The mapping is the
 # authoritative source for jarvis/surface/cli_render.py (Step 18) to consult
@@ -38,12 +40,11 @@ ATTENTION_CHANNEL_TO_SURFACES: Final[dict[str, tuple[str, ...]]] = {
     "suppress":       (),
 }
 
-_DEFAULT_VOICE: Final[str] = "Tingting"
 _MAX_BANNER_BODY_CHARS: Final[int] = 240
 
 
-def deliver_voice(text: str, *, voice: str = _DEFAULT_VOICE) -> None:
-    """Fire-and-forget ``say`` subprocess. Returns immediately.
+def deliver_voice(text: str, *, voice: str | None = None) -> None:
+    """Fire-and-forget ``say`` subprocess in ``voice`` (default: the language's own).
 
     Day-2 has no TTS preprocessing; the text is spoken verbatim. Empty
     text is a no-op (don't spawn an empty ``say``).
@@ -51,7 +52,7 @@ def deliver_voice(text: str, *, voice: str = _DEFAULT_VOICE) -> None:
     if not text.strip():
         return
     subprocess.Popen(  # noqa: S603 — `say` is the macOS API contract.
-        ["say", "-v", voice, text],  # noqa: S607 — PATH lookup is the contract.
+        ["say", "-v", voice or lang.say_voice(), text],  # noqa: S607 — PATH lookup is the contract.
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,

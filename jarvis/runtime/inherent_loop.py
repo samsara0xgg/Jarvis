@@ -102,6 +102,7 @@ from jarvis.decision.commentary import (
     commentary_speech_text,
 )
 from jarvis.decision.gates import ResponsePlan, pre_emit_gate
+from jarvis.decision.llm import failure_reason
 from jarvis.decision.response_run import (
     ResponseCancelledError,
     ResponseCancelRequest,
@@ -143,7 +144,8 @@ from jarvis.runtime import (
 )
 from jarvis.runtime.inherent_hub import start_inherent_view
 from jarvis.runtime.session_compaction import CompactionSweep, preset_context_length
-from jarvis.shared import Event
+from jarvis.runtime.setup import Setup
+from jarvis.shared import Event, lang
 from jarvis.shared.pricing import load_pricing_table
 from jarvis.shared.realtime import (
     AlreadyTerminal,
@@ -802,13 +804,14 @@ def _emit_turn_failed(
     conn: sqlite3.Connection,
     *,
     intent_event: Event,
-    exception_repr: str,
+    exc: BaseException,
 ) -> None:
     """Emit the watcher-level ``turn.failed`` audit event (ADR-0003 D9 F3).
 
     ``trigger_event_id`` is the originating ``surface.user_intent``
     event's ``event_uid`` so a future replay can join the failure back
-    to the request that produced it.
+    to the request that produced it; ``reason`` is what the desktop
+    shows (a missing key, a refused key, no quota, ...).
 
     Never raises: its callers are the catch-alls of the daemon's input loops,
     and a failed write here must not end the loop that called it.
@@ -820,8 +823,9 @@ def _emit_turn_failed(
             type="turn.failed",
             payload={
                 "turn_id": str(turn_id),
-                "exception_repr": exception_repr,
+                "exception_repr": repr(exc),
                 "trigger_event_id": intent_event.event_uid,
+                "reason": failure_reason(exc),
             },
             # ADR-0016 D5: correlated so a Live delegation's lookup by turn finds it.
             correlation={"turn_id": str(turn_id)},
@@ -1024,7 +1028,7 @@ async def _user_intent_watcher(
                     _emit_turn_failed(
                         runtime.conn,
                         intent_event=ev,
-                        exception_repr=repr(exc),
+                        exc=exc,
                     )
             await asyncio.sleep(poll_interval_s)
     except asyncio.CancelledError:
@@ -1243,7 +1247,7 @@ async def _intent_worker(
             except TurnConnectionUnavailableError as exc:
                 if continuation is None or waiting is None:
                     _emit_turn_failed(
-                        runtime.conn, intent_event=event, exception_repr=repr(exc),
+                        runtime.conn, intent_event=event, exc=exc,
                     )
                 else:
                     # No driver finally ran: retain all response/action ownership
@@ -1266,7 +1270,7 @@ async def _intent_worker(
                 _emit_turn_failed(
                     runtime.conn,
                     intent_event=event,
-                    exception_repr=repr(exc),
+                    exc=exc,
                 )
             finally:
                 queue.task_done()
@@ -1456,7 +1460,11 @@ async def _response_watcher(
                     elif ev.type == "surface.response_emitted":
                         await broadcaster.broadcast_done(ev)
                     elif ev.type == "turn.failed":
-                        await broadcaster.broadcast_op("failed", turn_id=turn_id)
+                        reason = str(ev.payload.get("reason") or "error")
+                        await broadcaster.broadcast_op(
+                            "failed", turn_id=turn_id, reason=reason,
+                            message=lang.t(f"failure.{reason}"),
+                        )
                     else:  # response.cancelled
                         await broadcaster.broadcast_op("cancelled", turn_id=turn_id)
             except Exception:
@@ -3625,7 +3633,7 @@ async def _system_trigger_watcher(
                         _emit_turn_failed(
                             runtime.conn,
                             intent_event=trigger,
-                            exception_repr=repr(exc),
+                            exc=exc,
                         )
             except Exception:
                 after_id = resume_id
@@ -5049,6 +5057,19 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             )
             return {"since": since, "rows": rows}
 
+        setup: Setup | None = None
+        if window_memory is not None:
+            knobs = _voice_knobs(runtime.config)
+            setup = Setup(
+                root=runtime.runtime_paths.root,
+                settings_path=runtime.runtime_paths.settings,
+                memory_path=window_memory.db_path,
+                config=runtime.config,
+                tts_endpoint=knobs.tts_primary_endpoint,
+                tts_model=knobs.tts_model,
+                restart=_restart_soon if spawned_by_agent() else None,
+            )
+
         deps = InherentDeps(
             submit_callable=submit_callable,
             broadcaster=broadcaster,
@@ -5113,6 +5134,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             ),
             plugin_icon=runtime.plugin_connections.icon if runtime.plugin_connections else None,
             language_save=functools.partial(save_language, runtime.runtime_paths.settings),
+            setup=setup,
             cancel_response_callable=cancel_response_callable,
             controls=controls,
             live=live_voice,
@@ -5198,6 +5220,12 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 name="response_watcher",
             ),
         )
+        if setup is not None:
+            # The keys' boot check: a model list and one word of TTS, off the loop;
+            # failures are logged and served by GET /inherent/setup.
+            watchers.append(
+                asyncio.create_task(asyncio.to_thread(setup.check_at_boot), name="setup_key_check"),
+            )
         if tts_pipe is not None:
             watchers.append(
                 asyncio.create_task(

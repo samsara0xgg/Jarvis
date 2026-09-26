@@ -25,6 +25,7 @@ LOGGER = logging.getLogger(__name__)
 SETTINGS_FILE = "settings.json"
 SYSTEM_DEFAULT = "System default"
 _MANDARIN = "Chinese (Mandarin)_"
+_ENGLISH = "English_"
 # MiniMax's Mandarin system voices, from its get_voice answer of 2026-09-25.
 VOICES = tuple(
     _MANDARIN + name
@@ -37,7 +38,21 @@ VOICES = tuple(
         "Straightforward_Boy", "Pure-hearted_Boy", "Sincere_Adult", "Lyrical_Voice",
         "Radio_Host", "Male_Announcer", "Humorous_Elder",
     )
+) + tuple(
+    # English ones first-run setup offers (same get_voice answer, 2026-09-26).
+    _ENGLISH + name
+    for name in ("SereneWoman", "radiant_girl", "CalmWoman", "FriendlyPerson", "Trustworth_Man")
 )
+# The five voices first-run setup offers per language; the first is the default
+# when ``realtime.tts_voice`` is left empty.
+SETUP_VOICES: dict[str, tuple[str, ...]] = {
+    "zh": tuple(
+        _MANDARIN + name
+        for name in ("Warm_Bestie", "Sweet_Lady", "Mature_Woman", "Reliable_Executive",
+                     "Gentle_Youth")
+    ),
+    "en": VOICES[-5:],
+}
 # Each key the page may change and the config value it sets.
 PATHS: dict[str, tuple[str, ...]] = {
     "reply_language": ("reply_language",),
@@ -63,7 +78,7 @@ REPLY_LINES = {
 
 def voice_name(voice_id: str) -> str:
     """``Chinese (Mandarin)_Warm_HeartedGirl`` -> ``Warm Hearted Girl``: what the page shows."""
-    name = voice_id.removeprefix(_MANDARIN).replace("_", " ")
+    name = voice_id.removeprefix(_MANDARIN).removeprefix(_ENGLISH).replace("_", " ")
     return re.sub(r"(?<=[a-z])(?=[A-Z])", " ", name)
 
 

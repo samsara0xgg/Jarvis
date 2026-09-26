@@ -36,6 +36,7 @@ if TYPE_CHECKING:
 
     from jarvis.surface import voice_ducking
 
+from jarvis.shared import lang
 from jarvis.shared.realtime_trace import (
     TraceValue,
     realtime_trace_context,
@@ -2679,10 +2680,10 @@ class MacOSSayProcessOwner:
 
     _RUN_TIMEOUT_S = 30.0
 
-    def __init__(self, text: str, *, voice: str = "Tingting") -> None:
-        """Capture arguments without spawning the process."""
+    def __init__(self, text: str, *, voice: str | None = None) -> None:
+        """Capture arguments without spawning the process; no voice = the language's own."""
         self._text = text
-        self._voice = voice
+        self._voice = voice or lang.say_voice()
         self._lock = threading.Lock()
         self._cancel_requested = False
         self._process: subprocess.Popen[bytes] | None = None
@@ -3474,7 +3475,7 @@ class TTSPipeline:
 def macos_say_fallback(
     text: str,
     *,
-    voice: str = "Tingting",
+    voice: str | None = None,
 ) -> MacOSSayProcessOwner:
     """Create the ADR-0005 §10 F7 macOS ``say`` process owner.
 

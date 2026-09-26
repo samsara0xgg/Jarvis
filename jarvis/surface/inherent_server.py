@@ -83,7 +83,7 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ValidationError
 from starlette.datastructures import Headers
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -114,7 +114,6 @@ from jarvis.surface.voice_pipeline import VoiceInputBusyError, VoicePipelineEmpt
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
-    from starlette.responses import Response
     from starlette.types import ASGIApp, Receive, Scope, Send
 
     from jarvis.surface.voice_controls import VoiceControls
@@ -250,6 +249,25 @@ class V2Session:
     connection_id: str
     send_text: Callable[[str], Awaitable[None]]
     close: Callable[[int, str], Awaitable[None]]
+
+
+class SetupRoutes(Protocol):
+    """What first-run setup serves (``jarvis.runtime.setup.Setup``)."""
+
+    def read(self) -> dict[str, Any]:
+        """``GET /inherent/setup``."""
+
+    def save_names(self, body: dict[str, Any]) -> dict[str, Any]:
+        """``POST /inherent/setup/name``."""
+
+    def check_key(self, body: dict[str, Any]) -> dict[str, Any]:
+        """``POST /inherent/setup/key``."""
+
+    def preview(self, body: dict[str, Any]) -> bytes:
+        """``POST /inherent/setup/voice-preview``."""
+
+    def done(self) -> dict[str, Any]:
+        """``POST /inherent/setup/done``."""
 
 
 class V2ClientHandle(Protocol):
@@ -463,6 +481,10 @@ class InherentDeps:
     # it in settings.yaml (``code -> language``, raises ValueError on anything
     # but zh / en). Registered only with ``plugin_authorize``.
     language_save: Callable[[str], str] | None = None
+    # First-run setup (``jarvis.runtime.setup.Setup``): read, save_names,
+    # check_key and preview block (run off the loop thread; ValueError is a
+    # 400), done runs on the loop because it schedules the restart.
+    setup: SetupRoutes | None = None
 
 
 class _FrameRateLimiter:
@@ -956,6 +978,59 @@ def _register_home_routes(app: FastAPI, deps: InherentDeps) -> None:  # noqa: C9
             return {"ok": True}
 
 
+_MAX_SETUP_BODY_BYTES = 4096
+
+
+async def _setup_body(request: Request) -> dict[str, Any]:
+    """A setup request's JSON object; no echo of it in errors (it can hold an API key)."""
+    raw = await request.body()
+    if len(raw) > _MAX_SETUP_BODY_BYTES:
+        raise HTTPException(status_code=413, detail="setup request too large")
+    try:
+        body = json.loads(raw or b"{}")
+    except ValueError:
+        body = None
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="send a JSON object")
+    return body
+
+
+def _register_setup_routes(app: FastAPI, deps: InherentDeps) -> None:
+    """First-run setup: status, names, a key to test and keep, a voice preview, done."""
+    if deps.setup is None:
+        return
+    setup = deps.setup
+
+    @app.get("/inherent/setup")
+    async def setup_status() -> dict[str, Any]:
+        """Whether setup has run, what it saved, which keys work, what the user can use."""
+        return await asyncio.to_thread(setup.read)
+
+    @app.post("/inherent/setup/name")
+    async def setup_names(request: Request) -> dict[str, Any]:
+        """``{name?, assistant_name?}``; answers like ``GET``."""
+        body = await _setup_body(request)
+        return await _home_call(asyncio.to_thread(setup.save_names, body))
+
+    @app.post("/inherent/setup/key")
+    async def setup_key(request: Request) -> dict[str, Any]:
+        """``{provider, key}``: run its checks, keep the key in the Keychain only when it works."""
+        body = await _setup_body(request)
+        return await _home_call(asyncio.to_thread(setup.check_key, body))
+
+    @app.post("/inherent/setup/voice-preview")
+    async def setup_preview(request: Request) -> Response:
+        """``{voice_id, text?}``: that voice saying the line, as MP3."""
+        body = await _setup_body(request)
+        audio = await _home_call(asyncio.to_thread(setup.preview, body))
+        return Response(content=audio, media_type="audio/mpeg")
+
+    @app.post("/inherent/setup/done")
+    async def setup_done() -> dict[str, Any]:
+        """Setup will not show again; the daemon restarts to take in keys and names."""
+        return setup.done()
+
+
 _MAX_PLUGIN_COMMAND_BYTES = 32_768
 _REQUEST_ID: Final[re.Pattern[str]] = re.compile(
     r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
@@ -1302,6 +1377,7 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0915 — one cl
             return conversation_read(after, limit)
 
     _register_home_routes(app, deps)
+    _register_setup_routes(app, deps)
 
     # ADR 0019 step 4: Allen's own Codex sessions, fed by scripts/codex_hook_log.py.
     codex_board: dict[str, CodexSession] = {}

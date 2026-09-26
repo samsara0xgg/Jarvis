@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 import numpy as np
 
-from jarvis.shared import Event
+from jarvis.shared import Event, lang
 from jarvis.shared.realtime_trace import record_realtime_trace
 from jarvis.state.event_log import emit_event
 from jarvis.state.lifecycle_terminal import terminalize_playback
@@ -2714,7 +2714,7 @@ class StreamingTTSPipeline:
             asyncio.create_subprocess_exec(
                 "say",
                 "-v",
-                "Tingting",
+                lang.say_voice(),
                 speech,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,

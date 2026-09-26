@@ -130,7 +130,8 @@ from jarvis.runtime.home import Home
 from jarvis.runtime.plugin_connections import PluginConnections
 from jarvis.runtime.plugins import Plugins, load_plugins
 from jarvis.runtime.projects import ProjectsService
-from jarvis.runtime.settings import REPLY_LINES, Settings, apply_settings
+from jarvis.runtime.settings import REPLY_LINES, SETUP_VOICES, Settings, apply_settings
+from jarvis.runtime.setup import write_setting
 from jarvis.runtime.stream_bridge import LoopBoundTokenStream
 from jarvis.runtime.work_state import WorkStateService, build_analyst
 from jarvis.shared import CallerPrincipal, Event, lang
@@ -574,14 +575,7 @@ def save_language(settings_path: Path, code: str) -> lang.Language:
     if chosen is None:
         msg = f"language must be one of {', '.join(lang.LANGUAGES)}"
         raise ValueError(msg)
-    text = settings_path.read_text(encoding="utf-8") if settings_path.is_file() else ""
-    line = f"language: {chosen}\n"
-    text, found = re.subn(r"(?m)^language:.*(?:\n|$)", line, text)
-    if not found:
-        text += ("\n" if text and not text.endswith("\n") else "") + line
-    staged = settings_path.with_suffix(".yaml.tmp")
-    staged.write_text(text, encoding="utf-8")
-    staged.replace(settings_path)
+    write_setting(settings_path, "language", chosen)
     return lang.set_language(chosen)
 
 
@@ -1713,6 +1707,9 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
     # user's settings.yaml for this boot.
     full_config = apply_settings(_load_full_config(config_path, paths.settings), paths.root)
     lang.set_language(_language(full_config))
+    realtime_block = full_config.setdefault("realtime", {})
+    if not realtime_block.get("tts_voice"):
+        realtime_block["tts_voice"] = SETUP_VOICES[lang.language()][0]
     wave1_features = _wave1_feature_flags(full_config)
     (
         web_search_max_results,

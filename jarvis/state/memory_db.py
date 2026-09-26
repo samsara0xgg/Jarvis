@@ -1,8 +1,9 @@
-"""L2 memory store — utterances, answers, Allen's profile, and history summaries.
+"""L2 memory store — utterances, answers, the user's profile, and history summaries.
 
 One standalone SQLite file (``memory.db``), deliberately separate from the
 runtime Event Log so the runtime can be rewritten without touching it.
-Append-only: rows are never updated or deleted. Every writer opens its own
+Append-only: rows are never updated or deleted, except the profile's name
+line, which first-run setup writes and rewrites. Every writer opens its own
 short-lived connection, so callers on any thread can write without sharing
 state.
 
@@ -211,6 +212,29 @@ def open_memory_db(path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(path, timeout=5.0)
     conn.executescript(_SCHEMA)
     return conn
+
+
+_NAME_ROW: Final[str] = "profile-name"
+_NAME_LINE: Final[tuple[str, str]] = ("The user's name is ", ".")
+
+
+def set_user_name(path: Path, name: str) -> None:
+    """Keep ``name`` as the profile's name line (first-run setup)."""
+    with closing(open_memory_db(path)) as conn, conn:
+        conn.execute(
+            "INSERT INTO profile (id, ts, text) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE "
+            "SET ts = excluded.ts, text = excluded.text",
+            (_NAME_ROW, iso_seconds(local_now()), name.join(_NAME_LINE)),
+        )
+
+
+def user_name(path: Path) -> str | None:
+    """The name first-run setup saved, or ``None``."""
+    if not path.is_file():
+        return None
+    with closing(open_memory_db(path)) as conn:
+        row = conn.execute("SELECT text FROM profile WHERE id = ?", (_NAME_ROW,)).fetchone()
+    return row[0].removeprefix(_NAME_LINE[0]).removesuffix(_NAME_LINE[1]) if row else None
 
 
 def append_record(
