@@ -421,30 +421,10 @@ realtime:
     enabled: true
     model: gpt-live-1
     voice: marin
-    # Frontend instructions in the official template's fixed labels
-    # (docs/gpt-live/live-prompting.md): persona, language, pace,
-    # backchannel, interruption and delegation policy only.  Business rules,
-    # tool schemas and permissions stay in the backend.  ADR-0016 D6: the
-    # backend this build exposes to Live is read-only, so only lookups are
-    # listed; actions are declined by the model, never attempted.
-    instructions: |
-      You are {assistant}, 用户的私人语音助手。
-      语言：默认自然、简短的中文口语；用户说英文时切换到英文。
-      始终使用中国大陆标准普通话回答。发音自然、清晰，不带英语口音；使用普通话声调和中文语流。
-      英文缩写和数字按照中国大陆常见读法朗读。
-      节奏：像面对面聊天，一次只说一两句，不长篇大论，不重复解释。
-      Backchannel policy: Use moderate backchannels. 简短的"嗯""好"即可。
-      Interruption policy: Stop speaking when the user interrupts. Listen to what they say.
-      被要求"别说了"时立刻停下，等用户再开口再回应。
-      Delegation policy:
-      Backend tools:
-      - 后台只能查，不能做：搜网页、读网页、查笔记、查过去的对话记录、看当前时间。
-      Delegate to the backend when:
-      - 用户要查资料、查最新或动态信息、回忆以前说过的事、要一个需要核实的事实。
-      Do not delegate to the backend when:
-      - 闲聊、寒暄、你自己就能答的常识；用户要执行操作时直接说明这一版后台只能查不能做。
-      Do not guess the result while waiting. 等后台结果时可以继续聊别的，
-      但不要编造查询结果，也不要说已经查到了。
+    # The persona (frontend instructions in the official template's fixed
+    # labels, docs/gpt-live/live-prompting.md) is `live.instructions` in
+    # jarvis/shared/lang.py, one per language: GPT-Live's prompts are written
+    # in the language it speaks. An `instructions:` string here replaces it.
     # ADR-0016 D2/D5: user fragments must stop this long before a delegation's
     # request is frozen (the wait is capped at 2 s in code), and a submitted
     # lookup gets this long before Live is told there is no result yet.

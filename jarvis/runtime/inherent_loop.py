@@ -121,6 +121,7 @@ from jarvis.runtime import (
     TriggerWaitTimeout,
     TurnSuspended,
     WaitingTurn,
+    _assistant_name,
     _event_action_id,
     _new_turn_id,
     _observer_poll_interval_s,
@@ -4685,7 +4686,9 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         gpt_live_config: voice_live.GptLiveConfig | None = None
         if isinstance(gpt_live_raw, Mapping):
             try:
-                gpt_live_config = voice_live.gpt_live_config_from_mapping(gpt_live_raw)
+                gpt_live_config = voice_live.gpt_live_config_from_mapping(
+                    {"assistant": _assistant_name(runtime.config), **gpt_live_raw},
+                )
             except (TypeError, ValueError):
                 LOGGER.exception("realtime.gpt_live is malformed; GPT-Live stays off this boot")
         if gpt_live_config is not None and gpt_live_config.enabled:
