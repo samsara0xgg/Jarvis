@@ -13,6 +13,7 @@ type Rect = { x: number; y: number; w: number; h: number };
 type Zone = 'none' | 'lobe' | 'ball';
 const within = (p: Point, r: Rect) => p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h;
 const PANEL = 300;
+const DOUBLE_CLICK_MS = 300;
 // around: one column under her, her words first (the default). grid: the main app's two columns of tiles.
 type DashboardLayout = 'grid' | 'around';
 // Prototype script: every transcript and reply below is simulated.
@@ -93,7 +94,7 @@ export function Companion() {
   const input = useRef<HTMLInputElement>(null), root = useRef<HTMLElement>(null), pressing = useRef(false);
 
   const zoneTimer = useRef<ReturnType<typeof setTimeout>>(undefined), pending = useRef<Zone>('none');
-  const dashTimer = useRef<ReturnType<typeof setTimeout>>(undefined), dashEntered = useRef(false), interactive = useRef(false);
+  const dashTimer = useRef<ReturnType<typeof setTimeout>>(undefined), dashEntered = useRef(false), pinned = useRef(false), interactive = useRef(false);
   const script = useRef<ReturnType<typeof setTimeout>[]>([]);
   const after = (ms: number, run: () => void) => { script.current.push(setTimeout(run, ms)); };
   const stopScript = () => { script.current.forEach(clearTimeout); script.current = []; };
@@ -125,14 +126,17 @@ export function Companion() {
     else if (voice === 'speaking') listen(false);
     else endVoice();
   };
-  const pressAt = useRef(0);
+  const pressAt = useRef(0), firstClick = useRef<ReturnType<typeof setTimeout>>(undefined), latestPoke = useRef(poke);
+  latestPoke.current = poke;
   const press = () => { pressing.current = true; pressAt.current = performance.now(); setPressed(true); };
-  // A short poke talks to her; holding her until she shivers changes her into the next skin.
+  // A short poke talks to her once no second click follows; a double click opens or closes the Dashboard;
+  // holding her until she shivers changes her into the next skin.
   const release = () => {
     if (!pressing.current) return;
     pressing.current = false; setPressed(false);
-    if (performance.now() - pressAt.current < HOLD_MS) poke();
-    else choose(SKIN_KEYS[(SKIN_KEYS.indexOf(worn.current) + 1) % SKIN_KEYS.length]);
+    if (performance.now() - pressAt.current >= HOLD_MS) choose(SKIN_KEYS[(SKIN_KEYS.indexOf(worn.current) + 1) % SKIN_KEYS.length]);
+    else if (firstClick.current) { clearTimeout(firstClick.current); firstClick.current = undefined; toggleDashboard(); }
+    else firstClick.current = setTimeout(() => { firstClick.current = undefined; latestPoke.current(); }, DOUBLE_CLICK_MS);
   };
   const cancel = () => { pressing.current = false; setPressed(false); };
 
@@ -157,7 +161,9 @@ export function Companion() {
     receive();
     after(700, () => say(text.includes('整理') ? '好，我来整理。' : '收到，我来处理。', () => after(1800, () => setReply({ text: '', shown: 0 }))));
   };
-  const openDashboard = (hovered: boolean) => { dashEntered.current = hovered; setDashboard(true); setComposer(false); void window.jarvis?.focus(false); };
+  const openDashboard = (hovered: boolean) => { pinned.current = false; dashEntered.current = hovered; setDashboard(true); setComposer(false); void window.jarvis?.focus(false); };
+  // Opened by a double click, the Dashboard stays when the cursor leaves; another double click on her closes it.
+  const toggleDashboard = () => { if (live.current.dashboard) setDashboard(false); else { openDashboard(false); pinned.current = true; } };
 
   // What she wears now; it differs from the saved pick while she tries another skin on her own.
   const worn = useRef<Skin>(wardrobe.skin);
@@ -238,13 +244,13 @@ export function Companion() {
     }
     const over = z.dash.some(r => within(point, r)) || (dashboard && within(point, z.panel));
     if (dashboard) {
-      if (over) { dashEntered.current = true; clearTimeout(dashTimer.current); dashTimer.current = undefined; }
+      if (over || pinned.current) { dashEntered.current = true; clearTimeout(dashTimer.current); dashTimer.current = undefined; }
       else if (dashEntered.current && !dashTimer.current) dashTimer.current = setTimeout(() => { dashTimer.current = undefined; setDashboard(false); }, 450);
     } else if (over && !dashTimer.current) {
       dashTimer.current = setTimeout(() => { dashTimer.current = undefined; if (live.current.geo.zones.dash.some(r => within(cursor.current, r))) openDashboard(true); }, 200);
     } else if (!over && dashTimer.current) { clearTimeout(dashTimer.current); dashTimer.current = undefined; }
   }), []);
-  useEffect(() => () => { clearTimeout(zoneTimer.current); clearTimeout(dashTimer.current); }, []);
+  useEffect(() => () => { clearTimeout(zoneTimer.current); clearTimeout(dashTimer.current); clearTimeout(firstClick.current); }, []);
   useEffect(refreshHit, [place, chip, composer, dashboard, voice, reply.text]);
 
   // Native frosted glass behind every visible panel, following its transitions.

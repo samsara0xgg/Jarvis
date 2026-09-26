@@ -118,10 +118,10 @@ try {
   check('05 she answers in a bubble beneath her, with her replying face', (await page.locator('.companion-bubble').textContent()).includes('好，我来整理。') && await face('39', '39b', '39c') === '39');
   await shot('05-speaking');
   await hit.click({ force: true });
-  await page.waitForTimeout(300);
+  await page.waitForTimeout(600);
   check('05 poke while speaking interrupts and keeps listening', await page.locator('.companion-strip.is-open').count() === 1 && await page.locator('.companion-bubble.is-open').count() === 0);
   await hit.click({ force: true });
-  await page.waitForTimeout(300);
+  await page.waitForTimeout(600);
   check('05 poke while listening ends voice', await page.locator('.companion-strip.is-open').count() === 0);
 
   await move(320, 14);
@@ -136,6 +136,20 @@ try {
   await waitPlace('home');
   check('06 closing the dashboard sends her home', true);
   await shot('06-home-again');
+  await move(out.x, out.y);
+  await waitPlace('out');
+  await hit.dblclick({ force: true });
+  await page.locator('.companion-dashboard.is-open').waitFor();
+  await waitPlace('dock');
+  await move(600, 560);
+  await page.waitForTimeout(1200);
+  check('06 a double click on her opens the Dashboard, and it stays when the cursor leaves',
+    await page.locator('.companion-dashboard.is-open').count() === 1 && await page.locator('.companion-strip.is-open').count() === 0);
+  await hit.dblclick({ force: true });
+  await page.waitForFunction(() => !document.querySelector('.companion-dashboard.is-open'), null, { timeout: 3000 });
+  await waitPlace('home');
+  await page.waitForTimeout(400);
+  check('06 another double click on her closes it, and neither double click starts voice', await page.locator('.companion-strip.is-open').count() === 0);
 
   // 09: the Dashboard around her. Five home rows fit without scrolling; each row grows into its page
   // at the same panel height, her face follows the page, and ‹ or Esc goes back one level.
