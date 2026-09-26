@@ -98,13 +98,15 @@ export function Companion() {
   const link = useRef<Runtime | null>(null);
   useEffect(() => { if (!port) return; link.current = connect(port, dispatch); return () => { link.current?.close(); link.current = null; }; }, []);
   // Live, the daemon's phase is her voice; standby counts as listening only in wave mode (ADR 0041).
-  const voice = !port ? simVoice : s.phase === 'speaking' ? 'speaking' : s.phase === 'processing' ? 'thinking'
+  // While your words are coming in she only listens: no answer starts then (ADR 0053), whatever text arrives.
+  const inFlight = !!port && s.inFlight;
+  const voice = !port ? simVoice : inFlight ? 'listening' : s.phase === 'speaking' ? 'speaking' : s.phase === 'processing' ? 'thinking'
     : s.phase === 'hearing' || (s.conversation && s.phase !== 'error') ? 'listening' : 'off';
-  const caption = port ? s.heard : simCaption, hearing = port ? s.phase === 'hearing' : simHearing, talking = port ? false : simTalking;
+  const caption = port ? s.heard : simCaption, hearing = port ? inFlight : simHearing, talking = port ? false : simTalking;
   const said = port ? spoken(s.reply) : '';
-  // Cutting in stops her voice, and with it her answer; her words stay up while yours are still coming in.
+  // Her words on screen stay as they were while yours are still coming in: cut off, or none.
   const held = useRef('');
-  if (said || !(s.phase === 'hearing' || (s.phase === 'processing' && !s.heard))) held.current = said;
+  if (!inFlight) held.current = said;
   const reply = port ? { text: held.current, shown: held.current.length } : simReply;
   const [pressed, setPressed] = useState(false);
   const [wardrobe, setWardrobe] = useState(loadWardrobe);

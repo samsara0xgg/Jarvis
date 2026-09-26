@@ -300,6 +300,20 @@ try {
     check('L4 then her answer', await only() === '1,0' && await text('.bubble-text span:last-child') === '好，改到三点。');
     await page.evaluate(() => { window.__emit('done', { turn_id: 'v1e', fadeMs: 100 }); window.__emit('voice', { phase: 'spoken', turn_id: 'v1e' }); });
     await page.waitForFunction(() => document.querySelector('.companion-strip.is-open') && !document.querySelector('.companion-bubble.is-open'), null, { timeout: 3000 });
+    // A split sentence (ADR 0053): the first half's answer text lands while he says the second half; she only listens.
+    await page.evaluate(() => { window.__emit('voice', { phase: 'listening', turn_id: 'v1f' }); window.__emit('voice', { phase: 'accepted', turn_id: 'v1f', text: '怎么说' }); });
+    await page.waitForTimeout(300); // live, the second half starts after the first is accepted
+    await page.evaluate(() => { window.__emit('voice', { phase: 'listening', turn_id: 'v1g' }); window.__emit('open', { turn_id: 'v1f', response_id: 'resp-v1f' }); window.__emit('append', { turn_id: 'v1f', token: '<voice>你想让我怎么说？</voice>' }); });
+    await page.waitForTimeout(150);
+    check('L4 an answer written while he still talks stays off screen; she listens', await only() === '0,1' && await page.locator('.companion-strip.is-hearing').count() === 1 && await face('35', '35b') === '35');
+    await page.evaluate(() => { window.__emit('voice', { phase: 'transcribing', turn_id: 'v1g' }); window.__emit('voice', { phase: 'accepted', turn_id: 'v1g', text: '到一半停了' }); window.__emit('cancelled', { turn_id: 'v1f' }); });
+    await page.waitForTimeout(150);
+    check('L4 then the strip shows his second half, still no bubble', await only() === '0,1' && await text('.strip-text') === '到一半停了');
+    await page.evaluate(() => { window.__emit('open', { turn_id: 'v1g', response_id: 'resp-v1g' }); window.__emit('append', { turn_id: 'v1g', token: '<voice>刚才是我说到一半断了。</voice>' }); });
+    await page.waitForTimeout(150);
+    check('L4 and one answer to both halves', await only() === '1,0' && await text('.bubble-text span:last-child') === '刚才是我说到一半断了。');
+    await page.evaluate(() => { window.__emit('done', { turn_id: 'v1g', fadeMs: 100 }); window.__emit('voice', { phase: 'spoken', turn_id: 'v1g' }); });
+    await page.waitForFunction(() => document.querySelector('.companion-strip.is-open') && !document.querySelector('.companion-bubble.is-open'), null, { timeout: 3000 });
     await page.locator('.strip-stop').click(); await page.waitForTimeout(300);
     check('L5 the strip’s stop ends wave mode', posts.at(-1)?.path === '/inherent/controls' && posts.at(-1).body.conversation === false && await page.locator('.companion-strip.is-open').count() === 0);
     await move(600, 560); await waitPlace('home');
