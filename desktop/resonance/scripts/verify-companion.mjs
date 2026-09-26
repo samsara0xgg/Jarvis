@@ -419,37 +419,57 @@ try {
   await waitPlace('home');
   check('08 the tray plays an expression out of the island and she goes home', true);
 
-  // 10: the agent marks. A black wing out of the notch's right edge carries one mark per live session, in the
-  // look picked in the tray (星芒 or 像素); resting on it lists them, and a click opens Agents in the same marks.
-  const wingEl = page.locator('.agent-wing');
-  const wingAlpha = (x, y) => page.evaluate(([x, y]) => { const c = document.querySelector('.agent-wing'), r = c.getBoundingClientRect(), k = c.width / r.width;
+  // 10: beside the notch (ADR 0057). Right of the camera one black shape carries a star per session in the look picked
+  // in the tray (星芒 or 像素): four working fold into one star with a count, the three finished ones (met already done,
+  // so seen) stay dim. Resting on a star grows its panel out of the notch; a folded colour lists its sessions, and a
+  // row opens only on a click. A finished star is cleared from its panel or by dragging it down out of the menu bar.
+  const notch = page.locator('.notch'), marks = () => notch.getAttribute('data-marks');
+  const fxAlpha = (x, y) => page.evaluate(([x, y]) => { const c = document.querySelector('.notch-fx'), r = c.getBoundingClientRect(), k = c.width / r.width;
     return c.getContext('2d').getImageData(Math.round((x - r.left) * k), Math.round((y - r.top) * k), 1, 1).data[3]; }, [x, y]);
-  const looks = sel => page.locator(sel).evaluateAll(els => [...new Set(els.map(e => e.dataset.look))].join());
-  check('10 a black wing right of the notch carries one star per live session (09 approved the one that waited)',
-    await wingEl.getAttribute('data-look') === 'spark' && await wingEl.getAttribute('data-marks') === 'work work work work' && await wingAlpha(416, 30) > 200 && await wingAlpha(500, 16) === 0);
-  await move(440, 14);
-  await page.waitForTimeout(500);
-  check('10 resting on the marks lists the live sessions under them', await page.locator('.agent-wing-tip.is-open .wt-row').count() === 4
-    && (await page.locator('.agent-wing-tip .wt-row b').first().textContent()) === 'Adjust the usage page');
+  // The right edge of the black shape: past the notch while stars show, 0 when nothing hangs there.
+  const blackRight = () => page.evaluate(() => { const p = document.querySelector('.notch-shape path'); if (!p.getAttribute('d')) return 0; const b = p.getBBox(); return b.x + b.width; });
+  const looks = sel => page.locator(sel).evaluateAll(els => [...new Set(els.map(e => e.dataset.look).filter(Boolean))].join());
+  const drop = page.locator('.notch-drop.is-open');
   await shot('10-wing-spark', { x: 320, y: 0, width: 320, height: 220 });
+  const row10 = [await page.locator('.notch-fx').getAttribute('data-look'), await marks(), await blackRight(), await fxAlpha(426.5, 16)];
+  check(`10 right of the notch: the four working fold into one star, the three finished stay (${row10.join(' | ')} ${errors.join('; ')})`,
+    row10[0] === 'spark' && row10[1] === 'workx4 done done done' && row10[2] > 470 && row10[3] > 0);
+  await shot('10-wing-spark', { x: 320, y: 0, width: 320, height: 220 });
+  await move(426, 14);
+  await drop.waitFor();
+  await page.waitForTimeout(700);
+  check('10 resting on the folded star lists its four sessions, star and name', await drop.locator('.s-row').count() === 4
+    && (await drop.locator('.c-label').textContent()) === '4 working' && (await drop.locator('.s-head b').first().textContent()) === 'Adjust the usage page');
+  await move(470, 70); await page.waitForTimeout(500);
+  check('10 pointing at a row does not open it', await drop.locator('.s-row.is-open').count() === 0);
+  await drop.locator('.s-head').nth(1).click(); await page.waitForTimeout(300);
+  check('10 a click opens that row in place with what it is doing', await drop.locator('.s-row.is-open').count() === 1 && (await drop.locator('.s-row.is-open .c-now').textContent()).startsWith('Now'));
+  await shot('10-stack-row', { x: 240, y: 0, width: 400, height: 330 });
+  await drop.locator('.s-row.is-open .s-head b').click(); await page.waitForTimeout(300);
+  check('10 a click on its name folds it back', await drop.locator('.s-row.is-open').count() === 0);
+  // The first finished star: its panel says what it came to, with Clear.
+  await move(600, 560); await page.waitForTimeout(700);
+  const doneX = 412.5 + 6 + 16 + 9 + 8;
+  await move(doneX, 14); await drop.waitFor(); await page.waitForTimeout(700);
+  check('10 a finished star shows its result with Clear', (await drop.locator('.c-label').textContent()) === 'Done' && (await drop.locator('.c-now b').textContent()) === 'Result'
+    && (await drop.locator('.c-choice .btn').allTextContents()).includes('Clear'));
+  await shot('10-peek-done', { x: 240, y: 0, width: 400, height: 260 });
+  await drop.locator('.btn', { hasText: 'Clear' }).click(); await page.waitForTimeout(400);
+  await move(600, 560); await page.waitForTimeout(900);
+  check(`10 Clear takes it off the row (${await marks()})`, await marks() === 'workx4 done done');
+  // Pulled 20 px under the menu bar it goes back; 40 px, and it is cleared.
+  const drag = async dy => { await move(doneX, 16); await page.mouse.down(); await page.mouse.move(doneX + 4, 30, { steps: 4 }); await page.mouse.move(doneX + 6, 32 + dy, { steps: 6 }); await page.mouse.up(); await move(600, 560); await page.waitForTimeout(900); };
+  await drag(20);
+  check(`10 a short pull puts the star back (${await marks()})`, await marks() === 'workx4 done done');
+  await drag(40);
+  check(`10 dragged out of the menu bar it is cleared (${await marks()})`, await marks() === 'workx4 done' && await page.locator('.notch-catch').count() === 0);
   await page.evaluate(() => window.__command('marks:pixel'));
-  await page.waitForTimeout(500);
-  check('10 the tray turns every mark into pixels', await wingEl.getAttribute('data-look') === 'pixel' && await looks('.agent-wing-tip canvas, .ad .r-agents canvas') === 'pixel'
-    && await page.evaluate(() => window.__state.menu?.marks === 'pixel'));
-  await shot('10-wing-pixel', { x: 320, y: 0, width: 320, height: 220 });
-  await page.locator('.agent-wing-hit').click();
-  await page.locator('.companion-dashboard.is-open').waitFor();
-  await page.waitForTimeout(900);
-  check('10 a click on the marks opens Agents, whose rows wear the same marks',
-    await title() === 'Agents' && await looks('.ad .ag canvas') === 'pixel' && (await page.locator('.ad .ag canvas').evaluateAll(els => els.map(e => e.dataset.state))).join() === 'work,work,work,work,seen,seen,seen');
-  await panelShot('10-agents-pixel');
-  await move(600, 560);
-  await page.waitForTimeout(600);
-  check('10 opened from the marks, the Dashboard stays when the cursor leaves', await page.locator('.companion-dashboard.is-open').count() === 1);
+  await move(426, 14); await drop.waitFor(); await page.waitForTimeout(600);
+  check('10 the tray turns every mark into pixels', await looks('.notch canvas, .ad .r-agents canvas') === 'pixel' && await page.evaluate(() => window.__state.menu?.marks === 'pixel'));
+  await shot('10-wing-pixel', { x: 240, y: 0, width: 400, height: 260 });
+  await move(600, 560); await page.waitForTimeout(700);
   await page.evaluate(() => window.__command('marks:spark'));
-  await hit.dblclick({ force: true });
-  await page.waitForFunction(() => !document.querySelector('.companion-dashboard.is-open'), null, { timeout: 3000 });
-  await waitPlace('home');
+  check('10 the panel folds back into the notch when the pointer leaves', await drop.count() === 0);
 
   // 12: ⌘ in the menu bar row tucks the side of the camera the cursor is on, so what sits under it can be clicked.
   const islandBottom = () => page.locator('.companion-island').evaluate(e => e.getBoundingClientRect().bottom);
@@ -462,7 +482,7 @@ try {
   check(`12 out under the notch, she goes up with the island in one motion, nothing of her trailing (${along.join(' | ')})`, along[0] !== 'none' && along[0] === along[1]);
   await page.waitForTimeout(1380);
   check('12 left of the camera, the island and she slide up off the screen; the marks stay',
-    await islandBottom() <= 0 && await starBottom() <= 0 && await alphaAt(lobe.x, 24) === 0 && await wingAlpha(416, 30) > 200);
+    await islandBottom() <= 0 && await starBottom() <= 0 && await alphaAt(lobe.x, 24) === 0 && await blackRight() > 440);
   await shot('12-tucked-left');
   await move(170, 10);
   await page.waitForTimeout(80);
@@ -477,15 +497,15 @@ try {
   await page.evaluate(() => window.__tuck({ left: false, right: true }));
   await page.waitForTimeout(1500);
   check('12 right of the camera, the marks go under the notch and she is back in the island',
-    await wingAlpha(416, 30) === 0 && await islandBottom() > 0 && await alphaAt(lobe.x, 24) > 200);
+    await blackRight() === 0 && await islandBottom() > 0 && await alphaAt(lobe.x, 24) > 200);
   await move(440, 14);
   await page.waitForTimeout(500);
   check('12 the menu bar under the tucked marks gets its clicks, and no list opens',
-    await page.evaluate(() => window.__state.passthrough === true) && await page.locator('.agent-wing-tip.is-open').count() === 0);
+    await page.evaluate(() => window.__state.passthrough === true) && await page.locator('.notch-drop.is-open').count() === 0);
   await move(600, 560);
   await page.evaluate(() => window.__tuck({ left: false, right: false }));
   await page.waitForTimeout(1500);
-  check('12 untucked, the marks come back', await wingAlpha(416, 30) > 200);
+  check('12 untucked, the marks come back', await blackRight() > 440);
 
   // 07: the cursor rests on an external screen with no notch. She sinks into this island,
   // Electron moves the window only after display-ready, and she comes up dead centre there.
@@ -518,10 +538,10 @@ try {
   await waitPlace('home');
   await page.evaluate(() => window.__tuck({ left: true, right: true }));
   await page.waitForTimeout(120);
-  const rides = await page.evaluate(() => ['.companion-island', '.companion-canvas', '.agent-wing'].map(s => getComputedStyle(document.querySelector(s)).transform));
+  const rides = await page.evaluate(() => ['.companion-island', '.companion-canvas', '.notch'].map(s => getComputedStyle(document.querySelector(s)).transform));
   check(`12 without a notch the pill, she and the marks go up as one piece (${rides.join(' | ')})`, rides[0] !== 'none' && rides.every(t => t === rides[0]));
   await page.waitForTimeout(1400);
-  check('12 without a notch the whole pill goes, its marks too', await islandBottom() <= 0 && await starBottom() <= 0 && await wingAlpha(400, 16) === 0);
+  check('12 without a notch the whole pill goes, its marks too', await islandBottom() <= 0 && await starBottom() <= 0 && await page.locator('.notch-hit').evaluate(e => e.getBoundingClientRect().bottom) <= 0);
   await shot('12-external-tucked', { x: 120, y: 0, width: 400, height: 210 });
   await move(268, 14);
   await page.waitForTimeout(600);

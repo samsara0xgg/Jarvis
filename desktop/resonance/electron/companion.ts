@@ -2,6 +2,7 @@ import { app, BrowserWindow, Menu, Tray, nativeImage, ipcMain, screen, session }
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
+import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { registerDaemonBridge } from './bridge.js';
 // The companion: 星核, who lives beside the notch, with her Dashboard. She talks to the daemon on
 // JARVIS_INHERENT_BRIDGE_PORT like the capsule does; the daemon owns mic and speaker, so she never
@@ -33,6 +34,54 @@ function placement(display: Electron.Display) {
   const topInset = notch ? Math.max(24, Math.round(notch.topInset)) : Math.max(32, Math.round(display.workArea.y - display.bounds.y));
   return { docked: false, topInset, notchWidth: notch ? notch.notchWidth : 0, surfaceWidth: WIDTH, compactWidth: 0, displayId: display.id };
 }
+// A line only when it changes: "front<TAB><focused terminal's title>", or "away" (Ghostty not in front, not
+// running, or not allowed). The terminal's title, not the tab's: the tab's lags a switch by up to 0.6 s.
+const GHOSTTY_WATCH = `set sep to character id 9
+set prev to ""
+repeat
+  set cur to "away"
+  if application "Ghostty" is running then
+    tell application "Ghostty"
+      try
+        if frontmost then set cur to "front" & sep & (name of focused terminal of selected tab of front window)
+      end try
+    end tell
+  end if
+  if cur is not prev then
+    log cur
+    set prev to cur
+  end if
+  delay 0.4
+end repeat`;
+// Claude Code may put a mark before the name in a terminal's title, so a title ending in " name" matches too.
+const GHOSTTY_JUMP = `on run argv
+  set want to item 1 of argv
+  set job to item 2 of argv
+  tell application "Ghostty"
+    repeat with w in windows
+      repeat with b in tabs of w
+        repeat with m in terminals of b
+          set t to name of m
+          if t is want or t ends with (" " & want) then
+            focus m
+            activate
+            return "focused"
+          end if
+        end repeat
+      end repeat
+    end repeat
+    if job is "" then return "none"
+    set cfg to new surface configuration
+    set initial input of cfg to "claude attach " & job & linefeed
+    if (count of windows) > 0 then
+      new tab in front window with configuration cfg
+    else
+      new window with configuration cfg
+    end if
+    activate
+    return "attached"
+  end tell
+end run`;
 function frame(): Electron.Rectangle { return material?.getFrame(win.getNativeWindowHandle()) ?? win.getBounds(); }
 function place() {
   const display = current = target(), value = placement(display);
@@ -118,6 +167,29 @@ if (locked) app.whenReady().then(() => {
     const rects = payload.rects.slice(0, 16).filter((r: Record<string, number>) => r && ['x', 'y', 'width', 'height', 'radius', 'opacity'].every(k => Number.isFinite(r[k])) && r.width > 0 && r.height > 0);
     material.update(win.getNativeWindowHandle(), rects, 1);
   });
+  // ADR 0057: which Claude session Allen is looking at. One long-lived script reads Ghostty's front terminal
+  // every 0.4 s while the renderer asks, and reports only changes; Ghostty is never launched for it.
+  let watcher: ChildProcess | null = null, watched = '';
+  const report = (line: string) => { watched = line; const [state, ...title] = line.split('\t'); if (!win.isDestroyed()) win.webContents.send('ghostty', { front: state === 'front', title: title.join('\t') }); };
+  ipcMain.on('ghostty-watch', (event, on) => {
+    if (event.sender !== win.webContents || demo || typeof on !== 'boolean') return;
+    if (!on) { watcher?.kill(); watcher = null; return; }
+    if (watcher) { if (watched) report(watched); return; }
+    const child = watcher = spawn('/usr/bin/osascript', ['-e', GHOSTTY_WATCH], { stdio: ['ignore', 'ignore', 'pipe'] });
+    let buffer = '';
+    child.stderr!.setEncoding('utf8').on('data', (chunk: string) => {
+      buffer += chunk;
+      for (let at = buffer.indexOf('\n'); at >= 0; at = buffer.indexOf('\n')) { report(buffer.slice(0, at)); buffer = buffer.slice(at + 1); }
+    });
+    child.on('exit', () => { if (watcher === child) { watcher = null; watched = ''; } });
+  });
+  app.on('will-quit', () => watcher?.kill());
+  // Go to a session: its Ghostty terminal if one shows it, else a new tab attaching the background job.
+  ipcMain.handle('ghostty-jump', (event, title, job) => new Promise<boolean>(resolve => {
+    if (event.sender !== win.webContents || demo || typeof title !== 'string' || !title.trim() || title.length > 300
+      || typeof job !== 'string' || !/^([0-9a-f]{8})?$/.test(job)) { resolve(false); return; }
+    execFile('/usr/bin/osascript', ['-e', GHOSTTY_JUMP, title.trim(), job], { timeout: 8000 }, (error, stdout) => resolve(!error && stdout.trim() !== 'none'));
+  }));
   tray = new Tray(nativeImage.createEmpty());
   tray.setTitle('●'); tray.setToolTip(demo ? 'Jarvis 小球 · 演示数据' : 'Jarvis 小球');
   // The renderer owns her skins and expressions and reports them; every item just sends a command back.

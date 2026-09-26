@@ -9,7 +9,8 @@ export type Place = 'home' | 'peek' | 'out' | 'dock';
 export type Point = { x: number; y: number };
 export type Lobe = { left: number; right: number; height: number; notched: boolean; tucked?: boolean };
 // lift: how far the canvas rides up with the tucked island (0 while the Dashboard or a notice holds her).
-export type BallTarget = { place: Place; expr: ExprId; pressed: boolean; anchors: Record<Place, Point>; homeGlass: boolean; lift: number };
+// `homeFace`: she wears `expr` and follows `look` even at home (a notice hangs from the notch and she watches it from there).
+export type BallTarget = { place: Place; expr: ExprId; pressed: boolean; anchors: Record<Place, Point>; homeGlass: boolean; lift: number; homeFace?: boolean };
 // With her glass showing at home, this long without the cursor moving sends her to sleep there.
 const DOZE_MS = 10 * 60_000;
 export type BallHandle = { nudge: () => void; arrive: () => void; change: (skin: Skin) => void; hop: (height: number) => void };
@@ -76,18 +77,18 @@ export function CompanionBall({ width, height, lobe, lift, target, look, handle,
       ].some(Boolean);
       // Gaze: toward the cursor or caret, softer with distance; straight ahead in the island.
       let gaze: [number, number] | null = null;
-      const point = leaving ? { x: s.x.value, y: -400 } : atHome && !glance && !glassHome ? null : look.current;
+      const point = leaving ? { x: s.x.value, y: -400 } : atHome && !glance && !glassHome && !t.homeFace ? null : look.current;
       if (point) {
         const dx = point.x - s.x.value, dy = point.y - s.y.value, dist = Math.hypot(dx, dy) || 1;
         const k = dist / (dist + 90) * (dist < 280 ? 1 : Math.max(.35, 1 - (dist - 280) / 700));
         // Resting at home she only follows a cursor that comes near; otherwise she looks around on her own.
-        if (!(atHome && !leaving && glassHome && dist > 260)) gaze = [dx / dist * k, shown === 'peek' ? Math.max(0, dy / dist * k) : dy / dist * k];
+        if (!(atHome && !leaving && glassHome && dist > 260 && !t.homeFace)) gaze = [dx / dist * k, shown === 'peek' ? Math.max(0, dy / dist * k) : dy / dist * k];
       }
       // Holding her charges a costume change: she squashes further, shivers and her stars speed up.
       if (!t.pressed) pressedAt = -1; else if (pressedAt < 0) pressedAt = now;
       const charge = pressedAt < 0 ? 0 : Math.min(1, Math.max(0, (now - pressedAt - 200) / (HOLD_MS - 200)));
-      const face: ExprId = atHome ? (glassHome ? (dozing ? 'doze' : 'rest') : glance ? 'glance' : 'home') : shown === 'peek' ? 'peek' : t.expr;
-      const busy = core.update(now, dt, { expr: face, look: gaze, still: atHome && !glance && !glassHome, pressed: t.pressed, charge });
+      const face: ExprId = atHome && !t.homeFace ? (glassHome ? (dozing ? 'doze' : 'rest') : glance ? 'glance' : 'home') : shown === 'peek' ? 'peek' : t.expr;
+      const busy = core.update(now, dt, { expr: face, look: gaze, still: atHome && !glance && !glassHome && !t.homeFace, pressed: t.pressed, charge });
 
       // Where she is (spring position, flight squash, the pivot on the Dashboard edge), then her own motion.
       const a = s.shine.value, scale = s.scale.value, x = s.x.value, y = s.y.value, pivot = s.pivot.value * R;

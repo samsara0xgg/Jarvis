@@ -1,8 +1,7 @@
 import { useEffect, useRef } from 'react';
-import { spring, step } from './starCore';
 
 // Agent status marks in the two looks Allen picked from the notice lab: 星芒, a four-point star (the 星 in her
-// name), and 像素, dot-matrix glyphs. The wing beside the notch, its hover list, the home Agents row and the
+// name), and 像素, dot-matrix glyphs. The stars beside the notch, their panels, the home Agents row and the
 // Agents page all draw the same mark. A mark draws in world units centred on the origin (1 unit = 1 pt at the
 // notch); `px` is device pixels per unit, for the glow; `since` is seconds in this state.
 export type MarkLook = 'spark' | 'pixel';
@@ -10,8 +9,6 @@ export const isMarkLook = (value: unknown): value is MarkLook => value === 'spar
 // work = working, pack = compacting its context, wait = needs you, done = finished and not looked at yet,
 // err = stopped on an error, seen = finished and looked at.
 export type MarkState = 'work' | 'pack' | 'wait' | 'done' | 'err' | 'seen';
-// What the wing and its hover list show of one live session.
-export type WingAgent = { id: string; mark: MarkState; title: string; line: string };
 type C3 = [number, number, number];
 export const COLOR: Record<MarkState, C3> = { work: [108, 156, 255], pack: [187, 148, 255], wait: [255, 201, 143], done: [111, 224, 180], err: [255, 106, 90], seen: [170, 178, 210] };
 
@@ -96,7 +93,7 @@ export function drawMark(ctx: CanvasRenderingContext2D, look: MarkLook, st: Mark
   DRAW[look](ctx, st, COLOR[st], t, since, px);
   ctx.restore();
 }
-const seedOf = (key: string) => [...key].reduce((a, ch) => a + ch.charCodeAt(0), 0) * .37 % 7;
+export const seedOf = (key: string) => [...key].reduce((a, ch) => a + ch.charCodeAt(0), 0) * .37 % 7;
 
 // One clock for every mark on screen, about 30 frames a second. A painter says whether it drew; with nothing
 // visible the clock only checks back every 100 ms.
@@ -108,7 +105,7 @@ const schedule = (ms: number) => {
   pending = true;
   setTimeout(() => requestAnimationFrame(now => { pending = false; let drew = false; painters.forEach(p => { drew = p(now) || drew; }); schedule(drew ? 30 : 100); }), ms);
 };
-function useClock(paint: Painter) {
+export function useClock(paint: Painter) {
   const latest = useRef(paint);
   latest.current = paint;
   useEffect(() => {
@@ -117,8 +114,8 @@ function useClock(paint: Painter) {
     return () => { painters.delete(painter); };
   }, []);
 }
-const dpr = () => Math.min(2, devicePixelRatio || 1);
-const shown = (el: HTMLElement) => el.checkVisibility({ opacityProperty: true, visibilityProperty: true });
+export const dpr = () => Math.min(2, devicePixelRatio || 1);
+export const shown = (el: HTMLElement) => el.checkVisibility({ opacityProperty: true, visibilityProperty: true });
 
 // One mark at `size` css px; its canvas is larger than its box so the glow is not cut off.
 export function AgentMark({ look, state, id = '', size = 14 }: { look: MarkLook; state: MarkState; id?: string; size?: number }) {
@@ -142,72 +139,5 @@ export function AgentMark({ look, state, id = '', size = 14 }: { look: MarkLook;
   </span>;
 }
 
-// The wing: one mark per live session, needs-you first; past five, one mark per state with a count beside it.
-export type Slot = { key: string; st: MarkState; n: number };
-const ORDER: MarkState[] = ['wait', 'err', 'done', 'work', 'pack'];
-const CELL: Record<MarkLook, number> = { spark: 16, pixel: 17 }, COUNT_W = 9, PAD = 6, TUCK = 12, SHOULDER = 6;
-export function wingSlots(agents: WingAgent[], look: MarkLook) {
-  const live = agents.filter(a => a.mark !== 'seen').sort((a, b) => ORDER.indexOf(a.mark) - ORDER.indexOf(b.mark));
-  const slots: Slot[] = live.length > 5
-    ? ORDER.flatMap(st => { const n = live.filter(a => a.mark === st).length; return n ? [{ key: st, st, n }] : []; })
-    : live.map(a => ({ key: a.id, st: a.mark, n: 1 }));
-  const width = slots.length ? PAD * 2 + slots.reduce((w, s) => w + CELL[look] + (s.n > 1 ? COUNT_W : 0), 0) : 0;
-  return { live, slots, width };
-}
-export type Wing = ReturnType<typeof wingSlots>;
-// Widest wing: five grouped states with counts.
-const MAX_W = PAD * 2 + 5 * (CELL.pixel + COUNT_W);
-const TIP_ROWS = 8;
-
-// A black wing grows out from under the notch's right edge (the pill's, on a screen without a notch), the
-// same black as her island, with its bottom corner rounded and a concave shoulder at the screen edge.
-// Hovering it lists the live sessions under it; a click opens Agents.
-export function AgentWing({ look, wing, lift, x, height, limit, tip, onOpen }: {
-  look: MarkLook; wing: Wing; lift: number; x: number; height: number; limit: number; tip: boolean; onOpen: () => void;
-}) {
-  const up = lift ? `translateY(${-lift}px)` : undefined;
-  const ref = useRef<HTMLCanvasElement>(null), width = useRef(spring(0)), last = useRef(0);
-  const changed = useRef(new Map<string, { st: MarkState; at: number }>());
-  const now0 = performance.now();
-  for (const s of wing.slots) { const c = changed.current.get(s.key); if (!c || c.st !== s.st) changed.current.set(s.key, { st: s.st, at: now0 }); }
-  const W = TUCK + MAX_W + SHOULDER;
-  useClock(now => {
-    const cv = ref.current;
-    if (!cv) return false;
-    const dt = Math.min(last.current ? (now - last.current) / 1000 : 1 / 30, 1 / 15);
-    last.current = now;
-    const moving = step(width.current, wing.width, 3.2, reduced.matches ? 1 : .8, dt), ww = Math.max(0, width.current.value);
-    const d = dpr();
-    if (cv.width !== Math.round(W * d) || cv.height !== Math.round(height * d)) { cv.width = Math.round(W * d); cv.height = Math.round(height * d); }
-    const ctx = cv.getContext('2d')!;
-    ctx.setTransform(d, 0, 0, d, 0, 0); ctx.clearRect(0, 0, W, height);
-    if (ww < 2) return moving;
-    const r = TUCK + ww, h = height;
-    ctx.fillStyle = '#000';
-    ctx.fill(new Path2D(`M ${r + SHOULDER} 0 Q ${r} 0 ${r} ${SHOULDER} L ${r} ${h - 10} Q ${r} ${h} ${r - 10} ${h} L 0 ${h} L 0 0 Z`));
-    ctx.save(); ctx.beginPath(); ctx.rect(TUCK, 0, ww, h); ctx.clip();
-    let at = TUCK + PAD;
-    for (const s of wing.slots) {
-      ctx.save(); ctx.translate(at + CELL[look] / 2, h / 2);
-      drawMark(ctx, look, s.st, now / 1000 + seedOf(s.key), (now - (changed.current.get(s.key)?.at ?? 0)) / 1000, d);
-      ctx.restore();
-      if (s.n > 1) {
-        ctx.font = '600 9px "JetBrains Mono", Menlo, monospace'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
-        ctx.fillStyle = rgba(tint(COLOR[s.st], .45), .95); ctx.fillText(String(s.n), at + CELL[look] - 1, h / 2 + .5);
-      }
-      at += CELL[look] + (s.n > 1 ? COUNT_W : 0);
-    }
-    ctx.restore();
-    return true;
-  });
-  const more = wing.live.length - TIP_ROWS;
-  return <>
-    <canvas ref={ref} className="agent-wing" data-look={look} data-marks={wing.slots.map(s => s.n > 1 ? `${s.st}x${s.n}` : s.st).join(' ')} aria-hidden="true"
-      style={{ left: x - TUCK, width: W, height, transform: up }}/>
-    {wing.width > 0 && <button className="agent-wing-hit" data-hit aria-label={`Agents: ${wing.live.length} live`} style={{ left: x, width: wing.width, height, transform: up }} onClick={onOpen}/>}
-    <div className={`agent-wing-tip ${tip && wing.live.length ? 'is-open' : ''}`} role="tooltip" style={{ left: Math.min(x - 4, limit - 258), top: height + 6 }}>
-      {wing.live.slice(0, TIP_ROWS).map(a => <div className="wt-row" key={a.id}><AgentMark look={look} state={a.mark} id={a.id} size={12}/><b>{a.title}</b><span>{a.line}</span></div>)}
-      <div className="wt-foot">{more > 0 ? `${more} more · ` : ''}Click for all sessions</div>
-    </div>
-  </>;
-}
+// A mark's cell in the row beside the notch, and the room a count takes after it.
+export const CELL: Record<MarkLook, number> = { spark: 16, pixel: 17 }, COUNT_W = 9;
