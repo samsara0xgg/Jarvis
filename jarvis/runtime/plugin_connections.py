@@ -27,6 +27,7 @@ from jarvis.runtime.plugin_catalog import (
     resolve_credentials,
 )
 from jarvis.runtime.plugins import Plugins, load_plugins
+from jarvis.shared.lang import t
 from jarvis.state.event_log import append_event_in_transaction, open_runtime_event_log
 from jarvis.state.plugin_settings import PluginSettings
 
@@ -122,9 +123,9 @@ class PluginConnections:
                 self._active.pop(plugin_id, None)
                 if active:
                     active.client.stop()
-                self._status[plugin_id] = ("error", "插件工具名称冲突，请检查连接配置")
+                self._status[plugin_id] = ("error", t("plugin.tool_name_clash"))
             except (OSError, ValueError, TypeError, RuntimeError):
-                self._status[plugin_id] = ("needs_auth", "尚未接入，请连接或重新授权")
+                self._status[plugin_id] = ("needs_auth", t("plugin.not_connected"))
 
     def _enabled(self, plugin_id: str) -> bool:
         defaults = self._config.get(plugin_id)
@@ -300,11 +301,11 @@ class PluginConnections:
 
     def _present(self, plugin_id: str, purpose: str = "") -> None:
         if plugin_id not in self.packages:
-            msg = "找不到这个插件，请从插件列表选择"
+            msg = t("plugin.unknown")
             raise ValueError(msg)
         if self._request and self._request["state"] in _BUSY:
             if self._request["plugin_id"] != plugin_id:
-                msg = "请先完成或取消当前连接"
+                msg = t("plugin.busy")
                 raise ValueError(msg)
         else:
             self._request = {
@@ -323,14 +324,14 @@ class PluginConnections:
         """Authenticated UI commands; network setup runs outside the state lock."""
         with self._lock:
             if self._closed:
-                msg = "Jarvis 正在关闭"
+                msg = t("plugin.shutting_down")
                 raise ValueError(msg)
             if operation == "open":
                 self._present(str(data.get("plugin_id") or ""))
                 return self.read()
             request = self._request
             if not request or data.get("request_id") != request["id"]:
-                msg = "连接请求已更新，请重新打开插件"
+                msg = t("plugin.request_replaced")
                 raise ValueError(msg)
             stop = self._command(operation, request, data)
         if stop:
@@ -350,7 +351,7 @@ class PluginConnections:
             return stop
         elif operation == "reopen":
             if request["state"] != "authorizing" or not self._auth_url:
-                msg = "当前没有等待授权的页面"
+                msg = t("plugin.no_pending_login")
                 raise ValueError(msg)
             self._open_url(self._auth_url)
         elif operation == "disable":
@@ -365,14 +366,14 @@ class PluginConnections:
             self._require_idle(request)
             self._approval(plugin_id, data.get("mode"))
         else:
-            msg = "未知的插件操作"
+            msg = t("plugin.unknown_operation")
             raise ValueError(msg)
         return None
 
     @staticmethod
     def _require_idle(request: dict[str, Any]) -> None:
         if request["state"] in _BUSY:
-            msg = "请先完成或取消当前连接"
+            msg = t("plugin.busy")
             raise ValueError(msg)
 
     def _start(self, request: dict[str, Any], data: dict[str, Any]) -> None:
@@ -387,7 +388,7 @@ class PluginConnections:
             k not in expected or not isinstance(v, str) or len(v) > _MAX_CREDENTIAL_LENGTH
             for k, v in credentials.items()
         ):
-            msg = "凭证输入无效"
+            msg = t("plugin.bad_credentials_input")
             raise ValueError(msg)
         request.update(
             state="connecting",
@@ -401,7 +402,7 @@ class PluginConnections:
 
     def _approval(self, plugin_id: str, mode: object) -> None:
         if mode not in ("auto", "prompt", "writes", "approve"):
-            msg = "无效的操作审批设置"
+            msg = t("plugin.bad_approval")
             raise ValueError(msg)
         active = self._active.get(plugin_id)
         if active is None:
@@ -465,7 +466,7 @@ class PluginConnections:
                 not values.get(name) and not os.environ.get(name)
                 for name in credential_fields(spec)
             ):
-                msg = "请填写连接所需的凭证"
+                msg = t("plugin.credentials_required")
                 raise ValueError(msg)
         resolved = {n: resolve_credentials(s, values) for n, s in specs.items()}
 
@@ -499,10 +500,10 @@ class PluginConnections:
         try:
             tools = client.connect(resolved)
             if set(resolved) != client.connected_servers:
-                msg = "无法连接服务，请检查网络、凭证或重新授权"
+                msg = t("plugin.cannot_connect")
                 raise RuntimeError(msg)  # noqa: TRY301 — close the partially connected client below
             if any(is_oauth(s) and not client.has_login(n) for n, s in resolved.items()):
-                msg = "授权尚未完成，请重新连接"
+                msg = t("plugin.login_unfinished")
                 raise RuntimeError(msg)  # noqa: TRY301 — close unauthenticated client below
             plugins = (
                 load_plugins(package.directory.parent, {package.directory.name: {}})
@@ -560,10 +561,11 @@ class PluginConnections:
             with self._lock:
                 if request is self._request and request["state"] in _BUSY:
                     # Transport errors can contain credentials; expose only our fixed messages.
+                    missing = t("plugin.credentials_required")
                     error = (
                         str(exc)
-                        if isinstance(exc, ValueError) and str(exc) == "请填写连接所需的凭证"
-                        else "连接未完成，请检查网络、凭证或重新授权后重试"
+                        if isinstance(exc, ValueError) and str(exc) == missing
+                        else t("plugin.connect_failed")
                     )
                     request.update(state="error", error=error)
                     self._status[plugin_id] = ("error", error)

@@ -67,6 +67,8 @@ from jarvis.runtime import (
     run_turn,
 )
 from jarvis.runtime.inherent_loop import serve_inherent
+from jarvis.shared.lang import t
+from jarvis.shared.text import is_english
 from jarvis.state.plugin_settings import local_key
 
 LOGGER = logging.getLogger("jarvis.cli")
@@ -89,14 +91,10 @@ _LONG_RUN_RE: re.Pattern[str] = re.compile(
     re.IGNORECASE,
 )
 
-# Fixed ack template per Day-2 § Daemon / CLI contract. Day-3 may
-# personalize per match (the ack is intentionally a single Chinese
-# sentence so Allen's CLI transcripts grep cleanly) but Day-2 pins
-# the single phrase so the canary can assert ack-before-fork without
-# parsing variants. RUF001 flags the fullwidth comma inside the
-# Chinese phrase as an "ambiguous" Latin look-alike; the character
-# is deliberate Chinese punctuation here.
-_QUICK_ACK_PHRASE: str = "好的，跑起来了。"  # noqa: RUF001 — fullwidth comma is intentional Chinese punctuation.
+# Fixed ack per Day-2 § Daemon / CLI contract (``cli.quick_ack`` in the
+# language table), in the language of the utterance: the parent process
+# reads no settings before it forks. One phrase per language, so the canary
+# can assert ack-before-fork without parsing variants.
 
 # --- ADR-0009 D2: forward mode -------------------------------------------
 #
@@ -134,12 +132,8 @@ def _utterance_implies_long_run(utterance: str) -> bool:
 
 
 def _quick_ack_phrase(utterance: str) -> str:
-    """Cheap ack rendered from the regex match. Day-2: fixed template."""
-    # The utterance is consulted only via the classifier; the Day-2
-    # phrase is constant so future-Allen can grep the ack out of
-    # transcripts without parsing variants.
-    del utterance
-    return _QUICK_ACK_PHRASE
+    """Cheap ack: one fixed phrase, in the utterance's language."""
+    return t("cli.quick_ack", lang="en" if is_english(utterance) else "zh")
 
 
 class _DaemonUnreachableError(RuntimeError):
@@ -453,7 +447,7 @@ def main_with_detach(
 
     Long-run path (classifier matched, ``no_detach`` false):
 
-    1. Print :data:`_QUICK_ACK_PHRASE`, flush stdout.
+    1. Print :func:`_quick_ack_phrase`, flush stdout.
     2. Call :func:`jarvis.runtime.daemon.fork_detach`.
     3. Parent: ``os._exit(0)`` immediately (no SQLite to close — none
        was opened).

@@ -61,6 +61,7 @@ def _client(tmp_path: Any) -> tuple[TestClient, str, list[str]]:  # noqa: ANN401
             plugin_action=lambda _operation, _data: {},
             plugin_authorize=matches,
             plugin_icon=lambda _plugin_id: None,
+            language_save=lambda _code: "zh",
             today_read=_empty,
             todo_set=_set_todo,
             mail_read=_empty,
@@ -97,12 +98,12 @@ def _call(client: TestClient, route: str, headers: dict[str, str]) -> int:
 def test_the_route_table_is_the_one_this_test_walks(tmp_path: Any) -> None:  # noqa: ANN401
     """Pin the count, so a route added later is walked, not silently skipped.
 
-    29 HTTP method/path pairs, the four FastAPI docs pairs (GET and HEAD of
+    31 HTTP method/path pairs, the four FastAPI docs pairs (GET and HEAD of
     ``/openapi.json``, ``/docs``, ``/docs/oauth2-redirect``, ``/redoc``) and
     the ``/inherent/ws`` socket.
     """
     _, _, routes = _client(tmp_path)
-    assert len(routes) == 38, routes
+    assert len(routes) == 40, routes
 
 
 @pytest.mark.parametrize(

@@ -58,8 +58,10 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
+import jarvis.runtime as runtime_pkg
 from jarvis.deployment import models, sleep_wake
 from jarvis.runtime import inherent_loop
+from jarvis.shared import lang
 from jarvis.surface import (
     notify,
     voice_audio,
@@ -214,6 +216,20 @@ def _block_model_download(*_args: object, **_kwargs: object) -> None:
 def _no_model_download(monkeypatch: pytest.MonkeyPatch) -> None:
     """A daemon booted without models would fetch 240 MB; tests stay offline."""
     monkeypatch.setattr(models, "download", _block_model_download)
+
+
+@pytest.fixture(autouse=True)
+def _chinese_unless_a_test_says_otherwise(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Pin the fixed-text language to zh, whatever this Mac's system language.
+
+    A booted runtime with no ``language`` setting reads the system language,
+    and the choice is process-wide, so one test's boot would otherwise leak
+    its language into every later test.
+    """
+    monkeypatch.setattr(runtime_pkg, "_system_language", lambda: "zh")
+    lang.set_language("zh")
+    yield
+    lang.set_language("zh")
 
 
 @pytest.fixture(autouse=True)

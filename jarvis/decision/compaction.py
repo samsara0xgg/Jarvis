@@ -20,15 +20,15 @@ if TYPE_CHECKING:
 
 # The headings ``session.compact_prompt`` asks for; every summary carries all of them.
 REQUIRED_HEADINGS: Final[tuple[str, ...]] = (
-    "### 相比上次的变化",
-    "### 当前在谈什么",
-    "### 已确认的决定与用户修正",
-    "### 助手提过、尚未确认的建议",
-    "### 未决问题",
-    "### 已答问题",
-    "### 背景事实",
-    "### 未完事项 / 下一步",
-    "### 未完整读取/未纳入的内容",
+    "### Changes since the last summary",
+    "### What the conversation is about now",
+    "### Confirmed decisions and user corrections",
+    "### Assistant suggestions not yet confirmed",
+    "### Open questions",
+    "### Answered questions",
+    "### Background facts",
+    "### Unfinished items / next steps",
+    "### Content not fully read or not included",
 )
 
 # A record id is an event uid (32 hex digits) or a Live row id
@@ -47,10 +47,10 @@ def build_compaction_messages(
     summary must cite.
     """
     lines = [
-        "[上一份摘要]",
-        previous_summary or "(无, 这是第一份摘要)",
+        "[Previous summary]",
+        previous_summary or "(none, this is the first summary)",
         "",
-        "[待纳入的记录, 时间正序; 每行: record_id | 时间 | 说话人 | 原文]",
+        "[Records to fold in, oldest first; each line: record_id | time | speaker | words]",
     ]
     lines.extend(f"{rid} | {ts} | {source} | {text}" for rid, ts, source, text in records)
     return [{"role": "user", "content": "\n".join(lines)}]

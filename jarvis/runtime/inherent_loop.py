@@ -124,6 +124,7 @@ from jarvis.runtime import (
     TriggerWaitTimeout,
     TurnSuspended,
     WaitingTurn,
+    _assistant_name,
     _event_action_id,
     _new_turn_id,
     _observer_poll_interval_s,
@@ -138,6 +139,7 @@ from jarvis.runtime import (
     make_foreground_decision_callable,
     make_response_cancel_callable,
     make_supersede_unspoken_callable,
+    save_language,
 )
 from jarvis.runtime.inherent_hub import start_inherent_view
 from jarvis.runtime.session_compaction import CompactionSweep, preset_context_length
@@ -4738,7 +4740,9 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         gpt_live_config: voice_live.GptLiveConfig | None = None
         if isinstance(gpt_live_raw, Mapping):
             try:
-                gpt_live_config = voice_live.gpt_live_config_from_mapping(gpt_live_raw)
+                gpt_live_config = voice_live.gpt_live_config_from_mapping(
+                    {"assistant": _assistant_name(runtime.config), **gpt_live_raw},
+                )
             except (TypeError, ValueError):
                 LOGGER.exception("realtime.gpt_live is malformed; GPT-Live stays off this boot")
         if gpt_live_config is not None and gpt_live_config.enabled:
@@ -4945,6 +4949,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 runtime.plugin_connections.settings.matches if runtime.plugin_connections else None
             ),
             plugin_icon=runtime.plugin_connections.icon if runtime.plugin_connections else None,
+            language_save=functools.partial(save_language, runtime.runtime_paths.settings),
             cancel_response_callable=cancel_response_callable,
             controls=controls,
             live=live_voice,

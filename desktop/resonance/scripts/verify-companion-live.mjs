@@ -144,6 +144,7 @@ try {
     // The home's new writes: a to-do checked off, and Jarvis's own settings once it serves them.
     if (method === 'POST' && url.pathname === '/inherent/today/todo') return json({ ok: true });
     if (method === 'POST' && url.pathname === '/inherent/settings' && fixtures['/inherent/settings']) { Object.assign(fixtures['/inherent/settings'].values, body.changes); return json(fixtures['/inherent/settings']); }
+    if (method === 'POST' && url.pathname === '/inherent/language') { fixtures['/inherent/language'] = { language: body.language }; return json(fixtures['/inherent/language']); }
     if (fixtures[url.pathname]) return json(fixtures[url.pathname]);
     return route.fulfill({ status: 404, contentType: 'application/json', body: '{"detail":"Not Found"}' });
   });
@@ -507,6 +508,14 @@ try {
       && posts.at(-1)?.path === '/inherent/settings' && posts.at(-1).body.changes?.tts_voice === 'Explorative Girl'
       && await page.locator('.ad .st-opts button[aria-checked="true"]', { hasText: 'Explorative Girl' }).count() === 1);
     await panelShot('L14-settings-voice');
+    // One language switch: Interface language flips her panel and tells Jarvis to say its own phrases in it.
+    const langName = () => text('.ad [data-item="lang"] .st-name');
+    await back(); await page.locator('.ad [data-cat="general"]').click(); await page.waitForTimeout(500);
+    await page.locator('.ad [data-item="lang"] .st-seg button', { hasText: '中文' }).click(); await page.waitForTimeout(600);
+    check('L15 Interface language 中文 posts { language: zh } and her panel turns Chinese',
+      posts.at(-1)?.path === '/inherent/language' && posts.at(-1).body.language === 'zh' && await langName() === '界面语言');
+    await page.locator('.ad [data-item="lang"] .st-seg button', { hasText: 'English' }).click(); await page.waitForTimeout(600);
+    check('L15 English posts { language: en } and turns it back', posts.at(-1)?.body.language === 'en' && await langName() === 'Interface language');
     await back(); await back();
     await hit.dblclick({ force: true });
     await page.waitForFunction(() => !document.querySelector('.companion-dashboard.is-open'), null, { timeout: 3000 });
@@ -606,6 +615,11 @@ try {
     await page.locator('.companion-notice .btn-ghost', { hasText: 'Always' }).click(); await page.waitForTimeout(200);
     check('L13 Always goes back as always', JSON.stringify(answered('r-edit')) === '[{"decision":"always"}]');
     setBoard('c-wait', { request: null }); await cardGone();
+    // Jarvis's language wins when she starts: a daemon speaking Chinese turns her panel Chinese.
+    fixtures['/inherent/language'] = { language: 'zh' };
+    await page.reload(); await page.waitForTimeout(2500);
+    check('L15 at start her panel follows the language Jarvis speaks in',
+      await page.evaluate(() => JSON.parse(localStorage.getItem('companion-settings-v1') ?? '{}').lang) === 'zh');
     check('no page errors', errors.length === 0);
   }
   await context.close();

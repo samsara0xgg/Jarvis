@@ -11,6 +11,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from jarvis.shared.lang import t
+
 # The surface retains pinned snapshots. Never evict active work for newer work.
 RETENTION_MS = 24 * 60 * 60 * 1000
 _DETAIL_CHARS = 160
@@ -32,7 +34,7 @@ def _end_session(board: dict[str, CodexSession], session_id: str, now_ms: int) -
         return
     row["since_ms"] = now_ms
     if row["state"] != "finished":
-        row.update(state="idle", detail="会话已结束")
+        row.update(state="idle", detail=t("codex.session_ended"))
 
 
 def _short(value: object) -> str:

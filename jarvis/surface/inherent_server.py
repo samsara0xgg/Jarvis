@@ -89,6 +89,7 @@ from starlette.datastructures import Headers
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.websockets import WebSocketClose
 
+from jarvis.shared.lang import language, t
 from jarvis.surface.claude_hooks import ClaudeHooks
 from jarvis.surface.claude_sessions import ClaudeSessions
 from jarvis.surface.codex_sessions import CodexSession, fold_codex_hook, prune_codex_sessions
@@ -458,6 +459,10 @@ class InherentDeps:
     plugin_action: Callable[[str, dict[str, Any]], dict[str, Any]] | None = None
     plugin_authorize: Callable[[str | None], bool] | None = None
     plugin_icon: Callable[[str], str | None] | None = None
+    # The desktop settings switch: switch the fixed-text language now and keep
+    # it in settings.yaml (``code -> language``, raises ValueError on anything
+    # but zh / en). Registered only with ``plugin_authorize``.
+    language_save: Callable[[str], str] | None = None
 
 
 class _FrameRateLimiter:
@@ -1184,8 +1189,29 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0915 — one cl
                 )
             except ValueError as exc:
                 # No Pydantic error echo: request bodies can contain credentials.
-                detail = "无效的插件请求" if isinstance(exc, json.JSONDecodeError) else str(exc)
+                bad_json = isinstance(exc, json.JSONDecodeError)
+                detail = t("plugin.bad_request") if bad_json else str(exc)
                 raise HTTPException(status_code=400, detail=detail) from None
+
+    if deps.language_save is not None and deps.plugin_authorize is not None:
+        language_save, language_authorize = deps.language_save, deps.plugin_authorize
+
+        @app.get("/inherent/language")
+        async def language_read() -> dict[str, str]:
+            """The language Jarvis speaks and writes its fixed text in."""
+            return {"language": language()}
+
+        @app.post("/inherent/language", status_code=200)
+        async def language_write(request: Request) -> dict[str, str]:
+            """Switch to ``{"language": "zh" | "en"}`` now and keep it in settings.yaml."""
+            if not language_authorize(request.headers.get("authorization")):
+                raise HTTPException(status_code=401, detail="desktop authorization required")
+            try:
+                code = json.loads(await request.body()).get("language")
+                chosen = await asyncio.to_thread(language_save, str(code))
+            except (ValueError, AttributeError) as exc:
+                raise HTTPException(status_code=400, detail="language must be zh or en") from exc
+            return {"language": chosen}
 
     if deps.usage_read is not None and deps.usage_refresh is not None:
         usage_read, usage_refresh = deps.usage_read, deps.usage_refresh

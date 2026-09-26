@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from jarvis.execution.mcp_tools import is_oauth
+from jarvis.shared.lang import t
 
 _NAME = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}\Z")
 _ENV = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))")
@@ -155,15 +156,15 @@ def read_package(directory: Path) -> PluginPackage:
     skill_count = len(list((directory / "skills").glob("*/SKILL.md")))
     reason = None
     if (directory / ".app.json").exists() and not servers:
-        reason = "此插件依赖尚未接入的连接器网关"
+        reason = t("plugin.needs_connector_gateway")
     elif not servers and not skill_count:
-        reason = "此插件没有 Jarvis 支持的工具或技能"
+        reason = t("plugin.nothing_supported")
     elif any(
         not isinstance(s, dict) or not (s.get("url") or s.get("command")) for s in servers.values()
     ):
-        reason = "此插件的连接配置暂不受支持"
+        reason = t("plugin.connection_unsupported")
     elif any(p.is_symlink() for p in directory.rglob("*")):
-        reason = "此插件包含需要手动检查的文件链接"
+        reason = t("plugin.has_symlinks")
     return PluginPackage(name, directory, manifest, servers, skill_count, reason)
 
 

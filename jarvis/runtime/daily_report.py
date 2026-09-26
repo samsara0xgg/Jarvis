@@ -41,6 +41,7 @@ from jarvis.decision.daily_report import (
     summary_table,
     title_terms,
 )
+from jarvis.shared.lang import t
 from jarvis.state.daily_contract import DailyError
 from jarvis.state.daily_report import (
     claim_originals,
@@ -75,8 +76,6 @@ MAX_ROUNDS = 5
 """Drafting calls per report: the query rounds, the report, and one retry of an unusable one."""
 CHECK_BUDGET = 12
 """Verification calls per report: one per item holding a claim the program could not rule on."""
-UNCHECKED_BUDGET = "核查预算耗尽"
-UNCHECKED_FAILED = "核查失败"
 PLAN_SERVER = "microsoft"
 """ADR 0036: the configured MCP server whose calendar and To Do the report reads."""
 _EVENT_FIELDS = "subject,start,end,isAllDay,isCancelled,location"
@@ -382,13 +381,15 @@ class DailyReportService:
                 continue
             if provider_down or made >= self._check_budget:
                 for claim in pending:
-                    claim.unchecked = UNCHECKED_FAILED if provider_down else UNCHECKED_BUDGET
+                    claim.unchecked = t(
+                        "report.unchecked.failed" if provider_down else "report.unchecked.budget"
+                    )
                 continue
             made += 1
             provider_down = not self._check_item(conn, evidence, index, item, pending)
             for claim in pending:
                 if claim.verdict is None:
-                    claim.unchecked = UNCHECKED_FAILED
+                    claim.unchecked = t("report.unchecked.failed")
         return made
 
     def _check_item(
@@ -459,7 +460,7 @@ class DailyReportService:
     ) -> str:
         """One query's reply: search hits for a query, or the whole originals behind the keys."""
         if name == DETAILS_TOOL_NAME:
-            return self._details(conn, evidence, argument) or "没有可读的键"
+            return self._details(conn, evidence, argument) or "No readable keys."
         return search_day(
             evidence,
             str(argument),

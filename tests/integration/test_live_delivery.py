@@ -19,9 +19,10 @@ from typing import TYPE_CHECKING, Any
 from websockets.asyncio import client as ws_client
 
 from jarvis.runtime.inherent_loop import _LiveBackend
+from jarvis.shared import lang
 from jarvis.state.event_log import emit_event, iter_events_of_types, open_event_log
 from jarvis.state.memory_db import SessionSettings
-from jarvis.surface import voice_live, voice_tts
+from jarvis.surface import voice_tts
 from jarvis.surface.voice_live import (
     DelegationResult,
     GptLiveConfig,
@@ -362,7 +363,7 @@ def test_late_result_is_spoken_while_the_session_is_open(
         assert progress["content"].startswith("正在查")
         await _until(lambda: [
             f for f in wire.frames("session.commentary.append")
-            if f["content"] == voice_live.TIMEOUT_COMMENTARY
+            if f["content"] == lang.t("live.timeout")
         ])
         assert marks == []  # the timeout notice is not an outcome
 
