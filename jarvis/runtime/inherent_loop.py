@@ -3758,6 +3758,13 @@ _FALLBACK_USAGE_POLL_INTERVAL_S: Final[float] = 300.0
 _FALLBACK_MINIMAX_USD_PER_MILLION_CHARS: Final[float] = 60.0
 
 
+def _claude_sessions_read(config: Mapping[str, Any]) -> bool:
+    """``observer.claude_sessions.enabled``: may the Agents page read Claude Code's files."""
+    block = config.get("observer")
+    sessions = block.get("claude_sessions") if isinstance(block, Mapping) else None
+    return isinstance(sessions, Mapping) and sessions.get("enabled") is True
+
+
 def _usage_observer_block(config: Mapping[str, Any]) -> Mapping[str, Any] | None:
     """Return ``observer.usage`` when ``enabled: true``; None means off."""
     block = config.get("observer")
@@ -3917,6 +3924,11 @@ async def _set_todo(home: Home, todo_id: str, done: bool) -> None:  # noqa: FBT0
     await asyncio.to_thread(functools.partial(home.set_todo, todo_id, done=done))
 
 
+async def _save_settings(settings: Settings, changes: dict[str, Any]) -> dict[str, Any]:
+    """``POST /inherent/settings``: one file write, off the loop thread."""
+    return await asyncio.to_thread(settings.update, changes)
+
+
 def _fetch_models_then_restart(
     sensevoice_dir: Path, silero_path: Path, loop: asyncio.AbstractEventLoop,
 ) -> None:
@@ -3935,11 +3947,6 @@ def _fetch_models_then_restart(
             LOGGER.warning("models: ready; restart Jarvis to turn voice on")
 
     threading.Thread(target=run, name="jarvis-models", daemon=True).start()
-
-
-async def _save_settings(settings: Settings, changes: dict[str, Any]) -> dict[str, Any]:
-    """``POST /inherent/settings``: one file write, off the loop thread."""
-    return await asyncio.to_thread(settings.update, changes)
 
 
 def _restart_soon() -> None:
@@ -4662,12 +4669,12 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             silero_path=silero_path,
         )
         voice_startup_reason = "models_missing"
-            _fetch_models_then_restart(sensevoice_dir, silero_path, asyncio.get_running_loop())
         if not models_ok:
             LOGGER.error(
                 "voice models missing; running text-only. Missing: %s",
                 "; ".join(missing),
             )
+            _fetch_models_then_restart(sensevoice_dir, silero_path, asyncio.get_running_loop())
         else:
             try:
                 voice_pipe = _build_voice_pipeline(
@@ -4931,6 +4938,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 else functools.partial(_save_settings, runtime.settings)
             ),
             restart=_restart_soon if spawned_by_agent() else None,
+            claude_sessions_read=_claude_sessions_read(runtime.config),
             plugin_read=runtime.plugin_connections.read if runtime.plugin_connections else None,
             plugin_action=runtime.plugin_connections.action if runtime.plugin_connections else None,
             plugin_authorize=(

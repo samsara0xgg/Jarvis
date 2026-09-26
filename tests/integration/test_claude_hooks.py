@@ -78,7 +78,9 @@ class _Rig:
             self.port = str(sock.getsockname()[1])
         self.root = tmp_path / ".jarvis"
         key = local_key(self.root)
-        app = create_app(InherentDeps(submit_callable=_noop, broadcaster=InherentBroadcaster()))
+        app = create_app(InherentDeps(
+            submit_callable=_noop, broadcaster=InherentBroadcaster(), claude_sessions_read=True
+        ))
         require_local_key(app, functools.partial(local_key_matches, key))
         self.server = uvicorn.Server(
             uvicorn.Config(app, host="127.0.0.1", port=int(self.port), log_level="warning")

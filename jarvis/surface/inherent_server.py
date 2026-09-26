@@ -448,6 +448,10 @@ class InherentDeps:
     # Settings > Restart: answer, then TERM this process; registered only when
     # launchd's KeepAlive is there to bring the daemon back.
     restart: Callable[[], None] | None = None
+    # ADR 0046: whether the Agents page may read Claude Code's own session
+    # files (``observer.claude_sessions.enabled``); off, it shows only what
+    # the user's installed hooks push.
+    claude_sessions_read: bool = False
     # ADR 0038: desktop management uses a private local credential, unlike
     # ordinary text submission. Secrets never travel on the public websocket.
     plugin_read: Callable[[], dict[str, Any]] | None = None
@@ -1297,6 +1301,8 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0915 — one cl
     @app.get("/inherent/claude-sessions")
     async def claude_sessions() -> dict[str, Any]:
         """Newest-first Claude Code session rows for the Resonance Agents page."""
+        if not deps.claude_sessions_read:
+            return claude_hooks.merge({"sessions": []})
         return claude_hooks.merge(await asyncio.to_thread(claude_board.read))
 
     @app.post("/inherent/claude-hook", status_code=200)

@@ -3456,9 +3456,9 @@ def write_file_handler(  # noqa: PLR0911 — one linear resolve/validate/mode/wr
 
 def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 config value threaded into one tool's closure at registry-build time; bundling them into one options object defeats the point of each tool owning its own defaulted knobs.
     *,
-    obsidian_vault_root: Path | None = None,
+    obsidian_vault_root: Path | None = DEFAULT_OBSIDIAN_VAULT_ROOT,
     web_search_max_results: int = DEFAULT_WEB_SEARCH_MAX_RESULTS,
-    web_search_provider: str = DEFAULT_WEB_SEARCH_PROVIDER,
+    web_search_provider: str | None = DEFAULT_WEB_SEARCH_PROVIDER,
     web_search_api_key: str | None = None,
     web_fetch_max_bytes: int = DEFAULT_WEB_FETCH_MAX_BYTES,
     web_fetch_max_text_bytes: int = DEFAULT_WEB_FETCH_MAX_TEXT_BYTES,
@@ -3479,16 +3479,14 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
 
     Args:
         obsidian_vault_root: Vault root for `search_notes` (ADR-0011
-            D7, `tools.obsidian.vault_root`). `None` (the default, and
-            what the two existing integration tests pass implicitly)
-            falls back to :data:`DEFAULT_OBSIDIAN_VAULT_ROOT` — the
-            composition root always supplies the real configured
-            value; a hand-built test registry can point this at a
+            D7, `tools.obsidian.vault_root`). `None` registers no
+            `search_notes`, so nothing touches a folder the user never
+            named; a hand-built test registry can point this at a
             `tmp_path` fixture instead.
         web_search_max_results: `tools.web.search_max_results` (ADR-0011
             D7) — the `web_search` default absent a request argument.
         web_search_provider: `tools.web.search_provider` — which backend
-            answers `web_search`. See
+            answers `web_search`; `None` registers no `web_search`. See
             :data:`DEFAULT_WEB_SEARCH_PROVIDER` for why the keyless
             default is not the recommended one.
         web_search_api_key: The credential named by
@@ -3528,30 +3526,28 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
             over that memory.db. `None` (hand-built test registries)
             registers no memory tool.
     """
-    vault_root = (
-        obsidian_vault_root if obsidian_vault_root is not None else DEFAULT_OBSIDIAN_VAULT_ROOT
-    )
     registry = ToolRegistry(confirmation_dispatch_outbox=confirmation_dispatch_outbox)
     registry.register(get_current_time)
     registry.register(open_path)
-    registry.register(
-        ToolDefinition(
-            name="search_notes",
-            description=(
-                "Case-insensitive full-text search over Allen's Obsidian vault "
-                "(*.md files only). Returns matching lines with their source "
-                "file. No index — brute-force scan, fine for a small vault."
-            ),
-            allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
-            risk_level="L0",
-            result_semantics="observation",
-            input_schema=_SEARCH_NOTES_INPUT_SCHEMA,
-            handler=_make_search_notes_handler(vault_root),
-            read_only=True,
-            requires_entity=False,
-            requires_confirmation=False,
+    if obsidian_vault_root is not None:
+        registry.register(
+            ToolDefinition(
+                name="search_notes",
+                description=(
+                    "Case-insensitive full-text search over Allen's Obsidian vault "
+                    "(*.md files only). Returns matching lines with their source "
+                    "file. No index — brute-force scan, fine for a small vault."
+                ),
+                allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
+                risk_level="L0",
+                result_semantics="observation",
+                input_schema=_SEARCH_NOTES_INPUT_SCHEMA,
+                handler=_make_search_notes_handler(obsidian_vault_root),
+                read_only=True,
+                requires_entity=False,
+                requires_confirmation=False,
+            )
         )
-    )
     registry.register(
         ToolDefinition(
             name="read_file",
@@ -3574,21 +3570,24 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
     registry.register(read_clipboard)
     registry.register(create_memo)
     registry.register(list_memos)
-    registry.register(
-        _make_web_search(
-            default_max_results=web_search_max_results,
-            timeout_s=web_timeout_s,
-            provider=web_search_provider,
-            api_key=web_search_api_key,
+    if web_search_provider is not None:
+        registry.register(
+            _make_web_search(
+                default_max_results=web_search_max_results,
+                timeout_s=web_timeout_s,
+                provider=web_search_provider,
+                api_key=web_search_api_key,
+            )
         )
-    )
     registry.register(
         _make_web_fetch(
             max_bytes=web_fetch_max_bytes,
             max_text_chars=web_fetch_max_text_bytes,
             timeout_s=web_timeout_s,
             extract_api_key=(
-                web_search_api_key if web_search_provider.strip().lower() == "tavily" else None
+                web_search_api_key
+                if (web_search_provider or "").strip().lower() == "tavily"
+                else None
             ),
         )
     )
