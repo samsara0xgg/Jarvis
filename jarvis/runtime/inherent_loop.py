@@ -3233,7 +3233,6 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
             output_active=(tts.is_output_active if tts is not None else None),
             wake_threshold=knobs.wake_threshold,
             config=session_config,
-            barge_in_interrupt=barge_in_interrupt,
             mic_muted=mic_muted,
             conversation=conversation,
             stop_speaking=_stop_speaking,
@@ -4860,11 +4859,6 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             plugin_action=runtime.plugin_connections.action if runtime.plugin_connections else None,
             plugin_authorize=(
                 runtime.plugin_connections.settings.matches if runtime.plugin_connections else None
-            ),
-            barge_in_confirm_callable=(
-                duplex_voice_session.confirm_ptt_barge_in
-                if duplex_voice_session is not None and duplex_voice_session.barge_in_armed
-                else None
             ),
             cancel_response_callable=cancel_response_callable,
             controls=controls,

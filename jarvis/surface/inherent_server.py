@@ -372,16 +372,6 @@ class InherentDeps:
             text-only fixtures stay backward compatible — when unset
             the ``/inherent/asr-submit`` handler 501s instead of
             attempting ASR.
-        barge_in_confirm_callable: ADR-0006 D8 — bound to the duplex
-            voice session's ``confirm_ptt_barge_in`` when the realtime
-            input session is live. A PTT upload arriving while output is
-            active is a deliberate press and cannot be speaker echo, so
-            it confirms a barge-in directly. Takes no argument and
-            returns the router's outcome string, which the handler only
-            logs: the upload's own transcript still becomes the next
-            question either way. ``None`` (the default) leaves
-            ``/inherent/asr-submit`` exactly as it is today; the request
-            and response shapes are unchanged in both cases.
         cancel_response_callable: ADR-0008 D10 — bound to the runtime's
             ``make_response_cancel_callable`` when
             ``realtime.response.independent_response_cancel`` is on.
@@ -407,7 +397,6 @@ class InherentDeps:
     submit_callable: Callable[[str], str | None]
     broadcaster: InherentBroadcaster
     voice_pipeline_callable: Callable[[bytes, str, str, str], Event] | None = None
-    barge_in_confirm_callable: Callable[[], str] | None = None
     cancel_response_callable: Callable[[str, str, str], str] | None = None
     v2: InherentV2Deps | None = None
     # ADR-0015: the mute switches behind ``POST /inherent/controls``. ``None``
@@ -649,21 +638,6 @@ async def _run_v2_session(deps: InherentV2Deps, ws: WebSocket) -> None:
         return
 
 
-async def _confirm_ptt_barge_in(deps: InherentDeps) -> None:
-    """ADR-0006 D8 — a PTT upload during output confirms a barge-in.
-
-    Called before the ASR offload so the speaking response is cancelled
-    while this upload is still being recognized rather than after its own
-    answer would already have been queued behind it.  The outcome is
-    diagnostic only: the upload's transcript becomes the next question
-    whether or not anything was speaking.
-    """
-    if deps.barge_in_confirm_callable is None:
-        return
-    outcome = await asyncio.to_thread(deps.barge_in_confirm_callable)
-    LOGGER.debug("asr_submit barge-in confirm outcome=%s", outcome)
-
-
 def _v2_authorized(deps: InherentV2Deps, request: Request) -> bool:
     """Report whether this HTTP v2 request presented the boot token (D5)."""
     token = _v2_presented_token(request.headers.get("authorization"))
@@ -885,8 +859,6 @@ async def _run_asr_submit(
     pcm = _decode_wav_to_pcm16_mono_16k(body)
     if not pcm:
         raise HTTPException(status_code=400, detail="empty audio after decode")
-
-    await _confirm_ptt_barge_in(deps)
 
     # ADR §5.2: server-mint turn_id, ignore any client-supplied value (Day-1 trust posture).
     turn_id = "T" + secrets.token_hex(4)
