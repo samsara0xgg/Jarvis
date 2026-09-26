@@ -47,6 +47,9 @@ details are needed rather than preloading the entire specification.
   or external runtime interaction.
 - Small fixes and refactors use risk-appropriate acceptance checks.
 - Language-specific testing rules load from `.claude/rules/`.
+- In a fresh checkout or worktree, run `bash scripts/init.sh` first (`--fix`
+  repairs); until it is green, a red gate or a deaf daemon may be environment
+  drift, not code.
 
 ## Git
 

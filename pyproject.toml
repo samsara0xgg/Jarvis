@@ -144,9 +144,6 @@ ignore = [
 # Vendored from jarvis-legacy per ADR-0002 § Reference sources.
 # Upstream-sync only — do not lint-fix in place.
 "scripts/refresh_pricing.py" = ["ALL"]
-# Vendored from jarvis-legacy per ADR-0002 § Reference sources.
-# Upstream-sync only — do not lint-fix in place.
-"jarvis/execution/_helpers.py" = ["ALL"]
 # Live burn harnesses for the web tools: operator-run console scripts, so
 # `print` IS the interface, and they reach into the private helpers they
 # exist to exercise. Same posture as the other scripts/ entries.

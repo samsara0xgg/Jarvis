@@ -902,9 +902,9 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
     ),
     EventTypeSchema(
         # ADR-0014 D14 — the third confirmation terminal, and the only one
-        # no human utters: the runtime expiry sweep and its boot reconciler
-        # append it once a live ask passes `expires_at_ms`, so an idle panel
-        # is cleared by a committed row instead of by its own clock.
+        # no human utters. ADR 0047 retired the runtime sweep that appended
+        # it; the type stays so an existing log still folds, and read-time
+        # expiry (`PendingConfirmationSlot.is_live`) is what runs today.
         # `actor` is `jarvis_runtime` (deterministic runtime machinery), not
         # `user` like its two siblings, because no one answered.
         # `source_event_id` again points at the exact

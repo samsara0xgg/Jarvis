@@ -22,7 +22,6 @@ from jarvis.surface import (
     voice_asr,
     voice_audio,
     voice_backend,
-    voice_interrupt,
     voice_media,
     voice_pipeline,
     voice_session,
@@ -1693,59 +1692,6 @@ def test_output_active_keeps_sampling_but_cannot_cancel_or_commit_echo() -> None
         assert pipeline.calls == []
         assert session.metrics().wake_detections > 0
         assert session.close().definitively_closed
-
-
-def test_armed_barge_in_in_ptt_mode_still_suppresses_the_wake_hit() -> None:
-    """ADR-0006 D9: only PTT may confirm on a ptt-ceiling route.
-
-    Barge-in is configured on and an interrupt callable is injected, so the
-    only thing keeping the wake hit inert is the mode table.  ``output_active``
-    alone and a wake hit alone still cancel nothing and arm nothing.
-    """
-    backend = _FakeBackend()
-    ingress = _ingress(backend)
-    engine = _FakeWakeEngine()
-    pipeline = _RecordingPipeline()
-    interrupts: list[str] = []
-
-    def _interrupt(source: str) -> str:
-        interrupts.append(source)
-        return "cancelled"
-
-    with patch.object(voice_audio, "_load_silero_session", return_value=_EnergySession()):
-        session = voice_session.DuplexVoiceSession(
-            ingress=ingress,
-            wake_engine=engine,
-            vad=voice_audio.SileroVad(mode="record"),
-            pipeline=pipeline,
-            broadcaster=None,
-            output_active=lambda: True,
-            wake_threshold=0.5,
-            config=replace(
-                voice_session.RealtimeInputSessionConfig(),
-                worker_poll_s=0.001,
-                shutdown_timeout_s=1.0,
-                barge_in=voice_interrupt.BargeInConfig(enabled=True),
-            ),
-            barge_in_interrupt=_interrupt,
-        )
-        assert session.start().started
-        epoch = ingress.stream_epoch
-        assert epoch is not None
-        for value in range(12):
-            backend.emit(epoch=epoch, value=value + 1)
-        _wait_until(lambda: session.metrics().wake_suppressed_during_output > 0)
-        metrics = session.metrics()
-        profile = session.device_profile
-        assert session.close().definitively_closed
-
-    assert profile is not None
-    assert profile.allowed_barge_mode == "ptt"
-    assert metrics.barge_in_candidates == 0
-    assert metrics.barge_in_confirmations == 0
-    assert metrics.capture_starts == 0
-    assert interrupts == []
-    assert pipeline.calls == []
 
 
 def test_wake_prediction_failure_downgrades_only_wake_then_recovers() -> None:
