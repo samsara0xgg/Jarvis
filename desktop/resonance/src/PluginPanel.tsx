@@ -52,6 +52,9 @@ export function usePlugins() {
 
 // A plugin's own logo from its manifest, fetched once per session rather than on every poll.
 const icons = new Map<string, Promise<string | null>>();
+// Icons Allen picked for packages that ship no logo, and for connectors with no package, by plugin id.
+const PICKED: Record<string, string> = Object.fromEntries(Object.entries(import.meta.glob<string>('./plugin-icons/*', { eager: true, import: 'default' }))
+  .map(([file, url]) => [file.replace(/^.*\/|\.\w+$/g, ''), url]));
 export function usePluginIcon(id: string) {
   const [src, setSrc] = useState<string | null>(null);
   useEffect(() => {
@@ -61,7 +64,7 @@ export function usePluginIcon(id: string) {
     void icons.get(id)!.then(icon => { if (live) setSrc(icon); });
     return () => { live = false; };
   }, [id]);
-  return src;
+  return src ?? PICKED[id] ?? null;
 }
 
 function PluginIcon({ plugin, small = false }: { plugin: Plugin; small?: boolean }) {
