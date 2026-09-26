@@ -3,8 +3,9 @@
 Codex's tool discovery on a Chat Completions wire: every deferred tool's
 metadata (name, description, input property names) is one BM25 document;
 a search returns the best names under
-``loaded_tools``, and the decision loop adds those tools to the model's
-tool list for the rest of the turn. The search never runs a found tool.
+``loaded_tools``, plus every read-only tool of the best match's server
+(ADR 0055), and the decision loop adds those tools to the model's tool list
+for the rest of the turn. The search never runs a found tool.
 """
 
 from __future__ import annotations
@@ -146,7 +147,17 @@ def build_tool_search(deferred: Sequence[Tool], sources: Mapping[str, str]) -> t
         if limit <= 0:
             msg = "limit must be greater than zero"
             raise ToolError(msg, code="invalid_arguments")
-        return {"loaded_tools": [names[i] for i in index.top(query, limit)]}
+        hits = [names[i] for i in index.top(query, limit)]
+        # ADR 0055: the best match's server brings all of its read-only tools. A search
+        # there is often useless without the read that follows (gmail_search lists ids,
+        # gmail_get reads one), and read-only tools run unasked, so loading them risks nothing.
+        best = _source(hits[0]) if hits else None
+        reads = [
+            name
+            for name, tool in zip(names, deferred, strict=True)
+            if tool.read_only and _source(name) == best and name not in hits
+        ]
+        return {"loaded_tools": hits + reads}
 
     return (
         Tool(
