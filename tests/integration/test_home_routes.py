@@ -1,24 +1,24 @@
-"""ADR 0051 — the companion home's routes over replayed Microsoft, Gmail and Open-Meteo answers.
+"""ADR 0054 — the companion home's routes over replayed Microsoft, Gmail and Open-Meteo answers.
 
 The To Do list and task and the weather are the services' answers of
 2026-09-25 (ids shortened, one forecast hour turned to rain so the icon
 mapping shows); the calendar is empty on the real account, so its events are
-written in Graph's calendarView shape, and the mail in the shape imaplib
-returns for a Gmail FETCH. Each check asserts what a route serves (what the
-home renders) or what Jarvis sent to Microsoft or Gmail.
+written in Graph's calendarView shape, and the mail in the JSON text blocks the
+Google Workspace server's gmail_search and gmail_get answer. Each check asserts
+what a route serves (what the home renders) or what Jarvis sent to Microsoft or
+Gmail.
 """
 
 from __future__ import annotations
 
 import asyncio
 import functools
-import imaplib
 import io
 import json
 import sqlite3
 import urllib.request
 from datetime import datetime, time, timedelta
-from typing import TYPE_CHECKING, Any, ClassVar, Self
+from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
 from fastapi.testclient import TestClient
@@ -63,24 +63,24 @@ EVENTS = [
         "end": {"dateTime": "2026-09-25T21:00:00.0000000", "timeZone": "UTC"},
     },
 ]
-FIELDS = b"BODY[HEADER.FIELDS (FROM SUBJECT)]"
-MAIL_ROWS: list[Any] = [
-    (
-        b'1 (UID 4101 INTERNALDATE "25-Sep-2026 14:40:00 -0700" ' + FIELDS + b" {70}",
-        b'From: "Prof. Lee" <lee@uvic.ca>\r\nSubject: Office hours move to Thursday\r\n\r\n',
-    ),
-    b")",
-    (
-        b'2 (UID 4102 INTERNALDATE "25-Sep-2026 13:00:00 -0700" ' + FIELDS + b" {62}",
-        b"From: GitHub <noreply@github.com>\r\nSubject: Your weekly digest\r\n\r\n",
-    ),
-    b")",
-    (
-        b'3 (UID 4103 INTERNALDATE "25-Sep-2026 15:05:00 -0700" ' + FIELDS + b" {90}",
-        b"From: =?utf-8?b?5aaI5aaI?= <mom@example.com>\r\n"
-        b"Subject: =?utf-8?b?5LuK5pma6L+Y5p2l5ZCX77yf?=\r\n\r\n",
-    ),
-    b")",
+# gmail_get's metadata answers; gmail_search lists them in this order, which is not
+# newest first, so the route's own sort by Date shows.
+LETTERS: list[dict[str, Any]] = [
+    {
+        "id": "199a1c0d4101", "threadId": "199a1c0d4101", "labelIds": ["UNREAD", "INBOX"],
+        "subject": "Office hours move to Thursday", "from": '"Prof. Lee" <lee@uvic.ca>',
+        "to": "allen@example.com", "date": "Thu, 25 Sep 2026 14:40:00 -0700",
+    },
+    {
+        "id": "199a1c0d4102", "threadId": "199a1c0d4102", "labelIds": ["UNREAD", "INBOX"],
+        "subject": "Your weekly digest", "from": "GitHub <noreply@github.com>",
+        "to": "allen@example.com", "date": "Thu, 25 Sep 2026 13:00:00 -0700",
+    },
+    {
+        "id": "199a1c0d4103", "threadId": "199a1c0d4103", "labelIds": ["UNREAD", "INBOX"],
+        "subject": "今晚还来吗？", "from": "妈妈 <mom@example.com>",  # noqa: RUF001 — her words.
+        "to": "allen@example.com", "date": "Thu, 25 Sep 2026 15:05:00 -0700",
+    },
 ]
 WEATHER: dict[str, Any] = {
     "current": {"time": 1790400600, "temperature_2m": 10.5, "weather_code": 0},
@@ -114,15 +114,35 @@ class _Microsoft:
         return {"text": json.dumps({"value": ANSWERS.get(tool, [])})}
 
 
-class _Connections:
-    def __init__(self, server: _Microsoft | None) -> None:
-        self.server = server
+class _Gmail:
+    """The connected Workspace server: JSON in a text block, a failure as {"error": ...}."""
 
-    def client_for(self, server: str) -> _Microsoft:
-        if self.server is None:
+    def __init__(self, error: str | None = None) -> None:
+        self.error = error
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    def call(self, server: str, tool: str, args: Mapping[str, Any]) -> dict[str, Any]:
+        assert server == "gmail"
+        self.calls.append((tool, dict(args)))
+        if self.error:
+            return {"text": json.dumps({"error": self.error})}
+        if tool == "gmail_search":
+            hits = [{"id": one["id"], "threadId": one["threadId"]} for one in LETTERS]
+            return {"text": json.dumps({"messages": hits, "resultSizeEstimate": len(hits)})}
+        letter = next(one for one in LETTERS if one["id"] == args["messageId"])
+        return {"text": json.dumps({**letter, "snippet": "", "body": "", "attachments": []})}
+
+
+class _Connections:
+    def __init__(self, server: _Microsoft | None, gmail: _Gmail | None = None) -> None:
+        self.servers = {"microsoft": server, "gmail": gmail}
+
+    def client_for(self, server: str) -> _Microsoft | _Gmail:
+        found = self.servers.get(server)
+        if found is None:
             msg = f"mcp server {server!r} is not connected"
             raise ToolError(msg, code="mcp_server")
-        return self.server
+        return found
 
 
 def _client(home: Home, conn: sqlite3.Connection | None = None) -> TestClient:
@@ -155,9 +175,9 @@ def _weather_answers(monkeypatch: pytest.MonkeyPatch, *, reachable: bool = True)
     return asked
 
 
-def _home(server: _Microsoft | None) -> Home:
+def _home(server: _Microsoft | None, gmail: _Gmail | None = None) -> Home:
     return Home(
-        _Connections(server),  # type: ignore[arg-type]
+        _Connections(server, gmail),  # type: ignore[arg-type]
         (ZONE, ZoneInfo(ZONE)),
         {"latitude": 49.28, "longitude": -123.12},
     )
@@ -239,63 +259,37 @@ def test_the_checkbox_writes_the_task_status_to_todo() -> None:
     assert len(server.calls) == 2
 
 
-class _Gmail:
-    """imaplib.IMAP4_SSL's surface as the mail read uses it; records every command."""
-
-    sent: ClassVar[list[tuple[Any, ...]]] = []
-
-    def __init__(self, host: str, *, timeout: float) -> None:
-        self.sent.append(("connect", host, timeout > 0))
-
-    def __enter__(self) -> Self:
-        return self
-
-    def __exit__(self, *_exc: object) -> None:
-        self.sent.append(("logout",))
-
-    def login(self, user: str, password: str) -> None:
-        self.sent.append(("login", user, password))
-
-    def select(self, mailbox: str, *, readonly: bool) -> None:
-        self.sent.append(("select", mailbox, readonly))
-
-    def uid(self, command: str, *args: str) -> tuple[str, list[Any]]:
-        self.sent.append((command, *args))
-        return ("OK", [b"4101 4102 4103"]) if command == "SEARCH" else ("OK", MAIL_ROWS)
-
-
-def test_mail_is_unread_primary_gmail_from_people(monkeypatch: pytest.MonkeyPatch) -> None:
-    """GET /inherent/mail: unread Primary Gmail, read-only, no-reply dropped, newest first."""
-    monkeypatch.setenv("GMAIL_ADDRESS", "allen@example.com")
-    monkeypatch.setenv("GMAIL_APP_PASSWORD", "app-password")
-    monkeypatch.setattr(imaplib, "IMAP4_SSL", _Gmail)
-    _Gmail.sent.clear()
-    reply = _client(_home(_Microsoft())).get("/inherent/mail")
+def test_mail_is_unread_primary_gmail_from_people() -> None:
+    """GET /inherent/mail: unread Primary Gmail by read-only tools, no-reply out, newest first."""
+    gmail = _Gmail()
+    reply = _client(_home(_Microsoft(), gmail)).get("/inherent/mail")
     assert reply.json() == {"unread": [
         {
-            "id": "4103", "from": "妈妈", "subject": "今晚还来吗？",  # noqa: RUF001 — her words.
+            "id": "199a1c0d4103", "from": "妈妈", "subject": "今晚还来吗？",  # noqa: RUF001 — her words.
             "received": "2026-09-25T22:05:00+00:00",
         },
         {
-            "id": "4101", "from": "Prof. Lee", "subject": "Office hours move to Thursday",
+            "id": "199a1c0d4101", "from": "Prof. Lee", "subject": "Office hours move to Thursday",
             "received": "2026-09-25T21:40:00+00:00",
         },
     ]}
-    assert _Gmail.sent == [
-        ("connect", "imap.gmail.com", True),
-        ("login", "allen@example.com", "app-password"),
-        ("select", "INBOX", True),
-        ("SEARCH", "X-GM-RAW", '"category:primary is:unread"'),
-        ("FETCH", "4101,4102,4103", "(INTERNALDATE BODY.PEEK[HEADER.FIELDS (FROM SUBJECT)])"),
-        ("logout",),
+    assert gmail.calls == [
+        ("gmail_search", {"query": "category:primary is:unread", "maxResults": 20}),
+        *[("gmail_get", {"messageId": one["id"], "format": "metadata"}) for one in LETTERS],
     ]
 
 
-def test_without_microsoft_or_gmail_the_home_says_not_connected(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """No Microsoft connection, no Gmail password: 404, which the home shows as not connected."""
-    monkeypatch.delenv("GMAIL_APP_PASSWORD", raising=False)
+def test_a_gmail_error_answer_is_the_homes_502() -> None:
+    """Not logged in: the server answers {"error": ...} in its text, and the home gets a 502."""
+    gmail = _Gmail(error="No browser available for authentication.")
+    reply = _client(_home(_Microsoft(), gmail)).get("/inherent/mail")
+    assert reply.status_code == 502
+    assert "No browser available" in reply.json()["detail"]
+    assert [tool for tool, _args in gmail.calls] == ["gmail_search"]
+
+
+def test_without_microsoft_or_gmail_the_home_says_not_connected() -> None:
+    """No Microsoft or Gmail connection: 404, which the home shows as not connected."""
     client = _client(_home(None))
     assert client.get("/inherent/today").status_code == 404
     assert client.get("/inherent/mail").status_code == 404

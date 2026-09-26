@@ -238,16 +238,29 @@ tools:
   # tools.<工具名>.approval_mode，取值 auto（默认）/ prompt / writes / approve。
   # github 需要 ~/.jarvis/env 里有 GITHUB_PAT_TOKEN；notion 要先跑一次
   # `python -m jarvis mcp-login notion`。
+  # gmail（ADR 0054）跑 Google 给 Gemini CLI 做的 Workspace server
+  # （github.com/gemini-cli-extensions/workspace，Apache-2.0），要先装在
+  # ~/Projects/external/gemini-workspace 并 npm ci && npm run build。它用
+  # Google 自己的 OAuth 应用，换 token 和刷新走 Google 的云函数，不用自建
+  # Google Cloud 项目；邮件只在本机和 Google 之间走。它的 .mcp.json 里：
+  # WORKSPACE_FEATURE_OVERRIDES 关掉 Gmail 以外的每一组，授权只要
+  # gmail.modify，登录和守护进程用同一份，否则它会嫌 token 缺权限而删掉；
+  # FORCE_FILE_STORAGE 让 token 加密存在它自己的目录，不进钥匙串；CI=1 让
+  # 没登录时直接报错，不从守护进程弹浏览器。登录跑一次
+  # `python -m jarvis mcp-login gmail`，浏览器里授权后把页面上的 JSON 粘回终端。
   plugins:
     notion: {enabled: true}
     github: {enabled: true}
+    gmail: {enabled: true}
   # ADR 0031 — MCP servers。每个条目在启动时连上，它列出的工具以
   # mcp__<条目名>__<工具名> 注册；连不上只告警、不影响启动。和插件里的
   # server 同名时，这里的条目整条替换插件的。
   # 一个条目要么写 url（Streamable HTTP），要么写 command + args（stdio
-  # 子进程），可选 env / cwd。env 和 headers 的值里可以写 $VAR，从守护
+  # 子进程），可选 env / cwd。env、args 和 headers 的值里可以写 $VAR，从守护
   # 进程环境（含 ~/.jarvis/env）展开，key 不进这个文件。也认 Codex 的
   # bearer_token_env_var / http_headers / env_http_headers 写法。
+  # ADR 0054 — 自己管登录的本机 server 写 login_args：`mcp-login <条目名>`
+  # 在终端用同一个 command 和 env 跑它，登录申请的权限就和守护进程里一致。
   # ADR 0033 — 审批照 Codex 的 auto 档：readOnlyHint 为真的直接用（L0），
   # 其余先问 Allen（L3，走确认），只有明确标了不破坏且不对外的才不问（L1）。
   # ADR 0034 — 这些工具默认不进 LLM 菜单，模型用 tool_search 搜到才加进来。

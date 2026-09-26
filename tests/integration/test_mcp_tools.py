@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from jarvis.execution.mcp_tools import McpServers
+from jarvis.runtime import mcp_login
 from tests.integration.test_flat_tool_dispatch import _chain, _Fixture, _request
 
 if TYPE_CHECKING:
@@ -145,6 +146,40 @@ def test_unreachable_server_contributes_nothing(servers: McpServers) -> None:
     """A missing binary is a warning, not a boot failure; the reachable server still lists."""
     tools = servers.connect({"ghost": {"command": "/nonexistent/mcp-server"}, **ECHO})
     assert {t.name.split("__")[1] for t in tools} == {"echo"}
+
+
+def test_stdio_args_expand_from_the_environment(
+    servers: McpServers, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR 0054: `$HOME`-style paths in args, so the install location stays out of the config."""
+    monkeypatch.setenv("ECHO_DIR", str(HERE))
+    entry = {"echo": {"command": sys.executable, "args": ["$ECHO_DIR/mcp_echo_server.py"]}}
+    assert {t.name for t in servers.connect(entry)} == {
+        "mcp__echo__echo", "mcp__echo__add", "mcp__echo__boom",
+    }
+
+
+def test_mcp_login_runs_a_local_servers_own_login(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR 0054: login_args runs with the entry's command and env; its exit code is the answer."""
+    (tmp_path / "login.py").write_text(
+        "import os, pathlib, sys\n"
+        "pathlib.Path(sys.argv[1]).write_text(os.environ['FEATURES'])\n"
+        "sys.exit(3)\n"
+    )
+    monkeypatch.setenv("LOGIN_DIR", str(tmp_path))
+    config = tmp_path / "config" / "jarvis.yaml"
+    config.parent.mkdir()
+    entry = {
+        "command": sys.executable,
+        "args": ["never-run-by-login"],
+        "login_args": ["$LOGIN_DIR/login.py", "$LOGIN_DIR/seen.txt"],
+        "env": {"FEATURES": "gmail only"},
+    }
+    config.write_text(json.dumps({"tools": {"mcp": {"servers": {"local": entry}}}}))
+    assert mcp_login("local", config_path=config, runtime_root=tmp_path / "runtime") == 3
+    assert (tmp_path / "seen.txt").read_text() == "gmail only"
 
 
 def test_bearer_header_from_the_environment(

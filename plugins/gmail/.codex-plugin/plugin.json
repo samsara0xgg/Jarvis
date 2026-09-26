@@ -1,0 +1,26 @@
+{
+  "name": "gmail",
+  "version": "0.1.0",
+  "description": "Search, read, label, draft and send Gmail through Google's Workspace MCP server for Gemini CLI.",
+  "homepage": "https://github.com/gemini-cli-extensions/workspace",
+  "license": "Apache-2.0",
+  "keywords": [
+    "gmail",
+    "email",
+    "google",
+    "mail",
+    "inbox",
+    "drafts"
+  ],
+  "interface": {
+    "displayName": "Gmail",
+    "shortDescription": "Read and manage Gmail",
+    "developerName": "Google",
+    "category": "Communication",
+    "logo": "./assets/gmail.png",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ]
+  }
+}

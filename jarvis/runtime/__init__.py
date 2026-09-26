@@ -37,6 +37,7 @@ import json
 import logging
 import os
 import re
+import subprocess
 import sys
 import time
 import uuid
@@ -99,7 +100,7 @@ from jarvis.decision.stream_gate import routine_stream_policy
 from jarvis.decision.tier0 import Tier0ConfigError, load_tier0_table, validate_tier0_table
 from jarvis.deployment import RuntimePaths, bootstrap_runtime, load_env_file
 from jarvis.execution.mcp_oauth import DEFAULT_OAUTH_CALLBACK_PORT
-from jarvis.execution.mcp_tools import DEFAULT_MCP_TIMEOUT_S, McpServers, is_oauth
+from jarvis.execution.mcp_tools import DEFAULT_MCP_TIMEOUT_S, McpServers, is_oauth, stdio_env
 from jarvis.execution.path_resolver import resolve as resolve_file_entity
 from jarvis.execution.path_resolver import resolve_write_target
 from jarvis.execution.tools import (
@@ -1460,8 +1461,12 @@ def mcp_login(
 ) -> int:
     """ADR 0032: log one `auth: oauth` server in through the browser; the daemon reuses the token.
 
-    Returns a process exit code: 0 logged in, 1 the server refused or never
-    asked for a login, 2 the entry is missing or not an OAuth one.
+    A local server that keeps its own login names its login command in
+    ``login_args`` (ADR 0054); that command runs here, in the terminal, with the
+    entry's command and environment, so it asks for exactly what the daemon's
+    server will use. Returns a process exit code: 0 logged in, 1 the server
+    refused or never asked for a login, 2 the entry is missing or has no login;
+    a login command's own exit code otherwise.
     """
     if config_path is None:
         repo_root = _locate_repo_root(Path(__file__).parent)
@@ -1481,6 +1486,10 @@ def mcp_login(
             f" of {config_path} (known: {known})\n"
         )
         return 2
+    if spec.get("command") and spec.get("login_args"):
+        login = [str(spec["command"]), *(os.path.expandvars(str(a)) for a in spec["login_args"])]
+        env = {**os.environ, **stdio_env(spec)}
+        return subprocess.run(login, env=env, cwd=spec.get("cwd"), check=False).returncode  # noqa: S603 — Allen's own config names the command.
     if not is_oauth(spec):
         sys.stderr.write(f"mcp-login: {server} does not log in with OAuth; nothing to do\n")
         return 2
