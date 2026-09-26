@@ -57,3 +57,11 @@ contextBridge.exposeInMainWorld('jarvis', {
     return () => ipcRenderer.removeListener('command', listener);
   },
 });
+// The first launch's window (companion.ts answers only that window).
+contextBridge.exposeInMainWorld('firstRun', {
+  info: () => ipcRenderer.invoke('first-run-info'),
+  permission: (kind: string, ask: boolean, note?: [string, string]) => ipcRenderer.invoke('first-run-permission', kind, ask, note),
+  open: (page: string) => ipcRenderer.send('first-run-open', page),
+  passthrough: (on: boolean) => ipcRenderer.send('first-run-passthrough', on),
+  done: () => ipcRenderer.send('first-run-done'),
+});

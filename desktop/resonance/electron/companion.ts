@@ -1,9 +1,11 @@
-import { app, BrowserWindow, Menu, Tray, nativeImage, ipcMain, screen, session } from 'electron';
+import { app, BrowserWindow, Menu, Tray, nativeImage, ipcMain, screen, session, shell, systemPreferences, desktopCapturer, Notification } from 'electron';
 import path from 'node:path';
+import { existsSync } from 'node:fs';
+import { userInfo } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
-import { registerDaemonBridge } from './bridge.js';
+import { daemonToken, registerDaemonBridge, sendDaemonKey } from './bridge.js';
 // The companion: 星核, who lives beside the notch, with her Dashboard. She talks to the daemon on
 // JARVIS_INHERENT_BRIDGE_PORT like the capsule does; the daemon owns mic and speaker, so she never
 // records audio or plays speech herself. `--demo` runs her on the built-in demo data instead.
@@ -94,9 +96,93 @@ function keepOnTop() {
   win.setAlwaysOnTop(true, 'status');
   material?.setStationary(win.getNativeWindowHandle(), true);
 }
-if (locked) app.whenReady().then(() => {
+const port = process.env.JARVIS_INHERENT_BRIDGE_PORT ?? '8006';
+// Her first launch runs until the daemon has marked setup done; `--first-run` shows it anyway.
+async function needsSetup() {
+  if (process.argv.includes('--first-run')) return true;
+  if (demo) return false;
+  try {
+    const r = await fetch(`http://127.0.0.1:${port}/inherent/setup`, { headers: { Authorization: `Bearer ${await daemonToken()}` }, signal: AbortSignal.timeout(3000) });
+    return r.ok && (await r.json()).first_run === true;
+  } catch { return false; }
+}
+const PAGES: Record<string, string> = {
+  openai: 'https://platform.openai.com/api-keys',
+  minimax: 'https://platform.minimax.io/user-center/basic-information/interface-key',
+  tavily: 'https://app.tavily.com/',
+};
+const SETTINGS = 'x-apple.systempreferences:com.apple.preference.security?';
+// What macOS says about one permission; with `ask` it asks first. Screen Recording is turned on in
+// System Settings and only counts after a relaunch; notifications cannot be read back, only asked.
+async function permission(kind: unknown, ask: unknown, note: unknown): Promise<string> {
+  if (kind === 'mic') {
+    const status = systemPreferences.getMediaAccessStatus('microphone');
+    if (status === 'granted') return 'ok';
+    if (!ask) return '';
+    if (status === 'not-determined') return await systemPreferences.askForMediaAccess('microphone') ? 'ok' : 'later';
+    void shell.openExternal(`${SETTINGS}Privacy_Microphone`);
+    return 'later';
+  }
+  if (kind === 'screen') {
+    if (systemPreferences.getMediaAccessStatus('screen') === 'granted') return 'ok';
+    if (!ask) return '';
+    await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 0, height: 0 } }).catch(() => []);
+    void shell.openExternal(`${SETTINGS}Privacy_ScreenCapture`);
+    return 'relaunch';
+  }
+  if (kind === 'auto' && ask) {
+    // Asking to control the terminal is the only way to learn the answer; -1743 is macOS saying no.
+    const term = existsSync('/Applications/Ghostty.app') ? 'Ghostty' : 'Terminal';
+    return new Promise(done => execFile('osascript', ['-e', `tell application "${term}" to count windows`], { timeout: 120000 },
+      (_err, _out, err) => done(/-1743/.test(String(err)) ? 'later' : 'ok')));
+  }
+  if (kind === 'notify' && ask && Array.isArray(note)) {
+    new Notification({ title: String(note[0]), body: String(note[1]) }).show();
+    return 'asked';
+  }
+  return '';
+}
+// The full-screen first launch on the screen under the cursor: her sky opens where 打开 was clicked,
+// she moves in beside the notch and walks through setup. When she has said hello it hands over.
+function firstRun() {
+  const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()), at = screen.getCursorScreenPoint();
+  const fr = new BrowserWindow({ ...display.bounds, frame: false, transparent: true, backgroundColor: '#00000000', hasShadow: false,
+    resizable: false, movable: false, minimizable: false, maximizable: false, fullscreenable: false, show: false, skipTaskbar: true,
+    roundedCorners: false, enableLargerThanScreen: true, alwaysOnTop: true,
+    webPreferences: { preload: path.join(here, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, autoplayPolicy: 'no-user-gesture-required' } });
+  // Above the menu bar and the Dock, on every Space, like the notch dock. While another app has you (a macOS
+  // permission prompt, System Settings, the browser for a sign-in) it comes first; a click back on her sky covers the screen again.
+  fr.setAlwaysOnTop(true, 'screen-saver');
+  fr.on('blur', () => fr.setAlwaysOnTop(false));
+  fr.on('focus', () => fr.setAlwaysOnTop(true, 'screen-saver'));
+  fr.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true });
+  if (material) material.setFrame(fr.getNativeWindowHandle(), display.bounds);
+  fr.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  fr.webContents.on('will-navigate', event => event.preventDefault());
+  sendDaemonKey(fr.webContents.session);
+  const mine = (event: Electron.IpcMainEvent | Electron.IpcMainInvokeEvent) => event.sender === fr.webContents;
+  ipcMain.handle('first-run-info', async event => {
+    if (!mine(event)) return null;
+    const spot = placement(display);
+    const full = await new Promise<string>(done => execFile('id', ['-F'], (err, out) => done(err ? '' : out.trim())));
+    return { top: spot.topInset, notch: spot.notchWidth, cursor: [at.x - display.bounds.x, at.y - display.bounds.y], port,
+      name: (full || userInfo().username).split(/\s+/)[0], lang: app.getPreferredSystemLanguages()[0]?.startsWith('zh') ? 'zh' : 'en' };
+  });
+  ipcMain.handle('first-run-permission', (event, kind, ask, note) => mine(event) ? permission(kind, ask, note) : '');
+  ipcMain.on('first-run-open', (event, page) => { if (mine(event) && Object.hasOwn(PAGES, page)) void shell.openExternal(PAGES[page]); });
+  ipcMain.on('first-run-passthrough', (event, on) => { if (mine(event) && typeof on === 'boolean') fr.setIgnoreMouseEvents(on, { forward: true }); });
+  // The companion comes up under her last frame, then the first launch closes.
+  ipcMain.once('first-run-done', () => companion(() => setTimeout(() => fr.destroy(), 400)));
+  fr.loadFile(path.join(here, '../dist/firstrun.html'));
+  fr.once('ready-to-show', () => { fr.show(); app.focus({ steal: true }); fr.focus(); });
+}
+if (locked) app.whenReady().then(async () => {
   session.defaultSession.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
   session.defaultSession.setPermissionCheckHandler(() => false);
+  app.dock?.hide();
+  if (await needsSetup()) firstRun(); else companion();
+});
+function companion(shown?: () => void) {
   win = new BrowserWindow({ width: WIDTH, height: 600, type: process.platform === 'darwin' ? 'panel' : undefined,
     frame: false, transparent: true, backgroundColor: '#00000000', hasShadow: false, resizable: false, maximizable: false,
     fullscreenable: false, show: false, focusable: false, alwaysOnTop: true, skipTaskbar: true, roundedCorners: false,
@@ -105,7 +191,6 @@ if (locked) app.whenReady().then(() => {
     webPreferences: { preload: path.join(here, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true,
       // A notice sounds when it comes, not only after a click.
       autoplayPolicy: 'no-user-gesture-required' } });
-  app.dock?.hide();
   win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true });
   // Transparent space passes clicks through; the renderer turns input on over its own shapes.
   win.setIgnoreMouseEvents(true, { forward: true });
@@ -114,7 +199,7 @@ if (locked) app.whenReady().then(() => {
   registerDaemonBridge(win, { lab: demo });
   win.loadFile(path.join(here, '../dist/index.html'), { query: demo ? { companion: '1' } : { companion: '1', port: process.env.JARVIS_INHERENT_BRIDGE_PORT ?? '8006' } });
   win.webContents.on('did-finish-load', place);
-  win.once('ready-to-show', () => { place(); win.showInactive(); keepOnTop(); });
+  win.once('ready-to-show', () => { place(); win.showInactive(); keepOnTop(); shown?.(); });
   win.on('blur', () => setImmediate(() => { if (!win.isDestroyed()) keepOnTop(); }));
   screen.on('display-added', place); screen.on('display-removed', place); screen.on('display-metrics-changed', place);
   // The hardware cutout and click-through space get no reliable DOM pointer events,
@@ -228,5 +313,5 @@ if (locked) app.whenReady().then(() => {
     // Pinned to the main screen while she is on another one: she sinks here and comes up there.
     if (typeof model.follow === 'boolean' && model.follow !== follow) { follow = model.follow; if (!follow && current?.id !== screen.getPrimaryDisplay().id && !moving) leave(); }
   });
-});
+}
 app.on('window-all-closed', () => {});

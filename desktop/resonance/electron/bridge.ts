@@ -15,16 +15,20 @@ const ACCOUNT_PAGES: Record<string, string> = {
   minimax: 'https://platform.minimax.io/user-center/payment/balance',
 };
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-export function registerDaemonBridge(win: BrowserWindow, { lab = false, verification = false } = {}) {
-  // Every daemon route needs the local key. The renderer never holds it: its requests and
-  // sockets to the daemon get the header here, read fresh so a first boot's key is picked up.
+// The local key every daemon route needs, read fresh so a first boot's key is picked up.
+export const daemonToken = () => readFile(path.join(process.env.JARVIS_RUNTIME_ROOT ?? path.join(homedir(), '.jarvis'), 'plugin-access.json'), 'utf8')
+  .then(text => JSON.parse(text).token as unknown).catch(() => undefined);
+// The renderer never holds the key: its requests and sockets to the daemon get the header here.
+export function sendDaemonKey(target: Electron.Session) {
   const daemonPort = process.env.JARVIS_INHERENT_BRIDGE_PORT ?? '8006';
-  const keyFile = path.join(process.env.JARVIS_RUNTIME_ROOT ?? path.join(homedir(), '.jarvis'), 'plugin-access.json');
-  win.webContents.session.webRequest.onBeforeSendHeaders({ urls: ['http://127.0.0.1/*', 'ws://127.0.0.1/*'] }, (details, callback) => {
+  target.webRequest.onBeforeSendHeaders({ urls: ['http://127.0.0.1/*', 'ws://127.0.0.1/*'] }, (details, callback) => {
     if (new URL(details.url).port !== daemonPort) { callback({}); return; }
-    void readFile(keyFile, 'utf8').then(text => JSON.parse(text).token as unknown).catch(() => undefined).then(token =>
+    void daemonToken().then(token =>
       callback({ requestHeaders: typeof token === 'string' && token ? { ...details.requestHeaders, Authorization: `Bearer ${token}` } : details.requestHeaders }));
   });
+}
+export function registerDaemonBridge(win: BrowserWindow, { lab = false, verification = false } = {}) {
+  sendDaemonKey(win.webContents.session);
   // The renderer can request plugin operations but never read the daemon's
   // management credential or choose an arbitrary URL/file/process to open.
   ipcMain.handle('plugins', async (event, operation: string, data: Record<string, unknown> = {}) => {
