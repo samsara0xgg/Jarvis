@@ -242,9 +242,7 @@ stopping to ask in chat is not.
    <branch>`. Claude Code's worktree isolation refuses git commands
    aimed at the main checkout from inside a worktree; call
    `ExitWorktree` with action `keep` first.
-3. Do not push. `push origin main` happens only when Allen asks;
-   **never** `push --force` to `main`.
-4. Restart what the change touches, from the main checkout root:
+3. Restart what the change touches, from the main checkout root:
    - Daemon (Python, `config/`, plugins, `uv.lock`); it runs from the
      main checkout, so the merge is what it picks up:
      `launchctl kickstart -k gui/$(id -u)/com.allen.jarvis`
@@ -260,6 +258,10 @@ stopping to ask in chat is not.
        > ~/.jarvis/logs/companion.log 2>&1 &
      ```
    - Docs, tests and ADRs only: nothing to restart.
+4. `git push origin main`, written exactly like that (the `ask` rule in
+   Allen's Claude Code settings matches `git push`, not `git -C <dir>
+   push`). The permission prompt is his approval; if he declines, main
+   stays local. **Never** `push --force` to `main`.
 5. Remove the task's worktree and branch (`git worktree remove`,
    `git branch -d`), then report what landed and what Allen should look
    at.
