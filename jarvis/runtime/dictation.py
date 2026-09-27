@@ -2,8 +2,8 @@
 
 While Allen dictates, his words go to the text caret, not to Jarvis. The
 desktop asks for one session at a time; the daemon records from its own mic
-(a capture lane on the single audio ingress), hears it with the voice path's
-recognizer a stretch at a time as he pauses (ADR 0076), and one side-job model
+(a capture lane on the single audio ingress), hears it with local Whisper
+(ADR 0077) a stretch at a time as he pauses (ADR 0076), and one side-job model
 polishes it with Typlus's instructions.
 The desktop pastes the result. Nothing reaches the event log or memory.db.
 """
@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import importlib.util
 import logging
 import math
 import threading
@@ -133,6 +134,16 @@ def load_vocab(path: Path) -> list[str]:
         if isinstance(term, str) and term.strip()
     ]
     return list(dict.fromkeys(terms))
+
+
+def whisper_ears() -> voice_asr.MlxWhisperRecognizer | None:
+    """ADR 0077: local Whisper in Chinese when mlx-whisper is installed; ``None`` means SenseVoice.
+
+    It is installed on Allen's Mac, outside ``pyproject.toml``; the packaged app ships without it.
+    """
+    if importlib.util.find_spec("mlx_whisper") is None:
+        return None
+    return voice_asr.MlxWhisperRecognizer(language="zh")
 
 
 def _latin(char: str) -> bool:

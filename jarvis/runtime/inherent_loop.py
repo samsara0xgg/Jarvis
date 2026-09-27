@@ -141,7 +141,7 @@ from jarvis.runtime import (
     make_supersede_unspoken_callable,
     save_language,
 )
-from jarvis.runtime.dictation import Dictation, polish_client
+from jarvis.runtime.dictation import Dictation, polish_client, whisper_ears
 from jarvis.runtime.inherent_hub import start_inherent_view
 from jarvis.runtime.session_compaction import CompactionSweep, preset_context_length
 from jarvis.runtime.settings import SETTINGS_FILE
@@ -5264,10 +5264,20 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             except ValueError:
                 LOGGER.exception("dictation off: its polish preset is not configured")
             else:
+                whisper = whisper_ears()
+                if whisper is not None:  # its ~1.6 GB loads now, not inside his first tap
+                    threading.Thread(
+                        target=whisper.prewarm, name="jarvis-dictation-whisper", daemon=True,
+                    ).start()
+                LOGGER.info("dictation hears with %s", "Whisper" if whisper else "SenseVoice")
                 dictation = Dictation(
                     ingress=ingress,
                     vad=voice_audio.SileroVad(mode="record", model_path=silero_path),
-                    transcribe=voice_pipe.transcribe,
+                    transcribe=(
+                        voice_pipe.transcribe
+                        if whisper is None
+                        else functools.partial(voice_pipe.transcribe, recognizer=whisper)
+                    ),
                     client=client,
                     vocab_path=Path(str(dictation_config.get("vocab_path", ""))),
                     event_log_path=runtime.runtime_paths.event_log,

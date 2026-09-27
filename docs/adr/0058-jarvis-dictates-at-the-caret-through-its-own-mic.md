@@ -1,6 +1,6 @@
 # ADR 0058 — Jarvis Dictates at the Caret Through Its Own Mic
 
-**Status:** Accepted
+**Status:** Superseded-by-0077
 **Date:** 2026-09-26
 **Supersedes:** none
 

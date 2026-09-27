@@ -510,6 +510,13 @@ class MlxWhisperRecognizer:
         self._language = language
         self._initial_prompt = initial_prompt or None
         self._module: Any | None = None
+        # One transcription at a time: the prewarm and a dictation stretch
+        # must not load the model twice or share Metal at once.
+        self._lock = threading.Lock()
+
+    def prewarm(self) -> None:
+        """Load the model (~1.6 GB, a few seconds) by hearing half a second of silence."""
+        self.recognize(bytes(_SAMPLE_RATE))
 
     def recognize(self, audio_pcm: bytes) -> TranscriptionResult:
         """Transcribe PCM16 mono 16 kHz audio with mlx-whisper."""
@@ -522,16 +529,17 @@ class MlxWhisperRecognizer:
                 emotion=None,
             )
 
-        mlx_whisper = self._load()
-        transcription: Mapping[str, Any] = mlx_whisper.transcribe(
-            audio,
-            path_or_hf_repo=self._repo,
-            fp16=self._fp16,
-            temperature=self._temperature,
-            language=self._language,
-            initial_prompt=self._initial_prompt,
-            verbose=False,
-        )
+        with self._lock:
+            mlx_whisper = self._load()
+            transcription: Mapping[str, Any] = mlx_whisper.transcribe(
+                audio,
+                path_or_hf_repo=self._repo,
+                fp16=self._fp16,
+                temperature=self._temperature,
+                language=self._language,
+                initial_prompt=self._initial_prompt,
+                verbose=None,
+            )
         text = str(transcription.get("text", "")).strip()
         language = str(transcription.get("language") or self._language or "") or None
         confidence = _estimate_whisper_confidence(transcription)

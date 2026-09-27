@@ -31,7 +31,7 @@ from fastapi.testclient import TestClient
 from jarvis.runtime.dictation import POLISH_PROMPT, PRE_ROLL_FRAMES, Dictation, polish_client
 from jarvis.shared.pricing import load_pricing_table
 from jarvis.state.event_log import open_event_log
-from jarvis.surface import voice_audio
+from jarvis.surface import voice_asr, voice_audio, voice_pipeline
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
 from tests.canary._helpers import repo_root
@@ -328,6 +328,41 @@ def test_a_stretch_ending_in_a_pause_is_heard_while_he_goes_on(tmp_path: Path) -
     sent = json.dumps(provider.requests, ensure_ascii=False)
     assert "Raw transcript:\\n第一段。second part" in sent
     assert provider.warmed == ["gpt-5.4-mini"]
+
+
+def test_the_ears_hear_a_stretch_with_whisper_and_skip_a_quiet_one() -> None:
+    """ADR 0077: Whisper hears speech; quiet stretches reach no model."""
+    calls: list[str] = []
+
+    class _Ear:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def recognize(self, _pcm: bytes) -> voice_asr.TranscriptionResult:
+            calls.append(self.name)
+            return voice_asr.TranscriptionResult(
+                text=f"{self.name}的话", confidence=0.9, language_detected="zh", emotion=None,
+            )
+
+        def partial_text(self, pcm: bytes) -> str:
+            return self.recognize(pcm).text
+
+    pipe = voice_pipeline.VoicePipeline(
+        conn_factory=lambda: None,  # type: ignore[arg-type,return-value]
+        recognizer=_Ear("sensevoice"),
+        normalizer=voice_asr.AsrNormalizer(corrections=[], aliases={}, fuzzy_enabled=False),
+        broadcaster=None,
+        artifacts_dir=None,
+    )
+    whisper = _Ear("whisper")
+    # One loud 0.2 s among 3 s of near-silence is still speech; 3 s of near-silence is not.
+    quiet = array("h", [100, -100] * 24_000).tobytes()
+    spoken = quiet[: 2 * 16_000] + _tone(1) * 7 + quiet[2 * 16_000 :]
+    assert pipe.transcribe(quiet, recognizer=whisper) == ""
+    assert calls == []
+    assert pipe.transcribe(spoken, recognizer=whisper) == "whisper的话"
+    assert pipe.transcribe(spoken) == "sensevoice的话"
+    assert calls == ["whisper", "sensevoice"]
 
 
 def test_dictation_without_speech_and_with_a_failing_polish(tmp_path: Path) -> None:
