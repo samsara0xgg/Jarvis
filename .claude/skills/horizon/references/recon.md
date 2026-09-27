@@ -6,13 +6,28 @@ context. Always pass `model` explicitly.
 
 ## Return contract (all three)
 
-- Every claim carries `path:line`.
-- Facts are labelled `observed` (seen in the file or in command output) or
-  `inferred`.
-- End with `not checked:` listing what the brief asked for that was not
-  examined.
-- No advice beyond the brief's question. No diffs pasted; counts and final
-  lines only.
+Every claim is labelled with one of three words:
+
+- **FACT** — something you saw. Cite the evidence, whichever kind it is:
+  `path:line`, a runtime trace or log line, an emitted event or wire
+  payload with its field values, a git sha or branch state, a sentence of
+  the canonical spec or an ADR decision, a command and its output.
+- **INFERENCE** — what you believe follows, stated as such, with the facts
+  it rests on and what would falsify it. Inferences are wanted; unmarked
+  ones are not. The hub adjudicates them, so give it something to
+  adjudicate.
+- **UNKNOWN** — a question the brief asked that the evidence does not
+  settle, and what would settle it. Replaces a bare "not checked" list.
+
+Two checks belong in every recon, whether or not the brief names them:
+
+- **Adjacent work** — other cards, branches, lanes or uncommitted
+  worktrees touching the same files or contracts, and where they are.
+- **Semantic conflict** — a place where the change being contemplated
+  would contradict a documented invariant, a neighbouring feature's
+  assumption, or a decision an ADR already made.
+
+No diffs pasted; counts and final lines only.
 
 ## Recon (sonnet)
 
@@ -20,9 +35,10 @@ Used by the hub before writing a card and by a lane before implementing.
 Brief shape:
 
     Read-only recon in <worktree>. Question: <one sentence>.
-    Look at: <paths or symbols, at most a handful>.
-    Return: for each of <fact list the card needs>, path:line and
-    observed/inferred. Not checked at the end. No recommendations.
+    Look at: <paths, symbols, events, or logs — a handful>.
+    Return FACT / INFERENCE / UNKNOWN per the return contract, covering
+    <the facts the card needs>, plus adjacent work and semantic conflict.
+    Mark every inference and say what would falsify it.
 
 ## Verifier (agent type `verifier`, model fable)
 

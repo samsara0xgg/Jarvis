@@ -28,7 +28,12 @@ afterwards from what it returns.
 
 ## Handoff rule
 
-The card is ready only when "Open questions" is empty. The design session
+The card is ready when its **Blocking questions are zero** — no question
+remains whose answer would change what gets built. Non-blocking unknowns,
+stated assumptions and follow-up observations stay in the card; they are
+what the implementation session needs to know, and demanding they be
+resolved first is how a card turns into an over-specification. The design
+session
 does not edit canonical docs; it records design intent in the card. The
 implementation session updates canonical docs after the facts land in code.
 
@@ -83,8 +88,10 @@ change and in what order, and records that under Progress as it goes.
     ## Docs to sync
     - <docs/spec.html §x | docs/adr/NNNN | none> — <fact that changes>
 
-    ## Open questions
-    (must be empty before handoff)
+    ## Questions
+    Blocking: (must be zero — an answer here changes what gets built)
+    Non-blocking:
+    - <unknown or assumption> — <how the lane proceeds without the answer>
 
     ## /goal condition
     <paste-ready, under 4000 characters, see below>

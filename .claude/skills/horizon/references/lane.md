@@ -7,8 +7,13 @@ branch and never redesigns a card.
 ## Bootstrap (after scripts/bootstrap.py)
 
 1. Read `claude-harness/env.md`.
-2. `git merge <integration_branch>`; on conflict, abort and write a
-   blocked report (below). Do not resolve conflicts outside your region.
+2. Verify your base: the launch prompt names the integration sha the card
+   was approved against. `git merge-base --is-ancestor <base> HEAD` must
+   pass. If it does not, stop and write a blocked report — you are on the
+   wrong base and anything you build on it is unreviewable. Advance to a
+   newer integration state only when the hub tells you to
+   (`git merge <integration_branch>`; on conflict, abort and report, and
+   never resolve conflicts outside your region).
 3. Read the card in full. If the manifest has a `checkpoint`, read it; it
    tells you what a predecessor finished, rejected, and was about to do.
 4. Set the card's frontmatter `status: in_progress` and commit it.

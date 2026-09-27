@@ -53,13 +53,25 @@ decides. The region owner lane resolves conflicts in its own region.
 
 Writing a card is design work and stays in the hub:
 
-1. One recon subagent (recon.md brief), sonnet, returning path:line facts.
+1. One recon subagent (recon.md brief), sonnet. It returns FACT /
+   INFERENCE / UNKNOWN; you adjudicate.
 2. Read only the ADR or spec section being pinned, never the whole
    document.
-3. Write the card with the goal-card skill template. Frontmatter:
-   `status: ready`, `owner_lane`, `depends_on`. Open questions must be
-   empty.
-4. Commit via a sonnet agent on the integration branch (commit skill).
+3. **Derive the acceptance yourself.** The owner stated an intent, not a
+   test plan. Acceptance comes from the intent plus the canonical contract
+   plus what the system observably emits — an event payload, a wire field,
+   a provider behavior, a command's output. Asking him "how will you know
+   it worked" is the workflow-manager reflex this protocol exists to
+   remove.
+4. Write the card with the goal-card skill template. Frontmatter:
+   `status: ready`, `owner_lane`, `depends_on`. Blocking Questions must be
+   zero; non-blocking unknowns, assumptions and follow-up observations
+   belong in the card and do not hold it back.
+5. **Approve it yourself** and commit it to the integration branch. Card
+   commits are serialized through whoever holds the integration branch;
+   delegate the commit when you want the diff out of your context, run it
+   yourself when that is cheaper. Escalate to the owner only per
+   Escalation below.
 
 ### Defect reports: diagnose before you fix
 
@@ -81,6 +93,19 @@ the owner's later evidence refutes a card's premise, set that card to
 
 ## Launching a lane
 
+**Base-state invariant: a lane starts from the exact integration commit its
+card was approved against.** Create the worktree explicitly and pin the
+base:
+
+    git worktree add .claude/worktrees/lane-<id> -b lane/<id> <integration sha>
+
+Never use Claude Code's native `--worktree` for a lane. Its default
+`worktree.baseRef=fresh` branches from the remote default branch, which is
+not this repository's integration state; the branch would silently miss the
+cards and merges the plan assumes. Record the base sha in the lane manifest
+and in the launch prompt, and verify it in the lane report
+(`git merge-base --is-ancestor <base> HEAD`).
+
 Fresh lane (no live session for that lane id), run from the lane worktree:
 
     claude --bg -n lane-<id>-g1 --model <session_model from env.md> --permission-mode auto "<lane prompt>"
@@ -98,16 +123,29 @@ lane protocol and the card are its stop condition):
     /horizon lane <id>
 
     You are lane <id> generation 1. Card: docs/goals/<slug>.md.
-    Integration branch: <branch>.
+    Integration branch: <branch>, approved base <sha>.
 
 Everything else the lane needs is in lane.md, env.md, and the card.
 
 ## Escalation
 
-Escalate to Allen only for decisions the recorded defaults do not cover.
-Batch them into one report. Never block a lane on a question a default
-answers; record the default used as a `decision` event so it can be
-reversed.
+The owner is outside the routine loop. He states intent and reads results;
+he does not approve each card, supply acceptance criteria, or answer
+questions the repository already answers.
+
+Escalate exactly three things:
+
+- a **product or UX choice** his request did not settle, where the options
+  differ in what he would experience,
+- a **material tradeoff** — cost, irreversibility, a contract or
+  architecture change that outlives this card,
+- a **genuine ambiguity** where two readings of his intent lead to
+  different implementations and the repository cannot break the tie.
+
+Everything else you decide. Record the decision and its reversibility as a
+`decision` event so he can overturn it later. Batch escalations into one
+message; never block a lane on a question a default answers; never ask him
+to run something a lane can run.
 
 ## Report to Allen
 
