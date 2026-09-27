@@ -460,6 +460,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         optional_payload=(
             "provider",
             "model",
+            "reasoning_effort",
             "risk_context_hash",
             "classifier_rule_version",
             "corrects_response_id",

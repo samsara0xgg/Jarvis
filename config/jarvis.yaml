@@ -9,8 +9,16 @@ llm:
   # LLM 提供商：openai（兼容 xAI/Kimi/DeepSeek）或 anthropic。
   provider: openai
 
-  # 对话固定用 default_preset。"深度模式"口令切换还没做。
+  # 对话平时用 default_preset。
   default_preset: luna
+
+  # ADR 0061 深想模式：Allen 说的话里出现 on_words 的词，这一句和这段对话之后的每句都改用
+  # preset（同一个模型，开思考）；出现 off_words 的词，或隔 10 分钟没说话，回到 default_preset。
+  # on_words / off_words 是正则，不分大小写（不能叫 on / off：YAML 会读成真假）。
+  think:
+    preset: luna-think
+    on_words: "想想吧|想一想|你想想|帮我想想|好好想想|认真想想|仔细想想|think (it )?(over|through)|think hard"
+    off_words: "不用想了|别想了|stop thinking|no need to think"
 
   # 对话每次请求的上限（秒）与重试次数；不写就是 SDK 默认的 600 秒、重试 2 次。
   # 对话只用 default_preset；日报、压缩、截屏、工作状态各自设了自己的上限，不读这里。
@@ -37,6 +45,15 @@ llm:
       max_tokens: 16384
       context_length: 1050000
       reasoning_effort: none
+    # 深想模式（上面的 llm.think）。思考和工具同开只能走 /v1/responses。
+    luna-think:
+      model: gpt-5.6-luna
+      base_url: "https://api.openai.com/v1"
+      api_key_env: OPENAI_API_KEY
+      api: responses
+      max_tokens: 16384
+      context_length: 1050000
+      reasoning_effort: medium
     # context_length：模型窗口（token）。session.compact_at_context_ratio
     # 按它算压缩门槛；决策预设缺了它就永远不压缩。
     #

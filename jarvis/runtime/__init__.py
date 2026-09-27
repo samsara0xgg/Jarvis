@@ -99,6 +99,7 @@ from jarvis.decision.response_run import (
     start_response_run,
 )
 from jarvis.decision.stream_gate import routine_stream_policy
+from jarvis.decision.think_mode import ThinkMode, ThinkModeConfigError, load_think_mode
 from jarvis.decision.tier0 import Tier0ConfigError, load_tier0_table, validate_tier0_table
 from jarvis.deployment import RuntimePaths, bootstrap_runtime, load_env_file
 from jarvis.deployment.models import default_sensevoice_dir, default_silero_vad_path
@@ -417,6 +418,8 @@ class JarvisRuntime:
     # empty tuple = no cue can veto the routine route (the other pre-route
     # conditions still apply).
     tool_cues: ToolCueTable = ()
+    # ADR 0061: `llm.think`, the words that switch a conversation's thinking on. None = never.
+    think_mode: ThinkMode | None = None
     # ADR 0019: the resident codex app-server and the four worker tools bound
     # to it. None = a hand-assembled runtime without workers.
     workers: Workers | None = None
@@ -647,6 +650,15 @@ def _max_tool_iterations(config: Mapping[str, Any]) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         return DEFAULT_MAX_TOOL_ITERATIONS
     return value
+
+
+def _think_mode(llm_config: Mapping[str, Any], config_path: Path) -> ThinkMode | None:
+    """``llm.think`` (ADR 0061); a broken block stops boot like a broken tool-cue table."""
+    try:
+        return load_think_mode(llm_config)
+    except ThinkModeConfigError as exc:
+        msg = f"runtime: {config_path} {exc}"
+        raise RuntimeBootstrapError(msg) from exc
 
 
 def _wave1_feature_flags(config: Mapping[str, Any]) -> Wave1FeatureFlags:
@@ -1876,6 +1888,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         msg = f"runtime: {config_path} has no 'llm' section"
         raise RuntimeBootstrapError(msg)
     llm_client = LLMClient(llm_config)
+    think_mode = _think_mode(llm_config, config_path)
 
     # 4b. ADR-0008 Step 2 (Wave 4A). The whole flag graph is resolved once,
     #     here; every downstream site reads the validated result. With the
@@ -1942,6 +1955,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
             fallback=default_silero_vad_path(paths.root),
         ),
         tool_cues=tool_cues,
+        think_mode=think_mode,
         work_state=work_state,
         projects=projects,
         home=Home(
@@ -1981,7 +1995,9 @@ def _start_drive_turn_response(
         return None
 
     response_id = new_response_id()
-    snapshot = runtime.llm_session_factory.snapshot(None)
+    think = runtime.think_mode
+    preset = think.preset_for(runtime.conn, int(time.time() * 1000)) if think else None
+    snapshot = runtime.llm_session_factory.snapshot(preset)
     request_client = runtime.llm_session_factory.create(snapshot, response_id=response_id)
     policy = legacy_full_text_policy(
         evidence_snapshot_hash=evidence_snapshot_hash(runtime.conn),
