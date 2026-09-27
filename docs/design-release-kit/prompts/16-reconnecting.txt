@@ -1,0 +1,13 @@
+Use case: ui-mockup.
+Asset type: one high-fidelity native macOS Jarvis dashboard reconnecting-state design, portrait 1024 × 1536.
+Input image is the EDIT TARGET, the approved matching offline screen. Keep its visual shell, dimensions, layout, screenshot framing, blurred blue-gray desktop backdrop, navy translucent glass panel, all spacing, typeface, header, draft composer placement, and retained draft exact. Keep the small top attached dark glass star-core orb with its two luminous ivory capsule eyes, no mouth or limbs.
+Make only a coherent state change from disconnected to passively reconnecting. Restore a little violet/cyan light to the top orb, and add a thin partial violet-to-icy-cyan arc encircling the orb to imply gentle breathing/renewal, incredibly restrained, not a neon ring. Replace the central amber broken-connection glyph with a small quiet partial-circle spinner or a tiny cyan glint. Replace center title with “正在重新连接”. Replace both body lines with one clear single line “连接恢复后，就可以继续。” Remove both action buttons and use a tiny understated 3-dot indeterminate progress indicator centered beneath the body. No ETA, no percentage, no countdown, no fabricated activity, no message bubble, no “ready” claim. Let the visual whitespace remain calm.
+All text must render in exact crisp PingFang SC and SF Pro:
+Header: “Jarvis”
+Main title: “正在重新连接”
+Body: “连接恢复后，就可以继续。”
+Composer label: “草稿已保留”
+Retained draft: “帮我整理一下今天的待办”
+Composer caption: “连接恢复后可发送”
+Keep microphone and send glyphs muted and disabled. Primary text #eef0ff, secondary #b9bfdc, quiet #7f86aa, breathing arc #9db4ff and #8fe3ff. UI material must match target. Reduce star flecks if needed but do not add decorative features. Must look like another state of the exact same product.
+One single standalone high-resolution scene. No multiple images, no collage, no contact sheet, no alternative designs, no split-screen, no external headings, no annotations, no watermarks. All controls are a proposed design; do not add promises.
