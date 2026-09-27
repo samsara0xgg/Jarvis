@@ -5188,6 +5188,10 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             conversation_read=None if window_memory is None else _read_conversation,
             card_read=_read_card,
             card_decide=_decide_card,
+            think_read=(
+                None if runtime.think_mode is None
+                else functools.partial(runtime.think_mode.status, runtime.conn)
+            ),
             today_read=(
                 None if runtime.home is None
                 else functools.partial(asyncio.to_thread, runtime.home.today)

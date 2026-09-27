@@ -11,8 +11,9 @@ export type Lobe = { left: number; right: number; height: number; notched: boole
 // lift: how far the canvas rides up with the tucked island (0 while the Dashboard or a notice holds her).
 // `homeFace`: she wears `expr` and follows `look` even at home (a notice hangs from the notch and she watches it from there).
 // `away`: out at the text caret for dictation (ADR 0058), drawn by another window; `happy` when she comes back from pasting.
+// `deep`: think mode is on and she is idle, so her eyes keep its colour, in the island too (ADR 0064).
 export type BallTarget = { place: Place; expr: ExprId; pressed: boolean; anchors: Record<Place, Point>; homeGlass: boolean; lift: number; homeFace?: boolean;
-  away?: boolean; happy?: boolean };
+  away?: boolean; happy?: boolean; deep?: boolean };
 // With her glass showing at home, this long without the cursor moving sends her to sleep there.
 const DOZE_MS = 10 * 60_000;
 const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
@@ -113,7 +114,7 @@ export function CompanionBall({ width, height, lobe, lift, target, look, handle,
       if (s.fold.value < .999) islandShape.current!.setAttribute('transform', `translate(${shape.right} 0) scale(${Math.max(0, s.fold.value)} 1) translate(${-shape.right} 0)`);
       else islandShape.current!.removeAttribute('transform');
       const face: ExprId = now < happyUntil ? '10' : atHome && !t.homeFace ? (glassHome ? (dozing ? 'doze' : 'rest') : glance ? 'glance' : 'home') : shown === 'peek' ? 'peek' : t.expr;
-      const busy = core.update(now, dt, { expr: face, look: gaze, still: atHome && !glance && !glassHome && !t.homeFace, pressed: t.pressed, charge });
+      const busy = core.update(now, dt, { expr: face, look: gaze, still: atHome && !glance && !glassHome && !t.homeFace, pressed: t.pressed, charge, deep: t.deep && face !== '10' });
 
       // Where she is (spring position, flight squash, the pivot on the Dashboard edge), then her own motion.
       const a = s.shine.value * seen, scale = s.scale.value, x = slipX ?? s.x.value, y = s.y.value + slipY, pivot = s.pivot.value * R;

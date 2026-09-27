@@ -3,7 +3,7 @@ import { IconContext, Keyboard, Paperclip, ArrowUp, Microphone, Stop } from '@ph
 import { CompanionBall, HOLD_MS, R, type BallHandle, type Lobe, type Place, type Point } from './CompanionBall';
 import { EXPRESSIONS, PREVIEW, SKINS, SKIN_KEYS, TAKES, isSkin, pick, type ExprId, type Skin } from './starCore';
 import { DashboardPreview } from './DashboardPreview';
-import { AroundDashboard } from './AroundDashboard';
+import { AroundDashboard, type Think } from './AroundDashboard';
 import { playFeedback, stopFeedback, warmFeedback, type FeedbackCue } from './feedback';
 import { usePreferences } from './preferences';
 import { initialState, plain, reducer, visible } from './model';
@@ -15,7 +15,7 @@ import { NoticeCard, ended, noticeCue, useNotices } from './Notices';
 import { ActionCard, type Card, type Decide } from './ActionCard';
 import { Notch, type NotchNote } from './Notch';
 import { tr, useCompanionSettings, type L, type Lang } from './companionSettings';
-import { useRoute } from './homeData';
+import { useNow, useRoute } from './homeData';
 import type { Controls as DashControls, Look } from './SettingsPage';
 import './companion.css';
 
@@ -48,6 +48,8 @@ function loadWardrobe(): { skin: Skin; auto: boolean; layout: DashboardLayout; h
 const bare = (text: string) => text.replace(/\s+/g, ' ').replace(/^[^\p{L}\p{N}]+/u, '').trim();
 const sameTitle = (name: string, title: string) => { const a = bare(name), b = bare(title); return !!a && (a === b || (a.endsWith('…') && b.startsWith(a.slice(0, -1)))); };
 const isPreview = (value: string): value is ExprId => (PREVIEW as string[]).includes(value);
+// Think mode's words come as the daemon's Python patterns; one JavaScript cannot read switches nothing on early.
+const pattern = (source: string) => { try { return new RegExp(source, 'i'); } catch { return null; } };
 
 function layout({ topInset, notchWidth, surfaceWidth: width }: Placement, tucked: boolean) {
   const center = width / 2, notchLeft = center - notchWidth / 2;
@@ -143,6 +145,19 @@ export function Companion() {
   const held = useRef('');
   if (!inFlight) held.current = said;
   const reply = port ? { text: held.current, shown: held.current.length } : simReply;
+  // ADR 0064: think mode as the daemon reads it from Allen's words (ADR 0061), read again as soon as his words go in
+  // or an answer opens; the poll catches the ten quiet minutes that end it.
+  const think = useRoute<{ on: boolean; on_words: string; off_words: string }>(port, '/inherent/think', true, 30_000);
+  const deep = !!port && think.data?.on === true;
+  const words = useMemo((): Think['words'] => [pattern(think.data?.on_words ?? '(?!)'), pattern(think.data?.off_words ?? '(?!)')], [think.data?.on_words, think.data?.off_words]);
+  useEffect(() => { if (s.waiting) think.reload(); }, [s.waiting, s.turnId]);
+  const deepThinking = deep && (voice === 'thinking' || s.askedAt !== null);
+  const clock = useNow(deepThinking ? 1000 : 3_600_000);
+  const deepSecs = deepThinking ? Math.max(1, Math.ceil((clock - (s.askedAt ?? clock)) / 1000)) : 0;
+  // Each deep answer's wait, pinned to the log position its row lands after (the streaming tail's rule).
+  const [thoughts, setThoughts] = useState<{ turn: string; after: number; secs: number }[]>([]);
+  useEffect(() => { if (deep && s.thoughtS && s.turnId) setThoughts(v => [...v.slice(-50), { turn: s.turnId!, after: s.openSeq, secs: s.thoughtS }]); }, [s.turnId]);
+  const answerSecs = thoughts.at(-1)?.turn === s.turnId ? thoughts.at(-1)!.secs : 0;
   const [pressed, setPressed] = useState(false);
   const [wardrobe, setWardrobe] = useState(loadWardrobe);
   // A skin change or an expression from the tray brings her out of the island for a moment.
@@ -151,7 +166,7 @@ export function Companion() {
   // The page open in the Dashboard sets her face while nothing else is going on.
   const [dashMood, setDashMood] = useState<ExprId | null>(null);
   const [receiving, setReceiving] = useState(false);
-  const busy = composer || voice !== 'off' || !!reply.text || receiving;
+  const busy = composer || voice !== 'off' || !!reply.text || receiving || deepThinking;
   // Every session the Dashboard's Agents data knows: the stars beside the notch, and the notices.
   const [agents, setAgents] = useState<ShownAgent[]>([]);
   // The Claude session Allen has been looking at in Ghostty for 1.5 s (ADR 0057): read, and nothing pops for it.
@@ -188,7 +203,7 @@ export function Companion() {
   const noticeFace: ExprId | null = carded ? 'ask' : !notice ? null : notices.over && moment < notices.over.until ? notices.over.face
     : notice.kind === 'pop' ? stopped ? moment - notices.openedAt < 1700 ? '34' : '02' : 'fin' : notices.card?.ok ? '02' : 'ask';
   useEffect(() => { if (!stopped) return; const t = setTimeout(notices.bump, 1750); return () => clearTimeout(t); }, [notice?.key]);
-  const expr: ExprId = preview ?? noticeFace ?? (receiving ? receiveFace.current : voice === 'listening' ? listenFace.current : voice === 'thinking' ? '30' : voice === 'speaking' || talking ? replyFace.current : dashboard && dashMood ? dashMood : reply.text ? '33' : '02');
+  const expr: ExprId = preview ?? noticeFace ?? (receiving ? receiveFace.current : inFlight ? listenFace.current : deepThinking ? 'deep' : voice === 'listening' ? listenFace.current : voice === 'thinking' ? '30' : voice === 'speaking' || talking ? replyFace.current : dashboard && dashMood ? dashMood : reply.text ? '33' : '02');
   const chip = place === 'out' && zone === 'ball' && !busy;
   // Tucked, the island and she slide up in one motion, far enough to clear her from where she comes out,
   // so nothing of her trails behind; the Dashboard and a notice card keep her (dock).
@@ -501,20 +516,23 @@ export function Companion() {
           onSelect={aimAtCaret} onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); closeComposer(); } }}/>
         <button type="submit" className="composer-send" disabled={!draft.trim()} aria-label={t(['Send', '发送'])}><ArrowUp weight="bold"/></button>
       </form>
-      <div className={`companion-strip ${strip ? 'is-open' : ''} ${hearing ? 'is-hearing' : ''}`} data-hit={strip || undefined} data-glass="19"
+      <div className={`companion-strip ${strip ? 'is-open' : ''} ${hearing ? 'is-hearing' : ''} ${deep ? 'is-deep' : ''}`} data-hit={strip || undefined} data-glass="19"
         style={{ left: out.x, top: out.y + R + 11 }} inert={!strip} role="status">
         <span className="strip-mic"><Microphone size={14} weight="fill"/></span>
         <span className={`strip-text ${caption ? '' : 'is-empty'}`}>{caption || t(['Listening…', '在听…'])}</span>
+        {deepSecs > 0 && <span className="strip-think">{t([`Thinking ${deepSecs} s`, `深想 ${deepSecs} 秒`])}</span>}
         <button className="strip-stop" aria-label={t(['End voice', '结束语音'])} onClick={endVoice}><Stop size={11} weight="fill"/></button>
       </div>
-      <div className={`companion-bubble ${bubble ? 'is-open' : ''}`} data-glass="18" style={{ left: out.x, top: out.y + R + 11 }} role="status">
+      <div className={`companion-bubble ${bubble ? 'is-open' : ''} ${answerSecs ? 'is-deep' : ''}`} data-glass="18" style={{ left: out.x, top: out.y + R + 11 }} role="status">
+        {answerSecs > 0 && <small className="bubble-think">{t([`Thought for ${answerSecs.toFixed(1)} s`, `想了 ${answerSecs.toFixed(1)} 秒`])}</small>}
         <span className="bubble-text"><span className="bubble-ghost">{reply.text}</span><span>{reply.text.slice(0, reply.shown)}</span></span>
       </div>
       <div className={`companion-dashboard ${dashboard ? 'is-open' : ''}`} data-hit={dashboard || undefined} data-glass="24"
         style={{ left: geo.center - PANEL / 2, top: geo.panelTop }} inert={!dashboard}>
         {wardrobe.layout === 'around'
           ? <AroundDashboard open={dashboard} port={port} onClose={() => setDashboard(false)} onMood={setDashMood} onHop={height => ball.current?.hop(height)}
-            talk={port ? { rows: s.rows, tail, busy: s.phase === 'processing', offline: s.phase === 'error', floor, submit, older, card, decide: decideCard } : undefined}
+            talk={port ? { rows: s.rows, tail, busy: s.phase === 'processing', offline: s.phase === 'error', floor, submit, older, card, decide: decideCard,
+              think: { on: deep, secs: deepSecs, words, thoughts, exit: () => void submit(t(['stop thinking', '不用想了'])) } } : undefined}
             plugins={port ? plugins : undefined} pluginFocus={pluginFocus} marks={wardrobe.marks} onAgents={setAgents} unread={notices.unread}
             onAnswer={id => { setDashboard(false); notices.focus(id); }} ctl={ctl} settingsFocus={settingsFocus}/>
           : <DashboardPreview embedded port={port} visible={dashboard} shown={dashboard} onClose={() => setDashboard(false)}/>}
@@ -525,7 +543,7 @@ export function Companion() {
         act={{ jump, answer: notices.focus, read: notices.read, clear: notices.clear }} note={note}/>
       <CompanionBall width={geo.width} height={placement.topInset + 560} lobe={geo.lobe} lift={lift} look={look} handle={ball} skin={worn.current}
         target={{ place, expr, pressed, anchors: geo.anchors, homeGlass: wardrobe.homeGlass, lift: place === 'home' ? lift : 0, homeFace: !!notice || carded,
-          away: trip === 'out', happy: trip === 'happy' }}
+          away: trip === 'out', happy: trip === 'happy', deep: deep && expr === '02' }}
         label={voice === 'off' ? t([`Poke to talk${port ? '' : ' (demo)'}`, `戳一下，开始语音${port ? '' : '（演示）'}`]) : voice === 'speaking' ? t(['Poke to interrupt', '戳一下，打断播报']) : t(['Poke to stop', '戳一下，结束语音'])}
         onPress={press} onRelease={release} onCancel={cancel} onMove={refreshHit}/>
     </main>

@@ -59,11 +59,11 @@ export function connect(port: string, dispatch: (a: Action) => void): Runtime {
       try { msg = JSON.parse(String(e.data)); } catch { return; }
       const p = msg.payload ?? {};
       const turnId = String(p.turn_id ?? '');
-      if (msg.op === 'open') dispatch({ type: 'open', turnId, responseId: typeof p.response_id === 'string' ? p.response_id : null });
+      if (msg.op === 'open') dispatch({ type: 'open', turnId, responseId: typeof p.response_id === 'string' ? p.response_id : null, at: Date.now() });
       else if (msg.op === 'append') dispatch({ type: 'append', token: String(p.token ?? '') });
       else if (msg.op === 'done') setTimeout(() => dispatch({ type: 'settle', turnId }), Number(p.fadeMs ?? 5000));
       else if (msg.op === 'failed' || msg.op === 'cancelled') dispatch({ type: 'failed', turnId, cancelled: msg.op === 'cancelled' });
-      else if (msg.op === 'voice') { const a = voicePhase[String(p.phase)]; if (a) dispatch(a); if (p.phase === 'spoken') dispatch({ type: 'spoken', turnId }); if (p.phase === 'accepted' && turnId) dispatch({ type: 'pending', turnId }); if (p.phase === 'accepted' && typeof p.text === 'string') dispatch({ type: 'heard', text: p.text }); }
+      else if (msg.op === 'voice') { const a = voicePhase[String(p.phase)]; if (a) dispatch(a); if (p.phase === 'spoken') dispatch({ type: 'spoken', turnId }); if (p.phase === 'accepted' && turnId) dispatch({ type: 'pending', turnId, at: Date.now() }); if (p.phase === 'accepted' && typeof p.text === 'string') dispatch({ type: 'heard', text: p.text }); }
       else if (msg.op === 'live') dispatch({ type: 'live', live: liveFrom(p) });
       else if (msg.op === 'subtitle') dispatch({ type: 'subtitle', sessionId: String(p.session_id ?? ''), role: p.role === 'user' ? 'user' : 'assistant', delta: String(p.delta ?? ''), startMs: Number(p.start_ms ?? 0), endMs: Number(p.end_ms ?? 0) });
     };
@@ -77,7 +77,7 @@ export function connect(port: string, dispatch: (a: Action) => void): Runtime {
   open();
   return {
     // The answer names the turn this text started; it is the one whose failure releases "processing".
-    submit: async text => { const r = await post('/inherent/submit', { text }); if (typeof r.turn_id === 'string' && r.turn_id) dispatch({ type: 'pending', turnId: r.turn_id }); },
+    submit: async text => { const r = await post('/inherent/submit', { text }); if (typeof r.turn_id === 'string' && r.turn_id) dispatch({ type: 'pending', turnId: r.turn_id, at: Date.now() }); },
     // foreground_output stops what is audible now and lets the run finish (ADR-0008 D10).
     cancel: async responseId => { if (responseId) await post('/inherent/cancel-response', { response_id: responseId, scope: 'foreground_output' }); },
     controls,
@@ -85,7 +85,7 @@ export function connect(port: string, dispatch: (a: Action) => void): Runtime {
     conversation: async (after, limit) => { const r = await fetch(`${http}/inherent/conversation?after=${after}${limit ? `&limit=${limit}` : ''}`); if (!r.ok) throw new Error(`/inherent/conversation ${r.status}`); return ((await r.json()) as { rows: Row[] }).rows; },
     // ADR 0062: the card waiting for a button, and the button. A 409 means it is no longer the pending card.
     card: async () => { const r = await fetch(`${http}/inherent/confirmation`); if (!r.ok) throw new Error(`/inherent/confirmation ${r.status}`); return ((await r.json()) as { card: Card | null }).card; },
-    decide: async (id, decision, edits = {}) => { const r = await post('/inherent/confirmation', { confirmation_id: id, decision, edits }); if (typeof r.turn_id === 'string' && r.turn_id) dispatch({ type: 'pending', turnId: r.turn_id }); },
+    decide: async (id, decision, edits = {}) => { const r = await post('/inherent/confirmation', { confirmation_id: id, decision, edits }); if (typeof r.turn_id === 'string' && r.turn_id) dispatch({ type: 'pending', turnId: r.turn_id, at: Date.now() }); },
     reconnect: () => { if (ws) ws.close(); else open(); },
     close: () => { closed = true; if (retry) clearTimeout(retry); ws?.close(); },
   };

@@ -85,7 +85,7 @@ const pluginStatus = (p: DemoPlugin): [string, L] => p.unsupported ? ['', ['Not 
   : p.state === 'off' ? ['', ['Off', '关']] : p.state === 'token' ? ['is-need', ['Needs an access token', '要一个访问令牌']]
   : ['is-need', p.ask ? ['Jarvis asked · needs sign-in', 'Jarvis 要用 · 要登录'] : ['Needs sign-in', '要登录']];
 
-type Turn = { you: string; at: string; jarvis?: string; jarvisAt?: string; work?: [string, string]; day?: string; mail?: string[] };
+type Turn = { you: string; at: string; jarvis?: string; jarvisAt?: string; work?: [string, string]; day?: string; mail?: string[]; thought?: number };
 const DEMO_TURNS: Turn[] = [
   { you: 'Remind me to test the mic at four.', at: '11:05', jarvis: 'Done. I’ll remind you at 4 PM.', jarvisAt: '11:05' },
   { you: 'What’s left on my plate today?', at: '14:32', jarvisAt: 'just now',
@@ -97,22 +97,33 @@ const BASIS: Record<Basis, L> = { observed: ['Observed', '看到的'], stated: [
 // Live conversation: the memory.db rows and the answer still streaming, from the companion's daemon link.
 // `older` fetches a longer page and says whether it brought earlier rows; `floor` means the history's start is on hand.
 // `card` is the one waiting for a button (ADR 0062); it sits above the input until it is sent or dismissed.
-type Talk = { rows: Row[]; tail: string; busy: boolean; offline: boolean; floor: boolean; submit: (text: string) => void; older: () => Promise<boolean>; card?: Card | null; decide?: Decide };
+type Talk = { rows: Row[]; tail: string; busy: boolean; offline: boolean; floor: boolean; submit: (text: string) => void; older: () => Promise<boolean>; card?: Card | null; decide?: Decide; think: Think };
+// Think mode (ADR 0064): whether it is on, the seconds of the deep answer still coming, the words that switch it,
+// each deep answer's wait by the log position its row lands after, and the chip's × (saying the off-word).
+export type Think = { on: boolean; secs: number; words: [RegExp | null, RegExp | null]; thoughts: { after: number; secs: number }[]; exit: () => void };
+// The mode a sentence leaves: its off-word ends it, its on-word starts it, otherwise it stays as it was.
+const deepAfter = (think: Think, text: string) => think.words[1]?.test(text) ? false : think.words[0]?.test(text) ? true : think.on;
 const when = (ts: string) => { const d = new Date(ts); return Number.isNaN(d.getTime()) ? '' : d.toDateString() === new Date().toDateString() ? hm(d.getTime()) : `${d.getMonth() + 1}/${d.getDate()} ${hm(d.getTime())}`; };
 const dayLabel = (lang: Lang, day: string) => { const d = new Date(day); return d.toDateString() === new Date(Date.now() - 86_400_000).toDateString() ? tr(lang, ['yesterday', '昨天']) : `${d.toLocaleDateString(lang === 'zh' ? 'zh-CN' : 'en-US', { weekday: 'short' })} ${d.getMonth() + 1}/${d.getDate()}`; };
 // The conversation of record as turns, each dated by the row that opens it: your rows open one, and Jarvis's rows after it answer it.
-const toTurns = (rows: Row[]): Turn[] => {
+// `thought` holds a deep answer's wait, keyed by its row's seq.
+const toTurns = (rows: Row[], thought = new Map<number, number>()): Turn[] => {
   const turns: Turn[] = [];
   for (const row of rows) {
     const t = turns.at(-1), text = visible(row.text), at = when(row.ts), day = new Date(row.ts).toDateString();
     if (row.source === 'allen') turns.push({ you: row.text, at, day });
     // ADR 0063: an email Jarvis read whole shows above its answer.
     else if (row.source === 'mail') { if (t) t.mail = [...t.mail ?? [], row.text]; else turns.push({ you: '', at: '', day, mail: [row.text] }); }
-    else if (!t) turns.push({ you: '', at: '', jarvis: text, jarvisAt: at, day });
-    else Object.assign(t, { jarvis: t.jarvis ? `${t.jarvis}\n\n${text}` : text, jarvisAt: at });
+    else if (!t) turns.push({ you: '', at: '', jarvis: text, jarvisAt: at, day, thought: thought.get(row.seq) });
+    else Object.assign(t, { jarvis: t.jarvis ? `${t.jarvis}\n\n${text}` : text, jarvisAt: at, thought: t.thought ?? thought.get(row.seq) });
   }
   return turns;
 };
+// A deep answer's wait goes on the first answer row past where the log stood when it opened.
+const thoughtRows = (rows: Row[], thoughts: Think['thoughts']) => new Map(thoughts.flatMap(({ after, secs }) => {
+  const row = rows.find(r => r.seq > after && r.source !== 'allen');
+  return row ? [[row.seq, secs] as const] : [];
+}));
 const PULL = 240; // px of fresh upward scroll at the top that adds the day before
 
 export function AroundDashboard({ open, port = null, onClose, onMood, onHop, talk, plugins: live, pluginFocus = null, marks = 'spark', onAgents, agentsFocus = 0, onAnswer, unread, ctl, settingsFocus = 0 }: {
@@ -256,7 +267,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
     });
   };
   const body = () => pageEl.current?.querySelector('.pg-body');
-  const allTurns = talk ? toTurns(talk.rows) : turns, dayList = [...new Set(allTurns.map(t => t.day))];
+  const allTurns = talk ? toTurns(talk.rows, thoughtRows(talk.rows, talk.think.thoughts)) : turns, dayList = [...new Set(allTurns.map(t => t.day))];
   const shownTurns = talk ? allTurns.filter(t => dayList.slice(-days).includes(t.day)) : allTurns;
   const before = dayList.length > days ? dayList[dayList.length - days - 1]! : null, more = !!talk && (before !== null || !talk.floor);
   const loadEarlier = async () => {
@@ -461,9 +472,9 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
   // The conversation sits on top while you talk and for TALK_STAYS after your last turn (Settings › Home).
   const lastYou = talk ? [...talk.rows].reverse().find(row => row.source === 'allen') : null;
   const talkAt = talk ? lastYou ? Date.parse(lastYou.ts) : 0 : demoTalkAt;
-  const talking = talk ? talk.busy || !!talk.tail : said.busy;
+  const talking = talk ? talk.busy || !!talk.tail || talk.think.secs > 0 : said.busy;
   const youSaid = talk ? lastYou ? plain(lastYou.text) : '' : demoTalkAt ? turns.at(-1)?.you ?? '' : '';
-  const answer = !talk ? said.text : talk.tail ? plain(talk.tail) : talk.busy ? t(['Thinking…', '在想…'])
+  const answer = !talk ? said.text : talk.tail ? plain(talk.tail) : talk.think.secs ? t([`Thinking deeply · ${talk.think.secs} s`, `深想中 · ${talk.think.secs} 秒`]) : talk.busy ? t(['Thinking…', '在想…'])
     : lastAnswer && (!lastYou || lastAnswer.seq > lastYou.seq) ? plain(lastAnswer.text) : '';
   const popKey: Partial<Record<BlockId, string>> = {
     talk: settings.talk === 'always' ? (talk ? talk.rows.length > 0 : true) ? `t${talkAt}` : undefined
@@ -539,13 +550,14 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
         {more ? <><CaretUp size={10} weight="bold"/>{t(['Scroll up for', '往上滚看'])} {before ? dayLabel(lang, before) : t(['earlier', '更早的'])}</> : t(['Start of the conversation', '对话从这里开始'])}</div>}
       {shownTurns.map((turn, i) => <div className="pg-sec tr" key={i} data-day={turn.day}>
         {turn.you && <div className="tr-you"><span className="who">{t(['You', '你'])} · {turn.at}</span><p>{turn.you}</p></div>}
-        {(turn.jarvis || turn.mail) && <div className="tr-jarvis"><span className="who"><span className="dot"/>Jarvis · {turn.jarvisAt}</span>
+        {(turn.jarvis || turn.mail) && <div className="tr-jarvis"><span className="who"><span className="dot"/><span>Jarvis · {turn.jarvisAt}{turn.thought ? <em className="is-deep">{t([` · thought for ${turn.thought.toFixed(1)} s`, ` · 想了 ${turn.thought.toFixed(1)} 秒`])}</em> : null}</span></span>
           {turn.mail?.map((text, k) => <MailCard key={k} text={text} lang={lang}/>)}
           {turn.jarvis && <Markdown text={turn.jarvis}/>}
           {turn.work && <Fold label={turn.work[0]}><pre>{turn.work[1]}</pre></Fold>}</div>}
       </div>)}
       {talk?.card && talk.decide && <ActionCard key={talk.card.id} card={talk.card} lang={lang} onDecide={talk.decide}/>}
-      <Ask className="pg-input" onAsk={ask}/></div>
+      {talk && talk.think.secs > 0 && <div className="pg-sec tr-think">{t([`Thinking deeply · ${talk.think.secs} s`, `深想中 · ${talk.think.secs} 秒`])}</div>}
+      <Ask className="pg-input" onAsk={ask} think={talk?.think}/></div>
     </>,
     now: () => <>
       {back(t(TITLES.now), now && `${now.current ? t(['as of', '截至']) : t(['at', '于'])} ${now.at}`)}
@@ -638,7 +650,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
     </>,
   };
 
-  return <div className="ad" data-page={page ?? undefined} onKeyDown={keys}>
+  return <div className="ad" data-page={page ?? undefined} data-deep={page === 'conversation' && talk?.think.on ? '' : undefined} onKeyDown={keys}>
     <div className="view" ref={view} style={{ height: viewH }}>
       <div className="overview" ref={home} inert={!!page}>
         <div className="corner">
@@ -733,14 +745,17 @@ function HomeBlock({ id, pop, lang, onClose, children }: { id: BlockId; pop: boo
 // The companion window takes no key focus until you reach for a text box.
 const focusWindow = (event: { currentTarget: HTMLElement }) => { const el = event.currentTarget; void window.jarvis?.focus(true).then(() => el.focus({ preventScroll: true })); };
 
-function Ask({ className, onAsk }: { className: string; onAsk: (text: string) => void }) {
+// In think mode the box is deep and carries a chip whose × says the off-word; typing an on-word deepens it before you send.
+function Ask({ className, onAsk, think }: { className: string; onAsk: (text: string) => void; think?: Think }) {
   const [text, setText] = useState(''), t = useT();
-  return <form className={className} onSubmit={event => {
+  const deep = !!think && deepAfter(think, text);
+  return <form className={`${className}${deep ? ' is-deep' : ''}`} onSubmit={event => {
     event.preventDefault();
     if (!text.trim()) return;
     onAsk(text.trim()); setText(''); event.currentTarget.querySelector('input')?.blur();
   }}>
-    <input aria-label={t(['Message Jarvis', '给 Jarvis 发消息'])} placeholder={t(['Message Jarvis…', '给 Jarvis 发消息…'])} autoComplete="off" value={text} onChange={event => setText(event.target.value)}
+    {think?.on && <span className="think-chip">{t(['Deep', '深想'])}<button type="button" aria-label={t(['Stop thinking deeply', '退出深想'])} onClick={think.exit}>×</button></span>}
+    <input aria-label={t(['Message Jarvis', '给 Jarvis 发消息'])} placeholder={think?.on ? t(['Say “stop thinking” to go back', '说「不用想了」回到平时']) : t(['Message Jarvis…', '给 Jarvis 发消息…'])} autoComplete="off" value={text} onChange={event => setText(event.target.value)}
       onPointerDown={focusWindow} onKeyDown={event => { if (event.key === 'Enter' && event.nativeEvent.isComposing) event.preventDefault(); }}/>
     <button className="send" aria-label={t(['Send', '发送'])} disabled={!text.trim()}><ArrowUp size={13} weight="bold"/></button>
   </form>;
