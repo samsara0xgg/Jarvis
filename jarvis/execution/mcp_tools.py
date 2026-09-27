@@ -126,13 +126,18 @@ def needs_approval(annotations: mcp_types.ToolAnnotations | None, mode: str) -> 
     return destructive is not False or open_world is not False
 
 
+def stdio_env(spec: Mapping[str, Any]) -> dict[str, str]:
+    """The entry's ``env`` with ``$VAR`` expanded from the daemon environment."""
+    # `$VAR` keeps credentials in ~/.jarvis/env, the same indirection as api_key_env.
+    return {str(k): os.path.expandvars(str(v)) for k, v in (spec.get("env") or {}).items()}
+
+
 def _stdio(spec: Mapping[str, Any]) -> StdioServerParameters:
-    env = spec.get("env") or {}
     return StdioServerParameters(
         command=str(spec["command"]),
+        # `$HOME` in a path keeps a machine's install location out of the shipped config.
         args=[os.path.expandvars(str(a)) for a in spec.get("args") or []],
-        # `$VAR` keeps credentials in ~/.jarvis/env, the same indirection as api_key_env.
-        env={str(k): os.path.expandvars(str(v)) for k, v in env.items()},
+        env=stdio_env(spec),
         cwd=spec.get("cwd"),
     )
 
@@ -370,9 +375,10 @@ class McpServers:
             return str(exc)
 
     def call(self, server: str, tool: str, args: Mapping[str, Any]) -> dict[str, Any]:
-        """Call one tool of a connected server outside a model turn (ADR 0036's background reader).
+        """Call one tool of a connected server outside a model turn (ADR 0036 and 0051 readers).
 
-        No gate stands in front of this: callers pass read-only tools only.
+        No gate stands in front of this: callers pass read-only tools, and the one write is the
+        to-do status Allen clicked on the home (ADR 0051).
         """
         client = self._clients.get(server)
         if client is None:

@@ -1,7 +1,7 @@
-"""Replay labelled wake recordings through the daemon's wake engines (ADR-0042).
+"""Replay labelled wake recordings through the daemon's wake engine (ADR-0042).
 
     python scripts/replay_wake_engine.py --labels ~/.jarvis-kws-bench/live_mww/labels.json
-    python scripts/replay_wake_engine.py --labels ... --engine openwakeword --threshold 0.5
+    python scripts/replay_wake_engine.py --labels ... --threshold 0.97
 
 Each wav is cut into the daemon's own 80 ms / 1280-sample PCM16 frames and fed
 to ``engine.predict`` one frame at a time; a file wakes when any frame's
@@ -18,10 +18,10 @@ from pathlib import Path
 from jarvis.surface import voice_wake
 
 FRAME_BYTES = 1280 * 2
-DEFAULT_THRESHOLD = {"microwakeword": 0.95, "openwakeword": 0.5}
+DEFAULT_THRESHOLD = {"microwakeword": 0.95}
 
 
-def peak_probability(engine: voice_wake.AnyWakeEngine, wav: Path) -> float:
+def peak_probability(engine: voice_wake.MicroWakeWordEngine, wav: Path) -> float:
     """Highest per-frame probability the engine reports over one file."""
     with wave.open(str(wav)) as w:
         if (w.getframerate(), w.getnchannels(), w.getsampwidth()) != (16000, 1, 2):
@@ -37,18 +37,17 @@ def peak_probability(engine: voice_wake.AnyWakeEngine, wav: Path) -> float:
 
 
 def main() -> None:
-    """Score every labelled wav with the chosen engine(s) and tally against the labels."""
+    """Score every labelled wav with the wake engine and tally against the labels."""
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--labels", required=True, type=Path)
-    ap.add_argument("--engine", default="both", choices=(*voice_wake.WAKE_ENGINES, "both"))
     ap.add_argument("--threshold", type=float, default=None)
     args = ap.parse_args()
     labels_path = args.labels.expanduser()
     labels = json.loads(labels_path.read_text())
-    kinds = list(voice_wake.WAKE_ENGINES) if args.engine == "both" else [args.engine]
-    engines: dict[str, voice_wake.AnyWakeEngine] = {}
+    kinds = ["microwakeword"]
+    engines: dict[str, voice_wake.MicroWakeWordEngine] = {}
     for kind in kinds:
-        engines[kind] = voice_wake.build_wake_engine(kind)
+        engines[kind] = voice_wake.MicroWakeWordEngine()
         engines[kind].start()
     thresholds = {k: (args.threshold or DEFAULT_THRESHOLD[k]) for k in kinds}
     print("file          label  " + "  ".join(f"{k}@{thresholds[k]}" for k in kinds))

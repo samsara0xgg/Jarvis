@@ -31,6 +31,8 @@ _LLM_CLIENT_CONSTRUCTION_SITES: Final[frozenset[str]] = frozenset(
         # ADR-0019: the compaction summariser's own preset-pinned client,
         # built once in the composition root and never switched.
         "jarvis/runtime/session_compaction.py",
+        # ADR 0058: the dictation polish's own preset-pinned client, same shape.
+        "jarvis/runtime/dictation.py",
     },
 )
 

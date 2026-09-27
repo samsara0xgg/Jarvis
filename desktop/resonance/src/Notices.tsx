@@ -1,32 +1,30 @@
 import { useEffect, useReducer, useRef, useState, type ReactNode } from 'react';
-import { ArrowSquareOut, ArrowUp, Check, X } from '@phosphor-icons/react';
-import { AGENT_NAME, type AgentRequest, type ShownAgent } from './agents';
+import { ArrowSquareOut, ArrowUp, Check } from '@phosphor-icons/react';
+import { AGENT_NAME, openLabel, type Agent, type AgentRequest, type AgentState } from './agents';
 import { AgentMark, type MarkLook } from './AgentMarks';
 import { Markdown } from './Markdown';
 import { palette, play, scoreOf } from './soundKit';
 import type { ExprId } from './starCore';
 import './notices.css';
 
-// Agent notices, after the notice lab: when a session finishes, needs you or stops, her Dashboard panel opens
-// just tall enough for that one event and she docks on it. Results close themselves after 8 s; a needs-you
-// card folds away after 30 s untouched and comes back once, softer, 10 minutes later. Finishes that land
-// within 1.5 s share one card; needs-you cards go ahead of results; nothing shows while she talks or while
-// the Dashboard is open, and it all comes up after. A held Claude Code prompt (ADR 0049) is answered on the card.
-const AUTO_MS = 8000, FOLD_MS = 30_000, REMIND_MS = 600_000, TOGETHER_MS = 1500, CONFIRM_MS = 850;
+// Agent notices, after the notch lab (ADR 0057). A session that finishes or stops while Allen is not looking at it
+// joins his turn and pops up its name beside the notch for 5 s; one that needs him gets a card hanging from the
+// notch, answered right there; it folds away after 30 s untouched (or on Later) and comes back once, softer, 10
+// minutes later. Finishes within 1.5 s share one pop; needs-you cards go ahead of pops; nothing shows while she
+// talks or while the Dashboard is open, and it all comes up after. Nothing pops for the session he is looking at.
+const POP_MS = 5000, FOLD_MS = 30_000, REMIND_MS = 600_000, TOGETHER_MS = 1500, CONFIRM_MS = 850;
 type Base = { key: string; id: string; at: number; reminded?: boolean };
 export type Notice = Base & (
-  | { kind: 'done'; line: string; sum: string }
-  | { kind: 'dones'; ids: string[]; lines: string[] }
+  | { kind: 'pop'; ids: string[] }
   // Needs you, answered elsewhere: a Codex approval, or a Claude prompt Jarvis is not holding.
   | { kind: 'wait'; line: string }
-  | { kind: 'req'; req: AgentRequest }
-  | { kind: 'err'; text: string });
+  | { kind: 'req'; req: AgentRequest });
 type Arrival = Notice extends infer N ? N extends Notice ? Omit<N, 'key' | 'at'> : never : never;
-export const needs = (n: Notice) => n.kind === 'req' || n.kind === 'wait';
+export const needs = (n: Notice) => n.kind !== 'pop';
+export const ended = (state: AgentState) => state === 'done' || state === 'err';
 // One question's pick: an option, several options, or typed words.
 type Pick = number | number[] | string;
 type Card = { qi: number; picks: (Pick | undefined)[]; review: boolean; feedback: boolean; ok: string };
-const firstLine = (text: string) => text.split('\n').find(line => line.trim())?.replace(/^[#>*\-\s]+/, '').trim() ?? '';
 
 // The sound kit from 星核的声音: palette 水滴·脆, the "fifths" score. The context sleeps between cues.
 let audio: { ctx: AudioContext; out: GainNode; sleep?: ReturnType<typeof setTimeout> } | null = null;
@@ -45,56 +43,89 @@ export function noticeCue(name: 'ask' | 'done' | 'error' | 'send' | 'close', vol
   } catch { /* sound is optional */ }
 }
 
-type Tone = 'ask' | 'done' | 'error';
-const toneOf = (n: Notice): Tone => needs(n) ? 'ask' : n.kind === 'err' ? 'error' : 'done';
+// Allen's turn, kept in her profile (ADR 0057): finished or stopped sessions he has not looked at, the ones he
+// cleared from beside the notch, and each session's last state, so a finish while she was closed still counts.
+const TURN = 'companion-turn-v1', KEEP_MS = 2 * 86_400_000;
+type Kept = { unread: string[]; cleared: string[]; last: Record<string, [AgentState, number]> };
+function loadKept(): Kept {
+  try {
+    const v = JSON.parse(localStorage.getItem(TURN) ?? '{}');
+    return { unread: Array.isArray(v.unread) ? v.unread : [], cleared: Array.isArray(v.cleared) ? v.cleared : [], last: v.last && typeof v.last === 'object' ? v.last : {} };
+  } catch { return { unread: [], cleared: [], last: {} }; }
+}
 
-// The queue behind the cards. `hold` keeps every card back (she is talking, the Dashboard is open).
-export function useNotices({ agents, hold, cue, answer, onSeen }: {
-  agents: ShownAgent[]; hold: boolean; cue: (name: Tone | 'send' | 'close', gain?: number) => void;
+type Tone = 'ask' | 'done' | 'error';
+// The queue behind the pops and cards. `hold` keeps every one back (she is talking, the Dashboard is open);
+// `watched` is the session Allen has been looking at in Ghostty for 1.5 s.
+export function useNotices({ agents, hold, watched, cue, answer }: {
+  agents: Agent[]; hold: boolean; watched: string | null; cue: (name: Tone | 'send' | 'close', gain?: number) => void;
   answer: (req: AgentRequest, body: { decision: 'allow' | 'always' | 'deny'; answers?: Record<string, string>; message?: string }) => Promise<boolean>;
-  onSeen: (ids: string[]) => void;
 }) {
   const [, bump] = useReducer((x: number) => x + 1, 0);
-  const s = useRef({
-    queue: [] as Notice[], folded: [] as Notice[], cards: new Map<string, Card>(), shownReqs: new Set<string>(),
-    prev: null as Map<string, { state: string; req: string }> | null, soundAt: -1e9, shown: '', openedAt: 0, peek: false,
-    // Her face for a moment after an answer: pleased (with a hop) or refusing.
-    over: null as { face: ExprId; until: number; hop: boolean } | null,
-    timers: new Set<ReturnType<typeof setTimeout>>(),
-  }).current;
+  const [s] = useState(() => {
+    const kept = loadKept();
+    return {
+      queue: [] as Notice[], folded: [] as Notice[], cards: new Map<string, Card>(), shownReqs: new Set<string>(),
+      unread: new Set(kept.unread), cleared: new Set(kept.cleared), last: kept.last,
+      soundAt: -1e9, shown: '', openedAt: 0, peek: false, touched: '',
+      // Her face for a moment after an answer: pleased (with a hop) or refusing.
+      over: null as { face: ExprId; until: number; hop: boolean } | null,
+      timers: new Set<ReturnType<typeof setTimeout>>(),
+    };
+  });
+  const save = () => { try { localStorage.setItem(TURN, JSON.stringify({ unread: [...s.unread], cleared: [...s.cleared], last: s.last })); } catch { /* the list just is not remembered */ } };
   const later = (ms: number, run: () => void) => { const t = setTimeout(() => { s.timers.delete(t); run(); }, ms); s.timers.add(t); };
   useEffect(() => () => s.timers.forEach(clearTimeout), []);
   const byId = new Map(agents.map(a => [a.id, a]));
-  const live = useRef(byId);
-  live.current = byId;
+  const live = useRef({ byId, hold });
+  live.current = { byId, hold };
   const card = (n: Notice) => { let c = s.cards.get(n.key); if (!c) s.cards.set(n.key, c = { qi: 0, picks: [], review: false, feedback: false, ok: '' }); return c; };
+  const toneOf = (n: Notice): Tone => needs(n) ? 'ask' : n.kind === 'pop' && n.ids.every(id => byId.get(id)?.state === 'err') ? 'error' : 'done';
   const sound = (n: Notice, gain = 1) => { const now = performance.now(); if (now - s.soundAt > TOGETHER_MS) { s.soundAt = now; cue(toneOf(n), gain); } };
 
   const arrive = (a: Arrival) => {
-    const now = performance.now(), n = { ...a, key: `${a.kind}:${a.id}:${now}`, at: now } as Notice, tail = s.queue.at(-1);
-    // Finished within 1.5 s of the last result: one card for all of them.
-    if (n.kind === 'done' && tail && (tail.kind === 'done' || tail.kind === 'dones') && now - tail.at < TOGETHER_MS) {
-      const merged: Notice = tail.kind === 'dones' ? { ...tail, ids: [...tail.ids, n.id], lines: [...tail.lines, n.line], at: now }
-        : { key: tail.key, id: tail.id, at: now, kind: 'dones', ids: [tail.id, n.id], lines: [tail.line, n.line] };
-      s.queue[s.queue.length - 1] = merged;
+    const now = performance.now(), n = { ...a, key: `${a.kind}:${a.id}:${now}`, at: now } as Notice, head = s.queue[0], tail = s.queue.at(-1);
+    if (n.kind === 'pop') {
+      // Into the pop on screen, or the one that came up less than 1.5 s ago.
+      if (head?.kind === 'pop' && !live.current.hold) { head.ids = [...head.ids.filter(x => x !== n.id), n.id]; return; }
+      if (tail?.kind === 'pop' && now - tail.at < TOGETHER_MS) { tail.ids.push(n.id); tail.at = now; return; }
+      s.queue.push(n);
       return;
     }
-    // Needs-you cards go ahead of results; the card on screen keeps its place.
-    if (needs(n)) { const i = s.queue.findIndex((m, j) => j > 0 && !needs(m)); if (i < 0) s.queue.push(n); else s.queue.splice(i, 0, n); } else s.queue.push(n);
+    // Needs-you cards go ahead of pops; the one on screen keeps its place.
+    const i = s.queue.findIndex((m, j) => j > 0 && !needs(m));
+    if (i < 0) s.queue.push(n); else s.queue.splice(i, 0, n);
   };
+  // Out of his turn: looked at, opened, marked, or cleared. Their names leave any pop too.
+  const read = (ids: string[]) => {
+    ids.forEach(id => s.unread.delete(id));
+    for (const n of s.queue) if (n.kind === 'pop') n.ids = n.ids.filter(id => !ids.includes(id));
+    s.queue = s.queue.filter(n => n.kind !== 'pop' || n.ids.length);
+    save(); bump();
+  };
+  const clear = (ids: string[]) => { ids.forEach(id => s.cleared.add(id)); cue('close'); read(ids); };
   // What changed since the last poll. A session met for the first time only notifies through a held prompt.
   const key = agents.map(a => `${a.id}:${a.state}:${a.request?.id ?? ''}`).join('|');
   useEffect(() => {
-    const prev = s.prev;
-    s.prev = new Map(agents.map(a => [a.id, { state: a.state, req: a.request?.id ?? '' }]));
+    const now = Date.now();
     for (const a of agents) {
-      const was = prev?.get(a.id)?.state;
-      if (a.request && !s.shownReqs.has(a.request.id)) { s.shownReqs.add(a.request.id); arrive({ kind: 'req', id: a.id, req: a.request }); }
+      const was = s.last[a.id]?.[0], looking = a.id === watched;
+      s.last[a.id] = [a.state, now];
+      // A background session shows no dialog of its own while Jarvis holds its prompt, so that card comes even
+      // while he looks at the session; an interactive one asks in his terminal at the same time.
+      if (a.request && !s.shownReqs.has(a.request.id)) { s.shownReqs.add(a.request.id); if (!looking || a.kind === 'background') arrive({ kind: 'req', id: a.id, req: a.request }); }
       if (!was || was === a.state) continue;
-      if (a.state === 'done' && ['work', 'pack', 'wait'].includes(was)) arrive({ kind: 'done', id: a.id, line: firstLine(a.last), sum: a.last });
-      else if (a.state === 'err') arrive({ kind: 'err', id: a.id, text: a.error ?? '' });
-      else if (a.state === 'wait' && !a.request) arrive({ kind: 'wait', id: a.id, line: a.last });
+      if (!ended(a.state)) {
+        // Working again (or asking): it leaves his turn, and a cleared star comes back.
+        s.unread.delete(a.id); s.cleared.delete(a.id);
+        if (a.state === 'wait' && !a.request && !looking) arrive({ kind: 'wait', id: a.id, line: a.last });
+      } else if (!ended(was)) {
+        s.cleared.delete(a.id);
+        if (!looking) { s.unread.add(a.id); arrive({ kind: 'pop', id: a.id, ids: [a.id] }); }
+      }
     }
+    for (const [id, [, at]] of Object.entries(s.last)) if (!byId.has(id) && now - at > KEEP_MS) delete s.last[id];
+    for (const set of [s.unread, s.cleared]) for (const id of set) if (!s.last[id]) set.delete(id);
     // A needs-you card whose session no longer waits on it was answered elsewhere.
     const stale = (n: Notice) => {
       if (!needs(n) || card(n).ok) return false;
@@ -103,20 +134,17 @@ export function useNotices({ agents, hold, cue, answer, onSeen }: {
     };
     s.queue = s.queue.filter(n => !stale(n));
     s.folded = s.folded.filter(n => !stale(n));
-    bump();
-  }, [key]);
+    // Looking at a session on his turn reads it.
+    if (watched && s.unread.has(watched)) read([watched]); else { save(); bump(); }
+  }, [key, watched]);
 
   const current = hold ? undefined : s.queue[0];
-  // A card coming up: her sound (once per 1.5 s), and the clock for her error face.
+  // A notice coming up: her sound (once per 1.5 s), and the clock for her error face.
   if ((current?.key ?? '') !== s.shown) {
     s.shown = current?.key ?? '';
     if (current) { s.openedAt = performance.now(); sound(current); }
   }
-  const next = (seen: boolean) => {
-    const n = s.queue.shift();
-    if (n && seen) onSeen(n.kind === 'dones' ? n.ids : [n.id]);
-    bump();
-  };
+  const next = () => { s.queue.shift(); bump(); };
   const fold = () => {
     const n = s.queue[0];
     if (!n || !needs(n)) return;
@@ -132,13 +160,16 @@ export function useNotices({ agents, hold, cue, answer, onSeen }: {
     s.soundAt = -1e9; sound(n, .5); s.soundAt = performance.now();
     later(1100, () => { s.peek = false; s.queue.unshift(n); s.shown = n.key; s.openedAt = performance.now(); bump(); });
   };
-  const [hover, setHover] = useState(false);
+  const [hover, setHovering] = useState(false);
+  const setHover = (on: boolean) => { if (on && s.queue[0]) s.touched = s.queue[0].key; setHovering(on); };
   const ok = current ? card(current).ok : '';
+  const size = current?.kind === 'pop' ? current.ids.length : 0;
   useEffect(() => {
     if (!current || hover || ok) return;
-    const t = setTimeout(() => needs(current) ? fold() : next(false), needs(current) ? FOLD_MS : AUTO_MS);
+    // A pop the pointer has been on goes 1.5 s after it leaves.
+    const t = setTimeout(() => needs(current) ? fold() : next(), needs(current) ? FOLD_MS : s.touched === current.key ? 1500 : POP_MS);
     return () => clearTimeout(t);
-  }, [current?.key, hover, ok]);
+  }, [current?.key, hover, ok, size]);
 
   const resolve = async (n: Notice & { kind: 'req' }, text: string, body: Parameters<typeof answer>[1]) => {
     const c = card(n);
@@ -148,24 +179,23 @@ export function useNotices({ agents, hold, cue, answer, onSeen }: {
     s.over = { face: yes ? '02' : '38', until: performance.now() + 900, hop: yes };
     cue(yes ? 'send' : 'close');
     bump();
-    later(CONFIRM_MS, () => { if (s.queue[0] === n) next(true); });
+    later(CONFIRM_MS, () => { if (s.queue[0] === n) next(); });
   };
-  // A waiting session from the Agents page or the hover list: its card comes to the front.
+  // A session waiting on him, from his turn or the Agents page: its card comes to the front.
   const focus = (id: string) => {
     const f = s.folded.findIndex(n => n.id === id && needs(n)), q = s.queue.findIndex(n => n.id === id && needs(n));
     if (f >= 0) s.queue.unshift(...s.folded.splice(f, 1));
     else if (q > 0) s.queue.unshift(...s.queue.splice(q, 1));
-    else if (q < 0) { const a = live.current.get(id); if (a?.request) s.queue.unshift({ key: `req:${id}:${performance.now()}`, id, at: performance.now(), kind: 'req', req: a.request }); }
+    else if (q < 0) { const a = live.current.byId.get(id); if (a?.request) s.queue.unshift({ key: `req:${id}:${performance.now()}`, id, at: performance.now(), kind: 'req', req: a.request }); }
     bump();
   };
-  return { current, count: s.queue.length, peek: s.peek, openedAt: s.openedAt, over: s.over, card: current ? card(current) : null,
-    setHover, next, fold, resolve, focus, bump };
+  return { current, count: s.queue.filter(needs).length, peek: s.peek, openedAt: s.openedAt, over: s.over, card: current ? card(current) : null,
+    unread: s.unread as ReadonlySet<string>, cleared: s.cleared as ReadonlySet<string>, read, clear, setHover, next, fold, resolve, focus, bump };
 }
 
 // ---------- the card ----------
 type Question = { question: string; header?: string; multiSelect?: boolean; options?: { label: string; description?: string }[] };
 type Body = Parameters<Parameters<typeof useNotices>[0]['answer']>[1];
-const LABEL: Record<Notice['kind'], [string, string]> = { done: ['Finished', 'done'], dones: ['', 'done'], err: ['Stopped', 'err'], wait: ['Needs you', 'wait'], req: ['Needs your OK', 'wait'] };
 const shortPath = (p: string) => p.split('/').filter(Boolean).slice(-2).join('/');
 // An edit as diff lines: removed, then added, at most 14.
 function diffLines(tool: string, i: Record<string, unknown>) {
@@ -176,31 +206,28 @@ function diffLines(tool: string, i: Record<string, unknown>) {
 }
 const pickText = (q: Question, p: Pick | undefined) => typeof p === 'number' ? q.options?.[p]?.label ?? '' : Array.isArray(p) ? p.map(k => q.options?.[k]?.label).join(', ') : p ?? '';
 
-export function NoticeCard({ n, agent, card, count, total, look, onClose, onLater, onOpen, onAll, onResolve, onChange }: {
-  n: Notice; agent?: ShownAgent; card: Card; count: number; total: number; look: MarkLook;
-  onClose: () => void; onLater: () => void; onOpen: (id: string) => void; onAll: () => void;
-  onResolve: (text: string, body: Body) => void; onChange: () => void;
+// A needs-you card: what the session wants, answered right on it.
+export function NoticeCard({ n, agent, card, count, look, onLater, onOpen, onResolve, onChange }: {
+  n: Notice & { kind: 'req' | 'wait' }; agent?: Agent; card: Card; count: number; look: MarkLook;
+  onLater: () => void; onOpen: (agent: Agent) => void; onResolve: (text: string, body: Body) => void; onChange: () => void;
 }) {
   const [typed, setTyped] = useState(''), [feedback, setFeedback] = useState('');
   const who = agent ? AGENT_NAME[agent.agent] : 'It';
-  const wait = needs(n), [label, tone] = n.kind === 'dones' ? [`${n.ids.length} finished`, 'done'] : n.kind === 'req' && n.req.tool === 'AskUserQuestion' ? [`${who} asks`, 'wait']
-    : n.kind === 'req' && n.req.tool === 'ExitPlanMode' ? ['Plan to review', 'wait'] : LABEL[n.kind];
+  const label = n.kind === 'wait' ? 'Needs you' : n.req.tool === 'AskUserQuestion' ? `${who} asks` : n.req.tool === 'ExitPlanMode' ? 'Plan to review' : 'Needs your OK';
   const bar = <div className="nc-bar">
-    <span className={`nc-label is-${tone}`}><i/>{label}{count > 1 && <em> · 1 of {count}</em>}</span>
-    {wait ? <button type="button" className="nc-x" title="Put it away; she reminds you once in 10 minutes" onClick={onLater}>Later</button>
-      : <button type="button" className="nc-x" aria-label="Close" onClick={onClose}><X size={13}/></button>}
+    <span className="nc-label is-wait"><i/>{label}{count > 1 && <em> · 1 of {count}</em>}</span>
+    <button type="button" className="nc-x" title="Put it away; it stays on your turn, and she reminds you once in 10 minutes" onClick={onLater}>Later</button>
   </div>;
-  // Only Codex threads can be opened from here; a Claude session's terminal tab cannot be found yet.
-  const canOpen = agent?.agent === 'codex';
-  const head = n.kind !== 'dones' && agent && <>
+  const open = agent && openLabel(agent);
+  const head = agent && <>
     <div className="nc-head">
-      <AgentMark look={look} state={agent.mark === 'seen' ? 'done' : agent.mark} id={agent.id} size={12}/>
+      <AgentMark look={look} state="wait" id={agent.id} size={12}/>
       <div className="nc-t">
         <div className="nc-top"><b>{agent.title}</b><span className="age">now</span></div>
         <div className="nc-tags"><span className={`tagc ${agent.agent}`}>{who}</span>{agent.project && <span className="tagc">{agent.project}</span>}
-          {agent.where !== 'Codex' && <span className="tagc">{agent.where}</span>}</div>
+          {agent.branch && <span className="tagc">{agent.branch.replace(/^worktree-/, '')}</span>}</div>
       </div>
-      {canOpen && <button type="button" className="nc-go" aria-label={`Open in ${agent.where}`} title={`Open in ${agent.where}`} onClick={() => onOpen(agent.id)}><ArrowSquareOut size={14}/></button>}
+      {open && <button type="button" className="nc-go" onClick={() => onOpen(agent)}>{open}<ArrowSquareOut size={12}/></button>}
     </div>
     {agent.you && <p className="nc-you"><b>You</b>{agent.you}</p>}
   </>;
@@ -211,11 +238,7 @@ export function NoticeCard({ n, agent, card, count, total, look, onClose, onLate
     <button type="button" className="btn btn-warm" onClick={() => onResolve(`Allowed · ${who} continues`, { decision: 'allow' })}>Allow</button>
   </div>;
   let body: ReactNode = null;
-  if (n.kind === 'done') body = n.sum && <div className="nc-sum"><Markdown text={n.sum}/></div>;
-  else if (n.kind === 'dones') body = <div className="nc-rows">{n.ids.map((id, k) => <div className="nc-row" key={id}><AgentMark look={look} state="done" id={id} size={12}/>
-    <span className="nc-line">{n.lines[k] || 'Finished'}</span></div>)}</div>;
-  else if (n.kind === 'err') { const [what, ...rest] = n.text.split(': '); body = <p className="nc-err"><b>{what || 'Stopped'}</b>{rest.join(': ')}</p>; }
-  else if (n.kind === 'wait') body = <p className="nc-what">{n.line || 'Waiting for you'}{agent && !canOpen ? ` · answer it in ${agent.where}` : ''}</p>;
+  if (n.kind === 'wait') body = <p className="nc-what">{n.line || 'Waiting for you'}{agent && !open ? ` · answer it in ${agent.where}` : ''}</p>;
   else {
     const { tool, input: i, cwd, always } = n.req;
     if (tool === 'Bash') body = <><p className="nc-what">{typeof i.description === 'string' && i.description ? i.description : 'Wants to run a command'}</p>
@@ -263,5 +286,5 @@ export function NoticeCard({ n, agent, card, count, total, look, onClose, onLate
     } else body = <><p className="nc-what">Wants to use {tool.replace(/^mcp__([^_]+)__/, '$1 · ')}</p>
       <pre className="nc-box">{JSON.stringify(i, null, 1).slice(0, 600)}</pre>{choice(always)}</>;
   }
-  return <div className="nc">{bar}{head}{body}<button type="button" className="nc-all" onClick={onAll}>All {total} sessions</button></div>;
+  return <div className="nc">{bar}{head}{body}</div>;
 }

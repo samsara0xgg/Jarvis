@@ -39,10 +39,11 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 
+from jarvis.shared.lang import t
 from jarvis.surface import voice_audio, voice_tts
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import AsyncIterator, Callable, Mapping
 
     from jarvis.surface.inherent_output import InherentBroadcaster
 
@@ -50,46 +51,12 @@ LOGGER = logging.getLogger(__name__)
 
 LIVE_WS_URL = "wss://api.openai.com/v1/live/sessions"
 
-# The official template's fixed labels (docs/gpt-live/live-prompting.md); the
-# backend owns tool rules and permissions, so only the read-only capabilities
-# of ADR-0016 D6 are listed here.
-DEFAULT_INSTRUCTIONS = """\
-You are Jarvis, Allen 的私人语音助手。
-语言：默认自然、简短的中文口语；Allen 说英文时切换到英文。
-节奏：像面对面聊天，一次只说一两句，不长篇大论，不重复解释。
-Backchannel policy: Use moderate backchannels. 简短的"嗯""好"即可。
-Interruption policy: Stop speaking when the user interrupts. Listen to what they say.
-被要求"别说了"时立刻停下，等 Allen 再开口再回应。
-Delegation policy:
-Backend tools:
-- 后台只能查，不能做：搜网页、读网页、查笔记、查过去的对话记录、看当前时间。
-Delegate to the backend when:
-- Allen 要查资料、查最新或动态信息、回忆以前说过的事、要一个需要核实的事实。
-Do not delegate to the backend when:
-- 闲聊、寒暄、你自己就能答的常识；Allen 要执行操作时直接说明这一版后台只能查不能做。
-Do not guess the result while waiting.
-等后台结果时可以继续聊别的，但不要编造查询结果，也不要说已经查到了。
-"""  # noqa: RUF001 — intentional Chinese punctuation.
-
-# Appends are written in the language the model speaks (docs/gpt-live/live-prompting.md).
-# Commentary is a fact for the model to say in its own words, not an instruction to it;
-# thinking is a fact it may use later without speaking it now.
-NO_REQUEST_THINKING = (
-    "后台没有捕获到要查的内容，请让用户再说一遍要查什么。"  # noqa: RUF001 — intentional Chinese punctuation.
-)
-FAILED_COMMENTARY = "刚才那个查询失败了，后台没有拿到结果。"  # noqa: RUF001 — intentional Chinese punctuation.
-NO_BACKEND_COMMENTARY = "这个会话没有接后台，查不了。"  # noqa: RUF001 — intentional Chinese punctuation.
-TIMEOUT_COMMENTARY = "刚才那个查询还没拿到结果，拿到后再说。"  # noqa: RUF001 — intentional Chinese punctuation.
-LONG_RESULT_COMMENTARY = (
-    "查到了，但结果太长不适合口述，完整结果在界面上。"  # noqa: RUF001 — intentional Chinese punctuation.
-)
-# ADR 0026: what a new session is told about an outcome no session heard.
-UNDELIVERED_COMMENTARY = (
-    "上次连接关闭前没来得及说的结果。问的是：{request}。结果：{result}"  # noqa: RUF001 — Chinese punctuation.
-)
-UNDELIVERED_FAILED_COMMENTARY = (
-    "上次问的{request}，后台没有查到结果。"  # noqa: RUF001 — intentional Chinese punctuation.
-)
+# The persona (``live.instructions``) and every append are in the language
+# table: GPT-Live's prompts are written in the language the model speaks
+# (docs/gpt-live/live-prompting.md), so each language has its own wording, and
+# a session speaks the language setting current when it starts or appends.
+# Commentary is a fact for the model to say in its own words, not an
+# instruction to it; thinking is a fact it may use later without speaking it now.
 
 LiveState = Literal["idle", "connecting", "active", "closing"]
 DeliveryKind = Literal["commentary", "thinking"]
@@ -129,7 +96,9 @@ class GptLiveConfig:
     model: str = "gpt-live-1"
     voice: str = "marin"
     sample_rate_hz: int = 24000
-    instructions: str = DEFAULT_INSTRUCTIONS
+    # Empty: the language table's persona, with ``assistant`` as its name.
+    instructions: str = ""
+    assistant: str = "Jarvis"
     api_key_env: str = "OPENAI_API_KEY"
     idle_close_s: float = 30.0
     max_session_s: float = 1800.0
@@ -359,6 +328,7 @@ class LiveVoice:
         mic_muted: Callable[[], bool],
         speech_muted: Callable[[], bool],
         output_device: object | None = None,
+        volume: float = 1.0,
         on_owns_speech: Callable[[bool], None] | None = None,
         delegate: Callable[[str, str, str, str], str] | None = None,
         record: Callable[[str, str, str], None] | None = None,
@@ -389,6 +359,7 @@ class LiveVoice:
         self._mic_muted = mic_muted
         self._speech_muted = speech_muted
         self._output_device = output_device
+        self._volume = volume
         self._on_owns_speech = on_owns_speech
         self._delegate = delegate
         self._record = record
@@ -564,6 +535,35 @@ class LiveVoice:
         if run is not None:
             run.player.set_gain(0.0 if muted else 1.0)
 
+    @contextlib.asynccontextmanager
+    async def output_paused(self, output_device: object | None) -> AsyncIterator[bool]:
+        """Hold the session lock with the Live speaker closed for a device refresh (ADR 0054).
+
+        Yields ``False`` while Live is speaking, or when its stream did not
+        provably close. On exit the speaker reopens on ``output_device``, which
+        later sessions use too; no session starts or ends in between.
+        """
+        async with self._lock:
+            self._output_device = output_device
+            run = self._run
+            closed = True
+            if run is not None:
+                if run.writer_busy or run.player.bytes_pending() > 0:
+                    yield False
+                    return
+                closed = (await asyncio.to_thread(run.player.stop)).definitively_closed
+            try:
+                yield closed
+            finally:
+                if run is not None:
+                    run.player.set_device(output_device)
+                    started = await asyncio.to_thread(run.player.start)
+                    if not started.started:
+                        LOGGER.warning(
+                            "gpt_live speaker did not reopen after a device refresh: %s",
+                            started.reason,
+                        )
+
     # ------------------------------------------------------------------
     # Session bring-up / teardown
     # ------------------------------------------------------------------
@@ -577,6 +577,7 @@ class LiveVoice:
             ring_seconds=cfg.player_ring_seconds,
             device=self._output_device,
             lazy_open=True,
+            volume=self._volume,
         )
         subscription: voice_audio.AudioSubscription | None = None
         ws: Any = None
@@ -609,7 +610,8 @@ class LiveVoice:
                 "type": "session.start",
                 "session": {
                     "model": cfg.model,
-                    "instructions": cfg.instructions,
+                    "instructions": cfg.instructions
+                    or t("live.instructions", assistant=cfg.assistant),
                     "input": history,
                     "audio": {
                         "format": {"type": "audio/pcm", "rate": cfg.sample_rate_hz},
@@ -872,14 +874,14 @@ class LiveVoice:
         if self._delegate is None:
             LOGGER.info("gpt_live delegation %s refused: no backend injected", delegation_id)
             await self._send_append(
-                run, "commentary", NO_BACKEND_COMMENTARY, delegation_id=delegation_id,
+                run, "commentary", t("live.no_backend"), delegation_id=delegation_id,
             )
             return
         # D5: one foreground query. An older delegation still completes into
         # memory.db and the UI, but its result is withheld from Live: a quiet
         # append can still shape later speech (live-tested 2026-09-12, the
         # superseded "明天" forecast was spoken as "后天"). Only the request
-        # it displaces travels as 此前请求: its answer is not in memory.db yet.
+        # it displaces travels as the earlier request: its answer is not in memory.db yet.
         # A finished exchange already closes context_note, and a prefix on
         # an unrelated follow-up misreads it as a correction (live run
         # 2026-09-12 21:32: "明天卡尔加里" answered as 后天). One still
@@ -923,7 +925,7 @@ class LiveVoice:
             LOGGER.exception("gpt_live delegation %s task failed", pending.delegation_id)
             pending.state = "failed"
             await self._send_append(
-                run, "commentary", FAILED_COMMENTARY, delegation_id=pending.delegation_id,
+                run, "commentary", t("live.failed"), delegation_id=pending.delegation_id,
             )
         finally:
             run.delegation_tasks = [t for t in run.delegation_tasks if not t.done()]
@@ -937,7 +939,7 @@ class LiveVoice:
             LOGGER.info("gpt_live delegation %s dropped: no user transcript in window",
                         pending.delegation_id)
             await self._send_append(
-                run, "thinking", NO_REQUEST_THINKING, delegation_id=pending.delegation_id,
+                run, "thinking", t("live.no_request"), delegation_id=pending.delegation_id,
             )
             return
         pending.request_text = text
@@ -947,9 +949,9 @@ class LiveVoice:
         # window still names its row so drive_turn neither writes nor repeats it.
         pending.record_id = _row_record_id(run, "allen", (unflushed or fragments)[0])
         # A correction that superseded a running lookup is sent next to the
-        # request it corrects; the memory row stays Allen's own words.
+        # request it corrects; the memory row stays the user's own words.
         request = (
-            f"此前请求：{pending.prior_request}\n用户修正：{text}"  # noqa: RUF001 — Chinese punctuation.
+            f"Earlier request: {pending.prior_request}\nThe user's correction: {text}"
             if pending.prior_request
             else text
         )
@@ -970,7 +972,7 @@ class LiveVoice:
         LOGGER.info("gpt_live delegation %s submitted turn_id=%s", pending.delegation_id, turn_id)
         await self._send_append(
             run, "thinking",
-            f"正在查：{text[:40]}。还没有结果，不要猜。",  # noqa: RUF001 — Chinese punctuation.
+            t("live.looking_up", request=text[:40]),
             delegation_id=pending.delegation_id,
         )
         # D4/D5: one lookup now, then bus wakes plus a slow safety poll until the
@@ -984,15 +986,15 @@ class LiveVoice:
             pending.timed_out = True
             LOGGER.info("gpt_live delegation %s timed out after %.0fs (turn_id=%s)",
                         pending.delegation_id, cfg.delegation_timeout_s, turn_id)
-            await self._deliver(run, pending, "commentary", TIMEOUT_COMMENTARY)
+            await self._deliver(run, pending, "commentary", t("live.timeout"))
             result = await self._await_result(pending, turn_id, None)
             assert result is not None  # noqa: S101 - a None deadline only returns with a result
         pending.state = "answered" if result.status == "answered" else "failed"
         if result.status == "failed":
             LOGGER.info("gpt_live delegation %s failed: %s", pending.delegation_id, result.reason)
-            await self._deliver(run, pending, "commentary", FAILED_COMMENTARY, turn_id=turn_id)
+            await self._deliver(run, pending, "commentary", t("live.failed"), turn_id=turn_id)
             return
-        content = _speech_cut(result.voice_text or result.text) or LONG_RESULT_COMMENTARY
+        content = _speech_cut(result.voice_text or result.text) or t("live.long_result")
         if pending.timed_out:
             LOGGER.info("gpt_live delegation %s late result -> commentary", pending.delegation_id)
         await self._deliver(run, pending, "commentary", content, turn_id=turn_id)
@@ -1463,7 +1465,7 @@ def _speech_cut(text: str, *, budget: int = _COMMENTARY_BUDGET_CHARS) -> str:
     head = text[:budget]
     cut = max(head.rfind(mark) for mark in _SENTENCE_ENDS)
     if cut < 0:
-        return LONG_RESULT_COMMENTARY
+        return t("live.long_result")
     return head[: cut + 1].strip()
 
 
@@ -1471,17 +1473,16 @@ def _undelivered_commentary(item: UndeliveredResult) -> str:
     """One speech-sized fact per outcome no session was told (ADR 0026)."""
     request = " ".join(item.request.split())[:40]
     if item.result.status == "failed":
-        return UNDELIVERED_FAILED_COMMENTARY.format(request=request)
-    head = UNDELIVERED_COMMENTARY.format(request=request, result="")
+        return t("live.undelivered_failed", request=request)
+    head = t("live.undelivered", request=request, result="")
     body = _speech_cut(
         item.result.voice_text or item.result.text,
         budget=_COMMENTARY_BUDGET_CHARS - len(head),
     )
-    return head + (body or LONG_RESULT_COMMENTARY)
+    return head + (body or t("live.long_result"))
 
 
 __all__ = [
-    "DEFAULT_INSTRUCTIONS",
     "DelegationResult",
     "GptLiveConfig",
     "LiveVoice",

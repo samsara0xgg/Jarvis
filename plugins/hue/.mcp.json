@@ -1,0 +1,21 @@
+{
+  "mcpServers": {
+    "hue": {
+      "command": "uvx",
+      "args": ["--with", "mcp<2", "huemcp==0.1.0"],
+      "env": {
+        "PATH": "$HOME/.local/share/mise/shims:$HOME/.local/bin:/opt/homebrew/bin:/usr/bin:/bin",
+        "HUE_BRIDGE_HOST": "$HUE_BRIDGE_HOST",
+        "HUE_APPLICATION_KEY": "$HUE_APPLICATION_KEY"
+      },
+      "tools": {
+        "list_lights": {"approval_mode": "approve"},
+        "list_rooms": {"approval_mode": "approve"},
+        "list_zones": {"approval_mode": "approve"},
+        "list_scenes": {"approval_mode": "approve"},
+        "get_resource": {"approval_mode": "approve"},
+        "bridge_info": {"approval_mode": "approve"}
+      }
+    }
+  }
+}

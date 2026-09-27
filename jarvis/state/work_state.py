@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta, tzinfo
 from typing import TYPE_CHECKING, Any
 
+from jarvis.shared.lang import t
 from jarvis.state import timesink
 from jarvis.state.daily_contract import DailyError, fingerprint
 from jarvis.state.daily_records import read_connection
@@ -268,7 +269,7 @@ def _span_sections(g: _Gather, spans: dict[str, Any]) -> None:
     ]
     ranked = sorted(groups.values(), key=lambda x: -x["minutes"])
     if len(ranked) > _MAX_GROUPS:
-        g.limits.append(f"今天的窗口共 {len(ranked)} 个，只列出时长最长的 {_MAX_GROUPS} 个")
+        g.limits.append(t("work.limit.windows", total=len(ranked), shown=_MAX_GROUPS))
     windows = []
     for group in ranked[:_MAX_GROUPS]:
         key = f"a{group['_ref'].split(':')[2]}"
@@ -334,22 +335,20 @@ def _capture_sections(g: _Gather, captures: dict[str, Any], recent_start: dateti
                 _chars=item["text_chars"],
             )
     if len(recent) > _MAX_RECENT:
-        g.limits.append(f"最近窗口内有 {len(recent)} 条屏幕内容，只保留最新的 {_MAX_RECENT} 条")
+        g.limits.append(t("work.limit.recent", total=len(recent), shown=_MAX_RECENT))
     recent = recent[-_MAX_RECENT:]
     budget = _RECENT_TEXT_BUDGET
     for row in reversed(recent):
         row["text"] = row["text"][: max(0, budget)]
         budget -= len(row["text"])
     if budget <= 0:
-        g.limits.append("最近屏幕内容的文字超出预算，较早的条目只剩标题")
+        g.limits.append(t("work.limit.recent_text"))
     for row in recent:
         g.refs[row["key"]] = row.pop("_ref")
     g.sections["recent"] = recent
     ranked = sorted(earlier.values(), key=lambda x: -x["count"])
     if len(ranked) > _MAX_GROUPS:
-        g.limits.append(
-            f"今天较早的屏幕内容涉及 {len(ranked)} 个窗口，只列出最常见的 {_MAX_GROUPS} 个"
-        )
+        g.limits.append(t("work.limit.earlier", total=len(ranked), shown=_MAX_GROUPS))
     grouped = []
     for group in ranked[:_MAX_GROUPS]:
         g.refs[group["key"]] = group["_ref"]
@@ -381,23 +380,23 @@ def _timesink_sections(  # noqa: PLR0913 — one snapshot, the three windows and
     g.coverage["app"] = str(spans["coverage"]["status"])
     g.coverage["screen"] = str(captures["coverage"]["status"])
     if snap is None:
-        g.limits.append("TimeSink 不可读：没有应用、窗口和屏幕数据")
+        g.limits.append(t("timesink.unreadable"))
     _span_sections(g, spans)
     _capture_sections(g, captures, recent_start)
     all_events = [*state["at_start"], *state["events"]]
     events = all_events[-_MAX_STATE_EVENTS:]
     g.coverage["state"] = str(state["coverage"]["status"])
     if len(all_events) > _MAX_STATE_EVENTS:
-        g.limits.append(f"状态事件共 {len(all_events)} 条，只列出最后 {_MAX_STATE_EVENTS} 条")
-    for name, found in (("应用", spans), ("屏幕", captures), ("状态事件", state)):
+        g.limits.append(t("work.limit.state", total=len(all_events), shown=_MAX_STATE_EVENTS))
+    for name, found in (("app", spans), ("screen", captures), ("state", state)):
         if found["coverage"]["status"] == "unavailable" and snap is not None:
-            g.limits.append(f"TimeSink {name}来源不可用")
+            g.limits.append(t(f"work.limit.{name}_unavailable"))
     g.sections["state_events"] = [{"at": _local(e["at"], g.tz), "kind": e["kind"]} for e in events]
     related = timesink.search_captures(
         snap, now - timedelta(days=RELATED_DAYS), start, terms, limit=_MAX_RELATED_SCREEN
     )
     if len(related) == _MAX_RELATED_SCREEN:
-        g.limits.append(f"与问题相关的更早屏幕内容只取了最新的 {_MAX_RELATED_SCREEN} 条")
+        g.limits.append(t("work.limit.related_screen", shown=_MAX_RELATED_SCREEN))
     rows = []
     for item in reversed(related):
         key = f"s{_row_id(item)}"
@@ -461,17 +460,17 @@ def _record_sections(
                 ).fetchall()
     except (DailyError, sqlite3.Error):
         g.coverage["records"] = "unavailable"
-        g.limits.append("对话记录库不可读：没有对话材料")
+        g.limits.append(t("work.limit.records_unreadable"))
         g.sections["records"] = g.sections["related_records"] = []
         return []
     g.coverage["records"] = "available"
     if len(rows) == _MAX_RECORDS:
-        g.limits.append(f"近 {RECORD_HOURS} 小时的对话记录超过 {_MAX_RECORDS} 条，只保留最新的")
+        g.limits.append(t("work.limit.records", hours=RECORD_HOURS, shown=_MAX_RECORDS))
     if len(related) == _MAX_RELATED_RECORDS:
-        g.limits.append(f"与问题相关的更早对话记录只取了最新的 {_MAX_RELATED_RECORDS} 条")
+        g.limits.append(t("work.limit.related_records", shown=_MAX_RELATED_RECORDS))
     records, budget = _record_rows(g, rows, start_index=1, budget=_RECORD_TEXT_BUDGET)
     if budget <= 0:
-        g.limits.append("对话记录的文字超出预算，较早的条目被截断")
+        g.limits.append(t("work.limit.records_text"))
     g.sections["records"] = records
     g.sections["related_records"], _ = _record_rows(
         g, related, start_index=len(rows) + 1, budget=_RECORD_TEXT_BUDGET // 2
@@ -487,8 +486,7 @@ def _folded_section(  # noqa: PLR0913 — one fold, its kind, key prefix, cap an
     label = "title" if kind == "todo" else "statement"
     items.sort(key=lambda x: not _matches(str(x[label]), terms))
     if len(items) > limit:
-        noun = "未完成待办" if kind == "todo" else "知识条目"
-        g.limits.append(f"{noun}共 {len(items)} 条，只列出 {limit} 条（与问题相关的优先）")
+        g.limits.append(t(f"work.limit.{kind}", total=len(items), shown=limit))
     rows = []
     for index, item in enumerate(items[:limit]):
         key = f"{prefix}{index + 1}"
@@ -529,7 +527,7 @@ def _git_section(
         if kind == "project.commit_seen":
             # `at` is the observation time; a commit seen late still carries its own time.
             committed = datetime.fromtimestamp(payload["committed_at_ms"] / 1000, UTC)
-            text = f"提交于 {committed.astimezone(g.tz):%m-%d %H:%M}：{text}"
+            text = f"committed {committed.astimezone(g.tz):%m-%d %H:%M}: {text}"
         items.append(
             {
                 "key": key,
@@ -545,7 +543,7 @@ def _git_section(
     g.sections["git"] = items
     g.coverage["git"] = "partial" if repos else "unavailable"
     if not repos:
-        g.limits.append("没有配置被观察的 Git 仓库：没有 Git 活动数据")
+        g.limits.append(t("work.limit.no_repos"))
     return [str(row[0]) for row in rows]
 
 
@@ -706,10 +704,10 @@ def compose_state(  # noqa: C901 — the record's validation rules, listed once.
     uncertainties = list(analysis.get("uncertainties", []))
     claims = [c for c in [now_claim, *activities, *links] if c is not None]
     if downgraded:
-        uncertainties.append(f"有 {downgraded} 条结论缺少明确依据，已按推断处理")
+        uncertainties.append(t("work.downgraded", count=downgraded))
     if any(c["basis"] == "inferred" for c in claims) and not uncertainties:
-        uncertainties.append("部分结论是推断，未经确认")
-    uncertainties.extend(f"材料范围：{limit}" for limit in evidence.limits)
+        uncertainties.append(t("work.inferred"))
+    uncertainties.extend(t("material.scope", limit=limit) for limit in evidence.limits)
     return {
         "analyzed_at": (analyzed_at or datetime.now(UTC))
         .astimezone()

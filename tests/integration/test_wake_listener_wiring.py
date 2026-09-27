@@ -31,14 +31,14 @@ def test_spawn_wake_listener_passes_real_frame_factory(tmp_path: Path) -> None:
     tts_pipeline = MagicMock()
     tts_pipeline.is_speaking = lambda: False
 
-    # Patch openwakeword + SileroVad + raw input stream so the spawn path runs
+    # Patch the wake engine + SileroVad + raw input stream so the spawn path runs
     # without real audio / model dependencies.
     fake_stream = MagicMock()
     fake_stream.read.return_value = (b"\x00" * 2560, False)
 
     with patch.object(voice_wake.WakeListener, "__init__", _spy_init), \
          patch.object(voice_wake.WakeListener, "start"), \
-         patch.object(voice_wake.WakeEngine, "start") as model_start, \
+         patch.object(voice_wake.MicroWakeWordEngine, "start") as model_start, \
          patch("jarvis.surface.voice_audio.SileroVad") as mock_silero, \
          patch.object(inherent_loop, "_open_wake_input_stream", return_value=fake_stream):
         mock_silero.return_value = MagicMock()
@@ -80,7 +80,7 @@ def test_spawn_wake_listener_forwards_ducker(tmp_path: Path) -> None:
 
     with patch.object(voice_wake.WakeListener, "__init__", _spy_init), \
          patch.object(voice_wake.WakeListener, "start"), \
-         patch.object(voice_wake.WakeEngine, "start") as model_start, \
+         patch.object(voice_wake.MicroWakeWordEngine, "start") as model_start, \
          patch("jarvis.surface.voice_audio.SileroVad") as mock_silero, \
          patch.object(inherent_loop, "_open_wake_input_stream", return_value=fake_stream):
         mock_silero.return_value = MagicMock()
@@ -117,7 +117,7 @@ def test_wake_listener_uses_ducker_around_capture() -> None:
     fake_engine = MagicMock()
     detection_iter = iter([0.9, 0.0, 0.0, 0.0])
     fake_engine.predict.side_effect = lambda _frame: {
-        "hey_jarvis_v0.1": next(detection_iter, 0.0),
+        "hey_jarvis": next(detection_iter, 0.0),
     }
 
     fake_pipeline = MagicMock()
@@ -226,7 +226,7 @@ def test_wake_does_not_duck_while_tts_waits_for_first_pcm() -> None:
     ducker = MagicMock(spec=voice_ducking.SystemAudioDucker)
     capture = MagicMock(return_value=b"\x10\x00" * 16_000)
     engine = MagicMock()
-    engine.predict.return_value = {"hey_jarvis_v0.1": 0.9}
+    engine.predict.return_value = {"hey_jarvis": 0.9}
     listener = voice_wake.WakeListener(
         engine=engine,
         pipeline=MagicMock(),
@@ -291,7 +291,7 @@ def test_shared_ducker_closes_check_then_duck_race() -> None:
         )
         synthesis_thread.start()
         assert synthesis_started.wait(timeout=1.0)
-        return {"hey_jarvis_v0.1": 0.9}
+        return {"hey_jarvis": 0.9}
 
     engine = MagicMock()
     engine.predict.side_effect = _predict_after_initial_output_check
@@ -351,7 +351,7 @@ def test_serve_inherent_shutdown_joins_wake_thread_before_stream_close(
     tts_pipeline.is_speaking = lambda: False
 
     with patch.object(voice_wake.WakeListener, "start"), \
-         patch.object(voice_wake.WakeEngine, "start") as model_start, \
+         patch.object(voice_wake.MicroWakeWordEngine, "start") as model_start, \
          patch("jarvis.surface.voice_audio.SileroVad") as mock_silero, \
          patch.object(inherent_loop, "_open_wake_input_stream", return_value=fake_stream):
         mock_silero.return_value = MagicMock()

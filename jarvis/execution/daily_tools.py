@@ -98,8 +98,8 @@ _ACTIVITY_RESULT_CAP = ACTIVITY_PAGE_BUDGET + 16384
 _RESULT_CAPS = {"query_activity": _ACTIVITY_RESULT_CAP}
 _WRITES = frozenset({"save_knowledge", "save_briefing"})
 _WORK_STATE_DESCRIPTION = (
-    "Investigate and update Allen's persisted current work state. Call this when he asks what "
-    "he is doing now, what he did today/recently, or how something discussed earlier is "
+    "Investigate and update the user's persisted current work state. Call this when they ask "
+    "what they are doing now, what they did today/recently, or how something discussed earlier is "
     "progressing. It reads the latest TimeSink app/window/screen data, recent conversation "
     "records, knowledge and Git observations, runs one analysis and saves the "
     "result; outcome=reused means nothing new was observed and the saved state still holds, "

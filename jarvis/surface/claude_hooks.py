@@ -147,7 +147,7 @@ class ClaudeHooks:
             return False
         choice = body.get("decision")
         if choice == "deny":
-            message = str(body.get("message") or "") or "Allen said no from Jarvis."
+            message = str(body.get("message") or "") or "The user said no from Jarvis."
             held.answer.set_result({"behavior": "deny", "message": message})
             return True
         if choice not in {"allow", "always"}:

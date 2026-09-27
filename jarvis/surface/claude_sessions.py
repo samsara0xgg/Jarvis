@@ -242,6 +242,10 @@ class ClaudeSessions:
                     "agent": "claude",
                     "session_id": agent["sessionId"],
                     "kind": agent.get("kind", ""),
+                    # What `claude attach` takes; not always the session id's first 8 characters.
+                    "job_id": str(agent.get("id") or "")
+                    if agent.get("kind") == "background"
+                    else "",
                     "phase": _phase(agent, job),
                     "title": _short(agent.get("name")) or tx["prompt"] or _project(cwd),
                     "project": _project(cwd),

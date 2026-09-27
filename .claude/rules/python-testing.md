@@ -14,5 +14,6 @@ paths:
   gated on cost.
 - Small fixes and refactors do not automatically need a live test; choose
   verification by regression risk.
-- Tier 1 gates are `lint-imports`, `ruff`, `mypy --strict`, and the hermetic
-  acceptance checks. Report their printed counts; never infer them.
+- Tier 1 gates are `lint-imports`, `ruff`, `mypy --strict`, the hermetic
+  acceptance checks, and `uv audit` (known vulnerabilities in `uv.lock`).
+  Report their printed counts; never infer them.

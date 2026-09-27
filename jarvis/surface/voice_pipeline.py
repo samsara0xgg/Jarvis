@@ -62,7 +62,7 @@ class VoicePipeline:
     """Run one voice turn from raw audio bytes to utterance.received emit.
 
     The pipeline does NOT capture audio itself — the wake listener and
-    the ``/inherent/asr-submit`` handler each capture (or receive) audio
+    the ``/inherent/asr-submit/v2`` handler each capture (or receive) audio
     and call ``run_turn(...)`` for the ASR-and-emit phase.
     """
 
@@ -101,6 +101,13 @@ class VoicePipeline:
         text: str = partial(audio_bytes)
         return text
 
+    def transcribe(self, audio_bytes: bytes) -> str:
+        """ADR 0058 dictation: a turn's ears and corrections, no emit; ``""`` for no speech."""
+        tr = self._recognizer.recognize(audio_bytes)
+        if voice_asr.is_empty_or_too_short(tr.text, audio_pcm=audio_bytes):
+            return ""
+        return self._normalizer.normalize(tr.text)
+
     def run_turn(  # noqa: C901, PLR0912, PLR0913 — wake/PTT toggles widen the signature; splitting would shred the single locked critical section.
         self,
         *,
@@ -114,7 +121,7 @@ class VoicePipeline:
         session_id: str | None = None,
         utterance_id: str | None = None,
         endpoint_reason: str | None = None,
-        transcript_prefix: str = "",
+        before_emit: Callable[[], None] | None = None,
     ) -> Event:
         """Execute one voice turn end-to-end. Returns the emitted Event row.
 
@@ -144,9 +151,10 @@ class VoicePipeline:
                 endpointed utterance); the PTT path does not, so an unsupplied
                 id is minted here — one press-to-release is one utterance.
             endpoint_reason: Optional typed acoustic endpoint reason.
-            transcript_prefix: Literal text prepended to the normalized
-                transcript before emit (the Shift+Return memo path sends
-                ``/note `` so Tier 0 routes it without the LLM).
+            before_emit: Called once the transcript is accepted, before
+                ``utterance.received`` is written: conversation mode drops
+                the unspoken answer to Allen's previous sentence there, so
+                the new turn can never see it (ADR 0053).
 
         Raises:
             VoiceInputBusyError: VOICE_INPUT_LOCK contention (PTT path: 503).
@@ -202,8 +210,6 @@ class VoicePipeline:
 
             # 3. Normalize BEFORE emit — ADR §8 fix #1 (spec §3.6.2).
             normalized = self._normalizer.normalize(tr.text)
-            if transcript_prefix:
-                normalized = transcript_prefix + normalized
 
             # 4. Audio retention for memory.db (None = off).
             artifact_ref = voice_artifact_store.persist(
@@ -212,6 +218,9 @@ class VoicePipeline:
                 sample_rate_hz=self._sample_rate_hz,
                 artifacts_dir=self._artifacts_dir,
             )
+
+            if before_emit is not None:
+                before_emit()
 
             # 5. Emit utterance.received via fresh connection (worker thread).
             payload: dict[str, object] = {

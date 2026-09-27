@@ -25,6 +25,7 @@ from __future__ import annotations
 import hashlib
 from typing import TYPE_CHECKING, Final
 
+from jarvis.shared.lang import variants
 from jarvis.shared.realtime import PresentationIntent, PresentationIntentType
 from jarvis.shared.text import is_english
 
@@ -40,54 +41,14 @@ constant through to L5 rather than picking one itself.  It matches
 is routine by definition — short, interruptible, independently permitted.
 """
 
-_D6_ROWS: Final[dict[str, tuple[PresentationIntentType, dict[str, tuple[str, ...]]]]] = {
-    "action.dispatched": (
-        "acknowledge",
-        {
-            "zh": ("这就去办。", "好，我来办。"),  # noqa: RUF001 — fullwidth comma is intentional Chinese punctuation.
-            "en": ("On it.", "I'll take care of it."),
-        },
-    ),
-    "action.running": (
-        "progress",
-        {
-            "zh": ("任务已经在运行。", "这件事正在做。", "还在跑着。"),
-            "en": ("It's running now.", "That's in progress.", "Still working on it."),
-        },
-    ),
-    "action.result_observed": (
-        "progress",
-        {
-            "zh": (
-                "结果回来了，我整理一下。",  # noqa: RUF001 — fullwidth comma is intentional Chinese punctuation.
-                "拿到结果了，我看一下。",  # noqa: RUF001 — fullwidth comma is intentional Chinese punctuation.
-                "数据回来了，我过一遍。",  # noqa: RUF001 — fullwidth comma is intentional Chinese punctuation.
-            ),
-            "en": (
-                "The results are back, one moment.",
-                "Got the results, let me look.",
-                "The data is in, going through it.",
-            ),
-        },
-    ),
-    "action.failed": (
-        "error",
-        {
-            "zh": (
-                "这一步失败了，我告诉你具体原因。",  # noqa: RUF001 — fullwidth comma is intentional Chinese punctuation.
-                "这一步没成，我说说原因。",  # noqa: RUF001 — fullwidth comma is intentional Chinese punctuation.
-                "这里出错了，我讲一下怎么回事。",  # noqa: RUF001 — fullwidth comma is intentional Chinese punctuation.
-            ),
-            "en": (
-                "That step failed; I'll tell you why.",
-                "That didn't work, here's why.",
-                "Something went wrong there; let me explain.",
-            ),
-        },
-    ),
+_D6_ROWS: Final[dict[str, tuple[PresentationIntentType, str]]] = {
+    "action.dispatched": ("acknowledge", "commentary.dispatched"),
+    "action.running": ("progress", "commentary.running"),
+    "action.result_observed": ("progress", "commentary.result_observed"),
+    "action.failed": ("error", "commentary.failed"),
 }
-"""ADR-0008 D6's four action rows: observed truth -> the phrases it permits,
-in Chinese and in English.
+"""ADR-0008 D6's four action rows: observed truth -> the key of the phrases it
+permits, in Chinese and in English, in the language table.
 
 Each row carries a small set rather than one sentence because the per-turn cap
 makes the acknowledge the phrase actually heard, and one fixed acknowledge
@@ -100,15 +61,9 @@ The "utterance accepted, route selected" row of the same D6 table is not here;
 it is not an action lifecycle event and is out of this slice's scope.
 """
 
-_ACKNOWLEDGE_BY_TOOL: Final[dict[str, dict[str, tuple[str, ...]]]] = {
-    "lookup": {
-        "zh": ("我查一下。", "我去看看。", "稍等，我查查。"),  # noqa: RUF001 — fullwidth comma is intentional Chinese punctuation.
-        "en": ("Let me check.", "Looking it up.", "One sec, checking."),
-    },
-    "codex": {
-        "zh": ("我让 Codex 去做。", "交给 Codex 去办。"),
-        "en": ("I'll hand this to Codex.", "Passing this to Codex."),
-    },
+_ACKNOWLEDGE_BY_TOOL: Final[dict[str, str]] = {
+    "lookup": "commentary.lookup",
+    "codex": "commentary.codex",
 }
 """The acknowledge row narrowed by what the dispatched tool does: a read-only
 tool is looking something up, ``spawn_worker`` hands the work to Codex, and
@@ -153,13 +108,12 @@ def commentary_intent_for(
     action_id = event.payload.get("action_id")
     if not isinstance(action_id, str) or not action_id:
         return None
-    intent_type, by_language = row
-    language = "en" if is_english(user_text) else "zh"
-    phrases = by_language[language]
+    intent_type, key = row
     if intent_type == "acknowledge":
         kind = "codex" if tool_name == _CODEX_TOOL else "lookup" if tool_read_only else None
         if kind is not None:
-            phrases = _ACKNOWLEDGE_BY_TOOL[kind][language]
+            key = _ACKNOWLEDGE_BY_TOOL[kind]
+    phrases = variants(key, "en" if is_english(user_text) else "zh")
     return PresentationIntent(
         intent_type=intent_type,
         surface_hint="speech",

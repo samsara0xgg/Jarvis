@@ -71,9 +71,9 @@ HISTORY = (
     {"role": "assistant", "content": "[2026-09-15T02:50:09-07:00] jarvis: 明天多云。"},
 )
 STATUS = (
-    "[当前状态｜程序提供，不是用户说的话]\n"  # noqa: RUF001 — Chinese punctuation is intentional.
-    "时间：2026-09-21T15:37-07:00 周一\n"  # noqa: RUF001 — Chinese punctuation is intentional.
-    "交互方式：语音\n"  # noqa: RUF001 — Chinese punctuation is intentional.
+    "[Current state | from the program, not the user's words]\n"
+    "Time: 2026-09-21T15:37-07:00 Monday\n"
+    "Channel: voice\n"
 )
 
 
@@ -100,14 +100,14 @@ def test_history_replays_records_by_role_from_since(tmp_path: Path) -> None:
 
     ctx = render_context(db, exclude_id="new-6", since=SINCE, now=NOW)
 
-    assert ctx.profile == "[关于 Allen]\n- 用户叫 Allen。\n- 默认用中文。"
+    assert ctx.profile == "[About the user]\n- 用户叫 Allen。\n- 默认用中文。"
     # ADR 0044: words only, no [ts] source: label; one date line opens a day.
     assert ctx.history == (
         {"role": "user", "content": "[9月15日 周二]\n明天天气怎么样"},
         {"role": "assistant", "content": "明天多云。\n最高 18 度。\n记得带伞。"},
         {"role": "user", "content": "好\n还有呢"},
     )
-    assert ctx.now == "时间：2026-09-21T15:37-07:00 周一 · 距上次交流 6 天 12 小时"  # noqa: RUF001 — Chinese punctuation is intentional.
+    assert ctx.now == "Time: 2026-09-21T15:37-07:00 Monday · 6 d 12 h since the last exchange"
 
     # The null surface: without the cutoff the same store shows the old rows,
     # and the next day's first user row gets its own date line.
@@ -126,7 +126,7 @@ def test_empty_store_renders_empty_profile_and_no_history(tmp_path: Path) -> Non
 
     assert ctx.profile == ""
     assert ctx.history == ()
-    assert ctx.now == "时间：2026-09-21T15:37-07:00 周一"  # noqa: RUF001 — Chinese punctuation is intentional.
+    assert ctx.now == "Time: 2026-09-21T15:37-07:00 Monday"
 
 
 @dataclass(frozen=True)
@@ -181,7 +181,7 @@ class _CapturingLLMClient:
 
 
 def _drive_one_turn(
-    tmp_path: Path, history: Sequence[dict[str, str]],
+    tmp_path: Path, history: Sequence[dict[str, str]], connected_apps: str | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Run one ``surface.user_intent`` turn; return the ``system`` and ``messages`` sent."""
     conn = open_event_log(tmp_path / "events.db")
@@ -196,9 +196,10 @@ def _drive_one_turn(
         tool_registry=cast("ToolRegistryLike", build_default_registry()),
         lifecycle=cast("LifecycleLike", ActionLifecycle()),
         llm_client=cast("LLMClient", llm),
-        system_prompt="stub system prompt\n\n[关于 Allen]\n- 用户叫 Allen。",
+        system_prompt="stub system prompt\n\n[About the user]\n- 用户叫 Allen。",
         history=history,
-        time_note="时间：2026-09-21T15:37-07:00 周一",  # noqa: RUF001 — Chinese punctuation is intentional.
+        time_note="Time: 2026-09-21T15:37-07:00 Monday",
+        connected_apps=connected_apps,
     )
     try:
         trigger = emit_event(
@@ -222,11 +223,25 @@ def test_turn_request_is_history_by_role_then_one_user_message_with_status(
     """One turn hands the model the history as turns, then one user message with the state."""
     system, messages = _drive_one_turn(tmp_path, HISTORY)
 
-    assert system.endswith("[关于 Allen]\n- 用户叫 Allen。")
+    assert system.endswith("[About the user]\n- 用户叫 Allen。")
     assert [message["role"] for message in messages] == ["user", "assistant", "user"]
     assert messages[:2] == list(HISTORY)
     assert messages[2]["content"] == f"{STATUS}\n后天呢"
     assert not any("[system context]" in message["content"] for message in messages)
+
+
+def test_connected_apps_ride_this_turns_state_after_the_history(tmp_path: Path) -> None:
+    """The apps connected now sit in this turn's state, after any older answer about them."""
+    stale = (
+        {"role": "user", "content": "开灯"},
+        {"role": "assistant", "content": "我没有控制灯的能力。"},
+    )
+    apps = "Connected apps: Philips Hue (Control your Hue lights)"
+
+    _, messages = _drive_one_turn(tmp_path, stale, connected_apps=apps)
+
+    assert messages[:2] == list(stale)
+    assert messages[2]["content"] == f"{STATUS}{apps}\n\n后天呢"
 
 
 def test_history_ending_on_a_user_row_folds_into_this_turn(tmp_path: Path) -> None:

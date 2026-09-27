@@ -110,7 +110,7 @@ def build_llm_messages(
                 "role": "user",
                 "content": (
                     f"[system trigger] tool result observed (semantics={semantics}): "
-                    f"{output}. Compose a final response for Allen, honoring the "
+                    f"{output}. Compose a final response for the user, honoring the "
                     f"Pre-emit Gate."
                 ),
             }

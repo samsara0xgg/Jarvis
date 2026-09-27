@@ -393,6 +393,7 @@ class _DefaultInputOwnerRegistry:
 _CA_SYSTEM_OBJECT = 1
 _CA_GLOBAL_SCOPE = struct.unpack(">I", b"glob")[0]
 _CA_OUTPUT_SCOPE = struct.unpack(">I", b"outp")[0]
+_CA_INPUT_SCOPE = struct.unpack(">I", b"inpt")[0]
 _CF_UTF8 = 0x08000100
 
 
@@ -422,6 +423,14 @@ def _coreaudio_libraries() -> tuple[Any, Any] | None:
         ctypes.c_void_p,
     ]
     ca.AudioObjectGetPropertyData.restype = ctypes.c_int32
+    ca.AudioObjectGetPropertyDataSize.argtypes = [
+        ctypes.c_uint32,
+        ctypes.POINTER(_CoreAudioPropertyAddress),
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_uint32),
+    ]
+    ca.AudioObjectGetPropertyDataSize.restype = ctypes.c_int32
     cf.CFStringGetCString.argtypes = [
         ctypes.c_void_p,
         ctypes.c_char_p,
@@ -496,18 +505,109 @@ def _coreaudio_default_output_route() -> OutputRoute | None:
     )
 
 
-def _default_input_device_profile(input_format: AudioInputFormat) -> InputDeviceProfile:
-    """Resolve sounddevice's default input outside the realtime callback."""
+def _coreaudio_size(ca: Any, obj: int, selector: bytes, scope: int) -> int | None:  # noqa: ANN401
+    address = _CoreAudioPropertyAddress(struct.unpack(">I", selector)[0], scope, 0)
+    size = ctypes.c_uint32(0)
+    status = ca.AudioObjectGetPropertyDataSize(
+        obj, ctypes.byref(address), 0, None, ctypes.byref(size),
+    )
+    return size.value if status == 0 else None
+
+
+def coreaudio_devices(kind: str) -> tuple[int, dict[str, int]] | None:
+    """The default ``kind`` (``input`` / ``output``) device id, and every such device by name, now.
+
+    PortAudio reads its device list and defaults once, when it initialises, so
+    a device plugged in or made the default later is invisible to it (ADR
+    0054). This asks CoreAudio directly and is cheap enough to poll; ``None``
+    off macOS.
+    """
+    libraries = _coreaudio_libraries()
+    if libraries is None:
+        return None
+    ca, cf = libraries
+    size = _coreaudio_size(ca, _CA_SYSTEM_OBJECT, b"dev#", _CA_GLOBAL_SCOPE)
+    if size is None:
+        return None
+    ids = (ctypes.c_uint32 * (size // ctypes.sizeof(ctypes.c_uint32)))()
+    address = _CoreAudioPropertyAddress(struct.unpack(">I", b"dev#")[0], _CA_GLOBAL_SCOPE, 0)
+    written = ctypes.c_uint32(ctypes.sizeof(ids))
+    status = ca.AudioObjectGetPropertyData(
+        _CA_SYSTEM_OBJECT, ctypes.byref(address), 0, None, ctypes.byref(written), ctypes.byref(ids),
+    )
+    default = ctypes.c_uint32(0)
+    selector = b"dIn " if kind == "input" else b"dOut"
+    if status != 0 or not _coreaudio_property(
+        ca, _CA_SYSTEM_OBJECT, selector, _CA_GLOBAL_SCOPE, default,
+    ):
+        return None
+    scope = _CA_INPUT_SCOPE if kind == "input" else _CA_OUTPUT_SCOPE
+    named: dict[str, int] = {}
+    for device in ids[: written.value // ctypes.sizeof(ctypes.c_uint32)]:
+        name = _coreaudio_string(ca, cf, device, b"lnam")
+        if name is not None and _coreaudio_size(ca, device, b"stm#", scope):
+            named[name] = device
+    return default.value, named
+
+
+# Held around PortAudio device queries and the re-initialisation, which frees
+# the device list a query would be reading.
+_PORTAUDIO_LOCK = threading.Lock()
+
+
+def reinitialize_portaudio() -> None:
+    """Terminate and initialise PortAudio again, so it lists the devices there are now.
+
+    Termination frees every stream still open in this process underneath its
+    owner, so the caller closes them all first (ADR 0054).
+    """
     import sounddevice as sd  # noqa: PLC0415
 
-    default_device = sd.default.device
-    try:
-        # sounddevice 0.5.x exposes a private ``_InputOutputPair``: it is
-        # indexable but intentionally not a tuple/list subclass.
-        input_index = int(default_device[0])
-    except (IndexError, TypeError):
-        input_index = int(default_device)
-    raw = sd.query_devices(input_index, "input")
+    with _PORTAUDIO_LOCK:
+        if sd._initialized:  # noqa: SLF001 - sounddevice's own re-scan path
+            sd._terminate()  # noqa: SLF001
+        sd._initialize()  # noqa: SLF001
+
+
+def device_names(kind: str) -> list[str]:
+    """Names of the devices that can ``kind`` (``input`` / ``output``) now.
+
+    CoreAudio's list, so a device plugged in after PortAudio initialised can
+    be picked; the pick itself makes PortAudio read its devices again (ADR
+    0054). PortAudio's own list off macOS.
+    """
+    devices = coreaudio_devices(kind)
+    if devices is not None:
+        return list(devices[1])
+    import sounddevice as sd  # noqa: PLC0415
+
+    channels = f"max_{kind}_channels"
+    with _PORTAUDIO_LOCK:
+        return [str(one["name"]) for one in sd.query_devices() if one[channels] > 0]
+
+
+def _default_input_device_profile(
+    input_format: AudioInputFormat, device: str | None = None
+) -> InputDeviceProfile:
+    """Resolve the chosen input (ADR 0052), else sounddevice's default, outside the callback.
+
+    A chosen name that no longer resolves raises, like ``output_device``: the
+    open fails closed instead of quietly listening on another microphone.
+    """
+    import sounddevice as sd  # noqa: PLC0415
+
+    with _PORTAUDIO_LOCK:
+        if device is not None:
+            input_index = int(sd.query_devices(device, "input")["index"])
+        else:
+            default_device = sd.default.device
+            try:
+                # sounddevice 0.5.x exposes a private ``_InputOutputPair``: it is
+                # indexable but intentionally not a tuple/list subclass.
+                input_index = int(default_device[0])
+            except (IndexError, TypeError):
+                input_index = int(default_device)
+        raw = sd.query_devices(input_index, "input")
     name = str(raw.get("name", f"input-{input_index}"))
     return InputDeviceProfile(
         device_uid=f"sounddevice:{input_index}:{name}",
@@ -610,12 +710,15 @@ class SoundDeviceDuplexBackend:
         input_format: AudioInputFormat,
         open_timeout_s: float,
         close_timeout_s: float,
+        device: str | None = None,
     ) -> None:
         """Configure one backend; no hardware is opened until ``start``."""
         if open_timeout_s <= 0 or close_timeout_s <= 0:
             msg = "sounddevice backend timeouts must be positive"
             raise ValueError(msg)
         self._input_format = input_format
+        # ADR 0052: the Settings page's microphone; None follows the system default.
+        self._device = device
         self._open_timeout_s = open_timeout_s
         self._close_timeout_s = close_timeout_s
         self._owner_token = object()
@@ -829,7 +932,7 @@ class SoundDeviceDuplexBackend:
         def _open() -> None:  # noqa: C901 - exact foreign-open cleanup FSM
             stream: Any | None = None
             try:
-                profile = _default_input_device_profile(self._input_format)
+                profile = _default_input_device_profile(self._input_format, self._device)
                 stream = _open_sounddevice_input_stream(
                     input_format=self._input_format,
                     device_index=profile.device_index,
@@ -839,7 +942,7 @@ class SoundDeviceDuplexBackend:
                 # RawInputStream is pinned to the resolved index. Re-read the
                 # default before callbacks begin so an open-time route switch
                 # cannot attach the old device to the new device's profile.
-                current_profile = _default_input_device_profile(self._input_format)
+                current_profile = _default_input_device_profile(self._input_format, self._device)
                 _assert_default_profile_unchanged(profile, current_profile)
                 stream.start()
                 with self._lock:
@@ -1284,6 +1387,11 @@ class SoundDeviceDuplexBackend:
                 )
         return None
 
+    def set_device(self, device: str | None) -> None:
+        """Choose the microphone the next open uses (ADR 0054); an open stream keeps its own."""
+        with self._lock:
+            self._device = device
+
     def current_device_uid(self) -> str | None:
         """Resolve default input through one bounded, non-accumulating helper."""
         with self._lock:
@@ -1299,6 +1407,7 @@ class SoundDeviceDuplexBackend:
                     try:
                         attempt.device_uid = _default_input_device_profile(
                             self._input_format,
+                            self._device,
                         ).device_uid
                     except Exception:  # noqa: BLE001 - provider boundary
                         attempt.device_uid = None

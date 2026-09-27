@@ -168,6 +168,121 @@ static napi_value update(napi_env env, napi_callback_info info) {
   [CATransaction commit];
   napi_value result; napi_get_boolean(env, true, &result); return result;
 }
+// Whether ⌘ is held right now; AppKit answers this without any input permission.
+static napi_value commandDown(napi_env env, napi_callback_info info) {
+  napi_value result; napi_get_boolean(env, (NSEvent.modifierFlags & NSEventModifierFlagCommand) != 0, &result); return result;
+}
+// ADR 0058, dictation. The right ⌥ key alone, read like ⌘ above without any input permission, and how long ago
+// any key went down: a tap counts only when no other key was typed while it was held.
+static napi_value rightOption(napi_env env, napi_callback_info info) {
+  const CGEventFlags flags = CGEventSourceFlagsState(kCGEventSourceStateHIDSystemState);
+  const CGEventFlags others = kCGEventFlagMaskCommand | kCGEventFlagMaskControl | kCGEventFlagMaskShift | 0x20; // 0x20: left ⌥
+  napi_value result; napi_create_object(env, &result);
+  napi_value value;
+  napi_get_boolean(env, (flags & 0x40) != 0, &value); napi_set_named_property(env, result, "down", value); // 0x40: right ⌥
+  napi_get_boolean(env, (flags & others) != 0, &value); napi_set_named_property(env, result, "others", value);
+  setNumber(env, result, "keyIdle", CGEventSourceSecondsSinceLastEventType(kCGEventSourceStateHIDSystemState, kCGEventKeyDown));
+  return result;
+}
+static void setString(napi_env env, napi_value obj, const char *key, NSString *text) {
+  napi_value value; napi_create_string_utf8(env, (text ?: @"").UTF8String, NAPI_AUTO_LENGTH, &value);
+  napi_set_named_property(env, obj, key, value);
+}
+static void setRect(napi_env env, napi_value obj, const char *key, CGRect r) {
+  napi_value value; napi_create_object(env, &value);
+  setNumber(env, value, "x", r.origin.x); setNumber(env, value, "y", r.origin.y);
+  setNumber(env, value, "width", r.size.width); setNumber(env, value, "height", r.size.height);
+  napi_set_named_property(env, obj, key, value);
+}
+static CFTypeRef copyAttribute(AXUIElementRef element, CFStringRef name) {
+  CFTypeRef value = nullptr;
+  return element && AXUIElementCopyAttributeValue(element, name, &value) == kAXErrorSuccess ? value : nullptr;
+}
+static NSString *textAttribute(AXUIElementRef element, CFStringRef name) {
+  CFTypeRef value = copyAttribute(element, name);
+  if (value && CFGetTypeID(value) == CFStringGetTypeID()) return (__bridge_transfer NSString *)value;
+  if (value) CFRelease(value);
+  return nil;
+}
+// A text range's box in global top-left points; apps that do not know answer nothing or a zero or absurd box.
+static bool boundsFor(AXUIElementRef element, CFIndex location, CFIndex length, CGRect *out) {
+  CFRange range = CFRangeMake(location, length);
+  AXValueRef param = AXValueCreate(kAXValueTypeCFRange, &range);
+  CFTypeRef value = nullptr;
+  AXError error = AXUIElementCopyParameterizedAttributeValue(element, kAXBoundsForRangeParameterizedAttribute, param, &value);
+  CFRelease(param);
+  bool ok = error == kAXErrorSuccess && value && AXValueGetValue((AXValueRef)value, kAXValueTypeCGRect, out);
+  if (value) CFRelease(value);
+  return ok && out->size.height > 1 && out->size.height < 200 && (out->origin.x != 0 || out->origin.y != 0);
+}
+// ADR 0058: where the words will land. The focused element's caret (or the end of its selection), the right end of
+// the caret's line and the element's frame, in global top-left points like Electron's, plus the app, its window's title
+// and the selected text for the polish. Needs Accessibility: without it only `trusted: false` and the app come back.
+// An app that shows no caret to Accessibility leaves `caret` out, and she comes up by the mouse.
+static napi_value caret(napi_env env, napi_callback_info info) {
+  napi_value result; napi_create_object(env, &result);
+  NSRunningApplication *front = NSWorkspace.sharedWorkspace.frontmostApplication;
+  setString(env, result, "app", front.localizedName);
+  const bool trusted = AXIsProcessTrusted();
+  napi_value value; napi_get_boolean(env, trusted, &value); napi_set_named_property(env, result, "trusted", value);
+  if (!trusted || !front) return result;
+  AXUIElementRef app = AXUIElementCreateApplication(front.processIdentifier);
+  // A hung app must not hold the companion's main thread for AX's default six seconds.
+  AXUIElementSetMessagingTimeout(app, 0.25);
+  AXUIElementRef window = (AXUIElementRef)copyAttribute(app, kAXFocusedWindowAttribute);
+  setString(env, result, "window", textAttribute(window, kAXTitleAttribute));
+  if (window) CFRelease(window);
+  AXUIElementRef focused = (AXUIElementRef)copyAttribute(app, kAXFocusedUIElementAttribute);
+  CFRelease(app);
+  if (!focused) return result;
+  CGPoint origin; CGSize size;
+  CFTypeRef position = copyAttribute(focused, kAXPositionAttribute), extent = copyAttribute(focused, kAXSizeAttribute);
+  if (position && extent && AXValueGetValue((AXValueRef)position, kAXValueTypeCGPoint, &origin) && AXValueGetValue((AXValueRef)extent, kAXValueTypeCGSize, &size))
+    setRect(env, result, "element", CGRectMake(origin.x, origin.y, size.width, size.height));
+  if (position) CFRelease(position);
+  if (extent) CFRelease(extent);
+  setString(env, result, "selected", textAttribute(focused, kAXSelectedTextAttribute));
+  CFTypeRef selection = copyAttribute(focused, kAXSelectedTextRangeAttribute);
+  CFRange range;
+  if (selection && AXValueGetValue((AXValueRef)selection, kAXValueTypeCFRange, &range)) {
+    const CFIndex at = range.location + range.length;
+    CGRect box;
+    // An empty range has no box in most apps: measure the character before the caret and take its right edge,
+    // or the one after it and take its left edge.
+    if (boundsFor(focused, at, 0, &box) && box.size.width < 4) setRect(env, result, "caret", CGRectMake(box.origin.x, box.origin.y, 0, box.size.height));
+    else if (at > 0 && boundsFor(focused, at - 1, 1, &box)) setRect(env, result, "caret", CGRectMake(CGRectGetMaxX(box), box.origin.y, 0, box.size.height));
+    else if (boundsFor(focused, at, 1, &box)) setRect(env, result, "caret", CGRectMake(box.origin.x, box.origin.y, 0, box.size.height));
+    CFTypeRef line = copyAttribute(focused, kAXInsertionPointLineNumberAttribute), lineRange = nullptr;
+    if (line && AXUIElementCopyParameterizedAttributeValue(focused, kAXRangeForLineParameterizedAttribute, line, &lineRange) == kAXErrorSuccess
+        && lineRange && AXValueGetValue((AXValueRef)lineRange, kAXValueTypeCFRange, &range) && range.length > 0
+        && boundsFor(focused, range.location, range.length, &box)) setNumber(env, result, "lineRight", CGRectGetMaxX(box));
+    if (line) CFRelease(line);
+    if (lineRange) CFRelease(lineRange);
+  }
+  if (selection) CFRelease(selection);
+  CFRelease(focused);
+  return result;
+}
+// Whether Jarvis may read carets and paste; `prompt` shows macOS's own dialog once.
+static napi_value accessibility(napi_env env, napi_callback_info info) {
+  size_t argc = 1; napi_value args[1]; napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  bool prompt = false;
+  if (argc == 1) napi_get_value_bool(env, args[0], &prompt);
+  NSDictionary *options = @{ (__bridge NSString *)kAXTrustedCheckOptionPrompt: @(prompt) };
+  napi_value result; napi_get_boolean(env, AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)options), &result); return result;
+}
+// ⌘V into the app in front, as Typlus does; the text is already on the pasteboard.
+static napi_value paste(napi_env env, napi_callback_info info) {
+  CGEventSourceRef source = CGEventSourceCreate(kCGEventSourceStateHIDSystemState);
+  for (bool down : (bool[]){ true, false }) {
+    CGEventRef event = CGEventCreateKeyboardEvent(source, 9, down); // 9: V
+    CGEventSetFlags(event, kCGEventFlagMaskCommand);
+    CGEventPost(kCGHIDEventTap, event);
+    CFRelease(event);
+  }
+  if (source) CFRelease(source);
+  napi_value result; napi_get_boolean(env, AXIsProcessTrusted(), &result); return result;
+}
 static napi_value init(napi_env env, napi_value exports) {
   napi_value fn; napi_create_function(env, "update", NAPI_AUTO_LENGTH, update, nullptr, &fn);
   napi_set_named_property(env, exports, "update", fn);
@@ -175,6 +290,11 @@ static napi_value init(napi_env env, napi_value exports) {
   napi_create_function(env, "setFrame", NAPI_AUTO_LENGTH, setFrame, nullptr, &fn); napi_set_named_property(env, exports, "setFrame", fn);
   napi_create_function(env, "screens", NAPI_AUTO_LENGTH, screens, nullptr, &fn); napi_set_named_property(env, exports, "screens", fn);
   napi_create_function(env, "setStationary", NAPI_AUTO_LENGTH, setStationary, nullptr, &fn); napi_set_named_property(env, exports, "setStationary", fn);
+  napi_create_function(env, "commandDown", NAPI_AUTO_LENGTH, commandDown, nullptr, &fn); napi_set_named_property(env, exports, "commandDown", fn);
+  napi_create_function(env, "rightOption", NAPI_AUTO_LENGTH, rightOption, nullptr, &fn); napi_set_named_property(env, exports, "rightOption", fn);
+  napi_create_function(env, "caret", NAPI_AUTO_LENGTH, caret, nullptr, &fn); napi_set_named_property(env, exports, "caret", fn);
+  napi_create_function(env, "accessibility", NAPI_AUTO_LENGTH, accessibility, nullptr, &fn); napi_set_named_property(env, exports, "accessibility", fn);
+  napi_create_function(env, "paste", NAPI_AUTO_LENGTH, paste, nullptr, &fn); napi_set_named_property(env, exports, "paste", fn);
   return exports;
 }
 NAPI_MODULE(NODE_GYP_MODULE_NAME, init)

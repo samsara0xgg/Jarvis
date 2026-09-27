@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 import numpy as np
 
-from jarvis.shared import Event
+from jarvis.shared import Event, lang
 from jarvis.shared.realtime_trace import record_realtime_trace
 from jarvis.state.event_log import emit_event
 from jarvis.state.lifecycle_terminal import terminalize_playback
@@ -667,6 +667,15 @@ class StreamingTTSPipeline:
         self._responses: dict[str, _ResponseBuffer] = {}
         self._after_drain: deque[_ResponseBuffer] = deque()
         self._active: _ActiveResponse | None = None
+        # ADR 0053: while Allen's words are coming in no answer starts; it
+        # parks here. A turn that ever started playing is never dropped.
+        self._held = False
+        # ADR 0054: the same parking while the audio devices are re-read.
+        self._device_held = False
+        self._parked: deque[_ResponseBuffer] = deque()
+        # ponytail: only grows, one short id per spoken turn; trim it if a
+        # daemon ever runs for months.
+        self._started_turns: set[str] = set()
         self._thread = threading.Thread(
             target=self._thread_main,
             name="jarvis-media-owner",
@@ -787,6 +796,64 @@ class StreamingTTSPipeline:
             # The actor took the request; whether the tombstone landed is
             # exactly what this caller cannot know.
             return "uncertain"
+
+    def hold_output(self, *, held: bool) -> None:
+        """Hold or release answer starts while Allen is talking (ADR 0053).
+
+        Fire and forget from the capture threads; the actor applies the holds
+        in call order. An answer already speaking is barge-in's, not the hold's.
+        """
+        loop = self._loop
+        if loop is None or self._closed.is_set():
+            return
+        with contextlib.suppress(RuntimeError):
+            asyncio.run_coroutine_threadsafe(self._hold_output_owned(held=held), loop)
+
+    def hold_for_devices(self, *, held: bool) -> bool:
+        """Hold or release answer starts around an audio device refresh (ADR 0054).
+
+        Answers whether nothing is playing once the hold is in place, so the
+        caller may close the player; a closed or unresponsive actor answers
+        ``False``. The caller always releases, which starts the parked answers
+        unless Allen's own hold (ADR 0053) still stands.
+        """
+        loop = self._loop
+        if loop is None or self._closed.is_set():
+            return False
+        try:
+            future = asyncio.run_coroutine_threadsafe(
+                self._hold_for_devices_owned(held=held), loop,
+            )
+        except RuntimeError:
+            return False
+        try:
+            return future.result(timeout=self._config.shutdown_timeout_s)
+        except (TimeoutError, asyncio.CancelledError):
+            return False
+
+    @property
+    def player(self) -> AudioStreamPlayer:
+        """The persistent player, which a device refresh closes and reopens (ADR 0054)."""
+        return self._player
+
+    def drop_unspoken(self, turn_ids: frozenset[str]) -> frozenset[str]:
+        """Drop the answers of ``turn_ids`` that never reached the speaker (ADR 0053).
+
+        Returns the turns dropped: those of ``turn_ids`` none of whose answers
+        ever started playing. Their runs are the caller's to cancel. A closed
+        or unresponsive actor drops nothing.
+        """
+        loop = self._loop
+        if loop is None or self._closed.is_set() or not turn_ids:
+            return frozenset()
+        try:
+            future = asyncio.run_coroutine_threadsafe(self._drop_unspoken_owned(turn_ids), loop)
+        except RuntimeError:
+            return frozenset()
+        try:
+            return future.result(timeout=self._config.shutdown_timeout_s)
+        except (TimeoutError, asyncio.CancelledError):
+            return frozenset()
 
     def request_close(self) -> None:
         """Stop admission and publish shutdown outside the normal command lane."""
@@ -1490,6 +1557,32 @@ class StreamingTTSPipeline:
         self._purge_after_drain()
         return "applied"
 
+    async def _hold_output_owned(self, *, held: bool) -> None:
+        self._held = held
+        if held or self._device_held:
+            return
+        parked, self._parked = self._parked, deque()
+        for response in parked:
+            await self._schedule_response(response)
+
+    async def _hold_for_devices_owned(self, *, held: bool) -> bool:
+        self._device_held = held
+        if not held and not self._held:
+            parked, self._parked = self._parked, deque()
+            for response in parked:
+                await self._schedule_response(response)
+        return self._active is None
+
+    async def _drop_unspoken_owned(self, turn_ids: frozenset[str]) -> frozenset[str]:
+        dropped = turn_ids - self._started_turns
+        for response in list(self._responses.values()):
+            if response.turn_id in dropped:
+                self._unschedule(response)
+                self._responses.pop(response.response_id, None)
+                self._registry.terminalize(response.response_id)
+        record_realtime_trace("media_unspoken_dropped", turns=",".join(sorted(dropped)))
+        return dropped
+
     async def _resume_after_wake_owned(
         self,
         *,
@@ -2069,6 +2162,8 @@ class StreamingTTSPipeline:
         response.scheduled = False
         if response in self._after_drain:
             self._after_drain.remove(response)
+        if response in self._parked:
+            self._parked.remove(response)
 
     async def _schedule_response(  # noqa: C901, PLR0911 - explicit lane disposition table
         self,
@@ -2178,6 +2273,13 @@ class StreamingTTSPipeline:
             self._registry.terminalize(response.response_id)
             self._responses.pop(response.response_id, None)
             return
+        if self._held or self._device_held:
+            # ADR 0053: Allen is talking; the answer starts when he stops.
+            # ADR 0054: or the player is closed while the devices are re-read.
+            self._parked.append(response)
+            self._output_active.clear()
+            return
+        self._started_turns.add(response.turn_id)
         result = self._player.activate_generation(
             session_id=self._registry.boot_id,
             response_id=response.response_id,
@@ -2612,7 +2714,7 @@ class StreamingTTSPipeline:
             asyncio.create_subprocess_exec(
                 "say",
                 "-v",
-                "Tingting",
+                lang.say_voice(),
                 speech,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,

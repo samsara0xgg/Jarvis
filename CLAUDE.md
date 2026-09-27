@@ -53,11 +53,15 @@ details are needed rather than preloading the entire specification.
 
 ## Git
 
-- Commits are allowed.
-- Never push unless the user explicitly asks.
-- Never force-push `main`.
+- When a task is done and verified, land it without asking first: commit,
+  merge into `main`, restart whatever the change touches, and push `main`
+  (`docs/git-guide.md` §3). A permission prompt on the way is fine; stopping
+  to ask in chat is not. Stop only on a red gate, a merge conflict you cannot
+  resolve mechanically, or work Allen said to keep off `main`.
+- Push only as plain `git push origin main`: its permission prompt is
+  Allen's approval, and a declined push stays local. Never force-push `main`.
 - Never bypass hooks.
-- Never add `Co-Authored-By`.
+- Keep the `Co-Authored-By` trailer Claude Code adds.
 - Stage explicit paths only; never use `git add .`, `git add -A`, or
   `git commit -am`.
 - One logical change per commit.

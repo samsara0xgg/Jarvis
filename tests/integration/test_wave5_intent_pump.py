@@ -21,6 +21,8 @@ import threading
 from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
 
+import httpx
+import openai
 import pytest
 
 from jarvis.deployment import bootstrap_runtime
@@ -36,6 +38,7 @@ from jarvis.runtime.inherent_loop import (
     _start_intent_pump,
     _system_trigger_watcher,
 )
+from jarvis.shared import lang
 from jarvis.shared.realtime import Wave5InputFlags
 from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.input_claim import (
@@ -583,15 +586,21 @@ class _RecordingSocket:
 
 
 def test_a_turn_that_raises_reaches_the_surface_as_failed(runtime: JarvisRuntime) -> None:
-    """The worker's ``turn.failed`` goes out on the v1 wire as ``{op: failed}``.
+    """The worker's ``turn.failed`` goes out on the v1 wire as ``{op: failed}``, with why.
 
     Before this the wire carried only open/append/done, so a failed turn sent
-    nothing and the surface stayed on "processing" until restart.
+    nothing and the surface stayed on "processing" until restart. A refused
+    key (OpenAI's 401, raised from inside the turn) now arrives as
+    ``reason: unauthorized`` and the sentence the desktop shows for it.
     """
 
     def _raises(_runtime: JarvisRuntime, **_: object) -> None:
+        request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+        refused = openai.AuthenticationError(
+            "Incorrect API key provided", response=httpx.Response(401, request=request), body=None,
+        )
         message = "provider refused the connection"
-        raise ConnectionError(message)
+        raise RuntimeError(message) from refused
 
     socket = _RecordingSocket()
 
@@ -620,7 +629,9 @@ def test_a_turn_that_raises_reaches_the_surface_as_failed(runtime: JarvisRuntime
     asyncio.run(_body())
 
     assert _count(runtime.conn, "turn.failed") == 1
-    assert socket.sent == [{"op": "failed", "payload": {"turn_id": "T-fails"}}]
+    assert socket.sent == [{"op": "failed", "payload": {
+        "turn_id": "T-fails", "reason": "unauthorized", "message": lang.t("failure.unauthorized"),
+    }}]
 
 
 def test_a_failed_check_mid_batch_does_not_drop_the_rest(runtime: JarvisRuntime) -> None:

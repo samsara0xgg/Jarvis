@@ -29,7 +29,6 @@ from jarvis.surface import (
     voice_wake,
 )
 from jarvis.surface.inherent_output import InherentBroadcaster
-from jarvis.surface.inherent_server import InherentDeps
 from scripts import bench_voice_audio_ingress as voice_input_bench
 from tools.realtime_trace_report import TraceRow, summarize_trace
 
@@ -3993,7 +3992,7 @@ def test_wave3_prewarm_is_flag_gated_and_failure_preserves_legacy_before_device(
     pipeline.prewarm_input_model.side_effect = RuntimeError("injected prewarm")
     engine = MagicMock()
     with (
-        patch.object(voice_wake, "WakeEngine", return_value=engine),
+        patch.object(voice_wake, "MicroWakeWordEngine", return_value=engine),
         patch.object(
             voice_backend,
             "SoundDeviceDuplexBackend",
@@ -4037,7 +4036,7 @@ def test_session_silero_prepare_failure_is_pre_device_and_enables_legacy() -> No
     legacy_stream = MagicMock()
     wave2 = object.__new__(voice_media.StreamingTTSPipeline)
     with (
-        patch.object(voice_wake, "WakeEngine", return_value=engine),
+        patch.object(voice_wake, "MicroWakeWordEngine", return_value=engine),
         patch.object(voice_audio, "SileroVad", return_value=vad),
         patch.object(voice_backend, "SoundDeviceDuplexBackend", return_value=backend),
         patch.object(
@@ -4090,7 +4089,7 @@ def test_post_ingress_construction_failure_closes_capability_dispatcher(
         for thread in threading.enumerate()
     )
     with (
-        patch.object(voice_wake, "WakeEngine", return_value=engine),
+        patch.object(voice_wake, "MicroWakeWordEngine", return_value=engine),
         patch.object(voice_backend, "SoundDeviceDuplexBackend", return_value=backend),
     ):
         if failure_site == "silero":
@@ -4150,7 +4149,7 @@ def test_legacy_listener_start_failure_is_local_and_ptt_remains_wired() -> None:
     listener.is_alive.return_value = False
     with (
         patch.object(inherent_loop, "_open_wake_input_stream", return_value=stream),
-        patch.object(voice_wake, "WakeEngine", return_value=engine),
+        patch.object(voice_wake, "MicroWakeWordEngine", return_value=engine),
         patch.object(voice_audio, "SileroVad", return_value=vad),
         patch.object(voice_wake, "WakeListener", return_value=listener),
     ):
@@ -4163,12 +4162,6 @@ def test_legacy_listener_start_failure_is_local_and_ptt_remains_wired() -> None:
             ducker=MagicMock(),
         )
     ptt = inherent_loop._build_voice_pipeline_callable(pipeline)
-    deps = InherentDeps(
-        submit_callable=lambda _text: "T-submit",
-        broadcaster=broadcaster,
-        voice_pipeline_callable=ptt,
-    )
-    assert deps.voice_pipeline_callable is ptt
     ptt(b"RIFF", "T-ptt-after-wake-failure", "U-ptt", "S-ptt")
     pipeline.run_turn.assert_called_once()
     assert owners.wake_listener is None
@@ -4228,7 +4221,7 @@ def test_composition_root_voice_input_matrix_retains_ptt_and_exact_shutdown_bran
     pipeline.prewarm_input_model.side_effect = RuntimeError("injected prewarm")
     engine = MagicMock()
     with (
-        patch.object(voice_wake, "WakeEngine", return_value=engine),
+        patch.object(voice_wake, "MicroWakeWordEngine", return_value=engine),
         patch.object(
             voice_backend,
             "SoundDeviceDuplexBackend",

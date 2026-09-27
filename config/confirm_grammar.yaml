@@ -10,7 +10,8 @@
 # (stripped before matching), ASCII case-insensitivity for the English
 # tokens, and one optional trailing punctuation mark. Zero
 # generalization by design — every entry below is ONE literal token
-# from the ADR's frozen yes-set / no-set v1. A paraphrase such as
+# from the ADR's frozen yes-set / no-set v1, plus the English tokens an
+# English speaker answers the same ask with. A paraphrase such as
 # "行吧那就写进去吧" must NOT match: it isn't one of these literals, so
 # no pattern here can ever fire for it, full stop — that sentence falls
 # through to ordinary Tier 0 / LLM handling exactly like any other
@@ -50,6 +51,21 @@
 - id: yes_go_ahead
   pattern: "^(?i:go)\\s+(?i:ahead)[?？。.!！]?$"
   decision: "yes"
+- id: yes_okay
+  pattern: "^(?i:okay)[?？。.!！]?$"
+  decision: "yes"
+- id: yes_sure
+  pattern: "^(?i:sure)[?？。.!！]?$"
+  decision: "yes"
+- id: yes_yeah
+  pattern: "^(?i:yeah|yep)[?？。.!！]?$"
+  decision: "yes"
+- id: yes_confirm
+  pattern: "^(?i:confirm)[?？。.!！]?$"
+  decision: "yes"
+- id: yes_do_it
+  pattern: "^(?i:do)\\s+(?i:it)[?？。.!！]?$"
+  decision: "yes"
 - id: no_bu
   pattern: "^不[?？。.!！]?$"
   decision: "no"
@@ -76,4 +92,13 @@
   decision: "no"
 - id: no_cancel
   pattern: "^(?i:cancel)[?？。.!！]?$"
+  decision: "no"
+- id: no_nope
+  pattern: "^(?i:nope)[?？。.!！]?$"
+  decision: "no"
+- id: no_dont
+  pattern: "^(?i:don'?t)[?？。.!！]?$"
+  decision: "no"
+- id: no_never_mind
+  pattern: "^(?i:never)\\s*(?i:mind)[?？。.!！]?$"
   decision: "no"

@@ -3,10 +3,12 @@
 The real ``scripts/claude_hook.py`` talks to the daemon over HTTP while a
 stand-in companion reads ``/inherent/claude-sessions`` and answers through
 ``/inherent/claude-requests``; ``claude agents --json`` is a fake binary.
+The daemon requires the local key, which the hook reads from the runtime root.
 """
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import socket
@@ -20,9 +22,10 @@ from typing import TYPE_CHECKING, Any
 import httpx
 import uvicorn
 
+from jarvis.state.plugin_settings import local_key, local_key_matches
 from jarvis.surface import claude_hooks, claude_sessions
 from jarvis.surface.inherent_output import InherentBroadcaster
-from jarvis.surface.inherent_server import InherentDeps, create_app
+from jarvis.surface.inherent_server import InherentDeps, create_app, require_local_key
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -73,14 +76,23 @@ class _Rig:
         with socket.socket() as sock:
             sock.bind(("127.0.0.1", 0))
             self.port = str(sock.getsockname()[1])
-        app = create_app(InherentDeps(submit_callable=_noop, broadcaster=InherentBroadcaster()))
+        self.root = tmp_path / ".jarvis"
+        key = local_key(self.root)
+        app = create_app(InherentDeps(
+            submit_callable=_noop, broadcaster=InherentBroadcaster(), claude_sessions_read=True
+        ))
+        require_local_key(app, functools.partial(local_key_matches, key))
         self.server = uvicorn.Server(
             uvicorn.Config(app, host="127.0.0.1", port=int(self.port), log_level="warning")
         )
         threading.Thread(target=self.server.run, daemon=True).start()
         while not self.server.started:
             time.sleep(0.02)
-        self.http = httpx.Client(base_url=f"http://127.0.0.1:{self.port}", timeout=5)
+        self.http = httpx.Client(
+            base_url=f"http://127.0.0.1:{self.port}",
+            headers={"Authorization": f"Bearer {key}"},
+            timeout=5,
+        )
 
     def status(self, status: str) -> None:
         agent = {
@@ -104,7 +116,11 @@ class _Rig:
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             text=True,
-            env={**os.environ, "JARVIS_INHERENT_BRIDGE_PORT": self.port},
+            env={
+                **os.environ,
+                "JARVIS_INHERENT_BRIDGE_PORT": self.port,
+                "JARVIS_RUNTIME_ROOT": str(self.root),
+            },
         )
         assert proc.stdin is not None
         proc.stdin.write(json.dumps(payload))

@@ -1,5 +1,5 @@
-import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode, type WheelEvent } from 'react';
-import { ArrowSquareOut, ArrowUp, ArrowsClockwise, CaretDown, CaretLeft, CaretRight, CaretUp, GitBranch, MagnifyingGlass, ShieldCheck, X } from '@phosphor-icons/react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent, type ReactNode, type WheelEvent } from 'react';
+import { ArrowSquareOut, ArrowUp, ArrowsClockwise, CaretDown, CaretLeft, CaretRight, CaretUp, ChatCircle, Check, Cloud, CloudFog, CloudLightning, CloudRain, CloudSnow, EnvelopeSimple, GearSix, GitBranch, MagnifyingGlass, ShieldCheck, SpeakerHigh, SpeakerSlash, Sun, X } from '@phosphor-icons/react';
 import { TAKES, pick, type ExprId } from './starCore';
 import { useUsage, type UsageWindow } from './QuotaModule';
 import { useCodexSessions } from './CodexModule';
@@ -11,29 +11,41 @@ import { plain, visible, type Row } from './model';
 import { Markdown } from './Markdown';
 import { AgentMark, type MarkLook, type MarkState } from './AgentMarks';
 import { cleanError, usePluginIcon, type Plugin, type PluginRequest, type usePlugins } from './PluginPanel';
+import { HOME_DEFAULTS, isPop, tr, useCompanionSettings, useT, type BlockId, type L, type Lang } from './companionSettings';
+import { demoBrief, demoMail, demoNotices, demoToday, postRoute, useNow, useRoute, type Brief, type Mail, type Notice, type Today, type WxKind } from './homeData';
+import { ArrangeHome, BLOCK } from './ArrangeHome';
+import { SettingsPage, type Account, type Controls } from './SettingsPage';
 import './dashboard-around.css';
+import './dashboard-home.css';
 
-// The Dashboard around her: one column under the companion, her words first. A row grows into its
-// page in place; the panel never changes height. Every colour comes from her light (--glow).
-type Page = 'conversation' | 'now' | 'agents' | 'usage' | 'plugins' | 'projects';
-const TITLES: Record<Page, string> = { conversation: 'Conversation', now: 'Right now', agents: 'Agents', usage: 'Usage', plugins: 'Plugins', projects: 'Projects' };
+// The Dashboard around her: one column under the companion. A corner strip beside her, then the home's
+// blocks: the ones you keep, in your order, and the ones that show up when there is something. A block grows
+// into its page in place; the panel follows the blocks up to VIEW_MAX. Every colour comes from her light (--glow).
+type Page = 'conversation' | 'now' | 'agents' | 'usage' | 'plugins' | 'projects' | 'settings' | 'arrange' | 'brief';
+const TITLES: Record<Page, L> = { conversation: ['Conversation', '对话'], now: ['Right now', '现在'], agents: ['Agents', 'Agents'], usage: ['Usage', '用量'], plugins: ['Plugins', '插件'], projects: ['Projects', '项目'], settings: ['Settings', '设置'], arrange: ['Arrange the home', '编辑首页'], brief: ['Morning brief', '早报'] };
+// The home follows its blocks from the old fixed height up to this, then scrolls inside the panel.
+const VIEW_MIN = 466, VIEW_MAX = 600, CORNER = 30, HOLD = 560, TALK_STAYS = 10 * 60_000;
+const WX: Record<WxKind, ReactNode> = { sun: <Sun/>, cloud: <Cloud/>, rain: <CloudRain/>, snow: <CloudSnow/>, fog: <CloudFog/>, storm: <CloudLightning/> };
 const SPRING = 'linear(0,.054,.178,.329,.481,.617,.731,.82,.888,.936,.969,.99,1.003,1.01,1.014,1.015,1.014,1.012,1.01,1.008,1)';
 const reduced = matchMedia('(prefers-reduced-motion: reduce)');
 const dur = (ms: number) => reduced.matches ? 0 : ms;
-const usd = (n?: number) => n === undefined ? '—' : `$${n.toFixed(2)}`;
+const usd = (n?: number) => n === undefined ? '—' : `${n <= -.005 ? '-' : ''}$${Math.abs(n).toFixed(2)}`;
 const pad = (n: number) => String(n).padStart(2, '0');
 const hm = (ms: number) => { const d = new Date(ms); return `${pad(d.getHours())}:${pad(d.getMinutes())}`; };
 // Claude and Codex both hand out limit resets; one wording for both.
-const resetsLeft = (n: number, until?: string | null) =>
-  `${n} reset${n === 1 ? '' : 's'} left${n && until ? ` · until ${new Date(until).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}` : ''}`;
+const resetsLeft = (lang: Lang, n: number, until?: string | null) => {
+  const date = n && until ? new Date(until).toLocaleDateString(lang === 'zh' ? 'zh-CN' : 'en-US', { month: 'short', day: 'numeric' }) : '';
+  return lang === 'zh' ? `还剩 ${n} 次重置${date ? ` · ${date}前` : ''}` : `${n} reset${n === 1 ? '' : 's'} left${date ? ` · until ${date}` : ''}`;
+};
 // "Yes" wakes ARM_MS after the question, so a double click on "Use reset" cannot land on it;
 // an unanswered question folds away after ASK_MS. The answers are Codex's own words.
 const ARM_MS = 600, ASK_MS = 10_000;
-const RESET_ANSWERS: Record<string, string> = {
-  reset: 'Codex limits reset', nothing_to_reset: 'Your usage does not need a reset right now',
-  no_credit: 'No resets left', already_redeemed: 'That reset already went through',
+const RESET_ANSWERS: Record<string, L> = {
+  reset: ['Codex limits reset', 'Codex 额度已重置'], nothing_to_reset: ['Your usage does not need a reset right now', '现在的用量不需要重置'],
+  no_credit: ['No resets left', '没有重置次数了'], already_redeemed: ['That reset already went through', '这次重置已经生效了'],
 };
 
+const STALE_MS = { hour: 3_600_000, day: 86_400_000, never: Infinity };
 // Hidden rows stay hidden until the session is given a new prompt.
 const HIDDEN = 'companion-hidden-agents-v1';
 
@@ -66,11 +78,11 @@ function Mark({ id, mark }: { id: string; mark: string }) {
   const src = usePluginIcon(id);
   return src ? <img src={src} alt=""/> : <>{mark}</>;
 }
-const pluginStatus = (p: DemoPlugin): [string, string] => p.unsupported ? ['', 'Not supported'] : p.state === 'on' ? ['is-on', 'Connected']
-  : p.error && p.state !== 'connecting' ? ['is-need', 'Connection problem']
-  : p.state === 'connecting' ? ['is-need', p.kind === 'oauth' ? 'Waiting for sign-in…' : 'Connecting…']
-  : p.state === 'off' ? ['', 'Off'] : p.state === 'token' ? ['is-need', 'Needs an access token']
-  : ['is-need', p.ask ? 'Jarvis asked · needs sign-in' : 'Needs sign-in'];
+const pluginStatus = (p: DemoPlugin): [string, L] => p.unsupported ? ['', ['Not supported', '不支持']] : p.state === 'on' ? ['is-on', ['Connected', '已连接']]
+  : p.error && p.state !== 'connecting' ? ['is-need', ['Connection problem', '连接有问题']]
+  : p.state === 'connecting' ? ['is-need', p.kind === 'oauth' ? ['Waiting for sign-in…', '等你登录…'] : ['Connecting…', '连接中…']]
+  : p.state === 'off' ? ['', ['Off', '关']] : p.state === 'token' ? ['is-need', ['Needs an access token', '要一个访问令牌']]
+  : ['is-need', p.ask ? ['Jarvis asked · needs sign-in', 'Jarvis 要用 · 要登录'] : ['Needs sign-in', '要登录']];
 
 type Turn = { you: string; at: string; jarvis?: string; jarvisAt?: string; work?: [string, string]; day?: string };
 const DEMO_TURNS: Turn[] = [
@@ -80,12 +92,12 @@ const DEMO_TURNS: Turn[] = [
     work: ['Worked it out with gpt-5.6-luna · 2.1 s', 'Checked today’s to-dos:\n1. Confirm the Resonance dashboard direction.\n2. 16:00 voice test reminder, scheduled.'] },
 ];
 const ANSWER = 'Got it. I’ll take care of it and tell you when it’s done.';
-const BASIS: Record<Basis, string> = { observed: 'Observed', stated: 'You said', inferred: 'A guess' };
+const BASIS: Record<Basis, L> = { observed: ['Observed', '看到的'], stated: ['You said', '你说的'], inferred: ['A guess', '猜的'] };
 // Live conversation: the memory.db rows and the answer still streaming, from the companion's daemon link.
 // `older` fetches a longer page and says whether it brought earlier rows; `floor` means the history's start is on hand.
 type Talk = { rows: Row[]; tail: string; busy: boolean; offline: boolean; floor: boolean; submit: (text: string) => void; older: () => Promise<boolean> };
 const when = (ts: string) => { const d = new Date(ts); return Number.isNaN(d.getTime()) ? '' : d.toDateString() === new Date().toDateString() ? hm(d.getTime()) : `${d.getMonth() + 1}/${d.getDate()} ${hm(d.getTime())}`; };
-const dayLabel = (day: string) => { const d = new Date(day); return d.toDateString() === new Date(Date.now() - 86_400_000).toDateString() ? 'yesterday' : `${d.toLocaleDateString('en-US', { weekday: 'short' })} ${d.getMonth() + 1}/${d.getDate()}`; };
+const dayLabel = (lang: Lang, day: string) => { const d = new Date(day); return d.toDateString() === new Date(Date.now() - 86_400_000).toDateString() ? tr(lang, ['yesterday', '昨天']) : `${d.toLocaleDateString(lang === 'zh' ? 'zh-CN' : 'en-US', { weekday: 'short' })} ${d.getMonth() + 1}/${d.getDate()}`; };
 // The conversation of record as turns, each dated by the row that opens it: your rows open one, and Jarvis's rows after it answer it.
 const toTurns = (rows: Row[]): Turn[] => {
   const turns: Turn[] = [];
@@ -99,15 +111,19 @@ const toTurns = (rows: Row[]): Turn[] => {
 };
 const PULL = 240; // px of fresh upward scroll at the top that adds the day before
 
-export function AroundDashboard({ open, port = null, onClose, onMood, onHop, talk, plugins: live, pluginFocus = null, marks = 'spark', onAgents, agentsFocus = 0, onAnswer, seen }: {
+export function AroundDashboard({ open, port = null, onClose, onMood, onHop, talk, plugins: live, pluginFocus = null, marks = 'spark', onAgents, agentsFocus = 0, onAnswer, unread, ctl, settingsFocus = 0 }: {
   open: boolean; port?: string | null; onClose: () => void; onMood: (expr: ExprId | null) => void; onHop: (height: number) => void;
   talk?: Talk; plugins?: PluginController; pluginFocus?: { plugin: string; key: string } | null;
   marks?: MarkLook; onAgents?: (agents: ShownAgent[]) => void; agentsFocus?: number; onAnswer?: (id: string) => void;
-  seen?: { ids: string[]; at: number };
+  unread?: ReadonlySet<string>; ctl: Controls; settingsFocus?: number;
 }) {
+  const [settings, updateSettings] = useCompanionSettings(), lang = settings.lang;
+  const t = (l: L) => tr(lang, l);
+  const tick = useNow(20_000);
   const quota = useUsage(port), codex = useCodexSessions(port), work = useWorkState(port), projects = useProjects(port, open), claudeRows = useClaudeSessions(port);
   const [page, setPage] = useState<Page | null>(null);
   const [plugin, setPlugin] = useState<string | null>(null);
+  const [settingsCat, setSettingsCat] = useState<string | null>(null);
   const [demoPlugins, setPlugins] = useState(DEMO_PLUGINS);
   const snapshot = live?.snapshot;
   const plugins: Record<string, DemoPlugin> = !live ? demoPlugins : Object.fromEntries((snapshot?.plugins ?? []).map(p => [p.id, fromPlugin(p, snapshot!.request)]));
@@ -116,7 +132,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
   const [query, setQuery] = useState('');
   const [token, setToken] = useState('');
   const [said, setSaid] = useState({ text: 'Two things left today. Your 4 PM reminder is set.', caption: 'Jarvis · just now', busy: false });
-  const [turns, setTurns] = useState(DEMO_TURNS);
+  const [turns, setTurns] = useState(DEMO_TURNS), [demoTalkAt, setDemoTalkAt] = useState(0);
   // The Conversation page opens on the newest day; at the top, a fresh scroll up past PULL adds the day before.
   const [days, setDays] = useState(1), [pull, setPull] = useState(0);
   const wheel = useRef({ acc: 0, last: 0, armed: false, busy: false, timer: undefined as ReturnType<typeof setTimeout> | undefined });
@@ -152,33 +168,40 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
   // Closing the panel puts everything back on the home page, without animation.
   useEffect(() => {
     if (open) return;
-    closing.current = false; setPage(null); setPlugin(null); setUnfolded(null); setReset(null); react('02', 0);
+    closing.current = false; setPage(null); setPlugin(null); setSettingsCat(null); setUnfolded(null); setReset(null); react('02', 0);
     if (home.current) stopMotion(home.current);
     if (view.current?.contains(document.activeElement)) { (document.activeElement as HTMLElement).blur(); void window.jarvis?.focus(false); }
   }, [open]);
 
-  const row = (name: Page) => home.current!.querySelector<HTMLElement>(`[data-row="${name}"]`)!;
+  // The page grows out of what opened it: its row, the corner button, or the block held to arrange the home.
+  const origin = useRef<HTMLElement | null>(null);
+  const from = () => origin.current?.isConnected ? origin.current : null;
   const insetOf = (el: HTMLElement) => {
     const v = view.current!.getBoundingClientRect(), r = el.getBoundingClientRect();
     return `inset(${r.top - v.top}px ${v.right - r.right}px ${v.bottom - r.bottom}px ${r.left - v.left}px round 12px)`;
   };
   // Only animations started here; her CSS loops (orbs, pills, rings) keep running.
   const stopMotion = (el: HTMLElement) => el.getAnimations({ subtree: true }).forEach(a => { if (!(a instanceof CSSAnimation || a instanceof CSSTransition)) a.cancel(); });
-  const openPage = (name: Page) => {
+  const openPage = (name: Page, el?: HTMLElement | null) => {
     if (page || closing.current) return;
-    setPage(name); setPlugin(null);
+    origin.current = el ?? home.current?.querySelector<HTMLElement>(`[data-row="${name}"]`) ?? null;
+    setPage(name); setPlugin(null); setSettingsCat(null);
     if (name === 'conversation') { setDays(1); react(pick(TAKES.reply), 2600); }
     else if (name === 'now') react('37', 2400);
     else if (name === 'projects') { react('40', 1500); void projects.refresh(); }
+    else if (name === 'settings') react('30', 1400);
+    else if (name === 'arrange') react('14', 1200);
+    else if (name === 'brief') react('10', 1600);
     else { react('02', 0); if (name === 'agents') onHop(.2); }
   };
   // The row grows into the page: its outline opens to the whole panel and its title slides up to the top.
   useLayoutEffect(() => {
     const el = pageEl.current;
     if (!page || !el) return;
-    const from = row(page), dy = from.getBoundingClientRect().top - view.current!.getBoundingClientRect().top;
+    const start = from(), dy = start ? start.getBoundingClientRect().top - view.current!.getBoundingClientRect().top : 0;
     if (page === 'conversation') { const b = el.querySelector('.pg-body')!; b.scrollTop = b.scrollHeight; } // it opens on the newest turn
-    el.animate([{ clipPath: insetOf(from) }, { clipPath: 'inset(0 0 0 0 round 14px)' }], { duration: dur(560), easing: SPRING });
+    if (start) el.animate([{ clipPath: insetOf(start) }, { clipPath: 'inset(0 0 0 0 round 14px)' }], { duration: dur(560), easing: SPRING });
+    else el.animate([{ opacity: 0 }, { opacity: 1 }], { duration: dur(240) });
     el.querySelector('.pg-head')?.animate([{ transform: `translateY(${dy}px)`, opacity: .3 }, { transform: 'none', opacity: 1 }], { duration: dur(560), easing: SPRING });
     // Only what is on screen fades in, in order; a long page would otherwise hold its newest words back.
     const box = el.getBoundingClientRect();
@@ -191,25 +214,27 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
   const closePage = () => {
     const el = pageEl.current;
     if (!page || !el || closing.current) return;
-    const name = page, from = row(name);
+    const back = from();
     closing.current = true;
     // One thing at a time: the page's words leave, the empty page folds back into its row as a faint card,
     // and only then do the home rows return in order, the row it came from last, as the card lands on it.
     el.classList.add('is-closing');
     el.querySelectorAll('.pg-head, .pg-body').forEach(part => part.animate([{ opacity: 1 }, { opacity: 0, transform: 'translateY(-4px)' }], { duration: dur(120), easing: 'ease-in', fill: 'forwards' }));
-    const shrink = el.animate([{ clipPath: 'inset(0 0 0 0 round 14px)' }, { clipPath: insetOf(from) }], { duration: dur(320), delay: dur(40), easing: 'cubic-bezier(.3,0,.2,1)', fill: 'forwards' });
-    el.animate([{ opacity: 1 }, { opacity: 0 }], { duration: dur(90), delay: dur(290), fill: 'forwards' });
+    const shrink = back ? el.animate([{ clipPath: 'inset(0 0 0 0 round 14px)' }, { clipPath: insetOf(back) }], { duration: dur(320), delay: dur(40), easing: 'cubic-bezier(.3,0,.2,1)', fill: 'forwards' })
+      : el.animate([{ opacity: 1 }, { opacity: 0 }], { duration: dur(240), fill: 'forwards' });
+    if (back) el.animate([{ opacity: 1 }, { opacity: 0 }], { duration: dur(90), delay: dur(290), fill: 'forwards' });
     const homeEl = home.current!;
     stopMotion(homeEl);
-    [...homeEl.children].forEach((unit, i) => { if (unit !== from) unit.animate([{ opacity: 0, transform: 'translateY(4px)' }, { opacity: 1, transform: 'none' }], { duration: dur(220), delay: dur(130 + 30 * i), easing: 'cubic-bezier(.2,.7,.2,1)', fill: 'backwards' }); });
-    from.animate([{ opacity: 0 }, { opacity: 1 }], { duration: dur(200), delay: dur(290), fill: 'backwards' });
+    [...homeEl.querySelectorAll(':scope > .corner, .home-inner > *')].forEach((unit, i) => { if (unit !== back) unit.animate([{ opacity: 0, transform: 'translateY(4px)' }, { opacity: 1, transform: 'none' }], { duration: dur(220), delay: dur(130 + 30 * i), easing: 'cubic-bezier(.2,.7,.2,1)', fill: 'backwards' }); });
+    back?.animate([{ opacity: 0 }, { opacity: 1 }], { duration: dur(200), delay: dur(290), fill: 'backwards' });
     shrink.onfinish = () => {
       if (!closing.current) return;
-      closing.current = false; setPage(null); setPlugin(null); react('02', 0);
-      (from.matches('button') ? from : from.querySelector('button'))?.focus({ preventScroll: true });
+      closing.current = false; setPage(null); setPlugin(null); setSettingsCat(null); react('02', 0);
+      back?.classList.remove('is-holding');
+      (back?.matches('button') ? back : back?.querySelector('button'))?.focus({ preventScroll: true });
     };
   };
-  const goUp = () => { if (page === 'plugins' && plugin) setPlugin(null); else if (page) closePage(); else onClose(); };
+  const goUp = () => { if (page === 'plugins' && plugin) setPlugin(null); else if (page === 'settings' && settingsCat) setSettingsCat(null); else if (page) closePage(); else onClose(); };
   const keys = (event: KeyboardEvent) => {
     if (event.key !== 'Escape') return;
     event.stopPropagation();
@@ -218,7 +243,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
 
   const ask = (text: string) => {
     if (talk) { talk.submit(text); return; }
-    setTurns(value => [...value, { you: text, at: 'now' }]);
+    setTurns(value => [...value, { you: text, at: 'now' }]); setDemoTalkAt(Date.now());
     const reply = pick(TAKES.reply);
     setSaid({ text: 'Thinking…', caption: 'Thinking', busy: true }); react('30', 1300, reply);
     later(1300, () => {
@@ -253,37 +278,21 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
   // The day added above keeps the words you were reading where they were.
   useLayoutEffect(() => { const b = body(); if (anchor.current !== null && b) b.scrollTop = b.scrollHeight - anchor.current; anchor.current = null; }, [days]);
   const lastAnswer = talk && [...talk.rows].reverse().find(row => row.source !== 'allen');
-  const saying = !talk ? said : { busy: talk.busy,
-    text: plain(talk.tail) || (lastAnswer ? plain(lastAnswer.text) : 'Say something and Jarvis answers here.'),
-    caption: talk.offline ? 'Offline · reconnecting' : talk.busy ? 'Thinking' : talk.tail ? 'Jarvis · now' : lastAnswer ? `Jarvis · ${when(lastAnswer.ts)}` : 'Jarvis' };
   const newest = shownTurns.at(-1);
   useEffect(() => { if (page === 'conversation') body()?.scrollTo({ top: body()!.scrollHeight, behavior: reduced.matches ? 'auto' : 'smooth' }); }, [newest?.at, newest?.you, newest?.jarvis]);
 
   // Agents, grouped the way you act on them. A row you moved goes to the top of its new group.
-  const agents = (port ? [...claudeRows.map(fromClaude), ...codex.rows.map(fromCodex)] : DEMO_AGENTS).filter(s => hidden[s.id] !== s.you).map(s => ({ ...s, ...moved[s.id] }));
+  // Settings › Agents picks which sessions show; one left waiting past the stale limit counts as earlier.
+  const agents = (port ? [...claudeRows.map(fromClaude), ...codex.rows.map(fromCodex)] : DEMO_AGENTS).filter(s => hidden[s.id] !== s.you && settings[s.agent])
+    .map(s => ({ ...s, ...moved[s.id] })).map(s => s.state === 'wait' && !s.request && s.at && tick - s.at > STALE_MS[settings.stale] ? { ...s, state: 'done' as const } : s);
   const group = (state: AgentState) => agents.filter(s => s.state === state).sort((a, b) => (moved[b.id]?.at ?? 0) - (moved[a.id]?.at ?? 0));
   const waiting = group('wait'), stopped = group('err'), working = [...group('work'), ...group('pack')], earlier = group('done');
-  // A session that finishes while she watches stays "finished" until you have been on the Agents page;
-  // what was already done when she started, or has been looked at since, is quiet.
-  const [unseen, setUnseen] = useState<ReadonlySet<string>>(new Set());
-  const seenStates = useRef<Record<string, AgentState>>({}), onAgentsPage = open && page === 'agents', wasOnPage = useRef(false);
-  const statesKey = agents.map(s => `${s.id}:${s.state}`).join('|');
-  useEffect(() => {
-    const was = seenStates.current, now = seenStates.current = Object.fromEntries(agents.map(s => [s.id, s.state]));
-    setUnseen(current => {
-      const next = new Set([...current].filter(id => now[id] === 'done'));
-      agents.forEach(s => { if (s.state === 'done' && ['work', 'pack', 'wait'].includes(was[s.id])) next.add(s.id); });
-      return next.size === current.size && [...next].every(id => current.has(id)) ? current : next;
-    });
-  }, [statesKey]);
-  useEffect(() => { if (wasOnPage.current && !onAgentsPage) setUnseen(new Set()); wasOnPage.current = onAgentsPage; }, [onAgentsPage]);
-  // A finished card closed by hand counts as looked at.
-  useEffect(() => { if (seen?.ids.length) setUnseen(current => new Set([...current].filter(id => !seen.ids.includes(id)))); }, [seen?.at]);
-  const markOf = (s: Agent): MarkState => s.state === 'done' ? unseen.has(s.id) ? 'done' : 'seen' : s.state;
-  const finished = earlier.filter(s => unseen.has(s.id));
+  // Finished and not looked at yet: the companion keeps that list (ADR 0057); what is done and seen is quiet.
+  const markOf = (s: Agent): MarkState => s.state === 'done' && !unread?.has(s.id) ? 'seen' : s.state;
+  const finished = earlier.filter(s => unread?.has(s.id));
   // Every row goes up to the companion: the wing draws the live ones, the notices watch them all change.
   const shown: ShownAgent[] = agents.map(s => ({ ...s, mark: markOf(s),
-    line: s.state === 'done' ? unseen.has(s.id) ? 'Finished · not opened yet' : s.last : s.state === 'err' ? `Stopped · ${s.error}` : s.last || (s.state === 'wait' ? 'Needs you' : 'Working') }));
+    line: s.state === 'done' ? unread?.has(s.id) ? 'Finished · not opened yet' : s.last : s.state === 'err' ? `Stopped · ${s.error}` : s.last || (s.state === 'wait' ? 'Needs you' : 'Working') }));
   const shownKey = JSON.stringify(shown);
   useEffect(() => onAgents?.(shown), [shownKey]);
   // The marks beside the notch were clicked: the companion opened the panel, and it lands on Agents.
@@ -303,14 +312,14 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
   }, [moved]);
   const hide = (s: Agent) => {
     setHidden(value => ({ ...value, [s.id]: s.you }));
-    notify('Hidden from this list.', () => setHidden(({ [s.id]: _, ...rest }) => rest));
+    notify(t(['Hidden from this list.', '已从列表隐藏。']), () => setHidden(({ [s.id]: _, ...rest }) => rest));
   };
   // Claude sessions have no jump yet; their cards leave the button out rather than offer one that cannot work.
   const agentRow = (s: Agent, actions?: ReactNode) => <AgentRow key={s.id} s={s} look={marks} mark={markOf(s)} open={unfolded === s.id} onToggle={() => setUnfolded(v => v === s.id ? null : s.id)}
     onOpen={!port || s.agent === 'codex' ? () => void openAgent(s) : undefined} onHide={() => hide(s)} actions={actions}/>;
   const openAgent = async (s: Agent) => {
-    if (port && s.agent === 'codex' && await window.jarvis?.openCodex?.(s.id).catch(() => false)) notify('Opening in Codex…');
-    else notify(port ? `Can’t open ${s.where} from here yet.` : 'Demo session, nothing to open.');
+    if (port && s.agent === 'codex' && await window.jarvis?.openCodex?.(s.id).catch(() => false)) notify(t(['Opening in Codex…', '正在用 Codex 打开…']));
+    else notify(port ? t([`Can’t open ${s.where} from here yet.`, `还不能从这里打开 ${s.where}。`]) : t(['Demo session, nothing to open.', '演示会话，没有东西可打开。']));
   };
 
   const setPluginState = (id: string, change: Partial<DemoPlugin>) => setPlugins(value => ({ ...value, [id]: { ...value[id], ...change } }));
@@ -330,12 +339,12 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
     const run = (operation: string, data: Record<string, unknown> = {}) => live!.action(operation, { request_id: mine?.id, ...data });
     if (act === 'later') { if (mine?.state === 'offered' || mine?.state === 'error') void run('cancel'); setPlugin(null); }
     else if (act === 'reopen' || act === 'cancel') void run(act);
-    else if (act === 'off') { if (await run('disable')) notify(`${plugins[id].name} is off.`); }
-    else if (act === 'approval') { if (await run('approval', { mode: value })) notify('Saved.'); }
+    else if (act === 'off') { if (await run('disable')) notify(t([`${plugins[id].name} is off.`, `${plugins[id].name} 已关掉。`])); }
+    else if (act === 'approval') { if (await run('approval', { mode: value })) notify(t(['Saved.', '已保存。'])); }
     else if (act === 'connect') {
       // ponytail: one token box; a plugin with several credential fields needs one box per field.
       const field = snapshot?.plugins.find(p => p.id === id)?.credential_fields[0];
-      if (field && !token.trim() && !plugins[id].saved) { notify('Paste an access token first.'); return; }
+      if (field && !token.trim() && !plugins[id].saved) { notify(t(['Paste an access token first.', '先粘贴一个访问令牌。'])); return; }
       const credentials = field && token.trim() ? { [field]: token.trim() } : {};
       setToken('');
       if (await run('connect', { credentials })) react('36', 60_000);
@@ -354,16 +363,16 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
     const id = plugin!, p = plugins[id];
     if (live) { void liveAct(id, act, value); return; }
     if (act === 'later') setPlugin(null);
-    else if (act === 'reopen') notify('Opened the sign-in page again.');
-    else if (act === 'approval') { setPluginState(id, { approval: value }); notify('Saved.'); }
+    else if (act === 'reopen') notify(t(['Opened the sign-in page again.', '又打开了一次登录页。']));
+    else if (act === 'approval') { setPluginState(id, { approval: value }); notify(t(['Saved.', '已保存。'])); }
     else if (act === 'cancel') { clearTimeout(pluginTimer.current); setPluginState(id, { state: p.was }); react('02', 0); }
-    else if (act === 'off') { setPluginState(id, { state: p.kind === 'oauth' ? 'signin' : p.kind === 'token' ? 'token' : 'off', resumed: undefined }); notify(`${p.name} is off.`); }
+    else if (act === 'off') { setPluginState(id, { state: p.kind === 'oauth' ? 'signin' : p.kind === 'token' ? 'token' : 'off', resumed: undefined }); notify(t([`${p.name} is off.`, `${p.name} 已关掉。`])); }
     else if (act === 'connect') {
-      if (p.state === 'token' && !token.trim()) { notify('Paste an access token first.'); return; }
+      if (p.state === 'token' && !token.trim()) { notify(t(['Paste an access token first.', '先粘贴一个访问令牌。'])); return; }
       setToken(''); setPluginState(id, { was: p.state, state: 'connecting' }); react('36', 60_000);
       pluginTimer.current = setTimeout(() => {
         setPluginState(id, { state: 'on', ask: undefined, resumed: p.ask && `Picking up: “${p.ask}”` });
-        if (p.ask) setSaid({ text: `Signed in to ${p.name}. Looking for last week’s notes now.`, caption: 'Jarvis · just now', busy: false });
+        if (p.ask) { setSaid({ text: `Signed in to ${p.name}. Looking for last week’s notes now.`, caption: 'Jarvis · just now', busy: false }); setDemoTalkAt(Date.now()); }
         react('10', 1800);
       }, p.kind === 'oauth' ? 2600 : 1100);
     }
@@ -373,6 +382,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
   const { claude, codex: codexUsage, openai, deepseek, minimax } = quota.usage?.services ?? {};
   const synced = Math.max(0, ...[claude, codexUsage, openai, deepseek, minimax].map(s => s?.observed_at_ms ?? 0));
   const codexResets = codexUsage?.status === 'ok' ? codexUsage.data.reset_credits ?? 0 : 0;
+  const balanceSaved = () => { notify('Balance saved'); void quota.refresh(); };
   const askReset = () => {
     const id = crypto.randomUUID();
     setReset({ id, state: 'ask', armed: false });
@@ -386,7 +396,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
     try {
       const answer = await window.jarvis!.usageReset('codex', r.id);
       setReset(v => v?.id === r.id ? null : v);
-      notify(RESET_ANSWERS[answer.code] ?? `Codex answered ${answer.code}`);
+      notify(RESET_ANSWERS[answer.code] ? t(RESET_ANSWERS[answer.code]) : t([`Codex answered ${answer.code}`, `Codex 回复：${answer.code}`]));
       if (answer.code === 'reset') react('33', 1900);
       void quota.refresh();
     } catch (error) {
@@ -398,146 +408,318 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
   const topProject = (projectsView?.projects ?? []).find(p => p.seconds > 0);
   const lead = waiting[0] ?? working[0];
 
+  // ---------- the home's blocks ----------
+  const zh = lang === 'zh', d = new Date(tick);
+  const timeOf = (ms: number) => new Date(ms).toLocaleTimeString(zh ? 'zh-CN' : 'en-US', zh ? { hour: '2-digit', minute: '2-digit', hour12: false } : { hour: 'numeric', minute: '2-digit' });
+  const dateLabel = zh ? `${d.getMonth() + 1}月${d.getDate()}日` : `${d.toLocaleDateString('en-US', { weekday: 'short' })} ${d.getDate()}`;
+  const inAbout = (ms: number) => { const m = Math.max(0, Math.round((ms - tick) / 60_000)), h = Math.floor(m / 60);
+    return m < 1 ? t(['now', '现在']) : zh ? `${h ? `${h} 小时 ` : ''}${m % 60} 分后` : `in ${h ? `${h} h ` : ''}${m % 60} m`; };
+  const sameDay = (ms: number) => new Date(ms).toDateString() === d.toDateString();
+  const localDate = d.toLocaleDateString('en-CA');
+
+  // Today: the weather, what is left on the calendar, and the to-dos, all from /inherent/today.
+  const todayRoute = useRoute<Today>(port, '/inherent/today', open, 5 * 60_000);
+  const demoDay = useMemo(() => demoToday(), [open]);
+  const today = port ? todayRoute.data : demoDay;
+  const [checked, setChecked] = useState<Record<string, boolean>>({});
+  const checkTodo = async (id: string) => {
+    const done = !checked[id];
+    setChecked(c => ({ ...c, [id]: done }));
+    if (done) react('33', 1500);
+    if (!port) return;
+    try { await postRoute(port, '/inherent/today/todo', { id, done }); }
+    catch { setChecked(c => ({ ...c, [id]: !done })); notify(t(['Couldn’t reach To Do.', '连不上 To Do。'])); }
+  };
+  const events = (today?.events ?? []).filter(e => { const start = Date.parse(e.start), end = e.end ? Date.parse(e.end) : start + 30 * 60_000; return sameDay(start) && end > tick; }).slice(0, 2);
+  const due = (x: { due?: string }) => x.due ? Date.parse(x.due) : Infinity;
+  const todos = [...today?.todos ?? []].sort((a, b) => due(a) - due(b)).slice(0, 3);
+  const dueLabel = (ms: number) => ms < tick ? t(['overdue', '已过期']) : sameDay(ms) ? zh ? `今天 ${timeOf(ms)}` : `due ${timeOf(ms)}` : new Date(ms).toLocaleDateString(zh ? 'zh-CN' : 'en-US', { month: 'short', day: 'numeric' });
+  const wx = today?.weather, forecast = settings.forecast && d.getHours() < 11 && wx?.hours?.length ? wx.hours.slice(0, 4) : null;
+
+  // The pop-ups, each keyed by what it shows: closing one hides that; something newer brings the block back.
+  const briefRoute = useRoute<Brief>(port, '/inherent/brief', open, 10 * 60_000);
+  const mailRoute = useRoute<{ unread: Mail[] }>(port, '/inherent/mail', open, 5 * 60_000);
+  const noticeRoute = useRoute<{ notices: Notice[] }>(port, '/inherent/notices', open, 60_000);
+  const demoPops = useMemo(() => ({ brief: demoBrief(), mail: demoMail(), notices: demoNotices() }), []);
+  const brief = port ? briefRoute.data : demoPops.brief, mail = port ? mailRoute.data?.unread ?? [] : demoPops.mail;
+  const notices = port ? noticeRoute.data?.notices ?? [] : demoPops.notices;
+  const [briefRead, setBriefRead] = useState('');
+  const [dismissed, setDismissed] = useState<Partial<Record<BlockId, string>>>({});
+  // For you: what Jarvis itself wants from you. Agents keep their own row.
+  type ForYou = { id: string; text: string; ask?: boolean; act?: [L, () => void] };
+  const signIn = (id: string): [L, () => void] => [['Sign in', '登录'], () => { openPage('plugins', home.current?.querySelector<HTMLElement>('[data-block="foryou"]')); setPlugin(id); }];
+  const request = snapshot?.request;
+  const forYou: ForYou[] = [
+    ...(live ? request?.purpose && (request.state === 'offered' || request.state === 'error') ? [{ id: request.id, ask: true, text: `${plugins[request.plugin_id]?.name ?? request.plugin_id} · ${request.purpose}`, act: signIn(request.plugin_id) }] : []
+      : pluginIds.filter(id => plugins[id].ask && plugins[id].state === 'signin').map(id => ({ id, ask: true, text: `${plugins[id].name} · ${plugins[id].ask}`, act: signIn(id) }))),
+    ...notices.map(n => ({ id: n.id, text: n.text })),
+  ];
+  // The conversation sits on top while you talk and for TALK_STAYS after your last turn (Settings › Home).
+  const lastYou = talk ? [...talk.rows].reverse().find(row => row.source === 'allen') : null;
+  const talkAt = talk ? lastYou ? Date.parse(lastYou.ts) : 0 : demoTalkAt;
+  const talking = talk ? talk.busy || !!talk.tail : said.busy;
+  const youSaid = talk ? lastYou ? plain(lastYou.text) : '' : demoTalkAt ? turns.at(-1)?.you ?? '' : '';
+  const answer = !talk ? said.text : talk.tail ? plain(talk.tail) : talk.busy ? t(['Thinking…', '在想…'])
+    : lastAnswer && (!lastYou || lastAnswer.seq > lastYou.seq) ? plain(lastAnswer.text) : '';
+  const popKey: Partial<Record<BlockId, string>> = {
+    talk: settings.talk === 'always' ? (talk ? talk.rows.length > 0 : true) ? `t${talkAt}` : undefined
+      : settings.talk === 'after' && (talking || (talkAt > 0 && tick - talkAt < TALK_STAYS)) ? `t${talkAt}` : undefined,
+    foryou: settings.foryou && forYou.length ? forYou.map(f => f.id).join('|') : undefined,
+    brief: settings.brief && brief?.date === localDate && briefRead !== brief.date ? brief.date : undefined,
+    mail: settings.mail && mail.length ? mail[0].id : undefined,
+  };
+  const shows = (id: BlockId) => isPop(id) ? popKey[id] !== undefined && dismissed[id] !== popKey[id] : !settings.hidden.includes(id);
+  const blocks = settings.order.filter(shows);
+  const dismiss = (id: BlockId) => {
+    const key = popKey[id], el = home.current?.querySelector<HTMLElement>(`[data-block="${id}"]`);
+    if (key === undefined) return;
+    const apply = () => { setDismissed(v => ({ ...v, [id]: key })); notify(t(['Closed · comes back with the next one', '关掉了 · 有新的会再出现']), () => setDismissed(({ [id]: _, ...rest }) => rest)); };
+    if (!el || reduced.matches) { apply(); return; }
+    el.style.height = `${el.offsetHeight}px`; void el.offsetHeight; el.classList.add('is-leaving');
+    later(260, apply);
+  };
+
+  // Holding a block arranges the home. The click that ends the hold is swallowed, wherever it lands.
+  const hold = useRef<{ el: HTMLElement; x: number; y: number; timer: ReturnType<typeof setTimeout> } | null>(null);
+  const cancelHold = () => { const h = hold.current; if (!h) return; clearTimeout(h.timer); h.el.classList.remove('is-holding'); hold.current = null; };
+  const holdDown = (e: PointerEvent<HTMLDivElement>) => {
+    const el = (e.target as Element).closest<HTMLElement>('[data-block]');
+    if (e.button !== 0 || page || !el || (e.target as Element).closest('.mx')) return;
+    cancelHold();
+    el.classList.add('is-holding');
+    hold.current = { el, x: e.clientX, y: e.clientY, timer: setTimeout(() => {
+      hold.current = null;
+      const stop = (event: Event) => { event.stopPropagation(); event.preventDefault(); off(); };
+      const off = () => { window.removeEventListener('click', stop, true); window.removeEventListener('pointerdown', off, true); };
+      window.addEventListener('click', stop, true); window.addEventListener('pointerdown', off, true); later(1500, off);
+      openPage('arrange', el);
+    }, HOLD) };
+  };
+  const holdMove = (e: PointerEvent) => { const h = hold.current; if (h && Math.hypot(e.clientX - h.x, e.clientY - h.y) > 6) cancelHold(); };
+
+  // The home follows its blocks, between the old fixed height and VIEW_MAX; past that it scrolls.
+  const inner = useRef<HTMLDivElement>(null), [viewH, setViewH] = useState(VIEW_MIN);
+  useLayoutEffect(() => {
+    const el = inner.current;
+    if (!el || page) return;
+    const fit = () => setViewH(Math.round(Math.min(VIEW_MAX, Math.max(VIEW_MIN, CORNER + el.offsetHeight))));
+    fit();
+    const observer = new ResizeObserver(fit);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [page]);
+  // The tray's "Settings…" opens the panel on Settings.
+  useEffect(() => {
+    if (!settingsFocus || !open) return;
+    if (!page) openPage('settings'); else if (page !== 'settings') setPage('settings');
+  }, [settingsFocus]);
+  const mute = () => {
+    const muted = !ctl.speechMuted;
+    ctl.setSpeech(muted);
+    notify(t(muted ? ['Jarvis is muted: no voice, no sounds', 'Jarvis 已静音：不说话，也没有提示音'] : ['Jarvis can talk again', 'Jarvis 可以说话了']));
+  };
+  const svc = (name: string, x: { status: string; error?: string | null } | undefined, ok: string): Account =>
+    ({ name, ok: !x || x.status === 'ok', text: !x ? t(['Syncing…', '同步中…']) : x.status === 'ok' ? ok : x.error ?? t(['Not connected', '没连上']) });
+  const signedIn = t(['Signed in', '已登录']), connected = t(['Connected', '已连接']);
+  const accounts: Account[] = [svc('Claude', claude, signedIn), svc('Codex', codexUsage, signedIn), svc('OpenAI', openai, connected), svc('DeepSeek', deepseek, connected), svc('MiniMax', minimax, connected)];
+
   const back = (title: string, meta?: ReactNode) => <header className="pg-head">
-    <button className="pg-back" aria-label="Back" onClick={goUp}><CaretLeft size={14} weight="bold"/></button>
+    <button className="pg-back" aria-label={t(['Back', '返回'])} onClick={goUp}><CaretLeft size={14} weight="bold"/></button>
     <h3 key={title}>{title}</h3>{meta && <span className="meta">{meta}</span>}
   </header>;
   const pages: Record<Page, () => ReactNode> = {
     conversation: () => <>
-      {back('Conversation', talk ? undefined : 'today')}
+      {back(t(TITLES.conversation), talk ? undefined : t(['today', '今天']))}
       <div className="pg-body" onWheel={talk ? onWheel : undefined}>
       {talk && <div className={`pg-earlier${pull ? ' is-pulling' : ''}`} style={{ '--pull': pull } as CSSProperties}>
-        {more ? <><CaretUp size={10} weight="bold"/>Scroll up for {before ? dayLabel(before) : 'earlier'}</> : 'Start of the conversation'}</div>}
-      {shownTurns.map((t, i) => <div className="pg-sec tr" key={i} data-day={t.day}>
-        {t.you && <div className="tr-you"><span className="who">You · {t.at}</span><p>{t.you}</p></div>}
-        {t.jarvis && <div className="tr-jarvis"><span className="who"><span className="dot"/>Jarvis · {t.jarvisAt}</span><Markdown text={t.jarvis}/>
-          {t.work && <Fold label={t.work[0]}><pre>{t.work[1]}</pre></Fold>}</div>}
+        {more ? <><CaretUp size={10} weight="bold"/>{t(['Scroll up for', '往上滚看'])} {before ? dayLabel(lang, before) : t(['earlier', '更早的'])}</> : t(['Start of the conversation', '对话从这里开始'])}</div>}
+      {shownTurns.map((turn, i) => <div className="pg-sec tr" key={i} data-day={turn.day}>
+        {turn.you && <div className="tr-you"><span className="who">{t(['You', '你'])} · {turn.at}</span><p>{turn.you}</p></div>}
+        {turn.jarvis && <div className="tr-jarvis"><span className="who"><span className="dot"/>Jarvis · {turn.jarvisAt}</span><Markdown text={turn.jarvis}/>
+          {turn.work && <Fold label={turn.work[0]}><pre>{turn.work[1]}</pre></Fold>}</div>}
       </div>)}
       <Ask className="pg-input" onAsk={ask}/></div>
     </>,
     now: () => <>
-      {back('Right now', now && `${now.current ? 'as of' : 'at'} ${now.at}`)}
-      <div className="pg-body">{workView === null ? <p className="pg-sec muted">Syncing…</p> : !state ? <p className="pg-sec muted">No status yet. Refresh and Jarvis reads the latest activity.</p> : <>
-        {state.now && now && <div className="pg-sec now-card"><span className="who"><span className="dot"/>{BASIS[state.now.basis]} · {now.current ? 'as of' : 'at'} {now.at}</span><p>{now.claim}</p></div>}
-        <div className="pg-sec"><h4>Today{state.observed_until ? `, until ${hm(Date.parse(state.observed_until))}` : ''}</h4>
-          {state.activities.length ? <ol className="tl">{state.activities.map((c, i) => <li key={i} className={`is-${c.basis}`}>{c.text}{c.progress && <small>{c.progress}</small>}</li>)}</ol> : <p className="muted">Not enough data yet.</p>}
-          <div className="legend"><span><i className="o"/>seen</span><span><i className="s"/>you said</span><span><i className="g"/>a guess</span></div>
+      {back(t(TITLES.now), now && `${now.current ? t(['as of', '截至']) : t(['at', '于'])} ${now.at}`)}
+      <div className="pg-body">{workView === null ? <p className="pg-sec muted">{t(['Syncing…', '同步中…'])}</p> : !state ? <p className="pg-sec muted">{t(['No status yet. Refresh and Jarvis reads the latest activity.', '还没有状态。刷新一下，Jarvis 会读最新的动静。'])}</p> : <>
+        {state.now && now && <div className="pg-sec now-card"><span className="who"><span className="dot"/>{t(BASIS[state.now.basis])} · {now.current ? t(['as of', '截至']) : t(['at', '于'])} {now.at}</span><p>{now.claim}</p></div>}
+        <div className="pg-sec"><h4>{t(['Today', '今天'])}{state.observed_until ? t([`, until ${hm(Date.parse(state.observed_until))}`, `，到 ${hm(Date.parse(state.observed_until))}`]) : ''}</h4>
+          {state.activities.length ? <ol className="tl">{state.activities.map((c, i) => <li key={i} className={`is-${c.basis}`}>{c.text}{c.progress && <small>{c.progress}</small>}</li>)}</ol> : <p className="muted">{t(['Not enough data yet.', '数据还不够。'])}</p>}
+          <div className="legend"><span><i className="o"/>{t(['seen', '看到的'])}</span><span><i className="s"/>{t(['you said', '你说的'])}</span><span><i className="g"/>{t(['a guess', '猜的'])}</span></div>
         </div>
-        {state.links.length > 0 && <div className="pg-sec"><h4>Linked</h4>{state.links.map((l, i) => <div className="link" key={i}><span className="chip">{l.kind === 'todo' ? 'To-do' : 'Discussion'}</span>{l.title || l.note}{l.title && <small>{l.note}</small>}</div>)}</div>}
-        {state.uncertainties.length > 0 && <div className="pg-sec"><h4>Unknown</h4>{state.uncertainties.map((u, i) => <p className="muted" key={i}>{u}</p>)}</div>}
+        {state.links.length > 0 && <div className="pg-sec"><h4>{t(['Linked', '相关'])}</h4>{state.links.map((l, i) => <div className="link" key={i}><span className="chip">{l.kind === 'todo' ? t(['To-do', '待办']) : t(['Discussion', '讨论'])}</span>{l.title || l.note}{l.title && <small>{l.note}</small>}</div>)}</div>}
+        {state.uncertainties.length > 0 && <div className="pg-sec"><h4>{t(['Unknown', '不确定'])}</h4>{state.uncertainties.map((u, i) => <p className="muted" key={i}>{u}</p>)}</div>}
       </>}
       <footer className="pg-foot"><span className={fresh.stale ? 'is-warm' : ''}>{work.notice ?? fresh.text}</span>
-        <button className="icon-btn" aria-label="Refresh" disabled={work.refreshing} onClick={work.refresh}><ArrowsClockwise size={13} className={work.refreshing ? 'is-spinning' : ''}/></button></footer></div>
+        <button className="icon-btn" aria-label={t(['Refresh', '刷新'])} disabled={work.refreshing} onClick={work.refresh}><ArrowsClockwise size={13} className={work.refreshing ? 'is-spinning' : ''}/></button></footer></div>
     </>,
     agents: () => <>
-      {back('Agents', `${waiting.length + working.length} live`)}
-      <div className="pg-body">{!agents.length && <p className="pg-sec muted">Sessions show up once you start one.</p>}
-      {waiting.length > 0 && <div className="pg-sec"><h4 className="is-warm"><span className="dot"/>Needs you</h4>{waiting.map(s => agentRow(s,
-        !port ? <><button className="btn btn-glow" onClick={() => { move(s, { state: 'work', last: 'Approved · running it now…' }); react('33', 1900); }}>Approve</button>
-          <button className="btn btn-ghost" onClick={() => move(s, { state: 'done', last: 'You denied it. It stopped there.', age: 'now' })}>Deny</button></>
-          : s.request && <button className="btn btn-glow" onClick={() => onAnswer?.(s.id)}>Answer</button>))}</div>}
-      {stopped.length > 0 && <div className="pg-sec"><h4 className="is-alert">Stopped · {stopped.length}</h4>{stopped.map(s => agentRow(s))}</div>}
-      {working.length > 0 && <div className="pg-sec"><h4>Working · {working.length}</h4>{working.map(s => agentRow(s))}</div>}
-      {earlier.length > 0 && <div className="pg-sec"><h4>{port ? 'Last 24 hours' : 'Earlier today'} · {earlier.length}</h4>{earlier.map(s => agentRow(s))}</div>}
-      {agents.length > 0 && <p className="pg-sec muted">Click a session to see what it’s doing.</p>}</div>
+      {back(t(TITLES.agents), t([`${waiting.length + working.length} live`, `${waiting.length + working.length} 个在跑`]))}
+      <div className="pg-body">{!agents.length && <p className="pg-sec muted">{t(['Sessions show up once you start one.', '开一个会话，它就会出现在这里。'])}</p>}
+      {waiting.length > 0 && <div className="pg-sec"><h4 className="is-warm"><span className="dot"/>{t(['Needs you', '等你'])}</h4>{waiting.map(s => agentRow(s,
+        !port ? <><button className="btn btn-glow" onClick={() => { move(s, { state: 'work', last: 'Approved · running it now…' }); react('33', 1900); }}>{t(['Approve', '批准'])}</button>
+          <button className="btn btn-ghost" onClick={() => move(s, { state: 'done', last: 'You denied it. It stopped there.', age: 'now' })}>{t(['Deny', '拒绝'])}</button></>
+          : s.request && <button className="btn btn-glow" onClick={() => onAnswer?.(s.id)}>{t(['Answer', '回答'])}</button>))}</div>}
+      {stopped.length > 0 && <div className="pg-sec"><h4 className="is-alert">{t(['Stopped', '停了'])} · {stopped.length}</h4>{stopped.map(s => agentRow(s))}</div>}
+      {working.length > 0 && <div className="pg-sec"><h4>{t(['Working', '在做'])} · {working.length}</h4>{working.map(s => agentRow(s))}</div>}
+      {earlier.length > 0 && <div className="pg-sec"><h4>{port ? t(['Last 24 hours', '过去 24 小时']) : t(['Earlier today', '今天早些时候'])} · {earlier.length}</h4>{earlier.map(s => agentRow(s))}</div>}
+      {agents.length > 0 && <p className="pg-sec muted">{t(['Click a session to see what it’s doing.', '点一个会话，看它在做什么。'])}</p>}</div>
     </>,
     usage: () => <>
-      {back('Usage', <button className="us-sync" aria-label="Refresh" disabled={quota.refreshing} onClick={() => void quota.refresh()}>
-        {!quota.refreshing && synced ? `synced ${hm(synced)}` : 'syncing…'}<ArrowsClockwise size={11} className={quota.refreshing ? 'is-spinning' : ''}/></button>)}
-      <div className="pg-body"><div className="pg-sec"><div className="us-plan"><Account id="claude">Claude Max <em>{claude?.data.plan}</em></Account>{claude?.status === 'ok' && claude.data.reset_credits !== undefined && <span className="meta">{resetsLeft(claude.data.reset_credits, claude.data.reset_ends_at)}</span>}</div>
-        {claude?.status === 'ok' ? <div className="bigrings">{(claude.data.windows ?? []).map(w => <Ring key={w.key} w={w} name={w.label} sub={fmtReset(w.resets_at)}/>)}</div> : <p className="muted">{claude?.error ?? 'Not signed in to Claude Code'}</p>}</div>
-      <div className="pg-sec"><div className="us-plan"><Account id="codex">Codex <em>{codexUsage?.data.plan}</em></Account>{codexUsage?.status === 'ok' && <span className="meta">{resetsLeft(codexResets)}</span>}
-          {port && codexResets > 0 && !reset && <button className="us-use" onClick={askReset}>Use reset</button>}</div>
-        {reset && <div className="us-confirm" role="alertdialog" aria-label="Use this reset?">
-          <b>{reset.state === 'using' ? 'Using a reset…' : 'Use this reset?'}</b>
+      {back(t(TITLES.usage), <button className="us-sync" aria-label={t(['Refresh', '刷新'])} disabled={quota.refreshing} onClick={() => void quota.refresh()}>
+        {!quota.refreshing && synced ? t([`synced ${hm(synced)}`, `${hm(synced)} 同步`]) : t(['syncing…', '同步中…'])}<ArrowsClockwise size={11} className={quota.refreshing ? 'is-spinning' : ''}/></button>)}
+      <div className="pg-body"><div className="pg-sec"><h4>{t(['Balances', '余额'])}</h4><div className="bal">
+        <div className="bal-card"><Account id="deepseek">DeepSeek</Account><b>{deepseek?.status === 'ok' ? usd(deepseek.data.balance) : '—'}</b></div>
+        <Balance id="openai" name="OpenAI" left={openai?.status === 'ok' ? openai.data.balance_usd : undefined} since={openai?.data.balance_recorded_at} live={!!port} onSaved={balanceSaved}/>
+        <Balance id="minimax" name="MiniMax" left={minimax?.status === 'ok' ? minimax.data.estimate_usd : undefined} since={minimax?.data.anchor_at} live={!!port} onSaved={balanceSaved}/>
+      </div></div>
+      <div className="pg-sec"><div className="us-plan"><Account id="claude">Claude Max <em>{claude?.data.plan}</em></Account>{claude?.status === 'ok' && claude.data.reset_credits !== undefined && <span className="meta">{resetsLeft(lang, claude.data.reset_credits, claude.data.reset_ends_at)}</span>}</div>
+        {claude?.status === 'ok' ? <div className="bigrings">{(claude.data.windows ?? []).map(w => <Ring key={w.key} w={w} name={w.label} sub={fmtReset(w.resets_at)}/>)}</div> : <p className="muted">{claude?.error ?? t(['Not signed in to Claude Code', '没登录 Claude Code'])}</p>}</div>
+      <div className="pg-sec"><div className="us-plan"><Account id="codex">Codex <em>{codexUsage?.data.plan}</em></Account>{codexUsage?.status === 'ok' && <span className="meta">{resetsLeft(lang, codexResets)}</span>}
+          {port && codexResets > 0 && !reset && <button className="us-use" onClick={askReset}>{t(['Use reset', '用一次重置'])}</button>}</div>
+        {reset && <div className="us-confirm" role="alertdialog" aria-label={t(['Use this reset?', '用掉这次重置？'])}>
+          <b>{reset.state === 'using' ? t(['Using a reset…', '正在重置…']) : t(['Use this reset?', '用掉这次重置？'])}</b>
           {reset.state === 'error' ? <p className="is-alert">{reset.error}</p>
-            : <p>Clears your Codex limits now. {codexResets === 1 ? 'It is your only reset.' : `Uses 1 of your ${codexResets}.`}</p>}
-          <div><button className="btn btn-text" disabled={reset.state === 'using'} onClick={() => setReset(null)}>No, go back</button>
-            <button className="btn btn-glow" disabled={!reset.armed || reset.state === 'using'} onClick={() => void spendReset()}>{reset.state === 'error' ? 'Try again' : 'Yes, use reset'}</button></div>
+            : <p>{t(['Clears your Codex limits now.', '马上清空 Codex 的额度。'])} {codexResets === 1 ? t(['It is your only reset.', '这是你唯一一次重置。']) : t([`Uses 1 of your ${codexResets}.`, `用掉 ${codexResets} 次中的 1 次。`])}</p>}
+          <div><button className="btn btn-text" disabled={reset.state === 'using'} onClick={() => setReset(null)}>{t(['No, go back', '不用了'])}</button>
+            <button className="btn btn-glow" disabled={!reset.armed || reset.state === 'using'} onClick={() => void spendReset()}>{reset.state === 'error' ? t(['Try again', '再试一次']) : t(['Yes, use reset', '确定重置'])}</button></div>
         </div>}
-        {codexUsage?.status === 'ok' ? <div className="bigrings">{(codexUsage.data.windows ?? []).map(w => <Ring key={w.key} w={w} name={w.label} sub={fmtReset(w.resets_at)}/>)}</div> : <p className="muted">{codexUsage?.error ?? 'Not signed in to Codex'}</p>}</div>
-      <div className="pg-sec"><div className="us-plan"><Account id="openai">OpenAI <em>API</em></Account>{openai?.status === 'ok' && <span className="meta">this month {usd(openai.data.month_usd)}</span>}</div>
-        {openai?.status === 'ok' ? <Spend total={openai.data.today_usd ?? 0} models={openai.data.by_model ?? []}/> : <p className="muted">{openai?.error ?? 'Needs an admin key'}</p>}</div>
-      <div className="pg-sec"><h4>Balances</h4><div className="bal">
-        <Account id="deepseek"><span>DeepSeek</span><b>{deepseek?.status === 'ok' ? usd(deepseek.data.balance) : '—'}</b></Account>
-        <Account id="minimax"><span>MiniMax</span><b>{minimax?.status === 'ok' ? `≈ ${usd(minimax.data.estimate_usd)}` : '—'}</b><small>estimated from use</small></Account>
-      </div></div></div>
+        {codexUsage?.status === 'ok' ? <div className="bigrings">{(codexUsage.data.windows ?? []).map(w => <Ring key={w.key} w={w} name={w.label} sub={fmtReset(w.resets_at)}/>)}</div> : <p className="muted">{codexUsage?.error ?? t(['Not signed in to Codex', '没登录 Codex'])}</p>}</div>
+      <div className="pg-sec"><div className="us-plan"><Account id="openai">OpenAI <em>API</em></Account>{openai?.status === 'ok' && <span className="meta">{t(['this month', '本月'])} {usd(openai.data.month_usd)}</span>}</div>
+        {openai?.status === 'ok' ? <Spend total={openai.data.today_usd ?? 0} models={openai.data.by_model ?? []}/> : <p className="muted">{openai?.error ?? t(['Needs an admin key', '缺管理密钥'])}</p>}</div></div>
     </>,
     plugins: () => {
       const p = plugin ? plugins[plugin] : null;
       const shown = pluginIds.filter(id => plugins[id].name.toLowerCase().includes(query.trim().toLowerCase()));
       return <>
-        {back(p ? p.name : 'Plugins', !p && `${pluginsOn} connected`)}
+        {back(p ? p.name : t(TITLES.plugins), !p && t([`${pluginsOn} connected`, `${pluginsOn} 个已连接`]))}
         <div className="pg-body">{p ? <div className="pl-det" key={plugin}>{live?.error && <p className="pg-sec is-warm">{live.error}</p>}<PluginDetail id={plugin!} p={p} token={token} onToken={setToken} onAct={pluginAct}/></div>
           : <div className="pl-cat">
-            <label className="pg-sec search"><MagnifyingGlass size={13}/><input type="search" aria-label="Search plugins" placeholder="Search plugins" autoComplete="off" value={query} onChange={e => setQuery(e.target.value)} onPointerDown={focusWindow}/></label>
+            <label className="pg-sec search"><MagnifyingGlass size={13}/><input type="search" aria-label={t(['Search plugins', '搜索插件'])} placeholder={t(['Search plugins', '搜索插件'])} autoComplete="off" value={query} onChange={e => setQuery(e.target.value)} onPointerDown={focusWindow}/></label>
             {live?.error && <p className="pg-sec is-warm">{live.error}</p>}
-            {live && !snapshot && !live.error && <p className="pg-sec muted">Loading plugins…</p>}
+            {live && !snapshot && !live.error && <p className="pg-sec muted">{t(['Loading plugins…', '正在加载插件…'])}</p>}
             <div className="pg-sec pl-list">{shown.map(id => { const [cls, text] = pluginStatus(plugins[id]);
-              return <button key={id} className="pl-row" data-plugin={id} disabled={live?.busy} onClick={() => void openPlugin(id)}><span className={`pl-ic mk-${id}`}><Mark id={id} mark={plugins[id].mark}/></span><span className="pl-name">{plugins[id].name}<small className={cls}>{text}</small></span><CaretRight size={12}/></button>; })}</div>
-            {!shown.length && (!live || snapshot) && <p className="muted">No plugins match.</p>}
-            <p className="pg-sec muted">Plugins let Jarvis read and act in your apps. It asks before it writes, unless you change that.</p>
+              return <button key={id} className="pl-row" data-plugin={id} disabled={live?.busy} onClick={() => void openPlugin(id)}><span className={`pl-ic mk-${id}`}><Mark id={id} mark={plugins[id].mark}/></span><span className="pl-name">{plugins[id].name}<small className={cls}>{t(text)}</small></span><CaretRight size={12}/></button>; })}</div>
+            {!shown.length && (!live || snapshot) && <p className="muted">{t(['No plugins match.', '没有匹配的插件。'])}</p>}
+            <p className="pg-sec muted">{t(['Plugins let Jarvis read and act in your apps. It asks before it writes, unless you change that.', '插件让 Jarvis 读取并操作你的应用。写入前会先问你，除非你改了设置。'])}</p>
           </div>}</div>
       </>;
     },
+    settings: () => <SettingsPage lang={lang} port={port} open={open} cat={settingsCat} onCat={setSettingsCat} ctl={ctl} accounts={accounts}
+      hiddenAgents={Object.keys(hidden).length} onUnhideAgents={() => { setHidden({}); notify(t(['Hidden sessions are back.', '隐藏的会话回来了。'])); }}
+      onArrange={() => { setSettingsCat(null); setPage('arrange'); react('14', 1200); }} onPlugins={() => { setSettingsCat(null); setPage('plugins'); }}
+      onResetHome={() => { updateSettings(HOME_DEFAULTS); setDismissed({}); react('10', 1400); notify(t(['The home is back to how it started.', '首页恢复默认了。'])); }}
+      notify={text => notify(text)} head={(title, meta) => back(title, meta)}/>,
+    arrange: () => <>{back(t(['Arrange the home', '编辑首页']))}<ArrangeHome lang={lang}/></>,
+    brief: () => <>
+      {back(t(['Morning brief', '早报']), brief?.date)}
+      <div className="pg-body">{brief ? <div className="pg-sec"><Markdown text={brief.body}/></div> : <p className="pg-sec muted">{t(['No brief today yet.', '今天的早报还没写好。'])}</p>}</div>
+    </>,
     projects: () => <>
-      {back('Projects', 'last 7 days')}
-      <div className="pg-body">{projects.missing ? <p className="pg-sec muted">No projects set up. List them under projects in config/jarvis.yaml.</p> : !projectsView ? <p className="pg-sec muted">Syncing…</p> : <>
+      {back(t(TITLES.projects), t(['last 7 days', '最近 7 天']))}
+      <div className="pg-body">{projects.missing ? <p className="pg-sec muted">{t(['No projects set up. List them under projects in ~/.jarvis/settings.yaml.', '还没设置项目。在 ~/.jarvis/settings.yaml 的 projects 下列出来。'])}</p> : !projectsView ? <p className="pg-sec muted">{t(['Syncing…', '同步中…'])}</p> : <>
         {activeProjects.map(p => <article className="pg-sec pj" key={p.id}>
-          <div className="pj-top"><b>{p.name}</b><span>{duration(p.seconds)}{p.commits.count ? ` · ${p.commits.count} commits` : ''}</span></div>
+          <div className="pj-top"><b>{p.name}</b><span>{duration(p.seconds)}{p.commits.count ? t([` · ${p.commits.count} commits`, ` · ${p.commits.count} 次提交`]) : ''}</span></div>
           <Cols days={p.days} dates={projectsView.days}/>
-          <small>Today {p.today_seconds ? duration(p.today_seconds) : 'not touched'}{p.recent[0] ? ` · ${p.recent[0].app}, ${p.recent[0].label}` : ''}</small>
+          <small>{t(['Today', '今天'])} {p.today_seconds ? duration(p.today_seconds) : t(['not touched', '没碰'])}{p.recent[0] ? ` · ${p.recent[0].app}, ${p.recent[0].label}` : ''}</small>
         </article>)}
-        {projectsView.projects.some(p => !activeProjects.includes(p)) && <p className="pg-sec muted">Not touched this week: {projectsView.projects.filter(p => !activeProjects.includes(p)).map(p => p.name).join(', ')}</p>}
-        <footer className="pg-foot"><span>{projects.notice ?? `Other ${duration(projectsView.other.seconds)}${projectsView.unsorted.seconds ? ` · ${duration(projectsView.unsorted.seconds)} not sorted` : ''}`}</span>
-          {projectsView.unsorted.seconds > 0 && <button className="btn btn-ghost" disabled={projects.refreshing} onClick={() => void projects.refresh()}>{projects.refreshing ? 'Sorting…' : 'Sort now'}</button>}</footer>
+        {projectsView.projects.some(p => !activeProjects.includes(p)) && <p className="pg-sec muted">{t(['Not touched this week:', '这周没碰：'])} {projectsView.projects.filter(p => !activeProjects.includes(p)).map(p => p.name).join(', ')}</p>}
+        <footer className="pg-foot"><span>{projects.notice ?? `${t(['Other', '其他'])} ${duration(projectsView.other.seconds)}${projectsView.unsorted.seconds ? ` · ${duration(projectsView.unsorted.seconds)} ${t(['not sorted', '未归类'])}` : ''}`}</span>
+          {projectsView.unsorted.seconds > 0 && <button className="btn btn-ghost" disabled={projects.refreshing} onClick={() => void projects.refresh()}>{projects.refreshing ? t(['Sorting…', '归类中…']) : t(['Sort now', '现在归类'])}</button>}</footer>
       </>}</div>
     </>,
   };
 
   return <div className="ad" data-page={page ?? undefined} onKeyDown={keys}>
-    <div className="view" ref={view}>
+    <div className="view" ref={view} style={{ height: viewH }}>
       <div className="overview" ref={home} inert={!!page}>
-        <div className="row r-voice" data-row="conversation">
-          <button className="voice-open" aria-label="Open Conversation" onClick={() => openPage('conversation')}>
-            <span className="say" key={saying.text}>{saying.text}</span>
-            <span className={`cap ${saying.busy ? 'is-busy' : ''}`}><i/><span>{saying.caption}</span></span>
-          </button>
-        </div>
-        <button className="row r-agents" data-row="agents" aria-label="Open Agents" onClick={() => openPage('agents')}>
-          <span className="head"><span className="label">Agents</span><span className="head-r">
-            <span className="orbs">{[...waiting, ...stopped, ...finished, ...working].slice(0, 5).map(s => <AgentMark key={s.id} id={s.id} look={marks} state={markOf(s)} size={12}/>)}</span>
-            {(waiting.length > 0 || working.length > 0) && <span className={`pill ${waiting.length ? 'is-waiting' : ''}`}>{waiting.length ? `${waiting.length} ${waiting.length > 1 ? 'need' : 'needs'} you` : `${working.length} working`}</span>}
-          </span></span>
-          <span className="text one">{lead ? <><span className={`tagc ${lead.agent}`}>{AGENT_NAME[lead.agent]}</span>{lead.title}{lead.state === 'wait' && lead.last ? ` · ${lead.last.replace(/^Wants/, 'wants')}` : ''}</> : 'Sessions show up once you start one.'}</span>
-        </button>
-        <button className="row r-now" data-row="now" aria-label="Open Right now" onClick={() => openPage('now')}>
-          <span className="head"><span className="label">Now</span><span className={`meta ${fresh.stale ? 'is-warm' : ''}`} title={fresh.text}>{now ? `${now.current ? 'as of' : 'at'} ${now.at}` : ''}</span></span>
-          <span className="text">{now ? now.claim : workView === null ? 'Syncing…' : 'No recent activity observed'}</span>
-        </button>
-        <button className="row r-usage" data-row="usage" aria-label="Open Usage" onClick={() => openPage('usage')}>
-          <span className="head"><span className="label">Usage</span><span className="meta">OpenAI today <b>{usd(openai?.data.today_usd)}</b></span></span>
-          <span className="rings">
-            <UsageGroup name="Claude Max" plan={claude?.data.plan} ok={claude?.status === 'ok'} windows={(claude?.data.windows ?? []).slice(0, 3)} synced={!!quota.usage}/>
-            <span className="split"/>
-            <UsageGroup name="Codex" plan={codexUsage?.data.plan?.split(' ')[0]} ok={codexUsage?.status === 'ok'} windows={(codexUsage?.data.windows ?? []).slice(0, 1)} synced={!!quota.usage}/>
+        <div className="corner">
+          <span className="clock">{talk?.offline ? <b className="is-warm">{t(['Offline · reconnecting', '离线 · 重连中'])}</b> : <><b>{dateLabel}</b> {timeOf(tick)}</>}</span>
+          <span className="corner-b">
+            <button className="cb" data-row="conversation" aria-label={t(['Conversation', '对话'])} title={t(['Conversation', '对话'])} onClick={e => openPage('conversation', e.currentTarget)}><ChatCircle size={15}/></button>
+            <button className={`cb ${ctl.speechMuted ? 'is-muted' : ''}`} aria-pressed={ctl.speechMuted} onClick={mute}
+              aria-label={t(ctl.speechMuted ? ['Unmute Jarvis', '取消静音'] : ['Mute Jarvis', '让 Jarvis 静音'])} title={t(ctl.speechMuted ? ['Unmute Jarvis', '取消静音'] : ['Mute Jarvis: voice and sounds', '让 Jarvis 静音：声音和提示音'])}>
+              {ctl.speechMuted ? <SpeakerSlash size={15}/> : <SpeakerHigh size={15}/>}</button>
+            <button className="cb" data-row="settings" aria-label={t(['Settings', '设置'])} title={t(['Settings', '设置'])} onClick={e => openPage('settings', e.currentTarget)}><GearSix size={15}/></button>
           </span>
-        </button>
-        <div className="tiles">
-          <button className="row tile" data-row="plugins" aria-label="Open Plugins" onClick={() => openPage('plugins')}>
-            <span className="head"><span className="label">Plugins</span><span className="meta">{pluginsOn} on</span></span>
-            <span className="pl-mini">{pluginIds.slice(0, 4).map(id => <i key={id} className={`mk-${id} ${plugins[id].state === 'on' ? 'on' : plugins[id].state === 'off' ? 'off' : 'need'}`} title={`${plugins[id].name}: ${pluginStatus(plugins[id])[1]}`}><Mark id={id} mark={plugins[id].mark}/></i>)}</span>
-          </button>
-          <button className="row tile" data-row="projects" aria-label="Open Projects" onClick={() => openPage('projects')}>
-            <span className="head"><span className="label">Projects</span><span className="meta">7 d</span></span>
-            <span className="pj-mini">{topProject ? <><span><b>{topProject.name}</b> {duration(topProject.seconds)}</span><Cols days={topProject.days}/></> : <span>{projects.missing ? 'Not set up' : projectsView ? 'No time yet' : 'Syncing…'}</span>}</span>
-          </button>
+        </div>
+        <div className="home-list" onPointerDown={holdDown} onPointerMove={holdMove} onPointerUp={cancelHold} onPointerLeave={cancelHold} onPointerCancel={cancelHold}>
+          <div className="home-inner" ref={inner}>{blocks.map(id => <HomeBlock key={id} id={id} pop={isPop(id)} lang={lang} onClose={() => dismiss(id)}>{{
+            talk: () => <button className="talk-open" aria-label={t(['Open Conversation', '打开对话'])} onClick={e => openPage('conversation', e.currentTarget.parentElement)}>
+              {youSaid && <span className="you"><b>{t(['You', '你'])}</b>{youSaid}</span>}
+              <span className={`say ${talking ? 'is-busy' : ''}`} key={answer}>{answer || '…'}</span>
+            </button>,
+            foryou: () => <>
+              <span className="head"><span className="label is-warm">{t(['For you', '找你的事'])}</span><span className="meta">{forYou.length}</span></span>
+              {forYou.slice(0, 3).map(f => <div className="fy" key={f.id}><span className={`nd ${f.ask ? '' : 'is-note'}`}/><span className="fy-t" title={f.text}>{f.text}</span>
+                {f.act && <button className="fy-b" onClick={f.act[1]}>{t(f.act[0])}</button>}</div>)}
+            </>,
+            brief: () => brief && <>
+              <span className="head"><span className="label">{t(['Morning brief', '早报'])}</span>{brief.items ? <span className="meta">{t([`${brief.items} items`, `${brief.items} 条`])}</span> : null}</span>
+              <p className="text">{brief.summary}</p>
+              <button className="brief-go" data-row="brief" onClick={e => { const el = e.currentTarget.closest<HTMLElement>('.row'); setBriefRead(brief.date); openPage('brief', el); }}>{t(['Read the brief', '看早报'])}<CaretRight size={11}/></button>
+            </>,
+            today: () => <>
+              <span className="head"><span className="label">{t(['Today', '今天'])}</span>{wx && <span className="meta wx">{WX[wx.hours?.[0]?.kind ?? 'cloud']}{Math.round(wx.now_c)}°{wx.summary ? ` · ${wx.summary}` : ''}</span>}</span>
+              {forecast && <span className="fc">{forecast.map(h => <span key={h.at} className={h.kind === 'rain' || h.kind === 'storm' ? 'is-rain' : ''}><em>{timeOf(Date.parse(h.at)).replace(':00', '')}</em>{WX[h.kind]}<b>{Math.round(h.temp_c)}°</b></span>)}</span>}
+              <span className="td-list">
+                {events.map((e, i) => <span className="ev" key={e.id}><b>{e.all_day ? t(['All day', '全天']) : timeOf(Date.parse(e.start))}</b><span>{e.title}</span>{i === 0 && !e.all_day && Date.parse(e.start) > tick && <em>{inAbout(Date.parse(e.start))}</em>}</span>)}
+                {todos.map(x => <button className="td" key={x.id} aria-pressed={!!checked[x.id]} onClick={() => void checkTodo(x.id)}><i>{checked[x.id] && <Check size={10} weight="bold"/>}</i><span>{x.title}</span>
+                  {x.due && <em className={due(x) < tick || sameDay(due(x)) ? 'is-warm' : ''}>{dueLabel(due(x))}</em>}</button>)}
+                {port && !today && <span className="muted">{todayRoute.missing ? t(['Calendar and to-dos aren’t connected yet.', '日程和待办还没接上。']) : t(['Syncing…', '同步中…'])}</span>}
+                {today && !events.length && !todos.length && <span className="muted">{t(['Nothing left today.', '今天没有别的事了。'])}</span>}
+              </span>
+            </>,
+            mail: () => <>
+              <span className="head"><span className="label">{t(['Mail', '邮件'])}</span><span className="meta">{t([`${mail.length} unread`, `${mail.length} 封未读`])}</span></span>
+              {mail.slice(0, 2).map(m => <span className="ml" key={m.id}><EnvelopeSimple size={13}/><b>{m.from}</b><span>{m.subject}</span></span>)}
+            </>,
+            agents: () => <button className="fill" data-row="agents" aria-label={t(['Open Agents', '打开 Agents'])} onClick={e => openPage('agents', e.currentTarget.parentElement)}>
+              <span className="head"><span className="label">Agents</span><span className="head-r">
+                <span className="orbs">{[...waiting, ...stopped, ...finished, ...working].slice(0, 5).map(s => <AgentMark key={s.id} id={s.id} look={marks} state={markOf(s)} size={12}/>)}</span>
+                {(waiting.length > 0 || working.length > 0) && <span className={`pill ${waiting.length ? 'is-waiting' : ''}`}>{waiting.length ? zh ? `${waiting.length} 个等你` : `${waiting.length} ${waiting.length > 1 ? 'need' : 'needs'} you` : zh ? `${working.length} 个在做` : `${working.length} working`}</span>}
+              </span></span>
+              <span className="text one">{lead ? <><span className={`tagc ${lead.agent}`}>{AGENT_NAME[lead.agent]}</span>{lead.title}{lead.state === 'wait' && lead.last ? ` · ${lead.last.replace(/^Wants/, 'wants')}` : ''}</> : t(['Sessions show up once you start one.', '开一个会话，它就会出现在这里。'])}</span>
+            </button>,
+            now: () => <button className="fill" data-row="now" aria-label={t(['Open Right now', '打开“现在”'])} onClick={e => openPage('now', e.currentTarget.parentElement)}>
+              <span className="head"><span className="label">{t(['Now', '现在'])}</span><span className={`meta ${fresh.stale ? 'is-warm' : ''}`} title={fresh.text}>{now ? `${now.current ? t(['as of', '截至']) : t(['at', '于'])} ${now.at}` : ''}</span></span>
+              <span className="text">{now ? now.claim : workView === null ? t(['Syncing…', '同步中…']) : t(['No recent activity observed', '最近没看到动静'])}</span>
+            </button>,
+            usage: () => <button className="fill" data-row="usage" aria-label={t(['Open Usage', '打开用量'])} onClick={e => openPage('usage', e.currentTarget.parentElement)}>
+              <span className="head"><span className="label">{t(['Usage', '用量'])}</span><span className="meta">{t(['OpenAI today', 'OpenAI 今天'])} <b>{usd(openai?.data.today_usd)}</b></span></span>
+              <span className="rings">
+                <UsageGroup name="Claude Max" plan={claude?.data.plan} ok={claude?.status === 'ok'} windows={(claude?.data.windows ?? []).slice(0, 3)} synced={!!quota.usage}/>
+                <span className="split"/>
+                <UsageGroup name="Codex" plan={codexUsage?.data.plan?.split(' ')[0]} ok={codexUsage?.status === 'ok'} windows={(codexUsage?.data.windows ?? []).slice(0, 1)} synced={!!quota.usage}/>
+              </span>
+            </button>,
+            tiles: () => <>
+              <button className="row tile" data-row="plugins" aria-label={t(['Open Plugins', '打开插件'])} onClick={e => openPage('plugins', e.currentTarget)}>
+                <span className="head"><span className="label">{t(['Plugins', '插件'])}</span><span className="meta">{t([`${pluginsOn} on`, `${pluginsOn} 个开`])}</span></span>
+                <span className="pl-mini">{pluginIds.slice(0, 4).map(id => <i key={id} className={`mk-${id} ${plugins[id].state === 'on' ? 'on' : plugins[id].state === 'off' ? 'off' : 'need'}`} title={`${plugins[id].name}: ${t(pluginStatus(plugins[id])[1])}`}><Mark id={id} mark={plugins[id].mark}/></i>)}</span>
+              </button>
+              <button className="row tile" data-row="projects" aria-label={t(['Open Projects', '打开项目'])} onClick={e => openPage('projects', e.currentTarget)}>
+                <span className="head"><span className="label">{t(['Projects', '项目'])}</span><span className="meta">{t(['7 d', '7 天'])}</span></span>
+                <span className="pj-mini">{topProject ? <><span><b>{topProject.name}</b> {duration(topProject.seconds)}</span><Cols days={topProject.days}/></> : <span>{projects.missing ? t(['Not set up', '还没设置']) : projectsView ? t(['No time yet', '还没有时间']) : t(['Syncing…', '同步中…'])}</span>}</span>
+              </button>
+            </>,
+          }[id]()}</HomeBlock>)}
+          {!blocks.length && <p className="muted home-empty">{t(['Everything is hidden. Hold here or open Settings › Home.', '全部隐藏了。去 设置 › 首页 恢复。'])}</p>}</div>
         </div>
       </div>
-      {page && <section className="page" ref={pageEl} aria-label={TITLES[page]}>{pages[page]()}</section>}
+      {page && <section className="page" ref={pageEl} aria-label={t(TITLES[page])}>{pages[page]()}</section>}
     </div>
     <div className="cmp-hit" onClick={e => { const input = e.currentTarget.querySelector('input'); if (input && !(e.target as Element).closest('button,input')) focusWindow({ currentTarget: input }); }}><Ask className="cmp" onAsk={ask}/></div>
-    <div className={`toast ${toast ? 'is-on' : ''}`} role="status">{toast?.text}{toast?.undo && <button onClick={() => { toast.undo!(); setToast(null); }}>Undo</button>}</div>
+    <div className={`toast ${toast ? 'is-on' : ''}`} role="status">{toast?.text}{toast?.undo && <button onClick={() => { toast.undo!(); setToast(null); }}>{t(['Undo', '撤销'])}</button>}</div>
+  </div>;
+}
+
+// One block on the home. The pop-ups carry a × that closes what they show now; the tiles keep their own grid.
+function HomeBlock({ id, pop, lang, onClose, children }: { id: BlockId; pop: boolean; lang: Lang; onClose: () => void; children: ReactNode }) {
+  return <div className={id === 'tiles' ? 'tiles' : `row r-${id}${pop ? ' is-pop' : ''}`} data-block={id}>
+    {children}
+    {pop && <button className="mx" aria-label={`${tr(lang, ['Close', '关掉'])} ${tr(lang, BLOCK[id].name)}`} title={tr(lang, ['Close', '关掉'])} onClick={onClose}><X size={11} weight="bold"/></button>}
   </div>;
 }
 
@@ -545,15 +727,15 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
 const focusWindow = (event: { currentTarget: HTMLElement }) => { const el = event.currentTarget; void window.jarvis?.focus(true).then(() => el.focus({ preventScroll: true })); };
 
 function Ask({ className, onAsk }: { className: string; onAsk: (text: string) => void }) {
-  const [text, setText] = useState('');
+  const [text, setText] = useState(''), t = useT();
   return <form className={className} onSubmit={event => {
     event.preventDefault();
     if (!text.trim()) return;
     onAsk(text.trim()); setText(''); event.currentTarget.querySelector('input')?.blur();
   }}>
-    <input aria-label="Message Jarvis" placeholder="Message Jarvis…" autoComplete="off" value={text} onChange={event => setText(event.target.value)}
+    <input aria-label={t(['Message Jarvis', '给 Jarvis 发消息'])} placeholder={t(['Message Jarvis…', '给 Jarvis 发消息…'])} autoComplete="off" value={text} onChange={event => setText(event.target.value)}
       onPointerDown={focusWindow} onKeyDown={event => { if (event.key === 'Enter' && event.nativeEvent.isComposing) event.preventDefault(); }}/>
-    <button className="send" aria-label="Send" disabled={!text.trim()}><ArrowUp size={13} weight="bold"/></button>
+    <button className="send" aria-label={t(['Send', '发送'])} disabled={!text.trim()}><ArrowUp size={13} weight="bold"/></button>
   </form>;
 }
 
@@ -565,7 +747,8 @@ function Fold({ label, children }: { label: string; children: ReactNode }) {
 
 // The service's own usage or billing page, in the browser; main keeps the list of pages.
 function Account({ id, children }: { id: string; children: ReactNode }) {
-  return <button className="us-link" title="Open in the browser" onClick={() => void window.jarvis?.openAccount?.(id)}>{children}<ArrowSquareOut size={11} className="us-out"/></button>;
+  const t = useT();
+  return <button className="us-link" title={t(['Open in the browser', '在浏览器里打开'])} onClick={() => void window.jarvis?.openAccount?.(id)}>{children}<ArrowSquareOut size={11} className="us-out"/></button>;
 }
 // Short names fit under a small ring on the home page; the Usage page spells them out.
 const RING_NAME: Record<string, string> = { five_hour: '5 h', seven_day: '7 d', seven_day_fable: 'Fable', primary_window: '7 d' };
@@ -577,84 +760,123 @@ function Ring({ w, name, sub }: { w: UsageWindow; name: string; sub: string }) {
   </span>;
 }
 function UsageGroup({ name, plan, ok, windows, synced }: { name: string; plan?: string; ok: boolean; windows: UsageWindow[]; synced: boolean }) {
+  const t = useT();
   return <span className="group"><span className="plan">{name} <em>{plan}</em></span>
     {ok && windows.length ? <span className="ringset">{windows.map(w => <Ring key={w.key} w={w} name={RING_NAME[w.key] ?? w.label} sub={fmtReset(w.resets_at).replace('resets in ', '')}/>)}</span>
-      : <span className="plan">{synced ? 'Not set up' : 'Syncing…'}</span>}
+      : <span className="plan">{synced ? t(['Not set up', '还没设置']) : t(['Syncing…', '同步中…'])}</span>}
   </span>;
 }
 // Today's spend as one ring cut by model, biggest first; the list beside it names each cut.
 // The cuts sit on their own element so the fill animation reaches the gradient.
+// Only models that cost a cent today are listed; the rest fold into one line that opens them.
 function Spend({ total, models }: { total: number; models: { model: string; today_usd: number }[] }) {
+  const t = useT();
+  const [all, setAll] = useState(false);
   const sorted = [...models].sort((a, b) => b.today_usd - a.today_usd), tint = (i: number) => `rgb(var(--glow) / ${Math.max(.2, 1 - i * .55)})`;
+  const paid = sorted.filter(m => m.today_usd >= .005), free = sorted.length - paid.length;
   let edge = 0;
   const stops = sorted.map((m, i) => { const from = edge; edge += total ? m.today_usd / total : 0; return `${tint(i)} calc(var(--fill) * ${from}%) calc(var(--fill) * ${edge}%)`; });
   return <div className="spend">
-    <span className="ring"><span className="dial donut"><i style={{ background: `conic-gradient(${[...stops, 'rgb(var(--glow) / .12) 0'].join(',')})` }}/><b>{usd(total)}<small>today</small></b></span></span>
-    <ul>{sorted.map((m, i) => <li key={m.model}><i style={{ background: tint(i) }}/>{m.model}<span>{usd(m.today_usd)}</span></li>)}</ul>
+    <span className="ring"><span className="dial donut"><i style={{ background: `conic-gradient(${[...stops, 'rgb(var(--glow) / .12) 0'].join(',')})` }}/><b>{usd(total)}<small>{t(['today', '今天'])}</small></b></span></span>
+    <ul>{(all ? sorted : paid).map((m, i) => <li key={m.model}><i style={{ background: tint(i) }}/>{m.model}<span>{usd(m.today_usd)}</span></li>)}
+      {free > 0 && <li><button className="more" aria-expanded={all} onClick={() => setAll(v => !v)}>{all ? 'Show less' : `${free} more at $0.00`}</button></li>}</ul>
+  </div>;
+}
+// OpenAI and MiniMax report no balance (ADR 0050): Allen types the one on their billing page and
+// the daemon subtracts what is spent after it, so the number shown is an estimate since then.
+function Balance({ id, name, left, since, live, onSaved }: { id: 'openai' | 'minimax'; name: string; left?: number; since?: string | null; live: boolean; onSaved: () => void }) {
+  const [draft, setDraft] = useState<string | null>(null), [saving, setSaving] = useState(false), [error, setError] = useState('');
+  const amount = Number(draft), valid = !!draft?.trim() && Number.isFinite(amount) && amount >= 0;
+  const input = useCallback((el: HTMLInputElement | null) => {
+    if (!el) return;
+    el.closest('form')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    void window.jarvis?.focus(true).then(() => el.focus({ preventScroll: true }));
+  }, []);
+  const save = async () => {
+    if (!valid || saving) return;
+    setSaving(true); setError('');
+    try { await window.jarvis!.usageBalance(id, amount); setDraft(null); onSaved(); }
+    catch (e) { setError(cleanError(e)); }
+    finally { setSaving(false); }
+  };
+  if (draft !== null) return <form className="bal-card is-editing" onSubmit={e => { e.preventDefault(); void save(); }}>
+    <span className="bal-name">{name} balance now</span>
+    <label className="bal-input">$<input ref={input} aria-label={`${name} balance`} inputMode="decimal" autoComplete="off" placeholder="0.00" value={draft}
+      onChange={e => setDraft(e.target.value.replace(/[^\d.]/g, ''))} onPointerDown={focusWindow} onKeyDown={e => { if (e.key === 'Escape') setDraft(null); }}/></label>
+    {error && <p className="is-alert">{error}</p>}
+    <div><button type="button" className="btn btn-text" onClick={() => setDraft(null)}>Cancel</button><button className="btn btn-glow" disabled={!valid || saving}>{saving ? 'Saving…' : 'Save'}</button></div>
+  </form>;
+  return <div className="bal-card">
+    <Account id={id}>{name}</Account>
+    <b>{left === undefined ? '—' : `≈ ${usd(left)}`}</b>
+    <small>{since ? `since ${new Date(since).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}` : 'not set'}</small>
+    {live && <button className="bal-set" onClick={() => setDraft('')}>{since ? 'Update' : 'Set'}</button>}
   </div>;
 }
 // One column per day, today last. With dates, hovering a column tells its day and hours.
 function Cols({ days, dates }: { days: number[]; dates?: string[] }) {
-  const peak = Math.max(...days, 1);
-  const day = (iso: string, i: number) => i === days.length - 1 ? 'Today'
-    : `${new Date(`${iso}T12:00:00`).toLocaleDateString('en-US', { weekday: 'short' })} ${Number(iso.slice(5, 7))}/${Number(iso.slice(8, 10))}`;
+  const peak = Math.max(...days, 1), t = useT();
+  const day = (iso: string, i: number) => i === days.length - 1 ? t(['Today', '今天'])
+    : `${new Date(`${iso}T12:00:00`).toLocaleDateString(t(['en-US', 'zh-CN']), { weekday: 'short' })} ${Number(iso.slice(5, 7))}/${Number(iso.slice(8, 10))}`;
   return <span className="cols" role={dates ? 'img' : undefined} aria-hidden={!dates} aria-label={dates ? `Hours per day, today last: ${days.map(duration).join(', ')}` : undefined}>
-    {days.map((s, i) => <span key={i} style={{ '--h': s / peak * 100 } as CSSProperties}><i/>{dates?.[i] && <b className="tip">{day(dates[i], i)} · {s ? duration(s) : 'nothing'}</b>}</span>)}
+    {days.map((s, i) => <span key={i} style={{ '--h': s / peak * 100 } as CSSProperties}><i/>{dates?.[i] && <b className="tip">{day(dates[i], i)} · {s ? duration(s) : t(['nothing', '没有'])}</b>}</span>)}
   </span>;
 }
 
 // Folded: the state mark, the session's name and its tags. A click opens it to what you said, what it is
 // doing, and the actions; the jump to its terminal or Codex thread lives there too.
 function AgentRow({ s, look, mark, open, onToggle, onOpen, onHide, actions }: { s: Agent; look: MarkLook; mark: MarkState; open: boolean; onToggle: () => void; onOpen?: () => void; onHide: () => void; actions?: ReactNode }) {
+  const t = useT();
   return <article className={`ag is-${s.state} ${open ? 'is-open' : ''}`} data-id={s.id}>
     <AgentMark look={look} state={mark} id={s.id} size={14}/>
     <div className="ag-body">
       <button className="ag-head" aria-expanded={open} onClick={onToggle}>
         <span className="ag-top"><span className="ag-title">{s.title}</span><span className="age">{s.age}</span></span>
         <span className="ag-tags"><span className={`tagc ${s.agent}`}>{AGENT_NAME[s.agent]}</span><span className="tagc">{s.project}</span>
-          {s.where !== 'Codex' && <span className="tagc">{s.where}</span>}{s.sub && <span className="tagc sub">Subagent</span>}</span>
+          {s.where !== 'Codex' && <span className="tagc">{s.where}</span>}{s.sub && <span className="tagc sub">{t(['Subagent', '子代理'])}</span>}</span>
       </button>
       <div className="ag-more" inert={!open}><div>
         {s.branch && <span className="ag-meta"><GitBranch size={10}/>{s.branch}</span>}
-        {s.you && <span className="ag-you"><b>You</b>{s.you}</span>}
+        {s.you && <span className="ag-you"><b>{t(['You', '你'])}</b>{s.you}</span>}
         {s.last && <span className="ag-last">{s.last}</span>}
-        <span className="ag-actions">{s.state === 'wait' && actions}{onOpen && <button className="ag-go" onClick={onOpen}>Open in {s.where}<ArrowSquareOut size={11}/></button>}</span>
+        <span className="ag-actions">{s.state === 'wait' && actions}{onOpen && <button className="ag-go" onClick={onOpen}>{t([`Open in ${s.where}`, `在 ${s.where} 打开`])}<ArrowSquareOut size={11}/></button>}</span>
       </div></div>
     </div>
-    <button className="ag-x" aria-label={`Hide ${s.title}`} onClick={onHide}><X size={11}/></button>
+    <button className="ag-x" aria-label={`${t(['Hide', '隐藏'])} ${s.title}`} onClick={onHide}><X size={11}/></button>
     {s.state === 'work' && <i className="shimmer"/>}
   </article>;
 }
 
 function PluginDetail({ id, p, token, onToken, onAct }: { id: string; p: DemoPlugin; token: string; onToken: (value: string) => void; onAct: (act: string, value?: string) => void }) {
-  const top = <><div className="pg-sec pl-id"><span className={`pl-ic lg mk-${id}`}><Mark id={id} mark={p.mark}/></span><h5>{p.name}</h5><p>{p.about}</p>{p.state === 'on' && <span className="pill is-new">Connected</span>}</div>
+  const t = useT();
+  const top = <><div className="pg-sec pl-id"><span className={`pl-ic lg mk-${id}`}><Mark id={id} mark={p.mark}/></span><h5>{p.name}</h5><p>{p.about}</p>{p.state === 'on' && <span className="pill is-new">{t(['Connected', '已连接'])}</span>}</div>
     {p.error && p.state !== 'on' && p.state !== 'connecting' && <p className="pg-sec is-warm" role="alert">{p.error}</p>}</>;
   if (p.unsupported) return <>{top}<p className="pg-sec muted">{p.unsupported}</p></>;
-  const act = (name: string, label: string, className = 'btn-text') => <button className={className} onClick={() => onAct(name)}>{label}</button>;
+  const act = (name: string, label: L, className = 'btn-text') => <button className={className} onClick={() => onAct(name)}>{t(label)}</button>;
   if (p.state === 'connecting') return <>{top}
-    <div className="pg-sec waiting" role="status"><span className="spin-ring"/><p>{p.kind === 'oauth' ? 'Waiting for you in the browser…' : 'Connecting…'}</p><p className="muted">{p.ask ? 'Jarvis picks the task back up once you’re in.' : 'You can close the panel. It keeps waiting.'}</p></div>
-    <div className="pg-sec acts row-btns">{p.kind === 'oauth' && act('reopen', 'Open sign-in page again', 'btn btn-ghost')}{act('cancel', 'Cancel')}</div>
+    <div className="pg-sec waiting" role="status"><span className="spin-ring"/><p>{p.kind === 'oauth' ? t(['Waiting for you in the browser…', '在浏览器里等你…']) : t(['Connecting…', '连接中…'])}</p><p className="muted">{p.ask ? t(['Jarvis picks the task back up once you’re in.', '你登录后 Jarvis 会接着做那件事。']) : t(['You can close the panel. It keeps waiting.', '可以关掉面板，它会继续等。'])}</p></div>
+    <div className="pg-sec acts row-btns">{p.kind === 'oauth' && act('reopen', ['Open sign-in page again', '再打开登录页'], 'btn btn-ghost')}{act('cancel', ['Cancel', '取消'])}</div>
   </>;
   if (p.state === 'on') return <>{top}
-    {p.resumed && <div className="pg-sec ask-card is-ok"><span>Back to your task</span>{p.resumed}</div>}
-    <div className="pg-sec"><div><div className="kv"><span>Tools</span><span>{p.toolCount}</span></div><div className="kv"><span>Can</span><span>{p.can?.length ? p.can.join(' · ') : 'Read · Write'}</span></div></div></div>
-    <label className="pg-sec field">Ask before acting<select aria-label="Ask before acting" value={p.approval ?? 'auto'} onChange={e => onAct('approval', e.target.value)}>
-      {p.approval === 'configured' && <option value="configured" disabled>Each service’s own setting</option>}
-      <option value="auto">Let Jarvis decide (default)</option><option value="prompt">Ask every time</option><option value="writes">Ask before it writes</option><option value="approve">Don’t ask</option></select><small>A tool’s own setting wins over this.</small></label>
-    {p.tools.length > 0 && <div className="pg-sec"><Fold label="Show tools"><pre>{p.tools.join('\n')}</pre></Fold></div>}
-    <footer className="pg-foot"><span>Turning it off removes its tools.</span>{act('off', 'Turn off', 'btn-text is-alert')}</footer>
+    {p.resumed && <div className="pg-sec ask-card is-ok"><span>{t(['Back to your task', '接着做你的事'])}</span>{p.resumed}</div>}
+    <div className="pg-sec"><div><div className="kv"><span>{t(['Tools', '工具'])}</span><span>{p.toolCount}</span></div><div className="kv"><span>{t(['Can', '能做'])}</span><span>{p.can?.length ? p.can.join(' · ') : t(['Read · Write', '读 · 写'])}</span></div></div></div>
+    <label className="pg-sec field">{t(['Ask before acting', '动手前先问'])}<select aria-label={t(['Ask before acting', '动手前先问'])} value={p.approval ?? 'auto'} onChange={e => onAct('approval', e.target.value)}>
+      {p.approval === 'configured' && <option value="configured" disabled>{t(['Each service’s own setting', '按各服务自己的设置'])}</option>}
+      <option value="auto">{t(['Let Jarvis decide (default)', '让 Jarvis 决定（默认）'])}</option><option value="prompt">{t(['Ask every time', '每次都问'])}</option><option value="writes">{t(['Ask before it writes', '写入前问'])}</option><option value="approve">{t(['Don’t ask', '不用问'])}</option></select><small>{t(['A tool’s own setting wins over this.', '工具自己的设置优先。'])}</small></label>
+    {p.tools.length > 0 && <div className="pg-sec"><Fold label={t(['Show tools', '看看有哪些工具'])}><pre>{p.tools.join('\n')}</pre></Fold></div>}
+    <footer className="pg-foot"><span>{t(['Turning it off removes its tools.', '关掉后它的工具就没了。'])}</span>{act('off', ['Turn off', '关掉'], 'btn-text is-alert')}</footer>
   </>;
   if (p.state === 'token') return <>{top}
-    <label className="pg-sec field">Access token<input type="password" placeholder={p.saved ? 'Saved · leave empty to keep it' : 'ghp_…'} autoComplete="off" aria-label={`${p.name} access token`} value={token} onChange={e => onToken(e.target.value)} onPointerDown={focusWindow}/><small>Stays on this Mac. It never goes into the conversation.</small></label>
-    <div className="pg-sec acts">{act('connect', 'Connect', 'btn btn-glow wide')}{act('later', 'Not now')}</div>
+    <label className="pg-sec field">{t(['Access token', '访问令牌'])}<input type="password" placeholder={p.saved ? t(['Saved · leave empty to keep it', '已保存 · 留空就不变']) : 'ghp_…'} autoComplete="off" aria-label={`${p.name} ${t(['access token', '访问令牌'])}`} value={token} onChange={e => onToken(e.target.value)} onPointerDown={focusWindow}/><small>{t(['Stays on this Mac. It never goes into the conversation.', '只存在这台 Mac 上，不会进对话。'])}</small></label>
+    <div className="pg-sec acts">{act('connect', ['Connect', '连接'], 'btn btn-glow wide')}{act('later', ['Not now', '先不'])}</div>
   </>;
   if (p.state === 'off') return <>{top}
-    <ul className="pg-sec facts"><li><ArrowSquareOut size={13}/><span>Adds its tools to Jarvis on this Mac.</span></li><li><ShieldCheck size={13}/><span>Asks before it writes, unless you change that.</span></li></ul>
-    <div className="pg-sec acts">{act('connect', 'Turn on', 'btn btn-glow wide')}{act('later', 'Not now')}</div>
+    <ul className="pg-sec facts"><li><ArrowSquareOut size={13}/><span>{t(['Adds its tools to Jarvis on this Mac.', '把它的工具加给这台 Mac 上的 Jarvis。'])}</span></li><li><ShieldCheck size={13}/><span>{t(['Asks before it writes, unless you change that.', '写入前会先问你，除非你改了设置。'])}</span></li></ul>
+    <div className="pg-sec acts">{act('connect', ['Turn on', '打开'], 'btn btn-glow wide')}{act('later', ['Not now', '先不'])}</div>
   </>;
   return <>{top}
-    {p.ask && <div className="pg-sec ask-card"><span>Jarvis asked for this</span>“{p.ask}”</div>}
-    <ul className="pg-sec facts"><li><ArrowSquareOut size={13}/><span>Opens {p.name} in your browser to sign in.</span></li><li><ShieldCheck size={13}/><span>You choose what it can see there.</span></li></ul>
-    <div className="pg-sec acts">{act('connect', p.ask ? 'Sign in and continue' : 'Sign in', 'btn btn-glow wide')}{act('later', 'Not now')}</div>
+    {p.ask && <div className="pg-sec ask-card"><span>{t(['Jarvis asked for this', 'Jarvis 要用它'])}</span>“{p.ask}”</div>}
+    <ul className="pg-sec facts"><li><ArrowSquareOut size={13}/><span>{t([`Opens ${p.name} in your browser to sign in.`, `在浏览器里打开 ${p.name} 登录。`])}</span></li><li><ShieldCheck size={13}/><span>{t(['You choose what it can see there.', '在那里由你决定它能看到什么。'])}</span></li></ul>
+    <div className="pg-sec acts">{act('connect', p.ask ? ['Sign in and continue', '登录并继续'] : ['Sign in', '登录'], 'btn btn-glow wide')}{act('later', ['Not now', '先不'])}</div>
   </>;
 }

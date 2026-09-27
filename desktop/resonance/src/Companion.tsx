@@ -9,9 +9,13 @@ import { usePreferences } from './preferences';
 import { initialState, plain, reducer, visible } from './model';
 import { connect, type Runtime } from './runtime';
 import { usePlugins } from './PluginPanel';
-import { AgentWing, isMarkLook, wingSlots, type MarkLook } from './AgentMarks';
-import { answerRequest, type ShownAgent } from './agents';
-import { NoticeCard, noticeCue, useNotices, type Notice } from './Notices';
+import { isMarkLook, type MarkLook } from './AgentMarks';
+import { answerRequest, type Agent, type ShownAgent } from './agents';
+import { NoticeCard, ended, noticeCue, useNotices } from './Notices';
+import { Notch, type NotchNote } from './Notch';
+import { tr, useCompanionSettings, type L, type Lang } from './companionSettings';
+import { useRoute } from './homeData';
+import type { Controls as DashControls, Look } from './SettingsPage';
 import './companion.css';
 
 type Placement = { topInset: number; notchWidth: number; surfaceWidth: number; displayId?: number };
@@ -39,13 +43,16 @@ function loadWardrobe(): { skin: Skin; auto: boolean; layout: DashboardLayout; h
       marks: isMarkLook(value.marks) ? value.marks : 'spark' };
   } catch { return { skin: 'glass', auto: true, layout: 'around', homeGlass: true, marks: 'spark' }; }
 }
+// Ghostty's title for a session is its name, sometimes behind a status mark; the board folds long names with "…".
+const bare = (text: string) => text.replace(/\s+/g, ' ').replace(/^[^\p{L}\p{N}]+/u, '').trim();
+const sameTitle = (name: string, title: string) => { const a = bare(name), b = bare(title); return !!a && (a === b || (a.endsWith('…') && b.startsWith(a.slice(0, -1)))); };
 const isPreview = (value: string): value is ExprId => (PREVIEW as string[]).includes(value);
 
-function layout({ topInset, notchWidth, surfaceWidth: width }: Placement) {
+function layout({ topInset, notchWidth, surfaceWidth: width }: Placement, tucked: boolean) {
   const center = width / 2, notchLeft = center - notchWidth / 2;
   // Without a notch she lives dead centre in a pill; its two wings open the Dashboard, as the camera does beside a notch.
-  const lobe: Lobe = notchWidth ? { left: notchLeft - 64, right: notchLeft + 24, height: topInset, notched: true }
-    : { left: center - 66, right: center + 66, height: topInset, notched: false };
+  const lobe: Lobe = notchWidth ? { left: notchLeft - 64, right: notchLeft + 24, height: topInset, notched: true, tucked }
+    : { left: center - 66, right: center + 66, height: topInset, notched: false, tucked };
   const x = notchWidth ? notchLeft - 32 : center, out = { x, y: topInset + R + 14 }, panelTop = topInset + 44;
   const anchors: Record<Place, Point> = { home: { x, y: topInset / 2 }, peek: { x, y: topInset + R * .1 }, out, dock: { x: center, y: panelTop - R * .5 } };
   // The agent marks' wing grows from the notch's right edge, or the pill's.
@@ -55,8 +62,8 @@ function layout({ topInset, notchWidth, surfaceWidth: width }: Placement) {
     ball: { x: x - R - 12, y: topInset, w: 2 * R + 24, h: out.y + R + 12 - topInset },
     chip: { x: x + R + 4, y: out.y - 18, w: 44, h: 36 },
     dash: notchWidth ? [{ x: notchLeft, y: 0, w: notchWidth, h: topInset + 4 }]
-      : [{ x: lobe.left, y: 0, w: 30, h: topInset + 4 }, { x: center + 36, y: 0, w: 30, h: topInset + 4 }],
-    panel: { x: center - PANEL / 2 - 10, y: 0, w: PANEL + 20, h: panelTop + 520 },
+      : tucked ? [] : [{ x: lobe.left, y: 0, w: 30, h: topInset + 4 }, { x: center + 36, y: 0, w: 30, h: topInset + 4 }],
+    panel: { x: center - PANEL / 2 - 10, y: 0, w: PANEL + 20, h: panelTop + 660 },
   } };
 }
 
@@ -76,9 +83,19 @@ export function Companion() {
     void window.jarvis.placement().then(receive);
     return window.jarvis.onPlacement(receive);
   }, []);
-  const geo = useMemo(() => layout(placement), [placement]);
-  const [preferences] = usePreferences();
-  const feedback = (cue: FeedbackCue) => { if (preferences.feedbackEnabled) void playFeedback(cue, preferences.feedbackVolume); };
+  // ⌘ in the menu bar row tucks her away on that side of the camera for a moment (electron/companion.ts).
+  const [tuck, setTuck] = useState({ left: false, right: false });
+  useEffect(() => window.jarvis?.onTuck?.(setTuck), []);
+  // ADR 0058: out at the text caret for dictation, drawn by its own window; she comes back happy when the words went in.
+  const [trip, setTrip] = useState('home');
+  useEffect(() => window.jarvis?.onDictation?.(setTrip), []);
+  const geo = useMemo(() => layout(placement, tuck.left), [placement, tuck.left]);
+  const [preferences, setPreferences] = usePreferences();
+  const [companion, updateCompanion] = useCompanionSettings();
+  // One language switch (Settings → Interface language): her panel follows the language Jarvis speaks in.
+  const jarvisLang = useRoute<{ language: Lang }>(port, '/inherent/language', true, 3_600_000).data?.language;
+  useEffect(() => { if (jarvisLang === 'en' || jarvisLang === 'zh') updateCompanion({ lang: jarvisLang }); }, [jarvisLang]);
+  const t = (l: L) => tr(companion.lang, l);
   useEffect(() => { warmFeedback(); return stopFeedback; }, []);
   const [zone, setZone] = useState<Zone>('none');
   const [dashboard, setDashboard] = useState(false);
@@ -90,16 +107,20 @@ export function Companion() {
   const [simReply, setReply] = useState({ text: '', shown: 0 });
   const [simTalking, setTalking] = useState(false);
   const [s, dispatch] = useReducer(reducer, initialState);
+  // Muting Jarvis silences her cues as well as its voice.
+  const feedback = (cue: FeedbackCue) => { if (preferences.feedbackEnabled && !s.soundMuted) void playFeedback(cue, preferences.feedbackVolume); };
   const link = useRef<Runtime | null>(null);
   useEffect(() => { if (!port) return; link.current = connect(port, dispatch); return () => { link.current?.close(); link.current = null; }; }, []);
   // Live, the daemon's phase is her voice; standby counts as listening only in wave mode (ADR 0041).
-  const voice = !port ? simVoice : s.phase === 'speaking' ? 'speaking' : s.phase === 'processing' ? 'thinking'
+  // While your words are coming in she only listens: no answer starts then (ADR 0053), whatever text arrives.
+  const inFlight = !!port && s.inFlight;
+  const voice = !port ? simVoice : inFlight ? 'listening' : s.phase === 'speaking' ? 'speaking' : s.phase === 'processing' ? 'thinking'
     : s.phase === 'hearing' || (s.conversation && s.phase !== 'error') ? 'listening' : 'off';
-  const caption = port ? s.heard : simCaption, hearing = port ? s.phase === 'hearing' : simHearing, talking = port ? false : simTalking;
+  const caption = port ? s.heard : simCaption, hearing = port ? inFlight : simHearing, talking = port ? false : simTalking;
   const said = port ? spoken(s.reply) : '';
-  // Cutting in stops her voice, and with it her answer; her words stay up while yours are still coming in.
+  // Her words on screen stay as they were while yours are still coming in: cut off, or none.
   const held = useRef('');
-  if (said || !(s.phase === 'hearing' || (s.phase === 'processing' && !s.heard))) held.current = said;
+  if (!inFlight) held.current = said;
   const reply = port ? { text: held.current, shown: held.current.length } : simReply;
   const [pressed, setPressed] = useState(false);
   const [wardrobe, setWardrobe] = useState(loadWardrobe);
@@ -110,16 +131,29 @@ export function Companion() {
   const [dashMood, setDashMood] = useState<ExprId | null>(null);
   const [receiving, setReceiving] = useState(false);
   const busy = composer || voice !== 'off' || !!reply.text || receiving;
-  // Every session the Dashboard's Agents data knows: marks on the wing beside the notch, and the notices.
+  // Every session the Dashboard's Agents data knows: the stars beside the notch, and the notices.
   const [agents, setAgents] = useState<ShownAgent[]>([]);
-  const [seen, setSeen] = useState<{ ids: string[]; at: number }>({ ids: [], at: 0 });
+  // The Claude session Allen has been looking at in Ghostty for 1.5 s (ADR 0057): read, and nothing pops for it.
+  const [ghostty, setGhostty] = useState({ front: false, title: '' }), [dwelled, setDwelled] = useState(false);
+  useEffect(() => window.jarvis?.onGhostty?.(seen => setGhostty(g => g.front === seen.front && g.title === seen.title ? g : seen)), []);
+  useEffect(() => { setDwelled(false); if (!ghostty.front || !ghostty.title) return; const t = setTimeout(() => setDwelled(true), 1500); return () => clearTimeout(t); }, [ghostty]);
+  const anyClaude = agents.some(a => a.agent === 'claude');
+  useEffect(() => window.jarvis?.watchGhostty?.(anyClaude), [anyClaude]);
+  const watched = dwelled ? agents.find(a => a.agent === 'claude' && sameTitle(a.title, ghostty.title))?.id ?? null : null;
   // No notice while she talks, while you type to her or while the Dashboard is open; they come up after.
-  const notices = useNotices({ agents, hold: busy || dashboard || moving,
-    cue: (name, gain) => { if (preferences.feedbackEnabled) noticeCue(name, preferences.feedbackVolume, gain); },
-    answer: (req, body) => port ? answerRequest(port, req.id, body) : Promise.resolve(true),
-    onSeen: ids => setSeen({ ids, at: Date.now() }) });
+  const notices = useNotices({ agents, hold: busy || dashboard || moving, watched,
+    cue: (name, gain) => { if (preferences.feedbackEnabled && !s.soundMuted) noticeCue(name, preferences.feedbackVolume, gain); },
+    answer: (req, body) => port ? answerRequest(port, req.id, body) : Promise.resolve(true) });
   const notice = notices.current;
-  const place: Place = moving ? 'home' : dashboard || notice ? 'dock' : busy || zone === 'ball' || outing ? 'out' : zone === 'lobe' || notices.peek ? 'peek' : 'home';
+  // Going to a session reads it: its Codex thread, or its Ghostty terminal (a new tab attaches a background one).
+  const jump = (a: Agent) => {
+    if (ended(a.state)) notices.read([a.id]);
+    if (a.agent === 'codex') void window.jarvis?.openCodex?.(a.id);
+    else void window.jarvis?.jumpGhostty?.(a.title, a.job ?? '');
+  };
+  // Tucked, she stays up with the island until it comes back; only the Dashboard, below the menu bar, takes her out.
+  // A notice hangs from the notch and she watches it from home.
+  const place: Place = moving ? 'home' : dashboard ? 'dock' : notice ? notices.peek ? 'peek' : 'home' : tuck.left ? 'home' : busy || zone === 'ball' || outing ? 'out' : zone === 'lobe' || notices.peek ? 'peek' : 'home';
   // A finished text reply stays up briefly: that is her "done" face.
   const listenFace = useRef<ExprId>('35'), receiveFace = useRef<ExprId>('31'), replyFace = useRef<ExprId>('39');
   // Live turns pick her takes as they begin; the scripted demo picks its own in listen() and say().
@@ -129,23 +163,23 @@ export function Companion() {
   // A notice sets her face: waiting on you, pleased it is done, a jolt on an error; after you answer, a moment of
   // pleasure or refusal.
   const moment = performance.now();
+  const stopped = notice?.kind === 'pop' && notice.ids.every(id => agents.find(a => a.id === id)?.state === 'err');
   const noticeFace: ExprId | null = !notice ? null : notices.over && moment < notices.over.until ? notices.over.face
-    : notice.kind === 'done' || notice.kind === 'dones' ? 'fin' : notice.kind === 'err' ? moment - notices.openedAt < 1700 ? '34' : '02' : notices.card?.ok ? '02' : 'ask';
-  useEffect(() => { if (notice?.kind !== 'err') return; const t = setTimeout(notices.bump, 1750); return () => clearTimeout(t); }, [notice?.key]);
+    : notice.kind === 'pop' ? stopped ? moment - notices.openedAt < 1700 ? '34' : '02' : 'fin' : notices.card?.ok ? '02' : 'ask';
+  useEffect(() => { if (!stopped) return; const t = setTimeout(notices.bump, 1750); return () => clearTimeout(t); }, [notice?.key]);
   const expr: ExprId = preview ?? noticeFace ?? (receiving ? receiveFace.current : voice === 'listening' ? listenFace.current : voice === 'thinking' ? '30' : voice === 'speaking' || talking ? replyFace.current : dashboard && dashMood ? dashMood : reply.text ? '33' : '02');
   const chip = place === 'out' && zone === 'ball' && !busy;
-  const wing = useMemo(() => wingSlots(agents, wardrobe.marks), [agents, wardrobe.marks]);
-  const [wingTip, setWingTip] = useState(false), [agentsFocus, setAgentsFocus] = useState(0);
-  const wingRect = { x: geo.wingX, y: 0, w: wing.width, h: placement.topInset };
-  const live = useRef({ geo, dashboard, chip, composer, place, wardrobe, wingRect });
-  live.current = { geo, dashboard, chip, composer, place, wardrobe, wingRect };
+  // Tucked, the island and she slide up in one motion, far enough to clear her from where she comes out,
+  // so nothing of her trails behind; the Dashboard and a notice card keep her (dock).
+  const lift = tuck.left ? geo.out.y + 2 * R : 0;
+  // During a notice she looks down at it from the island.
+  const noticeLook = notice ? { x: notice.kind === 'pop' ? geo.wingX + 80 : geo.center, y: placement.topInset + 90 } : null;
+  const live = useRef({ geo, dashboard, chip, composer, place, wardrobe, noticeLook, openBy: companion.openBy });
+  live.current = { geo, dashboard, chip, composer, place, wardrobe, noticeLook, openBy: companion.openBy };
   const ball = useRef<BallHandle | null>(null), look = useRef<Point | null>(null), cursor = useRef<Point>({ x: -1e4, y: -1e4 });
   const input = useRef<HTMLInputElement>(null), root = useRef<HTMLElement>(null), pressing = useRef(false);
 
   const zoneTimer = useRef<ReturnType<typeof setTimeout>>(undefined), pending = useRef<Zone>('none');
-  const tipTimer = useRef<ReturnType<typeof setTimeout>>(undefined), overWing = useRef(false);
-  const noticeEl = useRef<HTMLDivElement>(null), overNotice = useRef(false), shownNotice = useRef<{ n: Notice; card: NonNullable<typeof notices.card> } | null>(null);
-  if (notice && notices.card) shownNotice.current = { n: notice, card: notices.card };
   const dashTimer = useRef<ReturnType<typeof setTimeout>>(undefined), dashEntered = useRef(false), pinned = useRef(false), interactive = useRef(false);
   const script = useRef<ReturnType<typeof setTimeout>[]>([]);
   const after = (ms: number, run: () => void) => { script.current.push(setTimeout(run, ms)); };
@@ -200,6 +234,7 @@ export function Companion() {
     if (!pressing.current) return;
     pressing.current = false; setPressed(false);
     if (performance.now() - pressAt.current >= HOLD_MS) choose(SKIN_KEYS[(SKIN_KEYS.indexOf(worn.current) + 1) % SKIN_KEYS.length]);
+    else if (live.current.openBy === 'hover') latestPoke.current();
     else if (firstClick.current) { clearTimeout(firstClick.current); firstClick.current = undefined; toggleDashboard(); }
     else firstClick.current = setTimeout(() => { firstClick.current = undefined; latestPoke.current(); }, DOUBLE_CLICK_MS);
   };
@@ -270,10 +305,6 @@ export function Companion() {
   const openDashboard = (hovered: boolean) => { pinned.current = false; dashEntered.current = hovered; setDashboard(true); setComposer(false); void window.jarvis?.focus(false); };
   // Opened by a double click, the Dashboard stays when the cursor leaves; another double click on her closes it.
   const toggleDashboard = () => { if (live.current.dashboard) setDashboard(false); else { openDashboard(false); pinned.current = true; } };
-  // A click on the marks opens the Dashboard on Agents, and it stays like a double-clicked one.
-  const openAgents = () => { setWingTip(false); if (!live.current.dashboard) openDashboard(false); pinned.current = true; setAgentsFocus(n => n + 1); };
-  // Only a Codex thread can be opened from a card; the card goes, and the session counts as looked at.
-  const openSession = (id: string) => { void window.jarvis?.openCodex?.(id); notices.next(true); };
 
   // What she wears now; it differs from the saved pick while she tries another skin on her own.
   const worn = useRef<Skin>(wardrobe.skin);
@@ -286,7 +317,9 @@ export function Companion() {
     outingTimers.current = [setTimeout(run, lead), setTimeout(() => { setOuting(false); setPreview(null); }, lead + stay)];
   };
   useEffect(() => () => outingTimers.current.forEach(clearTimeout), []);
-  const wear = (skin: Skin) => { if (skin === worn.current) return; worn.current = skin; appear(() => ball.current?.change(skin), 2600); };
+  const wear = (skin: Skin) => { if (skin === worn.current) return; worn.current = skin; window.jarvis?.wearing?.(skin); appear(() => ball.current?.change(skin), 2600); };
+  // At the caret she wears what she wears here.
+  useEffect(() => window.jarvis?.wearing?.(worn.current), []);
   const choose = (skin: Skin) => { setWardrobe(value => ({ ...value, skin })); wear(skin); };
   // On her own she tries another skin, and the next time changes back to yours.
   const selfChange = () => {
@@ -296,8 +329,8 @@ export function Companion() {
   useEffect(() => {
     try { localStorage.setItem(WARDROBE, JSON.stringify(wardrobe)); } catch { /* the pick just is not remembered */ }
     window.jarvis?.companionMenu({ skins: SKIN_KEYS.map(key => ({ key, name: SKINS[key].name, on: key === wardrobe.skin })), auto: wardrobe.auto, layout: wardrobe.layout, homeGlass: wardrobe.homeGlass, marks: wardrobe.marks,
-      exprs: PREVIEW.map(id => ({ id, name: EXPRESSIONS[id].name })) });
-  }, [wardrobe]);
+      follow: companion.screen === 'follow', lang: companion.lang, exprs: PREVIEW.map(id => ({ id, name: EXPRESSIONS[id].name })) });
+  }, [wardrobe, companion.screen, companion.lang]);
   useEffect(() => {
     if (!wardrobe.auto) return;
     let timer: ReturnType<typeof setTimeout>;
@@ -309,6 +342,7 @@ export function Companion() {
   useEffect(() => window.jarvis?.onCommand(command => {
     const [name, value = ''] = command.split(':');
     if (command === 'dashboard') openDashboard(false);
+    else if (command === 'settings') { openDashboard(false); pinned.current = true; setSettingsFocus(n => n + 1); }
     else if (name === 'skin' && isSkin(value)) choose(value);
     else if (command === 'outing') selfChange();
     else if (name === 'layout' && (value === 'grid' || value === 'around')) setWardrobe(current => ({ ...current, layout: value }));
@@ -339,37 +373,30 @@ export function Companion() {
   // The island counts: it is opaque, and a click on it must not reach a menu bar item hidden behind it.
   const refreshHit = () => {
     const p = cursor.current, { lobe } = live.current.geo;
-    const island = p.y >= 0 && p.y <= lobe.height && p.x >= lobe.left - 6 && p.x <= lobe.right + (lobe.notched ? 0 : 6);
+    const island = !lobe.tucked && p.y >= 0 && p.y <= lobe.height && p.x >= lobe.left - 6 && p.x <= lobe.right + (lobe.notched ? 0 : 6);
     const hit = island || !!document.elementFromPoint(p.x, p.y)?.closest('[data-hit]');
     if (hit !== interactive.current && !pressing.current) { interactive.current = hit; window.jarvis?.passthrough(!hit); }
   };
   useEffect(() => window.jarvis?.onCursor(point => {
     const { geo, dashboard, chip, composer } = live.current, z = geo.zones;
     cursor.current = point;
-    if (!composer) look.current = point;
+    if (!composer) look.current = live.current.noticeLook ?? point;
     refreshHit();
-    const next: Zone = within(point, z.ball) || (chip && within(point, z.chip)) ? 'ball' : within(point, z.lobe) ? 'lobe' : 'none';
-    // Resting on the marks lists the sessions under them.
-    const wingNow = live.current.wingRect.w > 0 && within(point, live.current.wingRect);
-    if (wingNow !== overWing.current) { overWing.current = wingNow; clearTimeout(tipTimer.current); tipTimer.current = setTimeout(() => setWingTip(wingNow), wingNow ? 120 : 200); }
+    const next: Zone = within(point, z.ball) || (chip && within(point, z.chip)) ? 'ball' : !geo.lobe.tucked && within(point, z.lobe) ? 'lobe' : 'none';
     if (next !== pending.current) {
       pending.current = next; clearTimeout(zoneTimer.current);
       zoneTimer.current = setTimeout(() => setZone(next), next === 'ball' ? 0 : next === 'lobe' ? 90 : 600);
     }
-    // A hand on a notice card holds its timers.
-    const card = noticeEl.current?.classList.contains('is-open') ? noticeEl.current.getBoundingClientRect() : null;
-    const onCard = !!card && point.x >= card.left && point.x <= card.right && point.y >= card.top && point.y <= card.bottom;
-    if (onCard !== overNotice.current) { overNotice.current = onCard; notices.setHover(onCard); }
     const over = z.dash.some(r => within(point, r)) || (dashboard && within(point, z.panel));
     if (dashboard) {
       if (over || pinned.current) { dashEntered.current = true; clearTimeout(dashTimer.current); dashTimer.current = undefined; }
       else if (dashEntered.current && !dashTimer.current) dashTimer.current = setTimeout(() => { dashTimer.current = undefined; setDashboard(false); }, 450);
-    } else if (over && !dashTimer.current) {
+    } else if (over && !dashTimer.current && live.current.openBy !== 'click') {
       dashTimer.current = setTimeout(() => { dashTimer.current = undefined; if (live.current.geo.zones.dash.some(r => within(cursor.current, r))) openDashboard(true); }, 200);
     } else if (!over && dashTimer.current) { clearTimeout(dashTimer.current); dashTimer.current = undefined; }
   }), []);
-  useEffect(() => () => { clearTimeout(zoneTimer.current); clearTimeout(dashTimer.current); clearTimeout(firstClick.current); clearTimeout(tipTimer.current); }, []);
-  useEffect(refreshHit, [place, chip, composer, dashboard, voice, reply.text, wing.width, notice?.key]);
+  useEffect(() => () => { clearTimeout(zoneTimer.current); clearTimeout(dashTimer.current); clearTimeout(firstClick.current); }, []);
+  useEffect(refreshHit, [place, chip, composer, dashboard, voice, reply.text, notice?.key, tuck.left]);
 
   // Native frosted glass behind every visible panel, following its transitions.
   const kickGlass = useRef(() => {});
@@ -397,29 +424,66 @@ export function Companion() {
   }, []);
   useEffect(() => kickGlass.current(), [place, chip, composer, dashboard, voice, reply.text, caption, notice?.key]);
 
+  // What Settings in the panel reads and changes here: the daemon's switches, her look, her cues.
+  const [settingsFocus, setSettingsFocus] = useState(0);
+  const control = (patch: { mic_muted?: boolean; speech_muted?: boolean; conversation?: boolean }) => void link.current?.controls(patch).catch(() => undefined);
+  const handsFree = port ? s.conversation : voice !== 'off';
+  const ctl: DashControls = {
+    micMuted: s.micMuted, speechMuted: s.soundMuted, handsFree,
+    setMic: muted => { if (muted === s.micMuted) return; feedback(muted ? 'mic-off' : 'mic-on'); if (port) control({ mic_muted: muted }); else dispatch({ type: 'mic' }); },
+    setSpeech: muted => {
+      if (muted === s.soundMuted) return;
+      if (muted) stopFeedback(); else if (preferences.feedbackEnabled) void playFeedback('speaker-on', preferences.feedbackVolume);
+      if (port) control({ speech_muted: muted }); else dispatch({ type: 'sound' });
+    },
+    setHandsFree: on => {
+      if (on === handsFree) return;
+      if (!on) { endVoice(); return; }
+      closeComposer(); feedback('voice-enter');
+      if (port) control({ conversation: true }); else listen(false);
+    },
+    look: wardrobe,
+    setLook: (change: Partial<Look>) => {
+      if (change.skin) choose(change.skin);
+      if (change.auto === false) wear(wardrobe.skin);
+      const { skin: _, ...rest } = change;
+      if (Object.keys(rest).length) setWardrobe(current => ({ ...current, ...rest }));
+    },
+    playFaces: () => { stopScript(); PREVIEW.forEach((id, i) => after(i * 1100, () => setPreview(id))); after(PREVIEW.length * 1100, () => setPreview(null)); },
+    cues: { on: preferences.feedbackEnabled, volume: preferences.feedbackVolume },
+    setCues: change => setPreferences({ ...change.on !== undefined && { feedbackEnabled: change.on }, ...change.volume !== undefined && { feedbackVolume: change.volume } }),
+  };
+
   const { out } = geo;
+  const note: NotchNote | null = !notice ? null : notice.kind === 'pop' ? { key: notice.key, pop: notice.ids, onClose: notices.next } : { key: notice.key, onClose: notices.fold,
+    card: <NoticeCard key={notice.key} n={notice} card={notices.card!} agent={agents.find(a => a.id === notice.id)} count={notices.count} look={wardrobe.marks}
+      onLater={notices.fold} onOpen={jump} onChange={notices.bump} onResolve={(text, body) => {
+        if (notice.kind !== 'req') return;
+        void notices.resolve(notice, text, body);
+        if (body.decision !== 'deny') ball.current?.hop(.14);
+      }}/> };
   // The strip and her bubble share one spot: her words keep it until yours are in, then the strip shows them whole.
   const yours = voice === 'thinking' && !!caption;
   const strip = place === 'out' && (yours || ((voice === 'listening' || voice === 'thinking') && !reply.text)), bubble = place === 'out' && !!reply.text && !yours;
   return <IconContext.Provider value={{ size: 16, weight: 'regular' }}>
     <main ref={root} className="companion" style={{ '--mint': preferences.themeColor } as React.CSSProperties}>
       <div className={`companion-chip ${chip ? 'is-open' : ''}`} data-hit={chip || undefined} data-glass="9" style={{ left: out.x + R + 12, top: out.y - 13 }}>
-        <button aria-label="文字输入" tabIndex={chip ? 0 : -1} onClick={openComposer}><Keyboard/></button>
+        <button aria-label={t(['Type to her', '文字输入'])} tabIndex={chip ? 0 : -1} onClick={openComposer}><Keyboard/></button>
       </div>
       <form className={`companion-composer ${composer && place === 'out' ? 'is-open' : ''}`} data-hit={composer || undefined} data-glass="17"
         style={{ left: out.x - PANEL / 2, top: out.y + R + 11 }} inert={!composer} onTransitionEnd={aimAtCaret}
         onSubmit={event => { event.preventDefault(); send(); }}>
-        <button type="button" className="composer-attach" disabled aria-label="添加附件（原型未接入）"><Paperclip/></button>
-        <input ref={input} aria-label="文字输入" placeholder="和她说点什么…" value={draft}
+        <button type="button" className="composer-attach" disabled aria-label={t(['Attach (not wired yet)', '添加附件（还没接）'])}><Paperclip/></button>
+        <input ref={input} aria-label={t(['Type to her', '文字输入'])} placeholder={t(['Say something…', '和她说点什么…'])} value={draft}
           onChange={event => { setDraft(event.target.value); ball.current?.nudge(); requestAnimationFrame(aimAtCaret); }}
           onSelect={aimAtCaret} onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); closeComposer(); } }}/>
-        <button type="submit" className="composer-send" disabled={!draft.trim()} aria-label="发送"><ArrowUp weight="bold"/></button>
+        <button type="submit" className="composer-send" disabled={!draft.trim()} aria-label={t(['Send', '发送'])}><ArrowUp weight="bold"/></button>
       </form>
       <div className={`companion-strip ${strip ? 'is-open' : ''} ${hearing ? 'is-hearing' : ''}`} data-hit={strip || undefined} data-glass="19"
         style={{ left: out.x, top: out.y + R + 11 }} inert={!strip} role="status">
         <span className="strip-mic"><Microphone size={14} weight="fill"/></span>
-        <span className={`strip-text ${caption ? '' : 'is-empty'}`}>{caption || '在听…'}</span>
-        <button className="strip-stop" aria-label="结束语音" onClick={endVoice}><Stop size={11} weight="fill"/></button>
+        <span className={`strip-text ${caption ? '' : 'is-empty'}`}>{caption || t(['Listening…', '在听…'])}</span>
+        <button className="strip-stop" aria-label={t(['End voice', '结束语音'])} onClick={endVoice}><Stop size={11} weight="fill"/></button>
       </div>
       <div className={`companion-bubble ${bubble ? 'is-open' : ''}`} data-glass="18" style={{ left: out.x, top: out.y + R + 11 }} role="status">
         <span className="bubble-text"><span className="bubble-ghost">{reply.text}</span><span>{reply.text.slice(0, reply.shown)}</span></span>
@@ -429,25 +493,18 @@ export function Companion() {
         {wardrobe.layout === 'around'
           ? <AroundDashboard open={dashboard} port={port} onClose={() => setDashboard(false)} onMood={setDashMood} onHop={height => ball.current?.hop(height)}
             talk={port ? { rows: s.rows, tail, busy: s.phase === 'processing', offline: s.phase === 'error', floor, submit, older } : undefined}
-            plugins={port ? plugins : undefined} pluginFocus={pluginFocus} marks={wardrobe.marks} onAgents={setAgents} agentsFocus={agentsFocus} seen={seen}
-            onAnswer={id => { setDashboard(false); notices.focus(id); }}/>
+            plugins={port ? plugins : undefined} pluginFocus={pluginFocus} marks={wardrobe.marks} onAgents={setAgents} unread={notices.unread}
+            onAnswer={id => { setDashboard(false); notices.focus(id); }} ctl={ctl} settingsFocus={settingsFocus}/>
           : <DashboardPreview embedded port={port} visible={dashboard} shown={dashboard} onClose={() => setDashboard(false)}/>}
       </div>
-      <div ref={noticeEl} className={`companion-notice ${notice ? 'is-open' : ''}`} data-hit={notice ? true : undefined} data-glass="24"
-        style={{ left: geo.center - PANEL / 2, top: geo.panelTop }} inert={!notice} role="alertdialog" aria-label="Agent notice">
-        {shownNotice.current && <NoticeCard key={shownNotice.current.n.key} n={shownNotice.current.n} card={shownNotice.current.card} agent={agents.find(a => a.id === shownNotice.current!.n.id)}
-          count={notices.count} total={agents.length} look={wardrobe.marks} onClose={() => notices.next(true)} onLater={notices.fold} onOpen={openSession} onAll={openAgents}
-          onChange={notices.bump} onResolve={(text, body) => {
-            const n = shownNotice.current!.n;
-            if (n.kind !== 'req') return;
-            void notices.resolve(n, text, body);
-            if (body.decision !== 'deny') ball.current?.hop(.14);
-          }}/>}
-      </div>
-      <AgentWing look={wardrobe.marks} wing={wing} x={geo.wingX} height={placement.topInset} limit={geo.width} tip={wingTip && !dashboard} onOpen={openAgents}/>
-      <CompanionBall width={geo.width} height={placement.topInset + 560} lobe={geo.lobe} look={look} handle={ball} skin={worn.current}
-        target={{ place, expr, pressed, anchors: geo.anchors, homeGlass: wardrobe.homeGlass }}
-        label={voice === 'off' ? `戳一下，开始语音${port ? '' : '（演示）'}` : voice === 'speaking' ? '戳一下，打断播报' : '戳一下，结束语音'}
+      <Notch look={wardrobe.marks} agents={agents} unread={notices.unread} cleared={notices.cleared} cursor={cursor} quiet={dashboard || moving} onNoteHover={notices.setHover}
+        geo={{ width: geo.width, top: placement.topInset, notchR: geo.wingX, baseL: placement.notchWidth ? geo.center - placement.notchWidth / 2 : geo.wingX - 12,
+          lift: placement.notchWidth ? 0 : lift, hidden: tuck.right && !!placement.notchWidth }}
+        act={{ jump, answer: notices.focus, read: notices.read, clear: notices.clear }} note={note}/>
+      <CompanionBall width={geo.width} height={placement.topInset + 560} lobe={geo.lobe} lift={lift} look={look} handle={ball} skin={worn.current}
+        target={{ place, expr, pressed, anchors: geo.anchors, homeGlass: wardrobe.homeGlass, lift: place === 'home' ? lift : 0, homeFace: !!notice,
+          away: trip === 'out', happy: trip === 'happy' }}
+        label={voice === 'off' ? t([`Poke to talk${port ? '' : ' (demo)'}`, `戳一下，开始语音${port ? '' : '（演示）'}`]) : voice === 'speaking' ? t(['Poke to interrupt', '戳一下，打断播报']) : t(['Poke to stop', '戳一下，结束语音'])}
         onPress={press} onRelease={release} onCancel={cancel} onMove={refreshHit}/>
     </main>
   </IconContext.Provider>;

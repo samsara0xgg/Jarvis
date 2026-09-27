@@ -9,13 +9,11 @@ description: Create a Jarvis git commit in the repository's required format with
 
 1. Run `git status` and read the relevant diff. Confirm it is one logical
    change.
-2. Outside an autonomous goal run, show the user a diff summary and wait for
-   confirmation before committing. Allen reviews changes before commits.
-3. Stage explicit paths only.
+2. Stage explicit paths only. Do not ask before committing; after the commit,
+   land it as `CLAUDE.md` § Git says.
 
 Forbidden: `git add .`, `git add -A`, `git commit -am`, `--no-verify` or any
-other hook bypass, `Co-Authored-By`, unrelated files in the same commit,
-pushing.
+other hook bypass, unrelated files in the same commit.
 
 ## Title
 
@@ -34,7 +32,8 @@ Scopes are layer or subsystem names; the list and examples are in
     - <path> — <what this file contributes>
 
     Tier 1: lint-imports KEPT (1/1) · ruff clean (N files) · mypy strict clean
-    (N files) · M/M acceptance checks pass · wall <t>s (< 30s budget).
+    (N files) · M/M acceptance checks pass · uv audit clean (N packages) ·
+    wall <t>s (< 30s budget).
 
     Legacy-bypass: <legacy/path> — <why it was not reused>.
     Legacy consulted: <legacy/path> (<what slice was borrowed>).
@@ -49,6 +48,7 @@ Rules:
   have been reused but were not, one per file. `Legacy consulted:` lists files
   read and partially borrowed. A file appears in at most one trailer. Omit
   both trailers when no legacy file was considered.
+- The last line is the `Co-Authored-By` trailer Claude Code adds.
 - Never invent counts, timings, or legacy evidence. Every number in the body
   comes from a command run in the current work. If a gate was not run, say so.
 - Unusual cases: `docs/git-guide.md` §2 is the source of truth.

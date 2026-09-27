@@ -1,0 +1,16 @@
+<!doctype html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; media-src blob:; connect-src http://127.0.0.1:*"><title>Jarvis</title></head>
+<body><div id="screen">
+  <canvas id="sky"></canvas>
+  <canvas id="gl"></canvas>
+  <canvas id="bg"></canvas>
+  <div id="halo" aria-hidden="true"><i></i></div>
+  <div id="intro" aria-live="polite">
+    <div class="word" id="word" aria-label="Jarvis"></div>
+    <p class="tag" id="tag"></p>
+    <div class="go-wrap"><button type="button" class="go" id="go"></button><span class="hint" id="go-hint"></span></div>
+  </div>
+  <div id="panel" role="dialog" aria-label="Jarvis"><div class="p-in" id="pin"></div></div>
+  <canvas id="fg"></canvas>
+  <div id="bubble" role="status"></div>
+  <button type="button" class="skip-intro" id="skip-intro"></button>
+</div><script type="module" src="/src/firstRun/firstRun.ts"></script></body></html>

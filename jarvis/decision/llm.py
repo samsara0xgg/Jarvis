@@ -89,6 +89,34 @@ class MissingAPIKeyError(RuntimeError):
     """Raised when the configured ``api_key_env`` variable is unset."""
 
 
+FailureReason = Literal[
+    "missing_key", "unauthorized", "model_denied", "quota", "rate_limited", "network",
+    "timeout", "error",
+]
+
+
+def failure_reason(exc: BaseException) -> FailureReason:  # noqa: PLR0911 — one per reason.
+    """Why a model call failed, from ``exc`` or the exceptions it was raised from."""
+    import openai  # noqa: PLC0415 — lazy SDK import (see module docstring)
+
+    seen: BaseException | None = exc
+    while seen is not None:
+        if isinstance(seen, MissingAPIKeyError):
+            return "missing_key"
+        if isinstance(seen, openai.AuthenticationError):
+            return "unauthorized"
+        if isinstance(seen, openai.PermissionDeniedError | openai.NotFoundError):
+            return "model_denied"
+        if isinstance(seen, openai.RateLimitError):
+            return "quota" if seen.code == "insufficient_quota" else "rate_limited"
+        if isinstance(seen, openai.APITimeoutError):  # before its base, APIConnectionError
+            return "timeout"
+        if isinstance(seen, openai.APIConnectionError):
+            return "network"
+        seen = seen.__cause__ or seen.__context__
+    return "error"
+
+
 # --- Public data shapes -----------------------------------------------------
 
 

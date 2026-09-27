@@ -67,12 +67,15 @@ from jarvis.runtime import (
     run_turn,
 )
 from jarvis.runtime.inherent_loop import serve_inherent
+from jarvis.shared.lang import t
+from jarvis.shared.text import is_english
+from jarvis.state.plugin_settings import local_key
 
 LOGGER = logging.getLogger("jarvis.cli")
 
 _PROG = "python -m jarvis"
 _DESC = (
-    "Allen's state-centric personal runtime — Day-2 fork-detach CLI. "
+    "A state-centric personal runtime — Day-2 fork-detach CLI. "
     "Long-run utterances ack then fork-detach; synchronous utterances "
     "run inline as in Day-1. Pass an utterance string; Jarvis emits "
     "surface.user_intent, drives the decide() loop, and writes the "
@@ -88,14 +91,10 @@ _LONG_RUN_RE: re.Pattern[str] = re.compile(
     re.IGNORECASE,
 )
 
-# Fixed ack template per Day-2 § Daemon / CLI contract. Day-3 may
-# personalize per match (the ack is intentionally a single Chinese
-# sentence so Allen's CLI transcripts grep cleanly) but Day-2 pins
-# the single phrase so the canary can assert ack-before-fork without
-# parsing variants. RUF001 flags the fullwidth comma inside the
-# Chinese phrase as an "ambiguous" Latin look-alike; the character
-# is deliberate Chinese punctuation here.
-_QUICK_ACK_PHRASE: str = "好的，跑起来了。"  # noqa: RUF001 — fullwidth comma is intentional Chinese punctuation.
+# Fixed ack per Day-2 § Daemon / CLI contract (``cli.quick_ack`` in the
+# language table), in the language of the utterance: the parent process
+# reads no settings before it forks. One phrase per language, so the canary
+# can assert ack-before-fork without parsing variants.
 
 # --- ADR-0009 D2: forward mode -------------------------------------------
 #
@@ -133,12 +132,8 @@ def _utterance_implies_long_run(utterance: str) -> bool:
 
 
 def _quick_ack_phrase(utterance: str) -> str:
-    """Cheap ack rendered from the regex match. Day-2: fixed template."""
-    # The utterance is consulted only via the classifier; the Day-2
-    # phrase is constant so future-Allen can grep the ack out of
-    # transcripts without parsing variants.
-    del utterance
-    return _QUICK_ACK_PHRASE
+    """Cheap ack: one fixed phrase, in the utterance's language."""
+    return t("cli.quick_ack", lang="en" if is_english(utterance) else "zh")
 
 
 class _DaemonUnreachableError(RuntimeError):
@@ -163,7 +158,7 @@ class _ResponseTimeoutError(RuntimeError):
         self.turn_id = turn_id
 
 
-def _post_submit(url: str, utterance: str) -> str:
+def _post_submit(url: str, utterance: str, key: str) -> str:
     """POST the utterance to ``/inherent/submit``; return the minted ``turn_id``.
 
     stdlib ``urllib`` on purpose — ADR-0009 adds zero runtime
@@ -178,7 +173,7 @@ def _post_submit(url: str, utterance: str) -> str:
     request = urllib.request.Request(  # noqa: S310 — fixed http://127.0.0.1 URL built above.
         url,
         data=payload,
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
         method="POST",
     )
     try:
@@ -286,27 +281,37 @@ async def _drain_ws(ws: object, queue: asyncio.Queue[dict[str, object]]) -> None
                 queue.put_nowait(decoded)
 
 
-async def _forward_attempt(utterance: str, *, timeout_s: float) -> str:
+async def _forward_attempt(utterance: str, *, timeout_s: float, key: str) -> str:
     """One WS-connect → POST → collect cycle. Returns the response text."""
     from websockets.asyncio.client import connect  # noqa: PLC0415 — keeps CLI import cheap.
+    from websockets.exceptions import InvalidStatus  # noqa: PLC0415 — same.
 
     ws_url = f"ws://{_DAEMON_HOST}:{_DAEMON_PORT}/inherent/ws"
     post_url = f"http://{_DAEMON_HOST}:{_DAEMON_PORT}/inherent/submit"
 
     # WS FIRST. Reversing these two lines loses the response on any turn
     # that finishes before the POST's HTTP response is read.
-    async with connect(ws_url, open_timeout=_WS_OPEN_TIMEOUT_S) as ws:
-        queue: asyncio.Queue[dict[str, object]] = asyncio.Queue()
-        reader = asyncio.create_task(_drain_ws(ws, queue))
-        try:
-            turn_id = await asyncio.to_thread(_post_submit, post_url, utterance)
-            return await _collect_response(
-                queue, utterance=utterance, turn_id=turn_id, timeout_s=timeout_s
-            )
-        finally:
-            reader.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await reader
+    try:
+        async with connect(
+            ws_url,
+            open_timeout=_WS_OPEN_TIMEOUT_S,
+            additional_headers={"Authorization": f"Bearer {key}"},
+        ) as ws:
+            queue: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+            reader = asyncio.create_task(_drain_ws(ws, queue))
+            try:
+                turn_id = await asyncio.to_thread(_post_submit, post_url, utterance, key)
+                return await _collect_response(
+                    queue, utterance=utterance, turn_id=turn_id, timeout_s=timeout_s
+                )
+            finally:
+                reader.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await reader
+    except InvalidStatus as exc:
+        # 403: the daemon runs from another runtime root, so its key differs.
+        msg = f"daemon refused the connection: HTTP {exc.response.status_code}"
+        raise _SubmitRejectedError(msg) from None
 
 
 def _stdout_text(text: str) -> str:
@@ -333,12 +338,12 @@ def _stdout_text(text: str) -> str:
     return channels.document or channels.voice
 
 
-async def _forward(utterance: str, *, timeout_s: float) -> int:
+async def _forward(utterance: str, *, timeout_s: float, key: str) -> int:
     """D2 forward mode with the pinned retry / exit-code contract."""
     last_error = ""
     for attempt in range(1, _FORWARD_ATTEMPTS + 1):
         try:
-            text = await _forward_attempt(utterance, timeout_s=timeout_s)
+            text = await _forward_attempt(utterance, timeout_s=timeout_s, key=key)
         except (ConnectionRefusedError, _DaemonUnreachableError) as exc:
             last_error = str(exc)
             if attempt < _FORWARD_ATTEMPTS:
@@ -365,9 +370,9 @@ async def _forward(utterance: str, *, timeout_s: float) -> int:
     return _EXIT_DAEMON_UNREACHABLE
 
 
-def _forward_to_daemon(utterance: str, *, timeout_s: float) -> int:
+def _forward_to_daemon(utterance: str, *, timeout_s: float, key: str) -> int:
     """Sync wrapper — the one-shot CLI has no running event loop."""
-    return asyncio.run(_forward(utterance, timeout_s=timeout_s))
+    return asyncio.run(_forward(utterance, timeout_s=timeout_s, key=key))
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -442,7 +447,7 @@ def main_with_detach(
 
     Long-run path (classifier matched, ``no_detach`` false):
 
-    1. Print :data:`_QUICK_ACK_PHRASE`, flush stdout.
+    1. Print :func:`_quick_ack_phrase`, flush stdout.
     2. Call :func:`jarvis.runtime.daemon.fork_detach`.
     3. Parent: ``os._exit(0)`` immediately (no SQLite to close — none
        was opened).
@@ -925,7 +930,9 @@ def _main_oneshot(argv: list[str]) -> int:
         # D2 — thin client. The agent-installed half also covers the
         # ThrottleInterval respawn window, where the lock is momentarily
         # free but a daemon is about to own it again.
-        return _forward_to_daemon(args.utterance, timeout_s=args.timeout)
+        return _forward_to_daemon(
+            args.utterance, timeout_s=args.timeout, key=local_key(requested_root)
+        )
 
     return main_with_detach(
         args.utterance,

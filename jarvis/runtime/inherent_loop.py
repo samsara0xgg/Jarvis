@@ -75,20 +75,23 @@ import json
 import logging
 import math
 import os
+import signal
 import sqlite3
 import threading
 import time
 import uuid
 from collections.abc import Mapping
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Literal
 
 import uvicorn
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from pathlib import Path
 
     from jarvis.deployment.sleep_wake import PowerObserver
+    from jarvis.runtime.home import Home
+    from jarvis.runtime.settings import Settings
     from jarvis.runtime.work_state import WorkStateService
     from jarvis.shared.realtime import PresentationIntent
     from jarvis.state.committed_event_bus import CommittedEventBus
@@ -99,6 +102,7 @@ from jarvis.decision.commentary import (
     commentary_speech_text,
 )
 from jarvis.decision.gates import ResponsePlan, pre_emit_gate
+from jarvis.decision.llm import failure_reason
 from jarvis.decision.response_run import (
     ResponseCancelledError,
     ResponseCancelRequest,
@@ -111,8 +115,8 @@ from jarvis.decision.response_run import (
     request_response_cancel,
     start_response_run,
 )
-from jarvis.deployment import inherent_v2_token_matches, rotate_inherent_v2_token
-from jarvis.deployment.launchd import repo_root
+from jarvis.deployment import inherent_v2_token_matches, models, rotate_inherent_v2_token
+from jarvis.deployment.launchd import repo_root, spawned_by_agent
 from jarvis.deployment.process_lock import acquire_exclusive
 from jarvis.deployment.sleep_wake import install_power_observer, sweep_overdue_actions
 from jarvis.execution.tools import live_action_ids
@@ -121,6 +125,7 @@ from jarvis.runtime import (
     TriggerWaitTimeout,
     TurnSuspended,
     WaitingTurn,
+    _assistant_name,
     _event_action_id,
     _new_turn_id,
     _observer_poll_interval_s,
@@ -134,10 +139,14 @@ from jarvis.runtime import (
     make_barge_in_interrupt_callable,
     make_foreground_decision_callable,
     make_response_cancel_callable,
+    make_supersede_unspoken_callable,
+    save_language,
 )
+from jarvis.runtime.dictation import Dictation, polish_client
 from jarvis.runtime.inherent_hub import start_inherent_view
 from jarvis.runtime.session_compaction import CompactionSweep, preset_context_length
-from jarvis.shared import Event
+from jarvis.runtime.setup import Setup
+from jarvis.shared import Event, lang
 from jarvis.shared.pricing import load_pricing_table
 from jarvis.shared.realtime import (
     AlreadyTerminal,
@@ -181,6 +190,7 @@ from jarvis.state.memory_db import (
     brief_note,
     conversation_rows,
 )
+from jarvis.state.plugin_settings import local_key, local_key_matches
 from jarvis.state.projections import rebuild_projections
 from jarvis.state.trigger_consumption import trigger_was_consumed
 from jarvis.surface import (
@@ -206,6 +216,7 @@ from jarvis.surface.inherent_server import (
     InherentV2Deps,
     InputSubmissionOutcome,
     create_app,
+    require_local_key,
 )
 from jarvis.surface.playback_recovery import reconcile_open_playback
 from jarvis.surface.repo_observer import RepoObserver
@@ -327,10 +338,10 @@ _SELECT_RESPONSE_EVENTS_AFTER_ID_SQL = (
 # owner and ignored by the other.
 _DEFAULT_CAPTURE_MAX_DURATION_S: float = 5.0
 _DEFAULT_CAPTURE_MIN_VOICED_S: float = 1.0
-# Wake input stream params — ADR §5.1 (openwakeword expects 16 kHz mono PCM16
+# Wake input stream params — ADR §5.1 (the wake engine reads 16 kHz mono PCM16
 # at 1280-sample / 80 ms blocks). A SEPARATE stream from the recorder's per
 # legacy ``core/inherent_wake_listener.py`` parity (the recorder's 32-ms VAD
-# chunks would force openwakeword to buffer across reads).
+# chunks would force the engine to buffer across reads).
 _WAKE_SAMPLE_RATE_HZ: int = 16000
 _WAKE_FRAME_SAMPLES: int = 1280
 
@@ -356,10 +367,6 @@ class _VoiceKnobs:
     composition root reads ``realtime:`` for these values.
     """
 
-    # Which wake engine both input owners construct (ADR-0042); one of
-    # :data:`voice_wake.WAKE_ENGINES`.  The default keeps a config that names
-    # nothing on the ADR-0005 engine.
-    wake_engine: str = "openwakeword"
     # The engine's detection probability gate.  BOTH input owners construct a
     # listener with it, which is why it is a flat key and is threaded to both
     # rather than living under ``realtime.single_audio_ingress``.
@@ -542,15 +549,7 @@ def _voice_knobs(config: Mapping[str, Any]) -> _VoiceKnobs:
     block = config.get("realtime")
     values: Mapping[str, Any] = block if isinstance(block, Mapping) else {}
     d = _VoiceKnobs()
-    wake_engine = _knob_text(values, "wake_engine", d.wake_engine)
-    if wake_engine not in voice_wake.WAKE_ENGINES:
-        LOGGER.warning(
-            "realtime.wake_engine must be one of %s; using %r.",
-            voice_wake.WAKE_ENGINES, d.wake_engine,
-        )
-        wake_engine = d.wake_engine
     return _VoiceKnobs(
-        wake_engine=wake_engine,
         wake_threshold=_knob_number(values, "wake_threshold", d.wake_threshold),
         wake_join_timeout_s=_knob_number(
             values, "wake_join_timeout_s", d.wake_join_timeout_s,
@@ -806,13 +805,14 @@ def _emit_turn_failed(
     conn: sqlite3.Connection,
     *,
     intent_event: Event,
-    exception_repr: str,
+    exc: BaseException,
 ) -> None:
     """Emit the watcher-level ``turn.failed`` audit event (ADR-0003 D9 F3).
 
     ``trigger_event_id`` is the originating ``surface.user_intent``
     event's ``event_uid`` so a future replay can join the failure back
-    to the request that produced it.
+    to the request that produced it; ``reason`` is what the desktop
+    shows (a missing key, a refused key, no quota, ...).
 
     Never raises: its callers are the catch-alls of the daemon's input loops,
     and a failed write here must not end the loop that called it.
@@ -824,8 +824,9 @@ def _emit_turn_failed(
             type="turn.failed",
             payload={
                 "turn_id": str(turn_id),
-                "exception_repr": exception_repr,
+                "exception_repr": repr(exc),
                 "trigger_event_id": intent_event.event_uid,
+                "reason": failure_reason(exc),
             },
             # ADR-0016 D5: correlated so a Live delegation's lookup by turn finds it.
             correlation={"turn_id": str(turn_id)},
@@ -1028,7 +1029,7 @@ async def _user_intent_watcher(
                     _emit_turn_failed(
                         runtime.conn,
                         intent_event=ev,
-                        exception_repr=repr(exc),
+                        exc=exc,
                     )
             await asyncio.sleep(poll_interval_s)
     except asyncio.CancelledError:
@@ -1247,7 +1248,7 @@ async def _intent_worker(
             except TurnConnectionUnavailableError as exc:
                 if continuation is None or waiting is None:
                     _emit_turn_failed(
-                        runtime.conn, intent_event=event, exception_repr=repr(exc),
+                        runtime.conn, intent_event=event, exc=exc,
                     )
                 else:
                     # No driver finally ran: retain all response/action ownership
@@ -1270,7 +1271,7 @@ async def _intent_worker(
                 _emit_turn_failed(
                     runtime.conn,
                     intent_event=event,
-                    exception_repr=repr(exc),
+                    exc=exc,
                 )
             finally:
                 queue.task_done()
@@ -1460,7 +1461,11 @@ async def _response_watcher(
                     elif ev.type == "surface.response_emitted":
                         await broadcaster.broadcast_done(ev)
                     elif ev.type == "turn.failed":
-                        await broadcaster.broadcast_op("failed", turn_id=turn_id)
+                        reason = str(ev.payload.get("reason") or "error")
+                        await broadcaster.broadcast_op(
+                            "failed", turn_id=turn_id, reason=reason,
+                            message=lang.t(f"failure.{reason}"),
+                        )
                     else:  # response.cancelled
                         await broadcaster.broadcast_op("cancelled", turn_id=turn_id)
             except Exception:
@@ -2283,6 +2288,8 @@ def _build_tts_pipeline(  # noqa: C901 - rollout/degradation capability boundary
     # Deliberately unvalidated: a type guard here would turn a mistyped key into
     # a silent fall back to the system default, out of the owner's speakers.
     output_device = realtime.get("output_device")
+    # ADR 0052: the Settings page's voice volume, applied in the player.
+    playback_volume = float(realtime.get("playback_volume") or 1.0)
     streaming_raw = realtime.get("streaming_output")
     streaming = streaming_raw if isinstance(streaming_raw, Mapping) else {}
     streaming_requested = realtime.get("enabled") is True and streaming.get("enabled") is True
@@ -2346,6 +2353,7 @@ def _build_tts_pipeline(  # noqa: C901 - rollout/degradation capability boundary
             generation_safe=True,
             device=output_device,
             playback_tap=echo_canceller.add_playback if echo_canceller is not None else None,
+            volume=playback_volume,
         )
         try:
             return voice_media.StreamingTTSPipeline(
@@ -2395,6 +2403,7 @@ def _build_tts_pipeline(  # noqa: C901 - rollout/degradation capability boundary
             ring_seconds=knobs.tts_ring_seconds,
             lazy_open=False,
             device=output_device,
+            volume=playback_volume,
         )
         return voice_tts.TTSPipeline(
             provider=provider,
@@ -2408,25 +2417,19 @@ def _build_tts_pipeline(  # noqa: C901 - rollout/degradation capability boundary
         return None
 
 
-# Shift+Return on the card records a memo instead of asking a question: the
-# ASR transcript gets the `/note ` prefix so the Tier 0 `note_capture` row
-# (config/tier0_patterns.yaml) routes it straight to `create_memo`.
-_TRANSCRIPT_PREFIX_BY_CHANNEL: Final[Mapping[str, str]] = {"inherent_note": "/note "}
-
-
 def _build_voice_pipeline_callable(
     pipeline: voice_pipeline.VoicePipeline,
 ) -> Callable[[bytes, str, str, str], Event]:
-    """Adapt :meth:`VoicePipeline.run_turn` to the InherentDeps callable shape.
+    """Adapt :meth:`VoicePipeline.run_turn` to the PTT callable shape.
 
-    ``InherentDeps.voice_pipeline_callable`` takes positional
-    ``(audio_bytes, turn_id, channel, language)`` and returns the
+    ``_submit_asr_v2`` calls it with positional
+    ``(audio_bytes, turn_id, channel, language)`` and gets back the
     emitted ``utterance.received`` :class:`Event`; the pipeline
     itself is keyword-only, so this thin closure does the rewrite.
 
     The closure forces ``broadcast=False`` — this callable is the PTT
-    path (``/inherent/asr-submit``), and per ADR-0005 §6 the inherent-
-    swift card drives its state from the HTTP response body, not from
+    path (``/inherent/asr-submit/v2``), and per ADR-0005 §6 the client
+    drives its state from the HTTP response body, not from
     WS ``op:voice`` envelopes. The shared :class:`VoicePipeline`
     instance keeps its broadcaster wired for the wake path; this
     adapter just silences phase envelopes for PTT.
@@ -2439,7 +2442,6 @@ def _build_voice_pipeline_callable(
             channel=channel,
             language=language,
             broadcast=False,
-            transcript_prefix=_TRANSCRIPT_PREFIX_BY_CHANNEL.get(channel, ""),
         )
 
     return _call
@@ -2492,7 +2494,7 @@ def _spawn_wake_listener(  # noqa: PLR0913 - composition boundary dependencies
 
     Also opens the 16 kHz / 80 ms PortAudio input stream that backs the
     listener's ``frame_factory``. Without this stream the listener
-    reads silent zero frames and openwakeword's probability never
+    reads silent zero frames and the wake probability never
     crosses threshold — wake silently never fires in production.
 
     Returns ``(listener, stream)`` on success so the daemon shutdown
@@ -2517,10 +2519,10 @@ def _spawn_wake_listener(  # noqa: PLR0913 - composition boundary dependencies
         data, _overflow = stream.read(_WAKE_FRAME_SAMPLES)
         return bytes(data)
 
-    engine: voice_wake.AnyWakeEngine | None = None
+    engine: voice_wake.MicroWakeWordEngine | None = None
     listener: voice_wake.WakeListener | None = None
     try:
-        engine = voice_wake.build_wake_engine(knobs.wake_engine)
+        engine = voice_wake.MicroWakeWordEngine()
         # Without start(), predict() silently returns no detection.
         engine.start()
         silero_vad = voice_audio.SileroVad(
@@ -2606,6 +2608,14 @@ class _VoicePowerTransition:
     deadline_monotonic: float
     elapsed_s: float
     input_skipped_reason: str | None = None
+
+
+# ADR 0054: asleep, or a close not proven, so re-initialising PortAudio could
+# free a stream still open.
+_NOT_REFRESHABLE = frozenset({
+    voice_audio.InputCapabilityState.SUSPENDED,
+    voice_audio.InputCapabilityState.CLOSE_UNCERTAIN,
+})
 
 
 class _VoicePowerCoordinator:
@@ -3003,6 +3013,64 @@ class _VoicePowerCoordinator:
             done.set()
             LOGGER.exception("failed to start pending wake continuation")
 
+    def quiet(self) -> bool:
+        """Nothing plays, Allen is not mid-sentence, and the mic is not asleep or in doubt."""
+        ingress = self._session.ingress
+        return (
+            not self._media.is_output_active()
+            and not ingress.capture_active
+            and ingress.capability.state not in _NOT_REFRESHABLE
+        )
+
+    def refresh_devices(self, *, input_device: str | None, output_device: str | None) -> str:
+        """Close every stream, re-read PortAudio's devices, reopen on these (ADR 0054).
+
+        Starts only while :meth:`quiet`; an answer arriving meanwhile parks and
+        starts afterwards. The caller has already closed any GPT-Live speaker.
+        Answers ``refreshed ...`` only when PortAudio initialised again.
+        """
+        ingress = self._session.ingress
+        if not self._lock.acquire(timeout=self._TOTAL_TRANSITION_BOUND_S):
+            return "busy:power_transition"
+        try:
+            if self._shutdown.is_set():
+                return "closed"
+            state = ingress.capability.state
+            if state in _NOT_REFRESHABLE:
+                return f"skipped:{state.value}"
+            nothing_playing = self._media.hold_for_devices(held=True)
+            try:
+                if not nothing_playing:
+                    return "busy:speaking"
+                if ingress.capture_active:
+                    return "busy:listening"
+                stopped = ingress.stop_for_sleep(
+                    deadline=time.monotonic() + self._TOTAL_TRANSITION_BOUND_S,
+                )
+                player = self._media.player
+                closed = player.stop()
+                if (stopped is None or stopped.definitively_closed) and closed.definitively_closed:
+                    voice_backend.reinitialize_portaudio()
+                    outcome = "refreshed"
+                else:
+                    outcome = "not_refreshed:close_uncertain"
+                player.set_device(output_device)
+                started = player.start()
+                ingress.set_input_device(input_device)
+                resumed = ingress.resume_after_wake(
+                    deadline=time.monotonic() + self._TOTAL_TRANSITION_BOUND_S,
+                )
+                if not started.started:
+                    ingress.report_output_unavailable(reason=f"device_refresh:{started.reason}")
+                return (
+                    f"{outcome} speaker={started.status}:{started.reason} "
+                    f"microphone={self._input_resume_reason(resumed)}"
+                )
+            finally:
+                self._media.hold_for_devices(held=False)
+        finally:
+            self._lock.release()
+
     def close(self, *, timeout_s: float | None = None) -> bool:
         """Revoke any pending wake before input/output owner shutdown."""
         self._shutdown.set()
@@ -3132,7 +3200,7 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
     if ingress_config is None or session_config is None:
         msg = "validated single ingress activation lacks parsed config"
         raise RuntimeError(msg)
-    engine = voice_wake.build_wake_engine(knobs.wake_engine)
+    engine = voice_wake.MicroWakeWordEngine()
     try:
         # Model construction/download happens before PortAudio owns the mic.
         engine.start()
@@ -3193,6 +3261,8 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
             ),
             open_timeout_s=ingress_config.backend_open_timeout_s,
             close_timeout_s=ingress_config.backend_close_timeout_s,
+            # ADR 0052: the Settings page's microphone; null = the system default.
+            device=(runtime.config.get("realtime") or {}).get("input_device"),
         )
         ingress = voice_audio.AudioIngress(
             backend=backend,
@@ -3224,6 +3294,22 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
                 # One second on, so the recording also holds what followed the onset.
                 threading.Timer(1.0, _dump_echo_history, args=(echo_canceller,)).start()
 
+        streaming = tts if isinstance(tts, voice_media.StreamingTTSPipeline) else None
+
+        def _hold_output(held: bool) -> None:  # noqa: FBT001 - the capture side's one bit
+            # ADR 0053: while Allen's words are coming in, no run completes and
+            # no queued answer starts playing.
+            if runtime.response_runs is not None:
+                runtime.response_runs.hold_completion(held=held)
+            if streaming is not None:
+                streaming.hold_output(held=held)
+
+        supersede_unspoken = (
+            make_supersede_unspoken_callable(runtime, streaming.drop_unspoken)
+            if streaming is not None and runtime.response_runs is not None
+            else None
+        )
+
         def _dump_echo_history(canceller: voice_aec.EchoCanceller) -> None:
             path = canceller.dump(runtime.runtime_paths.root / "aec-diagnostics")
             if path is not None:
@@ -3241,6 +3327,8 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
             mic_muted=mic_muted,
             conversation=conversation,
             stop_speaking=_stop_speaking,
+            hold_output=_hold_output,
+            supersede_unspoken=supersede_unspoken,
         )
     except Exception:
         LOGGER.exception(
@@ -3546,7 +3634,7 @@ async def _system_trigger_watcher(
                         _emit_turn_failed(
                             runtime.conn,
                             intent_event=trigger,
-                            exception_repr=repr(exc),
+                            exc=exc,
                         )
             except Exception:
                 after_id = resume_id
@@ -3747,6 +3835,13 @@ _FALLBACK_USAGE_POLL_INTERVAL_S: Final[float] = 300.0
 _FALLBACK_MINIMAX_USD_PER_MILLION_CHARS: Final[float] = 60.0
 
 
+def _claude_sessions_read(config: Mapping[str, Any]) -> bool:
+    """``observer.claude_sessions.enabled``: may the Agents page read Claude Code's files."""
+    block = config.get("observer")
+    sessions = block.get("claude_sessions") if isinstance(block, Mapping) else None
+    return isinstance(sessions, Mapping) and sessions.get("enabled") is True
+
+
 def _usage_observer_block(config: Mapping[str, Any]) -> Mapping[str, Any] | None:
     """Return ``observer.usage`` when ``enabled: true``; None means off."""
     block = config.get("observer")
@@ -3901,9 +3996,141 @@ def _start_timesink_observer(runtime: JarvisRuntime) -> list[asyncio.Task[None]]
     ]
 
 
+async def _set_todo(home: Home, todo_id: str, done: bool) -> None:  # noqa: FBT001 — the route's body.
+    """``POST /inherent/today/todo``: one To Do write, off the loop thread."""
+    await asyncio.to_thread(functools.partial(home.set_todo, todo_id, done=done))
+
+
+async def _save_settings(settings: Settings, changes: dict[str, Any]) -> dict[str, Any]:
+    """``POST /inherent/settings``: one file write, off the loop thread."""
+    return await asyncio.to_thread(settings.update, changes)
+
+
+def _fetch_models_then_restart(
+    sensevoice_dir: Path, silero_path: Path, loop: asyncio.AbstractEventLoop,
+) -> None:
+    """First boot: fetch the speech models in the background, then come back with voice."""
+
+    def run() -> None:
+        try:
+            models.fetch_missing(sensevoice_dir, silero_path)
+        except Exception:
+            LOGGER.exception("models: download failed; voice stays off until the next boot")
+            return
+        if spawned_by_agent():
+            LOGGER.info("models: ready; restarting so voice comes up")
+            loop.call_soon_threadsafe(_restart_soon)
+        else:
+            LOGGER.warning("models: ready; restart Jarvis to turn voice on")
+
+    threading.Thread(target=run, name="jarvis-models", daemon=True).start()
+
+
+def _restart_soon() -> None:
+    """``POST /inherent/restart``: TERM ourselves once the answer is out; KeepAlive respawns us."""
+    asyncio.get_running_loop().call_later(0.5, os.kill, os.getpid(), signal.SIGTERM)
+
+
 async def _refresh_work_state_now(service: WorkStateService) -> dict[str, Any]:
     """``POST /inherent/work-state/refresh``: the single-flight analysis on its own connection."""
     return await asyncio.to_thread(service.refresh_in_own_connection, trigger="dashboard")
+
+
+@dataclasses.dataclass
+class _AudioDeviceChoice:
+    """The microphone and speaker to be on; the Settings page changes them live (ADR 0054)."""
+
+    input_device: str | None
+    output_device: str | None
+    changed: bool = False
+
+    def choose(self, input_device: str | None, output_device: str | None) -> None:
+        self.input_device, self.output_device, self.changed = input_device, output_device, True
+
+
+_AUDIO_DEVICE_POLL_S = 1.0
+
+
+def _device_targets(choice: _AudioDeviceChoice) -> tuple[int | None, int | None] | None:
+    """The CoreAudio ids Jarvis should be on now: each default it follows, or its pick if in."""
+    inputs = voice_backend.coreaudio_devices("input")
+    outputs = voice_backend.coreaudio_devices("output")
+    if inputs is None or outputs is None:
+        return None
+    return (
+        inputs[0] if choice.input_device is None else inputs[1].get(choice.input_device),
+        outputs[0] if choice.output_device is None else outputs[1].get(choice.output_device),
+    )
+
+
+async def _watch_audio_devices(
+    coordinator: _VoicePowerCoordinator,
+    ingress: voice_audio.AudioIngress,
+    live_voice: voice_live.LiveVoice | None,
+    choice: _AudioDeviceChoice,
+) -> None:
+    """ADR 0054: re-read the devices when the ones to be on change, the mic is lost, or on a pick.
+
+    PortAudio lists only the devices there were when it initialised, so a
+    microphone plugged back in stays invisible to every reopen until then.
+    Other devices coming and going (a phone's microphone does, every minute or
+    so) are not a reason: each re-read leaves the microphone deaf for a moment.
+    """
+    seen = await asyncio.to_thread(_device_targets, choice)
+    if seen is None:
+        return
+    handled_loss = -1
+    while True:
+        await asyncio.sleep(_AUDIO_DEVICE_POLL_S)
+        now = await asyncio.to_thread(_device_targets, choice)
+        capability = ingress.capability
+        lost = (
+            capability.state is voice_audio.InputCapabilityState.LOCAL_CAPTURE_UNAVAILABLE
+            and capability.version != handled_loss
+        )
+        if now is None or not (now != seen or lost or choice.changed) or not coordinator.quiet():
+            continue
+        wanted = (choice.input_device, choice.output_device)
+        paused = (
+            live_voice.output_paused(wanted[1])
+            if live_voice is not None
+            else contextlib.nullcontext(enter_result=True)
+        )
+        async with paused as free:
+            if not free:
+                continue
+            outcome = await asyncio.to_thread(
+                functools.partial(
+                    coordinator.refresh_devices, input_device=wanted[0], output_device=wanted[1],
+                ),
+            )
+        LOGGER.log(
+            logging.DEBUG if outcome.startswith("busy") else logging.INFO,
+            "audio devices re-read: %s (asked microphone=%s speaker=%s)",
+            outcome, wanted[0] or "default", wanted[1] or "default",
+        )
+        if outcome.startswith("refreshed"):
+            seen = now
+            handled_loss = ingress.capability.version
+            if (choice.input_device, choice.output_device) == wanted:
+                choice.changed = False
+
+
+def _start_audio_device_watch(
+    runtime: JarvisRuntime,
+    coordinator: _VoicePowerCoordinator,
+    ingress: voice_audio.AudioIngress,
+    live_voice: voice_live.LiveVoice | None,
+) -> asyncio.Task[None]:
+    """Start the ADR 0054 device watch and let the Settings page's device picks reach it."""
+    realtime = runtime.config.get("realtime") or {}
+    choice = _AudioDeviceChoice(realtime.get("input_device"), realtime.get("output_device"))
+    if runtime.settings is not None:
+        runtime.settings.on_devices = choice.choose
+    return asyncio.create_task(
+        _watch_audio_devices(coordinator, ingress, live_voice, choice),
+        name="audio_device_watch",
+    )
 
 
 def _install_power_observer_or_degrade(
@@ -4478,8 +4705,8 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
        failure: log ERROR and continue text-only — the text path stays
        healthy.
     4. Build the FastAPI app via :func:`create_app` with
-       :class:`InherentDeps` (carries ``voice_pipeline_callable`` so
-       ``/inherent/asr-submit`` can do PTT ASR even without a wake
+       :class:`InherentDeps` (carries ``submit_asr`` so
+       ``/inherent/asr-submit/v2`` can do PTT ASR even without a wake
        listener; falls through to 501 when the pipeline is None).
     5. Configure :class:`uvicorn.Config` (``lifespan="off"`` because
        this module owns the lifecycle, ``log_level="warning"`` to
@@ -4591,11 +4818,17 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         shared_ducker: voice_ducking.SystemAudioDucker = voice_ducking.SystemAudioDucker()
 
         live_voice: voice_live.LiveVoice | None = None
+        dictation: Dictation | None = None
 
         def _old_chain_input_blocked() -> bool:
             # ADR-0015 mic mute, plus: while GPT-Live owns speech the local chain
-            # arms no new wake, so one utterance cannot be answered twice.
-            return controls.mic_is_muted() or (live_voice is not None and live_voice.owns_speech)
+            # arms no new wake, so one utterance cannot be answered twice; and
+            # while Allen dictates (ADR 0058) his words are text, not a turn.
+            return (
+                controls.mic_is_muted()
+                or (live_voice is not None and live_voice.owns_speech)
+                or (dictation is not None and dictation.active)
+            )
 
         def _apply_speech_mute(muted: bool) -> None:  # noqa: FBT001 - Callable[[bool], None] shape
             # ADR-0015 D2: speech mute is the player's output gain, 0.0 muted and
@@ -4621,6 +4854,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 "voice models missing; running text-only. Missing: %s",
                 "; ".join(missing),
             )
+            _fetch_models_then_restart(sensevoice_dir, silero_path, asyncio.get_running_loop())
         else:
             try:
                 voice_pipe = _build_voice_pipeline(
@@ -4684,7 +4918,9 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         gpt_live_config: voice_live.GptLiveConfig | None = None
         if isinstance(gpt_live_raw, Mapping):
             try:
-                gpt_live_config = voice_live.gpt_live_config_from_mapping(gpt_live_raw)
+                gpt_live_config = voice_live.gpt_live_config_from_mapping(
+                    {"assistant": _assistant_name(runtime.config), **gpt_live_raw},
+                )
             except (TypeError, ValueError):
                 LOGGER.exception("realtime.gpt_live is malformed; GPT-Live stays off this boot")
         if gpt_live_config is not None and gpt_live_config.enabled:
@@ -4707,6 +4943,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 mic_muted=controls.mic_is_muted,
                 speech_muted=lambda: controls.speech_muted,
                 output_device=realtime_map.get("output_device"),
+                volume=float(realtime_map.get("playback_volume") or 1.0),
                 on_owns_speech=lambda _owns: _apply_speech_mute(controls.speech_muted),
                 delegate=live_backend.delegate,
                 record=live_backend.record,
@@ -4827,10 +5064,43 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             )
             return {"since": since, "rows": rows}
 
+        setup: Setup | None = None
+        if window_memory is not None:
+            knobs = _voice_knobs(runtime.config)
+            setup = Setup(
+                root=runtime.runtime_paths.root,
+                settings_path=runtime.runtime_paths.settings,
+                memory_path=window_memory.db_path,
+                config=runtime.config,
+                tts_endpoint=knobs.tts_primary_endpoint,
+                tts_model=knobs.tts_model,
+                restart=_restart_soon if spawned_by_agent() else None,
+            )
+
+        # ADR 0058: dictation hears through the live mic and the voice path's ears.
+        ingress = duplex_voice_session.ingress if duplex_voice_session is not None else None
+        if ingress is not None and voice_pipe is not None:
+            dictation_config = runtime.config.get("dictation") or {}
+            try:
+                client = polish_client(
+                    runtime.config.get("llm") or {},
+                    str(dictation_config.get("polish_preset", "")),
+                )
+            except ValueError:
+                LOGGER.exception("dictation off: its polish preset is not configured")
+            else:
+                dictation = Dictation(
+                    ingress=ingress,
+                    transcribe=voice_pipe.transcribe,
+                    client=client,
+                    vocab_path=Path(str(dictation_config.get("vocab_path", ""))),
+                    event_log_path=runtime.runtime_paths.event_log,
+                    pricing_table=load_pricing_table(repo_root() / "data" / "pricing.json"),
+                )
+
         deps = InherentDeps(
             submit_callable=submit_callable,
             broadcaster=broadcaster,
-            voice_pipeline_callable=voice_pipeline_callable,
             usage_read=(
                 None if usage_observer is None else functools.partial(latest_usage, runtime.conn)
             ),
@@ -4840,6 +5110,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 else functools.partial(_refresh_usage_now, usage_observer, runtime.conn)
             ),
             usage_codex_reset=None if usage_observer is None else redeem_codex_reset,
+            usage_record_balance=None if usage_observer is None else usage_observer.record_balance,
             work_state_read=(
                 None
                 if runtime.work_state is None
@@ -4861,12 +5132,38 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 else functools.partial(asyncio.to_thread, runtime.projects.refresh)
             ),
             conversation_read=None if window_memory is None else _read_conversation,
+            today_read=(
+                None if runtime.home is None
+                else functools.partial(asyncio.to_thread, runtime.home.today)
+            ),
+            todo_set=None if runtime.home is None else functools.partial(_set_todo, runtime.home),
+            mail_read=(
+                None if runtime.home is None
+                else functools.partial(asyncio.to_thread, runtime.home.mail)
+            ),
+            brief_read=(
+                None if runtime.home is None
+                else functools.partial(runtime.home.brief, runtime.conn)
+            ),
+            settings_read=(
+                None if runtime.settings is None
+                else functools.partial(asyncio.to_thread, runtime.settings.read)
+            ),
+            settings_update=(
+                None if runtime.settings is None
+                else functools.partial(_save_settings, runtime.settings)
+            ),
+            restart=_restart_soon if spawned_by_agent() else None,
+            claude_sessions_read=_claude_sessions_read(runtime.config),
             plugin_read=runtime.plugin_connections.read if runtime.plugin_connections else None,
             plugin_action=runtime.plugin_connections.action if runtime.plugin_connections else None,
             plugin_authorize=(
                 runtime.plugin_connections.settings.matches if runtime.plugin_connections else None
             ),
             plugin_icon=runtime.plugin_connections.icon if runtime.plugin_connections else None,
+            language_save=functools.partial(save_language, runtime.runtime_paths.settings),
+            setup=setup,
+            dictation=dictation,
             cancel_response_callable=cancel_response_callable,
             controls=controls,
             live=live_voice,
@@ -4898,6 +5195,12 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             ),
         )
         app = create_app(deps)
+        # The desktop, the CLI and the Claude Code / Codex hooks read this key
+        # from the runtime root; nothing else on the machine can call the daemon.
+        require_local_key(
+            app,
+            functools.partial(local_key_matches, local_key(runtime.runtime_paths.root)),
+        )
 
         config = uvicorn.Config(
             app=app,
@@ -4946,6 +5249,12 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 name="response_watcher",
             ),
         )
+        if setup is not None:
+            # The keys' boot check: a model list and one word of TTS, off the loop;
+            # failures are logged and served by GET /inherent/setup.
+            watchers.append(
+                asyncio.create_task(asyncio.to_thread(setup.check_at_boot), name="setup_key_check"),
+            )
         if tts_pipe is not None:
             watchers.append(
                 asyncio.create_task(
@@ -5022,6 +5331,12 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             and isinstance(tts_pipe, voice_media.StreamingTTSPipeline)
             else None
         )
+        if power_coordinator is not None and duplex_voice_session is not None:
+            device_watch = _start_audio_device_watch(
+                runtime, power_coordinator, duplex_voice_session.ingress, live_voice,
+            )
+            device_watch.add_done_callback(_log_watcher_death)
+            watchers.append(device_watch)
         before_sleep_hook = (
             power_coordinator.before_sleep if power_coordinator is not None else None
         )

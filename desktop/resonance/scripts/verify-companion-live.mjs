@@ -17,7 +17,10 @@ const dir = path.join(root, 'evidence', real ? 'companion-live-real' : 'companio
 mkdirSync(dir, { recursive: true });
 const port = real ? (process.env.JARVIS_INHERENT_BRIDGE_PORT ?? '8006') : '8799';
 const daemon = `http://127.0.0.1:${port}`;
-const web = 5192;
+// Every daemon route needs the local key; the page gets it as a header on each request.
+const pluginToken = real ? (() => { try { return JSON.parse(readFileSync(path.join(homedir(), '.jarvis/plugin-access.json'), 'utf8')).token; } catch { return null; } })() : null;
+const daemonHeaders = pluginToken ? { Authorization: `Bearer ${pluginToken}` } : {};
+const web = Number(process.env.COMPANION_PORT ?? 5192);
 const server = spawn(path.join(root, 'node_modules/.bin/vite'), ['preview', '--port', String(web), '--strictPort'], { cwd: root, stdio: 'ignore' });
 const checks = [], check = (name, pass) => { assert.ok(pass, name); checks.push(name); console.log(`PASS ${name}`); };
 // The page is served from vite, the daemon from another origin; the Electron window has no such wall.
@@ -28,7 +31,7 @@ const words = text => text.replace(/<\/?(voice|document)>/g, '').replace(/^\s*(\
 const hm = ms => { const d = new Date(ms); return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
 try {
   for (let i = 0; i < 50; i++) { try { await fetch(`http://127.0.0.1:${web}/`); break; } catch { await new Promise(r => setTimeout(r, 100)); } }
-  const context = await browser.newContext({ viewport: { width: 640, height: 592 }, deviceScaleFactor: 2 });
+  const context = await browser.newContext({ viewport: { width: 640, height: 722 }, deviceScaleFactor: 2, extraHTTPHeaders: daemonHeaders });
   const page = await context.newPage();
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
@@ -64,7 +67,11 @@ try {
     '/inherent/codex-sessions': { sessions: [{ session_id: codexId, state: 'running', cwd: '/Users/x/Projects/typlus', model: 'gpt', prompt: 'fix the overlay', detail: 'Editing Overlay.swift', last_message: '', since_ms: now - 120_000 }] },
     '/inherent/usage': { services: { claude: { status: 'ok', observed_at_ms: now, data: { plan: '20X', windows: [{ key: 'five_hour', label: '5 hours', percent: 41, resets_at: iso(now + 3_600_000) }] } },
       codex: { status: 'ok', observed_at_ms: now, data: { plan: 'Pro Lite', windows: [{ key: 'primary_window', label: '7 d', percent: 64, resets_at: iso(now + 86_400_000) }], reset_credits: 1 } },
-      deepseek: { status: 'ok', observed_at_ms: now, data: { balance: 4.2, currency: 'USD', is_available: true } } } },
+      deepseek: { status: 'ok', observed_at_ms: now, data: { balance: -0.1, currency: 'USD', is_available: true } },
+      openai: { status: 'ok', observed_at_ms: now, data: { today_usd: 0.32, month_usd: 14.53, by_key: [], balance_usd: 23.25, balance_recorded_usd: 25, balance_recorded_at: '2026-09-25T18:00:00+00:00',
+        by_model: [{ model: 'gpt-5.6-sol', today_usd: 0, month_usd: 4.37 }, { model: 'gpt-5.6-luna', today_usd: 0.2817, month_usd: 1.8 }, { model: 'gpt-5.4-mini', today_usd: 0.0356, month_usd: 0.88 },
+          { model: 'gpt-6-luna', today_usd: 0.0034, month_usd: 0.27 }, { model: 'gpt-live-1', today_usd: 0, month_usd: 2.16 }] } },
+      minimax: { status: 'ok', observed_at_ms: now, data: { anchor_usd: 17.82, anchor_at: '2026-09-13T20:24:00-07:00', characters_since_anchor: 41000, usd_per_million_chars: 60, estimate_usd: 15.36 } } } },
     '/inherent/work-state': { state: { version: 1, analyzed_at: iso(now - 60_000), observed_until: iso(now - 60_000), evidence: { coverage: {}, counts: {}, limits: [] }, now: { text: 'Wiring the companion to the daemon.', basis: 'observed', refs: [] }, activities: [], links: [], uncertainties: [], note: null },
       data: null, freshness: { checked_at_ms: now, latest_observed_at: iso(now - 60_000), analyzed_at: iso(now - 60_000), analysis_observed_until: iso(now - 60_000) }, refreshing: false, outcome: 'analyzed', error: null },
     '/inherent/projects': { days: Array.from({ length: 7 }, (_, i) => iso(now - (6 - i) * 86_400_000).slice(0, 10)), projects: [{ id: 'jarvis', name: 'jarvis', seconds: 7200, today_seconds: 3600, days: [0, 0, 0, 0, 0, 3600, 3600], last_seen: null, commits: { count: 2, items: [] }, recent: [] }],
@@ -74,14 +81,14 @@ try {
   const LOGO = `data:image/svg+xml;base64,${Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8"><circle cx="4" cy="4" r="4" fill="#5e6ad2"/></svg>').toString('base64')}`;
   fixtures['/inherent/usage/refresh'] = fixtures['/inherent/usage'];
   // What the Usage page asked main to spend; `resetFails` makes the next call fail like a lost daemon.
-  const resets = [], refreshes = [];
+  const resets = [], refreshes = [], balances = [];
+  await page.exposeFunction('__usageBalance', async (service, usd) => { balances.push({ service, usd }); return { recorded: true }; });
   let resetFails = 0;
   await page.exposeFunction('__usageReset', async (service, id) => {
     resets.push({ service, id });
     if (resetFails) { resetFails--; throw new Error("Error invoking remote method 'usage-reset': Error: Could not reach Jarvis. Try again."); }
     return { code: 'reset', windows_reset: 1 };
   });
-  const pluginToken = real ? (() => { try { return JSON.parse(readFileSync(path.join(homedir(), '.jarvis/plugin-access.json'), 'utf8')).token; } catch { return null; } })() : null;
   await page.exposeFunction('__plugins', async (operation, data) => {
     pluginOps.push({ operation, data });
     if (real) {
@@ -99,7 +106,7 @@ try {
     return structuredClone(snapshot);
   });
   await page.addInitScript(fake => {
-    window.__state = { opened: [], accounts: [] };
+    window.__state = { opened: [], accounts: [], jumps: [] };
     window.jarvis = {
       placement: async () => ({ docked: false, topInset: 32, notchWidth: 185, surfaceWidth: 640, compactWidth: 0, displayId: 1 }),
       onPlacement: () => () => {}, onDisplayLeave: () => () => {}, displayReady: () => {}, companionMenu: () => {},
@@ -107,7 +114,10 @@ try {
       onCommand: callback => { window.__command = callback; return () => {}; },
       passthrough: () => {}, focus: async () => {}, material: () => {},
       codexTitles: async () => ({}), openCodex: async id => { window.__state.opened.push(id); return true; },
+      watchGhostty: on => { window.__state.watch = on; }, onGhostty: callback => { window.__ghostty = callback; return () => {}; },
+      jumpGhostty: async (title, job) => { window.__state.jumps.push([title, job]); return true; },
       openAccount: async id => { window.__state.accounts.push(id); return true; }, usageReset: (service, id) => window.__usageReset(service, id),
+      usageBalance: (service, usd) => window.__usageBalance(service, usd),
       plugins: (operation, data = {}) => window.__plugins(operation, data),
     };
     if (!fake) return;
@@ -133,6 +143,10 @@ try {
       reads.push({ at: Date.now(), after, limit });
       return json({ since: after, rows: after ? all.filter(r => r.seq > after) : all.slice(-limit) });
     }
+    // The home's new writes: a to-do checked off, and Jarvis's own settings once it serves them.
+    if (method === 'POST' && url.pathname === '/inherent/today/todo') return json({ ok: true });
+    if (method === 'POST' && url.pathname === '/inherent/settings' && fixtures['/inherent/settings']) { Object.assign(fixtures['/inherent/settings'].values, body.changes); return json(fixtures['/inherent/settings']); }
+    if (method === 'POST' && url.pathname === '/inherent/language') { fixtures['/inherent/language'] = { language: body.language }; return json(fixtures['/inherent/language']); }
     if (fixtures[url.pathname]) return json(fixtures[url.pathname]);
     return route.fulfill({ status: 404, contentType: 'application/json', body: '{"detail":"Not Found"}' });
   });
@@ -144,7 +158,7 @@ try {
   const waitPlace = async value => { await page.waitForFunction(v => document.querySelector('.companion-hit')?.dataset.place === v, value, { timeout: 5000 }); await page.waitForTimeout(700); };
   const face = (...ids) => page.waitForFunction(v => v.includes(document.querySelector('.companion-canvas')?.dataset.face), ids, { timeout: 2500 }).then(() => ids[0], () => null);
   const shot = (name, clip = { x: 120, y: 0, width: 400, height: 240 }) => page.screenshot({ path: path.join(dir, `${name}.png`), clip });
-  const panelShot = name => shot(name, { x: 150, y: 0, width: 340, height: 592 });
+  const panelShot = name => shot(name, { x: 150, y: 0, width: 340, height: 722 });
   const openRow = name => page.locator(`.ad [data-row="${name}"]`).evaluate(el => (el.matches('button') ? el : el.querySelector('button')).click());
   const back = async () => { await page.locator('.ad .pg-back').click(); await page.waitForTimeout(700); };
   const text = selector => page.locator(selector).first().textContent();
@@ -165,14 +179,19 @@ try {
   await page.waitForTimeout(800);
 
   if (real) {
-    const get = async p => (await fetch(`${daemon}${p}`)).json();
+    const get = async p => (await fetch(`${daemon}${p}`, { headers: daemonHeaders })).json();
     await page.evaluate(() => window.__command('dashboard'));
     await page.locator('.companion-dashboard.is-open').waitFor();
     await page.waitForTimeout(2500);
     const conversation = await get('/inherent/conversation?after=0');
     const answer = [...conversation.rows].reverse().find(r => r.source !== 'allen');
-    const say = await text('.ad .say');
-    check(`R her words are the last answer on record (${answer?.seq})`, !!answer && say === plain(answer.text) && (await text('.ad .cap')).includes(hm(Date.parse(answer.ts))));
+    const lastYou = [...conversation.rows].reverse().find(r => r.source === 'allen'), since = lastYou ? Date.now() - Date.parse(lastYou.ts) : Infinity;
+    const talkShown = await page.locator('.ad [data-block="talk"]').count() === 1;
+    check(`R the conversation is on top only within 10 min of your last turn (${Number.isFinite(since) ? Math.round(since / 60_000) : '-'} min ago, ${talkShown ? 'shown' : 'not shown'})`,
+      talkShown === since < 10 * 60_000 && (!talkShown || !answer || answer.seq < lastYou.seq || await text('.ad .r-talk .say') === plain(answer.text)));
+    const todayRoute = await fetch(`${daemon}/inherent/today`).then(r => r.status, () => 0);
+    check(`R Today says the calendar is not connected while the daemon has no /inherent/today (${todayRoute})`,
+      todayRoute !== 404 || (await text('.ad [data-block="today"] .muted')) === 'Calendar and to-dos aren’t connected yet.');
     const work = await get('/inherent/work-state');
     const nowText = await text('.ad .r-now .text');
     check(`R Now is the daemon's work state (${work.state?.now ? 'claim' : 'none'})`, work.state?.now ? nowText === work.state.now.text : /No recent activity|Syncing/.test(nowText));
@@ -182,7 +201,7 @@ try {
     const projects = await get('/inherent/projects'), top = projects.projects?.find(p => p.seconds > 0);
     check(`R the Projects tile is the daemon's (${top?.name ?? 'none'})`, top ? (await text('.ad .pj-mini b')) === top.name : true);
     const codex = (await get('/inherent/codex-sessions')).sessions ?? [];
-    const claudeRoute = await fetch(`${daemon}/inherent/claude-sessions`);
+    const claudeRoute = await fetch(`${daemon}/inherent/claude-sessions`, { headers: daemonHeaders });
     const claudeIds = claudeRoute.ok ? (await claudeRoute.json()).sessions.map(r => r.session_id) : [];
     await openRow('agents'); await page.waitForTimeout(3500);
     const shownIds = await page.locator('.ad .ag').evaluateAll(els => els.map(e => e.dataset.id));
@@ -197,7 +216,8 @@ try {
     // Opened the way a click opens it, timing when the words on screen have faded in.
     const litMs = await page.evaluate(async () => {
       const t0 = performance.now();
-      document.querySelector('.ad [data-row="conversation"] button').click();
+      const opener = document.querySelector('.ad [data-row="conversation"]');
+      (opener.matches('button') ? opener : opener.querySelector('button')).click();
       while (performance.now() - t0 < 4000) {
         await new Promise(r => requestAnimationFrame(r));
         const body = document.querySelector('.ad .pg-body'), box = body?.getBoundingClientRect();
@@ -285,6 +305,20 @@ try {
     check('L4 then her answer', await only() === '1,0' && await text('.bubble-text span:last-child') === '好，改到三点。');
     await page.evaluate(() => { window.__emit('done', { turn_id: 'v1e', fadeMs: 100 }); window.__emit('voice', { phase: 'spoken', turn_id: 'v1e' }); });
     await page.waitForFunction(() => document.querySelector('.companion-strip.is-open') && !document.querySelector('.companion-bubble.is-open'), null, { timeout: 3000 });
+    // A split sentence (ADR 0053): the first half's answer text lands while he says the second half; she only listens.
+    await page.evaluate(() => { window.__emit('voice', { phase: 'listening', turn_id: 'v1f' }); window.__emit('voice', { phase: 'accepted', turn_id: 'v1f', text: '怎么说' }); });
+    await page.waitForTimeout(300); // live, the second half starts after the first is accepted
+    await page.evaluate(() => { window.__emit('voice', { phase: 'listening', turn_id: 'v1g' }); window.__emit('open', { turn_id: 'v1f', response_id: 'resp-v1f' }); window.__emit('append', { turn_id: 'v1f', token: '<voice>你想让我怎么说？</voice>' }); });
+    await page.waitForTimeout(150);
+    check('L4 an answer written while he still talks stays off screen; she listens', await only() === '0,1' && await page.locator('.companion-strip.is-hearing').count() === 1 && await face('35', '35b') === '35');
+    await page.evaluate(() => { window.__emit('voice', { phase: 'transcribing', turn_id: 'v1g' }); window.__emit('voice', { phase: 'accepted', turn_id: 'v1g', text: '到一半停了' }); window.__emit('cancelled', { turn_id: 'v1f' }); });
+    await page.waitForTimeout(150);
+    check('L4 then the strip shows his second half, still no bubble', await only() === '0,1' && await text('.strip-text') === '到一半停了');
+    await page.evaluate(() => { window.__emit('open', { turn_id: 'v1g', response_id: 'resp-v1g' }); window.__emit('append', { turn_id: 'v1g', token: '<voice>刚才是我说到一半断了。</voice>' }); });
+    await page.waitForTimeout(150);
+    check('L4 and one answer to both halves', await only() === '1,0' && await text('.bubble-text span:last-child') === '刚才是我说到一半断了。');
+    await page.evaluate(() => { window.__emit('done', { turn_id: 'v1g', fadeMs: 100 }); window.__emit('voice', { phase: 'spoken', turn_id: 'v1g' }); });
+    await page.waitForFunction(() => document.querySelector('.companion-strip.is-open') && !document.querySelector('.companion-bubble.is-open'), null, { timeout: 3000 });
     await page.locator('.strip-stop').click(); await page.waitForTimeout(300);
     check('L5 the strip’s stop ends wave mode', posts.at(-1)?.path === '/inherent/controls' && posts.at(-1).body.conversation === false && await page.locator('.companion-strip.is-open').count() === 0);
     await move(600, 560); await waitPlace('home');
@@ -315,7 +349,8 @@ try {
     await page.evaluate(() => window.__command('dashboard'));
     await page.locator('.companion-dashboard.is-open').waitFor();
     await page.waitForTimeout(1500);
-    check('L8 her words are the last answer on record, plain, with its time', await text('.ad .say') === 'Two things: the voice test at four, and the demo cut.' && (await text('.ad .cap')).includes(hm(Date.parse(rows[1].ts))));
+    check('L8 your turn 9 min ago keeps the conversation on top: your words, then the answer on record, plain',
+      (await text('.ad .r-talk .you')).endsWith(rows[0].text) && await text('.ad .r-talk .say') === 'Two things: the voice test at four, and the demo cut.');
     check('L8 Now, Usage and Projects come from the daemon', await text('.ad .r-now .text') === 'Wiring the companion to the daemon.' && (await text('.ad .r-usage .dial b')).startsWith('41') && await text('.ad .pj-mini b') === 'jarvis');
     check('L8 the Agents row counts live sessions', (await text('.ad .r-agents .pill')) === '1 needs you' && (await text('.ad .r-agents .text')).includes('Wire the companion'));
     check('L8 the Plugins tile is the live catalog, connected first, with a manifest logo where there is one', (await page.locator('.ad .pl-mini i').allTextContents()).join('') === 'N' && await page.locator('.ad .pl-mini i:first-child img[src^="data:image/svg"]').count() === 1 && (await text('.ad [data-row="plugins"] .meta')) === '1 on');
@@ -400,7 +435,93 @@ try {
     await page.locator('.ad .us-confirm .btn-glow').click(); await page.waitForTimeout(400);
     check('L12 Try again resends the same request id for Codex, so it cannot spend twice', resets.length === 2 && resets[1].id === resets[0].id && /^[0-9a-f]{8}-[0-9a-f]{4}-/.test(resets[0].id) && resets.every(r => r.service === 'codex'));
     check('L12 a reset closes the question, says so, and re-reads usage', await page.locator('.ad .us-confirm').count() === 0 && (await text('.ad .toast')) === 'Codex limits reset' && refreshes.length > before);
+
+    // OpenAI: only the models that cost money today; balances Allen records himself (ADR 0050).
+    const listed = () => page.locator('.ad .spend li:not(:has(.more))').allTextContents();
+    check('L13 OpenAI lists only the models that cost a cent today, the rest fold', (await listed()).join('|') === 'gpt-5.6-luna$0.28|gpt-5.4-mini$0.04' && (await text('.ad .spend .more')) === '3 more at $0.00');
+    await page.locator('.ad .spend .more').click();
+    check('L13 the fold opens every model', (await listed()).length === 5 && (await text('.ad .spend .more')) === 'Show less');
+    const balanceCard = name => page.locator('.ad .bal-card', { hasText: name });
+    check('L13 OpenAI and MiniMax balances say since when, with Update', (await balanceCard('OpenAI').locator('b').textContent()) === '≈ $23.25' && (await balanceCard('OpenAI').locator('small').textContent()) === 'since Sep 25' && (await balanceCard('OpenAI').locator('.bal-set').textContent()) === 'Update'
+      && (await balanceCard('MiniMax').locator('small').textContent()).startsWith('since Sep 1'));
+    await page.locator('.ad .pg-body').evaluate(b => { b.scrollTop = 0; }); await page.waitForTimeout(300);
+    check('L13 balances open the page, Set in view without scrolling, and a debt reads -$0.10', await page.locator('.ad .pg-body > .pg-sec').first().locator('.bal').count() === 1
+      && await balanceCard('OpenAI').locator('.bal-set').evaluate(el => { const r = el.getBoundingClientRect(), b = el.closest('.pg-body').getBoundingClientRect(); return r.bottom <= b.bottom && r.top >= b.top; })
+      && (await balanceCard('DeepSeek').locator('b').textContent()) === '-$0.10');
+    await panelShot('L13-usage-balances');
+    await balanceCard('OpenAI').locator('.bal-set').click(); await page.waitForTimeout(300);
+    const save = page.locator('.ad .bal-card.is-editing .btn-glow');
+    const emptyDisabled = await save.isDisabled();
+    await page.locator('.ad .bal-card.is-editing input').fill('30.5'); await page.waitForTimeout(400);
+    await panelShot('L13-usage-typing');
+    const beforeSave = refreshes.length;
+    await page.locator('.ad .bal-card.is-editing input').press('Enter'); await page.waitForTimeout(500);
+    check('L13 typing a balance and Enter records it once, then re-reads usage', emptyDisabled && JSON.stringify(balances) === '[{"service":"openai","usd":30.5}]'
+      && await page.locator('.ad .bal-card.is-editing').count() === 0 && refreshes.length > beforeSave && (await text('.ad .toast')) === 'Balance saved');
+    await balanceCard('MiniMax').locator('.bal-set').click(); await page.waitForTimeout(300);
+    await page.locator('.ad .bal-card.is-editing input').fill('abc'); await page.waitForTimeout(100);
+    const lettersIgnored = await page.locator('.ad .bal-card.is-editing input').inputValue() === '' && await save.isDisabled();
+    await page.locator('.ad .bal-card.is-editing input').press('Escape'); await page.waitForTimeout(200);
+    check('L13 letters are not a balance, and Esc leaves without saving', lettersIgnored && balances.length === 1 && await page.locator('.ad .bal-card.is-editing').count() === 0);
     await back();
+
+    // The home's new sources. Until the daemon serves them, Today says so, the pop-ups stay away and Jarvis's own
+    // settings are greyed out; once it does, each block shows what it answers and the writes go where the contract says.
+    check('L14 without /inherent/today, Today says the calendar is not connected, and no brief, mail or reminder shows',
+      (await text('.ad [data-block="today"] .muted')) === 'Calendar and to-dos aren’t connected yet.' && await page.locator('.ad [data-block="brief"], .ad [data-block="mail"], .ad [data-block="foryou"]').count() === 0);
+    await page.locator('.ad .corner .cb').nth(1).click(); await page.waitForTimeout(300);
+    check('L14 the corner mute sets speech_muted on the daemon', posts.at(-1)?.path === '/inherent/controls' && posts.at(-1).body.speech_muted === true && await page.locator('.ad .cb.is-muted').count() === 1);
+    await page.locator('.ad .corner .cb').nth(1).click(); await page.waitForTimeout(300);
+    check('L14 and the second press unmutes it', posts.at(-1)?.body.speech_muted === false && await page.locator('.ad .cb.is-muted').count() === 0);
+    await page.locator('.ad .corner [data-row="settings"]').click(); await page.waitForTimeout(900);
+    await page.locator('.ad [data-cat="voice"]').click(); await page.waitForTimeout(500);
+    check('L14 without /inherent/settings, Jarvis’s own voice settings are greyed out and say they still live in jarvis.yaml',
+      (await text('.ad .st-warn')).includes('jarvis.yaml') && await page.locator('.ad .st.is-off').count() === 7);
+    await panelShot('L14-settings-missing');
+    await back(); await back();
+    const today = new Date().toLocaleDateString('en-CA');
+    fixtures['/inherent/today'] = { weather: { now_c: 12, summary: 'Rain from 9 PM' },
+      events: [{ id: 'e1', title: 'Office hours', start: iso(Date.now() - 60_000), end: iso(Date.now() + 30 * 60_000) }],
+      todos: [{ id: 't1', title: 'Send the A3 draft', due: iso(Date.now() + 60_000) }] };
+    fixtures['/inherent/brief'] = { date: today, summary: 'Two agents finished overnight.', body: '**Overnight**\n\n- Two agents finished.', items: 1 };
+    fixtures['/inherent/mail'] = { unread: [{ id: 'm1', from: 'Prof. Lee', subject: 'Office hours moved', received: iso(Date.now() - 600_000) }] };
+    fixtures['/inherent/notices'] = { notices: [{ id: 'n1', text: 'Reminder: call the dentist', at: iso(Date.now()) }] };
+    fixtures['/inherent/settings'] = { values: { reply_language: 'follow', wake_threshold: .95, tts_voice: 'Warm Bestie', tts_volume: 1, output_device: 'System default', input_device: 'System default',
+      gpt_live: true, mac_aec: false, timesink: true, keep_audio: true, repos: ['jarvis'], model_conversation: 'gpt-5.6-luna', model_background: 'GPT-6 luna', model_report: 'GPT-6 sol' },
+      options: { tts_voice: ['Warm Bestie', 'Explorative Girl'], output_device: ['System default'], input_device: ['System default'] } };
+    await hit.dblclick({ force: true });
+    await page.waitForFunction(() => !document.querySelector('.companion-dashboard.is-open'), null, { timeout: 3000 });
+    await page.evaluate(() => window.__command('dashboard'));
+    await page.locator('.companion-dashboard.is-open').waitFor();
+    await page.waitForTimeout(1500);
+    check('L14 once the daemon answers, Today shows its weather, event and to-do',
+      (await text('.ad [data-block="today"] .ev span')) === 'Office hours' && (await text('.ad [data-block="today"] .wx')).includes('12°') && (await text('.ad [data-block="today"] .td span')) === 'Send the A3 draft');
+    check('L14 the brief, the mail and Jarvis’s reminder show up', await page.locator('.ad [data-block="brief"]').count() === 1
+      && (await text('.ad [data-block="mail"] .ml b')) === 'Prof. Lee' && (await text('.ad [data-block="foryou"]')).includes('call the dentist'));
+    await panelShot('L14-home');
+    await page.locator('.ad [data-block="today"] .td').click(); await page.waitForTimeout(400);
+    check('L14 checking a to-do posts { id, done } to /inherent/today/todo', posts.at(-1)?.path === '/inherent/today/todo' && posts.at(-1).body.id === 't1' && posts.at(-1).body.done === true
+      && await page.locator('.ad .td[aria-pressed="true"]').count() === 1);
+    await page.locator('.ad .brief-go').click(); await page.waitForTimeout(900);
+    check('L14 Read the brief opens its page', await text('.ad .pg-head h3') === 'Morning brief' && (await text('.ad .pg-body')).includes('Two agents finished'));
+    await back();
+    check('L14 a brief you read does not come back today', await page.locator('.ad [data-block="brief"]').count() === 0);
+    await page.locator('.ad .corner [data-row="settings"]').click(); await page.waitForTimeout(900);
+    await page.locator('.ad [data-cat="voice"]').click(); await page.waitForTimeout(500);
+    await page.locator('.ad .st-opts button', { hasText: 'Explorative Girl' }).click(); await page.waitForTimeout(600);
+    check('L14 with /inherent/settings they are live, and a change posts { changes }', await page.locator('.ad .st.is-off').count() === 0
+      && posts.at(-1)?.path === '/inherent/settings' && posts.at(-1).body.changes?.tts_voice === 'Explorative Girl'
+      && await page.locator('.ad .st-opts button[aria-checked="true"]', { hasText: 'Explorative Girl' }).count() === 1);
+    await panelShot('L14-settings-voice');
+    // One language switch: Interface language flips her panel and tells Jarvis to say its own phrases in it.
+    const langName = () => text('.ad [data-item="lang"] .st-name');
+    await back(); await page.locator('.ad [data-cat="general"]').click(); await page.waitForTimeout(500);
+    await page.locator('.ad [data-item="lang"] .st-seg button', { hasText: '中文' }).click(); await page.waitForTimeout(600);
+    check('L15 Interface language 中文 posts { language: zh } and her panel turns Chinese',
+      posts.at(-1)?.path === '/inherent/language' && posts.at(-1).body.language === 'zh' && await langName() === '界面语言');
+    await page.locator('.ad [data-item="lang"] .st-seg button', { hasText: 'English' }).click(); await page.waitForTimeout(600);
+    check('L15 English posts { language: en } and turns it back', posts.at(-1)?.body.language === 'en' && await langName() === 'Interface language');
+    await back(); await back();
     await hit.dblclick({ force: true });
     await page.waitForFunction(() => !document.querySelector('.companion-dashboard.is-open'), null, { timeout: 3000 });
     // Jarvis asks for a plugin mid-conversation: the closed panel opens and lands on it.
@@ -409,100 +530,142 @@ try {
     check('L11 when Jarvis asks for a plugin the Dashboard opens on it with the reason', await page.locator('.companion-dashboard.is-open').count() === 1 && (await text('.ad .pl-det .btn-glow')) === 'Sign in and continue');
     await page.waitForTimeout(900); await panelShot('L11-asked');
 
-    // L13: agent notices (ADR 0049). The fake board changes under her: sessions finish, ask, stop; she docks on a
-    // card at one event's height, and every answer goes back as a POST for the held prompt.
+    // L13: agent notices beside the notch (ADR 0049, ADR 0057). The fake board changes under her: sessions finish,
+    // ask, stop. A finish pops its name for 5 s and stays on Allen's turn until he looks at it in Ghostty (a fake
+    // front-terminal feed here) or goes to it; a needs-you card hangs from the notch and every answer goes back as a
+    // POST for the held prompt. She watches all of it from home.
     await hit.dblclick({ force: true });
     await page.waitForFunction(() => !document.querySelector('.companion-dashboard.is-open'), null, { timeout: 3000 });
     await waitPlace('home');
-    const session = (id, over = {}) => ({ agent: 'claude', session_id: id, kind: 'interactive', phase: 'working', title: id, project: 'jarvis', branch: '', cwd: '/x', where: 'Ghostty',
+    const session = (id, over = {}) => ({ agent: 'claude', session_id: id, kind: 'interactive', job_id: '', phase: 'working', title: id, project: 'jarvis', branch: '', cwd: '/x', where: 'Ghostty',
       prompt: `do ${id}`, activity: 'Working', last_message: '', started_ms: now, updated_ms: now, ...over });
     const board = { 'c-wait': claude[0], 'n-build': session('n-build', { title: 'Build the notices' }), 'n-a': session('n-a', { title: 'Port the sounds' }),
-      'n-b': session('n-b', { title: 'Port the faces' }), 'n-plan': session('n-plan', { title: 'Plan the wing' }), 'n-x': session('n-x', { title: 'Check the queue' }) };
+      'n-b': session('n-b', { title: 'Port the faces', kind: 'background', job_id: 'b7a91c02', where: 'background' }), 'n-plan': session('n-plan', { title: 'Plan the wing' }), 'n-x': session('n-x', { title: 'Check the queue' }) };
     const setBoard = (id, over) => { if (id) board[id] = { ...board[id], ...over }; fixtures['/inherent/claude-sessions'] = { sessions: Object.values(board), error: null }; };
-    const card = () => page.locator('.companion-notice.is-open');
-    const cardUp = () => card().waitFor({ timeout: 5000 });
-    const cardGone = () => page.waitForFunction(() => !document.querySelector('.companion-notice.is-open'), null, { timeout: 5000 });
-    const marks = () => page.locator('.agent-wing').getAttribute('data-marks');
+    const note = () => page.locator('.notch-note.is-open');
+    const noteUp = () => note().waitFor({ timeout: 5000 });
+    const noteGone = () => page.waitForFunction(() => !document.querySelector('.notch-note.is-open'), null, { timeout: 7000 });
+    const marks = () => page.locator('.notch').getAttribute('data-marks');
+    const settle = async () => { await move(600, 560); await page.waitForTimeout(900); };
+    const ghostty = (title, front = true) => page.evaluate(([title, front]) => window.__ghostty({ front, title }), [title, front]);
     const answered = path => posts.filter(p => p.path === `/inherent/claude-requests/${path}`).map(p => p.body);
+    const drop = page.locator('.notch-drop.is-open');
+    const noteShot = name => shot(name, { x: 80, y: 0, width: 560, height: 420 });
     setBoard(); await page.waitForTimeout(2500);
-    check('L13 sessions met for the first time wear their marks and pop nothing', await card().count() === 0 && (await marks()) === 'wait workx6');
+    check(`L13 sessions met for the first time pop nothing: the waiting one is on his turn, six working fold (${await marks()})`,
+      await note().count() === 0 && (await marks()) === 'turn1 workx6' && await page.evaluate(() => window.__state.watch === true));
     setBoard('n-build', { phase: 'done', last_message: '**Done.** The wing and the cards are in.\n- 72 checks pass' });
-    await cardUp(); await waitPlace('dock');
-    check('L13 a finished session opens a card she docks on, in her done face, with its summary',
-      (await text('.companion-notice .nc-label')) === 'Finished' && (await text('.companion-notice .nc-top b')) === 'Build the notices'
-      && (await text('.companion-notice .nc-sum')).includes('The wing and the cards are in') && await face('fin') === 'fin' && (await marks()).startsWith('wait done'));
-    await panelShot('L13-finished');
-    await page.locator('.companion-notice .nc-x').click(); await cardGone(); await page.waitForTimeout(400);
-    check(`L13 closed by hand it counts as seen: the green mark goes (${await marks()})`, !(await marks()).includes('done'));
+    await noteUp(); await page.waitForTimeout(700);
+    check('L13 a finished session pops its name only, beside the notch, while she stays home in her done face',
+      (await text('.notch-note .c-label')) === 'Done' && (await page.locator('.notch-note .u-row').allTextContents()).join('|') === 'Build the notices'
+      && !(await text('.notch-note')).includes('checks pass') && await face('fin') === 'fin' && await hit.getAttribute('data-place') === 'home');
+    await noteShot('L13-pop');
+    await noteGone(); await settle();
+    check(`L13 after 5 s the pop folds into the beacon; the session stays on his turn (${await marks()})`, (await marks()) === 'turn2 workx5');
+    await move(428, 14); await drop.waitFor(); await page.waitForTimeout(700);
+    check('L13 the beacon lists his turn: the one asking first, in the warm colour, then the finished one',
+      (await drop.locator('.u-row').allTextContents()).join('|') === 'Wire the companion|Build the notices' && await drop.locator('.u-row.is-ask').count() === 1
+      && (await text('.notch-drop .c-label')).startsWith('Your turn · 2'));
+    await noteShot('L13-your-turn');
+    await settle();
+    await ghostty('Build the notices'); await page.waitForTimeout(2200);
+    check(`L13 1.5 s on its Ghostty terminal reads it: it leaves his turn and stays as a dim star (${await marks()})`, (await marks()) === 'turn1 workx5 done');
+    await ghostty('zsh');
     setBoard('n-a', { phase: 'done', last_message: 'Sounds ported.' }); setBoard('n-b', { phase: 'done', last_message: 'Faces ported.' });
-    await cardUp(); await page.waitForTimeout(600);
-    check('L13 two finishes together share one card', (await text('.companion-notice .nc-label')).startsWith('2 finished') && await page.locator('.companion-notice .nc-row').count() === 2);
-    await page.locator('.companion-notice .nc-x').click(); await cardGone();
+    await noteUp(); await page.waitForTimeout(700);
+    check('L13 two finishes together share one pop', (await text('.notch-note .c-label')) === '2 done' && await page.locator('.notch-note .u-row').count() === 2);
+    await page.locator('.notch-note .u-row', { hasText: 'Port the sounds' }).hover();
+    await page.locator('.notch-note .u-row', { hasText: 'Port the sounds' }).locator('.u-read').click(); await page.waitForTimeout(300);
+    check('L13 ✕ marks one read and it leaves the pop', (await page.locator('.notch-note .u-row').allTextContents()).join('|') === 'Port the faces');
+    await page.locator('.notch-note .u-row', { hasText: 'Port the faces' }).click();
+    await noteGone(); await settle();
+    check(`L13 a click goes to it: a background session attaches by its job id in Ghostty, and it is read (${await marks()})`,
+      JSON.stringify(await page.evaluate(() => window.__state.jumps)) === '[["Port the faces","b7a91c02"]]' && (await marks()) === 'turn1 work work work done done done');
+    await ghostty('Check the queue'); await page.waitForTimeout(1800);
+    setBoard('n-x', { phase: 'done', last_message: 'Queue checked.' }); await page.waitForTimeout(2600);
+    check(`L13 a session finishing while he looks at it pops nothing and is not on his turn; the fourth finished folds (${await marks()})`,
+      await note().count() === 0 && (await marks()) === 'turn1 work work donex4');
 
     setBoard('c-wait', { request: { id: 'r-bash', tool: 'Bash', input: { command: 'npm run build', description: 'Build the desktop app' }, cwd: '/x/jarvis/desktop/resonance', always: "Don't ask again for Bash(npm run build:*)" } });
-    await cardUp(); await waitPlace('dock');
-    check('L13 a held Bash prompt shows its command with Deny, Always and Allow, and she waits on you',
-      (await text('.companion-notice .nc-label')) === 'Needs your OK' && (await text('.companion-notice .nc-cmd')).includes('npm run build')
-      && (await page.locator('.companion-notice .nc-choice .btn').allTextContents()).join('|') === 'Deny|Always|Allow' && await face('ask') === 'ask');
-    await panelShot('L13-bash');
-    await page.locator('.companion-notice .btn-warm').click();
+    await noteUp(); await page.waitForTimeout(700);
+    check('L13 a held Bash prompt hangs a card from the notch with its command, Deny, Always and Allow; she waits on you from home',
+      (await text('.notch-note .nc-label')) === 'Needs your OK' && (await text('.notch-note .nc-cmd')).includes('npm run build') && (await text('.notch-note .nc-go')) === 'Open in Ghostty'
+      && (await page.locator('.notch-note .nc-choice .btn').allTextContents()).join('|') === 'Deny|Always|Allow' && await face('ask') === 'ask' && await hit.getAttribute('data-place') === 'home');
+    await noteShot('L13-bash');
+    await page.locator('.notch-note .btn-warm').click();
     await page.waitForTimeout(200);
-    check('L13 Allow goes back for that prompt and the card confirms', JSON.stringify(answered('r-bash')) === '[{"decision":"allow"}]' && (await text('.companion-notice .nc-ok')) === 'Allowed · Claude continues');
-    setBoard('c-wait', { request: null }); await cardGone();
+    check('L13 Allow goes back for that prompt and the card confirms', JSON.stringify(answered('r-bash')) === '[{"decision":"allow"}]' && (await text('.notch-note .nc-ok')) === 'Allowed · Claude continues');
+    setBoard('c-wait', { request: null }); await noteGone();
 
     const questions = [{ question: 'Where do the marks go?', header: 'Side', multiSelect: false, options: [{ label: 'Right of the notch', description: 'Recommended' }, { label: 'Left of her island' }] },
       { question: 'Finished cards?', header: 'Finish', multiSelect: false, options: [{ label: 'Expand' }, { label: 'Compact' }] }];
     setBoard('c-wait', { request: { id: 'r-ask', tool: 'AskUserQuestion', input: { questions }, cwd: '/x', always: '' } });
-    await cardUp();
-    check('L13 a question card asks the first of two', (await text('.companion-notice .nc-label')) === 'Claude asks' && (await text('.companion-notice .nc-qt')).includes('Where do the marks go?'));
-    await panelShot('L13-ask');
-    await page.locator('.companion-notice .opt').first().click(); await page.waitForTimeout(500);
-    await page.locator('.companion-notice .opt').first().click(); await page.waitForTimeout(500);
-    check('L13 each pick moves on, and the last step shows every answer', (await page.locator('.companion-notice .nc-review li').allTextContents()).join('|') === 'SideRight of the notch|FinishExpand');
-    await page.locator('.companion-notice .btn-warm').click(); await page.waitForTimeout(200);
+    await noteUp();
+    check('L13 a question card asks the first of two', (await text('.notch-note .nc-label')) === 'Claude asks' && (await text('.notch-note .nc-qt')).includes('Where do the marks go?'));
+    await page.waitForTimeout(600); await noteShot('L13-ask');
+    await page.locator('.notch-note .opt').first().click(); await page.waitForTimeout(500);
+    await page.locator('.notch-note .opt').first().click(); await page.waitForTimeout(500);
+    check('L13 each pick moves on, and the last step shows every answer', (await page.locator('.notch-note .nc-review li').allTextContents()).join('|') === 'SideRight of the notch|FinishExpand');
+    await page.locator('.notch-note .btn-warm').click(); await page.waitForTimeout(200);
     check('L13 the answers go back keyed by question', JSON.stringify(answered('r-ask')) === JSON.stringify([{ decision: 'allow', answers: { 'Where do the marks go?': 'Right of the notch', 'Finished cards?': 'Expand' } }]));
-    setBoard('c-wait', { request: null }); await cardGone();
+    setBoard('c-wait', { request: null }); await noteGone();
 
     setBoard('c-wait', { request: { id: 'r-plan', tool: 'ExitPlanMode', input: { plan: '## Plan\n1. Marks\n2. Cards' }, cwd: '/x', always: '' } });
-    await cardUp();
-    check('L13 a plan card shows the plan with Keep planning and Approve', (await text('.companion-notice .nc-label')) === 'Plan to review' && (await text('.companion-notice .nc-plan')).includes('Marks'));
-    await page.locator('.companion-notice .btn-ghost').click();
-    await page.locator('.companion-notice .pg-input input').fill('Cards first');
-    await page.locator('.companion-notice .pg-input .send').click(); await page.waitForTimeout(200);
+    await noteUp();
+    check('L13 a plan card shows the plan with Keep planning and Approve', (await text('.notch-note .nc-label')) === 'Plan to review' && (await text('.notch-note .nc-plan')).includes('Marks'));
+    await page.locator('.notch-note .nc-choice .btn-ghost').click();
+    await page.locator('.notch-note .pg-input input').fill('Cards first');
+    await page.locator('.notch-note .pg-input .send').click(); await page.waitForTimeout(200);
     check('L13 keep planning sends what to change as a deny', JSON.stringify(answered('r-plan')) === '[{"decision":"deny","message":"Cards first"}]');
-    setBoard('c-wait', { request: null }); await cardGone();
+    setBoard('c-wait', { request: null }); await noteGone();
 
     setBoard('n-plan', { phase: 'done', error: 'Rate limited: 429 Too Many Requests' });
-    await cardUp();
-    check('L13 a stopped session says why, with her error face', (await text('.companion-notice .nc-label')) === 'Stopped' && (await text('.companion-notice .nc-err b')) === 'Rate limited' && await face('34') === '34');
-    await page.locator('.companion-notice .nc-x').click(); await cardGone();
+    await noteUp();
+    check('L13 a stopped session pops as stopped, with her error face', (await text('.notch-note .c-label')) === 'Stopped' && await face('34') === '34');
+    await page.locator('.notch-note .c-x').click(); await noteGone(); await settle();
+    check(`L13 closed by hand, a pop stays on his turn (${await marks()})`, (await marks()) === 'turn2 work donex4');
 
     await page.evaluate(() => window.__command('dashboard'));
     await page.locator('.companion-dashboard.is-open').waitFor();
-    setBoard('n-x', { phase: 'done', last_message: 'Queue checked.' }); await page.waitForTimeout(2500);
-    check('L13 nothing pops while the Dashboard is open', await card().count() === 0);
-    await hit.dblclick({ force: true }); await cardUp();
-    check('L13 and it comes up once the Dashboard closes', (await text('.companion-notice .nc-top b')) === 'Check the queue');
-    await page.locator('.companion-notice .nc-x').click(); await cardGone();
+    fixtures['/inherent/codex-sessions'] = { sessions: [{ ...fixtures['/inherent/codex-sessions'].sessions[0], state: 'finished', last_message: 'Overlay fixed.' }] };
+    await page.waitForTimeout(3500);
+    check('L13 nothing pops while the Dashboard is open', await note().count() === 0);
+    await hit.dblclick({ force: true }); await noteUp();
+    check('L13 and it comes up once the Dashboard closes', (await page.locator('.notch-note .u-row').allTextContents()).join('|') === 'fix the overlay');
+    await page.locator('.notch-note .u-row').click(); await noteGone();
+    check('L13 a Codex session opens its thread', JSON.stringify(await page.evaluate(() => window.__state.opened.slice(-1))) === JSON.stringify([codexId]));
 
     setBoard('c-wait', { request: { id: 'r-edit', tool: 'Edit', input: { file_path: '/x/jarvis/src/Notices.tsx', old_string: 'const a = 1;', new_string: 'const a = 2;\nconst b = 3;' }, cwd: '/x', always: 'Allow edits for the rest of this session' } });
-    await cardUp();
-    check('L13 an edit prompt shows the file and its diff', (await text('.companion-notice .nc-file')).includes('src/Notices.tsx') && await page.locator('.companion-notice .nc-diff code.add').count() === 2);
-    await page.locator('.companion-notice .nc-x').click(); await cardGone();
-    check('L13 Later puts a needs-you card away; its mark still waits', await card().count() === 0 && (await marks()).startsWith('wait'));
-    await page.locator('.agent-wing-hit').click();
-    await page.locator('.companion-dashboard.is-open').waitFor(); await page.waitForTimeout(1200);
-    await page.locator('.ad [data-id="c-wait"] .ag-head').click(); await page.waitForTimeout(500);
-    await page.locator('.ad [data-id="c-wait"] .btn-glow').click();
-    await cardUp();
-    check('L13 Answer on the Agents page closes the Dashboard and brings the card back', await page.locator('.companion-dashboard.is-open').count() === 0 && (await text('.companion-notice .nc-file')).includes('Notices.tsx'));
-    await page.locator('.companion-notice .btn-ghost', { hasText: 'Always' }).click(); await page.waitForTimeout(200);
+    await noteUp();
+    check('L13 an edit prompt shows the file and its diff', (await text('.notch-note .nc-file')).includes('src/Notices.tsx') && await page.locator('.notch-note .nc-diff code.add').count() === 2);
+    await page.locator('.notch-note .nc-x').click(); await noteGone(); await settle();
+    check(`L13 Later puts a needs-you card away; it stays on his turn (${await marks()})`, await note().count() === 0 && (await marks()).startsWith('turn2'));
+    await move(428, 14); await drop.waitFor(); await page.waitForTimeout(600);
+    await drop.locator('.u-row.is-ask').click();
+    await noteUp();
+    check('L13 the asking row on his turn brings its card back', (await text('.notch-note .nc-file')).includes('Notices.tsx'));
+    await page.locator('.notch-note .btn-ghost', { hasText: 'Always' }).click(); await page.waitForTimeout(200);
     check('L13 Always goes back as always', JSON.stringify(answered('r-edit')) === '[{"decision":"always"}]');
-    setBoard('c-wait', { request: null }); await cardGone();
+    setBoard('c-wait', { request: null }); await noteGone(); await settle();
+
+    // The four finished fold into one star: Clear all on its panel takes them off the row, and her profile keeps
+    // what he cleared and what is still his turn across a restart.
+    await move(456, 14); await drop.waitFor(); await page.waitForTimeout(600);
+    check('L13 the folded finished star lists all five with Clear all', await drop.locator('.s-row').count() === 5 && (await text('.notch-drop .c-x')) === 'Clear all');
+    await drop.locator('.c-x').click(); await settle();
+    const kept = await marks();
+    check(`L13 Clear all takes the finished stars off the row (${kept})`, kept === 'turn2');
+    await page.reload(); await page.waitForTimeout(3000);
+    check(`L13 after a restart his turn and what he cleared are the same (${await marks()})`, (await marks()) === kept);
+    // Jarvis's language wins when she starts: a daemon speaking Chinese turns her panel Chinese.
+    fixtures['/inherent/language'] = { language: 'zh' };
+    await page.reload(); await page.waitForTimeout(2500);
+    check('L15 at start her panel follows the language Jarvis speaks in',
+      await page.evaluate(() => JSON.parse(localStorage.getItem('companion-settings-v1') ?? '{}').lang) === 'zh');
     check('no page errors', errors.length === 0);
   }
   await context.close();
-  writeFileSync(path.join(dir, 'verification.json'), JSON.stringify({ checks, errors, posts, pluginOps: pluginOps.filter(o => o.operation !== 'read'), resets }, null, 2));
+  writeFileSync(path.join(dir, 'verification.json'), JSON.stringify({ checks, errors, posts, pluginOps: pluginOps.filter(o => o.operation !== 'read'), resets, balances }, null, 2));
   console.log(`${checks.length} checks passed; evidence in ${dir}`);
 } finally {
   await browser.close();

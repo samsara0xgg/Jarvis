@@ -63,6 +63,7 @@ from jarvis.shared import (
     RawResultBundle,
     ResultSemantics,
     RiskLevel,
+    lang,
 )
 from jarvis.shared.action_admission import action_admission_guard
 from jarvis.shared.text import truncate_utf8
@@ -576,59 +577,6 @@ _OUTPUT_TAIL_BYTES: Final[int] = 2048
 # --- get_current_time (F-Tier0) ---------------------------------------------
 
 
-_WEEKDAYS_ZH: Final[tuple[str, ...]] = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
-"""`datetime.weekday()` (Mon=0) indexed into the zh-CN weekday names."""
-
-_DAY_PERIODS: Final[tuple[tuple[int, str], ...]] = (
-    (6, "凌晨"),
-    (9, "早上"),
-    (12, "上午"),
-    (13, "中午"),
-    (18, "下午"),
-    (24, "晚上"),
-)
-"""`(exclusive upper-bound hour, zh-CN day-period label)`, ascending."""
-
-_SPOKEN_MINUTE_FILLER_BELOW: Final[int] = 10
-"""Minutes below this take the spoken `零` filler (`10点零2分`)."""
-
-
-def _spoken_day_period(hour: int) -> str:
-    """Map a 24h hour to the zh-CN day-period prefix used by TTS."""
-    for upper_bound, label in _DAY_PERIODS:
-        if hour < upper_bound:
-            return label
-    return "晚上"
-
-
-def _spoken_clock(hour: int, minute: int) -> str:
-    """Render a 24h `(hour, minute)` as one idiomatic zh-CN spoken clock string.
-
-    This field exists only to be spoken by TTS, so it follows speech
-    convention rather than digit-for-digit transcription:
-
-    - minute 0 says ``整`` (``上午10点整``), never ``10点0分``;
-    - minutes 1-9 take the ``零`` filler (``10点零2分``) — dropping it
-      makes the utterance wrong, not merely terse;
-    - hour 0 is ``零点`` (``凌晨零点30分``); the naive 12h wrap would say
-      ``凌晨12点``, which contradicts itself since ``12点`` reads as noon.
-
-    Args:
-        hour: Hour in 24h form, 0-23.
-        minute: Minute, 0-59.
-
-    Returns:
-        The day-period prefix followed by the spoken clock reading.
-    """
-    period = _spoken_day_period(hour)
-    hour_label = "零" if hour == 0 else str(hour % 12 or 12)
-    if minute == 0:
-        return f"{period}{hour_label}点整"
-    if minute < _SPOKEN_MINUTE_FILLER_BELOW:
-        return f"{period}{hour_label}点零{minute}分"
-    return f"{period}{hour_label}点{minute}分"
-
-
 @tool(
     description="Read the current local date and time (observation only).",
     input_schema={"type": "object", "properties": {}, "required": []},
@@ -640,18 +588,17 @@ def get_current_time(_args: Mapping[str, Any], _ctx: ToolContext) -> dict[str, A
     """Read the system clock (spec §3.5.4); Tier 0's tool, jarvis_llm may call it too.
 
     The payload carries the machine keys ``iso`` / ``date`` / ``time`` /
-    ``weekday`` plus the TTS-ready ``spoken_time`` / ``spoken_date`` the L5
-    templates read.
+    ``weekday`` (English) plus the TTS-ready ``spoken_time`` / ``spoken_date``,
+    in the language setting, that the Tier 0 replies read.
     """
     now = datetime.now().astimezone()
-    weekday = _WEEKDAYS_ZH[now.weekday()]
     return {
         "iso": now.isoformat(timespec="seconds"),
         "date": now.strftime("%Y-%m-%d"),
         "time": now.strftime("%H:%M"),
-        "weekday": weekday,
-        "spoken_time": _spoken_clock(now.hour, now.minute),
-        "spoken_date": f"{now.month}月{now.day}日{weekday}",
+        "weekday": lang.weekday(now, "en"),
+        "spoken_time": lang.spoken_time(now),
+        "spoken_date": lang.spoken_date(now),
     }
 
 
@@ -662,8 +609,8 @@ _MEMO_MAX_CHARS: Final[int] = 2000
 
 @tool(
     description=(
-        "Save a short memo to Allen's memo inbox for later review. "
-        "Use when Allen says '记一下 X' / '备忘 X'."
+        "Save a short memo to the user's memo inbox for later review. "
+        "Use when the user asks to jot something down or keep a note of it."
     ),
     input_schema={
         "type": "object",
@@ -707,7 +654,7 @@ def list_memos(_args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
     for event in iter_events_of_types(ctx.conn, ("memo.captured",)):
         stamp = datetime.fromtimestamp(event.ts_epoch_ms / 1000).astimezone()
         lines.append(f"{len(lines) + 1}. [{stamp:%m-%d %H:%M}] {event.payload.get('text', '')}")
-    return {"count": len(lines), "rendered": "\n".join(lines) if lines else "还没有备忘录。"}
+    return {"count": len(lines), "rendered": "\n".join(lines) if lines else lang.t("memo.none")}
 
 
 # --- open_path handler --------------------------------------------------------
@@ -814,9 +761,9 @@ _OPEN_PATH_INPUT_SCHEMA: Final[Mapping[str, Any]] = {
 
 @tool(
     description=(
-        "Open a file or folder on Allen's Mac by spoken name (bookmark "
-        "alias, partial filename, or description). Use for '打开 X' / "
-        "'用 VS Code 打开 X' requests."
+        "Open a file or folder on the user's Mac by spoken name (bookmark "
+        "alias, partial filename, or description). Use when the user asks to "
+        "open X, or to open X in VS Code."
     ),
     input_schema=_OPEN_PATH_INPUT_SCHEMA,
     allowed_callers=frozenset({CallerPrincipal.REGEX_ROUTER, CallerPrincipal.JARVIS_LLM}),
@@ -826,7 +773,7 @@ _OPEN_PATH_INPUT_SCHEMA: Final[Mapping[str, Any]] = {
     # resolve-then-act contract internally — it *is* a resolver caller.
 )
 def open_path(args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
-    """Open a file or folder on Allen's Mac by spoken name (spec §17 companion tool).
+    """Open a file or folder on the user's Mac by spoken name (spec §17 companion tool).
 
     "打开 X" / "用 VS Code 打开 X" — the query is resolved via
     :func:`jarvis.execution.path_resolver.resolve` (pure, no events; see
@@ -1145,7 +1092,7 @@ def _make_search_notes_handler(vault_root: Path) -> ToolHandler:  # noqa: C901 �
         if not vault_root.is_dir():
             payload: dict[str, Any] = {
                 "results": [],
-                "note": f"vault root not found: {vault_root} (Allen may have renamed it)",
+                "note": f"vault root not found: {vault_root} (the vault may have been renamed)",
             }
             return _emit_tool_observation(
                 conn=conn,
@@ -2923,7 +2870,7 @@ def _make_screen_look(*, vision_client: VisionClient | None, max_width_px: int) 
     return Tool(
         name="screen_look",
         description=(
-            "Take a screenshot of Allen's screen and describe what's on "
+            "Take a screenshot of the user's screen and describe what's on "
             "it via a vision model; an optional `question` focuses the "
             "description on something specific. The decision LLM never "
             "sees the screenshot pixels — only this tool's returned "
@@ -3456,9 +3403,9 @@ def write_file_handler(  # noqa: PLR0911 — one linear resolve/validate/mode/wr
 
 def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 config value threaded into one tool's closure at registry-build time; bundling them into one options object defeats the point of each tool owning its own defaulted knobs.
     *,
-    obsidian_vault_root: Path | None = None,
+    obsidian_vault_root: Path | None = DEFAULT_OBSIDIAN_VAULT_ROOT,
     web_search_max_results: int = DEFAULT_WEB_SEARCH_MAX_RESULTS,
-    web_search_provider: str = DEFAULT_WEB_SEARCH_PROVIDER,
+    web_search_provider: str | None = DEFAULT_WEB_SEARCH_PROVIDER,
     web_search_api_key: str | None = None,
     web_fetch_max_bytes: int = DEFAULT_WEB_FETCH_MAX_BYTES,
     web_fetch_max_text_bytes: int = DEFAULT_WEB_FETCH_MAX_TEXT_BYTES,
@@ -3479,16 +3426,14 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
 
     Args:
         obsidian_vault_root: Vault root for `search_notes` (ADR-0011
-            D7, `tools.obsidian.vault_root`). `None` (the default, and
-            what the two existing integration tests pass implicitly)
-            falls back to :data:`DEFAULT_OBSIDIAN_VAULT_ROOT` — the
-            composition root always supplies the real configured
-            value; a hand-built test registry can point this at a
+            D7, `tools.obsidian.vault_root`). `None` registers no
+            `search_notes`, so nothing touches a folder the user never
+            named; a hand-built test registry can point this at a
             `tmp_path` fixture instead.
         web_search_max_results: `tools.web.search_max_results` (ADR-0011
             D7) — the `web_search` default absent a request argument.
         web_search_provider: `tools.web.search_provider` — which backend
-            answers `web_search`. See
+            answers `web_search`; `None` registers no `web_search`. See
             :data:`DEFAULT_WEB_SEARCH_PROVIDER` for why the keyless
             default is not the recommended one.
         web_search_api_key: The credential named by
@@ -3528,30 +3473,28 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
             over that memory.db. `None` (hand-built test registries)
             registers no memory tool.
     """
-    vault_root = (
-        obsidian_vault_root if obsidian_vault_root is not None else DEFAULT_OBSIDIAN_VAULT_ROOT
-    )
     registry = ToolRegistry(confirmation_dispatch_outbox=confirmation_dispatch_outbox)
     registry.register(get_current_time)
     registry.register(open_path)
-    registry.register(
-        ToolDefinition(
-            name="search_notes",
-            description=(
-                "Case-insensitive full-text search over Allen's Obsidian vault "
-                "(*.md files only). Returns matching lines with their source "
-                "file. No index — brute-force scan, fine for a small vault."
-            ),
-            allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
-            risk_level="L0",
-            result_semantics="observation",
-            input_schema=_SEARCH_NOTES_INPUT_SCHEMA,
-            handler=_make_search_notes_handler(vault_root),
-            read_only=True,
-            requires_entity=False,
-            requires_confirmation=False,
+    if obsidian_vault_root is not None:
+        registry.register(
+            ToolDefinition(
+                name="search_notes",
+                description=(
+                    "Case-insensitive full-text search over the user's Obsidian vault "
+                    "(*.md files only). Returns matching lines with their source "
+                    "file. No index — brute-force scan, fine for a small vault."
+                ),
+                allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
+                risk_level="L0",
+                result_semantics="observation",
+                input_schema=_SEARCH_NOTES_INPUT_SCHEMA,
+                handler=_make_search_notes_handler(obsidian_vault_root),
+                read_only=True,
+                requires_entity=False,
+                requires_confirmation=False,
+            )
         )
-    )
     registry.register(
         ToolDefinition(
             name="read_file",
@@ -3574,28 +3517,34 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
     registry.register(read_clipboard)
     registry.register(create_memo)
     registry.register(list_memos)
-    registry.register(
-        _make_web_search(
-            default_max_results=web_search_max_results,
-            timeout_s=web_timeout_s,
-            provider=web_search_provider,
-            api_key=web_search_api_key,
+    if web_search_provider is not None:
+        registry.register(
+            _make_web_search(
+                default_max_results=web_search_max_results,
+                timeout_s=web_timeout_s,
+                provider=web_search_provider,
+                api_key=web_search_api_key,
+            )
         )
-    )
     registry.register(
         _make_web_fetch(
             max_bytes=web_fetch_max_bytes,
             max_text_chars=web_fetch_max_text_bytes,
             timeout_s=web_timeout_s,
             extract_api_key=(
-                web_search_api_key if web_search_provider.strip().lower() == "tavily" else None
+                web_search_api_key
+                if (web_search_provider or "").strip().lower() == "tavily"
+                else None
             ),
         )
     )
     registry.register(
         ToolDefinition(
             name="open_url",
-            description="Open a URL in the default browser. Use for '用浏览器打开 X' requests.",
+            description=(
+                "Open a URL in the default browser. Use when the user asks to open X"
+                " in the browser."
+            ),
             allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
             risk_level="L1",
             result_semantics="ack",
@@ -3617,7 +3566,7 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
                 "or path. The target is resolved to a canonical path before "
                 "writing — never pass a raw filesystem path. mode='create' "
                 "refuses an existing file; 'overwrite'/'append' both require "
-                "one. Risk L3 — every dispatch requires Allen's explicit "
+                "one. Risk L3 — every dispatch requires the user's explicit "
                 "confirmation."
             ),
             # frozen 2026-09-12: engineering is off the LLM menu; no caller may reach this.

@@ -25,13 +25,19 @@ the dashboard can show *why* a row is stale instead of silently freezing.
 The one exception is Claude's 429 (polled too soon), which keeps the last
 reading. :func:`redeem_codex_reset` is the one write: it spends a Codex
 limit reset when Allen confirms it on the Usage page (ADR 0048).
+
+OpenAI and MiniMax report no balance. Allen records one on the Usage page
+(``usage.balance_recorded``, ADR 0050); the balance shown is the latest
+recording minus the spend observed since.
 """
 
 from __future__ import annotations
 
 import datetime as dt
+import functools
 import json
 import logging
+import math
 import os
 import re
 import subprocess
@@ -44,6 +50,7 @@ from http import HTTPStatus
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 
+from jarvis.shared.lang import t
 from jarvis.state.event_log import emit_event
 
 if TYPE_CHECKING:
@@ -58,12 +65,19 @@ OBSERVER_ACTOR: Final[str] = "observer"
 EVENT_TYPE: Final[str] = "usage.state_observed"
 TTS_USAGE_EVENT_TYPE: Final[str] = "tts.usage_observed"
 SERVICES: Final[tuple[str, ...]] = ("claude", "codex", "openai", "deepseek", "minimax")
+BALANCE_EVENT_TYPE: Final[str] = "usage.balance_recorded"
+# The services with no balance API, whose balance Allen records by hand.
+BALANCE_SERVICES: Final[tuple[str, ...]] = ("openai", "minimax")
+MAX_BALANCE_USD: Final[float] = 1_000_000.0
 
 DEFAULT_HTTP_TIMEOUT_S: Final[float] = 15.0
 MAX_ERROR_CHARS: Final[int] = 200
 MAX_ROWS: Final[int] = 20
 
 _SELECT_BY_TYPE_SQL: Final[str] = "SELECT payload_json FROM events WHERE type = ? ORDER BY id ASC"
+_SELECT_BALANCES_SQL: Final[str] = (
+    "SELECT payload_json, ts_epoch_ms FROM events WHERE type = ? ORDER BY id ASC"
+)
 _SELECT_TTS_CHARS_SQL: Final[str] = (
     "SELECT COALESCE(SUM(CAST(json_extract(payload_json, '$.characters') AS INTEGER)), 0) "
     "FROM events WHERE type = ? AND ts_epoch_ms >= ?"
@@ -78,6 +92,14 @@ class UsageConfig:
     minimax_anchor_at_ms: int | None = None
     minimax_usd_per_million_chars: float = 60.0
     http_timeout_s: float = DEFAULT_HTTP_TIMEOUT_S
+
+
+@dataclass(frozen=True)
+class RecordedBalance:
+    """A balance Allen read off the provider's billing page, and when he recorded it."""
+
+    usd: float
+    at_ms: int
 
 
 @dataclass(frozen=True)
@@ -242,7 +264,10 @@ def collect_claude(*, timeout_s: float) -> UsageSnapshot | None:
     except (urllib.error.URLError, OSError, ValueError) as exc:
         return _error("claude", exc)
     windows: list[dict[str, Any]] = []
-    for key, label in (("five_hour", "5 小时"), ("seven_day", "7 天 · 总")):
+    for key, label in (
+        ("five_hour", t("usage.window_hours", hours=5)),
+        ("seven_day", t("usage.window_week_total")),
+    ):
         window = body.get(key) or {}
         if window.get("utilization") is not None:
             windows.append(
@@ -263,7 +288,7 @@ def collect_claude(*, timeout_s: float) -> UsageSnapshot | None:
         windows.append(
             {
                 "key": f"seven_day_{name.lower()}",
-                "label": f"7 天 · {name}",
+                "label": t("usage.window_week_model", name=name),
                 "percent": float(limit["percent"]),
                 "resets_at": _iso_seconds(limit.get("resets_at")),
             }
@@ -295,11 +320,9 @@ _SEVEN_DAYS_S: Final[int] = 7 * 86400
 
 
 def _codex_window_label(seconds: int) -> str:
-    if seconds == _FIVE_HOURS_S:
-        return "5 小时"
     if seconds == _SEVEN_DAYS_S:
-        return "7 天"
-    return f"{seconds // 3600} 小时"
+        return t("usage.window_days", days=7)
+    return t("usage.window_hours", hours=seconds // 3600)
 
 
 def _codex_headers() -> dict[str, str] | None:
@@ -474,11 +497,26 @@ def _openai_key_names(key: str, *, timeout_s: float) -> dict[str, str]:
     return names
 
 
-def collect_openai(*, timeout_s: float, now: dt.datetime | None = None) -> UsageSnapshot:
-    """Today / month-to-date USD by model, plus tokens by API key."""
+def _openai_spent_since(key: str, balance: RecordedBalance, *, timeout_s: float) -> float:
+    """USD spent from the start of the recording's UTC day, the Costs API's grain.
+
+    Spend earlier that day is counted too, so the balance errs low by at most a day.
+    ponytail: four pages of 31 days; a recording older than that undercounts.
+    """
+    day_s = balance.at_ms // 1000 // 86_400 * 86_400
+    buckets = _openai_buckets(
+        key, "costs", start_s=day_s, group_by="line_item", timeout_s=timeout_s
+    )
+    return sum(_cost_row(row)[1] for bucket in buckets for row in bucket.get("results") or [])
+
+
+def collect_openai(
+    *, timeout_s: float, now: dt.datetime | None = None, balance: RecordedBalance | None = None
+) -> UsageSnapshot:
+    """Today / month-to-date USD by model, tokens by API key, and the balance left."""
     key = os.environ.get("OPENAI_ADMIN_KEY", "").strip()
     if not key:
-        return UsageSnapshot("openai", "unconfigured", {}, "需要 Admin key")
+        return UsageSnapshot("openai", "unconfigured", {}, t("usage.needs_admin_key"))
     now = now or dt.datetime.now().astimezone()
     month_s = _local_month_start_s(now)
     try:
@@ -498,6 +536,7 @@ def collect_openai(*, timeout_s: float, now: dt.datetime | None = None) -> Usage
             ),
             _token_row,
         )
+        spent = None if balance is None else _openai_spent_since(key, balance, timeout_s=timeout_s)
     except (urllib.error.URLError, OSError, ValueError) as exc:
         return _error("openai", exc)
     names = _openai_key_names(key, timeout_s=timeout_s) if month_keys else {}
@@ -526,6 +565,15 @@ def collect_openai(*, timeout_s: float, now: dt.datetime | None = None) -> Usage
                 }
                 for k in keys[:MAX_ROWS]
             ],
+            **(
+                {}
+                if balance is None or spent is None
+                else {
+                    "balance_usd": round(balance.usd - spent, 4),
+                    "balance_recorded_usd": balance.usd,
+                    "balance_recorded_at": _iso(balance.at_ms / 1000),
+                }
+            ),
         },
     )
 
@@ -572,21 +620,29 @@ def tts_characters_since(event_log: sqlite3.Connection, since_ms: int) -> int:
     return int(row[0]) if row else 0
 
 
-def estimate_minimax(event_log: sqlite3.Connection, config: UsageConfig) -> UsageSnapshot:
-    """Anchor minus characters times unit price; ``unconfigured`` without an anchor."""
-    if config.minimax_anchor_usd is None or config.minimax_anchor_at_ms is None:
+def estimate_minimax(
+    event_log: sqlite3.Connection, config: UsageConfig, recorded: RecordedBalance | None = None
+) -> UsageSnapshot:
+    """Anchor minus characters times unit price; ``unconfigured`` without an anchor.
+
+    The anchor is the newer of the configured one and the one Allen recorded on the page.
+    """
+    anchor_usd, anchor_ms = config.minimax_anchor_usd, config.minimax_anchor_at_ms
+    if recorded is not None and (anchor_ms is None or recorded.at_ms >= anchor_ms):
+        anchor_usd, anchor_ms = recorded.usd, recorded.at_ms
+    if anchor_usd is None or anchor_ms is None:
         return UsageSnapshot("minimax", "unconfigured", {}, "no balance anchor")
-    characters = tts_characters_since(event_log, config.minimax_anchor_at_ms)
+    characters = tts_characters_since(event_log, anchor_ms)
     spent = characters * config.minimax_usd_per_million_chars / 1_000_000
     return UsageSnapshot(
         "minimax",
         "ok",
         {
-            "anchor_usd": config.minimax_anchor_usd,
-            "anchor_at": _iso(config.minimax_anchor_at_ms / 1000),
+            "anchor_usd": anchor_usd,
+            "anchor_at": _iso(anchor_ms / 1000),
             "characters_since_anchor": characters,
             "usd_per_million_chars": config.minimax_usd_per_million_chars,
-            "estimate_usd": round(config.minimax_anchor_usd - spent, 4),
+            "estimate_usd": round(anchor_usd - spent, 4),
         },
     )
 
@@ -615,6 +671,16 @@ def recover_baselines(event_log: sqlite3.Connection) -> dict[str, UsageSnapshot]
         if snapshot is not None:
             baselines[snapshot.service] = snapshot
     return baselines
+
+
+def recorded_balances(event_log: sqlite3.Connection) -> dict[str, RecordedBalance]:
+    """Latest ``usage.balance_recorded`` per service, folded from the log."""
+    balances: dict[str, RecordedBalance] = {}
+    for payload_json, ts_ms in event_log.execute(_SELECT_BALANCES_SQL, (BALANCE_EVENT_TYPE,)):
+        payload = json.loads(payload_json)
+        if payload.get("service") in BALANCE_SERVICES:
+            balances[payload["service"]] = RecordedBalance(float(payload["usd"]), int(ts_ms))
+    return balances
 
 
 def latest_usage(event_log: sqlite3.Connection) -> dict[str, Any]:
@@ -646,11 +712,31 @@ class UsageObserver:
         self._event_log = event_log
         self._config = config or UsageConfig()
         self._baselines: dict[str, UsageSnapshot] = {}
+        self._balances: dict[str, RecordedBalance] = {}
 
     def recover_baselines(self) -> dict[str, UsageSnapshot]:
-        """Seed the baseline cache from the event log; call at startup."""
+        """Seed the baselines and recorded balances from the event log; call at startup."""
         self._baselines = recover_baselines(self._event_log)
+        self._balances = recorded_balances(self._event_log)
         return dict(self._baselines)
+
+    def record_balance(self, service: str, usd: float) -> Event:
+        """Record a balance Allen read off the provider's page (ADR 0050); loop thread.
+
+        The next poll subtracts the spend since. Raises ``ValueError`` for a service
+        that reports its own balance or an amount that is not a plausible balance.
+        """
+        plausible = math.isfinite(usd) and 0 <= usd < MAX_BALANCE_USD
+        if service not in BALANCE_SERVICES or not plausible:
+            msg = f"cannot record {usd!r} as the {service!r} balance"
+            raise ValueError(msg)
+        event = emit_event(
+            self._event_log,
+            type="usage.balance_recorded",  # literal: the registry canaries scan it.
+            payload={"service": service, "usd": usd},
+        )
+        self._balances[service] = RecordedBalance(usd, event.ts_epoch_ms)
+        return event
 
     def collect(self) -> list[UsageSnapshot]:
         """Every remote service, sequentially; a failure is a snapshot, never a raise.
@@ -664,7 +750,7 @@ class UsageObserver:
         collectors: tuple[tuple[str, Callable[..., UsageSnapshot | None]], ...] = (
             ("claude", collect_claude),
             ("codex", collect_codex),
-            ("openai", collect_openai),
+            ("openai", functools.partial(collect_openai, balance=self._balances.get("openai"))),
             ("deepseek", collect_deepseek),
         )
         snapshots: list[UsageSnapshot] = []
@@ -681,7 +767,8 @@ class UsageObserver:
         """Append one ``usage.state_observed`` per *changed* service."""
         emitted: list[Event] = []
         observed_at_ms = _now_ms()
-        for snapshot in [*snapshots, estimate_minimax(self._event_log, self._config)]:
+        minimax = estimate_minimax(self._event_log, self._config, self._balances.get("minimax"))
+        for snapshot in [*snapshots, minimax]:
             if snapshot.same_state(self._baselines.get(snapshot.service)):
                 continue
             emitted.append(
@@ -707,10 +794,13 @@ class UsageObserver:
 
 
 __all__ = [
+    "BALANCE_EVENT_TYPE",
+    "BALANCE_SERVICES",
     "EVENT_TYPE",
     "OBSERVER_ACTOR",
     "SERVICES",
     "TTS_USAGE_EVENT_TYPE",
+    "RecordedBalance",
     "UsageConfig",
     "UsageObserver",
     "UsageSnapshot",
@@ -720,6 +810,7 @@ __all__ = [
     "collect_openai",
     "estimate_minimax",
     "latest_usage",
+    "recorded_balances",
     "recover_baselines",
     "redeem_codex_reset",
     "tts_characters_since",
