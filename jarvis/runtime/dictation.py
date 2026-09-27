@@ -3,7 +3,8 @@
 While Allen dictates, his words go to the text caret, not to Jarvis. The
 desktop asks for one session at a time; the daemon records from its own mic
 (a capture lane on the single audio ingress), hears it with the voice path's
-recognizer, and one side-job model polishes it with Typlus's instructions.
+recognizer a stretch at a time as he pauses (ADR 0076), and one side-job model
+polishes it with Typlus's instructions.
 The desktop pastes the result. Nothing reaches the event log or memory.db.
 """
 
@@ -17,6 +18,7 @@ import threading
 import time
 from array import array
 from collections import deque
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import closing
 from typing import TYPE_CHECKING, Any
 
@@ -25,7 +27,7 @@ import yaml
 from jarvis.decision.cost_guard import CostRecorder
 from jarvis.decision.llm import LLMClient
 from jarvis.state.event_log import open_runtime_event_log
-from jarvis.surface import voice_audio
+from jarvis.surface import voice_asr, voice_audio
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Mapping, Sequence
@@ -40,6 +42,12 @@ MAX_SECONDS = 540
 PRE_ROLL_FRAMES = 16
 _LEVEL_EVERY_S = 0.05
 _BYTES_PER_SECOND = 16_000 * 2
+# ADR 0076: a stretch of at least 5 s that ends in a half-second pause is heard
+# while he goes on, so the stop leaves only the last stretch to hear.
+_PAUSE_FRAMES = 16  # 16 x 32 ms
+_MIN_STRETCH_BYTES = 5 * _BYTES_PER_SECOND
+# The provider pool drops a connection idle for 5 s; a pause re-opens one older than this.
+_WARM_STALE_S = 3.0
 
 # Typlus refine.py SYSTEM_PROMPT (typeless-local 5f43b0a), verbatim.
 POLISH_PROMPT = """You are the AI auto-editing layer of a system-wide dictation app.
@@ -127,6 +135,20 @@ def load_vocab(path: Path) -> list[str]:
     return list(dict.fromkeys(terms))
 
 
+def _latin(char: str) -> bool:
+    return char.isascii() and char.isalnum()
+
+
+def _join(parts: Sequence[str]) -> str:
+    """The stretches' words in order; a space only where two Latin words would touch."""
+    out = ""
+    for part in parts:
+        if out and part and _latin(out[-1]) and _latin(part[0]):
+            out += " "
+        out += part
+    return out
+
+
 def _level(pcm: bytes) -> float:
     """How loud one frame is, 0..1, for her glow; speech sits around the middle."""
     samples = array("h", pcm)
@@ -195,18 +217,23 @@ class Dictation:
         self,
         *,
         ingress: voice_audio.AudioIngress,
+        vad: voice_audio.SileroVad,
         transcribe: Callable[[bytes], str],
         client: LLMClient,
         vocab_path: Path,
         event_log_path: Path,
         pricing_table: Mapping[str, Any] | None,
     ) -> None:
-        """Hold the live mic, the voice path's ears, the polish model, its word list and ledger.
+        """Hold the live mic, a pause detector, the voice path's ears, the polish and its ledger.
 
         The capture lane stays subscribed for the daemon's life: while idle it
         keeps the last ``PRE_ROLL_FRAMES``, and a session starts from those.
+        ``transcribe`` hears one stretch; stretches are heard one at a time, in order.
         """
+        self._vad = vad
+        vad.prepare_utterance()  # loads its model now, not inside his first tap
         self._transcribe = transcribe
+        self._hearing = ThreadPoolExecutor(1, thread_name_prefix="jarvis-dictation-hear")
         self._client = client
         self._vocab_path = vocab_path
         self._event_log_path = event_log_path
@@ -217,6 +244,11 @@ class Dictation:
         self._recent: deque[bytes] = deque(maxlen=PRE_ROLL_FRAMES)
         self._pcm: bytearray | None = None
         self._level = 0.0
+        self._stretches: list[Future[str]] = []
+        self._stretch_start = 0
+        self._silent = 0
+        self._spoke = False
+        self._warmed_at = 0.0
         self._lane = ingress.subscribe(
             name="dictation", purpose=voice_audio.SubscriberPurpose.CAPTURE, capacity=128,
         )
@@ -233,6 +265,27 @@ class Dictation:
                 else:
                     self._pcm.extend(frame.pcm16_mono)
                     self._level = _level(frame.pcm16_mono)
+                    self._hear_at_pause(self._pcm, frame.pcm16_mono)
+
+    def _hear_at_pause(self, pcm: bytearray, frame: bytes) -> None:
+        """Under the lock, per recorded frame: at a half-second pause, hear the stretch now."""
+        speech = self._vad.feed(frame) is voice_audio.VadEvent.SPEECH_ACTIVE
+        self._silent = 0 if speech else self._silent + 1
+        self._spoke = self._spoke or speech
+        if not self._spoke or self._silent < _PAUSE_FRAMES:
+            return
+        if self._silent == _PAUSE_FRAMES and time.monotonic() - self._warmed_at > _WARM_STALE_S:
+            self._warm()
+        if len(pcm) - self._stretch_start >= _MIN_STRETCH_BYTES:
+            stretch = bytes(pcm[self._stretch_start :])
+            self._stretches.append(self._hearing.submit(self._transcribe, stretch))
+            self._stretch_start, self._spoke = len(pcm), False
+
+    def _warm(self) -> None:
+        """Open the polish call's connection in the background, so the stop skips the handshake."""
+        self._warmed_at = time.monotonic()
+        warm = threading.Thread(target=self._client.warm, name="jarvis-dictation-warm", daemon=True)
+        warm.start()
 
     def begin(self, context: Mapping[str, str]) -> AsyncIterator[dict[str, Any]]:
         """Start recording now; the stream yields levels, then ``thinking``, then the result.
@@ -246,9 +299,12 @@ class Dictation:
         self.active = True
         self._stop.clear()
         with self._lock:
+            self._vad.prepare_utterance()
             self._pcm = bytearray(b"".join(self._recent))
             self._recent.clear()
             self._level = 0.0
+            self._stretches, self._stretch_start, self._silent, self._spoke = [], 0, 0, False
+        self._warm()
         return self._session(dict(context))
 
     def stop(self) -> bool:
@@ -266,13 +322,12 @@ class Dictation:
                 await asyncio.sleep(_LEVEL_EVERY_S)
             with self._lock:
                 pcm, self._pcm = self._pcm or bytearray(), None
-            # The polish call's connection opens while the words are heard.
-            threading.Thread(
-                target=self._client.warm, name="jarvis-dictation-warm", daemon=True,
-            ).start()
+                stretches, self._stretches = self._stretches, []
+                last = bytes(pcm[self._stretch_start :])
+            stretches.append(self._hearing.submit(self._transcribe, last))
             yield {"state": "thinking", "seconds": round(len(pcm) / _BYTES_PER_SECOND, 2)}
-            raw = await asyncio.to_thread(self._transcribe, bytes(pcm))
-            if not raw:
+            raw = _join([await asyncio.wrap_future(stretch) for stretch in stretches])
+            if voice_asr.is_empty_or_too_short(raw, audio_pcm=bytes(pcm)):
                 yield {"text": "", "raw": ""}
                 return
             try:
@@ -292,4 +347,7 @@ class Dictation:
             self._stop.set()
             with self._lock:
                 self._pcm = None
+                unheard, self._stretches = self._stretches, []
+            for stretch in unheard:  # cancelled while recording: nobody waits for these words
+                stretch.cancel()
             self.active = False

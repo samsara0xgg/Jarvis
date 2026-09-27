@@ -5266,6 +5266,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             else:
                 dictation = Dictation(
                     ingress=ingress,
+                    vad=voice_audio.SileroVad(mode="record", model_path=silero_path),
                     transcribe=voice_pipe.transcribe,
                     client=client,
                     vocab_path=Path(str(dictation_config.get("vocab_path", ""))),

@@ -102,11 +102,14 @@ class VoicePipeline:
         return text
 
     def transcribe(self, audio_bytes: bytes) -> str:
-        """ADR 0058 dictation: a turn's ears and corrections, no emit; ``""`` for no speech."""
-        tr = self._recognizer.recognize(audio_bytes)
-        if voice_asr.is_empty_or_too_short(tr.text, audio_pcm=audio_bytes):
+        """Dictation (ADR 0058/0076): one stretch between his pauses, heard and corrected, no emit.
+
+        ``""`` when no 0.2 s of it is loud enough to be speech; the caller
+        judges the joined stretches as a whole.
+        """
+        if voice_asr.too_quiet_for_speech(audio_bytes):
             return ""
-        return self._normalizer.normalize(tr.text)
+        return self._normalizer.normalize(self.partial_text(audio_bytes))
 
     def run_turn(  # noqa: C901, PLR0912, PLR0913 — wake/PTT toggles widen the signature; splitting would shred the single locked critical section.
         self,

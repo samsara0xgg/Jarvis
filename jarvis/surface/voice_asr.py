@@ -433,11 +433,13 @@ class SenseVoiceRecognizer:
         )
 
     def partial_text(self, audio_pcm: bytes) -> str:
-        """Decode one bounded utterance snapshot for endpointing only (ADR-0006 D7).
+        """Decode without the utterance gate: an endpointing snapshot or a dictation stretch.
 
-        The text is ephemeral L5 input to the semantic endpoint decision. It
-        carries no confidence, is never normalized for L3, and is never
-        persisted; :meth:`recognize` on the committed audio stays the only
+        The text is ephemeral L5 input: the semantic endpoint decision
+        (ADR-0006 D7), or a stretch of dictation that goes to the caret (ADR
+        0076). It carries no confidence, is never normalized for L3, and is
+        never persisted;
+        :meth:`recognize` on the committed audio stays a voice turn's only
         authoritative transcript.
         """
         audio = _pcm16_to_float32(audio_pcm)
@@ -732,6 +734,23 @@ def _rms(audio_pcm: bytes) -> float:
     return float(np.sqrt(np.mean(samples.astype(np.float64) ** 2)))
 
 
+def too_quiet_for_speech(audio_pcm: bytes) -> bool:
+    """True when no 0.2 s of PCM16 mono audio reaches SenseVoice's speech floor.
+
+    The loudest window decides, not the mean: a dictation stretch that holds a
+    long pause averages his words under the floor (ADR 0076).
+    """
+    samples = np.frombuffer(audio_pcm, dtype=np.int16).astype(np.float64) / 32768.0
+    window = _SAMPLE_RATE // 5
+    if samples.size <= window:
+        level = float(np.sqrt(np.mean(samples**2))) if samples.size else 0.0
+        return level < _SENSEVOICE_FLOAT_RMS_FLOOR
+    energy = np.concatenate(([0.0], np.cumsum(samples**2)))
+    hop = window // 4
+    loudest = float(np.max(energy[window::hop] - energy[:-window:hop])) / window
+    return float(np.sqrt(loudest)) < _SENSEVOICE_FLOAT_RMS_FLOOR
+
+
 def _is_punctuation_only(text: str) -> bool:
     """True when ``text`` contains no non-punctuation, non-whitespace chars."""
     punct = set(
@@ -772,4 +791,5 @@ __all__ = [
     "is_wake_only",
     "looks_complete",
     "normalize_partial_text",
+    "too_quiet_for_speech",
 ]

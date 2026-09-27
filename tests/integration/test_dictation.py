@@ -7,8 +7,9 @@ while recording, ``thinking`` once stopped, then the polished words with the raw
 ones; a second session refused while one runs; the wake gate's flag up only while
 recording; the raw words when the polish fails; no route without a voice stack.
 The ears hear half a second from before the request, unbroken into the session,
-and the polish connection is opened while they hear. The event log gets the
-polish's spend and never the words.
+and the polish connection is opened as the session starts. A stretch that ends in
+a half-second pause is heard while he goes on talking, and the stop hears only
+the rest (ADR 0076). The event log gets the polish's spend and never the words.
 """
 
 from __future__ import annotations
@@ -17,16 +18,20 @@ import json
 import threading
 import time
 from array import array
+from collections import deque
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
+from unittest.mock import patch
 
+import numpy as np
 import yaml
 from fastapi.testclient import TestClient
 
 from jarvis.runtime.dictation import POLISH_PROMPT, PRE_ROLL_FRAMES, Dictation, polish_client
 from jarvis.shared.pricing import load_pricing_table
 from jarvis.state.event_log import open_event_log
+from jarvis.surface import voice_audio
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
 from tests.canary._helpers import repo_root
@@ -69,15 +74,47 @@ class _Lane:
         self._closed.set()
 
 
-class _Ingress:
+QUIET = bytes(1024)
+
+
+def _tone(number: int) -> bytes:
+    """A loud 32 ms frame whose first sample is its number."""
+    return array("h", [number, *[3000, -3000] * 255, 3000]).tobytes()
+
+
+class _Talk(_Lane):
+    """A mic that is quiet (a frame a millisecond) until given frames, then plays them at once."""
+
     def __init__(self) -> None:
+        super().__init__()
+        self.script: deque[bytes] = deque()
+
+    def read(self, *, timeout_s: float = 0.0) -> _Frame | None:
+        _ = timeout_s
+        if self._closed.wait(0 if self.script else 0.001):
+            return None
+        return _Frame(self.script.popleft() if self.script else QUIET)
+
+
+class _EnergySession:
+    """Silero's ONNX shape; any sound in the frame counts as speech."""
+
+    def run(self, _names: object, inputs: dict[str, np.ndarray]) -> list[np.ndarray]:
+        probability = 0.9 if np.any(inputs["x"]) else 0.0
+        speech = np.asarray([[probability]], dtype=np.float32)
+        return [speech, inputs["h"].copy(), inputs["c"].copy()]
+
+
+class _Ingress:
+    def __init__(self, lane: type[_Lane] = _Lane) -> None:
         self.lanes: list[_Lane] = []
+        self._lane = lane
 
     def subscribe(self, *, name: str, purpose: object, capacity: int) -> _Lane:
         assert name == "dictation"
         assert capacity > 0
         _ = purpose
-        self.lanes.append(_Lane())
+        self.lanes.append(self._lane())
         return self.lanes[-1]
 
 
@@ -114,7 +151,7 @@ class _Provider:
 
 
 def _dictation(
-    tmp_path: Path, ears: Callable[[bytes], str], provider: _Provider
+    tmp_path: Path, ears: Callable[[bytes], str], provider: _Provider, lane: type[_Lane] = _Lane,
 ) -> tuple[Dictation, _Ingress]:
     config = yaml.safe_load((repo_root() / "config" / "jarvis.yaml").read_text())
     client = polish_client(config["llm"], config["dictation"]["polish_preset"])
@@ -122,15 +159,18 @@ def _dictation(
         chat=SimpleNamespace(completions=provider), models=SimpleNamespace(retrieve=provider.warm),
     )
     open_event_log(tmp_path / "events.db").close()
-    ingress = _Ingress()
-    return Dictation(
-        ingress=ingress,  # type: ignore[arg-type]
-        transcribe=ears,
-        client=client,
-        vocab_path=tmp_path / "vocab.yaml",
-        event_log_path=tmp_path / "events.db",
-        pricing_table=load_pricing_table(repo_root() / "data" / "pricing.json"),
-    ), ingress
+    ingress = _Ingress(lane)
+    with patch.object(voice_audio, "_load_silero_session", return_value=_EnergySession()):
+        dictation = Dictation(
+            ingress=ingress,  # type: ignore[arg-type]
+            vad=voice_audio.SileroVad(mode="record"),
+            transcribe=ears,
+            client=client,
+            vocab_path=tmp_path / "vocab.yaml",
+            event_log_path=tmp_path / "events.db",
+            pricing_table=load_pricing_table(repo_root() / "data" / "pricing.json"),
+        )
+    return dictation, ingress
 
 
 def _app(dictation: Dictation | None) -> TestClient:
@@ -224,7 +264,7 @@ def test_dictation_streams_levels_then_the_polished_words(tmp_path: Path) -> Non
     assert len(ingress.lanes) == 1
     assert not lane.closed
     lane.close()
-    # The polish connection was opened while the words were heard.
+    # The polish connection was opened once, as the session started.
     assert provider.warmed == ["gpt-5.4-mini"]
     # One request to gpt-5.4-mini with Typlus's prompt, the raw words and where they land.
     (request,) = provider.requests
@@ -241,6 +281,53 @@ def test_dictation_streams_levels_then_the_polished_words(tmp_path: Path) -> Non
     assert cost["model"] == "gpt-5.4-mini"
     assert cost["cost_usd"] > 0
     assert not any("typlus" in payload.lower() or "悬浮窗" in payload for _, payload in events)
+
+
+def _wait(condition: Callable[[], bool]) -> None:
+    deadline = time.monotonic() + 3
+    while not condition():
+        assert time.monotonic() < deadline
+        time.sleep(0.005)
+
+
+def test_a_stretch_ending_in_a_pause_is_heard_while_he_goes_on(tmp_path: Path) -> None:
+    """5.4 s of talk, a 0.6 s pause, more talk: the first stretch is heard before the stop."""
+    heard: list[bytes] = []
+    words = iter(["第一段。", "second part"])
+
+    def ears(pcm: bytes) -> str:
+        heard.append(pcm)
+        return next(words) if pcm.strip(b"\0") else ""  # like the pipeline: silence is no words
+
+    provider = _Provider(POLISHED)
+    dictation, ingress = _dictation(tmp_path, ears, provider, _Talk)
+    (lane,) = ingress.lanes
+    assert isinstance(lane, _Talk)
+    seen: dict[str, int] = {}
+
+    def talk() -> None:
+        lane.script.extend([*(_tone(n) for n in range(1, 171)), *[QUIET] * 20])
+        _wait(lambda: len(heard) == 1)
+        seen["heard_while_recording"] = len(heard)
+        lane.script.extend(_tone(n) for n in range(171, 211))
+        _wait(lambda: not lane.script)
+
+    lines = _dictate(_app(dictation), {}, meanwhile=talk)
+    lane.close()
+    assert seen == {"heard_while_recording": 1}
+    assert lines[-1] == {"text": POLISHED, "raw": "第一段。second part"}
+    # The first stretch runs past 5 s and ends in exactly the half-second pause that cut it.
+    first = heard[0]
+    assert len(first) >= 5 * 32_000
+    assert first.endswith(QUIET * 16)
+    assert not first.endswith(QUIET * 17)
+    # Every spoken frame was heard once, in order, across the cuts.
+    frames = [pcm[i : i + 1024] for pcm in heard for i in range(0, len(pcm), 1024)]
+    assert [array("h", f)[0] for f in frames if f != QUIET] == list(range(1, 211))
+    # The joined words went to the polish; the session was already warm, so no second warm-up.
+    sent = json.dumps(provider.requests, ensure_ascii=False)
+    assert "Raw transcript:\\n第一段。second part" in sent
+    assert provider.warmed == ["gpt-5.4-mini"]
 
 
 def test_dictation_without_speech_and_with_a_failing_polish(tmp_path: Path) -> None:
