@@ -4,9 +4,9 @@
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { deleteSession, forkSession, getSessionMessages, query, renameSession, type Options, type PermissionResult, type PermissionUpdate,
-  type Query, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
-import { catalogChanged, log, type Driver, type Session } from './host.js';
-import type { Choice, Diff, File, Req, Step } from './types.js';
+  type Query, type SDKControlGetContextUsageResponse, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import { catalogChanged, kt, log, type Driver, type Session } from './host.js';
+import type { Choice, Ctx, CtxRow, Diff, File, Req, Step } from './types.js';
 
 // Allen's subscription, never an API key; and nothing that says this runs inside another Claude Code session. The
 // marker keeps Jarvis's own PermissionRequest hook (ADR 0049) out of sessions this window answers itself.
@@ -230,6 +230,42 @@ function frame(s: Session, m: SDKMessage) {
 }
 const oneLine = (t: string, n = 120) => { const x = t.replace(/\s+/g, ' ').trim(); return x.length > n ? `${x.slice(0, n - 1)}…` : x; };
 
+// ---------- the context window, as /context counts it (getContextUsage, token counts, not estimates) ----------
+const CTX_NAME: Record<string, string> = { 'System prompt': '系统提示词', 'System tools': '内置工具', 'MCP server instructions': 'MCP 说明', 'MCP tools': 'MCP 工具',
+  'Custom agents': '自定义 agent', 'Memory files': '记忆文件', Skills: 'Skills', Messages: '对话', 'Compact buffer': '留给压缩', 'Free space': '还空着' };
+// The biggest few, the rest as one line.
+function top(xs: [string, number][], n = 6): [string, number][] {
+  const s = xs.filter(x => x[1] > 0).sort((a, b) => b[1] - a[1]);
+  return s.length > n + 1 ? [...s.slice(0, n), [`其余 ${s.length - n} 个`, s.slice(n).reduce((a, x) => a + x[1], 0)]] : s;
+}
+function ctxOf(s: Session, u: SDKControlGetContextUsageResponse): Ctx {
+  const b = u.messageBreakdown, msgs = u.categories.find(c => c.name === 'Messages')?.tokens ?? 0;
+  // The split inside the conversation is Claude Code's own estimate and does not add up to the counted total, so it is
+  // scaled to that total.
+  const parts: [string, number][] = b ? [['工具结果', b.toolResultTokens], ['它写的', b.assistantMessageTokens], ['工具调用', b.toolCallTokens], ['你说的', b.userMessageTokens],
+    ['附带的提醒和说明', b.attachmentTokens], ['其他', b.redirectedContextTokens + b.unattributedTokens]] : [];
+  const k = msgs / (parts.reduce((a, p) => a + p[1], 0) || 1), scale = (xs: [string, number][]) => xs.map(([n, t]) => [n, Math.round(t * k)] as [string, number]);
+  const tools = top(scale((b?.toolCallsByType ?? []).map(t => [t.name, t.callTokens + t.resultTokens])), 5);
+  const sub: Record<string, CtxRow['sub']> = {
+    'System prompt': top((u.systemPromptSections ?? []).map(x => [x.name, x.tokens])),
+    'System tools': top((u.systemTools ?? []).map(x => [x.name, x.tokens])),
+    'MCP tools': top(u.mcpTools.filter(x => x.isLoaded !== false).map(x => [`${x.serverName} · ${x.name}`, x.tokens])),
+    'Custom agents': top(u.agents.map(x => [x.agentType, x.tokens])),
+    'Memory files': u.memoryFiles.map(x => [rel(s, x.path), x.tokens]),
+    Skills: top((u.skills?.skillFrontmatter ?? []).map(x => [x.name, x.tokens])),
+    Messages: parts.length ? ['大约的分法', ...top(scale(parts)), ...tools.length ? ['最占地方的工具', ...tools] : []] : [],
+  };
+  const rows: CtxRow[] = u.categories.filter(c => c.kind !== 'deferred').map(c => ({ n: CTX_NAME[c.name] ?? c.name, t: c.tokens,
+    ...c.kind === 'buffer' ? { kind: 'buf' as const } : c.kind === 'free' ? { kind: 'free' as const } : {}, ...sub[c.name]?.length ? { sub: sub[c.name] } : {} }));
+  const fixed = u.totalTokens - msgs, mem = u.categories.find(c => c.name === 'Memory files')?.tokens ?? 0;
+  const deferred = u.categories.filter(c => c.kind === 'deferred').reduce((a, c) => a + c.tokens, 0);
+  const say: [string, string] = u.percentage >= 75 ? ['快满了。', u.isAutoCompactEnabled ? '再满一点它会自己压缩。' : '发 /compact 能把对话缩成一段摘要。']
+    : msgs > fixed ? ['对话占了大头', tools[0] ? `，里面最多的是 ${tools[0][0]} 的来回，大约 ${kt(tools[0][1])}。` : '。']
+    : ['还很空。', `一开会话，系统提示、工具、记忆和 Skills 就先占了 ${kt(fixed)}${mem ? `，其中记忆文件 ${kt(mem)}` : ''}。`];
+  return { used: u.totalTokens, max: u.maxTokens, model: u.model, rows, say,
+    foot: [...deferred ? [`还有 ${kt(deferred)} 的工具没载入，用到才占地方`] : [], u.isAutoCompactEnabled ? '快满时会自己压缩' : '自动压缩关着 · 快满了要自己发 /compact'] };
+}
+
 // ---------- menus: what a fresh session in a folder offers, asked of a session that never gets a message ----------
 const cmdCache = new Map<string, { at: number; list: [string, string][] }>();
 let models: [string, string][] = [], efforts: string[] = [];
@@ -341,4 +377,15 @@ export const claude: Driver = {
     return cmdCache.get(cwd)?.list ?? [];
   },
   resume: s => `claude --resume ${s.s.id}`,
+  // A running session is asked directly; an idle one is resumed by a query of its own that ends once it answers, so
+  // looking never keeps a process around.
+  async context(s) {
+    let q = rt(s).q, input: ReturnType<typeof pushable<SDKUserMessage>> | undefined;
+    if (!q) {
+      input = pushable<SDKUserMessage>();
+      q = query({ prompt: input, options: { cwd: s.s.cwd, env: ENV, systemPrompt: PROMPT, resume: s.s.id, model: s.s.model || undefined,
+        permissionMode: (MODES.some(m => m[0] === s.s.mode) ? s.s.mode : 'auto') as Options['permissionMode'] } });
+    }
+    try { return ctxOf(s, await q.getContextUsage()); } finally { if (input) { q.close(); input.end(); } }
+  },
 };

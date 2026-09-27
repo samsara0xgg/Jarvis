@@ -9,7 +9,7 @@ import { promisify } from 'node:util';
 import { mkdir, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
-import type { Agent, Answer, Catalog, Choice, Event, File, Item, Req, Sess, St, Step } from './types.js';
+import type { Agent, Answer, Catalog, Choice, Ctx, Event, File, Item, Req, Sess, St, Step } from './types.js';
 import { claude } from './claude.js';
 import { codex } from './codex.js';
 
@@ -39,6 +39,8 @@ export type Driver = {
   commands(cwd: string, s?: Session): Promise<[string, string][]>;
   // What a terminal types to continue it.
   resume(s: Session): string;
+  // What fills its context window now.
+  context(s: Session): Promise<Ctx>;
 };
 const DRIVERS: Record<Agent, Driver> = { claude, codex };
 
@@ -49,6 +51,8 @@ export const took = (ms: number) => {
   const m = Math.round(s / 60);
   return m < 60 ? `${m} 分钟` : `${Math.floor(m / 60)} 小时${m % 60 ? ` ${m % 60} 分` : ''}`;
 };
+// A token count as the popover says it: 950, 12.4k, 958k, 1M.
+export const kt = (n: number) => n >= 1e6 ? `${+(n / 1e6).toFixed(1)}M` : n >= 1000 ? `${n >= 1e5 ? Math.round(n / 1000) : +(n / 1000).toFixed(1)}k` : String(Math.round(n));
 const oneLine = (t: string, n = 120) => { const x = t.replace(/\s+/g, ' ').trim(); return x.length > n ? `${x.slice(0, n - 1)}…` : x; };
 // A finished row shows the start of its last answer: the first sentence, without markdown.
 export const firstSentence = (text: string) => oneLine((text.split('\n').find(l => l.trim() && !l.startsWith('```')) ?? '')
@@ -409,6 +413,13 @@ async function route(req: Req0, res: http.ServerResponse, url: URL): Promise<unk
     broadcast({ t: 'gone', id: x.s.id });
     save();
     return { ok: true };
+  }
+  if (m === 'GET' && verb === 'context') {
+    if (x.s.term) throw new Http(409, '在终端里，拿回来才看得到');
+    const c = await x.driver.context(x);
+    // The ring takes the measured number.
+    if (c.max) x.set({ ctx: Math.min(100, Math.round(c.used / c.max * 100)) });
+    return c;
   }
   if (m !== 'POST') throw new Http(405, '不行');
   const b = await body(req);
