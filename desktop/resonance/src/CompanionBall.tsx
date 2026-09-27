@@ -53,7 +53,7 @@ export function CompanionBall({ width, height, lobe, hang, target, look, handle,
     // The eyes are drawn apart first, so one blur gives them their glow.
     const eyes = document.createElement('canvas'), ectx = eyes.getContext('2d')!;
     // Her inside faded to no edge, for the dark-glass island.
-    const neb = document.createElement('canvas'), nctx = neb.getContext('2d')!;
+    const neb = document.createElement('canvas'), nctx = neb.getContext('2d')!, spill = document.createElement('canvas');
     const start = latest.current.anchors.home;
     const s = { x: spring(start.x), y: spring(start.y), scale: spring(HOME_SCALE), shine: spring(0), pivot: spring(0), dock: spring(0), fold: spring(1) };
     const reduced = matchMedia('(prefers-reduced-motion: reduce)');
@@ -140,8 +140,8 @@ export function CompanionBall({ width, height, lobe, hang, target, look, handle,
       silhouette.current!.style.display = y - R * scale - island.current.lobe.height < 26 && slipX === null && !hidden ? '' : 'none';
 
       const isl = island.current, { lobe, path } = isl, S = Math.round(2 * B * R * d);
-      // A panel or a card hanging under the island is the same black: her light runs on into it, and the island's
-      // lower rim, no longer an edge, fades out as it opens.
+      // A panel or a card hanging under the island is the same black, so its old bottom edge must not show: as it
+      // opens, her light draws back to fade out just above that edge, and the island's lower rim fades out with it.
       const hung = hang.current;
       if (isl.hangD !== hung.d) { isl.hangD = hung.d; isl.whole = new Path2D(isl.d); if (hung.d) isl.whole.addPath(new Path2D(hung.d)); }
       const under = Math.max(lobe.height, ...hung.rects.filter(r => r.l <= x && r.r >= x).map(r => r.d)), open = smooth(0, 12, under - lobe.height);
@@ -187,10 +187,17 @@ export function CompanionBall({ width, height, lobe, hang, target, look, handle,
         nctx.fillStyle = m; nctx.fillRect(-N / 2, -N / 2, N, N); nctx.globalCompositeOperation = 'source-over';
         // Her nebula glows through the island's black, and its lower rim catches her light like glass.
         const r = B * R * scale * 1.9, rgb = core.light.rim.map(v => Math.round(v * 255)).join(',');
+        const W = Math.ceil(2 * r * d), sc = spill.getContext('2d')!;
+        if (spill.width !== W) spill.width = spill.height = W;
+        sc.setTransform(1, 0, 0, 1, 0, 0); sc.globalCompositeOperation = 'source-over'; sc.clearRect(0, 0, W, W);
+        sc.drawImage(neb, 0, 0, W, W);
+        const edge = (lobe.height - 12 * open - (y - r)) * d, fall = sc.createLinearGradient(0, edge, 0, edge + 12 * d);
+        fall.addColorStop(0, '#000'); fall.addColorStop(1, 'rgba(0,0,0,0)');
+        sc.globalCompositeOperation = 'destination-in'; sc.fillStyle = fall; sc.fillRect(0, 0, W, W);
         ctx.save(); ctx.clip(isl.whole); ctx.globalAlpha = inside;
-        ctx.drawImage(neb, x - r, y - r, 2 * r, 2 * r);
+        ctx.drawImage(spill, x - r, y - r, 2 * r, 2 * r);
         ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = .6 * inside;
-        ctx.drawImage(neb, x - r, y - r, 2 * r, 2 * r); ctx.globalCompositeOperation = 'source-over';
+        ctx.drawImage(spill, x - r, y - r, 2 * r, 2 * r); ctx.globalCompositeOperation = 'source-over';
         const rim = ctx.createLinearGradient(lobe.left, 0, lobe.right, 0);
         rim.addColorStop(0, `rgba(${rgb},0)`); rim.addColorStop(.5, `rgba(${rgb},${.55 * (1 - open)})`); rim.addColorStop(1, `rgba(${rgb},0)`);
         if (open < 1) { ctx.strokeStyle = rim; ctx.lineWidth = .8; ctx.beginPath(); ctx.moveTo(lobe.left, lobe.height - .5); ctx.lineTo(lobe.right, lobe.height - .5); ctx.stroke(); }

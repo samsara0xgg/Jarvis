@@ -487,9 +487,9 @@ try {
   check(`10 the panel is the whole island growing down, from her lobe past the marks (${Math.round(box10.x)}, ${Math.round(box10.width)})`,
     box10.x < 163.5 && box10.x + box10.width > 484 && Math.abs(box10.width - 400) < 2);
   check('10 nothing needs a look, so no name is bold', (await drop.locator('.a-row b').evaluateAll(els => [...new Set(els.map(e => getComputedStyle(e).fontWeight))])).join() === '400');
-  // The panel is the island's own black, so her light runs on down into it instead of stopping at the island's edge.
+  // The panel is the island's own black, so her light draws back and fades out before the island's old edge.
   const under10 = await litIn(150, 33, 240, 40);
-  check(`10 her nebula runs on down into the panel hanging under her island (${JSON.stringify(under10)})`, under10.max > 0);
+  check(`10 with the panel open her light is gone under her island (${JSON.stringify(under10)})`, under10.max === 0);
   await shot('10-panel', { x: 100, y: 0, width: 440, height: 330 });
   const finished = drop.locator('.a-sec[data-sec="done"] .a-row').first();
   await finished.hover(); await page.waitForTimeout(200);
