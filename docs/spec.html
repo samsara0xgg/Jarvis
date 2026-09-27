@@ -504,7 +504,7 @@ Jarvis 是 <strong>6-layer state-centric personal runtime</strong>。Identity �
 <tr><td><strong>Status Board</strong></td><td>Mac / home / action / tool / domain availability 的当前状态。</td></tr>
 <tr><td><strong>Mode Runtime State</strong></td><td>当前 durable mode、lenses、overrides。</td></tr>
 <tr><td><strong>Recent Trace</strong></td><td>最近 N turn 和相关 action / event 的近因上下文。</td></tr>
-<tr><td><strong>Pending Clarification</strong></td><td>最新一张待填卡片（ADR 0066）：Jarvis 缺信息时用 <code>ask_user</code> 放上的问题和一到四个输入项。同一时间只有一张，新的替换旧的；提交、点 × 或 Allen 接下来开口说话都会关掉它；开口关掉的那一轮，以及点 × 之后的第一轮，会被告知卡片问了什么。</td></tr>
+<tr><td><strong>Pending Clarification</strong></td><td>最新一张待填卡片（ADR 0066）：Jarvis 缺信息时用 <code>ask_user</code> 放上的问题和一到四个输入项。同一时间只有一张，新的替换旧的；提交、点 × 或 Allen 接下来开口说话都会关掉它；开口关掉的那一轮，以及点 × 之后的第一轮，会被告知卡片问了什么。提交时留空的项，答卡那一轮会被告知：由 Jarvis 自己定或不要，不再追问。</td></tr>
 <tr><td><strong>Memory Projection</strong></td><td>长期稳定个人知识，包含 Allen profile view。</td></tr>
 <tr><td><strong>Drift Watch</strong></td><td>项目是否跑偏、commit/task/session 是否偏离目标。</td></tr>
 </tbody>

@@ -62,7 +62,10 @@ def _note(conn: sqlite3.Connection, trigger: Event) -> str | None:
 def test_a_filled_in_card_closes_and_its_answer_turn_hears_what_it_answers(
     conn: sqlite3.Connection,
 ) -> None:
-    """GET shows the card until surface.clarified; the answer turn gets the answer line."""
+    """GET shows the card until surface.clarified; the answer turn gets the answer line.
+
+    邮编 came back blank, so that line also says not to ask for it again.
+    """
     _ask(conn, "Q1")
     assert _card(conn).waiting
     assert [f["label"] for f in _card(conn).fields] == ["送餐地址", "邮编"]
@@ -75,6 +78,8 @@ def test_a_filled_in_card_closes_and_its_answer_turn_hears_what_it_answers(
     assert not _card(conn).waiting
     assert _note(conn, answer) == (
         f"This message is the user's answer to your card {_ASKED}. "
+        "They left 邮编 blank: decide those yourself or do without them; "
+        "do not ask for them again. "
         "Fields you did not mark one-off are already saved in [About the user]. "
         "Carry on with what they asked for."
     )
