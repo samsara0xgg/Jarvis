@@ -457,6 +457,10 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
   const briefRoute = useRoute<Brief>(port, '/inherent/brief', open, 10 * 60_000);
   const mailRoute = useRoute<{ unread: Mail[] }>(port, '/inherent/mail', open, 5 * 60_000);
   const noticeRoute = useRoute<{ notices: Notice[] }>(port, '/inherent/notices', open, 60_000);
+  // A first boot fetches the speech models (~240 MB) before she can hear or speak; the corner shows how far, polled until they are in.
+  const [voiceIn, setVoiceIn] = useState(false);
+  const models = useRoute<{ voice_models?: { state: 'ready' | 'downloading' | 'failed'; done: number; total: number } }>(port, '/inherent/setup', open && !voiceIn, 3000).data?.voice_models;
+  useEffect(() => { if (models?.state === 'ready') setVoiceIn(true); }, [models?.state]);
   const demoPops = useMemo(() => ({ brief: demoBrief(), mail: demoMail(), notices: demoNotices() }), []);
   const brief = port ? briefRoute.data : demoPops.brief, mail = port ? mailRoute.data?.unread ?? [] : demoPops.mail;
   const notices = port ? noticeRoute.data?.notices ?? [] : demoPops.notices;
@@ -658,7 +662,11 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
     <div className="view" ref={view} style={{ height: viewH }}>
       <div className="overview" ref={home} inert={!!page}>
         <div className="corner">
-          <span className="clock">{talk?.offline ? <b className="is-warm">{t(['Offline · reconnecting', '离线 · 重连中'])}</b> : <><b>{dateLabel}</b> {timeOf(tick)}</>}</span>
+          <span className="clock">{talk?.offline ? <b className="is-warm">{t(['Offline · reconnecting', '离线 · 重连中'])}</b>
+            : models?.state === 'failed' ? <b className="is-warm" title={t(['Her voice didn’t download. Restart Jarvis in Settings › Advanced to try again.', '她的声音没下载下来。到 设置 › 高级 里重启 Jarvis 再试。'])}>{t(['Voice failed', '声音下载失败'])}</b>
+            : models?.state === 'downloading' ? <b className="is-warm" title={t(['Downloading her voice (about 240 MB). Type to her meanwhile.', '正在下载她的声音（约 240 MB），这期间可以先打字。'])}>
+              {t([`Voice · ${Math.floor(models.done * 100 / models.total)}%`, `声音准备中 ${Math.floor(models.done * 100 / models.total)}%`])}</b>
+            : <><b>{dateLabel}</b> {timeOf(tick)}</>}</span>
           <span className="corner-b">
             <button className="cb" data-row="conversation" aria-label={t(['Conversation', '对话'])} title={t(['Conversation', '对话'])} onClick={e => openPage('conversation', e.currentTarget)}><ChatCircle size={15}/></button>
             <button className={`cb ${ctl.speechMuted ? 'is-muted' : ''}`} aria-pressed={ctl.speechMuted} onClick={mute}

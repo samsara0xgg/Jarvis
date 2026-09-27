@@ -547,6 +547,18 @@ try {
       posts.at(-1)?.path === '/inherent/language' && posts.at(-1).body.language === 'zh' && await langName() === '界面语言');
     await page.locator('.ad [data-item="lang"] .st-seg button', { hasText: 'English' }).click(); await page.waitForTimeout(600);
     check('L15 English posts { language: en } and turns it back', posts.at(-1)?.body.language === 'en' && await langName() === 'Interface language');
+    // L16: a first boot's speech-model download shows in the corner until the models are in.
+    await back(); await back();
+    const corner = () => text('.ad .corner .clock');
+    fixtures['/inherent/setup'] = { keys: { openai: 'bad', minimax: 'missing', tavily: 'missing' }, voice_models: { state: 'downloading', done: 148_000_000, total: 240_193_589 } };
+    const downloading = await page.waitForFunction(() => document.querySelector('.ad .corner .clock')?.textContent === 'Voice · 61%', null, { timeout: 5000 }).then(() => true, () => false);
+    check('L16 while the speech models download the corner says how far, from real bytes', downloading);
+    await panelShot('L16-voice-downloading');
+    fixtures['/inherent/setup'].voice_models = { state: 'ready', done: 0, total: 0 };
+    await page.waitForFunction(() => !document.querySelector('.ad .corner .clock')?.textContent.includes('Voice'), null, { timeout: 5000 }).catch(() => {});
+    check('L16 once they are in the corner is the clock again', /\d:\d\d/.test(await corner()));
+    await page.locator('.ad .corner [data-row="settings"]').click(); await page.waitForTimeout(900);
+    await page.locator('.ad [data-cat="accounts"]').click(); await page.waitForTimeout(900);
     await back(); await back();
     await hit.dblclick({ force: true });
     await page.waitForFunction(() => !document.querySelector('.companion-dashboard.is-open'), null, { timeout: 3000 });

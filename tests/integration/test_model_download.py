@@ -18,6 +18,7 @@ import pytest
 
 from jarvis.deployment.models import (
     ModelFile,
+    Progress,
     default_sensevoice_dir,
     default_silero_vad_path,
     missing_models,
@@ -59,12 +60,14 @@ def test_a_fresh_root_lists_every_model_as_missing(tmp_path: Path) -> None:
 
 
 def test_a_verified_download_lands_in_place(tmp_path: Path, served: tuple[str, bytes]) -> None:
-    """Matching bytes are moved into place; no partial file stays beside them."""
+    """Matching bytes land in place, every byte counted; no partial file stays beside them."""
     url, body = served
     target = tmp_path / "jarvis" / "models" / "silero_vad.onnx"
-    real_download(target, ModelFile(url, hashlib.sha256(body).hexdigest()))
+    progress = Progress(total=len(body))
+    real_download(target, ModelFile(url, hashlib.sha256(body).hexdigest(), len(body)), progress)
     assert target.read_bytes() == body
     assert list(target.parent.iterdir()) == [target]
+    assert progress.view() == {"state": "downloading", "done": len(body), "total": len(body)}
 
 
 def test_a_hash_mismatch_leaves_nothing_behind(tmp_path: Path, served: tuple[str, bytes]) -> None:
@@ -72,5 +75,5 @@ def test_a_hash_mismatch_leaves_nothing_behind(tmp_path: Path, served: tuple[str
     url, _ = served
     target = tmp_path / "jarvis" / "models" / "silero_vad.onnx"
     with pytest.raises(ValueError, match="sha256"):
-        real_download(target, ModelFile(url, "0" * 64))
+        real_download(target, ModelFile(url, "0" * 64, 0))
     assert list(target.parent.iterdir()) == []
