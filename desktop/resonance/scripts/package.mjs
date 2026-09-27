@@ -22,6 +22,7 @@ rmSync(path.join(resources, 'default_app.asar'));
 cpSync('node_modules/electron/dist/LICENSE', path.join(resources, 'LICENSE.electron'));
 cpSync('node_modules/electron/dist/LICENSES.chromium.html', path.join(resources, 'LICENSES.chromium.html'));
 cpSync('THIRD-PARTY-NOTICES.md', path.join(resources, 'THIRD-PARTY-NOTICES.md'));
+cpSync('../../LICENSE', path.join(resources, 'LICENSE'));
 renameSync(path.join(contents, 'MacOS/Electron'), path.join(contents, 'MacOS/Jarvis'));
 const plist = path.join(contents, 'Info.plist'), set = (key, type, value) => run('plutil', ['-replace', key, `-${type}`, value, plist]);
 for (const [key, value] of Object.entries({
@@ -56,7 +57,10 @@ run('uv', ['pip', 'install', '--python', py, '--break-system-packages', '--no-de
 const runtime = path.join(resources, 'runtime');
 mkdirSync(runtime);
 execFileSync('tar', ['-x', '-C', runtime], { input: execFileSync('git', ['-C', repo, 'archive', 'HEAD', 'jarvis', 'config', 'prompts', 'plugins', 'data/pricing.json'], { maxBuffer: 1 << 30 }) });
-run(py, ['-m', 'compileall', '-q', path.join(runtime, 'jarvis')]); // the stdlib ships compiled, uv compiled the rest
+// Jarvis is closed source: only its bytecode ships. `-b` puts each .pyc where its .py was, the one
+// place Python imports a module without its source. The stdlib ships compiled, uv compiled the rest.
+run(py, ['-m', 'compileall', '-q', '-b', path.join(runtime, 'jarvis')]);
+for (const file of readdirSync(path.join(runtime, 'jarvis'), { recursive: true })) if (file.endsWith('.py')) rmSync(path.join(runtime, 'jarvis', file));
 // A C extension that cannot load only shows when imported; import the native ones now, outside any venv.
 run(path.join(python, 'bin/python3'), ['-c', 'import jarvis.runtime, jarvis.surface.voice_tts, sherpa_onnx, pymicro_wakeword, onnxruntime, sounddevice, soxr, uvloop, lxml, cryptography'],
   { cwd: '/', env: { PATH: '/usr/bin:/bin', HOME: process.env.HOME, PYTHONPATH: runtime, PYTHONNOUSERSITE: '1', PYTHONDONTWRITEBYTECODE: '1' } });
