@@ -498,9 +498,11 @@ class PendingConfirmationSlot:
             `confirmation.requested.payload["template_line"]` — durable
             so consent binds to recorded machine truth (§3 D3).
         expires_at_ms: TTL deadline stamped by the ask path (Step 5;
-            this projection never computes or defaults it). Compared
-            against a caller-supplied `now_ms` at read time via
-            :meth:`is_live` — never against a hidden clock read.
+            this projection never computes or defaults it). ADR 0061: it
+            bounds only a spoken or typed answer (:meth:`answers_by_words`);
+            the card itself waits until it is answered or replaced.
+            Compared against a caller-supplied `now_ms` at read time —
+            never against a hidden clock read.
         state: Current lifecycle state. See `PendingConfirmationState`.
         accepted_event_uid: `event_uid` of the `confirmation.accepted`
             event that moved this slot to `accepted_unconsumed`, or
@@ -514,6 +516,9 @@ class PendingConfirmationSlot:
             already-spent `lease_id` and has no way to validate that a
             lease's `source_confirmation_event_id` was ever a real
             acceptance in the first place.
+        utterances_since: How many user utterances (`surface.user_intent`
+            / `utterance.received`) the log holds after the ask. The one
+            being handled is already appended, so the first answer sees 1.
     """
 
     confirmation_id: str
@@ -522,19 +527,25 @@ class PendingConfirmationSlot:
     expires_at_ms: int
     state: PendingConfirmationState
     accepted_event_uid: str | None = None
+    utterances_since: int = 0
 
-    def is_live(self, now_ms: int) -> bool:
-        """True iff this slot is a still-pending, unexpired ask at `now_ms`.
+    def is_live(self, now_ms: int) -> bool:  # noqa: ARG002 — callers pass their clock; ADR 0061 dropped the deadline here.
+        """True iff this slot is a still-pending ask: its card waits (ADR 0061).
 
-        §3 D4's state enum has no `expired` member — expiry is judged
-        here, at read time, against the caller-supplied `now_ms`, never
-        stored and never read from a hidden clock (a caller-supplied
-        `now_ms` keeps the fold pure and this check testable). Any
-        state other than `"pending"` returns False regardless of
-        `expires_at_ms` — an accepted, rejected, consumed, or
-        superseded slot is not awaiting an answer, live or not.
+        Any state other than `"pending"` returns False — an accepted,
+        rejected, consumed, or superseded slot is not awaiting an answer.
+        A card never times out; see :meth:`answers_by_words` for the
+        narrower window a spoken or typed yes/no has.
         """
-        return self.state == "pending" and now_ms < self.expires_at_ms
+        return self.state == "pending"
+
+    def answers_by_words(self, now_ms: int) -> bool:
+        """Whether a spoken or typed yes/no can answer this ask (ADR 0061, from ADR 0039).
+
+        Only the first utterance after the ask, and only within its TTL:
+        a later 「好」 meant for another question never fires the card.
+        """
+        return self.is_live(now_ms) and now_ms < self.expires_at_ms and self.utterances_since <= 1
 
 
 @dataclass(frozen=True)
@@ -585,7 +596,7 @@ def _pending_slot_from_requested(event: Event) -> PendingConfirmationSlot | None
     )
 
 
-def _fold_pending_confirmations(events: Iterable[Event]) -> PendingConfirmations:  # noqa: C901 - a flat one-branch-per-event-type dispatch; merging the three id-matching terminals to satisfy the counter would hide that each has its own rule
+def _fold_pending_confirmations(events: Iterable[Event]) -> PendingConfirmations:  # noqa: C901, PLR0912 - a flat one-branch-per-event-type dispatch; merging the three id-matching terminals to satisfy the counter would hide that each has its own rule
     """Single-pass fold producing the PendingConfirmations projection.
 
     Fold rules (ADR-0012 §3 D4, decisions pinned 2026-08-26):
@@ -595,6 +606,8 @@ def _fold_pending_confirmations(events: Iterable[Event]) -> PendingConfirmations
       discarded, not retained (single-slot; see `PendingConfirmationState`
       for why `"superseded"` is never the CURRENT slot's state under
       this rule).
+    - `surface.user_intent` / `utterance.received` count into a pending
+      slot's `utterances_since` (ADR 0061: only the first answers by words).
     - `confirmation.accepted` / `confirmation.rejected` move the slot to
       `accepted_unconsumed` / `rejected` ONLY when the event's
       `confirmation_id` matches the current slot's — a stale answer
@@ -630,6 +643,9 @@ def _fold_pending_confirmations(events: Iterable[Event]) -> PendingConfirmations
     for evt in events:
         if evt.type == "confirmation.requested":
             slot = _pending_slot_from_requested(evt)
+        elif evt.type in ("surface.user_intent", "utterance.received"):
+            if slot is not None and slot.state == "pending":
+                slot = replace(slot, utterances_since=slot.utterances_since + 1)
         elif evt.type == "confirmation.accepted":
             if (
                 slot is not None

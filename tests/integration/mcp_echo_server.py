@@ -21,6 +21,12 @@ def add(a: int, b: int) -> dict[str, int]:
 
 
 @server.tool()
+def send(to: str, subject: str, body: str) -> dict[str, str]:
+    """Send a letter; answers with what it sent (a card's letter, ADR 0061)."""
+    return {"to": to, "subject": subject, "body": body}
+
+
+@server.tool()
 def boom() -> str:
     """Always fail."""
     msg = "boom went off"

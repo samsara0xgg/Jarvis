@@ -18,6 +18,7 @@ module can be re-used by the gates without circular pulls.
 
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
@@ -134,6 +135,8 @@ def assemble_packet(trigger: Event, conn: sqlite3.Connection) -> SituationPacket
 # --- Pending confirmation system note (ADR-0012 §3 D4) --------------------
 
 _MS_PER_SECOND: Final[int] = 1000
+_NOTE_ARGUMENTS_CHARS: Final[int] = 2000
+"""The card's arguments the note carries, so the model can revise a letter it no longer sees."""
 
 
 def format_pending_confirmation_note(
@@ -148,16 +151,15 @@ def format_pending_confirmation_note(
     turn (C4), or one that only paraphrases consent (C6) — has no
     handle it could try to use to act on the pending ask itself. Only
     the answer-path grammar hook (Step 6, exact-sentence match against
-    `confirm_grammar.yaml`) can move the slot; this note exists so the
+    `confirm_grammar.yaml`) or the card's button (ADR 0061) can move the
+    slot; this note exists so the
     LLM can *talk about* the ask without being structurally able to
     authorize it.
 
-    Returns None when there is no live slot: no `confirmation.requested`
-    has fired, the slot has moved past `pending` (accepted / rejected /
-    consumed / superseded), or the recorded `expires_at_ms` has lapsed
-    at `now_ms` — a merely-expired ask renders no note, matching D6's
-    "expired pending -> ordinary turn, packet note shows no pending"
-    rule (:meth:`PendingConfirmationSlot.is_live`).
+    Returns None when there is no pending slot: no `confirmation.requested`
+    has fired, or the slot has moved past `pending` (accepted / rejected /
+    consumed / superseded). ADR 0061: the card waits past its TTL, so the
+    note shows it, with its arguments, until it is answered or replaced.
 
     Args:
         packet: The packet whose ``pending_confirmation`` is rendered.
@@ -171,13 +173,14 @@ def format_pending_confirmation_note(
         return None
 
     tool_name = slot.snapshot.get("tool_name", "?")
-    target = slot.snapshot.get("canonical_target", "?")
-    remaining_s = max(0, (slot.expires_at_ms - resolved_now_ms) // _MS_PER_SECOND)
+    arguments = json.dumps(slot.snapshot.get("args_meta", {}), ensure_ascii=False)
+    if len(arguments) > _NOTE_ARGUMENTS_CHARS:
+        arguments = f"{arguments[:_NOTE_ARGUMENTS_CHARS]}…"
     return (
-        f"Awaiting the user's answer: {tool_name} → {target}, {remaining_s} s left. "
-        "You cannot run or authorize it yourself; only the user's direct answer to the "
-        "runtime's question counts. If the user asks about it, describe this action; do "
-        "not claim you can run it and do not propose the same action again."
+        f"A card is waiting for the user's button: {tool_name} {arguments}. "
+        "You cannot run or authorize it yourself; only the user's button or direct answer "
+        "counts. To change it, or when the user asks you to go ahead with it, call the same "
+        "tool again with the arguments it should have: that replaces the card and asks once more."
     )
 
 

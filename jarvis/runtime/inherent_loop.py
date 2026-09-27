@@ -191,7 +191,7 @@ from jarvis.state.memory_db import (
     conversation_rows,
 )
 from jarvis.state.plugin_settings import local_key, local_key_matches
-from jarvis.state.projections import rebuild_projections
+from jarvis.state.projections import PendingConfirmations, rebuild_projections
 from jarvis.state.trigger_consumption import trigger_was_consumed
 from jarvis.surface import (
     voice_aec,
@@ -349,6 +349,10 @@ _WAKE_FRAME_SAMPLES: int = 1280
 # ``_MODE_THRESHOLDS`` keys).  A closed set: ADR-0006 D8 names both and
 # ``realtime.single_audio_ingress.output_active_vad_mode`` selects between them.
 _VAD_MODES: Final[tuple[str, ...]] = ("record", "tts")
+_CARD_EVENT_TYPES: Final[tuple[str, ...]] = (
+    "confirmation.requested", "confirmation.accepted", "confirmation.rejected", "gate.evaluated",
+)
+"""What the pending card folds from (ADR 0061), the rows the answer path itself re-reads."""
 
 
 def _default_vad_profiles() -> dict[str, voice_audio.VadThresholds]:
@@ -5064,6 +5068,56 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             )
             return {"since": since, "rows": rows}
 
+        def _read_card() -> dict[str, Any]:
+            """ADR 0061: the card waiting for Allen's button, or ``None``."""
+            conn = open_runtime_event_log(runtime.runtime_paths.event_log)
+            try:
+                slot = PendingConfirmations.from_events(
+                    iter_events_of_types(conn, _CARD_EVENT_TYPES),
+                ).slot
+            finally:
+                with contextlib.suppress(sqlite3.Error):
+                    conn.close()
+            if slot is None or not slot.is_live(int(time.time() * 1000)):
+                return {"card": None}
+            tool = str(slot.snapshot.get("tool_name", ""))
+            args_raw = slot.snapshot.get("args_meta")
+            args = dict(args_raw) if isinstance(args_raw, Mapping) else {}
+            parts = tool.split("__")
+            return {"card": {
+                "id": slot.confirmation_id,
+                "tool": tool,
+                "action": lang.action(tool)[0],
+                "source": parts[1] if len(parts) == 3 and parts[0] == "mcp" else "",  # noqa: PLR2004
+                "letter": lang.letter_to(args) is not None,
+                "args": args,
+            }}
+
+        def _decide_card(confirmation_id: str, decision: str, edits: dict[str, str]) -> str:
+            """ADR 0061: a card's button, as an intent the turn pump runs like any other."""
+            turn_id = _new_turn_id()
+            conn = open_runtime_event_log(runtime.runtime_paths.event_log)
+            try:
+                emit_event(
+                    conn,
+                    type="surface.user_intent",
+                    payload={
+                        "transcript": "",
+                        "turn_id": turn_id,
+                        "channel": "card",
+                        "confirmation_decision": {
+                            "confirmation_id": confirmation_id,
+                            "decision": decision,
+                            "edits": edits,
+                        },
+                    },
+                    correlation={"turn_id": turn_id},
+                )
+            finally:
+                with contextlib.suppress(sqlite3.Error):
+                    conn.close()
+            return turn_id
+
         setup: Setup | None = None
         if window_memory is not None:
             knobs = _voice_knobs(runtime.config)
@@ -5132,6 +5186,8 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 else functools.partial(asyncio.to_thread, runtime.projects.refresh)
             ),
             conversation_read=None if window_memory is None else _read_conversation,
+            card_read=_read_card,
+            card_decide=_decide_card,
             today_read=(
                 None if runtime.home is None
                 else functools.partial(asyncio.to_thread, runtime.home.today)

@@ -78,6 +78,59 @@ def variants(key: str, lang: Language | None = None) -> tuple[str, ...]:
     return VARIANTS[key][lang or _current]
 
 
+# --- What a confirmed tool does (ADR 0061) ----------------------------------
+
+# (what the card and the ask call it, the line once it ran) per tool.
+_ACTIONS: Final[dict[str, dict[Language, tuple[str, str]]]] = {
+    "mcp__gmail__gmail_send": {"zh": ("发这封邮件", "已发送"), "en": ("send this email", "Sent")},
+    "mcp__gmail__gmail_sendDraft": {"zh": ("发出这封草稿", "已发送"), "en": ("send this draft", "Sent")},
+    "mcp__gmail__gmail_modify": {
+        "zh": ("改这封邮件的标签", "标签已改"),
+        "en": ("change this email's labels", "Labels changed"),
+    },
+    "mcp__gmail__gmail_batchModify": {
+        "zh": ("改这些邮件的标签", "标签已改"),
+        "en": ("change these emails' labels", "Labels changed"),
+    },
+    "mcp__gmail__gmail_modifyThread": {
+        "zh": ("改这组邮件的标签", "标签已改"),
+        "en": ("change this thread's labels", "Labels changed"),
+    },
+    "spawn_worker": {
+        "zh": ("派这个后台任务", "已派出去"),
+        "en": ("start this background task", "Started"),
+    },
+}
+
+
+def spoken_tool_name(tool_name: str) -> str:
+    """``mcp__notion__notion-fetch`` -> ``notion notion-fetch`` (spec §3.5.6 naming)."""
+    parts = tool_name.split("__")
+    return f"{parts[1]} {parts[2]}" if len(parts) == 3 and parts[0] == "mcp" else tool_name  # noqa: PLR2004
+
+
+def action(tool_name: str, lang: Language | None = None) -> tuple[str, str]:
+    """What ``tool_name`` does and the line once it ran; a tool not listed goes by its name."""
+    lang = lang or _current
+    named = _ACTIONS.get(tool_name)
+    if named is not None:
+        return named[lang]
+    spoken = spoken_tool_name(tool_name)
+    return (f"执行 {spoken}", f"已执行 {spoken}") if lang == "zh" else (f"run {spoken}", f"Ran {spoken}")
+
+
+def letter_to(arguments: object) -> str | None:
+    """The recipients when a tool call's arguments are a letter (to, subject, body), else None."""
+    if not isinstance(arguments, dict):
+        return None
+    to, subject, body = arguments.get("to"), arguments.get("subject"), arguments.get("body")
+    if not isinstance(subject, str) or not isinstance(body, str):
+        return None
+    if isinstance(to, list) and to and all(isinstance(one, str) for one in to):
+        return ", ".join(to)
+    return to if isinstance(to, str) and to else None
+
+
 # --- Dates and times --------------------------------------------------------
 
 _WEEKDAYS: Final[dict[Language, tuple[str, ...]]] = {
@@ -153,11 +206,13 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
         "en": "To confirm: {tool_name} → `{canonical_target}` ({mode}, {content_bytes} bytes, risk"
         ' {risk_level}). Say "yes" to run it or "no" to cancel.',
     },
-    "confirm.ask_tool": {
-        "zh": "待确认：{tool}（{arguments}）。回复「可以」执行，「不要」取消。",
-        "en": 'To confirm: {tool} ({arguments}). Say "yes" to run it or "no" to cancel.',
+    # ADR 0061: the ask under a card is one spoken line; the card shows the rest.
+    "confirm.ask_tool": {"zh": "要{action}吗？", "en": "Shall I {action}?"},
+    "confirm.ask_letter": {
+        "zh": "信写好了，发给 {to}，主题「{subject}」。要发吗？",
+        "en": 'The email to {to} is ready, subject "{subject}". Send it?',
     },
-    "confirm.rejected": {"zh": "好，已取消：{template_line}", "en": "OK, cancelled: {template_line}"},
+    "confirm.rejected": {"zh": "好，不{action}了。", "en": "OK, I won't {action}."},
     "confirm.content_mismatch": {
         "zh": "暂存内容校验失败，写入未执行。",
         "en": "The staged content failed its check; nothing was written.",
@@ -175,10 +230,10 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
         "zh": "write_file 已执行：`{path}`（{bytes_written} 字节）",
         "en": "write_file ran: `{path}` ({bytes_written} bytes)",
     },
-    "confirm.tool_ran": {"zh": "{tool} 已执行。结果：{result}", "en": "{tool} ran. Result: {result}"},
+    "confirm.tool_ran": {"zh": "{done}。", "en": "{done}."},
     "confirm.stale": {
-        "zh": "确认已被处理或失效。未接纳新的写入。",
-        "en": "That confirmation was already handled or has expired. No new write was accepted.",
+        "zh": "这张卡已经处理过或被换掉了，没有执行。",
+        "en": "That card was already handled or replaced; nothing ran.",
     },
     "confirm.accepted": {
         "zh": "该确认已接纳。执行状态请以结果为准。",

@@ -90,10 +90,12 @@ def _call(tmp_path: Path, tools: tuple[Any, ...], name: str, action_id: str) -> 
 
 
 def test_listed_tools_dispatch_through_the_real_log(tmp_path: Path, servers: McpServers) -> None:
-    """echo/add/boom arrive named, deferred and approval-mapped; each call ends in one row."""
+    """echo/add/send/boom arrive named, deferred and approval-mapped; each call ends in one row."""
     tools = servers.connect(ECHO)
     by_name = {t.name: t for t in tools}
-    assert set(by_name) == {"mcp__echo__echo", "mcp__echo__add", "mcp__echo__boom"}
+    assert set(by_name) == {
+        "mcp__echo__echo", "mcp__echo__add", "mcp__echo__send", "mcp__echo__boom",
+    }
     echo, add = by_name["mcp__echo__echo"], by_name["mcp__echo__add"]
     # ADR 0033 auto mode: readOnlyHint runs unasked; a tool with no hints asks first.
     assert (echo.read_only, echo.risk_level, echo.requires_confirmation) == (True, "L0", False)
@@ -137,6 +139,7 @@ def test_codex_approval_modes_move_the_risk(servers: McpServers) -> None:
     assert risks == {
         "mcp__echo__echo": ("L3", True),
         "mcp__echo__add": ("L1", False),
+        "mcp__echo__send": ("L1", False),
         "mcp__echo__boom": ("L1", False),
     }
     assert servers.connect({"echo": {**spec, "default_tools_approval_mode": "sometimes"}}) == ()
@@ -155,7 +158,7 @@ def test_stdio_args_expand_from_the_environment(
     monkeypatch.setenv("ECHO_DIR", str(HERE))
     entry = {"echo": {"command": sys.executable, "args": ["$ECHO_DIR/mcp_echo_server.py"]}}
     assert {t.name for t in servers.connect(entry)} == {
-        "mcp__echo__echo", "mcp__echo__add", "mcp__echo__boom",
+        "mcp__echo__echo", "mcp__echo__add", "mcp__echo__send", "mcp__echo__boom",
     }
 
 

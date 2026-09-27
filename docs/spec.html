@@ -500,7 +500,7 @@ Jarvis 是 <strong>6-layer state-centric personal runtime</strong>。Identity �
 <thead><tr><th>Projection</th><th>作用</th></tr></thead>
 <tbody>
 <tr><td><strong>Open Actions / Admissions</strong></td><td>已授权未终结的 action、gate / dispatch 关联、confirm 等待。</td></tr>
-<tr><td><strong>Pending Confirmations</strong></td><td>等待 Allen 回答的 confirmation request。只有紧接着的下一句能回答它：下一句不命中确认语法时，写 <code>confirmation.rejected</code>（<code>grammar_rule_id: superseded_by_turn</code>）关闭它，该回合按没有待确认处理（ADR 0039）；没人回答的询问按 TTL 过期。</td></tr>
+<tr><td><strong>Pending Confirmations</strong></td><td>等待 Allen 回答的 confirmation request，界面上是一张卡片（ADR 0061）。卡片不过期，只在被接受、被 × 关掉或被更新的询问替换时关闭；同一时间只有一张。确认语法只对询问后的第一句话、且在 TTL 内有效；其他话不关闭卡片，按普通回合处理。</td></tr>
 <tr><td><strong>Status Board</strong></td><td>Mac / home / action / tool / domain availability 的当前状态。</td></tr>
 <tr><td><strong>Mode Runtime State</strong></td><td>当前 durable mode、lenses、overrides。</td></tr>
 <tr><td><strong>Recent Trace</strong></td><td>最近 N turn 和相关 action / event 的近因上下文。</td></tr>
@@ -2921,6 +2921,8 @@ Tool Surface 是由 effective_policy 为特定调用主体、mode、task 和风�
 <li>short checklist</li>
 <li>mode / state pill</li>
 <li>对话记录：memory.db <code>records</code> 自 <code>session.history_since</code> 起的行，与后台请求的历史同源（§10.5.1），经 <code>GET /inherent/conversation?after=&lt;seq&gt;</code> 增量拉取；文字模式默认展开；后台正在流式输出的回答作为末行显示，落库后由记录行接替；Live 会话进行中，该会话已落库的行让位给实时字幕，不重复显示</li>
+<li>待确认卡片（ADR 0061）：<code>GET /inherent/confirmation</code> → <code>{card: {id, tool, action, source, letter, args} | null}</code>，<code>action</code> 是语言表里的动作名，<code>letter</code> 表示参数是一封信（to、subject、body）；<code>POST /inherent/confirmation</code> <code>{confirmation_id, decision: accept | reject, edits?}</code> 启动一轮并回 <code>{status, turn_id}</code>，卡片已不是当前待确认的那张时回 409。<code>edits</code> 只能替换已有的字符串参数。对话页开着时卡片在输入框上方，关着时从刘海长出来</li>
+<li>邮件记录（ADR 0062）：一轮用 <code>gmail_get</code> 完整读了恰好一封邮件时，回答前写一行 <code>source: "mail"</code> 的记录，内容是信头（From、To、Date、Subject、Thread-Id、Gmail-Id）、空行、正文（纯文本，最多 4000 字），对话页把它画成邮件卡片放在回答上方</li>
 <li>没有回答的结束：一轮以 <code>turn.failed</code> 结束或回答以 <code>response.cancelled</code> 结束时，<code>/inherent/ws</code> 推送 <code>{op: "failed"}</code> 或 <code>{op: "cancelled"}</code>（payload 带 <code>turn_id</code>）；界面只认自己发起的那一轮（文字提交应答里的或语音 <code>accepted</code> 带的 <code>turn_id</code>），据此结束"处理中"，失败时在回复位置说明这一轮没有完成；别的回合（后台任务、Live 委派）的结束不改变界面</li>
 </ul>
 
