@@ -158,10 +158,11 @@ def test_the_next_sentence_cancels_only_an_unspoken_answer_to_a_recent_sentence(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Of three held answers only the unspoken voice one is dropped.
+    """Of four held answers only the unspoken voice and card ones are dropped.
 
     ``T-voice`` answers a voice sentence and never reached the speaker: dropped.
-    ``T-heard`` answers one too, but L5 already played some of it: kept.
+    ``T-card`` answers a filled-in ask card (ADR 0072) the same way: dropped.
+    ``T-heard`` answers a voice sentence, but L5 already played some of it: kept.
     ``T-typed`` answers typed text: kept. The kept two complete on release.
     """
     runtime = _make_runtime(tmp_path, lifecycle=True, cancel=True)
@@ -176,9 +177,15 @@ def test_the_next_sentence_cancels_only_an_unspoken_answer_to_a_recent_sentence(
 
     supersede = make_supersede_unspoken_callable(runtime, _drop)
     intents = {turn: _emit_intent(runtime.conn, turn) for turn in ("T-voice", "T-heard", "T-typed")}
+    intents["T-card"] = emit_event(
+        runtime.conn,
+        type="surface.user_intent",
+        payload={"transcript": "邮箱: a@b.c", "turn_id": "T-card", "channel": "clarify"},
+        correlation={"turn_id": "T-card"},
+    )
     _heard(runtime.conn, "T-voice")
     _heard(runtime.conn, "T-heard")
-    with ThreadPoolExecutor(max_workers=3) as pool:
+    with ThreadPoolExecutor(max_workers=4) as pool:
         futures = {
             turn: pool.submit(
                 _drive_turn_on_own_connection,
@@ -189,17 +196,20 @@ def test_the_next_sentence_cancels_only_an_unspoken_answer_to_a_recent_sentence(
             )
             for turn, intent in intents.items()
         }
-        _wait_open(runtime, 3)
+        _wait_open(runtime, 4)
         supersede("T-next")
-        with pytest.raises(ResponseCancelledError):
-            futures["T-voice"].result(timeout=10)
+        for dropped in ("T-voice", "T-card"):
+            with pytest.raises(ResponseCancelledError):
+                futures[dropped].result(timeout=10)
         runtime.response_runs.hold_completion(held=False)
         futures["T-heard"].result(timeout=10)
         futures["T-typed"].result(timeout=10)
 
-    assert asked == [frozenset({"T-voice", "T-heard"})]
+    assert asked == [frozenset({"T-voice", "T-card", "T-heard"})]
     cancelled = _payloads(runtime.conn, "response.cancelled")
-    assert [(row["turn_id"], row["reason"]) for row in cancelled] == [("T-voice", "superseded")]
+    assert sorted((row["turn_id"], row["reason"]) for row in cancelled) == [
+        ("T-card", "superseded"), ("T-voice", "superseded"),
+    ]
     emitted = {row["turn_id"] for row in _payloads(runtime.conn, "surface.response_emitted")}
     assert emitted == {"T-heard", "T-typed"}
     runtime.conn.close()

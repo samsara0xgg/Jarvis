@@ -2226,11 +2226,12 @@ def make_supersede_unspoken_callable(
     runtime: JarvisRuntime,
     drop_unspoken: Callable[[frozenset[str]], frozenset[str]],
 ) -> Callable[[str], None]:
-    """Build the ADR 0053 ``(accepted_turn_id) -> None`` seam.
+    """Build the ADR 0072 ``(accepted_turn_id) -> None`` seam.
 
     Called for a voice utterance just accepted, before its
-    ``utterance.received`` is written. Every other voice turn of the last
-    ``_SUPERSEDE_WINDOW_S`` whose run is still open, whose policy lets its
+    ``utterance.received`` is written. Every other turn of the last
+    ``_SUPERSEDE_WINDOW_S`` that answers a voice sentence or a filled-in ask
+    card (``clarify`` intent) whose run is still open, whose policy lets its
     generation be cancelled, and whose answer never reached the speaker is
     dropped: L5 discards its queued audio (``drop_unspoken``), then the run is
     cancelled with reason ``superseded``. Its run is open because no run
@@ -2261,7 +2262,9 @@ def make_supersede_unspoken_callable(
                 str(row[0])
                 for row in conn.execute(
                     "SELECT json_extract(payload_json, '$.turn_id') FROM events "
-                    "WHERE type = 'utterance.received' AND ts_epoch_ms >= ?",
+                    "WHERE ts_epoch_ms >= ? AND (type = 'utterance.received' "
+                    "OR (type = 'surface.user_intent' "
+                    "AND json_extract(payload_json, '$.channel') = 'clarify'))",
                     (since_ms,),
                 )
             }
