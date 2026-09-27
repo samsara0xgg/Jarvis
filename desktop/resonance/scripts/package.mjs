@@ -22,7 +22,6 @@ rmSync(path.join(resources, 'default_app.asar'));
 cpSync('node_modules/electron/dist/LICENSE', path.join(resources, 'LICENSE.electron'));
 cpSync('node_modules/electron/dist/LICENSES.chromium.html', path.join(resources, 'LICENSES.chromium.html'));
 cpSync('THIRD-PARTY-NOTICES.md', path.join(resources, 'THIRD-PARTY-NOTICES.md'));
-cpSync('../../LICENSE', path.join(resources, 'LICENSE'));
 renameSync(path.join(contents, 'MacOS/Electron'), path.join(contents, 'MacOS/Jarvis'));
 const plist = path.join(contents, 'Info.plist'), set = (key, type, value) => run('plutil', ['-replace', key, `-${type}`, value, plist]);
 for (const [key, value] of Object.entries({
