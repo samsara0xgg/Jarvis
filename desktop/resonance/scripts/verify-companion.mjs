@@ -484,8 +484,8 @@ try {
   const heads = await drop.locator('.a-h > span').allTextContents(), box10 = await drop.boundingBox();
   check(`10 resting on the row opens one panel: every group, one line per session, the pointed group lit (${heads.join('|')})`,
     heads.join('|') === 'Working4|Finished3' && await drop.locator('.a-row').count() === 7 && (await drop.locator('.a-sec.is-hot').getAttribute('data-sec')) === 'done');
-  check(`10 the panel is the whole island growing down, from her lobe past the marks (${Math.round(box10.x)}, ${Math.round(box10.width)})`,
-    box10.x < 163.5 && box10.x + box10.width > 484 && Math.abs(box10.width - 400) < 2);
+  check(`10 the panel is the whole island growing down, from her lobe past the marks, centred on the notch (${Math.round(box10.x)}, ${Math.round(box10.width)})`,
+    box10.x < 163.5 && box10.x + box10.width > 484 && Math.abs(box10.width - 400) < 2 && Math.abs(box10.x + box10.width / 2 - 320) < 1);
   check('10 nothing needs a look, so no name is bold', (await drop.locator('.a-row b').evaluateAll(els => [...new Set(els.map(e => getComputedStyle(e).fontWeight))])).join() === '400');
   await shot('10-panel', { x: 100, y: 0, width: 440, height: 330 });
   const finished = drop.locator('.a-sec[data-sec="done"] .a-row').first();
