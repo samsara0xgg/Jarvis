@@ -31,7 +31,10 @@ llm:
   max_tool_iterations: 40
 
   presets:
-    # 对话（语音和文字）2026-09-25 起用它。同一段 14 句真实语音对话离线重放：
+    # 对话（语音和文字）。2026-09-26 从 gpt-5.6-luna 换成 gpt-6-luna：价钱一半；
+    # 8 句真实对话沙盒重放（都不开思考）答得差不多，缺信息时 6 会弹提问卡片
+    # （ADR 0066），5.6 用嘴问。下面三行是 gpt-5.6-luna 时的数据。
+    # 2026-09-25 同一段 14 句真实语音对话离线重放：
     # 带全部历史 0/14 跑题（fast 13/14），首 token 约 1s（短历史 0.75s），
     # 被打断的故事能接回来。不开思考。脚本和数据在
     # ~/.jarvis-realtime-test/voice-replay-2026-09-25/。
@@ -39,7 +42,7 @@ llm:
     # 回答中位数 1.9 → 3.1 秒，所以默认仍不开。数据在
     # ~/.jarvis-realtime-test/think-replay-2026-09-26/。
     luna:
-      model: gpt-5.6-luna
+      model: gpt-6-luna
       base_url: "https://api.openai.com/v1"
       api_key_env: OPENAI_API_KEY
       max_tokens: 16384
@@ -47,7 +50,7 @@ llm:
       reasoning_effort: none
     # 深想模式（上面的 llm.think）。思考和工具同开只能走 /v1/responses。
     luna-think:
-      model: gpt-5.6-luna
+      model: gpt-6-luna
       base_url: "https://api.openai.com/v1"
       api_key_env: OPENAI_API_KEY
       api: responses
