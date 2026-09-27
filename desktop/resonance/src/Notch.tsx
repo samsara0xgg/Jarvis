@@ -21,6 +21,8 @@ type Rect = { l: number; r: number; d: number };
 type Sec = { key: Kind; label: string; ts: Agent[] };
 type Keys = { view: 'list' | 'page'; id: string; i: number; at: number };
 export type NotchGeo = { width: number; top: number; notchR: number; lobeL: number };
+// The black as last drawn, for her ball: whatever hangs under her island is the same surface her light runs into.
+export type NotchShape = { d: string; rects: Rect[] };
 export type NotchAct = {
   jump: (a: Agent) => void; answer: (id: string) => void; read: (ids: string[]) => void; back: () => void;
   archive: (ids: string[]) => void; park: (ids: string[]) => void; unpark: (ids: string[]) => void;
@@ -227,8 +229,8 @@ function Pop({ agents, look, act, onClose }: { agents: Agent[]; look: MarkLook; 
     <div className="u-list">{agents.map(a => <PopRow key={a.id} a={a} look={look} act={act} tag={a.state === 'err' && !all ? <em> stopped</em> : null}/>)}</div></div>;
 }
 
-export function Notch({ look, agents, unread, parked, archived, geo, cursor, note, quiet, act, onNoteHover, port, keys, onKeys, onViewing }: {
-  look: MarkLook; agents: Agent[]; unread: ReadonlySet<string>; parked: ReadonlyMap<string, number>; archived: ReadonlySet<string>; geo: NotchGeo;
+export function Notch({ look, agents, unread, parked, archived, geo, cursor, note, quiet, act, onNoteHover, port, keys, onKeys, onViewing, hang }: {
+  look: MarkLook; agents: Agent[]; unread: ReadonlySet<string>; parked: ReadonlyMap<string, number>; archived: ReadonlySet<string>; geo: NotchGeo; hang: RefObject<NotchShape>;
   cursor: RefObject<Point>; note: NotchNote | null; quiet: boolean; act: NotchAct; onNoteHover: (on: boolean) => void;
   port: string | null; keys: number; onKeys: (on: boolean) => void; onViewing: (id: string | null) => void;
 }) {
@@ -385,7 +387,8 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
       if (wingR > g.notchR + .5 || dropOut || noteOut) rects.push({ l: g.lobeL, r: Math.max(g.notchR, wingR), d: top });
       if (dropOut) rects.push({ l: s.dx.value, r: s.dx.value + s.dw.value, d: s.dd.value });
       if (noteOut) rects.push({ l: s.nx.value, r: s.nx.value + s.nw.value, d: s.nd.value });
-      shape.current!.setAttribute('d', skyline(rects));
+      const d = skyline(rects);
+      if (d !== hang.current.d) { shape.current!.setAttribute('d', d); hang.current = { d, rects }; }
       if (st.open) st.innerL = dg.l;
       place(drop.current!, dIn, s.dx.value, s.dw.value, s.dd.value, st.innerL, st.dropGoal.d, st.open, top);
       place(noteP.current!, nIn, s.nx.value, s.nw.value, s.nd.value, st.noteL, st.noteGoal.d, noteOpen, top);

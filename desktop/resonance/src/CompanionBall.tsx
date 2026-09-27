@@ -1,5 +1,6 @@
 import { useEffect, useRef, type RefObject } from 'react';
 import { B, Core, spring, step, type ExprId, type Skin } from './starCore';
+import type { NotchShape } from './Notch';
 
 export const R = 26;
 // Held this long, a poke becomes a costume change instead.
@@ -36,13 +37,13 @@ function lobePath({ left, right, height: h, notched }: Lobe) {
     : `${side} L ${right - r} ${h} Q ${right} ${h} ${right} ${h - r} L ${right} ${s} Q ${right} 0 ${right + s} 0 L ${right + s} -20 Z`;
 }
 
-export function CompanionBall({ width, height, lobe, target, look, handle, skin, label, onPress, onRelease, onCancel, onMove }: {
-  width: number; height: number; lobe: Lobe; target: BallTarget; look: RefObject<Point | null>; handle: RefObject<BallHandle | null>;
+export function CompanionBall({ width, height, lobe, hang, target, look, handle, skin, label, onPress, onRelease, onCancel, onMove }: {
+  width: number; height: number; lobe: Lobe; hang: RefObject<NotchShape>; target: BallTarget; look: RefObject<Point | null>; handle: RefObject<BallHandle | null>;
   skin: Skin; label: string; onPress: () => void; onRelease: () => void; onCancel: () => void; onMove: () => void;
 }) {
   const latest = useRef(target), moved = useRef(onMove), firstSkin = useRef(skin), size = useRef({ width, height });
-  const lobeD = lobePath(lobe), island = useRef({ lobe, path: new Path2D(lobeD) });
-  if (island.current.lobe !== lobe) island.current = { lobe, path: new Path2D(lobeD) };
+  const lobeD = lobePath(lobe), island = useRef({ lobe, d: lobeD, path: new Path2D(lobeD), hangD: '', whole: new Path2D(lobeD) });
+  if (island.current.lobe !== lobe) island.current = { lobe, d: lobeD, path: new Path2D(lobeD), hangD: '', whole: new Path2D(lobeD) };
   moved.current = onMove; size.current = { width, height };
   const wake = useRef(() => {});
   useEffect(() => { latest.current = target; wake.current(); });
@@ -59,7 +60,7 @@ export function CompanionBall({ width, height, lobe, target, look, handle, skin,
     let frame = 0, last = 0, d = 0, wanted: Place = 'home', shown: Place = 'home', switchAt = 0, pressedAt = -1;
     let tick: ReturnType<typeof setTimeout> | undefined, lit = '';
     let movedAt = performance.now(), px = NaN, py = NaN;
-    let away = false, awayAt = -1e9, happyUntil = 0, leftHome = true;
+    let away = false, awayAt = -1e9, happyUntil = 0, leftHome = true, lastUnder = 0;
     const fit = () => {
       const k = Math.min(2, devicePixelRatio || 1), w = Math.round(size.current.width * k), h = Math.round(size.current.height * k);
       if (k === d && cv.width === w && cv.height === h) return;
@@ -138,7 +139,13 @@ export function CompanionBall({ width, height, lobe, target, look, handle, skin,
       // The goo only matters where the ball meets the island, and not while she is out at the caret.
       silhouette.current!.style.display = y - R * scale - island.current.lobe.height < 26 && slipX === null && !hidden ? '' : 'none';
 
-      const { lobe, path } = island.current, S = Math.round(2 * B * R * d);
+      const isl = island.current, { lobe, path } = isl, S = Math.round(2 * B * R * d);
+      // A panel or a card hanging under the island is the same black: her light runs on into it, and the island's
+      // lower rim, no longer an edge, fades out as it opens.
+      const hung = hang.current;
+      if (isl.hangD !== hung.d) { isl.hangD = hung.d; isl.whole = new Path2D(isl.d); if (hung.d) isl.whole.addPath(new Path2D(hung.d)); }
+      const under = Math.max(lobe.height, ...hung.rects.filter(r => r.l <= x && r.r >= x).map(r => r.d)), open = smooth(0, 12, under - lobe.height);
+      const sliding = Math.abs(under - lastUnder) > .01; lastUnder = under;
       // Dark glass: how much of her is still inside the island, glowing through its black.
       const inside = t.home === 'dark' && !hidden ? seen * (1 - smooth(0, R, y - t.anchors.home.y)) : 0;
       ctx.setTransform(d, 0, 0, d, 0, 0); ctx.clearRect(0, 0, size.current.width, size.current.height);
@@ -180,13 +187,13 @@ export function CompanionBall({ width, height, lobe, target, look, handle, skin,
         nctx.fillStyle = m; nctx.fillRect(-N / 2, -N / 2, N, N); nctx.globalCompositeOperation = 'source-over';
         // Her nebula glows through the island's black, and its lower rim catches her light like glass.
         const r = B * R * scale * 1.9, rgb = core.light.rim.map(v => Math.round(v * 255)).join(',');
-        ctx.save(); ctx.clip(path); ctx.globalAlpha = inside;
+        ctx.save(); ctx.clip(isl.whole); ctx.globalAlpha = inside;
         ctx.drawImage(neb, x - r, y - r, 2 * r, 2 * r);
         ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = .6 * inside;
         ctx.drawImage(neb, x - r, y - r, 2 * r, 2 * r); ctx.globalCompositeOperation = 'source-over';
         const rim = ctx.createLinearGradient(lobe.left, 0, lobe.right, 0);
-        rim.addColorStop(0, `rgba(${rgb},0)`); rim.addColorStop(.5, `rgba(${rgb},.55)`); rim.addColorStop(1, `rgba(${rgb},0)`);
-        ctx.strokeStyle = rim; ctx.lineWidth = .8; ctx.beginPath(); ctx.moveTo(lobe.left, lobe.height - .5); ctx.lineTo(lobe.right, lobe.height - .5); ctx.stroke();
+        rim.addColorStop(0, `rgba(${rgb},0)`); rim.addColorStop(.5, `rgba(${rgb},${.55 * (1 - open)})`); rim.addColorStop(1, `rgba(${rgb},0)`);
+        if (open < 1) { ctx.strokeStyle = rim; ctx.lineWidth = .8; ctx.beginPath(); ctx.moveTo(lobe.left, lobe.height - .5); ctx.lineTo(lobe.right, lobe.height - .5); ctx.stroke(); }
         ctx.restore();
       }
       // The eyes stay on top everywhere, the island included.
@@ -211,7 +218,7 @@ export function CompanionBall({ width, height, lobe, target, look, handle, skin,
       // She can slide under a resting cursor; hit testing must follow her, not only the mouse.
       if (moving) moved.current();
       const tripping = (away ? ae < 200 : ae < 1200) || Math.abs(s.fold.value - (away ? 0 : 1)) > .002;
-      if (!atHome || moving || now < switchAt || tripping) frame = requestAnimationFrame(draw);
+      if (!atHome || moving || sliding || now < switchAt || tripping) frame = requestAnimationFrame(draw);
       // Awake at home she needs no more than 30 frames a second, dozing 10.
       else tick = setTimeout(() => { tick = undefined; frame = requestAnimationFrame(draw); }, dozing ? 100 : 33);
     };
