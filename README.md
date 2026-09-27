@@ -5,20 +5,10 @@
 <p align="center">
   <img src="https://img.shields.io/badge/macOS-000000?logo=apple&logoColor=white" alt="macOS">
   <img src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white" alt="Python 3.12">
-  <img src="https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white" alt="FastAPI">
-  <img src="https://img.shields.io/badge/SQLite-003B57?logo=sqlite&logoColor=white" alt="SQLite">
   <img src="https://img.shields.io/badge/Electron-47848F?logo=electron&logoColor=white" alt="Electron">
   <img src="https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=white" alt="React 19">
   <img src="https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&logoColor=white" alt="TypeScript">
-  <img src="https://img.shields.io/badge/Vite-646CFF?logo=vite&logoColor=white" alt="Vite">
-  <br>
-  <img src="https://img.shields.io/badge/OpenAI-412991" alt="OpenAI">
   <img src="https://img.shields.io/badge/MCP-1C1C1C?logo=modelcontextprotocol&logoColor=white" alt="MCP">
-  <img src="https://img.shields.io/badge/ONNX_Runtime-005CED?logo=onnx&logoColor=white" alt="ONNX Runtime">
-  <img src="https://img.shields.io/badge/microWakeWord-4B5BD6" alt="microWakeWord">
-  <img src="https://img.shields.io/badge/SenseVoice-4B5BD6" alt="SenseVoice">
-  <img src="https://img.shields.io/badge/Silero_VAD-4B5BD6" alt="Silero VAD">
-  <img src="https://img.shields.io/badge/MiniMax-4B5BD6" alt="MiniMax">
 </p>
 
 Jarvis sits next to the MacBook notch as a small glass ball with eyes. It answers when you talk to it, keeps a record of your day, and tells you when a Claude Code or Codex session needs you.
@@ -32,13 +22,16 @@ Jarvis sits next to the MacBook notch as a small glass ball with eyes. It answer
 - **Your accounts through MCP.** Gmail, Outlook, Microsoft To Do, GitHub and Notion connect as plugins, and it asks before it acts on any of them.
 
 <p align="center">
-  <img src="docs/assets/pages.png" alt="Three Dashboard pages: Agents, Usage and Conversation" width="100%">
-  <br><sub>Agents, Usage and Conversation, from the Dashboard that opens under the notch. Screenshots use the app's built-in demo data.</sub>
+  <img src="docs/assets/readme/agents-live.png" alt="Real Jarvis Agents view showing Claude Code and Codex sessions grouped by Needs You and Working, with the live session indicators at the top of the screen" width="100%">
 </p>
 
 <p align="center">
-  <img src="docs/assets/notch-pair.png" alt="Cards dropping from the notch: one Codex session waiting for an answer, one Claude Code session at work" width="100%">
-  <br><sub>Beside the notch: one session waiting for an answer, one at work.</sub>
+  <img src="docs/assets/readme/conversation-plugins-live.png" alt="A real English follow-up conversation with Jarvis, beside its connected Gmail, Linear, Microsoft and Notion plugins" width="100%">
+</p>
+
+<p align="center">
+  <img src="docs/assets/readme/usage-projects-live.png" alt="Real Claude and Codex usage windows, reset times and OpenAI API spending, alongside a cropped seven-day Jarvis project activity chart" width="100%">
+  <br><sub>Captured from the running app, with an English interface and a real conversation. Screenshots are cropped and arranged for this page; UI text and values are unchanged. Usage and activity are snapshots of one installation.</sub>
 </p>
 
 ## Design notes

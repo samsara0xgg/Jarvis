@@ -1,0 +1,64 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><base href="../../"><title>Jarvis · README preview</title><style>
+:root{color-scheme:dark;font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#e6edf3;background:#0d1117}*{box-sizing:border-box}body{margin:0;padding:32px 16px}article{max-width:1012px;margin:auto;border:1px solid #30363d;border-radius:8px;padding:32px}img{max-width:100%;height:auto}p{margin:0 0 16px}h2{font-size:24px;line-height:1.3;padding-bottom:8px;border-bottom:1px solid #30363d;margin:32px 0 16px}h3{font-size:20px}a{color:#79c0ff;text-underline-offset:3px}li{margin:6px 0}ul{padding-left:26px}pre{padding:16px;background:#161b22;border-radius:6px;overflow:auto;line-height:1.45}code{font:85%/1.5 ui-monospace,monospace;background:#161b22;border-radius:4px;padding:2px 4px}pre code{padding:0}sub{font-size:12px;color:#b1bac4;vertical-align:baseline}::selection{background:#355f89}a:focus-visible{outline:2px solid #79c0ff;outline-offset:3px}@media(max-width:600px){body{padding:0}article{border:0;padding:20px 16px}h2{font-size:22px}}
+</style></head><body><article><p align="center">
+  <img src="docs/assets/poster.png" alt="Jarvis, a glass ball with two glowing eyes, beside the words Jarvis, by Allen Shi" width="100%">
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/macOS-000000?logo=apple&logoColor=white" alt="macOS">
+  <img src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white" alt="Python 3.12">
+  <img src="https://img.shields.io/badge/Electron-47848F?logo=electron&logoColor=white" alt="Electron">
+  <img src="https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=white" alt="React 19">
+  <img src="https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&logoColor=white" alt="TypeScript">
+  <img src="https://img.shields.io/badge/MCP-1C1C1C?logo=modelcontextprotocol&logoColor=white" alt="MCP">
+</p>
+
+<p>Jarvis sits next to the MacBook notch as a small glass ball with eyes. It answers when you talk to it, keeps a record of your day, and tells you when a Claude Code or Codex session needs you.</p>
+<h2>What it does</h2>
+<ul>
+<li><strong>What&#39;s left today, and what you did yesterday.</strong> Answers come from your calendar, to-dos, git history and screen activity, and each item in the daily report points back to the record it came from.</li>
+<li><strong>Claude Code and Codex from the notch.</strong> Each session is a star beside the notch. When one wants to run a command, a card drops down and you allow or deny it without switching windows.</li>
+<li><strong>Your limits.</strong> The Usage page shows how much of your Claude and Codex plans you&#39;ve used and when each limit resets.</li>
+<li><strong>English and Chinese.</strong> It follows whichever one you speak.</li>
+<li><strong>Your accounts through MCP.</strong> Gmail, Outlook, Microsoft To Do, GitHub and Notion connect as plugins, and it asks before it acts on any of them.</li>
+</ul>
+<p align="center">
+  <img src="docs/assets/readme/agents-live.png" alt="Real Jarvis Agents view showing Claude Code and Codex sessions grouped by Needs You and Working, with the live session indicators at the top of the screen" width="100%">
+</p>
+
+<p align="center">
+  <img src="docs/assets/readme/conversation-plugins-live.png" alt="A real English follow-up conversation with Jarvis, beside its connected Gmail, Linear, Microsoft and Notion plugins" width="100%">
+</p>
+
+<p align="center">
+  <img src="docs/assets/readme/usage-projects-live.png" alt="Real Claude and Codex usage windows, reset times and OpenAI API spending, alongside a cropped seven-day Jarvis project activity chart" width="100%">
+  <br><sub>Captured from the running app, with an English interface and a real conversation. Screenshots are cropped and arranged for this page; UI text and values are unchanged. Usage and activity are snapshots of one installation.</sub>
+</p>
+
+<h2>Design notes</h2>
+<p><strong>Interrupting it.</strong> The first version, <a href="https://github.com/samsara0xgg/jarvis-legacy">jarvis-legacy</a>, had an interrupt feature. Measured later, it had never fired once. Here you can talk over Jarvis at any point. With a reSpeaker XVF3800 mic array, its own voice is removed on the board before speech recognition hears it.</p>
+<p><strong>Long answers.</strong> A model&#39;s answer is written to be read, and read aloud word for word it drags. The full answer goes on screen, and Jarvis speaks a version of one to three sentences. Turns that call tools stay quiet until the answer is ready.</p>
+<p><strong>Pops in the audio.</strong> Faint clicks in replies looked like a streaming bug. They came from the speech provider&#39;s volume limiter, and went away with the volume left at its default.</p>
+<p><strong>Keeping the code in shape.</strong> The daemon is split into six layers, and only <code>runtime/</code> may connect them; <code>lint-imports</code> fails if anything else does. Each decision that moves a boundary gets a short record in <a href="docs/adr">docs/adr</a>, 54 so far.</p>
+<h2>How it&#39;s built</h2>
+<p>A Python daemon owns the microphone, speaker, models, memory and tools. The companion is Electron with React and TypeScript, with a small AppKit module for the glass. They talk over localhost with a per-machine key. Wake word: microWakeWord. Speech recognition: SenseVoice with Silero VAD. Speech: MiniMax. Storage: SQLite. The full design is in <a href="docs/spec.html">docs/spec.html</a>.</p>
+<h2>Run it</h2>
+<p>You need macOS, Python 3.12+, <a href="https://docs.astral.sh/uv/">uv</a> and Node.js. On a MacBook it sits beside the notch; on a screen without one it lives in a small black pill at the top.</p>
+<p>To see the companion on its built-in demo data, with no daemon and no keys:</p>
+<pre><code class="language-bash">cd desktop/resonance
+npm ci
+npm run companion -- --demo
+</code></pre>
+<p>To run it for real, start the daemon:</p>
+<pre><code class="language-bash">uv sync
+uv run python -m jarvis serve
+</code></pre>
+<p>and the companion in a second terminal:</p>
+<pre><code class="language-bash">cd desktop/resonance
+npm ci
+npm run companion
+</code></pre>
+<p>The first time it starts, the companion walks you through setup: your name, its language, an OpenAI key (required) and a MiniMax key for its voice. Each key is checked before it is saved to your login Keychain. You can also put keys in <code>~/.jarvis/env</code>, one <code>KEY=value</code> per line.</p>
+<p>Anything that reads another app or account (agent sessions, usage, screen activity, plugins) is off until you turn it on in Settings.</p>
+<p>Jarvis runs from a developer checkout. It is not a signed app yet, and a few defaults still assume the author&#39;s machine.</p>
+</article></body></html>
