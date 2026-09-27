@@ -6,6 +6,7 @@ over a scripted provider socket, and asserts on what the desktop reads: level li
 while recording, ``thinking`` once stopped, then the polished words with the raw
 ones; a second session refused while one runs; the wake gate's flag up only while
 recording; the raw words when the polish fails; no route without a voice stack.
+The ears hear half a second from before the request, unbroken into the session.
 The event log gets the polish's spend and never the words.
 """
 
@@ -22,7 +23,7 @@ from typing import TYPE_CHECKING, Any
 import yaml
 from fastapi.testclient import TestClient
 
-from jarvis.runtime.dictation import POLISH_PROMPT, Dictation, polish_client
+from jarvis.runtime.dictation import POLISH_PROMPT, PRE_ROLL_FRAMES, Dictation, polish_client
 from jarvis.shared.pricing import load_pricing_table
 from jarvis.state.event_log import open_event_log
 from jarvis.surface.inherent_output import InherentBroadcaster
@@ -43,20 +44,28 @@ class _Frame:
 
 
 class _Lane:
-    """A capture lane that hears a steady tone until closed."""
+    """A capture lane that hears a steady tone until closed, one 32 ms frame at a time.
+
+    Each frame's first sample is its number, so the test can tell which ones the ears got.
+    """
 
     def __init__(self) -> None:
-        self.closed = threading.Event()
+        self._closed = threading.Event()
         self.frames = 0
 
+    @property
+    def closed(self) -> bool:
+        return self._closed.is_set()
+
     def read(self, *, timeout_s: float = 0.0) -> _Frame | None:
-        if self.closed.wait(timeout_s / 10):
+        _ = timeout_s
+        if self._closed.wait(0.032):
             return None
         self.frames += 1
-        return _Frame(array("h", [3000, -3000] * 256).tobytes())
+        return _Frame(array("h", [self.frames, *[3000, -3000] * 255, 3000]).tobytes())
 
     def close(self) -> None:
-        self.closed.set()
+        self._closed.set()
 
 
 class _Ingress:
@@ -184,6 +193,10 @@ def test_dictation_streams_levels_then_the_polished_words(tmp_path: Path) -> Non
         seen["active"] = dictation.active
         seen["second"] = client.post("/inherent/dictation", json=context).status_code
 
+    (lane,) = ingress.lanes
+    while lane.frames <= PRE_ROLL_FRAMES:  # the mic has been on for a while before the tap
+        time.sleep(0.01)
+    before = lane.frames
     lines = _dictate(client, context, meanwhile=meanwhile)
     assert seen == {"active": True, "second": 409}
     levels = [line["level"] for line in lines[:-2]]
@@ -194,10 +207,15 @@ def test_dictation_streams_levels_then_the_polished_words(tmp_path: Path) -> Non
     assert lines[-2]["seconds"] > 0
     assert lines[-1] == {"text": POLISHED, "raw": RAW}
     assert not dictation.active
-    assert ingress.lanes[0].closed.is_set()
     assert client.post("/inherent/dictation/stop").json() == {"ok": False}
-    # Every frame the lane gave reached the ears.
-    assert len(heard[0]) == ingress.lanes[0].frames * 1024
+    # The ears got the last half second before the request, then every frame after it, no gap.
+    numbers = [array("h", heard[0][i : i + 1024])[0] for i in range(0, len(heard[0]), 1024)]
+    assert numbers == list(range(numbers[0], numbers[0] + len(numbers)))
+    assert before - PRE_ROLL_FRAMES <= numbers[0] < before
+    # One lane for the daemon's life: still listening for the next pre-roll.
+    assert len(ingress.lanes) == 1
+    assert not lane.closed
+    lane.close()
     # One request to gpt-5.4-mini with Typlus's prompt, the raw words and where they land.
     (request,) = provider.requests
     assert request["model"] == "gpt-5.4-mini"
@@ -219,14 +237,16 @@ def test_dictation_without_speech_and_with_a_failing_polish(tmp_path: Path) -> N
     """No words is ``{text: ""}`` without a model call; a failing model gives the raw words."""
     provider = _Provider("unused")
     (tmp_path / "a").mkdir()
-    silent, _ = _dictation(tmp_path / "a", lambda _pcm: "", provider)
+    silent, silent_mic = _dictation(tmp_path / "a", lambda _pcm: "", provider)
     assert _dictate(_app(silent), {})[-1] == {"text": "", "raw": ""}
     assert provider.requests == []
+    silent_mic.lanes[0].close()
 
     (tmp_path / "b").mkdir()
     failing = _Provider(TimeoutError("slow"))
-    broken, _ = _dictation(tmp_path / "b", lambda _pcm: "原话", failing)
+    broken, broken_mic = _dictation(tmp_path / "b", lambda _pcm: "原话", failing)
     last = _dictate(_app(broken), {})[-1]
+    broken_mic.lanes[0].close()
     # No vocab.yaml, no vocabulary block.
     assert "User vocabulary" not in json.dumps(failing.requests)
     assert set(last) == {"error", "raw"}
