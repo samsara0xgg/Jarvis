@@ -11,8 +11,12 @@ type Native = { rightOption(): { down: boolean; others: boolean; keyIdle: number
 // A tap is shorter than this, alone, and no key goes down while it is held.
 const TAP_S = .5;
 
-export function setupDictation({ companion, native, preload, page, port, topInset }: {
+// Under its LaunchAgent macOS counts Accessibility against the launcher, node: that is the row to turn on.
+const GRANTEE = process.env.XPC_SERVICE_NAME === 'com.allen.jarvis.resonance' ? 'node' : '';
+
+export function setupDictation({ companion, native, preload, page, port, topInset, open }: {
   companion: BrowserWindow; native: Native; preload: string; page: string; port: string; topInset: (display: Electron.Display) => number;
+  open: (page: string) => void;
 }) {
   const overlay = new BrowserWindow({ type: 'panel', frame: false, transparent: true, backgroundColor: '#00000000', hasShadow: false,
     resizable: false, movable: false, minimizable: false, maximizable: false, fullscreenable: false, focusable: false, show: false,
@@ -43,7 +47,7 @@ export function setupDictation({ companion, native, preload, page, port, topInse
     overlay.showInactive();
     overlay.webContents.send('dictation-start', {
       caret: local(at.caret), lineRight: at.lineRight === undefined ? null : at.lineRight - o.x, element: local(at.element),
-      pointer: { x: pointer.x - o.x, y: pointer.y - o.y }, top: topInset(display), skin, lang, port, trusted: at.trusted,
+      pointer: { x: pointer.x - o.x, y: pointer.y - o.y }, top: topInset(display), skin, lang, port, trusted: at.trusted, grantee: GRANTEE,
       context: { app: at.app, window: at.window ?? '', selected: at.selected ?? '' },
     });
     companion.webContents.send('dictation', 'out');
@@ -67,6 +71,7 @@ export function setupDictation({ companion, native, preload, page, port, topInse
     overlay.hide();
     busy = false;
   });
+  ipcMain.on('dictation-open', (event, name) => { if (mine(event) && typeof name === 'string') open(name); });
   ipcMain.on('dictation-passthrough', (event, on) => { if (mine(event) && typeof on === 'boolean') overlay.setIgnoreMouseEvents(on, { forward: true }); });
   // Fixing the words: the box takes the keyboard without activating Jarvis (the overlay is a non-activating panel),
   // and Esc is the box's own again. Letting go, a hide and an inactive show hand the keyboard back to the app

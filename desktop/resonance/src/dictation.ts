@@ -11,7 +11,7 @@ type Lang = 'zh' | 'en';
 // Everything in this window's own points; the window covers the caret's screen.
 export type DictationStart = {
   caret: Rect | null; lineRight: number | null; element: Rect | null; pointer: Pt; top: number;
-  skin: string; lang: Lang; port: string; trusted: boolean; context: { app: string; window: string; selected: string };
+  skin: string; lang: Lang; port: string; trusted: boolean; grantee: string; context: { app: string; window: string; selected: string };
 };
 declare global { interface Window { dictation: {
   onStart: (cb: (start: DictationStart) => void) => void;
@@ -24,6 +24,7 @@ declare global { interface Window { dictation: {
   done: () => void;
   passthrough: (on: boolean) => void;
   focus: (on: boolean) => void;
+  open: (page: string) => void;
 } } }
 
 const T = {
@@ -36,9 +37,12 @@ const T = {
   off: ['Jarvis’s voice is off, so dictation can’t listen.', 'Jarvis 的语音没开，听写用不了'],
   offline: ['Can’t reach Jarvis.', '连不上 Jarvis'],
   cardTitle: ['No text box', '没找到输入框'],
+  noAccessTitle: ['No Accessibility access yet', '还没有辅助功能权限'],
   copied: ['Copied', '已复制'],
   pasteIt: ['Paste it anywhere', '直接粘贴就行'],
   close: ['Close', '关闭'],
+  openAccess: ['Open Accessibility settings', '打开辅助功能设置'],
+  grantee: ['Turn on “%” in the list.', '在列表里打开“%”'],
   editArmed: ['I’ll let you edit it first.', '写好先给你改'],
   editHint: ['Enter or tap her to paste · Shift+Enter for a new line · Esc to cancel', '回车或点她贴上 · Shift+回车换行 · Esc 取消'],
 } satisfies Record<string, [string, string]>;
@@ -102,7 +106,7 @@ let core = new Core('glass'), lang: Lang = 'zh';
 const t = (pair: [string, string]) => pair[lang === 'zh' ? 1 : 0];
 const P = {
   state: 'off' as State, t0: 0, x: 0, y: 0, info: { kind: 'none', caret: null, element: null } as Info,
-  lvl: 0, target: 0, hole: null as Hole | null, sinkAt: 0, trusted: true, port: '', session: 0,
+  lvl: 0, target: 0, hole: null as Hole | null, sinkAt: 0, trusted: true, grantee: '', port: '', session: 0,
   vis: { x: 0, y: 0 }, cursor: { x: -1e4, y: -1e4 }, over: false, downAt: -1,
   // A tap on her once she is listening: the words come back in a box to fix before they go in.
   edit: false,
@@ -160,14 +164,18 @@ function start(s: DictationStart) {
   const now = performance.now();
   hideBubble();
   if (isSkin(s.skin) && s.skin !== core.skin) core = new Core(s.skin);
-  lang = s.lang; top = s.top; P.trusted = s.trusted; P.port = s.port; P.session++;
+  lang = s.lang; top = s.top; P.trusted = s.trusted; P.grantee = s.grantee; P.port = s.port; P.session++;
   P.info = { kind: s.caret ? 'caret' : s.element ? 'element' : 'none', caret: s.caret, element: s.element };
   const at = place(P.info, s.lineRight, s.pointer);
   Object.assign(P, { x: at.x, y: at.y, vis: at, state: 'appear', t0: now, lvl: 0, target: 0, hole: null, downAt: -1, edit: false });
   holes = [];
   // the hole at her feet opens while she is still slipping into the notch
   dig(at.x, at.y + R, now + 90, now + 260);
-  if (P.info.kind === 'none') setTimeout(() => { if (active()) showBubble(t(P.trusted ? T.noBox : T.noAccess), '', 'hint', 2200); }, 450);
+  if (P.info.kind === 'none') setTimeout(() => {
+    if (!active()) return;
+    if (P.trusted) showBubble(t(T.noBox), '', 'hint', 2200);
+    else showBubble(t(T.noAccess), grantNote(), 'hint', 6000, accessButton());
+  }, 450);
   void record(s, P.session);
   loop();
 }
@@ -221,16 +229,25 @@ function land(now: number) { window.dictation.paste(text); goHome(now, true); }
 
 // ---------- bubbles ----------
 let bubbleTimer: ReturnType<typeof setTimeout> | undefined;
+// Without Accessibility she can only copy: one click takes Allen to the switch in System Settings.
+const grantNote = () => P.grantee ? t(T.grantee).replace('%', P.grantee) : '';
+function accessButton() {
+  const go = document.createElement('button');
+  go.type = 'button'; go.className = 'go'; go.textContent = t(T.openAccess);
+  go.addEventListener('click', () => window.dictation.open('accessibility'));
+  return go;
+}
 function placeBubble() {
   const b = bubble.getBoundingClientRect();
   let x = P.x + R + 10;
   if (x + b.width > W - 8) x = P.x - R - 10 - b.width;
   bubble.style.left = `${Math.max(8, x)}px`; bubble.style.top = `${clamp(P.y - b.height / 2, top + 8, H - b.height - 8)}px`;
 }
-function showBubble(message: string, note: string, kind: string, ms: number) {
+function showBubble(message: string, note: string, kind: string, ms: number, action?: HTMLElement) {
   clearTimeout(bubbleTimer);
   bubble.className = `bubble ${kind}`; bubble.replaceChildren(message);
   if (note) { const small = document.createElement('span'); small.textContent = note; bubble.append(document.createElement('br'), small); }
+  if (action) bubble.append(document.createElement('br'), action);
   bubble.hidden = false; placeBubble();
   bubbleTimer = setTimeout(hideBubble, ms);
 }
@@ -238,12 +255,17 @@ function showCard(words: string) {
   clearTimeout(bubbleTimer);
   bubble.className = 'bubble card';
   bubble.innerHTML = '<div class="card-top"><b></b><button type="button" class="x">×</button></div><div class="card-text"></div><div class="card-foot"><span class="copied"></span><span></span></div>';
-  bubble.querySelector('b')!.textContent = t(T.cardTitle);
+  bubble.querySelector('b')!.textContent = t(P.trusted ? T.cardTitle : T.noAccessTitle);
   bubble.querySelector('.x')!.setAttribute('aria-label', t(T.close));
   bubble.querySelector('.card-text')!.textContent = words;
   const [copied, paste] = bubble.querySelectorAll('.card-foot span');
   copied.textContent = t(T.copied); paste.textContent = t(T.pasteIt);
   bubble.querySelector('.x')!.addEventListener('click', () => dissolve(performance.now()));
+  if (!P.trusted) {
+    const row = document.createElement('div'); row.className = 'card-foot';
+    const note = document.createElement('span'); note.textContent = grantNote();
+    row.append(accessButton(), note); bubble.append(row);
+  }
   bubble.hidden = false; placeBubble();
   bubbleTimer = setTimeout(() => { if (P.state === 'card') dissolve(performance.now()); }, 8000);
 }
@@ -272,7 +294,7 @@ function hideBubble() { clearTimeout(bubbleTimer); bubble.hidden = true; }
 function refreshHit() {
   const p = P.cursor, b = bubble.hidden ? null : bubble.getBoundingClientRect();
   const onHer = ['appear', 'listen', 'think', 'edit', 'card'].includes(P.state) && Math.hypot(p.x - P.vis.x, p.y - P.vis.y) < R + 8;
-  const onCard = !!b && (P.state === 'card' || P.state === 'edit') && p.x >= b.left && p.x <= b.right && p.y >= b.top && p.y <= b.bottom;
+  const onCard = !!b && (P.state === 'card' || P.state === 'edit' || !!bubble.querySelector('button')) && p.x >= b.left && p.x <= b.right && p.y >= b.top && p.y <= b.bottom;
   const over = onHer || onCard;
   if (over !== P.over) { P.over = over; window.dictation.passthrough(!over); }
 }
