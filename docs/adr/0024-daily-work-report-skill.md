@@ -6,7 +6,7 @@
 ## Context
 
 - Allen wants a written work report for a given day that he and GPT Live can
-  read later. ADR 0020/0021/0022 made the day's raw material readable and ADR
+  read later. ADR 0020/0021/0078 made the day's raw material readable and ADR
   0023 persists a *current* state, but a current-state snapshot is not a day:
   it is bounded to the last two hours of screen text and today's spans, and it
   is deliberately short and claim-shaped.

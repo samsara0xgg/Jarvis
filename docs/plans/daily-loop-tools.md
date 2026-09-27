@@ -66,8 +66,7 @@ reconcile its response/registry changes when integrating it, preserving compacti
 - Full strict mypy reports 3 pre-existing errors in voice_live.py and
   test_launchd_install.py (223 files checked). Full Ruff reports 82 pre-existing
   errors only in unchanged .claude/skills/horizon/scripts files.
-- The ADR checker still reports the pre-existing missing ADR-0013 reference.
-  Both newly added ADRs conform to the file standard.
+- Both newly added ADRs conform to the file standard.
 - Before integration, 1091 hermetic checks passed; the smaller integrated count
   reflects CC's removal of retired execution-chain tests, not skipped new tools.
 

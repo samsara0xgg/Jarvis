@@ -617,7 +617,7 @@ source_refs carries the full <code>timesink:&lt;store&gt;:&lt;id&gt;:&lt;rev&gt;
 the row ref plus the page's store also yields; a saved reference may carry 8 to 32 revision digits
 (prefix match). Full values remain in the detail reader. Jarvis collects no page contents,
 screenshot or OCR itself. TimeSink's suppressed incognito fields remain suppressed.</p>
-<p>Screen captures are TimeSink's <code>capture</code> rows (ADR-0022): one row per distinct front-window
+<p>Screen captures are TimeSink's <code>capture</code> rows (ADR-0078): one row per distinct front-window
 content inside one continuous observation segment. TimeSink extends a row's lastSeenAt only while the same
 window stays in front; leaving the window and coming back, an excluded app, and every lock, sleep, stop,
 pause or resume signal (however short, with a 5 s tick silence as backstop) each start a new segment, so unchanged content seen again becomes a
@@ -2860,7 +2860,7 @@ Tool Surface 是由 effective_policy 为特定调用主体、mode、task 和风�
 <table>
 <thead><tr><th>资源</th><th>Master</th><th>另一节点的访问方式</th></tr></thead>
 <tbody>
-<tr><td>Hue</td><td>RPi（HOME NODE 上线前由 Mac 的 hue 插件直连 bridge，ADR 0058）</td><td>Mac 发 <code>request.hue_control</code> 经 MQTT</td></tr>
+<tr><td>Hue</td><td>RPi（HOME NODE 上线前由 Mac 的 hue 插件直连 bridge，ADR 0079）</td><td>Mac 发 <code>request.hue_control</code> 经 MQTT</td></tr>
 <tr><td>MQTT broker</td><td>RPi (Mosquitto)</td><td>Mac 是 client</td></tr>
 <tr><td>ESP32 sensors</td><td>RPi（直接 publish）</td><td>Mac 不直连</td></tr>
 <tr><td>Agents (cc/codex/hermes)</td><td>Mac</td><td>RPi 只通过 task lifecycle 观察</td></tr>
@@ -3128,7 +3128,7 @@ Surface Design 负责把 Jarvis 的输出放到<strong>打扰成本最低且足�
 <tr><td>Resonance</td><td>in + out</td><td>Electron + React（desktop/resonance）</td><td>Mac</td></tr>
 <tr><td>Mac Observer</td><td>in</td><td>focus / clipboard / screen / window / git</td><td>Mac</td></tr>
 <tr><td>ESP32 sensors</td><td>in</td><td>motion / temp / humidity / optical</td><td>RPi</td></tr>
-<tr><td>Hue</td><td>out</td><td>Philips Hue bridge</td><td>RPi；HOME NODE 上线前 Mac（hue 插件，ADR 0058）</td></tr>
+<tr><td>Hue</td><td>out</td><td>Philips Hue bridge</td><td>RPi；HOME NODE 上线前 Mac（hue 插件，ADR 0079）</td></tr>
 <tr><td>Worker agents</td><td>out + in</td><td>cc / codex / hermes in zellij pane</td><td>Mac</td></tr>
 <tr><td>OLED display</td><td>out</td><td>low-bandwidth status surface</td><td>RPi</td></tr>
 <tr><td>Mac notification</td><td>out</td><td>macOS native notification</td><td>Mac</td></tr>

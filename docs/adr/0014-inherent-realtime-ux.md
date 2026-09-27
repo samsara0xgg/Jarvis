@@ -7,7 +7,6 @@ Approved means the design is approved for implementation; implementation complet
 **Completes:** the physical Inherent/Swift client, recoverable panel delivery, and user-control contract intentionally left underspecified by ADR-0006 and ADR-0008.
 **Supersedes/amends:** ADR-0003's outbound-only, best-effort `open/append/done` client protocol as the target Inherent path; ADR-0008's ambiguous use of one `generation_id` for all surface deliveries; and ADR-0012's lazy-only expiry for a confirmation currently visible on a connected v2 client. The old endpoint remains a compatibility and rollback surface.
 **Does not use:** OpenAI Realtime API. Jarvis owns the WebSocket protocol, state reconstruction, UI reducer, controls, media interruption, and task/action presentation.
-**Number note:** ADR-0013 is already assigned to Memory Boundary + Session Model in the existing design/implementation worktrees and declares 0014 as the next free number.
 
 ---
 

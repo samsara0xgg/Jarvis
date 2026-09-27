@@ -1,4 +1,4 @@
-# ADR 0022 — Screen capture lives inside TimeSink
+# ADR 0078 — Screen capture lives inside TimeSink
 
 **Status:** Accepted
 **Date:** 2026-09-20

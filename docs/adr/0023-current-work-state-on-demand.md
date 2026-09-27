@@ -9,7 +9,7 @@
 - Allen wants Jarvis to know what he is working on: open the dashboard and
   see the last integrated picture, ask "我现在在做什么 / 今天主要做了什么 /
   之前说的事情进展如何" and get an answer that investigates the latest
-  data. ADR 0021/0022 made the raw material readable (TimeSink app spans,
+  data. ADR 0021/0078 made the raw material readable (TimeSink app spans,
   screen OCR, state reasons) and ADR 0020 keeps todos, knowledge and
   conversation records local, but nothing combined them and nothing
   persisted a conclusion; every question re-read everything from scratch.

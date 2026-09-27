@@ -1,4 +1,4 @@
-# ADR 0058 — Hue lights come through a plugin on the Mac
+# ADR 0079 — Hue lights come through a plugin on the Mac
 
 **Status:** Accepted
 **Date:** 2026-09-26
