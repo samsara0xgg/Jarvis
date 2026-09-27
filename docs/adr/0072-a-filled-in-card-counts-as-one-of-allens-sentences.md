@@ -1,6 +1,6 @@
 # ADR 0072 — A filled-in card counts as one of Allen's sentences
 
-**Status:** Accepted
+**Status:** Superseded-by-0074
 **Date:** 2026-09-26
 **Supersedes:** 0053
 
