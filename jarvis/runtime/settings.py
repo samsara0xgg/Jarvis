@@ -15,6 +15,7 @@ import logging
 import re
 from typing import TYPE_CHECKING, Any
 
+from jarvis.shared import lang
 from jarvis.state.plugin_settings import write_private_json
 
 if TYPE_CHECKING:
@@ -78,7 +79,13 @@ REPLY_LINES = {
 
 
 def voice_name(voice_id: str) -> str:
-    """``Chinese (Mandarin)_Warm_HeartedGirl`` -> ``Warm Hearted Girl``: what the page shows."""
+    """What the page shows: first-run setup's name for the voice when it has one.
+
+    ``English_radiant_girl`` -> ``Radiant Girl`` / ``明亮女孩`` (current language);
+    any other ``Chinese (Mandarin)_Warm_HeartedGirl`` -> ``Warm Hearted Girl``.
+    """
+    if f"voice.{voice_id}" in lang.TEXT:
+        return lang.t(f"voice.{voice_id}")
     name = voice_id.removeprefix(_MANDARIN).removeprefix(_ENGLISH).replace("_", " ")
     return re.sub(r"(?<=[a-z])(?=[A-Z])", " ", name)
 

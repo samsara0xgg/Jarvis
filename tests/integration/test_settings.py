@@ -72,7 +72,7 @@ def test_the_page_reads_what_jarvis_booted_with(tmp_path: Path) -> None:
     """GET: current values in the page's words, the choices, nothing waiting for a restart."""
     body = _client(tmp_path).get("/inherent/settings").json()
     assert body["values"] == {
-        "reply_language": "follow", "wake_threshold": 0.95, "tts_voice": "Warm Bestie",
+        "reply_language": "follow", "wake_threshold": 0.95, "tts_voice": "暖心闺蜜",
         "tts_volume": 1.0, "output_device": "System default", "input_device": "System default",
         "gpt_live": True, "mac_aec": False, "timesink": True, "keep_audio": True,
         "repos": ["~/Projects/jarvis", "~/Projects/typlus"],
@@ -82,7 +82,8 @@ def test_the_page_reads_what_jarvis_booted_with(tmp_path: Path) -> None:
     assert body["options"]["input_device"] == ["System default", *DEVICES["input"]]
     assert body["options"]["output_device"] == ["System default", *DEVICES["output"]]
     assert len(body["options"]["tts_voice"]) == 36  # 32 Mandarin + the 4 English setup voices
-    assert "Calm Woman" in body["options"]["tts_voice"]
+    # A voice first-run setup offers carries setup's name; the rest their MiniMax name.
+    assert "舒缓女声" in body["options"]["tts_voice"]
     assert "Warm Hearted Girl" in body["options"]["tts_voice"]
     assert body["restart_pending"] is False
 
