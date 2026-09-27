@@ -51,7 +51,7 @@ export function setupDictation({ companion, native, preload, page, port, topInse
       context: { app: at.app, window: at.window ?? '', selected: at.selected ?? '' },
     });
     companion.webContents.send('dictation', 'out');
-    globalShortcut.register('Escape', cancel);
+    if (!globalShortcut.isRegistered('Escape')) globalShortcut.register('Escape', cancel);
     busy = true;
   }
   const tap = () => { if (busy) overlay.webContents.send('dictation-finish'); else if (on) start(); };
@@ -72,6 +72,8 @@ export function setupDictation({ companion, native, preload, page, port, topInse
     busy = false;
   });
   ipcMain.on('dictation-open', (event, name) => { if (mine(event) && typeof name === 'string') open(name); });
+  // A tap while her last card or message is still up: that one goes, a new dictation starts.
+  ipcMain.on('dictation-again', event => { if (mine(event)) start(); });
   ipcMain.on('dictation-passthrough', (event, on) => { if (mine(event) && typeof on === 'boolean') overlay.setIgnoreMouseEvents(on, { forward: true }); });
   // Fixing the words: the box takes the keyboard without activating Jarvis (the overlay is a non-activating panel),
   // and Esc is the box's own again. Letting go, a hide and an inactive show hand the keyboard back to the app

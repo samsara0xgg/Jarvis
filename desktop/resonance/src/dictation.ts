@@ -25,6 +25,7 @@ declare global { interface Window { dictation: {
   passthrough: (on: boolean) => void;
   focus: (on: boolean) => void;
   open: (page: string) => void;
+  again: () => void;
 } } }
 
 const T = {
@@ -473,6 +474,13 @@ function frame() {
 }
 
 window.dictation.onStart(start);
-window.dictation.onFinish(() => finish(performance.now()));
+// The right ⌥ again: it finishes a listening dictation, pastes the box being fixed, and while her last card or
+// message is still up it clears that and starts the next one. While she thinks or dives it waits.
+window.dictation.onFinish(() => {
+  const now = performance.now();
+  if (active()) finish(now);
+  else if (P.state === 'edit') submit(now);
+  else if (['card', 'miss', 'error', 'dissolve', 'cancel', 'gone'].includes(P.state)) { hideBubble(); window.dictation.again(); }
+});
 window.dictation.onCancel(() => cancel(performance.now()));
 window.dictation.onCursor(point => { P.cursor = point; });
