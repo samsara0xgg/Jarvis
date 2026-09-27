@@ -435,13 +435,27 @@ try {
   check('08 holding her changes her into the next skin instead of starting voice', await page.locator('.companion-strip.is-open').count() === 0 && await skinOn() === 'nebula');
   await page.waitForTimeout(1400);
   await shot('08-nebula');
-  for (const key of ['galaxy', 'frost', 'glass', 'aurora']) {
+  // Her bright, strongly coloured pixels: the icon skin's painted sky has plenty; without it loaded she would be
+  // dark glass like the default skin, which has almost none.
+  const colour = () => page.evaluate(() => {
+    const c = document.querySelector('.companion-canvas'), d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+    let n = 0;
+    for (let i = 0; i < d.length; i += 4) {
+      const hi = Math.max(d[i], d[i + 1], d[i + 2]), lo = Math.min(d[i], d[i + 1], d[i + 2]);
+      if (d[i + 3] > 200 && hi > 140 && hi - lo > 60) n++;
+    }
+    return n;
+  });
+  const sky = {};
+  for (const key of ['galaxy', 'frost', 'glass', 'codex', 'aurora']) {
     await page.evaluate(k => window.__command(`skin:${k}`), key);
     await wearsSoon(key);
     await page.waitForTimeout(1400);
+    sky[key] = await colour();
     await shot(`08-${key}`);
   }
   check('08 the tray picks any skin and she wears it', await skinOn() === 'aurora');
+  check(`08 in the icon skin her inside is the icon's painted sky (coloured pixels ${JSON.stringify(sky)})`, sky.codex > 200 && sky.codex > 3 * sky.glass);
   await move(600, 560);
   await waitPlace('home');
   await page.evaluate(() => window.__command('outing'));
