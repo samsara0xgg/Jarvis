@@ -34,7 +34,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
 REPO = Path(__file__).resolve().parents[2]
-ASK = "要派这个后台任务吗？"  # noqa: RUF001 — the fixed Chinese ask under the card (ADR 0061).
+ASK = "要派这个后台任务吗？"  # noqa: RUF001 — the fixed Chinese ask under the card (ADR 0062).
 
 
 @dataclass(frozen=True)

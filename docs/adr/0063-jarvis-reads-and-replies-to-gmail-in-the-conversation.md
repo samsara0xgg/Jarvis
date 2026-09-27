@@ -1,4 +1,4 @@
-# ADR 0062 — Jarvis reads and replies to Gmail in the conversation
+# ADR 0063 — Jarvis reads and replies to Gmail in the conversation
 
 **Status:** Accepted
 **Date:** 2026-09-26
@@ -45,7 +45,7 @@ the server, and it keeps nothing about the user in the profile.
 - **Replying.** `gmail_send` gains an optional `threadId`. With it, the one
   confirmed call drafts the reply into that thread and sends the draft.
   `gmail_createDraft` stays off the model's menu: the waiting card is the
-  draft (ADR 0061), and on 2026-09-26 the model, given both tools, answered
+  draft (ADR 0062), and on 2026-09-26 the model, given both tools, answered
   "回复吧" with `gmail_createDraft`, whose confirmation saves and never
   sends.
 - **The user's address.** On connect, Jarvis reads the address off the

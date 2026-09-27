@@ -1,4 +1,4 @@
-"""ADR 0033/0034/0061: a plugin tool is searched onto the menu, asks Allen, and runs on his yes.
+"""ADR 0033/0034/0062: a plugin tool is searched onto the menu, asks Allen, and runs on his yes.
 
 Drives the real ``decide()`` loop, dispatcher, confirmation grammar and event log
 (with production's atomic confirmation-dispatch outbox on) against the real echo
@@ -41,7 +41,7 @@ if TYPE_CHECKING:
 HERE = Path(__file__).parent
 REPO = HERE.parent.parent
 ECHO = {"echo": {"command": sys.executable, "args": [str(HERE / "mcp_echo_server.py")]}}
-ASK = "要执行 echo add吗？"  # noqa: RUF001 — the fixed Chinese ask under the card (ADR 0061).
+ASK = "要执行 echo add吗？"  # noqa: RUF001 — the fixed Chinese ask under the card (ADR 0062).
 LETTER = {"to": "allen@example.com", "subject": "周六见", "body": "周六早上八点停车场见。"}
 
 
@@ -154,7 +154,7 @@ def _say(ctx: DecideContext, text: str, turn_id: str) -> str:
 
 
 def _press(ctx: DecideContext, decision: dict[str, Any], turn_id: str) -> str:
-    """A card's button: an empty-transcript intent naming the confirmation (ADR 0061)."""
+    """A card's button: an empty-transcript intent naming the confirmation (ADR 0062)."""
     trigger = emit_event(
         ctx.conn,
         type="surface.user_intent",
@@ -224,7 +224,7 @@ def test_searched_plugin_tool_does_nothing_on_no(tmp_path: Path, servers: McpSer
 def test_an_unrelated_turn_leaves_the_card_to_its_button(
     tmp_path: Path, servers: McpServers
 ) -> None:
-    """ADR 0061: a 好 meant for the model's own question never fires the card; its button does."""
+    """ADR 0062: a 好 meant for the model's own question never fires the card; its button does."""
     ctx, llm = _ask(tmp_path, servers)
     try:
         _say(ctx, "现在几点", "T2")
@@ -254,7 +254,7 @@ def test_an_unrelated_turn_leaves_the_card_to_its_button(
 
 
 def test_a_letter_card_sends_what_allen_edited(tmp_path: Path, servers: McpServers) -> None:
-    """ADR 0061: the ask names the letter; send with an edited body re-freezes it, then runs it."""
+    """ADR 0062: the ask names the letter; send with an edited body re-freezes it, then runs it."""
     llm = _ScriptedClient(query="send a letter", call=("send", LETTER))
     ctx = _context(tmp_path, servers, llm)
     try:
@@ -280,7 +280,7 @@ def test_a_letter_card_sends_what_allen_edited(tmp_path: Path, servers: McpServe
 
 
 def test_the_cards_x_dismisses_it(tmp_path: Path, servers: McpServers) -> None:
-    """ADR 0061: the card's close button is a rejection bound to its id; nothing runs."""
+    """ADR 0062: the card's close button is a rejection bound to its id; nothing runs."""
     ctx, _ = _ask(tmp_path, servers)
     try:
         card = _rows(ctx.conn, "confirmation.requested")[0]["confirmation_id"]

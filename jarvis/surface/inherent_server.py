@@ -210,7 +210,7 @@ class SubmitRequest(BaseModel):
 
 
 class CardDecisionRequest(BaseModel):
-    """ADR 0061: Allen's answer to the card he sees, by its id; edits are the card's text fields."""
+    """ADR 0062: Allen's answer to the card he sees, by its id; edits are the card's text fields."""
 
     confirmation_id: str
     decision: Literal["accept", "reject"]
@@ -478,7 +478,7 @@ class InherentDeps:
     # cursor. ``(after, limit) -> {"since", "rows"}``; ``None`` leaves the
     # route unregistered.
     conversation_read: Callable[[int, int], dict[str, Any]] | None = None
-    # ADR 0061: the card waiting for Allen's button (``{"card": ... | None}``, a
+    # ADR 0062: the card waiting for Allen's button (``{"card": ... | None}``, a
     # small fold off the loop thread) and his answer to it, which starts a turn
     # and returns its id. ``None`` leaves both routes unregistered.
     card_read: Callable[[], dict[str, Any]] | None = None
@@ -1448,12 +1448,12 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 â
 
         @app.get("/inherent/confirmation")
         async def confirmation_card() -> dict[str, Any]:
-            """ADR 0061: the pending card, or ``{"card": null}``."""
+            """ADR 0062: the pending card, or ``{"card": null}``."""
             return await asyncio.to_thread(card_read)
 
         @app.post("/inherent/confirmation", status_code=200)
         async def confirmation_answer(req: CardDecisionRequest) -> dict[str, str]:
-            """ADR 0061: send or dismiss the card on screen; 409 once it is not the pending one."""
+            """ADR 0062: send or dismiss the card on screen; 409 once it is not the pending one."""
             card = (await asyncio.to_thread(card_read)).get("card")
             if not card or card.get("id") != req.confirmation_id:
                 raise HTTPException(status_code=409, detail="that card is no longer waiting")

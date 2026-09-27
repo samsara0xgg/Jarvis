@@ -78,7 +78,7 @@ def variants(key: str, lang: Language | None = None) -> tuple[str, ...]:
     return VARIANTS[key][lang or _current]
 
 
-# --- What a confirmed tool does (ADR 0061) ----------------------------------
+# --- What a confirmed tool does (ADR 0062) ----------------------------------
 
 # (what the card and the ask call it, the line once it ran) per tool.
 _ACTIONS: Final[dict[str, dict[Language, tuple[str, str]]]] = {
@@ -206,7 +206,7 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
         "en": "To confirm: {tool_name} → `{canonical_target}` ({mode}, {content_bytes} bytes, risk"
         ' {risk_level}). Say "yes" to run it or "no" to cancel.',
     },
-    # ADR 0061: the ask under a card is one spoken line; the card shows the rest.
+    # ADR 0062: the ask under a card is one spoken line; the card shows the rest.
     "confirm.ask_tool": {"zh": "要{action}吗？", "en": "Shall I {action}?"},
     "confirm.ask_letter": {
         "zh": "信写好了，发给 {to}，主题「{subject}」。要发吗？",

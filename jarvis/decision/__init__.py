@@ -911,13 +911,13 @@ def _handle_utterance(
     #     all for this trigger.
     #   - The grammar is active ONLY for the first utterance after the
     #     ask, within its TTL (`PendingConfirmationSlot.answers_by_words`,
-    #     ADR 0061) — later words fall through to ordinary Tier 0 / Tier 2
+    #     ADR 0062) — later words fall through to ordinary Tier 0 / Tier 2
     #     handling while the card keeps waiting for its button. Its worst
     #     case (a paraphrase like "行吧那就写进去吧", or 「发吧」 ten minutes
     #     on) is the LLM proposing the action again via the ordinary
     #     tool-call path, which produces a FRESH `confirm_required` -> a
     #     fresh `confirmation.requested` that re-asks — never a dispatch.
-    #   - A card button (`confirmation_decision` on the intent, ADR 0061)
+    #   - A card button (`confirmation_decision` on the intent, ADR 0062)
     #     names the exact confirmation it answers and is Allen's own act on
     #     his own surface, so it needs no grammar and no timing.
     pending_slot = packet.pending_confirmation.slot
@@ -1177,7 +1177,7 @@ _CONFIRM_REQUIRED_TOOL_RESULT_TEXT: Final[str] = (
 # rather than hardcoded to "write_file"/"L3" even though that is the
 # only L3 tool today (D1) — byte-identical output for the one case
 # that exists, forward-compatible if a second L3 tool ever lands.
-# ADR 0033 / 0061: every other tool at the threshold gets one spoken line,
+# ADR 0033 / 0062: every other tool at the threshold gets one spoken line,
 # rendered from the frozen arguments only; the card shows the arguments.
 
 
@@ -2569,7 +2569,7 @@ def _stage_and_request_confirmation(  # noqa: PLR0913 — one keyword per D3 sna
 # constructs an `AuthorizationLease`. It is reachable from two call sites in
 # `_handle_utterance`: the grammar hook, gated on a pending slot the utterance
 # may still answer and an exact-sentence grammar hit, and a card's button
-# (ADR 0061), gated on the intent naming the pending slot's own id. No LLM code
+# (ADR 0062), gated on the intent naming the pending slot's own id. No LLM code
 # path touches any of those preconditions. That is the load-bearing invariant
 # (ADR §3 D6) made structural rather than merely documented.
 
@@ -2605,7 +2605,7 @@ the confirmation ask's own minutes-scale TTL)."""
 # ``confirm.write_ran`` — ADR-0012 §3 D6 exact wording: "backed by ack semantics; the wording
 # deliberately stops at 已执行 and must not be strengthened" (no completion or
 # verification words; "ran" is exactly what the ack proves). ``confirm.tool_ran``
-# (ADR 0061) is the tool's own ack-only line from the language table ("已发送"
+# (ADR 0062) is the tool's own ack-only line from the language table ("已发送"
 # for a send), never the model's words.
 
 
@@ -2644,7 +2644,7 @@ def _record_confirmation_answer(
     )
 
 
-# ADR 0061: a card's button answers like a grammar hit; the rule id says which.
+# ADR 0062: a card's button answers like a grammar hit; the rule id says which.
 _CARD_SEND: Final[ConfirmGrammarHit] = ConfirmGrammarHit(rule_id="card_button", decision="yes")
 _CARD_DISMISS: Final[ConfirmGrammarHit] = ConfirmGrammarHit(rule_id="card_dismiss", decision="no")
 
@@ -2657,7 +2657,7 @@ def _handle_card_decision(  # noqa: PLR0913 — the answer path's inputs plus th
     ctx: DecideContext,
     scratch: _Scratch,
 ) -> DecideResult:
-    """ADR 0061: a card's button, bound to the exact confirmation it shows.
+    """ADR 0062: a card's button, bound to the exact confirmation it shows.
 
     A card that is no longer the pending one (answered, or replaced by a
     newer ask) runs nothing. Accept with edits first freezes the edited
@@ -2683,7 +2683,7 @@ def _revise_confirmation(
     ctx: DecideContext,
     scratch: _Scratch,
 ) -> PendingConfirmationSlot:
-    """Freeze Allen's edits as a new ask for the same tool and target (ADR 0061).
+    """Freeze Allen's edits as a new ask for the same tool and target (ADR 0062).
 
     Only a string argument the ask already had can be replaced, and only by a
     string; staged content (``write_file``) is never edited here. Returns the

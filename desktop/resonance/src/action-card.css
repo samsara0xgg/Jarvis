@@ -1,4 +1,4 @@
-/* ADR 0061: the action card, on the Conversation page's glass and in the notch's black. One quiet surface: colour
+/* ADR 0062: the action card, on the Conversation page's glass and in the notch's black. One quiet surface: colour
    lives only in the status dot and the one button that acts. Both hosts define --p-ink/-muted/-faint/-line and --warm-c. */
 .ac { position:relative; display:flex; flex-direction:column; gap:9px; padding:10px 12px 11px; border-radius:16px; text-align:left;
   background:linear-gradient(180deg,rgb(255 255 255 / .065),rgb(255 255 255 / .035));

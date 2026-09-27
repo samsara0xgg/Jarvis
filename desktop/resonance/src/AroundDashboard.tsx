@@ -96,7 +96,7 @@ const ANSWER = 'Got it. I’ll take care of it and tell you when it’s done.';
 const BASIS: Record<Basis, L> = { observed: ['Observed', '看到的'], stated: ['You said', '你说的'], inferred: ['A guess', '猜的'] };
 // Live conversation: the memory.db rows and the answer still streaming, from the companion's daemon link.
 // `older` fetches a longer page and says whether it brought earlier rows; `floor` means the history's start is on hand.
-// `card` is the one waiting for a button (ADR 0061); it sits above the input until it is sent or dismissed.
+// `card` is the one waiting for a button (ADR 0062); it sits above the input until it is sent or dismissed.
 type Talk = { rows: Row[]; tail: string; busy: boolean; offline: boolean; floor: boolean; submit: (text: string) => void; older: () => Promise<boolean>; card?: Card | null; decide?: Decide };
 const when = (ts: string) => { const d = new Date(ts); return Number.isNaN(d.getTime()) ? '' : d.toDateString() === new Date().toDateString() ? hm(d.getTime()) : `${d.getMonth() + 1}/${d.getDate()} ${hm(d.getTime())}`; };
 const dayLabel = (lang: Lang, day: string) => { const d = new Date(day); return d.toDateString() === new Date(Date.now() - 86_400_000).toDateString() ? tr(lang, ['yesterday', '昨天']) : `${d.toLocaleDateString(lang === 'zh' ? 'zh-CN' : 'en-US', { weekday: 'short' })} ${d.getMonth() + 1}/${d.getDate()}`; };
@@ -106,7 +106,7 @@ const toTurns = (rows: Row[]): Turn[] => {
   for (const row of rows) {
     const t = turns.at(-1), text = visible(row.text), at = when(row.ts), day = new Date(row.ts).toDateString();
     if (row.source === 'allen') turns.push({ you: row.text, at, day });
-    // ADR 0062: an email Jarvis read whole shows above its answer.
+    // ADR 0063: an email Jarvis read whole shows above its answer.
     else if (row.source === 'mail') { if (t) t.mail = [...t.mail ?? [], row.text]; else turns.push({ you: '', at: '', day, mail: [row.text] }); }
     else if (!t) turns.push({ you: '', at: '', jarvis: text, jarvisAt: at, day });
     else Object.assign(t, { jarvis: t.jarvis ? `${t.jarvis}\n\n${text}` : text, jarvisAt: at });

@@ -1,4 +1,4 @@
-# ADR 0061 — A confirmation is a card that waits for its button
+# ADR 0062 — A confirmation is a card that waits for its button
 
 **Status:** Accepted
 **Date:** 2026-09-26

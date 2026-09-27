@@ -83,7 +83,7 @@ export function connect(port: string, dispatch: (a: Action) => void): Runtime {
     controls,
     // Rows past `after` (0 = the newest `limit` rows, the daemon's default 200); the log is memory.db, so it survives every reload.
     conversation: async (after, limit) => { const r = await fetch(`${http}/inherent/conversation?after=${after}${limit ? `&limit=${limit}` : ''}`); if (!r.ok) throw new Error(`/inherent/conversation ${r.status}`); return ((await r.json()) as { rows: Row[] }).rows; },
-    // ADR 0061: the card waiting for a button, and the button. A 409 means it is no longer the pending card.
+    // ADR 0062: the card waiting for a button, and the button. A 409 means it is no longer the pending card.
     card: async () => { const r = await fetch(`${http}/inherent/confirmation`); if (!r.ok) throw new Error(`/inherent/confirmation ${r.status}`); return ((await r.json()) as { card: Card | null }).card; },
     decide: async (id, decision, edits = {}) => { const r = await post('/inherent/confirmation', { confirmation_id: id, decision, edits }); if (typeof r.turn_id === 'string' && r.turn_id) dispatch({ type: 'pending', turnId: r.turn_id }); },
     reconnect: () => { if (ws) ws.close(); else open(); },

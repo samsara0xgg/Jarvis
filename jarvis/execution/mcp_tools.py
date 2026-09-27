@@ -11,7 +11,7 @@ handlers hop onto that loop for every call. Codex's ``enabled_tools`` narrows
 a server's menu; a server that lists ``browser_snapshot`` runs every tool
 behind the browser guard (ADR 0059). A server with Gmail's send and draft
 tools gets a ``gmail_send`` that replies inside a thread and names the
-signed-in address, and keeps ``gmail_createDraft`` off the menu (ADR 0062).
+signed-in address, and keeps ``gmail_createDraft`` off the menu (ADR 0063).
 
 A remote entry (``url``) authenticates with ``headers`` (``$VAR`` expanded
 from the daemon environment) or with ``auth: oauth``, whose token file lives
@@ -82,7 +82,7 @@ APPROVAL_MODES: Final = frozenset({"auto", "prompt", "writes", "approve"})
 """Codex's per-server / per-tool approval modes (ADR 0033); ``auto`` when unset."""
 
 _MAIL_TOOLS: Final = frozenset({"gmail_send", "gmail_createDraft", "gmail_sendDraft"})
-"""Google's Workspace server lists these; its send has no thread, its draft does (ADR 0062)."""
+"""Google's Workspace server lists these; its send has no thread, its draft does (ADR 0063)."""
 
 
 def mcp_tool_name(server: str, name: str) -> str:
@@ -215,7 +215,7 @@ def _send_in_thread(
 
 
 def _mail_send(listed: mcp_types.Tool, address: str) -> tuple[str, dict[str, Any]]:
-    """``gmail_send``'s description and schema with the reply thread and the sender (ADR 0062)."""
+    """``gmail_send``'s description and schema with the reply thread and the sender (ADR 0063)."""
     schema = dict(listed.input_schema)
     schema["properties"] = {
         **(schema.get("properties") or {}),
@@ -264,7 +264,7 @@ class McpServers:
         self._listed: list[tuple[str, Client, mcp_types.Tool]] = []
         self._clients: dict[str, Client] = {}
         self._browsers: set[str] = set()
-        self._mail: dict[str, str] = {}  # ADR 0062: mail server -> its signed-in address
+        self._mail: dict[str, str] = {}  # ADR 0063: mail server -> its signed-in address
 
     def token_path(self, server: str) -> Path:
         """Where ``server``'s OAuth login lives; the login command reports it."""
@@ -380,7 +380,7 @@ class McpServers:
                 listed = [t for t in every if allowed is None or t.name in allowed]
                 mail = {t.name for t in every} >= _MAIL_TOOLS
                 if mail:
-                    # ADR 0062: the card holds the draft; a reply goes out through gmail_send.
+                    # ADR 0063: the card holds the draft; a reply goes out through gmail_send.
                     listed = [t for t in listed if t.name != "gmail_createDraft"]
                 modes = [approval_mode(spec, one.name) for one in listed]
             except Exception:  # noqa: BLE001 — a missing binary, a refused URL, a hung handshake, a bad approval mode: warn, never fail boot.

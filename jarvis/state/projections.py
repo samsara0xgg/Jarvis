@@ -498,7 +498,7 @@ class PendingConfirmationSlot:
             `confirmation.requested.payload["template_line"]` — durable
             so consent binds to recorded machine truth (§3 D3).
         expires_at_ms: TTL deadline stamped by the ask path (Step 5;
-            this projection never computes or defaults it). ADR 0061: it
+            this projection never computes or defaults it). ADR 0062: it
             bounds only a spoken or typed answer (:meth:`answers_by_words`);
             the card itself waits until it is answered or replaced.
             Compared against a caller-supplied `now_ms` at read time —
@@ -529,8 +529,8 @@ class PendingConfirmationSlot:
     accepted_event_uid: str | None = None
     utterances_since: int = 0
 
-    def is_live(self, now_ms: int) -> bool:  # noqa: ARG002 — callers pass their clock; ADR 0061 dropped the deadline here.
-        """True iff this slot is a still-pending ask: its card waits (ADR 0061).
+    def is_live(self, now_ms: int) -> bool:  # noqa: ARG002 — callers pass their clock; ADR 0062 dropped the deadline here.
+        """True iff this slot is a still-pending ask: its card waits (ADR 0062).
 
         Any state other than `"pending"` returns False — an accepted,
         rejected, consumed, or superseded slot is not awaiting an answer.
@@ -540,7 +540,7 @@ class PendingConfirmationSlot:
         return self.state == "pending"
 
     def answers_by_words(self, now_ms: int) -> bool:
-        """Whether a spoken or typed yes/no can answer this ask (ADR 0061, from ADR 0039).
+        """Whether a spoken or typed yes/no can answer this ask (ADR 0062, from ADR 0039).
 
         Only the first utterance after the ask, and only within its TTL:
         a later 「好」 meant for another question never fires the card.
@@ -607,7 +607,7 @@ def _fold_pending_confirmations(events: Iterable[Event]) -> PendingConfirmations
       for why `"superseded"` is never the CURRENT slot's state under
       this rule).
     - `surface.user_intent` / `utterance.received` count into a pending
-      slot's `utterances_since` (ADR 0061: only the first answers by words).
+      slot's `utterances_since` (ADR 0062: only the first answers by words).
     - `confirmation.accepted` / `confirmation.rejected` move the slot to
       `accepted_unconsumed` / `rejected` ONLY when the event's
       `confirmation_id` matches the current slot's — a stale answer

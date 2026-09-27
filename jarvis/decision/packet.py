@@ -151,14 +151,14 @@ def format_pending_confirmation_note(
     turn (C4), or one that only paraphrases consent (C6) — has no
     handle it could try to use to act on the pending ask itself. Only
     the answer-path grammar hook (Step 6, exact-sentence match against
-    `confirm_grammar.yaml`) or the card's button (ADR 0061) can move the
+    `confirm_grammar.yaml`) or the card's button (ADR 0062) can move the
     slot; this note exists so the
     LLM can *talk about* the ask without being structurally able to
     authorize it.
 
     Returns None when there is no pending slot: no `confirmation.requested`
     has fired, or the slot has moved past `pending` (accepted / rejected /
-    consumed / superseded). ADR 0061: the card waits past its TTL, so the
+    consumed / superseded). ADR 0062: the card waits past its TTL, so the
     note shows it, with its arguments, until it is answered or replaced.
 
     Args:

@@ -2574,7 +2574,7 @@ def _mail_body(body: str) -> str:
 
 
 def _fetched_mail(conn: sqlite3.Connection, turn_id: str) -> tuple[str, str] | None:
-    """ADR 0062: the message this turn read whole with ``gmail_get``, as a mail record.
+    """ADR 0063: the message this turn read whole with ``gmail_get``, as a mail record.
 
     Only when the turn read exactly one message in full: a turn that read
     several is a list, answered in words. The record is headers, a blank
@@ -2711,7 +2711,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
         else user_intent_event.event_uid
     )
     surface_wrote_row = memory_exclude_id != user_intent_event.event_uid
-    # ADR 0061: a card's button is Allen's act, not his words; it writes no row.
+    # ADR 0062: a card's button is Allen's act, not his words; it writes no row.
     card_button = isinstance(user_intent_event.payload.get("confirmation_decision"), Mapping)
     if memory is not None and continuation is None and not surface_wrote_row and not card_button:
         audio_ref = user_intent_event.payload.get("audio_artifact_ref")
@@ -3108,7 +3108,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
         sys.stdout.flush()
         collected_events.append(render_event)
         if memory is not None:
-            # ADR 0062: the one message this turn read whole shows above the answer.
+            # ADR 0063: the one message this turn read whole shows above the answer.
             mail = _fetched_mail(runtime.conn, effective_turn_id)
             if mail is not None:
                 append_record(memory.db_path, record_id=mail[0], source="mail", text=mail[1])

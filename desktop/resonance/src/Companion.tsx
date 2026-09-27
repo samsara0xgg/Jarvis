@@ -112,7 +112,7 @@ export function Companion() {
   const feedback = (cue: FeedbackCue) => { if (preferences.feedbackEnabled && !s.soundMuted) void playFeedback(cue, preferences.feedbackVolume); };
   const link = useRef<Runtime | null>(null);
   useEffect(() => { if (!port) return; link.current = connect(port, dispatch); return () => { link.current?.close(); link.current = null; }; }, []);
-  // ADR 0061: the card waiting for Allen's button, read every 1.5 s whether or not the Dashboard is open: closed, it
+  // ADR 0062: the card waiting for Allen's button, read every 1.5 s whether or not the Dashboard is open: closed, it
   // grows from the notch. The same card object stays while its id does, so a letter being edited keeps its text.
   const [card, setCard] = useState<Card | null>(null);
   useEffect(() => {

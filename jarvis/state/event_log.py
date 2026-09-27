@@ -643,7 +643,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         required_payload=("transcript", "turn_id"),
         # ADR-0016 D3: ``record_id`` names the memory.db row the submitting
         # surface already wrote, so drive_turn skips its own write.
-        # ADR 0061: ``confirmation_decision`` is a card's button,
+        # ADR 0062: ``confirmation_decision`` is a card's button,
         # ``{confirmation_id, decision: accept | reject, edits?}``, with an
         # empty transcript; it writes no row of Allen's words.
         optional_payload=("channel", "language", "record_id", "confirmation_decision"),

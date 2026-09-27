@@ -352,7 +352,7 @@ _VAD_MODES: Final[tuple[str, ...]] = ("record", "tts")
 _CARD_EVENT_TYPES: Final[tuple[str, ...]] = (
     "confirmation.requested", "confirmation.accepted", "confirmation.rejected", "gate.evaluated",
 )
-"""What the pending card folds from (ADR 0061), the rows the answer path itself re-reads."""
+"""What the pending card folds from (ADR 0062), the rows the answer path itself re-reads."""
 
 
 def _default_vad_profiles() -> dict[str, voice_audio.VadThresholds]:
@@ -5069,7 +5069,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             return {"since": since, "rows": rows}
 
         def _read_card() -> dict[str, Any]:
-            """ADR 0061: the card waiting for Allen's button, or ``None``."""
+            """ADR 0062: the card waiting for Allen's button, or ``None``."""
             conn = open_runtime_event_log(runtime.runtime_paths.event_log)
             try:
                 slot = PendingConfirmations.from_events(
@@ -5094,7 +5094,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             }}
 
         def _decide_card(confirmation_id: str, decision: str, edits: dict[str, str]) -> str:
-            """ADR 0061: a card's button, as an intent the turn pump runs like any other."""
+            """ADR 0062: a card's button, as an intent the turn pump runs like any other."""
             turn_id = _new_turn_id()
             conn = open_runtime_event_log(runtime.runtime_paths.event_log)
             try:

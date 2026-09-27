@@ -3,7 +3,7 @@ import { ArrowUp, X } from '@phosphor-icons/react';
 import { tr, type L, type Lang } from './companionSettings';
 import './action-card.css';
 
-// ADR 0061: the card Jarvis puts up before it does something with consequences. It shows exactly what will run;
+// ADR 0062: the card Jarvis puts up before it does something with consequences. It shows exactly what will run;
 // a letter can be edited in place, and the button sends what the card holds at that moment. Dismissing is the ×.
 export interface Card { id: string; tool: string; action: string; source: string; letter: boolean; args: Record<string, unknown> }
 export type Decide = (decision: 'accept' | 'reject', edits?: Record<string, string>) => void;
@@ -48,7 +48,7 @@ export function ActionCard({ card, lang, onDecide }: { card: Card; lang: Lang; o
   </div>;
 }
 
-// ADR 0062: an email Jarvis read whole, shown above its answer. The record is headers, a blank line, the body.
+// ADR 0063: an email Jarvis read whole, shown above its answer. The record is headers, a blank line, the body.
 export function MailCard({ text, lang }: { text: string; lang: Lang }) {
   const [open, setOpen] = useState(false);
   const cut = text.indexOf('\n\n'), head = cut < 0 ? text : text.slice(0, cut), body = cut < 0 ? '' : text.slice(cut + 2);
