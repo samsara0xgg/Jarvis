@@ -53,6 +53,10 @@ p{margin:0}
 .skip-intro{position:absolute;right:18px;bottom:18px;z-index:6;font-size:12.5px;color:var(--mute);padding:6px 10px;border-radius:8px;opacity:0;transition:opacity 300ms}
 .skip-intro.on{opacity:1}
 .skip-intro:hover{color:var(--ink)}
+/* leaving before setup is done: the next launch starts over */
+.quit{position:absolute;left:18px;bottom:18px;z-index:6;font-size:12.5px;color:var(--mute);padding:6px 10px;border-radius:8px}
+.quit:hover{color:var(--ink)}
+#screen[data-phase="finale"] .quit{visibility:hidden}
 /* ---------- the island panel (the island itself is painted on #bg) ---------- */
 #panel{position:absolute;top:0;left:50%;width:var(--pw);transform:translateX(-50%);z-index:3;overflow:hidden;opacity:0;pointer-events:none;transition:opacity 160ms}
 #panel.show{opacity:1;pointer-events:auto;transition-duration:260ms}

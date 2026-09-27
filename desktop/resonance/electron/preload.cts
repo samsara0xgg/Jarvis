@@ -85,4 +85,5 @@ contextBridge.exposeInMainWorld('firstRun', {
   open: (page: string) => ipcRenderer.send('first-run-open', page),
   passthrough: (on: boolean) => ipcRenderer.send('first-run-passthrough', on),
   done: () => ipcRenderer.send('first-run-done'),
+  quit: () => ipcRenderer.send('first-run-quit'),
 });

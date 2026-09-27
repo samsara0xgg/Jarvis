@@ -61,7 +61,7 @@ try {
   page.on('console', m => { if (m.type() === 'error' && !m.text().startsWith('Failed to load resource')) errors.push(m.text()); });
   page.on('response', r => { if (r.status() >= 400 && !r.url().endsWith('/favicon.ico')) errors.push(`${r.status()} ${r.url()}`); });
   await page.addInitScript(daemonPort => {
-    window.__main = { perms: [], passthrough: [], done: 0, opened: [] };
+    window.__main = { perms: [], passthrough: [], done: 0, opened: [], quit: 0 };
     const answer = { mic: 'ok', screen: 'relaunch', auto: 'ok', notify: 'asked' };
     window.firstRun = {
       info: async () => ({ top: 32, notch: 185, cursor: [1180, 610], name: 'Allen', lang: 'zh', port: daemonPort }),
@@ -69,6 +69,7 @@ try {
       open: page => window.__main.opened.push(page),
       passthrough: on => window.__main.passthrough.push(on),
       done: () => { window.__main.done++; },
+      quit: () => { window.__main.quit++; },
     };
   }, daemonPort);
   await page.goto(`http://127.0.0.1:${port}/firstrun.html`);
@@ -96,13 +97,15 @@ try {
   await waitPhase('setup', 8000);
   await page.waitForSelector('#f-user'); await page.waitForTimeout(900);
   check('04 page 1 is prefilled with the Mac account name', await page.locator('#f-user').inputValue() === 'Allen' && await page.locator('.src').isVisible());
+  await page.locator('#quit').click(); await page.keyboard.press('Meta+q');
+  check('04 退出 and ⌘Q both ask the main process to quit', await page.locator('#quit').innerText() === '退出' && (await page.evaluate(() => window.__main.quit)) === 2);
   await shot('04-name');
   await page.locator('#f-user').fill('Allen');
   await act('next'); await page.waitForSelector('[data-act="asst"]'); await settle();
   await act('asst', '[data-v="Nova"]'); await act('next');
   await page.waitForSelector('[data-act="lang"]'); await settle();
   await act('lang', '[data-v="en"]'); await page.waitForTimeout(400); await settle();
-  check('05 picking English switches her words at once', (await say()) === 'Which language should we use?');
+  check('05 picking English switches her words and 退出 at once', (await say()) === 'Which language should we use?' && await page.locator('#quit').innerText() === 'Quit');
   await act('next'); await page.waitForSelector('#f-key'); await settle();
   check('05 leaving the language page tells the daemon', calls.some(c => c.url === '/inherent/language' && c.body.language === 'en'));
 
@@ -164,6 +167,7 @@ try {
   check('12 she greets from home', (await page.locator('#bubble').innerText()).includes('Allen') && await page.locator('#bubble').evaluate(e => e.classList.contains('on')));
   await page.waitForFunction(() => window.__main.done === 1, null, { timeout: 8000 });
   check('12 then the companion takes over', true);
+  check('12 there is no 退出 once setup is done', !(await page.locator('#quit').isVisible()));
   if (errors.length) console.log(errors.join('\n'));
   check('no page errors', errors.length === 0);
 } finally {
