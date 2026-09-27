@@ -704,6 +704,8 @@ class PendingClarification:
         dismissed: It was closed with its close button, unanswered.
         answered_turn_id: The turn Allen's filled-in answers started, or
             ``None`` when he never submitted it.
+        answered_labels: Labels of the fields he filled in; the rest he left
+            blank.
         utterances_since: User utterances (`surface.user_intent` /
             `utterance.received`) after the ask while it was open, or after
             it was dismissed. The one being handled is already appended, so
@@ -717,6 +719,7 @@ class PendingClarification:
     closed: bool = False
     dismissed: bool = False
     answered_turn_id: str | None = None
+    answered_labels: tuple[str, ...] = ()
     utterances_since: int = 0
 
     @property
@@ -761,7 +764,11 @@ def _fold_pending_clarification(events: Iterable[Event]) -> PendingClarification
             if not slot.closed and evt.payload.get("clarification_id") == slot.clarification_id:
                 dismissed = evt.type == "surface.dismissed"
                 answered = None if dismissed else str(evt.payload["turn_id"])
-                slot = replace(slot, closed=True, dismissed=dismissed, answered_turn_id=answered)
+                answers = evt.payload.get("answers")
+                slot = replace(
+                    slot, closed=True, dismissed=dismissed, answered_turn_id=answered,
+                    answered_labels=tuple(answers) if isinstance(answers, Mapping) else (),
+                )
         elif evt.type in ("surface.user_intent", "utterance.received") and (
             not slot.closed or slot.dismissed
         ):

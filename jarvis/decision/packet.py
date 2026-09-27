@@ -204,8 +204,19 @@ def format_pending_clarification_note(packet: SituationPacket) -> str | None:
         return None
     labels = ", ".join(str(f.get("label", "")) for f in slot.fields)
     if slot.answered_turn_id is not None and slot.answered_turn_id == packet.current_turn_id:
+        blank = [
+            str(f.get("label", ""))
+            for f in slot.fields
+            if f.get("label") not in slot.answered_labels
+        ]
+        left_blank = (
+            f"They left {', '.join(blank)} blank: decide those yourself or do without them; "
+            "do not ask for them again. "
+            if blank else ""
+        )
         return (
             f"This message is the user's answer to your card “{slot.question}” ({labels}). "
+            f"{left_blank}"
             "Fields you did not mark one-off are already saved in [About the user]. "
             "Carry on with what they asked for."
         )
