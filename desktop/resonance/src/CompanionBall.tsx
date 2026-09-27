@@ -7,12 +7,11 @@ export const HOLD_MS = 650;
 const HOME_SCALE = .5;
 export type Place = 'home' | 'peek' | 'out' | 'dock';
 export type Point = { x: number; y: number };
-export type Lobe = { left: number; right: number; height: number; notched: boolean; tucked?: boolean };
-// lift: how far the canvas rides up with the tucked island (0 while the Dashboard or a notice holds her).
+export type Lobe = { left: number; right: number; height: number; notched: boolean };
 // `homeFace`: she wears `expr` and follows `look` even at home (a notice hangs from the notch and she watches it from there).
 // `away`: out at the text caret for dictation (ADR 0058), drawn by another window; `happy` when she comes back from pasting.
 // `deep`: think mode is on and she is idle, so her eyes keep its colour, in the island too (ADR 0064).
-export type BallTarget = { place: Place; expr: ExprId; pressed: boolean; anchors: Record<Place, Point>; homeGlass: boolean; lift: number; homeFace?: boolean;
+export type BallTarget = { place: Place; expr: ExprId; pressed: boolean; anchors: Record<Place, Point>; homeGlass: boolean; homeFace?: boolean;
   away?: boolean; happy?: boolean; deep?: boolean };
 // With her glass showing at home, this long without the cursor moving sends her to sleep there.
 const DOZE_MS = 10 * 60_000;
@@ -34,8 +33,8 @@ function lobePath({ left, right, height: h, notched }: Lobe) {
     : `${side} L ${right - r} ${h} Q ${right} ${h} ${right} ${h - r} L ${right} ${s} Q ${right} 0 ${right + s} 0 L ${right + s} -20 Z`;
 }
 
-export function CompanionBall({ width, height, lobe, lift, target, look, handle, skin, label, onPress, onRelease, onCancel, onMove }: {
-  width: number; height: number; lobe: Lobe; lift: number; target: BallTarget; look: RefObject<Point | null>; handle: RefObject<BallHandle | null>;
+export function CompanionBall({ width, height, lobe, target, look, handle, skin, label, onPress, onRelease, onCancel, onMove }: {
+  width: number; height: number; lobe: Lobe; target: BallTarget; look: RefObject<Point | null>; handle: RefObject<BallHandle | null>;
   skin: Skin; label: string; onPress: () => void; onRelease: () => void; onCancel: () => void; onMove: () => void;
 }) {
   const latest = useRef(target), moved = useRef(onMove), firstSkin = useRef(skin), size = useRef({ width, height });
@@ -127,8 +126,8 @@ export function CompanionBall({ width, height, lobe, lift, target, look, handle,
       };
       const deg = angle * 180 / Math.PI;
       silhouette.current!.setAttribute('transform', `translate(${x} ${y + pivot * scale}) rotate(${deg}) scale(${1 + flight} ${1 / Math.sqrt(1 + flight)}) rotate(${-deg}) scale(${scale} ${scale * squat}) translate(${jx * R} ${jy * R - pivot}) scale(${bx} ${by})`);
-      // The goo only matters where the ball meets the island, and not while it is tucked away or out at the caret.
-      silhouette.current!.style.display = y - R * scale - island.current.lobe.height < 26 && !island.current.lobe.tucked && slipX === null && !hidden ? '' : 'none';
+      // The goo only matters where the ball meets the island, and not while she is out at the caret.
+      silhouette.current!.style.display = y - R * scale - island.current.lobe.height < 26 && slipX === null && !hidden ? '' : 'none';
 
       const { lobe, path } = island.current, S = Math.round(2 * 1.3 * R * d);
       ctx.setTransform(d, 0, 0, d, 0, 0); ctx.clearRect(0, 0, size.current.width, size.current.height);
@@ -174,7 +173,7 @@ export function CompanionBall({ width, height, lobe, lift, target, look, handle,
       const light = core.light.glow.map(v => Math.round(v * 255)).join(' ');
       if (light !== lit) { lit = light; document.documentElement.style.setProperty('--glow', light); }
 
-      hit.current!.style.transform = `translate(${x - R - 4}px, ${y - R - 4 - t.lift}px) scale(${scale})`;
+      hit.current!.style.transform = `translate(${x - R - 4}px, ${y - R - 4}px) scale(${scale})`;
       if (hit.current!.dataset.place !== shown) hit.current!.dataset.place = shown;
       // She can slide under a resting cursor; hit testing must follow her, not only the mouse.
       if (moving) moved.current();
@@ -214,9 +213,9 @@ export function CompanionBall({ width, height, lobe, lift, target, look, handle,
           <feColorMatrix values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 18 -8"/>
         </filter>
       </defs>
-      <g filter="url(#cb-goo)"><path ref={islandShape} className="companion-island" d={lobeD} style={lift ? { transform: `translateY(${-lift}px)` } : undefined}/><circle ref={silhouette} r={R}/></g>
+      <g filter="url(#cb-goo)"><path ref={islandShape} className="companion-island" d={lobeD}/><circle ref={silhouette} r={R}/></g>
     </svg>
-    <canvas ref={canvas} className="companion-canvas" style={{ width, height, transform: target.lift ? `translateY(${-target.lift}px)` : undefined }} aria-hidden="true"/>
+    <canvas ref={canvas} className="companion-canvas" style={{ width, height }} aria-hidden="true"/>
     <button ref={hit} className="companion-hit" data-hit aria-label={label} style={{ width: 2 * R + 8, height: 2 * R + 8 }}
       onPointerDown={event => { if (event.button !== 0) return; event.currentTarget.setPointerCapture(event.pointerId); onPress(); }}
       onPointerUp={onRelease} onPointerCancel={onCancel} onLostPointerCapture={onCancel}

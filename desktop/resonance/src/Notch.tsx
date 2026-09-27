@@ -15,7 +15,7 @@ type Point = { x: number; y: number };
 type Group = 'work' | 'err' | 'done';
 type Box = { key: string; kind: 'turn' | 'one' | 'stack'; group: Group; ids: string[]; x0: number; x1: number; cx: number };
 type Rect = { l: number; r: number; d: number };
-export type NotchGeo = { width: number; top: number; notchR: number; baseL: number; lift: number; hidden: boolean };
+export type NotchGeo = { width: number; top: number; notchR: number; baseL: number };
 export type NotchAct = { jump: (a: Agent) => void; answer: (id: string) => void; read: (ids: string[]) => void; clear: (ids: string[]) => void };
 // A pop names sessions; a card is a needs-you card the companion builds.
 export type NotchNote = { key: string; pop?: string[]; card?: ReactNode; onClose: () => void };
@@ -202,13 +202,11 @@ export function Notch({ look, agents, unread, cleared, geo, cursor, note, quiet,
       // the stars keep their places, their looks and counts follow along, and the row catches up once you leave.
       if (st.drag || !st.boxes.length || !(st.dropFor || inWing)) {
         const held = st.drag?.box.ids ?? [], slots: Omit<Box, 'x0' | 'x1' | 'cx'>[] = [];
-        if (!g.hidden) {
-          if (turn.length) slots.push({ key: 'turn', kind: 'turn', group: 'work', ids: turn.map(a => a.id) });
-          for (const group of GROUPS) {
-            const ts = stars.filter(a => groupOf(a.state) === group && !held.includes(a.id));
-            if (ts.length >= FOLD_AT) slots.push({ key: `stack:${group}`, kind: 'stack', group, ids: ts.map(a => a.id) });
-            else slots.push(...ts.map(a => ({ key: a.id, kind: 'one' as const, group, ids: [a.id] })));
-          }
+        if (turn.length) slots.push({ key: 'turn', kind: 'turn', group: 'work', ids: turn.map(a => a.id) });
+        for (const group of GROUPS) {
+          const ts = stars.filter(a => groupOf(a.state) === group && !held.includes(a.id));
+          if (ts.length >= FOLD_AT) slots.push({ key: `stack:${group}`, kind: 'stack', group, ids: ts.map(a => a.id) });
+          else slots.push(...ts.map(a => ({ key: a.id, kind: 'one' as const, group, ids: [a.id] })));
         }
         let x = g.notchR + PAD;
         st.boxes = slots.map(b => {
@@ -369,7 +367,7 @@ export function Notch({ look, agents, unread, cleared, geo, cursor, note, quiet,
   const dropNode = !dropKey || !list.length ? null : dropKey === 'turn' ? <TurnList turn={list} look={look} act={act}/>
     : dropBox?.kind === 'stack' ? <Stack group={dropBox.group} members={list} open={openRows} toggle={toggle} look={look} act={act}/> : <Peek a={list[0]} look={look} act={act}/>;
   const popAgents = shownNote?.pop?.map(id => agents.find(a => a.id === id)).filter((a): a is Agent => !!a) ?? [];
-  return <div ref={root} className="notch" style={{ transform: geo.lift ? `translateY(${-geo.lift}px)` : undefined }}>
+  return <div ref={root} className="notch">
     <svg className="notch-shape" aria-hidden="true"><path ref={shape}/></svg>
     <canvas ref={fx} className="notch-fx" data-look={look} aria-hidden="true" style={{ width: geo.width, height: FX_H }}/>
     <div ref={hit} className="notch-hit" data-hit aria-hidden="true"

@@ -218,27 +218,34 @@ function companion(shown?: () => void) {
   // sinks her into this island first, answers display-ready, and only then the window moves.
   const move = () => { clearTimeout(moving); moving = undefined; pending = null; current = home(); place(); };
   const leave = () => { win.webContents.send('display-leave'); moving = setTimeout(move, 900); };
-  // ⌘ with the cursor in the menu bar row tucks her away on that side of the camera, so the menu bar items
-  // and macOS's overflow arrow under her can be clicked; she comes back 3 s after ⌘ is let go.
-  // Without a notch she is one pill, and all of her goes.
-  let command = false, tucked = { left: false, right: false }, untuck: ReturnType<typeof setTimeout> | undefined;
-  const tuck = (next: typeof tucked) => { tucked = next; win.webContents.send('tuck', next); };
+  // ⌘ with the cursor in the menu bar row hides all of her at once: the island, the marks and whatever hangs below
+  // them (a notice, a card, the Dashboard), so the menu bar items and macOS's overflow arrow under her can be
+  // clicked; she comes back 3 s after ⌘ is let go. Hidden, the window takes no clicks and the page is told the
+  // cursor went far away, so what hover opened closes and nothing opens behind the glass.
+  let command = false, tucked = false, pass = true, untuck: ReturnType<typeof setTimeout> | undefined;
+  const tuck = (on: boolean) => {
+    tucked = on; last = '';
+    win.setIgnoreMouseEvents(on || pass, { forward: true });
+    if (on) win.webContents.send('cursor', { x: -1e4, y: -1e4 });
+  };
   const cursor = setInterval(() => {
     const point = screen.getCursorScreenPoint();
     dictation?.tick(point);
     if (win.isDestroyed() || !win.isVisible()) return;
     const bounds = frame();
     const value = { x: point.x - bounds.x, y: point.y - bounds.y }, key = `${value.x},${value.y}`;
-    if (key !== last) { last = key; win.webContents.send('cursor', value); }
+    if (key !== last && !tucked) { last = key; win.webContents.send('cursor', value); }
+    // She fades out in about 130 ms and back in about 200 ms.
+    const alpha = win.getOpacity();
+    if (alpha !== (tucked ? 0 : 1)) win.setOpacity(tucked ? Math.max(0, alpha - .12) : Math.min(1, alpha + .08));
     const down = !!material?.commandDown();
     if (down !== command) {
       command = down;
       const d = current, spot = d && placement(d);
       if (down && d && spot && point.x >= d.bounds.x && point.x < d.bounds.x + d.bounds.width && point.y >= d.bounds.y && point.y <= d.bounds.y + spot.topInset) {
         clearTimeout(untuck);
-        const left = !spot.notchWidth || point.x < d.bounds.x + d.bounds.width / 2, right = !spot.notchWidth || !left;
-        tuck({ left: tucked.left || left, right: tucked.right || right });
-      } else if (!down && (tucked.left || tucked.right)) untuck = setTimeout(() => tuck({ left: false, right: false }), 3000);
+        if (!tucked) tuck(true);
+      } else if (!down && tucked) untuck = setTimeout(() => tuck(false), 3000);
     }
     const under = screen.getDisplayNearestPoint(point);
     if (moving || !follow) return;
@@ -249,7 +256,7 @@ function companion(shown?: () => void) {
   win.on('closed', () => { clearInterval(cursor); clearTimeout(moving); clearTimeout(untuck); dictation?.close(); });
   ipcMain.on('display-ready', event => { if (event.sender === win.webContents && moving) move(); });
   ipcMain.handle('placement', event => event.sender === win.webContents ? placement(target()) : null);
-  ipcMain.on('passthrough', (event, enabled) => { if (event.sender === win.webContents && typeof enabled === 'boolean') win.setIgnoreMouseEvents(enabled, { forward: true }); });
+  ipcMain.on('passthrough', (event, enabled) => { if (event.sender === win.webContents && typeof enabled === 'boolean') { pass = enabled; win.setIgnoreMouseEvents(enabled || tucked, { forward: true }); } });
   ipcMain.handle('focus-input', (event, enabled) => {
     if (event.sender !== win.webContents || typeof enabled !== 'boolean') return;
     // Key focus without activating the app, the same handshake as the capsule composer.

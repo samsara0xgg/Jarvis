@@ -27,7 +27,6 @@ try {
       placement: async () => ({ docked: false, topInset: 32, notchWidth: 185, surfaceWidth: 640, compactWidth: 0, displayId: 1 }),
       onPlacement: callback => { window.__placement = callback; return () => {}; },
       onDisplayLeave: callback => { window.__leave = callback; return () => {}; },
-      onTuck: callback => { window.__tuck = callback; return () => {}; },
       onDictation: callback => { window.__trip = callback; return () => {}; },
       wearing: skin => { window.__state.wearing = skin; },
       displayReady: () => { window.__state.ready++; },
@@ -496,41 +495,23 @@ try {
   await page.evaluate(() => window.__command('marks:spark'));
   check('10 the panel folds back into the notch when the pointer leaves', await drop.count() === 0);
 
-  // 12: ⌘ in the menu bar row tucks the side of the camera the cursor is on, so what sits under it can be clicked.
-  const islandBottom = () => page.locator('.companion-island').evaluate(e => e.getBoundingClientRect().bottom);
-  const starBottom = async () => { const b = await hit.boundingBox(); return b.y + b.height; };
+  // 12: ⌘ in the menu bar row hides the whole window (electron/companion.ts): it fades out, takes no clicks, and
+  // tells the page the cursor went far away, so what hover opened closes behind the glass.
+  const far = async () => { await page.mouse.move(600, 560); await page.evaluate(() => window.__cursor({ x: -1e4, y: -1e4 })); };
   await move(lobe.x, out.y);
   await waitPlace('out');
-  await page.evaluate(() => window.__tuck({ left: true, right: false }));
-  await page.waitForTimeout(120);
-  const along = await page.evaluate(() => ['.companion-island', '.companion-canvas'].map(s => getComputedStyle(document.querySelector(s)).transform));
-  check(`12 out under the notch, she goes up with the island in one motion, nothing of her trailing (${along.join(' | ')})`, along[0] !== 'none' && along[0] === along[1]);
-  await page.waitForTimeout(1380);
-  check('12 left of the camera, the island and she slide up off the screen; the marks stay',
-    await islandBottom() <= 0 && await starBottom() <= 0 && await alphaAt(lobe.x, 24) === 0 && await blackRight() > 440);
-  await shot('12-tucked-left');
-  await move(170, 10);
-  await page.waitForTimeout(80);
-  check('12 the menu bar under the tucked island gets its clicks', await page.evaluate(() => window.__state.passthrough === true));
-  await move(lobe.x - 20, 14);
-  await page.waitForTimeout(900);
-  check('12 tucked, the cursor where the island was does not bring her out', await starBottom() <= 0);
-  await move(lobe.x, out.y);
-  await page.waitForTimeout(900);
-  check('12 tucked, the cursor where she comes out does not bring her down either', await starBottom() <= 0);
-  await move(600, 560);
-  await page.evaluate(() => window.__tuck({ left: false, right: true }));
-  await page.waitForTimeout(1500);
-  check('12 right of the camera, the marks go under the notch and she is back in the island',
-    await blackRight() === 0 && await islandBottom() > 0 && await alphaAt(lobe.x, 24) > 200);
-  await move(440, 14);
-  await page.waitForTimeout(500);
-  check('12 the menu bar under the tucked marks gets its clicks, and no list opens',
-    await page.evaluate(() => window.__state.passthrough === true) && await page.locator('.notch-drop.is-open').count() === 0);
-  await move(600, 560);
-  await page.evaluate(() => window.__tuck({ left: false, right: false }));
-  await page.waitForTimeout(1500);
-  check('12 untucked, the marks come back', await blackRight() > 440);
+  await far();
+  await waitPlace('home');
+  check('12 hidden, she goes home and the window gives up its clicks', await page.evaluate(() => window.__state.passthrough === true));
+  await move(426, 14); await drop.waitFor();
+  await far(); await page.waitForTimeout(700);
+  check('12 hidden, the list the marks opened closes', await drop.count() === 0);
+  await move(320, 14);
+  await page.locator('.companion-dashboard.is-open').waitFor();
+  await far();
+  await page.waitForFunction(() => !document.querySelector('.companion-dashboard.is-open'), null, { timeout: 3000 });
+  await waitPlace('home');
+  check('12 hidden, the Dashboard the notch opened closes and she is home', await page.evaluate(() => window.__state.passthrough === true));
 
   // 07: the cursor rests on an external screen with no notch. She sinks into this island,
   // Electron moves the window only after display-ready, and she comes up dead centre there.
@@ -561,25 +542,6 @@ try {
   await shot('07-external-dock', { x: 120, y: 0, width: 400, height: 300 });
   await move(600, 560);
   await waitPlace('home');
-  await page.evaluate(() => window.__tuck({ left: true, right: true }));
-  await page.waitForTimeout(120);
-  const rides = await page.evaluate(() => ['.companion-island', '.companion-canvas', '.notch'].map(s => getComputedStyle(document.querySelector(s)).transform));
-  check(`12 without a notch the pill, she and the marks go up as one piece (${rides.join(' | ')})`, rides[0] !== 'none' && rides.every(t => t === rides[0]));
-  await page.waitForTimeout(1400);
-  check('12 without a notch the whole pill goes, its marks too', await islandBottom() <= 0 && await starBottom() <= 0 && await page.locator('.notch-hit').evaluate(e => e.getBoundingClientRect().bottom) <= 0);
-  await shot('12-external-tucked', { x: 120, y: 0, width: 400, height: 210 });
-  await move(268, 14);
-  await page.waitForTimeout(600);
-  check('12 the menu bar under the tucked pill gets its clicks and opens no Dashboard',
-    await page.evaluate(() => window.__state.passthrough === true) && await page.locator('.companion-dashboard.is-open').count() === 0);
-  const gooBottom = () => page.locator('.companion-stage circle').evaluate(e => getComputedStyle(e).display === 'none' ? -1 : e.getBoundingClientRect().bottom);
-  await move(320, out.y);
-  await page.waitForTimeout(900);
-  check('12 tucked without a notch, the cursor under the pill brings neither her nor a dark blob down', await starBottom() <= 0 && await gooBottom() <= 0);
-  await move(600, 560);
-  await page.evaluate(() => window.__tuck({ left: false, right: false }));
-  await page.waitForTimeout(1500);
-  check('12 untucked, the pill comes back', await islandBottom() > 0 && await starBottom() > 0);
   await page.reload();
   await page.waitForTimeout(800);
   check('08 her skin survives a restart', await skinOn() === 'aurora' && await wearing() === 'aurora');
