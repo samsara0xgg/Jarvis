@@ -239,8 +239,13 @@ directly on `main`. When the task is done and verified, land it
 stopping to ask in chat is not.
 
 1. Commit with the commit skill.
-2. Merge into `main` from the main checkout with `git merge --no-ff
-   <branch>`. Claude Code's worktree isolation refuses git commands
+2. Integrate into `main` from the main checkout. GitHub requires linear
+   history and rejects new merge commits. Use `git merge --ff-only <branch>`
+   when the branch is a linear descendant of `main`. Otherwise, rebase only
+   the task's unpublished commits onto `main` first, then fast-forward.
+   For an older shared branch, bring the selected changes over as ordinary
+   commits and preserve its source history. Never force-push `main`.
+   Claude Code's worktree isolation refuses git commands
    aimed at the main checkout from inside a worktree; call
    `ExitWorktree` with action `keep` first.
 3. Restart what the change touches, from the main checkout root:
