@@ -7,7 +7,9 @@ rule for its mode says the call must be confirmed first.
 The ``mcp`` SDK is asyncio-only and its client context manager must be
 entered and exited from one task, so :class:`McpServers` owns a private loop
 thread: one task per server holds the client open, and the synchronous
-handlers hop onto that loop for every call.
+handlers hop onto that loop for every call. Codex's ``enabled_tools`` narrows
+a server's menu; a server that lists ``browser_snapshot`` runs every tool
+behind the browser guard (ADR 0059).
 
 A remote entry (``url``) authenticates with ``headers`` (``$VAR`` expanded
 from the daemon environment) or with ``auth: oauth``, whose token file lives
@@ -29,6 +31,7 @@ import threading
 from collections.abc import Mapping
 from concurrent.futures import Future
 from contextlib import AsyncExitStack, suppress
+from functools import partial
 from typing import TYPE_CHECKING, Any, Final
 
 import httpx2
@@ -36,6 +39,7 @@ from mcp import Client, StdioServerParameters
 from mcp import types as mcp_types
 from mcp.client.streamable_http import streamable_http_client
 
+from jarvis.execution.browser_guard import SNAPSHOT_TOOL, guarded
 from jarvis.execution.mcp_oauth import (
     DEFAULT_OAUTH_CALLBACK_PORT,
     LOGIN_HINT,
@@ -188,6 +192,7 @@ class McpServers:
         self.connected_servers: set[str] = set()
         self._listed: list[tuple[str, Client, mcp_types.Tool]] = []
         self._clients: dict[str, Client] = {}
+        self._browsers: set[str] = set()
 
     def token_path(self, server: str) -> Path:
         """Where ``server``'s OAuth login lives; the login command reports it."""
@@ -297,7 +302,10 @@ class McpServers:
         for server, spec in servers.items():
             try:
                 client = self._open(server, spec)
-                listed = self._run(self._list(client))
+                every = self._run(self._list(client))
+                # Codex's `enabled_tools`: only the named tools reach the menu.
+                allowed = spec.get("enabled_tools")
+                listed = [t for t in every if allowed is None or t.name in allowed]
                 modes = [approval_mode(spec, one.name) for one in listed]
             except Exception:  # noqa: BLE001 — a missing binary, a refused URL, a hung handshake, a bad approval mode: warn, never fail boot.
                 LOGGER.warning(
@@ -305,6 +313,8 @@ class McpServers:
                 )
                 continue
             self._clients[server] = client
+            if any(t.name == SNAPSHOT_TOOL for t in every):
+                self._browsers.add(server)  # ADR 0059
             pairs = zip(listed, modes, strict=True)
             tools.extend(self._wrap(server, client, one, mode) for one, mode in pairs)
             self.connected_servers.add(server)
@@ -324,9 +334,14 @@ class McpServers:
         # ADR 0033: a call that needs approval sits at the confirmation threshold,
         # so the Pre-action Gate asks Allen before it runs.
         ask = needs_approval(listed.annotations, mode)
+        run: Callable[[Mapping[str, Any]], dict[str, Any]] = partial(
+            self._call, server, client, listed.name
+        )
+        if server in self._browsers:
+            run = guarded(listed.name, run, partial(self._snapshot, server, client))
 
         def call(args: Mapping[str, Any], _ctx: ToolContext) -> dict[str, Any]:
-            return self._call(server, client, listed.name, args)
+            return run(args)
 
         return Tool(
             name=mcp_tool_name(server, listed.name),
@@ -350,6 +365,14 @@ class McpServers:
             msg = f"{server}: {type(exc).__name__}: {exc}"
             raise ToolError(msg, code="mcp_server") from exc
         return _payload(result)
+
+    def _snapshot(self, server: str, client: Client) -> str:
+        """The page as the browser guard sees it; a refused snapshot's text names a dialog."""
+        try:
+            payload = self._call(server, client, SNAPSHOT_TOOL, {})
+            return "\n".join(v for v in payload.values() if isinstance(v, str))
+        except ToolError as exc:
+            return str(exc)
 
     def call(self, server: str, tool: str, args: Mapping[str, Any]) -> dict[str, Any]:
         """Call one tool of a connected server outside a model turn (ADR 0036 and 0051 readers).

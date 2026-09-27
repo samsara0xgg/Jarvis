@@ -123,8 +123,9 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger(__name__)
 
 # Hard ceiling on the tool-use loop in `decide()`. Defends against an LLM
-# that keeps proposing tool calls without converging.
-_DEFAULT_MAX_TOOL_ITERATIONS = 5
+# that keeps proposing tool calls without converging; `llm.max_tool_iterations`
+# replaces it (ADR 0060).
+DEFAULT_MAX_TOOL_ITERATIONS = 5
 
 # ADR-0012 §3 D4/V2 — confirmation TTL default (10 minutes). Config-
 # overridable via `config/jarvis.yaml`'s `confirmation.ttl_ms`
@@ -601,7 +602,7 @@ class DecideContext:
     lifecycle: LifecycleLike
     llm_client: LLMClient
     system_prompt: str
-    max_tool_iterations: int = _DEFAULT_MAX_TOOL_ITERATIONS
+    max_tool_iterations: int = DEFAULT_MAX_TOOL_ITERATIONS
     tier0_table: Tier0Table | None = None
     entity_resolver: EntityResolverLike | None = None
     write_entity_resolver: EntityResolverLike | None = None
@@ -3095,6 +3096,7 @@ def _latest_event_uid_of_type(
 
 
 __all__ = [
+    "DEFAULT_MAX_TOOL_ITERATIONS",
     "AttentionChannel",
     "DecideContext",
     "DecideResult",

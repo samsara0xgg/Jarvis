@@ -53,6 +53,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import yaml
 
 from jarvis.decision import (
+    DEFAULT_MAX_TOOL_ITERATIONS,
     DecideContext,
     EntityResolverLike,
     LifecycleLike,
@@ -637,6 +638,15 @@ def _confirmation_ttl_ms(config: Mapping[str, Any]) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         return _FALLBACK_CONFIRMATION_TTL_MS
     return value if value > 0 else _FALLBACK_CONFIRMATION_TTL_MS
+
+
+def _max_tool_iterations(config: Mapping[str, Any]) -> int:
+    """``llm.max_tool_iterations`` (ADR 0060); unset or not a positive int keeps decide()'s 5."""
+    block = config.get("llm")
+    value = block.get("max_tool_iterations") if isinstance(block, Mapping) else None
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return DEFAULT_MAX_TOOL_ITERATIONS
+    return value
 
 
 def _wave1_feature_flags(config: Mapping[str, Any]) -> Wave1FeatureFlags:
@@ -2755,6 +2765,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             # ADR-0012 §3 D4/V2 — confirmation TTL, config-overridable
             # via `confirmation.ttl_ms` so the live burn can shorten it.
             confirmation_ttl_ms=_confirmation_ttl_ms(runtime.config),
+            max_tool_iterations=_max_tool_iterations(runtime.config),
             # ADR-0012 §3 D6 — answer-path grammar, threaded the same
             # way tier0_table is threaded.
             confirm_grammar_table=runtime.confirm_grammar_table,

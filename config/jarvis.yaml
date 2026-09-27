@@ -18,11 +18,18 @@ llm:
   timeout_s: 30
   max_retries: 1
 
+  # ADR 0060 — 一轮对话最多几次带工具的模型请求（不写就是 5）。订一次酒店
+  # 实测要 16–18 次，所以放到 40；到顶后还会再发一次不带工具的请求来收尾。
+  max_tool_iterations: 40
+
   presets:
     # 对话（语音和文字）2026-09-25 起用它。同一段 14 句真实语音对话离线重放：
     # 带全部历史 0/14 跑题（fast 13/14），首 token 约 1s（短历史 0.75s），
     # 被打断的故事能接回来。不开思考。脚本和数据在
     # ~/.jarvis-realtime-test/voice-replay-2026-09-25/。
+    # 2026-09-26 重放 111 句旧话：轻度思考（须走 /v1/responses）让不查东西的
+    # 回答中位数 1.9 → 3.1 秒，所以默认仍不开。数据在
+    # ~/.jarvis-realtime-test/think-replay-2026-09-26/。
     luna:
       model: gpt-5.6-luna
       base_url: "https://api.openai.com/v1"
