@@ -123,6 +123,8 @@ function firstRun() {
   ipcMain.handle('first-run-permission', (event, kind, ask, note) => mine(event) ? permission(kind, ask, note) : '');
   ipcMain.on('first-run-open', (event, page) => { if (mine(event) && Object.hasOwn(PAGES, page)) void shell.openExternal(PAGES[page]); });
   ipcMain.on('first-run-passthrough', (event, on) => { if (mine(event) && typeof on === 'boolean') fr.setIgnoreMouseEvents(on, { forward: true }); });
+  // Setup is not marked done, so the next launch starts the first run again.
+  ipcMain.on('first-run-quit', event => { if (mine(event)) app.quit(); });
   // The companion comes up under her last frame, then the first launch closes.
   ipcMain.once('first-run-done', () => companion(() => setTimeout(() => fr.destroy(), 400)));
   fr.loadFile(path.join(here, '../dist/firstrun.html'));

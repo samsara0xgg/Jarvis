@@ -17,6 +17,7 @@ declare global { interface Window { firstRun: {
   open: (page: 'openai' | 'minimax' | 'tavily') => void;
   passthrough: (on: boolean) => void;
   done: () => void;
+  quit: () => void;
 } } }
 const $ = <T extends HTMLElement = HTMLElement>(s: string, r: ParentNode = document) => r.querySelector(s) as T;
 const clamp = (v: number, lo = 0, hi = 1) => Math.max(lo, Math.min(hi, v));
@@ -83,7 +84,7 @@ type Conn = 'notion' | 'ms' | 'web';
 type Reason = 'unauthorized' | 'model_denied' | 'quota' | 'rate_limited' | 'network' | 'timeout' | 'missing_key';
 const TX = {
   zh: {
-    tag: '住在你 Mac 上的助手', go: '开始', goHint: '或者按回车', skipIntro: '跳过动画', radec: '赤经 {ra}   赤纬 {dec}',
+    tag: '住在你 Mac 上的助手', go: '开始', goHint: '或者按回车', skipIntro: '跳过动画', quit: '退出', radec: '赤经 {ra}   赤纬 {dec}',
     next: '继续', skip: '跳过', must: '这一步必填', enter: '进入 {a}', test: '测试', testing: '测试中',
     say1: '先认识一下。我该怎么称呼你？', ph1: '你的名字', src1: '来自 Mac 账户', note1: '只用来称呼你，随时能在设置里改。', hi1: '你好，{u}！',
     say2: '那我呢？给我起个名字吧。', rec: '推荐', nova: '新星', own: '自己起', ph2: '给她起个名字',
@@ -121,7 +122,7 @@ const TX = {
     bubble: '{u}，我在这儿。双击我，随时找我。',
   },
   en: {
-    tag: 'The assistant that lives on your Mac', go: 'Begin', goHint: 'or press Return', skipIntro: 'Skip animation', radec: 'RA {ra}   Dec {dec}',
+    tag: 'The assistant that lives on your Mac', go: 'Begin', goHint: 'or press Return', skipIntro: 'Skip animation', quit: 'Quit', radec: 'RA {ra}   Dec {dec}',
     next: 'Continue', skip: 'Skip', must: 'Required', enter: 'Enter {a}', test: 'Test', testing: 'Testing',
     say1: 'Let’s get acquainted. What should I call you?', ph1: 'Your name', src1: 'From your Mac account', note1: 'Only used to address you. Change it any time in Settings.', hi1: 'Hi, {u}!',
     say2: 'And me? Give me a name.', rec: 'Suggested', nova: 'New star', own: 'Your own', ph2: 'Her name',
@@ -437,7 +438,7 @@ function bedCut(fade = .025, padFade = fade) {
 
 // ---------- DOM ----------
 const screenEl = $('#screen'), intro = $('#intro'), word = $('#word'), halo = $('#halo');
-const panel = $('#panel'), pin = $('#pin'), bubble = $('#bubble'), skipBtn = $('#skip-intro');
+const panel = $('#panel'), pin = $('#pin'), bubble = $('#bubble'), skipBtn = $('#skip-intro'), quitBtn = $('#quit');
 const bg = $<HTMLCanvasElement>('#bg'), fg = $<HTMLCanvasElement>('#fg');
 const sky = $<HTMLCanvasElement>('#sky'), glc = $<HTMLCanvasElement>('#gl');
 const bctx = bg.getContext('2d')!, fctx = fg.getContext('2d')!, sctx = sky.getContext('2d')!;
@@ -942,7 +943,7 @@ function refreshFoot() { const b = pin.querySelector<HTMLButtonElement>('[data-a
 function render(n: number) {
   stepN = n; pin.classList.remove('leave');
   pin.innerHTML = `<p class="say" style="--i:0"></p><div class="body" style="--i:1">${body(n)}</div>${foot(n)}`;
-  setLine(sayOf(n)); drawLine(); face = FACE[n]; measure();
+  setLine(sayOf(n)); drawLine(); face = FACE[n]; measure(); quitBtn.textContent = tx().quit;
   const f = pin.querySelector<HTMLInputElement>(n === 1 ? '#f-user' : n === 4 ? '#f-key' : '#none');
   if (f) { f.focus({ preventScroll: true }); if (n === 1) f.select(); }
   if (n === 6) for (const k of PERMS) void bridge.permission(k, false).then(s => { if (s && !S.perms[k]) { S.perms[k] = s; refresh(); } });
@@ -1354,6 +1355,7 @@ screenEl.addEventListener('pointermove', e => { const r = screenEl.getBoundingCl
 screenEl.addEventListener('pointerleave', () => { pointer = null; });
 $('#go').addEventListener('click', moveIn);
 skipBtn.addEventListener('click', skipIntro);
+quitBtn.addEventListener('click', () => bridge.quit());
 pin.addEventListener('click', e => {
   const b = (e.target as Element).closest<HTMLElement>('[data-act]');
   if (!b || (b as HTMLButtonElement).disabled || b.getAttribute('aria-disabled') === 'true') return;
@@ -1390,6 +1392,7 @@ pin.addEventListener('paste', e => {
 });
 addEventListener('keydown', e => {
   const tgt = e.target as HTMLElement;
+  if (e.metaKey && e.key.toLowerCase() === 'q') { bridge.quit(); return; }
   if (e.key === 'Escape') { if (phase === 'intro') skipIntro(); return; }
   if (e.key !== 'Enter' || tgt.tagName === 'BUTTON' || tgt.tagName === 'A') return;
   if (phase === 'intro') skipIntro();
@@ -1407,7 +1410,7 @@ addEventListener('keydown', e => {
 void bridge.info().then(info => {
   TOP = info.top; NOTCH = info.notch; PORT = info.port;
   S.account = S.user = info.name; S.lang = S.sysLang = info.lang;
-  $('#go').textContent = tx().go; $('#go-hint').textContent = tx().goHint; skipBtn.textContent = tx().skipIntro;
+  $('#go').textContent = tx().go; $('#go-hint').textContent = tx().goHint; skipBtn.textContent = tx().skipIntro; quitBtn.textContent = tx().quit;
   resetWord(); new ResizeObserver(resize).observe(screenEl); resize(); snapIsland();
   start(info.cursor);
   requestAnimationFrame(frame);
