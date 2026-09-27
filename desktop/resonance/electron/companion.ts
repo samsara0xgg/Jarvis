@@ -8,6 +8,7 @@ import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { daemonToken, registerDaemonBridge, sendDaemonKey } from './bridge.js';
 import { startDaemon } from './daemon.js';
 import { setupDictation } from './dictation.js';
+import { setupAgents } from './agentsWindow.js';
 // The companion: 星核, who lives beside the notch, with her Dashboard. She talks to the daemon on
 // JARVIS_INHERENT_BRIDGE_PORT like the capsule does; the daemon owns mic and speaker, so she never
 // records audio or plays speech herself. `--demo` runs her on the built-in demo data instead.
@@ -301,6 +302,9 @@ function companion(shown?: () => void) {
   tray.setTitle('●'); tray.setToolTip(demo ? 'Jarvis 小球 · 演示数据' : 'Jarvis 小球');
   // The renderer owns her skins and expressions and reports them; every item just sends a command back.
   const send = (command: string) => () => win.webContents.send('command', command);
+  // ADR 0072: the Agents window, from her menu or the Dashboard's Agents page. Live only: its sessions are real. Not in
+  // the installed app yet: it runs on Allen's own subscription.
+  const agents = demo || app.isPackaged ? null : setupAgents({ preload: path.join(here, 'preload.cjs'), page: path.join(here, '../dist/agents.html'), host: path.join(here, 'agents/host.js') });
   // Spec §15.3: ⌥Tab opens the island's list of agent sessions for the keys, and closes it again.
   if (!demo && !globalShortcut.register('Alt+Tab', send('agent-keys'))) console.warn('Shortcut unavailable: Alt+Tab');
   app.on('will-quit', () => globalShortcut.unregister('Alt+Tab'));
@@ -314,6 +318,7 @@ function companion(shown?: () => void) {
   const menu = (next: MenuModel) => { model = next; const t = (en: string, zh: string) => model.lang === 'zh' ? zh : en; tray.setContextMenu(Menu.buildFromTemplate([
     { label: demo ? t('Jarvis companion · demo data', 'Jarvis 小球 · 演示数据') : t('Jarvis companion', 'Jarvis 小球'), enabled: false },
     { label: t('Open Dashboard', '打开 Dashboard'), click: open('dashboard') },
+    ...agents ? [{ label: t('Agents window', 'Agents 窗口'), click: () => { void agents.open(); } }] : [],
     { label: t('Settings…', '设置…'), click: open('settings') },
     { label: t('Dashboard layout', 'Dashboard 布局'), submenu: [
       { label: t('Around her (one column)', '围着她（一列）'), type: 'radio', checked: model.layout !== 'grid', click: send('layout:around') },

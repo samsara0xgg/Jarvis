@@ -1,0 +1,915 @@
+// The Agents window (ADR 0067), built from design lab FHrstDSC v2. It is cut from her glass like the Dashboard, she sits
+// at the top of the list and answers what the sessions do, and the sounds are her kit exactly as the notch plays them.
+// The sessions themselves run in the agent host; this page draws what the host's event stream says and sends back
+// what Allen does. Drawing is batched into one frame, rows and messages are keyed so only what changed is touched,
+// each session keeps its own conversation so switching is instant, and only marks that move repaint.
+import type { Agent, Catalog, Event, File as Upload, Item, Req, Sess, St, Step } from '../../electron/agents/types';
+import { drawMark } from '../AgentMarks';
+import { palette, play, scoreOf } from '../soundKit';
+import { Core, TAKES, pick, type ExprId } from '../starCore';
+import './agents.css';
+
+declare global { interface Window { agents?: {
+  folder(): Promise<string>; terminal(cwd: string, cmd: string): Promise<boolean>; reveal(cwd: string): Promise<void>;
+} } }
+
+const $ = <T extends Element = HTMLElement>(s: string, root: ParentNode = document) => root.querySelector(s) as T;
+const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+const DPR = () => Math.min(2, devicePixelRatio || 1);
+const reduced = matchMedia('(prefers-reduced-motion: reduce)');
+// The app's own curves: the shared spring from companion.css, and a quick ease-out for fades.
+const SPRING = 'linear(0,.054,.178,.329,.481,.617,.731,.82,.888,.936,.969,.99,1.003,1.01,1.014,1.015,1.014,1.012,1.01,1.008,1)';
+const OUT = 'cubic-bezier(.23,1,.32,1)';
+const anim = (el: Element, kf: Keyframe[], ms: number, easing = OUT, fill: FillMode = 'none') => reduced.matches ? null : el.animate(kf, { duration: ms, easing, fill });
+// Only what changed is touched: an element remembers the markup it was given and skips an identical one.
+const H = new WeakMap<Element, string>();
+const patch = (el: Element, html: string) => { if (H.get(el) === html) return false; el.innerHTML = html; H.set(el, html); return true; };
+const cls = (el: Element, c: string) => { if (el.className !== c) el.className = c; };
+const store = {
+  get(k: string) { try { return localStorage.getItem(k); } catch { return null; } },
+  set(k: string, v: string) { try { localStorage.setItem(k, v); } catch { /* not remembered, that is all */ } },
+};
+
+// ---------- the host ----------
+const API = `http://127.0.0.1:${new URLSearchParams(location.search).get('port') ?? '8016'}`;
+async function call<T = Record<string, unknown>>(route: string, body?: unknown, method = body === undefined ? 'GET' : 'POST'): Promise<T> {
+  const r = await fetch(API + route, { method, headers: body === undefined ? undefined : { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(typeof j.error === 'string' ? j.error : `后台答不上来（${r.status}）`);
+  return j as T;
+}
+const toastEl = $('.toast');
+let toastTimer = 0;
+function toast(text: string) {
+  toastEl.textContent = text; toastEl.hidden = false;
+  anim(toastEl, [{ opacity: 0, transform: 'translate(-50%, 8px)' }, { opacity: 1, transform: 'translate(-50%, 0)' }], 320, SPRING);
+  clearTimeout(toastTimer); toastTimer = window.setTimeout(() => { toastEl.hidden = true; }, 5200);
+}
+const tryCall = (route: string, body?: unknown, method?: string) => call(route, body, method).catch(e => { toast(e instanceof Error ? e.message : String(e)); return null; });
+
+// ---------- words ----------
+const STATE: Record<St, string> = { work: '在干活', pack: '在压缩', wait: '等你', done: '做完了', err: '出错了' };
+const NAME: Record<Agent, string> = { claude: 'Claude Code', codex: 'Codex' };
+const home = (p: string) => p.replace(/^\/Users\/[^/]+/, '~');
+function age(ms: number) {
+  const m = Math.floor((Date.now() - ms) / 60000);
+  return m < 1 ? '刚刚' : m < 60 ? `${m} 分钟` : m < 1440 ? `${Math.floor(m / 60)} 小时` : `${Math.floor(m / 1440)} 天`;
+}
+function ago(since?: number) { const t = (Date.now() - (since ?? Date.now())) / 1000; return t < 60 ? `${Math.max(1, Math.round(t))} 秒` : `${Math.round(t / 60)} 分钟`; }
+
+// ---------- markdown, the part agents use, block by block so a stream only redraws its last block ----------
+const inl = (x: string) => esc(x).replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+  .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '<a title="$2">$1</a>');
+function mdBlocks(src: string) {
+  const out: string[] = [], lines = src.split('\n');
+  let list = '', lis: string[] = [], para: string[] = [];
+  const endP = () => { if (para.length) out.push(`<p>${para.map(inl).join('<br>')}</p>`); para = []; };
+  const endL = () => { if (list) out.push(`<${list}>${lis.join('')}</${list}>`); list = ''; lis = []; };
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i], li = /^\s*(?:[-*+]|(\d+)[.)])\s+(.*)/.exec(l), h = /^#{1,6}\s+(.*)/.exec(l);
+    if (l.trimStart().startsWith('```')) {
+      endP(); endL();
+      const code: string[] = [];
+      while (++i < lines.length && !lines[i].trimStart().startsWith('```')) code.push(lines[i]);
+      out.push(`<pre>${esc(code.join('\n'))}</pre>`);
+    } else if (/^\s*\|/.test(l)) {
+      // A table reads fine in monospace, and costs nothing to lay out.
+      endP(); endL();
+      const rows = [l];
+      while (i + 1 < lines.length && /^\s*\|/.test(lines[i + 1])) rows.push(lines[++i]);
+      out.push(`<pre>${esc(rows.filter(r => !/^\s*\|[\s:|-]+\|\s*$/.test(r)).join('\n'))}</pre>`);
+    } else if (h) { endP(); endL(); out.push(`<h4>${inl(h[1])}</h4>`); }
+    else if (/^\s*>\s?/.test(l)) { endP(); endL(); out.push(`<blockquote>${inl(l.replace(/^\s*>\s?/, ''))}</blockquote>`); }
+    else if (li) { endP(); const k = li[1] ? 'ol' : 'ul'; if (list !== k) { endL(); list = k; } lis.push(`<li>${inl(li[2])}</li>`); }
+    else if (!l.trim()) { endP(); endL(); }
+    else { endL(); para.push(l); }
+  }
+  endP(); endL();
+  return out;
+}
+const md = (src: string) => `<div class="md">${mdBlocks(src).join('')}</div>`;
+// The caret is one of her stars, at the end of the last line written.
+const CARET = '<i class="caret" aria-hidden="true"></i>';
+const withCaret = (b: string) => { const m = /<\/(?:p|li|pre|h4|blockquote)>(?:<\/[uo]l>)?$/.exec(b); return m ? b.slice(0, m.index) + CARET + b.slice(m.index) : b + CARET; };
+
+// ---------- small pieces ----------
+const star = (id: string, size = 12) => `<span class="mk" style="--s:${size}px"><canvas data-mk="${esc(id)}" data-size="${size}"></canvas></span>`;
+const svg = (d: string, w = 13, extra = '') => `<svg viewBox="0 0 16 16" width="${w}" height="${w}" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"${extra}>${d}</svg>`;
+const I = {
+  pin: svg('<path d="M6 2.5h4l-.6 4 2.3 2.2H4.3L6.6 6.5z"/><path d="M8 8.7V13.5"/>'),
+  park: svg('<circle cx="8" cy="8" r="5.5"/><path d="M8 5v3.2l2 1.3"/>'),
+  box: svg('<path d="M2.5 3.5h11v3h-11zM3.5 6.5v6h9v-6M6.5 9h3"/>'),
+  term: svg('<rect x="1.8" y="2.8" width="12.4" height="10.4" rx="2"/><path d="M4.5 6.5 6.5 8l-2 1.5M8 10h3.5"/>'),
+  chev: svg('<path d="M6 3.5 10.5 8 6 12.5"/>', 11, ' stroke-width="1.8"'),
+  tree: svg('<circle cx="4.5" cy="3.5" r="1.5"/><circle cx="4.5" cy="12.5" r="1.5"/><circle cx="11.5" cy="6.5" r="1.5"/><path d="M4.5 5v6M11.5 8c0 2.5-4 2-7 3.2"/>', 11),
+  img: svg('<rect x="2" y="3" width="12" height="10" rx="2"/><circle cx="6" cy="6.8" r="1.2"/><path d="m3 12 3.5-3.5 2.5 2.5 1.8-1.8L14 12"/>', 14),
+  stop: '<svg viewBox="0 0 16 16" width="11" height="11" fill="currentColor" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9" rx="2"/></svg>',
+  up: svg('<path d="M8 13V3.5M4 7.5l4-4 4 4"/>', 14, ' stroke-width="2"'),
+  doc: svg('<path d="M4 1.8h5.2L12.5 5v9.2H4z"/><path d="M9 1.8V5h3.5"/>', 12),
+  sound: svg('<path d="M2.5 6h2.2L8 3.2v9.6L4.7 10H2.5z"/><path d="M10.6 5.6a3.4 3.4 0 0 1 0 4.8M12.4 3.9a5.8 5.8 0 0 1 0 8.2"/>', 15),
+  mute: svg('<path d="M2.5 6h2.2L8 3.2v9.6L4.7 10H2.5z"/><path d="m10.8 6.2 3.4 3.6M14.2 6.2l-3.4 3.6"/>', 15),
+};
+const STEP_K: Record<Step['k'], string> = { read: '读', edit: '改', bash: '跑', search: '搜', agent: '子任务', web: '网页', tool: '工具', say: '' };
+const who = (a: Agent) => `<span class="who ${a}">${a === 'claude' ? 'Claude' : 'Codex'}</span>`;
+const diffHTML = (d: [string, string][]) => `<div class="diff">${d.map(([s, t]) => `<code class="${s === '+' ? 'add' : s === '-' ? 'del' : ''}"><b>${s === ' ' ? '' : s === '-' ? '−' : '+'}</b><span>${esc(t)}</span></code>`).join('')}</div>`;
+function stepsSummary(steps: Step[]) {
+  const n = (k: Step['k']) => steps.filter(s => s.k === k).length;
+  const add = steps.reduce((a, s) => a + (s.add ?? 0), 0), del = steps.reduce((a, s) => a + (s.del ?? 0), 0);
+  return [n('read') + n('search') ? `读了 ${n('read') + n('search')} 个` : '', n('edit') ? `改了 ${n('edit')} 个 <span class="p">+${add}</span> <span class="m">−${del}</span>` : '',
+    n('bash') ? `跑了 ${n('bash')} 条` : '', n('agent') ? `${n('agent')} 个子任务` : '', n('web') ? `查了 ${n('web')} 次网页` : '', n('tool') ? `用了 ${n('tool')} 个工具` : '']
+    .filter(Boolean).join(' · ');
+}
+
+// ---------- sound: her kit, exactly as the notch plays it (melody "fifths", palette "dropCrisp") ----------
+const snd = { on: store.get('agents.sound') !== 'off', ctx: null as AudioContext | null, out: null as GainNode | null, last: new Map<string, number>() };
+const wake = () => {
+  if (snd.ctx) return;
+  snd.ctx = new AudioContext(); snd.out = snd.ctx.createGain(); snd.out.gain.value = .8; snd.out.connect(snd.ctx.destination);
+};
+addEventListener('pointerdown', wake, { capture: true });
+addEventListener('keydown', wake, { capture: true });
+// The same cue twice in quick succession is one cue: a burst of finishes is one chime, not a chord.
+const NOTICE = new Set(['done', 'ask', 'error']);
+function cue(name: string, gain = 1, force = false) {
+  if ((!snd.on && !force) || !snd.ctx) return;
+  const now = performance.now();
+  if (now - (snd.last.get(name) ?? -1e9) < (NOTICE.has(name) ? 450 : 120)) return;
+  snd.last.set(name, now);
+  const c = scoreOf('fifths')[name];
+  if (c) { void snd.ctx.resume(); play(snd.ctx, snd.out!, c, palette('dropCrisp'), gain); }
+}
+
+// ---------- her: the ball at the top of the list, the desktop's own starCore ----------
+const win = $('#win');
+const core = new Core('glass');
+const herCv = $<HTMLCanvasElement>('.her-c', win), hctx = herCv.getContext('2d')!;
+const eyeCv = document.createElement('canvas'), ectx = eyeCv.getContext('2d')!;
+const HW = 60, HR = 15;
+const her = { face: 'rest' as ExprId, faceUntil: 0, lookId: '', lookUntil: 0, ptr: null as [number, number] | null, pressed: false, glow: '' };
+// She turns to the row that changed and makes the face for it, then settles back.
+function herSay(face: ExprId, ms: number, id = '') {
+  const now = performance.now();
+  her.face = face; her.faceUntil = now + ms;
+  if (id) { her.lookId = id; her.lookUntil = now + Math.min(ms, 1800); }
+}
+function herLook(): [number, number] | null {
+  const now = performance.now(), row = now < her.lookUntil ? rowEls.get(her.lookId) : undefined;
+  if (!row?.isConnected && !her.ptr) return null;
+  const r = herCv.getBoundingClientRect(), cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+  let x: number, y: number;
+  if (row?.isConnected) { const q = row.getBoundingClientRect(); x = q.left + 60 - cx; y = q.top + q.height / 2 - cy; }
+  else { x = her.ptr![0] - cx; y = her.ptr![1] - cy; if (Math.hypot(x, y) > 340) return null; }
+  const dist = Math.hypot(x, y) || 1, k = dist / (dist + 90);
+  return [x / dist * k, y / dist * k];
+}
+function herFrame(now: number, dt: number) {
+  core.update(now, dt, { expr: now < her.faceUntil ? her.face : 'rest', look: herLook(), still: false, pressed: her.pressed, charge: 0 });
+  const d = DPR(), N = Math.round(HW * d), c = hctx, m = HW / 2;
+  if (herCv.width !== N) herCv.width = herCv.height = N;
+  c.setTransform(d, 0, 0, d, 0, 0); c.clearRect(0, 0, HW, HW);
+  const S = Math.round(2 * 1.3 * HR * d), [jx, jy, bx, by] = core.pose(1);
+  if (core.render(S, HR * d < 20 ? 2 : 3)) {
+    c.save(); c.translate(m, m); core.orbit(c, HR, -1); c.restore();
+    c.save(); c.translate(m + jx * HR, m + jy * HR); c.scale(bx, by); core.inside(c, HR, S); core.glass(c, HR, S); c.restore();
+  }
+  const E = Math.ceil(3.8 * HR * d);
+  if (eyeCv.width !== E) eyeCv.width = eyeCv.height = E;
+  ectx.setTransform(1, 0, 0, 1, 0, 0); ectx.clearRect(0, 0, E, E);
+  ectx.setTransform(d, 0, 0, d, E / 2, E / 2); ectx.translate(jx * HR, jy * HR); ectx.scale(bx, by); core.eyes(ectx, HR);
+  const [glow, blur] = core.glow();
+  c.save(); c.setTransform(1, 0, 0, 1, 0, 0); c.shadowColor = glow; c.shadowBlur = blur * HR * d; c.drawImage(eyeCv, m * d - E / 2, m * d - E / 2); c.restore();
+  c.save(); c.translate(m, m); core.orbit(c, HR, 1); core.particles(c, HR, d); c.restore();
+  // Her light is the window's accent, as it is the Dashboard's.
+  const g = core.light.glow.map(v => Math.round(v * 255)).join(' ');
+  if (g !== her.glow) { her.glow = g; win.style.setProperty('--glow', g); }
+}
+
+// ---------- marks: the island's stars; a mark repaints only while it moves ----------
+const painted = new WeakMap<HTMLCanvasElement, string>();
+const canvases = win.getElementsByTagName('canvas');
+const stAt = new Map<string, number>();
+const seed = (id: string) => [...id].reduce((a, ch) => a + ch.charCodeAt(0), 0) % 7;
+function paintMarks(now: number) {
+  for (const cv of canvases) {
+    const s = cv.dataset.mk ? byId(cv.dataset.mk) : undefined;
+    if (!s) continue;
+    const since = (now - (stAt.get(s.id) ?? -1e9)) / 1000, moving = !reduced.matches && (s.st !== 'done' || since < .5), key = moving ? '' : s.st;
+    if (key && painted.get(cv) === key) continue;
+    painted.set(cv, key);
+    const size = Number(cv.dataset.size), d = DPR(), w = Math.round(size * 1.6 * d), k = size / 16;
+    if (cv.width !== w) cv.width = cv.height = w;
+    const c = cv.getContext('2d')!;
+    c.setTransform(1, 0, 0, 1, 0, 0); c.clearRect(0, 0, w, w); c.setTransform(d * k, 0, 0, d * k, w / 2, w / 2);
+    drawMark(c, 'spark', s.st, moving ? now / 1000 + seed(s.id) : 0, reduced.matches ? 99 : since, d * k);
+  }
+}
+
+// ---------- the app ----------
+type View = 'chat' | 'new' | 'archive';
+type Open = { open?: boolean; step?: number };
+const app = {
+  ss: [] as Sess[], catalog: null as Catalog | null, items: new Map<string, Item[]>(), live: new Map<string, string>(),
+  // Which folded steps Allen opened, per session and item: that is this window's business, not the host's.
+  opened: new Map<string, Map<number, Open>>(),
+  cur: '', view: 'chat' as View, filter: 'all' as 'all' | Agent, by: 'state' as 'state' | 'project', q: '',
+  files: [] as Upload[], menu: '' as '' | 'slash' | 'at', pick: 0, picks: [] as [string, string][], renaming: false, del: '',
+  newAgent: (store.get('agents.agent') === 'codex' ? 'codex' : 'claude') as Agent, newProject: store.get('agents.project') ?? '', newTree: store.get('agents.tree') !== 'off',
+  newSet: { model: '', effort: '', mode: '' }, projects: [] as string[],
+  sideOpen: false, openAt: performance.now(), how: 'click' as 'click' | 'key', sending: false,
+  // Answers picked on a question card with more than one question or more than one choice.
+  asked: new Map<string, string[][]>(),
+};
+const byId = (id: string) => app.ss.find(s => s.id === id);
+const cur = () => byId(app.cur);
+const side = $('.side', win), list = $('.s-list', side), herT = $('.her-t', side), find = $<HTMLInputElement>('#find'), archLink = $('.arch-link', side);
+const head = $('.m-head', win), hMk = $('.h-mk', head), hT = $('.h-t', head), hMeta = $('.h-meta', head), ctxEl = $('.ctx', head), ctxFg = $<SVGCircleElement>('.ctx-fg', head), ctxN = $('.ctx b', head);
+const hostEl = $('.host', win), comp = $('.composer', win), ta = $<HTMLTextAreaElement>('#msg'), cMenu = $('.c-menu', comp), cFiles = $('.c-files', comp), tl = $('.t-l', comp), tr = $('.t-r', comp);
+const pop = $('.pop', win), sndBtn = $('.snd', win), offEl = $('.w-off', win);
+
+// Every change asks for a frame; one frame draws whatever was asked for since the last.
+type Part = 'side' | 'head' | 'main' | 'live' | 'comp';
+const dirty = new Set<Part>();
+let raf = 0;
+function draw(...parts: Part[]) {
+  for (const p of parts.length ? parts : ['side', 'head', 'main', 'comp'] as Part[]) dirty.add(p);
+  if (!raf) raf = requestAnimationFrame(flush);
+}
+function flush() {
+  raf = 0;
+  const d = new Set(dirty); dirty.clear();
+  if (d.has('side')) renderSide();
+  if (d.has('head')) renderHead();
+  const s = cur();
+  if (d.has('main')) renderMain();
+  else if (d.has('live') && app.view === 'chat' && s) { const c = convs.get(s.id); if (c) { const b = bottom(c.root); renderLive(s, c); if (b) c.root.scrollTop = c.root.scrollHeight; } }
+  if (d.has('comp')) renderComp();
+}
+// A session's change redraws the list; the rest only when it is the one on screen.
+const touch = (id: string) => { if (app.view === 'chat' && app.cur === id) draw(); else draw('side'); };
+
+// ---------- the side: her, then every session, keyed so rows glide when they change group ----------
+function visible() {
+  const q = app.q.trim().toLowerCase();
+  return app.ss.filter(s => (app.filter === 'all' || s.agent === app.filter) && (!q || `${s.title} ${s.summary} ${s.project} ${s.branch}`.toLowerCase().includes(q)));
+}
+// Parked (ADR 0069, shared with the notch) is out of his turn and quiet until he takes it back.
+const yourTurn = (s: Sess) => !s.term && !s.parked && (s.st === 'wait' || s.unread);
+function groups(): [string, Sess[]][] {
+  const vs = visible().filter(s => !s.archived).sort((a, b) => b.updated - a.updated);
+  if (app.by === 'project') return [...new Set(vs.map(s => s.project))].map(p => [p, vs.filter(s => s.project === p)]);
+  const rest = vs.filter(s => !s.pinned && !s.parked);
+  return ([
+    ['置顶', vs.filter(s => s.pinned && !s.parked)],
+    ['轮到你', rest.filter(yourTurn)],
+    ['在干活', rest.filter(s => !yourTurn(s) && (s.st === 'work' || s.st === 'pack'))],
+    ['做完了', rest.filter(s => !yourTurn(s) && (s.st === 'done' || s.st === 'err' || s.st === 'wait'))],
+    ['先放着', vs.filter(s => s.parked)],
+  ] as [string, Sess[]][]).filter(g => g[1].length);
+}
+const order = () => groups().flatMap(g => g[1].map(s => s.id));
+const label = (s: Sess) => s.term ? '在终端里' : s.stopped ? '停了' : STATE[s.st];
+
+const rowEls = new Map<string, HTMLElement>(), grpEls = new Map<string, HTMLElement>();
+let quiet = true; // the first draw, filtering and search do not animate the list
+function rowEl(s: Sess) {
+  let el = rowEls.get(s.id);
+  if (!el) {
+    el = document.createElement('div');
+    el.dataset.act = 'open'; el.dataset.id = s.id; el.tabIndex = 0; el.setAttribute('role', 'button');
+    el.innerHTML = `${star(s.id, 12)}<span class="r-b"></span><span class="r-acts"></span>`;
+    rowEls.set(s.id, el);
+  }
+  return el;
+}
+function renderSide() {
+  const live = app.ss.filter(s => !s.archived && !s.parked), nWait = live.filter(yourTurn).length, nWork = live.filter(s => s.st === 'work' || s.st === 'pack').length;
+  patch(herT, nWait
+    ? `<b class="warm">${nWait} 个轮到你</b><span>${nWork ? `${nWork} 个在干活 · ` : ''}点我去下一个</span>`
+    : nWork ? `<b>${nWork} 个在干活</b><span>没有要你管的</span>` : live.length ? '<b>都做完了</b><span>想到什么就开一个新的</span>' : '<b>还没有会话</b><span>点「新会话」开一个</span>');
+  side.querySelectorAll<HTMLElement>('.seg button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.v === app.filter)));
+  patch($('.by', side), app.by === 'state' ? '按状态' : '按项目');
+  $('.new', side).classList.toggle('is-on', app.view === 'new');
+  archLink.classList.toggle('is-on', app.view === 'archive');
+  patch($('em', archLink), String(visible().filter(s => s.archived).length));
+
+  const glide = !quiet && !reduced.matches, before = new Map<Element, number>();
+  if (glide) for (const k of list.children) before.set(k, k.getBoundingClientRect().top);
+  const want: HTMLElement[] = [];
+  for (const [g, ss] of groups()) {
+    let h = grpEls.get(g);
+    if (!h) { h = document.createElement('div'); h.className = 'g-h'; grpEls.set(g, h); }
+    patch(h, `${esc(g)}<em>${ss.length}</em>`); want.push(h);
+    for (const s of ss) {
+      const el = rowEl(s);
+      cls(el, `row${s.id === app.cur && app.view === 'chat' ? ' is-on' : ''}${s.st === 'wait' && !s.term ? ' is-ask' : ''}${s.unread ? ' is-new' : ''}${s.st === 'err' ? ' is-err' : ''}`);
+      patch(el.children[1], `<b>${esc(s.title)}</b><span class="age">${s.unread ? '<i class="nd"></i>' : ''}${age(s.updated)}</span>`
+        + `<span class="sum">${who(s.agent)}<span class="dot">·</span><span class="t">${esc(s.term ? '在终端里' : s.summary)}</span></span>`);
+      patch(el.children[2], `<i data-act="pin" data-id="${s.id}" title="${s.pinned ? '取消置顶' : '置顶'}"${s.pinned ? ' class="on"' : ''}>${I.pin}</i>`
+        + `<i data-act="park" data-id="${s.id}" title="${s.parked ? '拿回来' : '先放着'}"${s.parked ? ' class="on"' : ''}>${I.park}</i><i data-act="archive" data-id="${s.id}" title="归档">${I.box}</i>`);
+      want.push(el);
+    }
+  }
+  want.forEach((el, i) => { if (list.children[i] !== el) list.insertBefore(el, list.children[i] ?? null); });
+  while (list.children.length > want.length) { const x = list.lastElementChild as HTMLElement; for (const a of x.getAnimations()) a.cancel(); x.style.pointerEvents = ''; x.remove(); }
+  const empty = $('.empty', side);
+  empty.hidden = want.length > 0 || !app.ss.some(s => !s.archived);
+  patch(empty, '没有对得上的会话。');
+  // FLIP: every row that moved starts where it was and springs to where it is; a new one drops in.
+  if (glide) for (const el of want) {
+    const b = before.get(el), t = el.getBoundingClientRect().top;
+    if (b === undefined) anim(el, [{ opacity: 0, transform: 'translateY(-8px) scale(.97)' }, { opacity: 1, transform: 'none' }], 460, SPRING);
+    else if (Math.abs(b - t) > 1) anim(el, [{ transform: `translateY(${b - t}px)` }, { transform: 'none' }], 520, SPRING);
+  }
+  quiet = false;
+}
+
+// ---------- the header ----------
+function renderHead() {
+  const s = cur(), chat = app.view === 'chat' && !!s;
+  head.classList.toggle('plain', !chat);
+  if (!chat) {
+    patch(hMk, ''); patch(hT, `<b>${app.view === 'archive' ? '已归档' : '新会话'}</b>`);
+    patch(hMeta, app.view === 'archive' ? '<span>还能搜到，随时能拿回来</span>' : '<span>选一个 agent 和文件夹，在下面写要它做什么</span>');
+    return;
+  }
+  patch(hMk, star(s.id, 13));
+  if (app.renaming) { if (patch(hT, `<input id="rename" class="rename" value="${esc(s.title)}" aria-label="会话名字" autocomplete="off">`)) { const r = $<HTMLInputElement>('#rename', hT); r.focus(); r.select(); } }
+  else patch(hT, `<b data-act="rename" title="点一下改名">${esc(s.title)}</b>`);
+  patch(hMeta, `${who(s.agent)}<span title="${esc(s.cwd)}">${esc(s.project)}</span><span class="dot">·</span><span class="br">${s.tree ? I.tree : ''}${esc(s.branch || '—')}</span><span class="dot">·</span><span class="st st-${s.st}">${label(s)}</span>`);
+  // The context ring fills by a transition on the stroke, not by a redraw.
+  ctxFg.style.strokeDasharray = `${(s.ctx / 100 * 47.1).toFixed(1)} 47.1`;
+  ctxFg.classList.toggle('hi', s.ctx > 75);
+  patch(ctxN, `${Math.round(s.ctx)}%`); ctxEl.title = `上下文用了 ${Math.round(s.ctx)}%`;
+  patch($('[data-act="terminal"] span', head), s.term ? '拿回来' : '在终端打开');
+}
+
+// ---------- the conversation: one kept per session, so switching is instant and each keeps its place ----------
+type Conv = { root: HTMLElement; items: HTMLElement; live: HTMLElement; queue: HTMLElement; now: HTMLElement; bg: HTMLElement; term: HTMLElement; built: boolean; scroll: number };
+const convs = new Map<string, Conv>();
+function convOf(id: string): Conv {
+  let c = convs.get(id);
+  if (!c) {
+    const root = document.createElement('div');
+    root.className = 'conv';
+    root.innerHTML = '<div class="c-in"><div class="c-items"></div><div class="it md live" hidden></div><div class="c-queue"></div><div class="now" hidden><span class="nm"></span><span class="shine"></span><span class="el"></span><kbd>esc</kbd><span class="k">打断</span></div><p class="bg" hidden></p><div class="banner" hidden></div></div>';
+    c = { root, items: $('.c-items', root), live: $('.live', root), queue: $('.c-queue', root), now: $('.now', root), bg: $('.bg', root), term: $('.banner', root), built: false, scroll: -1 };
+    convs.set(id, c);
+  }
+  return c;
+}
+const viewNew = document.createElement('div'), viewArch = document.createElement('div');
+viewNew.className = viewArch.className = 'conv';
+viewNew.innerHTML = '<div class="c-in wide"></div>'; viewArch.innerHTML = '<div class="c-in wide"></div>';
+const bottom = (r: HTMLElement) => !r.isConnected || r.scrollTop >= r.scrollHeight - r.clientHeight - 40;
+
+let shownId = '';
+function show(root: HTMLElement, id: string) {
+  if (shownId === id) return;
+  const prev = convs.get(shownId);
+  if (prev) prev.scroll = prev.root.scrollTop;
+  hostEl.replaceChildren(root); shownId = id;
+  const c = convs.get(id);
+  root.scrollTop = c && c.scroll >= 0 ? c.scroll : c ? root.scrollHeight : 0;
+  // Switching by keyboard is a quick fade; by click it also rises a little.
+  const k = root.firstElementChild!;
+  if (app.how === 'key') anim(k, [{ opacity: .35 }, { opacity: 1 }], 120);
+  else anim(k, [{ opacity: 0, transform: 'translateY(8px)' }, { opacity: 1, transform: 'none' }], 300, OUT);
+}
+function renderMain() {
+  if (app.view === 'new') { renderNew(); show(viewNew, '__new'); return; }
+  if (app.view === 'archive') { renderArchive(); show(viewArch, '__arch'); return; }
+  const s = cur();
+  if (!s) { app.view = 'new'; renderNew(); show(viewNew, '__new'); return; }
+  const c = convOf(s.id);
+  renderConv(s, c);
+  show(c.root, s.id);
+}
+
+function reqHead(r: Req) {
+  if (r.tool === 'Bash') return '要你批准 · 跑一条命令';
+  if (r.tool === 'Edit') return '要你批准 · 改一个文件';
+  if (r.tool === 'Plan') return '计划写好了';
+  return `要你批准 · ${r.tool === 'Tool' ? esc(r.name) : ''}`;
+}
+function reqRecord(r: Req) {
+  if (r.tool === 'Ask') return r.qs.map(q => q.q).join(' · ');
+  if (r.tool === 'Plan') return '计划';
+  if (r.tool === 'Bash') return r.cmd;
+  if (r.tool === 'Edit') return `改 ${r.file}`;
+  return r.name;
+}
+function itemHTML(s: Sess, it: Exclude<Item, { k: 'steps' }>) {
+  if (it.k === 'you') return `<div class="you">${it.files?.length ? `<span class="att">${it.files.map(f => `<span class="thumb">${I.img}${esc(f)}</span>`).join('')}</span>` : ''}${esc(it.text)}</div>`;
+  if (it.k === 'it') return `<div class="it">${md(it.text)}</div>`;
+  if (it.k === 'note') return `<p class="note">${esc(it.text)}</p>`;
+  if (it.k === 'plan') return `<div class="plan"><span class="p-h">计划</span>${it.todos.map(([t, d]) => `<span class="todo d${d}"><i></i>${esc(t)}</span>`).join('')}</div>`;
+  const r = it.req, a = NAME[s.agent];
+  if (it.done) return `<p class="note done"><span class="ok">${/^(拒绝|没回答)/.test(it.done) ? '✕' : '✓'}</span>${esc(reqRecord(r))}<span class="how">${esc(it.done)}</span></p>`;
+  if (r.tool === 'Ask') {
+    const picked = app.asked.get(r.id) ?? [], simple = r.qs.length === 1 && !r.qs[0].multi;
+    return `<div class="req ask"><span class="r-h">${esc(a)} 问你</span>${r.qs.map((q, qi) => `<div class="q-block"><p class="q">${esc(q.q)}</p><div class="opts">${q.opts.map(([l, d], k) =>
+      `<button type="button" class="opt${picked[qi]?.includes(l) ? ' on' : ''}" data-act="${simple ? 'answer' : 'pickopt'}" data-q="${qi}" data-v="${esc(l)}" data-req="${esc(r.id)}"><i>${k + 1}</i><span><b>${esc(l)}</b>${d ? `<small>${esc(d)}</small>` : ''}</span></button>`).join('')}</div></div>`).join('')}`
+      + (simple ? '' : `<div class="choice"><button type="button" class="btn warm" data-act="answerall" data-req="${esc(r.id)}"${r.qs.every((_, qi) => picked[qi]?.length) ? '' : ' disabled'}>好了</button></div>`)
+      + '<p class="hint">也可以直接在下面打字回答。</p></div>';
+  }
+  if (r.tool === 'Plan') return `<div class="req"><span class="r-h">${reqHead(r)}</span><div class="plan-text">${md(r.plan)}</div><div class="choice"><button type="button" class="btn" data-act="deny" data-req="${esc(r.id)}">再想想</button><button type="button" class="btn warm" data-act="allow" data-req="${esc(r.id)}">就这么做</button></div><p class="hint">点「再想想」前可以在下面写哪里要改。</p></div>`;
+  const what = r.tool === 'Bash' ? `<pre class="cmd"><span>${esc(home(r.cwd))} $</span> ${esc(r.cmd)}</pre>`
+    : r.tool === 'Edit' ? `<div class="file">${I.doc}${esc(r.file)}</div>${r.diff.length ? diffHTML(r.diff) : ''}`
+    : `<pre class="cmd">${esc(r.detail)}</pre>`;
+  return `<div class="req"><span class="r-h">${reqHead(r)}</span>${r.why ? `<p class="why">${esc(r.why)}</p>` : ''}${what}<div class="choice"><button type="button" class="btn" data-act="deny" data-req="${esc(r.id)}">拒绝</button>${r.always ? `<button type="button" class="btn" data-act="always" data-req="${esc(r.id)}">${esc(r.always)}</button>` : ''}<button type="button" class="btn warm" data-act="allow" data-req="${esc(r.id)}">允许</button></div></div>`;
+}
+// A new item arrives the way it happened: yours rises from the composer, a request drops in, the rest fade.
+function enter(el: HTMLElement, it: Item) {
+  if (it.k === 'you') { el.style.transformOrigin = '100% 100%'; anim(el, [{ opacity: 0, transform: 'translateY(14px) scale(.97)' }, { opacity: 1, transform: 'none' }], 460, SPRING); }
+  else if (it.k === 'req') anim(el, [{ opacity: 0, transform: 'translateY(-6px) scale(.98)' }, { opacity: 1, transform: 'none' }], 480, SPRING);
+  else if (it.k !== 'it') anim(el, [{ opacity: 0 }, { opacity: 1 }], 240);
+}
+// An answered request folds into its one-line record: the height eases from the card to the line.
+function morph(el: HTMLElement, html: string) {
+  const h0 = el.offsetHeight;
+  patch(el, html);
+  const h1 = el.offsetHeight;
+  if (h0 === h1 || reduced.matches) return;
+  el.style.overflow = 'hidden';
+  el.animate([{ height: `${h0}px`, opacity: .2 }, { height: `${h1}px`, opacity: 1 }], { duration: 300, easing: OUT }).onfinish = () => { el.style.overflow = ''; };
+}
+function renderConv(s: Sess, c: Conv) {
+  const stick = bottom(c.root), items = app.items.get(s.id);
+  if (!items) { patch(c.items, '<p class="loading">在读这个会话…</p>'); c.built = false; return; }
+  if (!c.built) c.items.replaceChildren();
+  items.forEach((it, i) => {
+    let el = c.items.children[i] as HTMLElement | undefined;
+    const isNew = !el;
+    if (!el) { el = document.createElement('div'); el.className = 'item'; c.items.appendChild(el); }
+    if (it.k === 'steps') renderSteps(s.id, el, it, i, c.built);
+    else if (!isNew && it.k === 'req' && it.done && H.get(el)?.includes('class="req')) morph(el, itemHTML(s, it));
+    else { if (el.firstElementChild?.classList.contains('steps')) { el.replaceChildren(); H.delete(el); } patch(el, itemHTML(s, it)); if (isNew && c.built) enter(el, it); }
+  });
+  while (c.items.children.length > items.length) c.items.lastElementChild!.remove();
+  renderLive(s, c);
+  patch(c.queue, (s.queue ?? []).map(q => `<div class="item"><div class="you queued">${esc(q)}<em>排队中 · 这一步做完它就会看到</em></div></div>`).join(''));
+  const working = s.st === 'work' || s.st === 'pack';
+  if (working && c.now.hidden && c.built) anim(c.now, [{ opacity: 0 }, { opacity: 1 }], 240);
+  c.now.hidden = !working;
+  if (working) {
+    patch($('.nm', c.now), star(s.id, 10));
+    patch($('.shine', c.now), `${esc(s.st === 'pack' ? '在压缩上下文' : s.now ?? '在想')}…`);
+    patch($('.el', c.now), s.since ? `· ${ago(s.since)}` : '');
+  }
+  c.bg.hidden = !s.bg;
+  if (s.bg) patch(c.bg, `<span class="dotlive"></span>${esc(s.bg)}`);
+  if (s.term && c.term.hidden && c.built) anim(c.term, [{ opacity: 0, transform: 'translateY(6px)' }, { opacity: 1, transform: 'none' }], 420, SPRING);
+  c.term.hidden = !s.term;
+  if (s.term) patch(c.term, `${I.term}<span><b>在终端里打开着。</b>Jarvis 先放手，一次只有一边能写。</span><button type="button" class="btn" data-act="takeback">拿回来</button>`);
+  c.built = true;
+  if (stick) c.root.scrollTop = c.root.scrollHeight;
+}
+// Steps keep their elements: new ones slide in while it works, and the list folds shut when the turn ends.
+function renderSteps(id: string, el: HTMLElement, it: Item & { k: 'steps' }, i: number, animate: boolean) {
+  const first = !el.firstElementChild?.classList.contains('steps');
+  if (first) {
+    H.delete(el);
+    el.innerHTML = `<div class="steps"><button type="button" class="s-sum" data-act="steps" data-i="${i}"><span class="chev">${I.chev}</span><span class="s-t"></span></button><div class="s-wrap"><div class="s-clip"><div class="s-in"></div></div></div></div>`;
+    if (animate) anim(el, [{ opacity: 0 }, { opacity: 1 }], 240);
+  }
+  const o = app.opened.get(id)?.get(i) ?? {};
+  const box = el.firstElementChild as HTMLElement, live = !!it.live, btn = box.firstElementChild as HTMLButtonElement, rows = $('.s-in', box);
+  box.hidden = !it.steps.length;
+  box.classList.toggle('live', live); box.classList.toggle('open', live || !!o.open);
+  btn.disabled = live; btn.setAttribute('aria-expanded', String(live || !!o.open));
+  const sum = stepsSummary(it.steps);
+  patch(btn.lastElementChild!, `${live ? '正在干' : it.took ? `干了 ${esc(it.took)}` : '干完了'}${sum ? ` · ${sum}` : ''}`);
+  // A folded list draws its rows only once it is opened.
+  if (!live && !o.open) { if (rows.childElementCount && first) rows.replaceChildren(); if (!rows.childElementCount) return; }
+  it.steps.forEach((st, j) => {
+    let r = rows.children[j] as HTMLElement | undefined;
+    if (!r) { r = document.createElement('div'); rows.appendChild(r); if (!first && live) anim(r, [{ opacity: 0, transform: 'translateX(-6px)' }, { opacity: 1, transform: 'none' }], 320, OUT); }
+    if (st.k === 'say') { cls(r, 'step say'); patch(r, esc(st.t)); return; }
+    const more = !!(st.diff?.length || st.out), open = o.step === j;
+    cls(r, `step${more ? ' more' : ''}${open ? ' open' : ''}`);
+    if (more) { r.dataset.act = 'step'; r.dataset.i = String(i); r.dataset.j = String(j); r.setAttribute('role', 'button'); r.tabIndex = 0; }
+    const was = r.dataset.shown === '1';
+    patch(r, `<span class="k">${STEP_K[st.k]}</span><span class="a" title="${esc(st.t)}">${esc(st.t)}</span>`
+      + `<span class="r">${st.add !== undefined ? `<span class="p">+${st.add}</span> <span class="m">−${st.del ?? 0}</span>` : st.ok === true ? '<span class="p">✓</span>' : st.ok === false ? '<span class="m">✕</span>' : ''}</span>`
+      + (open ? `<div class="x">${st.diff?.length ? diffHTML(st.diff) : `<pre class="out">${esc(st.out ?? '')}</pre>`}</div>` : ''));
+    if (open && !was) { const x = $('.x', r); if (x) anim(x, [{ opacity: 0, transform: 'translateY(-4px)' }, { opacity: 1, transform: 'none' }], 260); }
+    r.dataset.shown = open ? '1' : '';
+  });
+  while (rows.children.length > it.steps.length) rows.lastElementChild!.remove();
+}
+// The answer as it is written: only its last block changes, so a long answer costs no more than a short one.
+function renderLive(s: Sess, c: Conv) {
+  const el = c.live, text = app.live.get(s.id);
+  if (text === undefined) { if (!el.hidden) { el.hidden = true; el.textContent = ''; } return; }
+  el.hidden = false;
+  const bs = mdBlocks(text);
+  if (!bs.length) bs.push('<p></p>');
+  bs[bs.length - 1] = withCaret(bs[bs.length - 1]);
+  bs.forEach((b, i) => { let x = el.children[i]; if (!x) { x = document.createElement('div'); el.appendChild(x); } patch(x, b); });
+  while (el.children.length > bs.length) el.lastElementChild!.remove();
+}
+function renderArchive() {
+  const as = visible().filter(s => s.archived).sort((a, b) => b.updated - a.updated);
+  patch(viewArch.firstElementChild!, '<p class="lead">归档的会话还能搜到，随时能拿回来。它们的 worktree 留着，删掉时才一起删。</p>'
+    + (as.length ? `<div class="a-list">${as.map(s => `<div class="a-row">${star(s.id)}<span class="a-t"><b>${esc(s.title)}</b><span>${who(s.agent)}<span class="dot">·</span>${esc(s.project)}<span class="dot">·</span>${esc(s.summary)}<span class="dot">·</span>${age(s.updated)}</span></span>`
+      + `<button type="button" class="btn" data-act="unarchive" data-id="${s.id}">拿回来</button><button type="button" class="btn${app.del === s.id ? ' bad-on' : ' bad'}" data-act="delete" data-id="${s.id}">${app.del === s.id ? s.tree ? '连 worktree 一起删' : '真的删掉' : '删除'}</button></div>`).join('')}</div>`
+      : '<p class="empty">没有归档的会话。</p>'));
+}
+function renderNew() {
+  const a = app.newAgent, ps = app.projects.includes(app.newProject) || !app.newProject ? app.projects : [app.newProject, ...app.projects];
+  patch(viewNew.firstElementChild!, `<div class="agents">${(['claude', 'codex'] as Agent[]).map(k => `<button type="button" class="agent ${k}${a === k ? ' is-on' : ''}" data-act="agent" data-v="${k}" aria-pressed="${a === k}"><i></i><b>${NAME[k]}</b><span>${k === 'claude' ? '用你的 Claude 订阅' : '用你的 ChatGPT 登录'}</span></button>`).join('')}`
+    + '<div class="agent later"><i></i><b>更多</b><span>Cursor、Copilot、Gemini…… 以后通过同一个协议接进来</span></div></div>'
+    + `<div class="n-row"><label class="fld"><span>文件夹</span><select id="proj">${ps.map(p => `<option value="${esc(p)}"${p === app.newProject ? ' selected' : ''}>${esc(home(p))}</option>`).join('')}</select></label>`
+    + '<button type="button" class="other" data-act="folder">别的文件夹…</button>'
+    + `<label class="chk"><input type="checkbox" id="tree"${app.newTree ? ' checked' : ''}>单独一个 worktree</label></div>`
+    + '<p class="lead">在下面写要它做什么，按 Enter。它在 Jarvis 的后台跑，关掉这个窗口也不停；想在终端里接着聊也行。</p>');
+}
+
+// ---------- the composer: stays in the page so what you type survives every redraw; only its parts change ----------
+function choice(agent: Agent) { return app.catalog?.[agent] ?? { models: [], efforts: [], modes: [], always: '' }; }
+const labelOf = (xs: [string, string][], v: string) => xs.find(x => x[0] === v)?.[1] ?? v;
+function newDefaults() {
+  const c = choice(app.newAgent);
+  const pickOr = (v: string, xs: string[], d: string) => xs.includes(v) ? v : d;
+  app.newSet.model = pickOr(store.get(`agents.${app.newAgent}.model`) ?? app.newSet.model, c.models.map(m => m[0]), c.models[0]?.[0] ?? '');
+  app.newSet.effort = pickOr(store.get(`agents.${app.newAgent}.effort`) ?? app.newSet.effort, c.efforts, c.efforts.includes('high') ? 'high' : c.efforts[0] ?? '');
+  app.newSet.mode = pickOr(store.get(`agents.${app.newAgent}.mode`) ?? app.newSet.mode, c.modes.map(m => m[0]), c.modes[0]?.[0] ?? '');
+}
+function renderComp() {
+  const newV = app.view === 'new', s = newV ? undefined : cur(), agent = newV ? app.newAgent : s?.agent ?? 'claude', c = choice(agent);
+  comp.hidden = app.view === 'archive' || (!newV && !s);
+  if (comp.hidden) return;
+  const busy = !!s && (s.st === 'work' || s.st === 'pack'), pend = s ? pendingReq(s.id) : undefined;
+  const blocked = !!s && (!!s.term || (!!pend && pend.tool !== 'Ask' && pend.tool !== 'Plan'));
+  ta.disabled = blocked || app.sending;
+  ta.placeholder = newV ? `要 ${NAME[agent]} 做什么？` : s!.term ? '在终端里 · 拿回来才能在这里写' : blocked ? '先回答上面的请求'
+    : pend?.tool === 'Ask' ? '打字回答它的问题' : pend?.tool === 'Plan' ? '哪里要改？写了再点「再想想」' : busy ? `给 ${NAME[agent]} 发消息 · 这一步做完它就会看到` : `给 ${NAME[agent]} 发消息 · / 用命令，@ 选文件`;
+  const model = newV ? app.newSet.model : s!.model, effort = newV ? app.newSet.effort : s!.effort, mode = newV ? app.newSet.mode : s!.mode;
+  patch(tl, `<button type="button" class="t-btn icon" data-act="attach" title="加图片（也可以直接粘贴）">${I.img}</button>`
+    + '<button type="button" class="t-btn icon" data-act="insert" data-v="@" title="提到一个文件">@</button><button type="button" class="t-btn icon" data-act="insert" data-v="/" title="命令和 skill">/</button><span class="t-sep"></span>'
+    + (c.models.length ? `<button type="button" class="t-btn" data-act="menu" data-v="model">${esc(labelOf(c.models, model) || '模型')}</button>` : '')
+    + (c.efforts.length ? `<button type="button" class="t-btn" data-act="menu" data-v="effort">${esc(effort || '力度')}</button>` : '')
+    + (c.modes.length ? `<button type="button" class="t-btn mode" data-act="menu" data-v="mode">${esc(labelOf(c.modes, mode) || '模式')}</button>` : ''));
+  patch(tr, `${busy ? '<button type="button" class="t-stop" data-act="interrupt" title="打断（Esc）">' + I.stop + '</button>' : ''}`
+    + `<button type="button" class="t-send" data-act="send" aria-label="${newV ? '开始' : '发送'}"${blocked || app.sending ? ' disabled' : ''}>${I.up}</button>`);
+  patch(cFiles, app.files.map((f, k) => `<span class="thumb">${I.img}${esc(f.name)}<i data-act="unfile" data-k="${k}" aria-label="去掉">✕</i></span>`).join(''));
+  patch(cMenu, app.picks.map(([v, d], k) => app.menu === 'at'
+    ? `<button type="button" data-act="pickfile" data-v="${esc(v)}"${k === app.pick ? ' class="on"' : ''}><code>@${esc(v)}</code></button>`
+    : `<button type="button" data-act="pickcmd" data-v="${esc(v)}"${k === app.pick ? ' class="on"' : ''}><code>${esc(v)}</code><span>${esc(d)}</span></button>`).join(''));
+  cMenu.classList.toggle('on', !!app.menu && app.picks.length > 0);
+}
+const pendingReq = (id: string) => (app.items.get(id)?.find(it => it.k === 'req' && !it.done) as (Item & { k: 'req' }) | undefined)?.req;
+
+// ---------- one popover for every menu, kept in the page so it can ease in and out ----------
+let popFor = '';
+function openPop(kind: string, anchor: HTMLElement) {
+  if (popFor === kind) { closePop(); return; }
+  const s = app.view === 'chat' ? cur() : undefined, c = choice(s ? s.agent : app.newAgent);
+  const opts = (k: 'model' | 'effort' | 'mode', vs: [string, string][], v: string) => vs.map(([x, l]) => `<button type="button" data-act="set" data-k="${k}" data-v="${esc(x)}"${x === v ? ' class="on"' : ''}>${esc(l)}</button>`).join('');
+  const html = kind === 'more' && s
+    ? `<button type="button" data-act="pin">${s.pinned ? '取消置顶' : '置顶'}</button><button type="button" data-act="park">${s.parked ? '不放着了' : '先放着'}</button><button type="button" data-act="rename">改名</button><button type="button" data-act="fork">从这里分叉</button><button type="button" data-act="reveal">在访达里看文件夹</button><button type="button" data-act="archive" data-id="${s.id}">归档</button><span class="sep"></span><button type="button" data-act="stop" class="bad">停掉</button>`
+    : kind === 'model' ? opts('model', c.models, s ? s.model : app.newSet.model)
+    : kind === 'effort' ? opts('effort', c.efforts.map(e => [e, e]), s ? s.effort : app.newSet.effort)
+    : opts('mode', c.modes, s ? s.mode : app.newSet.mode);
+  pop.innerHTML = html; popFor = kind;
+  const w = win.getBoundingClientRect(), r = anchor.getBoundingClientRect(), down = kind === 'more';
+  Object.assign(pop.style, down
+    ? { left: 'auto', right: `${w.right - r.right}px`, top: `${r.bottom - w.top + 6}px`, bottom: 'auto', transformOrigin: '100% 0' }
+    : { left: `${Math.min(r.left - w.left, w.width - 200)}px`, right: 'auto', top: 'auto', bottom: `${w.bottom - r.top + 6}px`, transformOrigin: '0 100%' });
+  pop.classList.add('on');
+}
+function closePop() { if (!popFor) return; popFor = ''; pop.classList.remove('on'); }
+
+// ---------- what the host says ----------
+const here = (id: string) => app.view === 'chat' && app.cur === id && document.hasFocus();
+// A state change is where she and the sound answer: a finish chimes (softly if you are watching), a question asks.
+// A change Allen caused himself (an interrupt, a stop) stays quiet.
+const hush = new Map<string, number>();
+function react(s: Sess, was: St) {
+  if (s.st === was) return;
+  stAt.set(s.id, performance.now());
+  if ((hush.get(s.id) ?? 0) > performance.now() || s.parked) return;
+  if (s.st === 'done' && was !== 'done') { cue('done', here(s.id) ? .45 : 1); herSay('fin', 2400, s.id); core.hop(performance.now(), .14); }
+  if (s.st === 'wait') { cue('ask'); herSay('ask', 2800, s.id); }
+  if (s.st === 'err') { cue('error'); herSay('34', 2600, s.id); core.effect('shake', performance.now()); }
+}
+async function loadItems(id: string) {
+  const r = await call<{ items: Item[]; live: string | null }>(`/sessions/${id}`).catch(e => { toast(String(e instanceof Error ? e.message : e)); return null; });
+  if (!r) return;
+  app.items.set(id, r.items);
+  if (r.live) app.live.set(id, r.live); else app.live.delete(id);
+  const c = convs.get(id);
+  if (c) c.built = false;
+  touch(id);
+}
+let connected = false;
+function apply(e: Event) {
+  if (e.t === 'hello') {
+    const first = !connected;
+    connected = true; offEl.hidden = true;
+    app.ss = e.sessions; app.catalog = e.catalog;
+    for (const s of app.ss) if (!stAt.has(s.id)) stAt.set(s.id, -1e9);
+    // After a reconnect the host may have restarted: what this window holds is read again.
+    for (const id of [...app.items.keys()]) { if (byId(id)) void loadItems(id); else app.items.delete(id); }
+    if (first) { newDefaults(); const o = order(); app.cur = o[0] ?? ''; if (!app.cur) app.view = 'new'; else void loadItems(app.cur); }
+    quiet = true; draw(); return;
+  }
+  if (e.t === 'catalog') { app.catalog = e.catalog; newDefaults(); draw('comp'); return; }
+  if (e.t === 'gone') {
+    app.ss = app.ss.filter(s => s.id !== e.id); app.items.delete(e.id); app.live.delete(e.id); convs.delete(e.id); rowEls.delete(e.id);
+    if (app.cur === e.id) { const next = order()[0]; if (next) open(next); else { app.cur = ''; app.view = 'new'; } }
+    draw(); return;
+  }
+  if (e.t === 'sess') {
+    const i = app.ss.findIndex(s => s.id === e.s.id), was = i >= 0 ? app.ss[i].st : e.s.st;
+    // Looking at it when it finishes is having seen it: it never goes to 「轮到你」.
+    if (e.s.unread && here(e.s.id) && e.s.st !== 'wait') { e.s.unread = false; void call(`/sessions/${e.s.id}/meta`, { seen: true }).catch(() => {}); }
+    if (i >= 0) app.ss[i] = e.s; else app.ss.push(e.s);
+    react(e.s, was);
+    touch(e.s.id); return;
+  }
+  if (e.t === 'items') {
+    const have = app.items.get(e.id);
+    if (!have) return;
+    if (e.from > have.length) { void loadItems(e.id); return; }
+    have.splice(e.from, have.length - e.from, ...e.items);
+    if (app.view === 'chat' && app.cur === e.id) draw('main', 'comp');
+    return;
+  }
+  if (e.t === 'live') {
+    if (e.text === null) app.live.delete(e.id); else app.live.set(e.id, e.text);
+    if (app.view === 'chat' && app.cur === e.id) draw('live');
+  }
+}
+function connect() {
+  const es = new EventSource(`${API}/events`);
+  es.onmessage = m => apply(JSON.parse(m.data) as Event);
+  // The stream comes back by itself; until then the title bar says so.
+  es.onerror = () => { offEl.hidden = false; };
+}
+
+// ---------- doing things ----------
+function open(id: string, how: 'click' | 'key' = 'click') {
+  if (app.view === 'chat' && app.cur === id) { app.sideOpen = false; win.classList.remove('side-open'); return; }
+  app.cur = id; app.view = 'chat'; app.renaming = false; app.sideOpen = false; app.openAt = performance.now(); app.how = how;
+  app.menu = ''; app.picks = [];
+  closePop(); win.classList.remove('side-open');
+  if (!app.items.has(id)) void loadItems(id);
+  draw();
+}
+const readFile = (f: Blob & { name?: string }, k: number) => new Promise<Upload>((done, fail) => {
+  const r = new FileReader();
+  r.onload = () => done({ name: f.name || `图片 ${k + 1}.png`, url: String(r.result) });
+  r.onerror = () => fail(r.error);
+  r.readAsDataURL(f);
+});
+async function send() {
+  const text = ta.value.trim();
+  if ((!text && !app.files.length) || app.sending) return;
+  if (app.view === 'new') {
+    if (!app.newProject) { toast('先选一个文件夹'); return; }
+    app.sending = true; draw('comp');
+    const r = await tryCall('/sessions', { agent: app.newAgent, cwd: app.newProject, tree: app.newTree, text, files: app.files, ...app.newSet });
+    app.sending = false;
+    if (!r) { draw('comp'); return; }
+    app.files = []; clearTa();
+    cue('send'); herSay(pick(TAKES.receive), 1300, String(r.id)); core.hop(performance.now(), .12);
+    store.set('agents.project', app.newProject);
+    app.items.set(String(r.id), app.items.get(String(r.id)) ?? []);
+    open(String(r.id));
+    void loadItems(String(r.id));
+    return;
+  }
+  const s = cur();
+  if (!s || s.term) return;
+  const pend = pendingReq(s.id);
+  if (pend?.tool === 'Ask') { clearTa(); cue('send'); await tryCall(`/sessions/${s.id}/answer`, { req: pend.id, decision: 'allow', text }); return; }
+  if (pend?.tool === 'Plan') { clearTa(); cue('close'); await tryCall(`/sessions/${s.id}/answer`, { req: pend.id, decision: 'deny', text }); return; }
+  if (pend) return;
+  const files = app.files; app.files = []; app.menu = ''; app.picks = []; clearTa();
+  cue('send', s.st === 'work' ? .55 : .8);
+  if (s.st !== 'work') herSay(pick(TAKES.receive), 1100);
+  await tryCall(`/sessions/${s.id}/send`, { text, files });
+}
+const clearTa = () => { ta.value = ''; ta.style.height = ''; draw('comp'); };
+async function answer(id: string, req: string, decision: 'allow' | 'always' | 'deny', answers?: string[][]) {
+  cue(decision === 'deny' ? 'close' : 'send');
+  const text = decision === 'deny' ? ta.value.trim() : '';
+  if (text) clearTa();
+  await tryCall(`/sessions/${id}/answer`, { req, decision, answers, ...(text ? { text } : {}) });
+}
+function interrupt(s: Sess) {
+  hush.set(s.id, performance.now() + 2500);
+  cue('interrupt'); core.effect('jolt', performance.now());
+  void tryCall(`/sessions/${s.id}/interrupt`, {});
+}
+// Archiving folds the row away first, then the list closes over it.
+function archive(s: Sess) {
+  const el = rowEls.get(s.id);
+  hush.set(s.id, performance.now() + 2500);
+  const commit = () => {
+    s.archived = true; s.pinned = false;
+    if (app.cur === s.id && app.view === 'chat') { const next = order().find(id => id !== s.id); if (next) open(next); else app.view = 'archive'; }
+    draw();
+    void tryCall(`/sessions/${s.id}/meta`, { archived: true });
+  };
+  cue('close', .8);
+  if (el?.isConnected && !reduced.matches) {
+    el.style.pointerEvents = 'none';
+    el.animate([{ height: `${el.offsetHeight}px`, opacity: 1, transform: 'none' }, { height: '0px', opacity: 0, paddingTop: '0px', paddingBottom: '0px', transform: 'translateX(-10px)' }],
+      { duration: 260, easing: 'cubic-bezier(.4,0,.2,1)', fill: 'forwards' }).onfinish = commit;
+  } else commit();
+}
+async function act(a: string, el: HTMLElement) {
+  const id = el.dataset.id ?? app.cur, s = byId(id);
+  if (a === 'open') open(id);
+  else if (a === 'next') {
+    const o = order().filter(x => yourTurn(byId(x)!));
+    core.hop(performance.now(), .16);
+    if (o.length) open(o[(o.indexOf(app.cur) + 1) % o.length]);
+  }
+  else if (a === 'new') { app.view = 'new'; app.sideOpen = false; closePop(); win.classList.remove('side-open'); cue('open', .5); newDefaults(); void refreshProjects(); draw(); ta.focus(); }
+  else if (a === 'archview') { app.view = 'archive'; app.sideOpen = false; closePop(); win.classList.remove('side-open'); draw(); }
+  else if (a === 'filter') { app.filter = el.dataset.v as typeof app.filter; quiet = true; draw('side'); }
+  else if (a === 'by') { app.by = app.by === 'state' ? 'project' : 'state'; quiet = true; draw('side'); }
+  else if (a === 'pin' && s) { s.pinned = !s.pinned; closePop(); cue(s.pinned ? 'on' : 'off', .7); draw(); void tryCall(`/sessions/${s.id}/meta`, { pinned: s.pinned }); }
+  else if (a === 'archive' && s) { closePop(); archive(s); }
+  else if (a === 'park' && s) { s.parked = !s.parked; closePop(); cue(s.parked ? 'close' : 'open', .6); draw(); void tryCall(`/sessions/${s.id}/meta`, { parked: s.parked }); }
+  else if (a === 'unarchive' && s) { s.archived = false; cue('open', .8); draw(); void tryCall(`/sessions/${s.id}/meta`, { archived: false }); }
+  else if (a === 'delete' && s) {
+    if (app.del !== id) { app.del = id; draw('main'); return; }
+    app.del = '';
+    const ok = await tryCall(`/sessions/${id}`, undefined, 'DELETE');
+    if (ok) cue('close');
+    draw();
+  }
+  else if (a === 'rename') { app.renaming = true; closePop(); draw('head'); }
+  else if (a === 'fork' && s) { closePop(); const r = await tryCall(`/sessions/${s.id}/fork`, {}); if (r) { cue('open', .7); open(String(r.id)); } }
+  else if (a === 'reveal' && s) { closePop(); void window.agents?.reveal(s.cwd); }
+  else if (a === 'stop' && s) { closePop(); hush.set(s.id, performance.now() + 2500); cue('interrupt'); void tryCall(`/sessions/${s.id}/stop`, {}); }
+  else if (a === 'terminal' && s) {
+    if (s.term) { void act('takeback', el); return; }
+    const r = await tryCall(`/sessions/${s.id}/release`, {});
+    if (!r) return;
+    cue('close', .6);
+    if (!await window.agents?.terminal(String(r.cwd), String(r.cmd))) toast(`没能打开 Ghostty。在终端里跑：cd ${home(String(r.cwd))} && ${r.cmd}`);
+  }
+  else if (a === 'takeback' && s) { cue('open', .8); await tryCall(`/sessions/${s.id}/takeback`, {}); }
+  else if (a === 'steps' || a === 'step') {
+    const m = app.opened.get(app.cur) ?? new Map<number, Open>(), i = Number(el.dataset.i), o = m.get(i) ?? {};
+    if (a === 'steps') { o.open = !o.open; o.step = undefined; } else { const j = Number(el.dataset.j); o.step = o.step === j ? undefined : j; }
+    m.set(i, o); app.opened.set(app.cur, m); draw('main');
+  }
+  else if ((a === 'allow' || a === 'always' || a === 'deny') && s) void answer(s.id, el.dataset.req!, a);
+  else if (a === 'answer' && s) void answer(s.id, el.dataset.req!, 'allow', [[el.dataset.v!]]);
+  else if (a === 'pickopt' && s) {
+    const req = el.dataset.req!, qi = Number(el.dataset.q), v = el.dataset.v!, r = pendingReq(s.id);
+    const picked = app.asked.get(req) ?? [], multi = r?.tool === 'Ask' && r.qs[qi]?.multi;
+    const now = picked[qi] ?? [];
+    picked[qi] = multi ? (now.includes(v) ? now.filter(x => x !== v) : [...now, v]) : [v];
+    app.asked.set(req, picked); draw('main');
+  }
+  else if (a === 'answerall' && s) { const req = el.dataset.req!; void answer(s.id, req, 'allow', app.asked.get(req)); app.asked.delete(req); }
+  else if (a === 'interrupt' && s) interrupt(s);
+  else if (a === 'send') void send();
+  else if (a === 'menu') openPop(el.dataset.v!, el);
+  else if (a === 'set') {
+    const k = el.dataset.k as 'model' | 'effort' | 'mode', v = el.dataset.v!;
+    closePop();
+    if (app.view === 'new') { app.newSet[k] = v; store.set(`agents.${app.newAgent}.${k}`, v); draw('comp'); }
+    else if (s && s[k] !== v) { await tryCall(`/sessions/${s.id}/set`, { key: k, value: v }); }
+  }
+  else if (a === 'insert') { ta.value += (ta.value && !/\s$/.test(ta.value) && el.dataset.v === '@' ? ' ' : '') + el.dataset.v; ta.focus(); typed(); }
+  else if (a === 'pickcmd' || a === 'pickfile') pickIt(el.dataset.v!, a === 'pickcmd');
+  else if (a === 'attach') $<HTMLInputElement>('#file').click();
+  else if (a === 'unfile') { app.files.splice(Number(el.dataset.k), 1); draw('comp'); }
+  else if (a === 'agent') { app.newAgent = el.dataset.v as Agent; store.set('agents.agent', app.newAgent); newDefaults(); draw('main', 'comp'); }
+  else if (a === 'folder') { const p = await window.agents?.folder(); if (p) { app.newProject = p; draw('main'); } }
+  else if (a === 'side') { app.sideOpen = !app.sideOpen; win.classList.toggle('side-open', app.sideOpen); }
+  else if (a === 'sound') setSound(!snd.on);
+}
+function setSound(on: boolean) {
+  if (!on) cue('speakerOff', 1, true);
+  snd.on = on; store.set('agents.sound', on ? 'on' : 'off');
+  if (on) cue('speakerOn', 1, true);
+  sndBtn.innerHTML = on ? I.sound : I.mute;
+  sndBtn.setAttribute('aria-pressed', String(on)); sndBtn.title = on ? '声音开着' : '声音关了';
+}
+function pickIt(v: string, isCmd: boolean) {
+  if (isCmd) ta.value = `${v} `;
+  else ta.value = ta.value.slice(0, ta.value.lastIndexOf('@')) + `@${v} `;
+  app.menu = ''; app.pick = 0; app.picks = []; ta.focus(); draw('comp');
+}
+// Typing "/" at the start opens commands and skills; "@" opens files. Arrows and Enter pick from the list.
+let lookup = 0, cmds: { key: string; list: [string, string][] } | null = null;
+async function typed() {
+  const v = ta.value, n = ++lookup;
+  app.menu = /^[/$]\S*$/.test(v) ? 'slash' : /(^|\s)@[^\s]*$/.test(v) ? 'at' : '';
+  app.pick = 0;
+  ta.style.height = 'auto'; ta.style.height = `${Math.min(180, ta.scrollHeight)}px`;
+  const s = app.view === 'chat' ? cur() : undefined, where = s ? `id=${encodeURIComponent(s.id)}` : `agent=${app.newAgent}&cwd=${encodeURIComponent(app.newProject)}`;
+  if (app.menu === 'slash') {
+    if (cmds?.key !== where) cmds = { key: where, list: (await call<{ commands: [string, string][] }>(`/commands?${where}`).catch(() => ({ commands: [] }))).commands };
+    if (n !== lookup) return;
+    const q = v.split(/\s/)[0];
+    app.picks = cmds.list.filter(c => c[0].startsWith(q)).slice(0, 60);
+  } else if (app.menu === 'at') {
+    const q = v.slice(v.lastIndexOf('@') + 1);
+    const r = await call<{ files: string[] }>(`/files?${where}&q=${encodeURIComponent(q)}`).catch(() => ({ files: [] }));
+    if (n !== lookup) return;
+    app.picks = r.files.map(f => [f, '']);
+  } else app.picks = [];
+  draw('comp');
+}
+async function refreshProjects() {
+  const r = await call<{ projects: string[] }>('/projects').catch(() => null);
+  if (!r) return;
+  app.projects = r.projects;
+  if (!app.newProject) app.newProject = app.projects[0] ?? '';
+  if (app.view === 'new') draw('main');
+}
+
+// ---------- wiring ----------
+win.addEventListener('click', e => {
+  const t = e.target as Element, el = t.closest<HTMLElement>('[data-act]');
+  if (popFor && !t.closest('.pop') && el?.dataset.act !== 'menu') closePop();
+  if (el && !(el as HTMLButtonElement).disabled) void act(el.dataset.act!, el);
+});
+win.addEventListener('keydown', e => {
+  const t = e.target as HTMLElement;
+  if (t.id === 'rename') {
+    const s = cur();
+    if (e.key === 'Enter' && !e.isComposing) { const v = (t as HTMLInputElement).value.trim(); if (v && s) { s.title = v; void tryCall(`/sessions/${s.id}/meta`, { title: v }); } app.renaming = false; draw(); }
+    if (e.key === 'Escape') { app.renaming = false; draw('head'); }
+    return;
+  }
+  if (t === ta) {
+    const menuOpen = !!app.menu, n = cMenu.children.length;
+    if (menuOpen && n && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) { e.preventDefault(); app.pick = (app.pick + (e.key === 'ArrowDown' ? 1 : -1) + n) % n; draw('comp'); return; }
+    if (menuOpen && n && (e.key === 'Enter' || e.key === 'Tab') && !e.isComposing) { e.preventDefault(); const b = cMenu.children[app.pick] as HTMLElement; pickIt(b.dataset.v!, b.dataset.act === 'pickcmd'); return; }
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); void send(); return; }
+  }
+  if ((e.key === 'Enter' || e.key === ' ') && t.matches('[role="button"]')) { e.preventDefault(); void act(t.dataset.act!, t); }
+});
+addEventListener('keydown', e => {
+  // Esc anywhere but the rename field: close a menu first, otherwise interrupt the turn on screen.
+  if (e.key === 'Escape' && (e.target as HTMLElement).id !== 'rename') {
+    if (popFor) { closePop(); return; }
+    if (app.menu) { app.menu = ''; app.picks = []; draw('comp'); return; }
+    const s = cur();
+    if (app.view === 'chat' && s && (s.st === 'work' || s.st === 'wait')) { e.preventDefault(); interrupt(s); }
+    return;
+  }
+  const mod = e.metaKey || e.ctrlKey;
+  if (mod && e.key.toLowerCase() === 'k') { e.preventDefault(); find.focus(); find.select(); }
+  if (mod && e.key.toLowerCase() === 'n') { e.preventDefault(); void act('new', $('.new', side)); }
+  if ((mod || e.altKey) && (e.key === 'ArrowDown' || e.key === 'ArrowUp') && document.activeElement !== ta) {
+    const o = order(), i = o.indexOf(app.cur);
+    if (o.length) { e.preventDefault(); open(o[Math.max(0, Math.min(o.length - 1, i + (e.key === 'ArrowDown' ? 1 : -1)))], 'key'); }
+  }
+});
+find.addEventListener('input', () => { app.q = find.value; quiet = true; draw('side'); if (app.view === 'archive') draw('main'); });
+ta.addEventListener('input', () => { void typed(); });
+win.addEventListener('change', async e => {
+  const t = e.target as HTMLInputElement;
+  if (t.id === 'proj') app.newProject = t.value;
+  if (t.id === 'tree') { app.newTree = t.checked; store.set('agents.tree', t.checked ? 'on' : 'off'); }
+  if (t.id === 'file' && t.files) { const fs = [...t.files]; t.value = ''; app.files.push(...await Promise.all(fs.map(readFile))); draw('comp'); }
+});
+ta.addEventListener('paste', async e => {
+  const imgs = [...(e.clipboardData?.files ?? [])].filter(f => f.type.startsWith('image/'));
+  if (!imgs.length) return;
+  e.preventDefault();
+  app.files.push(...await Promise.all(imgs.map(readFile)));
+  draw('comp');
+});
+// Her eyes follow the pointer when it is near her; pressing her squashes her a little.
+win.addEventListener('pointermove', e => { her.ptr = [e.clientX, e.clientY]; });
+win.addEventListener('pointerleave', () => { her.ptr = null; her.pressed = false; });
+herCv.addEventListener('pointerdown', () => { her.pressed = true; });
+addEventListener('pointerup', () => { her.pressed = false; });
+herCv.addEventListener('click', () => { void act('next', herCv); });
+
+// ---------- one loop: her every frame, moving marks at 30 fps, nothing while the window is out of sight ----------
+let lastT = performance.now(), lastMk = 0, lastAge = 0;
+function loop(now: number) {
+  const dt = Math.min(.05, (now - lastT) / 1000);
+  lastT = now;
+  if (!document.hidden) {
+    herFrame(now, dt);
+    if (now - lastMk > 33) {
+      lastMk = now; paintMarks(now);
+      // Looking at a finished one for 1.5 s reads it, as in the island.
+      const s = app.view === 'chat' ? cur() : undefined;
+      if (s?.unread && now - app.openAt > 1500 && document.hasFocus()) { s.unread = false; draw('side'); void call(`/sessions/${s.id}/meta`, { seen: true }).catch(() => {}); }
+      const w = s && (s.st === 'work' || s.st === 'pack') ? convs.get(s.id) : undefined;
+      if (w && s?.since) patch($('.el', w.now), `· ${ago(s.since)}`);
+    }
+    // Ages in the list move on by themselves.
+    if (now - lastAge > 30000) { lastAge = now; draw('side'); }
+  }
+  requestAnimationFrame(loop);
+}
+setSound(snd.on);
+connect(); void refreshProjects();
+draw(); requestAnimationFrame(loop);
