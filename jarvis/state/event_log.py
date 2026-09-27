@@ -43,6 +43,7 @@ from typing import TYPE_CHECKING, Any, Final
 
 from jarvis.shared import Event
 from jarvis.shared.realtime import new_log_epoch
+from jarvis.state import NewerDataError
 from jarvis.state.committed_event_bus import CommittedEventBus
 
 if TYPE_CHECKING:
@@ -1241,6 +1242,10 @@ def open_event_log(path: Path) -> sqlite3.Connection:
     Returns:
         Open `sqlite3.Connection`. The caller closes it (recommended via
         `contextlib.closing`).
+
+    Raises:
+        NewerDataError: the file's `user_version` is above this build's
+            (ADR 0068).
     """
     conn = sqlite3.connect(path)
     # Concurrency / durability PRAGMAs. Order matters: journal_mode
@@ -1250,6 +1255,11 @@ def open_event_log(path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode = WAL").fetchall()
     conn.execute("PRAGMA busy_timeout = 5000")
     conn.execute("PRAGMA synchronous = NORMAL")
+    # ADR 0068: a newer Jarvis's log is refused, never stamped back down.
+    found = conn.execute("PRAGMA user_version").fetchone()[0]
+    if found > _SCHEMA_USER_VERSION:
+        conn.close()
+        raise NewerDataError(path.name, found, _SCHEMA_USER_VERSION)
     _migrate_schema_v0_to_v1(conn)
     conn.execute(_CREATE_TABLE_SQL)
     for index_sql in _CREATE_INDEXES_SQL:

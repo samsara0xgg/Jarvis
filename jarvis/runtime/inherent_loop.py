@@ -114,11 +114,11 @@ from jarvis.decision.response_run import (
     request_response_cancel,
     start_response_run,
 )
-from jarvis.deployment import inherent_v2_token_matches, models, rotate_inherent_v2_token
-from jarvis.deployment.launchd import repo_root, spawned_by_agent
+from jarvis.deployment import data, inherent_v2_token_matches, models, rotate_inherent_v2_token
+from jarvis.deployment.launchd import logs_dir, repo_root, spawned_by_agent
 from jarvis.deployment.process_lock import acquire_exclusive
 from jarvis.deployment.sleep_wake import install_power_observer, sweep_overdue_actions
-from jarvis.execution.tools import live_action_ids
+from jarvis.execution.tools import SCREEN_ARTIFACTS_DIRNAME, live_action_ids
 from jarvis.runtime import (
     JarvisRuntime,
     TriggerWaitTimeout,
@@ -144,6 +144,7 @@ from jarvis.runtime import (
 from jarvis.runtime.dictation import Dictation, polish_client
 from jarvis.runtime.inherent_hub import start_inherent_view
 from jarvis.runtime.session_compaction import CompactionSweep, preset_context_length
+from jarvis.runtime.settings import SETTINGS_FILE
 from jarvis.runtime.setup import Setup
 from jarvis.shared import Event, lang
 from jarvis.shared.pricing import load_pricing_table
@@ -189,6 +190,7 @@ from jarvis.state.memory_db import (
     brief_note,
     conversation_rows,
     remember_fact,
+    retention_days,
 )
 from jarvis.state.plugin_settings import local_key, local_key_matches
 from jarvis.state.projections import (
@@ -4012,6 +4014,60 @@ def _restart_soon() -> None:
     asyncio.get_running_loop().call_later(0.5, os.kill, os.getpid(), signal.SIGTERM)
 
 
+_DATA_SWEEP_INTERVAL_S = 3600.0
+
+
+def _media_dirs(runtime: JarvisRuntime) -> dict[Path, int | None]:
+    """ADR 0067: the recordings and screenshots, each with its days to keep (None: forever)."""
+    tools = runtime.config.get("tools") or {}
+    screen = tools.get("screen") if isinstance(tools, dict) else None
+    days = retention_days(screen.get("retention_days")) if isinstance(screen, dict) else None
+    dirs = {runtime.runtime_paths.artifacts_root / SCREEN_ARTIFACTS_DIRNAME: days}
+    if runtime.memory is not None:
+        dirs[runtime.memory.audio_dir] = runtime.memory.audio_retention_days
+    return dirs
+
+
+def _sweep_data(dirs: dict[Path, int | None], logs: Path) -> None:
+    """Delete what has passed its days and cut each log past its size (ADR 0067)."""
+    for directory, days in dirs.items():
+        if gone := data.delete_older_than(directory, days):
+            LOGGER.info("retention: deleted %d files older than %s days from %s",
+                        gone, days, directory.name)
+    if cut := data.rotate_logs(logs):
+        LOGGER.info("retention: started %d new log files", cut)
+
+
+async def _data_sweep_task(dirs: dict[Path, int | None], logs: Path) -> None:
+    """At boot and then every hour; a failed pass waits for the next one."""
+    while True:
+        try:
+            await asyncio.to_thread(_sweep_data, dirs, logs)
+        except OSError:
+            LOGGER.exception("retention: sweep failed; next try in an hour")
+        await asyncio.sleep(_DATA_SWEEP_INTERVAL_S)
+
+
+def _export_data(runtime: JarvisRuntime) -> Path:
+    """``GET /inherent/data/export``: conversations, event log, settings, recordings, screenshots.
+
+    Keys, sign-ins, the browser profile and the speech models stay out.
+    """
+    paths = runtime.runtime_paths
+    memory = [runtime.memory.db_path] if runtime.memory is not None else []
+    return data.export_zip(
+        paths.root,
+        [*memory, paths.event_log, paths.settings, paths.root / SETTINGS_FILE,
+         *_media_dirs(runtime)],
+    )
+
+
+def _erase_data(root: Path) -> None:
+    """``POST /inherent/data/erase``: everything goes at the next boot, which starts now."""
+    data.request_erase(root)
+    _restart_soon()
+
+
 async def _refresh_work_state_now(service: WorkStateService) -> dict[str, Any]:
     """``POST /inherent/work-state/refresh``: the single-flight analysis on its own connection."""
     return await asyncio.to_thread(service.refresh_in_own_connection, trigger="dashboard")
@@ -5273,6 +5329,14 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 else functools.partial(_save_settings, runtime.settings)
             ),
             restart=_restart_soon if spawned_by_agent() else None,
+            data_export=functools.partial(asyncio.to_thread, _export_data, runtime),
+            data_clear=functools.partial(
+                asyncio.to_thread, data.clear_files, list(_media_dirs(runtime)),
+            ),
+            data_erase=(
+                functools.partial(_erase_data, runtime.runtime_paths.root)
+                if spawned_by_agent() else None
+            ),
             claude_sessions_read=_claude_sessions_read(runtime.config),
             plugin_read=runtime.plugin_connections.read if runtime.plugin_connections else None,
             plugin_action=runtime.plugin_connections.action if runtime.plugin_connections else None,
@@ -5433,6 +5497,10 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         watchers.extend(_start_repo_observer(runtime))
         watchers.extend(_start_usage_observer(usage_observer, runtime.config))
         watchers.extend(_start_timesink_observer(runtime))
+        watchers.append(asyncio.create_task(
+            _data_sweep_task(_media_dirs(runtime), logs_dir(runtime.runtime_paths.root)),
+            name="data_sweep",
+        ))
         for watcher in watchers:
             watcher.add_done_callback(_log_watcher_death)
 

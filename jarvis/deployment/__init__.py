@@ -35,6 +35,8 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from jarvis.deployment.data import erase_if_requested
+
 # Single canonical home for the `~/.jarvis` literal. Every other file in
 # `jarvis/` referencing the runtime root must go through `bootstrap_runtime`,
 # `RuntimePaths`, or this exported constant. Canary H8 enforces this by AST
@@ -155,6 +157,14 @@ def save_key(runtime_root: Path, name: str, key: str) -> None:
     os.environ[name] = key
 
 
+def forget_keys(runtime_root: Path) -> None:
+    """Delete this root's Keychain item; a root with none is already clean."""
+    subprocess.run(  # noqa: S603 — fixed macOS tool, no shell.
+        [_SECURITY, "delete-generic-password", "-s", _KEYCHAIN_SERVICE, "-a", str(runtime_root)],
+        capture_output=True, timeout=10, check=False,
+    )
+
+
 def load_env_file(runtime_root: Path) -> dict[str, str]:
     """Fill-only loader for the Keychain keys, then ``${runtime_root}/env`` (ADR-0009 D1).
 
@@ -216,6 +226,8 @@ def bootstrap_runtime(root: Path | None = None) -> RuntimePaths:
         - `${root}` created with `parents=True, exist_ok=True`, then
           set to 0700 on every call, so other accounts on this Mac can
           read none of the conversations, audio or keys under it.
+        - An erase the Settings page asked for (ADR 0067) empties
+          `${root}` and its Keychain item before anything else.
         - `${root}/artifacts/` created with `parents=True, exist_ok=True`.
         - `mac_events.db` and `registry.json` are NOT created here;
           they are L2's responsibility at first write.
@@ -235,6 +247,9 @@ def bootstrap_runtime(root: Path | None = None) -> RuntimePaths:
 
     resolved_root.mkdir(parents=True, exist_ok=True)
     resolved_root.chmod(0o700)
+    # ADR 0067: Settings > erase everything takes effect here, before anything is open.
+    if erase_if_requested(resolved_root):
+        forget_keys(resolved_root)
     artifacts_root.mkdir(parents=True, exist_ok=True)
 
     return RuntimePaths(

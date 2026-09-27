@@ -419,11 +419,11 @@ class SenseVoiceRecognizer:
             confidence = 0.9
 
         LOGGER.info(
-            "SenseVoice: lang=%s emotion=%s conf=%.1f text=%r",
+            "SenseVoice: lang=%s emotion=%s conf=%.1f chars=%d",  # never the words (ADR 0067)
             language,
             emotion,
             confidence,
-            text,
+            len(text),
         )
         return TranscriptionResult(
             text=text,
@@ -535,10 +535,10 @@ class MlxWhisperRecognizer:
         confidence = _estimate_whisper_confidence(transcription)
 
         LOGGER.info(
-            "MLX Whisper: language=%s confidence=%.3f text=%r",
+            "MLX Whisper: language=%s confidence=%.3f chars=%d",  # never the words (ADR 0067)
             language,
             confidence,
-            text,
+            len(text),
         )
         return TranscriptionResult(
             text=text,
@@ -600,10 +600,10 @@ class LocalWhisperRecognizer:
         confidence = _estimate_whisper_confidence(transcription)
 
         LOGGER.info(
-            "Whisper transcription: language=%s confidence=%.3f text=%r",
+            "Whisper transcription: language=%s confidence=%.3f chars=%d",  # never the words
             language,
             confidence,
-            text,
+            len(text),
         )
         return TranscriptionResult(
             text=text,

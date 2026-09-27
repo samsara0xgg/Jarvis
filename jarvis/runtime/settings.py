@@ -15,6 +15,7 @@ import logging
 import re
 from typing import TYPE_CHECKING, Any
 
+from jarvis.shared import lang
 from jarvis.state.plugin_settings import write_private_json
 
 if TYPE_CHECKING:
@@ -66,11 +67,16 @@ PATHS: dict[str, tuple[str, ...]] = {
     "mac_aec": ("realtime", "single_audio_ingress", "echo_cancellation"),
     "timesink": ("observer", "timesink", "enabled"),
     "keep_audio": ("memory", "retain_audio"),
+    "audio_days": ("memory", "audio_retention_days"),
+    "screenshot_days": ("tools", "screen", "retention_days"),
 }
 _DEFAULTS: dict[str, Any] = {"reply_language": "follow", "tts_volume": 1.0}
 _DEVICES = {"output_device": "output", "input_device": "input"}
 _RANGES = {"wake_threshold": (0.80, 0.99), "tts_volume": (0.3, 1.0)}
 _SWITCHES = ("gpt_live", "mac_aec", "timesink", "keep_audio")
+# ADR 0067: how many days recordings and screenshots are kept; None is forever.
+RETENTION_DAYS = (7, 30, 90, None)
+_RETENTION = ("audio_days", "screenshot_days")
 REPLY_LINES = {
     "zh": "Reply language: always answer in Chinese (Mandarin), whatever language the user uses.",
     "en": "Reply language: always answer in English, whatever language the user uses.",
@@ -78,7 +84,13 @@ REPLY_LINES = {
 
 
 def voice_name(voice_id: str) -> str:
-    """``Chinese (Mandarin)_Warm_HeartedGirl`` -> ``Warm Hearted Girl``: what the page shows."""
+    """What the page shows: first-run setup's name for the voice when it has one.
+
+    ``English_radiant_girl`` -> ``Radiant Girl`` / ``明亮女孩`` (current language);
+    any other ``Chinese (Mandarin)_Warm_HeartedGirl`` -> ``Warm Hearted Girl``.
+    """
+    if f"voice.{voice_id}" in lang.TEXT:
+        return lang.t(f"voice.{voice_id}")
     name = voice_id.removeprefix(_MANDARIN).removeprefix(_ENGLISH).replace("_", " ")
     return re.sub(r"(?<=[a-z])(?=[A-Z])", " ", name)
 
@@ -91,6 +103,8 @@ def _valid(key: str, value: object) -> bool:
         return number and low <= value <= high  # type: ignore[operator]
     if key in _SWITCHES:
         return isinstance(value, bool)
+    if key in _RETENTION:
+        return value is None or (type(value) is int and value in RETENTION_DAYS)
     if key in _DEVICES:
         return value is None or isinstance(value, str)
     if key == "tts_voice":
@@ -172,6 +186,7 @@ class Settings:
             "values": values,
             "options": {
                 "tts_voice": [voice_name(one) for one in VOICES],
+                **{key: list(RETENTION_DAYS) for key in _RETENTION},
                 **{key: [SYSTEM_DEFAULT, *self._devices(kind)] for key, kind in _DEVICES.items()},
             },
             "restart_pending": any(value != self._booted[key] for key, value in saved.items()),

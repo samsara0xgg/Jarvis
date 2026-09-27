@@ -69,11 +69,14 @@ from jarvis.runtime import (
 from jarvis.runtime.inherent_loop import serve_inherent
 from jarvis.shared.lang import t
 from jarvis.shared.text import is_english
+from jarvis.state import NewerDataError
 from jarvis.state.plugin_settings import local_key
 
 LOGGER = logging.getLogger("jarvis.cli")
 
 _PROG = "python -m jarvis"
+# `serve` exits with this when a database was written by a newer Jarvis (ADR 0068).
+EXIT_NEWER_DATA = 3
 _DESC = (
     "A state-centric personal runtime — Day-2 fork-detach CLI. "
     "Long-run utterances ack then fork-detach; synchronous utterances "
@@ -668,7 +671,8 @@ def _main_serve(argv: list[str]) -> int:
 
     Returns:
         0 on clean shutdown, 1 on bootstrap failure, 2 if another live
-        daemon already owns the per-runtime-root lock.
+        daemon already owns the per-runtime-root lock, 3 if a database
+        was written by a newer Jarvis.
     """
     parser = argparse.ArgumentParser(
         prog=f"{_PROG} serve",
@@ -734,6 +738,10 @@ def _main_serve(argv: list[str]) -> int:
     except RuntimeBootstrapError as exc:
         sys.stderr.write(f"jarvis serve: bootstrap failed: {exc}\n")
         return 1
+    except NewerDataError as exc:
+        # ADR 0068: its own exit code, so the app can say "update Jarvis".
+        sys.stderr.write(f"jarvis serve: {exc}\n")
+        return EXIT_NEWER_DATA
 
     lock_path = runtime.runtime_paths.root / "daemon.lock"
 

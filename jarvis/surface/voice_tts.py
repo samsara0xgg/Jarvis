@@ -3448,8 +3448,8 @@ class TTSPipeline:
                 )
             except MiniMaxUnavailableError:
                 LOGGER.warning(
-                    "MiniMax unavailable; falling back to macos_say for: %r",
-                    cleaned,
+                    "MiniMax unavailable; falling back to macos_say for %d chars",
+                    len(cleaned),
                 )
                 self._fallback_if_current(
                     cleaned,
