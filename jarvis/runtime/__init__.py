@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import html
 import io
 import json
 import logging
@@ -154,7 +155,7 @@ from jarvis.shared.realtime_trace import (
 )
 from jarvis.state.committed_event_bus import CommittedEventBus
 from jarvis.state.daily_report import resolve_zone
-from jarvis.state.event_log import open_event_log, open_runtime_event_log
+from jarvis.state.event_log import iter_events_for_turn, open_event_log, open_runtime_event_log
 from jarvis.state.memory_db import MemorySettings, SessionSettings, append_record, render_context
 from jarvis.state.projects import parse_catalog
 from jarvis.state.stream_emission import committed_text_prefix
@@ -2554,6 +2555,63 @@ def run_turn(
     )
 
 
+_MAIL_GET: Final[str] = "mcp__gmail__gmail_get"
+_MAIL_BODY_CHARS: Final[int] = 4000
+_HTML_HINT_RE: Final = re.compile(r"<(?:html|body|div|p|br|table|span)\b", re.IGNORECASE)
+_HTML_DROP_RE: Final = re.compile(r"<(style|script|head)\b.*?</\1\s*>", re.IGNORECASE | re.DOTALL)
+_HTML_BREAK_RE: Final = re.compile(r"<(?:br|/p|/div|/tr|/li|/h\d)\b[^>]*>", re.IGNORECASE)
+_HTML_TAG_RE: Final = re.compile(r"<[^>]+>")
+
+
+def _mail_body(body: str) -> str:
+    """The message body as plain text, capped; an HTML-only message loses its markup."""
+    if _HTML_HINT_RE.search(body):
+        # ponytail: tag stripping, not an HTML renderer; tables and quoted replies stay flat.
+        body = _HTML_TAG_RE.sub("", _HTML_BREAK_RE.sub("\n", _HTML_DROP_RE.sub("", body)))
+        body = html.unescape(body)
+    body = re.sub(r"\n[ \t]*\n(?:[ \t]*\n)+", "\n\n", body).strip()
+    return body if len(body) <= _MAIL_BODY_CHARS else f"{body[:_MAIL_BODY_CHARS]}…"
+
+
+def _fetched_mail(conn: sqlite3.Connection, turn_id: str) -> tuple[str, str] | None:
+    """ADR 0062: the message this turn read whole with ``gmail_get``, as a mail record.
+
+    Only when the turn read exactly one message in full: a turn that read
+    several is a list, answered in words. The record is headers, a blank
+    line, then the body, and its id is the result's event uid.
+    """
+    gets = [
+        event.payload
+        for event in iter_events_for_turn(conn, turn_id, ("action.proposed",))
+        if event.payload.get("tool_name") == _MAIL_GET
+        and (event.payload.get("arguments") or {}).get("format", "full") == "full"
+    ]
+    if len({str((get.get("arguments") or {}).get("messageId")) for get in gets}) != 1:
+        return None
+    row = conn.execute(
+        "SELECT event_uid, payload_json FROM events WHERE type = 'action.result_observed' "
+        "AND json_extract(payload_json, '$.action_id') = ?",
+        (gets[-1].get("action_id"),),
+    ).fetchone()
+    try:
+        output = json.loads(json.loads(row[1])["tool_output"]) if row else {}
+        message = json.loads(output.get("text", "")) if isinstance(output, dict) else None
+    except (ValueError, KeyError, TypeError):
+        return None  # a windowed (over-long) or failed answer shows no card
+    if not isinstance(message, dict) or "error" in message or not message.get("id"):
+        return None
+    headers = [
+        f"{name}: {message[key]}"
+        for name, key in (
+            ("From", "from"), ("To", "to"), ("Date", "date"), ("Subject", "subject"),
+            ("Thread-Id", "threadId"), ("Gmail-Id", "id"),
+        )
+        if isinstance(message.get(key), str) and message[key]
+    ]
+    body = _mail_body(str(message.get("body") or ""))
+    return str(row[0]), "\n".join(headers) + "\n\n" + body
+
+
 def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root entrypoint; argument set + traced multi-trigger loop are the cross-surface contract, and every ResponseRun branch is flag-guarded.
     runtime: JarvisRuntime,
     *,
@@ -2653,7 +2711,9 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
         else user_intent_event.event_uid
     )
     surface_wrote_row = memory_exclude_id != user_intent_event.event_uid
-    if memory is not None and continuation is None and not surface_wrote_row:
+    # ADR 0061: a card's button is Allen's act, not his words; it writes no row.
+    card_button = isinstance(user_intent_event.payload.get("confirmation_decision"), Mapping)
+    if memory is not None and continuation is None and not surface_wrote_row and not card_button:
         audio_ref = user_intent_event.payload.get("audio_artifact_ref")
         append_record(
             memory.db_path,
@@ -3048,6 +3108,10 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
         sys.stdout.flush()
         collected_events.append(render_event)
         if memory is not None:
+            # ADR 0062: the one message this turn read whole shows above the answer.
+            mail = _fetched_mail(runtime.conn, effective_turn_id)
+            if mail is not None:
+                append_record(memory.db_path, record_id=mail[0], source="mail", text=mail[1])
             # The full answer text, not the spoken form (ADR 0040), which
             # lives only in the voice channel; the audit event's uid is the
             # record id.

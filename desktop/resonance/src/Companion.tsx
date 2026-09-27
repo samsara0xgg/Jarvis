@@ -12,6 +12,7 @@ import { usePlugins } from './PluginPanel';
 import { isMarkLook, type MarkLook } from './AgentMarks';
 import { answerRequest, type Agent, type ShownAgent } from './agents';
 import { NoticeCard, ended, noticeCue, useNotices } from './Notices';
+import { ActionCard, type Card, type Decide } from './ActionCard';
 import { Notch, type NotchNote } from './Notch';
 import { tr, useCompanionSettings, type L, type Lang } from './companionSettings';
 import { useRoute } from './homeData';
@@ -111,6 +112,26 @@ export function Companion() {
   const feedback = (cue: FeedbackCue) => { if (preferences.feedbackEnabled && !s.soundMuted) void playFeedback(cue, preferences.feedbackVolume); };
   const link = useRef<Runtime | null>(null);
   useEffect(() => { if (!port) return; link.current = connect(port, dispatch); return () => { link.current?.close(); link.current = null; }; }, []);
+  // ADR 0061: the card waiting for Allen's button, read every 1.5 s whether or not the Dashboard is open: closed, it
+  // grows from the notch. The same card object stays while its id does, so a letter being edited keeps its text.
+  const [card, setCard] = useState<Card | null>(null);
+  useEffect(() => {
+    if (!port) return;
+    let stop = false;
+    const load = async () => { try { const next = await link.current?.card(); if (!stop) setCard(current => current?.id === next?.id ? current : next ?? null); } catch { /* daemon away; the next tick retries */ } };
+    void load();
+    const id = setInterval(() => void load(), 1500);
+    return () => { stop = true; clearInterval(id); };
+  }, []);
+  const decideCard: Decide = (decision, edits) => {
+    if (!card) return;
+    const id = card.id;
+    setCard(null);
+    if (decision === 'accept') ball.current?.hop(.14);
+    void link.current?.decide(id, decision, edits).catch(() => undefined); // a stale card: the next read shows what waits now
+  };
+  // With the Dashboard closed the card hangs from the notch, ahead of the agents' notices, and she watches it from home.
+  const carded = !!card && !dashboard && !moving;
   // Live, the daemon's phase is her voice; standby counts as listening only in wave mode (ADR 0041).
   // While your words are coming in she only listens: no answer starts then (ADR 0053), whatever text arrives.
   const inFlight = !!port && s.inFlight;
@@ -141,7 +162,7 @@ export function Companion() {
   useEffect(() => window.jarvis?.watchGhostty?.(anyClaude), [anyClaude]);
   const watched = dwelled ? agents.find(a => a.agent === 'claude' && sameTitle(a.title, ghostty.title))?.id ?? null : null;
   // No notice while she talks, while you type to her or while the Dashboard is open; they come up after.
-  const notices = useNotices({ agents, hold: busy || dashboard || moving, watched,
+  const notices = useNotices({ agents, hold: busy || dashboard || moving || carded, watched,
     cue: (name, gain) => { if (preferences.feedbackEnabled && !s.soundMuted) noticeCue(name, preferences.feedbackVolume, gain); },
     answer: (req, body) => port ? answerRequest(port, req.id, body) : Promise.resolve(true) });
   const notice = notices.current;
@@ -153,7 +174,7 @@ export function Companion() {
   };
   // Tucked, she stays up with the island until it comes back; only the Dashboard, below the menu bar, takes her out.
   // A notice hangs from the notch and she watches it from home.
-  const place: Place = moving ? 'home' : dashboard ? 'dock' : notice ? notices.peek ? 'peek' : 'home' : tuck.left ? 'home' : busy || zone === 'ball' || outing ? 'out' : zone === 'lobe' || notices.peek ? 'peek' : 'home';
+  const place: Place = moving ? 'home' : dashboard ? 'dock' : carded ? 'home' : notice ? notices.peek ? 'peek' : 'home' : tuck.left ? 'home' : busy || zone === 'ball' || outing ? 'out' : zone === 'lobe' || notices.peek ? 'peek' : 'home';
   // A finished text reply stays up briefly: that is her "done" face.
   const listenFace = useRef<ExprId>('35'), receiveFace = useRef<ExprId>('31'), replyFace = useRef<ExprId>('39');
   // Live turns pick her takes as they begin; the scripted demo picks its own in listen() and say().
@@ -164,7 +185,7 @@ export function Companion() {
   // pleasure or refusal.
   const moment = performance.now();
   const stopped = notice?.kind === 'pop' && notice.ids.every(id => agents.find(a => a.id === id)?.state === 'err');
-  const noticeFace: ExprId | null = !notice ? null : notices.over && moment < notices.over.until ? notices.over.face
+  const noticeFace: ExprId | null = carded ? 'ask' : !notice ? null : notices.over && moment < notices.over.until ? notices.over.face
     : notice.kind === 'pop' ? stopped ? moment - notices.openedAt < 1700 ? '34' : '02' : 'fin' : notices.card?.ok ? '02' : 'ask';
   useEffect(() => { if (!stopped) return; const t = setTimeout(notices.bump, 1750); return () => clearTimeout(t); }, [notice?.key]);
   const expr: ExprId = preview ?? noticeFace ?? (receiving ? receiveFace.current : voice === 'listening' ? listenFace.current : voice === 'thinking' ? '30' : voice === 'speaking' || talking ? replyFace.current : dashboard && dashMood ? dashMood : reply.text ? '33' : '02');
@@ -173,7 +194,7 @@ export function Companion() {
   // so nothing of her trails behind; the Dashboard and a notice card keep her (dock).
   const lift = tuck.left ? geo.out.y + 2 * R : 0;
   // During a notice she looks down at it from the island.
-  const noticeLook = notice ? { x: notice.kind === 'pop' ? geo.wingX + 80 : geo.center, y: placement.topInset + 90 } : null;
+  const noticeLook = carded ? { x: geo.center, y: placement.topInset + 90 } : notice ? { x: notice.kind === 'pop' ? geo.wingX + 80 : geo.center, y: placement.topInset + 90 } : null;
   const live = useRef({ geo, dashboard, chip, composer, place, wardrobe, noticeLook, openBy: companion.openBy });
   live.current = { geo, dashboard, chip, composer, place, wardrobe, noticeLook, openBy: companion.openBy };
   const ball = useRef<BallHandle | null>(null), look = useRef<Point | null>(null), cursor = useRef<Point>({ x: -1e4, y: -1e4 });
@@ -396,7 +417,7 @@ export function Companion() {
     } else if (!over && dashTimer.current) { clearTimeout(dashTimer.current); dashTimer.current = undefined; }
   }), []);
   useEffect(() => () => { clearTimeout(zoneTimer.current); clearTimeout(dashTimer.current); clearTimeout(firstClick.current); }, []);
-  useEffect(refreshHit, [place, chip, composer, dashboard, voice, reply.text, notice?.key, tuck.left]);
+  useEffect(refreshHit, [place, chip, composer, dashboard, voice, reply.text, notice?.key, card?.id, tuck.left]);
 
   // Native frosted glass behind every visible panel, following its transitions.
   const kickGlass = useRef(() => {});
@@ -422,7 +443,7 @@ export function Companion() {
     kick();
     return () => { cancelAnimationFrame(frame); observer.disconnect(); el.removeEventListener('transitionrun', kick); };
   }, []);
-  useEffect(() => kickGlass.current(), [place, chip, composer, dashboard, voice, reply.text, caption, notice?.key]);
+  useEffect(() => kickGlass.current(), [place, chip, composer, dashboard, voice, reply.text, caption, notice?.key, card?.id]);
 
   // What Settings in the panel reads and changes here: the daemon's switches, her look, her cues.
   const [settingsFocus, setSettingsFocus] = useState(0);
@@ -455,7 +476,8 @@ export function Companion() {
   };
 
   const { out } = geo;
-  const note: NotchNote | null = !notice ? null : notice.kind === 'pop' ? { key: notice.key, pop: notice.ids, onClose: notices.next } : { key: notice.key, onClose: notices.fold,
+  const note: NotchNote | null = carded && card ? { key: `card:${card.id}`, onClose: () => undefined, card: <ActionCard key={card.id} card={card} lang={companion.lang} onDecide={decideCard}/> }
+    : !notice ? null : notice.kind === 'pop' ? { key: notice.key, pop: notice.ids, onClose: notices.next } : { key: notice.key, onClose: notices.fold,
     card: <NoticeCard key={notice.key} n={notice} card={notices.card!} agent={agents.find(a => a.id === notice.id)} count={notices.count} look={wardrobe.marks}
       onLater={notices.fold} onOpen={jump} onChange={notices.bump} onResolve={(text, body) => {
         if (notice.kind !== 'req') return;
@@ -492,7 +514,7 @@ export function Companion() {
         style={{ left: geo.center - PANEL / 2, top: geo.panelTop }} inert={!dashboard}>
         {wardrobe.layout === 'around'
           ? <AroundDashboard open={dashboard} port={port} onClose={() => setDashboard(false)} onMood={setDashMood} onHop={height => ball.current?.hop(height)}
-            talk={port ? { rows: s.rows, tail, busy: s.phase === 'processing', offline: s.phase === 'error', floor, submit, older } : undefined}
+            talk={port ? { rows: s.rows, tail, busy: s.phase === 'processing', offline: s.phase === 'error', floor, submit, older, card, decide: decideCard } : undefined}
             plugins={port ? plugins : undefined} pluginFocus={pluginFocus} marks={wardrobe.marks} onAgents={setAgents} unread={notices.unread}
             onAnswer={id => { setDashboard(false); notices.focus(id); }} ctl={ctl} settingsFocus={settingsFocus}/>
           : <DashboardPreview embedded port={port} visible={dashboard} shown={dashboard} onClose={() => setDashboard(false)}/>}
@@ -502,7 +524,7 @@ export function Companion() {
           lift: placement.notchWidth ? 0 : lift, hidden: tuck.right && !!placement.notchWidth }}
         act={{ jump, answer: notices.focus, read: notices.read, clear: notices.clear }} note={note}/>
       <CompanionBall width={geo.width} height={placement.topInset + 560} lobe={geo.lobe} lift={lift} look={look} handle={ball} skin={worn.current}
-        target={{ place, expr, pressed, anchors: geo.anchors, homeGlass: wardrobe.homeGlass, lift: place === 'home' ? lift : 0, homeFace: !!notice,
+        target={{ place, expr, pressed, anchors: geo.anchors, homeGlass: wardrobe.homeGlass, lift: place === 'home' ? lift : 0, homeFace: !!notice || carded,
           away: trip === 'out', happy: trip === 'happy' }}
         label={voice === 'off' ? t([`Poke to talk${port ? '' : ' (demo)'}`, `戳一下，开始语音${port ? '' : '（演示）'}`]) : voice === 'speaking' ? t(['Poke to interrupt', '戳一下，打断播报']) : t(['Poke to stop', '戳一下，结束语音'])}
         onPress={press} onRelease={release} onCancel={cancel} onMove={refreshHit}/>

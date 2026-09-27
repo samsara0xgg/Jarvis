@@ -66,6 +66,13 @@
 - id: yes_do_it
   pattern: "^(?i:do)\\s+(?i:it)[?？。.!！]?$"
   decision: "yes"
+# ADR 0061: a letter card's ask ends 「要发吗？」, so 「发」 answers it like its button.
+- id: yes_fa
+  pattern: "^发(?:吧|送|出去)?[?？。.!！]?$"
+  decision: "yes"
+- id: yes_send
+  pattern: "^(?i:send)(?:\\s+(?i:it))?[?？。.!！]?$"
+  decision: "yes"
 - id: no_bu
   pattern: "^不[?？。.!！]?$"
   decision: "no"

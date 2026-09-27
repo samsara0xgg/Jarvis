@@ -34,7 +34,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
 REPO = Path(__file__).resolve().parents[2]
-ASK_TAIL = "回复「可以」执行，「不要」取消。"  # noqa: RUF001 — the fixed Chinese consent line.
+ASK = "要派这个后台任务吗？"  # noqa: RUF001 — the fixed Chinese ask under the card (ADR 0061).
 
 
 @dataclass(frozen=True)
@@ -165,8 +165,7 @@ def test_a_worker_starts_only_after_the_user_says_yes(tmp_path: Path) -> None:
     ctx = _context(tmp_path, project, spawns)
     try:
         ask = _say(ctx, "让 Codex 修一下 README", "T1")
-        assert ask.startswith("待确认：spawn_worker（"), ask  # noqa: RUF001
-        assert ask.endswith(ASK_TAIL), ask
+        assert ask.endswith(ASK), ask
         assert spawns.started == []
         _say(ctx, "可以", "T2")
         assert len(_rows(ctx.conn, "confirmation.accepted")) == 1

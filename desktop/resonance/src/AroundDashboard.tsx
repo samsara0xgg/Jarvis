@@ -15,6 +15,7 @@ import { HOME_DEFAULTS, isPop, tr, useCompanionSettings, useT, type BlockId, typ
 import { demoBrief, demoMail, demoNotices, demoToday, postRoute, useNow, useRoute, type Brief, type Mail, type Notice, type Today, type WxKind } from './homeData';
 import { ArrangeHome, BLOCK } from './ArrangeHome';
 import { SettingsPage, type Account, type Controls } from './SettingsPage';
+import { ActionCard, MailCard, type Card, type Decide } from './ActionCard';
 import './dashboard-around.css';
 import './dashboard-home.css';
 
@@ -84,7 +85,7 @@ const pluginStatus = (p: DemoPlugin): [string, L] => p.unsupported ? ['', ['Not 
   : p.state === 'off' ? ['', ['Off', '关']] : p.state === 'token' ? ['is-need', ['Needs an access token', '要一个访问令牌']]
   : ['is-need', p.ask ? ['Jarvis asked · needs sign-in', 'Jarvis 要用 · 要登录'] : ['Needs sign-in', '要登录']];
 
-type Turn = { you: string; at: string; jarvis?: string; jarvisAt?: string; work?: [string, string]; day?: string };
+type Turn = { you: string; at: string; jarvis?: string; jarvisAt?: string; work?: [string, string]; day?: string; mail?: string[] };
 const DEMO_TURNS: Turn[] = [
   { you: 'Remind me to test the mic at four.', at: '11:05', jarvis: 'Done. I’ll remind you at 4 PM.', jarvisAt: '11:05' },
   { you: 'What’s left on my plate today?', at: '14:32', jarvisAt: 'just now',
@@ -95,7 +96,8 @@ const ANSWER = 'Got it. I’ll take care of it and tell you when it’s done.';
 const BASIS: Record<Basis, L> = { observed: ['Observed', '看到的'], stated: ['You said', '你说的'], inferred: ['A guess', '猜的'] };
 // Live conversation: the memory.db rows and the answer still streaming, from the companion's daemon link.
 // `older` fetches a longer page and says whether it brought earlier rows; `floor` means the history's start is on hand.
-type Talk = { rows: Row[]; tail: string; busy: boolean; offline: boolean; floor: boolean; submit: (text: string) => void; older: () => Promise<boolean> };
+// `card` is the one waiting for a button (ADR 0061); it sits above the input until it is sent or dismissed.
+type Talk = { rows: Row[]; tail: string; busy: boolean; offline: boolean; floor: boolean; submit: (text: string) => void; older: () => Promise<boolean>; card?: Card | null; decide?: Decide };
 const when = (ts: string) => { const d = new Date(ts); return Number.isNaN(d.getTime()) ? '' : d.toDateString() === new Date().toDateString() ? hm(d.getTime()) : `${d.getMonth() + 1}/${d.getDate()} ${hm(d.getTime())}`; };
 const dayLabel = (lang: Lang, day: string) => { const d = new Date(day); return d.toDateString() === new Date(Date.now() - 86_400_000).toDateString() ? tr(lang, ['yesterday', '昨天']) : `${d.toLocaleDateString(lang === 'zh' ? 'zh-CN' : 'en-US', { weekday: 'short' })} ${d.getMonth() + 1}/${d.getDate()}`; };
 // The conversation of record as turns, each dated by the row that opens it: your rows open one, and Jarvis's rows after it answer it.
@@ -104,6 +106,8 @@ const toTurns = (rows: Row[]): Turn[] => {
   for (const row of rows) {
     const t = turns.at(-1), text = visible(row.text), at = when(row.ts), day = new Date(row.ts).toDateString();
     if (row.source === 'allen') turns.push({ you: row.text, at, day });
+    // ADR 0062: an email Jarvis read whole shows above its answer.
+    else if (row.source === 'mail') { if (t) t.mail = [...t.mail ?? [], row.text]; else turns.push({ you: '', at: '', day, mail: [row.text] }); }
     else if (!t) turns.push({ you: '', at: '', jarvis: text, jarvisAt: at, day });
     else Object.assign(t, { jarvis: t.jarvis ? `${t.jarvis}\n\n${text}` : text, jarvisAt: at });
   }
@@ -535,9 +539,12 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
         {more ? <><CaretUp size={10} weight="bold"/>{t(['Scroll up for', '往上滚看'])} {before ? dayLabel(lang, before) : t(['earlier', '更早的'])}</> : t(['Start of the conversation', '对话从这里开始'])}</div>}
       {shownTurns.map((turn, i) => <div className="pg-sec tr" key={i} data-day={turn.day}>
         {turn.you && <div className="tr-you"><span className="who">{t(['You', '你'])} · {turn.at}</span><p>{turn.you}</p></div>}
-        {turn.jarvis && <div className="tr-jarvis"><span className="who"><span className="dot"/>Jarvis · {turn.jarvisAt}</span><Markdown text={turn.jarvis}/>
+        {(turn.jarvis || turn.mail) && <div className="tr-jarvis"><span className="who"><span className="dot"/>Jarvis · {turn.jarvisAt}</span>
+          {turn.mail?.map((text, k) => <MailCard key={k} text={text} lang={lang}/>)}
+          {turn.jarvis && <Markdown text={turn.jarvis}/>}
           {turn.work && <Fold label={turn.work[0]}><pre>{turn.work[1]}</pre></Fold>}</div>}
       </div>)}
+      {talk?.card && talk.decide && <ActionCard key={talk.card.id} card={talk.card} lang={lang} onDecide={talk.decide}/>}
       <Ask className="pg-input" onAsk={ask}/></div>
     </>,
     now: () => <>

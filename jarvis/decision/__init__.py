@@ -36,7 +36,6 @@ Protocols that the runtime composition root satisfies structurally.
 
 from __future__ import annotations
 
-import contextlib
 import functools
 import hashlib
 import json
@@ -93,7 +92,7 @@ from jarvis.shared import (
     RawResult,
     RawResultBundle,
 )
-from jarvis.shared.lang import t
+from jarvis.shared.lang import action, letter_to, t
 from jarvis.shared.pricing import compute_cost_usd, load_pricing_table
 from jarvis.shared.realtime import AlreadyConsumed, Wave1FeatureFlags, stable_authorization_identity
 from jarvis.shared.realtime_trace import realtime_trace_context, record_realtime_trace
@@ -910,21 +909,22 @@ def _handle_utterance(
     #     (further down) before `_run_tool_use_loop` ever calls the
     #     LLM this turn. On a grammar hit, the LLM is never invoked at
     #     all for this trigger.
-    #   - The grammar is active ONLY while the PendingConfirmations
-    #     projection holds a live (`state == "pending"`, unexpired)
-    #     slot (`PendingConfirmationSlot.is_live`) — an expired or
-    #     already-answered slot makes this whole block inert and the
-    #     turn falls through to ordinary Tier 0 / Tier 2 handling
-    #     exactly as if no confirmation existed (D6 "expired pending ->
-    #     ordinary turn"; C3).
-    #   - A grammar miss closes the slot (ADR 0039), so the LLM on this
-    #     turn sees no pending ask at all. Its worst case (a paraphrase
-    #     like "行吧那就写进去吧") is proposing the action again via the
-    #     ordinary tool-call path, which produces a FRESH
-    #     `confirm_required` -> a fresh `confirmation.requested` that
-    #     re-asks — never a dispatch.
+    #   - The grammar is active ONLY for the first utterance after the
+    #     ask, within its TTL (`PendingConfirmationSlot.answers_by_words`,
+    #     ADR 0061) — later words fall through to ordinary Tier 0 / Tier 2
+    #     handling while the card keeps waiting for its button. Its worst
+    #     case (a paraphrase like "行吧那就写进去吧", or 「发吧」 ten minutes
+    #     on) is the LLM proposing the action again via the ordinary
+    #     tool-call path, which produces a FRESH `confirm_required` -> a
+    #     fresh `confirmation.requested` that re-asks — never a dispatch.
+    #   - A card button (`confirmation_decision` on the intent, ADR 0061)
+    #     names the exact confirmation it answers and is Allen's own act on
+    #     his own surface, so it needs no grammar and no timing.
     pending_slot = packet.pending_confirmation.slot
-    if pending_slot is not None and pending_slot.is_live(_now_epoch_ms()):
+    card_decision = trigger.payload.get("confirmation_decision")
+    if isinstance(card_decision, Mapping):
+        return _handle_card_decision(card_decision, pending_slot, packet, policy, ctx, scratch)
+    if pending_slot is not None and pending_slot.answers_by_words(_now_epoch_ms()):
         transcript_raw = trigger.payload.get("transcript", "")
         transcript = transcript_raw if isinstance(transcript_raw, str) else ""
         grammar_hit = match_confirm_grammar(transcript, ctx.confirm_grammar_table)
@@ -947,9 +947,6 @@ def _handle_utterance(
                 ctx,
                 scratch,
             )
-        # ADR 0039: an ask binds only the next utterance. Anything else closes
-        # it, so a later 「好」 meant for another question can never fire it.
-        packet = _supersede_confirmation(pending_slot, transcript, packet, ctx, scratch)
 
     # Tier 0 deterministic shortcut (spec §17): hit → dispatch through
     # the full gate/audit chain with caller_principal=regex_router,
@@ -1180,22 +1177,16 @@ _CONFIRM_REQUIRED_TOOL_RESULT_TEXT: Final[str] = (
 # rather than hardcoded to "write_file"/"L3" even though that is the
 # only L3 tool today (D1) — byte-identical output for the one case
 # that exists, forward-compatible if a second L3 tool ever lands.
-# ADR 0033: ``confirm.ask_tool`` is the same runtime-rendered consent line for
-# every other tool at the threshold, rendered from the frozen arguments only.
-_ARGUMENTS_PREVIEW_CHARS: Final[int] = 160
+# ADR 0033 / 0061: every other tool at the threshold gets one spoken line,
+# rendered from the frozen arguments only; the card shows the arguments.
 
 
-def _spoken_tool_name(tool_name: str) -> str:
-    """``mcp__notion__notion-fetch`` -> ``notion notion-fetch`` (spec §3.5.6 naming)."""
-    parts = tool_name.split("__")
-    return f"{parts[1]} {parts[2]}" if len(parts) == 3 and parts[0] == "mcp" else tool_name  # noqa: PLR2004
-
-
-def _arguments_preview(arguments: Mapping[str, Any]) -> str:
-    text = json.dumps(dict(arguments), ensure_ascii=False)
-    if len(text) <= _ARGUMENTS_PREVIEW_CHARS:
-        return text
-    return f"{text[:_ARGUMENTS_PREVIEW_CHARS]}…"
+def _ask_line(tool_name: str, arguments: Mapping[str, Any]) -> str:
+    """``confirm.ask_letter`` for a letter (to, subject, body), else ``confirm.ask_tool``."""
+    to = letter_to(dict(arguments))
+    if to is not None:
+        return t("confirm.ask_letter", to=to, subject=arguments["subject"])
+    return t("confirm.ask_tool", action=action(tool_name)[0])
 
 
 _TIER0_SPOKEN_PREVIEW_MAX_BYTES: Final[int] = 200
@@ -2516,11 +2507,7 @@ def _stage_and_request_confirmation(  # noqa: PLR0913 — one keyword per D3 sna
             payload={
                 "confirmation_id": confirmation_id,
                 "action_snapshot": generic_snapshot,
-                "template_line": t(
-                    "confirm.ask_tool",
-                    tool=_spoken_tool_name(action_request.tool_name),
-                    arguments=_arguments_preview(arguments),
-                ),
+                "template_line": _ask_line(action_request.tool_name, arguments),
                 "expires_at_ms": expires_at_ms,
             },
             source_event_id=source_event_id,
@@ -2579,10 +2566,11 @@ def _stage_and_request_confirmation(  # noqa: PLR0913 — one keyword per D3 sna
 #
 # `_handle_confirmation_accepted` is the ONLY function in this module (and,
 # by the module-boundary rules at the top of this file, in all of L3) that
-# constructs an `AuthorizationLease`. It is reachable from exactly one call
-# site: the grammar hook in `_handle_utterance`, itself gated on a live
-# PendingConfirmations slot and an exact-sentence grammar hit. No LLM code
-# path touches either precondition. That is the load-bearing invariant
+# constructs an `AuthorizationLease`. It is reachable from two call sites in
+# `_handle_utterance`: the grammar hook, gated on a pending slot the utterance
+# may still answer and an exact-sentence grammar hit, and a card's button
+# (ADR 0061), gated on the intent naming the pending slot's own id. No LLM code
+# path touches any of those preconditions. That is the load-bearing invariant
 # (ADR §3 D6) made structural rather than merely documented.
 
 _LEASE_TTL_MS: Final[int] = 60_000
@@ -2617,13 +2605,8 @@ the confirmation ask's own minutes-scale TTL)."""
 # ``confirm.write_ran`` — ADR-0012 §3 D6 exact wording: "backed by ack semantics; the wording
 # deliberately stops at 已执行 and must not be strengthened" (no completion or
 # verification words; "ran" is exactly what the ack proves). ``confirm.tool_ran``
-# (ADR 0033) is the same ack-only wording for any other confirmed tool, followed by
-# the head of what the tool returned (machine truth, never the model's words).
-_RESULT_PREVIEW_CHARS: Final[int] = 300
-
-
-def _result_preview(text: str) -> str:
-    return text if len(text) <= _RESULT_PREVIEW_CHARS else f"{text[:_RESULT_PREVIEW_CHARS]}…"
+# (ADR 0061) is the tool's own ack-only line from the language table ("已发送"
+# for a send), never the model's words.
 
 
 def _new_lease_id() -> str:
@@ -2661,34 +2644,81 @@ def _record_confirmation_answer(
     )
 
 
-_SUPERSEDED_BY_TURN: Final[ConfirmGrammarHit] = ConfirmGrammarHit(
-    rule_id="superseded_by_turn",
-    decision="no",
-)
+# ADR 0061: a card's button answers like a grammar hit; the rule id says which.
+_CARD_SEND: Final[ConfirmGrammarHit] = ConfirmGrammarHit(rule_id="card_button", decision="yes")
+_CARD_DISMISS: Final[ConfirmGrammarHit] = ConfirmGrammarHit(rule_id="card_dismiss", decision="no")
 
 
-def _supersede_confirmation(
-    slot: PendingConfirmationSlot,
-    transcript: str,
+def _handle_card_decision(  # noqa: PLR0913 — the answer path's inputs plus the button's payload.
+    decision: Mapping[str, Any],
+    slot: PendingConfirmationSlot | None,
     packet: SituationPacket,
+    policy: EffectivePolicy,
     ctx: DecideContext,
     scratch: _Scratch,
-) -> SituationPacket:
-    """Close ``slot`` as rejected and return a packet that no longer shows it.
+) -> DecideResult:
+    """ADR 0061: a card's button, bound to the exact confirmation it shows.
 
-    The turn then runs as an ordinary one: no pending note reaches the LLM,
-    and nothing announces the closure. A closed slot that another turn
-    already answered is simply left alone.
+    A card that is no longer the pending one (answered, or replaced by a
+    newer ask) runs nothing. Accept with edits first freezes the edited
+    arguments as a new ask for the same tool and target, then accepts that:
+    the dispatched arguments are always exactly a recorded snapshot's.
     """
-    with contextlib.suppress(ConfirmationRevalidationError):
-        scratch.events.append(
-            _record_confirmation_answer(slot, _SUPERSEDED_BY_TURN, transcript, ctx, scratch),
-        )
-    closed = replace(slot, state="rejected")
-    return replace(
-        packet,
-        pending_confirmation=replace(packet.pending_confirmation, slot=closed),
+    if slot is None or not slot.is_live(_now_epoch_ms()) or (
+        decision.get("confirmation_id") != slot.confirmation_id
+    ):
+        scratch.confirmation_answered_this_turn = True
+        return _finalize_response(t("confirm.stale"), packet, ctx, scratch)
+    if decision.get("decision") != "accept":
+        return _handle_confirmation_rejected(slot, _CARD_DISMISS, "", packet, ctx, scratch)
+    edits = decision.get("edits")
+    if isinstance(edits, Mapping) and edits:
+        slot = _revise_confirmation(slot, edits, ctx, scratch)
+    return _handle_confirmation_accepted(slot, _CARD_SEND, "", packet, policy, ctx, scratch)
+
+
+def _revise_confirmation(
+    slot: PendingConfirmationSlot,
+    edits: Mapping[str, Any],
+    ctx: DecideContext,
+    scratch: _Scratch,
+) -> PendingConfirmationSlot:
+    """Freeze Allen's edits as a new ask for the same tool and target (ADR 0061).
+
+    Only a string argument the ask already had can be replaced, and only by a
+    string; staged content (``write_file``) is never edited here. Returns the
+    new pending slot, or ``slot`` unchanged when nothing differs.
+    """
+    args_meta_raw = slot.snapshot.get("args_meta")
+    args_meta = dict(args_meta_raw) if isinstance(args_meta_raw, Mapping) else {}
+    if "content_artifact" in args_meta:
+        return slot
+    changed = {
+        key: value
+        for key, value in edits.items()
+        if isinstance(value, str)
+        and isinstance(args_meta.get(key), str)
+        and args_meta[key] != value
+    }
+    if not changed:
+        return slot
+    arguments = {**args_meta, **changed}
+    tool_name = str(slot.snapshot.get("tool_name", ""))
+    correlation = {"turn_id": scratch.turn_id} if scratch.turn_id else None
+    emit_event(
+        ctx.conn,
+        type="confirmation.requested",
+        payload={
+            "confirmation_id": _new_confirmation_id(),
+            "action_snapshot": {**slot.snapshot, "args_meta": arguments},
+            "template_line": _ask_line(tool_name, arguments),
+            "expires_at_ms": _now_epoch_ms() + ctx.confirmation_ttl_ms,
+        },
+        source_event_id=_latest_event_uid_of_type(ctx.conn, event_type="confirmation.requested"),
+        correlation=correlation,
     )
+    revised = make_snapshot(ctx.conn).pending_confirmations.slot
+    return revised if revised is not None else slot
 
 
 def _handle_confirmation_rejected(  # noqa: PLR0913 — one keyword per D6 answer-path input; each is load-bearing, splitting would only relocate the arg list.
@@ -2719,7 +2749,7 @@ def _handle_confirmation_rejected(  # noqa: PLR0913 — one keyword per D6 answe
     scratch.events.append(rejected_event)
     scratch.confirmation_answered_this_turn = True
 
-    draft = t("confirm.rejected", template_line=slot.template_line)
+    draft = t("confirm.rejected", action=action(str(slot.snapshot.get("tool_name", "")))[0])
     return _finalize_response(draft, packet, ctx, scratch)
 
 
@@ -2965,11 +2995,7 @@ def _handle_confirmation_accepted(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR
         return _finalize_response(draft, packet, ctx, scratch)
 
     if not staged:
-        draft = t(
-            "confirm.tool_ran",
-            tool=_spoken_tool_name(tool_name),
-            result=_result_preview(_render_bundle_for_llm(bundle)),
-        )
+        draft = t("confirm.tool_ran", done=action(tool_name)[1])
         return _finalize_response(draft, packet, ctx, scratch)
     path_written = primary_result_slot.payload.get("path", "?")
     bytes_written = primary_result_slot.payload.get("bytes_written", "?")

@@ -1,6 +1,6 @@
 # ADR 0039 — A confirmation ask binds only the next utterance
 
-**Status:** Accepted
+**Status:** Superseded-by-0061
 **Date:** 2026-09-24
 **Supersedes:** none
 

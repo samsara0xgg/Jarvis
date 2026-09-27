@@ -209,6 +209,14 @@ class SubmitRequest(BaseModel):
     text: str
 
 
+class CardDecisionRequest(BaseModel):
+    """ADR 0061: Allen's answer to the card he sees, by its id; edits are the card's text fields."""
+
+    confirmation_id: str
+    decision: Literal["accept", "reject"]
+    edits: dict[str, str] = Field(default_factory=dict)
+
+
 class CancelResponseRequest(BaseModel):
     """Body of ``POST /inherent/cancel-response`` (ADR-0008 D10).
 
@@ -470,6 +478,11 @@ class InherentDeps:
     # cursor. ``(after, limit) -> {"since", "rows"}``; ``None`` leaves the
     # route unregistered.
     conversation_read: Callable[[int, int], dict[str, Any]] | None = None
+    # ADR 0061: the card waiting for Allen's button (``{"card": ... | None}``, a
+    # small fold off the loop thread) and his answer to it, which starts a turn
+    # and returns its id. ``None`` leaves both routes unregistered.
+    card_read: Callable[[], dict[str, Any]] | None = None
+    card_decide: Callable[[str, str, dict[str, str]], str] | None = None
     # ADR 0051: the companion home's reads and its one write, all off the loop
     # thread. A LookupError is "not connected" (404, the home's fallback), any
     # other failure 502. ``None`` leaves the routes unregistered.
@@ -1091,7 +1104,7 @@ _REQUEST_ID: Final[re.Pattern[str]] = re.compile(
 )
 
 
-def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0915 — one closed route table; the cancel and controls routes are registered only when injected.
+def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 — one closed route table; the cancel and controls routes are registered only when injected.
     """Build the FastAPI app with all 5 endpoints registered.
 
     The factory takes the injected deps once and closes over them in
@@ -1429,6 +1442,25 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0915 — one cl
         async def conversation(after: int = 0, limit: int = 200) -> dict[str, Any]:
             """Spec §18.3: the conversation of record past ``after`` (0 = the newest rows)."""
             return conversation_read(after, limit)
+
+    if deps.card_read is not None and deps.card_decide is not None:
+        card_read, card_decide = deps.card_read, deps.card_decide
+
+        @app.get("/inherent/confirmation")
+        async def confirmation_card() -> dict[str, Any]:
+            """ADR 0061: the pending card, or ``{"card": null}``."""
+            return await asyncio.to_thread(card_read)
+
+        @app.post("/inherent/confirmation", status_code=200)
+        async def confirmation_answer(req: CardDecisionRequest) -> dict[str, str]:
+            """ADR 0061: send or dismiss the card on screen; 409 once it is not the pending one."""
+            card = (await asyncio.to_thread(card_read)).get("card")
+            if not card or card.get("id") != req.confirmation_id:
+                raise HTTPException(status_code=409, detail="that card is no longer waiting")
+            turn_id = await asyncio.to_thread(
+                card_decide, req.confirmation_id, req.decision, dict(req.edits),
+            )
+            return {"status": "accepted", "turn_id": turn_id}
 
     _register_home_routes(app, deps)
     _register_setup_routes(app, deps)
