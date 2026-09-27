@@ -35,8 +35,9 @@ function target() {
 function placement(display: Electron.Display) {
   const notches: NotchScreen[] = material?.screens() ?? [];
   const notch = notches.find(item => item.id === display.id && item.topInset > 0);
-  // Without a notch she lives in a free-standing pill that hangs just below the menu bar.
-  const topInset = notch ? Math.max(24, Math.round(notch.topInset)) : Math.max(32, Math.round(display.workArea.y - display.bounds.y));
+  // Without a notch she lives in a free-standing pill that hangs just below the menu bar. The notch's height is
+  // not rounded: in a scaled mode it can be 28.5 pt, and rounding it leaves her island half a point below the notch.
+  const topInset = notch ? Math.max(24, notch.topInset) : Math.max(32, Math.round(display.workArea.y - display.bounds.y));
   return { docked: false, topInset, notchWidth: notch ? notch.notchWidth : 0, surfaceWidth: WIDTH, compactWidth: 0, displayId: display.id };
 }
 // A line only when it changes: "front<TAB><focused terminal's title>", or "away" (Ghostty not in front, not
@@ -90,7 +91,7 @@ end run`;
 function frame(): Electron.Rectangle { return material?.getFrame(win.getNativeWindowHandle()) ?? win.getBounds(); }
 function place() {
   const display = current = target(), value = placement(display);
-  const bounds = { x: Math.round(display.bounds.x + (display.bounds.width - WIDTH) / 2), y: display.bounds.y, width: WIDTH, height: Math.min(display.bounds.height, value.topInset + 690) };
+  const bounds = { x: Math.round(display.bounds.x + (display.bounds.width - WIDTH) / 2), y: display.bounds.y, width: WIDTH, height: Math.min(display.bounds.height, Math.ceil(value.topInset) + 690) };
   // A borderless panel may cover the menu bar only through AppKit, like the notch dock.
   if (material) material.setFrame(win.getNativeWindowHandle(), bounds); else win.setBounds(bounds);
   win.webContents.send('placement', value);
