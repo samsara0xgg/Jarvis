@@ -185,7 +185,8 @@ def format_pending_confirmation_note(
         f"A card is waiting for the user's button: {tool_name} {arguments}. "
         "You cannot run or authorize it yourself; only the user's button or direct answer "
         "counts. To change it, or when the user asks you to go ahead with it, call the same "
-        "tool again with the arguments it should have: that replaces the card and asks once more."
+        "tool again with the arguments it should have: that replaces the card and asks once more. "
+        "To take it down without running it, call withdraw_card."
     )
 
 

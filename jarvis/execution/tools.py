@@ -70,10 +70,15 @@ from jarvis.shared import (
 )
 from jarvis.shared.action_admission import action_admission_guard
 from jarvis.shared.text import truncate_utf8
-from jarvis.state.authorized_dispatch_outbox import admit_authorized_dispatch
+from jarvis.state.authorized_dispatch_outbox import (
+    ConfirmationRevalidationError,
+    admit_authorized_dispatch,
+    answer_confirmation_once,
+)
 from jarvis.state.event_log import emit_event, iter_events_of_types
 from jarvis.state.lifecycle_terminal import terminalize_action
 from jarvis.state.memory_db import remember_fact
+from jarvis.state.projections import PendingConfirmations
 
 if TYPE_CHECKING:
     import sqlite3
@@ -811,6 +816,46 @@ def ask_user(args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
             "stop; their answers arrive as their next message."
         ),
     }
+
+
+# ADR 0075: what the waiting confirmation card folds from (ADR 0062).
+_CARD_TYPES: Final[tuple[str, ...]] = (
+    "confirmation.requested", "confirmation.accepted", "confirmation.rejected", "gate.evaluated",
+)
+
+
+@tool(
+    description=(
+        "Take down the card waiting for the user's button without running its action. Use it "
+        "when the user tells you not to go ahead with it, or says it is wrong and you cannot "
+        "call its tool again with the right arguments yet. To change a card, call its tool "
+        "again instead: that replaces it. No arguments."
+    ),
+    input_schema={"type": "object", "properties": {}, "required": []},
+    allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
+    risk_level="L1",
+    read_only=False,
+)
+def withdraw_card(_args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    """Reject the waiting card with rule ``card_withdrawn``; its action never runs."""
+    slot = PendingConfirmations.from_events(iter_events_of_types(ctx.conn, _CARD_TYPES)).slot
+    if slot is None or not slot.is_live(int(time.time() * 1000)):
+        msg = "withdraw_card: no card is waiting"
+        raise ToolError(msg, code="no_card")
+    turn_id = _turn_of(ctx.action_id)
+    try:
+        answer_confirmation_once(
+            ctx.conn,
+            confirmation_id=slot.confirmation_id,
+            accepted=False,
+            utterance_raw="",
+            grammar_rule_id="card_withdrawn",
+            correlation={"turn_id": turn_id} if turn_id else None,
+        )
+    except ConfirmationRevalidationError as exc:
+        msg = "withdraw_card: the card was answered or replaced just now"
+        raise ToolError(msg, code="no_card") from exc
+    return {"status": "withdrawn", "tool": slot.snapshot.get("tool_name", "")}
 
 
 def _make_remember(memory_db_path: Path) -> Tool:
@@ -3710,6 +3755,7 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
     registry.register(create_memo)
     registry.register(list_memos)
     registry.register(ask_user)
+    registry.register(withdraw_card)
     if memory_db_path is not None:
         registry.register(_make_remember(memory_db_path))
     if web_search_provider is not None:

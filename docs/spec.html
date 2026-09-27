@@ -500,7 +500,7 @@ Jarvis 是 <strong>6-layer state-centric personal runtime</strong>。Identity �
 <thead><tr><th>Projection</th><th>作用</th></tr></thead>
 <tbody>
 <tr><td><strong>Open Actions / Admissions</strong></td><td>已授权未终结的 action、gate / dispatch 关联、confirm 等待。</td></tr>
-<tr><td><strong>Pending Confirmations</strong></td><td>等待 Allen 回答的 confirmation request，界面上是一张卡片（ADR 0062）。卡片不过期，只在被接受、被 × 关掉、被更新的询问替换，或提出它的那一轮被下一句话丢掉时关闭（ADR 0074）；同一时间只有一张。确认语法只对询问后的第一句话、且在 TTL 内有效；其他话不关闭卡片，按普通回合处理。</td></tr>
+<tr><td><strong>Pending Confirmations</strong></td><td>等待 Allen 回答的 confirmation request，界面上是一张卡片（ADR 0062）。卡片不过期，只在被接受、被 × 关掉、被更新的询问替换、提出它的那一轮被下一句话丢掉（ADR 0074），或 Jarvis 按 Allen 的话用 <code>withdraw_card</code> 撤掉时关闭（ADR 0075，记为 <code>confirmation.rejected</code> rule <code>card_withdrawn</code>）；同一时间只有一张。确认语法只对询问后的第一句话、且在 TTL 内有效；其他话不关闭卡片，按普通回合处理。</td></tr>
 <tr><td><strong>Status Board</strong></td><td>Mac / home / action / tool / domain availability 的当前状态。</td></tr>
 <tr><td><strong>Mode Runtime State</strong></td><td>当前 durable mode、lenses、overrides。</td></tr>
 <tr><td><strong>Recent Trace</strong></td><td>最近 N turn 和相关 action / event 的近因上下文。</td></tr>
