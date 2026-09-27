@@ -12,8 +12,9 @@ export type AgentRequest = { id: string; tool: string; input: Record<string, unk
 export type Agent = {
   id: string; agent: 'claude' | 'codex'; state: AgentState; title: string; project: string; branch?: string; where: string; age: string;
   you: string; last: string; sub?: boolean; request?: AgentRequest; error?: string; at?: number; // last change, for Settings › Agents' stale limit
-  // A Claude session's kind, and for a background one the id `claude attach` takes (ADR 0057).
-  kind?: 'interactive' | 'background'; job?: string;
+  // A Claude session's kind, and for a background one the id `claude attach` takes (ADR 0057). `replyable`: idle
+  // at its input box, so a line typed from the island lands there (ADR 0068).
+  kind?: 'interactive' | 'background'; job?: string; replyable?: boolean;
 };
 // A row as the companion sees it: with the mark it wears and its one line for the hover list.
 export type ShownAgent = Agent & { mark: MarkState; line: string };
@@ -48,7 +49,7 @@ export function requestLine(r: AgentRequest) {
 }
 type ClaudeSession = {
   session_id: string; kind: 'interactive' | 'background'; job_id?: string; phase: 'needs_input' | 'working' | 'done'; title: string; project: string; branch: string; where: string; prompt: string; activity: string;
-  last_message: string; updated_ms: number; compacting?: boolean; error?: string; request?: AgentRequest | null;
+  last_message: string; updated_ms: number; compacting?: boolean; error?: string; request?: AgentRequest | null; replyable?: boolean;
 };
 export const fromClaude = (r: ClaudeSession): Agent => ({
   id: r.session_id, agent: 'claude', title: r.title || r.prompt || 'Claude session', project: r.project, branch: r.branch || undefined,
@@ -56,6 +57,7 @@ export const fromClaude = (r: ClaudeSession): Agent => ({
   where: r.where === 'background' ? 'Background' : r.where, age: ago(r.updated_ms), you: r.prompt,
   last: r.request ? requestLine(r.request) : r.compacting ? 'Compacting its context' : r.phase === 'done' ? r.last_message : r.activity || r.last_message,
   request: r.request ?? undefined, error: r.error || undefined, at: r.updated_ms, kind: r.kind, job: r.job_id || undefined,
+  replyable: !!r.replyable && !r.request,
 });
 // Polled all the time: the marks beside the notch and the notices read them too. A daemon that does not serve
 // the route yet simply has no Claude rows.
@@ -87,4 +89,36 @@ export async function answerRequest(port: string, id: string, answer: Answer) {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(answer), signal: AbortSignal.timeout(5000) });
     return r.ok;
   } catch { return false; }
+}
+
+// ADR 0067: Allen's marks on his sessions, kept by the daemon for every surface: not seen yet, parked (先放着),
+// archived (done with, kept to find again).
+export type Mark = { unread?: boolean; parked_ms?: number | null; archived_ms?: number | null };
+export async function loadMarks(port: string): Promise<Record<string, Mark> | null> {
+  try {
+    const r = await fetch(`http://127.0.0.1:${port}/inherent/agent-marks`, { signal: AbortSignal.timeout(5000) });
+    const data = r.ok ? await r.json() : null;
+    return data?.marks && typeof data.marks === 'object' ? data.marks : null;
+  } catch { return null; }
+}
+export function saveMark(port: string, id: string, mark: { unread: boolean; park: boolean; archive: boolean } | { seen: true }) {
+  void fetch(`http://127.0.0.1:${port}/inherent/agent-marks/${encodeURIComponent(id)}`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(mark), signal: AbortSignal.timeout(5000) }).catch(() => {});
+}
+// A session's conversation for the island's page: Allen's words and each turn's final answer (ADR 0068).
+export type Said = { who: 'you' | 'it'; text: string };
+export async function readConversation(port: string, id: string): Promise<Said[] | null> {
+  try {
+    const r = await fetch(`http://127.0.0.1:${port}/inherent/claude-sessions/${encodeURIComponent(id)}/conversation`, { signal: AbortSignal.timeout(5000) });
+    const data = r.ok ? await r.json() : null;
+    return Array.isArray(data?.messages) ? data.messages : null;
+  } catch { return null; }
+}
+// A line typed into the session through a hidden attach; '' once it landed, else why not.
+export async function sendReply(port: string, id: string, text: string): Promise<string> {
+  try {
+    const r = await fetch(`http://127.0.0.1:${port}/inherent/claude-sessions/${encodeURIComponent(id)}/reply`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text }), signal: AbortSignal.timeout(20_000) });
+    return r.ok ? '' : r.status === 409 ? 'It cannot take a reply right now' : 'The reply did not reach it';
+  } catch { return 'The reply did not reach it'; }
 }

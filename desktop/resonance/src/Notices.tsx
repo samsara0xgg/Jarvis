@@ -1,17 +1,19 @@
 import { useEffect, useReducer, useRef, useState, type ReactNode } from 'react';
-import { ArrowSquareOut, ArrowUp, Check } from '@phosphor-icons/react';
-import { AGENT_NAME, openLabel, type Agent, type AgentRequest, type AgentState } from './agents';
+import { ArrowSquareOut, ArrowUp, Check, Moon } from '@phosphor-icons/react';
+import { AGENT_NAME, loadMarks, openLabel, saveMark, type Agent, type AgentRequest, type AgentState } from './agents';
 import { AgentMark, type MarkLook } from './AgentMarks';
 import { Markdown } from './Markdown';
 import { palette, play, scoreOf } from './soundKit';
 import type { ExprId } from './starCore';
 import './notices.css';
 
-// Agent notices, after the notch lab (ADR 0057). A session that finishes or stops while Allen is not looking at it
-// joins his turn and pops up its name beside the notch for 5 s; one that needs him gets a card hanging from the
-// notch, answered right there; it folds away after 30 s untouched (or on Later) and comes back once, softer, 10
-// minutes later. Finishes within 1.5 s share one pop; needs-you cards go ahead of pops; nothing shows while she
-// talks or while the Dashboard is open, and it all comes up after. Nothing pops for the session he is looking at.
+// Agent notices, after the notch lab (ADR 0057, 0067). A session that finishes or stops while Allen is not looking at
+// it joins his turn and pops up its name from the island for 5 s; one that needs him gets a card hanging from the
+// island, answered right there; it folds away after 30 s untouched and comes back once, softer, 10 minutes later.
+// Park (先放着) takes a session off his turn: no pops, no cards, no reminder, until he takes it back or it does
+// something new. Finishes within 1.5 s share one pop; needs-you cards go ahead of pops; nothing shows while she
+// talks, while the Dashboard is open or while the keys hold the island, and it all comes up after. Nothing pops for
+// the session he is looking at, in Ghostty or on its page in the island.
 const POP_MS = 5000, FOLD_MS = 30_000, REMIND_MS = 600_000, TOGETHER_MS = 1500, CONFIRM_MS = 850;
 type Base = { key: string; id: string; at: number; reminded?: boolean };
 export type Notice = Base & (
@@ -43,8 +45,9 @@ export function noticeCue(name: 'ask' | 'done' | 'error' | 'send' | 'close', vol
   } catch { /* sound is optional */ }
 }
 
-// Allen's turn, kept in her profile (ADR 0057): finished or stopped sessions he has not looked at, the ones he
-// cleared from beside the notch, and each session's last state, so a finish while she was closed still counts.
+// Allen's turn (ADR 0057, 0067): finished or stopped sessions he has not looked at, the ones he parked and the ones he
+// archived. With a daemon they live there, for every surface; her profile keeps each session's last state, so a
+// finish while she was closed still counts, and a copy of the lists for a companion without a daemon.
 const TURN = 'companion-turn-v1', KEEP_MS = 2 * 86_400_000;
 type Kept = { unread: string[]; cleared: string[]; last: Record<string, [AgentState, number]> };
 function loadKept(): Kept {
@@ -55,10 +58,11 @@ function loadKept(): Kept {
 }
 
 type Tone = 'ask' | 'done' | 'error';
-// The queue behind the pops and cards. `hold` keeps every one back (she is talking, the Dashboard is open);
-// `watched` is the session Allen has been looking at in Ghostty for 1.5 s.
-export function useNotices({ agents, hold, watched, cue, answer }: {
-  agents: Agent[]; hold: boolean; watched: string | null; cue: (name: Tone | 'send' | 'close', gain?: number) => void;
+// The queue behind the pops and cards. `hold` keeps every one back (she is talking, the Dashboard is open, the keys
+// hold the island) except a card brought forward on purpose; `watched` is the session Allen has been looking at in
+// Ghostty for 1.5 s, `viewing` the one whose page is open in the island.
+export function useNotices({ port, agents, hold, watched, viewing, cue, answer }: {
+  port: string | null; agents: Agent[]; hold: boolean; watched: string | null; viewing: string | null; cue: (name: Tone | 'send' | 'close', gain?: number) => void;
   answer: (req: AgentRequest, body: { decision: 'allow' | 'always' | 'deny'; answers?: Record<string, string>; message?: string }) => Promise<boolean>;
 }) {
   const [, bump] = useReducer((x: number) => x + 1, 0);
@@ -66,14 +70,36 @@ export function useNotices({ agents, hold, watched, cue, answer }: {
     const kept = loadKept();
     return {
       queue: [] as Notice[], folded: [] as Notice[], cards: new Map<string, Card>(), shownReqs: new Set<string>(),
-      unread: new Set(kept.unread), cleared: new Set(kept.cleared), last: kept.last,
-      soundAt: -1e9, shown: '', openedAt: 0, peek: false, touched: '',
+      unread: new Set(kept.unread), archived: new Set(kept.cleared), parked: new Map<string, number>(), last: kept.last,
+      soundAt: -1e9, shown: '', openedAt: 0, peek: false, touched: '', forced: '',
+      // Sessions changed here before the daemon's marks arrived: their marks stay as she set them.
+      loaded: false, early: new Set<string>(),
       // Her face for a moment after an answer: pleased (with a hop) or refusing.
       over: null as { face: ExprId; until: number; hop: boolean } | null,
       timers: new Set<ReturnType<typeof setTimeout>>(),
     };
   });
-  const save = () => { try { localStorage.setItem(TURN, JSON.stringify({ unread: [...s.unread], cleared: [...s.cleared], last: s.last })); } catch { /* the list just is not remembered */ } };
+  const save = () => { try { localStorage.setItem(TURN, JSON.stringify({ unread: [...s.unread], cleared: [...s.archived], last: s.last })); } catch { /* the list just is not remembered */ } };
+  const persist = (id: string) => { if (!s.loaded) s.early.add(id); if (port) saveMark(port, id, { unread: s.unread.has(id), park: s.parked.has(id), archive: s.archived.has(id) }); };
+  // The daemon's marks win; the first time it has none, her profile's lists move there.
+  useEffect(() => {
+    if (!port) return;
+    void loadMarks(port).then(marks => {
+      if (!marks) return;
+      const ids = Object.keys(marks), mine = { unread: s.unread, archived: s.archived, parked: s.parked };
+      s.loaded = true;
+      if (!ids.length) { new Set([...s.unread, ...s.archived, ...s.parked.keys()]).forEach(persist); return; }
+      s.unread = new Set(ids.filter(id => marks[id].unread));
+      s.archived = new Set(ids.filter(id => marks[id].archived_ms));
+      s.parked = new Map(ids.filter(id => marks[id].parked_ms).map(id => [id, marks[id].parked_ms!]));
+      for (const id of s.early) {
+        if (mine.unread.has(id)) s.unread.add(id); else s.unread.delete(id);
+        if (mine.archived.has(id)) s.archived.add(id); else s.archived.delete(id);
+        if (mine.parked.has(id)) s.parked.set(id, mine.parked.get(id)!); else s.parked.delete(id);
+      }
+      save(); bump();
+    });
+  }, [port]);
   const later = (ms: number, run: () => void) => { const t = setTimeout(() => { s.timers.delete(t); run(); }, ms); s.timers.add(t); };
   useEffect(() => () => s.timers.forEach(clearTimeout), []);
   const byId = new Map(agents.map(a => [a.id, a]));
@@ -84,6 +110,7 @@ export function useNotices({ agents, hold, watched, cue, answer }: {
   const sound = (n: Notice, gain = 1) => { const now = performance.now(); if (now - s.soundAt > TOGETHER_MS) { s.soundAt = now; cue(toneOf(n), gain); } };
 
   const arrive = (a: Arrival) => {
+    if (s.parked.has(a.id)) return;
     const now = performance.now(), n = { ...a, key: `${a.kind}:${a.id}:${now}`, at: now } as Notice, head = s.queue[0], tail = s.queue.at(-1);
     if (n.kind === 'pop') {
       // Into the pop on screen, or the one that came up less than 1.5 s ago.
@@ -96,36 +123,59 @@ export function useNotices({ agents, hold, watched, cue, answer }: {
     const i = s.queue.findIndex((m, j) => j > 0 && !needs(m));
     if (i < 0) s.queue.push(n); else s.queue.splice(i, 0, n);
   };
-  // Out of his turn: looked at, opened, marked, or cleared. Their names leave any pop too.
-  const read = (ids: string[]) => {
-    ids.forEach(id => s.unread.delete(id));
+  // Their names leave any pop; `cards` takes their needs-you cards away too.
+  const drop = (ids: string[], cards = false) => {
     for (const n of s.queue) if (n.kind === 'pop') n.ids = n.ids.filter(id => !ids.includes(id));
-    s.queue = s.queue.filter(n => n.kind !== 'pop' || n.ids.length);
+    const keep = (n: Notice) => n.kind === 'pop' ? n.ids.length > 0 : !(cards && ids.includes(n.id));
+    s.queue = s.queue.filter(keep); s.folded = s.folded.filter(keep);
+  };
+  // Out of his turn: looked at, opened or marked.
+  const read = (ids: string[]) => {
+    ids.forEach(id => { if (s.unread.delete(id)) { if (!s.loaded) s.early.add(id); if (port) saveMark(port, id, { seen: true }); } });
+    drop(ids); save(); bump();
+  };
+  // Done with: off the island until it does something new, kept for the Agents window's archive.
+  const archive = (ids: string[]) => {
+    ids.forEach(id => { s.archived.add(id); s.unread.delete(id); s.parked.delete(id); persist(id); });
+    cue('close'); drop(ids); save(); bump();
+  };
+  // 先放着: off his turn and quiet, a question still waiting, until he takes it back or it does something new.
+  const park = (ids: string[]) => {
+    ids.forEach(id => { s.parked.set(id, Date.now()); persist(id); });
+    cue('close', .7); drop(ids, true); bump();
+  };
+  const unpark = (ids: string[]) => {
+    ids.forEach(id => { s.parked.delete(id); if (ended(live.current.byId.get(id)?.state ?? 'work')) s.unread.add(id); persist(id); });
     save(); bump();
   };
-  const clear = (ids: string[]) => { ids.forEach(id => s.cleared.add(id)); cue('close'); read(ids); };
   // What changed since the last poll. A session met for the first time only notifies through a held prompt.
   const key = agents.map(a => `${a.id}:${a.state}:${a.request?.id ?? ''}`).join('|');
   useEffect(() => {
-    const now = Date.now();
+    const now = Date.now(), touched = new Set<string>();
     for (const a of agents) {
-      const was = s.last[a.id]?.[0], looking = a.id === watched;
+      const was = s.last[a.id]?.[0], looking = a.id === watched || a.id === viewing;
       s.last[a.id] = [a.state, now];
       // A background session shows no dialog of its own while Jarvis holds its prompt, so that card comes even
-      // while he looks at the session; an interactive one asks in his terminal at the same time.
-      if (a.request && !s.shownReqs.has(a.request.id)) { s.shownReqs.add(a.request.id); if (!looking || a.kind === 'background') arrive({ kind: 'req', id: a.id, req: a.request }); }
-      if (!was || was === a.state) continue;
-      if (!ended(a.state)) {
-        // Working again (or asking): it leaves his turn, and a cleared star comes back.
-        s.unread.delete(a.id); s.cleared.delete(a.id);
-        if (a.state === 'wait' && !a.request && !looking) arrive({ kind: 'wait', id: a.id, line: a.last });
-      } else if (!ended(was)) {
-        s.cleared.delete(a.id);
-        if (!looking) { s.unread.add(a.id); arrive({ kind: 'pop', id: a.id, ids: [a.id] }); }
+      // while he looks at the session; an interactive one asks in his terminal at the same time. A new question
+      // is something new: it brings a parked session back.
+      if (a.request && !s.shownReqs.has(a.request.id)) {
+        s.shownReqs.add(a.request.id);
+        if (s.parked.delete(a.id)) touched.add(a.id);
+        if (!looking || a.kind === 'background') arrive({ kind: 'req', id: a.id, req: a.request });
       }
+      if (!was || was === a.state) continue;
+      // Anything new brings it back from the moon or the archive.
+      const unarchived = s.archived.delete(a.id), unparked = s.parked.delete(a.id);
+      if (unarchived || unparked) touched.add(a.id);
+      if (!ended(a.state)) {
+        // Working again (or asking): it leaves his turn.
+        if (s.unread.delete(a.id)) touched.add(a.id);
+        if (a.state === 'wait' && !a.request && !looking) arrive({ kind: 'wait', id: a.id, line: a.last });
+      } else if (!ended(was) && !looking) { s.unread.add(a.id); touched.add(a.id); arrive({ kind: 'pop', id: a.id, ids: [a.id] }); }
     }
+    touched.forEach(persist);
     for (const [id, [, at]] of Object.entries(s.last)) if (!byId.has(id) && now - at > KEEP_MS) delete s.last[id];
-    for (const set of [s.unread, s.cleared]) for (const id of set) if (!s.last[id]) set.delete(id);
+    for (const set of [s.unread, s.archived, s.parked]) for (const id of set.keys()) if (!s.last[id]) set.delete(id);
     // A needs-you card whose session no longer waits on it was answered elsewhere.
     const stale = (n: Notice) => {
       if (!needs(n) || card(n).ok) return false;
@@ -136,30 +186,32 @@ export function useNotices({ agents, hold, watched, cue, answer }: {
     s.folded = s.folded.filter(n => !stale(n));
     // Looking at a session on his turn reads it.
     if (watched && s.unread.has(watched)) read([watched]); else { save(); bump(); }
-  }, [key, watched]);
+  }, [key, watched, viewing]);
 
-  const current = hold ? undefined : s.queue[0];
+  const current = hold && s.queue[0]?.key !== s.forced ? undefined : s.queue[0];
   // A notice coming up: her sound (once per 1.5 s), and the clock for her error face.
   if ((current?.key ?? '') !== s.shown) {
     s.shown = current?.key ?? '';
     if (current) { s.openedAt = performance.now(); sound(current); }
   }
-  const next = () => { s.queue.shift(); bump(); };
+  const next = () => { s.queue.shift(); s.forced = ''; bump(); };
   const fold = () => {
     const n = s.queue[0];
     if (!n || !needs(n)) return;
-    s.queue.shift(); s.folded.push(n);
+    s.queue.shift(); s.folded.push(n); s.forced = '';
     if (!n.reminded) later(REMIND_MS, () => remind(n));
     bump();
   };
   // Once, ten minutes on: she peeks out of the island with a softer sound, then the card comes back.
   const remind = (n: Notice) => {
     const i = s.folded.indexOf(n);
-    if (i < 0) return;
+    if (i < 0 || s.parked.has(n.id)) return;
     s.folded.splice(i, 1); n.reminded = true; s.peek = true; bump();
     s.soundAt = -1e9; sound(n, .5); s.soundAt = performance.now();
-    later(1100, () => { s.peek = false; s.queue.unshift(n); s.shown = n.key; s.openedAt = performance.now(); bump(); });
+    later(1100, () => { s.peek = false; if (!s.parked.has(n.id)) { s.queue.unshift(n); s.shown = n.key; s.openedAt = performance.now(); } bump(); });
   };
+  // A card brought up from the island's list and put back with Esc: it waits behind the beacon, no reminder.
+  const back = () => { if (s.queue[0] && needs(s.queue[0])) { s.queue.shift(); s.forced = ''; bump(); } };
   const [hover, setHovering] = useState(false);
   const setHover = (on: boolean) => { if (on && s.queue[0]) s.touched = s.queue[0].key; setHovering(on); };
   const ok = current ? card(current).ok : '';
@@ -181,16 +233,19 @@ export function useNotices({ agents, hold, watched, cue, answer }: {
     bump();
     later(CONFIRM_MS, () => { if (s.queue[0] === n) next(); });
   };
-  // A session waiting on him, from his turn or the Agents page: its card comes to the front.
+  // A session waiting on him, from his turn, the island's list or the Agents page: its card comes to the front,
+  // even while the island is held.
   const focus = (id: string) => {
     const f = s.folded.findIndex(n => n.id === id && needs(n)), q = s.queue.findIndex(n => n.id === id && needs(n));
     if (f >= 0) s.queue.unshift(...s.folded.splice(f, 1));
     else if (q > 0) s.queue.unshift(...s.queue.splice(q, 1));
     else if (q < 0) { const a = live.current.byId.get(id); if (a?.request) s.queue.unshift({ key: `req:${id}:${performance.now()}`, id, at: performance.now(), kind: 'req', req: a.request }); }
+    s.forced = s.queue[0]?.id === id ? s.queue[0].key : '';
     bump();
   };
   return { current, count: s.queue.filter(needs).length, peek: s.peek, openedAt: s.openedAt, over: s.over, card: current ? card(current) : null,
-    unread: s.unread as ReadonlySet<string>, cleared: s.cleared as ReadonlySet<string>, read, clear, setHover, next, fold, resolve, focus, bump };
+    unread: s.unread as ReadonlySet<string>, archived: s.archived as ReadonlySet<string>, parked: s.parked as ReadonlyMap<string, number>,
+    read, archive, park, unpark, setHover, next, fold, back, resolve, focus, bump };
 }
 
 // ---------- the card ----------
@@ -207,16 +262,16 @@ function diffLines(tool: string, i: Record<string, unknown>) {
 const pickText = (q: Question, p: Pick | undefined) => typeof p === 'number' ? q.options?.[p]?.label ?? '' : Array.isArray(p) ? p.map(k => q.options?.[k]?.label).join(', ') : p ?? '';
 
 // A needs-you card: what the session wants, answered right on it.
-export function NoticeCard({ n, agent, card, count, look, onLater, onOpen, onResolve, onChange }: {
+export function NoticeCard({ n, agent, card, count, look, onPark, onOpen, onResolve, onChange }: {
   n: Notice & { kind: 'req' | 'wait' }; agent?: Agent; card: Card; count: number; look: MarkLook;
-  onLater: () => void; onOpen: (agent: Agent) => void; onResolve: (text: string, body: Body) => void; onChange: () => void;
+  onPark: () => void; onOpen: (agent: Agent) => void; onResolve: (text: string, body: Body) => void; onChange: () => void;
 }) {
   const [typed, setTyped] = useState(''), [feedback, setFeedback] = useState('');
   const who = agent ? AGENT_NAME[agent.agent] : 'It';
   const label = n.kind === 'wait' ? 'Needs you' : n.req.tool === 'AskUserQuestion' ? `${who} asks` : n.req.tool === 'ExitPlanMode' ? 'Plan to review' : 'Needs your OK';
   const bar = <div className="nc-bar">
     <span className="nc-label is-wait"><i/>{label}{count > 1 && <em> · 1 of {count}</em>}</span>
-    <button type="button" className="nc-x" title="Put it away; it stays on your turn, and she reminds you once in 10 minutes" onClick={onLater}>Later</button>
+    <button type="button" className="nc-x nc-park" title="Out of your turn, no reminders, until you take it back" onClick={onPark}><Moon size={12} weight="fill"/>Park</button>
   </div>;
   const open = agent && openLabel(agent);
   const head = agent && <>

@@ -118,7 +118,8 @@ export const dpr = () => Math.min(2, devicePixelRatio || 1);
 export const shown = (el: HTMLElement) => el.checkVisibility({ opacityProperty: true, visibilityProperty: true });
 
 // One mark at `size` css px; its canvas is larger than its box so the glow is not cut off.
-export function AgentMark({ look, state, id = '', size = 14 }: { look: MarkLook; state: MarkState; id?: string; size?: number }) {
+// `still`: drawn at rest, for lists that are read rather than watched.
+export function AgentMark({ look, state, id = '', size = 14, still = false }: { look: MarkLook; state: MarkState; id?: string; size?: number; still?: boolean }) {
   const ref = useRef<HTMLCanvasElement>(null), since = useRef({ state, at: performance.now() });
   if (since.current.state !== state) since.current = { state, at: performance.now() };
   const box = size * 1.6;
@@ -130,7 +131,7 @@ export function AgentMark({ look, state, id = '', size = 14 }: { look: MarkLook;
     const ctx = cv.getContext('2d')!;
     ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, w, w);
     ctx.setTransform(d * k, 0, 0, d * k, w / 2, w / 2);
-    drawMark(ctx, look, state, now / 1000 + seedOf(id), (now - since.current.at) / 1000, d * k);
+    drawMark(ctx, look, state, still ? 0 : now / 1000 + seedOf(id), still ? 99 : (now - since.current.at) / 1000, d * k);
     return true;
   });
   return <span className="agent-mark" style={{ position: 'relative', display: 'inline-block', flex: 'none', width: size, height: size }}>

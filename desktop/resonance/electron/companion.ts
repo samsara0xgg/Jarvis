@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, Tray, nativeImage, ipcMain, screen, session, shell, systemPreferences, desktopCapturer, Notification } from 'electron';
+import { app, BrowserWindow, Menu, Tray, nativeImage, ipcMain, screen, session, shell, systemPreferences, desktopCapturer, Notification, globalShortcut } from 'electron';
 import path from 'node:path';
 import { existsSync } from 'node:fs';
 import { userInfo } from 'node:os';
@@ -301,6 +301,9 @@ function companion(shown?: () => void) {
   tray.setTitle('●'); tray.setToolTip(demo ? 'Jarvis 小球 · 演示数据' : 'Jarvis 小球');
   // The renderer owns her skins and expressions and reports them; every item just sends a command back.
   const send = (command: string) => () => win.webContents.send('command', command);
+  // Spec §15.3: ⌥Tab opens the island's list of agent sessions for the keys, and closes it again.
+  if (!demo && !globalShortcut.register('Alt+Tab', send('agent-keys'))) console.warn('Shortcut unavailable: Alt+Tab');
+  app.on('will-quit', () => globalShortcut.unregister('Alt+Tab'));
   // Hiding her keeps this process, and the right-⌥ dictation it carries, running beside Jarvis; launchd would
   // bring a quit process straight back anyway (ADR-0015). The Dashboard and Settings bring her back.
   const show = () => { if (!win.isVisible()) { win.showInactive(); keepOnTop(); } };
