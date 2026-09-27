@@ -30,7 +30,6 @@ declare global { interface Window { jarvis?: {
   onCursor: (cb: (point: { x: number; y: number }) => void) => () => void;
   onDisplayLeave: (cb: () => void) => () => void;
   displayReady: () => void;
-  onTuck?: (cb: (tucked: { left: boolean; right: boolean }) => void) => () => void;
   onDictation?: (cb: (trip: string) => void) => () => void;
   wearing?: (skin: string) => void;
   companionMenu: (menu: { skins: { key: string; name: string; on: boolean }[]; auto: boolean; layout: string; home: string; marks: string; follow: boolean; lang: string; dictation: boolean; exprs: { id: string; name: string }[] }) => void;
