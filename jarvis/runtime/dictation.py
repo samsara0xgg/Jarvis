@@ -266,6 +266,10 @@ class Dictation:
                 await asyncio.sleep(_LEVEL_EVERY_S)
             with self._lock:
                 pcm, self._pcm = self._pcm or bytearray(), None
+            # The polish call's connection opens while the words are heard.
+            threading.Thread(
+                target=self._client.warm, name="jarvis-dictation-warm", daemon=True,
+            ).start()
             yield {"state": "thinking", "seconds": round(len(pcm) / _BYTES_PER_SECOND, 2)}
             raw = await asyncio.to_thread(self._transcribe, bytes(pcm))
             if not raw:

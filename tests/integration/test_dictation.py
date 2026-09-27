@@ -6,8 +6,9 @@ over a scripted provider socket, and asserts on what the desktop reads: level li
 while recording, ``thinking`` once stopped, then the polished words with the raw
 ones; a second session refused while one runs; the wake gate's flag up only while
 recording; the raw words when the polish fails; no route without a voice stack.
-The ears hear half a second from before the request, unbroken into the session.
-The event log gets the polish's spend and never the words.
+The ears hear half a second from before the request, unbroken into the session,
+and the polish connection is opened while they hear. The event log gets the
+polish's spend and never the words.
 """
 
 from __future__ import annotations
@@ -86,6 +87,11 @@ class _Provider:
     def __init__(self, answer: str | Exception) -> None:
         self.answer = answer
         self.requests: list[dict[str, Any]] = []
+        self.warmed: list[str] = []
+
+    def warm(self, model: str) -> object:
+        self.warmed.append(model)
+        return SimpleNamespace(id=model)
 
     def create(self, **kwargs: Any) -> object:  # noqa: ANN401 — the SDK's keywords
         self.requests.append(kwargs)
@@ -112,7 +118,9 @@ def _dictation(
 ) -> tuple[Dictation, _Ingress]:
     config = yaml.safe_load((repo_root() / "config" / "jarvis.yaml").read_text())
     client = polish_client(config["llm"], config["dictation"]["polish_preset"])
-    client._openai_client = SimpleNamespace(chat=SimpleNamespace(completions=provider))  # noqa: SLF001 — provider fixture seam
+    client._openai_client = SimpleNamespace(  # noqa: SLF001 — provider fixture seam
+        chat=SimpleNamespace(completions=provider), models=SimpleNamespace(retrieve=provider.warm),
+    )
     open_event_log(tmp_path / "events.db").close()
     ingress = _Ingress()
     return Dictation(
@@ -216,6 +224,8 @@ def test_dictation_streams_levels_then_the_polished_words(tmp_path: Path) -> Non
     assert len(ingress.lanes) == 1
     assert not lane.closed
     lane.close()
+    # The polish connection was opened while the words were heard.
+    assert provider.warmed == ["gpt-5.4-mini"]
     # One request to gpt-5.4-mini with Typlus's prompt, the raw words and where they land.
     (request,) = provider.requests
     assert request["model"] == "gpt-5.4-mini"
