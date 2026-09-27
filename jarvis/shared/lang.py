@@ -784,8 +784,6 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
     },
     "voice.Chinese (Mandarin)_Gentle_Youth": {"zh": "温和青年", "en": "Gentle Youth"},
     "voice.Chinese (Mandarin)_Gentle_Youth.note": {"zh": "轻松，像朋友", "en": "easy, like a friend"},
-    "voice.English_SereneWoman": {"zh": "沉静女声", "en": "Serene Woman"},
-    "voice.English_SereneWoman.note": {"zh": "平静，友好", "en": "calm, friendly"},
     "voice.English_radiant_girl": {"zh": "明亮女孩", "en": "Radiant Girl"},
     "voice.English_radiant_girl.note": {"zh": "活泼，明亮", "en": "lively, bright"},
     "voice.English_CalmWoman": {"zh": "舒缓女声", "en": "Calm Woman"},

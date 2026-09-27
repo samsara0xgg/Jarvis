@@ -41,7 +41,7 @@ VOICES = tuple(
 ) + tuple(
     # English ones first-run setup offers (same get_voice answer, 2026-09-26).
     _ENGLISH + name
-    for name in ("SereneWoman", "radiant_girl", "CalmWoman", "FriendlyPerson", "Trustworth_Man")
+    for name in ("radiant_girl", "CalmWoman", "FriendlyPerson", "Trustworth_Man")
 )
 # The five voices first-run setup offers per language; the first is the default
 # when ``realtime.tts_voice`` is left empty.
@@ -51,7 +51,8 @@ SETUP_VOICES: dict[str, tuple[str, ...]] = {
         for name in ("Warm_Bestie", "Sweet_Lady", "Mature_Woman", "Reliable_Executive",
                      "Gentle_Youth")
     ),
-    "en": VOICES[-5:],
+    # Warm Bestie leads here too: Allen picked it over every English voice (2026-09-26).
+    "en": (_MANDARIN + "Warm_Bestie", *VOICES[-4:]),
 }
 # Each key the page may change and the config value it sets.
 PATHS: dict[str, tuple[str, ...]] = {

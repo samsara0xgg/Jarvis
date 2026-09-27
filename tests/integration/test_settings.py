@@ -81,8 +81,8 @@ def test_the_page_reads_what_jarvis_booted_with(tmp_path: Path) -> None:
     }
     assert body["options"]["input_device"] == ["System default", *DEVICES["input"]]
     assert body["options"]["output_device"] == ["System default", *DEVICES["output"]]
-    assert len(body["options"]["tts_voice"]) == 37  # 32 Mandarin + the 5 English setup voices
-    assert "Serene Woman" in body["options"]["tts_voice"]
+    assert len(body["options"]["tts_voice"]) == 36  # 32 Mandarin + the 4 English setup voices
+    assert "Calm Woman" in body["options"]["tts_voice"]
     assert "Warm Hearted Girl" in body["options"]["tts_voice"]
     assert body["restart_pending"] is False
 

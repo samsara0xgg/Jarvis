@@ -79,6 +79,12 @@ def test_a_fresh_install_is_a_first_run_until_done(tmp_path: Path) -> None:
     assert fresh["voices"][0] == {
         "id": "Chinese (Mandarin)_Warm_Bestie", "label": "暖心闺蜜", "note": "温暖，清楚",  # noqa: RUF001
     }
+    # In English, Allen's pick leads the four English voices he kept.
+    lang.set_language("en")
+    assert [voice["label"] for voice in client.get("/inherent/setup").json()["voices"]] == [
+        "Warm Bestie", "Radiant Girl", "Calm Woman", "Friendly Guy", "Trustworthy Man",
+    ]
+    lang.set_language("zh")
 
     named = client.post("/inherent/setup/name", json={"name": "Ada", "assistant_name": "No"})
     assert named.status_code == 200
