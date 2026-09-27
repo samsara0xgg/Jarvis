@@ -251,3 +251,65 @@ def test_oauth_login_then_the_daemon_reuses_and_refreshes(tmp_path: Path, oauth_
     assert refreshed["tokens"]["access_token"] == "at-2"  # noqa: S105
     assert refreshed["expires_at"] > time.time()
     assert len(opened) == 1
+
+
+def test_browser_guard_leaves_payment_and_sign_in_to_allen(
+    tmp_path: Path, servers: McpServers
+) -> None:
+    """ADR 0059: a refused call never reaches the page; a typed secret never reaches the model."""
+    reached = tmp_path / "reached.log"
+    reached.touch()
+    menu = ["browser_snapshot", "browser_find", "browser_navigate", "browser_click"]
+    menu += ["browser_type", "browser_press_key"]
+    spec = {
+        "command": sys.executable,
+        "args": [str(HERE / "mcp_browser_server.py"), str(reached)],
+        "enabled_tools": menu,
+        "default_tools_approval_mode": "approve",
+    }
+    tools = servers.connect({"browser": spec})
+    # Codex's enabled_tools: browser_evaluate is listed by the server but never registered.
+    assert {t.name for t in tools} == {f"mcp__browser__{n}" for n in menu}
+
+    fx = _Fixture(tmp_path / "log", tools=tools)
+    try:
+
+        def run(action_id: str, tool: str, **arguments: object) -> dict[str, Any]:
+            fx.dispatch(_request(f"mcp__browser__{tool}", action_id, arguments=arguments))
+            return _chain(fx, action_id)
+
+        def refused(action_id: str, tool: str, **arguments: object) -> str:
+            outcome = run(action_id, tool, **arguments)
+            assert (action_id, outcome["error"]) == (action_id, "allens_step")
+            return str(json.loads(outcome["tool_output"])["error"])
+
+        assert "allen@example.com" in run("B1", "browser_snapshot")["tool_output"]
+        assert "payment step" in refused("B2", "browser_click", target="e13", element="Order")
+        refused("B3", "browser_click", target="e14", element="a button")  # name nested inside
+        refused("B4", "browser_click", target="e17", element="icon")  # inside the order button
+        assert "Allen's" in refused("B5", "browser_type", target="e6", text="x", element="Pass")
+        refused("B6", "browser_click", target="text=Place your order", element="x")
+        refused("B7", "browser_click", target="e99", element="gone")
+        refused("B8", "browser_navigate", url="javascript:document.forms[0].submit()")
+        refused("B9", "browser_press_key", key="Enter")  # the focused promo field submits
+        refused("B10", "browser_press_key", key="\n")
+        refused("B11", "browser_type", target="e9", text="SAVE10", element="Promo", submit=True)
+
+        assert run("B12", "browser_press_key", key="Tab")["semantics"] == "observation"
+        assert run("B13", "browser_click", target="e16", element="Next")["semantics"] == (
+            "observation"
+        )
+        run("B14", "browser_navigate", url="http://shop.test/signed-in")
+        assert "Allen typed" in refused("B15", "browser_snapshot")
+        refused("B16", "browser_find", text="hunter2")  # no probing a hidden value either
+        run("B17", "browser_navigate", url="http://shop.test/pay")
+        assert "payment step" in refused("B18", "browser_click", target="e2", element="Next")
+    finally:
+        fx.close()
+    # The null surface: every refused call would have left its own line here.
+    assert reached.read_text().splitlines() == [
+        "press Tab",
+        "click e16 Next",
+        "goto http://shop.test/signed-in",
+        "goto http://shop.test/pay",
+    ]
