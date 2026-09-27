@@ -19,10 +19,10 @@ const SUBTITLE_GAP_MS = 1500;
 export const idleLive: Live = { state: 'idle', sessionId: null, since: null, usageS: null, usageFinal: false, reason: null, speaking: false, hearing: false, error: null, notice: null };
 // `conversation` is the daemon's wave mode (ADR 0041), from every controls answer; `heard` is the last accepted transcript.
 // `askedAt`: when this surface's turn went in, until its answer opens; `thoughtS`: how long that answer took to come (ADR 0064).
-export interface State { mode: Mode; phase: Phase; micMuted: boolean; soundMuted: boolean; conversation: boolean; heard: string; inbox: boolean; detail: string | null; results: Result[]; reply: string; draft: string; attachment: boolean; turnId: string | null; responseId: string | null; waiting: string | null; askedAt: number | null; thoughtS: number; faded: boolean; played: boolean; inFlight: boolean; live: Live; subtitles: Subtitle[]; rows: Row[]; openSeq: number }
-export const initialState: State = { mode: 'voice', phase: 'listening', micMuted: false, soundMuted: false, conversation: false, heard: '', inbox: false, detail: null, results: [examples[0], examples[3], examples[1]], reply: '', draft: '', attachment: false, turnId: null, responseId: null, waiting: null, askedAt: null, thoughtS: 0, faded: false, played: false, inFlight: false, live: idleLive, subtitles: [], rows: [], openSeq: 0 };
+export interface State { mode: Mode; phase: Phase; micMuted: boolean; soundMuted: boolean; conversation: boolean; heard: string; inbox: boolean; detail: string | null; results: Result[]; reply: string; draft: string; attachment: boolean; turnId: string | null; responseId: string | null; failed: boolean; waiting: string | null; askedAt: number | null; thoughtS: number; faded: boolean; played: boolean; inFlight: boolean; live: Live; subtitles: Subtitle[]; rows: Row[]; openSeq: number }
+export const initialState: State = { mode: 'voice', phase: 'listening', micMuted: false, soundMuted: false, conversation: false, heard: '', inbox: false, detail: null, results: [examples[0], examples[3], examples[1]], reply: '', draft: '', attachment: false, turnId: null, responseId: null, failed: false, waiting: null, askedAt: null, thoughtS: 0, faded: false, played: false, inFlight: false, live: idleLive, subtitles: [], rows: [], openSeq: 0 };
 export type Action = { type: 'mode'; mode: Mode } | { type: 'phase'; phase: Phase } | { type: 'mic' | 'sound' | 'inbox' | 'interrupt' | 'end' | 'attachment' | 'reset' } | { type: 'draft'; value: string } | { type: 'send' } | { type: 'answer' } | { type: 'detail'; id: string | null } | { type: 'dismiss'; id: string } | { type: 'example'; id: string }
-  | { type: 'open'; turnId: string; responseId: string | null; at: number } | { type: 'append'; token: string } | { type: 'settle'; turnId: string } | { type: 'pending'; turnId: string; at: number } | { type: 'failed'; turnId: string; cancelled: boolean } | { type: 'controls'; micMuted: boolean; soundMuted: boolean; conversation: boolean } | { type: 'heard'; text: string } | { type: 'spoken'; turnId: string }
+  | { type: 'open'; turnId: string; responseId: string | null; at: number } | { type: 'append'; token: string } | { type: 'settle'; turnId: string } | { type: 'pending'; turnId: string; at: number } | { type: 'failed'; turnId: string; cancelled: boolean; message: string | null } | { type: 'controls'; micMuted: boolean; soundMuted: boolean; conversation: boolean } | { type: 'heard'; text: string } | { type: 'spoken'; turnId: string }
   | { type: 'live'; live: Live } | { type: 'subtitle'; sessionId: string; role: 'user' | 'assistant'; delta: string; startMs: number; endMs: number } | { type: 'live_dismiss' }
   | { type: 'rows'; rows: Row[] } | { type: 'older'; rows: Row[] };
 export function reducer(s: State, a: Action): State {
@@ -44,7 +44,7 @@ export function reducer(s: State, a: Action): State {
     // `openSeq` remembers where the log stood when this turn opened: the streaming reply shows as a tail row until an answer row lands past it.
     // The daemon opens an answer once it is whole (ADR 0064), so the wait from `askedAt` is how long it took.
     case 'open': { const mine = a.turnId === s.waiting && s.askedAt !== null;
-      return { ...s, phase: 'processing', reply: '', turnId: a.turnId, responseId: a.responseId, faded: false, played: false, openSeq: s.rows.length ? s.rows[s.rows.length - 1].seq : 0,
+      return { ...s, phase: 'processing', reply: '', turnId: a.turnId, responseId: a.responseId, failed: false, faded: false, played: false, openSeq: s.rows.length ? s.rows[s.rows.length - 1].seq : 0,
         thoughtS: mine ? (a.at - s.askedAt!) / 1000 : 0, askedAt: mine ? null : s.askedAt }; }
     case 'append': return { ...s, reply: s.reply + a.token, phase: 'speaking' };
     // An answer leaves once its fade is over (`done` + fadeMs, which runtime.ts turns into a delayed settle) and she has
@@ -53,10 +53,13 @@ export function reducer(s: State, a: Action): State {
     case 'spoken': return s.turnId !== a.turnId ? s : { ...s, played: true, reply: s.faded ? '' : s.reply, phase: s.phase === 'speaking' || s.phase === 'processing' ? 'listening' : s.phase };
     // `waiting` is the turn this surface started (submit answer or voice `accepted`); only its end without an answer
     // (daemon `failed` / `cancelled`) releases "processing", so a background turn failing meanwhile changes nothing.
+    // A failure says why in the daemon's words (a bad key, no credit, no network…) in place of the answer.
     case 'pending': return { ...s, waiting: a.turnId, askedAt: a.at };
+    // Nothing is spoken for it, so it leaves at its settle (runtime.ts) like an answer whose speech is over.
     case 'failed': { if (a.turnId !== s.waiting) return s;
       const t = { ...s, askedAt: null };
-      return t.phase === 'processing' ? { ...t, phase: 'listening', reply: a.cancelled ? '' : '这一轮出错了，没有完成。可以再说一次。', openSeq: t.rows.length ? t.rows[t.rows.length - 1].seq : 0 } : t; }
+      return t.phase === 'processing' ? { ...t, phase: 'listening', reply: a.cancelled ? '' : a.message ?? '这一轮出错了，没有完成。可以再说一次。', turnId: a.turnId, responseId: null, failed: !a.cancelled, faded: false, played: true,
+        openSeq: t.rows.length ? t.rows[t.rows.length - 1].seq : 0 } : t; }
     case 'controls': return { ...s, micMuted: a.micMuted, soundMuted: a.soundMuted, conversation: a.conversation };
     case 'heard': return { ...s, heard: a.text, inFlight: false };
     // A new session id starts a fresh transcript; a closed session keeps its lines on screen until dismissed.

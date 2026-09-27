@@ -348,6 +348,17 @@ try {
     await page.evaluate(() => { window.__emit('done', { turn_id: 'v2', fadeMs: 200 }); window.__emit('voice', { phase: 'spoken', turn_id: 'v2' }); });
     await waitPlace('home');
     check('L6 once it settles she goes home, wave mode off', await page.locator('.companion-strip.is-open').count() === 0);
+    // A turn that fails says why in Jarvis's own words (a refused key, no credit…) where the answer would be.
+    const quota = 'The account is out of credit. Add credit, then try again.';
+    await page.evaluate(() => { window.__emit('voice', { phase: 'listening', turn_id: 'v2f' }); window.__emit('voice', { phase: 'accepted', turn_id: 'v2f', text: 'what is on today' }); });
+    await waitPlace('out');
+    await page.evaluate(text => window.__emit('failed', { turn_id: 'v2f', reason: 'quota', message: text }), quota);
+    const said = await page.waitForFunction(text => document.querySelector('.companion-bubble.is-open .bubble-text span:last-child')?.textContent === text, quota, { timeout: 5000 }).then(() => true, () => false);
+    check('L6 a failed turn shows the daemon’s reason in her bubble, with her sorry face', said && await face('38') === '38');
+    await page.waitForTimeout(700); await shot('L6-failed', { x: 0, y: 0, width: 400, height: 240 });
+    await page.waitForFunction(() => !document.querySelector('.companion-bubble.is-open'), null, { timeout: 10_000 });
+    await move(600, 560); await waitPlace('home');
+    check('L6 and after 8 s it leaves and she goes home', true);
 
     // Typed text from her own box goes to the daemon.
     await move(out.x, out.y); await waitPlace('out');
