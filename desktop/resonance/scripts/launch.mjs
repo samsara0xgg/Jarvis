@@ -19,8 +19,8 @@ if (mtime('package-lock.json') > mtime('node_modules/.package-lock.json')) {
   console.log('resonance: lockfile newer than node_modules, installing');
   run(['ci']);
 }
-const built = ['dist/index.html', 'dist/dictation.html', 'dist-electron/companion.js', 'dist-native/material.node'];
-const sources = ['src', 'electron', 'native', 'public', 'index.html', 'package.json', 'vite.config.ts', 'tsconfig.json', 'tsconfig.electron.json'];
+const built = ['dist/index.html', 'dist/dictation.html', 'dist/agents.html', 'dist-electron/companion.js', 'dist-electron/agents/host.js', 'dist-native/material.node'];
+const sources = ['src', 'electron', 'native', 'public', 'index.html', 'agents.html', 'package.json', 'vite.config.ts', 'tsconfig.json', 'tsconfig.electron.json'];
 if (built.some(f => !existsSync(f)) || newest(sources) > Math.min(...built.map(mtime))) {
   console.log('resonance: sources newer than build, rebuilding');
   run(['run', 'build']);
