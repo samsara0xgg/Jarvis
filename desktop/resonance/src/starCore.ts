@@ -2,7 +2,7 @@
 // paints her inside and her glass; a skin only changes that program's numbers, so one skin
 // can morph into another. Ported from the approved study (handoff lab/xinghe.html).
 const PI = Math.PI, TAU = 2 * PI, D = PI / 180;
-const B = 1.3; // half-size of the square the GL layers cover, in ball radii
+export const B = 1.3; // half-size of the square the GL layers cover, in ball radii
 const reduced = matchMedia('(prefers-reduced-motion: reduce)');
 const clamp = (v: number, a: number, b: number) => v < a ? a : v > b ? b : v;
 const smooth = (a: number, b: number, x: number) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };

@@ -1,10 +1,10 @@
 import { useEffect, useRef, type RefObject } from 'react';
-import { Core, spring, step, type ExprId, type Skin } from './starCore';
+import { B, Core, spring, step, type ExprId, type Skin } from './starCore';
 
 export const R = 26;
 // Held this long, a poke becomes a costume change instead.
 export const HOLD_MS = 650;
-const HOME_SCALE = .5;
+const HOME_SCALE = .6;
 export type Place = 'home' | 'peek' | 'out' | 'dock';
 export type Point = { x: number; y: number };
 export type Lobe = { left: number; right: number; height: number; notched: boolean; tucked?: boolean };
@@ -12,9 +12,12 @@ export type Lobe = { left: number; right: number; height: number; notched: boole
 // `homeFace`: she wears `expr` and follows `look` even at home (a notice hangs from the notch and she watches it from there).
 // `away`: out at the text caret for dictation (ADR 0058), drawn by another window; `happy` when she comes back from pasting.
 // `deep`: think mode is on and she is idle, so her eyes keep its colour, in the island too (ADR 0064).
-export type BallTarget = { place: Place; expr: ExprId; pressed: boolean; anchors: Record<Place, Point>; homeGlass: boolean; lift: number; homeFace?: boolean;
+// `home`: how she sits in the island. dark: its black is her dimmed glass, her nebula turning inside; eyes: all black
+// but her eyes. Either way her glass lights up only once she drops clear of the island's edge.
+export type HomeLook = 'dark' | 'eyes';
+export type BallTarget = { place: Place; expr: ExprId; pressed: boolean; anchors: Record<Place, Point>; home: HomeLook; lift: number; homeFace?: boolean;
   away?: boolean; happy?: boolean; deep?: boolean };
-// With her glass showing at home, this long without the cursor moving sends her to sleep there.
+// This long without the cursor moving sends her to sleep at home.
 const DOZE_MS = 10 * 60_000;
 const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
 const smooth = (a: number, b: number, v: number) => { const k = clamp01((v - a) / (b - a)); return k * k * (3 - 2 * k); };
@@ -49,11 +52,13 @@ export function CompanionBall({ width, height, lobe, lift, target, look, handle,
     const cv = canvas.current!, ctx = cv.getContext('2d')!, core = new Core(firstSkin.current);
     // The eyes are drawn apart first, so one blur gives them their glow.
     const eyes = document.createElement('canvas'), ectx = eyes.getContext('2d')!;
+    // Her inside faded to no edge, for the dark-glass island.
+    const neb = document.createElement('canvas'), nctx = neb.getContext('2d')!;
     const start = latest.current.anchors.home;
     const s = { x: spring(start.x), y: spring(start.y), scale: spring(HOME_SCALE), shine: spring(0), pivot: spring(0), dock: spring(0), fold: spring(1) };
     const reduced = matchMedia('(prefers-reduced-motion: reduce)');
     let frame = 0, last = 0, d = 0, wanted: Place = 'home', shown: Place = 'home', switchAt = 0, pressedAt = -1;
-    let glanceUntil = 0, sleep: ReturnType<typeof setTimeout> | undefined, tick: ReturnType<typeof setTimeout> | undefined, lit = '';
+    let tick: ReturnType<typeof setTimeout> | undefined, lit = '';
     let movedAt = performance.now(), px = NaN, py = NaN;
     let away = false, awayAt = -1e9, happyUntil = 0, leftHome = true;
     const fit = () => {
@@ -71,25 +76,26 @@ export function CompanionBall({ width, height, lobe, lift, target, look, handle,
       if (t.place !== wanted) { wanted = t.place; switchAt = now + (wanted === 'home' && shown !== 'home' ? 170 : 0); }
       if (now >= switchAt) shown = wanted;
       const atHome = shown === 'home', leaving = wanted === 'home' && !atHome, docked = shown === 'dock';
-      const glance = atHome && now < glanceUntil;
-      // With her glass showing at home she stays awake there: she blinks, watches a nearby cursor, and dozes after a long quiet spell.
-      const glassHome = t.homeGlass, p = look.current;
+      // At home she stays awake: she blinks, watches a nearby cursor, and dozes after a long quiet spell.
+      const p = look.current;
       if (p && (p.x !== px || p.y !== py)) { px = p.x; py = p.y; movedAt = now; }
-      const dozing = glassHome && atHome && now - movedAt > DOZE_MS;
+      const dozing = atHome && now - movedAt > DOZE_MS;
       const anchor = t.anchors[shown], [xHz, xDamp, yHz, yDamp] = travel[shown];
       const moving = [
         step(s.x, anchor.x, xHz, firm ? 1 : xDamp, dt), step(s.y, anchor.y, yHz, firm ? 1 : yDamp, dt),
-        step(s.scale, atHome ? HOME_SCALE : 1, 2.6, .95, dt), step(s.shine, atHome && !glassHome ? 0 : 1, 3, 1, dt),
+        step(s.scale, atHome ? HOME_SCALE : 1, 2.6, .95, dt),
+        // She leaves as a black drop and lights up once clear of the island's edge; coming back her colour drains at the touch.
+        step(s.shine, Math.max(s.dock.value, smooth(0, R * s.scale.value * 1.4, s.y.value - island.current.lobe.height)), 3.2, 1, dt),
         step(s.pivot, docked ? 1 : 0, 3, 1, dt), step(s.dock, docked ? 1 : 0, 3, 1, dt),
       ].some(Boolean);
       // Gaze: toward the cursor or caret, softer with distance; straight ahead in the island.
       let gaze: [number, number] | null = null;
-      const point = leaving ? { x: s.x.value, y: -400 } : atHome && !glance && !glassHome && !t.homeFace ? null : look.current;
+      const point = leaving ? { x: s.x.value, y: -400 } : look.current;
       if (point) {
         const dx = point.x - s.x.value, dy = point.y - s.y.value, dist = Math.hypot(dx, dy) || 1;
         const k = dist / (dist + 90) * (dist < 280 ? 1 : Math.max(.35, 1 - (dist - 280) / 700));
         // Resting at home she only follows a cursor that comes near; otherwise she looks around on her own.
-        if (!(atHome && !leaving && glassHome && dist > 260 && !t.homeFace)) gaze = [dx / dist * k, shown === 'peek' ? Math.max(0, dy / dist * k) : dy / dist * k];
+        if (!(atHome && !leaving && dist > 260 && !t.homeFace)) gaze = [dx / dist * k, shown === 'peek' ? Math.max(0, dy / dist * k) : dy / dist * k];
       }
       // Holding her charges a costume change: she squashes further, shivers and her stars speed up.
       if (!t.pressed) pressedAt = -1; else if (pressedAt < 0) pressedAt = now;
@@ -113,14 +119,14 @@ export function CompanionBall({ width, height, lobe, lift, target, look, handle,
       step(s.fold, away && ae > 110 ? 0 : 1, 4.2, .9, dt);
       if (s.fold.value < .999) islandShape.current!.setAttribute('transform', `translate(${shape.right} 0) scale(${Math.max(0, s.fold.value)} 1) translate(${-shape.right} 0)`);
       else islandShape.current!.removeAttribute('transform');
-      const face: ExprId = now < happyUntil ? '10' : atHome && !t.homeFace ? (glassHome ? (dozing ? 'doze' : 'rest') : glance ? 'glance' : 'home') : shown === 'peek' ? 'peek' : t.expr;
-      const busy = core.update(now, dt, { expr: face, look: gaze, still: atHome && !glance && !glassHome && !t.homeFace, pressed: t.pressed, charge, deep: t.deep && face !== '10' });
+      const face: ExprId = now < happyUntil ? '10' : atHome && !t.homeFace ? (dozing ? 'doze' : 'rest') : shown === 'peek' ? 'peek' : t.expr;
+      core.update(now, dt, { expr: face, look: gaze, still: false, pressed: t.pressed, charge, deep: t.deep && face !== '10' });
 
       // Where she is (spring position, flight squash, the pivot on the Dashboard edge), then her own motion.
       const a = s.shine.value * seen, scale = s.scale.value, x = slipX ?? s.x.value, y = s.y.value + slipY, pivot = s.pivot.value * R;
       const speed = Math.hypot(s.x.velocity, s.y.velocity), flight = firm ? 0 : Math.min(.09, speed / 4000);
       const angle = Math.atan2(s.y.velocity, s.x.velocity), squat = 1 - .05 * s.dock.value;
-      const [jx, jy, bx, by] = core.pose(a);
+      const [jx, jy, bx, by] = core.pose(1);
       const pose = (c: CanvasRenderingContext2D, cx: number, cy: number) => {
         c.translate(cx, cy + pivot * scale); c.rotate(angle); c.scale(1 + flight, 1 / Math.sqrt(1 + flight)); c.rotate(-angle);
         c.scale(scale * sx, scale * squat * sy); c.translate(jx * R, jy * R - pivot); c.scale(bx, by);
@@ -130,11 +136,14 @@ export function CompanionBall({ width, height, lobe, lift, target, look, handle,
       // The goo only matters where the ball meets the island, and not while it is tucked away or out at the caret.
       silhouette.current!.style.display = y - R * scale - island.current.lobe.height < 26 && !island.current.lobe.tucked && slipX === null && !hidden ? '' : 'none';
 
-      const { lobe, path } = island.current, S = Math.round(2 * 1.3 * R * d);
+      const { lobe, path } = island.current, S = Math.round(2 * B * R * d);
+      // Dark glass: how much of her is still inside the island, glowing through its black.
+      const inside = t.home === 'dark' && !hidden ? seen * (1 - smooth(0, R, y - t.anchors.home.y)) : 0;
       ctx.setTransform(d, 0, 0, d, 0, 0); ctx.clearRect(0, 0, size.current.width, size.current.height);
       // The notch's left edge is the mouth of her tunnel.
       ctx.save(); ctx.beginPath(); ctx.rect(0, 0, Math.min(clipX, size.current.width), size.current.height); ctx.clip();
-      if (!hidden && a > .01 && core.render(S, 3)) {
+      const gl = !hidden && (a > .01 || inside > .01) && core.render(S, 3);
+      if (gl && a > .01) {
         ctx.save(); ctx.globalAlpha = a;
         ctx.save(); ctx.translate(x, y); ctx.scale(scale, scale); core.orbit(ctx, R, -1); ctx.restore();
         ctx.save(); pose(ctx, x, y);
@@ -150,13 +159,33 @@ export function CompanionBall({ width, height, lobe, lift, target, look, handle,
         }
         core.inside(ctx, R, S); core.glass(ctx, R, S);
         ctx.restore(); ctx.restore();
-        // The island hides her body above its edge (unless her glass shows at home); a short fade keeps that edge from reading as a seam.
-        if (!glassHome) {
+        // The island hides her glass above its edge; a short fade keeps that edge from reading as a seam.
+        if (s.dock.value < .99) {
           ctx.save(); ctx.globalCompositeOperation = 'destination-out'; ctx.fillStyle = '#000'; ctx.fill(path);
           const fade = ctx.createLinearGradient(0, lobe.height, 0, lobe.height + 9);
           fade.addColorStop(0, '#000'); fade.addColorStop(1, 'rgba(0,0,0,0)');
           ctx.fillStyle = fade; ctx.fillRect(lobe.left, lobe.height, lobe.right - lobe.left, 9); ctx.restore();
         }
+      }
+      if (gl && inside > .01) {
+        const N = Math.min(S, 320);
+        if (neb.width !== N) neb.width = neb.height = N;
+        nctx.setTransform(1, 0, 0, 1, 0, 0); nctx.clearRect(0, 0, N, N);
+        nctx.setTransform(1, 0, 0, 1, N / 2, N / 2); core.inside(nctx, N / 2 / B, S);
+        nctx.globalCompositeOperation = 'destination-in';
+        const m = nctx.createRadialGradient(0, 0, 0, 0, 0, N / 2);
+        m.addColorStop(0, '#000'); m.addColorStop(.4, 'rgba(0,0,0,.8)'); m.addColorStop(.72, 'rgba(0,0,0,0)');
+        nctx.fillStyle = m; nctx.fillRect(-N / 2, -N / 2, N, N); nctx.globalCompositeOperation = 'source-over';
+        // Her nebula glows through the island's black, and its lower rim catches her light like glass.
+        const r = B * R * scale * 1.9, rgb = core.light.rim.map(v => Math.round(v * 255)).join(',');
+        ctx.save(); ctx.clip(path); ctx.globalAlpha = inside;
+        ctx.drawImage(neb, x - r, y - r, 2 * r, 2 * r);
+        ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = .6 * inside;
+        ctx.drawImage(neb, x - r, y - r, 2 * r, 2 * r); ctx.globalCompositeOperation = 'source-over';
+        const rim = ctx.createLinearGradient(lobe.left, 0, lobe.right, 0);
+        rim.addColorStop(0, `rgba(${rgb},0)`); rim.addColorStop(.5, `rgba(${rgb},.55)`); rim.addColorStop(1, `rgba(${rgb},0)`);
+        ctx.strokeStyle = rim; ctx.lineWidth = .8; ctx.beginPath(); ctx.moveTo(lobe.left, lobe.height - .5); ctx.lineTo(lobe.right, lobe.height - .5); ctx.stroke();
+        ctx.restore();
       }
       // The eyes stay on top everywhere, the island included.
       const E = eyes.width, [glow, blur] = core.glow();
@@ -166,7 +195,8 @@ export function CompanionBall({ width, height, lobe, lift, target, look, handle,
         ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = seen; ctx.shadowColor = glow; ctx.shadowBlur = blur * R * scale * d;
         ctx.drawImage(eyes, x * d - E / 2, y * d - E / 2); ctx.restore();
       }
-      if (!hidden && a > .01) { ctx.save(); ctx.globalAlpha = a; ctx.translate(x, y); ctx.scale(scale, scale); core.orbit(ctx, R, 1); core.particles(ctx, R, d); ctx.restore(); }
+      // Her zzz and sparkles show in the island too.
+      if (!hidden) { ctx.save(); ctx.translate(x, y); ctx.scale(scale, scale); ctx.globalAlpha = a; core.orbit(ctx, R, 1); ctx.globalAlpha = seen; core.particles(ctx, R, d); ctx.restore(); }
       ctx.restore();
       if (cv.dataset.skin !== core.skin) cv.dataset.skin = core.skin;
       if (cv.dataset.face !== core.expr) cv.dataset.face = core.expr ?? '';
@@ -179,31 +209,29 @@ export function CompanionBall({ width, height, lobe, lift, target, look, handle,
       // She can slide under a resting cursor; hit testing must follow her, not only the mouse.
       if (moving) moved.current();
       const tripping = (away ? ae < 200 : ae < 1200) || Math.abs(s.fold.value - (away ? 0 : 1)) > .002;
-      if (!atHome || moving || now < switchAt || tripping || busy && !glassHome) frame = requestAnimationFrame(draw);
+      if (!atHome || moving || now < switchAt || tripping) frame = requestAnimationFrame(draw);
       // Awake at home she needs no more than 30 frames a second, dozing 10.
-      else if (glassHome) tick = setTimeout(() => { tick = undefined; frame = requestAnimationFrame(draw); }, dozing ? 100 : 33);
-      else sleep ??= setTimeout(() => { sleep = undefined; glanceUntil = performance.now() + 1500; wake.current(); }, 22000 + Math.random() * 18000);
+      else tick = setTimeout(() => { tick = undefined; frame = requestAnimationFrame(draw); }, dozing ? 100 : 33);
     };
     wake.current = () => {
-      if (sleep) { clearTimeout(sleep); sleep = undefined; }
       if (tick) { clearTimeout(tick); tick = undefined; }
       if (!frame) { last = 0; frame = requestAnimationFrame(draw); }
     };
     handle.current = {
       nudge: () => { core.s.gy.velocity += 1.6; wake.current(); },
-      // A new screen: already in its island, with a small bump out of it and a look around.
+      // A new screen: already in its island, with a small bump out of it.
       arrive: () => {
         const a = latest.current.anchors.home;
         Object.assign(s.x, { value: a.x, velocity: 0 }); Object.assign(s.y, { value: a.y, velocity: 140 });
         Object.assign(s.scale, { value: HOME_SCALE, velocity: 0 }); Object.assign(s.shine, { value: 0, velocity: 0 });
-        wanted = shown = 'home'; switchAt = 0; glanceUntil = performance.now() + 1400;
+        wanted = shown = 'home'; switchAt = 0;
         wake.current();
       },
       change: next => { core.change(next, performance.now()); wake.current(); },
       hop: height => { core.hop(performance.now(), height); wake.current(); },
     };
     wake.current();
-    return () => { cancelAnimationFrame(frame); clearTimeout(sleep); clearTimeout(tick); wake.current = () => {}; handle.current = null; };
+    return () => { cancelAnimationFrame(frame); clearTimeout(tick); wake.current = () => {}; handle.current = null; };
   }, []);
   return <>
     <svg className="companion-stage" width={width} height={height} viewBox={`0 0 ${width} ${height}`} aria-hidden="true">

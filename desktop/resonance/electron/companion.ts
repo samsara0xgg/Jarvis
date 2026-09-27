@@ -294,7 +294,7 @@ function companion(shown?: () => void) {
   // bring a quit process straight back anyway (ADR-0015). The Dashboard and Settings bring her back.
   const show = () => { if (!win.isVisible()) { win.showInactive(); keepOnTop(); } };
   const open = (command: string) => () => { show(); send(command)(); };
-  type MenuModel = { skins: { key: string; name: string; on: boolean }[]; auto: boolean; layout?: string; homeGlass?: boolean; marks?: string; follow?: boolean; lang?: string; dictation?: boolean; exprs: { id: string; name: string }[] };
+  type MenuModel = { skins: { key: string; name: string; on: boolean }[]; auto: boolean; layout?: string; home?: string; marks?: string; follow?: boolean; lang?: string; dictation?: boolean; exprs: { id: string; name: string }[] };
   let model: MenuModel = { skins: [], auto: false, exprs: [] };
   // Her menu speaks the panel's language (Settings › General).
   const menu = (next: MenuModel) => { model = next; const t = (en: string, zh: string) => model.lang === 'zh' ? zh : en; tray.setContextMenu(Menu.buildFromTemplate([
@@ -316,7 +316,8 @@ function companion(shown?: () => void) {
       { label: t('Change outfit by herself', '自己换装'), type: 'checkbox', checked: !!model.auto, click: send('auto') },
       { label: t('Change now', '现在换一套'), click: send('outing') },
       { type: 'separator' },
-      { label: t('Show the glass ball at home', '在家露出玻璃球'), type: 'checkbox', checked: !!model.homeGlass, click: send('homeGlass') },
+      { label: t('In the island: dark glass', '在家：暗玻璃'), type: 'radio', checked: model.home !== 'eyes', click: send('home:dark') },
+      { label: t('In the island: just her eyes', '在家：只有两只眼'), type: 'radio', checked: model.home === 'eyes', click: send('home:eyes') },
     ] },
     { label: t('Expressions', '看表情'), enabled: model.exprs.length > 0, submenu: model.exprs.map(x => ({ label: `${x.id} ${x.name}`, click: send(`expr:${x.id}`) })) },
     { type: 'separator' },

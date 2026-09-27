@@ -57,12 +57,20 @@ try {
   await shot('01-home');
   const alphaAt = (x, y) => page.evaluate(([x, y]) => { const c = document.querySelector('.companion-canvas'), r = c.getBoundingClientRect(), k = c.width / r.width;
     return c.getContext('2d').getImageData(Math.round((x - r.left) * k), Math.round((y - r.top) * k), 1, 1).data[3]; }, [x, y]);
-  check('01 at home her glass ball shows in the island', await alphaAt(lobe.x, 24) > 200);
-  await page.evaluate(() => window.__command('homeGlass'));
+  // How much of a box her canvas covers (alpha > 30), and its brightest alpha.
+  const litIn = (x0, y0, x1, y1) => page.evaluate(([x0, y0, x1, y1]) => { const c = document.querySelector('.companion-canvas'), r = c.getBoundingClientRect(), k = c.width / r.width;
+    const d = c.getContext('2d').getImageData(Math.round((x0 - r.left) * k), Math.round((y0 - r.top) * k), Math.round((x1 - x0) * k), Math.round((y1 - y0) * k)).data;
+    let max = 0, on = 0; for (let i = 3; i < d.length; i += 4) { max = Math.max(max, d[i]); if (d[i] > 30) on++; } return { max, lit: +(on / (d.length / 4)).toFixed(2) }; }, [x0, y0, x1, y1]);
+  const inIsland = () => litIn(135, 0, 225, 32), home = () => page.evaluate(() => window.__state.menu?.home);
+  let seen = await inIsland();
+  check(`01 at home she is dark glass: her nebula glows through the black island around her eyes, no ball below it (${JSON.stringify(seen)})`,
+    await home() === 'dark' && seen.lit > .4 && seen.max === 255 && (await litIn(150, 33, 240, 40)).max === 0);
+  await page.evaluate(() => window.__command('home:eyes'));
   await page.waitForTimeout(1500);
-  check('01 the tray switch sinks her back so only her eyes show', await alphaAt(lobe.x, 24) < 30 && await page.evaluate(() => window.__state.menu?.homeGlass === false));
+  seen = await inIsland();
+  check(`01 the other look leaves the island black but for her two eyes (${JSON.stringify(seen)})`, await home() === 'eyes' && seen.lit < .15 && seen.max === 255);
   await shot('01-home-eyes');
-  await page.evaluate(() => window.__command('homeGlass'));
+  await page.evaluate(() => window.__command('home:dark'));
   await page.waitForTimeout(1500);
   // ADR 0058: dictation takes her out through the notch to the text caret (another window draws her there) and back.
   check('13 she tells the caret window which skin she wears', await page.evaluate(() => window.__state.wearing) === 'glass');
@@ -89,8 +97,18 @@ try {
   await waitPlace('peek');
   check('01 peeks when the cursor approaches the island', true);
   await shot('01-peek');
+  // Every frame of the way out: her centre and the alpha of a point on her body, right of her eyes.
+  await page.evaluate(() => { const log = window.__drip = [], c = document.querySelector('.companion-canvas'), g = c.getContext('2d'), h = document.querySelector('.companion-hit'), t0 = performance.now();
+    const k = c.width / c.getBoundingClientRect().width;
+    const f = () => { const [, x, y, sc] = /translate\(([-\d.]+)px, ([-\d.]+)px\) scale\(([-\d.]+)\)/.exec(h.style.transform).map(Number);
+      log.push([y + 30, g.getImageData(Math.round((x + 30 + 14 * sc) * k), Math.round((y + 30 + 8 * sc) * k), 1, 1).data[3]]);
+      if (performance.now() - t0 < 900) requestAnimationFrame(f); };
+    requestAnimationFrame(f); });
   await move(out.x, out.y - 6);
   await waitPlace('out');
+  const drip = await page.evaluate(() => window.__drip), clear = drip.find(([y]) => y > 36);
+  check(`02 she leaves the island as a black drop and lights up into glass once clear of it (${JSON.stringify(clear)} → ${drip.at(-1)[1]})`,
+    !!clear && clear[1] < 128 && drip.at(-1)[1] > 240);
   check('02 comes out under the island on hover', await page.evaluate(() => window.__state.passthrough === false));
   check('02 keyboard chip appears beside her', await page.locator('.companion-chip.is-open').count() === 1);
   await shot('02-out-chip');
