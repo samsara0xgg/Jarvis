@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { daemonToken, registerDaemonBridge, sendDaemonKey } from './bridge.js';
+import { startDaemon } from './daemon.js';
 import { setupDictation } from './dictation.js';
 // The companion: 星核, who lives beside the notch, with her Dashboard. She talks to the daemon on
 // JARVIS_INHERENT_BRIDGE_PORT like the capsule does; the daemon owns mic and speaker, so she never
@@ -15,8 +16,9 @@ const require = createRequire(import.meta.url);
 const material = process.platform === 'darwin' ? require('../dist-native/material.node') : null;
 type NotchScreen = { id: number; topInset: number; notchWidth: number };
 app.setName('Jarvis Companion');
-// Its own profile, so it runs beside the live Resonance and its single-instance lock.
-app.setPath('userData', path.resolve(here, '../.electron-profile/companion'));
+// Its own profile, so it runs beside the live Resonance and its single-instance lock. The installed
+// app keeps the default one in Application Support: its bundle is read-only.
+if (!app.isPackaged) app.setPath('userData', path.resolve(here, '../.electron-profile/companion'));
 const demo = process.argv.includes('--demo');
 const locked = app.requestSingleInstanceLock();
 if (!locked) app.quit();
@@ -97,7 +99,7 @@ function keepOnTop() {
   win.setAlwaysOnTop(true, 'status');
   material?.setStationary(win.getNativeWindowHandle(), true);
 }
-const port = process.env.JARVIS_INHERENT_BRIDGE_PORT ?? '8006';
+let port = process.env.JARVIS_INHERENT_BRIDGE_PORT ?? '8006';
 // Her first launch runs until the daemon has marked setup done; `--first-run` shows it anyway.
 async function needsSetup() {
   if (process.argv.includes('--first-run')) return true;
@@ -186,6 +188,7 @@ if (locked) app.whenReady().then(async () => {
   session.defaultSession.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
   session.defaultSession.setPermissionCheckHandler(() => false);
   app.dock?.hide();
+  if (app.isPackaged && !demo) process.env.JARVIS_INHERENT_BRIDGE_PORT = port = await startDaemon();
   if (await needsSetup()) firstRun(); else companion();
 });
 function companion(shown?: () => void) {
