@@ -62,3 +62,36 @@ export function MailCard({ text, lang }: { text: string; lang: Lang }) {
     {body.split('\n').length > 6 || body.length > 360 ? <button type="button" className="mc-more" onClick={() => setOpen(v => !v)}>{open ? tr(lang, ['Less', '收起']) : tr(lang, ['Show all', '展开'])}</button> : null}
   </div>;
 }
+
+// ADR 0066: Jarvis asks for details it cannot go on without. One input per detail, or a row of choices; "Done" sends
+// what is filled in (and the daemon remembers it), the × closes the card and nothing runs.
+export interface QuestionField { label: string; choices?: string[]; value?: string }
+export interface Question { id: string; question: string; fields: QuestionField[] }
+export type Answer = (answers: Record<string, string> | null) => void;
+
+export function QuestionCard({ question, lang, onAnswer }: { question: Question; lang: Lang; onAnswer: Answer }) {
+  const t = (l: L) => tr(lang, l);
+  const [values, setValues] = useState<Record<string, string>>(() => Object.fromEntries(question.fields.map(f => [f.label, f.value ?? ''])));
+  const set = (label: string, value: string) => setValues(v => ({ ...v, [label]: value }));
+  const filled = Object.values(values).some(v => v.trim());
+  const answer: Answer = answers => { onAnswer(answers); void window.jarvis?.focus(false); };
+  const send = () => { if (filled) answer(values); };
+  return <div className="ac" data-question={question.id}>
+    <div className="ac-bar">
+      <span className="ac-label"><i/>{t(['Jarvis needs', 'Jarvis 需要'])}</span>
+      <button type="button" className="ac-x" aria-label={t(['Dismiss', '不填了'])} onClick={() => answer(null)}><X size={10} weight="bold"/></button>
+    </div>
+    <p className="qc-q">{question.question}</p>
+    {question.fields.map(f => <div className="qc-field" key={f.label}>
+      <span>{f.label}</span>
+      {f.choices
+        ? <span className="qc-choices" role="radiogroup" aria-label={f.label}>{f.choices.map(c =>
+          <button type="button" role="radio" aria-checked={values[f.label] === c} className={`qc-choice${values[f.label] === c ? ' is-on' : ''}`} key={c}
+            onClick={() => set(f.label, c)}>{c}</button>)}</span>
+        : <input className="qc-input" aria-label={f.label} value={values[f.label] ?? ''} onPointerDown={focusWindow} onChange={e => set(f.label, e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) send(); }}/>}
+    </div>)}
+    <div className="ac-foot"><span/>
+      <button type="button" className="ac-go" disabled={!filled} onClick={send}>{t(['Done', '好了'])}<ArrowUp size={12} weight="bold"/></button></div>
+  </div>;
+}

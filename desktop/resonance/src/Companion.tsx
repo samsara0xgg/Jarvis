@@ -12,7 +12,7 @@ import { usePlugins } from './PluginPanel';
 import { isMarkLook, type MarkLook } from './AgentMarks';
 import { answerRequest, type Agent, type ShownAgent } from './agents';
 import { NoticeCard, ended, noticeCue, useNotices } from './Notices';
-import { ActionCard, type Card, type Decide } from './ActionCard';
+import { ActionCard, QuestionCard, type Answer, type Card, type Decide, type Question } from './ActionCard';
 import { Notch, type NotchNote } from './Notch';
 import { tr, useCompanionSettings, type L, type Lang } from './companionSettings';
 import { useNow, useRoute } from './homeData';
@@ -114,11 +114,18 @@ export function Companion() {
   useEffect(() => { if (!port) return; link.current = connect(port, dispatch); return () => { link.current?.close(); link.current = null; }; }, []);
   // ADR 0062: the card waiting for Allen's button, read every 1.5 s whether or not the Dashboard is open: closed, it
   // grows from the notch. The same card object stays while its id does, so a letter being edited keeps its text.
+  // ADR 0066: the ask card rides the same tick; it hangs from the notch too, after a waiting confirmation.
   const [card, setCard] = useState<Card | null>(null);
+  const [question, setQuestion] = useState<Question | null>(null);
   useEffect(() => {
     if (!port) return;
     let stop = false;
-    const load = async () => { try { const next = await link.current?.card(); if (!stop) setCard(current => current?.id === next?.id ? current : next ?? null); } catch { /* daemon away; the next tick retries */ } };
+    const load = async () => { try {
+      const [next, asked] = await Promise.all([link.current?.card(), link.current?.question()]);
+      if (stop) return;
+      setCard(current => current?.id === next?.id ? current : next ?? null);
+      setQuestion(current => current?.id === asked?.id ? current : asked ?? null);
+    } catch { /* daemon away; the next tick retries */ } };
     void load();
     const id = setInterval(() => void load(), 1500);
     return () => { stop = true; clearInterval(id); };
@@ -130,8 +137,15 @@ export function Companion() {
     if (decision === 'accept') ball.current?.hop(.14);
     void link.current?.decide(id, decision, edits).catch(() => undefined); // a stale card: the next read shows what waits now
   };
+  const answerQuestion: Answer = answers => {
+    if (!question) return;
+    const id = question.id;
+    setQuestion(null);
+    if (answers) ball.current?.hop(.14);
+    void link.current?.answer(id, answers).catch(() => undefined); // a stale card: the next read shows what waits now
+  };
   // With the Dashboard closed the card hangs from the notch, ahead of the agents' notices, and she watches it from home.
-  const carded = !!card && !dashboard && !moving;
+  const carded = (!!card || !!question) && !dashboard && !moving;
   // Live, the daemon's phase is her voice; standby counts as listening only in wave mode (ADR 0041).
   // While your words are coming in she only listens: no answer starts then (ADR 0053), whatever text arrives.
   const inFlight = !!port && s.inFlight;
@@ -486,6 +500,7 @@ export function Companion() {
 
   const { out } = geo;
   const note: NotchNote | null = carded && card ? { key: `card:${card.id}`, onClose: () => undefined, card: <ActionCard key={card.id} card={card} lang={companion.lang} onDecide={decideCard}/> }
+    : carded && question ? { key: `question:${question.id}`, onClose: () => undefined, card: <QuestionCard key={question.id} question={question} lang={companion.lang} onAnswer={answerQuestion}/> }
     : !notice ? null : notice.kind === 'pop' ? { key: notice.key, pop: notice.ids, onClose: notices.next } : { key: notice.key, onClose: notices.fold,
     card: <NoticeCard key={notice.key} n={notice} card={notices.card!} agent={agents.find(a => a.id === notice.id)} count={notices.count} look={wardrobe.marks}
       onLater={notices.fold} onOpen={jump} onChange={notices.bump} onResolve={(text, body) => {
@@ -525,7 +540,7 @@ export function Companion() {
         style={{ left: geo.center - PANEL / 2, top: geo.panelTop }} inert={!dashboard}>
         {wardrobe.layout === 'around'
           ? <AroundDashboard open={dashboard} port={port} onClose={() => setDashboard(false)} onMood={setDashMood} onHop={height => ball.current?.hop(height)}
-            talk={port ? { rows: s.rows, tail, busy: s.phase === 'processing', offline: s.phase === 'error', floor, submit, older, card, decide: decideCard,
+            talk={port ? { rows: s.rows, tail, busy: s.phase === 'processing', offline: s.phase === 'error', floor, submit, older, card, decide: decideCard, question, answer: answerQuestion,
               think: { on: deep, secs: deepSecs, words, thoughts, exit: () => void submit(t(['stop thinking', '不用想了'])) } } : undefined}
             plugins={port ? plugins : undefined} pluginFocus={pluginFocus} marks={wardrobe.marks} onAgents={setAgents} unread={notices.unread}
             onAnswer={id => { setDashboard(false); notices.focus(id); }} ctl={ctl} settingsFocus={settingsFocus}/>

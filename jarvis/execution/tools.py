@@ -40,11 +40,14 @@ import ipaddress
 import json
 import logging
 import math
+import re
 import socket
 import subprocess
 import sys
 import threading
 import time
+import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from html.parser import HTMLParser
@@ -70,10 +73,11 @@ from jarvis.shared.text import truncate_utf8
 from jarvis.state.authorized_dispatch_outbox import admit_authorized_dispatch
 from jarvis.state.event_log import emit_event, iter_events_of_types
 from jarvis.state.lifecycle_terminal import terminalize_action
+from jarvis.state.memory_db import remember_fact
 
 if TYPE_CHECKING:
     import sqlite3
-    from collections.abc import Callable, Mapping, Sequence
+    from collections.abc import Callable, Sequence
 
     from jarvis.shared import Event
 
@@ -655,6 +659,197 @@ def list_memos(_args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
         stamp = datetime.fromtimestamp(event.ts_epoch_ms / 1000).astimezone()
         lines.append(f"{len(lines) + 1}. [{stamp:%m-%d %H:%M}] {event.payload.get('text', '')}")
     return {"count": len(lines), "rendered": "\n".join(lines) if lines else lang.t("memo.none")}
+
+
+# --- ask card (ask_user) and kept facts (remember) — ADR 0066 ------------------
+
+_ASK_MAX_FIELDS: Final[int] = 4
+_ASK_TEXT_MAX_CHARS: Final[int] = 200
+_ASK_LABEL_MAX_CHARS: Final[int] = 40
+_ASK_CHOICES: Final[range] = range(2, 7)
+# ponytail: a word list over the question and labels; a field phrased around it
+# gets through (ADR 0066 Consequences). Sign-ins and payment stay with ADR 0059.
+_ASK_SECRET_RE: Final[re.Pattern[str]] = re.compile(
+    r"password|passcode|passphrase|\bpin\b|cvv|cvc|card number|credit card|debit card"
+    r"|security code|verification code|one[- ]time code|\botp\b|api key|secret|token"
+    r"|密码|口令|卡号|信用卡|银行卡|安全码|验证码|动态码|密钥|令牌",
+    re.IGNORECASE,
+)
+
+
+def _ask_text(value: object, name: str, limit: int) -> str:
+    text = value.strip() if isinstance(value, str) else ""
+    if not text or len(text) > limit:
+        msg = f"ask_user: {name} must be 1-{limit} characters"
+        raise ToolError(msg, code="invalid_argument")
+    return text
+
+
+def _ask_field(raw: object) -> dict[str, Any]:
+    """One card field as the companion draws it: label, choices, pre-filled value, remember."""
+    if not isinstance(raw, Mapping):
+        msg = "ask_user: each field must be an object with a label"
+        raise ToolError(msg, code="invalid_argument")
+    field: dict[str, Any] = {
+        "label": _ask_text(raw.get("label"), "label", _ASK_LABEL_MAX_CHARS),
+        "remember": raw.get("remember") is not False,
+    }
+    choices = raw.get("choices")
+    if choices:
+        if not isinstance(choices, list) or len(choices) not in _ASK_CHOICES:
+            msg = "ask_user: choices must list 2-6 options"
+            raise ToolError(msg, code="invalid_argument")
+        field["choices"] = [_ask_text(c, "a choice", _ASK_LABEL_MAX_CHARS) for c in choices]
+    value = raw.get("value")
+    if isinstance(value, str) and value.strip():
+        field["value"] = value.strip()[:_ASK_TEXT_MAX_CHARS]
+    return field
+
+
+def _turn_of(action_id: str) -> str | None:
+    """The live turn driving ``action_id``, or None outside a turn."""
+    with _LIVE_ACTIONS_LOCK:
+        return next((t for t, ids in _LIVE_ACTIONS_BY_TURN.items() if action_id in ids), None)
+
+
+@tool(
+    description=(
+        "Ask the user for details you need before you can go on (an address, amounts, dates, "
+        "how many people, which of a few options) on a card with one input per detail. Use it "
+        "whenever your reply would otherwise end by asking for such details, even where you "
+        "asked in words before: the user fills in the card instead of typing. The turn then "
+        "ends: say in one short sentence what you need and stop. The answers arrive as the "
+        "user's next message. Never ask for passwords, card numbers, codes or keys, and never "
+        "use it to confirm an action: actions that need approval get their own card."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "question": {
+                "type": "string",
+                "description": "One short sentence at the top of the card, in the user's language.",
+            },
+            "fields": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": _ASK_MAX_FIELDS,
+                "description": "One entry per detail.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "label": {
+                            "type": "string",
+                            "description": (
+                                "Short name of the detail in the user's language, e.g. "
+                                "delivery address. A remembered answer is kept under it."
+                            ),
+                        },
+                        "choices": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "2-6 options when the answer is one of a few.",
+                        },
+                        "value": {
+                            "type": "string",
+                            "description": (
+                                "An answer you already know, pre-filled for the user to "
+                                "change. Never an example or a hint: it is sent as the answer."
+                            ),
+                        },
+                        "remember": {
+                            "type": "boolean",
+                            "description": (
+                                "Keep the answer in [About the user]. true only for facts "
+                                "about the user that stay true (address, postal code, "
+                                "allergies); false for anything about this one request "
+                                "(dates, times, amounts, how many, this order's choices). "
+                                "Default true."
+                            ),
+                        },
+                    },
+                    "required": ["label"],
+                },
+            },
+        },
+        "required": ["question", "fields"],
+    },
+    allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
+    risk_level="L1",
+    read_only=False,
+)
+def ask_user(args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    """Put up the ask card (`clarification.requested`); a newer one replaces it."""
+    question = _ask_text(args.get("question"), "question", _ASK_TEXT_MAX_CHARS)
+    raw_fields = args.get("fields")
+    if not isinstance(raw_fields, list) or not 1 <= len(raw_fields) <= _ASK_MAX_FIELDS:
+        msg = f"ask_user: fields must list 1-{_ASK_MAX_FIELDS} details"
+        raise ToolError(msg, code="invalid_argument")
+    fields = [_ask_field(raw) for raw in raw_fields]
+    if _ASK_SECRET_RE.search(" ".join([question, *(f["label"] for f in fields)])):
+        msg = (
+            "ask_user: a card never asks for passwords, card numbers, codes or keys; "
+            "the user enters those on the site itself"
+        )
+        raise ToolError(msg, code="secret_field")
+    emit_event(
+        ctx.conn,
+        type="clarification.requested",
+        payload={
+            "clarification_id": f"Q{uuid.uuid4().hex[:12]}",
+            "question": question,
+            "fields": fields,
+            "turn_id": _turn_of(ctx.action_id) or "",
+            "action_id": ctx.action_id,
+        },
+        source_event_id=_get_running_event_uid(ctx.conn, ctx.action_id),
+        correlation={"action_id": ctx.action_id},
+    )
+    return {
+        "status": "card_shown",
+        "next": (
+            "The card is on screen. Tell the user in one short sentence what you need, then "
+            "stop; their answers arrive as their next message."
+        ),
+    }
+
+
+def _make_remember(memory_db_path: Path) -> Tool:
+    """Bind memory.db into `remember`, the model's writer for [About the user]."""
+
+    def remember(args: Mapping[str, Any], _ctx: ToolContext) -> dict[str, Any]:
+        topic = str(args.get("topic", "")).strip()[:_ASK_LABEL_MAX_CHARS]
+        fact = str(args.get("fact", "")).strip()[:_ASK_TEXT_MAX_CHARS]
+        if not topic or not fact:
+            msg = "remember: topic and fact are both required"
+            raise ToolError(msg, code="invalid_argument")
+        remember_fact(memory_db_path, topic, fact)
+        return {"remembered": f"{topic}: {fact}"}
+
+    return Tool(
+        name="remember",
+        description=(
+            "Keep a lasting fact about the user in [About the user], which you see at the "
+            "start of every conversation: an address, a dietary need, a preference they "
+            "state. Use it when the user tells you such a fact or asks you to remember "
+            "something. A fact under a topic you used before replaces the old one. Not for "
+            "one-off choices or things that change from day to day."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "topic": {
+                    "type": "string",
+                    "description": "Short topic in the user's language, e.g. delivery address.",
+                },
+                "fact": {"type": "string", "description": "The fact, in the user's words."},
+            },
+            "required": ["topic", "fact"],
+        },
+        handler=remember,
+        allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
+        risk_level="L1",
+        read_only=False,
+    )
 
 
 # --- open_path handler --------------------------------------------------------
@@ -3517,6 +3712,9 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
     registry.register(read_clipboard)
     registry.register(create_memo)
     registry.register(list_memos)
+    registry.register(ask_user)
+    if memory_db_path is not None:
+        registry.register(_make_remember(memory_db_path))
     if web_search_provider is not None:
         registry.register(
             _make_web_search(

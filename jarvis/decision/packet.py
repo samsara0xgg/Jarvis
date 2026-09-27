@@ -33,6 +33,7 @@ if TYPE_CHECKING:
     from jarvis.state.conversation import ConversationHistory
     from jarvis.state.projections import (
         ActionAdmissions,
+        PendingClarification,
         PendingConfirmations,
         StatusBoard,
     )
@@ -70,6 +71,8 @@ class SituationPacket:
         action_admissions: Folded ActionAdmissions (ADR-0008 D10) — the
             admitting `gate.evaluated` uid and dispatched uid of every
             non-terminal action.
+        pending_clarification: The newest ask card (ADR 0066), read by
+            `format_pending_clarification_note`.
     """
 
     trigger_event: Event
@@ -81,6 +84,7 @@ class SituationPacket:
     conversation_history: ConversationHistory | None = None
     authorization_snapshot: AuthorizationSnapshot | None = None
     event_cursor: int | None = None
+    pending_clarification: PendingClarification | None = None
 
 
 # --- assemble_packet --------------------------------------------------------
@@ -129,6 +133,7 @@ def assemble_packet(trigger: Event, conn: sqlite3.Connection) -> SituationPacket
         conversation_history=projections.conversation_history,
         authorization_snapshot=state.authorizations,
         event_cursor=state.event_cursor,
+        pending_clarification=projections.pending_clarification,
     )
 
 
@@ -184,8 +189,39 @@ def format_pending_confirmation_note(
     )
 
 
+# --- Ask card system note (ADR 0066) ---------------------------------------
+
+
+def format_pending_clarification_note(packet: SituationPacket) -> str | None:
+    """Tell the model about its ask card on the one turn the card ends in, or None.
+
+    Three turns need the question to make sense: the turn its filled-in
+    answers start, the utterance that talked over it, and the first utterance
+    after it was dismissed.
+    """
+    slot = packet.pending_clarification
+    if slot is None:
+        return None
+    labels = ", ".join(str(f.get("label", "")) for f in slot.fields)
+    if slot.answered_turn_id is not None and slot.answered_turn_id == packet.current_turn_id:
+        return (
+            f"This message is the user's answer to your card “{slot.question}” ({labels}). "
+            "Fields you did not mark one-off are already saved in [About the user]. "
+            "Carry on with what they asked for."
+        )
+    if slot.answered_by_words:
+        return (
+            f"Your card “{slot.question}” ({labels}) closed because the user spoke instead "
+            "of filling it in. If these words answer it, carry on with them."
+        )
+    if slot.just_dismissed:
+        return f"The user closed your card “{slot.question}” ({labels}) without filling it in."
+    return None
+
+
 __all__ = [
     "SituationPacket",
     "assemble_packet",
+    "format_pending_clarification_note",
     "format_pending_confirmation_note",
 ]
