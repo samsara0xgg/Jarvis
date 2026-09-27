@@ -1,4 +1,5 @@
-import { BrowserWindow, clipboard, globalShortcut, ipcMain, screen } from 'electron';
+import { app, BrowserWindow, clipboard, globalShortcut, ipcMain, screen } from 'electron';
+import { execFile } from 'node:child_process';
 import path from 'node:path';
 // ADR 0058: dictation, Jarvis's small typing tool. A clean tap of the right ⌥ starts it and another finishes it;
 // Esc cancels. She leaves the notch for the text caret: a window over the caret's screen draws her there
@@ -12,11 +13,12 @@ type Native = { rightOption(): { down: boolean; others: boolean; keyIdle: number
 const TAP_S = .5;
 
 // Under its LaunchAgent macOS counts Accessibility against the launcher, node: that is the row to turn on.
-const GRANTEE = process.env.XPC_SERVICE_NAME === 'com.allen.jarvis.resonance' ? 'node' : '';
+const AGENT = process.env.XPC_SERVICE_NAME === 'com.allen.jarvis.resonance';
+const GRANTEE = AGENT ? 'node' : '';
 
-export function setupDictation({ companion, native, preload, page, port, topInset, open }: {
-  companion: BrowserWindow; native: Native; preload: string; page: string; port: string; topInset: (display: Electron.Display) => number;
-  open: (page: string) => void;
+export function setupDictation({ companion, native, nativePath, preload, page, port, topInset, open }: {
+  companion: BrowserWindow; native: Native; nativePath: string; preload: string; page: string; port: string;
+  topInset: (display: Electron.Display) => number; open: (page: string) => void;
 }) {
   const overlay = new BrowserWindow({ type: 'panel', frame: false, transparent: true, backgroundColor: '#00000000', hasShadow: false,
     resizable: false, movable: false, minimizable: false, maximizable: false, fullscreenable: false, focusable: false, show: false,
@@ -33,6 +35,23 @@ export function setupDictation({ companion, native, preload, page, port, topInse
   let option = { down: false, at: 0, clean: false };
   const mine = (event: Electron.IpcMainEvent) => event.sender === overlay.webContents;
   const cancel = () => overlay.webContents.send('dictation-cancel');
+
+  // A grant made while she runs counts only in a fresh process; this one keeps the answer it started with. Once the
+  // Accessibility pane is opened, a child asks every 2 s for five minutes, and when the switch is on she restarts
+  // between dictations: launchd brings her back, or she relaunches herself outside it.
+  let watching = false, granted = false;
+  const restart = () => { if (!AGENT) app.relaunch(); app.exit(0); };
+  function watchGrant() {
+    if (watching) return;
+    watching = true;
+    const until = Date.now() + 5 * 60_000;
+    const ask = () => execFile(process.execPath, ['-e', `console.log(require(${JSON.stringify(nativePath)}).accessibility(false))`],
+      { env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, timeout: 5000 }, (error, stdout) => {
+        if (!error && stdout.trim() === 'true') { granted = true; if (!busy) restart(); return; }
+        if (Date.now() < until) setTimeout(ask, 2000); else watching = false;
+      });
+    ask();
+  }
 
   function start() {
     const at = native.caret();
@@ -70,8 +89,13 @@ export function setupDictation({ companion, native, preload, page, port, topInse
     overlay.setIgnoreMouseEvents(true, { forward: true });
     overlay.hide();
     busy = false;
+    if (granted) restart();
   });
-  ipcMain.on('dictation-open', (event, name) => { if (mine(event) && typeof name === 'string') open(name); });
+  ipcMain.on('dictation-open', (event, name) => {
+    if (!mine(event) || typeof name !== 'string') return;
+    open(name);
+    if (name === 'accessibility') watchGrant();
+  });
   // A tap while her last card or message is still up: that one goes, a new dictation starts.
   ipcMain.on('dictation-again', event => { if (mine(event)) start(); });
   ipcMain.on('dictation-passthrough', (event, on) => { if (mine(event) && typeof on === 'boolean') overlay.setIgnoreMouseEvents(on, { forward: true }); });

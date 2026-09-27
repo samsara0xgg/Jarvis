@@ -204,7 +204,7 @@ function companion(shown?: () => void) {
   win.webContents.on('will-navigate', event => event.preventDefault());
   registerDaemonBridge(win, { lab: demo });
   // ADR 0058: the right ⌥ dictates at the text caret; she goes there from the notch. Live only: it needs the daemon's mic.
-  const dictation = demo || !material ? null : setupDictation({ companion: win, native: material, preload: path.join(here, 'preload.cjs'),
+  const dictation = demo || !material ? null : setupDictation({ companion: win, native: material, nativePath: path.join(here, '../dist-native/material.node'), preload: path.join(here, 'preload.cjs'),
     page: path.join(here, '../dist/dictation.html'), port, topInset: display => placement(display).topInset, open: openPage });
   win.loadFile(path.join(here, '../dist/index.html'), { query: demo ? { companion: '1' } : { companion: '1', port: process.env.JARVIS_INHERENT_BRIDGE_PORT ?? '8006' } });
   win.webContents.on('did-finish-load', place);
