@@ -4,7 +4,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { homedir } from 'node:os';
 import { createInterface } from 'node:readline';
-import { catalogChanged, find, log, type Driver, type Session } from './host.js';
+import { catalogChanged, find, kt, log, type Driver, type Session } from './host.js';
 import type { Choice, Diff, File, Question, Req, Step } from './types.js';
 import { diffOf } from './claude.js';
 
@@ -50,7 +50,8 @@ process.on('exit', () => { if (child?.pid) try { process.kill(-child.pid); } cat
 
 // ---------- one session's side of it ----------
 type Pending = { rpc: number | string; kind: 'cmd' | 'file' | 'perm' | 'ask'; params: any };
-type Rt = { loaded: boolean; turn?: string; text: Map<string, string>; out: Map<string, string>; pending: Map<string, Pending>; steps: Map<string, Step[]> };
+// usage: the last thread/tokenUsage/updated, the only count Codex gives
+type Rt = { loaded: boolean; turn?: string; text: Map<string, string>; out: Map<string, string>; pending: Map<string, Pending>; steps: Map<string, Step[]>; usage?: any };
 const rt = (s: Session): Rt => (s.rt.codex ??= { loaded: false, text: new Map(), out: new Map(), pending: new Map(), steps: new Map() }) as Rt;
 const loaded = new Set<Session>();
 const str = (v: unknown) => typeof v === 'string' ? v : '';
@@ -138,7 +139,7 @@ function receive(m: Msg) {
     case 'item/fileChange/patchUpdated': fileSteps(s, p.changes).forEach((x, i) => s.toolDone(`${p.itemId}:${i}`, x)); break;
     case 'turn/plan/updated': s.plan((p.plan ?? []).map((x: any) => [str(x.step), x.status === 'completed' ? 2 : x.status === 'inProgress' ? 1 : 0])); break;
     case 'thread/tokenUsage/updated': {
-      const u = p.tokenUsage, w = u?.modelContextWindow;
+      const u = r.usage = p.tokenUsage, w = u?.modelContextWindow;
       if (w && u?.last) s.set({ ctx: Math.min(100, Math.round(u.last.totalTokens / w * 100)) });
       break;
     }
@@ -318,4 +319,14 @@ export const codex: Driver = {
     return [['/compact', '把对话压缩一下，腾出上下文'], ...list.map(k => [`$${k.name}`, k.about] as [string, string])];
   },
   resume: s => `codex resume ${s.s.id}`,
+  // Codex reports totals only, and only while it works: what the last request sent and what it wrote.
+  async context(s) {
+    const u = rt(s).usage, last = u?.last, max = u?.modelContextWindow ?? 0, model = s.s.model;
+    if (!last || !max) return { used: 0, max: 0, model, rows: [], say: ['还没有数。', 'Codex 只在干活时报用量，下一轮之后再看。'], foot: [] };
+    const inp = last.inputTokens ?? 0, hit = Math.min(inp, last.cachedInputTokens ?? 0), out = last.outputTokens ?? 0, used = Math.min(max, last.totalTokens ?? inp + out);
+    return { used, max, model, say: ['Codex 只报总数', `，不分系统提示、工具和对话。上一次请求发过去 ${kt(inp)}${inp ? `，${Math.round(hit / inp * 100)}% 读自缓存` : ''}。`],
+      rows: [{ n: '发过去的', t: inp, sub: [['读自缓存', hit], ['新的', inp - hit]] }, { n: '它上一次写的', t: out, sub: [['其中思考', last.reasoningOutputTokens ?? 0]] },
+        { n: '还空着', t: max - used, kind: 'free' }],
+      foot: [`整个会话累计：发出 ${kt(u.total?.inputTokens ?? 0)}，写了 ${kt(u.total?.outputTokens ?? 0)}`, '快满时 Codex 会自己压缩'] };
+  },
 };

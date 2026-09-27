@@ -1,9 +1,9 @@
-// The Agents window (ADR 0073), built from design lab FHrstDSC v2. It is cut from her glass like the Dashboard, she sits
+// The Agents window (ADR 0073), built from design lab FHrstDSC v2 and v3 (the context popover, and Hermes' button details). It is cut from her glass like the Dashboard, she sits
 // at the top of the list and answers what the sessions do, and the sounds are her kit exactly as the notch plays them.
 // The sessions themselves run in the agent host; this page draws what the host's event stream says and sends back
 // what Allen does. Drawing is batched into one frame, rows and messages are keyed so only what changed is touched,
 // each session keeps its own conversation so switching is instant, and only marks that move repaint.
-import type { Agent, Catalog, Event, File as Upload, Item, Req, Sess, St, Step } from '../../electron/agents/types';
+import type { Agent, Catalog, Ctx, Event, File as Upload, Item, Req, Sess, St, Step } from '../../electron/agents/types';
 import { drawMark } from '../AgentMarks';
 import { palette, play, scoreOf } from '../soundKit';
 import { Core, TAKES, pick, type ExprId } from '../starCore';
@@ -108,6 +108,8 @@ const I = {
   doc: svg('<path d="M4 1.8h5.2L12.5 5v9.2H4z"/><path d="M9 1.8V5h3.5"/>', 12),
   sound: svg('<path d="M2.5 6h2.2L8 3.2v9.6L4.7 10H2.5z"/><path d="M10.6 5.6a3.4 3.4 0 0 1 0 4.8M12.4 3.9a5.8 5.8 0 0 1 0 8.2"/>', 15),
   mute: svg('<path d="M2.5 6h2.2L8 3.2v9.6L4.7 10H2.5z"/><path d="m10.8 6.2 3.4 3.6M14.2 6.2l-3.4 3.6"/>', 15),
+  copy: svg('<rect x="5.5" y="5.5" width="8" height="8" rx="2"/><path d="M10.5 5.5v-2a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2"/>', 12),
+  check: svg('<path d="m3.5 8.5 3 3 6-7"/>', 12, ' stroke-width="1.8"'),
 };
 const STEP_K: Record<Step['k'], string> = { read: '读', edit: '改', bash: '跑', search: '搜', agent: '子任务', web: '网页', tool: '工具', say: '' };
 const who = (a: Agent) => `<span class="who ${a}">${a === 'claude' ? 'Claude' : 'Codex'}</span>`;
@@ -135,6 +137,8 @@ function cue(name: string, gain = 1, force = false) {
   const c = scoreOf('fifths')[name];
   if (c) { void snd.ctx.resume(); play(snd.ctx, snd.out!, c, palette('dropCrisp'), gain); }
 }
+// A pick (a model, a filter, a menu line, a copy) is one quiet click, Hermes' selection haptic, as her kit has it for the mic.
+const tick = () => cue('mic', .45);
 
 // ---------- her: the ball at the top of the list, the desktop's own starCore ----------
 const win = $('#win');
@@ -215,6 +219,9 @@ const app = {
   sideOpen: false, openAt: performance.now(), how: 'click' as 'click' | 'key', sending: false,
   // Answers picked on a question card with more than one question or more than one choice.
   asked: new Map<string, string[][]>(),
+  // busy: per session, the answer in flight (its request and what was pressed) · cx: each session's last measured context,
+  // or why it could not be read · cxOpen: rows opened in the context popover
+  busy: new Map<string, { req: string; key: string }>(), cx: new Map<string, Ctx | string>(), cxOpen: new Set<string>(),
 };
 const byId = (id: string) => app.ss.find(s => s.id === id);
 const cur = () => byId(app.cur);
@@ -240,6 +247,7 @@ function flush() {
   if (d.has('main')) renderMain();
   else if (d.has('live') && app.view === 'chat' && s) { const c = convs.get(s.id); if (c) { const b = bottom(c.root); renderLive(s, c); if (b) c.root.scrollTop = c.root.scrollHeight; } }
   if (d.has('comp')) renderComp();
+  if (tipFor && !tipFor.isConnected) tipHide();
 }
 // A session's change redraws the list; the rest only when it is the one on screen.
 const touch = (id: string) => { if (app.view === 'chat' && app.cur === id) draw(); else draw('side'); };
@@ -301,8 +309,8 @@ function renderSide() {
       cls(el, `row${s.id === app.cur && app.view === 'chat' ? ' is-on' : ''}${s.st === 'wait' && !s.term ? ' is-ask' : ''}${s.unread ? ' is-new' : ''}${s.st === 'err' ? ' is-err' : ''}`);
       patch(el.children[1], `<b>${esc(s.title)}</b><span class="age">${s.unread ? '<i class="nd"></i>' : ''}${age(s.updated)}</span>`
         + `<span class="sum">${who(s.agent)}<span class="dot">·</span><span class="t">${esc(s.term ? '在终端里' : s.summary)}</span></span>`);
-      patch(el.children[2], `<i data-act="pin" data-id="${s.id}" title="${s.pinned ? '取消置顶' : '置顶'}"${s.pinned ? ' class="on"' : ''}>${I.pin}</i>`
-        + `<i data-act="park" data-id="${s.id}" title="${s.parked ? '拿回来' : '先放着'}"${s.parked ? ' class="on"' : ''}>${I.park}</i><i data-act="archive" data-id="${s.id}" title="归档">${I.box}</i>`);
+      patch(el.children[2], `<i data-act="pin" data-id="${s.id}" data-tip="${s.pinned ? '取消置顶' : '置顶'}"${s.pinned ? ' class="on"' : ''}>${I.pin}</i>`
+        + `<i data-act="park" data-id="${s.id}" data-tip="${s.parked ? '拿回来' : '先放着'}"${s.parked ? ' class="on"' : ''}>${I.park}</i><i data-act="archive" data-id="${s.id}" data-tip="归档">${I.box}</i>`);
       want.push(el);
     }
   }
@@ -331,13 +339,15 @@ function renderHead() {
   }
   patch(hMk, star(s.id, 13));
   if (app.renaming) { if (patch(hT, `<input id="rename" class="rename" value="${esc(s.title)}" aria-label="会话名字" autocomplete="off">`)) { const r = $<HTMLInputElement>('#rename', hT); r.focus(); r.select(); } }
-  else patch(hT, `<b data-act="rename" title="点一下改名">${esc(s.title)}</b>`);
+  else patch(hT, `<b data-act="rename" data-tip="点一下改名">${esc(s.title)}</b>`);
   patch(hMeta, `${who(s.agent)}<span title="${esc(s.cwd)}">${esc(s.project)}</span><span class="dot">·</span><span class="br">${s.tree ? I.tree : ''}${esc(s.branch || '—')}</span><span class="dot">·</span><span class="st st-${s.st}">${label(s)}</span>`);
   // The context ring fills by a transition on the stroke, not by a redraw.
   ctxFg.style.strokeDasharray = `${(s.ctx / 100 * 47.1).toFixed(1)} 47.1`;
   ctxFg.classList.toggle('hi', s.ctx > 75);
-  patch(ctxN, `${Math.round(s.ctx)}%`); ctxEl.title = `上下文用了 ${Math.round(s.ctx)}%`;
-  patch($('[data-act="terminal"] span', head), s.term ? '拿回来' : '在终端打开');
+  patch(ctxN, `${Math.round(s.ctx)}%`); ctxEl.dataset.tip = `上下文用了 ${Math.round(s.ctx)}% · 点开看明细`;
+  const tb = $('[data-act="terminal"]', head);
+  patch($('span', tb), s.term ? '拿回来' : '在终端打开');
+  tb.dataset.tip = s.term ? '在这里接着聊' : `在 Ghostty 里接着聊 · ${s.agent === 'codex' ? 'codex resume' : 'claude --resume'}`;
 }
 
 // ---------- the conversation: one kept per session, so switching is instant and each keeps its place ----------
@@ -397,24 +407,31 @@ function reqRecord(r: Req) {
 }
 function itemHTML(s: Sess, it: Exclude<Item, { k: 'steps' }>) {
   if (it.k === 'you') return `<div class="you">${it.files?.length ? `<span class="att">${it.files.map(f => `<span class="thumb">${I.img}${esc(f)}</span>`).join('')}</span>` : ''}${esc(it.text)}</div>`;
-  if (it.k === 'it') return `<div class="it">${md(it.text)}</div>`;
+  if (it.k === 'it') return `<div class="it">${withCopy(md(it.text))}<div class="it-acts"><button type="button" class="ia" data-act="copy">${I.copy}<span>复制</span></button></div></div>`;
   if (it.k === 'note') return `<p class="note">${esc(it.text)}</p>`;
   if (it.k === 'plan') return `<div class="plan"><span class="p-h">计划</span>${it.todos.map(([t, d]) => `<span class="todo d${d}"><i></i>${esc(t)}</span>`).join('')}</div>`;
-  const r = it.req, a = NAME[s.agent];
+  const r = it.req, a = NAME[s.agent], b = app.busy.get(s.id), busy = b?.req === r.id ? b.key : '';
+  const on = (k: string) => busy === k ? ' is-busy' : '', off = busy ? ' disabled' : '';
   if (it.done) return `<p class="note done"><span class="ok">${/^(拒绝|没回答)/.test(it.done) ? '✕' : '✓'}</span>${esc(reqRecord(r))}<span class="how">${esc(it.done)}</span></p>`;
   if (r.tool === 'Ask') {
     const picked = app.asked.get(r.id) ?? [], simple = r.qs.length === 1 && !r.qs[0].multi;
-    return `<div class="req ask"><span class="r-h">${esc(a)} 问你</span>${r.qs.map((q, qi) => `<div class="q-block"><p class="q">${esc(q.q)}</p><div class="opts">${q.opts.map(([l, d], k) =>
-      `<button type="button" class="opt${picked[qi]?.includes(l) ? ' on' : ''}" data-act="${simple ? 'answer' : 'pickopt'}" data-q="${qi}" data-v="${esc(l)}" data-req="${esc(r.id)}"><i>${k + 1}</i><span><b>${esc(l)}</b>${d ? `<small>${esc(d)}</small>` : ''}</span></button>`).join('')}</div></div>`).join('')}`
-      + (simple ? '' : `<div class="choice"><button type="button" class="btn warm" data-act="answerall" data-req="${esc(r.id)}"${r.qs.every((_, qi) => picked[qi]?.length) ? '' : ' disabled'}>好了</button></div>`)
-      + '<p class="hint">也可以直接在下面打字回答。</p></div>';
+    return `<div class="req ask${busy ? ' busy' : ''}"><span class="r-h">${esc(a)} 问你</span>${r.qs.map((q, qi) => `<div class="q-block"><p class="q">${esc(q.q)}</p><div class="opts">${q.opts.map(([l, d], k) =>
+      `<button type="button" class="opt${picked[qi]?.includes(l) ? ' on' : ''}${on(`opt:${l}`)}" data-act="${simple ? 'answer' : 'pickopt'}" data-q="${qi}" data-v="${esc(l)}" data-req="${esc(r.id)}"${off}><i>${k + 1}</i><span><b>${esc(l)}</b>${d ? `<small>${esc(d)}</small>` : ''}</span></button>`).join('')}</div></div>`).join('')}`
+      + (simple ? '' : `<div class="choice"><button type="button" class="btn warm${on('all')}" data-act="answerall" data-req="${esc(r.id)}"${busy || !r.qs.every((_, qi) => picked[qi]?.length) ? ' disabled' : ''}>好了</button></div>`)
+      + `<p class="hint">${simple ? '按数字键选，' : ''}<kbd>esc</kbd> 不回答，也可以直接在下面打字回答。</p></div>`;
   }
-  if (r.tool === 'Plan') return `<div class="req"><span class="r-h">${reqHead(r)}</span><div class="plan-text">${md(r.plan)}</div><div class="choice"><button type="button" class="btn" data-act="deny" data-req="${esc(r.id)}">再想想</button><button type="button" class="btn warm" data-act="allow" data-req="${esc(r.id)}">就这么做</button></div><p class="hint">点「再想想」前可以在下面写哪里要改。</p></div>`;
+  if (r.tool === 'Plan') return `<div class="req${busy ? ' busy' : ''}"><span class="r-h">${reqHead(r)}</span><div class="plan-text">${md(r.plan)}</div><div class="choice">`
+    + `<button type="button" class="btn${on('deny')}" data-act="deny" data-req="${esc(r.id)}"${off}>再想想<kbd>esc</kbd></button><button type="button" class="btn warm${on('allow')}" data-act="allow" data-req="${esc(r.id)}"${off}>就这么做<kbd>↵</kbd></button></div>`
+    + '<p class="hint">点「再想想」前可以在下面写哪里要改。</p></div>';
   const what = r.tool === 'Bash' ? `<pre class="cmd"><span>${esc(home(r.cwd))} $</span> ${esc(r.cmd)}</pre>`
     : r.tool === 'Edit' ? `<div class="file">${I.doc}${esc(r.file)}</div>${r.diff.length ? diffHTML(r.diff) : ''}`
     : `<pre class="cmd">${esc(r.detail)}</pre>`;
-  return `<div class="req"><span class="r-h">${reqHead(r)}</span>${r.why ? `<p class="why">${esc(r.why)}</p>` : ''}${what}<div class="choice"><button type="button" class="btn" data-act="deny" data-req="${esc(r.id)}">拒绝</button>${r.always ? `<button type="button" class="btn" data-act="always" data-req="${esc(r.id)}">${esc(r.always)}</button>` : ''}<button type="button" class="btn warm" data-act="allow" data-req="${esc(r.id)}">允许</button></div></div>`;
+  return `<div class="req${busy ? ' busy' : ''}"><span class="r-h">${reqHead(r)}</span>${r.why ? `<p class="why">${esc(r.why)}</p>` : ''}${what}<div class="choice">`
+    + `<button type="button" class="btn${on('deny')}" data-act="deny" data-req="${esc(r.id)}"${off}>拒绝<kbd>esc</kbd></button>${r.always ? `<button type="button" class="btn${on('always')}" data-act="always" data-req="${esc(r.id)}"${off}>${esc(r.always)}</button>` : ''}`
+    + `<button type="button" class="btn warm${on('allow')}" data-act="allow" data-req="${esc(r.id)}"${off}>允许<kbd>↵</kbd></button></div></div>`;
 }
+// Code blocks in a finished answer get their own copy button.
+const withCopy = (html: string) => html.replace(/<pre>/g, `<div class="code"><button type="button" class="cp" data-act="copy" data-what="code">${I.copy}<span>复制</span></button><pre>`).replace(/<\/pre>/g, '</pre></div>');
 // A new item arrives the way it happened: yours rises from the composer, a request drops in, the rest fade.
 function enter(el: HTMLElement, it: Item) {
   if (it.k === 'you') { el.style.transformOrigin = '100% 100%'; anim(el, [{ opacity: 0, transform: 'translateY(14px) scale(.97)' }, { opacity: 1, transform: 'none' }], 460, SPRING); }
@@ -542,13 +559,13 @@ function renderComp() {
   ta.placeholder = newV ? `要 ${NAME[agent]} 做什么？` : s!.term ? '在终端里 · 拿回来才能在这里写' : blocked ? '先回答上面的请求'
     : pend?.tool === 'Ask' ? '打字回答它的问题' : pend?.tool === 'Plan' ? '哪里要改？写了再点「再想想」' : busy ? `给 ${NAME[agent]} 发消息 · 这一步做完它就会看到` : `给 ${NAME[agent]} 发消息 · / 用命令，@ 选文件`;
   const model = newV ? app.newSet.model : s!.model, effort = newV ? app.newSet.effort : s!.effort, mode = newV ? app.newSet.mode : s!.mode;
-  patch(tl, `<button type="button" class="t-btn icon" data-act="attach" title="加图片（也可以直接粘贴）">${I.img}</button>`
-    + '<button type="button" class="t-btn icon" data-act="insert" data-v="@" title="提到一个文件">@</button><button type="button" class="t-btn icon" data-act="insert" data-v="/" title="命令和 skill">/</button><span class="t-sep"></span>'
-    + (c.models.length ? `<button type="button" class="t-btn" data-act="menu" data-v="model">${esc(labelOf(c.models, model) || '模型')}</button>` : '')
-    + (c.efforts.length ? `<button type="button" class="t-btn" data-act="menu" data-v="effort">${esc(effort || '力度')}</button>` : '')
-    + (c.modes.length ? `<button type="button" class="t-btn mode" data-act="menu" data-v="mode">${esc(labelOf(c.modes, mode) || '模式')}</button>` : ''));
-  patch(tr, `${busy ? '<button type="button" class="t-stop" data-act="interrupt" title="打断（Esc）">' + I.stop + '</button>' : ''}`
-    + `<button type="button" class="t-send" data-act="send" aria-label="${newV ? '开始' : '发送'}"${blocked || app.sending ? ' disabled' : ''}>${I.up}</button>`);
+  patch(tl, `<button type="button" class="t-btn icon" data-act="attach" data-tip="加图片 · 也可以直接粘贴">${I.img}</button>`
+    + '<button type="button" class="t-btn icon" data-act="insert" data-v="@" data-tip="提到一个文件">@</button><button type="button" class="t-btn icon" data-act="insert" data-v="/" data-tip="命令和 skill">/</button><span class="t-sep"></span>'
+    + (c.models.length ? `<button type="button" class="t-btn" data-act="menu" data-v="model" data-tip="模型">${esc(labelOf(c.models, model) || '模型')}</button>` : '')
+    + (c.efforts.length ? `<button type="button" class="t-btn" data-act="menu" data-v="effort" data-tip="想多深">${esc(effort || '力度')}</button>` : '')
+    + (c.modes.length ? `<button type="button" class="t-btn mode" data-act="menu" data-v="mode" data-tip="它能自己做到哪一步">${esc(labelOf(c.modes, mode) || '模式')}</button>` : ''));
+  patch(tr, `${busy ? `<button type="button" class="t-stop" data-act="interrupt" data-tip="打断" data-key="esc">${I.stop}</button>` : ''}`
+    + `<button type="button" class="t-send" data-act="send" aria-label="${newV ? '开始' : '发送'}" data-tip="${newV ? '开始' : '发送'}" data-key="↵"${blocked || app.sending ? ' disabled' : ''}>${I.up}</button>`);
   patch(cFiles, app.files.map((f, k) => `<span class="thumb">${I.img}${esc(f.name)}<i data-act="unfile" data-k="${k}" aria-label="去掉">✕</i></span>`).join(''));
   patch(cMenu, app.picks.map(([v, d], k) => app.menu === 'at'
     ? `<button type="button" data-act="pickfile" data-v="${esc(v)}"${k === app.pick ? ' class="on"' : ''}><code>@${esc(v)}</code></button>`
@@ -562,6 +579,19 @@ let popFor = '';
 function openPop(kind: string, anchor: HTMLElement) {
   if (popFor === kind) { closePop(); return; }
   const s = app.view === 'chat' ? cur() : undefined, c = choice(s ? s.agent : app.newAgent);
+  if (kind === 'ctx') {
+    if (!s) return;
+    pop.className = 'pop cx'; pop.setAttribute('role', 'dialog'); pop.setAttribute('aria-label', '上下文');
+    popFor = kind; H.delete(pop); fillCtx(s);
+    const w = win.getBoundingClientRect(), r = anchor.getBoundingClientRect();
+    Object.assign(pop.style, { left: 'auto', right: `${Math.max(12, w.right - r.right)}px`, top: `${r.bottom - w.top + 6}px`, bottom: 'auto', transformOrigin: '100% 0' });
+    anchor.setAttribute('aria-expanded', 'true');
+    pop.classList.add('on');
+    growBar();
+    void loadCtx(s.id);
+    return;
+  }
+  pop.className = 'pop'; pop.setAttribute('role', 'menu'); pop.removeAttribute('aria-label');
   const opts = (k: 'model' | 'effort' | 'mode', vs: [string, string][], v: string) => vs.map(([x, l]) => `<button type="button" data-act="set" data-k="${k}" data-v="${esc(x)}"${x === v ? ' class="on"' : ''}>${esc(l)}</button>`).join('');
   const html = kind === 'more' && s
     ? `<button type="button" data-act="pin">${s.pinned ? '取消置顶' : '置顶'}</button><button type="button" data-act="park">${s.parked ? '不放着了' : '先放着'}</button><button type="button" data-act="rename">改名</button><button type="button" data-act="fork">从这里分叉</button><button type="button" data-act="reveal">在访达里看文件夹</button><button type="button" data-act="archive" data-id="${s.id}">归档</button><span class="sep"></span><button type="button" data-act="stop" class="bad">停掉</button>`
@@ -575,7 +605,77 @@ function openPop(kind: string, anchor: HTMLElement) {
     : { left: `${Math.min(r.left - w.left, w.width - 200)}px`, right: 'auto', top: 'auto', bottom: `${w.bottom - r.top + 6}px`, transformOrigin: '0 100%' });
   pop.classList.add('on');
 }
-function closePop() { if (!popFor) return; popFor = ''; pop.classList.remove('on'); }
+function closePop() { if (!popFor) return; popFor = ''; pop.classList.remove('on'); ctxEl.setAttribute('aria-expanded', 'false'); }
+
+// ---------- the context ring's popover: what fills the window, as the host measures it ----------
+// Claude's numbers are /context's own token counts through the Agent SDK; Codex gives only totals, so its view is plainer.
+const kt = (n: number) => n >= 1e6 ? `${+(n / 1e6).toFixed(1)}M` : n >= 1000 ? `${n >= 1e5 ? Math.round(n / 1000) : +(n / 1000).toFixed(1)}k` : String(Math.round(n));
+const CX_COLOR: Record<string, string> = { 系统提示词: '#8fb1ff', 内置工具: '#c7a8ff', 'MCP 说明': '#7fd4e8', 'MCP 工具': '#7fd4e8', '自定义 agent': '#f2b596',
+  记忆文件: '#ffc98f', Skills: '#6fe0b4', 对话: '#e8ebff', 发过去的: '#a9bfff', 它上一次写的: '#6fe0b4' };
+async function loadCtx(id: string) {
+  const r = await call<Ctx>(`/sessions/${id}/context`).catch((e: unknown) => e instanceof Error ? e.message : String(e));
+  // A reading that fails after one that worked keeps the one that worked.
+  if (typeof r !== 'string' || typeof app.cx.get(id) !== 'object') app.cx.set(id, r);
+  const s = byId(id);
+  if (popFor === 'ctx' && app.cur === id && s) { const had = !!$('.cx-bar', pop); fillCtx(s); if (!had) growBar(); }
+}
+// The bar fills left to right as it appears.
+const growBar = () => { const b = pop.querySelector('.cx-bar'); if (b) anim(b, [{ clipPath: 'inset(0 100% 0 0)' }, { clipPath: 'inset(0 0 0 0)' }], 560, OUT); };
+function fillCtx(s: Sess) {
+  const x = app.cx.get(s.id), m = labelOf(choice(s.agent).models, s.model) || (typeof x === 'object' ? x.model : '');
+  if (typeof x !== 'object' || !x.max) {
+    patch(pop, `<div class="cx-h"><b>上下文</b><span>${Math.round(s.ctx)}%</span></div><p class="cx-sub">${esc(m)}</p>`
+      + `<p class="cx-say">${x === undefined ? '在量…' : typeof x === 'string' ? esc(x) : `<b>${esc(x.say[0])}</b>${esc(x.say[1])}`}</p>`);
+    return;
+  }
+  patch(pop, `<div class="cx-h"><b>上下文</b><span>${Math.round(x.used / x.max * 100)}%</span></div><p class="cx-sub">${kt(x.used)} / ${kt(x.max)} · ${esc(m)}</p>`
+    + `<div class="cx-bar">${x.rows.filter(r => r.kind !== 'free').map(r => `<i data-n="${esc(r.n)}"${r.kind ? ' class="buf"' : ''} style="width:${(r.t / x.max * 100).toFixed(2)}%${r.kind ? '' : `;background:${CX_COLOR[r.n] ?? '#9aa3c7'}`}"></i>`).join('')}</div>`
+    + `<p class="cx-say"><b>${esc(x.say[0])}</b>${esc(x.say[1])}</p><div class="cx-rows">${x.rows.map(r => {
+      const has = !!r.sub?.length, o = has && app.cxOpen.has(r.n), tag = has ? 'button' : 'div';
+      return `<${tag}${has ? ` type="button" data-act="cxrow" aria-expanded="${o}"` : ''} class="cx-r${o ? ' open' : ''}" data-n="${esc(r.n)}"><i class="sw${r.kind ? ` ${r.kind}` : ''}"${r.kind ? '' : ` style="background:${CX_COLOR[r.n] ?? '#9aa3c7'}"`}></i><span>${esc(r.n)}</span><span class="n">${kt(r.t)}</span><span class="cv">${has ? I.chev : ''}</span></${tag}>`
+        + (has ? `<div class="cx-sub-w${o ? ' open' : ''}"><div class="cx-sub-c"><div class="cx-sub-l">${r.sub!.map(e => typeof e === 'string' ? `<h5>${esc(e)}</h5>` : `<p><span title="${esc(e[0])}">${esc(e[0])}</span><em>${kt(e[1])}</em></p>`).join('')}</div></div></div>` : '');
+    }).join('')}</div>`
+    + (x.foot.length ? `<div class="cx-foot">${x.foot.map(l => `<span>${esc(l)}</span>`).join('')}</div>` : ''));
+}
+// Pointing at a row lights its part of the bar.
+pop.addEventListener('pointerover', e => {
+  const r = (e.target as Element).closest<HTMLElement>('.cx-r'), bar = pop.querySelector<HTMLElement>('.cx-bar');
+  if (!bar) return;
+  bar.classList.toggle('hi', !!r);
+  for (const i of bar.children) i.classList.toggle('on', !!r && (i as HTMLElement).dataset.n === r.dataset.n);
+});
+pop.addEventListener('pointerleave', () => pop.querySelector('.cx-bar')?.classList.remove('hi'));
+
+// ---------- tooltips: 200 ms to appear, at once while another has just shown, a keycap for the shortcut (Hermes' timing) ----------
+const tipEl = $('.tip', win);
+let tipFor: HTMLElement | null = null, tipTimer = 0, tipGone = -1e9;
+function tipShow(el: HTMLElement) {
+  if (!el.isConnected || !el.dataset.tip) return;
+  patch(tipEl, `<span>${esc(el.dataset.tip)}</span>${el.dataset.key ? `<kbd>${esc(el.dataset.key)}</kbd>` : ''}`);
+  const w = win.getBoundingClientRect(), r = el.getBoundingClientRect(), t = tipEl.getBoundingClientRect(), below = r.top - w.top < t.height + 14;
+  tipEl.style.left = `${Math.max(8, Math.min(w.width - t.width - 8, r.left - w.left + r.width / 2 - t.width / 2))}px`;
+  tipEl.style.top = `${below ? r.bottom - w.top + 7 : r.top - w.top - t.height - 7}px`;
+  tipEl.style.setProperty('--dy', below ? '-3px' : '3px');
+  tipEl.classList.add('on');
+}
+function tipHide() {
+  clearTimeout(tipTimer);
+  if (tipEl.classList.contains('on')) tipGone = performance.now();
+  tipFor = null; tipEl.classList.remove('on');
+}
+win.addEventListener('pointerover', e => {
+  if (e.pointerType !== 'mouse') return;
+  const el = (e.target as Element).closest<HTMLElement>('[data-tip]');
+  if (el === tipFor) return;
+  tipHide();
+  if (!el) return;
+  tipFor = el;
+  tipTimer = window.setTimeout(() => tipShow(el), performance.now() - tipGone < 300 ? 0 : 200);
+});
+win.addEventListener('pointerdown', tipHide, true);
+win.addEventListener('pointerleave', tipHide);
+win.addEventListener('focusin', e => { const el = e.target as HTMLElement; if (el.dataset?.tip && el.matches(':focus-visible')) { tipFor = el; tipShow(el); } });
+win.addEventListener('focusout', tipHide);
 
 // ---------- what the host says ----------
 const here = (id: string) => app.view === 'chat' && app.cur === id && document.hasFocus();
@@ -689,11 +789,41 @@ async function send() {
   await tryCall(`/sessions/${s.id}/send`, { text, files });
 }
 const clearTa = () => { ta.value = ''; ta.style.height = ''; draw('comp'); };
-async function answer(id: string, req: string, decision: 'allow' | 'always' | 'deny', answers?: string[][]) {
+// Pressing an answer sounds at once and locks its card, a spinner on what was pressed, until the host has it; a second
+// press or a held key does nothing. `key` is what was pressed: allow, always, deny, all, or opt:<label>.
+async function answer(s: Sess, req: string, decision: 'allow' | 'always' | 'deny', key: string, answers?: string[][]) {
+  if (app.busy.get(s.id)?.req === req) return;
+  app.busy.set(s.id, { req, key });
   cue(decision === 'deny' ? 'close' : 'send');
   const text = decision === 'deny' ? ta.value.trim() : '';
   if (text) clearTa();
-  await tryCall(`/sessions/${id}/answer`, { req, decision, answers, ...(text ? { text } : {}) });
+  draw('main');
+  if (!await tryCall(`/sessions/${s.id}/answer`, { req, decision, answers, ...(text ? { text } : {}) })) { app.busy.delete(s.id); draw('main'); }
+}
+// Copying: the button says so for 1.5 s; where the clipboard is refused, the text is selected for ⌘C instead.
+function copy(el: HTMLElement, text: string, target: Element) {
+  const done = (ok: boolean) => {
+    el.classList.remove('ok', 'no'); el.classList.add(ok ? 'ok' : 'no');
+    patch(el, `${ok ? I.check : I.copy}<span>${ok ? '复制好了' : '选好了，按 ⌘C'}</span>`);
+    clearTimeout(Number(el.dataset.t));
+    el.dataset.t = String(setTimeout(() => { el.classList.remove('ok', 'no'); patch(el, `${I.copy}<span>复制</span>`); }, 1500));
+  };
+  tick();
+  navigator.clipboard.writeText(text).then(() => done(true), () => {
+    const r = document.createRange(); r.selectNodeContents(target);
+    const sel = getSelection(); sel?.removeAllRanges(); sel?.addRange(r);
+    done(false);
+  });
+}
+// Esc while you are writing: the turn goes on, and the now-line says why.
+function escHint(s: Sess) {
+  const c = convs.get(s.id);
+  if (!c) return;
+  const k = $('.k', c.now), kb = $('kbd', c.now);
+  k.textContent = '输入框里有字，没打断 · 清空再按'; k.classList.add('warn');
+  anim(kb, [{ transform: 'none' }, { transform: 'translateX(-3px)' }, { transform: 'translateX(3px)' }, { transform: 'translateX(-2px)' }, { transform: 'none' }], 320);
+  clearTimeout(Number(k.dataset.t));
+  k.dataset.t = String(setTimeout(() => { k.textContent = '打断'; k.classList.remove('warn'); }, 2200));
 }
 function interrupt(s: Sess) {
   hush.set(s.id, performance.now() + 2500);
@@ -727,8 +857,8 @@ async function act(a: string, el: HTMLElement) {
   }
   else if (a === 'new') { app.view = 'new'; app.sideOpen = false; closePop(); win.classList.remove('side-open'); cue('open', .5); newDefaults(); void refreshProjects(); draw(); ta.focus(); }
   else if (a === 'archview') { app.view = 'archive'; app.sideOpen = false; closePop(); win.classList.remove('side-open'); draw(); }
-  else if (a === 'filter') { app.filter = el.dataset.v as typeof app.filter; quiet = true; draw('side'); }
-  else if (a === 'by') { app.by = app.by === 'state' ? 'project' : 'state'; quiet = true; draw('side'); }
+  else if (a === 'filter') { if (app.filter !== el.dataset.v) tick(); app.filter = el.dataset.v as typeof app.filter; quiet = true; draw('side'); }
+  else if (a === 'by') { tick(); app.by = app.by === 'state' ? 'project' : 'state'; quiet = true; draw('side'); }
   else if (a === 'pin' && s) { s.pinned = !s.pinned; closePop(); cue(s.pinned ? 'on' : 'off', .7); draw(); void tryCall(`/sessions/${s.id}/meta`, { pinned: s.pinned }); }
   else if (a === 'archive' && s) { closePop(); archive(s); }
   else if (a === 'park' && s) { s.parked = !s.parked; closePop(); cue(s.parked ? 'close' : 'open', .6); draw(); void tryCall(`/sessions/${s.id}/meta`, { parked: s.parked }); }
@@ -757,30 +887,41 @@ async function act(a: string, el: HTMLElement) {
     if (a === 'steps') { o.open = !o.open; o.step = undefined; } else { const j = Number(el.dataset.j); o.step = o.step === j ? undefined : j; }
     m.set(i, o); app.opened.set(app.cur, m); draw('main');
   }
-  else if ((a === 'allow' || a === 'always' || a === 'deny') && s) void answer(s.id, el.dataset.req!, a);
-  else if (a === 'answer' && s) void answer(s.id, el.dataset.req!, 'allow', [[el.dataset.v!]]);
+  else if ((a === 'allow' || a === 'always' || a === 'deny') && s) void answer(s, el.dataset.req!, a, a);
+  else if (a === 'answer' && s) void answer(s, el.dataset.req!, 'allow', `opt:${el.dataset.v}`, [[el.dataset.v!]]);
   else if (a === 'pickopt' && s) {
+    tick();
     const req = el.dataset.req!, qi = Number(el.dataset.q), v = el.dataset.v!, r = pendingReq(s.id);
     const picked = app.asked.get(req) ?? [], multi = r?.tool === 'Ask' && r.qs[qi]?.multi;
     const now = picked[qi] ?? [];
     picked[qi] = multi ? (now.includes(v) ? now.filter(x => x !== v) : [...now, v]) : [v];
     app.asked.set(req, picked); draw('main');
   }
-  else if (a === 'answerall' && s) { const req = el.dataset.req!; void answer(s.id, req, 'allow', app.asked.get(req)); app.asked.delete(req); }
+  else if (a === 'answerall' && s) { const req = el.dataset.req!; void answer(s, req, 'allow', 'all', app.asked.get(req)); app.asked.delete(req); }
+  else if (a === 'copy' && s) {
+    const code = el.dataset.what === 'code', item = el.closest('.item')!, it = app.items.get(s.id)?.[[...item.parentElement!.children].indexOf(item)];
+    const target = code ? el.nextElementSibling! : item.querySelector('.md')!;
+    copy(el, code || it?.k !== 'it' ? target.textContent ?? '' : it.text, target);
+  }
+  else if (a === 'cxrow') {
+    const n = el.dataset.n!, o = !app.cxOpen.has(n);
+    if (o) app.cxOpen.add(n); else app.cxOpen.delete(n);
+    el.classList.toggle('open', o); el.setAttribute('aria-expanded', String(o)); el.nextElementSibling?.classList.toggle('open', o);
+  }
   else if (a === 'interrupt' && s) interrupt(s);
   else if (a === 'send') void send();
   else if (a === 'menu') openPop(el.dataset.v!, el);
   else if (a === 'set') {
     const k = el.dataset.k as 'model' | 'effort' | 'mode', v = el.dataset.v!;
-    closePop();
+    closePop(); tick();
     if (app.view === 'new') { app.newSet[k] = v; store.set(`agents.${app.newAgent}.${k}`, v); draw('comp'); }
     else if (s && s[k] !== v) { await tryCall(`/sessions/${s.id}/set`, { key: k, value: v }); }
   }
   else if (a === 'insert') { ta.value += (ta.value && !/\s$/.test(ta.value) && el.dataset.v === '@' ? ' ' : '') + el.dataset.v; ta.focus(); typed(); }
-  else if (a === 'pickcmd' || a === 'pickfile') pickIt(el.dataset.v!, a === 'pickcmd');
+  else if (a === 'pickcmd' || a === 'pickfile') { tick(); pickIt(el.dataset.v!, a === 'pickcmd'); }
   else if (a === 'attach') $<HTMLInputElement>('#file').click();
   else if (a === 'unfile') { app.files.splice(Number(el.dataset.k), 1); draw('comp'); }
-  else if (a === 'agent') { app.newAgent = el.dataset.v as Agent; store.set('agents.agent', app.newAgent); newDefaults(); draw('main', 'comp'); }
+  else if (a === 'agent') { if (app.newAgent !== el.dataset.v) tick(); app.newAgent = el.dataset.v as Agent; store.set('agents.agent', app.newAgent); newDefaults(); draw('main', 'comp'); }
   else if (a === 'folder') { const p = await window.agents?.folder(); if (p) { app.newProject = p; draw('main'); } }
   else if (a === 'side') { app.sideOpen = !app.sideOpen; win.classList.toggle('side-open', app.sideOpen); }
   else if (a === 'sound') setSound(!snd.on);
@@ -790,7 +931,7 @@ function setSound(on: boolean) {
   snd.on = on; store.set('agents.sound', on ? 'on' : 'off');
   if (on) cue('speakerOn', 1, true);
   sndBtn.innerHTML = on ? I.sound : I.mute;
-  sndBtn.setAttribute('aria-pressed', String(on)); sndBtn.title = on ? '声音开着' : '声音关了';
+  sndBtn.setAttribute('aria-pressed', String(on)); sndBtn.dataset.tip = on ? '声音开着 · 点一下关' : '声音关了 · 点一下开';
 }
 function pickIt(v: string, isCmd: boolean) {
   if (isCmd) ta.value = `${v} `;
@@ -843,19 +984,34 @@ win.addEventListener('keydown', e => {
   if (t === ta) {
     const menuOpen = !!app.menu, n = cMenu.children.length;
     if (menuOpen && n && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) { e.preventDefault(); app.pick = (app.pick + (e.key === 'ArrowDown' ? 1 : -1) + n) % n; draw('comp'); return; }
-    if (menuOpen && n && (e.key === 'Enter' || e.key === 'Tab') && !e.isComposing) { e.preventDefault(); const b = cMenu.children[app.pick] as HTMLElement; pickIt(b.dataset.v!, b.dataset.act === 'pickcmd'); return; }
+    if (menuOpen && n && (e.key === 'Enter' || e.key === 'Tab') && !e.isComposing) { e.preventDefault(); const b = cMenu.children[app.pick] as HTMLElement; tick(); pickIt(b.dataset.v!, b.dataset.act === 'pickcmd'); return; }
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); void send(); return; }
   }
   if ((e.key === 'Enter' || e.key === ' ') && t.matches('[role="button"]')) { e.preventDefault(); void act(t.dataset.act!, t); }
 });
 addEventListener('keydown', e => {
-  // Esc anywhere but the rename field: close a menu first, otherwise interrupt the turn on screen.
-  if (e.key === 'Escape' && (e.target as HTMLElement).id !== 'rename') {
-    if (popFor) { closePop(); return; }
-    if (app.menu) { app.menu = ''; app.picks = []; draw('comp'); return; }
-    const s = cur();
-    if (app.view === 'chat' && s && (s.st === 'work' || s.st === 'wait')) { e.preventDefault(); interrupt(s); }
-    return;
+  const t = e.target as HTMLElement, s = app.view === 'chat' ? cur() : undefined;
+  if (t.id !== 'rename') {
+    // A card waiting on you takes the keys unless you are typing: Enter allows, Esc says no, digits pick an answer. Enter
+    // on a focused button is that button's (the open session's own row aside), and a held key does nothing more.
+    const r = s && !s.term && !popFor && !app.menu ? pendingReq(s.id) : undefined;
+    const typing = (t === ta && !!ta.value.trim()) || t.tagName === 'INPUT' || t.tagName === 'SELECT';
+    if (s && r && !typing && !e.metaKey && !e.ctrlKey && !e.altKey && !e.isComposing) {
+      const opt = r.tool === 'Ask' && r.qs.length === 1 && !r.qs[0].multi && /^[1-9]$/.test(e.key) ? r.qs[0].opts[Number(e.key) - 1] : undefined;
+      const enter = e.key === 'Enter' && !e.shiftKey && r.tool !== 'Ask' && !t.closest('button,[role="button"]:not(.row.is-on)');
+      if (opt || enter || e.key === 'Escape') {
+        e.preventDefault();
+        if (!e.repeat) void answer(s, r.id, opt || enter ? 'allow' : 'deny', opt ? `opt:${opt[0]}` : enter ? 'allow' : 'deny', opt ? [[opt[0]]] : undefined);
+        return;
+      }
+    }
+    // Esc: close a menu first, otherwise interrupt the turn on screen; a message you are writing is never lost to it.
+    if (e.key === 'Escape') {
+      if (popFor) { closePop(); return; }
+      if (app.menu) { app.menu = ''; app.picks = []; draw('comp'); return; }
+      if (s && (s.st === 'work' || s.st === 'pack')) { e.preventDefault(); if (t === ta && ta.value.trim()) escHint(s); else interrupt(s); }
+      return;
+    }
   }
   const mod = e.metaKey || e.ctrlKey;
   if (mod && e.key.toLowerCase() === 'k') { e.preventDefault(); find.focus(); find.select(); }

@@ -35,6 +35,10 @@ export type Catalog = Record<Agent, Choice>;
 // A file sent with a message: its name and a data: URL.
 export type File = { name: string; url: string };
 export type Answer = { req: string; decision: 'allow' | 'always' | 'deny'; answers?: string[][]; text?: string };
+// What fills a session's context window, for the popover on its ring: rows in the order the bar draws them, each with
+// what it holds (a string is a heading); `say` is one line on what it means, its first part in bold.
+export type CtxRow = { n: string; t: number; kind?: 'buf' | 'free'; sub?: (string | [string, number])[] };
+export type Ctx = { used: number; max: number; model: string; rows: CtxRow[]; say: [string, string]; foot: string[] };
 export type Event =
   | { t: 'hello'; sessions: Sess[]; catalog: Catalog }
   | { t: 'sess'; s: Sess }
