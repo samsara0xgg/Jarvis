@@ -7,7 +7,7 @@ import { palette, play, scoreOf } from './soundKit';
 import type { ExprId } from './starCore';
 import './notices.css';
 
-// Agent notices, after the notch lab (ADR 0057, 0067). A session that finishes or stops while Allen is not looking at
+// Agent notices, after the notch lab (ADR 0057, 0069). A session that finishes or stops while Allen is not looking at
 // it joins his turn and pops up its name from the island for 5 s; one that needs him gets a card hanging from the
 // island, answered right there; it folds away after 30 s untouched and comes back once, softer, 10 minutes later.
 // Park (先放着) takes a session off his turn: no pops, no cards, no reminder, until he takes it back or it does
@@ -45,7 +45,7 @@ export function noticeCue(name: 'ask' | 'done' | 'error' | 'send' | 'close', vol
   } catch { /* sound is optional */ }
 }
 
-// Allen's turn (ADR 0057, 0067): finished or stopped sessions he has not looked at, the ones he parked and the ones he
+// Allen's turn (ADR 0057, 0069): finished or stopped sessions he has not looked at, the ones he parked and the ones he
 // archived. With a daemon they live there, for every surface; her profile keeps each session's last state, so a
 // finish while she was closed still counts, and a copy of the lists for a companion without a daemon.
 const TURN = 'companion-turn-v1', KEEP_MS = 2 * 86_400_000;

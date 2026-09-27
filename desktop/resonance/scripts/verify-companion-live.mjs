@@ -49,7 +49,7 @@ try {
     { seq: 12, id: 'b', ts: iso(now - 9 * 60_000 + 4000), source: 'jarvis', text: 'Two things: the **voice test** at four, and `the demo cut`.' },
   ];
   let controls = { mic_muted: false, speech_muted: false, conversation: false };
-  // ADR 0067, 0068: the daemon's marks, each session's conversation, and what a typed reply does to the board.
+  // ADR 0069, 0070: the daemon's marks, each session's conversation, and what a typed reply does to the board.
   const agentMarks = {}, conversations = {};
   let replied = () => {};
   let snapshot = { request: null, plugins: [
@@ -545,7 +545,7 @@ try {
     check('L11 when Jarvis asks for a plugin the Dashboard opens on it with the reason', await page.locator('.companion-dashboard.is-open').count() === 1 && (await text('.ad .pl-det .btn-glow')) === 'Sign in and continue');
     await page.waitForTimeout(900); await panelShot('L11-asked');
 
-    // L13: agent notices beside the notch (ADR 0049, 0067, 0068). The fake board changes under her: sessions finish,
+    // L13: agent notices beside the notch (ADR 0049, 0069, 0070). The fake board changes under her: sessions finish,
     // ask, stop. A finish pops its name for 5 s and stays on Allen's turn until he looks at it in Ghostty (a fake
     // front-terminal feed here) or goes to it; a needs-you card hangs from the notch and every answer goes back as a
     // POST for the held prompt. She watches all of it from home.

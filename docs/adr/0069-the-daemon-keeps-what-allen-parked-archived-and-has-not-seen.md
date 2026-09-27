@@ -1,4 +1,4 @@
-# ADR 0067 — The Daemon Keeps What Allen Parked, Archived and Has Not Seen
+# ADR 0069 — The Daemon Keeps What Allen Parked, Archived and Has Not Seen
 
 **Status:** Accepted
 **Date:** 2026-09-26

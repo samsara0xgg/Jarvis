@@ -190,7 +190,7 @@ def _answer(*texts: str, **extra: object) -> dict[str, object]:
 def test_island_page_reads_the_conversation_and_types_a_reply(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """ADR 0068: each turn's final answer only; a reply lands through a hidden attach."""
+    """ADR 0070: each turn's final answer only; a reply lands through a hidden attach."""
     session = {"kind": "background", "cwd": "/x", "startedAt": NOW_MS}
     (tmp_path / "agents.json").write_text(
         json.dumps(
@@ -263,7 +263,7 @@ def test_island_page_reads_the_conversation_and_types_a_reply(
 
 
 def test_agent_marks_are_one_file_every_surface_shares(tmp_path: Path) -> None:
-    """ADR 0067: unread, parked and archived per session, kept across a restart."""
+    """ADR 0069: unread, parked and archived per session, kept across a restart."""
     path = tmp_path / "agent-marks.json"
 
     def app() -> TestClient:

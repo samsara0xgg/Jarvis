@@ -7,7 +7,7 @@ import { Markdown } from './Markdown';
 import { ended } from './Notices';
 import { spring, step } from './starCore';
 
-// Beside the notch, after the notch lab (ADR 0067, 0068). Right of the camera, one mark per group with its count:
+// Beside the notch, after the notch lab (ADR 0069, 0070). Right of the camera, one mark per group with its count:
 // your turn (the beacon), working, finished, parked (the moon). Only working moves; the beacon sends out its rings
 // for a few seconds after news. Resting anywhere on the row opens one panel that is the whole island growing down,
 // every session one line; its pops and needs-you cards grow out of the island the same way. ⌥Tab opens the same

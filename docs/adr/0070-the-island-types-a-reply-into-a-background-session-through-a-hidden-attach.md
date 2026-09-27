@@ -1,4 +1,4 @@
-# ADR 0068 — The Island Types a Reply into a Background Session Through a Hidden Attach
+# ADR 0070 — The Island Types a Reply into a Background Session Through a Hidden Attach
 
 **Status:** Accepted
 **Date:** 2026-09-26

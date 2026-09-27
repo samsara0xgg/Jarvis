@@ -13,7 +13,7 @@ export type Agent = {
   id: string; agent: 'claude' | 'codex'; state: AgentState; title: string; project: string; branch?: string; where: string; age: string;
   you: string; last: string; sub?: boolean; request?: AgentRequest; error?: string; at?: number; // last change, for Settings › Agents' stale limit
   // A Claude session's kind, and for a background one the id `claude attach` takes (ADR 0057). `replyable`: idle
-  // at its input box, so a line typed from the island lands there (ADR 0068).
+  // at its input box, so a line typed from the island lands there (ADR 0070).
   kind?: 'interactive' | 'background'; job?: string; replyable?: boolean;
 };
 // A row as the companion sees it: with the mark it wears and its one line for the hover list.
@@ -91,7 +91,7 @@ export async function answerRequest(port: string, id: string, answer: Answer) {
   } catch { return false; }
 }
 
-// ADR 0067: Allen's marks on his sessions, kept by the daemon for every surface: not seen yet, parked (先放着),
+// ADR 0069: Allen's marks on his sessions, kept by the daemon for every surface: not seen yet, parked (先放着),
 // archived (done with, kept to find again).
 export type Mark = { unread?: boolean; parked_ms?: number | null; archived_ms?: number | null };
 export async function loadMarks(port: string): Promise<Record<string, Mark> | null> {
@@ -105,7 +105,7 @@ export function saveMark(port: string, id: string, mark: { unread: boolean; park
   void fetch(`http://127.0.0.1:${port}/inherent/agent-marks/${encodeURIComponent(id)}`, {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(mark), signal: AbortSignal.timeout(5000) }).catch(() => {});
 }
-// A session's conversation for the island's page: Allen's words and each turn's final answer (ADR 0068).
+// A session's conversation for the island's page: Allen's words and each turn's final answer (ADR 0070).
 export type Said = { who: 'you' | 'it'; text: string };
 export async function readConversation(port: string, id: string): Promise<Said[] | null> {
   try {

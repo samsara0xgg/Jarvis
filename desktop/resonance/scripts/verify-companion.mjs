@@ -461,7 +461,7 @@ try {
   await waitPlace('home');
   check('08 the tray plays an expression out of the island and she goes home', true);
 
-  // 10: beside the notch (ADR 0067). Right of the camera one black shape carries one mark per group in the look
+  // 10: beside the notch (ADR 0069). Right of the camera one black shape carries one mark per group in the look
   // picked in the tray (星芒 or 像素), each with its count: the four working, the three finished ones (met already
   // done, so seen). Resting anywhere on the row opens one panel that is the whole island growing down, every session
   // one line; names are bold only while they need a look. A finished one is archived from its row, or all of them by
