@@ -122,19 +122,16 @@ function stepsSummary(steps: Step[]) {
 
 // ---------- sound: her kit, exactly as the notch plays it (melody "fifths", palette "dropCrisp") ----------
 const snd = { on: store.get('agents.sound') !== 'off', ctx: null as AudioContext | null, out: null as GainNode | null, last: new Map<string, number>() };
-const wake = () => {
-  if (snd.ctx) return;
-  snd.ctx = new AudioContext(); snd.out = snd.ctx.createGain(); snd.out.gain.value = .8; snd.out.connect(snd.ctx.destination);
-};
-addEventListener('pointerdown', wake, { capture: true });
-addEventListener('keydown', wake, { capture: true });
 // The same cue twice in quick succession is one cue: a burst of finishes is one chime, not a chord.
 const NOTICE = new Set(['done', 'ask', 'error']);
 function cue(name: string, gain = 1, force = false) {
-  if ((!snd.on && !force) || !snd.ctx) return;
+  if (!snd.on && !force) return;
   const now = performance.now();
   if (now - (snd.last.get(name) ?? -1e9) < (NOTICE.has(name) ? 450 : 120)) return;
   snd.last.set(name, now);
+  // Made at the first cue, not the first touch: the window may play before it is ever clicked (its autoplay is allowed),
+  // so a session finishing while the window just sits open still chimes.
+  if (!snd.ctx) { snd.ctx = new AudioContext(); snd.out = snd.ctx.createGain(); snd.out.gain.value = .8; snd.out.connect(snd.ctx.destination); }
   const c = scoreOf('fifths')[name];
   if (c) { void snd.ctx.resume(); play(snd.ctx, snd.out!, c, palette('dropCrisp'), gain); }
 }
