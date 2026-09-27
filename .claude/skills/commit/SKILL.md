@@ -48,7 +48,8 @@ Rules:
   have been reused but were not, one per file. `Legacy consulted:` lists files
   read and partially borrowed. A file appears in at most one trailer. Omit
   both trailers when no legacy file was considered.
-- The last line is the `Co-Authored-By` trailer Claude Code adds.
+- Do not add an AI assistant, tool, or model as an author, co-author, or
+  contributor unless Allen explicitly requests it for that commit.
 - Never invent counts, timings, or legacy evidence. Every number in the body
   comes from a command run in the current work. If a gate was not run, say so.
 - Unusual cases: `docs/git-guide.md` §2 is the source of truth.

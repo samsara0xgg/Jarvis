@@ -81,7 +81,8 @@ genuinely cross-cutting.
 - Title ≤ 72 characters.
 - Title writes **what** at a high level; body writes **why** and
   the per-file breakdown.
-- The last line is the `Co-Authored-By` trailer Claude Code adds.
+- Do not add an AI assistant, tool, or model as an author, co-author, or
+  contributor unless Allen explicitly requests it for that commit.
 
 ### Body structure
 

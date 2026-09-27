@@ -61,7 +61,8 @@ details are needed rather than preloading the entire specification.
 - Push only as plain `git push origin main`: its permission prompt is
   Allen's approval, and a declined push stays local. Never force-push `main`.
 - Never bypass hooks.
-- Keep the `Co-Authored-By` trailer Claude Code adds.
+- Do not add an AI assistant, tool, or model as an author, co-author, or
+  contributor unless Allen explicitly requests it for that commit.
 - Stage explicit paths only; never use `git add .`, `git add -A`, or
   `git commit -am`.
 - One logical change per commit.
