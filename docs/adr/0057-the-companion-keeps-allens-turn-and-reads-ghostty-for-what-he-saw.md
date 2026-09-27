@@ -1,6 +1,6 @@
 # ADR 0057 — The Companion Keeps Allen's Turn and Reads Ghostty for What He Saw
 
-**Status:** Accepted
+**Status:** Superseded-by-0067
 **Date:** 2026-09-26
 **Supersedes:** none
 

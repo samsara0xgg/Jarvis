@@ -90,6 +90,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.websockets import WebSocketClose
 
 from jarvis.shared.lang import language, t
+from jarvis.state.agent_marks import AgentMarks
 from jarvis.surface.claude_hooks import ClaudeHooks
 from jarvis.surface.claude_sessions import ClaudeSessions
 from jarvis.surface.codex_sessions import (
@@ -118,6 +119,7 @@ from jarvis.surface.voice_pipeline import VoiceInputBusyError, VoicePipelineEmpt
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable
+    from pathlib import Path
 
     from starlette.types import ASGIApp, Receive, Scope, Send
 
@@ -144,6 +146,9 @@ _PCM16_SAMPLE_WIDTH_BYTES = 2
 # A page that rebinds its own domain to 127.0.0.1 still sends that domain as
 # Host, so only requests addressed to this machine reach a route.
 _LOCAL_HOSTS: Final[tuple[str, ...]] = ("127.0.0.1", "localhost")
+# ADR 0068 / 0067: the longest line the island types into a session, the longest mark key.
+_REPLY_CHARS: Final = 4000
+_SESSION_ID_CHARS: Final = 128
 # Open without the local key: the liveness probe, and the v2 routes, which
 # check their own per-boot token.
 _KEYLESS_PATHS: Final[frozenset[str]] = frozenset(
@@ -505,6 +510,9 @@ class InherentDeps:
     # files (``observer.claude_sessions.enabled``); off, it shows only what
     # the user's installed hooks push.
     claude_sessions_read: bool = False
+    # ADR 0067: the file Allen's marks on agent sessions live in (unread,
+    # parked, archived). ``None`` leaves the marks routes unregistered.
+    agent_marks_path: Path | None = None
     # ADR 0038: desktop management uses a private local credential, unlike
     # ordinary text submission. Secrets never travel on the public websocket.
     plugin_read: Callable[[], dict[str, Any]] | None = None
@@ -1505,6 +1513,45 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 â
         if not deps.claude_sessions_read:
             return claude_hooks.merge({"sessions": []})
         return claude_hooks.merge(await asyncio.to_thread(claude_board.read))
+
+    @app.get("/inherent/claude-sessions/{session_id}/conversation")
+    async def claude_conversation(session_id: str) -> dict[str, Any]:
+        """ADR 0068: what Allen said and each turn's final answer, for the island's page."""
+        if not deps.claude_sessions_read:
+            raise HTTPException(status_code=404, detail="reading Claude Code's files is off")
+        try:
+            return await asyncio.to_thread(claude_board.conversation, session_id)
+        except LookupError:
+            raise HTTPException(status_code=404, detail="no such session") from None
+
+    @app.post("/inherent/claude-sessions/{session_id}/reply", status_code=200)
+    async def claude_reply(session_id: str, body: dict[str, Any]) -> dict[str, bool]:
+        """ADR 0068: type Allen's line into an idle background session; 409 if it cannot."""
+        text = body.get("text")
+        if not deps.claude_sessions_read or not isinstance(text, str) or not text.strip():
+            raise HTTPException(status_code=400, detail="a reply needs text")
+        try:
+            await asyncio.to_thread(claude_board.reply, session_id, text[:_REPLY_CHARS])
+        except LookupError:
+            raise HTTPException(status_code=409, detail="it cannot take a reply now") from None
+        except (OSError, RuntimeError) as exc:
+            raise HTTPException(status_code=502, detail=str(exc)[:200]) from None
+        return {"ok": True}
+
+    if deps.agent_marks_path is not None:
+        marks = AgentMarks(deps.agent_marks_path)
+
+        @app.get("/inherent/agent-marks")
+        async def agent_marks() -> dict[str, Any]:
+            """ADR 0067: unread, parked and archived, per session, for every surface."""
+            return marks.read()
+
+        @app.post("/inherent/agent-marks/{session_id}", status_code=200)
+        async def agent_mark(session_id: str, body: dict[str, Any]) -> dict[str, Any]:
+            """ADR 0067: ``seen`` / ``unread`` / ``park`` / ``archive`` on one session."""
+            if not 0 < len(session_id) <= _SESSION_ID_CHARS:
+                raise HTTPException(status_code=400, detail="bad session id")
+            return await asyncio.to_thread(marks.update, session_id, body)
 
     @app.post("/inherent/claude-hook", status_code=200)
     async def claude_hook(payload: dict[str, Any], request: Request) -> dict[str, Any]:
