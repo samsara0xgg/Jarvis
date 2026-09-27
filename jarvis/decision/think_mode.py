@@ -9,6 +9,7 @@ restart keeps it and no new event exists for it.
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final
 
@@ -52,6 +53,14 @@ class ThinkMode:
                     return self.preset
             later = event.ts_epoch_ms
         return None
+
+    def status(self, conn: sqlite3.Connection) -> dict[str, Any]:
+        """ADR 0064: ``GET /inherent/think``, whether it is on now and the words that switch it."""
+        return {
+            "on": self.preset_for(conn, int(time.time() * 1000)) is not None,
+            "on_words": self.on.pattern,
+            "off_words": self.off.pattern,
+        }
 
 
 def load_think_mode(llm: Mapping[str, Any]) -> ThinkMode | None:

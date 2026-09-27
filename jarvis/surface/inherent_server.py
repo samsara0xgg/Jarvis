@@ -483,6 +483,10 @@ class InherentDeps:
     # and returns its id. ``None`` leaves both routes unregistered.
     card_read: Callable[[], dict[str, Any]] | None = None
     card_decide: Callable[[str, str, dict[str, str]], str] | None = None
+    # ADR 0064: whether Allen's words have thinking on now (ADR 0061), and the
+    # words that switch it. A small SQLite read on the loop thread; ``None``
+    # leaves the route unregistered.
+    think_read: Callable[[], dict[str, Any]] | None = None
     # ADR 0051: the companion home's reads and its one write, all off the loop
     # thread. A LookupError is "not connected" (404, the home's fallback), any
     # other failure 502. ``None`` leaves the routes unregistered.
@@ -1461,6 +1465,13 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 â
                 card_decide, req.confirmation_id, req.decision, dict(req.edits),
             )
             return {"status": "accepted", "turn_id": turn_id}
+    if deps.think_read is not None:
+        think_read = deps.think_read
+
+        @app.get("/inherent/think")
+        async def think() -> dict[str, Any]:
+            """ADR 0064: ``{on, on_words, off_words}`` for the companion's deep look."""
+            return think_read()
 
     _register_home_routes(app, deps)
     _register_setup_routes(app, deps)

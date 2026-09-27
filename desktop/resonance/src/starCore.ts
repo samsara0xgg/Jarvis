@@ -44,6 +44,8 @@ const LIGHT = {
   memory: light('#fbf6ff', '#e0b4ff', ['#4a2a6a', '#8a4a8a', '#2a3a7a'], '#e6b8ff', .95),
   deny: light('#e8dcdc', '#c86a6a', ['#3a1418', '#5a1e24', '#221a3a'], '#b85a5a', .7),
   off: light('#6b7080', '#2a2f40', ['#0a0c16', '#0e0f1c', '#0a1220'], '#2a3048', .08),
+  // Think mode (ADR 0064): the ordinary thinking violet, deeper and quieter, for as long as the mode is on.
+  deep: light('#f1edff', '#9a86ff', ['#170d4a', '#351c7a', '#10184a'], '#9a86ff', .92),
 };
 type LightKey = keyof typeof LIGHT;
 const copyLight = (l: Light): Light => ({ eye: [...l.eye], glow: [...l.glow], n: l.n.map(c => [...c] as RGB), rim: [...l.rim], b: l.b });
@@ -92,7 +94,7 @@ const SMILE = { sep: .31, y: .1, len: .46, w: .15, tilt: 90, bend: .17 };
 const TILT = { sep: .28, y: .06, len: .42, w: .22, tilt: 0, head: 12, lenR: .3 };
 const ODD = { sep: .29, y: .04, len: .04, w: .27, wR: .33, tilt: 0, head: -10 };
 const LINES = { sep: .42, y: .04, len: .42, w: .19, tilt: 90 };
-export type ExprId = '00' | '02' | '10' | '13' | '14' | '21' | '30' | '31' | '31b' | '31c' | '31d' | '32' | '33' | '34' | '35' | '35b' | '36' | '37' | '38' | '39' | '39b' | '39c' | '40' | '41' | 'ask' | 'fin' | 'home' | 'rest' | 'doze' | 'glance' | 'peek';
+export type ExprId = '00' | '02' | '10' | '13' | '14' | '21' | '30' | '31' | '31b' | '31c' | '31d' | '32' | '33' | '34' | '35' | '35b' | '36' | '37' | '38' | '39' | '39b' | '39c' | '40' | '41' | 'ask' | 'fin' | 'deep' | 'home' | 'rest' | 'doze' | 'glance' | 'peek';
 export const EXPRESSIONS: Record<ExprId, Expr> = {
   // Where she is decides her face first: flat "— —" in the island, round dots when she glances out, low eyes when she peeks.
   home: { name: '', eyes: LINES, gaze: 'still' },
@@ -144,6 +146,8 @@ export const EXPRESSIONS: Record<ExprId, Expr> = {
   // Agent notices (the notice lab): warm and looking down at the card when a session needs you; the done face
   // in green when one has finished. Her light is the card's light, so the panel takes the event's colour.
   ask: { name: '等你', eyes: TILT, light: 'warm', gaze: 'still', gx: 0, gy: .32, sway: [3, 3.2], blink: [2400, 6000], spin: .35, breathe: [.012, 2.8], enter: ['hop'] },
+  // Think mode: looking far up and holding it, blinking slowly; no stars circle her.
+  deep: { name: '深想', eyes: { sep: .27, y: -.02, len: .3, w: .17, tilt: 0, cut: .16 }, light: 'deep', gaze: 'still', gx: .38, gy: -.52, blink: [4200, 8000], blinkSlow: true, spin: .35, breathe: [.014, 5] },
   fin: { name: '做完了', eyes: SMILE, light: 'speak', spin: .5, enter: ['hop', 'burst'], seq: { frames: [
     { at: 0, light: 'gold', bright: 1.4, spin: 3 }, { at: 1400, light: 'speak', bright: 1, spin: .5 },
   ], end: 1500 } },
@@ -432,7 +436,8 @@ function sparkle(c: CanvasRenderingContext2D, x: number, y: number, r: number, c
 }
 
 // ---------- one character: update once per frame, then paint in layers ----------
-export type CoreInput = { expr: ExprId; look: [number, number] | null; still: boolean; pressed: boolean; charge: number };
+// `deep`: think mode is on, so whatever face she wears takes its light.
+export type CoreInput = { expr: ExprId; look: [number, number] | null; still: boolean; pressed: boolean; charge: number; deep?: boolean };
 type Particle = { k: 'z' | 'spark' | 'star'; x: number; y: number; vx: number; vy: number; age: number; life: number; s: number; r: number; c?: RGB };
 type State = { L: Eye; R: Eye; head: number; gx: number; gy: number; yaw: number; t: number; env: number; sx: number; sy: number; yOff: number; jx: number;
   spin: number; bright: number; blush: number; orbitK: number; voice: number; eyes: EyePose[]; ripple: number; flash: number };
@@ -572,7 +577,7 @@ export class Core {
     step(s.spinV, calm * (ov?.spin ?? x.spin ?? .22) + 2.6 * charge, 1.2, 1, dt);
     this.spin += s.spinV.value * dt;
     // light
-    const L = LIGHT[ov?.light ?? x.light ?? 'base'], gap = mixLight(this.light, L, 1 - Math.exp(-(ov?.lightK ?? x.lightK ?? 5) * dt));
+    const L = LIGHT[input.deep ? 'deep' : ov?.light ?? x.light ?? 'base'], gap = mixLight(this.light, L, 1 - Math.exp(-(ov?.lightK ?? x.lightK ?? 5) * dt));
     let bt = (ov?.bright ?? x.bright ?? 1) * L.b * (1 + .25 * env) * (1 + .3 * charge);
     if (x.flicker && calm) bt *= 1 - x.flicker * (.5 + .5 * Math.sin(t * 37) * Math.sin(t * 23.3));
     const dim = Math.abs(bt - this.bright);

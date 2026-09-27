@@ -2,7 +2,8 @@
 
 Six turns of one evening, driven through ``drive_turn`` with the model scripted: the on-word turns
 thinking on for its own sentence and the next, an off-word turns it off, and a pause of more
-than ten minutes ends it. The observable is ``response.started.reasoning_effort``.
+than ten minutes ends it. The observables are ``response.started.reasoning_effort`` and, after
+each turn, the ``on`` the companion reads from ``GET /inherent/think`` (ADR 0064).
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 
 import yaml
 
+import jarvis.decision.think_mode as think_mode_module
 import jarvis.runtime as runtime_module
 from jarvis.decision.llm import LLMClient
 from jarvis.decision.llm_session import LLMSessionFactory
@@ -94,6 +96,10 @@ def test_on_word_thinks_until_off_word_or_a_pause(
     start = int(time.time() * 1000)
     clock = _Clock(start)
     monkeypatch.setattr(runtime_module, "time", clock)
+    monkeypatch.setattr(think_mode_module, "time", clock)
+    think = runtime.think_mode
+    assert think is not None
+    shown: list[bool] = []
 
     for minute, said, _ in _EVENING:
         clock.now_ms = start + minute * _MINUTE
@@ -116,6 +122,7 @@ def test_on_word_thinks_until_off_word_or_a_pause(
             available_surfaces=frozenset(),
             streaming_enabled=True,
         )
+        shown.append(think.status(conn)["on"])
 
     efforts = [
         json.loads(p)["reasoning_effort"]
@@ -124,4 +131,5 @@ def test_on_word_thinks_until_off_word_or_a_pause(
         )
     ]
     assert efforts == [effort for _, _, effort in _EVENING]
+    assert shown == [effort == "medium" for _, _, effort in _EVENING]
     conn.close()

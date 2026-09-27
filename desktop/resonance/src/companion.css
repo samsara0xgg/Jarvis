@@ -65,9 +65,19 @@
 .bubble-text { display:grid; }
 .bubble-text > span { grid-area:1 / 1; display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:3; overflow:hidden; }
 .bubble-ghost { visibility:hidden; }
+/* Think mode (ADR 0064): the strip goes deep, the seconds of a deep answer count up in it, and her words say how long she thought. */
+.companion-strip::before { content:''; position:absolute; inset:0; border-radius:inherit; pointer-events:none; opacity:0; transition:opacity .9s ease;
+  background:radial-gradient(120% 160% at 0 50%,rgb(var(--deep) / .26),transparent 62%),linear-gradient(90deg,#05061a,#090a24); box-shadow:inset 0 0 0 .5px rgb(var(--deep) / .55); }
+.companion-strip.is-deep::before { opacity:1; }
+.companion-strip > * { position:relative; }
+.companion-strip.is-deep .strip-mic { color:var(--deep-hi); }
+.companion-strip.is-deep .strip-mic::before { background:var(--deep); }
+.strip-think { flex:none; font-size:11.5px; color:var(--deep-hi); font-variant-numeric:tabular-nums; }
+.companion-bubble.is-deep { flex-direction:column; align-items:stretch; gap:2px; }
+.bubble-think { font-size:10.5px; line-height:14px; color:var(--deep-hi); }
 
-/* Her light as "r g b", written by the ball whenever it changes. */
-:root { --glow:157 180 255; }
+/* Her light as "r g b", written by the ball whenever it changes. Think mode's colour is fixed: her deep light's glow. */
+:root { --glow:157 180 255; --deep:154 134 255; --deep-hi:color-mix(in srgb,rgb(var(--deep)) 55%,#fff); }
 /* The Dashboard is cut from her glass: deep blue, a little of her nebula in the corners, her light pooled beneath her. */
 .companion-dashboard {
   --surface-ink:#eef0fb; --surface-muted:rgb(196 204 238 / .62); --surface-line:rgb(157 180 255 / .12); --surface-hover:rgb(var(--glow) / .07);
@@ -90,6 +100,12 @@
     radial-gradient(1.4px 1.4px at 96% 71%,#e9e1ff,transparent),radial-gradient(1.5px 1.5px at 4% 86%,#dfe6ff,transparent),
     radial-gradient(1.2px 1.2px at 28% 98.6%,#fff,transparent),radial-gradient(1.2px 1.2px at 74% 98.8%,#fff,transparent);
 }
+/* Think mode on the Conversation page: the whole panel goes deeper, over the stars, in and out with the mode. */
+.companion-dashboard::after {
+  content:''; position:absolute; inset:0; z-index:-1; border-radius:inherit; pointer-events:none; opacity:0; transition:opacity .9s ease;
+  background:radial-gradient(220px 120px at 50% 0,rgb(var(--deep) / .3),transparent 72%),radial-gradient(120% 55% at 0 100%,rgb(var(--deep) / .13),transparent 62%),linear-gradient(180deg,rgb(6 8 24),rgb(2 3 12));
+}
+.companion-dashboard:has(.ad[data-deep])::after { opacity:1; }
 .companion-dashboard .dashboard-preview { --dashboard-accent:rgb(var(--glow)); }
 .companion-dashboard .dashboard-overview[data-dashboard-style="unified"] .dashboard-composer-surface {
   background:color-mix(in srgb,rgb(var(--glow) / .55) calc((1 - var(--compose-progress)) * 100%),rgb(255 255 255 / .05));

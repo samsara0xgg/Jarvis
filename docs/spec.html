@@ -1014,7 +1014,9 @@ returns no text, the turn ends with a fixed limitation in the language setting, 
 <p>Thinking mode (ADR 0061). A turn uses <code>llm.default_preset</code> unless Allen's recent words, read
 back from the event log, hold an <code>llm.think.on_words</code> match newer than any <code>llm.think.off_words</code>
 match with no gap over 10 minutes between them and now; then it uses <code>llm.think.preset</code>.
-<code>response.started</code> records the preset's <code>reasoning_effort</code>.</p>
+<code>response.started</code> records the preset's <code>reasoning_effort</code>.
+<code>GET /inherent/think</code> answers <code>{on, on_words, off_words}</code> from the same read, for the
+companion's deep look (ADR 0064).</p>
 
 <h4>3.4.10 Entity hallucination repair protocol</h4>
 
