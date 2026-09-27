@@ -429,6 +429,11 @@ class ToolDefinitionLike(Protocol):
         """ADR 0034: off the model's tool list until a search loads it."""
         ...
 
+    @property
+    def requires_confirmation(self) -> bool:
+        """ADR 0062: a call puts up a card and waits for Allen's button."""
+        ...
+
 
 class ResolvedEntityLike(Protocol):
     """One resolved non-task entity handed back by the injected resolver.
@@ -3052,11 +3057,22 @@ def _allowed_tool_surface(
     return surface
 
 
+_CARD_NOTE: Final = (
+    " Calling this does not run it: the user gets a card with these arguments"
+    " and runs or discards it."
+)
+
+
 def _tool_to_dict(tool_def: ToolDefinitionLike) -> dict[str, Any]:
-    """Project a ToolDefinitionLike into a dict for ``intent.build_messages``."""
+    """Project a ToolDefinitionLike into a dict for ``intent.build_messages``.
+
+    A tool that asks first says so (ADR 0062), or the model, believing the
+    call acts at once, asks in its own words before the card asks again.
+    """
+    card = _CARD_NOTE if tool_def.requires_confirmation else ""
     return {
         "name": tool_def.name,
-        "description": tool_def.description,
+        "description": tool_def.description + card,
         "input_schema": dict(tool_def.input_schema),
     }
 
