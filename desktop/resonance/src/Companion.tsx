@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { IconContext, Keyboard, Paperclip, ArrowUp, Microphone, Stop } from '@phosphor-icons/react';
-import { CompanionBall, HOLD_MS, R, type BallHandle, type Lobe, type Place, type Point } from './CompanionBall';
+import { CompanionBall, HOLD_MS, R, type BallHandle, type HomeLook, type Lobe, type Place, type Point } from './CompanionBall';
 import { EXPRESSIONS, PREVIEW, SKINS, SKIN_KEYS, TAKES, isSkin, pick, type ExprId, type Skin } from './starCore';
 import { DashboardPreview } from './DashboardPreview';
 import { AroundDashboard, type Think } from './AroundDashboard';
@@ -37,12 +37,12 @@ const HEARD = '把今天的任务整理一下';
 // Her skin, whether she changes it herself, how the Dashboard is laid out and the look of the agent marks
 // live in this companion's own profile.
 const WARDROBE = 'companion-wardrobe-v1';
-function loadWardrobe(): { skin: Skin; auto: boolean; layout: DashboardLayout; homeGlass: boolean; marks: MarkLook } {
+function loadWardrobe(): { skin: Skin; auto: boolean; layout: DashboardLayout; home: HomeLook; marks: MarkLook } {
   try {
     const value = JSON.parse(localStorage.getItem(WARDROBE) ?? '{}');
-    return { skin: isSkin(value.skin) ? value.skin : 'glass', auto: value.auto !== false, layout: value.layout === 'grid' ? 'grid' : 'around', homeGlass: value.homeGlass !== false,
+    return { skin: isSkin(value.skin) ? value.skin : 'glass', auto: value.auto !== false, layout: value.layout === 'grid' ? 'grid' : 'around', home: value.home === 'eyes' ? 'eyes' : 'dark',
       marks: isMarkLook(value.marks) ? value.marks : 'spark' };
-  } catch { return { skin: 'glass', auto: true, layout: 'around', homeGlass: true, marks: 'spark' }; }
+  } catch { return { skin: 'glass', auto: true, layout: 'around', home: 'dark', marks: 'spark' }; }
 }
 // Ghostty's title for a session is its name, sometimes behind a status mark; the board folds long names with "…".
 const bare = (text: string) => text.replace(/\s+/g, ' ').replace(/^[^\p{L}\p{N}]+/u, '').trim();
@@ -364,7 +364,7 @@ export function Companion() {
   };
   useEffect(() => {
     try { localStorage.setItem(WARDROBE, JSON.stringify(wardrobe)); } catch { /* the pick just is not remembered */ }
-    window.jarvis?.companionMenu({ skins: SKIN_KEYS.map(key => ({ key, name: SKINS[key].name, on: key === wardrobe.skin })), auto: wardrobe.auto, layout: wardrobe.layout, homeGlass: wardrobe.homeGlass, marks: wardrobe.marks,
+    window.jarvis?.companionMenu({ skins: SKIN_KEYS.map(key => ({ key, name: SKINS[key].name, on: key === wardrobe.skin })), auto: wardrobe.auto, layout: wardrobe.layout, home: wardrobe.home, marks: wardrobe.marks,
       follow: companion.screen === 'follow', lang: companion.lang, dictation: companion.dictation, exprs: PREVIEW.map(id => ({ id, name: EXPRESSIONS[id].name })) });
   }, [wardrobe, companion.screen, companion.lang, companion.dictation]);
   useEffect(() => {
@@ -383,7 +383,7 @@ export function Companion() {
     else if (command === 'outing') selfChange();
     else if (name === 'layout' && (value === 'grid' || value === 'around')) setWardrobe(current => ({ ...current, layout: value }));
     else if (name === 'expr' && isPreview(value)) appear(() => setPreview(value), 4200);
-    else if (command === 'homeGlass') setWardrobe(current => ({ ...current, homeGlass: !current.homeGlass }));
+    else if (name === 'home' && (value === 'dark' || value === 'eyes')) setWardrobe(current => ({ ...current, home: value }));
     else if (name === 'marks' && isMarkLook(value)) setWardrobe(current => ({ ...current, marks: value }));
     else if (command === 'auto') {
       const auto = !live.current.wardrobe.auto;
@@ -542,7 +542,7 @@ export function Companion() {
           lift: placement.notchWidth ? 0 : lift, hidden: tuck.right && !!placement.notchWidth }}
         act={{ jump, answer: notices.focus, read: notices.read, clear: notices.clear }} note={note}/>
       <CompanionBall width={geo.width} height={placement.topInset + 560} lobe={geo.lobe} lift={lift} look={look} handle={ball} skin={worn.current}
-        target={{ place, expr, pressed, anchors: geo.anchors, homeGlass: wardrobe.homeGlass, lift: place === 'home' ? lift : 0, homeFace: !!notice || carded,
+        target={{ place, expr, pressed, anchors: geo.anchors, home: wardrobe.home, lift: place === 'home' ? lift : 0, homeFace: !!notice || carded,
           away: trip === 'out', happy: trip === 'happy', deep: deep && expr === '02' }}
         label={voice === 'off' ? t([`Poke to talk${port ? '' : ' (demo)'}`, `戳一下，开始语音${port ? '' : '（演示）'}`]) : voice === 'speaking' ? t(['Poke to interrupt', '戳一下，打断播报']) : t(['Poke to stop', '戳一下，结束语音'])}
         onPress={press} onRelease={release} onCancel={cancel} onMove={refreshHit}/>

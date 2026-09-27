@@ -3,10 +3,11 @@ import { CaretRight, Cpu, Globe, House, Key, LockSimple, Microphone, Planet, Rob
 import { tr, useCompanionSettings, type L, type Lang } from './companionSettings';
 import { postRoute, useRoute } from './homeData';
 import { SKIN_KEYS, SKINS, type Skin } from './starCore';
+import type { HomeLook } from './CompanionBall';
 
 // Settings as a page in her panel: quick switches on top, then one list per category. Her own settings save
 // in this profile and apply at once; Jarvis's own save through the daemon and are greyed out until it serves them.
-export type Look = { skin: Skin; auto: boolean; homeGlass: boolean; layout: 'around' | 'grid' };
+export type Look = { skin: Skin; auto: boolean; home: HomeLook; layout: 'around' | 'grid' };
 export type Cues = { on: boolean; volume: number };
 export type Controls = {
   micMuted: boolean; speechMuted: boolean; handsFree: boolean;
@@ -101,7 +102,7 @@ export function SettingsPage({ lang, port, open, cat, onCat, ctl, accounts, hidd
     { id: 'look', icon: <Planet/>, name: ['Her look', '她的样子'], sum: `${lang === 'zh' ? SKINS[ctl.look.skin].name : SKIN_EN[ctl.look.skin]}${ctl.look.auto ? t([' · changes by herself', ' · 自己换装']) : ''}`, items: [
       { id: 'skin', name: ['Skin', '皮肤'], ctl: { k: 'skins' } },
       { id: 'auto', name: ['Change outfit by herself', '自己换装'], note: ['Every 6–14 min while resting', '在家时每 6–14 分钟一次'], ctl: { k: 'switch', on: ctl.look.auto, set: on => ctl.setLook({ auto: on }) } },
-      { id: 'glass', name: ['Show the glass ball at home', '在家露出玻璃球'], ctl: { k: 'switch', on: ctl.look.homeGlass, set: on => ctl.setLook({ homeGlass: on }) } },
+      { id: 'home', name: ['In the island', '在家的样子'], ctl: { k: 'seg', value: ctl.look.home, opts: [['dark', ['Dark glass', '暗玻璃']], ['eyes', ['Just her eyes', '只有两只眼']]], set: value => ctl.setLook({ home: value as HomeLook }) } },
       { id: 'layout', name: ['Dashboard layout', '面板布局'], note: ['Two columns has no Settings page; the tray switches back', '两栏没有设置页，用托盘菜单换回来'], ctl: { k: 'seg', value: ctl.look.layout, opts: [['around', ['Around her', '围着她']], ['grid', ['Two columns', '两栏']]], set: value => ctl.setLook({ layout: value as Look['layout'] }) } },
       { id: 'faces', name: ['Her expressions', '她的表情'], ctl: { k: 'act', label: ['Play all', '全部看一遍'], run: ctl.playFaces } },
     ] },
