@@ -444,6 +444,8 @@ const bctx = bg.getContext('2d')!, fctx = fg.getContext('2d')!, sctx = sky.getCo
 const eyeCv = document.createElement('canvas'), ectx = eyeCv.getContext('2d')!;
 
 let W = 800, H = 600, dpr = 1, pw = 560;
+// sd: canvas pixels per CSS px for the moving stars, redrawn every frame; soft light that does not need the screen's full resolution
+const sd = 1;
 const center = (): V2 => [W / 2, H * .4];
 const R0 = () => clamp(Math.min(W, H) * .085, 44, 80);
 const home = (): V2 => [NOTCH ? W / 2 - NOTCH / 2 - 32 : W / 2, TOP / 2];
@@ -483,7 +485,7 @@ function ballTarget(): [number, number, number] {
 }
 function snapBall() { const [x, y, r] = ballTarget(); Object.assign(ball.x, { value: x, velocity: 0 }); Object.assign(ball.y, { value: y, velocity: 0 }); Object.assign(ball.R, { value: r, velocity: 0 }); }
 
-let hole = 0, haloK = 0, edgeAt = -1e9, panelShown = false;
+let hole = 0, haloK = 0, edgeAt = -1e9, panelShown = false, islKey = '';
 
 const STAR_C = ['#9bb0ff', '#aabfff', '#cad7ff', '#f4f6ff', '#f4f6ff', '#fff4ea', '#ffe2c0', '#ffc98f', '#b98cff', '#8fe3ff'];
 // A star with a soft glow and four thin spikes, painted once and stamped.
@@ -513,14 +515,14 @@ const STAR_VS = `attribute vec2 aP, aA, aB, aH; attribute vec4 aC; uniform vec2 
 varying vec2 vP, vA, vB, vH; varying vec4 vC;
 void main(){ vP = aP; vA = aA; vB = aB; vH = aH; vC = aC; gl_Position = vec4(aP.x / uRes.x * 2. - 1., 1. - aP.y / uRes.y * 2., 0., 1.); }`;
 const STAR_FS = `precision highp float;
-varying vec2 vP, vA, vB, vH; varying vec4 vC; uniform vec3 uM, uH;
+varying vec2 vP, vA, vB, vH; varying vec4 vC; uniform vec3 uM, uH; uniform float uD;
 void main(){
   vec2 ab = vB - vA; float L2 = dot(ab, ab);
   float h = L2 > .01 ? clamp(dot(vP - vA, ab) / L2, 0., 1.) : 1.;
   float d = length(vP - vA - ab * h), w = vC.a, s = mix(vH.x, vH.y, h);
   float I = (exp(-d * d / (w * w)) + .2 * exp(-d / (w * 1.8))) * (.04 + .96 * s * s);
-  I *= 1. - smoothstep(uM.z - 90., uM.z, length(vP - uM.xy));
-  if (uH.z > 0.) I *= smoothstep(uH.z - 180., uH.z, length(vP - uH.xy));
+  I *= 1. - smoothstep(uM.z - 45. * uD, uM.z, length(vP - uM.xy));
+  if (uH.z > 0.) I *= smoothstep(uH.z - 90. * uD, uH.z, length(vP - uH.xy));
   vec3 c = vC.rgb * I;
   gl_FragColor = vec4(c, max(c.r, max(c.g, c.b)));
 }`;
@@ -533,7 +535,7 @@ const suni: Record<string, WebGLUniformLocation | null> = {};
   ([['aP', 2, 0], ['aA', 2, 8], ['aB', 2, 16], ['aH', 2, 24], ['aC', 4, 32]] as const).forEach(([n, size, off]) => {
     const l = sgl.getAttribLocation(prog, n); sgl.enableVertexAttribArray(l); sgl.vertexAttribPointer(l, size, sgl.FLOAT, false, 48, off);
   });
-  suni.uRes = sgl.getUniformLocation(prog, 'uRes'); suni.uM = sgl.getUniformLocation(prog, 'uM'); suni.uH = sgl.getUniformLocation(prog, 'uH');
+  suni.uRes = sgl.getUniformLocation(prog, 'uRes'); suni.uM = sgl.getUniformLocation(prog, 'uM'); suni.uH = sgl.getUniformLocation(prog, 'uH'); suni.uD = sgl.getUniformLocation(prog, 'uD');
   sgl.enable(sgl.BLEND); sgl.blendFunc(sgl.ONE, sgl.ONE);
 }
 const MAXC = 7000, VB = new Float32Array(MAXC * 72);
@@ -541,7 +543,7 @@ let nC = 0;
 // A capsule from tail (a) to head (b) in CSS px; h0/h1 is how far along the whole streak its two ends sit.
 function cap(ax: number, ay: number, bx: number, by: number, w: number, r: number, g: number, b: number, h0 = 0, h1 = 1) {
   if (nC >= MAXC || r + g + b < .003) return;
-  const d = dpr; ax *= d; ay *= d; bx *= d; by *= d; w *= d;
+  const d = sd; ax *= d; ay *= d; bx *= d; by *= d; w *= d;
   let ux = bx - ax, uy = by - ay; const L = Math.hypot(ux, uy);
   if (L > .01) { ux /= L; uy /= L; } else { ux = 1; uy = 0; }
   const e = w * 6 + 1; ux *= e; uy *= e;
@@ -556,9 +558,9 @@ function cap(ax: number, ay: number, bx: number, by: number, w: number, r: numbe
 function glFlush() {
   sgl.viewport(0, 0, glc.width, glc.height); sgl.clearColor(0, 0, 0, 0); sgl.clear(sgl.COLOR_BUFFER_BIT);
   if (nC) {
-    const m = openR > hd() * 2.3 ? 1e6 : openR * dpr;
-    sgl.uniform2f(suni.uRes, glc.width, glc.height); sgl.uniform3f(suni.uM, P[0] * dpr, P[1] * dpr, m);
-    sgl.uniform3f(suni.uH, home()[0] * dpr, home()[1] * dpr, hole * dpr);
+    const m = openR > hd() * 2.3 ? 1e6 : openR * sd;
+    sgl.uniform2f(suni.uRes, glc.width, glc.height); sgl.uniform3f(suni.uM, P[0] * sd, P[1] * sd, m); sgl.uniform1f(suni.uD, sd);
+    sgl.uniform3f(suni.uH, home()[0] * sd, home()[1] * sd, hole * sd);
     sgl.bufferData(sgl.ARRAY_BUFFER, VB.subarray(0, nC * 72), sgl.DYNAMIC_DRAW);
     sgl.drawArrays(sgl.TRIANGLES, 0, nC * 6);
   }
@@ -631,8 +633,12 @@ function radial(c: CanvasRenderingContext2D, x: number, y: number, r: number, st
   c.fillStyle = g; c.fillRect(0, 0, W, H);
 }
 // Her sky on its own canvas: a deep vignette round her star, the far sky and the chart's grid, opened from the click.
+// It only changes while it opens, swings, streams or gives the desktop back; otherwise last frame's stays.
+let skyKey = '';
 function drawSky() {
-  const c = sctx, [vx, vy] = V, [cx, cy] = center();
+  const c = sctx, [vx, vy] = V, [cx, cy] = center(), key = `${vx},${vy},${openR},${skyK},${backK},${gridK},${P},${hole}`;
+  if (key === skyKey) return;
+  skyKey = key;
   c.setTransform(1, 0, 0, 1, 0, 0); c.clearRect(0, 0, sky.width, sky.height);
   if (openR <= 0 || skyK < .002) return;
   c.setTransform(dpr, 0, 0, dpr, 0, 0); c.globalAlpha = skyK;
@@ -1285,11 +1291,12 @@ function draw() {
   drawSky();
   if (wfield.length && skyK > .002) flyDraw(skyK);
   glFlush();
-  // background canvas: the island
-  const c = bctx;
-  c.setTransform(1, 0, 0, 1, 0, 0); c.clearRect(0, 0, bg.width, bg.height); c.setTransform(d, 0, 0, d, 0, 0);
-  {
-    const x0 = isl.x0.value, x1 = isl.x1.value, h = isl.h.value, open = clamp((h - TOP) / 120);
+  // background canvas: the island, repainted only when its shape or her light changes
+  const x0 = isl.x0.value, x1 = isl.x1.value, h = isl.h.value, islNow = `${x0},${x1},${h},${glowNow}`;
+  if (islNow !== islKey) {
+    islKey = islNow;
+    const c = bctx, open = clamp((h - TOP) / 120);
+    c.setTransform(1, 0, 0, 1, 0, 0); c.clearRect(0, 0, bg.width, bg.height); c.setTransform(d, 0, 0, d, 0, 0);
     c.save();
     if (open > 0) { c.shadowColor = rgb(core.light.glow, .28 * open); c.shadowBlur = 50 * d; }
     islandPath(c, x0, x1, h); c.fillStyle = '#000'; c.fill();
@@ -1334,7 +1341,9 @@ function frame(ts: number) {
 }
 function resize() {
   const r = screenEl.getBoundingClientRect(); W = r.width; H = r.height; dpr = Math.min(2, devicePixelRatio || 1);
-  for (const cv of [bg, fg, sky, glc]) { cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); }
+  for (const cv of [bg, fg, sky]) { cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); }
+  glc.width = Math.round(W * sd); glc.height = Math.round(H * sd);
+  skyKey = islKey = '';
   paintBack();
   pw = Math.min(560, W - 24); document.documentElement.style.setProperty('--pw', `${pw}px`); document.documentElement.style.setProperty('--top', `${TOP}px`);
   layoutIntro(); if (islMode === 'notch') snapIsland(); if (phase === 'setup') measure();
