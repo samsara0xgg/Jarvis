@@ -934,27 +934,29 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         optional_payload=(),
         schema_version=1,
     ),
+    # ADR 0066: the model's `ask_user` card — a question and one to four
+    # fields. The newest one is the only card; `surface.clarified` (Allen
+    # filled it in) or `surface.dismissed` (its close button) naming its id closes it.
+    EventTypeSchema(
+        event_type="clarification.requested",
+        owner_layer="L4",
+        actor="jarvis_llm",
+        required_payload=("clarification_id", "question", "fields", "turn_id"),
+        optional_payload=("action_id",),
+        schema_version=1,
+    ),
     # `surface.dismissed` / `surface.clarified` — spec §3.6.3-named
-    # UserResponse durable forms; ADR-0012 §3 D3 registers them as
-    # placeholders with NO emitter yet, same idiom as `claim.accepted`
-    # above (occupy the schema now; the emitter lands as its own
-    # change). owner_layer/actor deliberately align with the existing
-    # `surface.*` family rather than inventing new values: L5
-    # (unanimous across every surface.* entry above) and `user`
-    # (matching `surface.user_intent` specifically — a dismiss or
-    # clarify is a human action crossing the surface, not
-    # runtime-authored output like `surface.response_*`).
-    # `required_payload=("turn_id",)` is the smallest defensible
-    # shape: every per-turn surface.* entry above keys on `turn_id`,
-    # and inventing a content shape ahead of a real emitter would
-    # fight whatever consumes it later — same minimalism as
-    # `claim.accepted`'s single identifying field.
+    # UserResponse durable forms (ADR-0012 §3 D3), emitted by the ask card
+    # (ADR 0066). owner_layer/actor align with the `surface.*` family: L5,
+    # and `user` — a dismiss or clarify is a human action crossing the
+    # surface. `turn_id` is the turn the answer starts (clarified) or the
+    # turn that asked (dismissed: nothing runs).
     EventTypeSchema(
         event_type="surface.dismissed",
         owner_layer="L5",
         actor="user",
         required_payload=("turn_id",),
-        optional_payload=(),
+        optional_payload=("clarification_id",),
         schema_version=1,
     ),
     EventTypeSchema(
@@ -962,7 +964,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         owner_layer="L5",
         actor="user",
         required_payload=("turn_id",),
-        optional_payload=(),
+        optional_payload=("clarification_id", "answers"),
         schema_version=1,
     ),
     # Memo inbox: one durable row per `/note ...` capture. The list view is

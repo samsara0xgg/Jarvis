@@ -33,6 +33,7 @@ Layer boundary (`.importlinter` + canary H13 Step 11): stdlib only plus
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Final, Literal
 
@@ -41,7 +42,7 @@ from jarvis.state.event_log import iter_events
 
 if TYPE_CHECKING:
     import sqlite3
-    from collections.abc import Iterable, Iterator, Mapping
+    from collections.abc import Iterable, Iterator
 
     from jarvis.shared import Event
 
@@ -676,6 +677,98 @@ def _fold_pending_confirmations(events: Iterable[Event]) -> PendingConfirmations
     return PendingConfirmations(slot=slot, consumed_lease_ids=frozenset(consumed_lease_ids))
 
 
+# --- PendingClarification (ADR 0066) ------------------------------------------
+
+CLARIFICATION_EVENT_TYPES: Final[tuple[str, ...]] = (
+    "clarification.requested",
+    "surface.clarified",
+    "surface.dismissed",
+    "surface.user_intent",
+    "utterance.received",
+)
+"""Everything the ask-card fold reads, for readers that fold it without the full log."""
+
+
+@dataclass(frozen=True)
+class PendingClarification:
+    """The newest ask card (ADR 0066): what the model asked, and whether it is still up.
+
+    Attributes:
+        clarification_id: Id from its `clarification.requested`.
+        question: The one-sentence question on the card.
+        fields: The card's fields as the tool stored them (label, choices,
+            value, remember).
+        asked_turn_id: The turn that put the card up.
+        closed: A `surface.clarified` or `surface.dismissed` naming this id
+            has landed.
+        dismissed: It was closed with its close button, unanswered.
+        answered_turn_id: The turn Allen's filled-in answers started, or
+            ``None`` when he never submitted it.
+        utterances_since: User utterances (`surface.user_intent` /
+            `utterance.received`) after the ask while it was open, or after
+            it was dismissed. The one being handled is already appended, so
+            the first one sees 1.
+    """
+
+    clarification_id: str
+    question: str
+    fields: tuple[Mapping[str, Any], ...]
+    asked_turn_id: str = ""
+    closed: bool = False
+    dismissed: bool = False
+    answered_turn_id: str | None = None
+    utterances_since: int = 0
+
+    @property
+    def waiting(self) -> bool:
+        """The card is on screen: not answered, dismissed, replaced or talked over."""
+        return not self.closed and self.utterances_since == 0
+
+    @property
+    def answered_by_words(self) -> bool:
+        """The turn being handled is the utterance that closed the card by speaking over it."""
+        return not self.closed and self.utterances_since == 1
+
+    @property
+    def just_dismissed(self) -> bool:
+        """The turn being handled is the first utterance after the card was dismissed."""
+        return self.dismissed and self.utterances_since == 1
+
+    @classmethod
+    def from_events(cls, events: Iterable[Event]) -> PendingClarification | None:
+        """Fold `events` (at least :data:`CLARIFICATION_EVENT_TYPES`) into the newest card."""
+        return _fold_pending_clarification(events)
+
+
+def _fold_pending_clarification(events: Iterable[Event]) -> PendingClarification | None:
+    """A newer ask replaces the slot; an answer or dismissal closes it only by its own id."""
+    slot: PendingClarification | None = None
+    for evt in events:
+        if evt.type == "clarification.requested":
+            fields = evt.payload.get("fields")
+            slot = PendingClarification(
+                clarification_id=str(evt.payload["clarification_id"]),
+                question=str(evt.payload.get("question", "")),
+                asked_turn_id=str(evt.payload.get("turn_id", "")),
+                fields=(
+                    tuple(f for f in fields if isinstance(f, Mapping))
+                    if isinstance(fields, list) else ()
+                ),
+            )
+        elif slot is None:
+            continue
+        elif evt.type in ("surface.clarified", "surface.dismissed"):
+            if not slot.closed and evt.payload.get("clarification_id") == slot.clarification_id:
+                dismissed = evt.type == "surface.dismissed"
+                answered = None if dismissed else str(evt.payload["turn_id"])
+                slot = replace(slot, closed=True, dismissed=dismissed, answered_turn_id=answered)
+        elif evt.type in ("surface.user_intent", "utterance.received") and (
+            not slot.closed or slot.dismissed
+        ):
+            slot = replace(slot, utterances_since=slot.utterances_since + 1)
+    return slot
+
+
 # --- ProjectionSet -----------------------------------------------------------
 
 
@@ -693,6 +786,7 @@ class ProjectionSet:
         action_admissions: Folded ActionAdmissions (ADR-0008 D10) — the
             admitting gate uid and dispatched uid of every non-terminal
             action.
+        pending_clarification: The newest ask card (ADR 0066), or None.
     """
 
     recent_trace: RecentTrace
@@ -700,6 +794,7 @@ class ProjectionSet:
     pending_confirmations: PendingConfirmations
     action_admissions: ActionAdmissions
     conversation_history: ConversationHistory = field(default_factory=ConversationHistory)
+    pending_clarification: PendingClarification | None = None
 
 
 def rebuild_projections(
@@ -737,6 +832,7 @@ def fold_projections(
         pending_confirmations=_fold_pending_confirmations(materialized),
         action_admissions=_fold_action_admissions(materialized),
         conversation_history=fold_conversation_history(materialized),
+        pending_clarification=_fold_pending_clarification(materialized),
     )
 
 
@@ -751,10 +847,12 @@ def make_snapshot(conn: sqlite3.Connection) -> ProjectionSet:
 
 
 __all__ = [
+    "CLARIFICATION_EVENT_TYPES",
     "ActionAdmission",
     "ActionAdmissions",
     "CommitObservation",
     "OpenAction",
+    "PendingClarification",
     "PendingConfirmationSlot",
     "PendingConfirmationState",
     "PendingConfirmations",

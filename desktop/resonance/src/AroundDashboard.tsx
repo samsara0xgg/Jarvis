@@ -15,7 +15,7 @@ import { HOME_DEFAULTS, isPop, tr, useCompanionSettings, useT, type BlockId, typ
 import { demoBrief, demoMail, demoNotices, demoToday, postRoute, useNow, useRoute, type Brief, type Mail, type Notice, type Today, type WxKind } from './homeData';
 import { ArrangeHome, BLOCK } from './ArrangeHome';
 import { SettingsPage, type Account, type Controls } from './SettingsPage';
-import { ActionCard, MailCard, type Card, type Decide } from './ActionCard';
+import { ActionCard, MailCard, QuestionCard, type Answer, type Card, type Decide, type Question } from './ActionCard';
 import './dashboard-around.css';
 import './dashboard-home.css';
 
@@ -97,7 +97,9 @@ const BASIS: Record<Basis, L> = { observed: ['Observed', '看到的'], stated: [
 // Live conversation: the memory.db rows and the answer still streaming, from the companion's daemon link.
 // `older` fetches a longer page and says whether it brought earlier rows; `floor` means the history's start is on hand.
 // `card` is the one waiting for a button (ADR 0062); it sits above the input until it is sent or dismissed.
-type Talk = { rows: Row[]; tail: string; busy: boolean; offline: boolean; floor: boolean; submit: (text: string) => void; older: () => Promise<boolean>; card?: Card | null; decide?: Decide; think: Think };
+// `question` is the ask card (ADR 0066), in the same place, until it is filled in, dismissed or talked over.
+type Talk = { rows: Row[]; tail: string; busy: boolean; offline: boolean; floor: boolean; submit: (text: string) => void; older: () => Promise<boolean>; card?: Card | null; decide?: Decide;
+  question?: Question | null; answer?: Answer; think: Think };
 // Think mode (ADR 0064): whether it is on, the seconds of the deep answer still coming, the words that switch it,
 // each deep answer's wait by the log position its row lands after, and the chip's × (saying the off-word).
 export type Think = { on: boolean; secs: number; words: [RegExp | null, RegExp | null]; thoughts: { after: number; secs: number }[]; exit: () => void };
@@ -556,6 +558,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
           {turn.work && <Fold label={turn.work[0]}><pre>{turn.work[1]}</pre></Fold>}</div>}
       </div>)}
       {talk?.card && talk.decide && <ActionCard key={talk.card.id} card={talk.card} lang={lang} onDecide={talk.decide}/>}
+      {talk?.question && talk.answer && <QuestionCard key={talk.question.id} question={talk.question} lang={lang} onAnswer={talk.answer}/>}
       {talk && talk.think.secs > 0 && <div className="pg-sec tr-think">{t([`Thinking deeply · ${talk.think.secs} s`, `深想中 · ${talk.think.secs} 秒`])}</div>}
       <Ask className="pg-input" onAsk={ask} think={talk?.think}/></div>
     </>,

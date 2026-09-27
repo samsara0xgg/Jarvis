@@ -70,6 +70,7 @@ from jarvis.decision.llm_stream import LLMResponseFailed, LLMTextDelta
 from jarvis.decision.packet import (
     SituationPacket,
     assemble_packet,
+    format_pending_clarification_note,
     format_pending_confirmation_note,
 )
 from jarvis.decision.policy import EffectivePolicy, effective_policy, surface_for
@@ -758,6 +759,7 @@ def _current_status_block(packet: SituationPacket, ctx: DecideContext) -> str | 
             ctx.connected_apps,
             _previous_answer_line(packet),
             format_pending_confirmation_note(packet),
+            format_pending_clarification_note(packet),
             _format_open_actions_note(packet),
         )
         if line
