@@ -1011,6 +1011,11 @@ evidence first, unknowns stated. That request runs under the same cost recording
 cancellation checks as the loop's calls and is not counted against the tool budget. If it fails or
 returns no text, the turn ends with a fixed limitation in the language setting, never an internal English error.</p>
 
+<p>Thinking mode (ADR 0061). A turn uses <code>llm.default_preset</code> unless Allen's recent words, read
+back from the event log, hold an <code>llm.think.on_words</code> match newer than any <code>llm.think.off_words</code>
+match with no gap over 10 minutes between them and now; then it uses <code>llm.think.preset</code>.
+<code>response.started</code> records the preset's <code>reasoning_effort</code>.</p>
+
 <h4>3.4.10 Entity hallucination repair protocol</h4>
 
 <ol>
