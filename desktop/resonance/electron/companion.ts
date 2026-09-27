@@ -107,12 +107,15 @@ async function needsSetup() {
     return r.ok && (await r.json()).first_run === true;
   } catch { return false; }
 }
+const SETTINGS = 'x-apple.systempreferences:com.apple.preference.security?';
+// Pages a window may open for Allen, asked for by name, never by URL: where keys are made, and System Settings panes.
 const PAGES: Record<string, string> = {
   openai: 'https://platform.openai.com/api-keys',
   minimax: 'https://platform.minimax.io/user-center/basic-information/interface-key',
   tavily: 'https://app.tavily.com/',
+  accessibility: `${SETTINGS}Privacy_Accessibility`,
 };
-const SETTINGS = 'x-apple.systempreferences:com.apple.preference.security?';
+const openPage = (page: unknown) => { if (typeof page === 'string' && Object.hasOwn(PAGES, page)) void shell.openExternal(PAGES[page]); };
 // What macOS says about one permission; with `ask` it asks first. Screen Recording is turned on in
 // System Settings and only counts after a relaunch; notifications cannot be read back, only asked.
 async function permission(kind: unknown, ask: unknown, note: unknown): Promise<string> {
@@ -170,7 +173,7 @@ function firstRun() {
       name: (full || userInfo().username).split(/\s+/)[0], lang: app.getPreferredSystemLanguages()[0]?.startsWith('zh') ? 'zh' : 'en' };
   });
   ipcMain.handle('first-run-permission', (event, kind, ask, note) => mine(event) ? permission(kind, ask, note) : '');
-  ipcMain.on('first-run-open', (event, page) => { if (mine(event) && Object.hasOwn(PAGES, page)) void shell.openExternal(PAGES[page]); });
+  ipcMain.on('first-run-open', (event, page) => { if (mine(event)) openPage(page); });
   ipcMain.on('first-run-passthrough', (event, on) => { if (mine(event) && typeof on === 'boolean') fr.setIgnoreMouseEvents(on, { forward: true }); });
   // Setup is not marked done, so the next launch starts the first run again.
   ipcMain.on('first-run-quit', event => { if (mine(event)) app.quit(); });
@@ -202,7 +205,7 @@ function companion(shown?: () => void) {
   registerDaemonBridge(win, { lab: demo });
   // ADR 0058: the right ⌥ dictates at the text caret; she goes there from the notch. Live only: it needs the daemon's mic.
   const dictation = demo || !material ? null : setupDictation({ companion: win, native: material, preload: path.join(here, 'preload.cjs'),
-    page: path.join(here, '../dist/dictation.html'), port, topInset: display => placement(display).topInset });
+    page: path.join(here, '../dist/dictation.html'), port, topInset: display => placement(display).topInset, open: openPage });
   win.loadFile(path.join(here, '../dist/index.html'), { query: demo ? { companion: '1' } : { companion: '1', port: process.env.JARVIS_INHERENT_BRIDGE_PORT ?? '8006' } });
   win.webContents.on('did-finish-load', place);
   win.once('ready-to-show', () => { place(); win.showInactive(); keepOnTop(); shown?.(); });

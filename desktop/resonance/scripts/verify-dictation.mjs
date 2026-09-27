@@ -29,7 +29,7 @@ try {
       onStart: cb => { on.start = cb; }, onFinish: cb => { on.finish = cb; }, onCancel: cb => { on.cancel = cb; }, onCursor: cb => { on.cursor = cb; },
       paste: text => window.__log.push(['paste', text]), copy: text => window.__log.push(['copy', text]),
       home: happy => window.__log.push(['home', happy]), done: () => window.__log.push(['done']),
-      passthrough: () => {}, focus: value => window.__log.push(['focus', value]),
+      passthrough: () => {}, focus: value => window.__log.push(['focus', value]), open: page => window.__log.push(['open', page]),
     };
     // The daemon: one open stream per dictation, fed line by line from the test.
     window.fetch = async url => {
@@ -42,9 +42,10 @@ try {
   await page.goto(`http://127.0.0.1:${port}/dictation.html`);
   const log = () => page.evaluate(() => window.__log.splice(0));
   const push = line => page.evaluate(l => window.__daemon.push(l), line);
-  const start = async () => {
-    await page.evaluate(() => window.__on.start({ caret: { l: 300, t: 300, r: 302, b: 318 }, lineRight: 480, element: { l: 100, t: 280, r: 900, b: 520 },
-      pointer: { x: 600, y: 600 }, top: 32, skin: 'glass', lang: 'zh', port: '9999', trusted: true, context: { app: 'Notes', window: '', selected: '' } }));
+  const start = async (trusted = true) => {
+    await page.evaluate(trusted => window.__on.start({ caret: trusted ? { l: 300, t: 300, r: 302, b: 318 } : null, lineRight: 480,
+      element: trusted ? { l: 100, t: 280, r: 900, b: 520 } : null, pointer: { x: 600, y: 600 }, top: 32, skin: 'glass', lang: 'zh', port: '9999',
+      trusted, grantee: 'node', context: { app: 'Notes', window: '', selected: '' } }), trusted);
     await page.waitForTimeout(500); // up through her hole and listening
     await push({ level: .4 });
   };
@@ -123,6 +124,23 @@ try {
   await box.press('Enter');
   await page.waitForTimeout(900);
   check('04 an emptied box pastes nothing', !(await log()).some(([k]) => k === 'paste'));
+  await page.waitForTimeout(700);
+  await log();
+
+  // No Accessibility: she says so by the mouse with a button to the switch, and the card after keeps it.
+  await start(false);
+  const warned = await page.locator('#bubble').textContent();
+  check('05 without Accessibility she says so and names the row to turn on', warned.includes('还没有辅助功能权限') && warned.includes('在列表里打开“node”'));
+  await page.locator('#bubble .go').click();
+  check('05 its button opens the Accessibility pane', (await log()).some(([k, v]) => k === 'open' && v === 'accessibility'));
+  await page.evaluate(() => window.__on.finish());
+  await push({ state: 'thinking', seconds: 2 });
+  await push({ text: SPOKEN, raw: SPOKEN });
+  await page.waitForTimeout(200);
+  await page.locator('#bubble.card .go').click();
+  const carded = await log();
+  check('05 the copied card offers the same button', (await page.locator('#bubble.card b').textContent()) === '还没有辅助功能权限' && carded.some(([k, v]) => k === 'copy' && v === SPOKEN) && carded.some(([k, v]) => k === 'open' && v === 'accessibility'));
+  await page.screenshot({ path: path.join(dir, '05-no-access-card.png'), clip: { x: 450, y: 450, width: 700, height: 330 } });
   check('no page errors', errors.length === 0);
   console.log(`${checks.length} checks passed`);
 } finally {
