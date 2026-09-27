@@ -131,7 +131,10 @@ export function CompanionBall({ width, height, lobe, target, look, handle, skin,
         c.scale(scale * sx, scale * squat * sy); c.translate(jx * R, jy * R - pivot); c.scale(bx, by);
       };
       const deg = angle * 180 / Math.PI;
-      silhouette.current!.setAttribute('transform', `translate(${x} ${y + pivot * scale}) rotate(${deg}) scale(${1 + flight} ${1 / Math.sqrt(1 + flight)}) rotate(${-deg}) scale(${scale} ${scale * squat}) translate(${jx * R} ${jy * R - pivot}) scale(${bx} ${by})`);
+      // At home her body is taller than the island; lifted to sit a point inside its edge, the goo leaves that edge
+      // flat instead of sagging under her. The lift fades as she drops, so the drip is unchanged.
+      const lift = Math.max(0, t.anchors.home.y + R * HOME_SCALE + 1 - island.current.lobe.height) * (1 - smooth(0, R, y - t.anchors.home.y));
+      silhouette.current!.setAttribute('transform', `translate(${x} ${y + pivot * scale - lift}) rotate(${deg}) scale(${1 + flight} ${1 / Math.sqrt(1 + flight)}) rotate(${-deg}) scale(${scale} ${scale * squat}) translate(${jx * R} ${jy * R - pivot}) scale(${bx} ${by})`);
       // The goo only matters where the ball meets the island, and not while she is out at the caret.
       silhouette.current!.style.display = y - R * scale - island.current.lobe.height < 26 && slipX === null && !hidden ? '' : 'none';
 
@@ -235,10 +238,11 @@ export function CompanionBall({ width, height, lobe, target, look, handle, skin,
   return <>
     <svg className="companion-stage" width={width} height={height} viewBox={`0 0 ${width} ${height}`} aria-hidden="true">
       <defs>
-        {/* Blur plus an alpha threshold: the island and the ball join like one liquid body. */}
+        {/* Blur plus an alpha threshold: the island and the ball join like one liquid body. The threshold sits at half
+            alpha, so a straight edge stays where the path puts it, level with the black drawn beside the island. */}
         <filter id="cb-goo" x="-40%" y="-60%" width="180%" height="220%" colorInterpolationFilters="sRGB">
           <feGaussianBlur stdDeviation="4"/>
-          <feColorMatrix values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 18 -8"/>
+          <feColorMatrix values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 18 -8.5"/>
         </filter>
       </defs>
       <g filter="url(#cb-goo)"><path ref={islandShape} className="companion-island" d={lobeD}/><circle ref={silhouette} r={R}/></g>

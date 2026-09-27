@@ -58,7 +58,8 @@ function layout({ topInset, notchWidth, surfaceWidth: width }: Placement) {
     : { left: center - 66, right: center + 66, height: topInset, notched: false };
   const x = notchWidth ? notchLeft - 32 : center, out = { x, y: topInset + R + 14 }, panelTop = topInset + 44;
   const anchors: Record<Place, Point> = { home: { x, y: topInset / 2 }, peek: { x, y: topInset + R * .1 }, out, dock: { x: center, y: panelTop - R * .5 } };
-  // The agent marks' wing grows from the notch's right edge, or the pill's.
+  // The agent marks' wing grows from the notch's right edge, or the pill's. Beside the pill it starts 30 pt inside it,
+  // so neither shape's rounded corner shows where they meet and the bottom edge runs straight across.
   const wingX = notchWidth ? notchLeft + notchWidth : lobe.right;
   return { width, lobe, anchors, out, center, panelTop, wingX, zones: {
     lobe: notchWidth ? { x: lobe.left - 26, y: 0, w: notchLeft - lobe.left + 26, h: topInset + 16 } : { x: center - 36, y: 0, w: 72, h: topInset + 16 },
@@ -531,7 +532,7 @@ export function Companion() {
           : <DashboardPreview embedded port={port} visible={dashboard} shown={dashboard} onClose={() => setDashboard(false)}/>}
       </div>
       <Notch look={wardrobe.marks} agents={agents} unread={notices.unread} cleared={notices.cleared} cursor={cursor} quiet={dashboard || moving} onNoteHover={notices.setHover}
-        geo={{ width: geo.width, top: placement.topInset, notchR: geo.wingX, baseL: placement.notchWidth ? geo.center - placement.notchWidth / 2 : geo.wingX - 12 }}
+        geo={{ width: geo.width, top: placement.topInset, notchR: geo.wingX, baseL: placement.notchWidth ? geo.center - placement.notchWidth / 2 : geo.wingX - 30 }}
         act={{ jump, answer: notices.focus, read: notices.read, clear: notices.clear }} note={note}/>
       <CompanionBall width={geo.width} height={placement.topInset + 560} lobe={geo.lobe} look={look} handle={ball} skin={worn.current}
         target={{ place, expr, pressed, anchors: geo.anchors, home: wardrobe.home, homeFace: !!notice || carded,
