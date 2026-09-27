@@ -1,6 +1,7 @@
 // Residency entry for the com.allen.jarvis.resonance LaunchAgent (ADR-0015): install when the lockfile is newer
-// than node_modules, rebuild when any source is newer than the build, then run Electron and stay attached so
-// launchd owns its lifetime and respawns it. Runs under launchd's bare PATH, so node, npm and electron are
+// than node_modules, rebuild when any source is newer than the build, then run the companion and stay attached so
+// launchd owns its lifetime and respawns it. She starts and stops with Jarvis, and so does the right-⌥ dictation
+// (ADR 0058) that her process carries. Runs under launchd's bare PATH, so node, npm and electron are
 // resolved from this install, never from PATH.
 import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, statSync } from 'node:fs';
@@ -18,11 +19,11 @@ if (mtime('package-lock.json') > mtime('node_modules/.package-lock.json')) {
   console.log('resonance: lockfile newer than node_modules, installing');
   run(['ci']);
 }
-const built = ['dist/index.html', 'dist-electron/main.js', 'dist-native/material.node'];
+const built = ['dist/index.html', 'dist/dictation.html', 'dist-electron/companion.js', 'dist-native/material.node'];
 const sources = ['src', 'electron', 'native', 'public', 'index.html', 'package.json', 'vite.config.ts', 'tsconfig.json', 'tsconfig.electron.json'];
 if (built.some(f => !existsSync(f)) || newest(sources) > Math.min(...built.map(mtime))) {
   console.log('resonance: sources newer than build, rebuilding');
   run(['run', 'build']);
 }
 const { default: electron } = await import('electron');
-execFileSync(electron, ['.'], { stdio: 'inherit', env });
+execFileSync(electron, ['dist-electron/companion.js'], { stdio: 'inherit', env });

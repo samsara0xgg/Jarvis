@@ -329,8 +329,8 @@ export function Companion() {
   useEffect(() => {
     try { localStorage.setItem(WARDROBE, JSON.stringify(wardrobe)); } catch { /* the pick just is not remembered */ }
     window.jarvis?.companionMenu({ skins: SKIN_KEYS.map(key => ({ key, name: SKINS[key].name, on: key === wardrobe.skin })), auto: wardrobe.auto, layout: wardrobe.layout, homeGlass: wardrobe.homeGlass, marks: wardrobe.marks,
-      follow: companion.screen === 'follow', lang: companion.lang, exprs: PREVIEW.map(id => ({ id, name: EXPRESSIONS[id].name })) });
-  }, [wardrobe, companion.screen, companion.lang]);
+      follow: companion.screen === 'follow', lang: companion.lang, dictation: companion.dictation, exprs: PREVIEW.map(id => ({ id, name: EXPRESSIONS[id].name })) });
+  }, [wardrobe, companion.screen, companion.lang, companion.dictation]);
   useEffect(() => {
     if (!wardrobe.auto) return;
     let timer: ReturnType<typeof setTimeout>;
