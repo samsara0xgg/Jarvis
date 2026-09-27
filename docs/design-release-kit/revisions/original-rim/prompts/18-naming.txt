@@ -1,0 +1,16 @@
+Use case: identity-preserve / precise-object-edit.
+Create ONE final standalone landscape Jarvis brand poster by editing Image 1. Keep its exact 1536x1024 overall composition, typography, copy, wordmark position, dark navy palette, asymmetric whitespace, size and position of the single hero orb. This is a restrained material revision, not a new layout.
+
+INPUT ROLES:
+Image 1 = PREVIOUS POSTER, EDIT TARGET. Its bright silver/cyan all-around orb rim is specifically rejected and MUST be removed.
+Image 2 = NEW REVISED APP ICON, character/material anchor. Use ONLY its glass spherical character, WITHOUT the square icon tile, as the same hero orb in Image 1.
+Image 3 = user's current live-render screenshot. Only its RIGHT-HAND orb is the authoritative original shell/eye design. The left orb is old and rejected. Never render a comparison or the screenshot itself.
+
+Replace the old poster's sphere with the user's current original-rim sphere. Preserve the subtle smoky translucent blue-violet glass boundary from the RIGHT source, low-contrast fine dark rim that merges naturally into the backdrop; one existing upper-left curved rectangular softbox reflection, no new environment reflections. Retain the eye capsule proportions and original placements of the right-hand source and new icon: long rounded blue-white capsules, modest inward slant, naturally diffused glow, no mouth. Do NOT retain the smaller eyes of the old poster.
+
+The outer circular edge must remain quiet and almost unlit, not bright polished metal. ABSOLUTE NEGATIVES: no continuous white/silver/cyan circumference, no chrome bezel, no glowing glass tube, no double outlines, no illuminated equatorial band, no new halo, no hard bright rimlight. Even where the nebula is blue, do not make the silhouette glow. The sphere should feel like the same real-time mascot, not fake luxury jewelry. Keep its circular geometry and optical glass softness. Do not sharpen its outer rim.
+
+Internal color grading only: refined dark-ink depth, luminous but controlled muted cyan mist and violet nebula, fine sparse stars, softer natural transitions, preserve the current cloud arrangement. Use the interior of Image 2 but slightly lower peak cyan/magenta intensity for tasteful editorial print-like tonality. Improve through tonal hierarchy and richer shadows rather than adding glow or contrast to edges. High fidelity, no new props.
+
+Preserve the old poster's exact three texts with excellent typography: “Jarvis” large elegant white Unbounded Light style at upper-left, “住在你 Mac 上的助手” below it, and “小球 / Orb” small at right of the orb. Do not add any labels. Preserve all text spelling and layout. Preserve dark background, slightly quiet the blue floor flare so it does not light a new metallic rim. Soft natural grounding shadow beneath one floating orb, no conspicuous stage or horizon. No square icon tile anywhere in the poster.
+One artwork, one orb, no watermark, no inset, no variants, no technical labels.
