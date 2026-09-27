@@ -29,7 +29,7 @@ try {
       onStart: cb => { on.start = cb; }, onFinish: cb => { on.finish = cb; }, onCancel: cb => { on.cancel = cb; }, onCursor: cb => { on.cursor = cb; },
       paste: text => window.__log.push(['paste', text]), copy: text => window.__log.push(['copy', text]),
       home: happy => window.__log.push(['home', happy]), done: () => window.__log.push(['done']),
-      passthrough: () => {}, focus: value => window.__log.push(['focus', value]), open: page => window.__log.push(['open', page]),
+      passthrough: () => {}, focus: value => window.__log.push(['focus', value]), open: page => window.__log.push(['open', page]), again: () => window.__log.push(['again']),
     };
     // The daemon: one open stream per dictation, fed line by line from the test.
     window.fetch = async url => {
@@ -141,6 +141,21 @@ try {
   const carded = await log();
   check('05 the copied card offers the same button', (await page.locator('#bubble.card b').textContent()) === '还没有辅助功能权限' && carded.some(([k, v]) => k === 'copy' && v === SPOKEN) && carded.some(([k, v]) => k === 'open' && v === 'accessibility'));
   await page.screenshot({ path: path.join(dir, '05-no-access-card.png'), clip: { x: 450, y: 450, width: 700, height: 330 } });
+
+  // The right ⌥ while that card is still up: the card goes and the next dictation starts.
+  await page.evaluate(() => window.__on.finish());
+  check('06 the right ⌥ over a card still up clears it and asks for a new dictation', (await log()).some(([k]) => k === 'again') && await page.locator('#bubble').isHidden());
+  await start();
+  check('06 the new one comes up listening with no card left', await page.locator('#bubble').isHidden());
+  await tapHer();
+  await push({ state: 'thinking', seconds: 2 });
+  await push({ text: SPOKEN, raw: SPOKEN });
+  await page.waitForTimeout(150);
+  await log();
+  // The right ⌥ while fixing the words pastes them, like Enter.
+  await page.evaluate(() => window.__on.finish());
+  await page.waitForTimeout(600);
+  check('07 the right ⌥ in the box pastes what is there', (await log()).some(([k, v]) => k === 'paste' && v === SPOKEN));
   check('no page errors', errors.length === 0);
   console.log(`${checks.length} checks passed`);
 } finally {

@@ -5,7 +5,8 @@ body { font: 13px/1.45 -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-se
 .hit { position: fixed; left: 0; top: 0; width: 42px; height: 42px; border-radius: 50%; cursor: pointer; }
 .bubble { position: fixed; max-width: 320px; padding: 7px 11px; border-radius: 10px; background: rgba(12, 14, 24, .92); color: #eef1fb;
   border: 1px solid rgba(143, 227, 255, .38); box-shadow: 0 6px 22px rgba(0, 0, 0, .35); white-space: pre-wrap; }
-.bubble[hidden] { display: none; }
+/* !important: the card's display: flex comes later and would keep a hidden card on screen for the next dictation */
+.bubble[hidden] { display: none !important; }
 .bubble span { color: #aab2c8; font-size: 12px; }
 .bubble.err { border-color: rgba(255, 110, 110, .55); }
 .bubble.card { width: 300px; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; border-color: rgba(255, 208, 138, .45); }

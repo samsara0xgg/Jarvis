@@ -79,6 +79,7 @@ contextBridge.exposeInMainWorld('dictation', {
   passthrough: (on: boolean) => ipcRenderer.send('dictation-passthrough', on),
   focus: (on: boolean) => ipcRenderer.send('dictation-focus', on),
   open: (page: string) => ipcRenderer.send('dictation-open', page),
+  again: () => ipcRenderer.send('dictation-again'),
 });
 // The first launch's window (companion.ts answers only that window).
 contextBridge.exposeInMainWorld('firstRun', {
