@@ -23,7 +23,7 @@ export type KeyRow = { key_id: string; name: string; today_tokens: number; month
 export type OpenAIData = { today_usd: number; month_usd: number; by_model: SpendRow[]; by_key: KeyRow[];
   balance_usd?: number; balance_recorded_usd?: number; balance_recorded_at?: string | null };
 export type DeepSeekData = { balance: number; currency: string };
-export type MiniMaxData = { anchor_usd: number; anchor_at: string | null; characters_since_anchor: number; usd_per_million_chars: number; estimate_usd: number };
+export type MiniMaxData = { balance: number };
 export type Usage = { services: {
   claude?: UsageService<ClaudeData>; codex?: UsageService<CodexData>; openai?: UsageService<OpenAIData>;
   anthropic?: UsageService<Record<string, never>>; deepseek?: UsageService<DeepSeekData>; minimax?: UsageService<MiniMaxData>;
@@ -43,7 +43,7 @@ export const demoUsage: Usage = { services: {
     by_model: [{ model: 'gpt-live-1', today_usd: 0.61, month_usd: 9.2 }, { model: 'gpt-5.4-mini', today_usd: 0.23, month_usd: 3.4 }],
     by_key: [{ key_id: 'k1', name: 'jarvis', today_tokens: 98_000, month_tokens: 1_240_000 }, { key_id: 'k2', name: 'typeless', today_tokens: 12_000, month_tokens: 310_000 }] } },
   deepseek: { status: 'ok', observed_at_ms: demoAt, data: { balance: 8.46, currency: 'USD' } },
-  minimax: { status: 'ok', observed_at_ms: demoAt - 120_000, data: { anchor_usd: 17.82, anchor_at: '2026-09-13T20:24:00-07:00', characters_since_anchor: 41_000, usd_per_million_chars: 60, estimate_usd: 15.36 } },
+  minimax: { status: 'ok', observed_at_ms: demoAt - 120_000, data: { balance: 15.36 } },
 } };
 
 export function useUsage(port: string | null) {
@@ -141,21 +141,13 @@ function Spend({ usage, provider }: { usage: Usage; provider?: 'openai' | 'anthr
 
 function Balances({ usage, provider }: { usage: Usage; provider?: 'deepseek' | 'minimax' }) {
   const { deepseek, minimax } = usage.services;
-  const [formula, setFormula] = useState(true);
-  const m = minimax?.data ?? {};
   return <>
     {provider !== 'minimax' && <><Head glyph="deepseek" name="DeepSeek" service={deepseek}/>
     {deepseek?.status === 'ok' ? <div className="quota-big"><strong>{fmtUsd(deepseek.data.balance)}</strong><small>官方余额</small></div> : <p className="quota-note">{deepseek?.error ?? '未配置'}</p>}
     </>}
     {!provider && <div className="quota-divider"/>}
     {provider !== 'deepseek' && <><Head glyph="minimax" name="MiniMax" service={minimax}/>
-    {minimax?.status === 'ok' ? <>
-      <div className="quota-big"><strong>{fmtUsd(m.estimate_usd)}<span className="quota-chip">估算</span></strong><small>估算余额</small></div>
-      <div className="quota-formula">
-        <button aria-expanded={formula} onClick={() => setFormula(v => !v)}><CaretDown className={formula ? 'rotated' : ''}/>估算计算方式</button>
-        <div className={`quota-fold-reveal ${formula ? 'is-open' : ''}`} inert={!formula} aria-hidden={!formula}><div><div className="quota-formula-box"><span>{fmtUsd(m.anchor_usd)} − 累计字符 × 单价</span><Info size={16} aria-label={`锚点之后 ${m.characters_since_anchor ?? 0} 字符，单价 $${m.usd_per_million_chars ?? 0} / 百万字符`}/></div></div></div>
-      </div>
-    </> : <p className="quota-note">{minimax?.error ?? '未配置'}<small>在 config 里填写充值锚点</small></p>}</>}
+    {minimax?.status === 'ok' ? <div className="quota-big"><strong>{fmtUsd(minimax.data.balance)}</strong><small>官方余额</small></div> : <p className="quota-note">{minimax?.error ?? '未配置'}</p>}</>}
   </>;
 }
 

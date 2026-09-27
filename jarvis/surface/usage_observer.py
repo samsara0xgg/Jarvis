@@ -13,10 +13,8 @@ Services and their sources (all verified live 2026-09-13):
 - ``codex``    — ChatGPT ``wham/usage``; token from ``~/.codex/auth.json``.
 - ``openai``   — official org Costs + Usage APIs; needs ``OPENAI_ADMIN_KEY``.
 - ``deepseek`` — official ``/user/balance``.
-- ``minimax``  — no balance API exists; the balance is *estimated* from a
-  configured top-up anchor minus the TTS characters ``tts.usage_observed``
-  has recorded since that anchor (folded from the event log on the loop
-  thread, no network).
+- ``minimax``  — ``/account/query_balance``, undocumented; MiniMax's own
+  ``mmx-cli`` reads the balance of an ``sk-api-`` key there (ADR 0065).
 
 Secrets never enter a payload: only percentages, dollars, timestamps and
 plan labels are stored. Every remote failure collapses to a snapshot with
@@ -26,8 +24,8 @@ The one exception is Claude's 429 (polled too soon), which keeps the last
 reading. :func:`redeem_codex_reset` is the one write: it spends a Codex
 limit reset when Allen confirms it on the Usage page (ADR 0048).
 
-OpenAI and MiniMax report no balance. Allen records one on the Usage page
-(``usage.balance_recorded``, ADR 0050); the balance shown is the latest
+OpenAI reports no balance. Allen records one on the Usage page
+(``usage.balance_recorded``, ADR 0065); the balance shown is the latest
 recording minus the spend observed since.
 """
 
@@ -63,11 +61,10 @@ LOGGER = logging.getLogger("jarvis.surface.usage_observer")
 
 OBSERVER_ACTOR: Final[str] = "observer"
 EVENT_TYPE: Final[str] = "usage.state_observed"
-TTS_USAGE_EVENT_TYPE: Final[str] = "tts.usage_observed"
 SERVICES: Final[tuple[str, ...]] = ("claude", "codex", "openai", "deepseek", "minimax")
 BALANCE_EVENT_TYPE: Final[str] = "usage.balance_recorded"
 # The services with no balance API, whose balance Allen records by hand.
-BALANCE_SERVICES: Final[tuple[str, ...]] = ("openai", "minimax")
+BALANCE_SERVICES: Final[tuple[str, ...]] = ("openai",)
 MAX_BALANCE_USD: Final[float] = 1_000_000.0
 
 DEFAULT_HTTP_TIMEOUT_S: Final[float] = 15.0
@@ -78,19 +75,12 @@ _SELECT_BY_TYPE_SQL: Final[str] = "SELECT payload_json FROM events WHERE type = 
 _SELECT_BALANCES_SQL: Final[str] = (
     "SELECT payload_json, ts_epoch_ms FROM events WHERE type = ? ORDER BY id ASC"
 )
-_SELECT_TTS_CHARS_SQL: Final[str] = (
-    "SELECT COALESCE(SUM(CAST(json_extract(payload_json, '$.characters') AS INTEGER)), 0) "
-    "FROM events WHERE type = ? AND ts_epoch_ms >= ?"
-)
 
 
 @dataclass(frozen=True)
 class UsageConfig:
-    """Poller settings; the MiniMax anchor is the one human-supplied fact."""
+    """Poller settings."""
 
-    minimax_anchor_usd: float | None = None
-    minimax_anchor_at_ms: int | None = None
-    minimax_usd_per_million_chars: float = 60.0
     http_timeout_s: float = DEFAULT_HTTP_TIMEOUT_S
 
 
@@ -611,40 +601,28 @@ def collect_deepseek(*, timeout_s: float) -> UsageSnapshot:
     )
 
 
-# --- MiniMax (estimate, loop thread) -----------------------------------------
+# --- MiniMax ------------------------------------------------------------------
 
 
-def tts_characters_since(event_log: sqlite3.Connection, since_ms: int) -> int:
-    """Sum ``tts.usage_observed`` characters at or after ``since_ms``."""
-    row = event_log.execute(_SELECT_TTS_CHARS_SQL, (TTS_USAGE_EVENT_TYPE, since_ms)).fetchone()
-    return int(row[0]) if row else 0
-
-
-def estimate_minimax(
-    event_log: sqlite3.Connection, config: UsageConfig, recorded: RecordedBalance | None = None
-) -> UsageSnapshot:
-    """Anchor minus characters times unit price; ``unconfigured`` without an anchor.
-
-    The anchor is the newer of the configured one and the one Allen recorded on the page.
-    """
-    anchor_usd, anchor_ms = config.minimax_anchor_usd, config.minimax_anchor_at_ms
-    if recorded is not None and (anchor_ms is None or recorded.at_ms >= anchor_ms):
-        anchor_usd, anchor_ms = recorded.usd, recorded.at_ms
-    if anchor_usd is None or anchor_ms is None:
-        return UsageSnapshot("minimax", "unconfigured", {}, "no balance anchor")
-    characters = tts_characters_since(event_log, anchor_ms)
-    spent = characters * config.minimax_usd_per_million_chars / 1_000_000
-    return UsageSnapshot(
-        "minimax",
-        "ok",
-        {
-            "anchor_usd": anchor_usd,
-            "anchor_at": _iso(anchor_ms / 1000),
-            "characters_since_anchor": characters,
-            "usd_per_million_chars": config.minimax_usd_per_million_chars,
-            "estimate_usd": round(anchor_usd - spent, 4),
-        },
-    )
+def collect_minimax(*, timeout_s: float) -> UsageSnapshot:
+    """Account balance, less anything owed."""
+    key = os.environ.get("MINIMAX_API_KEY", "").strip()
+    if not key:
+        return UsageSnapshot("minimax", "unconfigured", {}, "no MINIMAX_API_KEY")
+    try:
+        body = _get_json(
+            "https://api.minimax.io/account/query_balance",
+            {"Authorization": f"Bearer {key}"},
+            timeout_s=timeout_s,
+        )
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        return _error("minimax", exc)
+    # MiniMax answers a refused key with a 200 whose base_resp carries the error.
+    base = body.get("base_resp") or {}
+    if base.get("status_code") != 0 or body.get("available_amount") is None:
+        return _error("minimax", str(base.get("status_msg") or "no available_amount in response"))
+    balance = float(body["available_amount"]) - float(body.get("owed_amount") or 0)
+    return UsageSnapshot("minimax", "ok", {"balance": round(balance, 4)})
 
 
 # --- Baseline + emit ----------------------------------------------------------
@@ -703,8 +681,7 @@ class UsageObserver:
     """Emit-on-change usage perception over a log-recovered baseline.
 
     :meth:`collect` is the ``asyncio.to_thread`` half (network only);
-    :meth:`emit` runs on the connection's owning thread, adds the
-    log-derived MiniMax estimate, and appends events.
+    :meth:`emit` runs on the connection's owning thread and appends events.
     """
 
     def __init__(self, event_log: sqlite3.Connection, config: UsageConfig | None = None) -> None:
@@ -721,7 +698,7 @@ class UsageObserver:
         return dict(self._baselines)
 
     def record_balance(self, service: str, usd: float) -> Event:
-        """Record a balance Allen read off the provider's page (ADR 0050); loop thread.
+        """Record a balance Allen read off the provider's page (ADR 0065); loop thread.
 
         The next poll subtracts the spend since. Raises ``ValueError`` for a service
         that reports its own balance or an amount that is not a plausible balance.
@@ -752,6 +729,7 @@ class UsageObserver:
             ("codex", collect_codex),
             ("openai", functools.partial(collect_openai, balance=self._balances.get("openai"))),
             ("deepseek", collect_deepseek),
+            ("minimax", collect_minimax),
         )
         snapshots: list[UsageSnapshot] = []
         for service, collector in collectors:
@@ -767,8 +745,7 @@ class UsageObserver:
         """Append one ``usage.state_observed`` per *changed* service."""
         emitted: list[Event] = []
         observed_at_ms = _now_ms()
-        minimax = estimate_minimax(self._event_log, self._config, self._balances.get("minimax"))
-        for snapshot in [*snapshots, minimax]:
+        for snapshot in snapshots:
             if snapshot.same_state(self._baselines.get(snapshot.service)):
                 continue
             emitted.append(
@@ -799,7 +776,6 @@ __all__ = [
     "EVENT_TYPE",
     "OBSERVER_ACTOR",
     "SERVICES",
-    "TTS_USAGE_EVENT_TYPE",
     "RecordedBalance",
     "UsageConfig",
     "UsageObserver",
@@ -807,11 +783,10 @@ __all__ = [
     "collect_claude",
     "collect_codex",
     "collect_deepseek",
+    "collect_minimax",
     "collect_openai",
-    "estimate_minimax",
     "latest_usage",
     "recorded_balances",
     "recover_baselines",
     "redeem_codex_reset",
-    "tts_characters_since",
 ]

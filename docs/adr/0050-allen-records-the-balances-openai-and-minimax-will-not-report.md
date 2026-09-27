@@ -1,6 +1,6 @@
 # ADR 0050 — Allen records the balances OpenAI and MiniMax will not report
 
-**Status:** Accepted
+**Status:** Superseded-by-0065
 **Date:** 2026-09-25
 **Supersedes:** none
 

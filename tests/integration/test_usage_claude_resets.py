@@ -103,7 +103,7 @@ def test_claude_429_keeps_the_last_reading(tmp_path: Path, monkeypatch: pytest.M
         del timeout_s
         return usage_observer.UsageSnapshot("x", "unconfigured", {})
 
-    for other in ("collect_codex", "collect_openai", "collect_deepseek"):
+    for other in ("collect_codex", "collect_openai", "collect_deepseek", "collect_minimax"):
         monkeypatch.setattr(usage_observer, other, unconfigured)
     answers: list[Any] = [
         {"five_hour": {"utilization": 27.0, "resets_at": None}},

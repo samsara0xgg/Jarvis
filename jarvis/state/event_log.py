@@ -800,7 +800,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
     ),
     EventTypeSchema(
         # One row per finished TTS segment carrying the provider's own
-        # character count; the MiniMax balance estimate folds these.
+        # character count.
         event_type="tts.usage_observed",
         owner_layer="L5",
         actor="observer",
@@ -809,8 +809,8 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         schema_version=1,
     ),
     EventTypeSchema(
-        # ADR 0050: a balance Allen read off a provider's billing page and typed
-        # into the Usage page (openai / minimax report none). The usage observer
+        # ADR 0065: a balance Allen read off OpenAI's billing page and typed
+        # into the Usage page (OpenAI reports none). The usage observer
         # subtracts the spend since; the event's own time is the anchor. Never a
         # decision trigger.
         event_type="usage.balance_recorded",

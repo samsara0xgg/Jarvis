@@ -67,7 +67,7 @@ export function registerDaemonBridge(win: BrowserWindow, { lab = false, verifica
     try { await shell.openExternal(ACCOUNT_PAGES[service]); return true; }
     catch { return false; }
   });
-  // A Usage page write (ADR 0048/0050): main reads the desktop credential and posts to the
+  // A Usage page write (ADR 0048/0065): main reads the desktop credential and posts to the
   // daemon; the renderer only names what to do.
   const usagePost = async (route: string, body: Record<string, unknown>, failed: string) => {
     if (lab || verification) throw new Error('This preview is not connected to Jarvis');
@@ -97,10 +97,10 @@ export function registerDaemonBridge(win: BrowserWindow, { lab = false, verifica
     if (service !== 'codex' || typeof requestId !== 'string' || !UUID.test(requestId)) throw new Error('Invalid reset request');
     return usagePost('codex/reset', { request_id: requestId }, 'The reset did not go through. Try again.');
   });
-  // ADR 0050: record a balance OpenAI or MiniMax will not report.
+  // ADR 0065: record the balance OpenAI will not report.
   ipcMain.handle('usage-balance', async (event, service, usd) => {
     if (!fromThisWindow(event)) throw new Error('Not this window');
-    if ((service !== 'openai' && service !== 'minimax') || typeof usd !== 'number' || !Number.isFinite(usd) || usd < 0) throw new Error('Invalid balance');
+    if (service !== 'openai' || typeof usd !== 'number' || !Number.isFinite(usd) || usd < 0) throw new Error('Invalid balance');
     return usagePost('balance', { service, usd }, 'The balance was not saved. Try again.');
   });
   ipcMain.handle('open-codex', async (event, threadId) => {
