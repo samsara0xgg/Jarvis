@@ -2879,12 +2879,9 @@ DEFAULT_SCREEN_MAX_WIDTH_PX: Final[int] = 1568
 """Default `tools.screen.max_width_px` (ADR-0011 D7) — the vision
 model's own recommended upper bound on input image width."""
 
-_SCREEN_ARTIFACTS_DIRNAME: Final[str] = "screen_artifacts"
-"""Subdirectory of `runtime_paths.artifacts_root`, mirroring the
-`voice_artifacts/` precedent (`jarvis/runtime/inherent_loop.py:735`).
-Nothing prunes it — same as `voice_artifacts/`, which has no pruner
-either (`jarvis/surface/voice_artifact_store.py`); screenshots
-accumulate on disk indefinitely."""
+SCREEN_ARTIFACTS_DIRNAME: Final[str] = "screen_artifacts"
+"""Subdirectory of `runtime_paths.artifacts_root`. The runtime deletes
+screenshots older than `tools.screen.retention_days` (ADR 0067)."""
 
 _SCREEN_CAPTURE_TIMEOUT_S: Final[float] = 10.0
 _SIPS_TIMEOUT_S: Final[float] = 10.0
@@ -2993,7 +2990,7 @@ def _make_screen_look(*, vision_client: VisionClient | None, max_width_px: int) 
         question = (
             question_raw.strip() if isinstance(question_raw, str) and question_raw.strip() else None
         )
-        artifacts_dir = ctx.runtime_paths.artifacts_root / _SCREEN_ARTIFACTS_DIRNAME
+        artifacts_dir = ctx.runtime_paths.artifacts_root / SCREEN_ARTIFACTS_DIRNAME
         artifacts_dir.mkdir(parents=True, exist_ok=True)
         # `action_id` makes this collision-free; the timestamp prefix is for chronological `ls`.
         image_path = artifacts_dir / f"{int(time.time() * 1000)}_{ctx.action_id}.png"

@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Final, NamedTuple
 
 from jarvis.shared import lang
+from jarvis.state import NewerDataError
 
 _SCHEMA: Final[str] = """
 CREATE TABLE IF NOT EXISTS records (
@@ -58,6 +59,9 @@ CREATE TABLE IF NOT EXISTS summaries (
 );
 """
 
+# ``PRAGMA user_version`` (ADR 0068). 0 is a file from before the stamp, same
+# schema as 1; a file above this was written by a newer Jarvis and is refused.
+SCHEMA_VERSION: Final[int] = 1
 DEFAULT_SEARCH_LIMIT: Final[int] = 20
 # The Live brief's label for the user's own rows; the stored source stays ``allen``.
 _USER_LABEL: Final[str] = "user"
@@ -77,6 +81,13 @@ _COPIED_LABEL_RE: Final[re.Pattern[str]] = re.compile(r"^\[\d{4}-\d\d-\d\dT[^\]\
 Record = tuple[str, str, str, str]
 
 
+def retention_days(value: object) -> int | None:
+    """A positive whole number of days, else None: keep forever (ADR 0067)."""
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    return None
+
+
 @dataclass(frozen=True)
 class MemorySettings:
     """The ``memory:`` block of ``config/jarvis.yaml``, resolved against the runtime root."""
@@ -84,6 +95,8 @@ class MemorySettings:
     db_path: Path
     audio_dir: Path
     retain_audio: bool = True
+    # ADR 0067: recordings older than this many days are deleted; None keeps them.
+    audio_retention_days: int | None = None
 
     @classmethod
     def from_config(cls, raw: object, *, runtime_root: Path) -> MemorySettings:
@@ -100,6 +113,7 @@ class MemorySettings:
             db_path=_path("db_path", runtime_root / "memory.db"),
             audio_dir=_path("audio_dir", runtime_root / "memory" / "audio"),
             retain_audio=values.get("retain_audio") is not False,
+            audio_retention_days=retention_days(values.get("audio_retention_days")),
         )
 
 
@@ -209,10 +223,19 @@ def iso_seconds(moment: datetime) -> str:
 
 
 def open_memory_db(path: Path) -> sqlite3.Connection:
-    """Open (creating if needed) the memory database at ``path``."""
+    """Open (creating if needed) the memory database at ``path``.
+
+    Raises :class:`NewerDataError` for a file a newer Jarvis wrote (ADR 0068).
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, timeout=5.0)
+    found = conn.execute("PRAGMA user_version").fetchone()[0]
+    if found > SCHEMA_VERSION:
+        conn.close()
+        raise NewerDataError(path.name, found, SCHEMA_VERSION)
     conn.executescript(_SCHEMA)
+    if found < SCHEMA_VERSION:
+        conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     return conn
 
 

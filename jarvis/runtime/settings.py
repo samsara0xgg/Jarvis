@@ -67,11 +67,16 @@ PATHS: dict[str, tuple[str, ...]] = {
     "mac_aec": ("realtime", "single_audio_ingress", "echo_cancellation"),
     "timesink": ("observer", "timesink", "enabled"),
     "keep_audio": ("memory", "retain_audio"),
+    "audio_days": ("memory", "audio_retention_days"),
+    "screenshot_days": ("tools", "screen", "retention_days"),
 }
 _DEFAULTS: dict[str, Any] = {"reply_language": "follow", "tts_volume": 1.0}
 _DEVICES = {"output_device": "output", "input_device": "input"}
 _RANGES = {"wake_threshold": (0.80, 0.99), "tts_volume": (0.3, 1.0)}
 _SWITCHES = ("gpt_live", "mac_aec", "timesink", "keep_audio")
+# ADR 0067: how many days recordings and screenshots are kept; None is forever.
+RETENTION_DAYS = (7, 30, 90, None)
+_RETENTION = ("audio_days", "screenshot_days")
 REPLY_LINES = {
     "zh": "Reply language: always answer in Chinese (Mandarin), whatever language the user uses.",
     "en": "Reply language: always answer in English, whatever language the user uses.",
@@ -98,6 +103,8 @@ def _valid(key: str, value: object) -> bool:
         return number and low <= value <= high  # type: ignore[operator]
     if key in _SWITCHES:
         return isinstance(value, bool)
+    if key in _RETENTION:
+        return value is None or (type(value) is int and value in RETENTION_DAYS)
     if key in _DEVICES:
         return value is None or isinstance(value, str)
     if key == "tts_voice":
@@ -179,6 +186,7 @@ class Settings:
             "values": values,
             "options": {
                 "tts_voice": [voice_name(one) for one in VOICES],
+                **{key: list(RETENTION_DAYS) for key in _RETENTION},
                 **{key: [SYSTEM_DEFAULT, *self._devices(kind)] for key, kind in _DEVICES.items()},
             },
             "restart_pending": any(value != self._booted[key] for key, value in saved.items()),

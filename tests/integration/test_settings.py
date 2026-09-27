@@ -38,7 +38,8 @@ YAML: dict[str, Any] = {
     "observer": {
         "repos": ["~/Projects/jarvis", "~/Projects/typlus"], "timesink": {"enabled": True},
     },
-    "memory": {"retain_audio": True},
+    "memory": {"retain_audio": True, "audio_retention_days": 30},
+    "tools": {"screen": {"retention_days": 7}},
     "realtime": {
         "wake_threshold": 0.95,
         "tts_voice": "Chinese (Mandarin)_Warm_Bestie",
@@ -75,6 +76,7 @@ def test_the_page_reads_what_jarvis_booted_with(tmp_path: Path) -> None:
         "reply_language": "follow", "wake_threshold": 0.95, "tts_voice": "暖心闺蜜",
         "tts_volume": 1.0, "output_device": "System default", "input_device": "System default",
         "gpt_live": True, "mac_aec": False, "timesink": True, "keep_audio": True,
+        "audio_days": 30, "screenshot_days": 7,
         "repos": ["~/Projects/jarvis", "~/Projects/typlus"],
         "model_conversation": "gpt-5.6-luna", "model_background": "gpt-6-luna",
         "model_report": "gpt-6-sol",
@@ -85,6 +87,7 @@ def test_the_page_reads_what_jarvis_booted_with(tmp_path: Path) -> None:
     # A voice first-run setup offers carries setup's name; the rest their MiniMax name.
     assert "舒缓女声" in body["options"]["tts_voice"]
     assert "Warm Hearted Girl" in body["options"]["tts_voice"]
+    assert body["options"]["audio_days"] == [7, 30, 90, None]  # None: keep forever (ADR 0067)
     assert body["restart_pending"] is False
 
 
@@ -93,6 +96,7 @@ def test_saving_waits_for_the_next_boot(tmp_path: Path) -> None:
     changes = {
         "input_device": "MacBook Pro Microphone", "tts_voice": "Crisp Girl",
         "wake_threshold": 0.9, "reply_language": "en", "mac_aec": True,
+        "audio_days": None, "screenshot_days": 90,
     }
     body = _client(tmp_path).post("/inherent/settings", json={"changes": changes}).json()
     assert body["restart_pending"] is True
@@ -100,8 +104,11 @@ def test_saving_waits_for_the_next_boot(tmp_path: Path) -> None:
     assert json.loads((tmp_path / "settings.json").read_text()) == {
         "input_device": "MacBook Pro Microphone", "tts_voice": "Chinese (Mandarin)_Crisp_Girl",
         "wake_threshold": 0.9, "reply_language": "en", "mac_aec": True,
+        "audio_days": None, "screenshot_days": 90,
     }
     booted = apply_settings(YAML, tmp_path)
+    assert booted["memory"]["audio_retention_days"] is None
+    assert booted["tools"]["screen"]["retention_days"] == 90
     assert booted["realtime"]["input_device"] == "MacBook Pro Microphone"
     assert booted["realtime"]["single_audio_ingress"]["echo_cancellation"] is True
     assert booted["reply_language"] == "en"
@@ -126,6 +133,8 @@ def test_a_value_the_page_cannot_hold_is_refused(tmp_path: Path) -> None:
         {"gpt_live": "yes"},
         {"input_device": "USB Mic that left"},
         {"tts_voice": "Nobody"},
+        {"audio_days": 45},
+        {"screenshot_days": 7.0},
     ):
         assert client.post("/inherent/settings", json={"changes": changes}).status_code == 400
     assert not (tmp_path / "settings.json").exists()

@@ -834,7 +834,10 @@ class LiveVoice:
         if role == "user":
             # Every user delta with its span: three sentence tails went missing
             # right after a row flush (2026-09-12), and only this shows which.
-            LOGGER.info("gpt_live user fragment %d-%d %r", start_ms, end_ms, fragment.text)
+            # Its length, never the words (ADR 0067).
+            LOGGER.info(
+                "gpt_live user fragment %d-%d chars=%d", start_ms, end_ms, len(fragment.text),
+            )
             run.max_user_end_ms = max(run.max_user_end_ms, end_ms)
             run.hearing_until = now + _HEARING_HOLD_S
             run.user_fragments.append(fragment)
@@ -956,8 +959,8 @@ class LiveVoice:
             else text
         )
         LOGGER.info(
-            "gpt_live delegation %s request=%r window=(%d,%d] record_id=%s",
-            pending.delegation_id, request, pending.window_start_ms, pending.window_end_ms,
+            "gpt_live delegation %s request_chars=%d window=(%d,%d] record_id=%s",
+            pending.delegation_id, len(request), pending.window_start_ms, pending.window_end_ms,
             pending.record_id,
         )
         row_text = "".join(f.text for f in unflushed).strip()

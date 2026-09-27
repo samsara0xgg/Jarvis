@@ -156,7 +156,13 @@ from jarvis.shared.realtime_trace import (
 from jarvis.state.committed_event_bus import CommittedEventBus
 from jarvis.state.daily_report import resolve_zone
 from jarvis.state.event_log import iter_events_for_turn, open_event_log, open_runtime_event_log
-from jarvis.state.memory_db import MemorySettings, SessionSettings, append_record, render_context
+from jarvis.state.memory_db import (
+    MemorySettings,
+    SessionSettings,
+    append_record,
+    open_memory_db,
+    render_context,
+)
 from jarvis.state.projects import parse_catalog
 from jarvis.state.stream_emission import committed_text_prefix
 from jarvis.state.trigger_consumption import mark_trigger_consumed
@@ -1744,6 +1750,8 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
     _install_open_path(full_config)
     vision_preset_name, screen_max_width_px = _screen_tools_config(full_config)
     memory = MemorySettings.from_config(full_config.get("memory"), runtime_root=paths.root)
+    # ADR 0068: refuse a memory.db a newer Jarvis wrote before anything writes to it.
+    open_memory_db(memory.db_path).close()
     session = SessionSettings.from_config(full_config.get("session"))
     work_state = WorkStateService(
         event_log_path=paths.event_log,

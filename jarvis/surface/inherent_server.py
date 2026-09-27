@@ -83,8 +83,9 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field, ValidationError
+from starlette.background import BackgroundTask
 from starlette.datastructures import Headers
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.websockets import WebSocketClose
@@ -118,6 +119,7 @@ from jarvis.surface.voice_pipeline import VoiceInputBusyError, VoicePipelineEmpt
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable
+    from pathlib import Path
 
     from starlette.types import ASGIApp, Receive, Scope, Send
 
@@ -514,6 +516,14 @@ class InherentDeps:
     # Settings > Restart: answer, then TERM this process; registered only when
     # launchd's KeepAlive is there to bring the daemon back.
     restart: Callable[[], None] | None = None
+    # ADR 0067, Settings > Privacy & data: the export builds a zip and hands
+    # back its temp path (deleted once sent); the clear deletes every
+    # recording and screenshot now and answers how many; the erase marks
+    # everything for the next boot and restarts, so it is wired only with
+    # ``restart``. ``None`` leaves a route unregistered.
+    data_export: Callable[[], Awaitable[Path]] | None = None
+    data_clear: Callable[[], Awaitable[int]] | None = None
+    data_erase: Callable[[], None] | None = None
     # ADR 0046: whether the Agents page may read Claude Code's own session
     # files (``observer.claude_sessions.enabled``); off, it shows only what
     # the user's installed hooks push.
@@ -1028,6 +1038,39 @@ def _register_home_routes(app: FastAPI, deps: InherentDeps) -> None:  # noqa: C9
             return {"ok": True}
 
 
+def _register_data_routes(app: FastAPI, deps: InherentDeps) -> None:
+    """ADR 0067: take the data out as a zip, clear the recordings, erase everything."""
+    if deps.data_export is not None:
+        data_export = deps.data_export
+
+        @app.get("/inherent/data/export")
+        async def data_export_zip() -> FileResponse:
+            """One zip of the user's data, as a download; the temp file goes once it is sent."""
+            path = await data_export()
+            return FileResponse(
+                path, media_type="application/zip",
+                filename=f"Jarvis-export-{time.strftime('%Y-%m-%d')}.zip",
+                background=BackgroundTask(path.unlink, missing_ok=True),
+            )
+
+    if deps.data_clear is not None:
+        data_clear = deps.data_clear
+
+        @app.post("/inherent/data/clear-recordings", status_code=200)
+        async def data_clear_recordings() -> dict[str, int]:
+            """Delete every recording and screenshot now; the conversations stay."""
+            return {"deleted": await data_clear()}
+
+    if deps.data_erase is not None:
+        data_erase = deps.data_erase
+
+        @app.post("/inherent/data/erase", status_code=202)
+        async def data_erase_all() -> dict[str, bool]:
+            """Everything but the speech models goes at the restart this starts."""
+            data_erase()
+            return {"ok": True}
+
+
 class DictationRequest(BaseModel):
     """Body of ``POST /inherent/dictation``: where the words will land, for the polish."""
 
@@ -1509,6 +1552,7 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 â
             return think_read()
 
     _register_home_routes(app, deps)
+    _register_data_routes(app, deps)
     _register_setup_routes(app, deps)
     _register_dictation_routes(app, deps)
 
