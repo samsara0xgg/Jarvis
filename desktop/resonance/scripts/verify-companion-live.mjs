@@ -49,6 +49,8 @@ try {
     { seq: 12, id: 'b', ts: iso(now - 9 * 60_000 + 4000), source: 'jarvis', text: 'Two things: the **voice test** at four, and `the demo cut`.' },
   ];
   let controls = { mic_muted: false, speech_muted: false, conversation: false };
+  // What POST /inherent/setup/key answers next (Settings › Accounts).
+  let keyAnswer = { ok: false, checks: [] };
   // ADR 0069, 0070: the daemon's marks, each session's conversation, and what a typed reply does to the board.
   const agentMarks = {}, conversations = {};
   let replied = () => {};
@@ -139,6 +141,8 @@ try {
     if (url.pathname === '/inherent/controls') { controls = { ...controls, ...body }; return json(controls); }
     if (url.pathname === '/inherent/submit') return json({ turn_id: 'typed-1' });
     if (url.pathname === '/inherent/cancel-response') return json({});
+    if (url.pathname === '/inherent/setup/key') return json(keyAnswer);
+    if (url.pathname === '/inherent/restart') return json({ ok: true });
     if (url.pathname === '/inherent/usage/refresh') refreshes.push(Date.now());
     if (url.pathname.startsWith('/inherent/claude-requests/')) return json({ ok: true });
     if (url.pathname === '/inherent/agent-marks') return json({ marks: agentMarks });
@@ -557,8 +561,22 @@ try {
     fixtures['/inherent/setup'].voice_models = { state: 'ready', done: 0, total: 0 };
     await page.waitForFunction(() => !document.querySelector('.ad .corner .clock')?.textContent.includes('Voice'), null, { timeout: 5000 }).catch(() => {});
     check('L16 once they are in the corner is the clock again', /\d:\d\d/.test(await corner()));
+    // Settings › Accounts takes a new API key: a refused one says why and restarts nothing, a kept one restarts Jarvis.
     await page.locator('.ad .corner [data-row="settings"]').click(); await page.waitForTimeout(900);
     await page.locator('.ad [data-cat="accounts"]').click(); await page.waitForTimeout(900);
+    const keyRow = '.ad [data-item="key-openai"]';
+    check('L16 Accounts says the saved OpenAI key is refused', (await text(`${keyRow} .st-val`)) === 'Refused');
+    keyAnswer = { ok: false, checks: [{ id: 'connect', ok: false, reason: 'unauthorized', detail: '401' }] };
+    await page.locator(`${keyRow} input`).fill('sk-wrong'); await page.locator(`${keyRow} .st-key button`).click();
+    await page.locator(`${keyRow} .st-why`).waitFor({ timeout: 3000 });
+    check('L16 a refused key says why and restarts nothing', (await text(`${keyRow} .st-why`)).includes('(401)')
+      && posts.at(-1)?.path === '/inherent/setup/key' && posts.at(-1).body.provider === 'openai' && posts.at(-1).body.key === 'sk-wrong' && !posts.some(p => p.path === '/inherent/restart'));
+    await panelShot('L16-key-refused');
+    keyAnswer = { ok: true, checks: [{ id: 'connect', ok: true }, { id: 'chat', ok: true }] };
+    await page.locator(`${keyRow} input`).fill('sk-right'); await page.locator(`${keyRow} .st-key button`).click();
+    await page.waitForTimeout(600);
+    check('L16 a kept key restarts Jarvis and empties the field', posts.at(-2)?.path === '/inherent/setup/key' && posts.at(-2).body.key === 'sk-right'
+      && posts.at(-1)?.path === '/inherent/restart' && await page.locator(`${keyRow} input`).inputValue() === '' && await page.locator(`${keyRow} .st-why`).count() === 0);
     await back(); await back();
     await hit.dblclick({ force: true });
     await page.waitForFunction(() => !document.querySelector('.companion-dashboard.is-open'), null, { timeout: 3000 });

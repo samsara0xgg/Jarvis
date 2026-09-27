@@ -211,7 +211,7 @@ function companion(shown?: () => void) {
   // ADR 0058: the right ⌥ dictates at the text caret; she goes there from the notch. Live only: it needs the daemon's mic.
   const dictation = demo || !material ? null : setupDictation({ companion: win, native: material, nativePath: path.join(here, '../dist-native/material.node'), preload: path.join(here, 'preload.cjs'),
     page: path.join(here, '../dist/dictation.html'), port, topInset: display => placement(display).topInset, open: openPage });
-  win.loadFile(path.join(here, '../dist/index.html'), { query: demo ? { companion: '1' } : { companion: '1', port: process.env.JARVIS_INHERENT_BRIDGE_PORT ?? '8006' } });
+  win.loadFile(path.join(here, '../dist/index.html'), { query: demo ? { companion: '1' } : { companion: '1', port: process.env.JARVIS_INHERENT_BRIDGE_PORT ?? '8006', ...app.isPackaged ? { packaged: '1' } : {} } });
   win.webContents.on('did-finish-load', place);
   win.once('ready-to-show', () => { place(); win.showInactive(); keepOnTop(); shown?.(); });
   win.on('blur', () => setImmediate(() => { if (!win.isDestroyed()) keepOnTop(); }));
@@ -261,6 +261,8 @@ function companion(shown?: () => void) {
   win.on('closed', () => { clearInterval(cursor); clearTimeout(moving); clearTimeout(untuck); dictation?.close(); });
   ipcMain.on('display-ready', event => { if (event.sender === win.webContents && moving) move(); });
   ipcMain.handle('placement', event => event.sender === win.webContents ? placement(target()) : null);
+  // Settings › Advanced › Quit, the installed app's only way out (no Dock icon); the daemon stops with it (daemon.ts).
+  ipcMain.on('quit', event => { if (event.sender === win.webContents && app.isPackaged) app.quit(); });
   ipcMain.on('passthrough', (event, enabled) => { if (event.sender === win.webContents && typeof enabled === 'boolean') { pass = enabled; win.setIgnoreMouseEvents(enabled || tucked, { forward: true }); } });
   ipcMain.handle('focus-input', (event, enabled) => {
     if (event.sender !== win.webContents || typeof enabled !== 'boolean') return;

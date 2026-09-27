@@ -28,6 +28,7 @@ contextBridge.exposeInMainWorld('jarvis', {
   layout: (mode: string, height: number, surface?: { x: number; y: number; width: number; height: number }) => ipcRenderer.send('layout', { mode, height, surface }),
   focus: (enabled: boolean) => ipcRenderer.invoke('focus-input', enabled),
   hide: () => ipcRenderer.send('hide'),
+  quit: () => ipcRenderer.send('quit'),
   copy: (text: string) => ipcRenderer.invoke('copy', text),
   openCodex: (threadId: string) => ipcRenderer.invoke('open-codex', threadId),
   // ADR 0057: Ghostty's front terminal while asked, and going to a session's terminal.

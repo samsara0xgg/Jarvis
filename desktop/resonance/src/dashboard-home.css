@@ -157,6 +157,10 @@
 .ad .st-skins [aria-checked="true"] { color:var(--p-ink); }
 .ad .st-skins [aria-checked="true"] i { box-shadow:0 0 0 2px rgb(var(--glow)),0 0 12px rgb(var(--glow) / .6); }
 .ad .st-warn { font-size:11.5px; line-height:16px; color:var(--warm-c); }
+.ad .st-key { display:flex; gap:6px; }
+.ad .st-key input { flex:1; min-width:0; padding:4px 8px; border:0; border-radius:8px; background:rgb(0 0 0 / .25); color:var(--p-ink); font-size:12px; }
+.ad .st-key input::placeholder { color:var(--p-faint); }
+.ad .st-why { color:var(--warm-c); }
 .ad .pg-head .meta .is-ok { color:#8be4bc; }
 .ad .st-restart { flex:none; display:flex; align-items:center; justify-content:space-between; gap:8px; margin:0 4px 4px; padding:7px 8px 7px 12px; border-radius:12px; background:rgb(255 201 143 / .12); box-shadow:inset 0 0 0 .5px rgb(255 201 143 / .35); font-size:11.5px; color:var(--warm-c); animation:ad-rise .3s var(--spring) both; }
 .ad .st-restart button { padding:3px 9px; border-radius:7px; background:var(--warm-c); color:#241406; font-size:11.5px; font-weight:600; }
