@@ -49,6 +49,9 @@ try {
     { seq: 12, id: 'b', ts: iso(now - 9 * 60_000 + 4000), source: 'jarvis', text: 'Two things: the **voice test** at four, and `the demo cut`.' },
   ];
   let controls = { mic_muted: false, speech_muted: false, conversation: false };
+  // ADR 0067, 0068: the daemon's marks, each session's conversation, and what a typed reply does to the board.
+  const agentMarks = {}, conversations = {};
+  let replied = () => {};
   let snapshot = { request: null, plugins: [
     { id: 'notion', name: 'Notion', description: 'Pages and databases.', capabilities: ['Read'], skill_count: 0, supported: true, unavailable_reason: null, enabled: false, status: 'needs_auth', error: null, auth: 'oauth', credential_fields: [], credentials_saved: false, approval_mode: 'auto', tools: [] },
     { id: 'linear', name: 'Linear', description: 'Issues and projects.', capabilities: ['Read', 'Write'], skill_count: 0, supported: true, unavailable_reason: null, enabled: true, status: 'ready', error: null, auth: 'oauth', credential_fields: [], credentials_saved: true, approval_mode: 'auto',
@@ -112,7 +115,7 @@ try {
       onPlacement: () => () => {}, onDisplayLeave: () => () => {}, displayReady: () => {}, companionMenu: () => {},
       onCursor: callback => { window.__cursor = callback; return () => {}; },
       onCommand: callback => { window.__command = callback; return () => {}; },
-      passthrough: () => {}, focus: async () => {}, material: () => {},
+      passthrough: () => {}, focus: async on => { window.__state.focus = on; }, material: () => {},
       codexTitles: async () => ({}), openCodex: async id => { window.__state.opened.push(id); return true; },
       watchGhostty: on => { window.__state.watch = on; }, onGhostty: callback => { window.__ghostty = callback; return () => {}; },
       jumpGhostty: async (title, job) => { window.__state.jumps.push([title, job]); return true; },
@@ -138,6 +141,18 @@ try {
     if (url.pathname === '/inherent/cancel-response') return json({});
     if (url.pathname === '/inherent/usage/refresh') refreshes.push(Date.now());
     if (url.pathname.startsWith('/inherent/claude-requests/')) return json({ ok: true });
+    if (url.pathname === '/inherent/agent-marks') return json({ marks: agentMarks });
+    const marked = /^\/inherent\/agent-marks\/(.+)$/.exec(url.pathname), said = /^\/inherent\/claude-sessions\/([^/]+)\/(conversation|reply)$/.exec(url.pathname);
+    if (marked && method === 'POST') {
+      const m = agentMarks[marked[1]] ??= {};
+      if (body.seen) m.unread = false;
+      if (typeof body.unread === 'boolean') m.unread = body.unread;
+      if (typeof body.park === 'boolean') m.parked_ms = body.park ? m.parked_ms || Date.now() : null;
+      if (typeof body.archive === 'boolean') m.archived_ms = body.archive ? m.archived_ms || Date.now() : null;
+      return json(m);
+    }
+    if (said?.[2] === 'conversation') return json({ messages: conversations[said[1]] ?? [] });
+    if (said?.[2] === 'reply') { replied(said[1], body.text); return json({ ok: true }); }
     if (url.pathname === '/inherent/conversation') {
       const after = Number(url.searchParams.get('after') ?? 0), limit = Number(url.searchParams.get('limit') ?? 2), all = [...yesterday, ...rows];
       reads.push({ at: Date.now(), after, limit });
@@ -530,7 +545,7 @@ try {
     check('L11 when Jarvis asks for a plugin the Dashboard opens on it with the reason', await page.locator('.companion-dashboard.is-open').count() === 1 && (await text('.ad .pl-det .btn-glow')) === 'Sign in and continue');
     await page.waitForTimeout(900); await panelShot('L11-asked');
 
-    // L13: agent notices beside the notch (ADR 0049, ADR 0057). The fake board changes under her: sessions finish,
+    // L13: agent notices beside the notch (ADR 0049, 0067, 0068). The fake board changes under her: sessions finish,
     // ask, stop. A finish pops its name for 5 s and stays on Allen's turn until he looks at it in Ghostty (a fake
     // front-terminal feed here) or goes to it; a needs-you card hangs from the notch and every answer goes back as a
     // POST for the held prompt. She watches all of it from home.
@@ -551,46 +566,52 @@ try {
     const answered = path => posts.filter(p => p.path === `/inherent/claude-requests/${path}`).map(p => p.body);
     const drop = page.locator('.notch-drop.is-open');
     const noteShot = name => shot(name, { x: 80, y: 0, width: 560, height: 420 });
+    const beaconX = 412.5 + 6 + 9, slotX = i => beaconX + 30 * i;
+    const heads = () => drop.locator('.a-h > span').allTextContents();
+    const rowsOf = sec => drop.locator(`.a-sec[data-sec="${sec}"] .a-row b`).allTextContents();
+    const weights = sec => drop.locator(`.a-sec[data-sec="${sec}"] .a-row b`).evaluateAll(els => [...new Set(els.map(e => getComputedStyle(e).fontWeight))].join());
+    const rowAct = async (name, label) => { const row = drop.locator('.a-row', { hasText: name }); await row.hover(); await page.waitForTimeout(150); await row.locator(`[aria-label^="${label}"]`).click(); await page.waitForTimeout(300); };
     setBoard(); await page.waitForTimeout(2500);
-    check(`L13 sessions met for the first time pop nothing: the waiting one is on his turn, six working fold (${await marks()})`,
-      await note().count() === 0 && (await marks()) === 'turn1 workx6' && await page.evaluate(() => window.__state.watch === true));
+    check(`L13 sessions met for the first time pop nothing: the waiting one is on his turn, six working share one mark (${await marks()})`,
+      await note().count() === 0 && (await marks()) === 'turn1 work6' && await page.evaluate(() => window.__state.watch === true));
     setBoard('n-build', { phase: 'done', last_message: '**Done.** The wing and the cards are in.\n- 72 checks pass' });
     await noteUp(); await page.waitForTimeout(700);
-    check('L13 a finished session pops its name only, beside the notch, while she stays home in her done face',
+    check('L13 a finished session pops its name only, out of the island, while she stays home in her done face',
       (await text('.notch-note .c-label')) === 'Done' && (await page.locator('.notch-note .u-row').allTextContents()).join('|') === 'Build the notices'
       && !(await text('.notch-note')).includes('checks pass') && await face('fin') === 'fin' && await hit.getAttribute('data-place') === 'home');
     await noteShot('L13-pop');
     await noteGone(); await settle();
-    check(`L13 after 5 s the pop folds into the beacon; the session stays on his turn (${await marks()})`, (await marks()) === 'turn2 workx5');
-    await move(428, 14); await drop.waitFor(); await page.waitForTimeout(700);
-    check('L13 the beacon lists his turn: the one asking first, in the warm colour, then the finished one',
-      (await drop.locator('.u-row').allTextContents()).join('|') === 'Wire the companion|Build the notices' && await drop.locator('.u-row.is-ask').count() === 1
-      && (await text('.notch-drop .c-label')).startsWith('Your turn · 2'));
+    check(`L13 after 5 s the pop folds into the beacon; the session stays on his turn (${await marks()})`, (await marks()) === 'turn2 work5');
+    await move(beaconX, 14); await drop.waitFor(); await page.waitForTimeout(700);
+    check(`L13 the panel starts with his turn: the one asking first, warm, then the finished one; both bold, the working ones not (${(await heads()).join('|')})`,
+      (await rowsOf('turn')).join('|') === 'Wire the companion|Build the notices' && await drop.locator('.a-sec[data-sec="turn"] .a-row.is-ask').count() === 1
+      && (await heads()).join('|') === 'Your turn2|Working5' && Number(await weights('turn')) >= 600 && (await weights('work')) === '400');
     await noteShot('L13-your-turn');
     await settle();
     await ghostty('Build the notices'); await page.waitForTimeout(2200);
-    check(`L13 1.5 s on its Ghostty terminal reads it: it leaves his turn and stays as a dim star (${await marks()})`, (await marks()) === 'turn1 workx5 done');
+    check(`L13 1.5 s on its Ghostty terminal reads it: it leaves his turn for Finished (${await marks()})`, (await marks()) === 'turn1 work5 done1');
     await ghostty('zsh');
     setBoard('n-a', { phase: 'done', last_message: 'Sounds ported.' }); setBoard('n-b', { phase: 'done', last_message: 'Faces ported.' });
     await noteUp(); await page.waitForTimeout(700);
     check('L13 two finishes together share one pop', (await text('.notch-note .c-label')) === '2 done' && await page.locator('.notch-note .u-row').count() === 2);
     await page.locator('.notch-note .u-row', { hasText: 'Port the sounds' }).hover();
-    await page.locator('.notch-note .u-row', { hasText: 'Port the sounds' }).locator('.u-read').click(); await page.waitForTimeout(300);
+    await page.locator('.notch-note .u-row', { hasText: 'Port the sounds' }).locator('[aria-label="Mark as read"]').click(); await page.waitForTimeout(300);
     check('L13 ✕ marks one read and it leaves the pop', (await page.locator('.notch-note .u-row').allTextContents()).join('|') === 'Port the faces');
     await page.locator('.notch-note .u-row', { hasText: 'Port the faces' }).click();
     await noteGone(); await settle();
     check(`L13 a click goes to it: a background session attaches by its job id in Ghostty, and it is read (${await marks()})`,
-      JSON.stringify(await page.evaluate(() => window.__state.jumps)) === '[["Port the faces","b7a91c02"]]' && (await marks()) === 'turn1 work work work done done done');
+      JSON.stringify(await page.evaluate(() => window.__state.jumps)) === '[["Port the faces","b7a91c02"]]' && (await marks()) === 'turn1 work3 done3');
     await ghostty('Check the queue'); await page.waitForTimeout(1800);
     setBoard('n-x', { phase: 'done', last_message: 'Queue checked.' }); await page.waitForTimeout(2600);
-    check(`L13 a session finishing while he looks at it pops nothing and is not on his turn; the fourth finished folds (${await marks()})`,
-      await note().count() === 0 && (await marks()) === 'turn1 work work donex4');
+    check(`L13 a session finishing while he looks at it pops nothing and goes straight to Finished (${await marks()})`,
+      await note().count() === 0 && (await marks()) === 'turn1 work2 done4');
 
     setBoard('c-wait', { request: { id: 'r-bash', tool: 'Bash', input: { command: 'npm run build', description: 'Build the desktop app' }, cwd: '/x/jarvis/desktop/resonance', always: "Don't ask again for Bash(npm run build:*)" } });
     await noteUp(); await page.waitForTimeout(700);
-    check('L13 a held Bash prompt hangs a card from the notch with its command, Deny, Always and Allow; she waits on you from home',
+    check('L13 a held Bash prompt hangs a card out of the island with its command, Park, Deny, Always and Allow; she waits on you from home',
       (await text('.notch-note .nc-label')) === 'Needs your OK' && (await text('.notch-note .nc-cmd')).includes('npm run build') && (await text('.notch-note .nc-go')) === 'Open in Ghostty'
-      && (await page.locator('.notch-note .nc-choice .btn').allTextContents()).join('|') === 'Deny|Always|Allow' && await face('ask') === 'ask' && await hit.getAttribute('data-place') === 'home');
+      && (await text('.notch-note .nc-x')) === 'Park' && (await page.locator('.notch-note .nc-choice .btn').allTextContents()).join('|') === 'Deny|Always|Allow'
+      && await face('ask') === 'ask' && await hit.getAttribute('data-place') === 'home');
     await noteShot('L13-bash');
     await page.locator('.notch-note .btn-warm').click();
     await page.waitForTimeout(200);
@@ -623,7 +644,7 @@ try {
     await noteUp();
     check('L13 a stopped session pops as stopped, with her error face', (await text('.notch-note .c-label')) === 'Stopped' && await face('34') === '34');
     await page.locator('.notch-note .c-x').click(); await noteGone(); await settle();
-    check(`L13 closed by hand, a pop stays on his turn (${await marks()})`, (await marks()) === 'turn2 work donex4');
+    check(`L13 closed by hand, a pop stays on his turn (${await marks()})`, (await marks()) === 'turn2 work1 done4');
 
     await page.evaluate(() => window.__command('dashboard'));
     await page.locator('.companion-dashboard.is-open').waitFor();
@@ -635,28 +656,69 @@ try {
     await page.locator('.notch-note .u-row').click(); await noteGone();
     check('L13 a Codex session opens its thread', JSON.stringify(await page.evaluate(() => window.__state.opened.slice(-1))) === JSON.stringify([codexId]));
 
+    // Park (先放着): off his turn, into the moon at the far right, quiet until he takes it back or it moves again.
     setBoard('c-wait', { request: { id: 'r-edit', tool: 'Edit', input: { file_path: '/x/jarvis/src/Notices.tsx', old_string: 'const a = 1;', new_string: 'const a = 2;\nconst b = 3;' }, cwd: '/x', always: 'Allow edits for the rest of this session' } });
     await noteUp();
     check('L13 an edit prompt shows the file and its diff', (await text('.notch-note .nc-file')).includes('src/Notices.tsx') && await page.locator('.notch-note .nc-diff code.add').count() === 2);
     await page.locator('.notch-note .nc-x').click(); await noteGone(); await settle();
-    check(`L13 Later puts a needs-you card away; it stays on his turn (${await marks()})`, await note().count() === 0 && (await marks()).startsWith('turn2'));
-    await move(428, 14); await drop.waitFor(); await page.waitForTimeout(600);
-    await drop.locator('.u-row.is-ask').click();
+    check(`L13 Park on the card puts the question into the moon, off his turn (${await marks()})`, await note().count() === 0 && (await marks()) === 'turn1 done5 moon1'
+      && agentMarks['c-wait']?.parked_ms > 0);
+    await move(slotX(2), 14); await drop.waitFor(); await page.waitForTimeout(600);
+    check(`L13 the moon lists what is parked, the question still warm (${(await heads()).join('|')})`, (await heads()).join('|') === 'Your turn1|Finished5|Parked1'
+      && (await rowsOf('moon')).join() === 'Wire the companion' && await drop.locator('.a-sec[data-sec="moon"] .a-row.is-ask').count() === 1);
+    await noteShot('L13-moon');
+    await drop.locator('.a-sec[data-sec="moon"] .a-row').click();
     await noteUp();
-    check('L13 the asking row on his turn brings its card back', (await text('.notch-note .nc-file')).includes('Notices.tsx'));
+    check('L13 its row brings the card back from the moon', (await text('.notch-note .nc-file')).includes('Notices.tsx'));
     await page.locator('.notch-note .btn-ghost', { hasText: 'Always' }).click(); await page.waitForTimeout(200);
     check('L13 Always goes back as always', JSON.stringify(answered('r-edit')) === '[{"decision":"always"}]');
-    setBoard('c-wait', { request: null }); await noteGone(); await settle();
+    setBoard('c-wait', { request: null, phase: 'working' }); await noteGone(); await settle();
+    check(`L13 working again, it leaves the moon (${await marks()})`, (await marks()) === 'turn1 work1 done5' && !agentMarks['c-wait'].parked_ms);
+    await move(beaconX, 14); await drop.waitFor(); await page.waitForTimeout(500);
+    await rowAct('Plan the wing', 'Park'); await settle();
+    check(`L13 a stopped session parks from its row (${await marks()})`, (await marks()) === 'work1 done5 moon1');
+    await move(slotX(2), 14); await drop.waitFor(); await page.waitForTimeout(500);
+    await rowAct('Plan the wing', 'Take back'); await settle();
+    check(`L13 Take back puts it on his turn again (${await marks()})`, (await marks()) === 'turn1 work1 done5');
 
-    // The four finished fold into one star: Clear all on its panel takes them off the row, and her profile keeps
-    // what he cleared and what is still his turn across a restart.
-    await move(456, 14); await drop.waitFor(); await page.waitForTimeout(600);
-    check('L13 the folded finished star lists all five with Clear all', await drop.locator('.s-row').count() === 5 && (await text('.notch-drop .c-x')) === 'Clear all');
-    await drop.locator('.c-x').click(); await settle();
+    // ⌥Tab: the list held for the keys; → on a finished session opens its page, the conversation from the daemon;
+    // a line typed there goes to the session as a reply; while the keys hold the island nothing pops.
+    conversations['n-b'] = [{ who: 'you', text: 'port the faces' }, { who: 'it', text: '**Faces ported.**\n- 38 faces, same names' }];
+    setBoard('n-b', { replyable: true });
+    replied = (id, said) => { conversations[id].push({ who: 'you', text: said }); setBoard(id, { phase: 'working', replyable: false, activity: 'Reading your line' }); };
+    await page.waitForTimeout(1700);
+    await page.evaluate(() => window.__command('agent-keys')); await drop.waitFor(); await page.waitForTimeout(400);
+    check(`L13 ⌥Tab holds the list with key focus, on his turn first (${await drop.locator('.a-row.is-cur b').textContent()})`,
+      (await drop.locator('.a-row.is-cur b').textContent()) === 'Plan the wing' && await page.evaluate(() => window.__state.focus === true));
+    for (let i = 0; i < 4; i++) { await page.keyboard.press('ArrowDown'); await page.waitForTimeout(80); }
+    await page.keyboard.press('ArrowRight'); await page.waitForTimeout(900);
+    check('L13 → opens its page: your words right, its answer rendered, and a box to reply',
+      (await text('.notch-drop .r-head b')) === 'Port the faces' && (await text('.notch-drop .m-you')) === 'port the faces'
+      && (await text('.notch-drop .m-it strong')) === 'Faces ported.' && await page.locator('.notch-drop .c-reply input:not([disabled])').count() === 1);
+    await noteShot('L13-page');
+    setBoard('c-wait', { phase: 'done', last_message: 'Wired.' }); await page.waitForTimeout(2500);
+    check('L13 a finish while the keys hold the island pops nothing yet', await note().count() === 0);
+    await page.keyboard.type('ship it'); await page.keyboard.press('Enter'); await page.waitForTimeout(2200);
+    check('L13 Enter sends the line to that session, and its page shows it working with the box greyed',
+      JSON.stringify(posts.filter(x => x.path === '/inherent/claude-sessions/n-b/reply').map(x => x.body)) === '[{"text":"ship it"}]'
+      && (await page.locator('.notch-drop .m-you').allTextContents()).at(-1) === 'ship it' && await page.locator('.notch-drop .m-now').count() === 1
+      && await page.locator('.notch-drop .c-reply input[disabled]').count() === 1);
+    await noteShot('L13-replied');
+    await page.keyboard.press('Escape'); await page.waitForTimeout(300);
+    await noteUp();
+    check('L13 Esc lets go of the keys and the held pop comes up', await page.evaluate(() => window.__state.focus === false)
+      && (await page.locator('.notch-note .u-row').allTextContents()).join('|') === 'Wire the companion');
+    await page.locator('.notch-note .c-x').click(); await noteGone(); await settle();
+
+    // Archive all on Finished takes them off the island; the daemon keeps his turn, parked and archived, so a
+    // restart shows the same row.
+    await move(slotX(2), 14); await drop.waitFor(); await page.waitForTimeout(500);
+    await drop.locator('.a-sec[data-sec="done"] .a-h button', { hasText: 'Archive all' }).click(); await settle();
     const kept = await marks();
-    check(`L13 Clear all takes the finished stars off the row (${kept})`, kept === 'turn2');
+    check(`L13 Archive all takes the finished ones off the island (${kept})`, kept === 'turn2 work1' && agentMarks['n-build']?.archived_ms > 0);
+    await page.evaluate(() => localStorage.removeItem('companion-turn-v1'));
     await page.reload(); await page.waitForTimeout(3000);
-    check(`L13 after a restart his turn and what he cleared are the same (${await marks()})`, (await marks()) === kept);
+    check(`L13 after a restart his turn and what he archived come back from the daemon (${await marks()})`, (await marks()) === kept);
     // Jarvis's language wins when she starts: a daemon speaking Chinese turns her panel Chinese.
     fixtures['/inherent/language'] = { language: 'zh' };
     await page.reload(); await page.waitForTimeout(2500);

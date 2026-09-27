@@ -188,8 +188,12 @@ export function Companion() {
   const anyClaude = agents.some(a => a.agent === 'claude');
   useEffect(() => window.jarvis?.watchGhostty?.(anyClaude), [anyClaude]);
   const watched = dwelled ? agents.find(a => a.agent === 'claude' && sameTitle(a.title, ghostty.title))?.id ?? null : null;
-  // No notice while she talks, while you type to her or while the Dashboard is open; they come up after.
-  const notices = useNotices({ agents, hold: busy || dashboard || moving || carded, watched,
+  // ⌥Tab (spec §15.3): each press toggles the island's list for the keys; while it holds them the window takes key
+  // focus without activating the app. `viewing` is the session whose page is open in the island.
+  const [keysPress, setKeysPress] = useState(0), [keysOn, setKeysOn] = useState(false), [viewing, setViewing] = useState<string | null>(null);
+  // No notice while she talks, while you type to her, while the Dashboard is open or while the keys hold the island;
+  // they come up after.
+  const notices = useNotices({ port, agents, hold: busy || dashboard || moving || carded || keysOn, watched, viewing,
     cue: (name, gain) => { if (preferences.feedbackEnabled && !s.soundMuted) noticeCue(name, preferences.feedbackVolume, gain); },
     answer: (req, body) => port ? answerRequest(port, req.id, body) : Promise.resolve(true) });
   const notice = notices.current;
@@ -386,6 +390,7 @@ export function Companion() {
   useEffect(() => window.jarvis?.onCommand(command => {
     const [name, value = ''] = command.split(':');
     if (command === 'dashboard') openDashboard(false);
+    else if (command === 'agent-keys') { setDashboard(false); closeComposer(); setKeysPress(n => n + 1); }
     else if (command === 'settings') { openDashboard(false); pinned.current = true; setSettingsFocus(n => n + 1); }
     else if (name === 'skin' && isSkin(value)) choose(value);
     else if (command === 'outing') selfChange();
@@ -501,9 +506,9 @@ export function Companion() {
   const { out } = geo;
   const note: NotchNote | null = carded && card ? { key: `card:${card.id}`, onClose: () => undefined, card: <ActionCard key={card.id} card={card} lang={companion.lang} onDecide={decideCard}/> }
     : carded && question ? { key: `question:${question.id}`, onClose: () => undefined, card: <QuestionCard key={question.id} question={question} lang={companion.lang} onAnswer={answerQuestion}/> }
-    : !notice ? null : notice.kind === 'pop' ? { key: notice.key, pop: notice.ids, onClose: notices.next } : { key: notice.key, onClose: notices.fold,
+    : !notice ? null : notice.kind === 'pop' ? { key: notice.key, pop: notice.ids, onClose: notices.next } : { key: notice.key, id: notice.id, onClose: notices.fold,
     card: <NoticeCard key={notice.key} n={notice} card={notices.card!} agent={agents.find(a => a.id === notice.id)} count={notices.count} look={wardrobe.marks}
-      onLater={notices.fold} onOpen={jump} onChange={notices.bump} onResolve={(text, body) => {
+      onPark={() => notices.park([notice.id])} onOpen={jump} onChange={notices.bump} onResolve={(text, body) => {
         if (notice.kind !== 'req') return;
         void notices.resolve(notice, text, body);
         if (body.decision !== 'deny') ball.current?.hop(.14);
@@ -546,9 +551,10 @@ export function Companion() {
             onAnswer={id => { setDashboard(false); notices.focus(id); }} ctl={ctl} settingsFocus={settingsFocus}/>
           : <DashboardPreview embedded port={port} visible={dashboard} shown={dashboard} onClose={() => setDashboard(false)}/>}
       </div>
-      <Notch look={wardrobe.marks} agents={agents} unread={notices.unread} cleared={notices.cleared} cursor={cursor} quiet={dashboard || moving} onNoteHover={notices.setHover}
-        geo={{ width: geo.width, top: placement.topInset, notchR: geo.wingX, baseL: placement.notchWidth ? geo.center - placement.notchWidth / 2 : geo.wingX - 30 }}
-        act={{ jump, answer: notices.focus, read: notices.read, clear: notices.clear }} note={note}/>
+      <Notch look={wardrobe.marks} agents={agents} unread={notices.unread} parked={notices.parked} archived={notices.archived} cursor={cursor} quiet={dashboard || moving}
+        onNoteHover={notices.setHover} geo={{ width: geo.width, top: placement.topInset, notchR: geo.wingX, lobeL: geo.lobe.left }} note={note}
+        act={{ jump, answer: notices.focus, read: notices.read, back: notices.back, archive: notices.archive, park: notices.park, unpark: notices.unpark }}
+        port={port} keys={keysPress} onViewing={setViewing} onKeys={on => { setKeysOn(on); void window.jarvis?.focus(on); }}/>
       <CompanionBall width={geo.width} height={placement.topInset + 560} lobe={geo.lobe} look={look} handle={ball} skin={worn.current}
         target={{ place, expr, pressed, anchors: geo.anchors, home: wardrobe.home, homeFace: !!notice || carded,
           away: trip === 'out', happy: trip === 'happy', deep: deep && expr === '02' }}

@@ -29,11 +29,12 @@ function star4(c: CanvasRenderingContext2D, ro: number, ri: number, rot = 0, x =
   c.closePath();
 }
 // Each draws in world units round the origin (a session star is about 11 across); `glow` is 0 for the pixel copy.
-const ICONS: Record<TurnIcon, (c: CanvasRenderingContext2D, t: number, glow: number, hue: TurnHue) => void> = {
+// `quiet` keeps the beacon's rings in: they only say something arrived, for a few seconds.
+const ICONS: Record<TurnIcon, (c: CanvasRenderingContext2D, t: number, glow: number, hue: TurnHue, quiet: boolean) => void> = {
   // 信标: an eight-point star, long and short rays, sending out two rings in turn.
-  beacon: (c, t, glow, hue) => {
+  beacon: (c, t, glow, hue, quiet) => {
     const col = hueAt(t, hue);
-    for (const off of [0, .5]) {
+    if (!quiet) for (const off of [0, .5]) {
       const ph = (t / 1.6 + off) % 1;
       c.shadowBlur = 0; c.strokeStyle = rgba(col, .75 * (1 - ph)); c.lineWidth = .8; c.beginPath(); c.arc(0, 0, 4 + ph * 5.5, 0, Math.PI * 2); c.stroke();
     }
@@ -81,7 +82,7 @@ const ICONS: Record<TurnIcon, (c: CanvasRenderingContext2D, t: number, glow: num
 const reduced = matchMedia('(prefers-reduced-motion: reduce)');
 // The pixel look: the same icon drawn at 11 px, its alpha snapped, then blown up without smoothing.
 let pix: CanvasRenderingContext2D | null = null;
-export function drawTurnIcon(c: CanvasRenderingContext2D, look: MarkLook, t: number, since: number, px: number, icon = TURN_ICON, hue = TURN_HUE) {
+export function drawTurnIcon(c: CanvasRenderingContext2D, look: MarkLook, t: number, since: number, px: number, quiet = false, icon = TURN_ICON, hue = TURN_HUE) {
   if (reduced.matches) { t = 1.2; since = 99; }
   // A new arrival makes it jump once.
   const pop = since < .5 ? 1 + .6 * (1 - since / .5) : 1;
@@ -89,12 +90,27 @@ export function drawTurnIcon(c: CanvasRenderingContext2D, look: MarkLook, t: num
   if (look === 'pixel') {
     if (!pix) { const cv = document.createElement('canvas'); cv.width = cv.height = 11; pix = cv.getContext('2d', { willReadFrequently: true })!; }
     pix.setTransform(1, 0, 0, 1, 0, 0); pix.clearRect(0, 0, 11, 11);
-    pix.setTransform(1 / 1.85, 0, 0, 1 / 1.85, 5.5, 5.5); ICONS[icon](pix, t, 0, hue);
+    pix.setTransform(1 / 1.85, 0, 0, 1 / 1.85, 5.5, 5.5); ICONS[icon](pix, t, 0, hue, quiet);
     const img = pix.getImageData(0, 0, 11, 11);
     for (let i = 3; i < img.data.length; i += 4) img.data[i] = img.data[i] > 90 ? 255 : 0;
     pix.putImageData(img, 0, 0);
     c.imageSmoothingEnabled = false; c.shadowColor = rgba(hueAt(t, hue), .8); c.shadowBlur = 4 * px;
     c.drawImage(pix.canvas, -5.5 * 1.85, -5.5 * 1.85, 11 * 1.85, 11 * 1.85);
-  } else ICONS[icon](c, t, px, hue);
+  } else ICONS[icon](c, t, px, hue, quiet);
   c.restore();
+}
+
+// 月亮: where parked sessions wait (先放着). A crescent with a small star beside it, quiet: no rings, no drifting
+// colour, at a session star's weight.
+const MOON: C3 = [206, 216, 255];
+export const MOON_RGB = MOON.join(',');
+export function drawMoon(c: CanvasRenderingContext2D, t: number, px: number) {
+  if (reduced.matches) t = 1.2;
+  c.save();
+  c.beginPath(); c.rect(-12, -12, 24, 24); c.arc(1.9, -1.7, 3.5, 0, Math.PI * 2); c.clip('evenodd');
+  c.shadowColor = rgba(MOON, .6); c.shadowBlur = 4 * px; c.fillStyle = rgba(tint(MOON, .15), .9);
+  c.beginPath(); c.arc(-.5, .5, 4.2, 0, Math.PI * 2); c.fill();
+  c.restore();
+  const k = .5 + .5 * Math.max(0, Math.sin(t * 1.3));
+  c.fillStyle = rgba(tint(MOON, .5), .45 + .5 * k); star4(c, 1.6 * (.7 + .3 * k), .45, 0, 4.1, -3.9); c.fill();
 }

@@ -5338,6 +5338,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 if spawned_by_agent() else None
             ),
             claude_sessions_read=_claude_sessions_read(runtime.config),
+            agent_marks_path=runtime.runtime_paths.root / "agent-marks.json",
             plugin_read=runtime.plugin_connections.read if runtime.plugin_connections else None,
             plugin_action=runtime.plugin_connections.action if runtime.plugin_connections else None,
             plugin_authorize=(

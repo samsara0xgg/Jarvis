@@ -13,10 +13,17 @@ Code. ``GET /inherent/claude-sessions`` serves :meth:`ClaudeSessions.read`.
 from __future__ import annotations
 
 import datetime as dt
+import fcntl
 import json
+import os
+import pty
 import re
+import select
 import shutil
+import signal
+import struct
 import subprocess
+import termios
 import threading
 import time
 from pathlib import Path
@@ -26,6 +33,14 @@ RETENTION_MS = 24 * 60 * 60 * 1000
 REFRESH_S = 3.0
 _TAIL_BYTES = 512 * 1024
 _TEXT_CHARS = 160
+# The island's conversation page: this much of the transcript's end, at most this many messages.
+_CONVERSATION_BYTES = 2 * 1024 * 1024
+_MESSAGES = 60
+_MESSAGE_CHARS = 20_000
+_PASTED = re.compile(r"<pasted_content[^>]*>.*?</pasted_content[^>]*>", re.DOTALL)
+# A hidden attach shows its first screen in about 0.2 s; the input box takes a little longer.
+_ATTACH_S = 3.0
+SESSION_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 # Process names (lowercase prefix) that host a terminal session, innermost first wins.
 _TERMINALS = (
     ("zellij", "zellij"),
@@ -118,6 +133,133 @@ def read_transcript(path: Path) -> dict[str, str]:
     return out
 
 
+def _said(entry: dict[str, Any]) -> str:
+    """Allen's own words in a user entry; empty for tool results, commands and notifications."""
+    message = entry.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if entry.get("isMeta") or entry.get("isCompactSummary") or not isinstance(content, str):
+        return ""
+    text = _PASTED.sub("[Pasted text]", content).strip()
+    return "" if text.startswith("<") else text
+
+
+def _answered(entry: dict[str, Any]) -> str:
+    """The newest text in one assistant entry."""
+    message = entry.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    texts = [
+        str(b["text"]).strip()
+        for b in (content if isinstance(content, list) else [])
+        if isinstance(b, dict) and b.get("type") == "text" and str(b.get("text", "")).strip()
+    ]
+    return texts[-1][:_MESSAGE_CHARS] if texts else ""
+
+
+def read_conversation(path: Path) -> list[dict[str, str]]:
+    """What Allen said and what the session answered at the end of each turn, oldest first.
+
+    The steps in between (tool calls, the texts before them) are left out;
+    a turn still running shows its newest text. Only the transcript's tail
+    is read, so a long session starts partway through.
+    """
+    with path.open("rb") as fh:
+        size = fh.seek(0, 2)
+        fh.seek(max(0, size - _CONVERSATION_BYTES))
+        lines = fh.read().decode("utf-8", "replace").splitlines()
+    if size > _CONVERSATION_BYTES:
+        lines = lines[1:]  # cut mid-line
+    out: list[dict[str, str]] = []
+    answer = ""
+    for line in lines:
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(entry, dict) or entry.get("isSidechain"):
+            continue
+        if entry.get("type") == "user" and (said := _said(entry)):
+            if answer:
+                out.append({"who": "it", "text": answer})
+            out.append({"who": "you", "text": said[:_MESSAGE_CHARS]})
+            answer = ""
+        elif entry.get("type") == "assistant":
+            answer = _answered(entry) or answer
+    if answer:
+        out.append({"who": "it", "text": answer})
+    return out[-_MESSAGES:]
+
+
+def said_since(path: Path, offset: int) -> list[str]:
+    """Allen's lines written to a transcript after byte ``offset``, whitespace folded."""
+    with path.open("rb") as fh:
+        fh.seek(offset)
+        lines = fh.read().decode("utf-8", "replace").splitlines()
+    out: list[str] = []
+    for line in lines:
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(entry, dict) and entry.get("type") == "user" and not entry.get("isSidechain"):
+            out += [" ".join(said.split())] if (said := _said(entry)) else []
+    return out
+
+
+def type_into(claude: str, job_id: str, text: str) -> None:
+    """Type one line into a background session through an attach no screen shows.
+
+    ``claude attach`` runs on a pseudo-terminal this process owns; the words
+    go in, then Enter, then the attach client is closed. The session keeps
+    running; a terminal showing it sees the line too.
+    """
+    # No API key (it would bill the API) and none of a parent session's CLAUDE_* markers;
+    # the config directory stays, so attach finds the same sessions `claude agents` lists.
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if k != "ANTHROPIC_API_KEY" and (not k.startswith("CLAUDE") or k == "CLAUDE_CONFIG_DIR")
+    }
+    main, sub = pty.openpty()
+    try:
+        fcntl.ioctl(sub, termios.TIOCSWINSZ, struct.pack("HHHH", 50, 160, 0, 0))
+        child = subprocess.Popen(  # noqa: S603 — fixed argv; the binary is Claude Code's own.
+            [claude, "attach", job_id],
+            stdin=sub,
+            stdout=sub,
+            stderr=sub,
+            env=env,
+            start_new_session=True,
+        )
+    except OSError:
+        os.close(main)
+        raise
+    finally:
+        os.close(sub)
+
+    def drain(seconds: float) -> None:
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            if select.select([main], [], [], 0.1)[0]:
+                try:
+                    os.read(main, 65536)
+                except OSError:
+                    return
+
+    try:
+        drain(_ATTACH_S)
+        os.write(main, " ".join(text.split()).encode())
+        time.sleep(0.3)
+        os.write(main, b"\r")
+        drain(1.0)
+    finally:
+        child.send_signal(signal.SIGHUP)
+        try:
+            child.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            child.kill()
+        os.close(main)
+
+
 def _phase(agent: dict[str, Any], job: dict[str, Any]) -> str:
     """A background job still ``working`` but at tempo ``idle`` only sleeps on a stale wakeup."""
     status, state = agent.get("status"), agent.get("state")
@@ -169,6 +311,7 @@ class ClaudeSessions:
         self._at = -REFRESH_S
         self._board: dict[str, Any] = {"sessions": [], "error": None}
         self._transcripts: dict[Path, tuple[int, dict[str, str]]] = {}
+        self._reply_lock = threading.Lock()
 
     def read(self) -> dict[str, Any]:
         """Blocking (a subprocess and file reads): call it from a worker thread."""
@@ -177,6 +320,45 @@ class ClaudeSessions:
                 self._board = self._collect()
                 self._at = time.monotonic()
             return self._board
+
+    def _path(self, session_id: str) -> Path | None:
+        if not SESSION_ID.fullmatch(session_id):
+            return None
+        return next(iter((self._home / ".claude" / "projects").glob(f"*/{session_id}.jsonl")), None)
+
+    def conversation(self, session_id: str) -> dict[str, Any]:
+        """Blocking. ``{"messages": [{who, text}]}``; LookupError for an unknown session."""
+        path = self._path(session_id)
+        if path is None:
+            raise LookupError(session_id)
+        return {"messages": read_conversation(path)}
+
+    def reply(self, session_id: str, text: str) -> None:
+        """Blocking, several seconds. Type ``text`` into an idle background session.
+
+        LookupError: no such session on the board, or it cannot take a reply
+        now (interactive, working, or a dialog open). RuntimeError: the line
+        was typed but never reached the transcript.
+        """
+        line = " ".join(text.split())
+        with self._reply_lock:
+            # On a fresh board, under the lock: a reply queued behind another finds it working.
+            self._at = -REFRESH_S
+            row = next((r for r in self.read()["sessions"] if r["session_id"] == session_id), None)
+            path = self._path(session_id)
+            if row is None or not row["replyable"] or path is None:
+                raise LookupError(session_id)
+            start = path.stat().st_size
+            type_into(self._claude, row["job_id"], line)
+            end = time.monotonic() + 4
+            while time.monotonic() < end:
+                # A new entry, not an old line that happens to read the same ("continue").
+                if line in said_since(path, start):
+                    self._at = -REFRESH_S  # the next board read shows it working
+                    return
+                time.sleep(0.3)
+        msg = "the reply did not reach the session"
+        raise RuntimeError(msg)
 
     def _transcript(self, path: Path | None, mtime_ns: int) -> dict[str, str]:
         if path is None:
@@ -259,6 +441,10 @@ class ClaudeSessions:
                     or tx["tool"]
                     or _short(agent.get("waitingFor")),
                     "last_message": tx["last_message"],
+                    # Idle at its input box: a line typed through a hidden attach lands there.
+                    "replyable": agent.get("kind") == "background"
+                    and agent.get("status") == "idle"
+                    and bool(agent.get("id")),
                     "started_ms": int(agent.get("startedAt") or 0),
                     "updated_ms": updated_ms,
                 }

@@ -34,7 +34,7 @@ try {
       onCursor: callback => { window.__cursor = callback; return () => {}; },
       onCommand: callback => { window.__command = callback; return () => {}; },
       passthrough: value => { window.__state.passthrough = value; },
-      focus: async () => {},
+      focus: async on => { window.__state.focus = on; },
       material: rects => { window.__state.glass = rects; },
     };
   });
@@ -461,57 +461,69 @@ try {
   await waitPlace('home');
   check('08 the tray plays an expression out of the island and she goes home', true);
 
-  // 10: beside the notch (ADR 0057). Right of the camera one black shape carries a star per session in the look picked
-  // in the tray (星芒 or 像素): four working fold into one star with a count, the three finished ones (met already done,
-  // so seen) stay dim. Resting on a star grows its panel out of the notch; a folded colour lists its sessions, and a
-  // row opens only on a click. A finished star is cleared from its panel or by dragging it down out of the menu bar.
+  // 10: beside the notch (ADR 0067). Right of the camera one black shape carries one mark per group in the look
+  // picked in the tray (星芒 or 像素), each with its count: the four working, the three finished ones (met already
+  // done, so seen). Resting anywhere on the row opens one panel that is the whole island growing down, every session
+  // one line; names are bold only while they need a look. A finished one is archived from its row, or all of them by
+  // dragging the finished mark down out of the menu bar. ⌥Tab opens the same panel for the keys.
   const notch = page.locator('.notch'), marks = () => notch.getAttribute('data-marks');
   const fxAlpha = (x, y) => page.evaluate(([x, y]) => { const c = document.querySelector('.notch-fx'), r = c.getBoundingClientRect(), k = c.width / r.width;
     return c.getContext('2d').getImageData(Math.round((x - r.left) * k), Math.round((y - r.top) * k), 1, 1).data[3]; }, [x, y]);
-  // The right edge of the black shape: past the notch while stars show, 0 when nothing hangs there.
+  // The right edge of the black shape: past the notch while marks show, 0 when nothing hangs there.
   const blackRight = () => page.evaluate(() => { const p = document.querySelector('.notch-shape path'); if (!p.getAttribute('d')) return 0; const b = p.getBBox(); return b.x + b.width; });
   const looks = sel => page.locator(sel).evaluateAll(els => [...new Set(els.map(e => e.dataset.look).filter(Boolean))].join());
   const drop = page.locator('.notch-drop.is-open');
+  const workX = 412.5 + 6 + 9, doneX = workX + 30;
+  const row10 = [await page.locator('.notch-fx').getAttribute('data-look'), await marks(), await blackRight(), await fxAlpha(workX, 16)];
+  check(`10 right of the notch: one mark per group with its count, working then finished (${row10.join(' | ')} ${errors.join('; ')})`,
+    row10[0] === 'spark' && row10[1] === 'work4 done3' && row10[2] > 470 && row10[3] > 0);
   await shot('10-wing-spark', { x: 320, y: 0, width: 320, height: 220 });
-  const row10 = [await page.locator('.notch-fx').getAttribute('data-look'), await marks(), await blackRight(), await fxAlpha(426.5, 16)];
-  check(`10 right of the notch: the four working fold into one star, the three finished stay (${row10.join(' | ')} ${errors.join('; ')})`,
-    row10[0] === 'spark' && row10[1] === 'workx4 done done done' && row10[2] > 470 && row10[3] > 0);
-  await shot('10-wing-spark', { x: 320, y: 0, width: 320, height: 220 });
-  await move(426, 14);
+  await move(doneX, 14);
   await drop.waitFor();
   await page.waitForTimeout(700);
-  check('10 resting on the folded star lists its four sessions, star and name', await drop.locator('.s-row').count() === 4
-    && (await drop.locator('.c-label').textContent()) === '4 working' && (await drop.locator('.s-head b').first().textContent()) === 'Adjust the usage page');
-  await move(470, 70); await page.waitForTimeout(500);
-  check('10 pointing at a row does not open it', await drop.locator('.s-row.is-open').count() === 0);
-  await drop.locator('.s-head').nth(1).click(); await page.waitForTimeout(300);
-  check('10 a click opens that row in place with what it is doing', await drop.locator('.s-row.is-open').count() === 1 && (await drop.locator('.s-row.is-open .c-now').textContent()).startsWith('Now'));
-  await shot('10-stack-row', { x: 240, y: 0, width: 400, height: 330 });
-  await drop.locator('.s-row.is-open .s-head b').click(); await page.waitForTimeout(300);
-  check('10 a click on its name folds it back', await drop.locator('.s-row.is-open').count() === 0);
-  // The first finished star: its panel says what it came to, with Clear.
-  await move(600, 560); await page.waitForTimeout(700);
-  const doneX = 412.5 + 6 + 16 + 9 + 8;
-  await move(doneX, 14); await drop.waitFor(); await page.waitForTimeout(700);
-  check('10 a finished star shows its result with Clear', (await drop.locator('.c-label').textContent()) === 'Done' && (await drop.locator('.c-now b').textContent()) === 'Result'
-    && (await drop.locator('.c-choice .btn').allTextContents()).includes('Clear'));
-  await shot('10-peek-done', { x: 240, y: 0, width: 400, height: 260 });
-  await drop.locator('.btn', { hasText: 'Clear' }).click(); await page.waitForTimeout(400);
+  const heads = await drop.locator('.a-h > span').allTextContents(), box10 = await drop.boundingBox();
+  check(`10 resting on the row opens one panel: every group, one line per session, the pointed group lit (${heads.join('|')})`,
+    heads.join('|') === 'Working4|Finished3' && await drop.locator('.a-row').count() === 7 && (await drop.locator('.a-sec.is-hot').getAttribute('data-sec')) === 'done');
+  check(`10 the panel is the whole island growing down, from her lobe past the marks (${Math.round(box10.x)}, ${Math.round(box10.width)})`,
+    box10.x < 163.5 && box10.x + box10.width > 484 && Math.abs(box10.width - 400) < 2);
+  check('10 nothing needs a look, so no name is bold', (await drop.locator('.a-row b').evaluateAll(els => [...new Set(els.map(e => getComputedStyle(e).fontWeight))])).join() === '400');
+  await shot('10-panel', { x: 100, y: 0, width: 440, height: 330 });
+  const finished = drop.locator('.a-sec[data-sec="done"] .a-row').first();
+  await finished.hover(); await page.waitForTimeout(200);
+  await finished.locator('[aria-label^="Archive"]').click(); await page.waitForTimeout(400);
   await move(600, 560); await page.waitForTimeout(900);
-  check(`10 Clear takes it off the row (${await marks()})`, await marks() === 'workx4 done done');
-  // Pulled 20 px under the menu bar it goes back; 40 px, and it is cleared.
+  check(`10 Archive on a finished row takes it off the island (${await marks()})`, await marks() === 'work4 done2');
+  // Pulled 20 px under the menu bar the finished mark goes back; 40 px, and every finished session is archived.
   const drag = async dy => { await move(doneX, 16); await page.mouse.down(); await page.mouse.move(doneX + 4, 30, { steps: 4 }); await page.mouse.move(doneX + 6, 32 + dy, { steps: 6 }); await page.mouse.up(); await move(600, 560); await page.waitForTimeout(900); };
   await drag(20);
-  check(`10 a short pull puts the star back (${await marks()})`, await marks() === 'workx4 done done');
+  check(`10 a short pull puts the mark back (${await marks()})`, await marks() === 'work4 done2');
   await drag(40);
-  check(`10 dragged out of the menu bar it is cleared (${await marks()})`, await marks() === 'workx4 done' && await page.locator('.notch-catch').count() === 0);
+  check(`10 dragged out of the menu bar the finished ones are archived (${await marks()})`, await marks() === 'work4' && await page.locator('.notch-catch').count() === 0);
   await page.evaluate(() => window.__command('marks:pixel'));
-  await move(426, 14); await drop.waitFor(); await page.waitForTimeout(600);
+  await move(workX, 14); await drop.waitFor(); await page.waitForTimeout(600);
   check('10 the tray turns every mark into pixels', await looks('.notch canvas, .ad .r-agents canvas') === 'pixel' && await page.evaluate(() => window.__state.menu?.marks === 'pixel'));
-  await shot('10-wing-pixel', { x: 240, y: 0, width: 400, height: 260 });
+  await shot('10-wing-pixel', { x: 100, y: 0, width: 440, height: 260 });
   await move(600, 560); await page.waitForTimeout(700);
   await page.evaluate(() => window.__command('marks:spark'));
-  check('10 the panel folds back into the notch when the pointer leaves', await drop.count() === 0);
+  check('10 the panel folds back into the island when the pointer leaves', await drop.count() === 0);
+  // ⌥Tab (the main process sends agent-keys): the panel opens held, with key focus, on the first row.
+  await page.evaluate(() => window.__command('agent-keys')); await drop.waitFor(); await page.waitForTimeout(500);
+  const cur = () => drop.locator('.a-row.is-cur b').textContent();
+  const first10 = await cur();
+  check(`10 ⌥Tab opens the panel for the keys on the first row, with the key hints (${first10})`, await page.evaluate(() => window.__state.focus === true)
+    && (await drop.locator('.k-hint kbd').allTextContents()).join(' ') === '↑↓ → ⏎ esc');
+  await move(600, 560); await page.waitForTimeout(700);
+  check('10 held by the keys it stays open when the pointer is away', await drop.count() === 1);
+  await page.keyboard.press('ArrowDown'); await page.waitForTimeout(150);
+  const second10 = await cur();
+  await page.keyboard.press('ArrowRight'); await page.waitForTimeout(500);
+  check(`10 ↓ moves to the next row and → opens its page: back, star, name, what it is at, and its words (${first10} → ${second10})`, second10 !== first10
+    && (await drop.locator('.r-head b').textContent()) === second10 && await drop.locator('.m-list .m-you').count() === 1 && (await drop.locator('.r-note').textContent()) === 'Answer it in its terminal');
+  await shot('10-page', { x: 30, y: 0, width: 580, height: 330 });
+  await page.keyboard.press('ArrowLeft'); await page.waitForTimeout(300);
+  check('10 ← goes back to the list on the same row', (await cur()) === second10);
+  await page.keyboard.press('Escape'); await page.waitForTimeout(700);
+  check('10 Esc lets go: the panel folds back and key focus goes', await drop.count() === 0 && await page.evaluate(() => window.__state.focus === false));
 
   // 12: ⌘ in the menu bar row hides the whole window (electron/companion.ts): it fades out, takes no clicks, and
   // tells the page the cursor went far away, so what hover opened closes behind the glass.

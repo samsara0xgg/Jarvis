@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import time
 from typing import TYPE_CHECKING
 
@@ -172,3 +173,114 @@ def test_claude_sessions_missing_binary_reports_why(
 
     assert body["sessions"] == []
     assert body["error"].startswith("claude agents --json")
+
+
+IDLE, BUSY = "1a2b3c4d-0000-4000-8000-000000000001", "1a2b3c4d-0000-4000-8000-000000000002"
+
+
+def _said(content: object, **extra: object) -> dict[str, object]:
+    return {"type": "user", "message": {"content": content}, **extra}
+
+
+def _answer(*texts: str, **extra: object) -> dict[str, object]:
+    blocks = [{"type": "text", "text": t} for t in texts]
+    return {"type": "assistant", "message": {"content": blocks}, **extra}
+
+
+def test_island_page_reads_the_conversation_and_types_a_reply(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR 0068: each turn's final answer only; a reply lands through a hidden attach."""
+    session = {"kind": "background", "cwd": "/x", "startedAt": NOW_MS}
+    (tmp_path / "agents.json").write_text(
+        json.dumps(
+            [
+                {**session, "sessionId": IDLE, "id": "job1", "status": "idle", "name": "overlay"},
+                {**session, "sessionId": BUSY, "id": "job2", "status": "busy", "name": "audit"},
+            ]
+        )
+    )
+    project = tmp_path / ".claude" / "projects" / "-x"
+    project.mkdir(parents=True)
+    transcript = project / f"{IDLE}.jsonl"
+    tool = {"type": "tool_use", "name": "Read", "input": {}}
+    entries = [
+        _said("continue"),
+        _said("fix the overlay"),
+        {"type": "assistant", "message": {"content": [{"type": "text", "text": "Looking."}, tool]}},
+        _said([{"type": "tool_result", "content": "..."}]),
+        _answer("a subagent's words", isSidechain=True),
+        _answer("**Fixed.**\n- one line"),
+        _said("<task-notification>done</task-notification>"),
+        _said("Base directory for this skill", isMeta=True),
+        _said('<pasted_content id="1">long log</pasted_content id="1"> why this?'),
+    ]
+    transcript.write_text("\n".join(json.dumps(e) for e in entries))
+    (project / f"{BUSY}.jsonl").write_text(json.dumps(_said("audit it")))
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "claude"
+    # `claude attach` stand-in: the line typed into its terminal lands in the session's record.
+    fake.write_text(
+        f"#!{sys.executable}\nimport json, sys\n"
+        f"if sys.argv[1] == 'agents': print(open({str(tmp_path / 'agents.json')!r}).read())\n"
+        "elif sys.argv[1] == 'attach':\n"
+        "    line = sys.stdin.readline().strip()\n"
+        "    if line == 'continue': sys.exit()\n"
+        f"    open({str(transcript)!r}, 'a').write('\\n' + json.dumps("
+        "{'type': 'user', 'message': {'content': line}}))\n"
+    )
+    fake.chmod(0o755)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    client = TestClient(
+        create_app(InherentDeps(
+            submit_callable=_noop, broadcaster=InherentBroadcaster(), claude_sessions_read=True
+        ))
+    )
+    reply = f"/inherent/claude-sessions/{IDLE}/reply"
+
+    rows = {r["session_id"]: r for r in client.get("/inherent/claude-sessions").json()["sessions"]}
+    page = client.get(f"/inherent/claude-sessions/{IDLE}/conversation").json()["messages"]
+    busy = client.post(f"/inherent/claude-sessions/{BUSY}/reply", json={"text": "hi"})
+    blank = client.post(reply, json={"text": " "})
+    sent = client.post(reply, json={"text": "ship  it"})
+    # Typed but never landed: an older line that reads the same does not count.
+    lost = client.post(reply, json={"text": "continue"})
+    after = client.get(f"/inherent/claude-sessions/{IDLE}/conversation").json()["messages"]
+
+    assert (rows[IDLE]["replyable"], rows[BUSY]["replyable"]) == (True, False)
+    assert page == [
+        {"who": "you", "text": "continue"},
+        {"who": "you", "text": "fix the overlay"},
+        {"who": "it", "text": "**Fixed.**\n- one line"},
+        {"who": "you", "text": "[Pasted text] why this?"},
+    ]
+    assert client.get("/inherent/claude-sessions/nope/conversation").status_code == 404
+    assert (busy.status_code, blank.status_code, sent.json()) == (409, 400, {"ok": True})
+    assert lost.status_code == 502
+    assert after[-1] == {"who": "you", "text": "ship it"}
+
+
+def test_agent_marks_are_one_file_every_surface_shares(tmp_path: Path) -> None:
+    """ADR 0067: unread, parked and archived per session, kept across a restart."""
+    path = tmp_path / "agent-marks.json"
+
+    def app() -> TestClient:
+        return TestClient(
+            create_app(InherentDeps(
+                submit_callable=_noop, broadcaster=InherentBroadcaster(), agent_marks_path=path
+            ))
+        )
+
+    client = app()
+    client.post("/inherent/agent-marks/a", json={"unread": True, "park": False, "archive": False})
+    client.post("/inherent/agent-marks/b", json={"unread": False, "park": True, "archive": False})
+    client.post("/inherent/agent-marks/c", json={"archive": True})
+    client.post("/inherent/agent-marks/a", json={"seen": True})
+    marks = app().get("/inherent/agent-marks").json()["marks"]
+
+    assert (marks["a"]["unread"], marks["a"]["seen_ms"] > 0) == (False, True)
+    assert (marks["b"]["parked_ms"] > 0, marks["b"].get("archived_ms")) == (True, None)
+    assert marks["c"]["archived_ms"] > 0
+    assert oct(path.stat().st_mode & 0o777) == "0o600"
