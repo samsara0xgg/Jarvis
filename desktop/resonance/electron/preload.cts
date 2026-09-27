@@ -38,6 +38,8 @@ contextBridge.exposeInMainWorld('jarvis', {
     return () => ipcRenderer.removeListener('ghostty', listener);
   },
   jumpGhostty: (title: string, job: string) => ipcRenderer.invoke('ghostty-jump', title, job),
+  // ADR 0073: the Agents window.
+  openAgents: () => ipcRenderer.send('agents-open'),
   codexTitles: (ids: string[]) => ipcRenderer.invoke('codex-titles', ids),
   openAccount: (service: string) => ipcRenderer.invoke('open-account', service),
   usageReset: (service: string, requestId: string) => ipcRenderer.invoke('usage-reset', service, requestId),
@@ -75,6 +77,12 @@ contextBridge.exposeInMainWorld('dictation', {
   focus: (on: boolean) => ipcRenderer.send('dictation-focus', on),
   open: (page: string) => ipcRenderer.send('dictation-open', page),
   again: () => ipcRenderer.send('dictation-again'),
+});
+// The Agents window (agentsWindow.ts answers only that window): a folder picker, a terminal tab, a folder in Finder.
+contextBridge.exposeInMainWorld('agents', {
+  folder: () => ipcRenderer.invoke('agents-folder'),
+  terminal: (cwd: string, cmd: string) => ipcRenderer.invoke('agents-terminal', cwd, cmd),
+  reveal: (cwd: string) => ipcRenderer.invoke('agents-reveal', cwd),
 });
 // The first launch's window (companion.ts answers only that window).
 contextBridge.exposeInMainWorld('firstRun', {

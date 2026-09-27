@@ -153,6 +153,10 @@ from jarvis.shared.realtime_trace import (
     configure_realtime_trace_jsonl,
     record_realtime_trace,
 )
+from jarvis.state.authorized_dispatch_outbox import (
+    ConfirmationRevalidationError,
+    answer_confirmation_once,
+)
 from jarvis.state.committed_event_bus import CommittedEventBus
 from jarvis.state.daily_report import resolve_zone
 from jarvis.state.event_log import iter_events_for_turn, open_event_log, open_runtime_event_log
@@ -2226,16 +2230,19 @@ def make_supersede_unspoken_callable(
     runtime: JarvisRuntime,
     drop_unspoken: Callable[[frozenset[str]], frozenset[str]],
 ) -> Callable[[str], None]:
-    """Build the ADR 0053 ``(accepted_turn_id) -> None`` seam.
+    """Build the ADR 0074 ``(accepted_turn_id) -> None`` seam.
 
     Called for a voice utterance just accepted, before its
-    ``utterance.received`` is written. Every other voice turn of the last
-    ``_SUPERSEDE_WINDOW_S`` whose run is still open, whose policy lets its
+    ``utterance.received`` is written. Every other turn of the last
+    ``_SUPERSEDE_WINDOW_S`` that answers a voice sentence or a filled-in ask
+    card (``clarify`` intent) whose run is still open, whose policy lets its
     generation be cancelled, and whose answer never reached the speaker is
     dropped: L5 discards its queued audio (``drop_unspoken``), then the run is
     cancelled with reason ``superseded``. Its run is open because no run
     completes while Allen is talking, so nothing of it reaches memory.db and
-    the new turn's prompt folds its words in (ADR 0044).
+    the new turn's prompt folds its words in (ADR 0044). A card it put up and
+    that still waits is rejected with rule ``superseded`` (ADR 0074), so the
+    new turn asks afresh.
     """
     cancel = make_response_cancel_callable(runtime)
     registry = runtime.response_runs
@@ -2261,23 +2268,57 @@ def make_supersede_unspoken_callable(
                 str(row[0])
                 for row in conn.execute(
                     "SELECT json_extract(payload_json, '$.turn_id') FROM events "
-                    "WHERE type = 'utterance.received' AND ts_epoch_ms >= ?",
+                    "WHERE ts_epoch_ms >= ? AND (type = 'utterance.received' "
+                    "OR (type = 'surface.user_intent' "
+                    "AND json_extract(payload_json, '$.channel') = 'clarify'))",
                     (since_ms,),
                 )
             }
-        # ponytail: a run that passed the completion hold just before Allen
-        # started talking can complete between this drop and its cancel; its
-        # queued audio is then lost while its row stays. A millisecond window.
-        dropped = drop_unspoken(frozenset(run.turn_id for run in runs) & recent)
-        for run in runs:
-            if run.turn_id in dropped:
+            # ponytail: a run that passed the completion hold just before Allen
+            # started talking can complete between this drop and its cancel; its
+            # queued audio is then lost while its row stays. A millisecond window.
+            dropped = drop_unspoken(frozenset(run.turn_id for run in runs) & recent)
+            for run in runs:
+                if run.turn_id not in dropped:
+                    continue
                 outcome = cancel(run.response_id, "generation", "superseded")
                 LOGGER.info(
                     "unspoken answer superseded by %s: turn %s response %s -> %s",
                     turn_id, run.turn_id, run.response_id, outcome,
                 )
+                if outcome == "cancelled":
+                    _withdraw_card(conn, run.turn_id, turn_id)
 
     return _supersede
+
+
+def _withdraw_card(conn: sqlite3.Connection, dropped_turn_id: str, turn_id: str) -> None:
+    """ADR 0074: reject the card a dropped turn put up, if it still waits.
+
+    Through the one-answer-per-ask primitive, so a button press racing this
+    either lands first (and this finds the card answered) or finds it gone.
+    """
+    rows = conn.execute(
+        "SELECT json_extract(payload_json, '$.confirmation_id') FROM events "
+        "WHERE type = 'confirmation.requested' "
+        "AND json_extract(correlation_json, '$.turn_id') = ? ORDER BY id DESC LIMIT 1",
+        (dropped_turn_id,),
+    ).fetchall()
+    if not rows:
+        return
+    confirmation_id = str(rows[0][0])
+    try:
+        answer_confirmation_once(
+            conn,
+            confirmation_id=confirmation_id,
+            accepted=False,
+            utterance_raw="",
+            grammar_rule_id="superseded",
+            correlation={"turn_id": turn_id},
+        )
+    except ConfirmationRevalidationError:
+        return  # already answered, or a newer ask replaced it
+    LOGGER.info("card %s of dropped turn %s withdrawn", confirmation_id, dropped_turn_id)
 
 
 # --- run_turn ---------------------------------------------------------------

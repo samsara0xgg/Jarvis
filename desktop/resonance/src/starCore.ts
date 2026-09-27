@@ -1,6 +1,8 @@
 // Star-core (星核): a glass ball with stars inside and two glowing eyes. One WebGL program
 // paints her inside and her glass; a skin only changes that program's numbers, so one skin
 // can morph into another. Ported from the approved study (handoff lab/xinghe.html).
+// inline, so WebGL may read it wherever the page is loaded from
+import nebulaUrl from './assets/skins/icon-sky.jpg?inline';
 const PI = Math.PI, TAU = 2 * PI, D = PI / 180;
 export const B = 1.3; // half-size of the square the GL layers cover, in ball radii
 const reduced = matchMedia('(prefers-reduced-motion: reduce)');
@@ -59,13 +61,15 @@ function mixLight(cur: Light, to: Light, a: number) {
 }
 
 // ---------- skins: the same glass, different insides ----------
-type Glass = { neb: number; stars: number; soft: number; gal: number; aur: number; refr: number; frost: number; irid: number };
+// tex: a painted sky (the app icon's) in place of the generated nebula.
+type Glass = { neb: number; stars: number; soft: number; gal: number; aur: number; refr: number; frost: number; irid: number; tex: number };
 export const SKINS = {
-  glass: { name: '深空玻璃', gl: { neb: .3, stars: 1, soft: 0, gal: 0, aur: 0, refr: 1, frost: 0, irid: 0 } },
-  nebula: { name: '星云', gl: { neb: 1, stars: .75, soft: 0, gal: 0, aur: 0, refr: .7, frost: 0, irid: 0 } },
-  galaxy: { name: '银河', gl: { neb: .18, stars: .65, soft: 0, gal: 1, aur: 0, refr: .8, frost: 0, irid: 0 } },
-  frost: { name: '磨砂', gl: { neb: .4, stars: .9, soft: 1, gal: 0, aur: 0, refr: .25, frost: 1, irid: 0 } },
-  aurora: { name: '极光', gl: { neb: .12, stars: .7, soft: 0, gal: 0, aur: 1, refr: .8, frost: 0, irid: 1 } },
+  glass: { name: '深空玻璃', gl: { neb: .3, stars: 1, soft: 0, gal: 0, aur: 0, refr: 1, frost: 0, irid: 0, tex: 0 } },
+  nebula: { name: '星云', gl: { neb: 1, stars: .75, soft: 0, gal: 0, aur: 0, refr: .7, frost: 0, irid: 0, tex: 0 } },
+  galaxy: { name: '银河', gl: { neb: .18, stars: .65, soft: 0, gal: 1, aur: 0, refr: .8, frost: 0, irid: 0, tex: 0 } },
+  frost: { name: '磨砂', gl: { neb: .4, stars: .9, soft: 1, gal: 0, aur: 0, refr: .25, frost: 1, irid: 0, tex: 0 } },
+  aurora: { name: '极光', gl: { neb: .12, stars: .7, soft: 0, gal: 0, aur: 1, refr: .8, frost: 0, irid: 1, tex: 0 } },
+  codex: { name: '图标同款', gl: { neb: 0, stars: .35, soft: 0, gal: 0, aur: 0, refr: .7, frost: 0, irid: 0, tex: 1 } },
 } satisfies Record<string, { name: string; gl: Glass }>;
 export type Skin = keyof typeof SKINS;
 export const SKIN_KEYS = Object.keys(SKINS) as Skin[];
@@ -233,6 +237,10 @@ uniform float uPx, uT, uQ;
 uniform mat3 uRot;
 uniform vec3 uN1, uN2, uN3, uRim, uEyeC, uEyeL, uEyeR;
 uniform float uNeb, uStars, uSoft, uGal, uAur, uRefr, uFrost, uIrid, uBright;
+uniform sampler2D uTex;
+uniform float uTexK, uTexA, uTint;
+uniform vec2 uTexO;
+uniform vec3 uTintC;
 
 float h31(vec3 p) { p = fract(p * vec3(.1031, .1030, .0973)); p += dot(p, p.yzx + 33.33); return fract((p.x + p.y) * p.z); }
 vec3 h33(vec3 p) { p = fract(p * vec3(.1031, .1030, .0973)); p += dot(p, p.yxz + 33.33); return fract((p.xxy + p.yxx) * p.zyx); }
@@ -343,6 +351,14 @@ void main() {
     vec3 near = shell(e, d, .9, 0., 7.) + shell(e, d, .72, 0., 9.) * .9 + shell(e, d, .54, 0., 12.) * .75 + shell(e, d, .36, 0., 16.) * .6;
     col += (far * trans * .6 + near * mix(1., trans, .4)) * uStars;
     col *= uBright;
+    if (uTexK > 0.) {
+      // the painted sky turns slowly about her centre, slides a little with her gaze, and takes on the
+      // expression's hue away from rest; a painting overexposes fast, so brightening past 1 is gentler
+      float ca = cos(uTexA), sa = sin(uTexA);
+      vec3 tc = texture(uTex, mat2(ca, sa, -sa, ca) * (v - uTexO * z) * .5 + .5, -.8).rgb;
+      tc = mix(tc, uTintC * dot(tc, vec3(.3, .55, .15)) * 2.2, uTint) * (uBright > 1. ? 1. + (uBright - 1.) * .4 : uBright);
+      col += -log(1. - min(tc, .996)) / 1.1 * uTexK;
+    }
     col *= mix(.45, 1., smoothstep(0., .6, z));
     col += uRim * pow(1. - z, 6.) * .5 * min(uBright, 1.2);
     col += uRim * exp(-(v.x * v.x * 6. + (v.y - .83) * (v.y - .83) * 45.)) * .55 * uRefr * min(uBright, 1.2);
@@ -374,7 +390,8 @@ void main() {
     o = vec4(col * cov, max(col.r, max(col.g, col.b)) * cov);
   }
 }`;
-type Uniforms = { t: number; q: number; rot: Float32Array; n: RGB[]; rim: RGB; eyeC: RGB; eyeL: RGB; eyeR: RGB; bright: number };
+type Uniforms = { t: number; q: number; rot: Float32Array; n: RGB[]; rim: RGB; eyeC: RGB; eyeL: RGB; eyeR: RGB; bright: number;
+  texA: number; texO: [number, number]; tint: number; tintC: RGB };
 function makeGL() {
   const canvas = document.createElement('canvas');
   const gl = canvas.getContext('webgl2', { premultipliedAlpha: true, preserveDrawingBuffer: true, antialias: false, alpha: true });
@@ -400,9 +417,20 @@ void main() { v = vec2(p.x, -p.y) * uB; gl_Position = vec4(p, 0., 1.); }`);
   gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]), gl.STATIC_DRAW);
   const loc = gl.getAttribLocation(program, 'p');
   gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
-  const U = Object.fromEntries(['uLayer', 'uB', 'uPx', 'uT', 'uQ', 'uRot', 'uN1', 'uN2', 'uN3', 'uRim', 'uEyeC', 'uEyeL', 'uEyeR', 'uNeb', 'uStars', 'uSoft', 'uGal', 'uAur', 'uRefr', 'uFrost', 'uIrid', 'uBright']
+  const U = Object.fromEntries(['uLayer', 'uB', 'uPx', 'uT', 'uQ', 'uRot', 'uN1', 'uN2', 'uN3', 'uRim', 'uEyeC', 'uEyeL', 'uEyeR', 'uNeb', 'uStars', 'uSoft', 'uGal', 'uAur', 'uRefr', 'uFrost', 'uIrid', 'uBright',
+    'uTex', 'uTexK', 'uTexA', 'uTexO', 'uTint', 'uTintC']
     .map(n => [n, gl.getUniformLocation(program, n)]));
   gl.uniform1f(U.uB, B);
+  // The painted sky: black until its picture has loaded.
+  const tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 255]));
+  for (const [k, val] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]])
+    gl.texParameteri(gl.TEXTURE_2D, k, val);
+  gl.uniform1i(U.uTex, 0);
+  const img = new Image();
+  img.onload = () => { gl.bindTexture(gl.TEXTURE_2D, tex); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img); gl.generateMipmap(gl.TEXTURE_2D); };
+  img.src = nebulaUrl;
   // Every fragment of the square is written (transparent outside the ball), so nothing needs clearing.
   // Both layers go side by side into one canvas, so a frame stalls on the GPU once, not per copy.
   function render(S: number, u: Uniforms, m: Glass) {
@@ -413,6 +441,7 @@ void main() { v = vec2(p.x, -p.y) * uB; gl_Position = vec4(p, 0., 1.); }`);
     gl!.uniform3fv(U.uRim, u.rim); gl!.uniform3fv(U.uEyeC, u.eyeC); gl!.uniform3fv(U.uEyeL, u.eyeL); gl!.uniform3fv(U.uEyeR, u.eyeR);
     gl!.uniform1f(U.uNeb, m.neb); gl!.uniform1f(U.uStars, m.stars); gl!.uniform1f(U.uSoft, m.soft); gl!.uniform1f(U.uGal, m.gal); gl!.uniform1f(U.uAur, m.aur);
     gl!.uniform1f(U.uRefr, m.refr); gl!.uniform1f(U.uFrost, m.frost); gl!.uniform1f(U.uIrid, m.irid); gl!.uniform1f(U.uBright, u.bright);
+    gl!.uniform1f(U.uTexK, m.tex); gl!.uniform1f(U.uTexA, u.texA); gl!.uniform2fv(U.uTexO, u.texO); gl!.uniform1f(U.uTint, u.tint); gl!.uniform3fv(U.uTintC, u.tintC);
     for (const layer of [0, 1]) { gl!.viewport(layer * S, 0, S, S); gl!.uniform1i(U.uLayer, layer); gl!.drawArrays(gl!.TRIANGLES, 0, 6); }
   }
   return { canvas, render };
@@ -449,7 +478,7 @@ export class Core {
   E: Record<keyof Eye, ReturnType<typeof spring>>[];
   s = { head: spring(0), gx: spring(0), gy: spring(0), stretch: spring(1), lift: spring(0), spinV: spring(.22) };
   light = copyLight(LIGHT.base); bright = 1; blush = 0; orbitK = 0; voiceK = 0;
-  seed = Math.random() * 10; spin = Math.random() * TAU; spinStart = -1; spinDur = 1100;
+  seed = Math.random() * 10; spin = Math.random() * TAU; texA = 0; spinStart = -1; spinDur = 1100;
   blinkAt = 0; blinkStart = -1; sacAt = 0; sac: [number, number] = [0, 0];
   hopStart = -1; hopH = 0; hopDur = 380; anticAt = 0; shakeAt = -1; rippleAt = -1; flashAt = -1; celebrateUntil = 0;
   fx: Particle[] = []; zAt = 0; sparkAt = 0; expr: ExprId | null = null; t0 = 0; fired = new Set<number>();
@@ -625,7 +654,12 @@ export class Core {
     if (!gl) return false;
     const st = this.st, L = this.light, [eL, eR] = st.eyes;
     const spill = (e: EyePose): RGB => [e.c[0], e.c[1], e.a * clamp(e.lid, 0, 1) * (.75 + .6 * st.env) * Math.min(1.3, st.bright + .2)];
-    gl.render(S, { t: st.t, q, rot: rotMat(-(st.spin + st.gx * .5 + st.yaw), .3 + st.gy * .4), n: L.n, rim: L.rim, eyeC: L.glow, eyeL: spill(eL), eyeR: spill(eR), bright: st.bright }, this.mat);
+    // How far her light is from rest decides how much the painted sky takes on its hue.
+    let gap = 0;
+    for (let j = 0; j < 3; j++) for (let i = 0; i < 3; i++) gap = Math.max(gap, Math.abs(L.n[j][i] - LIGHT.base.n[j][i]));
+    const avg = [0, 1, 2].map(i => (L.n[0][i] + L.n[1][i] + L.n[2][i]) / 3), top = Math.max(...avg, 1e-3);
+    gl.render(S, { t: st.t, q, rot: rotMat(-(st.spin + st.gx * .5 + st.yaw), .3 + st.gy * .4), n: L.n, rim: L.rim, eyeC: L.glow, eyeL: spill(eL), eyeR: spill(eR), bright: st.bright,
+      texA: -st.spin * .3 + this.texA, texO: [st.gx * .06, st.gy * .06], tint: clamp(gap * 3, 0, .8), tintC: avg.map(c => c / top) as RGB }, this.mat);
     return true;
   }
   // The painters below draw at the ball centre in ball radii R, under the caller's pose.

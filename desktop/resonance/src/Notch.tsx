@@ -322,11 +322,14 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
 
   useEffect(() => {
     let raf = 0, timer: ReturnType<typeof setTimeout> | undefined, last = 0;
-    // The island opens whole, her lobe to the last mark, one piece growing down: at least as wide as the island,
-    // wider when the content needs it, and then wider on both sides round the island's middle.
+    // Her lobe to the last mark. Closed it may lean right when the marks outgrow her side.
+    const island = () => { const g = L.current.geo; return { l: g.lobeL, w: g.notchR + Math.max(0, st.wingTarget) - g.lobeL }; };
+    // Open, it is one piece growing down, always centred on the notch (the window's middle): wide enough to cover
+    // the island's longer side on both sides, wider when the content needs it.
     const span = (w: number) => {
-      const g = L.current.geo, l = g.lobeL, r = g.notchR + Math.max(0, st.wingTarget), ww = Math.max(w, r - l);
-      return { l: clamp((l + r) / 2 - ww / 2, 8, g.width - ww - 8), w: ww };
+      const g = L.current.geo, c = g.width / 2, isl = island();
+      const ww = Math.max(w, 2 * Math.max(c - isl.l, isl.l + isl.w - c));
+      return { l: c - ww / 2, w: ww };
     };
     // The marks and the panes, laid out and drawn. True while something is still moving.
     const frame = (now: number, dt: number) => {
@@ -372,7 +375,7 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
         }
       }
       // Closed, both panes rest inside the island, so they grow out of it and fold back into it.
-      const isl = span(0), rest = { l: isl.l, w: isl.w, d: top * .6 }, dw = st.dropGoal.w;
+      const isl = island(), rest = { l: isl.l, w: isl.w, d: top * .6 }, dw = st.dropGoal.w;
       const dg = st.open ? { l: span(dw).l, w: dw, d: st.dropGoal.d } : rest;
       if (st.open && s.dd.value < top) { s.dx.value = isl.l; s.dw.value = isl.w; }
       moving = go(s.dx, dg.l, 3.4, .86) || moving; moving = go(s.dw, dg.w, 3.4, .86) || moving; moving = go(s.dd, dg.d, 3.2, .8) || moving;

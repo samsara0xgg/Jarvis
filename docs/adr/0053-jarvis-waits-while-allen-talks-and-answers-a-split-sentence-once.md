@@ -1,6 +1,6 @@
 # ADR 0053 — Jarvis Waits While Allen Talks and Answers a Split Sentence Once
 
-**Status:** Accepted
+**Status:** Superseded-by-0072
 **Date:** 2026-09-25
 **Supersedes:** none
 

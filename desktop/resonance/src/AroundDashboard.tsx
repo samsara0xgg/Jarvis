@@ -586,7 +586,8 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
       {stopped.length > 0 && <div className="pg-sec"><h4 className="is-alert">{t(['Stopped', '停了'])} · {stopped.length}</h4>{stopped.map(s => agentRow(s))}</div>}
       {working.length > 0 && <div className="pg-sec"><h4>{t(['Working', '在做'])} · {working.length}</h4>{working.map(s => agentRow(s))}</div>}
       {earlier.length > 0 && <div className="pg-sec"><h4>{port ? t(['Last 24 hours', '过去 24 小时']) : t(['Earlier today', '今天早些时候'])} · {earlier.length}</h4>{earlier.map(s => agentRow(s))}</div>}
-      {agents.length > 0 && <p className="pg-sec muted">{t(['Click a session to see what it’s doing.', '点一个会话，看它在做什么。'])}</p>}</div>
+      {agents.length > 0 && <p className="pg-sec muted">{t(['Click a session to see what it’s doing.', '点一个会话，看它在做什么。'])}</p>}
+      {port && window.jarvis?.openAgents && <div className="pg-sec"><button className="btn btn-ghost" onClick={() => window.jarvis?.openAgents?.()}>{t(['Open the Agents window', '打开 Agents 窗口'])}</button></div>}</div>
     </>,
     usage: () => <>
       {back(t(TITLES.usage), <button className="us-sync" aria-label={t(['Refresh', '刷新'])} disabled={quota.refreshing} onClick={() => void quota.refresh()}>

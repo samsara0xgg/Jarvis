@@ -19,7 +19,8 @@ import pytest
 
 from jarvis.decision.response_run import ResponseCancelledError
 from jarvis.runtime import make_supersede_unspoken_callable
-from jarvis.state.event_log import emit_event, open_event_log
+from jarvis.state.event_log import emit_event, iter_events_of_types, open_event_log
+from jarvis.state.projections import PendingConfirmations
 from jarvis.surface import voice_media, voice_pipeline
 from tests.integration.test_conversation_mode import _Session
 from tests.integration.test_foreground_arbitration import _whole
@@ -158,10 +159,11 @@ def test_the_next_sentence_cancels_only_an_unspoken_answer_to_a_recent_sentence(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Of three held answers only the unspoken voice one is dropped.
+    """Of four held answers only the unspoken voice and card ones are dropped.
 
     ``T-voice`` answers a voice sentence and never reached the speaker: dropped.
-    ``T-heard`` answers one too, but L5 already played some of it: kept.
+    ``T-card`` answers a filled-in ask card (ADR 0072) the same way: dropped.
+    ``T-heard`` answers a voice sentence, but L5 already played some of it: kept.
     ``T-typed`` answers typed text: kept. The kept two complete on release.
     """
     runtime = _make_runtime(tmp_path, lifecycle=True, cancel=True)
@@ -176,9 +178,15 @@ def test_the_next_sentence_cancels_only_an_unspoken_answer_to_a_recent_sentence(
 
     supersede = make_supersede_unspoken_callable(runtime, _drop)
     intents = {turn: _emit_intent(runtime.conn, turn) for turn in ("T-voice", "T-heard", "T-typed")}
+    intents["T-card"] = emit_event(
+        runtime.conn,
+        type="surface.user_intent",
+        payload={"transcript": "邮箱: a@b.c", "turn_id": "T-card", "channel": "clarify"},
+        correlation={"turn_id": "T-card"},
+    )
     _heard(runtime.conn, "T-voice")
     _heard(runtime.conn, "T-heard")
-    with ThreadPoolExecutor(max_workers=3) as pool:
+    with ThreadPoolExecutor(max_workers=4) as pool:
         futures = {
             turn: pool.submit(
                 _drive_turn_on_own_connection,
@@ -189,19 +197,70 @@ def test_the_next_sentence_cancels_only_an_unspoken_answer_to_a_recent_sentence(
             )
             for turn, intent in intents.items()
         }
-        _wait_open(runtime, 3)
+        _wait_open(runtime, 4)
         supersede("T-next")
-        with pytest.raises(ResponseCancelledError):
-            futures["T-voice"].result(timeout=10)
+        for dropped in ("T-voice", "T-card"):
+            with pytest.raises(ResponseCancelledError):
+                futures[dropped].result(timeout=10)
         runtime.response_runs.hold_completion(held=False)
         futures["T-heard"].result(timeout=10)
         futures["T-typed"].result(timeout=10)
 
-    assert asked == [frozenset({"T-voice", "T-heard"})]
+    assert asked == [frozenset({"T-voice", "T-card", "T-heard"})]
     cancelled = _payloads(runtime.conn, "response.cancelled")
-    assert [(row["turn_id"], row["reason"]) for row in cancelled] == [("T-voice", "superseded")]
+    assert sorted((row["turn_id"], row["reason"]) for row in cancelled) == [
+        ("T-card", "superseded"), ("T-voice", "superseded"),
+    ]
     emitted = {row["turn_id"] for row in _payloads(runtime.conn, "surface.response_emitted")}
     assert emitted == {"T-heard", "T-typed"}
+    runtime.conn.close()
+
+
+def test_a_dropped_turn_takes_its_waiting_card_with_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ADR 0074: the card the first half put up is rejected as ``superseded``, so none waits."""
+    runtime = _make_runtime(tmp_path, lifecycle=True, cancel=True)
+    _script_decide(monkeypatch, _final_result())
+    assert runtime.response_runs is not None
+    runtime.response_runs.hold_completion(held=True)
+    intent = _emit_intent(runtime.conn, "T-first")
+    _heard(runtime.conn, "T-first")
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(
+            _drive_turn_on_own_connection,
+            runtime,
+            user_intent_event=intent,
+            available_surfaces=frozenset(),
+            streaming_enabled=True,
+        )
+        _wait_open(runtime, 1)
+        emit_event(
+            runtime.conn,
+            type="confirmation.requested",
+            payload={
+                "confirmation_id": "C-first",
+                "action_snapshot": {"tool_name": "mcp__gmail__gmail_send", "args_meta": {}},
+                "template_line": "要发吗",
+                "expires_at_ms": int(time.time() * 1000) + 60_000,
+            },
+            correlation={"turn_id": "T-first", "action_id": "A-first"},
+        )
+        make_supersede_unspoken_callable(runtime, lambda turn_ids: turn_ids)("T-next")
+        with pytest.raises(ResponseCancelledError):
+            future.result(timeout=10)
+        runtime.response_runs.hold_completion(held=False)
+
+    rejected = _payloads(runtime.conn, "confirmation.rejected")
+    assert [(row["confirmation_id"], row["grammar_rule_id"]) for row in rejected] == [
+        ("C-first", "superseded"),
+    ]
+    slot = PendingConfirmations.from_events(
+        iter_events_of_types(runtime.conn, ("confirmation.requested", "confirmation.rejected")),
+    ).slot
+    assert slot is not None
+    assert not slot.is_live(int(time.time() * 1000))
     runtime.conn.close()
 
 

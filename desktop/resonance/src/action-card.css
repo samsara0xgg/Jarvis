@@ -22,7 +22,7 @@
 .ac-edit:hover { background:rgb(255 255 255 / .04); }
 .ac-edit:focus-visible { background:rgb(255 255 255 / .06); box-shadow:0 0 0 1px rgb(139 228 188 / .45); }
 .ac-subject { font-size:15px; font-weight:600; letter-spacing:-.01em; line-height:1.4; }
-.ac-body { font-size:13px; line-height:1.62; color:var(--p-ink); opacity:.88; resize:none; min-height:3.4em; max-height:240px; field-sizing:content; }
+.ac-body { font-size:13px; line-height:1.62; color:var(--p-ink); opacity:.88; resize:none; min-height:3.4em; max-height:240px; }
 
 /* Any other tool: its arguments as a few name: value rows, never the raw call. */
 .ac-kv { display:flex; flex-direction:column; gap:5px; margin:0; font-size:12.5px; }

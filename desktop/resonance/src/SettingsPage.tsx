@@ -27,11 +27,12 @@ const DEMO: Daemon = {
   options: { tts_voice: ['Warm Bestie', 'Explorative Girl'], output_device: ['System default', 'Multi-Output Device 2', 'MacBook Pro Speakers'], input_device: ['System default', 'reSpeaker XVF3800', 'MacBook Pro Microphone'] },
 };
 const STALE: Record<'hour' | 'day' | 'never', L> = { hour: ['1 h', '1 小时'], day: ['1 day', '1 天'], never: ['never', '不收'] };
-const SKIN_EN: Record<Skin, string> = { glass: 'Glass', nebula: 'Nebula', galaxy: 'Galaxy', frost: 'Frost', aurora: 'Aurora' };
+const SKIN_EN: Record<Skin, string> = { glass: 'Glass', nebula: 'Nebula', galaxy: 'Galaxy', frost: 'Frost', aurora: 'Aurora', codex: 'Icon' };
 const SKIN_BG: Record<Skin, string> = {
   glass: 'radial-gradient(circle at 35% 30%,#7f95ff,#121634 68%)', nebula: 'radial-gradient(circle at 35% 30%,#d58cff,#2a1246 70%)',
   galaxy: 'conic-gradient(from 40deg,#1b2350,#8fa6ff,#1b2350,#e6c7ff,#1b2350)', frost: 'radial-gradient(circle at 35% 30%,#dfe6ff,#56618f 75%)',
   aurora: 'linear-gradient(160deg,#3fe0b5,#5a7bff 55%,#b26bff)',
+  codex: 'radial-gradient(circle at 40% 45%,#7fe0ff,#5b3fd0 45%,#b04fd8 62%,#0d1030 80%)',
 };
 
 type Ctl =
