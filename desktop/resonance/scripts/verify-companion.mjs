@@ -30,7 +30,7 @@ try {
       onDictation: callback => { window.__trip = callback; return () => {}; },
       wearing: skin => { window.__state.wearing = skin; },
       displayReady: () => { window.__state.ready++; },
-      companionMenu: menu => { window.__state.menu = menu; },
+      companionSettings: settings => { window.__state.settings = settings; },
       onCursor: callback => { window.__cursor = callback; return () => {}; },
       onCommand: callback => { window.__command = callback; return () => {}; },
       passthrough: value => { window.__state.passthrough = value; },
@@ -60,17 +60,34 @@ try {
   const litIn = (x0, y0, x1, y1) => page.evaluate(([x0, y0, x1, y1]) => { const c = document.querySelector('.companion-canvas'), r = c.getBoundingClientRect(), k = c.width / r.width;
     const d = c.getContext('2d').getImageData(Math.round((x0 - r.left) * k), Math.round((y0 - r.top) * k), Math.round((x1 - x0) * k), Math.round((y1 - y0) * k)).data;
     let max = 0, on = 0; for (let i = 3; i < d.length; i += 4) { max = Math.max(max, d[i]); if (d[i] > 30) on++; } return { max, lit: +(on / (d.length / 4)).toFixed(2) }; }, [x0, y0, x1, y1]);
-  const inIsland = () => litIn(135, 0, 225, 32), home = () => page.evaluate(() => window.__state.menu?.home);
+  // What she wears and how she looks is kept in her profile and picked in Settings › Her look: the panel opens
+  // from the notch, and closes again when the cursor leaves.
+  const wardrobe = () => page.evaluate(() => JSON.parse(localStorage.getItem('companion-wardrobe-v1') ?? '{}'));
+  const pickLook = async (item, label) => {
+    await move(320, 14);
+    await page.locator('.companion-dashboard.is-open').waitFor();
+    await move(320, 200); await page.waitForTimeout(900);
+    await page.locator('.ad .corner [data-row="settings"]').click(); await page.waitForTimeout(700);
+    await page.locator('.ad [data-cat="look"]').click(); await page.waitForTimeout(500);
+    await page.locator(`.ad [data-item="${item}"] button`, { hasText: label }).first().click();
+    await page.locator('.ad .pg-back').click(); await page.waitForTimeout(450);
+    await page.locator('.ad .pg-back').click();
+    await move(600, 560);
+    await page.waitForFunction(() => !document.querySelector('.companion-dashboard.is-open'), null, { timeout: 3000 });
+  };
+  const inIsland = () => litIn(135, 0, 225, 32), home = async () => (await wardrobe()).home;
   let seen = await inIsland();
   check(`01 at home she is dark glass: her nebula glows through the black island around her eyes, no ball below it (${JSON.stringify(seen)})`,
     await home() === 'dark' && seen.lit > .4 && seen.max === 255 && (await litIn(150, 33, 240, 40)).max === 0);
-  await page.evaluate(() => window.__command('home:eyes'));
-  await page.waitForTimeout(1500);
+  await pickLook('home', 'Just her eyes');
+  await waitPlace('home');
+  await page.waitForTimeout(600);
   seen = await inIsland();
-  check(`01 the other look leaves the island black but for her two eyes (${JSON.stringify(seen)})`, await home() === 'eyes' && seen.lit < .15 && seen.max === 255);
+  check(`01 Settings › Her look leaves the island black but for her two eyes (${JSON.stringify(seen)})`, await home() === 'eyes' && seen.lit < .15 && seen.max === 255);
   await shot('01-home-eyes');
-  await page.evaluate(() => window.__command('home:dark'));
-  await page.waitForTimeout(1500);
+  await pickLook('home', 'Dark glass');
+  await waitPlace('home');
+  await page.waitForTimeout(600);
   // ADR 0058: dictation takes her out through the notch to the text caret (another window draws her there) and back.
   check('13 she tells the caret window which skin she wears', await page.evaluate(() => window.__state.wearing) === 'glass');
   const fold = async () => { const t = await page.locator('.companion-island').getAttribute('transform'); return t === null ? 1 : Number(/scale\(([^ )]+)/.exec(t)[1]); };
@@ -343,19 +360,19 @@ try {
   check('11 …Settings too', await title() === '设置' && (await page.locator('.ad .st-cat b').allTextContents()).includes('隐私与数据'));
   await page.locator('.ad .pg-back').click();
   await page.waitForFunction(() => !document.querySelector('.ad .page'));
-  check('11 …and the home', await page.locator('.ad [data-block="today"] .label').textContent() === '今天' && await page.evaluate(() => window.__state.menu?.lang === 'zh'));
+  check('11 …and the home', await page.locator('.ad [data-block="today"] .label').textContent() === '今天' && await page.evaluate(() => window.__state.settings?.lang === 'zh'));
   await panelShot('11-home-zh');
   await page.locator('.ad .corner [data-row="settings"]').click(); await settle();
   await page.locator('.ad [data-cat="general"]').click(); await page.waitForTimeout(500);
   await page.locator('.ad .st-seg button', { hasText: 'English' }).first().click();
   // The right-⌥ dictation lives in her process: its switch reaches the main process with her menu.
   const dictationSwitch = page.locator('.ad [data-item="dictation"] .sw');
-  const dictationOn = await dictationSwitch.getAttribute('aria-checked') === 'true' && await page.evaluate(() => window.__state.menu?.dictation === true);
+  const dictationOn = await dictationSwitch.getAttribute('aria-checked') === 'true' && await page.evaluate(() => window.__state.settings?.dictation === true);
   await dictationSwitch.click(); await page.waitForTimeout(150);
-  const dictationOff = await dictationSwitch.getAttribute('aria-checked') === 'false' && await page.evaluate(() => window.__state.menu?.dictation === false);
+  const dictationOff = await dictationSwitch.getAttribute('aria-checked') === 'false' && await page.evaluate(() => window.__state.settings?.dictation === false);
   await dictationSwitch.click(); await page.waitForTimeout(150);
   check('11 Settings › General › Dictation starts on, and switching it off and on reaches her process',
-    dictationOn && dictationOff && await page.evaluate(() => window.__state.menu?.dictation === true));
+    dictationOn && dictationOff && await page.evaluate(() => window.__state.settings?.dictation === true));
   await page.locator('.ad .pg-back').click(); await page.waitForTimeout(450);
   await page.locator('.ad .pg-back').click();
   await page.waitForFunction(() => !document.querySelector('.ad .page'));
@@ -409,8 +426,8 @@ try {
   await waitPlace('home');
 
   // 08: skins. She starts in deep-space glass; holding her past a poke changes her into the next skin,
-  // the tray picks any skin, and on her own she comes out of the island, changes, and goes home.
-  const skinOn = () => page.evaluate(() => window.__state.menu?.skins.find(s => s.on)?.key);
+  // and Settings picks any skin.
+  const skinOn = async () => (await wardrobe()).skin;
   const wearing = () => page.locator('.companion-canvas').getAttribute('data-skin');
   const wearsSoon = key => page.waitForFunction(k => document.querySelector('.companion-canvas')?.dataset.skin === k, key, { timeout: 4000 });
   check('08 she starts in deep-space glass', await skinOn() === 'glass' && await wearing() === 'glass');
@@ -447,36 +464,22 @@ try {
     return n;
   });
   const sky = {};
-  for (const key of ['galaxy', 'frost', 'glass', 'codex', 'aurora']) {
-    await page.evaluate(k => window.__command(`skin:${k}`), key);
+  for (const [key, label] of [['galaxy', 'Galaxy'], ['frost', 'Frost'], ['glass', 'Glass'], ['codex', 'Icon'], ['aurora', 'Aurora']]) {
+    await pickLook('skin', label);
     await wearsSoon(key);
+    await move(out.x, out.y);
+    await waitPlace('out');
     await page.waitForTimeout(1400);
     sky[key] = await colour();
     await shot(`08-${key}`);
   }
-  check('08 the tray picks any skin and she wears it', await skinOn() === 'aurora');
+  check('08 Settings picks any skin and she wears it', await skinOn() === 'aurora');
   check(`08 in the icon skin her inside is the icon's painted sky (coloured pixels ${JSON.stringify(sky)})`, sky.codex > 200 && sky.codex > 3 * sky.glass);
   await move(600, 560);
   await waitPlace('home');
-  await page.evaluate(() => window.__command('outing'));
-  await waitPlace('out');
-  await page.waitForFunction(() => document.querySelector('.companion-canvas')?.dataset.skin !== 'aurora', null, { timeout: 4000 });
-  await shot('08-own-change');
-  await waitPlace('home');
-  check('08 on her own she comes out, changes skin and goes home, keeping your pick', await skinOn() === 'aurora');
-  await page.evaluate(() => window.__command('outing'));
-  await wearsSoon('aurora');
-  await waitPlace('home');
-  check('08 her next change on her own returns to your pick', true);
-  await page.evaluate(() => window.__command('expr:30'));
-  await waitPlace('out');
-  await page.waitForTimeout(1200);
-  await shot('08-thinking');
-  await waitPlace('home');
-  check('08 the tray plays an expression out of the island and she goes home', true);
 
   // 10: beside the notch (ADR 0069). Right of the camera one black shape carries one mark per group in the look
-  // picked in the tray (星芒 or 像素), each with its count: the four working, the three finished ones (met already
+  // picked in Settings (星芒 or 像素), each with its count: the four working, the three finished ones (met already
   // done, so seen). Resting anywhere on the row opens one panel that is the whole island growing down, every session
   // one line; names are bold only while they need a look. A finished one is archived from its row, or all of them by
   // dragging the finished mark down out of the menu bar. ⌥Tab opens the same panel for the keys.
@@ -513,13 +516,13 @@ try {
   check(`10 a short pull puts the mark back (${await marks()})`, await marks() === 'work4 done2');
   await drag(40);
   check(`10 dragged out of the menu bar the finished ones are archived (${await marks()})`, await marks() === 'work4' && await page.locator('.notch-catch').count() === 0);
-  await page.evaluate(() => window.__command('marks:pixel'));
+  await pickLook('marks', 'Pixel');
   await move(workX, 14); await drop.waitFor(); await page.waitForTimeout(600);
-  check('10 the tray turns every mark into pixels', await looks('.notch canvas, .ad .r-agents canvas') === 'pixel' && await page.evaluate(() => window.__state.menu?.marks === 'pixel'));
+  check('10 Settings › Her look turns every mark into pixels', await looks('.notch canvas, .ad .r-agents canvas') === 'pixel' && (await wardrobe()).marks === 'pixel');
   await shot('10-wing-pixel', { x: 100, y: 0, width: 440, height: 260 });
   await move(600, 560); await page.waitForTimeout(700);
-  await page.evaluate(() => window.__command('marks:spark'));
   check('10 the panel folds back into the island when the pointer leaves', await drop.count() === 0);
+  await pickLook('marks', 'Spark');
   // ⌥Tab (the main process sends agent-keys): the panel opens held, with key focus, on the first row.
   await page.evaluate(() => window.__command('agent-keys')); await drop.waitFor(); await page.waitForTimeout(500);
   const cur = () => drop.locator('.a-row.is-cur b').textContent();

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, Tray, nativeImage, ipcMain, screen, session, shell, systemPreferences, desktopCapturer, Notification, globalShortcut } from 'electron';
+import { app, BrowserWindow, ipcMain, screen, session, shell, systemPreferences, desktopCapturer, Notification, globalShortcut } from 'electron';
 import path from 'node:path';
 import { existsSync } from 'node:fs';
 import { userInfo } from 'node:os';
@@ -25,7 +25,6 @@ const locked = app.requestSingleInstanceLock();
 if (!locked) app.quit();
 const WIDTH = 640;
 let win: BrowserWindow;
-let tray: Tray;
 // One companion, on the screen you are using: `current` is the display she lives on now. With `follow`
 // off (her Settings › General) she stays on the main screen.
 let current: Electron.Display | null = null, follow = true;
@@ -300,60 +299,19 @@ function companion(shown?: () => void) {
       || typeof job !== 'string' || !/^([0-9a-f]{8})?$/.test(job)) { resolve(false); return; }
     execFile('/usr/bin/osascript', ['-e', GHOSTTY_JUMP, title.trim(), job], { timeout: 8000 }, (error, stdout) => resolve(!error && stdout.trim() !== 'none'));
   }));
-  tray = new Tray(nativeImage.createEmpty());
-  tray.setTitle('●'); tray.setToolTip(demo ? 'Jarvis 小球 · 演示数据' : 'Jarvis 小球');
-  // The renderer owns her skins and expressions and reports them; every item just sends a command back.
-  const send = (command: string) => () => win.webContents.send('command', command);
-  // ADR 0073: the Agents window, from her menu or the Dashboard's Agents page. Live only: its sessions are real. Not in
-  // the installed app yet: it runs on Allen's own subscription.
-  const agents = demo || app.isPackaged ? null : setupAgents({ preload: path.join(here, 'preload.cjs'), page: path.join(here, '../dist/agents.html'), host: path.join(here, 'agents/host.js') });
+  // ADR 0073: the Agents window, from the Dashboard's Agents page. Live only: its sessions are real. Not in the
+  // installed app yet: it runs on Allen's own subscription.
+  if (!demo && !app.isPackaged) setupAgents({ preload: path.join(here, 'preload.cjs'), page: path.join(here, '../dist/agents.html'), host: path.join(here, 'agents/host.js') });
   // Spec §15.3: ⌥Tab opens the island's list of agent sessions for the keys, and closes it again.
-  if (!demo && !globalShortcut.register('Alt+Tab', send('agent-keys'))) console.warn('Shortcut unavailable: Alt+Tab');
+  if (!demo && !globalShortcut.register('Alt+Tab', () => win.webContents.send('command', 'agent-keys'))) console.warn('Shortcut unavailable: Alt+Tab');
   app.on('will-quit', () => globalShortcut.unregister('Alt+Tab'));
-  // Hiding her keeps this process, and the right-⌥ dictation it carries, running beside Jarvis; launchd would
-  // bring a quit process straight back anyway (ADR-0015). The Dashboard and Settings bring her back.
-  const show = () => { if (!win.isVisible()) { win.showInactive(); keepOnTop(); } };
-  const open = (command: string) => () => { show(); send(command)(); };
-  type MenuModel = { skins: { key: string; name: string; on: boolean }[]; auto: boolean; layout?: string; home?: string; marks?: string; follow?: boolean; lang?: string; dictation?: boolean; exprs: { id: string; name: string }[] };
-  let model: MenuModel = { skins: [], auto: false, exprs: [] };
-  // Her menu speaks the panel's language (Settings › General).
-  const menu = (next: MenuModel) => { model = next; const t = (en: string, zh: string) => model.lang === 'zh' ? zh : en; tray.setContextMenu(Menu.buildFromTemplate([
-    { label: demo ? t('Jarvis companion · demo data', 'Jarvis 小球 · 演示数据') : t('Jarvis companion', 'Jarvis 小球'), enabled: false },
-    { label: t('Open Dashboard', '打开 Dashboard'), click: open('dashboard') },
-    ...agents ? [{ label: t('Agents window', 'Agents 窗口'), click: () => { void agents.open(); } }] : [],
-    { label: t('Settings…', '设置…'), click: open('settings') },
-    { label: t('Dashboard layout', 'Dashboard 布局'), submenu: [
-      { label: t('Around her (one column)', '围着她（一列）'), type: 'radio', checked: model.layout !== 'grid', click: send('layout:around') },
-      { label: t('Two columns (the old layout)', '两栏（原来的排法）'), type: 'radio', checked: model.layout === 'grid', click: send('layout:grid') },
-    ] },
-    { label: t('Agent marks', '状态点'), submenu: [
-      { label: t('Spark', '星芒'), type: 'radio', checked: model.marks !== 'pixel', click: send('marks:spark') },
-      { label: t('Pixel', '像素'), type: 'radio', checked: model.marks === 'pixel', click: send('marks:pixel') },
-    ] },
-    { type: 'separator' },
-    { label: t('Skin', '皮肤'), enabled: model.skins.length > 0, submenu: [
-      ...model.skins.map(skin => ({ label: String(skin.name), type: 'radio' as const, checked: !!skin.on, click: send(`skin:${skin.key}`) })),
-      { type: 'separator' },
-      { label: t('Change outfit by herself', '自己换装'), type: 'checkbox', checked: !!model.auto, click: send('auto') },
-      { label: t('Change now', '现在换一套'), click: send('outing') },
-      { type: 'separator' },
-      { label: t('In the island: dark glass', '在家：暗玻璃'), type: 'radio', checked: model.home !== 'eyes', click: send('home:dark') },
-      { label: t('In the island: just her eyes', '在家：只有两只眼'), type: 'radio', checked: model.home === 'eyes', click: send('home:eyes') },
-    ] },
-    { label: t('Expressions', '看表情'), enabled: model.exprs.length > 0, submenu: model.exprs.map(x => ({ label: `${x.id} ${x.name}`, click: send(`expr:${x.id}`) })) },
-    { type: 'separator' },
-    win.isVisible()
-      ? { label: t('Hide the companion', '隐藏小球'), click: () => { win.hide(); menu(model); } }
-      : { label: t('Show the companion', '显示小球'), click: () => { show(); menu(model); } },
-  ])); };
-  menu(model);
-  ipcMain.on('companion-menu', (event, model: MenuModel) => {
-    if (event.sender !== win.webContents || !Array.isArray(model?.skins) || !Array.isArray(model?.exprs)) return;
-    menu(model);
-    dictation?.language(model.lang);
-    dictation?.enabled(model.dictation !== false);
+  // Her Settings that act in this process: the right-⌥ dictation, its language, and which screen she lives on.
+  ipcMain.on('companion-settings', (event, settings: { follow?: boolean; lang?: string; dictation?: boolean }) => {
+    if (event.sender !== win.webContents || typeof settings !== 'object' || !settings) return;
+    dictation?.language(settings.lang);
+    dictation?.enabled(settings.dictation !== false);
     // Pinned to the main screen while she is on another one: she sinks here and comes up there.
-    if (typeof model.follow === 'boolean' && model.follow !== follow) { follow = model.follow; if (!follow && current?.id !== screen.getPrimaryDisplay().id && !moving) leave(); }
+    if (typeof settings.follow === 'boolean' && settings.follow !== follow) { follow = settings.follow; if (!follow && current?.id !== screen.getPrimaryDisplay().id && !moving) leave(); }
   });
 }
 app.on('window-all-closed', () => {});

@@ -24,7 +24,7 @@ try {
   await page.addInitScript(() => {
     window.jarvis = {
       placement: async () => ({ docked: false, topInset: 32, notchWidth: 185, surfaceWidth: 640, compactWidth: 0, displayId: 1 }),
-      onPlacement: () => () => {}, onDisplayLeave: () => () => {}, displayReady: () => {}, companionMenu: () => {},
+      onPlacement: () => () => {}, onDisplayLeave: () => () => {}, displayReady: () => {}, companionSettings: () => {},
       onCursor: () => () => {}, onCommand: () => () => {}, passthrough: () => {}, focus: async () => {}, material: () => {},
       codexTitles: async () => ({}), watchGhostty: () => {}, onGhostty: () => () => {},
     };
