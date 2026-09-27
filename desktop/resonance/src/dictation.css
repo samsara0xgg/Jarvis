@@ -14,4 +14,7 @@ body { font: 13px/1.45 -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-se
 .card-top .x { background: none; border: 0; color: #9ea5bf; font-size: 18px; line-height: 1; cursor: pointer; padding: 0 2px; }
 .card-text { border: 1px solid rgba(255, 255, 255, .12); border-radius: 7px; padding: 7px 9px; font-size: 14px; line-height: 1.6; max-height: 220px; overflow: auto; user-select: text; }
 .card-foot { display: flex; gap: 10px; align-items: center; font-size: 12px; color: #9ea5bf; }
+.bubble.edit { width: 340px; max-width: 340px; }
+.bubble.edit textarea { font: inherit; font-size: 14px; line-height: 1.6; color: inherit; background: none; border: 1px solid rgba(255, 255, 255, .18); border-radius: 7px; padding: 7px 9px; resize: none; outline: none; overflow: auto; }
+.bubble.edit textarea:focus { border-color: rgba(255, 208, 138, .6); }
 .bubble .copied { color: #0a0c14; background: #8be4bc; border-radius: 5px; padding: 0 7px; font-weight: 600; }

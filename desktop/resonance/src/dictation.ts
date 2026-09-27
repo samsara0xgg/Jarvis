@@ -23,6 +23,7 @@ declare global { interface Window { dictation: {
   home: (happy: boolean) => void;
   done: () => void;
   passthrough: (on: boolean) => void;
+  focus: (on: boolean) => void;
 } } }
 
 const T = {
@@ -38,6 +39,8 @@ const T = {
   copied: ['Copied', '已复制'],
   pasteIt: ['Paste it anywhere', '直接粘贴就行'],
   close: ['Close', '关闭'],
+  editArmed: ['I’ll let you edit it first.', '写好先给你改'],
+  editHint: ['Enter or tap her to paste · Shift+Enter for a new line · Esc to cancel', '回车或点她贴上 · Shift+回车换行 · Esc 取消'],
 } satisfies Record<string, [string, string]>;
 
 const TAU = Math.PI * 2, R = 15, M = 6;
@@ -94,13 +97,15 @@ function dig(x: number, y: number, open: number, close = 1e12) { // 1e12: open u
 const holeR = (h: Hole, now: number) => R * smooth(h.open, h.open + 90, now) * (1 - smooth(h.close, h.close + 110, now));
 
 // ---------- her ----------
-type State = 'off' | 'appear' | 'listen' | 'think' | 'leave' | 'miss' | 'error' | 'card' | 'dissolve' | 'cancel' | 'gone';
+type State = 'off' | 'appear' | 'listen' | 'think' | 'edit' | 'leave' | 'miss' | 'error' | 'card' | 'dissolve' | 'cancel' | 'gone';
 let core = new Core('glass'), lang: Lang = 'zh';
 const t = (pair: [string, string]) => pair[lang === 'zh' ? 1 : 0];
 const P = {
   state: 'off' as State, t0: 0, x: 0, y: 0, info: { kind: 'none', caret: null, element: null } as Info,
   lvl: 0, target: 0, hole: null as Hole | null, sinkAt: 0, trusted: true, port: '', session: 0,
   vis: { x: 0, y: 0 }, cursor: { x: -1e4, y: -1e4 }, over: false, downAt: -1,
+  // A tap on her once she is listening: the words come back in a box to fix before they go in.
+  edit: false,
 };
 // Beats, in ms.
 const APPEAR = 340, PLUNGE = 250, SHAKE = 260;
@@ -158,7 +163,7 @@ function start(s: DictationStart) {
   lang = s.lang; top = s.top; P.trusted = s.trusted; P.port = s.port; P.session++;
   P.info = { kind: s.caret ? 'caret' : s.element ? 'element' : 'none', caret: s.caret, element: s.element };
   const at = place(P.info, s.lineRight, s.pointer);
-  Object.assign(P, { x: at.x, y: at.y, vis: at, state: 'appear', t0: now, lvl: 0, target: 0, hole: null, downAt: -1 });
+  Object.assign(P, { x: at.x, y: at.y, vis: at, state: 'appear', t0: now, lvl: 0, target: 0, hole: null, downAt: -1, edit: false });
   holes = [];
   // the hole at her feet opens while she is still slipping into the notch
   dig(at.x, at.y + R, now + 90, now + 260);
@@ -175,19 +180,32 @@ function finish(now: number) {
 function outcome(now: number, words: string) {
   if (!words) { P.state = 'miss'; P.t0 = now; showBubble(t(T.miss), '', 'hint', 1900); return; }
   text = words;
+  if (P.edit) { P.state = 'edit'; P.t0 = now; showEditor(words); return; }
+  deliver(now);
+}
+function deliver(now: number) {
   if (canPaste()) {
     // no pause for a victory lap: she dives at once, and the words come out as the hole shuts
     const c = P.info.caret;
     P.state = 'leave'; P.t0 = now;
     dig(c ? c.l : P.x, c ? Math.max(c.b, P.y + R) : P.y + R, now + 70);
-  } else { window.dictation.copy(words); P.state = 'card'; P.t0 = now; showCard(words); }
+  } else { window.dictation.copy(text); P.state = 'card'; P.t0 = now; showCard(text); }
+}
+// The fixed words go in the way the spoken ones would; nothing left in the box sends nothing.
+function submit(now: number) {
+  const box = bubble.querySelector('textarea');
+  if (P.state !== 'edit' || !box) return;
+  text = box.value.trim();
+  window.dictation.focus(false); hideBubble();
+  if (text) deliver(now); else dissolve(now);
 }
 function error(message: string, note: string) { const now = performance.now(); P.state = 'error'; P.t0 = now; showBubble(message, note, 'err', 3000); }
 function fail(message: string) { abort?.abort(); error(message, ''); }
 // She sinks where she stands: a hole opens at her feet as she crouches.
 function sink(at: number) { P.sinkAt = at; dig(P.x, P.y + R, at + 40); }
 function cancel(now: number) {
-  if (!['appear', 'listen', 'think', 'card', 'miss', 'error'].includes(P.state)) return;
+  if (!['appear', 'listen', 'think', 'edit', 'card', 'miss', 'error'].includes(P.state)) return;
+  if (P.state === 'edit') window.dictation.focus(false);
   abort?.abort(); P.session++;
   if (P.state !== 'card') core.effect('shake', now);
   const card = P.state === 'card';
@@ -229,20 +247,44 @@ function showCard(words: string) {
   bubble.hidden = false; placeBubble();
   bubbleTimer = setTimeout(() => { if (P.state === 'card') dissolve(performance.now()); }, 8000);
 }
+// The polished words in a box that has the keyboard; Enter (not while an input method is composing) pastes them.
+function showEditor(words: string) {
+  clearTimeout(bubbleTimer);
+  bubble.className = 'bubble card edit';
+  bubble.innerHTML = '<textarea rows="1" spellcheck="false"></textarea><div class="card-foot"><span></span></div>';
+  const box = bubble.querySelector('textarea')!;
+  bubble.querySelector('.card-foot span')!.textContent = t(T.editHint);
+  box.value = words;
+  const grow = () => { box.style.height = 'auto'; box.style.height = `${Math.min(box.scrollHeight, 220)}px`; placeBubble(); };
+  box.addEventListener('input', grow);
+  box.addEventListener('keydown', event => {
+    if (event.isComposing || event.keyCode === 229) return;
+    if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); submit(performance.now()); }
+    else if (event.key === 'Escape') { event.preventDefault(); cancel(performance.now()); }
+  });
+  bubble.hidden = false; grow();
+  window.dictation.focus(true);
+  box.focus(); box.setSelectionRange(box.value.length, box.value.length);
+}
 function hideBubble() { clearTimeout(bubbleTimer); bubble.hidden = true; }
 
 // ---------- clicks: she and her card take the mouse; everything else passes through to the app below ----------
 function refreshHit() {
   const p = P.cursor, b = bubble.hidden ? null : bubble.getBoundingClientRect();
-  const onHer = ['appear', 'listen', 'think', 'card'].includes(P.state) && Math.hypot(p.x - P.vis.x, p.y - P.vis.y) < R + 8;
-  const onCard = !!b && P.state === 'card' && p.x >= b.left && p.x <= b.right && p.y >= b.top && p.y <= b.bottom;
+  const onHer = ['appear', 'listen', 'think', 'edit', 'card'].includes(P.state) && Math.hypot(p.x - P.vis.x, p.y - P.vis.y) < R + 8;
+  const onCard = !!b && (P.state === 'card' || P.state === 'edit') && p.x >= b.left && p.x <= b.right && p.y >= b.top && p.y <= b.bottom;
   const over = onHer || onCard;
   if (over !== P.over) { P.over = over; window.dictation.passthrough(!over); }
 }
 hit.addEventListener('pointerdown', event => { event.preventDefault(); P.downAt = performance.now(); });
 hit.addEventListener('pointerup', () => {
   const now = performance.now();
-  if (P.downAt >= 0 && now - P.downAt < 350) { if (P.state === 'card') dissolve(now); else finish(now); }
+  if (P.downAt >= 0 && now - P.downAt < 350) {
+    if (P.state === 'card') dissolve(now);
+    else if (P.state === 'edit') submit(now);
+    // Finishing by tapping her, or tapping her while she thinks: the words come back to fix first.
+    else if (active() || P.state === 'think') { if (!P.edit) { P.edit = true; showBubble(t(T.editArmed), '', 'hint', 1400); } finish(now); }
+  }
   P.downAt = -1;
 });
 
@@ -351,7 +393,7 @@ function faceFor(): ExprId {
     case 'leave': return '33';
     case 'miss': return '14';
     case 'error': return '34';
-    case 'card': return 'ask';
+    case 'card': case 'edit': return 'ask';
     default: return 'dictate' as ExprId;
   }
 }
@@ -384,7 +426,7 @@ function frame() {
   const b = body(now, el), glow = core.light.glow, r = R * b.scale;
   P.vis = { x: b.x, y: b.y };
   // where the words will land: a small light at the caret, and a thread to it when she is further off
-  if (c && (active() || P.state === 'think' || P.state === 'leave')) {
+  if (c && (active() || P.state === 'think' || P.state === 'edit' || P.state === 'leave')) {
     const pulse = .55 + .35 * Math.sin(now / 160);
     ctx.save(); ctx.shadowColor = rgba(glow, .9); ctx.shadowBlur = 8 * k;
     ctx.fillStyle = rgba(glow, pulse); ctx.fillRect(c.l - 1, c.t, 2, c.b - c.t); ctx.restore();
