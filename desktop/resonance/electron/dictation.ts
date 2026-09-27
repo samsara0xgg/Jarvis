@@ -24,7 +24,8 @@ export function setupDictation({ companion, native, preload, page, port, topInse
   overlay.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   overlay.webContents.on('will-navigate', event => event.preventDefault());
   overlay.loadFile(page);
-  let busy = false, asked = false, skin = 'glass', lang = 'zh', origin = { x: 0, y: 0 };
+  // `on`: Settings › General › Dictation; off, a tap starts nothing (one already running still finishes).
+  let busy = false, on = true, asked = false, skin = 'glass', lang = 'zh', origin = { x: 0, y: 0 };
   let option = { down: false, at: 0, clean: false };
   const mine = (event: Electron.IpcMainEvent) => event.sender === overlay.webContents;
   const cancel = () => overlay.webContents.send('dictation-cancel');
@@ -49,7 +50,7 @@ export function setupDictation({ companion, native, preload, page, port, topInse
     globalShortcut.register('Escape', cancel);
     busy = true;
   }
-  const tap = () => { if (busy) overlay.webContents.send('dictation-finish'); else start(); };
+  const tap = () => { if (busy) overlay.webContents.send('dictation-finish'); else if (on) start(); };
 
   ipcMain.on('dictation-paste', (event, text) => {
     if (!mine(event) || typeof text !== 'string') return;
@@ -83,6 +84,7 @@ export function setupDictation({ companion, native, preload, page, port, topInse
       if (busy) overlay.webContents.send('dictation-cursor', { x: point.x - origin.x, y: point.y - origin.y });
     },
     language(value: string | undefined) { if (value === 'zh' || value === 'en') lang = value; },
+    enabled(value: boolean) { on = value; },
     close() { globalShortcut.unregister('Escape'); if (!overlay.isDestroyed()) overlay.destroy(); },
   };
 }

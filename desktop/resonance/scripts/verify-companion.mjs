@@ -331,6 +331,14 @@ try {
   await page.locator('.ad .corner [data-row="settings"]').click(); await settle();
   await page.locator('.ad [data-cat="general"]').click(); await page.waitForTimeout(500);
   await page.locator('.ad .st-seg button', { hasText: 'English' }).first().click();
+  // The right-⌥ dictation lives in her process: its switch reaches the main process with her menu.
+  const dictationSwitch = page.locator('.ad [data-item="dictation"] .sw');
+  const dictationOn = await dictationSwitch.getAttribute('aria-checked') === 'true' && await page.evaluate(() => window.__state.menu?.dictation === true);
+  await dictationSwitch.click(); await page.waitForTimeout(150);
+  const dictationOff = await dictationSwitch.getAttribute('aria-checked') === 'false' && await page.evaluate(() => window.__state.menu?.dictation === false);
+  await dictationSwitch.click(); await page.waitForTimeout(150);
+  check('11 Settings › General › Dictation starts on, and switching it off and on reaches her process',
+    dictationOn && dictationOff && await page.evaluate(() => window.__state.menu?.dictation === true));
   await page.locator('.ad .pg-back').click(); await page.waitForTimeout(450);
   await page.locator('.ad .pg-back').click();
   await page.waitForFunction(() => !document.querySelector('.ad .page'));

@@ -22,6 +22,7 @@ export const defaultSettings = {
   order: BLOCKS, hidden: [] as BlockId[],
   talk: 'after' as TalkMode, foryou: true, brief: true, mail: true, forecast: true,
   claude: true, codex: true, stale: 'day' as Stale,
+  dictation: true,
 };
 export type CompanionSettings = typeof defaultSettings;
 export const HOME_DEFAULTS: Partial<CompanionSettings> = { order: BLOCKS, hidden: [], talk: 'after', foryou: true, brief: true, mail: true, forecast: true };
@@ -42,6 +43,7 @@ function load(): CompanionSettings {
       order, hidden: Array.isArray(v.hidden) ? v.hidden.filter((id: unknown) => BLOCKS.includes(id as BlockId) && !isPop(id as BlockId)) : [],
       talk: one(v.talk, ['after', 'always', 'never'], d.talk), foryou: flag(v.foryou, d.foryou), brief: flag(v.brief, d.brief), mail: flag(v.mail, d.mail), forecast: flag(v.forecast, d.forecast),
       claude: flag(v.claude, d.claude), codex: flag(v.codex, d.codex), stale: one(v.stale, ['hour', 'day', 'never'], d.stale),
+      dictation: flag(v.dictation, d.dictation),
     };
   } catch { return d; }
 }

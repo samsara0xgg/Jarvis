@@ -285,12 +285,17 @@ function companion(shown?: () => void) {
   tray.setTitle('●'); tray.setToolTip(demo ? 'Jarvis 小球 · 演示数据' : 'Jarvis 小球');
   // The renderer owns her skins and expressions and reports them; every item just sends a command back.
   const send = (command: string) => () => win.webContents.send('command', command);
-  type MenuModel = { skins: { key: string; name: string; on: boolean }[]; auto: boolean; layout?: string; homeGlass?: boolean; marks?: string; follow?: boolean; lang?: string; exprs: { id: string; name: string }[] };
+  // Hiding her keeps this process, and the right-⌥ dictation it carries, running beside Jarvis; launchd would
+  // bring a quit process straight back anyway (ADR-0015). The Dashboard and Settings bring her back.
+  const show = () => { if (!win.isVisible()) { win.showInactive(); keepOnTop(); } };
+  const open = (command: string) => () => { show(); send(command)(); };
+  type MenuModel = { skins: { key: string; name: string; on: boolean }[]; auto: boolean; layout?: string; homeGlass?: boolean; marks?: string; follow?: boolean; lang?: string; dictation?: boolean; exprs: { id: string; name: string }[] };
+  let model: MenuModel = { skins: [], auto: false, exprs: [] };
   // Her menu speaks the panel's language (Settings › General).
-  const menu = (model: MenuModel) => { const t = (en: string, zh: string) => model.lang === 'zh' ? zh : en; tray.setContextMenu(Menu.buildFromTemplate([
+  const menu = (next: MenuModel) => { model = next; const t = (en: string, zh: string) => model.lang === 'zh' ? zh : en; tray.setContextMenu(Menu.buildFromTemplate([
     { label: demo ? t('Jarvis companion · demo data', 'Jarvis 小球 · 演示数据') : t('Jarvis companion', 'Jarvis 小球'), enabled: false },
-    { label: t('Open Dashboard', '打开 Dashboard'), click: send('dashboard') },
-    { label: t('Settings…', '设置…'), click: send('settings') },
+    { label: t('Open Dashboard', '打开 Dashboard'), click: open('dashboard') },
+    { label: t('Settings…', '设置…'), click: open('settings') },
     { label: t('Dashboard layout', 'Dashboard 布局'), submenu: [
       { label: t('Around her (one column)', '围着她（一列）'), type: 'radio', checked: model.layout !== 'grid', click: send('layout:around') },
       { label: t('Two columns (the old layout)', '两栏（原来的排法）'), type: 'radio', checked: model.layout === 'grid', click: send('layout:grid') },
@@ -310,13 +315,16 @@ function companion(shown?: () => void) {
     ] },
     { label: t('Expressions', '看表情'), enabled: model.exprs.length > 0, submenu: model.exprs.map(x => ({ label: `${x.id} ${x.name}`, click: send(`expr:${x.id}`) })) },
     { type: 'separator' },
-    { label: t('Quit the companion', '退出小球'), click: () => app.quit() },
+    win.isVisible()
+      ? { label: t('Hide the companion', '隐藏小球'), click: () => { win.hide(); menu(model); } }
+      : { label: t('Show the companion', '显示小球'), click: () => { show(); menu(model); } },
   ])); };
-  menu({ skins: [], auto: false, exprs: [] });
+  menu(model);
   ipcMain.on('companion-menu', (event, model: MenuModel) => {
     if (event.sender !== win.webContents || !Array.isArray(model?.skins) || !Array.isArray(model?.exprs)) return;
     menu(model);
     dictation?.language(model.lang);
+    dictation?.enabled(model.dictation !== false);
     // Pinned to the main screen while she is on another one: she sinks here and comes up there.
     if (typeof model.follow === 'boolean' && model.follow !== follow) { follow = model.follow; if (!follow && current?.id !== screen.getPrimaryDisplay().id && !moving) leave(); }
   });

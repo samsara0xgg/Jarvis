@@ -246,17 +246,13 @@ stopping to ask in chat is not.
    - Daemon (Python, `config/`, plugins, `uv.lock`); it runs from the
      main checkout, so the merge is what it picks up:
      `launchctl kickstart -k gui/$(id -u)/com.allen.jarvis`
-   - Companion (`desktop/resonance/`); it runs from the detached
-     worktree `companion-live`:
-
-     ```bash
-     git archive main desktop/resonance | tar -x -C .claude/worktrees/companion-live
-     (cd .claude/worktrees/companion-live/desktop/resonance && npm run build)
-     pkill -f companion-live/desktop/resonance/dist-electron/companion.js
-     nohup .claude/worktrees/companion-live/desktop/resonance/node_modules/.bin/electron \
-       .claude/worktrees/companion-live/desktop/resonance/dist-electron/companion.js \
-       > ~/.jarvis/logs/companion.log 2>&1 &
-     ```
+   - Companion (`desktop/resonance/`); its LaunchAgent runs it from the
+     main checkout and rebuilds when the sources are newer than the build
+     (ADR-0015), so the merge is what it picks up:
+     `launchctl kickstart -k gui/$(id -u)/com.allen.jarvis.resonance`
+     (logs in `~/.jarvis/logs/resonance.{out,err}.log`). Never start a
+     second one by hand: its single-instance lock makes launchd's copy quit
+     and respawn every 10 s.
    - Docs, tests and ADRs only: nothing to restart.
 4. `git push origin main`, written exactly like that (the `ask` rule in
    Allen's Claude Code settings matches `git push`, not `git -C <dir>
