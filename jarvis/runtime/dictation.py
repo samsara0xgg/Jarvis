@@ -16,6 +16,7 @@ import math
 import threading
 import time
 from array import array
+from collections import deque
 from contextlib import closing
 from typing import TYPE_CHECKING, Any
 
@@ -34,6 +35,9 @@ LOGGER = logging.getLogger(__name__)
 
 # Typlus's limit: nine minutes, then the session finishes on its own.
 MAX_SECONDS = 540
+# Frames kept from before the session: his tap, the desktop and the HTTP hop
+# take ~0.1-0.5 s, and a word spoken meanwhile was lost. 16 x 32 ms = 0.5 s.
+PRE_ROLL_FRAMES = 16
 _LEVEL_EVERY_S = 0.05
 _BYTES_PER_SECOND = 16_000 * 2
 
@@ -197,8 +201,11 @@ class Dictation:
         event_log_path: Path,
         pricing_table: Mapping[str, Any] | None,
     ) -> None:
-        """Hold the live mic, the voice path's ears, the polish model, its word list and ledger."""
-        self._ingress = ingress
+        """Hold the live mic, the voice path's ears, the polish model, its word list and ledger.
+
+        The capture lane stays subscribed for the daemon's life: while idle it
+        keeps the last ``PRE_ROLL_FRAMES``, and a session starts from those.
+        """
         self._transcribe = transcribe
         self._client = client
         self._vocab_path = vocab_path
@@ -206,6 +213,26 @@ class Dictation:
         self._pricing_table = pricing_table
         self._stop = threading.Event()
         self.active = False
+        self._lock = threading.Lock()
+        self._recent: deque[bytes] = deque(maxlen=PRE_ROLL_FRAMES)
+        self._pcm: bytearray | None = None
+        self._level = 0.0
+        self._lane = ingress.subscribe(
+            name="dictation", purpose=voice_audio.SubscriberPurpose.CAPTURE, capacity=128,
+        )
+        threading.Thread(target=self._listen, name="jarvis-dictation-lane", daemon=True).start()
+
+    def _listen(self) -> None:
+        while not self._lane.closed:
+            frame = self._lane.read(timeout_s=0.05)
+            if frame is None:
+                continue
+            with self._lock:
+                if self._pcm is None:
+                    self._recent.append(frame.pcm16_mono)
+                else:
+                    self._pcm.extend(frame.pcm16_mono)
+                    self._level = _level(frame.pcm16_mono)
 
     def begin(self, context: Mapping[str, str]) -> AsyncIterator[dict[str, Any]]:
         """Start recording now; the stream yields levels, then ``thinking``, then the result.
@@ -218,10 +245,11 @@ class Dictation:
             raise RuntimeError(msg)
         self.active = True
         self._stop.clear()
-        subscription = self._ingress.subscribe(
-            name="dictation", purpose=voice_audio.SubscriberPurpose.CAPTURE, capacity=128,
-        )
-        return self._session(subscription, dict(context))
+        with self._lock:
+            self._pcm = bytearray(b"".join(self._recent))
+            self._recent.clear()
+            self._level = 0.0
+        return self._session(dict(context))
 
     def stop(self) -> bool:
         """Finish recording; the running stream goes on to the result."""
@@ -230,27 +258,18 @@ class Dictation:
         self._stop.set()
         return True
 
-    async def _session(
-        self, subscription: voice_audio.AudioSubscription, context: dict[str, str],
-    ) -> AsyncIterator[dict[str, Any]]:
-        pcm = bytearray()
-        level = [0.0]
-
-        def record() -> None:
-            deadline = time.monotonic() + MAX_SECONDS
-            while not self._stop.is_set() and time.monotonic() < deadline:
-                frame = subscription.read(timeout_s=0.05)
-                if frame is not None:
-                    pcm.extend(frame.pcm16_mono)
-                    level[0] = _level(frame.pcm16_mono)
-            self._stop.set()
-
+    async def _session(self, context: dict[str, str]) -> AsyncIterator[dict[str, Any]]:
+        deadline = time.monotonic() + MAX_SECONDS
         try:
-            recorder = asyncio.create_task(asyncio.to_thread(record))
-            while not recorder.done():
-                yield {"level": round(level[0], 3)}
-                await asyncio.wait({recorder}, timeout=_LEVEL_EVERY_S)
-            subscription.close()
+            while not self._stop.is_set() and time.monotonic() < deadline:
+                yield {"level": round(self._level, 3)}
+                await asyncio.sleep(_LEVEL_EVERY_S)
+            with self._lock:
+                pcm, self._pcm = self._pcm or bytearray(), None
+            # The polish call's connection opens while the words are heard.
+            threading.Thread(
+                target=self._client.warm, name="jarvis-dictation-warm", daemon=True,
+            ).start()
             yield {"state": "thinking", "seconds": round(len(pcm) / _BYTES_PER_SECOND, 2)}
             raw = await asyncio.to_thread(self._transcribe, bytes(pcm))
             if not raw:
@@ -271,5 +290,6 @@ class Dictation:
             yield {"text": text, "raw": raw}
         finally:
             self._stop.set()
-            subscription.close()
+            with self._lock:
+                self._pcm = None
             self.active = False

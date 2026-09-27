@@ -42,6 +42,8 @@ _MATCHERS: Final[dict[str, frozenset[str]]] = {
     # The browser guard (ADR 0059) reads a page's own labels, Chinese sites included.
     "jarvis/execution/browser_guard.py": frozenset({"_MONEY", "_CARD", "_SECRET"}),
     "jarvis/execution/path_resolver.py": frozenset({"_TRAILING_NOUN_RE", "_CONNECTIVE_CHAR"}),
+    # The ask card (ADR 0066) refuses fields whose model-written labels ask for a secret.
+    "jarvis/execution/tools.py": frozenset({"_ASK_SECRET_RE"}),
     # Typlus's polish prompt (ADR 0058) names the Chinese phantoms the recognizer emits
     # and Chinese dictations that must not be answered, as the words the model will read.
     "jarvis/runtime/dictation.py": frozenset({"POLISH_PROMPT"}),

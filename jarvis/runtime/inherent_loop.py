@@ -188,9 +188,15 @@ from jarvis.state.memory_db import (
     append_record,
     brief_note,
     conversation_rows,
+    remember_fact,
 )
 from jarvis.state.plugin_settings import local_key, local_key_matches
-from jarvis.state.projections import PendingConfirmations, rebuild_projections
+from jarvis.state.projections import (
+    CLARIFICATION_EVENT_TYPES,
+    PendingClarification,
+    PendingConfirmations,
+    rebuild_projections,
+)
 from jarvis.state.trigger_consumption import trigger_was_consumed
 from jarvis.surface import (
     voice_aec,
@@ -5089,6 +5095,86 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                     conn.close()
             return turn_id
 
+        def _read_question() -> dict[str, Any]:
+            """ADR 0066: the ask card waiting to be filled in, or ``None``."""
+            conn = open_runtime_event_log(runtime.runtime_paths.event_log)
+            try:
+                slot = PendingClarification.from_events(
+                    iter_events_of_types(conn, CLARIFICATION_EVENT_TYPES),
+                )
+            finally:
+                with contextlib.suppress(sqlite3.Error):
+                    conn.close()
+            if slot is None or not slot.waiting:
+                return {"card": None}
+            fields = [
+                {k: f[k] for k in ("label", "choices", "value") if k in f} for f in slot.fields
+            ]
+            card = {"id": slot.clarification_id, "question": slot.question, "fields": fields}
+            return {"card": card}
+
+        def _answer_question(
+            clarification_id: str, answers: dict[str, str] | None,
+        ) -> str | None:
+            """ADR 0066: filled-in answers are remembered and run as Allen's words.
+
+            Dismissing the card (``answers is None``) closes it and runs nothing.
+
+            Returns the answer turn's id, or ``None`` for a dismissal. Raises
+            ``LookupError`` once the card is not the one waiting.
+            """
+            conn = open_runtime_event_log(runtime.runtime_paths.event_log)
+            try:
+                slot = PendingClarification.from_events(
+                    iter_events_of_types(conn, CLARIFICATION_EVENT_TYPES),
+                )
+                if slot is None or not slot.waiting or slot.clarification_id != clarification_id:
+                    msg = "that card is no longer waiting"
+                    raise LookupError(msg)
+                if answers is None:
+                    emit_event(
+                        conn,
+                        type="surface.dismissed",
+                        payload={
+                            "turn_id": slot.asked_turn_id,
+                            "clarification_id": clarification_id,
+                        },
+                    )
+                    return None
+                filled = [
+                    (f, answers.get(str(f["label"]), "").strip()) for f in slot.fields
+                ]
+                filled = [(f, value) for f, value in filled if value]
+                if window_memory is not None:
+                    for f, value in filled:
+                        if f.get("remember", True):
+                            remember_fact(window_memory.db_path, str(f["label"]), value)
+                turn_id = _new_turn_id()
+                emit_event(
+                    conn,
+                    type="surface.clarified",
+                    payload={
+                        "turn_id": turn_id,
+                        "clarification_id": clarification_id,
+                        "answers": {str(f["label"]): value for f, value in filled},
+                    },
+                    correlation={"turn_id": turn_id},
+                )
+                emit_event(
+                    conn,
+                    type="surface.user_intent",
+                    payload={
+                        "transcript": "\n".join(f"{f['label']}: {value}" for f, value in filled),
+                        "turn_id": turn_id,
+                        "channel": "clarify",
+                    },
+                    correlation={"turn_id": turn_id},
+                )
+            finally:
+                with contextlib.suppress(sqlite3.Error):
+                    conn.close()
+            return turn_id
+
         setup: Setup | None = None
         if window_memory is not None:
             knobs = _voice_knobs(runtime.config)
@@ -5159,6 +5245,8 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             conversation_read=None if window_memory is None else _read_conversation,
             card_read=_read_card,
             card_decide=_decide_card,
+            question_read=_read_question,
+            question_answer=_answer_question,
             think_read=(
                 None if runtime.think_mode is None
                 else functools.partial(runtime.think_mode.status, runtime.conn)

@@ -1,7 +1,7 @@
 // Live link to the Jarvis daemon over the Inherent v1 wire (ADR-0003/0005):
 // outbound-only WebSocket envelopes `{op, payload}` in, HTTP POSTs out. Audio never crosses this link; the daemon owns mic and speaker.
 import type { Action, Live, LiveState, Row } from './model';
-import type { Card } from './ActionCard';
+import type { Card, Question } from './ActionCard';
 
 export interface Controls { mic_muted?: boolean; speech_muted?: boolean; conversation?: boolean; live?: 'start' | 'stop' }
 const liveStates: LiveState[] = ['idle', 'connecting', 'active', 'closing', 'unavailable'];
@@ -18,7 +18,7 @@ const liveFrom = (p: Record<string, unknown>): Live => ({
   error: typeof p.error === 'string' ? p.error : null,
   notice: typeof p.notice === 'string' ? p.notice : null,
 });
-export interface Runtime { submit: (text: string) => Promise<void>; cancel: (responseId: string | null) => Promise<void>; controls: (patch: Controls) => Promise<void>; conversation: (after: number, limit?: number) => Promise<Row[]>; card: () => Promise<Card | null>; decide: (id: string, decision: 'accept' | 'reject', edits?: Record<string, string>) => Promise<void>; reconnect: () => void; close: () => void }
+export interface Runtime { submit: (text: string) => Promise<void>; cancel: (responseId: string | null) => Promise<void>; controls: (patch: Controls) => Promise<void>; conversation: (after: number, limit?: number) => Promise<Row[]>; card: () => Promise<Card | null>; decide: (id: string, decision: 'accept' | 'reject', edits?: Record<string, string>) => Promise<void>; question: () => Promise<Question | null>; answer: (id: string, answers: Record<string, string> | null) => Promise<void>; reconnect: () => void; close: () => void }
 
 // Daemon `voice` phases → UI phases. Anything unlisted leaves the phase alone.
 const voicePhase: Record<string, Action> = {
@@ -86,6 +86,9 @@ export function connect(port: string, dispatch: (a: Action) => void): Runtime {
     // ADR 0062: the card waiting for a button, and the button. A 409 means it is no longer the pending card.
     card: async () => { const r = await fetch(`${http}/inherent/confirmation`); if (!r.ok) throw new Error(`/inherent/confirmation ${r.status}`); return ((await r.json()) as { card: Card | null }).card; },
     decide: async (id, decision, edits = {}) => { const r = await post('/inherent/confirmation', { confirmation_id: id, decision, edits }); if (typeof r.turn_id === 'string' && r.turn_id) dispatch({ type: 'pending', turnId: r.turn_id, at: Date.now() }); },
+    // ADR 0066: the ask card waiting to be filled in, and its answers (null = the ×). A 409 means it is no longer waiting.
+    question: async () => { const r = await fetch(`${http}/inherent/clarification`); if (!r.ok) throw new Error(`/inherent/clarification ${r.status}`); return ((await r.json()) as { card: Question | null }).card; },
+    answer: async (id, answers) => { const r = await post('/inherent/clarification', answers ? { clarification_id: id, answers } : { clarification_id: id, dismiss: true }); if (typeof r.turn_id === 'string' && r.turn_id) dispatch({ type: 'pending', turnId: r.turn_id, at: Date.now() }); },
     reconnect: () => { if (ws) ws.close(); else open(); },
     close: () => { closed = true; if (retry) clearTimeout(retry); ws?.close(); },
   };

@@ -666,6 +666,20 @@ class LLMClient:
         """
         yield self
 
+    def warm(self) -> None:
+        """Open the provider connection ahead of a call that is about to come.
+
+        The SDK's pool drops a connection idle for 5 s, so a caller that knows
+        a call is near (dictation, while it hears the words) saves the TLS
+        handshake (~0.15 s measured) by asking for the model first. Never raises.
+        """
+        if self._provider != "openai":
+            return
+        try:
+            self._get_openai_client().models.retrieve(self._model)
+        except Exception:  # noqa: BLE001 — a failed warm-up costs only the handshake it tried to save
+            LOGGER.debug("LLM warm-up failed", exc_info=True)
+
     # ---- OpenAI backend -----------------------------------------------
 
     def _get_openai_client(self) -> Any:  # noqa: ANN401

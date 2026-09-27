@@ -2,8 +2,10 @@
 
 One standalone SQLite file (``memory.db``), deliberately separate from the
 runtime Event Log so the runtime can be rewritten without touching it.
-Append-only: rows are never updated or deleted, except the profile's name
-line, which first-run setup writes and rewrites. Every writer opens its own
+Append-only: rows are never updated or deleted, except two kinds of profile
+row: the name line first-run setup writes, and a fact the assistant keeps
+under a topic, which a later fact on the same topic rewrites in place (ADR
+0066). Every writer opens its own
 short-lived connection, so callers on any thread can write without sharing
 state.
 
@@ -225,6 +227,20 @@ def set_user_name(path: Path, name: str) -> None:
             "INSERT INTO profile (id, ts, text) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE "
             "SET ts = excluded.ts, text = excluded.text",
             (_NAME_ROW, iso_seconds(local_now()), name.join(_NAME_LINE)),
+        )
+
+
+def remember_fact(path: Path, topic: str, fact: str) -> None:
+    """Keep ``fact`` in the profile under ``topic``; the same topic replaces it (ADR 0066).
+
+    The row keeps its place in the block, so rewriting a fact never reorders
+    the prompt's ``[About the user]`` lines.
+    """
+    with closing(open_memory_db(path)) as conn, conn:
+        conn.execute(
+            "INSERT INTO profile (id, ts, text) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE "
+            "SET ts = excluded.ts, text = excluded.text",
+            (f"fact:{topic.casefold()}", iso_seconds(local_now()), f"{topic}: {fact}"),
         )
 
 
@@ -641,6 +657,7 @@ __all__ = [
     "iso_seconds",
     "local_now",
     "open_memory_db",
+    "remember_fact",
     "render_context",
     "search_records",
     "verbatim_stats",

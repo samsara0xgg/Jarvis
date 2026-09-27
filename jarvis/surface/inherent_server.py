@@ -214,6 +214,14 @@ class SubmitRequest(BaseModel):
     text: str
 
 
+class QuestionAnswerRequest(BaseModel):
+    """ADR 0066: the ask card's answers by field label, or ``dismiss`` for its close button."""
+
+    clarification_id: str
+    answers: dict[str, str] = Field(default_factory=dict)
+    dismiss: bool = False
+
+
 class CardDecisionRequest(BaseModel):
     """ADR 0062: Allen's answer to the card he sees, by its id; edits are the card's text fields."""
 
@@ -488,6 +496,11 @@ class InherentDeps:
     # and returns its id. ``None`` leaves both routes unregistered.
     card_read: Callable[[], dict[str, Any]] | None = None
     card_decide: Callable[[str, str, dict[str, str]], str] | None = None
+    # ADR 0066: the ask card waiting to be filled in (``{"card": ... | None}``)
+    # and Allen's answers to it, which start a turn (its id) or, dismissed,
+    # nothing (``None``). ``None`` leaves both routes unregistered.
+    question_read: Callable[[], dict[str, Any]] | None = None
+    question_answer: Callable[[str, dict[str, str] | None], str | None] | None = None
     # ADR 0064: whether Allen's words have thinking on now (ADR 0061), and the
     # words that switch it. A small SQLite read on the loop thread; ``None``
     # leaves the route unregistered.
@@ -1473,6 +1486,28 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 â
                 card_decide, req.confirmation_id, req.decision, dict(req.edits),
             )
             return {"status": "accepted", "turn_id": turn_id}
+    if deps.question_read is not None and deps.question_answer is not None:
+        question_read, question_answer = deps.question_read, deps.question_answer
+
+        @app.get("/inherent/clarification")
+        async def clarification_card() -> dict[str, Any]:
+            """ADR 0066: the ask card waiting to be filled in, or ``{"card": null}``."""
+            return await asyncio.to_thread(question_read)
+
+        @app.post("/inherent/clarification", status_code=200)
+        async def clarification_answer(req: QuestionAnswerRequest) -> dict[str, Any]:
+            """ADR 0066: fill in or dismiss the ask card; 409 once it is not the one waiting."""
+            if not req.dismiss and not any(v.strip() for v in req.answers.values()):
+                raise HTTPException(status_code=400, detail="nothing was filled in")
+            try:
+                turn_id = await asyncio.to_thread(
+                    question_answer,
+                    req.clarification_id,
+                    None if req.dismiss else dict(req.answers),
+                )
+            except LookupError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            return {"status": "dismissed" if turn_id is None else "accepted", "turn_id": turn_id}
     if deps.think_read is not None:
         think_read = deps.think_read
 

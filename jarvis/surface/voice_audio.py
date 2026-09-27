@@ -1097,6 +1097,11 @@ class AudioSubscription:
         self._ring.close()
 
     @property
+    def closed(self) -> bool:
+        """Return whether this lane was unsubscribed or its ingress closed."""
+        return self._closed
+
+    @property
     def overflow_count(self) -> int:
         """Return lifetime software-subscriber overflow count."""
         return self._ring.overflow_count
