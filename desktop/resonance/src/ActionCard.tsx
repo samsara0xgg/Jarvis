@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
 import { ArrowUp, X } from '@phosphor-icons/react';
 import { tr, type L, type Lang } from './companionSettings';
 import './action-card.css';
@@ -20,6 +20,19 @@ export function ActionCard({ card, lang, onDecide }: { card: Card; lang: Lang; o
   const t = (l: L) => tr(lang, l);
   const args = card.args;
   const [subject, setSubject] = useState(String(args.subject ?? '')), [body, setBody] = useState(String(args.body ?? ''));
+  // The letter's box grows to its text (CSS caps it): `field-sizing: content` left it one line tall in Chrome 153.
+  // It refits when its width settles, since the notch grows the card from narrower than its final width.
+  const bodyBox = useRef<HTMLTextAreaElement>(null);
+  useLayoutEffect(() => {
+    const el = bodyBox.current;
+    if (!el) return;
+    const fit = () => { el.style.height = 'auto'; el.style.height = `${el.scrollHeight}px`; };
+    fit();
+    let width = el.clientWidth;
+    const watch = new ResizeObserver(() => { if (el.clientWidth !== width) { width = el.clientWidth; fit(); } });
+    watch.observe(el);
+    return () => watch.disconnect();
+  }, [body]);
   const decide: Decide = (decision, edits) => { onDecide(decision, edits); void window.jarvis?.focus(false); };
   const bar = <div className="ac-bar">
     <span className="ac-label"><i/>{card.action}</span>
@@ -33,7 +46,7 @@ export function ActionCard({ card, lang, onDecide }: { card: Card; lang: Lang; o
       {bar}
       <div className="ac-to">{t(['To', '发给'])}<span className="ac-chip" title={to}>{to}</span>{typeof args.threadId === 'string' && <em>{t(['reply', '回复'])}</em>}</div>
       <input className="ac-edit ac-subject" aria-label={t(['Subject', '主题'])} value={subject} onPointerDown={focusWindow} onChange={e => setSubject(e.target.value)}/>
-      <textarea className="ac-edit ac-body" aria-label={t(['Body', '正文'])} value={body} rows={3} onPointerDown={focusWindow} onChange={e => setBody(e.target.value)}/>
+      <textarea ref={bodyBox} className="ac-edit ac-body" aria-label={t(['Body', '正文'])} value={body} rows={3} onPointerDown={focusWindow} onChange={e => setBody(e.target.value)}/>
       <div className="ac-foot"><span/>
         <button type="button" className="ac-go" onClick={() => decide('accept', edits)}>{t(['Send', '发送'])}<ArrowUp size={12} weight="bold"/></button></div>
     </div>;
