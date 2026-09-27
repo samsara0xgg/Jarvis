@@ -25,7 +25,7 @@ ROOT = Path(os.environ.get("JARVIS_RUNTIME_ROOT") or Path.home() / ".jarvis").ex
 def main() -> int:
     """POST stdin to the daemon; echo a decision if one came back."""
     raw = sys.stdin.read()
-    # A session the Agents window runs (ADR 0072) is answered there, not on the notice card.
+    # A session the Agents window runs (ADR 0073) is answered there, not on the notice card.
     if os.environ.get("JARVIS_AGENTS_HOST"):
         return 0
     try:

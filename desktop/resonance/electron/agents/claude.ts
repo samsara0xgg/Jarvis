@@ -1,4 +1,4 @@
-// Claude Code through the Claude Agent SDK (ADR 0067): one `claude` child per session that has something to do, fed by a
+// Claude Code through the Claude Agent SDK (ADR 0073): one `claude` child per session that has something to do, fed by a
 // message queue that never ends, so the session lives between turns. Permission prompts, questions and plan approval
 // all come through canUseTool and wait for Allen's answer in the window.
 import { randomUUID } from 'node:crypto';
@@ -331,7 +331,8 @@ export const claude: Driver = {
     const { sessionId } = await forkSession(s.s.id, { dir: s.s.cwd });
     return sessionId;
   },
-  async remove(s) { await claude.release(s); await deleteSession(s.s.id, { dir: s.s.cwd }); },
+  // A transcript that is already gone counts as deleted.
+  async remove(s) { await claude.release(s); await deleteSession(s.s.id, { dir: s.s.cwd }).catch(e => { if (!/not found/i.test(String(e))) throw e; }); },
   async commands(cwd, s) {
     const q = s ? rt(s).q : undefined;
     if (q) return (await q.supportedCommands()).map(c => [`/${c.name}`, [c.description, c.argumentHint].filter(Boolean).join(' · ')] as [string, string]);

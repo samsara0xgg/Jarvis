@@ -302,7 +302,7 @@ function companion(shown?: () => void) {
   tray.setTitle('●'); tray.setToolTip(demo ? 'Jarvis 小球 · 演示数据' : 'Jarvis 小球');
   // The renderer owns her skins and expressions and reports them; every item just sends a command back.
   const send = (command: string) => () => win.webContents.send('command', command);
-  // ADR 0072: the Agents window, from her menu or the Dashboard's Agents page. Live only: its sessions are real. Not in
+  // ADR 0073: the Agents window, from her menu or the Dashboard's Agents page. Live only: its sessions are real. Not in
   // the installed app yet: it runs on Allen's own subscription.
   const agents = demo || app.isPackaged ? null : setupAgents({ preload: path.join(here, 'preload.cjs'), page: path.join(here, '../dist/agents.html'), host: path.join(here, 'agents/host.js') });
   // Spec §15.3: ⌥Tab opens the island's list of agent sessions for the keys, and closes it again.

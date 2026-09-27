@@ -4,7 +4,7 @@ import { closeSync, existsSync, mkdirSync, openSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { daemonToken } from './bridge.js';
-// ADR 0067: the Agents window. Its sessions run in the agent host (agents/host.ts), which this process starts when
+// ADR 0073: the Agents window. Its sessions run in the agent host (agents/host.ts), which this process starts when
 // nothing answers on its port and which keeps running when the companion restarts. The window talks to the host
 // itself; from here it only asks for what a page may not do: a folder picker and a terminal tab.
 export const AGENTS_PORT = process.env.JARVIS_AGENTS_PORT ?? '8016';
@@ -32,9 +32,9 @@ export function ensureHost(host: string) {
 }
 // A new Ghostty tab in the session's folder that continues it.
 const GHOSTTY_RUN = `on run argv
-  set cfg to new surface configuration
-  set initial input of cfg to (item 1 of argv) & linefeed
   tell application "Ghostty"
+    set cfg to new surface configuration
+    set initial input of cfg to (item 1 of argv) & linefeed
     if (count of windows) > 0 then
       new tab in front window with configuration cfg
     else

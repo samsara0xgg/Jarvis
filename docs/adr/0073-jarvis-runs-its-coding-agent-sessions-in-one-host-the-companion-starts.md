@@ -1,4 +1,4 @@
-# ADR 0072 — Jarvis runs its coding-agent sessions in one host the companion starts
+# ADR 0073 — Jarvis runs its coding-agent sessions in one host the companion starts
 
 **Status:** Accepted
 **Date:** 2026-09-26

@@ -10,6 +10,7 @@
   color-scheme:dark;
 }
 *{box-sizing:border-box}
+[hidden]{display:none!important}
 html,body{height:100%;margin:0;overflow:hidden;background:#0a0b19}
 h1,h2,h3{margin:0;text-wrap:balance}
 p,ul,ol{margin:0}
@@ -18,7 +19,7 @@ button{border:0;background:none;padding:0;cursor:pointer}
 :focus-visible{outline:2px solid rgb(var(--glow) / .85);outline-offset:2px}
 canvas{display:block}
 kbd{font-family:var(--mono)}
-/* ---------- the window (ADR 0067): her glass, deep blue, a little nebula in the corners, a few faint stars ---------- */
+/* ---------- the window (ADR 0073): her glass, deep blue, a little nebula in the corners, a few faint stars ---------- */
 .win{
   --ink:#eef0fb; --muted:rgb(196 204 238 / .66); --faint:rgb(196 204 238 / .44); --line:rgb(157 180 255 / .12);
   position:relative;isolation:isolate;display:flex;flex-direction:column;height:100%;overflow:hidden;color:var(--ink);font:13px/1.5 var(--ui);

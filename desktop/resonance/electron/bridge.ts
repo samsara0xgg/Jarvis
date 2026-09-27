@@ -18,7 +18,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 // The local key every daemon route needs, read fresh so a first boot's key is picked up.
 export const daemonToken = () => readFile(path.join(process.env.JARVIS_RUNTIME_ROOT ?? path.join(homedir(), '.jarvis'), 'plugin-access.json'), 'utf8')
   .then(text => JSON.parse(text).token as unknown).catch(() => undefined);
-// The renderer never holds the key: its requests and sockets to the daemon, and to the agent host (ADR 0072), which
+// The renderer never holds the key: its requests and sockets to the daemon, and to the agent host (ADR 0073), which
 // takes the same key, get the header here.
 export function sendDaemonKey(target: Electron.Session) {
   const ports = [process.env.JARVIS_INHERENT_BRIDGE_PORT ?? '8006', process.env.JARVIS_AGENTS_PORT ?? '8016'];

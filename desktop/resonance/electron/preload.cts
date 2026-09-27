@@ -38,7 +38,7 @@ contextBridge.exposeInMainWorld('jarvis', {
     return () => ipcRenderer.removeListener('ghostty', listener);
   },
   jumpGhostty: (title: string, job: string) => ipcRenderer.invoke('ghostty-jump', title, job),
-  // ADR 0072: the Agents window.
+  // ADR 0073: the Agents window.
   openAgents: () => ipcRenderer.send('agents-open'),
   codexTitles: (ids: string[]) => ipcRenderer.invoke('codex-titles', ids),
   openAccount: (service: string) => ipcRenderer.invoke('open-account', service),

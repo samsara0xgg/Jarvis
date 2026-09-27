@@ -1,4 +1,4 @@
-// What the agent host (ADR 0067) and the Agents window say to each other. Both agents are folded into the same few
+// What the agent host (ADR 0073) and the Agents window say to each other. Both agents are folded into the same few
 // shapes: the window never knows which wire a session came from.
 export type Agent = 'claude' | 'codex';
 // work: a turn is running · pack: compacting · wait: it asked you something · done: idle · err: the last turn failed

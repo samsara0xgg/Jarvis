@@ -1,4 +1,4 @@
-// The agent host (ADR 0067): one long-lived process that runs every coding-agent session Jarvis starts, so a turn keeps
+// The agent host (ADR 0073): one long-lived process that runs every coding-agent session Jarvis starts, so a turn keeps
 // going while the companion or the daemon restarts. The companion starts it when nothing answers on its port; the
 // Agents window talks to it over local HTTP and one event stream. Conversations are read back from each agent's own
 // transcript; this process keeps only what the agents do not: pinned, archived, which agent, the worktree it made.
@@ -403,7 +403,8 @@ async function route(req: Req0, res: http.ServerResponse, url: URL): Promise<unk
       try { await git(x.repo, 'worktree', 'remove', x.s.cwd); } catch { throw new Http(409, 'worktree 里还有没提交的改动，先提交或者自己删'); }
       await git(x.repo, 'branch', '-d', x.s.branch).catch(() => {});
     }
-    await x.driver.remove(x).catch(e => log('remove', x.s.id, e));
+    // The agent can refuse too (Codex keeps a thread a fork still reads from): then the session stays.
+    try { await x.driver.remove(x); } catch (e) { log('remove', x.s.id, e); throw new Http(409, `删不掉：${e instanceof Error ? e.message : String(e)}`); }
     sessions.delete(x.s.id);
     broadcast({ t: 'gone', id: x.s.id });
     save();

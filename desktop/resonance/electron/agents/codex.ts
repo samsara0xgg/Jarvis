@@ -1,4 +1,4 @@
-// Codex through `codex app-server` (ADR 0072), the JSON-RPC interface Codex's own desktop app uses: one server for every
+// Codex through `codex app-server` (ADR 0073), the JSON-RPC interface Codex's own desktop app uses: one server for every
 // session, over stdio, one JSON object per line. A thread must be started or resumed in this server before it takes a
 // turn; approvals and questions arrive as requests from the server and wait for Allen's answer in the window.
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -311,7 +311,8 @@ export const codex: Driver = {
     });
   },
   async fork(s) { return (await call<{ thread: { id: string } }>('thread/fork', { threadId: s.s.id })).thread.id; },
-  async remove(s) { await codex.release(s); await call('thread/delete', { threadId: s.s.id }); },
+  // A thread that is already gone counts as deleted.
+  async remove(s) { await codex.release(s); await call('thread/delete', { threadId: s.s.id }).catch(e => { if (!/no rollout found/i.test(String(e))) throw e; }); },
   async commands(cwd) {
     const list = await skillsOf(cwd);
     return [['/compact', '把对话压缩一下，腾出上下文'], ...list.map(k => [`$${k.name}`, k.about] as [string, string])];
