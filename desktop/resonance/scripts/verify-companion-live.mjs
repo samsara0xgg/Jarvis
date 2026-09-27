@@ -114,7 +114,7 @@ try {
     window.__state = { opened: [], accounts: [], jumps: [] };
     window.jarvis = {
       placement: async () => ({ docked: false, topInset: 32, notchWidth: 185, surfaceWidth: 640, compactWidth: 0, displayId: 1 }),
-      onPlacement: () => () => {}, onDisplayLeave: () => () => {}, displayReady: () => {}, companionMenu: () => {},
+      onPlacement: () => () => {}, onDisplayLeave: () => () => {}, displayReady: () => {}, companionSettings: () => {},
       onCursor: callback => { window.__cursor = callback; return () => {}; },
       onCommand: callback => { window.__command = callback; return () => {}; },
       passthrough: () => {}, focus: async on => { window.__state.focus = on; }, material: () => {},
@@ -199,7 +199,7 @@ try {
 
   if (real) {
     const get = async p => (await fetch(`${daemon}${p}`, { headers: daemonHeaders })).json();
-    await page.evaluate(() => window.__command('dashboard'));
+    await hit.dblclick({ force: true });
     await page.locator('.companion-dashboard.is-open').waitFor();
     await page.waitForTimeout(2500);
     const conversation = await get('/inherent/conversation?after=0');
@@ -376,7 +376,7 @@ try {
     await move(600, 560); await page.waitForTimeout(1200);
 
     // The Dashboard on live data.
-    await page.evaluate(() => window.__command('dashboard'));
+    await hit.dblclick({ force: true });
     await page.locator('.companion-dashboard.is-open').waitFor();
     await page.waitForTimeout(1500);
     check('L8 your turn 9 min ago keeps the conversation on top: your words, then the answer on record, plain',
@@ -521,7 +521,7 @@ try {
       options: { tts_voice: ['Warm Bestie', 'Explorative Girl'], output_device: ['System default'], input_device: ['System default'] } };
     await hit.dblclick({ force: true });
     await page.waitForFunction(() => !document.querySelector('.companion-dashboard.is-open'), null, { timeout: 3000 });
-    await page.evaluate(() => window.__command('dashboard'));
+    await hit.dblclick({ force: true });
     await page.locator('.companion-dashboard.is-open').waitFor();
     await page.waitForTimeout(1500);
     check('L14 once the daemon answers, Today shows its weather, event and to-do',
@@ -687,7 +687,7 @@ try {
     await page.locator('.notch-note .c-x').click(); await noteGone(); await settle();
     check(`L13 closed by hand, a pop stays on his turn (${await marks()})`, (await marks()) === 'turn2 work1 done4');
 
-    await page.evaluate(() => window.__command('dashboard'));
+    await hit.dblclick({ force: true });
     await page.locator('.companion-dashboard.is-open').waitFor();
     fixtures['/inherent/codex-sessions'] = { sessions: [{ ...fixtures['/inherent/codex-sessions'].sessions[0], state: 'finished', last_message: 'Overlay fixed.' }] };
     await page.waitForTimeout(3500);

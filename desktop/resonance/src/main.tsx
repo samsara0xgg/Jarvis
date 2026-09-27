@@ -32,7 +32,7 @@ declare global { interface Window { jarvis?: {
   displayReady: () => void;
   onDictation?: (cb: (trip: string) => void) => () => void;
   wearing?: (skin: string) => void;
-  companionMenu: (menu: { skins: { key: string; name: string; on: boolean }[]; auto: boolean; layout: string; home: string; marks: string; follow: boolean; lang: string; dictation: boolean; exprs: { id: string; name: string }[] }) => void;
+  companionSettings: (settings: { follow: boolean; lang: string; dictation: boolean }) => void;
   drag: (phase: 'start' | 'move' | 'end', point?: { x: number; y: number }) => void;
   copy: (text: string) => Promise<boolean>;
   openCodex: (threadId: string) => Promise<boolean>;

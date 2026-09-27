@@ -156,7 +156,7 @@ export const EXPRESSIONS: Record<ExprId, Expr> = {
     { at: 0, light: 'gold', bright: 1.4, spin: 3 }, { at: 1400, light: 'speak', bright: 1, spin: .5 },
   ], end: 1500 } },
 };
-// The twelve work states first, then five feelings: what the tray can play on demand.
+// The twelve work states first, then five feelings: what Settings plays with "Play all".
 export const PREVIEW: ExprId[] = ['30', '31', '31b', '31c', '31d', '32', '33', '34', '35', '35b', '36', '37', '38', '39', '39b', '39c', '40', '41', '10', '14', '13', '00', '21'];
 // The takes she picks from at random each time.
 export const TAKES = { listen: ['35', '35b'], receive: ['31', '31b', '31c', '31d'], reply: ['39', '39b', '39c'] } satisfies Record<string, ExprId[]>;

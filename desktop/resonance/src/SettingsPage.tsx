@@ -4,10 +4,11 @@ import { tr, useCompanionSettings, type L, type Lang } from './companionSettings
 import { postRoute, useRoute } from './homeData';
 import { SKIN_KEYS, SKINS, type Skin } from './starCore';
 import type { HomeLook } from './CompanionBall';
+import type { MarkLook } from './AgentMarks';
 
 // Settings as a page in her panel: quick switches on top, then one list per category. Her own settings save
 // in this profile and apply at once; Jarvis's own save through the daemon and are greyed out until it serves them.
-export type Look = { skin: Skin; auto: boolean; home: HomeLook; layout: 'around' | 'grid' };
+export type Look = { skin: Skin; auto: boolean; home: HomeLook; marks: MarkLook };
 export type Cues = { on: boolean; volume: number };
 export type Controls = {
   micMuted: boolean; speechMuted: boolean; handsFree: boolean;
@@ -128,7 +129,7 @@ export function SettingsPage({ lang, port, open, cat, onCat, ctl, accounts, hidd
       { id: 'skin', name: ['Skin', '皮肤'], ctl: { k: 'skins' } },
       { id: 'auto', name: ['Change outfit by herself', '自己换装'], note: ['Every 6–14 min while resting', '在家时每 6–14 分钟一次'], ctl: { k: 'switch', on: ctl.look.auto, set: on => ctl.setLook({ auto: on }) } },
       { id: 'home', name: ['In the island', '在家的样子'], ctl: { k: 'seg', value: ctl.look.home, opts: [['dark', ['Dark glass', '暗玻璃']], ['eyes', ['Just her eyes', '只有两只眼']]], set: value => ctl.setLook({ home: value as HomeLook }) } },
-      { id: 'layout', name: ['Dashboard layout', '面板布局'], note: ['Two columns has no Settings page; the tray switches back', '两栏没有设置页，用托盘菜单换回来'], ctl: { k: 'seg', value: ctl.look.layout, opts: [['around', ['Around her', '围着她']], ['grid', ['Two columns', '两栏']]], set: value => ctl.setLook({ layout: value as Look['layout'] }) } },
+      { id: 'marks', name: ['Agent marks', '状态点'], note: ['The session marks beside the notch', '刘海旁边的会话标记'], ctl: { k: 'seg', value: ctl.look.marks, opts: [['spark', ['Spark', '星芒']], ['pixel', ['Pixel', '像素']]], set: value => ctl.setLook({ marks: value as MarkLook }) } },
       { id: 'faces', name: ['Her expressions', '她的表情'], ctl: { k: 'act', label: ['Play all', '全部看一遍'], run: ctl.playFaces } },
     ] },
     { id: 'voice', icon: <Waveform/>, name: ['Voice', '语音'], daemon: true, sum: ready ? `${t(['Wake word', '唤醒'])} ${Number(v('wake_threshold') ?? 0).toFixed(2)} · ${String(v('tts_voice') ?? '—')}` : t(['Not connected yet', '还没接上']), items: [

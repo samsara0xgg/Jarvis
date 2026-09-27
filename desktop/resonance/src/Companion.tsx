@@ -1,15 +1,14 @@
 import { useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { IconContext, Keyboard, Paperclip, ArrowUp, Microphone, Stop } from '@phosphor-icons/react';
-import { CompanionBall, HOLD_MS, R, type BallHandle, type HomeLook, type Lobe, type Place, type Point } from './CompanionBall';
-import { EXPRESSIONS, PREVIEW, SKINS, SKIN_KEYS, TAKES, isSkin, pick, type ExprId, type Skin } from './starCore';
-import { DashboardPreview } from './DashboardPreview';
+import { CompanionBall, HOLD_MS, R, type BallHandle, type Lobe, type Place, type Point } from './CompanionBall';
+import { PREVIEW, SKIN_KEYS, TAKES, isSkin, pick, type ExprId, type Skin } from './starCore';
 import { AroundDashboard, type Think } from './AroundDashboard';
 import { playFeedback, stopFeedback, warmFeedback, type FeedbackCue } from './feedback';
 import { usePreferences } from './preferences';
 import { initialState, plain, reducer, visible } from './model';
 import { connect, type Runtime } from './runtime';
 import { usePlugins } from './PluginPanel';
-import { isMarkLook, type MarkLook } from './AgentMarks';
+import { isMarkLook } from './AgentMarks';
 import { answerRequest, type Agent, type ShownAgent } from './agents';
 import { NoticeCard, ended, noticeCue, useNotices } from './Notices';
 import { ActionCard, QuestionCard, type Answer, type Card, type Decide, type Question } from './ActionCard';
@@ -30,24 +29,21 @@ const port = new URLSearchParams(location.search).get('port');
 // Her bubble carries what she says aloud: the spoken form when the answer has one (ADR 0040), else its text.
 const spoken = (reply: string) => { const voice = /<voice>([\s\S]*?)(?:<\/voice>|$)/.exec(reply); return voice ? plain(voice[1]) : plain(reply); };
 const DOUBLE_CLICK_MS = 300;
-// around: one column under her, her words first (the default). grid: the main app's two columns of tiles.
-type DashboardLayout = 'grid' | 'around';
 // Prototype script: every transcript and reply below is simulated.
 const HEARD = '把今天的任务整理一下';
-// Her skin, whether she changes it herself, how the Dashboard is laid out and the look of the agent marks
+// Her skin, whether she changes it herself, how she looks in the island and the look of the agent marks
 // live in this companion's own profile.
 const WARDROBE = 'companion-wardrobe-v1';
-function loadWardrobe(): { skin: Skin; auto: boolean; layout: DashboardLayout; home: HomeLook; marks: MarkLook } {
+function loadWardrobe(): Look {
   try {
     const value = JSON.parse(localStorage.getItem(WARDROBE) ?? '{}');
-    return { skin: isSkin(value.skin) ? value.skin : 'glass', auto: value.auto !== false, layout: value.layout === 'grid' ? 'grid' : 'around', home: value.home === 'eyes' ? 'eyes' : 'dark',
+    return { skin: isSkin(value.skin) ? value.skin : 'glass', auto: value.auto !== false, home: value.home === 'eyes' ? 'eyes' : 'dark',
       marks: isMarkLook(value.marks) ? value.marks : 'spark' };
-  } catch { return { skin: 'glass', auto: true, layout: 'around', home: 'dark', marks: 'spark' }; }
+  } catch { return { skin: 'glass', auto: true, home: 'dark', marks: 'spark' }; }
 }
 // Ghostty's title for a session is its name, sometimes behind a status mark; the board folds long names with "…".
 const bare = (text: string) => text.replace(/\s+/g, ' ').replace(/^[^\p{L}\p{N}]+/u, '').trim();
 const sameTitle = (name: string, title: string) => { const a = bare(name), b = bare(title); return !!a && (a === b || (a.endsWith('…') && b.startsWith(a.slice(0, -1)))); };
-const isPreview = (value: string): value is ExprId => (PREVIEW as string[]).includes(value);
 // Think mode's words come as the daemon's Python patterns; one JavaScript cannot read switches nothing on early.
 const pattern = (source: string) => { try { return new RegExp(source, 'i'); } catch { return null; } };
 
@@ -172,7 +168,7 @@ export function Companion() {
   const answerSecs = thoughts.at(-1)?.turn === s.turnId ? thoughts.at(-1)!.secs : 0;
   const [pressed, setPressed] = useState(false);
   const [wardrobe, setWardrobe] = useState(loadWardrobe);
-  // A skin change or an expression from the tray brings her out of the island for a moment.
+  // A skin change brings her out of the island for a moment.
   const [outing, setOuting] = useState(false);
   const [preview, setPreview] = useState<ExprId | null>(null);
   // The page open in the Dashboard sets her face while nothing else is going on.
@@ -376,9 +372,9 @@ export function Companion() {
   };
   useEffect(() => {
     try { localStorage.setItem(WARDROBE, JSON.stringify(wardrobe)); } catch { /* the pick just is not remembered */ }
-    window.jarvis?.companionMenu({ skins: SKIN_KEYS.map(key => ({ key, name: SKINS[key].name, on: key === wardrobe.skin })), auto: wardrobe.auto, layout: wardrobe.layout, home: wardrobe.home, marks: wardrobe.marks,
-      follow: companion.screen === 'follow', lang: companion.lang, dictation: companion.dictation, exprs: PREVIEW.map(id => ({ id, name: EXPRESSIONS[id].name })) });
-  }, [wardrobe, companion.screen, companion.lang, companion.dictation]);
+  }, [wardrobe]);
+  useEffect(() => window.jarvis?.companionSettings({ follow: companion.screen === 'follow', lang: companion.lang, dictation: companion.dictation }),
+    [companion.screen, companion.lang, companion.dictation]);
   useEffect(() => {
     if (!wardrobe.auto) return;
     let timer: ReturnType<typeof setTimeout>;
@@ -387,22 +383,9 @@ export function Companion() {
     plan();
     return () => clearTimeout(timer);
   }, [wardrobe.auto]);
+  // ⌥Tab, from the main process.
   useEffect(() => window.jarvis?.onCommand(command => {
-    const [name, value = ''] = command.split(':');
-    if (command === 'dashboard') openDashboard(false);
-    else if (command === 'agent-keys') { setDashboard(false); closeComposer(); setKeysPress(n => n + 1); }
-    else if (command === 'settings') { openDashboard(false); pinned.current = true; setSettingsFocus(n => n + 1); }
-    else if (name === 'skin' && isSkin(value)) choose(value);
-    else if (command === 'outing') selfChange();
-    else if (name === 'layout' && (value === 'grid' || value === 'around')) setWardrobe(current => ({ ...current, layout: value }));
-    else if (name === 'expr' && isPreview(value)) appear(() => setPreview(value), 4200);
-    else if (name === 'home' && (value === 'dark' || value === 'eyes')) setWardrobe(current => ({ ...current, home: value }));
-    else if (name === 'marks' && isMarkLook(value)) setWardrobe(current => ({ ...current, marks: value }));
-    else if (command === 'auto') {
-      const auto = !live.current.wardrobe.auto;
-      setWardrobe(current => ({ ...current, auto }));
-      if (!auto) wear(live.current.wardrobe.skin);
-    }
+    if (command === 'agent-keys') { setDashboard(false); closeComposer(); setKeysPress(n => n + 1); }
   }), []);
   useEffect(() => window.jarvis?.onDisplayLeave(() => {
     closeComposer(); setDashboard(false); clearTimeout(zoneTimer.current); pending.current = 'none'; setZone('none'); setMoving(true);
@@ -474,7 +457,6 @@ export function Companion() {
   useEffect(() => kickGlass.current(), [place, chip, composer, dashboard, voice, reply.text, caption, notice?.key, card?.id]);
 
   // What Settings in the panel reads and changes here: the daemon's switches, her look, her cues.
-  const [settingsFocus, setSettingsFocus] = useState(0);
   const control = (patch: { mic_muted?: boolean; speech_muted?: boolean; conversation?: boolean }) => void link.current?.controls(patch).catch(() => undefined);
   const handsFree = port ? s.conversation : voice !== 'off';
   const ctl: DashControls = {
@@ -543,13 +525,11 @@ export function Companion() {
       </div>
       <div className={`companion-dashboard ${dashboard ? 'is-open' : ''}`} data-hit={dashboard || undefined} data-glass="24"
         style={{ left: geo.center - PANEL / 2, top: geo.panelTop }} inert={!dashboard}>
-        {wardrobe.layout === 'around'
-          ? <AroundDashboard open={dashboard} port={port} onClose={() => setDashboard(false)} onMood={setDashMood} onHop={height => ball.current?.hop(height)}
-            talk={port ? { rows: s.rows, tail, busy: s.phase === 'processing', offline: s.phase === 'error', floor, submit, older, card, decide: decideCard, question, answer: answerQuestion,
-              think: { on: deep, secs: deepSecs, words, thoughts, exit: () => void submit(t(['stop thinking', '不用想了'])) } } : undefined}
-            plugins={port ? plugins : undefined} pluginFocus={pluginFocus} marks={wardrobe.marks} onAgents={setAgents} unread={notices.unread}
-            onAnswer={id => { setDashboard(false); notices.focus(id); }} ctl={ctl} settingsFocus={settingsFocus}/>
-          : <DashboardPreview embedded port={port} visible={dashboard} shown={dashboard} onClose={() => setDashboard(false)}/>}
+        <AroundDashboard open={dashboard} port={port} onClose={() => setDashboard(false)} onMood={setDashMood} onHop={height => ball.current?.hop(height)}
+          talk={port ? { rows: s.rows, tail, busy: s.phase === 'processing', offline: s.phase === 'error', floor, submit, older, card, decide: decideCard, question, answer: answerQuestion,
+            think: { on: deep, secs: deepSecs, words, thoughts, exit: () => void submit(t(['stop thinking', '不用想了'])) } } : undefined}
+          plugins={port ? plugins : undefined} pluginFocus={pluginFocus} marks={wardrobe.marks} onAgents={setAgents} unread={notices.unread}
+          onAnswer={id => { setDashboard(false); notices.focus(id); }} ctl={ctl}/>
       </div>
       <Notch look={wardrobe.marks} agents={agents} unread={notices.unread} parked={notices.parked} archived={notices.archived} cursor={cursor} quiet={dashboard || moving}
         onNoteHover={notices.setHover} geo={{ width: geo.width, top: placement.topInset, notchR: geo.wingX, lobeL: geo.lobe.left }} note={note}

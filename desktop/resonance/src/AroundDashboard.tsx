@@ -128,11 +128,11 @@ const thoughtRows = (rows: Row[], thoughts: Think['thoughts']) => new Map(though
 }));
 const PULL = 240; // px of fresh upward scroll at the top that adds the day before
 
-export function AroundDashboard({ open, port = null, onClose, onMood, onHop, talk, plugins: live, pluginFocus = null, marks = 'spark', onAgents, agentsFocus = 0, onAnswer, unread, ctl, settingsFocus = 0 }: {
+export function AroundDashboard({ open, port = null, onClose, onMood, onHop, talk, plugins: live, pluginFocus = null, marks = 'spark', onAgents, agentsFocus = 0, onAnswer, unread, ctl }: {
   open: boolean; port?: string | null; onClose: () => void; onMood: (expr: ExprId | null) => void; onHop: (height: number) => void;
   talk?: Talk; plugins?: PluginController; pluginFocus?: { plugin: string; key: string } | null;
   marks?: MarkLook; onAgents?: (agents: ShownAgent[]) => void; agentsFocus?: number; onAnswer?: (id: string) => void;
-  unread?: ReadonlySet<string>; ctl: Controls; settingsFocus?: number;
+  unread?: ReadonlySet<string>; ctl: Controls;
 }) {
   const [settings, updateSettings] = useCompanionSettings(), lang = settings.lang;
   const t = (l: L) => tr(lang, l);
@@ -529,11 +529,6 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
     observer.observe(el);
     return () => observer.disconnect();
   }, [page]);
-  // The tray's "Settings…" opens the panel on Settings.
-  useEffect(() => {
-    if (!settingsFocus || !open) return;
-    if (!page) openPage('settings'); else if (page !== 'settings') setPage('settings');
-  }, [settingsFocus]);
   const mute = () => {
     const muted = !ctl.speechMuted;
     ctl.setSpeech(muted);
