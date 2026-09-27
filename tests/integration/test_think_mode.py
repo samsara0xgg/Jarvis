@@ -22,7 +22,8 @@ from jarvis.decision.llm_session import LLMSessionFactory
 from jarvis.decision.think_mode import load_think_mode
 from jarvis.deployment import bootstrap_runtime
 from jarvis.execution.tools import ActionLifecycle, build_default_registry
-from jarvis.runtime import JarvisRuntime, Wave1FeatureFlags, _wave4_response_flags, drive_turn
+from jarvis.runtime import JarvisRuntime, _wave4_response_flags, drive_turn
+from jarvis.shared.realtime import Wave1FeatureFlags
 from jarvis.state.committed_event_bus import CommittedEventBus
 from jarvis.state.event_log import emit_event, open_event_log
 from tests.canary._helpers import repo_root

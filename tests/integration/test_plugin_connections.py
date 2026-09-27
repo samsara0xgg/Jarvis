@@ -80,6 +80,7 @@ def _wait(service: PluginConnections, state: str, timeout: float = 12) -> dict[s
     while time.monotonic() < deadline:
         request = service.read()["request"]
         if request and request["state"] == state:
+            assert isinstance(request, dict)
             return request
         time.sleep(0.025)
     pytest.fail(f"expected {state}: {service.read()['request']}")

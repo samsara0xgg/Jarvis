@@ -74,6 +74,8 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
+# Horizon's operator-facing CLI scripts use stdout as their interface.
+".claude/skills/horizon/scripts/*.py" = ["T201"]
 # The zh + en language table: its Chinese sentences carry fullwidth
 # punctuation on purpose, and each sentence stays on one line per language.
 "jarvis/shared/lang.py" = ["RUF001", "E501"]

@@ -217,7 +217,11 @@ def test_daemon_without_a_login_skips_the_oauth_server(
         assert daemon.connect({"svc": spec}) == ()
     finally:
         daemon.stop()
-    reasons = [str(r.exc_info[1]) for r in caplog.records if r.levelno >= logging.WARNING]
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    reasons = []
+    for record in warnings:
+        assert record.exc_info is not None
+        reasons.append(str(record.exc_info[1]))
     assert len(reasons) == 2
     assert all("not logged in" in reason for reason in reasons)
 

@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.deployment import launchd
+from jarvis.deployment import launchd, process_lock
 
 
 @pytest.fixture
@@ -107,8 +107,8 @@ def test_install_refuses_while_a_manual_daemon_holds_the_lock(
     rig: dict[str, object], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A hand-started daemon on the lock would respawn-loop the agent; refuse before writing."""
-    monkeypatch.setattr(launchd.process_lock, "is_held", lambda _p: True)
-    monkeypatch.setattr(launchd.process_lock, "holder_pid", lambda _p: 4242)
+    monkeypatch.setattr(process_lock, "is_held", lambda _p: True)
+    monkeypatch.setattr(process_lock, "holder_pid", lambda _p: 4242)
     with pytest.raises(launchd.ManualDaemonRunningError, match="kill 4242"):
         _install(rig)
     agents = rig["agents"]

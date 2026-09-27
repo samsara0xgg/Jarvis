@@ -126,6 +126,7 @@ def test_after_a_bare_wake_the_next_utterance_commits_without_a_second_wake(
         )
         assert session.start().started
         epoch = ingress.stream_epoch
+        assert epoch is not None
         for value in [0, 0, 0, 0, 10_000, 11_000, 12_000, 0, 0, 0, 0, 0]:
             backend.emit(epoch=epoch, value=value)
             time.sleep(0.002)

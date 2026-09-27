@@ -35,7 +35,7 @@ import os
 import queue
 import threading
 import time
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import numpy as np
 
@@ -159,7 +159,7 @@ class _Resampler:
     def feed(self, samples: np.ndarray) -> np.ndarray:
         if self._stream is None:
             return samples
-        return self._stream.resample_chunk(samples)
+        return cast("np.ndarray", self._stream.resample_chunk(samples))
 
 
 @dataclasses.dataclass(frozen=True)

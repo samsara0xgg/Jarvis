@@ -3,16 +3,17 @@
 
 from __future__ import annotations
 
-import os
 import sys
+from pathlib import Path
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import _harness  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _harness
 
 PREPARE, HARD = 60, 75
 
 
 def main() -> int:
+    """Print this session's role, context usage, and lease status."""
     root = _harness.harness_dir()
     sid = _harness.session_id()
     m = _harness.meta(root, sid)
@@ -25,7 +26,10 @@ def main() -> int:
     lease = "held" if holder == sid else ("lost" if holder else "none")
     pct = _harness.context_snapshot(root, sid).get("used_pct")
     inbox = len([p for p in (root / "inbox").iterdir() if p.is_file()])
-    line = f"session={sid} role={_harness.role_label(m)} context={pct if pct is not None else '?'}% lease={lease} inbox={inbox}"
+    line = (
+        f"session={sid} role={_harness.role_label(m)} "
+        f"context={pct if pct is not None else '?'}% lease={lease} inbox={inbox}"
+    )
     if pct is not None and pct >= HARD:
         line += "  -> HARD threshold: checkpoint and rotate now"
     elif pct is not None and pct >= PREPARE:

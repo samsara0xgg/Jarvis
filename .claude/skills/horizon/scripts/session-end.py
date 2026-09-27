@@ -1,18 +1,22 @@
 #!/usr/bin/env python3
-"""SessionEnd hook: if a harness session ends without a session log, append
-a mechanical fallback line. Reads the hook JSON on stdin."""
+"""Append a fallback log when a harness session ends without its own log.
+
+Read the SessionEnd hook JSON on stdin.
+"""
 
 from __future__ import annotations
 
 import json
-import os
+import subprocess
 import sys
+from pathlib import Path
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import _harness  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _harness
 
 
 def main() -> int:
+    """Record unexpected session endings without replacing an existing log."""
     try:
         data = json.load(sys.stdin)
     except ValueError:
@@ -22,7 +26,7 @@ def main() -> int:
         return 0
     try:
         root = _harness.harness_dir(data.get("cwd"))
-    except Exception:
+    except (OSError, subprocess.CalledProcessError):
         return 0  # not a git repo; nothing to do
     m = _harness.meta(root, sid)
     if not m:

@@ -1,20 +1,21 @@
 #!/usr/bin/env python3
-"""Register this session as a role generation, verify the manifest against
-reality, acquire the lease.  usage: bootstrap.py hub | bootstrap.py lane <id>
+"""Register a role generation, verify its manifest, and acquire its lease.
+
+Usage: bootstrap.py hub | bootstrap.py lane <id>
 """
 
 from __future__ import annotations
 
-import os
 import re
 import subprocess
 import sys
+from pathlib import Path
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import _harness  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _harness
 
-VERIFY_RE = re.compile(r"^\s*([A-Za-z_]+):\s*(\S+)\s*#\s*verify:\s*(.+?)\s*$", re.M)
-FIELD_RE = re.compile(r"^(generation|predecessor):\s*(\S+)", re.M)
+VERIFY_RE = re.compile(r"^\s*([A-Za-z_]+):\s*(\S+)\s*#\s*verify:\s*(.+?)\s*$", re.MULTILINE)
+FIELD_RE = re.compile(r"^(generation|predecessor):\s*(\S+)", re.MULTILINE)
 
 ENV_STUB = """# Harness environment facts
 
@@ -25,28 +26,36 @@ One fact per line; add `verify: <command>` where a command can check it.
 
 
 def parse_role(argv: list[str]) -> tuple[str, str | None]:
+    """Read the role and optional lane identifier from CLI arguments."""
     if len(argv) >= 1 and argv[0] == "hub":
         return "hub", None
-    if len(argv) >= 2 and argv[0] == "lane":
+    if len(argv) >= 2 and argv[0] == "lane":  # noqa: PLR2004 - role and lane ID
         return "lane", argv[1]
     print("usage: bootstrap.py hub | bootstrap.py lane <id>", file=sys.stderr)
     sys.exit(2)
 
 
 def verify(text: str) -> list[str]:
+    """Compare manifest facts with their operator-authored shell checks."""
     lines = []
     for m in VERIFY_RE.finditer(text):
         key, want, cmd = m.groups()
         try:
-            got = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30).stdout.strip()
+            got = subprocess.run(  # noqa: S602 - manifest checks are operator-authored shell commands
+                cmd, shell=True, capture_output=True, text=True, timeout=30, check=False,
+            ).stdout.strip()
         except subprocess.TimeoutExpired:
             got = "<timeout>"
-        ok = got == want or got.startswith(want) or want.startswith(got) and got
-        lines.append(f"  {'MATCH   ' if ok else 'MISMATCH'} {key}: manifest={want} actual={got or '<empty>'}")
+        ok = got == want or got.startswith(want) or (want.startswith(got) and got)
+        lines.append(
+            f"  {'MATCH   ' if ok else 'MISMATCH'} {key}: "
+            f"manifest={want} actual={got or '<empty>'}",
+        )
     return lines or ["  (no verify lines in manifest)"]
 
 
 def main() -> int:
+    """Register this session, print its handoff context, and claim the lease."""
     role, lane = parse_role(sys.argv[1:])
     key = "hub" if role == "hub" else f"lane-{lane}"
     root = _harness.harness_dir()
@@ -76,7 +85,7 @@ def main() -> int:
             "generation": generation,
             "predecessor": predecessor,
             "started": _harness.now(),
-            "cwd": os.getcwd(),
+            "cwd": str(Path.cwd()),
         },
     )
 

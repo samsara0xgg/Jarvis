@@ -1,20 +1,21 @@
 #!/usr/bin/env python3
-"""Append one high-signal event.  usage: log-event.py <type> "<summary>" """
+"""Append one high-signal event from its type and summary CLI arguments."""
 
 from __future__ import annotations
 
-import os
 import sys
+from pathlib import Path
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import _harness  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _harness
 
 TYPES = {"user_feedback", "report", "decision", "drift", "failure", "rotation"}
 
 
 def main() -> int:
-    if len(sys.argv) < 3 or sys.argv[1] not in TYPES:
-        print(f"usage: log-event.py <{'|'.join(sorted(TYPES))}> \"<summary>\"", file=sys.stderr)
+    """Validate and append an operator-supplied event."""
+    if len(sys.argv) < 3 or sys.argv[1] not in TYPES:  # noqa: PLR2004 - script, type, summary
+        print(f'usage: log-event.py <{'|'.join(sorted(TYPES))}> "<summary>"', file=sys.stderr)
         return 2
     root = _harness.harness_dir()
     sid = _harness.session_id()

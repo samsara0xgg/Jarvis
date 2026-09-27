@@ -1,4 +1,4 @@
-"""Shared helpers for the horizon harness scripts. Stdlib only."""
+"""Shared helpers for the horizon harness scripts. Stdlib only."""  # noqa: INP001 - sibling CLI helper, not a package
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ SUBDIRS = ("context", "sessions", "manifest", "inbox/done", "lease")
 
 def harness_dir(cwd: str | None = None) -> pathlib.Path:
     common = subprocess.check_output(
-        ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],  # noqa: S607 - use the operator's Git
         cwd=cwd,
         text=True,
         stderr=subprocess.DEVNULL,

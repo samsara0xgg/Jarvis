@@ -1,23 +1,23 @@
 #!/usr/bin/env python3
-"""statusLine wrapper: save the latest context snapshot, then run the real
-status line command with the same stdin.
+"""Save the context snapshot and forward stdin to the real status line.
 
 settings.json:  "command": "python3 <this file> -- <original command...>"
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
-import os
 import pathlib
 import subprocess
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import _harness  # noqa: E402
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import _harness
 
 
 def snapshot(raw: bytes) -> None:
+    """Save the latest context and token usage from a status-line payload."""
     data = json.loads(raw)
     sid = data.get("session_id") or pathlib.Path(data.get("transcript_path", "")).stem
     if not sid:
@@ -44,17 +44,16 @@ def snapshot(raw: bytes) -> None:
 
 
 def main() -> int:
+    """Best-effort snapshot without disrupting the configured status command."""
     raw = sys.stdin.buffer.read()
-    try:
+    with contextlib.suppress(Exception):  # snapshot failure must never hide the real status line
         snapshot(raw)
-    except Exception:  # never break the status line
-        pass
     args = sys.argv[1:]
     if args and args[0] == "--":
         args = args[1:]
     if not args:
         return 0
-    return subprocess.run(args, input=raw).returncode
+    return subprocess.run(args, input=raw, check=False).returncode  # noqa: S603 - operator-configured argv
 
 
 if __name__ == "__main__":

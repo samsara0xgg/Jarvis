@@ -1,25 +1,30 @@
 #!/usr/bin/env python3
-"""Append this generation's one-line session log: measured context +
-mechanical meta + the semantic summary given on the command line."""
+"""Append this generation's one-line session log.
+
+Combine measured context, mechanical metadata, and the supplied summary.
+"""
 
 from __future__ import annotations
 
 import argparse
-import os
 import sys
+from pathlib import Path
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import _harness  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _harness
 
 
 def main() -> int:
+    """Record this generation's outcome and release completed leases."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--end", required=True, choices=["planned_rotation", "complete", "blocked"])
     ap.add_argument("--outcome", required=True, help="what this generation completed, one line")
     ap.add_argument("--successor", default=None, help="e.g. hub-g9; omit when --end complete")
     ap.add_argument("--mix", default=None, help="context_mix_estimate, free text, an estimate")
     ap.add_argument("--drift", default=None, help="card-external work done and why, or none")
-    ap.add_argument("--feedback", action="append", default=[], help="extra user feedback, one sentence each")
+    ap.add_argument(
+        "--feedback", action="append", default=[], help="extra user feedback, one sentence each",
+    )
     a = ap.parse_args()
 
     root = _harness.harness_dir()

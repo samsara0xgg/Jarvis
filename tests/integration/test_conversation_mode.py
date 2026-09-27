@@ -86,8 +86,10 @@ class _Session:
             assert self.session.start().started
 
     def speak(self) -> None:
+        epoch = self.ingress.stream_epoch
+        assert epoch is not None
         for value in _SPEECH:
-            self.backend.emit(epoch=self.ingress.stream_epoch, value=value)
+            self.backend.emit(epoch=epoch, value=value)
             time.sleep(0.002)
 
     def close(self) -> None:
@@ -122,8 +124,10 @@ def test_leaving_wave_mode_or_muting_needs_the_wake_word_again(
 ) -> None:
     """An arm that heard nothing yet is dropped, so later speech commits nothing."""
     rig = _Session(monkeypatch)
+    epoch = rig.ingress.stream_epoch
+    assert epoch is not None
     for _ in range(4):  # idle frames: the conversation arm is in place
-        rig.backend.emit(epoch=rig.ingress.stream_epoch, value=0)
+        rig.backend.emit(epoch=epoch, value=0)
         time.sleep(0.002)
     if switch == "conversation":
         rig.conversation = False

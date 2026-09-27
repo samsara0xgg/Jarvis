@@ -49,6 +49,7 @@ from jarvis.state.input_claim import (
     claim_input_once,
     recoverable_inputs,
 )
+from jarvis.state.trigger_consumption import trigger_was_consumed
 from jarvis.surface.inherent_output import InherentBroadcaster
 
 if TYPE_CHECKING:
@@ -649,7 +650,7 @@ def test_a_failed_check_mid_batch_does_not_drop_the_rest(runtime: JarvisRuntime)
         )
         for n in (1, 2)
     ]
-    real_consumed = inherent_loop.trigger_was_consumed
+    real_consumed = trigger_was_consumed
     checks: list[str] = []
 
     def _locked_once(conn: sqlite3.Connection, uid: str) -> bool:
