@@ -1,4 +1,4 @@
-"""ADR 0050 — balances Allen records on the Usage page, and what the page then shows.
+"""ADR 0065 — balances Allen records on the Usage page, and what the page then shows.
 
 Each check asserts an observable: the route's status, the ``usage.balance_recorded``
 row it leaves in the log, the Costs query the OpenAI collector sends, or the snapshot
@@ -12,9 +12,10 @@ import datetime as dt
 import json
 from typing import TYPE_CHECKING, Any
 
+import pytest
 from fastapi.testclient import TestClient
 
-from jarvis.state.event_log import emit_event, open_event_log
+from jarvis.state.event_log import open_event_log
 from jarvis.surface import usage_observer
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
@@ -22,8 +23,6 @@ from jarvis.surface.inherent_server import InherentDeps, create_app
 if TYPE_CHECKING:
     from collections.abc import Mapping
     from pathlib import Path
-
-    import pytest
 
 DESKTOP = {"Authorization": "Bearer desktop"}
 # 2026-09-25 18:00 UTC; its UTC day starts at 1_790_294_400.
@@ -108,33 +107,38 @@ def test_openai_balance_is_the_recording_minus_costs_since_its_utc_day(
     assert sum(f"start_time={RECORDED_DAY_S}" in url for url in asked) == 1
 
 
-def test_minimax_uses_the_newer_recording_after_a_restart(tmp_path: Path) -> None:
-    """A page recording newer than the YAML anchor wins, and survives a restart."""
-    config = usage_observer.UsageConfig(
-        minimax_anchor_usd=17.82, minimax_anchor_at_ms=1_000, minimax_usd_per_million_chars=60.0
-    )
-    with contextlib.closing(open_event_log(tmp_path / "events.db")) as conn:
-        usage_observer.UsageObserver(conn, config).record_balance("minimax", 30.0)
-        recorded_at = conn.execute(
-            "SELECT ts_epoch_ms FROM events WHERE type = 'usage.balance_recorded'"
-        ).fetchone()[0]
-        for at, characters in ((recorded_at - 1, 900_000), (recorded_at + 1, 100_000)):
-            emit_event(
-                conn,
-                type="tts.usage_observed",
-                ts_epoch_ms=at,
-                payload={
-                    "provider": "minimax",
-                    "characters": characters,
-                    "response_id": f"r{at}",
-                    "sequence": 0,
-                    "actor": "observer",
-                },
-            )
-        restarted = usage_observer.UsageObserver(conn, config)
-        restarted.recover_baselines()
-        restarted.emit([])
-        minimax = usage_observer.latest_usage(conn)["services"]["minimax"]["data"]
-        assert minimax["anchor_usd"] == 30.0
-        assert minimax["characters_since_anchor"] == 100_000
-        assert minimax["estimate_usd"] == 24.0
+def test_minimax_reads_its_balance_and_says_why_it_cannot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The key goes to query_balance; a debt reads negative; a refusal keeps MiniMax's words."""
+    monkeypatch.setenv("MINIMAX_API_KEY", "sk-api-test")
+    asked: list[tuple[str, str]] = []
+    answers: list[dict[str, Any]] = [
+        {"available_amount": "17.50", "owed_amount": "0.00", "base_resp": {"status_code": 0}},
+        {"available_amount": "0.00", "owed_amount": "0.40", "base_resp": {"status_code": 0}},
+        {"base_resp": {"status_code": 1004, "status_msg": "login fail"}},
+    ]
+
+    def answer(url: str, headers: Mapping[str, str], *, timeout_s: float) -> dict[str, Any]:
+        del timeout_s
+        asked.append((url, headers["Authorization"]))
+        return answers.pop(0)
+
+    monkeypatch.setattr(usage_observer, "_get_json", answer)
+    ok, owed, refused = (usage_observer.collect_minimax(timeout_s=1) for _ in range(3))
+    assert asked[0] == ("https://api.minimax.io/account/query_balance", "Bearer sk-api-test")
+    assert (ok.status, ok.data) == ("ok", {"balance": 17.5})
+    assert (owed.status, owed.data) == ("ok", {"balance": -0.4})
+    assert (refused.status, refused.error) == ("error", "login fail")
+    monkeypatch.delenv("MINIMAX_API_KEY")
+    assert usage_observer.collect_minimax(timeout_s=1).status == "unconfigured"
+
+
+def test_minimax_balance_can_no_longer_be_typed(tmp_path: Path) -> None:
+    """MiniMax reports its own balance now, so recording one is refused and writes nothing."""
+    with (
+        contextlib.closing(open_event_log(tmp_path / "events.db")) as conn,
+        pytest.raises(ValueError, match="minimax"),
+    ):
+        usage_observer.UsageObserver(conn).record_balance("minimax", 30.0)
+    assert _balances(tmp_path / "events.db") == []

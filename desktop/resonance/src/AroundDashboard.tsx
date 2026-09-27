@@ -579,7 +579,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
       <div className="pg-body"><div className="pg-sec"><h4>{t(['Balances', '余额'])}</h4><div className="bal">
         <div className="bal-card"><Account id="deepseek">DeepSeek</Account><b>{deepseek?.status === 'ok' ? usd(deepseek.data.balance) : '—'}</b></div>
         <Balance id="openai" name="OpenAI" left={openai?.status === 'ok' ? openai.data.balance_usd : undefined} since={openai?.data.balance_recorded_at} live={!!port} onSaved={balanceSaved}/>
-        <Balance id="minimax" name="MiniMax" left={minimax?.status === 'ok' ? minimax.data.estimate_usd : undefined} since={minimax?.data.anchor_at} live={!!port} onSaved={balanceSaved}/>
+        <div className="bal-card"><Account id="minimax">MiniMax</Account><b>{minimax?.status === 'ok' ? usd(minimax.data.balance) : '—'}</b></div>
       </div></div>
       <div className="pg-sec"><div className="us-plan"><Account id="claude">Claude Max <em>{claude?.data.plan}</em></Account>{claude?.status === 'ok' && claude.data.reset_credits !== undefined && <span className="meta">{resetsLeft(lang, claude.data.reset_credits, claude.data.reset_ends_at)}</span>}</div>
         {claude?.status === 'ok' ? <div className="bigrings">{(claude.data.windows ?? []).map(w => <Ring key={w.key} w={w} name={w.label} sub={fmtReset(w.resets_at)}/>)}</div> : <p className="muted">{claude?.error ?? t(['Not signed in to Claude Code', '没登录 Claude Code'])}</p>}</div>
@@ -789,9 +789,9 @@ function Spend({ total, models }: { total: number; models: { model: string; toda
       {free > 0 && <li><button className="more" aria-expanded={all} onClick={() => setAll(v => !v)}>{all ? 'Show less' : `${free} more at $0.00`}</button></li>}</ul>
   </div>;
 }
-// OpenAI and MiniMax report no balance (ADR 0050): Allen types the one on their billing page and
+// OpenAI reports no balance (ADR 0065): Allen types the one on its billing page and
 // the daemon subtracts what is spent after it, so the number shown is an estimate since then.
-function Balance({ id, name, left, since, live, onSaved }: { id: 'openai' | 'minimax'; name: string; left?: number; since?: string | null; live: boolean; onSaved: () => void }) {
+function Balance({ id, name, left, since, live, onSaved }: { id: 'openai'; name: string; left?: number; since?: string | null; live: boolean; onSaved: () => void }) {
   const [draft, setDraft] = useState<string | null>(null), [saving, setSaving] = useState(false), [error, setError] = useState('');
   const amount = Number(draft), valid = !!draft?.trim() && Number.isFinite(amount) && amount >= 0;
   const input = useCallback((el: HTMLInputElement | null) => {

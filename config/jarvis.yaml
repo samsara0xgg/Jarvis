@@ -144,17 +144,12 @@ observer:
   # ADR-0018 usage observer：AI 订阅额度 / API 花费 / 余额轮询，只在快照变化
   # 时 emit usage.state_observed，供 Resonance「模型额度」模块读取。
   # 凭证一律来自本机登录态和环境变量（Keychain、~/.codex/auth.json、
-  # OPENAI_ADMIN_KEY、DEEPSEEK_API_KEY），不写进这个文件。默认关：它读别的 App
-  # 的登录凭证，要用户自己打开。
+  # OPENAI_ADMIN_KEY、DEEPSEEK_API_KEY、MINIMAX_API_KEY），不写进这个文件。
+  # 默认关：它读别的 App 的登录凭证，要用户自己打开。
   usage:
     enabled: false
     # 轮询间隔（秒）。claude.ai 的用量端点轮询过快会 429 锁一小时，别低于 300。
     poll_interval_s: 300
-    # MiniMax 没有余额 API：余额 = 锚点 − 锚点之后 tts.usage_observed 的字符数 × 单价。
-    # 每次充值后把后台显示的余额和时刻抄进 settings.yaml 的
-    # observer.usage.minimax_anchor_usd / minimax_anchor_at；不填 = 不估余额。
-    # speech-2.8-turbo 官方按量价（USD / 百万字符）。
-    minimax_usd_per_million_chars: 60
   # ADR 0046 — the Agents page reads Claude Code's own session files and runs
   # `claude agents --json`. Off unless the user turns it on; the hook-fed marks
   # (ADR 0049) still arrive either way.

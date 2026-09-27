@@ -458,7 +458,7 @@ class InherentDeps:
     # (blocking network, run off the loop). Registered only with ``plugin_authorize``:
     # it spends account credit, so only the desktop's private credential may call it.
     usage_codex_reset: Callable[[str], dict[str, Any]] | None = None
-    # ADR 0050: record a balance a provider will not report, ``(service, usd)``;
+    # ADR 0065: record a balance a provider will not report, ``(service, usd)``;
     # raises ``ValueError`` for a bad pair. Loop thread (it emits). Desktop
     # credential only, like the reset.
     usage_record_balance: Callable[[str, float], object] | None = None
@@ -1392,7 +1392,7 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 â
 
         @app.post("/inherent/usage/balance", status_code=200)
         async def usage_balance(request: Request) -> dict[str, Any]:
-            """ADR 0050: record a balance; the next usage poll subtracts the spend since."""
+            """ADR 0065: record a balance; the next usage poll subtracts the spend since."""
             if not balance_authorize(request.headers.get("authorization")):
                 raise HTTPException(status_code=401, detail="desktop authorization required")
             try:

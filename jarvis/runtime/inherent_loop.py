@@ -69,7 +69,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
-import datetime
 import functools
 import json
 import logging
@@ -222,7 +221,6 @@ from jarvis.surface.playback_recovery import reconcile_open_playback
 from jarvis.surface.repo_observer import RepoObserver
 from jarvis.surface.timesink_observer import TimesinkHead, TimesinkObserver
 from jarvis.surface.usage_observer import (
-    UsageConfig,
     UsageObserver,
     latest_usage,
     redeem_codex_reset,
@@ -3836,7 +3834,6 @@ def _start_repo_observer(runtime: JarvisRuntime) -> list[asyncio.Task[None]]:
 # --- ADR-0018 usage observer ---------------------------------------------------
 
 _FALLBACK_USAGE_POLL_INTERVAL_S: Final[float] = 300.0
-_FALLBACK_MINIMAX_USD_PER_MILLION_CHARS: Final[float] = 60.0
 
 
 def _claude_sessions_read(config: Mapping[str, Any]) -> bool:
@@ -3855,39 +3852,13 @@ def _usage_observer_block(config: Mapping[str, Any]) -> Mapping[str, Any] | None
     return usage
 
 
-def _usage_observer_config(usage: Mapping[str, Any]) -> UsageConfig:
-    """Translate the YAML block into :class:`UsageConfig` (bad values = unset)."""
-    anchor_at_ms: int | None = None
-    anchor_at = usage.get("minimax_anchor_at")
-    if isinstance(anchor_at, str) and anchor_at.strip():
-        try:
-            anchor_at_ms = int(datetime.datetime.fromisoformat(anchor_at).timestamp() * 1000)
-        except ValueError:
-            LOGGER.warning(
-                "usage_observer: unreadable minimax_anchor_at %r; estimate off", anchor_at
-            )
-    anchor_usd = usage.get("minimax_anchor_usd")
-    return UsageConfig(
-        minimax_anchor_usd=(
-            float(anchor_usd)
-            if isinstance(anchor_usd, int | float) and not isinstance(anchor_usd, bool)
-            else None
-        ),
-        minimax_anchor_at_ms=anchor_at_ms,
-        minimax_usd_per_million_chars=_positive_float(
-            usage.get("minimax_usd_per_million_chars"),
-            _FALLBACK_MINIMAX_USD_PER_MILLION_CHARS,
-        ),
-    )
-
-
 def _make_usage_observer(runtime: JarvisRuntime) -> UsageObserver | None:
     """Build the observer with baselines recovered on the loop thread."""
     usage = _usage_observer_block(runtime.config)
     if usage is None:
         LOGGER.info("usage_observer: observer.usage disabled; observer not started.")
         return None
-    observer = UsageObserver(runtime.conn, _usage_observer_config(usage))
+    observer = UsageObserver(runtime.conn)
     baselines = observer.recover_baselines()
     LOGGER.info("usage_observer: %d baseline(s) recovered from the event log", len(baselines))
     return observer
