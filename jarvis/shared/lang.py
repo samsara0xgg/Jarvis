@@ -718,6 +718,7 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
     # Desktop panels.
     "codex.session_ended": {"zh": "会话已结束", "en": "Session ended"},
     "codex.turn_stopped": {"zh": "已停下", "en": "Stopped"},
+    "codex.asks": {"zh": "Codex 问你：{question}", "en": "Codex asks: {question}"},
     "usage.window_hours": {"zh": "{hours} 小时", "en": "{hours} h"},
     "usage.window_days": {"zh": "{days} 天", "en": "{days} days"},
     "usage.window_week_total": {"zh": "7 天 · 总", "en": "7 days · total"},

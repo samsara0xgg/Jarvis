@@ -65,11 +65,13 @@ def test_activity_retention_and_turn_identity_over_http() -> None:
         assert len(client.get("/inherent/codex-sessions").json()["sessions"]) == 11
 
 
-def _rollout_line(path: Path, at_s: float, kind: str, **payload: object) -> None:
+def _rollout_line(
+    path: Path, at_s: float, kind: str, *, entry_type: str = "event_msg", **payload: object,
+) -> None:
     """Append one rollout line the way Codex writes it (compact JSON, UTC ISO time)."""
     stamp = datetime.fromtimestamp(at_s, UTC).isoformat(timespec="milliseconds")
     entry: dict[str, object] = {
-        "timestamp": stamp.replace("+00:00", "Z"), "type": "event_msg",
+        "timestamp": stamp.replace("+00:00", "Z"), "type": entry_type,
         "payload": {"type": kind, **payload},
     }
     if kind == "turn_context":
@@ -112,3 +114,46 @@ def test_rollout_settles_what_hooks_miss(tmp_path: Path) -> None:
         # A new prompt is not closed by the end of the turn before it.
         hook("auto", auto, "UserPromptSubmit", prompt="next")
         assert row("auto")["state"] == "running"
+
+
+def test_codex_question_waits_on_allen_until_he_writes(tmp_path: Path) -> None:
+    """Codex asks and works on: the row asks until Allen sends anything, past the turn's end."""
+    client = TestClient(create_app(InherentDeps(
+        submit_callable=_noop, broadcaster=InherentBroadcaster(),
+    )))
+    path = tmp_path / "rollout.jsonl"
+    _rollout_line(path, 999, "task_started", turn_id="t1")
+    asked = t("codex.asks", question="Web prototype or SwiftUI?")
+
+    def hook(event: str, **extra: object) -> None:
+        client.post("/inherent/codex-hook", json={
+            "session_id": "s", "hook_event_name": event, "transcript_path": str(path),
+            "turn_id": "t1", "tool_name": "Bash", **extra,
+        })
+
+    def row() -> dict[str, object]:
+        return dict(client.get("/inherent/codex-sessions").json()["sessions"][0])
+
+    with patch("jarvis.surface.inherent_server.time.time", return_value=1000):
+        hook("UserPromptSubmit", prompt="polish the app")
+    _rollout_line(
+        path, 1001, "function_call", entry_type="response_item", call_id="c1",
+        name="request_user_input_async",
+        arguments=json.dumps({"questions": [{"title": "Web prototype or SwiftUI?"}]}),
+    )
+    with patch("jarvis.surface.inherent_server.time.time", return_value=1002):
+        assert (row()["state"], row()["detail"]) == ("needs_input", asked)
+        # Codex keeps working; its tool calls neither answer nor hide the question,
+        # not even once the call has scrolled out of the rollout's tail.
+        hook("PostToolUse")
+        _rollout_line(path, 1002, "function_call_output", entry_type="response_item",
+                      output="x" * 300_000)
+        assert (row()["state"], row()["detail"]) == ("needs_input", asked)
+    _rollout_line(path, 1003, "task_complete", turn_id="t1", last_agent_message="Went with web.")
+    with patch("jarvis.surface.inherent_server.time.time", return_value=1004):
+        assert (row()["state"], row()["last_message"]) == ("needs_input", "Went with web.")
+    # His answer, as Codex records any message he sends in the thread.
+    _rollout_line(path, 1005, "task_started", turn_id="t2")
+    _rollout_line(path, 1005, "item_completed", item={"type": "UserMessage"})
+    with patch("jarvis.surface.inherent_server.time.time", return_value=1006):
+        assert (row()["state"], row()["detail"]) == ("running", "")
