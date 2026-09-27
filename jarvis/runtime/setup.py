@@ -32,6 +32,8 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
     from pathlib import Path
 
+    from jarvis.deployment.models import Progress
+
 LOGGER = logging.getLogger(__name__)
 KEY_ENVS: Final[dict[str, str]] = {
     "openai": "OPENAI_API_KEY",
@@ -141,6 +143,7 @@ class Setup:
         tts_endpoint: str,
         tts_model: str,
         restart: Callable[[], None] | None,
+        voice_models: Progress,
     ) -> None:
         """Bind what setup reads and writes; ``restart`` is None when launchd cannot respawn us."""
         self._root = root
@@ -150,6 +153,7 @@ class Setup:
         self._tts_endpoint = tts_endpoint.rstrip("/")
         self._tts_model = tts_model
         self._restart = restart
+        self._voice_models = voice_models
         # provider -> the last check's key-level reason (None = passed).
         self._refused: dict[str, str | None] = {}
 
@@ -203,6 +207,7 @@ class Setup:
             "keys": {provider: self._key_state(provider) for provider in KEY_ENVS},
             "voices": self.voices(),
             "features": self._features(),
+            "voice_models": self._voice_models.view(),
         }
 
     # --- writes --------------------------------------------------------------

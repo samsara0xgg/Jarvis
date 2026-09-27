@@ -35,6 +35,23 @@ const SKIN_BG: Record<Skin, string> = {
   codex: 'radial-gradient(circle at 40% 45%,#7fe0ff,#5b3fd0 45%,#b04fd8 62%,#0d1030 80%)',
 };
 
+// The API keys Jarvis runs on: GET /inherent/setup says whether each is ok, missing or refused; POST
+// /inherent/setup/key tests a pasted one and keeps it in the Keychain only when it works. Jarvis reads keys at boot.
+type Provider = 'openai' | 'minimax' | 'tavily';
+type Setup = { keys: Record<Provider, 'ok' | 'missing' | 'bad'> };
+const WHY: Record<string, L> = {
+  unauthorized: ['The service rejected this key (401). Check it was copied in full.', '服务拒绝了这个密钥（401），看看是不是少复制了一截。'],
+  model_denied: ['This key can’t use the model Jarvis needs. Allow it in the provider’s dashboard.', '这个密钥用不了 Jarvis 要的模型，去服务商后台打开模型权限。'],
+  quota: ['This account is out of credit.', '这个账户没有额度了。'],
+  rate_limited: ['Too many requests. Wait a minute and try again.', '请求太多了，等一分钟再试。'],
+  network: ['Couldn’t reach the service. Check the network.', '连不上服务，看看网络。'],
+  timeout: ['The service took too long to answer. Try again.', '服务太久没回应，再试一次。'],
+  away: ['Jarvis isn’t answering. Try again in a moment.', 'Jarvis 没有回应，等一下再试。'],
+  error: ['The key didn’t pass its test.', '这个密钥没测通。'],
+};
+// Only the installed app can quit for good: in a checkout launchd starts her again at once.
+const packaged = new URLSearchParams(location.search).has('packaged');
+
 type Ctl =
   | { k: 'switch'; on: boolean; set: (on: boolean) => void }
   | { k: 'seg'; value: string; opts: [string, L][]; set: (value: string) => void }
@@ -42,6 +59,7 @@ type Ctl =
   | { k: 'pick'; value: string; opts: string[]; set: (value: string) => void }
   | { k: 'info'; text: string; tone?: 'ok' | 'warn' }
   | { k: 'act'; label: L; run: () => void }
+  | { k: 'key'; provider: Provider; text: string; tone?: 'ok' | 'warn' }
   | { k: 'skins' };
 type Item = { id: string; name: L; note?: L; ctl: Ctl; off?: boolean };
 type Cat = { id: string; icon: ReactNode; name: L; sum: string; warm?: boolean; daemon?: boolean; items: Item[] };
@@ -54,6 +72,7 @@ export function SettingsPage({ lang, port, open, cat, onCat, ctl, accounts, hidd
   const t = (l: L) => tr(lang, l);
   const [s, update] = useCompanionSettings();
   const route = useRoute<Daemon>(port, '/inherent/settings', open, 60_000);
+  const setup = useRoute<Setup>(port, '/inherent/setup', open && cat === 'accounts', 30_000);
   const [demo, setDemo] = useState(DEMO), [draft, setDraft] = useState<Record<string, number>>({});
   const daemon = port ? route.data : demo, ready = !!daemon;
   const v = (key: string) => daemon?.values[key];
@@ -75,6 +94,11 @@ export function SettingsPage({ lang, port, open, cat, onCat, ctl, accounts, hidd
   const commit = (key: string) => { if (draft[key] !== undefined) { void save(key, draft[key]); setDraft(({ [key]: _, ...rest }) => rest); } };
   const dInfo = (key: string): Ctl => ({ k: 'info', text: Array.isArray(v(key)) ? t([`${(v(key) as unknown[]).length} folders`, `${(v(key) as unknown[]).length} 个`]) : String(v(key) ?? '—') });
   const off = !ready;
+  const keyCtl = (provider: Provider): Ctl => {
+    const state = setup.data?.keys[provider];
+    return { k: 'key', provider, text: t(state === 'ok' ? ['Working', '能用'] : state === 'bad' ? ['Refused', '用不了'] : state === 'missing' ? ['Not set', '没填'] : ['—', '—']),
+      tone: state === 'ok' ? 'ok' : state === 'bad' || (state === 'missing' && provider === 'openai') ? 'warn' : undefined };
+  };
   const pct = (n: number) => `${Math.round(n * 100)}%`;
 
   const reply: [string, L][] = [['follow', ['Follow me', '跟着我']], ['zh', ['中文', '中文']], ['en', ['English', 'English']]];
@@ -134,6 +158,9 @@ export function SettingsPage({ lang, port, open, cat, onCat, ctl, accounts, hidd
       { id: 'screen-look', name: ['Looking at your screen', '看你的屏幕'], ctl: { k: 'info', text: t(['Only when you ask', '只在你要求时']), tone: 'ok' } },
     ] },
     { id: 'accounts', icon: <Key/>, name: ['Accounts', '账户'], warm: accounts.some(a => !a.ok), sum: accounts.every(a => a.ok) ? t(['All connected', '都已连接']) : t([`${accounts.filter(a => !a.ok).length} need attention`, `${accounts.filter(a => !a.ok).length} 个要处理`]), items: [
+      { id: 'key-openai', name: ['OpenAI API key', 'OpenAI API 密钥'], note: ['Required: every answer uses it', '必填，所有回答都靠它'], ctl: keyCtl('openai') },
+      { id: 'key-minimax', name: ['MiniMax API key', 'MiniMax API 密钥'], note: ['Her speaking voice; without it she only types', '她说话的声音；不填就只打字'], ctl: keyCtl('minimax') },
+      { id: 'key-tavily', name: ['Tavily API key', 'Tavily API 密钥'], note: ['Web search', '上网搜索'], ctl: keyCtl('tavily') },
       ...accounts.map(a => ({ id: a.name, name: [a.name, a.name] as L, ctl: { k: 'info', text: a.text, tone: a.ok ? 'ok' : 'warn' } as Ctl })),
       { id: 'plugins', name: ['Plugins', '插件'], ctl: { k: 'act', label: ['Open', '打开'], run: onPlugins } },
     ] },
@@ -145,6 +172,8 @@ export function SettingsPage({ lang, port, open, cat, onCat, ctl, accounts, hidd
     { id: 'advanced', icon: <SlidersHorizontal/>, name: ['Advanced', '高级'], sum: port ? t([`Port ${port}`, `端口 ${port}`]) : t(['Demo data', '演示数据']), items: [
       { id: 'conn', name: ['Connection', '连接'], ctl: { k: 'info', text: port ? t([`Port ${port}`, `端口 ${port}`]) : t(['Demo data', '演示数据']), tone: 'ok' } },
       { id: 'restart', name: ['Restart Jarvis', '重启 Jarvis'], ctl: { k: 'act', label: ['Restart', '重启'], run: () => void restart() } },
+      ...packaged ? [{ id: 'quit', name: ['Quit Jarvis', '退出 Jarvis'], note: ['She and Jarvis’s background service stop until you open Jarvis again', '她和后台都会停下，直到你再打开 Jarvis'],
+        ctl: { k: 'act', label: ['Quit', '退出'], run: () => window.jarvis?.quit?.() } } satisfies Item] : [],
     ] },
   ];
 
@@ -167,7 +196,7 @@ export function SettingsPage({ lang, port, open, cat, onCat, ctl, accounts, hidd
   const control = (i: Item) => {
     const x = i.ctl;
     if (x.k === 'switch') return <button className="sw" role="switch" aria-checked={x.on} aria-label={t(i.name)} disabled={i.off} onClick={() => x.set(!x.on)}/>;
-    if (x.k === 'info') return <span className={`st-val ${x.tone ? `is-${x.tone}` : ''}`}>{x.text}</span>;
+    if (x.k === 'info' || x.k === 'key') return <span className={`st-val ${x.tone ? `is-${x.tone}` : ''}`}>{x.text}</span>;
     if (x.k === 'act') return <button className="btn btn-ghost st-act" disabled={i.off} onClick={x.run}>{t(x.label)}</button>;
     if (x.k === 'range') return <span className="st-val">{x.pct ? pct(x.value) : x.value.toFixed(2)}</span>;
     return null;
@@ -182,6 +211,7 @@ export function SettingsPage({ lang, port, open, cat, onCat, ctl, accounts, hidd
       onChange={e => x.set(Number(e.target.value))} onPointerUp={() => commit(keyOf(i))} onKeyUp={() => commit(keyOf(i))}/>;
     if (x.k === 'skins') return <div className="st-skins" role="radiogroup" aria-label={t(i.name)}>{SKIN_KEYS.map(k =>
       <button key={k} role="radio" aria-checked={ctl.look.skin === k} onClick={() => ctl.setLook({ skin: k })}><i style={{ background: SKIN_BG[k] }}/>{lang === 'zh' ? SKINS[k].name : SKIN_EN[k]}</button>)}</div>;
+    if (x.k === 'key') return <KeyField provider={x.provider} name={t(i.name)} port={port} lang={lang} onSaved={() => void restart()}/>;
     return null;
   };
   // Only the daemon's ranges wait for the release to save; hers apply as they move.
@@ -203,5 +233,30 @@ export function SettingsPage({ lang, port, open, cat, onCat, ctl, accounts, hidd
       </button>)}</div>
     </>}</div></div>
     {daemon?.restart_pending && <div className="st-restart"><span>{t(['Some changes apply after a restart', '有改动要重启 Jarvis 才生效'])}</span><button onClick={() => void restart()}>{t(['Restart', '重启'])}</button></div>}
+  </>;
+}
+
+// A kept key restarts Jarvis, which reads keys only at boot. The OpenAI test makes real calls, so it gets 90 s.
+function KeyField({ provider, name, port, lang, onSaved }: { provider: Provider; name: string; port: string | null; lang: Lang; onSaved: () => void }) {
+  const t = (l: L) => tr(lang, l);
+  const [key, setKey] = useState(''), [busy, setBusy] = useState(false), [why, setWhy] = useState<string | null>(null);
+  const test = async () => {
+    setBusy(true); setWhy(null);
+    try {
+      const r = await fetch(`http://127.0.0.1:${port}/inherent/setup/key`, { method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ provider, key: key.trim() }), signal: AbortSignal.timeout(90_000) });
+      const answer = await r.json() as { ok?: boolean; checks?: { ok: boolean; reason?: string }[] };
+      if (answer.ok) { setKey(''); onSaved(); }
+      else setWhy(t(WHY[answer.checks?.find(c => !c.ok)?.reason ?? ''] ?? WHY.error));
+    } catch { setWhy(t(WHY.away)); }
+    setBusy(false);
+  };
+  return <>
+    <form className="st-key" onSubmit={e => { e.preventDefault(); if (key.trim()) void test(); }}>
+      <input type="password" value={key} onChange={e => setKey(e.target.value)} placeholder={t(['Paste a new key', '贴一个新的密钥'])} aria-label={name}
+        autoComplete="off" spellCheck={false} disabled={!port || busy}/>
+      <button className="btn btn-ghost" disabled={!port || busy || !key.trim()}>{busy ? t(['Testing…', '测试中…']) : t(['Test and save', '测试并保存'])}</button>
+    </form>
+    {why && <p className="st-note st-why" role="alert">{why}</p>}
   </>;
 }

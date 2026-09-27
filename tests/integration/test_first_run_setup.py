@@ -22,6 +22,7 @@ from fastapi.testclient import TestClient
 
 from jarvis.decision.llm import MissingAPIKeyError, failure_reason
 from jarvis.deployment import load_env_file, read_keys, save_key
+from jarvis.deployment.models import Progress
 from jarvis.runtime import _load_full_config
 from jarvis.runtime import setup as runtime_setup
 from jarvis.runtime.settings import SETUP_VOICES
@@ -49,6 +50,7 @@ def _setup(root: Path) -> Setup:
         tts_endpoint="https://tts.invalid",
         tts_model="speech-2.8-turbo",
         restart=None,
+        voice_models=Progress(),
     )
 
 
@@ -75,6 +77,7 @@ def test_a_fresh_install_is_a_first_run_until_done(tmp_path: Path) -> None:
     assert fresh["keys"] == {"openai": "missing", "minimax": "missing", "tavily": "missing"}
     assert fresh["features"]["reply_voice"] == {"on": False, "reason": "minimax_missing"}
     assert fresh["features"]["live_voice"] == {"on": False, "reason": "openai_missing"}
+    assert fresh["voice_models"] == {"state": "ready", "done": 0, "total": 0}
     assert [voice["id"] for voice in fresh["voices"]] == list(SETUP_VOICES["zh"])
     assert fresh["voices"][0] == {
         "id": "Chinese (Mandarin)_Warm_Bestie", "label": "暖心闺蜜", "note": "温暖，清楚",  # noqa: RUF001

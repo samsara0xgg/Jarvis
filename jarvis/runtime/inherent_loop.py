@@ -3990,14 +3990,18 @@ async def _save_settings(settings: Settings, changes: dict[str, Any]) -> dict[st
 
 
 def _fetch_models_then_restart(
-    sensevoice_dir: Path, silero_path: Path, loop: asyncio.AbstractEventLoop,
+    sensevoice_dir: Path,
+    silero_path: Path,
+    loop: asyncio.AbstractEventLoop,
+    progress: models.Progress,
 ) -> None:
     """First boot: fetch the speech models in the background, then come back with voice."""
 
     def run() -> None:
         try:
-            models.fetch_missing(sensevoice_dir, silero_path)
+            models.fetch_missing(sensevoice_dir, silero_path, progress)
         except Exception:
+            progress.failed = True
             LOGGER.exception("models: download failed; voice stays off until the next boot")
             return
         if spawned_by_agent():
@@ -4881,6 +4885,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         voice_knobs = _voice_knobs(runtime.config)
         sensevoice_dir = runtime.sensevoice_dir
         silero_path = runtime.silero_vad_path
+        model_fetch = models.Progress()
         models_ok, missing = _voice_models_preflight(
             sensevoice_dir=sensevoice_dir,
             silero_path=silero_path,
@@ -4891,7 +4896,9 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 "voice models missing; running text-only. Missing: %s",
                 "; ".join(missing),
             )
-            _fetch_models_then_restart(sensevoice_dir, silero_path, asyncio.get_running_loop())
+            _fetch_models_then_restart(
+                sensevoice_dir, silero_path, asyncio.get_running_loop(), model_fetch,
+            )
         else:
             try:
                 voice_pipe = _build_voice_pipeline(
@@ -5242,6 +5249,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 tts_endpoint=knobs.tts_primary_endpoint,
                 tts_model=knobs.tts_model,
                 restart=_restart_soon if spawned_by_agent() else None,
+                voice_models=model_fetch,
             )
 
         # ADR 0058: dictation hears through the live mic and the voice path's ears.

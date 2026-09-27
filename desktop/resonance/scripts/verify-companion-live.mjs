@@ -49,6 +49,8 @@ try {
     { seq: 12, id: 'b', ts: iso(now - 9 * 60_000 + 4000), source: 'jarvis', text: 'Two things: the **voice test** at four, and `the demo cut`.' },
   ];
   let controls = { mic_muted: false, speech_muted: false, conversation: false };
+  // What POST /inherent/setup/key answers next (Settings › Accounts).
+  let keyAnswer = { ok: false, checks: [] };
   // ADR 0069, 0070: the daemon's marks, each session's conversation, and what a typed reply does to the board.
   const agentMarks = {}, conversations = {};
   let replied = () => {};
@@ -139,6 +141,8 @@ try {
     if (url.pathname === '/inherent/controls') { controls = { ...controls, ...body }; return json(controls); }
     if (url.pathname === '/inherent/submit') return json({ turn_id: 'typed-1' });
     if (url.pathname === '/inherent/cancel-response') return json({});
+    if (url.pathname === '/inherent/setup/key') return json(keyAnswer);
+    if (url.pathname === '/inherent/restart') return json({ ok: true });
     if (url.pathname === '/inherent/usage/refresh') refreshes.push(Date.now());
     if (url.pathname.startsWith('/inherent/claude-requests/')) return json({ ok: true });
     if (url.pathname === '/inherent/agent-marks') return json({ marks: agentMarks });
@@ -348,6 +352,17 @@ try {
     await page.evaluate(() => { window.__emit('done', { turn_id: 'v2', fadeMs: 200 }); window.__emit('voice', { phase: 'spoken', turn_id: 'v2' }); });
     await waitPlace('home');
     check('L6 once it settles she goes home, wave mode off', await page.locator('.companion-strip.is-open').count() === 0);
+    // A turn that fails says why in Jarvis's own words (a refused key, no credit…) where the answer would be.
+    const quota = 'The account is out of credit. Add credit, then try again.';
+    await page.evaluate(() => { window.__emit('voice', { phase: 'listening', turn_id: 'v2f' }); window.__emit('voice', { phase: 'accepted', turn_id: 'v2f', text: 'what is on today' }); });
+    await waitPlace('out');
+    await page.evaluate(text => window.__emit('failed', { turn_id: 'v2f', reason: 'quota', message: text }), quota);
+    const said = await page.waitForFunction(text => document.querySelector('.companion-bubble.is-open .bubble-text span:last-child')?.textContent === text, quota, { timeout: 5000 }).then(() => true, () => false);
+    check('L6 a failed turn shows the daemon’s reason in her bubble, with her sorry face', said && await face('38') === '38');
+    await page.waitForTimeout(700); await shot('L6-failed', { x: 0, y: 0, width: 400, height: 240 });
+    await page.waitForFunction(() => !document.querySelector('.companion-bubble.is-open'), null, { timeout: 10_000 });
+    await move(600, 560); await waitPlace('home');
+    check('L6 and after 8 s it leaves and she goes home', true);
 
     // Typed text from her own box goes to the daemon.
     await move(out.x, out.y); await waitPlace('out');
@@ -536,6 +551,32 @@ try {
       posts.at(-1)?.path === '/inherent/language' && posts.at(-1).body.language === 'zh' && await langName() === '界面语言');
     await page.locator('.ad [data-item="lang"] .st-seg button', { hasText: 'English' }).click(); await page.waitForTimeout(600);
     check('L15 English posts { language: en } and turns it back', posts.at(-1)?.body.language === 'en' && await langName() === 'Interface language');
+    // L16: a first boot's speech-model download shows in the corner until the models are in.
+    await back(); await back();
+    const corner = () => text('.ad .corner .clock');
+    fixtures['/inherent/setup'] = { keys: { openai: 'bad', minimax: 'missing', tavily: 'missing' }, voice_models: { state: 'downloading', done: 148_000_000, total: 240_193_589 } };
+    const downloading = await page.waitForFunction(() => document.querySelector('.ad .corner .clock')?.textContent === 'Voice · 61%', null, { timeout: 5000 }).then(() => true, () => false);
+    check('L16 while the speech models download the corner says how far, from real bytes', downloading);
+    await panelShot('L16-voice-downloading');
+    fixtures['/inherent/setup'].voice_models = { state: 'ready', done: 0, total: 0 };
+    await page.waitForFunction(() => !document.querySelector('.ad .corner .clock')?.textContent.includes('Voice'), null, { timeout: 5000 }).catch(() => {});
+    check('L16 once they are in the corner is the clock again', /\d:\d\d/.test(await corner()));
+    // Settings › Accounts takes a new API key: a refused one says why and restarts nothing, a kept one restarts Jarvis.
+    await page.locator('.ad .corner [data-row="settings"]').click(); await page.waitForTimeout(900);
+    await page.locator('.ad [data-cat="accounts"]').click(); await page.waitForTimeout(900);
+    const keyRow = '.ad [data-item="key-openai"]';
+    check('L16 Accounts says the saved OpenAI key is refused', (await text(`${keyRow} .st-val`)) === 'Refused');
+    keyAnswer = { ok: false, checks: [{ id: 'connect', ok: false, reason: 'unauthorized', detail: '401' }] };
+    await page.locator(`${keyRow} input`).fill('sk-wrong'); await page.locator(`${keyRow} .st-key button`).click();
+    await page.locator(`${keyRow} .st-why`).waitFor({ timeout: 3000 });
+    check('L16 a refused key says why and restarts nothing', (await text(`${keyRow} .st-why`)).includes('(401)')
+      && posts.at(-1)?.path === '/inherent/setup/key' && posts.at(-1).body.provider === 'openai' && posts.at(-1).body.key === 'sk-wrong' && !posts.some(p => p.path === '/inherent/restart'));
+    await panelShot('L16-key-refused');
+    keyAnswer = { ok: true, checks: [{ id: 'connect', ok: true }, { id: 'chat', ok: true }] };
+    await page.locator(`${keyRow} input`).fill('sk-right'); await page.locator(`${keyRow} .st-key button`).click();
+    await page.waitForTimeout(600);
+    check('L16 a kept key restarts Jarvis and empties the field', posts.at(-2)?.path === '/inherent/setup/key' && posts.at(-2).body.key === 'sk-right'
+      && posts.at(-1)?.path === '/inherent/restart' && await page.locator(`${keyRow} input`).inputValue() === '' && await page.locator(`${keyRow} .st-why`).count() === 0);
     await back(); await back();
     await hit.dblclick({ force: true });
     await page.waitForFunction(() => !document.querySelector('.companion-dashboard.is-open'), null, { timeout: 3000 });

@@ -62,7 +62,10 @@ export function connect(port: string, dispatch: (a: Action) => void): Runtime {
       if (msg.op === 'open') dispatch({ type: 'open', turnId, responseId: typeof p.response_id === 'string' ? p.response_id : null, at: Date.now() });
       else if (msg.op === 'append') dispatch({ type: 'append', token: String(p.token ?? '') });
       else if (msg.op === 'done') setTimeout(() => dispatch({ type: 'settle', turnId }), Number(p.fadeMs ?? 5000));
-      else if (msg.op === 'failed' || msg.op === 'cancelled') dispatch({ type: 'failed', turnId, cancelled: msg.op === 'cancelled' });
+      else if (msg.op === 'failed' || msg.op === 'cancelled') {
+        dispatch({ type: 'failed', turnId, cancelled: msg.op === 'cancelled', message: typeof p.message === 'string' ? p.message : null });
+        if (msg.op === 'failed') setTimeout(() => dispatch({ type: 'settle', turnId }), 8000); // long enough to read why
+      }
       else if (msg.op === 'voice') { const a = voicePhase[String(p.phase)]; if (a) dispatch(a); if (p.phase === 'spoken') dispatch({ type: 'spoken', turnId }); if (p.phase === 'accepted' && turnId) dispatch({ type: 'pending', turnId, at: Date.now() }); if (p.phase === 'accepted' && typeof p.text === 'string') dispatch({ type: 'heard', text: p.text }); }
       else if (msg.op === 'live') dispatch({ type: 'live', live: liveFrom(p) });
       else if (msg.op === 'subtitle') dispatch({ type: 'subtitle', sessionId: String(p.session_id ?? ''), role: p.role === 'user' ? 'user' : 'assistant', delta: String(p.delta ?? ''), startMs: Number(p.start_ms ?? 0), endMs: Number(p.end_ms ?? 0) });
