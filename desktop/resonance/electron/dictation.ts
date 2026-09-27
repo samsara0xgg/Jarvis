@@ -68,6 +68,14 @@ export function setupDictation({ companion, native, preload, page, port, topInse
     busy = false;
   });
   ipcMain.on('dictation-passthrough', (event, on) => { if (mine(event) && typeof on === 'boolean') overlay.setIgnoreMouseEvents(on, { forward: true }); });
+  // Fixing the words: the box takes the keyboard without activating Jarvis (the overlay is a non-activating panel),
+  // and Esc is the box's own again. Letting go, a hide and an inactive show hand the keyboard back to the app
+  // she pastes into before the ⌘V, which lands after her dive.
+  ipcMain.on('dictation-focus', (event, on) => {
+    if (!mine(event) || typeof on !== 'boolean') return;
+    if (on) { globalShortcut.unregister('Escape'); overlay.setFocusable(true); overlay.focus(); overlay.webContents.focus(); return; }
+    overlay.setFocusable(false); overlay.hide(); overlay.showInactive();
+  });
   ipcMain.on('companion-skin', (event, value) => { if (event.sender === companion.webContents && typeof value === 'string') skin = value; });
 
   return {
