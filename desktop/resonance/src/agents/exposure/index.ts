@@ -130,7 +130,7 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
     if (deckOn && !busy) {
       const available = new Set(h.map(d => d.key));
       deck = deck.filter(d => available.has(d.key));
-      if (!deck.length) closeDeck('done'); else renderDeck();
+      if (!deck.length) closeDeck('gone'); else renderDeck();
     }
     const ids = all.map(s => s.id), presence = JSON.stringify([enabled, ids]);
     if (presence !== presenceKey) { presenceKey = presence; window.agents?.presence?.(enabled, ids); }
@@ -242,8 +242,9 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
     animate(deckEl, [{ opacity: 0 }, { opacity: 1 }], 240);
     renderDeck(true); card.focus({ preventScroll: true });
   }
-  // done: every card answered · put: the rest put down, still in her hands · go: left to read one in full
-  function closeDeck(how: 'done' | 'put' | 'go') {
+  // done: every card answered · put: the rest put down, still in her hands · go: left to read one in full · gone: the
+  // cards settled elsewhere, nothing to celebrate
+  function closeDeck(how: 'done' | 'put' | 'go' | 'gone') {
     if (!deckOn) return;
     deckOn = false; main.inert = head.inert = false; her.surface(false); her.faceUntil = 0; deckKey = ''; deck = [];
     const fade = animate(deckEl, [{ opacity: 1 }, { opacity: 0 }], 200);
@@ -346,6 +347,8 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
     const consume = () => { e.preventDefault(); e.stopImmediatePropagation(); };
     if (deckOn) {
       if (e.key === 'Escape') { consume(); if (!busy) closeDeck('put'); return; }
+      // The stack is modal: the desk's session keys wait until it is put down.
+      if (e.altKey && e.key.startsWith('Arrow')) { consume(); return; }
       if (e.key === 'Tab') {
         const buttons = [...card.querySelectorAll<HTMLElement>('button:not(:disabled),input,textarea')];
         if (buttons.length && (e.shiftKey ? target === buttons[0] || target === card : target === buttons.at(-1))) { consume(); (e.shiftKey ? buttons.at(-1)! : buttons[0]).focus(); }
@@ -398,7 +401,7 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
     // An empty composer, or none to write in while a request holds it, is a pause: the keys are hers.
     const free = (target === ta || target === win || target === document.body) && (ta.disabled || !ta.value.trim());
     const plain = !e.metaKey && !e.ctrlKey && !e.altKey;
-    if (e.key === 'Escape' && !offerEl.hidden) { consume(); hideOffer(); return; }
+    if (e.key === 'Escape' && !offerEl.hidden && !win.querySelector('.pop.on')) { consume(); hideOffer(); return; }
     if ((free && plain && !e.shiftKey && e.key === 'ArrowLeft') || (e.altKey && e.key === 'ArrowUp')) { consume(); openSky(); return; }
     if (free && plain && e.key === ' ') { consume(); if (!e.repeat) openDeck(); }
   }
@@ -458,7 +461,7 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
     her.frame(t, dt);
   }
   modeButton.addEventListener('click', () => setMode(!enabled));
-  pull.addEventListener('click', () => skyOn ? closeSky() : openSky());
+  pull.addEventListener('click', () => { if (!skyOn) openSky(); else { closeSky(); settle(); } });
   $('.bw-her', chrome).addEventListener('click', openDeck); held.addEventListener('click', openDeck); offerEl.addEventListener('click', openDeck);
   $('.bw-her', chrome).addEventListener('pointerenter', () => her.hover = true); $('.bw-her', chrome).addEventListener('pointerleave', () => her.hover = false);
   $('.bw-her', chrome).addEventListener('pointerdown', () => her.pressed = true);

@@ -38,6 +38,9 @@ assert.deepEqual(turns({ st: 'wait' }, [{ k: 'you', text: 'A' }, { k: 'it', text
 assert.deepEqual(turns({ st: 'work', now: 'Editing x.ts' }, [{ k: 'you', text: 'A' }, { k: 'steps', steps: [{ k: 'edit', t: 'x.ts', add: 3, del: 1 }], took: '2 分钟' }, { k: 'you', text: 'B' }]),
   [['steps', '干了 2 分钟 · 改了 1 个 +3 −1'], ['live', 'Editing x.ts']]);
 assert.deepEqual(turns({}, [{ k: 'you', text: 'A' }, { k: 'you', text: 'B' }]), [['none', '没等它回，你接着又说了一句'], ['none', '还没回']]);
+assert.deepEqual(turns({}, [{ k: 'you', text: 'A' }, { k: 'steps', steps: [{ k: 'read', t: 'a' }, { k: 'read', t: 'b' }], took: '1 分钟' }, { k: 'req', req: bash, done: '允许了' },
+  { k: 'steps', steps: [{ k: 'edit', t: 'x', add: 3, del: 1 }], took: '20 秒' }]), [['steps', '干完了 · 读了 2 个 · 改了 1 个 +3 −1']]);
+assert.deepEqual(turns({ st: 'err', summary: 'Host restarted' }, [{ k: 'you', text: 'A' }, { k: 'it', text: 'Done' }]), [['err', 'Host restarted']]);
 
 const historical = new Session({ ...base }, '');
 await historical.build(async () => {

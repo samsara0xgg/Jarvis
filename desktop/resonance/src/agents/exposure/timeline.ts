@@ -48,12 +48,14 @@ export function timeline(s: Sess, items: Item[]): Trail {
   // Its reply in that turn: the last thing it said, or where the turn stands, as the B01 words read it.
   out.turns.forEach((turn, i) => {
     const after = blocks[i], last = i === out.turns.length - 1;
-    const said = lastOf(after, 'it'), steps = lastOf(after, 'steps'), pending = lastOf(after, 'req', true);
+    const said = lastOf(after, 'it'), pending = lastOf(after, 'req', true);
+    // A request splits a turn's steps into groups; the line counts them all, and its time only when there is one.
+    const groups = after.filter(it => it.k === 'steps'), steps = groups.flatMap(it => it.k === 'steps' ? it.steps : []);
     if (last && s.st === 'err') Object.assign(turn, { kind: 'err', reply: s.summary || '出错了' });
     else if (said?.k === 'it') Object.assign(turn, { kind: 'sum', reply: said.text });
     else if (last && s.st === 'wait') Object.assign(turn, { kind: 'wait', reply: pending?.k === 'req' ? asks(pending.req) || s.summary : s.summary });
     else if (last && (s.st === 'work' || s.st === 'pack')) Object.assign(turn, { kind: 'live', reply: s.now || '在干活…' });
-    else if (steps?.k === 'steps' && steps.steps.length) Object.assign(turn, { kind: 'steps', reply: stepsLine(steps.steps, steps.took) });
+    else if (steps.length) Object.assign(turn, { kind: 'steps', reply: stepsLine(steps, groups.length === 1 && groups[0].k === 'steps' ? groups[0].took : undefined) });
     else turn.reply = last ? '还没回' : '没等它回，你接着又说了一句';
   });
   // Observed transitions win when the agent records a last text before it actually finishes.
