@@ -182,10 +182,11 @@ function Pop({ agents, look, act, onClose }: { agents: Agent[]; look: MarkLook; 
     <div className="u-list">{agents.map(a => <PopRow key={a.id} a={a} look={look} act={act} tag={a.state === 'err' && !all ? <em> stopped</em> : null}/>)}</div></div>;
 }
 
-export function Notch({ look, agents, unread, parked, archived, geo, cursor, note, quiet, act, onNoteHover, port, keys, onKeys, onViewing }: {
+export function Notch({ look, agents, unread, parked, archived, geo, cursor, note, quiet, act, onNoteHover, port, keys, onKeys, onViewing, onJoinedChange }: {
   look: MarkLook; agents: Agent[]; unread: ReadonlySet<string>; parked: ReadonlyMap<string, number>; archived: ReadonlySet<string>; geo: NotchGeo;
   cursor: RefObject<Point>; note: NotchNote | null; quiet: boolean; act: NotchAct; onNoteHover: (on: boolean) => void;
   port: string | null; keys: number; onKeys: (on: boolean) => void; onViewing: (id: string | null) => void;
+  onJoinedChange?: (joined: boolean) => void;
 }) {
   const out = (a: Agent) => !parked.has(a.id);
   const turn = agents.filter(a => out(a) && (a.state === 'wait' || ended(a.state) && unread.has(a.id))).sort((a, b) => TURN_ORDER.indexOf(a.state) - TURN_ORDER.indexOf(b.state));
@@ -212,10 +213,10 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
     // Sessions on their way into the moon, from where the pointer was, and when the last one landed.
     flights: [] as { id: string; to: Kind; st: AgentState; x: number; y: number; at: number }[],
     bumpAt: { turn: -1e9, work: -1e9, done: -1e9, moon: -1e9 }, parkedIds: new Set<string>(),
-    popOrigins: new Map<string, Point>(), intent: new PointerIntent(), resolvedNote: '', workLandingUntil: 0,
+    popOrigins: new Map<string, Point>(), intent: new PointerIntent(), resolvedNote: '', workLandingUntil: 0, joined: false,
   }).current;
-  const L = useRef({ look, turn, work, fin, moon, geo, note, quiet, onNoteHover, held: false, pageW: false });
-  L.current = { look, turn, work, fin, moon, geo, note, quiet, onNoteHover, held: !!kb && !kbCard, pageW: !!paged };
+  const L = useRef({ look, turn, work, fin, moon, geo, note, quiet, onNoteHover, onJoinedChange, held: false, pageW: false });
+  L.current = { look, turn, work, fin, moon, geo, note, quiet, onNoteHover, onJoinedChange, held: !!kb && !kbCard, pageW: !!paged };
   const members = (key: Kind) => ({ turn: L.current.turn, work: L.current.work, done: L.current.fin, moon: L.current.moon })[key];
   const setPanel = (on: boolean) => { if (on === st.open) return; st.open = on; st.dirty = true; setOpen(on); };
   const setHotKey = (key: string) => { if (key === st.hot) return; st.hot = key; setHot(key); };
@@ -383,6 +384,10 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
       if (onNote !== st.onNote) { st.onNote = onNote; onNoteHover(onNote); }
       // One black piece: her island, the notch, the marks, and whatever hangs from them.
       const wingR = g.notchR + Math.max(0, s.ww.value), dropOut = st.open || s.dd.value > top + 1, noteOut = noteOpen || s.nd.value > top + 1, rects: Rect[] = [];
+      // The home shares this surface until the last pane has folded inside it,
+      // including list/page/card handoffs and the visible tail of closing.
+      const joined = dropOut || noteOut;
+      if (joined !== st.joined) { st.joined = joined; L.current.onJoinedChange?.(joined); }
       if (wingR > g.notchR + .5 || dropOut || noteOut) rects.push({ l: g.lobeL, r: Math.max(g.notchR, wingR), d: top });
       if (dropOut) rects.push({ l: s.dx.value, r: s.dx.value + s.dw.value, d: s.dd.value });
       if (noteOut) rects.push({ l: s.nx.value, r: s.nx.value + s.nw.value, d: s.nd.value });
@@ -481,7 +486,7 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
       else { raf = 0; timer = setTimeout(() => { raf = requestAnimationFrame(tick); }, st.boxes.length || L.current.note ? 33 : 100); }
     };
     raf = requestAnimationFrame(tick);
-    return () => { cancelAnimationFrame(raf); clearTimeout(timer); };
+    return () => { cancelAnimationFrame(raf); clearTimeout(timer); st.joined = false; L.current.onJoinedChange?.(false); };
   }, []);
 
   // Press the finished mark and pull it down out of the menu bar to archive them all; anywhere higher, it goes back.

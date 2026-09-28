@@ -210,7 +210,7 @@ export function CompanionBall({ width, height, lobe, target, look, handle, skin,
         paintAway(ctx, rgb, homeRect, path, t.anchors.home, warm, firm ? 0 : now / 1000);
         ctx.restore();
       }
-      // While the Dashboard is attached, this edge is inside one continuous
+      // While a pane is attached, this edge is inside one continuous
       // surface. Fade the pocket's tint and rim into its black header instead of
       // clipping a lit rectangle above it. Eyes are painted afterwards, so their
       // light stays continuous. A closed or detached home keeps its original rim.

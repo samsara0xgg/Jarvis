@@ -34,11 +34,14 @@ export function DockingDrop({ near, width, top, center }: { near: boolean; width
 
 // One opaque outline grows from the menu bar. Colour starts below its black
 // header, so neither the hardware cutout nor a translucent seam can show through.
-export function DuskDashboard({ open, top, width, left, islandLeft, islandRight, lightX, children, detached = false, onDetach }: {
+export function DuskDashboard({ open, top, width, left, islandLeft, islandRight, lightX, children, detached = false, onDetach, onJoinedChange }: {
   open: boolean; top: number; width: number; left: number; islandLeft: number; islandRight: number; lightX: number; children: ReactNode; detached?: boolean; onDetach?: () => void;
+  onJoinedChange?: (joined: boolean) => void;
 }) {
   const root = useRef<HTMLDivElement>(null), content = useRef<HTMLDivElement>(null), outline = useRef<SVGPathElement>(null);
   const latest = useRef(open), wake = useRef(() => {});
+  const joinedChange = useRef(onJoinedChange); joinedChange.current = onJoinedChange;
+  const joined = useRef(false);
   const drag = useRef<{ id: number; y: number; tear: number; native: boolean } | null>(null), busy = useRef(false);
   const [error, setError] = useState('');
   latest.current = open;
@@ -59,6 +62,8 @@ export function DuskDashboard({ open, top, width, left, islandLeft, islandRight,
       const moving = reduced.matches ? false : step(height, on ? goal : 0, SPRINGS.panel.frequency / (on ? 1 : MOTION.exit), SPRINGS.panel.damping, dt);
       if (reduced.matches) height.value = on ? goal : 0;
       const h = Math.max(0, height.value), shown = h > .5, tear = drag.current?.tear ?? 0;
+      const attached = !detached && (on || shown);
+      if (attached !== joined.current) { joined.current = attached; joinedChange.current?.(attached); }
       const neck = Math.max(90, 300 - tear / 52 * 210), cx = left + 180, y = top + tear;
       const torn = `${skyline([{ l: islandLeft, r: islandRight, d: top }])} M ${cx - 150} ${top - 3} C ${cx - 150} ${y - 8},${cx - neck / 2} ${y - 8},${cx - neck / 2} ${y + 4} L ${cx + neck / 2} ${y + 4} C ${cx + neck / 2} ${y - 8},${cx + 150} ${y - 8},${cx + 150} ${top - 3} Z`;
       path.setAttribute('d', detached || !shown ? '' : tear > 0 ? torn : skyline([{ l: islandLeft, r: islandRight, d: top }, { l: left, r: left + 360, d: top + h }]));
@@ -75,6 +80,7 @@ export function DuskDashboard({ open, top, width, left, islandLeft, islandRight,
     const observer = new ResizeObserver(measure); observer.observe(el); measure();
     return () => { observer.disconnect(); cancelAnimationFrame(frame); wake.current = () => {}; };
   }, [top, width, left, islandLeft, islandRight, detached]);
+  useLayoutEffect(() => () => { joined.current = false; joinedChange.current?.(false); }, []);
   useLayoutEffect(() => wake.current(), [open]);
   useLayoutEffect(() => {
     const el = root.current!;

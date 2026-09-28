@@ -1,5 +1,5 @@
 // The refined notch finish from the approved round-two study: fitted diffuse light,
-// sharp stars, a faint tint and light along the lower edge. The original stays in CompanionBall.
+// sharp stars and light along the lower edge. Its backdrop stays the island's black.
 import { B, type Core } from './starCore';
 
 export type Rect = { l: number; t: number; r: number; b: number };
@@ -23,7 +23,7 @@ function inside(core: Core, S: number) {
 export type HomePaint = { x: number; y: number; R: number; scale: number; inside: number; rect: Rect; path: Path2D; d: number; S: number; now: number };
 export function paintRefinedHome(c: CanvasRenderingContext2D, core: Core, o: HomePaint) {
   if (o.inside < .01) return;
-  const L = core.light, rim = rgb(L.rim), glow = rgb(L.glow), { x, y, rect: h } = o;
+  const rim = rgb(core.light.rim), { x, y, rect: h } = o;
   // refined: build the glow in a buffer the size of the pocket, then fit it to the pocket with an elliptical fade
   const n = inside(core, o.S), d = o.d, hw = h.r - h.l, hh = h.b - h.t, r = B * o.R * o.scale * 1.95;
   const W = Math.max(1, Math.ceil(hw * d)), H = Math.max(1, Math.ceil(hh * d));
@@ -42,11 +42,9 @@ export function paintRefinedHome(c: CanvasRenderingContext2D, core: Core, o: Hom
   b.fillStyle = m; b.fillRect(-rx, -rx, 2 * rx, 2 * rx); b.restore();
   b.globalCompositeOperation = 'source-over';
   c.save(); c.clip(o.path);
-  // her light tints the whole pocket, faintly, like smoked glass lit from inside
+  // Only her nebula emits light. Tinting the whole pocket paints a separate
+  // grey-blue rectangle over the black shared by the notch and its wings.
   c.globalAlpha = o.inside;
-  const hr = Math.max(hw, hh) * .75, haze = c.createRadialGradient(x, y, 0, x, y, hr);
-  haze.addColorStop(0, `rgba(${glow},.12)`); haze.addColorStop(1, `rgba(${glow},0)`);
-  c.fillStyle = haze; c.fillRect(x - hr, y - hr, 2 * hr, 2 * hr);
   c.drawImage(buf, h.l, h.t, hw, hh);
   // the lower edge catches her light, brightest right under her; a softer band sits just above it
   const at = (u: number) => Math.min(1, Math.max(0, (u - h.l) / hw));

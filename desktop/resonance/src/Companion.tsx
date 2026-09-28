@@ -100,6 +100,7 @@ export function Companion() {
   useEffect(() => { warmFeedback(); return stopFeedback; }, []);
   const [zone, setZone] = useState<Zone>('none');
   const [dashboard, setDashboard] = useState(detached), [remoteOpen, setRemoteOpen] = useState(false), [docking, setDocking] = useState(false);
+  const [dashboardJoined, setDashboardJoined] = useState(false), [notchJoined, setNotchJoined] = useState(false);
   const detachedMode = useRef(detached);
   const dashboardView = useRef<DashboardViewHandle>(null), remoteView = useRef<DashboardView | null>(null);
   const [composer, setComposer] = useState(false);
@@ -645,7 +646,7 @@ export function Companion() {
         {answerSecs > 0 && <small className="bubble-think">{t([`Thought for ${answerSecs.toFixed(1)} s`, `想了 ${answerSecs.toFixed(1)} 秒`])}</small>}
         <span className="bubble-text"><span className="bubble-ghost">{reply.text}</span><span>{reply.text.slice(0, reply.shown)}</span></span>
       </div>
-      <DuskDashboard open={dashboard} onDetach={transferDashboard} top={geo.panelTop} width={geo.width} left={geo.center - PANEL / 2}
+      <DuskDashboard open={dashboard} onDetach={transferDashboard} onJoinedChange={setDashboardJoined} top={geo.panelTop} width={geo.width} left={geo.center - PANEL / 2}
         islandLeft={geo.lobe.left} islandRight={geo.wingX} lightX={geo.anchors.home.x}>
         {dashboardContent}
       </DuskDashboard>
@@ -653,9 +654,9 @@ export function Companion() {
       <Notch look={wardrobe.marks} agents={agents} unread={notices.unread} parked={notices.parked} archived={notices.archived} cursor={cursor} quiet={dashboard || moving}
         onNoteHover={notices.setHover} geo={{ width: geo.width, top: placement.topInset, notchR: geo.wingX, lobeL: geo.lobe.left }} note={note}
         act={{ jump, answer: notices.focus, read: notices.read, back: notices.back, archive: notices.archive, park: notices.park, unpark: notices.unpark }}
-        port={port} keys={keysPress} onViewing={setViewing} onKeys={on => { setKeysOn(on); void window.jarvis?.focus(on); }}/>
+        port={port} keys={keysPress} onViewing={setViewing} onJoinedChange={setNotchJoined} onKeys={on => { setKeysOn(on); void window.jarvis?.focus(on); }}/>
       <CompanionBall width={geo.width} height={placement.topInset + 560} lobe={geo.lobe} look={look} handle={ball} skin={worn.current}
-        target={{ place, expr, pressed, anchors: geo.anchors, home: wardrobe.home, homeFinish: wardrobe.homeFinish, homeFace: !!notice || carded || dashboard || remoteOpen, homeJoined: dashboard,
+        target={{ place, expr, pressed, anchors: geo.anchors, home: wardrobe.home, homeFinish: wardrobe.homeFinish, homeFace: !!notice || carded || dashboard || remoteOpen, homeJoined: dashboard || dashboardJoined || notchJoined,
           attention: noticeLook ? { id: carded ? `card:${card?.id ?? question?.id}` : notice!.key, point: noticeLook } : undefined,
           away: trip === 'out', happy: trip === 'happy', deep: deep && expr === '02' }}
         label={voice === 'off' ? t([`Poke to talk${port ? '' : ' (demo)'}`, `戳一下，开始语音${port ? '' : '（演示）'}`]) : voice === 'speaking' ? t(['Poke to interrupt', '戳一下，打断播报']) : t(['Poke to stop', '戳一下，结束语音'])}
