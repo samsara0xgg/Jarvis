@@ -12,7 +12,7 @@ import './agents.css';
 import './exposure/exposure.css';
 
 declare global { interface Window { agents?: {
-  presence?(enabled: boolean, ids: string[]): void; onDeck?(callback: () => void): () => void;
+  presence?(enabled: boolean, ids: string[]): void; onNext?(callback: () => void): () => void;
   folder(): Promise<string>; terminal(cwd: string, cmd: string): Promise<boolean>; reveal(cwd: string): Promise<void>;
 } } }
 
@@ -129,11 +129,12 @@ function stepsSummary(steps: Step[]) {
 const snd = { on: store.get('agents.sound') !== 'off', ctx: null as AudioContext | null, out: null as GainNode | null, last: new Map<string, number>() };
 // The same cue twice in quick succession is one cue: a burst of finishes is one chime, not a chord.
 const NOTICE = new Set(['done', 'ask', 'error']);
-function cue(name: string, gain = 1, force = false) {
+// `notice`: the cue announces a session; B01 in front keeps those quiet, not the ones answering what Allen did there.
+function cue(name: string, gain = 1, force = false, notice = NOTICE.has(name)) {
   if (!snd.on && !force) return;
-  if (NOTICE.has(name) && win?.classList.contains('bw') && document.hasFocus()) return;
+  if (notice && win?.classList.contains('bw') && document.hasFocus()) return;
   const now = performance.now();
-  if (now - (snd.last.get(name) ?? -1e9) < (NOTICE.has(name) ? 450 : 120)) return;
+  if (now - (snd.last.get(name) ?? -1e9) < (notice ? 450 : 120)) return;
   snd.last.set(name, now);
   // Made at the first cue, not the first touch: the window may play before it is ever clicked (its autoplay is allowed),
   // so a session finishing while the window just sits open still chimes.
@@ -143,6 +144,17 @@ function cue(name: string, gain = 1, force = false) {
 }
 // A pick (a model, a filter, a menu line, a copy) is one quiet click, Hermes' selection haptic, as her kit has it for the mic.
 const tick = () => cue('mic', .45);
+// A step along B01's sky: the prototype's short falling blip, pitched by p.
+function blip(p: number) {
+  if (!snd.on) return;
+  if (!snd.ctx) { snd.ctx = new AudioContext(); snd.out = snd.ctx.createGain(); snd.out.gain.value = .8; snd.out.connect(snd.ctx.destination); }
+  const a = snd.ctx, t = a.currentTime + .004, o = a.createOscillator(), g = a.createGain(), f = a.createBiquadFilter();
+  void a.resume();
+  o.type = 'sine'; o.frequency.setValueAtTime(1850 * p, t); o.frequency.exponentialRampToValueAtTime(1200 * p, t + .035);
+  f.type = 'lowpass'; f.frequency.value = 3200;
+  g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(.05, t + .003); g.gain.exponentialRampToValueAtTime(1e-4, t + .05);
+  o.connect(f).connect(g).connect(snd.out!); o.start(t); o.stop(t + .07);
+}
 
 // ---------- her: the ball at the top of the list, the desktop's own starCore ----------
 const win = $('#win');
@@ -418,6 +430,8 @@ function itemHTML(s: Sess, it: Exclude<Item, { k: 'steps' }>) {
   const r = it.req, a = NAME[s.agent], b = app.busy.get(s.id), busy = b?.req === r.id ? b.key : '';
   const on = (k: string) => busy === k ? ' is-busy' : '', off = busy ? ' disabled' : '';
   if (it.done) return `<p class="note done"><span class="ok">${/^(拒绝|没回答)/.test(it.done) ? '✕' : '✓'}</span>${esc(reqRecord(r))}<span class="how">${esc(it.done)}</span></p>`;
+  // B01: she holds the request for her stack; the conversation only says so, and pressing it deals the stack.
+  if (attention.enabled) return `<button type="button" class="c-held"><i></i>这一步等你拍板，她先替你拿着 · <kbd>空格</kbd> 过一遍</button>`;
   if (r.tool === 'Ask') {
     const picked = app.asked.get(r.id) ?? [], simple = r.qs.length === 1 && !r.qs[0].multi;
     return `<div class="req ask${busy ? ' busy' : ''}"><span class="r-h">${esc(a)} 问你</span>${r.qs.map((q, qi) => `<div class="q-block"><p class="q">${esc(q.q)}</p><div class="opts">${q.opts.map(([l, d], k) =>
@@ -563,6 +577,8 @@ function renderComp() {
   ta.disabled = blocked || app.sending;
   ta.placeholder = newV ? `要 ${NAME[agent]} 做什么？` : s!.term ? '在终端里 · 拿回来才能在这里写' : blocked ? '先回答上面的请求'
     : pend?.tool === 'Ask' ? '打字回答它的问题' : pend?.tool === 'Plan' ? '哪里要改？写了再点「再想想」' : busy ? `给 ${NAME[agent]} 发消息 · 这一步做完它就会看到` : `给 ${NAME[agent]} 发消息 · / 用命令，@ 选文件`;
+  // B01 teaches its pause keys where you write.
+  if (attention.enabled && s && !s.term) ta.placeholder = pend ? '它在等你拍板 · 空格 把手里的事过一遍' : `给 ${NAME[agent]} 发消息 · 空着按空格，过一遍她手里的事`;
   const model = newV ? app.newSet.model : s!.model, effort = newV ? app.newSet.effort : s!.effort, mode = newV ? app.newSet.mode : s!.mode;
   patch(tl, `<button type="button" class="t-btn icon" data-act="attach" data-tip="加图片 · 也可以直接粘贴">${I.img}</button>`
     + '<button type="button" class="t-btn icon" data-act="insert" data-v="@" data-tip="提到一个文件">@</button><button type="button" class="t-btn icon" data-act="insert" data-v="/" data-tip="命令和 skill">/</button><span class="t-sep"></span>'
@@ -1053,7 +1069,8 @@ herCv.addEventListener('click', () => { void act('next', herCv); });
 
 const attention = mountExposure(win, ta, {
   sessions: () => app.ss, items: id => app.items.get(id), current: () => app.cur, chat: () => app.view === 'chat',
-  load: loadItems, open: id => open(id, 'key'), call, md, toast, cue, refresh: () => draw(),
+  load: loadItems, open: id => open(id, 'key'), call, md, toast, cue: (name, gain) => cue(name, gain, false, false), blip, changed: id => stAt.get(id) ?? -1e9,
+  refresh: () => draw(),
 });
 
 // ---------- one loop: her every frame, moving marks at 30 fps, nothing while the window is out of sight ----------

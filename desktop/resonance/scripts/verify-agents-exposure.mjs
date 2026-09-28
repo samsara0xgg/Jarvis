@@ -30,6 +30,15 @@ assert.deepEqual(unknown.segs, [{ a: 15, b: null, k: 'idle' }]);
 const tied = timeline({ ...base, st: 'work', trace: [{ at: 240000, st: 'work' }] }, items.slice(0, 4));
 assert.equal(tied.segs.at(-1).k, 'work');
 
+// B01's words for each turn: its last answer wins; otherwise where the last turn stands; otherwise what it did.
+const bash = { id: 'b', tool: 'Bash', why: 'Build it again', cmd: 'npm run build', cwd: '/tmp', always: '' };
+const turns = (s, list) => timeline({ ...base, ...s }, list).turns.map(t => [t.kind, t.reply]);
+assert.deepEqual(turns({ st: 'wait', summary: 'Wants npm' }, [{ k: 'you', text: 'A', at: 60000 }, { k: 'steps', steps: [{ k: 'read', t: 'f' }] }, { k: 'req', req: bash, at: 90000 }]), [['wait', 'Build it again']]);
+assert.deepEqual(turns({ st: 'wait' }, [{ k: 'you', text: 'A' }, { k: 'it', text: 'Answered first' }, { k: 'req', req: bash }]), [['sum', 'Answered first']]);
+assert.deepEqual(turns({ st: 'work', now: 'Editing x.ts' }, [{ k: 'you', text: 'A' }, { k: 'steps', steps: [{ k: 'edit', t: 'x.ts', add: 3, del: 1 }], took: '2 分钟' }, { k: 'you', text: 'B' }]),
+  [['steps', '干了 2 分钟 · 改了 1 个 +3 −1'], ['live', 'Editing x.ts']]);
+assert.deepEqual(turns({}, [{ k: 'you', text: 'A' }, { k: 'you', text: 'B' }]), [['none', '没等它回，你接着又说了一句'], ['none', '还没回']]);
+
 const historical = new Session({ ...base }, '');
 await historical.build(async () => {
   historical.you('A', [], 60000);
@@ -46,4 +55,4 @@ assert.equal(historical.s.trace, undefined, 'replay must not invent observed sta
 const legacy = new Session({ ...base }, '');
 await legacy.build(async () => { legacy.you('No clock'); legacy.say('Still no clock'); });
 assert(legacy.items.every(i => i.at === undefined));
-console.log('5 acceptance checks passed: timed transitions, untimed history, transition precedence, transcript replay, legacy timestamps.');
+console.log('6 acceptance checks passed: timed transitions, untimed history, transition precedence, turn words, transcript replay, legacy timestamps.');

@@ -108,7 +108,7 @@ contextBridge.exposeInMainWorld('dictation', {
 // The Agents window (agentsWindow.ts answers only that window): a folder picker, a terminal tab, a folder in Finder.
 contextBridge.exposeInMainWorld('agents', {
   presence: (enabled: boolean, ids: string[]) => ipcRenderer.send('agents-presence', enabled, ids),
-  onDeck: (callback: () => void) => { const listener = () => callback(); ipcRenderer.on('agents-deck', listener); return () => ipcRenderer.removeListener('agents-deck', listener); },
+  onNext: (callback: () => void) => { const listener = () => callback(); ipcRenderer.on('agents-next', listener); return () => ipcRenderer.removeListener('agents-next', listener); },
   folder: () => ipcRenderer.invoke('agents-folder'),
   terminal: (cwd: string, cmd: string) => ipcRenderer.invoke('agents-terminal', cwd, cmd),
   reveal: (cwd: string) => ipcRenderer.invoke('agents-reveal', cwd),

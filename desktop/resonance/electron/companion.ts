@@ -320,7 +320,7 @@ function companion(shown?: () => void) {
   // installed app yet: it runs on Allen's own subscription.
   const agentsWindow = !demo && !app.isPackaged ? setupAgents({ preload: path.join(here, 'preload.cjs'), page: path.join(here, '../dist/agents.html'), host: path.join(here, 'agents/host.js'), trustedWindows: dashboard.windows }) : null;
   // Spec §15.3: ⌥Tab opens the island's list of agent sessions for the keys, and closes it again.
-  if (!demo && !globalShortcut.register('Alt+Tab', () => { if (!agentsWindow?.deck()) win.webContents.send('command', 'agent-keys'); })) console.warn('Shortcut unavailable: Alt+Tab');
+  if (!demo && !globalShortcut.register('Alt+Tab', () => { if (!agentsWindow?.next()) win.webContents.send('command', 'agent-keys'); })) console.warn('Shortcut unavailable: Alt+Tab');
   app.on('will-quit', () => globalShortcut.unregister('Alt+Tab'));
   // Her Settings that act in this process: the right-⌥ dictation, its language, and which screen she lives on.
   ipcMain.on('companion-settings', (event, settings: { follow?: boolean; lang?: string; dictation?: boolean }) => {

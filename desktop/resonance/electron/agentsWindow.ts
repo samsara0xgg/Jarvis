@@ -89,5 +89,6 @@ export function setupAgents({ preload, page, host, trustedWindows }: { preload: 
   ipcMain.on('agents-open', event => {
     if (trustedWindows().some(w => !w.isDestroyed() && event.sender === w.webContents && event.senderFrame === w.webContents.mainFrame)) void open();
   });
-  return { open, deck() { if (!presence().active) return false; win!.webContents.send('agents-deck'); return true; } };
+  // ⌥Tab while B01 has the foreground: straight to its next session waiting on Allen.
+  return { open, next() { if (!presence().active) return false; win!.webContents.send('agents-next'); return true; } };
 }
