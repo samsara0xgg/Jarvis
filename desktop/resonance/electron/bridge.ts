@@ -28,12 +28,16 @@ export function sendDaemonKey(target: Electron.Session) {
       callback({ requestHeaders: typeof token === 'string' && token ? { ...details.requestHeaders, Authorization: `Bearer ${token}` } : details.requestHeaders }));
   });
 }
-export function registerDaemonBridge(win: BrowserWindow, { lab = false, verification = false } = {}) {
+export function registerDaemonBridge(win: BrowserWindow, { lab = false, verification = false, trustedWindows = () => [win] }: {
+  lab?: boolean; verification?: boolean; trustedWindows?: () => BrowserWindow[];
+} = {}) {
   sendDaemonKey(win.webContents.session);
+  const fromThisWindow = (event: Electron.IpcMainInvokeEvent) => trustedWindows().some(w => !w.isDestroyed()
+    && event.sender === w.webContents && event.senderFrame === w.webContents.mainFrame);
   // The renderer can request plugin operations but never read the daemon's
   // management credential or choose an arbitrary URL/file/process to open.
   ipcMain.handle('plugins', async (event, operation: string, data: Record<string, unknown> = {}) => {
-    if (event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame) throw new Error('无效的插件窗口');
+    if (!fromThisWindow(event)) throw new Error('无效的插件窗口');
     const operations = ['read', 'icon', 'open', 'connect', 'cancel', 'reopen', 'disable', 'approval'];
     if (!operations.includes(operation) || !data || typeof data !== 'object' || Array.isArray(data)) throw new Error('无效的插件操作');
     const testPort = verification ? process.env.RESONANCE_PLUGIN_TEST_PORT : undefined;
@@ -63,8 +67,8 @@ export function registerDaemonBridge(win: BrowserWindow, { lab = false, verifica
     return result;
   });
   ipcMain.handle('open-account', async (event, service) => {
-    if (event.sender !== win.webContents || typeof service !== 'string' || !Object.hasOwn(ACCOUNT_PAGES, service)) return false;
-    if (verification) return false;
+    if (!fromThisWindow(event) || typeof service !== 'string' || !Object.hasOwn(ACCOUNT_PAGES, service)) return false;
+    if (verification || lab) return false;
     try { await shell.openExternal(ACCOUNT_PAGES[service]); return true; }
     catch { return false; }
   });
@@ -90,7 +94,6 @@ export function registerDaemonBridge(win: BrowserWindow, { lab = false, verifica
     if (!response.ok) throw new Error(response.status === 404 ? 'Jarvis needs a restart for this' : typeof result.detail === 'string' ? result.detail : failed);
     return result;
   };
-  const fromThisWindow = (event: Electron.IpcMainInvokeEvent) => event.sender === win.webContents && event.senderFrame === win.webContents.mainFrame;
   // ADR 0048: spend one Codex limit reset. The page confirms twice before it calls this; the
   // request id is minted once per confirmation, so a retry cannot spend a second reset.
   ipcMain.handle('usage-reset', async (event, service, requestId) => {
@@ -105,7 +108,7 @@ export function registerDaemonBridge(win: BrowserWindow, { lab = false, verifica
     return usagePost('balance', { service, usd }, 'The balance was not saved. Try again.');
   });
   ipcMain.handle('open-codex', async (event, threadId) => {
-    if (event.sender !== win.webContents || typeof threadId !== 'string'
+    if (!fromThisWindow(event) || typeof threadId !== 'string'
       || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(threadId)) return false;
     // An OS handoff is not proof that the target conversation was displayed.
     if (verification || lab) return false;
@@ -113,7 +116,7 @@ export function registerDaemonBridge(win: BrowserWindow, { lab = false, verifica
     catch { return false; }
   });
   ipcMain.handle('codex-titles', async (event, ids) => {
-    if (event.sender !== win.webContents || !Array.isArray(ids) || ids.length > 10000 || !ids.every(id => typeof id === 'string')) return {};
+    if (!fromThisWindow(event) || !Array.isArray(ids) || ids.length > 10000 || !ids.every(id => typeof id === 'string')) return {};
     if (verification || lab) return {};
     if (Date.now() - codexTitlesAt > 10000) {
       try {

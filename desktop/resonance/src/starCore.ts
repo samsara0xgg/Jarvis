@@ -320,15 +320,7 @@ vec3 shell(vec3 e, vec3 d, float r, float far, float dens) {
   vec3 col = mix(vec3(.74, .82, 1.), vec3(1., .87, .74), step(.8, hh.z));
   return col * (core + halo) * tw * (.9 + 4. * hh.y * hh.y);
 }
-float softbox(vec3 R, vec3 K, vec2 hs, float rough) {
-  float f = dot(R, K);
-  if (f <= 0.) return 0.;
-  vec3 T1 = normalize(cross(K, vec3(0., 0., 1.))), T2 = cross(K, T1);
-  vec2 uv = vec2(dot(R, T1), dot(R, T2)) / f;
-  vec2 q = abs(uv) - hs + .06;
-  float dd = length(max(q, 0.)) + min(max(q.x, q.y), 0.) - .06;
-  return smoothstep(rough, -rough, dd) * mix(1.3, .08, smoothstep(-1., .9, uv.y / hs.y));
-}
+
 void main() {
   float r = length(v), aa = uPx * 1.2;
   if (uLayer == 0) {
@@ -403,33 +395,14 @@ void main() {
     }
     col *= mix(.45, 1., smoothstep(0., .6, z));
     col += uRim * pow(1. - z, 6.) * .5 * min(uBright, 1.2);
-    col += uRim * exp(-(v.x * v.x * 6. + (v.y - .83) * (v.y - .83) * 45.)) * .55 * uRefr * min(uBright, 1.2);
     col = 1. - exp(-col * 1.1);
     col += (h31(vec3(gl_FragCoord.xy, 9.)) - .5) / 255.;
     float cov = 1. - smoothstep(1. - aa, 1., r);
     o = vec4(clamp(col, 0., 1.) * cov, cov);
   } else {
-    if (r > 1.) { o = vec4(0.); return; }
-    float z = sqrt(max(0., 1. - r * r));
-    vec3 n = vec3(v, z);
-    vec3 R = vec3(2. * z * n.x, 2. * z * n.y, 2. * z * z - 1.);
-    float fr = .04 + .96 * pow(1. - z, 5.);
-    float rough = .02 + uFrost * .3;
-    // The key light sits a little behind her, so its reflection hugs the upper-left rim
-    // instead of lying over the left eye like a brow.
-    float env = 30. * softbox(R, normalize(vec3(-.55, -.72, -.2)), vec2(.38, .24), rough)
-              + 2.2 * softbox(R, normalize(vec3(.85, .05, -.5)), vec2(.07, .7), rough + .06)
-              + .9 * smoothstep(.1, -.9, R.y) + .15 * smoothstep(-.1, .8, R.y) + .04;
-    vec3 col = vec3(.93, .96, 1.) * env * fr * (1. - uFrost * .45);
-    col += vec3(.8, .85, 1.) * pow(max(0., dot(n, normalize(vec3(-.4, -.55, .75)))), 6.) * .16 * uFrost;
-    col += vec3(.06, .07, .09) * uFrost;
-    col += (h31(vec3(gl_FragCoord.xy, 5.)) - .5) * .07 * uFrost;
-    vec3 film = .5 + .5 * cos(6.2832 * (vec3(0., .33, .67) + (1. - z) * 1.8 + v.y * .3));
-    col += film * pow(1. - z, 2.2) * .36 * uIrid;
-    col += vec3(.9, .95, 1.) * smoothstep(1. - aa * 3., 1., r) * .22 * smoothstep(.2, -.8, v.x * .6 + v.y * .8);
-    col = max(1. - exp(-col * 1.1), 0.);
-    float cov = 1. - smoothstep(1. - aa, 1., r);
-    o = vec4(col * cov, max(col.r, max(col.g, col.b)) * cov);
+    // Only her own light (GLASS_GLOW): no highlight, environment reflection,
+    // glass rim, frost lighting or iridescent film. Expression ripples still paint above it.
+    o = vec4(0.);
   }
 }`;
 type Uniforms = { t: number; q: number; rot: Float32Array; n: RGB[]; rim: RGB; eyeC: RGB; eyeL: RGB; eyeR: RGB; bright: number;

@@ -22,6 +22,8 @@ try {
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.addInitScript(() => {
+    // Retained original-home regression; verify-character-material covers the refined default.
+    localStorage.setItem('companion-wardrobe-v1', JSON.stringify({ ...JSON.parse(localStorage.getItem('companion-wardrobe-v1') ?? '{}'), homeFinish: 'original' }));
     window.__state = { passthrough: true, glass: [], ready: 0 };
     window.jarvis = {
       placement: async () => ({ docked: false, topInset: 32, notchWidth: 185, surfaceWidth: 640, compactWidth: 0, displayId: 1 }),
@@ -214,21 +216,21 @@ try {
 
   await move(320, 14);
   await page.locator('.companion-dashboard.is-open').waitFor();
-  await waitPlace('dock');
-  check('06 dashboard opens from the notch and she docks on its edge', true);
-  await shot('06-dock', { x: 120, y: 0, width: 400, height: 300 });
+  await waitPlace('home');
+  check('06 dusk dashboard opens from the notch while she remains in her home', true);
+  await shot('06-dusk', { x: 120, y: 0, width: 400, height: 300 });
   await move(320, 200);
   await page.waitForTimeout(200);
   await move(600, 560);
   await page.waitForFunction(() => !document.querySelector('.companion-dashboard.is-open'), null, { timeout: 3000 });
   await waitPlace('home');
-  check('06 closing the dashboard sends her home', true);
+  check('06 closing the dashboard keeps her home', true);
   await shot('06-home-again');
   await move(out.x, out.y);
   await waitPlace('out');
   await page.locator('.companion-island-target').click({ position: { x: 155, y: 14 }, force: true });
   await page.locator('.companion-dashboard.is-open').waitFor();
-  await waitPlace('dock');
+  await waitPlace('home');
   await move(600, 560);
   await page.waitForTimeout(1200);
   check('06 a click on the notch opens the Dashboard, and it stays when the cursor leaves',
@@ -355,6 +357,9 @@ try {
   check('09 the new turn is in the conversation, which has its own text box', (await page.locator('.ad .tr-you p').last().textContent()) === 'Move the voice test to five' && await page.locator('.ad .pg-input input').count() === 1);
   await move(600, 560);
   await page.waitForFunction(() => !document.querySelector('.companion-dashboard.is-open'), null, { timeout: 3000 });
+  // The shell closes in the first commit; AroundDashboard resets its page in
+  // the following effect. Wait for that visible result rather than that commit.
+  await page.waitForFunction(() => !document.querySelector('.ad .page'), null, { timeout: 3000 });
   check('09 closing the panel returns it to the home page', await page.locator('.ad .page').count() === 0);
   await waitPlace('home');
 
@@ -621,7 +626,7 @@ try {
   await waitPlace('home');
   await move(268, 14);
   await page.locator('.companion-dashboard.is-open').waitFor();
-  await waitPlace('dock');
+  await waitPlace('home');
   check('07 a wing of the pill opens the Dashboard', true);
   await shot('07-external-dock', { x: 120, y: 0, width: 400, height: 300 });
   await move(600, 560);

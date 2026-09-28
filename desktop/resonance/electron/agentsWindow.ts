@@ -45,9 +45,9 @@ const GHOSTTY_RUN = `on run argv
 end run`;
 const quote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 
-export function setupAgents({ preload, page, host }: { preload: string; page: string; host: string }) {
+export function setupAgents({ preload, page, host, trustedWindows }: { preload: string; page: string; host: string; trustedWindows: () => BrowserWindow[] }) {
   let win: BrowserWindow | null = null;
-  const mine = (event: Electron.IpcMainInvokeEvent | Electron.IpcMainEvent) => !!win && event.sender === win.webContents;
+  const mine = (event: Electron.IpcMainInvokeEvent | Electron.IpcMainEvent) => !!win && event.sender === win.webContents && event.senderFrame === win.webContents.mainFrame;
   ipcMain.handle('agents-folder', async event => {
     if (!mine(event)) return '';
     const r = await dialog.showOpenDialog(win!, { properties: ['openDirectory'], defaultPath: path.join(homedir(), 'Projects') });
@@ -72,6 +72,8 @@ export function setupAgents({ preload, page, host }: { preload: string; page: st
     win.loadFile(page, { query: { port: AGENTS_PORT } });
     win.once('ready-to-show', () => { win?.show(); win?.focus(); });
   }
-  ipcMain.on('agents-open', () => { void open(); });
+  ipcMain.on('agents-open', event => {
+    if (trustedWindows().some(w => !w.isDestroyed() && event.sender === w.webContents && event.senderFrame === w.webContents.mainFrame)) void open();
+  });
   return { open };
 }

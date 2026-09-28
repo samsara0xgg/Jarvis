@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent, type ReactNode, type WheelEvent } from 'react';
+import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent, type ReactNode, type Ref, type WheelEvent } from 'react';
 import { ArrowSquareOut, ArrowUp, ArrowsClockwise, CaretDown, CaretLeft, CaretRight, CaretUp, ChatCircle, Check, Cloud, CloudFog, CloudLightning, CloudRain, CloudSnow, EnvelopeSimple, GearSix, GitBranch, MagnifyingGlass, ShieldCheck, SpeakerHigh, SpeakerSlash, Sun, X } from '@phosphor-icons/react';
 import { TAKES, pick, type ExprId } from './starCore';
 import { useUsage, type UsageWindow } from './QuotaModule';
@@ -14,7 +14,7 @@ import { cleanError, usePluginIcon, type Plugin, type PluginRequest, type usePlu
 import { HOME_DEFAULTS, isPop, tr, useCompanionSettings, useT, type BlockId, type L, type Lang } from './companionSettings';
 import { demoBrief, demoMail, demoNotices, demoToday, postRoute, useNow, useRoute, type Brief, type Mail, type Notice, type Today, type WxKind } from './homeData';
 import { ArrangeHome, BLOCK } from './ArrangeHome';
-import { SettingsPage, type Account, type Controls } from './SettingsPage';
+import { SettingsPage, type Account, type AccountKeyDrafts, type Controls } from './SettingsPage';
 import { ActionCard, MailCard, QuestionCard, type Answer, type Card, type Decide, type Question } from './ActionCard';
 import { MOTION } from './motion';
 import './dashboard-around.css';
@@ -25,9 +25,18 @@ import './dashboard-home.css';
 // into its page in place; the panel follows the blocks up to VIEW_MAX. Her light accents the surface;
 // measurements and agent states keep their own stable colours.
 type Page = 'conversation' | 'now' | 'agents' | 'usage' | 'plugins' | 'projects' | 'settings' | 'arrange' | 'brief';
+export type DashboardView = {
+  page: Page | null; plugin: string | null; settingsCat: string | null; unfolded: string | null;
+  query: string; token: string; homeDraft: string; talkDraft: string; days: number; scroll: number;
+  accountKeyDrafts: AccountKeyDrafts; conversationFirstSeq: number | null;
+  briefRead: string; dismissed: Partial<Record<BlockId, string>>; hidden: Record<string, string>;
+  actionDraft: { id: string; value: { subject: string; body: string } } | null;
+  questionDraft: { id: string; value: Record<string, string> } | null;
+};
+export type DashboardViewHandle = { snapshot: () => DashboardView; restore: (value: DashboardView) => void };
 const TITLES: Record<Page, L> = { conversation: ['Conversation', '对话'], now: ['Right now', '现在'], agents: ['Agents', 'Agents'], usage: ['Usage', '用量'], plugins: ['Plugins', '插件'], projects: ['Projects', '项目'], settings: ['Settings', '设置'], arrange: ['Arrange the home', '编辑首页'], brief: ['Morning brief', '早报'] };
 // The home follows its blocks from the old fixed height up to this, then scrolls inside the panel.
-const VIEW_MIN = 466, VIEW_MAX = 600, CORNER = 30, HOLD = 560, TALK_STAYS = 10 * 60_000;
+const VIEW_MIN = 466, VIEW_MAX = 600, CORNER = 28, HOME_GAP = 8, HOLD = 560, TALK_STAYS = 10 * 60_000;
 const WX: Record<WxKind, ReactNode> = { sun: <Sun/>, cloud: <Cloud/>, rain: <CloudRain/>, snow: <CloudSnow/>, fog: <CloudFog/>, storm: <CloudLightning/> };
 const PAGE_MS = MOTION.medium, EXIT_MS = PAGE_MS * MOTION.exit;
 const PAGE_EASE = 'cubic-bezier(.16,1,.3,1)', EXIT_EASE = 'cubic-bezier(.7,0,.84,0)';
@@ -131,11 +140,11 @@ const thoughtRows = (rows: Row[], thoughts: Think['thoughts']) => new Map(though
 }));
 const PULL = 240; // px of fresh upward scroll at the top that adds the day before
 
-export function AroundDashboard({ open, port = null, onClose, onMood, onHop, talk, plugins: live, pluginFocus = null, marks = 'spark', onAgents, agentsFocus = 0, settingFocus = 0, onAnswer, unread, ctl }: {
+export function AroundDashboard({ open, port = null, onClose, onMood, onHop, talk, plugins: live, pluginFocus = null, marks = 'spark', onAgents, agentsFocus = 0, settingFocus = 0, onAnswer, unread, ctl, viewRef, onView }: {
   open: boolean; port?: string | null; onClose: () => void; onMood: (expr: ExprId | null) => void; onHop: (height: number) => void;
   talk?: Talk; plugins?: PluginController; pluginFocus?: { plugin: string; key: string } | null;
   marks?: MarkLook; onAgents?: (agents: ShownAgent[]) => void; agentsFocus?: number; settingFocus?: number; onAnswer?: (id: string) => void;
-  unread?: ReadonlySet<string>; ctl: Controls;
+  unread?: ReadonlySet<string>; ctl: Controls; viewRef?: Ref<DashboardViewHandle>; onView?: (value: DashboardView) => void;
 }) {
   const [settings, updateSettings] = useCompanionSettings(), lang = settings.lang;
   const t = (l: L) => tr(lang, l);
@@ -151,6 +160,12 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
     || Number(b.supported) - Number(a.supported) || a.name.localeCompare(b.name)).map(p => p.id);
   const [query, setQuery] = useState('');
   const [token, setToken] = useState('');
+  const [briefRead, setBriefRead] = useState('');
+  const [dismissed, setDismissed] = useState<Partial<Record<BlockId, string>>>({});
+  const [homeDraft, setHomeDraft] = useState(''), [talkDraft, setTalkDraft] = useState('');
+  const [accountKeyDrafts, setAccountKeyDrafts] = useState<AccountKeyDrafts>({});
+  const [actionDraft, setActionDraft] = useState<DashboardView['actionDraft']>(null);
+  const [questionDraft, setQuestionDraft] = useState<DashboardView['questionDraft']>(null);
   const [said, setSaid] = useState({ text: 'Two things left today. Your 4 PM reminder is set.', caption: 'Jarvis · just now', busy: false });
   const [turns, setTurns] = useState(DEMO_TURNS), [demoTalkAt, setDemoTalkAt] = useState(0);
   // The Conversation page opens on the newest day; at the top, a fresh scroll up past PULL adds the day before.
@@ -174,6 +189,37 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
   const later = (ms: number, run: () => void) => { timers.current.push(setTimeout(run, ms)); };
   useEffect(() => () => { timers.current.forEach(clearTimeout); [moodTimer, pluginTimer, toastTimer].forEach(t => clearTimeout(t.current)); }, []);
 
+  // Only presentation and unsent edits cross between the two trusted windows. A
+  // pending action or an armed spending confirmation is never replayed by a move.
+  const restoredScroll = useRef<number | null>(null);
+  const conversationRestore = useRef<{ firstSeq: number | null; scroll: number; loading: boolean; paused: boolean } | null>(null);
+  const [restoringConversation, setRestoringConversation] = useState(false), [restoreRevision, setRestoreRevision] = useState(0);
+  const snapshotView = (): DashboardView => ({ page, plugin, settingsCat, unfolded, query, token, homeDraft, talkDraft, days,
+    accountKeyDrafts, conversationFirstSeq: conversationRestore.current?.firstSeq ?? (page === 'conversation' ? talk?.rows[0]?.seq ?? null : null),
+    scroll: conversationRestore.current?.scroll ?? pageEl.current?.querySelector('.pg-body')?.scrollTop ?? 0, actionDraft, questionDraft, briefRead, dismissed, hidden });
+  useImperativeHandle(viewRef, () => ({ snapshot: snapshotView, restore: value => {
+    closing.current = false;
+    if (view.current) stopMotion(view.current);
+    pageEl.current?.classList.remove('is-closing');
+    // A reused window can still hold the previous page's filled opacity animation.
+    // Keep the overview hidden only when the restored view is another page.
+    if (value.page && home.current) home.current.animate([{ opacity: 0 }, { opacity: 0 }], { duration: 0, fill: 'forwards' });
+    setReset(null); setPage(value.page); setPlugin(value.plugin); setSettingsCat(value.settingsCat); setUnfolded(value.unfolded);
+    setQuery(value.query); setToken(value.token); setHomeDraft(value.homeDraft); setTalkDraft(value.talkDraft); setDays(value.days);
+    setAccountKeyDrafts(value.accountKeyDrafts); setActionDraft(value.actionDraft); setQuestionDraft(value.questionDraft); setBriefRead(value.briefRead); setDismissed(value.dismissed); setHidden(value.hidden);
+    const history = value.page === 'conversation' && !!talk;
+    conversationRestore.current = history ? { firstSeq: value.conversationFirstSeq, scroll: value.scroll, loading: false, paused: false } : null;
+    setRestoringConversation(history); setRestoreRevision(n => n + 1); restoredScroll.current = history ? null : value.scroll;
+  } }));
+  const publishView = useRef(onView); publishView.current = onView;
+  useEffect(() => {
+    if (restoredScroll.current !== null) {
+      const el = pageEl.current?.querySelector('.pg-body'); if (el) el.scrollTop = restoredScroll.current;
+      restoredScroll.current = null;
+    }
+    publishView.current?.(snapshotView());
+  }, [page, plugin, settingsCat, unfolded, query, token, homeDraft, talkDraft, days, accountKeyDrafts, actionDraft, questionDraft, briefRead, dismissed, hidden, restoringConversation]);
+
   // Her face follows the page; '02' is her resting face, so it hands control back to the companion.
   const react = (expr: ExprId, ms: number, after: ExprId = '02') => {
     clearTimeout(moodTimer.current); setMood(expr);
@@ -188,6 +234,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
   // Closing the panel puts everything back on the home page, without animation.
   useEffect(() => {
     if (open) return;
+    conversationRestore.current = null; restoredScroll.current = null; setRestoringConversation(false);
     closing.current = false; setPage(null); setPlugin(null); setSettingsCat(null); setUnfolded(null); setReset(null); react('02', 0);
     if (home.current) stopMotion(home.current);
     if (view.current?.contains(document.activeElement)) { (document.activeElement as HTMLElement).blur(); void window.jarvis?.focus(false); }
@@ -234,6 +281,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
   const closePage = () => {
     const el = pageEl.current;
     if (!page || !el || closing.current) return;
+    conversationRestore.current = null; setRestoringConversation(false);
     const back = from();
     closing.current = true;
     // Reverse the same geometry into the opening row, with a shorter exit.
@@ -282,6 +330,9 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
     setDays(d => d + 1);
   };
   const onWheel = (e: WheelEvent<HTMLDivElement>) => {
+    // An intentional scroll takes over from a pending history handoff, including
+    // one paused after a failed read. It must not jump back when that read ends.
+    if (conversationRestore.current) { conversationRestore.current = null; setRestoringConversation(false); }
     const w = wheel.current, fresh = e.timeStamp - w.last > 180;
     w.last = e.timeStamp;
     if (!more || w.busy || e.deltaY >= 0 || e.currentTarget.scrollTop > 0) { w.armed = false; if (w.acc) { w.acc = 0; setPull(0); } return; }
@@ -298,7 +349,26 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
   useLayoutEffect(() => { const b = body(); if (anchor.current !== null && b) b.scrollTop = b.scrollHeight - anchor.current; anchor.current = null; }, [days]);
   const lastAnswer = talk && [...talk.rows].reverse().find(row => row.source !== 'allen');
   const newest = shownTurns.at(-1);
-  useEffect(() => { if (page === 'conversation') body()?.scrollTo({ top: body()!.scrollHeight, behavior: reduced.matches ? 'auto' : 'smooth' }); }, [newest?.at, newest?.you, newest?.jarvis]);
+  useEffect(() => {
+    const target = conversationRestore.current;
+    if (!open || !restoringConversation || !target || page !== 'conversation' || !talk) return;
+    if (target.firstSeq === null || (talk.rows[0]?.seq ?? Infinity) <= target.firstSeq || talk.floor) {
+      const el = body(); if (el) el.scrollTop = target.scroll;
+      conversationRestore.current = null; setRestoringConversation(false); return;
+    }
+    if (target.loading || target.paused) return;
+    target.loading = true;
+    // Re-read through the authoritative route; the handoff carries only a range,
+    // not another copy of conversation rows. A failed read pauses without polling.
+    void talk.older().then(changed => {
+      if (conversationRestore.current !== target) return;
+      target.loading = false; target.paused = !changed; setRestoreRevision(n => n + 1);
+    }, () => {
+      if (conversationRestore.current !== target) return;
+      target.loading = false; target.paused = true; setRestoreRevision(n => n + 1);
+    });
+  }, [open, page, talk?.rows, talk?.floor, restoringConversation, restoreRevision]);
+  useEffect(() => { if (page === 'conversation' && !restoringConversation) body()?.scrollTo({ top: body()!.scrollHeight, behavior: reduced.matches ? 'auto' : 'smooth' }); }, [newest?.at, newest?.you, newest?.jarvis]);
 
   // Agents, grouped the way you act on them. A row you moved goes to the top of its new group.
   // Settings › Agents picks which sessions show; one left waiting past the stale limit counts as earlier.
@@ -471,8 +541,6 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
   const demoPops = useMemo(() => ({ brief: demoBrief(), mail: demoMail(), notices: demoNotices() }), []);
   const brief = port ? briefRoute.data : demoPops.brief, mail = port ? mailRoute.data?.unread ?? [] : demoPops.mail;
   const notices = port ? noticeRoute.data?.notices ?? [] : demoPops.notices;
-  const [briefRead, setBriefRead] = useState('');
-  const [dismissed, setDismissed] = useState<Partial<Record<BlockId, string>>>({});
   // For you: what Jarvis itself wants from you. Agents keep their own row.
   type ForYou = { id: string; text: string; ask?: boolean; act?: [L, () => void] };
   const signIn = (id: string): [L, () => void] => [['Sign in', '登录'], () => { openPage('plugins', home.current?.querySelector<HTMLElement>('[data-block="foryou"]')); setPlugin(id); }];
@@ -536,7 +604,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
       let top = 0;
       for (let node: HTMLElement | null = viewport; node; node = node.offsetParent as HTMLElement | null) top += node.offsetTop;
       const available = Math.max(0, window.innerHeight - top - parseFloat(getComputedStyle(panel).paddingBottom) - 12);
-      setViewH(Math.round(Math.min(available, VIEW_MAX, Math.max(VIEW_MIN, CORNER + el.offsetHeight))));
+      setViewH(Math.round(Math.min(available, VIEW_MAX, Math.max(VIEW_MIN, CORNER + HOME_GAP + el.offsetHeight))));
     };
     fit();
     let frame = 0;
@@ -573,10 +641,10 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
           {turn.jarvis && <Markdown text={turn.jarvis}/>}
           {turn.work && <Fold label={turn.work[0]}><pre>{turn.work[1]}</pre></Fold>}</div>}
       </div>)}
-      {talk?.card && talk.decide && <ActionCard key={talk.card.id} card={talk.card} lang={lang} onDecide={talk.decide}/>}
-      {talk?.question && talk.answer && <QuestionCard key={talk.question.id} question={talk.question} lang={lang} onAnswer={talk.answer}/>}
+      {talk?.card && talk.decide && <ActionCard key={talk.card.id} card={talk.card} lang={lang} onDecide={talk.decide} draft={actionDraft?.id === talk.card.id ? actionDraft.value : undefined} onDraft={value => setActionDraft({ id: talk.card!.id, value })}/>}
+      {talk?.question && talk.answer && <QuestionCard key={talk.question.id} question={talk.question} lang={lang} onAnswer={talk.answer} draft={questionDraft?.id === talk.question.id ? questionDraft.value : undefined} onDraft={value => setQuestionDraft({ id: talk.question!.id, value })}/>}
       {talk && talk.think.secs > 0 && <div className="pg-sec tr-think">{t([`Thinking deeply · ${talk.think.secs} s`, `深想中 · ${talk.think.secs} 秒`])}</div>}
-      <Ask className="pg-input" onAsk={ask} think={talk?.think}/></div>
+      <Ask className="pg-input" text={talkDraft} setText={setTalkDraft} onAsk={ask} think={talk?.think}/></div>
     </>,
     now: () => <>
       {back(t(TITLES.now), now && `${now.current ? t(['as of', '截至']) : t(['at', '于'])} ${now.at}`)}
@@ -646,6 +714,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
       </>;
     },
     settings: () => <SettingsPage lang={lang} port={port} open={open} cat={settingsCat} onCat={setSettingsCat} ctl={ctl} accounts={accounts}
+      keyDrafts={accountKeyDrafts} onKeyDraft={(provider, value) => setAccountKeyDrafts(drafts => ({ ...drafts, [provider]: value }))}
       hiddenAgents={Object.keys(hidden).length} onUnhideAgents={() => { setHidden({}); notify(t(['Hidden sessions are back.', '隐藏的会话回来了。'])); }}
       onArrange={() => { setSettingsCat(null); setPage('arrange'); react('14', 1200); }} onPlugins={() => { setSettingsCat(null); setPage('plugins'); }}
       onResetHome={() => { updateSettings(HOME_DEFAULTS); setDismissed({}); react('10', 1400); notify(t(['The home is back to how it started.', '首页恢复默认了。'])); }}
@@ -670,7 +739,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
     </>,
   };
 
-  return <div className="ad" data-page={page ?? undefined} data-deep={page === 'conversation' && talk?.think.on ? '' : undefined} onKeyDown={keys}>
+  return <div className="ad" data-page={page ?? undefined} data-deep={page === 'conversation' && talk?.think.on ? '' : undefined} onKeyDown={keys} onScrollCapture={() => publishView.current?.(snapshotView())}>
     <div className="view" ref={view} style={{ height: viewH }}>
       <div className="overview" ref={home} inert={!!page}>
         <div className="corner">
@@ -754,7 +823,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
       </div>
       {page && <section className="page" ref={pageEl} aria-label={t(TITLES[page])}>{pages[page]()}</section>}
     </div>
-    <div className="cmp-hit" onClick={e => { const input = e.currentTarget.querySelector('input'); if (input && !(e.target as Element).closest('button,input')) focusWindow({ currentTarget: input }); }}><Ask className="cmp" onAsk={ask}/></div>
+    <div className="cmp-hit" onClick={e => { const input = e.currentTarget.querySelector('input'); if (input && !(e.target as Element).closest('button,input')) focusWindow({ currentTarget: input }); }}><Ask className="cmp" text={homeDraft} setText={setHomeDraft} onAsk={ask}/></div>
     <div className={`toast ${toast ? 'is-on' : ''}`} role="status">{toast?.text}{toast?.undo && <button onClick={() => { toast.undo!(); setToast(null); }}>{t(['Undo', '撤销'])}</button>}</div>
   </div>;
 }
@@ -771,8 +840,8 @@ function HomeBlock({ id, pop, lang, onClose, children }: { id: BlockId; pop: boo
 const focusWindow = (event: { currentTarget: HTMLElement }) => { const el = event.currentTarget; void window.jarvis?.focus(true).then(() => el.focus({ preventScroll: true })); };
 
 // In think mode the box is deep and carries a chip whose × says the off-word; typing an on-word deepens it before you send.
-function Ask({ className, onAsk, think }: { className: string; onAsk: (text: string) => void; think?: Think }) {
-  const [text, setText] = useState(''), t = useT();
+function Ask({ className, onAsk, think, text, setText }: { className: string; onAsk: (text: string) => void; think?: Think; text: string; setText: (text: string) => void }) {
+  const t = useT();
   const deep = !!think && deepAfter(think, text);
   return <form className={`${className}${deep ? ' is-deep' : ''}`} onSubmit={event => {
     event.preventDefault();

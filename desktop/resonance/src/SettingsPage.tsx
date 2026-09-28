@@ -4,11 +4,12 @@ import { tr, useCompanionSettings, type L, type Lang } from './companionSettings
 import { postRoute, useRoute } from './homeData';
 import { SKIN_KEYS, SKINS, type Skin } from './starCore';
 import type { HomeLook } from './CompanionBall';
+import type { HomeFinish } from './homeFinish';
 import type { MarkLook } from './AgentMarks';
 
 // Settings as a page in her panel: quick switches on top, then one list per category. Her own settings save
 // in this profile and apply at once; Jarvis's own save through the daemon and are greyed out until it serves them.
-export type Look = { skin: Skin; auto: boolean; home: HomeLook; marks: MarkLook };
+export type Look = { skin: Skin; auto: boolean; home: HomeLook; homeFinish: HomeFinish; marks: MarkLook };
 export type Cues = { on: boolean; volume: number };
 export type Controls = {
   micMuted: boolean; speechMuted: boolean; handsFree: boolean;
@@ -39,6 +40,7 @@ const SKIN_BG: Record<Skin, string> = {
 // The API keys Jarvis runs on: GET /inherent/setup says whether each is ok, missing or refused; POST
 // /inherent/setup/key tests a pasted one and keeps it in the Keychain only when it works. Jarvis reads keys at boot.
 type Provider = 'openai' | 'minimax' | 'tavily';
+export type AccountKeyDrafts = Partial<Record<Provider, string>>;
 type Setup = { keys: Record<Provider, 'ok' | 'missing' | 'bad'> };
 const WHY: Record<string, L> = {
   unauthorized: ['The service rejected this key (401). Check it was copied in full.', '服务拒绝了这个密钥（401），看看是不是少复制了一截。'],
@@ -65,8 +67,9 @@ type Ctl =
 type Item = { id: string; name: L; note?: L; ctl: Ctl; off?: boolean };
 type Cat = { id: string; icon: ReactNode; name: L; sum: string; warm?: boolean; daemon?: boolean; items: Item[] };
 
-export function SettingsPage({ lang, port, open, cat, onCat, ctl, accounts, hiddenAgents, onUnhideAgents, onArrange, onPlugins, onResetHome, notify, head }: {
+export function SettingsPage({ lang, port, open, cat, onCat, ctl, accounts, keyDrafts, onKeyDraft, hiddenAgents, onUnhideAgents, onArrange, onPlugins, onResetHome, notify, head }: {
   lang: Lang; port: string | null; open: boolean; cat: string | null; onCat: (id: string | null) => void; ctl: Controls; accounts: Account[];
+  keyDrafts: AccountKeyDrafts; onKeyDraft: (provider: Provider, value: string) => void;
   hiddenAgents: number; onUnhideAgents: () => void; onArrange: () => void; onPlugins: () => void; onResetHome: () => void;
   notify: (text: string) => void; head: (title: string, meta?: ReactNode) => ReactNode;
 }) {
@@ -129,6 +132,7 @@ export function SettingsPage({ lang, port, open, cat, onCat, ctl, accounts, hidd
       { id: 'skin', name: ['Skin', '皮肤'], ctl: { k: 'skins' } },
       { id: 'auto', name: ['Change outfit by herself', '自己换装'], note: ['Every 6–14 min while resting', '在家时每 6–14 分钟一次'], ctl: { k: 'switch', on: ctl.look.auto, set: on => ctl.setLook({ auto: on }) } },
       { id: 'home', name: ['In the island', '在家的样子'], ctl: { k: 'seg', value: ctl.look.home, opts: [['dark', ['Dark glass', '暗玻璃']], ['eyes', ['Just her eyes', '只有两只眼']]], set: value => ctl.setLook({ home: value as HomeLook }) } },
+      { id: 'home-finish', name: ['Notch home', '刘海里的家'], ctl: { k: 'seg', value: ctl.look.homeFinish, opts: [['original', ['Original', '原设计']], ['refined', ['Refined notch', '精修刘海']]], set: value => ctl.setLook({ homeFinish: value as HomeFinish }) } },
       { id: 'marks', name: ['Agent marks', '状态点'], note: ['The session marks beside the notch', '刘海旁边的会话标记'], ctl: { k: 'seg', value: ctl.look.marks, opts: [['spark', ['Spark', '星芒']], ['pixel', ['Pixel', '像素']]], set: value => ctl.setLook({ marks: value as MarkLook }) } },
       { id: 'faces', name: ['Her expressions', '她的表情'], ctl: { k: 'act', label: ['Play all', '全部看一遍'], run: ctl.playFaces } },
     ] },
@@ -212,7 +216,8 @@ export function SettingsPage({ lang, port, open, cat, onCat, ctl, accounts, hidd
       onChange={e => x.set(Number(e.target.value))} onPointerUp={() => commit(keyOf(i))} onKeyUp={() => commit(keyOf(i))}/>;
     if (x.k === 'skins') return <div className="st-skins" role="radiogroup" aria-label={t(i.name)}>{SKIN_KEYS.map(k =>
       <button key={k} role="radio" aria-checked={ctl.look.skin === k} onClick={() => ctl.setLook({ skin: k })}><i style={{ background: SKIN_BG[k] }}/>{lang === 'zh' ? SKINS[k].name : SKIN_EN[k]}</button>)}</div>;
-    if (x.k === 'key') return <KeyField provider={x.provider} name={t(i.name)} port={port} lang={lang} onSaved={() => void restart()}/>;
+    if (x.k === 'key') return <KeyField provider={x.provider} name={t(i.name)} port={port} lang={lang} value={keyDrafts[x.provider] ?? ''}
+      onChange={value => onKeyDraft(x.provider, value)} onSaved={() => void restart()}/>;
     return null;
   };
   // Only the daemon's ranges wait for the release to save; hers apply as they move.
@@ -238,9 +243,9 @@ export function SettingsPage({ lang, port, open, cat, onCat, ctl, accounts, hidd
 }
 
 // A kept key restarts Jarvis, which reads keys only at boot. The OpenAI test makes real calls, so it gets 90 s.
-function KeyField({ provider, name, port, lang, onSaved }: { provider: Provider; name: string; port: string | null; lang: Lang; onSaved: () => void }) {
+function KeyField({ provider, name, port, lang, value: key, onChange: setKey, onSaved }: { provider: Provider; name: string; port: string | null; lang: Lang; value: string; onChange: (value: string) => void; onSaved: () => void }) {
   const t = (l: L) => tr(lang, l);
-  const [key, setKey] = useState(''), [busy, setBusy] = useState(false), [why, setWhy] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false), [why, setWhy] = useState<string | null>(null);
   const test = async () => {
     setBusy(true); setWhy(null);
     try {

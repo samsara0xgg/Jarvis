@@ -9,6 +9,7 @@ import { daemonToken, registerDaemonBridge, sendDaemonKey } from './bridge.js';
 import { startDaemon } from './daemon.js';
 import { setupDictation } from './dictation.js';
 import { setupAgents } from './agentsWindow.js';
+import { setupDashboard } from './dashboardWindow.js';
 // The companion: 星核, who lives beside the notch, with her Dashboard. She talks to the daemon on
 // JARVIS_INHERENT_BRIDGE_PORT like the capsule does; the daemon owns mic and speaker, so she never
 // records audio or plays speech herself. `--demo` runs her on the built-in demo data instead.
@@ -19,8 +20,9 @@ type NotchScreen = { id: number; topInset: number; notchWidth: number };
 app.setName('Jarvis Companion');
 // Its own profile, so it runs beside the live Resonance and its single-instance lock. The installed
 // app keeps the default one in Application Support: its bundle is read-only.
-if (!app.isPackaged) app.setPath('userData', path.resolve(here, '../.electron-profile/companion'));
 const demo = process.argv.includes('--demo');
+if (!app.isPackaged) app.setPath('userData', demo && process.env.JARVIS_COMPANION_TEST_PROFILE
+  ? path.resolve(process.env.JARVIS_COMPANION_TEST_PROFILE) : path.resolve(here, '../.electron-profile/companion'));
 const locked = app.requestSingleInstanceLock();
 if (!locked) app.quit();
 const WIDTH = 640;
@@ -206,7 +208,11 @@ function companion(shown?: () => void) {
   win.setIgnoreMouseEvents(true, { forward: true });
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.webContents.on('will-navigate', event => event.preventDefault());
-  registerDaemonBridge(win, { lab: demo });
+  const dashboard = setupDashboard({ parent: win, preload: path.join(here, 'preload.cjs'), page: path.join(here, '../dist/index.html'), demo, port,
+    mouseDown: material?.leftMouseDown ? () => material.leftMouseDown() : undefined,
+    onAttach: display => { clearTimeout(moving); moving = undefined; pending = null; current = display; place(); } });
+  registerDaemonBridge(win, { lab: demo, trustedWindows: dashboard.windows });
+  const mine = (event: Electron.IpcMainEvent | Electron.IpcMainInvokeEvent) => dashboard.senderWindow(event);
   // ADR 0058: the right ⌥ dictates at the text caret; she goes there from the notch. Live only: it needs the daemon's mic.
   const dictation = demo || !material ? null : setupDictation({ companion: win, native: material, nativePath: path.join(here, '../dist-native/material.node'), preload: path.join(here, 'preload.cjs'),
     page: path.join(here, '../dist/dictation.html'), port, topInset: display => placement(display).topInset, open: openPage });
@@ -258,13 +264,15 @@ function companion(shown?: () => void) {
     else if (Date.now() - pending.since > 250) leave();
   }, 16);
   win.on('closed', () => { clearInterval(cursor); clearTimeout(moving); clearTimeout(untuck); dictation?.close(); });
-  ipcMain.on('display-ready', event => { if (event.sender === win.webContents && moving) move(); });
-  ipcMain.handle('placement', event => event.sender === win.webContents ? placement(target()) : null);
+  ipcMain.on('display-ready', event => { if (mine(event) === win && moving) move(); });
+  ipcMain.handle('placement', event => { const sender = mine(event); return sender === win ? placement(target()) : sender ? dashboard.placement() : null; });
   // Settings › Advanced › Quit, the installed app's only way out (no Dock icon); the daemon stops with it (daemon.ts).
-  ipcMain.on('quit', event => { if (event.sender === win.webContents && app.isPackaged) app.quit(); });
-  ipcMain.on('passthrough', (event, enabled) => { if (event.sender === win.webContents && typeof enabled === 'boolean') { pass = enabled; win.setIgnoreMouseEvents(enabled || tucked, { forward: true }); } });
+  ipcMain.on('quit', event => { if (mine(event) && app.isPackaged) app.quit(); });
+  ipcMain.on('passthrough', (event, enabled) => { if (mine(event) === win && typeof enabled === 'boolean') { pass = enabled; win.setIgnoreMouseEvents(enabled || tucked, { forward: true }); } });
   ipcMain.handle('focus-input', (event, enabled) => {
-    if (event.sender !== win.webContents || typeof enabled !== 'boolean') return;
+    const sender = mine(event);
+    if (!sender || typeof enabled !== 'boolean') return;
+    if (sender !== win) { if (enabled) { sender.focus(); sender.webContents.focus(); } return; }
     // Key focus without activating the app, the same handshake as the capsule composer.
     win.setFocusable(enabled);
     if (enabled) { win.focus(); win.webContents.focus(); }
@@ -272,17 +280,26 @@ function companion(shown?: () => void) {
     keepOnTop();
   });
   ipcMain.on('material', (event, payload) => {
-    if (event.sender !== win.webContents || !material || !Array.isArray(payload?.rects)) return;
+    const sender = mine(event);
+    if (!sender || !material || !Array.isArray(payload?.rects)) return;
     const rects = payload.rects.slice(0, 16).filter((r: Record<string, number>) => r && ['x', 'y', 'width', 'height', 'radius', 'opacity'].every(k => Number.isFinite(r[k])) && r.width > 0 && r.height > 0);
-    material.update(win.getNativeWindowHandle(), rects, 1);
+    material.update(sender.getNativeWindowHandle(), rects, 1);
   });
   // ADR 0057: which Claude session Allen is looking at. One long-lived script reads Ghostty's front terminal
   // every 0.4 s while the renderer asks, and reports only changes; Ghostty is never launched for it.
   let watcher: ChildProcess | null = null, watched = '';
-  const report = (line: string) => { watched = line; const [state, ...title] = line.split('\t'); if (!win.isDestroyed()) win.webContents.send('ghostty', { front: state === 'front', title: title.join('\t') }); };
+  const watching = new Set<number>();
+  const watchedContents = new WeakSet<Electron.WebContents>();
+  const report = (line: string) => { watched = line; const [state, ...title] = line.split('\t'); for (const w of dashboard.windows()) w.webContents.send('ghostty', { front: state === 'front', title: title.join('\t') }); };
   ipcMain.on('ghostty-watch', (event, on) => {
-    if (event.sender !== win.webContents || demo || typeof on !== 'boolean') return;
-    if (!on) { watcher?.kill(); watcher = null; return; }
+    if (!mine(event) || demo || typeof on !== 'boolean') return;
+    if (!on) { watching.delete(event.sender.id); if (!watching.size) { watcher?.kill(); watcher = null; } return; }
+    watching.add(event.sender.id);
+    if (!watchedContents.has(event.sender)) {
+      const id = event.sender.id;
+      watchedContents.add(event.sender);
+      event.sender.once('destroyed', () => { watching.delete(id); if (!watching.size) { watcher?.kill(); watcher = null; } });
+    }
     if (watcher) { if (watched) report(watched); return; }
     const child = watcher = spawn('/usr/bin/osascript', ['-e', GHOSTTY_WATCH], { stdio: ['ignore', 'ignore', 'pipe'] });
     let buffer = '';
@@ -295,19 +312,19 @@ function companion(shown?: () => void) {
   app.on('will-quit', () => watcher?.kill());
   // Go to a session: its Ghostty terminal if one shows it, else a new tab attaching the background job.
   ipcMain.handle('ghostty-jump', (event, title, job) => new Promise<boolean>(resolve => {
-    if (event.sender !== win.webContents || demo || typeof title !== 'string' || !title.trim() || title.length > 300
+    if (!mine(event) || demo || typeof title !== 'string' || !title.trim() || title.length > 300
       || typeof job !== 'string' || !/^([0-9a-f]{8})?$/.test(job)) { resolve(false); return; }
     execFile('/usr/bin/osascript', ['-e', GHOSTTY_JUMP, title.trim(), job], { timeout: 8000 }, (error, stdout) => resolve(!error && stdout.trim() !== 'none'));
   }));
   // ADR 0073: the Agents window, from the Dashboard's Agents page. Live only: its sessions are real. Not in the
   // installed app yet: it runs on Allen's own subscription.
-  if (!demo && !app.isPackaged) setupAgents({ preload: path.join(here, 'preload.cjs'), page: path.join(here, '../dist/agents.html'), host: path.join(here, 'agents/host.js') });
+  if (!demo && !app.isPackaged) setupAgents({ preload: path.join(here, 'preload.cjs'), page: path.join(here, '../dist/agents.html'), host: path.join(here, 'agents/host.js'), trustedWindows: dashboard.windows });
   // Spec §15.3: ⌥Tab opens the island's list of agent sessions for the keys, and closes it again.
   if (!demo && !globalShortcut.register('Alt+Tab', () => win.webContents.send('command', 'agent-keys'))) console.warn('Shortcut unavailable: Alt+Tab');
   app.on('will-quit', () => globalShortcut.unregister('Alt+Tab'));
   // Her Settings that act in this process: the right-⌥ dictation, its language, and which screen she lives on.
   ipcMain.on('companion-settings', (event, settings: { follow?: boolean; lang?: string; dictation?: boolean }) => {
-    if (event.sender !== win.webContents || typeof settings !== 'object' || !settings) return;
+    if (!mine(event) || typeof settings !== 'object' || !settings) return;
     dictation?.language(settings.lang);
     dictation?.enabled(settings.dictation !== false);
     // Pinned to the main screen while she is on another one: she sinks here and comes up there.

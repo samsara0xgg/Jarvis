@@ -4,10 +4,11 @@ import { openLabel, readConversation, requestLine, sendReply, type Agent, type A
 import { AgentMark, drawMark, dpr, seedOf, useClock, type MarkLook } from './AgentMarks';
 import { drawMoon, drawTurnIcon, hueAt, MOON_RGB, rgba, tint } from './beacon';
 import { Markdown } from './Markdown';
-import { ended } from './Notices';
+import { ended, NoticeFlightContext } from './Notices';
 import { spring, step } from './starCore';
 import { HOVER_DWELL_MS, HOVER_EXIT_MS, HOVER_SPEED, PointerIntent } from './pointerIntent';
 import { MOTION, SPRINGS } from './motion';
+import { skyline, type IslandRect as Rect } from './islandShape';
 
 // Beside the notch, after the notch lab (ADR 0069, 0070). Right of the camera, one mark per group with its count:
 // your turn (the beacon), working, finished, parked (the moon). Only working moves; the beacon sends out its rings
@@ -19,7 +20,6 @@ import { MOTION, SPRINGS } from './motion';
 type Point = { x: number; y: number };
 type Kind = 'turn' | 'work' | 'done' | 'moon';
 type Box = { key: Kind; x0: number; x1: number; cx: number };
-type Rect = { l: number; r: number; d: number };
 type Sec = { key: Kind; label: string; ts: Agent[] };
 type Keys = { view: 'list' | 'page'; id: string; i: number; at: number };
 export type NotchGeo = { width: number; top: number; notchR: number; lobeL: number };
@@ -38,46 +38,6 @@ const reduced = matchMedia('(prefers-reduced-motion: reduce)');
 const countPulse = (progress: number) => reduced.matches ? 1 : 1 + .45 * Math.sin(Math.PI * progress);
 const working = (st: AgentState) => st === 'work' || st === 'pack';
 
-// ---------- the black shape: everything hangs from the top edge ----------
-// Each rect is [left, right] with a depth from the screen top. The outline of their union has concave shoulders
-// where it meets the screen edge and rounded steps wherever the depth changes, so her island, the notch, the marks
-// and whatever grows out of them read as one piece.
-function runPath(run: Rect[]) {
-  const S = 6, first = run[0], last = run.at(-1)!, rb = (s: Rect) => Math.min(24, s.d / 3, (s.r - s.l) / 2);
-  const r0 = rb(first);
-  let p = `M ${first.l - S} -20 L ${first.l - S} 0 Q ${first.l} 0 ${first.l} ${S} L ${first.l} ${first.d - r0} Q ${first.l} ${first.d} ${first.l + r0} ${first.d}`;
-  for (let i = 0; i < run.length - 1; i++) {
-    const a = run[i], b = run[i + 1], x = a.r, gap = Math.abs(b.d - a.d);
-    if (b.d > a.d) {
-      const rv = Math.min(rb(b), gap / 2), rc = Math.min(12, gap - rv, (a.r - a.l) / 2);
-      p += ` L ${x - rc} ${a.d} Q ${x} ${a.d} ${x} ${a.d + rc} L ${x} ${b.d - rv} Q ${x} ${b.d} ${x + rv} ${b.d}`;
-    } else {
-      const rv = Math.min(rb(a), gap / 2), rc = Math.min(12, gap - rv, (b.r - b.l) / 2);
-      p += ` L ${x - rv} ${a.d} Q ${x} ${a.d} ${x} ${a.d - rv} L ${x} ${b.d + rc} Q ${x} ${b.d} ${x + rc} ${b.d}`;
-    }
-  }
-  const r1 = rb(last);
-  return p + ` L ${last.r - r1} ${last.d} Q ${last.r} ${last.d} ${last.r} ${last.d - r1} L ${last.r} ${S} Q ${last.r} 0 ${last.r + S} 0 L ${last.r + S} -20 Z`;
-}
-function skyline(rects: Rect[]) {
-  const rs = rects.filter(r => r.r - r.l > .5 && r.d > .5);
-  const xs = [...new Set(rs.flatMap(r => [r.l, r.r]))].sort((a, b) => a - b), segs: Rect[] = [];
-  for (let i = 0; i < xs.length - 1; i++) {
-    const a = xs[i], b = xs[i + 1];
-    if (b - a < .01) continue;
-    const m = (a + b) / 2, d = Math.max(0, ...rs.filter(r => r.l <= m && r.r >= m).map(r => r.d)), last = segs.at(-1);
-    if (last && Math.abs(last.d - d) < .01 && Math.abs(last.r - a) < .01) last.r = b; else segs.push({ l: a, r: b, d });
-  }
-  let path = '', run: Rect[] = [];
-  const flush = () => { if (run.length) path += runPath(run); run = []; };
-  for (const s of segs) {
-    if (s.d <= 0) { flush(); continue; }
-    if (run.length && Math.abs(run.at(-1)!.r - s.l) > .01) flush();
-    run.push(s);
-  }
-  flush();
-  return path;
-}
 // ---------- what the panels show ----------
 // The beacon or the moon at `size` css px, for a panel's label.
 function IconMark({ look, moon = false, size = 11 }: { look: MarkLook; moon?: boolean; size?: number }) {
@@ -252,13 +212,22 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
     // Sessions on their way into the moon, from where the pointer was, and when the last one landed.
     flights: [] as { id: string; to: Kind; st: AgentState; x: number; y: number; at: number }[],
     bumpAt: { turn: -1e9, work: -1e9, done: -1e9, moon: -1e9 }, parkedIds: new Set<string>(),
-    popOrigins: new Map<string, Point>(), intent: new PointerIntent(),
+    popOrigins: new Map<string, Point>(), intent: new PointerIntent(), resolvedNote: '', workLandingUntil: 0,
   }).current;
   const L = useRef({ look, turn, work, fin, moon, geo, note, quiet, onNoteHover, held: false, pageW: false });
   L.current = { look, turn, work, fin, moon, geo, note, quiet, onNoteHover, held: !!kb && !kbCard, pageW: !!paged };
   const members = (key: Kind) => ({ turn: L.current.turn, work: L.current.work, done: L.current.fin, moon: L.current.moon })[key];
   const setPanel = (on: boolean) => { if (on === st.open) return; st.open = on; st.dirty = true; setOpen(on); };
   const setHotKey = (key: string) => { if (key === st.hot) return; st.hot = key; setHot(key); };
+  const returnApproval = (id: string, point: Point) => {
+    if (!note || st.resolvedNote === note.key) return;
+    st.resolvedNote = note.key;
+    if (!noteP.current?.classList.contains('is-open')) return;
+    // Keep a destination through the daemon's next session poll, even if this
+    // was the only waiting session and Working has not arrived in the snapshot.
+    st.workLandingUntil = performance.now() + 3000;
+    st.flights.push({ id, to: 'work', st: 'wait', ...point, at: performance.now() });
+  };
   // The keys: ⌥Tab (from the main process) opens the list and holds it; a row's → opens a page with the mouse too.
   const kbOpen = (id = '', view: Keys['view'] = 'list') => {
     const at = order.indexOf(id), i = Math.max(0, at);
@@ -289,7 +258,7 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
   const previousPop = useRef<{ key: string; agents: Agent[] } | null>(null);
   useLayoutEffect(() => {
     const previous = previousPop.current;
-    if (previous && previous.key !== note?.key) {
+    if (previous && previous.key !== note?.key && !L.current.held && !quiet) {
       for (const a of previous.agents) {
         if (parked.has(a.id) || archived.has(a.id) || !agents.some(x => x.id === a.id)) continue;
         const origin = st.popOrigins.get(a.id);
@@ -310,7 +279,14 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
     if (!kb) return;
     const key = (e: KeyboardEvent) => {
       const stop = () => { e.preventDefault(); e.stopPropagation(); }, k = e.key, field = e.target instanceof HTMLInputElement ? e.target : null;
-      if (kbCard) { if (k === 'Escape' || (k === 'ArrowLeft' && !field)) { stop(); act.back(); setKbCard(''); } return; }
+      const target = e.target instanceof HTMLElement ? e.target : null;
+      if (target?.closest('button,input,textarea,[contenteditable],[role="menu"],[role="listbox"],[role="combobox"]') && !root.current?.contains(target)) return;
+      if (kbCard) {
+        // A visible approval owns Escape as Deny; its document listener follows
+        // this window listener. Other cards keep the island's Back behavior.
+        if (k === 'Escape' && noteP.current?.classList.contains('is-open') && noteIn.current?.querySelector('[data-deny]')) return;
+        if (k === 'Escape' || (k === 'ArrowLeft' && !field)) { stop(); act.back(); setKbCard(''); } return;
+      }
       if (k === 'Escape') { stop(); kbClose(); return; }
       // On a page ← goes back unless there is text in the box to move through.
       if (kb.view === 'page') { if (k === 'ArrowLeft' && !field?.value) { stop(); setKb({ ...kb, view: 'list' }); } return; }
@@ -346,8 +322,8 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
       const inWing = !!p && p.y <= top + 2 && p.x >= g.notchR && p.x <= g.notchR + ww + 2;
       // One mark per group, so the row is at most four marks. Nothing moves while the pointer is on the row or the
       // panel is open; the counts follow along, and the row catches up once you leave.
-      if (st.drag || !st.boxes.length || !(st.open || inWing)) {
-        const kinds = ([['turn', turn], ['work', work], ['done', fin], ['moon', moon]] as const).filter(([, ts]) => ts.length).map(([k]) => k);
+      if (st.drag || !st.boxes.length || !(st.open || inWing) || now < st.workLandingUntil && !st.boxes.some(b => b.key === 'work')) {
+        const kinds = ([['turn', turn], ['work', work], ['done', fin], ['moon', moon]] as const).filter(([key, ts]) => ts.length || key === 'work' && now < st.workLandingUntil).map(([k]) => k);
         let x = g.notchR + PAD + (4 - kinds.length) * GCELL / 2;
         st.boxes = kinds.map(key => { const b = { key, x0: x, x1: x + GCELL, cx: x + GCX }; x += GCELL; return b; });
         st.wingTarget = kinds.length ? WING_W : 0;
@@ -386,11 +362,17 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
       const isl = island(), rest = { l: isl.l, w: isl.w, d: top * .6 }, dw = st.dropGoal.w;
       const dg = st.open ? { l: span(dw).l, w: dw, d: st.dropGoal.d } : rest;
       if (st.open && s.dd.value < top) { s.dx.value = isl.l; s.dw.value = isl.w; }
+      if (!st.open) for (const [sp, goal] of [[s.dx, dg.l], [s.dw, dg.w], [s.dd, dg.d]] as const) {
+        if (sp.velocity * (goal - sp.value) < 0) sp.velocity = 0;
+      }
       const panelHz = SPRINGS.panel.frequency / (st.open ? 1 : MOTION.exit);
       moving = go(s.dx, dg.l, panelHz, SPRINGS.panel.damping) || moving; moving = go(s.dw, dg.w, panelHz, SPRINGS.panel.damping) || moving; moving = go(s.dd, dg.d, panelHz, SPRINGS.panel.damping) || moving;
-      const noteOpen = !!note && !held;
+      const noteOpen = !!note && !held && note.key !== st.resolvedNote;
       const ng = noteOpen ? { l: st.noteL, w: st.noteGoal.w, d: st.noteGoal.d } : rest;
       if (noteOpen && s.nd.value < top) { s.nx.value = isl.l; s.nw.value = isl.w; }
+      if (!noteOpen) for (const [sp, goal] of [[s.nx, ng.l], [s.nw, ng.w], [s.nd, ng.d]] as const) {
+        if (sp.velocity * (goal - sp.value) < 0) sp.velocity = 0;
+      }
       const noteHz = SPRINGS.panel.frequency / (noteOpen ? 1 : MOTION.exit);
       moving = go(s.nx, ng.l, noteHz, SPRINGS.panel.damping) || moving; moving = go(s.nw, ng.w, noteHz, SPRINGS.panel.damping) || moving; moving = go(s.nd, ng.d, noteHz, SPRINGS.panel.damping) || moving;
       if (note?.pop && noteOpen) for (const row of nIn.querySelectorAll<HTMLElement>('.u-row')) {
@@ -419,6 +401,7 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
       pane.classList.toggle('is-open', open && k > .6);
       inner.style.left = `${goalL - left}px`;
       inner.style.transitionDuration = open ? 'var(--motion-fast)' : 'var(--exit-fast)';
+      inner.style.transitionTimingFunction = open ? 'var(--ease-out)' : 'var(--ease-in)';
       inner.style.opacity = open && k >= .6 ? '1' : '0';
     };
     // The marks, clipped to the wing as it grows; the finished mark being dragged; the puffs left where it went.
@@ -435,11 +418,11 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
       const counts: string[] = [];
       for (const b of st.boxes) {
         const ts = members(b.key);
-        if (!ts.length) continue;
+        if (!ts.length && !(b.key === 'work' && now < st.workLandingUntil)) continue;
         const pulse = countPulse(clamp((now - st.bumpAt[b.key]) / MOTION.medium));
         ctx.save(); ctx.translate(b.cx, top / 2); ctx.scale(.8, .8);
         if (b.key === 'turn') drawTurnIcon(ctx, look, t, (now - st.turnAt) / 1000, d, now - st.turnAt > 4000);
-        else if (b.key === 'work') drawMark(ctx, look, ts.every(a => a.state === 'pack') ? 'pack' : 'work', t + seedOf('work'), (now - st.workAt) / 1000, d);
+        else if (b.key === 'work') drawMark(ctx, look, ts.length && ts.every(a => a.state === 'pack') ? 'pack' : 'work', t + seedOf('work'), (now - st.workAt) / 1000, d);
         else if (b.key === 'done') { ctx.globalAlpha = .55; drawMark(ctx, look, ts.every(a => a.state === 'err') ? 'err' : 'done', 0, 99, d); }
         else { ctx.globalAlpha = .85; drawMoon(ctx, 99, d); }
         ctx.restore();
@@ -532,6 +515,7 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
         const b = st.boxes.find(x => e.clientX >= x.x0 && e.clientX < x.x1);
         if (b) setHotKey(b.key);
         st.lastIn = performance.now(); setPanel(true);
+        if (note) kbOpen();
         if (b?.key !== 'done') return;
         st.press = { x: e.clientX, y: e.clientY }; e.currentTarget.setPointerCapture(e.pointerId);
       }}
@@ -545,7 +529,7 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
     <div ref={drop} className="notch-pane notch-drop" data-hit={open ? true : undefined} role="dialog" aria-label="Sessions">
       <div ref={dropIn} className="notch-pane-in">{open ? panel : lastPanel.current}</div></div>
     <div ref={noteP} className="notch-pane notch-note" data-hit={note && !(kb && !kbCard) ? true : undefined} role="alertdialog" aria-label="Agent notice">
-      <div ref={noteIn} className="notch-pane-in">{shownNote && (shownNote.pop ? lastPopAgents.current.length > 0 && <Pop agents={lastPopAgents.current} look={look} act={A} onClose={shownNote.onClose}/> : shownNote.card)}</div></div>
+      <div ref={noteIn} className="notch-pane-in"><NoticeFlightContext.Provider value={returnApproval}>{shownNote && (shownNote.pop ? lastPopAgents.current.length > 0 && <Pop agents={lastPopAgents.current} look={look} act={A} onClose={shownNote.onClose}/> : shownNote.card)}</NoticeFlightContext.Provider></div></div>
     {dragging && <div className="notch-catch" data-hit aria-hidden="true"/>}
   </div>;
 }

@@ -48,6 +48,14 @@ declare global { interface Window { jarvis?: {
   layout: (mode: string, height: number, surface?: { x: number; y: number; width: number; height: number }) => void; focus: (enabled: boolean) => Promise<void>; hide: () => void; quit?: () => void; passthrough: (enabled: boolean) => void;
   material: (rects: {x:number;y:number;width:number;height:number;radius:number;opacity:number;occlusion?:GlassOcclusion}[], strength: number) => void;
   onCommand: (cb: (value: string) => void) => () => void;
+  dashboard?: (action: 'state' | 'open' | 'detach' | 'attach' | 'close', options?: { height?: number; dragging?: boolean }) => Promise<{ detached: boolean }>;
+  onDashboard?: (cb: (value: { detached: boolean; open?: boolean }) => void) => () => void;
+  dashboardDrag?: (phase: 'start' | 'move' | 'end') => void;
+  dashboardSize?: (height: number) => void;
+  dashboardVisible?: (visible: boolean) => void;
+  onDashboardDock?: (cb: (near: boolean) => void) => () => void;
+  dashboardMessage?: (target: 'parent' | 'dashboard', payload: Record<string, unknown>) => void;
+  onDashboardMessage?: (cb: (payload: Record<string, unknown>) => void) => () => void;
 } } }
 const lab = new URLSearchParams(location.search).has('lab');
 // A `port` query means Electron wants the live daemon link; without it every timer below is the simulation.

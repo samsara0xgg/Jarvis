@@ -1,6 +1,7 @@
 import { useEffect, useRef, type RefObject } from 'react';
 import { B, Core, LAYERS_ON, MOTION_V2, spring, step, type ExprId, type Skin } from './starCore';
 import { SPRINGS } from './motion';
+import { paintAway, paintRefinedHome, type HomeFinish } from './homeFinish';
 
 export const R = 26;
 // Held this long, a poke becomes a costume change instead.
@@ -15,7 +16,7 @@ export type Lobe = { left: number; right: number; height: number; notched: boole
 // `home`: how she sits in the island. dark: its black is her dimmed glass, her nebula turning inside; eyes: all black
 // but her eyes. Either way her glass lights up only once she drops clear of the island's edge.
 export type HomeLook = 'dark' | 'eyes';
-export type BallTarget = { place: Place; expr: ExprId; pressed: boolean; anchors: Record<Place, Point>; home: HomeLook; homeFace?: boolean;
+export type BallTarget = { place: Place; expr: ExprId; pressed: boolean; anchors: Record<Place, Point>; home: HomeLook; homeFinish: HomeFinish; homeFace?: boolean;
   away?: boolean; happy?: boolean; deep?: boolean; attention?: { id: string; point: Point } };
 // This long without the cursor moving sends her to sleep at home.
 const DOZE_MS = 10 * 60_000;
@@ -60,6 +61,7 @@ export function CompanionBall({ width, height, lobe, target, look, handle, skin,
     let movedAt = performance.now(), px = NaN, py = NaN;
     let away = false, awayAt = -1e9, happyUntil = 0, leftHome = true;
     let attentionId: string | undefined, attentionAt = 0;
+    let homeLeftAt = -1;
     const fit = () => {
       const k = Math.min(2, devicePixelRatio || 1), w = Math.round(size.current.width * k), h = Math.round(size.current.height * k);
       if (k === d && cv.width === w && cv.height === h) return;
@@ -75,6 +77,8 @@ export function CompanionBall({ width, height, lobe, target, look, handle, skin,
       if (t.place !== wanted) { wanted = t.place; switchAt = now + (wanted === 'home' && shown !== 'home' ? 170 : 0); }
       if (now >= switchAt) shown = wanted;
       const atHome = shown === 'home', leaving = wanted === 'home' && !atHome, docked = shown === 'dock';
+      if (atHome) homeLeftAt = -1;
+      else if (homeLeftAt < 0) homeLeftAt = now;
       // At home she stays awake: she blinks, watches a nearby cursor, and dozes after a long quiet spell.
       const p = look.current;
       if (p && (p.x !== px || p.y !== py)) { px = p.x; py = p.y; movedAt = now; }
@@ -174,7 +178,10 @@ export function CompanionBall({ width, height, lobe, target, look, handle, skin,
           ctx.fillStyle = fade; ctx.fillRect(lobe.left, lobe.height, lobe.right - lobe.left, 9); ctx.restore();
         }
       }
-      if (gl && inside > .01) {
+      const homeRect = { l: lobe.left, t: 0, r: lobe.right, b: lobe.height };
+      if (gl && inside > .01 && t.homeFinish === 'refined') {
+        paintRefinedHome(ctx, core, { x, y, R, scale, inside, rect: homeRect, path, d, S, now });
+      } else if (gl && inside > .01) {
         const N = Math.min(S, 320);
         if (neb.width !== N) neb.width = neb.height = N;
         nctx.setTransform(1, 0, 0, 1, 0, 0); nctx.clearRect(0, 0, N, N);
@@ -192,6 +199,12 @@ export function CompanionBall({ width, height, lobe, target, look, handle, skin,
         const rim = ctx.createLinearGradient(lobe.left, 0, lobe.right, 0);
         rim.addColorStop(0, `rgba(${rgb},0)`); rim.addColorStop(.5, `rgba(${rgb},.55)`); rim.addColorStop(1, `rgba(${rgb},0)`);
         ctx.strokeStyle = rim; ctx.lineWidth = .8; ctx.beginPath(); ctx.moveTo(lobe.left, lobe.height - .5); ctx.lineTo(lobe.right, lobe.height - .5); ctx.stroke();
+        ctx.restore();
+      }
+      if (t.home === 'dark' && t.homeFinish === 'refined' && homeLeftAt >= 0 && !hidden) {
+        const warm = clamp01(1 - (now - homeLeftAt) / 2500), rgb = core.light.glow.map(v => Math.round(v * 255)).join(',');
+        ctx.save(); ctx.globalAlpha = (1 - inside) * s.fold.value;
+        paintAway(ctx, rgb, homeRect, path, t.anchors.home, warm, firm ? 0 : now / 1000);
         ctx.restore();
       }
       // The eyes stay on top everywhere, the island included.
@@ -214,6 +227,8 @@ export function CompanionBall({ width, height, lobe, target, look, handle, skin,
         ctx.restore();
       }
       cv.dataset.charge = charge >= 1 ? 'ready' : charge > 0 ? 'holding' : '';
+      cv.dataset.homeFinish = t.homeFinish;
+      cv.dataset.homeWarmth = homeLeftAt < 0 ? '' : String(clamp01(1 - (now - homeLeftAt) / 2500));
       if (cv.dataset.skin !== core.skin) cv.dataset.skin = core.skin;
       if (cv.dataset.face !== core.expr) cv.dataset.face = core.expr ?? '';
       // Her light, for the Dashboard hanging under her.

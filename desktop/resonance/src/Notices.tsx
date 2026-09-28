@@ -1,4 +1,4 @@
-import { useEffect, useReducer, useRef, useState, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, useLayoutEffect, useReducer, useRef, useState, type ReactNode } from 'react';
 import { ArrowSquareOut, ArrowUp, Check, Moon } from '@phosphor-icons/react';
 import { AGENT_NAME, loadMarks, openLabel, saveMark, type Agent, type AgentRequest, type AgentState } from './agents';
 import { AgentMark, type MarkLook } from './AgentMarks';
@@ -26,7 +26,9 @@ export const needs = (n: Notice) => n.kind !== 'pop';
 export const ended = (state: AgentState) => state === 'done' || state === 'err';
 // One question's pick: an option, several options, or typed words.
 type Pick = number | number[] | string;
-type Card = { qi: number; picks: (Pick | undefined)[]; review: boolean; feedback: boolean; ok: string; pending?: boolean; error?: string };
+type Card = { qi: number; picks: (Pick | undefined)[]; review: boolean; feedback: boolean; ok: string; pending?: boolean; error?: string; resolved?: boolean };
+// The card reports only a confirmed response. Its host owns the visual flight.
+export const NoticeFlightContext = createContext<((id: string, point: { x: number; y: number }) => void) | null>(null);
 
 // The sound kit from 星核的声音: palette 水滴·脆, the "fifths" score. The context sleeps between cues.
 let audio: { ctx: AudioContext; out: GainNode; sleep?: ReturnType<typeof setTimeout> } | null = null;
@@ -178,7 +180,7 @@ export function useNotices({ port, agents, hold, watched, viewing, cue, answer }
     for (const set of [s.unread, s.archived, s.parked]) for (const id of set.keys()) if (!s.last[id]) set.delete(id);
     // A needs-you card whose session no longer waits on it was answered elsewhere.
     const stale = (n: Notice) => {
-      if (!needs(n) || card(n).ok) return false;
+      if (!needs(n) || card(n).ok || card(n).pending) return false;
       const a = byId.get(n.id);
       return !a || a.state !== 'wait' || (n.kind === 'req' ? a.request?.id !== n.req.id : !!a.request);
     };
@@ -225,16 +227,19 @@ export function useNotices({ port, agents, hold, watched, viewing, cue, answer }
 
   const resolve = async (n: Notice & { kind: 'req' }, text: string, body: Parameters<typeof answer>[1]) => {
     const c = card(n);
-    if (c.ok || c.pending) return;
+    if (c.ok || c.pending) return false;
     c.pending = true; c.error = ''; bump();
     const yes = body.decision !== 'deny';
-    try { c.ok = await answer(n.req, body) ? text : 'Already answered somewhere else'; }
-    catch { c.error = 'Could not send your answer. Try again.'; return; }
+    try {
+      c.resolved = await answer(n.req, body);
+      c.ok = c.resolved ? text : 'Already answered somewhere else';
+    }
+    catch { c.error = 'Could not send your answer. Try again.'; return false; }
     finally { c.pending = false; bump(); }
-    s.over = { face: yes ? '02' : '38', until: performance.now() + 900, hop: yes };
-    cue(yes ? 'send' : 'close');
+    if (c.resolved) { s.over = { face: yes ? '02' : '38', until: performance.now() + 900, hop: yes }; cue(yes ? 'send' : 'close'); }
     bump();
     later(CONFIRM_MS, () => { if (s.queue[0] === n) next(); });
+    return c.resolved === true;
   };
   // A session waiting on him, from his turn, the island's list or the Agents page: its card comes to the front,
   // even while the island is held.
@@ -270,23 +275,39 @@ export function NoticeCard({ n, agent, card, count, look, onPark, onOpen, onReso
   onPark: () => void; onOpen: (agent: Agent) => void; onResolve: (text: string, body: Body) => void; onChange: () => void;
 }) {
   const [typed, setTyped] = useState(''), [feedback, setFeedback] = useState(''), [alwaysAllowed, setAlwaysAllowed] = useState(false);
-  const allowButton = useRef<HTMLButtonElement>(null);
+  const allowButton = useRef<HTMLButtonElement>(null), denyButton = useRef<HTMLButtonElement>(null), root = useRef<HTMLDivElement>(null), flew = useRef(false);
+  const fly = useContext(NoticeFlightContext);
+  useLayoutEffect(() => {
+    if (!card.resolved || flew.current || !fly || n.kind !== 'req' || n.req.tool === 'AskUserQuestion') return;
+    const mark = root.current?.querySelector('.agent-mark')?.getBoundingClientRect();
+    if (!mark) return;
+    flew.current = true;
+    fly(n.id, { x: mark.x + mark.width / 2, y: mark.y + mark.height / 2 });
+  }, [card.resolved, fly, n.id, n.kind]);
   // Cards arrive without a keyboard gesture. A bare Return must never approve
   // one, including when its primary button happens to have focus.
   useEffect(() => {
     if (n.kind !== 'req' || n.req.tool === 'AskUserQuestion' || card.ok) return;
     const key = (e: KeyboardEvent) => {
-      if (e.key !== 'Enter' || e.isComposing) return;
+      if (!['Enter', 'Escape'].includes(e.key) || e.isComposing) return;
       const button = allowButton.current, pane = button?.closest('.notch-pane');
       if (!button?.checkVisibility({ opacityProperty: true, visibilityProperty: true }) || pane && !pane.classList.contains('is-open')) return;
       const target = e.target instanceof HTMLElement ? e.target : null;
-      if (target?.closest('button,input,textarea,[contenteditable]') && !button.closest('.nc')?.contains(target)) return;
+      if (target?.closest('button,input,textarea,[contenteditable],[role="menu"],[role="listbox"],[role="combobox"]') && !button.closest('.nc')?.contains(target)) return;
+      if (e.key === 'Escape') {
+        if (!denyButton.current || target?.closest('input,textarea,[contenteditable],[role="menu"],[role="listbox"],[role="combobox"]')) return;
+        e.preventDefault(); e.stopImmediatePropagation();
+        if (!e.repeat && !card.pending) denyButton.current.click();
+        return;
+      }
       if (e.target instanceof HTMLInputElement && n.req.tool === 'ExitPlanMode' && !e.metaKey) return;
       e.preventDefault(); e.stopImmediatePropagation();
       if (e.metaKey && !e.repeat && !card.pending) allowButton.current?.click();
     };
-    window.addEventListener('keydown', key, true);
-    return () => window.removeEventListener('keydown', key, true);
+    // The island's window listener yields visible approval keys. Document capture
+    // then handles Deny before defaults; fields and menus retain their own Escape.
+    document.addEventListener('keydown', key, true);
+    return () => document.removeEventListener('keydown', key, true);
   }, [n.key, card.ok, card.pending]);
   const who = agent ? AGENT_NAME[agent.agent] : 'It';
   const label = n.kind === 'wait' ? 'Needs you' : n.req.tool === 'AskUserQuestion' ? `${who} asks` : n.req.tool === 'ExitPlanMode' ? 'Plan to review' : 'Needs your OK';
@@ -307,7 +328,7 @@ export function NoticeCard({ n, agent, card, count, look, onPark, onOpen, onReso
     </div>
     {agent.you && <p className="nc-you"><b>You</b>{agent.you}</p>}
   </>;
-  if (card.ok) return <div className="nc">{bar}{head}<p className="nc-ok"><Check size={14} weight="bold"/><span>{card.ok}</span></p></div>;
+  if (card.ok) return <div ref={root} className="nc">{bar}{head}<p className="nc-ok"><Check size={14} weight="bold"/><span>{card.ok}</span></p></div>;
   const choice = (always: string) => {
     const request = n.kind === 'req' ? n.req : null;
     const project = agent?.project || request?.cwd.split('/').filter(Boolean).at(-1) || request?.cwd;
@@ -316,7 +337,7 @@ export function NoticeCard({ n, agent, card, count, look, onPark, onOpen, onReso
       <input type="checkbox" checked={alwaysAllowed} disabled={card.pending} onChange={e => setAlwaysAllowed(e.target.checked)}/>
       <span>{bashRule ? <>Always allow <code>{bashRule}</code></> : always.replace("Don't ask again for", 'Always allow')} in <b>{project}</b></span>
     </label>}<div className="nc-choice">
-      <button type="button" className="btn btn-ghost" disabled={card.pending} onClick={() => onResolve(`Denied · ${who} will try another way`, { decision: 'deny' })}>Deny</button>
+      <button ref={denyButton} type="button" className="btn btn-ghost" data-deny disabled={card.pending} onClick={() => onResolve(`Denied · ${who} will try another way`, { decision: 'deny' })}>Deny <kbd>esc</kbd></button>
       <button ref={allowButton} type="button" className="btn btn-warm" disabled={card.pending} onClick={() => onResolve(alwaysAllowed && always ? `Allowed · ${always.replace("Don't ask", "won't ask")}` : `Allowed · ${who} continues`, { decision: alwaysAllowed && always ? 'always' : 'allow' })}>Allow <kbd>⌘⏎</kbd></button>
     </div></>;
   };
@@ -369,5 +390,5 @@ export function NoticeCard({ n, agent, card, count, look, onPark, onOpen, onReso
     } else body = <><p className="nc-what">Wants to use {tool.replace(/^mcp__([^_]+)__/, '$1 · ')}</p>
       <pre className="nc-box">{JSON.stringify(i, null, 1).slice(0, 600)}</pre>{choice(always)}</>;
   }
-  return <div className="nc">{bar}{head}{body}{card.error && <p className="r-why" role="alert">{card.error}</p>}</div>;
+  return <div ref={root} className="nc">{bar}{head}{body}{card.error && <p className="r-why" role="alert">{card.error}</p>}</div>;
 }

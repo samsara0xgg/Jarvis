@@ -7,6 +7,7 @@ import './action-card.css';
 // a letter can be edited in place, and the button sends what the card holds at that moment. Dismissing is the ×.
 export interface Card { id: string; tool: string; action: string; source: string; letter: boolean; args: Record<string, unknown> }
 export type Decide = (decision: 'accept' | 'reject', edits?: Record<string, string>) => void;
+export type ActionDraft = { subject: string; body: string };
 
 const MAX_ROWS = 5;
 const SOURCE: Record<string, string> = { gmail: 'Gmail', notion: 'Notion', linear: 'Linear', github: 'GitHub', microsoft: 'Microsoft', hue: 'Hue' };
@@ -16,10 +17,17 @@ const FIELD: Record<string, L> = { message: ['Task', '任务'], cwd: ['Folder', 
 const shown = (value: unknown) => typeof value === 'string' ? value : Array.isArray(value) && value.every(v => typeof v === 'string') ? value.join(', ') : JSON.stringify(value);
 const focusWindow = () => void window.jarvis?.focus(true);
 
-export function ActionCard({ card, lang, onDecide }: { card: Card; lang: Lang; onDecide: Decide }) {
+export function ActionCard({ card, lang, onDecide, draft, onDraft }: {
+  card: Card; lang: Lang; onDecide: Decide; draft?: ActionDraft; onDraft?: (draft: ActionDraft) => void;
+}) {
   const t = (l: L) => tr(lang, l);
   const args = card.args;
-  const [subject, setSubject] = useState(String(args.subject ?? '')), [body, setBody] = useState(String(args.body ?? ''));
+  const [localDraft, setLocalDraft] = useState<ActionDraft>(() => ({ subject: String(args.subject ?? ''), body: String(args.body ?? '') }));
+  const { subject, body } = draft ?? localDraft;
+  const edit = (change: Partial<ActionDraft>) => {
+    const next = { subject, body, ...change };
+    setLocalDraft(next); onDraft?.(next);
+  };
   const acceptButton = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
@@ -60,8 +68,8 @@ export function ActionCard({ card, lang, onDecide }: { card: Card; lang: Lang; o
     return <div className="ac" data-card={card.id}>
       {bar}
       <div className="ac-to">{t(['To', '发给'])}<span className="ac-chip" title={to}>{to}</span>{typeof args.threadId === 'string' && <em>{t(['reply', '回复'])}</em>}</div>
-      <input className="ac-edit ac-subject" aria-label={t(['Subject', '主题'])} value={subject} onPointerDown={focusWindow} onChange={e => setSubject(e.target.value)}/>
-      <textarea ref={bodyBox} className="ac-edit ac-body" aria-label={t(['Body', '正文'])} value={body} rows={3} onPointerDown={focusWindow} onChange={e => setBody(e.target.value)}/>
+      <input className="ac-edit ac-subject" aria-label={t(['Subject', '主题'])} value={subject} onPointerDown={focusWindow} onChange={e => edit({ subject: e.target.value })}/>
+      <textarea ref={bodyBox} className="ac-edit ac-body" aria-label={t(['Body', '正文'])} value={body} rows={3} onPointerDown={focusWindow} onChange={e => edit({ body: e.target.value })}/>
       <div className="ac-foot"><span/>
         <button ref={acceptButton} type="button" className="ac-go" onClick={() => decide('accept', edits)}>{t(['Send', '发送'])}<kbd>⌘⏎</kbd><ArrowUp size={12} weight="bold"/></button></div>
     </div>;
@@ -97,10 +105,16 @@ export interface QuestionField { label: string; choices?: string[]; value?: stri
 export interface Question { id: string; question: string; fields: QuestionField[] }
 export type Answer = (answers: Record<string, string> | null) => void;
 
-export function QuestionCard({ question, lang, onAnswer }: { question: Question; lang: Lang; onAnswer: Answer }) {
+export function QuestionCard({ question, lang, onAnswer, draft, onDraft }: {
+  question: Question; lang: Lang; onAnswer: Answer; draft?: Record<string, string>; onDraft?: (draft: Record<string, string>) => void;
+}) {
   const t = (l: L) => tr(lang, l);
-  const [values, setValues] = useState<Record<string, string>>(() => Object.fromEntries(question.fields.map(f => [f.label, f.value ?? ''])));
-  const set = (label: string, value: string) => setValues(v => ({ ...v, [label]: value }));
+  const [localValues, setLocalValues] = useState<Record<string, string>>(() => Object.fromEntries(question.fields.map(f => [f.label, f.value ?? ''])));
+  const values = draft ?? localValues;
+  const set = (label: string, value: string) => {
+    const next = { ...values, [label]: value };
+    setLocalValues(next); onDraft?.(next);
+  };
   const filled = Object.values(values).some(v => v.trim());
   const answer: Answer = answers => { onAnswer(answers); void window.jarvis?.focus(false); };
   const send = () => { if (filled) answer(values); };

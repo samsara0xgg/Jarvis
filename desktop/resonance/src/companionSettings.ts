@@ -62,8 +62,10 @@ export function useCompanionSettings() {
   const [settings, setSettings] = useState(() => current ??= load());
   useEffect(() => {
     const receive = (event: Event) => setSettings((event as CustomEvent<CompanionSettings>).detail);
+    const shared = (event: StorageEvent) => { if (event.key === KEY) { current = load(); window.dispatchEvent(new CustomEvent(KEY, { detail: current })); } };
     window.addEventListener(KEY, receive);
-    return () => window.removeEventListener(KEY, receive);
+    window.addEventListener('storage', shared);
+    return () => { window.removeEventListener(KEY, receive); window.removeEventListener('storage', shared); };
   }, []);
   return [settings, update] as const;
 }

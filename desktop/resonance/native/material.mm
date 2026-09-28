@@ -168,6 +168,10 @@ static napi_value update(napi_env env, napi_callback_info info) {
   [CATransaction commit];
   napi_value result; napi_get_boolean(env, true, &result); return result;
 }
+// Button state survives a drag changing renderers; AppKit needs no input permission.
+static napi_value leftMouseDown(napi_env env, napi_callback_info info) {
+  napi_value result; napi_get_boolean(env, (NSEvent.pressedMouseButtons & 1) != 0, &result); return result;
+}
 // Whether ⌘ is held right now; AppKit answers this without any input permission.
 static napi_value commandDown(napi_env env, napi_callback_info info) {
   napi_value result; napi_get_boolean(env, (NSEvent.modifierFlags & NSEventModifierFlagCommand) != 0, &result); return result;
@@ -291,6 +295,7 @@ static napi_value init(napi_env env, napi_value exports) {
   napi_create_function(env, "screens", NAPI_AUTO_LENGTH, screens, nullptr, &fn); napi_set_named_property(env, exports, "screens", fn);
   napi_create_function(env, "setStationary", NAPI_AUTO_LENGTH, setStationary, nullptr, &fn); napi_set_named_property(env, exports, "setStationary", fn);
   napi_create_function(env, "commandDown", NAPI_AUTO_LENGTH, commandDown, nullptr, &fn); napi_set_named_property(env, exports, "commandDown", fn);
+  napi_create_function(env, "leftMouseDown", NAPI_AUTO_LENGTH, leftMouseDown, nullptr, &fn); napi_set_named_property(env, exports, "leftMouseDown", fn);
   napi_create_function(env, "rightOption", NAPI_AUTO_LENGTH, rightOption, nullptr, &fn); napi_set_named_property(env, exports, "rightOption", fn);
   napi_create_function(env, "caret", NAPI_AUTO_LENGTH, caret, nullptr, &fn); napi_set_named_property(env, exports, "caret", fn);
   napi_create_function(env, "accessibility", NAPI_AUTO_LENGTH, accessibility, nullptr, &fn); napi_set_named_property(env, exports, "accessibility", fn);

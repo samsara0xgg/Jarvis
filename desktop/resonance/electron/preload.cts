@@ -25,6 +25,27 @@ contextBridge.exposeInMainWorld('jarvis', {
   },
   displayReady: () => ipcRenderer.send('display-ready'),
   companionSettings: (settings: unknown) => ipcRenderer.send('companion-settings', settings),
+  dashboard: (action: 'state' | 'open' | 'detach' | 'attach' | 'close', options?: { height?: number; dragging?: boolean }) => ipcRenderer.invoke('dashboard', action, options),
+  onDashboard: (callback: (state: { detached: boolean; open?: boolean }) => void) => {
+    const listener = (_: unknown, state: { detached: boolean; open?: boolean }) => callback(state);
+    ipcRenderer.on('dashboard-state', listener);
+    return () => ipcRenderer.removeListener('dashboard-state', listener);
+  },
+  dashboardDrag: (phase: 'start' | 'move' | 'end') => ipcRenderer.send('dashboard-drag', phase),
+  dashboardSize: (height: number) => ipcRenderer.send('dashboard-size', height),
+  dashboardVisible: (visible: boolean) => ipcRenderer.send('dashboard-visible', visible),
+  onDashboardDock: (callback: (near: boolean) => void) => {
+    const listener = (_: unknown, near: boolean) => callback(near);
+    ipcRenderer.on('dashboard-dock', listener);
+    return () => ipcRenderer.removeListener('dashboard-dock', listener);
+  },
+  dashboardMessage: (target: 'parent' | 'dashboard', payload: Record<string, unknown>) => ipcRenderer.send('dashboard-message', target, payload),
+  onDashboardMessage: (callback: (payload: Record<string, unknown>) => void) => {
+    const listener = (_: unknown, payload: Record<string, unknown>) => callback(payload);
+    ipcRenderer.on('dashboard-message', listener);
+    ipcRenderer.send('dashboard-message-ready');
+    return () => ipcRenderer.removeListener('dashboard-message', listener);
+  },
   layout: (mode: string, height: number, surface?: { x: number; y: number; width: number; height: number }) => ipcRenderer.send('layout', { mode, height, surface }),
   focus: (enabled: boolean) => ipcRenderer.invoke('focus-input', enabled),
   hide: () => ipcRenderer.send('hide'),
