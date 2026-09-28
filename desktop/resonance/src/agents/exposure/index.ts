@@ -2,7 +2,7 @@ import type { Item, Req, Sess } from '../../../electron/agents/types';
 import { COL, glyph, rgba, type St } from './glyph';
 import { clamp, dpr, easeInOut, esc, hash, lerp, reduced, smooth, spring, step } from './motion';
 import { Her } from './her';
-import { drawSky, geometry } from './sky';
+import { ago, drawSky, geometry } from './sky';
 import { started, timeline, type Trail, type Turn } from './timeline';
 
 type Hooks = {
@@ -448,11 +448,13 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
       pop.style.transform = `translate(${left.value}px,${top.value}px)`; pop.style.setProperty('--sx', `${needle.value - left.value}px`);
       Object.assign(gap.style, { left: `${left.value - 18}px`, width: `${wordWidth + 32}px`, top: `${top.value - 8.5}px`, height: `${Math.max(0, opening.value - 4)}px` });
       axis.style.top = `${skyHeight() - 26}px`;
-      const guidesKey = g.guides.join(',');
-      if (axisKey !== guidesKey) { axisKey = guidesKey; axis.innerHTML = g.guides.map(m => `<span>${m < 60 ? `${m} 分前` : `${m / 60} 小时前`}</span>`).join('') + '<span class="nowl">现在</span>'; }
+      const labels = g.guides.map(ago), guidesKey = labels.join(',');
+      if (axisKey !== guidesKey) { axisKey = guidesKey; axis.innerHTML = labels.map(label => `<span>${label}</span>`).join('') + '<span class="nowl">现在</span>'; }
       // The axis steps aside where the needle writes its own time.
       const writes = stand ? -1e3 : needle.value;
-      [...axis.children].forEach((el, i) => { const tick = el as HTMLElement, x = g.guides[i] === undefined ? g.x1 : g.xOf(now - g.guides[i]); tick.style.left = `${x - 30}px`; tick.style.opacity = String(g.guides[i] === undefined ? 1 : clamp((Math.abs(x - writes) - 34) / 26)); });
+      // Where the cells are too narrow for every label, every other one (counting back from now) keeps its words.
+      const every = Math.ceil(64 / g.cell);
+      [...axis.children].forEach((el, i) => { const tick = el as HTMLElement, x = g.guides[i] === undefined ? g.x1 : g.xOf(now - g.guides[i]); tick.style.left = `${x - 30}px`; tick.style.opacity = String(g.guides[i] === undefined ? 1 : (i + 1) % every ? 0 : clamp((Math.abs(x - writes) - 34) / 26)); });
       rowsEl.querySelectorAll<HTMLElement>('.bw-row').forEach((el, i) => { el.style.left = `${g.x1}px`; el.style.opacity = String(1 - Math.min(.4, Math.abs(i - focus.value) * .1)); });
       renderWords();
       if (t < revealUntil) revealSelection();

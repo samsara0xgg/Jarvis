@@ -3,7 +3,7 @@ import { COL, glyph, rgba, tint } from './glyph';
 import { clamp } from './motion';
 import { activityAt, type Trail } from './timeline';
 export type Geo = {
-  width: number; x0: number; x1: number; span: number; rowH: number; band: [number, number]; minutes: boolean;
+  width: number; x0: number; x1: number; span: number; cell: number; rowH: number; band: [number, number]; minutes: boolean;
   y(i: number): number; yx(i: number, x: number): number; top: number; bottom: number;
   xOf(t: number): number; tOf(x: number): number; guides: number[]; gaps?: { a: number; b: number }[];
 };
@@ -12,16 +12,31 @@ type DrawOptions = {
   a?: number; thick?: number; focus?: number; base?: number; ndx?: number; cy?: number; nm?: boolean;
   conn?: { x: number; y: number; x2: number; y2: number; a?: number } | null;
 };
+// How long ago, in the axis's words: minutes, then hours, then days.
+export const ago = (m: number) => m < .5 ? '现在' : m < 60 ? `${Math.round(m)} 分前` : m < 600 ? `${+(m / 60).toFixed(1)} 小时前`
+  : m < 2880 ? `${Math.round(m / 60)} 小时前` : `${+(m / 1440).toFixed(1)} 天前`;
 const pl = (c: CanvasRenderingContext2D, a: number, b: number, f: (x: number) => number) => {
   c.moveTo(a, f(a)); for (let x = a + 4; x < b; x += 4) c.lineTo(x, f(x)); c.lineTo(b, f(b));
 };
+// The ruler's marks, in minutes ago. Every cell between two marks is equally wide and time runs evenly inside it, so a
+// cell near now holds minutes and one far back holds hours or days: recent time spreads out, a long history still fits.
+const MARKS = [5, 15, 30, 60, 120, 240, 480, 1440, 2880, 10080, 20160, 43200];
 export function geometry(width: number, now: number, span: number, height: number, bend: (i: number, x: number) => number): Geo {
   const x0 = 30, x1 = width - 262, range = x1 - x0;
-  return { width, x0, x1, span, rowH: 27, band: [18, width], minutes: true,
+  // The far edge is the first mark past the oldest session, so the ruler always ends on a whole mark.
+  const edge = MARKS.find(m => m >= span) ?? span, ticks = [0, ...MARKS.filter(m => m < edge), edge], cell = range / (ticks.length - 1);
+  const xAgo = (m: number) => {
+    m = clamp(m, 0, edge);
+    let i = 1; while (i < ticks.length - 1 && m > ticks[i]) i++;
+    return x1 - cell * (i - 1 + (m - ticks[i - 1]) / (ticks[i] - ticks[i - 1]));
+  };
+  const agoX = (x: number) => {
+    const k = clamp((x1 - x) / cell, 0, ticks.length - 1), i = Math.min(ticks.length - 2, Math.floor(k));
+    return ticks[i] + (ticks[i + 1] - ticks[i]) * (k - i);
+  };
+  return { width, x0, x1, span: edge, cell, rowH: 27, band: [18, width], minutes: true,
     y: i => 82 + i * 27, yx: (i, x) => 82 + i * 27 + bend(i, x), top: 56, bottom: 56 + height - 22,
-    xOf: at => x1 - range * clamp((now - at) / span) ** .55,
-    tOf: x => now - span * clamp((x1 - x) / range) ** (1 / .55),
-    guides: [5, 15, 30, 60, 120, 240, 480, 1440, 2880, 10080].filter(t => t < span * .94),
+    xOf: at => xAgo(now - at), tOf: x => now - agoX(x), guides: ticks.slice(1),
   };
 }
 export function drawSky(e: CanvasRenderingContext2D, t: { id: string }[], n: Record<string, Trail>, r: DrawOptions) {
@@ -218,7 +233,7 @@ export function drawSky(e: CanvasRenderingContext2D, t: { id: string }[], n: Rec
         e.lineTo(t, o.bottom + 2),
         e.stroke());
       let s = Math.max(0, i - o.tOf(t)),
-        c = s < 0.5 ? `现在` : s < 60 ? `${Math.round(s)} 分前` : `${(s / 60).toFixed(1)} 小时前`;
+        c = ago(s);
       ((e.font = `500 10px "IBM Plex Mono", ui-monospace, monospace`),
         (e.textAlign = `center`),
         (e.textBaseline = `middle`));

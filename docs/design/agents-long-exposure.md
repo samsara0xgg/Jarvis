@@ -120,6 +120,11 @@ maximum widths, not minimum sizes. The horizon remains at the top; expanding
 the sky overlays and dims the conversation without moving its reading position.
 
 The time axis begins at 30px and reaches “now” at the window width minus 262px.
+Its marks — 5, 15 and 30 minutes, 1, 2, 4, 8 and 24 hours, then days — stand
+at equal widths and time runs evenly inside each cell, so recent minutes spread
+out while a day-old session still fits; the ruler ends on the first mark past
+the oldest session. Where cells are narrower than a label, every other label
+shows.
 Trail rows follow the `trail-row` rhythm. The last 110px before “now” stay
 straight; expansion bends only the portion of lower trails beside the words,
 then returns them to the fixed name rows. Words stop before the names and
