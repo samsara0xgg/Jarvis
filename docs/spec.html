@@ -2828,7 +2828,7 @@ Tool Surface 是由 effective_policy 为特定调用主体、mode、task 和风�
 <li>不做的事：不回答 Codex 的审批，不在岛里回 Codex；不读 claude.ai、手机、别的终端里看没看过（只能手动标已读）；Allen 在 Agents 窗口里看着时提醒怎么简化，等那个窗口的信号有了再定。</li>
 </ul>
 
-<h3 id="agent-host">15.4 Agents 窗口和它的后台（ADR 0073）</h3>
+<h3 id="agent-host">15.4 Agents 窗口和它的后台（ADR 0073、0081）</h3>
 <ul>
 <li>后台（agent host）：<code>desktop/resonance/electron/agents/host.ts</code>，一个 Node 进程，跑 Jarvis 开的全部 Claude Code / Codex 会话。只听 <code>127.0.0.1:JARVIS_AGENTS_PORT</code>（默认 8016），端口就是锁，第二个起不来就退出。每个请求要带 daemon 的本地钥匙（<code>&lt;runtime root&gt;/plugin-access.json</code> 的 <code>token</code>，<code>Authorization: Bearer</code>），没有 401；它也用同一把钥匙找 daemon。小球要打开窗口而 <code>GET /health</code> 1.5 s 内没回答时，用自己的 Electron 当 Node（<code>ELECTRON_RUN_AS_NODE</code>）把它拉起来，独立进程组，小球重启、daemon 重启它都不停；输出写 <code>&lt;runtime root&gt;/logs/agents-host.{out,err}.log</code>。只有开发版的活小球有这个窗口：打包的 app 和 <code>--demo</code> 没有。</li>
 <li>会话文件 <code>JARVIS_AGENTS_DIR</code>（默认 <code>&lt;runtime root&gt;/agents</code>）下的 <code>sessions.json</code>，<code>{v: 1, sessions: [...]}</code>，每行是列表那一行（id、agent、名字、文件夹、仓库、分支、有没有自己的 worktree、状态、置顶、先放着、归档、没看过、时间、一句摘要、模型、力度、模式、上下文占比）。对话不存：每次从 agent 自己的记录读回（Claude 的 transcript，Codex 的 thread）。后台起来时还在干活或等你的会话记成出错，摘要写「Jarvis 的后台重启了，这一轮断了 · 发一句接着来」。</li>
@@ -2838,7 +2838,11 @@ Tool Surface 是由 effective_policy 为特定调用主体、mode、task 和风�
 <li>其余路由：<code>GET /projects</code>（会话用过的仓库在前，再加 <code>~/Projects</code> 下的 git 仓库）、<code>GET /files?id=|cwd=&amp;q=</code>（<code>git ls-files</code>，给 @ 选文件）、<code>GET /commands?id=|agent=&amp;cwd=</code>（/ 命令和 skill）、<code>POST /sessions</code> <code>{agent, cwd, tree, text, files, model, effort, mode}</code> → <code>{id}</code>、<code>GET /sessions/{id}</code> → <code>{items, live}</code>、<code>GET /sessions/{id}/context</code> → <code>{used, max, model, rows, say, foot}</code>（上下文圈的明细：Claude 是 Agent SDK 的 <code>getContextUsage</code>，按 token 真数分类，闲着的会话临时 resume 一个查询，答完就关；Codex 只有它最近一次报的总数；在终端里 409；圈的占比换成量到的数）、<code>DELETE /sessions/{id}</code>，以及 <code>POST /sessions/{id}/</code> 下的 <code>send</code>（在干活时进队列，它下一步看到）、<code>answer</code> <code>{req, decision: allow | always | deny, answers?, text?}</code>、<code>interrupt</code>、<code>stop</code>（打断并放开进程）、<code>set</code> <code>{key: model | effort | mode, value}</code>、<code>meta</code> <code>{pinned?, parked?, archived?, title?, seen?}</code>、<code>fork</code>、<code>release</code>、<code>takeback</code>。图片随消息以 data: URL 发。</li>
 <li>没看过、先放着、归档是 daemon 的标记（§15.3，ADR 0069）：后台自己判断它的会话有没有被看过，每次改动 POST <code>/inherent/agent-marks/{id}</code>；有窗口连着时每 20 s 读一次 <code>GET /inherent/agent-marks</code>，连上时也读。送不到 daemon 的标记留在 <code>sessions.json</code>，下次改动再送。</li>
 <li>交给终端：<code>release</code> 放开 agent 进程（在干活时 409），回 <code>{cwd, cmd}</code>，<code>cmd</code> 是 <code>claude --resume &lt;id&gt;</code> 或 <code>codex resume &lt;id&gt;</code>；小球在最前面的 Ghostty 窗口开新标签页输入 <code>cd &lt;cwd&gt; &amp;&amp; &lt;cmd&gt;</code>（只接受这两种命令加 UUID、存在的绝对路径文件夹）。交出去以后窗口不能发消息，<code>takeback</code> 从记录重读对话。一个会话同一时间只有一边在写。</li>
-<li>窗口：<code>agents.html</code>，从 Dashboard 的 Agents 页打开，同一时间一个。页面不拿钥匙：主进程给发往 daemon 端口和后台端口的请求加上。页面能叫主进程做的只有选文件夹、开 Ghostty 标签页、在访达里显示文件夹。</li>
+<li>窗口：<code>agents.html</code>，从 Dashboard 的 Agents 页打开，同一时间一个。页面不拿钥匙：主进程给发往 daemon 端口和后台端口的请求加上。页面能叫主进程选文件夹、开 Ghostty 标签页、在访达里显示文件夹，并报告当前展示模式与会话名单；主进程根据真实窗口焦点决定是否把注意力交给 Agents。</li>
+<li>默认展示为 B01「长曝光 · 行里展开」，本地记住与「原模式」的切换。原对话、发送、附件、管理与审批仍由同一个后台负责。收起时地平线只露星点；空输入框按 ← 或点长曝光展开。右侧名字每行位置固定，左侧轨迹只在展开文字附近弯曲，临近现在的末段保持笔直。↑↓ 保留时间锚点，←→ 逐句走，最后一句后的 → 先到名字，再 → 才进入；esc、直接打字、最底行 ↓ 收回并保留当前对话与阅读位置。超过 14 个会话时，一小时无活动且已读的闲置会话可以折叠。</li>
+<li>真实时间：会话可带 <code>created</code> 和后台观察到的 <code>trace: {at, st}[]</code>，写入原 <code>sessions.json</code>；对话条目与步骤可带毫秒时间 <code>at</code>，请求回答可带 <code>ended</code>。历史时间从提供方记录恢复，缺失时显示「时间未记录」，不编造轨迹。后台重启导致的中断记为本次观察到的错误转变，不声称知道停机的准确时刻。</li>
+<li>「她手里」的卡片按错误、FIFO 审批、未读完成排序，空格／Alt+Tab／点击打开；Enter 执行当前按钮，N 拒绝，单问题 1–9 选择，S 移到队尾，⌘Enter 看全文，esc 放下。多问题逐题作答，自由文字和多选沿用真实请求。只有后台接受后才收卡，失败保留卡片和错误；过期请求返回 409。收尾卡发送用户明确触发的收尾指令，不声称验证已通过；推送仍等明确批准。回到对话时恢复阅读位置并短暂照亮原行。</li>
+<li>注意力：正在输入、刚进会话前 5 秒、查看旧文或刚滚动时不递卡；发送后与回到窗口的停顿可以提示，紧急状态只改变星点、珠子和表情。前台 B01 不为状态变化播放通知音。主进程校验 Agents 上报者，将 <code>{active, ids}</code> 转发给受信窗口；B01 真正聚焦时，小球收起、notch 隐去同一批会话并暂停通知，Alt+Tab 发给 B01，失焦／关闭／切回原模式后还回原表面。减少动态效果设置同时约束弹簧、卡片和角色动画。</li>
 </ul>
 </section>
 

@@ -7,9 +7,12 @@ import type { Agent, Catalog, Ctx, Event, File as Upload, Item, Req, Sess, St, S
 import { drawMark } from '../AgentMarks';
 import { palette, play, scoreOf } from '../soundKit';
 import { Core, TAKES, pick, type ExprId } from '../starCore';
+import { mountExposure } from './exposure';
 import './agents.css';
+import './exposure/exposure.css';
 
 declare global { interface Window { agents?: {
+  presence?(enabled: boolean, ids: string[]): void; onDeck?(callback: () => void): () => void;
   folder(): Promise<string>; terminal(cwd: string, cmd: string): Promise<boolean>; reveal(cwd: string): Promise<void>;
 } } }
 
@@ -128,6 +131,7 @@ const snd = { on: store.get('agents.sound') !== 'off', ctx: null as AudioContext
 const NOTICE = new Set(['done', 'ask', 'error']);
 function cue(name: string, gain = 1, force = false) {
   if (!snd.on && !force) return;
+  if (NOTICE.has(name) && win?.classList.contains('bw') && document.hasFocus()) return;
   const now = performance.now();
   if (now - (snd.last.get(name) ?? -1e9) < (NOTICE.has(name) ? 450 : 120)) return;
   snd.last.set(name, now);
@@ -248,6 +252,7 @@ function flush() {
   else if (d.has('live') && app.view === 'chat' && s) { const c = convs.get(s.id); if (c) { const b = bottom(c.root); renderLive(s, c); if (b) c.root.scrollTop = c.root.scrollHeight; } }
   if (d.has('comp')) renderComp();
   if (tipFor && !tipFor.isConnected) tipHide();
+  attention.refresh();
 }
 // A session's change redraws the list; the rest only when it is the one on screen.
 const touch = (id: string) => { if (app.view === 'chat' && app.cur === id) draw(); else draw('side'); };
@@ -684,6 +689,7 @@ const here = (id: string) => app.view === 'chat' && app.cur === id && document.h
 const hush = new Map<string, number>();
 function react(s: Sess, was: St) {
   if (s.st === was) return;
+  attention.notify(s);
   stAt.set(s.id, performance.now());
   if ((hush.get(s.id) ?? 0) > performance.now() || s.parked) return;
   if (s.st === 'done' && was !== 'done') { cue('done', here(s.id) ? .45 : 1); herSay('fin', 2400, s.id); core.hop(performance.now(), .14); }
@@ -708,7 +714,7 @@ function apply(e: Event) {
     for (const s of app.ss) if (!stAt.has(s.id)) stAt.set(s.id, -1e9);
     // After a reconnect the host may have restarted: what this window holds is read again.
     for (const id of [...app.items.keys()]) { if (byId(id)) void loadItems(id); else app.items.delete(id); }
-    if (first) { newDefaults(); const o = order(); app.cur = o[0] ?? ''; if (!app.cur) app.view = 'new'; else void loadItems(app.cur); }
+    if (first) { newDefaults(); const o = order(); app.cur = o[0] ?? ''; if (!app.cur) app.view = 'new'; else { app.view = 'chat'; void loadItems(app.cur); } }
     quiet = true; draw(); return;
   }
   if (e.t === 'catalog') { app.catalog = e.catalog; newDefaults(); draw('comp'); return; }
@@ -720,7 +726,7 @@ function apply(e: Event) {
   if (e.t === 'sess') {
     const i = app.ss.findIndex(s => s.id === e.s.id), was = i >= 0 ? app.ss[i].st : e.s.st;
     // Looking at it when it finishes is having seen it: it never goes to 「轮到你」.
-    if (e.s.unread && here(e.s.id) && e.s.st !== 'wait') { e.s.unread = false; void call(`/sessions/${e.s.id}/meta`, { seen: true }).catch(() => {}); }
+    if (!attention.busy && e.s.unread && here(e.s.id) && e.s.st !== 'wait') { e.s.unread = false; void call(`/sessions/${e.s.id}/meta`, { seen: true }).catch(() => {}); }
     if (i >= 0) app.ss[i] = e.s; else app.ss.push(e.s);
     react(e.s, was);
     touch(e.s.id); return;
@@ -730,6 +736,7 @@ function apply(e: Event) {
     if (!have) return;
     if (e.from > have.length) { void loadItems(e.id); return; }
     have.splice(e.from, have.length - e.from, ...e.items);
+    attention.invalidate(e.id);
     if (app.view === 'chat' && app.cur === e.id) draw('main', 'comp');
     return;
   }
@@ -786,7 +793,7 @@ async function send() {
   const files = app.files; app.files = []; app.menu = ''; app.picks = []; clearTa();
   cue('send', s.st === 'work' ? .55 : .8);
   if (s.st !== 'work') herSay(pick(TAKES.receive), 1100);
-  await tryCall(`/sessions/${s.id}/send`, { text, files });
+  if (await tryCall(`/sessions/${s.id}/send`, { text, files })) attention.sent();
 }
 const clearTa = () => { ta.value = ''; ta.style.height = ''; draw('comp'); };
 // Pressing an answer sounds at once and locks its card, a spinner on what was pressed, until the host has it; a second
@@ -970,6 +977,7 @@ async function refreshProjects() {
 // ---------- wiring ----------
 win.addEventListener('click', e => {
   const t = e.target as Element, el = t.closest<HTMLElement>('[data-act]');
+  if (attention.enabled && el?.dataset.act === 'side') { attention.manage(); return; }
   if (popFor && !t.closest('.pop') && el?.dataset.act !== 'menu') closePop();
   if (el && !(el as HTMLButtonElement).disabled) void act(el.dataset.act!, el);
 });
@@ -996,7 +1004,7 @@ addEventListener('keydown', e => {
     // on a focused button is that button's (the open session's own row aside), and a held key does nothing more.
     const r = s && !s.term && !popFor && !app.menu ? pendingReq(s.id) : undefined;
     const typing = (t === ta && !!ta.value.trim()) || t.tagName === 'INPUT' || t.tagName === 'SELECT';
-    if (s && r && !typing && !e.metaKey && !e.ctrlKey && !e.altKey && !e.isComposing) {
+    if (!attention.enabled && s && r && !typing && !e.metaKey && !e.ctrlKey && !e.altKey && !e.isComposing) {
       const opt = r.tool === 'Ask' && r.qs.length === 1 && !r.qs[0].multi && /^[1-9]$/.test(e.key) ? r.qs[0].opts[Number(e.key) - 1] : undefined;
       const enter = e.key === 'Enter' && !e.shiftKey && r.tool !== 'Ask' && !t.closest('button,[role="button"]:not(.row.is-on)');
       if (opt || enter || e.key === 'Escape') {
@@ -1014,7 +1022,7 @@ addEventListener('keydown', e => {
     }
   }
   const mod = e.metaKey || e.ctrlKey;
-  if (mod && e.key.toLowerCase() === 'k') { e.preventDefault(); find.focus(); find.select(); }
+  if (mod && e.key.toLowerCase() === 'k') { e.preventDefault(); if (attention.enabled) win.classList.add('ex-manage'); find.focus(); find.select(); }
   if (mod && e.key.toLowerCase() === 'n') { e.preventDefault(); void act('new', $('.new', side)); }
   if ((mod || e.altKey) && (e.key === 'ArrowDown' || e.key === 'ArrowUp') && document.activeElement !== ta) {
     const o = order(), i = o.indexOf(app.cur);
@@ -1043,18 +1051,23 @@ herCv.addEventListener('pointerdown', () => { her.pressed = true; });
 addEventListener('pointerup', () => { her.pressed = false; });
 herCv.addEventListener('click', () => { void act('next', herCv); });
 
+const attention = mountExposure(win, ta, {
+  sessions: () => app.ss, items: id => app.items.get(id), current: () => app.cur, chat: () => app.view === 'chat',
+  load: loadItems, open: id => open(id, 'key'), call, md, toast, cue, refresh: () => draw(),
+});
+
 // ---------- one loop: her every frame, moving marks at 30 fps, nothing while the window is out of sight ----------
 let lastT = performance.now(), lastMk = 0, lastAge = 0;
 function loop(now: number) {
   const dt = Math.min(.05, (now - lastT) / 1000);
   lastT = now;
   if (!document.hidden) {
-    herFrame(now, dt);
+    if (attention.enabled) attention.frame(now, dt); else herFrame(now, dt);
     if (now - lastMk > 33) {
       lastMk = now; paintMarks(now);
       // Looking at a finished one for 1.5 s reads it, as in the island.
       const s = app.view === 'chat' ? cur() : undefined;
-      if (s?.unread && now - app.openAt > 1500 && document.hasFocus()) { s.unread = false; draw('side'); void call(`/sessions/${s.id}/meta`, { seen: true }).catch(() => {}); }
+      if (!attention.busy && s?.unread && now - app.openAt > 1500 && document.hasFocus()) { s.unread = false; draw('side'); void call(`/sessions/${s.id}/meta`, { seen: true }).catch(() => {}); }
       const w = s && (s.st === 'work' || s.st === 'pack') ? convs.get(s.id) : undefined;
       if (w && s?.since) patch($('.el', w.now), `· ${ago(s.since)}`);
     }

@@ -46,8 +46,21 @@ end run`;
 const quote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 
 export function setupAgents({ preload, page, host, trustedWindows }: { preload: string; page: string; host: string; trustedWindows: () => BrowserWindow[] }) {
-  let win: BrowserWindow | null = null;
+  let win: BrowserWindow | null = null, exposure = false, ids: string[] = [], presenceKey = '';
+  const presence = () => ({ active: !!win && !win.isDestroyed() && win.isFocused() && exposure, ids });
+  const publish = () => {
+    const value = presence(), key = JSON.stringify(value);
+    if (key === presenceKey) return; presenceKey = key;
+    for (const target of trustedWindows()) if (!target.isDestroyed()) target.webContents.send('agents-presence', value);
+  };
   const mine = (event: Electron.IpcMainInvokeEvent | Electron.IpcMainEvent) => !!win && event.sender === win.webContents && event.senderFrame === win.webContents.mainFrame;
+  ipcMain.on('agents-presence', (event, enabled: unknown, values: unknown) => {
+    if (!mine(event) || typeof enabled !== 'boolean' || !Array.isArray(values) || values.length > 2000 || !values.every(id => typeof id === 'string' && id.length <= 128)) return;
+    exposure = enabled; ids = values; publish();
+  });
+  ipcMain.on('agents-presence-ready', event => {
+    if (trustedWindows().some(w => !w.isDestroyed() && event.sender === w.webContents && event.senderFrame === w.webContents.mainFrame)) event.sender.send('agents-presence', presence());
+  });
   ipcMain.handle('agents-folder', async event => {
     if (!mine(event)) return '';
     const r = await dialog.showOpenDialog(win!, { properties: ['openDirectory'], defaultPath: path.join(homedir(), 'Projects') });
@@ -68,12 +81,13 @@ export function setupAgents({ preload, page, host, trustedWindows }: { preload: 
       webPreferences: { preload, contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: true, autoplayPolicy: 'no-user-gesture-required' } });
     win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     win.webContents.on('will-navigate', event => event.preventDefault());
-    win.on('closed', () => { win = null; });
+    win.on('focus', publish); win.on('blur', publish);
+    win.on('closed', () => { win = null; publish(); });
     win.loadFile(page, { query: { port: AGENTS_PORT } });
     win.once('ready-to-show', () => { win?.show(); win?.focus(); });
   }
   ipcMain.on('agents-open', event => {
     if (trustedWindows().some(w => !w.isDestroyed() && event.sender === w.webContents && event.senderFrame === w.webContents.mainFrame)) void open();
   });
-  return { open };
+  return { open, deck() { if (!presence().active) return false; win!.webContents.send('agents-deck'); return true; } };
 }

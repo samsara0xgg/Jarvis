@@ -88,7 +88,7 @@ function begun(s: Session, item: any, at?: number, live = true) {
   const r = rt(s);
   if (item.type === 'userMessage') {
     const text = userText(item), q = s.s.queue ?? [];
-    if (!live) s.you(text, userFiles(item));
+    if (!live) s.you(text, userFiles(item), at);
     else if (q.includes(text)) { s.dequeue(text); s.you(text, userFiles(item)); s.begin(); }
   } else if (item.type === 'agentMessage') r.text.set(item.id, '');
   else if (item.type === 'reasoning') { if (live) s.set({ now: '在想' }); }

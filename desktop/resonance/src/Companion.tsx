@@ -186,6 +186,9 @@ export function Companion() {
   const busy = composer || voice !== 'off' || !!reply.text || receiving || deepThinking;
   // Every session the Dashboard's Agents data knows: the stars beside the notch, and the notices.
   const [agents, setAgents] = useState<ShownAgent[]>([]);
+  const [agentsPresence, setAgentsPresence] = useState({ active: false, ids: [] as string[] });
+  useEffect(() => window.jarvis?.onAgentsPresence?.(setAgentsPresence), []);
+  const agentsFront = agentsPresence.active;
   // The Claude session Allen has been looking at in Ghostty for 1.5 s (ADR 0057): read, and nothing pops for it.
   const [ghostty, setGhostty] = useState({ front: false, title: '' }), [dwelled, setDwelled] = useState(false);
   useEffect(() => window.jarvis?.onGhostty?.(seen => setGhostty(g => g.front === seen.front && g.title === seen.title ? g : seen)), []);
@@ -198,7 +201,7 @@ export function Companion() {
   const [keysPress, setKeysPress] = useState(0), [keysOn, setKeysOn] = useState(false), [viewing, setViewing] = useState<string | null>(null);
   // No notice while she talks, while you type to her, while the Dashboard is open or while the keys hold the island;
   // they come up after.
-  const notices = useNotices({ port, agents, hold: busy || dashboard || remoteOpen || detached || moving || carded || keysOn || !!menu, watched, viewing,
+  const notices = useNotices({ port, agents, hold: agentsFront || busy || dashboard || remoteOpen || detached || moving || carded || keysOn || !!menu, watched, viewing,
     cue: (name, gain) => { if (preferences.feedbackEnabled && !s.soundMuted) noticeCue(name, preferences.feedbackVolume, gain); },
     answer: (req, body) => port ? answerRequest(port, req.id, body) : Promise.resolve(true) });
   const notice = notices.current;
@@ -651,14 +654,14 @@ export function Companion() {
         {dashboardContent}
       </DuskDashboard>
       <DockingDrop near={docking} width={geo.width} top={placement.topInset} center={geo.center}/>
-      <Notch look={wardrobe.marks} agents={agents} unread={notices.unread} parked={notices.parked} archived={notices.archived} cursor={cursor} quiet={dashboard || moving}
+      <Notch look={wardrobe.marks} agents={agentsFront ? agents.filter(a => !agentsPresence.ids.includes(a.id)) : agents} unread={notices.unread} parked={notices.parked} archived={notices.archived} cursor={cursor} quiet={agentsFront || dashboard || moving}
         onNoteHover={notices.setHover} geo={{ width: geo.width, top: placement.topInset, notchR: geo.wingX, lobeL: geo.lobe.left }} note={note}
         act={{ jump, answer: notices.focus, read: notices.read, back: notices.back, archive: notices.archive, park: notices.park, unpark: notices.unpark }}
         port={port} keys={keysPress} onViewing={setViewing} onJoinedChange={setNotchJoined} onKeys={on => { setKeysOn(on); void window.jarvis?.focus(on); }}/>
       <CompanionBall width={geo.width} height={placement.topInset + 560} lobe={geo.lobe} look={look} handle={ball} skin={worn.current}
         target={{ place, expr, pressed, anchors: geo.anchors, home: wardrobe.home, homeFinish: wardrobe.homeFinish, homeFace: !!notice || carded || dashboard || remoteOpen, homeJoined: dashboard || dashboardJoined || notchJoined,
           attention: noticeLook ? { id: carded ? `card:${card?.id ?? question?.id}` : notice!.key, point: noticeLook } : undefined,
-          away: trip === 'out', happy: trip === 'happy', deep: deep && expr === '02' }}
+          away: trip === 'out' || agentsFront && !busy, happy: trip === 'happy', deep: deep && expr === '02' }}
         label={voice === 'off' ? t([`Poke to talk${port ? '' : ' (demo)'}`, `戳一下，开始语音${port ? '' : '（演示）'}`]) : voice === 'speaking' ? t(['Poke to interrupt', '戳一下，打断播报']) : t(['Poke to stop', '戳一下，结束语音'])}
         onPress={press} onRelease={release} onCancel={cancel} onMove={refreshHit}/>
     </main>

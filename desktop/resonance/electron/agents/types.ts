@@ -5,7 +5,7 @@ export type Agent = 'claude' | 'codex';
 export type St = 'work' | 'pack' | 'wait' | 'done' | 'err';
 export type Diff = [' ' | '+' | '-', string][];
 // `say` is something it wrote on the way, before its next step; the last thing it writes in a turn is the answer.
-export type Step = { k: 'read' | 'edit' | 'bash' | 'search' | 'agent' | 'web' | 'tool' | 'say'; t: string; add?: number; del?: number; diff?: Diff; out?: string; ok?: boolean };
+export type Step = { at?: number; k: 'read' | 'edit' | 'bash' | 'search' | 'agent' | 'web' | 'tool' | 'say'; t: string; add?: number; del?: number; diff?: Diff; out?: string; ok?: boolean };
 export type Question = { q: string; head?: string; multi?: boolean; opts: [string, string][] };
 export type Req =
   | { id: string; tool: 'Bash'; why: string; cmd: string; cwd: string; always: string }
@@ -13,13 +13,14 @@ export type Req =
   | { id: string; tool: 'Tool'; why: string; name: string; detail: string; always: string }
   | { id: string; tool: 'Ask'; qs: Question[] }
   | { id: string; tool: 'Plan'; plan: string };
-export type Item =
+// Epoch milliseconds when known. Missing transcript times stay missing.
+export type Item = ({ at?: number; ended?: number } & (
   | { k: 'you'; text: string; files?: string[]; queued?: boolean }
   | { k: 'it'; text: string }
   | { k: 'steps'; steps: Step[]; took?: string; live?: boolean }
   | { k: 'plan'; todos: [string, 0 | 1 | 2][] }
   | { k: 'req'; req: Req; done?: string }
-  | { k: 'note'; text: string };
+  | { k: 'note'; text: string }));
 // One row of the list. `updated` is ms since epoch; `ctx` is the share of the context window used, 0–100.
 export type Sess = {
   id: string; agent: Agent; title: string; cwd: string; project: string; branch: string; tree: boolean;
@@ -28,6 +29,7 @@ export type Sess = {
   model: string; effort: string; mode: string; ctx: number;
   // now: what it is doing this moment · bg: its background tasks · term: handed to a terminal · since: this turn's start
   // queue: what you sent while it worked, not yet taken
+  created?: number; trace?: { at: number; st: St }[];
   now?: string; bg?: string; term?: boolean; stopped?: boolean; since?: number; queue?: string[];
 };
 export type Choice = { models: [string, string][]; efforts: string[]; modes: [string, string][]; always: string };

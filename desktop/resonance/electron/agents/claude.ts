@@ -153,10 +153,10 @@ function said(s: Session, m: SDKMessage | { type: string; message?: unknown; too
     // Allen's own words; Claude Code's bookkeeping in angle brackets is not.
     const text = textOf(content), cmd = /<command-name>([^<]*)<\/command-name>[\s\S]*?(?:<command-args>([^<]*)<\/command-args>)?/.exec(text);
     const files = Array.isArray(content) ? content.filter((b: Block) => b.type === 'image').map((_: unknown, k: number) => `图片 ${k + 1}`) : [];
-    if (cmd) s.you(`${cmd[1]} ${cmd[2] ?? ''}`.trim());
+    if (cmd) s.you(`${cmd[1]} ${cmd[2] ?? ''}`.trim(), [], at);
     else if (/^\s*<(local-command|system-reminder|command-)/.test(text)) return;
     else if (/^\[Request interrupted/.test(text)) s.note('你打断了这一轮');
-    else if (text.trim() || files.length) s.you(text.trim(), files);
+    else if (text.trim() || files.length) s.you(text.trim(), files, at);
   }
 }
 

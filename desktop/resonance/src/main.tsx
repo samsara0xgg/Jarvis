@@ -40,6 +40,7 @@ declare global { interface Window { jarvis?: {
   onGhostty?: (cb: (seen: { front: boolean; title: string }) => void) => () => void;
   jumpGhostty?: (title: string, job: string) => Promise<boolean>;
   openAgents?: () => void;
+  onAgentsPresence?: (cb: (value: { active: boolean; ids: string[] }) => void) => () => void;
   codexTitles: (ids: string[]) => Promise<Record<string, string>>;
   openAccount: (service: string) => Promise<boolean>;
   usageReset: (service: 'codex', requestId: string) => Promise<{ code: string; windows_reset: number }>;

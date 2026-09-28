@@ -61,6 +61,11 @@ contextBridge.exposeInMainWorld('jarvis', {
   },
   jumpGhostty: (title: string, job: string) => ipcRenderer.invoke('ghostty-jump', title, job),
   // ADR 0073: the Agents window.
+  onAgentsPresence: (callback: (value: { active: boolean; ids: string[] }) => void) => {
+    const listener = (_: unknown, value: { active: boolean; ids: string[] }) => callback(value);
+    ipcRenderer.on('agents-presence', listener); ipcRenderer.send('agents-presence-ready');
+    return () => ipcRenderer.removeListener('agents-presence', listener);
+  },
   openAgents: () => ipcRenderer.send('agents-open'),
   codexTitles: (ids: string[]) => ipcRenderer.invoke('codex-titles', ids),
   openAccount: (service: string) => ipcRenderer.invoke('open-account', service),
@@ -102,6 +107,8 @@ contextBridge.exposeInMainWorld('dictation', {
 });
 // The Agents window (agentsWindow.ts answers only that window): a folder picker, a terminal tab, a folder in Finder.
 contextBridge.exposeInMainWorld('agents', {
+  presence: (enabled: boolean, ids: string[]) => ipcRenderer.send('agents-presence', enabled, ids),
+  onDeck: (callback: () => void) => { const listener = () => callback(); ipcRenderer.on('agents-deck', listener); return () => ipcRenderer.removeListener('agents-deck', listener); },
   folder: () => ipcRenderer.invoke('agents-folder'),
   terminal: (cwd: string, cmd: string) => ipcRenderer.invoke('agents-terminal', cwd, cmd),
   reveal: (cwd: string) => ipcRenderer.invoke('agents-reveal', cwd),

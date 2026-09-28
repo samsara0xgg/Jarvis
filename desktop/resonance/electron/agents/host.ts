@@ -87,6 +87,11 @@ export class Session {
 
   // `daemon`: these are the daemon's marks coming in, not a change to send it.
   set(p: Partial<Sess>, daemon = false) {
+    if (p.st && p.st !== this.s.st && !this.quiet) {
+      const at = Date.now();
+      this.s.trace = [...this.s.trace ?? [], { at, st: p.st }];
+      this.s.created ??= at;
+    }
     const changed: string[] = [];
     for (const [k, v] of Object.entries(p)) if ((this.s as Record<string, unknown>)[k] !== v) { (this.s as Record<string, unknown>)[k] = v; changed.push(k); }
     if (!changed.length || this.quiet) return;
@@ -102,7 +107,8 @@ export class Session {
   }
   private emit(from: number) { if (this.items && !this.quiet) broadcast({ t: 'items', id: this.s.id, from, items: this.items.slice(from) }); }
   changed(i: number) { this.emit(i); }
-  private push(it: Item) { this.items!.push(it); this.emit(this.items!.length - 1); return this.items!.length - 1; }
+  private time(at?: number) { return at ?? (this.quiet ? undefined : Date.now()); }
+  private push(it: Item) { if (it.at !== undefined && (!this.s.created || it.at < this.s.created)) this.s.created = it.at; this.items!.push(it); this.emit(this.items!.length - 1); return this.items!.length - 1; }
   private showLive() {
     const t = this.turn, text = t ? [t.pending, t.block].filter(Boolean).join('\n\n') : '';
     this.live = text || null;
@@ -126,16 +132,16 @@ export class Session {
     if (!this.quiet) this.set({ st: 'work', stopped: false, since: Date.now(), now: '在想', summary: '在想', updated: Date.now() });
   }
   private need() { if (!this.turn) this.begin(); return this.turn!; }
-  you(text: string, files: string[] = []) {
+  you(text: string, files: string[] = [], at?: number) {
     this.end(undefined, true);
-    this.push({ k: 'you', text, ...(files.length ? { files } : {}) });
+    this.push({ k: 'you', text, at: this.time(at), ...(files.length ? { files } : {}) });
   }
   // The live group of steps, made when the first step of a stretch arrives.
   private group(at?: number) {
     const t = this.need(), last = this.items!.length - 1;
-    t.last = at ?? Date.now();
+    t.last = this.time(at);
     if (t.group === last && t.group >= 0) return t.group;
-    t.group = this.push({ k: 'steps', steps: [], live: true });
+    t.group = this.push({ k: 'steps', steps: [], live: true, at: this.time(at) });
     t.start = t.last;
     return t.group;
   }
@@ -158,14 +164,14 @@ export class Session {
   say(text: string, at?: number) {
     if (!text.trim()) return;
     const t = this.need();
-    t.last = at ?? Date.now();
+    t.last = this.time(at);
     t.pending = t.pending ? `${t.pending}\n\n${text}` : text; t.block = '';
     this.showLive();
   }
   tool(key: string, step: Step, at?: number) {
     this.flush(at);
     const g = this.group(at), it = this.items![g] as Item & { k: 'steps' };
-    it.steps.push(step);
+    it.steps.push({ ...step, at: this.time(at) });
     this.turn!.tools.set(key, [g, it.steps.length - 1]);
     this.changed(g);
     if (!this.quiet) this.set({ now: NOW[step.k](step.t), summary: NOW[step.k](step.t), updated: Date.now() });
@@ -186,13 +192,14 @@ export class Session {
   note(text: string) { this.flush(); this.push({ k: 'note', text }); }
   ask(req: Req) {
     this.flush();
-    this.push({ k: 'req', req });
+    this.push({ k: 'req', req, at: this.time() });
     if (!this.quiet) this.set({ st: 'wait', now: undefined, summary: reqLine(req), updated: Date.now() });
   }
   answered(id: string, done: string) {
     const i = this.items?.findIndex(it => it.k === 'req' && it.req.id === id && !it.done) ?? -1;
     if (i < 0) return;
     (this.items![i] as Item & { k: 'req' }).done = done;
+    this.items![i].ended = this.time();
     this.changed(i);
     if (!this.pending()) this.set({ st: 'work', now: '在想', summary: '在想' });
   }
@@ -207,7 +214,7 @@ export class Session {
         if (g?.k === 'steps' && g.live) { g.live = false; if (t.start !== undefined) g.took = took((at ?? (this.quiet ? t.last : undefined) ?? Date.now()) - t.start); this.changed(t.group); }
       }
       const text = [t.pending, t.block].filter(Boolean).join('\n\n');
-      if (text) this.push({ k: 'it', text });
+      if (text) this.push({ k: 'it', text, at: this.time(at ?? (this.quiet ? t.last : undefined)) });
       this.turn = null;
       clearTimeout(this.liveTimer); this.live = null;
       if (!this.quiet) broadcast({ t: 'live', id: this.s.id, text: null });
@@ -250,7 +257,10 @@ async function restore() {
   const data = JSON.parse(await readFile(FILE, 'utf8').catch(() => '{"sessions":[]}'));
   for (const { repo, ...s } of data.sessions as (Sess & { repo: string })[]) {
     // A turn that was running when the host went down went with it.
-    if (s.st === 'work' || s.st === 'wait' || s.st === 'pack') Object.assign(s, { st: 'err', summary: 'Jarvis 的后台重启了，这一轮断了 · 发一句接着来' });
+    if (s.st === 'work' || s.st === 'wait' || s.st === 'pack') Object.assign(s, {
+      st: 'err', trace: [...s.trace ?? [], { at: Date.now(), st: 'err' }],
+      summary: 'Jarvis 的后台重启了，这一轮断了 · 发一句接着来',
+    });
     s.parked ??= false;
     sessions.set(s.id, new Session(s, repo));
   }
@@ -382,7 +392,7 @@ async function route(req: Req0, res: http.ServerResponse, url: URL): Promise<unk
     if (b.tree && repo) { ({ cwd, branch } = await worktree(repo, text)); tree = true; }
     const cat = (await getCatalog())[agent];
     const s: Sess = { id: '', agent, title: oneLine(text || files[0]?.name || '新会话', 48), cwd, project: base(repo || cwd), branch, tree,
-      st: 'work', pinned: false, parked: false, archived: false, unread: false, updated: Date.now(), summary: '在想',
+      st: 'work', pinned: false, parked: false, archived: false, unread: false, created: Date.now(), trace: [{ at: Date.now(), st: 'work' }], updated: Date.now(), summary: '在想',
       model: typeof b.model === 'string' ? b.model : cat.models[0]?.[0] ?? '', effort: typeof b.effort === 'string' ? b.effort : 'high',
       mode: typeof b.mode === 'string' ? b.mode : cat.modes[0]?.[0] ?? '', ctx: 0 };
     const x = new Session(s, repo);
@@ -433,6 +443,7 @@ async function route(req: Req0, res: http.ServerResponse, url: URL): Promise<unk
     return { ok: true };
   }
   if (verb === 'answer') {
+    if (x.pending()?.req.id !== b.req) throw new Http(409, '这张请求已经处理过了');
     const a: Answer = { req: str(b.req, 'req'), decision: b.decision === 'deny' ? 'deny' : b.decision === 'always' ? 'always' : 'allow',
       answers: Array.isArray(b.answers) ? b.answers.map((q: unknown) => Array.isArray(q) ? q.map(String) : []) : undefined, text: typeof b.text === 'string' ? b.text : undefined };
     x.driver.answer(x, a);
@@ -470,6 +481,7 @@ async function route(req: Req0, res: http.ServerResponse, url: URL): Promise<unk
     await x.ensureLoaded();
     const id = await x.driver.fork(x);
     const f = new Session({ ...x.s, id, title: `${x.s.title}（分叉）`, pinned: false, parked: false, archived: false, unread: false, st: 'done', updated: Date.now(),
+      trace: [...x.s.trace ?? [], { at: Date.now(), st: 'done' }],
       now: undefined, since: undefined, queue: undefined, stopped: undefined, term: undefined }, x.repo);
     sessions.set(id, f);
     await f.ensureLoaded();
