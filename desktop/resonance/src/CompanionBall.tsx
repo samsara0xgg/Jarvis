@@ -1,6 +1,6 @@
 import { useEffect, useRef, type RefObject } from 'react';
 import { B, Core, LAYERS_ON, MOTION_V2, spring, step, type ExprId, type Skin } from './starCore';
-import { SPRINGS } from './motion';
+import { MOTION, SPRINGS } from './motion';
 import { paintAway, paintRefinedHome, type HomeFinish } from './homeFinish';
 
 export const R = 26;
@@ -16,7 +16,7 @@ export type Lobe = { left: number; right: number; height: number; notched: boole
 // `home`: how she sits in the island. dark: its black is her dimmed glass, her nebula turning inside; eyes: all black
 // but her eyes. Either way her glass lights up only once she drops clear of the island's edge.
 export type HomeLook = 'dark' | 'eyes';
-export type BallTarget = { place: Place; expr: ExprId; pressed: boolean; anchors: Record<Place, Point>; home: HomeLook; homeFinish: HomeFinish; homeFace?: boolean;
+export type BallTarget = { place: Place; expr: ExprId; pressed: boolean; anchors: Record<Place, Point>; home: HomeLook; homeFinish: HomeFinish; homeFace?: boolean; homeJoined?: boolean;
   away?: boolean; happy?: boolean; deep?: boolean; attention?: { id: string; point: Point } };
 // This long without the cursor moving sends her to sleep at home.
 const DOZE_MS = 10 * 60_000;
@@ -54,7 +54,7 @@ export function CompanionBall({ width, height, lobe, target, look, handle, skin,
     // Her inside faded to no edge, for the dark-glass island.
     const neb = document.createElement('canvas'), nctx = neb.getContext('2d')!;
     const start = latest.current.anchors.home;
-    const s = { x: spring(start.x), y: spring(start.y), scale: spring(HOME_SCALE), shine: spring(0), pivot: spring(0), dock: spring(0), fold: spring(1) };
+    const s = { x: spring(start.x), y: spring(start.y), scale: spring(HOME_SCALE), shine: spring(0), pivot: spring(0), dock: spring(0), fold: spring(1), join: spring(0) };
     const reduced = matchMedia('(prefers-reduced-motion: reduce)');
     let frame = 0, last = 0, d = 0, wanted: Place = 'home', shown: Place = 'home', switchAt = 0, pressedAt = -1;
     let tick: ReturnType<typeof setTimeout> | undefined, lit = '';
@@ -84,12 +84,15 @@ export function CompanionBall({ width, height, lobe, target, look, handle, skin,
       if (p && (p.x !== px || p.y !== py)) { px = p.x; py = p.y; movedAt = now; }
       const dozing = atHome && now - movedAt > DOZE_MS;
       const anchor = t.anchors[shown], { frequency: hz, damping } = flightSpring;
+      if (!t.homeJoined) s.join.velocity = Math.min(0, s.join.velocity);
+      if (firm) { s.join.value = Number(!!t.homeJoined); s.join.velocity = 0; }
       const moving = [
         step(s.x, anchor.x, hz, firm ? 1 : damping, dt), step(s.y, anchor.y, hz * 1.08, firm ? 1 : damping, dt),
         step(s.scale, atHome ? HOME_SCALE : 1, SPRINGS.control.frequency, SPRINGS.control.damping, dt),
         // She leaves as a black drop and lights up once clear of the island's edge; coming back her colour drains at the touch.
         step(s.shine, Math.max(s.dock.value, smooth(0, R * s.scale.value * 1.4, s.y.value - island.current.lobe.height)), SPRINGS.control.frequency, SPRINGS.control.damping, dt),
         step(s.pivot, docked ? 1 : 0, SPRINGS.panel.frequency, SPRINGS.panel.damping, dt), step(s.dock, docked ? 1 : 0, SPRINGS.panel.frequency, SPRINGS.panel.damping, dt),
+        !firm && step(s.join, Number(!!t.homeJoined), SPRINGS.panel.frequency / (t.homeJoined ? 1 : MOTION.exit), SPRINGS.panel.damping, dt),
       ].some(Boolean);
       // Gaze: toward the cursor or caret, softer with distance; straight ahead in the island.
       let gaze: [number, number] | null = null;
@@ -207,6 +210,19 @@ export function CompanionBall({ width, height, lobe, target, look, handle, skin,
         paintAway(ctx, rgb, homeRect, path, t.anchors.home, warm, firm ? 0 : now / 1000);
         ctx.restore();
       }
+      // While the Dashboard is attached, this edge is inside one continuous
+      // surface. Fade the pocket's tint and rim into its black header instead of
+      // clipping a lit rectangle above it. Eyes are painted afterwards, so their
+      // light stays continuous. A closed or detached home keeps its original rim.
+      const joined = clamp01(s.join.value);
+      if (joined > 0) {
+        ctx.save(); ctx.clip(path); ctx.globalCompositeOperation = 'destination-out';
+        const fade = ctx.createLinearGradient(0, lobe.height - 16, 0, lobe.height - 3.5);
+        fade.addColorStop(0, 'rgba(0,0,0,0)'); fade.addColorStop(.35, `rgba(0,0,0,${joined * .2})`);
+        fade.addColorStop(.7, `rgba(0,0,0,${joined * .75})`); fade.addColorStop(1, `rgba(0,0,0,${joined})`);
+        ctx.fillStyle = fade; ctx.fillRect(lobe.left, lobe.height - 16, lobe.right - lobe.left, 16); ctx.restore();
+      }
+      cv.dataset.homeJoin = String(joined);
       // The eyes stay on top everywhere, the island included.
       const E = eyes.width, [glow, blur] = core.glow();
       if (!hidden) {
