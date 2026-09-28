@@ -103,12 +103,12 @@ export const EXPRESSIONS: Record<ExprId, Expr> = {
   // Where she is decides her face first: flat "— —" in the island, round dots when she glances out, low eyes when she peeks.
   home: { name: '', eyes: LINES, gaze: 'still' },
   // With her glass showing at home she stays awake there, blinking and looking around, and dozes on the same lines after a long quiet spell.
-  rest: { name: '', eyes: { sep: .3, y: .06, len: .42, w: .21, tilt: 10 }, gaze: 'free', blink: [2600, 6000] },
+  rest: { name: '', eyes: { sep: .3, y: .08, len: .36, w: .245, tilt: 9 }, gaze: 'free', blink: [2600, 6000] },
   doze: { name: '', eyes: LINES, light: 'dim', gaze: 'still', breathe: [.02, 5], bob: .01, fx: { zzz: true } },
   glance: { name: '', eyes: { sep: .36, y: .02, len: .18, w: .18, tilt: 0 }, gaze: 'free' },
-  peek: { name: '', eyes: { sep: .27, y: .3, len: .26, w: .2, tilt: 12 }, gaze: 'free', blink: [2400, 6600] },
+  peek: { name: '', eyes: { sep: .27, y: .32, len: .36, w: .245, tilt: 9 }, gaze: 'free', blink: [2400, 6600] },
   '00': { name: '睡眠', eyes: { ...SLEEP, head: -4 }, light: 'dim', gaze: 'still', gy: .2, spin: .05, breathe: [.022, 5.5], bob: .012, fx: { zzz: true } },
-  '02': { name: '待机', eyes: {}, gaze: 'free', blink: [2400, 6600], antics: ['spin', 'hop'] },
+  '02': { name: '待机', eyes: { len: .36, w: .245, tilt: 9, y: .1 }, gaze: 'free', blink: [2400, 6600], antics: ['spin', 'hop'] },
   '10': { name: '开心', eyes: SMILE, light: 'warm', spin: .6, bounce: [.035, 900], fx: { sparkle: true }, enter: ['hop'], antics: ['spin'] },
   '13': { name: '惊讶', eyes: { sep: .3, y: .03, len: .02, w: .37, tilt: 0 }, light: 'cool', gaze: 'still', gy: -.05, blink: [5000, 9000], spring: [8, .38], enter: ['jolt'],
     seq: { frames: [{ at: 0, eyes: { w: .42, sep: .31 }, bright: 1.8 }, { at: 260, bright: 1.1 }], end: 500 } },
@@ -149,7 +149,7 @@ export const EXPRESSIONS: Record<ExprId, Expr> = {
   ], end: 1600 } },
   // Agent notices (the notice lab): warm and looking down at the card when a session needs you; the done face
   // in green when one has finished. Her light is the card's light, so the panel takes the event's colour.
-  ask: { name: '等你', eyes: TILT, light: 'warm', gaze: 'still', gx: 0, gy: .32, sway: [3, 3.2], blink: [2400, 6000], spin: .35, breathe: [.012, 2.8], enter: ['hop'] },
+  ask: { name: '等你', eyes: { len: .52, w: .21, tilt: 14 }, light: 'warm', gaze: 'still', gx: 0, gy: .32, sway: [3, 3.2], blink: [2400, 6000], spin: .35, breathe: [.012, 2.8], enter: ['hop'] },
   // Think mode: looking far up and holding it, blinking slowly; no stars circle her.
   deep: { name: '深想', eyes: { sep: .27, y: -.02, len: .3, w: .17, tilt: 0, cut: .16 }, light: 'deep', gaze: 'still', gx: .38, gy: -.52, blink: [4200, 8000], blinkSlow: true, spin: .35, breathe: [.014, 5] },
   fin: { name: '做完了', eyes: SMILE, light: 'speak', spin: .5, enter: ['hop', 'burst'], seq: { frames: [
@@ -162,6 +162,48 @@ export const PREVIEW: ExprId[] = ['30', '31', '31b', '31c', '31d', '32', '33', '
 export const TAKES = { listen: ['35', '35b'], receive: ['31', '31b', '31c', '31d'], reply: ['39', '39b', '39c'] } satisfies Record<string, ExprId[]>;
 export const pick = (ids: ExprId[]) => ids[Math.floor(Math.random() * ids.length)];
 const FACES = new Set<ExprId>(['home', 'rest', 'doze', 'glance', 'peek']);
+// Motion v2. Faces she falls asleep into, and how far apart two faces are (1 = too far to morph, hide it behind a blink).
+const SLEEPY = new Set<ExprId>(['home', 'doze', '00']);
+const shapeOf = (id: ExprId): Shape => ({ ...BASE, ...EXPRESSIONS[id].eyes });
+const gapOf = (a: Shape, b: Shape) => Math.max(Math.abs(a.tilt + a.lean - b.tilt - b.lean) / 50, Math.abs(a.len - b.len) / .24,
+  Math.abs((a.lenR ?? a.len) - (b.lenR ?? b.len)) / .24, Math.abs(a.w - b.w) / .14, Math.abs((a.wR ?? a.w) - (b.wR ?? b.w)) / .14,
+  Math.abs(a.head - b.head) / 18, Math.abs(a.cut - b.cut) / .3, Math.abs(a.sep - b.sep) / .1);
+// blink: a face change hides behind a blink; lead: eyes jump first, body follows; attend: looks at a moving cursor, loses interest when it stops;
+// pet: squints when the cursor rests on her; perk: lights up the moment something starts; hop: crouches before a jump; lag: eyes trail her body.
+export type Motion = { blink: boolean; lead: boolean; attend: boolean; pet: boolean; perk: boolean; hop: boolean; lag: boolean };
+export const MOTION_V1: Motion = { blink: false, lead: false, attend: false, pet: false, perk: false, hop: false, lag: false };
+export const MOTION_V2: Motion = { blink: true, lead: true, attend: true, pet: true, perk: true, hop: true, lag: true };
+
+// ---------- life: layers that run together on top of the face ----------
+// alive: breathing, blinking and small idle moments, paced by her energy; attend: what she looks at and for how long;
+// mood: energy and joy tint every face; react: short gestures stacked on top; voice: real voice levels drive her.
+export type Layers = { alive: boolean; attend: boolean; mood: boolean; react: boolean; voice: boolean };
+export const LAYERS_ON: Layers = { alive: true, attend: true, mood: true, react: true, voice: true };
+export const LAYERS_OFF: Layers = { alive: false, attend: false, mood: false, react: false, voice: false };
+export type Mood = { energy: number; joy: number };
+export const NEUTRAL: Mood = { energy: .6, joy: .5 };
+export type ActKind = 'nod' | 'flinch' | 'wince' | 'bulge' | 'wiggle' | 'drift' | 'yawn' | 'sigh' | 'glow' | 'swirl';
+type Act = { kind: ActKind; at: number; dur: number; amp: number; dir: number };
+const ACT_MS: Record<ActKind, number> = { nod: 460, flinch: 620, wince: 700, bulge: 700, wiggle: 800, drift: 2600, yawn: 2100, sigh: 1700, glow: 600, swirl: 900 };
+export const ACT_NAME: Record<ActKind, string> = { nod: '点头', flinch: '一缩', wince: '皱一下', bulge: '鼓一下', wiggle: '扭一扭', drift: '飘一下',
+  yawn: '打哈欠', sigh: '叹口气', glow: '亮一下', swirl: '转一下星星' };
+// A thing that wants her attention (a notice card): where it is, in gaze units, and when it showed up.
+export type Poi = { g: [number, number]; at: number; why: string };
+const IDLE = new Set<ExprId>(['rest', '02', 'peek', 'home', 'glance']);
+const LISTEN = new Set<ExprId>(['35', '35b']);
+const YOU: [number, number] = [0, -.03];
+const lerp = (a: number, b: number, k: number) => a + (b - a) * k;
+const lerp3 = (a: RGB, b: RGB, k: number): RGB => [lerp(a[0], b[0], k), lerp(a[1], b[1], k), lerp(a[2], b[2], k)];
+const blendLight = (a: Light, b: Light, k: number): Light => k <= 0 ? a
+  : { eye: lerp3(a.eye, b.eye, k), glow: lerp3(a.glow, b.glow, k), n: a.n.map((c, i) => lerp3(c, b.n[i], k)), rim: lerp3(a.rim, b.rim, k), b: lerp(a.b, b.b, k) };
+// Joy curves an open eye's lower edge into a smile or lets the inner ends rise into a worried lid; energy is handled where she paints.
+function moodShape(s: Shape, joy: number): Shape {
+  const o = { ...s }, flat = Math.abs(s.tilt) > 60;
+  if (joy > .55 && !flat) o.cutB = Math.max(o.cutB, (joy - .55) * .62);
+  if (joy > .55 && flat && s.bend > 0) o.bend = s.bend + (joy - .55) * .12;
+  if (joy < .45 && !flat && s.cut < .05) { o.cut = (.45 - joy) * .55; o.cutT = -16; o.y += (.45 - joy) * .08; }
+  return o;
+}
 
 // ---------- eyes ----------
 const EYE_KEYS = ['x', 'y', 'len', 'w', 'rot', 'bend', 'lid', 'cut', 'cutT', 'cutB', 'a'] as const;
@@ -465,29 +507,145 @@ function sparkle(c: CanvasRenderingContext2D, x: number, y: number, r: number, c
 }
 
 // ---------- one character: update once per frame, then paint in layers ----------
-// `deep`: think mode is on, so whatever face she wears takes its light.
-export type CoreInput = { expr: ExprId; look: [number, number] | null; still: boolean; pressed: boolean; charge: number; deep?: boolean };
+// vel: how fast her body travels, in her radii per second (v2 lets the eyes trail it).
+// hear: your voice level 0..1; say: her own voice level (none = the old made-up mouth); dim: fades her light (offline).
+export type CoreInput = { expr: ExprId; look: [number, number] | null; still: boolean; pressed: boolean; charge: number; vel?: [number, number];
+  hear?: number; say?: number; mood?: Mood; poi?: Poi | null; dim?: number; deep?: boolean };
 type Particle = { k: 'z' | 'spark' | 'star'; x: number; y: number; vx: number; vy: number; age: number; life: number; s: number; r: number; c?: RGB };
 type State = { L: Eye; R: Eye; head: number; gx: number; gy: number; yaw: number; t: number; env: number; sx: number; sy: number; yOff: number; jx: number;
-  spin: number; bright: number; blush: number; orbitK: number; voice: number; eyes: EyePose[]; ripple: number; flash: number };
+  spin: number; bright: number; blush: number; orbitK: number; voice: number; eyes: EyePose[]; ripple: number; flash: number; lx: number; ly: number; dx: number };
 
 export class Core {
   skin: Skin;
   mat: Glass;
   morph: { from: Glass; to: Skin; at: number; stage: number } | null = null;
   E: Record<keyof Eye, ReturnType<typeof spring>>[];
-  s = { head: spring(0), gx: spring(0), gy: spring(0), stretch: spring(1), lift: spring(0), spinV: spring(.22) };
+  s = { head: spring(0), gx: spring(0), gy: spring(0), stretch: spring(1), lift: spring(0), spinV: spring(.22),
+    ex: spring(0), ey: spring(0), lagX: spring(0), lagY: spring(0), lagB: spring(0), pet: spring(0) };
+  motion: Motion;
+  // Optional observer used by character previews and acceptance checks.
+  beat: (name: string) => void = () => {};
+  from: Shape | null = null; swapAt = 0; swapUntil = 0; drowse = 0; twice = false; perkAt = -1;
+  micro: [number, number] = [0, 0]; microAt = 0; petOn = false;
+  attn = { on: false, last: [0, 0] as [number, number], checkAt: 0, bored: 0, back: 0, since: 0 };
   light = copyLight(LIGHT.base); bright = 1; blush = 0; orbitK = 0; voiceK = 0;
   seed = Math.random() * 10; spin = Math.random() * TAU; texA = 0; spinStart = -1; spinDur = 1100;
   blinkAt = 0; blinkStart = -1; sacAt = 0; sac: [number, number] = [0, 0];
   hopStart = -1; hopH = 0; hopDur = 380; anticAt = 0; shakeAt = -1; rippleAt = -1; flashAt = -1; celebrateUntil = 0;
   fx: Particle[] = []; zAt = 0; sparkAt = 0; expr: ExprId | null = null; t0 = 0; fired = new Set<number>();
+  // life
+  layers: Layers; temper = .5; acts: Act[] = []; focus: { g: [number, number]; until: number; why: string } | null = null;
+  idleAt = 0; checkAt = 0; sighAt = 0; hearK = 0; sayK = 0; talkFrom = -1; hushAt = -1; nodAt = 0; sayFrom = -1; sayHush = -1;
+  tiltSide = 1; tiltAt = 0; poiAt = -1; heardAt = -1e9; yawnAt = 0; tired = false; mood = { energy: spring(NEUTRAL.energy), joy: spring(NEUTRAL.joy) };
+  // Current attention and gesture, also available to character previews.
+  looking = ''; lastAct = { name: '', at: -1e9 };
   st!: State;
-  constructor(skin: Skin) {
-    this.skin = skin; this.mat = { ...SKINS[skin].gl };
+  constructor(skin: Skin, motion: Motion = MOTION_V1, layers: Layers = LAYERS_OFF) {
+    this.skin = skin; this.mat = { ...SKINS[skin].gl }; this.motion = motion; this.layers = layers;
     this.E = eyeTargets(BASE).map(t => Object.fromEntries(EYE_KEYS.map(k => [k, spring(t[k])])) as Record<keyof Eye, ReturnType<typeof spring>>);
   }
-  hop(now: number, h: number, dur = 380) { if (!reduced.matches) { this.hopStart = now; this.hopH = h; this.hopDur = dur; } }
+  hop(now: number, h: number, dur = 380) {
+    if (reduced.matches) return;
+    // v2: a crouch first, then the jump.
+    if (this.motion.hop) { this.s.stretch.velocity -= 1.2 + 5 * h; this.hopStart = now + 90; this.beat('先蹲再跳'); } else this.hopStart = now;
+    this.hopH = h; this.hopDur = dur;
+  }
+  // v2: the moment something starts she lights up and her eyes open a little wider.
+  perk(now: number) {
+    if (!this.motion.perk) return;
+    this.perkAt = now; if (!reduced.matches) this.s.lift.velocity -= 1.6;
+    this.beat('一亮');
+  }
+  // A short gesture stacked on whatever she is doing; idle moments belong to the alive layer, the rest to react.
+  act(kind: ActKind, now: number, amp = 1, layer: keyof Layers = 'react', dir = Math.random() < .5 ? -1 : 1) {
+    if (!this.layers[layer] || reduced.matches) return;
+    if (kind === 'swirl') this.s.spinV.velocity += 5 * amp;
+    this.acts.push({ kind, at: now, dur: ACT_MS[kind], amp, dir });
+    this.lastAct = { name: ACT_NAME[kind], at: now }; this.beat(ACT_NAME[kind]);
+  }
+  // Her eyes go to a point for a while; a far jump takes a blink with it.
+  lookAt(g: [number, number], now: number, ms: number, why: string) {
+    if (!this.layers.attend) return;
+    if (this.blinkStart < 0 && Math.hypot(g[0] - this.s.ex.value, g[1] - this.s.ey.value) > .5 && Math.random() < .5) this.blinkStart = now;
+    this.focus = { g, until: now + ms, why }; this.beat(why);
+  }
+  // Something new showed up (a star beside the notch): a turn of the head when she is free, a flick of the eyes when busy.
+  notice(g: [number, number], now: number, why: string) {
+    if (!this.layers.attend || !this.expr) return;
+    const free = IDLE.has(this.expr) || this.expr === 'ask';
+    if (!free && LISTEN.has(this.expr)) return;
+    this.lookAt(g, now, free ? rnd(900, 1300) : 380, why);
+    if (free) this.perk(now);
+  }
+  // One small moment when nothing is going on; how often, and which, depend on her energy, joy and temper.
+  idle(now: number, e: number, j: number) {
+    const lively = this.temper, opts: [() => void, number][] = [];
+    if (this.layers.attend) {
+      opts.push([() => this.lookAt([rnd(-.65, .65), rnd(-.4, .25)], now, rnd(700, 1500), '瞟一眼别处'), 26 - 10 * lively]);
+      opts.push([() => this.lookAt(YOU, now, rnd(1000, 1700), '看看你'), 14]);
+    }
+    opts.push([() => this.act('bulge', now, .6 + .6 * lively, 'alive'), 6 + 14 * lively]);
+    opts.push([() => this.act('wiggle', now, .6 + .6 * lively, 'alive'), 4 + 12 * lively]);
+    opts.push([() => this.act('drift', now, .7 + .5 * lively, 'alive'), 10]);
+    opts.push([() => this.act('swirl', now, .6 + .8 * lively, 'alive'), 6 + 8 * lively]);
+    if (e < .4) opts.push([() => this.act('yawn', now, 1, 'alive'), 60 * (.4 - e) / .4 + 10]);
+    if (j < .42) opts.push([() => this.act('sigh', now, 1, 'alive'), 16]);
+    let r = Math.random() * opts.reduce((a, o) => a + o[1], 0);
+    for (const [run, w] of opts) if ((r -= w) <= 0) { run(); return; }
+  }
+  // The per-frame rules of the life layers that decide something; the pose changes are in update.
+  life(now: number, id: ExprId, e: number, j: number, poi: Poi | null | undefined) {
+    const Lf = this.layers;
+    // voice: while you talk she changes the angle now and then; at a pause after a phrase she nods.
+    if (LISTEN.has(id) && Lf.voice) {
+      if (this.hearK > .15) this.heardAt = now;
+      if (this.hearK > .2) {
+        if (this.talkFrom < 0) this.talkFrom = now;
+        this.hushAt = -1;
+        if (!this.tiltAt) this.tiltAt = now + rnd(3200, 4800);
+        else if (now > this.tiltAt) { this.tiltSide *= -1; this.tiltAt = now + rnd(3200, 5200); this.beat('换个角度听'); }
+      } else if (this.hearK < .08 && this.talkFrom >= 0) {
+        if (this.hushAt < 0) this.hushAt = now;
+        else if (now - this.hushAt > 200) {
+          if (now - this.talkFrom > 600 && now - this.nodAt > 1100 && Math.random() < .8) { this.nodAt = now; this.act('nod', now, .8 + .4 * this.temper); }
+          this.talkFrom = -1; this.hushAt = -1;
+        }
+      }
+    }
+    // voice: between her own sentences she blinks, and often looks at you.
+    if (this.voiceK > .5 && Lf.voice) {
+      if (this.sayK > .15) { if (this.sayFrom < 0) this.sayFrom = now; this.sayHush = -1; }
+      else if (this.sayK < .05 && this.sayFrom >= 0) {
+        if (this.sayHush < 0) this.sayHush = now;
+        else if (now - this.sayHush > 240) {
+          if (now - this.sayFrom > 600) {
+            if (this.blinkStart < 0) this.blinkStart = now;
+            if (Math.random() < .7) this.lookAt(YOU, now, 560, '说完一句，看你一眼');
+            if (Math.random() < .35) this.act('nod', now, .5);
+          }
+          this.sayFrom = -1; this.sayHush = -1;
+        }
+      }
+    }
+    // attend: while thinking she checks on you now and then; while a card waits she looks up at you between reading it.
+    if (Lf.attend && this.checkAt && now > this.checkAt && (id === '30' || id === 'ask')) {
+      this.lookAt(YOU, now, id === '30' ? 650 : 900, id === '30' ? '瞄你一眼：我还在想' : '抬头看你：你看这个');
+      this.checkAt = now + (id === '30' ? rnd(4200, 6000) : rnd(3000, 5000));
+    }
+    // attend: something new wants her (a card): a small start, then her eyes go to it.
+    if (poi && poi.at !== this.poiAt) { this.poiAt = poi.at; this.act('flinch', now, .45); this.lookAt(poi.g, now, 1400, poi.why); }
+    if (!poi) this.poiAt = -1;
+    // alive: when she gets tired she yawns soon after, not just by chance.
+    if (Lf.alive && Lf.mood && e < .3 !== this.tired) { this.tired = e < .3; if (this.tired) this.yawnAt = now + rnd(1500, 3000); }
+    if (this.yawnAt && now > this.yawnAt && (IDLE.has(id) || id === 'ask')) { this.yawnAt = 0; this.act('yawn', now, 1, 'alive'); }
+    // alive: a long wait wears on her.
+    if (id === 'ask' && Lf.alive && now > this.sighAt) { this.act('sigh', now, 1, 'alive'); this.sighAt = now + rnd(8000, 12000); }
+    // alive: small moments when nothing else is going on
+    if (Lf.alive && (IDLE.has(id) || id === 'ask') && now >= this.idleAt) {
+      if (this.idleAt) this.idle(now, e, j);
+      this.idleAt = now + rnd(5000, 11000) * lerp(1.6, .4, this.temper) * (1 + 1.2 * Math.max(0, .6 - e)) * (id === 'ask' ? 1.6 : 1);
+    }
+  }
   effect(name: Effect, now: number) {
     const s = this.s;
     if (name === 'hop') this.hop(now, .2);
@@ -504,11 +662,23 @@ export class Core {
     }
   }
   enter(id: ExprId, now: number) {
+    const was = this.expr;
     this.expr = id; this.t0 = now; this.fired = new Set();
     const x = EXPRESSIONS[id];
     for (const f of x.enter ?? []) this.effect(f, now);
-    this.anticAt = now + rnd(6000, 14000);
+    this.anticAt = now + rnd(6000, 14000) * (this.layers.alive ? lerp(1.8, .6, this.temper) : 1);
     if (x.blink) this.blinkAt = now + rnd(600, 2400);
+    this.tiltAt = 0; this.talkFrom = -1; this.hushAt = -1; this.sayFrom = -1; this.sayHush = -1;
+    this.checkAt = now + (id === '30' ? 3200 : id === 'ask' ? 2800 : 0); this.sighAt = now + 11000;
+    if (!this.motion.blink || !was) return;
+    // v2: falling asleep is slow; waking, or a face too far from the last to morph into, happens behind a blink (two when waking).
+    if (SLEEPY.has(id)) { this.drowse = now + 1600; this.beat('慢慢闭眼'); return; }
+    this.drowse = 0;
+    const first = x.seq?.frames[0]?.eyes, lidded = !!first && ('lid' in first || 'lidR' in first);
+    const waking = SLEEPY.has(was);
+    if (lidded || !(waking || gapOf(shapeOf(was), shapeOf(id)) >= 1)) return;
+    this.from = shapeOf(was); this.blinkStart = now; this.swapAt = now + 70; this.swapUntil = now + 300; this.twice = waking;
+    this.beat(waking ? '醒来眨两下' : '眨眼换脸');
   }
   // A costume change: crouch, jump and turn round; at the top a flash, and she lands in the new skin.
   change(to: Skin, now: number) {
@@ -525,12 +695,46 @@ export class Core {
     for (const key of Object.keys(to) as (keyof Glass)[]) this.mat[key] = m.from[key] + (to[key] - m.from[key]) * a;
     if (m.stage === 2 && k >= 860) { this.morph = null; this.celebrateUntil = now + 1800; }
   }
-  gaze(x: Expr, ov: Frame | null, now: number, t: number, look: [number, number] | null): [number, number, boolean] {
-    const mode = x.gaze ?? 'free', gx0 = x.gx ?? 0, gy0 = ov?.gy ?? x.gy ?? 0;
+  gaze(x: Expr, ov: Frame | null, now: number, t: number, look: [number, number] | null, poi: Poi | null | undefined): [number, number, boolean] {
+    const mode = x.gaze ?? 'free', gx0 = x.gx ?? 0, gy0 = ov?.gy ?? x.gy ?? 0, id = this.expr!;
+    if (this.motion.lead && now >= this.microAt) { this.micro = [rnd(-.035, .035), rnd(-.025, .025)]; this.microAt = now + rnd(350, 900); }
+    // attend: a glance she chose wins for its moment; while you talk she looks at you; a card holds her eyes between check-ins.
+    if (this.focus && now < this.focus.until) { this.looking = this.focus.why; return [this.focus.g[0] + this.micro[0], this.focus.g[1] + this.micro[1], false]; }
+    this.focus = null;
+    if (this.layers.attend) {
+      if (LISTEN.has(id) && now - this.heardAt < 1600) { this.looking = '看着你（你在说话）'; return [YOU[0] + .06 * this.tiltSide + this.micro[0], YOU[1] + this.micro[1], false]; }
+      if (id === 'ask' && poi) { this.looking = poi.why; return [poi.g[0] + this.micro[0], poi.g[1] + this.micro[1], false]; }
+    }
+    this.looking = { free: '', still: '看前面', away: '害羞，看别处', up: '往上想', loop: '转着圈想', scan: '扫一遍', sweepY: '上下看', recall: '往回想', read: '边说边看' }[mode];
     if (mode === 'free') {
-      if (look) return [look[0], look[1], false];
-      if (now >= this.sacAt) { const far = Math.random() < .4; this.sac = [rnd(-1, 1) * (far ? .55 : .18), rnd(-1, 1) * (far ? .3 : .1)]; this.sacAt = now + rnd(700, 3300); }
-      return [this.sac[0], this.sac[1], true];
+      const m = this.motion;
+      const [mx, my] = m.lead ? this.micro : [0, 0];
+      if (look && m.attend) {
+        // v2: a moving cursor catches her eye; once it sits still for a few seconds she looks elsewhere, then checks back now and then.
+        const a = this.attn;
+        if (now >= a.checkAt) {
+          const jump = Math.hypot(look[0] - a.last[0], look[1] - a.last[1]), moved = jump > .02;
+          a.last = [look[0], look[1]]; a.checkAt = now + 60;
+          if (moved && m.lead && jump > .5 && this.blinkStart < 0 && Math.random() < .6) { this.blinkStart = now; this.beat('远看顺便眨眼'); }
+          if (moved) {
+            if (!a.on) { a.on = true; a.since = now; this.perk(now); this.beat('注意到鼠标'); }
+            a.bored = now + rnd(1800, 3400);
+            // life: a cursor that never stops gets boring too
+            if (this.layers.attend && now - a.since > rnd(6000, 9000)) a.bored = now;
+          }
+          else if (a.on && now > a.bored) { a.on = false; a.back = now + rnd(2600, 5600); this.sacAt = now + rnd(120, 360); this.beat('看腻了，看别处'); }
+          else if (!a.on && now > a.back) { a.on = true; a.bored = now + rnd(700, 1200); this.beat('瞟你一眼'); }
+        }
+        if (a.on) { this.looking = '看鼠标'; return [look[0] + mx, look[1] + my, false]; }
+      } else if (look) { this.looking = '看鼠标'; return [look[0], look[1], false]; }
+      else this.attn.on = false;
+      this.looking = '随便看看';
+      if (now >= this.sacAt) {
+        const far = Math.random() < .4, next: [number, number] = [rnd(-1, 1) * (far ? .55 : .18), rnd(-1, 1) * (far ? .3 : .1)];
+        if (m.lead && this.blinkStart < 0 && Math.hypot(next[0] - this.sac[0], next[1] - this.sac[1]) > .5 && Math.random() < .6) { this.blinkStart = now; this.beat('远看顺便眨眼'); }
+        this.sac = next; this.sacAt = now + rnd(700, 3300);
+      }
+      return [this.sac[0] + mx, this.sac[1] + my, !m.lead];
     }
     if (mode === 'away') return [gx0 + .05 * Math.sin(t * .7), gy0 + .04 * Math.sin(t * .9), false];
     if (mode === 'up') return [.45 + .15 * Math.sin(t * .8), -.5 + .05 * Math.sin(t * 1.3), false];
@@ -546,6 +750,16 @@ export class Core {
     const id = now < this.celebrateUntil && !FACES.has(input.expr) ? '10' : input.expr;
     if (id !== this.expr) this.enter(id, now);
     const s = this.s, t = now / 1000, x = EXPRESSIONS[id], el = now - this.t0, seq = !!x.seq && el < x.seq.end;
+    // life: her mood glides to what the page asks; voice levels rise fast and fall slower
+    const Lf = this.layers, mood = input.mood ?? NEUTRAL;
+    step(this.mood.energy, Lf.mood ? mood.energy : NEUTRAL.energy, .5, 1, dt); step(this.mood.joy, Lf.mood ? mood.joy : NEUTRAL.joy, .5, 1, dt);
+    const e = clamp(this.mood.energy.value, 0, 1), j = clamp(this.mood.joy.value, 0, 1), low = Math.max(0, .6 - e), high = Math.max(0, e - .6);
+    const hear = Lf.voice ? input.hear ?? 0 : 0;
+    this.hearK += (hear - this.hearK) * (1 - Math.exp(-(hear > this.hearK ? 25 : 7) * dt));
+    const sayOn = Lf.voice && input.say !== undefined, say = sayOn ? input.say! : 0;
+    this.sayK += (say - this.sayK) * (1 - Math.exp(-(say > this.sayK ? 30 : 10) * dt));
+    const lean = LISTEN.has(id) && Lf.voice ? this.hearK : 0;
+    const effort = id === '30' && Lf.alive ? smooth(0, 7000, el) : 0;
     let ov: Frame | null = null;
     if (x.seq && seq) for (const [i, f] of x.seq.frames.entries()) if (el >= f.at) {
       ov = f;
@@ -553,33 +767,56 @@ export class Core {
     }
     const frozen = x.freeze && x.seq && el >= x.seq.end - 200;
     const calm = reduced.matches || frozen || input.still ? 0 : 1;
+    if (calm) this.life(now, id, e, j, input.poi);
     let moving = false;
     // eyes
-    const shape: Shape = { ...BASE, ...x.eyes, ...(ov?.eyes ?? {}) };
+    let shape: Shape = this.motion.blink && now < this.swapAt && this.from ? this.from : { ...BASE, ...x.eyes, ...(ov?.eyes ?? {}) };
+    // v2: the cursor resting right on her makes her squint happily.
+    const near = this.motion.pet && (x.gaze ?? 'free') === 'free' && !!input.look && (!this.motion.attend || this.attn.on) && Math.hypot(input.look[0], input.look[1]) < .3;
+    if (near !== this.petOn) { this.petOn = near; if (near) this.beat('摸头眯眼'); }
+    moving = step(s.pet, near ? 1 : 0, 4, 1, dt) || moving;
+    if (s.pet.value > .005) shape = { ...shape, cutB: Math.max(shape.cutB, .36 * s.pet.value), y: shape.y + .03 * s.pet.value };
+    if (Lf.mood) shape = moodShape(shape, j);
+    // alive: the longer she thinks, the harder she concentrates
+    if (effort) shape = { ...shape, cut: Math.max(shape.cut, .16 * effort), cutT: 6 };
     const tg = eyeTargets(shape);
-    const [eh, ed] = x.spring ?? (ov ? [9, .8] : [5.2, .62]);
+    let [eh, ed] = x.spring ?? (ov ? [9, .8] : [5.2, .62]);
+    if (this.motion.blink && now >= this.swapAt && now < this.swapUntil) [eh, ed] = [18, 1];
+    else if (this.motion.blink && now < this.drowse) [eh, ed] = [1.3, 1];
     for (let i = 0; i < 2; i++) for (const k of EYE_KEYS) moving = step(this.E[i][k], tg[i][k], k === 'a' ? 14 : eh, k === 'a' ? 1 : ed, dt) || moving;
     // gaze
-    let [gx, gy, fast] = this.gaze(x, ov, now, t, input.look);
+    let [gx, gy, fast] = this.gaze(x, ov, now, t, input.look, input.poi);
+    if (Lf.mood) gy += .22 * low; // tired eyes sink
     if (this.shakeAt >= 0) { const k = (now - this.shakeAt) / 800; if (k < 1) { gx = .55 * Math.sin(k * 3 * TAU) * (1 - k); fast = true; } else this.shakeAt = -1; }
     if (!calm && x.gaze !== 'still') { gx = 0; gy = 0; }
-    moving = step(s.gx, gx, fast ? 9 : 3.2, .9, dt) || moving;
-    moving = step(s.gy, gy, fast ? 9 : 3.2, .9, dt) || moving;
+    if (this.motion.lead && !fast) {
+      // v2: the eyes jump there first; her body and the stars inside turn after them.
+      moving = step(s.ex, gx, 12, .9, dt) || moving; moving = step(s.ey, gy, 12, .9, dt) || moving;
+      moving = step(s.gx, gx, 2.1, .95, dt) || moving; moving = step(s.gy, gy, 2.1, .95, dt) || moving;
+    } else {
+      moving = step(s.gx, gx, fast ? 9 : 3.2, .9, dt) || moving;
+      moving = step(s.gy, gy, fast ? 9 : 3.2, .9, dt) || moving;
+      Object.assign(s.ex, { value: s.gx.value, velocity: s.gx.velocity }); Object.assign(s.ey, { value: s.gy.value, velocity: s.gy.velocity });
+    }
     const sway = x.sway ? x.sway[0] * Math.sin(t * TAU / x.sway[1]) : 0;
-    moving = step(s.head, shape.head + calm * (sway + 2.2 * Math.sin(t * .37 + this.seed)), 3, .8, dt) || moving;
+    const tilt = lean ? 5 * this.tiltSide * Math.min(1, this.hearK * 3) : 0;
+    moving = step(s.head, shape.head + calm * (sway * (1 - .7 * lean) + tilt + 2.2 * Math.sin(t * .37 + this.seed)), 3, .8, dt) || moving;
     // blink: quick close, slower open, sometimes twice; the right eye a hair later
     if (x.blink && calm && this.blinkStart < 0 && now >= this.blinkAt && !input.pressed) this.blinkStart = now;
     let bl = 1, br = 1;
     if (this.blinkStart >= 0) {
-      const k = (now - this.blinkStart) / 1000 * (x.blinkSlow ? .45 : 1);
+      const k = (now - this.blinkStart) / 1000 * (x.blinkSlow ? .45 : 1) * (Lf.alive ? 1 - .9 * low : 1);
       bl = blinkCurve(k); br = blinkCurve(k - .022);
-      if (k > .3) { this.blinkStart = -1; this.blinkAt = now + (Math.random() < .18 ? 150 : rnd(...(x.blink ?? [3000, 6000]))); }
+      if (k > .3) {
+        this.blinkStart = -1; this.blinkAt = now + (Math.random() < .18 ? 150 : rnd(...(x.blink ?? [3000, 6000])) * (Lf.alive ? 1 + 1.5 * low - .4 * high : 1));
+        if (this.twice) { this.twice = false; this.blinkStart = now + 110; }
+      }
     }
     if (x.lidWave) { const w = Math.sin(t * TAU / x.lidWave); bl *= 1 - .92 * smooth(.1, .9, w); br *= 1 - .92 * smooth(.1, .9, -w); }
     // antics: a full turn (eyes go round the back) or a small hop
     if (x.antics && calm && now >= this.anticAt) {
       if (x.antics[Math.floor(Math.random() * x.antics.length)] === 'spin') this.effect('spin', now); else this.hop(now, .14);
-      this.anticAt = now + rnd(9000, 18000);
+      this.anticAt = now + rnd(9000, 18000) * (Lf.alive ? lerp(1.8, .6, this.temper) : 1);
     }
     this.changing(now);
     let yaw = 0;
@@ -590,24 +827,61 @@ export class Core {
     moving = step(s.lift, x.sink ?? 0, 3, .8, dt) || moving;
     this.voiceK += ((x.voice ? 1 : 0) - this.voiceK) * (1 - Math.exp(-3 * dt));
     const phrase = (.5 + .5 * Math.sin(t * 1.7 - .8)) ** 2, syl = (.5 + .5 * Math.sin(t * 7.3 + 1.3 * Math.sin(t * 2.1))) ** 2;
-    const env = calm * this.voiceK * phrase * (.35 + .65 * syl);
-    const br0 = x.breathe ?? [.007, 4.2];
-    const stretch = s.stretch.value * (1 + calm * br0[0] * Math.sin(t * TAU / br0[1]) + .028 * env);
-    let hopY = 0;
-    if (this.hopStart >= 0) {
+    // voice: her real level moves her when there is one; otherwise the old made-up rhythm
+    const env = sayOn ? this.sayK * this.voiceK : calm * this.voiceK * phrase * (.35 + .65 * syl);
+    let hopY = 0, rise = 0;
+    if (this.hopStart >= 0 && now >= this.hopStart) {
       const k = (now - this.hopStart) / this.hopDur;
-      if (k >= 1) { this.hopStart = -1; s.stretch.velocity -= this.hopH > .3 ? 2.4 : 1.4; } else hopY = -this.hopH * 4 * k * (1 - k);
+      if (k >= 1) { this.hopStart = -1; s.stretch.velocity -= this.hopH > .3 ? 2.4 : 1.4; }
+      else { hopY = -this.hopH * 4 * k * (1 - k); if (this.motion.hop) rise = .1 * Math.max(0, 1 - 2.2 * k); }
     }
+    // v2: lights up for a moment (perk)
+    const pk = this.perkAt >= 0 ? (now - this.perkAt) / 360 : -1;
+    if (pk >= 1) this.perkAt = -1;
+    const bump = pk >= 0 && pk < 1 ? Math.sin(pk * PI) : 0;
+    let br0 = x.breathe ?? [.007, 4.2];
+    if (Lf.alive) br0 = [br0[0] * (1 + 1.4 * low), br0[1] * (1 + .9 * low - .3 * high)];
+    // react: short gestures add up on top of everything else
+    let aGy = 0, aY = 0, aSt = 1, aLid = 1, aLen = 1, aHead = 0, aX = 0, aBr = 1, aCheek = 0, aJx = 0;
+    for (const a of this.acts) {
+      const k = (now - a.at) / a.dur;
+      if (k >= 1 || k < 0) continue;
+      const env1 = Math.sin(PI * k) * a.amp;
+      if (a.kind === 'nod') { aGy += .22 * env1; aY += .035 * env1; aLid *= 1 - .22 * env1; }
+      else if (a.kind === 'flinch') {
+        const shr = k < .35 ? Math.sin(PI * k / .35) * a.amp : 0, wide = k > .3 ? Math.sin(PI * (k - .3) / .7) * a.amp : 0;
+        aSt *= 1 - .13 * shr; aLid *= 1 - .75 * shr; aLen *= 1 + .14 * wide; aY -= .03 * wide; aBr *= 1 + .2 * wide;
+      } else if (a.kind === 'wince') { aLid *= 1 - .45 * env1; aCheek = Math.max(aCheek, .3 * env1); aJx += .012 * env1 * Math.sin(now * .06); aSt *= 1 - .05 * env1; }
+      else if (a.kind === 'bulge') aSt *= 1 + .075 * Math.sin(TAU * k) * (1 - k) * a.amp;
+      else if (a.kind === 'wiggle') aHead += 8 * Math.sin(3 * TAU * k) * (1 - k) * a.amp;
+      else if (a.kind === 'drift') { aX += .16 * a.dir * smooth(0, .35, k) * (1 - smooth(.6, 1, k)) * a.amp; aHead += 4 * a.dir * env1; }
+      else if (a.kind === 'yawn') {
+        const c = smooth(0, .3, k) * (1 - smooth(.7, 1, k)) * a.amp;
+        aLid *= 1 - .8 * c; aCheek = Math.max(aCheek, .25 * c); aSt *= 1 + .08 * c; aGy -= .28 * c; aBr *= 1 - .18 * c;
+      } else if (a.kind === 'sigh') {
+        const inh = k < .45 ? Math.sin(PI * k / .45) : 0, exh = k > .4 ? Math.sin(PI * (k - .4) / .6) : 0;
+        aSt *= 1 + (.04 * inh - .03 * exh) * a.amp; aBr *= 1 - .15 * exh * a.amp; aGy += .1 * exh * a.amp; aLid *= 1 - .2 * exh * a.amp;
+      } else if (a.kind === 'glow') { aBr *= 1 + .35 * env1; aLen *= 1 + .06 * env1; }
+    }
+    this.acts = this.acts.filter(a => now - a.at < a.dur);
+    const stretch = s.stretch.value * (1 + calm * br0[0] * Math.sin(t * TAU / br0[1]) + .028 * env) * (1 + rise) * aSt * (1 + .035 * lean);
     const bounce = x.bounce && calm ? -x.bounce[0] * Math.abs(Math.sin(PI * now / x.bounce[1])) : 0;
-    const bob = calm * (x.bob ?? .03) * Math.sin(t * TAU / 3.3 + this.seed);
+    const bob = calm * (x.bob ?? .03) * (Lf.alive ? .55 + .75 * e : 1) * Math.sin(t * TAU / 3.3 + this.seed);
     const trem = ((ov?.tremble ?? x.tremble ?? 0) + .012 * charge) * (reduced.matches ? 0 : 1);
-    const jx = trem * (Math.sin(t * 57.1) + Math.sin(t * 83.7 + 1.3)) * .5;
+    const jx = trem * (Math.sin(t * 57.1) + Math.sin(t * 83.7 + 1.3)) * .5 + aJx;
     // stars spin faster while she charges
-    step(s.spinV, calm * (ov?.spin ?? x.spin ?? .22) + 2.6 * charge, 1.2, 1, dt);
+    step(s.spinV, calm * (ov?.spin ?? x.spin ?? .22) * (Lf.mood ? .45 + .9 * e : 1) * (1 + .9 * effort) + 2.6 * charge, 1.2, 1, dt);
     this.spin += s.spinV.value * dt;
     // light
-    const L = LIGHT[input.deep ? 'deep' : ov?.light ?? x.light ?? 'base'], gap = mixLight(this.light, L, 1 - Math.exp(-(ov?.lightK ?? x.lightK ?? 5) * dt));
-    let bt = (ov?.bright ?? x.bright ?? 1) * L.b * (1 + .25 * env) * (1 + .3 * charge);
+    // mood: joy warms her light, low joy or energy dims it; offline dims it further
+    let L = LIGHT[input.deep ? 'deep' : ov?.light ?? x.light ?? 'base'];
+    if (Lf.mood) {
+      if (j > .55) L = blendLight(L, LIGHT.warm, (j - .55) * .8);
+      L = blendLight(L, LIGHT.dim, Math.min(.6, Math.max(0, .45 - j) * .8 + Math.max(0, .4 - e) * .9));
+    }
+    if (input.dim) L = blendLight(L, LIGHT.dim, input.dim);
+    const gap = mixLight(this.light, L, 1 - Math.exp(-(ov?.lightK ?? x.lightK ?? 5) * dt));
+    let bt = (ov?.bright ?? x.bright ?? 1) * L.b * (1 + .25 * env) * (1 + .3 * charge) * (1 + .25 * bump) * (Lf.mood ? .82 + .3 * e : 1) * (1 + .2 * lean);
     if (x.flicker && calm) bt *= 1 - x.flicker * (.5 + .5 * Math.sin(t * 37) * Math.sin(t * 23.3));
     const dim = Math.abs(bt - this.bright);
     this.bright += (bt - this.bright) * (1 - Math.exp(-(ov ? 14 : 6) * dt));
@@ -625,28 +899,44 @@ export class Core {
     }
     this.fx = this.fx.filter(p => p.age < p.life);
     // what the painters read
-    const [eL, eR] = this.E.map((e, i) => {
-      const o = Object.fromEntries(EYE_KEYS.map(k => [k, e[k].value])) as Eye;
-      o.lid = Math.max(.04, o.lid * (i ? br : bl) * (input.pressed ? .35 : 1));
-      o.len = Math.max(0, o.len * (1 + .08 * env)); o.w = Math.max(.02, o.w); o.a = clamp(o.a, 0, 1);
+    // mood: heavy lids when she is tired, a little wider when she is lively
+    const lidMul = Lf.mood ? 1 - 1.1 * low ** 1.5 : 1, lenMul = (Lf.mood ? 1 + .12 * high : 1) * aLen * (1 + .1 * lean);
+    const [eL, eR] = this.E.map((sp, i) => {
+      const o = Object.fromEntries(EYE_KEYS.map(k => [k, sp[k].value])) as Eye;
+      o.lid = Math.max(.04, o.lid * (i ? br : bl) * (input.pressed ? .35 : 1) * lidMul * aLid);
+      o.len = Math.max(0, o.len * (1 + .08 * env + .08 * bump) * lenMul); o.w = Math.max(.02, o.w * (1 + .16 * bump)); o.a = clamp(o.a, 0, 1);
+      o.cutB = Math.max(o.cutB, aCheek);
       return o;
     });
     const phase = (at: number, ms: number) => { if (at < 0) return -1; const k = (now - at) / ms; return k < 1 ? k : -1; };
     this.rippleAt = phase(this.rippleAt, 900) < 0 ? -1 : this.rippleAt;
     this.flashAt = phase(this.flashAt, 420) < 0 ? -1 : this.flashAt;
+    // v2: the eyes float in the glass: they trail her body (flight, hops) and settle with a small overshoot.
+    let ox = 0, oy = 0;
+    if (this.motion.lag) {
+      const [vx, vy] = input.vel ?? [0, 0], body = hopY + bounce;
+      moving = step(s.lagX, clamp(-vx * .012, -.1, .1), 7, .5, dt) || moving;
+      moving = step(s.lagY, clamp(-vy * .012, -.1, .1), 7, .5, dt) || moving;
+      moving = step(s.lagB, body, 9, .5, dt) || moving;
+      ox = s.lagX.value; oy = s.lagY.value + s.lagB.value - body;
+    }
+    const eyes = eyeSet(eL, eR, s.ex.value, s.ey.value + aGy, yaw, s.head.value + aHead);
+    if (ox || oy) for (const e of eyes) { e.c[0] += ox; e.c[1] += oy; for (const p of e.pts) { p[0] += ox; p[1] += oy; } }
+    const leanOn = this.motion.lead ? 1 : 0;
     this.st = {
-      L: eL, R: eR, head: s.head.value, gx: s.gx.value, gy: s.gy.value, yaw, t, env,
-      sx: (1 + .012 * env) / Math.sqrt(stretch), sy: stretch, yOff: hopY + bob + bounce + s.lift.value, jx,
-      spin: this.spin, bright: this.bright, blush: this.blush, orbitK: this.orbitK, voice: this.voiceK,
-      eyes: eyeSet(eL, eR, s.gx.value, s.gy.value, yaw, s.head.value), ripple: phase(this.rippleAt, 900), flash: phase(this.flashAt, 420),
+      L: eL, R: eR, head: s.head.value + aHead, gx: s.gx.value, gy: s.gy.value + .5 * aGy, yaw, t, env, lx: leanOn * .04 * s.gx.value, ly: leanOn * .025 * s.gy.value,
+      sx: (1 + .012 * env) / Math.sqrt(stretch), sy: stretch, yOff: hopY + bob + bounce + s.lift.value + aY + .03 * lean, jx, dx: aX,
+      spin: this.spin, bright: this.bright * aBr, blush: this.blush, orbitK: this.orbitK, voice: this.voiceK,
+      eyes, ripple: phase(this.rippleAt, 900), flash: phase(this.flashAt, 420),
     };
     return !input.still || moving || gap > .004 || dim > .004 || this.blinkStart >= 0 || this.hopStart >= 0 || this.spinStart >= 0
-      || this.shakeAt >= 0 || this.rippleAt >= 0 || this.flashAt >= 0 || this.fx.length > 0 || !!this.morph || seq;
+      || this.shakeAt >= 0 || this.rippleAt >= 0 || this.flashAt >= 0 || this.fx.length > 0 || !!this.morph || seq || this.perkAt >= 0 || now < this.swapUntil
+      || this.acts.length > 0 || !!this.focus || (Lf.alive && calm > 0);
   }
   // Her own motion on top of where she is: hop, tremble, breathing, squash. `k` fades it out inside the island.
   pose(k: number): [number, number, number, number] {
     const st = this.st;
-    return [st.jx * k, st.yOff * k, 1 + (st.sx - 1) * k, 1 + (st.sy - 1) * k];
+    return [(st.jx + st.lx + st.dx) * k, (st.yOff + st.ly) * k, 1 + (st.sx - 1) * k, 1 + (st.sy - 1) * k];
   }
   // Renders both GL layers for this frame at S device pixels; false without WebGL2.
   render(S: number, q: number) {

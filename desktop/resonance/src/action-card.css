@@ -1,67 +1,68 @@
 /* ADR 0062: the action card, on the Conversation page's glass and in the notch's black. One quiet surface: colour
    lives only in the status dot and the one button that acts. Both hosts define --p-ink/-muted/-faint/-line and --warm-c. */
-.ac { position:relative; display:flex; flex-direction:column; gap:9px; padding:10px 12px 11px; border-radius:16px; text-align:left;
+.ac { position:relative; display:flex; flex-direction:column; gap:9px; padding:10px 12px 11px; border-radius:var(--radius-block); text-align:left;
   background:linear-gradient(180deg,rgb(255 255 255 / .065),rgb(255 255 255 / .035));
   box-shadow:inset 0 0 0 .5px rgb(var(--glow) / .22),inset 0 1px 0 rgb(255 255 255 / .05),0 12px 28px -18px #000; }
 .notch .ac { padding:2px 2px 4px; border-radius:0; background:none; box-shadow:none; }
 .ac-bar { display:flex; align-items:center; gap:8px; min-height:22px; }
-.ac-label { flex:1; min-width:0; display:inline-flex; align-items:center; gap:7px; font-size:11.5px; font-weight:600; letter-spacing:.02em; color:var(--warm-c);
+.ac-label { flex:1; min-width:0; display:inline-flex; align-items:center; gap:7px; font-size:var(--text-detail); font-weight:600; letter-spacing:.02em; color:var(--warm-c);
   white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .ac-label i { width:6px; height:6px; flex:none; border-radius:50%; background:currentColor; box-shadow:0 0 8px currentColor; animation:ac-breathe 2.4s ease-in-out infinite; }
 @keyframes ac-breathe { 50% { opacity:.35; box-shadow:none; } }
-.ac-meta { font-size:11px; color:var(--p-faint); white-space:nowrap; }
-.ac-x { display:grid; place-items:center; flex:none; width:22px; height:22px; padding:0; margin-right:-5px; border-radius:7px; color:var(--p-faint); }
+.ac-meta { font-size:var(--text-label); color:var(--p-faint); white-space:nowrap; }
+.ac-x { display:grid; place-items:center; flex:none; width:22px; height:22px; padding:0; margin-right:-5px; border-radius:var(--radius-control); color:var(--p-faint); }
 .ac-x:hover,.ac-x:focus-visible { background:rgb(255 255 255 / .08); color:var(--p-ink); outline:none; }
 
 /* A letter, not a form: who it goes to, the subject as its title, then the body, all editable in place. */
-.ac-to { display:flex; align-items:center; gap:7px; min-width:0; padding-bottom:8px; border-bottom:.5px solid var(--p-line); font-size:12px; color:var(--p-muted); }
-.ac-to em { font-style:normal; font-size:11px; color:var(--p-faint); }
-.ac-chip { min-width:0; padding:2px 9px; border-radius:99px; background:rgb(var(--glow) / .14); color:#dfe6ff; font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.ac-edit { display:block; width:calc(100% + 10px); min-width:0; margin:0 -5px; padding:2px 5px; border:0; border-radius:7px; background:transparent; color:var(--p-ink);
-  font-family:inherit; outline:none; transition:background 140ms ease; }
+.ac-to { display:flex; align-items:center; gap:7px; min-width:0; padding-bottom:8px; border-bottom:.5px solid var(--p-line); font-size:var(--text-detail); color:var(--p-muted); }
+.ac-to em { font-style:normal; font-size:var(--text-label); color:var(--p-faint); }
+.ac-chip { min-width:0; padding:2px 9px; border-radius:var(--radius-tag); background:rgb(var(--glow) / .14); color:#dfe6ff; font-size:var(--text-detail); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.ac-edit { display:block; width:calc(100% + 10px); min-width:0; margin:0 -5px; padding:2px 5px; border:0; border-radius:var(--radius-control); background:transparent; color:var(--p-ink);
+  font-family:inherit; outline:none; transition:background var(--motion-fast) ease; }
 .ac-edit:hover { background:rgb(255 255 255 / .04); }
-.ac-edit:focus-visible { background:rgb(255 255 255 / .06); box-shadow:0 0 0 1px rgb(139 228 188 / .45); }
-.ac-subject { font-size:15px; font-weight:600; letter-spacing:-.01em; line-height:1.4; }
-.ac-body { font-size:13px; line-height:1.62; color:var(--p-ink); opacity:.88; resize:none; min-height:3.4em; max-height:240px; }
+.ac-edit:focus-visible { background:rgb(255 255 255 / .06); box-shadow:0 0 0 1px rgb(var(--glow) / .45); }
+.ac-subject { font-size:var(--text-title); font-weight:600; letter-spacing:-.01em; line-height:1.4; }
+.ac-body { font-size:var(--text-body); line-height:1.62; color:var(--p-ink); opacity:.88; resize:none; min-height:3.4em; max-height:240px; }
 
 /* Any other tool: its arguments as a few name: value rows, never the raw call. */
-.ac-kv { display:flex; flex-direction:column; gap:5px; margin:0; font-size:12.5px; }
+.ac-kv { display:flex; flex-direction:column; gap:5px; margin:0; font-size:var(--text-detail); }
 .ac-kv div { display:grid; grid-template-columns:5.5em minmax(0,1fr); gap:10px; }
-.ac-kv dt { color:var(--p-muted); font-size:12px; overflow:hidden; text-overflow:ellipsis; }
+.ac-kv dt { color:var(--p-muted); font-size:var(--text-detail); overflow:hidden; text-overflow:ellipsis; }
 .ac-kv dd { margin:0; overflow-wrap:anywhere; display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }
-.ac-more { margin:0; font-size:11.5px; color:var(--p-faint); }
+.ac-more { margin:0; font-size:var(--text-detail); color:var(--p-faint); }
 
 .ac-foot { display:flex; align-items:center; gap:4px; }
 .ac-foot > span { flex:1; }
-.ac-go { display:inline-flex; align-items:center; gap:6px; height:30px; padding:0 13px; border-radius:15px; background:var(--mint,#8be4bc); color:#10231a;
-  font:600 12.5px/1 -apple-system,BlinkMacSystemFont,sans-serif; white-space:nowrap; transition:transform 120ms ease,filter 160ms ease; }
+.ac-go { display:inline-flex; align-items:center; gap:6px; height:30px; padding:0 13px; border-radius:var(--radius-control); background:rgb(var(--glow)); color:#0d1022;
+  font:600 var(--text-detail)/1 -apple-system,BlinkMacSystemFont,sans-serif; white-space:nowrap; transition:transform var(--motion-fast) ease,filter var(--motion-fast) ease; }
 .ac-go:hover { filter:brightness(1.08); }
 .ac-go:active { transform:scale(.97); }
-.ac-go:focus-visible { outline:2px solid rgb(139 228 188 / .6); outline-offset:2px; }
+.ac-go:focus-visible { outline:2px solid rgb(var(--glow) / .6); outline-offset:2px; }
 
 /* An email Jarvis read whole, above its answer on the Conversation page. */
-.mc { display:flex; flex-direction:column; gap:4px; padding:9px 11px 10px; border-radius:12px; background:rgb(0 0 0 / .18); box-shadow:inset 0 0 0 .5px var(--p-line); }
+.mc { display:flex; flex-direction:column; gap:4px; padding:9px 11px 10px; border-radius:var(--radius-block); background:rgb(0 0 0 / .18); box-shadow:inset 0 0 0 .5px var(--p-line); }
 .mc-top { display:flex; align-items:baseline; gap:8px; min-width:0; }
-.mc-top b { flex:1; min-width:0; font-size:12.5px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.mc-top time { flex:none; font-size:11px; color:var(--p-faint); font-variant-numeric:tabular-nums; }
-.mc-subject { margin:0; font-size:13px; font-weight:500; }
-.mc-body { margin:0; font-size:12.5px; line-height:1.55; color:var(--p-muted); white-space:pre-wrap; overflow-wrap:anywhere;
+.mc-top b { flex:1; min-width:0; font-size:var(--text-detail); font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.mc-top time { flex:none; font-size:var(--text-label); color:var(--p-faint); font-variant-numeric:tabular-nums; }
+.mc-subject { margin:0; font-size:var(--text-body); font-weight:500; }
+.mc-body { margin:0; font-size:var(--text-detail); line-height:1.55; color:var(--p-muted); white-space:pre-wrap; overflow-wrap:anywhere;
   display:-webkit-box; -webkit-line-clamp:6; -webkit-box-orient:vertical; overflow:hidden; }
 .mc-body.is-open { display:block; }
-.mc-more { align-self:flex-start; padding:2px 0; font-size:11.5px; color:rgb(var(--glow)); }
+.mc-more { align-self:flex-start; padding:2px 0; font-size:var(--text-detail); color:rgb(var(--glow)); }
 
 /* ADR 0066: the ask card. Jarvis's question as its title, then one input or one row of choices per detail. */
-.qc-q { margin:0; font-size:14px; font-weight:600; line-height:1.45; letter-spacing:-.005em; }
+.qc-q { margin:0; font-size:var(--text-body); font-weight:600; line-height:1.45; letter-spacing:-.005em; }
 .qc-field { display:flex; flex-direction:column; gap:5px; min-width:0; }
-.qc-field > span:first-child { font-size:11px; color:var(--p-faint); }
-.qc-input { width:100%; min-width:0; height:32px; padding:0 10px; border:0; border-radius:9px; background:rgb(255 255 255 / .06);
-  box-shadow:inset 0 0 0 .5px var(--p-line); color:var(--p-ink); font:inherit; font-size:13px; outline:none; transition:box-shadow 140ms ease; }
-.qc-input:focus-visible { outline:none; box-shadow:inset 0 0 0 1px rgb(139 228 188 / .55); }
+.qc-field > span:first-child { font-size:var(--text-label); color:var(--p-faint); }
+.qc-input { width:100%; min-width:0; height:32px; padding:0 10px; border:0; border-radius:var(--radius-control); background:rgb(255 255 255 / .06);
+  box-shadow:inset 0 0 0 .5px var(--p-line); color:var(--p-ink); font:inherit; font-size:var(--text-body); outline:none; transition:box-shadow var(--motion-fast) ease; }
+.qc-input:focus-visible { outline:none; box-shadow:inset 0 0 0 1px rgb(var(--glow) / .55); }
 .qc-choices { display:flex; flex-wrap:wrap; gap:6px; }
-.qc-choice { height:28px; padding:0 12px; border-radius:14px; font-size:12.5px; color:var(--p-muted); box-shadow:inset 0 0 0 .5px var(--p-line);
-  transition:background 140ms ease,color 140ms ease; }
+.qc-choice { height:28px; padding:0 12px; border-radius:var(--radius-block); font-size:var(--text-detail); color:var(--p-muted); box-shadow:inset 0 0 0 .5px var(--p-line);
+  transition:background var(--motion-fast) ease,color var(--motion-fast) ease; }
 .qc-choice:hover { color:var(--p-ink); background:rgb(255 255 255 / .05); }
 .qc-choice.is-on { color:#10131d; background:var(--p-ink); box-shadow:none; font-weight:600; }
 .ac .ac-go:disabled { opacity:.38; filter:none; transform:none; }
 
 @media (prefers-reduced-motion:reduce) { .ac-label i { animation:none; } .ac-go,.ac-edit,.qc-input,.qc-choice { transition:none; } }
+.ac-go kbd { font:var(--text-mono)/1 ui-monospace,Menlo,monospace; opacity:.72; }

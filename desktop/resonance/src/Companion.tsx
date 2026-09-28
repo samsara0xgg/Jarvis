@@ -16,24 +16,26 @@ import { Notch, type NotchNote } from './Notch';
 import { tr, useCompanionSettings, type L, type Lang } from './companionSettings';
 import { useNow, useRoute } from './homeData';
 import type { Controls as DashControls, Look } from './SettingsPage';
+import { HOVER_DWELL_MS, HOVER_EXIT_MS, HOVER_SPEED, PointerIntent } from './pointerIntent';
+import './design-tokens.css';
 import './companion.css';
 
 type Placement = { topInset: number; notchWidth: number; surfaceWidth: number; displayId?: number };
 type Rect = { x: number; y: number; w: number; h: number };
 type Zone = 'none' | 'lobe' | 'ball';
 const within = (p: Point, r: Rect) => p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h;
-const PANEL = 300;
+const PANEL = 360;
 // With a `port` she is live: the daemon's turns drive her voice, faces and words. Without one (the design
 // checks, `--demo`) the scripted demo below plays instead.
 const port = new URLSearchParams(location.search).get('port');
 // Her bubble carries what she says aloud: the spoken form when the answer has one (ADR 0040), else its text.
 const spoken = (reply: string) => { const voice = /<voice>([\s\S]*?)(?:<\/voice>|$)/.exec(reply); return voice ? plain(voice[1]) : plain(reply); };
-const DOUBLE_CLICK_MS = 300;
 // Prototype script: every transcript and reply below is simulated.
 const HEARD = '把今天的任务整理一下';
 // Her skin, whether she changes it herself, how she looks in the island and the look of the agent marks
 // live in this companion's own profile.
 const WARDROBE = 'companion-wardrobe-v1';
+const SKIN_NAMES: Record<Skin, L> = { glass: ['Glass', '深空玻璃'], nebula: ['Nebula', '星云'], galaxy: ['Galaxy', '银河'], frost: ['Frost', '磨砂'], aurora: ['Aurora', '极光'], codex: ['Icon', '图标同款'] };
 function loadWardrobe(): Look {
   try {
     const value = JSON.parse(localStorage.getItem(WARDROBE) ?? '{}');
@@ -58,7 +60,7 @@ function layout({ topInset, notchWidth, surfaceWidth: width }: Placement) {
   // so neither shape's rounded corner shows where they meet and the bottom edge runs straight across.
   const wingX = notchWidth ? notchLeft + notchWidth : lobe.right;
   return { width, lobe, anchors, out, center, panelTop, wingX, zones: {
-    lobe: notchWidth ? { x: lobe.left - 26, y: 0, w: notchLeft - lobe.left + 26, h: topInset + 16 } : { x: center - 36, y: 0, w: 72, h: topInset + 16 },
+    lobe: notchWidth ? { x: lobe.left, y: 0, w: notchLeft - lobe.left, h: topInset } : { x: center - 36, y: 0, w: 72, h: topInset },
     ball: { x: x - R - 12, y: topInset, w: 2 * R + 24, h: out.y + R + 12 - topInset },
     chip: { x: x + R + 4, y: out.y - 18, w: 44, h: 36 },
     dash: notchWidth ? [{ x: notchLeft, y: 0, w: notchWidth, h: topInset + 4 }]
@@ -170,6 +172,8 @@ export function Companion() {
   const [wardrobe, setWardrobe] = useState(loadWardrobe);
   // A skin change brings her out of the island for a moment.
   const [outing, setOuting] = useState(false);
+  const [menu, setMenu] = useState<Point | null>(null), [settingsFocus, setSettingsFocus] = useState(0);
+  const menuRef = useRef<HTMLDivElement>(null);
   const [preview, setPreview] = useState<ExprId | null>(null);
   // The page open in the Dashboard sets her face while nothing else is going on.
   const [dashMood, setDashMood] = useState<ExprId | null>(null);
@@ -189,7 +193,7 @@ export function Companion() {
   const [keysPress, setKeysPress] = useState(0), [keysOn, setKeysOn] = useState(false), [viewing, setViewing] = useState<string | null>(null);
   // No notice while she talks, while you type to her, while the Dashboard is open or while the keys hold the island;
   // they come up after.
-  const notices = useNotices({ port, agents, hold: busy || dashboard || moving || carded || keysOn, watched, viewing,
+  const notices = useNotices({ port, agents, hold: busy || dashboard || moving || carded || keysOn || !!menu, watched, viewing,
     cue: (name, gain) => { if (preferences.feedbackEnabled && !s.soundMuted) noticeCue(name, preferences.feedbackVolume, gain); },
     answer: (req, body) => port ? answerRequest(port, req.id, body) : Promise.resolve(true) });
   const notice = notices.current;
@@ -200,7 +204,7 @@ export function Companion() {
     else void window.jarvis?.jumpGhostty?.(a.title, a.job ?? '');
   };
   // A notice hangs from the notch and she watches it from home.
-  const place: Place = moving ? 'home' : dashboard ? 'dock' : carded ? 'home' : notice ? notices.peek ? 'peek' : 'home' : busy || zone === 'ball' || outing ? 'out' : zone === 'lobe' || notices.peek ? 'peek' : 'home';
+  const place: Place = moving ? 'home' : dashboard ? 'dock' : carded ? 'home' : notice ? notices.peek ? 'peek' : 'home' : busy || zone === 'ball' || outing || menu ? 'out' : zone === 'lobe' || notices.peek ? 'peek' : 'home';
   // A finished text reply stays up briefly: that is her "done" face.
   const listenFace = useRef<ExprId>('35'), receiveFace = useRef<ExprId>('31'), replyFace = useRef<ExprId>('39');
   // Live turns pick her takes as they begin; the scripted demo picks its own in listen() and say().
@@ -224,7 +228,7 @@ export function Companion() {
   const input = useRef<HTMLInputElement>(null), root = useRef<HTMLElement>(null), pressing = useRef(false);
 
   const zoneTimer = useRef<ReturnType<typeof setTimeout>>(undefined), pending = useRef<Zone>('none');
-  const dashTimer = useRef<ReturnType<typeof setTimeout>>(undefined), dashEntered = useRef(false), pinned = useRef(false), interactive = useRef(false);
+  const dashTimer = useRef<ReturnType<typeof setTimeout>>(undefined), dashEntered = useRef(false), pinned = useRef(false), dashClosedHere = useRef(false), interactive = useRef(false);
   const script = useRef<ReturnType<typeof setTimeout>[]>([]);
   const after = (ms: number, run: () => void) => { script.current.push(setTimeout(run, ms)); };
   const stopScript = () => { script.current.forEach(clearTimeout); script.current = []; };
@@ -269,18 +273,16 @@ export function Companion() {
     else if (voice === 'speaking') listen(false);
     else endVoice();
   };
-  const pressAt = useRef(0), firstClick = useRef<ReturnType<typeof setTimeout>>(undefined), latestPoke = useRef(poke);
+  const pressAt = useRef(0), latestPoke = useRef(poke);
   latestPoke.current = poke;
   const press = () => { pressing.current = true; pressAt.current = performance.now(); setPressed(true); };
-  // A short poke talks to her once no second click follows; a double click opens or closes the Dashboard;
-  // holding her until she shivers changes her into the next skin.
+  // Release a short click immediately. Once the charge ring appears, releasing early cancels the hold.
   const release = () => {
     if (!pressing.current) return;
     pressing.current = false; setPressed(false);
-    if (performance.now() - pressAt.current >= HOLD_MS) choose(SKIN_KEYS[(SKIN_KEYS.indexOf(worn.current) + 1) % SKIN_KEYS.length]);
-    else if (live.current.openBy === 'hover') latestPoke.current();
-    else if (firstClick.current) { clearTimeout(firstClick.current); firstClick.current = undefined; toggleDashboard(); }
-    else firstClick.current = setTimeout(() => { firstClick.current = undefined; latestPoke.current(); }, DOUBLE_CLICK_MS);
+    const held = performance.now() - pressAt.current;
+    if (held >= HOLD_MS) choose(SKIN_KEYS[(SKIN_KEYS.indexOf(worn.current) + 1) % SKIN_KEYS.length]);
+    else if (held < 200) latestPoke.current();
   };
   const cancel = () => { pressing.current = false; setPressed(false); };
 
@@ -347,8 +349,12 @@ export function Companion() {
     if (request.purpose && (request.state === 'offered' || request.state === 'error')) { openDashboard(false); pinned.current = true; setPluginFocus({ plugin: request.plugin_id, key }); }
   }, [request?.id, request?.presentation]);
   const openDashboard = (hovered: boolean) => { pinned.current = false; dashEntered.current = hovered; setDashboard(true); setComposer(false); void window.jarvis?.focus(false); };
-  // Opened by a double click, the Dashboard stays when the cursor leaves; another double click on her closes it.
-  const toggleDashboard = () => { if (live.current.dashboard) setDashboard(false); else { openDashboard(false); pinned.current = true; } };
+  // Clicking the island pins the Dashboard; clicking it again closes it.
+  const toggleDashboard = () => {
+    clearTimeout(dashTimer.current); dashTimer.current = undefined;
+    if (live.current.dashboard && pinned.current) { setDashboard(false); pinned.current = false; dashClosedHere.current = true; }
+    else { if (!live.current.dashboard) openDashboard(false); pinned.current = true; }
+  };
 
   // What she wears now; it differs from the saved pick while she tries another skin on her own.
   const worn = useRef<Skin>(wardrobe.skin);
@@ -388,14 +394,14 @@ export function Companion() {
     if (command === 'agent-keys') { setDashboard(false); closeComposer(); setKeysPress(n => n + 1); }
   }), []);
   useEffect(() => window.jarvis?.onDisplayLeave(() => {
-    closeComposer(); setDashboard(false); clearTimeout(zoneTimer.current); pending.current = 'none'; setZone('none'); setMoving(true);
+    closeComposer(); setMenu(null); setDashboard(false); clearTimeout(zoneTimer.current); clearTimeout(dashTimer.current); dashTimer.current = undefined; pending.current = 'none'; setZone('none'); setMoving(true);
     // Long enough to look up, fly home and merge before the window leaves this screen.
     setTimeout(() => window.jarvis?.displayReady(), 520);
   }), []);
   // The ball reads the new anchors in its own effect, which runs before this one.
   useEffect(() => { if (arriving.current) { arriving.current = false; ball.current?.arrive(); } }, [geo]);
   useEffect(() => {
-    const blur = () => { if (live.current.composer) closeComposer(); };
+    const blur = () => { setMenu(null); cancel(); if (live.current.composer) closeComposer(); };
     window.addEventListener('blur', blur);
     return () => window.removeEventListener('blur', blur);
   }, []);
@@ -409,26 +415,56 @@ export function Companion() {
     const hit = island || !!document.elementFromPoint(p.x, p.y)?.closest('[data-hit]');
     if (hit !== interactive.current && !pressing.current) { interactive.current = hit; window.jarvis?.passthrough(!hit); }
   };
-  useEffect(() => window.jarvis?.onCursor(point => {
-    const { geo, dashboard, chip, composer } = live.current, z = geo.zones;
-    cursor.current = point;
-    if (!composer) look.current = live.current.noticeLook ?? point;
-    refreshHit();
-    const next: Zone = within(point, z.ball) || (chip && within(point, z.chip)) ? 'ball' : within(point, z.lobe) ? 'lobe' : 'none';
-    if (next !== pending.current) {
-      pending.current = next; clearTimeout(zoneTimer.current);
-      zoneTimer.current = setTimeout(() => setZone(next), next === 'ball' ? 0 : next === 'lobe' ? 90 : 600);
-    }
-    const over = z.dash.some(r => within(point, r)) || (dashboard && within(point, z.panel));
-    if (dashboard) {
-      if (over || pinned.current) { dashEntered.current = true; clearTimeout(dashTimer.current); dashTimer.current = undefined; }
-      else if (dashEntered.current && !dashTimer.current) dashTimer.current = setTimeout(() => { dashTimer.current = undefined; setDashboard(false); }, 450);
-    } else if (over && !dashTimer.current && live.current.openBy !== 'click') {
-      dashTimer.current = setTimeout(() => { dashTimer.current = undefined; if (live.current.geo.zones.dash.some(r => within(cursor.current, r))) openDashboard(true); }, 200);
-    } else if (!over && dashTimer.current) { clearTimeout(dashTimer.current); dashTimer.current = undefined; }
-  }), []);
-  useEffect(() => () => { clearTimeout(zoneTimer.current); clearTimeout(dashTimer.current); clearTimeout(firstClick.current); }, []);
-  useEffect(refreshHit, [place, chip, composer, dashboard, voice, reply.text, notice?.key, card?.id]);
+  useEffect(() => {
+    const intent = new PointerIntent();
+    const slow = () => intent.sample(cursor.current, performance.now()) < HOVER_SPEED;
+    const receive = (point: Point) => {
+      const { geo, dashboard, chip, composer } = live.current, z = geo.zones;
+      cursor.current = point;
+      intent.sample(point, performance.now());
+      if (!composer) look.current = live.current.noticeLook ?? point;
+      refreshHit();
+      const next: Zone = within(point, z.ball) || (chip && within(point, z.chip)) ? 'ball' : within(point, z.lobe) ? 'lobe' : 'none';
+      if (next !== pending.current) {
+        pending.current = next; clearTimeout(zoneTimer.current);
+        const reveal = () => {
+          if (next !== pending.current) return;
+          if (next === 'none' || slow()) { setZone(next); zoneTimer.current = undefined; }
+          else zoneTimer.current = setTimeout(reveal, 20);
+        };
+        zoneTimer.current = setTimeout(reveal, next === 'none' ? HOVER_EXIT_MS : HOVER_DWELL_MS);
+      }
+      const panel = root.current?.querySelector('.companion-dashboard')?.getBoundingClientRect();
+      const over = z.dash.some(r => within(point, r)) || (dashboard && !!panel && point.x >= panel.left && point.x <= panel.right && point.y >= 0 && point.y <= panel.bottom);
+      const toward = dashboard && !!panel && intent.headingTo(panel);
+      if (!over) dashClosedHere.current = false;
+      if (dashboard) {
+        if (over || pinned.current) { dashEntered.current = true; clearTimeout(dashTimer.current); dashTimer.current = undefined; }
+        else if (dashEntered.current && (toward || !dashTimer.current)) {
+          clearTimeout(dashTimer.current);
+          dashTimer.current = setTimeout(() => { dashTimer.current = undefined; setDashboard(false); }, HOVER_EXIT_MS);
+        }
+      } else if (over && !dashTimer.current && !dashClosedHere.current && live.current.openBy !== 'click') {
+        const reveal = () => {
+          if (live.current.dashboard || !live.current.geo.zones.dash.some(r => within(cursor.current, r))) { dashTimer.current = undefined; return; }
+          if (slow()) { dashTimer.current = undefined; openDashboard(true); }
+          else dashTimer.current = setTimeout(reveal, 20);
+        };
+        dashTimer.current = setTimeout(reveal, HOVER_DWELL_MS);
+      } else if (!over && dashTimer.current) { clearTimeout(dashTimer.current); dashTimer.current = undefined; }
+    };
+    const unsubscribe = window.jarvis?.onCursor(receive);
+    return () => { unsubscribe?.(); clearTimeout(zoneTimer.current); clearTimeout(dashTimer.current); };
+  }, []);
+  useEffect(() => {
+    if (!menu) return;
+    void Promise.resolve(window.jarvis?.focus(true)).then(() => menuRef.current?.querySelector('button')?.focus());
+    const dismiss = (event: PointerEvent) => { if (!menuRef.current?.contains(event.target as Node)) setMenu(null); };
+    const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') { event.stopPropagation(); setMenu(null); } };
+    document.addEventListener('pointerdown', dismiss); document.addEventListener('keydown', escape, true);
+    return () => { document.removeEventListener('pointerdown', dismiss); document.removeEventListener('keydown', escape, true); void window.jarvis?.focus(false); };
+  }, [menu]);
+  useEffect(refreshHit, [place, chip, composer, dashboard, menu, voice, reply.text, notice?.key, card?.id]);
 
   // Native frosted glass behind every visible panel, following its transitions.
   const kickGlass = useRef(() => {});
@@ -499,11 +535,32 @@ export function Companion() {
   const yours = voice === 'thinking' && !!caption;
   const strip = place === 'out' && (yours || ((voice === 'listening' || voice === 'thinking') && !reply.text)), bubble = place === 'out' && !!reply.text && !yours;
   return <IconContext.Provider value={{ size: 16, weight: 'regular' }}>
-    <main ref={root} className="companion" style={{ '--mint': preferences.themeColor } as React.CSSProperties}>
-      <div className={`companion-chip ${chip ? 'is-open' : ''}`} data-hit={chip || undefined} data-glass="9" style={{ left: out.x + R + 12, top: out.y - 13 }}>
+    <main ref={root} className="companion" onContextMenu={event => {
+      if (!(event.target as Element).closest('.companion-hit')) return;
+      event.preventDefault(); cancel();
+      setMenu({ x: Math.min(geo.width - 230, Math.max(8, event.clientX)), y: Math.max(placement.topInset + 12, event.clientY) });
+    }}>
+      <button className="companion-island-target" data-hit aria-label={t(['Open Dashboard', '打开主页'])} title={t(['Click the notch to open Dashboard', '点击刘海打开主页'])}
+        style={{ left: geo.lobe.left, width: geo.lobe.notched ? geo.wingX - geo.lobe.left : geo.lobe.right - geo.lobe.left, height: placement.topInset }}
+        onClick={toggleDashboard}/>
+      {menu && <div ref={menuRef} className="companion-menu" data-hit role="menu" aria-label={t(['Her menu', '她的菜单'])} style={{ left: menu.x, top: menu.y }}
+        onKeyDown={event => {
+          const items = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('button')], at = items.indexOf(document.activeElement as HTMLButtonElement);
+          if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+            event.preventDefault();
+            const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : (at + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+            items[next]?.focus();
+          }
+        }}>
+        {SKIN_KEYS.map(skin => <button key={skin} role="menuitemradio" aria-checked={wardrobe.skin === skin} onClick={() => { choose(skin); setMenu(null); }}>{t(SKIN_NAMES[skin])}</button>)}
+        <hr/>
+        <button role="menuitem" onClick={() => { setMenu(null); appear(ctl.playFaces, PREVIEW.length * 1100); }}>{t(['Preview expressions', '看一遍表情'])}</button>
+        <button role="menuitem" onClick={() => { setMenu(null); openDashboard(false); pinned.current = true; setSettingsFocus(n => n + 1); }}>{t(['Settings…', '设置…'])}</button>
+      </div>}
+      <div className={`companion-chip ${chip ? 'is-open' : ''}`} data-hit={chip || undefined} data-glass="10" style={{ left: out.x + R + 12, top: out.y - 13 }}>
         <button aria-label={t(['Type to her', '文字输入'])} tabIndex={chip ? 0 : -1} onClick={openComposer}><Keyboard/></button>
       </div>
-      <form className={`companion-composer ${composer && place === 'out' ? 'is-open' : ''}`} data-hit={composer || undefined} data-glass="17"
+      <form className={`companion-composer ${composer && place === 'out' ? 'is-open' : ''}`} data-hit={composer || undefined} data-glass="14"
         style={{ left: out.x - PANEL / 2, top: out.y + R + 11 }} inert={!composer} onTransitionEnd={aimAtCaret}
         onSubmit={event => { event.preventDefault(); send(); }}>
         <button type="button" className="composer-attach" disabled aria-label={t(['Attach (not wired yet)', '添加附件（还没接）'])}><Paperclip/></button>
@@ -512,20 +569,20 @@ export function Companion() {
           onSelect={aimAtCaret} onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); closeComposer(); } }}/>
         <button type="submit" className="composer-send" disabled={!draft.trim()} aria-label={t(['Send', '发送'])}><ArrowUp weight="bold"/></button>
       </form>
-      <div className={`companion-strip ${strip ? 'is-open' : ''} ${hearing ? 'is-hearing' : ''} ${deep ? 'is-deep' : ''}`} data-hit={strip || undefined} data-glass="19"
+      <div className={`companion-strip ${strip ? 'is-open' : ''} ${hearing ? 'is-hearing' : ''} ${deep ? 'is-deep' : ''}`} data-hit={strip || undefined} data-glass="14"
         style={{ left: out.x, top: out.y + R + 11 }} inert={!strip} role="status">
         <span className="strip-mic"><Microphone size={14} weight="fill"/></span>
         <span className={`strip-text ${caption ? '' : 'is-empty'}`}>{caption || t(['Listening…', '在听…'])}</span>
         {deepSecs > 0 && <span className="strip-think">{t([`Thinking ${deepSecs} s`, `深想 ${deepSecs} 秒`])}</span>}
         <button className="strip-stop" aria-label={t(['End voice', '结束语音'])} onClick={endVoice}><Stop size={11} weight="fill"/></button>
       </div>
-      <div className={`companion-bubble ${bubble ? 'is-open' : ''} ${answerSecs ? 'is-deep' : ''}`} data-glass="18" style={{ left: out.x, top: out.y + R + 11 }} role="status">
+      <div className={`companion-bubble ${bubble ? 'is-open' : ''} ${answerSecs ? 'is-deep' : ''}`} data-glass="14" style={{ left: out.x, top: out.y + R + 11 }} role="status">
         {answerSecs > 0 && <small className="bubble-think">{t([`Thought for ${answerSecs.toFixed(1)} s`, `想了 ${answerSecs.toFixed(1)} 秒`])}</small>}
         <span className="bubble-text"><span className="bubble-ghost">{reply.text}</span><span>{reply.text.slice(0, reply.shown)}</span></span>
       </div>
       <div className={`companion-dashboard ${dashboard ? 'is-open' : ''}`} data-hit={dashboard || undefined} data-glass="24"
         style={{ left: geo.center - PANEL / 2, top: geo.panelTop }} inert={!dashboard}>
-        <AroundDashboard open={dashboard} port={port} onClose={() => setDashboard(false)} onMood={setDashMood} onHop={height => ball.current?.hop(height)}
+        <AroundDashboard open={dashboard} port={port} onClose={() => setDashboard(false)} onMood={setDashMood} settingFocus={settingsFocus} onHop={height => ball.current?.hop(height)}
           talk={port ? { rows: s.rows, tail, busy: s.phase === 'processing', offline: s.phase === 'error', floor, submit, older, card, decide: decideCard, question, answer: answerQuestion,
             think: { on: deep, secs: deepSecs, words, thoughts, exit: () => void submit(t(['stop thinking', '不用想了'])) } } : undefined}
           plugins={port ? plugins : undefined} pluginFocus={pluginFocus} marks={wardrobe.marks} onAgents={setAgents} unread={notices.unread}
@@ -537,6 +594,7 @@ export function Companion() {
         port={port} keys={keysPress} onViewing={setViewing} onKeys={on => { setKeysOn(on); void window.jarvis?.focus(on); }}/>
       <CompanionBall width={geo.width} height={placement.topInset + 560} lobe={geo.lobe} look={look} handle={ball} skin={worn.current}
         target={{ place, expr, pressed, anchors: geo.anchors, home: wardrobe.home, homeFace: !!notice || carded,
+          attention: noticeLook ? { id: carded ? `card:${card?.id ?? question?.id}` : notice!.key, point: noticeLook } : undefined,
           away: trip === 'out', happy: trip === 'happy', deep: deep && expr === '02' }}
         label={voice === 'off' ? t([`Poke to talk${port ? '' : ' (demo)'}`, `戳一下，开始语音${port ? '' : '（演示）'}`]) : voice === 'speaking' ? t(['Poke to interrupt', '戳一下，打断播报']) : t(['Poke to stop', '戳一下，结束语音'])}
         onPress={press} onRelease={release} onCancel={cancel} onMove={refreshHit}/>

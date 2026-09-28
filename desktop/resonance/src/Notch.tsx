@@ -6,6 +6,8 @@ import { drawMoon, drawTurnIcon, hueAt, MOON_RGB, rgba, tint } from './beacon';
 import { Markdown } from './Markdown';
 import { ended } from './Notices';
 import { spring, step } from './starCore';
+import { HOVER_DWELL_MS, HOVER_EXIT_MS, HOVER_SPEED, PointerIntent } from './pointerIntent';
+import { MOTION, SPRINGS } from './motion';
 
 // Beside the notch, after the notch lab (ADR 0069, 0070). Right of the camera, one mark per group with its count:
 // your turn (the beacon), working, finished, parked (the moon). Only working moves; the beacon sends out its rings
@@ -30,9 +32,10 @@ export type NotchNote = { key: string; id?: string; pop?: string[]; card?: React
 
 // Your turn: asking first, then stopped, then finished.
 const TURN_ORDER: AgentState[] = ['wait', 'err', 'done'];
-const PAD = 6, GCELL = 30, GCX = 9, ALL_W = 400, PAGE_W = 520, CARD_W = 480, DRAG_OUT = 30, FX_H = 150, DWELL_MS = 1500;
+const PAD = 4, GCELL = 26, GCX = 6, WING_W = 112, POP_W = 360, ALL_W = 440, PAGE_W = 560, CARD_W = 440, DRAG_OUT = 30, DWELL_MS = 1500;
 const clamp = (v: number, lo = 0, hi = 1) => Math.max(lo, Math.min(hi, v));
 const reduced = matchMedia('(prefers-reduced-motion: reduce)');
+const countPulse = (progress: number) => reduced.matches ? 1 : 1 + .45 * Math.sin(Math.PI * progress);
 const working = (st: AgentState) => st === 'work' || st === 'pack';
 
 // ---------- the black shape: everything hangs from the top edge ----------
@@ -40,7 +43,7 @@ const working = (st: AgentState) => st === 'work' || st === 'pack';
 // where it meets the screen edge and rounded steps wherever the depth changes, so her island, the notch, the marks
 // and whatever grows out of them read as one piece.
 function runPath(run: Rect[]) {
-  const S = 6, first = run[0], last = run.at(-1)!, rb = (s: Rect) => Math.min(22, s.d / 3, (s.r - s.l) / 2);
+  const S = 6, first = run[0], last = run.at(-1)!, rb = (s: Rect) => Math.min(24, s.d / 3, (s.r - s.l) / 2);
   const r0 = rb(first);
   let p = `M ${first.l - S} -20 L ${first.l - S} 0 Q ${first.l} 0 ${first.l} ${S} L ${first.l} ${first.d - r0} Q ${first.l} ${first.d} ${first.l + r0} ${first.d}`;
   for (let i = 0; i < run.length - 1; i++) {
@@ -75,15 +78,6 @@ function skyline(rects: Rect[]) {
   flush();
   return path;
 }
-// Width follows the content (the longest name), between a floor and a ceiling.
-function autoWidth(el: HTMLElement, min: number, max: number) {
-  el.style.width = 'max-content'; el.style.maxWidth = `${max}px`;
-  // offsetWidth rounds; two spare pixels keep a name that just fits from tipping into an ellipsis.
-  const w = Math.round(clamp(el.offsetWidth + 2, min, Math.max(min, max)));
-  el.style.width = `${w}px`; el.style.maxWidth = '';
-  return w;
-}
-
 // ---------- what the panels show ----------
 // The beacon or the moon at `size` css px, for a panel's label.
 function IconMark({ look, moon = false, size = 11 }: { look: MarkLook; moon?: boolean; size?: number }) {
@@ -110,7 +104,7 @@ function Act({ tip, onClick, children }: { tip: string; onClick: () => void; chi
 }
 // One session on one line: a still star, its name (bold while it needs a look), what it is at, and on hover what
 // can be done about it. A click opens the card of one that is asking, else goes to it.
-function Row({ a, kind, cur, look, act, page }: { a: Agent; kind: Kind; cur: boolean; look: MarkLook; act: NotchAct; page: (id: string) => void }) {
+function Row({ a, kind, cur, look, act, page, index }: { a: Agent; kind: Kind; cur: boolean; look: MarkLook; act: NotchAct; page: (id: string) => void; index: number }) {
   const open = openLabel(a), go = () => asking(a) ? act.answer(a.id) : act.jump(a);
   const acts = <>
     {!asking(a) && open && <Act tip={open} onClick={() => act.jump(a)}><ArrowSquareOut size={12}/></Act>}
@@ -120,7 +114,7 @@ function Row({ a, kind, cur, look, act, page }: { a: Agent; kind: Kind; cur: boo
     {kind === 'moon' && <Act tip="Take back to your turn" onClick={() => act.unpark([a.id])}><ArrowUUpLeft size={12}/></Act>}
     {(kind === 'done' || kind === 'moon' && a.state !== 'wait') && <Act tip="Archive: done with it, kept to find again" onClick={() => act.archive([a.id])}><Archive size={12}/></Act>}
   </>;
-  return <div className={`a-row${a.state === 'wait' ? ' is-ask' : ''}${kind === 'turn' ? ' is-due' : ''}${cur ? ' is-cur' : ''}`} role="button" tabIndex={-1} data-id={a.id}
+  return <div className={`a-row${a.state === 'wait' ? ' is-ask' : ''}${kind === 'turn' ? ' is-due' : ''}${cur ? ' is-cur' : ''}`} role="button" tabIndex={-1} data-id={a.id} style={{ animationDelay: `${Math.min(index, 4) * MOTION.stagger}ms` }}
     title={asking(a) ? 'Open the card to answer' : open || a.title} onClick={go}>
     <AgentMark look={look} state={a.state} id={a.id} size={12} still/><b>{a.title}</b><span className="a-st">{statusOf(a)}</span>
     <span className="a-acts">{acts}</span></div>;
@@ -128,6 +122,7 @@ function Row({ a, kind, cur, look, act, page }: { a: Agent; kind: Kind; cur: boo
 const Hints = ({ keys }: { keys: [string, string][] }) => <p className="k-hint">{keys.map(([k, v]) => <span key={k}><kbd>{k}</kbd>{v}</span>)}</p>;
 // `done`: a whole group was handled from its heading, so the panel folds away (unless the keys hold it).
 function Panel({ secs, hot, cur, look, act, page, done }: { secs: Sec[]; hot: string; cur: string; look: MarkLook; act: NotchAct; page: (id: string) => void; done: () => void }) {
+  let rowIndex = 0;
   const list = useRef<HTMLDivElement>(null), shownHot = useRef('');
   // A list taller than the panel fades at the edge with more behind it; a newly lit part, or the row the keys
   // moved to, is brought into view.
@@ -147,7 +142,7 @@ function Panel({ secs, hot, cur, look, act, page, done }: { secs: Sec[]; hot: st
   return <div className="nt-card all"><div ref={list} className="a-list" onScroll={edges}>{secs.map(s =>
     <div key={s.key} className={`a-sec${s.key === hot ? ' is-hot' : ''}`} data-sec={s.key}>
       <div className={`a-h is-${s.key}`}><span>{s.key === 'moon' && <IconMark look={look} moon/>}{s.label}<em>{s.ts.length}</em></span>{tail(s)}</div>
-      {s.ts.map(a => <Row key={a.id} a={a} kind={s.key} cur={a.id === cur} look={look} act={act} page={page}/>)}
+      {s.ts.map(a => <Row key={a.id} a={a} kind={s.key} cur={a.id === cur} look={look} act={act} page={page} index={rowIndex++}/>)}
     </div>)}</div>
     {cur && <Hints keys={[['↑↓', 'choose'], ['→', 'open'], ['⏎', 'go to it'], ['esc', 'close']]}/>}</div>;
 }
@@ -255,7 +250,9 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
     press: null as { x: number; y: number } | null, drag: null as { x: number; y: number } | null,
     puffs: [] as { x: number; y: number; c: string; at: number }[], workAt: -1e9, workN: 0, turnIds: new Set<string>(), turnAt: -1e9,
     // Sessions on their way into the moon, from where the pointer was, and when the last one landed.
-    flights: [] as { st: AgentState; x: number; y: number; at: number }[], moonAt: -1e9, parkedIds: new Set<string>(),
+    flights: [] as { id: string; to: Kind; st: AgentState; x: number; y: number; at: number }[],
+    bumpAt: { turn: -1e9, work: -1e9, done: -1e9, moon: -1e9 }, parkedIds: new Set<string>(),
+    popOrigins: new Map<string, Point>(), intent: new PointerIntent(),
   }).current;
   const L = useRef({ look, turn, work, fin, moon, geo, note, quiet, onNoteHover, held: false, pageW: false });
   L.current = { look, turn, work, fin, moon, geo, note, quiet, onNoteHover, held: !!kb && !kbCard, pageW: !!paged };
@@ -284,9 +281,25 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
   // Parked just now: its star flies from where the pointer was into the moon.
   useEffect(() => {
     const p = cursor.current;
-    for (const a of moon) if (!st.parkedIds.has(a.id) && p) st.flights.push({ st: a.state, x: p.x, y: p.y, at: performance.now() });
+    for (const a of moon) if (!st.parkedIds.has(a.id) && p) st.flights.push({ id: a.id, to: 'moon', st: a.state, x: p.x, y: p.y, at: performance.now() });
     st.parkedIds = new Set(moon.map(a => a.id));
   }, [moon.map(a => a.id).join()]);
+  // A pop returns each star to its current group. Counts wait for the flight to
+  // land; the notice queue continues to own whether a session has been read.
+  const previousPop = useRef<{ key: string; agents: Agent[] } | null>(null);
+  useLayoutEffect(() => {
+    const previous = previousPop.current;
+    if (previous && previous.key !== note?.key) {
+      for (const a of previous.agents) {
+        if (parked.has(a.id) || archived.has(a.id) || !agents.some(x => x.id === a.id)) continue;
+        const origin = st.popOrigins.get(a.id);
+        if (!origin) continue;
+        st.flights.push({ id: a.id, to: unread.has(a.id) ? 'turn' : 'done', st: a.state, ...origin, at: performance.now() });
+      }
+      st.popOrigins.clear();
+    }
+    previousPop.current = note?.pop ? { key: note.key, agents: agents.filter(a => note.pop!.includes(a.id)) } : null;
+  }, [note?.key, note?.pop?.join()]);
   // 1.5 s on its page is looking at it.
   useEffect(() => {
     if (!paged || !unread.has(paged.id) || paged.state === 'wait') return;
@@ -322,52 +335,49 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
     let raf = 0, timer: ReturnType<typeof setTimeout> | undefined, last = 0;
     // Her lobe to the last mark. Closed it may lean right when the marks outgrow her side.
     const island = () => { const g = L.current.geo; return { l: g.lobeL, w: g.notchR + Math.max(0, st.wingTarget) - g.lobeL }; };
-    // Open, it is one piece growing down, always centred on the notch (the window's middle): wide enough to cover
-    // the island's longer side on both sides, wider when the content needs it.
-    const span = (w: number) => {
-      const g = L.current.geo, c = g.width / 2, isl = island();
-      const ww = Math.max(w, 2 * Math.max(c - isl.l, isl.l + isl.w - c));
-      return { l: c - ww / 2, w: ww };
-    };
+    // Three widths share the notch's centre; the skyline joins their shoulders to the wing.
+    const span = (w: number) => { const ww = Math.min(w, L.current.geo.width - 16); return { l: (L.current.geo.width - ww) / 2, w: ww }; };
     // The marks and the panes, laid out and drawn. True while something is still moving.
     const frame = (now: number, dt: number) => {
       const { look, turn, work, fin, moon, geo: g, note, quiet, onNoteHover, held, pageW } = L.current, s = st.s, top = g.top;
       const firm = reduced.matches, go = (sp: typeof s.ww, goal: number, hz: number, damp: number) => step(sp, goal, hz, firm ? 1 : damp, dt);
       const p = cursor.current, ww = Math.max(0, s.ww.value);
+      const speed = st.intent.sample(p, now);
       const inWing = !!p && p.y <= top + 2 && p.x >= g.notchR && p.x <= g.notchR + ww + 2;
       // One mark per group, so the row is at most four marks. Nothing moves while the pointer is on the row or the
       // panel is open; the counts follow along, and the row catches up once you leave.
       if (st.drag || !st.boxes.length || !(st.open || inWing)) {
         const kinds = ([['turn', turn], ['work', work], ['done', fin], ['moon', moon]] as const).filter(([, ts]) => ts.length).map(([k]) => k);
-        let x = g.notchR + PAD;
+        let x = g.notchR + PAD + (4 - kinds.length) * GCELL / 2;
         st.boxes = kinds.map(key => { const b = { key, x0: x, x1: x + GCELL, cx: x + GCX }; x += GCELL; return b; });
-        st.wingTarget = kinds.length ? x + PAD - g.notchR : 0;
+        st.wingTarget = kinds.length ? WING_W : 0;
         // What the row shows, for the checks: `turn2 work4 done3 moon1`.
         const marks = st.boxes.map(b => `${b.key}${members(b.key).length}`).join(' ');
         if (root.current!.dataset.marks !== marks) root.current!.dataset.marks = marks;
       }
-      // Resting anywhere on the row opens the panel after 90 ms; it closes 260 ms after the pointer has left the
-      // row and the panel. A notice closes it; the keys hold it open.
+      // A slow 140 ms dwell signals intent. The exit grace bridges the growing
+      // panel; a pointer travelling into it keeps it open. Clicks act immediately.
       if (!st.drag) {
         const inDrop = !!p && st.open && p.x >= s.dx.value && p.x <= s.dx.value + s.dw.value && p.y >= top - 2 && p.y <= s.dd.value;
         const slot = inWing ? st.boxes.find(b => p!.x >= b.x0 && p!.x < b.x1) : undefined;
-        const want = held || (!note && !quiet && (!!slot || inDrop));
+        const approaching = st.open && st.intent.headingTo({ left: s.dx.value, right: s.dx.value + s.dw.value, top, bottom: s.dd.value });
+        const want = held || (!note && !quiet && (inWing || inDrop || approaching));
         if (!held && slot) setHotKey(slot.key);
-        if (want && (slot || inDrop)) st.lastIn = now;
+        if (want && (inWing || inDrop || approaching)) st.lastIn = now;
         if (want !== st.want) { st.want = want; st.wantAt = now; }
-        if (want && !st.open && (held || now - st.wantAt > 90)) setPanel(true);
-        else if (!want && st.open && (note || quiet || now - st.lastIn > 260)) setPanel(false);
+        if (want && !st.open && (held || now - st.wantAt >= HOVER_DWELL_MS && speed < HOVER_SPEED)) setPanel(true);
+        else if (!want && st.open && (note || quiet || now - st.lastIn > HOVER_EXIT_MS)) setPanel(false);
         if (st.open && !held && !st.boxes.some(b => members(b.key).length)) setPanel(false);
       }
       // The page opens with the marks already out, not grown in from nothing.
       if (!st.opened) { st.opened = true; s.ww.value = st.wingTarget; }
-      let moving = go(s.ww, st.wingTarget, 3.2, .8);
-      const W = g.width, dIn = dropIn.current!, nIn = noteIn.current!, room = Math.min(440, W - (g.notchR - 6) - 8);
+      let moving = go(s.ww, st.wingTarget, SPRINGS.control.frequency, SPRINGS.control.damping);
+      const dIn = dropIn.current!, nIn = noteIn.current!;
       if (st.dirty) {
         st.dirty = false;
         if (st.open) { const sp = span(pageW ? PAGE_W : ALL_W); dIn.style.width = `${sp.w}px`; st.dropGoal = { w: sp.w, d: top + dIn.offsetHeight + 2 }; }
         if (note) {
-          const sp = span(note.pop ? autoWidth(nIn, 240, room) : Math.min(CARD_W, W - 16));
+          const sp = span(note.pop ? POP_W : CARD_W);
           nIn.style.width = `${sp.w}px`; st.noteL = sp.l;
           st.noteGoal = { w: sp.w, d: Math.min(top + 640, top + nIn.offsetHeight + 2) };
         }
@@ -376,11 +386,17 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
       const isl = island(), rest = { l: isl.l, w: isl.w, d: top * .6 }, dw = st.dropGoal.w;
       const dg = st.open ? { l: span(dw).l, w: dw, d: st.dropGoal.d } : rest;
       if (st.open && s.dd.value < top) { s.dx.value = isl.l; s.dw.value = isl.w; }
-      moving = go(s.dx, dg.l, 3.4, .86) || moving; moving = go(s.dw, dg.w, 3.4, .86) || moving; moving = go(s.dd, dg.d, 3.2, .8) || moving;
+      const panelHz = SPRINGS.panel.frequency / (st.open ? 1 : MOTION.exit);
+      moving = go(s.dx, dg.l, panelHz, SPRINGS.panel.damping) || moving; moving = go(s.dw, dg.w, panelHz, SPRINGS.panel.damping) || moving; moving = go(s.dd, dg.d, panelHz, SPRINGS.panel.damping) || moving;
       const noteOpen = !!note && !held;
       const ng = noteOpen ? { l: st.noteL, w: st.noteGoal.w, d: st.noteGoal.d } : rest;
       if (noteOpen && s.nd.value < top) { s.nx.value = isl.l; s.nw.value = isl.w; }
-      moving = go(s.nx, ng.l, 2.9, .84) || moving; moving = go(s.nw, ng.w, 2.9, .84) || moving; moving = go(s.nd, ng.d, 2.9, .8) || moving;
+      const noteHz = SPRINGS.panel.frequency / (noteOpen ? 1 : MOTION.exit);
+      moving = go(s.nx, ng.l, noteHz, SPRINGS.panel.damping) || moving; moving = go(s.nw, ng.w, noteHz, SPRINGS.panel.damping) || moving; moving = go(s.nd, ng.d, noteHz, SPRINGS.panel.damping) || moving;
+      if (note?.pop && noteOpen) for (const row of nIn.querySelectorAll<HTMLElement>('.u-row')) {
+        const mark = row.querySelector('.agent-mark')?.getBoundingClientRect();
+        if (mark && row.dataset.id) st.popOrigins.set(row.dataset.id, { x: mark.x + mark.width / 2, y: mark.y + mark.height / 2 });
+      }
       const onNote = noteOpen && !!p && p.x >= s.nx.value && p.x <= s.nx.value + s.nw.value && p.y >= top && p.y <= s.nd.value;
       if (onNote !== st.onNote) { st.onNote = onNote; onNoteHover(onNote); }
       // One black piece: her island, the notch, the marks, and whatever hangs from them.
@@ -394,7 +410,7 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
       place(noteP.current!, nIn, s.nx.value, s.nw.value, s.nd.value, st.noteL, st.noteGoal.d, noteOpen, top);
       Object.assign(hit.current!.style, { left: `${g.notchR}px`, width: `${Math.max(0, s.ww.value)}px`, height: `${top}px` });
       draw(now, top, look);
-      return moving || !!st.drag || st.puffs.length > 0 || st.flights.length > 0 || now - st.moonAt < 500;
+      return moving || !!st.drag || st.puffs.length > 0 || st.flights.length > 0 || Object.values(st.bumpAt).some(at => now - at < MOTION.medium);
     };
     const place = (pane: HTMLElement, inner: HTMLElement, left: number, w: number, d: number, goalL: number, goalD: number, open: boolean, top: number) => {
       const h = Math.max(0, d - top), k = open ? clamp(h / Math.max(1, goalD - top)) : 0;
@@ -402,31 +418,38 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
       pane.style.visibility = h < 1 ? 'hidden' : 'visible';
       pane.classList.toggle('is-open', open && k > .6);
       inner.style.left = `${goalL - left}px`;
-      inner.style.opacity = String(open ? clamp((k - .45) / .5) : clamp(h / 60) * .6);
+      inner.style.transitionDuration = open ? 'var(--motion-fast)' : 'var(--exit-fast)';
+      inner.style.opacity = open && k >= .6 ? '1' : '0';
     };
     // The marks, clipped to the wing as it grows; the finished mark being dragged; the puffs left where it went.
     const draw = (now: number, top: number, look: MarkLook) => {
-      const cv = fx.current!, { geo: g, turn, work } = L.current, d = dpr(), W = g.width, t = now / 1000;
-      if (cv.width !== Math.round(W * d) || cv.height !== Math.round(FX_H * d)) { cv.width = Math.round(W * d); cv.height = Math.round(FX_H * d); }
+      const cv = fx.current!, { geo: g, turn, work, note } = L.current, d = dpr(), W = g.width, H = window.innerHeight, t = now / 1000;
+      if (cv.width !== Math.round(W * d) || cv.height !== Math.round(H * d)) { cv.width = Math.round(W * d); cv.height = Math.round(H * d); }
       const ctx = cv.getContext('2d')!;
-      ctx.setTransform(d, 0, 0, d, 0, 0); ctx.clearRect(0, 0, W, FX_H);
+      ctx.setTransform(d, 0, 0, d, 0, 0); ctx.clearRect(0, 0, W, H);
       // News makes its mark jump once; the beacon rings for 4 s after each arrival.
       if (turn.some(a => !st.turnIds.has(a.id))) st.turnAt = now;
       if (work.length > st.workN) st.workAt = now;
       st.turnIds = new Set(turn.map(a => a.id)); st.workN = work.length;
       ctx.save(); ctx.beginPath(); ctx.rect(g.notchR, 0, Math.max(0, st.s.ww.value), top); ctx.clip();
+      const counts: string[] = [];
       for (const b of st.boxes) {
         const ts = members(b.key);
         if (!ts.length) continue;
-        ctx.save(); ctx.translate(b.cx, top / 2);
+        const pulse = countPulse(clamp((now - st.bumpAt[b.key]) / MOTION.medium));
+        ctx.save(); ctx.translate(b.cx, top / 2); ctx.scale(.8, .8);
         if (b.key === 'turn') drawTurnIcon(ctx, look, t, (now - st.turnAt) / 1000, d, now - st.turnAt > 4000);
         else if (b.key === 'work') drawMark(ctx, look, ts.every(a => a.state === 'pack') ? 'pack' : 'work', t + seedOf('work'), (now - st.workAt) / 1000, d);
         else if (b.key === 'done') { ctx.globalAlpha = .55; drawMark(ctx, look, ts.every(a => a.state === 'err') ? 'err' : 'done', 0, 99, d); }
-        else { const k = (now - st.moonAt) / 1000, pop = k < .5 ? 1 + .5 * (1 - k / .5) : 1; ctx.globalAlpha = .85; ctx.scale(pop, pop); drawMoon(ctx, 99, d); }
+        else { ctx.globalAlpha = .85; drawMoon(ctx, 99, d); }
         ctx.restore();
-        ctx.save(); ctx.font = '600 9px "JetBrains Mono", Menlo, monospace'; ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
+        ctx.save(); ctx.font = '600 10.5px "JetBrains Mono", Menlo, monospace'; ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
         ctx.fillStyle = b.key === 'turn' ? rgba(tint(hueAt(t), .45)) : 'rgba(214,222,250,.62)';
-        ctx.fillText(String(ts.length), b.cx + 9, top / 2 + .5); ctx.restore();
+        const hidden = new Set([...(note?.pop ?? []), ...st.flights.filter(f => f.to === b.key).map(f => f.id)]);
+        const count = ts.filter(a => !hidden.has(a.id)).length;
+        counts.push(`${b.key}${count}`);
+        ctx.translate(b.cx + 7, top / 2 + .5); ctx.scale(pulse, pulse);
+        ctx.fillText(count > 99 ? '99+' : String(count), 0, 0, 16); ctx.restore();
         if (st.open && st.hot === b.key) {
           const c = b.key === 'turn' ? hueAt(t).join(',') : b.key === 'moon' ? MOON_RGB : b.key === 'work' ? '108,156,255' : '111,224,180';
           ctx.fillStyle = `rgba(${c},.9)`; ctx.shadowColor = `rgba(${c},.9)`; ctx.shadowBlur = 6 * d;
@@ -434,16 +457,19 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
         }
       }
       ctx.restore();
-      // A parked session's star flies up into the moon (or to the end of the row before the moon is out).
-      const moonBox = st.boxes.find(b => b.key === 'moon'), tx = moonBox?.cx ?? g.notchR + Math.max(0, st.s.ww.value) - 10, ty = top / 2;
+      // Pops and parked stars share the same arc, landing in their own group.
+      const ty = top / 2;
       st.flights = st.flights.filter(f => {
-        const k = (now - f.at) / 560;
-        if (k >= 1) { st.moonAt = now; return false; }
+        const k = reduced.matches ? 1 : (now - f.at) / MOTION.slow;
+        const tx = st.boxes.find(b => b.key === f.to)?.cx ?? g.notchR + Math.max(0, st.s.ww.value) - 10;
+        if (k >= 1) { st.bumpAt[f.to] = now; return false; }
         const e = 1 - (1 - k) ** 3, u = 1 - e, x = u * u * f.x + 2 * u * e * tx + e * e * tx, y = u * u * f.y + 2 * u * e * f.y + e * e * ty;
         ctx.save(); ctx.translate(x, y); ctx.scale(1 - .35 * e, 1 - .35 * e); ctx.globalAlpha = 1 - .5 * e;
         drawMark(ctx, look, f.st, t, 99, d); ctx.restore();
         return true;
       });
+      root.current!.dataset.counts = counts.join(' ');
+      root.current!.dataset.flights = String(st.flights.length);
       const dr = st.drag;
       if (dr) {
         const out = dr.y > top + DRAG_OUT, ts = members('done');
@@ -457,9 +483,9 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
         ctx.fillText(out ? 'Let go to archive' : 'Drag out of the menu bar', 0, 16);
         ctx.restore();
       }
-      st.puffs = st.puffs.filter(f => now - f.at < 480);
+      st.puffs = st.puffs.filter(f => now - f.at < MOTION.slow);
       for (const f of st.puffs) {
-        const k = (now - f.at) / 480;
+        const k = (now - f.at) / MOTION.slow;
         ctx.fillStyle = `rgba(${f.c},${1 - k})`;
         for (let i = 0; i < 8; i++) { const a = i / 8 * Math.PI * 2, r = 4 + 14 * k; ctx.beginPath(); ctx.arc(f.x + Math.cos(a) * r, f.y + Math.sin(a) * r, 1.6 * (1 - k * .6), 0, Math.PI * 2); ctx.fill(); }
       }
@@ -491,6 +517,8 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
       setDraft={text => { drafts.set(paged.id, text); redraw(n => n + 1); }} back={() => setKb({ ...kb!, view: 'list' })}/>
     : secs.length ? <Panel secs={secs} hot={kb ? kbHot : hot} cur={cur} look={look} act={A} page={id => kbOpen(id, 'page')} done={() => { if (!kb) setPanel(false); }}/> : null;
   const popAgents = note?.pop?.map(id => agents.find(a => a.id === id)).filter((a): a is Agent => !!a) ?? [];
+  const lastPopAgents = useRef<Agent[]>([]);
+  if (note?.pop) lastPopAgents.current = popAgents;
   // The panes keep what they showed while they fold away.
   const lastNote = useRef<NotchNote | null>(null), lastPanel = useRef<ReactNode>(null);
   if (note) lastNote.current = note;
@@ -498,10 +526,12 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
   const shownNote = note ?? lastNote.current;
   return <div ref={root} className="notch">
     <svg className="notch-shape" aria-hidden="true"><path ref={shape}/></svg>
-    <canvas ref={fx} className="notch-fx" data-look={look} aria-hidden="true" style={{ width: geo.width, height: FX_H }}/>
+    <canvas ref={fx} className="notch-fx" data-look={look} aria-hidden="true" style={{ width: geo.width, height: '100%' }}/>
     <div ref={hit} className="notch-hit" data-hit aria-hidden="true"
       onPointerDown={e => {
         const b = st.boxes.find(x => e.clientX >= x.x0 && e.clientX < x.x1);
+        if (b) setHotKey(b.key);
+        st.lastIn = performance.now(); setPanel(true);
         if (b?.key !== 'done') return;
         st.press = { x: e.clientX, y: e.clientY }; e.currentTarget.setPointerCapture(e.pointerId);
       }}
@@ -515,7 +545,7 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
     <div ref={drop} className="notch-pane notch-drop" data-hit={open ? true : undefined} role="dialog" aria-label="Sessions">
       <div ref={dropIn} className="notch-pane-in">{open ? panel : lastPanel.current}</div></div>
     <div ref={noteP} className="notch-pane notch-note" data-hit={note && !(kb && !kbCard) ? true : undefined} role="alertdialog" aria-label="Agent notice">
-      <div ref={noteIn} className="notch-pane-in">{shownNote && (shownNote.pop ? popAgents.length > 0 && <Pop agents={popAgents} look={look} act={A} onClose={shownNote.onClose}/> : shownNote.card)}</div></div>
+      <div ref={noteIn} className="notch-pane-in">{shownNote && (shownNote.pop ? lastPopAgents.current.length > 0 && <Pop agents={lastPopAgents.current} look={look} act={A} onClose={shownNote.onClose}/> : shownNote.card)}</div></div>
     {dragging && <div className="notch-catch" data-hit aria-hidden="true"/>}
   </div>;
 }

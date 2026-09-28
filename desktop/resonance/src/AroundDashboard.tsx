@@ -16,18 +16,21 @@ import { demoBrief, demoMail, demoNotices, demoToday, postRoute, useNow, useRout
 import { ArrangeHome, BLOCK } from './ArrangeHome';
 import { SettingsPage, type Account, type Controls } from './SettingsPage';
 import { ActionCard, MailCard, QuestionCard, type Answer, type Card, type Decide, type Question } from './ActionCard';
+import { MOTION } from './motion';
 import './dashboard-around.css';
 import './dashboard-home.css';
 
 // The Dashboard around her: one column under the companion. A corner strip beside her, then the home's
 // blocks: the ones you keep, in your order, and the ones that show up when there is something. A block grows
-// into its page in place; the panel follows the blocks up to VIEW_MAX. Every colour comes from her light (--glow).
+// into its page in place; the panel follows the blocks up to VIEW_MAX. Her light accents the surface;
+// measurements and agent states keep their own stable colours.
 type Page = 'conversation' | 'now' | 'agents' | 'usage' | 'plugins' | 'projects' | 'settings' | 'arrange' | 'brief';
 const TITLES: Record<Page, L> = { conversation: ['Conversation', '对话'], now: ['Right now', '现在'], agents: ['Agents', 'Agents'], usage: ['Usage', '用量'], plugins: ['Plugins', '插件'], projects: ['Projects', '项目'], settings: ['Settings', '设置'], arrange: ['Arrange the home', '编辑首页'], brief: ['Morning brief', '早报'] };
 // The home follows its blocks from the old fixed height up to this, then scrolls inside the panel.
 const VIEW_MIN = 466, VIEW_MAX = 600, CORNER = 30, HOLD = 560, TALK_STAYS = 10 * 60_000;
 const WX: Record<WxKind, ReactNode> = { sun: <Sun/>, cloud: <Cloud/>, rain: <CloudRain/>, snow: <CloudSnow/>, fog: <CloudFog/>, storm: <CloudLightning/> };
-const SPRING = 'linear(0,.054,.178,.329,.481,.617,.731,.82,.888,.936,.969,.99,1.003,1.01,1.014,1.015,1.014,1.012,1.01,1.008,1)';
+const PAGE_MS = MOTION.medium, EXIT_MS = PAGE_MS * MOTION.exit;
+const PAGE_EASE = 'cubic-bezier(.16,1,.3,1)', EXIT_EASE = 'cubic-bezier(.7,0,.84,0)';
 const reduced = matchMedia('(prefers-reduced-motion: reduce)');
 const dur = (ms: number) => reduced.matches ? 0 : ms;
 const usd = (n?: number) => n === undefined ? '—' : `${n <= -.005 ? '-' : ''}$${Math.abs(n).toFixed(2)}`;
@@ -128,10 +131,10 @@ const thoughtRows = (rows: Row[], thoughts: Think['thoughts']) => new Map(though
 }));
 const PULL = 240; // px of fresh upward scroll at the top that adds the day before
 
-export function AroundDashboard({ open, port = null, onClose, onMood, onHop, talk, plugins: live, pluginFocus = null, marks = 'spark', onAgents, agentsFocus = 0, onAnswer, unread, ctl }: {
+export function AroundDashboard({ open, port = null, onClose, onMood, onHop, talk, plugins: live, pluginFocus = null, marks = 'spark', onAgents, agentsFocus = 0, settingFocus = 0, onAnswer, unread, ctl }: {
   open: boolean; port?: string | null; onClose: () => void; onMood: (expr: ExprId | null) => void; onHop: (height: number) => void;
   talk?: Talk; plugins?: PluginController; pluginFocus?: { plugin: string; key: string } | null;
-  marks?: MarkLook; onAgents?: (agents: ShownAgent[]) => void; agentsFocus?: number; onAnswer?: (id: string) => void;
+  marks?: MarkLook; onAgents?: (agents: ShownAgent[]) => void; agentsFocus?: number; settingFocus?: number; onAnswer?: (id: string) => void;
   unread?: ReadonlySet<string>; ctl: Controls;
 }) {
   const [settings, updateSettings] = useCompanionSettings(), lang = settings.lang;
@@ -195,7 +198,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
   const from = () => origin.current?.isConnected ? origin.current : null;
   const insetOf = (el: HTMLElement) => {
     const v = view.current!.getBoundingClientRect(), r = el.getBoundingClientRect();
-    return `inset(${r.top - v.top}px ${v.right - r.right}px ${v.bottom - r.bottom}px ${r.left - v.left}px round 12px)`;
+    return `inset(${r.top - v.top}px ${v.right - r.right}px ${v.bottom - r.bottom}px ${r.left - v.left}px round 14px)`;
   };
   // Only animations started here; her CSS loops (orbs, pills, rings) keep running.
   const stopMotion = (el: HTMLElement) => el.getAnimations({ subtree: true }).forEach(a => { if (!(a instanceof CSSAnimation || a instanceof CSSTransition)) a.cancel(); });
@@ -217,15 +220,15 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
     if (!page || !el) return;
     const start = from(), dy = start ? start.getBoundingClientRect().top - view.current!.getBoundingClientRect().top : 0;
     if (page === 'conversation') { const b = el.querySelector('.pg-body')!; b.scrollTop = b.scrollHeight; } // it opens on the newest turn
-    if (start) el.animate([{ clipPath: insetOf(start) }, { clipPath: 'inset(0 0 0 0 round 14px)' }], { duration: dur(560), easing: SPRING });
-    else el.animate([{ opacity: 0 }, { opacity: 1 }], { duration: dur(240) });
-    el.querySelector('.pg-head')?.animate([{ transform: `translateY(${dy}px)`, opacity: .3 }, { transform: 'none', opacity: 1 }], { duration: dur(560), easing: SPRING });
+    if (start) el.animate([{ clipPath: insetOf(start) }, { clipPath: 'inset(0 0 0 0 round 14px)' }], { duration: dur(PAGE_MS), easing: PAGE_EASE });
+    else el.animate([{ opacity: 0 }, { opacity: 1 }], { duration: dur(PAGE_MS), easing: PAGE_EASE });
+    el.querySelector('.pg-head')?.animate([{ transform: `translateY(${dy}px)`, opacity: .3 }, { transform: 'none', opacity: 1 }], { duration: dur(PAGE_MS), easing: PAGE_EASE });
     // Only what is on screen fades in, in order; a long page would otherwise hold its newest words back.
     const box = el.getBoundingClientRect();
     [...el.querySelectorAll('.pg-sec, .pg-foot, .pg-input')].filter(s => { const r = s.getBoundingClientRect(); return r.bottom > box.top && r.top < box.bottom; }).forEach((s, i) => s.animate([{ opacity: 0, transform: 'translateY(6px)' }, { opacity: 1, transform: 'none' }],
-      { duration: dur(260), delay: dur(170 + i * 45), easing: 'cubic-bezier(.2,.7,.2,1)', fill: 'backwards' }));
+      { duration: dur(MOTION.fast), delay: dur(Math.min(i, 4) * MOTION.stagger), easing: PAGE_EASE, fill: 'backwards' }));
     stopMotion(home.current!);
-    home.current!.animate([{ opacity: 1 }, { opacity: 0 }], { duration: dur(150), fill: 'forwards' });
+    home.current!.animate([{ opacity: 1 }, { opacity: 0 }], { duration: dur(MOTION.fast), fill: 'forwards' });
     el.querySelector<HTMLElement>('.pg-back')?.focus({ preventScroll: true });
   }, [page]);
   const closePage = () => {
@@ -233,17 +236,16 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
     if (!page || !el || closing.current) return;
     const back = from();
     closing.current = true;
-    // One thing at a time: the page's words leave, the empty page folds back into its row as a faint card,
-    // and only then do the home rows return in order, the row it came from last, as the card lands on it.
+    // Reverse the same geometry into the opening row, with a shorter exit.
     el.classList.add('is-closing');
-    el.querySelectorAll('.pg-head, .pg-body').forEach(part => part.animate([{ opacity: 1 }, { opacity: 0, transform: 'translateY(-4px)' }], { duration: dur(120), easing: 'ease-in', fill: 'forwards' }));
-    const shrink = back ? el.animate([{ clipPath: 'inset(0 0 0 0 round 14px)' }, { clipPath: insetOf(back) }], { duration: dur(320), delay: dur(40), easing: 'cubic-bezier(.3,0,.2,1)', fill: 'forwards' })
-      : el.animate([{ opacity: 1 }, { opacity: 0 }], { duration: dur(240), fill: 'forwards' });
-    if (back) el.animate([{ opacity: 1 }, { opacity: 0 }], { duration: dur(90), delay: dur(290), fill: 'forwards' });
+    el.querySelectorAll('.pg-head, .pg-body').forEach(part => part.animate([{ opacity: 1 }, { opacity: 0, transform: 'translateY(-4px)' }], { duration: dur(MOTION.fast * MOTION.exit), easing: EXIT_EASE, fill: 'forwards' }));
+    const shrink = back ? el.animate([{ clipPath: 'inset(0 0 0 0 round 14px)' }, { clipPath: insetOf(back) }], { duration: dur(EXIT_MS), easing: EXIT_EASE, fill: 'forwards' })
+      : el.animate([{ opacity: 1 }, { opacity: 0 }], { duration: dur(EXIT_MS), easing: EXIT_EASE, fill: 'forwards' });
+    if (back) el.animate([{ opacity: 1 }, { opacity: 0 }], { duration: dur(MOTION.fast * MOTION.exit), delay: dur(EXIT_MS - MOTION.fast * MOTION.exit), fill: 'forwards' });
     const homeEl = home.current!;
     stopMotion(homeEl);
-    [...homeEl.querySelectorAll(':scope > .corner, .home-inner > *')].forEach((unit, i) => { if (unit !== back) unit.animate([{ opacity: 0, transform: 'translateY(4px)' }, { opacity: 1, transform: 'none' }], { duration: dur(220), delay: dur(130 + 30 * i), easing: 'cubic-bezier(.2,.7,.2,1)', fill: 'backwards' }); });
-    back?.animate([{ opacity: 0 }, { opacity: 1 }], { duration: dur(200), delay: dur(290), fill: 'backwards' });
+    [...homeEl.querySelectorAll(':scope > .corner, .home-inner > *')].forEach((unit, i) => { if (unit !== back) unit.animate([{ opacity: 0, transform: 'translateY(4px)' }, { opacity: 1, transform: 'none' }], { duration: dur(MOTION.fast), delay: dur(MOTION.fast * MOTION.exit + Math.min(i, 4) * MOTION.stagger), easing: PAGE_EASE, fill: 'backwards' }); });
+    back?.animate([{ opacity: 0 }, { opacity: 1 }], { duration: dur(MOTION.fast), delay: dur(MOTION.fast * MOTION.exit), fill: 'backwards' });
     shrink.onfinish = () => {
       if (!closing.current) return;
       closing.current = false; setPage(null); setPlugin(null); setSettingsCat(null); react('02', 0);
@@ -317,6 +319,11 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
     if (!agentsFocus || !open) return;
     if (!page) openPage('agents'); else if (page !== 'agents') setPage('agents');
   }, [agentsFocus]);
+  useEffect(() => {
+    if (!settingFocus || !open) return;
+    if (!page) openPage('settings'); else if (page !== 'settings') setPage('settings');
+    setSettingsCat(null);
+  }, [settingFocus]);
   const move = (s: Agent, change: Partial<Agent>) => {
     const el = pageEl.current?.querySelector<HTMLElement>(`[data-id="${s.id}"]`);
     if (el) flip.current = { id: s.id, top: el.getBoundingClientRect().top };
@@ -325,7 +332,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
   useLayoutEffect(() => {
     const f = flip.current, el = f && pageEl.current?.querySelector<HTMLElement>(`[data-id="${f.id}"]`);
     flip.current = null;
-    if (f && el) el.animate([{ transform: `translateY(${f.top - el.getBoundingClientRect().top}px)` }, { transform: 'none' }], { duration: dur(460), easing: SPRING });
+    if (f && el) el.animate([{ transform: `translateY(${f.top - el.getBoundingClientRect().top}px)` }, { transform: 'none' }], { duration: dur(PAGE_MS), easing: PAGE_EASE });
   }, [moved]);
   const hide = (s: Agent) => {
     setHidden(value => ({ ...value, [s.id]: s.you }));
@@ -345,7 +352,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
     const prev = shownPlugin.current; shownPlugin.current = plugin;
     if (page !== 'plugins' || prev === plugin) return;
     const el = pageEl.current?.querySelector(plugin ? '.pl-det' : '.pl-cat');
-    el?.animate([{ transform: `translateX(${plugin ? 36 : -36}px)`, opacity: 0 }, { transform: 'none', opacity: 1 }], { duration: dur(380), easing: SPRING });
+    el?.animate([{ transform: `translateX(${plugin ? 36 : -36}px)`, opacity: 0 }, { transform: 'none', opacity: 1 }], { duration: dur(plugin ? PAGE_MS : EXIT_MS), easing: PAGE_EASE });
     if (plugin) body()?.scrollTo({ top: 0 });
     else pageEl.current?.querySelector<HTMLElement>(`[data-plugin="${prev}"]`)?.focus({ preventScroll: true });
   }, [plugin, page]);
@@ -428,7 +435,6 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
   // ---------- the home's blocks ----------
   const zh = lang === 'zh', d = new Date(tick);
   const timeOf = (ms: number) => new Date(ms).toLocaleTimeString(zh ? 'zh-CN' : 'en-US', zh ? { hour: '2-digit', minute: '2-digit', hour12: false } : { hour: 'numeric', minute: '2-digit' });
-  const dateLabel = zh ? `${d.getMonth() + 1}月${d.getDate()}日` : `${d.toLocaleDateString('en-US', { weekday: 'short' })} ${d.getDate()}`;
   const inAbout = (ms: number) => { const m = Math.max(0, Math.round((ms - tick) / 60_000)), h = Math.floor(m / 60);
     return m < 1 ? t(['now', '现在']) : zh ? `${h ? `${h} 小时 ` : ''}${m % 60} 分后` : `in ${h ? `${h} h ` : ''}${m % 60} m`; };
   const sameDay = (ms: number) => new Date(ms).toDateString() === d.toDateString();
@@ -447,7 +453,8 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
     try { await postRoute(port, '/inherent/today/todo', { id, done }); }
     catch { setChecked(c => ({ ...c, [id]: !done })); notify(t(['Couldn’t reach To Do.', '连不上 To Do。'])); }
   };
-  const events = (today?.events ?? []).filter(e => { const start = Date.parse(e.start), end = e.end ? Date.parse(e.end) : start + 30 * 60_000; return sameDay(start) && end > tick; }).slice(0, 2);
+  const remainingEvents = (today?.events ?? []).filter(e => { const start = Date.parse(e.start), end = e.end ? Date.parse(e.end) : start + 30 * 60_000; return sameDay(start) && end > tick; }).sort((a, b) => Date.parse(a.start) - Date.parse(b.start));
+  const events = remainingEvents.slice(0, 2), nextEvent = remainingEvents.find(e => !e.all_day) ?? remainingEvents[0];
   const due = (x: { due?: string }) => x.due ? Date.parse(x.due) : Infinity;
   const todos = [...today?.todos ?? []].sort((a, b) => due(a) - due(b)).slice(0, 3);
   const dueLabel = (ms: number) => ms < tick ? t(['overdue', '已过期']) : sameDay(ms) ? zh ? `今天 ${timeOf(ms)}` : `due ${timeOf(ms)}` : new Date(ms).toLocaleDateString(zh ? 'zh-CN' : 'en-US', { month: 'short', day: 'numeric' });
@@ -497,7 +504,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
     const apply = () => { setDismissed(v => ({ ...v, [id]: key })); notify(t(['Closed · comes back with the next one', '关掉了 · 有新的会再出现']), () => setDismissed(({ [id]: _, ...rest }) => rest)); };
     if (!el || reduced.matches) { apply(); return; }
     el.style.height = `${el.offsetHeight}px`; void el.offsetHeight; el.classList.add('is-leaving');
-    later(260, apply);
+    later(EXIT_MS, apply);
   };
 
   // Holding a block arranges the home. The click that ends the hold is swallowed, wherever it lands.
@@ -518,17 +525,27 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
   };
   const holdMove = (e: PointerEvent) => { const h = hold.current; if (h && Math.hypot(e.clientX - h.x, e.clientY - h.y) > 6) cancelHold(); };
 
-  // The home follows its blocks, between the old fixed height and VIEW_MAX; past that it scrolls.
+  // The home follows its blocks; the resting input keeps its space even on a short display.
   const inner = useRef<HTMLDivElement>(null), [viewH, setViewH] = useState(VIEW_MIN);
   useLayoutEffect(() => {
     const el = inner.current;
-    if (!el || page) return;
-    const fit = () => setViewH(Math.round(Math.min(VIEW_MAX, Math.max(VIEW_MIN, CORNER + el.offsetHeight))));
+    if (!el || !view.current) return;
+    const fit = () => {
+      const viewport = view.current!, panel = viewport.parentElement!;
+      // Layout offsets exclude the entrance transform, so opening cannot briefly oversize the panel.
+      let top = 0;
+      for (let node: HTMLElement | null = viewport; node; node = node.offsetParent as HTMLElement | null) top += node.offsetTop;
+      const available = Math.max(0, window.innerHeight - top - parseFloat(getComputedStyle(panel).paddingBottom) - 12);
+      setViewH(Math.round(Math.min(available, VIEW_MAX, Math.max(VIEW_MIN, CORNER + el.offsetHeight))));
+    };
     fit();
+    let frame = 0;
+    const resize = () => { cancelAnimationFrame(frame); frame = requestAnimationFrame(fit); };
     const observer = new ResizeObserver(fit);
     observer.observe(el);
-    return () => observer.disconnect();
-  }, [page]);
+    window.addEventListener('resize', resize);
+    return () => { observer.disconnect(); cancelAnimationFrame(frame); window.removeEventListener('resize', resize); };
+  }, [open, page]);
   const mute = () => {
     const muted = !ctl.speechMuted;
     ctl.setSpeech(muted);
@@ -657,11 +674,12 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
     <div className="view" ref={view} style={{ height: viewH }}>
       <div className="overview" ref={home} inert={!!page}>
         <div className="corner">
-          <span className="clock">{talk?.offline ? <b className="is-warm">{t(['Offline · reconnecting', '离线 · 重连中'])}</b>
+          <span className="next-event" title={nextEvent?.title}>{talk?.offline ? <b className="is-warm">{t(['Offline · reconnecting', '离线 · 重连中'])}</b>
             : models?.state === 'failed' ? <b className="is-warm" title={t(['Her voice didn’t download. Restart Jarvis in Settings › Advanced to try again.', '她的声音没下载下来。到 设置 › 高级 里重启 Jarvis 再试。'])}>{t(['Voice failed', '声音下载失败'])}</b>
             : models?.state === 'downloading' ? <b className="is-warm" title={t(['Downloading her voice (about 240 MB). Type to her meanwhile.', '正在下载她的声音（约 240 MB），这期间可以先打字。'])}>
               {t([`Voice · ${Math.floor(models.done * 100 / models.total)}%`, `声音准备中 ${Math.floor(models.done * 100 / models.total)}%`])}</b>
-            : <><b>{dateLabel}</b> {timeOf(tick)}</>}</span>
+            : nextEvent ? <><b>{nextEvent.all_day ? t(['Today', '今天']) : timeOf(Date.parse(nextEvent.start))}</b><span>{nextEvent.title}</span></>
+            : <span>{today ? t(['No more events today', '今天没有后续日程']) : todayRoute.missing ? t(['Calendar not connected', '日历未连接']) : t(['Syncing calendar…', '正在同步日历…'])}</span>}</span>
           <span className="corner-b">
             <button className="cb" data-row="conversation" aria-label={t(['Conversation', '对话'])} title={t(['Conversation', '对话'])} onClick={e => openPage('conversation', e.currentTarget)}><ChatCircle size={15}/></button>
             <button className={`cb ${ctl.speechMuted ? 'is-muted' : ''}`} aria-pressed={ctl.speechMuted} onClick={mute}
@@ -762,7 +780,7 @@ function Ask({ className, onAsk, think }: { className: string; onAsk: (text: str
     onAsk(text.trim()); setText(''); event.currentTarget.querySelector('input')?.blur();
   }}>
     {think?.on && <span className="think-chip">{t(['Deep', '深想'])}<button type="button" aria-label={t(['Stop thinking deeply', '退出深想'])} onClick={think.exit}>×</button></span>}
-    <input aria-label={t(['Message Jarvis', '给 Jarvis 发消息'])} placeholder={think?.on ? t(['Say “stop thinking” to go back', '说「不用想了」回到平时']) : t(['Message Jarvis…', '给 Jarvis 发消息…'])} autoComplete="off" value={text} onChange={event => setText(event.target.value)}
+    <input aria-label={t(['Message Jarvis', '给 Jarvis 发消息'])} placeholder={think?.on ? t(['Say “stop thinking” to go back', '说「不用想了」回到平时']) : t(['Ask Jarvis…', '问问 Jarvis…'])} autoComplete="off" value={text} onChange={event => setText(event.target.value)}
       onPointerDown={focusWindow} onKeyDown={event => { if (event.key === 'Enter' && event.nativeEvent.isComposing) event.preventDefault(); }}/>
     <button className="send" aria-label={t(['Send', '发送'])} disabled={!text.trim()}><ArrowUp size={13} weight="bold"/></button>
   </form>;
@@ -796,17 +814,17 @@ function UsageGroup({ name, plan, ok, windows, synced }: { name: string; plan?: 
   </span>;
 }
 // Today's spend as one ring cut by model, biggest first; the list beside it names each cut.
-// The cuts sit on their own element so the fill animation reaches the gradient.
+// The cuts retain their values when the page opens; no decorative fill replay.
 // Only models that cost a cent today are listed; the rest fold into one line that opens them.
 function Spend({ total, models }: { total: number; models: { model: string; today_usd: number }[] }) {
   const t = useT();
   const [all, setAll] = useState(false);
-  const sorted = [...models].sort((a, b) => b.today_usd - a.today_usd), tint = (i: number) => `rgb(var(--glow) / ${Math.max(.2, 1 - i * .55)})`;
+  const sorted = [...models].sort((a, b) => b.today_usd - a.today_usd), tint = (i: number) => `color-mix(in srgb,var(--data) ${Math.max(20, 100 - i * 55)}%,transparent)`;
   const paid = sorted.filter(m => m.today_usd >= .005), free = sorted.length - paid.length;
   let edge = 0;
   const stops = sorted.map((m, i) => { const from = edge; edge += total ? m.today_usd / total : 0; return `${tint(i)} calc(var(--fill) * ${from}%) calc(var(--fill) * ${edge}%)`; });
   return <div className="spend">
-    <span className="ring"><span className="dial donut"><i style={{ background: `conic-gradient(${[...stops, 'rgb(var(--glow) / .12) 0'].join(',')})` }}/><b>{usd(total)}<small>{t(['today', '今天'])}</small></b></span></span>
+    <span className="ring"><span className="dial donut"><i style={{ background: `conic-gradient(${[...stops, 'color-mix(in srgb,var(--data) 12%,transparent) 0'].join(',')})` }}/><b>{usd(total)}<small>{t(['today', '今天'])}</small></b></span></span>
     <ul>{(all ? sorted : paid).map((m, i) => <li key={m.model}><i style={{ background: tint(i) }}/>{m.model}<span>{usd(m.today_usd)}</span></li>)}
       {free > 0 && <li><button className="more" aria-expanded={all} onClick={() => setAll(v => !v)}>{all ? 'Show less' : `${free} more at $0.00`}</button></li>}</ul>
   </div>;

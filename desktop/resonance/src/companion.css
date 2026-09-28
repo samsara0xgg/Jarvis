@@ -1,97 +1,93 @@
 /* The companion: one black ball at the notch; every panel opens from beneath her. */
 .companion {
-  --mint:#8be4bc;
+  --mint:rgb(var(--glow));
   --spring:linear(0,.054,.178,.329,.481,.617,.731,.82,.888,.936,.969,.99,1.003,1.01,1.014,1.015,1.014,1.012,1.01,1.008,1);
   --glass:rgb(14 15 18 / .62);
   --edge:inset 0 0 0 .5px rgb(255 255 255 / .16),inset 0 1px 0 rgb(255 255 255 / .05);
   position:fixed; inset:0; overflow:hidden; color:#eceef2;
 }
 .companion-stage { position:absolute; left:0; top:0; z-index:4; pointer-events:none; overflow:visible; }
-.companion-island { transition:transform .3s cubic-bezier(.3,.7,.4,1); }
+.companion-island { transition:transform var(--motion-medium) var(--ease-out); }
 .companion-canvas { position:absolute; left:0; top:0; z-index:4; pointer-events:none; }
 .companion-hit { position:absolute; left:0; top:0; z-index:5; padding:0; border-radius:50%; background:transparent; transform-origin:50% 50%; cursor:pointer; }
 .companion-hit:focus-visible { outline:1.5px solid rgb(255 255 255 / .55); outline-offset:0; }
 
 .companion-chip {
-  position:absolute; z-index:3; width:32px; height:26px; border-radius:9px; background:var(--glass); box-shadow:var(--edge),0 6px 16px -8px #000a;
+  position:absolute; z-index:3; width:32px; height:26px; border-radius:var(--radius-control); background:var(--glass); box-shadow:var(--edge),0 6px 16px -8px #000a;
   opacity:0; transform:translateX(-6px) scale(.84); transform-origin:0 50%; pointer-events:none;
-  transition:opacity 120ms ease,transform 160ms ease;
+  transition:opacity var(--motion-fast) ease,transform var(--motion-fast) ease;
 }
 /* The delay is hover intent: passing over her does not flash the chip. */
-.companion-chip.is-open { opacity:1; transform:none; pointer-events:auto; transition:opacity 200ms ease 160ms,transform 380ms var(--spring) 160ms; }
+.companion-chip.is-open { opacity:1; transform:none; pointer-events:auto; transition:opacity var(--motion-fast) ease var(--motion-fast),transform var(--motion-slow) var(--spring) var(--motion-fast); }
 .companion-chip button { width:100%; height:100%; display:grid; place-items:center; padding:0; border-radius:inherit; color:#d9dce2; }
 .companion-chip button:hover { color:#fff; background:rgb(255 255 255 / .07); }
 
 .companion-composer {
-  position:absolute; z-index:3; width:300px; height:48px; display:flex; align-items:center; gap:6px; padding:0 8px; border-radius:17px;
+  position:absolute; z-index:3; width:360px; height:48px; display:flex; align-items:center; gap:6px; padding:0 8px; border-radius:var(--radius-block);
   background:var(--glass); box-shadow:var(--edge),0 14px 32px -16px #000c;
   opacity:0; transform:translateY(-10px) scale(.4,.7); transform-origin:50% -18px; pointer-events:none;
-  transition:opacity 140ms ease,transform 180ms cubic-bezier(.4,0,1,1);
+  transition:opacity var(--motion-fast) ease,transform var(--motion-fast) cubic-bezier(.4,0,1,1);
 }
-.companion-composer.is-open { opacity:1; transform:none; pointer-events:auto; transition:opacity 160ms ease,transform 420ms var(--spring); }
-.companion-composer > * { opacity:0; transition:opacity 90ms ease; }
-.companion-composer.is-open > * { opacity:1; transition:opacity 180ms ease 120ms; }
+.companion-composer.is-open { opacity:1; transform:none; pointer-events:auto; transition:opacity var(--motion-fast) ease,transform var(--motion-slow) var(--spring); }
+.companion-composer > * { opacity:0; transition:opacity var(--motion-fast) ease; }
+.companion-composer.is-open > * { opacity:1; transition:opacity var(--motion-fast) ease var(--motion-fast); }
 .companion-composer input {
-  flex:1; min-width:0; height:32px; padding:0 10px; border:0; border-radius:10px; outline:none;
-  background:rgb(255 255 255 / .06); box-shadow:inset 0 0 0 .5px rgb(255 255 255 / .1); color:#f2f3f5; font-size:13px; caret-color:var(--mint);
+  flex:1; min-width:0; height:32px; padding:0 10px; border:0; border-radius:var(--radius-control); outline:none;
+  background:rgb(255 255 255 / .06); box-shadow:inset 0 0 0 .5px rgb(255 255 255 / .1); color:#f2f3f5; font-size:var(--text-detail); caret-color:var(--mint);
 }
-.companion-composer input::placeholder { color:rgb(235 237 241 / .45); }
+.companion-composer input::placeholder { color:var(--p-faint); }
 .companion-composer input:focus-visible { outline:none; box-shadow:inset 0 0 0 .5px rgb(255 255 255 / .2); }
-.composer-attach { width:28px; height:28px; display:grid; place-items:center; padding:0; border-radius:9px; color:#b7bbc4; }
-.composer-send { width:30px; height:30px; display:grid; place-items:center; padding:0; border-radius:50%; background:var(--mint); color:#10231a; transition:transform 120ms ease,background 160ms ease; }
+.composer-attach { width:28px; height:28px; display:grid; place-items:center; padding:0; border-radius:var(--radius-control); color:#b7bbc4; }
+.composer-send { width:30px; height:30px; display:grid; place-items:center; padding:0; border-radius:50%; background:var(--mint); color:#090b14; transition:transform var(--motion-fast) ease,background var(--motion-fast) ease; }
 .composer-send:disabled { background:rgb(255 255 255 / .08); color:#9da2ab; opacity:1; }
 .composer-send:active:not(:disabled) { transform:scale(.92); }
 
 .companion-strip,.companion-bubble {
   position:absolute; z-index:3; display:flex; align-items:center; background:var(--glass); box-shadow:var(--edge),0 12px 28px -14px #000c;
   opacity:0; transform:translateX(-50%) translateY(-8px) scale(.9); transform-origin:50% 0; pointer-events:none;
-  transition:opacity 140ms ease,transform 180ms ease;
+  transition:opacity var(--motion-fast) ease,transform var(--motion-fast) ease;
 }
-.companion-strip.is-open,.companion-bubble.is-open { opacity:1; transform:translateX(-50%); pointer-events:auto; transition:opacity 180ms ease 60ms,transform 400ms var(--spring) 60ms; }
+.companion-strip.is-open,.companion-bubble.is-open { opacity:1; transform:translateX(-50%); pointer-events:auto; transition:opacity var(--motion-fast) ease 60ms,transform var(--motion-slow) var(--spring) 60ms; }
 .companion-bubble.is-open { pointer-events:none; }
-.companion-strip { width:256px; height:38px; gap:8px; padding:0 6px 0 9px; border-radius:19px; }
+.companion-strip { width:256px; height:38px; gap:8px; padding:0 6px 0 9px; border-radius:var(--radius-block); }
 .strip-mic { position:relative; flex:none; width:22px; height:22px; display:grid; place-items:center; color:var(--mint); }
 .strip-mic::before { content:''; position:absolute; inset:0; border-radius:50%; background:var(--mint); opacity:.14; animation:strip-breathe 2.4s ease-in-out infinite; }
 .companion-strip.is-hearing .strip-mic::before { opacity:.24; animation-duration:.9s; }
 @keyframes strip-breathe { 0%,100% { transform:scale(.8); } 50% { transform:scale(1.08); } }
 .strip-mic svg { position:relative; }
-.strip-text { flex:1; min-width:0; font-size:13px; line-height:18px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.strip-text.is-empty { color:rgb(235 237 241 / .48); }
-.strip-stop { flex:none; width:26px; height:26px; display:grid; place-items:center; padding:0; border-radius:9px; color:#e8e9ec; background:rgb(255 255 255 / .08); }
+.strip-text { flex:1; min-width:0; font-size:var(--text-detail); line-height:18px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.strip-text.is-empty { color:var(--p-faint); }
+.strip-stop { flex:none; width:26px; height:26px; display:grid; place-items:center; padding:0; border-radius:var(--radius-control); color:#e8e9ec; background:rgb(255 255 255 / .08); }
 .strip-stop:hover { background:rgb(255 255 255 / .15); }
-.companion-bubble { min-height:36px; max-width:280px; padding:9px 15px; border-radius:18px; font-size:13px; line-height:18px; }
+.companion-bubble { min-height:36px; max-width:280px; padding:9px 15px; border-radius:var(--radius-block); font-size:var(--text-detail); line-height:18px; }
 /* The full reply reserves the size up front, so typing never resizes the bubble. A longer answer
    wraps to three lines; the whole of it is in the Dashboard's conversation. */
 .bubble-text { display:grid; }
 .bubble-text > span { grid-area:1 / 1; display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:3; overflow:hidden; }
 .bubble-ghost { visibility:hidden; }
 /* Think mode (ADR 0064): the strip goes deep, the seconds of a deep answer count up in it, and her words say how long she thought. */
-.companion-strip::before { content:''; position:absolute; inset:0; border-radius:inherit; pointer-events:none; opacity:0; transition:opacity .9s ease;
+.companion-strip::before { content:''; position:absolute; inset:0; border-radius:inherit; pointer-events:none; opacity:0; transition:opacity var(--motion-slow) var(--ease-out);
   background:radial-gradient(120% 160% at 0 50%,rgb(var(--deep) / .26),transparent 62%),linear-gradient(90deg,#05061a,#090a24); box-shadow:inset 0 0 0 .5px rgb(var(--deep) / .55); }
 .companion-strip.is-deep::before { opacity:1; }
 .companion-strip > * { position:relative; }
 .companion-strip.is-deep .strip-mic { color:var(--deep-hi); }
 .companion-strip.is-deep .strip-mic::before { background:var(--deep); }
-.strip-think { flex:none; font-size:11.5px; color:var(--deep-hi); font-variant-numeric:tabular-nums; }
+.strip-think { flex:none; font-size:var(--text-label); color:var(--deep-hi); font-variant-numeric:tabular-nums; }
 .companion-bubble.is-deep { flex-direction:column; align-items:stretch; gap:2px; }
-.bubble-think { font-size:10.5px; line-height:14px; color:var(--deep-hi); }
+.bubble-think { font-size:var(--text-label); line-height:14px; color:var(--deep-hi); }
 
 /* Her light as "r g b", written by the ball whenever it changes. Think mode's colour is fixed: her deep light's glow. */
 :root { --glow:157 180 255; --deep:154 134 255; --deep-hi:color-mix(in srgb,rgb(var(--deep)) 55%,#fff); }
-/* The Dashboard is cut from her glass: deep blue, a little of her nebula in the corners, her light pooled beneath her. */
+/* The same black as the notch, with her light pooled beneath her. */
 .companion-dashboard {
   --surface-ink:#eef0fb; --surface-muted:rgb(196 204 238 / .62); --surface-line:rgb(157 180 255 / .12); --surface-hover:rgb(var(--glow) / .07);
-  position:absolute; z-index:2; width:300px; padding-top:8px; border-radius:24px;
-  background:
-    radial-gradient(200px 110px at 50% 0,rgb(var(--glow) / .3),transparent 72%),
-    radial-gradient(110% 55% at 0 100%,rgb(91 58 168 / .2),transparent 62%),
-    radial-gradient(80% 45% at 100% 62%,rgb(31 90 138 / .16),transparent 62%),
-    linear-gradient(180deg,rgb(21 23 50 / .8),rgb(10 11 25 / .86));
+  position:absolute; z-index:2; width:360px; padding-top:8px; border-radius:var(--radius-panel);
+  background:radial-gradient(200px 110px at 50% 0,rgb(var(--glow) / .18),transparent 72%),#000;
   box-shadow:inset 0 0 0 .5px rgb(var(--glow) / .28),inset 0 1px 0 rgb(255 255 255 / .08),0 28px 56px -28px #000,0 0 64px -34px rgb(var(--glow) / .7);
   opacity:0; visibility:hidden; transform:translateY(-14px) scale(.96); transform-origin:50% 0; pointer-events:none;
-  transition:opacity 180ms ease,transform 220ms cubic-bezier(.4,0,1,1),visibility 0s 220ms;
+  transition:opacity var(--exit-fast) var(--ease-in),transform var(--exit-medium) var(--ease-in),visibility 0s var(--exit-medium);
 }
-.companion-dashboard.is-open { opacity:1; visibility:visible; transform:none; pointer-events:auto; transition:opacity 200ms ease,transform 460ms var(--spring),visibility 0s; }
+.companion-dashboard.is-open { opacity:1; visibility:visible; transform:none; pointer-events:auto; transition:opacity var(--motion-fast) ease,transform var(--motion-slow) var(--spring),visibility 0s; }
 /* A few faint stars near the edges, under the content. */
 .companion-dashboard::before {
   content:''; position:absolute; inset:0; z-index:-1; border-radius:inherit; pointer-events:none; opacity:.45;
@@ -102,8 +98,8 @@
 }
 /* Think mode on the Conversation page: the whole panel goes deeper, over the stars, in and out with the mode. */
 .companion-dashboard::after {
-  content:''; position:absolute; inset:0; z-index:-1; border-radius:inherit; pointer-events:none; opacity:0; transition:opacity .9s ease;
-  background:radial-gradient(220px 120px at 50% 0,rgb(var(--deep) / .3),transparent 72%),radial-gradient(120% 55% at 0 100%,rgb(var(--deep) / .13),transparent 62%),linear-gradient(180deg,rgb(6 8 24),rgb(2 3 12));
+  content:''; position:absolute; inset:0; z-index:-1; border-radius:inherit; pointer-events:none; opacity:0; transition:opacity var(--motion-slow) var(--ease-out);
+  background:radial-gradient(220px 120px at 50% 0,rgb(var(--deep) / .22),transparent 72%),#000;
 }
 .companion-dashboard:has(.ad[data-deep])::after { opacity:1; }
 .companion-dashboard .dashboard-preview { --dashboard-accent:rgb(var(--glow)); }
@@ -117,3 +113,13 @@
   .strip-mic::before { animation:none; }
   .companion-island { transition:none; }
 }
+
+/* Position chooses the action: the island opens home; the character talks. */
+.companion-island-target { position:absolute; top:0; z-index:3; padding:0; background:transparent; border-radius:0; }
+.companion-island-target:focus-visible { outline:1px solid rgb(var(--glow)); outline-offset:-2px; }
+.companion-menu { position:absolute; z-index:8; width:220px; padding:10px; border-radius:var(--radius-block); background:#000; box-shadow:0 12px 32px -8px #000b; }
+.companion-menu button { display:block; width:100%; padding:8px 10px; border-radius:var(--radius-control); text-align:left; color:#eef0fb; font-size:var(--text-detail); }
+.companion-menu button:hover,.companion-menu button:focus-visible { background:rgb(var(--glow) / .14); outline:none; }
+.companion-menu button[aria-checked=true] { color:rgb(var(--glow)); background:rgb(var(--glow) / .08); }
+.companion-menu hr { border:0; border-top:1px solid rgb(196 204 238 / .15); margin:6px 0; }
+.companion ::selection { background:rgb(var(--glow) / .3); color:#fff; }

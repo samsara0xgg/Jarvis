@@ -26,7 +26,7 @@ export const needs = (n: Notice) => n.kind !== 'pop';
 export const ended = (state: AgentState) => state === 'done' || state === 'err';
 // One question's pick: an option, several options, or typed words.
 type Pick = number | number[] | string;
-type Card = { qi: number; picks: (Pick | undefined)[]; review: boolean; feedback: boolean; ok: string };
+type Card = { qi: number; picks: (Pick | undefined)[]; review: boolean; feedback: boolean; ok: string; pending?: boolean; error?: string };
 
 // The sound kit from 星核的声音: palette 水滴·脆, the "fifths" score. The context sleeps between cues.
 let audio: { ctx: AudioContext; out: GainNode; sleep?: ReturnType<typeof setTimeout> } | null = null;
@@ -225,9 +225,12 @@ export function useNotices({ port, agents, hold, watched, viewing, cue, answer }
 
   const resolve = async (n: Notice & { kind: 'req' }, text: string, body: Parameters<typeof answer>[1]) => {
     const c = card(n);
-    if (c.ok) return;
+    if (c.ok || c.pending) return;
+    c.pending = true; c.error = ''; bump();
     const yes = body.decision !== 'deny';
-    c.ok = await answer(n.req, body) ? text : 'Already answered somewhere else';
+    try { c.ok = await answer(n.req, body) ? text : 'Already answered somewhere else'; }
+    catch { c.error = 'Could not send your answer. Try again.'; return; }
+    finally { c.pending = false; bump(); }
     s.over = { face: yes ? '02' : '38', until: performance.now() + 900, hop: yes };
     cue(yes ? 'send' : 'close');
     bump();
@@ -266,12 +269,29 @@ export function NoticeCard({ n, agent, card, count, look, onPark, onOpen, onReso
   n: Notice & { kind: 'req' | 'wait' }; agent?: Agent; card: Card; count: number; look: MarkLook;
   onPark: () => void; onOpen: (agent: Agent) => void; onResolve: (text: string, body: Body) => void; onChange: () => void;
 }) {
-  const [typed, setTyped] = useState(''), [feedback, setFeedback] = useState('');
+  const [typed, setTyped] = useState(''), [feedback, setFeedback] = useState(''), [alwaysAllowed, setAlwaysAllowed] = useState(false);
+  const allowButton = useRef<HTMLButtonElement>(null);
+  // Cards arrive without a keyboard gesture. A bare Return must never approve
+  // one, including when its primary button happens to have focus.
+  useEffect(() => {
+    if (n.kind !== 'req' || n.req.tool === 'AskUserQuestion' || card.ok) return;
+    const key = (e: KeyboardEvent) => {
+      if (e.key !== 'Enter' || e.isComposing) return;
+      const button = allowButton.current, pane = button?.closest('.notch-pane');
+      if (!button?.checkVisibility({ opacityProperty: true, visibilityProperty: true }) || pane && !pane.classList.contains('is-open')) return;
+      const target = e.target instanceof HTMLElement ? e.target : null;
+      if (target?.closest('button,input,textarea,[contenteditable]') && !button.closest('.nc')?.contains(target)) return;
+      if (e.target instanceof HTMLInputElement && n.req.tool === 'ExitPlanMode' && !e.metaKey) return;
+      e.preventDefault(); e.stopImmediatePropagation();
+      if (e.metaKey && !e.repeat && !card.pending) allowButton.current?.click();
+    };
+    window.addEventListener('keydown', key, true);
+    return () => window.removeEventListener('keydown', key, true);
+  }, [n.key, card.ok, card.pending]);
   const who = agent ? AGENT_NAME[agent.agent] : 'It';
   const label = n.kind === 'wait' ? 'Needs you' : n.req.tool === 'AskUserQuestion' ? `${who} asks` : n.req.tool === 'ExitPlanMode' ? 'Plan to review' : 'Needs your OK';
   const bar = <div className="nc-bar">
     <span className="nc-label is-wait"><i/>{label}{count > 1 && <em> · 1 of {count}</em>}</span>
-    <button type="button" className="nc-x nc-park" title="Out of your turn, no reminders, until you take it back" onClick={onPark}><Moon size={12} weight="fill"/>Park</button>
   </div>;
   const open = agent && openLabel(agent);
   const head = agent && <>
@@ -282,16 +302,24 @@ export function NoticeCard({ n, agent, card, count, look, onPark, onOpen, onReso
         <div className="nc-tags"><span className={`tagc ${agent.agent}`}>{who}</span>{agent.project && <span className="tagc">{agent.project}</span>}
           {agent.branch && <span className="tagc">{agent.branch.replace(/^worktree-/, '')}</span>}</div>
       </div>
-      {open && <button type="button" className="nc-go" onClick={() => onOpen(agent)}>{open}<ArrowSquareOut size={12}/></button>}
+      <div className="nc-actions"><button type="button" className="nc-icon nc-park" aria-label="Park" title="Park: out of your turn until you take it back" onClick={onPark}><Moon size={14} weight="fill"/></button>
+        {open && <button type="button" className="nc-icon" aria-label={open} title={open} onClick={() => onOpen(agent)}><ArrowSquareOut size={14}/></button>}</div>
     </div>
     {agent.you && <p className="nc-you"><b>You</b>{agent.you}</p>}
   </>;
   if (card.ok) return <div className="nc">{bar}{head}<p className="nc-ok"><Check size={14} weight="bold"/><span>{card.ok}</span></p></div>;
-  const choice = (always: string) => <div className="nc-choice">
-    <button type="button" className="btn btn-ghost" onClick={() => onResolve(`Denied · ${who} will try another way`, { decision: 'deny' })}>Deny</button>
-    {always && <button type="button" className="btn btn-ghost" title={always} onClick={() => onResolve(`Allowed · ${always.replace("Don't ask", "won't ask")}`, { decision: 'always' })}>Always</button>}
-    <button type="button" className="btn btn-warm" onClick={() => onResolve(`Allowed · ${who} continues`, { decision: 'allow' })}>Allow</button>
-  </div>;
+  const choice = (always: string) => {
+    const request = n.kind === 'req' ? n.req : null;
+    const project = agent?.project || request?.cwd.split('/').filter(Boolean).at(-1) || request?.cwd;
+    const bashRule = request?.tool === 'Bash' ? always.match(/^Don't ask again for Bash\((.*)\)$/)?.[1] ?? String(request.input.command ?? '') : '';
+    return <>{always && <label className="nc-always" title={always}>
+      <input type="checkbox" checked={alwaysAllowed} disabled={card.pending} onChange={e => setAlwaysAllowed(e.target.checked)}/>
+      <span>{bashRule ? <>Always allow <code>{bashRule}</code></> : always.replace("Don't ask again for", 'Always allow')} in <b>{project}</b></span>
+    </label>}<div className="nc-choice">
+      <button type="button" className="btn btn-ghost" disabled={card.pending} onClick={() => onResolve(`Denied · ${who} will try another way`, { decision: 'deny' })}>Deny</button>
+      <button ref={allowButton} type="button" className="btn btn-warm" disabled={card.pending} onClick={() => onResolve(alwaysAllowed && always ? `Allowed · ${always.replace("Don't ask", "won't ask")}` : `Allowed · ${who} continues`, { decision: alwaysAllowed && always ? 'always' : 'allow' })}>Allow <kbd>⌘⏎</kbd></button>
+    </div></>;
+  };
   let body: ReactNode = null;
   if (n.kind === 'wait') body = <p className="nc-what">{n.line || 'Waiting for you'}{agent && !open ? ` · answer it in ${agent.where}` : ''}</p>;
   else {
@@ -310,7 +338,7 @@ export function NoticeCard({ n, agent, card, count, look, onPark, onOpen, onReso
           <input autoFocus placeholder="What should change?" value={feedback} onChange={e => setFeedback(e.target.value)}/>
           <button className="send" aria-label="Send" disabled={!feedback.trim()}><ArrowUp size={13} weight="bold"/></button></form>}
         <div className="nc-choice"><button type="button" className="btn btn-ghost" onClick={() => { card.feedback = !card.feedback; onChange(); }}>{card.feedback ? 'Cancel' : 'Keep planning'}</button>
-          <button type="button" className="btn btn-warm" onClick={() => onResolve(`Plan approved · ${who} starts`, { decision: 'allow' })}>Approve plan</button></div></>;
+          <button ref={allowButton} type="button" className="btn btn-warm" disabled={card.pending} onClick={() => onResolve(`Plan approved · ${who} starts`, { decision: 'allow' })}>Approve plan <kbd>⌘⏎</kbd></button></div></>;
     } else if (tool === 'AskUserQuestion') {
       const qs = (Array.isArray(i.questions) ? i.questions : []) as Question[], q = qs[card.qi], pick = card.picks[card.qi], multi = qs.length > 1;
       const send = () => onResolve(`Answered · ${who} continues`, { decision: 'allow', answers: Object.fromEntries(qs.map((qq, k) => [qq.question, pickText(qq, card.picks[k])])) });
@@ -341,5 +369,5 @@ export function NoticeCard({ n, agent, card, count, look, onPark, onOpen, onReso
     } else body = <><p className="nc-what">Wants to use {tool.replace(/^mcp__([^_]+)__/, '$1 · ')}</p>
       <pre className="nc-box">{JSON.stringify(i, null, 1).slice(0, 600)}</pre>{choice(always)}</>;
   }
-  return <div className="nc">{bar}{head}{body}</div>;
+  return <div className="nc">{bar}{head}{body}{card.error && <p className="r-why" role="alert">{card.error}</p>}</div>;
 }

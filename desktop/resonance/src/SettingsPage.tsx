@@ -113,7 +113,7 @@ export function SettingsPage({ lang, port, open, cat, onCat, ctl, accounts, hidd
       { id: 'reply', name: ['Jarvis answers in', 'Jarvis 用什么语言回答'], note: ['Follow me = the language you spoke in', '跟着我 = 你用什么语言说，它就用什么回答'], ctl: { k: 'seg', value: String(v('reply_language') ?? ''), opts: reply, set: value => void save('reply_language', value) }, off },
       { id: 'asr', name: ['Speech recognition', '语音识别'], ctl: { k: 'info', text: t(['Chinese + English', '中英文自动']), tone: 'ok' } },
       { id: 'dictation', name: ['Dictation', '听写'], note: ['Tap the right ⌥ to start and again to finish; the words go where you type', '轻点右 ⌥ 开始，再点一下结束，字贴到你打字的地方'], ctl: { k: 'switch', on: s.dictation, set: on => update({ dictation: on }) } },
-      { id: 'open-by', name: ['Open the Dashboard', '打开面板'], ctl: { k: 'seg', value: s.openBy, opts: [['both', ['Both', '都行']], ['click', ['Double-click', '双击她']], ['hover', ['Hover', '悬停刘海']]], set: value => update({ openBy: value as typeof s.openBy }) } },
+      { id: 'open-by', name: ['Open the Dashboard', '打开面板'], ctl: { k: 'seg', value: s.openBy, opts: [['both', ['Both', '都行']], ['click', ['Click notch', '点击刘海']], ['hover', ['Hover', '悬停刘海']]], set: value => update({ openBy: value as typeof s.openBy }) } },
       { id: 'screen', name: ['Which screen she lives on', '她在哪个屏幕'], ctl: { k: 'seg', value: s.screen, opts: [['follow', ['Follow the cursor', '跟着光标']], ['main', ['Main screen', '主屏幕']]], set: value => update({ screen: value as typeof s.screen }) } },
     ] },
     { id: 'home', icon: <House/>, name: ['Home', '首页'], sum: s.hidden.length ? t([`${s.hidden.length} hidden`, `隐藏了 ${s.hidden.length} 块`]) : t(['Nothing hidden', '没有隐藏']), items: [

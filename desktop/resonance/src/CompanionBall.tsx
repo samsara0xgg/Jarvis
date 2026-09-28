@@ -1,5 +1,6 @@
 import { useEffect, useRef, type RefObject } from 'react';
-import { B, Core, spring, step, type ExprId, type Skin } from './starCore';
+import { B, Core, LAYERS_ON, MOTION_V2, spring, step, type ExprId, type Skin } from './starCore';
+import { SPRINGS } from './motion';
 
 export const R = 26;
 // Held this long, a poke becomes a costume change instead.
@@ -15,7 +16,7 @@ export type Lobe = { left: number; right: number; height: number; notched: boole
 // but her eyes. Either way her glass lights up only once she drops clear of the island's edge.
 export type HomeLook = 'dark' | 'eyes';
 export type BallTarget = { place: Place; expr: ExprId; pressed: boolean; anchors: Record<Place, Point>; home: HomeLook; homeFace?: boolean;
-  away?: boolean; happy?: boolean; deep?: boolean };
+  away?: boolean; happy?: boolean; deep?: boolean; attention?: { id: string; point: Point } };
 // This long without the cursor moving sends her to sleep at home.
 const DOZE_MS = 10 * 60_000;
 const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
@@ -23,10 +24,8 @@ const smooth = (a: number, b: number, v: number) => { const k = clamp01((v - a) 
 const backOut = (e: number, c = 1.6) => 1 + (c + 1) * (e - 1) ** 3 + c * (e - 1) ** 2;
 export type BallHandle = { nudge: () => void; arrive: () => void; change: (skin: Skin) => void; hop: (height: number) => void };
 
-// x Hz, x damping, y Hz, y damping. A slower x than y bends every flight into a curve.
-const travel: Record<Place, [number, number, number, number]> = {
-  home: [2.4, .92, 2.6, .9], peek: [3, .8, 3.2, .7], out: [2.6, .75, 2.6, .62], dock: [1.5, .85, 2.2, .72],
-};
+// Vertical travel leads slightly, bending each flight into a curve within the shared flight spring.
+const flightSpring = SPRINGS.flight;
 // The software extension left of the camera: flush with the hardware cutout, concave
 // shoulders at the screen edge, and its right side tucked under the cutout.
 function lobePath({ left, right, height: h, notched }: Lobe) {
@@ -48,7 +47,7 @@ export function CompanionBall({ width, height, lobe, target, look, handle, skin,
   useEffect(() => { latest.current = target; wake.current(); });
   const silhouette = useRef<SVGCircleElement>(null), islandShape = useRef<SVGPathElement>(null), canvas = useRef<HTMLCanvasElement>(null), hit = useRef<HTMLButtonElement>(null);
   useEffect(() => {
-    const cv = canvas.current!, ctx = cv.getContext('2d')!, core = new Core(firstSkin.current);
+    const cv = canvas.current!, ctx = cv.getContext('2d')!, core = new Core(firstSkin.current, MOTION_V2, LAYERS_ON);
     // The eyes are drawn apart first, so one blur gives them their glow.
     const eyes = document.createElement('canvas'), ectx = eyes.getContext('2d')!;
     // Her inside faded to no edge, for the dark-glass island.
@@ -60,6 +59,7 @@ export function CompanionBall({ width, height, lobe, target, look, handle, skin,
     let tick: ReturnType<typeof setTimeout> | undefined, lit = '';
     let movedAt = performance.now(), px = NaN, py = NaN;
     let away = false, awayAt = -1e9, happyUntil = 0, leftHome = true;
+    let attentionId: string | undefined, attentionAt = 0;
     const fit = () => {
       const k = Math.min(2, devicePixelRatio || 1), w = Math.round(size.current.width * k), h = Math.round(size.current.height * k);
       if (k === d && cv.width === w && cv.height === h) return;
@@ -79,13 +79,13 @@ export function CompanionBall({ width, height, lobe, target, look, handle, skin,
       const p = look.current;
       if (p && (p.x !== px || p.y !== py)) { px = p.x; py = p.y; movedAt = now; }
       const dozing = atHome && now - movedAt > DOZE_MS;
-      const anchor = t.anchors[shown], [xHz, xDamp, yHz, yDamp] = travel[shown];
+      const anchor = t.anchors[shown], { frequency: hz, damping } = flightSpring;
       const moving = [
-        step(s.x, anchor.x, xHz, firm ? 1 : xDamp, dt), step(s.y, anchor.y, yHz, firm ? 1 : yDamp, dt),
-        step(s.scale, atHome ? HOME_SCALE : 1, 2.6, .95, dt),
+        step(s.x, anchor.x, hz, firm ? 1 : damping, dt), step(s.y, anchor.y, hz * 1.08, firm ? 1 : damping, dt),
+        step(s.scale, atHome ? HOME_SCALE : 1, SPRINGS.control.frequency, SPRINGS.control.damping, dt),
         // She leaves as a black drop and lights up once clear of the island's edge; coming back her colour drains at the touch.
-        step(s.shine, Math.max(s.dock.value, smooth(0, R * s.scale.value * 1.4, s.y.value - island.current.lobe.height)), 3.2, 1, dt),
-        step(s.pivot, docked ? 1 : 0, 3, 1, dt), step(s.dock, docked ? 1 : 0, 3, 1, dt),
+        step(s.shine, Math.max(s.dock.value, smooth(0, R * s.scale.value * 1.4, s.y.value - island.current.lobe.height)), SPRINGS.control.frequency, SPRINGS.control.damping, dt),
+        step(s.pivot, docked ? 1 : 0, SPRINGS.panel.frequency, SPRINGS.panel.damping, dt), step(s.dock, docked ? 1 : 0, SPRINGS.panel.frequency, SPRINGS.panel.damping, dt),
       ].some(Boolean);
       // Gaze: toward the cursor or caret, softer with distance; straight ahead in the island.
       let gaze: [number, number] | null = null;
@@ -115,11 +115,16 @@ export function CompanionBall({ width, height, lobe, target, look, handle, skin,
         else { const u = clamp01((ae - 80) / 200), f = 1 - smooth(0, .6, u); slipX = gone + (s.x.value - gone) * backOut(u); sx = 1 + .6 * f; sy = 1 - .4 * f; seen = smooth(0, .35, u); }
       }
       const clipX = slipX === null ? Infinity : edge;
-      step(s.fold, away && ae > 110 ? 0 : 1, 4.2, .9, dt);
+      step(s.fold, away && ae > 110 ? 0 : 1, SPRINGS.control.frequency, SPRINGS.control.damping, dt);
       if (s.fold.value < .999) islandShape.current!.setAttribute('transform', `translate(${shape.right} 0) scale(${Math.max(0, s.fold.value)} 1) translate(${-shape.right} 0)`);
       else islandShape.current!.removeAttribute('transform');
       const face: ExprId = now < happyUntil ? '10' : atHome && !t.homeFace ? (dozing ? 'doze' : 'rest') : shown === 'peek' ? 'peek' : t.expr;
-      core.update(now, dt, { expr: face, look: gaze, still: false, pressed: t.pressed, charge, deep: t.deep && face !== '10' });
+      if (t.attention?.id !== attentionId) { attentionId = t.attention?.id; attentionAt = now; }
+      const interest = t.attention?.point;
+      const ix = interest ? interest.x - s.x.value : 0, iy = interest ? interest.y - s.y.value : 0, reach = Math.hypot(ix, iy) + 90;
+      core.update(now, dt, { expr: face, look: gaze, still: false, pressed: t.pressed, charge, deep: t.deep && face !== '10',
+        vel: [s.x.velocity / R, s.y.velocity / R], mood: dozing ? { energy: .18, joy: .5 } : undefined,
+        poi: interest ? { g: [ix / reach, iy / reach], at: attentionAt, why: 'notice' } : null });
 
       // Where she is (spring position, flight squash, the pivot on the Dashboard edge), then her own motion.
       const a = s.shine.value * seen, scale = s.scale.value, x = slipX ?? s.x.value, y = s.y.value + slipY, pivot = s.pivot.value * R;
@@ -200,6 +205,15 @@ export function CompanionBall({ width, height, lobe, target, look, handle, skin,
       // Her zzz and sparkles show in the island too.
       if (!hidden) { ctx.save(); ctx.translate(x, y); ctx.scale(scale, scale); ctx.globalAlpha = a; core.orbit(ctx, R, 1); ctx.globalAlpha = seen; core.particles(ctx, R, d); ctx.restore(); }
       ctx.restore();
+      // The hold becomes visible after 200 ms and fills exactly when release changes her costume.
+      if (!hidden && charge > 0) {
+        const radius = R * scale + 5, rgb = core.light.glow.map(v => Math.round(v * 255)).join(',');
+        ctx.save(); ctx.lineWidth = 1.5; ctx.lineCap = 'round';
+        ctx.strokeStyle = `rgba(${rgb},.2)`; ctx.beginPath(); ctx.arc(x, y, radius, 0, Math.PI * 2); ctx.stroke();
+        ctx.strokeStyle = `rgba(${rgb},.95)`; ctx.beginPath(); ctx.arc(x, y, radius, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * charge); ctx.stroke();
+        ctx.restore();
+      }
+      cv.dataset.charge = charge >= 1 ? 'ready' : charge > 0 ? 'holding' : '';
       if (cv.dataset.skin !== core.skin) cv.dataset.skin = core.skin;
       if (cv.dataset.face !== core.expr) cv.dataset.face = core.expr ?? '';
       // Her light, for the Dashboard hanging under her.

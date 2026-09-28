@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ArrowUp, X } from '@phosphor-icons/react';
 import { tr, type L, type Lang } from './companionSettings';
 import './action-card.css';
@@ -20,6 +20,21 @@ export function ActionCard({ card, lang, onDecide }: { card: Card; lang: Lang; o
   const t = (l: L) => tr(lang, l);
   const args = card.args;
   const [subject, setSubject] = useState(String(args.subject ?? '')), [body, setBody] = useState(String(args.body ?? ''));
+  const acceptButton = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    const key = (e: KeyboardEvent) => {
+      if (e.key !== 'Enter' || e.isComposing) return;
+      const button = acceptButton.current, pane = button?.closest('.notch-pane');
+      if (!button?.checkVisibility({ opacityProperty: true, visibilityProperty: true }) || pane && !pane.classList.contains('is-open')) return;
+      const target = e.target instanceof HTMLElement ? e.target : null;
+      if (target?.closest('button,input,textarea,[contenteditable]') && !button.closest('.ac')?.contains(target)) return;
+      if (e.target instanceof HTMLTextAreaElement && !e.metaKey) return;
+      e.preventDefault(); e.stopImmediatePropagation();
+      if (e.metaKey && !e.repeat) button.click();
+    };
+    window.addEventListener('keydown', key, true);
+    return () => window.removeEventListener('keydown', key, true);
+  }, [card.id]);
   // The letter's box grows to its text (CSS caps it): `field-sizing: content` left it one line tall in Chrome 153.
   // It refits when its width settles, since the notch grows the card from narrower than its final width.
   const bodyBox = useRef<HTMLTextAreaElement>(null);
@@ -48,7 +63,7 @@ export function ActionCard({ card, lang, onDecide }: { card: Card; lang: Lang; o
       <input className="ac-edit ac-subject" aria-label={t(['Subject', '主题'])} value={subject} onPointerDown={focusWindow} onChange={e => setSubject(e.target.value)}/>
       <textarea ref={bodyBox} className="ac-edit ac-body" aria-label={t(['Body', '正文'])} value={body} rows={3} onPointerDown={focusWindow} onChange={e => setBody(e.target.value)}/>
       <div className="ac-foot"><span/>
-        <button type="button" className="ac-go" onClick={() => decide('accept', edits)}>{t(['Send', '发送'])}<ArrowUp size={12} weight="bold"/></button></div>
+        <button ref={acceptButton} type="button" className="ac-go" onClick={() => decide('accept', edits)}>{t(['Send', '发送'])}<kbd>⌘⏎</kbd><ArrowUp size={12} weight="bold"/></button></div>
     </div>;
   }
   const rows = Object.entries(args);
@@ -57,7 +72,7 @@ export function ActionCard({ card, lang, onDecide }: { card: Card; lang: Lang; o
     <dl className="ac-kv">{rows.slice(0, MAX_ROWS).map(([key, value]) =>
       <div key={key}><dt>{FIELD[key] ? t(FIELD[key]) : key}</dt><dd>{shown(value)}</dd></div>)}</dl>
     {rows.length > MAX_ROWS && <p className="ac-more">{t([`${rows.length - MAX_ROWS} more`, `还有 ${rows.length - MAX_ROWS} 项`])}</p>}
-    <div className="ac-foot"><span/><button type="button" className="ac-go" onClick={() => decide('accept')}>{t(['Go ahead', '执行'])}</button></div>
+    <div className="ac-foot"><span/><button ref={acceptButton} type="button" className="ac-go" onClick={() => decide('accept')}>{t(['Go ahead', '执行'])}<kbd>⌘⏎</kbd></button></div>
   </div>;
 }
 

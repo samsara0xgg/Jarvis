@@ -54,6 +54,24 @@ try {
   await page.waitForTimeout(800);
   check('01 rests in the island', await place() === 'home');
   await shot('01-home');
+  await move(140, 10); await page.waitForTimeout(220);
+  check('refinement the menu bar outside the island does not make her peek', await place() === 'home');
+  await move(320, 14);
+  await page.locator('.companion-island-target').click({ position: { x: 155, y: 14 }, force: true });
+  await page.waitForTimeout(200); await move(600, 560); await page.waitForTimeout(400);
+  check('refinement click pins home even when a hover timer was pending', await page.locator('.companion-dashboard.is-open').count() === 1);
+  await move(320, 14);
+  await page.locator('.companion-island-target').click({ position: { x: 155, y: 14 }, force: true });
+  await page.evaluate(() => window.__cursor({ x: 320, y: 14 })); await page.waitForTimeout(350);
+  check('refinement clicking pinned home closes it until the pointer leaves', await page.locator('.companion-dashboard.is-open').count() === 0);
+  await move(600, 560); await waitPlace('home');
+  await hit.click({ button: 'right', force: true });
+  check('refinement right-click opens skin and expression controls', await page.getByRole('menuitemradio').count() === 6 && await page.getByRole('menuitem', { name: 'Preview expressions' }).count() === 1);
+  await page.getByRole('menuitem', { name: 'Settings…', exact: true }).click();
+  await page.waitForFunction(() => document.querySelector('.ad .pg-head h3')?.textContent === 'Settings');
+  check('refinement her menu opens settings directly without starting voice', await page.locator('.companion-strip.is-open').count() === 0);
+  await page.locator('.companion-island-target').click({ position: { x: 155, y: 14 }, force: true });
+  await move(600, 560); await waitPlace('home');
   const alphaAt = (x, y) => page.evaluate(([x, y]) => { const c = document.querySelector('.companion-canvas'), r = c.getBoundingClientRect(), k = c.width / r.width;
     return c.getContext('2d').getImageData(Math.round((x - r.left) * k), Math.round((y - r.top) * k), 1, 1).data[3]; }, [x, y]);
   // How much of a box her canvas covers (alpha > 30), and its brightest alpha.
@@ -139,7 +157,7 @@ try {
   await page.keyboard.type('帮我整理今天的任务', { delay: 60 });
   await page.waitForTimeout(700);
   check('03 draft is typed into the composer', await page.locator('.companion-composer input').inputValue() === '帮我整理今天的任务');
-  check('03 composer has native glass behind it', await page.evaluate(() => window.__state.glass.some(r => Math.round(r.width) === 300 && r.opacity > .9)));
+  check('03 composer has native glass behind it', await page.evaluate(() => window.__state.glass.some(r => Math.round(r.width) === 360 && r.opacity > .9)));
   await shot('03-composer', { x: 20, y: 0, width: 400, height: 210 });
   await page.keyboard.press('Enter');
   await page.locator('.companion-bubble.is-open').waitFor();
@@ -148,15 +166,33 @@ try {
   await page.waitForFunction(() => !document.querySelector('.companion-bubble.is-open'), null, { timeout: 6000 });
   check('03 text reply types out and clears', true);
 
+  // A partial wardrobe hold cancels, and a short click starts voice on release without a double-click timer.
+  const originalSkin = await wardrobe();
+  await move(out.x, out.y); await waitPlace('out');
+  await hit.hover(); await page.mouse.down(); await page.waitForTimeout(330);
+  check('refinement charge ring appears after 200 ms', await page.locator('.companion-canvas').getAttribute('data-charge') === 'holding');
+  await page.mouse.up(); await page.waitForTimeout(60);
+  check('refinement releasing an unfinished hold cancels without talking or changing skin',
+    await page.locator('.companion-strip.is-open').count() === 0 && (await wardrobe()).skin === originalSkin.skin);
+  await page.evaluate(() => {
+    document.querySelector('.companion-hit').addEventListener('pointerup', () => {
+      const at = performance.now();
+      const observe = () => { if (document.querySelector('.companion-strip.is-open')) window.__clickLatency = performance.now() - at; else requestAnimationFrame(observe); };
+      requestAnimationFrame(observe);
+    }, { once: true });
+  });
   // Poke: press and hold briefly, then release into listening.
   await move(out.x, out.y);
   const box = await hit.boundingBox();
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.mouse.down();
-  await page.waitForTimeout(160);
+  await page.waitForTimeout(60);
   await shot('02-press');
   await page.mouse.up();
   await page.locator('.companion-strip.is-open').waitFor();
+  await page.waitForFunction(() => typeof window.__clickLatency === 'number');
+  const clickLatency = await page.evaluate(() => window.__clickLatency);
+  check(`refinement click starts listening within 100 ms of release (${clickLatency.toFixed(1)} ms)`, clickLatency < 100);
   // Her face follows on the next animation frame.
   const face = (...ids) => page.waitForFunction(v => v.includes(document.querySelector('.companion-canvas')?.dataset.face), ids, { timeout: 1500 }).then(() => ids[0], () => null);
   check('04 poke starts listening with a live caption strip and one of her two listening faces', await face('35', '35b') === '35');
@@ -190,23 +226,24 @@ try {
   await shot('06-home-again');
   await move(out.x, out.y);
   await waitPlace('out');
-  await hit.dblclick({ force: true });
+  await page.locator('.companion-island-target').click({ position: { x: 155, y: 14 }, force: true });
   await page.locator('.companion-dashboard.is-open').waitFor();
   await waitPlace('dock');
   await move(600, 560);
   await page.waitForTimeout(1200);
-  check('06 a double click on her opens the Dashboard, and it stays when the cursor leaves',
+  check('06 a click on the notch opens the Dashboard, and it stays when the cursor leaves',
     await page.locator('.companion-dashboard.is-open').count() === 1 && await page.locator('.companion-strip.is-open').count() === 0);
-  await hit.dblclick({ force: true });
+  await page.locator('.companion-island-target').click({ position: { x: 155, y: 14 }, force: true });
   await page.waitForFunction(() => !document.querySelector('.companion-dashboard.is-open'), null, { timeout: 3000 });
   await waitPlace('home');
   await page.waitForTimeout(400);
-  check('06 another double click on her closes it, and neither double click starts voice', await page.locator('.companion-strip.is-open').count() === 0);
+  check('06 another notch click closes it, and neither click starts voice', await page.locator('.companion-strip.is-open').count() === 0);
+  await move(600, 560);
 
   // 09: the Dashboard around her. The home's blocks in their default order; each row grows into its page
   // at the same panel height, her face follows the page, and ‹ or Esc goes back one level.
   const panel = page.locator('.companion-dashboard');
-  const panelShot = name => shot(name, { x: 150, y: 0, width: 340, height: 722 });
+  const panelShot = name => shot(name, { x: 120, y: 0, width: 400, height: 722 });
   const openRow = name => page.locator(`.ad [data-row="${name}"]`).evaluate(el => (el.matches('button') ? el : el.querySelector('button')).click());
   const title = () => page.locator('.ad .pg-head h3').textContent();
   const settle = () => page.waitForTimeout(700);
@@ -219,8 +256,8 @@ try {
   const blocks = () => page.locator('.ad .home-inner > [data-block]').evaluateAll(els => els.map(e => e.dataset.block).join());
   check(`09 home: For you, the brief, Today, Mail, Agents, Now, Usage and Plugins | Projects in order, no conversation before you talk (${await blocks()})`,
     await blocks() === 'foryou,brief,today,mail,agents,now,usage,tiles');
-  check('09 the panel grows with its blocks to 600 px, and the rest scrolls inside it',
-    await page.locator('.ad .view').evaluate(e => Math.round(e.getBoundingClientRect().height)) === 600 && await page.locator('.ad .home-list').evaluate(e => e.scrollHeight > e.clientHeight + 40));
+  check('09 the panel fits the window with a visible composer and scrolls its remaining blocks',
+    await panel.evaluate(e => e.getBoundingClientRect().bottom <= innerHeight) && await page.locator('.ad .cmp input').evaluate(e => e.getBoundingClientRect().bottom <= innerHeight) && await page.locator('.ad .home-list').evaluate(e => e.scrollHeight > e.clientHeight + 40));
   check('09 Today has the weather, the next event and the to-dos, with no heads-up lines and no Duolingo',
     /°/.test(await page.locator('.ad .r-today .wx').textContent()) && await page.locator('.ad .r-today .ev').count() >= 1 && await page.locator('.ad .r-today .td').count() === 2
     && await page.locator('.ad .hu, .ad .duo').count() === 0);
@@ -328,7 +365,7 @@ try {
   await move(320, 200);
   await page.waitForTimeout(900);
   const corner = page.locator('.ad .corner .cb');
-  check('11 beside her: the time, then Conversation, Mute and Settings', await corner.count() === 3 && /\d:\d\d/.test(await page.locator('.ad .clock').textContent()));
+  check('11 beside her: the next event, then Conversation, Mute and Settings', await corner.count() === 3 && (await page.locator('.ad .next-event').textContent()).includes('Call with Mom'));
   check('11 the conversation you just had sits on top, your words over her answer',
     (await blocks()).startsWith('talk,') && (await page.locator('.ad .r-talk .you').textContent()).endsWith('Move the voice test to five'));
   await page.evaluate(() => { window.__cues = []; window.addEventListener('jarvis:feedback', e => window.__cues.push(e.detail.cue)); });
@@ -411,9 +448,9 @@ try {
   check('11 × closes the brief and offers undo', !(await blocks()).includes('brief') && (await page.locator('.ad .toast.is-on').textContent()).includes('Undo'));
   await page.locator('.ad .toast button').click(); await page.waitForTimeout(300);
   check('11 undo brings it back', (await blocks()).includes('brief'));
-  const fits = await page.evaluate(() => { const v = document.querySelector('.ad .view').getBoundingClientRect().height, h = 30 + document.querySelector('.ad .home-inner').getBoundingClientRect().height;
-    return [Math.round(v), Math.round(Math.min(600, Math.max(466, h)))]; });
-  check(`11 the panel is as tall as its blocks, between 466 and 600 px (${fits.join(' = ')})`, fits[0] === fits[1]);
+  const fits = await page.evaluate(() => { const view = document.querySelector('.ad .view').getBoundingClientRect(), panel = document.querySelector('.companion-dashboard').getBoundingClientRect();
+    return { height: view.height, bottom: panel.bottom, viewport: innerHeight, scrolls: document.querySelector('.ad .home-list').scrollHeight > view.height }; });
+  check(`11 arranged blocks stay within the window and scroll when needed (${JSON.stringify(fits)})`, fits.height > 0 && fits.height <= 600 && fits.bottom <= fits.viewport && fits.scrolls);
   await page.locator('.ad .corner [data-row="settings"]').click(); await settle();
   await page.locator('.ad [data-cat="home"]').click(); await page.waitForTimeout(500);
   await page.locator('.ad .st[data-item="reset"] button').click(); await page.waitForTimeout(300);
@@ -490,7 +527,7 @@ try {
   const blackRight = () => page.evaluate(() => { const p = document.querySelector('.notch-shape path'); if (!p.getAttribute('d')) return 0; const b = p.getBBox(); return b.x + b.width; });
   const looks = sel => page.locator(sel).evaluateAll(els => [...new Set(els.map(e => e.dataset.look).filter(Boolean))].join());
   const drop = page.locator('.notch-drop.is-open');
-  const workX = 412.5 + 6 + 9, doneX = workX + 30;
+  const workX = 412.5 + 4 + 26 + 6, doneX = workX + 26;
   const row10 = [await page.locator('.notch-fx').getAttribute('data-look'), await marks(), await blackRight(), await fxAlpha(workX, 16)];
   check(`10 right of the notch: one mark per group with its count, working then finished (${row10.join(' | ')} ${errors.join('; ')})`,
     row10[0] === 'spark' && row10[1] === 'work4 done3' && row10[2] > 470 && row10[3] > 0);
@@ -502,7 +539,7 @@ try {
   check(`10 resting on the row opens one panel: every group, one line per session, the pointed group lit (${heads.join('|')})`,
     heads.join('|') === 'Working4|Finished3' && await drop.locator('.a-row').count() === 7 && (await drop.locator('.a-sec.is-hot').getAttribute('data-sec')) === 'done');
   check(`10 the panel is the whole island growing down, from her lobe past the marks, centred on the notch (${Math.round(box10.x)}, ${Math.round(box10.width)})`,
-    box10.x < 163.5 && box10.x + box10.width > 484 && Math.abs(box10.width - 400) < 2 && Math.abs(box10.x + box10.width / 2 - 320) < 1);
+    box10.x < 163.5 && box10.x + box10.width > 484 && Math.abs(box10.width - 440) < 2 && Math.abs(box10.x + box10.width / 2 - 320) < 1);
   check('10 nothing needs a look, so no name is bold', (await drop.locator('.a-row b').evaluateAll(els => [...new Set(els.map(e => getComputedStyle(e).fontWeight))])).join() === '400');
   await shot('10-panel', { x: 100, y: 0, width: 440, height: 330 });
   const finished = drop.locator('.a-sec[data-sec="done"] .a-row').first();

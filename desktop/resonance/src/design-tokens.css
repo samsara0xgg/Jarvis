@@ -1,0 +1,26 @@
+/* Shared companion, notch extension and Dashboard specification. */
+:root {
+  --text-title:17px;
+  --text-body:14px;
+  --text-detail:12.5px;
+  --text-label:11px;
+  --text-mono:10.5px;
+  --radius-panel:24px;
+  --radius-block:14px;
+  --radius-control:10px;
+  --radius-tag:6px;
+  --motion-fast:140ms;
+  --motion-medium:260ms;
+  --motion-slow:460ms;
+  --exit-fast:98ms;
+  --exit-medium:182ms;
+  --exit-slow:322ms;
+  --ease-out:cubic-bezier(.16,1,.3,1);
+  --ease-in:cubic-bezier(.7,0,.84,0);
+  --data:#9db4ff;
+  --status-work:#6c9cff;
+  --status-ask:#ffc98f;
+  --status-done:#6fe0b4;
+  --status-error:#ff7a66;
+  --p-faint:rgb(196 204 238 / .58);
+}
