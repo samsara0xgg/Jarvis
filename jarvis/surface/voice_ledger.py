@@ -84,6 +84,8 @@ class SpeechChunk:
     segment_hash: str
     closed: bool = False
     cursor_quality_observed: bool = False
+    word_boundaries: tuple[tuple[int, int], ...] = ()
+    uncertain_from: int | None = None
 
 
 @dataclass(frozen=True)
@@ -100,6 +102,8 @@ class OutputTimelineSnapshot:
     software_drained: bool
     final_segment_sequence: int | None
     all_segments_closed: bool
+    heard_partial_sequence: int | None = None
+    heard_partial_text_end: int = 0
 
     @property
     def heard_text_hash(self) -> str:
@@ -167,6 +171,22 @@ class PlaybackLedger:
             segment_hash=segment_hash,
         )
 
+    def align_segment(self, *, sequence: int, boundaries: tuple[tuple[int, int], ...]) -> None:
+        """Append word ends mapped to this generation's canonical sample clock."""
+        if self._frozen:
+            msg = "cannot align a frozen playback ledger"
+            raise RuntimeError(msg)
+        chunk = self._chunks[sequence]
+        last_text, last_sample = (
+            chunk.word_boundaries[-1] if chunk.word_boundaries else (0, chunk.output_start_cursor)
+        )
+        for text_end, sample_end in boundaries:
+            if not last_text < text_end <= len(chunk.text) or sample_end < last_sample:
+                msg = "non-monotonic provider word boundary"
+                raise ValueError(msg)
+            last_text, last_sample = text_end, sample_end
+        chunk.word_boundaries += boundaries
+
     def accept_samples(self, *, sequence: int, sample_count: int) -> AcceptedSamples:
         """Append accepted resampled samples to one open segment."""
         if self._frozen:
@@ -232,11 +252,22 @@ class PlaybackLedger:
                     or chunk.output_end_cursor > self._submitted_cursor
                 ):
                     chunk.audibility_class = "unknown"
+                    chunk.uncertain_from = min(
+                        chunk.uncertain_from
+                        if chunk.uncertain_from is not None else self._submitted_cursor,
+                        self._submitted_cursor,
+                    )
             return
         self._submitted_cursor = min(output_end_cursor, self._accepted_cursor)
         for chunk in self._chunks.values():
             chunk_end = chunk.output_end_cursor or self._accepted_cursor
             if output_start_cursor < chunk_end and output_end_cursor > chunk.output_start_cursor:
+                if audibility_class != "normal":
+                    chunk.uncertain_from = min(
+                        chunk.uncertain_from
+                        if chunk.uncertain_from is not None else output_start_cursor,
+                        output_start_cursor,
+                    )
                 chunk.audibility_class = _least_audible(
                     chunk.audibility_class,
                     audibility_class,
@@ -289,18 +320,30 @@ class PlaybackLedger:
         heard_quality: CursorQuality | None = None
         heard_through: int | None = None
         all_closed = bool(sequences)
+        partial_sequence: int | None = None
+        partial_end = 0
         for sequence in sequences:
             chunk = self._chunks[sequence]
-            if not chunk.closed:
-                all_closed = False
-                break
             end = chunk.output_end_cursor
             if (
-                end is None
-                or end > self._estimated_audible_cursor
-                or chunk.audibility_class != "normal"
-                or chunk.cursor_quality == "unknown"
+                not chunk.closed or end is None or end > self._estimated_audible_cursor
+                or chunk.audibility_class != "normal" or chunk.cursor_quality == "unknown"
             ):
+                horizon = self._estimated_audible_cursor
+                if chunk.uncertain_from is not None:
+                    horizon = min(horizon, chunk.uncertain_from)
+                if self._cursor_quality != "unknown":
+                    for text_end, sample_end in chunk.word_boundaries:
+                        if sample_end > horizon:
+                            break
+                        partial_end = text_end
+                    if partial_end:
+                        partial_sequence = sequence
+                        heard_parts.append(chunk.text[:partial_end])
+                        heard_quality = (
+                            self._cursor_quality if heard_quality is None
+                            else _least_quality(heard_quality, self._cursor_quality)
+                        )
                 break
             heard_parts.append(chunk.text)
             # The reported quality describes the prefix this snapshot reports,
@@ -325,6 +368,8 @@ class PlaybackLedger:
             software_drained=self._software_drained,
             final_segment_sequence=sequences[-1] if sequences else None,
             all_segments_closed=all_closed,
+            heard_partial_sequence=partial_sequence,
+            heard_partial_text_end=partial_end,
         )
 
 

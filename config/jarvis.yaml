@@ -572,6 +572,12 @@ realtime:
     # question ("你是谁", 0.6 s voiced) never ended: conversation mode waited
     # until Allen spoke again and merged both (live test 2026-09-24).
     min_voiced_s: 0.3
+    # A sound with less voiced time than that (a cough, a click, 「嗯」, a one-word
+    # 「好」) waits this much more silence after its pause for words to follow,
+    # then ends and final ASR decides whether it was speech. Until 2026-09-28 it
+    # never ended on a pause: it held every answer for max_utterance_s, and the
+    # next sentence was cut about 0.2 s in (「嗯……帮我查天气」 -> 「嗯……帮」 + 「我查天气」).
+    short_sound_grace_ms: 400
     max_utterance_s: 30.0
     armed_no_speech_timeout_s: 3.0
     worker_poll_s: 0.002
@@ -597,6 +603,20 @@ realtime:
     # them starts speech, and all 16 real cut-ins still start within 0.03 s.
     # -40 lets one through; -32 misses a quiet "你怎么".
     output_active_vad_mode: tts
+    # Soft barge-in in conversation mode: speech that starts over Jarvis first
+    # lowers her to barge_in_yield_gain; once it holds barge_in_confirm_voiced_s
+    # of voice she stops. A shorter sound ends after barge_in_pause_ms of
+    # silence and final ASR decides: nothing, a listening sound (嗯, 对对,
+    # mm-hmm) or one word that says nothing gives her the gain back, a stop
+    # request (停, 别说了, stop) stops her, and none becomes a turn; any other
+    # words stop her and are one. 0 stops her at onset, as ADR 0041 first
+    # shipped. Live test 2026-09-28, its captures replayed through Silero: at
+    # 0.4 a 「嗯」 of 0.61 s voiced stopped her mid-answer, and 「对对对」 held
+    # 0.64 s. A question shorter than this (「你是谁」, 0.6 s) is still judged by
+    # its words, only after its pause.
+    barge_in_confirm_voiced_s: 0.8
+    barge_in_yield_gain: 0.2
+    barge_in_pause_ms: 350
     # ADR-0006 D7. Rolling partial SenseVoice decode plus a semantic endpoint
     # hold. Off by default (acoustic endpointing only); the values are the
     # D7 calibration candidates, not promises.

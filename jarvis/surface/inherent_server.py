@@ -240,9 +240,15 @@ class CancelResponseRequest(BaseModel):
     leaves the run to finish on its own; under that scope ``reason`` is
     ignored, because such a stop is always recorded as ``user_stop``. Any
     unrecognized string is answered with ``{"outcome": "unsupported_scope"}``.
+
+    A turn still being thought about has no answer on the wire to name yet
+    (its ``open`` leaves once the answer is whole, ADR 0064): ``turn_id`` in
+    place of ``response_id`` cancels every run of that turn still open, as
+    ``generation``, and answers ``no_open_run`` when none is.
     """
 
-    response_id: str
+    response_id: str = ""
+    turn_id: str = ""
     scope: str = "generation"
     reason: str = "operator_request"
 
@@ -478,6 +484,9 @@ class InherentDeps:
     submit_callable: Callable[[str], str | None]
     broadcaster: InherentBroadcaster
     cancel_response_callable: Callable[[str, str, str], str] | None = None
+    # ``(turn_id, reason) -> outcome``: the same route's stop for a turn still
+    # being thought about; wired with ``cancel_response_callable``.
+    cancel_turn_callable: Callable[[str, str], str] | None = None
     v2: InherentV2Deps | None = None
     # ADR-0015: the mute switches behind ``POST /inherent/controls``. ``None``
     # (the default) leaves the route unregistered.
@@ -1292,12 +1301,19 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 â
             ``asyncio.to_thread`` exactly like ``/inherent/submit``, which
             is what keeps the ``BEGIN IMMEDIATE`` off the event loop.
             """
-            outcome = await asyncio.to_thread(
-                cancel_response_callable,
-                req.response_id,
-                req.scope,
-                req.reason,
-            )
+            if req.response_id:
+                outcome = await asyncio.to_thread(
+                    cancel_response_callable,
+                    req.response_id,
+                    req.scope,
+                    req.reason,
+                )
+            elif req.turn_id and deps.cancel_turn_callable is not None:
+                outcome = await asyncio.to_thread(
+                    deps.cancel_turn_callable, req.turn_id, req.reason,
+                )
+            else:
+                raise HTTPException(status_code=422, detail="response_id or turn_id required")
             return {"outcome": outcome}
 
     if deps.controls is not None:

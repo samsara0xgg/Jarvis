@@ -2186,6 +2186,30 @@ def make_foreground_decision_callable() -> Callable[[str, int, str, int], str]:
     return decide_foreground
 
 
+def make_turn_cancel_callable(runtime: JarvisRuntime) -> Callable[[str, str], str]:
+    """Build the ``(turn_id, reason) -> outcome`` seam behind a turn stop.
+
+    The surface's stop while Jarvis is still thinking: that turn's answer has
+    no response id on the wire until it is whole (ADR 0064), so the surface
+    names the turn and every run of it still open is cancelled as
+    ``generation``. ``no_open_run`` when none is open: the answer is out, and
+    the surface stops that by its response id.
+    """
+    cancel = make_response_cancel_callable(runtime)
+    registry = runtime.response_runs
+
+    def _cancel_turn(turn_id: str, reason: str) -> str:
+        runs = [] if registry is None else [
+            run for run in registry.open_runs() if run.turn_id == turn_id
+        ]
+        outcomes = [cancel(run.response_id, "generation", reason) for run in runs]
+        if not outcomes:
+            return "no_open_run"
+        return "cancelled" if "cancelled" in outcomes else outcomes[0]
+
+    return _cancel_turn
+
+
 def make_barge_in_interrupt_callable(
     runtime: JarvisRuntime,
 ) -> Callable[[str], str]:

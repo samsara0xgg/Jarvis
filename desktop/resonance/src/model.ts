@@ -30,8 +30,9 @@ export function reducer(s: State, a: Action): State {
     case 'reset': return { ...initialState, results: examples.slice(0, 1) };
     case 'mode': return { ...s, mode: a.mode };
     // `inFlight`: Allen's words are coming in, from speech onset until they are accepted or come to nothing.
+    // A lost link also ends the answer on screen: no `spoken` will come for it.
     case 'phase': return { ...s, phase: a.phase, reply: a.phase === 'error' ? '' : s.reply, heard: a.phase === 'hearing' ? '' : s.heard, askedAt: a.phase === 'error' ? null : s.askedAt,
-      inFlight: a.phase === 'hearing' || (s.inFlight && a.phase === 'processing') };
+      played: s.played || a.phase === 'error', inFlight: a.phase === 'hearing' || (s.inFlight && a.phase === 'processing') };
     case 'mic': return { ...s, micMuted: !s.micMuted };
     case 'sound': return { ...s, soundMuted: !s.soundMuted };
     case 'interrupt': return { ...s, phase: 'listening' };
@@ -50,16 +51,23 @@ export function reducer(s: State, a: Action): State {
     // An answer leaves once its fade is over (`done` + fadeMs, which runtime.ts turns into a delayed settle) and she has
     // stopped saying it (`spoken`, also when cut off), whichever comes last. Until `spoken` she is still speaking.
     case 'settle': return s.turnId !== a.turnId ? s : s.played ? { ...s, reply: '' } : { ...s, faded: true };
-    case 'spoken': return s.turnId !== a.turnId ? s : { ...s, played: true, reply: s.faded ? '' : s.reply, phase: s.phase === 'speaking' || s.phase === 'processing' ? 'listening' : s.phase };
-    // `waiting` is the turn this surface started (submit answer or voice `accepted`); only its end without an answer
-    // (daemon `failed` / `cancelled`) releases "processing", so a background turn failing meanwhile changes nothing.
-    // A failure says why in the daemon's words (a bad key, no credit, no network…) in place of the answer.
-    case 'pending': return { ...s, waiting: a.turnId, askedAt: a.at };
-    // Nothing is spoken for it, so it leaves at its settle (runtime.ts) like an answer whose speech is over.
-    case 'failed': { if (a.turnId !== s.waiting) return s;
-      const t = { ...s, askedAt: null };
-      return t.phase === 'processing' ? { ...t, phase: 'listening', reply: a.cancelled ? '' : a.message ?? '这一轮出错了，没有完成。可以再说一次。', turnId: a.turnId, responseId: null, failed: !a.cancelled, faded: false, played: true,
-        openSeq: t.rows.length ? t.rows[t.rows.length - 1].seq : 0 } : t; }
+    // A waiting turn answered where no words show (a silent channel) ends its wait here too.
+    case 'spoken': { const t = a.turnId === s.waiting ? { ...s, askedAt: null } : s;
+      return s.turnId !== a.turnId ? t : { ...t, played: true, responseId: null, reply: s.faded ? '' : s.reply, phase: s.phase === 'speaking' || s.phase === 'processing' ? 'listening' : s.phase }; }
+    // `waiting` is the turn this surface started (submit, card or voice `accepted`), thought about while `askedAt` is
+    // set. Only its end without an answer (daemon `failed` / `cancelled`) shows, whatever else is going on, so a
+    // background turn failing meanwhile changes nothing. A failure says why in the daemon's words (a bad key, no
+    // credit, no network…) in place of the answer. A typed turn's id comes back on the HTTP answer, which a quick
+    // answer's `open` can beat on the socket: then it has nothing left to wait for.
+    case 'pending': return { ...s, waiting: a.turnId, askedAt: a.turnId === s.turnId ? null : a.at };
+    // Nothing is spoken for it, so it leaves at its settle (runtime.ts) like an answer whose speech is over. A cancelled
+    // answer on screen goes whoever asked for it: it was stopped, or dropped for the words after it (ADR 0074).
+    case 'failed': { const shown = a.turnId === s.turnId, gone = { reply: '', played: true, responseId: null };
+      if (a.turnId !== s.waiting) return shown && a.cancelled ? { ...s, ...gone } : s;
+      const t = { ...s, askedAt: null, phase: s.phase === 'processing' ? 'listening' as const : s.phase };
+      if (a.cancelled) return shown ? { ...t, ...gone } : t;
+      return { ...t, reply: a.message ?? '这一轮出错了，没有完成。可以再说一次。', turnId: a.turnId, responseId: null, failed: true, faded: false, played: true,
+        openSeq: t.rows.length ? t.rows[t.rows.length - 1].seq : 0 }; }
     case 'controls': return { ...s, micMuted: a.micMuted, soundMuted: a.soundMuted, conversation: a.conversation };
     case 'heard': return { ...s, heard: a.text, inFlight: false };
     // A new session id starts a fresh transcript; a closed session keeps its lines on screen until dismissed.

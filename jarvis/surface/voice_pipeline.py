@@ -45,11 +45,29 @@ class VoiceInputBusyError(VoicePipelineError):
 
 
 class VoicePipelineEmptyError(VoicePipelineError):
-    """Transcript was empty / silent / punctuation-only after ASR."""
+    """Transcript was empty / silent / punctuation-only after ASR.
+
+    ``heard`` keeps what the recognizer returned, for an owner that acts on a
+    lone word too short to be a turn (a single 「停」 while Jarvis talks).
+    """
+
+    def __init__(self, message: str, *, heard: str = "") -> None:
+        """Keep the recognizer's text beside the message."""
+        super().__init__(message)
+        self.heard = heard
 
 
 class VoicePipelineWakeOnlyError(VoicePipelineEmptyError):
     """A wake-channel transcript held only the wake phrase; the question is still to come."""
+
+
+class VoicePipelineAbsorbedError(VoicePipelineEmptyError):
+    """``before_emit`` took the words as no turn: a listening sound, or a stop it acted on."""
+
+    def __init__(self, reason: str) -> None:
+        """``reason`` rides the ``empty`` phase the surface gets instead of ``accepted``."""
+        super().__init__(f"absorbed as {reason}")
+        self.reason = reason
 
 
 class _BroadcasterProtocol(Protocol):
@@ -116,6 +134,24 @@ class VoicePipeline:
             return self._normalizer.normalize(self.partial_text(audio_bytes))
         return self._normalizer.normalize(recognizer.recognize(audio_bytes).text)
 
+    def _judge(
+        self,
+        before_emit: Callable[[str], None],
+        normalized: str,
+        *,
+        turn_id: str,
+        broadcast: bool,
+    ) -> None:
+        """Hand the owner the words; an utterance it absorbs ends as ``empty`` on the wire."""
+        try:
+            before_emit(normalized)
+        except VoicePipelineAbsorbedError as absorbed:
+            if broadcast and self._broadcaster is not None:
+                self._broadcaster.broadcast_voice_sync(
+                    "empty", turn_id=turn_id, reason=absorbed.reason,
+                )
+            raise
+
     def run_turn(  # noqa: C901, PLR0912, PLR0913 — wake/PTT toggles widen the signature; splitting would shred the single locked critical section.
         self,
         *,
@@ -129,7 +165,7 @@ class VoicePipeline:
         session_id: str | None = None,
         utterance_id: str | None = None,
         endpoint_reason: str | None = None,
-        before_emit: Callable[[], None] | None = None,
+        before_emit: Callable[[str], None] | None = None,
     ) -> Event:
         """Execute one voice turn end-to-end. Returns the emitted Event row.
 
@@ -159,15 +195,19 @@ class VoicePipeline:
                 endpointed utterance); the PTT path does not, so an unsupplied
                 id is minted here — one press-to-release is one utterance.
             endpoint_reason: Optional typed acoustic endpoint reason.
-            before_emit: Called once the transcript is accepted, before
-                ``utterance.received`` is written: conversation mode drops
-                the unspoken answer to Allen's previous sentence there, so
-                the new turn can never see it (ADR 0053).
+            before_emit: Called with the normalized transcript once it is
+                accepted, before ``utterance.received`` is written:
+                conversation mode drops the unspoken answer to Allen's
+                previous sentence there, so the new turn can never see it
+                (ADR 0053), and raises :class:`VoicePipelineAbsorbedError`
+                for words spoken over Jarvis that are no turn.
 
         Raises:
             VoiceInputBusyError: VOICE_INPUT_LOCK contention (PTT path: 503).
                 Only raised when ``lock_already_held`` is False.
             VoicePipelineEmptyError: transcript empty / too short / silent.
+            VoicePipelineAbsorbedError: ``before_emit`` absorbed the words
+                (a subclass, announced to the surface as ``empty``).
             VoicePipelineWakeOnlyError: a wake transcript held only the wake
                 phrase (a subclass, so an owner that cannot re-listen treats
                 it as empty).
@@ -209,15 +249,18 @@ class VoicePipeline:
                         "empty", turn_id=turn_id, reason="no_speech",
                     )
                 msg = f"empty utterance for turn_id={turn_id}"
-                raise VoicePipelineEmptyError(msg)
+                raise VoicePipelineEmptyError(msg, heard=tr.text)
             if channel == "inherent_wake" and voice_asr.is_wake_only(tr.text):
                 # Not a question: the wake owner keeps listening for the next
                 # utterance and says so on the wire itself.
                 msg = f"wake phrase only for turn_id={turn_id}: {tr.text!r}"
-                raise VoicePipelineWakeOnlyError(msg)
+                raise VoicePipelineWakeOnlyError(msg, heard=tr.text)
 
             # 3. Normalize BEFORE emit — ADR §8 fix #1 (spec §3.6.2).
             normalized = self._normalizer.normalize(tr.text)
+
+            if before_emit is not None:
+                self._judge(before_emit, normalized, turn_id=turn_id, broadcast=broadcast)
 
             # 4. Audio retention for memory.db (None = off).
             artifact_ref = voice_artifact_store.persist(
@@ -226,9 +269,6 @@ class VoicePipeline:
                 sample_rate_hz=self._sample_rate_hz,
                 artifacts_dir=self._artifacts_dir,
             )
-
-            if before_emit is not None:
-                before_emit()
 
             # 5. Emit utterance.received via fresh connection (worker thread).
             payload: dict[str, object] = {
@@ -291,6 +331,7 @@ __all__ = [
     "VOICE_INPUT_LOCK",
     "VoiceInputBusyError",
     "VoicePipeline",
+    "VoicePipelineAbsorbedError",
     "VoicePipelineEmptyError",
     "VoicePipelineError",
     "VoicePipelineWakeOnlyError",

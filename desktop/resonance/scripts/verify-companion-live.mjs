@@ -38,6 +38,7 @@ try {
 
   // The fake daemon: what the companion posts, and what it is told.
   const posts = [], pluginOps = [];
+  let typed = 0; // the daemon mints a fresh turn id for every submit
   const now = Date.now(), iso = ms => new Date(ms).toISOString();
   // Yesterday's turn sits past the fake daemon's page of two rows, so only a longer page brings it.
   const yesterday = [
@@ -139,7 +140,7 @@ try {
     const json = value => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(value) });
     if (method === 'POST' && !url.pathname.endsWith('/refresh')) posts.push({ path: url.pathname, body });
     if (url.pathname === '/inherent/controls') { controls = { ...controls, ...body }; return json(controls); }
-    if (url.pathname === '/inherent/submit') return json({ turn_id: 'typed-1' });
+    if (url.pathname === '/inherent/submit') return json({ turn_id: `typed-${++typed}` });
     if (url.pathname === '/inherent/cancel-response') return json({});
     if (url.pathname === '/inherent/setup/key') return json(keyAnswer);
     if (url.pathname === '/inherent/restart') return json({ ok: true });
@@ -173,6 +174,9 @@ try {
   await page.goto(`http://127.0.0.1:${web}/?companion=1&port=${port}`);
   await page.addStyleTag({ content: 'html,body{height:100%}body{background:linear-gradient(160deg,#7f98b8,#5d7898 55%,#4a6484)!important}' });
   const hit = page.locator('.companion-hit');
+  // A click on the notch opens the Dashboard and pins it; a click on a pinned one closes it.
+  const island = () => page.locator('.companion-island-target').click({ force: true });
+  const closeDash = async () => { for (let i = 0; i < 2 && await page.locator('.companion-dashboard.is-open').count(); i++) { await island(); await page.waitForTimeout(200); } };
   const move = async (x, y) => { await page.mouse.move(x, y); await page.evaluate(([x, y]) => window.__cursor({ x, y }), [x, y]); };
   const waitPlace = async value => { await page.waitForFunction(v => document.querySelector('.companion-hit')?.dataset.place === v, value, { timeout: 5000 }); await page.waitForTimeout(700); };
   const face = (...ids) => page.waitForFunction(v => v.includes(document.querySelector('.companion-canvas')?.dataset.face), ids, { timeout: 2500 }).then(() => ids[0], () => null);
@@ -199,7 +203,7 @@ try {
 
   if (real) {
     const get = async p => (await fetch(`${daemon}${p}`, { headers: daemonHeaders })).json();
-    await hit.dblclick({ force: true });
+    await island();
     await page.locator('.companion-dashboard.is-open').waitFor();
     await page.waitForTimeout(2500);
     const conversation = await get('/inherent/conversation?after=0');
@@ -338,6 +342,21 @@ try {
     check('L4 and one answer to both halves', await only() === '1,0' && await text('.bubble-text span:last-child') === '刚才是我说到一半断了。');
     await page.evaluate(() => { window.__emit('done', { turn_id: 'v1g', fadeMs: 100 }); window.__emit('voice', { phase: 'spoken', turn_id: 'v1g' }); });
     await page.waitForFunction(() => document.querySelector('.companion-strip.is-open') && !document.querySelector('.companion-bubble.is-open'), null, { timeout: 3000 });
+    // A cough as her answer is written (ADR 0053): the answer waits for it; when it comes to nothing she says it, with
+    // her speaking face, and a poke stops that answer. Her face follows the turn, never the microphone.
+    await page.evaluate(() => { window.__emit('voice', { phase: 'listening', turn_id: 'v1h' }); window.__emit('voice', { phase: 'accepted', turn_id: 'v1h', text: '明天几点开会' }); });
+    await page.waitForTimeout(150);
+    await page.evaluate(() => { window.__emit('voice', { phase: 'listening', turn_id: 'v1i' }); window.__emit('open', { turn_id: 'v1h', response_id: 'resp-v1h' }); window.__emit('append', { turn_id: 'v1h', token: '<voice>明天上午十点。</voice>' }); });
+    await page.waitForTimeout(150);
+    const coughing = await only();
+    await page.evaluate(() => window.__emit('voice', { phase: 'empty', turn_id: 'v1i' }));
+    await page.waitForTimeout(150);
+    check('L4 a cough holds her answer, then she says it with her speaking face', coughing === '0,1' && await only() === '1,0'
+      && await text('.bubble-text span:last-child') === '明天上午十点。' && await face('39', '39b', '39c') === '39');
+    await hit.click({ force: true }); await page.waitForTimeout(600);
+    check('L4 and a poke stops that answer', posts.at(-1)?.path === '/inherent/cancel-response' && posts.at(-1).body.response_id === 'resp-v1h');
+    await page.evaluate(() => { window.__emit('done', { turn_id: 'v1h', fadeMs: 100 }); window.__emit('voice', { phase: 'spoken', turn_id: 'v1h', output_outcome: 'dropped' }); });
+    await page.waitForFunction(() => document.querySelector('.companion-strip.is-open') && !document.querySelector('.companion-bubble.is-open'), null, { timeout: 3000 });
     await page.locator('.strip-stop').click(); await page.waitForTimeout(300);
     check('L5 the strip’s stop ends wave mode', posts.at(-1)?.path === '/inherent/controls' && posts.at(-1).body.conversation === false && await page.locator('.companion-strip.is-open').count() === 0);
     await move(600, 560); await waitPlace('home');
@@ -363,6 +382,17 @@ try {
     await page.waitForFunction(() => !document.querySelector('.companion-bubble.is-open'), null, { timeout: 10_000 });
     await move(600, 560); await waitPlace('home');
     check('L6 and after 8 s it leaves and she goes home', true);
+    // A poke while she thinks: that turn has no answer to name yet, so it is stopped by its turn, not the last answer's id.
+    await page.evaluate(() => window.__emit('voice', { phase: 'listening', turn_id: 'v2t' }));
+    await waitPlace('out');
+    await page.evaluate(() => window.__emit('voice', { phase: 'accepted', turn_id: 'v2t', text: '帮我查一下航班' }));
+    const thinks = await face('30');
+    const posted = posts.length;
+    await hit.click({ force: true }); await page.waitForTimeout(600);
+    const stops = posts.slice(posted).filter(p => p.path === '/inherent/cancel-response');
+    check('L6 a poke while she thinks stops that turn by its id', thinks === '30' && stops.length === 1 && stops[0].body.turn_id === 'v2t' && !stops[0].body.response_id);
+    await page.evaluate(() => window.__emit('cancelled', { turn_id: 'v2t' }));
+    await move(600, 560); await waitPlace('home');
 
     // Typed text from her own box goes to the daemon.
     await move(out.x, out.y); await waitPlace('out');
@@ -374,9 +404,16 @@ try {
     await page.waitForTimeout(300);
     check('L7 her text box submits to the daemon', posts.at(-1)?.path === '/inherent/submit' && posts.at(-1).body.text === '帮我看看日程');
     await move(600, 560); await page.waitForTimeout(1200);
+    check('L7 she thinks about a typed turn too, out of the island', await face('30') === '30' && await page.locator('.companion-hit').getAttribute('data-place') === 'out');
+    const offline = 'Jarvis could not reach the model. Check the network, then try again.';
+    await page.evaluate(text => window.__emit('failed', { turn_id: 'typed-1', reason: 'network', message: text }), offline);
+    const typedSaid = await page.waitForFunction(text => document.querySelector('.companion-bubble.is-open .bubble-text span:last-child')?.textContent === text, offline, { timeout: 3000 }).then(() => true, () => false);
+    check('L7 and its failure says why in her bubble', typedSaid && await face('38') === '38');
+    await page.waitForFunction(() => !document.querySelector('.companion-bubble.is-open'), null, { timeout: 10_000 });
+    await waitPlace('home');
 
     // The Dashboard on live data.
-    await hit.dblclick({ force: true });
+    await island();
     await page.locator('.companion-dashboard.is-open').waitFor();
     await page.waitForTimeout(1500);
     check('L8 your turn 9 min ago keeps the conversation on top: your words, then the answer on record, plain',
@@ -385,6 +422,14 @@ try {
     check('L8 the Agents row counts live sessions', (await text('.ad .r-agents .pill')) === '1 needs you' && (await text('.ad .r-agents .text')).includes('Wire the companion'));
     check('L8 the Plugins tile is the live catalog, connected first, with a manifest logo where there is one', (await page.locator('.ad .pl-mini i').allTextContents()).join('') === 'N' && await page.locator('.ad .pl-mini i:first-child img[src^="data:image/svg"]').count() === 1 && (await text('.ad [data-row="plugins"] .meta')) === '1 on');
     await panelShot('L8-home');
+    // ADR 0074: an answer written while Allen is still talking is dropped once his words are in; the home row never shows it.
+    const homeSay = () => text('.ad .r-talk .say');
+    await page.evaluate(() => { window.__emit('voice', { phase: 'listening', turn_id: 'v8b' }); window.__emit('open', { turn_id: 'v8a', response_id: 'resp-v8a' }); window.__emit('append', { turn_id: 'v8a', token: '<voice>这句会被丢掉。</voice>' }); });
+    await page.waitForTimeout(200);
+    const whileTalking = await homeSay();
+    await page.evaluate(() => { window.__emit('voice', { phase: 'accepted', turn_id: 'v8b', text: '算了不用了' }); window.__emit('cancelled', { turn_id: 'v8a' }); window.__emit('cancelled', { turn_id: 'v8b' }); });
+    await page.waitForTimeout(200);
+    check('L8 an answer written while he talks never shows on the home row', whileTalking === 'Two things: the voice test at four, and the demo cut.' && await homeSay() === whileTalking);
     await openRow('conversation'); await page.waitForTimeout(900);
     check('L8 the Conversation page shows the record as turns', await page.locator('.ad .tr').count() === 1 && (await text('.ad .tr-you p')) === rows[0].text);
     rows.push({ seq: 13, id: 'c', ts: iso(Date.now()), source: 'allen', text: 'Move the test to five' });
@@ -397,7 +442,7 @@ try {
     rows.push({ seq: 14, id: 'd', ts: iso(Date.now()), source: 'jarvis', text: doc });
     await page.evaluate(() => { window.__seen = []; new MutationObserver(() => window.__seen.push(document.querySelector('.ad .pg-body').textContent)).observe(document.querySelector('.ad .pg-body'), { subtree: true, childList: true, characterData: true }); });
     const emitted = Date.now();
-    await page.evaluate(tokens => { window.__emit('open', { turn_id: 'typed-1', response_id: 'resp-3' }); for (const token of tokens) window.__emit('append', { turn_id: 'typed-1', token }); },
+    await page.evaluate(tokens => { window.__emit('open', { turn_id: 'typed-2', response_id: 'resp-3' }); for (const token of tokens) window.__emit('append', { turn_id: 'typed-2', token }); },
       ['<voice>', 'Moved to five.', '</voice>', '<document>', '## Moved', '- **5 PM** voice test', '- bring `reSpeaker`', '| When | What |', '|---|---|', '| 17:00 | voice test |', '</document>']);
     await page.waitForTimeout(500);
     const md = page.locator('.ad .tr-jarvis .md').last(), asked = reads.find(r => r.at >= emitted), seen = await page.evaluate(() => window.__seen);
@@ -407,7 +452,7 @@ try {
       && await md.locator('li > ul > li code').textContent() === 'reSpeaker' && (await md.locator('th').allTextContents()).join() === 'When,What'
       && (await md.locator('td').allTextContents()).join() === '17:00,voice test' && !/\*\*|##|\|/.test(await md.textContent()));
     await panelShot('L8-conversation');
-    await page.evaluate(() => { window.__emit('done', { turn_id: 'typed-1', fadeMs: 100 }); window.__emit('voice', { phase: 'spoken', turn_id: 'typed-1' }); });
+    await page.evaluate(() => { window.__emit('done', { turn_id: 'typed-2', fadeMs: 100 }); window.__emit('voice', { phase: 'spoken', turn_id: 'typed-2' }); });
     const days = () => page.locator('.ad .tr').evaluateAll(els => [...new Set(els.map(e => e.dataset.day))].length);
     check('L8 it holds today only, and offers earlier', await days() === 1 && (await text('.ad .pg-earlier')).includes('earlier'));
     const held = await pullUp(), longer = reads.some(r => r.limit > 2), shown = await days(), first = await text('.ad .tr-you p'), top = await text('.ad .pg-earlier');
@@ -519,9 +564,9 @@ try {
     fixtures['/inherent/settings'] = { values: { reply_language: 'follow', wake_threshold: .95, tts_voice: 'Warm Bestie', tts_volume: 1, output_device: 'System default', input_device: 'System default',
       gpt_live: true, mac_aec: false, timesink: true, keep_audio: true, repos: ['jarvis'], model_conversation: 'gpt-5.6-luna', model_background: 'GPT-6 luna', model_report: 'GPT-6 sol' },
       options: { tts_voice: ['Warm Bestie', 'Explorative Girl'], output_device: ['System default'], input_device: ['System default'] } };
-    await hit.dblclick({ force: true });
+    await closeDash();
     await page.waitForFunction(() => !document.querySelector('.companion-dashboard.is-open'), null, { timeout: 3000 });
-    await hit.dblclick({ force: true });
+    await island();
     await page.locator('.companion-dashboard.is-open').waitFor();
     await page.waitForTimeout(1500);
     check('L14 once the daemon answers, Today shows its weather, event and to-do',
@@ -553,13 +598,13 @@ try {
     check('L15 English posts { language: en } and turns it back', posts.at(-1)?.body.language === 'en' && await langName() === 'Interface language');
     // L16: a first boot's speech-model download shows in the corner until the models are in.
     await back(); await back();
-    const corner = () => text('.ad .corner .clock');
+    const corner = () => text('.ad .corner .next-event');
     fixtures['/inherent/setup'] = { keys: { openai: 'bad', minimax: 'missing', tavily: 'missing' }, voice_models: { state: 'downloading', done: 148_000_000, total: 240_193_589 } };
-    const downloading = await page.waitForFunction(() => document.querySelector('.ad .corner .clock')?.textContent === 'Voice · 61%', null, { timeout: 5000 }).then(() => true, () => false);
+    const downloading = await page.waitForFunction(() => document.querySelector('.ad .corner .next-event')?.textContent === 'Voice · 61%', null, { timeout: 5000 }).then(() => true, () => false);
     check('L16 while the speech models download the corner says how far, from real bytes', downloading);
     await panelShot('L16-voice-downloading');
     fixtures['/inherent/setup'].voice_models = { state: 'ready', done: 0, total: 0 };
-    await page.waitForFunction(() => !document.querySelector('.ad .corner .clock')?.textContent.includes('Voice'), null, { timeout: 5000 }).catch(() => {});
+    await page.waitForFunction(() => !document.querySelector('.ad .corner .next-event')?.textContent.includes('Voice'), null, { timeout: 5000 }).catch(() => {});
     check('L16 once they are in the corner is the clock again', /\d:\d\d/.test(await corner()));
     // Settings › Accounts takes a new API key: a refused one says why and restarts nothing, a kept one restarts Jarvis.
     await page.locator('.ad .corner [data-row="settings"]').click(); await page.waitForTimeout(900);
@@ -578,7 +623,7 @@ try {
     check('L16 a kept key restarts Jarvis and empties the field', posts.at(-2)?.path === '/inherent/setup/key' && posts.at(-2).body.key === 'sk-right'
       && posts.at(-1)?.path === '/inherent/restart' && await page.locator(`${keyRow} input`).inputValue() === '' && await page.locator(`${keyRow} .st-why`).count() === 0);
     await back(); await back();
-    await hit.dblclick({ force: true });
+    await closeDash();
     await page.waitForFunction(() => !document.querySelector('.companion-dashboard.is-open'), null, { timeout: 3000 });
     // Jarvis asks for a plugin mid-conversation: the closed panel opens and lands on it.
     snapshot = { ...snapshot, request: request('notion', 'Find last week’s meeting notes.') };
@@ -590,7 +635,7 @@ try {
     // ask, stop. A finish pops its name for 5 s and stays on Allen's turn until he looks at it in Ghostty (a fake
     // front-terminal feed here) or goes to it; a needs-you card hangs from the notch and every answer goes back as a
     // POST for the held prompt. She watches all of it from home.
-    await hit.dblclick({ force: true });
+    await closeDash();
     await page.waitForFunction(() => !document.querySelector('.companion-dashboard.is-open'), null, { timeout: 3000 });
     await waitPlace('home');
     const session = (id, over = {}) => ({ agent: 'claude', session_id: id, kind: 'interactive', job_id: '', phase: 'working', title: id, project: 'jarvis', branch: '', cwd: '/x', where: 'Ghostty',
@@ -687,12 +732,12 @@ try {
     await page.locator('.notch-note .c-x').click(); await noteGone(); await settle();
     check(`L13 closed by hand, a pop stays on his turn (${await marks()})`, (await marks()) === 'turn2 work1 done4');
 
-    await hit.dblclick({ force: true });
+    await island();
     await page.locator('.companion-dashboard.is-open').waitFor();
     fixtures['/inherent/codex-sessions'] = { sessions: [{ ...fixtures['/inherent/codex-sessions'].sessions[0], state: 'finished', last_message: 'Overlay fixed.' }] };
     await page.waitForTimeout(3500);
     check('L13 nothing pops while the Dashboard is open', await note().count() === 0);
-    await hit.dblclick({ force: true }); await noteUp();
+    await closeDash(); await noteUp();
     check('L13 and it comes up once the Dashboard closes', (await page.locator('.notch-note .u-row').allTextContents()).join('|') === 'fix the overlay');
     await page.locator('.notch-note .u-row').click(); await noteGone();
     check('L13 a Codex session opens its thread', JSON.stringify(await page.evaluate(() => window.__state.opened.slice(-1))) === JSON.stringify([codexId]));

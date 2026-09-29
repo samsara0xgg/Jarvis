@@ -118,6 +118,7 @@ if TYPE_CHECKING:
     from jarvis.decision.stream_sentences import SemanticCandidate
     from jarvis.decision.tier0 import Tier0Hit, Tier0Table
     from jarvis.shared import AuthorizationLease, RiskLevel
+    from jarvis.state.conversation import PresentationRecord
     from jarvis.state.projections import PendingConfirmationSlot
 
 LOGGER = logging.getLogger(__name__)
@@ -723,26 +724,58 @@ def _interaction_line(packet: SituationPacket) -> str | None:
 _HEARD_QUOTE_MAX_CHARS: Final[int] = 40
 
 
+def _unspaced(text: str) -> str:
+    return "".join(text.split())
+
+
 def _previous_answer_line(packet: SituationPacket) -> str | None:
-    """Where the previous turn's spoken answer stopped, or None when it was heard whole.
+    """Where the last spoken answer stopped, or None when it was heard whole.
 
     Read from the playback evidence the conversation projection already
-    validates. Only the fact goes in; whether to continue or take up the
-    new words is the model's call.
+    validates. Turns that got no answer, such as a half-sentence dropped
+    for the one after it, are looked past: the cut answer before them is
+    still the last thing Allen heard. Only the facts go in; whether to
+    continue or take up the new words is the model's call.
     """
     history = packet.conversation_history
     turns = history.turns if history is not None else ()
     index = next((i for i, t in enumerate(turns) if t.turn_id == packet.current_turn_id), 0)
-    finals = [r for r in turns[index - 1].responses if r.phase == "final"] if index else []
-    spoken = [r for r in finals if r.panel_available.strip()]
-    if not spoken:
-        return "Previous turn: interrupted before it was answered" if finals else None
-    voice = split_envelope(spoken[-1].panel_available)[0].strip()
-    prefix = spoken[-1].spoken_heard
-    if prefix is None or not voice or prefix.text.strip() == voice:
+    lines: list[str] = []
+    for turn in reversed(turns[:index]):
+        finals = [r for r in turn.responses if r.phase == "final"]
+        spoken = [r for r in finals if r.panel_available.strip()]
+        if spoken:
+            cut = _answer_cut_line(spoken[-1])
+            if cut is not None:
+                lines.append(cut)
+            prefix = spoken[-1].spoken_heard
+            if prefix is not None and not prefix.submitted_samples and not prefix.complete:
+                continue  # A later answer that never started cannot hide the last audible one.
+            break
+        if finals and not lines:
+            lines.append("Previous turn: interrupted before it was answered")
+    return "\n".join(lines) or None
+
+
+def _answer_cut_line(answer: PresentationRecord) -> str | None:
+    voice = split_envelope(answer.panel_available)[0].strip()
+    prefix = answer.spoken_heard
+    # Speech is the voice text split, stripped and cleaned, so the heard
+    # prefix of a whole answer differs from it in spacing and markup.
+    if prefix is None or prefix.complete or not voice or _unspaced(prefix.text) == _unspaced(voice):
         return None
     heard = prefix.text.strip()
+    if prefix.ended == "completed":
+        return (
+            "Previous answer: playback completed, but some audio was quiet or its audibility "
+            "was uncertain; do not describe it as interrupted."
+        )
     if not heard:
+        if prefix.submitted_samples:
+            return (
+                "Previous answer: playback started, but the exact stop position is unknown; "
+                "do not infer it from the full written answer."
+            )
         return "Previous answer: interrupted before any of it was spoken"
     if len(heard) > _HEARD_QUOTE_MAX_CHARS:
         heard = "…" + heard[-_HEARD_QUOTE_MAX_CHARS:]
@@ -2126,16 +2159,27 @@ _WRITTEN_MARKUP_RE: Final[re.Pattern[str]] = re.compile(
 # along so the rewrite knows which sentence answers it.
 _SPOKEN_FORM_PROMPT_ZH: Final[str] = (
     "Rewrite the answer the user gives you as a spoken reply in Mandarin Chinese, "
-    "to be read aloud as is: at most three sentences and 60 Chinese characters, only "
+    "to be read aloud as is. By default, use at most three sentences and 60 Chinese characters, "
+    "only "
     "the conclusion that answers the question and the one or two numbers that matter "
     "most; no lists, headings, brackets, links, code or any markup; add nothing that "
-    "is not in the answer. Output only the spoken reply, in Chinese."
+    "is not in the answer. If the question explicitly asks for counting, reading aloud, "
+    "verbatim repetition, a detailed explanation, or a specific length, fulfill that request "
+    "instead of these summary and length limits: preserve the requested content in order, "
+    "including every number or item, removing only visual markup. Do not replace the "
+    "requested speech with an acknowledgement or a description of what you will say. "
+    "Output only the spoken reply, in Chinese."
 )
 _SPOKEN_FORM_PROMPT_EN: Final[str] = (
     "Rewrite the answer the user gives you as a spoken English reply: "
-    "at most three sentences and 40 words, only the conclusion that answers the "
+    "by default, use at most three sentences and 40 words, only the conclusion that answers the "
     "question and the one or two numbers that matter; no lists, headings, brackets, "
-    "links, code or markup; add nothing that is not in the answer. Output only the "
+    "links, code or markup; add nothing that is not in the answer. If the question explicitly "
+    "asks for counting, reading aloud, verbatim repetition, a detailed explanation, or a "
+    "specific length, fulfill that request instead of these summary and length limits: "
+    "preserve the requested content in order, including every number or item, removing only "
+    "visual markup. Do not replace the requested speech with an acknowledgement or a "
+    "description of what you will say. Output only the "
     "spoken reply."
 )
 

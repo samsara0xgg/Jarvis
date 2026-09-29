@@ -778,6 +778,58 @@ def is_wake_only(text: str) -> bool:
     return _WAKE_ONLY_RE.fullmatch(text.strip()) is not None
 
 
+# What Allen says over Jarvis that must not take the turn from her (soft
+# barge-in). Matched whole, case and punctuation aside. A listening sound
+# keeps her talking; a lone 对/是/好 or "yes" may be answering a waiting card
+# (ADR 0062), so only their doubled forms count, and a question mark makes
+# any of them a request to repeat (「啊？」).
+_BACKCHANNEL_RE = re.compile(
+    r"(?:[嗯哼哦噢喔唔呃额啊哈呵]|对对+|是是+|好好+|行行+)+"
+    r"|(?:mm+|m+h+m+|uhhuh|hm+|uh+|um+|oh+|ah+|ha)+",
+)
+# A request to stop talking: she stops, and it is not a question to answer.
+# Over her voice a lone 「停」 comes back as any ting/ding syllable, sometimes
+# with a stray tail: 「停立」 and 「顶」 in the 2026-09-28 live test.
+_STOP_REQUEST_RE = re.compile(
+    r"(?:嗯|哎|唉|好|行|那|你|好了|行了)?"
+    r"(?:停+(?:一下|下)?|先停(?:一下)?|暂停(?:一下)?|等(?:一下|等|下)?|别说了|不要说了|不用说了"
+    r"|别念了|闭嘴|安静(?:一下|一点|点)?|够了|好了好了|行了行了)(?:吧|啊|呀|哈)?"
+    r"|[停亭婷庭廷挺艇听厅顶鼎定丁叮钉][立啲一]?"
+    r"|(?:ok|okay|please|jarvis|hey)*"
+    r"(?:stop(?:it|talking|that)?|wait|enough|bequiet|quiet|shutup|hush)(?:please|jarvis|now)*",
+)
+# What final ASR makes of a hum or a cough over her is often one syllable or
+# word: 「五」 and "And." in the 2026-09-28 live test, each answered as a
+# question. A lone 对/是/好 or yes/okay may still answer a waiting card (ADR 0062).
+_SHORT_ANSWER_RE = re.compile(r"[对是好行要不]|yes|yeah|yep|no|nope|ok|okay|sure|right")
+
+
+def _squashed(text: str) -> str:
+    return re.sub(r"[\W_]+", "", text.lower())
+
+
+def is_backchannel(text: str) -> bool:
+    """True when ``text`` is only a listening sound (嗯, 对对, mm-hmm), not a question."""
+    stripped = text.strip()
+    if stripped.endswith(("?", "？")):
+        return False
+    return _BACKCHANNEL_RE.fullmatch(_squashed(stripped)) is not None
+
+
+def is_stop_request(text: str) -> bool:
+    """True when ``text`` only asks Jarvis to stop talking (停, 别说了, stop)."""
+    return _STOP_REQUEST_RE.fullmatch(_squashed(text)) is not None
+
+
+def is_unclear_sound(text: str) -> bool:
+    """True for one syllable or word that answers nothing (五, "And."), not a question."""
+    stripped = text.strip()
+    if stripped.endswith(("?", "？")):
+        return False
+    words = re.findall(r"[a-z']+|\w", stripped.lower())
+    return len(words) == 1 and _SHORT_ANSWER_RE.fullmatch(words[0]) is None
+
+
 def is_empty_or_too_short(text: str, *, audio_pcm: bytes) -> bool:
     """Unified empty-utterance filter for wake + PTT (ADR-0005 §8 fix #3)."""
     stripped = text.strip()
@@ -795,7 +847,10 @@ __all__ = [
     "MlxWhisperRecognizer",
     "SenseVoiceRecognizer",
     "TranscriptionResult",
+    "is_backchannel",
     "is_empty_or_too_short",
+    "is_stop_request",
+    "is_unclear_sound",
     "is_wake_only",
     "looks_complete",
     "normalize_partial_text",

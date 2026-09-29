@@ -70,6 +70,7 @@ class RealtimeInputSessionConfig:
     max_utterance_s: float = 30.0
     armed_no_speech_timeout_s: float = 3.0
     min_voiced_s: float = 1.0
+    short_sound_grace_ms: int = 400
     wake_subscriber_capacity: int = 64
     capture_subscriber_capacity: int = 128
     diagnostic_subscriber_capacity: int = 16
@@ -79,6 +80,13 @@ class RealtimeInputSessionConfig:
     worker_poll_s: float = 0.005
     shutdown_timeout_s: float = 3.0
     output_active_vad_mode: str = "record"
+    # Conversation mode's soft barge-in: speech over Jarvis first lowers her to
+    # this gain, and stops her once it has this much voiced time (0 stops her
+    # at onset, ADR 0041); shorter sounds end after this much silence and final
+    # ASR decides.
+    barge_in_confirm_voiced_s: float = 0.8
+    barge_in_yield_gain: float = 0.2
+    barge_in_pause_ms: int = 350
     partial_asr: PartialAsrConfig = PartialAsrConfig()
 
 
@@ -251,7 +259,7 @@ class _PipelinePort(Protocol):
         session_id: str | None = ...,
         utterance_id: str | None = ...,
         endpoint_reason: str | None = ...,
-        before_emit: Callable[[], None] | None = ...,
+        before_emit: Callable[[str], None] | None = ...,
     ) -> Event:
         """Run final ASR and commit ``utterance.received``."""
         ...
@@ -457,6 +465,10 @@ class UtteranceAssembler:
             1,
             int(config.min_voiced_s * sample_rate_hz / frame_samples),
         )
+        self._short_sound_grace_frames = _frames(config.short_sound_grace_ms)
+        self._barge_pause_frames = _frames(config.barge_in_pause_ms)
+        # Set while this utterance started over Jarvis and has not yet stopped her.
+        self._yielding, self._yield_silence = False, 0
         self._armed_timeout_samples = max(
             frame_samples,
             int(config.armed_no_speech_timeout_s * sample_rate_hz),
@@ -472,6 +484,7 @@ class UtteranceAssembler:
         self._audio_frames: list[bytes] = []
         self._start_cursor = 0
         self._voiced_frames = 0
+        self._short_sound_silence = 0
         self._consecutive_silence = 0
         self._last_speech_index = -1
         self._hold_frames = 0
@@ -525,6 +538,21 @@ class UtteranceAssembler:
     def turn_id(self) -> str:
         """Return the turn id minted by the most recent :meth:`arm`."""
         return self._turn_id
+
+    @property
+    def voiced_frames(self) -> int:
+        """Return the speech frames of the active utterance so far."""
+        return self._voiced_frames
+
+    def yield_endpoint(self, *, on: bool) -> None:
+        """While on, the active utterance also ends after ``barge_in_pause_ms`` of silence.
+
+        For a sound spoken over Jarvis that has not stopped her: she is quieter
+        until final ASR judges it, so it should not wait out the pause and the
+        short-sound grace of an ordinary sentence.
+        """
+        self._yielding = on
+        self._yield_silence = 0
 
     def prepare(self) -> None:
         """Reset and prewarm Silero outside the first-speech hot path."""
@@ -609,7 +637,7 @@ class UtteranceAssembler:
             return
         self._vad.set_mode(self._output_active_vad_mode if speaking else "record")
 
-    def feed(  # noqa: C901 - linear ARMED/ACTIVE endpoint state machine
+    def feed(
         self,
         frame: voice_audio.CanonicalAudioFrame,
     ) -> CapturedUtterance | UtteranceCaptureFailure | WakeArmExpired | None:
@@ -673,20 +701,47 @@ class UtteranceAssembler:
             self._set_phase(EndpointPhase.SPEECH_ACTIVE, self._utterance_id)
         else:
             self._audio_frames.append(frame.pcm16_mono)
-        if event is voice_audio.VadEvent.SPEECH_ACTIVE:
+        speech = event is voice_audio.VadEvent.SPEECH_ACTIVE
+        if speech:
             self._voiced_frames += 1
-        endpoint_reason: str | None = None
-        if self._partial.enabled:
-            endpoint_reason = self._semantic_endpoint(
-                speech=event is voice_audio.VadEvent.SPEECH_ACTIVE,
-            )
-        elif self._voiced_frames >= self._min_voiced_frames and self._vad.empty():
-            endpoint_reason = "acoustic_pause"
-        elif len(self._audio_frames) >= self._max_frames:
-            endpoint_reason = "max_duration"
+        endpoint_reason = self._endpoint(speech=speech)
         if endpoint_reason is None:
             return None
         return self._commit(frame, endpoint_reason)
+
+    def _endpoint(self, *, speech: bool) -> str | None:
+        """Return why the utterance ends on this frame, or ``None`` while it goes on."""
+        if self._yielding:
+            self._yield_silence = 0 if speech else self._yield_silence + 1
+            if self._yield_silence >= self._barge_pause_frames:
+                return "barge_pause"
+        if self._partial.enabled:
+            return self._semantic_endpoint(speech=speech)
+        reason: str | None = None
+        if not speech and self._vad.empty():
+            reason = self._pause_endpoint()
+        else:
+            self._short_sound_silence = 0
+        if reason is None and len(self._audio_frames) >= self._max_frames:
+            reason = "max_duration"
+        return reason
+
+    def _pause_endpoint(self) -> str | None:
+        """Acoustic endpoint on one silent frame after the detector's pause.
+
+        Enough voiced audio before the pause ends the utterance there. A
+        shorter sound (a cough, a click, 「嗯」, a one-word 「好」) waits
+        ``short_sound_grace_ms`` more for words to follow; if none do it ends
+        as ``short_pause`` and final ASR decides whether it held any words.
+        Without that bound it stayed in flight until ``max_utterance_s``,
+        holding every answer (ADR 0074).
+        """
+        if self._voiced_frames >= self._min_voiced_frames:
+            return "acoustic_pause"
+        self._short_sound_silence += 1
+        if self._short_sound_silence >= self._short_sound_grace_frames:
+            return "short_pause"
+        return None
 
     def _commit(
         self,
@@ -875,6 +930,9 @@ class UtteranceAssembler:
         self._audio_frames.clear()
         self._speech_pre_roll.clear()
         self._voiced_frames = 0
+        self._short_sound_silence = 0
+        self._yielding = False
+        self._yield_silence = 0
         self._consecutive_silence = 0
         self._last_speech_index = -1
         self._hold_frames = 0
@@ -906,13 +964,19 @@ class DuplexVoiceSession:
         stop_speaking: Callable[[], object] | None = None,
         hold_output: Callable[[bool], None] | None = None,
         supersede_unspoken: Callable[[str], None] | None = None,
+        yield_speaking: Callable[[float], None] | None = None,
     ) -> None:
         """Register all bounded subscribers before any hardware starts.
 
         ``conversation`` reads the surface's conversation switch (ADR 0041):
         while it is on and the mic is live, capture stays armed without a
         wake hit, and speech that starts while Jarvis is speaking calls
-        ``stop_speaking`` on a thread of its own.
+        ``stop_speaking``. With ``yield_speaking`` it first only lowers her
+        (``barge_in_yield_gain``) and stops her once the speech has
+        ``barge_in_confirm_voiced_s`` of voice; a shorter sound is judged by
+        final ASR: a listening sound, one word that says nothing, or nothing
+        gives her the gain back, a stop request stops her, and none becomes
+        a turn.
 
         ADR 0053: ``hold_output(True)`` from an utterance's speech onset
         until it is accepted or comes to nothing, so no answer starts while
@@ -929,6 +993,17 @@ class DuplexVoiceSession:
         self._stop_speaking = stop_speaking
         self._hold_output = hold_output
         self._supersede_unspoken = supersede_unspoken
+        self._yield_speaking = yield_speaking
+        # Soft barge-in: the turns spoken over Jarvis until final ASR has
+        # judged their words. "yielding": she is only quieter; "stopping": a
+        # stop is on its way, still quieter; "stopped". "judged" is a stop
+        # still on its way for words already judged: its thread lets go.
+        self._barges: dict[str, str] = {}
+        self._barge_lock = threading.Lock()
+        self._yielded = False
+        self._confirm_voiced_frames = int(
+            config.barge_in_confirm_voiced_s * 16_000 / voice_audio.SILERO_CHUNK_SAMPLES + 0.999,
+        )
         # Turns whose words are still coming in: spoken, or waiting on ASR.
         self._in_flight: set[str] = set()
         self._in_flight_lock = threading.Lock()
@@ -1205,18 +1280,123 @@ class DuplexVoiceSession:
             self._assembler.reset_to_idle()
             self._conversation_armed = False
 
-    def _barge_in_on_speech(self) -> None:
-        """Speech started while Jarvis speaks in conversation mode: stop it."""
+    def _speaking(self) -> bool:
         try:
-            speaking = self._output_active is not None and self._output_active()
+            return self._output_active is not None and self._output_active()
         except Exception:  # noqa: BLE001 - unknown output state stops nothing
-            return
-        if not speaking or self._stop_speaking is None:
+            return False
+
+    def _barge_in_on_speech(self) -> None:
+        """Speech started while Jarvis speaks in conversation mode: yield, or stop her."""
+        if not self._speaking() or self._stop_speaking is None:
             return
         record_realtime_trace("conversation_barge_in", session_id=self._session_id)
+        if self._confirm_voiced_frames == 0 or self._yield_speaking is None:
+            threading.Thread(
+                target=self._stop_speaking, name="conversation-barge-in", daemon=True,
+            ).start()
+            return
+        with self._barge_lock:
+            self._barges[self._assembler.turn_id] = "yielding"
+            self._set_yield_locked()
+        self._assembler.yield_endpoint(on=True)
+
+    def _confirm_barge_in(self) -> None:
+        """Enough voice over her: the yield becomes a stop (capture thread)."""
+        turn_id = self._assembler.turn_id
+        if self._assembler.voiced_frames < self._confirm_voiced_frames:
+            return
+        with self._barge_lock:
+            if self._barges.get(turn_id) != "yielding":
+                return
+            self._barges[turn_id] = "stopping"
+        self._assembler.yield_endpoint(on=False)
+        record_realtime_trace("conversation_barge_in_confirmed", session_id=self._session_id)
         threading.Thread(
-            target=self._stop_speaking, name="conversation-barge-in", daemon=True,
+            target=self._stop_then_settle,
+            args=(turn_id,),
+            name="conversation-barge-in",
+            daemon=True,
         ).start()
+
+    def _stop_then_settle(self, turn_id: str) -> None:
+        """The gain comes back only once she is stopped, however late the stop is."""
+        self._stop_now()
+        with self._barge_lock:
+            state = self._barges.get(turn_id)
+            if state == "stopping":
+                self._barges[turn_id] = "stopped"
+            elif state == "judged":
+                del self._barges[turn_id]
+            self._set_yield_locked()
+
+    def _stop_now(self) -> None:
+        """Stop what Jarvis is still saying; the gain comes back only after."""
+        if self._stop_speaking is not None and self._speaking():
+            self._stop_speaking()
+
+    def _set_yield_locked(self) -> None:
+        """Lower her while any barge-in is undecided or stopping her, restore once none is."""
+        yielding = not {"yielding", "stopping", "judged"}.isdisjoint(self._barges.values())
+        if yielding == self._yielded or self._yield_speaking is None:
+            return
+        self._yielded = yielding
+        try:
+            self._yield_speaking(self._config.barge_in_yield_gain if yielding else 1.0)
+        except Exception:  # noqa: BLE001 - output state cannot break capture
+            LOGGER.debug("realtime yield_speaking failed", exc_info=True)
+
+    def _end_barge_in(self, turn_id: str) -> None:
+        """Its words are judged, or lost: she no longer yields to them."""
+        with self._barge_lock:
+            state = self._barges.get(turn_id)
+            if state == "stopping":
+                self._barges[turn_id] = "judged"
+            elif state in {"yielding", "stopped"}:
+                del self._barges[turn_id]
+            self._set_yield_locked()
+
+    def _judge_words(self, turn_id: str, text: str) -> None:
+        """Final ASR's verdict on words spoken over Jarvis, then ADR 0053's drop.
+
+        A listening sound or one word that says nothing gives her the gain
+        back and a stop request stops her; none of them is a turn. Anything
+        else stops her and is a turn. Words that already stopped her are
+        judged the same way, so 「停」 said long enough to stop her gets no
+        answer either.
+        """
+        with self._barge_lock:
+            state = self._barges.get(turn_id)
+        if state is not None:
+            backchannel = voice_asr.is_backchannel(text)
+            stop = voice_asr.is_stop_request(text)
+            unclear = not stop and voice_asr.is_unclear_sound(text)
+            if state == "yielding" and not (backchannel or unclear):
+                self._stop_now()
+            self._end_barge_in(turn_id)
+            verdict = (
+                "backchannel" if backchannel
+                else "stop" if stop
+                else "unclear" if unclear
+                else "turn"
+            )
+            record_realtime_trace(
+                "conversation_barge_in_judged",
+                session_id=self._session_id,
+                verdict=verdict,
+            )
+            if verdict != "turn":
+                raise voice_pipeline.VoicePipelineAbsorbedError(
+                    "stop_request" if stop else verdict,
+                )
+        self._supersede(turn_id)
+
+    def _judge_no_words(self, turn_id: str, heard: str, *, addressed: bool = False) -> None:
+        """No turn in it, yet a lone stop word or her name over her still stops her."""
+        with self._barge_lock:
+            yielding = self._barges.get(turn_id) == "yielding"
+        if yielding and (addressed or voice_asr.is_stop_request(heard)):
+            self._stop_now()
 
     def _mark_in_flight(self, turn_id: str, *, active: bool) -> None:
         """Hold answers while any of Allen's utterances is in flight (ADR 0053)."""
@@ -1269,6 +1449,8 @@ class DuplexVoiceSession:
                         # conversation arm has no wake, so it says it here.
                         self._broadcast("listening", turn_id=self._assembler.turn_id)
                         self._barge_in_on_speech()
+            if is_active:
+                self._confirm_barge_in()
             if outcome is not None:
                 self._conversation_armed = False
                 self._handle_capture_outcome(outcome)
@@ -1351,6 +1533,7 @@ class DuplexVoiceSession:
                 turn_id=outcome.turn_id,
                 reason="audio_discontinuity_retry_wake",
             )
+            self._end_barge_in(outcome.turn_id)
             self._assembler.prepare()
             return
         self._endpoint_commits += 1
@@ -1370,6 +1553,7 @@ class DuplexVoiceSession:
         try:
             self._commits.put_nowait(outcome)
         except queue.Full:
+            self._end_barge_in(outcome.turn_id)
             self._mark_in_flight(outcome.turn_id, active=False)
             self._commit_queue_full += 1
             record_realtime_trace(
@@ -1409,14 +1593,20 @@ class DuplexVoiceSession:
                         session_id=utterance.session_id,
                         utterance_id=utterance.utterance_id,
                         endpoint_reason=utterance.endpoint_reason,
-                        before_emit=functools.partial(self._supersede, utterance.turn_id),
+                        before_emit=functools.partial(self._judge_words, utterance.turn_id),
                     )
                 self._assembler.mark_committed(utterance.utterance_id)
+            except voice_pipeline.VoicePipelineAbsorbedError as absorbed:
+                LOGGER.info(
+                    "realtime wake: words over Jarvis were no turn (%s) turn_id=%s",
+                    absorbed.reason, utterance.turn_id,
+                )
             except voice_pipeline.VoicePipelineWakeOnlyError:
                 # Allen paused after "Hey Jarvis": listen for the question
                 # from where the wake phrase ended, as if the wake hit had
                 # landed there, instead of answering an empty turn.
                 LOGGER.info("realtime wake: wake phrase only turn_id=%s", utterance.turn_id)
+                self._judge_no_words(utterance.turn_id, "", addressed=True)
                 with contextlib.suppress(queue.Full):  # a newer wake is already queued
                     self._detections.put_nowait(
                         WakeDetection(
@@ -1426,8 +1616,9 @@ class DuplexVoiceSession:
                             probability=1.0,
                         ),
                     )
-            except voice_pipeline.VoicePipelineEmptyError:
+            except voice_pipeline.VoicePipelineEmptyError as empty:
                 LOGGER.info("realtime wake: empty utterance turn_id=%s", utterance.turn_id)
+                self._judge_no_words(utterance.turn_id, empty.heard)
             except voice_pipeline.VoiceInputBusyError:
                 LOGGER.warning("realtime wake: final ASR lane busy turn_id=%s", utterance.turn_id)
                 self._broadcast("error", turn_id=utterance.turn_id, reason="asr_busy")
@@ -1435,6 +1626,7 @@ class DuplexVoiceSession:
                 LOGGER.exception("realtime wake: ASR commit failed turn_id=%s", utterance.turn_id)
                 self._broadcast("error", turn_id=utterance.turn_id, reason="asr_error")
             finally:
+                self._end_barge_in(utterance.turn_id)
                 self._mark_in_flight(utterance.turn_id, active=False)
                 self._commits.task_done()
 
@@ -1509,6 +1701,9 @@ class DuplexVoiceSession:
             self._wake_engine.close()
         except Exception:  # noqa: BLE001 - report thread/backend ownership separately
             LOGGER.debug("wake engine close failed", exc_info=True)
+        with self._barge_lock:  # no word left to judge: never leave her quieter
+            self._barges.clear()
+            self._set_yield_locked()
         alive = tuple(thread.name for thread in self._started_threads if thread.is_alive())
         result = VoiceSessionCloseResult(
             ingress=ingress_result,
@@ -1560,6 +1755,7 @@ def realtime_input_session_config_from_mapping(
         voice_audio.SileroVad.thresholds(mode)
         return mode
 
+    confirm_voiced_s, yield_gain = _barge_in_yield(values, defaults)
     return RealtimeInputSessionConfig(
         pre_roll_ms=_positive_int("pre_roll_ms", defaults.pre_roll_ms),
         max_utterance_s=_positive_float(
@@ -1571,6 +1767,10 @@ def realtime_input_session_config_from_mapping(
             defaults.armed_no_speech_timeout_s,
         ),
         min_voiced_s=_positive_float("min_voiced_s", defaults.min_voiced_s),
+        short_sound_grace_ms=_positive_int(
+            "short_sound_grace_ms",
+            defaults.short_sound_grace_ms,
+        ),
         wake_subscriber_capacity=_positive_int(
             "wake_subscriber_capacity",
             defaults.wake_subscriber_capacity,
@@ -1604,8 +1804,26 @@ def realtime_input_session_config_from_mapping(
             "output_active_vad_mode",
             defaults.output_active_vad_mode,
         ),
+        barge_in_confirm_voiced_s=confirm_voiced_s,
+        barge_in_yield_gain=yield_gain,
+        barge_in_pause_ms=_positive_int("barge_in_pause_ms", defaults.barge_in_pause_ms),
         partial_asr=_partial_asr_config_from_mapping(values.get("partial_asr")),
     )
+
+
+def _barge_in_yield(
+    values: Mapping[str, object], defaults: RealtimeInputSessionConfig,
+) -> tuple[float, float]:
+    """``barge_in_confirm_voiced_s`` (0 stops at onset) and ``barge_in_yield_gain`` (0-1]."""
+    confirm = values.get("barge_in_confirm_voiced_s", defaults.barge_in_confirm_voiced_s)
+    if isinstance(confirm, bool) or not isinstance(confirm, int | float) or confirm < 0:
+        msg = "realtime.single_audio_ingress.barge_in_confirm_voiced_s must be a number >= 0"
+        raise ValueError(msg)
+    gain = values.get("barge_in_yield_gain", defaults.barge_in_yield_gain)
+    if isinstance(gain, bool) or not isinstance(gain, int | float) or not 0 < gain <= 1:
+        msg = "realtime.single_audio_ingress.barge_in_yield_gain must be above 0 and at most 1"
+        raise ValueError(msg)
+    return float(confirm), float(gain)
 
 
 def _partial_asr_config_from_mapping(raw: object) -> PartialAsrConfig:

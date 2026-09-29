@@ -1,6 +1,6 @@
 # ADR 0045 — No Commentary; the Spoken Form Starts Past Its Own Limit
 
-**Status:** Accepted
+**Status:** Superseded-by-0082
 **Date:** 2026-09-25
 **Supersedes:** 0043
 

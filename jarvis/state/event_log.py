@@ -529,6 +529,17 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         schema_version=1,
     ),
     EventTypeSchema(
+        event_type="surface.playback_alignment",
+        owner_layer="L5",
+        actor="jarvis_runtime",
+        required_payload=(
+            "session_id", "response_id", "turn_id", "playback_generation_id",
+            "sequence", "speech_text_hash", "word_boundaries",
+        ),
+        optional_payload=(),
+        schema_version=1,
+    ),
+    EventTypeSchema(
         event_type="surface.playback_checkpoint",
         owner_layer="L5",
         actor="jarvis_runtime",
@@ -541,7 +552,10 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
             "submitted_samples",
             "heard_text_hash",
         ),
-        optional_payload=("cursor_quality", "heard_text"),
+        optional_payload=(
+            "cursor_quality", "heard_text", "estimated_audible_samples",
+            "heard_partial_sequence", "heard_partial_text_end",
+        ),
         schema_version=1,
     ),
     EventTypeSchema(
@@ -558,6 +572,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
             "speech_text_hash",
         ),
         optional_payload=(
+            "estimated_audible_samples", "heard_partial_sequence", "heard_partial_text_end",
             "total_samples", "provider", "cursor_quality", "heard_text", "heard_text_hash",
             "starvation_gaps", "host_underflows", "tail_ramp_samples",
         ),
@@ -578,6 +593,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
             "reason",
         ),
         optional_payload=(
+            "estimated_audible_samples", "heard_partial_sequence", "heard_partial_text_end",
             "heard_text",
             "total_samples",
             "interrupted_by_utterance_id",
@@ -605,6 +621,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
             "reason",
         ),
         optional_payload=(
+            "estimated_audible_samples", "heard_partial_sequence", "heard_partial_text_end",
             "heard_text", "provider", "cursor_quality", "retryable",
             "starvation_gaps", "host_underflows", "tail_ramp_samples",
         ),

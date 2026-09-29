@@ -4,8 +4,11 @@ The first case drives the composition root's backend hooks against a real
 Event Log on disk. The wire cases drive ``LiveVoice`` over a fake socket and
 assert on what it sends and what it persists: the commentary a new session
 is told at start, the delivery mark an ACK writes, a late result spoken as
-commentary, a usage-less close kept truthful, and a dead microphone upload
-that ends the session under its own reason.
+commentary, a usage-less close kept truthful, a dead microphone upload that
+ends the session under its own reason, a superseded lookup withheld at the
+moment it is superseded, an empty request window said aloud, and a speaker
+that does not open refusing the session. The last cases pin the spoken cut
+of an English answer.
 """
 
 from __future__ import annotations
@@ -16,6 +19,7 @@ import time
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
+import pytest
 from websockets.asyncio import client as ws_client
 
 from jarvis.runtime.inherent_loop import _LiveBackend
@@ -28,14 +32,13 @@ from jarvis.surface.voice_live import (
     GptLiveConfig,
     LiveVoice,
     UndeliveredResult,
+    _speech_cut,
 )
 
 if TYPE_CHECKING:
     import sqlite3
     from collections.abc import Callable
     from pathlib import Path
-
-    import pytest
 
 _DAY_MS = 24 * 60 * 60 * 1000
 
@@ -179,11 +182,13 @@ class _Wire:
 
 
 class _Player:
+    opens = True
+
     def __init__(self, **_: object) -> None:
         self.gain: float | None = None
 
-    def start(self) -> None:
-        pass
+    def start(self) -> SimpleNamespace:
+        return SimpleNamespace(started=self.opens, reason="" if self.opens else "failed_closed")
 
     def set_gain(self, gain: float) -> None:
         self.gain = gain
@@ -411,3 +416,142 @@ def test_dead_microphone_upload_ends_the_session_as_send_failed(
         assert usages == [("S-1", None, "send_failed", None, False)]
 
     asyncio.run(scenario())
+
+
+def test_a_superseded_lookup_is_withheld_even_if_the_session_closes_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The withheld mark lands at the supersede, so no later session recites it."""
+    turns = iter(["T-1", "T-2"])
+    marks: list[tuple[str, str, str]] = []
+
+    async def scenario() -> None:
+        wire = _Wire()
+        live = await _start(
+            monkeypatch,
+            wire,
+            delegate=lambda *_: next(turns),
+            record=lambda *_: None,
+            lookup_result=lambda _turn: None,  # neither answer is back before the hang-up
+            undelivered=list,
+            mark_delivered=lambda t, s, k: marks.append((t, s, k)),
+        )
+        wire.serve({
+            "type": "session.input_transcript.delta",
+            "start_ms": 500,
+            "end_ms": 1400,
+            "delta": "查一下明天温哥华天气",
+        })
+        wire.serve({
+            "type": "session.delegation.created",
+            "offset_ms": 1500,
+            "delegation": {"id": "d-1"},
+        })
+        await _until(lambda: wire.frames("session.thinking.append"))
+        wire.serve({
+            "type": "session.input_transcript.delta",
+            "start_ms": 2500,
+            "end_ms": 3200,
+            "delta": "改成后天的",
+        })
+        wire.serve({
+            "type": "session.delegation.created",
+            "offset_ms": 3300,
+            "delegation": {"id": "d-2"},
+        })
+        await _until(lambda: marks)
+        assert marks == [("T-1", "S-1", "withheld")]
+        await live.stop()
+        assert marks == [("T-1", "S-1", "withheld")]  # written once; T-2 stays offerable
+
+    asyncio.run(scenario())
+
+
+def test_an_empty_request_window_is_said_aloud(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With no words to look up, Live is asked to speak, not handed a quiet note."""
+
+    async def scenario() -> None:
+        wire = _Wire()
+        live = await _start(
+            monkeypatch,
+            wire,
+            delegate=lambda *_: "T-1",
+            record=lambda *_: None,
+            lookup_result=lambda _turn: None,
+            undelivered=list,
+        )
+        wire.serve({
+            "type": "session.delegation.created",
+            "offset_ms": 1500,
+            "delegation": {"id": "d-1"},
+        })
+        [asked] = await _until(lambda: wire.frames("session.commentary.append"))
+        assert asked["content"] == lang.t("live.no_request")
+        assert asked["delegation_id"] == "d-1"
+        assert not wire.frames("session.thinking.append")
+        await live.stop()
+
+    asyncio.run(scenario())
+
+
+def test_a_speaker_that_does_not_open_refuses_the_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No billed session nobody can hear: the start fails and says why."""
+
+    async def scenario() -> None:
+        async def connect(*_: object, **__: object) -> _Wire:
+            return _Wire()
+
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+        monkeypatch.setattr(ws_client, "connect", connect)
+        monkeypatch.setattr(voice_tts, "AudioStreamPlayer", _Player)
+        monkeypatch.setattr(_Player, "opens", False)
+        lane = _Ingress()
+        live = LiveVoice(
+            config=_config(),
+            broadcaster=_Broadcaster(),  # type: ignore[arg-type]
+            ingress=lambda: lane,  # type: ignore[arg-type,return-value]
+            mic_muted=lambda: False,
+            speech_muted=lambda: False,
+        )
+        status = await live.start()
+        assert status["state"] == "idle"
+        assert status["reason"] == "start_failed"
+        assert "speaker did not open" in str(status["error"])
+
+    asyncio.run(scenario())
+
+
+_EN_FORECAST = (
+    "Tomorrow in Vancouver it will be mostly cloudy with a high of 15 degrees and a low of 9. "
+    "Light rain is expected in the late afternoon, around 3.5 mm in total, so bring a jacket. "
+    "Winds will be light from the southwest at 10 to 15 km/h. "
+    "The weekend looks drier, with sunny breaks on Saturday and highs near 17."
+)
+
+
+@pytest.mark.parametrize(
+    ("answer", "spoken"),
+    [
+        pytest.param(
+            _EN_FORECAST,
+            _EN_FORECAST.rsplit(" The weekend", 1)[0],
+            id="a long English answer is cut after its last whole sentence",
+        ),
+        pytest.param(
+            "Version gpt-5.6 " * 30,
+            lang.t("live.long_result"),
+            id="a decimal point is not a sentence end",
+        ),
+        pytest.param(
+            "明天温哥华多云，最高十五度。" * 30,
+            "明天温哥华多云，最高十五度。" * 21,
+            id="a Chinese answer still cuts at its full stop",
+        ),
+        pytest.param("Short answer.", "Short answer.", id="an answer within budget is untouched"),
+    ],
+)
+def test_spoken_cut(answer: str, spoken: str) -> None:
+    """What Live is handed to say of a backend answer (ADR-0016 D4)."""
+    assert _speech_cut(answer) == spoken

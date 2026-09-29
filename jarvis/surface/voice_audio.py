@@ -262,10 +262,13 @@ class SileroVad:
         return VadEvent.SPEECH_ACTIVE if is_speech else VadEvent.SILENCE
 
     def empty(self) -> bool:
-        """``True`` once consecutive post-speech silence reaches its threshold.
+        """``True`` while the latest speech has been followed by its silence threshold.
 
         The recorder polls this after each frame and stops capture when it
-        flips. Any intervening speech resets the consecutive-miss counter.
+        flips. Any intervening speech resets the consecutive-miss counter, and
+        speech that starts again clears the flag: a pause that did not end the
+        utterance (too little voiced audio before it) must not end it later,
+        in the middle of the words that follow.
         """
         return self._post_speech_silence_seen
 
@@ -325,6 +328,7 @@ class SileroVad:
                 if self._hits >= self._t.required_hits:
                     self._state = "ACTIVE"
                     self._misses = 0
+                    self._post_speech_silence_seen = False
                     self._last_start_perf = time.perf_counter()
                     record_realtime_trace(
                         "vad_speech_started",
@@ -424,7 +428,9 @@ def capture_utterance(
             event = vad.feed(bytes(frame))
             if event == VadEvent.SPEECH_ACTIVE:
                 voiced_frames += 1
-            if voiced_frames >= min_voiced_frames and vad.empty():
+            # Only a silent frame ends it: a word resuming after a short sound's
+            # pause is speech before the detector re-arms, and must not be cut.
+            elif voiced_frames >= min_voiced_frames and vad.empty():
                 break
 
     return bytes(audio_bytes)

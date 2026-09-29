@@ -324,8 +324,10 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
         "- 后台只能查，不能做：搜网页、读网页、查笔记、查过去的对话记录、看当前时间。\n"
         "Delegate to the backend when:\n"
         "- 用户要查资料、查最新或动态信息、回忆以前说过的事、要一个需要核实的事实。\n"
+        "- 用户纠正或改变了正在查的内容（比如“改成后天的”）。\n"
         "Do not delegate to the backend when:\n"
         "- 闲聊、寒暄、你自己就能答的常识；用户要执行操作时直接说明这一版后台只能查不能做。\n"
+        "Delegate before giving an answer that depends on backend work.\n"
         "Do not guess the result while waiting. 等后台结果时可以继续聊别的，\n"
         "但不要编造查询结果，也不要说已经查到了。\n",
         "en": "You are {assistant}, the user's personal voice assistant.\n"
@@ -343,10 +345,12 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
         "Delegate to the backend when:\n"
         "- The user wants something looked up, wants current or changing information, wants"
         " to recall something said before, or wants a fact that needs checking.\n"
+        "- A correction changes a lookup already requested.\n"
         "Do not delegate to the backend when:\n"
         "- Small talk, greetings, or general knowledge you can answer yourself; when the user"
         " wants an action taken, say plainly that this version's backend can only look"
         " things up.\n"
+        "Delegate before giving an answer that depends on backend work.\n"
         "Do not guess the result while waiting. You can keep talking about other things,\n"
         "but do not make up a result and do not say it has been found.\n",
     },
