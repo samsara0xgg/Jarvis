@@ -10,11 +10,12 @@ import { existsSync, mkdirSync, renameSync, statSync, writeFileSync } from 'node
 import { copyFile, mkdir, open, readFile, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
-import type { Agent, Answer, Catalog, Choice, Ctx, Doctor, Event, File, Item, Outside, Pic, Project, Req, Service, Sess, St, Step, Task, Usage, UsageWindow } from './types.js';
+import type { Agent, Answer, Catalog, Choice, Ctx, Doctor, Event, File, Item, Mcp, McpAct, Outside, Pic, Project, Req, Service, Sess, St, Step, Task, Usage, UsageWindow } from './types.js';
 import { claude, claudeExe } from './claude.js';
 import { codex } from './codex.js';
 import { loginPath, version, which } from './doctor.js';
 import { findFiles, keepUpload, peek, pruneOld, resolveRefs } from './files.js';
+import { contentOf } from './form.js';
 import { hostKey } from './key.js';
 import { ask, socketFor, startKeeper, type Kid } from './keeper.js';
 import { LABEL, Landing, REOPEN, dirtyOf, shellEnv } from './land.js';
@@ -55,6 +56,10 @@ export type Driver = {
   resume(s: Session): string;
   // What fills its context window now.
   context(s: Session): Promise<Ctx>;
+  // Its MCP servers as this session sees them (C3); one switched on or off, connected again, or signed in to, then the
+  // list again, or the page the sign-in opens.
+  mcp?(s: Session): Promise<Mcp[]>;
+  mcpAct?(s: Session, name: string, act: McpAct): Promise<Mcp[] | { url: string }>;
   // Take back a child the keeper kept through a restart; `news`: a turn that ends in what it replays was not seen.
   adopt?(s: Session, busy: boolean, news: boolean): Promise<void>;
   // Files as they were when the message `at` was sent (Claude's checkpoints): what would change, or change them.
@@ -143,6 +148,7 @@ export function reqLine(r: Req) {
   if (r.tool === 'Plan') return '计划写好了，等你点头';
   if (r.tool === 'Bash') return `想跑 ${oneLine(r.cmd, 60)}`;
   if (r.tool === 'Edit') return `想改 ${base(r.file)}`;
+  if (r.tool === 'Form') return r.url ? `${r.server} 要你打开一个网页` : `${r.server} 要你填一张表`;
   return `想用 ${r.name}`;
 }
 
@@ -536,7 +542,7 @@ async function body(req: Req0): Promise<Record<string, any>> {
 }
 // `need` names what the window can answer with: 'auth' is Claude's sign-in in the packaged app (ADR 0094), 'force' a
 // second, sure press.
-class Http extends Error { constructor(public code: number, msg: string, public need?: string) { super(msg); } }
+export class Http extends Error { constructor(public code: number, msg: string, public need?: string) { super(msg); } }
 // A Claude session of Startrail's own needs the packaged app's sign-in before anything starts a claude for it.
 const signedIn = (agent: Agent) => { const a = auth(); if (agent === 'claude' && !a.ready) throw new Http(409, a.why ?? '', 'auth'); };
 // Everyone gets what changed; a sign-in that became ready (or went) reads Claude's menus again.
@@ -745,6 +751,12 @@ async function route(req: Req0, res: http.ServerResponse, url: URL): Promise<unk
     if (c.max) x.set({ ctx: Math.min(100, Math.round(c.used / c.max * 100)) });
     return c;
   }
+  if (m === 'GET' && verb === 'mcp') {
+    if (!x.driver.mcp) throw new Http(409, '看不到它的 MCP');
+    if (x.s.term) throw new Http(409, '在终端里，拿回来才看得到');
+    signedIn(x.s.agent);
+    return { servers: await x.driver.mcp(x) };
+  }
   if (m !== 'POST') throw new Http(405, '不行');
   const b = await body(req);
   if (verb === 'land') {
@@ -777,11 +789,27 @@ async function route(req: Req0, res: http.ServerResponse, url: URL): Promise<unk
     return { ok: true };
   }
   if (verb === 'answer') {
-    if (x.pending()?.req.id !== b.req) throw new Http(409, '这张请求已经处理过了');
-    const a: Answer = { req: str(b.req, 'req'), decision: b.decision === 'deny' ? 'deny' : b.decision === 'always' ? 'always' : 'allow',
-      answers: Array.isArray(b.answers) ? b.answers.map((q: unknown) => Array.isArray(q) ? q.map(String) : []) : undefined, text: typeof b.text === 'string' ? b.text : undefined };
+    const open = x.pending()?.req;
+    if (!open || open.id !== b.req) throw new Http(409, '这张请求已经处理过了');
+    // A form (C3) can also be cancelled, and what was filled in must fit its fields before it goes.
+    const form = open.tool === 'Form' ? open : null;
+    const decision = b.decision === 'deny' || (b.decision === 'cancel' && !form) ? 'deny' : b.decision === 'cancel' ? 'cancel' : b.decision === 'always' ? 'always' : 'allow';
+    const values = form && (decision === 'allow' || decision === 'always') ? contentOf(form.fields, b.values && typeof b.values === 'object' ? b.values : {}) : undefined;
+    if (typeof values === 'string') throw new Http(400, values);
+    const a: Answer = { req: str(b.req, 'req'), decision, answers: Array.isArray(b.answers) ? b.answers.map((q: unknown) => Array.isArray(q) ? q.map(String) : []) : undefined,
+      text: typeof b.text === 'string' ? b.text : undefined, ...values ? { values } : {} };
     x.driver.answer(x, a);
     return { ok: true };
+  }
+  // An MCP server switched on or off, connected again, or signed in to (C3): the list after it, or the page to open.
+  if (verb === 'mcp') {
+    const act: McpAct | null = b.action === 'on' || b.action === 'off' || b.action === 'reconnect' || b.action === 'login' ? b.action : null;
+    if (!act) throw new Http(400, '没有这个动作');
+    if (!x.driver.mcpAct) throw new Http(409, '管不了它的 MCP');
+    if (x.s.term) throw new Http(409, '在终端里，先拿回来');
+    signedIn(x.s.agent);
+    const r = await x.driver.mcpAct(x, str(b.name, 'name'), act);
+    return Array.isArray(r) ? { ok: true, servers: r } : r;
   }
   if (verb === 'interrupt') { if (busy(x)) await x.driver.interrupt(x); return { ok: true }; }
   if (verb === 'stop') {

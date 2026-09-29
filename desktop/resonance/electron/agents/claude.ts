@@ -6,16 +6,18 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, realpathSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
-import { deleteSession, forkSession, getSessionInfo, getSessionMessages, listSessions, query, renameSession, type Options, type PermissionResult, type PermissionUpdate,
-  type Query, type SDKControlGetContextUsageResponse, type SDKMessage, type SDKUserMessage, type SpawnedProcess, type SpawnOptions } from '@anthropic-ai/claude-agent-sdk';
+import { deleteSession, forkSession, getSessionInfo, getSessionMessages, listSessions, query, renameSession, type ElicitationResult, type McpServerStatus, type Options,
+  type PermissionResult, type PermissionUpdate, type Query, type SDKControlGetContextUsageResponse, type SDKMessage, type SDKUserMessage, type SpawnedProcess,
+  type SpawnOptions } from '@anthropic-ai/claude-agent-sdk';
 import { EventEmitter } from 'node:events';
 import net from 'node:net';
 import { PassThrough } from 'node:stream';
 import { attach, attached } from './files.js';
-import { catalogChanged, KEEPER, kt, log, pic, sent, type Driver, type Session } from './host.js';
+import { fieldsOf } from './form.js';
+import { catalogChanged, Http, KEEPER, kt, log, pic, sent, type Driver, type Session } from './host.js';
 import { ask, lines, parse, type Head } from './keeper.js';
 import { auth, keyEnv } from './settings.js';
-import type { Choice, Ctx, CtxRow, Diff, File, Pic, Req, Step, Task } from './types.js';
+import type { Choice, Ctx, CtxRow, Diff, Field, File, Mcp, Pic, Req, Step, Task } from './types.js';
 
 // In the dev build Allen's subscription, in the packaged app the owner's own key or cloud account (ADR 0094), and never
 // a key or token this process happens to have; nothing that says this runs inside another Claude Code session. The
@@ -53,7 +55,9 @@ function pushable<T>() {
     },
   };
 }
-type Pending = { resolve: (r: PermissionResult) => void; name: string; input: Record<string, unknown>; suggestions?: PermissionUpdate[] };
+type Pending = { resolve: (r: PermissionResult) => void; name: string; input: Record<string, unknown>; suggestions?: PermissionUpdate[] }
+  // An MCP server's form, or a page it wants opened (C3)
+  | { form: (r: ElicitationResult) => void; fields: Field[]; url?: string };
 // prev: the mode to go back to when a plan is approved · usage: tokens the last answer was sent with · block: the text
 // block streaming in · creates: TaskCreate calls waiting for the id their result gives
 type Rt = {
@@ -272,6 +276,15 @@ function ensure(s: Session) {
       s.ask(reqOf(s, id, name, input, o));
       o.signal.addEventListener('abort', () => { if (r.pending.delete(id)) s.answered(id, '没回答'); });
     }),
+    // An MCP server's form, or a page it wants opened, a sign-in most often (C3); one that is not a web page is refused.
+    onElicitation: (e, o) => new Promise<ElicitationResult | null>(resolve => {
+      const url = e.mode === 'url' ? str(e.url) : '', server = e.displayName || e.serverName;
+      if (e.mode === 'url' && !/^https?:\/\//i.test(url)) { s.note(`${server} 要打开的不是网页，先拒绝了`); resolve({ action: 'decline' }); return; }
+      const id = o.requestId || randomUUID(), fields = url ? [] : fieldsOf(e.requestedSchema);
+      r.pending.set(id, { form: resolve, fields, ...url ? { url } : {} });
+      s.ask({ id, tool: 'Form', server, why: e.message || str(e.title), fields, ...url ? { url } : {} });
+      o.signal.addEventListener('abort', () => { if (r.pending.delete(id)) s.answered(id, '没回答'); });
+    }),
     spawnClaudeCodeProcess: viaKeeper(s),
     ...(r.fresh ? { sessionId: s.s.id } : { resume: cur(s) }),
   };
@@ -461,7 +474,12 @@ export const claude: Driver = {
     if (!p) return;
     r.pending.delete(a.req);
     let done: string;
-    if (p.name === 'AskUserQuestion') {
+    // A form: what was filled in (the host checked it against the fields), not given, or the call it came from cancelled.
+    if ('form' in p) {
+      if (a.decision === 'deny') { p.form({ action: 'decline' }); done = '不提供，继续'; }
+      else if (a.decision === 'cancel') { p.form({ action: 'cancel' }); done = '取消了'; }
+      else { p.form({ action: 'accept', ...p.url ? {} : { content: (a.values ?? {}) as ElicitationResult['content'] } }); done = p.url ? '同意打开网页' : '已提供'; }
+    } else if (p.name === 'AskUserQuestion') {
       const qs = (p.input.questions ?? []) as { question: string }[];
       if (a.decision === 'deny') { p.resolve({ behavior: 'deny', message: 'The user dismissed the question.' }); done = '没回答'; }
       else {
@@ -492,7 +510,10 @@ export const claude: Driver = {
   },
   async release(s) {
     const r = rt(s), q = r.q;
-    for (const p of r.pending.values()) p.resolve({ behavior: 'deny', message: 'Session released.', interrupt: true });
+    for (const p of r.pending.values()) {
+      if ('form' in p) p.form({ action: 'cancel' });
+      else p.resolve({ behavior: 'deny', message: 'Session released.', interrupt: true });
+    }
     r.pending.clear();
     for (const [, x] of r.queued) s.dequeue(x.text);
     r.queued.clear();
@@ -572,15 +593,43 @@ export const claude: Driver = {
   },
   async account() { return account; },
   resume: s => `claude --resume ${cur(s)}`,
-  // A running session is asked directly; an idle one is resumed by a query of its own that ends once it answers, so
-  // looking never keeps a process around.
-  async context(s) {
-    let q = rt(s).q, input: ReturnType<typeof pushable<SDKUserMessage>> | undefined;
-    if (!q) {
-      input = pushable<SDKUserMessage>();
-      q = query({ prompt: input, options: { cwd: s.s.cwd, env: claudeEnv(), pathToClaudeCodeExecutable: EXE, systemPrompt: PROMPT, resume: cur(s), model: s.s.model || undefined,
-        permissionMode: (MODES.some(m => m[0] === s.s.mode) ? s.s.mode : 'auto') as Options['permissionMode'] } });
-    }
-    try { return ctxOf(s, await q.getContextUsage()); } finally { if (input) { q.close(); input.end(); } }
+  async context(s) { return asking(s, async q => ctxOf(s, await q.getContextUsage()), true); },
+  async mcp(s) { return asking(s, (q, live) => servers(q, live, !live)); },
+  // Switching one off holds in this folder for every Claude Code session, a terminal's too; connecting again needs it
+  // running. Claude Code signs in to an MCP server only in its own terminal, with /mcp.
+  async mcpAct(s, name, act) {
+    return asking(s, async (q, live) => {
+      const one = (await servers(q, live, false)).find(m => m.name === name);
+      if (!one) throw new Http(404, '没有这个 MCP');
+      if (act === 'login') throw new Http(409, 'Claude Code 的 MCP 要在终端里用 /mcp 登录');
+      if (!one.can.includes(act)) throw new Http(409, act === 'reconnect' ? '它现在没在跑，下次开始时会重新连' : act === 'on' ? '它开着' : '它关着');
+      if (act === 'reconnect') await q.reconnectMcpServer(name);
+      else await q.toggleMcpServer(name, act === 'on');
+      return servers(q, live, true);
+    });
   },
 };
+
+// A running session is asked directly; an idle one through a query of its own in its folder that ends once it has
+// answered, so looking never keeps a process around. `resume`: what is asked needs the conversation.
+async function asking<T>(s: Session, f: (q: Query, live: boolean) => Promise<T>, resume = false): Promise<T> {
+  const running = rt(s).q;
+  if (running) return f(running, true);
+  const input = pushable<SDKUserMessage>();
+  const q = query({ prompt: input, options: { cwd: s.s.cwd, env: claudeEnv(), pathToClaudeCodeExecutable: EXE, systemPrompt: PROMPT, model: s.s.model || undefined,
+    permissionMode: (MODES.some(m => m[0] === s.s.mode) ? s.s.mode : 'auto') as Options['permissionMode'], ...resume ? { resume: cur(s) } : {} } });
+  try { return await f(q, false); } finally { q.close(); input.end(); }
+}
+// Its MCP servers (C3). `settle`: wait, up to 15 seconds, for the ones still connecting (a query that has just started,
+// one just switched on or connected again).
+const MCP_ST: Record<McpServerStatus['status'], Mcp['st']> = { connected: 'on', pending: 'wait', 'needs-auth': 'auth', failed: 'fail', disabled: 'off' };
+async function servers(q: Query, live: boolean, settle: boolean): Promise<Mcp[]> {
+  let list = await q.mcpServerStatus();
+  for (let i = 0; settle && i < 50 && list.some(m => m.status === 'pending'); i++) { await new Promise(r => setTimeout(r, 300)); list = await q.mcpServerStatus(); }
+  return list.map(m => {
+    const st = MCP_ST[m.status] ?? 'wait', scope = m.source || m.scope;
+    return { name: m.name, st, ...m.tools ? { tools: m.tools.length } : {}, ...scope ? { scope } : {},
+      ...st === 'fail' && m.error ? { why: oneLine(m.error, 200) } : st === 'auth' ? { why: '要登录：在终端里打开这个会话，用 /mcp 登录' } : {},
+      can: st === 'off' ? ['on'] : live ? ['off', 'reconnect'] : ['off'] };
+  });
+}

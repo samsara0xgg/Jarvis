@@ -6,6 +6,9 @@
 //   ASK   a shell command that needs the owner's yes     TASK  a background shell that runs until stopped
 //   SUB   a sub-agent that reads a file and reports      PLAN  a to-do list
 //   SLOW  three seconds of work (to interrupt, queue behind)      FAIL  the turn ends in an error
+//   FORM  an MCP server's form to fill in                          LINK  an MCP server's page to open
+// It has three MCP servers: docs (two tools, a moment to connect), tracker (wants a sign-in) and flaky (fails until it
+// is connected again); one switched off stays off in that folder, kept in the config folder as Claude Code keeps it.
 // Every start, request and turn is appended to FAKE_CLAUDE_LOG when it is set. The host runs it through
 // JARVIS_AGENTS_CLAUDE.
 import { randomUUID } from 'node:crypto';
@@ -91,6 +94,34 @@ function context() {
     messageBreakdown: { toolCallTokens: 600, toolResultTokens: 2000, attachmentTokens: 100, assistantMessageTokens: 1000, userMessageTokens: 500, redirectedContextTokens: 0, unattributedTokens: 0,
       toolCallsByType: [{ name: 'Read', callTokens: 100, resultTokens: 1500 }] } };
 }
+// ---------- MCP servers ----------
+const MCP = path.join(CONFIG, 'fake-mcp.json'), born = Date.now(), SERVERS = { docs: 'user', tracker: 'project', flaky: 'local' };
+const mcpOff = () => (existsSync(MCP) ? JSON.parse(readFileSync(MCP, 'utf8')) : {})[cwd] ?? [];
+let fixed = false, since = born;
+function mcpStatus() {
+  const off = mcpOff(), wait = Date.now() - since < 400;
+  return Object.entries(SERVERS).map(([name, scope]) => {
+    if (off.includes(name)) return { name, status: 'disabled', scope, source: scope };
+    if (name === 'tracker') return { name, status: 'needs-auth', scope, source: scope };
+    if (name === 'flaky' && !fixed) return { name, status: 'failed', error: 'connect ECONNREFUSED 127.0.0.1:9', scope, source: scope };
+    if (name === 'docs' && wait) return { name, status: 'pending', scope, source: scope };
+    return { name, status: 'connected', scope, source: scope, serverInfo: { name, version: '1.0.0' },
+      tools: name === 'docs' ? [{ name: 'publish' }, { name: 'search' }] : [{ name: 'retry' }] };
+  });
+}
+function mcpToggle(name, on) {
+  const all = existsSync(MCP) ? JSON.parse(readFileSync(MCP, 'utf8')) : {}, off = new Set(all[cwd] ?? []);
+  if (on) { off.delete(name); since = Date.now(); } else off.add(name);
+  all[cwd] = [...off];
+  mkdirSync(CONFIG, { recursive: true }); writeFileSync(MCP, JSON.stringify(all));
+}
+const FORM = { type: 'object', required: ['name', 'count'], properties: {
+  name: { type: 'string', title: 'Name', description: 'What to call it', minLength: 2, maxLength: 20 },
+  count: { type: 'integer', title: 'How many', minimum: 1, maximum: 5 },
+  public: { type: 'boolean', title: 'Public', default: false },
+  color: { type: 'string', title: 'Color', oneOf: [{ const: 'red', title: 'Red' }, { const: 'blue', title: 'Blue' }], default: 'blue' },
+  tags: { type: 'array', title: 'Tags', items: { anyOf: [{ const: 'a', title: 'A' }, { const: 'b', title: 'B' }, { const: 'c', title: 'C' }] }, maxItems: 2 } } };
+
 function answer(m) {
   const r = m.request, reply = response => out({ type: 'control_response', response: { subtype: 'success', request_id: m.request_id, response } });
   const refuse = error => out({ type: 'control_response', response: { subtype: 'error', request_id: m.request_id, error } });
@@ -116,6 +147,14 @@ function answer(m) {
     return reply({});
   }
   if (r.subtype === 'get_context_usage') return reply(context());
+  if (r.subtype === 'mcp_status') return reply({ mcpServers: mcpStatus() });
+  if ((r.subtype === 'mcp_toggle' || r.subtype === 'mcp_reconnect') && !(r.serverName in SERVERS)) return refuse(`Server not found: ${r.serverName}`);
+  if (r.subtype === 'mcp_toggle') { mcpToggle(r.serverName, r.enabled === true); return reply({}); }
+  if (r.subtype === 'mcp_reconnect') {
+    if (mcpOff().includes(r.serverName)) return refuse(`Server ${r.serverName} is disabled`);
+    if (r.serverName === 'flaky') fixed = true;
+    return reply({});
+  }
   if (r.subtype === 'set_model') model = r.model ?? model;
   reply({});
 }
@@ -145,7 +184,7 @@ async function result(id, content, extra = {}, parent = null, isError = false) {
 const tool = async (name, input, parent = null) => { const id = `toolu_${randomUUID().slice(0, 12)}`; await block({ type: 'tool_use', id, name, input }, parent); return id; };
 
 async function work(said) {
-  for (const [, what, arg1] of said.matchAll(/\b(EDIT|WRITE|ASK|TASK|SUB|PLAN|SLOW|FAIL)\b(?:\s+([\w./-]+))?/g)) {
+  for (const [, what, arg1] of said.matchAll(/\b(EDIT|WRITE|ASK|TASK|SUB|PLAN|SLOW|FAIL|FORM|LINK)\b(?:\s+([\w./-]+))?/g)) {
     if (what === 'SLOW') { for (let i = 0; i < 30 && !turn.stop; i++) await sleep(100); if (turn.stop) throw new Error('stop'); continue; }
     if (what === 'FAIL') return 'fail';
     if (what === 'EDIT' || what === 'WRITE') {
@@ -187,6 +226,14 @@ async function work(said) {
       await result(r, read(path.join(cwd, 'README.md')) ?? 'no readme', {}, id);
       await block({ type: 'text', text: 'The folder has a readme.' }, id);
       await result(id, [{ type: 'text', text: 'The folder has a readme.' }], { status: 'completed' });
+    }
+    if (what === 'FORM' || what === 'LINK') {
+      const id = await tool('mcp__docs__publish', { title: 'x' });
+      const got = await ask(what === 'FORM' ? { subtype: 'elicitation', mcp_server_name: 'docs', message: 'Where should it go?', mode: 'form', requested_schema: FORM }
+        : { subtype: 'elicitation', mcp_server_name: 'docs', message: 'Sign in to Docs', mode: 'url', url: 'https://docs.example.com/login', elicitation_id: 'e1' });
+      if (turn.stop) throw new Error('stop');
+      note({ ev: 'elicitation', response: got?.response ?? null });
+      await result(id, JSON.stringify(got?.response ?? null), {});
     }
     if (what === 'PLAN') {
       const id = await tool('TodoWrite', { todos: [{ content: 'Read the code', status: 'completed', activeForm: 'Reading' }, { content: 'Change it', status: 'in_progress', activeForm: 'Changing' }] });

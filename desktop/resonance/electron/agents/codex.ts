@@ -5,8 +5,9 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { homedir } from 'node:os';
 import { createInterface } from 'node:readline';
 import { attach, attached } from './files.js';
-import { broadcast, catalogChanged, find, kt, log, pic, picFile, sent, type Driver, type Session } from './host.js';
-import type { Choice, Diff, File, Outside, Question, Req, Step } from './types.js';
+import { fieldsOf } from './form.js';
+import { broadcast, catalogChanged, find, Http, kt, log, pic, picFile, sent, type Driver, type Session } from './host.js';
+import type { Choice, Diff, File, Mcp, Outside, Question, Req, Step } from './types.js';
 import { diffOf } from './claude.js';
 
 const MODES: [string, string][] = [['auto', '自动'], ['read', '只读'], ['full', '完全放开'], ['plan', '计划模式']];
@@ -61,7 +62,7 @@ function start() {
 process.on('exit', () => { if (child?.pid) try { process.kill(-child.pid); } catch { /* already gone */ } });
 
 // ---------- one session's side of it ----------
-type Pending = { rpc: number | string; kind: 'cmd' | 'file' | 'perm' | 'ask'; params: any };
+type Pending = { rpc: number | string; kind: 'cmd' | 'file' | 'perm' | 'ask' | 'form'; params: any };
 // usage: the last thread/tokenUsage/updated, the only count Codex gives
 type Rt = { loaded: boolean; turn?: string; text: Map<string, string>; out: Map<string, string>; pending: Map<string, Pending>; steps: Map<string, Step[]>; usage?: any };
 const rt = (s: Session): Rt => (s.rt.codex ??= { loaded: false, text: new Map(), out: new Map(), pending: new Map(), steps: new Map() }) as Rt;
@@ -153,8 +154,9 @@ function receive(m: Msg) {
   }
   const p = m.params ?? {}, s = typeof p.threadId === 'string' ? find(p.threadId) : undefined;
   if (m.id !== undefined) { asked(m, s); return; }
-  // A ChatGPT sign-in the check-up started (A4) finished.
+  // A ChatGPT sign-in the check-up started (A4) finished, or one to an MCP server (C3).
   if (m.method === 'account/login/completed') { broadcast({ t: 'signin', agent: 'codex', ok: !!p.success, ...p.error ? { why: str(p.error) } : {} }); if (p.success) void catalogChanged(); return; }
+  if (m.method === 'mcpServer/oauthLogin/completed') { broadcast({ t: 'mcp', agent: 'codex', name: str(p.name), ok: !!p.success, ...p.error ? { why: str(p.error) } : {}, ...s ? { id: s.s.id } : {} }); return; }
   if (!s || s.s.agent !== 'codex') return;
   const r = rt(s);
   switch (m.method) {
@@ -206,11 +208,20 @@ function asked(m: Msg, s: Session | undefined) {
     kind = 'ask';
     const qs: Question[] = (p.questions ?? []).map((q: any) => ({ q: str(q.question), head: str(q.header), opts: (q.options ?? []).map((o: any) => [str(o.label), str(o.description)]) }));
     req = { id: key, tool: 'Ask', qs };
+  } else if (m.method === 'mcpServer/elicitation/request') {
+    // An MCP server's form, or a page it wants opened (C3); one that is not a web page, or an identity check, is refused.
+    const url = p.mode === 'url' ? str(p.url) : '', server = str(p.serverName);
+    if ((p.mode === 'url' && !/^https?:\/\//i.test(url)) || p.mode === 'openai/userVerification') {
+      write({ id: m.id, result: { action: 'decline', content: null, _meta: null } });
+      s.note(p.mode === 'url' ? `${server} 要打开的不是网页，先拒绝了` : `${server} 要验证你的身份，这个窗口还做不了，先拒绝了`);
+      return;
+    }
+    kind = 'form';
+    req = { id: key, tool: 'Form', server, why: str(p.message), fields: url ? [] : fieldsOf(p.requestedSchema), ...url ? { url } : {} };
   }
   if (!req) {
-    // An MCP server's form, or anything newer than this window: say no, and say so.
-    if (m.method === 'mcpServer/elicitation/request') write({ id: m.id, result: { action: 'decline', content: null, _meta: null } });
-    else write({ id: m.id, error: { code: -32601, message: 'not supported here' } });
+    // Anything newer than this window: say no, and say so.
+    write({ id: m.id, error: { code: -32601, message: 'not supported here' } });
     s.note(`Codex 要的东西这个窗口还接不了（${m.method}），先拒绝了`);
     return;
   }
@@ -301,7 +312,11 @@ export const codex: Driver = {
     if (!p) return;
     r.pending.delete(a.req);
     let result: unknown, done: string;
-    if (p.kind === 'ask') {
+    if (p.kind === 'form') {
+      const give = a.decision === 'allow' || a.decision === 'always', url = p.params.mode === 'url';
+      result = { action: give ? 'accept' : a.decision === 'cancel' ? 'cancel' : 'decline', content: give && !url ? a.values ?? {} : null, _meta: null };
+      done = !give ? a.decision === 'cancel' ? '取消了' : '不提供，继续' : url ? '同意打开网页' : '已提供';
+    } else if (p.kind === 'ask') {
       const qs = p.params.questions ?? [];
       result = { answers: Object.fromEntries(qs.map((q: any, i: number) => [q.id, { answers: a.text !== undefined && i === 0 ? [a.text] : a.answers?.[i] ?? [] }])) };
       done = a.decision === 'deny' ? '没回答' : `你${a.text !== undefined ? '回答' : '选了'}：${a.text ?? (a.answers ?? []).flat().join(' · ')}`;
@@ -314,7 +329,7 @@ export const codex: Driver = {
     }
     write({ id: p.rpc, result });
     s.answered(a.req, done);
-    if (a.decision === 'deny' && a.text && p.kind !== 'ask') void codex.send(s, a.text, []);
+    if (a.decision === 'deny' && a.text && p.kind !== 'ask' && p.kind !== 'form') void codex.send(s, a.text, []);
   },
   async interrupt(s) {
     const r = rt(s);
@@ -322,7 +337,10 @@ export const codex: Driver = {
   },
   async release(s) {
     const r = rt(s);
-    for (const [k, p] of r.pending) { write({ id: p.rpc, result: p.kind === 'ask' ? { answers: {} } : p.kind === 'perm' ? { permissions: {}, scope: 'turn' } : { decision: 'cancel' } }); s.answered(k, '没回答'); }
+    for (const [k, p] of r.pending) {
+      write({ id: p.rpc, result: p.kind === 'ask' ? { answers: {} } : p.kind === 'perm' ? { permissions: {}, scope: 'turn' } : p.kind === 'form' ? { action: 'cancel', content: null, _meta: null } : { decision: 'cancel' } });
+      s.answered(k, '没回答');
+    }
     r.pending.clear();
     if (r.turn) await call('turn/interrupt', { threadId: s.s.id, turnId: r.turn }).catch(() => {});
     if (r.loaded) await call('thread/unsubscribe', { threadId: s.s.id }).catch(() => {});
@@ -390,4 +408,37 @@ export const codex: Driver = {
         { n: '还空着', t: max - used, kind: 'free' }],
       foot: [`整个会话累计：发出 ${kt(u.total?.inputTokens ?? 0)}，写了 ${kt(u.total?.outputTokens ?? 0)}`, '快满时 Codex 会自己压缩'] };
   },
+  async mcp(s) { return servers(s); },
+  // Connecting again reads its config.toml afresh, and a thread takes that on its next turn; switching one on or off is
+  // done in that file, not here. A sign-in is a page to open, and its end comes as an `mcp` event.
+  async mcpAct(s, name, act) {
+    const one = (await servers(s)).find(m => m.name === name);
+    if (!one) throw new Http(404, '没有这个 MCP');
+    if (!one.can.includes(act)) throw new Http(409, act === 'login' ? '它不用登录' : act === 'reconnect' ? '连不了' : 'Codex 的 MCP 要在它的 config.toml 里开关');
+    if (act === 'reconnect') { await call('config/mcpServer/reload', undefined); return servers(s); }
+    const url = (await call<{ authorizationUrl?: string }>('mcpServer/oauth/login', { name, ...rt(s).loaded ? { threadId: s.s.id } : {} })).authorizationUrl ?? '';
+    if (!/^https?:\/\//i.test(url)) throw new Http(502, 'Codex 没给能打开的登录页');
+    return { url };
+  },
 };
+
+// Its MCP servers (C3), as the session's thread sees them when this server holds it. Otherwise Codex says only what it
+// found when it looked (0.155 and 0.159 alike): the server answered, it failed, it wants a sign-in, or nothing, which is
+// one switched off. Only a server over HTTP that does OAuth can be signed in to from here.
+const MCP_ST: Record<string, Mcp['st']> = { connected: 'on', starting: 'wait', notStarted: 'wait', authenticationRequired: 'auth', failed: 'fail', cancelled: 'fail', disabled: 'off' };
+async function servers(s: Session): Promise<Mcp[]> {
+  const all: any[] = [];
+  let cursor: string | null = null;
+  do {
+    const r: { data: any[]; nextCursor: string | null } = await call('mcpServerStatus/list', { detail: 'toolsAndAuthOnly', limit: 100, ...rt(s).loaded ? { threadId: s.s.id } : {}, ...cursor ? { cursor } : {} });
+    all.push(...r.data ?? []); cursor = r.nextCursor;
+  } while (cursor && all.length < 500);
+  return all.map(m => {
+    const err = str(m.toolsError), st: Mcp['st'] = m.runtimeStatus ? MCP_ST[m.runtimeStatus] ?? 'wait'
+      : m.authStatus === 'notLoggedIn' || /auth required/i.test(err) ? 'auth' : m.serverInfo ? 'on' : err ? 'fail' : 'off';
+    const login = m.authStatus === 'notLoggedIn' || (m.authStatus === 'oAuth' && st === 'auth'), tools = Object.keys(m.tools ?? {}).length;
+    return { name: str(m.name), st, ...tools ? { tools } : {}, ...m.pluginId ? { scope: 'plugin' } : {},
+      ...st === 'fail' && err ? { why: err.slice(0, 200) } : st === 'auth' ? { why: login ? '要登录' : '要登录：在 config.toml 里给它配 token' } : {},
+      can: login ? ['reconnect', 'login'] : ['reconnect'] };
+  });
+}

@@ -1,8 +1,8 @@
 // Run after npm run build. The agent host's side of Startrail (ADR 0094-0096 and the release audit's gaps) against
 // throwaway folders, with stand-ins for everything outside the host: Claude Code (scripts/fake-claude.mjs), the login
-// Keychain, Anthropic's API and the daemon. Nothing here reaches Anthropic or spends anything, and nothing of this Mac's
-// own sessions, Keychain items or Claude Code login is read or touched: the hosts get a home, a Claude Code config
-// folder and a PATH of their own. Codex is not covered (none is on that PATH).
+// Keychain, Anthropic's API and the daemon; Codex's app-server (scripts/fake-codex.mjs) for one host of its own. Nothing
+// here reaches Anthropic or OpenAI or spends anything, and nothing of this Mac's own sessions, Keychain items or Claude
+// Code login is read or touched: the hosts get a home, a Claude Code config folder and a PATH of their own.
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -77,13 +77,14 @@ const freePort = () => new Promise(r => { const s = http.createServer().listen(0
 
 // ---------- a host: its own runtime root, the event stream kept ----------
 const electron = path.join(app, 'node_modules', '.bin', 'electron'), hosts = [];
-async function startHost(name, root, packaged) {
-  const dir = path.join(root, 'agents'), port = await freePort(), log = path.join(tmp, `${name}-claude.log`);
+// `first`: a folder at the front of its PATH (where the stand-in Codex is).
+async function startHost(name, root, packaged, first = '') {
+  const dir = path.join(root, 'agents'), port = await freePort(), log = path.join(tmp, `${name}-claude.log`), cxlog = path.join(tmp, `${name}-codex.log`);
   await mkdir(path.join(root, 'logs'), { recursive: true });
   await writeFile(path.join(root, 'plugin-access.json'), JSON.stringify({ token: `daemon-${name}` }));
-  const env = { PATH: `${BIN}:/usr/bin:/bin`, HOME, SHELL: path.join(BIN, 'sh'), USER: os.userInfo().username, LANG: 'en_US.UTF-8', TMPDIR: os.tmpdir(), ELECTRON_RUN_AS_NODE: '1',
+  const env = { PATH: `${first ? `${first}:` : ''}${BIN}:/usr/bin:/bin`, HOME, SHELL: path.join(BIN, 'sh'), USER: os.userInfo().username, LANG: 'en_US.UTF-8', TMPDIR: os.tmpdir(), ELECTRON_RUN_AS_NODE: '1',
     JARVIS_RUNTIME_ROOT: root, JARVIS_AGENTS_DIR: dir, JARVIS_AGENTS_PORT: String(port), JARVIS_INHERENT_BRIDGE_PORT: String(daemon.address().port),
-    JARVIS_AGENTS_CLAUDE: FAKE, JARVIS_AGENTS_SECURITY: SEC, CLAUDE_CONFIG_DIR: CONFIG, ANTHROPIC_BASE_URL: `http://127.0.0.1:${api.address().port}`, FAKE_CLAUDE_LOG: log,
+    JARVIS_AGENTS_CLAUDE: FAKE, JARVIS_AGENTS_SECURITY: SEC, CLAUDE_CONFIG_DIR: CONFIG, ANTHROPIC_BASE_URL: `http://127.0.0.1:${api.address().port}`, FAKE_CLAUDE_LOG: log, FAKE_CODEX_LOG: cxlog,
     ...packaged ? { JARVIS_AGENTS_PACKAGED: '1' } : {} };
   const proc = spawn(electron, [path.join(app, 'dist-electron', 'agents', 'host.js')], { stdio: ['ignore', 'pipe', 'pipe'], env });
   const h = { name, root, dir, port, log, proc, out: '', rows: new Map(), events: [], API: `http://127.0.0.1:${port}` };
@@ -113,8 +114,9 @@ async function startHost(name, root, packaged) {
     const j = await r.json().catch(() => ({}));
     return { status: r.status, ...j };
   };
-  // What the stand-in Claude Code did for this host.
+  // What the stand-in Claude Code, and the stand-in Codex, did for this host.
   h.claude = () => existsSync(log) ? readFileSync(log, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)) : [];
+  h.codex = () => existsSync(cxlog) ? readFileSync(cxlog, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)) : [];
   return h;
 }
 async function stopHost(h) {
@@ -327,6 +329,51 @@ const fk1 = await A.call(`/sessions/${S}/fork`, { at: you0.id, before: true, tex
 await until('fresh fork answered', () => A.claude().some(e => e.ev === 'turn' && e.text === 'start over') && A.rows.get(fk1.id)?.st === 'done');
 check('...and with one starts fresh', A.claude().some(e => e.ev === 'start' && e.args.includes(`--session-id=${fk1.id}`)));
 
+// ---------- C3: MCP servers, and their forms ----------
+const named = (list, n) => list?.find(v => v.name === n), openReq = async id => A.rows.get(id)?.st === 'wait' && (await A.call(`/sessions/${id}`)).items.find(i => i.k === 'req' && !i.done)?.req;
+const starts0 = A.claude().filter(e => e.ev === 'start').length, m0 = await A.call(`/sessions/${fk0.id}/mcp`), shot = A.claude().filter(e => e.ev === 'start').slice(starts0);
+await until('the one-shot ends', () => shot[0] && A.claude().some(e => e.ev === 'end' && e.pid === shot[0].pid));
+check('C3: an idle session\'s MCP servers come from a Claude Code of its own, which waits for them to connect and ends', named(m0.servers, 'docs')?.st === 'on' && named(m0.servers, 'docs').tools === 2
+  && named(m0.servers, 'docs').scope === 'user' && named(m0.servers, 'docs').can.join() === 'off' && named(m0.servers, 'tracker')?.st === 'auth' && named(m0.servers, 'tracker').why.includes('/mcp')
+  && named(m0.servers, 'flaky')?.st === 'fail' && named(m0.servers, 'flaky').why.includes('ECONNREFUSED') && shot.length === 1 && !shot[0].args.some(a => a.startsWith('--resume'))
+  && A.claude().filter(e => e.pid === shot[0].pid && e.subtype === 'mcp_status').length >= 2, { m0, shot });
+const r0 = await A.call(`/sessions/${fk0.id}/mcp`, { name: 'docs', action: 'reconnect' }), off0 = await A.call(`/sessions/${fk0.id}/mcp`, { name: 'docs', action: 'off' });
+check('C3: an idle session switches one off, but connects one again only while it runs', r0.status === 409 && off0.ok && named(off0.servers, 'docs')?.st === 'off' && named(off0.servers, 'docs').can.join() === 'on', { r0, off0 });
+const m1 = await A.call(`/sessions/${S}/mcp`);
+check('C3: switched off, it is off for every session in that folder; a running one can connect one again', named(m1.servers, 'docs')?.st === 'off' && named(m1.servers, 'flaky')?.can.join() === 'off,reconnect', m1);
+const rc = await A.call(`/sessions/${S}/mcp`, { name: 'flaky', action: 'reconnect' }), on1 = await A.call(`/sessions/${S}/mcp`, { name: 'docs', action: 'on' });
+check('C3: a running session connects one again, and switches one back on and waits for it', named(rc.servers, 'flaky')?.st === 'on' && named(rc.servers, 'flaky').tools === 1 && named(on1.servers, 'docs')?.st === 'on'
+  && A.claude().some(e => e.subtype === 'mcp_reconnect' && e.request.serverName === 'flaky') && A.claude().some(e => e.subtype === 'mcp_toggle' && e.request.serverName === 'docs' && e.request.enabled === true), { rc, on1 });
+const mx = await Promise.all([{ name: 'tracker', action: 'login' }, { name: 'nope', action: 'off' }, { name: 'docs', action: 'explode' }].map(b => A.call(`/sessions/${S}/mcp`, b)));
+check('C3: Claude Code signs in to an MCP server only in its terminal; an unknown server or action is refused', mx[0].status === 409 && mx[0].error.includes('/mcp') && mx[1].status === 404 && mx[2].status === 400, mx);
+await A.call(`/sessions/${S}/send`, { text: 'FORM' });
+const form = await until('a form', () => openReq(S)), fd = k => form.fields.find(f => f.key === k);
+check('C3: an MCP server\'s form comes as its fields', form.tool === 'Form' && form.server === 'docs' && form.why === 'Where should it go?' && form.fields.map(f => `${f.key}:${f.kind}`).join() === 'name:text,count:int,public:bool,color:one,tags:many'
+  && fd('name').need && fd('name').min === 2 && fd('count').max === 5 && fd('public').def === false && fd('color').def === 'blue' && fd('color').opts.map(o => o.join('=')).join() === 'red=Red,blue=Blue'
+  && fd('tags').max === 2 && A.rows.get(S).summary === 'docs 要你填一张表', form);
+const fe = await Promise.all([{ count: 2 }, { name: 'Report', count: 9 }, { name: 'Report', count: 3, tags: ['a', 'b', 'c'] }].map(values => A.call(`/sessions/${S}/answer`, { req: form.id, decision: 'allow', values })));
+check('C3: what does not fit the form is refused, and the form stays open', fe[0].status === 400 && fe[0].error === '「Name」要填' && fe[1].status === 400 && fe[2].status === 400 && A.rows.get(S).st === 'wait', fe);
+await A.call(`/sessions/${S}/answer`, { req: form.id, decision: 'allow', values: { name: 'Report', count: '3', tags: ['a', 'b'] } });
+await until('the form answered', () => A.claude().some(e => e.ev === 'elicitation') && A.rows.get(S)?.st === 'done');
+const el0 = A.claude().find(e => e.ev === 'elicitation').response;
+items = (await A.call(`/sessions/${S}`)).items;
+check('C3: 提供 sends what was filled in, and what the form held to start with', JSON.stringify(el0) === JSON.stringify({ action: 'accept', content: { name: 'Report', count: 3, public: false, color: 'blue', tags: ['a', 'b'] } })
+  && items.some(i => i.k === 'req' && i.req.id === form.id && i.done === '已提供'), el0);
+// One more of each: the form not given, cancelled, the page opened, and a command's request cancelled.
+async function answered(text, decision, what = 'elicitation') {
+  const n = A.claude().filter(e => e.ev === what).length;
+  await A.call(`/sessions/${S}/send`, { text });
+  const r = await until(`${text} asks`, () => openReq(S)), summary = A.rows.get(S).summary;
+  await A.call(`/sessions/${S}/answer`, { req: r.id, decision });
+  await until(`${text} answered`, () => A.claude().filter(e => e.ev === what).length > n && A.rows.get(S)?.st === 'done');
+  return { r, summary, got: A.claude().filter(e => e.ev === what).at(-1), done: (await A.call(`/sessions/${S}`)).items.find(i => i.k === 'req' && i.req.id === r.id)?.done };
+}
+const fn = await answered('FORM', 'deny'), fc = await answered('FORM', 'cancel'), fl = await answered('LINK', 'allow'), pc = await answered('ASK', 'cancel', 'permission');
+check('C3: 不提供，继续 and 取消 go back as decline and cancel', JSON.stringify(fn.got.response) === '{"action":"decline"}' && fn.done === '不提供，继续' && JSON.stringify(fc.got.response) === '{"action":"cancel"}' && fc.done === '取消了', { fn, fc });
+check('C3: a page an MCP server wants opened, and yes to it', fl.r.tool === 'Form' && fl.r.url === 'https://docs.example.com/login' && !fl.r.fields.length && fl.summary === 'docs 要你打开一个网页'
+  && JSON.stringify(fl.got.response) === '{"action":"accept"}' && fl.done === '同意打开网页', fl);
+check('C3: cancel on any other request is a no', pc.got.behavior === 'deny' && pc.done === '拒绝了', pc);
+
 // ---------- C5: other folders ----------
 const dr = await A.call(`/sessions/${S}/dirs`, { dirs: [plain, 'relative', path.join(tmp, 'missing')] });
 await turn(A, S, 'with more folders');
@@ -414,6 +461,45 @@ const oLater = (await A2.call(`/sessions/${OLD}`)).items;
 check('a turn running through a restart is taken back and ends here, in the same child', oLater.filter(i => i.k === 'it').at(-1)?.text.startsWith('好的，做完了：SLOW across the restart')
   && !A2.claude().some(e => e.ev === 'start' && e.sid === OLD), oLater.slice(-2));
 await stopHost(A2);
+
+// ======================= Codex, through a stand-in app-server =======================
+const CXBIN = path.join(tmp, 'codex-bin');
+await mkdir(CXBIN, { recursive: true });
+await writeFile(path.join(CXBIN, 'codex'), `#!/bin/sh\nexec node "${path.join(here, 'fake-codex.mjs')}" "$@"\n`); chmodSync(path.join(CXBIN, 'codex'), 0o755);
+const X = await startHost('codex', path.join(tmp, 'root-codex'), false, CXBIN);
+const XS = (await X.call('/sessions', { agent: 'codex', cwd: repo, text: 'hello codex' })).id;
+await until('the Codex turn', () => X.codex().some(e => e.ev === 'turn end') && X.rows.get(XS)?.st === 'done');
+const xm0 = await X.call(`/sessions/${XS}/mcp`);
+check('C3: Codex\'s MCP servers, as the session\'s thread sees them', named(xm0.servers, 'docs')?.st === 'on' && named(xm0.servers, 'docs').tools === 2 && named(xm0.servers, 'docs').can.join() === 'reconnect'
+  && named(xm0.servers, 'off')?.st === 'off' && named(xm0.servers, 'broken')?.st === 'fail' && named(xm0.servers, 'broken').why.includes('No such file')
+  && named(xm0.servers, 'remote')?.st === 'auth' && named(xm0.servers, 'remote').can.join() === 'reconnect,login' && X.codex().some(e => e.method === 'mcpServerStatus/list' && e.params.threadId === XS), xm0);
+const xl = await X.call(`/sessions/${XS}/mcp`, { name: 'remote', action: 'login' }), xev = await until('the MCP sign-in', () => X.events.find(e => e.t === 'mcp'));
+const xr = await X.call(`/sessions/${XS}/mcp`, { name: 'docs', action: 'reconnect' }), xx = await Promise.all([{ name: 'docs', action: 'off' }, { name: 'docs', action: 'login' }].map(b => X.call(`/sessions/${XS}/mcp`, b)));
+check('C3: Codex signs in to an MCP server over HTTP through a page and says when that is done; it reads its config again; it switches none on or off here', xl.url === 'https://remote.example.com/authorize?client_id=fake'
+  && xev.agent === 'codex' && xev.name === 'remote' && xev.ok === true && xev.id === XS && xr.ok && named(xr.servers, 'remote')?.st === 'on' && X.codex().some(e => e.method === 'config/mcpServer/reload')
+  && xx[0].status === 409 && xx[1].status === 409, { xl, xev, xr, xx });
+await X.call(`/sessions/${XS}/stop`, {});
+const xm1 = await X.call(`/sessions/${XS}/mcp`);
+check('C3: ...and, with no thread of the session\'s loaded, as its config does', named(xm1.servers, 'docs')?.st === 'on' && named(xm1.servers, 'off')?.st === 'off' && named(xm1.servers, 'broken')?.st === 'fail'
+  && named(xm1.servers, 'remote')?.st === 'on' && X.codex().filter(e => e.method === 'mcpServerStatus/list').at(-1).params.threadId === undefined, xm1);
+async function xAnswered(text, body) {
+  const n = X.codex().filter(e => e.ev === 'elicitation').length;
+  await X.call(`/sessions/${XS}/send`, { text });
+  const r = body && await until(`${text} asks`, async () => X.rows.get(XS)?.st === 'wait' && (await X.call(`/sessions/${XS}`)).items.find(i => i.k === 'req' && !i.done)?.req);
+  const bad = body?.values ? await X.call(`/sessions/${XS}/answer`, { req: r.id, decision: 'allow', values: {} }) : null;
+  if (body) await X.call(`/sessions/${XS}/answer`, { req: r.id, ...body });
+  await until(`${text} answered`, () => X.codex().filter(e => e.ev === 'elicitation').length > n && X.rows.get(XS)?.st === 'done');
+  const items = (await X.call(`/sessions/${XS}`)).items;
+  return { r, bad, got: X.codex().filter(e => e.ev === 'elicitation').at(-1).response, done: r && items.find(i => i.k === 'req' && i.req.id === r.id)?.done, items };
+}
+const xf = await xAnswered('FORM', { decision: 'allow', values: { name: 'Report' } }), xd = await xAnswered('FORM', { decision: 'deny' }), xk = await xAnswered('FORM', { decision: 'cancel' });
+check('C3: a Codex MCP form comes as its fields, and what does not fit it is refused', xf.r.tool === 'Form' && xf.r.server === 'docs' && xf.r.fields.map(f => `${f.key}:${f.kind}`).join() === 'name:text,count:int' && xf.bad.status === 400, xf);
+check('C3: 提供, 不提供，继续 and 取消 go back to Codex as it takes them', JSON.stringify(xf.got) === '{"action":"accept","content":{"name":"Report","count":1},"_meta":null}' && xf.done === '已提供'
+  && JSON.stringify(xd.got) === '{"action":"decline","content":null,"_meta":null}' && xd.done === '不提供，继续' && JSON.stringify(xk.got) === '{"action":"cancel","content":null,"_meta":null}' && xk.done === '取消了', { xf, xd, xk });
+const xu = await xAnswered('LINK', { decision: 'allow' }), xv = await xAnswered('VERIFY');
+check('C3: a page to open from Codex, and an identity check this window cannot do, refused with a note', xu.r.url === 'https://docs.example.com/login' && JSON.stringify(xu.got) === '{"action":"accept","content":null,"_meta":null}'
+  && xv.got.action === 'decline' && xv.items.some(i => i.k === 'note' && i.text === 'docs 要验证你的身份，这个窗口还做不了，先拒绝了'), { xu, xv: xv.got });
+await stopHost(X);
 
 // ======================= the installed app: the owner's own key (ADR 0094) =======================
 // Its runtime root is deep enough that <agents>/keeper.sock cannot be a socket (104 bytes on macOS, 108 here).
