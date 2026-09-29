@@ -250,8 +250,8 @@
 .bw .dk-error{color:var(--red)}.bw .dk-summary{overflow-wrap:anywhere}.bw .dk-summary .md{font-size:13px}
 .bw .dk-k button{display:inline-flex;align-items:center;gap:3px;font-size:11px;color:var(--faint)}
 .bw .dk-card button:disabled{opacity:.5;cursor:wait}
-.bw.ex-manage .side{display:flex;position:absolute;top:56px;bottom:0;left:0;width:276px;z-index:10;pointer-events:auto;background:#0b0d20;box-shadow:18px 0 40px -20px #000}
-.bw.ex-manage .side .her{display:none}
+.bw.side-open .side{display:flex;position:absolute;top:56px;bottom:0;left:0;width:276px;z-index:10;pointer-events:auto;background:#0b0d20;box-shadow:18px 0 40px -20px #000}
+.bw.side-open .side .her{display:none}
 .bw .pop,.bw .tip,.bw .toast{z-index:30}
 .bw ::selection{background:rgb(157 180 255 / .3);color:var(--ink)}
 .bw textarea{caret-color:var(--warm)}

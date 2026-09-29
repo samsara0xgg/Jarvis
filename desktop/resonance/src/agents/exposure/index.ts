@@ -525,6 +525,5 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
       if (s.st === 'err' || waitMin(s) >= 10) her.say(s.st === 'err' ? '34' : 'ask', 1800);
       refresh();
     },
-    manage() { win.classList.toggle('ex-manage'); },
   };
 }

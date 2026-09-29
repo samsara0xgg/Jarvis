@@ -993,7 +993,8 @@ async function refreshProjects() {
 // ---------- wiring ----------
 win.addEventListener('click', e => {
   const t = e.target as Element, el = t.closest<HTMLElement>('[data-act]');
-  if (attention.enabled && el?.dataset.act === 'side') { attention.manage(); return; }
+  // The session list laid over the conversation folds away once you click past it.
+  if (app.sideOpen && !t.closest('.side,.pop,[data-act="side"]')) { app.sideOpen = false; win.classList.remove('side-open'); }
   if (popFor && !t.closest('.pop') && el?.dataset.act !== 'menu') closePop();
   if (el && !(el as HTMLButtonElement).disabled) void act(el.dataset.act!, el);
 });
@@ -1029,16 +1030,17 @@ addEventListener('keydown', e => {
         return;
       }
     }
-    // Esc: close a menu first, otherwise interrupt the turn on screen; a message you are writing is never lost to it.
+    // Esc: close a menu or the session list first, otherwise interrupt the turn on screen; a message you are writing is never lost to it.
     if (e.key === 'Escape') {
       if (popFor) { closePop(); return; }
+      if (app.sideOpen) { app.sideOpen = false; win.classList.remove('side-open'); return; }
       if (app.menu) { app.menu = ''; app.picks = []; draw('comp'); return; }
       if (s && (s.st === 'work' || s.st === 'pack')) { e.preventDefault(); if (t === ta && ta.value.trim()) escHint(s); else interrupt(s); }
       return;
     }
   }
   const mod = e.metaKey || e.ctrlKey;
-  if (mod && e.key.toLowerCase() === 'k') { e.preventDefault(); if (attention.enabled) win.classList.add('ex-manage'); find.focus(); find.select(); }
+  if (mod && e.key.toLowerCase() === 'k') { e.preventDefault(); if (attention.enabled) { app.sideOpen = true; win.classList.add('side-open'); } find.focus(); find.select(); }
   if (mod && e.key.toLowerCase() === 'n') { e.preventDefault(); void act('new', $('.new', side)); }
   if ((mod || e.altKey) && (e.key === 'ArrowDown' || e.key === 'ArrowUp') && document.activeElement !== ta) {
     const o = order(), i = o.indexOf(app.cur);
