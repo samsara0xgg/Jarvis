@@ -374,6 +374,28 @@ check('C3: a page an MCP server wants opened, and yes to it', fl.r.tool === 'For
   && JSON.stringify(fl.got.response) === '{"action":"accept"}' && fl.done === '同意打开网页', fl);
 check('C3: cancel on any other request is a no', pc.got.behavior === 'deny' && pc.done === '拒绝了', pc);
 
+// ---------- C7: a question on the side ----------
+// A request that goes away before its answer, as a window closed mid-question: the error fetch ends with.
+const dropped = (h, id, text) => fetch(`${h.API}/sessions/${id}/side`, { method: 'POST', headers: { Authorization: `Bearer ${h.key}`, 'Content-Type': 'application/json' },
+  body: JSON.stringify({ text }), signal: AbortSignal.timeout(500) }).then(() => 'answered', e => e.name);
+await A.call(`/sessions/${S}/send`, { text: 'SLOW side SLOW' });
+await until('working', () => A.rows.get(S)?.st === 'work');
+const sd0 = await A.call(`/sessions/${S}/side`, { text: 'what now' }), sdSt = A.rows.get(S)?.st, sdGone = await dropped(A, S, 'SLOW why');
+await until('the side question dropped', () => A.claude().some(e => e.ev === 'side cancelled'));
+await until('SLOW side SLOW done', () => A.claude().some(e => e.ev === 'turn end' && e.how === 'ok' && A.claude().find(t => t.ev === 'turn' && t.text === 'SLOW side SLOW')?.uuid === e.uuid) && A.rows.get(S)?.st === 'done');
+items = (await A.call(`/sessions/${S}`)).items;
+const sq0 = A.claude().find(e => e.ev === 'side');
+check('C7: a question on the side is answered while the turn goes on, which ends as it would, and it stays out of the conversation', sd0.text === '侧答：what now' && sdSt === 'work'
+  && sq0.question === 'what now' && sq0.during && sq0.history === null && !JSON.stringify(items).includes('what now') && !JSON.stringify(items).includes('侧答'), { sd0, sdSt, sq0 });
+check('C7: a question whose request goes away is dropped', sdGone === 'TimeoutError' && A.claude().filter(e => e.ev === 'side').length === 1, sdGone);
+const starts1 = A.claude().filter(e => e.ev === 'start').length;
+const sd1 = await A.call(`/sessions/${fk0.id}/side`, { text: 'and then', history: [['what now', '侧答：what now'], 'junk', ['x']] }), shot1 = A.claude().filter(e => e.ev === 'start').slice(starts1);
+await until('the side one-shot ends', () => shot1[0] && A.claude().some(e => e.ev === 'end' && e.pid === shot1[0].pid));
+const sq1 = A.claude().filter(e => e.ev === 'side').at(-1);
+check('C7: an idle session is asked through a Claude Code of its own that reads the conversation back, with the side talk so far', sd1.text === '侧答：and then' && shot1.length === 1
+  && shot1[0].args.includes(`--resume=${fk0.id}`) && sq1.during === false && JSON.stringify(sq1.history) === JSON.stringify([{ question: 'what now', response: '侧答：what now' }]), { sd1, shot1, sq1 });
+check('C7: a question has to say something', (await A.call(`/sessions/${S}/side`, { text: '  ' })).status === 400 && (await A.call(`/sessions/${S}/side`, {})).status === 400);
+
 // ---------- C5: other folders ----------
 const dr = await A.call(`/sessions/${S}/dirs`, { dirs: [plain, 'relative', path.join(tmp, 'missing')] });
 await turn(A, S, 'with more folders');
@@ -499,6 +521,22 @@ check('C3: 提供, 不提供，继续 and 取消 go back to Codex as it takes th
 const xu = await xAnswered('LINK', { decision: 'allow' }), xv = await xAnswered('VERIFY');
 check('C3: a page to open from Codex, and an identity check this window cannot do, refused with a note', xu.r.url === 'https://docs.example.com/login' && JSON.stringify(xu.got) === '{"action":"accept","content":null,"_meta":null}'
   && xv.got.action === 'decline' && xv.items.some(i => i.k === 'note' && i.text === 'docs 要验证你的身份，这个窗口还做不了，先拒绝了'), { xu, xv: xv.got });
+await X.call(`/sessions/${XS}/send`, { text: 'SLOW' });
+await until('Codex working', () => X.rows.get(XS)?.st === 'work');
+const xs0 = await X.call(`/sessions/${XS}/side`, { text: 'why so slow', history: [['q1', 'a1']] }), xsSt = X.rows.get(XS)?.st, xsGone = await dropped(X, XS, 'SLOW');
+await until('the Codex turn beside the side questions', () => X.rows.get(XS)?.st === 'done');
+const xforks = X.codex().filter(e => e.method === 'thread/fork'), xturns = X.codex().filter(e => e.method === 'turn/start' && e.params.threadId !== XS), xitems = (await X.call(`/sessions/${XS}`)).items;
+check('C7: Codex answers on the side from an ephemeral, read-only fork of the thread, while its own turn goes on to its end', xs0.text === '侧答：Earlier in this side conversation:\n\nQ: q1\nA: a1\n\nNow: why so slow'
+  && xsSt === 'work' && xforks.length === 2 && xforks.every(e => e.params.threadId === XS && e.params.ephemeral === true && e.params.sandbox === 'read-only' && e.params.approvalPolicy === 'never'
+  && e.params.developerInstructions.includes('side conversation')) && xturns.length === 2 && xturns.every(e => e.params.sandboxPolicy.type === 'readOnly' && e.params.approvalPolicy === 'never')
+  && xitems.at(-1).k === 'it' && xitems.at(-1).text === '好的，做完了：SLOW。' && !JSON.stringify(xitems).includes('侧答'), { xs0, xsSt, xforks, xturns, last: xitems.at(-1) });
+const [xf1, xf2] = xturns.map(e => e.params.threadId), xun = X.codex().filter(e => e.method === 'thread/unsubscribe').map(e => e.params.threadId);
+check('C7: each fork is let go once it answers, and one whose request went away is stopped first', xsGone === 'TimeoutError' && xun.includes(xf1) && xun.includes(xf2)
+  && X.codex().some(e => e.method === 'turn/interrupt' && e.params.threadId === xf2) && !X.codex().some(e => e.method === 'turn/interrupt' && e.params.threadId === xf1), { xsGone, xun });
+const XN = (await X.call('/sessions', { agent: 'codex', cwd: repo, text: 'SLOW first' })).id;
+await until('the first Codex turn working', () => X.rows.get(XN)?.st === 'work');
+const xn = await X.call(`/sessions/${XN}/side`, { text: 'already?' });
+check('C7: before Codex has kept a turn of the conversation there is nothing to fork yet', xn.status === 409 && xn.error.includes('还没存下来'), xn);
 await stopHost(X);
 
 // ======================= the installed app: the owner's own key (ADR 0094) =======================

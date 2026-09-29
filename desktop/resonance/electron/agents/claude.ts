@@ -58,6 +58,8 @@ function pushable<T>() {
 type Pending = { resolve: (r: PermissionResult) => void; name: string; input: Record<string, unknown>; suggestions?: PermissionUpdate[] }
   // An MCP server's form, or a page it wants opened (C3)
   | { form: (r: ElicitationResult) => void; fields: Field[]; url?: string };
+// Claude Code's /btw as the SDK sends it (C7): the SDK has the call but does not declare it.
+type Sideways = { askSideQuestion(question: string, o: { history: { question: string; response: string }[]; signal: AbortSignal }): Promise<{ response: string } | null> };
 // prev: the mode to go back to when a plan is approved · usage: tokens the last answer was sent with · block: the text
 // block streaming in · creates: TaskCreate calls waiting for the id their result gives
 type Rt = {
@@ -607,6 +609,14 @@ export const claude: Driver = {
       else await q.toggleMcpServer(name, act === 'on');
       return servers(q, live, true);
     });
+  },
+  // As Claude Code's /btw asks it; an idle session is asked through a claude of its own that reads the conversation back.
+  async side(s, text, history, signal) {
+    return asking(s, async q => {
+      const r = await (q as unknown as Sideways).askSideQuestion(text, { history: history.map(([question, response]) => ({ question, response })), signal });
+      if (!r?.response) throw new Http(502, 'Claude 没答上来');
+      return r.response;
+    }, true);
   },
 };
 

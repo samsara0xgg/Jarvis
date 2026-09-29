@@ -60,6 +60,9 @@ export type Driver = {
   // list again, or the page the sign-in opens.
   mcp?(s: Session): Promise<Mcp[]>;
   mcpAct?(s: Session, name: string, act: McpAct): Promise<Mcp[] | { url: string }>;
+  // A question on the side (C7): answered from the conversation so far, a running turn's work included, without
+  // disturbing it, and kept out of it. `history`: this side talk's earlier questions and answers.
+  side?(s: Session, text: string, history: [string, string][], signal: AbortSignal): Promise<string>;
   // Take back a child the keeper kept through a restart; `news`: a turn that ends in what it replays was not seen.
   adopt?(s: Session, busy: boolean, news: boolean): Promise<void>;
   // Files as they were when the message `at` was sent (Claude's checkpoints): what would change, or change them.
@@ -810,6 +813,23 @@ async function route(req: Req0, res: http.ServerResponse, url: URL): Promise<unk
     signedIn(x.s.agent);
     const r = await x.driver.mcpAct(x, str(b.name, 'name'), act);
     return Array.isArray(r) ? { ok: true, servers: r } : r;
+  }
+  // A question on the side (C7): the answer comes back to this request, and the session's own turn goes on. `history`
+  // is [question, answer] pairs of this side talk; closing the request drops the question.
+  if (verb === 'side') {
+    if (!x.driver.side) throw new Http(409, '侧问不了');
+    if (x.s.term) throw new Http(409, '在终端里，先拿回来');
+    if (x.s.gone || !existsSync(x.s.cwd)) throw new Http(409, '这个会话已经落地，它的 worktree 清掉了');
+    const text = str(b.text, 'text').trim();
+    if (!text) throw new Http(400, '要问什么？');
+    signedIn(x.s.agent);
+    await x.ensureLoaded();
+    if (!x.items?.some(i => i.k === 'you')) throw new Http(409, '先说一句，才能侧问');
+    const history = (Array.isArray(b.history) ? b.history : []).filter((h: unknown): h is [string, string] => Array.isArray(h) && typeof h[0] === 'string' && typeof h[1] === 'string').slice(-20);
+    const gone = new AbortController();
+    res.once('close', () => { if (!res.writableFinished) gone.abort(); });
+    try { return { text: await x.driver.side(x, text, history, gone.signal) }; }
+    catch (e) { if (gone.signal.aborted) throw new Http(499, '不问了'); throw e; }
   }
   if (verb === 'interrupt') { if (busy(x)) await x.driver.interrupt(x); return { ok: true }; }
   if (verb === 'stop') {
