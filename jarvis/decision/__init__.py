@@ -723,9 +723,38 @@ def _interaction_line(packet: SituationPacket) -> str | None:
 
 _HEARD_QUOTE_MAX_CHARS: Final[int] = 40
 
+# Allen did not catch what she said: the whole utterance only asks for it
+# again. Matched on the text with spaces and closing punctuation removed.
+_REPEAT_REQUEST_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?:你|你刚才|刚才)?说?(?:的是)?(?:什么|啥)[?？]|[啊嗯哈蛤][?？]"  # noqa: RUF001 — Allen's fullwidth question mark.
+    r"|(?:请|麻烦)?你?再说一[遍次]吧?|我?没听清楚?"
+    r"|(?:sorry|pardon|what|huh)\??|comeagain\??|(?:can|could)?yousay(?:that|it)again(?:please)?\??"
+    r"|say(?:that|it)again(?:please)?\??|i?didn'?t(?:catch|hear)(?:that|you|it)\??",
+)
+
 
 def _unspaced(text: str) -> str:
     return "".join(text.split())
+
+
+def _repeat_of_last_answer(packet: SituationPacket) -> str | None:
+    """The last spoken answer's voice text when Allen only asks to hear it again."""
+    transcript = packet.trigger_event.payload.get("transcript")
+    if (
+        not isinstance(transcript, str)
+        or packet.trigger_event.payload.get("channel") == "gpt_live"
+        or _REPEAT_REQUEST_RE.fullmatch(re.sub(r"[\s,，。.!！]+", "", transcript.lower())) is None  # noqa: RUF001 — the fullwidth marks are Allen's own punctuation.
+    ):
+        return None
+    history = packet.conversation_history
+    turns = history.turns if history is not None else ()
+    index = next((i for i, t in enumerate(turns) if t.turn_id == packet.current_turn_id), 0)
+    for turn in reversed(turns[:index]):
+        for response in reversed(turn.responses):
+            voice = split_envelope(response.panel_available)[0].strip()
+            if response.phase == "final" and voice:
+                return voice
+    return None
 
 
 def _previous_answer_line(packet: SituationPacket) -> str | None:
@@ -987,6 +1016,12 @@ def _handle_utterance(
                 ctx,
                 scratch,
             )
+
+    # 「什么?」/「再说一遍」: say the last spoken answer again, word for word,
+    # through the Pre-emit Gate and without a model request (spec §17).
+    repeated = _repeat_of_last_answer(packet)
+    if repeated is not None:
+        return _finalize_response(repeated, packet, ctx, scratch)
 
     # Tier 0 deterministic shortcut (spec §17): hit → dispatch through
     # the full gate/audit chain with caller_principal=regex_router,
