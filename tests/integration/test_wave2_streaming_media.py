@@ -3753,6 +3753,115 @@ def test_a_user_stop_fades_the_output_instead_of_stepping_to_silence(
         verdict.close()
 
 
+# `_player()` runs at 8 kHz.
+_CUT_FADE_SAMPLES = int(8_000 * voice_media._CUT_FADE_MS / 1000)  # noqa: SLF001
+_RESTORE_SAMPLES = int(8_000 * voice_media._YIELD_RAMP_MS / 1000)  # noqa: SLF001
+# A gain ramp recomputes its value at each block edge; float32 rounding there
+# is not a step, and a ramp that ends mid-block is a little steeper in it.
+_RAMP_ROUNDING = 1e-6
+_RAMP_SLACK = 1.1
+
+
+def test_a_barge_in_stop_fades_her_out_on_the_waveform_before_the_cut(
+    tmp_path: Path,
+) -> None:
+    """Soft barge-in: her voice ramps to silence first, so D11's cut lands on nothing.
+
+    From mid-word the synthesized declick alone was heard as a pop, even at
+    the yield's 0.2 (live test 2026-09-29).
+    """
+    db_path = tmp_path / "declick-barge-in.db"
+    conn = open_event_log(db_path)
+    pipeline, player, provider = _declick_pipeline(db_path, response_id="RFADE", samples=8_000)
+    hold = threading.Event()
+    provider.final_gates[("RFADE", 0)] = hold
+    pump = _CallbackPump(player, record=True)
+    outcome: list[str] = []
+    stopper = threading.Thread(
+        target=lambda: outcome.append(pipeline.stop_foreground_output(None, reason="barge_in")),
+    )
+    try:
+        rows = _emit_response(
+            conn, response_id="RFADE", group_id="GFADE", turn_id="TFADE", text="这一句会被打断。",
+        )
+        asyncio.run(_submit_response(pipeline, rows))
+        _pump_until(
+            pump,
+            lambda: _playback_rows_for(conn, "RFADE", "surface.playback_started") == 1,
+        )
+        pump.blocks.clear()
+        stopper.start()
+        _pump_until(pump, lambda: not stopper.is_alive())
+        for _ in range(10):
+            pump.step()
+    finally:
+        hold.set()
+        stopper.join(timeout=1.0)
+        assert pipeline.close()
+        conn.close()
+
+    assert outcome == ["applied"]
+    signal = np.abs(pump.signal)
+    fade_start = int(np.flatnonzero(signal < _DECLICK_AMPLITUDE)[0])
+    first_zero = int(np.flatnonzero(signal == 0.0)[0])
+    assert np.all(signal[:fade_start] == _DECLICK_AMPLITUDE)
+    # (1) the waveform itself ramps down over the whole fade, never a step;
+    # the declick alone decays in `_DECLICK_SAMPLES`, with steps too big for this
+    assert first_zero - fade_start >= _CUT_FADE_SAMPLES - 2
+    edge = np.diff(signal[fade_start - 1 : first_zero + 1])
+    assert np.all(edge <= _RAMP_ROUNDING)
+    assert float(-edge.min()) <= _DECLICK_AMPLITUDE / (_CUT_FADE_SAMPLES - 1) * _RAMP_SLACK
+    # (2) silent from there on: the cut had nothing left to decay
+    assert np.all(signal[first_zero:] == 0.0)
+    # (3) the mute and the yield get their gain back for the next answer
+    assert player.current_gain() == 1.0
+
+
+def test_a_barge_in_hold_fades_her_out_and_back_in(tmp_path: Path) -> None:
+    """Held while Allen's words are judged: out on the waveform, silent, then back up."""
+    db_path = tmp_path / "declick-hold.db"
+    conn = open_event_log(db_path)
+    pipeline, player, provider = _declick_pipeline(db_path, response_id="RHOLD", samples=8_000)
+    hold = threading.Event()
+    provider.final_gates[("RHOLD", 0)] = hold
+    pump = _CallbackPump(player, record=True)
+    try:
+        rows = _emit_response(
+            conn, response_id="RHOLD", group_id="GHOLD", turn_id="THOLD", text="这一句会停住。",
+        )
+        asyncio.run(_submit_response(pipeline, rows))
+        _pump_until(
+            pump,
+            lambda: _playback_rows_for(conn, "RHOLD", "surface.playback_started") == 1,
+        )
+        pump.blocks.clear()
+        pipeline.pause_speaking(paused=True)
+        _pump_until(pump, lambda: player._paused_generation >= 0)  # noqa: SLF001
+        for _ in range(5):
+            pump.step()
+        pipeline.pause_speaking(paused=False)
+        _pump_until(pump, lambda: bool(np.all(pump.blocks[-1] == _DECLICK_AMPLITUDE)))
+    finally:
+        hold.set()
+        assert pipeline.close()
+        conn.close()
+
+    signal = np.abs(pump.signal)
+    first_zero = int(np.flatnonzero(signal == 0.0)[0])
+    back = int(np.flatnonzero(signal[first_zero:] > 0.0)[0]) + first_zero
+    # (1) out: the waveform ramps down, never a step
+    out_edge = np.diff(signal[: first_zero + 1])
+    assert np.all(out_edge <= _RAMP_ROUNDING)
+    assert float(-out_edge.min()) <= _DECLICK_AMPLITUDE / (_CUT_FADE_SAMPLES - 1) * _RAMP_SLACK
+    # (2) silent while held
+    assert back - first_zero >= 5 * 32
+    # (3) back in: a ramp up to where she was, never a step
+    in_edge = np.diff(signal[back - 1 :])
+    assert np.all(in_edge >= -_RAMP_ROUNDING)
+    assert float(in_edge.max()) <= _DECLICK_AMPLITUDE / (_RESTORE_SAMPLES - 1) * _RAMP_SLACK
+    assert signal[-1] == _DECLICK_AMPLITUDE
+
+
 def test_natural_completion_keeps_every_audible_sample_and_its_counts(
     tmp_path: Path,
 ) -> None:
