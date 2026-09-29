@@ -14,6 +14,7 @@ import { pathToFileURL } from 'node:url';
 import type { Agent, Answer, Catalog, Choice, Ctx, Diff, Event, File, Item, Peek, Pic, Req, Service, Sess, St, Step, Usage, UsageWindow } from './types.js';
 import { claude } from './claude.js';
 import { codex } from './codex.js';
+import { hostKey } from './key.js';
 import { ask, startKeeper, type Kid } from './keeper.js';
 import { LABEL, Landing, REOPEN, dirtyOf } from './land.js';
 import { inputTerm, killTerm, openTerm, resizeTerm, streamTerm } from './term.js';
@@ -379,14 +380,16 @@ async function marksIn() {
 
 // ---------- the routes ----------
 type Req0 = http.IncomingMessage;
-// The daemon's local key: the window's requests carry it, and this process uses it to reach the daemon.
-let token = '';
+// ADR 0095: the host's own key opens it, so the window connects with no daemon running. The daemon's local key, which
+// this process also uses to reach the daemon, still opens it for a companion from before the host had a key.
+let key = '', token = '';
 async function readToken() {
   try { token = JSON.parse(await readFile(path.join(ROOT, 'plugin-access.json'), 'utf8')).token ?? ''; } catch { token = ''; }
   return token;
 }
 async function authorized(req: Req0) {
   const got = req.headers.authorization ?? '';
+  if (got === `Bearer ${key}`) return true;
   if (token && got === `Bearer ${token}`) return true;
   // Read again in case it was made after this process started.
   return !!(await readToken()) && got === `Bearer ${token}`;
@@ -688,6 +691,7 @@ async function boot() {
 }
 
 export async function main() {
+  key = hostKey(DIR);
   ready = boot();
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1');

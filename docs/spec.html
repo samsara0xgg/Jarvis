@@ -234,7 +234,7 @@ header strong { color: var(--fg-strong); }
 <h3 id="local-endpoints">本机接口</h3>
 <ul>
 <li>后台只接受 Host 头是 <code>127.0.0.1</code> 或 <code>localhost</code> 的请求，挡住把自己域名重绑到本机的网页。除了存活探测和自带每次启动令牌的 v2 路由，每个请求都要带运行目录里 <code>plugin-access.json</code> 的令牌。</li>
-<li>agent 宿主的每个请求都要同一个令牌。它回 <code>Access-Control-Allow-Origin: *</code>，不查 Host 头。</li>
+<li>agent 宿主的每个请求都要带它自己的钥匙：<code>agents/host-key</code> 里的 32 个随机字节，只有主人能读，宿主和伴侣谁先用到谁生成（ADR 0095）。后台的令牌也还能打开它，留给这次改动之前的伴侣。它回 <code>Access-Control-Allow-Origin: *</code>，不查 Host 头。</li>
 <li><code>scripts/claude_hook.py</code> 把令牌发给 127.0.0.1:8006 上正在听的进程，再把对方的回答交给 Claude Code，当作权限决定。</li>
 <li>安装版的 App 启动时也先带着令牌问 8006：对方答得上来，就当它是自己的后台，不再另起一个。</li>
 <li>主人在终端登录远程 MCP 服务（<code>python -m jarvis mcp-login</code>）时，这个命令在 127.0.0.1:8789 上临时听浏览器的回调，登录完就关；授权走 PKCE。</li>
@@ -458,7 +458,7 @@ I8 到 I11 随审核链退役（ADR 0019），编号保留。
 <p>下面这些现在只靠「别的账户进不了运行目录」或「默认关」护着。公开版之前每一条都要重新看过。</p>
 <ul>
 <li><code>~/.jarvis/agents/keeper.sock</code> 和 <code>~/.jarvis/codex.sock</code> 不认证：连得上的进程可以让 keeper 以主人身份启动任意命令，或者驱动 Codex。</li>
-<li>agent 宿主的令牌能打开 <code>/term</code>，拿到主人的登录 shell，所以拿到令牌就等于拿到这个账户。这把令牌和后台的是同一把。</li>
+<li>agent 宿主的钥匙和后台的令牌都能打开宿主的 <code>/term</code>，拿到主人的登录 shell，所以拿到其中任何一把就等于拿到这个账户（ADR 0095）。</li>
 <li>用量页打开后，用 Claude Code 和 Codex 存在这台 Mac 上的登录、以它们命令行的 User-Agent 去问用量；在页面上确认一次，会花掉一次 Codex 的限额重置（<a href="#usage-page">第 8 章</a>）。</li>
 </ul>
 </section>
@@ -577,7 +577,7 @@ I8 到 I11 随审核链退役（ADR 0019），编号保留。
 <tr><td><code>artifacts/screen_artifacts/</code></td><td>看一眼屏幕时的截图</td><td>见<a href="#retention">保留期</a></td></tr>
 <tr><td><code>aec-diagnostics/</code></td><td>回声消除的诊断录音：麦克风、播放和消除后三轨</td><td>默认不写（<code>echo_diagnostics</code>）；写了就不删</td></tr>
 <tr><td><code>codex-hooks/</code></td><td>Codex hook 事件的完整内容</td><td>每种事件 10 MB，留两份旧的；不在保留期清理之内</td></tr>
-<tr><td><code>agents/</code></td><td>Agents 窗口的会话列表、贴进会话的图片、<code>keeper.sock</code></td><td>图片 30 天</td></tr>
+<tr><td><code>agents/</code></td><td>Agents 窗口的会话列表、贴进会话的图片、宿主的钥匙 <code>host-key</code>（0600）、<code>keeper.sock</code></td><td>图片 30 天</td></tr>
 <tr><td><code>settings.yaml</code>、<code>settings.json</code></td><td>主人的设置（<a href="#formats">第 3 章</a>）</td><td>—</td></tr>
 <tr><td><code>env</code></td><td>主人自己写的明文变量（<a href="#key-storage">第 7 章</a>）</td><td>—</td></tr>
 <tr><td><code>plugin-access.json</code>、<code>inherent-v2.token</code></td><td>本机接口的令牌，0600；后者每次启动都换</td><td>—</td></tr>
