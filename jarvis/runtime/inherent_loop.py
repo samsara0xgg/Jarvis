@@ -5282,6 +5282,11 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                     vocab_path=Path(str(dictation_config.get("vocab_path", ""))),
                     event_log_path=runtime.runtime_paths.event_log,
                     pricing_table=load_pricing_table(repo_root() / "data" / "pricing.json"),
+                    recordings=(
+                        runtime.memory.audio_dir
+                        if runtime.memory is not None and runtime.memory.retain_audio
+                        else None
+                    ),
                 )
 
         deps = InherentDeps(

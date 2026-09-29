@@ -9,11 +9,13 @@ recording; the raw words when the polish fails; no route without a voice stack.
 The ears hear half a second from before the request, unbroken into the session,
 and the polish connection is opened as the session starts. A stretch that ends in
 a half-second pause is heard while he goes on talking, and the stop hears only
-the rest (ADR 0076). The event log gets the polish's spend and never the words.
+the rest (ADR 0076). The event log gets the polish's spend and never the words;
+with recordings kept, each session leaves its audio and a note beside it (ADR 0084).
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import threading
 import time
@@ -151,7 +153,11 @@ class _Provider:
 
 
 def _dictation(
-    tmp_path: Path, ears: Callable[[bytes], str], provider: _Provider, lane: type[_Lane] = _Lane,
+    tmp_path: Path,
+    ears: Callable[[bytes], str],
+    provider: _Provider,
+    lane: type[_Lane] = _Lane,
+    recordings: Path | None = None,
 ) -> tuple[Dictation, _Ingress]:
     config = yaml.safe_load((repo_root() / "config" / "jarvis.yaml").read_text())
     client = polish_client(config["llm"], config["dictation"]["polish_preset"])
@@ -169,6 +175,7 @@ def _dictation(
             vocab_path=tmp_path / "vocab.yaml",
             event_log_path=tmp_path / "events.db",
             pricing_table=load_pricing_table(repo_root() / "data" / "pricing.json"),
+            recordings=recordings,
         )
     return dictation, ingress
 
@@ -363,6 +370,46 @@ def test_the_ears_hear_a_stretch_with_whisper_and_skip_a_quiet_one() -> None:
     assert pipe.transcribe(spoken, recognizer=whisper) == "whisper的话"
     assert pipe.transcribe(spoken) == "sensevoice的话"
     assert calls == ["whisper", "sensevoice"]
+
+
+def test_each_session_leaves_its_recording_and_a_note_beside_it(tmp_path: Path) -> None:
+    """ADR 0084: a finished and a cancelled session each keep their audio and a note beside it."""
+    recordings = tmp_path / "audio"
+    provider = _Provider(POLISHED)
+    dictation, ingress = _dictation(tmp_path, lambda _pcm: RAW, provider, recordings=recordings)
+    _dictate(_app(dictation), {"app": "Ghostty", "window": "claude"})
+
+    async def cancel() -> None:  # Esc while recording: the desktop closes the stream
+        stream = dictation.begin({"app": "Notes", "window": ""})
+        await anext(stream)
+        await asyncio.sleep(0.1)
+        await stream.aclose()  # type: ignore[attr-defined]  # an async generator underneath
+
+    asyncio.run(cancel())
+    ingress.lanes[0].close()
+    _wait(lambda: len(list(recordings.glob("*.json"))) == 2)
+    finished, cancelled = (
+        json.loads(p.read_text(encoding="utf-8")) for p in sorted(recordings.glob("*.json"))
+    )
+    assert finished["outcome"] == "text"
+    assert (finished["raw"], finished["text"], finished["app"]) == (RAW, POLISHED, "Ghostty")
+    assert finished["stretches"] == 1
+    assert finished["seconds"] > 0.2  # the 0.3 s session, pre-roll or not
+    assert finished["heard_s"] >= 0
+    assert finished["polish_s"] >= 0
+    assert cancelled["outcome"] == "cancelled"
+    assert "raw" not in cancelled
+    for note in (finished, cancelled):
+        audio = recordings / note["audio"]
+        assert audio.suffix in {".m4a", ".wav"}
+        assert audio.name.startswith("dictation-")
+        assert audio.stat().st_size > 0
+    # Nothing is kept without a recordings folder.
+    (tmp_path / "off").mkdir()
+    silent, mic = _dictation(tmp_path / "off", lambda _pcm: RAW, _Provider(POLISHED))
+    _dictate(_app(silent), {})
+    mic.lanes[0].close()
+    assert not any((tmp_path / "off").rglob("dictation-*"))
 
 
 def test_dictation_without_speech_and_with_a_failing_polish(tmp_path: Path) -> None:

@@ -5,7 +5,9 @@ desktop asks for one session at a time; the daemon records from its own mic
 (a capture lane on the single audio ingress), hears it with local Whisper
 (ADR 0077) a stretch at a time as he pauses (ADR 0076), and one side-job model
 polishes it with Typlus's instructions.
-The desktop pastes the result. Nothing reaches the event log or memory.db.
+The desktop pastes the result. Nothing reaches the event log or memory.db; with
+recordings kept, each dictation's audio and a note of what happened sit in the
+recordings folder under their retention (ADR 0084).
 """
 
 from __future__ import annotations
@@ -13,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import importlib.util
+import json
 import logging
 import math
 import threading
@@ -21,6 +24,8 @@ from array import array
 from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import closing
+from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import yaml
@@ -28,11 +33,10 @@ import yaml
 from jarvis.decision.cost_guard import CostRecorder
 from jarvis.decision.llm import LLMClient
 from jarvis.state.event_log import open_runtime_event_log
-from jarvis.surface import voice_asr, voice_audio
+from jarvis.surface import voice_artifact_store, voice_asr, voice_audio
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Mapping, Sequence
-    from pathlib import Path
 
 LOGGER = logging.getLogger(__name__)
 
@@ -234,13 +238,16 @@ class Dictation:
         vocab_path: Path,
         event_log_path: Path,
         pricing_table: Mapping[str, Any] | None,
+        recordings: Path | None,
     ) -> None:
         """Hold the live mic, a pause detector, the voice path's ears, the polish and its ledger.
 
         The capture lane stays subscribed for the daemon's life: while idle it
         keeps the last ``PRE_ROLL_FRAMES``, and a session starts from those.
         ``transcribe`` hears one stretch; stretches are heard one at a time, in order.
+        ``recordings`` is where each session's audio and note go; ``None`` keeps none.
         """
+        self._recordings = recordings
         self._vad = vad
         vad.prepare_utterance()  # loads its model now, not inside his first tap
         self._transcribe = transcribe
@@ -327,20 +334,32 @@ class Dictation:
 
     async def _session(self, context: dict[str, str]) -> AsyncIterator[dict[str, Any]]:
         deadline = time.monotonic() + MAX_SECONDS
+        started, pcm = time.time(), bytearray()
+        # What happened, for the note beside the recording; closed early = cancelled.
+        note: dict[str, Any] = {
+            "outcome": "cancelled",
+            "app": context.get("app") or "",
+            "window": context.get("window") or "",
+        }
         try:
             while not self._stop.is_set() and time.monotonic() < deadline:
                 yield {"level": round(self._level, 3)}
                 await asyncio.sleep(_LEVEL_EVERY_S)
+            stopped = time.monotonic()
             with self._lock:
                 pcm, self._pcm = self._pcm or bytearray(), None
                 stretches, self._stretches = self._stretches, []
                 last = bytes(pcm[self._stretch_start :])
             stretches.append(self._hearing.submit(self._transcribe, last))
+            note["stretches"] = len(stretches)
             yield {"state": "thinking", "seconds": round(len(pcm) / _BYTES_PER_SECOND, 2)}
             raw = _join([await asyncio.wrap_future(stretch) for stretch in stretches])
+            note.update(heard_s=round(time.monotonic() - stopped, 2), raw=raw)
             if voice_asr.is_empty_or_too_short(raw, audio_pcm=bytes(pcm)):
+                note["outcome"] = "empty"
                 yield {"text": "", "raw": ""}
                 return
+            polishing = time.monotonic()
             try:
                 text = await asyncio.to_thread(
                     functools.partial(
@@ -351,14 +370,44 @@ class Dictation:
                 )
             except Exception as exc:  # noqa: BLE001 — the model or the network failing is shown with the raw words.
                 LOGGER.warning("dictation polish failed: %s: %s", type(exc).__name__, exc)
-                yield {"error": f"{type(exc).__name__}: {exc}"[:200], "raw": raw}
+                note.update(outcome="error", error=f"{type(exc).__name__}: {exc}"[:200])
+                yield {"error": note["error"], "raw": raw}
                 return
+            note.update(outcome="text", text=text, polish_s=round(time.monotonic() - polishing, 2))
             yield {"text": text, "raw": raw}
         finally:
             self._stop.set()
             with self._lock:
-                self._pcm = None
+                left, self._pcm = self._pcm, None
                 unheard, self._stretches = self._stretches, []
             for stretch in unheard:  # cancelled while recording: nobody waits for these words
                 stretch.cancel()
+            self._keep(bytes(pcm or left or b""), started, note)
             self.active = False
+
+    def _keep(self, audio: bytes, started: float, note: dict[str, Any]) -> None:
+        """Log what happened, never the words; keep the audio and its note if asked (ADR 0084)."""
+        stamp = datetime.fromtimestamp(started).astimezone()
+        name = stamp.strftime("dictation-%Y%m%d-%H%M%S-") + f"{stamp.microsecond // 1000:03d}"
+        note = {"started": stamp.isoformat(timespec="milliseconds"),
+                "seconds": round(len(audio) / _BYTES_PER_SECOND, 2), **note}
+        LOGGER.info(
+            "%s: %s, %.2f s, %s stretches, heard in %s s, polished in %s s, %d chars",
+            name, note["outcome"], note["seconds"], note.get("stretches", 0),
+            note.get("heard_s", "-"), note.get("polish_s", "-"), len(note.get("text") or ""),
+        )
+        if self._recordings is not None and audio:
+            self._hearing.submit(self._save, self._recordings, name, audio, note)
+
+    @staticmethod
+    def _save(folder: Path, name: str, audio: bytes, note: dict[str, Any]) -> None:
+        try:
+            path = voice_artifact_store.persist(
+                audio, turn_id=name, sample_rate_hz=_BYTES_PER_SECOND // 2, artifacts_dir=folder,
+            )
+            note["audio"] = Path(str(path)).name
+            (folder / f"{name}.json").write_text(
+                json.dumps(note, ensure_ascii=False, indent=1), encoding="utf-8",
+            )
+        except OSError:
+            LOGGER.exception("%s: recording not kept", name)
