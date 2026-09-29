@@ -122,7 +122,8 @@ const PAGES: Record<string, string> = {
 };
 const openPage = (page: unknown) => { if (typeof page === 'string' && Object.hasOwn(PAGES, page)) void shell.openExternal(PAGES[page]); };
 // What macOS says about one permission; with `ask` it asks first. Screen Recording is turned on in
-// System Settings and only counts after a relaunch; notifications cannot be read back, only asked.
+// System Settings and only counts after a relaunch; notifications answer through the first one: shown is a yes,
+// failed a no (or a build macOS will not let notify, as the unsigned dev build), no answer in two minutes is only asked.
 async function permission(kind: unknown, ask: unknown, note: unknown): Promise<string> {
   if (kind === 'mic') {
     const status = systemPreferences.getMediaAccessStatus('microphone');
@@ -146,8 +147,14 @@ async function permission(kind: unknown, ask: unknown, note: unknown): Promise<s
       (_err, _out, err) => done(/-1743/.test(String(err)) ? 'later' : 'ok')));
   }
   if (kind === 'notify' && ask && Array.isArray(note)) {
-    new Notification({ title: String(note[0]), body: String(note[1]) }).show();
-    return 'asked';
+    const n = new Notification({ title: String(note[0]), body: String(note[1]) });
+    return new Promise(done => {
+      // The timer holds the notification, so it is not collected before macOS answers.
+      const t = setTimeout(() => { void n; done('asked'); }, 120000);
+      n.once('show', () => { clearTimeout(t); done('ok'); });
+      n.once('failed', (_e, error) => { clearTimeout(t); console.error(`notify: macOS refused the notification (${error})`); done('later'); });
+      n.show();
+    });
   }
   return '';
 }

@@ -109,10 +109,15 @@ function typeIn(term: unknown, cwd: string, cmd: string) {
 // session. Which moments count is the owner's (settings.notify). One session says one thing at a time: its newer
 // notification replaces the older, and not within 20 seconds of it. `turns` hears how many sessions are the owner's turn
 // (waiting on them, or finished and unread), for the Dock badge (B20).
+// macOS posts notifications only for a signed app: the dev build's Electron is not, and each one fails with
+// UNErrorDomain 1. There the notification goes through osascript instead, which cannot open the session when clicked.
+// In the installed app a failure is the owner's no, and nothing goes round it.
 type Row = { id: string; title: string; summary: string; st: string; unread: boolean; archived: boolean; parked: boolean };
+const script = (title: string, sub: string, body: string) => execFile('/usr/bin/osascript',
+  ['-e', 'on run a', '-e', 'display notification (item 3 of a) with title (item 1 of a) subtitle (item 2 of a)', '-e', 'end run', title, sub, body], { timeout: 8000 }, () => {});
 function watchHost(show: (id: string) => void, front: () => boolean, quiet: () => boolean, turns: (n: number) => void) {
-  const st = new Map<string, string>(), mine = new Set<string>(), shown = new Map<string, { at: number; n: Notification }>();
-  let notify = { done: true, wait: true, err: true }, told = -1;
+  const st = new Map<string, string>(), mine = new Set<string>(), shown = new Map<string, { at: number; n?: Notification }>();
+  let notify = { done: true, wait: true, err: true }, told = -1, failed = false;
   const tell = (n: number) => { if (n !== told) { told = n; turns(n); } };
   const count = (s: Row) => {
     if (!s.archived && !s.parked && (s.st === 'wait' || (s.unread && (s.st === 'done' || s.st === 'err')))) mine.add(s.id); else mine.delete(s.id);
@@ -124,9 +129,16 @@ function watchHost(show: (id: string) => void, front: () => boolean, quiet: () =
     if (was === undefined || was === s.st || s.archived || front() || !Notification.isSupported()) return;
     const kind = s.st === 'wait' ? 'wait' : s.st === 'err' ? 'err' : s.st === 'done' && s.unread && ['work', 'pack', 'wait'].includes(was) ? 'done' : null;
     if (!kind || !notify[kind] || (last && Date.now() - last.at < 20e3)) return;
-    last?.n.close();
-    const n = new Notification({ title: s.title, subtitle: kind === 'wait' ? '在等你' : kind === 'err' ? '出错了' : '做完了', body: s.summary, silent: quiet() });
+    last?.n?.close();
+    const sub = kind === 'wait' ? '在等你' : kind === 'err' ? '出错了' : '做完了';
+    if (failed && !app.isPackaged) { shown.set(s.id, { at: Date.now() }); script(s.title, sub, s.summary); return; }
+    const n = new Notification({ title: s.title, subtitle: sub, body: s.summary, silent: quiet() });
     n.on('click', () => show(s.id));
+    n.on('failed', (_e, error) => {
+      if (!failed) console.error(`agents: macOS refused the notification (${error})${app.isPackaged ? '' : '; the dev build says it through osascript from now on'}`);
+      failed = true;
+      if (!app.isPackaged) script(s.title, sub, s.summary);
+    });
     // Held, or a notification collected before it is clicked opens nothing.
     shown.set(s.id, { at: Date.now(), n });
     n.show();
@@ -138,7 +150,7 @@ function watchHost(show: (id: string) => void, front: () => boolean, quiet: () =
       Object.assign(chosen, { editor: e.settings?.editor, terminal: e.settings?.terminal });
     }
     else if (e.t === 'sess' && e.s) saw(e.s);
-    else if (e.t === 'gone' && e.id) { st.delete(e.id); mine.delete(e.id); shown.get(e.id)?.n.close(); shown.delete(e.id); }
+    else if (e.t === 'gone' && e.id) { st.delete(e.id); mine.delete(e.id); shown.get(e.id)?.n?.close(); shown.delete(e.id); }
     tell(mine.size);
   };
   void (async () => {
