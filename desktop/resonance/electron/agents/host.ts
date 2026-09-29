@@ -537,6 +537,15 @@ export async function main() {
   });
   // Only this machine: the port is the lock, so a second host started by accident exits here.
   server.on('error', e => { log('listen', e); process.exit(1); });
+  // Told to stop, the host takes its claude children (its own process group) with it: left behind, they run their turn
+  // on unseen while the next host resumes the same session beside them. Exiting also runs codex's exit hook.
+  let stopping = false;
+  for (const sig of ['SIGTERM', 'SIGINT', 'SIGHUP'] as const) process.on(sig, () => {
+    if (stopping) return;
+    stopping = true;
+    try { process.kill(-process.pid, 'SIGTERM'); } catch { /* not a group leader: started by hand */ }
+    process.exit(0);
+  });
   server.listen(PORT, '127.0.0.1', () => log(`agent host on ${PORT}, ${sessions.size} sessions`));
   // A comment line every 20 s keeps the stream open through idle stretches; while a window watches, the notch's marks
   // come in at the same pace.
