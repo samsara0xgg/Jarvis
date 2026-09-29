@@ -1,6 +1,7 @@
 // Run after npm run build. The workbench's host side (ADR 0085-0087) against throwaway git repositories: the real agent
-// host on a spare port, a stand-in daemon for the plans, nothing of Allen's sessions, services or remote touched.
-// `--live` also lets landing draft a commit title with Claude (one small Haiku call on the subscription).
+// host on a spare port, a stand-in daemon for the plans, a stand-in Claude Code (fake-claude.mjs) for the menus the host
+// reads, nothing of Allen's sessions, services or remote touched. `--live` runs the real Claude Code instead and lets
+// landing draft a commit title with it (one small Haiku call on the subscription).
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
@@ -67,7 +68,8 @@ await new Promise(r => daemon.listen(0, '127.0.0.1', r));
 const port = 18000 + Math.floor(Math.random() * 1000), API = `http://127.0.0.1:${port}`, H = { Authorization: 'Bearer workbench-check', 'Content-Type': 'application/json' };
 const electron = path.join(app, 'node_modules', '.bin', 'electron');
 const host = spawn(electron, [path.join(app, 'dist-electron', 'agents', 'host.js')], { stdio: ['ignore', 'pipe', 'pipe'],
-  env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', JARVIS_RUNTIME_ROOT: root, JARVIS_AGENTS_DIR: dir, JARVIS_AGENTS_PORT: String(port), JARVIS_INHERENT_BRIDGE_PORT: String(daemon.address().port) } });
+  env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', JARVIS_RUNTIME_ROOT: root, JARVIS_AGENTS_DIR: dir, JARVIS_AGENTS_PORT: String(port), JARVIS_INHERENT_BRIDGE_PORT: String(daemon.address().port),
+    ...live ? {} : { JARVIS_AGENTS_CLAUDE: path.join(here, 'fake-claude.mjs'), CLAUDE_CONFIG_DIR: path.join(tmp, 'claude-config') } } });
 let hostLog = ''; host.stdout.on('data', b => { hostLog += b; }); host.stderr.on('data', b => { hostLog += b; });
 // The host starts a keeper for its Claude children (ADR 0082); it goes with the check.
 const done = async () => { host.kill(); daemon.close(); try { execFileSync('pkill', ['-f', `keeper.js ${dir}`]); } catch { /* none left */ } await rm(tmp, { recursive: true, force: true }); };
