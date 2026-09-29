@@ -13,11 +13,14 @@ import path from 'node:path';
 import type { Agent, Answer, Catalog, Choice, Ctx, Event, File, Item, Pic, Req, Sess, St, Step } from './types.js';
 import { claude } from './claude.js';
 import { codex } from './codex.js';
+import { ask, startKeeper, type Kid } from './keeper.js';
 
 const exec = promisify(execFile);
 const ROOT = process.env.JARVIS_RUNTIME_ROOT ?? path.join(homedir(), '.jarvis');
 export const DIR = process.env.JARVIS_AGENTS_DIR ?? path.join(ROOT, 'agents');
 const PORT = Number(process.env.JARVIS_AGENTS_PORT ?? 8016);
+// Where the keeper (ADR 0082) answers: the Claude Code children live there, not under this process.
+export const KEEPER = path.join(DIR, 'keeper.sock');
 export const log = (...a: unknown[]) => console.log(new Date().toISOString(), ...a);
 
 // ---------- what each agent's wire must do ----------
@@ -42,6 +45,8 @@ export type Driver = {
   resume(s: Session): string;
   // What fills its context window now.
   context(s: Session): Promise<Ctx>;
+  // Take back a child the keeper kept through a restart; `news`: a turn that ends in what it replays was not seen.
+  adopt?(s: Session, busy: boolean, news: boolean): Promise<void>;
 };
 const DRIVERS: Record<Agent, Driver> = { claude, codex };
 
@@ -141,10 +146,12 @@ export class Session {
   }
 
   // Reading a transcript builds the same items a live turn does, then shows them at once.
-  async build(f: () => Promise<void>) {
+  // `open`: the turn is still running, so it stays open for what comes next.
+  async build(f: () => Promise<void>, open = false) {
     this.items = []; this.turn = null; this.quiet = true;
-    try { await f(); this.end(undefined, true); } finally { this.quiet = false; this.live = null; }
+    try { await f(); if (!open) this.end(undefined, true); } finally { this.quiet = false; this.live = null; }
     this.emit(0);
+    if (open) this.showLive();
   }
   // ----- the turn -----
   begin() {
@@ -273,11 +280,11 @@ function save() {
     await rename(`${FILE}.tmp`, FILE);
   }, 300);
 }
-async function restore() {
+async function restore(kids: Map<string, Kid>) {
   const data = JSON.parse(await readFile(FILE, 'utf8').catch(() => '{"sessions":[]}'));
   for (const { repo, ...s } of data.sessions as (Sess & { repo: string })[]) {
-    // A turn that was running when the host went down went with it.
-    if (s.st === 'work' || s.st === 'wait' || s.st === 'pack') Object.assign(s, {
+    // A turn that was running goes on in the keeper; without its child there, it went with the host.
+    if ((s.st === 'work' || s.st === 'wait' || s.st === 'pack') && !kids.has(s.id)) Object.assign(s, {
       st: 'err', trace: [...s.trace ?? [], { at: Date.now(), st: 'err' }],
       summary: 'Jarvis 的后台重启了，这一轮断了 · 发一句接着来',
     });
@@ -386,6 +393,7 @@ async function route(req: Req0, res: http.ServerResponse, url: URL): Promise<unk
   if (m === 'GET' && url.pathname === '/health') return { ok: true, pid: process.pid };
   if (m === 'GET' && url.pathname === '/events') {
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*' });
+    await ready;
     clients.add(res);
     req.on('close', () => clients.delete(res));
     const hello: Event = { t: 'hello', sessions: [...sessions.values()].map(x => x.s), catalog: await getCatalog() };
@@ -540,9 +548,34 @@ function label(agent: Agent, k: 'model' | 'effort' | 'mode', v: string) {
   return (k === 'model' ? c?.models : k === 'mode' ? c?.modes : undefined)?.find(x => x[0] === v)?.[1] ?? v;
 }
 
-export async function main() {
-  await restore();
+// The window is shown what is ready: every child taken back and every conversation read.
+let ready: Promise<unknown> = Promise.resolve();
+async function boot() {
+  const kids = new Map<string, Kid>();
+  try {
+    await startKeeper(KEEPER, path.join(ROOT, 'logs', 'agents-keeper.log'));
+    for (const k of await ask<Kid[]>(KEEPER, { op: 'list' })) kids.set(k.key, k);
+  } catch (e) { log('keeper', e); }
+  await restore(kids);
   await pruneImages();
+  const live = [...sessions.values()].filter(x => !x.s.archived);
+  await Promise.all(live.map(async x => {
+    const k = kids.get(x.s.id);
+    try {
+      if (k && x.driver.adopt) {
+        const was = x.s.st === 'work' || x.s.st === 'wait' || x.s.st === 'pack';
+        await x.driver.adopt(x, k.busy, was);
+        if (k.busy && x.s.st !== 'wait' && x.s.st !== 'pack') x.set({ st: 'work', now: x.s.now ?? '在想' });
+        log('took back', x.s.id.slice(0, 8), k.busy ? 'busy' : 'idle');
+      } else await x.ensureLoaded();
+    } catch (e) { log('boot', x.s.id, e); }
+  }));
+  // A child whose session is gone (deleted while no host ran) has nobody to answer to.
+  for (const key of kids.keys()) if (!sessions.has(key)) void ask(KEEPER, { op: 'kill', key }).catch(() => {});
+}
+
+export async function main() {
+  ready = boot();
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1');
     if (req.method === 'OPTIONS') {

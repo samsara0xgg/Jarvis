@@ -1,7 +1,8 @@
 <!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: http://127.0.0.1:*; connect-src http://127.0.0.1:*"><title>Agents</title></head>
 <body>
-<div class="win" id="win">
+<div class="win booting" id="win">
   <div class="w-bar"><span class="w-title">Agents</span><span class="w-off" hidden>连不上后台，正在重连…</span><button type="button" class="snd" data-act="sound" aria-pressed="true" aria-label="声音"></button></div>
+  <p class="w-boot" role="status">正在接上会话…</p>
   <div class="w-body">
     <aside class="side" aria-label="会话">
       <div class="her"><canvas class="her-c" aria-label="Jarvis，点她去下一个等你的会话" role="button" data-tip="去下一个轮到你的"></canvas><button type="button" class="her-t" data-act="next"></button></div>

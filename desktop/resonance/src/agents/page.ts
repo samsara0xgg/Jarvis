@@ -742,7 +742,7 @@ let connected = false;
 function apply(e: Event) {
   if (e.t === 'hello') {
     const first = !connected;
-    connected = true; offEl.hidden = true;
+    connected = true; offEl.hidden = true; win.classList.remove('booting');
     app.ss = e.sessions; app.catalog = e.catalog;
     for (const s of app.ss) if (!stAt.has(s.id)) stAt.set(s.id, -1e9);
     // After a reconnect the host may have restarted: what this window holds is read again.

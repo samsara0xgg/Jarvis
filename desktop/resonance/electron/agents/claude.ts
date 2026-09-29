@@ -6,8 +6,12 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { deleteSession, forkSession, getSessionMessages, query, renameSession, type Options, type PermissionResult, type PermissionUpdate,
-  type Query, type SDKControlGetContextUsageResponse, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
-import { catalogChanged, kt, log, pic, type Driver, type Session } from './host.js';
+  type Query, type SDKControlGetContextUsageResponse, type SDKMessage, type SDKUserMessage, type SpawnedProcess, type SpawnOptions } from '@anthropic-ai/claude-agent-sdk';
+import { EventEmitter } from 'node:events';
+import net from 'node:net';
+import { PassThrough } from 'node:stream';
+import { catalogChanged, KEEPER, kt, log, pic, type Driver, type Session } from './host.js';
+import { ask, lines, parse, type Head } from './keeper.js';
 import type { Choice, Ctx, CtxRow, Diff, File, Pic, Req, Step } from './types.js';
 
 // Allen's subscription, never an API key; and nothing that says this runs inside another Claude Code session. The
@@ -47,6 +51,9 @@ type Rt = {
   pending: Map<string, Pending>; queued: Map<string, { text: string; files: Pic[] }>;
   tasks: Map<string, [string, 0 | 1 | 2]>; creates: Map<string, Record<string, unknown>>;
   interrupted?: boolean; usage?: number; prev?: string; block: string;
+  // After a host restart: what the transcript already gave, whether the turn is still going, whether a result the
+  // keeper replays is news (the turn ended while no host watched) or one already shown
+  seen?: Set<string>; open?: boolean; news?: boolean;
 };
 const rt = (s: Session): Rt => (s.rt.claude ??= { pending: new Map(), queued: new Map(), tasks: new Map(), creates: new Map(), block: '' }) as Rt;
 
@@ -169,6 +176,36 @@ function said(s: Session, m: SDKMessage | { type: string; message?: unknown; too
 }
 
 // ---------- the live session ----------
+// The child runs in the keeper (ADR 0082), not under this process: the SDK talks to it through one keeper connection,
+// and opening the session again after a host restart carries on with the same child. What the keeper replays and the
+// transcript already showed is dropped here.
+function viaKeeper(s: Session) {
+  return (o: SpawnOptions): SpawnedProcess => {
+    const r = rt(s), stdin = new PassThrough(), stdout = new PassThrough(), sock = net.connect(KEEPER);
+    const p = Object.assign(new EventEmitter(), { stdin, stdout, killed: false, exitCode: null as number | null,
+      kill() {
+        if (!p.killed) { p.killed = true; void ask(KEEPER, { op: 'kill', key: s.s.id }).catch(e => log('keeper kill', e)); }
+        return true;
+      } });
+    sock.write(`${JSON.stringify({ op: 'open', key: s.s.id, spawn: { command: o.command, args: o.args, cwd: o.cwd, env: o.env } })}\n`);
+    let head: Head | null = null, replay = 0;
+    lines(sock, l => {
+      if (!head) { head = parse(l) as Head; replay = head.replay; return; }
+      if (replay > 0) {
+        replay--;
+        const m = parse(l);
+        if ((m.uuid && r.seen?.has(m.uuid)) || (m.type === 'result' && !r.news)) return;
+      }
+      stdout.write(`${l}\n`);
+    });
+    stdin.on('data', d => sock.write(d));
+    // The SDK ends its input only when it lets the session go: the child goes with it.
+    stdin.on('end', () => p.kill());
+    sock.on('close', () => { stdout.end(); p.exitCode = 0; p.emit('exit', 0, null); });
+    sock.on('error', e => p.emit('error', e));
+    return p as unknown as SpawnedProcess;
+  };
+}
 function ensure(s: Session) {
   const r = rt(s);
   if (r.q) return r;
@@ -183,7 +220,7 @@ function ensure(s: Session) {
       s.ask(reqOf(s, id, name, input, o));
       o.signal.addEventListener('abort', () => { if (r.pending.delete(id)) s.answered(id, '没回答'); });
     }),
-    stderr: d => log('claude', s.s.id.slice(0, 8), d.trim().slice(0, 400)),
+    spawnClaudeCodeProcess: viaKeeper(s),
     ...(r.fresh ? { sessionId: s.s.id } : { resume: s.s.id }),
   };
   r.fresh = false;
@@ -375,12 +412,23 @@ export const claude: Driver = {
     const r = rt(s);
     r.tasks.clear();
     const msgs = await getSessionMessages(s.s.id, { dir: s.s.cwd }).catch(() => []);
+    r.seen = new Set(msgs.map(m => m.uuid));
     await s.build(async () => {
       for (const m of msgs) {
         const t = Date.parse(String((m as Record<string, unknown>).timestamp ?? ''));
         said(s, m as never, Number.isFinite(t) ? t : undefined);
       }
-    });
+    }, r.open);
+    r.open = false;
+  },
+  // A child the keeper kept through a host restart: read what the transcript has, leave a running turn open, then
+  // take the child back; the keeper replays what the transcript does not have yet.
+  async adopt(s, busy, news) {
+    const r = rt(s);
+    Object.assign(r, { open: busy, news });
+    s.items = null;
+    await s.ensureLoaded();
+    ensure(s);
   },
   async fork(s) {
     const { sessionId } = await forkSession(s.s.id, { dir: s.s.cwd });

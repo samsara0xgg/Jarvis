@@ -32,6 +32,10 @@ kbd{font-family:var(--mono)}
 .w-bar{position:relative;flex:none;display:flex;align-items:center;gap:10px;height:40px;padding:0 14px 0 84px;-webkit-app-region:drag}
 .w-bar button{-webkit-app-region:no-drag}
 .w-off{position:relative;font-size:11.5px;color:var(--warm-c)}
+/* Until the host has every session back and read, only this line shows. */
+.w-boot{display:none}
+.booting .w-boot{display:grid;place-items:center;flex:1;margin:0;color:var(--faint);font-size:12.5px}
+.booting .w-body{display:none}
 .w-title{position:absolute;inset:0;display:grid;place-items:center;font-weight:600;font-size:12.5px;letter-spacing:.02em;color:var(--muted);pointer-events:none}
 .snd{margin-left:auto;display:grid;place-items:center;width:28px;height:28px;border-radius:8px;color:var(--muted);transition:background .15s,color .15s,transform .12s}
 .snd:hover{background:rgb(var(--glow) / .1);color:var(--ink)}
