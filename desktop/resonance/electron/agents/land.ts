@@ -13,6 +13,7 @@ import { promisify } from 'node:util';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { claudeEnv, EXE } from './claude.js';
 import { which } from './doctor.js';
+import { GIT } from './files.js';
 import { DIR, log, sharing, type Session } from './host.js';
 import { auth, settings } from './settings.js';
 import type { Land, LandSt, LandVia } from './types.js';
@@ -33,7 +34,7 @@ export function shellEnv(): Record<string, string> {
   e.PATH = [path.join(homedir(), '.local/share/mise/shims'), path.join(homedir(), '.local/bin'), '/opt/homebrew/bin', '/usr/local/bin', e.PATH || '/usr/bin:/bin:/usr/sbin:/sbin'].join(':');
   return e;
 }
-const git = async (cwd: string, ...args: string[]) => (await exec('git', ['-C', cwd, ...args], { maxBuffer: 64 << 20, env: shellEnv() })).stdout;
+const git = async (cwd: string, ...args: string[]) => (await exec('git', [...GIT, '-C', cwd, ...args], { maxBuffer: 64 << 20, env: shellEnv() })).stdout;
 const kill = (c: ChildProcess) => { try { process.kill(-c.pid!, 'SIGTERM'); } catch { c.kill('SIGTERM'); } };
 // A command in its own process group, so stopping a gate stops everything it started; the last 96 kB of what it said.
 function run(cmd: string, args: string[], cwd: string, hold?: (c: ChildProcess | null) => void, ms = 20 * 60e3, extra: Record<string, string> = {}) {

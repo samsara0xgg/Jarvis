@@ -14,7 +14,7 @@ import type { Agent, Answer, Catalog, Choice, Ctx, Doctor, Event, File, Item, Mc
 import { claude, claudeExe } from './claude.js';
 import { codex } from './codex.js';
 import { loginPath, version, which } from './doctor.js';
-import { findFiles, keepUpload, peek, pruneOld, resolveRefs } from './files.js';
+import { findFiles, GIT, keepUpload, peek, pruneOld, resolveRefs } from './files.js';
 import { contentOf } from './form.js';
 import { hostKey } from './key.js';
 import { ask, socketFor, startKeeper, type Kid } from './keeper.js';
@@ -439,7 +439,7 @@ async function getCatalog(): Promise<Catalog> {
 export async function catalogChanged() { catalog = null; broadcast({ t: 'catalog', catalog: await getCatalog() }); }
 
 // ---------- git: projects, worktrees ----------
-const git = async (cwd: string, ...args: string[]) => (await exec('git', ['-C', cwd, ...args], { maxBuffer: 64 << 20 })).stdout;
+const git = async (cwd: string, ...args: string[]) => (await exec('git', [...GIT, '-C', cwd, ...args], { maxBuffer: 64 << 20 })).stdout;
 // The repository a folder belongs to, with a worktree counted as its main checkout.
 async function repoOf(cwd: string) {
   try { return path.dirname((await git(cwd, 'rev-parse', '--path-format=absolute', '--git-common-dir')).trim()); } catch { return ''; }
