@@ -17,6 +17,7 @@ Log. Only the output side is recorded: her gains and her stops, in order.
 from __future__ import annotations
 
 import contextlib
+import re
 import threading
 import time
 from dataclasses import replace
@@ -251,6 +252,16 @@ def test_a_lone_answer_word_over_her_is_still_a_turn(tmp_path: Path) -> None:
         rig.close()
     assert rig.output == ["gain 0.2", "stop", "gain 1.0", "supersede"]
     assert rig.turns() == ["对。"]
+
+
+def test_every_one_word_card_answer_is_still_a_turn_over_her() -> None:
+    """A lone word the confirmation grammar answers a card with is never an unclear sound."""
+    grammar = (repo_root() / "config" / "confirm_grammar.yaml").read_text(encoding="utf-8")
+    patterns = [str(row["pattern"]) for row in yaml.safe_load(grammar)]
+    words = {*re.findall(r"[\u4e00-\u9fff]|[a-z]+", " ".join(patterns)), "don't", "dont"}
+    answers = {word for word in words if any(re.fullmatch(p, word) for p in patterns)}
+    assert {"好", "发", "别", "yes", "send", "cancel", "don't"} <= answers
+    assert not [word for word in answers if voice_asr.is_unclear_sound(word + ".")]
 
 
 def test_the_live_tests_hum_no_longer_stops_her(tmp_path: Path) -> None:
