@@ -67,6 +67,11 @@ class _FakeSession:
         self._closed = False
         self._send_active = False
 
+    async def connect(self) -> None:
+        self._provider.actions.append("connect")
+        if self._provider.connect_error is not None:
+            raise self._provider.connect_error
+
     async def open(self, response_id: str, playback_generation_id: int) -> None:
         self._response_id = response_id
         self._generation = playback_generation_id
@@ -179,6 +184,8 @@ class _FakeProvider:
         self.final_gates: dict[tuple[str, int], threading.Event] = {}
         self.late_pcm_release = threading.Event()
         self.late_yields: list[tuple[str, int]] = []
+        self.created = 0
+        self.connect_error: Exception | None = None
 
     @property
     def streaming_candidate_count(self) -> int:
@@ -193,6 +200,7 @@ class _FakeProvider:
         audio_queue_capacity: int,
     ) -> voice_tts.TTSSession:
         del idle_close_s, command_queue_capacity, audio_queue_capacity
+        self.created += 1
         return _FakeSession(
             self,
             endpoint_index=endpoint_index,

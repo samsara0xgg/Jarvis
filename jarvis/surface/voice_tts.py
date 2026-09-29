@@ -1941,8 +1941,11 @@ TTSAudioEvent = TTSAudioChunk | TTSSegmentFinished
 class TTSSession(Protocol):
     """Typed response-scoped single-writer/single-reader provider contract."""
 
+    async def connect(self) -> None:
+        """Connect ahead of the answer, while Allen is still talking."""
+
     async def open(self, response_id: str, playback_generation_id: int) -> None:
-        """Open one logical response session."""
+        """Open one logical response session, connecting first unless already done."""
 
     async def send(self, segment: TTSResponseSegment) -> None:
         """Serialize one segment through the command writer."""
@@ -2399,7 +2402,7 @@ class MiniMaxTTSSession:
         response_id: str,
         playback_generation_id: int,
     ) -> None:
-        """Connect and finish the handshake before starting owned tasks."""
+        """Bind the answer and start the owned tasks, connecting first unless already done."""
         if self._opened or self._closing:
             msg = "TTS session cannot be opened twice"
             raise RuntimeError(msg)
@@ -2410,8 +2413,42 @@ class MiniMaxTTSSession:
             "tts_session_open_requested",
             response_id=response_id,
             playback_generation_id=playback_generation_id,
+            prewarmed=self._conn is not None,
             measurement_semantics="before_provider_transport_connect",
         )
+        if self._conn is None:
+            await self.connect()
+        self._opened = True
+        self._touch_activity(loop)
+        self._writer_task = asyncio.create_task(
+            self._writer_main(),
+            name=f"tts-command-writer-{response_id}",
+        )
+        self._reader_task = asyncio.create_task(
+            self._reader_main(),
+            name=f"tts-audio-reader-{response_id}",
+        )
+        self._watchdog_task = asyncio.create_task(
+            self._watchdog_main(),
+            name=f"tts-idle-watchdog-{response_id}",
+        )
+        record_realtime_trace(
+            "tts_session_opened",
+            response_id=response_id,
+            playback_generation_id=playback_generation_id,
+            measurement_semantics="provider_handshake_completed",
+        )
+
+    async def connect(self) -> None:
+        """Connect and finish the task handshake before any answer is bound.
+
+        MiniMax keeps a started task open for 120 s without an event, so a
+        session connected while Allen is still talking can carry his answer.
+        """
+        if self._conn is not None or self._opened or self._closing:
+            msg = "TTS session cannot connect twice"
+            raise RuntimeError(msg)
+        loop = asyncio.get_running_loop()
         conn = await asyncio.wait_for(
             _ws_connect(
                 _base_to_ws_url(self._endpoint),
@@ -2466,26 +2503,7 @@ class MiniMaxTTSSession:
                 await asyncio.wait_for(conn.close(), timeout=self._CLOSE_TIMEOUT_S)
             self._conn = None
             raise
-        self._opened = True
         self._touch_activity(loop)
-        self._writer_task = asyncio.create_task(
-            self._writer_main(),
-            name=f"tts-command-writer-{response_id}",
-        )
-        self._reader_task = asyncio.create_task(
-            self._reader_main(),
-            name=f"tts-audio-reader-{response_id}",
-        )
-        self._watchdog_task = asyncio.create_task(
-            self._watchdog_main(),
-            name=f"tts-idle-watchdog-{response_id}",
-        )
-        record_realtime_trace(
-            "tts_session_opened",
-            response_id=response_id,
-            playback_generation_id=playback_generation_id,
-            measurement_semantics="provider_handshake_completed",
-        )
 
     async def send(self, segment: TTSResponseSegment) -> None:
         """Send through the sole writer, rejecting overlapping segment feeds."""
