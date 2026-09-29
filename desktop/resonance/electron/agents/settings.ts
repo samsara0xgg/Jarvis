@@ -23,7 +23,7 @@ const SECURITY = process.env.JARVIS_AGENTS_SECURITY ?? '/usr/bin/security', SERV
 // ---------- the settings file ----------
 // provider, bedrock, vertex: how Claude signs in (packaged app) · notify: which moments the Mac tells the owner about ·
 // editor, terminal: where a file or a session opens outside the window · folders: added to the project list · setup:
-// per repository, the script a new worktree runs first.
+// per repository, the script a new worktree runs first · land: per repository, its landing's gates, restart and way.
 export let settings: Settings = {};
 export async function loadSettings() {
   try { const s = JSON.parse(await readFile(FILE, 'utf8')); settings = s?.settings && typeof s.settings === 'object' ? s.settings : {}; } catch { settings = {}; }
@@ -44,6 +44,16 @@ export async function patchSettings(p: Record<string, unknown>) {
     const m = p.setup as Record<string, unknown> | null, out: Record<string, string> = {};
     for (const [repo, cmd] of Object.entries(m && typeof m === 'object' ? m : {})) { const c = text(cmd, 2000); if (path.isAbsolute(repo) && c) out[repo] = c; }
     if (Object.keys(out).length) s.setup = out; else drop('setup');
+  }
+  if ('land' in p) {
+    const m = p.land as Record<string, unknown> | null, out: NonNullable<Settings['land']> = {};
+    for (const [repo, v] of Object.entries(m && typeof m === 'object' ? m : {})) {
+      const o = (v && typeof v === 'object' ? v : {}) as Record<string, unknown>;
+      const gates = (Array.isArray(o.gates) ? o.gates : []).map(g => text(g, 2000)).filter((g): g is string => !!g).slice(0, 20);
+      const restart = text(o.restart, 2000), via = o.via === 'merge' || o.via === 'pr' ? o.via : undefined;
+      if (path.isAbsolute(repo) && (gates.length || restart || via)) out[repo] = { ...gates.length ? { gates } : {}, ...restart ? { restart } : {}, ...via ? { via } : {} };
+    }
+    if (Object.keys(out).length) s.land = out; else drop('land');
   }
   await mkdir(DIR, { recursive: true, mode: 0o700 });
   await writeFile(`${FILE}.tmp`, JSON.stringify({ v: 1, settings: s }, null, 1));

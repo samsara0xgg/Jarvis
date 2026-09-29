@@ -12,7 +12,8 @@ const I = {
   pause: '<svg viewBox="0 0 12 12" fill="currentColor"><rect x="3" y="2.5" width="2" height="7" rx=".8"/><rect x="7" y="2.5" width="2" height="7" rx=".8"/></svg>',
 };
 // A session with nothing under way draws the line as it would start.
-const idle = (s: Sess): Land => ({ s: 'run', i: -1, steps: STEP_T.map(() => ({ st: 'todo' as LandSt })), files: [], gates: [], msg: '', branch: s.branch, into: 'main' });
+const idle = (s: Sess): Land => ({ s: 'run', i: -1, steps: STEP_T.map(() => ({ st: 'todo' as LandSt })), files: [], gates: [], msg: '', branch: s.branch,
+  into: s.dirty?.into ?? 'main', via: s.dirty?.ways[0] ?? 'merge' });
 export const active = (l?: Land) => !!l && l.s !== 'done';
 
 export function panelHTML(s: Sess, pre = '') {

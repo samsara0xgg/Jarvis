@@ -162,7 +162,7 @@ export class Session {
   private liveTimer: ReturnType<typeof setTimeout> | undefined;
   constructor(public s: Sess, public repo: string) {}
   get driver() { return DRIVERS[this.s.agent]; }
-  // ADR 0085: its landing, made the first time it is asked for.
+  // ADR 0097: its landing, made the first time it is asked for.
   private landingOf?: Landing;
   get landing() { return this.landingOf ??= new Landing(this); }
 
@@ -724,10 +724,10 @@ async function route(req: Req0, res: http.ServerResponse, url: URL): Promise<unk
   if (m !== 'POST') throw new Http(405, '不行');
   const b = await body(req);
   if (verb === 'land') {
-    // ADR 0085: start (or go on from a stop), stop after this step, the push's yes or no, let Claude fix what stopped
-    // it, stay on the branch, and the commit title Allen wrote.
+    // ADR 0097: start (or go on from a stop) by the way picked, stop after this step, the push's yes or no, let Claude
+    // fix what stopped it, stay on the branch, and the commit title the owner wrote.
     const l = x.landing, a = b.action;
-    if (a === 'start') { if (x.s.term) throw new Http(409, '在终端里，先拿回来'); l.start(); }
+    if (a === 'start') { if (x.s.term) throw new Http(409, '在终端里，先拿回来'); l.start(b.via === 'merge' || b.via === 'pr' ? b.via : undefined); }
     else if (a === 'resume') l.resume();
     else if (a === 'stop') l.stop();
     else if (a === 'allow') l.allow();

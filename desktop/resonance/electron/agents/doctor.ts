@@ -19,8 +19,8 @@ export async function loginPath() {
   } catch (e) { log('login shell PATH', String(e).slice(0, 200)); }
 }
 // The first executable of that name on PATH.
-export async function which(name: string) {
-  for (const dir of (process.env.PATH ?? '').split(':').filter(Boolean)) {
+export async function which(name: string, PATH = process.env.PATH ?? '') {
+  for (const dir of PATH.split(':').filter(Boolean)) {
     const p = path.join(dir, name);
     if (await access(p, constants.X_OK).then(() => true, () => false)) return p;
   }

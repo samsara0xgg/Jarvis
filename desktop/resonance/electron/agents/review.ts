@@ -1,6 +1,6 @@
 // What a session changed, file by file, for the window's review (GET /sessions/{id}/changes): against what landing
-// compares (ADR 0085: main for its own worktree, origin for main itself), else against the last commit. One file's
-// diff, and one file put back the way the base has it, with a copy of what was there kept first.
+// compares (ADR 0097: where a branch left the default branch, origin for the default branch itself), else against the
+// last commit. One file's diff, and one file put back the way the base has it, with a copy of what was there kept first.
 import { execFile } from 'node:child_process';
 import { copyFile, mkdir, rm, stat } from 'node:fs/promises';
 import path from 'node:path';

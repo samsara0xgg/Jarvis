@@ -94,7 +94,7 @@ function context() {
 function answer(m) {
   const r = m.request, reply = response => out({ type: 'control_response', response: { subtype: 'success', request_id: m.request_id, response } });
   const refuse = error => out({ type: 'control_response', response: { subtype: 'error', request_id: m.request_id, error } });
-  note({ ev: 'control', subtype: r.subtype, ...r.subtype === 'initialize' ? {} : { request: r } });
+  note({ ev: 'control', subtype: r.subtype, ...r.subtype === 'initialize' ? { system: [r.systemPrompt ?? []].flat().filter(t => typeof t === 'string').join('\n') || null } : { request: r } });
   if (r.subtype === 'initialize') return reply({ commands: COMMANDS, agents: [{ name: 'Explore', description: 'Looks around' }], output_style: 'default', available_output_styles: ['default'],
     models: MODELS, account: { email: 'owner@example.com', subscriptionType: env.ANTHROPIC_API_KEY ? 'api' : 'fake', apiKeySource: env.ANTHROPIC_API_KEY ? 'ANTHROPIC_API_KEY' : 'none' }, pid: process.pid });
   // A question still out is withdrawn, as Claude Code does when a turn is interrupted.
@@ -196,6 +196,8 @@ async function work(said) {
   return 'ok';
 }
 async function run(m) {
+  // A one-shot query's message comes with no id of its own.
+  m.uuid ??= randomUUID();
   turn = { uuid: m.uuid, stop: false };
   const t0 = Date.now(), said = text(m.message?.content);
   note({ ev: 'turn', uuid: m.uuid, text: said, model, blocks: Array.isArray(m.message?.content) ? m.message.content.map(b => b.type) : ['text'] });
