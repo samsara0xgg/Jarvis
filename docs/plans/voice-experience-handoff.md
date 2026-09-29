@@ -1,7 +1,7 @@
 # 语音交互体验审计与改造：交接记录
 
-整理日期：2026-09-28。分支 `claude/peaceful-pasteur-wv870t`（基于 main `ae1e10f`），main 两次合并进来：
-`c6b3e6c`（`c909f5a`）与 `a805b44` B01 Long Exposure（`cb675ab`），都不改写已推送的历史。落进 main 时仍须线性：
+整理日期：2026-09-28，2026-09-29 按第一次 Mac 实测更新。分支 `claude/peaceful-pasteur-wv870t`（基于 main `ae1e10f`），
+main 三次合并进来：`c6b3e6c`（`c909f5a`）、`a805b44` B01 Long Exposure（`cb675ab`）、`daa0536`（`085a6fc`），都不改写已推送的历史。落进 main 时仍须线性：
 按 `docs/git-guide.md` §3 把本分支自己的提交变基到 main 上再快进，`Companion.tsx` 的冲突照 `c909f5a` 解。
 性质：跨 session 的工作底稿，合并时删除；不是 ADR，也不是合同。
 
@@ -33,6 +33,13 @@ Allen 的要求：严格审计 Jarvis 的语音交互系统（全双工对话 + 
 | `bb4f645` | （P0 #2–#5）星核的脸由回合推出而非共用 `phase`：在飞的话 → 在听；`turnId` 的回答从 `open` 到 `spoken` → 在说/在想；本界面发起、仍在等的回合 → 在想（打字、卡片也算）。戳一下：在说停该回答，在想按 `turn_id` 停该轮。Dashboard 尾行与气泡同用 held 文本；被取消的在显示回答一律清掉；等待中回合的失败不论 phase 都显示；`spoken` 结束静默回合的等待；断线结束当前回答；`open` 先于提交回执到达时不再等 | `verify-companion-live.mjs` 新增 6 项，父提交全部失败；合并 main 前 120/120 通过（headless Chromium + 假 daemon）。合并时与 main 的 `f2c1f95` 冲突于 `Companion.tsx`（main 把 Dashboard 移进 `dashboardContent`，`busy` 随之改用 `voice === 'thinking'`） |
 | `fe24c3a` | （P1 #7）软打断，按 §4 设计实现：会话模式下她说话时 Allen 开口先降到 0.2；浊音满 0.4 s 才停（停下后才恢复音量）；更短的声音静 350 ms 即结束交给最终识别：没字/附和恢复且不成回合，停止请求或只叫唤醒词停且不成回合，其余停并成回合；已停的若是停止词/附和也不成回合；静音 × 让步增益相乘，让步永不解除静音；`barge_in_confirm_voiced_s: 0` = ADR 0041 原样。spec §3.6.5 随改；决定写成 `docs/plans/soft-barge-in-proposal.md`（Proposed，待 Allen 接受后编号并 supersede 0041） | `test_soft_barge_in.py` 12 例（真会话 + 出厂 VAD + 真 pipeline + 事件日志），含晚到的停止不提前恢复音量。**欠 Mac 实测**（reSpeaker、外放各一次；0.4/0.2/350 未校准） |
 
+| `629e408` | （Allen 用 Codex 做）明确要求数数、朗读、逐字复述、详细讲或指定长度时，口语版不再压成 60 字/一两句，按要求说全（ADR 0082 取代 0045）。**编号冲突**：Allen stash 里未提交的 agents workbench ADR 草稿也叫 0082，落 main 时改一个 | Codex 的 4 个真模型用例（中英 1–50、逐字朗读、短默认）。欠 Mac 实测 |
+| `9a1c919` | （Allen 用 Codex 做）MiniMax `subtitle_type: word_streaming` 的逐字时间戳落进 `surface.playback_alignment`，听到的前缀可以停在字上而不是整段（ADR 0083）；让步/打断前已播的字保留 | `test_word_playback_cursor.py`；MiniMax 真合成 + 播放器重放 + LLM：停在 15，答"数到 15"。欠外放实测 |
+| `92f072a` | 按第一次实测：她声音上把「停」听成的 ting/ding 单音（「停立」「顶」）、「等一下」、wait 算停止；一个字/一个词又不是回答字的（「五」"And."）算 `unclear`，恢复音量、不成回合（单独的对/是/好/yes 仍成回合，ADR 0062）；`barge_in_confirm_voiced_s` 0.4 → 0.8 | `test_soft_barge_in.py` 新增 7 例，父提交全失败；录音重放：那声「嗯」浊音 0.61 s，「对对对」0.64 s |
+| `2229550` | 播放器只在出声时消费增益命令：打断停下后恢复 1.0 的命令留到下一个回答才以 30 ms 斜坡生效，下一个回答开头在 0.2 上起步、整段被记成 attenuated，于是"没听全"（实测里打断后的完整回答 heard_text 全空）；静音后下一个回答首块漏音同理。现：空闲回调立即落地 | 同文件 2 例，父提交失败 |
+| `4eb10a0` | "pause" 算英文停止词（单个英文词现在算 unclear） | 同文件 1 例 |
+| `65d0502` | 语义端点离线校准（见 §3.1 第 3 条），`candidate_ms` 320 → 400、`max_hold_ms` 900 → 800；开关仍关（tier B，需先实测） | `test_endpointing_partial_asr.py` 1 例 + 表 1 行 |
+
 另两个提交：`8658592` 让星核验收脚本按 main 的新手势（点刘海）开 Dashboard；`2ae364a` 加
 `tools/voice_live_report.py`，Mac 实测后一条命令打印每轮的话、回答、播放结局、听到多少和模型被告知的截断行
 （见 §7）。
@@ -50,10 +57,19 @@ unreachable（Linux 平台分支，main 同样）；全量 hermetic 1214/1217，
 
 ### 3.1 本地实时语音（先做，按顺序）
 
-1. **Mac 实测已完成的部分**（§7 第 1、2 轮），用 `tools/voice_live_report.py` 的输出校准
-   `barge_in_confirm_voiced_s`(0.4)、`yield_gain`(0.2)、350 ms 短音判定、`short_sound_grace_ms`(400)。
-   实测前任何参数都是猜的；实测暴露的问题排在下面所有条目之前。
-2. **首音延迟**（输出 F5，最大的自然度杠杆）：等完整生成 + 常有第二次口语版 LLM 调用（中文 >60 字或有
+1. **Mac 实测**：第一次（2026-09-28 19:16–19:20，17 轮，只做了第 1 轮前几步和报数）结果见 §7，暴露的问题已由
+   `92f072a`、`2229550`、`4eb10a0` 修（0.4 → 0.8 来自录音重放）。`yield_gain`(0.2)、350 ms、新的 0.8 s、
+   Codex 的两个修复都等第二次实测；"没出声时她会不会自己变小声/停下"（回声误触发）Allen 还没回答。
+   新发现、未做：SenseVoice 自动语种在短音上会猜成粤语/韩语（实测「嗯」→「五」）。强制 zh 重解能纠正，但
+   sherpa-onnx 只能整个识别器 `set_config` 换语种，换回自动后后续所有解码的语种判断都变了（实测），
+   不能用；第二个 zh 识别器要多约 240 MB 内存，没做。
+2. **首音延迟**（输出 F5，最大的自然度杠杆）。**实测（2026-09-29）**：9-26 换 gpt-6-luna 后 69 轮语音，
+   `utterance.received` → `surface.playback_started` p50 3.9 s、p75 6.3 s、p90 14 s（查东西的轮）；第一次实测的
+   14 轮里主模型 1.5–6.2 s（中位 2.4）、口语版改写 0.8–1.7 s（中位 1.1）、TTS 6 个字的一段从激活到合成完
+   0.48 s。主模型慢在先写完整段书面答案（190–550 字）。已问 Allen 三选一（2026-09-29）：A 先说后写（语音轮
+   模型先写口语段、边写边说，典型早约 2 s，要新 ADR 推翻 0040 的否决理由）、B 只把改写改成边写边说 + TTS
+   预热（省 0.5–0.8 s）、C 语音轮换小模型；推荐 A。trace 分解要在 launchd 环境里设
+   `JARVIS_REALTIME_TRACE_JSONL`（`launchctl setenv` 后 kickstart）。原计划：等完整生成 + 常有第二次口语版 LLM 调用（中文 >60 字或有
    markup，`decision/__init__.py:2115-2199`）+ 每个回答新开 MiniMax WebSocket 与两次握手
    （`voice_media.py:2501-2512`，`voice_tts.py:2341-2387`），无预热（ADR-0006:295 要求过）；段间严格串行。
    修：(i) 预开备用会话（`MiniMaxTTSSession.open` 拆成 `connect()`/`bind()`，在 `hold_output(True)`
@@ -62,16 +78,20 @@ unreachable（Linux 平台分支，main 同样）；全量 hermetic 1214/1217，
    2.5–3.2 s（端点 0.83 s + ASR ~0.1 s + 生成 ~1.15 s + 口语版 0–0.72 s + TTS 首包 ~0.4 s），先用
    现有 trace（`tts_session_open_requested` → `tts_provider_first_pcm_received` →
    `audio_output_first_nonzero_callback`）实测分解再动手。
-3. **端点 0.83 s**：语义端点（ADR-0006 D7 partial ASR，`single_audio_ingress.partial_asr`）已建、未校准、
-   默认关。用实测录音离线重放校准 `candidate_ms`/`max_hold_ms`，完整句子目标 0.3–0.5 s 结束，
-   半句（`looks_complete` 的悬挂后缀）继续等。与 ADR 0074 的"半句被合并"互补，不替代。
+3. **端点 0.83 s**：语义端点（ADR-0006 D7 partial ASR）已离线校准（`65d0502`）：200 条录音
+   （9-20..28，唤醒通道）按真 assembler + Silero + SenseVoice 重放，每个 partial 按实测解码时间落地。
+   对比现在的 0.77 s 静音：320/900 中位早 448 ms、200 条里 29 条在话没说完时结束；400/800 中位早 352 ms、
+   16 条；480/900 中位早 288 ms、11 条。提前结束的多是说完一个完整分句后停顿再接着说，ADR 0074 会合并作答；
+   其中约 5 条是重放伪影（"The."、"Yeah."）。取 400/800：「嗯」之后停 1 s 再问仍是一句。开关仍关（tier B，
+   canary `test_canary_realtime_adoption_tiers.py` 钉着）：第二次实测时在 `~/.jarvis/settings.yaml` 打开跑一轮，
+   通过后改出厂值并把它挪进 tier A。重放脚本在该 session 的 scratchpad，没进仓库。
 4. **工具慢时的口头回应**：ADR 0045 关掉了固定短语 commentary（工具 1 s 内就完时"结果回来了"突兀）。
    改为按延迟触发：Allen 说完后 ~1.5–2 s 仍无回答音频才说一句、按语言和工具类别选、不重复；
    1 s 内有结果则不说。改变 ADR 0045 的决定，先写提案（同软打断的做法）。
 5. **从未出声的回答仍被当作听完**（§2 `69f3fae` 遗留）：排队中被停、或被 ADR 0074 取代前已写完的回答
    没有任何 playback 事件，`spoken_heard` 为 None，下一轮当作听完。需 L5 为"未出声即丢弃"写一条持久
    事件，或 L3 把没有激活记录的语音回答当作未说出；先定语义。
-6. **播放细节**（输出 F6/F9/F12/F8/F16）：停止只有 2.7 ms 衰减（`voice_tts.py:455`），改 ~20 ms
+6. **播放细节**（输出 F6/F9/F12/F8/F16）：静音/增益命令空闲时不生效已修（`2229550`）。其余：停止只有 2.7 ms 衰减（`voice_tts.py:455`），改 ~20 ms
    升余弦；静音或 gain 0 后下一个回答首 10 ms 漏音（空闲分支不消费 gain 命令，`voice_tts.py:1721-1746`）；
    stop 走 media actor，SQLite 争用时最多多播 2.73 s（加线程安全的 `player.kill_audible()` 由
    `_stop_speaking` 先置位）；饿死后恢复无 ramp；部分 TTS 失败中途无声无提示。
@@ -175,4 +195,19 @@ launchctl kickstart -k gui/$(id -u)/com.allen.jarvis.resonance
 
 GPT-Live 那一轮延后（§3.3）。
 
-结果：（待填）
+结果（第一次，2026-09-28 19:16–19:20，Allen 只做了第 1 轮前几步和报数；Codex 修复都在这之后）：
+
+- 〔1〕短音不切句：通过（「嗯……」+长城问题是一句，只答一次）。
+- 〔7〕短附和：8 次都没打断、不成回合，通过。长一点的「嗯」（浊音 0.61 s）和一次咳嗽超过 0.4 s 直接停了她，
+  其一被识别成 "And." 成了新问题；「嗯」被识别成粤语「五」、两次「停」被识别成「停立」「顶」，都被当问题回答。
+- 〔5〕停在哪：失败。整段只有一个分段，中途停下时没有已完成分段，旧代码告诉模型"一个字没说出口"，
+  模型编了「数到 50」「说到长城各段用途不同」。
+- 另：「从 1 到 50 报数」只说「一到五十」、「我让你从一数到50」只说「好，我从一数到五十」、「说详细点」
+  「再讲 100 字」都只说一句（→ `629e408`）；延迟见 §3.1 第 2 条。
+- 没测：〔4〕英文、黄河插话、第 2 轮全部。
+
+第二次（待做）：主 checkout 现在常被别的 session 用在 main 上（9-29 有未推的 B01 提交），切分支前先问 Allen；
+测完读 `tools/voice_live_report.py` 和 `~/.jarvis/memory/audio/`（`memory.retain_audio: true`，每轮录音都在），
+不用 Allen 贴输出。步骤：数 1 到 30 时拖长「嗯——」、咳嗽（应只小声）；说「停」（停、不答）；问数到几（答对）；
+「说详细点」要讲一大段，中途「等一下」停 1.5 s 再说「第一点再说一遍」；英文说完再问（不提被打断）；全程留意
+不出声时会不会自己变小声。
