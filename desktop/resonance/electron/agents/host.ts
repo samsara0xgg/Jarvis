@@ -4,19 +4,22 @@
 // transcript; this process keeps only what the agents do not: pinned, archived, which agent, the worktree it made.
 import http from 'node:http';
 import { createHash, randomUUID } from 'node:crypto';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
-import { existsSync, writeFileSync } from 'node:fs';
-import { mkdir, open, readFile, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises';
+import { existsSync, statSync, writeFileSync } from 'node:fs';
+import { copyFile, mkdir, open, readFile, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
-import type { Agent, Answer, Catalog, Choice, Ctx, Diff, Event, File, Item, Peek, Pic, Req, Service, Sess, St, Step, Usage, UsageWindow } from './types.js';
-import { claude } from './claude.js';
+import type { Agent, Answer, Catalog, Choice, Ctx, Doctor, Event, File, Item, Outside, Pic, Project, Req, Service, Sess, St, Step, Task, Usage, UsageWindow } from './types.js';
+import { claude, claudeExe } from './claude.js';
 import { codex } from './codex.js';
+import { loginPath, version, which } from './doctor.js';
+import { findFiles, keepUpload, peek, pruneOld, resolveRefs } from './files.js';
 import { hostKey } from './key.js';
 import { ask, startKeeper, type Kid } from './keeper.js';
-import { LABEL, Landing, REOPEN, dirtyOf } from './land.js';
+import { LABEL, Landing, REOPEN, dirtyOf, shellEnv } from './land.js';
+import { baseOf, changes, fileDiff, revert } from './review.js';
+import { auth, forgetKey, loadSettings, PACKAGED, patchSettings, saveKey, settings } from './settings.js';
 import { inputTerm, killTerm, openTerm, resizeTerm, streamTerm } from './term.js';
 
 const exec = promisify(execFile);
@@ -41,16 +44,30 @@ export type Driver = {
   rename(s: Session, title: string): Promise<void>;
   // Read the whole conversation back from the agent's own transcript.
   load(s: Session): Promise<void>;
-  fork(s: Session): Promise<string>;
+  // A new session with this one's conversation: all of it, or up to the point `at` names (an item's `id`), with that
+  // point (`before`: without it). Null when nothing comes before it: the caller starts a fresh session.
+  fork(s: Session, at?: string, before?: boolean): Promise<string | null>;
   remove(s: Session): Promise<void>;
-  // The slash commands and skills for `cwd`, from the session itself when it runs.
-  commands(cwd: string, s?: Session): Promise<[string, string][]>;
+  // The slash commands and skills for `cwd`, from the session itself when it runs; a third entry names the window's
+  // own place for a command it handles itself (B8, B9).
+  commands(cwd: string, s?: Session): Promise<[string, string, string?][]>;
   // What a terminal types to continue it.
   resume(s: Session): string;
   // What fills its context window now.
   context(s: Session): Promise<Ctx>;
   // Take back a child the keeper kept through a restart; `news`: a turn that ends in what it replays was not seen.
   adopt?(s: Session, busy: boolean, news: boolean): Promise<void>;
+  // Files as they were when the message `at` was sent (Claude's checkpoints): what would change, or change them.
+  rewind?(s: Session, at: string, dry: boolean): Promise<{ can: boolean; why?: string; files: string[]; add: number; del: number }>;
+  // Take back a message sent while it worked, before the agent took it.
+  unqueue?(s: Session, text: string): Promise<boolean>;
+  // Stop one of its background tasks, and read what one wrote.
+  stopTask?(s: Session, id: string): Promise<void>;
+  // Its sessions in `cwd` (every folder when empty) that the window did not start (B12).
+  outside(cwd: string): Promise<Outside[]>;
+  // Who it is signed in as, for the check-up; and, for Codex, a sign-in page to open.
+  account(): Promise<Record<string, string> | null>;
+  login?(): Promise<string>;
 };
 const DRIVERS: Record<Agent, Driver> = { claude, codex };
 
@@ -75,6 +92,36 @@ export function pic(name: string, url: unknown): Pic {
   catch (e) { if ((e as NodeJS.ErrnoException).code !== 'EEXIST') { log('picture', name, String(e)); return { name }; } }
   return { name, img };
 }
+// A picture on this Mac (a file dropped on the window, an image Codex looked at) as a copy the window can show.
+const MIME: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', pdf: 'application/pdf' };
+const mimeOf = (p: string) => MIME[path.extname(p).slice(1).toLowerCase()];
+export async function picFile(name: string, file: string): Promise<Pic> {
+  const type = mimeOf(file), buf = type?.startsWith('image/') ? await readFile(file).catch(() => null) : null;
+  return buf && buf.length <= 20 << 20 ? pic(name, `data:${type};base64,${buf.toString('base64')}`) : { name };
+}
+// What a message's files become: pictures as pictures (Codex takes one on this Mac by its path), PDFs as documents for
+// Claude, and any other file kept here (or found where it is) and named in the message. `pics` is what the
+// conversation shows.
+export type Sent = { images: { type: string; data: string; url: string }[]; local: string[]; pdfs: { name: string; data: string }[]; paths: string[]; pics: Pic[] };
+const UPLOADS = path.join(DIR, 'uploads');
+export async function sent(files: File[], agent: Agent): Promise<Sent> {
+  const out: Sent = { images: [], local: [], pdfs: [], paths: [], pics: [] };
+  for (const f of files) {
+    let url = f.url;
+    if (f.path) {
+      const type = mimeOf(f.path), dir = (await stat(f.path)).isDirectory();
+      if (!dir && type?.startsWith('image/') && agent === 'codex') { out.local.push(f.path); out.pics.push(await picFile(f.name, f.path)); continue; }
+      const buf = !dir && type && (type.startsWith('image/') || agent === 'claude') ? await readFile(f.path) : null;
+      if (!buf || buf.length > 30 << 20) { out.paths.push(f.path); out.pics.push({ name: f.name }); continue; }
+      url = `data:${type};base64,${buf.toString('base64')}`;
+    }
+    const m = /^data:(image\/(?:png|jpeg|gif|webp)|application\/pdf);base64,(.+)$/s.exec(url ?? '');
+    if (m && m[1] === 'application/pdf' && agent === 'claude') { out.pdfs.push({ name: f.name, data: m[2] }); out.pics.push({ name: f.name }); }
+    else if (m && m[1] !== 'application/pdf') { out.images.push({ type: m[1], data: m[2], url: url! }); out.pics.push(pic(f.name, url)); }
+    else { out.paths.push(await keepUpload(UPLOADS, f.name, url!)); out.pics.push({ name: f.name }); }
+  }
+  return out;
+}
 async function pruneImages() {
   await mkdir(IMAGES, { recursive: true });
   for (const f of await readdir(IMAGES)) {
@@ -89,7 +136,7 @@ export const firstSentence = (text: string) => oneLine((text.split('\n').find(l 
 const base = (p: string) => p.split('/').pop() ?? p;
 const NOW: Record<Step['k'], (t: string) => string> = {
   read: t => `在读 ${base(t)}`, edit: t => `在改 ${base(t)}`, bash: t => `在跑 ${oneLine(t, 40)}`, search: t => `在搜 ${oneLine(t, 40)}`,
-  agent: () => '在开子任务', web: () => '在查网页', tool: t => `在用 ${oneLine(t, 40)}`, say: () => '在写',
+  agent: () => '在开子任务', web: () => '在查网页', tool: t => `在用 ${oneLine(t, 40)}`, say: () => '在写', think: () => '在想',
 };
 export function reqLine(r: Req) {
   if (r.tool === 'Ask') return `问你：${oneLine(r.qs[0]?.q ?? '', 60)}`;
@@ -100,8 +147,10 @@ export function reqLine(r: Req) {
 }
 
 // ---------- one session: its row, its conversation, and the turn being built ----------
-// last: when the last thing in this turn happened, so a turn read back from a transcript knows how long it took
-type Turn = { group: number; start?: number; last?: number; pending: string | null; block: string; tools: Map<string, [number, number]>; plan: number };
+// last: when the last thing in this turn happened, so a turn read back from a transcript knows how long it took ·
+// tools: where each call's step is (a sub-agent's call: its index under the step that started it) · ref: the point the
+// answer being written ends at, for fork and rewind
+type Turn = { group: number; start?: number; last?: number; pending: string | null; block: string; tools: Map<string, [number, number, number?]>; plan: number; ref?: string };
 export class Session {
   items: Item[] | null = null;
   live: string | null = null;
@@ -164,12 +213,23 @@ export class Session {
   // ----- the turn -----
   begin() {
     this.turn = { group: -1, pending: null, block: '', tools: new Map(), plan: -1 };
-    if (!this.quiet) this.set({ st: 'work', stopped: false, since: Date.now(), now: '在想', summary: '在想', updated: Date.now() });
+    // Tasks that ended go when the next turn begins.
+    if (!this.quiet) this.set({ st: 'work', stopped: false, since: Date.now(), now: '在想', summary: '在想', updated: Date.now(),
+      ...this.s.tasks?.some(t => t.st !== 'run') ? { tasks: this.s.tasks.filter(t => t.st === 'run') } : {} });
   }
   private need() { if (!this.turn) this.begin(); return this.turn!; }
-  you(text: string, files: Pic[] = [], at?: number) {
+  you(text: string, files: Pic[] = [], at?: number, id?: string) {
     this.end(undefined, true);
-    this.push({ k: 'you', text, at: this.time(at), ...(files.length ? { files } : {}) });
+    this.push({ k: 'you', text, at: this.time(at), ...(files.length ? { files } : {}), ...(id ? { id } : {}) });
+  }
+  // The point in the agent's own record this answer ends at (Claude: the message uuid; Codex: the turn).
+  ref(id: string) { this.need().ref = id; }
+  // Codex names a turn only once it started: the message that started it gets its id then.
+  youId(id: string) {
+    let i = (this.items?.length ?? 0) - 1;
+    while (i >= 0 && this.items![i].k !== 'you') i--;
+    const it = i >= 0 ? this.items![i] as Item & { k: 'you' } : null;
+    if (it && !it.id) { it.id = id; this.changed(i); }
   }
   // The live group of steps, made when the first step of a stretch arrives.
   private group(at?: number) {
@@ -214,9 +274,29 @@ export class Session {
   toolDone(key: string, patch: Partial<Step>) {
     const at = this.turn?.tools.get(key);
     if (!at) return;
-    const it = this.items![at[0]] as Item & { k: 'steps' };
-    Object.assign(it.steps[at[1]], patch);
+    const it = this.items![at[0]] as Item & { k: 'steps' }, st = at[2] === undefined ? it.steps[at[1]] : it.steps[at[1]].sub?.[at[2]];
+    if (!st) return;
+    Object.assign(st, patch);
     this.changed(at[0]);
+  }
+  // A sub-agent's own step, under the step of the call that started it (`parent`: that call's key; B16).
+  sub(parent: string, key: string | undefined, step: Step, at?: number) {
+    const p = this.turn?.tools.get(parent);
+    if (!p || p[2] !== undefined) return;
+    const it = this.items![p[0]] as Item & { k: 'steps' }, sub = it.steps[p[1]].sub ??= [];
+    if (sub.length >= 300) return;
+    sub.push({ ...step, at: this.time(at) });
+    if (key) this.turn!.tools.set(key, [p[0], p[1], sub.length - 1]);
+    this.changed(p[0]);
+  }
+  // Background work it started (B17): one entry per task, the ended ones kept until the next turn begins.
+  task(id: string, patch: Partial<Task>) {
+    if (!id || this.quiet) return;
+    const ts = [...this.s.tasks ?? []], i = ts.findIndex(t => t.id === id);
+    if (i >= 0) ts[i] = { ...ts[i], ...patch };
+    else if (patch.what || patch.kind) ts.push({ id, kind: 'task', what: '', st: 'run', since: Date.now(), ...patch });
+    else return;
+    this.set({ tasks: ts.slice(-20) });
   }
   plan(todos: [string, 0 | 1 | 2][]) {
     const t = this.need();
@@ -249,7 +329,7 @@ export class Session {
         if (g?.k === 'steps' && g.live) { g.live = false; if (t.start !== undefined) g.took = took((at ?? (this.quiet ? t.last : undefined) ?? Date.now()) - t.start); this.changed(t.group); }
       }
       const text = [t.pending, t.block].filter(Boolean).join('\n\n');
-      if (text) this.push({ k: 'it', text, at: this.time(at ?? (this.quiet ? t.last : undefined)) });
+      if (text) this.push({ k: 'it', text, at: this.time(at ?? (this.quiet ? t.last : undefined)), ...t.ref ? { id: t.ref } : {} });
       this.turn = null;
       clearTimeout(this.liveTimer); this.live = null;
       if (!this.quiet) broadcast({ t: 'live', id: this.s.id, text: null });
@@ -283,7 +363,7 @@ function save() {
   clearTimeout(saving);
   saving = setTimeout(async () => {
     const rows = [...sessions.values()].map(x => {
-      const { now, since, queue, stopped, bg, land, dirty, ...keep } = x.s;
+      const { now, since, queue, stopped, bg, land, dirty, tasks, ...keep } = x.s;
       return { ...keep, repo: x.repo };
     });
     await mkdir(DIR, { recursive: true });
@@ -307,6 +387,7 @@ async function restore(kids: Map<string, Kid>) {
 }
 // Another session working in the same folder (a fork): its worktree stays for it.
 export const sharing = (x: Session) => [...sessions.values()].some(o => o !== x && o.s.cwd === x.s.cwd);
+const busy = (x: Session) => x.s.st === 'work' || x.s.st === 'wait' || x.s.st === 'pack';
 
 // ---------- the event stream ----------
 const clients = new Set<http.ServerResponse>();
@@ -325,41 +406,71 @@ async function getCatalog(): Promise<Catalog> {
 // A driver learned more about its models: everyone gets the new menus.
 export async function catalogChanged() { catalog = null; broadcast({ t: 'catalog', catalog: await getCatalog() }); }
 
-// ---------- git: projects, files, worktrees ----------
+// ---------- git: projects, worktrees ----------
 const git = async (cwd: string, ...args: string[]) => (await exec('git', ['-C', cwd, ...args], { maxBuffer: 64 << 20 })).stdout;
 // The repository a folder belongs to, with a worktree counted as its main checkout.
 async function repoOf(cwd: string) {
   try { return path.dirname((await git(cwd, 'rev-parse', '--path-format=absolute', '--git-common-dir')).trim()); } catch { return ''; }
 }
 async function branchOf(cwd: string) { try { return (await git(cwd, 'branch', '--show-current')).trim(); } catch { return ''; } }
-async function worktree(repo: string, hint: string) {
+// A worktree of its own, from `from` (a branch or a commit; the repository's HEAD when empty), with the ignored files its
+// .worktreeinclude names copied in, as Claude Code's own worktrees do.
+async function worktree(repo: string, hint: string, from = '') {
   const slug = hint.toLowerCase().match(/[a-z0-9]+/g)?.slice(0, 4).join('-').slice(0, 32) || 'session';
   const name = `${slug}-${randomUUID().slice(0, 4)}`, at = path.join(repo, '.claude', 'worktrees', name), branch = `worktree-${name}`;
-  await git(repo, 'worktree', 'add', '-b', branch, at, 'HEAD');
+  const start = from ? (await git(repo, 'rev-parse', '--verify', '--quiet', `${from}^{commit}`).catch(() => '')).trim() : 'HEAD';
+  if (!start) throw new Http(400, `没有 ${from} 这个分支或提交`);
+  await git(repo, 'worktree', 'add', '-b', branch, at, start);
+  await include(repo, at);
   return { cwd: at, branch };
 }
-async function projects() {
-  const home = path.join(homedir(), 'Projects'), seen = new Map<string, number>();
-  for (const x of sessions.values()) if (x.repo) seen.set(x.repo, Math.max(seen.get(x.repo) ?? 0, x.s.updated));
-  for (const d of await readdir(home, { withFileTypes: true }).catch(() => [])) {
-    if (!d.isDirectory() || d.name.startsWith('.')) continue;
-    const p = path.join(home, d.name), g = await stat(path.join(p, '.git')).catch(() => null);
-    if (g && !seen.has(p)) seen.set(p, 0);
+async function include(repo: string, at: string) {
+  if (!existsSync(path.join(repo, '.worktreeinclude'))) return;
+  const listed = (await git(repo, 'ls-files', '--others', '--ignored', '--exclude-from=.worktreeinclude').catch(() => '')).split('\n').filter(Boolean), some = listed.slice(0, 500);
+  // Only what git itself ignores: anything else is in the worktree already, or nobody's.
+  const ignored = some.length ? (await git(repo, 'check-ignore', '--', ...some).catch(e => String((e as { stdout?: string }).stdout ?? ''))).split('\n').filter(Boolean) : [];
+  for (const f of ignored) {
+    await mkdir(path.dirname(path.join(at, f)), { recursive: true });
+    await copyFile(path.join(repo, f), path.join(at, f)).catch(e => log('worktreeinclude', f, String(e)));
   }
-  return [...seen].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([p]) => p);
+  if (listed.length > some.length) log('worktreeinclude', repo, `${listed.length} files, copied the first ${some.length}`);
 }
-const fileCache = new Map<string, { at: number; list: string[] }>();
-async function files(cwd: string, q: string) {
-  let c = fileCache.get(cwd);
-  if (!c || Date.now() - c.at > 15000) {
-    const out = await git(cwd, 'ls-files', '-co', '--exclude-standard').catch(() => '');
-    c = { at: Date.now(), list: out.split('\n').filter(Boolean) };
-    fileCache.set(cwd, c);
+// The script the owner set for a repository's new worktrees (installing, copying, building), run in the worktree before
+// its first turn; a failure is said in the conversation and the turn goes ahead.
+async function setup(x: Session) {
+  const cmd = settings.setup?.[x.repo];
+  if (!cmd) return;
+  x.set({ now: '在准备 worktree', summary: '在准备 worktree' });
+  const env = shellEnv(), r = await new Promise<{ code: number; out: string }>(done => {
+    let out = '';
+    const c = spawn(env.SHELL || '/bin/zsh', ['-lc', cmd], { cwd: x.s.cwd, detached: true, stdio: ['ignore', 'pipe', 'pipe'], env: { ...env, JARVIS_WORKTREE: x.s.cwd, JARVIS_REPO: x.repo } });
+    const keep = (b: Buffer) => { out = (out + b.toString('utf8')).slice(-8000); };
+    c.stdout!.on('data', keep); c.stderr!.on('data', keep);
+    const timer = setTimeout(() => { out += '\n超过 10 分钟，停掉了'; try { process.kill(-c.pid!, 'SIGTERM'); } catch { c.kill(); } }, 10 * 60e3);
+    c.on('error', e => { clearTimeout(timer); done({ code: 1, out: String(e) }); });
+    c.on('close', code => { clearTimeout(timer); done({ code: code ?? 1, out }); });
+  });
+  x.note(r.code ? `worktree 的准备脚本没跑成（退出码 ${r.code}）：${oneLine(r.out.trim().split('\n').slice(-5).join(' · '), 400)}` : 'worktree 准备好了');
+}
+// The project list (A8): the folders sessions ran in, the latest first, then folders the owner added, then the git
+// repositories in ~/Projects.
+async function projects(): Promise<Project[]> {
+  const out = new Map<string, Project>(), used = new Map<string, number>();
+  for (const x of sessions.values()) { const p = x.repo || x.s.cwd; used.set(p, Math.max(used.get(p) ?? 0, x.s.updated)); }
+  const add = async (p: string, more: Partial<Project>) => {
+    const had = out.get(p);
+    if (had) { Object.assign(had, more); return; }
+    if (!(await stat(p).catch(() => null))?.isDirectory()) return;
+    out.set(p, { path: p, name: path.basename(p), git: !!(await stat(path.join(p, '.git')).catch(() => null)), ...more });
+  };
+  for (const [p, at] of [...used].sort((a, b) => b[1] - a[1])) await add(p, { used: at });
+  for (const p of settings.folders ?? []) await add(p, { added: true });
+  const home = path.join(homedir(), 'Projects');
+  for (const d of (await readdir(home, { withFileTypes: true }).catch(() => [])).sort((a, b) => a.name.localeCompare(b.name))) {
+    const p = path.join(home, d.name);
+    if (d.isDirectory() && !d.name.startsWith('.') && !out.has(p) && await stat(path.join(p, '.git')).catch(() => null)) await add(p, {});
   }
-  const want = q.toLowerCase();
-  const hits = c.list.filter(f => f.toLowerCase().includes(want));
-  // A match in the file's own name beats one in its folders.
-  return hits.sort((a, b) => Number(!base(b).toLowerCase().includes(want)) - Number(!base(a).toLowerCase().includes(want)) || a.length - b.length).slice(0, 40);
+  return [...out.values()];
 }
 
 // ---------- the daemon's marks (ADR 0069): unread, parked and archived, one file the notch shares ----------
@@ -400,10 +511,27 @@ async function body(req: Req0): Promise<Record<string, any>> {
   for await (const c of req) { n += c.length; if (n > 48 << 20) throw new Error('太大了'); chunks.push(c); }
   return n ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {};
 }
-class Http extends Error { constructor(public code: number, msg: string) { super(msg); } }
+// `need` names what the window can answer with: 'auth' is Claude's sign-in in the packaged app (ADR 0094), 'force' a
+// second, sure press.
+class Http extends Error { constructor(public code: number, msg: string, public need?: string) { super(msg); } }
+// A Claude session of Startrail's own needs the packaged app's sign-in before anything starts a claude for it.
+const signedIn = (agent: Agent) => { const a = auth(); if (agent === 'claude' && !a.ready) throw new Http(409, a.why ?? '', 'auth'); };
+// Everyone gets what changed; a sign-in that became ready (or went) reads Claude's menus again.
+async function settingsChanged(was: boolean) {
+  broadcast({ t: 'settings', settings, auth: auth() });
+  if (auth().ready !== was) await catalogChanged();
+}
 const need = (id: string) => { const x = sessions.get(id); if (!x) throw new Http(404, '没有这个会话'); return x; };
 const str = (v: unknown, name: string) => { if (typeof v !== 'string') throw new Http(400, `${name} 不对`); return v; };
-const fileList = (v: unknown): File[] => Array.isArray(v) ? v.filter(f => typeof f?.name === 'string' && typeof f?.url === 'string' && f.url.startsWith('data:')) : [];
+const pathOf = (p: string) => p ? path.resolve(p.replace(/^~(?=\/|$)/, homedir())) : '';
+// Files sent with a message: a data: URL, or a file or folder on this Mac by its path (one dropped on the window).
+const fileList = (v: unknown): File[] => Array.isArray(v) ? v.slice(0, 20).filter(f => typeof f?.name === 'string'
+  && (typeof f.url === 'string' ? f.url.startsWith('data:') : typeof f.path === 'string' && path.isAbsolute(f.path) && existsSync(f.path)))
+  .map(f => typeof f.url === 'string' ? { name: f.name, url: f.url } : { name: f.name, path: f.path }) : [];
+// Folders a session may work in besides its own (C5).
+const dirList = (v: unknown) => Array.isArray(v) ? [...new Set(v.filter((d): d is string => typeof d === 'string' && path.isAbsolute(d) && existsSync(d) && statSync(d).isDirectory()))].slice(0, 20) : [];
+// What a file is compared against in the preview: what the session's review compares against.
+const baseFor = (x: Session) => baseOf(x).then(b => b.base, () => 'HEAD');
 
 async function route(req: Req0, res: http.ServerResponse, url: URL): Promise<unknown> {
   const m = req.method ?? 'GET', parts = url.pathname.split('/').filter(Boolean);
@@ -413,7 +541,7 @@ async function route(req: Req0, res: http.ServerResponse, url: URL): Promise<unk
     await ready;
     clients.add(res);
     req.on('close', () => clients.delete(res));
-    const hello: Event = { t: 'hello', sessions: [...sessions.values()].map(x => x.s), catalog: await getCatalog() };
+    const hello: Event = { t: 'hello', sessions: [...sessions.values()].map(x => x.s), catalog: await getCatalog(), settings, auth: auth() };
     res.write(`data: ${JSON.stringify(hello)}\n\n`);
     void marksIn();
     return undefined;
@@ -425,35 +553,86 @@ async function route(req: Req0, res: http.ServerResponse, url: URL): Promise<unk
     res.end(buf);
     return undefined;
   }
-  if (m === 'GET' && url.pathname === '/projects') return { projects: await projects() };
+  // Nothing below runs before the host has taken its children back and has the login shell's PATH.
+  await ready.catch(() => {});
+  // ---- what the owner sets, and the key Startrail's Claude sessions sign in with in the packaged app (ADR 0094) ----
+  if (url.pathname === '/settings' || url.pathname === '/settings/key') {
+    if (m === 'GET' && url.pathname === '/settings') return { settings, auth: auth() };
+    const was = auth().ready;
+    let r = {};
+    if (m === 'POST' && url.pathname === '/settings') await patchSettings(await body(req));
+    else if (m === 'POST') r = await saveKey(str((await body(req)).key, 'key'));
+    else if (m === 'DELETE' && url.pathname === '/settings/key') await forgetKey();
+    else throw new Http(405, '不行');
+    await settingsChanged(was);
+    return { ...r, settings, auth: auth() };
+  }
+  // `projects` is the list as paths, as the window before this one reads it.
+  if (url.pathname === '/projects') {
+    if (m === 'POST' || m === 'DELETE') {
+      const p = pathOf(m === 'POST' ? str((await body(req)).path, 'path') : url.searchParams.get('path') ?? '');
+      if (m === 'POST' && !(await stat(p).catch(() => null))?.isDirectory()) throw new Http(400, '没有这个文件夹');
+      await patchSettings({ folders: [...m === 'POST' ? [p] : [], ...(settings.folders ?? []).filter(f => f !== p)] });
+      await settingsChanged(auth().ready);
+    } else if (m !== 'GET') throw new Http(405, '不行');
+    const list = await projects();
+    return { projects: list.map(p => p.path), list };
+  }
+  if (m === 'GET' && url.pathname === '/doctor') return doctor();
+  if (m === 'POST' && url.pathname === '/doctor/login') {
+    if ((await body(req)).agent !== 'codex' || !codex.login) throw new Http(400, '只有 Codex 在这里登录');
+    return { url: await codex.login() };
+  }
   // A session's folder, or for a session not started yet the folder and agent it will have.
   const where = () => {
     const id = url.searchParams.get('id');
     if (id) { const x = need(id); return { cwd: x.s.cwd, agent: x.s.agent, x }; }
-    return { cwd: path.resolve(url.searchParams.get('cwd') ?? homedir()), agent: (url.searchParams.get('agent') === 'codex' ? 'codex' : 'claude') as Agent, x: undefined };
+    return { cwd: pathOf(url.searchParams.get('cwd') ?? '') || homedir(), agent: (url.searchParams.get('agent') === 'codex' ? 'codex' : 'claude') as Agent, x: undefined };
   };
-  if (m === 'GET' && url.pathname === '/files') return { files: await files(where().cwd, url.searchParams.get('q') ?? '') };
+  if (m === 'GET' && url.pathname === '/files') return { files: await findFiles(where().cwd, url.searchParams.get('q') ?? '') };
+  if (url.pathname === '/resolve') {
+    const refs = m === 'POST' ? (await body(req)).refs : url.searchParams.getAll('ref');
+    return { found: await resolveRefs(where().cwd, Array.isArray(refs) ? refs.filter((r): r is string => typeof r === 'string') : []) };
+  }
+  if (m === 'GET' && url.pathname === '/peek') { const w = where(); return peek(w.cwd, url.searchParams.get('ref') ?? '', async () => w.x ? baseFor(w.x) : 'HEAD'); }
+  if (m === 'GET' && url.pathname === '/branches') {
+    const cwd = where().cwd, out = await git(cwd, 'for-each-ref', '--sort=-committerdate', '--format=%(refname)%09%(committerdate:unix)', 'refs/heads', 'refs/remotes').catch(() => '');
+    const branches = out.split('\n').filter(l => l && !/^refs\/remotes\/[^\t]+\/HEAD\t/.test(l)).slice(0, 300)
+      .map(l => { const [ref, t] = l.split('\t'); return { name: ref.replace(/^refs\/(heads|remotes)\//, ''), remote: ref.startsWith('refs/remotes/'), at: Number(t) * 1000 }; });
+    return { current: await branchOf(cwd), branches };
+  }
   if (m === 'GET' && url.pathname === '/commands') { const w = where(); return { commands: await DRIVERS[w.agent].commands(w.cwd, w.x) }; }
+  if (m === 'GET' && url.pathname === '/search') return { hits: await search(url.searchParams.get('q') ?? '', url.searchParams.get('all') === '1') };
+  // ---- sessions started outside the window (B12, ADR 0096) ----
+  if (m === 'GET' && url.pathname === '/import') return { sessions: await outsideOf(pathOf(url.searchParams.get('cwd') ?? '')) };
+  if (m === 'POST' && url.pathname === '/import') {
+    const b = await body(req);
+    return { id: await take(b.agent === 'codex' ? 'codex' : 'claude', str(b.id, 'id'), typeof b.cwd === 'string' ? pathOf(b.cwd) : '', b.force === true) };
+  }
   if (m === 'POST' && url.pathname === '/sessions') {
-    const b = await body(req), agent = b.agent === 'codex' ? 'codex' : 'claude', text = str(b.text, 'text').trim(), files = fileList(b.files);
-    let cwd = path.resolve(str(b.cwd, 'cwd').replace(/^~(?=\/|$)/, homedir()));
+    const b = await body(req), agent = b.agent === 'codex' ? 'codex' : 'claude', text = str(b.text, 'text').trim(), files = fileList(b.files), dirs = dirList(b.dirs);
+    signedIn(agent);
+    let cwd = pathOf(str(b.cwd, 'cwd'));
     if (!(await stat(cwd).catch(() => null))?.isDirectory()) throw new Http(400, '没有这个文件夹');
     if (!text && !files.length) throw new Http(400, '要它做什么？');
-    const repo = await repoOf(cwd);
+    const repo = await repoOf(cwd), from = typeof b.base === 'string' ? b.base.trim() : '';
     let branch = await branchOf(cwd), tree = false;
-    if (b.tree && repo) { ({ cwd, branch } = await worktree(repo, text)); tree = true; }
+    if (b.tree && repo) { ({ cwd, branch } = await worktree(repo, text, from)); tree = true; }
     const cat = (await getCatalog())[agent];
     const s: Sess = { id: '', agent, title: oneLine(text || files[0]?.name || '新会话', 48), cwd, project: base(repo || cwd), branch, tree,
       st: 'work', pinned: false, parked: false, archived: false, unread: false, created: Date.now(), trace: [{ at: Date.now(), st: 'work' }], updated: Date.now(), summary: '在想',
       model: typeof b.model === 'string' ? b.model : cat.models[0]?.[0] ?? '', effort: typeof b.effort === 'string' ? b.effort : 'high',
-      mode: typeof b.mode === 'string' ? b.mode : cat.modes[0]?.[0] ?? '', ctx: 0 };
+      mode: typeof b.mode === 'string' ? b.mode : cat.modes[0]?.[0] ?? '', ctx: 0, ...dirs.length ? { dirs } : {}, ...tree && from ? { base: from } : {} };
     const x = new Session(s, repo);
     x.items = [];
     s.id = await x.driver.create(x);
     sessions.set(s.id, x);
     broadcast({ t: 'sess', s });
     save();
-    await x.driver.send(x, text, files);
+    // A new worktree's setup script runs first, so the answer comes back before it ends; a send that fails then shows
+    // on the row.
+    if (tree && settings.setup?.[repo]) void setup(x).then(() => x.driver.send(x, text, files)).catch(e => { log('first send', s.id, e); x.end(undefined, false, 'err', `没发出去：${oneLine(String(e instanceof Error ? e.message : e), 120)}`); });
+    else await x.driver.send(x, text, files);
     return { id: s.id };
   }
   // ---- the workbench (ADR 0085, 0086): plan usage, Jarvis's services and logs, a terminal per session ----
@@ -462,6 +641,7 @@ async function route(req: Req0, res: http.ServerResponse, url: URL): Promise<unk
   if (m === 'POST' && parts[0] === 'services' && parts[2] === 'restart') {
     const label = LABEL[parts[1]];
     if (!label) throw new Http(404, '没有这个服务');
+    if (!(await services()).some(v => v.name === parts[1] && v.loaded)) throw new Http(409, '这台 Mac 上没有装这个服务');
     // The companion takes the window with it; the one that comes up opens it again where it was.
     const b = await body(req);
     if (parts[1] === 'companion' && typeof b.id === 'string') { await mkdir(DIR, { recursive: true }); await writeFile(REOPEN(), JSON.stringify({ id: b.id, at: Date.now() })); }
@@ -487,27 +667,55 @@ async function route(req: Req0, res: http.ServerResponse, url: URL): Promise<unk
   if (parts[0] !== 'sessions' || !parts[1]) throw new Http(404, '没有这个地方');
   const x = need(parts[1]), verb = parts[2] ?? '';
   if (m === 'GET' && !verb) { await x.ensureLoaded(); return { items: x.items, live: x.live }; }
-  if (m === 'GET' && verb === 'peek') return peek(x, url.searchParams.get('ref') ?? '');
+  if (m === 'GET' && verb === 'peek') return peek(x.s.cwd, url.searchParams.get('ref') ?? '', () => baseFor(x));
+  // ---- the review (B6): what it changed, one file's diff, one file put back ----
+  if (m === 'GET' && verb === 'changes') return parts[3] === 'diff' ? fileDiff(x, url.searchParams.get('path') ?? '') : changes(x);
+  if (m === 'GET' && verb === 'export') { await x.ensureLoaded(); return exported(x); }
+  // What putting the files back to a point would change (B13).
+  if (m === 'GET' && verb === 'rewind') {
+    if (!x.driver.rewind) throw new Http(409, 'Codex 不记文件的检查点');
+    if (x.s.term) throw new Http(409, '在终端里，先拿回来');
+    signedIn(x.s.agent);
+    await x.ensureLoaded();
+    const p = pointOf(x, url.searchParams.get('at') ?? '');
+    return { ...p.checkpoint ? await x.driver.rewind(x, p.checkpoint, true) : { can: true, files: [], add: 0, del: 0 }, kind: p.kind };
+  }
+  if (m === 'GET' && verb === 'tasks' && parts[3]) {
+    const t = x.s.tasks?.find(y => y.id === parts[3]);
+    if (!t) throw new Http(404, '没有这个任务');
+    return { task: t, out: t.out && path.isAbsolute(t.out) ? await tail(t.out) : '' };
+  }
   if (m === 'DELETE' && !verb) {
+    const force = url.searchParams.get('force') === '1';
+    let kept = '';
     killTerm(x.s.id);
-    if (x.s.st === 'work' || x.s.st === 'wait') await x.driver.interrupt(x).catch(() => {});
+    if (busy(x)) await x.driver.interrupt(x).catch(() => {});
     await x.driver.release(x).catch(() => {});
     // A fork shares its session's worktree: it goes with the last session in it.
-    if (x.s.tree && x.repo && ![...sessions.values()].some(o => o !== x && o.s.cwd === x.s.cwd)) {
-      // Git's own checks decide: a worktree with changes, or a branch with commits nothing else has, stays.
-      if (!(await git(x.repo, 'merge-base', '--is-ancestor', x.s.branch, 'HEAD').then(() => true, () => false))) throw new Http(409, `${x.s.branch} 上还有没合进去的提交，先合进去或者自己删`);
-      try { await git(x.repo, 'worktree', 'remove', x.s.cwd); } catch { throw new Http(409, 'worktree 里还有没提交的改动，先提交或者自己删'); }
-      await git(x.repo, 'branch', '-d', x.s.branch).catch(() => {});
+    if (x.s.tree && x.repo && !x.s.gone && existsSync(x.s.cwd) && !sharing(x)) {
+      // Git's own checks decide: a worktree with changes, or a branch with commits nothing else has, stays, unless
+      // Allen says to delete it anyway; then everything in it is kept first.
+      const merged = await git(x.repo, 'merge-base', '--is-ancestor', x.s.branch, 'HEAD').then(() => true, () => false);
+      if (!merged && !force) throw new Http(409, `${x.s.branch} 上还有没合进去的提交：先合进去，或者确定就删（会先备份）`, 'force');
+      if (force) {
+        kept = await keep(x);
+        await git(x.repo, 'worktree', 'remove', '--force', x.s.cwd);
+        await git(x.repo, 'branch', '-D', x.s.branch).catch(() => {});
+      } else {
+        try { await git(x.repo, 'worktree', 'remove', x.s.cwd); } catch { throw new Http(409, 'worktree 里还有没提交的改动：先提交，或者确定就删（会先备份）', 'force'); }
+        await git(x.repo, 'branch', '-d', x.s.branch).catch(() => {});
+      }
     }
     // The agent can refuse too (Codex keeps a thread a fork still reads from): then the session stays.
     try { await x.driver.remove(x); } catch (e) { log('remove', x.s.id, e); throw new Http(409, `删不掉：${e instanceof Error ? e.message : String(e)}`); }
     sessions.delete(x.s.id);
     broadcast({ t: 'gone', id: x.s.id });
     save();
-    return { ok: true };
+    return { ok: true, ...kept ? { kept } : {} };
   }
   if (m === 'GET' && verb === 'context') {
     if (x.s.term) throw new Http(409, '在终端里，拿回来才看得到');
+    signedIn(x.s.agent);
     const c = await x.driver.context(x);
     // The ring takes the measured number.
     if (c.max) x.set({ ctx: Math.min(100, Math.round(c.used / c.max * 100)) });
@@ -526,7 +734,7 @@ async function route(req: Req0, res: http.ServerResponse, url: URL): Promise<unk
     else if (a === 'deny') l.deny();
     else if (a === 'stay') l.stay();
     else if (a === 'msg') l.message(str(b.msg, 'msg'));
-    else if (a === 'fix') { if (x.s.term) throw new Http(409, '在终端里，先拿回来'); await l.fix(); }
+    else if (a === 'fix') { if (x.s.term) throw new Http(409, '在终端里，先拿回来'); signedIn(x.s.agent); await l.fix(); }
     else throw new Http(400, '没有这个动作');
     return { ok: true };
   }
@@ -535,6 +743,10 @@ async function route(req: Req0, res: http.ServerResponse, url: URL): Promise<unk
     if (x.s.gone || !existsSync(x.s.cwd)) throw new Http(409, '这个会话已经落地，它的 worktree 清掉了：开个新会话接着做');
     const text = str(b.text, 'text').trim(), files = fileList(b.files);
     if (!text && !files.length) return { ok: true };
+    // The model, the effort and plan mode typed as a command: the host sets them, as the menus do (B9).
+    const cmd = files.length ? null : /^\/(model|effort|reasoning|plan)(?:\s+(\S+))?$/.exec(text);
+    if (cmd && (cmd[1] === 'plan' || cmd[2])) { await typed(x, cmd[1], cmd[2] ?? ''); return { ok: true }; }
+    signedIn(x.s.agent);
     await x.ensureLoaded();
     x.set({ unread: false, updated: Date.now() });
     await x.driver.send(x, text, files);
@@ -547,7 +759,7 @@ async function route(req: Req0, res: http.ServerResponse, url: URL): Promise<unk
     x.driver.answer(x, a);
     return { ok: true };
   }
-  if (verb === 'interrupt') { if (x.s.st === 'work' || x.s.st === 'pack' || x.s.st === 'wait') await x.driver.interrupt(x); return { ok: true }; }
+  if (verb === 'interrupt') { if (busy(x)) await x.driver.interrupt(x); return { ok: true }; }
   if (verb === 'stop') {
     if (x.s.st === 'work' || x.s.st === 'wait') await x.driver.interrupt(x).catch(() => {});
     await x.driver.release(x);
@@ -557,11 +769,7 @@ async function route(req: Req0, res: http.ServerResponse, url: URL): Promise<unk
   if (verb === 'set') {
     const k: 'model' | 'effort' | 'mode' | null = b.key === 'model' || b.key === 'effort' || b.key === 'mode' ? b.key : null;
     if (!k) throw new Http(400, 'key 不对');
-    const v = str(b.value, 'value');
-    if (x.s[k] === v) return { ok: true };
-    await x.driver.set(x, k, v);
-    x.set({ [k]: v });
-    if (x.items) x.note(`${k === 'model' ? '模型' : k === 'effort' ? '力度' : '模式'}换成 ${label(x.s.agent, k, v)}${x.s.st === 'work' ? ' · 从下一步开始' : ''}`);
+    await setKey(x, k, str(b.value, 'value'));
     return { ok: true };
   }
   if (verb === 'meta') {
@@ -569,24 +777,56 @@ async function route(req: Req0, res: http.ServerResponse, url: URL): Promise<unk
     if (typeof b.pinned === 'boolean') p.pinned = b.pinned;
     if (typeof b.archived === 'boolean') { p.archived = b.archived; if (b.archived) Object.assign(p, { pinned: false, parked: false }); }
     if (typeof b.parked === 'boolean') p.parked = b.parked;
-    if (typeof b.title === 'string' && b.title.trim()) { p.title = oneLine(b.title, 80); await x.driver.rename(x, p.title).catch(e => log('rename', x.s.id, e)); }
+    // A name Allen gives is never replaced by one the agent generates (B14).
+    if (typeof b.title === 'string' && b.title.trim()) { p.title = oneLine(b.title, 80); p.named = true; await x.driver.rename(x, p.title).catch(e => log('rename', x.s.id, e)); }
     if (b.seen === true) p.unread = false;
     if (p.archived && (x.s.st === 'work' || x.s.st === 'wait')) { await x.driver.interrupt(x).catch(() => {}); await x.driver.release(x).catch(() => {}); }
     x.set(p);
     return { ok: true };
   }
-  if (verb === 'fork') {
+  if (verb === 'fork') return { id: await fork(x, b) };
+  // Files put back as they were at a point, the conversation staying as it is (B13).
+  if (verb === 'rewind') {
+    if (!x.driver.rewind) throw new Http(409, 'Codex 不记文件的检查点');
+    if (x.s.term) throw new Http(409, '在终端里，先拿回来');
+    if (busy(x)) throw new Http(409, '它还在干活，先打断');
+    signedIn(x.s.agent);
     await x.ensureLoaded();
-    const id = await x.driver.fork(x);
-    const f = new Session({ ...x.s, id, title: `${x.s.title}（分叉）`, pinned: false, parked: false, archived: false, unread: false, st: 'done', updated: Date.now(),
-      trace: [...x.s.trace ?? [], { at: Date.now(), st: 'done' }],
-      now: undefined, since: undefined, queue: undefined, stopped: undefined, term: undefined, resets: undefined }, x.repo);
-    sessions.set(id, f);
-    await f.ensureLoaded();
-    f.note(`从「${x.s.title}」分叉 · 两边各走各的，用的是同一个文件夹`);
-    broadcast({ t: 'sess', s: f.s });
-    save();
-    return { id };
+    const p = pointOf(x, str(b.at, 'at'));
+    if (!p.checkpoint) return { can: true, files: [], add: 0, del: 0 };
+    const r = await x.driver.rewind(x, p.checkpoint, false);
+    if (!r.can) throw new Http(409, r.why ? `文件回不去：${r.why}` : '文件回不去了');
+    x.note(`文件退回到了${p.kind === 'you' ? '你发这一句之前' : '这个回答结束时'}的样子 · ${r.files.length} 个文件`);
+    void x.measure();
+    return r;
+  }
+  if (verb === 'changes' && parts[3] === 'revert') {
+    if (busy(x)) throw new Http(409, '它还在干活，先打断再撤');
+    const r = await revert(x, str(b.path, 'path'), TRASH);
+    void x.measure();
+    return r;
+  }
+  // A message sent while it worked, taken back before the agent took it (B11).
+  if (verb === 'queue') {
+    if (b.action !== 'cancel') throw new Http(400, '没有这个动作');
+    if (!x.driver.unqueue) throw new Http(409, 'Codex 收下就放进这一轮了，撤不回来');
+    if (!await x.driver.unqueue(x, str(b.text, 'text'))) throw new Http(409, '它已经收下了，撤不回来');
+    return { ok: true };
+  }
+  if (verb === 'tasks' && parts[3] && parts[4] === 'stop') {
+    if (!x.s.tasks?.some(y => y.id === parts[3] && y.st === 'run')) throw new Http(404, '没有这个在跑的任务');
+    if (!x.driver.stopTask) throw new Http(409, '停不了');
+    await x.driver.stopTask(x, parts[3]);
+    return { ok: true };
+  }
+  if (verb === 'dirs') {
+    if (x.s.agent === 'claude' && busy(x)) throw new Http(409, '它还在干活，这一轮做完再加');
+    const dirs = dirList(b.dirs);
+    x.set({ dirs: dirs.length ? dirs : undefined });
+    // Claude Code reads them as it starts, so the next message starts it again with them; Codex takes them each turn.
+    if (x.s.agent === 'claude') await x.driver.release(x);
+    if (x.items) x.note(dirs.length ? `它也能动这些文件夹了：${dirs.map(d => d.replace(homedir(), '~')).join('、')}` : '它只动自己的文件夹了');
+    return { ok: true, dirs };
   }
   if (verb === 'release') {
     if (x.s.st === 'work') throw new Http(409, '它还在干活，等这一步做完或先打断');
@@ -606,32 +846,168 @@ async function route(req: Req0, res: http.ServerResponse, url: URL): Promise<unk
   }
   throw new Http(404, '没有这个动作');
 }
-// ---------- what the workbench reads ----------
-// A file a session pointed at: pages, PDFs and images open in the preview's own browser, markdown and text come as text,
-// with what changed in it against what landing would compare, when something did.
-const WEB = /\.(html?|pdf|png|jpe?g|gif|webp|avif|svg|bmp|ico)$/i, MD = /\.(md|markdown|mdx)$/i;
-async function peek(x: Session, ref: string): Promise<Peek> {
-  const clean = decodeURIComponent(ref.replace(/^file:\/\//, '')).replace(/(#L\d.*|:\d+(:\d+)?(-\d+)?)$/, '').replace(/^~(?=\/|$)/, homedir());
-  if (!clean) throw new Http(400, 'ref 不对');
-  const abs = path.resolve(x.s.cwd, clean), st = await stat(abs).catch(() => null);
-  if (!st?.isFile()) throw new Http(404, `找不到 ${ref}`);
-  if (WEB.test(abs)) return { kind: 'web', abs, url: pathToFileURL(abs).href };
-  if (st.size > 2 << 20) throw new Http(413, '文件太大了，在新窗口打开看');
-  const buf = await readFile(abs);
-  if (buf.includes(0)) throw new Http(415, '不是文本，在新窗口打开看');
-  const text = buf.toString('utf8');
-  if (MD.test(abs)) return { kind: 'md', abs, text };
-  const base = x.s.tree ? (await git(x.s.cwd, 'merge-base', 'main', 'HEAD').catch(() => '')).trim() || 'HEAD' : 'HEAD';
-  const raw = await git(path.dirname(abs), 'diff', '--no-color', '-U3', base, '--', abs).catch(() => '');
-  const diff: Diff = [];
-  for (const l of raw.split('\n')) {
-    if (/^(diff |index |--- |\+\+\+ |new file|deleted file|similarity|rename |old mode|new mode|\\ )/.test(l)) continue;
-    if (l.startsWith('@@')) { if (diff.length) diff.push([' ', '⋯']); continue; }
-    if (l[0] === '+' || l[0] === '-' || l[0] === ' ') diff.push([l[0], l.slice(1)]);
-  }
-  const add = diff.filter(d => d[0] === '+').length, del = diff.filter(d => d[0] === '-').length;
-  return { kind: 'text', abs, text, ...(add + del ? { diff: diff.slice(0, 4000), add, del } : {}) };
+
+// ---------- what the routes do ----------
+async function setKey(x: Session, k: 'model' | 'effort' | 'mode', v: string) {
+  if (x.s[k] === v) return;
+  await x.driver.set(x, k, v);
+  x.set({ [k]: v });
+  if (x.items) x.note(`${k === 'model' ? '模型' : k === 'effort' ? '力度' : '模式'}换成 ${label(x.s.agent, k, v)}${x.s.st === 'work' ? ' · 从下一步开始' : ''}`);
 }
+// `/model x` (a model's id or name, or part of one), `/effort x` (`/reasoning x`, as Codex says it) and `/plan`.
+async function typed(x: Session, name: string, arg: string) {
+  const c = (await getCatalog())[x.s.agent], low = arg.toLowerCase();
+  if (name === 'plan') return setKey(x, 'mode', 'plan');
+  if (name === 'model') {
+    const hit = c.models.find(([v, l]) => v.toLowerCase() === low || l.toLowerCase() === low) ?? c.models.find(([v, l]) => v.toLowerCase().includes(low) || l.toLowerCase().includes(low));
+    if (!hit) throw new Http(400, `没有 ${arg} 这个模型`);
+    return setKey(x, 'model', hit[0]);
+  }
+  const e = c.efforts.find(v => v.toLowerCase() === low);
+  if (!e) throw new Http(400, `力度只有 ${c.efforts.join('、')}`);
+  return setKey(x, 'effort', e);
+}
+// A point of the conversation (what you said, or an answer, by its `id`) and the checkpoint its files go back to: what
+// you said goes back to before it, an answer to the next thing you said, or with nothing after it to where they are now.
+function pointOf(x: Session, at: string) {
+  const items = x.items ?? [], i = at ? items.findIndex(it => (it.k === 'you' || it.k === 'it') && it.id === at) : -1;
+  if (i < 0) throw new Http(404, '这个会话里没有这一句');
+  if (items[i].k === 'you') return { kind: 'you' as const, checkpoint: at };
+  const next = items.slice(i + 1).find((it): it is Item & { k: 'you' } => it.k === 'you' && !!it.id);
+  return { kind: 'it' as const, checkpoint: next?.id ?? null };
+}
+// A new session from this one (B13): the whole conversation, or up to a point (`at`; `before` leaves that point
+// out), with the files put back as they were there (`code`, Claude's checkpoints), this session archived (`archive`), and
+// a first message (`text`, `files`). With nothing before the point, the new session starts empty and needs that message.
+async function fork(x: Session, b: Record<string, any>) {
+  await x.ensureLoaded();
+  const at = typeof b.at === 'string' && b.at ? b.at : undefined, before = b.before === true, code = b.code === true;
+  const text = typeof b.text === 'string' ? b.text.trim() : '', files = fileList(b.files), point = at ? pointOf(x, at) : null;
+  if (code && !x.driver.rewind) throw new Http(409, 'Codex 不记文件的检查点，只能分叉对话');
+  if (code && busy(x)) throw new Http(409, '它还在干活，先打断再退文件');
+  if (code || text || files.length) signedIn(x.s.agent);
+  const cp = code ? point?.checkpoint ?? null : null;
+  if (cp) { const d = await x.driver.rewind!(x, cp, true); if (!d.can) throw new Http(409, d.why ? `文件回不去：${d.why}` : '文件回不去了'); }
+  const id = await x.driver.fork(x, at, before);
+  if (!id && !text && !files.length) throw new Http(409, '这是第一句，前面没有可以留下的：写一句新的发出去');
+  const f = new Session({ ...x.s, id: id ?? '', title: `${x.s.title}（分叉）`, named: false, pinned: false, parked: false, archived: false, unread: false, st: 'done', updated: Date.now(),
+    trace: [...x.s.trace ?? [], { at: Date.now(), st: 'done' }],
+    now: undefined, since: undefined, queue: undefined, stopped: undefined, term: undefined, resets: undefined, tasks: undefined, bg: undefined, land: undefined }, x.repo);
+  if (id) { sessions.set(id, f); await f.ensureLoaded(); }
+  else { f.items = []; f.s.id = await f.driver.create(f); sessions.set(f.s.id, f); }
+  f.note(`从「${x.s.title}」${at ? `的${before ? '这一句之前' : '这一句'}` : ''}分叉 · 两边各走各的，用的是同一个文件夹`);
+  broadcast({ t: 'sess', s: f.s });
+  save();
+  if (cp) { const r = await x.driver.rewind!(x, cp, false); f.note(`文件退回到了那时的样子 · ${r.files.length} 个文件`); void x.measure(); }
+  if (b.archive === true) {
+    if (busy(x)) await x.driver.interrupt(x).catch(() => {});
+    await x.driver.release(x).catch(() => {});
+    x.set({ archived: true, pinned: false, parked: false });
+  }
+  if (text || files.length) await f.driver.send(f, text, files);
+  return f.s.id;
+}
+// Before a worktree goes against git's own checks: everything in it that git does not ignore, committed or not, as one
+// commit on top of its branch under refs/startrail/trash/ (`git log <ref>` shows it, `git branch <name> <ref>` brings
+// it back).
+async function keep(x: Session) {
+  const idx = path.join(DIR, `trash-index-${process.pid}-${Date.now()}`), env = { ...process.env, GIT_INDEX_FILE: idx };
+  const g = async (...a: string[]) => (await exec('git', ['-C', x.s.cwd, '-c', 'user.name=Startrail', '-c', 'user.email=startrail@localhost', ...a], { env, maxBuffer: 64 << 20 })).stdout.trim();
+  try {
+    await g('read-tree', 'HEAD');
+    await g('add', '-A');
+    const commit = await g('commit-tree', await g('write-tree'), '-p', 'HEAD', '-m', `startrail: kept when "${x.s.title}" was deleted`);
+    const ref = `refs/startrail/trash/${x.s.branch.replace(/[^\w.-]+/g, '-')}-${Date.now()}`;
+    await g('update-ref', ref, commit);
+    return ref;
+  } finally { await unlink(idx).catch(() => {}); }
+}
+const TRASH = path.join(DIR, 'trash');
+// The last 64 kB a background task wrote.
+async function tail(file: string) {
+  const fh = await open(file, 'r').catch(() => null);
+  if (!fh) return '';
+  try { const size = (await fh.stat()).size, n = Math.min(size, 64e3), b = Buffer.alloc(n); await fh.read(b, 0, n, size - n); return b.toString('utf8'); }
+  finally { await fh.close(); }
+}
+// Sessions started outside the window (a terminal, Codex's own app) in a folder, or everywhere, that the window does not
+// have; one that moved in the last two minutes may still be open there (B12, ADR 0096).
+const RECENT = 120e3;
+async function outsideOf(cwd: string): Promise<Outside[]> {
+  const known = new Set([...sessions.values()].flatMap(x => [x.s.id, ...x.s.resets ?? []]));
+  const lists = await Promise.all((Object.keys(DRIVERS) as Agent[]).map(a => DRIVERS[a].outside(cwd).catch(e => { log('outside', a, String(e)); return [] as Outside[]; })));
+  return lists.flat().filter(o => !known.has(o.id)).map(o => Date.now() - o.updated < RECENT ? { ...o, recent: true } : o).sort((a, b) => b.updated - a.updated).slice(0, 200);
+}
+// One of them, taken in: read back from its own transcript, it goes on here; a recent one takes a second, sure press.
+async function take(agent: Agent, id: string, cwd: string, force: boolean) {
+  if ([...sessions.values()].some(x => x.s.id === id || x.s.resets?.includes(id))) throw new Http(409, '这个会话已经在列表里了');
+  const o = (await DRIVERS[agent].outside(cwd)).find(y => y.id === id) ?? (cwd ? (await DRIVERS[agent].outside('')).find(y => y.id === id) : undefined);
+  if (!o) throw new Http(404, '找不到这个会话');
+  if (!force && Date.now() - o.updated < RECENT) throw new Http(409, '它两分钟内还在别处动过，可能还开着：先在那边关掉，确定就再点一次', 'force');
+  if (!(await stat(o.cwd).catch(() => null))?.isDirectory()) throw new Http(409, '它的文件夹已经不在了');
+  const repo = await repoOf(o.cwd), cat = (await getCatalog())[agent];
+  // A worktree where Claude Code makes its own (`claude --worktree`) lands like one this window made.
+  const tree = !!repo && o.cwd.startsWith(`${path.join(repo, '.claude', 'worktrees')}/`);
+  const s: Sess = { id, agent, title: o.title, cwd: o.cwd, project: base(repo || o.cwd), branch: await branchOf(o.cwd), tree,
+    st: 'done', pinned: false, parked: false, archived: false, unread: false, created: o.updated, trace: [{ at: Date.now(), st: 'done' }], updated: Date.now(),
+    summary: '从别处接手', model: cat.models[0]?.[0] ?? '', effort: 'high', mode: cat.modes[0]?.[0] ?? '', ctx: 0 };
+  const x = new Session(s, repo);
+  sessions.set(id, x);
+  await x.ensureLoaded();
+  const last = [...x.items ?? []].reverse().find(it => it.k === 'it');
+  if (last?.k === 'it') s.summary = firstSentence(last.text);
+  x.note(`从${agent === 'claude' ? '终端' : ' Codex '}接手 · 在这里接着聊，那边别同时开着`);
+  broadcast({ t: 'sess', s });
+  save();
+  void x.measure();
+  return id;
+}
+// Every session's title and summary, and each conversation the host has read; with `all`, archived ones too (read now).
+async function search(q: string, all: boolean) {
+  const want = q.trim().toLowerCase(), hits: { id: string; item?: number; text: string }[] = [];
+  if (!want) return hits;
+  for (const x of [...sessions.values()].sort((a, b) => b.s.updated - a.s.updated)) {
+    if ((x.s.archived && !all) || hits.length >= 200) continue;
+    if (`${x.s.title}\n${x.s.summary}`.toLowerCase().includes(want)) hits.push({ id: x.s.id, text: x.s.title });
+    if (all && !x.items) await x.ensureLoaded();
+    (x.items ?? []).forEach((it, i) => {
+      const j = (it.k === 'you' || it.k === 'it') && hits.length < 200 ? it.text.toLowerCase().indexOf(want) : -1;
+      if (j >= 0) hits.push({ id: x.s.id, item: i, text: oneLine(`${j > 40 ? '…' : ''}${(it as { text: string }).text.slice(Math.max(0, j - 40), j + want.length + 80)}`, 160) });
+    });
+  }
+  return hits;
+}
+// The whole conversation as Markdown (C2): what you said, its answers, each step on one line.
+const STEP_NAME: Record<Step['k'], string> = { read: '读', edit: '改', bash: '跑', search: '搜', agent: '子任务', web: '网页', tool: '工具', say: '说', think: '想' };
+function exported(x: Session) {
+  const who = x.s.agent === 'claude' ? 'Claude' : 'Codex', when = (at?: number) => at ? ` · ${new Date(at).toLocaleString('zh-CN', { hour12: false })}` : '';
+  const out = [`# ${x.s.title}`, '', `${who} · ${x.s.cwd.replace(homedir(), '~')}${x.s.branch ? ` · ${x.s.branch}` : ''}`, ''];
+  for (const it of x.items ?? []) {
+    if (it.k === 'you') out.push(`## 你${when(it.at)}`, '', it.text, ...it.files?.length ? ['', `附带：${it.files.map(f => f.name).join('、')}`] : [], '');
+    else if (it.k === 'it') out.push(`## ${who}${when(it.at)}`, '', it.text, '');
+    else if (it.k === 'steps') out.push(...it.steps.map(st => `- ${STEP_NAME[st.k]} ${oneLine(st.t, 200)}`), '');
+    else if (it.k === 'plan') out.push(...it.todos.map(([t, d]) => `- [${d === 2 ? 'x' : ' '}] ${t}`), '');
+    else if (it.k === 'req') out.push(`> ${reqLine(it.req)}${it.done ? ` · ${it.done}` : ''}`, '');
+    else out.push(`> ${it.text}`, '');
+  }
+  return { name: `${x.s.title.replace(/[/\\:*?"<>|]+/g, ' ').trim().slice(0, 80) || 'session'}.md`, text: out.join('\n') };
+}
+// The check-up (A4): the PATH the host searches, which Claude Code it runs and who it is signed in as, Codex and git
+// where found, and whether the daemon answers.
+async function doctor(): Promise<Doctor> {
+  const exe = claudeExe();
+  const [cv, cx, gx, up] = await Promise.all([exe ? version(exe) : undefined, which('codex'), which('git'),
+    fetch(`${DAEMON}/api/health`, { signal: AbortSignal.timeout(2000) }).then(r => r.ok, () => false)]);
+  const [xv, gv, acct, ca] = await Promise.all([cx ? version(cx) : undefined, gx ? version(gx) : undefined,
+    cx ? codex.account().then(a => ({ a }), (e: unknown) => ({ e: oneLine(e instanceof Error ? e.message : String(e), 200) })) : { a: null },
+    claude.account().catch(() => null)]);
+  return { packaged: PACKAGED, path: (process.env.PATH ?? '').split(':').filter(Boolean),
+    claude: { exe, ...cv ? { version: cv } : {}, own: !!exe && !exe.includes('claude-agent-sdk-'), auth: auth(), ...ca && auth().ready ? { account: ca } : {} },
+    codex: { found: !!cx, ...cx ? { path: cx } : {}, ...xv ? { version: xv } : {}, ...'a' in acct ? { account: acct.a } : { error: acct.e } },
+    git: { found: !!gx, ...gv ? { version: gv } : {} }, daemon: { up } };
+}
+
+// ---------- what the workbench reads ----------
 // The daemon's last reading of the plans (ADR 0018), for the composer's ring.
 async function usage(): Promise<Usage> {
   const r = await daemon('/inherent/usage').catch(() => null) as { services?: Record<string, { status?: string; data?: { plan?: string; windows?: UsageWindow[] } }> } | null;
@@ -645,7 +1021,7 @@ async function services(): Promise<Service[]> {
     const out = await exec('launchctl', ['print', `gui/${process.getuid?.() ?? 501}/${label}`], { timeout: 5000 }).then(r => r.stdout, () => '');
     const pid = Number(/\bpid = (\d+)/.exec(out)?.[1]) || undefined;
     const started = pid ? await exec('ps', ['-o', 'lstart=', '-p', String(pid)], { timeout: 5000 }).then(r => Date.parse(r.stdout.trim()), () => NaN) : NaN;
-    return { name, label, running: /\bstate = running/.test(out), ...(pid ? { pid } : {}), ...(Number.isFinite(started) ? { since: started } : {}) };
+    return { name, label, loaded: !!out, running: /\bstate = running/.test(out), ...(pid ? { pid } : {}), ...(Number.isFinite(started) ? { since: started } : {}) };
   }));
 }
 // The logs the 日志 tab reads: from a byte offset on, or the last 48 kB to start with.
@@ -667,13 +1043,17 @@ function label(agent: Agent, k: 'model' | 'effort' | 'mode', v: string) {
 // The window is shown what is ready: every child taken back and every conversation read.
 let ready: Promise<unknown> = Promise.resolve();
 async function boot() {
+  // An app opened from Finder has only the system's PATH; the login shell knows where codex, git and the gates' tools are.
+  await loginPath();
   const kids = new Map<string, Kid>();
   try {
     await startKeeper(KEEPER, path.join(ROOT, 'logs', 'agents-keeper.log'));
     for (const k of await ask<Kid[]>(KEEPER, { op: 'list' })) kids.set(k.key, k);
   } catch (e) { log('keeper', e); }
+  await loadSettings();
   await restore(kids);
   await pruneImages();
+  await Promise.all([pruneOld(UPLOADS), pruneOld(TRASH)]);
   const live = [...sessions.values()].filter(x => !x.s.archived);
   await Promise.all(live.map(async x => {
     const k = kids.get(x.s.id);
@@ -709,8 +1089,10 @@ export async function main() {
       const out = await route(req, res, url);
       if (out !== undefined) reply(200, out);
     } catch (e) {
-      if (!(e instanceof Http)) log(req.method, url.pathname, e);
-      reply(e instanceof Http ? e.code : 500, { error: e instanceof Error ? e.message : String(e) });
+      // A plain error may carry the status it wants (a key that is refused, a file the preview refuses).
+      const code = e instanceof Http ? e.code : (e as { status?: number }).status ?? 500;
+      if (code >= 500) log(req.method, url.pathname, e);
+      reply(code, { error: e instanceof Error ? e.message : String(e), ...e instanceof Http && e.need ? { need: e.need } : {} });
     }
   });
   // Only this machine: the port is the lock, so a second host started by accident exits here.

@@ -4,27 +4,37 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync, realpathSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
-import { deleteSession, forkSession, getSessionMessages, query, renameSession, type Options, type PermissionResult, type PermissionUpdate,
+import { deleteSession, forkSession, getSessionInfo, getSessionMessages, listSessions, query, renameSession, type Options, type PermissionResult, type PermissionUpdate,
   type Query, type SDKControlGetContextUsageResponse, type SDKMessage, type SDKUserMessage, type SpawnedProcess, type SpawnOptions } from '@anthropic-ai/claude-agent-sdk';
 import { EventEmitter } from 'node:events';
 import net from 'node:net';
 import { PassThrough } from 'node:stream';
-import { catalogChanged, KEEPER, kt, log, pic, type Driver, type Session } from './host.js';
+import { attach, attached } from './files.js';
+import { catalogChanged, KEEPER, kt, log, pic, sent, type Driver, type Session } from './host.js';
 import { ask, lines, parse, type Head } from './keeper.js';
-import type { Choice, Ctx, CtxRow, Diff, File, Pic, Req, Step } from './types.js';
+import { auth, keyEnv } from './settings.js';
+import type { Choice, Ctx, CtxRow, Diff, File, Pic, Req, Step, Task } from './types.js';
 
-// Allen's subscription, never an API key; and nothing that says this runs inside another Claude Code session. The
-// marker keeps Jarvis's own PermissionRequest hook (ADR 0049) out of sessions this window answers itself.
-export const ENV: Record<string, string | undefined> = Object.fromEntries(Object.entries(process.env)
-  .filter(([k]) => !/^(ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|CLAUDECODE|CLAUDE_CODE_|CLAUDE_JOB)/.test(k)));
-ENV.JARVIS_AGENTS_HOST = '1';
+// In the dev build Allen's subscription, in the packaged app the owner's own key or cloud account (ADR 0094), and never
+// a key or token this process happens to have; nothing that says this runs inside another Claude Code session. The
+// marker keeps Jarvis's own PermissionRequest hook (ADR 0049) out of sessions this window answers itself. Read each
+// time, so what the login shell added to PATH once the host started counts. `session`: false for a claude that is not
+// a session (updating the install), which never gets the key.
+export const claudeEnv = (session = true): Record<string, string | undefined> => ({ ...Object.fromEntries(Object.entries(process.env)
+  .filter(([k]) => !/^(ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|CLAUDECODE|CLAUDE_CODE_|CLAUDE_JOB)/.test(k))), JARVIS_AGENTS_HOST: '1', ...session ? keyEnv() : {} });
 // The Claude Code install on this Mac, which moves to each new release (and its new models) without a Jarvis release;
-// the SDK's own pinned copy only where there is none.
+// the SDK's own pinned copy only where there is none. JARVIS_AGENTS_CLAUDE names another binary (a check's stand-in).
 const OWN = `${homedir()}/.local/bin/claude`;
-const EXE = existsSync(OWN) ? OWN : undefined;
+export const EXE = process.env.JARVIS_AGENTS_CLAUDE || (existsSync(OWN) ? OWN : undefined);
+// What actually runs: EXE, or the build the SDK finds beside its own package.
+export function claudeExe() {
+  if (EXE) return EXE;
+  try { return createRequire(import.meta.url).resolve(`@anthropic-ai/claude-agent-sdk-${process.platform}-${process.arch}/claude`); } catch { return ''; }
+}
 const PROMPT = { type: 'preset', preset: 'claude_code' } as const;
-const MODES: [string, string][] = [['auto', '自动'], ['default', '改之前问我'], ['acceptEdits', '自动接受修改'], ['plan', '计划模式']];
+const MODES: [string, string][] = [['auto', '自动'], ['default', '改之前问我'], ['acceptEdits', '自动接受修改'], ['plan', '计划模式'], ['bypassPermissions', '完全放开']];
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
 
 // A queue the session reads from; it ends only when the session is let go.
@@ -54,6 +64,8 @@ type Rt = {
   // After a host restart: what the transcript already gave, whether the turn is still going, whether a result the
   // keeper replays is news (the turn ended while no host watched) or one already shown
   seen?: Set<string>; open?: boolean; news?: boolean;
+  // titled: turns that ended here, so a title Claude Code generated after one of the first few is taken (B14)
+  titled?: number;
 };
 const rt = (s: Session): Rt => (s.rt.claude ??= { pending: new Map(), queued: new Map(), tasks: new Map(), creates: new Map(), block: '' }) as Rt;
 // A reset (/clear, a plan run with a clean context) starts a transcript of its own: the session reads them all back and
@@ -127,19 +139,35 @@ function reqOf(s: Session, id: string, name: string, input: Record<string, unkno
   return { id, tool: 'Tool', why: o.title || o.description || '', name: o.displayName || st?.t || name, detail: JSON.stringify(input, null, 1).slice(0, 800), always };
 }
 const textOf = (c: unknown): string => typeof c === 'string' ? c : Array.isArray(c) ? c.map(b => b?.type === 'text' ? str(b.text) : '').filter(Boolean).join('\n') : '';
+// Pictures a tool gave back (a screenshot, an image it read).
+const picsOf = (c: unknown): Pic[] => Array.isArray(c) ? c.filter(b => b?.type === 'image' && b.source?.type === 'base64')
+  .map((b, k) => pic(`图片 ${k + 1}`, `data:${b.source.media_type};base64,${b.source.data}`)) : [];
+const firstLine = (t: string) => oneLine(t.split('\n').find(l => l.trim()) ?? '', 80);
 
 // ---------- one message from the session, live or from its transcript ----------
-type Block = { type: string; id?: string; name?: string; input?: Record<string, unknown>; text?: string; tool_use_id?: string; content?: unknown; is_error?: boolean;
+type Block = { type: string; id?: string; name?: string; input?: Record<string, unknown>; text?: string; thinking?: string; title?: string; tool_use_id?: string; content?: unknown; is_error?: boolean;
   source?: { type: string; media_type?: string; data?: string } };
-// Live, Allen's own words are already on screen when he sends them; from a transcript they are read back here.
-function said(s: Session, m: SDKMessage | { type: string; message?: unknown; tool_use_result?: unknown; parent_tool_use_id?: string | null }, at?: number, live = false) {
-  const msg = (m as { message?: { content?: unknown } }).message;
+// Live, Allen's own words are already on screen when he sends them; from a transcript they are read back here. Each of
+// his messages and each answer keeps its uuid, the point fork and rewind name.
+function said(s: Session, m: SDKMessage | { type: string; uuid?: string; message?: unknown; tool_use_result?: unknown; parent_tool_use_id?: string | null }, at?: number, live = false) {
+  const msg = (m as { message?: { content?: unknown } }).message, parent = (m as { parent_tool_use_id?: string | null }).parent_tool_use_id, uuid = str((m as { uuid?: unknown }).uuid);
   if (m.type === 'assistant') {
-    if ((m as { parent_tool_use_id?: string | null }).parent_tool_use_id) return;
+    // A sub-agent's own thinking, text and calls go under the step that started it (B16).
+    if (parent) {
+      for (const b of (msg?.content ?? []) as Block[]) {
+        if (b.type === 'text' && b.text?.trim()) s.sub(parent, undefined, { k: 'say', t: b.text }, at);
+        else if (b.type === 'thinking' && b.thinking?.trim()) s.sub(parent, undefined, { k: 'think', t: firstLine(b.thinking), out: b.thinking }, at);
+        else if (b.type === 'tool_use' && b.name && b.id) { const st = stepOf(s, b.name, b.input ?? {}); if (st) s.sub(parent, b.id, st, at); }
+      }
+      return;
+    }
     const u = (msg as { usage?: Record<string, number> } | undefined)?.usage;
     if (u) rt(s).usage = (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0);
-    for (const b of (msg?.content ?? []) as Block[]) {
+    if (uuid) s.ref(uuid);
+    for (const [i, b] of ((msg?.content ?? []) as Block[]).entries()) {
       if (b.type === 'text' && b.text) s.say(b.text, at);
+      // Its thinking, as the summary Claude Code is asked for (B18).
+      else if (b.type === 'thinking' && b.thinking?.trim()) s.tool(`${uuid || randomUUID()}:think:${i}`, { k: 'think', t: firstLine(b.thinking), out: b.thinking }, at);
       else if (b.type === 'tool_use' && b.name && b.id) {
         const input = b.input ?? {}, st = stepOf(s, b.name, input);
         if (st) s.tool(b.id, st, at);
@@ -150,16 +178,16 @@ function said(s: Session, m: SDKMessage | { type: string; message?: unknown; too
     return;
   }
   if (m.type === 'user') {
-    if ((m as { parent_tool_use_id?: string | null }).parent_tool_use_id) return;
     const content = msg?.content;
     if (Array.isArray(content) && content.some((b: Block) => b.type === 'tool_result')) {
       for (const b of content as Block[]) {
         if (b.type !== 'tool_result' || !b.tool_use_id) continue;
         const created = rt(s).creates.get(b.tool_use_id);
         if (created) { rt(s).creates.delete(b.tool_use_id); planOf(s, 'TaskCreate', created, (m as { tool_use_result?: unknown }).tool_use_result); continue; }
-        const r = (m as { tool_use_result?: Record<string, unknown> }).tool_use_result, patch: Partial<Step> = { ok: !b.is_error };
+        const r = (m as { tool_use_result?: Record<string, unknown> }).tool_use_result, patch: Partial<Step> = { ok: !b.is_error }, pics = picsOf(b.content);
         const out = r && typeof r === 'object' && ('stdout' in r || 'stderr' in r) ? [str(r.stdout), str(r.stderr)].filter(Boolean).join('\n') : textOf(b.content);
         if (b.is_error || out) patch.out = out.slice(0, 6000);
+        if (pics.length) patch.pics = pics;
         if (r && Array.isArray(r.structuredPatch)) {
           const diff: Diff = (r.structuredPatch as { lines?: string[] }[]).flatMap(h => (h.lines ?? []).map(l => [l[0] === '+' ? '+' : l[0] === '-' ? '-' : ' ', l.slice(1)] as Diff[number]));
           if (diff.length) Object.assign(patch, { diff: diff.slice(0, 400), ...counts(diff) });
@@ -168,15 +196,18 @@ function said(s: Session, m: SDKMessage | { type: string; message?: unknown; too
       }
       return;
     }
-    if (live) return;
-    // Allen's own words; Claude Code's bookkeeping in angle brackets is not.
-    const text = textOf(content), cmd = /<command-name>([^<]*)<\/command-name>[\s\S]*?(?:<command-args>([^<]*)<\/command-args>)?/.exec(text);
-    const files = Array.isArray(content) ? (content as Block[]).filter(b => b.type === 'image')
-      .map((b, k) => pic(`图片 ${k + 1}`, b.source?.type === 'base64' ? `data:${b.source.media_type};base64,${b.source.data}` : '')) : [];
-    if (cmd) s.you(`${cmd[1]} ${cmd[2] ?? ''}`.trim(), [], at);
-    else if (/^\s*<(local-command|system-reminder|command-)/.test(text)) return;
-    else if (/^\[Request interrupted/.test(text)) s.note('你打断了这一轮');
-    else if (text.trim() || files.length) s.you(text.trim(), files, at);
+    // A sub-agent's instructions are in its step already.
+    if (parent || live) return;
+    // Allen's own words; Claude Code's bookkeeping in angle brackets is not. Files that are not pictures were named on
+    // lines of their own at the end.
+    const raw = textOf(content), cmd = /<command-name>([^<]*)<\/command-name>[\s\S]*?(?:<command-args>([^<]*)<\/command-args>)?/.exec(raw), { text, paths } = attached(raw);
+    const blocks = Array.isArray(content) ? content as Block[] : [];
+    const files = [...blocks.filter(b => b.type === 'image').map((b, k) => pic(`图片 ${k + 1}`, b.source?.type === 'base64' ? `data:${b.source.media_type};base64,${b.source.data}` : '')),
+      ...blocks.filter(b => b.type === 'document').map((b, k) => ({ name: str(b.title) || `PDF ${k + 1}` })), ...paths.map(p => ({ name: p.split('/').pop() || p }))];
+    if (cmd) s.you(`${cmd[1]} ${cmd[2] ?? ''}`.trim(), [], at, uuid);
+    else if (/^\s*<(local-command|system-reminder|command-)/.test(raw)) return;
+    else if (/^\[Request interrupted/.test(raw)) s.note('你打断了这一轮');
+    else if (text.trim() || files.length) s.you(text.trim(), files, at, uuid);
   }
 }
 
@@ -214,11 +245,18 @@ function viaKeeper(s: Session) {
 function ensure(s: Session) {
   const r = rt(s);
   if (r.q) return r;
+  const a = auth();
+  if (!a.ready) throw new Error(a.why);
   const input = r.input = pushable<SDKUserMessage>();
+  // File checkpoints make rewind possible (B13; they do not cover what a shell command changed); a sub-agent's text and
+  // Claude's summarized thinking come through so the window can show them (B16, B18); the extra folders are the
+  // session's own (C5). Bypassing permissions is allowed as a mode, never the default (C4).
   const options: Options = {
-    cwd: s.s.cwd, env: ENV, pathToClaudeCodeExecutable: EXE, systemPrompt: PROMPT, includePartialMessages: true,
+    cwd: s.s.cwd, env: claudeEnv(), pathToClaudeCodeExecutable: EXE, systemPrompt: PROMPT, includePartialMessages: true,
     model: s.s.model || undefined, effort: (EFFORTS.includes(s.s.effort) ? s.s.effort : undefined) as Options['effort'],
-    permissionMode: (MODES.some(m => m[0] === s.s.mode) ? s.s.mode : 'auto') as Options['permissionMode'],
+    permissionMode: (MODES.some(m => m[0] === s.s.mode) ? s.s.mode : 'auto') as Options['permissionMode'], allowDangerouslySkipPermissions: true,
+    enableFileCheckpointing: true, forwardSubagentText: true, extraArgs: { 'thinking-display': 'summarized' },
+    ...s.s.dirs?.length ? { additionalDirectories: s.s.dirs } : {},
     canUseTool: (name, input, o) => new Promise<PermissionResult>(resolve => {
       const id = o.toolUseID || randomUUID();
       r.pending.set(id, { resolve, name, input, suggestions: o.suggestions });
@@ -250,7 +288,7 @@ function frame(s: Session, m: SDKMessage) {
   // or run as the next turn.
   if (any.type === 'command_lifecycle' && any.state === 'started' && typeof any.command_uuid === 'string') {
     const q = r.queued.get(any.command_uuid);
-    if (q) { r.queued.delete(any.command_uuid); s.dequeue(q.text); s.you(q.text, q.files); s.begin(); }
+    if (q) { r.queued.delete(any.command_uuid); s.dequeue(q.text); s.you(q.text, q.files, undefined, any.command_uuid); s.begin(); }
     return;
   }
   if (m.type === 'stream_event') {
@@ -270,7 +308,7 @@ function frame(s: Session, m: SDKMessage) {
     if (r.queued.size) { s.end(undefined, true); if (aborted) s.note('你打断了这一轮'); return; }
     if (aborted) { s.end(undefined, false, 'done', '你打断了这一轮', false); s.note('你打断了这一轮 · 发一句就能接着来'); return; }
     if (res.is_error || res.subtype !== 'success') s.end(undefined, false, 'err', oneLine((res.errors as string[] | undefined)?.join(' · ') || str(res.result) || '出错了'));
-    else s.end();
+    else { s.end(); if ((r.titled = (r.titled ?? 0) + 1) <= 3) void titleOf(s); }
     return;
   }
   if (m.type !== 'system') return;
@@ -283,9 +321,26 @@ function frame(s: Session, m: SDKMessage) {
     const ts = any.tasks as { task_id: string; description: string }[];
     s.set({ bg: ts.length ? `${ts.length} 个后台任务 · ${ts.map(t => t.description).join('、').slice(0, 80)}` : undefined });
   }
+  // Its background work, one entry per task (B17).
+  else if (sub === 'task_started') s.task(str(any.task_id), { kind: str(any.task_type) || (any.subagent_type ? 'local_agent' : 'task'), what: str(any.description) || str(any.subagent_type), st: 'run', since: Date.now() });
+  else if (sub === 'task_updated') {
+    const p = (any.patch ?? {}) as Record<string, unknown>, st = TASK_ST[str(p.status)];
+    s.task(str(any.task_id), { ...st ? { st } : {}, ...p.description ? { what: str(p.description) } : {}, ...typeof p.end_time === 'number' ? { ended: p.end_time } : {} });
+  }
+  else if (sub === 'task_notification') s.task(str(any.task_id), { st: TASK_ST[str(any.status)] ?? 'done', ended: Date.now(), ...any.output_file ? { out: str(any.output_file) } : {} });
+  // Skills and commands that came or went while it ran.
+  else if (sub === 'commands_changed' && Array.isArray(any.commands)) cmdCache.set(s.s.cwd, { at: Date.now(), list: (any.commands as { name: string; description?: string; argumentHint?: string }[]).map(c => [`/${c.name}`, [c.description, c.argumentHint].filter(Boolean).join(' · ')] as [string, string]) });
   else if (sub === 'permission_denied') s.note(`自动模式没让它${str(any.tool_name) ? `用 ${any.tool_name}` : '做这一步'}${any.message ? `：${oneLine(str(any.message), 80)}` : ''}`);
 }
 const oneLine = (t: string, n = 120) => { const x = t.replace(/\s+/g, ' ').trim(); return x.length > n ? `${x.slice(0, n - 1)}…` : x; };
+const TASK_ST: Record<string, Task['st']> = { pending: 'run', running: 'run', paused: 'run', completed: 'done', failed: 'fail', killed: 'stop', stopped: 'stop' };
+// Claude Code names a session itself once its first exchange is under way, sometimes a turn later; the SDK reads that
+// name, or one given with /rename in a terminal, as customTitle. The row takes it unless Allen named it here (B14).
+async function titleOf(s: Session) {
+  if (s.s.named) return;
+  const t = oneLine((await getSessionInfo(cur(s), { dir: s.s.cwd }).catch(() => undefined))?.customTitle ?? '', 80);
+  if (t && t !== s.s.title) s.set({ title: t });
+}
 
 // ---------- the context window, as /context counts it (getContextUsage, token counts, not estimates) ----------
 const CTX_NAME: Record<string, string> = { 'System prompt': '系统提示词', 'System tools': '内置工具', 'MCP server instructions': 'MCP 说明', 'MCP tools': 'MCP 工具',
@@ -325,15 +380,22 @@ function ctxOf(s: Session, u: SDKControlGetContextUsageResponse): Ctx {
 
 // ---------- menus: what a fresh session in a folder offers, asked of a session that never gets a message ----------
 const cmdCache = new Map<string, { at: number; list: [string, string][] }>();
-let models: [string, string][] = [], efforts: string[] = [], probedAt = '';
+let models: [string, string][] = [], efforts: string[] = [], probedAt = '', account: Record<string, string> | null = null;
+// Commands whose screen in the terminal the window draws itself (B8): the third entry names its place for them.
+const OWN_UI: [string, string, string][] = [['/rewind', '回到之前的某一句', 'rewind'], ['/resume', '接手终端里开的会话', 'import'], ['/export', '导出整段对话', 'export'],
+  ['/permissions', '换权限模式', 'mode'], ['/memory', '打开 CLAUDE.md', 'memory'], ['/tasks', '后台任务', 'tasks'], ['/ide', '用编辑器打开', 'editor'],
+  ['/login', '环境和登录', 'doctor'], ['/status', '环境和登录', 'doctor'], ['/doctor', '环境和登录', 'doctor'], ['/diff', '看它改了什么', 'changes'],
+  ['/add-dir', '让它也能动另一个文件夹', 'dirs'], ['/model', '换模型', 'model'], ['/effort', '换力度', 'effort'], ['/new', '开新会话', 'new'], ['/fork', '从这里分叉', 'fork']];
+const withUi = (list: [string, string][]): [string, string, string?][] => [...OWN_UI, ...list.filter(c => !OWN_UI.some(u => u[0] === c[0]))];
 const version = () => EXE ? realpathSync(EXE) : '';
 async function probe(cwd: string) {
   probedAt = version();
   const input = pushable<SDKUserMessage>();
-  const q = query({ prompt: input, options: { cwd, env: ENV, pathToClaudeCodeExecutable: EXE, systemPrompt: PROMPT } });
+  const q = query({ prompt: input, options: { cwd, env: claudeEnv(), pathToClaudeCodeExecutable: EXE, systemPrompt: PROMPT } });
   try {
     const init = await Promise.race([q.initializationResult(), new Promise<never>((_, no) => setTimeout(() => no(new Error('Claude 没有及时答应')), 30000))]);
     cmdCache.set(cwd, { at: Date.now(), list: init.commands.map(c => [`/${c.name}`, [c.description, c.argumentHint].filter(Boolean).join(' · ')] as [string, string]) });
+    account = Object.fromEntries(Object.entries(init.account ?? {}).filter(([, v]) => typeof v === 'string')) as Record<string, string>;
     const ms = init.models.map(m => [m.value, m.displayName] as [string, string]);
     const es = [...new Set(init.models.flatMap(m => m.supportedEffortLevels ?? []))];
     if (ms.length && JSON.stringify(ms) !== JSON.stringify(models)) { models = ms; efforts = es.length ? EFFORTS.filter(e => es.includes(e as never)) : EFFORTS; void catalogChanged(); }
@@ -343,29 +405,47 @@ let probed: Promise<void> | null = null;
 // Nothing promises Claude Code updates itself when only the SDK runs it, so the host asks for the update every hour;
 // whoever moved the install (this or a terminal session), the menus are read again and pushed to open windows.
 function update() {
-  execFile(OWN, ['update'], { env: ENV, timeout: 300_000 }, e => {
+  execFile(OWN, ['update'], { env: claudeEnv(false), timeout: 300_000 }, e => {
     if (e) log('claude update', e.message.slice(0, 200));
     if (probed && version() !== probedAt) probed = probe(homedir()).catch(e => { log('claude probe', e); probed = null; });
   });
 }
-if (EXE) { update(); setInterval(update, 3_600_000).unref(); }
+if (EXE === OWN) { update(); setInterval(update, 3_600_000).unref(); }
 
 export const claude: Driver = {
+  // The packaged app starts no claude of its own before it has the owner's key: one without it would sign in with this
+  // Mac's own Claude Code login (ADR 0094).
   async catalog(): Promise<Choice> {
-    probed ??= probe(homedir()).catch(e => { log('claude probe', e); probed = null; });
+    if (auth().ready) probed ??= probe(homedir()).catch(e => { log('claude probe', e); probed = null; });
     return { models, efforts: efforts.length ? efforts : EFFORTS, modes: MODES, always: '以后都允许' };
   },
   async create(s) { rt(s).fresh = true; return randomUUID(); },
+  // Pictures go as images and PDFs as documents; any other file is named at the end of the text (B7).
   async send(s, text, files: File[]) {
-    const r = rt(s), uuid = randomUUID(), pics = files.map(f => pic(f.name, f.url));
-    const images = files.flatMap(f => {
-      const m = /^data:(image\/(?:png|jpeg|gif|webp));base64,(.+)$/.exec(f.url);
-      return m ? [{ type: 'image' as const, source: { type: 'base64' as const, media_type: m[1] as 'image/png', data: m[2] } }] : [];
-    });
+    const r = rt(s), uuid = randomUUID(), x = await sent(files, 'claude'), full = attach(text, x.paths);
+    const blocks = [...x.images.map(i => ({ type: 'image' as const, source: { type: 'base64' as const, media_type: i.type as 'image/png', data: i.data } })),
+      ...x.pdfs.map(p => ({ type: 'document' as const, title: p.name, source: { type: 'base64' as const, media_type: 'application/pdf' as const, data: p.data } }))];
     const busy = !!r.q && (s.s.st === 'work' || s.s.st === 'pack' || s.s.st === 'wait');
-    if (busy) { r.queued.set(uuid, { text, files: pics }); s.enqueue(text); }
-    else { s.you(text, pics); s.begin(); }
-    ensure(s).input!.push({ type: 'user', message: { role: 'user', content: images.length ? [...images, { type: 'text', text }] : text }, parent_tool_use_id: null, uuid });
+    if (busy) { r.queued.set(uuid, { text, files: x.pics }); s.enqueue(text); }
+    else { s.you(text, x.pics, undefined, uuid); s.begin(); }
+    ensure(s).input!.push({ type: 'user', message: { role: 'user', content: blocks.length ? [...blocks, { type: 'text', text: full }] : full }, parent_tool_use_id: null, uuid });
+  },
+  // A message it has not taken yet can still be taken back (B11).
+  async unqueue(s, text) {
+    const r = rt(s), hit = [...r.queued].find(([, q]) => q.text === text);
+    if (!hit || !r.q) return false;
+    const ok = await (r.q as unknown as { cancelAsyncMessage(uuid: string): Promise<boolean> }).cancelAsyncMessage(hit[0]).catch(() => false);
+    if (ok) { r.queued.delete(hit[0]); s.dequeue(text); }
+    return ok;
+  },
+  async stopTask(s, id) {
+    const q = rt(s).q;
+    if (!q) throw new Error('它现在没在跑');
+    await q.stopTask(id);
+  },
+  async rewind(s, at, dry) {
+    const q = ensure(s).q!, r = await q.rewindFiles(at, { dryRun: dry });
+    return { can: r.canRewind, ...r.error ? { why: r.error } : {}, files: r.filesChanged ?? [], add: r.insertions ?? 0, del: r.deletions ?? 0 };
   },
   answer(s, a) {
     const r = rt(s), p = r.pending.get(a.req);
@@ -451,9 +531,17 @@ export const claude: Driver = {
     await s.ensureLoaded();
     ensure(s);
   },
-  async fork(s) {
-    const { sessionId } = await forkSession(cur(s), { dir: s.s.cwd });
-    return sessionId;
+  // Up to a message: the transcript that holds it (after a clear, a later one) is copied up to that message, or up to
+  // the one before it.
+  async fork(s, at, before) {
+    if (!at) return (await forkSession(cur(s), { dir: s.s.cwd })).sessionId;
+    for (const id of [...ids(s)].reverse()) {
+      const msgs = await getSessionMessages(id, { dir: s.s.cwd }).catch(() => []), i = msgs.findIndex(m => m.uuid === at);
+      if (i < 0) continue;
+      const upTo = before ? msgs[i - 1]?.uuid : at;
+      return upTo ? (await forkSession(id, { dir: s.s.cwd, upToMessageId: upTo })).sessionId : null;
+    }
+    throw new Error('它的记录里没有这一句');
   },
   // A transcript that is already gone counts as deleted.
   async remove(s) {
@@ -462,11 +550,18 @@ export const claude: Driver = {
   },
   async commands(cwd, s) {
     const q = s ? rt(s).q : undefined;
-    if (q) return (await q.supportedCommands()).map(c => [`/${c.name}`, [c.description, c.argumentHint].filter(Boolean).join(' · ')] as [string, string]);
+    if (q) return withUi((await q.supportedCommands()).map(c => [`/${c.name}`, [c.description, c.argumentHint].filter(Boolean).join(' · ')] as [string, string]));
     const c = cmdCache.get(cwd);
-    if (!c || Date.now() - c.at > 10 * 60_000 || c.list.every(x => !x[1])) await probe(cwd).catch(e => log('claude probe', cwd, e));
-    return cmdCache.get(cwd)?.list ?? [];
+    if (auth().ready && (!c || Date.now() - c.at > 10 * 60_000 || c.list.every(x => !x[1]))) await probe(cwd).catch(e => log('claude probe', cwd, e));
+    return withUi(cmdCache.get(cwd)?.list ?? []);
   },
+  // Its own record of every session in a folder (B12).
+  async outside(cwd) {
+    const list = await listSessions({ ...cwd ? { dir: cwd } : {}, limit: 200 }).catch(() => []);
+    return list.map(i => ({ agent: 'claude' as const, id: i.sessionId, title: oneLine(i.summary || i.firstPrompt || i.sessionId, 80), cwd: i.cwd || cwd, updated: i.lastModified,
+      ...i.gitBranch ? { branch: i.gitBranch } : {} }));
+  },
+  async account() { return account; },
   resume: s => `claude --resume ${cur(s)}`,
   // A running session is asked directly; an idle one is resumed by a query of its own that ends once it answers, so
   // looking never keeps a process around.
@@ -474,7 +569,7 @@ export const claude: Driver = {
     let q = rt(s).q, input: ReturnType<typeof pushable<SDKUserMessage>> | undefined;
     if (!q) {
       input = pushable<SDKUserMessage>();
-      q = query({ prompt: input, options: { cwd: s.s.cwd, env: ENV, pathToClaudeCodeExecutable: EXE, systemPrompt: PROMPT, resume: cur(s), model: s.s.model || undefined,
+      q = query({ prompt: input, options: { cwd: s.s.cwd, env: claudeEnv(), pathToClaudeCodeExecutable: EXE, systemPrompt: PROMPT, resume: cur(s), model: s.s.model || undefined,
         permissionMode: (MODES.some(m => m[0] === s.s.mode) ? s.s.mode : 'auto') as Options['permissionMode'] } });
     }
     try { return ctxOf(s, await q.getContextUsage()); } finally { if (input) { q.close(); input.end(); } }

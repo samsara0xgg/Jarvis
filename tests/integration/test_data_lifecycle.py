@@ -193,6 +193,26 @@ def test_erase_empties_the_root_at_the_next_boot(tmp_path: Path) -> None:
     assert (root / "models").exists()
 
 
+def test_erase_forgets_the_daemons_key_and_the_agents_windows_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ADR 0094: Startrail's Claude key has a Keychain item of its own; erasing forgets both."""
+    root, _media = _root_with_data(tmp_path)
+    calls, security = tmp_path / "security-calls", tmp_path / "security"
+    security.write_text(f'#!/bin/sh\nprintf "%s\\n" "$*" >> "{calls}"\n')
+    security.chmod(0o755)
+    monkeypatch.setattr("jarvis.deployment._SECURITY", str(security))
+    data.request_erase(root)
+
+    bootstrap_runtime(root)
+
+    resolved = root.resolve()
+    assert calls.read_text().splitlines() == [
+        f"delete-generic-password -s Jarvis -a {resolved}",
+        f"delete-generic-password -s Jarvis -a {resolved / 'agents'}",
+    ]
+
+
 def _user_version(path: Path) -> int:
     with closing(sqlite3.connect(path)) as conn:
         version: int = conn.execute("PRAGMA user_version").fetchone()[0]

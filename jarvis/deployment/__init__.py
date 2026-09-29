@@ -250,6 +250,8 @@ def bootstrap_runtime(root: Path | None = None) -> RuntimePaths:
     # ADR 0067: Settings > erase everything takes effect here, before anything is open.
     if erase_if_requested(resolved_root):
         forget_keys(resolved_root)
+        # ADR 0094: the key the Agents window's Claude sessions run on has an item of its own.
+        forget_keys(resolved_root / "agents")
     artifacts_root.mkdir(parents=True, exist_ok=True)
 
     return RuntimePaths(

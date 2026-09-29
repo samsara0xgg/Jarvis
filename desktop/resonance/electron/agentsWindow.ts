@@ -1,4 +1,4 @@
-import { BrowserWindow, dialog, ipcMain, session, shell } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Notification, session, shell } from 'electron';
 import { spawn, execFile } from 'node:child_process';
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -26,7 +26,8 @@ async function replaceOld() {
   }
 }
 let starting: Promise<void> | null = null;
-export function ensureHost(host: string) {
+// `packaged`: the installed app, where Claude signs in with the owner's own key (ADR 0094).
+export function ensureHost(host: string, packaged = false) {
   return starting ??= (async () => {
     const now = await answers();
     if (now === 'yes') return;
@@ -36,14 +37,32 @@ export function ensureHost(host: string) {
     const out = openSync(path.join(logs, 'agents-host.out.log'), 'a'), err = openSync(path.join(logs, 'agents-host.err.log'), 'a');
     // Its own process group, so it outlives this one; this Electron runs it as plain Node. git and codex live on these paths.
     const child = spawn(process.execPath, [host], { detached: true, stdio: ['ignore', out, err], env: { ...process.env, ELECTRON_RUN_AS_NODE: '1',
+      ...packaged ? { JARVIS_AGENTS_PACKAGED: '1' } : {},
       PATH: [path.join(homedir(), '.local/bin'), '/opt/homebrew/bin', '/usr/local/bin', process.env.PATH || '/usr/bin:/bin:/usr/sbin:/sbin'].join(':') } });
     closeSync(out); closeSync(err);
     child.unref();
     for (let i = 0; i < 60 && await answers() !== 'yes'; i++) await wait(250);
   })().finally(() => { starting = null; });
 }
-// A new Ghostty tab in the session's folder that continues it.
-const GHOSTTY_RUN = `on run argv
+// ---------- the owner's own apps (B4, B21): what is installed, and a file or a command in it ----------
+const appAt = (name: string) => ['/Applications', '/Applications/Utilities', '/System/Applications/Utilities', path.join(homedir(), 'Applications')]
+  .map(dir => path.join(dir, name)).find(p => existsSync(p));
+// An editor opens a file at a line through the URL it answers to; one without such a URL gets the file.
+const EDITORS: { id: string; name: string; app: string; url?: (file: string, line?: number) => string }[] = [
+  { id: 'vscode', name: 'VS Code', app: 'Visual Studio Code.app', url: (f, l) => `vscode://file${encodeURI(f)}${l ? `:${l}` : ''}` },
+  { id: 'cursor', name: 'Cursor', app: 'Cursor.app', url: (f, l) => `cursor://file${encodeURI(f)}${l ? `:${l}` : ''}` },
+  { id: 'windsurf', name: 'Windsurf', app: 'Windsurf.app', url: (f, l) => `windsurf://file${encodeURI(f)}${l ? `:${l}` : ''}` },
+  { id: 'zed', name: 'Zed', app: 'Zed.app', url: (f, l) => `zed://file${encodeURI(f)}${l ? `:${l}` : ''}` },
+  { id: 'sublime', name: 'Sublime Text', app: 'Sublime Text.app', url: (f, l) => `subl://open?url=${encodeURIComponent(`file://${f}`)}${l ? `&line=${l}` : ''}` },
+  { id: 'xcode', name: 'Xcode', app: 'Xcode.app' }, { id: 'nova', name: 'Nova', app: 'Nova.app' }, { id: 'bbedit', name: 'BBEdit', app: 'BBEdit.app' },
+  { id: 'intellij', name: 'IntelliJ IDEA', app: 'IntelliJ IDEA.app' }, { id: 'intellij-ce', name: 'IntelliJ IDEA CE', app: 'IntelliJ IDEA CE.app' },
+  { id: 'pycharm', name: 'PyCharm', app: 'PyCharm.app' }, { id: 'pycharm-ce', name: 'PyCharm CE', app: 'PyCharm CE.app' },
+  { id: 'webstorm', name: 'WebStorm', app: 'WebStorm.app' }, { id: 'goland', name: 'GoLand', app: 'GoLand.app' },
+];
+// A command typed into a new tab or window of the owner's terminal, in the order one is picked when none was chosen.
+// Warp takes no typed input from outside: it opens in the folder and the command goes to the clipboard.
+const TERMINALS: { id: string; name: string; app: string; script?: string }[] = [
+  { id: 'ghostty', name: 'Ghostty', app: 'Ghostty.app', script: `on run argv
   tell application "Ghostty"
     set cfg to new surface configuration
     set initial input of cfg to (item 1 of argv) & linefeed
@@ -54,11 +73,101 @@ const GHOSTTY_RUN = `on run argv
     end if
     activate
   end tell
-end run`;
+end run` },
+  { id: 'iterm', name: 'iTerm2', app: 'iTerm.app', script: `on run argv
+  tell application "iTerm"
+    activate
+    set w to (create window with default profile)
+    tell current session of w to write text (item 1 of argv)
+  end tell
+end run` },
+  { id: 'terminal', name: '终端', app: 'Terminal.app', script: `on run argv
+  tell application "Terminal"
+    activate
+    do script (item 1 of argv)
+  end tell
+end run` },
+  { id: 'warp', name: 'Warp', app: 'Warp.app' },
+];
 const quote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
+// The editor and terminal the owner chose in the host's settings, as its event stream last said.
+const chosen: { editor?: string; terminal?: string } = {};
+// true: typed and running; 'copied': open in the folder with the command on the clipboard; false: nothing to run it in.
+function typeIn(term: unknown, cwd: string, cmd: string) {
+  const want = term ?? chosen.terminal;
+  const t = TERMINALS.find(x => x.id === want && appAt(x.app)) ?? TERMINALS.find(x => x.script && appAt(x.app));
+  const line = `cd ${quote(cwd)} && ${cmd}`;
+  return new Promise<boolean | 'copied'>(resolve => {
+    if (!t) resolve(false);
+    else if (t.script) execFile('/usr/bin/osascript', ['-e', t.script, line], { timeout: 8000 }, error => resolve(!error));
+    else execFile('/usr/bin/open', ['-a', appAt(t.app)!, cwd], { timeout: 8000 }, error => { if (!error) clipboard.writeText(cmd); resolve(error ? false : 'copied'); });
+  });
+}
 
-export function setupAgents({ preload, page, host, trustedWindows }: { preload: string; page: string; host: string; trustedWindows: () => BrowserWindow[] }) {
-  let win: BrowserWindow | null = null, exposure = false, ids: string[] = [], presenceKey = '';
+// ---------- A6: the Mac says when a session needs the owner, while the window is not in front ----------
+// The companion follows the host's event stream itself, so this works with the window closed; a click opens the
+// session. Which moments count is the owner's (settings.notify). One session says one thing at a time: its newer
+// notification replaces the older, and not within 20 seconds of it. `turns` hears how many sessions are the owner's turn
+// (waiting on them, or finished and unread), for the Dock badge (B20).
+type Row = { id: string; title: string; summary: string; st: string; unread: boolean; archived: boolean; parked: boolean };
+function watchHost(show: (id: string) => void, front: () => boolean, quiet: () => boolean, turns: (n: number) => void) {
+  const st = new Map<string, string>(), mine = new Set<string>(), shown = new Map<string, { at: number; n: Notification }>();
+  let notify = { done: true, wait: true, err: true }, told = -1;
+  const tell = (n: number) => { if (n !== told) { told = n; turns(n); } };
+  const count = (s: Row) => {
+    if (!s.archived && !s.parked && (s.st === 'wait' || (s.unread && (s.st === 'done' || s.st === 'err')))) mine.add(s.id); else mine.delete(s.id);
+  };
+  const saw = (s: Row) => {
+    const was = st.get(s.id), last = shown.get(s.id);
+    st.set(s.id, s.st);
+    count(s);
+    if (was === undefined || was === s.st || s.archived || front() || !Notification.isSupported()) return;
+    const kind = s.st === 'wait' ? 'wait' : s.st === 'err' ? 'err' : s.st === 'done' && s.unread && ['work', 'pack', 'wait'].includes(was) ? 'done' : null;
+    if (!kind || !notify[kind] || (last && Date.now() - last.at < 20e3)) return;
+    last?.n.close();
+    const n = new Notification({ title: s.title, subtitle: kind === 'wait' ? '在等你' : kind === 'err' ? '出错了' : '做完了', body: s.summary, silent: quiet() });
+    n.on('click', () => show(s.id));
+    // Held, or a notification collected before it is clicked opens nothing.
+    shown.set(s.id, { at: Date.now(), n });
+    n.show();
+  };
+  const take = (e: { t: string; sessions?: Row[]; s?: Row; id?: string; settings?: { notify?: typeof notify; editor?: string; terminal?: string } }) => {
+    if (e.t === 'hello') { st.clear(); mine.clear(); for (const s of e.sessions ?? []) { st.set(s.id, s.st); count(s); } }
+    if (e.t === 'hello' || e.t === 'settings') {
+      notify = e.settings?.notify ?? { done: true, wait: true, err: true };
+      Object.assign(chosen, { editor: e.settings?.editor, terminal: e.settings?.terminal });
+    }
+    else if (e.t === 'sess' && e.s) saw(e.s);
+    else if (e.t === 'gone' && e.id) { st.delete(e.id); mine.delete(e.id); shown.get(e.id)?.n.close(); shown.delete(e.id); }
+    tell(mine.size);
+  };
+  void (async () => {
+    for (;;) {
+      try {
+        const r = await fetch(`http://127.0.0.1:${AGENTS_PORT}/events`, { headers: { Authorization: `Bearer ${hostKey()}` } });
+        const rd = r.ok ? r.body?.getReader() : undefined, dec = new TextDecoder();
+        let buf = '';
+        for (;;) {
+          const { value, done } = rd ? await rd.read() : { value: undefined, done: true };
+          if (done) break;
+          buf += dec.decode(value, { stream: true });
+          for (let i = buf.indexOf('\n\n'); i >= 0; i = buf.indexOf('\n\n')) {
+            const data = buf.slice(0, i).split('\n').find(l => l.startsWith('data: '));
+            buf = buf.slice(i + 2);
+            if (data) take(JSON.parse(data.slice(6)));
+          }
+        }
+      } catch { /* no host yet, or it went: try again */ }
+      tell(0);
+      await wait(10000);
+    }
+  })();
+}
+
+// `packaged`: the installed app (ADR 0094), once it ships Claude Code and offers this window.
+export function setupAgents({ preload, page, host, packaged = false, trustedWindows }: { preload: string; page: string; host: string; packaged?: boolean; trustedWindows: () => BrowserWindow[] }) {
+  let win: BrowserWindow | null = null, exposure = false, ids: string[] = [], presenceKey = '', turns = 0;
+  const badge = () => app.dock?.setBadge(turns ? String(turns) : '');
   const presence = () => ({ active: !!win && !win.isDestroyed() && win.isFocused() && exposure, ids });
   const publish = () => {
     const value = presence(), key = JSON.stringify(value);
@@ -75,29 +184,45 @@ export function setupAgents({ preload, page, host, trustedWindows }: { preload: 
   });
   ipcMain.handle('agents-folder', async event => {
     if (!mine(event)) return '';
-    const r = await dialog.showOpenDialog(win!, { properties: ['openDirectory'], defaultPath: path.join(homedir(), 'Projects') });
+    const projects = path.join(homedir(), 'Projects');
+    const r = await dialog.showOpenDialog(win!, { properties: ['openDirectory', 'createDirectory'], defaultPath: existsSync(projects) ? projects : homedir() });
     return r.canceled ? '' : r.filePaths[0] ?? '';
   });
-  ipcMain.handle('agents-terminal', (event, cwd: unknown, cmd: unknown) => new Promise<boolean>(resolve => {
-    if (!mine(event) || typeof cwd !== 'string' || typeof cmd !== 'string' || !path.isAbsolute(cwd) || !existsSync(cwd) || !statSync(cwd).isDirectory()
-      || !/^(claude --resume|codex resume) [0-9a-f-]{36}$/i.test(cmd)) { resolve(false); return; }
-    execFile('/usr/bin/osascript', ['-e', GHOSTTY_RUN, `cd ${quote(cwd)} && ${cmd}`], { timeout: 8000 }, error => resolve(!error));
-  }));
+  const isDir = (p: unknown): p is string => typeof p === 'string' && path.isAbsolute(p) && existsSync(p) && statSync(p).isDirectory();
+  const isFile = (p: unknown): p is string => typeof p === 'string' && path.isAbsolute(p) && existsSync(p);
+  // `term`: a terminal by its id from agents-terminals; without one, the owner's choice in settings, else the first installed.
+  ipcMain.handle('agents-terminal', async (event, cwd: unknown, cmd: unknown, term: unknown) => {
+    if (!mine(event) || !isDir(cwd) || typeof cmd !== 'string' || !/^(claude --resume|codex resume) [0-9a-f-]{36}$/i.test(cmd)) return false;
+    return typeIn(term, cwd, cmd);
+  });
+  ipcMain.handle('agents-terminals', event => mine(event) ? TERMINALS.filter(t => appAt(t.app)).map(t => ({ id: t.id, name: t.name })) : []);
   ipcMain.handle('agents-reveal', (event, cwd: unknown) => { if (mine(event) && typeof cwd === 'string' && path.isAbsolute(cwd)) void shell.openPath(cwd); });
+  // A file in Finder (B1), in Quick Look inside the window (B2), or in the owner's editor at a line (B4).
+  ipcMain.handle('agents-reveal-file', (event, file: unknown) => { if (mine(event) && isFile(file)) shell.showItemInFolder(file); });
+  ipcMain.handle('agents-quick-look', (event, file: unknown) => { if (mine(event) && isFile(file)) win!.previewFile(file); });
+  ipcMain.handle('agents-editors', event => mine(event) ? EDITORS.filter(e => appAt(e.app)).map(e => ({ id: e.id, name: e.name })) : []);
+  ipcMain.handle('agents-open-in-editor', async (event, file: unknown, line: unknown, editor: unknown) => {
+    if (!mine(event) || !isFile(file)) return false;
+    const at = typeof line === 'number' && Number.isInteger(line) && line > 0 ? line : undefined;
+    const want = editor ?? chosen.editor, e = EDITORS.find(x => x.id === want && appAt(x.app)) ?? EDITORS.find(x => appAt(x.app));
+    if (!e) return (await shell.openPath(file)) === '';
+    if (e.url) { await shell.openExternal(e.url(file, at)); return true; }
+    return new Promise<boolean>(resolve => execFile('/usr/bin/open', ['-a', appAt(e.app)!, file], { timeout: 8000 }, error => resolve(!error)));
+  });
   // The workbench (ADR 0085-0087): a page or file in the real browser or its own app, and a session handed to the cloud.
   ipcMain.handle('agents-open-url', (event, url: unknown) => { if (mine(event) && typeof url === 'string' && /^https?:\/\//i.test(url) && url.length < 4096) void shell.openExternal(url); });
   ipcMain.handle('agents-open-path', (event, file: unknown) => { if (mine(event) && typeof file === 'string' && path.isAbsolute(file) && existsSync(file)) void shell.openPath(file); });
-  ipcMain.handle('agents-cloud', (event, cwd: unknown, text: unknown) => new Promise<boolean>(resolve => {
-    if (!mine(event) || typeof cwd !== 'string' || typeof text !== 'string' || !text.trim() || text.length > 600 || !path.isAbsolute(cwd) || !existsSync(cwd) || !statSync(cwd).isDirectory()) { resolve(false); return; }
-    execFile('/usr/bin/osascript', ['-e', GHOSTTY_RUN, `cd ${quote(cwd)} && claude --cloud ${quote(text.replace(/\s+/g, ' ').trim())}`], { timeout: 8000 }, error => resolve(!error));
-  }));
+  ipcMain.handle('agents-cloud', async (event, cwd: unknown, text: unknown, term: unknown) => {
+    if (!mine(event) || !isDir(cwd) || typeof text !== 'string' || !text.trim() || text.length > 600) return false;
+    return typeIn(term, cwd, `claude --cloud ${quote(text.replace(/\s+/g, ' ').trim())}`);
+  });
   // Previews run in their own browser: a partition of their own that never gets the daemon key, no preload, no Node,
   // new windows go to the real browser, and every permission is refused.
   const web = session.fromPartition('persist:agents-web');
   web.setPermissionRequestHandler((_, permission, callback) => callback(permission === 'clipboard-sanitized-write' || permission === 'fullscreen'));
   async function open(id = '') {
-    if (win && !win.isDestroyed()) { win.show(); win.focus(); return; }
-    await ensureHost(host);
+    if (win && !win.isDestroyed()) { win.show(); win.focus(); if (id) win.webContents.send('agents-open-session', id); return; }
+    await ensureHost(host, packaged);
     win = new BrowserWindow({ width: 1180, height: 780, minWidth: 720, minHeight: 520, show: false, title: 'Agents',
       titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 14, y: 14 }, backgroundColor: '#0c0d20',
       // Her sounds play before the window is first touched: a session finishing while the window just sits open chimes.
@@ -114,7 +239,9 @@ export function setupAgents({ preload, page, host, trustedWindows }: { preload: 
       guest.setWindowOpenHandler(({ url }) => { if (/^https?:\/\//i.test(url)) void shell.openExternal(url); return { action: 'deny' }; });
     });
     win.on('focus', publish); win.on('blur', publish);
-    win.on('closed', () => { win = null; publish(); });
+    // B20: while the window is open the app is in the Dock and ⌘Tab, badged with the sessions that are your turn.
+    win.on('closed', () => { win = null; publish(); app.dock?.hide(); });
+    void app.dock?.show().then(badge);
     win.loadFile(page, { query: { port: AGENTS_PORT, ...(id ? { open: id } : {}) } });
     win.once('ready-to-show', () => { win?.show(); win?.focus(); });
   }
@@ -130,6 +257,11 @@ export function setupAgents({ preload, page, host, trustedWindows }: { preload: 
   ipcMain.on('agents-open', event => {
     if (trustedWindows().some(w => !w.isDestroyed() && event.sender === w.webContents && event.senderFrame === w.webContents.mainFrame)) void open();
   });
+  // An open window chimes on its own, so its notifications are silent. The count is set again whenever the icon shows.
+  watchHost(id => void open(id), () => !!win && !win.isDestroyed() && win.isFocused(), () => !!win && !win.isDestroyed(),
+    n => { turns = n; badge(); });
+  // The Dock icon, clicked, brings the window forward.
+  app.on('activate', () => { if (win && !win.isDestroyed()) { win.show(); win.focus(); } });
   // ⌥Tab while B01 has the foreground: straight to its next session waiting on Allen.
   return { open: () => open(), reopen, next() { if (!presence().active) return false; win!.webContents.send('agents-next'); return true; } };
 }
