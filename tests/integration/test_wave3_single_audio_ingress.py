@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import threading
 import time
 from dataclasses import replace
@@ -29,7 +28,6 @@ from jarvis.surface import (
     voice_wake,
 )
 from jarvis.surface.inherent_output import InherentBroadcaster
-from scripts import bench_voice_audio_ingress as voice_input_bench
 from tools.realtime_trace_report import TraceRow, summarize_trace
 
 if TYPE_CHECKING:
@@ -2506,131 +2504,6 @@ def test_correlated_endpoint_candidate_is_reportable_by_turn() -> None:
         report = summarize_trace(rows, scenario="live_voice", turn_id=outcome.turn_id)
         assert "endpoint_candidate_to_gap_free_audio_ms" in report["durations_ms"]
         assert session.close().definitively_closed
-
-
-@pytest.mark.parametrize(
-    ("git_state", "expected_revision", "expected_reason"),
-    [
-        ({"head": "actual", "dirty": False}, "expected", "revision_mismatch"),
-        ({"head": None, "dirty": False}, "expected", "git_head_unknown"),
-        ({"head": "actual", "dirty": True}, "actual", "worktree_dirty_or_unknown"),
-    ],
-)
-def test_input_bench_ineligible_provenance_fails_before_device_work(
-    tmp_path: Path,
-    git_state: dict[str, object],
-    expected_revision: str,
-    expected_reason: str,
-) -> None:
-    """Bench rejects mismatch, unknown, or dirty state before sounddevice import."""
-    output = tmp_path / "ineligible.json"
-    with (
-        patch.object(
-            voice_input_bench,
-            "_git_provenance",
-            return_value=git_state,
-        ),
-        patch.object(
-            voice_input_bench,
-            "_base_report",
-            side_effect=AssertionError("device/provider work must not begin"),
-        ),
-    ):
-        code = voice_input_bench.main(
-            [
-                "--synthetic-churn-cycles",
-                "1",
-                "--expected-revision",
-                expected_revision,
-                "--output",
-                str(output),
-            ],
-        )
-    report = json.loads(output.read_text())
-    assert code == 2
-    assert report["status"] == "INELIGIBLE"
-    assert report["eligibility"]["reasons"] == [expected_reason]
-
-
-def test_input_bench_synthetic_status_requires_every_exact_churn_gate() -> None:
-    """The synthetic report cannot say observed with a missed stale callback."""
-    report = voice_input_bench.run_synthetic_churn(cycles=25)
-    assert report["status"] == "observed"
-    assert report["cycles_completed"] == 25
-    assert report["late_epoch_callbacks_rejected"] == 25
-    strict_checks = report["strict_checks"]
-    assert isinstance(strict_checks, dict)
-    assert all(strict_checks.values())
-
-
-def test_live_bench_tail_drain_waits_past_initial_empty_worker_poll() -> None:
-    """One early empty read cannot hide an accepted delayed native tail."""
-    frame = voice_audio.CanonicalAudioFrame(
-        stream_epoch=1,
-        sequence=0,
-        sample_cursor=0,
-        sample_rate_hz=16_000,
-        frame_count=512,
-        adc_time_s=None,
-        captured_monotonic_ns=1,
-        discontinuity_before=False,
-        pcm16_mono=_pcm(7),
-    )
-    subscriber = MagicMock(spec=voice_audio.AudioSubscription)
-    subscriber.read.side_effect = [None, frame, None, None]
-    delayed = MagicMock()
-    delayed.callback_calls = 1
-    delayed.canonical_frames = 0
-    converged = MagicMock()
-    converged.callback_calls = 1
-    converged.canonical_frames = 1
-    ingress = MagicMock(spec=voice_audio.AudioIngress)
-    ingress.metrics.side_effect = [delayed, converged, converged]
-    frames: list[voice_audio.CanonicalAudioFrame] = []
-    completed, stable_polls, deadline_exhausted = (
-        voice_input_bench._drain_accepted_tail(
-        ingress=ingress,
-        subscriber=subscriber,
-        frames=frames,
-        deadline=time.monotonic() + 0.2,
-        )
-    )
-    assert completed
-    assert not deadline_exhausted
-    assert stable_polls == 2
-    assert frames == [frame]
-    assert subscriber.read.call_count == 4
-
-
-def test_live_bench_second_stable_poll_crossing_deadline_fails_closed() -> None:
-    """Count convergence after the absolute deadline is never a passing drain."""
-    subscriber = MagicMock(spec=voice_audio.AudioSubscription)
-    reads = 0
-
-    def _read(*, timeout_s: float) -> None:
-        nonlocal reads
-        reads += 1
-        if reads == 2:
-            time.sleep(timeout_s + 0.01)
-
-    subscriber.read.side_effect = _read
-    converged = MagicMock()
-    converged.callback_calls = 0
-    converged.canonical_frames = 0
-    ingress = MagicMock(spec=voice_audio.AudioIngress)
-    ingress.metrics.return_value = converged
-    completed, stable_polls, deadline_exhausted = (
-        voice_input_bench._drain_accepted_tail(
-            ingress=ingress,
-            subscriber=subscriber,
-            frames=[],
-            deadline=time.monotonic() + 0.015,
-        )
-    )
-    assert not completed
-    assert deadline_exhausted
-    assert stable_polls == 1
-    assert reads == 2
 
 
 def test_power_coordinator_orders_input_then_output_and_fresh_output_before_input() -> None:

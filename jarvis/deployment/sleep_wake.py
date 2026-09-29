@@ -12,8 +12,8 @@ The real observer is :class:`_IOKitPowerObserver` —
 ``IORegisterForSystemPower`` driven over **ctypes** against IOKit +
 CoreFoundation (ADR-0009 D3: PyObjC does not wrap IOKit at all, so
 ctypes is the mechanism and costs no dependency). The exact signatures,
-message codes, ack calls and teardown order come from the Step-0 spike
-``scripts/spike_power_observer.py``, which proved them against a real
+message codes, ack calls and teardown order come from the ADR-0009 Step-0
+spike (removed 2026-09-29), which proved them against a real
 ``pmset sleepnow``.
 
 It sits behind a :class:`PowerObserver` protocol so unit tests inject a
@@ -235,8 +235,8 @@ class _PowerBinding:
 def _load_power_binding() -> _PowerBinding:
     """Load IOKit + CoreFoundation and pin every argtype / restype.
 
-    Signatures are copied verbatim from ``scripts/spike_power_observer.py``
-    (ADR-0009 Step 0), which proved them end-to-end against a real
+    Signatures are copied verbatim from the ADR-0009 Step-0 spike (removed
+    2026-09-29), which proved them end-to-end against a real
     ``pmset sleepnow`` plus a scheduled wake. Called only from
     :func:`_real_observer_factory`, so importing this module never binds
     a framework.
