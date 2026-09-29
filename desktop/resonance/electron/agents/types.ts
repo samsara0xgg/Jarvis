@@ -32,6 +32,9 @@ export type Sess = {
   // now: what it is doing this moment · bg: its background tasks · term: handed to a terminal · since: this turn's start
   // queue: what you sent while it worked, not yet taken
   created?: number; trace?: { at: number; st: St }[];
+  // The conversations each reset (/clear, a plan run with a clean context) started, oldest first: `id` is the first and
+  // the key, the last is the one it goes on in.
+  resets?: string[];
   now?: string; bg?: string; term?: boolean; stopped?: boolean; since?: number; queue?: string[];
   // ADR 0085 · dirty: what landing would take (files, lines, commits main does not have yet); absent outside git or with
   // nothing to land · land: the landing under way, absent when none is · gone: its worktree was cleaned away after landing

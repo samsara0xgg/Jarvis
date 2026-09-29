@@ -56,6 +56,11 @@ type Rt = {
   seen?: Set<string>; open?: boolean; news?: boolean;
 };
 const rt = (s: Session): Rt => (s.rt.claude ??= { pending: new Map(), queued: new Map(), tasks: new Map(), creates: new Map(), block: '' }) as Rt;
+// A reset (/clear, a plan run with a clean context) starts a transcript of its own: the session reads them all back and
+// goes on in the last one.
+const ids = (s: Session) => [s.s.id, ...s.s.resets ?? []];
+const cur = (s: Session) => ids(s).at(-1)!;
+const CLEARED = '上下文清空了 · 上面的它已经不记得了';
 
 // ---------- what a tool call looks like as a step ----------
 const str = (v: unknown) => typeof v === 'string' ? v : '';
@@ -221,7 +226,7 @@ function ensure(s: Session) {
       o.signal.addEventListener('abort', () => { if (r.pending.delete(id)) s.answered(id, '没回答'); });
     }),
     spawnClaudeCodeProcess: viaKeeper(s),
-    ...(r.fresh ? { sessionId: s.s.id } : { resume: s.s.id }),
+    ...(r.fresh ? { sessionId: s.s.id } : { resume: cur(s) }),
   };
   r.fresh = false;
   const q = r.q = query({ prompt: input, options });
@@ -234,6 +239,13 @@ function ensure(s: Session) {
 }
 function frame(s: Session, m: SDKMessage) {
   const r = rt(s), any = m as Record<string, unknown>;
+  // After a reset the session goes on under a session id of its own (conversation_reset's new_conversation_id is not
+  // it). What the keeper replays carries ids already known.
+  if (typeof any.session_id === 'string' && any.session_id && !ids(s).includes(any.session_id)) {
+    r.tasks.clear(); r.usage = undefined;
+    s.set({ resets: [...s.s.resets ?? [], any.session_id], ctx: 0 });
+    s.note(CLEARED);
+  }
   // A message sent while it worked is taken when Claude Code starts it: folded into the running turn at its next step,
   // or run as the next turn.
   if (any.type === 'command_lifecycle' && any.state === 'started' && typeof any.command_uuid === 'string') {
@@ -407,17 +419,26 @@ export const claude: Driver = {
     else if (k === 'effort') await q.applyFlagSettings({ effortLevel: v as 'high' });
     else await q.setPermissionMode(v as 'auto');
   },
-  async rename(s, title) { await renameSession(s.s.id, title, { dir: s.s.cwd }); },
+  async rename(s, title) { await renameSession(cur(s), title, { dir: s.s.cwd }); },
   async load(s) {
     const r = rt(s);
     r.tasks.clear();
-    const msgs = await getSessionMessages(s.s.id, { dir: s.s.cwd }).catch(() => []);
-    r.seen = new Set(msgs.map(m => m.uuid));
-    await s.build(async () => {
+    const parts = await Promise.all(ids(s).map(id => getSessionMessages(id, { dir: s.s.cwd }).catch(() => [])));
+    r.seen = new Set(parts.flat().map(m => m.uuid));
+    const read = (msgs: typeof parts[number]) => {
       for (const m of msgs) {
         const t = Date.parse(String((m as Record<string, unknown>).timestamp ?? ''));
         said(s, m as never, Number.isFinite(t) ? t : undefined);
       }
+    };
+    await s.build(async () => {
+      parts.forEach((msgs, k) => {
+        // The line sits after the /clear that drew it, where it came live.
+        const lead = k && /<command-name>\/(clear|reset|new)</.test(textOf((msgs[0]?.message as { content?: unknown } | undefined)?.content)) ? 1 : 0;
+        read(msgs.slice(0, lead));
+        if (k) s.note(CLEARED);
+        read(msgs.slice(lead));
+      });
     }, r.open);
     r.open = false;
   },
@@ -431,11 +452,14 @@ export const claude: Driver = {
     ensure(s);
   },
   async fork(s) {
-    const { sessionId } = await forkSession(s.s.id, { dir: s.s.cwd });
+    const { sessionId } = await forkSession(cur(s), { dir: s.s.cwd });
     return sessionId;
   },
   // A transcript that is already gone counts as deleted.
-  async remove(s) { await claude.release(s); await deleteSession(s.s.id, { dir: s.s.cwd }).catch(e => { if (!/not found/i.test(String(e))) throw e; }); },
+  async remove(s) {
+    await claude.release(s);
+    for (const id of ids(s)) await deleteSession(id, { dir: s.s.cwd }).catch(e => { if (!/not found/i.test(String(e))) throw e; });
+  },
   async commands(cwd, s) {
     const q = s ? rt(s).q : undefined;
     if (q) return (await q.supportedCommands()).map(c => [`/${c.name}`, [c.description, c.argumentHint].filter(Boolean).join(' · ')] as [string, string]);
@@ -443,14 +467,14 @@ export const claude: Driver = {
     if (!c || Date.now() - c.at > 10 * 60_000 || c.list.every(x => !x[1])) await probe(cwd).catch(e => log('claude probe', cwd, e));
     return cmdCache.get(cwd)?.list ?? [];
   },
-  resume: s => `claude --resume ${s.s.id}`,
+  resume: s => `claude --resume ${cur(s)}`,
   // A running session is asked directly; an idle one is resumed by a query of its own that ends once it answers, so
   // looking never keeps a process around.
   async context(s) {
     let q = rt(s).q, input: ReturnType<typeof pushable<SDKUserMessage>> | undefined;
     if (!q) {
       input = pushable<SDKUserMessage>();
-      q = query({ prompt: input, options: { cwd: s.s.cwd, env: ENV, pathToClaudeCodeExecutable: EXE, systemPrompt: PROMPT, resume: s.s.id, model: s.s.model || undefined,
+      q = query({ prompt: input, options: { cwd: s.s.cwd, env: ENV, pathToClaudeCodeExecutable: EXE, systemPrompt: PROMPT, resume: cur(s), model: s.s.model || undefined,
         permissionMode: (MODES.some(m => m[0] === s.s.mode) ? s.s.mode : 'auto') as Options['permissionMode'] } });
     }
     try { return ctxOf(s, await q.getContextUsage()); } finally { if (input) { q.close(); input.end(); } }

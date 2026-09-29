@@ -577,7 +577,7 @@ async function route(req: Req0, res: http.ServerResponse, url: URL): Promise<unk
     const id = await x.driver.fork(x);
     const f = new Session({ ...x.s, id, title: `${x.s.title}（分叉）`, pinned: false, parked: false, archived: false, unread: false, st: 'done', updated: Date.now(),
       trace: [...x.s.trace ?? [], { at: Date.now(), st: 'done' }],
-      now: undefined, since: undefined, queue: undefined, stopped: undefined, term: undefined }, x.repo);
+      now: undefined, since: undefined, queue: undefined, stopped: undefined, term: undefined, resets: undefined }, x.repo);
     sessions.set(id, f);
     await f.ensureLoaded();
     f.note(`从「${x.s.title}」分叉 · 两边各走各的，用的是同一个文件夹`);
