@@ -207,11 +207,14 @@ def test_a_listening_sound_keeps_her_talking_and_is_no_turn(tmp_path: Path) -> N
         ("等一下。", "stop_request"),
         ("Wait.", "stop_request"),
         ("Pause.", "stop_request"),
-        # "That's enough" in the 2026-09-29 live test, which she took for "go on".
+        # "That's enough" in the 2026-09-29 live tests, each taken for a turn.
         ("OK可以了。", "stop_request"),
-        # How 「pause」 comes back over her (2026-09-29 live test; a synthesized one).
+        ("可以啦。", "stop_request"),
+        # 「pause」 over her comes back as some other lone English word
+        # (2026-09-29 live tests; a synthesized one); any such word stops her.
         ("Pulse.", "stop_request"),
         ("Cause.", "stop_request"),
+        ("Po", "stop_request"),
     ],
 )
 def test_a_stop_request_stops_her_and_is_no_turn(
@@ -230,8 +233,12 @@ def test_a_stop_request_stops_her_and_is_no_turn(
     assert ("empty", reason) in rig.phases
 
 
-@pytest.mark.parametrize("heard", ["五。", "And."])
-def test_one_word_that_says_nothing_keeps_her_talking(tmp_path: Path, heard: str) -> None:
+@pytest.mark.parametrize(("heard", "reason"), [("五。", "unclear"), ("And.", "backchannel")])
+def test_one_word_that_says_nothing_keeps_her_talking(
+    tmp_path: Path,
+    heard: str,
+    reason: str,
+) -> None:
     """What final ASR made of a 「嗯」 over her in the live test: no stop, and no turn."""
     rig = _Rig(tmp_path, heard)
     try:
@@ -241,7 +248,7 @@ def test_one_word_that_says_nothing_keeps_her_talking(tmp_path: Path, heard: str
     assert rig.output == ["gain 0.2", "gain 1.0"]
     assert rig.speaking
     assert rig.turns() == []
-    assert ("empty", "unclear") in rig.phases
+    assert ("empty", reason) in rig.phases
 
 
 def test_a_lone_answer_word_over_her_is_still_a_turn(tmp_path: Path) -> None:
@@ -256,15 +263,20 @@ def test_a_lone_answer_word_over_her_is_still_a_turn(tmp_path: Path) -> None:
 
 
 def test_every_one_word_card_answer_is_still_a_turn_over_her() -> None:
-    """A lone word the confirmation grammar answers a card with is never an unclear sound."""
+    """A lone word the confirmation grammar answers a card with is no unclear sound or stop."""
     grammar = (repo_root() / "config" / "confirm_grammar.yaml").read_text(encoding="utf-8")
     patterns = [str(row["pattern"]) for row in yaml.safe_load(grammar)]
     words = {*re.findall(r"[\u4e00-\u9fff]|[a-z]+", " ".join(patterns)), "don't", "dont"}
     answers = {word for word in words if any(re.fullmatch(p, word) for p in patterns)}
     assert {"好", "发", "别", "yes", "send", "cancel", "don't"} <= answers
-    assert not [word for word in answers if voice_asr.is_unclear_sound(word + ".")]
+    assert not [
+        word for word in answers
+        if voice_asr.is_unclear_sound(word + ".") or voice_asr.is_stop_request(word + ".")
+    ]
     # 「可以了」 over her is enough; the card's 「可以」 is still yes.
     assert not voice_asr.is_stop_request("可以。")
+    # A lone English word asked as a question is a turn (「What?」 repeats her).
+    assert not voice_asr.is_stop_request("What?")
 
 
 def test_the_live_tests_hum_no_longer_stops_her(tmp_path: Path) -> None:

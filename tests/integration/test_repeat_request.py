@@ -74,6 +74,8 @@ def _decide(tmp_path: Path, heard: str) -> tuple[str, int]:
     "heard",
     [
         "什么？",  # noqa: RUF001
+        # How final ASR heard it in the 2026-09-29 live test.
+        "什么。",
         "你刚才说什么？",  # noqa: RUF001
         "啊？",  # noqa: RUF001
         "再说一遍",

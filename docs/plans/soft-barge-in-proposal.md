@@ -34,6 +34,9 @@
 - The second live run (2026-09-29) at 0.8 s: two short 「嗯」 passed, but a
   drawn-out 「嗯——」 held enough voice to stop her; final ASR then judged it a
   listening sound, and she stayed silent with the answer cut off.
+- The second and third live runs (2026-09-29): every 「pause」 over her came
+  back as some other lone English word of two to six characters, taken as
+  saying nothing, and 「可以啦」 was a turn she answered.
 
 ## Decision
 
@@ -41,11 +44,13 @@ In conversation mode, speech that starts while Jarvis speaks first lowers her
 to `barge_in_yield_gain`; once it holds `barge_in_confirm_voiced_s` of voice
 she is held where she is (her answer stops playing and keeps its place), and
 a shorter sound ends after `barge_in_pause_ms` of silence. Final ASR judges
-both: nothing, a listening sound or one word that is no answer lets her go on
+both: nothing, a listening sound or one Chinese syllable that is no answer
+lets her go on
 from where she was with the gain back and is no turn, a stop request or her
 wake phrase alone stops her and is no turn, anything else stops her and is a
 turn. A stop request includes the ting/ding syllables final ASR makes of a
-lone 「停」 over her voice.
+lone 「停」 over her voice, and any lone English word that is no listening
+sound, no card's answer and no question.
 
 Limits: the gain returns only after a stop has landed; the yield scales the
 mute and never replaces it; words that held her by their length are judged
@@ -84,13 +89,15 @@ a listening sound; `0` for the voiced time is ADR 0041 as it shipped.
   written cancelled, only once it is judged. While she is held her speech
   keeps streaming into the player's ring and its writer waits.
 - The listening-sound and stop-request lists are fixed Chinese and English
-  word lists in `voice_asr.py`; a phrasing outside them is a turn.
+  word lists in `voice_asr.py`; a phrasing outside them is a turn, except a
+  lone English word, which stops her: a hum heard as an English word other
+  than "And.", or a lone "wow" said over her, stops her too.
 - 0.8 s comes from the first live run's hums and 「对对对」; 0.2 and 350 ms
   are still chosen, not measured. A second live run on the Mac with the
   reSpeaker and with the built-in speakers is owed before acceptance.
 - A question with less voice than 0.8 s (「你是谁」, 0.6 s) stops her only after
   its pause and final ASR, about 0.45 s after it ends.
-- One syllable or word that is no answer is dropped over her voice: a lone
+- One Chinese syllable that is no answer is dropped over her voice: a lone
   「五」 said on purpose is lost, and Allen says it again.
 - A sound split by a pause longer than `barge_in_pause_ms` is judged in two
   parts; ADR 0074's merge still joins the second part to the first when both

@@ -782,30 +782,31 @@ def is_wake_only(text: str) -> bool:
 # barge-in). Matched whole, case and punctuation aside. A listening sound
 # keeps her talking; a lone 对/是/好 or "yes" may be answering a waiting card
 # (ADR 0062), so only their doubled forms count, and a question mark makes
-# any of them a request to repeat (「啊？」).
+# any of them a request to repeat (「啊？」). A 「嗯」 came back as "And." in
+# the 2026-09-28 live test.
 _BACKCHANNEL_RE = re.compile(
     r"(?:[嗯哼哦噢喔唔呃额啊哈呵]|对对+|是是+|好好+|行行+)+"
-    r"|(?:mm+|m+h+m+|uhhuh|hm+|uh+|um+|oh+|ah+|ha)+",
+    r"|(?:mm+|m+h+m+|uhhuh|hm+|uh+|um+|oh+|ah+|ha|and)+",
 )
 # A request to stop talking: she stops, and it is not a question to answer.
 # Over her voice a lone 「停」 comes back as any ting/ding syllable, sometimes
 # with a stray tail: 「停立」 and 「顶」 in the 2026-09-28 live test. 「OK可以了」
-# (enough) in the 2026-09-29 one; a lone 「可以」 still answers a card. There
-# each of seven 「pause」 came back as some other lone English word of five or
-# six characters, "Pulse" as Allen tells it; a synthesized "pause" reads "Cause.".
+# and 「可以啦」 (enough) in the 2026-09-29 ones; a lone 「可以」 still answers
+# a card. A lone English word is one too (is_stop_request).
 _STOP_REQUEST_RE = re.compile(
-    r"(?:ok|okay|嗯|哎|唉|好|行|那|你|好了|行了)?"
-    r"(?:停+(?:一下|下)?|先停(?:一下)?|暂停(?:一下)?|等(?:一下|等|下)?|别说了|不要说了|不用说了"
-    r"|别念了|闭嘴|安静(?:一下|一点|点)?|够了|可以了|好了好了|行了行了)(?:吧|啊|呀|哈)?"
+    r"(?:ok|okay|嗯|哎|唉|好|行|那|你|好[了啦]|行[了啦])?"
+    r"(?:停+(?:一下|下)?|先停(?:一下)?|暂停(?:一下)?|等(?:一下|等|下)?|别说[了啦]|不要说[了啦]"
+    r"|不用说[了啦]|别念[了啦]|闭嘴|安静(?:一下|一点|点)?|够[了啦]|可以[了啦]|好[了啦]好[了啦]"
+    r"|行[了啦]行[了啦])(?:吧|啊|呀|哈|啦)?"
     r"|[停亭婷庭廷挺艇听厅顶鼎定丁叮钉][立啲一]?"
     r"|(?:ok|okay|please|jarvis|hey)*"
-    r"(?:stop(?:it|talking|that)?|wait|pause|pulse|cause|enough|bequiet|quiet|shutup|hush)"
+    r"(?:stop(?:it|talking|that)?|wait|pause|enough|bequiet|quiet|shutup|hush)"
     r"(?:please|jarvis|now)*",
 )
-# What final ASR makes of a hum or a cough over her is often one syllable or
-# word: 「五」 and "And." in the 2026-09-28 live test, each answered as a
-# question. A lone word that may answer a waiting card (ADR 0062; every
-# one-word answer in config/confirm_grammar.yaml) stays a turn.
+# What final ASR makes of a hum or a cough over her is often one syllable:
+# 「五」 in the 2026-09-28 live test, answered as a question. A lone word
+# that may answer a waiting card (ADR 0062; every one-word answer in
+# config/confirm_grammar.yaml) stays a turn.
 _SHORT_ANSWER_RE = re.compile(
     r"[对是好行要不发否别]|yes|yeah|yep|no|nope|ok|okay|sure|right|confirm|send|cancel|don'?t",
 )
@@ -824,12 +825,25 @@ def is_backchannel(text: str) -> bool:
 
 
 def is_stop_request(text: str) -> bool:
-    """True when ``text`` only asks Jarvis to stop talking (停, 别说了, stop)."""
-    return _STOP_REQUEST_RE.fullmatch(_squashed(text)) is not None
+    """True when ``text`` only asks Jarvis to stop talking (停, 别说了, stop).
+
+    A lone English word counts unless it is a listening sound, a card's
+    answer or a question: in the 2026-09-29 live tests final ASR heard every
+    「pause」 over her voice as some other lone English word of two to six
+    characters ("Pulse" as Allen tells it; a synthesized one reads "Cause.").
+    """
+    squashed = _squashed(text)
+    if _STOP_REQUEST_RE.fullmatch(squashed) is not None:
+        return True
+    return (
+        is_unclear_sound(text)
+        and re.fullmatch(r"[a-z]+", squashed) is not None
+        and _BACKCHANNEL_RE.fullmatch(squashed) is None
+    )
 
 
 def is_unclear_sound(text: str) -> bool:
-    """True for one syllable or word that answers nothing (五, "And."), not a question."""
+    """True for one syllable or word that answers nothing (五), not a question."""
     stripped = text.strip()
     if stripped.endswith(("?", "？")):
         return False

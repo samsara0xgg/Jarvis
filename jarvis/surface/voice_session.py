@@ -975,7 +975,7 @@ class DuplexVoiceSession:
         ``stop_speaking``. With ``yield_speaking`` and ``pause_speaking`` it
         first only lowers her (``barge_in_yield_gain``) and holds her where
         she is once the speech has ``barge_in_confirm_voiced_s`` of voice;
-        final ASR then decides: a listening sound, one word that says
+        final ASR then decides: a listening sound, one syllable that says
         nothing, or nothing lets her go on from there with the gain back, a
         stop request stops her, and none becomes a turn.
 
@@ -1370,7 +1370,7 @@ class DuplexVoiceSession:
     def _judge_words(self, turn_id: str, text: str) -> None:
         """Final ASR's verdict on words spoken over Jarvis, then ADR 0053's drop.
 
-        A listening sound or one word that says nothing lets her go on (from
+        A listening sound or one syllable that says nothing lets her go on (from
         where she was held, if they were long) and a stop request stops her;
         none of them is a turn. Anything else stops her and is a turn.
         """
