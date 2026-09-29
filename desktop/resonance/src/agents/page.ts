@@ -445,14 +445,14 @@ function reqHead(r: Req) {
   if (r.tool === 'Bash') return '要你批准 · 跑一条命令';
   if (r.tool === 'Edit') return '要你批准 · 改一个文件';
   if (r.tool === 'Plan') return '计划写好了';
-  return `要你批准 · ${r.tool === 'Tool' ? esc(r.name) : ''}`;
+  return `要你批准 · ${r.tool === 'Tool' ? esc(r.name) : r.tool === 'Form' ? esc(r.server) : ''}`;
 }
 function reqRecord(r: Req) {
   if (r.tool === 'Ask') return r.qs.map(q => q.q).join(' · ');
   if (r.tool === 'Plan') return '计划';
   if (r.tool === 'Bash') return r.cmd;
   if (r.tool === 'Edit') return `改 ${r.file}`;
-  return r.name;
+  return r.tool === 'Form' ? r.server : r.name;
 }
 function itemHTML(s: Sess, it: Exclude<Item, { k: 'steps' }>, i = -1) {
   if (it.k === 'you') return `<div class="you">${it.files?.length ? `<span class="att">${it.files.map(picHTML).join('')}</span>` : ''}${esc(it.text)}</div>`;
@@ -476,9 +476,9 @@ function itemHTML(s: Sess, it: Exclude<Item, { k: 'steps' }>, i = -1) {
     + '<p class="hint">点「再想想」前可以在下面写哪里要改。</p></div>';
   const what = r.tool === 'Bash' ? `<pre class="cmd"><span>${esc(home(r.cwd))} $</span> ${esc(r.cmd)}</pre>`
     : r.tool === 'Edit' ? `<div class="file">${I.doc}${esc(r.file)}</div>${r.diff.length ? diffHTML(r.diff) : ''}`
-    : `<pre class="cmd">${esc(r.detail)}</pre>`;
+    : `<pre class="cmd">${esc(r.tool === 'Form' ? [r.url ?? '', ...r.fields.map(f => `· ${f.title}`)].filter(Boolean).join('\n') : r.detail)}</pre>`;
   return `<div class="req${busy ? ' busy' : ''}"><span class="r-h">${reqHead(r)}</span>${r.why ? `<p class="why">${esc(r.why)}</p>` : ''}${what}<div class="choice">`
-    + `<button type="button" class="btn${on('deny')}" data-act="deny" data-req="${esc(r.id)}"${off}>拒绝<kbd>esc</kbd></button>${r.always ? `<button type="button" class="btn${on('always')}" data-act="always" data-req="${esc(r.id)}"${off}>${esc(r.always)}</button>` : ''}`
+    + `<button type="button" class="btn${on('deny')}" data-act="deny" data-req="${esc(r.id)}"${off}>拒绝<kbd>esc</kbd></button>${r.tool !== 'Form' && r.always ? `<button type="button" class="btn${on('always')}" data-act="always" data-req="${esc(r.id)}"${off}>${esc(r.always)}</button>` : ''}`
     + `<button type="button" class="btn warm${on('allow')}" data-act="allow" data-req="${esc(r.id)}"${off}>允许<kbd>↵</kbd></button></div></div>`;
 }
 // A picture shows itself and opens large; one the host kept no copy of stays a named chip.

@@ -284,8 +284,9 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
       if (r.tool === 'Ask') body = r.qs.map((q, i) => `<fieldset><legend class="dk-t">${esc(q.q)}</legend><div class="dk-opts">${q.opts.map(([label, desc], j) => `<label><input type="${q.multi ? 'checkbox' : 'radio'}" name="question-${i}" value="${esc(label)}"><span><b>${kbd(String(j + 1))} ${esc(label)}</b><small>${esc(desc)}</small></span></label>`).join('')}</div></fieldset>`).join('') + `<textarea class="dk-text" aria-label="补充回答" placeholder="也可以直接写你的回答"></textarea><div class="dk-row"><button type="button" class="btn" data-deck="deny">不回答 ${kbd('N')}</button><button type="button" class="btn warm" data-deck="allow">回答 ${kbd('⏎')}</button></div>`;
       else if (r.tool === 'Plan') body = `<p class="dk-t">计划写好了</p><div class="dk-summary">${hooks.md(r.plan)}</div><textarea class="dk-text" aria-label="修改意见" placeholder="需要调整的地方"></textarea>${actions}`;
       else {
-        const detail = r.tool === 'Bash' ? `<span>${esc(r.cwd)} $</span> ${esc(r.cmd)}` : r.tool === 'Edit' ? `${esc(r.file)}\n${r.diff.map(([sign, text]) => esc(sign + text)).join('\n')}` : `${esc(r.name)}\n${esc(r.detail)}`;
-        body = `<p class="dk-t">${esc(r.why || '这一步需要你批准')}</p><pre class="dk-cmd">${detail}</pre>${r.always ? `<label class="dk-always"><input type="checkbox" name="always">${esc(r.always)}</label>` : ''}${actions}`;
+        const detail = r.tool === 'Bash' ? `<span>${esc(r.cwd)} $</span> ${esc(r.cmd)}` : r.tool === 'Edit' ? `${esc(r.file)}\n${r.diff.map(([sign, text]) => esc(sign + text)).join('\n')}`
+          : r.tool === 'Form' ? esc([r.server, r.url ?? '', ...r.fields.map(f => `· ${f.title}`)].filter(Boolean).join('\n')) : `${esc(r.name)}\n${esc(r.detail)}`;
+        body = `<p class="dk-t">${esc(r.why || '这一步需要你批准')}</p><pre class="dk-cmd">${detail}</pre>${r.tool !== 'Form' && r.always ? `<label class="dk-always"><input type="checkbox" name="always">${esc(r.always)}</label>` : ''}${actions}`;
       }
     }
     // Who, how long it has waited, and one dot per card still in the stack, this one lit.

@@ -11,12 +11,20 @@ export type Diff = [' ' | '+' | '-', string][];
 export type Step = { at?: number; k: 'read' | 'edit' | 'bash' | 'search' | 'agent' | 'web' | 'tool' | 'say' | 'think'; t: string; add?: number; del?: number; diff?: Diff; out?: string; ok?: boolean;
   sub?: Step[]; pics?: Pic[] };
 export type Question = { q: string; head?: string; multi?: boolean; opts: [string, string][] };
+// One field of an MCP server's form (C3): the answer it takes (text, a number, a whole number, yes or no, one or several
+// of `opts`, each [value, label]), whether it must be filled, what it holds to start with; `min` and `max` bound a
+// number's value, a text's length, or how many are picked.
+export type Field = { key: string; title: string; about?: string; kind: 'text' | 'number' | 'int' | 'bool' | 'one' | 'many'; opts?: [string, string][];
+  need?: boolean; def?: string | number | boolean | string[]; format?: string; min?: number; max?: number };
 export type Req =
   | { id: string; tool: 'Bash'; why: string; cmd: string; cwd: string; always: string }
   | { id: string; tool: 'Edit'; why: string; file: string; diff: Diff; always: string }
   | { id: string; tool: 'Tool'; why: string; name: string; detail: string; always: string }
   | { id: string; tool: 'Ask'; qs: Question[] }
-  | { id: string; tool: 'Plan'; plan: string };
+  | { id: string; tool: 'Plan'; plan: string }
+  // An MCP server asks for its form to be filled, or (`url`) for a page to be opened, a sign-in most often: the window
+  // opens it when the owner says yes.
+  | { id: string; tool: 'Form'; server: string; why: string; fields: Field[]; url?: string };
 // Epoch milliseconds when known. Missing transcript times stay missing.
 // A picture sent with a message: `img` names the host's copy of it (GET /images/{img}); without one only its name is known.
 export type Pic = { name: string; img?: string };
@@ -104,7 +112,14 @@ export type Catalog = Record<Agent, Choice>;
 // A file sent with a message: its name and a data: URL, or where it is on this Mac (a file dropped on the window).
 // Pictures go to the agent as pictures, a PDF to Claude as a document; any other file is named in the message.
 export type File = { name: string; url?: string; path?: string };
-export type Answer = { req: string; decision: 'allow' | 'always' | 'deny'; answers?: string[][]; text?: string };
+// A form (C3) is answered with `values` by its fields' keys (allow: 提供), `deny` (不提供，继续) or `cancel` (取消); any
+// other request takes cancel as deny.
+export type Answer = { req: string; decision: 'allow' | 'always' | 'deny' | 'cancel'; answers?: string[][]; text?: string; values?: Record<string, unknown> };
+// An MCP server as a session sees it now (C3): connected, starting, waiting for a sign-in, failed (`why`) or switched
+// off; how many tools it gives, where it is configured, and what the window can do with it here (switch it on or off,
+// connect again, sign in: POST /sessions/{id}/mcp).
+export type Mcp = { name: string; st: 'on' | 'wait' | 'auth' | 'fail' | 'off'; tools?: number; why?: string; scope?: string; can: McpAct[] };
+export type McpAct = 'on' | 'off' | 'reconnect' | 'login';
 // What fills a session's context window, for the popover on its ring: rows in the order the bar draws them, each with
 // what it holds (a string is a heading); `say` is one line on what it means, its first part in bold.
 export type CtxRow = { n: string; t: number; kind?: 'buf' | 'free'; sub?: (string | [string, number])[] };
@@ -130,6 +145,8 @@ export type Event =
   | { t: 'settings'; settings: Settings; auth: Auth }
   // A sign-in the check-up started (Codex's ChatGPT login) finished.
   | { t: 'signin'; agent: Agent; ok: boolean; why?: string }
+  // A sign-in to an MCP server (C3) finished; `id`: the session it was started from, when the agent says.
+  | { t: 'mcp'; agent: Agent; name: string; ok: boolean; why?: string; id?: string }
   | { t: 'sess'; s: Sess }
   | { t: 'gone'; id: string }
   | { t: 'catalog'; catalog: Catalog }
