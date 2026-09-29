@@ -800,8 +800,11 @@ _STOP_REQUEST_RE = re.compile(
 )
 # What final ASR makes of a hum or a cough over her is often one syllable or
 # word: 「五」 and "And." in the 2026-09-28 live test, each answered as a
-# question. A lone 对/是/好 or yes/okay may still answer a waiting card (ADR 0062).
-_SHORT_ANSWER_RE = re.compile(r"[对是好行要不]|yes|yeah|yep|no|nope|ok|okay|sure|right")
+# question. A lone word that may answer a waiting card (ADR 0062; every
+# one-word answer in config/confirm_grammar.yaml) stays a turn.
+_SHORT_ANSWER_RE = re.compile(
+    r"[对是好行要不发否别]|yes|yeah|yep|no|nope|ok|okay|sure|right|confirm|send|cancel|don'?t",
+)
 
 
 def _squashed(text: str) -> str:
