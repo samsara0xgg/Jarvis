@@ -35,6 +35,7 @@
 .ac-foot > span { flex:1; }
 .ac-go { display:inline-flex; align-items:center; gap:6px; height:30px; padding:0 13px; border-radius:var(--radius-control); background:rgb(var(--glow)); color:#0d1022;
   font:600 var(--text-detail)/1 -apple-system,BlinkMacSystemFont,sans-serif; white-space:nowrap; transition:transform var(--motion-fast) ease,filter var(--motion-fast) ease; }
+.notch .ac-go { color:#0d1022; } /* the notch's `button { color:inherit }` is for its own cards, not the one that acts */
 .ac-go:hover { filter:brightness(1.08); }
 .ac-go:active { transform:scale(.97); }
 .ac-go:focus-visible { outline:2px solid rgb(var(--glow) / .6); outline-offset:2px; }
