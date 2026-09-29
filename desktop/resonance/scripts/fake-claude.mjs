@@ -7,6 +7,7 @@
 //   SUB   a sub-agent that reads a file and reports      PLAN  a to-do list
 //   SLOW  three seconds of work (to interrupt, queue behind)      FAIL  the turn ends in an error
 //   FORM  an MCP server's form to fill in                          LINK  an MCP server's page to open
+// A question on the side (/btw) is answered on its own, after three seconds when it says SLOW, and can be cancelled.
 // It has three MCP servers: docs (two tools, a moment to connect), tracker (wants a sign-in) and flaky (fails until it
 // is connected again); one switched off stays off in that folder, kept in the config folder as Claude Code keeps it.
 // Every start, request and turn is appended to FAKE_CLAUDE_LOG when it is set. The host runs it through
@@ -81,7 +82,7 @@ function ask(request) {
   out({ type: 'control_request', request_id: id, request });
   return new Promise(resolve => waiting.set(id, resolve)).finally(() => waiting.delete(id));
 }
-const tasks = new Map();
+const tasks = new Map(), sides = new Map();
 const COMMANDS = [{ name: 'compact', description: 'Clear history but keep a summary', argumentHint: '<instructions>' }, { name: 'review', description: 'Review a pull request', argumentHint: '' },
   { name: 'fake-skill', description: 'A skill only the stand-in has', argumentHint: '' }];
 const MODELS = [{ value: 'fake-sonnet', displayName: 'Fake Sonnet', description: 'the stand-in', supportedEffortLevels: ['low', 'medium', 'high'] },
@@ -148,6 +149,15 @@ function answer(m) {
   }
   if (r.subtype === 'get_context_usage') return reply(context());
   if (r.subtype === 'mcp_status') return reply({ mcpServers: mcpStatus() });
+  if (r.subtype === 'side_question') {
+    out({ type: 'system', subtype: 'control_request_progress', request_id: m.request_id, status: 'started', uuid: randomUUID(), session_id: sid });
+    sides.set(m.request_id, setTimeout(() => {
+      sides.delete(m.request_id);
+      note({ ev: 'side', question: r.question, history: r.history ?? null, during: !!turn });
+      reply({ response: `侧答：${r.question}`, synthetic: false });
+    }, /SLOW/.test(r.question) ? 3000 : 200));
+    return;
+  }
   if ((r.subtype === 'mcp_toggle' || r.subtype === 'mcp_reconnect') && !(r.serverName in SERVERS)) return refuse(`Server not found: ${r.serverName}`);
   if (r.subtype === 'mcp_toggle') { mcpToggle(r.serverName, r.enabled === true); return reply({}); }
   if (r.subtype === 'mcp_reconnect') {
@@ -299,6 +309,7 @@ process.stdin.on('data', d => {
     try { m = JSON.parse(l); } catch { continue; }
     if (m.type === 'control_request') answer(m);
     else if (m.type === 'control_response') waiting.get(m.response?.request_id)?.(m.response);
+    else if (m.type === 'control_cancel_request' && sides.has(m.request_id)) { clearTimeout(sides.get(m.request_id)); sides.delete(m.request_id); note({ ev: 'side cancelled' }); }
     else if (m.type === 'user') { if (turn) { queue.push(m); note({ ev: 'queued', uuid: m.uuid }); } else void run(m); }
   }
 });

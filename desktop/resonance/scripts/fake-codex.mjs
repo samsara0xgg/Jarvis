@@ -3,6 +3,8 @@
 // desktop app uses, one object per line on stdin and stdout, as Codex 0.155 and 0.159 answer it, for what the agent
 // host asks of it. Threads live in memory; a turn answers from what the message asks for:
 //   FORM  an MCP server's form to fill in     LINK  an MCP server's page to open     VERIFY  an identity check
+//   SLOW  three seconds of work, until interrupted
+// A thread that has had a turn can be forked; a fork with instructions of its own, as a side question's, answers 侧答：<the text>.
 // Its MCP servers are docs (connected, two tools), off (switched off in its config), remote (over HTTP, wants an OAuth
 // sign-in) and broken (fails to start), reported as Codex reports them with and without a thread of the session's.
 // Every request, and every answer to its own requests, is appended to FAKE_CODEX_LOG when it is set. The host runs it
@@ -20,7 +22,7 @@ note({ ev: 'start', args: process.argv.slice(2) });
 
 // ---------- threads and turns ----------
 const threads = new Map();
-const thread = (id, cwd) => ({ id, cwd, turns: 0, running: null });
+const thread = (id, cwd, side = null) => ({ id, cwd, turns: 0, running: null, side });
 let asked = 0;
 const waiting = new Map();
 function ask(method, params) {
@@ -33,14 +35,15 @@ async function run(t, turnId, text) {
   const turn = t.running = { id: turnId, stop: false };
   tell('turn/started', { threadId: t.id, turn: { id: turnId, status: 'inProgress', items: [] } });
   tell('item/started', { threadId: t.id, turnId, item: { type: 'userMessage', id: randomUUID(), content: [{ type: 'text', text }] } });
-  for (const [, what] of text.matchAll(/\b(FORM|LINK|VERIFY)\b/g)) {
+  for (const [, what] of text.matchAll(/\b(FORM|LINK|VERIFY|SLOW)\b/g)) {
+    if (what === 'SLOW') { for (let i = 0; i < 30 && !turn.stop; i++) await sleep(100); continue; }
     const base = { threadId: t.id, turnId, serverName: 'docs', _meta: null };
     const got = await ask('mcpServer/elicitation/request', what === 'FORM' ? { ...base, mode: 'form', message: 'Where should it go?', requestedSchema: FORM }
       : what === 'LINK' ? { ...base, mode: 'url', message: 'Sign in to Docs', url: 'https://docs.example.com/login', elicitationId: 'e1' }
       : { ...base, mode: 'openai/userVerification', title: 'Confirm it is you', description: 'Touch ID', challenge: 'c1' });
     note({ ev: 'elicitation', mode: what, response: got.result ?? null, error: got.error ?? null });
   }
-  const item = randomUUID(), said = `好的，做完了：${text}。`;
+  const item = randomUUID(), said = t.side ? `侧答：${text}` : `好的，做完了：${text}。`;
   tell('item/started', { threadId: t.id, turnId, item: { type: 'agentMessage', id: item, text: '', phase: null } });
   tell('item/agentMessage/delta', { threadId: t.id, turnId, itemId: item, delta: said });
   tell('item/completed', { threadId: t.id, turnId, item: { type: 'agentMessage', id: item, text: said, phase: 'final_answer' } });
@@ -75,6 +78,13 @@ function handle(m) {
     case 'account/read': return reply({ account: { type: 'chatgpt', email: 'owner@example.com', planType: 'plus' } });
     case 'thread/start': { const t = thread(randomUUID(), p.cwd); threads.set(t.id, t); return reply({ thread: { id: t.id, cwd: t.cwd, turns: [] } }); }
     case 'thread/resume': { if (!threads.has(p.threadId)) threads.set(p.threadId, thread(p.threadId, p.cwd)); return reply({ thread: { id: p.threadId, turns: [] } }); }
+    case 'thread/fork': {
+      const from = threads.get(p.threadId);
+      if (!from?.turns) return refuse(-32600, `no rollout found for thread id ${p.threadId}`);
+      const t = thread(randomUUID(), from.cwd, p.developerInstructions ?? '');
+      threads.set(t.id, t);
+      return reply({ thread: { id: t.id, ephemeral: !!p.ephemeral, forkedFromId: from.id, turns: [] } });
+    }
     case 'thread/unsubscribe': return reply({ status: 'unsubscribed' });
     case 'thread/delete': threads.delete(p.threadId); return reply({});
     case 'thread/name/set': return reply({});

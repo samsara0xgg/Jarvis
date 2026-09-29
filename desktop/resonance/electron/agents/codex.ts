@@ -53,6 +53,8 @@ function start() {
       // Every thread it held is gone with it: the next send resumes them.
       for (const s of loaded) { const r = rt(s); r.loaded = false; if (r.turn) { r.turn = undefined; s.end(undefined, false, 'err', 'Codex 的后台退出了，这一轮断了'); } }
       loaded.clear();
+      for (const x of sides.values()) x.fail(new Http(502, 'Codex 的后台退出了'));
+      sides.clear();
     });
     rpc('initialize', { clientInfo: { name: 'jarvis-agents', title: 'Jarvis', version: '1' },
       capabilities: { experimentalApi: true, optOutNotificationMethods: ['remoteControl/status/changed'] } })
@@ -60,6 +62,13 @@ function start() {
   }).catch(e => { ready = null; throw e; });
 }
 process.on('exit', () => { if (child?.pid) try { process.kill(-child.pid); } catch { /* already gone */ } });
+
+// ---------- a question on the side (C7) ----------
+// As Codex's own /side asks it: an ephemeral fork of the thread, told its history is only for reference, here also kept
+// from asking or writing anything. It answers once and is let go; nothing of it stays in the thread or on disk.
+const SIDE = 'You are in a side conversation, not the main thread: the owner asks a question while the main task goes on. Everything before this is the parent thread\'s history, for reference only; do not continue, execute or complete anything from it. Answer the question after it, briefly. You may read and search files; do not change files, git state or anything else in the workspace, and do not use sub-agents.';
+type Side = { turn?: string; last: string; done: (text: string) => void; fail: (e: Error) => void };
+const sides = new Map<string, Side>();
 
 // ---------- one session's side of it ----------
 type Pending = { rpc: number | string; kind: 'cmd' | 'file' | 'perm' | 'ask' | 'form'; params: any };
@@ -157,6 +166,17 @@ function receive(m: Msg) {
   // A ChatGPT sign-in the check-up started (A4) finished, or one to an MCP server (C3).
   if (m.method === 'account/login/completed') { broadcast({ t: 'signin', agent: 'codex', ok: !!p.success, ...p.error ? { why: str(p.error) } : {} }); if (p.success) void catalogChanged(); return; }
   if (m.method === 'mcpServer/oauthLogin/completed') { broadcast({ t: 'mcp', agent: 'codex', name: str(p.name), ok: !!p.success, ...p.error ? { why: str(p.error) } : {}, ...s ? { id: s.s.id } : {} }); return; }
+  // A question on the side (C7) runs in a thread of its own, no session's.
+  const side = typeof p.threadId === 'string' ? sides.get(p.threadId) : undefined;
+  if (side) {
+    if (m.method === 'turn/started') side.turn = p.turn?.id;
+    else if (m.method === 'item/completed' && p.item?.type === 'agentMessage' && str(p.item.text)) side.last = str(p.item.text);
+    else if (m.method === 'turn/completed') {
+      if (p.turn?.status === 'completed' && side.last) side.done(side.last);
+      else side.fail(new Http(502, str(p.turn?.error?.message) ? `Codex 出错：${str(p.turn.error.message).slice(0, 120)}` : 'Codex 没答上来'));
+    }
+    return;
+  }
   if (!s || s.s.agent !== 'codex') return;
   const r = rt(s);
   switch (m.method) {
@@ -407,6 +427,31 @@ export const codex: Driver = {
       rows: [{ n: '发过去的', t: inp, sub: [['读自缓存', hit], ['新的', inp - hit]] }, { n: '它上一次写的', t: out, sub: [['其中思考', last.reasoningOutputTokens ?? 0]] },
         { n: '还空着', t: max - used, kind: 'free' }],
       foot: [`整个会话累计：发出 ${kt(u.total?.inputTokens ?? 0)}，写了 ${kt(u.total?.outputTokens ?? 0)}`, '快满时 Codex 会自己压缩'] };
+  },
+  async side(s, text, history, signal) {
+    const said = history.length ? `Earlier in this side conversation:\n\n${history.map(([q, a]) => `Q: ${q}\nA: ${a}`).join('\n\n')}\n\nNow: ${text}` : text;
+    const fork = await call<{ thread: { id: string } }>('thread/fork', { threadId: s.s.id, ephemeral: true, excludeTurns: true, developerInstructions: SIDE, approvalPolicy: 'never', sandbox: 'read-only' })
+      .catch(e => { throw /no rollout found/i.test(String(e)) ? new Http(409, '这段对话还没存下来，等第一轮答完再问') : e; });
+    const id = fork.thread.id, model = s.s.model || catalogCache.c?.models[0]?.[0] || '';
+    try {
+      return await new Promise<string>((done, fail) => {
+        const x: Side = { last: '', done, fail };
+        sides.set(id, x);
+        if (signal.aborted) { fail(new Error('不问了')); return; }
+        signal.addEventListener('abort', () => fail(new Error('不问了')));
+        call<{ turn: { id: string } }>('turn/start', { threadId: id, input: [{ type: 'text', text: said, text_elements: [] }], model: model || undefined, effort: s.s.effort || undefined,
+          approvalPolicy: 'never', sandboxPolicy: { type: 'readOnly', networkAccess: false },
+          ...(model ? { collaborationMode: { mode: 'default', settings: { model, reasoning_effort: s.s.effort || null, developer_instructions: null } } } : {}) }).then(r => { x.turn ??= r.turn.id; }, fail);
+      });
+    } finally {
+      // Let go of it, unless the server that held it is gone.
+      const x = sides.get(id);
+      if (x) {
+        sides.delete(id);
+        if (signal.aborted && x.turn) await call('turn/interrupt', { threadId: id, turnId: x.turn }).catch(() => {});
+        await call('thread/unsubscribe', { threadId: id }).catch(() => {});
+      }
+    }
   },
   async mcp(s) { return servers(s); },
   // Connecting again reads its config.toml afresh, and a thread takes that on its next turn; switching one on or off is
