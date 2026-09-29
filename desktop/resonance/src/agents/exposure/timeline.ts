@@ -27,7 +27,7 @@ export function timeline(s: Sess, items: Item[]): Trail {
   const blocks: Item[][] = [];
   for (const [i, it] of items.entries()) {
     if (it.k === 'you') {
-      out.turns.push({ item: i, at: it.at, you: it.text || (it.files ?? []).join('、'), reply: '', kind: 'none' });
+      out.turns.push({ item: i, at: it.at, you: it.text || (it.files ?? []).map(f => f.name).join('、'), reply: '', kind: 'none' });
       blocks.push([]);
       if (it.at !== undefined) {
         out.marks.push({ t: minute(it.at), k: 'you', turn: out.turns.length - 1 });

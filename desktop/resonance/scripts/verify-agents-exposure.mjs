@@ -26,6 +26,8 @@ const unknown = timeline(base, [{ k: 'you', text: 'Untimed' }, { k: 'it', text: 
 assert.equal(unknown.turns[0].at, undefined);
 assert.deepEqual(unknown.marks, []);
 assert.deepEqual(unknown.segs, [{ a: 15, b: null, k: 'idle' }]);
+// A message of pictures alone reads as their names, never as [object Object].
+assert.equal(timeline(base, [{ k: 'you', text: '', files: [{ name: 'shot.png', img: 'a' }, { name: '图片 2' }] }]).turns[0].you, 'shot.png、图片 2');
 
 const tied = timeline({ ...base, st: 'work', trace: [{ at: 240000, st: 'work' }] }, items.slice(0, 4));
 assert.equal(tied.segs.at(-1).k, 'work');
@@ -65,4 +67,4 @@ assert.match(first.img, /^[0-9a-f]{32}\.png$/);
 assert.equal(pic('图片 2', png).img, first.img);
 assert.equal(await readFile(path.join(process.env.JARVIS_AGENTS_DIR, 'images', first.img), 'utf8'), 'picture bytes');
 assert.deepEqual(pic('图片 3', 'https://example.com/a.png'), { name: '图片 3' });
-console.log('7 acceptance checks passed: timed transitions, untimed history, transition precedence, turn words, transcript replay, legacy timestamps, picture copies.');
+console.log('8 acceptance checks passed: timed transitions, untimed history, picture-only messages, transition precedence, turn words, transcript replay, legacy timestamps, picture copies.');
