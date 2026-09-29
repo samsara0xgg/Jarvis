@@ -67,7 +67,7 @@ _MAX_EVENT_DRAIN_BATCH = 1024
 _MAX_DURABILITY_RETRY_ATTEMPTS = 10
 # A barge-in yield lowers or restores the speech within one spoken syllable.
 _YIELD_RAMP_MS = 30.0
-# A barge-in stop or hold first fades her out on the real waveform: the cut's
+# A stop or a barge-in hold first fades her out on the real waveform: the cut's
 # own declick (ADR-0006 D11) starts from the last sample played, and from
 # mid-word that truncation was a pop even at the yield's 0.2 (live test
 # 2026-09-29). The wait is bounded for a player whose callback is not running.
@@ -807,12 +807,19 @@ class StreamingTTSPipeline:
         loop = self._loop
         if loop is None or self._closed.is_set():
             return "stale"
+        if response_id is None:
+            # Whatever is speaking fades now, not once the actor gets here: an
+            # actor busy on SQLite could let her play on for seconds.
+            with self._gain_lock:
+                self._player.set_gain(0.0, _CUT_FADE_MS)
         try:
             future = asyncio.run_coroutine_threadsafe(
                 self._stop_foreground_output_owned(response_id, reason),
                 loop,
             )
         except RuntimeError:
+            if response_id is None:
+                self._restore_gain()
             return "stale"
         try:
             return future.result(timeout=self._config.shutdown_timeout_s)
@@ -1603,6 +1610,9 @@ class StreamingTTSPipeline:
             or (response_id is not None and active.response.response_id != response_id)
             or active.terminal_commit_pending
         ):
+            if response_id is None:
+                # The caller faded her out before asking; nothing is cut.
+                self._restore_gain()
             record_realtime_trace(
                 "media_stop_foreground_stale",
                 response_id=response_id,
@@ -1610,15 +1620,12 @@ class StreamingTTSPipeline:
                 terminal_commit_pending=active is not None and active.terminal_commit_pending,
             )
             return "stale"
-        faded = reason == "barge_in"
-        if faded:
-            await self._fade_out()
         try:
+            await self._fade_out()
             if not await self._interrupt_active(reason=reason):
                 return "uncertain"
         finally:
-            if faded:
-                self._restore_gain()
+            self._restore_gain()
         # ADR-0006 D4: a user stop covers the queued speech of that group
         # too, and `_release_active(start_successor=False)` never advances
         # the lane, so an unpurged successor would sit unstartable.

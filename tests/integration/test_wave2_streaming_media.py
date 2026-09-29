@@ -3762,15 +3762,20 @@ _RAMP_ROUNDING = 1e-6
 _RAMP_SLACK = 1.1
 
 
-def test_a_barge_in_stop_fades_her_out_on_the_waveform_before_the_cut(
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    ("stop_id", "reason"),
+    [(None, "barge_in"), ("RFADE", "user_stop")],
+    ids=["barge_in", "user_stop"],
+)
+def test_a_stop_fades_her_out_on_the_waveform_before_the_cut(
+    tmp_path: Path, stop_id: str | None, reason: str,
 ) -> None:
-    """Soft barge-in: her voice ramps to silence first, so D11's cut lands on nothing.
+    """Her voice ramps to silence first, so D11's cut lands on nothing.
 
     From mid-word the synthesized declick alone was heard as a pop, even at
     the yield's 0.2 (live test 2026-09-29).
     """
-    db_path = tmp_path / "declick-barge-in.db"
+    db_path = tmp_path / "declick-stop.db"
     conn = open_event_log(db_path)
     pipeline, player, provider = _declick_pipeline(db_path, response_id="RFADE", samples=8_000)
     hold = threading.Event()
@@ -3778,7 +3783,7 @@ def test_a_barge_in_stop_fades_her_out_on_the_waveform_before_the_cut(
     pump = _CallbackPump(player, record=True)
     outcome: list[str] = []
     stopper = threading.Thread(
-        target=lambda: outcome.append(pipeline.stop_foreground_output(None, reason="barge_in")),
+        target=lambda: outcome.append(pipeline.stop_foreground_output(stop_id, reason=reason)),
     )
     try:
         rows = _emit_response(
@@ -3815,6 +3820,58 @@ def test_a_barge_in_stop_fades_her_out_on_the_waveform_before_the_cut(
     assert np.all(signal[first_zero:] == 0.0)
     # (3) the mute and the yield get their gain back for the next answer
     assert player.current_gain() == 1.0
+
+
+def test_a_barge_in_stop_fades_her_out_while_the_actor_is_busy(tmp_path: Path) -> None:
+    """The caller fades her itself: an actor stuck on SQLite no longer lets her play on."""
+    db_path = tmp_path / "declick-busy.db"
+    conn = open_event_log(db_path)
+    pipeline, player, provider = _declick_pipeline(db_path, response_id="RBUSY", samples=8_000)
+    hold = threading.Event()
+    provider.final_gates[("RBUSY", 0)] = hold
+    busy = threading.Event()
+    pump = _CallbackPump(player, record=True)
+    outcome: list[str] = []
+    stopper = threading.Thread(
+        target=lambda: outcome.append(pipeline.stop_foreground_output(None, reason="barge_in")),
+    )
+    try:
+        rows = _emit_response(
+            conn, response_id="RBUSY", group_id="GBUSY", turn_id="TBUSY", text="这一句会被打断。",
+        )
+        asyncio.run(_submit_response(pipeline, rows))
+        _pump_until(
+            pump,
+            lambda: _playback_rows_for(conn, "RBUSY", "surface.playback_started") == 1,
+        )
+        loop = pipeline._loop  # noqa: SLF001
+        assert loop is not None
+        loop.call_soon_threadsafe(busy.wait, 5.0)
+        pump.blocks.clear()
+        stopper.start()
+        # (1) silent while the actor has not even seen the stop
+        _pump_until(pump, lambda: player.current_gain() == 0.0)
+        assert stopper.is_alive()
+        busy.set()
+        _pump_until(pump, lambda: not stopper.is_alive())
+        for _ in range(10):
+            pump.step()
+        # (2) cut and given back; a second stop finds nothing and gives it back too
+        assert player.current_gain() == 1.0
+        assert pipeline.stop_foreground_output(None, reason="barge_in") == "stale"
+        pump.step()
+        assert player.current_gain() == 1.0
+    finally:
+        busy.set()
+        hold.set()
+        stopper.join(timeout=1.0)
+        assert pipeline.close()
+        conn.close()
+
+    assert outcome == ["applied"]
+    edge = np.diff(np.abs(pump.signal))
+    assert np.all(edge <= _RAMP_ROUNDING)
+    assert float(-edge.min()) <= _DECLICK_AMPLITUDE / (_CUT_FADE_SAMPLES - 1) * _RAMP_SLACK
 
 
 def test_a_barge_in_hold_fades_her_out_and_back_in(tmp_path: Path) -> None:
@@ -4015,3 +4072,46 @@ def test_end_of_generation_short_read_ramps_inside_its_own_block(
     ]
     assert len(audible) == 1
     assert audible[0].attributes["estimated_audible_samples"] == _TAIL_RAMP_RESPONSE_SAMPLES
+
+
+def test_a_dry_ring_that_refills_ramps_her_back_in() -> None:
+    """ADR-0006:347: she rises out of a dry window's silence, never steps onto the waveform."""
+    player = _player()
+    lease = player.activate_generation(
+        session_id="S", response_id="RDRY", response_group_id="G", turn_id="T",
+    )
+    assert isinstance(lease, GenerationLease)
+    generation = lease.playback_generation_id
+    player.begin_generation_segment(
+        expected_playback_generation_id=generation, sequence=0, text="words", segment_hash="h",
+    )
+
+    def speak(samples: int) -> None:
+        player.write_generation(
+            np.full(samples, _DECLICK_AMPLITUDE, dtype=np.float32).tobytes(),
+            expected_playback_generation_id=generation,
+            segment_sequence=0,
+        )
+
+    block = 256
+    pump = _CallbackPump(player, record=True)
+    speak(2 * block + 100)
+    for _ in range(4):  # two whole blocks, one short that D12 ramps down, one dry
+        pump.step(block)
+    speak(3 * block)
+    for _ in range(3):
+        pump.step(block)
+
+    signal = pump.signal
+    back = 4 * block
+    ramp = voice_tts._DECLICK_SAMPLES  # noqa: SLF001
+    assert np.all(signal[: 2 * block] == _DECLICK_AMPLITUDE)
+    assert not signal[2 * block + 100 : back].any()
+    assert player.starvation_gaps == 1
+    # (1) back in from exactly the silence, rising, never a step
+    assert signal[back] == 0.0
+    edge = np.diff(signal[back - 1 : back + ramp])
+    assert np.all(edge >= 0.0)
+    assert float(edge.max()) <= _DECLICK_AMPLITUDE / (ramp - 1) * 1.01
+    # (2) the rest of her words at full amplitude
+    assert np.all(signal[back + ramp - 1 :] == _DECLICK_AMPLITUDE)
