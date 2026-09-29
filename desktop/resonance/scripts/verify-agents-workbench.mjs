@@ -69,7 +69,8 @@ const electron = path.join(app, 'node_modules', '.bin', 'electron');
 const host = spawn(electron, [path.join(app, 'dist-electron', 'agents', 'host.js')], { stdio: ['ignore', 'pipe', 'pipe'],
   env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', JARVIS_RUNTIME_ROOT: root, JARVIS_AGENTS_DIR: dir, JARVIS_AGENTS_PORT: String(port), JARVIS_INHERENT_BRIDGE_PORT: String(daemon.address().port) } });
 let hostLog = ''; host.stdout.on('data', b => { hostLog += b; }); host.stderr.on('data', b => { hostLog += b; });
-const done = async () => { host.kill(); daemon.close(); await rm(tmp, { recursive: true, force: true }); };
+// The host starts a keeper for its Claude children (ADR 0082); it goes with the check.
+const done = async () => { host.kill(); daemon.close(); try { execFileSync('pkill', ['-f', `keeper.js ${dir}`]); } catch { /* none left */ } await rm(tmp, { recursive: true, force: true }); };
 process.on('uncaughtException', async e => { console.error(e, '\n--- host ---\n', hostLog.slice(-3000)); await done(); process.exit(1); });
 
 const call = async (route, body, method = body === undefined ? 'GET' : 'POST') => {
