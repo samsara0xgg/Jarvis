@@ -10,6 +10,9 @@
   the Claude Agent SDK on Allen's own sign-in, and says a public Jarvis has to
   revisit that. The installed app keeps the window off until then
   (`docs/spec.html#agent-host`, release inventory 改19).
+- ADR 0092: every feature on by default runs on one OpenAI key alone; another
+  provider's key only moves a feature to that provider or turns on a feature
+  that is off by default, and first run asks for no other key.
 - Claude Code's legal page
   (https://code.claude.com/docs/en/legal-and-compliance, read 2026-09-29):
   - "Developers building products or services that interact with Claude's
@@ -50,8 +53,10 @@
 In the installed app, every `claude` the agent host starts for a Startrail
 session gets the owner's own Anthropic API key, or their Amazon Bedrock or
 Google Vertex settings, in that process's environment and nowhere else;
-without one, the host starts no Claude session and says what is missing. The
-dev build keeps Allen's subscription.
+without one, the host starts no Claude session and says what is missing. That
+makes Startrail's Claude sessions a feature another provider's key turns on,
+as ADR 0092 allows, and first run does not ask for this key. The dev build
+keeps Allen's subscription.
 
 Limits:
 
