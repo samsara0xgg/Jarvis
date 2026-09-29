@@ -28,7 +28,9 @@ _TABLE: Final = "jarvis/shared/lang.py"
 # enclosing module-level name or function.
 _MATCHERS: Final[dict[str, frozenset[str]]] = {
     "jarvis/cli/__init__.py": frozenset({"_LONG_RUN_RE"}),
-    "jarvis/decision/__init__.py": frozenset({"_WRITTEN_MARKUP_RE"}),
+    "jarvis/decision/__init__.py": frozenset(
+        {"_WRITTEN_MARKUP_RE", "_REPEAT_REQUEST_RE", "_repeat_of_last_answer"}
+    ),
     "jarvis/decision/daily_report.py": frozenset({"_COMPLETION_WORDS", "_TITLE_TERM", "_BREAKS"}),
     "jarvis/decision/pre_route.py": frozenset({"_DEMONSTRATIVE_TASK_RE"}),
     "jarvis/decision/stream_gate.py": frozenset({"routine_stream_policy"}),
