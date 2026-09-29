@@ -374,21 +374,21 @@ export const claude: Driver = {
     let done: string;
     if (p.name === 'AskUserQuestion') {
       const qs = (p.input.questions ?? []) as { question: string }[];
-      if (a.decision === 'deny') { p.resolve({ behavior: 'deny', message: 'Allen dismissed the question.' }); done = '没回答'; }
+      if (a.decision === 'deny') { p.resolve({ behavior: 'deny', message: 'The user dismissed the question.' }); done = '没回答'; }
       else {
         const answers = Object.fromEntries(qs.map((q, i) => [q.question, a.text !== undefined && i === 0 ? a.text : (a.answers?.[i] ?? []).join(', ')]));
         p.resolve({ behavior: 'allow', updatedInput: { ...p.input, answers } });
         done = `你${a.text !== undefined ? '回答' : '选了'}：${Object.values(answers).filter(Boolean).join(' · ')}`;
       }
     } else if (p.name === 'ExitPlanMode') {
-      if (a.decision === 'deny') { p.resolve({ behavior: 'deny', message: a.text || 'Allen wants to rethink this plan before you start.' }); done = a.text ? `再想想：${a.text}` : '再想想'; }
+      if (a.decision === 'deny') { p.resolve({ behavior: 'deny', message: a.text || 'The user wants to rethink this plan before you start.' }); done = a.text ? `再想想：${a.text}` : '再想想'; }
       else {
         const next = r.prev && r.prev !== 'plan' ? r.prev : 'auto';
         p.resolve({ behavior: 'allow', updatedInput: p.input, updatedPermissions: [{ type: 'setMode', mode: next as 'auto', destination: 'session' }] });
         s.set({ mode: next });
         done = '就这么做';
       }
-    } else if (a.decision === 'deny') { p.resolve({ behavior: 'deny', message: a.text || 'Allen said no from Jarvis.' }); done = a.text ? `拒绝了：${a.text}` : '拒绝了'; }
+    } else if (a.decision === 'deny') { p.resolve({ behavior: 'deny', message: a.text || 'The user said no.' }); done = a.text ? `拒绝了：${a.text}` : '拒绝了'; }
     else {
       p.resolve({ behavior: 'allow', updatedInput: p.input, ...(a.decision === 'always' && p.suggestions?.length ? { updatedPermissions: p.suggestions } : {}) });
       done = a.decision === 'always' ? '已允许 · 以后都允许' : '已允许';
