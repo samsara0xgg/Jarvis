@@ -16,7 +16,7 @@ import { codex } from './codex.js';
 import { loginPath, version, which } from './doctor.js';
 import { findFiles, keepUpload, peek, pruneOld, resolveRefs } from './files.js';
 import { hostKey } from './key.js';
-import { ask, startKeeper, type Kid } from './keeper.js';
+import { ask, socketFor, startKeeper, type Kid } from './keeper.js';
 import { LABEL, Landing, REOPEN, dirtyOf, shellEnv } from './land.js';
 import { baseOf, changes, fileDiff, revert } from './review.js';
 import { auth, forgetKey, loadSettings, PACKAGED, patchSettings, saveKey, settings } from './settings.js';
@@ -27,7 +27,7 @@ const ROOT = process.env.JARVIS_RUNTIME_ROOT ?? path.join(homedir(), '.jarvis');
 export const DIR = process.env.JARVIS_AGENTS_DIR ?? path.join(ROOT, 'agents');
 const PORT = Number(process.env.JARVIS_AGENTS_PORT ?? 8016);
 // Where the keeper (ADR 0082) answers: the Claude Code children live there, not under this process.
-export const KEEPER = path.join(DIR, 'keeper.sock');
+export const KEEPER = socketFor(DIR);
 export const log = (...a: unknown[]) => console.log(new Date().toISOString(), ...a);
 
 // ---------- what each agent's wire must do ----------
@@ -1047,7 +1047,7 @@ async function boot() {
   await loginPath();
   const kids = new Map<string, Kid>();
   try {
-    await startKeeper(KEEPER, path.join(ROOT, 'logs', 'agents-keeper.log'));
+    await startKeeper(DIR, KEEPER, path.join(ROOT, 'logs', 'agents-keeper.log'));
     for (const k of await ask<Kid[]>(KEEPER, { op: 'list' })) kids.set(k.key, k);
   } catch (e) { log('keeper', e); }
   await loadSettings();

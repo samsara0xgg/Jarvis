@@ -5,6 +5,7 @@
 // folder and a PATH of their own. Codex is not covered (none is on that PATH).
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { chmodSync, existsSync, readFileSync, realpathSync, statSync, symlinkSync, utimesSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import http from 'node:http';
@@ -120,8 +121,10 @@ async function stopHost(h) {
   h.proc.kill(); await new Promise(r => h.proc.exitCode !== null ? r() : h.proc.once('exit', r));
   try { execFileSync('pkill', ['-f', `keeper.js ${h.dir}`]); } catch { /* none left */ }
 }
+// A keeper's socket outside the agents folder (the folder too deep for one) goes with the check too.
+const sockOutside = h => path.join(os.tmpdir(), `jarvis-agents-${process.getuid()}`, `${createHash('sha256').update(h.dir).digest('hex').slice(0, 16)}.sock`);
 const done = async () => {
-  for (const h of hosts) { h.proc.kill(); try { execFileSync('pkill', ['-f', `keeper.js ${h.dir}`]); } catch { /* none left */ } }
+  for (const h of hosts) { h.proc.kill(); try { execFileSync('pkill', ['-f', `keeper.js ${h.dir}`]); } catch { /* none left */ } await rm(sockOutside(h), { force: true }); }
   api.close(); daemon.close();
   if (process.env.KEEP_TMP) console.log(`kept ${tmp}`); else await rm(tmp, { recursive: true, force: true });
 };
@@ -388,7 +391,9 @@ check('deleting a session deletes its transcript', had && dl.ok && !existsSync(t
 await stopHost(A);
 
 // ======================= the installed app: the owner's own key (ADR 0094) =======================
-let B = await startHost('packaged', path.join(tmp, 'root2'), true);
+// Its runtime root is deep enough that <agents>/keeper.sock cannot be a socket (104 bytes on macOS, 108 here).
+const deep = path.join(tmp, 'the-installed-apps-runtime-root-whose-path-is-too-long-for-a-socket');
+let B = await startHost('packaged', deep, true);
 const b0 = await B.call('/settings');
 check('the installed app starts with no Claude sign-in and says what is missing', b0.auth.packaged && b0.auth.mode === 'key' && b0.auth.ready === false && b0.auth.why === '先填一个 Anthropic API key', b0.auth);
 const bc = (await B.call(`/commands?cwd=${encodeURIComponent(repo)}`)).commands;
@@ -409,6 +414,10 @@ const bs1 = await B.call('/sessions', { agent: 'claude', cwd: repo, text: 'on my
 await until('packaged turn', () => B.claude().some(e => e.ev === 'turn end') && B.rows.get(bs1.id)?.st === 'done');
 const bStarts = B.claude().filter(e => e.ev === 'start');
 check('every Claude Code the host starts for Startrail gets the key', bStarts.length >= 2 && bStarts.every(e => e.key === '…Q7kZ' && e.token === null && e.host === '1'), bStarts);
+const sock = sockOutside(B), priv = path.dirname(sock);
+check('an agents folder too deep for a socket gets its keeper in a folder only the owner can enter', Buffer.byteLength(path.join(B.dir, 'keeper.sock')) >= 108
+  && !existsSync(path.join(B.dir, 'keeper.sock')) && statSync(sock).isSocket() && (statSync(priv).mode & 0o777) === 0o700
+  && execFileSync('pgrep', ['-f', `keeper.js ${B.dir} ${sock}`]).toString().trim() !== '');
 // The owner's own terminal claude keeps its own sign-in: the host's environment, which terminals and setup scripts copy, has no key.
 await B.call('/settings', { setup: { [repo]: 'printf "key=%s\\n" "${ANTHROPIC_API_KEY:-none}" > setup-ran.txt' } });
 const bw = await B.call('/sessions', { agent: 'claude', cwd: repo, text: 'tree on my key', tree: true });
@@ -424,7 +433,7 @@ if (term.ok) {
   await B.call(`/term/${bs1.id}`, undefined, 'DELETE');
 } else console.log(`SKIP the terminal (${term.error ?? term.status}): node-pty is not built for this platform`);
 await stopHost(B);
-B = await startHost('packaged', path.join(tmp, 'root2'), true);
+B = await startHost('packaged', deep, true);
 const b1 = await B.call('/settings');
 check('the key is read back from the Keychain when the host starts', b1.auth.ready && b1.auth.hint === '…Q7kZ', b1.auth);
 await B.call('/settings', { provider: 'bedrock' });
