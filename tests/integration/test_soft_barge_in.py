@@ -233,7 +233,16 @@ def test_a_stop_request_stops_her_and_is_no_turn(
     assert ("empty", reason) in rig.phases
 
 
-@pytest.mark.parametrize(("heard", "reason"), [("五。", "unclear"), ("And.", "backchannel")])
+@pytest.mark.parametrize(
+    ("heard", "reason"),
+    [
+        ("五。", "unclear"),
+        ("And.", "backchannel"),
+        # A drawn-out 「嗯」 in the 2026-09-29 live test, which stopped her as a turn.
+        ("うん。", "backchannel"),
+        ("응.", "backchannel"),
+    ],
+)
 def test_one_word_that_says_nothing_keeps_her_talking(
     tmp_path: Path,
     heard: str,

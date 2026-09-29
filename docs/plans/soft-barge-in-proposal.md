@@ -37,6 +37,10 @@
 - The second and third live runs (2026-09-29): every 「pause」 over her came
   back as some other lone English word of two to six characters, taken as
   saying nothing, and 「可以啦」 was a turn she answered.
+- The fourth live run (2026-09-29): a lone English word and 「可以啦」
+  stopped her with no answer; a drawn-out 「嗯——」 reached final ASR in
+  three pieces, the `tts` VAD profile losing it in between, heard as
+  Japanese 「うん」, 「うん」 and 「う」, and the first stopped her as a turn.
 
 ## Decision
 
