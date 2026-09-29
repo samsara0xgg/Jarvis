@@ -18,8 +18,8 @@ const contents = path.join(app, 'Contents'), resources = path.join(contents, 'Re
 rmSync(app, { recursive: true, force: true });
 cpSync('node_modules/electron/dist/Electron.app', app, { recursive: true, verbatimSymlinks: true });
 rmSync(path.join(resources, 'default_app.asar'));
-// Her icon in Electron's place (Info.plist names electron.icns). Cut from the release kit's 01-app-icon.png to
-// Apple's grid: an 824 px body on a 1024 canvas, sizes 16 to 1024 by iconutil.
+// Her icon in Electron's place (Info.plist names electron.icns). Cut from the release design kit's 01-app-icon.png
+// (removed from the repo, in git history) to Apple's grid: an 824 px body on a 1024 canvas, sizes 16 to 1024 by iconutil.
 cpSync('assets/Jarvis.icns', path.join(resources, 'electron.icns'));
 // Electron's and Chromium's licenses must travel with the app; the notices name the models too.
 cpSync('node_modules/electron/dist/LICENSE', path.join(resources, 'LICENSE.electron'));
