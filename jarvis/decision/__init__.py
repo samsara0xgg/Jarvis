@@ -725,8 +725,10 @@ _HEARD_QUOTE_MAX_CHARS: Final[int] = 40
 
 # Allen did not catch what she said: the whole utterance only asks for it
 # again. Matched on the text with spaces and closing punctuation removed.
+# 「什么」 needs no question mark: final ASR ended it with 「。」 in the
+# 2026-09-29 live test.
 _REPEAT_REQUEST_RE: Final[re.Pattern[str]] = re.compile(
-    r"(?:你|你刚才|刚才)?说?(?:的是)?(?:什么|啥)[?？]|[啊嗯哈蛤][?？]"  # noqa: RUF001 — Allen's fullwidth question mark.
+    r"(?:你|你刚才|刚才)?说?(?:的是)?(?:什么|啥)[?？]?|[啊嗯哈蛤][?？]"  # noqa: RUF001 — Allen's fullwidth question mark.
     r"|(?:请|麻烦)?你?再说一[遍次]吧?|我?没听清楚?"
     r"|(?:sorry|pardon|what|huh)\??|comeagain\??|(?:can|could)?yousay(?:that|it)again(?:please)?\??"
     r"|say(?:that|it)again(?:please)?\??|i?didn'?t(?:catch|hear)(?:that|you|it)\??",
