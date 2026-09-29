@@ -3,22 +3,34 @@ import { spawn, execFile } from 'node:child_process';
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
-import { daemonToken } from './bridge.js';
+import { hostKey } from './agents/key.js';
 // ADR 0073: the Agents window. Its sessions run in the agent host (agents/host.ts), which this process starts when
 // nothing answers on its port and which keeps running when the companion restarts. The window talks to the host
 // itself; from here it only asks for what a page may not do: a folder picker and a terminal tab.
 export const AGENTS_PORT = process.env.JARVIS_AGENTS_PORT ?? '8016';
 const wait = (ms: number) => new Promise(done => setTimeout(done, ms));
-async function answers() {
+const run = (cmd: string, args: string[]) => new Promise<string>(done => execFile(cmd, args, { timeout: 5000 }, (_, out) => done(String(out ?? ''))));
+// 'old': a host from before it had a key of its own (ADR 0095) holds the port, and does not know this one.
+async function answers(): Promise<'yes' | 'no' | 'old'> {
   try {
-    const r = await fetch(`http://127.0.0.1:${AGENTS_PORT}/health`, { headers: { Authorization: `Bearer ${await daemonToken()}` }, signal: AbortSignal.timeout(1500) });
-    return r.ok;
-  } catch { return false; }
+    const r = await fetch(`http://127.0.0.1:${AGENTS_PORT}/health`, { headers: { Authorization: `Bearer ${hostKey()}` }, signal: AbortSignal.timeout(1500) });
+    return r.ok ? 'yes' : r.status === 401 ? 'old' : 'no';
+  } catch { return 'no'; }
+}
+// The old host goes the way a restart takes it: its turns carry on in the keeper (ADR 0082) and the new one takes them back.
+async function replaceOld() {
+  for (const pid of (await run('/usr/sbin/lsof', ['-nP', `-iTCP:${AGENTS_PORT}`, '-sTCP:LISTEN', '-t'])).split('\n').map(Number).filter(Boolean)) {
+    if (!/agents\/host\.js/.test(await run('/bin/ps', ['-o', 'command=', '-p', String(pid)]))) continue;
+    try { process.kill(pid, 'SIGTERM'); } catch { continue; }
+    for (let i = 0; i < 40; i++) { await wait(250); try { process.kill(pid, 0); } catch { break; } }
+  }
 }
 let starting: Promise<void> | null = null;
 export function ensureHost(host: string) {
   return starting ??= (async () => {
-    if (await answers()) return;
+    const now = await answers();
+    if (now === 'yes') return;
+    if (now === 'old') await replaceOld();
     const logs = path.join(process.env.JARVIS_RUNTIME_ROOT ?? path.join(homedir(), '.jarvis'), 'logs');
     mkdirSync(logs, { recursive: true, mode: 0o700 });
     const out = openSync(path.join(logs, 'agents-host.out.log'), 'a'), err = openSync(path.join(logs, 'agents-host.err.log'), 'a');
@@ -27,7 +39,7 @@ export function ensureHost(host: string) {
       PATH: [path.join(homedir(), '.local/bin'), '/opt/homebrew/bin', '/usr/local/bin', process.env.PATH || '/usr/bin:/bin:/usr/sbin:/sbin'].join(':') } });
     closeSync(out); closeSync(err);
     child.unref();
-    for (let i = 0; i < 60 && !await answers(); i++) await wait(250);
+    for (let i = 0; i < 60 && await answers() !== 'yes'; i++) await wait(250);
   })().finally(() => { starting = null; });
 }
 // A new Ghostty tab in the session's folder that continues it.
