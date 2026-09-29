@@ -348,11 +348,13 @@ export class Landing {
     if (c.uncommitted.length && !this.draft && !this.edited) this.startDraft(c);
     return 'ok';
   }
+  // Its last answer goes with the diff, so the conversation is read first when nothing has opened it yet (B23).
   private startDraft(c: Changes) {
     this.land.drafting = true;
-    const last = [...this.x.items ?? []].reverse().find(it => it.k === 'it');
-    this.draft = draftMessage(c.top, this.x.s.title, last?.k === 'it' ? last.text : '', c.uncommitted)
-      .then(d => { if (d) { if (!this.edited) this.land.msg = d.title; this.body = d.body; } }, e => log('draft', this.x.s.id, e))
+    this.draft = this.x.ensureLoaded().then(() => {
+      const last = [...this.x.items ?? []].reverse().find(it => it.k === 'it');
+      return draftMessage(c.top, this.x.s.title, last?.k === 'it' ? last.text : '', c.uncommitted);
+    }).then(d => { if (d) { if (!this.edited) this.land.msg = d.title; this.body = d.body; } }, e => log('draft', this.x.s.id, e))
       .finally(() => { this.land.drafting = false; if (this.x.s.land) this.emit(); });
   }
   private async gate(live: () => boolean): Promise<Done> {

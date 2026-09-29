@@ -6,7 +6,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, existsSync, readFileSync, realpathSync, statSync, symlinkSync, utimesSync } from 'node:fs';
+import { appendFileSync, chmodSync, existsSync, readFileSync, realpathSync, statSync, symlinkSync, utimesSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import os from 'node:os';
@@ -389,7 +389,7 @@ const had = existsSync(tr), dl = await A.call(`/sessions/${fk1.id}`, undefined, 
 await until('gone from the list', () => !A.rows.has(fk1.id));
 check('deleting a session deletes its transcript', had && dl.ok && !existsSync(tr));
 
-// ---------- a restart in the middle of things: the list it left and a turn it was running ----------
+// ---------- a restart in the middle of things: the list it left, a turn it was running, and B23 ----------
 // OLD is in a slow turn when the host is stopped; the keeper keeps its child for the new host to take back.
 await A.call(`/sessions/${OLD}/send`, { text: 'SLOW across the restart' });
 await until('the slow turn', () => A.rows.get(OLD)?.st === 'work');
@@ -398,6 +398,17 @@ A.proc.kill(); await new Promise(r => A.proc.exitCode !== null ? r() : A.proc.on
 const A2 = await startHost('dev-again', A.root, false);
 await until('the list', () => A2.events[0]?.t === 'hello');
 check('a host stopped in the middle of things comes back to the list it left', listOf(A2) === left, { left, back: listOf(A2) });
+// B23: S has no child (it went to the terminal and came back), so nothing reads it until it is opened, and a line its
+// transcript gains after the new host started is there when it is.
+const trS = path.join(CONFIG, 'projects', A2.rows.get(S).cwd.replace(/[^a-zA-Z0-9]/g, '-'), `${S}.jsonl`);
+const lastS = readFileSync(trS, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)).filter(e => e.uuid && !e.isSidechain).at(-1).uuid, u3 = crypto.randomUUID();
+const later = { isSidechain: false, userType: 'external', cwd: A2.rows.get(S).cwd, sessionId: S, version: '9.9.9', gitBranch: 'main', timestamp: new Date().toISOString() };
+appendFileSync(trS, `${JSON.stringify({ ...later, parentUuid: lastS, type: 'user', message: { role: 'user', content: 'said after the restart' }, uuid: u3 })}\n${
+  JSON.stringify({ ...later, parentUuid: u3, type: 'assistant', message: { id: 'msg_y', type: 'message', role: 'assistant', model: 'fake-sonnet', content: [{ type: 'text', text: 'Heard after the restart.' }] }, uuid: crypto.randomUUID() })}\n`);
+const sLater = (await A2.call(`/sessions/${S}`)).items;
+check('B23: a conversation is read when it is opened, not when the host starts', sLater.at(-1)?.k === 'it' && sLater.at(-1).text === 'Heard after the restart.', sLater.slice(-2));
+const sr2 = (await A2.call('/search?q=hello%20PLAN')).hits;
+check('B23: search reads the conversations nobody has opened yet', sr2.some(h => h.id === fk0.id && typeof h.item === 'number'), sr2);
 await until('the slow turn ends under the new host', () => A2.rows.get(OLD)?.st === 'done');
 const oLater = (await A2.call(`/sessions/${OLD}`)).items;
 check('a turn running through a restart is taken back and ends here, in the same child', oLater.filter(i => i.k === 'it').at(-1)?.text.startsWith('好的，做完了：SLOW across the restart')

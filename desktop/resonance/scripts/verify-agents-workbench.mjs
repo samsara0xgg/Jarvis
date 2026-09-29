@@ -113,7 +113,7 @@ const host = spawn(electron, [path.join(app, 'dist-electron', 'agents', 'host.js
   env: { ...live ? process.env : own, ELECTRON_RUN_AS_NODE: '1', JARVIS_RUNTIME_ROOT: root, JARVIS_AGENTS_DIR: dir, JARVIS_AGENTS_PORT: String(port),
     JARVIS_INHERENT_BRIDGE_PORT: String(daemon.address().port), JARVIS_AGENTS_GH: ghBin } });
 let hostLog = ''; host.stdout.on('data', b => { hostLog += b; }); host.stderr.on('data', b => { hostLog += b; });
-// The host starts a keeper for its Claude children (ADR 0082); it goes with the check.
+// The host starts a keeper for its Claude children (ADR 0098); it goes with the check.
 const done = async () => { host.kill(); daemon.close(); try { execFileSync('pkill', ['-f', `keeper.js ${dir}`]); } catch { /* none left */ } await rm(tmp, { recursive: true, force: true }); };
 process.on('uncaughtException', async e => { console.error(e, '\n--- host ---\n', hostLog.slice(-3000)); await done(); process.exit(1); });
 

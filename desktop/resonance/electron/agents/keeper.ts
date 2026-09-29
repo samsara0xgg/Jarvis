@@ -1,4 +1,4 @@
-// The keeper (ADR 0082): a small process that owns every Claude Code child the agent host drives, so a session keeps
+// The keeper (ADR 0098): a small process that owns every Claude Code child the agent host drives, so a session keeps
 // running while the host restarts. The host starts it when nothing answers on its socket, and each session is one
 // connection: the first line says which session, and after it the connection is that child's stdin and stdout. When
 // the host comes back, it opens the same session again and gets what it needs to carry on: the lines of the turn it
