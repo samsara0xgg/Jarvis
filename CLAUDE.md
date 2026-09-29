@@ -35,9 +35,12 @@ L6 deployment
 
 Do not violate layer boundaries. `lint-imports` is an architectural gate.
 
-The full architecture specification is in `docs/spec.html`. §3 is the source
-of truth when sections disagree. Read the relevant section when architecture
-details are needed rather than preloading the entire specification.
+The specification is `docs/spec.html` (v2): what a public build must satisfy,
+cited by anchor (`docs/spec.html#egress`), never by `§`. `docs/spec-v1.html`
+is the archived v1: the `§` numbers in code written before ADR 0089 point
+there, as background, not contract. Read the relevant chapter when
+architecture details are needed rather than preloading the entire
+specification.
 
 ## Verification
 

@@ -60,7 +60,7 @@ bash docs/archify/render.sh --visual-check
 | reported / observed / verified 区分 | [`result_interpreter.py`](../../jarvis/decision/result_interpreter.py)：`interpret_verify_diff_bundle`；[`reviewer.py`](../../jarvis/decision/reviewer.py) |
 | 部署路径、驻留与电源观察 | [`deployment/`](../../jarvis/deployment/)、[`daemon.py`](../../jarvis/runtime/daemon.py) |
 
-完整合同仍以 [spec §3](../spec.html#layer-state-object) 与 [ADR](../adr/) 为准。
+完整合同仍以 [spec §3](../spec-v1.html#layer-state-object) 与 [ADR](../adr/) 为准。
 这两张图描述当前代码的选定路径，不代表 Jarvis 全部设计目标已实现或已完成运行验收。
 
 ## 交付证据

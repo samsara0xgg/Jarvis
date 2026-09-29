@@ -37,7 +37,7 @@ Production Jarvis has not been restarted and main has not been modified.
 - jarvis/state/timesink.py: read-only external SQLite adapter.
 - config/jarvis.yaml observer.timesink: enabled local database path, wired only
   through jarvis/runtime/__init__.py. An absent block does not open the user's DB.
-- docs/spec.html#daily-loop-tools: canonical interface and failure semantics.
+- docs/spec-v1.html#daily-loop-tools: canonical interface and failure semantics.
 - docs/adr/0020-local-daily-loop-state.md and 0021-read-local-timesink-activity.md:
   accepted architectural decisions.
 

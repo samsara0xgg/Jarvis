@@ -62,7 +62,7 @@ already implied by the Decision; do not restate them.>
 
    | Content | Owner |
    |---|---|
-   | Wire protocol, schema, field list, registry, event-type table | `docs/spec.html` |
+   | Wire protocol, schema, field list, registry, event-type table | the code that defines it; `docs/spec.html` only on ADR 0089's terms |
    | Build order, file-level change map, module map | the commit, or a scratch plan that dies at merge |
    | Acceptance checklist, Definition of Done, verification steps | wherever current pass/fail state lives, never a document |
    | Implementation errata, post-hoc audit of a build pass | nowhere durable: fix the code, or write a new ADR |
@@ -82,9 +82,10 @@ already implied by the Decision; do not restate them.>
 
 `Frozen` marks a historical record: read it for background, never as contract.
 The fourteen ADRs written before this standard are not retrofitted. They are
-frozen in place, and the contracts buried in their bodies move to
-`docs/spec.html` once. Until a file is frozen or rewritten, the check reports
-it as legacy without failing.
+frozen in place, and the contracts buried in their bodies move out once: to
+`docs/spec.html` on ADR 0089's terms, otherwise to the code that defines
+them. Until a file is frozen or rewritten, the check reports it as legacy
+without failing.
 
 A frozen file keeps its number even where a number is shared, because
 production code and other ADRs cite these numbers by hand.

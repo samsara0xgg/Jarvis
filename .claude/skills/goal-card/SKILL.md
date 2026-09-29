@@ -86,7 +86,7 @@ change and in what order, and records that under Progress as it goes.
     - Live run: <required | not required> — <which real run, which canary value>
 
     ## Docs to sync
-    - <docs/spec.html §x | docs/adr/NNNN | none> — <fact that changes>
+    - <docs/spec.html#anchor | docs/adr/NNNN | none> — <fact that changes>
 
     ## Questions
     Blocking: (must be zero — an answer here changes what gets built)
