@@ -43,14 +43,16 @@ is routine by definition — short, interruptible, independently permitted.
 
 _D6_ROWS: Final[dict[str, tuple[PresentationIntentType, str]]] = {
     "action.dispatched": ("acknowledge", "commentary.dispatched"),
-    "action.running": ("progress", "commentary.running"),
-    "action.result_observed": ("progress", "commentary.result_observed"),
-    "action.failed": ("error", "commentary.failed"),
 }
-"""ADR-0008 D6's four action rows: observed truth -> the key of the phrases it
-permits, in Chinese and in English, in the language table.
+"""The one ADR-0008 D6 action row that speaks: observed truth -> the key of the
+phrases it permits, in Chinese and in English, in the language table.
 
-Each row carries a small set rather than one sentence because the per-turn cap
+Only the acknowledge: the result row's 「结果回来了」 was heard with nothing
+before it after a quick tool (ADR 0045), and a tool's own end says nothing
+about when the answer comes. The wait is the model's: from a turn's last tool
+result to its audio took 3.9 s median (2026-09-26 to 09-29).
+
+The row carries a small set rather than one sentence because the per-turn cap
 makes the acknowledge the phrase actually heard, and one fixed acknowledge
 repeated on every turn is the "one moment while I process that" shape OpenAI's
 Realtime preamble guidance names as the thing to avoid. Every member of a set
@@ -71,6 +73,11 @@ anything else keeps the generic row. Still observed truth: the tool's own
 registry flag and name, never a guess about the answer."""
 
 _CODEX_TOOL: Final = "spawn_worker"
+
+_SILENT_TOOLS: Final = ("tool_search", "get_current_time", "remember", "ask_user", "withdraw_card")
+"""Tools that serve the turn's own bookkeeping rather than Allen's request:
+finding a tool, the clock, a kept fact, a card. Announcing them was the
+2026-09-25 complaint, a clock lookup nobody asked for (ADR 0045)."""
 
 
 def _phrase_for(action_id: str, phrases: tuple[str, ...]) -> str:
@@ -94,16 +101,17 @@ def commentary_intent_for(
 ) -> PresentationIntent | None:
     """Return the D6 intent this action event permits, or ``None``.
 
-    ``None`` for every event type outside the four-row table — including
-    ``run.started``, ``gate.evaluated`` and ``action.cancelled`` — and for a
-    mapped row that carries no usable ``action_id``, since ``subject_ref`` is
-    that id and an intent about nothing cannot be coalesced or superseded.
+    ``None`` for every event type but ``action.dispatched`` — including
+    ``run.started``, ``gate.evaluated`` and ``action.cancelled`` — for a
+    bookkeeping tool, and for a row that carries no usable ``action_id``,
+    since ``subject_ref`` is that id and an intent about nothing cannot be
+    coalesced or superseded.
 
     The phrase is English when ``user_text`` (what Allen said or typed this
     turn) reads as English, and an acknowledge names what ``tool_name`` does.
     """
     row = _D6_ROWS.get(event.type)
-    if row is None:
+    if row is None or tool_name in _SILENT_TOOLS:
         return None
     action_id = event.payload.get("action_id")
     if not isinstance(action_id, str) or not action_id:

@@ -897,26 +897,6 @@ VARIANTS: Final[dict[str, dict[Language, tuple[str, ...]]]] = {
         "zh": ("这就去办。", "好，我来办。"),
         "en": ("On it.", "I'll take care of it."),
     },
-    "commentary.running": {
-        "zh": ("任务已经在运行。", "这件事正在做。", "还在跑着。"),
-        "en": ("It's running now.", "That's in progress.", "Still working on it."),
-    },
-    "commentary.result_observed": {
-        "zh": ("结果回来了，我整理一下。", "拿到结果了，我看一下。", "数据回来了，我过一遍。"),
-        "en": (
-            "The results are back, one moment.",
-            "Got the results, let me look.",
-            "The data is in, going through it.",
-        ),
-    },
-    "commentary.failed": {
-        "zh": ("这一步失败了，我告诉你具体原因。", "这一步没成，我说说原因。", "这里出错了，我讲一下怎么回事。"),
-        "en": (
-            "That step failed; I'll tell you why.",
-            "That didn't work, here's why.",
-            "Something went wrong there; let me explain.",
-        ),
-    },
     "commentary.lookup": {
         "zh": ("我查一下。", "我去看看。", "稍等，我查查。"),
         "en": ("Let me check.", "Looking it up.", "One sec, checking."),
