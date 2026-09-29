@@ -6,7 +6,7 @@ import http from 'node:http';
 import { createHash, randomUUID } from 'node:crypto';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
-import { existsSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { copyFile, mkdir, open, readFile, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
@@ -358,21 +358,35 @@ export class Session {
 const sessions = new Map<string, Session>();
 export const find = (id: string) => sessions.get(id);
 const FILE = path.join(DIR, 'sessions.json');
-let saving: ReturnType<typeof setTimeout> | undefined;
+const rows = () => JSON.stringify({ v: 1, sessions: [...sessions.values()].map(x => {
+  const { now, since, queue, stopped, bg, land, dirty, tasks, ...keep } = x.s;
+  return { ...keep, repo: x.repo };
+}) }, null, 1);
+// Written 300 ms after a change however many more follow, one write at a time, and at once when the host is told to
+// stop; never before the list was read back, so a host that could not read it does not write it over.
+let saving: ReturnType<typeof setTimeout> | undefined, writing = Promise.resolve(), restored = false;
 function save() {
-  clearTimeout(saving);
-  saving = setTimeout(async () => {
-    const rows = [...sessions.values()].map(x => {
-      const { now, since, queue, stopped, bg, land, dirty, tasks, ...keep } = x.s;
-      return { ...keep, repo: x.repo };
-    });
-    await mkdir(DIR, { recursive: true });
-    await writeFile(`${FILE}.tmp`, JSON.stringify({ v: 1, sessions: rows }, null, 1));
-    await rename(`${FILE}.tmp`, FILE);
+  if (!restored) return;
+  saving ??= setTimeout(() => {
+    saving = undefined;
+    const text = rows();
+    writing = writing.then(async () => {
+      await mkdir(DIR, { recursive: true });
+      await writeFile(`${FILE}.tmp`, text);
+      await rename(`${FILE}.tmp`, FILE);
+    }).catch(e => log('save', e));
   }, 300);
+}
+function saveNow() {
+  if (!restored) return;
+  clearTimeout(saving); saving = undefined;
+  mkdirSync(DIR, { recursive: true });
+  writeFileSync(`${FILE}.stop`, rows());
+  renameSync(`${FILE}.stop`, FILE);
 }
 async function restore(kids: Map<string, Kid>) {
   const data = JSON.parse(await readFile(FILE, 'utf8').catch(() => '{"sessions":[]}'));
+  restored = true;
   for (const { repo, ...s } of data.sessions as (Sess & { repo: string })[]) {
     // A turn that was running goes on in the keeper; without its child there, it went with the host.
     if ((s.st === 'work' || s.st === 'wait' || s.st === 'pack') && !kids.has(s.id)) Object.assign(s, {
@@ -1097,12 +1111,14 @@ export async function main() {
   });
   // Only this machine: the port is the lock, so a second host started by accident exits here.
   server.on('error', e => { log('listen', e); process.exit(1); });
-  // Told to stop, the host takes its claude children (its own process group) with it: left behind, they run their turn
-  // on unseen while the next host resumes the same session beside them. Exiting also runs codex's exit hook.
+  // Told to stop, the host writes the list and takes its claude children (its own process group) with it: left behind,
+  // they run their turn on unseen while the next host resumes the same session beside them. Exiting also runs codex's
+  // exit hook.
   let stopping = false;
   for (const sig of ['SIGTERM', 'SIGINT', 'SIGHUP'] as const) process.on(sig, () => {
     if (stopping) return;
     stopping = true;
+    try { saveNow(); } catch (e) { log('save', e); }
     try { process.kill(-process.pid, 'SIGTERM'); } catch { /* not a group leader: started by hand */ }
     process.exit(0);
   });

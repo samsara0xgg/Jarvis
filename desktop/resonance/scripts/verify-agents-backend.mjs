@@ -388,7 +388,14 @@ const tr = path.join(CONFIG, 'projects', repo.replace(/[^a-zA-Z0-9]/g, '-'), `${
 const had = existsSync(tr), dl = await A.call(`/sessions/${fk1.id}`, undefined, 'DELETE');
 await until('gone from the list', () => !A.rows.has(fk1.id));
 check('deleting a session deletes its transcript', had && dl.ok && !existsSync(tr));
-await stopHost(A);
+
+// ---------- a restart in the middle of things: the list it left ----------
+const listOf = h => [...h.rows.values()].map(r => [r.id, r.title, !!r.named, r.archived].join(' ')).sort().join('\n'), left = listOf(A);
+A.proc.kill(); await new Promise(r => A.proc.exitCode !== null ? r() : A.proc.once('exit', r));
+const A2 = await startHost('dev-again', A.root, false);
+await until('the list', () => A2.events[0]?.t === 'hello');
+check('a host stopped in the middle of things comes back to the list it left', listOf(A2) === left, { left, back: listOf(A2) });
+await stopHost(A2);
 
 // ======================= the installed app: the owner's own key (ADR 0094) =======================
 // Its runtime root is deep enough that <agents>/keeper.sock cannot be a socket (104 bytes on macOS, 108 here).
