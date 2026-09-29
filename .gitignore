@@ -5,7 +5,6 @@ __pycache__/
 
 # Virtual env
 .venv
-venv/
 
 # Test / lint caches
 .pytest_cache/
@@ -31,8 +30,6 @@ dist/
 
 # OS
 .DS_Store
-*.pyc
-.ipynb_checkpoints/
 
 # Local agent / draft / eval (per-machine, not committed)
 .claude/*

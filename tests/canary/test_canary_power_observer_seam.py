@@ -7,10 +7,10 @@ Two things must survive every future refactor of
 
 1. **The stub-factory seam.** ``install_power_observer`` keeps its
    keyword-only ``observer_factory`` parameter and uses it INSTEAD of
-   the real factory when one is injected. The K7 / K8 Tier-2 invariants
-   and every unit test in ``tests/unit/test_sleep_wake.py`` ride on this
-   seam; a refactor that calls ``_real_observer_factory()`` directly
-   would drag IOKit into every one of them. The static counterpart of
+   the real factory when one is injected. Every test that installs the
+   power observer rides on this seam; a refactor that calls
+   ``_real_observer_factory()`` directly would drag IOKit into every one
+   of them. The static counterpart of
    "an injected stub loads no IOKit" is that the frameworks are dlopened
    lazily: **no ``ctypes.CDLL(...)`` call may sit at module scope**, so
    merely importing the module (which the whole test suite does) never

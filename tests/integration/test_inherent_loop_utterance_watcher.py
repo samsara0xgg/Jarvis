@@ -46,8 +46,7 @@ if TYPE_CHECKING:
 def _make_runtime(tmp_path: Path) -> JarvisRuntime:
     """Build a minimal :class:`JarvisRuntime` with a real Event Log.
 
-    Mirrors the helper in ``tests/unit/test_inherent_loop.py``: the
-    watcher only exercises ``runtime.conn`` and ``runtime.runtime_paths``,
+    The watcher only exercises ``runtime.conn`` and ``runtime.runtime_paths``,
     so the rest (config / llm_client / system_prompt) get sentinel
     values because the worker-thread dispatcher is monkeypatched.
     """

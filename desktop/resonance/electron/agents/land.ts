@@ -113,7 +113,7 @@ function gatesFor(top: string, paths: string[]): { defs: GateDef[]; say: string 
       { n: 'lint-imports', cmd: 'uv', args: UV('lint-imports'), dir: top, group: 'py', count: o => { const m = /Contracts: (\d+) kept, (\d+) broken/.exec(o); return m ? `KEPT (${m[1]}/${Number(m[1]) + Number(m[2])})` : 'KEPT'; } },
       { n: 'ruff', cmd: 'uv', args: UV('ruff', 'check', '.'), dir: top, group: 'py', count: () => 'clean' },
       { n: 'mypy', cmd: 'uv', args: UV('mypy', '--strict', 'jarvis', 'tests', 'scripts', 'tools'), dir: top, group: 'py', count: o => { const m = /no issues found in (\d+) source files/.exec(o); return m ? `strict clean (${m[1]} files)` : 'strict clean'; } },
-      { n: 'pytest', cmd: 'uv', args: UV('pytest', 'tests', '-m', 'not live_llm and not live_codex', '-x', '-q'), dir: top, group: 'py', count: o => { const m = /(\d+) passed/.exec(o); return m ? `${m[1]}/${m[1]}` : 'pass'; } },
+      { n: 'pytest', cmd: 'uv', args: UV('pytest', 'tests', '-m', 'not live_llm', '-x', '-q'), dir: top, group: 'py', count: o => { const m = /(\d+) passed/.exec(o); return m ? `${m[1]}/${m[1]}` : 'pass'; } },
       { n: 'uv audit', cmd: 'uv', args: ['audit', '--frozen', '--preview-features', 'audit'], dir: top, group: 'py', count: o => { const m = /in (\d+) packages/.exec(o); return m ? `clean (${m[1]} packages)` : 'clean'; } },
     );
   }

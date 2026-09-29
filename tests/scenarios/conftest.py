@@ -17,7 +17,7 @@ Tier-2 invocation
 Run the full Tier-2 J/K/L sweep on a Mac with a real OpenRouter key
 and Codex CLI installed::
 
-    uv run pytest tests/scenarios --live-codex --live-llm
+    uv run pytest tests/scenarios --live-llm
 
 Required environment (Step 20):
 

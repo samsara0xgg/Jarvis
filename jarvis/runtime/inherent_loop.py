@@ -919,9 +919,7 @@ def _drive_turn_in_worker_thread(
     :class:`JarvisRuntime` replacement to ``drive_turn``. The fresh
     connection is closed in ``finally`` regardless of the outcome.
 
-    This mirrors the ``_bg_emit`` precedent in
-    ``tests/unit/test_runtime_composition.py``:
-    every cross-thread emit-site opens its own SQLite connection so the
+    Every cross-thread emit-site opens its own SQLite connection so the
     ``check_same_thread`` invariant holds.
     """
     try:

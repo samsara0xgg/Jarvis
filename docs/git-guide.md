@@ -10,7 +10,7 @@ details and examples live here.
    - `lint-imports`
    - `ruff check .`
    - `mypy --strict jarvis tests scripts tools`
-   - `pytest tests -m "not live_llm and not live_codex" -x`
+   - `pytest tests -m "not live_llm" -x`
    - `uv audit --frozen --preview-features audit` (known vulnerabilities in
      `uv.lock`; a finding means upgrade the package with
      `uv lock --upgrade-package <name>`, never skip it)
@@ -132,10 +132,9 @@ strict clean (131 files) · 109/109 hermetic tests pass · wall
 7.8s (< 30s budget).
 ```
 
-("hermetic tests" = `pytest tests -m "not live_llm and not
-live_codex"` — every collected non-live test; live-marked items are
-deselected, not skipped-in-place, so the count moves when tests are
-added.)
+("hermetic tests" = `pytest tests -m "not live_llm"` — every
+collected non-live test; live-marked items are deselected, not
+skipped-in-place, so the count moves when tests are added.)
 
 Always include each of the four gates and a wall-clock number. If a
 gate is intentionally skipped (e.g. pure docs change), say so:

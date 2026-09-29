@@ -124,7 +124,7 @@ follows the data/ symlink this script just created into another checkout):
   .venv/bin/lint-imports
   .venv/bin/ruff check .
   .venv/bin/mypy --strict jarvis tests scripts tools
-  .venv/bin/pytest tests -m "not live_llm and not live_codex" -x
+  .venv/bin/pytest tests -m "not live_llm" -x
   uv audit --frozen --preview-features audit
 
   daemon   JARVIS_LOG_LEVEL=INFO env -u MINIMAX_API_KEY .venv/bin/python -m jarvis daemon run --force-manual

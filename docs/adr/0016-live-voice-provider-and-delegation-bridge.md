@@ -173,8 +173,8 @@ WebRTC, provider storage and forks.
 
 ## 5. Definition of done
 
-A live run recorded in `docs/live-burn-2026-09-12-gpt-live-phase-b.md`
-with, per decision: the daemon log lines for claim, submit, `turn_id`, ACK
+A recorded live run (no report of it is in the repository) with, per
+decision: the daemon log lines for claim, submit, `turn_id`, ACK
 by `client_event_id` and delivery kind (D2, D4); a redelivered delegation
 producing one `surface.user_intent` row (D2); memory.db rows for `allen`,
 `jarvis_live` and the backend `jarvis` answer with no duplicated request

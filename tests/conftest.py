@@ -88,18 +88,12 @@ if TYPE_CHECKING:
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
-    """Register the ``--live-llm`` and ``--live-codex`` flags (default: off)."""
+    """Register the ``--live-llm`` flag (default: off)."""
     parser.addoption(
         "--live-llm",
         action="store_true",
         default=False,
         help="Run scenarios that call the real cloud LLM (real network).",
-    )
-    parser.addoption(
-        "--live-codex",
-        action="store_true",
-        default=False,
-        help="Run Tier-2 tests that spawn real Codex app-server subprocesses ($$$).",
     )
 
 
@@ -107,26 +101,14 @@ def pytest_collection_modifyitems(
     config: pytest.Config,
     items: list[pytest.Item],
 ) -> None:
-    """Skip ``live_llm`` / ``live_codex`` items unless the matching flag is on.
-
-    Both markers are independent: a test marked ``live_codex`` but not
-    ``live_llm`` will run under ``--live-codex`` alone, and vice versa.
-    A test marked with BOTH (the common Tier-2 J/K/L case) needs both
-    flags to run; either flag missing → the item is skipped.
-    """
+    """Skip ``live_llm`` items unless ``--live-llm`` is on."""
     skip_llm = pytest.mark.skip(
         reason="live_llm scenario; pass --live-llm to enable real cloud LLM calls.",
     )
-    skip_codex = pytest.mark.skip(
-        reason="live_codex scenario; pass --live-codex to spawn real Codex subprocess.",
-    )
     want_llm = config.getoption("--live-llm")
-    want_codex = config.getoption("--live-codex")
     for item in items:
         if "live_llm" in item.keywords and not want_llm:
             item.add_marker(skip_llm)
-        if "live_codex" in item.keywords and not want_codex:
-            item.add_marker(skip_codex)
 
 
 class _InertPowerObserver:
@@ -136,8 +118,7 @@ class _InertPowerObserver:
     so ``install_power_observer`` still runs for real — callbacks wired,
     ``loop=`` marshaling applied, teardown exercised — while nothing
     registers with IOKit and no CFRunLoop thread starts. The callbacks are
-    kept (not dropped) so a test that wants to fire them can, exactly as
-    ``StubPowerObserver`` does in ``tests/unit/test_sleep_wake.py``.
+    kept (not dropped) so a test that wants to fire them can.
     """
 
     def __init__(self) -> None:

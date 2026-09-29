@@ -976,8 +976,7 @@ def main(argv: list[str] | None = None) -> int:
     Dispatch is purely positional: ``serve`` as the first argv element
     routes to :func:`_main_serve`, ``daemon`` to :func:`_main_daemon`
     (ADR-0009 D1); everything else goes through :func:`_main_oneshot`
-    (which preserves the Day-1 argparse contract so existing tests in
-    ``tests/unit/test_cli_main.py`` keep passing).
+    (which preserves the Day-1 argparse contract).
 
     Args:
         argv: argv-style list (without the program name). Default:

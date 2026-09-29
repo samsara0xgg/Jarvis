@@ -1012,9 +1012,10 @@ Tier A (on): `realtime.enabled`, the four `concurrency_safety` switches,
 `actions.action_runner`, `actions.true_async_workers`, `input.intent_pump`,
 `streaming_output.enabled`, `single_audio_ingress.enabled`. Evidence is
 the wave-4 (4/4), wave-5 (3/3) and post-6ed7280 (10/10) live-burn
-reports (removed from the repository 2026-09-29), plus a 2026-09-07
-boot recording `input_owner: single_ingress`, `models_ok: true` with
-`intent_pump` adopting the input stream and no downgrade warning.
+reports (removed from the repository 2026-09-25 and 2026-09-29), plus a
+2026-09-07 boot recording `input_owner: single_ingress`, `models_ok:
+true` with `intent_pump` adopting the input stream and no downgrade
+warning.
 
 Tier B (off, each needs its own live run first): `response.routine_streaming`,
 `commentary`, `streaming_output.speak_from_segments`,
