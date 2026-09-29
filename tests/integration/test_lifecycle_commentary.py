@@ -82,6 +82,12 @@ if TYPE_CHECKING:
 # --- helpers ---------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _no_acknowledge_floor(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Rows here follow their turn at once; the 1.5 s floor has its own test."""
+    monkeypatch.setattr(inherent_loop, "_COMMENTARY_EARLIEST_S", 0.0)
+
+
 def _action_event(event_type: str, *, action_id: str = "ACT-1") -> Event:
     """Build one committed-shaped action event without touching the log."""
     return Event(
@@ -98,29 +104,35 @@ def _action_event(event_type: str, *, action_id: str = "ACT-1") -> Event:
 # --- D6 mapping ------------------------------------------------------------
 
 
-def test_four_d6_rows_map_to_their_declared_intent_and_variant_set() -> None:
-    """ADR-0008 D6's action table, with the action id as subject.
+def test_the_dispatch_row_is_the_one_that_speaks() -> None:
+    """The acknowledge alone, with the action id as subject.
 
     The phrase is no longer one literal per row, so the pin is membership in
     the row's declared set plus the intent type it carries. Which member a
     given id selects is pinned by
     ``test_six_turns_speak_variants_from_the_acknowledge_set``.
     """
-    expected_types = {
-        "action.dispatched": "acknowledge",
-        "action.running": "progress",
-        "action.result_observed": "progress",
-        "action.failed": "error",
-    }
-    assert set(_D6_ROWS) == set(expected_types)
-    for event_type, intent_type in expected_types.items():
-        intent = commentary_intent_for(_action_event(event_type, action_id="ACT-7"))
-        assert intent is not None, event_type
-        assert intent.intent_type == intent_type
-        assert intent.content_hint in lang.variants(_D6_ROWS[event_type][1], "zh"), event_type
-        assert intent.subject_ref == "ACT-7"
-        assert intent.surface_hint == "speech"
-        assert intent.freshness_required is True
+    assert set(_D6_ROWS) == {"action.dispatched"}
+    intent = commentary_intent_for(_action_event("action.dispatched", action_id="ACT-7"))
+    assert intent is not None
+    assert intent.intent_type == "acknowledge"
+    assert intent.content_hint in lang.variants(_D6_ROWS["action.dispatched"][1], "zh")
+    assert intent.subject_ref == "ACT-7"
+    assert intent.surface_hint == "speech"
+    assert intent.freshness_required is True
+
+
+@pytest.mark.parametrize(
+    "tool_name", ["tool_search", "get_current_time", "remember", "ask_user", "withdraw_card"],
+)
+def test_a_bookkeeping_tool_says_nothing(tool_name: str) -> None:
+    """Finding a tool, the clock, a kept fact or a card is not what Allen asked for.
+
+    2026-09-25: a clock lookup nobody asked for was announced mid-chat (ADR 0045).
+    """
+    event = _action_event("action.dispatched")
+    assert commentary_intent_for(event, tool_name=tool_name) is None
+    assert commentary_intent_for(event, tool_name="web_search", tool_read_only=True) is not None
 
 
 def test_a_phrase_is_stable_across_processes_for_one_action_id() -> None:
@@ -137,8 +149,13 @@ def test_a_phrase_is_stable_across_processes_for_one_action_id() -> None:
 
 
 def test_non_mapped_event_types_return_none() -> None:
-    """Only the four D6 action rows speak; every other row is silent."""
-    for event_type in ("memo.captured", "gate.evaluated", "action.cancelled",
+    """Only the dispatch row speaks: a tool's progress, result or failure is silent.
+
+    ADR 0045: the result row's 「结果回来了」 followed a quick tool with nothing
+    before it.
+    """
+    for event_type in ("action.running", "action.result_observed", "action.failed",
+                       "memo.captured", "gate.evaluated", "action.cancelled",
                        "action.timeout_assumed", "turn.started", "response.completed"):
         assert commentary_intent_for(_action_event(event_type)) is None, event_type
 
@@ -558,8 +575,8 @@ def test_action_on_a_turn_with_no_turn_started_stays_silent(tmp_path: Path) -> N
 def test_a_turn_whose_answer_is_out_stays_silent(tmp_path: Path) -> None:
     """2026-09-24: a Tier 0 time question said the time, then "result's back, let me look".
 
-    Tier 0 ends the turn before its tool's rows reach the watcher, so the
-    only phrase left to open would follow the answer it announces.
+    Tier 0 ends the turn before its tool's rows reach the watcher, so a
+    phrase opened now would follow the answer it announces.
     """
     runtime = _make_runtime(tmp_path)
     reader = _reader(runtime)
@@ -575,7 +592,7 @@ def test_a_turn_whose_answer_is_out_stays_silent(tmp_path: Path) -> None:
             },
             correlation={"turn_id": "T-t0"},
         )
-        _action_row(runtime.conn, "action.result_observed", action_id="ACT-t0", turn_id="T-t0")
+        _action_row(runtime.conn, "action.dispatched", action_id="ACT-t0", turn_id="T-t0")
         _settle()
         assert _count(reader, "response.started") == 0
         # Positive control: a turn still at work speaks.
@@ -619,9 +636,9 @@ def test_live_pending_confirmation_silences_commentary(tmp_path: Path) -> None:
     """An unresolved ask owns the surface; commentary waits for its answer.
 
     Also the pin for "a suppressed row does not consume the turn's one slot":
-    the dispatched row is silenced here, and the turn still speaks on the
-    later `action.running`. A cap recorded on suppression would mute the turn
-    entirely, which is a worse defect than the one it replaces.
+    the first dispatch is silenced here, and the turn still speaks on its next
+    one. A cap recorded on suppression would mute the turn entirely, which is
+    a worse defect than the one it replaces.
     """
     runtime = _make_runtime(tmp_path)
     reader = _reader(runtime)
@@ -652,11 +669,12 @@ def test_live_pending_confirmation_silences_commentary(tmp_path: Path) -> None:
             },
             correlation={"turn_id": "T-conf"},
         )
-        _action_row(runtime.conn, "action.running", action_id="ACT-c", turn_id="T-conf")
+        _action_row(runtime.conn, "action.dispatched", action_id="ACT-c2", turn_id="T-conf")
         _wait_until(lambda: _count(reader, "surface.response_emitted") == 1)
-    # `_only_phrase` asserts there is exactly one; the running row spoke and
-    # the silenced dispatched row did not take the turn's slot with it.
-    assert _only_phrase(reader) in lang.variants(_D6_ROWS["action.running"][1], "zh")
+    # `_only_phrase` asserts there is exactly one; the second dispatch spoke and
+    # the silenced first one did not take the turn's slot with it.
+    assert _only_phrase(reader) in lang.variants(_D6_ROWS["action.dispatched"][1], "zh")
+    assert _typed_payloads(reader, "response.started")[0]["active_subject_ref"] == "ACT-c2"
 
 
 # --- observer: one phrase per turn -----------------------------------------
@@ -794,12 +812,7 @@ def test_the_acknowledge_follows_the_tool_and_the_language_allen_used(tmp_path: 
 
 
 def test_a_second_row_in_the_same_turn_opens_nothing(tmp_path: Path) -> None:
-    """The cap wins before supersession, so no phrase is ever cut off for a newer one.
-
-    Per-action supersession is retained as the safety net if the cap is ever
-    loosened, but an action belongs to exactly one turn, so under the cap it
-    is unreachable from the watcher: no `superseded` row can appear.
-    """
+    """The cap: a later dispatch in the turn neither speaks nor cuts the first off."""
     runtime = _make_runtime(tmp_path)
     reader = _reader(runtime)
     _user_turn(runtime.conn, "T-coal")
@@ -808,13 +821,12 @@ def test_a_second_row_in_the_same_turn_opens_nothing(tmp_path: Path) -> None:
             runtime.conn, "action.dispatched", action_id="ACT-c", turn_id="T-coal",
         )
         _wait_until(lambda: _count(reader, "surface.response_emitted") == 1)
-        _action_row(
-            runtime.conn, "action.running", action_id="ACT-c", turn_id="T-coal",
-            source_event_id=dispatched.event_uid,
-        )
+        _action_row(runtime.conn, "action.dispatched", action_id="ACT-c2", turn_id="T-coal")
         _settle()
 
-    assert len(_typed_payloads(reader, "response.started")) == 1
+    assert [p["active_subject_ref"] for p in _typed_payloads(reader, "response.started")] == [
+        dispatched.payload["action_id"],
+    ]
     assert len(_commentary_emitted(reader, "T-coal")) == 1
     assert _cancel_reasons(reader) == ["shutdown"]
 
@@ -825,9 +837,7 @@ def test_a_commentary_that_reached_the_speaker_finishes(tmp_path: Path) -> None:
     reader = _reader(runtime)
     _user_turn(runtime.conn, "T-heard")
     with _Observer(runtime):
-        dispatched = _action_row(
-            runtime.conn, "action.dispatched", action_id="ACT-h", turn_id="T-heard",
-        )
+        _action_row(runtime.conn, "action.dispatched", action_id="ACT-h", turn_id="T-heard")
         _wait_until(lambda: _count(reader, "surface.response_emitted") == 1)
         first = _typed_payloads(reader, "response.started")[0]
         emit_event(
@@ -845,10 +855,7 @@ def test_a_commentary_that_reached_the_speaker_finishes(tmp_path: Path) -> None:
             correlation={"turn_id": "T-heard"},
         )
         _wait_until(lambda: _count(reader, "response.completed") == 1)
-        _action_row(
-            runtime.conn, "action.running", action_id="ACT-h", turn_id="T-heard",
-            source_event_id=dispatched.event_uid,
-        )
+        _action_row(runtime.conn, "action.dispatched", action_id="ACT-h1", turn_id="T-heard")
         _settle()
         # Positive control: the observer is alive and the silence above is
         # the cap, not a stalled watcher.
@@ -869,10 +876,12 @@ def test_a_commentary_that_reached_the_speaker_finishes(tmp_path: Path) -> None:
     )
 
 
-def test_a_non_terminal_row_is_silent_once_its_action_terminal_committed(
-    tmp_path: Path,
-) -> None:
-    """An acknowledge for work that already finished is stale, not truthful."""
+def test_the_acknowledge_outlives_its_tool_until_the_answer_is_out(tmp_path: Path) -> None:
+    """The turn is still at work after a quick tool: its answer comes seconds later.
+
+    2026-09-26 to 09-29: tools returned within 0.5 s, and from a turn's last
+    tool result to its audio took 3.9 s median.
+    """
     runtime = _make_runtime(tmp_path)
     reader = _reader(runtime)
     _user_turn(runtime.conn, "T-late")
@@ -886,10 +895,46 @@ def test_a_non_terminal_row_is_silent_once_its_action_terminal_committed(
     opened = inherent_loop._open_commentary_in_worker_thread(  # noqa: SLF001
         runtime,
         action_event=dispatched,
-        previous=None,
     )
-    assert opened is None
-    assert _count(reader, "response.started") == 0
+    assert opened is not None
+    assert _count(reader, "response.started") == 1
+    inherent_loop._cancel_unheard_commentary(runtime, opened, reason="shutdown")  # noqa: SLF001
+
+
+def test_an_answer_out_within_the_floor_hears_no_acknowledge(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A light switched in 0.4 s needs no 「这就去办」 before its 「好了」.
+
+    A turn still at work when the floor passes speaks, and not before it.
+    """
+    floor_s = 0.5
+    monkeypatch.setattr(inherent_loop, "_COMMENTARY_EARLIEST_S", floor_s)
+    runtime = _make_runtime(tmp_path)
+    reader = _reader(runtime)
+    with _Observer(runtime):
+        _user_turn(runtime.conn, "T-quick")
+        _action_row(runtime.conn, "action.dispatched", action_id="ACT-q", turn_id="T-quick")
+        time.sleep(floor_s / 3)
+        emit_event(
+            runtime.conn,
+            type="turn.ended",
+            payload={
+                "turn_id": "T-quick",
+                "final_response_hash": "0" * 64,
+                "consumed_trigger_event_uid": "uid-quick",
+            },
+            correlation={"turn_id": "T-quick"},
+        )
+        _settle(floor_s + 0.2)
+        assert _count(reader, "response.started") == 0
+        asked = _user_turn(runtime.conn, "T-slow")
+        _action_row(runtime.conn, "action.dispatched", action_id="ACT-s", turn_id="T-slow")
+        _wait_until(lambda: _count(reader, "response.started") == 1)
+    (spoke_at,) = reader.execute(
+        "SELECT ts_epoch_ms FROM events WHERE type = 'response.started'",
+    ).fetchone()
+    assert spoke_at - asked.ts_epoch_ms >= floor_s * 1000
 
 
 # --- observer: the final is never delayed, dropped or superseded ------------
@@ -1144,39 +1189,6 @@ def test_the_observer_task_is_created_only_under_the_flag() -> None:
     assert "_commentary_watcher" in "\n".join(ast.unparse(stmt) for stmt in guards[0].body)
 
 
-def test_a_terminal_row_with_no_correlation_finds_its_turn_through_dispatch(
-    tmp_path: Path,
-) -> None:
-    """The runner's inline terminals carry no correlation; the chain still holds.
-
-    Observed live: `terminalize_action` commits `action.result_observed` with
-    an empty correlation on the synchronous path, so the turn has to come from
-    the action's own `action.dispatched` row.
-    """
-    runtime = _make_runtime(tmp_path)
-    reader = _reader(runtime)
-    _user_turn(runtime.conn, "T-join")
-    # Emitted before the observer takes its boot anchor, so the only row that
-    # reaches the watcher is the correlation-less terminal below and the turn
-    # has to be recovered through this row.
-    dispatched = _action_row(
-        runtime.conn, "action.dispatched", action_id="ACT-j", turn_id="T-join",
-    )
-    with _Observer(runtime):
-        emit_event(
-            runtime.conn,
-            type="action.result_observed",
-            payload={"action_id": "ACT-j", "semantics": "observation"},
-            source_event_id=dispatched.event_uid,
-            correlation=None,
-        )
-        _wait_until(lambda: _count(reader, "surface.response_emitted") == 1)
-
-    started = _typed_payloads(reader, "response.started")
-    assert [payload["turn_id"] for payload in started] == ["T-join"]
-    assert _only_phrase(reader) in lang.variants(_D6_ROWS["action.result_observed"][1], "zh")
-
-
 # --- the per-turn assumption the card asked the lane to prove ---------------
 
 
@@ -1240,65 +1252,6 @@ def test_commentary_leaves_the_next_turns_pre_route_alone(tmp_path: Path) -> Non
         tool_cues=runtime.tool_cues,
         now_ms=int(time.time() * 1000),
     ) == "casual_or_explanatory"
-
-
-def test_a_playing_commentary_is_completed_not_cut_off(tmp_path: Path) -> None:
-    """D6: a commentary already playing finishes; only an unheard one is cut.
-
-    Deterministic reconstruction of a race the live run hit. The action row
-    that supersedes a phrase is written *before* that phrase's playback
-    begins, so it has the lower row id — a retirement that judged "already
-    playing" from the observer's own cursor position would always decide too
-    early, and cut off speech that was coming out of the speaker.
-
-    Under the per-turn cap the watcher no longer reaches that retirement at
-    all: the second call below returns `None` because the turn already spoke.
-    The safety net is kept for the day the cap is loosened, so it is driven
-    here through its own entry point rather than claimed to be exercised.
-    """
-    runtime = _make_runtime(tmp_path)
-    reader = _reader(runtime)
-    _user_turn(runtime.conn, "T-cut")
-    dispatched = _action_row(
-        runtime.conn, "action.dispatched", action_id="ACT-cut", turn_id="T-cut",
-    )
-    first = inherent_loop._open_commentary_in_worker_thread(  # noqa: SLF001
-        runtime, action_event=dispatched, previous=None,
-    )
-    assert first is not None
-    emit_event(
-        runtime.conn,
-        type="surface.playback_started",
-        payload={
-            "session_id": "SESS-cut",
-            "response_id": first.run.response_id,
-            "turn_id": "T-cut",
-            "playback_generation_id": 1,
-            "phase": "commentary",
-            "channel": "speech",
-            "speech_text_hash": "deadbeef",
-        },
-        correlation={"turn_id": "T-cut"},
-    )
-    running = _action_row(
-        runtime.conn, "action.running", action_id="ACT-cut", turn_id="T-cut",
-        source_event_id=dispatched.event_uid,
-    )
-    second = inherent_loop._open_commentary_in_worker_thread(  # noqa: SLF001
-        runtime, action_event=running, previous=first,
-    )
-    assert second is None
-    assert len(_commentary_emitted(reader, "T-cut")) == 1
-
-    # The retained safety net, driven directly: a phrase that reached the
-    # speaker is completed, never cancelled.
-    inherent_loop._retire_superseded_commentary(runtime, reader, first)  # noqa: SLF001
-
-    assert _typed_payloads(reader, "response.cancelled") == []
-    completed = [
-        payload["response_id"] for payload in _typed_payloads(reader, "response.completed")
-    ]
-    assert completed == [first.run.response_id]
 
 
 # --- observer: the operator cancel seam reaches a commentary ----------------

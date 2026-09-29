@@ -455,14 +455,16 @@ realtime:
     routine_streaming:
       enabled: false
   # ADR-0008 Step 5 (D6).  With commentary on, a user-originated turn speaks
-  # at most one short deterministic phrase, opened from the first committed
-  # action lifecycle row that qualifies, in a `phase="commentary"`
-  # ResponseRun sharing that turn's response_group_id; the final answer is
-  # never dropped or superseded by it.  It additionally requires
-  # realtime.enabled and response.response_run_lifecycle and downgrades once,
-  # with one warning, without them.
-  # Off since ADR 0045: the fixed phrase landed as "结果回来了" with no lead-up
-  # whenever a tool finished within a second; the wait shows in Resonance.
+  # one short acknowledge when it first dispatches a tool that works on
+  # Allen's request (not tool_search, the clock, memory or a card), no earlier
+  # than 1.5 s after his words and only while its answer is not out, in a
+  # `phase="commentary"` ResponseRun sharing that turn's response_group_id;
+  # the final answer is never dropped or superseded by it.  It additionally
+  # requires realtime.enabled and response.response_run_lifecycle and
+  # downgrades once, with one warning, without them.
+  # Off since ADR 0045: every lifecycle row spoke, and "结果回来了" landed with
+  # no lead-up whenever a tool finished within a second.  The acknowledge-only
+  # form (2026-09-29) waits for its live run before it ships on.
   commentary:
     enabled: false
   # ADR-0008 D8 (Wave 5).  intent_pump replaces the daemon's "poll one
