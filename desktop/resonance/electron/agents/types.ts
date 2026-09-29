@@ -46,21 +46,28 @@ export type Sess = {
   // dirs: folders it may work in besides its own · named: the title is yours, so it is never replaced by a generated one
   // · base: what its worktree started from
   tasks?: Task[]; dirs?: string[]; named?: boolean; base?: string;
-  // ADR 0085 · dirty: what landing would take (files, lines, commits main does not have yet); absent outside git or with
-  // nothing to land · land: the landing under way, absent when none is · gone: its worktree was cleaned away after landing
-  dirty?: { n: number; add: number; del: number; ahead: number }; land?: Land; gone?: boolean;
+  // ADR 0097 · dirty: what landing would take (files, lines, commits the default branch does not have yet), the default
+  // branch it lands into and the ways it can, the default first; absent outside git, with nothing to land or no way to ·
+  // land: the landing under way, absent when none is · gone: its worktree was cleaned away after landing · pr: the pull
+  // request a landing opened for its branch
+  dirty?: { n: number; add: number; del: number; ahead: number; into: string; ways: LandVia[] }; land?: Land; gone?: boolean; pr?: string;
 };
-// ADR 0085: landing, the host's line from a session's changes to main. `s` is where the line stands and `i` the step it
-// is on; `steps` follows the line's order (changes, gates, commit, into main, restart, push, clean), each with its
-// state, how long it took, the line under its name and the commands it runs. `why` says what stopped it or what it waits
-// for; `acts` are the ways on, the first one lit.
+// ADR 0097: how a landing ends. merge: fast-forward into the default branch, restart, push it, clean the worktree away ·
+// pr: push the session's branch and open a pull request against the default branch, keeping the worktree.
+export type LandVia = 'merge' | 'pr';
+// ADR 0097: landing, the host's line from a session's changes to its repository's default branch. `s` is where the
+// line stands and `i` the step it is on; `steps` follows the line's order (changes, gates, commit, into the default
+// branch, restart, push, clean), each with its state, how long it took, the line under its name and the commands it
+// runs. `why` says what stopped it or what it waits for; `acts` are the ways on, the first one lit. `into`: the default
+// branch · `restart`: what it restarts (the owner's command, cut short) · `pr`: the pull request's address, or where to
+// open one when gh is not installed.
 export type LandSt = 'todo' | 'run' | 'ok' | 'skip' | 'wait' | 'paused' | 'fail';
 export type Land = {
   s: 'run' | 'stopping' | 'wait' | 'paused' | 'fail' | 'fixing' | 'done'; i: number;
   steps: { st: LandSt; ms?: number; d?: string; cmd?: string[] }[];
   files: [string, number, number][]; gates: { n: string; st: 'todo' | 'run' | 'ok' | 'er'; say?: string }[];
   msg: string; drafting?: boolean; why?: string; acts?: ('fix' | 'stay' | 'resume' | 'allow' | 'deny')[];
-  branch: string; into: string; restart?: string[];
+  branch: string; into: string; via: LandVia; restart?: string[]; pr?: string;
 };
 // A background task: `kind` as the agent names it (local_bash, local_agent, monitor, …; Codex: terminal), `what` its
 // description or command, `out` where its output is kept (GET /sessions/{id}/tasks/{task}).
@@ -106,11 +113,13 @@ export type Ctx = { used: number; max: number; model: string; rows: CtxRow[]; sa
 // sessions sign in in the packaged app (ADR 0094) · notify: which moments the Mac tells you about while the window is
 // not in front · editor, terminal: where a file or a session opens outside the window (ids from the window's lists) ·
 // folders: folders you added to the project list · setup: per repository, the script a new worktree runs before its
-// first turn.
+// first turn · land: per repository, how its landing goes (ADR 0097): the gates, each a shell command run in the
+// session's folder, the restart command run in the main checkout once the default branch has the change, and the way
+// it lands unless the owner picks another.
 export type Settings = {
   provider?: 'anthropic' | 'bedrock' | 'vertex'; bedrock?: { region: string; profile?: string }; vertex?: { region: string; project: string };
   notify?: { done: boolean; wait: boolean; err: boolean }; editor?: string; terminal?: string;
-  folders?: string[]; setup?: Record<string, string>;
+  folders?: string[]; setup?: Record<string, string>; land?: Record<string, { gates?: string[]; restart?: string; via?: LandVia }>;
 };
 // How Startrail's Claude sessions sign in: the dev build with Allen's subscription; the packaged app with the owner's
 // own key or cloud account, ready once it has what it needs (`why` says what is missing) · hint: the key's last four

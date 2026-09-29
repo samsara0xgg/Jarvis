@@ -1,6 +1,6 @@
 # ADR 0085 — Workbench landing runs in the agent host
 
-**Status:** Accepted
+**Status:** Superseded-by-0097
 **Date:** 2026-09-29
 **Supersedes:** none
 
