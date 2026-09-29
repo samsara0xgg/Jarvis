@@ -5370,6 +5370,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             language_save=functools.partial(save_language, runtime.runtime_paths.settings),
             setup=setup,
             dictation=dictation,
+            night=runtime.night,
             cancel_response_callable=cancel_response_callable,
             controls=controls,
             live=live_voice,
@@ -5520,6 +5521,10 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         watchers.extend(_start_repo_observer(runtime))
         watchers.extend(_start_usage_observer(usage_observer, runtime.config))
         watchers.extend(_start_timesink_observer(runtime))
+        if runtime.night is not None:
+            # ADR 0093: the night run mutes after the goodnight line, never under a wake capture.
+            runtime.night.busy = lambda: shared_ducker.active or shared_ducker.outputting
+            watchers.append(asyncio.create_task(runtime.night.run(), name="night_run"))
         watchers.append(asyncio.create_task(
             _data_sweep_task(_media_dirs(runtime), logs_dir(runtime.runtime_paths.root)),
             name="data_sweep",

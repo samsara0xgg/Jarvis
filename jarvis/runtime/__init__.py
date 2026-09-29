@@ -104,6 +104,7 @@ from jarvis.decision.think_mode import ThinkMode, ThinkModeConfigError, load_thi
 from jarvis.decision.tier0 import Tier0ConfigError, load_tier0_table, validate_tier0_table
 from jarvis.deployment import RuntimePaths, bootstrap_runtime, load_env_file
 from jarvis.deployment.models import default_sensevoice_dir, default_silero_vad_path
+from jarvis.deployment.night_power import MacPower
 from jarvis.execution.mcp_oauth import DEFAULT_OAUTH_CALLBACK_PORT
 from jarvis.execution.mcp_tools import DEFAULT_MCP_TIMEOUT_S, McpServers, is_oauth, stdio_env
 from jarvis.execution.path_resolver import (
@@ -130,6 +131,7 @@ from jarvis.execution.tools import (
 from jarvis.execution.workers import Workers, make_worker_tools
 from jarvis.runtime.daily_report import PLAN_SERVER, DailyReportService, microsoft_plan
 from jarvis.runtime.home import Home
+from jarvis.runtime.night_run import NightRun, night_settings
 from jarvis.runtime.plugin_connections import PluginConnections
 from jarvis.runtime.plugins import Plugins, load_plugins
 from jarvis.runtime.projects import ProjectsService
@@ -446,6 +448,8 @@ class JarvisRuntime:
     home: Home | None = None
     # ADR 0052: the Settings page's file. None = hand-assembled.
     settings: Settings | None = None
+    # ADR 0093: the night run; the daemon ticks it. None = hand-assembled.
+    night: NightRun | None = None
 
 
 @dataclass(frozen=True)
@@ -1806,12 +1810,19 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         tz=_work_state_timezone(full_config),
         codex_sessions_path=_codex_sessions_path(full_config),
     )
+    night = NightRun(
+        paths.event_log,
+        night_settings(full_config),
+        MacPower(),
+        zone=resolve_zone(None, _work_state_timezone(full_config))[1],
+    )
     registry = build_default_registry(
         memory_db_path=memory.db_path,
         observed_repos=_observer_repo_paths(full_config),
         timesink_db_path=_timesink_db_path(full_config),
         work_state_refresh=_work_state_tool_refresh(work_state),
         daily_report_run=_daily_report_tool_run(daily_report),
+        night=night,
         confirmation_dispatch_outbox=wave1_features.confirmation_dispatch_outbox,
         obsidian_vault_root=_obsidian_vault_root(full_config),
         web_search_max_results=web_search_max_results,
@@ -1977,6 +1988,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
             _home_weather(full_config),
         ),
         settings=Settings(paths.root, full_config, _audio_devices),
+        night=night,
     )
 
 

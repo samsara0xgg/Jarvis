@@ -150,6 +150,12 @@ class SystemAudioDucker:
             return self._depth > 0 or self._restore_state != "ready"
 
     @property
+    def outputting(self) -> bool:
+        """Return True while an output lease is held: an answer or media is being made or played."""
+        with self._lock:
+            return self._output_depth > 0
+
+    @property
     def restore_state(self) -> RestoreState:
         """Expose the output-readiness state for health checks and live burns."""
         with self._lock:

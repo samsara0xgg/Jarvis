@@ -84,6 +84,7 @@ if TYPE_CHECKING:
     import sqlite3
     from collections.abc import Callable, Sequence
 
+    from jarvis.execution.night_tools import NightControl
     from jarvis.shared import Event
 
 
@@ -3655,6 +3656,7 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
     timesink_db_path: Path | None = None,
     work_state_refresh: WorkStateRefresh | None = None,
     daily_report_run: DailyReportRun | None = None,
+    night: NightControl | None = None,
 ) -> ToolRegistry:
     """Assemble the default ToolRegistry.
 
@@ -3706,6 +3708,8 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
             off the menu.
         daily_report_run: ADR 0024 — the runtime's daily work report
             workflow; `None` leaves `daily_work_report` off the menu.
+        night: ADR 0093 — the runtime's night run; `None` leaves
+            `start_night_run` / `end_night_run` off the menu.
         memory_db_path: `memory.db_path` — registers `search_records`
             over that memory.db. `None` (hand-built test registries)
             registers no memory tool.
@@ -3836,6 +3840,10 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
         registry.register(state_tool)
     for report_tool in build_daily_report_tool(daily_report_run):
         registry.register(report_tool)
+    from jarvis.execution.night_tools import build_night_tools  # noqa: PLC0415 — same cycle.
+
+    for night_tool in build_night_tools(night):
+        registry.register(night_tool)
     return registry
 
 

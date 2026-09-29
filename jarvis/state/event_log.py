@@ -730,6 +730,45 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         optional_payload=("reconciliation_summary",),
         schema_version=1,
     ),
+    # ADR 0093 night run. The owner starts one; `wake_at_ms` is their
+    # morning, before which a return is only a look; `guarded` says whether
+    # the keep-awake assertion was granted. `saved` ({brightness, volume,
+    # muted}, each null when unknown) is written before anything changes: it
+    # is what the return puts back, across a daemon restart too. `released`
+    # lets the Mac sleep (reason deadline | battery); `ended` closes the run
+    # (reason returned | ended | cancelled) with what was put back.
+    EventTypeSchema(
+        event_type="night.started",
+        owner_layer="L6",
+        actor="user",
+        required_payload=("night_id", "until_ms", "source", "guarded"),
+        optional_payload=("wake_at_ms",),
+        schema_version=1,
+    ),
+    EventTypeSchema(
+        event_type="night.darkened",
+        owner_layer="L6",
+        actor="jarvis_runtime",
+        required_payload=("night_id", "saved"),
+        optional_payload=(),
+        schema_version=1,
+    ),
+    EventTypeSchema(
+        event_type="night.released",
+        owner_layer="L6",
+        actor="jarvis_runtime",
+        required_payload=("night_id", "reason"),
+        optional_payload=(),
+        schema_version=1,
+    ),
+    EventTypeSchema(
+        event_type="night.ended",
+        owner_layer="L6",
+        actor="user",
+        required_payload=("night_id", "reason"),
+        optional_payload=("restored",),
+        schema_version=1,
+    ),
     # ADR 0026: a Live delegation's outcome is told to one session, recorded
     # on the provider's ACK; ``kind == "withheld"`` settles a superseded result
     # that no session will ever be told.

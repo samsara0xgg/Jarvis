@@ -657,6 +657,13 @@ dictation:
   polish_preset: gpt54-mini
   vocab_path: ~/.typlus/vocab.yaml   # Typlus's word list, read on every dictation; absent = none
 
+# The night run (ADR 0093): "我要睡觉了，让它继续跑" keeps the Mac awake this long,
+# screen off and sound muted. Before `morning` an unlock is only a look; from it on,
+# coming back puts brightness and sound back. Times follow work_state.timezone.
+night:
+  hours: 2          # 0.25-12
+  morning: "06:00"
+
 # The running conversation and its compaction (ADR-0019). Every record stays
 # in the prompt word for word until a compaction; a compaction runs only on
 # the supervisor sweep while Jarvis is idle, folds the records older than

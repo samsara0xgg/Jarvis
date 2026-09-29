@@ -120,6 +120,7 @@ from jarvis.surface.voice_pipeline import VoiceInputBusyError, VoicePipelineEmpt
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable
+    from datetime import time as clock
     from pathlib import Path
 
     from starlette.types import ASGIApp, Receive, Scope, Send
@@ -307,6 +308,24 @@ class DictationRoutes(Protocol):
 
     def stop(self) -> bool:
         """Finish recording; the running stream goes on to the result."""
+
+
+class NightRoutes(Protocol):
+    """ADR 0093 night run (``jarvis.runtime.night_run.NightRun``); every call may block briefly."""
+
+    def snapshot(self) -> dict[str, Any]:
+        """``GET /inherent/night``."""
+
+    def start(
+        self, *, hours: float | None, until: clock | None, source: str, action_id: str | None,
+    ) -> dict[str, Any]:
+        """Start a run, or answer the one already running."""
+
+    def darken_now(self) -> None:
+        """Dim, mute and sleep the display now instead of after the bedtime card."""
+
+    def end(self, *, action_id: str | None) -> dict[str, Any]:
+        """End the run: put back what it changed."""
 
 
 class V2ClientHandle(Protocol):
@@ -552,6 +571,9 @@ class InherentDeps:
     # ADR 0058: dictation from the live mic, heard and polished for the text
     # caret. ``None`` (no voice stack) leaves both routes unregistered.
     dictation: DictationRoutes | None = None
+    # ADR 0093: the night run the companion's cards show and its buttons
+    # drive. ``None`` leaves both routes unregistered.
+    night: NightRoutes | None = None
 
 
 class _FrameRateLimiter:
@@ -1112,6 +1134,40 @@ def _register_dictation_routes(app: FastAPI, deps: InherentDeps) -> None:
         return {"ok": dictation.stop()}
 
 
+class NightRequest(BaseModel):
+    """Body of ``POST /inherent/night``: start one (for ``hours``), go dark now, or end it."""
+
+    action: Literal["start", "dark", "end"]
+    hours: float | None = Field(default=None, ge=0.25, le=12)
+
+
+def _register_night_routes(app: FastAPI, deps: InherentDeps) -> None:
+    """ADR 0093: the night run as the companion reads and drives it."""
+    if deps.night is None:
+        return
+    night = deps.night
+
+    @app.get("/inherent/night")
+    async def night_read() -> dict[str, Any]:
+        """The run now (or null), the last one that ended, the default length."""
+        return await asyncio.to_thread(night.snapshot)
+
+    @app.post("/inherent/night", status_code=200)
+    async def night_act(req: NightRequest) -> dict[str, Any]:
+        """Start, go dark now, or end; answers like ``GET``."""
+        if req.action == "start":
+            await asyncio.to_thread(
+                functools.partial(
+                    night.start, hours=req.hours, until=None, source="companion", action_id=None,
+                ),
+            )
+        elif req.action == "dark":
+            await asyncio.to_thread(night.darken_now)
+        else:
+            await asyncio.to_thread(functools.partial(night.end, action_id=None))
+        return await asyncio.to_thread(night.snapshot)
+
+
 _MAX_SETUP_BODY_BYTES = 4096
 
 
@@ -1562,6 +1618,7 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 â
     _register_data_routes(app, deps)
     _register_setup_routes(app, deps)
     _register_dictation_routes(app, deps)
+    _register_night_routes(app, deps)
 
     # ADR 0019 step 4: Allen's own Codex sessions, fed by scripts/codex_hook_log.py.
     codex_board: dict[str, CodexSession] = {}

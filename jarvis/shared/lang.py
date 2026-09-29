@@ -264,7 +264,39 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
     },
     "tier0.note_captured": {"zh": "已录入。", "en": "Noted."},
     "tier0.note_list": {"zh": "{rendered}", "en": "{rendered}"},
+    "tier0.night": {"zh": "{spoken}", "en": "{spoken}"},
     "memo.none": {"zh": "还没有备忘录。", "en": "No memos yet."},
+    # ADR 0093: the night run's spoken lines; its cards show the times.
+    "night.started": {
+        "zh": "好，挂到{until}。{seconds}秒后熄屏，晚安。",
+        "en": "Okay, it keeps running until {until}. The screen goes off in {seconds} seconds."
+        " Good night.",
+    },
+    "night.started_unguarded": {
+        "zh": "好，挂到{until}，{seconds}秒后熄屏。不过没拿到防睡，Mac 可能会自己睡着。",
+        "en": "Okay, until {until}; the screen goes off in {seconds} seconds. I couldn't keep"
+        " the Mac awake, so it may fall asleep.",
+    },
+    "night.already": {"zh": "已经在挂着了，到{until}。", "en": "It's already running until {until}."},
+    "night.ended": {"zh": "好，不挂了。", "en": "Okay, the night run is over."},
+    "night.ended_restored": {
+        "zh": "好，不挂了，亮度和声音调回来了。",
+        "en": "Okay, the night run is over; brightness and sound are back.",
+    },
+    "night.ended_brightness": {
+        "zh": "好，不挂了，亮度调回来了。",
+        "en": "Okay, the night run is over; brightness is back.",
+    },
+    "night.ended_volume": {
+        "zh": "好，不挂了，声音调回来了。",
+        "en": "Okay, the night run is over; the sound is back.",
+    },
+    "night.cancelled": {"zh": "好，不挂了，屏幕和声音都没动。", "en": "Okay, cancelled. Nothing was changed."},
+    "night.none": {"zh": "现在没在挂机。", "en": "No night run is on."},
+    "night.unavailable": {
+        "zh": "夜间挂机要后台在跑时才能开。",
+        "en": "A night run needs the background service running.",
+    },
     # Action terminal limitations (B-0003c, ADR-0008 D9).
     "limitation.timeout": {"zh": "Codex 超时，未完成", "en": "Codex timed out before finishing"},
     "limitation.failed": {"zh": "Codex 跑挂了，没新 diff", "en": "Codex crashed with no new diff"},
