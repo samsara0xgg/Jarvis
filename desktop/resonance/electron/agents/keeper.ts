@@ -5,8 +5,10 @@
 // missed, requests still waiting for an answer, and the child's first handshake answered again without asking it.
 // Keep this file small and rarely changed: restarting the keeper is the one thing that still ends running turns.
 import { spawn, type ChildProcess } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import net from 'node:net';
-import { closeSync, mkdirSync, openSync, rmSync } from 'node:fs';
+import { closeSync, lstatSync, mkdirSync, openSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -111,6 +113,21 @@ function serve(sock: string) {
 }
 
 // ---------- the host's side ----------
+// Where the keeper answers for an agents folder: keeper.sock in it, unless that path is longer than a socket address
+// holds (104 bytes on macOS, its end included). Then a socket named for the folder, in a folder under the temp folder
+// that only this user can enter; when that folder is not so, the path stays as it was and the keeper says it cannot
+// listen there.
+export function socketFor(dir: string) {
+  const own = path.join(dir, 'keeper.sock');
+  if (Buffer.byteLength(own) < 104) return own;
+  const uid = process.getuid?.() ?? 0, at = path.join(tmpdir(), `jarvis-agents-${uid}`);
+  try {
+    mkdirSync(at, { recursive: true, mode: 0o700 });
+    const st = lstatSync(at);
+    if (st.isDirectory() && st.uid === uid && !(st.mode & 0o077)) return path.join(at, `${createHash('sha256').update(path.resolve(dir)).digest('hex').slice(0, 16)}.sock`);
+  } catch { /* the keeper's own error says where it could not listen */ }
+  return own;
+}
 // One question, one line back.
 export function ask<T>(sock: string, h: Hello) {
   return new Promise<T>((ok, no) => {
@@ -120,12 +137,13 @@ export function ask<T>(sock: string, h: Hello) {
     c.write(`${JSON.stringify(h)}\n`);
   });
 }
-// Starts the keeper when nothing answers; it outlives the host, so it gets its own process group and log.
-export async function startKeeper(sock: string, logFile: string) {
+// Starts the keeper when nothing answers; it outlives the host, so it gets its own process group and log. Its command
+// line names the agents folder first, so the keeper of a folder can be found by it wherever its socket is.
+export async function startKeeper(dir: string, sock: string, logFile: string) {
   if (await ask(sock, { op: 'list' }).then(() => true, () => false)) return;
   mkdirSync(path.dirname(logFile), { recursive: true });
   const out = openSync(logFile, 'a');
-  spawn(process.execPath, [fileURLToPath(new URL('./keeper.js', import.meta.url)), sock], { detached: true, stdio: ['ignore', out, out], env: process.env }).unref();
+  spawn(process.execPath, [fileURLToPath(new URL('./keeper.js', import.meta.url)), dir, sock], { detached: true, stdio: ['ignore', out, out], env: process.env }).unref();
   closeSync(out);
   for (let i = 0; i < 40; i++) {
     await new Promise(r => setTimeout(r, 100));
@@ -134,4 +152,5 @@ export async function startKeeper(sock: string, logFile: string) {
   throw new Error('the keeper did not start');
 }
 
-if (process.argv[1]?.endsWith('keeper.js')) serve(process.argv[2]);
+// `keeper.js <agents folder> <socket>`; a host from before names only the socket.
+if (process.argv[1]?.endsWith('keeper.js')) serve(process.argv[3] ?? process.argv[2]);
