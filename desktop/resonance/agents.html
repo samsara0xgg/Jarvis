@@ -1,4 +1,4 @@
-<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src http://127.0.0.1:*"><title>Agents</title></head>
+<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: http://127.0.0.1:*; connect-src http://127.0.0.1:*"><title>Agents</title></head>
 <body>
 <div class="win" id="win">
   <div class="w-bar"><span class="w-title">Agents</span><span class="w-off" hidden>连不上后台，正在重连…</span><button type="button" class="snd" data-act="sound" aria-pressed="true" aria-label="声音"></button></div>
@@ -39,6 +39,7 @@
   <div class="pop" role="menu"></div>
   <div class="tip" aria-hidden="true"></div>
   <div class="toast" role="status" hidden></div>
+  <dialog class="viewer" aria-label="图片"><img alt=""></dialog>
 </div>
 <script type="module" src="/src/agents/page.ts"></script>
 </body></html>

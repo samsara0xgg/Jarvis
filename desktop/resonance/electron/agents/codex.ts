@@ -4,7 +4,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { homedir } from 'node:os';
 import { createInterface } from 'node:readline';
-import { catalogChanged, find, kt, log, type Driver, type Session } from './host.js';
+import { catalogChanged, find, kt, log, pic, type Driver, type Session } from './host.js';
 import type { Choice, Diff, File, Question, Req, Step } from './types.js';
 import { diffOf } from './claude.js';
 
@@ -81,7 +81,7 @@ function commandStep(s: Session, item: any): Step {
   return { k: 'bash', t: unwrap(str(item.command)).split('\n')[0] };
 }
 const userText = (item: any) => (item.content ?? []).map((c: any) => c.type === 'text' ? str(c.text) : '').join('').trim();
-const userFiles = (item: any) => (item.content ?? []).filter((c: any) => c.type === 'image' || c.type === 'localImage').map((_: unknown, k: number) => `图片 ${k + 1}`);
+const userFiles = (item: any) => (item.content ?? []).filter((c: any) => c.type === 'image' || c.type === 'localImage').map((c: any, k: number) => pic(`图片 ${k + 1}`, c.url));
 
 // An item beginning: a step appears. Read back from history, the same item is begun and finished at once.
 function begun(s: Session, item: any, at?: number, live = true) {
@@ -240,7 +240,7 @@ export const codex: Driver = {
     return r.thread.id;
   },
   async send(s, text, files: File[]) {
-    const r = rt(s), names = files.map(f => f.name);
+    const r = rt(s), pics = files.map(f => pic(f.name, f.url));
     await resume(s);
     if (/^\/compact\s*$/.test(text)) { s.you(text); s.begin(); await call('thread/compact/start', { threadId: s.s.id }); return; }
     const known = /\$[\w-]/.test(text) ? await skillsOf(s.s.cwd) : [];
@@ -252,7 +252,7 @@ export const codex: Driver = {
       try { await call('turn/steer', { threadId: s.s.id, input, expectedTurnId: r.turn }); return; }
       catch { s.dequeue(text); }
     }
-    s.you(text, names); s.begin();
+    s.you(text, pics); s.begin();
     try { await turn(s, input); }
     catch (e) { s.end(undefined, false, 'err', `Codex 没接：${String(e instanceof Error ? e.message : e).slice(0, 120)}`); }
   },

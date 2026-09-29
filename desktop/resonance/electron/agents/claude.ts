@@ -7,8 +7,8 @@ import { existsSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { deleteSession, forkSession, getSessionMessages, query, renameSession, type Options, type PermissionResult, type PermissionUpdate,
   type Query, type SDKControlGetContextUsageResponse, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
-import { catalogChanged, kt, log, type Driver, type Session } from './host.js';
-import type { Choice, Ctx, CtxRow, Diff, File, Req, Step } from './types.js';
+import { catalogChanged, kt, log, pic, type Driver, type Session } from './host.js';
+import type { Choice, Ctx, CtxRow, Diff, File, Pic, Req, Step } from './types.js';
 
 // Allen's subscription, never an API key; and nothing that says this runs inside another Claude Code session. The
 // marker keeps Jarvis's own PermissionRequest hook (ADR 0049) out of sessions this window answers itself.
@@ -44,7 +44,7 @@ type Pending = { resolve: (r: PermissionResult) => void; name: string; input: Re
 // block streaming in · creates: TaskCreate calls waiting for the id their result gives
 type Rt = {
   q?: Query; input?: ReturnType<typeof pushable<SDKUserMessage>>; fresh?: boolean;
-  pending: Map<string, Pending>; queued: Map<string, { text: string; files: string[] }>;
+  pending: Map<string, Pending>; queued: Map<string, { text: string; files: Pic[] }>;
   tasks: Map<string, [string, 0 | 1 | 2]>; creates: Map<string, Record<string, unknown>>;
   interrupted?: boolean; usage?: number; prev?: string; block: string;
 };
@@ -117,7 +117,8 @@ function reqOf(s: Session, id: string, name: string, input: Record<string, unkno
 const textOf = (c: unknown): string => typeof c === 'string' ? c : Array.isArray(c) ? c.map(b => b?.type === 'text' ? str(b.text) : '').filter(Boolean).join('\n') : '';
 
 // ---------- one message from the session, live or from its transcript ----------
-type Block = { type: string; id?: string; name?: string; input?: Record<string, unknown>; text?: string; tool_use_id?: string; content?: unknown; is_error?: boolean };
+type Block = { type: string; id?: string; name?: string; input?: Record<string, unknown>; text?: string; tool_use_id?: string; content?: unknown; is_error?: boolean;
+  source?: { type: string; media_type?: string; data?: string } };
 // Live, Allen's own words are already on screen when he sends them; from a transcript they are read back here.
 function said(s: Session, m: SDKMessage | { type: string; message?: unknown; tool_use_result?: unknown; parent_tool_use_id?: string | null }, at?: number, live = false) {
   const msg = (m as { message?: { content?: unknown } }).message;
@@ -158,7 +159,8 @@ function said(s: Session, m: SDKMessage | { type: string; message?: unknown; too
     if (live) return;
     // Allen's own words; Claude Code's bookkeeping in angle brackets is not.
     const text = textOf(content), cmd = /<command-name>([^<]*)<\/command-name>[\s\S]*?(?:<command-args>([^<]*)<\/command-args>)?/.exec(text);
-    const files = Array.isArray(content) ? content.filter((b: Block) => b.type === 'image').map((_: unknown, k: number) => `图片 ${k + 1}`) : [];
+    const files = Array.isArray(content) ? (content as Block[]).filter(b => b.type === 'image')
+      .map((b, k) => pic(`图片 ${k + 1}`, b.source?.type === 'base64' ? `data:${b.source.media_type};base64,${b.source.data}` : '')) : [];
     if (cmd) s.you(`${cmd[1]} ${cmd[2] ?? ''}`.trim(), [], at);
     else if (/^\s*<(local-command|system-reminder|command-)/.test(text)) return;
     else if (/^\[Request interrupted/.test(text)) s.note('你打断了这一轮');
@@ -306,14 +308,14 @@ export const claude: Driver = {
   },
   async create(s) { rt(s).fresh = true; return randomUUID(); },
   async send(s, text, files: File[]) {
-    const r = rt(s), uuid = randomUUID(), names = files.map(f => f.name);
+    const r = rt(s), uuid = randomUUID(), pics = files.map(f => pic(f.name, f.url));
     const images = files.flatMap(f => {
       const m = /^data:(image\/(?:png|jpeg|gif|webp));base64,(.+)$/.exec(f.url);
       return m ? [{ type: 'image' as const, source: { type: 'base64' as const, media_type: m[1] as 'image/png', data: m[2] } }] : [];
     });
     const busy = !!r.q && (s.s.st === 'work' || s.s.st === 'pack' || s.s.st === 'wait');
-    if (busy) { r.queued.set(uuid, { text, files: names }); s.enqueue(text); }
-    else { s.you(text, names); s.begin(); }
+    if (busy) { r.queued.set(uuid, { text, files: pics }); s.enqueue(text); }
+    else { s.you(text, pics); s.begin(); }
     ensure(s).input!.push({ type: 'user', message: { role: 'user', content: images.length ? [...images, { type: 'text', text }] : text }, parent_tool_use_id: null, uuid });
   },
   answer(s, a) {

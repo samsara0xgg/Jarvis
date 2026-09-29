@@ -3,7 +3,7 @@
 // The sessions themselves run in the agent host; this page draws what the host's event stream says and sends back
 // what Allen does. Drawing is batched into one frame, rows and messages are keyed so only what changed is touched,
 // each session keeps its own conversation so switching is instant, and only marks that move repaint.
-import type { Agent, Catalog, Ctx, Event, File as Upload, Item, Req, Sess, St, Step } from '../../electron/agents/types';
+import type { Agent, Catalog, Ctx, Event, File as Upload, Item, Pic, Req, Sess, St, Step } from '../../electron/agents/types';
 import { drawMark } from '../AgentMarks';
 import { palette, play, scoreOf } from '../soundKit';
 import { Core, TAKES, pick, type ExprId } from '../starCore';
@@ -229,7 +229,7 @@ const app = {
   // Which folded steps Allen opened, per session and item: that is this window's business, not the host's.
   opened: new Map<string, Map<number, Open>>(),
   cur: '', view: 'chat' as View, filter: 'all' as 'all' | Agent, by: 'state' as 'state' | 'project', q: '',
-  files: [] as Upload[], menu: '' as '' | 'slash' | 'at', pick: 0, picks: [] as [string, string][], renaming: false, del: '',
+  files: [] as Attached[], menu: '' as '' | 'slash' | 'at', pick: 0, picks: [] as [string, string][], renaming: false, del: '',
   newAgent: (store.get('agents.agent') === 'codex' ? 'codex' : 'claude') as Agent, newProject: store.get('agents.project') ?? '', newTree: store.get('agents.tree') !== 'off',
   newSet: { model: '', effort: '', mode: '' }, projects: [] as string[],
   sideOpen: false, openAt: performance.now(), how: 'click' as 'click' | 'key', sending: false,
@@ -423,7 +423,7 @@ function reqRecord(r: Req) {
   return r.name;
 }
 function itemHTML(s: Sess, it: Exclude<Item, { k: 'steps' }>) {
-  if (it.k === 'you') return `<div class="you">${it.files?.length ? `<span class="att">${it.files.map(f => `<span class="thumb">${I.img}${esc(f)}</span>`).join('')}</span>` : ''}${esc(it.text)}</div>`;
+  if (it.k === 'you') return `<div class="you">${it.files?.length ? `<span class="att">${it.files.map(picHTML).join('')}</span>` : ''}${esc(it.text)}</div>`;
   if (it.k === 'it') return `<div class="it">${withCopy(md(it.text))}<div class="it-acts"><button type="button" class="ia" data-act="copy">${I.copy}<span>复制</span></button></div></div>`;
   if (it.k === 'note') return `<p class="note">${esc(it.text)}</p>`;
   if (it.k === 'plan') return `<div class="plan"><span class="p-h">计划</span>${it.todos.map(([t, d]) => `<span class="todo d${d}"><i></i>${esc(t)}</span>`).join('')}</div>`;
@@ -449,6 +449,9 @@ function itemHTML(s: Sess, it: Exclude<Item, { k: 'steps' }>) {
     + `<button type="button" class="btn${on('deny')}" data-act="deny" data-req="${esc(r.id)}"${off}>拒绝<kbd>esc</kbd></button>${r.always ? `<button type="button" class="btn${on('always')}" data-act="always" data-req="${esc(r.id)}"${off}>${esc(r.always)}</button>` : ''}`
     + `<button type="button" class="btn warm${on('allow')}" data-act="allow" data-req="${esc(r.id)}"${off}>允许<kbd>↵</kbd></button></div></div>`;
 }
+// A picture shows itself and opens large; one the host kept no copy of stays a named chip.
+const picHTML = (f: Pic) => f.img ? `<button type="button" class="pic" data-act="view" data-tip="看大图"><img src="${API}/images/${esc(f.img)}" alt="${esc(f.name)}" loading="lazy" decoding="async"></button>`
+  : `<span class="thumb">${I.img}${esc(f.name)}</span>`;
 // Code blocks in a finished answer get their own copy button.
 const withCopy = (html: string) => html.replace(/<pre>/g, `<div class="code"><button type="button" class="cp" data-act="copy" data-what="code">${I.copy}<span>复制</span></button><pre>`).replace(/<\/pre>/g, '</pre></div>');
 // A new item arrives the way it happened: yours rises from the composer, a request drops in, the rest fade.
@@ -587,7 +590,7 @@ function renderComp() {
     + (c.modes.length ? `<button type="button" class="t-btn mode" data-act="menu" data-v="mode" data-tip="它能自己做到哪一步">${esc(labelOf(c.modes, mode) || '模式')}</button>` : ''));
   patch(tr, `${busy ? `<button type="button" class="t-stop" data-act="interrupt" data-tip="打断" data-key="esc">${I.stop}</button>` : ''}`
     + `<button type="button" class="t-send" data-act="send" aria-label="${newV ? '开始' : '发送'}" data-tip="${newV ? '开始' : '发送'}" data-key="↵"${blocked || app.sending ? ' disabled' : ''}>${I.up}</button>`);
-  patch(cFiles, app.files.map((f, k) => `<span class="thumb">${I.img}${esc(f.name)}<i data-act="unfile" data-k="${k}" aria-label="去掉">✕</i></span>`).join(''));
+  patch(cFiles, app.files.map((f, k) => `<span class="c-pic"><button type="button" class="pic" data-act="view" data-tip="看大图"><img src="${f.view}" alt="${esc(f.name)}"></button><i data-act="unfile" data-k="${k}" aria-label="去掉">✕</i></span>`).join(''));
   patch(cMenu, app.picks.map(([v, d], k) => app.menu === 'at'
     ? `<button type="button" data-act="pickfile" data-v="${esc(v)}"${k === app.pick ? ' class="on"' : ''}><code>@${esc(v)}</code></button>`
     : `<button type="button" data-act="pickcmd" data-v="${esc(v)}"${k === app.pick ? ' class="on"' : ''}><code>${esc(v)}</code><span>${esc(d)}</span></button>`).join(''));
@@ -777,9 +780,12 @@ function open(id: string, how: 'click' | 'key' = 'click') {
   if (!app.items.has(id)) void loadItems(id);
   draw();
 }
-const readFile = (f: Blob & { name?: string }, k: number) => new Promise<Upload>((done, fail) => {
+// `view` shows the picture in the composer without carrying its data: URL through every redraw.
+type Attached = Upload & { view: string };
+const unattach = (fs: Attached[]) => { for (const f of fs) URL.revokeObjectURL(f.view); };
+const readFile = (f: Blob & { name?: string }, k: number) => new Promise<Attached>((done, fail) => {
   const r = new FileReader();
-  r.onload = () => done({ name: f.name || `图片 ${k + 1}.png`, url: String(r.result) });
+  r.onload = () => done({ name: f.name || `图片 ${k + 1}.png`, url: String(r.result), view: URL.createObjectURL(f) });
   r.onerror = () => fail(r.error);
   r.readAsDataURL(f);
 });
@@ -792,7 +798,7 @@ async function send() {
     const r = await tryCall('/sessions', { agent: app.newAgent, cwd: app.newProject, tree: app.newTree, text, files: app.files, ...app.newSet });
     app.sending = false;
     if (!r) { draw('comp'); return; }
-    app.files = []; clearTa();
+    unattach(app.files); app.files = []; clearTa();
     cue('send'); herSay(pick(TAKES.receive), 1300, String(r.id)); core.hop(performance.now(), .12);
     store.set('agents.project', app.newProject);
     app.items.set(String(r.id), app.items.get(String(r.id)) ?? []);
@@ -806,7 +812,7 @@ async function send() {
   if (pend?.tool === 'Ask') { clearTa(); cue('send'); await tryCall(`/sessions/${s.id}/answer`, { req: pend.id, decision: 'allow', text }); return; }
   if (pend?.tool === 'Plan') { clearTa(); cue('close'); await tryCall(`/sessions/${s.id}/answer`, { req: pend.id, decision: 'deny', text }); return; }
   if (pend) return;
-  const files = app.files; app.files = []; app.menu = ''; app.picks = []; clearTa();
+  const files = app.files; unattach(files); app.files = []; app.menu = ''; app.picks = []; clearTa();
   cue('send', s.st === 'work' ? .55 : .8);
   if (s.st !== 'work') herSay(pick(TAKES.receive), 1100);
   if (await tryCall(`/sessions/${s.id}/send`, { text, files })) attention.sent();
@@ -943,7 +949,8 @@ async function act(a: string, el: HTMLElement) {
   else if (a === 'insert') { ta.value += (ta.value && !/\s$/.test(ta.value) && el.dataset.v === '@' ? ' ' : '') + el.dataset.v; ta.focus(); typed(); }
   else if (a === 'pickcmd' || a === 'pickfile') { tick(); pickIt(el.dataset.v!, a === 'pickcmd'); }
   else if (a === 'attach') $<HTMLInputElement>('#file').click();
-  else if (a === 'unfile') { app.files.splice(Number(el.dataset.k), 1); draw('comp'); }
+  else if (a === 'unfile') { unattach(app.files.splice(Number(el.dataset.k), 1)); draw('comp'); }
+  else if (a === 'view') { const img = $<HTMLImageElement>('img', el); viewImg.src = img.src; viewImg.alt = img.alt; viewer.showModal(); }
   else if (a === 'agent') { if (app.newAgent !== el.dataset.v) tick(); app.newAgent = el.dataset.v as Agent; store.set('agents.agent', app.newAgent); newDefaults(); draw('main', 'comp'); }
   else if (a === 'folder') { const p = await window.agents?.folder(); if (p) { app.newProject = p; draw('main'); } }
   else if (a === 'side') { app.sideOpen = !app.sideOpen; win.classList.toggle('side-open', app.sideOpen); }
@@ -1068,6 +1075,12 @@ win.addEventListener('pointerleave', () => { her.ptr = null; her.pressed = false
 herCv.addEventListener('pointerdown', () => { her.pressed = true; });
 addEventListener('pointerup', () => { her.pressed = false; });
 herCv.addEventListener('click', () => { void act('next', herCv); });
+
+// A picture opened large, in the top layer: any click or esc puts it away, and nothing behind it takes a key meanwhile.
+// Registered before B01's own keys so it comes first.
+const viewer = $<HTMLDialogElement>('.viewer', win), viewImg = $<HTMLImageElement>('img', viewer);
+viewer.addEventListener('click', () => viewer.close());
+addEventListener('keydown', e => { if (!viewer.open) return; e.stopImmediatePropagation(); if (e.key === 'Escape') { e.preventDefault(); viewer.close(); } }, true);
 
 const attention = mountExposure(win, ta, {
   sessions: () => app.ss, items: id => app.items.get(id), current: () => app.cur, chat: () => app.view === 'chat',

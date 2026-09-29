@@ -1,12 +1,12 @@
 // Run after npm run build. Pure history checks plus the real host's transcript builder.
 import assert from 'node:assert/strict';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { timeline } from '../src/agents/exposure/timeline.ts';
 
 process.env.JARVIS_AGENTS_DIR = await mkdtemp(path.join(os.tmpdir(), 'jarvis-exposure-check-'));
-const { Session } = await import('../dist-electron/agents/host.js');
+const { Session, pic } = await import('../dist-electron/agents/host.js');
 const base = { id: 'exposure-check', agent: 'codex', title: 'History check', cwd: '/tmp', project: 'check', branch: '', tree: false,
   st: 'done', pinned: false, parked: false, archived: false, unread: false, updated: 900000, summary: 'Ready', model: '', effort: '', mode: '', ctx: 0 };
 
@@ -58,4 +58,11 @@ assert.equal(historical.s.trace, undefined, 'replay must not invent observed sta
 const legacy = new Session({ ...base }, '');
 await legacy.build(async () => { legacy.you('No clock'); legacy.say('Still no clock'); });
 assert(legacy.items.every(i => i.at === undefined));
-console.log('6 acceptance checks passed: timed transitions, untimed history, transition precedence, turn words, transcript replay, legacy timestamps.');
+// A picture sent with a message becomes a copy named by its content; the same bytes find the same copy; no image, no copy.
+await mkdir(path.join(process.env.JARVIS_AGENTS_DIR, 'images'));
+const png = `data:image/png;base64,${Buffer.from('picture bytes').toString('base64')}`, first = pic('图片 1', png);
+assert.match(first.img, /^[0-9a-f]{32}\.png$/);
+assert.equal(pic('图片 2', png).img, first.img);
+assert.equal(await readFile(path.join(process.env.JARVIS_AGENTS_DIR, 'images', first.img), 'utf8'), 'picture bytes');
+assert.deepEqual(pic('图片 3', 'https://example.com/a.png'), { name: '图片 3' });
+console.log('7 acceptance checks passed: timed transitions, untimed history, transition precedence, turn words, transcript replay, legacy timestamps, picture copies.');

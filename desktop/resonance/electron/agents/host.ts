@@ -3,13 +3,14 @@
 // Agents window talks to it over local HTTP and one event stream. Conversations are read back from each agent's own
 // transcript; this process keeps only what the agents do not: pinned, archived, which agent, the worktree it made.
 import http from 'node:http';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdir, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
+import { writeFileSync } from 'node:fs';
+import { mkdir, readFile, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
-import type { Agent, Answer, Catalog, Choice, Ctx, Event, File, Item, Req, Sess, St, Step } from './types.js';
+import type { Agent, Answer, Catalog, Choice, Ctx, Event, File, Item, Pic, Req, Sess, St, Step } from './types.js';
 import { claude } from './claude.js';
 import { codex } from './codex.js';
 
@@ -53,6 +54,25 @@ export const took = (ms: number) => {
 };
 // A token count as the popover says it: 950, 12.4k, 958k, 1M.
 export const kt = (n: number) => n >= 1e6 ? `${+(n / 1e6).toFixed(1)}M` : n >= 1000 ? `${n >= 1e5 ? Math.round(n / 1000) : +(n / 1000).toFixed(1)}k` : String(Math.round(n));
+// ---------- pictures: a copy of each image sent with a message, named by its content, so the window can show it ----------
+// The transcript stays the record; a copy written more than 30 days ago goes when the host starts, and reading its session
+// back writes it again.
+const IMAGES = path.join(DIR, 'images');
+export function pic(name: string, url: unknown): Pic {
+  const m = typeof url === 'string' ? /^data:image\/(png|jpeg|gif|webp);base64,/.exec(url) : null;
+  if (!m) return { name };
+  const buf = Buffer.from((url as string).slice(m[0].length), 'base64'), img = `${createHash('sha256').update(buf).digest('hex').slice(0, 32)}.${m[1]}`;
+  try { writeFileSync(path.join(IMAGES, img), buf, { flag: 'wx' }); }
+  catch (e) { if ((e as NodeJS.ErrnoException).code !== 'EEXIST') { log('picture', name, String(e)); return { name }; } }
+  return { name, img };
+}
+async function pruneImages() {
+  await mkdir(IMAGES, { recursive: true });
+  for (const f of await readdir(IMAGES)) {
+    const p = path.join(IMAGES, f);
+    if (Date.now() - (await stat(p)).mtimeMs > 30 * 864e5) await unlink(p).catch(() => {});
+  }
+}
 const oneLine = (t: string, n = 120) => { const x = t.replace(/\s+/g, ' ').trim(); return x.length > n ? `${x.slice(0, n - 1)}…` : x; };
 // A finished row shows the start of its last answer: the first sentence, without markdown.
 export const firstSentence = (text: string) => oneLine((text.split('\n').find(l => l.trim() && !l.startsWith('```')) ?? '')
@@ -132,7 +152,7 @@ export class Session {
     if (!this.quiet) this.set({ st: 'work', stopped: false, since: Date.now(), now: '在想', summary: '在想', updated: Date.now() });
   }
   private need() { if (!this.turn) this.begin(); return this.turn!; }
-  you(text: string, files: string[] = [], at?: number) {
+  you(text: string, files: Pic[] = [], at?: number) {
     this.end(undefined, true);
     this.push({ k: 'you', text, at: this.time(at), ...(files.length ? { files } : {}) });
   }
@@ -373,6 +393,13 @@ async function route(req: Req0, res: http.ServerResponse, url: URL): Promise<unk
     void marksIn();
     return undefined;
   }
+  if (m === 'GET' && parts[0] === 'images' && parts.length === 2) {
+    const f = /^[0-9a-f]{32}\.(png|jpeg|gif|webp)$/.exec(parts[1]), buf = f && await readFile(path.join(IMAGES, parts[1])).catch(() => null);
+    if (!buf) throw new Http(404, '没有这张图');
+    res.writeHead(200, { 'Content-Type': `image/${f![1]}`, 'Cache-Control': 'max-age=31536000, immutable', 'Access-Control-Allow-Origin': '*' });
+    res.end(buf);
+    return undefined;
+  }
   if (m === 'GET' && url.pathname === '/projects') return { projects: await projects() };
   // A session's folder, or for a session not started yet the folder and agent it will have.
   const where = () => {
@@ -515,6 +542,7 @@ function label(agent: Agent, k: 'model' | 'effort' | 'mode', v: string) {
 
 export async function main() {
   await restore();
+  await pruneImages();
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1');
     if (req.method === 'OPTIONS') {

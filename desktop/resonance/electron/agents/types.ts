@@ -14,8 +14,10 @@ export type Req =
   | { id: string; tool: 'Ask'; qs: Question[] }
   | { id: string; tool: 'Plan'; plan: string };
 // Epoch milliseconds when known. Missing transcript times stay missing.
+// A picture sent with a message: `img` names the host's copy of it (GET /images/{img}); without one only its name is known.
+export type Pic = { name: string; img?: string };
 export type Item = ({ at?: number; ended?: number } & (
-  | { k: 'you'; text: string; files?: string[]; queued?: boolean }
+  | { k: 'you'; text: string; files?: Pic[]; queued?: boolean }
   | { k: 'it'; text: string }
   | { k: 'steps'; steps: Step[]; took?: string; live?: boolean }
   | { k: 'plan'; todos: [string, 0 | 1 | 2][] }
