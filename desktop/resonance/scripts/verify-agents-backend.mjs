@@ -389,12 +389,19 @@ const had = existsSync(tr), dl = await A.call(`/sessions/${fk1.id}`, undefined, 
 await until('gone from the list', () => !A.rows.has(fk1.id));
 check('deleting a session deletes its transcript', had && dl.ok && !existsSync(tr));
 
-// ---------- a restart in the middle of things: the list it left ----------
+// ---------- a restart in the middle of things: the list it left and a turn it was running ----------
+// OLD is in a slow turn when the host is stopped; the keeper keeps its child for the new host to take back.
+await A.call(`/sessions/${OLD}/send`, { text: 'SLOW across the restart' });
+await until('the slow turn', () => A.rows.get(OLD)?.st === 'work');
 const listOf = h => [...h.rows.values()].map(r => [r.id, r.title, !!r.named, r.archived].join(' ')).sort().join('\n'), left = listOf(A);
 A.proc.kill(); await new Promise(r => A.proc.exitCode !== null ? r() : A.proc.once('exit', r));
 const A2 = await startHost('dev-again', A.root, false);
 await until('the list', () => A2.events[0]?.t === 'hello');
 check('a host stopped in the middle of things comes back to the list it left', listOf(A2) === left, { left, back: listOf(A2) });
+await until('the slow turn ends under the new host', () => A2.rows.get(OLD)?.st === 'done');
+const oLater = (await A2.call(`/sessions/${OLD}`)).items;
+check('a turn running through a restart is taken back and ends here, in the same child', oLater.filter(i => i.k === 'it').at(-1)?.text.startsWith('好的，做完了：SLOW across the restart')
+  && !A2.claude().some(e => e.ev === 'start' && e.sid === OLD), oLater.slice(-2));
 await stopHost(A2);
 
 // ======================= the installed app: the owner's own key (ADR 0094) =======================

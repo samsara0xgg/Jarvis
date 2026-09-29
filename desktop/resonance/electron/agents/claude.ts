@@ -238,7 +238,9 @@ function viaKeeper(s: Session) {
       if (replay > 0) {
         replay--;
         const m = parse(l);
-        if ((m.uuid && r.seen?.has(m.uuid)) || (m.type === 'result' && !r.news)) return;
+        // The keeper keeps a child's last result until its next one, so only the last line replayed can be the end of
+        // a turn this host missed; one before it ended a turn the last host saw.
+        if ((m.uuid && r.seen?.has(m.uuid)) || (m.type === 'result' && (!r.news || replay > 0))) return;
       }
       stdout.write(`${l}\n`);
     });
