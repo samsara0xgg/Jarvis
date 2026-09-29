@@ -2,23 +2,22 @@
 
 Conversation mode stopped Jarvis at the first frame of any speech over her
 (ADR 0041), so a cough, a 「嗯」, a door or the TV cut her answer off and
-cancelled the rest of it. Now she yields: lowered at onset, stopped once the
-speech holds ``barge_in_confirm_voiced_s`` of voice, and for a shorter sound the
-final transcript decides. Nothing, or a listening sound, gives her the gain back
-and is no turn; a stop request stops her and is no turn; other words stop her
-and are a turn.
+cancelled the rest of it. Now she yields: lowered at onset, held where she is
+once the speech holds ``barge_in_confirm_voiced_s`` of voice, and the final
+transcript decides. Nothing, or a listening sound, lets her go on from there
+with the gain back and is no turn; a stop request stops her and is no turn;
+other words stop her and are a turn.
 
 A real DuplexVoiceSession on the scripted ingress, with the shipped VAD profile
 and Silero replaced by a stand-in whose probability follows frame energy, feeds
 a real VoicePipeline whose recognizer returns scripted text, over a real Event
-Log. Only the output side is recorded: her gains and her stops, in order.
+Log. Only the output side is recorded: her gains, holds and stops, in order.
 """
 
 from __future__ import annotations
 
 import contextlib
 import re
-import threading
 import time
 from dataclasses import replace
 from typing import TYPE_CHECKING
@@ -82,10 +81,8 @@ class _Rig:
         *,
         speaking: bool = True,
         confirm_voiced_s: float = 0.4,
-        stop_gate: threading.Event | None = None,
     ) -> None:
         self.output: list[str] = []
-        self.stop_gate = stop_gate
         self.phases: list[tuple[str, object]] = []
         self.speaking = speaking
         self.db = tmp_path / "events.db"
@@ -121,12 +118,11 @@ class _Rig:
                 stop_speaking=self._stop,
                 supersede_unspoken=lambda _turn_id: self.output.append("supersede"),
                 yield_speaking=lambda gain: self.output.append(f"gain {gain}"),
+                pause_speaking=lambda paused: self.output.append("pause" if paused else "go on"),
             )
             assert self.session.start().started
 
     def _stop(self) -> None:
-        if self.stop_gate is not None:
-            assert self.stop_gate.wait(5.0)
         self.output.append("stop")
         self.speaking = False
 
@@ -299,41 +295,50 @@ def test_her_name_alone_over_her_stops_her_and_listens_on(tmp_path: Path) -> Non
 
 
 def test_words_that_hold_enough_voice_stop_her_and_are_a_turn(tmp_path: Path) -> None:
-    """She stops while he is still talking, and his words are answered."""
+    """She is held while he is still talking, stopped once his words are in, and they are answered.
+
+    Her gain comes back only after the stop.
+    """
     rig = _Rig(tmp_path, "明天的会改到三点")
     try:
         rig.say(LONG)
     finally:
         rig.close()
-    assert rig.output == ["gain 0.2", "stop", "gain 1.0", "supersede"]
+    assert rig.output == ["gain 0.2", "pause", "stop", "gain 1.0", "supersede"]
     assert rig.turns() == ["明天的会改到三点"]
 
 
-def test_her_gain_comes_back_only_after_a_late_stop(tmp_path: Path) -> None:
-    """A stop still on its way when his words are judged keeps her quieter until it lands."""
-    gate = threading.Event()
-    rig = _Rig(tmp_path, "明天的会改到三点", stop_gate=gate)
-    try:
-        rig.say(LONG)
-        judged = list(rig.output)
-        gate.set()
-        _wait_until(lambda: rig.output[-1:] == ["gain 1.0"])
-    finally:
-        rig.close()
-    assert judged == ["gain 0.2", "supersede"]
-    assert rig.output == ["gain 0.2", "supersede", "stop", "gain 1.0"]
-
-
-def test_a_stop_request_long_enough_to_stop_her_gets_no_answer(tmp_path: Path) -> None:
-    """「别说了」 said slowly already stopped her; it is still no question."""
+def test_a_stop_request_long_enough_to_hold_her_gets_no_answer(tmp_path: Path) -> None:
+    """「别说了」 said slowly held her; it stops her, and it is still no question."""
     rig = _Rig(tmp_path, "别说了")
     try:
         rig.say(LONG)
     finally:
         rig.close()
-    assert rig.output == ["gain 0.2", "stop", "gain 1.0"]
+    assert rig.output == ["gain 0.2", "pause", "stop", "gain 1.0"]
     assert rig.turns() == []
     assert ("empty", "stop_request") in rig.phases
+
+
+@pytest.mark.parametrize(("heard", "reason"), [("嗯。", "backchannel"), ("", "no_speech")])
+def test_a_long_hum_or_cough_holds_her_then_she_goes_on(
+    tmp_path: Path,
+    heard: str,
+    reason: str,
+) -> None:
+    """A drawn-out 「嗯——」 or a cough held her; it says nothing, so she goes on from there.
+
+    In the 2026-09-29 live test such a 「嗯——」 stopped her for good.
+    """
+    rig = _Rig(tmp_path, heard)
+    try:
+        rig.say(LONG)
+    finally:
+        rig.close()
+    assert rig.output == ["gain 0.2", "pause", "go on", "gain 1.0"]
+    assert rig.speaking
+    assert rig.turns() == []
+    assert ("empty", reason) in rig.phases
 
 
 def test_zero_confirm_time_stops_her_at_onset(tmp_path: Path) -> None:
@@ -420,3 +425,48 @@ def test_the_answer_after_a_stop_starts_at_the_gain_set_while_she_was_silent(
     player._callback(np.zeros((8, 1), dtype=np.float32), 8, None, None)  # noqa: SLF001
     _, block = _speak(player, "R2")
     assert np.all(block == heard)
+
+
+def _block(player: voice_tts.AudioStreamPlayer, frames: int) -> np.ndarray:
+    out = np.zeros((frames, 1), dtype=np.float32)
+    player._callback(out, frames, None, None)  # noqa: SLF001
+    return out[:, 0]
+
+
+def test_a_held_answer_keeps_its_place_and_fades_back_in() -> None:
+    """Held, nothing of the answer is consumed; let go, it goes on from the held sample."""
+    player = _player()
+    lease = player.activate_generation(
+        session_id="S", response_id="R1", response_group_id="G", turn_id="T",
+    )
+    assert isinstance(lease, GenerationLease)
+    generation = lease.playback_generation_id
+    player.begin_generation_segment(
+        expected_playback_generation_id=generation, sequence=0, text="words", segment_hash="h",
+    )
+    words = np.linspace(0.1, 0.9, 512, dtype=np.float32)
+    player.write_generation(
+        words.tobytes(), expected_playback_generation_id=generation, segment_sequence=0,
+    )
+    assert np.array_equal(_block(player, 64), words[:64])
+    player.pause_generation(paused=True)
+    _block(player, 64)
+    _block(player, 64)  # the decay to silence
+    assert not _block(player, 64).any()
+    player.pause_generation(paused=False)
+    back = np.concatenate([_block(player, 64) for _ in range(3)])
+    assert back[0] == 0.0  # faded in, not stepped onto the waveform
+    assert np.array_equal(back[128:], words[192:256])
+
+
+def test_a_later_answer_never_starts_held() -> None:
+    """A hold names the answer it held: the next one plays at once, whole."""
+    player = _player(ring_seconds=0.02)
+    first, _ = _speak(player, "R1")
+    player.pause_generation(paused=True)
+    _block(player, 8)
+    player.interrupt_generation(expected_playback_generation_id=first)
+    player.settle_interrupted_generation(expected_playback_generation_id=first)
+    player.retire_generation(first)
+    _, block = _speak(player, "R2")
+    assert np.all(block == 1.0)

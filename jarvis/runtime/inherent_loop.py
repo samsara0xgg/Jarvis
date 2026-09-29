@@ -3374,6 +3374,7 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
             hold_output=_hold_output,
             supersede_unspoken=supersede_unspoken,
             yield_speaking=streaming.set_yield_gain if streaming is not None else None,
+            pause_speaking=streaming.pause_speaking if streaming is not None else None,
         )
     except Exception:
         LOGGER.exception(

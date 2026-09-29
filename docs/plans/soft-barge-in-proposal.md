@@ -31,23 +31,27 @@
   mid-answer and final ASR heard it as "And."; another 「嗯」 came back as a
   Cantonese 「五」 and two 「停」 as 「停立」 and 「顶」, and all three were
   answered as questions. 「对对对」 held 0.64 s of voice.
+- The second live run (2026-09-29) at 0.8 s: two short 「嗯」 passed, but a
+  drawn-out 「嗯——」 held enough voice to stop her; final ASR then judged it a
+  listening sound, and she stayed silent with the answer cut off.
 
 ## Decision
 
 In conversation mode, speech that starts while Jarvis speaks first lowers her
-to `barge_in_yield_gain`; it stops her once it holds
-`barge_in_confirm_voiced_s` of voice, and a shorter sound ends after
-`barge_in_pause_ms` of silence for final ASR to judge: nothing, a listening
-sound or one word that is no answer gives her the gain back and is no turn, a
-stop request or her wake phrase alone stops her and is no turn, anything else
-stops her and is a turn. A stop request includes the ting/ding syllables
-final ASR makes of a lone 「停」 over her voice.
+to `barge_in_yield_gain`; once it holds `barge_in_confirm_voiced_s` of voice
+she is held where she is (her answer stops playing and keeps its place), and
+a shorter sound ends after `barge_in_pause_ms` of silence. Final ASR judges
+both: nothing, a listening sound or one word that is no answer lets her go on
+from where she was with the gain back and is no turn, a stop request or her
+wake phrase alone stops her and is no turn, anything else stops her and is a
+turn. A stop request includes the ting/ding syllables final ASR makes of a
+lone 「停」 over her voice.
 
 Limits: the gain returns only after a stop has landed; the yield scales the
-mute and never replaces it; words that stopped her by their length are judged
-the same way (a slow 「别说了」 is no turn); a lone 对/好/是/yes and anything
-ending in a question mark are never a listening sound; `0` for the voiced time
-is ADR 0041 as it shipped.
+mute and never replaces it; words that held her by their length are judged
+the same way (a slow 「别说了」 is no turn); held words that final ASR fails on
+stop her; a lone 对/好/是/yes and anything ending in a question mark are never
+a listening sound; `0` for the voiced time is ADR 0041 as it shipped.
 
 ## Alternatives rejected
 
@@ -58,6 +62,12 @@ is ADR 0041 as it shipped.
   stops her: it is shorter than any voiced-time rule that lets a cough pass.
 - **Stop on voiced time alone, without the transcript.** A long 「嗯嗯嗯」 stops
   her and becomes a turn she answers; a quick 「停」 does not stop her.
+- **Stop once the voiced time is reached, and let the transcript only decide
+  the turn** (as first shipped). A drawn-out 「嗯——」 or a cough ends her
+  answer for good (second live run).
+- **Stop, then say the unheard rest again when the words say nothing.** The
+  answer may still be generating when it is cancelled, and saying it again
+  costs a new synthesis; holding costs neither.
 - **Keyword spotting on partial ASR while she talks (ADR-0006 D8).** Measured
   at 15 times its false-candidate target on the MacBook speakers, and partial
   ASR is off.
@@ -68,6 +78,11 @@ is ADR 0041 as it shipped.
   ends (about 0.45 s at the defaults), where ADR 0041 stopped her at onset.
 - Until a sound is judged she keeps talking at 0.2: a word of hers may be
   missed under a cough.
+- A long sound holds her silent until it is judged: its ordinary endpoint
+  (0.77 s of silence) plus final ASR after it ends. A real question still
+  silences her at 0.8 s, but her answer is dropped, and the one still being
+  written cancelled, only once it is judged. While she is held her speech
+  keeps streaming into the player's ring and its writer waits.
 - The listening-sound and stop-request lists are fixed Chinese and English
   word lists in `voice_asr.py`; a phrasing outside them is a turn.
 - 0.8 s comes from the first live run's hums and 「对对对」; 0.2 and 350 ms
