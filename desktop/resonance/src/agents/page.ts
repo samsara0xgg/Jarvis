@@ -266,8 +266,24 @@ function draw(...parts: Part[]) {
   for (const p of parts.length ? parts : ['side', 'head', 'main', 'comp'] as Part[]) dirty.add(p);
   if (!raf) raf = requestAnimationFrame(flush);
 }
+// Each session keeps its own draft, and the new-session page one of its own: what you typed or attached for one never
+// goes to another when you switch.
+const drafts = new Map<string, { text: string; files: Attached[] }>();
+let draftAt = '';
+function swapDraft() {
+  const key = app.view === 'new' ? '__new' : app.view === 'chat' ? app.cur : draftAt;
+  if (key === draftAt) return;
+  if (ta.value || app.files.length) drafts.set(draftAt, { text: ta.value, files: app.files }); else drafts.delete(draftAt);
+  const d = drafts.get(key);
+  drafts.delete(key);
+  ta.value = d?.text ?? ''; app.files = d?.files ?? []; app.menu = ''; app.picks = [];
+  ta.style.height = 'auto'; ta.style.height = ta.value ? `${Math.min(180, ta.scrollHeight)}px` : '';
+  draftAt = key;
+  dirty.add('comp');
+}
 function flush() {
   raf = 0;
+  swapDraft();
   const d = new Set(dirty); dirty.clear();
   if (d.has('side')) renderSide();
   if (d.has('head')) renderHead();
