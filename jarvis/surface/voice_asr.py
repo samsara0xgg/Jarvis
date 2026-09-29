@@ -790,14 +790,17 @@ _BACKCHANNEL_RE = re.compile(
 # A request to stop talking: she stops, and it is not a question to answer.
 # Over her voice a lone 「停」 comes back as any ting/ding syllable, sometimes
 # with a stray tail: 「停立」 and 「顶」 in the 2026-09-28 live test. 「OK可以了」
-# (enough) in the 2026-09-29 one; a lone 「可以」 still answers a card.
+# (enough) in the 2026-09-29 one; a lone 「可以」 still answers a card. There
+# each of seven 「pause」 came back as some other lone English word of five or
+# six characters, "Pulse" as Allen tells it; a synthesized "pause" reads "Cause.".
 _STOP_REQUEST_RE = re.compile(
     r"(?:ok|okay|嗯|哎|唉|好|行|那|你|好了|行了)?"
     r"(?:停+(?:一下|下)?|先停(?:一下)?|暂停(?:一下)?|等(?:一下|等|下)?|别说了|不要说了|不用说了"
     r"|别念了|闭嘴|安静(?:一下|一点|点)?|够了|可以了|好了好了|行了行了)(?:吧|啊|呀|哈)?"
     r"|[停亭婷庭廷挺艇听厅顶鼎定丁叮钉][立啲一]?"
     r"|(?:ok|okay|please|jarvis|hey)*"
-    r"(?:stop(?:it|talking|that)?|wait|pause|enough|bequiet|quiet|shutup|hush)(?:please|jarvis|now)*",
+    r"(?:stop(?:it|talking|that)?|wait|pause|pulse|cause|enough|bequiet|quiet|shutup|hush)"
+    r"(?:please|jarvis|now)*",
 )
 # What final ASR makes of a hum or a cough over her is often one syllable or
 # word: 「五」 and "And." in the 2026-09-28 live test, each answered as a
