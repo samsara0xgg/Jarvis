@@ -511,8 +511,9 @@ function renderSteps(id: string, el: HTMLElement, it: Item & { k: 'steps' }, i: 
   const o = app.opened.get(id)?.get(i) ?? {};
   const box = el.firstElementChild as HTMLElement, live = !!it.live, btn = box.firstElementChild as HTMLButtonElement, rows = $('.s-in', box);
   box.hidden = !it.steps.length;
-  box.classList.toggle('live', live); box.classList.toggle('open', live || !!o.open);
-  btn.disabled = live; btn.setAttribute('aria-expanded', String(live || !!o.open));
+  // While it works only its last few steps show, and they stay that few as the list folds; the line opens all of them.
+  box.classList.toggle('live', live); box.classList.toggle('open', live || !!o.open); box.classList.toggle('tail', !o.open);
+  btn.setAttribute('aria-expanded', String(!!o.open));
   const sum = stepsSummary(it.steps);
   patch(btn.lastElementChild!, `${live ? '正在干' : it.took ? `干了 ${esc(it.took)}` : '干完了'}${sum ? ` · ${sum}` : ''}`);
   // A folded list draws its rows only once it is opened.
