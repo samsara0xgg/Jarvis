@@ -58,6 +58,11 @@ function age(ms: number) {
   const m = Math.floor((Date.now() - ms) / 60000);
   return m < 1 ? '刚刚' : m < 60 ? `${m} 分钟` : m < 1440 ? `${Math.floor(m / 60)} 小时` : `${Math.floor(m / 1440)} 天`;
 }
+// When an answer came: the clock today, the date in front on other days.
+function clock(at: number) {
+  const d = new Date(at), t = d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
+  return d.toDateString() === new Date().toDateString() ? t : `${d.getMonth() + 1}月${d.getDate()}日 ${t}`;
+}
 function ago(since?: number) { const t = (Date.now() - (since ?? Date.now())) / 1000; return t < 60 ? `${Math.max(1, Math.round(t))} 秒` : `${Math.round(t / 60)} 分钟`; }
 
 // ---------- markdown, the part agents use, block by block so a stream only redraws its last block ----------
@@ -424,7 +429,7 @@ function reqRecord(r: Req) {
 }
 function itemHTML(s: Sess, it: Exclude<Item, { k: 'steps' }>) {
   if (it.k === 'you') return `<div class="you">${it.files?.length ? `<span class="att">${it.files.map(picHTML).join('')}</span>` : ''}${esc(it.text)}</div>`;
-  if (it.k === 'it') return `<div class="it">${withCopy(md(it.text))}<div class="it-acts"><button type="button" class="ia" data-act="copy">${I.copy}<span>复制</span></button></div></div>`;
+  if (it.k === 'it') return `<div class="it">${withCopy(md(it.text))}<div class="it-acts"><button type="button" class="ia" data-act="copy" data-tip="复制" aria-label="复制">${I.copy}</button>${it.at ? `<time>${clock(it.at)}</time>` : ''}</div></div>`;
   if (it.k === 'note') return `<p class="note">${esc(it.text)}</p>`;
   if (it.k === 'plan') return `<div class="plan"><span class="p-h">计划</span>${it.todos.map(([t, d]) => `<span class="todo d${d}"><i></i>${esc(t)}</span>`).join('')}</div>`;
   const r = it.req, a = NAME[s.agent], b = app.busy.get(s.id), busy = b?.req === r.id ? b.key : '';
@@ -831,12 +836,14 @@ async function answer(s: Sess, req: string, decision: 'allow' | 'always' | 'deny
   if (!await tryCall(`/sessions/${s.id}/answer`, { req, decision, answers, ...(text ? { text } : {}) })) { app.busy.delete(s.id); draw('main'); }
 }
 // Copying: the button says so for 1.5 s; where the clipboard is refused, the text is selected for ⌘C instead.
+// A code block's button says it in words; an answer's is an icon that speaks only when the copy was refused.
 function copy(el: HTMLElement, text: string, target: Element) {
+  const words = el.classList.contains('cp'), say = (t: string) => words ? `<span>${t}</span>` : '';
   const done = (ok: boolean) => {
     el.classList.remove('ok', 'no'); el.classList.add(ok ? 'ok' : 'no');
-    patch(el, `${ok ? I.check : I.copy}<span>${ok ? '复制好了' : '选好了，按 ⌘C'}</span>`);
+    patch(el, ok ? `${I.check}${say('复制好了')}` : `${I.copy}<span>选好了，按 ⌘C</span>`);
     clearTimeout(Number(el.dataset.t));
-    el.dataset.t = String(setTimeout(() => { el.classList.remove('ok', 'no'); patch(el, `${I.copy}<span>复制</span>`); }, 1500));
+    el.dataset.t = String(setTimeout(() => { el.classList.remove('ok', 'no'); patch(el, `${I.copy}${say('复制')}`); }, 1500));
   };
   tick();
   navigator.clipboard.writeText(text).then(() => done(true), () => {
