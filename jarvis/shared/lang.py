@@ -270,8 +270,8 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
     "limitation.failed": {"zh": "Codex 跑挂了，没新 diff", "en": "Codex crashed with no new diff"},
     "limitation.cancelled": {"zh": "任务已停止，未完成", "en": "The task was stopped before finishing"},
     # GPT-Live (ADR-0016): the persona in the official template's fixed labels
-    # (docs/gpt-live/live-prompting.md: written in the language the model
-    # speaks), then the appends. Backend rules and permissions stay in the
+    # (https://developers.openai.com/api/docs/guides/live-prompting: written in the language the
+    # model speaks), then the appends. Backend rules and permissions stay in the
     # backend; only ADR-0016 D6's read-only lookups are listed.
     "live.instructions": {
         "zh": "You are {assistant}, 用户的私人语音助手。\n"

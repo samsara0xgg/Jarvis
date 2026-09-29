@@ -22,7 +22,8 @@
   the ADR-0018 quota page cannot show Live. Sessions that no one opened by
   hand, such as a morning brief, will add to this.
 - The provider's ACK proves receipt of an append, not playback, and the API
-  emits no playback-done event (docs/gpt-live/live-conversations.md).
+  emits no playback-done event
+  (https://developers.openai.com/api/docs/guides/live-conversations).
   "Delivered" can therefore mean at most "the provider accepted it into the
   session"; whether Allen heard it is a separate fact.
 - Allen's direction, 2026-09-21: the backend is the long-lived session; voice

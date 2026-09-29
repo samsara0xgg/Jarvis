@@ -14,7 +14,7 @@ export interface Live { state: LiveState; sessionId: string | null; since: numbe
 export interface Subtitle { role: 'user' | 'assistant'; text: string; startMs: number; endMs: number }
 // One memory.db record: the conversation of record, the same rows the backend's history is built from. `seq` is the poll cursor.
 export interface Row { seq: number; id: string; ts: string; source: string; text: string }
-// A same-speaker pause longer than this starts a new caption row (docs/gpt-live/live-conversations.md, Display captions): an assistant resuming after an interruption must not extend the cut-off line. Application choice; tune against recordings.
+// A same-speaker pause longer than this starts a new caption row (https://developers.openai.com/api/docs/guides/live-conversations, Display captions): an assistant resuming after an interruption must not extend the cut-off line. Application choice; tune against recordings.
 const SUBTITLE_GAP_MS = 1500;
 export const idleLive: Live = { state: 'idle', sessionId: null, since: null, usageS: null, usageFinal: false, reason: null, speaking: false, hearing: false, error: null, notice: null };
 // `conversation` is the daemon's wave mode (ADR 0041), from every controls answer; `heard` is the last accepted transcript.

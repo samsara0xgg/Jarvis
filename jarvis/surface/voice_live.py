@@ -53,8 +53,9 @@ LIVE_WS_URL = "wss://api.openai.com/v1/live/sessions"
 
 # The persona (``live.instructions``) and every append are in the language
 # table: GPT-Live's prompts are written in the language the model speaks
-# (docs/gpt-live/live-prompting.md), so each language has its own wording, and
-# a session speaks the language setting current when it starts or appends.
+# (https://developers.openai.com/api/docs/guides/live-prompting), so each
+# language has its own wording, and a session speaks the language setting
+# current when it starts or appends.
 # Commentary is a fact for the model to say in its own words, not an
 # instruction to it; thinking is a fact it may use later without speaking it now.
 
@@ -1316,7 +1317,8 @@ class LiveVoice:
                 LOGGER.debug("gpt_live mic discontinuity before frame %d", frame.sequence)
             # Muted: keep the frame clock running with silence. The session timeline
             # advances on input frames and append ACKs stall when frames stop
-            # (docs/gpt-live/voice-websockets.md); real microphone content never leaves.
+            # (https://developers.openai.com/api/docs/guides/voice-websockets); real microphone
+            # content never leaves.
             samples = (
                 np.zeros(frame.frame_count, dtype=np.float32)
                 if run.mic_muted

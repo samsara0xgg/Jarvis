@@ -489,9 +489,10 @@ realtime:
     model: gpt-live-1
     voice: marin
     # The persona (frontend instructions in the official template's fixed
-    # labels, docs/gpt-live/live-prompting.md) is `live.instructions` in
-    # jarvis/shared/lang.py, one per language: GPT-Live's prompts are written
-    # in the language it speaks. An `instructions:` string here replaces it.
+    # labels, https://developers.openai.com/api/docs/guides/live-prompting)
+    # is `live.instructions` in jarvis/shared/lang.py, one per language:
+    # GPT-Live's prompts are written in the language it speaks. An
+    # `instructions:` string here replaces it.
     # ADR-0016 D2/D5: user fragments must stop this long before a delegation's
     # request is frozen (the wait is capped at 2 s in code), and a submitted
     # lookup gets this long before Live is told there is no result yet.
