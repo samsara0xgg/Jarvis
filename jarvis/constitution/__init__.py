@@ -1,10 +1,10 @@
 """L1 Constitution — frozen product identity, principles, non-goals, autonomy axes.
 
-Owns (per spec.html §3.2):
+Owns (per docs/spec.html#owner):
 - Product identity label.
-- Locked constitution C1..C6 (§3.2.1).
-- Product non-goals (§3.2.2).
-- Autonomy axes — 5 independent axes (§3.2.6).
+- Constitution C1..C6 (docs/spec.html#constitution; C1 per ADR 0090).
+- Product non-goals (docs/spec.html#positioning).
+- Autonomy axes — 5 independent axes (archived spec v1 §3.2.6).
 
 Does NOT own: state schema, projection fields, tool implementations, surface layout,
 runtime config, prompt wording. The Constitution is read by every higher layer but
@@ -26,12 +26,12 @@ JARVIS_IDENTITY: Final[str] = "Jarvis"
 
 @dataclass(frozen=True)
 class ConstitutionalPrinciple:
-    """One numbered principle from spec §3.2.1.
+    """One numbered principle from docs/spec.html#constitution.
 
     Attributes:
         code: Short code, e.g. "C1".
         title: Single-line English title (for code-side ergonomics).
-        statement: English rendering of the canonical statement in spec §3.2.1.
+        statement: English rendering of the canonical statement in the spec.
     """
 
     code: str
@@ -41,57 +41,60 @@ class ConstitutionalPrinciple:
 
 _C1 = ConstitutionalPrinciple(
     code="C1",
-    title="Allen-only personal runtime.",
+    title="One owner per install.",
     statement=(
-        "Jarvis always serves Allen alone first; it never trades personalisation for "
-        "multi-user collaboration, commercialisation, generic onboarding or legibility to "
-        "strangers. It may lean heavily towards Allen's projects, rooms, Mac, habits and "
-        "ways of speaking."
+        "A Jarvis install serves the person whose macOS account it runs in; its memory, "
+        "keys, confirmations and attention are that person's. It may lean as far into the "
+        "owner's projects, habits and ways of speaking as it likes, but no code names a "
+        "particular person, and a stranger has to be able to understand it on their first "
+        "run. Two people on one Mac are two accounts with two installs that share only the "
+        "hardware. Jarvis does not tell voices apart: whoever speaks near the owner's Mac "
+        "is heard as the owner."
     ),
 )
 _C2 = ConstitutionalPrinciple(
     code="C2",
-    title="State Object is identity.",
+    title="State is identity.",
     statement=(
-        "Jarvis's identity is not in the LLM, the prompt, the router, the agent loop, the "
-        "tool registry, the voice pipeline or the Inherent UI. It lives in the continuously "
-        "maintained Allen standing state."
+        "Jarvis's identity is not in the model, the prompt, the tools or the voice "
+        "pipeline. It lives in the state it keeps: the append-only event log and the "
+        "projections folded from it. Changing the model, the prompt or the tools does not "
+        "touch it."
     ),
 )
 _C3 = ConstitutionalPrinciple(
     code="C3",
-    title="Reduce context load and task load.",
+    title="Spare the owner re-explaining.",
     statement=(
-        "The core value is not general chat but sparing Allen repeated explanation: where "
-        "yesterday's work stopped, what each agent is doing, which tasks are unfinished, which "
-        "results are unaccepted, whether the current project has drifted, what comes next."
+        "The core value is that the owner never has to reload context: what each agent is "
+        "doing, where yesterday stopped, what is unfinished, what comes next."
     ),
 )
 _C4 = ConstitutionalPrinciple(
     code="C4",
-    title="Supervisor, not primary worker.",
+    title="Supervisor, not worker.",
     statement=(
-        "Jarvis dispatches, supervises, accepts and keeps state. Complex engineering goes "
-        "mainly to workers such as Codex / Claude Code / Hermes. By default Jarvis's main "
-        "LLM does not get executor tools such as patch / write_file / terminal."
+        "Jarvis dispatches, follows, collects and keeps state; writing code and changing "
+        "files go to Claude Code and Codex. The main model has no terminal, patch or "
+        "file-writing tool. A worker's final message reaches the owner as it is; Jarvis "
+        "does not rule on whether it succeeded."
     ),
 )
 _C5 = ConstitutionalPrinciple(
     code="C5",
-    title="High privilege must be evidence-bound.",
+    title="The higher the privilege, the tighter the bounds and the trail.",
     statement=(
-        "Jarvis may hold high privilege, but every important action is bound by policy, "
-        "risk, confirmation, claim/evidence and invariant gates. A tool's success, an "
-        "agent's own report or an LLM's confidence alone never proves a goal was met."
+        "Every action passes risk level, confirmation and the gate, and leaves events. A "
+        "tool's success, an agent's own report or the model's confidence alone never counts "
+        "as a goal met; Jarvis says nothing more certain than what it saw."
     ),
 )
 _C6 = ConstitutionalPrinciple(
     code="C6",
     title="Surfaces are replaceable; continuity is not.",
     statement=(
-        "Voice, Inherent, browser UI, notification, OLED and ambient light are only "
-        "surfaces. The voice provider can change today and the UI tomorrow, but the "
-        "continuity in the State Object must not break."
+        "Voice, the notch, the panel and notifications are only surfaces. Changing the "
+        "voice provider or the interface must not break the state."
     ),
 )
 
@@ -112,24 +115,20 @@ Each value is a frozen ConstitutionalPrinciple (FrozenInstanceError on attribute
 
 
 NON_GOALS: Final[tuple[str, ...]] = (
-    "Not an ordinary chatbot, and not an ordinary voice assistant.",
-    "Not a Home Assistant replacement; home automation is part of the body, not the "
-    "product itself.",
-    "Not a general agent framework; Codex / Claude Code / Hermes are workers, not "
-    "Jarvis's identity.",
-    "Not a Cursor / IDE competitor; 99% of the time Jarvis does not write complex code "
-    "itself.",
-    "Not a multi-user collaboration SaaS; permissions and UX serve Allen's N=1 workflow "
-    "first.",
-    "Not companion-chat first; tone and personality serve state management and do not "
-    "drive the system design.",
+    "Not another worker agent: writing code and operating the computer go to Claude Code "
+    "and Codex.",
+    "Not a multi-user or team tool: one install answers to one owner.",
+    "Not a cloud service: it relays none of the owner's data and resells no model quota.",
+    "Not a smart-home hub: the Raspberry Pi, cross-device federation and room screens are "
+    "out of this version; devices such as Hue come in as plugins.",
+    "Not companion-chat first: tone serves the state, not the other way round.",
 )
-"""Product non-goals (spec §3.2.2). Tuple — immutable by construction."""
+"""Product non-goals (docs/spec.html#positioning). Tuple — immutable by construction."""
 
 
 @dataclass(frozen=True)
 class AutonomyAxis:
-    """One autonomy axis from spec §3.2.6.
+    """One autonomy axis from archived spec v1 §3.2.6.
 
     Attributes:
         name: Axis identifier, e.g. "Proactivity".
@@ -161,7 +160,7 @@ AUTONOMY_AXES: Final[Mapping[str, AutonomyAxis]] = MappingProxyType(
         ),
         "Confirmation": AutonomyAxis(
             name="Confirmation",
-            meaning="Which actions ask Allen first",
+            meaning="Which actions ask the owner first",
             default=(
                 "High-risk / irreversible / external side effect / low-confidence but "
                 "valuable actions must confirm"
@@ -185,7 +184,7 @@ AUTONOMY_AXES: Final[Mapping[str, AutonomyAxis]] = MappingProxyType(
         ),
     },
 )
-"""The 5 autonomy axes (spec §3.2.6). Read-only MappingProxyType; mutation raises."""
+"""The 5 autonomy axes (archived spec v1 §3.2.6). Read-only MappingProxyType; mutation raises."""
 
 
 __all__ = [
