@@ -390,6 +390,14 @@ const viewNew = document.createElement('div'), viewArch = document.createElement
 viewNew.className = viewArch.className = 'conv';
 viewNew.innerHTML = '<div class="c-in wide"></div>'; viewArch.innerHTML = '<div class="c-in wide"></div>';
 const bottom = (r: HTMLElement) => !r.isConnected || r.scrollTop >= r.scrollHeight - r.clientHeight - 40;
+// To the latest answer. Rows that come on screen trade their 60 px guess for their real height and push the end away, so
+// it follows the end frame by frame until the height holds, or until Allen scrolls.
+function toEnd(root: HTMLElement, frames = 30) {
+  const h = root.scrollHeight;
+  root.scrollTop = h;
+  const at = root.scrollTop;
+  requestAnimationFrame(() => { if (frames && root.isConnected && root.scrollTop === at && root.scrollHeight !== h) toEnd(root, frames - 1); });
+}
 
 let shownId = '';
 function show(root: HTMLElement, id: string) {
@@ -398,7 +406,7 @@ function show(root: HTMLElement, id: string) {
   if (prev) prev.scroll = prev.root.scrollTop;
   hostEl.replaceChildren(root); shownId = id;
   const c = convs.get(id);
-  root.scrollTop = c && c.scroll >= 0 ? c.scroll : c ? root.scrollHeight : 0;
+  if (c && c.scroll < 0) toEnd(root); else root.scrollTop = c ? c.scroll : 0;
   // Switching by keyboard is a quick fade; by click it also rises a little.
   const k = root.firstElementChild!;
   if (app.how === 'key') anim(k, [{ opacity: .35 }, { opacity: 1 }], 120);
@@ -475,7 +483,7 @@ function morph(el: HTMLElement, html: string) {
   el.animate([{ height: `${h0}px`, opacity: .2 }, { height: `${h1}px`, opacity: 1 }], { duration: 300, easing: OUT }).onfinish = () => { el.style.overflow = ''; };
 }
 function renderConv(s: Sess, c: Conv) {
-  const stick = bottom(c.root), items = app.items.get(s.id);
+  const stick = bottom(c.root), items = app.items.get(s.id), built = c.built;
   if (!items) { patch(c.items, '<p class="loading">在读这个会话…</p>'); c.built = false; return; }
   if (!c.built) c.items.replaceChildren();
   items.forEach((it, i) => {
@@ -503,7 +511,7 @@ function renderConv(s: Sess, c: Conv) {
   c.term.hidden = !s.term;
   if (s.term) patch(c.term, `${I.term}<span><b>在终端里打开着。</b>Jarvis 先放手，一次只有一边能写。</span><button type="button" class="btn" data-act="takeback">拿回来</button>`);
   c.built = true;
-  if (stick) c.root.scrollTop = c.root.scrollHeight;
+  if (stick && !built) toEnd(c.root); else if (stick) c.root.scrollTop = c.root.scrollHeight;
 }
 // Steps keep their elements: new ones slide in while it works, and the list folds shut when the turn ends.
 function renderSteps(id: string, el: HTMLElement, it: Item & { k: 'steps' }, i: number, animate: boolean) {
@@ -778,8 +786,11 @@ function connect() {
 }
 
 // ---------- doing things ----------
-function open(id: string, how: 'click' | 'key' = 'click') {
-  if (app.view === 'chat' && app.cur === id) { app.sideOpen = false; win.classList.remove('side-open'); return; }
+// `end`: open at its latest answer, wherever it was last read (B01's way in).
+function open(id: string, how: 'click' | 'key' = 'click', end = false) {
+  const c = end ? convs.get(id) : undefined;
+  if (c) c.scroll = -1;
+  if (app.view === 'chat' && app.cur === id) { app.sideOpen = false; win.classList.remove('side-open'); if (c) toEnd(c.root); return; }
   app.cur = id; app.view = 'chat'; app.renaming = false; app.sideOpen = false; app.openAt = performance.now(); app.how = how;
   app.menu = ''; app.picks = [];
   closePop(); win.classList.remove('side-open');
@@ -1092,7 +1103,7 @@ addEventListener('keydown', e => { if (!viewer.open) return; e.stopImmediateProp
 
 const attention = mountExposure(win, ta, {
   sessions: () => app.ss, items: id => app.items.get(id), current: () => app.cur, chat: () => app.view === 'chat',
-  load: loadItems, open: id => open(id, 'key'), call, md, toast, cue: (name, gain) => cue(name, gain, false, false), blip, changed: id => stAt.get(id) ?? -1e9,
+  load: loadItems, open: id => open(id, 'key', true), call, md, toast, cue: (name, gain) => cue(name, gain, false, false), blip, changed: id => stAt.get(id) ?? -1e9,
   refresh: () => draw(),
 });
 

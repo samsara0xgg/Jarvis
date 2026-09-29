@@ -192,7 +192,8 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
   function openSky() {
     if (!enabled || !rows.length || deckOn) return;
     peek.hidden = true;
-    selected = rows.find(s => s.id === hooks.current())?.id ?? rows[0].id; nameStop = false; latest();
+    // It opens on the names: ↑↓ pick a session, → goes in; ← steps back into what you said.
+    selected = rows.find(s => s.id === hooks.current())?.id ?? rows[0].id; nameStop = true; latest();
     skyOn = true; snap = true; hoverQi = null; revealUntil = performance.now() + 800; hideOffer();
     win.classList.add('sky-on'); skyEl.inert = false; pullLabel();
     win.tabIndex = -1; win.focus({ preventScroll: true }); renderRows(); renderWords();
