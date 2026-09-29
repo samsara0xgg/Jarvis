@@ -77,6 +77,8 @@ function serve(sock: string) {
         kids.set(h.key, kid);
         lines(child.stdout!, l => fromChild(kid, l));
         child.stderr!.setEncoding('utf8').on('data', (d: string) => log(h.key.slice(0, 8), d.trim().slice(0, 400)));
+        // A line on its way to a child that just died is dropped, not the keeper with every other child in it.
+        child.stdin!.on('error', e => log(h.key.slice(0, 8), 'stdin', e.message));
         child.on('error', e => log(h.key.slice(0, 8), 'spawn', e.message));
         child.on('exit', (code, sig) => { log(h.key.slice(0, 8), 'exited', code, sig); if (kids.get(h.key) === kid) kids.delete(h.key); kid.conn?.end(); });
         log(h.key.slice(0, 8), 'started', child.pid);
