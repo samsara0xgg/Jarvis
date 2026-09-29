@@ -67,6 +67,10 @@ _MAX_EVENT_DRAIN_BATCH = 1024
 _MAX_DURABILITY_RETRY_ATTEMPTS = 10
 # A barge-in yield lowers or restores the speech within one spoken syllable.
 _YIELD_RAMP_MS = 30.0
+# A session connected while Allen is still talking spares his answer the
+# transport and task handshake (TLS alone took 0.11-0.15 s to api-uw on
+# 2026-09-29). MiniMax closes a started task after 120 s without an event.
+_SPARE_SESSION_MAX_AGE_S = 60.0
 _CHANNEL_TAG_RE = re.compile(r"</?(?:voice|document)>")
 _RESPONSE_TERMINAL_TYPES = frozenset({"response.cancelled", "response.failed"})
 _RESPONSE_EVENT_TYPES = frozenset(
@@ -684,6 +688,10 @@ class StreamingTTSPipeline:
         self._gain_lock = threading.Lock()
         self._mute_gain = 1.0
         self._yield_gain = 1.0
+        # Connected for the next answer while Allen talks; actor-owned.
+        self._spare: TTSSession | None = None
+        self._spare_ready_at = 0.0
+        self._spare_task: asyncio.Task[None] | None = None
         self._thread = threading.Thread(
             target=self._thread_main,
             name="jarvis-media-owner",
@@ -1542,6 +1550,7 @@ class StreamingTTSPipeline:
     async def _suspend_for_sleep_owned(self) -> bool:
         """Actor-owned power transition; distinct from speech interruption."""
         self._power_suspended = True
+        await self._close_spare()
         if self._active is not None and not await self._interrupt_active(
             reason="system_sleep",
         ):
@@ -1593,11 +1602,71 @@ class StreamingTTSPipeline:
 
     async def _hold_output_owned(self, *, held: bool) -> None:
         self._held = held
+        if held:
+            await self._prewarm()
         if held or self._device_held:
             return
         parked, self._parked = self._parked, deque()
         for response in parked:
             await self._schedule_response(response)
+
+    async def _prewarm(self) -> None:
+        """Allen started talking: have the first session of his answer connected now."""
+        if self._spare_task is not None or self._power_suspended or not self._accepting.is_set():
+            return
+        if self._spare is not None:
+            if self._spare_fresh():
+                return
+            await self._drop_spare()
+        session = self._provider.create_tts_session(
+            endpoint_index=0,
+            idle_close_s=self._config.session_idle_close_s,
+            command_queue_capacity=self._config.session_command_capacity,
+            audio_queue_capacity=self._config.session_audio_capacity,
+        )
+        self._spare_task = asyncio.create_task(
+            self._connect_spare(session), name="tts-spare-connect",
+        )
+
+    async def _connect_spare(self, session: TTSSession) -> None:
+        try:
+            await session.connect()
+        except Exception:  # noqa: BLE001 - a spare that cannot connect is only not used
+            LOGGER.debug("spare TTS session did not connect", exc_info=True)
+            await self._wait_task_bounded(asyncio.create_task(session.close()), timeout_s=0.5)
+            return
+        finally:
+            self._spare_task = None
+        if self._power_suspended or not self._accepting.is_set():
+            await self._wait_task_bounded(asyncio.create_task(session.close()), timeout_s=0.5)
+            return
+        self._spare, self._spare_ready_at = session, asyncio.get_running_loop().time()
+        record_realtime_trace("tts_session_prewarmed", measurement_semantics="spare_connected")
+
+    def _spare_fresh(self) -> bool:
+        return asyncio.get_running_loop().time() - self._spare_ready_at <= _SPARE_SESSION_MAX_AGE_S
+
+    async def _take_spare(self) -> TTSSession | None:
+        """The connected spare for an answer's first endpoint, if it is still fresh.
+
+        One still connecting is left to become the next answer's spare.
+        """
+        if self._spare is not None and self._spare_fresh():
+            spare, self._spare = self._spare, None
+            return spare
+        await self._drop_spare()
+        return None
+
+    async def _drop_spare(self) -> None:
+        spare, self._spare = self._spare, None
+        if spare is not None:
+            await self._wait_task_bounded(asyncio.create_task(spare.close()), timeout_s=0.5)
+
+    async def _close_spare(self) -> None:
+        """Shutdown and sleep: no spare survives, including one still connecting."""
+        if self._spare_task is not None:
+            await self._wait_task_bounded(self._spare_task, timeout_s=0.5)
+        await self._drop_spare()
 
     async def _hold_for_devices_owned(self, *, held: bool) -> bool:
         self._device_held = held
@@ -2534,7 +2603,9 @@ class StreamingTTSPipeline:
                     return False
                 try:
                     if session is None:
-                        session = self._provider.create_tts_session(
+                        session = (
+                            await self._take_spare() if endpoint_index == 0 else None
+                        ) or self._provider.create_tts_session(
                             endpoint_index=endpoint_index,
                             idle_close_s=self._config.session_idle_close_s,
                             command_queue_capacity=self._config.session_command_capacity,
@@ -3462,6 +3533,7 @@ class StreamingTTSPipeline:
 
     async def _shutdown_owned(self) -> None:
         self._accepting.clear()
+        await self._close_spare()
         if self._active is not None:
             await self._interrupt_active(reason="media_owner_shutdown")
         while self._fallback_janitors:
