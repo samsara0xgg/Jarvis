@@ -40,3 +40,7 @@ dist/
 Harness/
 evals/
 AGENTS.md
+
+# Side projects the owner keeps in the local checkout only, never pushed
+/desktop/caption-translator/
+/hardware/
