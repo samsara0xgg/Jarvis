@@ -6,7 +6,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { appendFileSync, chmodSync, existsSync, readFileSync, realpathSync, statSync, symlinkSync, utimesSync } from 'node:fs';
+import { appendFileSync, chmodSync, existsSync, readFileSync, realpathSync, statSync, symlinkSync, utimesSync, watch } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import os from 'node:os';
@@ -444,6 +444,16 @@ check('a worktree starts from its base in .claude/worktrees', W.tree && W.base =
 check('ignored files .worktreeinclude names are copied in, and the setup script runs there first', ran.split('\n').join('|') === `key=none|${W.cwd}|SECRET=1|`, ran);
 check('the setup script is noted in the conversation', (await A.call(`/sessions/${w.id}`)).items.some(i => i.k === 'note' && i.text === 'worktree 准备好了'));
 check('branches list the repository\'s, the current one first', (await A.call(`/branches?cwd=${encodeURIComponent(repo)}`)).current === 'main');
+// Reading a checkout never takes its index lock, or a commit made there at that moment fails on it: the commit below
+// once did, on a Mac, while the host measured the worktree at the end of its turn.
+const wdir = git(W.cwd, 'rev-parse', '--absolute-git-dir'), locks = [], idx = () => createHash('sha256').update(readFileSync(path.join(wdir, 'index'))).digest('hex');
+const touched = new Date(Date.now() + 60000);
+for (const f of ['README.md', 'src/a.ts']) utimesSync(path.join(W.cwd, f), touched, touched);
+const idx0 = idx(), watcher = watch(wdir, (_, f) => { if (f === 'index.lock') locks.push(f); });
+const wc = await A.call(`/sessions/${w.id}/changes`), wf = await A.call(`/sessions/${w.id}/changes/diff?path=README.md`);
+await sleep(300); watcher.close();
+check('reading what a session changed leaves the index and its lock alone, and a file only touched is no change', !locks.length && idx() === idx0
+  && Array.isArray(wc.files) && !wc.files.some(f => f.path === 'README.md' || f.path === 'src/a.ts') && wf.add === 0 && wf.del === 0, { locks, same: idx() === idx0, files: wc.files, wf });
 await writeFile(path.join(W.cwd, 'committed.txt'), 'c'); git(W.cwd, 'add', 'committed.txt'); git(W.cwd, 'commit', '-q', '-m', 'work on the branch');
 await writeFile(path.join(W.cwd, 'loose.txt'), 'not committed');
 const d0 = await A.call(`/sessions/${w.id}`, undefined, 'DELETE');

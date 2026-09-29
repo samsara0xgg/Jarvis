@@ -5,13 +5,13 @@ import { execFile } from 'node:child_process';
 import { copyFile, mkdir, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { diffLines, Refused } from './files.js';
+import { diffLines, GIT, Refused } from './files.js';
 import { changesOf } from './land.js';
 import type { Change, Diff } from './types.js';
 import type { Session } from './host.js';
 
 const exec = promisify(execFile);
-const git = async (cwd: string, ...args: string[]) => (await exec('git', ['-C', cwd, ...args], { maxBuffer: 64 << 20 })).stdout;
+const git = async (cwd: string, ...args: string[]) => (await exec('git', [...GIT, '-C', cwd, ...args], { maxBuffer: 64 << 20 })).stdout;
 
 export async function baseOf(x: Session) {
   const c = await changesOf(x).catch(() => null);
@@ -22,12 +22,17 @@ export async function baseOf(x: Session) {
 }
 export async function changes(x: Session): Promise<{ base: string; top: string; files: Change[] }> {
   const { top, base } = await baseOf(x), files = new Map<string, Change>();
-  const nums = (await git(top, 'diff', '--numstat', '--no-renames', '-z', base)).split('\0');
+  const nums = new Map<string, [number, number]>();
+  for (const e of (await git(top, 'diff', '--numstat', '--no-renames', '-z', base)).split('\0')) {
+    const m = /^(\d+|-)\t(\d+|-)\t(.+)$/s.exec(e);
+    if (m) nums.set(m[3], [m[1] === '-' ? 0 : Number(m[1]), m[2] === '-' ? 0 : Number(m[2])]);
+  }
+  // The index is not refreshed (GIT), so --name-status also calls a file only touched modified; --numstat reads the
+  // files, and leaves it out.
   const sts = (await git(top, 'diff', '--name-status', '--no-renames', '-z', base)).split('\0');
-  for (let i = 0; i + 1 < sts.length; i += 2) if (/^[MAD]$/.test(sts[i][0] ?? '')) files.set(sts[i + 1], { path: sts[i + 1], add: 0, del: 0, st: sts[i][0] as Change['st'] });
-  for (const e of nums) {
-    const m = /^(\d+|-)\t(\d+|-)\t(.+)$/s.exec(e), f = m && files.get(m[3]);
-    if (f) Object.assign(f, { add: m![1] === '-' ? 0 : Number(m![1]), del: m![2] === '-' ? 0 : Number(m![2]) });
+  for (let i = 0; i + 1 < sts.length; i += 2) {
+    const st = sts[i][0] ?? '', p = sts[i + 1], n = nums.get(p);
+    if (/^[MAD]$/.test(st) && (st !== 'M' || n)) files.set(p, { path: p, add: n?.[0] ?? 0, del: n?.[1] ?? 0, st: st as Change['st'] });
   }
   for (const e of (await git(top, 'status', '--porcelain=v1', '-z', '--untracked-files=all')).split('\0')) {
     // A folder here is another repository inside this one (a nested worktree).

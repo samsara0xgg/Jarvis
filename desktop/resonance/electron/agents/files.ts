@@ -10,7 +10,11 @@ import { promisify } from 'node:util';
 import type { Diff, Peek } from './types.js';
 
 const exec = promisify(execFile);
-const git = async (cwd: string, ...args: string[]) => (await exec('git', ['-C', cwd, ...args], { maxBuffer: 64 << 20 })).stdout;
+// What every git the host runs starts with: reading never takes the index lock. A status, or a diff that meets a file
+// only touched, otherwise holds .git/index.lock while it runs, and a commit the agent or the owner makes in that
+// checkout at the same moment fails on it. Writes still take the lock they need.
+export const GIT = ['--no-optional-locks', '-c', 'diff.autoRefreshIndex=false'];
+const git = async (cwd: string, ...args: string[]) => (await exec('git', [...GIT, '-C', cwd, ...args], { maxBuffer: 64 << 20 })).stdout;
 export class Refused extends Error { constructor(public status: number, msg: string) { super(msg); } }
 
 // ---------- @: every file and folder, matched by the letters typed in order ----------
