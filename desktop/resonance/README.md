@@ -1,6 +1,6 @@
 # Jarvis Resonance prototype
 
-Jarvis 的桌面语音界面（Electron + React + TypeScript）。桌面模式连接本机 daemon 的 Inherent v1 线：声纹跟随 daemon 的语音阶段，回复文字流式进入胶囊，文字输入、停止播报、麦克风静音、播报静音都发给 daemon。本进程不录音、不放语音，麦克风和扬声器归 daemon（见 `HANDOFF.md` 与 ADR-0015）。`npm run lab` 与验收脚本仍是本地模拟。
+Jarvis 的桌面语音界面（Electron + React + TypeScript）。桌面模式连接本机 daemon 的 Inherent v1 线：声纹跟随 daemon 的语音阶段，回复文字流式进入胶囊，文字输入、停止播报、麦克风静音、播报静音都发给 daemon。本进程不录音、不放语音，麦克风和扬声器归 daemon（见 ADR-0015）。`npm run lab` 与验收脚本仍是本地模拟。
 
 ## 运行
 
@@ -51,7 +51,7 @@ Mac 原生材质编译需要 Xcode Command Line Tools 和 Node C headers；可�
 
 - 悬停省略号、右键胶囊或菜单栏 J →「外观与提示音…」打开设置。不透明度与毛玻璃强度分别可调，设置保存在本原型的资料目录。强度控制原生毛玻璃的混合比例，不是任意半径的模糊调节。
 - 设置中的「Dashboard 风格」可在默认「统一风格」和「原卡片风格（备份）」之间切换，选择自动保存；`verify-dashboard-grid.mjs` 同时验收样式恢复与重载保留，备份截图为 `evidence/dashboard-grid/original-cards.png`。
-- 默认遮罩不透明度 40%。图标按用户参考图描出 SVG 轮廓；还原证据与推断边界见 `design/fidelity-notes.md`。
+- 默认遮罩不透明度 40%。图标按用户参考图描出 SVG 轮廓。
 - 已接入五类提示音。进入语音仍是来自录屏片段频带过滤的候选音，其现场噪声与操作时序存在不确定性，不声称与原版完全相同。
 - 麦克风开/关与播报开/关改为实时合成的触感点击，移植 Hermes desktop 的 `selection` / `open` / `close` intent（引擎取自 web-haptics 0.0.6，MIT）：每个脉冲是一段 4 ms 噪声过 bandpass，中心频率与增益都随强度走，所以麦克风两个方向是同一声单击，播报开是渐强的一对、关是渐弱的一对。没有对应的音频资源。
 - 默认低音量，可关闭或调节；不在启动、悬停、拖拽时播放，连续点击会平滑切断上一段。声音播放完毕会挂起 AudioContext。
@@ -77,11 +77,8 @@ Codex 会话详情采用固定高度的紧凑滚动列表，无服务商图标�
 - `references/user-comparison.mov`：用户 2026-09-12 提供的同屏对比。首轮 Jarvis 约 730 × 116 视频像素，Codex 约 440 × 80；最初据此缩为约 220 × 40，随后按确认的 2.5:1 声纹区域加宽至 270 × 40 逻辑像素。拖拽规则另由用户明确说明。
 - `evidence/`：验收输出。Playwright `capturePage` 图片只包含 renderer；Computer Use 原生截图单独标明，不混为一谈。
 
-本目录是独立设计迭代原型，语音接线入口与边界见 `HANDOFF.md`。
-
 ## 还原证据
 
-- `design/fidelity-notes.md`：逐项说明已验证行为、推断和剩余限制。
 - `evidence/desktop-orbit/verification.json`：当前圆点／Live 悬浮版验收结果；旧版验收文件保留作历史参考。
 - `evidence/icon-fidelity.png`：参考轮廓与 Chromium 渲染结果。
 - `evidence/notification-fade.json`、`notification-dismissal.json`：运行时逐帧透明度与尺寸。
