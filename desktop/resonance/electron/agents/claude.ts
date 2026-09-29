@@ -1,7 +1,9 @@
 // Claude Code through the Claude Agent SDK (ADR 0073): one `claude` child per session that has something to do, fed by a
 // message queue that never ends, so the session lives between turns. Permission prompts, questions and plan approval
 // all come through canUseTool and wait for Allen's answer in the window.
+import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { existsSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { deleteSession, forkSession, getSessionMessages, query, renameSession, type Options, type PermissionResult, type PermissionUpdate,
   type Query, type SDKControlGetContextUsageResponse, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
@@ -13,6 +15,10 @@ import type { Choice, Ctx, CtxRow, Diff, File, Req, Step } from './types.js';
 const ENV: Record<string, string | undefined> = Object.fromEntries(Object.entries(process.env)
   .filter(([k]) => !/^(ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|CLAUDECODE|CLAUDE_CODE_|CLAUDE_JOB)/.test(k)));
 ENV.JARVIS_AGENTS_HOST = '1';
+// The Claude Code install on this Mac, which moves to each new release (and its new models) without a Jarvis release;
+// the SDK's own pinned copy only where there is none.
+const OWN = `${homedir()}/.local/bin/claude`;
+const EXE = existsSync(OWN) ? OWN : undefined;
 const PROMPT = { type: 'preset', preset: 'claude_code' } as const;
 const MODES: [string, string][] = [['auto', '自动'], ['default', '改之前问我'], ['acceptEdits', '自动接受修改'], ['plan', '计划模式']];
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
@@ -166,7 +172,7 @@ function ensure(s: Session) {
   if (r.q) return r;
   const input = r.input = pushable<SDKUserMessage>();
   const options: Options = {
-    cwd: s.s.cwd, env: ENV, systemPrompt: PROMPT, includePartialMessages: true,
+    cwd: s.s.cwd, env: ENV, pathToClaudeCodeExecutable: EXE, systemPrompt: PROMPT, includePartialMessages: true,
     model: s.s.model || undefined, effort: (EFFORTS.includes(s.s.effort) ? s.s.effort : undefined) as Options['effort'],
     permissionMode: (MODES.some(m => m[0] === s.s.mode) ? s.s.mode : 'auto') as Options['permissionMode'],
     canUseTool: (name, input, o) => new Promise<PermissionResult>(resolve => {
@@ -268,10 +274,12 @@ function ctxOf(s: Session, u: SDKControlGetContextUsageResponse): Ctx {
 
 // ---------- menus: what a fresh session in a folder offers, asked of a session that never gets a message ----------
 const cmdCache = new Map<string, { at: number; list: [string, string][] }>();
-let models: [string, string][] = [], efforts: string[] = [];
+let models: [string, string][] = [], efforts: string[] = [], probedAt = '';
+const version = () => EXE ? realpathSync(EXE) : '';
 async function probe(cwd: string) {
+  probedAt = version();
   const input = pushable<SDKUserMessage>();
-  const q = query({ prompt: input, options: { cwd, env: ENV, systemPrompt: PROMPT } });
+  const q = query({ prompt: input, options: { cwd, env: ENV, pathToClaudeCodeExecutable: EXE, systemPrompt: PROMPT } });
   try {
     const init = await Promise.race([q.initializationResult(), new Promise<never>((_, no) => setTimeout(() => no(new Error('Claude 没有及时答应')), 30000))]);
     cmdCache.set(cwd, { at: Date.now(), list: init.commands.map(c => [`/${c.name}`, [c.description, c.argumentHint].filter(Boolean).join(' · ')] as [string, string]) });
@@ -281,6 +289,15 @@ async function probe(cwd: string) {
   } finally { q.close(); input.end(); }
 }
 let probed: Promise<void> | null = null;
+// Nothing promises Claude Code updates itself when only the SDK runs it, so the host asks for the update every hour;
+// whoever moved the install (this or a terminal session), the menus are read again and pushed to open windows.
+function update() {
+  execFile(OWN, ['update'], { env: ENV, timeout: 300_000 }, e => {
+    if (e) log('claude update', e.message.slice(0, 200));
+    if (probed && version() !== probedAt) probed = probe(homedir()).catch(e => { log('claude probe', e); probed = null; });
+  });
+}
+if (EXE) { update(); setInterval(update, 3_600_000).unref(); }
 
 export const claude: Driver = {
   async catalog(): Promise<Choice> {
@@ -383,7 +400,7 @@ export const claude: Driver = {
     let q = rt(s).q, input: ReturnType<typeof pushable<SDKUserMessage>> | undefined;
     if (!q) {
       input = pushable<SDKUserMessage>();
-      q = query({ prompt: input, options: { cwd: s.s.cwd, env: ENV, systemPrompt: PROMPT, resume: s.s.id, model: s.s.model || undefined,
+      q = query({ prompt: input, options: { cwd: s.s.cwd, env: ENV, pathToClaudeCodeExecutable: EXE, systemPrompt: PROMPT, resume: s.s.id, model: s.s.model || undefined,
         permissionMode: (MODES.some(m => m[0] === s.s.mode) ? s.s.mode : 'auto') as Options['permissionMode'] } });
     }
     try { return ctxOf(s, await q.getContextUsage()); } finally { if (input) { q.close(); input.end(); } }
