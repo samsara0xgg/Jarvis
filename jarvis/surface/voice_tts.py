@@ -464,6 +464,9 @@ _DECLICK_RAMP = np.linspace(1.0, 0.0, _DECLICK_SAMPLES + 1, dtype=np.float32)[1:
 # at unity and lands on an exact `0.0`; a tail slice of `_DECLICK_RAMP` would
 # start below unity and move the step one sample earlier instead of removing it.
 _TAIL_RAMP_STEPS = np.arange(_DECLICK_SAMPLES - 1, -1, -1, dtype=np.float32)
+# The same steps rising: when a dry ring refills (the ADR-0006:347 starvation
+# clause), the resumed block's first samples come up from that silence too.
+_HEAD_RAMP_STEPS = np.arange(_DECLICK_SAMPLES, dtype=np.float32)
 
 
 class _GainRamp:
@@ -1745,12 +1748,14 @@ class AudioStreamPlayer:
         # once the *same* generation resumes (otherwise it is the normal
         # end-of-generation tail, which every clean response produces).
         generation_before = -1 if active_before is None else active_before.playback_generation_id
+        resumed = False
         if generation_before >= 0:
             if actual > 0 and generation_before == self._starvation_dry_generation:
                 # Any audio ends the dry window, including a short read: the
                 # gap was audible whether or not the ring refilled a whole block.
                 self._starvation_gaps += 1
                 self._starvation_dry_generation = -1
+                resumed = True
             if actual < frames and generation_before == self._callback_first_generation:
                 self._starvation_dry_generation = generation_before
         if actual <= 0:
@@ -1809,6 +1814,18 @@ class AudioStreamPlayer:
             if first:
                 self._callback_first_generation = generation
                 self._tail_ramp_samples = 0
+            if resumed:
+                # Back from a dry ring: rise out of the silence rather than step
+                # onto the waveform mid-word. Like D12 below it shapes this block
+                # only: no gain, audibility class or ledger count changes.
+                ramp = min(actual, _DECLICK_SAMPLES)
+                scratch = self._tail_ramp_scratch[:ramp]
+                np.divide(
+                    _HEAD_RAMP_STEPS[:ramp],
+                    float(ramp - 1) if ramp > 1 else 1.0,
+                    out=scratch,
+                )
+                view[:ramp] *= scratch
             if actual < frames:
                 # ADR-0006 D12: `read_into` zero-padded this block, so decay its
                 # own last real samples to exactly 0.0 rather than step there.
