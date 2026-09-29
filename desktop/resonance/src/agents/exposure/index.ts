@@ -13,6 +13,8 @@ type Hooks = {
   // blip: the short tick of a step along the sky, pitched by p · changed: when a session last changed state (performance.now)
   blip(p: number): void; changed(id: string): number;
   refresh(): void;
+  // back: the workbench steps back a layer first (out of a preview) and says whether it did
+  back?(): boolean;
 };
 type Decision = { id: string; key: string; kind: 'err' | 'ask' | 'allow' | 'land'; at: number; req?: Req };
 const kbd = (key: string) => `<kbd>${key}</kbd>`;
@@ -314,6 +316,9 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
       if (action === 'allow' && answers && !text && answers.some(a => !a.length)) { error.textContent = '把每个问题选好，或写下你的回答'; error.hidden = false; return; }
       body = { req: d.req.id, decision: action === 'deny' ? 'deny' : $<HTMLInputElement>('input[name="always"]', card)?.checked ? 'always' : 'allow', answers, ...(text ? { text } : {}) };
       route = `/sessions/${s.id}/answer`;
+    } else if (action === 'land' && s.dirty) {
+      // 收尾 is the workbench's landing (ADR 0085): the host runs the line; its push still waits for Allen.
+      body = { action: 'start' }; route = `/sessions/${s.id}/land`;
     } else {
       body = { text: action === 'resume' ? '请从刚才出错的地方接着来，先确认当前状态。' : '请按项目约定收尾：完成验证、提交、合入 main、重启用到的服务；推送前等我确认。', files: [] };
       route = `/sessions/${s.id}/send`;
@@ -464,7 +469,7 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
     her.frame(t, dt);
   }
   modeButton.addEventListener('click', () => setMode(!enabled));
-  pull.addEventListener('click', () => { if (!skyOn) openSky(); else { closeSky(); settle(); } });
+  pull.addEventListener('click', () => { if (!skyOn) { if (!hooks.back?.()) openSky(); } else { closeSky(); settle(); } });
   $('.bw-her', chrome).addEventListener('click', openDeck); held.addEventListener('click', openDeck); offerEl.addEventListener('click', openDeck);
   $('.bw-her', chrome).addEventListener('pointerenter', () => her.hover = true); $('.bw-her', chrome).addEventListener('pointerleave', () => her.hover = false);
   $('.bw-her', chrome).addEventListener('pointerdown', () => her.pressed = true);

@@ -112,6 +112,9 @@ contextBridge.exposeInMainWorld('agents', {
   folder: () => ipcRenderer.invoke('agents-folder'),
   terminal: (cwd: string, cmd: string) => ipcRenderer.invoke('agents-terminal', cwd, cmd),
   reveal: (cwd: string) => ipcRenderer.invoke('agents-reveal', cwd),
+  openUrl: (url: string) => ipcRenderer.invoke('agents-open-url', url),
+  openPath: (file: string) => ipcRenderer.invoke('agents-open-path', file),
+  cloud: (cwd: string, text: string) => ipcRenderer.invoke('agents-cloud', cwd, text),
 });
 // The first launch's window (companion.ts answers only that window).
 contextBridge.exposeInMainWorld('firstRun', {

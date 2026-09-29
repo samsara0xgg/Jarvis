@@ -25,15 +25,32 @@
         <button type="button" class="side-btn" data-act="side" aria-label="会话列表"><svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11"/></svg></button>
         <span class="h-mk"></span>
         <div class="h-main"><div class="h-t"></div><div class="h-meta"></div></div>
-        <button type="button" class="ctx" data-act="menu" data-v="ctx" aria-label="上下文" aria-haspopup="dialog" aria-expanded="false"><svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><circle cx="10" cy="10" r="7.5" class="ctx-bg"/><circle cx="10" cy="10" r="7.5" class="ctx-fg" stroke-dasharray="0 47.1"/></svg><b></b></button>
         <button type="button" class="h-btn" data-act="terminal"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="1.8" y="2.8" width="12.4" height="10.4" rx="2"/><path d="M4.5 6.5 6.5 8l-2 1.5M8 10h3.5"/></svg><span>在终端打开</span></button>
         <button type="button" class="h-btn icon" data-act="menu" data-v="more" aria-label="更多" data-tip="置顶、分叉、归档、停掉"><svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" aria-hidden="true"><circle cx="3.5" cy="8" r="1.3"/><circle cx="8" cy="8" r="1.3"/><circle cx="12.5" cy="8" r="1.3"/></svg></button>
       </header>
-      <div class="host"></div>
-      <div class="composer">
-        <div class="c-menu"></div>
-        <div class="c-box"><div class="c-files"></div><textarea id="msg" rows="1" aria-label="消息"></textarea><div class="c-tools"><div class="t-l"></div><div class="t-r"></div></div></div>
-        <input type="file" id="file" accept="image/*" multiple hidden>
+      <div class="bd">
+        <nav class="pn lp off" aria-label="落地">
+          <div class="lp-w"><div class="lp-h"><div><h4>落地</h4><button type="button" class="ib" data-act="lpclose" aria-label="收起落地面板" data-tip="收起"></button></div><span class="br"></span></div><ol class="pl"></ol><div class="lp-f"></div></div>
+          <div class="rail"></div>
+        </nav>
+        <section class="pn chat" aria-label="对话">
+          <div class="host"></div>
+          <div class="composer">
+            <div class="c-menu"></div>
+            <div class="c-box">
+              <div class="bn" hidden></div>
+              <div class="c-files"></div>
+              <div class="tw"><textarea id="msg" rows="1" aria-label="消息"></textarea><div class="hint"></div></div>
+              <div class="c-tools"><div class="t-l"></div><span class="gap"></span><button type="button" class="land" data-act="landpanel" data-tip="打开落地面板" hidden></button><div class="t-r"></div></div>
+            </div>
+            <input type="file" id="file" accept="image/*" multiple hidden>
+          </div>
+        </section>
+        <section class="pn sheet pv off" aria-label="预览">
+          <div class="sh"><span class="ic"></span><b></b><small></small><button type="button" class="ib" data-act="pvflip"></button><button type="button" class="ib" data-act="pvext" aria-label="在新窗口打开" data-tip="在新窗口打开"></button><button type="button" class="ib" data-act="pvclose" aria-label="关闭预览" data-tip="关掉" data-key="←"></button></div>
+          <div class="pv-body"><div class="pv-view"></div></div>
+        </section>
+        <section class="pn tm off" aria-label="终端"></section>
       </div>
     </main>
   </div>

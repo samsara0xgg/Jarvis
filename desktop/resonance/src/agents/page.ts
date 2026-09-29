@@ -3,17 +3,21 @@
 // The sessions themselves run in the agent host; this page draws what the host's event stream says and sends back
 // what Allen does. Drawing is batched into one frame, rows and messages are keyed so only what changed is touched,
 // each session keeps its own conversation so switching is instant, and only marks that move repaint.
-import type { Agent, Catalog, Ctx, Event, File as Upload, Item, Pic, Req, Sess, St, Step } from '../../electron/agents/types';
+import type { Agent, Catalog, Ctx, Event, File as Upload, Item, Pic, Req, Sess, St, Step, Usage } from '../../electron/agents/types';
 import { drawMark } from '../AgentMarks';
 import { palette, play, scoreOf } from '../soundKit';
 import { Core, TAKES, pick, type ExprId } from '../starCore';
 import { mountExposure } from './exposure';
+import { mountWorkbench } from './workbench';
+import { cardsHTML, editsBefore, inline } from './workbench/refs';
+import * as usage from './workbench/usage';
 import './agents.css';
 import './exposure/exposure.css';
 
 declare global { interface Window { agents?: {
   presence?(enabled: boolean, ids: string[]): void; onNext?(callback: () => void): () => void;
   folder(): Promise<string>; terminal(cwd: string, cmd: string): Promise<boolean>; reveal(cwd: string): Promise<void>;
+  openUrl?(url: string): Promise<void>; openPath?(file: string): Promise<void>; cloud?(cwd: string, text: string): Promise<boolean>;
 } } }
 
 const $ = <T extends Element = HTMLElement>(s: string, root: ParentNode = document) => root.querySelector(s) as T;
@@ -66,8 +70,8 @@ function clock(at: number) {
 function ago(since?: number) { const t = (Date.now() - (since ?? Date.now())) / 1000; return t < 60 ? `${Math.max(1, Math.round(t))} 秒` : `${Math.round(t / 60)} 分钟`; }
 
 // ---------- markdown, the part agents use, block by block so a stream only redraws its last block ----------
-const inl = (x: string) => esc(x).replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-  .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '<a title="$2">$1</a>');
+// Links, addresses and paths in the text open in the workbench (workbench/refs.ts).
+const inl = inline;
 function mdBlocks(src: string) {
   const out: string[] = [], lines = src.split('\n');
   let list = '', lis: string[] = [], para: string[] = [];
@@ -243,12 +247,15 @@ const app = {
   // busy: per session, the answer in flight (its request and what was pressed) · cx: each session's last measured context,
   // or why it could not be read · cxOpen: rows opened in the context popover
   busy: new Map<string, { req: string; key: string }>(), cx: new Map<string, Ctx | string>(), cxOpen: new Set<string>(),
+  // usage: the plans as the daemon last read them, for the composer's ring · cxMore: the usage card's context detail open
+  usage: null as Usage | null, cxMore: false,
 };
 const byId = (id: string) => app.ss.find(s => s.id === id);
 const cur = () => byId(app.cur);
 const side = $('.side', win), list = $('.s-list', side), herT = $('.her-t', side), find = $<HTMLInputElement>('#find'), archLink = $('.arch-link', side);
-const head = $('.m-head', win), hMk = $('.h-mk', head), hT = $('.h-t', head), hMeta = $('.h-meta', head), ctxEl = $('.ctx', head), ctxFg = $<SVGCircleElement>('.ctx-fg', head), ctxN = $('.ctx b', head);
+const head = $('.m-head', win), hMk = $('.h-mk', head), hT = $('.h-t', head), hMeta = $('.h-meta', head);
 const hostEl = $('.host', win), comp = $('.composer', win), ta = $<HTMLTextAreaElement>('#msg'), cMenu = $('.c-menu', comp), cFiles = $('.c-files', comp), tl = $('.t-l', comp), tr = $('.t-r', comp);
+const bnEl = $('.bn', comp), hintEl = $('.hint', comp);
 const pop = $('.pop', win), sndBtn = $('.snd', win), offEl = $('.w-off', win);
 
 // Every change asks for a frame; one frame draws whatever was asked for since the last.
@@ -362,26 +369,22 @@ function renderHead() {
   patch(hMk, star(s.id, 13));
   if (app.renaming) { if (patch(hT, `<input id="rename" class="rename" value="${esc(s.title)}" aria-label="会话名字" autocomplete="off">`)) { const r = $<HTMLInputElement>('#rename', hT); r.focus(); r.select(); } }
   else patch(hT, `<b data-act="rename" data-tip="点一下改名">${esc(s.title)}</b>`);
-  patch(hMeta, `${who(s.agent)}<span title="${esc(s.cwd)}">${esc(s.project)}</span><span class="dot">·</span><span class="br">${s.tree ? I.tree : ''}${esc(s.branch || '—')}</span><span class="dot">·</span><span class="st st-${s.st}">${label(s)}</span>`);
-  // The context ring fills by a transition on the stroke, not by a redraw.
-  ctxFg.style.strokeDasharray = `${(s.ctx / 100 * 47.1).toFixed(1)} 47.1`;
-  ctxFg.classList.toggle('hi', s.ctx > 75);
-  patch(ctxN, `${Math.round(s.ctx)}%`); ctxEl.dataset.tip = `上下文用了 ${Math.round(s.ctx)}% · 点开看明细`;
+  patch(hMeta, `${who(s.agent)}<span class="dot">·</span><span title="${esc(s.cwd)}">${esc(s.project)}</span><span class="dot">·</span><span class="br">⎇ ${esc(s.branch || '—')}</span><span class="dot">·</span><span class="st st-${s.st}">${label(s)}</span>`);
   const tb = $('[data-act="terminal"]', head);
   patch($('span', tb), s.term ? '拿回来' : '在终端打开');
   tb.dataset.tip = s.term ? '在这里接着聊' : `在 Ghostty 里接着聊 · ${s.agent === 'codex' ? 'codex resume' : 'claude --resume'}`;
 }
 
 // ---------- the conversation: one kept per session, so switching is instant and each keeps its place ----------
-type Conv = { root: HTMLElement; items: HTMLElement; live: HTMLElement; queue: HTMLElement; now: HTMLElement; bg: HTMLElement; term: HTMLElement; built: boolean; scroll: number };
+type Conv = { root: HTMLElement; items: HTMLElement; live: HTMLElement; queue: HTMLElement; now: HTMLElement; bg: HTMLElement; term: HTMLElement; older: HTMLElement; ask: HTMLElement; built: boolean; scroll: number };
 const convs = new Map<string, Conv>();
 function convOf(id: string): Conv {
   let c = convs.get(id);
   if (!c) {
     const root = document.createElement('div');
     root.className = 'conv';
-    root.innerHTML = '<div class="c-in"><div class="c-items"></div><div class="it md live" hidden></div><div class="c-queue"></div><div class="now" hidden><span class="nm"></span><span class="shine"></span><span class="el"></span><kbd>esc</kbd><span class="k">打断</span></div><p class="bg" hidden></p><div class="banner" hidden></div></div>';
-    c = { root, items: $('.c-items', root), live: $('.live', root), queue: $('.c-queue', root), now: $('.now', root), bg: $('.bg', root), term: $('.banner', root), built: false, scroll: -1 };
+    root.innerHTML = '<div class="c-in"><button type="button" class="older" data-act="older" hidden></button><div class="c-items"></div><div class="it md live" hidden></div><div class="c-queue"></div><div class="ask" hidden><button type="button" data-act="land">一键落地 <kbd>⌘⏎</kbd></button><span>推送那一步会等你点头</span></div><div class="now" hidden><span class="nm"></span><span class="shine"></span><span class="el"></span><kbd>esc</kbd><span class="k">打断</span></div><p class="bg" hidden></p><div class="banner" hidden></div></div>';
+    c = { root, items: $('.c-items', root), live: $('.live', root), queue: $('.c-queue', root), now: $('.now', root), bg: $('.bg', root), term: $('.banner', root), older: $('.older', root), ask: $('.ask', root), built: false, scroll: -1 };
     convs.set(id, c);
   }
   return c;
@@ -435,9 +438,9 @@ function reqRecord(r: Req) {
   if (r.tool === 'Edit') return `改 ${r.file}`;
   return r.name;
 }
-function itemHTML(s: Sess, it: Exclude<Item, { k: 'steps' }>) {
+function itemHTML(s: Sess, it: Exclude<Item, { k: 'steps' }>, i = -1) {
   if (it.k === 'you') return `<div class="you">${it.files?.length ? `<span class="att">${it.files.map(picHTML).join('')}</span>` : ''}${esc(it.text)}</div>`;
-  if (it.k === 'it') return `<div class="it">${withCopy(md(it.text))}<div class="it-acts"><button type="button" class="ia" data-act="copy" data-tip="复制" aria-label="复制">${I.copy}</button>${it.at ? `<time>${clock(it.at)}</time>` : ''}</div></div>`;
+  if (it.k === 'it') { const cards = i >= 0 ? cardsHTML(it.text, editsBefore(app.items.get(s.id) ?? [], i)) : ''; return `<div class="it">${withCopy(md(it.text))}${cards ? `<div class="lnks">${cards}</div>` : ''}<div class="it-acts"><button type="button" class="ia" data-act="copy" data-tip="复制" aria-label="复制">${I.copy}</button>${it.at ? `<time>${clock(it.at)}</time>` : ''}</div></div>`; }
   if (it.k === 'note') return `<p class="note">${esc(it.text)}</p>`;
   if (it.k === 'plan') return `<div class="plan"><span class="p-h">计划</span>${it.todos.map(([t, d]) => `<span class="todo d${d}"><i></i>${esc(t)}</span>`).join('')}</div>`;
   const r = it.req, a = NAME[s.agent], b = app.busy.get(s.id), busy = b?.req === r.id ? b.key : '';
@@ -491,10 +494,16 @@ function renderConv(s: Sess, c: Conv) {
     const isNew = !el;
     if (!el) { el = document.createElement('div'); el.className = 'item'; c.items.appendChild(el); }
     if (it.k === 'steps') renderSteps(s.id, el, it, i, c.built);
-    else if (!isNew && it.k === 'req' && it.done && H.get(el)?.includes('class="req')) morph(el, itemHTML(s, it));
-    else { if (el.firstElementChild?.classList.contains('steps')) { el.replaceChildren(); H.delete(el); } patch(el, itemHTML(s, it)); if (isNew && c.built) enter(el, it); }
+    else if (!isNew && it.k === 'req' && it.done && H.get(el)?.includes('class="req')) morph(el, itemHTML(s, it, i));
+    else { if (el.firstElementChild?.classList.contains('steps')) { el.replaceChildren(); H.delete(el); } patch(el, itemHTML(s, it, i)); if (isNew && c.built) enter(el, it); }
   });
   while (c.items.children.length > items.length) c.items.lastElementChild!.remove();
+  // In the stage's narrow column only the last turn stays: everything up to the last thing Allen said folds into one line.
+  const lastYou = items.map(it => it.k).lastIndexOf('you'), older = items.slice(0, lastYou + 1).filter(it => it.k === 'you').length;
+  [...c.items.children].forEach((el, i) => el.classList.toggle('old', i <= lastYou));
+  c.older.hidden = !older; patch(c.older, `更早 ${older} 轮`);
+  // The way to land what this session changed, once it is done and nothing is under way.
+  c.ask.hidden = !(s.dirty && s.st === 'done' && !s.term && !s.gone && (!s.land || s.land.s === 'done'));
   renderLive(s, c);
   patch(c.queue, (s.queue ?? []).map(q => `<div class="item"><div class="you queued">${esc(q)}<em>排队中 · 这一步做完它就会看到</em></div></div>`).join(''));
   const working = s.st === 'work' || s.st === 'pack';
@@ -592,18 +601,24 @@ function renderComp() {
   const busy = !!s && (s.st === 'work' || s.st === 'pack'), pend = s ? pendingReq(s.id) : undefined;
   const blocked = !!s && (!!s.term || (!!pend && pend.tool !== 'Ask' && pend.tool !== 'Plan'));
   ta.disabled = blocked || app.sending;
+  const short = agent === 'codex' ? 'Codex' : 'Claude';
   ta.placeholder = newV ? `要 ${NAME[agent]} 做什么？` : s!.term ? '在终端里 · 拿回来才能在这里写' : blocked ? '先回答上面的请求'
-    : pend?.tool === 'Ask' ? '打字回答它的问题' : pend?.tool === 'Plan' ? '哪里要改？写了再点「再想想」' : busy ? `给 ${NAME[agent]} 发消息 · 这一步做完它就会看到` : `给 ${NAME[agent]} 发消息 · / 用命令，@ 选文件`;
-  // B01 teaches its pause keys where you write.
-  if (attention.enabled && s && !s.term) ta.placeholder = pend ? '它在等你拍板 · 空格 把手里的事过一遍' : `给 ${NAME[agent]} 发消息 · 空着按空格，过一遍她手里的事`;
+    : pend?.tool === 'Ask' ? '打字回答它的问题' : pend?.tool === 'Plan' ? '哪里要改？写了再点「再想想」' : busy ? `给 ${short} 发消息 · 这一步做完它就会看到` : `给 ${short} 发消息`;
   const model = newV ? app.newSet.model : s!.model, effort = newV ? app.newSet.effort : s!.effort, mode = newV ? app.newSet.mode : s!.mode;
-  patch(tl, `<button type="button" class="t-btn icon" data-act="attach" data-tip="加图片 · 也可以直接粘贴">${I.img}</button>`
-    + '<button type="button" class="t-btn icon" data-act="insert" data-v="@" data-tip="提到一个文件">@</button><button type="button" class="t-btn icon" data-act="insert" data-v="/" data-tip="命令和 skill">/</button><span class="t-sep"></span>'
-    + (c.models.length ? `<button type="button" class="t-btn" data-act="menu" data-v="model" data-tip="模型">${esc(labelOf(c.models, model) || '模型')}</button>` : '')
-    + (c.efforts.length ? `<button type="button" class="t-btn" data-act="menu" data-v="effort" data-tip="想多深">${esc(effort || '力度')}</button>` : '')
-    + (c.modes.length ? `<button type="button" class="t-btn mode" data-act="menu" data-v="mode" data-tip="它能自己做到哪一步">${esc(labelOf(c.modes, mode) || '模式')}</button>` : ''));
-  patch(tr, `${busy ? `<button type="button" class="t-stop" data-act="interrupt" data-tip="打断" data-key="esc">${I.stop}</button>` : ''}`
-    + `<button type="button" class="t-send" data-act="send" aria-label="${newV ? '开始' : '发送'}" data-tip="${newV ? '开始' : '发送'}" data-key="↵"${blocked || app.sending ? ' disabled' : ''}>${I.up}</button>`);
+  // One row of quiet tools (the workbench composer): ＋ for pictures, files and commands, the mode; on the right the model
+  // and its effort as one, the ring, and send.
+  patch(tl, '<button type="button" class="tb plus" data-act="menu" data-v="plus" aria-label="添加" data-tip="图片、文件、命令">＋</button>'
+    + (c.modes.length ? `<button type="button" class="tb mode" data-act="menu" data-v="mode" data-tip="它能自己做到哪一步"><i></i><span class="lbl">${esc(labelOf(c.modes, mode) || '模式')}</span></button>` : ''));
+  const r = usage.ring(s, agent, app.usage, s ? app.cx.get(s.id) : undefined), eff = effort ? effort === 'xhigh' ? 'XHigh' : effort[0].toUpperCase() + effort.slice(1) : '';
+  patch(tr, (c.models.length ? `<button type="button" class="tb model" data-act="menu" data-v="me" data-tip="模型和力度">${esc(labelOf(c.models, model) || '模型')}${eff ? ` <em>· ${esc(eff)}</em>` : ''}</button>` : '')
+    + `<button type="button" class="ring" data-act="menu" data-v="usage" aria-label="用量" aria-haspopup="dialog" aria-expanded="${popFor === 'usage'}" data-tip="${esc(r.tip)}">${r.svg}</button>`
+    + `${busy ? `<button type="button" class="t-stop" data-act="interrupt" data-tip="打断" data-key="esc">${I.stop}</button>` : ''}`
+    + `<button type="button" class="send" data-act="send" aria-label="${newV ? '开始' : '发送'}" data-tip="${newV ? '开始' : '发送'}" data-key="↵"${blocked || app.sending || !ta.value.trim() && !app.files.length ? ' disabled' : ''}>${I.up}</button>`);
+  // A plan window used up: one line in the box with the way on.
+  const out = usage.banner(agent, app.usage);
+  bnEl.hidden = !out;
+  if (out) patch(bnEl, `<i></i><span>${out}</span>${agent === 'claude' && s ? '<button type="button" data-act="cloud">挪到云端继续</button>' : ''}`);
+  patch(hintEl, wb.hint());
   patch(cFiles, app.files.map((f, k) => `<span class="c-pic"><button type="button" class="pic" data-act="view" data-tip="看大图"><img src="${f.view}" alt="${esc(f.name)}"></button><i data-act="unfile" data-k="${k}" aria-label="去掉">✕</i></span>`).join(''));
   patch(cMenu, app.picks.map(([v, d], k) => app.menu === 'at'
     ? `<button type="button" data-act="pickfile" data-v="${esc(v)}"${k === app.pick ? ' class="on"' : ''}><code>@${esc(v)}</code></button>`
@@ -617,21 +632,24 @@ let popFor = '';
 function openPop(kind: string, anchor: HTMLElement) {
   if (popFor === kind) { closePop(); return; }
   const s = app.view === 'chat' ? cur() : undefined, c = choice(s ? s.agent : app.newAgent);
-  if (kind === 'ctx') {
-    if (!s) return;
-    pop.className = 'pop cx'; pop.setAttribute('role', 'dialog'); pop.setAttribute('aria-label', '上下文');
-    popFor = kind; H.delete(pop); fillCtx(s);
+  // The ring's card: the context window and the plan's windows, above the ring.
+  if (kind === 'usage') {
+    pop.className = 'pop us'; pop.setAttribute('role', 'dialog'); pop.setAttribute('aria-label', '用量');
+    popFor = kind; H.delete(pop); fillUsage();
     const w = win.getBoundingClientRect(), r = anchor.getBoundingClientRect();
-    Object.assign(pop.style, { left: 'auto', right: `${Math.max(12, w.right - r.right)}px`, top: `${r.bottom - w.top + 6}px`, bottom: 'auto', transformOrigin: '100% 0' });
+    Object.assign(pop.style, { left: `${Math.max(8, Math.min(w.width - 350, r.right - w.left - 340))}px`, right: 'auto', top: 'auto', bottom: `${w.bottom - r.top + 8}px`, transformOrigin: '100% 100%' });
     anchor.setAttribute('aria-expanded', 'true');
     pop.classList.add('on');
-    growBar();
-    void loadCtx(s.id);
+    if (s) void loadCtx(s.id);
+    void loadUsage();
     return;
   }
   pop.className = 'pop'; pop.setAttribute('role', 'menu'); pop.removeAttribute('aria-label');
   const opts = (k: 'model' | 'effort' | 'mode', vs: [string, string][], v: string) => vs.map(([x, l]) => `<button type="button" data-act="set" data-k="${k}" data-v="${esc(x)}"${x === v ? ' class="on"' : ''}>${esc(l)}</button>`).join('');
-  const html = kind === 'more' && s
+  const cap = (e: string) => e === 'xhigh' ? 'XHigh' : e[0].toUpperCase() + e.slice(1);
+  const html = kind === 'plus' ? `<button type="button" data-act="attach">加图片<span class="k">也可以直接粘贴</span></button><button type="button" data-act="insert" data-v="@">提到一个文件<span class="k">@</span></button><button type="button" data-act="insert" data-v="/">命令和 skill<span class="k">/</span></button>`
+    : kind === 'me' ? `<span class="ph">模型</span>${opts('model', c.models, s ? s.model : app.newSet.model)}${c.efforts.length ? `<span class="sep"></span><span class="ph">力度</span>${opts('effort', c.efforts.map(e => [e, cap(e)]), s ? s.effort : app.newSet.effort)}` : ''}`
+    : kind === 'more' && s
     ? `<button type="button" data-act="pin">${s.pinned ? '取消置顶' : '置顶'}</button><button type="button" data-act="park">${s.parked ? '不放着了' : '先放着'}</button><button type="button" data-act="rename">改名</button><button type="button" data-act="fork">从这里分叉</button><button type="button" data-act="reveal">在访达里看文件夹</button><button type="button" data-act="archive" data-id="${s.id}">归档</button><span class="sep"></span><button type="button" data-act="stop" class="bad">停掉</button>`
     : kind === 'model' ? opts('model', c.models, s ? s.model : app.newSet.model)
     : kind === 'effort' ? opts('effort', c.efforts.map(e => [e, e]), s ? s.effort : app.newSet.effort)
@@ -643,7 +661,7 @@ function openPop(kind: string, anchor: HTMLElement) {
     : { left: `${Math.min(r.left - w.left, w.width - 200)}px`, right: 'auto', top: 'auto', bottom: `${w.bottom - r.top + 6}px`, transformOrigin: '0 100%' });
   pop.classList.add('on');
 }
-function closePop() { if (!popFor) return; popFor = ''; pop.classList.remove('on'); ctxEl.setAttribute('aria-expanded', 'false'); }
+function closePop() { if (!popFor) return; popFor = ''; pop.classList.remove('on'); win.querySelector('.ring')?.setAttribute('aria-expanded', 'false'); }
 
 // ---------- the context ring's popover: what fills the window, as the host measures it ----------
 // Claude's numbers are /context's own token counts through the Agent SDK; Codex gives only totals, so its view is plainer.
@@ -654,26 +672,29 @@ async function loadCtx(id: string) {
   const r = await call<Ctx>(`/sessions/${id}/context`).catch((e: unknown) => e instanceof Error ? e.message : String(e));
   // A reading that fails after one that worked keeps the one that worked.
   if (typeof r !== 'string' || typeof app.cx.get(id) !== 'object') app.cx.set(id, r);
-  const s = byId(id);
-  if (popFor === 'ctx' && app.cur === id && s) { const had = !!$('.cx-bar', pop); fillCtx(s); if (!had) growBar(); }
+  if (popFor === 'usage' && app.cur === id) fillUsage();
+  draw('comp');
 }
-// The bar fills left to right as it appears.
-const growBar = () => { const b = pop.querySelector('.cx-bar'); if (b) anim(b, [{ clipPath: 'inset(0 100% 0 0)' }, { clipPath: 'inset(0 0 0 0)' }], 560, OUT); };
-function fillCtx(s: Sess) {
+// The plans as the daemon last read them; the daemon polls them every few minutes.
+async function loadUsage() {
+  app.usage = await call<Usage>('/usage').catch(() => app.usage);
+  if (popFor === 'usage') fillUsage();
+  draw('comp');
+}
+function fillUsage() {
+  const s = app.view === 'chat' ? cur() : undefined;
+  patch(pop, usage.card(s, s?.agent ?? app.newAgent, app.usage, s ? app.cx.get(s.id) : undefined, { open: app.cxMore, html: s ? ctxDetail(s) : '' }, CX_COLOR));
+}
+// What fills the context window, row by row, for the card's 都占了什么.
+function ctxDetail(s: Sess) {
   const x = app.cx.get(s.id), m = labelOf(choice(s.agent).models, s.model) || (typeof x === 'object' ? x.model : '');
-  if (typeof x !== 'object' || !x.max) {
-    patch(pop, `<div class="cx-h"><b>上下文</b><span>${Math.round(s.ctx)}%</span></div><p class="cx-sub">${esc(m)}</p>`
-      + `<p class="cx-say">${x === undefined ? '在量…' : typeof x === 'string' ? esc(x) : `<b>${esc(x.say[0])}</b>${esc(x.say[1])}`}</p>`);
-    return;
-  }
-  patch(pop, `<div class="cx-h"><b>上下文</b><span>${Math.round(x.used / x.max * 100)}%</span></div><p class="cx-sub">${kt(x.used)} / ${kt(x.max)} · ${esc(m)}</p>`
-    + `<div class="cx-bar">${x.rows.filter(r => r.kind !== 'free').map(r => `<i data-n="${esc(r.n)}"${r.kind ? ' class="buf"' : ''} style="width:${(r.t / x.max * 100).toFixed(2)}%${r.kind ? '' : `;background:${CX_COLOR[r.n] ?? '#9aa3c7'}`}"></i>`).join('')}</div>`
-    + `<p class="cx-say"><b>${esc(x.say[0])}</b>${esc(x.say[1])}</p><div class="cx-rows">${x.rows.map(r => {
+  if (typeof x !== 'object' || !x.max) return `<p class="cx-sub">${esc(m)}</p><p class="cx-say">${x === undefined ? '在量…' : typeof x === 'string' ? esc(x) : `<b>${esc(x.say[0])}</b>${esc(x.say[1])}`}</p>`;
+  return `<p class="cx-sub">${esc(m)}</p><p class="cx-say"><b>${esc(x.say[0])}</b>${esc(x.say[1])}</p><div class="cx-rows">${x.rows.map(r => {
       const has = !!r.sub?.length, o = has && app.cxOpen.has(r.n), tag = has ? 'button' : 'div';
       return `<${tag}${has ? ` type="button" data-act="cxrow" aria-expanded="${o}"` : ''} class="cx-r${o ? ' open' : ''}" data-n="${esc(r.n)}"><i class="sw${r.kind ? ` ${r.kind}` : ''}"${r.kind ? '' : ` style="background:${CX_COLOR[r.n] ?? '#9aa3c7'}"`}></i><span>${esc(r.n)}</span><span class="n">${kt(r.t)}</span><span class="cv">${has ? I.chev : ''}</span></${tag}>`
         + (has ? `<div class="cx-sub-w${o ? ' open' : ''}"><div class="cx-sub-c"><div class="cx-sub-l">${r.sub!.map(e => typeof e === 'string' ? `<h5>${esc(e)}</h5>` : `<p><span title="${esc(e[0])}">${esc(e[0])}</span><em>${kt(e[1])}</em></p>`).join('')}</div></div></div>` : '');
     }).join('')}</div>`
-    + (x.foot.length ? `<div class="cx-foot">${x.foot.map(l => `<span>${esc(l)}</span>`).join('')}</div>` : ''));
+    + (x.foot.length ? `<div class="cx-foot">${x.foot.map(l => `<span>${esc(l)}</span>`).join('')}</div>` : '');
 }
 // Pointing at a row lights its part of the bar.
 pop.addEventListener('pointerover', e => {
@@ -747,13 +768,15 @@ function apply(e: Event) {
     for (const s of app.ss) if (!stAt.has(s.id)) stAt.set(s.id, -1e9);
     // After a reconnect the host may have restarted: what this window holds is read again.
     for (const id of [...app.items.keys()]) { if (byId(id)) void loadItems(id); else app.items.delete(id); }
-    if (first) { newDefaults(); const o = order(); app.cur = o[0] ?? ''; if (!app.cur) app.view = 'new'; else { app.view = 'chat'; void loadItems(app.cur); } }
+    // A companion that a landing restarted opens the window again on that session (ADR 0085).
+    const back = new URLSearchParams(location.search).get('open');
+    if (first) { newDefaults(); const o = order(); app.cur = back && byId(back) ? back : o[0] ?? ''; if (!app.cur) app.view = 'new'; else { app.view = 'chat'; void loadItems(app.cur); } wb.switched(); }
     quiet = true; draw(); return;
   }
   if (e.t === 'catalog') { app.catalog = e.catalog; newDefaults(); draw('comp'); return; }
   if (e.t === 'gone') {
     app.ss = app.ss.filter(s => s.id !== e.id); app.items.delete(e.id); app.live.delete(e.id); convs.delete(e.id); rowEls.delete(e.id);
-    if (app.cur === e.id) { const next = order()[0]; if (next) open(next); else { app.cur = ''; app.view = 'new'; } }
+    if (app.cur === e.id) { const next = order()[0]; if (next) open(next); else { app.cur = ''; app.view = 'new'; wb.switched(); } }
     draw(); return;
   }
   if (e.t === 'sess') {
@@ -762,7 +785,7 @@ function apply(e: Event) {
     if (!attention.busy && e.s.unread && here(e.s.id) && e.s.st !== 'wait') { e.s.unread = false; void call(`/sessions/${e.s.id}/meta`, { seen: true }).catch(() => {}); }
     if (i >= 0) app.ss[i] = e.s; else app.ss.push(e.s);
     react(e.s, was);
-    touch(e.s.id); return;
+    touch(e.s.id); wb.saw(e.s); return;
   }
   if (e.t === 'items') {
     const have = app.items.get(e.id);
@@ -795,6 +818,7 @@ function open(id: string, how: 'click' | 'key' = 'click', end = false) {
   app.menu = ''; app.picks = [];
   closePop(); win.classList.remove('side-open');
   if (!app.items.has(id)) void loadItems(id);
+  wb.switched();
   draw();
 }
 // `view` shows the picture in the composer without carrying its data: URL through every redraw.
@@ -897,14 +921,23 @@ function archive(s: Sess) {
 }
 async function act(a: string, el: HTMLElement) {
   const id = el.dataset.id ?? app.cur, s = byId(id);
+  if (wb.act(a, el)) return;
   if (a === 'open') open(id);
+  else if (a === 'cxmore') { app.cxMore = !app.cxMore; fillUsage(); }
+  else if (a === 'usagepage') { closePop(); void window.agents?.openUrl?.((s?.agent ?? app.newAgent) === 'codex' ? 'https://chatgpt.com/codex/settings/usage' : 'https://claude.ai/settings/usage'); }
+  // 挪到云端继续: the session's work goes on in a Claude Code cloud session, started from its folder in Ghostty.
+  else if (a === 'cloud' && s) {
+    closePop();
+    const text = `接着 Jarvis 里的会话「${s.title}」做下去。它停在：${s.summary}。仓库 ${s.project}，分支 ${s.branch}。`.slice(0, 590);
+    toast(await window.agents?.cloud?.(s.cwd, text) ? '在 Ghostty 里开了一个云端会话' : `没能打开 Ghostty。在终端里跑：cd ${home(s.cwd)} && claude --cloud "…"`);
+  }
   else if (a === 'next') {
     const o = order().filter(x => yourTurn(byId(x)!));
     core.hop(performance.now(), .16);
     if (o.length) open(o[(o.indexOf(app.cur) + 1) % o.length]);
   }
-  else if (a === 'new') { app.view = 'new'; app.sideOpen = false; closePop(); win.classList.remove('side-open'); cue('open', .5); newDefaults(); void refreshProjects(); draw(); ta.focus(); }
-  else if (a === 'archview') { app.view = 'archive'; app.sideOpen = false; closePop(); win.classList.remove('side-open'); draw(); }
+  else if (a === 'new') { app.view = 'new'; app.sideOpen = false; closePop(); win.classList.remove('side-open'); cue('open', .5); newDefaults(); void refreshProjects(); wb.switched(); draw(); ta.focus(); }
+  else if (a === 'archview') { app.view = 'archive'; app.sideOpen = false; closePop(); win.classList.remove('side-open'); wb.switched(); draw(); }
   else if (a === 'filter') { if (app.filter !== el.dataset.v) tick(); app.filter = el.dataset.v as typeof app.filter; quiet = true; draw('side'); }
   else if (a === 'by') { tick(); app.by = app.by === 'state' ? 'project' : 'state'; quiet = true; draw('side'); }
   else if (a === 'pin' && s) { s.pinned = !s.pinned; closePop(); cue(s.pinned ? 'on' : 'off', .7); draw(); void tryCall(`/sessions/${s.id}/meta`, { pinned: s.pinned }); }
@@ -1061,11 +1094,14 @@ addEventListener('keydown', e => {
       if (popFor) { closePop(); return; }
       if (app.sideOpen) { app.sideOpen = false; win.classList.remove('side-open'); return; }
       if (app.menu) { app.menu = ''; app.picks = []; draw('comp'); return; }
+      if (wb.esc()) { e.preventDefault(); return; }
       if (s && (s.st === 'work' || s.st === 'pack')) { e.preventDefault(); if (t === ta && ta.value.trim()) escHint(s); else interrupt(s); }
       return;
     }
   }
   const mod = e.metaKey || e.ctrlKey;
+  // ⌘⏎ with nothing being written: land this session.
+  if (mod && e.key === 'Enter' && !e.shiftKey && !e.isComposing && app.view === 'chat' && (t !== ta || !ta.value.trim())) { e.preventDefault(); wb.land(); return; }
   if (mod && e.key.toLowerCase() === 'k') { e.preventDefault(); if (attention.enabled) { app.sideOpen = true; win.classList.add('side-open'); } find.focus(); find.select(); }
   if (mod && e.key.toLowerCase() === 'n') { e.preventDefault(); void act('new', $('.new', side)); }
   if ((mod || e.altKey) && (e.key === 'ArrowDown' || e.key === 'ArrowUp') && document.activeElement !== ta) {
@@ -1101,10 +1137,15 @@ const viewer = $<HTMLDialogElement>('.viewer', win), viewImg = $<HTMLImageElemen
 viewer.addEventListener('click', () => viewer.close());
 addEventListener('keydown', e => { if (!viewer.open) return; e.stopImmediatePropagation(); if (e.key === 'Escape') { e.preventDefault(); viewer.close(); } }, true);
 
+const wb = mountWorkbench(win, ta, {
+  api: API, call, toast, cue: (name, gain) => cue(name, gain, false, false),
+  current: () => app.view === 'chat' ? cur() : undefined, chat: () => app.view === 'chat' && !!cur(),
+  busy: () => attention.busy, b01: () => attention.enabled, md, diff: diffHTML, redraw: () => draw('comp'),
+});
 const attention = mountExposure(win, ta, {
   sessions: () => app.ss, items: id => app.items.get(id), current: () => app.cur, chat: () => app.view === 'chat',
   load: loadItems, open: id => open(id, 'key', true), call, md, toast, cue: (name, gain) => cue(name, gain, false, false), blip, changed: id => stAt.get(id) ?? -1e9,
-  refresh: () => draw(),
+  refresh: () => draw(), back: () => wb.back(),
 });
 
 // ---------- one loop: her every frame, moving marks at 30 fps, nothing while the window is out of sight ----------
@@ -1128,5 +1169,6 @@ function loop(now: number) {
   requestAnimationFrame(loop);
 }
 setSound(snd.on);
-connect(); void refreshProjects();
+connect(); void refreshProjects(); void loadUsage();
+setInterval(() => { if (!document.hidden) void loadUsage(); }, 60000);
 draw(); requestAnimationFrame(loop);

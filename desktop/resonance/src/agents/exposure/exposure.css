@@ -199,7 +199,7 @@
 .bw .w-body{display:block;border:0;position:absolute;inset:0;pointer-events:none}
 .bw .side{display:none}
 .bw .main{position:absolute;inset:56px 0 0;display:flex;flex-direction:column;pointer-events:auto;background:none;transition:opacity 240ms}
-.bw.sky-on .main>.host,.bw.sky-on .main>.composer{opacity:calc(1 - var(--skp) * .55)}
+.bw.sky-on .main .bd{opacity:calc(1 - var(--skp) * .55)}
 .bw .m-head{position:absolute;top:0;left:86px;width:min(450px,calc(100vw - 610px));height:56px;min-height:0;padding:0;gap:9px;border:0;z-index:7;background:none;-webkit-app-region:drag}
 .bw .m-head button,.bw .h-t{-webkit-app-region:no-drag}
 .bw .h-main{min-width:0}.bw .h-t b{font-size:15px;line-height:20px}.bw .h-meta{font-size:11px;color:var(--faint)}

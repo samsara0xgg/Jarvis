@@ -33,7 +33,29 @@ export type Sess = {
   // queue: what you sent while it worked, not yet taken
   created?: number; trace?: { at: number; st: St }[];
   now?: string; bg?: string; term?: boolean; stopped?: boolean; since?: number; queue?: string[];
+  // ADR 0085 · dirty: what landing would take (files, lines, commits main does not have yet); absent outside git or with
+  // nothing to land · land: the landing under way, absent when none is · gone: its worktree was cleaned away after landing
+  dirty?: { n: number; add: number; del: number; ahead: number }; land?: Land; gone?: boolean;
 };
+// ADR 0085: landing, the host's line from a session's changes to main. `s` is where the line stands and `i` the step it
+// is on; `steps` follows the line's order (changes, gates, commit, into main, restart, push, clean), each with its
+// state, how long it took, the line under its name and the commands it runs. `why` says what stopped it or what it waits
+// for; `acts` are the ways on, the first one lit.
+export type LandSt = 'todo' | 'run' | 'ok' | 'skip' | 'wait' | 'paused' | 'fail';
+export type Land = {
+  s: 'run' | 'stopping' | 'wait' | 'paused' | 'fail' | 'fixing' | 'done'; i: number;
+  steps: { st: LandSt; ms?: number; d?: string; cmd?: string[] }[];
+  files: [string, number, number][]; gates: { n: string; st: 'todo' | 'run' | 'ok' | 'er'; say?: string }[];
+  msg: string; drafting?: boolean; why?: string; acts?: ('fix' | 'stay' | 'resume' | 'allow' | 'deny')[];
+  branch: string; into: string; restart?: string[];
+};
+// A file or page a session pointed at, as the preview shows it: markdown and text come as text (with what changed, when
+// something did), pages, PDFs and images as a file:// address for the preview's own browser.
+export type Peek = { kind: 'md' | 'text' | 'web'; abs: string; url?: string; text?: string; diff?: Diff; add?: number; del?: number };
+// The workbench's other tabs: Jarvis's two services as launchd sees them, and plan usage as the daemon last read it.
+export type Service = { name: 'daemon' | 'companion'; label: string; running: boolean; pid?: number; since?: number };
+export type UsageWindow = { key: string; label: string; percent: number; resets_at: string | null };
+export type Usage = Partial<Record<Agent, { plan: string; windows: UsageWindow[] }>>;
 export type Choice = { models: [string, string][]; efforts: string[]; modes: [string, string][]; always: string };
 export type Catalog = Record<Agent, Choice>;
 // A file sent with a message: its name and a data: URL.

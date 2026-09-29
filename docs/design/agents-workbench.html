@@ -1,0 +1,1039 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#faf9f5;color:#141413}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>长曝光 工作台</title>
+<meta name="description" content="Jarvis Agents 窗口的工作台：三种姿态、舞台预览、一键落地、终端位置和额度">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Newsreader:ital,opsz,wght@1,6..72,300..500&family=Noto+Serif+SC:wght@600;900&display=swap" rel="stylesheet">
+<style>
+/* One look on purpose, the same night as 长曝光: this page is its sequel. */
+:root{
+  --ground:#05060B; --surface:#0B0D17; --line:#1C2030; --ink:#E9ECF5; --muted:#A5ACC2; --faint:#838BA6;
+  --warm:#FFC98F; --her:#9DB4FF; --mint:#6FE0B4; --red:#FF7A66; --blue:#6C9CFF;
+  --zh:"Noto Serif SC","Songti SC","STSong",serif; --en:"Newsreader","Iowan Old Style",Georgia,serif;
+  --sans:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Noto Sans SC","Microsoft YaHei",sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,Menlo,monospace;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+body{background:var(--ground);color:var(--ink);font:15px/1.78 var(--sans);-webkit-font-smoothing:antialiased}
+h1,h2,h3,h4,p,ul,ol,dl,dd,figure{margin:0}
+button,input,textarea{font:inherit;color:inherit}
+button{cursor:pointer;background:none;border:0;padding:0}
+a{color:var(--her);text-underline-offset:3px;text-decoration-thickness:1px}
+:focus-visible{outline:2px solid var(--warm);outline-offset:2px;border-radius:4px}
+code{font-family:var(--mono);font-size:.86em}
+.k{display:inline-grid;place-items:center;min-width:1.6em;height:1.55em;padding:0 .38em;margin:0 .08em;border-radius:5px;font:500 .78em/1 var(--mono);color:var(--ink);background:#141828;box-shadow:inset 0 -1.5px 0 #080a12,inset 0 0 0 1px #262c42;vertical-align:.08em}
+.page{max-width:1200px;margin:0 auto;padding-inline:24px;padding-block:22px 120px}
+@media (max-width:600px){.page{padding-inline:16px}}
+.top{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;font:12px/1.4 var(--mono);color:var(--faint);letter-spacing:.04em}
+.top nav{display:flex;gap:14px;flex-wrap:wrap}
+.top nav a{color:var(--faint);text-decoration:none}
+.top nav a:hover{color:var(--warm)}
+.top nav .here{color:var(--ink)}
+.hero{display:grid;gap:24px;padding-block:56px 30px}
+.kicker{font:500 12px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--warm)}
+.hero h1{font:900 clamp(56px,10vw,120px)/.98 var(--zh);letter-spacing:.02em}
+.hero h1 em{display:block;font:italic 300 .26em/1.3 var(--en);color:var(--muted);margin-top:.5em;max-width:30em}
+.lede{font-size:18px;line-height:1.85;max-width:38em;color:var(--muted);text-wrap:pretty}
+.lede b{color:var(--ink);font-weight:600}
+
+/* ---------- the demo frame ---------- */
+.stage{border-radius:22px;padding:22px 22px 14px;background:radial-gradient(800px 380px at 70% 0,#1a1733,transparent 70%),#090A12;box-shadow:inset 0 0 0 1px #151928,0 40px 90px -50px #000}
+@media (max-width:600px){.stage{padding:10px 10px 12px;border-radius:16px}}
+.fit{position:relative;width:100%;aspect-ratio:1180/740}
+.cap{display:flex;flex-wrap:wrap;align-items:center;gap:8px 10px;margin-top:14px;font:12.5px/1.5 var(--sans);color:var(--muted)}
+.cap .id{font:500 12px var(--mono);color:var(--ink);margin-right:4px}
+.cap .sp{flex:1}
+.chip{height:28px;padding:0 11px;border-radius:999px;font-size:12.5px;color:var(--ink);background:#141828;box-shadow:inset 0 0 0 1px #262c42;transition:background .15s,transform .12s,box-shadow .15s,color .15s}
+.chip:hover{background:#1c2138}
+.chip:active{transform:scale(.96)}
+.chip.go{background:var(--warm);color:#2b1705;font-weight:600;box-shadow:0 0 22px -8px var(--warm)}
+.chip[aria-pressed="true"]{box-shadow:inset 0 0 0 1px var(--warm);color:var(--warm)}
+.segs{display:inline-flex;align-items:center;padding:2px;border-radius:9px;background:#141828;box-shadow:inset 0 0 0 1px #262c42}
+.segs span{padding:0 8px 0 7px;font-size:11.5px;color:var(--faint)}
+.segs button{height:24px;padding:0 10px;border-radius:7px;font-size:12.5px;color:var(--muted);transition:background .15s,color .15s}
+.segs button[aria-pressed="true"]{background:#2a2f4a;color:var(--ink)}
+.tip{min-height:3.3em;margin-top:12px;padding:10px 14px;border-radius:12px;background:#0E1120;box-shadow:inset 0 0 0 1px #1a1f33;font-size:14.5px;line-height:1.6;display:flex;gap:12px;align-items:flex-start}
+.tip b{flex:none;font:600 11.5px/1.95 var(--mono);color:var(--warm);letter-spacing:.06em}
+
+/* ---------- the window ---------- */
+.w{
+  --ink:#EEF0FB; --muted:rgb(196 204 238 / .74); --faint:rgb(196 204 238 / .56); --line:rgb(157 180 255 / .12);
+  --acc:157 180 255; --e:cubic-bezier(.22,.8,.24,1); --d:460ms;
+  --ui:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Helvetica Neue",sans-serif;
+  position:absolute;left:0;top:0;width:1180px;height:740px;transform-origin:0 0;overflow:hidden;border-radius:20px;isolation:isolate;outline:none;
+  color:var(--ink);font:13px/1.5 var(--ui);
+  background:radial-gradient(60% 45% at 8% 100%,rgb(91 58 168 / .15),transparent 62%),radial-gradient(50% 40% at 100% 70%,rgb(31 90 138 / .13),transparent 62%),linear-gradient(180deg,#10122a,#08091a);
+  box-shadow:inset 0 0 0 .5px rgb(var(--acc) / .26),0 50px 90px -40px #000;
+}
+.w *{box-sizing:border-box}
+.w kbd{display:inline-grid;place-items:center;min-width:16px;height:16px;padding:0 4px;border-radius:4px;font:500 10px/1 var(--mono);background:rgb(255 255 255 / .08);color:var(--muted);vertical-align:1px}
+.w :focus-visible{outline:2px solid rgb(var(--acc) / .8);outline-offset:1px}
+/* horizon */
+.hz{position:absolute;z-index:20;left:0;right:0;top:0;height:56px;background:linear-gradient(180deg,#04050c,#080918);box-shadow:inset 0 -.5px 0 rgb(var(--acc) / .16)}
+.lights{position:absolute;left:16px;top:22px;display:flex;gap:8px}
+.lights i{width:12px;height:12px;border-radius:50%;background:#ff5f57}.lights i:nth-child(2){background:#febc2e}.lights i:nth-child(3){background:#28c840}
+.ttl{position:absolute;left:86px;top:9px;display:flex;flex-direction:column}
+.ttl b{font:600 15px/20px var(--ui)}
+.ttl span{font-size:11px;color:var(--faint)}
+.ttl .pr{padding:0 5px;border-radius:5px;font:600 10px/15px var(--mono);color:var(--mint);background:rgb(111 224 180 / .12)}
+.pull{position:absolute;left:640px;top:17px;display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 9px 0 6px;border-radius:6px;font-size:12px;color:var(--faint)}
+.stars{position:absolute;right:66px;top:19px;display:flex;gap:9px}
+.stars svg{width:14px;height:14px;display:block}
+.her{position:absolute;right:14px;top:9px;width:38px;height:38px;border-radius:50%;
+  background:radial-gradient(circle at 40% 34%,#f5f7ff 0 6%,transparent 7%),radial-gradient(circle at 36% 30%,rgb(157 180 255 / .9),transparent 46%),radial-gradient(circle at 60% 70%,#5b3aa8,transparent 62%),radial-gradient(circle,#2b2a78,#131339 70%);
+  box-shadow:0 0 22px -4px rgb(157 180 255 / .7),inset 0 0 0 .5px rgb(255 255 255 / .2)}
+.her::before,.her::after{content:"";position:absolute;top:14px;width:3.4px;height:8px;border-radius:2px;background:#fff;box-shadow:0 0 6px #fff}
+.her::before{left:14px}.her::after{left:21px}
+.her.blink::before,.her.blink::after{animation:blink 4.6s infinite}
+@keyframes blink{0%,94%,100%{transform:scaleY(1)}96%{transform:scaleY(.1)}}
+
+/* the body under the horizon: everything is placed by one layout function and moves on one curve */
+.bd{position:absolute;left:0;right:0;top:56px;bottom:0}
+.pn{position:absolute;transition:left var(--d) var(--e),top var(--d) var(--e),width var(--d) var(--e),height var(--d) var(--e),opacity 260ms var(--e),transform var(--d) var(--e)}
+.pn.off{opacity:0;pointer-events:none}
+.w.nt .pn{transition:none}
+
+/* chat */
+.chat{display:flex;flex-direction:column}
+.conv{flex:1;min-height:0;overflow-y:auto;scrollbar-width:none;overscroll-behavior:contain;transition:opacity 180ms var(--e)}
+.conv::-webkit-scrollbar{display:none}
+.conv-in{max-width:680px;margin:0 auto;padding:22px 24px 14px;display:flex;flex-direction:column;gap:14px;font-size:14px;line-height:1.7}
+.you{align-self:flex-end;max-width:78%;margin:0;padding:8px 13px;border-radius:18px 18px 6px 18px;background:rgb(var(--acc) / .17);box-shadow:inset 0 0 0 .5px rgb(var(--acc) / .22);line-height:1.55}
+.it p{margin:0 0 6px}.it p:last-child{margin:0}
+.it ul{margin:0;padding-left:20px}.it li::marker{color:rgb(var(--acc))}
+.it b{color:#fff;font-weight:600}
+.it code{font-size:12.5px;color:var(--muted)}
+.steps{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--faint)}
+.steps i{width:6px;height:6px;border-right:1.3px solid currentColor;border-bottom:1.3px solid currentColor;transform:rotate(-45deg);margin-right:3px}
+.rec{display:flex;align-items:center;gap:8px;padding:6px 10px;border-radius:10px;background:rgb(255 255 255 / .035);font-size:12px;color:var(--faint)}
+.rec b{color:var(--mint)} .rec code{font:12px var(--mono);color:var(--muted);flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lnk{display:flex;align-items:center;gap:11px;width:100%;padding:10px 12px;border-radius:12px;text-align:left;background:rgb(255 255 255 / .04);box-shadow:inset 0 0 0 .5px rgb(var(--acc) / .22);transition:background 160ms,box-shadow 160ms}
+.lnk:hover{background:rgb(var(--acc) / .08);box-shadow:inset 0 0 0 .5px rgb(var(--acc) / .45)}
+.lnk .ic{flex:none;width:34px;height:34px;border-radius:9px;display:grid;place-items:center;background:linear-gradient(160deg,#1d1b3a,#0c0d1f);box-shadow:inset 0 0 0 .5px rgb(var(--acc) / .3);font:900 13px var(--zh);color:#fff}
+.lnk .ic.fi{font:600 10px var(--mono);color:var(--muted)}
+.lnk > span:not(.ic){flex:1;min-width:0;display:flex;flex-direction:column}
+.lnk b{font:600 13px/1.4 var(--ui);color:var(--ink)}
+.lnk small{font-size:11.5px;color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lnk em{flex:none;font:normal 11.5px var(--ui);color:var(--faint)}
+.lnk.on{box-shadow:inset 0 0 0 1px rgb(var(--acc) / .6);background:rgb(var(--acc) / .1)}
+.lnk.on em{color:rgb(var(--acc))}
+.ask{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.ask button{display:inline-flex;align-items:center;gap:7px;height:30px;padding:0 12px;border-radius:9px;font-size:13px;font-weight:600;background:var(--warm);color:#2b1705;box-shadow:0 0 18px -6px rgb(255 201 143 / .7)}
+.ask button kbd{background:rgb(0 0 0 / .14);color:inherit}
+.ask span{font-size:12px;color:var(--faint)}
+/* in the narrow column only the last turn stays; the rest folds into one line you can open */
+.older{align-self:center;display:none;height:24px;padding:0 10px;border-radius:999px;font-size:11.5px;color:var(--faint);background:rgb(255 255 255 / .04)}
+.chat.nar .conv-in{padding:16px 16px 10px;font-size:13px;gap:12px}
+.chat.nar:not(.all) .old{display:none}
+.chat.nar.all .older{display:none!important}
+.chat.nar .older{display:inline-flex;align-items:center}
+.chat.nar .you{max-width:92%}
+.chat.nar .lnk small{display:none}
+
+/* composer, after Claude's own: one box, one row of quiet tools, one ring for everything about usage */
+.comp{flex:none;padding:0 24px 16px}
+.chat.nar .comp{padding:0 12px 12px}
+.box{position:relative;max-width:680px;margin:0 auto;display:flex;flex-direction:column;border-radius:20px;background:rgb(14 15 26 / .72);box-shadow:inset 0 0 0 .5px rgb(255 255 255 / .15),0 18px 40px -24px #000;transition:box-shadow 240ms}
+.box:focus-within{box-shadow:inset 0 0 0 .5px rgb(var(--acc) / .55),0 0 0 3px rgb(var(--acc) / .07),0 18px 40px -24px #000}
+.bn{display:flex;align-items:center;gap:10px;margin:6px 6px 0;padding:6px 8px 6px 10px;border-radius:14px;background:rgb(255 122 102 / .08);font-size:12px;color:var(--muted)}
+.bn i{flex:none;width:6px;height:6px;border-radius:50%;background:var(--red);box-shadow:0 0 8px var(--red)}
+.bn b{color:#ffb3a6;font-weight:600}
+.bn span{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bn button{flex:none;height:24px;padding:0 10px;border-radius:7px;font-size:12px;font-weight:600;background:rgb(255 255 255 / .1)}
+.bn button:hover{background:rgb(255 255 255 / .16)}
+.tw{position:relative;display:flex;padding:11px 14px 4px}
+.ta{flex:1;resize:none;border:0;background:none;outline:none;min-height:22px;max-height:96px;font:14px/1.55 var(--ui);color:var(--ink)}
+.ta::placeholder{color:var(--faint)}
+.hint{position:absolute;right:14px;top:12px;display:flex;gap:10px;font-size:11.5px;color:var(--faint);pointer-events:none;transition:opacity 160ms}
+.hint span{display:inline-flex;align-items:center;gap:4px}
+.tools{display:flex;align-items:center;gap:4px;padding:4px 8px 8px 8px}
+.tb{display:inline-flex;align-items:center;gap:5px;height:28px;padding:0 8px;border-radius:8px;font-size:12px;color:var(--muted);transition:background 140ms,color 140ms}
+.tb:hover{background:rgb(255 255 255 / .06);color:var(--ink)}
+.tb.plus{width:28px;padding:0;justify-content:center;font-size:17px;font-weight:300}
+.tb.mode i{width:6px;height:6px;border-radius:50%;background:rgb(var(--acc));box-shadow:0 0 7px rgb(var(--acc))}
+.tb.mode{color:rgb(var(--acc))}
+.tb em{font-style:normal;color:var(--faint)}
+.gap{flex:1}
+/* the landing, while it runs, is a small chip here: you can watch it without opening anything */
+.land{display:inline-flex;align-items:center;gap:7px;height:26px;padding:0 10px 0 8px;margin-right:2px;border-radius:999px;font-size:12px;color:var(--muted);background:rgb(255 255 255 / .05);box-shadow:inset 0 0 0 .5px rgb(255 255 255 / .1);transition:color 200ms,background 200ms,box-shadow 200ms}
+.land:hover{background:rgb(255 255 255 / .09)}
+.land svg{width:14px;height:14px;flex:none}
+.land[data-s="wait"],.land[data-s="paused"]{color:var(--warm);box-shadow:inset 0 0 0 .5px rgb(255 201 143 / .45)}
+.land[data-s="fail"]{color:#ffb3a6;box-shadow:inset 0 0 0 .5px rgb(255 122 102 / .5)}
+.land[data-s="done"]{color:var(--mint);box-shadow:inset 0 0 0 .5px rgb(111 224 180 / .45)}
+.ring{position:relative;width:28px;height:28px;border-radius:8px;display:grid;place-items:center}
+.ring:hover{background:rgb(255 255 255 / .06)}
+.ring svg{width:16px;height:16px;transform:rotate(-90deg)}
+.send{width:30px;height:30px;margin-left:4px;border-radius:50%;display:grid;place-items:center;background:rgb(var(--acc));color:#0b0d24;font-weight:700;box-shadow:0 0 18px -6px rgb(var(--acc) / .8);transition:opacity 160ms,transform 120ms}
+.send:active{transform:scale(.94)}
+.send[disabled]{opacity:.35;box-shadow:none;cursor:default}
+.chat.nar .tb .lbl{display:none}
+.chat.nar .tb.model em{display:none}
+/* the terminal can also grow out of the box itself */
+.iterm{height:0;overflow:hidden;transition:height var(--d) var(--e)}
+.box.ti .iterm{height:206px}
+.box.ti .iterm .tm{height:196px;margin:6px 6px 0;border-radius:15px}
+/* usage popover */
+.pop{position:absolute;z-index:40;width:340px;padding:12px 14px 10px;border-radius:14px;background:rgb(20 22 44 / .96);-webkit-backdrop-filter:blur(16px);backdrop-filter:blur(16px);box-shadow:inset 0 0 0 .5px rgb(var(--acc) / .35),0 24px 60px -18px #000;transform-origin:100% 100%}
+.pop h5{margin:0;display:flex;justify-content:space-between;align-items:baseline;font:500 12.5px var(--ui);color:var(--muted)}
+.pop h5 b{font:500 12px var(--mono);color:var(--muted);font-variant-numeric:tabular-nums}
+.pop .sec{padding:10px 0;border-bottom:.5px solid rgb(var(--acc) / .14)}
+.pop .sec:last-of-type{border-bottom:0}
+.pop .sub{margin:0 0 6px;font-size:11px;color:var(--faint);letter-spacing:.02em}
+.row{display:grid;grid-template-columns:1fr auto;gap:2px 10px;margin-top:8px;font-size:12.5px}
+.row em{font-style:normal;font:500 11.5px var(--mono);color:var(--muted);font-variant-numeric:tabular-nums;text-align:right}
+.row small{color:var(--faint);font-size:11px;margin-right:8px}
+.bar{grid-column:1/-1;height:4px;border-radius:2px;background:rgb(255 255 255 / .07);overflow:hidden;display:flex;gap:1px}
+.bar i{display:block;height:100%;border-radius:2px}
+.pop .act{display:flex;gap:6px;padding-top:10px}
+.pop .act button{height:28px;padding:0 11px;border-radius:8px;font-size:12px;background:rgb(255 255 255 / .06)}
+.pop .act button.pri{background:rgb(var(--acc));color:#0b0d24;font-weight:600}
+.pop .note{margin-top:8px;font-size:11px;color:var(--faint)}
+
+/* a sheet: preview and terminal sit on the same glass, inset from the window's edges */
+.sheet{display:flex;flex-direction:column;overflow:hidden;border-radius:14px;background:rgb(9 10 22 / .86);box-shadow:inset 0 0 0 .5px rgb(var(--acc) / .2),0 24px 50px -30px #000}
+.sh{flex:none;display:flex;align-items:center;gap:8px;height:40px;padding:0 6px 0 12px;box-shadow:inset 0 -.5px 0 rgb(var(--acc) / .14)}
+.sh .ic{flex:none;width:18px;height:18px;border-radius:5px;display:grid;place-items:center;background:#1a1a36;font:900 10px var(--zh)}
+.sh .ic.fi{width:30px;font:600 8.5px var(--mono);color:var(--muted)}
+.sh b{font:600 12.5px var(--ui);white-space:nowrap}
+.sh small{flex:1;min-width:0;font:11.5px var(--mono);color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ib{flex:none;width:28px;height:28px;border-radius:7px;display:grid;place-items:center;color:var(--muted);transition:background 140ms,color 140ms}
+.ib:hover{background:rgb(255 255 255 / .07);color:var(--ink)}
+.ib svg{width:15px;height:15px}
+.pv-body{flex:1;min-height:0;position:relative;overflow:hidden}
+.pv-view{position:absolute;inset:0;overflow:auto;scrollbar-width:thin;scrollbar-color:rgb(var(--acc) / .2) transparent;transition:opacity 220ms var(--e)}
+/* the artifact, as it looks on its own page */
+.art{min-height:100%;padding:34px 40px;background:radial-gradient(600px 300px at 80% 0,#1a1733,transparent 70%),#05060B;position:relative}
+.art canvas{position:absolute;left:0;top:0;width:100%;height:260px;pointer-events:none}
+.art .a-top{position:relative;font:10.5px var(--mono);letter-spacing:.06em;color:#838BA6;display:flex;justify-content:space-between}
+.art .a-k{position:relative;margin-top:44px;font:500 10.5px var(--mono);letter-spacing:.14em;color:#FFC98F}
+.art h2{position:relative;margin-top:14px;font:900 86px/1 var(--zh);letter-spacing:.02em}
+.art h2 em{display:block;margin-top:14px;font:italic 300 21px/1.3 var(--en);color:#A5ACC2;letter-spacing:0}
+.art p{position:relative;margin-top:20px;max-width:34em;font-size:14px;line-height:1.85;color:#A5ACC2}
+.art p b{color:#E9ECF5}
+.art .a-meta{position:relative;margin-top:26px;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border-top:1px solid #1C2030}
+.art .a-meta div{padding:10px 12px 0 0;font-size:12px;color:#E9ECF5}
+.art .a-meta dt{font:500 9.5px var(--mono);letter-spacing:.1em;color:#838BA6}
+/* the spec, as a document */
+.doc{max-width:640px;margin:0 auto;padding:28px 30px 40px;font-size:13.5px;line-height:1.8;color:rgb(226 230 247 / .9)}
+.doc .d-k{font:500 10.5px var(--mono);letter-spacing:.12em;color:var(--faint)}
+.doc h3{margin:8px 0 12px;font:600 21px/1.4 var(--zh);color:var(--ink)}
+.doc p{margin:0 0 12px}
+.doc ol{margin:0 0 12px;padding:0;list-style:none;display:grid;gap:4px}
+.doc li{display:grid;grid-template-columns:34px 1fr;gap:10px;padding:6px 10px;border-radius:8px;background:rgb(255 255 255 / .03)}
+.doc li b{font:600 12px/1.9 var(--mono);color:rgb(var(--acc))}
+.doc li.hl{box-shadow:inset 0 0 0 .5px rgb(255 201 143 / .5);background:rgb(255 201 143 / .06)}
+.doc code{color:var(--ink)}
+.doc .note{padding:10px 12px;border-radius:10px;background:rgb(var(--acc) / .07);font-size:12.5px;color:var(--muted)}
+/* the ghost: the link card becoming the preview */
+.ghost{position:absolute;z-index:30;pointer-events:none;border-radius:12px;background:linear-gradient(180deg,#141633,#0b0c1d);box-shadow:inset 0 0 0 .5px rgb(var(--acc) / .5),0 30px 70px -30px #000}
+
+/* the terminal: the same glass, the same type, no black box */
+.tm{display:flex;flex-direction:column;overflow:hidden;border-radius:14px;background:linear-gradient(180deg,rgb(12 13 28 / .92),rgb(8 9 20 / .94));box-shadow:inset 0 0 0 .5px rgb(var(--acc) / .2),0 24px 50px -30px #000}
+.tm-h{flex:none;display:flex;align-items:center;gap:2px;height:34px;padding:0 6px 0 8px;box-shadow:inset 0 -.5px 0 rgb(var(--acc) / .12)}
+.tm-h button.t{height:24px;padding:0 9px;border-radius:6px;font-size:12px;color:var(--faint);transition:background 140ms,color 140ms}
+.tm-h button.t[aria-selected="true"]{background:rgb(255 255 255 / .06);color:var(--ink)}
+.tm-h .dot{width:6px;height:6px;margin-left:6px;border-radius:50%;background:var(--mint);box-shadow:0 0 6px var(--mint)}
+.tm-h .sp{flex:1}
+.tm-h .ib{width:24px;height:24px}
+.tm-b{flex:1;min-height:0;overflow:auto;padding:9px 14px 12px;font:12px/1.72 var(--mono);color:rgb(214 219 240 / .88);scrollbar-width:none}
+.tm-b::-webkit-scrollbar{display:none}
+.tm-b .p{color:var(--faint)} .tm-b .p b{color:rgb(var(--acc));font-weight:500}
+.tm-b .ok{color:var(--mint)} .tm-b .dim{color:var(--faint)} .tm-b .wr{color:var(--warm)} .tm-b .er{color:#ffb3a6}
+.tm-b .cur{display:inline-block;width:7px;height:14px;vertical-align:-2px;background:rgb(var(--acc) / .8);animation:cur 1.1s steps(1) infinite}
+@keyframes cur{50%{opacity:0}}
+.svc{display:grid;gap:8px}
+.svc div{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:4px 12px;padding:9px 11px;border-radius:10px;background:rgb(255 255 255 / .035);font-family:var(--ui)}
+.svc i{width:7px;height:7px;border-radius:50%;background:var(--mint);box-shadow:0 0 7px var(--mint)}
+.svc i.re{background:var(--blue);box-shadow:0 0 7px var(--blue);animation:pulse 1s infinite}
+@keyframes pulse{50%{opacity:.35}}
+.svc b{font:600 12.5px var(--ui);color:var(--ink)}
+.svc small{grid-column:2;font:11px var(--mono);color:var(--faint)}
+.svc button{grid-row:1/3;grid-column:3;height:26px;padding:0 10px;border-radius:7px;font:12px var(--ui);background:rgb(255 255 255 / .06)}
+.svc button:hover{background:rgb(255 255 255 / .1)}
+.tm.island{box-shadow:inset 0 0 0 .5px rgb(var(--acc) / .3),0 30px 70px -20px #000}
+
+/* the landing panel on the left */
+.lp{display:flex;flex-direction:column;overflow:hidden;background:linear-gradient(180deg,#0b0c1f,#07081a 60%,#05060f);box-shadow:inset -.5px 0 0 rgb(var(--acc) / .18)}
+.lp-w{position:absolute;left:0;top:0;bottom:0;width:336px;display:flex;flex-direction:column;transition:opacity 200ms var(--e)}
+.lp-h{flex:none;padding:14px 16px 10px;display:flex;flex-direction:column;gap:6px}
+.lp-h div{display:flex;align-items:center;justify-content:space-between}
+.lp-h h4{font:600 14px var(--ui)}
+.br{display:inline-flex;align-items:center;gap:6px;font:11.5px var(--mono);color:var(--muted)}
+.br i{font-style:normal;color:var(--faint)}
+.lp-h small{font:11.5px var(--mono);color:var(--faint)} .lp-h small b{color:var(--mint);font-weight:500} .lp-h small em{font-style:normal;color:#ff9f8f}
+.pl{flex:1;min-height:0;overflow:auto;padding:4px 10px 10px;list-style:none;margin:0;scrollbar-width:none}
+.pl::-webkit-scrollbar{display:none}
+.st{position:relative;display:grid;grid-template-columns:22px 1fr;gap:0 10px;padding:8px 8px 10px 6px;border-radius:10px;transition:background 240ms}
+.st::before{content:"";position:absolute;left:16.5px;top:28px;bottom:-6px;width:1px;background:rgb(var(--acc) / .14)}
+.st:last-child::before{display:none}
+.st .n{position:relative;z-index:1;width:22px;height:22px;border-radius:50%;display:grid;place-items:center;font:600 10.5px var(--mono);color:var(--faint);background:#0c0d20;box-shadow:inset 0 0 0 1px rgb(var(--acc) / .22);transition:background 240ms,color 240ms,box-shadow 240ms}
+.st .n svg{width:12px;height:12px}
+.st h5{margin:1px 0 0;display:flex;align-items:center;justify-content:space-between;gap:8px;font:600 13px/20px var(--ui);color:var(--muted);transition:color 240ms}
+.st h5 em{font:normal 11px var(--mono);color:var(--faint);font-variant-numeric:tabular-nums}
+.st .d{grid-column:2;font-size:12px;line-height:1.55;color:var(--faint)}
+.st .d code{font:11.5px var(--mono);color:var(--muted);word-break:break-all}
+.st .files{margin:6px 0 0;padding:0;list-style:none;display:grid;gap:1px;font:11.5px/1.7 var(--mono);color:var(--muted)}
+.st .files li{display:flex;justify-content:space-between;gap:8px}
+.st .files li span{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.st .files li i{flex:none;font-style:normal;color:var(--faint)} .st .files .p{color:var(--mint)} .st .files .m{color:#ff9f8f}
+.st .msg{margin-top:6px;width:100%;padding:7px 9px;border-radius:8px;border:0;outline:none;background:rgb(255 255 255 / .05);box-shadow:inset 0 0 0 .5px rgb(var(--acc) / .2);font:12px var(--mono);color:var(--ink)}
+.st .msg:focus{box-shadow:inset 0 0 0 1px rgb(var(--acc) / .6)}
+.st .gates{margin-top:6px;display:flex;flex-wrap:wrap;gap:4px}
+.st .gates span{display:inline-flex;align-items:center;gap:5px;height:20px;padding:0 7px;border-radius:6px;font:11px var(--mono);color:var(--faint);background:rgb(255 255 255 / .04);transition:color 200ms,background 200ms}
+.st .gates span.ok{color:var(--mint);background:rgb(111 224 180 / .08)}
+.st .gates span.er{color:#ffb3a6;background:rgb(255 122 102 / .1)}
+.st .gates span.run{color:var(--blue)}
+.st .why{margin-top:6px;padding:7px 9px;border-radius:8px;font-size:12px;line-height:1.5}
+.st .why.er{background:rgb(255 122 102 / .08);color:#ffcabf}
+.st .why.wr{background:rgb(255 201 143 / .08);color:#ffe0bd}
+.st .row2{margin-top:7px;display:flex;gap:6px}
+.st .row2 button{height:26px;padding:0 10px;border-radius:7px;font-size:12px;background:rgb(255 255 255 / .07)}
+.st .row2 button.pri{background:var(--warm);color:#2b1705;font-weight:600}
+/* step states */
+.st[data-s="run"]{background:rgb(108 156 255 / .06)}
+.st[data-s="run"] .n{color:var(--blue);box-shadow:inset 0 0 0 1px rgb(108 156 255 / .7)}
+.st[data-s="run"] h5{color:var(--ink)}
+.st[data-s="ok"] .n{background:rgb(111 224 180 / .14);color:var(--mint);box-shadow:inset 0 0 0 1px rgb(111 224 180 / .45)}
+.st[data-s="ok"] h5{color:rgb(226 230 247 / .86)}
+.st[data-s="wait"],.st[data-s="paused"]{background:rgb(255 201 143 / .05)}
+.st[data-s="wait"] .n,.st[data-s="paused"] .n{color:var(--warm);box-shadow:inset 0 0 0 1px rgb(255 201 143 / .7)}
+.st[data-s="wait"] h5,.st[data-s="paused"] h5{color:var(--ink)}
+.st[data-s="fail"]{background:rgb(255 122 102 / .06)}
+.st[data-s="fail"] .n{color:var(--red);box-shadow:inset 0 0 0 1px rgb(255 122 102 / .7)}
+.st[data-s="fail"] h5{color:var(--ink)}
+.st[data-s="skip"] h5{color:var(--faint);text-decoration:line-through;text-decoration-color:rgb(196 204 238 / .3)}
+.spin{width:12px;height:12px;border-radius:50%;border:1.5px solid currentColor;border-right-color:transparent;animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(1turn)}}
+.lp-f{flex:none;padding:10px 12px 14px;display:flex;gap:8px;align-items:center;box-shadow:inset 0 .5px 0 rgb(var(--acc) / .12)}
+.lp-f button{height:32px;padding:0 12px;border-radius:10px;font-size:13px;font-weight:500;background:rgb(255 255 255 / .07);display:inline-flex;align-items:center;gap:7px;transition:background 140ms,transform 120ms}
+.lp-f button:active{transform:scale(.97)}
+.lp-f button.pri{flex:1;justify-content:center;background:var(--warm);color:#2b1705;font-weight:600;box-shadow:0 0 18px -6px rgb(255 201 143 / .7)}
+.lp-f button.pri kbd,.lp-f button kbd{background:rgb(0 0 0 / .16);color:inherit}
+.lp-f small{flex:1;font-size:12px;color:var(--faint)}
+/* in the stage the panel folds to a rail of its steps */
+.rail{position:absolute;left:0;top:0;bottom:0;width:52px;display:flex;flex-direction:column;align-items:center;gap:10px;padding-top:16px;opacity:0;pointer-events:none;transition:opacity 200ms var(--e)}
+.lp.rl .rail{opacity:1;pointer-events:auto}
+.lp.rl .lp-w{opacity:0;pointer-events:none}
+.rail button{display:flex;flex-direction:column;align-items:center;gap:7px;padding:8px 6px;border-radius:10px}
+.rail button:hover{background:rgb(255 255 255 / .05)}
+.rail i{width:8px;height:8px;border-radius:50%;background:rgb(var(--acc) / .2);transition:background 240ms,box-shadow 240ms}
+.rail i[data-s="ok"]{background:var(--mint)} .rail i[data-s="run"]{background:var(--blue);box-shadow:0 0 8px var(--blue)}
+.rail i[data-s="wait"],.rail i[data-s="paused"]{background:var(--warm);box-shadow:0 0 8px var(--warm)} .rail i[data-s="fail"]{background:var(--red);box-shadow:0 0 8px var(--red)}
+.rail b{writing-mode:vertical-rl;font:600 11px var(--ui);letter-spacing:.2em;color:var(--faint)}
+
+/* the long exposure, pulled down over the whole window */
+.sky{position:absolute;z-index:25;left:0;right:0;top:56px;height:0;overflow:hidden;background:linear-gradient(180deg,rgb(3 4 11),rgb(7 8 20));box-shadow:0 18px 40px -10px rgb(0 0 0 / .9),inset 0 -.5px 0 rgb(var(--acc) / .2);transition:height 520ms var(--e)}
+.sky.on{height:330px}
+.sky canvas{position:absolute;left:0;top:0}
+.sky p{position:absolute;left:30px;bottom:14px;margin:0;font-size:12px;color:var(--faint)}
+.sky p a{color:rgb(var(--acc))}
+.w.dim .bd{opacity:.35;transition:opacity 400ms}
+.bd{transition:opacity 400ms}
+
+/* ---------- sections ---------- */
+.body{display:grid;grid-template-columns:150px minmax(0,1fr);gap:52px;margin-top:36px}
+.idx{position:sticky;top:calc(env(safe-area-inset-top,0px) + 26px);align-self:start;display:flex;flex-direction:column;padding-top:66px}
+.idx a{display:flex;gap:10px;align-items:baseline;font:13px/1.25 var(--sans);color:var(--faint);padding:6px 0;text-decoration:none}
+.idx a b{font:500 11px var(--mono);width:20px;flex:none}
+.idx a:hover{color:var(--ink)}
+@media (max-width:900px){.body{grid-template-columns:minmax(0,1fr)}.idx{display:none}}
+main > section{padding-top:68px;scroll-margin-top:20px;display:flex;flex-direction:column;gap:20px}
+.sec-k{font:500 12px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--warm)}
+main > section h2{font:900 clamp(28px,3.4vw,42px)/1.2 var(--zh);text-wrap:balance}
+main > section h3{font:600 19px/1.4 var(--zh);margin-top:6px}
+.intro{max-width:44em;color:var(--muted);font-size:16px;line-height:1.85}
+.intro b{color:var(--ink);font-weight:600}
+.poses{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+.poses figure,.terms figure{border-radius:16px;padding:14px 14px 16px;background:var(--surface);box-shadow:inset 0 0 0 1px var(--line);display:flex;flex-direction:column;gap:10px}
+.poses svg,.terms svg{display:block;width:100%;height:auto;border-radius:9px}
+.poses b,.terms b{font:600 15.5px/1.4 var(--zh)}
+.poses p,.terms p{font-size:13.5px;color:var(--muted);line-height:1.65}
+.poses small,.terms small{font:12px/1.5 var(--mono);color:var(--faint)}
+@media (max-width:820px){.poses{grid-template-columns:1fr}}
+.ladder{display:flex;flex-wrap:wrap;align-items:center;gap:10px;padding:14px 16px;border-radius:14px;background:#0E1120;box-shadow:inset 0 0 0 1px #1a1f33;font-size:14px;color:var(--muted)}
+.ladder b{color:var(--ink);font-weight:600}
+.ladder i{font-style:normal;color:var(--faint)}
+.map{width:100%;border-collapse:collapse;font-size:14.5px}
+.map td{padding:10px 8px;border-bottom:1px solid var(--line);vertical-align:top;line-height:1.6}
+.map td:first-child{width:28%;color:var(--faint)}
+.map tr:last-child td{border-bottom:0}
+.map em{font-style:normal;font:500 12px var(--mono);color:var(--warm)}
+.wrap{overflow-x:auto}
+.lists{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:26px}
+.lists ul{padding-left:18px;display:flex;flex-direction:column;gap:8px;color:var(--muted);font-size:14.5px;line-height:1.65}
+.lists li b{color:var(--ink);font-weight:600}
+.terms{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+.terms figure.rec2{box-shadow:inset 0 0 0 1px rgb(255 201 143 / .45)}
+.terms em{font-style:normal;font:500 11.5px var(--mono);color:var(--warm)}
+@media (max-width:980px){.terms{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:560px){.terms{grid-template-columns:1fr}}
+.asks{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:12px;counter-reset:ask;padding:0;list-style:none}
+.asks li{counter-increment:ask;border-radius:14px;padding:16px 18px;background:var(--surface);box-shadow:inset 0 0 0 1px var(--line);display:flex;flex-direction:column;gap:6px}
+.asks li::before{content:"要你定 " counter(ask);font:500 11.5px var(--mono);letter-spacing:.06em;color:var(--warm)}
+.asks b{font-size:15.5px;line-height:1.5}
+.asks span{font-size:13.5px;color:var(--muted);line-height:1.65}
+.asks em{font-style:normal;font:500 12px var(--mono);color:var(--mint)}
+.foot{margin-top:80px;padding-top:18px;border-top:1px solid var(--line);display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;font:12px var(--mono);color:var(--faint)}
+@media (prefers-reduced-motion:reduce){.w *,.w *::before,.w *::after{animation:none!important;transition:none!important}}
+</style>
+
+<div class="page">
+  <header class="top">
+    <span>JARVIS · DESIGN REVIEW · 2026-09-28</span>
+    <nav><a href="https://claude.ai/artifact/SuuzwKu6bATLjUSHe6JqJC" target="_blank" rel="noopener">方案 B · 长曝光 ↗</a><span class="here">工作台</span></nav>
+  </header>
+
+  <div class="hero">
+    <p class="kicker">方案 B · 续 · 工作台</p>
+    <h1>工作台<em>Around the conversation: a stage for what you look at, a line for what you land</em></h1>
+    <p class="lede">长曝光管的是「去哪」，这一页管「到了以后手边有什么」。窗口只有三种姿态：平时是<b>对话</b>；看 diff、文档、终端时，旁边拉出一个面板，是<b>并排</b>；打开 artifact、网页、PDF 这类要宽度的东西，它占住大半个窗口，对话收成右边一条窄栏，是<b>舞台</b>。左边是<b>落地</b>：提交、合入、重启、推送，一键走到底，看得见每一步，随时能打断。</p>
+    <figure class="stage">
+      <div class="fit" id="fit"><div class="w" id="w" tabindex="-1"></div></div>
+      <figcaption class="cap">
+        <span class="id">W–01</span>
+        <button type="button" class="chip go" data-c="art">打开 artifact</button>
+        <button type="button" class="chip" data-c="spec">打开 spec</button>
+        <button type="button" class="chip" data-c="land">一键落地</button>
+        <button type="button" class="chip" data-c="fail" aria-pressed="false">下次门禁会失败</button>
+        <button type="button" class="chip" data-c="term" aria-pressed="false">终端 ⌃`</button>
+        <span class="segs" id="tpos"><span>终端在</span><button type="button" data-v="drawer" aria-pressed="true">底部抽屉</button><button type="button" data-v="side" aria-pressed="false">并排</button><button type="button" data-v="input" aria-pressed="false">输入框里</button><button type="button" data-v="island" aria-pressed="false">浮岛</button></span>
+        <span class="segs" id="quota"><span>额度</span><button type="button" data-v="out" aria-pressed="true">用完了</button><button type="button" data-v="ok" aria-pressed="false">充足</button></span>
+        <span class="sp"></span>
+        <button type="button" class="chip" data-c="reset">重来</button>
+      </figcaption>
+      <p class="tip"><b id="tipK">试试</b><span id="tipT">点对话里的「长曝光」卡片，它会展开成舞台；输入框空着按 ← 退出，再按一次 ←，长曝光盖下来。点输入框右下角的圆环看额度。</span></p>
+    </figure>
+  </div>
+
+  <div class="body">
+    <nav class="idx" aria-label="目录">
+      <a href="#pose"><b>01</b>姿态</a><a href="#stage"><b>02</b>舞台</a><a href="#land"><b>03</b>落地</a><a href="#term"><b>04</b>终端</a><a href="#input"><b>05</b>输入框</a><a href="#asks"><b>06</b>要你定</a>
+    </nav>
+    <main>
+      <section id="pose">
+        <p class="sec-k">01 · Postures</p>
+        <h2>三种姿态，按内容自动换</h2>
+        <p class="intro">不做一堆可以随便拖的面板。拖出来的布局每次都不一样，眼睛每次都要重新找。窗口只有三种样子，由你打开的东西决定；地平线一直在最上面，右上角永远是会话，右下角永远是你说话的地方。</p>
+        <div class="poses">
+          <figure><svg viewBox="0 0 300 170" aria-label="对话"><rect width="300" height="170" fill="#090a16"/><rect width="300" height="16" fill="#04050c"/><rect x="95" y="30" width="110" height="10" rx="5" fill="#1d2140"/><rect x="95" y="48" width="90" height="6" rx="3" fill="#252a4d"/><rect x="95" y="60" width="104" height="6" rx="3" fill="#252a4d"/><rect x="140" y="78" width="65" height="12" rx="6" fill="#2b3160"/><rect x="95" y="140" width="110" height="18" rx="9" fill="#141733" stroke="#3a4170" stroke-width=".6"/></svg><b>对话</b><p>平时。对话居中，两边收起。</p><small>默认</small></figure>
+          <figure><svg viewBox="0 0 300 170" aria-label="并排"><rect width="300" height="170" fill="#090a16"/><rect width="300" height="16" fill="#04050c"/><rect x="30" y="30" width="100" height="6" rx="3" fill="#252a4d"/><rect x="30" y="42" width="84" height="6" rx="3" fill="#252a4d"/><rect x="72" y="60" width="58" height="11" rx="5.5" fill="#2b3160"/><rect x="24" y="140" width="112" height="18" rx="9" fill="#141733" stroke="#3a4170" stroke-width=".6"/><rect x="160" y="22" width="132" height="140" rx="7" fill="#0f1126" stroke="#39406b" stroke-width=".6"/><rect x="172" y="40" width="80" height="6" rx="3" fill="#2a2f55"/><rect x="172" y="52" width="104" height="5" rx="2.5" fill="#20244a"/><rect x="172" y="62" width="96" height="5" rx="2.5" fill="#20244a"/></svg><b>并排</b><p>diff、Markdown、spec、终端。对话还在中间偏左，面板占 46%。</p><small>⤢ 推上舞台</small></figure>
+          <figure><svg viewBox="0 0 300 170" aria-label="舞台"><rect width="300" height="170" fill="#090a16"/><rect width="300" height="16" fill="#04050c"/><rect x="8" y="22" width="196" height="140" rx="7" fill="#05060b" stroke="#39406b" stroke-width=".6"/><text x="22" y="74" fill="#e9ecf5" font-size="30" font-weight="900" font-family="Noto Serif SC,serif">长曝光</text><rect x="22" y="88" width="120" height="4" rx="2" fill="#2a2f55"/><path d="M20 120 C80 116 120 128 196 110" stroke="#9db4ff" stroke-opacity=".5" fill="none"/><rect x="216" y="92" width="72" height="10" rx="5" fill="#2b3160"/><rect x="216" y="108" width="60" height="5" rx="2.5" fill="#252a4d"/><rect x="212" y="140" width="80" height="18" rx="9" fill="#141733" stroke="#3a4170" stroke-width=".6"/></svg><b>舞台</b><p>artifact、网页、PDF、图片。内容占大半，对话收成 372px 的窄栏，只留最近一轮。</p><small>← 或 esc 退出</small></figure>
+        </div>
+        <p class="ladder"><b>← 永远是「退一层，看得更全」</b><i>·</i>舞台 <i>←</i> 对话 <i>←</i> 长曝光盖下来 <i>·</i> 只在输入框空着时生效，打字时 ← 还是移光标</p>
+      </section>
+
+      <section id="stage">
+        <p class="sec-k">02 · Stage</p>
+        <h2>要宽度的给宽度，对话让出来</h2>
+        <p class="intro">网页和 artifact 是按宽度排版的，挤窄了就走样；对话是一栏文字，收到 372px 照样能读。所以打开这类东西时自动进舞台。<b>进去的那一下是整页唯一「重」的动作：</b>你点的那张卡片原地长大，变成舞台，同时对话往右收；退出时它缩回那张卡片，你回到原来那一行。</p>
+        <div class="wrap"><table class="map"><tbody>
+          <tr><td>Artifact、网页、PDF、图片</td><td>自动进舞台 <em>← / esc 退出</em></td></tr>
+          <tr><td>Markdown、spec、ADR、diff</td><td>并排。右上角 ⤢ 可以推上舞台，也可以从舞台放回并排</td></tr>
+          <tr><td>终端和日志</td><td>不进舞台，按你选的位置出现（第 04 节）</td></tr>
+          <tr><td>舞台里的对话</td><td>只留最近一轮和输入框，更早的收成一行「更早 3 轮」，点开或往上滚就回来。窄栏里工具条只留图标</td></tr>
+          <tr><td>舞台里的落地面板</td><td>收成 52px 的一条，只剩七个状态点；点它展开，舞台让一点</td></tr>
+          <tr><td>记住你的习惯</td><td>某一类东西你连着三次一进舞台就退出，以后它就先并排打开</td></tr>
+        </tbody></table></div>
+      </section>
+
+      <section id="land">
+        <p class="sec-k">03 · Landing</p>
+        <h2>落地：一条线，走到底，看得见，停得下</h2>
+        <p class="intro">这不是一个通用的 Git 面板，是把 <code>docs/git-guide.md</code> §3 画出来：改动、门禁、提交、合入、重启、推送、清理。按一下走到底，背后调的是你的 commit skill，所以只提交明确的路径、不绕过 hook、提交信息的格式这些规矩都照旧。</p>
+        <div class="lists">
+          <div><h3>看得见</h3><ul>
+            <li><b>面板关着也看得见。</b>跑的时候，输入框工具条上有一个小胶囊：「落地 · 门禁 2/7」。等你点头时变暖色，出错变红，做完变绿后几秒淡掉。</li>
+            <li><b>每一步写清楚在干嘛。</b>门禁一项一项亮；提交标题可以在跑之前改；重启会写出它判断的是 daemon 还是 companion。</li>
+            <li><b>推送等你点头。</b>和现在一样，<code>git push origin main</code> 的权限确认就是你的点头。</li>
+          </ul></div>
+          <div><h3>停得下</h3><ul>
+            <li><b>esc 或「打断」随时按。</b>正在跑的这一步跑完才停，不会停在合入或推送的半中间；停下后可以「继续」或「留在分支上」。</li>
+            <li><b>门禁红了自己停。</b>写出哪一项、为什么，两个出口：「让 Claude 修」或「留在分支上」。和 CLAUDE.md 里「只在红色门禁、解不开的冲突时停」一致。</li>
+            <li><b>合入冲突也停。</b>机械能解的它解；要判断的，它停下来把两边摆给你。</li>
+          </ul></div>
+        </div>
+      </section>
+
+      <section id="term">
+        <p class="sec-k">04 · Terminal</p>
+        <h2>终端放哪：四个位置，都在上面能试</h2>
+        <p class="intro">终端和预览用同一块玻璃、同一套字体和颜色：成功是薄荷绿，等你是暖色，出错是珊瑚红，没有一块突然出现的黑框。三个页签：终端、服务（daemon 和 companion 的状态和重启）、日志。<span class="k">⌃</span><span class="k">`</span> 开关。</p>
+        <div class="terms">
+          <figure class="rec2"><svg viewBox="0 0 200 120"><rect width="200" height="120" fill="#090a16"/><rect width="200" height="10" fill="#04050c"/><rect x="60" y="18" width="80" height="5" rx="2.5" fill="#252a4d"/><rect x="60" y="28" width="66" height="5" rx="2.5" fill="#252a4d"/><rect x="60" y="56" width="80" height="11" rx="5.5" fill="#141733" stroke="#3a4170" stroke-width=".5"/><rect x="5" y="74" width="190" height="41" rx="5" fill="#0d0f22" stroke="#39406b" stroke-width=".5"/><rect x="12" y="84" width="60" height="3" rx="1.5" fill="#6fe0b4" opacity=".6"/><rect x="12" y="92" width="90" height="3" rx="1.5" fill="#2a2f55"/></svg><b>底部抽屉</b><p>像 IDE。又宽又矮，正好装日志和命令输出；对话往上让。</p><em>推荐做「家」</em></figure>
+          <figure><svg viewBox="0 0 200 120"><rect width="200" height="120" fill="#090a16"/><rect width="200" height="10" fill="#04050c"/><rect x="18" y="18" width="80" height="5" rx="2.5" fill="#252a4d"/><rect x="18" y="28" width="66" height="5" rx="2.5" fill="#252a4d"/><rect x="18" y="100" width="90" height="12" rx="6" fill="#141733" stroke="#3a4170" stroke-width=".5"/><rect x="116" y="15" width="79" height="100" rx="5" fill="#0d0f22" stroke="#39406b" stroke-width=".5"/><rect x="122" y="26" width="50" height="3" rx="1.5" fill="#6fe0b4" opacity=".6"/><rect x="122" y="34" width="62" height="3" rx="1.5" fill="#2a2f55"/></svg><b>并排</b><p>占右边的面板。长时间跑的东西一直看着很舒服，但和预览抢位置。</p><small>和预览叠放</small></figure>
+          <figure><svg viewBox="0 0 200 120"><rect width="200" height="120" fill="#090a16"/><rect width="200" height="10" fill="#04050c"/><rect x="60" y="18" width="80" height="5" rx="2.5" fill="#252a4d"/><rect x="50" y="46" width="100" height="66" rx="8" fill="#141733" stroke="#3a4170" stroke-width=".5"/><rect x="54" y="50" width="92" height="44" rx="6" fill="#0d0f22"/><rect x="60" y="58" width="44" height="3" rx="1.5" fill="#6fe0b4" opacity=".6"/><rect x="60" y="66" width="70" height="3" rx="1.5" fill="#2a2f55"/></svg><b>输入框里</b><p>从输入框往上长出来，是它的一部分。跑一条命令、看一眼结果，最不打扰。</p><small>适合一次性的命令</small></figure>
+          <figure><svg viewBox="0 0 200 120"><rect width="200" height="120" fill="#090a16"/><rect width="200" height="10" fill="#04050c"/><rect x="40" y="18" width="80" height="5" rx="2.5" fill="#252a4d"/><rect x="40" y="28" width="66" height="5" rx="2.5" fill="#252a4d"/><rect x="40" y="100" width="100" height="12" rx="6" fill="#141733" stroke="#3a4170" stroke-width=".5"/><rect x="116" y="44" width="78" height="48" rx="6" fill="#0d0f22" stroke="#4a5285" stroke-width=".6"/><rect x="122" y="54" width="44" height="3" rx="1.5" fill="#6fe0b4" opacity=".6"/></svg><b>浮岛</b><p>一张浮着的小卡片，像画中画。不挤任何东西，但会盖住一角。</p><small>舞台里停在左下</small></figure>
+        </div>
+        <p class="intro">我的建议是抽屉做「家」，同时允许在输入框里用 <code>!</code> 开头跑一次性命令，结果就在输入框上方长出来，跑完一会儿自己收起。</p>
+      </section>
+
+      <section id="input">
+        <p class="sec-k">05 · Composer</p>
+        <h2>输入框：学 Claude 的克制，再多做一点</h2>
+        <div class="lists">
+          <div><h3>从 Claude 学的</h3><ul>
+            <li><b>额度只有一个圆环。</b>上下文、5 小时、每周、各个模型、云端余额，全在点开的卡片里。圆环画的是最紧的那一项，平时安静，快到了才变色。</li>
+            <li><b>一行工具，都不抢眼。</b>＋、模式、模型，都是图标加一两个字。</li>
+          </ul></div>
+          <div><h3>多做的</h3><ul>
+            <li><b>额度用完不再是一大块红框。</b>它缩成输入框里的一行，直接给出路：「挪到云端继续」。</li>
+            <li><b>提示跟着状态变。</b>输入框空着时右边写着 ← 现在会做什么：「长曝光」，在舞台里是「退出舞台」。</li>
+            <li><b>落地的状态住在工具条里。</b>不用开面板也知道走到哪一步。</li>
+            <li><b>模型和强度合成一个。</b>「Opus 5.5 · Max」，窄栏里只剩一个字。</li>
+          </ul></div>
+        </div>
+      </section>
+
+      <section id="asks">
+        <p class="sec-k">06 · Decisions</p>
+        <h2>要你定</h2>
+        <ol class="asks">
+          <li><b>终端的家放哪？</b><span>四个位置上面都能试。抽屉最像 IDE，输入框里最轻。</span><em>推荐：抽屉做家，! 命令在输入框里</em></li>
+          <li><b>落地的打断，停在哪？</b><span>现在是「这一步跑完再停」，不会半途中断 git。门禁这种可以立刻杀掉的，要不要立刻停？</span><em>推荐：门禁立刻停，其余跑完这步</em></li>
+          <li><b>「记住习惯」要不要？</b><span>某类东西你总是一进舞台就退，以后先并排开。省事，但窗口会变得不那么可预期。</span><em>推荐：要，并在舞台角上写一句「上次你放在旁边」</em></li>
+        </ol>
+      </section>
+      <p class="foot"><span>App 一行没改。落地面板里的文件和门禁来自 fdde702 这次真实的提交；会话、时间和额度数字是演示用的。</span><a href="https://claude.ai/artifact/SuuzwKu6bATLjUSHe6JqJC" target="_blank" rel="noopener">方案 B · 长曝光 ↗</a></p>
+    </main>
+  </div>
+</div>
+
+<script>
+(() => {
+  const RM = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const W = 1180, H = 740, BH = H - 56;
+  const $ = (s, r = document) => r.querySelector(s);
+  const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+  const star = (c, glow = true) => `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5 9.3 6.7 14.5 8 9.3 9.3 8 14.5 6.7 9.3 1.5 8 6.7 6.7Z" fill="${c}" ${glow ? `style="filter:drop-shadow(0 0 3px ${c})"` : ''}/></svg>`;
+  const icon = {
+    stage: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M9.5 2.5h4v4M6.5 13.5h-4v-4M13.5 2.5 9 7M2.5 13.5 7 9"/></svg>',
+    side: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="2" y="3" width="12" height="10" rx="2"/><path d="M9.5 3v10"/></svg>',
+    out: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M9 3h4v4M13 3 7.5 8.5M11 9.5V13H3V5h3.5"/></svg>',
+    x: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M4 4l8 8M12 4l-8 8"/></svg>',
+    ok: '<svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M2.5 6.2 5 8.5 9.5 3.5"/></svg>',
+    bang: '<svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M6 2.5v4.2M6 9.2v.3"/></svg>',
+    pause: '<svg viewBox="0 0 12 12" fill="currentColor"><rect x="3" y="2.5" width="2" height="7" rx=".8"/><rect x="7" y="2.5" width="2" height="7" rx=".8"/></svg>',
+  };
+
+  /* ---------- state ---------- */
+  const S = {
+    pos: 'chat', prev: null, back: 'chat', left: false, wide: false,
+    term: false, tpos: 'drawer', ttab: 'term', sky: false,
+    quota: 'out', pop: false, fail: false,
+    run: null,
+  };
+  const STEPS = [
+    { id: 'diff', t: '改动', d: '12 个文件 · <span style="color:var(--mint)">+85</span> <span style="color:#ff9f8f">−148</span> · 只加明确的路径' },
+    { id: 'gate', t: '门禁', d: 'desktop 的改动：类型检查、构建、两套 companion 验收' },
+    { id: 'commit', t: '提交', d: 'commit skill 起草，跑之前可以改' },
+    { id: 'merge', t: '合入 main', d: '<code>git merge --no-ff worktree-remove-tray</code>' },
+    { id: 'restart', t: '重启', d: '只改了 desktop/resonance，所以只重启 companion' },
+    { id: 'push', t: '推送', d: '<code>git push origin main</code> · 等你点头' },
+    { id: 'clean', t: '清理', d: '<code>git worktree remove</code> · <code>git branch -d</code>' },
+  ];
+  const GATES = ['tsc', 'build', 'verify-companion 111/111', 'live 114/114'];
+  const FILES = [
+    ['electron/companion.ts', 18, 41], ['src/Companion.tsx', 9, 27], ['src/SettingsPage.tsx', 14, 6],
+    ['scripts/verify-companion.mjs', 11, 29], ['src/AroundDashboard.tsx', 2, 9], ['… 另外 7 个', 31, 36],
+  ];
+
+  /* ---------- build the window ---------- */
+  const w = $('#w');
+  w.innerHTML = `
+  <div class="hz">
+    <div class="lights" aria-hidden="true"><i></i><i></i><i></i></div>
+    <div class="ttl"><b>jarvis companion menu bar</b><span>Claude · jarvis · ⎇ worktree-remove-tray · <i style="font-style:normal;color:var(--mint)">做完了</i></span></div>
+    <button type="button" class="pull" data-a="sky"><kbd>←</kbd>长曝光</button>
+    <div class="stars" aria-hidden="true">${['#6b7394', '#9DB4FF', '#FF7A66', '#FFC98F', '#6FE0B4', '#FFC98F', '#6C9CFF', '#FFC98F', '#6C9CFF', '#6b7394'].map((c, i) => star(c, i % 3 !== 0)).join('')}</div>
+    <div class="her blink" role="img" aria-label="她"></div>
+  </div>
+  <div class="bd">
+    <nav class="pn lp" aria-label="落地">
+      <div class="lp-w">
+        <div class="lp-h"><div><h4>落地</h4><button type="button" class="ib" data-a="left" aria-label="收起落地面板">${icon.x}</button></div>
+          <span class="br">worktree-remove-tray <i>→</i> main</span></div>
+        <ol class="pl"></ol>
+        <div class="lp-f"></div>
+      </div>
+      <div class="rail"><button type="button" data-a="wide" aria-label="展开落地面板"><b>落地</b></button></div>
+    </nav>
+    <section class="pn chat" aria-label="对话">
+      <div class="conv"><div class="conv-in">
+        <p class="you old">把刘海旁边那个菜单栏图标去掉吧，它能做的 Settings 里都有了。</p>
+        <div class="steps old"><i></i>干了 9 分钟 · 读了 14 个 · 改了 12 个 · 跑了 6 条</div>
+        <div class="it old"><p>去掉了。● 菜单里的东西都搬进了她的设置和面板，只有 <b>Agent 标记</b> 挪到 设置 › 她的样子。两栏的 Dashboard 也一起去掉：它没有设置页，只能从菜单切回来。</p></div>
+        <div class="rec old"><b>✓</b><code>verify-companion 111/111 · verify-companion-live 114/114</code><span>跑过</span></div>
+        <p class="you old">那 spec 里还写着菜单是入口吗？</p>
+        <button type="button" class="older" data-a="older">更早 3 轮</button>
+        <div class="it"><p>改了。§5 里不再把菜单算作进入她的一条路，你可以对着看一下；长曝光那一版的设计也更新了。</p></div>
+        <button type="button" class="lnk" data-a="spec"><span class="ic fi">.html</span><span><b>docs/spec.html</b><small>§5 Surface · 改了 2 行</small></span><em>并排</em></button>
+        <button type="button" class="lnk" data-a="art"><span class="ic">长</span><span><b>长曝光 Long Exposure</b><small>claude.ai/artifact/SuuzwKu6… · 第 11 版</small></span><em>舞台</em></button>
+        <div class="it"><p>要落地吗？提交、合入 main、重启 companion、推送。</p></div>
+        <div class="ask"><button type="button" data-a="land">一键落地 <kbd>⌘⏎</kbd></button><span>推送那一步会等你点头</span></div>
+      </div></div>
+      <div class="comp"><div class="box">
+        <div class="iterm"></div>
+        <div class="bn" hidden><i></i><span><b>每周额度用完了</b> · 周二 5:00 重置</span><button type="button" data-a="cloud">挪到云端继续</button></div>
+        <div class="tw"><textarea class="ta" rows="1" placeholder="给 Claude 发消息" aria-label="消息"></textarea><div class="hint"></div></div>
+        <div class="tools">
+          <button type="button" class="tb plus" aria-label="添加">＋</button>
+          <button type="button" class="tb mode"><i></i><span class="lbl">自动</span></button>
+          <span class="gap"></span>
+          <button type="button" class="land" data-a="left" hidden></button>
+          <button type="button" class="tb model">Opus 5.5 <em>· Max</em></button>
+          <button type="button" class="ring" data-a="pop" aria-label="用量"></button>
+          <button type="button" class="send" disabled aria-label="发送">↑</button>
+        </div>
+      </div></div>
+    </section>
+    <section class="pn sheet pv off" aria-label="预览">
+      <div class="sh"><span class="ic"></span><b></b><small></small>
+        <button type="button" class="ib" data-a="flip"></button>
+        <button type="button" class="ib" data-a="ext" aria-label="在新窗口打开">${icon.out}</button>
+        <button type="button" class="ib" data-a="close" aria-label="关闭预览">${icon.x}</button>
+      </div>
+      <div class="pv-body"><div class="pv-view"></div></div>
+    </section>
+    <section class="pn tm off" aria-label="终端"></section>
+  </div>
+  <div class="sky"><canvas width="1180" height="330"></canvas><p>长曝光盖住整个窗口，舞台也一样。完整的在 <a href="https://claude.ai/artifact/SuuzwKu6bATLjUSHe6JqJC" target="_blank" rel="noopener">长曝光</a> 那一页。<kbd>esc</kbd> 收起</p></div>
+  <div class="pop" hidden></div>`;
+
+  const lp = $('.lp', w), chat = $('.chat', w), pv = $('.pv', w), tm = $('.tm', w), conv = $('.conv', w);
+  const ta = $('.ta', w), hint = $('.hint', w), box = $('.box', w), iterm = $('.iterm', w);
+  const pop = $('.pop', w), ring = $('.ring', w), landChip = $('.land', w), bn = $('.bn', w), sky = $('.sky', w);
+
+  /* fit the 1180×740 window into the frame */
+  const fit = $('#fit');
+  let K = 1;
+  const scale = () => { K = fit.clientWidth / W; w.style.transform = `scale(${K})`; };
+  new ResizeObserver(scale).observe(fit); scale();
+
+  /* ---------- layout: every posture is a set of rectangles, one curve moves between them ---------- */
+  function rects() {
+    const stage = S.pos === 'stage';
+    const L = S.left ? (stage && !S.wide ? 52 : 336) : 0;
+    const a = { x: L, y: 0, w: W - L, h: BH };
+    const r = { lp: { x: 0, y: 0, w: L, h: BH }, chat: null, pv: null, tm: null };
+    const T = S.term, I = 10;
+    if (T && S.tpos === 'drawer') { r.tm = { x: L + I, y: BH - 240 - I, w: W - L - 2 * I, h: 240 }; a.h = BH - 250; }
+    if (S.pos === 'chat') {
+      r.chat = { ...a };
+      if (T && S.tpos === 'side') { const pw = Math.round(a.w * 0.44); r.tm = { x: a.x + a.w - pw, y: I, w: pw - I, h: a.h - 2 * I }; r.chat.w -= pw; }
+    } else if (S.pos === 'side') {
+      const pw = Math.round(a.w * 0.46);
+      r.pv = { x: a.x + a.w - pw, y: I, w: pw - I, h: a.h - 2 * I };
+      r.chat = { x: a.x, y: 0, w: a.w - pw, h: a.h };
+      if (T && S.tpos === 'side') { const th = Math.round((a.h - 2 * I) * 0.42); r.pv.h -= th + 8; r.tm = { x: r.pv.x, y: r.pv.y + r.pv.h + 8, w: r.pv.w, h: th }; }
+    } else {
+      const cw = 372;
+      r.chat = { x: a.x + a.w - cw, y: 0, w: cw, h: a.h };
+      r.pv = { x: a.x + I, y: I, w: a.w - cw - I, h: a.h - 2 * I };
+      if (T && S.tpos === 'side') { r.tm = { x: r.chat.x + 6, y: a.h - 262 - I, w: cw - 6 - I, h: 262 }; r.chat.h = a.h - 272; }
+    }
+    if (T && S.tpos === 'island') r.tm = stage ? { x: r.pv.x + 16, y: BH - 236 - 26, w: 440, h: 236 } : { x: W - 440 - 22, y: BH - 236 - 132, w: 440, h: 236 };
+    return r;
+  }
+  const put = (el, q) => { if (!q) return; Object.assign(el.style, { left: q.x + 'px', top: q.y + 'px', width: q.w + 'px', height: q.h + 'px' }); };
+  function layout(instant = false) {
+    instant && w.classList.add('nt');
+    const r = rects();
+    put(lp, r.lp); put(chat, r.chat);
+    pv.classList.toggle('off', !r.pv); put(pv, r.pv || { x: r.chat.x + r.chat.w - 20, y: 10, w: 20, h: r.chat.h - 20 });
+    const inBox = S.term && S.tpos === 'input';
+    tm.classList.toggle('off', !r.tm);
+    tm.classList.toggle('island', S.tpos === 'island');
+    r.tm && put(tm, r.tm);
+    box.classList.toggle('ti', inBox);
+    lp.classList.toggle('rl', S.pos === 'stage' && S.left && !S.wide);
+    lp.style.opacity = S.left ? '1' : '0';
+    lp.style.pointerEvents = S.left ? 'auto' : 'none';
+    chat.classList.toggle('nar', r.chat.w < 480);
+    r.chat.w < 480 || chat.classList.remove('all');
+    placeTerm();
+    hints();
+    instant && (w.offsetWidth, w.classList.remove('nt'));
+  }
+
+  /* ---------- the terminal: one element, moved between homes ---------- */
+  function termHTML() {
+    const tabs = [['term', '终端'], ['svc', '服务'], ['log', '日志']].map(([k, t]) => `<button type="button" class="t" role="tab" data-t="${k}" aria-selected="${S.ttab === k}">${t}</button>`).join('');
+    return `<div class="tm-h" role="tablist">${tabs}<span class="dot" title="daemon 和 companion 都在跑"></span><span class="sp"></span><button type="button" class="ib" data-a="term" aria-label="收起终端">${icon.x}</button></div><div class="tm-b"></div>`;
+  }
+  const svc = { daemon: '运行中 · 3 小时', comp: '运行中 · 41 分钟', re: false };
+  function termBody() {
+    if (S.ttab === 'svc') return `<div class="svc"><div><i></i><b>daemon</b><button type="button" data-a="kick">重启</button><small>com.allen.jarvis · ${svc.daemon}</small></div><div><i class="${svc.re ? 're' : ''}"></i><b>companion</b><button type="button" data-a="kick">重启</button><small>com.allen.jarvis.resonance · ${svc.comp}</small></div></div>`;
+    if (S.ttab === 'log') return `<div class="dim">~/.jarvis/logs/resonance.out.log</div><div>companion  single-instance lock held</div><div>companion  island look · marks: spark · 10 agents</div><div>companion  agent-keys bound: ⌥Tab</div><div class="ok">companion  ready</div><div class="dim">示例日志</div>`;
+    return `<div class="p"><b>~/Jarvis</b> worktree-remove-tray ›</div><div>npm run build --prefix desktop/resonance</div><div class="dim">building for production…</div><div class="ok">✓ built</div><div class="p"><b>~/Jarvis</b> worktree-remove-tray ›</div><div>node desktop/resonance/scripts/verify-companion.mjs</div><div class="ok">verify-companion  111/111 pass</div><div class="p"><b>~/Jarvis</b> worktree-remove-tray › <span class="cur"></span></div>`;
+  }
+  function placeTerm() {
+    const inBox = S.term && S.tpos === 'input';
+    const host = inBox ? iterm : tm;
+    let t = $('.tm-inner', w);
+    if (!t) { t = document.createElement('div'); t.className = 'tm-inner'; t.style.cssText = 'display:flex;flex-direction:column;height:100%;min-height:0'; }
+    if (inBox) { if (!iterm.firstChild) { const g = document.createElement('div'); g.className = 'tm'; iterm.append(g); } $('.tm', iterm).append(t); }
+    else if (t.parentNode !== tm) tm.append(t);
+    renderTerm();
+  }
+  function renderTerm() {
+    const t = $('.tm-inner', w);
+    if (!t) return;
+    t.innerHTML = termHTML();
+    $('.tm-b', t).innerHTML = termBody();
+  }
+
+  /* ---------- preview contents ---------- */
+  const PV = {
+    art: { ic: '长', cls: '', b: '长曝光 Long Exposure', u: 'claude.ai/artifact/SuuzwKu6bATLjUSHe6JqJC', html: () => `<div class="art"><canvas></canvas><div class="a-top"><span>JARVIS · DESIGN REVIEW · 2026-09-27</span><span>方案 A ↗ · 方案 B · 长曝光</span></div><p class="a-k">方案 B · 自主方向 · CASE STUDY</p><h2>长曝光<em>An agents window that draws time, holds what needs you, and waits for your pauses</em></h2><p>多开几个 agent 不贵，<b>贵的是你每次被叫回来的那一下。</b>输入框空着按 ←，全部会话从开始到现在像一张长曝光照片盖下来，越近的时间铺得越开。一根时间指针停在你说过的话上，右边的名单一行不动。</p><dl class="a-meta"><div><dt>范围</dt><dd>整个 Agents 窗口</dd></div><div><dt>角色</dt><dd>UI · 动效 · 交互</dd></div><div><dt>依据</dt><dd>你怎么用会话</dd></div><div><dt>版本</dt><dd>第 11 版</dd></div></dl></div>` },
+    spec: { ic: '.html', cls: 'fi', b: 'docs/spec.html', u: '§5 Surface', html: () => `<div class="doc"><p class="d-k">SPEC · §3 ARCHITECTURE</p><h3>六层</h3><p>Jarvis 有六层。<code>runtime/</code> 是唯一可以跨层接线的地方，<code>lint-imports</code> 是架构门禁。</p><ol><li><b>L1</b>constitution</li><li><b>L2</b>state</li><li><b>L3</b>decision</li><li><b>L4</b>execution</li><li class="hl"><b>L5</b>surface · 这次改的是这一层：companion 的入口</li><li><b>L6</b>deployment</li></ol><p class="d-k" style="margin-top:22px">§5 SURFACE</p><h3>进入她的方式</h3><p>双击刘海里的她，打开 Dashboard；设置在 Dashboard 和 ⌥Tab 里。<s style="color:var(--faint)">菜单栏的 ● 菜单也可以打开设置。</s></p><p class="note">这一行在 fdde702 里删掉了：菜单栏图标已经不在。</p></div>` },
+  };
+  function fillPreview(k) {
+    const p = PV[k];
+    const ic = $('.sh .ic', pv);
+    ic.textContent = p.ic; ic.className = 'ic ' + p.cls;
+    $('.sh b', pv).textContent = p.b; $('.sh small', pv).textContent = p.u;
+    const v = $('.pv-view', pv);
+    v.innerHTML = p.html(); v.scrollTop = 0;
+    flipIcon();
+    k === 'art' && requestAnimationFrame(drawArt);
+  }
+  function flipIcon() {
+    const f = $('[data-a="flip"]', pv);
+    f.innerHTML = S.pos === 'stage' ? icon.side : icon.stage;
+    f.setAttribute('aria-label', S.pos === 'stage' ? '放回旁边' : '推上舞台');
+    f.title = S.pos === 'stage' ? '放回旁边' : '推上舞台';
+  }
+  function drawArt() {
+    const c = $('.art canvas', pv); if (!c) return;
+    const r = c.getBoundingClientRect(), d = Math.min(2, devicePixelRatio || 1);
+    const cw = c.offsetWidth, ch = c.offsetHeight;
+    c.width = cw * d; c.height = ch * d;
+    const g = c.getContext('2d'); g.scale(d, d);
+    for (let i = 0; i < 26; i++) {
+      const y = 30 + i * 8.5, a = 0.05 + (i % 5) * 0.03;
+      g.strokeStyle = i % 7 === 3 ? `rgba(255,201,143,${a + .12})` : `rgba(157,180,255,${a})`;
+      g.lineWidth = 1; g.beginPath();
+      g.moveTo(cw * 0.42, y);
+      g.bezierCurveTo(cw * 0.62, y - 40 + i * 3, cw * 0.8, y + 30 - i, cw, y - 60 + i * 5);
+      g.stroke();
+    }
+  }
+
+  /* ---------- stage: the card you clicked grows into the stage and shrinks back ---------- */
+  let busy = false;
+  const rel = (el) => { const a = el.getBoundingClientRect(), b = w.getBoundingClientRect(); return { x: (a.left - b.left) / K, y: (a.top - b.top) / K, w: a.width / K, h: a.height / K }; };
+  const bodyRect = (q) => ({ x: q.x, y: q.y + 56, w: q.w, h: q.h });
+  function ghostFly(from, to, ms = 460) {
+    const g = document.createElement('div'); g.className = 'ghost';
+    Object.assign(g.style, { left: from.x + 'px', top: from.y + 'px', width: from.w + 'px', height: from.h + 'px' });
+    w.append(g);
+    if (RM) { g.remove(); return Promise.resolve(); }
+    const an = g.animate([
+      { left: from.x + 'px', top: from.y + 'px', width: from.w + 'px', height: from.h + 'px', borderRadius: '12px' },
+      { left: to.x + 'px', top: to.y + 'px', width: to.w + 'px', height: to.h + 'px', borderRadius: '14px' },
+    ], { duration: ms, easing: 'cubic-bezier(.22,.8,.24,1)', fill: 'forwards' });
+    return an.finished.then(() => { g.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 160, fill: 'forwards' }).finished.then(() => g.remove()); });
+  }
+  const fadeConv = (to) => (conv.style.opacity = to);
+  async function open(k) {
+    if (busy) return;
+    const target = k === 'art' ? 'stage' : 'side';
+    const card = $(`.lnk[data-a="${k}"]`, w);
+    if (S.prev === k && S.pos === target) return;
+    busy = true;
+    S.back = S.pos === 'stage' || S.pos === 'side' ? S.back : S.pos;
+    const from = rel(card);
+    $$('.lnk', w).forEach((e) => e.classList.toggle('on', e === card));
+    S.prev = k; fillPreview(k);
+    const wasPos = S.pos; S.pos = target;
+    pv.style.opacity = '0';
+    if (target === 'stage' && wasPos !== 'stage') { fadeConv(0); await wait(120); }
+    layout(); flipIcon();
+    const to = bodyRect(rects().pv);
+    await ghostFly(from, to);
+    pv.style.opacity = ''; fadeConv(1);
+    if (target === 'stage') keepCardInView();
+    busy = false;
+    tip(target === 'stage' ? '舞台' : '并排', target === 'stage'
+      ? '卡片长成了舞台，对话收成右边一条，只留最近一轮。输入框空着按 ← 或 esc 退出，它会缩回那张卡片。右上角可以放回旁边。'
+      : '文档在旁边并排打开，对话还在。右上角 ⤢ 推上舞台，✕ 关掉。');
+  }
+  function keepCardInView() { const c = $('.lnk.on', w); c && c.scrollIntoView({ block: 'nearest' }); }
+  async function closePreview() {
+    if (busy || !S.prev) return;
+    busy = true;
+    const k = S.prev, card = $(`.lnk[data-a="${k}"]`, w);
+    const from = bodyRect(rects().pv);
+    const wasStage = S.pos === 'stage';
+    // where the card will sit once the chat has its width back
+    S.pos = 'chat'; if (S.back === 'stage' || S.back === 'side') S.back = 'chat';
+    wasStage && fadeConv(0);
+    w.classList.add('nt'); const saved = { ...rects().chat }; put(chat, saved); chat.classList.toggle('nar', saved.w < 480);
+    conv.offsetWidth; const to = rel(card);
+    S.pos = wasStage ? 'stage' : 'side'; layout(true); S.pos = 'chat';
+    pv.style.opacity = '0';
+    requestAnimationFrame(() => { layout(); });
+    await ghostFly(from, to, 420);
+    $$('.lnk', w).forEach((e) => e.classList.remove('on'));
+    S.prev = null; pv.style.opacity = ''; fadeConv(1);
+    card.animate && !RM && card.animate([{ boxShadow: 'inset 0 0 0 1px rgb(157 180 255 / .8)' }, { boxShadow: 'inset 0 0 0 .5px rgb(157 180 255 / .22)' }], { duration: 900, easing: 'ease-out' });
+    busy = false;
+    tip('回来了', '缩回了那张卡片，你还在原来那一行。再按一次 ←，长曝光盖下来。');
+  }
+  async function flip() {
+    if (busy || !S.prev) return;
+    const toStage = S.pos !== 'stage';
+    toStage && fadeConv(0);
+    toStage && (await wait(110));
+    S.pos = toStage ? 'stage' : 'side'; layout(); flipIcon();
+    await wait(260); fadeConv(1);
+    S.prev === 'art' && requestAnimationFrame(drawArt);
+  }
+
+  /* ---------- the long exposure, over everything ---------- */
+  function drawSky() {
+    const c = $('canvas', sky), g = c.getContext('2d');
+    g.clearRect(0, 0, 1180, 330);
+    const cols = ['#9DB4FF', '#FF7A66', '#9DB4FF', '#FFC98F', '#FFC98F', '#6C9CFF', '#FFC98F', '#6C9CFF', '#9DB4FF', '#9DB4FF'];
+    const names = ['claude agent hub backend', 'jarvis travel booking', '9.24 mac alarm mode', 'jarvis companion menu bar', '把首页接到守护进程上', 'boob sound lab', 'timesink daily narrative', 'Notion plugin sign-in', 'jarvis onboarding flow', 'readme broken links'];
+    for (let i = 0; i < 10; i++) {
+      const y = 28 + i * 26, x0 = 60 + ((i * 97) % 380);
+      g.strokeStyle = 'rgba(157,180,255,.35)'; g.lineWidth = 1.2; g.beginPath(); g.moveTo(x0, y); g.lineTo(918, y); g.stroke();
+      if (cols[i] === '#FFC98F') { g.save(); g.shadowColor = 'rgba(255,201,143,.8)'; g.shadowBlur = 8; g.strokeStyle = '#FFC98F'; g.lineWidth = 2.4; g.beginPath(); g.moveTo(918 - 60 - i * 8, y); g.lineTo(918, y); g.stroke(); g.restore(); }
+      g.fillStyle = i === 3 ? '#EEF0FB' : 'rgba(196,204,238,.72)'; g.font = `${i === 3 ? 600 : 450} 13px -apple-system, "PingFang SC", sans-serif`; g.textBaseline = 'middle'; g.fillText(names[i], 946, y);
+      g.fillStyle = cols[i]; g.beginPath(); g.arc(918, y, 2.6, 0, 7); g.fill();
+    }
+  }
+  function toggleSky(on) {
+    S.sky = on; sky.classList.toggle('on', on); w.classList.toggle('dim', on);
+    on && drawSky();
+    on && tip('长曝光', '← 在舞台里先退出舞台，在对话里再按才盖下长曝光：永远是退一层、看得更全。它盖住整个窗口，舞台也一样。esc 收起。');
+  }
+
+  /* ---------- landing ---------- */
+  const R = { i: -1, s: 'idle', gates: 0, stop: false, tok: 0, msg: "feat(desktop): drop the companion's menu bar item" };
+  function stepState(j) {
+    if (R.s === 'idle') return 'todo';
+    if (j < R.i) return 'ok';
+    if (j > R.i) return R.s === 'done' ? 'ok' : 'todo';
+    return { run: 'run', wait: 'wait', paused: 'paused', fail: 'fail', done: 'ok', stopping: 'run' }[R.s] ?? 'todo';
+  }
+  function renderLand() {
+    const ol = $('.pl', w);
+    ol.innerHTML = STEPS.map((s, j) => {
+      const st = stepState(j);
+      const n = st === 'ok' ? icon.ok : st === 'run' ? '<span class="spin"></span>' : st === 'fail' ? icon.bang : st === 'paused' ? icon.pause : j + 1;
+      let extra = '';
+      if (s.id === 'diff') extra = `<ul class="files">${FILES.map(([f, p, m]) => `<li><span>${f}</span><i><span class="p">+${p}</span> <span class="m">−${m}</span></i></li>`).join('')}</ul>`;
+      if (s.id === 'gate') extra = `<div class="gates">${GATES.map((g, k) => { const c = R.s === 'idle' || j > R.i ? '' : j < R.i || k < R.gates ? 'ok' : st === 'fail' && k === R.gates ? 'er' : st === 'run' && k === R.gates ? 'run' : ''; const t = st === 'fail' && k === R.gates && k === 2 ? 'verify-companion 110/111' : g; return `<span class="${c}">${c === 'ok' ? '✓ ' : c === 'er' ? '✕ ' : ''}${t}</span>`; }).join('')}</div>` + (st === 'fail' ? `<p class="why er">Settings › Her look 里找不到「Agent 标记」这一项：验收脚本还在找旧的 Dashboard 布局开关。</p><div class="row2"><button type="button" class="pri" data-a="fix">让 Claude 修</button><button type="button" data-a="stay">留在分支上</button></div>` : '');
+      if (s.id === 'commit') extra = `<input class="msg" id="landmsg" value="${esc(R.msg)}" aria-label="提交标题" ${R.i > j ? 'disabled' : ''}>`;
+      if (s.id === 'push' && st === 'wait') extra = `<p class="why wr">这是 Claude Code 的权限确认：你点「允许」，它才推。拒绝的话，main 留在本地。</p><div class="row2"><button type="button" class="pri" data-a="allow">允许</button><button type="button" data-a="deny">拒绝</button></div>`;
+      if (st === 'paused') extra += `<p class="why wr">打断在这里：上一步跑完了，这一步还没开始。</p><div class="row2"><button type="button" class="pri" data-a="resume">继续</button><button type="button" data-a="stay">留在分支上</button></div>`;
+      if (s.id === 'restart' && (st === 'run' || st === 'ok')) extra = `<p class="d" style="margin-top:4px"><code>launchctl kickstart -k gui/$UID/com.allen.jarvis.resonance</code></p>`;
+      const time = st === 'ok' ? ['0.2s', '6.1s', '0.4s', '0.6s', '2.3s', '1.1s', '0.3s'][j] : '';
+      return `<li class="st" data-s="${st}"><span class="n">${n}</span><div><h5>${s.t}<em>${time}</em></h5><div class="d">${s.d}</div>${extra}</div></li>`;
+    }).join('');
+    // keep the step that is moving in view, gently
+    const cur = $('.st[data-s="run"],.st[data-s="wait"],.st[data-s="paused"],.st[data-s="fail"]', ol);
+    if (cur && S.left) {
+      const top = cur.offsetTop - ol.offsetTop, bot = top + cur.offsetHeight;
+      (top < ol.scrollTop || bot > ol.scrollTop + ol.clientHeight) && ol.scrollTo({ top: Math.max(0, bot - ol.clientHeight + 12), behavior: RM ? 'auto' : 'smooth' });
+    }
+    const f = $('.lp-f', w);
+    f.innerHTML = R.s === 'run' || R.s === 'stopping'
+      ? `<small>${R.s === 'stopping' ? '这一步跑完就停…' : '一步一步在走，你可以继续干别的'}</small><button type="button" data-a="stop" ${R.s === 'stopping' ? 'disabled' : ''}>打断 <kbd>esc</kbd></button>`
+      : R.s === 'done' ? `<small style="color:var(--mint)">落地完成 · companion 刚重启</small><button type="button" data-a="svc">看服务</button>`
+        : R.s === 'idle' ? `<button type="button" class="pri" data-a="land">一键落地 <kbd>⌘⏎</kbd></button>`
+          : `<small>${R.s === 'wait' ? '等你点头' : R.s === 'fail' ? '门禁没过，停在这里' : '停在这里'}</small>`;
+    // the rail and the chip
+    $('.rail', w).innerHTML = `<button type="button" data-a="wide" aria-label="展开落地面板"><b>落地</b>${STEPS.map((_, j) => `<i data-s="${stepState(j)}"></i>`).join('')}</button>`;
+    const chipS = { run: 'run', stopping: 'run', wait: 'wait', paused: 'paused', fail: 'fail', done: 'done' }[R.s];
+    landChip.hidden = !chipS; landChip.dataset.s = chipS || '';
+    if (chipS) {
+      const lab = R.s === 'done' ? '落地完成' : R.s === 'wait' ? '落地 · 等你点头' : R.s === 'fail' ? '落地 · 门禁没过' : R.s === 'paused' ? `落地 · 停在${STEPS[R.i].t}前` : `落地 · ${STEPS[R.i].t} ${R.i + 1}/7`;
+      const pr = R.s === 'done' ? 1 : (R.i + (R.s === 'run' ? 0.5 : 0)) / 7;
+      const col = { run: '#6C9CFF', wait: '#FFC98F', paused: '#FFC98F', fail: '#FF7A66', done: '#6FE0B4' }[chipS];
+      landChip.innerHTML = `<svg viewBox="0 0 14 14" style="transform:rotate(-90deg)"><circle cx="7" cy="7" r="5.5" fill="none" stroke="rgba(255,255,255,.12)" stroke-width="1.6"/><circle cx="7" cy="7" r="5.5" fill="none" stroke="${col}" stroke-width="1.6" stroke-linecap="round" stroke-dasharray="${(pr * 34.56).toFixed(2)} 40"/></svg><span class="lbl">${lab}</span>`;
+    }
+  }
+  const DUR = [450, 0, 700, 900, 1500, 0, 600];
+  async function runFrom(i) {
+    const tok = ++R.tok, gone = () => tok !== R.tok || R.s === 'paused' || R.s === 'idle';
+    for (R.i = i; R.i < STEPS.length; R.i++) {
+      if (R.stop) { R.stop = false; R.s = 'paused'; renderLand(); tip('打断', '停在两步之间：上一步完整跑完了，git 不会停在半中间。「继续」从这里接着走，「留在分支上」就到此为止。'); return; }
+      R.s = 'run'; renderLand();
+      const id = STEPS[R.i].id;
+      if (id === 'gate') {
+        for (R.gates = 0; R.gates < GATES.length; R.gates++) {
+          renderLand(); await wait(700);
+          if (gone()) return;
+          if (S.fail && R.gates === 2) { R.s = 'fail'; renderLand(); tip('门禁没过', '红了就自己停：写出哪一项、为什么。「让 Claude 修」修好后从门禁重跑；「留在分支上」就不落地。'); return; }
+        }
+        R.gates = GATES.length;
+      } else if (id === 'commit') {
+        const m = $('#landmsg'); m && (R.msg = m.value || R.msg); await wait(DUR[R.i]);
+        if (gone()) return;
+      } else if (id === 'push') {
+        R.s = 'wait'; renderLand(); tip('等你点头', '推送前停下来等你：这就是 Claude Code 的权限确认。输入框上的小胶囊也变成了暖色。');
+        return;
+      } else if (id === 'restart') {
+        svc.re = true; svc.comp = '重启中'; renderTerm(); await wait(DUR[R.i]); svc.re = false; svc.comp = '运行中 · 刚刚'; renderTerm();
+        if (gone()) return;
+      } else { await wait(DUR[R.i]); if (gone()) return; }
+    }
+    R.i = STEPS.length - 1; R.s = 'done'; renderLand();
+    tip('落地完成', '七步都绿了。胶囊变绿，几秒后淡掉；终端的「服务」页里 companion 写着刚刚重启。');
+    setTimeout(() => { if (R.s === 'done') { landChip.animate && !RM ? landChip.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 600, fill: 'forwards' }).finished.then(() => { landChip.hidden = true; landChip.getAnimations().forEach((a) => a.cancel()); }) : (landChip.hidden = true); } }, 4200);
+  }
+  function startLanding() {
+    if (R.s === 'run' || R.s === 'stopping' || R.s === 'wait') { S.left || openLeft(); return; }
+    if (R.s === 'done') { tip('已经落地了', '点「重来」可以再看一遍。'); return; }
+    R.stop = false; R.gates = 0;
+    runFrom(R.s === 'paused' || R.s === 'fail' ? R.i : 0);
+    S.left || openLeft();
+    tip('一键落地', '左边一条线走到底：改动、门禁、提交、合入、重启、推送、清理。面板关着也能在输入框上的小胶囊看进度。esc 或「打断」随时停。');
+  }
+  function openLeft() { S.left = true; S.wide = false; layout(); }
+  function stopLanding() {
+    if (R.s !== 'run') return;
+    if (STEPS[R.i].id === 'gate') { R.stop = false; R.s = 'paused'; R.gates = 0; renderLand(); tip('打断', '门禁可以立刻停，它不改任何东西。「继续」会从门禁重新跑。'); return; }
+    R.stop = true; R.s = 'stopping'; renderLand();
+  }
+
+  /* ---------- usage ---------- */
+  const Q = {
+    out: { ctx: [234.5, 1000], five: 0, week: 100, fable: 6, cloud: [124, 250] },
+    ok: { ctx: [234.5, 1000], five: 18, week: 64, fable: 6, cloud: [124, 250] },
+  };
+  function ringHTML() {
+    const q = Q[S.quota], top = Math.max(q.five, q.week, q.ctx[0] / q.ctx[1] * 100);
+    const col = top >= 100 ? '#FF7A66' : top >= 80 ? '#FFC98F' : 'rgba(157,180,255,.85)';
+    ring.innerHTML = `<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" fill="none" stroke="rgba(255,255,255,.14)" stroke-width="2"/><circle cx="8" cy="8" r="6" fill="none" stroke="${col}" stroke-width="2" stroke-linecap="round" stroke-dasharray="${(Math.min(100, top) / 100 * 37.7).toFixed(2)} 40"/></svg>`;
+    ring.title = top >= 100 ? '每周额度 100% · 周二 5:00 重置' : `最紧的一项：每周 ${q.week}%`;
+    bn.hidden = !(top >= 100);
+  }
+  function popHTML() {
+    const q = Q[S.quota], pc = (v) => `${v}%`;
+    const bar = (v, c) => `<span class="bar"><i style="width:${Math.min(100, v)}%;background:${c}"></i></span>`;
+    const barCol = (v) => (v >= 100 ? '#FF7A66' : v >= 80 ? '#FFC98F' : '#6C9CFF');
+    return `<div class="sec" style="padding-top:0"><h5>上下文<b>${q.ctx[0]}k / 1M · 23%</b></h5><div class="row" style="margin-top:6px"><span class="bar"><i style="width:12%;background:#6C9CFF"></i><i style="width:2%;background:#FF7A66"></i><i style="width:1.4%;background:#FFC98F"></i><i style="width:1%;background:#6FE0B4"></i><i style="width:6.6%;background:rgba(196,204,238,.35)"></i></span></div></div>
+      <div class="sec"><p class="sub">套餐 · Max (20x)</p>
+        <div class="row"><span>5 小时</span><em>${pc(q.five)}</em>${bar(q.five, barCol(q.five))}</div>
+        <div class="row"><span>每周 · 全部模型</span><em><small>周二 5:00 重置</small>${pc(q.week)}</em>${bar(q.week, barCol(q.week))}</div>
+        <div class="row"><span>每周 · Fable</span><em><small>周二 5:00 重置</small>${pc(q.fable)}</em>${bar(q.fable, barCol(q.fable))}</div></div>
+      <div class="sec"><div class="row" style="margin-top:0"><span>云端会话余额</span><em>$${q.cloud[0]} / $${q.cloud[1]}</em>${bar(q.cloud[0] / q.cloud[1] * 100, '#6C9CFF')}</div><p class="note">11 月 4 日 23:59 到期</p></div>
+      <div class="act">${q.week >= 100 ? '<button type="button" class="pri" data-a="cloud">挪到云端继续</button>' : ''}<button type="button" data-a="detail">看明细</button></div>`;
+  }
+  function togglePop(on = !S.pop) {
+    S.pop = on; pop.hidden = !on;
+    if (!on) return;
+    pop.innerHTML = popHTML();
+    const r = rel(ring);
+    pop.style.left = Math.min(W - 350, r.x + r.w - 340) + 'px';
+    pop.style.top = (r.y - pop.offsetHeight - 8) + 'px';
+    !RM && pop.animate([{ opacity: 0, transform: 'translateY(4px) scale(.98)' }, { opacity: 1, transform: 'none' }], { duration: 180, easing: 'cubic-bezier(.22,.8,.24,1)' });
+  }
+
+  /* ---------- hints and tips ---------- */
+  function hints() {
+    const empty = !ta.value;
+    const back = S.sky ? '' : S.pos === 'stage' ? '退出舞台' : S.pos === 'side' ? '关掉旁边' : '长曝光';
+    hint.innerHTML = empty && back ? `<span><kbd>←</kbd>${back}</span><span class="hk2"><kbd>⌃</kbd><kbd>\`</kbd>终端</span>` : '';
+    chat.classList.contains('nar') && $('.hk2', hint) && $('.hk2', hint).remove();
+    $('.send', w).disabled = empty;
+  }
+  function tip(k, t) { $('#tipK').textContent = k; $('#tipT').textContent = t; }
+
+  /* ---------- events ---------- */
+  w.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-a]');
+    if (!b) { S.pop && !e.target.closest('.pop') && togglePop(false); return; }
+    const a = b.dataset.a;
+    if (a !== 'pop' && S.pop && !e.target.closest('.pop')) togglePop(false);
+    ({
+      art: () => open('art'), spec: () => open('spec'), close: closePreview, flip,
+      ext: () => tip('新窗口', '在浏览器里单独打开。演示里不跳转。'),
+      sky: () => (S.pos === 'stage' || S.pos === 'side' ? closePreview() : toggleSky(!S.sky)),
+      left: () => { S.left = !S.left; S.wide = false; layout(); },
+      wide: () => { S.wide = !S.wide; layout(); },
+      land: startLanding, stop: stopLanding,
+      allow: async () => { R.s = 'run'; renderLand(); await wait(1100); runFrom(R.i + 1); },
+      deny: () => { R.s = 'paused'; renderLand(); tip('没推', 'main 已经合好了，只是留在本地。「继续」会再问你一次。'); },
+      resume: () => { R.s = 'run'; R.gates = 0; runFrom(R.i); },
+      fix: async () => { R.s = 'run'; R.gates = 2; renderLand(); tip('让 Claude 修', '它改了验收脚本里找的那一项，然后从门禁重新跑。'); S.fail = false; setChip('fail', false); await wait(900); runFrom(1); },
+      stay: () => { R.tok++; R.s = 'idle'; R.i = -1; renderLand(); tip('留在分支上', 'worktree-remove-tray 还在，什么都没合进 main。'); },
+      term: () => toggleTerm(), kick: async () => { svc.re = true; svc.comp = '重启中'; renderTerm(); await wait(1200); svc.re = false; svc.comp = '运行中 · 刚刚'; renderTerm(); },
+      svc: () => { S.ttab = 'svc'; S.term || toggleTerm(true); renderTerm(); },
+      pop: () => togglePop(), cloud: () => { togglePop(false); tip('挪到云端', '把这个会话接到云端继续，用云端余额（还剩 $124）。本地额度周二 5:00 重置。'); },
+      detail: () => tip('明细', '跳到 claude.ai 的用量页。演示里不跳转。'),
+      older: () => { chat.classList.add('all'); conv.scrollTop = 0; },
+    }[a] || (() => {}))();
+  });
+  w.addEventListener('click', (e) => { const t = e.target.closest('.tm-h .t'); if (t) { S.ttab = t.dataset.t; renderTerm(); } });
+  w.addEventListener('input', (e) => { if (e.target === ta) { ta.style.height = 'auto'; ta.style.height = Math.min(96, ta.scrollHeight) + 'px'; hints(); } if (e.target.id === 'landmsg') R.msg = e.target.value; });
+  w.addEventListener('keydown', (e) => {
+    if (e.target.id === 'landmsg') return;
+    const inTa = e.target === ta, empty = !ta.value;
+    if (e.key === 'ArrowLeft' && (!inTa || empty)) {
+      e.preventDefault();
+      if (S.sky) return;
+      if (S.pos === 'stage' || S.pos === 'side') closePreview(); else toggleSky(true);
+      return;
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      if (S.pop) return togglePop(false);
+      if (S.sky) return toggleSky(false);
+      if (S.pos === 'stage') return closePreview();
+      if (R.s === 'run') return stopLanding();
+      return;
+    }
+    if (e.key === '`' && e.ctrlKey) { e.preventDefault(); toggleTerm(); return; }
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); startLanding(); }
+  });
+  w.addEventListener('pointerdown', () => { document.activeElement === document.body && w.focus({ preventScroll: true }); });
+  ta.addEventListener('focus', hints);
+
+  function toggleTerm(on = !S.term) {
+    S.term = on; layout(); setChip('term', on);
+    on && tip('终端', { drawer: '底部抽屉：像 IDE，对话往上让。和预览、落地面板都不冲突。', side: '并排：占右边的面板；有预览时叠在它下面，舞台里叠在窄栏下面。', input: '输入框里：从输入框往上长出来，是它的一部分。最不打扰，适合一次性的命令。', island: '浮岛：浮着的小卡片，不挤任何东西；舞台里停在左下角。' }[S.tpos]);
+  }
+  function setChip(c, on) { const b = $(`[data-c="${c}"]`); b && b.setAttribute('aria-pressed', String(on)); }
+
+  /* caption controls */
+  $$('[data-c]').forEach((b) => b.addEventListener('click', () => {
+    const c = b.dataset.c;
+    if (c === 'art' || c === 'spec') { (S.prev === c ? closePreview() : open(c)); }
+    else if (c === 'land') startLanding();
+    else if (c === 'fail') { S.fail = !S.fail; setChip('fail', S.fail); tip(S.fail ? '门禁会失败' : '门禁会通过', S.fail ? '下一次落地会在 verify-companion 那一项红掉，看它怎么停。' : '门禁会全部通过。'); }
+    else if (c === 'term') toggleTerm();
+    else if (c === 'reset') reset();
+    w.focus({ preventScroll: true });
+  }));
+  const seg = (id, fn) => $$(`#${id} button`).forEach((b) => b.addEventListener('click', () => { $$(`#${id} button`).forEach((x) => x.setAttribute('aria-pressed', String(x === b))); fn(b.dataset.v); }));
+  seg('tpos', (v) => { S.tpos = v; S.term ? toggleTerm(true) : toggleTerm(true); });
+  seg('quota', (v) => { S.quota = v; ringHTML(); S.pop && togglePop(true); tip('额度', v === 'out' ? '用完时，圆环变红，输入框里多一行，直接给出路：挪到云端继续。不再是一大块红框。' : '平时圆环只画最紧的那一项，安静地待着；点开才看到全部。'); });
+
+  function reset() {
+    Object.assign(S, { pos: 'chat', prev: null, back: 'chat', left: false, wide: false, term: false, sky: false, pop: false, fail: false, ttab: 'term' });
+    Object.assign(R, { i: -1, s: 'idle', gates: 0, stop: false, tok: R.tok + 1 });
+    Object.assign(svc, { comp: '运行中 · 41 分钟', re: false });
+    pop.hidden = true; toggleSky(false); pv.style.opacity = ''; fadeConv(1);
+    $$('.lnk', w).forEach((e) => e.classList.remove('on'));
+    ['fail', 'term'].forEach((c) => setChip(c, false));
+    ta.value = ''; renderLand(); ringHTML(); layout(true);
+    conv.scrollTop = conv.scrollHeight;
+    tip('试试', '点对话里的「长曝光」卡片，它会展开成舞台；输入框空着按 ← 退出，再按一次 ←，长曝光盖下来。点输入框右下角的圆环看额度。');
+  }
+  renderLand(); ringHTML(); layout(true);
+  conv.scrollTop = conv.scrollHeight;
+})();
+</script>
+
+</body></html>

@@ -319,6 +319,8 @@ function companion(shown?: () => void) {
   // ADR 0073: the Agents window, from the Dashboard's Agents page. Live only: its sessions are real. Not in the
   // installed app yet: it runs on Allen's own subscription.
   const agentsWindow = !demo && !app.isPackaged ? setupAgents({ preload: path.join(here, 'preload.cjs'), page: path.join(here, '../dist/agents.html'), host: path.join(here, 'agents/host.js'), trustedWindows: dashboard.windows }) : null;
+  // A landing that restarted this companion comes back to its window (ADR 0085).
+  agentsWindow?.reopen();
   // Spec §15.3: ⌥Tab opens the island's list of agent sessions for the keys, and closes it again.
   if (!demo && !globalShortcut.register('Alt+Tab', () => { if (!agentsWindow?.next()) win.webContents.send('command', 'agent-keys'); })) console.warn('Shortcut unavailable: Alt+Tab');
   app.on('will-quit', () => globalShortcut.unregister('Alt+Tab'));

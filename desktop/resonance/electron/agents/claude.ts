@@ -16,7 +16,7 @@ import type { Choice, Ctx, CtxRow, Diff, File, Pic, Req, Step } from './types.js
 
 // Allen's subscription, never an API key; and nothing that says this runs inside another Claude Code session. The
 // marker keeps Jarvis's own PermissionRequest hook (ADR 0049) out of sessions this window answers itself.
-const ENV: Record<string, string | undefined> = Object.fromEntries(Object.entries(process.env)
+export const ENV: Record<string, string | undefined> = Object.fromEntries(Object.entries(process.env)
   .filter(([k]) => !/^(ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|CLAUDECODE|CLAUDE_CODE_|CLAUDE_JOB)/.test(k)));
 ENV.JARVIS_AGENTS_HOST = '1';
 // The Claude Code install on this Mac, which moves to each new release (and its new models) without a Jarvis release;

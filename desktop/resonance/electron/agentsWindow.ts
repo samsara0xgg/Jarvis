@@ -1,6 +1,6 @@
-import { BrowserWindow, dialog, ipcMain, shell } from 'electron';
+import { BrowserWindow, dialog, ipcMain, session, shell } from 'electron';
 import { spawn, execFile } from 'node:child_process';
-import { closeSync, existsSync, mkdirSync, openSync, statSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { daemonToken } from './bridge.js';
@@ -72,23 +72,52 @@ export function setupAgents({ preload, page, host, trustedWindows }: { preload: 
     execFile('/usr/bin/osascript', ['-e', GHOSTTY_RUN, `cd ${quote(cwd)} && ${cmd}`], { timeout: 8000 }, error => resolve(!error));
   }));
   ipcMain.handle('agents-reveal', (event, cwd: unknown) => { if (mine(event) && typeof cwd === 'string' && path.isAbsolute(cwd)) void shell.openPath(cwd); });
-  async function open() {
+  // The workbench (ADR 0085-0087): a page or file in the real browser or its own app, and a session handed to the cloud.
+  ipcMain.handle('agents-open-url', (event, url: unknown) => { if (mine(event) && typeof url === 'string' && /^https?:\/\//i.test(url) && url.length < 4096) void shell.openExternal(url); });
+  ipcMain.handle('agents-open-path', (event, file: unknown) => { if (mine(event) && typeof file === 'string' && path.isAbsolute(file) && existsSync(file)) void shell.openPath(file); });
+  ipcMain.handle('agents-cloud', (event, cwd: unknown, text: unknown) => new Promise<boolean>(resolve => {
+    if (!mine(event) || typeof cwd !== 'string' || typeof text !== 'string' || !text.trim() || text.length > 600 || !path.isAbsolute(cwd) || !existsSync(cwd) || !statSync(cwd).isDirectory()) { resolve(false); return; }
+    execFile('/usr/bin/osascript', ['-e', GHOSTTY_RUN, `cd ${quote(cwd)} && claude --cloud ${quote(text.replace(/\s+/g, ' ').trim())}`], { timeout: 8000 }, error => resolve(!error));
+  }));
+  // Previews run in their own browser: a partition of their own that never gets the daemon key, no preload, no Node,
+  // new windows go to the real browser, and every permission is refused.
+  const web = session.fromPartition('persist:agents-web');
+  web.setPermissionRequestHandler((_, permission, callback) => callback(permission === 'clipboard-sanitized-write' || permission === 'fullscreen'));
+  async function open(id = '') {
     if (win && !win.isDestroyed()) { win.show(); win.focus(); return; }
     await ensureHost(host);
     win = new BrowserWindow({ width: 1180, height: 780, minWidth: 720, minHeight: 520, show: false, title: 'Agents',
       titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 14, y: 14 }, backgroundColor: '#0c0d20',
       // Her sounds play before the window is first touched: a session finishing while the window just sits open chimes.
-      webPreferences: { preload, contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: true, autoplayPolicy: 'no-user-gesture-required' } });
+      webPreferences: { preload, contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: true, autoplayPolicy: 'no-user-gesture-required', webviewTag: true } });
     win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     win.webContents.on('will-navigate', event => event.preventDefault());
+    win.webContents.on('will-attach-webview', (event, prefs, params) => {
+      delete prefs.preload;
+      Object.assign(prefs, { nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true });
+      params.partition = 'persist:agents-web';
+      if (!/^(https?|file):/i.test(params.src ?? '')) event.preventDefault();
+    });
+    win.webContents.on('did-attach-webview', (_, guest) => {
+      guest.setWindowOpenHandler(({ url }) => { if (/^https?:\/\//i.test(url)) void shell.openExternal(url); return { action: 'deny' }; });
+    });
     win.on('focus', publish); win.on('blur', publish);
     win.on('closed', () => { win = null; publish(); });
-    win.loadFile(page, { query: { port: AGENTS_PORT } });
+    win.loadFile(page, { query: { port: AGENTS_PORT, ...(id ? { open: id } : {}) } });
     win.once('ready-to-show', () => { win?.show(); win?.focus(); });
+  }
+  // A landing (or the 服务 tab) that restarted the companion left a note: open the window again on that session.
+  function reopen() {
+    const file = path.join(process.env.JARVIS_AGENTS_DIR ?? path.join(process.env.JARVIS_RUNTIME_ROOT ?? path.join(homedir(), '.jarvis'), 'agents'), 'reopen.json');
+    try {
+      const note = JSON.parse(readFileSync(file, 'utf8')) as { id?: unknown; at?: unknown };
+      rmSync(file, { force: true });
+      if (typeof note.at === 'number' && Date.now() - note.at < 180e3) void open(typeof note.id === 'string' ? note.id : '');
+    } catch { /* no note */ }
   }
   ipcMain.on('agents-open', event => {
     if (trustedWindows().some(w => !w.isDestroyed() && event.sender === w.webContents && event.senderFrame === w.webContents.mainFrame)) void open();
   });
   // ⌥Tab while B01 has the foreground: straight to its next session waiting on Allen.
-  return { open, next() { if (!presence().active) return false; win!.webContents.send('agents-next'); return true; } };
+  return { open: () => open(), reopen, next() { if (!presence().active) return false; win!.webContents.send('agents-next'); return true; } };
 }
