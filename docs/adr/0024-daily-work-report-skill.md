@@ -20,9 +20,9 @@
   while nothing was deployed; the same commit appears once per observed
   worktree; a commit written days ago is first seen today; an app is in front
   for 264 minutes without being worked in.
-- `docs/plans/daily-loop-tools.md` lists "skill discovery/loading" as
-  unbuilt, and the repository has no runtime skill mechanism at all —
-  `.claude/skills/` is Claude Code's, not Jarvis's.
+- The daily-loop tools plan (removed 2026-09-29) lists "skill
+  discovery/loading" as unbuilt, and the repository has no runtime skill
+  mechanism at all — `.claude/skills/` is Claude Code's, not Jarvis's.
 - The `briefing.revised` store already carries request deduplication, version
   checks and source-ref validation, and `get_briefing` already pages a saved
   report back.

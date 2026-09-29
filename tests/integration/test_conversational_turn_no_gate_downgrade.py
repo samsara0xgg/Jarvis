@@ -1,7 +1,7 @@
 """E2E regression: conversational turn must not be force-downgraded.
 
-Per design doc 2026-05-27-pre-emit-gate-optimal-design.md §7 acceptance
-criteria:
+Per the 2026-05-27 Pre-emit Gate design draft (removed 2026-09-29), §7
+acceptance criteria:
 
   1. Conversational pass-through — a turn with no active task subject
      surfaces the LLM's own draft text (not the canonical "找不到对应的
