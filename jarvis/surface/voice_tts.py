@@ -749,6 +749,10 @@ class AudioStreamPlayer:
         self._callback_commit_generation = -1
         self._starvation_gaps = 0
         self._starvation_dry_generation = -1
+        # A barge-in still being judged holds the answer playing now in place;
+        # the callback fades that answer back in when the hold lifts.
+        self._paused_generation = -1
+        self._fade_in_generation = -1
         self._callback_report_drop_seen = 0
         self._presentation_horizon_coalesced = 0
         self._presentation_horizon_coalesced_seen = 0
@@ -1524,6 +1528,18 @@ class AudioStreamPlayer:
         ramp_samples = int(self._sample_rate_hz * ramp_ms / 1000.0)
         self._gain_command = (float(target), max(0, ramp_samples))
 
+    def pause_generation(self, *, paused: bool) -> None:
+        """Hold the answer playing now where it is, silent, or let it go on from there.
+
+        The hold names that answer's generation, so a later answer never
+        starts held. Nothing is consumed while held: the ring fills and the
+        writer waits, and no report or cursor moves.
+        """
+        lease = self._active_lease
+        self._paused_generation = (
+            lease.playback_generation_id if paused and lease is not None else -1
+        )
+
     def duck(self, target_gain: float = 0.3, ramp_ms: int = 30) -> None:
         """Ramp gain down to ``target_gain`` over ``ramp_ms`` (user-speech ducking)."""
         self.set_gain(target_gain, float(ramp_ms))
@@ -1665,7 +1681,7 @@ class AudioStreamPlayer:
         if tap is not None:
             tap(outdata[:frames, 0] if outdata.ndim > 1 else outdata[:frames], self._sample_rate_hz)
 
-    def _callback(  # noqa: C901, PLR0912, PLR0915 - realtime path stays inline
+    def _callback(  # noqa: C901, PLR0911, PLR0912, PLR0915 - realtime path stays inline
         self,
         outdata: np.ndarray,
         frames: int,
@@ -1710,6 +1726,12 @@ class AudioStreamPlayer:
             return
 
         active_before = self._active_lease
+        held = self._paused_generation
+        if active_before is not None and active_before.playback_generation_id == held:
+            # Held while a barge-in is judged: silence, and her place kept.
+            self._emit_declick(view, frames)
+            self._fade_in_generation = held
+            return
         actual = generation_ring.read_into(
             view,
             self._callback_generations,
@@ -1760,6 +1782,12 @@ class AudioStreamPlayer:
         if not bool(np.all(valid)):
             self._emit_declick(view, actual)
             return
+        if self._fade_in_generation == generation:
+            # Back from a hold: ramp in rather than step onto the waveform.
+            self._fade_in_generation = -1
+            gain = self._gain.current
+            self._gain.set_target(0.0, 0)
+            self._gain.set_target(gain, _DECLICK_SAMPLES)
         gain_command = self._gain_command
         if gain_command is not self._gain_consumed_command:
             self._gain.set_target(*gain_command)

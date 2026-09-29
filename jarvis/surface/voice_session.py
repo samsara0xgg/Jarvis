@@ -965,18 +965,19 @@ class DuplexVoiceSession:
         hold_output: Callable[[bool], None] | None = None,
         supersede_unspoken: Callable[[str], None] | None = None,
         yield_speaking: Callable[[float], None] | None = None,
+        pause_speaking: Callable[[bool], None] | None = None,
     ) -> None:
         """Register all bounded subscribers before any hardware starts.
 
         ``conversation`` reads the surface's conversation switch (ADR 0041):
         while it is on and the mic is live, capture stays armed without a
         wake hit, and speech that starts while Jarvis is speaking calls
-        ``stop_speaking``. With ``yield_speaking`` it first only lowers her
-        (``barge_in_yield_gain``) and stops her once the speech has
-        ``barge_in_confirm_voiced_s`` of voice; a shorter sound is judged by
-        final ASR: a listening sound, one word that says nothing, or nothing
-        gives her the gain back, a stop request stops her, and none becomes
-        a turn.
+        ``stop_speaking``. With ``yield_speaking`` and ``pause_speaking`` it
+        first only lowers her (``barge_in_yield_gain``) and holds her where
+        she is once the speech has ``barge_in_confirm_voiced_s`` of voice;
+        final ASR then decides: a listening sound, one word that says
+        nothing, or nothing lets her go on from there with the gain back, a
+        stop request stops her, and none becomes a turn.
 
         ADR 0053: ``hold_output(True)`` from an utterance's speech onset
         until it is accepted or comes to nothing, so no answer starts while
@@ -994,10 +995,10 @@ class DuplexVoiceSession:
         self._hold_output = hold_output
         self._supersede_unspoken = supersede_unspoken
         self._yield_speaking = yield_speaking
+        self._pause_speaking = pause_speaking
         # Soft barge-in: the turns spoken over Jarvis until final ASR has
-        # judged their words. "yielding": she is only quieter; "stopping": a
-        # stop is on its way, still quieter; "stopped". "judged" is a stop
-        # still on its way for words already judged: its thread lets go.
+        # judged their words. "yielding": she is only quieter; "paused": the
+        # words held enough voice, so she is also held where she is.
         self._barges: dict[str, str] = {}
         self._barge_lock = threading.Lock()
         self._yielded = False
@@ -1291,7 +1292,11 @@ class DuplexVoiceSession:
         if not self._speaking() or self._stop_speaking is None:
             return
         record_realtime_trace("conversation_barge_in", session_id=self._session_id)
-        if self._confirm_voiced_frames == 0 or self._yield_speaking is None:
+        if (
+            self._confirm_voiced_frames == 0
+            or self._yield_speaking is None
+            or self._pause_speaking is None
+        ):
             threading.Thread(
                 target=self._stop_speaking, name="conversation-barge-in", daemon=True,
             ).start()
@@ -1302,33 +1307,29 @@ class DuplexVoiceSession:
         self._assembler.yield_endpoint(on=True)
 
     def _confirm_barge_in(self) -> None:
-        """Enough voice over her: the yield becomes a stop (capture thread)."""
+        """Enough voice over her: she holds where she is until it is judged (capture thread).
+
+        A long 「嗯——」 or a cough stopped her for good before (live test
+        2026-09-29); held, she goes on from there if it says nothing.
+        """
         turn_id = self._assembler.turn_id
         if self._assembler.voiced_frames < self._confirm_voiced_frames:
             return
         with self._barge_lock:
             if self._barges.get(turn_id) != "yielding":
                 return
-            self._barges[turn_id] = "stopping"
+            self._barges[turn_id] = "paused"
         self._assembler.yield_endpoint(on=False)
         record_realtime_trace("conversation_barge_in_confirmed", session_id=self._session_id)
-        threading.Thread(
-            target=self._stop_then_settle,
-            args=(turn_id,),
-            name="conversation-barge-in",
-            daemon=True,
-        ).start()
+        self._pause(paused=True)
 
-    def _stop_then_settle(self, turn_id: str) -> None:
-        """The gain comes back only once she is stopped, however late the stop is."""
-        self._stop_now()
-        with self._barge_lock:
-            state = self._barges.get(turn_id)
-            if state == "stopping":
-                self._barges[turn_id] = "stopped"
-            elif state == "judged":
-                del self._barges[turn_id]
-            self._set_yield_locked()
+    def _pause(self, *, paused: bool) -> None:
+        if self._pause_speaking is None:
+            return
+        try:
+            self._pause_speaking(paused)
+        except Exception:  # noqa: BLE001 - output state cannot break capture
+            LOGGER.debug("realtime pause_speaking failed", exc_info=True)
 
     def _stop_now(self) -> None:
         """Stop what Jarvis is still saying; the gain comes back only after."""
@@ -1336,8 +1337,8 @@ class DuplexVoiceSession:
             self._stop_speaking()
 
     def _set_yield_locked(self) -> None:
-        """Lower her while any barge-in is undecided or stopping her, restore once none is."""
-        yielding = not {"yielding", "stopping", "judged"}.isdisjoint(self._barges.values())
+        """Lower her while any barge-in is undecided, restore once none is."""
+        yielding = bool(self._barges)
         if yielding == self._yielded or self._yield_speaking is None:
             return
         self._yielded = yielding
@@ -1346,24 +1347,32 @@ class DuplexVoiceSession:
         except Exception:  # noqa: BLE001 - output state cannot break capture
             LOGGER.debug("realtime yield_speaking failed", exc_info=True)
 
-    def _end_barge_in(self, turn_id: str) -> None:
-        """Its words are judged, or lost: she no longer yields to them."""
+    def _settle_barge_in(self, turn_id: str, *, go_on: bool) -> None:
+        """She goes on from where she was, or stops; only then does her gain come back."""
         with self._barge_lock:
             state = self._barges.get(turn_id)
-            if state == "stopping":
-                self._barges[turn_id] = "judged"
-            elif state in {"yielding", "stopped"}:
-                del self._barges[turn_id]
+        if state is None:
+            return
+        if not go_on:
+            self._stop_now()
+        elif state == "paused":
+            self._pause(paused=False)
+        with self._barge_lock:
+            self._barges.pop(turn_id, None)
             self._set_yield_locked()
+
+    def _end_barge_in(self, turn_id: str) -> None:
+        """Its words are lost before a verdict: held, she stops; only lowered, she goes on."""
+        with self._barge_lock:
+            paused = self._barges.get(turn_id) == "paused"
+        self._settle_barge_in(turn_id, go_on=not paused)
 
     def _judge_words(self, turn_id: str, text: str) -> None:
         """Final ASR's verdict on words spoken over Jarvis, then ADR 0053's drop.
 
-        A listening sound or one word that says nothing gives her the gain
-        back and a stop request stops her; none of them is a turn. Anything
-        else stops her and is a turn. Words that already stopped her are
-        judged the same way, so 「停」 said long enough to stop her gets no
-        answer either.
+        A listening sound or one word that says nothing lets her go on (from
+        where she was held, if they were long) and a stop request stops her;
+        none of them is a turn. Anything else stops her and is a turn.
         """
         with self._barge_lock:
             state = self._barges.get(turn_id)
@@ -1371,9 +1380,7 @@ class DuplexVoiceSession:
             backchannel = voice_asr.is_backchannel(text)
             stop = voice_asr.is_stop_request(text)
             unclear = not stop and voice_asr.is_unclear_sound(text)
-            if state == "yielding" and not (backchannel or unclear):
-                self._stop_now()
-            self._end_barge_in(turn_id)
+            self._settle_barge_in(turn_id, go_on=backchannel or unclear)
             verdict = (
                 "backchannel" if backchannel
                 else "stop" if stop
@@ -1392,11 +1399,10 @@ class DuplexVoiceSession:
         self._supersede(turn_id)
 
     def _judge_no_words(self, turn_id: str, heard: str, *, addressed: bool = False) -> None:
-        """No turn in it, yet a lone stop word or her name over her still stops her."""
-        with self._barge_lock:
-            yielding = self._barges.get(turn_id) == "yielding"
-        if yielding and (addressed or voice_asr.is_stop_request(heard)):
-            self._stop_now()
+        """No turn in it: her name or a lone stop word over her stops her, anything else not."""
+        self._settle_barge_in(
+            turn_id, go_on=not (addressed or voice_asr.is_stop_request(heard)),
+        )
 
     def _mark_in_flight(self, turn_id: str, *, active: bool) -> None:
         """Hold answers while any of Allen's utterances is in flight (ADR 0053)."""
@@ -1701,9 +1707,12 @@ class DuplexVoiceSession:
             self._wake_engine.close()
         except Exception:  # noqa: BLE001 - report thread/backend ownership separately
             LOGGER.debug("wake engine close failed", exc_info=True)
-        with self._barge_lock:  # no word left to judge: never leave her quieter
+        with self._barge_lock:  # no word left to judge: never leave her quieter, or held
+            held = "paused" in self._barges.values()
             self._barges.clear()
             self._set_yield_locked()
+        if held:
+            self._pause(paused=False)
         alive = tuple(thread.name for thread in self._started_threads if thread.is_alive())
         result = VoiceSessionCloseResult(
             ingress=ingress_result,

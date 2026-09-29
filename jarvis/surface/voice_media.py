@@ -973,6 +973,10 @@ class StreamingTTSPipeline:
             self._yield_gain = gain
             self._player.set_gain(self._mute_gain * gain, _YIELD_RAMP_MS)
 
+    def pause_speaking(self, paused: bool) -> None:  # noqa: FBT001 - the capture side's one bit
+        """Hold her answer where it is while Allen's words are judged, or let it go on."""
+        self._player.pause_generation(paused=paused)
+
     def suspend_for_sleep(  # noqa: C901, PLR0912, PLR0915 - exact late-continuation FSM
         self,
         *,
