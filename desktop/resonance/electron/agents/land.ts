@@ -9,8 +9,9 @@ import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import { ENV } from './claude.js';
+import { claudeEnv, EXE } from './claude.js';
 import { DIR, log, sharing, type Session } from './host.js';
+import { auth } from './settings.js';
 import type { Land, LandSt } from './types.js';
 
 const exec = promisify(execFile);
@@ -22,19 +23,20 @@ type Done = 'ok' | 'skip' | 'wait' | Fail;
 const HAIKU = 'claude-haiku-4-5-20251001';
 
 // Gates and git run as Allen's shell would: his tool paths, and nothing of this process's own Electron-as-Node setup.
-export const SHELL_ENV: Record<string, string> = (() => {
+// Read each time, so what the login shell added to PATH once the host started counts.
+export function shellEnv(): Record<string, string> {
   const e: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) if (v !== undefined && !/^(ELECTRON_|JARVIS_AGENTS_)/.test(k)) e[k] = v;
   e.PATH = [path.join(homedir(), '.local/share/mise/shims'), path.join(homedir(), '.local/bin'), '/opt/homebrew/bin', '/usr/local/bin', e.PATH || '/usr/bin:/bin:/usr/sbin:/sbin'].join(':');
   return e;
-})();
-const git = async (cwd: string, ...args: string[]) => (await exec('git', ['-C', cwd, ...args], { maxBuffer: 64 << 20, env: SHELL_ENV })).stdout;
+}
+const git = async (cwd: string, ...args: string[]) => (await exec('git', ['-C', cwd, ...args], { maxBuffer: 64 << 20, env: shellEnv() })).stdout;
 const kill = (c: ChildProcess) => { try { process.kill(-c.pid!, 'SIGTERM'); } catch { c.kill('SIGTERM'); } };
 // A command in its own process group, so stopping a gate stops everything it started; the last 96 kB of what it said.
 function run(cmd: string, args: string[], cwd: string, hold?: (c: ChildProcess | null) => void, ms = 20 * 60e3) {
   return new Promise<{ code: number; out: string }>(done => {
     let out = '', ended = false;
-    const c = spawn(cmd, args, { cwd, env: SHELL_ENV, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    const c = spawn(cmd, args, { cwd, env: shellEnv(), detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
     const end = (code: number) => { if (ended) return; ended = true; clearTimeout(timer); hold?.(null); done({ code, out }); };
     const timer = setTimeout(() => { out += `\n超过 ${Math.round(ms / 60e3)} 分钟，停掉了`; kill(c); }, ms);
     hold?.(c);
@@ -150,6 +152,8 @@ export const REOPEN = () => path.join(DIR, 'reopen.json');
 // ---------- the commit message: drafted from the diff with the commit skill as the instructions ----------
 const SKILL_FALLBACK = 'Title: `type(scope): English description`, at most 72 characters, Conventional Commits types. Body: a one-line opener, then one bullet per file or file group, "- <path> — <what this file contributes>", English, wrapped near 72 columns.';
 async function draftMessage(top: string, title: string, said: string, paths: string[]): Promise<{ title: string; body: string } | null> {
+  // Without Claude's sign-in (the packaged app with no key yet) the title is left to Allen.
+  if (!auth().ready) return null;
   const skill = await readFile(path.join(top, '.claude', 'skills', 'commit', 'SKILL.md'), 'utf8').catch(() => SKILL_FALLBACK);
   const guide = await readFile(path.join(top, 'docs', 'git-guide.md'), 'utf8').then(t => /## 2\.[\s\S]*?(?=\n## 3\.)/.exec(t)?.[0] ?? '', () => '');
   const stat = await git(top, 'diff', '--stat', 'HEAD', '--', ...paths).catch(() => '');
@@ -157,7 +161,7 @@ async function draftMessage(top: string, title: string, said: string, paths: str
   for (const p of paths) if (!stat.includes(p) && existsSync(path.join(top, p))) diff += `\n--- new file ${p}\n${(await readFile(path.join(top, p), 'utf8').catch(() => '')).slice(0, 3000)}`;
   const system = `You write one git commit message, following the project's commit skill below. Write only: the title line, a blank line, a one-line opener, a blank line, then one bullet per file or tightly related file group ("- <path> — <what it contributes>"), wrapped near 72 columns. English only. No Tier 1 or verification line, no trailers, no code fences, no commentary.\n\n<commit-skill>\n${skill.slice(0, 8000)}\n</commit-skill>${guide ? `\n\n<scopes>\n${guide.slice(0, 7000)}\n</scopes>` : ''}`;
   const prompt = `The coding session: ${title}\n\nWhat it said last:\n${said.slice(0, 3000)}\n\nChanged files:\n${stat.slice(0, 4000)}\n\nThe diff (may be cut):\n${diff.slice(0, 40000)}`;
-  const q = query({ prompt, options: { model: HAIKU, maxTurns: 1, tools: [], systemPrompt: system, cwd: top, env: ENV, settingSources: [], persistSession: false } });
+  const q = query({ prompt, options: { model: HAIKU, maxTurns: 1, tools: [], systemPrompt: system, cwd: top, env: claudeEnv(), pathToClaudeCodeExecutable: EXE, settingSources: [], persistSession: false } });
   let text = '';
   for await (const m of q) if (m.type === 'result' && m.subtype === 'success') text = m.result;
   const ls = text.replace(/```[a-z]*\n?|```/g, '').trim().split('\n');

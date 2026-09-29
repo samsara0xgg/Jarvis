@@ -4,16 +4,28 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { homedir } from 'node:os';
 import { createInterface } from 'node:readline';
-import { catalogChanged, find, kt, log, pic, type Driver, type Session } from './host.js';
-import type { Choice, Diff, File, Question, Req, Step } from './types.js';
+import { attach, attached } from './files.js';
+import { broadcast, catalogChanged, find, kt, log, pic, picFile, sent, type Driver, type Session } from './host.js';
+import type { Choice, Diff, File, Outside, Question, Req, Step } from './types.js';
 import { diffOf } from './claude.js';
 
 const MODES: [string, string][] = [['auto', '自动'], ['read', '只读'], ['full', '完全放开'], ['plan', '计划模式']];
-const WRITE = { type: 'workspaceWrite', writableRoots: [], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false };
-function policy(mode: string) {
+// The session's extra folders (C5) are writable too.
+function policy(mode: string, dirs: string[] = []) {
   if (mode === 'read') return { approvalPolicy: 'on-request', sandbox: 'read-only', sandboxPolicy: { type: 'readOnly', networkAccess: false } };
   if (mode === 'full') return { approvalPolicy: 'never', sandbox: 'danger-full-access', sandboxPolicy: { type: 'dangerFullAccess' } };
-  return { approvalPolicy: 'on-request', sandbox: 'workspace-write', sandboxPolicy: WRITE };
+  return { approvalPolicy: 'on-request', sandbox: 'workspace-write', sandboxPolicy: { type: 'workspaceWrite', writableRoots: dirs, networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false } };
+}
+// What `/init` asks for, as Codex's own command does.
+const INIT = 'Generate a file named AGENTS.md that serves as a contributor guide for this repository: its structure, how to build, test and run it, the coding style and naming it follows, and how commits and pull requests are written here. Keep it concise and specific to this repository; read the code before writing.';
+// `/review` with nothing after it reviews what is not committed; `/review base <branch>`, `/review commit <sha>`, or
+// any other words as the instructions.
+function reviewTarget(arg: string) {
+  const m = /^(base|branch)\s+(\S+)$/.exec(arg), c = /^commit\s+([0-9a-f]{4,40})$/i.exec(arg);
+  if (!arg) return { type: 'uncommittedChanges' };
+  if (m) return { type: 'baseBranch', branch: m[2] };
+  if (c) return { type: 'commit', sha: c[1], title: null };
+  return { type: 'custom', instructions: arg };
 }
 
 // ---------- the server ----------
@@ -80,8 +92,11 @@ function commandStep(s: Session, item: any): Step {
   if (a?.type === 'search') return { k: 'search', t: `"${str(a.query)}"${a.path ? ` in ${rel(s, str(a.path))}` : ''}` };
   return { k: 'bash', t: unwrap(str(item.command)).split('\n')[0] };
 }
-const userText = (item: any) => (item.content ?? []).map((c: any) => c.type === 'text' ? str(c.text) : '').join('').trim();
-const userFiles = (item: any) => (item.content ?? []).filter((c: any) => c.type === 'image' || c.type === 'localImage').map((c: any, k: number) => pic(`图片 ${k + 1}`, c.url));
+// What Allen wrote, without the lines naming files that are not pictures; those come back as files.
+const userText = (item: any) => attached((item.content ?? []).map((c: any) => c.type === 'text' ? str(c.text) : '').join('').trim()).text.trim();
+const userFiles = (item: any) => [...(item.content ?? []).filter((c: any) => c.type === 'image' || c.type === 'localImage').map((c: any, k: number) => pic(str(c.path).split('/').pop() || `图片 ${k + 1}`, c.url)),
+  ...attached((item.content ?? []).map((c: any) => c.type === 'text' ? str(c.text) : '').join('')).paths.map(p => ({ name: p.split('/').pop() || p }))];
+const firstLine = (t: string) => { const l = (t.split('\n').find(x => x.trim()) ?? '').replace(/\*\*/g, '').trim(); return l.length > 80 ? `${l.slice(0, 79)}…` : l; };
 
 // An item beginning: a step appears. Read back from history, the same item is begun and finished at once.
 function begun(s: Session, item: any, at?: number, live = true) {
@@ -98,7 +113,7 @@ function begun(s: Session, item: any, at?: number, live = true) {
   else if (item.type === 'dynamicToolCall') s.tool(item.id, { k: 'tool', t: str(item.tool) }, at);
   else if (item.type === 'webSearch') s.tool(item.id, { k: 'web', t: str(item.query) || str(item.action?.url) }, at);
   else if (item.type === 'collabAgentToolCall') s.tool(item.id, { k: 'agent', t: str(item.prompt).split('\n')[0].slice(0, 80) || str(item.tool) }, at);
-  else if (item.type === 'imageView') s.tool(item.id, { k: 'read', t: rel(s, str(item.path)) }, at);
+  else if (item.type === 'imageView') { s.tool(item.id, { k: 'read', t: rel(s, str(item.path)) }, at); void picFile(str(item.path).split('/').pop() ?? '', str(item.path)).then(p => { if (p.img) s.toolDone(item.id, { pics: [p] }); }); }
   else if (item.type === 'contextCompaction' && live) s.set({ st: 'pack', now: '在压缩上下文' });
 }
 function finished(s: Session, item: any, at?: number) {
@@ -115,6 +130,16 @@ function finished(s: Session, item: any, at?: number) {
     s.toolDone(item.id, { ok: item.status === 'completed' && item.success !== false, out: String(text).slice(0, 6000) });
   } else if (item.type === 'webSearch' || item.type === 'collabAgentToolCall' || item.type === 'imageView') s.toolDone(item.id, { ok: item.status !== 'failed' });
   else if (item.type === 'contextCompaction') { s.note('上下文压缩过了'); if (s.s.st === 'pack') s.set({ st: 'work', now: '在想' }); }
+  // Its reasoning, as the summary Codex gives (B18).
+  else if (item.type === 'reasoning') { const t = (item.summary ?? []).map(str).join('\n\n').trim(); if (t) s.tool(item.id, { k: 'think', t: firstLine(t), out: t }, at); }
+}
+// Its background terminals (B17), read when a turn ends: a Codex older than this list has none to show.
+async function terminals(s: Session) {
+  const r = await call<{ data: { processId: string; command: string }[] }>('thread/backgroundTerminals/list', { threadId: s.s.id }).catch(() => null);
+  if (!r) return;
+  const live = new Set(r.data.map(t => t.processId));
+  for (const t of r.data) s.task(t.processId, { kind: 'terminal', what: unwrap(str(t.command)).split('\n')[0].slice(0, 200), st: 'run' });
+  for (const t of s.s.tasks ?? []) if (t.kind === 'terminal' && t.st === 'run' && !live.has(t.id)) s.task(t.id, { st: 'done', ended: Date.now() });
 }
 
 // ---------- what the server says ----------
@@ -128,10 +153,14 @@ function receive(m: Msg) {
   }
   const p = m.params ?? {}, s = typeof p.threadId === 'string' ? find(p.threadId) : undefined;
   if (m.id !== undefined) { asked(m, s); return; }
+  // A ChatGPT sign-in the check-up started (A4) finished.
+  if (m.method === 'account/login/completed') { broadcast({ t: 'signin', agent: 'codex', ok: !!p.success, ...p.error ? { why: str(p.error) } : {} }); if (p.success) void catalogChanged(); return; }
   if (!s || s.s.agent !== 'codex') return;
   const r = rt(s);
   switch (m.method) {
-    case 'turn/started': r.turn = p.turn?.id; if (s.s.st !== 'work' && s.s.st !== 'wait') s.begin(); break;
+    case 'turn/started': r.turn = p.turn?.id; if (s.s.st !== 'work' && s.s.st !== 'wait') s.begin(); if (r.turn) { s.ref(r.turn); s.youId(r.turn); } break;
+    // Codex names a thread itself; a name Allen gave stays (B14).
+    case 'thread/name/updated': if (p.threadName && !s.s.named) s.set({ title: str(p.threadName).slice(0, 80) }); break;
     case 'item/started': begun(s, p.item); break;
     case 'item/completed': finished(s, p.item); break;
     case 'item/agentMessage/delta': { const t = (r.text.get(p.itemId) ?? '') + str(p.delta); r.text.set(p.itemId, t); s.delta(t); break; }
@@ -153,6 +182,7 @@ function receive(m: Msg) {
       else s.end();
       // What Allen sent too late for the turn to take goes next.
       if (queue.length) { for (const q of queue) s.dequeue(q); void codex.send(s, queue.join('\n\n'), []); }
+      void terminals(s);
       break;
     }
   }
@@ -202,7 +232,7 @@ let reading: Promise<void> | null = null;
 async function resume(s: Session) {
   const r = rt(s);
   if (r.loaded) return;
-  const pol = policy(s.s.mode);
+  const pol = policy(s.s.mode, s.s.dirs);
   await call('thread/resume', { threadId: s.s.id, cwd: s.s.cwd, approvalPolicy: pol.approvalPolicy, approvalsReviewer: 'user', sandbox: pol.sandbox, excludeTurns: true });
   r.loaded = true; loaded.add(s);
 }
@@ -216,7 +246,7 @@ async function skillsOf(cwd: string) {
   return list;
 }
 async function turn(s: Session, input: unknown[]) {
-  const pol = policy(s.s.mode), model = s.s.model || catalogCache.c?.models[0]?.[0] || '';
+  const pol = policy(s.s.mode, s.s.dirs), model = s.s.model || catalogCache.c?.models[0]?.[0] || '';
   const params = { threadId: s.s.id, input, model: model || undefined, effort: s.s.effort || undefined, approvalPolicy: pol.approvalPolicy, sandboxPolicy: pol.sandboxPolicy,
     ...(model ? { collaborationMode: { mode: s.s.mode === 'plan' ? 'plan' : 'default', settings: { model, reasoning_effort: s.s.effort || null, developer_instructions: null } } } : {}) };
   try { rt(s).turn = (await call<{ turn: { id: string } }>('turn/start', params)).turn.id; }
@@ -234,18 +264,28 @@ export const codex: Driver = {
     return catalogCache.c ?? { models: [], efforts: [], modes: MODES, always: '这个会话都允许' };
   },
   async create(s) {
-    const pol = policy(s.s.mode);
+    const pol = policy(s.s.mode, s.s.dirs);
     const r = await call<{ thread: { id: string } }>('thread/start', { cwd: s.s.cwd, model: s.s.model || undefined, approvalPolicy: pol.approvalPolicy, approvalsReviewer: 'user', sandbox: pol.sandbox });
     const x = rt(s); x.loaded = true; loaded.add(s);
     return r.thread.id;
   },
+  // Pictures go as pictures (one on this Mac by its path); any other file is named at the end of the text (B7). /compact,
+  // /review and /init are Codex's own (B9).
   async send(s, text, files: File[]) {
-    const r = rt(s), pics = files.map(f => pic(f.name, f.url));
+    const r = rt(s), x = await sent(files, 'codex'), pics = x.pics;
     await resume(s);
     if (/^\/compact\s*$/.test(text)) { s.you(text); s.begin(); await call('thread/compact/start', { threadId: s.s.id }); return; }
-    const known = /\$[\w-]/.test(text) ? await skillsOf(s.s.cwd) : [];
-    const input = [{ type: 'text', text, text_elements: [] }, ...files.map(f => ({ type: 'image', url: f.url })),
-      ...known.filter(k => text.includes(`$${k.name}`)).map(k => ({ type: 'skill', name: k.name, path: k.path }))];
+    const review = /^\/review(?:\s+([\s\S]*))?$/.exec(text.trim());
+    if (review && !r.turn) {
+      s.you(text); s.begin();
+      try { r.turn = (await call<{ turn: { id: string } }>('review/start', { threadId: s.s.id, target: reviewTarget((review[1] ?? '').trim()) })).turn.id; }
+      catch (e) { s.end(undefined, false, 'err', `Codex 没接这次审查：${String(e instanceof Error ? e.message : e).slice(0, 120)}`); }
+      return;
+    }
+    const said = /^\/init\s*$/.test(text.trim()) ? INIT : attach(text, x.paths);
+    const known = /\$[\w-]/.test(said) ? await skillsOf(s.s.cwd) : [];
+    const input = [{ type: 'text', text: said, text_elements: [] }, ...x.images.map(i => ({ type: 'image', url: i.url })), ...x.local.map(p => ({ type: 'localImage', path: p })),
+      ...known.filter(k => said.includes(`$${k.name}`)).map(k => ({ type: 'skill', name: k.name, path: k.path }))];
     if (r.turn) {
       // It is working: the words go into the running turn, and show once Codex takes them.
       s.enqueue(text);
@@ -253,7 +293,7 @@ export const codex: Driver = {
       catch { s.dequeue(text); }
     }
     s.you(text, pics); s.begin();
-    try { await turn(s, input); }
+    try { await turn(s, input); if (rt(s).turn) { s.ref(rt(s).turn!); s.youId(rt(s).turn!); } }
     catch (e) { s.end(undefined, false, 'err', `Codex 没接：${String(e instanceof Error ? e.message : e).slice(0, 120)}`); }
   },
   answer(s, a) {
@@ -305,18 +345,39 @@ export const codex: Driver = {
     await s.build(async () => {
       for (const t of turns) {
         const at = t.startedAt ? t.startedAt * 1000 : undefined;
-        for (const item of t.items ?? []) { begun(s, item, at, false); finished(s, item, at); }
+        for (const item of t.items ?? []) { begun(s, item, at, false); finished(s, item, at); if (item.type === 'userMessage' && t.id) s.youId(t.id); }
+        if (t.id) s.ref(t.id);
         if (t.status === 'interrupted') s.note('你打断了这一轮');
         s.end(t.completedAt ? t.completedAt * 1000 : undefined, true);
       }
     });
   },
-  async fork(s) { return (await call<{ thread: { id: string } }>('thread/fork', { threadId: s.s.id })).thread.id; },
+  // Up to a turn: through it, or (`before`) without it and what came after.
+  async fork(s, at, before) {
+    return (await call<{ thread: { id: string } }>('thread/fork', { threadId: s.s.id, ...at ? before ? { beforeTurnId: at } : { lastTurnId: at } : {} })).thread.id;
+  },
+  async stopTask(s, id) { await call('thread/backgroundTerminals/terminate', { threadId: s.s.id, processId: id }); s.task(id, { st: 'stop', ended: Date.now() }); },
+  // Its threads in a folder, newest first (B12).
+  async outside(cwd) {
+    const r = await call<{ data: any[] }>('thread/list', { limit: 100, ...cwd ? { cwd } : {} }).catch(() => ({ data: [] }));
+    return r.data.map((t): Outside => ({ agent: 'codex', id: str(t.id), title: (str(t.name) || str(t.preview) || str(t.id)).replace(/\s+/g, ' ').slice(0, 80), cwd: str(t.cwd) || cwd,
+      updated: (Number(t.updatedAt) || 0) * 1000, ...t.gitInfo?.branch ? { branch: str(t.gitInfo.branch) } : {} }));
+  },
+  async account() {
+    const r = await call<{ account: { type: string; email?: string | null; planType?: string } | null }>('account/read', { refreshToken: false });
+    return r.account ? { type: r.account.type, ...r.account.email ? { email: r.account.email } : {}, ...r.account.planType ? { plan: String(r.account.planType) } : {} } : null;
+  },
+  // A ChatGPT sign-in: the page to open; Codex hears back on its own local address.
+  async login() { return (await call<{ authUrl?: string }>('account/login/start', { type: 'chatgpt' })).authUrl ?? ''; },
   // A thread that is already gone counts as deleted.
   async remove(s) { await codex.release(s); await call('thread/delete', { threadId: s.s.id }).catch(e => { if (!/no rollout found/i.test(String(e))) throw e; }); },
+  // The window draws its own place for the ones with a third entry (B9).
   async commands(cwd) {
     const list = await skillsOf(cwd);
-    return [['/compact', '把对话压缩一下，腾出上下文'], ...list.map(k => [`$${k.name}`, k.about] as [string, string])];
+    return [['/compact', '把对话压缩一下，腾出上下文'], ['/review', '审查没提交的改动 · base <分支> · commit <sha> · 或写要求'], ['/init', '写一份 AGENTS.md'],
+      ['/model', '换模型', 'model'], ['/reasoning', '换力度', 'effort'], ['/plan', '切到计划模式'], ['/new', '开新会话', 'new'], ['/fork', '从这里分叉', 'fork'],
+      ['/status', '环境和登录', 'doctor'], ['/diff', '看它改了什么', 'changes'], ['/export', '导出整段对话', 'export'], ['/resume', '接手别处开的会话', 'import'],
+      ...list.map(k => [`$${k.name}`, k.about] as [string, string])];
   },
   resume: s => `codex resume ${s.s.id}`,
   // Codex reports totals only, and only while it works: what the last request sent and what it wrote.

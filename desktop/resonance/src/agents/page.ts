@@ -15,7 +15,7 @@ import './agents.css';
 import './exposure/exposure.css';
 
 declare global { interface Window { agents?: {
-  presence?(enabled: boolean, ids: string[]): void; onNext?(callback: () => void): () => void;
+  presence?(enabled: boolean, ids: string[]): void; onNext?(callback: () => void): () => void; onOpen?(callback: (id: string) => void): () => void;
   folder(): Promise<string>; terminal(cwd: string, cmd: string): Promise<boolean>; reveal(cwd: string): Promise<void>;
   openUrl?(url: string): Promise<void>; openPath?(file: string): Promise<void>; cloud?(cwd: string, text: string): Promise<boolean>;
 } } }
@@ -123,7 +123,7 @@ const I = {
   copy: svg('<rect x="5.5" y="5.5" width="8" height="8" rx="2"/><path d="M10.5 5.5v-2a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2"/>', 12),
   check: svg('<path d="m3.5 8.5 3 3 6-7"/>', 12, ' stroke-width="1.8"'),
 };
-const STEP_K: Record<Step['k'], string> = { read: '读', edit: '改', bash: '跑', search: '搜', agent: '子任务', web: '网页', tool: '工具', say: '' };
+const STEP_K: Record<Step['k'], string> = { read: '读', edit: '改', bash: '跑', search: '搜', agent: '子任务', web: '网页', tool: '工具', say: '', think: '想' };
 const who = (a: Agent) => `<span class="who ${a}">${a === 'claude' ? 'Claude' : 'Codex'}</span>`;
 const diffHTML = (d: [string, string][]) => `<div class="diff">${d.map(([s, t]) => `<code class="${s === '+' ? 'add' : s === '-' ? 'del' : ''}"><b>${s === ' ' ? '' : s === '-' ? '−' : '+'}</b><span>${esc(t)}</span></code>`).join('')}</div>`;
 function stepsSummary(steps: Step[]) {
@@ -1186,5 +1186,7 @@ function loop(now: number) {
 }
 setSound(snd.on);
 connect(); void refreshProjects(); void loadUsage();
+// A notification the companion showed opens its session here (A6).
+window.agents?.onOpen?.(id => { if (byId(id)) open(id); });
 setInterval(() => { if (!document.hidden) void loadUsage(); }, 60000);
 draw(); requestAnimationFrame(loop);

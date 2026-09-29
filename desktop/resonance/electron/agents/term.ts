@@ -6,7 +6,7 @@ import { chmod, stat } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import type http from 'node:http';
-import { SHELL_ENV } from './land.js';
+import { shellEnv } from './land.js';
 
 type Pty = { onData(f: (d: string) => void): void; onExit(f: (e: { exitCode: number }) => void): void; write(d: string): void; resize(c: number, r: number): void; kill(): void; pid: number };
 type Term = { pty: Pty; buf: string; subs: Set<http.ServerResponse>; cwd: string };
@@ -33,8 +33,8 @@ export async function openTerm(id: string, cwd: string, cols: number, rows: numb
   if (have) { have.pty.resize(cols, rows); return; }
   const m = await load();
   if (!m) throw new Error('终端用不了：node-pty 没装上');
-  const env = { ...SHELL_ENV, TERM: 'xterm-256color', COLORTERM: 'truecolor', TERM_PROGRAM: 'Jarvis', LANG: SHELL_ENV.LANG || 'zh_CN.UTF-8' };
-  const pty = m.spawn(SHELL_ENV.SHELL || '/bin/zsh', ['-l'], { name: 'xterm-256color', cols, rows, cwd, env });
+  const base = shellEnv(), env = { ...base, TERM: 'xterm-256color', COLORTERM: 'truecolor', TERM_PROGRAM: 'Jarvis', LANG: base.LANG || 'zh_CN.UTF-8' };
+  const pty = m.spawn(base.SHELL || '/bin/zsh', ['-l'], { name: 'xterm-256color', cols, rows, cwd, env });
   const t: Term = { pty, buf: '', subs: new Set(), cwd };
   terms.set(id, t);
   pty.onData(d => { t.buf = (t.buf + d).slice(-KEEP); for (const r of t.subs) send(r, d); });

@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, webUtils } from 'electron';
 contextBridge.exposeInMainWorld('jarvis', {
   placement: () => ipcRenderer.invoke('placement'),
   dock: (enabled: boolean) => ipcRenderer.invoke('dock', enabled),
@@ -105,16 +105,24 @@ contextBridge.exposeInMainWorld('dictation', {
   open: (page: string) => ipcRenderer.send('dictation-open', page),
   again: () => ipcRenderer.send('dictation-again'),
 });
-// The Agents window (agentsWindow.ts answers only that window): a folder picker, a terminal tab, a folder in Finder.
+// The Agents window (agentsWindow.ts answers only that window): a folder picker, the owner's terminal, editor, Finder and
+// Quick Look, a dropped file's path, and a session a notification opened.
 contextBridge.exposeInMainWorld('agents', {
   presence: (enabled: boolean, ids: string[]) => ipcRenderer.send('agents-presence', enabled, ids),
   onNext: (callback: () => void) => { const listener = () => callback(); ipcRenderer.on('agents-next', listener); return () => ipcRenderer.removeListener('agents-next', listener); },
+  onOpen: (callback: (id: string) => void) => { const listener = (_: unknown, id: string) => callback(id); ipcRenderer.on('agents-open-session', listener); return () => ipcRenderer.removeListener('agents-open-session', listener); },
   folder: () => ipcRenderer.invoke('agents-folder'),
-  terminal: (cwd: string, cmd: string) => ipcRenderer.invoke('agents-terminal', cwd, cmd),
+  terminal: (cwd: string, cmd: string, term?: string) => ipcRenderer.invoke('agents-terminal', cwd, cmd, term),
+  terminals: () => ipcRenderer.invoke('agents-terminals'),
   reveal: (cwd: string) => ipcRenderer.invoke('agents-reveal', cwd),
+  revealFile: (file: string) => ipcRenderer.invoke('agents-reveal-file', file),
+  quickLook: (file: string) => ipcRenderer.invoke('agents-quick-look', file),
+  editors: () => ipcRenderer.invoke('agents-editors'),
+  openInEditor: (file: string, line?: number, editor?: string) => ipcRenderer.invoke('agents-open-in-editor', file, line, editor),
+  pathOf: (file: File) => webUtils.getPathForFile(file),
   openUrl: (url: string) => ipcRenderer.invoke('agents-open-url', url),
   openPath: (file: string) => ipcRenderer.invoke('agents-open-path', file),
-  cloud: (cwd: string, text: string) => ipcRenderer.invoke('agents-cloud', cwd, text),
+  cloud: (cwd: string, text: string, term?: string) => ipcRenderer.invoke('agents-cloud', cwd, text, term),
 });
 // The first launch's window (companion.ts answers only that window).
 contextBridge.exposeInMainWorld('firstRun', {
