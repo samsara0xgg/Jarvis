@@ -9,6 +9,7 @@ Only the late-revision case starts the real ``DuplexVoiceSession`` threads.
 from __future__ import annotations
 
 import json
+import math
 import threading
 import time
 from dataclasses import replace
@@ -17,6 +18,7 @@ from unittest.mock import patch
 
 import numpy as np
 import pytest
+import yaml
 
 from jarvis.shared.realtime_trace import (
     RealtimeTracePoint,
@@ -25,6 +27,7 @@ from jarvis.shared.realtime_trace import (
 )
 from jarvis.state.event_log import open_event_log
 from jarvis.surface import voice_asr, voice_audio, voice_backend, voice_pipeline, voice_session
+from tests.canary._helpers import repo_root
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -280,6 +283,43 @@ def test_unstable_suffix_defers_completeness_until_the_hypothesis_converges() ->
     assert utterance.endpoint_reason == "max_hold"
     assert silence_frames == 2 + 5
     assert _decisions()[-1] == ("commit", "max_hold", 160.0)
+
+
+def _shipped() -> voice_session.RealtimeInputSessionConfig:
+    config = yaml.safe_load((repo_root() / "config" / "jarvis.yaml").read_text(encoding="utf-8"))
+    return voice_session.realtime_input_session_config_from_mapping(
+        config["realtime"]["single_audio_ingress"],
+    )
+
+
+def test_the_calibrated_hold_keeps_a_hum_and_its_question_one_utterance() -> None:
+    """「嗯……」, a one-second pause, then the question: one utterance, ended on its words.
+
+    At the shipped (still switched off) calibration the hum alone reads as
+    unfinished and holds; the question ends ``candidate_ms`` after its last
+    word instead of the acoustic 0.77 s.
+    """
+    calibrated = replace(_shipped().partial_asr, enabled=True)
+    candidate = math.ceil(calibrated.candidate_ms / 32)  # 32 ms frames
+    pause = 31  # 0.99 s
+    harness = _Harness(
+        _ScriptedDecoder(["嗯。"] * 5 + ["嗯，帮我查一下天气。"]),  # noqa: RUF001
+        partial=calibrated,
+        required_misses=24,
+    )
+    try:
+        heard = harness.feed_many([_SPEECH] * 10 + [_SILENCE] * pause + [_SPEECH] * 30)
+        silence_frames = 0
+        utterance = None
+        while utterance is None:
+            utterance = harness.feed(_SILENCE)
+            silence_frames += 1
+    finally:
+        harness.close()
+    assert heard == [None] * len(heard)
+    assert utterance.endpoint_reason == "semantic_complete"
+    assert silence_frames == candidate
+    assert candidate * 32 < 768
 
 
 def test_speech_resume_during_hold_returns_to_speech_active_without_commit() -> None:
@@ -644,6 +684,7 @@ def test_late_partial_revision_is_discarded_and_only_final_text_is_committed(
         ("我想问一下。", False),
         ("我想问一下，", False),  # noqa: RUF001
         ("然后", False),
+        ("嗯。", False),
         ("turn on the light.", True),
         ("Turn on the light", True),
         ("turn on the light, and", False),

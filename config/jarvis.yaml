@@ -618,13 +618,19 @@ realtime:
     barge_in_yield_gain: 0.2
     barge_in_pause_ms: 350
     # ADR-0006 D7. Rolling partial SenseVoice decode plus a semantic endpoint
-    # hold. Off by default (acoustic endpointing only); the values are the
-    # D7 calibration candidates, not promises.
+    # hold: after candidate_ms of silence a finished-looking stable prefix ends
+    # the utterance; an unfinished one (a dangling 然后/的话/, or a lone 嗯) holds
+    # up to max_hold_ms more. 200 recordings (2026-09-20..28) replayed through
+    # the real assembler and SenseVoice: against the acoustic 0.77 s, 400/800
+    # ends median 350 ms sooner; about one in twelve ends at a mid-thought
+    # pause (ADR 0074 answers the two parts once), and a hum before a
+    # one-second pause stays one utterance. 320 cut one in seven. Still off:
+    # tier B, it ships on only after a live run.
     partial_asr:
       enabled: false
       interval_ms: 240
-      candidate_ms: 320
-      max_hold_ms: 900
+      candidate_ms: 400
+      max_hold_ms: 800
       post_roll_ms: 200
     # ADR-0006 D9. The route observer polls the default output as well as the
     # input on route_poll_s; off keeps today's input-only poll. detection_mode
