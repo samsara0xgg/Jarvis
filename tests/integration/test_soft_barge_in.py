@@ -213,6 +213,9 @@ def test_a_listening_sound_keeps_her_talking_and_is_no_turn(tmp_path: Path) -> N
         ("Pause.", "stop_request"),
         # "That's enough" in the 2026-09-29 live test, which she took for "go on".
         ("OK可以了。", "stop_request"),
+        # How 「pause」 comes back over her (2026-09-29 live test; a synthesized one).
+        ("Pulse.", "stop_request"),
+        ("Cause.", "stop_request"),
     ],
 )
 def test_a_stop_request_stops_her_and_is_no_turn(
