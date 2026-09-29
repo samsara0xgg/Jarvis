@@ -783,9 +783,12 @@ def is_wake_only(text: str) -> bool:
 # keeps her talking; a lone 对/是/好 or "yes" may be answering a waiting card
 # (ADR 0062), so only their doubled forms count, and a question mark makes
 # any of them a request to repeat (「啊？」). A 「嗯」 came back as "And." in
-# the 2026-09-28 live test.
+# the 2026-09-28 live test, and a drawn-out one as three pieces of Japanese
+# 「うん」「う」 in the 2026-09-29 one; final ASR guesses Korean on short sounds
+# too.
 _BACKCHANNEL_RE = re.compile(
     r"(?:[嗯哼哦噢喔唔呃额啊哈呵]|对对+|是是+|好好+|行行+)+"
+    r"|[あうえおんぁぅぇぉっはふへほアウエオンァゥェォッハフヘホー]+|[응음으흠어아]+"
     r"|(?:mm+|m+h+m+|uhhuh|hm+|uh+|um+|oh+|ah+|ha|and)+",
 )
 # A request to stop talking: she stops, and it is not a question to answer.
