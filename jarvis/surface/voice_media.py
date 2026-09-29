@@ -67,6 +67,12 @@ _MAX_EVENT_DRAIN_BATCH = 1024
 _MAX_DURABILITY_RETRY_ATTEMPTS = 10
 # A barge-in yield lowers or restores the speech within one spoken syllable.
 _YIELD_RAMP_MS = 30.0
+# A barge-in stop or hold first fades her out on the real waveform: the cut's
+# own declick (ADR-0006 D11) starts from the last sample played, and from
+# mid-word that truncation was a pop even at the yield's 0.2 (live test
+# 2026-09-29). The wait is bounded for a player whose callback is not running.
+_CUT_FADE_MS = 20.0
+_CUT_FADE_WAIT_S = 0.1
 # A session connected while Allen is still talking spares his answer the
 # transport and task handshake (TLS alone took 0.11-0.15 s to api-uw on
 # 2026-09-29). MiniMax closes a started task after 120 s without an event.
@@ -974,8 +980,16 @@ class StreamingTTSPipeline:
             self._player.set_gain(self._mute_gain * gain, _YIELD_RAMP_MS)
 
     def pause_speaking(self, paused: bool) -> None:  # noqa: FBT001 - the capture side's one bit
-        """Hold her answer where it is while Allen's words are judged, or let it go on."""
-        self._player.pause_generation(paused=paused)
+        """Hold her answer where it is while Allen's words are judged, or let it go on.
+
+        Fire and forget from the capture thread; the actor fades her out
+        before the hold and back in after it, in call order.
+        """
+        loop = self._loop
+        if loop is None or self._closed.is_set():
+            return
+        with contextlib.suppress(RuntimeError):
+            asyncio.run_coroutine_threadsafe(self._pause_owned(paused=paused), loop)
 
     def suspend_for_sleep(  # noqa: C901, PLR0912, PLR0915 - exact late-continuation FSM
         self,
@@ -1596,13 +1610,44 @@ class StreamingTTSPipeline:
                 terminal_commit_pending=active is not None and active.terminal_commit_pending,
             )
             return "stale"
-        if not await self._interrupt_active(reason=reason):
-            return "uncertain"
+        faded = reason == "barge_in"
+        if faded:
+            await self._fade_out()
+        try:
+            if not await self._interrupt_active(reason=reason):
+                return "uncertain"
+        finally:
+            if faded:
+                self._restore_gain()
         # ADR-0006 D4: a user stop covers the queued speech of that group
         # too, and `_release_active(start_successor=False)` never advances
         # the lane, so an unpurged successor would sit unstartable.
         self._purge_after_drain()
         return "applied"
+
+    async def _pause_owned(self, *, paused: bool) -> None:
+        if paused:
+            await self._fade_out()
+            self._player.pause_generation(paused=True)
+            return
+        self._player.pause_generation(paused=False)
+        self._restore_gain()
+
+    async def _fade_out(self) -> None:
+        """Ramp her to silence on the real waveform before the player cuts or holds her."""
+        with self._gain_lock:
+            self._player.set_gain(0.0, _CUT_FADE_MS)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _CUT_FADE_WAIT_S
+        while loop.time() < deadline:
+            if self._player.current_gain() == 0.0:
+                return
+            await asyncio.sleep(0.005)
+
+    def _restore_gain(self) -> None:
+        """Give the gain back to the mute and the yield after a fade."""
+        with self._gain_lock:
+            self._player.set_gain(self._mute_gain * self._yield_gain, _YIELD_RAMP_MS)
 
     async def _hold_output_owned(self, *, held: bool) -> None:
         self._held = held

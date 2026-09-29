@@ -41,6 +41,8 @@
   stopped her with no answer; a drawn-out 「嗯——」 reached final ASR in
   three pieces, the `tts` VAD profile losing it in between, heard as
   Japanese 「うん」, 「うん」 and 「う」, and the first stopped her as a turn.
+  Allen heard each stop from mid-word as a pop: the cut's own declick
+  (ADR-0006 D11) starts from the last sample played.
 
 ## Decision
 
@@ -56,11 +58,12 @@ turn. A stop request includes the ting/ding syllables final ASR makes of a
 lone 「停」 over her voice, and any lone English word that is no listening
 sound, no card's answer and no question.
 
-Limits: the gain returns only after a stop has landed; the yield scales the
-mute and never replaces it; words that held her by their length are judged
-the same way (a slow 「别说了」 is no turn); held words that final ASR fails on
-stop her; a lone 对/好/是/yes and anything ending in a question mark are never
-a listening sound; `0` for the voiced time is ADR 0041 as it shipped.
+Limits: a stop or a hold first fades her voice to silence over 20 ms; the gain
+returns only after a stop has landed; the yield scales the mute and never
+replaces it; words that held her by their length are judged the same way (a
+slow 「别说了」 is no turn); held words that final ASR fails on stop her; a lone
+对/好/是/yes and anything ending in a question mark are never a listening sound;
+`0` for the voiced time is ADR 0041 as it shipped.
 
 ## Alternatives rejected
 
@@ -83,6 +86,8 @@ a listening sound; `0` for the voiced time is ADR 0041 as it shipped.
 
 ## Consequences
 
+- Each stop or hold lands about 20 ms plus one output block after it is
+  decided, the fade; the cut's declick then has nothing left to decay.
 - A short 「停」 stops her about `barge_in_pause_ms` plus final ASR after it
   ends (about 0.45 s at the defaults), where ADR 0041 stopped her at onset.
 - Until a sound is judged she keeps talking at 0.2: a word of hers may be
