@@ -140,6 +140,7 @@ from jarvis.runtime import (
     make_foreground_decision_callable,
     make_response_cancel_callable,
     make_supersede_unspoken_callable,
+    make_turn_cancel_callable,
     save_language,
 )
 from jarvis.runtime.dictation import Dictation, polish_client, whisper_ears
@@ -300,6 +301,11 @@ _TTS_SILENT_CHANNELS: frozenset[str] = frozenset(
 # still lands on the card so Allen can read it when he comes back —
 # which is what "queue for review" means.
 _BROADCAST_SILENT_CHANNELS: frozenset[str] = frozenset({"silent_log"})
+
+# The rows that close a response: its render, or its run's terminal.
+_RESPONSE_TERMINAL_TYPES: frozenset[str] = frozenset(
+    {"surface.response_emitted", "response.cancelled", "response.failed"},
+)
 
 # Watcher cursor SELECT — placeholders only, no user-controlled
 # interpolation. Mirrors the column order of
@@ -1409,6 +1415,7 @@ async def _response_watcher(
     broadcaster: InherentBroadcaster,
     *,
     poll_interval_s: float = _DEFAULT_POLL_INTERVAL_S,
+    voiced: bool = True,
 ) -> None:
     """Background task: forward every new response event to the broadcaster.
 
@@ -1443,6 +1450,10 @@ async def _response_watcher(
     remembered from the open until its ``emitted`` closes it, because
     only the open header carries the channel. See the constant's
     comment for why this set is narrower than the TTS one.
+
+    ``voiced=False`` (no speech pipeline this boot) follows every
+    ``done`` with ``voice spoken {output_outcome: "no_voice"}``: a surface
+    ends a turn's speaking face on ``spoken``, and nothing else would send it.
     """
     after_id = _latest_id(runtime.conn)
     silent_turns: set[str] = set()
@@ -1465,20 +1476,9 @@ async def _response_watcher(
                         consumer="response_watcher",
                     ):
                         continue
-                    if ev.type == "surface.response_open":
-                        await broadcaster.broadcast_open(ev)
-                    elif ev.type == "surface.response_chunk":
-                        await broadcaster.broadcast_chunk(ev)
-                    elif ev.type == "surface.response_emitted":
-                        await broadcaster.broadcast_done(ev)
-                    elif ev.type == "turn.failed":
-                        reason = str(ev.payload.get("reason") or "error")
-                        await broadcaster.broadcast_op(
-                            "failed", turn_id=turn_id, reason=reason,
-                            message=lang.t(f"failure.{reason}"),
-                        )
-                    else:  # response.cancelled
-                        await broadcaster.broadcast_op("cancelled", turn_id=turn_id)
+                    await _broadcast_response_event(
+                        broadcaster, ev, turn_id=turn_id, voiced=voiced,
+                    )
             except Exception:
                 LOGGER.exception("response_watcher: poll failed at after_id=%d; retrying", after_id)
                 await asyncio.sleep(_WATCHER_RETRY_S)
@@ -1489,11 +1489,37 @@ async def _response_watcher(
         raise
 
 
+async def _broadcast_response_event(
+    broadcaster: InherentBroadcaster,
+    ev: Event,
+    *,
+    turn_id: str,
+    voiced: bool,
+) -> None:
+    """Put one response row on the wire; see :func:`_response_watcher`."""
+    if ev.type == "surface.response_open":
+        await broadcaster.broadcast_open(ev)
+    elif ev.type == "surface.response_chunk":
+        await broadcaster.broadcast_chunk(ev)
+    elif ev.type == "surface.response_emitted":
+        await broadcaster.broadcast_done(ev)
+        if not voiced:
+            await broadcaster.broadcast_voice("spoken", turn_id=turn_id, output_outcome="no_voice")
+    elif ev.type == "turn.failed":
+        reason = str(ev.payload.get("reason") or "error")
+        await broadcaster.broadcast_op(
+            "failed", turn_id=turn_id, reason=reason, message=lang.t(f"failure.{reason}"),
+        )
+    else:  # response.cancelled
+        await broadcaster.broadcast_op("cancelled", turn_id=turn_id)
+
+
 async def _tts_watcher(  # noqa: C901, PLR0912 - ordered durable dispatch FSM
     *,
     conn: sqlite3.Connection,
     pipeline: object,  # voice_tts.TTSPipeline protocol; loosely typed to avoid cycles
     poll_interval_s: float = _DEFAULT_POLL_INTERVAL_S,
+    broadcaster: InherentBroadcaster | None = None,
 ) -> None:
     """Background task: feed every surface.response_* row into the TTSPipeline.
 
@@ -1538,7 +1564,10 @@ async def _tts_watcher(  # noqa: C901, PLR0912 - ordered durable dispatch FSM
     ``emitted`` only clears the bookkeeping. Both labels are read once,
     at the open, so the suppressed turn ids are remembered until their
     ``emitted`` row closes them. This is a filter, not a switch: a
-    ``voice_notify`` turn streams exactly as before.
+    ``voice_notify`` turn streams exactly as before. The row that closes a
+    suppressed turn is announced as ``voice spoken {output_outcome:
+    "suppressed"}`` on ``broadcaster``: the surface shows the turn's text
+    with a speaking face until ``spoken``, which no player would send.
 
     Cancellation: re-raises :class:`asyncio.CancelledError` so the daemon
     shutdown path (Task 19) can await the watcher cleanly.
@@ -1588,6 +1617,10 @@ async def _tts_watcher(  # noqa: C901, PLR0912 - ordered durable dispatch FSM
                             else None
                         ),
                     ):
+                        if broadcaster is not None and ev.type in _RESPONSE_TERMINAL_TYPES:
+                            await broadcaster.broadcast_voice(
+                                "spoken", turn_id=turn_id, output_outcome="suppressed",
+                            )
                         after_id = max(after_id, row_id)
                         continue
                     if streaming_pipeline is not None:
@@ -3340,6 +3373,7 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
             stop_speaking=_stop_speaking,
             hold_output=_hold_output,
             supersede_unspoken=supersede_unspoken,
+            yield_speaking=streaming.set_yield_gain if streaming is not None else None,
         )
     except Exception:
         LOGGER.exception(
@@ -5385,6 +5419,9 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             night=runtime.night,
             codex_board=codex_board,
             cancel_response_callable=cancel_response_callable,
+            cancel_turn_callable=(
+                make_turn_cancel_callable(runtime) if cancel_response_callable is not None else None
+            ),
             controls=controls,
             live=live_voice,
             v2=InherentV2Deps(
@@ -5465,7 +5502,12 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             )
         watchers.append(
             asyncio.create_task(
-                _response_watcher(runtime, broadcaster, poll_interval_s=poll_interval_s),
+                _response_watcher(
+                    runtime,
+                    broadcaster,
+                    poll_interval_s=poll_interval_s,
+                    voiced=tts_pipe is not None,
+                ),
                 name="response_watcher",
             ),
         )
@@ -5482,6 +5524,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                         conn=runtime.conn,
                         pipeline=tts_pipe,
                         poll_interval_s=poll_interval_s,
+                        broadcaster=broadcaster,
                     ),
                     name="tts_watcher",
                 ),

@@ -14,6 +14,7 @@ import contextlib
 import hashlib
 import json
 import logging
+import math
 import re
 import sqlite3
 import threading
@@ -64,6 +65,8 @@ _MAX_RESPONSE_TIMEOUT_S = 300.0
 _MAX_SHUTDOWN_TIMEOUT_S = 10.0
 _MAX_EVENT_DRAIN_BATCH = 1024
 _MAX_DURABILITY_RETRY_ATTEMPTS = 10
+# A barge-in yield lowers or restores the speech within one spoken syllable.
+_YIELD_RAMP_MS = 30.0
 _CHANNEL_TAG_RE = re.compile(r"</?(?:voice|document)>")
 _RESPONSE_TERMINAL_TYPES = frozenset({"response.cancelled", "response.failed"})
 _RESPONSE_EVENT_TYPES = frozenset(
@@ -369,7 +372,7 @@ class _ActiveResponse:
     fallback_spawn_task: asyncio.Task[asyncio.subprocess.Process] | None = None
     fallback_janitor_task: asyncio.Task[bool] | None = None
     output_lease: bool = False
-    last_checkpoint_sequence: int | None = None
+    last_checkpoint_text: str = ""
     provider_label: str = "minimax_ws_streaming"
     advance_after_cleanup: bool = False
     terminal_commit_pending: bool = False
@@ -676,6 +679,11 @@ class StreamingTTSPipeline:
         # ponytail: only grows, one short id per spoken turn; trim it if a
         # daemon ever runs for months.
         self._started_turns: set[str] = set()
+        # The player's gain is the mute's (ADR-0015 D2) times a barge-in
+        # yield's, so a yield never lifts a mute.
+        self._gain_lock = threading.Lock()
+        self._mute_gain = 1.0
+        self._yield_gain = 1.0
         self._thread = threading.Thread(
             target=self._thread_main,
             name="jarvis-media-owner",
@@ -761,6 +769,8 @@ class StreamingTTSPipeline:
 
         ``response_id=None`` stops whatever is speaking: a spoken interruption
         in conversation mode (ADR 0041, ``reason="barge_in"``) knows no id.
+        A named response that is not audible yet (queued, parked while Allen
+        talks, buffering) is dropped unsaid.
 
         ADR-0014 D20 step 4, callable from any non-actor thread. The target
         is resolved on the actor against ``self._active``'s own playback
@@ -942,7 +952,18 @@ class StreamingTTSPipeline:
 
     def set_output_gain(self, gain: float, ramp_ms: float = 10.0) -> None:
         """Ramp the player's output gain: 0.0 is the ADR-0015 D2 speech mute, 1.0 restores."""
-        self._player.set_gain(gain, ramp_ms)
+        with self._gain_lock:
+            self._mute_gain = gain
+            self._player.set_gain(gain * self._yield_gain, ramp_ms)
+
+    def set_yield_gain(self, gain: float) -> None:
+        """Lower the speech while Allen may be taking the turn; 1.0 gives it back.
+
+        Scales, never replaces, the mute: a yield ending during a mute stays silent.
+        """
+        with self._gain_lock:
+            self._yield_gain = gain
+            self._player.set_gain(self._mute_gain * gain, _YIELD_RAMP_MS)
 
     def suspend_for_sleep(  # noqa: C901, PLR0912, PLR0915 - exact late-continuation FSM
         self,
@@ -1537,6 +1558,19 @@ class StreamingTTSPipeline:
     async def _stop_foreground_output_owned(self, response_id: str | None, reason: str) -> str:
         """Actor-owned stop of one named (or, for ``None``, the current) response's output."""
         active = self._active
+        waiting = None if response_id is None else self._responses.get(response_id)
+        if waiting is not None and (active is None or active.response is not waiting):
+            # Named but not audible yet: queued behind another answer, parked
+            # while Allen talks (ADR 0053) or still buffering. The surface
+            # already shows it, so a stop there means it is never said.
+            self._unschedule(waiting)
+            self._responses.pop(waiting.response_id, None)
+            self._registry.terminalize(waiting.response_id)
+            self._broadcast_spoken(waiting.turn_id, event_type="dropped")
+            record_realtime_trace(
+                "media_stop_foreground_waiting", response_id=waiting.response_id, reason=reason,
+            )
+            return "applied"
         if (
             active is None
             or (response_id is not None and active.response.response_id != response_id)
@@ -2115,15 +2149,13 @@ class StreamingTTSPipeline:
                 # the wake listener.
                 return
             await self._interrupt_active(reason=reason)
-            while self._after_drain:
-                queued = self._after_drain.popleft()
-                self._registry.terminalize(queued.response_id)
-                self._responses.pop(queued.response_id, None)
+            self._purge_after_drain()
             self._output_active.clear()
             return
         self._unschedule(response)
         self._responses.pop(response.response_id, None)
         self._registry.terminalize(response.response_id)
+        self._broadcast_spoken(response.turn_id, event_type="dropped")
 
     async def _response_emitted(self, response: _ResponseBuffer, event: Event) -> None:
         """Complete the buffer; a scheduled response finishes its own segment loop."""
@@ -2157,6 +2189,8 @@ class StreamingTTSPipeline:
             old = self._after_drain.popleft()
             self._registry.terminalize(old.response_id)
             self._responses.pop(old.response_id, None)
+            # Its text may already be on screen: the surface ends its turn on `spoken`.
+            self._broadcast_spoken(old.turn_id, event_type="dropped")
 
     def _unschedule(self, response: _ResponseBuffer) -> None:
         response.scheduled = False
@@ -2493,6 +2527,7 @@ class StreamingTTSPipeline:
             )
             if isinstance(opened, StalePlaybackGeneration):
                 return False
+            segment_start = accepted_total
             accepted_segment = 0
             while endpoint_index < self._provider.streaming_candidate_count:
                 if self._active is not active:
@@ -2520,6 +2555,7 @@ class StreamingTTSPipeline:
                         ),
                     )
                     resampler: _SegmentResampler | None = None
+                    pending_alignment: list[TTSAudioChunk] = []
                     while True:
                         if iterator is None:  # pragma: no cover - session invariant
                             msg = "opened TTS session has no audio iterator"
@@ -2532,6 +2568,15 @@ class StreamingTTSPipeline:
                             )
                             raise RuntimeError(msg)  # noqa: TRY301 - provider failure lane
                         if isinstance(event, TTSAudioChunk):
+                            if event.word_boundaries and event.timing_text == text:
+                                if accepted_segment:
+                                    self._record_alignment(
+                                        active, event, segment_start=segment_start,
+                                    )
+                                else:
+                                    pending_alignment.append(event)
+                            if not event.pcm:
+                                continue
                             if resampler is None:
                                 resampler = _SegmentResampler(
                                     input_rate_hz=event.sample_rate_hz,
@@ -2557,6 +2602,12 @@ class StreamingTTSPipeline:
                             )
                             accepted_segment += written
                             accepted_total += written
+                            if accepted_segment:
+                                for alignment in pending_alignment:
+                                    self._record_alignment(
+                                        active, alignment, segment_start=segment_start,
+                                    )
+                                pending_alignment.clear()
                             continue
                         if resampler is not None:
                             written = await self._write_all(
@@ -2566,6 +2617,11 @@ class StreamingTTSPipeline:
                             )
                             accepted_segment += written
                             accepted_total += written
+                        if accepted_segment:
+                            for alignment in pending_alignment:
+                                self._record_alignment(
+                                    active, alignment, segment_start=segment_start,
+                                )
                         finished = self._player.finish_generation_segment(
                             expected_playback_generation_id=lease.playback_generation_id,
                             sequence=sequence,
@@ -2653,6 +2709,33 @@ class StreamingTTSPipeline:
                 await session.finish()
             active.session = None
         return True
+
+    def _record_alignment(
+        self, active: _ActiveResponse, event: TTSAudioChunk, *, segment_start: int,
+    ) -> None:
+        """Persist exact text/sample mappings before allowing a word checkpoint."""
+        boundaries = tuple(
+            (end, segment_start + math.ceil(ms * self._config.canonical_sample_rate_hz / 1000))
+            for end, ms in event.word_boundaries
+        )
+        emit_event(
+            self._require_conn(), type="surface.playback_alignment",
+            payload={
+                "session_id": active.lease.session_id,
+                "response_id": active.response.response_id,
+                "turn_id": active.response.turn_id,
+                "playback_generation_id": active.lease.playback_generation_id,
+                "sequence": event.sequence,
+                "speech_text_hash": hashlib.sha256((event.timing_text or "").encode()).hexdigest(),
+                "word_boundaries": [list(boundary) for boundary in boundaries],
+            },
+            source_event_id=active.activation_event_uid,
+            correlation={"turn_id": active.response.turn_id},
+        )
+        self._player.align_generation_segment(
+            expected_playback_generation_id=active.lease.playback_generation_id,
+            sequence=event.sequence, boundaries=boundaries,
+        )
 
     async def _await_segments(
         self,
@@ -3047,7 +3130,7 @@ class StreamingTTSPipeline:
         snapshot: OutputTimelineSnapshot,
     ) -> None:
         sequence = snapshot.heard_through_sequence
-        if sequence is None or sequence == active.last_checkpoint_sequence:
+        if not snapshot.heard_text or snapshot.heard_text == active.last_checkpoint_text:
             return
         for attempt in range(1, self._config.checkpoint_retry_attempts + 1):
             conn = self._require_conn()
@@ -3056,16 +3139,16 @@ class StreamingTTSPipeline:
                 "AND json_extract(payload_json, '$.response_id') = ? "
                 "AND json_extract(payload_json, '$.playback_generation_id') = ? "
                 "AND json_extract(payload_json, '$.session_id') = ? "
-                "AND json_extract(payload_json, '$.heard_through_sequence') = ? LIMIT 1",
+                "AND json_extract(payload_json, '$.heard_text_hash') = ? LIMIT 1",
                 (
                     active.response.response_id,
                     active.lease.playback_generation_id,
                     active.lease.session_id,
-                    sequence,
+                    snapshot.heard_text_hash,
                 ),
             ).fetchone()
             if existing is not None:
-                active.last_checkpoint_sequence = sequence
+                active.last_checkpoint_text = snapshot.heard_text
                 return
             try:
                 emit_event(
@@ -3078,6 +3161,9 @@ class StreamingTTSPipeline:
                         "playback_generation_id": active.lease.playback_generation_id,
                         "heard_through_sequence": sequence,
                         "submitted_samples": snapshot.submitted_samples,
+                        "estimated_audible_samples": snapshot.estimated_audible_samples,
+                        "heard_partial_sequence": snapshot.heard_partial_sequence,
+                        "heard_partial_text_end": snapshot.heard_partial_text_end,
                         "heard_text_hash": snapshot.heard_text_hash,
                         "heard_text": snapshot.heard_text,
                         "cursor_quality": snapshot.cursor_quality,
@@ -3095,7 +3181,7 @@ class StreamingTTSPipeline:
                 if attempt < self._config.checkpoint_retry_attempts:
                     await asyncio.sleep(self._config.durability_retry_s)
                 continue
-            active.last_checkpoint_sequence = sequence
+            active.last_checkpoint_text = snapshot.heard_text
             return
 
     async def _commit_terminal_durable(  # noqa: PLR0913 - mirrors terminal payload owner
@@ -3222,6 +3308,9 @@ class StreamingTTSPipeline:
             "playback_generation_id": active.lease.playback_generation_id,
             "heard_through_sequence": snapshot.heard_through_sequence,
             "submitted_samples": snapshot.submitted_samples,
+            "estimated_audible_samples": snapshot.estimated_audible_samples,
+            "heard_partial_sequence": snapshot.heard_partial_sequence,
+            "heard_partial_text_end": snapshot.heard_partial_text_end,
             "total_samples": snapshot.accepted_samples,
             "provider": active.provider_label,
             "cursor_quality": snapshot.cursor_quality,

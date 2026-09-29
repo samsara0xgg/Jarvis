@@ -1254,6 +1254,19 @@ class AudioStreamPlayer:
             )
         return accepted
 
+    def align_generation_segment(
+        self, *, expected_playback_generation_id: int, sequence: int,
+        boundaries: tuple[tuple[int, int], ...],
+    ) -> StalePlaybackGeneration | None:
+        """Install durable provider word ends on the exact active lease."""
+        lease = self._active_lease
+        if lease is None or lease.playback_generation_id != expected_playback_generation_id:
+            return self._stale(expected_playback_generation_id)
+        self._ledgers[expected_playback_generation_id].align_segment(
+            sequence=sequence, boundaries=boundaries,
+        )
+        return None
+
     def finish_generation_segment(
         self,
         *,
@@ -1719,6 +1732,14 @@ class AudioStreamPlayer:
             if actual < frames and generation_before == self._callback_first_generation:
                 self._starvation_dry_generation = generation_before
         if actual <= 0:
+            # Nothing of hers is playing, so a gain set meanwhile lands whole:
+            # ramped in later, it leaked a mute's first block, and the answer
+            # after a barge-in stop began under the yield's 0.2 and was never
+            # counted as heard in full (live test 2026-09-28).
+            gain_command = self._gain_command
+            if gain_command is not self._gain_consumed_command:
+                self._gain.set_target(gain_command[0], 0)
+                self._gain_consumed_command = gain_command
             self._emit_declick(view, frames)
             return
         active_after = self._active_lease
@@ -1854,6 +1875,56 @@ class TTSAudioChunk:
     sample_rate_hz: int
     channels: int = 1
     sample_format: Literal["int16_le"] = "int16_le"
+    # Stable provider word ends: code-point offset and milliseconds in this segment.
+    timing_text: str | None = None
+    word_boundaries: tuple[tuple[int, float], ...] = ()
+
+
+_MAX_SUBTITLE_TIME_MS = 3_600_000
+
+
+def _subtitle_boundaries(
+    raw: object, text: str, *, final: bool,
+) -> tuple[tuple[int, float], ...]:
+    """Validate one subtitle block and coalesce syllables sharing a source span."""
+    if not isinstance(raw, dict):
+        return ()
+    block_start, block_end = raw.get("text_begin", 0), raw.get("text_end", len(text))
+    if (
+        type(block_start) is not int or type(block_end) is not int
+        or not 0 <= block_start < block_end <= len(text)
+        or raw.get("text") != text[block_start:block_end]
+    ):
+        return ()
+    words = raw.get("timestamped_words")
+    if not isinstance(words, list):
+        return ()
+    boundaries: list[tuple[int, float]] = []
+    text_start, text_end, time_end = block_start, block_start, 0.0
+    for word in words:
+        if not isinstance(word, dict):
+            return ()
+        start, end = word.get("word_begin"), word.get("word_end")
+        begin_ms, end_ms = word.get("time_begin"), word.get("time_end")
+        repeated = bool(boundaries) and (start, end) == (text_start, text_end)
+        if (
+            type(start) is not int or type(end) is not int
+            or (not repeated and start != text_end) or not start < end <= block_end
+            or word.get("word") != text[start:end]
+            or not isinstance(begin_ms, int | float) or not isinstance(end_ms, int | float)
+            or isinstance(begin_ms, bool) or isinstance(end_ms, bool)
+            or not time_end - 1e-6 <= begin_ms <= end_ms < _MAX_SUBTITLE_TIME_MS
+            or end_ms < time_end
+        ):
+            return ()
+        if repeated:
+            boundaries[-1] = (end, float(end_ms))
+        else:
+            boundaries.append((end, float(end_ms)))
+        text_start, text_end, time_end = start, end, float(end_ms)
+    # A digit token may be repeated for each pronounced syllable ("15" twice).
+    # Neither that token nor the streaming tail is final until a successor arrives.
+    return tuple(boundaries if final else boundaries[:-1])
 
 
 @dataclass(frozen=True)
@@ -2309,6 +2380,9 @@ class MiniMaxTTSSession:
         self._reader_task: asyncio.Task[None] | None = None
         self._watchdog_task: asyncio.Task[None] | None = None
         self._active_sequence: int | None = None
+        self._active_text = ""
+        self._subtitle: object = None
+        self._published_words: tuple[tuple[int, float], ...] = ()
         self._active_ready = asyncio.Event()
         self._send_call_active = False
         self._reader_claimed = False
@@ -2360,6 +2434,8 @@ class MiniMaxTTSSession:
             task_start = {
                 "event": "task_start",
                 "model": self._model,
+                "subtitle_enable": True,
+                "subtitle_type": "word_streaming",
                 "voice_setting": {
                     "voice_id": self._voice,
                     "speed": 1.0,
@@ -2533,6 +2609,9 @@ class MiniMaxTTSSession:
                             msg = "writer observed overlapping active segments"
                             raise TTSConcurrentSendError(msg)  # noqa: TRY301
                         self._active_sequence = segment.sequence
+                        self._active_text = segment.text
+                        self._subtitle = None
+                        self._published_words = ()
                         self._active_ready.set()
                         await conn.send(
                             json.dumps(
@@ -2581,7 +2660,23 @@ class MiniMaxTTSSession:
                 if status != 0:
                     msg = f"MiniMax audio event failed: {obj.get('base_resp')}"
                     raise _MiniMaxProtocolError(msg)  # noqa: TRY301 - reader failure lane
-                audio_hex = obj.get("data", {}).get("audio", "") or ""
+                data = obj.get("data", {})
+                subtitle = data.get("subtitle")
+                if (
+                    isinstance(subtitle, dict)
+                    and isinstance(subtitle.get("timestamped_words"), list)
+                ):
+                    previous_subtitle = self._subtitle
+                    if (
+                        isinstance(previous_subtitle, dict)
+                        and subtitle.get("text_begin") == previous_subtitle.get("text_end")
+                    ):
+                        await self._publish_alignment(sequence, previous_subtitle, final=True)
+                    self._subtitle = subtitle
+                await self._publish_alignment(
+                    sequence, self._subtitle, final=obj.get("is_final") is True,
+                )
+                audio_hex = data.get("audio", "") or ""
                 if audio_hex:
                     if len(audio_hex) % 2:
                         audio_hex = audio_hex[:-1]
@@ -2608,6 +2703,23 @@ class MiniMaxTTSSession:
             raise
         except Exception as exc:  # noqa: BLE001 - provider reader boundary
             await self._publish_failure(exc)
+
+    async def _publish_alignment(self, sequence: int, subtitle: object, *, final: bool) -> None:
+        boundaries = _subtitle_boundaries(subtitle, self._active_text, final=final)
+        last_end = self._published_words[-1][0] if self._published_words else 0
+        block_start = subtitle.get("text_begin", 0) if isinstance(subtitle, dict) else None
+        if type(block_start) is not int or block_start > last_end:
+            return  # A missing block cannot establish a contiguous heard prefix.
+        previous = dict(self._published_words)
+        if any(end in previous and previous[end] != ms for end, ms in boundaries):
+            return  # Never revise a boundary already given to the player.
+        new = tuple((end, ms) for end, ms in boundaries if end > last_end)
+        if new:
+            await self._events.put(TTSAudioChunk(
+                sequence=sequence, pcm=b"", sample_rate_hz=self._sample_rate_hz,
+                timing_text=self._active_text, word_boundaries=new,
+            ))
+            self._published_words += new
 
     async def _watchdog_main(self) -> None:
         """Close only an actually idle session; active feeds use reader deadlines."""

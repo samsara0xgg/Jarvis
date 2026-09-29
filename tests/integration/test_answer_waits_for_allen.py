@@ -63,7 +63,7 @@ class _AcceptingPipeline(_RecordingPipeline):
         if self._empty:
             msg = "silence"
             raise voice_pipeline.VoicePipelineEmptyError(msg)
-        kwargs["before_emit"]()
+        kwargs["before_emit"]("明天上午十点提醒我")
         self._record.append("utterance.received")
         return super().run_turn(**kwargs)
 

@@ -238,6 +238,10 @@ class _Pending:
     turn_id: str | None = None
     state: str = "settling"
     foreground: bool = True
+    # Set once a superseded turn is recorded as withheld (ADR 0026), so the
+    # record is written once, at the supersede, whether or not the session
+    # is still open when the result lands.
+    withheld: bool = False
     timed_out: bool = False
     wake: asyncio.Event = dataclasses.field(default_factory=asyncio.Event)
 
@@ -598,7 +602,7 @@ class LiveVoice:
                 "content": [{"type": "input_text", "text": brief}],
             })
         try:
-            player.start()
+            _open_speaker(player)
             ws = await asyncio.wait_for(
                 connect(
                     LIVE_WS_URL,
@@ -899,6 +903,10 @@ class LiveVoice:
                     "gpt_live delegation %s superseded by %s; its result stays off Live",
                     older.delegation_id, delegation_id,
                 )
+                # Withheld now, not when its result lands: a session that
+                # closes first would otherwise leave it for the next session
+                # to recite (ADR 0026). One still settling is withheld on submit.
+                self._withhold(older)
         pending = _Pending(
             delegation_id=delegation_id,
             session_id=str(run.session_id),
@@ -942,8 +950,10 @@ class LiveVoice:
             pending.state = "dropped"
             LOGGER.info("gpt_live delegation %s dropped: no user transcript in window",
                         pending.delegation_id)
+            # Commentary, not thinking: a quiet note never asks Live to speak,
+            # so after its "我查一下" Allen heard nothing at all.
             await self._send_append(
-                run, "thinking", t("live.no_request"), delegation_id=pending.delegation_id,
+                run, "commentary", t("live.no_request"), delegation_id=pending.delegation_id,
             )
             return
         pending.request_text = text
@@ -974,11 +984,15 @@ class LiveVoice:
         pending.turn_id = turn_id
         pending.state = "submitted"
         LOGGER.info("gpt_live delegation %s submitted turn_id=%s", pending.delegation_id, turn_id)
-        await self._send_append(
-            run, "thinking",
-            t("live.looking_up", request=text[:40]),
-            delegation_id=pending.delegation_id,
-        )
+        if pending.foreground:
+            await self._send_append(
+                run, "thinking",
+                t("live.looking_up", request=text[:40]),
+                delegation_id=pending.delegation_id,
+            )
+        else:
+            # Superseded while it settled: withheld, and Live hears no progress on it.
+            self._withhold(pending)
         # D4/D5: one lookup now, then bus wakes plus a slow safety poll until the
         # deadline. A result after the deadline is still spoken while this
         # session is open (ADR 0026); one that is not in before the session
@@ -1091,14 +1105,13 @@ class LiveVoice:
             return
         if not pending.foreground:
             # Superseded: memory.db and the UI keep the result, Live never hears
-            # of it. Even a quiet append can shape later speech. Settled, so no
-            # later session is told either (ADR 0026).
+            # of it. Even a quiet append can shape later speech. Settled at the
+            # supersede, so no later session is told either (ADR 0026).
             LOGGER.info(
                 "gpt_live delegation %s result withheld from Live (superseded, %d chars)",
                 pending.delegation_id, len(content),
             )
-            if turn_id is not None:
-                self._settle(turn_id, pending.session_id, "withheld")
+            self._withhold(pending)
             return
         LOGGER.info(
             "gpt_live delegation %s delivered as %s (%d chars)",
@@ -1127,6 +1140,13 @@ class LiveVoice:
             await self._send_append(
                 run, "commentary", content, delegation_id=None, turn_id=item.turn_id,
             )
+
+    def _withhold(self, pending: _Pending) -> None:
+        """Record once that a superseded delegation's outcome is withheld (ADR 0026)."""
+        if pending.withheld or pending.turn_id is None:
+            return
+        pending.withheld = True
+        self._settle(pending.turn_id, pending.session_id, "withheld")
 
     def _settle(self, turn_id: str, session_id: str, kind: str) -> None:
         """Persist that ``turn_id``'s outcome reached, or was withheld from, ``session_id``."""
@@ -1413,6 +1433,14 @@ async def _await_started(ws: Any) -> str:  # noqa: ANN401 - websockets connectio
     raise RuntimeError(msg)
 
 
+def _open_speaker(player: voice_tts.AudioStreamPlayer) -> None:
+    """Open Live's player, or fail the start: a session nobody hears is still billed."""
+    started = player.start()
+    if not started.started:
+        msg = f"speaker did not open: {started.reason}"
+        raise RuntimeError(msg)
+
+
 def _pcm16_to_float32(pcm: bytes) -> bytes:
     aligned = len(pcm) - (len(pcm) % 2)
     samples = np.frombuffer(pcm[:aligned], dtype="<i2").astype(np.float32) / 32768.0
@@ -1469,6 +1497,19 @@ def _speech_cut(text: str, *, budget: int = _COMMENTARY_BUDGET_CHARS) -> str:
         return text
     head = text[:budget]
     cut = max(head.rfind(mark) for mark in _SENTENCE_ENDS)
+    # An English period ends a sentence only before a space or the end, so
+    # "3.5 degrees" and "gpt-5.6" never split. Without it no English answer
+    # past the budget was ever spoken.
+    cut = max(
+        (
+            cut,
+            *(
+                index
+                for index in range(cut + 1, len(head))
+                if head[index] == "." and (index + 1 == len(text) or text[index + 1].isspace())
+            ),
+        ),
+    )
     if cut < 0:
         return t("live.long_result")
     return head[: cut + 1].strip()

@@ -42,6 +42,9 @@ _CURSOR_FIELDS: Final[tuple[str, ...]] = (
     "submitted_samples",
     "heard_text_hash",
     "heard_text",
+    "estimated_audible_samples",
+    "heard_partial_sequence",
+    "heard_partial_text_end",
 )
 _UNHEARD_CURSOR: Final[dict[str, object]] = {
     "heard_through_sequence": None,

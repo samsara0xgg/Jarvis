@@ -172,17 +172,21 @@ export function Companion() {
     const known = agents.find(a => a.id === session.id);
     if (known) jump(known); else window.jarvis?.openAgents?.();
   };
-  // Live, the daemon's phase is her voice; standby counts as listening only in wave mode (ADR 0041).
+  // Live, her voice comes from the turns, never from what the microphone is doing: your words coming in, then
+  // her answer to `s.turnId` from its `open` until `spoken` says she stopped saying it, and a turn this surface
+  // started still being thought about. Standby counts as listening only in wave mode (ADR 0041).
   // While your words are coming in she only listens: no answer starts then (ADR 0053), whatever text arrives.
   const inFlight = !!port && s.inFlight;
-  const voice = !port ? simVoice : inFlight ? 'listening' : s.phase === 'speaking' ? 'speaking' : s.phase === 'processing' ? 'thinking'
-    : s.phase === 'hearing' || (s.conversation && s.phase !== 'error') ? 'listening' : 'off';
+  const answering = !!s.turnId && !s.played;
+  const voice = !port ? simVoice : inFlight ? 'listening' : answering && s.reply ? 'speaking' : answering || s.askedAt !== null ? 'thinking'
+    : s.conversation && s.phase !== 'error' ? 'listening' : 'off';
   const caption = port ? s.heard : simCaption, hearing = port ? inFlight : simHearing, talking = port ? false : simTalking;
-  const said = port ? spoken(s.reply) : '';
-  // Her words on screen stay as they were while yours are still coming in: cut off, or none.
+  // Her words on screen, here and on the Dashboard, stay as they were while yours are still coming in: cut off, or
+  // none. An answer written meanwhile is dropped once your words are in (ADR 0074).
   const held = useRef('');
-  if (!inFlight) held.current = said;
-  const reply = port ? { text: held.current, shown: held.current.length } : simReply;
+  if (!inFlight) held.current = s.reply;
+  const said = port ? spoken(held.current) : '';
+  const reply = port ? { text: said, shown: said.length } : simReply;
   // ADR 0064: think mode as the daemon reads it from Allen's words (ADR 0061), read again as soon as his words go in
   // or an answer opens; the poll catches the ten quiet minutes that end it.
   const think = useRoute<{ on: boolean; on_words: string; off_words: string }>(port, '/inherent/think', true, 30_000);
@@ -283,11 +287,17 @@ export function Companion() {
     after(end + 250, () => { setHearing(false); setVoice('thinking'); receive(); });
     after(end + 1700, () => { setVoice('speaking'); say('好，我来整理。', () => listen(false)); });
   };
+  // Whatever she is saying or about to say stops: the answer on screen by its response, or the turn she is still
+  // thinking about by its turn.
+  const stopTalking = () => {
+    if (answering) void link.current?.cancel(s.responseId).catch(() => undefined);
+    else if (s.askedAt !== null && s.waiting) void link.current?.stopTurn(s.waiting).catch(() => undefined);
+  };
   const endVoice = () => {
     if (port) {
       feedback('voice-exit');
       void link.current?.controls({ conversation: false }).catch(() => undefined);
-      if (s.phase === 'speaking' || s.phase === 'processing') void link.current?.cancel(s.responseId).catch(() => undefined);
+      stopTalking();
       return;
     }
     stopScript(); setReceiving(false); feedback('voice-exit'); setVoice('off'); setCaption(''); setHearing(false); setReply({ text: '', shown: 0 }); setTalking(false); };
@@ -296,7 +306,7 @@ export function Companion() {
   const poke = () => {
     if (port) {
       if (voice === 'off') { closeComposer(); feedback('voice-enter'); void link.current?.controls({ conversation: true }).catch(() => undefined); }
-      else if (voice === 'speaking') void link.current?.cancel(s.responseId).catch(() => undefined);
+      else if (voice === 'speaking') stopTalking();
       else endVoice();
       return;
     }
@@ -345,7 +355,7 @@ export function Companion() {
   useEffect(() => { if (port && s.heard) receive(); }, [s.heard]);
   // The conversation of record, polled while the Dashboard shows it. The streaming answer rides as a tail on the home row
   // until its row lands; the Conversation page waits for the row, since the stream's chunks lose the answer's line breaks.
-  const tail = s.reply && !s.rows.some(row => row.seq > s.openSeq && row.source !== 'allen') ? visible(s.reply) : '';
+  const tail = held.current && !s.rows.some(row => row.seq > s.openSeq && row.source !== 'allen') ? visible(held.current) : '';
   const lastSeq = useRef(0);
   lastSeq.current = s.rows.length ? s.rows[s.rows.length - 1].seq : 0;
   useEffect(() => {
@@ -621,7 +631,7 @@ export function Companion() {
   const strip = place === 'out' && (yours || ((voice === 'listening' || voice === 'thinking') && !reply.text)), bubble = place === 'out' && !!reply.text && !yours;
   const dashboardContent = <AroundDashboard open={dashboard} port={port} onClose={closeDashboard} viewRef={dashboardView} onView={value => { if (detached && detachedMode.current) window.jarvis?.dashboardMessage?.('parent', { type: 'view', value }); }}
           onMood={dashboardMood} settingFocus={settingsFocus} onHop={height => ball.current?.hop(height)}
-          talk={port ? { rows: s.rows, tail, busy: s.phase === 'processing', offline: s.phase === 'error', floor, submit, older, card, decide: decideCard, question, answer: answerQuestion,
+          talk={port ? { rows: s.rows, tail, busy: voice === 'thinking', offline: s.phase === 'error', floor, submit, older, card, decide: decideCard, question, answer: answerQuestion,
             think: { on: deep, secs: deepSecs, words, thoughts, exit: () => void submit(t(['stop thinking', '不用想了'])) } } : undefined}
           plugins={port ? plugins : undefined} pluginFocus={pluginFocus} marks={wardrobe.marks} onAgents={setAgents} unread={notices.unread}
           onAnswer={id => { if (detached) window.jarvis?.dashboardMessage?.('parent', { type: 'notice', id }); else notices.focus(id); closeDashboard(); }} ctl={ctl}/>;

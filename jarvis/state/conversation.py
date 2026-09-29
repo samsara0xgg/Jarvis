@@ -105,6 +105,7 @@ _OUTPUT_TYPES = frozenset(
         "surface.response_emitted",
         "surface.playback_started",
         "surface.playback_segment_prepared",
+        "surface.playback_alignment",
         "surface.playback_checkpoint",
         "surface.playback_completed",
         "surface.playback_interrupted",
