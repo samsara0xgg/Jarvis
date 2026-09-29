@@ -533,7 +533,7 @@ function renderSteps(id: string, el: HTMLElement, it: Item & { k: 'steps' }, i: 
   const o = app.opened.get(id)?.get(i) ?? {};
   const box = el.firstElementChild as HTMLElement, live = !!it.live, btn = box.firstElementChild as HTMLButtonElement, rows = $('.s-in', box);
   box.hidden = !it.steps.length;
-  // While it works only its last few steps show, and they stay that few as the list folds; the line opens all of them.
+  // While it works only its newest step shows, and the list folds from that one; the line opens all of them.
   box.classList.toggle('live', live); box.classList.toggle('open', live || !!o.open); box.classList.toggle('tail', !o.open);
   btn.setAttribute('aria-expanded', String(!!o.open));
   const sum = stepsSummary(it.steps);

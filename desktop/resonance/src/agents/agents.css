@@ -201,8 +201,8 @@ kbd{padding:0 4px;border-radius:4px;font-size:10px;line-height:16px;background:r
 .s-wrap{display:grid;grid-template-rows:0fr;transition:grid-template-rows .32s cubic-bezier(.2,.7,.2,1)}
 .steps.open .s-wrap{grid-template-rows:1fr}
 .s-clip{min-height:0;overflow:hidden}
-/* Folded while it works: the last three steps, the newest at the bottom. */
-.steps.tail .s-in>:not(:nth-last-child(-n+3)){display:none}
+/* Folded while it works: only the newest step. */
+.steps.tail .s-in>:not(:last-child){display:none}
 .s-in{display:flex;flex-direction:column;gap:1px;margin:4px 0 2px 11px;padding-left:12px;border-left:1px solid var(--line)}
 .step{display:grid;grid-template-columns:38px minmax(0,1fr) auto;gap:0 10px;align-items:center;padding:3px 8px;border-radius:7px;font:12px/1.6 var(--mono)}
 .step.more{cursor:pointer}
