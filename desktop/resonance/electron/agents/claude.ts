@@ -64,8 +64,9 @@ type Rt = {
   // After a host restart: what the transcript already gave, whether the turn is still going, whether a result the
   // keeper replays is news (the turn ended while no host watched) or one already shown
   seen?: Set<string>; open?: boolean; news?: boolean;
-  // titled: turns that ended here, so a title Claude Code generated after one of the first few is taken (B14)
-  titled?: number;
+  // titled: turns that ended here, so a title Claude Code generated after one of the first few is taken (B14) · gone:
+  // until the child last let go has ended
+  titled?: number; gone?: Promise<void>;
 };
 const rt = (s: Session): Rt => (s.rt.claude ??= { pending: new Map(), queued: new Map(), tasks: new Map(), creates: new Map(), block: '' }) as Rt;
 // A reset (/clear, a plan run with a clean context) starts a transcript of its own: the session reads them all back and
@@ -214,16 +215,23 @@ function said(s: Session, m: SDKMessage | { type: string; uuid?: string; message
 // ---------- the live session ----------
 // The child runs in the keeper (ADR 0082), not under this process: the SDK talks to it through one keeper connection,
 // and opening the session again after a host restart carries on with the same child. What the keeper replays and the
-// transcript already showed is dropped here.
+// transcript already showed is dropped here. A child being let go (released to change its folders, stopped) is gone
+// before the session opens again: the keeper would otherwise hand the new query the child it is about to end.
 function viaKeeper(s: Session) {
   return (o: SpawnOptions): SpawnedProcess => {
-    const r = rt(s), stdin = new PassThrough(), stdout = new PassThrough(), sock = net.connect(KEEPER);
+    const r = rt(s), stdin = new PassThrough(), stdout = new PassThrough(), sock = net.connect(KEEPER), was = r.gone;
     const p = Object.assign(new EventEmitter(), { stdin, stdout, killed: false, exitCode: null as number | null,
       kill() {
-        if (!p.killed) { p.killed = true; void ask(KEEPER, { op: 'kill', key: s.s.id }).catch(e => log('keeper kill', e)); }
+        if (!p.killed) {
+          p.killed = true;
+          r.gone = new Promise<void>(done => { sock.once('close', () => done()); setTimeout(done, 5000).unref(); });
+          void ask(KEEPER, { op: 'kill', key: s.s.id }).catch(e => log('keeper kill', e));
+        }
         return true;
       } });
-    sock.write(`${JSON.stringify({ op: 'open', key: s.s.id, spawn: { command: o.command, args: o.args, cwd: o.cwd, env: o.env } })}\n`);
+    // What the SDK writes follows the line that opens the session.
+    const start = () => { sock.write(`${JSON.stringify({ op: 'open', key: s.s.id, spawn: { command: o.command, args: o.args, cwd: o.cwd, env: o.env } })}\n`); stdin.on('data', d => sock.write(d)); };
+    if (was) void was.then(start); else start();
     let head: Head | null = null, replay = 0;
     lines(sock, l => {
       if (!head) { head = parse(l) as Head; replay = head.replay; return; }
@@ -234,7 +242,6 @@ function viaKeeper(s: Session) {
       }
       stdout.write(`${l}\n`);
     });
-    stdin.on('data', d => sock.write(d));
     // The SDK ends its input only when it lets the session go: the child goes with it.
     stdin.on('end', () => p.kill());
     sock.on('close', () => { stdout.end(); p.exitCode = 0; p.emit('exit', 0, null); });
