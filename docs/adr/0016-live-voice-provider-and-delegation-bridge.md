@@ -1,6 +1,6 @@
 # ADR-0016 — Live Voice Provider and Delegation Bridge
 
-**Status:** Approved (2026-09-12, Allen: "没问题，开始写吧" on the phase B plan; direct playback and "允许重新设计" granted earlier the same day, recorded in `docs/gpt-live-integration-planning.md` §1.1)
+**Status:** Approved (2026-09-12, Allen: "没问题，开始写吧" on the phase B plan; direct playback and "允许重新设计" granted earlier the same day, recorded in `docs/gpt-live-integration-planning.md` §1.1, removed 2026-09-29)
 **Date:** 2026-09-12
 **Depends on:** ADR-0005 (voice foundation, single audio ingress), ADR-0009 (resident daemon), ADR-0011 (tool surface and caller principals), ADR-0014 D21 (idempotent input inbox), ADR-0015 (Resonance surface and mute-as-gain).
 **Supersedes:** the hosted speech-to-speech non-goals in ADR-0006 ("Does not use: OpenAI Realtime API or any hosted speech-to-speech runtime"), ADR-0008 §Non-goals ("Hosted speech-to-speech or OpenAI Realtime API integration") and ADR-0014 §Non-goals ("Integrating OpenAI Realtime API or any hosted speech-to-speech session"). Everything else in those ADRs stands; the local ASR → L3 → TTS chain remains the default and the fallback.

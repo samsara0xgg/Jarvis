@@ -3,7 +3,7 @@
 
 Enumerates both sides and prints the counts, then exits nonzero on a real
 break. Legacy files, listed in PRE_STANDARD, are reported but never failed:
-retrofitting fourteen pre-standard ADRs is a separate decision. What fails is
+retrofitting thirteen pre-standard ADRs is a separate decision. What fails is
 a file that claims the new format and breaks it, a duplicate number among such
 files, or a NEW dangling ADR reference anywhere in the repository.
 """
@@ -46,14 +46,13 @@ SCANNED_SUFFIXES = (".py", ".md", ".html", ".yaml", ".yml", ".swift", ".ts", ".t
 # citations are deleted.
 NEVER_WRITTEN = {"0004", "0007", "0010"}
 
-# The fourteen ADRs that predate this standard. Every other file is checked, so
+# The thirteen ADRs that predate this standard. Every other file is checked, so
 # a new ADR cannot skip the checks by accident. Remove a name when that file is
 # frozen or rewritten; when the set is empty, delete it and this comment.
 # An explicit set, not a heuristic: 0005 is the one legacy file whose Status
 # line already happens to match the new enum, so any rule inferred from the
 # header misclassifies it.
 PRE_STANDARD = {
-    "0001-legacy-scan.md",
     "0001-mac-only-flagship-scenario.md",
     "0002-real-codex-flagship-scenario.md",
     "0003-inherent-text.md",

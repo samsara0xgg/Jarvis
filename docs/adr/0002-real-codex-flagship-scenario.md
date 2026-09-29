@@ -1984,7 +1984,7 @@ Verification).
 | 18 | Surface render: voice → `say`, document → `notify`; populate `delivered_via` (physical) + `attention_channel` (logical L3 channel) on `surface.response_emitted` | F6; § Attention channel mapping | Unit test: payload populated correctly for all-channel and partial cases |
 | 19 | Full Tier 1 canary sweep (17 new canaries from § Tier 1 list: 14 from v3.1 + `test_canary_stash_pop_after_verify` + `test_canary_verify_command_plumbed_to_action_request` + `test_canary_response_plan_carries_gate_mode`) | ADR-0001 H series canary style | Full Tier 1 green (< 75s) |
 | 20 | Tier 2 J + K + L acceptance tests (gated by `--live-codex` + `--live-llm`); includes D-1 fixture seeding + D-day happy path + verify-fail + empty-diff + crash + timeout + simulated sleep/wake + missing-submit-report | this ADR § Acceptance | All J (1-13) / K (1-8) / L (1-5) invariants pass on Allen's Mac |
-| 21 | `docs/progress.md` ADR-0002 acceptance summary; update CLAUDE.md anchor if needed | ADR-0001 build-order convention | Doc-only; Tier 1 docs-only |
+| 21 | `docs/progress.md` (removed 2026-09-29) ADR-0002 acceptance summary; update CLAUDE.md anchor if needed | ADR-0001 build-order convention | Doc-only; Tier 1 docs-only |
 
 **Estimated commit count: 22.** Each step ~50–300 LOC delta. Worktree
 convention same as ADR-0001 (`worktree-claude-adr0002` or similar).

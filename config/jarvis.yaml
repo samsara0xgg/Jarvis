@@ -478,7 +478,7 @@ realtime:
     intent_pump: true
     queue_capacity: 8
     max_concurrent_turns: 2
-  # GPT-Live (docs/gpt-live-integration-planning.md, phase A).  `enabled`
+  # GPT-Live (ADR-0016).  `enabled`
   # only registers the controller behind POST /inherent/controls
   # {"live": "start"|"stop"}; nothing connects until that request
   # arrives, and start refuses without the single audio ingress or the API

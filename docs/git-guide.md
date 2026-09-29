@@ -327,34 +327,7 @@ git blame <file>              # line-by-line authorship
   `${JARVIS_RUNTIME_ROOT}`, or test recordings.
 - Bypass any hook that exists (no `--no-verify`).
 
-## 7. progress.md
-
-Every completed Build step (per ADR 0001 § Build order) appends an
-entry to `progress.md` at the repo root. Step 1 creates the file if
-absent; Step 0's entry may be backfilled retroactively.
-
-**Each entry uses this exact template** (loop-parseable):
-
-```markdown
-## Step N — <name> (YYYY-MM-DD)
-
-**Files**: created `path/to/x.py`, edited `path/to/y.py`
-**Legacy consulted**: `jarvis-legacy/core/foo.py` (adapted)
-**Legacy-bypassed**: `jarvis-legacy/core/bar.py` — reason
-**Tier 1**: PASS (T1.A–D green, 12.4s)
-**Notes**: <optional one-liner>
-**Next**: Step N+1
-```
-
-The 6 bold labels are fixed — `Files`, `Legacy consulted`,
-`Legacy-bypassed`, `Tier 1`, `Notes`, `Next`. If a label has no
-content for a given step, write `none`. Do not omit labels; do not
-rename them.
-
-`progress.md` is the autonomous loop's working memory across
-iterations. Do not rewrite previous entries; append.
-
-## 8. When things go wrong
+## 7. When things go wrong
 
 - **Already committed and discovered a secret leak**: tell Allen
   immediately. Do not rewrite history on your own; may require

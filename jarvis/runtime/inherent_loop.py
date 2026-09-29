@@ -4951,7 +4951,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                     single_ingress_attempted=False,
                 )
 
-        # GPT-Live phase A (docs/gpt-live-integration-planning.md §11). Building
+        # GPT-Live (ADR-0016). Building
         # the controller opens nothing: a session starts only from
         # POST /inherent/controls {"live": "start"}, which re-checks the single
         # audio ingress and the API key at that moment. Billed per second, so

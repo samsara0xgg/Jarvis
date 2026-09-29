@@ -521,7 +521,7 @@ DeviceProfileSnapshot
 
 Legacy's stricter VAD threshold is not AEC. A single word such as “停” is also unsafe without AEC because Jarvis may say that word itself. Speaker/no-AEC mode requires PTT or wake-phrase-plus-keyword confirmation, checks the candidate transcript against current far-end speech as an exclusion signal, and is validated against synchronized far-end/mic recordings.
 
-Natural speakerphone barge-in remains disabled until `VoiceProcessingIOBackend` or a hardware path such as XVF3800 proves residual echo, near-end recall, double-talk, and false-cancel targets. This ADR does not silently add a media framework or choose hardware. The 2026-09-05 spike measured that path on this MacBook and came back inconclusive — `VoiceProcessingIO` runs and still yields a 16 kHz mono capture, but leaves `record`-profile false candidates 15× over target, does not separate cancellation from its own AGC, and cannot reach the near-end and double-talk gates without a human trial (`docs/live-burn-2026-09-05-voiceprocessingio-aec.md`).
+Natural speakerphone barge-in remains disabled until `VoiceProcessingIOBackend` or a hardware path such as XVF3800 proves residual echo, near-end recall, double-talk, and false-cancel targets. This ADR does not silently add a media framework or choose hardware. The 2026-09-05 spike measured that path on this MacBook and came back inconclusive — `VoiceProcessingIO` runs and still yields a 16 kHz mono capture, but leaves `record`-profile false candidates 15× over target, does not separate cancellation from its own AGC, and cannot reach the near-end and double-talk gates without a human trial (`docs/live-burn-2026-09-05-voiceprocessingio-aec.md`, removed 2026-09-29).
 
 Initial per-device acceptance thresholds, measured separately for built-in speaker/mic and each external profile at three volume/distance settings, are: near-end interrupt recall ≥95%, double-talk near-end recall ≥90%, false hard cancel ≤0.1/hour over at least 10 aggregate hours, false candidate ≤0.5/minute, and physical loopback interrupt silence p95 ≤350 ms. Failing any profile keeps that profile in PTT/two-stage-keyword mode.
 
@@ -1011,11 +1011,10 @@ Tier A (on): `realtime.enabled`, the four `concurrency_safety` switches,
 `response.response_run_lifecycle`, `response.independent_response_cancel`,
 `actions.action_runner`, `actions.true_async_workers`, `input.intent_pump`,
 `streaming_output.enabled`, `single_audio_ingress.enabled`. Evidence is
-`docs/live-burn-2026-09-03-realtime-wave4.md` (4/4),
-`-wave5.md` (3/3) and `docs/live-burn-2026-09-04-realtime-post6ed7280.md`
-(10/10), plus a 2026-09-07 boot recording `input_owner: single_ingress`,
-`models_ok: true` with `intent_pump` adopting the input stream and no
-downgrade warning.
+the wave-4 (4/4), wave-5 (3/3) and post-6ed7280 (10/10) live-burn
+reports (removed from the repository 2026-09-29), plus a 2026-09-07
+boot recording `input_owner: single_ingress`, `models_ok: true` with
+`intent_pump` adopting the input stream and no downgrade warning.
 
 Tier B (off, each needs its own live run first): `response.routine_streaming`,
 `commentary`, `streaming_output.speak_from_segments`,

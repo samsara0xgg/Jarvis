@@ -325,7 +325,7 @@ agree.
 
 ### 10.6 Live-burn findings — OPEN, Allen's decision
 
-Both surfaced in the §7 burn (`docs/live-burn-2026-08-26-adr0012.md`). Neither is a confirmation-flow
+Both surfaced in the §7 burn (`docs/live-burn-2026-08-26-adr0012.md`, removed 2026-09-29). Neither is a confirmation-flow
 defect; both keep C1 red, and neither was patched.
 
 **M — `write_file`'s mode contract demands a distinction the tool surface withholds.** D1: `create`

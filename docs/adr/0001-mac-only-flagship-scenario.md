@@ -26,7 +26,7 @@ consult and adapt from:
 
 The full Day-1 reuse map across both sources is in
 `docs/adr/0001-legacy-scan.md` (Build Step 0 output, written
-2026-05-17). This ADR locks the scope, scenario, acceptance, and build
+2026-05-17; removed 2026-09-29). This ADR locks the scope, scenario, acceptance, and build
 order; it does not re-enumerate the per-file scan.
 
 Allen wants the first scenario to:
@@ -108,7 +108,7 @@ ordering), use these as the escape hatch.
 implementation.
 
 Files with high Day-1 reuse value (full per-file analysis in
-`docs/adr/0001-legacy-scan.md`):
+`docs/adr/0001-legacy-scan.md`, removed 2026-09-29):
 
 | Legacy file | Day-1 use | Notes |
 |---|---|---|
@@ -486,7 +486,7 @@ required to load `config/jarvis.yaml`.
 
 ```
 docs/adr/0001-mac-only-flagship-scenario.md   (this file)
-docs/adr/0001-legacy-scan.md                  (Build Step 0 output)
+docs/adr/0001-legacy-scan.md                  (Build Step 0 output; removed 2026-09-29)
 prompts/jarvis_v1.md                          (L3 prompt text asset; legacy verbatim; not L1 identity source)
 config/jarvis.yaml                            (runtime config; legacy LLM section verbatim; not state)
 
@@ -1036,7 +1036,7 @@ After this ADR is approved:
 
 | Step | What | References (optional, agent discretion) | Verification |
 |---|---|---|---|
-| **0** | **(Done)** Full Legacy + Hermes reference scan at `docs/adr/0001-legacy-scan.md` | — | scan doc exists; ADR cross-references it |
+| **0** | **(Done)** Full Legacy + Hermes reference scan at `docs/adr/0001-legacy-scan.md` (removed 2026-09-29) | — | scan doc exists; ADR cross-references it |
 | 1 | `pyproject.toml` ratchet to ruff ALL + mypy --strict per § Lint configuration | — | Tier 1 T1.A–T1.C clean on empty scaffold |
 | 2 | `jarvis/constitution/__init__.py` + `jarvis/shared/__init__.py` | spec §3.2.1, §3.5.2 | unit test: principles frozen, types compile |
 | 3 | `jarvis/deployment/__init__.py` (paths + bootstrap with `JARVIS_RUNTIME_ROOT`) | — | unit test: bootstrap creates runtime root idempotently |

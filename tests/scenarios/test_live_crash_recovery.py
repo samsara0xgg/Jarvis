@@ -74,7 +74,7 @@ _INSTALL_HINT = "brew install switchaudio-osx blackhole-16ch"
 # explanatory marker ("温哥华位于...") is buffered, so the stream seals
 # before any permit. The long questions are tried in order, twice over,
 # until one opens the window; the order follows the live permit rate
-# measured on 2026-09-05 (docs/live-burn-2026-09-05-crash-recovery.md).
+# measured in a 2026-09-05 live burn.
 _WARMUP_QUESTION = "用两句话介绍一下温哥华"
 _LONG_QUESTIONS = (
     "什么是海岸山脉 请详细介绍 至少十句话",

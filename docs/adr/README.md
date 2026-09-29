@@ -81,7 +81,7 @@ already implied by the Decision; do not restate them.>
 ## Frozen ADRs
 
 `Frozen` marks a historical record: read it for background, never as contract.
-The fourteen ADRs written before this standard are not retrofitted. They are
+The thirteen ADRs written before this standard are not retrofitted. They are
 frozen in place, and the contracts buried in their bodies move out once: to
 `docs/spec.html` on ADR 0089's terms, otherwise to the code that defines
 them. Until a file is frozen or rewritten, the check reports it as legacy

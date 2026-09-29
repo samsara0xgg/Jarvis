@@ -17,8 +17,8 @@ has a recorded reason it must stay off.
 2026-09-05 VoiceProcessingIO burn measured at 15 times their false-candidate
 target) were tier C until ADR 0047 retired them with their code.
 
-The evidence for tier A is docs/live-burn-2026-09-03-realtime-wave4.md (4/4),
--wave5.md (3/3) and docs/live-burn-2026-09-04-realtime-post6ed7280.md (10/10).
+The evidence for tier A is the live burns ADR 0006 records (4/4, 3/3 and
+10/10).
 
 ``commentary`` was on from ADR 0040 (2026-09-24) and is off again since
 ADR 0045 (2026-09-25): Allen heard "结果回来了" out of nowhere after fast tools.
