@@ -1,0 +1,13 @@
+/* ADR 0093: the night run's cards, on the action card's surface. Moonlight for the run, the done colour for the
+   morning; in the night the card and its button go quiet, since it is read with sleepy eyes in the dark. */
+.nc-night { --night-c:#b7c3ff; }
+.nc-night .ac-label { color:var(--night-c); }
+.nc-count { margin:0; font-size:var(--text-body); color:var(--p-muted); font-variant-numeric:tabular-nums; }
+.nc-count b { font-size:var(--text-title); font-weight:600; color:var(--p-ink); margin-right:1px; }
+.nc-lines { display:flex; flex-direction:column; gap:3px; margin:0; padding:0; list-style:none; }
+.nc-lines li,.nc-line { margin:0; font-size:var(--text-detail); line-height:1.5; color:var(--p-faint); }
+.nc-lines li.is-warn { color:var(--warm-c); }
+.nc-night.is-dim { opacity:.66; }
+.nc-night.is-dim .ac-label i { animation:none; box-shadow:none; opacity:.7; }
+.nc-night.is-dim .ac-go { background:rgb(255 255 255 / .1); color:var(--p-ink); }
+.nc-night.is-morning .ac-label { color:var(--mint-c,#6fe0b4); }

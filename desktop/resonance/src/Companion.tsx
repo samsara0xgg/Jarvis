@@ -14,6 +14,7 @@ import { answerRequest, type Agent, type ShownAgent } from './agents';
 import { NoticeCard, ended, noticeCue, useNotices } from './Notices';
 import { ActionCard, QuestionCard, type Answer, type Card, type Decide, type Question } from './ActionCard';
 import { Notch, type NotchNote } from './Notch';
+import { NightCard, markNightSeen, morningOf, seenNight, type NightAction, type NightState } from './NightCard';
 import { tr, useCompanionSettings, type L, type Lang } from './companionSettings';
 import { useNow, useRoute } from './homeData';
 import type { Controls as DashControls, Look } from './SettingsPage';
@@ -118,16 +119,19 @@ export function Companion() {
   // ADR 0062: the card waiting for Allen's button, read every 1.5 s whether or not the Dashboard is open: closed, it
   // grows from the notch. The same card object stays while its id does, so a letter being edited keeps its text.
   // ADR 0066: the ask card rides the same tick; it hangs from the notch too, after a waiting confirmation.
+  // ADR 0093: so does the night run; a daemon without its route leaves it as it was.
   const [card, setCard] = useState<Card | null>(null);
   const [question, setQuestion] = useState<Question | null>(null);
+  const [nightState, setNightState] = useState<NightState | null>(null);
   useEffect(() => {
     if (!port) return;
     let stop = false;
     const load = async () => { try {
-      const [next, asked] = await Promise.all([link.current?.card(), link.current?.question()]);
+      const [next, asked, dusk] = await Promise.all([link.current?.card(), link.current?.question(), link.current?.night().catch(() => undefined)]);
       if (stop) return;
       setCard(current => current?.id === next?.id ? current : next ?? null);
       setQuestion(current => current?.id === asked?.id ? current : asked ?? null);
+      if (dusk) setNightState(current => JSON.stringify(current) === JSON.stringify(dusk) ? current : dusk);
     } catch { /* daemon away; the next tick retries */ } };
     void load();
     const id = setInterval(() => void load(), 1500);
@@ -149,6 +153,18 @@ export function Companion() {
   };
   // With the Dashboard closed the card hangs from the notch, ahead of the agents' notices, and she watches it from home.
   const carded = (!!card || !!question) && !dashboard && !remoteOpen && !moving;
+  // ADR 0093: the night run's cards come next: before the screen goes, when it wakes in the night, and the morning after
+  // until its ×. While one is up, or a run is on, the agents' notices wait; she sleeps in the island through the night.
+  const [nightSeen, setNightSeen] = useState(seenNight), nightClock = useNow(nightState?.last ? 60_000 : 3_600_000);
+  const nightRun = nightState?.night ?? null, morning = morningOf(nightState, nightClock, nightSeen);
+  const nightShown = (!!nightRun || !!morning) && !card && !question && !dashboard && !remoteOpen && !moving;
+  const nightKey = nightRun ? `night:${nightRun.id}:${nightRun.phase === 'starting' ? 'bed' : 'night'}` : morning ? `night:${morning.id}:morning` : '';
+  const nightFace: ExprId = !nightRun ? 'fin' : nightRun.phase === 'starting' ? 'ask' : '00';
+  const nightAct = (action: NightAction) => {
+    if (action === 'end' && nightRun?.phase !== 'starting') ball.current?.hop(.14);
+    void link.current?.nightAct(action).then(setNightState).catch(() => undefined); // a stale card: the next read shows the run as it is
+  };
+  const closeMorning = () => { if (morning) { markNightSeen(morning.id); setNightSeen(morning.id); } };
   // Live, the daemon's phase is her voice; standby counts as listening only in wave mode (ADR 0041).
   // While your words are coming in she only listens: no answer starts then (ADR 0053), whatever text arrives.
   const inFlight = !!port && s.inFlight;
@@ -201,7 +217,7 @@ export function Companion() {
   const [keysPress, setKeysPress] = useState(0), [keysOn, setKeysOn] = useState(false), [viewing, setViewing] = useState<string | null>(null);
   // No notice while she talks, while you type to her, while the Dashboard is open or while the keys hold the island;
   // they come up after.
-  const notices = useNotices({ port, agents, hold: agentsFront || busy || dashboard || remoteOpen || detached || moving || carded || keysOn || !!menu, watched, viewing,
+  const notices = useNotices({ port, agents, hold: agentsFront || busy || dashboard || remoteOpen || detached || moving || carded || nightShown || !!nightRun || keysOn || !!menu, watched, viewing,
     cue: (name, gain) => { if (preferences.feedbackEnabled && !s.soundMuted) noticeCue(name, preferences.feedbackVolume, gain); },
     answer: (req, body) => port ? answerRequest(port, req.id, body) : Promise.resolve(true) });
   const notice = notices.current;
@@ -212,7 +228,7 @@ export function Companion() {
     else void window.jarvis?.jumpGhostty?.(a.title, a.job ?? '');
   };
   // A notice hangs from the notch and she watches it from home.
-  const place: Place = moving || dashboard ? 'home' : carded ? 'home' : notice ? notices.peek ? 'peek' : 'home' : busy || zone === 'ball' || outing || menu ? 'out' : zone === 'lobe' || notices.peek ? 'peek' : 'home';
+  const place: Place = moving || dashboard ? 'home' : carded || nightShown ? 'home' : notice ? notices.peek ? 'peek' : 'home' : busy || zone === 'ball' || outing || menu ? 'out' : zone === 'lobe' || notices.peek ? 'peek' : 'home';
   // A finished text reply stays up briefly: that is her "done" face.
   const listenFace = useRef<ExprId>('35'), receiveFace = useRef<ExprId>('31'), replyFace = useRef<ExprId>('39');
   // Live turns pick her takes as they begin; the scripted demo picks its own in listen() and say().
@@ -223,13 +239,13 @@ export function Companion() {
   // pleasure or refusal.
   const moment = performance.now();
   const stopped = notice?.kind === 'pop' && notice.ids.every(id => agents.find(a => a.id === id)?.state === 'err');
-  const noticeFace: ExprId | null = carded ? 'ask' : !notice ? null : notices.over && moment < notices.over.until ? notices.over.face
+  const noticeFace: ExprId | null = carded ? 'ask' : nightShown ? nightFace : !notice ? null : notices.over && moment < notices.over.until ? notices.over.face
     : notice.kind === 'pop' ? stopped ? moment - notices.openedAt < 1700 ? '34' : '02' : 'fin' : notices.card?.ok ? '02' : 'ask';
   useEffect(() => { if (!stopped) return; const t = setTimeout(notices.bump, 1750); return () => clearTimeout(t); }, [notice?.key]);
   const expr: ExprId = preview ?? noticeFace ?? (receiving ? receiveFace.current : inFlight ? listenFace.current : deepThinking ? 'deep' : voice === 'listening' ? listenFace.current : voice === 'thinking' ? '30' : voice === 'speaking' || talking ? replyFace.current : (dashboard || remoteOpen) && dashMood ? dashMood : reply.text ? port && s.failed ? '38' : '33' : '02');
   const chip = place === 'out' && zone === 'ball' && !busy;
   // During a notice she looks down at it from the island.
-  const noticeLook = carded ? { x: geo.center, y: placement.topInset + 90 } : notice ? { x: notice.kind === 'pop' ? geo.wingX + 80 : geo.center, y: placement.topInset + 90 } : null;
+  const noticeLook = carded || nightShown ? { x: geo.center, y: placement.topInset + 90 } : notice ? { x: notice.kind === 'pop' ? geo.wingX + 80 : geo.center, y: placement.topInset + 90 } : null;
   const live = useRef({ geo, dashboard, chip, composer, place, wardrobe, noticeLook, openBy: companion.openBy });
   live.current = { geo, dashboard, chip, composer, place, wardrobe, noticeLook, openBy: companion.openBy };
   const ball = useRef<BallHandle | null>(null), look = useRef<Point | null>(null), cursor = useRef<Point>({ x: -1e4, y: -1e4 });
@@ -525,7 +541,7 @@ export function Companion() {
     document.addEventListener('pointerdown', dismiss); document.addEventListener('keydown', escape, true);
     return () => { document.removeEventListener('pointerdown', dismiss); document.removeEventListener('keydown', escape, true); void window.jarvis?.focus(false); };
   }, [menu]);
-  useEffect(refreshHit, [place, chip, composer, dashboard, menu, voice, reply.text, notice?.key, card?.id]);
+  useEffect(refreshHit, [place, chip, composer, dashboard, menu, voice, reply.text, notice?.key, card?.id, nightKey]);
 
   // Native frosted glass behind every visible panel, following its transitions.
   const kickGlass = useRef(() => {});
@@ -551,7 +567,7 @@ export function Companion() {
     kick();
     return () => { cancelAnimationFrame(frame); observer.disconnect(); el.removeEventListener('transitionrun', kick); };
   }, []);
-  useEffect(() => kickGlass.current(), [place, chip, composer, dashboard, voice, reply.text, caption, notice?.key, card?.id]);
+  useEffect(() => kickGlass.current(), [place, chip, composer, dashboard, voice, reply.text, caption, notice?.key, card?.id, nightKey]);
 
   // What Settings in the panel reads and changes here: the daemon's switches, her look, her cues.
   const control = (patch: { mic_muted?: boolean; speech_muted?: boolean; conversation?: boolean }) => void link.current?.controls(patch).catch(() => undefined);
@@ -585,6 +601,7 @@ export function Companion() {
   const { out } = geo;
   const note: NotchNote | null = carded && card ? { key: `card:${card.id}`, onClose: () => undefined, card: <ActionCard key={card.id} card={card} lang={companion.lang} onDecide={decideCard}/> }
     : carded && question ? { key: `question:${question.id}`, onClose: () => undefined, card: <QuestionCard key={question.id} question={question} lang={companion.lang} onAnswer={answerQuestion}/> }
+    : nightShown && nightState ? { key: nightKey, onClose: closeMorning, card: <NightCard key={nightKey} state={nightState} morning={morning} unread={notices.unread.size} lang={companion.lang} act={nightAct} onClose={closeMorning}/> }
     : !notice ? null : notice.kind === 'pop' ? { key: notice.key, pop: notice.ids, onClose: notices.next } : { key: notice.key, id: notice.id, onClose: notices.fold,
     card: <NoticeCard key={notice.key} n={notice} card={notices.card!} agent={agents.find(a => a.id === notice.id)} count={notices.count} look={wardrobe.marks}
       onPark={() => notices.park([notice.id])} onOpen={jump} onChange={notices.bump} onResolve={(text, body) => {
@@ -623,6 +640,9 @@ export function Companion() {
         }}>
         {SKIN_KEYS.map(skin => <button key={skin} role="menuitemradio" aria-checked={wardrobe.skin === skin} onClick={() => { choose(skin); setMenu(null); }}>{t(SKIN_NAMES[skin])}</button>)}
         <hr/>
+        {nightState && (nightRun
+          ? <button role="menuitem" onClick={() => { setMenu(null); nightAct('end'); }}>{t(['End the night run', '结束挂机'])}</button>
+          : <button role="menuitem" onClick={() => { setMenu(null); nightAct('start'); }}>{t([`Off to sleep: keep running ${+nightState.hours.toFixed(2)} h`, `睡了，挂 ${+nightState.hours.toFixed(2)} 小时`])}</button>)}
         <button role="menuitem" onClick={() => { setMenu(null); appear(ctl.playFaces, PREVIEW.length * 1100); }}>{t(['Preview expressions', '看一遍表情'])}</button>
         <button role="menuitem" onClick={() => { setMenu(null); openDashboard(false); pinned.current = true; if (detachedMode.current) window.jarvis?.dashboardMessage?.('dashboard', { type: 'settings' }); else setSettingsFocus(n => n + 1); }}>{t(['Settings…', '设置…'])}</button>
       </div>}
@@ -659,8 +679,8 @@ export function Companion() {
         act={{ jump, answer: notices.focus, read: notices.read, back: notices.back, archive: notices.archive, park: notices.park, unpark: notices.unpark }}
         port={port} keys={keysPress} onViewing={setViewing} onJoinedChange={setNotchJoined} onKeys={on => { setKeysOn(on); void window.jarvis?.focus(on); }}/>
       <CompanionBall width={geo.width} height={placement.topInset + 560} lobe={geo.lobe} look={look} handle={ball} skin={worn.current}
-        target={{ place, expr, pressed, anchors: geo.anchors, home: wardrobe.home, homeFinish: wardrobe.homeFinish, homeFace: !!notice || carded || dashboard || remoteOpen, homeJoined: dashboard || dashboardJoined || notchJoined,
-          attention: noticeLook ? { id: carded ? `card:${card?.id ?? question?.id}` : notice!.key, point: noticeLook } : undefined,
+        target={{ place, expr, pressed, anchors: geo.anchors, home: wardrobe.home, homeFinish: wardrobe.homeFinish, homeFace: !!notice || carded || nightShown || dashboard || remoteOpen, homeJoined: dashboard || dashboardJoined || notchJoined,
+          attention: noticeLook ? { id: carded ? `card:${card?.id ?? question?.id}` : nightShown ? nightKey : notice!.key, point: noticeLook } : undefined,
           away: trip === 'out' || agentsFront && !busy, happy: trip === 'happy', deep: deep && expr === '02' }}
         label={voice === 'off' ? t([`Poke to talk${port ? '' : ' (demo)'}`, `戳一下，开始语音${port ? '' : '（演示）'}`]) : voice === 'speaking' ? t(['Poke to interrupt', '戳一下，打断播报']) : t(['Poke to stop', '戳一下，结束语音'])}
         onPress={press} onRelease={release} onCancel={cancel} onMove={refreshHit}/>
