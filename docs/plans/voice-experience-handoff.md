@@ -39,6 +39,8 @@ Allen 的要求：严格审计 Jarvis 的语音交互系统（全双工对话 + 
 | `2229550` | 播放器只在出声时消费增益命令：打断停下后恢复 1.0 的命令留到下一个回答才以 30 ms 斜坡生效，下一个回答开头在 0.2 上起步、整段被记成 attenuated，于是"没听全"（实测里打断后的完整回答 heard_text 全空）；静音后下一个回答首块漏音同理。现：空闲回调立即落地 | 同文件 2 例，父提交失败 |
 | `4eb10a0` | "pause" 算英文停止词（单个英文词现在算 unclear） | 同文件 1 例 |
 | `65d0502` | 语义端点离线校准（见 §3.1 第 3 条），`candidate_ms` 320 → 400、`max_hold_ms` 900 → 800；开关仍关（tier B，需先实测） | `test_endpointing_partial_asr.py` 1 例 + 表 1 行 |
+| `656a0b8` | （§3.1 第 9 条）整句只是「什么？」「啊？」「再说一遍」「没听清」、what? / pardon / say that again 时，L3 在 Tier 0 前把最近一个回答的语音部分原样再说一遍，不调模型（spec §17） | `test_repeat_request.py` 10 种说法父提交全失败，4 个近似句仍走模型 |
+| `ed1792d` | （§3.1 第 2 条 i）TTS 预热：ADR 0053 的 hold（Allen 开口）时连好一个 MiniMax 会话（connect + task_start），回答的首个 endpoint 直接 bind；超过 60 s 的关掉重连（MiniMax 120 s 无事件断开），正在连的留给下一个回答，睡眠/关闭时关掉。TLS 到 api-uw 实测 0.11–0.15 s | `test_tts_prewarm.py` 4 例父提交全失败。省多少欠 trace 实测（`tts_session_open_requested prewarmed`） |
 
 另两个提交：`8658592` 让星核验收脚本按 main 的新手势（点刘海）开 Dashboard；`2ae364a` 加
 `tools/voice_live_report.py`，Mac 实测后一条命令打印每轮的话、回答、播放结局、听到多少和模型被告知的截断行
@@ -68,7 +70,12 @@ unreachable（Linux 平台分支，main 同样）；全量 hermetic 1214/1217，
    14 轮里主模型 1.5–6.2 s（中位 2.4）、口语版改写 0.8–1.7 s（中位 1.1）、TTS 6 个字的一段从激活到合成完
    0.48 s。主模型慢在先写完整段书面答案（190–550 字）。已问 Allen 三选一（2026-09-29）：A 先说后写（语音轮
    模型先写口语段、边写边说，典型早约 2 s，要新 ADR 推翻 0040 的否决理由）、B 只把改写改成边写边说 + TTS
-   预热（省 0.5–0.8 s）、C 语音轮换小模型；推荐 A。trace 分解要在 launchd 环境里设
+   预热（省 0.5–0.8 s）、C 语音轮换小模型。之后细看代码（2026-09-29）改推荐为 **D：主回答仍用 gpt-6-luna，
+   只把口语版改写换成小模型**（这一步 0.8–1.7 s，单一简单任务），因为 A、B 的"边写边说"都比预估大：
+   现有 routine streaming 只在 `pre_route` 判为闲聊、不调工具时开（`config/tool_cues.yaml` 的工具线索很宽，
+   "请/帮我/can you/search" 都算）；`stream_risk` 的正向句式规则会拒掉带我/你/请的句子，"已经/查到/search/check"
+   等算 consequential，第一次拒绝就封住整轮；调完工具后的最终回答是批量请求，要流式得先建 ADR 0008 的
+   第 9–10 步（语音/文档兄弟 run、流式工具调用）；run 的 policy 开 run 时就定死。Allen 还没选。trace 分解要在 launchd 环境里设
    `JARVIS_REALTIME_TRACE_JSONL`（`launchctl setenv` 后 kickstart）。原计划：等完整生成 + 常有第二次口语版 LLM 调用（中文 >60 字或有
    markup，`decision/__init__.py:2115-2199`）+ 每个回答新开 MiniMax WebSocket 与两次握手
    （`voice_media.py:2501-2512`，`voice_tts.py:2341-2387`），无预热（ADR-0006:295 要求过）；段间严格串行。
@@ -105,7 +112,7 @@ unreachable（Linux 平台分支，main 同样）；全量 hermetic 1214/1217，
    加 `words_open` 与最近一次关卡原因）；卡片点击乐观移除（F11）；daemon 重启/断线后免唤醒模式静默结束
    且星核不重发（F12）；进入提示音与 `conversation:true` 同时发出、可能被自己的麦克风听到（F13）；
    error/empty 原因被丢，识别失败看起来像沉默（F14）。
-9. **修复用语**：「什么？/再说一遍」复述上一个口语版（不经 LLM）；与软打断的停止词同一处理层。
+9. **修复用语**：已做（`656a0b8`）。放在 L3 而不是 L5：L5 不能自己出声（spec §3.6.5）。
 10. **AEC 参考不全**（输出 F10/F11，本地部分）：`say` 兜底以子进程播放，不在参考里，会话模式下可能自我打断
     （改为 `say -o` 渲染成 PCM 走播放器，或 `macos_say` 期间不做打断）；AEC 参考环满时丢最新样本，
     停顿后参考错位（计溢出、`clean()` 里重启）。
