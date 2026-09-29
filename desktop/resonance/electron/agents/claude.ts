@@ -213,7 +213,7 @@ function said(s: Session, m: SDKMessage | { type: string; uuid?: string; message
 }
 
 // ---------- the live session ----------
-// The child runs in the keeper (ADR 0082), not under this process: the SDK talks to it through one keeper connection,
+// The child runs in the keeper (ADR 0098), not under this process: the SDK talks to it through one keeper connection,
 // and opening the session again after a host restart carries on with the same child. What the keeper replays and the
 // transcript already showed is dropped here. A child being let go (released to change its folders, stopped) is gone
 // before the session opens again: the keeper would otherwise hand the new query the child it is about to end.

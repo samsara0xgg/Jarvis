@@ -1,4 +1,4 @@
-// The keeper (ADR 0082), end to end: a real host and keeper on port 8033 and a temporary folder, two real Claude
+// The keeper (ADR 0098), end to end: a real host and keeper on port 8033 and a temporary folder, two real Claude
 // sessions on Haiku (a few paid calls). A is running a command and B waits on a permission request when the host
 // stops; both must still run without it, and the next host must take them back where they were.
 // Run from desktop/resonance after building: node scripts/verify-agents-keeper.mjs

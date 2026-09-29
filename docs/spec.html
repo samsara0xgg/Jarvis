@@ -224,7 +224,7 @@ header strong { color: var(--fg-strong); }
 <tr><td><strong>后台</strong>（Python，<code>python -m jarvis serve</code>）</td><td>麦克风和扬声器、本地语音模型、记忆、工具、事件日志，以及发给模型的每个请求</td><td>安装版由 App 拉起，退出就重启（跑满一分钟才退出的，一秒后重启；连续崩溃时间隔翻倍，最长一分钟）；开发机上是 LaunchAgent <code>com.allen.jarvis</code></td><td>127.0.0.1:8006，HTTP 和 WebSocket。安装版发现 8006 被一个答不上令牌的进程占着，就换一个空闲端口</td></tr>
 <tr><td><strong>伴侣</strong>（Electron）</td><td>刘海里的她、面板、Agents 窗口、首次设置和设置</td><td>安装版就是 App 本身，不在 Dock 里；开发机上是 LaunchAgent <code>com.allen.jarvis.resonance</code></td><td>不监听</td></tr>
 <tr><td><strong>agent 宿主</strong>（Node）</td><td>Agents 窗口里的 Claude Code 和 Codex 会话，工作台的终端、预览和落地（ADR 0073、0086、0087、0097）</td><td>伴侣发现 8016 没人应答时拉起；伴侣或后台重启时它照常运行</td><td>127.0.0.1:8016，HTTP</td></tr>
-<tr><td><strong>keeper</strong>（Node，每个 Claude Code 会话一个）</td><td>替宿主抱住 Claude Code 子进程的输入输出，宿主重启后交还（ADR 0082）</td><td>宿主拉起</td><td><code>~/.jarvis/agents/keeper.sock</code>；这个路径超过 socket 地址的上限（macOS 是 104 字节）时，在临时目录里一个只有主人能进的文件夹</td></tr>
+<tr><td><strong>keeper</strong>（Node，每个 Claude Code 会话一个）</td><td>替宿主抱住 Claude Code 子进程的输入输出，宿主重启后交还（ADR 0098）</td><td>宿主拉起</td><td><code>~/.jarvis/agents/keeper.sock</code>；这个路径超过 socket 地址的上限（macOS 是 104 字节）时，在临时目录里一个只有主人能进的文件夹</td></tr>
 <tr><td><strong>Codex app-server</strong>，给 Agents 窗口</td><td>宿主通过它驱动 Codex</td><td>宿主拉起，走标准输入输出</td><td>不监听</td></tr>
 <tr><td><strong>Codex app-server</strong>，给后台的 worker</td><td>后台派给 Codex 的活（ADR 0019）；默认关（<code>tools.workers.enabled</code>）</td><td>后台第一次派活时拉起</td><td><code>~/.jarvis/codex.sock</code></td></tr>
 <tr><td><strong>hook 脚本</strong></td><td>Claude Code 和 Codex 在会话事件上运行它们，把状态和权限请求交给后台（<a href="#hooks">第 8 章</a>）</td><td>Claude Code 或 Codex 每次触发时运行</td><td>不监听，连后台</td></tr>

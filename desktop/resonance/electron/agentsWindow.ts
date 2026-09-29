@@ -17,7 +17,7 @@ async function answers(): Promise<'yes' | 'no' | 'old'> {
     return r.ok ? 'yes' : r.status === 401 ? 'old' : 'no';
   } catch { return 'no'; }
 }
-// The old host goes the way a restart takes it: its turns carry on in the keeper (ADR 0082) and the new one takes them back.
+// The old host goes the way a restart takes it: its turns carry on in the keeper (ADR 0098) and the new one takes them back.
 async function replaceOld() {
   for (const pid of (await run('/usr/sbin/lsof', ['-nP', `-iTCP:${AGENTS_PORT}`, '-sTCP:LISTEN', '-t'])).split('\n').map(Number).filter(Boolean)) {
     if (!/agents\/host\.js/.test(await run('/bin/ps', ['-o', 'command=', '-p', String(pid)]))) continue;

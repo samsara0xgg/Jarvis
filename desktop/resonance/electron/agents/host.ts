@@ -26,7 +26,7 @@ const exec = promisify(execFile);
 const ROOT = process.env.JARVIS_RUNTIME_ROOT ?? path.join(homedir(), '.jarvis');
 export const DIR = process.env.JARVIS_AGENTS_DIR ?? path.join(ROOT, 'agents');
 const PORT = Number(process.env.JARVIS_AGENTS_PORT ?? 8016);
-// Where the keeper (ADR 0082) answers: the Claude Code children live there, not under this process.
+// Where the keeper (ADR 0098) answers: the Claude Code children live there, not under this process.
 export const KEEPER = socketFor(DIR);
 export const log = (...a: unknown[]) => console.log(new Date().toISOString(), ...a);
 
@@ -160,6 +160,10 @@ export class Session {
   private quiet = false;
   private liveAt = 0;
   private liveTimer: ReturnType<typeof setTimeout> | undefined;
+  // B23: the conversation is read the first time something needs it, not when the host starts. `kept`: its child, kept
+  // by the keeper through a host restart, being taken back; whatever acts on the session waits for that first.
+  kept?: Promise<void>;
+  private loading?: Promise<void>;
   constructor(public s: Sess, public repo: string) {}
   get driver() { return DRIVERS[this.s.agent]; }
   // ADR 0097: its landing, made the first time it is asked for.
@@ -351,7 +355,12 @@ export class Session {
     if (i >= 0) q.splice(i, 1);
     this.set({ queue: q.length ? q : undefined });
   }
-  async ensureLoaded() { if (!this.items) { try { await this.driver.load(this); } catch (e) { log('load', this.s.id, e); this.items = [{ k: 'note', text: `读不出这个会话的记录：${String(e)}` }]; } } }
+  // Read once, however many ask for it at the same time.
+  async ensureLoaded() {
+    if (this.items) return;
+    await (this.loading ??= this.driver.load(this).catch(e => { log('load', this.s.id, e); this.items = [{ k: 'note', text: `读不出这个会话的记录：${String(e)}` }]; })
+      .finally(() => { this.loading = undefined; }));
+  }
 }
 
 // ---------- the sessions, kept in one file ----------
@@ -567,7 +576,7 @@ async function route(req: Req0, res: http.ServerResponse, url: URL): Promise<unk
     res.end(buf);
     return undefined;
   }
-  // Nothing below runs before the host has taken its children back and has the login shell's PATH.
+  // Nothing below runs before the host has the login shell's PATH, its keeper and the rows back.
   await ready.catch(() => {});
   // ---- what the owner sets, and the key Startrail's Claude sessions sign in with in the packaged app (ADR 0094) ----
   if (url.pathname === '/settings' || url.pathname === '/settings/key') {
@@ -680,6 +689,7 @@ async function route(req: Req0, res: http.ServerResponse, url: URL): Promise<unk
   }
   if (parts[0] !== 'sessions' || !parts[1]) throw new Http(404, '没有这个地方');
   const x = need(parts[1]), verb = parts[2] ?? '';
+  await x.kept;
   if (m === 'GET' && !verb) { await x.ensureLoaded(); return { items: x.items, live: x.live }; }
   if (m === 'GET' && verb === 'peek') return peek(x.s.cwd, url.searchParams.get('ref') ?? '', () => baseFor(x));
   // ---- the review (B6): what it changed, one file's diff, one file put back ----
@@ -976,14 +986,15 @@ async function take(agent: Agent, id: string, cwd: string, force: boolean) {
   void x.measure();
   return id;
 }
-// Every session's title and summary, and each conversation the host has read; with `all`, archived ones too (read now).
+// Every session's title, summary and conversation (read now if nobody has opened it yet); with `all`, archived ones too.
 async function search(q: string, all: boolean) {
   const want = q.trim().toLowerCase(), hits: { id: string; item?: number; text: string }[] = [];
   if (!want) return hits;
   for (const x of [...sessions.values()].sort((a, b) => b.s.updated - a.s.updated)) {
     if ((x.s.archived && !all) || hits.length >= 200) continue;
     if (`${x.s.title}\n${x.s.summary}`.toLowerCase().includes(want)) hits.push({ id: x.s.id, text: x.s.title });
-    if (all && !x.items) await x.ensureLoaded();
+    await x.kept;
+    await x.ensureLoaded();
     (x.items ?? []).forEach((it, i) => {
       const j = (it.k === 'you' || it.k === 'it') && hits.length < 200 ? it.text.toLowerCase().indexOf(want) : -1;
       if (j >= 0) hits.push({ id: x.s.id, item: i, text: oneLine(`${j > 40 ? '…' : ''}${(it as { text: string }).text.slice(Math.max(0, j - 40), j + want.length + 80)}`, 160) });
@@ -1054,7 +1065,8 @@ function label(agent: Agent, k: 'model' | 'effort' | 'mode', v: string) {
   return (k === 'model' ? c?.models : k === 'mode' ? c?.modes : undefined)?.find(x => x[0] === v)?.[1] ?? v;
 }
 
-// The window is shown what is ready: every child taken back and every conversation read.
+// B23: the window gets the list as soon as the rows are back. A conversation is read when something opens it; a child
+// the keeper kept is taken back after, and whatever acts on its session waits for that.
 let ready: Promise<unknown> = Promise.resolve();
 async function boot() {
   // An app opened from Finder has only the system's PATH; the login shell knows where codex, git and the gates' tools are.
@@ -1068,20 +1080,21 @@ async function boot() {
   await restore(kids);
   await pruneImages();
   await Promise.all([pruneOld(UPLOADS), pruneOld(TRASH)]);
-  const live = [...sessions.values()].filter(x => !x.s.archived);
-  await Promise.all(live.map(async x => {
+  for (const x of sessions.values()) {
     const k = kids.get(x.s.id);
-    try {
-      if (k && x.driver.adopt) {
-        const was = x.s.st === 'work' || x.s.st === 'wait' || x.s.st === 'pack';
-        await x.driver.adopt(x, k.busy, was);
-        if (k.busy && x.s.st !== 'wait' && x.s.st !== 'pack') x.set({ st: 'work', now: x.s.now ?? '在想' });
-        log('took back', x.s.id.slice(0, 8), k.busy ? 'busy' : 'idle');
-      } else await x.ensureLoaded();
-    } catch (e) { log('boot', x.s.id, e); }
-  }));
+    if (k && x.driver.adopt && !x.s.archived) x.kept = takeBack(x, k);
+  }
   // A child whose session is gone (deleted while no host ran) has nobody to answer to.
   for (const key of kids.keys()) if (!sessions.has(key)) void ask(KEEPER, { op: 'kill', key }).catch(() => {});
+}
+// Its conversation read and the child taken back, a turn it was running going on here.
+async function takeBack(x: Session, k: Kid) {
+  const was = busy(x);
+  try {
+    await x.driver.adopt!(x, k.busy, was);
+    if (k.busy && x.s.st !== 'wait' && x.s.st !== 'pack') x.set({ st: 'work', now: x.s.now ?? '在想' });
+    log('took back', x.s.id.slice(0, 8), k.busy ? 'busy' : 'idle');
+  } catch (e) { log('boot', x.s.id, e); }
 }
 
 export async function main() {
