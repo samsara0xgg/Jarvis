@@ -211,6 +211,8 @@ def test_a_listening_sound_keeps_her_talking_and_is_no_turn(tmp_path: Path) -> N
         ("等一下。", "stop_request"),
         ("Wait.", "stop_request"),
         ("Pause.", "stop_request"),
+        # "That's enough" in the 2026-09-29 live test, which she took for "go on".
+        ("OK可以了。", "stop_request"),
     ],
 )
 def test_a_stop_request_stops_her_and_is_no_turn(
@@ -262,6 +264,8 @@ def test_every_one_word_card_answer_is_still_a_turn_over_her() -> None:
     answers = {word for word in words if any(re.fullmatch(p, word) for p in patterns)}
     assert {"好", "发", "别", "yes", "send", "cancel", "don't"} <= answers
     assert not [word for word in answers if voice_asr.is_unclear_sound(word + ".")]
+    # 「可以了」 over her is enough; the card's 「可以」 is still yes.
+    assert not voice_asr.is_stop_request("可以。")
 
 
 def test_the_live_tests_hum_no_longer_stops_her(tmp_path: Path) -> None:
