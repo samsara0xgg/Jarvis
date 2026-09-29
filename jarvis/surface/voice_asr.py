@@ -796,7 +796,7 @@ _STOP_REQUEST_RE = re.compile(
     r"|别念了|闭嘴|安静(?:一下|一点|点)?|够了|好了好了|行了行了)(?:吧|啊|呀|哈)?"
     r"|[停亭婷庭廷挺艇听厅顶鼎定丁叮钉][立啲一]?"
     r"|(?:ok|okay|please|jarvis|hey)*"
-    r"(?:stop(?:it|talking|that)?|wait|enough|bequiet|quiet|shutup|hush)(?:please|jarvis|now)*",
+    r"(?:stop(?:it|talking|that)?|wait|pause|enough|bequiet|quiet|shutup|hush)(?:please|jarvis|now)*",
 )
 # What final ASR makes of a hum or a cough over her is often one syllable or
 # word: 「五」 and "And." in the 2026-09-28 live test, each answered as a

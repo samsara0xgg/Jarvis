@@ -209,6 +209,7 @@ def test_a_listening_sound_keeps_her_talking_and_is_no_turn(tmp_path: Path) -> N
         ("顶。", "stop_request"),
         ("等一下。", "stop_request"),
         ("Wait.", "stop_request"),
+        ("Pause.", "stop_request"),
     ],
 )
 def test_a_stop_request_stops_her_and_is_no_turn(
