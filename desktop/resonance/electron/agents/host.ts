@@ -10,8 +10,8 @@ import { existsSync, mkdirSync, renameSync, statSync, writeFileSync } from 'node
 import { copyFile, mkdir, open, readFile, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
-import type { Agent, Answer, Catalog, Choice, Ctx, Doctor, Event, File, Item, Mcp, McpAct, Outside, Pic, Project, Req, Rx, Service, Sess, St, Step, Task, Usage, UsageWindow } from './types.js';
-import { claude, claudeExe } from './claude.js';
+import type { Agent, Answer, Catalog, Choice, Ctx, Doctor, Event, File, Item, Live, Mcp, McpAct, Outside, Pic, Project, Req, Rx, Service, Sess, St, Step, Task, Usage, UsageWindow } from './types.js';
+import { claude, claudeExe, heldReq } from './claude.js';
 import { codex } from './codex.js';
 import { loginPath, version, which } from './doctor.js';
 import { findFiles, GIT, keepUpload, peek, pruneOld, resolveRefs } from './files.js';
@@ -658,6 +658,21 @@ async function route(req: Req0, res: http.ServerResponse, url: URL): Promise<unk
     const b = await body(req);
     return { id: await take(b.agent === 'codex' ? 'codex' : 'claude', str(b.id, 'id'), typeof b.cwd === 'string' ? pathOf(b.cwd) : '', b.force === true) };
   }
+  // One of them read without taking it in, for the window's read-only view; and what the Claude ones in a terminal are
+  // doing now, with the request each stopped on, answered through the daemon that holds it (ADR 0049).
+  if (m === 'GET' && url.pathname === '/import/read') {
+    return { items: await readOutside(url.searchParams.get('agent') === 'codex' ? 'codex' : 'claude', str(url.searchParams.get('id'), 'id'), pathOf(url.searchParams.get('cwd') ?? '')) };
+  }
+  if (m === 'GET' && url.pathname === '/import/live') return { live: await liveOutside() };
+  if (m === 'POST' && url.pathname === '/import/answer') {
+    const b = await body(req), decision = b.decision === 'deny' || b.decision === 'always' ? b.decision : 'allow';
+    // A question's answers go back as {question: label}; a no carries what was typed.
+    const answers = b.answers && typeof b.answers === 'object' && !Array.isArray(b.answers)
+      ? Object.fromEntries(Object.entries(b.answers as Record<string, unknown>).filter((e): e is [string, string] => typeof e[1] === 'string')) : undefined;
+    await daemon(`/inherent/claude-requests/${encodeURIComponent(str(b.req, 'req'))}`, { decision, ...answers ? { answers } : {}, ...typeof b.text === 'string' && b.text.trim() ? { message: b.text.trim() } : {} })
+      .catch((e: unknown) => { throw new Http(409, /\b404\b/.test(String(e)) ? '它已经不在等了：终端那边答过了，或者它往下走了' : '没送到 Jarvis 后台：它开着吗？'); });
+    return { ok: true };
+  }
   if (m === 'POST' && url.pathname === '/sessions') {
     const b = await body(req), agent = b.agent === 'codex' ? 'codex' : 'claude', text = str(b.text, 'text').trim(), files = fileList(b.files), dirs = dirList(b.dirs);
     signedIn(agent);
@@ -1154,6 +1169,26 @@ async function outsideOf(cwd: string): Promise<Outside[]> {
   const known = new Set([...sessions.values()].flatMap(x => [x.s.id, ...x.s.resets ?? []]));
   const lists = await Promise.all((Object.keys(DRIVERS) as Agent[]).map(a => DRIVERS[a].outside(cwd).catch(e => { log('outside', a, String(e)); return [] as Outside[]; })));
   return lists.flat().filter(o => !known.has(o.id)).map(o => Date.now() - o.updated < RECENT ? { ...o, recent: true } : o).sort((a, b) => b.updated - a.updated).slice(0, 200);
+}
+// One of them as its transcript has it, read into a row nobody lists: the window shows it and nothing here changes.
+async function readOutside(agent: Agent, id: string, cwd: string) {
+  if ([...sessions.values()].some(x => x.s.id === id || x.s.resets?.includes(id))) throw new Http(409, '这个会话已经在列表里了');
+  const o = (await DRIVERS[agent].outside(cwd)).find(y => y.id === id);
+  if (!o) throw new Http(404, '找不到这个会话');
+  const x = new Session({ id, agent, title: o.title, cwd: o.cwd, project: base(o.cwd), branch: o.branch ?? '', tree: false, st: 'done', pinned: false, parked: false,
+    archived: false, unread: false, updated: o.updated, summary: '', model: '', effort: '', mode: '', ctx: 0 }, '');
+  await x.driver.load(x);
+  return x.items ?? [];
+}
+// The daemon's board (ADR 0046): the Claude Code sessions this window does not hold that are running or waiting now.
+async function liveOutside(): Promise<Live[]> {
+  const known = new Set([...sessions.values()].flatMap(x => [x.s.id, ...x.s.resets ?? []]));
+  const board = await daemon('/inherent/claude-sessions').catch(() => null) as { sessions?: Record<string, any>[] } | null;
+  return (board?.sessions ?? []).filter(r => typeof r.session_id === 'string' && !known.has(r.session_id)).map((r): Live => {
+    const q = r.request && typeof r.request.id === 'string' ? r.request : null;
+    return { id: r.session_id, st: q || r.phase === 'needs_input' ? 'wait' : r.phase === 'working' ? 'work' : 'done',
+      ...q ? { req: heldReq(q.id, String(q.tool ?? ''), q.input && typeof q.input === 'object' ? q.input : {}, String(q.cwd || r.cwd || ''), !!q.always) } : {} };
+  });
 }
 // One of them, taken in: read back from its own transcript, it goes on here; a recent one takes a second, sure press.
 async function take(agent: Agent, id: string, cwd: string, force: boolean) {

@@ -147,6 +147,9 @@ function reqOf(s: Session, id: string, name: string, input: Record<string, unkno
   if (st?.k === 'edit') return { id, tool: 'Edit', why: o.title ?? '', file: st.t, diff: st.diff ?? [], always };
   return { id, tool: 'Tool', why: o.title || o.description || '', name: o.displayName || st?.t || name, detail: JSON.stringify(input, null, 1).slice(0, 800), always };
 }
+// A request a Claude session in a terminal stopped on, as the daemon holds it (ADR 0049): the same card as one of ours.
+export const heldReq = (id: string, tool: string, input: Record<string, unknown>, cwd: string, always: boolean) =>
+  reqOf({ s: { cwd } } as Session, id, tool, input, always ? { suggestions: [{} as PermissionUpdate] } : {});
 const textOf = (c: unknown): string => typeof c === 'string' ? c : Array.isArray(c) ? c.map(b => b?.type === 'text' ? str(b.text) : '').filter(Boolean).join('\n') : '';
 // Pictures a tool gave back (a screenshot, an image it read).
 const picsOf = (c: unknown): Pic[] => Array.isArray(c) ? c.filter(b => b?.type === 'image' && b.source?.type === 'base64')

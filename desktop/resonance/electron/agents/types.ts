@@ -104,6 +104,9 @@ export type Peek = { kind: 'md' | 'text' | 'web' | 'media' | 'dir' | 'quicklook'
 export type Change = { path: string; add: number; del: number; st: 'M' | 'A' | 'D' | 'R' | '?'; from?: string };
 // A session started outside the window (a terminal, Codex's app) that it can take in (GET /import).
 export type Outside = { agent: Agent; id: string; title: string; cwd: string; updated: number; branch?: string; recent?: boolean };
+// One of them running now, as the daemon's board of Claude Code sessions sees it (GET /import/live, ADR 0049): what it
+// is doing, and the request it stopped on when the daemon holds it, answered from here with POST /import/answer.
+export type Live = { id: string; st: 'work' | 'wait' | 'done'; req?: Req };
 // A project in the list (GET /projects): recent session folders first, then folders you added, then ~/Projects.
 export type Project = { path: string; name: string; git: boolean; used?: number; added?: boolean };
 // What the host runs with (GET /doctor), for the window's own check-up: the PATH it searches, which Claude Code it runs
