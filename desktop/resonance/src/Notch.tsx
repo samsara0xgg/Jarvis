@@ -5,6 +5,7 @@ import { AgentMark, drawMark, dpr, seedOf, useClock, type MarkLook } from './Age
 import { drawMoon, drawTurnIcon, hueAt, MOON_RGB, rgba, tint } from './beacon';
 import { Markdown } from './Markdown';
 import { ended, NoticeFlightContext } from './Notices';
+import { readStartrail } from './startrail';
 import { spring, step } from './starCore';
 import { HOVER_DWELL_MS, HOVER_EXIT_MS, HOVER_SPEED, PointerIntent } from './pointerIntent';
 import { MOTION, SPRINGS } from './motion';
@@ -108,7 +109,7 @@ function Panel({ secs, hot, cur, look, act, page, done }: { secs: Sec[]; hot: st
 }
 // One session's page: the conversation (Allen's words right, its end-of-turn answers rendered left), what it is doing
 // now, and a box whose line Jarvis types into the session. A working session takes it once it stops; a Codex one is
-// read here and answered in Codex.
+// read here and answered in Codex, one of Startrail's in Startrail.
 function Page({ a, port, look, act, draft, setDraft, back, keys }: {
   a: Agent; port: string | null; look: MarkLook; act: NotchAct; draft: string; setDraft: (text: string) => void; back: () => void; keys: boolean;
 }) {
@@ -116,9 +117,9 @@ function Page({ a, port, look, act, draft, setDraft, back, keys }: {
   const list = useRef<HTMLDivElement>(null), input = useRef<HTMLInputElement>(null), bottom = useRef(true);
   const claude = a.agent === 'claude' && !!port;
   useEffect(() => {
-    if (!claude) return;
+    if (!claude && !a.host) return;
     let stop = false;
-    void readConversation(port!, a.id).then(m => { if (!stop && m) setSaid(m); });
+    void (a.host ? readStartrail(a.id) : readConversation(port!, a.id)).then(m => { if (!stop && m) setSaid(m); });
     return () => { stop = true; };
   }, [a.id, a.at, a.state]);
   const base = said ?? [...(a.you ? [{ who: 'you' as const, text: a.you }] : []), ...(a.last && ended(a.state) ? [{ who: 'it' as const, text: a.last }] : [])];
@@ -138,7 +139,8 @@ function Page({ a, port, look, act, draft, setDraft, back, keys }: {
     if (fail) { setWhy(fail); setMine(m => m.filter(t => t !== text)); setDraft(text); }
   };
   const open = openLabel(a);
-  const box = a.agent === 'codex' ? <p className="r-note">Codex is read here only · answer it in Codex</p>
+  const box = a.host ? !asking(a) && <p className="r-note">Read here only · reply to it in Startrail</p>
+    : a.agent === 'codex' ? <p className="r-note">Codex is read here only · answer it in Codex</p>
     : asking(a) ? null
     : a.kind !== 'background' ? <p className="r-note">Answer it in its terminal</p>
     : <form className="pg-input c-reply" onSubmit={send}>
@@ -458,6 +460,7 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
       });
       root.current!.dataset.counts = counts.join(' ');
       root.current!.dataset.flights = String(st.flights.length);
+      root.current!.dataset.rings = st.boxes.some(b => b.key === 'turn') && now - st.turnAt <= 4000 ? '1' : '';
       const dr = st.drag;
       if (dr) {
         const out = dr.y > top + DRAG_OUT, ts = members('done');

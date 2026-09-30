@@ -36,7 +36,7 @@ export async function patchSettings(p: Record<string, unknown>) {
   if ('provider' in p) { if (p.provider === 'anthropic' || p.provider === 'bedrock' || p.provider === 'vertex') s.provider = p.provider; else drop('provider'); }
   if ('bedrock' in p) { const b = p.bedrock as Record<string, unknown> | null, region = text(b?.region, 40), profile = text(b?.profile, 100); if (region) s.bedrock = { region, ...profile ? { profile } : {} }; else drop('bedrock'); }
   if ('vertex' in p) { const v = p.vertex as Record<string, unknown> | null, region = text(v?.region, 40), project = text(v?.project, 100); if (region && project) s.vertex = { region, project }; else drop('vertex'); }
-  if ('notify' in p) { const n = p.notify as Record<string, unknown> | null; if (n && typeof n === 'object') s.notify = { done: n.done === true, wait: n.wait !== false, err: n.err !== false }; else drop('notify'); }
+  if ('notify' in p) { const n = p.notify as Record<string, unknown> | null; if (n && typeof n === 'object') s.notify = { done: n.done === true, wait: n.wait !== false, err: n.err !== false, ...n.notch === false ? { notch: false } : {} }; else drop('notify'); }
   if ('editor' in p) { const e = text(p.editor, 60); if (e) s.editor = e; else drop('editor'); }
   if ('terminal' in p) { const t = text(p.terminal, 60); if (t) s.terminal = t; else drop('terminal'); }
   if ('folders' in p) { const f = Array.isArray(p.folders) ? [...new Set(p.folders.filter(x => typeof x === 'string' && path.isAbsolute(x)))].slice(0, 200) as string[] : []; if (f.length) s.folders = f; else drop('folders'); }

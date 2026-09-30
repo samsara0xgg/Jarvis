@@ -66,7 +66,7 @@ contextBridge.exposeInMainWorld('jarvis', {
     ipcRenderer.on('agents-presence', listener); ipcRenderer.send('agents-presence-ready');
     return () => ipcRenderer.removeListener('agents-presence', listener);
   },
-  openAgents: () => ipcRenderer.send('agents-open'),
+  openAgents: (id?: string) => ipcRenderer.send('agents-open', id),
   codexTitles: (ids: string[]) => ipcRenderer.invoke('codex-titles', ids),
   openAccount: (service: string) => ipcRenderer.invoke('open-account', service),
   usageReset: (service: string, requestId: string) => ipcRenderer.invoke('usage-reset', service, requestId),

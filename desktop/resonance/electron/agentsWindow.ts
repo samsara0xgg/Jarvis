@@ -107,7 +107,8 @@ function typeIn(term: unknown, cwd: string, cmd: string) {
 
 // ---------- A6: the Mac says when a session needs the owner, while the window is not in front ----------
 // The companion follows the host's event stream itself, so this works with the window closed; a click opens the
-// session. Which moments count is the owner's (settings.notify). One session says one thing at a time: its newer
+// session. Which moments count is the owner's (settings.notify), and none do while Jarvis's notch says them instead
+// (`notch`, on unless turned off; src/startrail.ts). One session says one thing at a time: its newer
 // notification replaces the older, and not within 20 seconds of it.
 // macOS posts notifications only for a signed app: the dev build's Electron is not, and each one fails with
 // UNErrorDomain 1. There the notification goes through osascript instead, which cannot open the session when clicked.
@@ -117,11 +118,11 @@ const script = (title: string, sub: string, body: string) => execFile('/usr/bin/
   ['-e', 'on run a', '-e', 'display notification (item 3 of a) with title (item 1 of a) subtitle (item 2 of a)', '-e', 'end run', title, sub, body], { timeout: 8000 }, () => {});
 function watchHost(show: (id: string) => void, front: () => boolean, quiet: () => boolean) {
   const st = new Map<string, string>(), shown = new Map<string, { at: number; n?: Notification }>();
-  let notify = { done: false, wait: true, err: true }, failed = false;
+  let notify: { done: boolean; wait: boolean; err: boolean; notch?: boolean } = { done: false, wait: true, err: true }, failed = false;
   const saw = (s: Row) => {
     const was = st.get(s.id), last = shown.get(s.id);
     st.set(s.id, s.st);
-    if (was === undefined || was === s.st || s.archived || front() || !Notification.isSupported()) return;
+    if (was === undefined || was === s.st || s.archived || front() || notify.notch !== false || !Notification.isSupported()) return;
     const kind = s.st === 'wait' ? 'wait' : s.st === 'err' ? 'err' : s.st === 'done' && s.unread && ['work', 'pack', 'wait'].includes(was) ? 'done' : null;
     if (!kind || !notify[kind] || (last && Date.now() - last.at < 20e3)) return;
     last?.n?.close();
@@ -267,8 +268,9 @@ export function setupAgents({ preload, page, host, packaged = false, trustedWind
       if (typeof note.at === 'number' && Date.now() - note.at < 180e3) void open(typeof note.id === 'string' ? note.id : '');
     } catch { /* no note */ }
   }
-  ipcMain.on('agents-open', event => {
-    if (trustedWindows().some(w => !w.isDestroyed() && event.sender === w.webContents && event.senderFrame === w.webContents.mainFrame)) void open();
+  // `id`: a session to open it on (Jarvis's notch, for one of Startrail's).
+  ipcMain.on('agents-open', (event, id: unknown) => {
+    if (trustedWindows().some(w => !w.isDestroyed() && event.sender === w.webContents && event.senderFrame === w.webContents.mainFrame)) void open(typeof id === 'string' && /^[\w-]{1,128}$/.test(id) ? id : '');
   });
   // Settings is a sheet inside the window, opened with ⌘, or the app menu's 设置… (one window: none of its own). The
   // rest of the menu is Electron's default, so the editing keys and ⌘W keep working.
