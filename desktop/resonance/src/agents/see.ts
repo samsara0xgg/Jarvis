@@ -343,9 +343,9 @@ export function mountSee(ctx: PageCtx): Feature {
     e.preventDefault();
     look(s, ref);
     menuFor = { el, ref, sid: s.id };
-    const w = win.getBoundingClientRect();
+    // Under the file (above it when there is no room), so the menu never covers the name it is for.
     ctx.menu(`<button type="button" data-act="seefside">在右边打开</button><button type="button" data-act="seefapp">用默认的 app 打开</button><button type="button" data-act="seefed">在编辑器里打开${editor ? `<span class="k">${esc(editor)}</span>` : ''}</button>`
-      + '<button type="button" data-act="seeffind">在访达里显示</button><span class="sep"></span><button type="button" data-act="seefcopy">复制路径</button>', { x: e.clientX - w.left, y: e.clientY - w.top }, { cls: 'see-fm' });
+      + '<button type="button" data-act="seeffind">在访达里显示</button><span class="sep"></span><button type="button" data-act="seefcopy">复制路径</button>', el, { cls: 'see-fm' });
     void readEditor();
   });
   async function fileAct(a: string) {

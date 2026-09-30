@@ -88,6 +88,8 @@ export function mountWorkbench(win: HTMLElement, ta: HTMLTextAreaElement, hooks:
     lp.classList.toggle('off', !(S.left && s));
     const nar = r.chat.w < 480;
     chat.classList.toggle('nar', nar);
+    // Its text would reach the list button in the window's corner: the column keeps clear of it (workbench.css).
+    chat.classList.toggle('edge', r.chat.x < 44 && r.chat.w < 720);
     if (!nar) chat.classList.remove('all');
     win.classList.toggle('wb-right', !!r.pv || (!!r.tm && terminal.pos !== 'drawer' && terminal.pos !== 'island'));
     win.classList.toggle('wb-cover', (S.left && !!s) || S.pos === 'stage');
@@ -110,6 +112,13 @@ export function mountWorkbench(win: HTMLElement, ta: HTMLTextAreaElement, hooks:
       { left: `${to.x}px`, top: `${to.y}px`, width: `${to.w}px`, height: `${to.h}px`, borderRadius: '14px' },
     ], { duration: ms, easing: EASE, fill: 'forwards' });
     return an.finished.then(() => { void g.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 160, fill: 'forwards' }).finished.then(() => g.remove()); }, () => g.remove());
+  }
+  // Opening, the sheet itself leaves the card with what it shows already in it, and lands on the same curve the
+  // conversation gives way on: one motion, no empty frame first.
+  async function launch(from: Q) {
+    if (!RM.matches) { pv.style.transition = 'none'; put(pv, from); void pv.offsetWidth; pv.style.transition = ''; }
+    layout(); flipIcon();
+    if (!RM.matches) await wait(460);
   }
   const fadeConv = (to: number) => { const c = conv(); if (c) c.style.opacity = String(to); };
   function cards() { for (const c of win.querySelectorAll<HTMLElement>('.lnk')) c.classList.toggle('on', !!S.ref && classify(c.dataset.ref!).key === S.ref.key); }
@@ -215,11 +224,9 @@ export function mountWorkbench(win: HTMLElement, ta: HTMLTextAreaElement, hooks:
     S.ref = { ...r, src: el.closest<HTMLElement>('.lnk') ?? el };
     cards(); void fill(S.ref, s, { k });
     S.pos = target;
-    pv.style.opacity = '0';
     if (target === 'stage' && was !== 'stage') { fadeConv(0); await wait(120); }
-    layout(); flipIcon();
-    await ghostFly(from, rects().pv!);
-    pv.style.opacity = ''; fadeConv(1);
+    await launch(from);
+    fadeConv(1);
     if (target === 'stage') S.ref?.src?.scrollIntoView({ block: 'nearest' });
     S.openedAt = performance.now();
     showNote(note);
@@ -240,11 +247,9 @@ export function mountWorkbench(win: HTMLElement, ta: HTMLTextAreaElement, hooks:
     S.ref = next;
     cards(); void fill(next, s);
     S.pos = target;
-    pv.style.opacity = '0';
     if (target === 'stage' && was !== 'stage') { fadeConv(0); await wait(120); }
-    layout(); flipIcon();
-    await ghostFly(start, rects().pv!);
-    pv.style.opacity = ''; fadeConv(1);
+    await launch(start);
+    fadeConv(1);
     S.openedAt = performance.now();
     S.busy = false;
   }

@@ -29,7 +29,8 @@ export function ring(s: Sess | undefined, agent: Agent, u: Usage | null, cx: Ctx
   const top = ws.reduce((m, w) => w.percent > m.p ? { p: w.percent, n: nameOf(agent, w), w } : m, { p: c, n: '上下文', w: null as UsageWindow | null });
   const col = level(top.p) || 'rgba(157,180,255,.85)';
   const tip = top.w && top.p >= 100 ? `${top.n} 用完了 · ${resetAt(top.w.resets_at)}` : `最紧的一项：${top.n} ${Math.round(top.p)}%`;
-  const svg = `<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="rgba(255,255,255,.14)" stroke-width="2"/><circle cx="8" cy="8" r="6" fill="none" stroke="${col}" stroke-width="2" stroke-linecap="round" stroke-dasharray="${(Math.min(100, top.p) / 100 * 37.7).toFixed(2)} 40"/></svg>`;
+  // A filled wedge in a thin ring, a gauge that stands still: an open arc on a faint track reads as a spinner.
+  const svg = `<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.6" fill="none" stroke="rgba(255,255,255,.3)" stroke-width="1.2"/><circle cx="8" cy="8" r="2.75" fill="none" stroke="${col}" stroke-width="5.5" stroke-dasharray="${(Math.min(100, top.p) / 100 * 17.28).toFixed(2)} 18"/></svg>`;
   return { svg, tip };
 }
 // A plan window used up: which one, and when it starts over.

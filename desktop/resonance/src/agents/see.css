@@ -7,8 +7,9 @@
 .see-th em{font-style:normal;font-variant-numeric:tabular-nums}
 .step.more:hover .see-th{color:var(--muted)}
 .step:has(> .see-tb){background:rgb(var(--glow) / .06)}
-.see-tb{grid-column:1 / -1;margin:6px 0 4px;max-height:122px;overflow-y:auto;overscroll-behavior:contain;padding:6px 10px 6px 12px;border-radius:8px;cursor:text;
-  background:rgb(0 0 0 / .18);box-shadow:inset 2px 0 0 rgb(199 168 255 / .4);font:12px/1.75 var(--ui);color:var(--muted);white-space:normal;
+/* one box: the step's own tint is its ground, the thought only a violet rule and the step's own insets */
+.see-tb{grid-column:1 / -1;margin:4px 0 5px;max-height:122px;overflow-y:auto;overscroll-behavior:contain;padding:1px 4px 1px 12px;cursor:text;
+  box-shadow:inset 1.5px 0 0 rgb(199 168 255 / .5);font:12.5px/1.7 var(--ui);color:rgb(226 230 247 / .86);white-space:normal;
   scrollbar-width:thin;scrollbar-color:rgb(199 168 255 / .3) transparent}
 .see-tb .md{display:flex;flex-direction:column;gap:6px}
 .see-tb p,.see-tb ul,.see-tb ol,.see-tb h4{margin:0}

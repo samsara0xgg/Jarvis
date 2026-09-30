@@ -66,11 +66,15 @@ export function mountKeys(ctx: PageCtx): Feature {
   ctx.win.append(el);
   const inner = el.querySelector<HTMLElement>('.keys-in')!;
   let from: HTMLElement | null = null;
+  // A small window cuts the sheet short: its foot says there is more below until the end is in view.
+  const more = () => inner.classList.toggle('more', inner.scrollTop + inner.clientHeight < inner.scrollHeight - 4);
+  inner.addEventListener('scroll', more, { passive: true });
+  new ResizeObserver(() => { if (!el.hidden) more(); }).observe(inner);
 
   function open() {
     ctx.closeMenu();
     from = document.activeElement as HTMLElement | null;
-    el.hidden = false; inner.scrollTop = 0; inner.focus({ preventScroll: true });
+    el.hidden = false; inner.scrollTop = 0; inner.focus({ preventScroll: true }); more();
     if (!reduced.matches) el.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 160 });
     ctx.tick();
   }

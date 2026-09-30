@@ -46,4 +46,4 @@
 .c-queue .you.queued{background:none;box-shadow:inset 0 0 0 1px rgb(var(--glow) / .35);color:var(--muted)}
 
 /* Reading another version of a conversation you changed. */
-.m-old{align-self:center;margin:0;font-size:11.5px;color:var(--faint)}
+.m-old{align-self:center;margin:2px 0 0;padding:3px 11px;border-radius:999px;font-size:11.5px;line-height:1.5;color:var(--muted);background:rgb(20 22 46 / .96);box-shadow:inset 0 0 0 .5px rgb(var(--glow) / .22)}

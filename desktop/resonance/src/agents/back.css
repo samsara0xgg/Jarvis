@@ -56,7 +56,8 @@
 .bk-q-h .bk-q-b:hover{background:rgb(var(--acc) / .14);color:var(--ink)}
 .bk-q-s{max-height:calc(13px * 1.65 * 12);overflow:auto;display:flex;flex-direction:column;gap:9px;padding:4px 12px 8px;scrollbar-width:thin;scrollbar-color:rgb(var(--acc) / .25) transparent;overscroll-behavior:contain}
 .bk-q-s:empty{display:none}
-.bk-q-s.bk-top{-webkit-mask-image:linear-gradient(180deg,transparent,#000 22px);mask-image:linear-gradient(180deg,transparent,#000 22px)}
+.bk-q:has(.bk-q-s.bk-top) .bk-q-h{box-shadow:inset 0 -.5px 0 rgb(var(--acc) / .18)}
+.bk-q-s.bk-top{-webkit-mask-image:linear-gradient(180deg,transparent 4px,#000 40px);mask-image:linear-gradient(180deg,transparent 4px,#000 40px)}
 .bk-qa{display:flex;flex-direction:column;gap:5px}
 .bk-qq{align-self:flex-end;max-width:90%;margin:0;padding:3px 10px;border-radius:12px 12px 4px 12px;background:rgb(var(--acc) / .15);font-size:12.5px;line-height:1.55;color:var(--ink);white-space:pre-wrap;overflow-wrap:anywhere}
 .bk-qa-a{display:flex;flex-direction:column;gap:6px;margin:0;font-size:13px;line-height:1.65;color:rgb(226 230 247 / .92)}
@@ -73,7 +74,8 @@
 .bk-q-in .bk-qi{flex:1;min-width:0;height:100%;border:0;padding:0;background:none;outline:none;font:12.5px var(--ui);color:var(--ink)}
 .bk-q-in .bk-qi:focus-visible{outline:none}
 .bk-q-in .bk-qi::placeholder{color:var(--faint)}
-.bk-q-in kbd{flex:none;opacity:.8}
+.bk-q-in kbd{flex:none}
+.win .bk-q-in kbd{height:17px;padding:0 5px;font-size:11px;background:rgb(255 255 255 / .1);box-shadow:inset 0 0 0 .5px rgb(255 255 255 / .12);color:var(--ink)}
 
 /* the mark a folded side question leaves by its paragraph */
 .md .bk-mk{position:relative;display:inline-grid;place-items:center;width:20px;height:18px;margin-left:5px;border-radius:6px;vertical-align:-3px;color:rgb(var(--acc));background:rgb(var(--acc) / .12);box-shadow:inset 0 0 0 .5px rgb(var(--acc) / .3);transition:background 120ms}

@@ -127,11 +127,20 @@ export function mountBack(ctx: PageCtx): Feature {
       + `<div class="bk-pk-l" role="listbox" aria-label="先打断它吗">${opts.map(([l, sub], j) => `<button type="button" class="bk-r bk-o${j === PK.opt ? ' bk-sel' : ''}" data-act="bk-opt" data-j="${j}" role="option" aria-selected="${j === PK.opt}">${kbd(String(j + 1))}<span class="bk-r-t">${l}</span>${sub ? `<span class="bk-r-f">${sub}</span>` : ''}</button>`).join('')}</div>`
       + `<p class="bk-pk-f">${kbd('⏎')} 确定 · ${kbd('esc')} 换一句</p>`;
   }
-  // Left with the composer box, just above it.
+  // Edge to edge with the composer box, just above it. The conversation makes room under its end for it, so the last
+  // turn is read above the list rather than under it.
+  let padded: HTMLElement | null = null;
   function place() {
     const c = comp.getBoundingClientRect(), b = box.getBoundingClientRect();
-    Object.assign(pk.style, { left: `${Math.round(b.left - c.left + 8)}px`, bottom: `${Math.round(c.bottom - b.top + 6)}px`, width: `${Math.round(Math.min(520, b.width - 16))}px` });
+    Object.assign(pk.style, { left: `${Math.round(b.left - c.left)}px`, bottom: `${Math.round(c.bottom - b.top + 8)}px`, width: `${Math.round(b.width)}px` });
+    const cv = host.querySelector<HTMLElement>('.conv');
+    if (padded && padded !== cv) unpad();
+    if (!cv) return;
+    const end = cv.scrollTop >= cv.scrollHeight - cv.clientHeight - 40, over = Math.max(0, Math.round(cv.getBoundingClientRect().bottom - pk.getBoundingClientRect().top));
+    cv.style.paddingBottom = over ? `${over + 10}px` : ''; padded = cv;
+    if (end) cv.scrollTop = cv.scrollHeight;
   }
+  function unpad() { if (padded) padded.style.paddingBottom = ''; padded = null; }
   function drawPick(first = false) {
     const s = ctx.byId(PK.sid);
     if (!PK.open || !s || ctx.current()?.id !== s.id) { closePick(); return; }
@@ -144,7 +153,7 @@ export function mountBack(ctx: PageCtx): Feature {
     if (l && r) { if (r.offsetTop < l.scrollTop) l.scrollTop = r.offsetTop - 2; else if (r.offsetTop + r.offsetHeight > l.scrollTop + l.clientHeight) l.scrollTop = r.offsetTop + r.offsetHeight - l.clientHeight + 2; }
     if (first) anim(pk, [{ opacity: 0, transform: 'translateY(4px)' }, { opacity: 1, transform: 'none' }], 150);
   }
-  function closePick() { if (!PK.open && pk.hidden) return; PK.open = false; PK.rows = []; PK.going = false; pk.hidden = true; patch(pk, ''); }
+  function closePick() { if (!PK.open && pk.hidden) return; PK.open = false; PK.rows = []; PK.going = false; pk.hidden = true; patch(pk, ''); unpad(); }
   function openPick(kind: 'rewind' | 'fork', s: Sess | undefined) {
     if (!s || !ctx.chat() || ctx.current()?.id !== s.id) return;
     if (s.term) { ctx.toast('在终端里，先拿回来'); return; }
@@ -291,9 +300,12 @@ export function mountBack(ctx: PageCtx): Feature {
     Object.assign(SEL, { text, sid: s.id, i, inQ: q?.dataset.q ?? '', para: blk && !q ? [...md.children].filter(x => !x.hasAttribute('data-x')).indexOf(blk) : -1 });
     patch(bar, `<button type="button" data-act="bk-quote">${I.quote}<span>引用</span></button><button type="button" data-act="bk-ask">${I.btw}<span>问一句</span></button>`);
     bar.hidden = false;
-    const rr = r.getBoundingClientRect(), w = win.getBoundingClientRect(), pw = bar.offsetWidth, ph = bar.offsetHeight, x = rr.left + rr.width / 2 - w.left, y = rr.top - w.top;
-    bar.style.left = `${Math.max(8, Math.min(w.width - pw - 8, x - pw / 2))}px`;
-    bar.style.top = `${y - ph - 8 < 60 ? rr.bottom - w.top + 8 : y - ph - 8}px`;
+    // Under the words, from where they start and inside the answer's column, so it covers neither the line above nor
+    // the margin; over them only when the composer is too close below.
+    const rr = r.getBoundingClientRect(), w = win.getBoundingClientRect(), col = md.getBoundingClientRect(), pw = bar.offsetWidth, ph = bar.offsetHeight;
+    const lim = host.getBoundingClientRect().bottom, under = rr.bottom + 6 + ph <= lim - 4;
+    bar.style.left = `${Math.max(col.left, Math.min(col.right - pw, rr.left)) - w.left}px`;
+    bar.style.top = `${(under ? rr.bottom + 6 : Math.max(host.getBoundingClientRect().top + 4, rr.top - ph - 6)) - w.top}px`;
   }
   host.addEventListener('mouseup', () => setTimeout(onSelect, 0));
   host.addEventListener('keyup', e => { if (e.shiftKey) onSelect(); });

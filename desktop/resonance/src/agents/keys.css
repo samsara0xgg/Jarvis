@@ -4,7 +4,10 @@
 .keys-in{width:720px;max-width:calc(100% - 40px);max-height:calc(100% - 40px);overflow:auto;padding:18px 20px 16px;border-radius:16px;outline:none;
   background:linear-gradient(180deg,#191a33,#111228);box-shadow:inset 0 0 0 .5px rgb(var(--glow) / .35),0 30px 60px -24px #000;scrollbar-width:thin;scrollbar-color:rgb(157 180 255 / .25) transparent}
 .keys .keys-in:focus-visible{outline:none}
-.keys-in h4{display:flex;justify-content:space-between;align-items:center;margin:0 0 10px;font:600 14px var(--ui);color:var(--ink)}
+.keys-in h4{position:sticky;top:-18px;z-index:1;display:flex;justify-content:space-between;align-items:center;margin:-18px -19px 10px;padding:18px 19px 10px;background:#191a33;box-shadow:0 .5px 0 rgb(var(--glow) / .1);font:600 14px var(--ui);color:var(--ink)}
+/* cut short by a small window: a fade and a word at its foot until the end is in view (macOS hides the scroll bar) */
+.keys-in.more::after{content:"↓ 往下还有";position:sticky;bottom:-16px;display:flex;align-items:flex-end;justify-content:center;height:44px;margin:-44px -19px -16px;padding-bottom:8px;
+  background:linear-gradient(180deg,rgb(17 18 40 / 0),#111228 70%);font:11px var(--ui);color:var(--faint);pointer-events:none}
 .keys-in h4 small{font:normal 11.5px var(--ui);color:var(--faint)}
 .keys kbd{display:inline-grid;place-items:center;min-width:16px;height:16px;padding:0 4px;border-radius:4px;font:500 10px/1 var(--mono);background:rgb(255 255 255 / .08);color:var(--muted);vertical-align:1px}
 .keys-g{display:grid;grid-template-columns:1fr 1fr;gap:6px 26px}

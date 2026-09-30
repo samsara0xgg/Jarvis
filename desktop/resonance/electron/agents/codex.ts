@@ -424,7 +424,7 @@ export const codex: Driver = {
     return [['/compact', '把对话压缩一下，腾出上下文'], ['/review', '审查没提交的改动 · base <分支> · commit <sha> · 或写要求'], ['/init', '写一份 AGENTS.md'],
       ['/model', '换模型', 'model'], ['/reasoning', '换力度', 'effort'], ['/plan', '切到计划模式'], ['/new', '开新会话', 'new'], ['/fork', '从某一句之前分出一个新会话', 'fork'],
       ['/rewind', '回到之前的某一句', 'rewind'], ['/side', '侧问：不打断它，也不进对话', 'btw'],
-      ['/status', '环境和登录', 'doctor'], ['/diff', '看它改了什么', 'changes'], ['/export', '导出整段对话', 'export'], ['/resume', '接手别处开的会话', 'import'],
+      ['/status', '看版本、登录和后台开没开', 'doctor'], ['/diff', '看它改了什么', 'changes'], ['/export', '导出整段对话', 'export'], ['/resume', '接手别处开的会话', 'import'],
       ['/add-dir', '让它也能动另一个文件夹', 'dirs'], ['/mcp', '看它用的 MCP', 'mcp'], ...list.map(k => [`$${k.name}`, k.about] as [string, string])];
   },
   resume: s => `codex resume ${s.s.id}`,
