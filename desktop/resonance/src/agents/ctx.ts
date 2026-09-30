@@ -1,7 +1,7 @@
 // What a feature of the Agents page works with. page.ts builds one context and mounts every feature on it (messages,
 // the queue by her, what it is doing, going back, opening what it names, the composer, settings…); each feature keeps
 // its own state and answers the clicks, keys, commands and title-menu lines that are its own. Nothing here draws.
-import type { Item, Sess, Step } from '../../electron/agents/types';
+import type { Catalog, Item, Sess, Step } from '../../electron/agents/types';
 import type { mountWorkbench } from './workbench';
 
 export type Part = 'side' | 'head' | 'main' | 'live' | 'comp';
@@ -31,6 +31,8 @@ export type PageCtx = {
   // The page's state, read fresh each time.
   sessions(): Sess[]; current(): Sess | undefined; byId(id: string): Sess | undefined; items(id: string): Item[] | undefined;
   chat(): boolean;
+  // What each agent offers (models, efforts, modes) as the host last said, or null before it has.
+  catalog(): Catalog | null;
   // The host: `call` throws its error; `tryCall` says it in a toast and gives null.
   call<T = Record<string, unknown>>(route: string, body?: unknown, method?: string): Promise<T>;
   tryCall(route: string, body?: unknown, method?: string): Promise<Record<string, unknown> | null>;

@@ -14,6 +14,7 @@ import { mountStopped } from './exposure/waiting';
 import { mountWorkbench } from './workbench';
 import { cardsHTML, editsBefore, inline } from './workbench/refs';
 import * as usage from './workbench/usage';
+import { mountSlip } from './slip';
 import './agents.css';
 import './exposure/exposure.css';
 
@@ -383,8 +384,8 @@ function renderHead() {
   const s = cur(), chat = app.view === 'chat' && !!s;
   head.classList.toggle('plain', !chat);
   if (!chat) {
-    patch(hMk, ''); patch(hT, `<b>${app.view === 'archive' ? '已归档' : '新会话'}</b>`);
-    patch(hMeta, app.view === 'archive' ? '<span>还能搜到，随时能拿回来</span>' : '<span>选一个 agent 和文件夹，在下面写要它做什么</span>');
+    patch(hMk, ''); patch(hT, `<b>${app.view === 'archive' ? '已归档' : '没有开着的会话'}</b>`);
+    patch(hMeta, app.view === 'archive' ? '<span>还能搜到，随时能拿回来</span>' : '<span>⌘N 落下一张纸条，写一句要它做什么</span>');
     return;
   }
   patch(hMk, star(s.id, 13));
@@ -594,14 +595,9 @@ function renderArchive() {
       + `<button type="button" class="btn" data-act="unarchive" data-id="${s.id}">拿回来</button><button type="button" class="btn${app.del === s.id ? ' bad-on' : ' bad'}" data-act="delete" data-id="${s.id}">${app.del === s.id ? s.tree ? '连 worktree 一起删' : '真的删掉' : '删除'}</button></div>`).join('')}</div>`
       : '<p class="empty">没有归档的会话。</p>'));
 }
+// Nothing open: a session starts from the slip (slip.ts), which an empty window drops by itself; this is what is under it.
 function renderNew() {
-  const a = app.newAgent, ps = app.projects.includes(app.newProject) || !app.newProject ? app.projects : [app.newProject, ...app.projects];
-  patch(viewNew.firstElementChild!, `<div class="agents">${(['claude', 'codex'] as Agent[]).map(k => `<button type="button" class="agent ${k}${a === k ? ' is-on' : ''}" data-act="agent" data-v="${k}" aria-pressed="${a === k}"><i></i><b>${NAME[k]}</b><span>${k === 'claude' ? '用你的 Claude 订阅' : '用你的 ChatGPT 登录'}</span></button>`).join('')}`
-    + '<div class="agent later"><i></i><b>更多</b><span>Cursor、Copilot、Gemini…… 以后通过同一个协议接进来</span></div></div>'
-    + `<div class="n-row"><label class="fld"><span>文件夹</span><select id="proj">${ps.map(p => `<option value="${esc(p)}"${p === app.newProject ? ' selected' : ''}>${esc(home(p))}</option>`).join('')}</select></label>`
-    + '<button type="button" class="other" data-act="folder">别的文件夹…</button>'
-    + `<label class="chk"><input type="checkbox" id="tree"${app.newTree ? ' checked' : ''}>单独一个 worktree</label></div>`
-    + '<p class="lead">在下面写要它做什么，按 Enter。它在 Jarvis 的后台跑，关掉这个窗口也不停；想在终端里接着聊也行。</p>');
+  patch(viewNew.firstElementChild!, '<div class="n-empty"><p>没有开着的会话。写一句要它做什么，抛出去就开跑。</p><button type="button" class="btn" data-act="new">写一句 <kbd>⌘N</kbd></button></div>');
 }
 
 // ---------- the composer: stays in the page so what you type survives every redraw; only its parts change ----------
@@ -616,7 +612,7 @@ function newDefaults() {
 }
 function renderComp() {
   const newV = app.view === 'new', s = newV ? undefined : cur(), agent = newV ? app.newAgent : s?.agent ?? 'claude', c = choice(agent);
-  comp.hidden = app.view === 'archive' || (!newV && !s);
+  comp.hidden = app.view !== 'chat' || !s;
   if (comp.hidden) return;
   const busy = !!s && (s.st === 'work' || s.st === 'pack'), pend = s ? pendingReq(s.id) : undefined;
   const blocked = !!s && (!!s.term || (!!pend && pend.tool !== 'Ask' && pend.tool !== 'Plan'));
@@ -807,13 +803,13 @@ function apply(e: Event) {
     for (const id of [...app.items.keys()]) { if (byId(id)) void loadItems(id); else app.items.delete(id); }
     // A companion that a landing restarted opens the window again on that session (ADR 0085).
     const back = new URLSearchParams(location.search).get('open');
-    if (first) { newDefaults(); const o = order(); app.cur = back && byId(back) ? back : o[0] ?? ''; if (!app.cur) app.view = 'new'; else { app.view = 'chat'; void loadItems(app.cur); } wb.switched(); }
+    if (first) { newDefaults(); const o = order(); app.cur = back && byId(back) ? back : o[0] ?? ''; if (!app.cur) { app.view = 'new'; void act('new', win); } else { app.view = 'chat'; void loadItems(app.cur); } wb.switched(); }
     quiet = true; draw(); return;
   }
   if (e.t === 'catalog') { app.catalog = e.catalog; newDefaults(); draw('comp'); return; }
   if (e.t === 'gone') {
     app.ss = app.ss.filter(s => s.id !== e.id); app.items.delete(e.id); app.live.delete(e.id); convs.delete(e.id); rowEls.delete(e.id);
-    if (app.cur === e.id) { const next = order()[0]; if (next) open(next); else { app.cur = ''; app.view = 'new'; wb.switched(); } }
+    if (app.cur === e.id) { const next = order()[0]; if (next) open(next); else { app.cur = ''; app.view = 'new'; wb.switched(); void act('new', win); } }
     draw(); return;
   }
   if (e.t === 'sess') {
@@ -981,7 +977,6 @@ async function act(a: string, el: HTMLElement) {
     core.hop(performance.now(), .16);
     if (o.length) open(o[(o.indexOf(app.cur) + 1) % o.length]);
   }
-  else if (a === 'new') { app.view = 'new'; app.sideOpen = false; closePop(); win.classList.remove('side-open'); cue('open', .5); newDefaults(); void refreshProjects(); wb.switched(); draw(); ta.focus(); }
   else if (a === 'archview') { app.view = 'archive'; app.sideOpen = false; closePop(); win.classList.remove('side-open'); wb.switched(); draw(); }
   else if (a === 'filter') { if (app.filter !== el.dataset.v) tick(); app.filter = el.dataset.v as typeof app.filter; quiet = true; draw('side'); }
   else if (a === 'by') { tick(); app.by = app.by === 'state' ? 'project' : 'state'; quiet = true; draw('side'); }
@@ -1048,8 +1043,6 @@ async function act(a: string, el: HTMLElement) {
   else if (a === 'attach') $<HTMLInputElement>('#file').click();
   else if (a === 'unfile') { unattach(app.files.splice(Number(el.dataset.k), 1)); draw('comp'); }
   else if (a === 'view') { const img = $<HTMLImageElement>('img', el); viewImg.src = img.src; viewImg.alt = img.alt; viewer.showModal(); }
-  else if (a === 'agent') { if (app.newAgent !== el.dataset.v) tick(); app.newAgent = el.dataset.v as Agent; store.set('agents.agent', app.newAgent); newDefaults(); draw('main', 'comp'); }
-  else if (a === 'folder') { const p = await window.agents?.folder(); if (p) { app.newProject = p; draw('main'); } }
   else if (a === 'side') { app.sideOpen = !app.sideOpen; win.classList.toggle('side-open', app.sideOpen); }
   else if (a === 'sound') setSound(!snd.on);
 }
@@ -1158,8 +1151,6 @@ find.addEventListener('input', () => { app.q = find.value; quiet = true; draw('s
 ta.addEventListener('input', () => { void typed(); });
 win.addEventListener('change', async e => {
   const t = e.target as HTMLInputElement;
-  if (t.id === 'proj') app.newProject = t.value;
-  if (t.id === 'tree') { app.newTree = t.checked; store.set('agents.tree', t.checked ? 'on' : 'off'); }
   if (t.id === 'file' && t.files) { const fs = [...t.files]; t.value = ''; app.files.push(...await Promise.all(fs.map(readFile))); draw('comp'); }
 });
 ta.addEventListener('paste', async e => {
@@ -1198,9 +1189,11 @@ const ctx: PageCtx = {
   win, ta, api: API, sessions: () => app.ss, current: () => app.view === 'chat' ? cur() : undefined, byId, items: id => app.items.get(id), chat: () => app.view === 'chat' && !!cur(),
   call, tryCall, load: loadItems, draw, open: id => open(id), toast, cue: (name, gain) => cue(name, gain, false, false), tick, md, diff: diffHTML,
   menu, closeMenu: closePop, wb, own: new Map(),
+  catalog: () => app.catalog,
 };
 // Each feature is mounted on the one context below; its clicks, keys, commands and menu lines are its own.
 features.push(mountStopped(ctx));
+features.push(mountSlip(ctx));
 
 // ---------- one loop: her every frame, moving marks at 30 fps, nothing while the window is out of sight ----------
 let lastT = performance.now(), lastMk = 0, lastAge = 0;
