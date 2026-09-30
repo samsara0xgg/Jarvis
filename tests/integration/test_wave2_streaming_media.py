@@ -21,7 +21,7 @@ import pytest
 import yaml
 
 from jarvis.runtime import inherent_loop
-from jarvis.shared.realtime import Wave1FeatureFlags
+from jarvis.shared.realtime import Wave1FeatureFlags, Wave4ResponseFlags
 from jarvis.shared.realtime_trace import realtime_trace_snapshot, reset_realtime_trace
 from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.lifecycle_terminal import terminalize_playback
@@ -3167,6 +3167,7 @@ def test_streaming_rollout_default_on_and_production_builder_gate(  # noqa: PLR0
     db_path = tmp_path / "builder.db"
     conn = open_event_log(db_path)
     runtime = SimpleNamespace(
+        response_flags=Wave4ResponseFlags(),
         config={
             "realtime": {
                 "enabled": True,
@@ -3313,6 +3314,7 @@ def test_production_builder_falls_back_only_after_typed_closed_startup(
     db_path = tmp_path / "typed-output-startup.db"
     conn = open_event_log(db_path)
     runtime = SimpleNamespace(
+        response_flags=Wave4ResponseFlags(),
         config={
             "realtime": {
                 "enabled": True,
@@ -3580,6 +3582,7 @@ def test_realtime_output_device_reaches_both_builder_player_sites(
     db_path = tmp_path / "device.db"
     conn = open_event_log(db_path)
     runtime = SimpleNamespace(
+        response_flags=Wave4ResponseFlags(),
         config={},
         wave1_features=Wave1FeatureFlags(
             transactional_event_append=True,
@@ -3635,6 +3638,7 @@ def test_production_builder_puts_the_configured_request_volume_on_the_wire(
     db_path = tmp_path / "tts-volume.db"
     conn = open_event_log(db_path)
     runtime = SimpleNamespace(
+        response_flags=Wave4ResponseFlags(),
         config={"realtime": {"enabled": False}},
         wave1_features=Wave1FeatureFlags(
             transactional_event_append=True,

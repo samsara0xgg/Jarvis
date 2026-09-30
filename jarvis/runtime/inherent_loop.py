@@ -2352,7 +2352,9 @@ def _build_tts_pipeline(  # noqa: C901 - rollout/degradation capability boundary
                 config=media_config,
                 broadcaster=broadcaster,
                 ducker=ducker,
-                foreground_decision_callable=make_foreground_decision_callable(),
+                foreground_decision_callable=make_foreground_decision_callable(
+                    wait_for_lane=runtime.response_flags.slow_results,
+                ),
             )
         except voice_media.StreamingMediaStartupError as exc:
             if not exc.legacy_fallback_safe:

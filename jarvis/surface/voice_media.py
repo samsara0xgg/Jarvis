@@ -2369,6 +2369,11 @@ class StreamingTTSPipeline:
                 response.response_group_id,
                 response.row_id,
             )
+            if verdict == "enqueue_after_drain":
+                # docs/plans/slow-results-proposal.md: another turn's answer
+                # waits until she has finished, and is not lost for arriving second.
+                self._enqueue_after_drain(response)
+                return
             if verdict != "supersede":
                 self._registry.terminalize(response.response_id)
                 self._responses.pop(response.response_id, None)
@@ -2416,24 +2421,7 @@ class StreamingTTSPipeline:
             )
             return
         if active.response.response_group_id == response.response_group_id:
-            if len(self._after_drain) >= self._config.response_lane_capacity:
-                self._registry.terminalize(response.response_id)
-                self._responses.pop(response.response_id, None)
-                record_realtime_trace(
-                    "media_after_drain_overflow",
-                    response_id=response.response_id,
-                    response_group_id=response.response_group_id,
-                    capacity=self._config.response_lane_capacity,
-                )
-                return
-            self._after_drain.append(response)
-            record_realtime_trace(
-                "media_after_drain_enqueued",
-                response_id=response.response_id,
-                response_group_id=response.response_group_id,
-                phase=response.phase,
-                lane_depth=len(self._after_drain),
-            )
+            self._enqueue_after_drain(response, behind=active.response.response_group_id)
             return
         if not await self._interrupt_active(reason="foreground_superseded"):
             self._registry.terminalize(response.response_id)
@@ -2441,6 +2429,39 @@ class StreamingTTSPipeline:
             return
         self._purge_after_drain()
         self._start_response(response)
+
+    def _enqueue_after_drain(self, response: _ResponseBuffer, *, behind: str | None = None) -> None:
+        """Queue ``response`` for the lane; ``behind`` keeps that group's answer together.
+
+        The playing answer's own continuation goes ahead of another turn's
+        answer already waiting, so a turn is said whole before the next.
+        """
+        if len(self._after_drain) >= self._config.response_lane_capacity:
+            self._registry.terminalize(response.response_id)
+            self._responses.pop(response.response_id, None)
+            record_realtime_trace(
+                "media_after_drain_overflow",
+                response_id=response.response_id,
+                response_group_id=response.response_group_id,
+                capacity=self._config.response_lane_capacity,
+            )
+            return
+        index = next(
+            (
+                position
+                for position, queued in enumerate(self._after_drain)
+                if behind is not None and queued.response_group_id != behind
+            ),
+            len(self._after_drain),
+        )
+        self._after_drain.insert(index, response)
+        record_realtime_trace(
+            "media_after_drain_enqueued",
+            response_id=response.response_id,
+            response_group_id=response.response_group_id,
+            phase=response.phase,
+            lane_depth=len(self._after_drain),
+        )
 
     def _start_response(self, response: _ResponseBuffer) -> None:
         if (

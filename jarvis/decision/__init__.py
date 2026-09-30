@@ -109,6 +109,7 @@ from jarvis.state.cost_accounting import record_run_cost_once
 from jarvis.state.event_log import emit_event, iter_events_of_types
 from jarvis.state.projections import make_snapshot
 from jarvis.state.stream_emission import committed_text_prefix
+from jarvis.state.turn_overlap import TurnInFlight, turns_in_flight, words_since
 
 if TYPE_CHECKING:
     import sqlite3
@@ -637,6 +638,10 @@ class DecideContext:
     # continues the exposed prefix of a failed stream.
     routine_stream: RoutineStreamRoute | None = None
     stream_correction: StreamCorrection | None = None
+    # docs/plans/slow-results-proposal.md (``realtime.response.slow_results``):
+    # a turn is told which earlier ones are still being answered, and a turn
+    # Allen spoke past opens its answer by pointing back at his question.
+    slow_results: bool = False
 
 
 @dataclass(frozen=True)
@@ -789,20 +794,25 @@ def _repeat_of_last_answer(packet: SituationPacket) -> str | None:
     return None
 
 
-def _previous_answer_line(packet: SituationPacket) -> str | None:
+def _previous_answer_line(
+    packet: SituationPacket, in_flight: frozenset[str] = frozenset(),
+) -> str | None:
     """Where the last spoken answer stopped, or None when it was heard whole.
 
     Read from the playback evidence the conversation projection already
     validates. Turns that got no answer, such as a half-sentence dropped
     for the one after it, are looked past: the cut answer before them is
-    still the last thing Allen heard. Only the facts go in; whether to
-    continue or take up the new words is the model's call.
+    still the last thing Allen heard. So are turns another run is still
+    answering (``in_flight``). Only the facts go in; whether to continue or
+    take up the new words is the model's call.
     """
     history = packet.conversation_history
     turns = history.turns if history is not None else ()
     index = next((i for i, t in enumerate(turns) if t.turn_id == packet.current_turn_id), 0)
     lines: list[str] = []
     for turn in reversed(turns[:index]):
+        if turn.turn_id in in_flight:
+            continue
         finals = [r for r in turn.responses if r.phase == "final"]
         spoken = [r for r in finals if r.panel_available.strip()]
         if spoken and spoken[-1].unspoken:
@@ -846,15 +856,78 @@ def _answer_cut_line(answer: PresentationRecord) -> str | None:
     return f'Previous answer: interrupted after "{heard}"; the rest was not spoken'
 
 
+# A turn stuck longer than this is the supervisor's, not the model's to hear about.
+_IN_FLIGHT_WINDOW_MS: Final[int] = 5 * 60 * 1000
+
+
+def _earlier_turns_in_flight(
+    packet: SituationPacket, ctx: DecideContext,
+) -> tuple[TurnInFlight, ...]:
+    """The user's earlier turns another run is still answering (the switch on)."""
+    if not ctx.slow_results:
+        return ()
+    return turns_in_flight(
+        ctx.conn,
+        trigger_event_uid=packet.trigger_event.event_uid,
+        since_ms=_now_epoch_ms() - _IN_FLIGHT_WINDOW_MS,
+    )
+
+
+def _turns_in_flight_line(earlier: tuple[TurnInFlight, ...]) -> str | None:
+    """Name the user's earlier questions another turn is still answering."""
+    if not earlier:
+        return None
+    now_ms = _now_epoch_ms()
+    asked = "; ".join(
+        f'"{turn.words}" (asked {max(0, now_ms - turn.asked_ms) // 1000} s ago)'
+        for turn in earlier
+    )
+    return (
+        f"Still being answered in another turn: {asked}. That answer will be spoken "
+        "when it is ready. Answer only what the user just said; do not answer or look "
+        "up the earlier question again."
+    )
+
+
+def _late_answer_note(packet: SituationPacket, ctx: DecideContext) -> str | None:
+    """After a slow tool: what the user said meanwhile, and how to open this answer."""
+    if not ctx.slow_results:
+        return None
+    said = words_since(ctx.conn, trigger_event_uid=packet.trigger_event.event_uid)
+    if not said:
+        return None
+    quoted = "; ".join(f'"{words}"' for words in said)
+    return (
+        "[Runtime note, not the user's words] While this was being looked up, the user "
+        f"went on to say: {quoted}. That is answered separately; do not answer it here. "
+        "Open this answer with a few words pointing back to what they asked here, as a "
+        "person would when coming back to an earlier question, then give the answer. "
+        "Answer in the language the user spoke."
+    )
+
+
+def _add_late_answer_note(
+    messages: list[dict[str, Any]], packet: SituationPacket, ctx: DecideContext,
+) -> bool:
+    """Append the late-answer note once the user has spoken past this turn."""
+    note = _late_answer_note(packet, ctx)
+    if note is None:
+        return False
+    messages.append({"role": "user", "content": note})
+    return True
+
+
 def _current_status_block(packet: SituationPacket, ctx: DecideContext) -> str | None:
     """This turn's state under one header, or None when there is nothing to say."""
+    earlier = _earlier_turns_in_flight(packet, ctx)
     lines = [
         line
         for line in (
             ctx.time_note,
             _interaction_line(packet, ctx),
             ctx.connected_apps,
-            _previous_answer_line(packet),
+            _previous_answer_line(packet, frozenset(turn.turn_id for turn in earlier)),
+            _turns_in_flight_line(earlier),
             format_pending_confirmation_note(packet),
             format_pending_clarification_note(packet),
             _format_open_actions_note(packet),
@@ -1085,6 +1158,7 @@ def _run_tool_use_loop(
 
     messages = _loop_messages(packet, ctx)
     llm_surface = surface_for(policy, ctx.tool_registry, CallerPrincipal.JARVIS_LLM)
+    late_noted = False
 
     iteration = 0
     while iteration < ctx.max_tool_iterations:
@@ -1165,6 +1239,7 @@ def _run_tool_use_loop(
             # Refresh the packet so the next LLM call sees the log as the
             # tool dispatches left it.
             packet = assemble_packet(packet.trigger_event, ctx.conn)
+            late_noted = late_noted or _add_late_answer_note(messages, packet, ctx)
             continue
 
         # LLM returned text -> finalize via Pre-emit Gate.
@@ -2327,7 +2402,7 @@ def _run_spoken_stream(  # noqa: C901 - one request loop: calls, one continuatio
         ctx, route, scratch, classifier=SegmentRiskClassifier(rule_version=SPOKEN_RULE_VERSION),
     )
     line: str | None = None
-    continued = False
+    continued = late_noted = False
     for iteration in range(1, ctx.max_tool_iterations + 1):
         tools = _tool_menu(llm_surface, scratch.loaded_tools)
         with realtime_trace_context(
@@ -2355,6 +2430,7 @@ def _run_spoken_stream(  # noqa: C901 - one request loop: calls, one continuatio
             if ending is not None:
                 return _finish_spoken(packet, ctx, route, speaker, scratch, draft=ending)
             packet = assemble_packet(packet.trigger_event, ctx.conn)
+            late_noted = late_noted or _add_late_answer_note(messages, packet, ctx)
             continue
         if reply.text.strip() and not reply.answer.strip() and not continued:
             # It said what it would do and stopped: one more request to do it.

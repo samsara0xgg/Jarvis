@@ -112,6 +112,11 @@ class Wave4ResponseFlags:
     next turn's prompt up to its new message, so OpenAI's cache covers the
     history (``jarvis.decision.open_prefix_warm``). Needs the run lifecycle's
     per-run client; without it the switch does nothing."""
+    slow_results: bool = False
+    """``slow_results.enabled`` (docs/plans/slow-results-proposal.md): a turn
+    is told which earlier ones are still being answered, a turn Allen spoke
+    past opens by pointing back at its question, and another turn's answer
+    waits for the speech lane instead of cutting in or being dropped."""
     lifecycle_commentary: bool = False
     """ADR-0008 D6 (Step 5, ``realtime.commentary.enabled``).
 
@@ -140,6 +145,7 @@ class Wave4ResponseFlags:
         routine = values.get("routine_streaming")
         spoken = values.get("spoken_streaming")
         warm = values.get("prefix_warm")
+        slow = values.get("slow_results")
         return cls(
             response_run_lifecycle=values.get("response_run_lifecycle") is True,
             independent_response_cancel=values.get("independent_response_cancel") is True,
@@ -147,6 +153,7 @@ class Wave4ResponseFlags:
             spoken_streaming=isinstance(spoken, Mapping) and spoken.get("enabled") is True,
             spoken_first_clause_chars=_first_clause_chars(spoken),
             prefix_warm=isinstance(warm, Mapping) and warm.get("enabled") is True,
+            slow_results=isinstance(slow, Mapping) and slow.get("enabled") is True,
             lifecycle_commentary=commentary is not None and commentary.get("enabled") is True,
         )
 

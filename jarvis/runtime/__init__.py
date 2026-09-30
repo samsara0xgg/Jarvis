@@ -2257,7 +2257,9 @@ def make_response_cancel_callable(  # noqa: C901 - one seam, two scopes' exact o
     return _cancel
 
 
-def make_foreground_decision_callable() -> Callable[[str, int, str, int], str]:
+def make_foreground_decision_callable(
+    *, wait_for_lane: bool = False,
+) -> Callable[[str, int, str, int], str]:
     """Build the injectable foreground-lane arbitration seam.
 
     ``(incumbent_group, incumbent_row_id, candidate_group, candidate_row_id)
@@ -2265,11 +2267,11 @@ def make_foreground_decision_callable() -> Callable[[str, int, str, int], str]:
     ``"supersede"`` or ``"decline"``.
 
     The policy is a pure L3 function with no clock and no IO, so there is
-    nothing to bind; the builder exists only because ``jarvis.decision`` and
-    ``jarvis.surface`` are siblings (``.importlinter``) and the runtime is the
-    only layer allowed to wire them together.
+    nothing to bind but ``realtime.response.slow_results``; the builder exists
+    because ``jarvis.decision`` and ``jarvis.surface`` are siblings
+    (``.importlinter``) and the runtime is the only layer allowed to wire them.
     """
-    return decide_foreground
+    return partial(decide_foreground, wait_for_lane=True) if wait_for_lane else decide_foreground
 
 
 def make_turn_cancel_callable(runtime: JarvisRuntime) -> Callable[[str, str], str]:
@@ -3030,6 +3032,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
                 partial(run.admit_request, runtime.conn) if run is not None else None
             ),
             routine_stream=stream_route,
+            slow_results=runtime.response_flags.slow_results,
         )
 
         # SQLite row id of the surface.user_intent event — used as the

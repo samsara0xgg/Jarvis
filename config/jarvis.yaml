@@ -477,6 +477,14 @@ realtime:
     # per-minute token limit. OpenAI presets only.
     prefix_warm:
       enabled: false
+    # docs/plans/slow-results-proposal.md.  Allen asks something slow, then
+    # something else while it runs: the new turn is told the first question
+    # is still being answered, so it answers only his new words; the first
+    # turn's answer opens by pointing back at its question; and whichever
+    # answer comes second waits until she has finished speaking, instead of
+    # cutting her off (newer turn) or never being said (older turn).
+    slow_results:
+      enabled: false
   # ADR-0008 Step 5 (D6).  With commentary on, a user-originated turn speaks
   # one short acknowledge when it first dispatches a tool that works on
   # Allen's request (not tool_search, the clock, memory or a card), no earlier

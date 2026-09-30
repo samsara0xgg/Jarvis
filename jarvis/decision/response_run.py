@@ -774,6 +774,8 @@ def decide_foreground(
     incumbent_row_id: int,
     candidate_group: str,
     candidate_row_id: int,
+    *,
+    wait_for_lane: bool = False,
 ) -> str:
     """Decide whether a candidate response may take the foreground speech lane.
 
@@ -788,10 +790,14 @@ def decide_foreground(
     utterance therefore always carries the highest row id and always wins;
     only a straggler from an older turn is declined.
 
+    ``wait_for_lane`` (docs/plans/slow-results-proposal.md): no answer cuts
+    another or is lost for arriving second; a cross-group candidate waits
+    until the lane drains, whichever turn is newer.
+
     Returns ``"enqueue_after_drain"``, ``"supersede"`` or ``"decline"``.  The
     lane-free case never reaches here: L5 activates an empty lane directly.
     """
-    if incumbent_group == candidate_group:
+    if incumbent_group == candidate_group or wait_for_lane:
         return "enqueue_after_drain"
     if candidate_row_id > incumbent_row_id:
         return "supersede"
