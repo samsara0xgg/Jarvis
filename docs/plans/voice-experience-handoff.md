@@ -125,6 +125,13 @@ unreachable（Linux 平台分支，main 同样）；全量 hermetic 1214/1217，
     （改为 `say -o` 渲染成 PCM 走播放器，或 `macos_say` 期间不做打断）；AEC 参考环满时丢最新样本，
     停顿后参考错位（计溢出、`clean()` 里重启）。
 11. **作品集文档**（§5）：在上述主干完成或实测有结果后写，发布为 Artifact。
+12. **唤醒词和命令一口气说出时 Tier 0 全落空**（夜间挂机线程 2026-09-29 17:03 实测发现，未改）：转写
+    「嘿ja班javis斯,我要睡觉了，能让他继续跑吗？」。`tier0.match_tier0`（`tier0.py:248`）拿原始转写匹配
+    `^` 锚定的规则，没有地方去掉开头的唤醒词；`voice_pipeline.py:253` 只拒整句只有唤醒词的（`is_wake_only`）。
+    这一轮于是转去调模型。`_WAKE_ONLY_RE` 认不全这类转写（「班」「斯」），更稳的是按唤醒词检测的结束时间切掉前段。
+13. **聚合输出设备上压低音量可能无效**（同上）：默认输出是聚合设备 "Multi-Output Device 2"，其上 osascript 的
+    `get volume settings` 返回 missing value，`voice_ducking.py:102-117` 的 AppleScript 多半不起作用。夜间挂机
+    线程正把静音改成走 CoreAudio、对聚合设备的每个子设备分别静音，ducking 等它落地后照做。
 
 ### 3.2 本地链 P2（记录在案）
 
