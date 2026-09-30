@@ -778,6 +778,28 @@ def is_wake_only(text: str) -> bool:
     return _WAKE_ONLY_RE.fullmatch(text.strip()) is not None
 
 
+# The wake phrase said in one breath with the request: heard as
+# 「嘿ja班javis斯,我要睡觉了，能让他继续跑吗？」 on 2026-09-29, where Tier 0's
+# anchored patterns then missed the night run. A lead that opens like the wake
+# phrase and ends at the first pause mark is cut; one that runs on into words
+# (「Javascript怎么学」) is not.
+_WAKE_LEAD_RE = re.compile(
+    r"\s*(?:(?:hey|hay|hi|嘿|嗨)[\s,，、]*(?:ja|贾)[^,，、。.!！?？]{0,8}"
+    r"|hey|hay|嘿|嗨|(?:ja|贾)[^,，、。.!！?？\s]{0,8})[,，、。.!！?？]+\s*",
+    re.IGNORECASE,
+)
+
+
+def strip_wake_lead(text: str) -> str:
+    """``text`` without the wake phrase it opens with, if it does."""
+    for _ in range(3):  # 「Hey，Jarvis，…」 comes back in pieces
+        lead = _WAKE_LEAD_RE.match(text)
+        if lead is None:
+            break
+        text = text[lead.end():]
+    return text
+
+
 # What Allen says over Jarvis that must not take the turn from her (soft
 # barge-in). Matched whole, case and punctuation aside. A listening sound
 # keeps her talking; a lone 对/是/好 or "yes" may be answering a waiting card

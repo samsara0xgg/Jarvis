@@ -250,14 +250,17 @@ class VoicePipeline:
                     )
                 msg = f"empty utterance for turn_id={turn_id}"
                 raise VoicePipelineEmptyError(msg, heard=tr.text)
-            if channel == "inherent_wake" and voice_asr.is_wake_only(tr.text):
+            said = voice_asr.strip_wake_lead(tr.text) if channel == "inherent_wake" else tr.text
+            if channel == "inherent_wake" and (
+                voice_asr.is_wake_only(tr.text) or not said.strip()
+            ):
                 # Not a question: the wake owner keeps listening for the next
                 # utterance and says so on the wire itself.
                 msg = f"wake phrase only for turn_id={turn_id}: {tr.text!r}"
                 raise VoicePipelineWakeOnlyError(msg, heard=tr.text)
 
             # 3. Normalize BEFORE emit — ADR §8 fix #1 (spec §3.6.2).
-            normalized = self._normalizer.normalize(tr.text)
+            normalized = self._normalizer.normalize(said)
 
             if before_emit is not None:
                 self._judge(before_emit, normalized, turn_id=turn_id, broadcast=broadcast)
