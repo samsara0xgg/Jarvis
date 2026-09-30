@@ -1,7 +1,7 @@
 // What a feature of the Agents page works with. page.ts builds one context and mounts every feature on it (messages,
 // the queue by her, what it is doing, going back, opening what it names, the composer, settings…); each feature keeps
 // its own state and answers the clicks, keys, commands and title-menu lines that are its own. Nothing here draws.
-import type { Catalog, Item, Sess, Step } from '../../electron/agents/types';
+import type { Catalog, File as Upload, Item, Sess, Step } from '../../electron/agents/types';
 import type { mountWorkbench } from './workbench';
 
 export type Part = 'side' | 'head' | 'main' | 'live' | 'comp';
@@ -28,6 +28,8 @@ export type Feature = {
   message?(s: Sess, it: Item & { k: 'you' | 'it' }, i: number, html: string): string;
   // A session that is part of another one (an older version of a conversation you edited): the archive does not list it.
   hidden?(s: Sess): boolean;
+  // A message on its way to the open session, the composer already cleared: true when this feature sends it its own way.
+  send?(s: Sess, text: string, files: Upload[]): boolean;
 };
 // A window command the host marks with a place (claude.ts OWN_UI): typed or picked, it runs here and never reaches the
 // agent. `arg` is what follows the command.

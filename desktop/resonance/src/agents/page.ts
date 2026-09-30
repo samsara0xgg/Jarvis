@@ -6,6 +6,7 @@
 import type { Agent, Catalog, Ctx, Event, File as Upload, Item, Pic, Req, Sess, St, Step, Usage } from '../../electron/agents/types';
 import { drawMark } from '../AgentMarks';
 import { features, type Own, type PageCtx } from './ctx';
+import { mountBack } from './back';
 import { waitOf } from './queue';
 import { mountSee } from './see';
 import { palette, play, scoreOf } from '../soundKit';
@@ -34,6 +35,7 @@ declare global { interface Window { agents?: {
   terminals?(): Promise<{ id: string; name: string }[]>; revealFile?(file: string): Promise<void>; quickLook?(file: string): Promise<void>;
   editors?(): Promise<{ id: string; name: string }[]>; openInEditor?(file: string, line?: number, editor?: string): Promise<boolean>; pathOf?(file: File): string;
   onSettings?(callback: () => void): () => void; notifyTest?(title: string, sub: string, body: string, id?: string): Promise<boolean>;
+  saveFile?(name: string, text: string): Promise<string>;
 } } }
 
 const $ = <T extends Element = HTMLElement>(s: string, root: ParentNode = document) => root.querySelector(s) as T;
@@ -682,7 +684,7 @@ function openPop(kind: string, anchor: HTMLElement) {
   const html = kind === 'plus' ? `<button type="button" data-act="attach">加图片<span class="k">也可以直接粘贴</span></button><button type="button" data-act="insert" data-v="@">提到一个文件<span class="k">@</span></button><button type="button" data-act="insert" data-v="/">命令和 skill<span class="k">/</span></button>`
     : kind === 'me' ? `<span class="ph">模型</span>${opts('model', c.models, s ? s.model : app.newSet.model)}${c.efforts.length ? `<span class="sep"></span><span class="ph">力度</span>${opts('effort', c.efforts.map(e => [e, cap(e)]), s ? s.effort : app.newSet.effort)}` : ''}`
     : kind === 'more' && s
-    ? `<button type="button" data-act="pin">${s.pinned ? '取消置顶' : '置顶'}</button><button type="button" data-act="park">${s.parked ? '不放着了' : '先放着'}</button><button type="button" data-act="rename">改名</button><button type="button" data-act="fork">从这里分叉</button>${features.map(f => f.more?.(s) ?? '').join('')}<button type="button" data-act="archive" data-id="${s.id}">归档</button><span class="sep"></span><button type="button" data-act="stop" class="bad">停掉</button>`
+    ? `<button type="button" data-act="pin">${s.pinned ? '取消置顶' : '置顶'}</button><button type="button" data-act="park">${s.parked ? '不放着了' : '先放着'}</button><button type="button" data-act="rename">改名</button>${features.map(f => f.more?.(s) ?? '').join('')}<button type="button" data-act="archive" data-id="${s.id}">归档</button><span class="sep"></span><button type="button" data-act="stop" class="bad">停掉</button>`
     : kind === 'model' ? opts('model', c.models, s ? s.model : app.newSet.model)
     : kind === 'effort' ? opts('effort', c.efforts.map(e => [e, e]), s ? s.effort : app.newSet.effort)
     : opts('mode', c.modes, s ? s.mode : app.newSet.mode);
@@ -909,6 +911,7 @@ async function send() {
   if (pend?.tool === 'Plan') { clearTa(); cue('close'); await tryCall(`/sessions/${s.id}/answer`, { req: pend.id, decision: 'deny', text }); return; }
   if (pend) return;
   const files = app.files; unattach(files); app.files = []; app.menu = ''; app.picks = []; clearTa();
+  if (features.some(f => f.send?.(s, text, files))) return;
   cue('send', s.st === 'work' ? .55 : .8);
   if (s.st !== 'work') herSay(pick(TAKES.receive), 1100);
   if (await tryCall(`/sessions/${s.id}/send`, { text, files })) attention.sent();
@@ -1007,7 +1010,6 @@ async function act(a: string, el: HTMLElement) {
     draw();
   }
   else if (a === 'rename') { app.renaming = true; closePop(); draw('head'); }
-  else if (a === 'fork' && s) { closePop(); const r = await tryCall(`/sessions/${s.id}/fork`, {}); if (r) { cue('open', .7); open(String(r.id)); } }
   else if (a === 'reveal' && s) { closePop(); void window.agents?.reveal(s.cwd); }
   else if (a === 'stop' && s) { closePop(); hush.set(s.id, performance.now() + 2500); cue('interrupt'); void tryCall(`/sessions/${s.id}/stop`, {}); }
   else if (a === 'terminal' && s) {
@@ -1212,6 +1214,7 @@ features.push(mountHist(ctx));
 features.push(mountBang(ctx));
 features.push(mountSee(ctx));
 features.push(mountMessages(ctx));
+features.push(mountBack(ctx));
 
 // ---------- one loop: her every frame, moving marks at 30 fps, nothing while the window is out of sight ----------
 let lastT = performance.now(), lastMk = 0, lastAge = 0;
