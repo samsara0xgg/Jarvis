@@ -409,7 +409,7 @@ function renderHead() {
   patch(hMeta, `${who(s.agent)}<span class="dot">·</span><span title="${esc(s.cwd)}">${esc(s.project)}</span><span class="dot">·</span><span class="br">⎇ ${esc(s.branch || '—')}</span><span class="dot">·</span><span class="st st-${s.st}">${label(s)}</span>`);
   const tb = $('[data-act="terminal"]', head);
   patch($('span', tb), s.term ? '拿回来' : '在终端打开');
-  tb.dataset.tip = s.term ? '在这里接着聊' : `在 Ghostty 里接着聊 · ${s.agent === 'codex' ? 'codex resume' : 'claude --resume'}`;
+  if (s.term) delete tb.dataset.tip; else tb.dataset.tip = `在 Ghostty 里接着聊 · ${s.agent === 'codex' ? 'codex resume' : 'claude --resume'}`;
 }
 
 // ---------- the conversation: one kept per session, so switching is instant and each keeps its place ----------

@@ -60,7 +60,8 @@ export function mountSlip(ctx: PageCtx): Feature {
   // The fuse: one quiet line above the composer while a throw burns, and a moment after it lands.
   const bar = document.createElement('div');
   bar.className = 'mt-fuse'; bar.hidden = true; bar.setAttribute('role', 'status');
-  win.append(el, bar);
+  const scrim = document.createElement('div'); scrim.className = 'mt-scrim'; scrim.setAttribute('aria-hidden', 'true');
+  win.append(scrim, el, bar);
   const ta = el.querySelector<HTMLTextAreaElement>('.mt-ta')!, dot = el.querySelector<HTMLElement>('.mt-dot')!, dest = el.querySelector<HTMLElement>('.mt-dest')!;
   const pick = el.querySelector<HTMLElement>('.mt-pick')!, q = el.querySelector<HTMLInputElement>('.mp-q')!, list = el.querySelector<HTMLElement>('.mp-list')!;
 
@@ -150,14 +151,14 @@ export function mountSlip(ctx: PageCtx): Feature {
   // ---------- open and close ----------
   // The slip sits over the conversation's column, under the window's top line.
   function place() {
-    const w = win.getBoundingClientRect(), bd = (win.querySelector('.bd') ?? win).getBoundingClientRect(), width = Math.min(620, bd.width - 32);
+    const w = win.getBoundingClientRect(), bd = (win.querySelector('.bd') ?? win).getBoundingClientRect(), width = Math.min(680, bd.width - 32);
     Object.assign(el.style, { left: `${bd.left - w.left + (bd.width - width) / 2}px`, top: `${bd.top - w.top + 10}px`, width: `${width}px` });
   }
   function open(o: { dest?: Dest; target?: string } = {}) {
     if (S.open) { if (o.dest) { S.dest = o.dest; S.target = o.target ?? S.target; renderDest(); } closePick(); return; }
     ctx.closeMenu();
     S.open = true; S.dest = o.dest ?? 'new'; S.target = o.target ?? S.target; S.from = document.activeElement as HTMLElement | null;
-    place(); renderDest(); el.hidden = false; charge();
+    place(); renderDest(); el.hidden = false; win.classList.add('slip-on'); charge();
     anim(el, [{ opacity: 0, transform: 'translateY(-12px)', clipPath: 'inset(0 0 100% 0 round 16px)' }, { opacity: 1, transform: 'none', clipPath: 'inset(0 0 0 0 round 16px)' }], 320, SPRING);
     ta.focus({ preventScroll: true }); ta.setSelectionRange(ta.value.length, ta.value.length);
     ctx.cue('open', .5);
@@ -174,7 +175,7 @@ export function mountSlip(ctx: PageCtx): Feature {
   // Put away: its words stay for next time.
   function close(focus = true) {
     if (!S.open) return;
-    closePick(false); S.open = false; saveDraft();
+    closePick(false); S.open = false; saveDraft(); win.classList.remove('slip-on');
     const a = anim(el, [{ opacity: 1, transform: 'none' }, { opacity: 0, transform: 'translateY(-8px)' }], 180, 'cubic-bezier(.4,0,1,1)');
     if (a) a.onfinish = () => { if (!S.open) el.hidden = true; }; else el.hidden = true;
     if (focus) back();
@@ -238,7 +239,7 @@ export function mountSlip(ctx: PageCtx): Feature {
   }
   // The slip folds back into its star and is gone.
   function fold() {
-    closePick(false); S.open = false;
+    closePick(false); S.open = false; win.classList.remove('slip-on');
     const r = dot.getBoundingClientRect(), m = el.getBoundingClientRect(), dx = r.left + r.width / 2 - m.left, dy = r.top + r.height / 2 - m.top;
     const a = anim(el, [{ clipPath: 'inset(0 0 0 0 round 16px)', opacity: 1 }, { clipPath: `inset(${dy - 8}px ${m.width - dx - 8}px ${m.height - dy - 8}px ${dx - 8}px round 8px)`, opacity: .4 }], 190, 'cubic-bezier(.5,0,.9,.4)');
     if (a) a.onfinish = () => { if (!S.open) el.hidden = true; }; else el.hidden = true;
