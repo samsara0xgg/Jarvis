@@ -3,10 +3,11 @@
 // The sessions themselves run in the agent host; this page draws what the host's event stream says and sends back
 // what Allen does. Drawing is batched into one frame, rows and messages are keyed so only what changed is touched,
 // each session keeps its own conversation so switching is instant, and only marks that move repaint.
-import type { Agent, Catalog, Ctx, Event, File as Upload, Item, Pic, Req, Sess, St, Step, Usage } from '../../electron/agents/types';
+import type { Agent, Catalog, Ctx, Event, Item, Pic, Req, Sess, St, Step, Usage } from '../../electron/agents/types';
 import { drawMark } from '../AgentMarks';
 import { features, type Own, type PageCtx } from './ctx';
 import { mountBack } from './back';
+import { attachAll, chipsHTML, dropped, fileTag, mountInput, type Attached } from './input';
 import { waitOf } from './queue';
 import { mountSee } from './see';
 import { palette, play, scoreOf } from '../soundKit';
@@ -36,7 +37,7 @@ declare global { interface Window { agents?: {
   terminals?(): Promise<{ id: string; name: string }[]>; revealFile?(file: string): Promise<void>; quickLook?(file: string): Promise<void>;
   editors?(): Promise<{ id: string; name: string }[]>; openInEditor?(file: string, line?: number, editor?: string): Promise<boolean>; pathOf?(file: File): string;
   onSettings?(callback: () => void): () => void; notifyTest?(title: string, sub: string, body: string, id?: string): Promise<boolean>;
-  saveFile?(name: string, text: string): Promise<string>;
+  saveFile?(name: string, text: string): Promise<string>; copyFile?(file: string): Promise<'file' | 'path' | false>;
 } } }
 
 const $ = <T extends Element = HTMLElement>(s: string, root: ParentNode = document) => root.querySelector(s) as T;
@@ -503,7 +504,7 @@ function itemHTML(s: Sess, it: Exclude<Item, { k: 'steps' }>, i = -1) {
 }
 // A picture shows itself and opens large; one the host kept no copy of stays a named chip.
 const picHTML = (f: Pic) => f.img ? `<button type="button" class="pic" data-act="view" data-tip="看大图"><img src="${API}/images/${esc(f.img)}" alt="${esc(f.name)}" loading="lazy" decoding="async"></button>`
-  : `<span class="thumb">${I.img}${esc(f.name)}</span>`;
+  : f.path ? fileTag(f as Pic & { path: string }) : `<span class="thumb">${I.img}${esc(f.name)}</span>`;
 // Code blocks in a finished answer get their own copy button.
 const withCopy = (html: string) => html.replace(/<pre>/g, `<div class="code"><button type="button" class="cp" data-act="copy" data-what="code">${I.copy}<span>复制</span></button><pre>`).replace(/<\/pre>/g, '</pre></div>');
 // A new item arrives the way it happened: yours rises from the composer, a request drops in, the rest fade.
@@ -655,7 +656,7 @@ function renderComp() {
   if (out) patch(bnEl, `<i></i><span>${out}</span>${agent === 'claude' && s ? '<button type="button" data-act="cloud">挪到云端继续</button>' : ''}`);
   patch(hintEl, wb.hint() + attention.hint());
   patch(cRows, s ? features.map(f => f.rows?.(s) ?? '').join('') : '');
-  patch(cFiles, app.files.map((f, k) => `<span class="c-pic"><button type="button" class="pic" data-act="view" data-tip="看大图"><img src="${f.view}" alt="${esc(f.name)}"></button><i data-act="unfile" data-k="${k}" aria-label="去掉">✕</i></span>`).join(''));
+  patch(cFiles, chipsHTML(app.files));
   patch(cMenu, app.picks.map(([v, d], k) => app.menu === 'at'
     ? `<button type="button" data-act="pickfile" data-v="${esc(v)}"${k === app.pick ? ' class="on"' : ''}><code>@${esc(v)}</code></button>`
     : `<button type="button" data-act="pickcmd" data-v="${esc(v)}"${k === app.pick ? ' class="on"' : ''}><code>${esc(v)}</code><span>${esc(d)}</span></button>`).join(''));
@@ -683,7 +684,7 @@ function openPop(kind: string, anchor: HTMLElement) {
   pop.className = 'pop'; pop.setAttribute('role', 'menu'); pop.removeAttribute('aria-label');
   const opts = (k: 'model' | 'effort' | 'mode', vs: [string, string][], v: string) => vs.map(([x, l]) => `<button type="button" data-act="set" data-k="${k}" data-v="${esc(x)}"${x === v ? ' class="on"' : ''}>${esc(l)}</button>`).join('');
   const cap = (e: string) => e === 'xhigh' ? 'XHigh' : e[0].toUpperCase() + e.slice(1);
-  const html = kind === 'plus' ? `<button type="button" data-act="attach">加图片<span class="k">也可以直接粘贴</span></button><button type="button" data-act="insert" data-v="@">提到一个文件<span class="k">@</span></button><button type="button" data-act="insert" data-v="/">命令和 skill<span class="k">/</span></button>`
+  const html = kind === 'plus' ? `<button type="button" data-act="attach">加文件<span class="k">也可以拖进来</span></button><button type="button" data-act="insert" data-v="@">提到一个文件<span class="k">@</span></button><button type="button" data-act="insert" data-v="/">命令和 skill<span class="k">/</span></button>`
     : kind === 'me' ? `<span class="ph">模型</span>${opts('model', c.models, s ? s.model : app.newSet.model)}${c.efforts.length ? `<span class="sep"></span><span class="ph">力度</span>${opts('effort', c.efforts.map(e => [e, cap(e)]), s ? s.effort : app.newSet.effort)}` : ''}`
     : kind === 'more' && s
     ? `<button type="button" data-act="pin">${s.pinned ? '取消置顶' : '置顶'}</button><button type="button" data-act="park">${s.parked ? '不放着了' : '先放着'}</button><button type="button" data-act="rename">改名</button>${features.map(f => f.more?.(s) ?? '').join('')}<button type="button" data-act="archive" data-id="${s.id}">归档</button><span class="sep"></span><button type="button" data-act="stop" class="bad">停掉</button>`
@@ -873,15 +874,7 @@ function open(id: string, how: 'click' | 'key' = 'click', end = false) {
   wb.switched();
   draw();
 }
-// `view` shows the picture in the composer without carrying its data: URL through every redraw.
-type Attached = Upload & { view: string };
 const unattach = (fs: Attached[]) => { for (const f of fs) URL.revokeObjectURL(f.view); };
-const readFile = (f: Blob & { name?: string }, k: number) => new Promise<Attached>((done, fail) => {
-  const r = new FileReader();
-  r.onload = () => done({ name: f.name || `图片 ${k + 1}.png`, url: String(r.result), view: URL.createObjectURL(f) });
-  r.onerror = () => fail(r.error);
-  r.readAsDataURL(f);
-});
 // A window command (the host names its place) runs here with what follows it, when a feature answers that place.
 function ownOf(text: string): [Own, string] | null {
   const m = /^([/$][^\s]+)(?:\s+([\s\S]*))?$/.exec(text), place = m && cmds?.list.find(c => c[0] === m[1])?.[2], run = place ? ctx.own.get(place) : undefined;
@@ -1169,15 +1162,17 @@ find.addEventListener('input', () => { app.q = find.value; quiet = true; draw('s
 ta.addEventListener('input', () => { void typed(); });
 win.addEventListener('change', async e => {
   const t = e.target as HTMLInputElement;
-  if (t.id === 'file' && t.files) { const fs = [...t.files]; t.value = ''; app.files.push(...await Promise.all(fs.map(readFile))); draw('comp'); }
+  if (t.id === 'file' && t.files) { const fs = [...t.files]; t.value = ''; app.files.push(...await attachAll(fs.map(f => ({ f })), toast)); draw('comp'); }
 });
 ta.addEventListener('paste', async e => {
-  const imgs = [...(e.clipboardData?.files ?? [])].filter(f => f.type.startsWith('image/'));
-  if (!imgs.length) return;
+  const fs = [...(e.clipboardData?.files ?? [])];
+  if (!fs.length) return;
   e.preventDefault();
-  app.files.push(...await Promise.all(imgs.map(readFile)));
+  app.files.push(...await attachAll(fs.map(f => ({ f })), toast));
   draw('comp');
 });
+// Files dropped anywhere on the window go with the next message.
+win.addEventListener('drop', async e => { const fs = dropped(e, toast); if (!fs) return; app.files.push(...await fs); draw('comp'); ta.focus(); });
 // Her eyes follow the pointer when it is near her; pressing her squashes her a little.
 win.addEventListener('pointermove', e => { her.ptr = [e.clientX, e.clientY]; });
 win.addEventListener('pointerleave', () => { her.ptr = null; her.pressed = false; });
@@ -1211,6 +1206,7 @@ features.push(mountKeys(ctx));
 // A session held in a terminal is read-only here: its view takes the composer's keys before the rest.
 features.push(mountFrom(ctx));
 features.push(mountStopped(ctx));
+features.push(mountInput(ctx));
 features.push(mountSlip(ctx));
 features.push(mountHist(ctx));
 features.push(mountBang(ctx));

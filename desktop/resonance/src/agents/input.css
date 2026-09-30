@@ -1,0 +1,32 @@
+/* ---------- the composer beyond typing: files of any kind, a right click on one, the veil while dropping ---------- */
+.in-fc{position:relative;display:inline-flex;align-items:center;gap:9px;height:52px;max-width:220px;padding:0 28px 0 9px;border-radius:9px;background:rgb(255 255 255 / .045);box-shadow:inset 0 0 0 .5px rgb(255 255 255 / .12);cursor:pointer;transition:background 120ms}
+.in-fc:hover{background:rgb(255 255 255 / .08)}
+.in-fn{display:flex;flex-direction:column;min-width:0;line-height:1.35}
+.in-fn b{font-weight:500;font-size:12.5px;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.in-fn small{font-size:11px;color:var(--faint);white-space:nowrap}
+.in-fc.in-big .in-fn small{color:var(--warm-c)}
+.in-x{position:absolute;right:5px;top:50%;display:grid;place-items:center;width:20px;height:20px;margin-top:-10px;border-radius:6px;color:var(--faint);opacity:0;transition:opacity 120ms,background 120ms,color 120ms}
+.in-x svg{width:12px;height:12px}
+.in-fc:hover .in-x,.in-fc:focus-visible .in-x,.in-x:focus-visible{opacity:1}
+.in-x:hover{background:rgb(255 255 255 / .1);color:var(--ink)}
+.in-fi{flex:none;display:grid;place-items:center;width:28px;height:34px;border-radius:6px;background:rgb(255 255 255 / .07);font:600 8.5px/1 var(--mono);letter-spacing:.02em;color:var(--muted);font-style:normal}
+.in-fi.in-k-code{background:rgb(var(--acc) / .14);color:rgb(var(--acc))}
+.in-fi.in-k-pdf{background:rgb(255 106 90 / .14);color:#ffb3a6}
+.in-fi.in-k-dir{background:none;color:rgb(var(--acc))}
+.in-fi.in-k-dir svg{width:26px;height:26px}
+/* pictures stand as tall as the chips beside them */
+.c-files:has(.in-fc) .c-pic .pic img{width:78px;height:52px}
+.in-mfc{display:inline-flex;align-items:center;gap:8px;height:36px;max-width:260px;padding:0 11px 0 6px;border-radius:9px;background:rgb(255 255 255 / .06);box-shadow:inset 0 0 0 .5px rgb(255 255 255 / .12);font-size:12.5px;color:var(--ink);text-align:left;white-space:nowrap;transition:background 120ms}
+.in-mfc:hover{background:rgb(255 255 255 / .1)}
+.in-mfc > span{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.in-mfc small{flex:none;font-size:11px;color:var(--faint)}
+.in-mfc .in-fi{width:22px;height:26px;font-size:7.5px;border-radius:5px}
+.in-mfc .in-fi.in-k-dir svg{width:20px;height:20px}
+.pop.in-att svg{flex:none;color:var(--muted)}
+/* while files are held over the window */
+.in-drop{position:absolute;z-index:43;left:0;right:0;top:0;bottom:0;display:grid;place-items:center;background:rgb(9 10 24 / .9);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);pointer-events:none}
+.in-drop::before{content:"";position:absolute;inset:12px;border-radius:14px;border:1.5px dashed rgb(var(--acc) / .5)}
+.in-dt{display:flex;flex-direction:column;align-items:center;gap:6px;text-align:center}
+.in-dt svg{width:34px;height:34px;margin-bottom:4px;color:rgb(var(--acc))}
+.in-dt b{font:600 17px/1.4 var(--ui);color:var(--ink)}
+.in-dt small{font-size:12.5px;color:var(--faint)}
