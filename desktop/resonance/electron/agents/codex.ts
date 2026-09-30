@@ -72,8 +72,9 @@ const sides = new Map<string, Side>();
 
 // ---------- one session's side of it ----------
 type Pending = { rpc: number | string; kind: 'cmd' | 'file' | 'perm' | 'ask' | 'form'; params: any };
-// usage: the last thread/tokenUsage/updated, the only count Codex gives · thinking: when each reasoning under way began
-type Rt = { loaded: boolean; turn?: string; text: Map<string, string>; out: Map<string, string>; pending: Map<string, Pending>; steps: Map<string, Step[]>; usage?: any;
+// usage: the last thread/tokenUsage/updated, the only count Codex gives · thinking: when each reasoning under way began ·
+// ended: the last turn that completed, which a turn/start answered after it ended does not make the running one again
+type Rt = { loaded: boolean; turn?: string; ended?: string; text: Map<string, string>; out: Map<string, string>; pending: Map<string, Pending>; steps: Map<string, Step[]>; usage?: any;
   thinking?: Map<string, number> };
 const rt = (s: Session): Rt => (s.rt.codex ??= { loaded: false, text: new Map(), out: new Map(), pending: new Map(), steps: new Map() }) as Rt;
 const loaded = new Set<Session>();
@@ -202,7 +203,7 @@ function receive(m: Msg) {
     case 'error': if (p.willRetry) s.set({ now: `出错了，在重试：${str(p.error?.message).slice(0, 60)}` }); break;
     case 'serverRequest/resolved': for (const [k, x] of r.pending) if (String(x.rpc) === String(p.requestId)) { r.pending.delete(k); s.answered(k, '别处回答了'); } break;
     case 'turn/completed': {
-      r.turn = undefined; r.text.clear(); r.out.clear();
+      r.turn = undefined; r.ended = p.turn?.id; r.text.clear(); r.out.clear();
       const t = p.turn ?? {}, queue = s.s.queue ?? [];
       if (t.status === 'interrupted') { s.end(undefined, false, 'done', '你打断了这一轮', false); s.note('你打断了这一轮 · 发一句就能接着来'); }
       else if (t.status === 'failed') s.end(undefined, false, 'err', `Codex 出错：${str(t.error?.message).slice(0, 120) || '这一轮没做完'}`);
@@ -285,12 +286,13 @@ async function turn(s: Session, input: unknown[]) {
   const pol = policy(s.s.mode, s.s.dirs), model = s.s.model || catalogCache.c?.models[0]?.[0] || '';
   const params = { threadId: s.s.id, input, model: model || undefined, effort: s.s.effort || undefined, approvalPolicy: pol.approvalPolicy, sandboxPolicy: pol.sandboxPolicy,
     ...(model ? { collaborationMode: { mode: s.s.mode === 'plan' ? 'plan' : 'default', settings: { model, reasoning_effort: s.s.effort || null, developer_instructions: null } } } : {}) };
-  try { rt(s).turn = (await call<{ turn: { id: string } }>('turn/start', params)).turn.id; }
+  const running = (id: string) => { if (rt(s).ended !== id) rt(s).turn = id; };
+  try { running((await call<{ turn: { id: string } }>('turn/start', params)).turn.id); }
   catch (e) {
     // A thread this server no longer holds is resumed once, then the turn goes again.
     if (!/not found/i.test(String(e))) throw e;
     rt(s).loaded = false; await resume(s);
-    rt(s).turn = (await call<{ turn: { id: string } }>('turn/start', params)).turn.id;
+    running((await call<{ turn: { id: string } }>('turn/start', params)).turn.id);
   }
 }
 
