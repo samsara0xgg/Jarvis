@@ -3291,6 +3291,9 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
                 runtime.response_runs.hold_completion(held=held)
             if streaming is not None:
                 streaming.hold_output(held=held)
+            if held:
+                # His words will end in a request; have its connection open by then.
+                runtime.llm_client.warm_stream()
 
         supersede_unspoken = (
             make_supersede_unspoken_callable(runtime, streaming.drop_unspoken)

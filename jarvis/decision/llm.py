@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import yaml
 
+from jarvis.decision.llm_io import stream_openai, warm_openai
 from jarvis.decision.llm_stream import LLMStreamHandle, StreamNormalizer
 from jarvis.shared.realtime import LLMUsageStatus
 from jarvis.shared.realtime_trace import record_realtime_trace
@@ -563,7 +564,7 @@ class LLMClient:
             return self._chat_stream_openai(messages=messages, system=system, tools=tools)
         return self._chat_stream_anthropic(messages=messages, system=system, tools=tools)
 
-    def stream_events(  # noqa: C901, PLR0912 - three provider request shapes
+    def stream_events(
         self, *, messages: list[dict[str, Any]], system: str,
         tools: list[dict[str, Any]] | None = None,
         on_settled: Callable[[StreamDisposition], object],
@@ -578,13 +579,7 @@ class LLMClient:
         responses = responses and self._provider == "openai"
         # Capture everything before returning the lazy source. Later preset or
         # caller-message mutations cannot redirect this request or its payload.
-        options: dict[str, Any] = {"api_key": self._api_key}
-        if self._base_url:
-            options["base_url"] = self._base_url
-        if self._timeout_s is not None:
-            options["timeout"] = self._timeout_s
-        if self._max_retries is not None:
-            options["max_retries"] = self._max_retries
+        options = self._stream_options()
         body: dict[str, Any] = {"model": self._model, "stream": True}
         if responses:
             body.update({
@@ -634,7 +629,7 @@ class LLMClient:
         provider: Provider, options: dict[str, Any], body: dict[str, Any], *,
         responses: bool = False,
     ) -> AsyncIterator[Mapping[str, Any]]:
-        """Own and close one async SDK client/stream, including cancelled reads."""
+        """Own and close one provider stream, including cancelled reads."""
         if not options.get("api_key"):
             message = "provider API key is unset; check the request preset"
             raise MissingAPIKeyError(message)
@@ -644,17 +639,10 @@ class LLMClient:
             measurement_semantics="immediately_before_sdk_call_not_network_send",
         )
         if provider == "openai":
-            from openai import AsyncOpenAI  # noqa: PLC0415 — lazy provider construction
-
-            async with AsyncOpenAI(**options) as client:
-                response = await (
-                    client.responses.create(**body)
-                    if responses
-                    else client.chat.completions.create(**body)
-                )
-                async with response:
-                    async for chunk in response:
-                        yield chunk.model_dump(exclude_none=True)
+            # The request runs on the resident loop, whose client keeps its
+            # connection for the next one; the chunks come back to this loop.
+            async for chunk in stream_openai(options, body, responses=responses):
+                yield chunk
         else:
             from anthropic import AsyncAnthropic  # noqa: PLC0415 — lazy provider construction
 
@@ -708,6 +696,26 @@ class LLMClient:
             self._get_openai_client().models.retrieve(self._model)
         except Exception:  # noqa: BLE001 — a failed warm-up costs only the handshake it tried to save
             LOGGER.debug("LLM warm-up failed", exc_info=True)
+
+    def warm_stream(self) -> None:
+        """Open a connection on the stream loop for the request about to come.
+
+        Called when Allen starts talking, so the spoken turn's first request
+        finds its TLS connection already open. Never blocks, never raises.
+        """
+        if self._provider != "openai" or not self._api_key:
+            return
+        warm_openai(self._stream_options(), self._model)
+
+    def _stream_options(self) -> dict[str, Any]:
+        options: dict[str, Any] = {"api_key": self._api_key}
+        if self._base_url:
+            options["base_url"] = self._base_url
+        if self._timeout_s is not None:
+            options["timeout"] = self._timeout_s
+        if self._max_retries is not None:
+            options["max_retries"] = self._max_retries
+        return options
 
     # ---- OpenAI backend -----------------------------------------------
 
