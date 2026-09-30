@@ -23,6 +23,8 @@ import { mountHist } from './hist';
 import { mountBang } from './bang';
 import './agents.css';
 import './exposure/exposure.css';
+// Features after the page's own styles, so a feature's rule stands over the page's.
+import { mountSettings } from './settings';
 
 declare global { interface Window { agents?: {
   presence?(enabled: boolean, ids: string[]): void; onNext?(callback: () => void): () => void; onOpen?(callback: (id: string) => void): () => void;
@@ -30,6 +32,7 @@ declare global { interface Window { agents?: {
   openUrl?(url: string): Promise<void>; openPath?(file: string): Promise<void>; cloud?(cwd: string, text: string, term?: string): Promise<boolean>;
   terminals?(): Promise<{ id: string; name: string }[]>; revealFile?(file: string): Promise<void>; quickLook?(file: string): Promise<void>;
   editors?(): Promise<{ id: string; name: string }[]>; openInEditor?(file: string, line?: number, editor?: string): Promise<boolean>; pathOf?(file: File): string;
+  onSettings?(callback: () => void): () => void; notifyTest?(title: string, sub: string, body: string, id?: string): Promise<boolean>;
 } } }
 
 const $ = <T extends Element = HTMLElement>(s: string, root: ParentNode = document) => root.querySelector(s) as T;
@@ -1195,7 +1198,8 @@ const ctx: PageCtx = {
   catalog: () => app.catalog,
 };
 // Each feature is mounted on the one context below; its clicks, keys, commands and menu lines are its own.
-// The picture viewer and the key sheet hold every key while they are open, so they come first.
+// Settings (and the first run), the picture viewer and the key sheet hold every key while they are open, so they come first.
+features.push(mountSettings(ctx));
 features.push(mountViewer(ctx));
 features.push(mountKeys(ctx));
 features.push(mountStopped(ctx));
