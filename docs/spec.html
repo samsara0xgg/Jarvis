@@ -543,6 +543,8 @@ I8 到 I11 随审核链退役（ADR 0019），编号保留。
 <li>窗口能列出这台 Mac 上它还没有的 Claude Code 和 Codex 会话（SDK 的 <code>listSessions</code>、app-server 的 <code>thread/list</code>），主人选一个，就用同一个 id 在窗口里接着跑；两分钟内还动过的可能还在别处开着，要再按一次（ADR 0096）。</li>
 <li>窗口能看会话连着的 MCP 服务器，并替主人回答它们要填的表和要打开的网页。关掉一个 Claude Code 的 MCP 服务器，是 Claude Code 自己记在这个文件夹的配置里，终端里在这个文件夹开的 Claude Code 也一样关着；Codex 的服务器在这里只能重新读配置和登录，开关要改它自己的 <code>config.toml</code>。Codex 要主人验证身份的请求仍然拒绝。</li>
 <li>主人能在会话旁边另问一句，不打断它正在跑的那一轮，这一问一答也不进对话：Claude Code 用它自己 <code>/btw</code> 的那一问；Codex 学它自己的 <code>/side</code>，从这段对话开一个不存盘、只读、不问审批的分叉，答完就放掉。</li>
+<li>主人能改自己说过的一句再发：正在跑的那一轮先停下，对话回到这一句之前，再发新的话。改出的是一个新会话，留着原来的标题、在列表里的位置和标记；原来的归档成上一版，不进列表，在这一句下面翻得到，在它里面写一句它就换回来。Claude 会话的文件按 Claude Code 自己的检查点一起退回，Codex 只退对话；翻版本不动文件。</li>
+<li>主人给消息加的表情不叫醒 agent：宿主按消息记下，主人发的下一句前面带一行 <code>[Reactions: …]</code> 一起过去，每个只带一次。</li>
 <li>Claude 会话清空上下文（<code>/clear</code>）后，Claude Code 换一个新的 session id 接着写。窗口里的一行按先后记下每个 id，在最后一个里继续，读回时依次读全部记录，并在清空处标一行（ADR 0088）。</li>
 <li>一键落地把会话的改动落到仓库的默认分支（origin 的 HEAD 指的那个，没有就 <code>main</code>，再没有就 <code>master</code>），两种走法：合入是提交、快进合进默认分支、重启、主人允许后推默认分支、删掉会话的 worktree；开 PR 是提交、主人允许后推会话的分支并用 <code>gh</code> 开 PR，不重启，worktree 留着。没装 <code>gh</code> 时停在推好的分支和远端给的开 PR 链接。门禁、重启命令和默认走法按仓库在设置里配；没配时 Jarvis 仓库用 <code>docs/git-guide.md</code> 的门禁和重启，别的仓库没有。Jarvis 仓库默认合入，别的仓库有 origin 时默认开 PR；会话就在默认分支上只能合入，不在自己 worktree 里的别的分支只能开 PR（ADR 0097）。</li>
 <li>宿主在启动时和之后每小时替主人跑一次 <code>claude update</code>，升级主人自己的 Claude Code。</li>

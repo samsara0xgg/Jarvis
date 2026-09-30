@@ -398,8 +398,10 @@ export const codex: Driver = {
     });
   },
   // Up to a turn: through it, or (`before`) without it and what came after.
-  async fork(s, at, before) {
-    return (await call<{ thread: { id: string } }>('thread/fork', { threadId: s.s.id, ...at ? before ? { beforeTurnId: at } : { lastTurnId: at } : {} })).thread.id;
+  async fork(s, at, before, title) {
+    const id = (await call<{ thread: { id: string } }>('thread/fork', { threadId: s.s.id, ...at ? before ? { beforeTurnId: at } : { lastTurnId: at } : {} })).thread.id;
+    if (title) await call('thread/name/set', { threadId: id, name: title }).catch(e => log('codex name', id, e));
+    return id;
   },
   async stopTask(s, id) { await call('thread/backgroundTerminals/terminate', { threadId: s.s.id, processId: id }); s.task(id, { st: 'stop', ended: Date.now() }); },
   // Its threads in a folder, newest first (B12).

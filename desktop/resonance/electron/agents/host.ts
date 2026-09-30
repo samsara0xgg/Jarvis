@@ -10,7 +10,7 @@ import { existsSync, mkdirSync, renameSync, statSync, writeFileSync } from 'node
 import { copyFile, mkdir, open, readFile, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
-import type { Agent, Answer, Catalog, Choice, Ctx, Doctor, Event, File, Item, Mcp, McpAct, Outside, Pic, Project, Req, Service, Sess, St, Step, Task, Usage, UsageWindow } from './types.js';
+import type { Agent, Answer, Catalog, Choice, Ctx, Doctor, Event, File, Item, Mcp, McpAct, Outside, Pic, Project, Req, Rx, Service, Sess, St, Step, Task, Usage, UsageWindow } from './types.js';
 import { claude, claudeExe } from './claude.js';
 import { codex } from './codex.js';
 import { loginPath, version, which } from './doctor.js';
@@ -46,8 +46,9 @@ export type Driver = {
   // Read the whole conversation back from the agent's own transcript.
   load(s: Session): Promise<void>;
   // A new session with this one's conversation: all of it, or up to the point `at` names (an item's `id`), with that
-  // point (`before`: without it). Null when nothing comes before it: the caller starts a fresh session.
-  fork(s: Session, at?: string, before?: boolean): Promise<string | null>;
+  // point (`before`: without it), named `title` when given. Null when nothing comes before it: the caller starts a fresh
+  // session.
+  fork(s: Session, at?: string, before?: boolean, title?: string): Promise<string | null>;
   remove(s: Session): Promise<void>;
   // The slash commands and skills for `cwd`, from the session itself when it runs; a third entry names the window's
   // own place for a command it handles itself (B8, B9).
@@ -138,6 +139,15 @@ async function pruneImages() {
   }
 }
 const oneLine = (t: string, n = 120) => { const x = t.replace(/\s+/g, ' ').trim(); return x.length > n ? `${x.slice(0, n - 1)}…` : x; };
+// ---------- reactions (m-rx): they never wake the agent; the next message you send carries the ones still waiting as a
+// line in front of your words, and what you said shows which went with it ----------
+export const RX = ['👍', '❤️', '😂', '🎉', '🤔', '👀', '🙏', '👎'];
+const RIDE = /^\[Reactions: ([^\n]*)\]\n\n/;
+// What you said without that line, and the reactions it carried.
+export function rode(text: string) {
+  const m = RIDE.exec(text);
+  return m ? { text: text.slice(m[0].length), ride: [...m[1].matchAll(/(?:^|; )(\S+) on (?:your reply|my message) /g)].map(x => x[1]).filter(e => RX.includes(e)) } : { text, ride: [] };
+}
 // A finished row shows the start of its last answer: the first sentence, without markdown.
 export const firstSentence = (text: string) => oneLine((text.split('\n').find(l => l.trim() && !l.startsWith('```')) ?? '')
   .replace(/^\s*(?:[-*#>]+|\d+[.)])\s*/, '').replace(/\*\*|`/g, '').split(/(?<=[。！？])|(?<=[.!?])\s+(?=[A-Z"'(])/)[0].replace(/[：:]\s*$/, ''));
@@ -173,6 +183,8 @@ export class Session {
   // by the keeper through a host restart, being taken back; whatever acts on the session waits for that first.
   kept?: Promise<void>;
   private loading?: Promise<void>;
+  // The reactions a message Claude keeps in its queue carries, by its words: taking it back puts them back to waiting.
+  carrying = new Map<string, [string, string][]>();
   constructor(public s: Sess, public repo: string) {}
   get driver() { return DRIVERS[this.s.agent]; }
   // ADR 0097: its landing, made the first time it is asked for.
@@ -231,10 +243,15 @@ export class Session {
       ...this.s.tasks?.some(t => t.st !== 'run') ? { tasks: this.s.tasks.filter(t => t.st === 'run') } : {} });
   }
   private need() { if (!this.turn) this.begin(); return this.turn!; }
+  // The line of reactions it carried is not what you said: it shows as the reactions under it.
   you(text: string, files: Pic[] = [], at?: number, id?: string) {
     this.end(undefined, true);
-    this.push({ k: 'you', text, at: this.time(at), ...(files.length ? { files } : {}), ...(id ? { id } : {}) });
+    const r = rode(text);
+    if (!this.quiet) this.carrying.delete(r.text);
+    this.push({ k: 'you', text: r.text, at: this.time(at), ...(files.length ? { files } : {}), ...(id ? { id } : {}), ...(r.ride.length ? { ride: r.ride } : {}) });
   }
+  // The agent took a message you sent while it worked: its 👀 on it (m-eyes).
+  looked(id: string) { const k = `you:${id}`; this.set({ rx: { ...this.s.rx, [k]: { ...this.s.rx?.[k], by: '👀' } } }); }
   // The point in the agent's own record this answer ends at (Claude: the message uuid; Codex: the turn).
   ref(id: string) { this.need().ref = id; }
   // Codex names a turn only once it started: the message that started it gets its id then.
@@ -358,9 +375,9 @@ export class Session {
   // What landing would take now, for the conversation's 一键落地.
   async measure() { const d = await dirtyOf(this); if (JSON.stringify(d) !== JSON.stringify(this.s.dirty)) this.set({ dirty: d }); }
   // A message sent while it worked waits here until the agent takes it.
-  enqueue(text: string) { this.set({ queue: [...this.s.queue ?? [], text] }); }
+  enqueue(text: string) { this.set({ queue: [...this.s.queue ?? [], rode(text).text] }); }
   dequeue(text: string) {
-    const q = [...this.s.queue ?? []], i = q.indexOf(text);
+    const q = [...this.s.queue ?? []], i = q.indexOf(rode(text).text);
     if (i >= 0) q.splice(i, 1);
     this.set({ queue: q.length ? q : undefined });
   }
@@ -788,9 +805,24 @@ async function route(req: Req0, res: http.ServerResponse, url: URL): Promise<unk
     signedIn(x.s.agent);
     await x.ensureLoaded();
     x.set({ unread: false, updated: Date.now() });
-    await x.driver.send(x, text, files);
+    if (x.s.archived && x.s.vers) await current(x);
+    await x.driver.send(x, carry(x, text), files);
     return { ok: true };
   }
+  // A reaction of yours on a message, on or off (m-rx): kept here, never sent by itself.
+  if (verb === 'rx') {
+    const k = b.k === 'it' ? 'it' : 'you', at = str(b.at, 'at'), e = str(b.e, 'e');
+    if (!RX.includes(e)) throw new Http(400, '没有这个表情');
+    await x.ensureLoaded();
+    if (!x.items?.some(it => it.k === k && it.id === at)) throw new Http(404, '这个会话里没有这一句');
+    const key = `${k}:${at}`, r = x.s.rx?.[key] ?? {}, on = !r.mine?.includes(e), rx = { ...x.s.rx };
+    const mine = on ? [...r.mine ?? [], e] : (r.mine ?? []).filter(y => y !== e), sent = (r.sent ?? []).filter(y => y !== e);
+    const next: Rx = { ...mine.length ? { mine } : {}, ...sent.length ? { sent } : {}, ...r.by ? { by: r.by } : {} };
+    if (Object.keys(next).length) rx[key] = next; else delete rx[key];
+    x.set({ rx: Object.keys(rx).length ? rx : undefined });
+    return { ok: true, rx: next };
+  }
+  if (verb === 'edit') return { id: await edit(x, b) };
   if (verb === 'answer') {
     const open = x.pending()?.req;
     if (!open || open.id !== b.req) throw new Http(409, '这张请求已经处理过了');
@@ -883,6 +915,13 @@ async function route(req: Req0, res: http.ServerResponse, url: URL): Promise<unk
     if (b.action !== 'cancel') throw new Http(400, '没有这个动作');
     if (!x.driver.unqueue) throw new Http(409, 'Codex 收下就放进这一轮了，撤不回来');
     if (!await x.driver.unqueue(x, str(b.text, 'text'))) throw new Http(409, '它已经收下了，撤不回来');
+    // The reactions it carried wait for the next message again.
+    const took = x.carrying.get(b.text), rx = { ...x.s.rx };
+    if (took) {
+      x.carrying.delete(b.text);
+      for (const [k, e] of took) if (rx[k]) rx[k] = { ...rx[k], sent: rx[k].sent?.filter(y => y !== e) };
+      x.set({ rx });
+    }
     return { ok: true };
   }
   if (verb === 'tasks' && parts[3] && parts[4] === 'stop') {
@@ -978,6 +1017,112 @@ async function fork(x: Session, b: Record<string, any>) {
   }
   if (text || files.length) await f.driver.send(f, text, files);
   return f.s.id;
+}
+// The reactions still waiting (m-rx) ride with a message that starts a turn, or that Claude keeps in its queue: one line
+// in front of your words, naming each message by its first words; from then on they count as carried. Codex takes a
+// message sent while it works into the running turn, so there they wait for the next one; a command goes on its own.
+function carry(x: Session, text: string) {
+  if (text.startsWith('/') || (x.s.agent === 'codex' && busy(x))) return text;
+  const items = x.items ?? [], rx = { ...x.s.rx }, parts: string[] = [], took: [string, string][] = [];
+  for (const [key, r] of Object.entries(rx)) {
+    const wait = (r.mine ?? []).filter(e => !r.sent?.includes(e)), k = key.slice(0, key.indexOf(':')), id = key.slice(k.length + 1);
+    const it = wait.length ? items.find((i): i is Item & { k: 'you' | 'it' } => (i.k === 'you' || i.k === 'it') && i.k === k && i.id === id) : undefined;
+    if (!it) continue;
+    const words = oneLine(it.text.replace(/[*`#>]/g, ''), 32).replace(/"/g, "'");
+    parts.push(...wait.map(e => `${e} on ${k === 'it' ? 'your reply' : 'my message'} "${words}"`));
+    rx[key] = { ...r, sent: [...r.sent ?? [], ...wait] };
+    took.push(...wait.map(e => [key, e] as [string, string]));
+  }
+  if (!parts.length) return text;
+  x.set({ rx });
+  if (busy(x)) x.carrying.set(text, took);
+  return `[Reactions: ${parts.join('; ')}]\n\n${text}`;
+}
+// The same messages in two versions of a conversation: the n-th thing you said and the n-th answer, by their keys.
+function same(a: Item[], b: Item[]) {
+  const out = new Map<string, string>();
+  for (const k of ['you', 'it'] as const) {
+    const ids = (xs: Item[]) => xs.map(it => it.k === k ? it.id : undefined).filter((id): id is string => !!id), ys = ids(b);
+    ids(a).forEach((id, n) => { if (ys[n]) out.set(`${k}:${id}`, `${k}:${ys[n]}`); });
+  }
+  return out;
+}
+// What you said, changed and sent again (m-edit): a running turn stops, the conversation goes back to before that message
+// (Claude: the files too, from its checkpoints; Codex: the conversation only), and the new words go with the old
+// message's pictures. The new session reads as the same conversation, with its title, place in the list, marks and the
+// reactions on what stays; this one is archived as the version before it, and the page steps between them (m-ver).
+async function edit(x: Session, b: Record<string, any>) {
+  if (x.s.term) throw new Http(409, '在终端里，先拿回来');
+  if (x.s.gone || !existsSync(x.s.cwd)) throw new Http(409, '这个会话已经落地，它的 worktree 清掉了：开个新会话接着做');
+  const at = str(b.at, 'at'), text = str(b.text, 'text').trim();
+  if (!text) throw new Http(400, '要改成什么？');
+  signedIn(x.s.agent);
+  await x.ensureLoaded();
+  const items = x.items ?? [], i = items.findIndex(it => it.k === 'you' && it.id === at);
+  if (i < 0) throw new Http(404, '这个会话里没有这一句');
+  // An older version edited becomes the current one first.
+  if (x.s.archived && x.s.vers) await current(x);
+  const old = items[i] as Item & { k: 'you' }, was = busy(x), marks = { pinned: x.s.pinned, parked: x.s.parked };
+  // Archived first, so the turn it stops is not news anywhere; what it had queued is taken back before the stop, so it
+  // never runs. Its agent is let go only at the end: the checkpoints are read through the one it has.
+  const queued = x.s.queue ?? [];
+  x.set({ archived: true, pinned: false, parked: false, queue: undefined });
+  let f: Session, d: Awaited<ReturnType<NonNullable<Driver['rewind']>>> | null = null;
+  try {
+    if (was) {
+      for (const q of queued) await x.driver.unqueue?.(x, q).catch(() => false);
+      await x.driver.interrupt(x).catch(() => {});
+      // Its record has the stopped turn in it before anything is cut from it.
+      for (let n = 0; n < 50 && busy(x); n++) await new Promise(ok => setTimeout(ok, 100));
+    }
+    if (x.driver.rewind) d = await x.driver.rewind(x, at, true).catch(e => { log('edit rewind', x.s.id, e); return null; });
+    const id = await x.driver.fork(x, at, true, x.s.title);
+    f = new Session({ ...x.s, ...marks, id: id ?? '', archived: false, unread: false, st: 'done', updated: Date.now(), now: undefined, since: undefined, queue: undefined,
+      stopped: undefined, term: undefined, resets: undefined, tasks: undefined, bg: undefined, land: undefined, dirty: undefined, rx: undefined, vers: undefined }, x.repo);
+    if (id) { sessions.set(id, f); await f.ensureLoaded(); }
+    else { f.items = []; f.s.id = await f.driver.create(f); sessions.set(f.s.id, f); }
+  } catch (e) { x.set({ archived: false, ...marks }); throw e; }
+  // What stays keeps its reactions and the versions of what was edited before; this message gets a family of versions.
+  const map = same(items.slice(0, i), f.items ?? []), root = x.s.vers?.root ?? x.s.id, had = x.s.vers?.at[`you:${at}`], fam = had?.[0] ?? `${x.s.id}:${at}`;
+  const n = Math.max(1, ...[...sessions.values()].flatMap(o => Object.values(o.s.vers?.at ?? {})).filter(v => v[0] === fam).map(v => v[1])) + 1, keep = { root, at: {} as Record<string, [string, number]> };
+  f.s.rx = Object.fromEntries(Object.entries(x.s.rx ?? {}).filter(([k]) => map.has(k)).map(([k, v]) => [map.get(k)!, v]));
+  for (const [k, v] of Object.entries(x.s.vers?.at ?? {})) if (map.has(k)) keep.at[map.get(k)!] = v;
+  f.s.vers = keep;
+  x.set({ vers: { root, at: { ...x.s.vers?.at, [`you:${at}`]: had ?? [fam, 1] } }, ...was ? { st: 'done' as St, now: undefined, since: undefined } : {} });
+  let back = 0;
+  if (d?.can) back = (await x.driver.rewind!(x, at, false)).files.length;
+  await x.driver.release(x).catch(() => {});
+  f.note(['改过这一句', was && '那一轮停下了', !x.driver.rewind ? 'Codex 只回退对话，文件不动' : !d?.can ? '这一句没有文件的检查点，文件还是现在的样子'
+    : back ? `之后改的 ${back} 个文件回去了` : ''].filter(Boolean).join(' · '));
+  broadcast({ t: 'sess', s: f.s });
+  save();
+  if (f.s.parked) markOut(f.s.id, { park: true });
+  void x.measure(); void f.measure();
+  // The old message's pictures go with the new words.
+  const pics = (await Promise.all((old.files ?? []).filter(p => p.img).map(async p => {
+    const buf = await readFile(path.join(IMAGES, p.img!)).catch(() => null);
+    return buf ? { name: p.name, url: `data:${mimeOf(p.img!)};base64,${buf.toString('base64')}` } : null;
+  }))).filter((p): p is File & { url: string } => !!p);
+  await f.driver.send(f, carry(f, text), pics);
+  const you = [...f.items ?? []].reverse().find((it): it is Item & { k: 'you' } => it.k === 'you');
+  if (you?.id) f.set({ vers: { root, at: { ...keep.at, [`you:${you.id}`]: [fam, n] } } });
+  return f.s.id;
+}
+// Writing in an older version of a conversation you edited makes it the current one again (m-ver): it comes back into the
+// list with the title and marks of the version that was there, and that one is archived.
+async function current(x: Session) {
+  const p: Partial<Sess> = { archived: false };
+  for (const o of sessions.values()) {
+    if (o === x || o.s.archived || o.s.vers?.root !== x.s.vers?.root) continue;
+    const was = busy(o);
+    Object.assign(p, { pinned: o.s.pinned, parked: o.s.parked, title: o.s.title, named: o.s.named });
+    o.set({ archived: true, pinned: false, parked: false, queue: undefined });
+    if (was) await o.driver.interrupt(o).catch(() => {});
+    await o.driver.release(o).catch(() => {});
+    if (was) o.set({ st: 'done', now: undefined, since: undefined });
+  }
+  if (p.title && p.title !== x.s.title) await x.driver.rename(x, p.title).catch(e => log('rename', x.s.id, e));
+  x.set(p);
 }
 // Before a worktree goes against git's own checks: everything in it that git does not ignore, committed or not, as one
 // commit on top of its branch under refs/startrail/trash/ (`git log <ref>` shows it, `git branch <name> <ref>` brings
