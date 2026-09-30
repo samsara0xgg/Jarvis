@@ -141,7 +141,7 @@ try {
   const fb = p.locator('.step .see-f[data-act="peek"][data-ref="notes.txt"]').last();
   check('a step\'s file is a file button', await fb.count() === 1 && (await fb.innerText()) === 'notes.txt');
   await fb.click();
-  await p.waitForSelector('.pv:not(.off) .code-v, .pv:not(.off) .dv', { timeout: 5000 });
+  await p.waitForSelector('.pv:not(.off) .op-code', { timeout: 5000 });
   await sleep(700);
   check('a click on it opens the file on the right, the button marked', (await text('.pv .sh b')) === 'notes.txt' && await fb.evaluate(el => el.classList.contains('on')));
   await p.locator('.pv [data-act="pvclose"]').click(); await sleep(700);
@@ -161,7 +161,7 @@ try {
   await fileMenu(line, 'seefed'); await sleep(200);
   check('a path with a line opens in the editor at that line', (await calls('openInEditor')).some(c => c[1] === path.join(repo, 'src/a.ts') && c[2] === 2), await calls('openInEditor'));
   await fileMenu(ans.locator('.see-p[data-ref="README.md"]'), 'seefside');
-  await p.waitForSelector('.pv:not(.off) .doc', { timeout: 5000 }); await sleep(700);
+  await p.waitForSelector('.pv:not(.off) .op-md', { timeout: 5000 }); await sleep(700);
   check('在右边打开 on a path in an answer opens it on the right, the path marked', (await text('.pv .sh b')) === 'README.md' && await ans.locator('.see-p.on[data-ref="README.md"]').count() === 1);
   await p.locator('.pv [data-act="pvclose"]').click(); await sleep(700);
   await fileMenu(ans.locator('.lnk[data-ref="notes.txt"]'), 'seeffind'); await sleep(200);

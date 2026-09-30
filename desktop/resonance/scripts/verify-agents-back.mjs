@@ -324,6 +324,9 @@ try {
   check('esc there puts the sheet away; the mark stays, no longer lit', await p.evaluate(() => document.querySelector('.bk-mk').dataset.n === '4'));
   await p.click('.bk-mk');
   await st.until('open', () => p.evaluate(() => !!document.querySelector('.bk-q')));
+  // It opens scrolled into view; take hold once it has stopped moving.
+  let y0 = NaN;
+  await st.until('settled', async () => { const y = await p.evaluate(() => document.querySelector('.bk-q').getBoundingClientRect().top); const ok = y === y0; y0 = y; await p.waitForTimeout(80); return ok; });
   const hd = await p.evaluate(() => { const r = document.querySelector('.bk-q .bk-q-k').getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; });
   await p.mouse.move(hd.x, hd.y); await p.mouse.down(); await p.mouse.move(hd.x + 160, hd.y + 4, { steps: 10 }); await p.mouse.up();
   await st.until('dragged right', () => p.evaluate(() => document.querySelectorAll('.pv-view .bk-sp .bk-qa').length === 4));
