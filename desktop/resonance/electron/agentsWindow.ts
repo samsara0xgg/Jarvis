@@ -107,25 +107,19 @@ function typeIn(term: unknown, cwd: string, cmd: string) {
 // ---------- A6: the Mac says when a session needs the owner, while the window is not in front ----------
 // The companion follows the host's event stream itself, so this works with the window closed; a click opens the
 // session. Which moments count is the owner's (settings.notify). One session says one thing at a time: its newer
-// notification replaces the older, and not within 20 seconds of it. `turns` hears how many sessions are the owner's turn
-// (waiting on them, or finished and unread), for the Dock badge (B20).
+// notification replaces the older, and not within 20 seconds of it.
 // macOS posts notifications only for a signed app: the dev build's Electron is not, and each one fails with
 // UNErrorDomain 1. There the notification goes through osascript instead, which cannot open the session when clicked.
 // In the installed app a failure is the owner's no, and nothing goes round it.
 type Row = { id: string; title: string; summary: string; st: string; unread: boolean; archived: boolean; parked: boolean };
 const script = (title: string, sub: string, body: string) => execFile('/usr/bin/osascript',
   ['-e', 'on run a', '-e', 'display notification (item 3 of a) with title (item 1 of a) subtitle (item 2 of a)', '-e', 'end run', title, sub, body], { timeout: 8000 }, () => {});
-function watchHost(show: (id: string) => void, front: () => boolean, quiet: () => boolean, turns: (n: number) => void) {
-  const st = new Map<string, string>(), mine = new Set<string>(), shown = new Map<string, { at: number; n?: Notification }>();
-  let notify = { done: true, wait: true, err: true }, told = -1, failed = false;
-  const tell = (n: number) => { if (n !== told) { told = n; turns(n); } };
-  const count = (s: Row) => {
-    if (!s.archived && !s.parked && (s.st === 'wait' || (s.unread && (s.st === 'done' || s.st === 'err')))) mine.add(s.id); else mine.delete(s.id);
-  };
+function watchHost(show: (id: string) => void, front: () => boolean, quiet: () => boolean) {
+  const st = new Map<string, string>(), shown = new Map<string, { at: number; n?: Notification }>();
+  let notify = { done: true, wait: true, err: true }, failed = false;
   const saw = (s: Row) => {
     const was = st.get(s.id), last = shown.get(s.id);
     st.set(s.id, s.st);
-    count(s);
     if (was === undefined || was === s.st || s.archived || front() || !Notification.isSupported()) return;
     const kind = s.st === 'wait' ? 'wait' : s.st === 'err' ? 'err' : s.st === 'done' && s.unread && ['work', 'pack', 'wait'].includes(was) ? 'done' : null;
     if (!kind || !notify[kind] || (last && Date.now() - last.at < 20e3)) return;
@@ -144,14 +138,13 @@ function watchHost(show: (id: string) => void, front: () => boolean, quiet: () =
     n.show();
   };
   const take = (e: { t: string; sessions?: Row[]; s?: Row; id?: string; settings?: { notify?: typeof notify; editor?: string; terminal?: string } }) => {
-    if (e.t === 'hello') { st.clear(); mine.clear(); for (const s of e.sessions ?? []) { st.set(s.id, s.st); count(s); } }
+    if (e.t === 'hello') { st.clear(); for (const s of e.sessions ?? []) st.set(s.id, s.st); }
     if (e.t === 'hello' || e.t === 'settings') {
       notify = e.settings?.notify ?? { done: true, wait: true, err: true };
       Object.assign(chosen, { editor: e.settings?.editor, terminal: e.settings?.terminal });
     }
     else if (e.t === 'sess' && e.s) saw(e.s);
-    else if (e.t === 'gone' && e.id) { st.delete(e.id); mine.delete(e.id); shown.get(e.id)?.n?.close(); shown.delete(e.id); }
-    tell(mine.size);
+    else if (e.t === 'gone' && e.id) { st.delete(e.id); shown.get(e.id)?.n?.close(); shown.delete(e.id); }
   };
   void (async () => {
     for (;;) {
@@ -170,7 +163,6 @@ function watchHost(show: (id: string) => void, front: () => boolean, quiet: () =
           }
         }
       } catch { /* no host yet, or it went: try again */ }
-      tell(0);
       await wait(10000);
     }
   })();
@@ -178,8 +170,7 @@ function watchHost(show: (id: string) => void, front: () => boolean, quiet: () =
 
 // `packaged`: the installed app (ADR 0094), once it ships Claude Code and offers this window.
 export function setupAgents({ preload, page, host, packaged = false, trustedWindows }: { preload: string; page: string; host: string; packaged?: boolean; trustedWindows: () => BrowserWindow[] }) {
-  let win: BrowserWindow | null = null, exposure = false, ids: string[] = [], presenceKey = '', turns = 0;
-  const badge = () => app.dock?.setBadge(turns ? String(turns) : '');
+  let win: BrowserWindow | null = null, exposure = false, ids: string[] = [], presenceKey = '';
   const presence = () => ({ active: !!win && !win.isDestroyed() && win.isFocused() && exposure, ids });
   const publish = () => {
     const value = presence(), key = JSON.stringify(value);
@@ -251,9 +242,9 @@ export function setupAgents({ preload, page, host, packaged = false, trustedWind
       guest.setWindowOpenHandler(({ url }) => { if (/^https?:\/\//i.test(url)) void shell.openExternal(url); return { action: 'deny' }; });
     });
     win.on('focus', publish); win.on('blur', publish);
-    // B20: while the window is open the app is in the Dock and ⌘Tab, badged with the sessions that are your turn.
+    // B20: while the window is open the app is in the Dock and ⌘Tab, without a badge: who waits is by her in the window.
     win.on('closed', () => { win = null; publish(); app.dock?.hide(); });
-    void app.dock?.show().then(badge);
+    void app.dock?.show();
     win.loadFile(page, { query: { port: AGENTS_PORT, ...(id ? { open: id } : {}) } });
     win.once('ready-to-show', () => { win?.show(); win?.focus(); });
   }
@@ -269,9 +260,8 @@ export function setupAgents({ preload, page, host, packaged = false, trustedWind
   ipcMain.on('agents-open', event => {
     if (trustedWindows().some(w => !w.isDestroyed() && event.sender === w.webContents && event.senderFrame === w.webContents.mainFrame)) void open();
   });
-  // An open window chimes on its own, so its notifications are silent. The count is set again whenever the icon shows.
-  watchHost(id => void open(id), () => !!win && !win.isDestroyed() && win.isFocused(), () => !!win && !win.isDestroyed(),
-    n => { turns = n; badge(); });
+  // An open window chimes on its own, so its notifications are silent.
+  watchHost(id => void open(id), () => !!win && !win.isDestroyed() && win.isFocused(), () => !!win && !win.isDestroyed());
   // The Dock icon, clicked, brings the window forward.
   app.on('activate', () => { if (win && !win.isDestroyed()) { win.show(); win.focus(); } });
   // ⌥Tab while B01 has the foreground: straight to its next session waiting on Allen.
