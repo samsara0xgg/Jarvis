@@ -2,7 +2,7 @@ import type { Item, Sess } from '../../../electron/agents/types';
 import { glyph, type St } from './glyph';
 import { clamp, dpr, easeInOut, esc, hash, lerp, reduced, smooth, spring, step } from './motion';
 import { Her } from './her';
-import { ago, drawSky, geometry } from './sky';
+import { ago, drawSky, geometry, gone } from './sky';
 import { started, timeline, type Trail, type Turn } from './timeline';
 import { mountAway } from './away';
 import { findField, hl, land, search, turnHits } from './find';
@@ -39,7 +39,8 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
     <button type="button" class="bw-her" aria-label="Jarvis：下一个等你的"><canvas></canvas></button>
     <button type="button" class="bw-pull" aria-expanded="false"></button>
     <div class="bw-sky" role="region" aria-label="长曝光时间线" inert>
-      <div class="bw-rows"></div><div class="bw-axis"></div><div class="bw-gap" hidden></div><div class="bw-open" hidden><div class="pp-in"></div></div>
+      <div class="bw-rows"></div><div class="bw-axis"></div>
+      <button type="button" class="bw-edge bw-older" tabindex="-1" hidden>‹ 更早</button><button type="button" class="bw-edge bw-newer" tabindex="-1" hidden>现在 ›</button><div class="bw-gap" hidden></div><div class="bw-open" hidden><div class="pp-in"></div></div>
       <div class="bw-more"></div>
     </div>
     <div class="bw-peek" hidden></div>`;
@@ -47,7 +48,7 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
   const cv = $<HTMLCanvasElement>('.bw-cv', chrome), c = cv.getContext('2d')!;
   const skyEl = $('.bw-sky', chrome), rowsEl = $('.bw-rows', chrome), starsEl = $('.bw-stars', chrome), axis = $('.bw-axis', chrome);
   const pop = $('.bw-open', chrome), inner = $('.pp-in', pop), gap = $('.bw-gap', chrome), pull = $('.bw-pull', chrome);
-  const peek = $('.bw-peek', chrome);
+  const peek = $('.bw-peek', chrome), older = $('.bw-older', chrome), newer = $('.bw-newer', chrome);
   // ⌘K's field stands where 收起 does while it searches.
   const { el: findEl, input: findInput } = findField(); pull.after(findEl);
   const away = mountAway();
@@ -76,6 +77,9 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
   // hoverQi: the point of the selected row under the pointer, read in place of the one you stand on · hoverStar: the
   // horizon star under it · glance: the star she turns to when a session changes, until when
   let hoverQi: number | null = null, hoverStar = '', glance = { id: '', until: 0 };
+  // pan: how far the sky is slid right to show older time; panTo, where it is going; follow, what it last followed.
+  let panTo = 0, follow = '', momentsKey = '', momentsAt: number[] = [], trailsSeen = 0;
+  const pan = spring(0);
   const sky = spring(0), opening = spring(0), left = spring(0), top = spring(0), needle = spring(0), needleY = spring(0), focus = spring(0);
   const offsets = new Map<string, ReturnType<typeof spring>>();
   let wordWidth = 0, wordHeight = 0, targetLeft = 0, targetTop = 0, nearNow = false, snap = true;
@@ -96,8 +100,17 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
   const stateHTML = (s: Sess, tag = 'em') => `<${tag} class="st-${status(s)}">${stateText(s)}</${tag}>`;
   const skyHeight = () => 26 + (rows.length + xrows.length) * 27 + opening.value + 34 + (Number(more.dataset.h) || 0);
   // Under the words the trails bend down once, past their right edge, and stay down all the way back.
-  const geo = () => geometry(width, now, Math.max(60, ...rows.map(s => now - (trails[s.id]?.segs[0]?.a ?? now))) * 1.04, skyHeight(),
-    (i, x) => (offsets.get(rows[i]?.id)?.value ?? 0) * (1 - smooth(left.value + wordWidth + 14, left.value + wordWidth + 58, x)));
+  const geo = () => geometry(width, now, moments(), skyHeight(),
+    (i, x) => (offsets.get(rows[i]?.id)?.value ?? 0) * (1 - smooth(left.value + wordWidth + 14, left.value + wordWidth + 58, x)), pan.value);
+  // Every moment in the rows' trails, which the sky keeps apart: what you said, its replies and stops, where a state began or ended.
+  function moments() {
+    const key = `${trailsSeen}|${rows.map(s => s.id).join(',')}`;
+    if (key !== momentsKey) {
+      momentsKey = key;
+      momentsAt = rows.flatMap(s => { const t = trails[s.id]; return t ? [...t.marks.map(m => m.t), ...t.segs.flatMap(g => g.b === null ? [g.a] : [g.a, g.b])] : []; });
+    }
+    return momentsAt;
+  }
   // A star rises from where it rests (on the horizon, or in the queue by her) to its row's head as the sky opens.
   const starPosition = (i: number): [number, number] => {
     const p = easeInOut(clamp(sky.value * 1.3 - i * .03)), [x, y] = waiting.at(rows[i]?.id ?? '');
@@ -125,7 +138,7 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
     for (const s of searching() ? every : all) {
       const items = hooks.items(s.id), key = `${s.st}|${s.updated}|${s.summary}|${s.now}|${s.trace?.length}`;
       if (sources.get(s.id)?.items !== items || sources.get(s.id)?.s !== key) {
-        trails[s.id] = timeline(s, items ?? []); sources.set(s.id, { s: key, items });
+        trails[s.id] = timeline(s, items ?? []); sources.set(s.id, { s: key, items }); trailsSeen++;
       }
     }
     // Pinned first, then by when each began: a row never moves because its state changed.
@@ -243,6 +256,7 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
     finding = find; query = findInput.value = ''; found = new Set(); refresh();
     // It opens on the names: ↑↓ pick a session, → goes in; ← steps back into what you said.
     selected = first(); nameStop = true; latest();
+    pan.value = panTo = 0; pan.velocity = 0; follow = '';
     skyOn = true; snap = true; hoverQi = null; revealUntil = performance.now() + 800; waiting.hide();
     pop.hidden = gap.hidden = true; popKey = '';
     win.classList.add('sky-on'); skyEl.inert = false; pullLabel();
@@ -389,6 +403,18 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
       const value = offsets.get(s.id) ?? spring(0); offsets.set(s.id, value);
       step(value, parted && i > selectedIndex ? wordHeight : 0, 2.6, .9, dt);
     }
+    // Stepping to a sentence out of view slides the sky just far enough to bring it in; the name stop slides back to now.
+    const standing = `${selected}|${nameStop ? -1 : qi}`;
+    if (skyOn && standing !== follow) {
+      follow = standing;
+      const g = geo(), turn = point();
+      if (nameStop || turn?.at === undefined) panTo = 0;
+      else { const x = g.xOf(turn.at / 60000), room = Math.min(120, (g.x1 - g.x0) / 3); panTo = g.pan + Math.max(0, g.x0 + room - x) - Math.max(0, x - (g.x1 - room)); }
+    }
+    const was = pan.value;
+    step(pan, panTo = clamp(panTo, 0, geo().panMax), 2.6, 1, dt);
+    // What is drawn moves with the sky: the needle keeps its point instead of trailing behind.
+    needle.value += pan.value - was;
     // At the name stop the needle's point slides on to now and waits by the name; the needle itself steps aside.
     const g = geo(), turn = point(), at = turn?.at !== undefined ? turn.at / 60000 : undefined, stand = nameStop || at === undefined;
     const nx = stand ? g.x1 : g.xOf(at!), ny = g.y(selectedIndex);
@@ -410,12 +436,23 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
     c.save();
     if (skyEl.scrollTop > 0) { c.beginPath(); c.rect(0, 56, width, height - 56); c.clip(); }
     c.translate(0, -skyEl.scrollTop);
+    // Slid back in time, what is newer than the sky's right edge goes under it rather than under the names.
+    if (g.pan > .5) { c.beginPath(); c.rect(0, 0, g.x1 + 1, canvasHeight + skyEl.scrollTop); c.clip(); }
     drawSky(c, rows, trails, { now, p: sky.value, dev: clamp((sky.value - .18) / .82), geo: g, sel: shown && !onX() ? selectedIndex : undefined, pt: shown ? at : undefined,
       aways: away.spans().map(s => ({ a: s.a / 60000, b: s.b === null ? null : s.b / 60000 })),
       span: stand ? undefined : [at!, (trails[selected]?.turns[qi + 1]?.at ?? Date.now()) / 60000], ndx: at === undefined ? undefined : needle.value, nm: nameStop,
       cy: needleY.value, focus: shown ? focus.value : undefined,
       card: pop.hidden ? null : { x: left.value - 18, y: 56 + top.value - 8.5, w: wordWidth + 32, h: Math.max(0, opening.value - 4) },
       conn: nearNow && !pop.hidden ? { x: stand ? g.x1 : needle.value, y: needleY.value, x2: left.value + wordWidth - 16, y2: top.value + 58, a: clamp((sky.value - .35) / .5) } : null });
+    // Where there is more time past an edge, the sky fades out toward it.
+    c.globalCompositeOperation = 'destination-out';
+    for (const [more, from, to] of [[g.panMax - g.pan, g.x0, g.x0 + 56], [g.pan, g.x1, g.x1 - 40]] as const) {
+      if (more < .5) continue;
+      const fade = c.createLinearGradient(from, 0, to, 0), a = clamp(more / 40);
+      fade.addColorStop(0, `rgba(0,0,0,${a})`); fade.addColorStop(1, 'rgba(0,0,0,0)');
+      c.fillStyle = fade; c.fillRect(Math.min(from, to) - (from < to ? 30 : 0), g.top, Math.abs(to - from) + 30, g.bottom - g.top + 30);
+    }
+    c.globalCompositeOperation = 'source-over';
     c.restore();
     // A star pops when its session changes state and swells under the pointer; one waiting on you is the queue's to
     // draw while the sky is closed.
@@ -437,13 +474,20 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
       pop.style.transform = `translate(${left.value}px,${top.value}px)`; pop.style.setProperty('--sx', `${needle.value - left.value}px`);
       Object.assign(gap.style, { left: `${left.value - 18}px`, width: `${wordWidth + 32}px`, top: `${top.value - 8.5}px`, height: `${Math.max(0, opening.value - 4)}px` });
       axis.style.top = `${skyHeight() - 26}px`;
-      const labels = g.guides.map(ago), guidesKey = labels.join(',');
-      if (axisKey !== guidesKey) { axisKey = guidesKey; axis.innerHTML = labels.map(label => `<span>${label}</span>`).join('') + '<span class="nowl">现在</span>'; }
-      // The axis steps aside where the needle writes its own time.
-      const writes = stand ? -1e3 : needle.value;
-      // Where the cells are too narrow for every label, every other one (counting back from now) keeps its words.
-      const every = Math.ceil(64 / g.cell);
-      [...axis.children].forEach((el, i) => { const tick = el as HTMLElement, x = g.guides[i] === undefined ? g.x1 : g.xOf(now - g.guides[i]); tick.style.left = `${x - 30}px`; tick.style.opacity = String(g.guides[i] !== undefined && (i + 1) % every ? 0 : clamp((Math.abs(x - writes) - 34) / 26)); });
+      // How long ago at the ticks, how long nothing happened at each break, and now.
+      const marks = [...g.guides.map(m => ({ at: m.t, text: m.text, cls: '' })), ...g.gaps.map(p => ({ at: (p.a + p.b) / 2, text: gone(p.b - p.a), cls: 'brk' })), { at: now, text: '现在', cls: 'nowl' }];
+      const guidesKey = marks.map(m => m.cls + m.text).join(',');
+      if (axisKey !== guidesKey) { axisKey = guidesKey; axis.innerHTML = marks.map(m => `<span${m.cls ? ` class="${m.cls}"` : ''}>${m.text}</span>`).join(''); }
+      // The axis steps aside where the needle writes its own time, and fades toward an edge with more time past it.
+      const writes = stand ? -1e3 : clamp(needle.value, g.x0 + 46, g.x1 - 46), olderOn = g.panMax - g.pan > 8, newerOn = g.pan > 8;
+      [...axis.children].forEach((el, i) => {
+        const tick = el as HTMLElement, m = marks[i], x = g.xOf(m.at);
+        const half = tick.offsetWidth / 2, edge = Math.min(clamp((x - half - g.x0 - (olderOn ? 50 : -24)) / 16), m.cls === 'nowl' && !newerOn ? 1 : clamp((g.x1 - x - half - (newerOn ? 54 : -40)) / 16));
+        tick.style.left = `${x}px`; tick.style.opacity = String(Math.min(edge, clamp((Math.abs(x - writes) - half - 50) / 20)));
+      });
+      // More time past an edge says so there, and takes you to it.
+      older.hidden = !olderOn; newer.hidden = !newerOn;
+      for (const el of [older, newer]) el.style.top = axis.style.top;
       // The names start a little right of the heads, so a row's star stands before its name, not on its edge.
       rowsEl.querySelectorAll<HTMLElement>('.bw-row').forEach((el, i) => { el.style.left = `${g.x1 + 12}px`; el.style.opacity = String(1 - Math.min(.4, Math.abs(i - focus.value) * .1)); });
       renderWords();
@@ -472,6 +516,17 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
     if (x.startsWith('x:a:')) window.setTimeout(() => { if (!skyOn) return; selected = x.slice(4); nameStop = true; latest(); refresh(); renderRows(); renderWords(); });
   });
   skyEl.addEventListener('wheel', () => revealUntil = 0, { passive: true });
+  // Sideways (or with ⇧) the sky slides through time: toward what is older, and back to now.
+  win.addEventListener('wheel', e => {
+    if (!skyOn || e.clientY - win.getBoundingClientRect().top > 56 + skyEl.clientHeight) return;
+    const dx = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.shiftKey ? e.deltaY : 0, g = geo();
+    if (!dx || !g.panMax) return;
+    e.preventDefault();
+    const to = clamp(pan.value - dx, 0, g.panMax); needle.value += to - pan.value; panTo = pan.value = to; pan.velocity = 0;
+    if (hoverQi !== null) { hoverQi = null; renderWords(); }
+  }, { passive: false });
+  older.addEventListener('click', () => { const g = geo(); panTo = clamp(panTo + (g.x1 - g.x0) * .7, 0, g.panMax); });
+  newer.addEventListener('click', () => { panTo = 0; });
   for (const el of [rowsEl, starsEl]) el.addEventListener('click', e => {
     const id = (e.target as HTMLElement).closest<HTMLElement>('[data-session]')?.dataset.session; if (!id) return;
     // A found session opens where it was found.
@@ -485,7 +540,7 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
   function hit(e: MouseEvent) {
     if ((e.target as HTMLElement).closest('button,.bw-open')) return null;
     const rect = win.getBoundingClientRect(), x = e.clientX - rect.left, y = e.clientY - rect.top + skyEl.scrollTop, g = geo();
-    if (y <= 56 || y >= 56 + skyHeight() - 30 || x < 20 || x > g.x1) return null;
+    if (y <= 56 || y >= 56 + skyHeight() - 30 || x < g.x0 || x > g.x1) return null;
     const row = rows.findIndex((_, i) => Math.abs(g.yx(i, x) - y) <= 27 / 2);
     if (row < 0) return null;
     const turn = (trails[rows[row].id]?.turns ?? []).findIndex(t => t.at !== undefined && Math.abs(g.xOf(t.at / 60000) - x) < 7);
