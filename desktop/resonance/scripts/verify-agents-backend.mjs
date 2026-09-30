@@ -334,7 +334,7 @@ const named = (list, n) => list?.find(v => v.name === n), openReq = async id => 
 const starts0 = A.claude().filter(e => e.ev === 'start').length, m0 = await A.call(`/sessions/${fk0.id}/mcp`), shot = A.claude().filter(e => e.ev === 'start').slice(starts0);
 await until('the one-shot ends', () => shot[0] && A.claude().some(e => e.ev === 'end' && e.pid === shot[0].pid));
 check('C3: an idle session\'s MCP servers come from a Claude Code of its own, which waits for them to connect and ends', named(m0.servers, 'docs')?.st === 'on' && named(m0.servers, 'docs').tools === 2
-  && named(m0.servers, 'docs').scope === 'user' && named(m0.servers, 'docs').can.join() === 'off' && named(m0.servers, 'tracker')?.st === 'auth' && named(m0.servers, 'tracker').why.includes('/mcp')
+  && named(m0.servers, 'docs').scope === 'user' && named(m0.servers, 'docs').can.join() === 'off' && named(m0.servers, 'tracker')?.st === 'auth' && named(m0.servers, 'tracker').why === '要登录' && named(m0.servers, 'tracker').can.join() === 'off,login'
   && named(m0.servers, 'flaky')?.st === 'fail' && named(m0.servers, 'flaky').why.includes('ECONNREFUSED') && shot.length === 1 && !shot[0].args.some(a => a.startsWith('--resume'))
   && A.claude().filter(e => e.pid === shot[0].pid && e.subtype === 'mcp_status').length >= 2, { m0, shot });
 const r0 = await A.call(`/sessions/${fk0.id}/mcp`, { name: 'docs', action: 'reconnect' }), off0 = await A.call(`/sessions/${fk0.id}/mcp`, { name: 'docs', action: 'off' });
@@ -344,8 +344,11 @@ check('C3: switched off, it is off for every session in that folder; a running o
 const rc = await A.call(`/sessions/${S}/mcp`, { name: 'flaky', action: 'reconnect' }), on1 = await A.call(`/sessions/${S}/mcp`, { name: 'docs', action: 'on' });
 check('C3: a running session connects one again, and switches one back on and waits for it', named(rc.servers, 'flaky')?.st === 'on' && named(rc.servers, 'flaky').tools === 1 && named(on1.servers, 'docs')?.st === 'on'
   && A.claude().some(e => e.subtype === 'mcp_reconnect' && e.request.serverName === 'flaky') && A.claude().some(e => e.subtype === 'mcp_toggle' && e.request.serverName === 'docs' && e.request.enabled === true), { rc, on1 });
-const mx = await Promise.all([{ name: 'tracker', action: 'login' }, { name: 'nope', action: 'off' }, { name: 'docs', action: 'explode' }].map(b => A.call(`/sessions/${S}/mcp`, b)));
-check('C3: Claude Code signs in to an MCP server only in its terminal; an unknown server or action is refused', mx[0].status === 409 && mx[0].error.includes('/mcp') && mx[1].status === 404 && mx[2].status === 400, mx);
+const mx = await Promise.all([{ name: 'tracker', action: 'login' }, { name: 'nope', action: 'off' }, { name: 'docs', action: 'explode' }, { name: 'docs', action: 'login' }].map(b => A.call(`/sessions/${S}/mcp`, b)));
+const signed = await until('tracker signed in to', async () => { const l = (await A.call(`/sessions/${S}/mcp`)).servers; return named(l, 'tracker')?.st === 'on' && l; });
+check('C3: Claude Code gives the page to sign in to an MCP server, and connects it once signed in; one that needs none, an unknown server or action is refused',
+  mx[0].url === 'https://tracker.example.com/authorize?client_id=fake' && A.claude().some(e => e.subtype === 'mcp_authenticate' && e.request.serverName === 'tracker')
+  && named(signed, 'tracker').tools === 3 && mx[1].status === 404 && mx[2].status === 400 && mx[3].status === 409, { mx, signed });
 await A.call(`/sessions/${S}/send`, { text: 'FORM' });
 const form = await until('a form', () => openReq(S)), fd = k => form.fields.find(f => f.key === k);
 check('C3: an MCP server\'s form comes as its fields', form.tool === 'Form' && form.server === 'docs' && form.why === 'Where should it go?' && form.fields.map(f => `${f.key}:${f.kind}`).join() === 'name:text,count:int,public:bool,color:one,tags:many'

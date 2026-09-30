@@ -60,6 +60,8 @@ type Pending = { resolve: (r: PermissionResult) => void; name: string; input: Re
   | { form: (r: ElicitationResult) => void; fields: Field[]; url?: string };
 // Claude Code's /btw as the SDK sends it (C7): the SDK has the call but does not declare it.
 type Sideways = { askSideQuestion(question: string, o: { history: { question: string; response: string }[]; signal: AbortSignal }): Promise<{ response: string } | null> };
+// Claude Code's own sign-in to an MCP server (its /mcp), as the SDK sends it: the SDK has the call but does not declare it.
+type SignIn = { mcpAuthenticate(serverName: string): Promise<{ authUrl?: string; requiresUserAction?: boolean } | undefined> };
 // prev: the mode to go back to when a plan is approved · usage: tokens the last answer was sent with · block: the text
 // block streaming in · creates: TaskCreate calls waiting for the id their result gives
 type Rt = {
@@ -433,7 +435,7 @@ const OWN_UI: [string, string, string][] = [['/rewind', '回到之前的某一�
   ['/permissions', '换权限模式', 'mode'], ['/memory', '打开 CLAUDE.md', 'memory'], ['/tasks', '后台任务', 'tasks'], ['/ide', '用编辑器打开', 'editor'],
   ['/login', '环境和登录', 'doctor'], ['/status', '环境和登录', 'doctor'], ['/doctor', '环境和登录', 'doctor'], ['/diff', '看它改了什么', 'changes'],
   ['/add-dir', '让它也能动另一个文件夹', 'dirs'], ['/model', '换模型', 'model'], ['/effort', '换力度', 'effort'], ['/new', '开新会话', 'new'], ['/fork', '从某一句之前分出一个新会话', 'fork'],
-  ['/btw', '侧问：不打断它，也不进对话', 'btw']];
+  ['/btw', '侧问：不打断它，也不进对话', 'btw'], ['/mcp', '看它用的 MCP，在这里开关', 'mcp']];
 const withUi = (list: [string, string][]): [string, string, string?][] => [...OWN_UI, ...list.filter(c => !OWN_UI.some(u => u[0] === c[0]))];
 const version = () => EXE ? realpathSync(EXE) : '';
 async function probe(cwd: string) {
@@ -624,12 +626,21 @@ export const claude: Driver = {
   async context(s) { return asking(s, async q => ctxOf(s, await q.getContextUsage()), true); },
   async mcp(s) { return asking(s, (q, live) => servers(q, live, !live)); },
   // Switching one off holds in this folder for every Claude Code session, a terminal's too; connecting again needs it
-  // running. Claude Code signs in to an MCP server only in its own terminal, with /mcp.
+  // running. A sign-in is Claude Code's own: the session's claude gives the page to open and waits for the browser to
+  // come back to it, so the session starts for it, and connects the server once it is signed in to.
   async mcpAct(s, name, act) {
+    if (act === 'login') {
+      const q = ensure(s).q!, one = (await servers(q, true, false)).find(m => m.name === name);
+      if (!one) throw new Http(404, '没有这个 MCP');
+      if (!one.can.includes('login')) throw new Http(409, '它不用登录');
+      const r = await (q as unknown as SignIn).mcpAuthenticate(name), url = str(r?.authUrl);
+      if (r?.requiresUserAction === false) return servers(q, true, true);
+      if (!/^https?:\/\//i.test(url)) throw new Http(502, 'Claude Code 没给能打开的登录页');
+      return { url };
+    }
     return asking(s, async (q, live) => {
       const one = (await servers(q, live, false)).find(m => m.name === name);
       if (!one) throw new Http(404, '没有这个 MCP');
-      if (act === 'login') throw new Http(409, 'Claude Code 的 MCP 要在终端里用 /mcp 登录');
       if (!one.can.includes(act)) throw new Http(409, act === 'reconnect' ? '它现在没在跑，下次开始时会重新连' : act === 'on' ? '它开着' : '它关着');
       if (act === 'reconnect') await q.reconnectMcpServer(name);
       else await q.toggleMcpServer(name, act === 'on');
@@ -665,7 +676,7 @@ async function servers(q: Query, live: boolean, settle: boolean): Promise<Mcp[]>
   return list.map(m => {
     const st = MCP_ST[m.status] ?? 'wait', scope = m.source || m.scope;
     return { name: m.name, st, ...m.tools ? { tools: m.tools.length } : {}, ...scope ? { scope } : {},
-      ...st === 'fail' && m.error ? { why: oneLine(m.error, 200) } : st === 'auth' ? { why: '要登录：在终端里打开这个会话，用 /mcp 登录' } : {},
-      can: st === 'off' ? ['on'] : live ? ['off', 'reconnect'] : ['off'] };
+      ...st === 'fail' && m.error ? { why: oneLine(m.error, 200) } : st === 'auth' ? { why: '要登录' } : {},
+      can: st === 'off' ? ['on'] : [...live ? ['off', 'reconnect'] as const : ['off'] as const, ...st === 'auth' ? ['login'] as const : []] };
   });
 }

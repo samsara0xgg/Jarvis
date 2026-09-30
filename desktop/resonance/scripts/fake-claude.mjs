@@ -12,9 +12,12 @@
 //   SHOT  a tool that gives back a picture (a screenshot)
 //   THINK a thought that takes four seconds                        LATE  the session's name comes 1.5 s after the turn
 //   QUESTION  a question with two options (AskUserQuestion)
+//   MCP <server>  a call to that MCP server's tool that fails; to tracker, while it wants a sign-in, the authenticate
+//                 call Claude Code gives the model in its tools' place, which hands back the page to open
 // A question on the side (/btw) is answered on its own, after three seconds when it says SLOW, and can be cancelled.
-// It has three MCP servers: docs (two tools, a moment to connect), tracker (wants a sign-in) and flaky (fails until it
-// is connected again); one switched off stays off in that folder, kept in the config folder as Claude Code keeps it.
+// It has three MCP servers: docs (two tools, a moment to connect), tracker (wants a sign-in: its page is given, and it is
+// signed in to and connected, three tools, a moment later) and flaky (fails until it is connected again); one switched
+// off stays off in that folder, kept in the config folder as Claude Code keeps it.
 // Every start, request and turn is appended to FAKE_CLAUDE_LOG when it is set. The host runs it through
 // JARVIS_AGENTS_CLAUDE.
 import { randomUUID } from 'node:crypto';
@@ -104,16 +107,16 @@ function context() {
 // ---------- MCP servers ----------
 const MCP = path.join(CONFIG, 'fake-mcp.json'), born = Date.now(), SERVERS = { docs: 'user', tracker: 'project', flaky: 'local' };
 const mcpOff = () => (existsSync(MCP) ? JSON.parse(readFileSync(MCP, 'utf8')) : {})[cwd] ?? [];
-let fixed = false, since = born;
+let fixed = false, since = born, signed = false;
 function mcpStatus() {
   const off = mcpOff(), wait = Date.now() - since < 400;
   return Object.entries(SERVERS).map(([name, scope]) => {
     if (off.includes(name)) return { name, status: 'disabled', scope, source: scope };
-    if (name === 'tracker') return { name, status: 'needs-auth', scope, source: scope };
+    if (name === 'tracker' && !signed) return { name, status: 'needs-auth', scope, source: scope };
     if (name === 'flaky' && !fixed) return { name, status: 'failed', error: 'connect ECONNREFUSED 127.0.0.1:9', scope, source: scope };
     if (name === 'docs' && wait) return { name, status: 'pending', scope, source: scope };
     return { name, status: 'connected', scope, source: scope, serverInfo: { name, version: '1.0.0' },
-      tools: name === 'docs' ? [{ name: 'publish' }, { name: 'search' }] : [{ name: 'retry' }] };
+      tools: name === 'docs' ? [{ name: 'publish' }, { name: 'search' }] : name === 'tracker' ? [{ name: 'search' }, { name: 'file' }, { name: 'close' }] : [{ name: 'retry' }] };
   });
 }
 function mcpToggle(name, on) {
@@ -164,7 +167,13 @@ function answer(m) {
     }, /SLOW/.test(r.question) ? 3000 : 200));
     return;
   }
-  if ((r.subtype === 'mcp_toggle' || r.subtype === 'mcp_reconnect') && !(r.serverName in SERVERS)) return refuse(`Server not found: ${r.serverName}`);
+  if ((r.subtype === 'mcp_toggle' || r.subtype === 'mcp_reconnect' || r.subtype === 'mcp_authenticate') && !(r.serverName in SERVERS)) return refuse(`Server not found: ${r.serverName}`);
+  // The owner signs in in the browser a moment after the page is given; Claude Code then connects the server.
+  if (r.subtype === 'mcp_authenticate') {
+    if (r.serverName !== 'tracker' || signed) return reply({ requiresUserAction: false, callbackExpected: false });
+    setTimeout(() => { signed = true; }, 600);
+    return reply({ authUrl: 'https://tracker.example.com/authorize?client_id=fake', requiresUserAction: true, callbackExpected: true, redirectScheme: 'localhost', callbackPort: 54321 });
+  }
   if (r.subtype === 'mcp_toggle') { mcpToggle(r.serverName, r.enabled === true); return reply({}); }
   if (r.subtype === 'mcp_reconnect') {
     if (mcpOff().includes(r.serverName)) return refuse(`Server ${r.serverName} is disabled`);
@@ -205,7 +214,7 @@ const tool = async (name, input, parent = null) => { const id = `toolu_${randomU
 const SHOT = 'iVBORw0KGgoAAAANSUhEUgAAADAAAAAgCAIAAADbtmxLAAACnElEQVR4nM3U+TdUcRzG8c9/VolEq0ikRSQSiYTZ7sy9d/btLnPn3rmzGsswxjKGktIqaZHSIilJK2mRtEjbufNr53T6wdH3P3if1znPA7+6a3521XyPyZaissUO+dd2+Zc2xaeIYqFFMR9WfmhWzoVU7xpVbxtUs/XY6yA2U6t+FVC/9GueezXPPJopN/5ExCcFYoInHjmJcY58wJJjjHaU1t6jdHdsuttW3YhFf9OsHzYahgyG63rDNZ3xCmkcJEwDuOmSxtyPmS+ozOeVlrNyyxmZFX7EZEudsm9R2aKUIv/cqliIKD6GlfPNyrkm5fuQlPKmHputw2aC2LSUon7hk2qeuvEpEZ904Y8FYsJJPOTIcQc5xpL3ae0opb1rl2pGLPpbZv2wSX/DaBiKp1zVGgdJ42XcNKAx9avNFzEp5ZxCqumTWU9XWwERmL4a66lqa2+VDRCB6a2ynTxm66m0wd9hplcKpqfSduKovbvCDojAHK+wd5fbY0coQASmq5yKlVHRwxQgAtNZRkVL6fYSGv7LlP6E6Sil20ro1mIGEIFpO0RHipmWIgYQgYkcZMJFTHMhC4jAhAvZpgNsqIAFRGBCBWzjfkdDvgMQgWnId9TnOYL7OEAEpi6PC+Zygb0cIAJTm8sF9jh9u52wDDCKZYDxx2s8OTwgAuPd5XTn8GI2D4jAuHfyrmxeyBIAERhXlsDvEJyZAiACw2cK3HaXI8MFiMA4MlxsuovZJgIiMEy6SKeJ1FYREIGh0kT7Frd1sxtW4Hz/BcYWrzFv9AAiMJZNUo0x1QOIwJg2eAypHn2KFxCBMaR4deu92mQvIAKjS/aS63xEkg8QgSGTfHiiT7PWD4jAaBL96gQ/tsYPiMBgCX7V6oByVeA3K0OO46WieP4AAAAASUVORK5CYII=';
 const THOUGHT = '**Weighing where the switch belongs**\n\nThe setting is written to settings.json, but the menu bar item reads it only once, at launch.\nWith the menu gone, nothing tells the companion the value changed.\n\nTwo ways: the companion watches settings.json, or the settings page sends it a message.\nThe settings module already has onDidChange, which costs the least and leaves the page alone.\n\nFirst check the key the page writes, then find who else reads it.\nThen change the companion to redraw her mark when the value moves.\nLast, run the companion check again.';
 async function work(said) {
-  for (const [, what, arg1] of said.matchAll(/\b(EDIT|WRITE|ASK|TASK|SUB|AGENT|PLAN|SLOW|FAIL|FORM|LINK|PICK|SHOT|THINK|QUESTION)\b(?:\s+([\w./-]+))?/g)) {
+  for (const [, what, arg1] of said.matchAll(/\b(EDIT|WRITE|ASK|TASK|SUB|AGENT|PLAN|SLOW|FAIL|FORM|LINK|PICK|SHOT|THINK|QUESTION|MCP)\b(?:\s+([\w./-]+))?/g)) {
     if (what === 'THINK') { await block({ type: 'thinking', thinking: THOUGHT, signature: 'x' }, null, 4000); continue; }
     if (what === 'SLOW') { for (let i = 0; i < 30 && !turn.stop; i++) await sleep(100); if (turn.stop) throw new Error('stop'); continue; }
     if (what === 'FAIL') return 'fail';
@@ -307,6 +316,11 @@ async function work(said) {
     if (what === 'SHOT') {
       const id = await tool('mcp__browser__screenshot', {});
       await result(id, [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: SHOT } }]);
+    }
+    if (what === 'MCP') {
+      const server = arg1 ?? 'tracker', auth = server === 'tracker' && !signed, id = await tool(`mcp__${server}__${auth ? 'authenticate' : 'search'}`, auth ? {} : { q: 'x' });
+      await result(id, [{ type: 'text', text: auth ? 'Ask the user to open this URL in their browser to authorize tracker: https://tracker.example.com/authorize?client_id=fake'
+        : `MCP server "${server}" is not connected` }], {}, null, !auth);
     }
     if (what === 'PLAN') {
       const id = await tool('TodoWrite', { todos: [{ content: 'Read the code', status: 'completed', activeForm: 'Reading' }, { content: 'Change it', status: 'in_progress', activeForm: 'Changing' }] });
