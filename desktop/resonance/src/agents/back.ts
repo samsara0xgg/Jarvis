@@ -523,14 +523,14 @@ export function mountBack(ctx: PageCtx): Feature {
   }
   async function copyEx() {
     try { await navigator.clipboard.writeText(X.text); ctx.tick(); ctx.toast(`复制了 Markdown · ${X.text.trimEnd().split('\n').length} 行`); }
-    catch { ctx.toast('剪贴板用不了，存成文件吧'); }
+    catch { ctx.toast('剪贴板用不了，存成文件吧', true); }
     // ⏎ still saves after a copy.
     ex.querySelector<HTMLElement>('[data-act="bk-ex-save"]')?.focus({ preventScroll: true });
   }
   // Kept where you pick in the Mac's own save dialog (agentsWindow.ts), ~/Downloads to start with.
   async function saveEx() {
     if (!window.agents?.saveFile) { ctx.toast('这里存不了文件，先复制吧'); return; }
-    const p = await window.agents.saveFile(X.name, X.text).catch((e: unknown) => { ctx.toast(`没存成：${e instanceof Error ? e.message : String(e)}`); return ''; });
+    const p = await window.agents.saveFile(X.name, X.text).catch((e: unknown) => { ctx.toast(`没存成：${e instanceof Error ? e.message : String(e)}`, true); return ''; });
     if (!p) return;
     closeEx(true); ta.focus({ preventScroll: true });
     ctx.cue('done', .6); ctx.toast(`存到了 ${p.replace(/^\/Users\/[^/]+/, '~')}`);
@@ -557,7 +557,7 @@ export function mountBack(ctx: PageCtx): Feature {
       else if (a === 'bk-mk' && q) openSide(q);
       else if (a === 'bk-q-min' && q) fold(q);
       else if (a === 'bk-q-right' && q) { if (performance.now() - dragAt > 300) toRight(q, el.closest<HTMLElement>('.bk-q')); }
-      else if (a === 'bk-q-copy' && q) { const x = q.qa[j]; if (x?.a) navigator.clipboard.writeText(x.a).then(() => { ctx.tick(); ctx.toast('复制了这个回答'); }, () => ctx.toast('剪贴板用不了')); }
+      else if (a === 'bk-q-copy' && q) { const x = q.qa[j]; if (x?.a) navigator.clipboard.writeText(x.a).then(() => { ctx.tick(); ctx.toast('复制了这个回答'); }, () => ctx.toast('剪贴板用不了', true)); }
       else if (a === 'bk-q-put' && q) {
         const x = q.qa[j];
         if (!x?.a) return true;

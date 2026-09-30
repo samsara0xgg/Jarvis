@@ -6,7 +6,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import type { Service } from '../../../electron/agents/types';
 
-type Hooks = { api: string; call(route: string, body?: unknown, method?: string): Promise<unknown>; current(): string; toast(t: string): void; changed(): void };
+type Hooks = { api: string; call(route: string, body?: unknown, method?: string): Promise<unknown>; current(): string; toast(t: string, bad?: boolean): void; changed(): void };
 export type Tab = 'term' | 'svc' | 'log';
 export type TPos = 'side' | 'drawer' | 'island';
 const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -142,7 +142,7 @@ export function mountTerminal(pane: HTMLElement, hooks: Hooks) {
     else if (a === 'kick') {
       const n = b.dataset.n!;
       st.kicking.add(n); draw();
-      void hooks.call(`/services/${n}/restart`, { id: hooks.current() }).catch(e => { st.kicking.delete(n); draw(); hooks.toast(e instanceof Error ? e.message : String(e)); });
+      void hooks.call(`/services/${n}/restart`, { id: hooks.current() }).catch(e => { st.kicking.delete(n); draw(); hooks.toast(e instanceof Error ? e.message : String(e), true); });
     }
   });
 

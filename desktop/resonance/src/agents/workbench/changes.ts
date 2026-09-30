@@ -24,7 +24,7 @@ export function mountChanges(ctx: PageCtx): Feature {
     const key = `changes:${s.id}`;
     if (ctx.wb.shown() === key && pick) { if (path) pick(path); return; }
     let l: List;
-    try { l = await ctx.call<List>(`/sessions/${s.id}/changes`); } catch (e) { ctx.toast(e instanceof Error ? e.message : String(e)); return; }
+    try { l = await ctx.call<List>(`/sessions/${s.id}/changes`); } catch (e) { ctx.toast(e instanceof Error ? e.message : String(e), true); return; }
     if (!l.files.length) { ctx.toast('它还没改文件'); return; }
     await ctx.wb.show({ key, ic: '±', b: '改动', small: against(l), target: 'stage', fill: view => draw(s, l, view) }, from);
   }
