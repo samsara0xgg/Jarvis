@@ -126,7 +126,11 @@ export async function dirtyOf(x: Session) {
   if (!ways.length) return undefined;
   // A branch whose pull request a landing opened has nothing to land until something is new since its last push.
   if (ways[0] === 'pr' && x.s.pr && !c.uncommitted.length && await git(c.top, 'rev-list', '--count', '@{u}..HEAD').then(n => n.trim() === '0', () => false)) return undefined;
-  return { n: c.files.length, add: c.files.reduce((n, f) => n + f[1], 0), del: c.files.reduce((n, f) => n + f[2], 0), ahead: c.ahead, into: c.into, ways };
+  // Review 18: the landing shows only its own steps, and the first one in a repository that could go either way asks.
+  const paths = c.files.map(f => f[0]), gates = gatesFor(x.repo, c.top, paths).defs.map(d => d.n), restart = restartFor(x.repo, c.top, paths).labels;
+  const ask = ways.length > 1 && !settings.land?.[x.repo]?.via && !isJarvis(c.top), local = !await originOf(c.top);
+  return { n: c.files.length, add: c.files.reduce((n, f) => n + f[1], 0), del: c.files.reduce((n, f) => n + f[2], 0), ahead: c.ahead, into: c.into, ways,
+    ...ask ? { ask } : {}, ...gates.length ? { gates } : {}, ...restart.length ? { restart } : {}, ...local ? { local } : {} };
 }
 
 // ---------- the gates and the restart: the owner's for the repository, else the Jarvis repository's own ----------
@@ -222,9 +226,10 @@ async function draftMessage(top: string, title: string, said: string, paths: str
 }
 
 // ---------- the line itself ----------
+// The gates and the restart it expects are there from the start, so the window draws the steps this landing has at once.
 const fresh = (x: Session): Land => ({
-  s: 'run', i: 0, steps: STEPS.map(() => ({ st: 'todo' as LandSt })), files: [], gates: [], msg: '', branch: x.s.branch,
-  into: x.s.dirty?.into ?? 'main', via: x.s.dirty?.ways[0] ?? 'merge',
+  s: 'run', i: 0, steps: STEPS.map(() => ({ st: 'todo' as LandSt })), files: [], gates: (x.s.dirty?.gates ?? []).map(n => ({ n, st: 'todo' as const })), msg: '', branch: x.s.branch,
+  into: x.s.dirty?.into ?? 'main', via: x.s.dirty?.ways[0] ?? 'merge', ...x.s.dirty?.restart ? { restart: x.s.dirty.restart } : {},
 });
 export class Landing {
   land: Land;
@@ -246,6 +251,7 @@ export class Landing {
     if (s === 'paused' || s === 'fail') { this.resume(); return; }
     this.want = via;
     this.land = fresh(this.x); this.land.msg = this.pre; this.edited = !!this.pre; this.pre = '';
+    if (via && this.x.s.dirty?.ways.includes(via)) { this.land.via = via; if (via === 'pr') this.land.restart = undefined; }
     this.body = ''; this.outs.clear(); this.draft = null; this.go = false;
     void this.from(0);
   }
@@ -273,7 +279,7 @@ export class Landing {
   }
   // A step's name as the window shows it.
   private title(i: number) {
-    return STEPS[i] === 'merge' ? `合入 ${this.land.into}` : STEPS[i] === 'push' && this.land.via === 'pr' ? '推分支、开 PR' : ['改动', '门禁', '提交', '', '重启', '推送', '清理'][i];
+    return STEPS[i] === 'merge' ? `合进 ${this.land.into}` : STEPS[i] === 'push' && this.land.via === 'pr' ? '推分支、开 PR' : ['改动', '门禁', '提交', '', '重启', '推送', '清理 worktree'][i];
   }
   // 留在分支上: the line stops where it is; nothing else is undone.
   stay() { this.tok++; if (this.child) kill(this.child); this.fixing = false; this.x.set({ land: undefined }); void this.refresh(); }
@@ -298,7 +304,7 @@ export class Landing {
   // The session's state moved: a fix that ended runs the line again; one that stopped leaves it paused.
   saw(st: string) {
     if (!this.fixing || this.x.s.land?.s !== 'fixing') return;
-    if (st === 'done') { this.fixing = false; this.land.gates = []; this.draft = null; void this.from(this.failed <= at('gate') ? 0 : this.failed); }
+    if (st === 'done') { this.fixing = false; this.land.gates = this.land.gates.map(g => ({ n: g.n, st: 'todo' })); this.draft = null; void this.from(this.failed <= at('gate') ? 0 : this.failed); }
     else if (st === 'err') { this.fixing = false; this.pause(this.failed, `${this.x.s.agent === 'codex' ? 'Codex' : 'Claude'} 没修完：它停了。`); }
   }
   private pause(i: number, why: string) {
@@ -338,13 +344,13 @@ export class Landing {
     Object.assign(this.land, { files: c.files, branch: c.branch, into, via });
     const g = gatesFor(this.x.repo, c.top, paths), r = restartFor(this.x.repo, c.top, paths);
     this.defs = g.defs; this.land.gates = g.defs.map(d => ({ n: d.n, st: 'todo' })); this.land.restart = pr ? [] : r.labels; this.own = r.own;
-    const s = this.land.steps, onto = c.branch !== into, tree = onto && this.x.s.tree, gh = pr && !!await ghExe();
+    const s = this.land.steps, onto = c.branch !== into, tree = onto && this.x.s.tree, gh = pr && !!await ghExe(), origin = !!await originOf(c.top);
     s[at('gate')].d = g.say;
     s[at('commit')].d = !c.uncommitted.length ? '改动都已经提交了' : existsSync(path.join(c.top, '.claude', 'skills', 'commit', 'SKILL.md')) ? 'commit skill 起草，跑之前可以改' : '照这个仓库最近的提交起草，跑之前可以改';
     s[at('merge')] = { ...s[at('merge')], d: pr ? `开 PR，不合进 ${into}` : onto ? undefined : `就在 ${into} 上`, cmd: !pr && onto ? [...c.linear ? [] : [`git rebase ${into}`], `git merge --ff-only ${c.branch}`] : undefined };
     s[at('restart')] = { ...s[at('restart')], d: pr ? '开 PR 不重启' : r.say, cmd: pr ? undefined : r.own ? [r.own] : r.labels.map(l => `launchctl kickstart -k gui/$UID/${LABEL[l]}`) };
-    s[at('push')] = { ...s[at('push')], d: pr && !gh ? '等你点头 · 没装 gh，推完给你开 PR 的链接' : '等你点头',
-      cmd: pr ? [`git push -u origin ${c.branch}`, ...gh ? [`gh pr create --base ${into} --head ${c.branch}`] : []] : [`git push origin ${into}`] };
+    s[at('push')] = { ...s[at('push')], d: !origin ? '这个仓库没有 origin，不推' : pr && !gh ? '等你点头 · 没装 gh，推完给你开 PR 的链接' : '等你点头',
+      cmd: !origin ? undefined : pr ? [`git push -u origin ${c.branch}`, ...gh ? [`gh pr create --base ${into} --head ${c.branch}`] : []] : [`git push origin ${into}`] };
     s[at('clean')] = { ...s[at('clean')], d: pr ? 'PR 还开着，worktree 留着接着改' : tree ? undefined : '不是它自己的 worktree', cmd: !pr && tree ? ['git worktree remove', 'git branch -d'] : undefined };
     if (c.uncommitted.length && !this.draft && !this.edited) this.startDraft(c);
     return 'ok';

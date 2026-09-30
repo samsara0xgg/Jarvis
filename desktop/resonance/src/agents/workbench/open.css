@@ -160,3 +160,28 @@ button.op-dp:hover{color:rgb(var(--acc));text-decoration-color:rgb(var(--acc))}
   .op-dv{grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,38%) minmax(0,1fr)}
   .op-dl{box-shadow:inset 0 -.5px 0 rgb(var(--acc) / .14)}
 }
+
+/* ---------- landing: the way asked once, the changes one click away, done in one line ---------- */
+.ask .ask-q{flex-basis:100%;margin:0;font-size:14px;line-height:1.7;color:rgb(226 230 247 / .92)}
+.ask .op-choose{display:inline-flex;gap:6px}
+.ask .op-choose button{background:rgb(255 255 255 / .08);color:var(--ink);box-shadow:inset 0 0 0 .5px rgb(var(--acc) / .4);transition:background 140ms,transform 120ms}
+.ask .op-choose button:hover{background:rgb(var(--acc) / .18)}
+.ask .when-open{display:none}
+.win.wb-land .ask .when-open{display:inline}
+.win.wb-land .ask .when-shut{display:none}
+.ask button>span{font-size:inherit;color:inherit}
+.ask .op-landed{display:flex;align-items:center;gap:8px;margin:0;padding:6px 12px 6px 10px;border-radius:10px;background:rgb(111 224 180 / .06);box-shadow:inset 0 0 0 .5px rgb(111 224 180 / .3);font-size:12.5px;line-height:1.5;color:var(--muted)}
+.ask .op-landed b{color:var(--mint);font-weight:600}
+.ask .op-landed button,.st .op-pr{display:inline;height:auto;padding:0;border-radius:0;font:inherit;background:none;box-shadow:none;color:var(--ink);text-decoration:underline;text-decoration-color:rgb(111 224 180 / .5);text-underline-offset:3px}
+.ask .op-landed button:hover,.st .op-pr:hover{color:var(--mint);text-decoration-color:var(--mint)}
+.st .op-lsum{color:var(--muted);text-decoration:underline;text-decoration-color:rgb(var(--acc) / .35);text-underline-offset:3px;text-align:left}
+.st .op-lsum:hover{color:var(--ink);text-decoration-color:rgb(var(--acc))}
+.st .op-lsum .p,.st .files .p{color:var(--mint)}
+.st .op-lsum .m,.st .files .m{color:#ff9f8f}
+.st .files li button{flex:1;min-width:0;display:flex;justify-content:space-between;gap:8px;margin:0 -5px;padding:0 5px;border-radius:5px;text-align:left;font:inherit;color:inherit;transition:background 120ms,color 120ms}
+.st .files li button:hover{background:rgb(var(--acc) / .1);color:var(--ink)}
+.st .files li button span{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.st .files li button i{flex:none;font-style:normal;color:var(--faint)}
+.st .op-choose{margin-top:8px}
+.st .op-choose button{height:26px;padding:0 10px;border-radius:7px;font-size:12px;font-weight:600;background:rgb(255 255 255 / .08);box-shadow:inset 0 0 0 .5px rgb(var(--acc) / .4)}
+.st .op-choose button:hover{background:rgb(var(--acc) / .18)}

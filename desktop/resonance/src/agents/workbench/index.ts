@@ -3,9 +3,9 @@
 // opens beside it; 舞台 when a page, artifact, PDF or image wants the width and the conversation folds into a narrow
 // column on the right. On the left, 落地 lays out the line from these changes to main. Every posture is a set of
 // rectangles and one curve moves between them; the one heavy move is the card you clicked growing into the stage.
-import type { Peek, Sess } from '../../../electron/agents/types';
+import type { LandVia, Peek, Sess } from '../../../electron/agents/types';
 import { classify, stripLine, type Ref } from './refs';
-import { CLOSE_ICON, active, chipOf, panelHTML, railHTML } from './landing';
+import { CLOSE_ICON, active, askHTML, chipOf, panelHTML, railHTML, svcOf } from './landing';
 import { QUICKLOOK, badge, drawFile, stopFile } from './open';
 import { mountTerminal, type Tab, type TPos } from './terminal';
 import './workbench.css';
@@ -91,6 +91,7 @@ export function mountWorkbench(win: HTMLElement, ta: HTMLTextAreaElement, hooks:
     if (!nar) chat.classList.remove('all');
     win.classList.toggle('wb-right', !!r.pv || (!!r.tm && terminal.pos !== 'drawer' && terminal.pos !== 'island'));
     win.classList.toggle('wb-cover', (S.left && !!s) || S.pos === 'stage');
+    win.classList.toggle('wb-land', S.left && !!s);
     terminal.show(!!r.tm, s?.id ?? '');
     hooks.redraw();
     if (instant) { void win.offsetWidth; win.classList.remove('wb-nt'); }
@@ -305,6 +306,7 @@ export function mountWorkbench(win: HTMLElement, ta: HTMLTextAreaElement, hooks:
       drawn.set(nu, h); moved = true;
       if (li) li.replaceWith(nu); else pl.append(nu);
     });
+    while (pl.children.length > p.steps.length) pl.lastElementChild!.remove();
     if (foot.innerHTML !== p.foot) foot.innerHTML = p.foot;
     if (br.innerHTML !== p.branch) br.innerHTML = p.branch;
     const rl = railHTML(s); if (rail.innerHTML !== rl) rail.innerHTML = rl;
@@ -331,6 +333,8 @@ export function mountWorkbench(win: HTMLElement, ta: HTMLTextAreaElement, hooks:
     else if (now === 'fail') hooks.cue('error');
     else if (now === 'done' && was) {
       hooks.cue('done', .6); S.doneAt.set(s.id, performance.now());
+      // Done is one line in the conversation: the panel folds away (it stays while there are services to look at).
+      if (!svcOf(s.land)) setTimeout(() => { if (S.left && sess()?.id === s.id && sess()?.land?.s === 'done') { S.left = false; layout(); } }, 600);
       setTimeout(() => { if (!RM.matches && !chip.hidden) chip.animate({ opacity: [1, 0] }, { duration: 600, fill: 'forwards' }).finished.then(() => { chip.getAnimations().forEach(a => a.cancel()); renderLand(); }, () => {}); else renderLand(); }, 4200);
     }
     if (active(s.land) && !was && !S.left) openPanel();
@@ -339,17 +343,22 @@ export function mountWorkbench(win: HTMLElement, ta: HTMLTextAreaElement, hooks:
   async function land(action: string, extra: Record<string, unknown> = {}) {
     const s = sess();
     if (!s) return;
-    await hooks.call(`/sessions/${s.id}/land`, { action, ...extra }).catch((e: unknown) => hooks.toast(e instanceof Error ? e.message : String(e)));
+    return hooks.call(`/sessions/${s.id}/land`, { action, ...extra }).then(() => true, (e: unknown) => { hooks.toast(e instanceof Error ? e.message : String(e)); return false; });
   }
-  function startLanding() {
+  // `via`: the way picked in answer to the repository's first landing, kept for it from then on. Until it is picked,
+  // ⌘⏎ only opens the panel, where the question is.
+  async function startLanding(via?: LandVia) {
     const s = sess();
     if (!s) return;
     const st = s.land?.s;
     if (st === 'run' || st === 'stopping' || st === 'wait' || st === 'fixing') { if (!S.left) openPanel(); return; }
     if (!s.dirty && !s.land) { hooks.toast('没有要落地的改动'); return; }
+    const asking = !!s.dirty?.ask && (!s.land || st === 'done');
+    if (asking && !via) { if (!S.left) openPanel(); return; }
     hooks.cue('send', .7);
     if (!S.left) openPanel();
-    void land(st === 'paused' || st === 'fail' ? 'resume' : 'start');
+    const ok = await land(st === 'paused' || st === 'fail' ? 'resume' : 'start', asking && via ? { via, keep: true } : {});
+    if (ok && asking && via) hooks.toast(`记住了：${s.project} 以后都${via === 'pr' ? '推分支开 PR' : `合进 ${s.dirty?.into ?? 'main'}`}`);
   }
   let msgTimer = 0;
   win.addEventListener('focusout', e => { if ((e.target as HTMLElement).id === 'landmsg') requestAnimationFrame(renderLand); });
@@ -402,7 +411,9 @@ export function mountWorkbench(win: HTMLElement, ta: HTMLTextAreaElement, hooks:
       return false;
     },
     back() { if (!S.ref) return false; void close(); return true; },
-    land: startLanding,
+    land: () => void startLanding(),
+    // The line under the last answer about landing this session's changes, or ''.
+    ask: (s: Sess) => askHTML(s),
     get narrow() { return chat.classList.contains('nar'); },
     // The page's click handler hands over what is the workbench's.
     act(a: string, el: HTMLElement) {
@@ -411,8 +422,10 @@ export function mountWorkbench(win: HTMLElement, ta: HTMLTextAreaElement, hooks:
       else if (a === 'pvclose') void close();
       else if (a === 'pvflip') void flip();
       else if (a === 'pvext') { const r = S.ref; if (r?.href) void window.agents?.openUrl?.(r.href); else if (r?.abs) void window.agents?.openPath?.(r.abs); }
-      else if (a === 'land') startLanding();
-      else if (a === 'landpanel') openPanel();
+      else if (a === 'land') void startLanding();
+      else if (a === 'landvia') void startLanding(el.dataset.v === 'pr' ? 'pr' : 'merge');
+      else if (a === 'landpr') { const u = sess()?.land?.pr; if (u) void window.agents?.openUrl?.(u); }
+      else if (a === 'landpanel') { if (S.left) { S.left = false; layout(); } else openPanel(); }
       else if (a === 'lpclose') { S.left = false; layout(); }
       else if (a === 'lpwide') { S.wide = !S.wide; layout(); }
       else if (a === 'lpstop') void land('stop');

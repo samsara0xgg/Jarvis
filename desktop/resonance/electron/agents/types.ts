@@ -59,10 +59,13 @@ export type Sess = {
   // · base: what its worktree started from
   tasks?: Task[]; dirs?: string[]; named?: boolean; base?: string;
   // ADR 0097 · dirty: what landing would take (files, lines, commits the default branch does not have yet), the default
-  // branch it lands into and the ways it can, the default first; absent outside git, with nothing to land or no way to ·
+  // branch it lands into and the ways it can, the default first; absent outside git, with nothing to land or no way to.
+  // `ask`: its repository has no way of its own yet and could go either, so the first landing asks which (and keeps the
+  // answer) · `gates`: the gates this change would run · `restart`: what merging it would restart · `local`: its
+  // repository has no origin, so nothing is pushed ·
   // land: the landing under way, absent when none is · gone: its worktree was cleaned away after landing · pr: the pull
   // request a landing opened for its branch
-  dirty?: { n: number; add: number; del: number; ahead: number; into: string; ways: LandVia[] }; land?: Land; gone?: boolean; pr?: string;
+  dirty?: { n: number; add: number; del: number; ahead: number; into: string; ways: LandVia[]; ask?: boolean; gates?: string[]; restart?: string[]; local?: boolean }; land?: Land; gone?: boolean; pr?: string;
   // rx: reactions on its messages, by the message (`you:<id>`, `it:<id>`) · vers: this session as one version of a
   // conversation you edited (m-edit): `root` is shared by every version of it, `at` names the messages here that have
   // versions, each with its family and this version's number
