@@ -1,7 +1,9 @@
 """ADR 0093 — the night run over a real event log, with the Mac's switches recorded.
 
 The Mac is a recorder (``_Mac``): what the run asked of it is asserted, and its
-answers (brightness, sound, presence, battery) are set per step. The clock is
+answers (brightness, sound, presence, battery) are set per step. Its default
+output is a Multi-Output Device, as on the owner's Mac: two devices, each
+muted on its own. The clock is
 the test's: 2026-09-29 23:00 in Vancouver, the morning 06:00. The later checks
 take the same run through the Tier 0 rows and tools a spoken request takes,
 through the companion's routes, and through the daemon's loop.
@@ -12,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import sqlite3
 from datetime import datetime, time
 from typing import TYPE_CHECKING, Any
@@ -26,7 +29,7 @@ from jarvis.decision.tier0 import (
     validate_tier0_table,
 )
 from jarvis.deployment import bootstrap_runtime
-from jarvis.deployment.night_power import Battery, Presence, Volume, parse_battery, parse_volume
+from jarvis.deployment.night_power import Battery, Presence, parse_battery
 from jarvis.execution.tools import ActionLifecycle, build_default_registry
 from jarvis.runtime import night_run
 from jarvis.runtime.night_run import DIM, NightRun, NightSettings, night_settings
@@ -55,7 +58,9 @@ class _Mac:
 
     def __init__(self) -> None:
         self.level: float | None = 0.8
-        self.sound: Volume | None = Volume(level=40, muted=False)
+        # Every device that takes a mute, by UID, and the ones behind the default output.
+        self.mutes: dict[str, bool] = {"speakers": False, "phones": False, "tv": False}
+        self.default: tuple[str, ...] | None = ("speakers", "phones")
         self.seen: Presence | None = Presence(locked=True, idle_s=9_999.0)
         self.cell: Battery | None = Battery(on_battery=False, percent=90)
         self.held: dict[int, float] = {}
@@ -83,12 +88,19 @@ class _Mac:
         self.level = level
         return True
 
-    def volume(self) -> Volume | None:
-        return self.sound
+    def outputs(self) -> dict[str, bool | None] | None:
+        if self.default is None:
+            return None
+        return {uid: self.mutes.get(uid) for uid in self.default}
 
-    def set_volume(self, volume: Volume) -> bool:
-        self.sound = volume
-        self.calls.append(("volume", volume.level, volume.muted))
+    def is_muted(self, uid: str) -> bool | None:
+        return self.mutes.get(uid)
+
+    def set_muted(self, uid: str, *, muted: bool) -> bool:
+        if uid not in self.mutes:
+            return False
+        self.mutes[uid] = muted
+        self.calls.append(("mute" if muted else "unmute", uid))
         return True
 
     def presence(self) -> Presence | None:
@@ -180,16 +192,16 @@ def test_a_run_holds_the_mac_goes_dark_and_a_look_before_morning_stays_a_look(
     # The bedtime card's seconds: nothing changes until they are up.
     clock.go(seconds=5)
     night.tick()
-    assert mac.sound == Volume(level=40, muted=False)
+    assert not any(mac.mutes.values())
     clock.go(seconds=3)
     night.tick()
     assert fx.rows()[-1] == (
         "night.darkened",
         {"night_id": started["night_id"],
-         "saved": {"brightness": 0.8, "volume": 40, "muted": False}},
+         "saved": {"brightness": 0.8, "muted": ["speakers", "phones"]}},
     )
     assert mac.level == DIM
-    assert mac.sound == Volume(level=40, muted=True)
+    assert mac.mutes == {"speakers": True, "phones": True, "tv": False}
     assert mac.calls[-1] == ("display_sleep",)
     assert _phase(night) == "dark"
 
@@ -199,7 +211,7 @@ def test_a_run_holds_the_mac_goes_dark_and_a_look_before_morning_stays_a_look(
     night.tick()
     assert _phase(night) == "glance"
     assert fx.rows()[-1][0] == "night.darkened"
-    assert mac.sound == Volume(level=40, muted=True)
+    assert mac.mutes["speakers"] is True
     # A quiet minute later the display sleeps again; the run goes on.
     clock.go(seconds=61)
     mac.seen = Presence(locked=False, idle_s=62.0)
@@ -224,7 +236,7 @@ def test_the_deadline_lets_only_the_hold_go_and_getting_up_puts_things_back(
     assert fx.rows()[-1] == ("night.released", {"night_id": night_id, "reason": "deadline"})
     assert ("release", held_id) in mac.calls
     assert not mac.held
-    assert mac.sound == Volume(level=40, muted=True)
+    assert mac.mutes["speakers"] is True
     assert _phase(night) == "dark"
     emit_event(fx.conn, type="mac.sleeping", payload={"ts_epoch_ms": _ms(1, 5, day=30)},
                ts_epoch_ms=_ms(1, 5, day=30))
@@ -239,7 +251,7 @@ def test_the_deadline_lets_only_the_hold_go_and_getting_up_puts_things_back(
          "restored": {"brightness": True, "volume": True}},
     )
     assert mac.level == 0.8
-    assert mac.sound == Volume(level=40, muted=False)
+    assert not any(mac.mutes.values())
     shown = night.snapshot()
     assert shown["night"] is None
     assert shown["last"] == {
@@ -250,23 +262,26 @@ def test_the_deadline_lets_only_the_hold_go_and_getting_up_puts_things_back(
     fx.close()
 
 
-def test_what_allen_changed_in_the_night_stays_and_a_sleep_while_held_is_reported(
+def test_what_the_owner_changed_in_the_night_stays_and_a_sleep_while_held_is_reported(
     tmp_path: Path,
 ) -> None:
     """Only what is still as the run left it comes back; a sleep while held is kept."""
     fx = _Fixture(tmp_path, at=_ms(23))
     mac, clock, night = fx.mac, fx.clock, fx.night
+    mac.mutes["phones"] = True  # muted before the run: not the run's to unmute
     night.start(hours=3, until=None, source="conversation", action_id="act-1")
     clock.go(seconds=8)
     night.tick()
-    # He turned the sound back on and the panel up; the lid closed at 23:40.
-    mac.sound = Volume(level=55, muted=False)
+    assert fx.rows()[-1][1]["saved"]["muted"] == ["speakers"]
+    # The owner turned the speakers back on and the panel up; the lid closed at 23:40.
+    mac.mutes["speakers"] = False
     mac.level = 0.5
     emit_event(fx.conn, type="mac.sleeping", payload={"ts_epoch_ms": _ms(23, 40)},
                ts_epoch_ms=_ms(23, 40))
     clock.go(to=_ms(23, 50))
     assert night.end(action_id="act-2") == {"status": "ended", "spoken": lang.t("night.ended")}
-    assert mac.sound == Volume(level=55, muted=False)
+    assert mac.mutes == {"speakers": False, "phones": True, "tv": False}
+    assert not any(call[0] == "unmute" for call in mac.calls)
     assert mac.level == 0.5
     assert not mac.held
     last = night.snapshot()["last"]
@@ -274,13 +289,18 @@ def test_what_allen_changed_in_the_night_stays_and_a_sleep_while_held_is_reporte
     assert last["slept_ms"] == _ms(23, 40)
     assert last["reason"] == "ended"
 
-    # Only the panel touched this time: the sound comes back, and End says just that.
+    # Only the panel touched this time, and the output moved to the TV: what the
+    # run muted comes back all the same, the TV is left alone, End says just that.
+    mac.mutes["phones"] = False
     night.start(hours=None, until=None, source="conversation")
     clock.go(seconds=8)
     night.tick()
     mac.level = 0.9
+    mac.default = ("tv",)
     assert night.end() == {"status": "ended", "spoken": lang.t("night.ended_volume")}
-    assert mac.sound == Volume(level=55, muted=False)
+    assert mac.mutes == {"speakers": False, "phones": False, "tv": False}
+    unmuted = [call for call in mac.calls if call[0] == "unmute"]
+    assert unmuted == [("unmute", "speakers"), ("unmute", "phones")]
     assert mac.level == 0.9
     correlations = [
         json.loads(corr) for (corr,) in fx.conn.execute(
@@ -300,7 +320,8 @@ def test_a_restart_picks_the_run_up_and_a_missed_deadline_is_written_down(tmp_pa
     # 23:30: the daemon restarts; the new one holds the rest of the two hours.
     fx.clock.go(to=_ms(23, 30))
     mac = _Mac()
-    mac.level, mac.sound = DIM, Volume(level=40, muted=True)
+    mac.level = DIM
+    mac.mutes.update(speakers=True, phones=True)
     night = fx.boot(mac)
     assert _phase(night) == "dark"
     assert mac.calls == [("hold", 90 * 60)]
@@ -310,7 +331,7 @@ def test_a_restart_picks_the_run_up_and_a_missed_deadline_is_written_down(tmp_pa
     night.tick()
     assert [etype for etype, _ in fx.rows()[-2:]] == ["night.released", "night.ended"]
     assert mac.level == 0.8
-    assert mac.sound == Volume(level=40, muted=False)
+    assert not any(mac.mutes.values())
     assert not mac.held
 
     # A run whose deadline passed while no daemon ran gets its release on boot.
@@ -336,7 +357,7 @@ def test_cancel_before_dark_changes_nothing_and_a_daytime_run_ends_at_the_first_
     clock.go(seconds=3)
     assert night.end()["status"] == "cancelled"
     assert fx.rows()[-1][1]["reason"] == "cancelled"
-    assert mac.sound == Volume(level=40, muted=False)
+    assert not any(mac.mutes.values())
     assert mac.level == 0.8
     assert not mac.held
 
@@ -388,6 +409,35 @@ def test_the_dark_waits_out_the_goodnight_line_and_a_low_battery_lets_the_mac_go
     clock.go(seconds=1)
     night.tick()
     assert _phase(night) == "dark"
+    fx.close()
+
+
+def test_an_output_without_a_mute_is_logged_and_the_rest_still_happens(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A display's own speakers take no mute: the log names them; the rest goes on."""
+    fx = _Fixture(tmp_path, at=_ms(23))
+    mac, night = fx.mac, fx.night
+    mac.default = ("speakers", "hdmi")  # the display has no mute, so none in mac.mutes
+    with caplog.at_level(logging.WARNING, logger="jarvis.runtime.night_run"):
+        night_id = _dark(fx)
+    assert "could not mute hdmi; its sound stays on" in caplog.text
+    assert fx.rows()[-1] == (
+        "night.darkened",
+        {"night_id": night_id, "saved": {"brightness": 0.8, "muted": ["speakers"]}},
+    )
+    assert mac.mutes["speakers"] is True
+    assert mac.level == DIM
+    assert night.end() == {"status": "ended", "spoken": lang.t("night.ended_restored")}
+
+    # No answer from the sound system at all: said too, and End has only the panel.
+    mac.default = None
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="jarvis.runtime.night_run"):
+        _dark(fx)
+    assert "could not mute the default output" in caplog.text
+    assert fx.rows()[-1][1]["saved"] == {"brightness": 0.8, "muted": []}
+    assert night.end() == {"status": "ended", "spoken": lang.t("night.ended_brightness")}
     fx.close()
 
 
@@ -471,11 +521,11 @@ def test_the_companion_routes_start_darken_and_end_the_run(tmp_path: Path) -> No
     assert shown["laptop"] is True
     darkened = client.post("/inherent/night", json={"action": "dark"}).json()
     assert darkened["night"]["phase"] == "dark"
-    assert fx.mac.sound == Volume(level=40, muted=True)
+    assert fx.mac.mutes == {"speakers": True, "phones": True, "tv": False}
     ended = client.post("/inherent/night", json={"action": "end"}).json()
     assert ended["night"] is None
     assert ended["last"]["reason"] == "ended"
-    assert fx.mac.sound == Volume(level=40, muted=False)
+    assert not any(fx.mac.mutes.values())
     assert client.post("/inherent/night", json={"action": "nap"}).status_code == 422
     assert client.post("/inherent/night", json={"action": "start", "hours": 20}).status_code == 422
     fx.close()
@@ -513,22 +563,12 @@ def test_the_daemon_loop_serves_ticks_and_stops_serving(
 
 
 def test_settings_and_the_macs_own_answers_parse() -> None:
-    """``night:`` settings fall back per value; osascript and pmset text parse."""
+    """``night:`` settings fall back per value; pmset's battery text parses."""
     assert night_settings({"night": {"hours": 3, "morning": "07:30"}}) == NightSettings(
         hours=3.0, morning=time(7, 30),
     )
     assert night_settings({"night": {"hours": 40, "morning": "late"}}) == NightSettings()
     assert night_settings({}) == NightSettings()
-    volumes = {
-        "output volume:44, input volume:50, alert volume:100, output muted:false":
-            Volume(level=44, muted=False),
-        "output volume:0, input volume:75, alert volume:100, output muted:true":
-            Volume(level=0, muted=True),
-        "output volume:missing value, input volume:50, alert volume:100, "
-        "output muted:missing value": None,
-    }
-    for text, volume in volumes.items():
-        assert parse_volume(text) == volume, text
     batteries = {
         "Now drawing from 'AC Power'\n -InternalBattery-0 (id=4653155)\t100%; charged; 0:00 "
         "remaining present: true\n": Battery(on_battery=False, percent=100),

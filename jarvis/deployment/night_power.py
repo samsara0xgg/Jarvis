@@ -8,9 +8,11 @@ hung or killed daemon never keeps the Mac awake past the deadline, and the
 assertion dies with this process anyway.
 
 Brightness is the built-in panel's, through the private DisplayServices
-framework (Apple Silicon has no public call). Sound goes through AppleScript,
-the same calls as the wake ducker (ADR-0005 §4.2). Presence is the session's
-lock state and the seconds since the last keyboard or mouse input.
+framework (Apple Silicon has no public call). Sound is muted device by device
+through CoreAudio: a Multi-Output Device has no level or mute of its own
+(AppleScript reads it as ``missing value``), so each of its active sub-devices
+is muted instead. Presence is the session's lock state and the seconds since
+the last keyboard or mouse input.
 
 Layer placement: L6 deployment. stdlib and L1's product name; nothing here
 imports ``jarvis.state`` (H13), the runtime records what these calls did.
@@ -35,6 +37,7 @@ _DETAILS: Final = "Keeps agents running through the night; released at the deadl
 _IOKIT: Final = "/System/Library/Frameworks/IOKit.framework/IOKit"
 _CORE_FOUNDATION: Final = "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation"
 _CORE_GRAPHICS: Final = "/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics"
+_CORE_AUDIO: Final = "/System/Library/Frameworks/CoreAudio.framework/CoreAudio"
 _DISPLAY_SERVICES: Final = (
     "/System/Library/PrivateFrameworks/DisplayServices.framework/DisplayServices"
 )
@@ -43,18 +46,21 @@ _HID_SYSTEM_STATE: Final = 1  # kCGEventSourceStateHIDSystemState
 _ANY_INPUT_EVENT: Final = 0xFFFFFFFF  # kCGAnyInputEventType
 _MAX_DISPLAYS: Final = 16
 _TIMEOUT_S: Final = 5
-
-_VOLUME_RE: Final = re.compile(r"output volume:(\d+)")
-_MUTED_RE: Final = re.compile(r"output muted:(true|false)")
 _PERCENT_RE: Final = re.compile(r"(\d{1,3})%")
 
-
-@dataclass(frozen=True)
-class Volume:
-    """The system output level (0-100) and whether it is muted."""
-
-    level: int
-    muted: bool
+# CoreAudio: the system object, the property codes and elements used here.
+_AUDIO_SYSTEM: Final = 1  # kAudioObjectSystemObject
+_GLOBAL: Final = int.from_bytes(b"glob", "big")
+_OUTPUT: Final = int.from_bytes(b"outp", "big")
+_DEVICES: Final = int.from_bytes(b"dev#", "big")
+_DEFAULT_OUTPUT: Final = int.from_bytes(b"dOut", "big")
+_DEVICE_UID: Final = int.from_bytes(b"uid ", "big")
+_SUB_DEVICES: Final = int.from_bytes(b"agrp", "big")  # an aggregate's active sub-devices
+_STREAMS: Final = int.from_bytes(b"stm#", "big")
+_MUTE: Final = int.from_bytes(b"mute", "big")
+_MAIN: Final = 0  # kAudioObjectPropertyElementMain
+_CHANNELS: Final = range(1, 9)  # a device without a main mute may have one per channel
+_MAX_AUDIO_IDS: Final = 256
 
 
 @dataclass(frozen=True)
@@ -71,22 +77,6 @@ class Battery:
 
     on_battery: bool
     percent: int
-
-
-def parse_volume(text: str) -> Volume | None:
-    """``get volume settings`` output -> Volume; None when the device has no level.
-
-    >>> parse_volume("output volume:44, input volume:50, alert volume:100, output muted:false")
-    Volume(level=44, muted=False)
-    """
-    level = _VOLUME_RE.search(text)
-    if level is None:  # "output volume:missing value": HDMI and the like
-        return None
-    muted = _MUTED_RE.search(text)
-    return Volume(
-        level=max(0, min(100, int(level.group(1)))),
-        muted=muted is not None and muted.group(1) == "true",
-    )
 
 
 def parse_battery(text: str) -> Battery | None:
@@ -114,6 +104,19 @@ def _run(argv: list[str]) -> str | None:
     return done.stdout
 
 
+class _Address(ctypes.Structure):
+    """CoreAudio's AudioObjectPropertyAddress."""
+
+    _fields_ = (
+        ("selector", ctypes.c_uint32),
+        ("scope", ctypes.c_uint32),
+        ("element", ctypes.c_uint32),
+    )
+
+
+type _AudioData = ctypes.c_uint32 | ctypes.c_void_p | ctypes.Array[ctypes.c_uint32]
+
+
 class _Frameworks:
     """The frameworks behind the ctypes calls, each function's types pinned once."""
 
@@ -121,6 +124,7 @@ class _Frameworks:
         self.iokit = ctypes.CDLL(_IOKIT)
         self.cf = ctypes.CDLL(_CORE_FOUNDATION)
         self.cg = ctypes.CDLL(_CORE_GRAPHICS)
+        self.ca = ctypes.CDLL(_CORE_AUDIO)
         try:
             self.ds: ctypes.CDLL | None = ctypes.CDLL(_DISPLAY_SERVICES)
         except OSError:
@@ -138,6 +142,10 @@ class _Frameworks:
         cf.CFBooleanGetTypeID.argtypes = []
         cf.CFBooleanGetValue.restype = ctypes.c_bool
         cf.CFBooleanGetValue.argtypes = [ctypes.c_void_p]
+        cf.CFStringGetCString.restype = ctypes.c_bool
+        cf.CFStringGetCString.argtypes = [
+            ctypes.c_void_p, ctypes.c_char_p, ctypes.c_long, ctypes.c_uint32,
+        ]
         iokit.IOPMAssertionCreateWithDescription.restype = ctypes.c_int
         iokit.IOPMAssertionCreateWithDescription.argtypes = [
             ctypes.c_void_p,  # AssertionType
@@ -161,6 +169,24 @@ class _Frameworks:
         ]
         cg.CGDisplayIsBuiltin.restype = ctypes.c_uint32
         cg.CGDisplayIsBuiltin.argtypes = [ctypes.c_uint32]
+        address = ctypes.POINTER(_Address)
+        self.ca.AudioObjectHasProperty.restype = ctypes.c_bool
+        self.ca.AudioObjectHasProperty.argtypes = [ctypes.c_uint32, address]
+        self.ca.AudioObjectGetPropertyDataSize.restype = ctypes.c_int32
+        self.ca.AudioObjectGetPropertyDataSize.argtypes = [
+            ctypes.c_uint32, address, ctypes.c_uint32, ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_uint32),
+        ]
+        self.ca.AudioObjectGetPropertyData.restype = ctypes.c_int32
+        self.ca.AudioObjectGetPropertyData.argtypes = [
+            ctypes.c_uint32, address, ctypes.c_uint32, ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_uint32), ctypes.c_void_p,
+        ]
+        self.ca.AudioObjectSetPropertyData.restype = ctypes.c_int32
+        self.ca.AudioObjectSetPropertyData.argtypes = [
+            ctypes.c_uint32, address, ctypes.c_uint32, ctypes.c_void_p,
+            ctypes.c_uint32, ctypes.c_void_p,
+        ]
         if self.ds is not None:
             self.ds.DisplayServicesGetBrightness.restype = ctypes.c_int
             self.ds.DisplayServicesGetBrightness.argtypes = [
@@ -200,6 +226,83 @@ class _Frameworks:
             if self.cg.CGDisplayIsBuiltin(ids[index]):
                 return int(ids[index])
         return None
+
+    def audio_get(self, audio_object: int, address: _Address, out: _AudioData) -> int | None:
+        """Read a CoreAudio property into ``out``; the bytes written, or None."""
+        size = ctypes.c_uint32(ctypes.sizeof(out))
+        code = self.ca.AudioObjectGetPropertyData(
+            audio_object, ctypes.byref(address), 0, None, ctypes.byref(size), ctypes.byref(out),
+        )
+        return int(size.value) if code == 0 else None
+
+    def audio_ids(self, audio_object: int, selector: int) -> list[int]:
+        """A list-of-ids property (``dev#``, ``agrp``); empty when there is none."""
+        ids = (ctypes.c_uint32 * _MAX_AUDIO_IDS)()
+        written = self.audio_get(audio_object, _Address(selector, _GLOBAL, _MAIN), ids)
+        count = 0 if written is None else written // ctypes.sizeof(ctypes.c_uint32)
+        return [int(ids[index]) for index in range(count)]
+
+    def audio_uid(self, device: int) -> str | None:
+        """The device's UID, which, unlike its id, outlives a replug or a restart."""
+        ref = ctypes.c_void_p(0)
+        if self.audio_get(device, _Address(_DEVICE_UID, _GLOBAL, _MAIN), ref) is None:
+            return None
+        if not ref.value:
+            return None
+        text = ctypes.create_string_buffer(512)
+        try:
+            if not self.cf.CFStringGetCString(ref, text, len(text), _UTF8):
+                return None
+        finally:
+            self.cf.CFRelease(ref)
+        return text.value.decode("utf-8", errors="replace")
+
+    def device(self, uid: str) -> int | None:
+        """The id the device with ``uid`` has now, when it is there."""
+        for device in self.audio_ids(_AUDIO_SYSTEM, _DEVICES):
+            if self.audio_uid(device) == uid:
+                return device
+        return None
+
+    def plays(self, device: int) -> bool:
+        """Whether the device has output streams: an aggregate may hold a microphone too."""
+        size = ctypes.c_uint32(0)
+        code = self.ca.AudioObjectGetPropertyDataSize(
+            device, ctypes.byref(_Address(_STREAMS, _OUTPUT, _MAIN)), 0, None, ctypes.byref(size),
+        )
+        return code == 0 and size.value > 0
+
+    def mutes(self, device: int) -> list[_Address]:
+        """Where the device's output takes a mute: its main element, else each channel's."""
+        main = _Address(_MUTE, _OUTPUT, _MAIN)
+        if self.ca.AudioObjectHasProperty(device, ctypes.byref(main)):
+            return [main]
+        channels = [_Address(_MUTE, _OUTPUT, channel) for channel in _CHANNELS]
+        return [
+            channel for channel in channels
+            if self.ca.AudioObjectHasProperty(device, ctypes.byref(channel))
+        ]
+
+    def muted(self, device: int) -> bool | None:
+        """Whether every mute the device has is on; None when it has none."""
+        states: list[bool] = []
+        for address in self.mutes(device):
+            value = ctypes.c_uint32(0)
+            if self.audio_get(device, address, value) is None:
+                return None
+            states.append(value.value != 0)
+        return all(states) if states else None
+
+    def set_muted(self, device: int, *, muted: bool) -> bool:
+        """Turn every mute the device has on or off; False when one would not."""
+        value = ctypes.c_uint32(1 if muted else 0)
+        codes = [
+            self.ca.AudioObjectSetPropertyData(
+                device, ctypes.byref(address), 0, None, ctypes.sizeof(value), ctypes.byref(value),
+            )
+            for address in self.mutes(device)
+        ]
+        return bool(codes) and all(code == 0 for code in codes)
 
 
 class MacPower:
@@ -285,23 +388,41 @@ class MacPower:
         value = ctypes.c_float(max(0.0, min(1.0, level)))
         return int(mac.ds.DisplayServicesSetBrightness(display, value)) == 0
 
-    def volume(self) -> Volume | None:
-        """The output level and mute; None when the device has no level."""
-        if self._mac() is None:
-            return None
-        out = _run(["/usr/bin/osascript", "-e", "get volume settings"])
-        return None if out is None else parse_volume(out)
+    def outputs(self) -> dict[str, bool | None] | None:
+        """The devices the default output plays on, by UID: muted or not, None for no mute.
 
-    def set_volume(self, volume: Volume) -> bool:
-        """Set the output level and mute together."""
-        if self._mac() is None:
+        An aggregate (a Multi-Output Device) has no mute of its own, so its
+        active sub-devices stand in for it. None when CoreAudio does not answer.
+        """
+        mac = self._mac()
+        if mac is None:
+            return None
+        default = ctypes.c_uint32(0)
+        where = _Address(_DEFAULT_OUTPUT, _GLOBAL, _MAIN)
+        if mac.audio_get(_AUDIO_SYSTEM, where, default) is None:
+            return None
+        found: dict[str, bool | None] = {}
+        for device in mac.audio_ids(default.value, _SUB_DEVICES) or [default.value]:
+            uid = mac.audio_uid(device)
+            if uid is not None and mac.plays(device):
+                found[uid] = mac.muted(device)
+        return found
+
+    def is_muted(self, uid: str) -> bool | None:
+        """Whether the device with ``uid`` is muted now; None when it is gone."""
+        mac = self._mac()
+        if mac is None:
+            return None
+        device = mac.device(uid)
+        return None if device is None else mac.muted(device)
+
+    def set_muted(self, uid: str, *, muted: bool) -> bool:
+        """Mute or unmute the device with ``uid``, the default output or not."""
+        mac = self._mac()
+        if mac is None:
             return False
-        muted = "true" if volume.muted else "false"
-        script = (
-            f"set volume output volume {max(0, min(100, volume.level))}\n"
-            f"try\n  set volume output muted {muted}\nend try\n"
-        )
-        return _run(["/usr/bin/osascript", "-e", script]) is not None
+        device = mac.device(uid)
+        return device is not None and mac.set_muted(device, muted=muted)
 
     def presence(self) -> Presence | None:
         """Lock state and input idle time of this login session; None outside one."""
@@ -332,7 +453,5 @@ __all__ = [
     "Battery",
     "MacPower",
     "Presence",
-    "Volume",
     "parse_battery",
-    "parse_volume",
 ]

@@ -732,11 +732,12 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
     ),
     # ADR 0093 night run. The owner starts one; `wake_at_ms` is their
     # morning, before which a return is only a look; `guarded` says whether
-    # the keep-awake assertion was granted. `saved` ({brightness, volume,
-    # muted}, each null when unknown) is written before anything changes: it
-    # is what the return puts back, across a daemon restart too. `released`
-    # lets the Mac sleep (reason deadline | battery); `ended` closes the run
-    # (reason returned | ended | cancelled) with what was put back.
+    # the keep-awake assertion was granted. `saved` ({brightness, muted}: the
+    # panel's level, null when unknown, and the UIDs of the output devices the
+    # run mutes) is written before anything changes: it is what the return
+    # puts back, across a daemon restart too. `released` lets the Mac sleep
+    # (reason deadline | battery); `ended` closes the run (reason returned |
+    # ended | cancelled) with what was put back.
     EventTypeSchema(
         event_type="night.started",
         owner_layer="L6",

@@ -28,7 +28,6 @@ from datetime import datetime, timedelta
 from datetime import time as clock
 from typing import TYPE_CHECKING, Any, Final, Protocol
 
-from jarvis.deployment.night_power import Volume
 from jarvis.execution.night_tools import MAX_HOURS, MIN_HOURS
 from jarvis.shared import lang
 from jarvis.state.event_log import emit_event, iter_events_of_types, open_runtime_event_log
@@ -88,11 +87,14 @@ class NightPower(Protocol):
     def set_brightness(self, level: float) -> bool:
         """Set the built-in panel's level."""
 
-    def volume(self) -> Volume | None:
-        """The output level and mute."""
+    def outputs(self) -> dict[str, bool | None] | None:
+        """The default output's devices by UID: muted or not, None for no mute."""
 
-    def set_volume(self, volume: Volume) -> bool:
-        """Set the output level and mute."""
+    def is_muted(self, uid: str) -> bool | None:
+        """Whether that device is muted now; None when it is gone."""
+
+    def set_muted(self, uid: str, *, muted: bool) -> bool:
+        """Mute or unmute that device."""
 
     def presence(self) -> Presence | None:
         """Lock state and input idle time."""
@@ -358,13 +360,10 @@ class NightRun:
     # --- steps: called with the lock held ---------------------------------------
 
     def _darken(self, night: _Night) -> None:
-        sound = self._power.volume()
         level = self._power.brightness()
-        saved = {
-            "brightness": level,
-            "volume": None if sound is None else sound.level,
-            "muted": None if sound is None else sound.muted,
-        }
+        outputs = self._power.outputs() or {}
+        playing = [uid for uid, muted in outputs.items() if muted is False]
+        saved = {"brightness": level, "muted": playing}
         now = self._now_ms()
         with self._log() as conn:
             emit_event(
@@ -377,8 +376,11 @@ class NightRun:
         night.darkened_ms = now
         if level is not None and level > DIM:
             self._power.set_brightness(DIM)
-        if sound is not None and not sound.muted:
-            self._power.set_volume(Volume(level=sound.level, muted=True))
+        stays = [uid for uid, muted in outputs.items() if muted is None]
+        stays += [uid for uid in playing if not self._power.set_muted(uid, muted=True)]
+        if stays or not outputs:
+            LOGGER.warning("night run: could not mute %s; its sound stays on",
+                           ", ".join(stays) or "the default output")
         self._power.sleep_display()
         night.dark_at = self._mono()
 
@@ -446,11 +448,10 @@ class NightRun:
                     self._power.set_brightness(now + (before - now) * step / _FADE_STEPS)
                     self._sleep(_FADE_STEP_S)
                 restored["brightness"] = self._power.set_brightness(float(before))
-        level = saved.get("volume")
-        if isinstance(level, int) and saved.get("muted") is False:
-            sound = self._power.volume()
-            if sound is not None and sound.muted:
-                restored["volume"] = self._power.set_volume(Volume(level=level, muted=False))
+        muted = saved.get("muted")
+        for uid in muted if isinstance(muted, list) else ():
+            if self._power.is_muted(uid) and self._power.set_muted(uid, muted=False):
+                restored["volume"] = True
         return restored
 
     def _battery_low(self) -> bool:
