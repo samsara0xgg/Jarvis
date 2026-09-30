@@ -2440,6 +2440,49 @@ def test_macos_say_plays_through_the_player_the_echo_canceller_listens_to(
     assert payload["heard_through_sequence"] == 1
 
 
+def test_a_voice_that_breaks_mid_sentence_plays_out_then_sounds_the_cut_off_cue(
+    tmp_path: Path,
+) -> None:
+    """MiniMax fails after part of a sentence: that part plays, a cue follows, then the terminal.
+
+    ADR-0006 D5 still forbids saying the sentence again; before the cue she
+    went silent mid-word with nothing to say why.
+    """
+    db_path = tmp_path / "cut-off-cue.db"
+    conn = open_event_log(db_path)
+    provider = _FakeProvider({("RCUT", 0): _Behavior("fail_after")}, candidate_count=1)
+    player = _player()
+    pipeline = voice_media.StreamingTTSPipeline(
+        provider=provider,
+        player=player,
+        conn_factory=lambda: open_event_log(db_path),
+        boot_high_water_id=0,
+        config=_config(),
+        start_player=False,
+    )
+    try:
+        with _CallbackPump(player, record=True) as pump:
+            rows = _emit_response(
+                conn, response_id="RCUT", group_id="GCUT", turn_id="TCUT",
+                text=["first sentence. ", "second sentence."],
+            )
+            asyncio.run(_submit_response(pipeline, rows))
+            assert pipeline.wait_until_idle(timeout_s=3.0)
+    finally:
+        assert pipeline.close()
+        conn.close()
+    signal = pump.signal
+    said = np.flatnonzero(np.abs(signal - 2_000 / 32_768) < 1e-3)  # the provider's partial PCM
+    cue = np.flatnonzero(np.abs(signal) > 0.1)
+    assert len(cue) > 500
+    # All 160 samples it gave, but for the declick, and before the cue starts.
+    assert np.count_nonzero(said < cue.min()) >= 150
+    kind, payload = _terminal_for(open_event_log(db_path), response_id="RCUT")
+    assert kind == "surface.playback_failed"
+    assert payload["reason"] == "partial_tts_provider_failure"
+    assert payload["heard_through_sequence"] is None
+
+
 def test_a_say_that_cannot_render_says_the_rest_aloud(tmp_path: Path) -> None:
     """A failed render falls back to the old way, straight to the speakers."""
     db_path = tmp_path / "macos-say-aloud.db"

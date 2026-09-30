@@ -553,6 +553,17 @@ class ActivePlaybackRegistry:
             self._seen_events.discard(self._seen_order.popleft())
 
 
+def _cut_off_cue(rate_hz: int) -> bytes:
+    """Two soft falling notes (E5, A4), 90 ms each, as canonical float32 PCM."""
+    notes = []
+    for frequency in (659.25, 440.0):
+        t = np.arange(int(rate_hz * 0.09)) / rate_hz
+        envelope = np.minimum(1.0, np.minimum(t, t[::-1]) / 0.012)  # 12 ms ramps
+        notes.append(0.18 * envelope * np.sin(2 * np.pi * frequency * t))
+        notes.append(np.zeros(int(rate_hz * 0.03)))
+    return np.concatenate(notes).astype("<f4").tobytes()
+
+
 class _SegmentResampler:
     """Independent int16-LE provider segment to canonical float32-LE PCM."""
 
@@ -2775,6 +2786,10 @@ class StreamingTTSPipeline:
                     iterator = None
                     active.session = None
                     if accepted_segment > 0:
+                        # ADR-0006 D5: a segment heard in part is never said
+                        # again. What she said plays out, and a cue tells Allen
+                        # her voice broke rather than leaving him in silence.
+                        await self._play_cut_off_cue(active, sequence=sequence)
                         await self._fail_active(
                             active,
                             reason="partial_tts_provider_failure",
@@ -2827,6 +2842,25 @@ class StreamingTTSPipeline:
                 await session.finish()
             active.session = None
         return True
+
+    async def _play_cut_off_cue(self, active: _ActiveResponse, *, sequence: int) -> None:
+        """Play what was accepted to its end, then the cut-off cue, before the terminal."""
+        cue = _cut_off_cue(self._config.canonical_sample_rate_hz)
+        await self._write_all(active, cue, sequence=sequence)
+        record_realtime_trace(
+            "tts_cut_off_cue",
+            response_id=active.response.response_id,
+            playback_generation_id=active.lease.playback_generation_id,
+            segment_sequence=sequence,
+        )
+        while self._active is active:
+            snapshot = self._player.poll_generation(active.lease.playback_generation_id)
+            if isinstance(snapshot, StalePlaybackGeneration):
+                return
+            await self._checkpoint_if_advanced(active, snapshot)
+            if snapshot.estimated_audible_samples >= snapshot.accepted_samples:
+                return
+            await asyncio.sleep(self._config.presentation_poll_s)
 
     def _prepare_segment(
         self, active: _ActiveResponse, sequence: int, text: str, segment_hash: str,
