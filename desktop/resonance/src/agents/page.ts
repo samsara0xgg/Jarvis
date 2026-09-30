@@ -14,6 +14,7 @@ import { mountStopped } from './exposure/waiting';
 import { mountWorkbench } from './workbench';
 import { cardsHTML, editsBefore, inline } from './workbench/refs';
 import * as usage from './workbench/usage';
+import { mountViewer } from './viewer';
 import { mountSlip } from './slip';
 import './agents.css';
 import './exposure/exposure.css';
@@ -1042,7 +1043,6 @@ async function act(a: string, el: HTMLElement) {
   else if (a === 'pickcmd' || a === 'pickfile') { tick(); pickIt(el.dataset.v!, a === 'pickcmd'); }
   else if (a === 'attach') $<HTMLInputElement>('#file').click();
   else if (a === 'unfile') { unattach(app.files.splice(Number(el.dataset.k), 1)); draw('comp'); }
-  else if (a === 'view') { const img = $<HTMLImageElement>('img', el); viewImg.src = img.src; viewImg.alt = img.alt; viewer.showModal(); }
   else if (a === 'side') { app.sideOpen = !app.sideOpen; win.classList.toggle('side-open', app.sideOpen); }
   else if (a === 'sound') setSound(!snd.on);
 }
@@ -1167,12 +1167,6 @@ herCv.addEventListener('pointerdown', () => { her.pressed = true; });
 addEventListener('pointerup', () => { her.pressed = false; });
 herCv.addEventListener('click', () => { void act('next', herCv); });
 
-// A picture opened large, in the top layer: any click or esc puts it away, and nothing behind it takes a key meanwhile.
-// Registered before B01's own keys so it comes first.
-const viewer = $<HTMLDialogElement>('.viewer', win), viewImg = $<HTMLImageElement>('img', viewer);
-viewer.addEventListener('click', () => viewer.close());
-addEventListener('keydown', e => { if (!viewer.open) return; e.stopImmediatePropagation(); if (e.key === 'Escape') { e.preventDefault(); viewer.close(); } }, true);
-
 // Features take keys before the workbench and the Long Exposure, so what one of them has open keeps them.
 addEventListener('keydown', e => { for (const f of features) if (f.key?.(e)) return; }, true);
 const wb = mountWorkbench(win, ta, {
@@ -1192,6 +1186,8 @@ const ctx: PageCtx = {
   catalog: () => app.catalog,
 };
 // Each feature is mounted on the one context below; its clicks, keys, commands and menu lines are its own.
+// The picture viewer holds every key while it is open, so it comes first.
+features.push(mountViewer(ctx));
 features.push(mountStopped(ctx));
 features.push(mountSlip(ctx));
 
