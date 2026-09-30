@@ -344,7 +344,7 @@ export function mountSee(ctx: PageCtx): Feature {
     look(s, ref);
     menuFor = { el, ref, sid: s.id };
     const w = win.getBoundingClientRect();
-    ctx.menu(`<button type="button" data-act="seefside">在右边打开</button><button type="button" data-act="seefed">在编辑器里打开${editor ? `<span class="k">${esc(editor)}</span>` : ''}</button>`
+    ctx.menu(`<button type="button" data-act="seefside">在右边打开</button><button type="button" data-act="seefapp">用默认的 app 打开</button><button type="button" data-act="seefed">在编辑器里打开${editor ? `<span class="k">${esc(editor)}</span>` : ''}</button>`
       + '<button type="button" data-act="seeffind">在访达里显示</button><span class="sep"></span><button type="button" data-act="seefcopy">复制路径</button>', { x: e.clientX - w.left, y: e.clientY - w.top }, { cls: 'see-fm' });
     void readEditor();
   });
@@ -356,7 +356,8 @@ export function mountSee(ctx: PageCtx): Feature {
     if (a === 'seefside') {
       const src = m.el.isConnected ? m.el : [...win.querySelectorAll<HTMLElement>('[data-ref]')].find(x => x.dataset.ref === m.ref);
       if (src) ctx.wb.act('peek', src);
-    } else if (a === 'seefed') { if (await window.agents?.openInEditor?.(abs, line) === false) ctx.toast('没能在编辑器里打开'); }
+    } else if (a === 'seefapp') void window.agents?.openPath?.(abs);
+    else if (a === 'seefed') { if (await window.agents?.openInEditor?.(abs, line) === false) ctx.toast('没能在编辑器里打开'); }
     else if (a === 'seeffind') void window.agents?.revealFile?.(abs);
     else if (a === 'seefcopy') await navigator.clipboard.writeText(abs).then(() => ctx.tick(), () => ctx.toast(`没能复制。路径是 ${abs}`));
   }

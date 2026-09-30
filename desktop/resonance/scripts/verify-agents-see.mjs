@@ -146,11 +146,13 @@ try {
   check('a click on it opens the file on the right, the button marked', (await text('.pv .sh b')) === 'notes.txt' && await fb.evaluate(el => el.classList.contains('on')));
   await p.locator('.pv [data-act="pvclose"]').click(); await sleep(700);
   await fileMenu(fb);
-  check('a right click gives 在右边打开 · 在编辑器里打开 · 在访达里显示 · 复制路径', (await text('.pop.on')).split('\n').map(s => s.trim()).filter(Boolean).join(' · ') === '在右边打开 · 在编辑器里打开 · 在访达里显示 · 复制路径', await text('.pop.on'));
+  check('a right click gives 在右边打开 · 用默认的 app 打开 · 在编辑器里打开 · 在访达里显示 · 复制路径', (await text('.pop.on')).split('\n').map(s => s.trim()).filter(Boolean).join(' · ') === '在右边打开 · 用默认的 app 打开 · 在编辑器里打开 · 在访达里显示 · 复制路径', await text('.pop.on'));
   await st.shot('see-file');
   const abs = path.join(repo, 'notes.txt');
   await p.locator('.pop.on [data-act="seefed"]').click(); await sleep(200);
   check('在编辑器里打开 asks the window for this Mac\'s editor, with the path resolved against the session\'s folder', (await calls('openInEditor')).some(c => c[1] === abs), await calls('openInEditor'));
+  await fileMenu(fb, 'seefapp'); await sleep(200);
+  check('用默认的 app 打开 asks the window to open it with the Mac\'s default app', (await calls('openPath')).some(c => c[1] === abs), await calls('openPath'));
   await fileMenu(fb, 'seeffind'); await sleep(200);
   check('在访达里显示 asks the window to show it in Finder', (await calls('revealFile')).some(c => c[1] === abs), await calls('revealFile'));
   await st.context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: new URL(p.url()).origin });
