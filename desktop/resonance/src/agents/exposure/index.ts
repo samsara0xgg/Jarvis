@@ -244,6 +244,7 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
     // It opens on the names: ↑↓ pick a session, → goes in; ← steps back into what you said.
     selected = first(); nameStop = true; latest();
     skyOn = true; snap = true; hoverQi = null; revealUntil = performance.now() + 800; waiting.hide();
+    pop.hidden = gap.hidden = true; popKey = '';
     win.classList.add('sky-on'); skyEl.inert = false; pullLabel();
     if (find) findInput.focus({ preventScroll: true }); else { win.tabIndex = -1; win.focus({ preventScroll: true }); }
     renderRows(); renderWords();
@@ -251,7 +252,8 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
   }
   function closeSky() {
     const typing = findEl.contains(document.activeElement);
-    skyOn = false; pop.hidden = gap.hidden = true; wordHeight = 0; popKey = ''; nameStop = false; hoverQi = null;
+    // The words and where you stood stay as they are and fade with the sky; frame puts them away once it has folded.
+    skyOn = false; hoverQi = null;
     // A search ends with the sky: the sessions come back as they were.
     finding = false; query = findInput.value = ''; found = new Set(); findSeq++;
     win.classList.remove('sky-on'); skyEl.inert = true; skyEl.style.cursor = ''; pullLabel(); refresh();
@@ -299,7 +301,8 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
   // field stands there instead.
   function pullLabel() {
     pull.hidden = skyOn && finding; findEl.hidden = !(skyOn && finding);
-    pull.innerHTML = skyOn ? `${kbd('esc')}<span>收起</span>` : `${kbd('←')}<span>长曝光</span>`;
+    if (!pull.firstElementChild) pull.innerHTML = `<span class="pl-in">${kbd('←')}<span>长曝光</span></span><span class="pl-out" aria-hidden="true">${kbd('esc')}<span>收起</span></span>`;
+    pull.querySelector('.pl-in')!.setAttribute('aria-hidden', String(skyOn)); pull.querySelector('.pl-out')!.setAttribute('aria-hidden', String(!skyOn));
     pull.setAttribute('aria-expanded', String(skyOn)); pull.setAttribute('aria-label', skyOn ? '收起长曝光' : '全部会话');
   }
   // Back to where you were writing; while a request holds the composer shut, the window keeps the keys.
@@ -307,8 +310,9 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
     if (ta.disabled) { win.tabIndex = -1; win.focus({ preventScroll: true }); } else ta.focus({ preventScroll: true });
   }
   function revealSelection() {
-    const y = 15 + place() * 27, bottom = Math.max(y + 22, top.value + wordHeight - 18), viewport = skyEl.clientHeight;
-    if (!viewport) return;
+    // Against the height the sky is opening to: mid-way it is short, and scrolling then would hide the rows at its top.
+    const y = 15 + place() * 27, bottom = Math.max(y + 22, top.value + wordHeight - 18), viewport = Math.min(height - 56, skyHeight() - opening.value + wordHeight);
+    if (!viewport || !skyEl.clientHeight) return;
     const scroll = skyEl.scrollTop;
     if (bottom - y > viewport - 24 || y < scroll + 12) skyEl.scrollTop = Math.max(0, y - 12);
     else if (bottom > scroll + viewport - 12) skyEl.scrollTop = Math.max(0, bottom - viewport + 12);
@@ -377,19 +381,28 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
     step(sky, skyOn ? 1 : 0, 2.2, .92, dt); const selectedIndex = index();
     // Every star toward its resting place; the buttons follow when the places change.
     if (waiting.move(dt)) renderRows();
-    step(opening, skyOn ? wordHeight : 0, 2.6, .9, dt); step(left, targetLeft, 2.8, .86, dt); step(top, targetTop, 2.8, .86, dt); step(focus, place(), 2.4, 1, dt);
+    // Folding, the sky keeps its shape: the words stay where they stood and the rows under them stay parted.
+    if (!skyOn && !pop.hidden && sky.value < .02) { pop.hidden = gap.hidden = true; wordHeight = 0; popKey = ''; }
+    const shown = skyOn || sky.value > .02, parted = skyOn || !pop.hidden;
+    step(opening, parted ? wordHeight : 0, 2.6, .9, dt); step(left, targetLeft, 2.8, .86, dt); step(top, targetTop, 2.8, .86, dt); step(focus, place(), 2.4, 1, dt);
     for (const [i, s] of rows.entries()) {
       const value = offsets.get(s.id) ?? spring(0); offsets.set(s.id, value);
-      step(value, skyOn && i > selectedIndex ? wordHeight : 0, 2.6, .9, dt);
+      step(value, parted && i > selectedIndex ? wordHeight : 0, 2.6, .9, dt);
     }
     // At the name stop the needle's point slides on to now and waits by the name; the needle itself steps aside.
     const g = geo(), turn = point(), at = turn?.at !== undefined ? turn.at / 60000 : undefined, stand = nameStop || at === undefined;
     const nx = stand ? g.x1 : g.xOf(at!), ny = g.y(selectedIndex);
     if (snap || sky.value < .3) { needle.value = nx; needle.velocity = 0; needleY.value = ny; needleY.velocity = 0; snap = false; }
-    else { step(needle, nx, 2.8, .82, dt); step(needleY, ny, 2.8, .86, dt); }
+    else if (skyOn) { step(needle, nx, 2.8, .82, dt); step(needleY, ny, 2.8, .86, dt); }
+    const skyPx = Math.min(height - 56, sky.value * skyHeight());
     win.style.setProperty('--sky', `${sky.value * skyHeight()}px`); win.style.setProperty('--skp', String(sky.value));
-    skyEl.style.height = `${Math.min(height - 56, sky.value * skyHeight())}px`;
+    skyEl.style.height = `${skyPx}px`;
     skyEl.style.opacity = String(clamp((sky.value - .35) / .5)); skyEl.style.pointerEvents = skyOn ? 'auto' : 'none';
+    // While it opens or folds, what is in the sky fades out toward its moving edge instead of being cut by it.
+    const fade = (1 - sky.value) * 72, soft = sky.value > .001 && fade > .5;
+    for (const [el, mask] of [[skyEl, `linear-gradient(#000 calc(100% - ${fade}px), transparent)`], [cv, `linear-gradient(#000 ${56 + skyPx - fade}px, transparent ${56 + skyPx}px)`]] as const) {
+      el.style.setProperty('mask-image', soft ? mask : ''); el.style.setProperty('-webkit-mask-image', soft ? mask : '');
+    }
     const ratio = dpr(), canvasHeight = Math.max(height, skyHeight() + 56);
     if (cv.width !== Math.round(width * ratio) || cv.height !== Math.round(canvasHeight * ratio)) { cv.width = Math.round(width * ratio); cv.height = Math.round(canvasHeight * ratio); cv.style.width = `${width}px`; cv.style.height = `${canvasHeight}px`; }
     c.setTransform(ratio, 0, 0, ratio, 0, 0); c.clearRect(0, 0, width, canvasHeight);
@@ -397,11 +410,12 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
     c.save();
     if (skyEl.scrollTop > 0) { c.beginPath(); c.rect(0, 56, width, height - 56); c.clip(); }
     c.translate(0, -skyEl.scrollTop);
-    drawSky(c, rows, trails, { now, p: sky.value, dev: clamp((sky.value - .18) / .82), geo: g, sel: skyOn && !onX() ? selectedIndex : undefined, pt: skyOn ? at : undefined,
+    drawSky(c, rows, trails, { now, p: sky.value, dev: clamp((sky.value - .18) / .82), geo: g, sel: shown && !onX() ? selectedIndex : undefined, pt: shown ? at : undefined,
       aways: away.spans().map(s => ({ a: s.a / 60000, b: s.b === null ? null : s.b / 60000 })),
       span: stand ? undefined : [at!, (trails[selected]?.turns[qi + 1]?.at ?? Date.now()) / 60000], ndx: at === undefined ? undefined : needle.value, nm: nameStop,
-      cy: needleY.value, focus: skyOn ? focus.value : undefined,
-      conn: skyOn && nearNow && !pop.hidden ? { x: stand ? g.x1 : needle.value, y: needleY.value, x2: left.value + wordWidth - 16, y2: top.value + 58 } : null });
+      cy: needleY.value, focus: shown ? focus.value : undefined,
+      card: pop.hidden ? null : { x: left.value - 18, y: 56 + top.value - 8.5, w: wordWidth + 32, h: Math.max(0, opening.value - 4) },
+      conn: nearNow && !pop.hidden ? { x: stand ? g.x1 : needle.value, y: needleY.value, x2: left.value + wordWidth - 16, y2: top.value + 58, a: clamp((sky.value - .35) / .5) } : null });
     c.restore();
     // A star pops when its session changes state and swells under the pointer; one waiting on you is the queue's to
     // draw while the sky is closed.
@@ -419,7 +433,7 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
     else if (glance.id) { glance.id = ''; her.look = null; }
     // At rest, a while after the pointer last moved, her eyes are on the first one waiting.
     else if (t - pointerAt > 1800) her.look = waiting.lookAt();
-    if (skyOn) {
+    if (shown) {
       pop.style.transform = `translate(${left.value}px,${top.value}px)`; pop.style.setProperty('--sx', `${needle.value - left.value}px`);
       Object.assign(gap.style, { left: `${left.value - 18}px`, width: `${wordWidth + 32}px`, top: `${top.value - 8.5}px`, height: `${Math.max(0, opening.value - 4)}px` });
       axis.style.top = `${skyHeight() - 26}px`;
@@ -430,9 +444,10 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
       // Where the cells are too narrow for every label, every other one (counting back from now) keeps its words.
       const every = Math.ceil(64 / g.cell);
       [...axis.children].forEach((el, i) => { const tick = el as HTMLElement, x = g.guides[i] === undefined ? g.x1 : g.xOf(now - g.guides[i]); tick.style.left = `${x - 30}px`; tick.style.opacity = String(g.guides[i] === undefined ? 1 : (i + 1) % every ? 0 : clamp((Math.abs(x - writes) - 34) / 26)); });
-      rowsEl.querySelectorAll<HTMLElement>('.bw-row').forEach((el, i) => { el.style.left = `${g.x1}px`; el.style.opacity = String(1 - Math.min(.4, Math.abs(i - focus.value) * .1)); });
+      // The names start a little right of the heads, so a row's star stands before its name, not on its edge.
+      rowsEl.querySelectorAll<HTMLElement>('.bw-row').forEach((el, i) => { el.style.left = `${g.x1 + 12}px`; el.style.opacity = String(1 - Math.min(.4, Math.abs(i - focus.value) * .1)); });
       renderWords();
-      if (t < revealUntil) revealSelection();
+      if (skyOn && t < revealUntil) revealSelection();
     }
     starsEl.inert = skyOn; starsEl.style.pointerEvents = skyOn ? 'none' : '';
     her.frame(t, dt);

@@ -13,6 +13,13 @@ type DrawOptions = {
   conn?: { x: number; y: number; x2: number; y2: number; a?: number } | null;
   // The times you were away (minutes; b null while you still are), drawn as the away line.
   aways?: { a: number; b: number | null }[];
+  // The words' card: the lines that cross the sky (guides, the needle, the away line) pass behind it, not through it.
+  card?: { x: number; y: number; w: number; h: number } | null;
+};
+// Everything but the card, for what would otherwise run through its words.
+const besides = (c: CanvasRenderingContext2D, g: Geo, card: DrawOptions['card']) => {
+  if (!card) return;
+  c.beginPath(); c.rect(0, 0, g.width, g.bottom + 40); c.roundRect(card.x, card.y, card.w, card.h, 12); c.clip('evenodd');
 };
 // How long ago, in the axis's words: minutes, then hours, then days.
 export const ago = (m: number) => m < .5 ? '现在' : m < 60 ? `${Math.round(m)} 分前` : m < 600 ? `${+(m / 60).toFixed(1)} 小时前`
@@ -54,24 +61,27 @@ function awayLines(c: CanvasRenderingContext2D, aways: { a: number; b: number | 
     const xa = g.xOf(a), xb = g.xOf(b);
     if (xb - xa < 1 || xb < dev) continue;
     // The left end shows only once the exposure has developed that far back.
-    const x0 = Math.max(dev, xa), y0 = g.top + 15, open = aw.b === null, edge = xa >= dev;
+    const x0 = Math.max(dev, xa), y0 = g.top + 11, open = aw.b === null, edge = xa >= dev;
+    const label = `你不在 · ${gone(b - aw.a)}`;
+    c.font = `500 10px ${UI}`; c.textBaseline = 'middle';
+    // The words sit on the bracket, in a break of its line, when they fit; else just left of it.
+    const w = c.measureText(label).width, inside = xb - x0 > w + 24, mid = (x0 + xb) / 2;
     c.lineWidth = 1; c.strokeStyle = 'rgba(214,224,255,.55)';
     c.beginPath();
-    if (edge) { c.moveTo(x0, y0 + 5); c.lineTo(x0, y0); } else c.moveTo(x0, y0);
+    if (edge) { c.moveTo(x0, y0 + 4); c.lineTo(x0, y0); } else c.moveTo(x0, y0);
+    if (inside) { c.lineTo(mid - w / 2 - 5, y0); c.moveTo(mid + w / 2 + 5, y0); }
     c.lineTo(xb, y0);
-    if (!open) c.lineTo(xb, y0 + 5);
+    if (!open) c.lineTo(xb, y0 + 4);
     c.stroke();
     const down = c.createLinearGradient(0, y0, 0, g.bottom);
     down.addColorStop(0, 'rgba(214,224,255,.3)'); down.addColorStop(1, 'rgba(214,224,255,0)');
     c.strokeStyle = down; c.setLineDash([1, 3]); c.beginPath();
-    if (edge) { c.moveTo(xa, y0 + 7); c.lineTo(xa, g.bottom); }
-    if (!open) { c.moveTo(xb, y0 + 7); c.lineTo(xb, g.bottom); }
+    if (edge) { c.moveTo(xa, y0 + 6); c.lineTo(xa, g.bottom); }
+    if (!open) { c.moveTo(xb, y0 + 6); c.lineTo(xb, g.bottom); }
     c.stroke(); c.setLineDash([]);
-    const label = `你不在 · ${gone(b - aw.a)}`;
-    c.font = `500 10.5px ${UI}`; c.textBaseline = 'bottom'; c.fillStyle = 'rgba(214,224,255,.74)';
-    // Over the bracket when it fits, else just left of it.
-    if (xb - x0 > c.measureText(label).width + 8) { c.textAlign = 'center'; c.fillText(label, (x0 + xb) / 2, y0 - 3); }
-    else { c.textAlign = 'right'; c.fillText(label, x0 - 6, y0 + 4); }
+    c.fillStyle = 'rgba(214,224,255,.74)';
+    if (inside) { c.textAlign = 'center'; c.fillText(label, mid, y0 + .5); }
+    else { c.textAlign = 'right'; c.fillText(label, x0 - 6, y0 + .5); }
   }
 }
 export function drawSky(e: CanvasRenderingContext2D, t: { id: string }[], n: Record<string, Trail>, r: DrawOptions) {
@@ -81,7 +91,7 @@ export function drawSky(e: CanvasRenderingContext2D, t: { id: string }[], n: Rec
       u = r.thick ?? 1,
       d = c - (c - s) * (1 - (1 - r.dev) ** 3);
     if (a <= 0.01 || l <= 0.01) return;
-    (e.save(), (e.globalAlpha = Math.min(1, a * 1.4) * l));
+    (e.save(), (e.globalAlpha = Math.min(1, a * 1.4) * l), besides(e, o, r.card));
     for (let t of o.guides) {
       let n = o.xOf(i - t);
       n < d - 0.5 ||
@@ -187,9 +197,10 @@ export function drawSky(e: CanvasRenderingContext2D, t: { id: string }[], n: Rec
                   e.restore(),
                   o.minutes &&
                     n.b === null &&
-                    c - s > 26 &&
+                    ((e.font = `600 10px "IBM Plex Mono", ui-monospace, monospace`),
+                    // Only where the wait is long enough to hold its words clear of the head: the row says it anyway.
+                    c - s > e.measureText(`${Math.round(i - n.a)} 分`).width + 22) &&
                     ((e.fillStyle = rgba(COL.wait, 0.95)),
-                    (e.font = `600 10px "IBM Plex Mono", ui-monospace, monospace`),
                     (e.textBaseline = `bottom`),
                     e.fillText(`${Math.round(i - n.a)} 分`, s + 2, Yx(s) - 4)))
                 : n.k === `stop` &&
@@ -206,7 +217,8 @@ export function drawSky(e: CanvasRenderingContext2D, t: { id: string }[], n: Rec
           if (t.t < i - o.span) continue;
           let n = o.xOf(t.t),
             f = Yx(n);
-          n < d ||
+          // Within a star's width of now the row's own star stands for it; a mark there would pile onto it.
+          n < d || n > o.x1 - 9 ||
             (t.k === `you`
               ? ((e.fillStyle = `rgba(240,242,255,.85)`),
                 e.fillRect(n - 0.6, f - 9, 1.2, 6),
@@ -245,12 +257,13 @@ export function drawSky(e: CanvasRenderingContext2D, t: { id: string }[], n: Rec
             e.arc(t, f - 10.5, 3.4, 0, Math.PI * 2),
             e.fill(),
             e.restore(),
-            (e.strokeStyle = `rgba(233,236,245,.5)`),
-            (e.lineWidth = 1),
-            e.beginPath(),
-            e.moveTo(t, f - 7),
-            e.lineTo(t, f + 9),
-            e.stroke());
+            t < o.x1 - 9 &&
+              ((e.strokeStyle = `rgba(233,236,245,.5)`),
+              (e.lineWidth = 1),
+              e.beginPath(),
+              e.moveTo(t, f - 7),
+              e.lineTo(t, f + 9),
+              e.stroke()));
         }
         e.restore();
       }));
@@ -262,19 +275,23 @@ export function drawSky(e: CanvasRenderingContext2D, t: { id: string }[], n: Rec
         n.addColorStop(1, `rgba(233,236,245,.16)`),
         e.save(),
         (e.globalAlpha = Math.min(1, a * 1.4) * l),
+        e.save(),
+        besides(e, o, r.card),
         (e.strokeStyle = n),
         (e.lineWidth = 1),
         e.beginPath(),
         e.moveTo(t, o.top + 6),
-        e.lineTo(t, o.bottom + 2),
-        e.stroke());
+        e.lineTo(t, o.bottom - 4),
+        e.stroke(),
+        e.restore());
       let s = Math.max(0, i - o.tOf(t)),
         c = ago(s);
       ((e.font = `500 10px "IBM Plex Mono", ui-monospace, monospace`),
         (e.textAlign = `center`),
         (e.textBaseline = `middle`));
       let u = e.measureText(c).width + 12,
-        f = o.bottom + 12,
+        // On the axis's own line, in place of the label it steps over.
+        f = o.bottom + 4,
         p = Math.min(o.x1 - u / 2, Math.max(o.x0 + u / 2, t));
       ((e.fillStyle = `rgb(24,27,52)`),
         e.beginPath(),
