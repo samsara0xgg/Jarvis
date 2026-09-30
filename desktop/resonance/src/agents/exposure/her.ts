@@ -8,6 +8,20 @@ import { dpr, reduced, spring, step, type Spring } from './motion';
 // pause button. Both pages draw it the same way.
 // The app owns the shared expression definitions.
 
+// Her nebula at home, as light only: the darker a pixel, the more transparent, so the dark patches of her glass never
+// show as a grainy dark crescent over the horizon. An SVG filter the canvas draws through.
+const LIGHT_ONLY = 'her-light-only';
+function lightOnly() {
+  if (!document.getElementById(LIGHT_ONLY)) {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('width', '0'); svg.setAttribute('height', '0'); svg.setAttribute('aria-hidden', 'true');
+    svg.style.position = 'absolute';
+    svg.innerHTML = `<filter id="${LIGHT_ONLY}" color-interpolation-filters="sRGB"><feColorMatrix type="matrix" values="1 0 0 0 0 0 1 0 0 0 0 0 1 0 0 3 3.4 2.6 0 0"/></filter>`;
+    document.body.append(svg);
+  }
+  return `url(#${LIGHT_ONLY})`;
+}
+
 export class Her {
   core = new Core('glass');
   shine: Spring = spring(0);
@@ -57,11 +71,14 @@ export class Her {
         nc.globalCompositeOperation = 'destination-in';
         const g = nc.createRadialGradient(0, 0, 0, 0, 0, n / 2);
         g.addColorStop(0, '#000'); g.addColorStop(.4, 'rgba(0,0,0,.8)'); g.addColorStop(.72, 'rgba(0,0,0,0)');
-        nc.fillStyle = g; nc.fillRect(-n / 2, -n / 2, n, n); nc.globalCompositeOperation = 'source-over';
-        const r = GLB * R * 1.9;
-        c.save(); c.globalAlpha = .3 * (1 - a); c.drawImage(this.neb, m - r, m - r, 2 * r, 2 * r);
-        c.globalCompositeOperation = 'lighter'; c.globalAlpha = 1 - a; c.drawImage(this.neb, m - r, m - r, 2 * r, 2 * r);
-        c.globalAlpha = .9 * (1 - a); c.drawImage(this.neb, m - r, m - r, 2 * r, 2 * r); c.restore();
+        nc.fillStyle = g; nc.fillRect(-n / 2, -n / 2, n, n);
+        // on black, so its soft edge is dark too and the filter below fades it out with the rest of the dark
+        nc.globalCompositeOperation = 'destination-over'; nc.fillStyle = '#000'; nc.fillRect(-n / 2, -n / 2, n, n); nc.globalCompositeOperation = 'source-over';
+        // It moves with her (a hop, a lean toward where she looks) so her eyes stay on it, and its soft edge ends
+        // inside her canvas, never cut off by it.
+        const r = GLB * R * 1.6, nx = m + jx * R - r, ny = m + jy * R - r;
+        c.save(); c.filter = lightOnly(); c.globalCompositeOperation = 'lighter'; c.globalAlpha = 1 - a; c.drawImage(this.neb, nx, ny, 2 * r, 2 * r);
+        c.globalAlpha = .9 * (1 - a); c.drawImage(this.neb, nx, ny, 2 * r, 2 * r); c.restore();
       }
       if (a > .01) {
         c.save(); c.globalAlpha = a;
@@ -70,12 +87,12 @@ export class Her {
         c.restore();
       }
     }
-    // Where she surfaces, a ring of her light runs out over the glass.
+    // Where she surfaces, a ring of her light runs out over the glass, gone before it reaches her canvas's edge.
     const rk = this.rippleAt < 0 ? 1 : (now - this.rippleAt) / 900;
     if (rk < 1) {
       const e = 1 - (1 - rk) ** 3, rgb = core.light.glow.map(v => Math.round(v * 255)).join(',');
-      c.save(); c.strokeStyle = `rgba(${rgb},${.5 * (1 - rk) ** 2})`; c.lineWidth = 1.3 * (1 - rk * .6);
-      c.beginPath(); c.arc(m, m, R * (1 + .85 * e) / k, 0, Math.PI * 2); c.stroke(); c.restore();
+      c.save(); c.strokeStyle = `rgba(${rgb},${.45 * (1 - rk) ** 2})`; c.lineWidth = 1.2 * (1 - rk * .6);
+      c.beginPath(); c.arc(m, m, Math.min(m - 3, R * (1 + .5 * e)) / k, 0, Math.PI * 2); c.stroke(); c.restore();
     } else this.rippleAt = -1;
     const E = Math.ceil(3.8 * R * d * 1.1);
     if (this.eyeCv.width !== E) this.eyeCv.width = this.eyeCv.height = E;

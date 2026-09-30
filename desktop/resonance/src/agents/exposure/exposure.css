@@ -190,7 +190,10 @@
 .bw .c-box:focus-within{box-shadow:inset 0 0 0 .5px rgb(var(--acc) / .6),0 0 0 3px rgb(var(--acc) / .08),0 18px 40px -24px #000}
 .bw #msg{font:14px/1.55 var(--ui);min-height:22px}
 .bw .you{border-radius:18px 18px 6px 18px;background:rgb(var(--acc) / .17);box-shadow:inset 0 0 0 .5px rgb(var(--acc) / .22)}
-.bw .bw-her{width:56px;height:56px;pointer-events:auto;background:none}
+.bw .bw-her{width:56px;height:56px;border-radius:50%;pointer-events:auto;background:none}
+/* her focus ring: round, round her glass, inside the window; for the keyboard only */
+.bw .bw-her:focus{outline:none}
+.bw .bw-her:focus-visible{outline:1.5px solid rgb(var(--acc) / .75);outline-offset:-9px}
 .bw .bw-pull{left:auto;right:calc(50% - 166px)}
 /* The horizon is the window's drag strip, so its one control stays while the sky is open and reads esc 收起. */
 .bw.sky-on .bw-pull{opacity:1;pointer-events:auto}
@@ -198,7 +201,7 @@
 /* the desk's own corner controls step back while the sky covers them */
 .bw.sky-on .m-head>.side-btn{opacity:0;pointer-events:none}
 .bw-stars{position:absolute;inset:0 0 auto;height:56px}
-.bw-stars button{position:absolute;top:12px;width:20px;height:30px;border-radius:5px}
+.bw-stars button{position:absolute;top:13px;width:20px;height:30px;border-radius:5px}
 .bw-stars button:focus-visible{outline-color:var(--warm)}
 .bw .bw-sky{overflow:auto;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:rgb(var(--acc) / .25) transparent}
 .bw .bw-cv{pointer-events:none}

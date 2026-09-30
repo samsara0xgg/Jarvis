@@ -429,7 +429,7 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
     waiting.draw(c, t, 1 - clamp(sky.value * 4), skyOn ? '' : hoverStar);
     // For a moment after a session changes, she looks toward its star.
     const glancing = t < glance.until ? rows.findIndex(r => r.id === glance.id) : -1;
-    if (glancing >= 0) { const [x, y] = starPosition(glancing); her.look = [clamp((x - width + 34) / 160, -1, 1), clamp((y - 27) / 160, -1, 1)]; }
+    if (glancing >= 0) { const [x, y] = starPosition(glancing); her.look = [clamp((x - width + 34) / 160, -.8, .8), clamp((y - 28) / 160, -.8, .8)]; }
     else if (glance.id) { glance.id = ''; her.look = null; }
     // At rest, a while after the pointer last moved, her eyes are on the first one waiting.
     else if (t - pointerAt > 1800) her.look = waiting.lookAt();
@@ -456,7 +456,9 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
   $('.bw-her', chrome).addEventListener('pointerenter', () => her.hover = true); $('.bw-her', chrome).addEventListener('pointerleave', () => her.hover = false);
   $('.bw-her', chrome).addEventListener('pointerdown', () => her.pressed = true);
   addEventListener('pointerup', () => her.pressed = false);
-  win.addEventListener('pointermove', e => { const r = win.getBoundingClientRect(); her.look = [(e.clientX - r.left - width + 34) / 140, (e.clientY - r.top - 27) / 140]; pointerAt = performance.now(); });
+  // Her eyes follow the pointer, but only so far round: past that they would turn to the back of her glass and she would
+  // show no face.
+  win.addEventListener('pointermove', e => { const r = win.getBoundingClientRect(); her.look = [clamp((e.clientX - r.left - width + 34) / 140, -.8, .8), clamp((e.clientY - r.top - 28) / 140, -.8, .8)]; pointerAt = performance.now(); });
   win.addEventListener('pointerleave', () => { her.look = null; her.pressed = false; });
   // The lines under the sessions: the folds open and close here; 新会话 and 拿回来 are the page's acts (data-act).
   rowsEl.addEventListener('click', e => {

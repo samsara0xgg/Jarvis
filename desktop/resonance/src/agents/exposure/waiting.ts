@@ -26,9 +26,12 @@ const COLOR: Record<Wait, C3> = { ask: COL.wait, err: COL.err, done: COL.done };
 const STAR: Record<Wait, St> = { ask: 'wait', err: 'err', done: 'done' };
 // A new one falls in with its own kit sound, softly: the notch's ask, error or done.
 const CUE: Record<Wait, string> = { ask: 'ask', err: 'error', done: 'done' };
-// A: the line, a little below the horizon, the next one 70 px in from the edge · B: the rings round her, the innermost
-// just outside her glass. Kinds keep a little apart in the line, so the order reads at a glance.
-const QA = { max: 6, dx: 27, y: 40, right: 70 }, QB = { max: 4, r0: 19, dr: 3, right: 34, y: 28 }, GAP = 8;
+// One line for every star up here, level with her centre: the horizon's, then the queue's. A: the queue on it, evenly
+// spaced, the next one 76 px in from the edge (clear of her glow) · B: the rings round her, the innermost just outside
+// her glass. A star coming to wait (or going back once read) rises off the line as it travels (LIFT) and settles into
+// its place, so it never crosses the others; they ease aside along the line.
+const BASE = 28, LIFT = 15;
+const QA = { max: 6, dx: 26, right: 76 }, QB = { max: 4, r0: 19, dr: 3, right: 34, y: BASE };
 // The rings' canvas, in css px from the window's top right corner (its size is in waiting.css too).
 const RING = { w: 100, h: 72 };
 const LIVELY = 'linear(0,.045,.153,.29,.433,.568,.687,.786,.864,.924,.967,.996,1.014,1.024,1.028,1.028,1.026,1.022,1.018,1.014,1.011,1.008,1.005,1.003,1)';
@@ -39,8 +42,8 @@ const waited = (s: Sess) => Math.max(0, (Date.now() - waitingSince(s)) / 60000);
 const mins = (m: number) => m < 1 ? '刚刚' : m < 60 ? `${Math.round(m)} 分` : `${+(m / 60).toFixed(1)} 小时`;
 // What each waits with, in one line: the host already words a request (reqLine) and an error in the summary.
 const lineOf = (s: Sess) => waitOf(s) === 'done' ? `做完了：${s.summary}` : s.summary;
-// Its streak: longer the longer it has waited, full length at an hour.
-const tail = (s: Sess) => 7 + 25 * clamp(Math.log2(1 + waited(s)) / Math.log2(61));
+// Its tail: longer the longer it has waited, full length at an hour, always short of the star behind it.
+const tail = (s: Sess) => 5 + 10 * clamp(Math.log2(1 + waited(s)) / Math.log2(61));
 const anim = (el: Element, frames: Keyframe[], ms: number, easing = 'cubic-bezier(.2,.8,.2,1)') => reduced.matches ? null : el.animate(frames, { duration: ms, easing });
 
 export function mountWaiting(env: Env) {
@@ -54,6 +57,10 @@ export function mountWaiting(env: Env) {
   const herEl = env.chrome.querySelector<HTMLElement>('.bw-her')!, starsEl = env.chrome.querySelector<HTMLElement>('.bw-stars')!;
   let look: Look = localStorage.getItem('agents.queue') === 'B' ? 'B' : 'A';
   const X = new Map<string, Spring>(), Y = new Map<string, Spring>(), trails = new Map<string, [number, number, number][]>();
+  // coming: the ones travelling between the horizon and the line, lifted off it until nearly there · moreN, moreAt: +N,
+  // and when it appeared
+  const coming = new Set<string>();
+  let moreN = 0, moreAt = -Infinity;
   // slots: where each row's star rests while the sky is closed · line: the queue as drawn (the rows' waiting ones)
   let slots = new Map<string, [number, number]>(), slotKey = '', line: Sess[] = [], place = new Map<string, number>(), seen: Set<string> | null = null;
   // over: the list row under the pointer, whose star lifts · listKey: what the open list shows
@@ -62,14 +69,13 @@ export function mountWaiting(env: Env) {
   const away = new Map<string, Sess['st']>();
   const others = () => queue(env.sessions()).filter(s => s.id !== env.current());
   const menuOpen = () => !!env.win.querySelector('.pop.on');
-  const at = (id: string): [number, number] => { const x = X.get(id), y = Y.get(id); return x && y ? [x.value, y.value] : slots.get(id) ?? [env.width() - 84, 27]; };
+  const at = (id: string): [number, number] => { const x = X.get(id), y = Y.get(id); return x && y ? [x.value, y.value] : slots.get(id) ?? [env.width() - 84, BASE]; };
+  // The one she opens next: the first waiting that is not the one on screen.
+  const nextId = () => line.find(s => s.id !== env.current())?.id ?? '';
 
   // ---------- where the stars rest ----------
-  function lineX(j: number, q: Sess[], w: number) {
-    let x = w - QA.right;
-    for (let k = 1; k <= Math.min(j, QA.max - 1); k++) x -= QA.dx + (q[k] && waitOf(q[k]) !== waitOf(q[k - 1]) ? GAP : 0);
-    return x;
-  }
+  // Past the line the rest wait where +N stands, one place further out.
+  const lineX = (j: number, w: number) => w - QA.right - Math.min(j, QA.max) * QA.dx;
   // Each ring's head: its arc starts at twelve o'clock when the wait began and runs clockwise, a full turn an hour.
   function ringHead(s: Sess, j: number, w: number): [number, number] {
     const cx = w - QB.right;
@@ -79,28 +85,39 @@ export function mountWaiting(env: Env) {
   }
   // Whether the resting places changed.
   function layout() {
-    const rows = env.rows(), w = env.width(), q = queue(rows);
-    const key = `${look}|${w}|${look === 'B' ? Math.floor(Date.now() / 60000) : ''}|${rows.map(s => s.id + (q.includes(s) ? `.${q.indexOf(s)}${waitOf(s)}` : '')).join(',')}`;
+    // A finished one you open is being read: it goes back to the horizon at once, not when the page marks it read.
+    // The rows as the page has them now: the long exposure refreshes its own copy only once a second.
+    const fresh = new Map(env.sessions().map(s => [s.id, s])), rows = env.rows().map(s => fresh.get(s.id) ?? s);
+    const w = env.width(), cur = env.current(), q = queue(rows).filter(s => s.id !== cur || waitOf(s) !== 'done');
+    const key = `${look}|${w}|${cur}|${look === 'B' ? Math.floor(Date.now() / 60000) : ''}|${rows.map(s => s.id + (q.includes(s) ? `.${q.indexOf(s)}${waitOf(s)}` : '')).join(',')}`;
     if (key === slotKey) return false;
+    const was = place;
     slotKey = key; line = q; slots = new Map(); place = new Map(q.map((s, j) => [s.id, j]));
-    q.forEach((s, j) => slots.set(s.id, look === 'B' ? ringHead(s, j, w) : [lineX(j, q, w), QA.y]));
+    // one that leaves the line goes back up over the others too
+    if (!reduced.matches) for (const id of was.keys()) if (!place.has(id) && X.has(id)) coming.add(id);
+    q.forEach((s, j) => slots.set(s.id, look === 'B' ? ringHead(s, j, w) : [lineX(j, w), BASE]));
     const calm = rows.filter(s => !place.has(s.id)), n = calm.length;
-    const right = look === 'B' ? w - QB.right - QB.r0 - QB.dr * (QB.max - 1) - 24 : q.length ? lineX(Math.min(q.length, QA.max) - 1, q, w) - 48 : w - 84;
+    // the horizon ends a clear gap before the line, or before its +N
+    const right = look === 'B' ? w - QB.right - QB.r0 - QB.dr * (QB.max - 1) - 30 : q.length ? lineX(q.length - 1, w) - 44 : w - 84;
     // 24 px apart, closer when there are many, never further in than the title leaves room for
     const gap = Math.min(24, Math.max(8, (right - 496) / Math.max(1, n - 1)));
-    calm.forEach((s, i) => slots.set(s.id, [right - (n - 1 - i) * gap, 27]));
+    calm.forEach((s, i) => slots.set(s.id, [right - (n - 1 - i) * gap, BASE]));
     arrivals();
     if (!listEl.hidden) renderList();
     return true;
   }
-  // A star that just came to wait lets go of the horizon: a little lift, then the fall into the line, with its sound
-  // when you are here to hear it (away, the notice already chimed). Nothing falls when the page first reads the list.
+  // A star that just came to wait lets go of the horizon: it rises off the line, travels, and settles into its place,
+  // with its sound when you are here to hear it (away, the notice already chimed). One new to the page drops into its
+  // place from just above. Nothing moves when the page first reads the list.
   function arrivals() {
     if (seen) for (const s of line) {
       if (seen.has(s.id)) continue;
-      const y = Y.get(s.id);
-      if (y && !reduced.matches) y.velocity = -90;
-      if (y && s.id !== env.current() && document.hasFocus() && performance.now() - env.changed(s.id) < 3000) env.cue(CUE[waitOf(s)!], .5);
+      if (!reduced.matches) {
+        coming.add(s.id);
+        const [tx, ty] = slots.get(s.id)!;
+        if (!Y.has(s.id)) { X.set(s.id, spring(tx)); Y.set(s.id, spring(ty - LIFT)); }
+      }
+      if (s.id !== env.current() && document.hasFocus() && performance.now() - env.changed(s.id) < 3000) env.cue(CUE[waitOf(s)!], .5);
     }
     seen = new Set(line.map(s => s.id));
   }
@@ -127,14 +144,20 @@ export function mountWaiting(env: Env) {
     c.save(); c.fillStyle = 'rgba(214,224,255,.78)'; c.font = '600 8.5px "IBM Plex Mono", ui-monospace, monospace'; c.textAlign = 'center'; c.textBaseline = 'middle';
     c.fillText(String(j + 1), x, y); c.restore();
   }
-  function more(c: CanvasRenderingContext2D, n: number, x: number, y: number) {
-    c.save(); c.fillStyle = 'rgba(214,224,255,.72)'; c.font = '600 9px "IBM Plex Mono", ui-monospace, monospace'; c.textAlign = 'right'; c.textBaseline = 'middle';
-    c.fillText(`+${n}`, x, y); c.restore();
+  // +N: the ones past the line, where the next of them would stand; it fades in when it first appears.
+  function more(c: CanvasRenderingContext2D, n: number, x: number, y: number, t: number, align: CanvasTextAlign = 'center') {
+    if (!moreN) moreAt = t;
+    moreN = n;
+    const k = reduced.matches ? 1 : clamp((t - moreAt) / 320);
+    c.save(); c.globalAlpha *= k; c.fillStyle = 'rgba(214,224,255,.7)'; c.font = '600 9px "IBM Plex Mono", ui-monospace, monospace'; c.textAlign = align; c.textBaseline = 'middle';
+    c.fillText(`+${n}`, x, y + .5); c.restore();
   }
-  // The one she will open next breathes a little.
-  function halo(c: CanvasRenderingContext2D, x: number, y: number, col: C3, t: number, r: number) {
-    const k = reduced.matches ? .5 : .5 + .5 * Math.sin(t / 1000 * 1.9);
-    c.save(); c.strokeStyle = rgba(col, .16 + .16 * k, .25); c.lineWidth = 1; c.beginPath(); c.arc(x, y, r + 2.2 * k, 0, Math.PI * 2); c.stroke(); c.restore();
+  // A soft glow under a star: the one she will open next breathes in it; the one you point at glows brighter.
+  function glow(c: CanvasRenderingContext2D, x: number, y: number, col: C3, t: number, a: number, breathe: boolean) {
+    const k = reduced.matches || !breathe ? .5 : .5 + .5 * Math.sin(t / 1000 * 1.9), r = 10.5 + 1.2 * k, A = a * (.75 + .25 * k);
+    const g = c.createRadialGradient(x, y, 0, x, y, r);
+    g.addColorStop(0, rgba(col, A, .2)); g.addColorStop(.45, rgba(col, A * .4, .2)); g.addColorStop(1, rgba(col, 0, .2));
+    c.save(); c.fillStyle = g; c.beginPath(); c.arc(x, y, r, 0, Math.PI * 2); c.fill(); c.restore();
   }
   function star(c: CanvasRenderingContext2D, s: Sess, x: number, y: number, t: number, lift: number, scale: number, on: boolean) {
     c.save(); c.translate(x, y);
@@ -142,26 +165,32 @@ export function mountWaiting(env: Env) {
     c.restore();
   }
   function drawLine(c: CanvasRenderingContext2D, t: number, hover: string) {
-    const q = line, n = Math.min(q.length, QA.max), w = env.width(), nums = !listEl.hidden;
-    for (let j = n - 1; j >= 0; j--) {
-      const s = q[j], [x, y] = at(s.id), col = COLOR[waitOf(s)!], L = tail(s), tx = lineX(j, q, w);
-      const settled = Math.abs(y - QA.y) < 1.5 && Math.abs(x - tx) < 1.5, on = hover === s.id || over === s.id;
-      drawTrail(c, trailPoint(s.id, x, y, t), col, t);
-      // its streak bends back up toward the horizon it fell from
-      const ex = x - Math.cos(.46) * L, ey = y - Math.sin(.46) * L, mx = x - Math.cos(.46) * L * .55, my = y - Math.sin(.46) * L * .3;
-      const g = c.createLinearGradient(x, y, ex, ey); g.addColorStop(0, rgba(col, on ? .95 : .8, .2)); g.addColorStop(1, rgba(col, 0, .2));
-      c.save(); c.strokeStyle = g; c.lineWidth = j === 0 ? 1.9 : 1.4; c.lineCap = 'round';
-      c.beginPath(); c.moveTo(x, y); c.quadraticCurveTo(mx, my, ex, ey); c.stroke(); c.restore();
-      if (j === 0 && settled && s.id !== env.current() && !on) halo(c, x, y, col, t, 7.5);
-      if (on) { c.save(); c.strokeStyle = rgba(col, .6, .3); c.lineWidth = 1.2; c.beginPath(); c.arc(x, y, 9.5, 0, Math.PI * 2); c.stroke(); c.restore(); }
-      star(c, s, x, y, t, on ? 1.7 : 1.35, (j === 0 ? 1.18 : .95) * (on ? 1.15 : 1), on);
-      if (nums && settled) number(c, j, x, y + 12.5);
+    // the numbers, while her list is open, are the list's
+    const q = line, w = env.width(), nums = !listEl.hidden, next = nextId(), order = nums ? queue(env.sessions()).map(s => s.id) : [];
+    for (let j = q.length - 1; j >= 0; j--) {
+      const s = q[j], [x, y] = at(s.id), col = COLOR[waitOf(s)!], L = tail(s), tx = lineX(j, w);
+      // past the line: one on its way out to +N fades as it gets there (one coming back fades in); the rest are +N
+      const fade = j < QA.max ? 1 : clamp((Math.abs(x - tx) + Math.abs(y - BASE)) / QA.dx);
+      if (fade < .02) continue;
+      c.save(); c.globalAlpha *= fade;
+      const settled = Math.abs(y - BASE) < 1.5 && Math.abs(x - tx) < 1.5, on = hover === s.id || over === s.id, first = s.id === next;
+      // only one on its way in leaves a trail; the others just slide along the line
+      if (coming.has(s.id)) drawTrail(c, trailPoint(s.id, x, y, t), col, t);
+      else { const p = trails.get(s.id); if (p) { while (p.length && t - p[0][2] > 480) p.shift(); if (p.length > 1) drawTrail(c, p, col, t); else trails.delete(s.id); } }
+      // its tail: a thin fading line back along the line, longer the longer it has waited
+      const x0 = x - 3, g = c.createLinearGradient(x0, y, x0 - L, y);
+      g.addColorStop(0, rgba(col, on ? .6 : .45, .25)); g.addColorStop(1, rgba(col, 0, .25));
+      c.save(); c.strokeStyle = g; c.lineWidth = .9; c.lineCap = 'round'; c.beginPath(); c.moveTo(x0, y); c.lineTo(x0 - L, y); c.stroke(); c.restore();
+      if (first || on) glow(c, x, y, col, t, on ? .45 : .38, !on);
+      star(c, s, x, y, t, on ? 1.7 : 1.35, (first ? 1.18 : .95) * (on ? 1.12 : 1), on);
+      if (nums && settled && j < QA.max) number(c, order.indexOf(s.id), x, y + 13);
+      c.restore();
     }
-    if (q.length > QA.max) more(c, q.length - QA.max, lineX(QA.max - 1, q, w) - 11, QA.y + 1);
+    if (q.length > QA.max) more(c, q.length - QA.max, lineX(QA.max, w), BASE, t); else moreN = 0;
   }
   // o: the rings' own canvas, over her · c: the window's, for a star still on its way in from the horizon
   function drawRings(o: CanvasRenderingContext2D, c: CanvasRenderingContext2D, t: number, hover: string) {
-    const q = line, n = Math.min(q.length, QB.max), w = env.width(), cx = w - QB.right, cy = QB.y, nums = !listEl.hidden;
+    const q = line, n = Math.min(q.length, QB.max), w = env.width(), cx = w - QB.right, cy = QB.y, nums = !listEl.hidden, order = nums ? queue(env.sessions()).map(s => s.id) : [];
     // the orbits in use, faint, and a tick at twelve: where every wait begins
     o.save(); o.lineWidth = .6;
     for (let j = 0; j < n; j++) { o.strokeStyle = 'rgba(157,180,255,.1)'; o.beginPath(); o.arc(cx, cy, QB.r0 + j * QB.dr, 0, Math.PI * 2); o.stroke(); }
@@ -183,9 +212,10 @@ export function mountWaiting(env: Env) {
       }
       o.restore();
       star(far ? c : o, s, far ? sx : hx, far ? sy : hy, t, on ? 1.8 : 1.45, far ? .9 : (j === 0 ? .66 : .52) * (on ? 1.3 : 1), on);
-      if (nums && !far) number(o, j, hx + Math.cos(a1) * 7.5, hy + Math.sin(a1) * 7.5);
+      if (nums && !far) number(o, order.indexOf(s.id), hx + Math.cos(a1) * 7.5, hy + Math.sin(a1) * 7.5);
     }
-    if (q.length > QB.max) more(o, q.length - QB.max, cx - QB.r0 - QB.dr * QB.max - 3, cy + 16);
+    // +N: just outside the outermost ring, on the line
+    if (q.length > QB.max) more(o, q.length - QB.max, cx - QB.r0 - QB.dr * (QB.max - 1) - 5, cy, t, 'right'); else moreN = 0;
   }
 
   // ---------- going there, and putting one aside ----------
@@ -211,9 +241,14 @@ export function mountWaiting(env: Env) {
     look = k; slotKey = ''; localStorage.setItem('agents.queue', k); env.cue('mic', .45);
   }
   const point = (e: MouseEvent) => { const r = env.win.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
-  function aside(id: string, e: MouseEvent) {
+  // row: a row of her list, which the menu stands beside (left of the list, level with the row) instead of over.
+  function aside(id: string, e: MouseEvent, row?: HTMLElement) {
     e.preventDefault(); clearTimeout(listT);
     env.menu(`<button type="button" data-q="open" data-id="${esc(id)}">打开</button><button type="button" data-q="park" data-id="${esc(id)}">${PARK_ICON}先放着</button>`, point(e));
+    const pop = env.win.querySelector<HTMLElement>('.pop.on');
+    if (!row || !pop) return;
+    const w = env.win.getBoundingClientRect(), l = listEl.getBoundingClientRect(), r = row.getBoundingClientRect();
+    Object.assign(pop.style, { left: `${Math.max(8, l.left - w.left - pop.offsetWidth - 6)}px`, top: `${clamp(r.top - w.top, 8, w.height - pop.offsetHeight - 8)}px`, transformOrigin: '100% 0' });
   }
 
   // ---------- the list, while you point at her ----------
@@ -228,7 +263,7 @@ export function mountWaiting(env: Env) {
     listKey = ''; renderList(); hideSay();
     if (!listEl.hidden) return;
     listEl.hidden = false;
-    anim(listEl, [{ opacity: 0, transform: 'translateY(-4px)' }, { opacity: 1, transform: 'none' }], 160);
+    anim(listEl, [{ opacity: 0, transform: 'translateY(-4px)' }, { opacity: 1, transform: 'none' }], 140);
   }
   function hideList() { clearTimeout(listT); listEl.hidden = true; over = ''; }
   // A menu opened from the list keeps it while it is up.
@@ -236,10 +271,17 @@ export function mountWaiting(env: Env) {
 
   // ---------- her one line, at a pause ----------
   function hideSay() { clearTimeout(sayT); if (sayEl.hidden) return; sayEl.hidden = true; env.her.surface(false); }
+  // Under her, or, with a sheet open on the right, under the sheet's header and the view switch at the top of its body
+  // (open.css .op-seg), so their buttons stay in reach.
+  function placeSay() {
+    const sh = env.win.querySelector<HTMLElement>('.pv:not(.off) .sh'), w = env.win.getBoundingClientRect(), r = sh?.getBoundingClientRect();
+    const top = r && r.height && r.right > w.right - 330 ? Math.max(58, Math.round(r.bottom - w.top + 42)) : 58;
+    if (sayEl.style.top !== `${top}px`) sayEl.style.top = `${top}px`;
+  }
   function say(lead: string, first: Sess, ms: number) {
     sayEl.innerHTML = `<button type="button" class="say-go" data-id="${esc(first.id)}"><span class="say-l">${esc(lead)}</span><span class="say-f"><b class="q-${waitOf(first)}" aria-hidden="true">✦</b>`
       + `<em>${esc(first.title)}</em><i>${mins(waited(first))}</i><small>${esc(lineOf(first))}</small></span></button><button type="button" class="say-x" aria-label="收起">${X_ICON}</button>`;
-    hideList(); sayEl.hidden = false;
+    hideList(); sayEl.hidden = false; placeSay();
     // She surfaces from her glass; her words follow.
     env.her.surface(true); env.her.say('ask', 1100); env.her.hop(.08); env.cue('msg', .5);
     anim(sayEl, [{ opacity: 0, transform: 'translateY(-6px) scale(.96)' }, { opacity: 1, transform: 'none' }], 240, LIVELY);
@@ -270,7 +312,11 @@ export function mountWaiting(env: Env) {
   // ---------- wiring ----------
   herEl.setAttribute('aria-label', 'Jarvis：下一个等你的');
   herEl.addEventListener('click', next);
-  herEl.addEventListener('pointerenter', () => { clearTimeout(listT); listT = window.setTimeout(() => { if (!env.sky() && !menuOpen()) showList(); }, 260); });
+  // A click on her keeps focus where it was, so nothing later hands focus back to her (a slip thrown after it would,
+  // and her focus ring would show); the keyboard still reaches her with Tab.
+  herEl.addEventListener('mousedown', e => e.preventDefault());
+  // A short intent delay: pointing at her lists them at once, passing over her does not.
+  herEl.addEventListener('pointerenter', () => { clearTimeout(listT); listT = window.setTimeout(() => { if (!env.sky() && !menuOpen()) showList(); }, 150); });
   herEl.addEventListener('pointerleave', e => { clearTimeout(listT); if (!listEl.contains(e.relatedTarget as Node | null)) listT = window.setTimeout(hideSoon, 260); });
   // Right-click her: how the queue is drawn.
   herEl.addEventListener('contextmenu', e => {
@@ -282,7 +328,7 @@ export function mountWaiting(env: Env) {
   // a row you point at lifts its star, so the list and the line read as one
   listEl.addEventListener('pointerover', e => { over = (e.target as HTMLElement).closest<HTMLElement>('.hq-r')?.dataset.id ?? ''; });
   listEl.addEventListener('click', e => { const id = (e.target as HTMLElement).closest<HTMLElement>('.hq-r')?.dataset.id; if (id) go(id); });
-  listEl.addEventListener('contextmenu', e => { const id = (e.target as HTMLElement).closest<HTMLElement>('.hq-r')?.dataset.id; if (id) aside(id, e); });
+  listEl.addEventListener('contextmenu', e => { const row = (e.target as HTMLElement).closest<HTMLElement>('.hq-r'), id = row?.dataset.id; if (id) aside(id, e, row!); });
   starsEl.addEventListener('contextmenu', e => { const id = (e.target as HTMLElement).closest<HTMLElement>('[data-session]')?.dataset.session; if (id && place.has(id)) aside(id, e); });
   sayEl.addEventListener('click', e => {
     const el = e.target as HTMLElement, id = el.closest<HTMLElement>('.say-go')?.dataset.id;
@@ -313,12 +359,17 @@ export function mountWaiting(env: Env) {
     move(dt: number) {
       const changed = layout(), rows = env.rows(), ids = new Set(rows.map(s => s.id));
       for (const id of [...X.keys()]) if (!ids.has(id)) { X.delete(id); Y.delete(id); trails.delete(id); }
+      for (const id of coming) if (!ids.has(id)) coming.delete(id);
       for (const s of rows) {
-        const [tx, ty] = slots.get(s.id) ?? [env.width() - 84, 27], q = place.has(s.id);
+        const [tx, ty] = slots.get(s.id) ?? [env.width() - 84, BASE], q = place.has(s.id);
         let x = X.get(s.id), y = Y.get(s.id);
         if (!x || !y) { X.set(s.id, x = spring(tx)); Y.set(s.id, y = spring(ty)); }
-        step(x, tx, q ? 1.9 : 2.4, .84, dt); step(y, ty, q ? 2.2 : 2.6, q ? .5 : .8, dt);
+        // on its way in, it keeps above the line until it is nearly over its place, then settles into it
+        const up = look === 'A' && coming.has(s.id) && Math.abs(x.value - tx) > 14;
+        step(x, tx, q ? 2 : 2.4, .9, dt); step(y, up ? ty - LIFT : ty, q ? 2.4 : 2.6, .82, dt);
+        if (coming.has(s.id) && !up && Math.abs(y.value - ty) < .5 && Math.abs(x.value - tx) < .5) coming.delete(s.id);
       }
+      if (!sayEl.hidden) placeSay();
       return changed;
     },
     at,
@@ -348,15 +399,14 @@ export function mountWaiting(env: Env) {
     },
     // Where a horizon star's button sits: in the line for a queued one in A; none for one on a ring or past the line.
     place(id: string) {
-      const j = place.get(id), [x, y] = slots.get(id) ?? [env.width() - 84, 27];
-      if (j === undefined) return `left:${x - 10}px`;
-      return look === 'B' || j >= QA.max ? null : `left:${x - 10}px;top:${y - 15}px`;
+      const j = place.get(id), [x, y] = slots.get(id) ?? [env.width() - 84, BASE];
+      return j !== undefined && (look === 'B' || j >= QA.max) ? null : `left:${x - 10}px;top:${y - 15}px`;
     },
     // At rest her eyes are on the first one waiting.
     lookAt(): [number, number] | null {
       const f = line.find(s => s.id !== env.current()); if (!f) return null;
       const [x, y] = look === 'B' ? ringHead(f, 0, env.width()) : at(f.id);
-      return [clamp((x - env.width() + 34) / 50, -1, 1), clamp((y - 28) / 36, -1, 1)];
+      return [clamp((x - env.width() + 34) / 50, -.8, .8), clamp((y - 28) / 36, -.8, .8)];
     },
     // The sky's rows carry the same numbers, in the same order.
     badge(s: Sess) {
