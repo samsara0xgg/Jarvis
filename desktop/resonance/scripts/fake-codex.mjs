@@ -9,7 +9,7 @@
 // Its MCP servers are docs (connected, two tools), off (switched off in its config), remote (over HTTP, wants an OAuth
 // sign-in) and broken (fails to start), reported as Codex reports them with and without a thread of the session's.
 // Every request, and every answer to its own requests, is appended to FAKE_CODEX_LOG when it is set. The host runs it
-// as `codex` on its PATH.
+// as `codex` on its PATH. With FAKE_CODEX_SIGNED_OUT it starts signed out, until a ChatGPT sign-in it finishes itself.
 import { randomUUID } from 'node:crypto';
 import { appendFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
@@ -23,6 +23,7 @@ note({ ev: 'start', args: process.argv.slice(2) });
 
 // ---------- threads and turns ----------
 const threads = new Map();
+let signedOut = !!process.env.FAKE_CODEX_SIGNED_OUT;
 const thread = (id, cwd, side = null, turns = []) => ({ id, cwd, turns, running: null, side });
 let asked = 0;
 const waiting = new Map();
@@ -85,7 +86,12 @@ function handle(m) {
     case 'initialize': return reply({ userAgent: 'fake-codex/9.9.9' });
     case 'model/list': return reply({ data: [{ id: 'fake-codex', model: 'fake-codex', displayName: 'Fake Codex', hidden: false, isDefault: true,
       supportedReasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 'high' }] }], nextCursor: null });
-    case 'account/read': return reply({ account: { type: 'chatgpt', email: 'owner@example.com', planType: 'plus' } });
+    case 'account/read': return reply({ account: signedOut ? null : { type: 'chatgpt', email: 'owner@example.com', planType: 'plus' } });
+    case 'account/login/start': {
+      const loginId = randomUUID();
+      setTimeout(() => { signedOut = false; tell('account/login/completed', { loginId, success: true, error: null }); }, 800);
+      return reply({ type: 'chatgpt', loginId, authUrl: 'https://auth.openai.com/fake' });
+    }
     case 'thread/start': { const t = thread(randomUUID(), p.cwd); threads.set(t.id, t); return reply({ thread: { id: t.id, cwd: t.cwd, turns: [] } }); }
     case 'thread/resume': { if (!threads.has(p.threadId)) threads.set(p.threadId, thread(p.threadId, p.cwd)); return reply({ thread: { id: p.threadId, turns: [] } }); }
     case 'thread/fork': {
