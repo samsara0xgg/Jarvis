@@ -37,6 +37,8 @@ class PresentationRecord:
     source_event_uids: tuple[str, ...]
     consistent: bool
     truncated: bool = False
+    # L5 dropped its speech before any of it played (surface.speech_dropped).
+    unspoken: bool = False
 
 
 @dataclass(frozen=True)
@@ -74,6 +76,7 @@ class _Response:
     consistent: bool = True
     truncated: bool = False
     text_chars: int = 0
+    dropped: bool = False
 
     def freeze(self) -> PresentationRecord:
         sequences = sorted(self.chunks)
@@ -93,6 +96,7 @@ class _Response:
             source_event_uids=tuple(self.sources),
             consistent=valid,
             truncated=self.truncated,
+            unspoken=self.dropped and self.playback.identity is None,
         )
 
 
@@ -110,6 +114,7 @@ _OUTPUT_TYPES = frozenset(
         "surface.playback_completed",
         "surface.playback_interrupted",
         "surface.playback_failed",
+        "surface.speech_dropped",
     }
 )
 
@@ -178,6 +183,7 @@ def _fold_output(response: _Response, event: Event) -> None:  # noqa: C901 - clo
         return
     if event.type in {"surface.response_open", "surface.response_emitted"}:
         response.surface_sources.add(event.event_uid)
+    response.dropped |= event.type == "surface.speech_dropped"
     if event.type == "surface.response_chunk":
         _fold_chunk(response, event)
     elif event.type == "surface.response_emitted":

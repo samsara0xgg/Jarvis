@@ -1605,6 +1605,7 @@ class StreamingTTSPipeline:
             self._unschedule(waiting)
             self._responses.pop(waiting.response_id, None)
             self._registry.terminalize(waiting.response_id)
+            self._record_dropped(waiting, reason=reason)
             self._broadcast_spoken(waiting.turn_id, event_type="dropped")
             record_realtime_trace(
                 "media_stop_foreground_waiting", response_id=waiting.response_id, reason=reason,
@@ -2285,6 +2286,7 @@ class StreamingTTSPipeline:
         self._unschedule(response)
         self._responses.pop(response.response_id, None)
         self._registry.terminalize(response.response_id)
+        self._record_dropped(response, reason=reason)
         self._broadcast_spoken(response.turn_id, event_type="dropped")
 
     async def _response_emitted(self, response: _ResponseBuffer, event: Event) -> None:
@@ -2320,6 +2322,7 @@ class StreamingTTSPipeline:
             self._registry.terminalize(old.response_id)
             self._responses.pop(old.response_id, None)
             # Its text may already be on screen: the surface ends its turn on `spoken`.
+            self._record_dropped(old, reason="displaced")
             self._broadcast_spoken(old.turn_id, event_type="dropped")
 
     def _unschedule(self, response: _ResponseBuffer) -> None:
@@ -3589,6 +3592,28 @@ class StreamingTTSPipeline:
             self._start_response(self._after_drain.popleft())
         else:
             self._output_active.clear()
+
+    def _record_dropped(self, response: _ResponseBuffer, *, reason: str) -> None:
+        """Leave the durable fact that none of ``response`` was spoken.
+
+        Best effort: letting the answer go must not fail on its record.
+        """
+        try:
+            emit_event(
+                self._require_conn(),
+                type="surface.speech_dropped",
+                payload={
+                    "response_id": response.response_id,
+                    "turn_id": response.turn_id,
+                    "reason": reason,
+                },
+                source_event_id=response.source_event_id,
+                correlation={"turn_id": response.turn_id},
+            )
+        except Exception:  # noqa: BLE001 - see docstring
+            LOGGER.warning(
+                "could not record dropped speech %s", response.response_id, exc_info=True,
+            )
 
     def _broadcast_spoken(self, turn_id: str, *, event_type: str = "no_speech") -> None:
         callback = getattr(self._broadcaster, "broadcast_voice_sync", None)

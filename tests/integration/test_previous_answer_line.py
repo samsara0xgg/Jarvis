@@ -161,3 +161,61 @@ def test_an_answer_given_after_the_cut_ends_the_look_back(tmp_path: Path) -> Non
         assert _next_turn_line(conn) is None
     finally:
         conn.close()
+
+
+def test_an_answer_stopped_before_it_played_was_never_spoken(tmp_path: Path) -> None:
+    """Parked while Allen talked, then stopped: on screen, never said, not heard whole.
+
+    With no playback row at all, the next turn used to read it as heard.
+    """
+    db_path = tmp_path / "events.db"
+    conn = open_event_log(db_path)
+    pipeline, player = _pipeline(
+        db_path, _FakeProvider(candidate_count=1), speak_from_segments=True,
+    )
+    try:
+        _asked(conn, "T-RP")
+        with _CallbackPump(player):
+            asyncio.run(_submit_response(pipeline, [_open(conn, "RP")]))
+            pipeline.hold_output(held=True)
+            rest = [_chunk(conn, "RP", 0, "会议改到三点。"), _emitted(conn, "RP", "会议改到三点。")]
+            asyncio.run(_submit_response(pipeline, rest))
+            assert pipeline.stop_foreground_output("RP") == "applied"
+            pipeline.hold_output(held=False)
+            assert pipeline.wait_until_idle(timeout_s=2.0)
+        dropped = conn.execute(
+            "SELECT json_extract(payload_json, '$.reason') FROM events "
+            "WHERE type = 'surface.speech_dropped'",
+        ).fetchall()
+        assert dropped == [("user_stop",)]
+        assert _next_turn_line(conn) == (
+            "Previous answer: never spoken aloud; it was stopped before it began to play "
+            "and was only shown on screen"
+        )
+    finally:
+        assert pipeline.close()
+        conn.close()
+
+
+def test_a_cut_answer_before_one_never_spoken_is_still_named(tmp_path: Path) -> None:
+    """The answer that was never played does not hide the cut one Allen last heard."""
+    db_path = tmp_path / "events.db"
+    conn = open_event_log(db_path)
+    try:
+        _play_cut(conn, db_path, gated=1)
+        _asked(conn, "T-never")
+        _emit_response(conn, response_id="RN", group_id="GN", turn_id="T-never", text="Sure.")
+        emit_event(
+            conn,
+            type="surface.speech_dropped",
+            payload={"response_id": "RN", "turn_id": "T-never", "reason": "displaced"},
+        )
+        line = _next_turn_line(conn)
+    finally:
+        conn.close()
+    assert line is not None
+    assert line.splitlines() == [
+        "Previous answer: never spoken aloud; it was stopped before it began to play "
+        "and was only shown on screen",
+        _CUT,
+    ]

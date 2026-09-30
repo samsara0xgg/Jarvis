@@ -748,6 +748,10 @@ def _interaction_line(packet: SituationPacket, ctx: DecideContext) -> str | None
 
 
 _HEARD_QUOTE_MAX_CHARS: Final[int] = 40
+_UNSPOKEN_LINE: Final[str] = (
+    "Previous answer: never spoken aloud; it was stopped before it began to play "
+    "and was only shown on screen"
+)
 
 # Allen did not catch what she said: the whole utterance only asks for it
 # again. Matched on the text with spaces and closing punctuation removed.
@@ -801,6 +805,9 @@ def _previous_answer_line(packet: SituationPacket) -> str | None:
     for turn in reversed(turns[:index]):
         finals = [r for r in turn.responses if r.phase == "final"]
         spoken = [r for r in finals if r.panel_available.strip()]
+        if spoken and spoken[-1].unspoken:
+            lines.append(_UNSPOKEN_LINE)
+            continue  # Never played: the last audible answer is further back.
         if spoken:
             cut = _answer_cut_line(spoken[-1])
             if cut is not None:

@@ -627,6 +627,19 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         ),
         schema_version=1,
     ),
+    # An answer L5 let go before any of it played: stopped while parked or
+    # queued, displaced by a foreground grant, or ended by L3 while it was
+    # still buffering. It never reached a lease, so it carries no generation
+    # and no playback terminal; without it the next turn read no playback as
+    # heard whole (docs/plans/unspoken-answer-proposal.md).
+    EventTypeSchema(
+        event_type="surface.speech_dropped",
+        owner_layer="L5",
+        actor="jarvis_runtime",
+        required_payload=("response_id", "turn_id", "reason"),
+        optional_payload=(),
+        schema_version=1,
+    ),
     # ADR-0006 §4.2: the fourth exit from playback, which appends no terminal.
     # The media lane fails closed and speaks nothing further until the process
     # restarts; without this row that outcome is unprovable after the fact.
