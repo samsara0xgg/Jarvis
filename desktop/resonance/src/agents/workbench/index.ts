@@ -375,6 +375,14 @@ export function mountWorkbench(win: HTMLElement, ta: HTMLTextAreaElement, hooks:
       return true;
     },
     terminal: (on?: boolean, tab?: Tab, log?: string) => { if (tab) terminal.tab(tab, log); toggleTerm(on); },
+    // A !… line from the composer runs once in the session's shell: the pane opens on 终端 and the composer keeps the keys.
+    run(cmd: string) {
+      if (!sess()) return false;
+      terminal.tab('term');
+      if (!S.term) { S.term = true; layout(); }
+      terminal.run(cmd);
+      return true;
+    },
     show,
     // What the sheet shows now (a file's path, a page's address or a feature's key), or ''.
     shown: () => S.ref?.key ?? '',
