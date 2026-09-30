@@ -265,7 +265,7 @@ export function mountFrom(ctx: PageCtx): Feature {
     if (T.cur !== o) return;
     if (r instanceof Error) {
       if (r.need === 'force') { o.recent = true; drawRO(); ctx.cue('ask', .6); return; }
-      ctx.toast(r.message); return;
+      ctx.toast(r.message, true); return;
     }
     ctx.cue('open');
     closeRO();
@@ -331,7 +331,7 @@ export function mountFrom(ctx: PageCtx): Feature {
     // Git would lose something after all: the question, and the row is back until it is answered.
     const back = () => { s.archived = false; ctx.draw(); void ctx.tryCall(`/sessions/${id}/meta`, { archived: false }); };
     if (r.need === 'force') { back(); ask(s, /没提交/.test(r.message) ? 'dirty' : 'ahead', { x: Math.max(8, win.clientWidth / 2 - 150), y: 70 }); return; }
-    back(); ctx.toast(r.message);
+    back(); ctx.toast(r.message, true);
   }
   async function force(id: string) {
     const s = ctx.byId(id); if (!s) return;
@@ -397,8 +397,9 @@ export function mountFrom(ctx: PageCtx): Feature {
     act(a, el) {
       if (a === 'fr-del') {
         const s = ctx.byId(el.dataset.id ?? ''), menu = el.closest('.pop')?.getBoundingClientRect(), w = win.getBoundingClientRect();
-        // The question stands where the menu stood (a right click already said where).
-        if (menu && !point) point = { x: menu.left - w.left, y: menu.top - w.top };
+        // The question stands where the menu stood, its right edge on the menu's (under the ··· it came from); a right
+        // click already said where. 300 is .pop.fr-ask's width.
+        if (menu && !point) point = { x: menu.right - w.left - 300, y: menu.top - w.top };
         if (s) { ctx.closeMenu(); del(s); }
         return true;
       }

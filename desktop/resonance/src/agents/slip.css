@@ -67,9 +67,10 @@
 .mp-x:hover{background:rgb(255 255 255 / .1);color:var(--ink)}
 .mp-none{padding:16px 10px;font-size:12px;color:var(--faint)}
 /* the fuse: a ring that burns once round in three seconds, above the composer */
-.mt-fuse{position:absolute;z-index:26;transform:translateX(-50%);display:flex;align-items:center;gap:10px;max-width:min(560px,calc(100% - 32px));padding:7px 8px 7px 12px;border-radius:10px;
+/* one width whatever it says, so a word changing in it does not move it */
+.mt-fuse{position:absolute;z-index:26;transform:translateX(-50%);display:flex;align-items:center;gap:10px;width:min(440px,calc(100% - 32px));padding:7px 8px 7px 12px;border-radius:10px;
   background:rgb(22 24 48 / .97);box-shadow:inset 0 0 0 .5px rgb(var(--glow) / .4),0 16px 40px -14px #000;font-size:12px;color:var(--ink);white-space:nowrap}
-.mt-ft{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.mt-ft{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
 .mt-ft em{font-style:normal;color:var(--faint)}
 .mt-fuse button{flex:none;display:inline-flex;align-items:center;gap:4px;height:22px;padding:0 8px;border-radius:6px;font-size:11.5px;color:rgb(var(--glow));background:rgb(var(--glow) / .1)}
 .mt-fuse button:hover{background:rgb(var(--glow) / .18)}
