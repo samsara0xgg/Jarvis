@@ -47,9 +47,9 @@ function rowOf(s: Sess, l: Line[] | undefined): Agent {
     request: req && requestOf(s, req), error: s.st === 'err' ? s.summary : undefined, host: { unread: s.unread, parked: s.parked, archived: s.archived } };
 }
 
-// The rows, waiting ones first in her queue's order; `ids` are every session the host holds, so the daemon's own row of
-// one (a session taken in from a terminal) gives way. One held in a terminal is the terminal's (ADR 0096): its row
-// stays the daemon's.
+// The rows, waiting ones first in her queue's order; `ids` are every session the host holds, under every id Claude Code
+// gave it (a /clear starts a new one), so the daemon's own row of one (a session taken in from a terminal) gives way.
+// One held in a terminal is the terminal's (ADR 0096): its row stays the daemon's.
 export function useStartrail() {
   const [version, bump] = useReducer((x: number) => x + 1, 0);
   const [st] = useState(() => ({ ss: new Map<string, Sess>(), lines: new Map<string, Line[]>(), loading: new Set<string>(), on: true,
@@ -102,7 +102,7 @@ export function useStartrail() {
       st.shown.set(s.id, row);
       return row;
     });
-    return { rows, ids: new Set(ss.map(s => s.id)) };
+    return { rows, ids: new Set(ss.flatMap(s => [s.id, ...s.resets ?? []])) };
   }, [version]);
 }
 
