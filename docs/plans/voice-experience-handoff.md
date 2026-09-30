@@ -80,6 +80,15 @@ unreachable（Linux 平台分支，main 同样）；全量 hermetic 1214/1217，
    工具轮用模型自己的引导语（Responses API 的 `phase`，停在过程话就让它接着办，没说话的调用由第 4 项固定确认兜底）；
    边听边想；语义端点；最后按实测决定要不要开口更快的模型。D 不做。提案 `docs/plans/speak-as-written-proposal.md`（一份，
    两件事都取代 0082、用同一套机制）。
+   **实现（2026-09-29，分支 `claude/peaceful-pasteur-wv870t`，开关 `realtime.response.spoken_streaming.enabled`
+   关，tier B）**：Allen 说的一轮（`inherent_ptt`/`inherent_wake`/`speech`，且主模型在 api.openai.com）每次请求都经
+   /v1/responses 流式发出；`final_answer` 文字过信封拆分和句子组装，按 `spoken-v1`（不拒任何句子）逐句出流，
+   没有第二次调用；`commentary` 那句随 `action.proposed.lead_in` 走，commentary 开时在第一次为 Allen 办事的派发时
+   代替固定确认说出（超 60 字、带标签或说成已完成的回落到固定句）；停在那句又没调用的回应补一次请求；一句都没出流
+   （开头就有 markup）时整段按原文交付。回答写完前就出声还要开 `streaming_output.speak_from_segments`。
+   证据：`tests/integration/test_spoken_streaming.py` 4 例、`test_lifecycle_commentary.py` 1 例、
+   `test_typed_llm_stream.py` 3 例。欠：Mac 实测（三个开关一起开）；每次流新建 AsyncOpenAI 客户端和事件循环，
+   多一次 TLS 握手（约 0.15 s）；接受后改 spec §3.6.5 "Spoken form" 与 §3.6.12 的 D6 注记，删旧 routine 路由。
    **实验（2026-09-29，50 次调用 0.18 美元，脚本和数据在 `~/.jarvis-realtime-test/speak-first-2026-09-29/`）**：
    真实提示 4.1 万 token（24 个工具、500 条历史），首字中位 gpt-6-luna 冷 1.47 s / 热 1.26 s，gpt-5.6-luna
    1.38 / 1.26 s；历史只留最近 12 条（6 千 token）1.04 / 0.86 s；第一句紧跟首字约 0.05 s。带引导语提示走 Responses

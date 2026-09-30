@@ -23,6 +23,7 @@ say about this row".
 from __future__ import annotations
 
 import hashlib
+import re
 from typing import TYPE_CHECKING, Final
 
 from jarvis.shared.lang import variants
@@ -78,6 +79,37 @@ _SILENT_TOOLS: Final = ("tool_search", "get_current_time", "remember", "ask_user
 """Tools that serve the turn's own bookkeeping rather than Allen's request:
 finding a tool, the clock, a kept fact, a card. Announcing them was the
 2026-09-25 complaint, a clock lookup nobody asked for (ADR 0045)."""
+
+
+_LEAD_IN_MAX_CHARS: Final = 60
+"""The longest line before a call that is spoken: one speech candidate, the
+sentence assembler's bound. A longer line gives way to the fixed phrase."""
+
+_RESULT_CLAIM: Final = (
+    r"已经|已[查找发关开完做]|[查找]到|好了|完成|搞定|结果是"
+    r"|\b(?:done|finished|completed|found|sent|already|here(?:'s| is| are))\b"
+)
+"""A line before a call says what is about to happen. One that states a result
+would be "已经查到了" before ``action.result_observed``, which D6 forbids."""
+
+
+def lead_in_speech_text(line: str | None) -> str | None:
+    """The model's line before a call as speech, or ``None`` for the fixed phrase.
+
+    docs/plans/speak-as-written-proposal.md: spoken at the first dispatch of a
+    tool that works for Allen, so the doing has started. ``None`` for no line,
+    one longer than a speech candidate, one carrying a tag, or one that states
+    a result.
+    """
+    text = (line or "").strip()
+    if (
+        not text
+        or len(text) > _LEAD_IN_MAX_CHARS
+        or "<" in text
+        or re.search(_RESULT_CLAIM, text, re.IGNORECASE) is not None
+    ):
+        return None
+    return f"<voice>{text}</voice>"
 
 
 def _phrase_for(action_id: str, phrases: tuple[str, ...]) -> str:
@@ -154,4 +186,5 @@ __all__ = [
     "COMMENTARY_ATTENTION_CHANNEL",
     "commentary_intent_for",
     "commentary_speech_text",
+    "lead_in_speech_text",
 ]

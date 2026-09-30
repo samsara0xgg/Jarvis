@@ -23,6 +23,10 @@ if TYPE_CHECKING:
     from jarvis.shared.stream_emission import SegmentRisk
 
 RULE_VERSION: Final = "routine-zh-en-v1"
+SPOKEN_RULE_VERSION: Final = "spoken-v1"
+"""A spoken turn's answer (docs/plans/speak-as-written-proposal.md): the
+sentence assembler is its only filter, because the Pre-emit Gate would pass the
+same text unchanged once complete (ADR 0019)."""
 CONTEXT_VERSION: Final = "response-risk-v1"
 _MAX_SCAN_CHARS: Final = 8192
 _HARD_CAP_MS: Final = 20.0
@@ -69,7 +73,7 @@ class ResponseRiskContext:
     response_id: str
     turn_id: str
     user_request: str
-    route: Literal["casual_or_explanatory", "action", "consequential", "unknown"]
+    route: Literal["casual_or_explanatory", "spoken", "action", "consequential", "unknown"]
     active_subject_ref: str
     linked_action_ids: tuple[str, ...]
     pending_action_risk: Literal["none", "consequential", "high", "unknown"]
@@ -263,6 +267,8 @@ class SegmentRiskClassifier:
         text: str,
         context: ResponseRiskContext,
     ) -> tuple[SegmentRisk, tuple[str, ...]]:
+        if self.rule_version == SPOKEN_RULE_VERSION:
+            return "routine", ("spoken_answer",)
         if self.rule_version != RULE_VERSION:
             return "unknown", ("unknown_rule_version",)
         if len(text) > _MAX_SCAN_CHARS or len(context.user_request) > _MAX_SCAN_CHARS:

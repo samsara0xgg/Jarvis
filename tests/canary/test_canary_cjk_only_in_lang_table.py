@@ -31,6 +31,8 @@ _MATCHERS: Final[dict[str, frozenset[str]]] = {
     "jarvis/decision/__init__.py": frozenset(
         {"_WRITTEN_MARKUP_RE", "_REPEAT_REQUEST_RE", "_repeat_of_last_answer"}
     ),
+    # A model-written line before a tool call that already claims a result is not spoken.
+    "jarvis/decision/commentary.py": frozenset({"_RESULT_CLAIM"}),
     "jarvis/decision/daily_report.py": frozenset({"_COMPLETION_WORDS", "_TITLE_TERM", "_BREAKS"}),
     "jarvis/decision/pre_route.py": frozenset({"_DEMONSTRATIVE_TASK_RE"}),
     "jarvis/decision/stream_gate.py": frozenset({"routine_stream_policy"}),

@@ -563,13 +563,19 @@ class LLMClient:
             return self._chat_stream_openai(messages=messages, system=system, tools=tools)
         return self._chat_stream_anthropic(messages=messages, system=system, tools=tools)
 
-    def stream_events(
+    def stream_events(  # noqa: C901, PLR0912 - three provider request shapes
         self, *, messages: list[dict[str, Any]], system: str,
         tools: list[dict[str, Any]] | None = None,
         on_settled: Callable[[StreamDisposition], object],
+        responses: bool = False,
     ) -> LLMStreamHandle:
-        """Prepare an isolated typed stream; L3 must supply its cost settlement owner."""
+        """Prepare an isolated typed stream; L3 must supply its cost settlement owner.
+
+        ``responses`` streams an OpenAI request through /v1/responses, whose
+        text carries each message's phase; Anthropic ignores it.
+        """
         request_id = _new_llm_request_id()
+        responses = responses and self._provider == "openai"
         # Capture everything before returning the lazy source. Later preset or
         # caller-message mutations cannot redirect this request or its payload.
         options: dict[str, Any] = {"api_key": self._api_key}
@@ -580,7 +586,23 @@ class LLMClient:
         if self._max_retries is not None:
             options["max_retries"] = self._max_retries
         body: dict[str, Any] = {"model": self._model, "stream": True}
-        if self._provider == "openai":
+        if responses:
+            body.update({
+                "instructions": system,
+                "input": _messages_to_responses_input(copy.deepcopy(messages)),
+                "max_output_tokens": self._max_tokens,
+                "store": False,
+            })
+            if tools:
+                body["tools"] = [
+                    {**tool["function"], "type": "function", "strict": False}
+                    for tool in _tools_to_openai(copy.deepcopy(tools))
+                ]
+            if self._reasoning_effort:
+                body["reasoning"] = {"effort": self._reasoning_effort}
+            if self._extra_body:
+                body["extra_body"] = copy.deepcopy(self._extra_body)
+        elif self._provider == "openai":
             body.update({
                 _openai_token_key(self._base_url): self._max_tokens,
                 "messages": [{"role": "system", "content": system}, *copy.deepcopy(messages)],
@@ -600,14 +622,17 @@ class LLMClient:
             if tools:
                 body["tools"] = copy.deepcopy(tools)
         return LLMStreamHandle(
-            normalizer=StreamNormalizer(self._provider, request_id),
-            source=self._typed_provider_events(self._provider, options, body),
+            normalizer=StreamNormalizer(self._provider, request_id, responses=responses),
+            source=self._typed_provider_events(
+                self._provider, options, body, responses=responses,
+            ),
             on_settled=on_settled,
         )
 
     @staticmethod
     async def _typed_provider_events(
-        provider: Provider, options: dict[str, Any], body: dict[str, Any],
+        provider: Provider, options: dict[str, Any], body: dict[str, Any], *,
+        responses: bool = False,
     ) -> AsyncIterator[Mapping[str, Any]]:
         """Own and close one async SDK client/stream, including cancelled reads."""
         if not options.get("api_key"):
@@ -622,7 +647,11 @@ class LLMClient:
             from openai import AsyncOpenAI  # noqa: PLC0415 — lazy provider construction
 
             async with AsyncOpenAI(**options) as client:
-                response = await client.chat.completions.create(**body)
+                response = await (
+                    client.responses.create(**body)
+                    if responses
+                    else client.chat.completions.create(**body)
+                )
                 async with response:
                     async for chunk in response:
                         yield chunk.model_dump(exclude_none=True)
@@ -1320,7 +1349,11 @@ def _messages_to_responses_input(messages: list[dict[str, Any]]) -> list[dict[st
                 for part in content
             ]
         if content:
-            items.append({"role": message["role"], "content": content})
+            item: dict[str, Any] = {"role": message["role"], "content": content}
+            # The model's own label on its earlier message; OpenAI asks for it back.
+            if message.get("phase") in ("commentary", "final_answer"):
+                item["phase"] = message["phase"]
+            items.append(item)
         items.extend(
             {
                 "type": "function_call",

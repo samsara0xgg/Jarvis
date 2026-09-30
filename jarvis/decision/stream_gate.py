@@ -7,7 +7,12 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from jarvis.decision.response_run import ResponseEmissionPolicy
-from jarvis.decision.stream_risk import RULE_VERSION, ResponseRiskContext, SegmentRiskClassifier
+from jarvis.decision.stream_risk import (
+    RULE_VERSION,
+    SPOKEN_RULE_VERSION,
+    ResponseRiskContext,
+    SegmentRiskClassifier,
+)
 from jarvis.shared.stream_emission import EmissionPermit, StreamGateAssessment
 from jarvis.state.stream_emission import StreamEmissionError, append_stream_gate
 
@@ -51,6 +56,26 @@ def routine_stream_policy(
     )
 
 
+def spoken_stream_policy(
+    context: ResponseRiskContext,
+    *,
+    preset_snapshot_hash: str,
+) -> ResponseEmissionPolicy:
+    """Pin a spoken turn's route: every sentence the assembler forms may stream."""
+    return ResponseEmissionPolicy(
+        emission_mode="routine_stream",
+        output_risk_class="routine",
+        required_gate_mode="sentence",
+        allowed_phases=("final",),
+        allowed_channels=("speech", "document", "both"),
+        active_subject_ref=context.active_subject_ref,
+        evidence_snapshot_hash=context.evidence_snapshot_hash,
+        preset_snapshot_hash=preset_snapshot_hash,
+        risk_context_hash=context.context_hash,
+        classifier_rule_version=SPOKEN_RULE_VERSION,
+    )
+
+
 def stream_emission_gate(  # noqa: PLR0913 - explicit immutable gate inputs
     conn: sqlite3.Connection,
     *,
@@ -79,7 +104,9 @@ def stream_emission_gate(  # noqa: PLR0913 - explicit immutable gate inputs
     ):
         message = "stream gate context or output scope differs from pinned policy"
         raise StreamEmissionError(message)
-    result = (classifier or SegmentRiskClassifier()).classify(segment.text, context)
+    result = (
+        classifier or SegmentRiskClassifier(rule_version=policy.classifier_rule_version)
+    ).classify(segment.text, context)
     candidate_shape_valid = (
         segment.boundary in {"sentence", "subclause", "final"}
         and bool(segment.text.strip())
@@ -92,7 +119,8 @@ def stream_emission_gate(  # noqa: PLR0913 - explicit immutable gate inputs
         and policy.required_gate_mode == "sentence"
         and phase in policy.allowed_phases
         and channel in policy.allowed_channels
-        and policy.classifier_rule_version == result.rule_version == RULE_VERSION
+        and policy.classifier_rule_version == result.rule_version
+        and result.rule_version in {RULE_VERSION, SPOKEN_RULE_VERSION}
         and candidate_shape_valid
     )
     reasons = result.reasons if eligible else (*result.reasons, "routine_ceiling_not_met")

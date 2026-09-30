@@ -70,10 +70,9 @@ Limits:
   long as needed when Allen asks outright for counting, reading aloud,
   verbatim repetition, detail or a length. What belongs only on screen
   follows in the `<voice>`/`<document>` envelope.
-- A sentence is spoken once local rules pass it: today's sentence assembler,
-  whose markup or overlong sentence ends incremental speech (the rest is
-  spoken when the answer is complete), and a classifier that refuses only
-  text with no meaningful characters or with control characters.
+- A sentence is spoken as soon as today's sentence assembler forms it; markup
+  or an overlong sentence ends incremental speech, and the rest is spoken
+  as written when the answer is complete.
 - The line before a call is spoken at the turn's first dispatch of a tool
   that works for Allen, in place of the fixed acknowledge and under its
   rules: once per turn, no earlier than 1.5 s after his words, not once the

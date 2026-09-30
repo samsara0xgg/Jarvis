@@ -82,6 +82,8 @@ from jarvis.decision.pre_route import (
     load_tool_cues,
     pre_route,
     routine_risk_context,
+    spoken_risk_context,
+    spoken_turn,
 )
 from jarvis.decision.response_run import (
     CancelAccepted,
@@ -99,7 +101,7 @@ from jarvis.decision.response_run import (
     request_response_cancel,
     start_response_run,
 )
-from jarvis.decision.stream_gate import routine_stream_policy
+from jarvis.decision.stream_gate import routine_stream_policy, spoken_stream_policy
 from jarvis.decision.think_mode import ThinkMode, ThinkModeConfigError, load_think_mode
 from jarvis.decision.tier0 import Tier0ConfigError, load_tier0_table, validate_tier0_table
 from jarvis.deployment import RuntimePaths, bootstrap_runtime, load_env_file
@@ -707,8 +709,8 @@ def _wave4_response_activation(config: Mapping[str, Any]) -> _Wave4ResponseActiv
     2. ``response_run_lifecycle`` requested without the Wave-1
        transactional-append and lifecycle-terminal-CAS primitives it writes
        through.
-    3. ``independent_response_cancel``,
-       ``routine_streaming`` or ``lifecycle_commentary`` requested without a
+    3. ``independent_response_cancel``, ``routine_streaming``,
+       ``spoken_streaming`` or ``lifecycle_commentary`` requested without a
        surviving ``response_run_lifecycle``. Cancellation,
        routine streaming and D6 commentary all require stable response
        lifecycle identities — without the lifecycle switch no ResponseRun,
@@ -744,6 +746,7 @@ def _wave4_response_activation(config: Mapping[str, Any]) -> _Wave4ResponseActiv
     if (
         requested.independent_response_cancel
         or requested.routine_streaming
+        or requested.spoken_streaming
         or requested.lifecycle_commentary
     ) and not requested.response_run_lifecycle:
         return _downgraded_response_activation(requested, "lifecycle_flag_disabled")
@@ -776,18 +779,20 @@ def _downgraded_response_activation(
     LOGGER.warning(
         "realtime.response downgraded (%s): requested response_run_lifecycle=%s "
         "independent_response_cancel=%s "
-        "routine_streaming=%s lifecycle_commentary=%s; effective "
+        "routine_streaming=%s spoken_streaming=%s lifecycle_commentary=%s; effective "
         "response_run_lifecycle=%s independent_response_cancel=%s "
-        "routine_streaming=%s "
+        "routine_streaming=%s spoken_streaming=%s "
         "lifecycle_commentary=%s",
         reason,
         requested.response_run_lifecycle,
         requested.independent_response_cancel,
         requested.routine_streaming,
+        requested.spoken_streaming,
         requested.lifecycle_commentary,
         flags.response_run_lifecycle,
         flags.independent_response_cancel,
         flags.routine_streaming,
+        flags.spoken_streaming,
         flags.lifecycle_commentary,
     )
     record_realtime_trace(
@@ -797,6 +802,7 @@ def _downgraded_response_activation(
             f"response_run_lifecycle={requested.response_run_lifecycle},"
             f"independent_response_cancel={requested.independent_response_cancel},"
             f"routine_streaming={requested.routine_streaming},"
+            f"spoken_streaming={requested.spoken_streaming},"
             f"lifecycle_commentary={requested.lifecycle_commentary}"
         ),
     )
@@ -1995,6 +2001,15 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
 # --- ADR-0008 Wave 4A ResponseRun seams -------------------------------------
 
 
+def _labels_phases(base_url: str | None) -> bool:
+    """Whether the host labels each message ``commentary`` or ``final_answer``.
+
+    Only OpenAI's own /v1/responses does. On a compatible host (the x.ai
+    presets) the line before a call would stream as the answer.
+    """
+    return "api.openai.com" in (base_url or "api.openai.com")
+
+
 def _start_drive_turn_response(
     runtime: JarvisRuntime,
     *,
@@ -2011,8 +2026,10 @@ def _start_drive_turn_response(
 
     ADR-0008 Step 8: with ``routine_streaming`` on, the route is decided here,
     before the run opens, and a ``casual_or_explanatory`` turn opens under
-    ``routine_stream_policy`` with the streaming seam bound; every other turn
-    (and every correction run) keeps ``legacy_full_text_policy``.
+    ``routine_stream_policy`` with the streaming seam bound. With
+    ``spoken_streaming`` on, a turn Allen spoke opens as ``spoken`` under
+    ``spoken_stream_policy`` first. Every other turn (and every correction
+    run) keeps ``legacy_full_text_policy``.
     """
     if not runtime.response_flags.response_run_lifecycle:
         return None
@@ -2030,7 +2047,24 @@ def _start_drive_turn_response(
     )
     route: str | None = None
     context = None
-    if runtime.response_flags.routine_streaming and correction is None:
+    if (
+        runtime.response_flags.spoken_streaming
+        and correction is None
+        and spoken_turn(user_intent_event)
+        and snapshot.provider == "openai"
+        and _labels_phases(snapshot.base_url)
+    ):
+        # docs/plans/speak-as-written-proposal.md: a turn Allen spoke streams
+        # every request through /v1/responses, whose phase labels tell the line
+        # before a call from the answer, and speaks the answer as it is written.
+        route = "spoken"
+        context = spoken_risk_context(
+            assemble_packet(user_intent_event, runtime.conn),
+            response_id=response_id,
+            turn_id=turn_id,
+        )
+        policy = spoken_stream_policy(context, preset_snapshot_hash=snapshot.snapshot_hash)
+    elif runtime.response_flags.routine_streaming and correction is None:
         packet = assemble_packet(user_intent_event, runtime.conn)
         route = pre_route(
             packet,
@@ -3027,7 +3061,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             response_plan = result.response_plan
             if response_plan is not None:
                 final_attention_channel = result.attention_channel
-                streamed = result.route == "casual_or_explanatory"
+                streamed = result.route in {"casual_or_explanatory", "spoken"}
                 last_gate_event_uid = result.last_gate_event_uid
                 break
 

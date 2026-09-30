@@ -32,12 +32,21 @@ class _Event:
     provider_response_id: str | None
 
 
+type MessagePhase = Literal["commentary", "final_answer"]
+
+
 @dataclass(frozen=True, kw_only=True)
 class LLMTextDelta(_Event):
-    """Untrusted model text, never an emission permit."""
+    """Untrusted model text, never an emission permit.
+
+    ``phase`` is the Responses API's label for the message the text belongs
+    to: ``commentary`` for a line before a tool call, ``final_answer`` for the
+    answer. Chat completions and Anthropic carry none.
+    """
 
     text: str
     content_block_index: int
+    phase: MessagePhase | None = None
     kind: Literal["text_delta"] = "text_delta"
 
 
@@ -204,10 +213,17 @@ class _ToolBlock:
 class StreamNormalizer:
     """Bounded provider protocol state; consumes usage through actual EOF."""
 
-    def __init__(self, provider: Literal["openai", "anthropic"], request_id: str) -> None:
-        """Bind one provider/request without any network or mutable client state."""
+    def __init__(
+        self, provider: Literal["openai", "anthropic"], request_id: str, *, responses: bool = False,
+    ) -> None:
+        """Bind one provider/request without any network or mutable client state.
+
+        ``responses`` reads OpenAI's /v1/responses event stream instead of
+        chat completion chunks.
+        """
         self.provider = provider
         self.request_id = request_id
+        self.responses = responses and provider == "openai"
         self.response_id: str | None = None
         self.finish_reason: str | None = None
         self.input_tokens: int | None = None
@@ -219,6 +235,9 @@ class StreamNormalizer:
         self._message_started = False
         self._message_stopped = False
         self._final_usage_seen = False
+        # Responses API: message item id -> its phase, function_call item id -> call index.
+        self._phases: dict[str, MessagePhase | None] = {}
+        self._calls: dict[str, int] = {}
 
     def _identity(self) -> dict[str, Any]:
         return {"llm_request_id": self.request_id, "provider_response_id": self.response_id}
@@ -265,6 +284,8 @@ class StreamNormalizer:
 
     def feed(self, raw: Mapping[str, Any]) -> list[LLMStreamEvent]:
         """Normalize one SDK event; this never produces a completed proposal."""
+        if self.responses:
+            return self._openai_responses(raw)
         if self.provider == "openai":
             return self._openai(raw)
         return self._anthropic(raw)
@@ -333,6 +354,96 @@ class StreamNormalizer:
             self.finish_reason = _text(reason)
         self._openai_final_usage(usage)
         return events
+
+    def _responses_end(self, kind: str, raw: Mapping[str, Any]) -> None:
+        response = _object(raw.get("response"))
+        self._response_id(response.get("id"))
+        usage = response.get("usage")
+        self._usage(usage, {"input_tokens": "input_tokens", "output_tokens": "output_tokens"})
+        if isinstance(usage, dict):
+            self._usage(usage.get("input_tokens_details"), {"cached_tokens": "cache_read_tokens"})
+            self._final_usage_seen = (
+                self.input_tokens is not None and self.output_tokens is not None
+            )
+        if kind == "response.completed":
+            self.finish_reason = "tool_calls" if self._tools else "stop"
+        else:
+            reason = _object(response.get("incomplete_details") or {}).get("reason")
+            self.finish_reason = (
+                "length" if reason == "max_output_tokens" else _text(reason or "incomplete")
+            )
+        self._message_stopped = True
+
+    def _responses_item(self, raw: Mapping[str, Any]) -> list[LLMStreamEvent]:
+        item = _object(raw.get("item"))
+        index = _index(raw.get("output_index"))
+        item_type = item.get("type")
+        if item_type == "message":
+            phase = item.get("phase")
+            self._phases[_text(item.get("id"))] = (
+                "commentary" if phase == "commentary"
+                else "final_answer" if phase == "final_answer"
+                else None
+            )
+            return []
+        if item_type == "reasoning":
+            return []
+        if item_type != "function_call":
+            raise _protocol_error("unsupported_output_item")
+        tool = self._tool(index)
+        tool.call_id = _text(item.get("call_id"))
+        tool.name = _text(item.get("name"))
+        if len(tool.call_id) > _MAX_CALL_ID or len(tool.name) > _MAX_TOOL_NAME:
+            raise _protocol_error("tool_identity_too_large")
+        self._calls[_text(item.get("id"))] = index
+        events: list[LLMStreamEvent] = [LLMToolCallStarted(
+            **self._identity(), call_index=index, call_id=tool.call_id, name=tool.name,
+        )]
+        if item.get("arguments"):
+            events.append(self._arguments(index, item["arguments"]))
+        return events
+
+    def _openai_responses(self, raw: Mapping[str, Any]) -> list[LLMStreamEvent]:  # noqa: C901, PLR0912
+        kind = _text(raw.get("type"))
+        if self._message_stopped:
+            raise _protocol_error("event_after_message_stop")
+        if kind in {"response.created", "response.in_progress", "response.queued"}:
+            self._response_id(_object(raw.get("response")).get("id"))
+            return []
+        if kind in {"response.completed", "response.incomplete"}:
+            self._responses_end(kind, raw)
+            return []
+        if kind in {"response.failed", "error"}:
+            raise _protocol_error("provider_response_failed")
+        if kind.startswith("response.refusal."):
+            raise _protocol_error("provider_refusal")
+        if kind == "response.output_item.added":
+            return self._responses_item(raw)
+        if kind == "response.output_text.delta":
+            item_id = _text(raw.get("item_id"))
+            if item_id not in self._phases:
+                raise _protocol_error("text_outside_message")
+            return [LLMTextDelta(
+                **self._identity(), text=_text(raw.get("delta")),
+                content_block_index=_index(raw.get("output_index")), phase=self._phases[item_id],
+            )]
+        if kind == "response.function_call_arguments.delta":
+            index = self._calls.get(_text(raw.get("item_id")))
+            if index is None:
+                raise _protocol_error("arguments_outside_call")
+            return [self._arguments(index, raw.get("delta"))]
+        if kind == "response.output_item.done":
+            item = _object(raw.get("item"))
+            if item.get("type") == "function_call":
+                index = self._calls.get(_text(item.get("id")))
+                if index is None:
+                    raise _protocol_error("arguments_outside_call")
+                if not self._tools[index].arguments and item.get("arguments"):
+                    self._arguments(index, item["arguments"])  # a stream that sent no deltas
+                self._tools[index].stopped = True
+        # Content parts, done markers, reasoning summaries and annotations carry
+        # nothing the delta and item events above did not.
+        return []
 
     def _anthropic(self, raw: Mapping[str, Any]) -> list[LLMStreamEvent]:  # noqa: C901, PLR0911, PLR0912, PLR0915
         kind = _text(raw.get("type"))

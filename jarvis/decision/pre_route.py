@@ -36,6 +36,9 @@ type Route = Literal["casual_or_explanatory", "action", "unknown"]
 ROUTINE_ATTENTION_CHANNEL = "voice_notify"
 """The channel a routine stream pins before generation; ordinary answers speak."""
 
+SPOKEN_CHANNELS = frozenset({"inherent_ptt", "inherent_wake", "speech"})
+"""Trigger channels whose words came in by voice; anything else is typed text."""
+
 _USER_TRIGGERS = frozenset({"surface.user_intent", "utterance.received"})
 # Mirrors the demonstrative task reference the F1 short-circuit refuses.
 _DEMONSTRATIVE_TASK_RE = re.compile(
@@ -125,6 +128,37 @@ def pre_route(
     if match_tool_cue(transcript, tool_cues) is not None:
         return "action"
     return "casual_or_explanatory"
+
+
+def spoken_turn(trigger: Event) -> bool:
+    """Whether Allen spoke this turn's words (GPT-Live relays are not his voice)."""
+    return trigger.type in _USER_TRIGGERS and trigger.payload.get("channel") in SPOKEN_CHANNELS
+
+
+def spoken_risk_context(
+    packet: SituationPacket,
+    *,
+    response_id: str,
+    turn_id: str,
+) -> ResponseRiskContext:
+    """Pin a spoken turn's context: tools are on offer and the answer speaks."""
+    slot = packet.pending_confirmation.slot
+    return ResponseRiskContext(
+        response_id=response_id,
+        turn_id=turn_id,
+        user_request=_transcript(packet),
+        route="spoken",
+        active_subject_ref="none",
+        linked_action_ids=(),
+        pending_action_risk="unknown" if packet.status_board.open_actions else "none",
+        confirmation_state="none" if slot is None else "pending",
+        evidence_snapshot_hash=snapshot_content_hash(packet),
+        attention_channel=ROUTINE_ATTENTION_CHANNEL,
+        tools_offered=True,
+        context_complete=True,
+        unresolved_references=False,
+        history_status="complete",
+    )
 
 
 def routine_risk_context(

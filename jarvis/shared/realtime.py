@@ -87,13 +87,17 @@ class Wave4ResponseFlags:
     cancel seam.
     ``routine_streaming`` (ADR-0008 Step 8, ``routine_streaming.enabled``)
     streams permitted sentences of a pre-routed casual answer while the model
-    is still generating. All stay off in the shipped configuration,
-    preserving the complete legacy batch prompt.
+    is still generating. ``spoken_streaming`` (``spoken_streaming.enabled``,
+    docs/plans/speak-as-written-proposal.md) streams every request of a turn
+    Allen spoke, tools included, and speaks its answer as it is written. All
+    stay off in the shipped configuration, preserving the complete legacy
+    batch prompt.
     """
 
     response_run_lifecycle: bool = False
     independent_response_cancel: bool = False
     routine_streaming: bool = False
+    spoken_streaming: bool = False
     lifecycle_commentary: bool = False
     """ADR-0008 D6 (Step 5, ``realtime.commentary.enabled``).
 
@@ -120,10 +124,12 @@ class Wave4ResponseFlags:
         """
         values = {} if raw is None else raw
         routine = values.get("routine_streaming")
+        spoken = values.get("spoken_streaming")
         return cls(
             response_run_lifecycle=values.get("response_run_lifecycle") is True,
             independent_response_cancel=values.get("independent_response_cancel") is True,
             routine_streaming=isinstance(routine, Mapping) and routine.get("enabled") is True,
+            spoken_streaming=isinstance(spoken, Mapping) and spoken.get("enabled") is True,
             lifecycle_commentary=commentary is not None and commentary.get("enabled") is True,
         )
 
@@ -135,6 +141,7 @@ class Wave4ResponseFlags:
                 self.response_run_lifecycle,
                 self.independent_response_cancel,
                 self.routine_streaming,
+                self.spoken_streaming,
                 self.lifecycle_commentary,
             )
         )
