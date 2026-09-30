@@ -93,14 +93,15 @@ const quote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 // The editor and terminal the owner chose in the host's settings, as its event stream last said.
 const chosen: { editor?: string; terminal?: string } = {};
 // true: typed and running; 'copied': open in the folder with the command on the clipboard; false: nothing to run it in.
+// No command: a shell in that folder.
 function typeIn(term: unknown, cwd: string, cmd: string) {
   const want = term ?? chosen.terminal;
   const t = TERMINALS.find(x => x.id === want && appAt(x.app)) ?? TERMINALS.find(x => x.script && appAt(x.app));
-  const line = `cd ${quote(cwd)} && ${cmd}`;
+  const line = cmd ? `cd ${quote(cwd)} && ${cmd}` : `cd ${quote(cwd)}`;
   return new Promise<boolean | 'copied'>(resolve => {
     if (!t) resolve(false);
     else if (t.script) execFile('/usr/bin/osascript', ['-e', t.script, line], { timeout: 8000 }, error => resolve(!error));
-    else execFile('/usr/bin/open', ['-a', appAt(t.app)!, cwd], { timeout: 8000 }, error => { if (!error) clipboard.writeText(cmd); resolve(error ? false : 'copied'); });
+    else execFile('/usr/bin/open', ['-a', appAt(t.app)!, cwd], { timeout: 8000 }, error => { if (!error && cmd) clipboard.writeText(cmd); resolve(error ? false : cmd ? 'copied' : true); });
   });
 }
 
@@ -194,8 +195,9 @@ export function setupAgents({ preload, page, host, packaged = false, trustedWind
   const isDir = (p: unknown): p is string => typeof p === 'string' && path.isAbsolute(p) && existsSync(p) && statSync(p).isDirectory();
   const isFile = (p: unknown): p is string => typeof p === 'string' && path.isAbsolute(p) && existsSync(p);
   // `term`: a terminal by its id from agents-terminals; without one, the owner's choice in settings, else the first installed.
+  // `cmd`: a session to go on with there, or '' for a shell in the folder.
   ipcMain.handle('agents-terminal', async (event, cwd: unknown, cmd: unknown, term: unknown) => {
-    if (!mine(event) || !isDir(cwd) || typeof cmd !== 'string' || !/^(claude --resume|codex resume) [0-9a-f-]{36}$/i.test(cmd)) return false;
+    if (!mine(event) || !isDir(cwd) || typeof cmd !== 'string' || (cmd !== '' && !/^(claude --resume|codex resume) [0-9a-f-]{36}$/i.test(cmd))) return false;
     return typeIn(term, cwd, cmd);
   });
   ipcMain.handle('agents-terminals', event => mine(event) ? TERMINALS.filter(t => appAt(t.app)).map(t => ({ id: t.id, name: t.name })) : []);

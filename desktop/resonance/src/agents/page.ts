@@ -7,6 +7,7 @@ import type { Agent, Catalog, Ctx, Event, File as Upload, Item, Pic, Req, Sess, 
 import { drawMark } from '../AgentMarks';
 import { features, type Own, type PageCtx } from './ctx';
 import { waitOf } from './queue';
+import { mountSee } from './see';
 import { palette, play, scoreOf } from '../soundKit';
 import { Core, TAKES, pick, type ExprId } from '../starCore';
 import { mountExposure } from './exposure';
@@ -509,10 +510,13 @@ function morph(el: HTMLElement, html: string) {
   el.style.overflow = 'hidden';
   el.animate([{ height: `${h0}px`, opacity: .2 }, { height: `${h1}px`, opacity: 1 }], { duration: 300, easing: OUT }).onfinish = () => { el.style.overflow = ''; };
 }
+const SKEL = '<div class="skel" aria-hidden="true"><div class="y"><i style="width:44%"></i></div><div><i class="s" style="width:34%"></i></div><div><i style="width:86%"></i><i style="width:71%"></i><i style="width:52%"></i></div>'
+  + '<div class="y"><i style="width:31%"></i></div><div><i class="s" style="width:28%"></i></div><div><i style="width:78%"></i><i style="width:60%"></i></div></div>';
 function renderConv(s: Sess, c: Conv) {
   const stick = bottom(c.root), items = app.items.get(s.id), built = c.built;
-  if (!items) { patch(c.items, '<p class="loading">在读这个会话…</p>'); c.built = false; return; }
-  if (!c.built) c.items.replaceChildren();
+  // Not read yet: the shape of a conversation for a moment, then the conversation fades in over it.
+  if (!items) { patch(c.items, SKEL); c.built = false; return; }
+  if (!c.built) { if (c.items.firstElementChild?.classList.contains('skel')) anim(c.items, [{ opacity: 0 }, { opacity: 1 }], 200); c.items.replaceChildren(); H.delete(c.items); }
   items.forEach((it, i) => {
     let el = c.items.children[i] as HTMLElement | undefined;
     const isNew = !el;
@@ -538,8 +542,6 @@ function renderConv(s: Sess, c: Conv) {
     patch($('.shine', c.now), `${esc(s.st === 'pack' ? '在压缩上下文' : s.now ?? '在想')}…`);
     patch($('.el', c.now), s.since ? `· ${ago(s.since)}` : '');
   }
-  c.bg.hidden = !s.bg;
-  if (s.bg) patch(c.bg, `<span class="dotlive"></span>${esc(s.bg)}`);
   if (s.term && c.term.hidden && c.built) anim(c.term, [{ opacity: 0, transform: 'translateY(6px)' }, { opacity: 1, transform: 'none' }], 420, SPRING);
   c.term.hidden = !s.term;
   if (s.term) patch(c.term, `${I.term}<span><b>在终端里打开着。</b>Jarvis 先放手，一次只有一边能写。</span><button type="button" class="btn" data-act="takeback">拿回来</button>`);
@@ -572,7 +574,7 @@ function renderSteps(id: string, el: HTMLElement, it: Item & { k: 'steps' }, i: 
     cls(r, `step${more ? ' more' : ''}${open ? ' open' : ''}`);
     if (more) { r.dataset.act = 'step'; r.dataset.i = String(i); r.dataset.j = String(j); r.setAttribute('role', 'button'); r.tabIndex = 0; }
     const was = r.dataset.shown === '1';
-    patch(r, `<span class="k">${STEP_K[st.k]}</span><span class="a" title="${esc(st.t)}">${esc(st.t)}</span>`
+    patch(r, `<span class="k">${STEP_K[st.k]}</span><span class="a" title="${esc(st.t)}">${features.reduce((h, f) => f.arg?.(s, st, i, j, h) ?? h, esc(st.t))}</span>`
       + `<span class="r">${st.add !== undefined ? `<span class="p">+${st.add}</span> <span class="m">−${st.del ?? 0}</span>` : st.ok === true ? '<span class="p">✓</span>' : st.ok === false ? '<span class="m">✕</span>' : ''}</span>`
       + (open ? `<div class="x">${st.diff?.length ? diffHTML(st.diff) : `<pre class="out">${esc(st.out ?? '')}</pre>`}</div>` : '')
       + features.map(f => f.under?.(s, st, i, j) ?? '').join(''));
@@ -671,7 +673,7 @@ function openPop(kind: string, anchor: HTMLElement) {
   const html = kind === 'plus' ? `<button type="button" data-act="attach">加图片<span class="k">也可以直接粘贴</span></button><button type="button" data-act="insert" data-v="@">提到一个文件<span class="k">@</span></button><button type="button" data-act="insert" data-v="/">命令和 skill<span class="k">/</span></button>`
     : kind === 'me' ? `<span class="ph">模型</span>${opts('model', c.models, s ? s.model : app.newSet.model)}${c.efforts.length ? `<span class="sep"></span><span class="ph">力度</span>${opts('effort', c.efforts.map(e => [e, cap(e)]), s ? s.effort : app.newSet.effort)}` : ''}`
     : kind === 'more' && s
-    ? `<button type="button" data-act="pin">${s.pinned ? '取消置顶' : '置顶'}</button><button type="button" data-act="park">${s.parked ? '不放着了' : '先放着'}</button><button type="button" data-act="rename">改名</button><button type="button" data-act="fork">从这里分叉</button><button type="button" data-act="reveal">在访达里看文件夹</button>${features.map(f => f.more?.(s) ?? '').join('')}<button type="button" data-act="archive" data-id="${s.id}">归档</button><span class="sep"></span><button type="button" data-act="stop" class="bad">停掉</button>`
+    ? `<button type="button" data-act="pin">${s.pinned ? '取消置顶' : '置顶'}</button><button type="button" data-act="park">${s.parked ? '不放着了' : '先放着'}</button><button type="button" data-act="rename">改名</button><button type="button" data-act="fork">从这里分叉</button>${features.map(f => f.more?.(s) ?? '').join('')}<button type="button" data-act="archive" data-id="${s.id}">归档</button><span class="sep"></span><button type="button" data-act="stop" class="bad">停掉</button>`
     : kind === 'model' ? opts('model', c.models, s ? s.model : app.newSet.model)
     : kind === 'effort' ? opts('effort', c.efforts.map(e => [e, e]), s ? s.effort : app.newSet.effort)
     : opts('mode', c.modes, s ? s.mode : app.newSet.mode);
@@ -1196,6 +1198,7 @@ features.push(mountStopped(ctx));
 features.push(mountSlip(ctx));
 features.push(mountHist(ctx));
 features.push(mountBang(ctx));
+features.push(mountSee(ctx));
 
 // ---------- one loop: her every frame, moving marks at 30 fps, nothing while the window is out of sight ----------
 let lastT = performance.now(), lastMk = 0, lastAge = 0;

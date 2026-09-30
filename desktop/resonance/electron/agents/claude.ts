@@ -73,6 +73,8 @@ type Rt = {
   // titled: turns that ended here, so a title Claude Code generated after one of the first few is taken (B14) · gone:
   // until the child last let go has ended
   titled?: number; gone?: Promise<void>;
+  // The thought being streamed: its step's key and when it began.
+  think?: string; thinkAt?: number;
 };
 const rt = (s: Session): Rt => (s.rt.claude ??= { pending: new Map(), queued: new Map(), tasks: new Map(), creates: new Map(), block: '' }) as Rt;
 // A reset (/clear, a plan run with a clean context) starts a transcript of its own: the session reads them all back and
@@ -155,8 +157,9 @@ const firstLine = (t: string) => oneLine(t.split('\n').find(l => l.trim()) ?? ''
 type Block = { type: string; id?: string; name?: string; input?: Record<string, unknown>; text?: string; thinking?: string; title?: string; tool_use_id?: string; content?: unknown; is_error?: boolean;
   source?: { type: string; media_type?: string; data?: string } };
 // Live, Allen's own words are already on screen when he sends them; from a transcript they are read back here. Each of
-// his messages and each answer keeps its uuid, the point fork and rewind name.
-function said(s: Session, m: SDKMessage | { type: string; uuid?: string; message?: unknown; tool_use_result?: unknown; parent_tool_use_id?: string | null }, at?: number, live = false) {
+// his messages and each answer keeps its uuid, the point fork and rewind name. `prev`: when the transcript's entry
+// before this one was written.
+function said(s: Session, m: SDKMessage | { type: string; uuid?: string; message?: unknown; tool_use_result?: unknown; parent_tool_use_id?: string | null }, at?: number, live = false, prev?: number) {
   const msg = (m as { message?: { content?: unknown } }).message, parent = (m as { parent_tool_use_id?: string | null }).parent_tool_use_id, uuid = str((m as { uuid?: unknown }).uuid);
   if (m.type === 'assistant') {
     // A sub-agent's own thinking, text and calls go under the step that started it (B16).
@@ -173,8 +176,13 @@ function said(s: Session, m: SDKMessage | { type: string; uuid?: string; message
     if (uuid) s.ref(uuid);
     for (const [i, b] of ((msg?.content ?? []) as Block[]).entries()) {
       if (b.type === 'text' && b.text) s.say(b.text, at);
-      // Its thinking, as the summary Claude Code is asked for (B18).
-      else if (b.type === 'thinking' && b.thinking?.trim()) s.tool(`${uuid || randomUUID()}:think:${i}`, { k: 'think', t: firstLine(b.thinking), out: b.thinking }, at);
+      // Its thinking, as the summary Claude Code is asked for (B18), and how long it thought: live, the step it has been
+      // since the thought began; from a transcript, the time since the entry before.
+      else if (b.type === 'thinking') {
+        const r = rt(s), text = b.thinking?.trim() ? b.thinking : '';
+        if (live && r.think) { s.toolDone(r.think, { ...text ? { t: firstLine(text), out: text } : {}, ms: Date.now() - (r.thinkAt ?? Date.now()) }); r.think = undefined; }
+        else if (text) s.tool(`${uuid || randomUUID()}:think:${i}`, { k: 'think', t: firstLine(text), out: text, ...!live && at && prev && at > prev ? { ms: at - prev } : {} }, at);
+      }
       else if (b.type === 'tool_use' && b.name && b.id) {
         const input = b.input ?? {}, st = stepOf(s, b.name, input);
         if (st) s.tool(b.id, st, at);
@@ -200,6 +208,9 @@ function said(s: Session, m: SDKMessage | { type: string; uuid?: string; message
           if (diff.length) Object.assign(patch, { diff: diff.slice(0, 400), ...counts(diff) });
         }
         s.toolDone(b.tool_use_id, patch);
+        // A shell sent to the background says where its output goes, so its task can be read while it runs.
+        const file = r && typeof r === 'object' && str(r.backgroundTaskId) ? /Output is being written to: (\S+\.output)/.exec(textOf(b.content))?.[1] : undefined;
+        if (file) s.task(str(r!.backgroundTaskId), { out: file });
       }
       return;
     }
@@ -318,7 +329,8 @@ function frame(s: Session, m: SDKMessage) {
   if (m.type === 'stream_event') {
     if (m.parent_tool_use_id) return;
     const e = m.event as { type: string; content_block?: { type: string }; delta?: { type: string; text?: string } };
-    if (e.type === 'content_block_start') { r.block = ''; if (e.content_block?.type === 'thinking') s.set({ now: '在想' }); }
+    // A thought is a step from its first moment, so the window can count its seconds.
+    if (e.type === 'content_block_start') { r.block = ''; if (e.content_block?.type === 'thinking') { r.think = `think:${randomUUID()}`; r.thinkAt = Date.now(); s.tool(r.think, { k: 'think', t: '' }); } }
     else if (e.type === 'content_block_delta' && e.delta?.type === 'text_delta') { r.block += e.delta.text ?? ''; s.delta(r.block); }
     return;
   }
@@ -327,7 +339,7 @@ function frame(s: Session, m: SDKMessage) {
     const res = m as Record<string, any>, model = Object.values((res.modelUsage ?? {}) as Record<string, { contextWindow?: number }>)[0];
     if (model?.contextWindow && r.usage) s.set({ ctx: Math.min(100, Math.round(r.usage / model.contextWindow * 100)) });
     const aborted = String(res.terminal_reason ?? '').startsWith('aborted') || !!r.interrupted;
-    r.interrupted = false;
+    r.interrupted = false; r.think = undefined;
     // What Allen sent while it worked runs next, interrupted or not.
     if (r.queued.size) { s.end(undefined, true); if (aborted) s.note('你打断了这一轮'); return; }
     if (aborted) { s.end(undefined, false, 'done', '你打断了这一轮', false); s.note('你打断了这一轮 · 发一句就能接着来'); return; }
@@ -345,11 +357,16 @@ function frame(s: Session, m: SDKMessage) {
     const ts = any.tasks as { task_id: string; description: string }[];
     s.set({ bg: ts.length ? `${ts.length} 个后台任务 · ${ts.map(t => t.description).join('、').slice(0, 80)}` : undefined });
   }
-  // Its background work, one entry per task (B17).
-  else if (sub === 'task_started') s.task(str(any.task_id), { kind: str(any.task_type) || (any.subagent_type ? 'local_agent' : 'task'), what: str(any.description) || str(any.subagent_type), st: 'run', since: Date.now() });
+  // Its background work, one entry per task (B17); the call that started one knows it, so a sub-agent stops on its own.
+  else if (sub === 'task_started') {
+    s.task(str(any.task_id), { kind: str(any.task_type) || (any.subagent_type ? 'local_agent' : 'task'), what: str(any.description) || str(any.subagent_type), st: 'run', since: Date.now(),
+      ...any.is_backgrounded === false ? { fg: true } : {} });
+    if (typeof any.tool_use_id === 'string') s.toolDone(any.tool_use_id, { task: str(any.task_id) });
+  }
   else if (sub === 'task_updated') {
     const p = (any.patch ?? {}) as Record<string, unknown>, st = TASK_ST[str(p.status)];
-    s.task(str(any.task_id), { ...st ? { st } : {}, ...p.description ? { what: str(p.description) } : {}, ...typeof p.end_time === 'number' ? { ended: p.end_time } : {} });
+    s.task(str(any.task_id), { ...st ? { st } : {}, ...p.description ? { what: str(p.description) } : {}, ...typeof p.end_time === 'number' ? { ended: p.end_time } : {},
+      ...p.is_backgrounded === true ? { fg: false } : {} });
   }
   else if (sub === 'task_notification') s.task(str(any.task_id), { st: TASK_ST[str(any.status)] ?? 'done', ended: Date.now(), ...any.output_file ? { out: str(any.output_file) } : {} });
   // Skills and commands that came or went while it ran.
@@ -360,10 +377,13 @@ const oneLine = (t: string, n = 120) => { const x = t.replace(/\s+/g, ' ').trim(
 const TASK_ST: Record<string, Task['st']> = { pending: 'run', running: 'run', paused: 'run', completed: 'done', failed: 'fail', killed: 'stop', stopped: 'stop' };
 // Claude Code names a session itself once its first exchange is under way, sometimes a turn later; the SDK reads that
 // name, or one given with /rename in a terminal, as customTitle. The row takes it unless Allen named it here (B14).
-async function titleOf(s: Session) {
+// The name is asked for on the side while the turn runs, so a quick turn can end before it is written: looked for once
+// more a few seconds later.
+async function titleOf(s: Session, again = true) {
   if (s.s.named) return;
   const t = oneLine((await getSessionInfo(cur(s), { dir: s.s.cwd }).catch(() => undefined))?.customTitle ?? '', 80);
   if (t && t !== s.s.title) s.set({ title: t });
+  else if (!t && again) setTimeout(() => void titleOf(s, false), 5000).unref();
 }
 
 // ---------- the context window, as /context counts it (getContextUsage, token counts, not estimates) ----------
@@ -538,9 +558,11 @@ export const claude: Driver = {
     const parts = await Promise.all(ids(s).map(id => getSessionMessages(id, { dir: s.s.cwd }).catch(() => [])));
     r.seen = new Set(parts.flat().map(m => m.uuid));
     const read = (msgs: typeof parts[number]) => {
+      let prev: number | undefined;
       for (const m of msgs) {
-        const t = Date.parse(String((m as Record<string, unknown>).timestamp ?? ''));
-        said(s, m as never, Number.isFinite(t) ? t : undefined);
+        const t = Date.parse(String((m as Record<string, unknown>).timestamp ?? '')), at = Number.isFinite(t) ? t : undefined;
+        said(s, m as never, at, false, prev);
+        prev = at ?? prev;
       }
     };
     await s.build(async () => {
