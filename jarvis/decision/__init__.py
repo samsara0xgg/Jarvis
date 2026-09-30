@@ -713,7 +713,7 @@ _STATUS_HEADER: Final[str] = "[Current state | from the program, not the user's 
 # docs/plans/speak-as-written-proposal.md: on the spoken route each sentence is
 # spoken as the model writes it, so the spoken reply comes first and is the
 # answer itself. The length default and the explicit-request override are the
-# ones the spoken-form rewrite prompt carried (ADR 0082); the line before a
+# ones the spoken-form rewrite prompt carried (ADR 0099); the line before a
 # tool call is spoken when that call is dispatched. It names no tool and gives
 # no example of one, so it cannot invite a call.
 _SPOKEN_REPLY_NOTE: Final[str] = (
