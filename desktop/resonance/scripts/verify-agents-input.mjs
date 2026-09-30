@@ -1,6 +1,6 @@
 // Run after npm run build. The composer beyond typing, on the stage (scripts/agents-stage.mjs): files dropped anywhere
-// on the window, of any kind, and a right click on one; the / menu in two groups and /add-dir. SHOTS=<folder> keeps a
-// screenshot of each point.
+// on the window, of any kind, and a right click on one; the / menu in two groups and /add-dir; each agent's permission
+// modes, with 完全放开 asked once. SHOTS=<folder> keeps a screenshot of each point.
 // The window's own calls are recorded as the stage records them; a dropped file's path is a real file in the stage's
 // folder, and a dropped folder is told as a folder the way the Mac's drop tells it.
 import assert from 'node:assert/strict';
@@ -238,8 +238,46 @@ try {
   await p.keyboard.press('Escape'); await wait(200);
   check('in-adddir: esc puts the sheet away and nothing is added', await p.locator('.in-sheet').isHidden() && st.row(id).dirs.length === 3);
 
+  // ---------- in-mode, in-bypass: Claude Code's five modes; 完全放开 asked once, then warm ----------
+  const modeMenu = () => p.evaluate(() => [...document.querySelectorAll('.pop.on button[data-k="mode"]')].map(b => ({ v: b.dataset.v, name: b.firstChild.textContent, sub: b.querySelector('small')?.textContent ?? '', on: b.classList.contains('on'), warm: b.classList.contains('in-warm') })));
+  const warmChip = () => p.evaluate(() => { const c = document.querySelector('.tb.mode'); return getComputedStyle(c).color === 'rgb(255, 201, 143)'; });
+  await p.evaluate(() => document.querySelectorAll('.conv').forEach(c => { c.scrollTop = c.scrollHeight; }));
+  await p.click('.tb.mode'); await wait(300);
+  let modes = await modeMenu();
+  check('in-mode: Claude Code\'s five modes by their Chinese names, each saying what it means', modes.map(m => m.name).join(' · ') === '自动 · 改之前问我 · 自动接受修改 · 计划模式 · 完全放开'
+    && modes.map(m => m.v).join() === 'auto,default,acceptEdits,plan,bypassPermissions' && modes.every(m => m.sub) && modes[0].on && modes[4].warm && modes.filter(m => m.warm).length === 1, modes);
+  await st.shot('in-mode');
+  await p.click('.pop.on [data-v="bypassPermissions"]'); await wait(400);
+  const askText = () => p.locator('.c-rows .in-ask').innerText().catch(() => '');
+  check('in-bypass: 完全放开 asks first, above the composer, and nothing has switched yet', (await askText()).includes('完全放开？它不再问你就改文件、跑命令。只在这个会话里。') && !await p.locator('.pop.on').count()
+    && st.row(id).mode === 'auto' && !await warmChip(), await askText());
+  await st.shot('in-bypass');
+  await p.keyboard.press('Escape'); await wait(300);
+  check('in-bypass: esc says 算了 and the mode stays', !await p.locator('.c-rows .in-ask').count() && st.row(id).mode === 'auto');
+  await p.click('.tb.mode'); await wait(250); await p.click('.pop.on [data-v="bypassPermissions"]'); await wait(300);
+  await p.locator('#msg').focus(); await p.keyboard.press('Enter');
+  await st.until('bypass on', () => st.row(id).mode === 'bypassPermissions');
+  await wait(500);
+  const told = { chip: await warmChip(), ask: await p.locator('.c-rows .in-ask').count(), note: (await items(id)).filter(i => i.k === 'note').map(i => i.text) };
+  check('in-bypass: ⏎ lets it go: the session switches, the conversation says so, and the mode chip turns warm', told.chip && !told.ask && told.note.includes('模式换成 完全放开'), told);
+  // The folders added above let its Claude Code go, so the mode goes with the next start.
+  await st.send(id, 'go on');
+  check('in-bypass: its Claude Code runs with permissions bypassed from then on', st.claude().filter(e => e.ev === 'start').at(-1).args.join(' ').includes('bypassPermissions'), st.claude().filter(e => e.ev === 'start').at(-1).args);
+  await st.shot('in-bypass-on', { x: 0, y: 700, width: 1280, height: 120 });
+  await p.click('.tb.mode'); await wait(250);
+  modes = await modeMenu();
+  await p.click('.pop.on [data-v="default"]');
+  await st.until('back to asking', () => st.row(id).mode === 'default');
+  await wait(300);
+  check('in-mode: any other mode switches at once, and the chip is plain again', modes[4].on && !await warmChip() && !await p.locator('.c-rows .in-ask').count());
+  await type('/permissions'); await p.keyboard.press('Enter'); await p.keyboard.press('Enter'); await wait(400);
+  check('in-mode: /permissions opens the same menu', (await modeMenu()).length === 5);
+  await p.keyboard.press('Escape');
+
   // Codex: the same place for /add-dir, which it takes each turn.
-  const cx = await st.session('hello', { agent: 'codex' });
+  // SLOW: the stand-in answers after a moment, as Codex does; one that ends its turn in the same breath as it starts it
+  // can outrun the host learning the new thread.
+  const cx = await st.session('hello SLOW', { agent: 'codex' });
   await st.open(cx);
   await p.locator('#msg').focus();
   await type('/');
@@ -248,12 +286,33 @@ try {
   await type(`/add-dir ${other}`); await p.keyboard.press('Enter');
   await st.until('codex folder added', () => st.row(cx).dirs?.includes(other));
   check('in-adddir: a Codex session takes a folder too', (await items(cx)).some(i => i.k === 'note' && i.text.includes('elsewhere')));
+  // ---------- in-mode-codex: Codex's four ----------
+  await p.click('.tb.mode'); await wait(300);
+  modes = await modeMenu();
+  check('in-mode-codex: a Codex session has Codex\'s four modes', modes.map(m => m.name).join(' · ') === '自动 · 只读 · 完全放开 · 计划模式' && modes.map(m => m.v).join() === 'auto,read,full,plan'
+    && modes.every(m => m.sub) && modes[2].warm, modes);
+  await st.shot('in-mode-codex');
+  await p.click('.pop.on [data-v="full"]'); await wait(300);
+  const cxAsk = await askText();
+  await p.click('.c-rows .in-ask [data-ok]');
+  await st.until('codex full', () => st.row(cx).mode === 'full');
+  await wait(300);
+  check('in-mode-codex: 完全放开 asks in Codex\'s words, and 放开 switches it', cxAsk.includes('不限在这个文件夹里') && await warmChip(), cxAsk);
   await p.keyboard.press('Control+n');
   await wait(400);
   await p.locator('#msg').focus();
   await type('/add-dir'); await p.keyboard.press('Enter'); await p.keyboard.press('Enter');
   await wait(300);
   check('in-adddir: before there is a session it says to start one first', (await p.locator('.toast').innerText()).includes('开了会话再给它加文件夹'), await p.locator('.toast').innerText());
+  await p.fill('#msg', '');
+  await p.click('.tb.mode'); await wait(250);
+  await p.click('.pop.on [data-k="mode"].in-warm'); await wait(300);
+  const newAsk = await p.locator('.pop.on.in-askpop').innerText().catch(() => '');
+  await p.evaluate(() => { document.querySelector('.toast').hidden = true; });
+  await st.shot('in-bypass-new');
+  await p.click('.pop.on.in-askpop [data-ok]'); await wait(300);
+  check('in-bypass: before there is a session the question stands where the menu was, and 放开 picks it for the new one', newAsk.includes('完全放开？') && await warmChip()
+    && ['bypassPermissions', 'full'].includes(await p.locator('.tb.mode').getAttribute('data-m')), newAsk);
 
   check('no errors on the page', !st.errors.length, st.errors);
   console.log(`\n${checks.length} checks passed`);
