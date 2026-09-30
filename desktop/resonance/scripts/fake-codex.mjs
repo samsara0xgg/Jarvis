@@ -4,7 +4,8 @@
 // host asks of it. Threads live in memory; a turn answers from what the message asks for:
 //   FORM  an MCP server's form to fill in     LINK  an MCP server's page to open     VERIFY  an identity check
 //   SLOW  three seconds of work, until interrupted     THINK  reasoning that takes 1.2 seconds, with its summary
-// A thread that has had a turn can be forked; a fork with instructions of its own, as a side question's, answers 侧答：<the text>.
+// A thread keeps its turns and lists them; one that has had a turn can be forked, through a turn or up to one, and a fork
+// with instructions of its own, as a side question's, answers 侧答：<the text>.
 // Its MCP servers are docs (connected, two tools), off (switched off in its config), remote (over HTTP, wants an OAuth
 // sign-in) and broken (fails to start), reported as Codex reports them with and without a thread of the session's.
 // Every request, and every answer to its own requests, is appended to FAKE_CODEX_LOG when it is set. The host runs it
@@ -22,7 +23,7 @@ note({ ev: 'start', args: process.argv.slice(2) });
 
 // ---------- threads and turns ----------
 const threads = new Map();
-const thread = (id, cwd, side = null) => ({ id, cwd, turns: 0, running: null, side });
+const thread = (id, cwd, side = null, turns = []) => ({ id, cwd, turns, running: null, side });
 let asked = 0;
 const waiting = new Map();
 function ask(method, params) {
@@ -32,9 +33,9 @@ function ask(method, params) {
 }
 const FORM = { type: 'object', required: ['name'], properties: { name: { type: 'string', title: 'Name', minLength: 2 }, count: { type: 'integer', title: 'How many', minimum: 1, maximum: 5, default: 1 } } };
 async function run(t, turnId, text) {
-  const turn = t.running = { id: turnId, stop: false };
+  const turn = t.running = { id: turnId, stop: false }, startedAt = Math.floor(Date.now() / 1000), you = { type: 'userMessage', id: randomUUID(), content: [{ type: 'text', text }] };
   tell('turn/started', { threadId: t.id, turn: { id: turnId, status: 'inProgress', items: [] } });
-  tell('item/started', { threadId: t.id, turnId, item: { type: 'userMessage', id: randomUUID(), content: [{ type: 'text', text }] } });
+  tell('item/started', { threadId: t.id, turnId, item: you });
   for (const [, what] of text.matchAll(/\b(FORM|LINK|VERIFY|SLOW|THINK)\b/g)) {
     if (what === 'SLOW') { for (let i = 0; i < 30 && !turn.stop; i++) await sleep(100); continue; }
     if (what === 'THINK') {
@@ -54,8 +55,10 @@ async function run(t, turnId, text) {
   tell('item/started', { threadId: t.id, turnId, item: { type: 'agentMessage', id: item, text: '', phase: null } });
   tell('item/agentMessage/delta', { threadId: t.id, turnId, itemId: item, delta: said });
   tell('item/completed', { threadId: t.id, turnId, item: { type: 'agentMessage', id: item, text: said, phase: 'final_answer' } });
-  t.turns++; t.running = null;
-  tell('turn/completed', { threadId: t.id, turn: { id: turnId, status: turn.stop ? 'interrupted' : 'completed', items: [], error: null } });
+  const status = turn.stop ? 'interrupted' : 'completed';
+  t.turns.push({ id: turnId, status, startedAt, completedAt: Math.floor(Date.now() / 1000), error: null, items: [you, { type: 'agentMessage', id: item, text: said, phase: 'final_answer' }] });
+  t.running = null;
+  tell('turn/completed', { threadId: t.id, turn: { id: turnId, status, items: [], error: null } });
   note({ ev: 'turn end', thread: t.id, turn: turnId });
 }
 
@@ -87,11 +90,14 @@ function handle(m) {
     case 'thread/resume': { if (!threads.has(p.threadId)) threads.set(p.threadId, thread(p.threadId, p.cwd)); return reply({ thread: { id: p.threadId, turns: [] } }); }
     case 'thread/fork': {
       const from = threads.get(p.threadId);
-      if (!from?.turns) return refuse(-32600, `no rollout found for thread id ${p.threadId}`);
-      const t = thread(randomUUID(), from.cwd, p.developerInstructions ?? '');
+      if (!from?.turns.length) return refuse(-32600, `no rollout found for thread id ${p.threadId}`);
+      const cut = p.beforeTurnId ? from.turns.findIndex(x => x.id === p.beforeTurnId) : p.lastTurnId ? from.turns.findIndex(x => x.id === p.lastTurnId) + 1 : from.turns.length;
+      if (cut < 0 || (p.lastTurnId && !cut)) return refuse(-32600, `no turn ${p.beforeTurnId ?? p.lastTurnId} in thread ${p.threadId}`);
+      const t = thread(randomUUID(), from.cwd, p.developerInstructions ?? '', structuredClone(from.turns.slice(0, cut)));
       threads.set(t.id, t);
       return reply({ thread: { id: t.id, ephemeral: !!p.ephemeral, forkedFromId: from.id, turns: [] } });
     }
+    case 'thread/turns/list': { const t = threads.get(p.threadId); return t ? reply({ data: structuredClone(t.turns), nextCursor: null }) : refuse(-32600, `thread not found: ${p.threadId}`); }
     case 'thread/unsubscribe': return reply({ status: 'unsubscribed' });
     case 'thread/delete': threads.delete(p.threadId); return reply({});
     case 'thread/name/set': return reply({});

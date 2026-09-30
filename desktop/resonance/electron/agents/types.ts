@@ -32,9 +32,10 @@ export type Req =
 // A picture sent with a message: `img` names the host's copy of it (GET /images/{img}); without one only its name is known.
 export type Pic = { name: string; img?: string };
 // `id` on what you said and on an answer names that point of the conversation for fork and rewind (POST
-// /sessions/{id}/fork): Claude's message uuid, Codex's turn id.
+// /sessions/{id}/fork): Claude's message uuid, Codex's turn id. `ride`: your reactions that went to the agent with what
+// you said (m-rx).
 export type Item = ({ at?: number; ended?: number } & (
-  | { k: 'you'; text: string; files?: Pic[]; queued?: boolean; id?: string }
+  | { k: 'you'; text: string; files?: Pic[]; queued?: boolean; id?: string; ride?: string[] }
   | { k: 'it'; text: string; id?: string }
   | { k: 'steps'; steps: Step[]; took?: string; live?: boolean }
   | { k: 'plan'; todos: [string, 0 | 1 | 2][] }
@@ -62,7 +63,14 @@ export type Sess = {
   // land: the landing under way, absent when none is · gone: its worktree was cleaned away after landing · pr: the pull
   // request a landing opened for its branch
   dirty?: { n: number; add: number; del: number; ahead: number; into: string; ways: LandVia[] }; land?: Land; gone?: boolean; pr?: string;
+  // rx: reactions on its messages, by the message (`you:<id>`, `it:<id>`) · vers: this session as one version of a
+  // conversation you edited (m-edit): `root` is shared by every version of it, `at` names the messages here that have
+  // versions, each with its family and this version's number
+  rx?: Record<string, Rx>; vers?: { root: string; at: Record<string, [string, number]> };
 };
+// Reactions on one message (m-rx): yours in the order you added them, those already carried to the agent with a message
+// you sent after them (`sent`), and the agent's own (`by`: 👀 when it took a message you sent while it worked).
+export type Rx = { mine?: string[]; sent?: string[]; by?: string };
 // ADR 0097: how a landing ends. merge: fast-forward into the default branch, restart, push it, clean the worktree away ·
 // pr: push the session's branch and open a pull request against the default branch, keeping the worktree.
 export type LandVia = 'merge' | 'pr';

@@ -14,7 +14,7 @@ import net from 'node:net';
 import { PassThrough } from 'node:stream';
 import { attach, attached } from './files.js';
 import { fieldsOf } from './form.js';
-import { catalogChanged, Http, KEEPER, kt, log, pic, sent, type Driver, type Session } from './host.js';
+import { catalogChanged, Http, KEEPER, kt, log, pic, rode, sent, type Driver, type Session } from './host.js';
 import { ask, lines, parse, type Head } from './keeper.js';
 import { auth, keyEnv } from './settings.js';
 import type { Choice, Ctx, CtxRow, Diff, Field, File, Mcp, Pic, Req, Step, Task } from './types.js';
@@ -323,7 +323,7 @@ function frame(s: Session, m: SDKMessage) {
   // or run as the next turn.
   if (any.type === 'command_lifecycle' && any.state === 'started' && typeof any.command_uuid === 'string') {
     const q = r.queued.get(any.command_uuid);
-    if (q) { r.queued.delete(any.command_uuid); s.dequeue(q.text); s.you(q.text, q.files, undefined, any.command_uuid); s.begin(); }
+    if (q) { r.queued.delete(any.command_uuid); s.dequeue(q.text); s.you(q.text, q.files, undefined, any.command_uuid); s.looked(any.command_uuid); s.begin(); }
     return;
   }
   if (m.type === 'stream_event') {
@@ -476,7 +476,7 @@ export const claude: Driver = {
   },
   // A message it has not taken yet can still be taken back (B11).
   async unqueue(s, text) {
-    const r = rt(s), hit = [...r.queued].find(([, q]) => q.text === text);
+    const r = rt(s), hit = [...r.queued].find(([, q]) => rode(q.text).text === text);
     if (!hit || !r.q) return false;
     const ok = await (r.q as unknown as { cancelAsyncMessage(uuid: string): Promise<boolean> }).cancelAsyncMessage(hit[0]).catch(() => false);
     if (ok) { r.queued.delete(hit[0]); s.dequeue(text); }
@@ -586,14 +586,14 @@ export const claude: Driver = {
     ensure(s);
   },
   // Up to a message: the transcript that holds it (after a clear, a later one) is copied up to that message, or up to
-  // the one before it.
-  async fork(s, at, before) {
-    if (!at) return (await forkSession(cur(s), { dir: s.s.cwd })).sessionId;
+  // the one before it. Without a title Claude Code names the copy "<its name> (fork)".
+  async fork(s, at, before, title) {
+    if (!at) return (await forkSession(cur(s), { dir: s.s.cwd, title })).sessionId;
     for (const id of [...ids(s)].reverse()) {
       const msgs = await getSessionMessages(id, { dir: s.s.cwd }).catch(() => []), i = msgs.findIndex(m => m.uuid === at);
       if (i < 0) continue;
       const upTo = before ? msgs[i - 1]?.uuid : at;
-      return upTo ? (await forkSession(id, { dir: s.s.cwd, upToMessageId: upTo })).sessionId : null;
+      return upTo ? (await forkSession(id, { dir: s.s.cwd, upToMessageId: upTo, title })).sessionId : null;
     }
     throw new Error('它的记录里没有这一句');
   },
