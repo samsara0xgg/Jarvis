@@ -4,6 +4,7 @@
 // that failed or wants a sign-in gets one line under the step that ran into it; /mcp lists them all.
 import type { Agent, Mcp, File as Upload, Pic, Sess, Step } from '../../electron/agents/types';
 import type { Feature, PageCtx } from './ctx';
+import { settingsPages } from './settings';
 import './input.css';
 
 const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -247,6 +248,11 @@ export function mountInput(ctx: PageCtx): Feature {
   C = ctx;
   const { win } = ctx;
   own = ctx.own;
+  // The settings sheet's MCP page: the session in front's list, the same one /mcp shows.
+  settingsPages.push({ id: 'mcp', label: 'MCP', draw(el) {
+    const s = ctx.current();
+    if (s) renderMcp(el, s, true); else el.innerHTML = '<p class="fr-fn">开了会话再看它的 MCP：每个会话连着的服务器不一样。</p>';
+  } });
   veil = document.createElement('div'); veil.className = 'in-drop'; veil.hidden = true; win.append(veil);
   function showVeil(n: number) {
     if (!veil!.hidden) return;
