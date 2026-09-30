@@ -1,6 +1,7 @@
 // The composer beyond typing: any file, dropped anywhere on the window or picked, goes with a message; a right click on
-// one copies it, its path, or opens it.
-import type { File as Upload, Pic } from '../../electron/agents/types';
+// one copies it, its path, or opens it. The / menu shows the window's own commands above the agent's, and /add-dir
+// gives a session one more folder.
+import type { File as Upload, Pic, Sess } from '../../electron/agents/types';
 import type { Feature, PageCtx } from './ctx';
 import './input.css';
 
@@ -15,6 +16,7 @@ const IC = {
   path: '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" aria-hidden="true"><path d="M6.8 3.2 4.2 12.8M8.8 12.8h3.6"/></svg>',
   side: '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="12" height="10" rx="1.6"/><path d="M9.5 3v10"/></svg>',
   out: '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 2.5h4.5V7M13.5 2.5 7.5 8.5M11.5 9.5v3a1 1 0 01-1 1h-7a1 1 0 01-1-1v-7a1 1 0 011-1h3"/></svg>',
+  plus: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg>',
   finder: '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="2.5" width="11" height="11" rx="2"/><path d="M8 2.5c-1 2-1.3 4-1.1 6H8.6M6 10.8c1.3.8 2.7.8 4 0" stroke-linecap="round"/></svg>',
 };
 
@@ -85,8 +87,29 @@ export function dropped(e: DragEvent, say: (text: string) => void): Promise<Atta
   return attachAll(list.length ? list : [...dt.files].map(f => ({ f })), say);
 }
 
+// ---------- the / menu: the window's own commands (a feature here runs them) above the agent's, one filter over both ----------
+export type Pick = [string, string, string?];
+let own: PageCtx['own'] | null = null;
+// What starts with what was typed, then what holds it; the third entry marks the window's own.
+export function slashPicks(list: [string, string, string?][], q: string): Pick[] {
+  const rest = q.slice(1).toLowerCase(), mine = (c: Pick) => !!c[2] && !!own?.has(c[2]);
+  const found = [...list.filter(c => c[0].startsWith(q)), ...rest ? list.filter(c => c[0][0] === q[0] && !c[0].startsWith(q) && c[0].slice(1).toLowerCase().includes(rest)) : []];
+  return [...found.filter(mine).map(c => [c[0], c[1], 'own'] as Pick), ...found.filter(c => !mine(c)).map(c => [c[0], c[1]] as Pick)].slice(0, 60);
+}
+export function slashHTML(picks: Pick[], at: number, agent: string) {
+  const rows = picks.map(([v, d, g], k) => (k && !!picks[k - 1][2] === !!g ? '' : `<p class="in-h">${g ? '窗口里的' : `${esc(agent)} 的`}</p>`)
+    + `<button type="button" data-act="pickcmd" data-v="${esc(v)}"${k === at ? ' class="on"' : ''}><code>${esc(v)}</code><span>${esc(d)}</span></button>`).join('');
+  return rows && `${rows}<p class="in-f"><kbd>↑</kbd><kbd>↓</kbd> 选 · <kbd>⏎</kbd> 或 <kbd>Tab</kbd> 填进去 · <kbd>esc</kbd> 收起</p>`;
+}
+const home = (p: string) => p.replace(/^\/(Users|home)\/[^/]+(?=\/|$)/, '~');
+const day = (ms: number) => {
+  const d = Math.floor((new Date().setHours(24, 0, 0, 0) - ms) / 864e5);
+  return d <= 0 ? '今天' : d === 1 ? '昨天' : d < 7 ? `${d} 天前` : `${new Date(ms).getMonth() + 1} 月 ${new Date(ms).getDate()} 日`;
+};
+
 export function mountInput(ctx: PageCtx): Feature {
   const { win } = ctx;
+  own = ctx.own;
   veil = document.createElement('div'); veil.className = 'in-drop'; veil.hidden = true; win.append(veil);
   function showVeil(n: number) {
     if (!veil!.hidden) return;
@@ -156,9 +179,54 @@ export function mountInput(ctx: PageCtx): Feature {
     else void window.agents?.quickLook?.(p);
   }
 
+  // ---------- /add-dir: a sheet under the title with the folders you work in, or the Mac's folder picker ----------
+  type Folder = { path: string; name: string; used?: number };
+  const sheet = document.createElement('div');
+  sheet.className = 'in-sheet'; sheet.hidden = true; win.append(sheet);
+  let dirs: { id: string; rows: Folder[]; at: number } | null = null;
+  async function addDir(s: Sess, p: string) {
+    if (p.replace(/\/+$/, '') === s.cwd) { ctx.toast('这就是它自己的文件夹'); return; }
+    if (s.dirs?.includes(p)) { ctx.toast('这个文件夹已经加过了'); return; }
+    if (await ctx.tryCall(`/sessions/${s.id}/dirs`, { dirs: [...s.dirs ?? [], p] })) ctx.cue('mark');
+  }
+  function drawDirs() {
+    if (!dirs) return;
+    const s = ctx.byId(dirs.id), have = s?.dirs ?? [], at = dirs.at;
+    sheet.innerHTML = `<div class="in-veil" data-act="in-dir-x"></div><div class="in-sh" role="dialog" aria-label="再加一个文件夹"><p class="in-shh"><b>再加一个文件夹</b><span>这个会话里它也能动</span></p>`
+      + `<div class="in-drs" role="listbox">${dirs.rows.map((f, j) => `<button type="button" class="in-dr${j === at ? ' in-sel' : ''}${have.includes(f.path) ? ' in-on' : ''}" data-act="in-dir" data-v="${esc(f.path)}" role="option" aria-selected="${j === at}">`
+        + `${IC.dir}<b>${esc(f.name)}</b><span>${esc(home(f.path))}</span><em>${have.includes(f.path) ? '加过了' : f.used ? day(f.used) : ''}</em></button>`).join('')}`
+      + `${dirs.rows.length ? '<i class="in-sep"></i>' : ''}<button type="button" class="in-dr in-other${at === dirs.rows.length ? ' in-sel' : ''}" data-act="in-dir-other" role="option" aria-selected="${at === dirs.rows.length}">${IC.plus}<b>选别的文件夹…</b></button></div>`
+      + `<div class="in-shf"><span><kbd>↑</kbd><kbd>↓</kbd> 选 · <kbd>⏎</kbd> 加上</span><button type="button" class="btn" data-act="in-dir-x">取消 <kbd>esc</kbd></button></div></div>`;
+  }
+  async function openDirs(s: Sess) {
+    ctx.closeMenu();
+    const r = await ctx.call<{ list: Folder[] }>('/projects').catch(() => ({ list: [] as Folder[] }));
+    dirs = { id: s.id, rows: r.list.filter(f => f.path !== s.cwd).slice(0, 6), at: 0 };
+    drawDirs();
+    const head = win.querySelector('.m-head')?.getBoundingClientRect(), w = win.getBoundingClientRect();
+    sheet.style.top = `${head && head.height ? head.bottom - w.top : 0}px`;
+    sheet.hidden = false;
+    anim(sheet.querySelector('.in-sh')!, [{ opacity: 0, transform: 'translate(-50%, -10px)' }, { opacity: 1, transform: 'translateX(-50%)' }], 220);
+  }
+  function closeDirs() { if (!dirs) return false; dirs = null; sheet.hidden = true; sheet.replaceChildren(); ctx.ta.focus(); return true; }
+  async function pickDir(p: string) {
+    const s = dirs && ctx.byId(dirs.id);
+    closeDirs();
+    if (s && p) await addDir(s, p);
+  }
+  // Typed with a path it adds that folder; without one it asks which.
+  ctx.own.set('dirs', (s, arg) => {
+    if (!s) { ctx.toast('开了会话再给它加文件夹'); return; }
+    if (arg.startsWith('/')) void addDir(s, arg);
+    else void openDirs(s);
+  });
+
   return {
     act(a, el) {
       if (a === 'in-open') { open(el); return true; }
+      if (a === 'in-dir') { void pickDir(el.dataset.v!); return true; }
+      if (a === 'in-dir-other') { const id = dirs?.id; closeDirs(); void window.agents?.folder().then(p => { const s = id ? ctx.byId(id) : undefined; if (p && s) void addDir(s, p); }); return true; }
+      if (a === 'in-dir-x') { closeDirs(); return true; }
       if (a === 'in-a' && target) {
         const t = target, v = el.dataset.v;
         ctx.closeMenu();
@@ -171,6 +239,14 @@ export function mountInput(ctx: PageCtx): Feature {
       }
       return false;
     },
-    esc() { if (!veil?.hidden) { hideVeil(); return true; } return false; },
+    esc() { if (!veil?.hidden) { hideVeil(); return true; } return closeDirs(); },
+    key(e) {
+      if (!dirs || e.isComposing) return false;
+      const take = () => { e.preventDefault(); e.stopImmediatePropagation(); return true; }, n = dirs.rows.length + 1;
+      if (e.key === 'Escape') { closeDirs(); return take(); }
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { dirs.at = (dirs.at + (e.key === 'ArrowDown' ? 1 : -1) + n) % n; drawDirs(); return take(); }
+      if (e.key === 'Enter') { if (!e.repeat) sheet.querySelector<HTMLElement>('.in-sel')?.click(); return take(); }
+      return false;
+    },
   };
 }

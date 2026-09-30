@@ -7,7 +7,7 @@ import type { Agent, Catalog, Ctx, Event, Item, Pic, Req, Sess, St, Step, Usage 
 import { drawMark } from '../AgentMarks';
 import { features, type Own, type PageCtx } from './ctx';
 import { mountBack } from './back';
-import { attachAll, chipsHTML, dropped, fileTag, mountInput, type Attached } from './input';
+import { attachAll, chipsHTML, dropped, fileTag, mountInput, slashHTML, slashPicks, type Attached, type Pick } from './input';
 import { waitOf } from './queue';
 import { mountSee } from './see';
 import { palette, play, scoreOf } from '../soundKit';
@@ -259,7 +259,7 @@ const app = {
   // Which folded steps Allen opened, per session and item: that is this window's business, not the host's.
   opened: new Map<string, Map<number, Open>>(),
   cur: '', view: 'chat' as View, filter: 'all' as 'all' | Agent, by: 'state' as 'state' | 'project', q: '',
-  files: [] as Attached[], menu: '' as '' | 'slash' | 'at', pick: 0, picks: [] as [string, string][], renaming: false, del: '',
+  files: [] as Attached[], menu: '' as '' | 'slash' | 'at', pick: 0, picks: [] as Pick[], renaming: false, del: '',
   newAgent: (store.get('agents.agent') === 'codex' ? 'codex' : 'claude') as Agent, newProject: store.get('agents.project') ?? '', newTree: store.get('agents.tree') !== 'off',
   newSet: { model: '', effort: '', mode: '' }, projects: [] as string[],
   sideOpen: false, openAt: performance.now(), how: 'click' as 'click' | 'key', sending: false,
@@ -657,9 +657,9 @@ function renderComp() {
   patch(hintEl, wb.hint() + attention.hint());
   patch(cRows, s ? features.map(f => f.rows?.(s) ?? '').join('') : '');
   patch(cFiles, chipsHTML(app.files));
-  patch(cMenu, app.picks.map(([v, d], k) => app.menu === 'at'
-    ? `<button type="button" data-act="pickfile" data-v="${esc(v)}"${k === app.pick ? ' class="on"' : ''}><code>@${esc(v)}</code></button>`
-    : `<button type="button" data-act="pickcmd" data-v="${esc(v)}"${k === app.pick ? ' class="on"' : ''}><code>${esc(v)}</code><span>${esc(d)}</span></button>`).join(''));
+  const menuHTML = app.menu === 'slash' ? slashHTML(app.picks, app.pick, NAME[agent])
+    : app.picks.map(([v], k) => `<button type="button" data-act="pickfile" data-v="${esc(v)}"${k === app.pick ? ' class="on"' : ''}><code>@${esc(v)}</code></button>`).join('');
+  if (patch(cMenu, menuHTML)) cMenu.querySelector('.on')?.scrollIntoView({ block: 'nearest' });
   cMenu.classList.toggle('on', !!app.menu && app.picks.length > 0);
 }
 const pendingReq = (id: string) => (app.items.get(id)?.find(it => it.k === 'req' && !it.done) as (Item & { k: 'req' }) | undefined)?.req;
@@ -1081,7 +1081,7 @@ async function typed() {
     if (cmds?.key !== where) cmds = { key: where, list: (await call<{ commands: [string, string, string?][] }>(`/commands?${where}`).catch(() => ({ commands: [] }))).commands };
     if (n !== lookup) return;
     const q = v.split(/\s/)[0];
-    app.picks = cmds.list.filter(c => c[0].startsWith(q)).slice(0, 60).map(c => [c[0], c[1]]);
+    app.picks = slashPicks(cmds.list, q);
   } else if (app.menu === 'at') {
     const q = v.slice(v.lastIndexOf('@') + 1);
     const r = await call<{ files: string[] }>(`/files?${where}&q=${encodeURIComponent(q)}`).catch(() => ({ files: [] }));
@@ -1115,9 +1115,9 @@ win.addEventListener('keydown', e => {
     return;
   }
   if (t === ta) {
-    const menuOpen = !!app.menu, n = cMenu.children.length;
+    const menuOpen = !!app.menu, bs = cMenu.querySelectorAll<HTMLElement>('button'), n = bs.length;
     if (menuOpen && n && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) { e.preventDefault(); app.pick = (app.pick + (e.key === 'ArrowDown' ? 1 : -1) + n) % n; draw('comp'); return; }
-    if (menuOpen && n && (e.key === 'Enter' || e.key === 'Tab') && !e.isComposing) { e.preventDefault(); const b = cMenu.children[app.pick] as HTMLElement; tick(); pickIt(b.dataset.v!, b.dataset.act === 'pickcmd'); return; }
+    if (menuOpen && n && (e.key === 'Enter' || e.key === 'Tab') && !e.isComposing) { e.preventDefault(); const b = bs[app.pick]; tick(); pickIt(b.dataset.v!, b.dataset.act === 'pickcmd'); return; }
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); void send(); return; }
   }
   if ((e.key === 'Enter' || e.key === ' ') && t.matches('[role="button"]')) { e.preventDefault(); void act(t.dataset.act!, t); }
