@@ -14,9 +14,10 @@
   box-shadow:inset 0 0 0 .5px rgb(var(--acc) / .26),0 50px 90px -40px #000;-webkit-font-smoothing:antialiased;
 }
 .bw *{box-sizing:border-box}
-.bw :where(button){font:inherit;color:inherit;border:0;background:none;padding:0;cursor:pointer}
+/* Resets carry no weight, so a module's own button rule wins whichever stylesheet loads first. */
+:where(.bw button){font:inherit;color:inherit;border:0;background:none;padding:0;cursor:pointer}
 .bw kbd{display:inline-grid;place-items:center;min-width:16px;height:16px;padding:0 4px;border-radius:4px;font:500 10px/1 var(--code);background:rgb(255 255 255 / .08);color:var(--muted);vertical-align:1px}
-.bw :focus-visible{outline:2px solid rgb(var(--acc) / .8);outline-offset:1px}
+:where(.bw) :focus-visible{outline:2px solid rgb(var(--acc) / .8);outline-offset:1px}
 .bw .bw-ta:focus-visible{outline:none}
 /* the horizon: the notch's strip, inside the window */
 .bw-hz{position:absolute;z-index:1;left:0;right:0;top:0;height:56px;background:linear-gradient(180deg,#04050c,#080918);box-shadow:inset 0 -.5px 0 rgb(var(--acc) / .16)}
@@ -166,11 +167,13 @@
 .bw .side{display:none}
 .bw .main{position:absolute;inset:56px 0 0;display:flex;flex-direction:column;pointer-events:auto;background:none;transition:opacity 240ms}
 .bw.sky-on .main .bd{opacity:calc(1 - var(--skp) * .55)}
-.bw .m-head{position:absolute;top:0;left:86px;width:min(450px,calc(100vw - 610px));height:56px;min-height:0;padding:0;gap:9px;border:0;z-index:7;background:none;-webkit-app-region:drag}
+.bw .m-head{position:absolute;top:0;left:86px;width:min(560px,calc(50vw - 11px));height:56px;min-height:0;padding:0;gap:9px;border:0;z-index:7;background:none;-webkit-app-region:drag}
 .bw .m-head button,.bw .h-t{-webkit-app-region:no-drag}
 .bw .h-main{min-width:0}.bw .h-t b{font-size:15px;line-height:20px}.bw .h-meta{font-size:11px;color:var(--faint)}
-.bw .m-head>.h-btn,.bw .m-head>.ctx{display:none}
-.bw .m-head:hover>.h-btn,.bw .m-head:focus-within>.h-btn,.bw .m-head:hover>.ctx,.bw .m-head:focus-within>.ctx{display:flex}
+/* The head's buttons keep their place and fade in, so pointing at the title moves nothing and they end short of 长曝光. */
+.bw .m-head>.h-btn,.bw .m-head>.ctx{flex:none;opacity:0;visibility:hidden;transform:translateX(-3px);transition:opacity .16s var(--in),transform .16s var(--in),visibility 0s .16s,background .15s,color .15s}
+.bw .m-head:hover>.h-btn,.bw .m-head:focus-within>.h-btn,.bw .m-head:hover>.ctx,.bw .m-head:focus-within>.ctx{opacity:1;visibility:visible;transform:none;transition:opacity .2s var(--out),transform .2s var(--out),visibility 0s,background .15s,color .15s}
+.bw .m-head>.h-btn:active{transform:scale(.96)}
 .bw .m-head>.side-btn{display:grid;position:fixed;left:12px;top:65px;opacity:.45;width:24px;height:24px}
 .bw .m-head>.side-btn:hover{opacity:1}
 .bw .conv .c-in{max-width:680px;padding:22px 24px 16px;gap:16px;font-size:14px;line-height:1.7}
@@ -211,5 +214,5 @@
 .bw .pop,.bw .tip,.bw .toast{z-index:30}
 .bw ::selection{background:rgb(157 180 255 / .3);color:var(--ink)}
 .bw textarea{caret-color:var(--warm)}
-@media(max-width:900px){.bw .m-head{width:220px}.bw .bw-pull{right:310px}.bw .h-meta{max-width:200px}.bw .bw-open .pp-in{gap:6px 8px}}
+@media(max-width:900px){.bw .m-head{width:calc(100vw - 486px)}.bw .bw-pull{right:310px}.bw .bw-open .pp-in{gap:6px 8px}}
 @media(prefers-reduced-motion:reduce){.bw *,.bw *::before,.bw *::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
