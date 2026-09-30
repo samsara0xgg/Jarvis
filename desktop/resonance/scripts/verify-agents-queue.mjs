@@ -53,9 +53,13 @@ try {
     && L.every((r, i) => r.t === st.row(want[i]).title && r.when === '刚刚'), L);
   await away();
   const boxes = await Promise.all(want.map(id => p.locator(`.bw-stars [data-session="${id}"]`).boundingBox()));
-  check('A lines the waiting stars up left of her, the next one nearest her, a little below the horizon',
+  // one line, level with her centre, the horizon's stars on it too; the queue evenly spaced after the horizon's end
+  const herBox = await p.locator('.bw-her').boundingBox(), homeBox = await p.locator(`.bw-stars [data-session="${home}"]`).boundingBox();
+  const gaps = boxes.slice(1).map((b, i) => boxes[i].x - b.x);
+  check('A lines the waiting stars up left of her, the next one nearest her, evenly spaced on the horizon\'s line, level with her',
     boxes.every(Boolean) && boxes.every((b, i) => i === 0 || b.x < boxes[i - 1].x) && boxes.every(b => Math.abs(b.y - boxes[0].y) < 1)
-    && boxes[0].x > 1180 && (await p.locator(`.bw-stars [data-session="${home}"]`).boundingBox()).y < boxes[0].y, boxes.map(b => b && [b.x, b.y]));
+    && gaps.every(g => Math.abs(g - gaps[0]) < 1) && boxes[0].x > 1180 && Math.abs(boxes[0].y + boxes[0].height / 2 - (herBox.y + herBox.height / 2)) < 1
+    && Math.abs(homeBox.y - boxes[0].y) < 1 && homeBox.x < boxes.at(-1).x, { boxes: boxes.map(b => b && [b.x, b.y]), gaps });
   await st.shot('q-a', TOP);
 
   // ---------- 先放着 ----------
@@ -173,15 +177,19 @@ try {
   // ---------- a new one falls into the line ----------
   await st.open(home);
   await sleep(1500);
-  // one already on the horizon asks again: it falls from its place there to the head of the line
+  // one already on the horizon asks again: it rises off the line, travels over the others and settles at the head of it
   const late = ask, star = () => p.locator(`.bw-stars [data-session="${late}"]`).boundingBox();
   const from = await star();
   await st.call(`/sessions/${late}/send`, { text: 'one more ASK' });
   await st.until('late waits', () => st.row(late)?.st === 'wait', 6000);
+  const lift = p.evaluate(() => new Promise(r => { const c = document.querySelector('.bw-cv'), k = c.getContext('2d'), d = c.width / c.clientWidth; let up = 0, n = 0;
+    // warm light well above the line (y 6..15) left of her while it travels: the star on its way in
+    const f = () => { const px = k.getImageData(Math.round(600 * d), Math.round(6 * d), Math.round(640 * d), Math.round(9 * d)).data; let s = 0; for (let i = 0; i < px.length; i += 4) if (px[i] > 200 && px[i + 1] > 150 && px[i + 2] < 200 && px[i + 3] > 120) s++; up = Math.max(up, s); if (++n < 60) requestAnimationFrame(f); else r(up); };
+    requestAnimationFrame(f); }));
   for (const [k, ms] of [[1, 60], [2, 180], [3, 200], [4, 1600]]) { await sleep(ms); await st.shot(`q-new-${k}`, TOP); }
-  const to = await star();
-  check('one that comes to wait leaves its place on the horizon for the head of the line',
-    from.y < to.y && to.x > from.x && to.x > 1180, [from, to]);
+  const to = await star(), rose = await lift;
+  check('one that comes to wait leaves its place on the horizon for the head of the line, rising over the others on the way',
+    Math.abs(from.y - to.y) < 1 && to.x > from.x && to.x > 1180 && rose > 0, { from, to, rose });
 
   // ---------- coming back after a while: what happened meanwhile ----------
   await quiet();

@@ -56,8 +56,10 @@ export function glyph(c: CanvasRenderingContext2D, st: St, o: GlyphOpts = {}) {
     // unread: a small dot at its shoulder
     c.beginPath(); c.arc(5.2, -5.2, 1.35, 0, Math.PI * 2); c.fill();
   } else if (st === 'err') {
-    // one arm broken off: reads as broken without the red
-    c.fillStyle = rgba(col, Math.min(1, .82 * lift * hov), .2); sparkPath(c, [4.9, 1.9, 4.9, 4.9], 1.3); c.fill();
+    // one arm broken off, its tip a small chip just beyond the break: reads as broken without the red, and as a whole
+    // star rather than an arrow
+    c.fillStyle = rgba(col, Math.min(1, .82 * lift * hov), .2); sparkPath(c, [4.9, 2.4, 4.9, 4.9], 1.3); c.fill();
+    c.beginPath(); c.moveTo(3.3, 0); c.lineTo(4.1, -.62); c.lineTo(4.9, 0); c.lineTo(4.1, .62); c.closePath(); c.fill();
   } else {
     c.fillStyle = rgba(col, Math.min(1, .24 * lift * hov), .6); sparkPath(c, 4.2, 1.1); c.fill();
   }
