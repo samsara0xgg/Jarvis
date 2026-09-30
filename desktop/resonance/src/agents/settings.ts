@@ -160,8 +160,9 @@ export function mountSettings(ctx: PageCtx): Feature {
     const notch = n.notch !== false;
     return `<div class="fr-cd fr-tg0">${sw('done', '做完了', n.done ? '做完了也弹一条' : '不弹：星星落到她旁边，等你回来看')}${sw('wait', '等你批准或回答', '点它直接到那个会话')}${sw('err', '出错了', '点它直接到那个会话')}</div>`
       + '<p class="fr-fn">窗口在前台时不弹；在后面时弹出来不出声。同一个会话 20 秒内只弹一条。</p>'
-      + `<div class="fr-cd fr-tg0"><div class="fr-tr"><span class="fr-tl"><b>Jarvis 开着时用刘海说</b><small>${notch ? '要批的、要回答的从刘海垂下来就地回答，不弹系统通知' : '不用刘海，照上面弹系统通知'}</small></span>`
-      + `<button type="button" class="fr-sw" role="switch" data-act="fr-sw" data-k="notch" aria-checked="${notch}" aria-label="Jarvis 开着时用刘海说"><i></i></button></div></div>`
+      // The notch follows the host only in the dev build (companion.ts), so only there is it a choice.
+      + (S.auth?.packaged ? '' : `<div class="fr-cd fr-tg0"><div class="fr-tr"><span class="fr-tl"><b>Jarvis 开着时用刘海说</b><small>${notch ? '要批的、要回答的从刘海垂下来就地回答，不弹系统通知' : '不用刘海，照上面弹系统通知'}</small></span>`
+      + `<button type="button" class="fr-sw" role="switch" data-act="fr-sw" data-k="notch" aria-checked="${notch}" aria-label="Jarvis 开着时用刘海说"><i></i></button></div></div>`)
       + '<div class="fr-kr"><button type="button" class="btn sm" data-act="fr-test">发一条试试</button></div>';
   }
   function whenUsed(at: number) {

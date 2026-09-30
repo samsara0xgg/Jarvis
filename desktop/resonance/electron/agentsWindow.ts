@@ -109,7 +109,8 @@ function typeIn(term: unknown, cwd: string, cmd: string) {
 // ---------- A6: the Mac says when a session needs the owner, while the window is not in front ----------
 // The companion follows the host's event stream itself, so this works with the window closed; a click opens the
 // session. Which moments count is the owner's (settings.notify), and none do while Jarvis's notch says them instead
-// (`notch`, on unless turned off; src/startrail.ts). One session says one thing at a time: its newer
+// (`notch`, on unless turned off; src/startrail.ts), which it can only where main hands the notch the host's port
+// (companion.ts: not in the installed app). One session says one thing at a time: its newer
 // notification replaces the older, and not within 20 seconds of it.
 // macOS posts notifications only for a signed app: the dev build's Electron is not, and each one fails with
 // UNErrorDomain 1. There the notification goes through osascript instead, which cannot open the session when clicked.
@@ -123,7 +124,7 @@ function watchHost(show: (id: string) => void, front: () => boolean, quiet: () =
   const saw = (s: Row) => {
     const was = st.get(s.id), last = shown.get(s.id);
     st.set(s.id, s.st);
-    if (was === undefined || was === s.st || s.archived || front() || notify.notch !== false || !Notification.isSupported()) return;
+    if (was === undefined || was === s.st || s.archived || front() || (notify.notch !== false && !app.isPackaged) || !Notification.isSupported()) return;
     const kind = s.st === 'wait' ? 'wait' : s.st === 'err' ? 'err' : s.st === 'done' && s.unread && ['work', 'pack', 'wait'].includes(was) ? 'done' : null;
     if (!kind || !notify[kind] || (last && Date.now() - last.at < 20e3)) return;
     last?.n?.close();
