@@ -72,8 +72,9 @@ const sides = new Map<string, Side>();
 
 // ---------- one session's side of it ----------
 type Pending = { rpc: number | string; kind: 'cmd' | 'file' | 'perm' | 'ask' | 'form'; params: any };
-// usage: the last thread/tokenUsage/updated, the only count Codex gives
-type Rt = { loaded: boolean; turn?: string; text: Map<string, string>; out: Map<string, string>; pending: Map<string, Pending>; steps: Map<string, Step[]>; usage?: any };
+// usage: the last thread/tokenUsage/updated, the only count Codex gives · thinking: when each reasoning under way began
+type Rt = { loaded: boolean; turn?: string; text: Map<string, string>; out: Map<string, string>; pending: Map<string, Pending>; steps: Map<string, Step[]>; usage?: any;
+  thinking?: Map<string, number> };
 const rt = (s: Session): Rt => (s.rt.codex ??= { loaded: false, text: new Map(), out: new Map(), pending: new Map(), steps: new Map() }) as Rt;
 const loaded = new Set<Session>();
 const str = (v: unknown) => typeof v === 'string' ? v : '';
@@ -116,7 +117,7 @@ function begun(s: Session, item: any, at?: number, live = true) {
     if (!live) s.you(text, userFiles(item), at);
     else if (q.includes(text)) { s.dequeue(text); s.you(text, userFiles(item)); s.begin(); }
   } else if (item.type === 'agentMessage') r.text.set(item.id, '');
-  else if (item.type === 'reasoning') { if (live) s.set({ now: '在想' }); }
+  else if (item.type === 'reasoning') { if (live) { s.set({ now: '在想' }); (r.thinking ??= new Map()).set(item.id, Date.now()); } }
   else if (item.type === 'commandExecution') s.tool(item.id, commandStep(s, item), at);
   else if (item.type === 'fileChange') { const st = fileSteps(s, item.changes); r.steps.set(item.id, st); st.forEach((x, i) => s.tool(`${item.id}:${i}`, x, at)); }
   else if (item.type === 'mcpToolCall') s.tool(item.id, { k: 'tool', t: `${str(item.server)} · ${str(item.tool)}` }, at);
@@ -140,8 +141,12 @@ function finished(s: Session, item: any, at?: number) {
     s.toolDone(item.id, { ok: item.status === 'completed' && item.success !== false, out: String(text).slice(0, 6000) });
   } else if (item.type === 'webSearch' || item.type === 'collabAgentToolCall' || item.type === 'imageView') s.toolDone(item.id, { ok: item.status !== 'failed' });
   else if (item.type === 'contextCompaction') { s.note('上下文压缩过了'); if (s.s.st === 'pack') s.set({ st: 'work', now: '在想' }); }
-  // Its reasoning, as the summary Codex gives (B18).
-  else if (item.type === 'reasoning') { const t = (item.summary ?? []).map(str).join('\n\n').trim(); if (t) s.tool(item.id, { k: 'think', t: firstLine(t), out: t }, at); }
+  // Its reasoning, as the summary Codex gives (B18), and how long it thought when it came live.
+  else if (item.type === 'reasoning') {
+    const t = (item.summary ?? []).map(str).join('\n\n').trim(), t0 = r.thinking?.get(item.id);
+    r.thinking?.delete(item.id);
+    if (t) s.tool(item.id, { k: 'think', t: firstLine(t), out: t, ...t0 ? { ms: Date.now() - t0 } : {} }, at);
+  }
 }
 // Its background terminals (B17), read when a turn ends: a Codex older than this list has none to show.
 async function terminals(s: Session) {

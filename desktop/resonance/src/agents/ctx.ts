@@ -19,6 +19,8 @@ export type Feature = {
   answer?(s: Sess, it: Item & { k: 'it' }, i: number, html: string): string;
   // A line under one step of a turn (item i, step j), inside the step list, or ''.
   under?(s: Sess, st: Step, i: number, j: number): string;
+  // A step's argument cell (item i, step j), given what it would show so far: what it shows instead, or undefined.
+  arg?(s: Sess, st: Step, i: number, j: number, html: string): string | undefined;
   // Rows right above the composer while a session is open, or ''.
   rows?(s: Sess): string;
 };

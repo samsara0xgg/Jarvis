@@ -6,10 +6,13 @@ export type St = 'work' | 'pack' | 'wait' | 'done' | 'err';
 export type Diff = [' ' | '+' | '-', string][];
 // `say` is something it wrote on the way, before its next step; the last thing it writes in a turn is the answer.
 // `think` is a summary of its thinking (Claude's summarized thinking, Codex's reasoning summary): `t` its first line,
-// `out` the whole. `sub`: a sub-agent's own steps, under the `agent` step that started it. `pics`: pictures a step gave
-// back (a screenshot a tool took, an image Codex viewed or made).
+// `out` the whole, `ms` how long it thought (Claude's is a step from the moment it starts thinking, with no `t` yet; read
+// back from a transcript, `ms` is the time since the entry before it). `sub`: a sub-agent's own steps, under the `agent`
+// step that started it. `pics`: pictures a step gave back (a screenshot a tool took, an image Codex viewed or made).
+// `task`: the task the call started (a sub-agent, a shell in the background), which stops on its own through
+// POST /sessions/{id}/tasks/{task}/stop while it runs.
 export type Step = { at?: number; k: 'read' | 'edit' | 'bash' | 'search' | 'agent' | 'web' | 'tool' | 'say' | 'think'; t: string; add?: number; del?: number; diff?: Diff; out?: string; ok?: boolean;
-  sub?: Step[]; pics?: Pic[] };
+  sub?: Step[]; pics?: Pic[]; ms?: number; task?: string };
 export type Question = { q: string; head?: string; multi?: boolean; opts: [string, string][] };
 // One field of an MCP server's form (C3): the answer it takes (text, a number, a whole number, yes or no, one or several
 // of `opts`, each [value, label]), whether it must be filled, what it holds to start with; `min` and `max` bound a
@@ -78,8 +81,10 @@ export type Land = {
   branch: string; into: string; via: LandVia; restart?: string[]; pr?: string;
 };
 // A background task: `kind` as the agent names it (local_bash, local_agent, monitor, …; Codex: terminal), `what` its
-// description or command, `out` where its output is kept (GET /sessions/{id}/tasks/{task}).
-export type Task = { id: string; kind: string; what: string; st: 'run' | 'done' | 'fail' | 'stop'; since?: number; ended?: number; out?: string };
+// description or command, `out` where its output is kept (GET /sessions/{id}/tasks/{task}), known while it runs for a
+// shell Claude sent to the background. `fg`: started in the foreground, the call that started it waiting on it (a
+// sub-agent working for the turn), so not background work.
+export type Task = { id: string; kind: string; what: string; st: 'run' | 'done' | 'fail' | 'stop'; since?: number; ended?: number; out?: string; fg?: boolean };
 // A file or page a session pointed at, as the preview shows it: markdown and text come as text (with what changed, when
 // something did), pages, PDFs, images, audio and video as a file:// address for the preview's own browser, a folder as
 // its entries; anything else is for Quick Look. `line`: the line the reference named · `cut`: text past 2 MB, only the
