@@ -11,10 +11,15 @@ type DrawOptions = {
   now: number; p: number; geo: Geo; dev: number; sel?: number; pt?: number; span?: [number, number];
   a?: number; thick?: number; focus?: number; base?: number; ndx?: number; cy?: number; nm?: boolean;
   conn?: { x: number; y: number; x2: number; y2: number; a?: number } | null;
+  // The times you were away (minutes; b null while you still are), drawn as the away line.
+  aways?: { a: number; b: number | null }[];
 };
 // How long ago, in the axis's words: minutes, then hours, then days.
 export const ago = (m: number) => m < .5 ? '现在' : m < 60 ? `${Math.round(m)} 分前` : m < 600 ? `${+(m / 60).toFixed(1)} 小时前`
   : m < 2880 ? `${Math.round(m / 60)} 小时前` : `${+(m / 1440).toFixed(1)} 天前`;
+// How long you were away, in the same words.
+const gone = (m: number) => m < 60 ? `${Math.max(1, Math.round(m))} 分` : m < 1440 ? `${+(m / 60).toFixed(m < 600 ? 1 : 0)} 小时` : `${+(m / 1440).toFixed(1)} 天`;
+const UI = '-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Helvetica Neue", sans-serif';
 const pl = (c: CanvasRenderingContext2D, a: number, b: number, f: (x: number) => number) => {
   c.moveTo(a, f(a)); for (let x = a + 4; x < b; x += 4) c.lineTo(x, f(x)); c.lineTo(b, f(b));
 };
@@ -38,6 +43,36 @@ export function geometry(width: number, now: number, span: number, height: numbe
     y: i => 82 + i * 27, yx: (i, x) => 82 + i * 27 + bend(i, x), top: 56, bottom: 56 + height - 22,
     xOf: at => xAgo(now - at), tOf: x => now - agoX(x), guides: ticks.slice(1),
   };
+}
+// 离开线: while you were away. A thin bracket along the top from the moment you left to the moment you came back, a
+// dotted hairline down from each end and how long above it; nothing covers the trails, so it reads as a note on the
+// time, not a filter.
+function awayLines(c: CanvasRenderingContext2D, aways: { a: number; b: number | null }[], g: Geo, dev: number, now: number) {
+  for (const aw of aways) {
+    const a = Math.max(aw.a, now - g.span), b = Math.min(aw.b ?? now, now);
+    if (b <= a) continue;
+    const xa = g.xOf(a), xb = g.xOf(b);
+    if (xb - xa < 1 || xb < dev) continue;
+    // The left end shows only once the exposure has developed that far back.
+    const x0 = Math.max(dev, xa), y0 = g.top + 15, open = aw.b === null, edge = xa >= dev;
+    c.lineWidth = 1; c.strokeStyle = 'rgba(214,224,255,.55)';
+    c.beginPath();
+    if (edge) { c.moveTo(x0, y0 + 5); c.lineTo(x0, y0); } else c.moveTo(x0, y0);
+    c.lineTo(xb, y0);
+    if (!open) c.lineTo(xb, y0 + 5);
+    c.stroke();
+    const down = c.createLinearGradient(0, y0, 0, g.bottom);
+    down.addColorStop(0, 'rgba(214,224,255,.3)'); down.addColorStop(1, 'rgba(214,224,255,0)');
+    c.strokeStyle = down; c.setLineDash([1, 3]); c.beginPath();
+    if (edge) { c.moveTo(xa, y0 + 7); c.lineTo(xa, g.bottom); }
+    if (!open) { c.moveTo(xb, y0 + 7); c.lineTo(xb, g.bottom); }
+    c.stroke(); c.setLineDash([]);
+    const label = `你不在 · ${gone(b - aw.a)}`;
+    c.font = `500 10.5px ${UI}`; c.textBaseline = 'bottom'; c.fillStyle = 'rgba(214,224,255,.74)';
+    // Over the bracket when it fits, else just left of it.
+    if (xb - x0 > c.measureText(label).width + 8) { c.textAlign = 'center'; c.fillText(label, (x0 + xb) / 2, y0 - 3); }
+    else { c.textAlign = 'right'; c.fillText(label, x0 - 6, y0 + 4); }
+  }
 }
 export function drawSky(e: CanvasRenderingContext2D, t: { id: string }[], n: Record<string, Trail>, r: DrawOptions) {
     let { now: i, p: a, geo: o } = r,
@@ -68,6 +103,7 @@ export function drawSky(e: CanvasRenderingContext2D, t: { id: string }[], n: Rec
       e.lineTo(c, o.bottom),
       e.stroke(),
       e.setLineDash([]),
+      awayLines(e, r.aways ?? [], o, d, i),
       e.restore(),
       t.forEach((t, s) => {
         let f = o.y(s),

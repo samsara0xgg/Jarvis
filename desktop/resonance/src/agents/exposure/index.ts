@@ -4,6 +4,7 @@ import { clamp, dpr, easeInOut, esc, hash, lerp, reduced, smooth, spring, step }
 import { Her } from './her';
 import { ago, drawSky, geometry } from './sky';
 import { started, timeline, type Trail, type Turn } from './timeline';
+import { mountAway } from './away';
 
 type Hooks = {
   sessions(): Sess[]; items(id: string): Item[] | undefined; current(): string; chat(): boolean;
@@ -45,6 +46,7 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
   const skyEl = $('.bw-sky', chrome), rowsEl = $('.bw-rows', chrome), starsEl = $('.bw-stars', chrome), axis = $('.bw-axis', chrome);
   const pop = $('.bw-open', chrome), inner = $('.pp-in', pop), gap = $('.bw-gap', chrome), pull = $('.bw-pull', chrome);
   const offerEl = $('.bw-offer', chrome), deckEl = $('.bw-deck', chrome), card = $('.dk-card', chrome), peek = $('.bw-peek', chrome), rest = $('.bw-rest', chrome);
+  const away = mountAway();
   const head = $('.m-head', win), main = $('.main', win);
   const her = new Her($<HTMLCanvasElement>('.bw-her canvas', chrome), 56, 15.6, true);
   const modeButton = document.createElement('button'); modeButton.type = 'button'; modeButton.className = 'ex-mode';
@@ -439,6 +441,7 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
     if (skyEl.scrollTop > 0) { c.beginPath(); c.rect(0, 56, width, height - 56); c.clip(); }
     c.translate(0, -skyEl.scrollTop);
     drawSky(c, rows, trails, { now, p: sky.value, dev: clamp((sky.value - .18) / .82), geo: g, sel: skyOn ? selectedIndex : undefined, pt: skyOn ? at : undefined,
+      aways: away.spans().map(s => ({ a: s.a / 60000, b: s.b === null ? null : s.b / 60000 })),
       span: stand ? undefined : [at!, (trails[selected]?.turns[qi + 1]?.at ?? Date.now()) / 60000], ndx: at === undefined ? undefined : needle.value, nm: nameStop,
       cy: needleY.value, focus: skyOn ? focus.value : undefined,
       conn: skyOn && nearNow && !pop.hidden ? { x: stand ? g.x1 : needle.value, y: needleY.value, x2: left.value + wordWidth - 16, y2: top.value + 58 } : null });
