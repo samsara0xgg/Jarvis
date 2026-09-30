@@ -386,6 +386,7 @@ I8 到 I11 随审核链退役（ADR 0019），编号保留。
 <tbody>
 <tr><td>对话、深想</td><td>OpenAI</td><td>上面的四部分，加上这一轮每个工具的结果。两种接口都不让 OpenAI 留存：chat/completions 默认不存，深想走的 Responses 带 <code>store: false</code></td><td>每一轮</td><td>开</td></tr>
 <tr><td>历史压缩</td><td>OpenAI</td><td>上一段摘要和要折叠的记录</td><td>见上</td><td>开</td></tr>
+<tr><td>缓存预热</td><td>OpenAI</td><td>下一轮请求里「这一句」之前的部分：系统提示、历史（到这一轮的回答为止）和工具，只让它回 16 个 token。OpenAI 只在旧请求结束的地方找得到缓存，这样下一轮开头整段都在缓存里</td><td>打开 <code>realtime.response.prefix_warm</code> 时，每一轮用 OpenAI 答完之后</td><td>关</td></tr>
 <tr><td>实时语音</td><td>OpenAI Realtime</td><td>麦克风的声音、指令和最多 1500 字的记忆简报；<code>store: false</code></td><td>主人开始实时对话时连上；30 秒没有动静就挂断，一次最长 30 分钟</td><td>开</td></tr>
 <tr><td>看一眼屏幕 <code>screen_look</code></td><td>OpenAI</td><td>主显示器的一张截图，缩到 1568 像素宽以内</td><td>模型调用它（L1，不经确认），或主人说了 Tier 0 认得的那句话</td><td>开</td></tr>
 <tr><td>工作状态</td><td>OpenAI</td><td>最近两天的对话记录、按问题搜到的旧记录、本地待办、存下的知识、当天的 git 活动；打开 TimeSink 时还有各 App 的时长、窗口标题和屏幕文字的摘录</td><td>主人刷新面板或在对话里问起，而且有新证据时</td><td>用到时才调</td></tr>
