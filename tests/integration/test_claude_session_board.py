@@ -118,6 +118,14 @@ def test_claude_sessions_rows_over_http(tmp_path: Path, monkeypatch: pytest.Monk
                 "cwd": "/x",
                 "startedAt": 1,
             },
+            {  # the same session still open in a terminal: the busy process is its row
+                "sessionId": "s-busy-old",
+                "kind": "interactive",
+                "status": "idle",
+                "name": "terminal",
+                "cwd": "/x",
+                "startedAt": NOW_MS,
+            },
             {
                 "sessionId": "s-busy-old",
                 "kind": "interactive",
@@ -140,6 +148,7 @@ def test_claude_sessions_rows_over_http(tmp_path: Path, monkeypatch: pytest.Monk
 
     assert body["error"] is None
     rows = {r["session_id"]: r for r in body["sessions"]}
+    assert len(rows) == len(body["sessions"])  # one row per session
     assert set(rows) == {
         "s-inter",
         "s-bg",
