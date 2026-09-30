@@ -77,6 +77,11 @@ class Wave1FeatureFlags:
         )
 
 
+def _first_clause_chars(spoken: object) -> int:
+    value = spoken.get("first_clause_chars") if isinstance(spoken, Mapping) else None
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
+
+
 @dataclass(frozen=True)
 class Wave4ResponseFlags:
     """Production adoption switches for ADR-0008 Step 2 (Wave 4A).
@@ -98,6 +103,10 @@ class Wave4ResponseFlags:
     independent_response_cancel: bool = False
     routine_streaming: bool = False
     spoken_streaming: bool = False
+    spoken_first_clause_chars: int = 0
+    """``spoken_streaming.first_clause_chars``: a spoken answer's first
+    sentence is said from its first clause end at or past this many
+    characters, not from its end (0: off)."""
     prefix_warm: bool = False
     """``prefix_warm.enabled``: after each turn, one capped request with the
     next turn's prompt up to its new message, so OpenAI's cache covers the
@@ -136,6 +145,7 @@ class Wave4ResponseFlags:
             independent_response_cancel=values.get("independent_response_cancel") is True,
             routine_streaming=isinstance(routine, Mapping) and routine.get("enabled") is True,
             spoken_streaming=isinstance(spoken, Mapping) and spoken.get("enabled") is True,
+            spoken_first_clause_chars=_first_clause_chars(spoken),
             prefix_warm=isinstance(warm, Mapping) and warm.get("enabled") is True,
             lifecycle_commentary=commentary is not None and commentary.get("enabled") is True,
         )

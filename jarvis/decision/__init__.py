@@ -1913,7 +1913,7 @@ class _SegmentSpeaker:
         self._scratch = scratch
         self._classifier = classifier
         self._splitter = StreamEnvelopeSplitter()
-        self._assembler = SemanticAssembler()
+        self._assembler = SemanticAssembler(first_clause_chars=route.first_clause_chars)
         self._citation = ""  # an open citation, held until it closes
         self.prefix = ""
         self.voice = ""

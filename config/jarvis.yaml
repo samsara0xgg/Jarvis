@@ -461,9 +461,13 @@ realtime:
     # speaks in place of the fixed acknowledge.  Speech starts before the
     # answer is complete only with streaming_output.speak_from_segments.  It
     # additionally requires response_run_lifecycle and downgrades once, with
-    # one warning, without it.
+    # one warning, without it.  first_clause_chars > 0 lets the first thing
+    # said end at the first clause end (，；,;) at or past that many
+    # characters, so speech starts before the first sentence is written;
+    # 0 waits for the sentence's end.
     spoken_streaming:
       enabled: false
+      first_clause_chars: 0
     # After each turn, send the next turn's prompt up to its new message as a
     # request of its own (16 output tokens), so the next turn's first request
     # finds the whole history cached. Without it that request found only the

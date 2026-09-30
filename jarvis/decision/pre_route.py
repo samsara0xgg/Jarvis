@@ -202,6 +202,7 @@ class RoutineStreamRoute:
     emit_segment: Callable[[EmissionPermit, str], Event]
     segment_guard: Callable[[], AbstractContextManager[None]]
     committed_event_bus: CommittedEventBus | None = None
+    first_clause_chars: int = 0  # SemanticAssembler's; 0 waits for a sentence end
 
 
 @dataclass(frozen=True)

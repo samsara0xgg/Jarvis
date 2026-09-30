@@ -8,8 +8,10 @@ import pytest
 from jarvis.decision.stream_sentences import SemanticAssembler, SemanticCandidate
 
 
-def _assemble(text: str, width: int) -> tuple[list[SemanticCandidate], SemanticAssembler]:
-    assembler = SemanticAssembler()
+def _assemble(
+    text: str, width: int, *, first_clause_chars: int = 0,
+) -> tuple[list[SemanticCandidate], SemanticAssembler]:
+    assembler = SemanticAssembler(first_clause_chars=first_clause_chars)
     candidates: list[SemanticCandidate] = []
     for start in range(0, len(text), width):
         candidates.extend(assembler.feed(text[start : start + width]))
@@ -114,3 +116,26 @@ def test_decimal_waits_for_lookahead_and_finalization_cannot_replay() -> None:
         assembler.finish()
     with pytest.raises(RuntimeError, match="closed or blocked"):
         assembler.feed("Must not replay.")
+
+
+@pytest.mark.parametrize(
+    ("text", "parts"),
+    [
+        ("今天北京是晴天，气温二十度左右。明天也差不多。",
+         ["今天北京是晴天，", "气温二十度左右。", "明天也差不多。"]),
+        ("好，我记下了。", ["好，我记下了。"]),  # a clause under 6 waits for the sentence
+        ("我觉得，嗯，这个可以。", ["我觉得，嗯，", "这个可以。"]),
+        ("价格是1,000元，不贵。", ["价格是1,000元，", "不贵。"]),  # 1,000 is no clause end
+        ("他说（第一，第二）很好，对吧。", ["他说（第一，第二）很好，", "对吧。"]),
+        ("Sure, I can do that. And then, more.", ["Sure, I can do that.", " And then, more."]),
+        ("Well then, let us go, now.", ["Well then,", " let us go, now."]),
+        ("好的，明白", ["好的，明白"]),
+        ("一二三四五，", ["一二三四五，"]),
+    ],
+)
+def test_the_first_clause_can_end_the_first_candidate(text: str, parts: list[str]) -> None:
+    """first_clause_chars=6: only the first candidate may end at a clause end."""
+    for width in (1, 2, 5, len(text)):
+        candidates, assembler = _assemble(text, width, first_clause_chars=6)
+        assert assembler.blocked_reason is None, (text, width, assembler.blocked_reason)
+        assert [candidate.text for candidate in candidates] == parts, (text, width)

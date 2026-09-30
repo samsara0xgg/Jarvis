@@ -145,15 +145,22 @@ class SemanticAssembler:
     a larger explicit limit. A forced split chooses punctuation, never an
     arbitrary character offset. The engine must stop feeding this assembler
     once ``blocked_reason`` is set, and buffer/finalize the remaining draft.
+    ``first_clause_chars`` (0: off) lets the first candidate end at a clause
+    end once it is that long, so speech starts before the first sentence does.
     """
 
-    def __init__(self, *, max_candidate_chars: int = 60, max_buffer_chars: int = 2048) -> None:
+    def __init__(
+        self, *, max_candidate_chars: int = 60, max_buffer_chars: int = 2048,
+        first_clause_chars: int = 0,
+    ) -> None:
         """Set positive candidate and pending-text bounds."""
         if not 1 <= max_candidate_chars <= max_buffer_chars:
             message = "candidate bound must be positive and no larger than buffer bound"
             raise ValueError(message)
         self._max_candidate = max_candidate_chars
         self._max_buffer = max_buffer_chars
+        self._first_clause = first_clause_chars
+        self._released = False
         self._buffer = ""
         self._closed = False
         self._blocked_reason: str | None = None
@@ -216,6 +223,12 @@ class SemanticAssembler:
                 and _balanced_prose(self._buffer[: index + 1])
             ):
                 clauses.append(index + 1)
+                if (
+                    not self._released
+                    and 0 < self._first_clause <= index + 1
+                    and (final or index + 1 < len(self._buffer))  # 1,000 is no clause end
+                ):
+                    return index + 1, "subclause"
             end = _sentence_boundary(self._buffer, index, protected, final=final)
             if end is not None and end <= self._max_candidate:
                 return end, "sentence"
@@ -245,6 +258,7 @@ class SemanticAssembler:
             self._buffer = self._buffer[end:]
             if text.strip():
                 candidates.append(SemanticCandidate(text, kind))
+                self._released = True
             else:
                 # Whitespace cannot be a standalone candidate. Retain it until
                 # another stable unit can carry it without changing the prefix.

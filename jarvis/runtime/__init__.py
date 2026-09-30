@@ -2166,6 +2166,9 @@ def _start_drive_turn_response(
         ).event,
         segment_guard=run.admission_guard,
         committed_event_bus=runtime.committed_event_bus,
+        first_clause_chars=(
+            runtime.response_flags.spoken_first_clause_chars if route == "spoken" else 0
+        ),
     )
     record_realtime_trace(
         "routine_stream_route_opened", turn_id=turn_id, response_id=response_id,

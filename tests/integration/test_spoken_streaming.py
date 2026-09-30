@@ -6,6 +6,7 @@ real on-disk Event Log, the real OpenAI SDK and a localhost peer shaped like
 open so a test can prove a sentence was committed before the answer completed.
 """
 
+# ruff: noqa: RUF001, RUF003 — the first clause ends at a fullwidth comma.
 from __future__ import annotations
 
 import asyncio
@@ -13,6 +14,7 @@ import contextlib
 import json
 import re
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Self
@@ -20,6 +22,7 @@ from typing import TYPE_CHECKING, Any, Self
 import pytest
 
 from jarvis import runtime as runtime_module
+from jarvis.shared.realtime import Wave4ResponseFlags
 from jarvis.state.event_log import emit_event
 from tests.integration.test_wire_routine_streaming import (
     _drive,
@@ -87,9 +90,13 @@ def _frames(items: list[tuple[str, str]]) -> list[dict[str, Any]]:
 class _Peer:
     """Localhost /v1/responses peer: request N streams ``outputs[N]``."""
 
-    def __init__(self, outputs: list[list[tuple[str, str]]], *, hold: bool = False) -> None:
+    def __init__(
+        self, outputs: list[list[tuple[str, str]]], *, hold: bool = False, hold_at: str = "。.",
+    ) -> None:
         self.outputs = list(outputs)
         self.hold = hold
+        self.hold_at = hold_at
+        self.holding = threading.Event()
         self.release = threading.Event()
         self.requests: list[tuple[str, dict[str, Any]]] = []
         self.completed = 0
@@ -134,9 +141,10 @@ class _Peer:
                 await writer.drain()
                 if str(frame.get("item_id", "")).startswith("final_answer"):
                     answer += frame["delta"]
-                if self.hold and re.search(r"。.", answer):
+                if self.hold and re.search(self.hold_at, answer):
                     # Hold the answer open once its first sentence is followed by more.
                     self.hold = False
+                    self.holding.set()
                     await asyncio.get_running_loop().run_in_executor(None, self.release.wait)
             self.completed += 1
         except (OSError, asyncio.IncompleteReadError):
@@ -199,6 +207,39 @@ def test_the_answer_speaks_sentence_by_sentence_from_one_request(tmp_path: Path)
     assert _rows(conn, "response.completed")[0][0] < _rows(conn, "turn.ended")[0][0]
     emitted = _payloads(conn, "surface.response_emitted")[0]
     assert emitted["voice_text"] == answer
+
+
+@pytest.mark.parametrize("first_clause_chars", [6, 0])
+def test_the_first_clause_is_said_before_the_first_sentence_ends(
+    tmp_path: Path, first_clause_chars: int,
+) -> None:
+    """``first_clause_chars``: the first chunk ends at a clause; 0 waits for the sentence."""
+    answer = "今天北京是晴天，气温二十度左右。明天也差不多。"
+    config = {"spoken_streaming": {"enabled": True, "first_clause_chars": first_clause_chars}}
+    chars = Wave4ResponseFlags.from_mapping(config).spoken_first_clause_chars
+    with _Peer([[("final_answer", answer)]], hold=True, hold_at="，.") as peer:
+        runtime = _spoken_runtime(tmp_path, peer.url)
+        flags = replace(runtime.response_flags, spoken_first_clause_chars=chars)
+        runtime = replace(runtime, response_flags=flags)
+        intent = _spoken(runtime.conn, "turn-clause", "北京天气怎么样")
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(_drive, runtime, intent)
+            assert peer.holding.wait(10)  # the model has written 「今天北京是晴天，气温二十」
+            if first_clause_chars:
+                _wait_for(lambda: _rows(runtime.conn, "surface.response_chunk"))
+            else:
+                time.sleep(0.5)
+            held = [chunk["text"] for chunk in _payloads(runtime.conn, "surface.response_chunk")]
+            peer.release.set()
+            result = future.result(timeout=20)
+    chunks = [payload["text"] for payload in _payloads(runtime.conn, "surface.response_chunk")]
+    assert "".join(chunks) == result.response_plan.text == answer
+    if first_clause_chars:
+        assert held == ["今天北京是晴天，"]
+        assert chunks == ["今天北京是晴天，", "气温二十度左右。", "明天也差不多。"]
+    else:
+        assert held == []
+        assert chunks == ["今天北京是晴天，气温二十度左右。", "明天也差不多。"]
 
 
 def test_the_line_before_a_call_rides_its_proposal_and_never_streams(tmp_path: Path) -> None:
