@@ -82,10 +82,12 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
   const get = (id: string) => hooks.sessions().find(s => s.id === id);
   const point = () => trails[selected]?.turns[qi];
   // Standing on a line under the sessions: no words, no needle, nothing bends.
-  const onX = () => selected.startsWith('x:');
+  const onX = () => selected.startsWith('x:') || selected.startsWith('m:');
+  // The rows another feature puts at the sky's foot (the terminal's sessions) are stops too, after its own lines.
+  const moreRows = () => [...more.querySelectorAll<HTMLElement>('button')];
   const index = () => Math.max(0, rows.findIndex(s => s.id === selected));
-  const stops = () => [...rows.map(s => s.id), ...xrows.filter(x => x.key !== 'x:none').map(x => x.key)];
-  const place = () => onX() ? rows.length + xrows.findIndex(x => x.key === selected) : index();
+  const stops = () => [...rows.map(s => s.id), ...xrows.filter(x => x.key !== 'x:none').map(x => x.key), ...moreRows().map((_, i) => `m:${i}`)];
+  const place = () => selected.startsWith('m:') ? rows.length + xrows.length + Number(selected.slice(2)) : onX() ? rows.length + xrows.findIndex(x => x.key === selected) : index();
   // Where the sky opens, and where a search starts: the session on screen, else the first.
   const first = () => (searching() ? undefined : rows.find(s => s.id === hooks.current())?.id) ?? stops()[0] ?? '';
   const since = (s: Sess) => s.trace?.at(-1)?.at ?? hooks.items(s.id)?.find(it => it.k === 'req' && !it.done)?.at ?? s.updated;
@@ -156,6 +158,7 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
     // While searching, a name shows what matched and how many of its sentences say it.
     const q = searching() ? query.trim() : '', count = (s: Sess) => q ? saying(s).length : 0;
     const key = rows.map(s => `${s.id}|${s.title}|${status(s)}|${waitMin(s)}|${s.archived}|${count(s)}`).join(';') + `|${selected}|${skyOn}|${nameStop}|${hooks.current()}|${q}|${xrows.map(x => x.key + x.label).join(',')}|${waiting.key}`;
+    moreRows().forEach((b, i) => b.classList.toggle('sel', skyOn && selected === `m:${i}`));
     if (rowKey === key) return; rowKey = key;
     rowsEl.innerHTML = rows.map((s, i) => `<button type="button" class="bw-row${selected === s.id ? ' sel' : ''}${hooks.current() === s.id ? ' on' : ''}${nameStop && selected === s.id ? ' nm' : ''}" data-session="${esc(s.id)}" style="top:${15 + i * 27}px" aria-label="${esc(s.title)}，${s.archived ? '已归档' : words[status(s)]}"><b>${hl(s.title, q)}</b>${waiting.badge(s)}${count(s) ? `<em class="st-find">${count(s)} 处说过</em>` : ''}${s.archived ? '<em class="st-arch">已归档</em>' : stateHTML(s)}</button>`).join('')
       // The lines under the sessions: 新会话 and taking an archived one back are the page's own acts.
@@ -289,7 +292,8 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
   }
   // ⏎ or → where you stand: a session goes in; a line under the sessions does its one thing.
   function activate() {
-    if (onX()) rowsEl.querySelector<HTMLElement>(`[data-x="${CSS.escape(selected)}"]`)?.click(); else if (selected) enter();
+    if (selected.startsWith('m:')) moreRows()[Number(selected.slice(2))]?.click();
+    else if (onX()) rowsEl.querySelector<HTMLElement>(`[data-x="${CSS.escape(selected)}"]`)?.click(); else if (selected) enter();
   }
   // The horizon is the window's drag strip, so the way in stays on it as the way out: esc, 收起. While searching, the
   // field stands there instead.

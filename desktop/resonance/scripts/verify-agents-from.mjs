@@ -167,8 +167,10 @@ try {
     trows.length === 3 && trows.every(r => r.tag === '终端') && trows[0].id === tNew.sid && Math.abs(trows[0].left - ownLeft) < 2 && /收起终端里的 3 个/.test(await text('.bw-more .fr-tcount')), { trows, ownLeft });
   await st.shot('fr-term');
 
-  // ---------- read-only ----------
-  await p.click(`.bw-more .fr-trow[data-fr="${tOld.sid}"]`);
+  // ---------- read-only, reached from the keyboard: ↓ goes on past the sky's own rows into the terminal's ----------
+  for (let i = 0; i < 20 && !(await has(`.bw-more .fr-trow.sel[data-fr="${tOld.sid}"]`)); i++) { await p.keyboard.press('ArrowDown'); await p.waitForTimeout(60); }
+  check('↓ reaches the terminal\'s rows at the foot of the sky', await has(`.bw-more .fr-trow.sel[data-fr="${tOld.sid}"]`) && await has('#win.sky-on'));
+  await p.keyboard.press('Enter');
   await waitFor('the read-only view', async () => await has('#win.fr-ro-on') && /PLAN the release notes/.test(await text('.fr-rov .c-items')));
   await p.waitForTimeout(400);
   const head = await text('.fr-rh');
