@@ -3,7 +3,7 @@
 // desktop app uses, one object per line on stdin and stdout, as Codex 0.155 and 0.159 answer it, for what the agent
 // host asks of it. Threads live in memory; a turn answers from what the message asks for:
 //   FORM  an MCP server's form to fill in     LINK  an MCP server's page to open     VERIFY  an identity check
-//   SLOW  three seconds of work, until interrupted
+//   SLOW  three seconds of work, until interrupted     THINK  reasoning that takes 1.2 seconds, with its summary
 // A thread that has had a turn can be forked; a fork with instructions of its own, as a side question's, answers 侧答：<the text>.
 // Its MCP servers are docs (connected, two tools), off (switched off in its config), remote (over HTTP, wants an OAuth
 // sign-in) and broken (fails to start), reported as Codex reports them with and without a thread of the session's.
@@ -35,8 +35,15 @@ async function run(t, turnId, text) {
   const turn = t.running = { id: turnId, stop: false };
   tell('turn/started', { threadId: t.id, turn: { id: turnId, status: 'inProgress', items: [] } });
   tell('item/started', { threadId: t.id, turnId, item: { type: 'userMessage', id: randomUUID(), content: [{ type: 'text', text }] } });
-  for (const [, what] of text.matchAll(/\b(FORM|LINK|VERIFY|SLOW)\b/g)) {
+  for (const [, what] of text.matchAll(/\b(FORM|LINK|VERIFY|SLOW|THINK)\b/g)) {
     if (what === 'SLOW') { for (let i = 0; i < 30 && !turn.stop; i++) await sleep(100); continue; }
+    if (what === 'THINK') {
+      const id = randomUUID();
+      tell('item/started', { threadId: t.id, turnId, item: { type: 'reasoning', id, summary: [], content: [] } });
+      for (let i = 0; i < 12 && !turn.stop; i++) await sleep(100);
+      tell('item/completed', { threadId: t.id, turnId, item: { type: 'reasoning', id, summary: ['**Checking the ask**\n\nIt wants a short answer; nothing to change.'], content: [] } });
+      continue;
+    }
     const base = { threadId: t.id, turnId, serverName: 'docs', _meta: null };
     const got = await ask('mcpServer/elicitation/request', what === 'FORM' ? { ...base, mode: 'form', message: 'Where should it go?', requestedSchema: FORM }
       : what === 'LINK' ? { ...base, mode: 'url', message: 'Sign in to Docs', url: 'https://docs.example.com/login', elicitationId: 'e1' }

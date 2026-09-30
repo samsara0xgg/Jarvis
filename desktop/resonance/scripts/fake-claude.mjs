@@ -5,10 +5,12 @@
 //   EDIT <file> · WRITE <file>  change a file in its folder (with a checkpoint)
 //   ASK   a shell command that needs the owner's yes     TASK  a background shell that runs until stopped
 //   SUB   a sub-agent that reads a file and reports      PLAN  a to-do list
+//   AGENT a sub-agent that works for about six seconds and can be stopped on its own
 //   SLOW  three seconds of work (to interrupt, queue behind)      FAIL  the turn ends in an error
 //   FORM  an MCP server's form to fill in                          LINK  an MCP server's page to open
 //   PICK  a question with three options to pick from (AskUserQuestion)
 //   SHOT  a tool that gives back a picture (a screenshot)
+//   THINK a thought that takes four seconds                        LATE  the session's name comes 1.5 s after the turn
 // A question on the side (/btw) is answered on its own, after three seconds when it says SLOW, and can be cancelled.
 // It has three MCP servers: docs (two tools, a moment to connect), tracker (wants a sign-in) and flaky (fails until it
 // is connected again); one switched off stays off in that folder, kept in the config folder as Claude Code keeps it.
@@ -145,7 +147,7 @@ function answer(m) {
   if (r.subtype === 'stop_task') {
     const t = tasks.get(r.task_id);
     if (!t) return refuse(`No task ${r.task_id}`);
-    tasks.delete(r.task_id);
+    tasks.delete(r.task_id); t.stop?.();
     out({ type: 'system', subtype: 'task_notification', task_id: r.task_id, status: 'stopped', output_file: t.file, summary: 'Stopped', session_id: sid, uuid: randomUUID() });
     return reply({});
   }
@@ -175,12 +177,14 @@ function answer(m) {
 let turn = null;
 const queue = [];
 const stream = (event, parent = null) => out({ type: 'stream_event', event, parent_tool_use_id: parent, session_id: sid, uuid: randomUUID() });
-// One content block: streamed, then as an assistant message of its own; the main thread's go in the transcript.
-async function block(b, parent = null) {
+// One content block: streamed, then as an assistant message of its own; the main thread's go in the transcript. `ms`:
+// how long a thought takes to stream.
+async function block(b, parent = null, ms = 0) {
   if (turn.stop) throw new Error('stop');
   const uuid = randomUUID(), message = { id: `msg_${randomUUID().slice(0, 8)}`, type: 'message', role: 'assistant', model, content: [b], stop_reason: null,
     usage: { input_tokens: 1200, output_tokens: 40, cache_read_input_tokens: 18000, cache_creation_input_tokens: 800 } };
   stream({ type: 'content_block_start', index: 0, content_block: b.type === 'text' ? { type: 'text', text: '' } : b.type === 'thinking' ? { type: 'thinking', thinking: '' } : { ...b, input: {} } }, parent);
+  for (let t = 0; t < ms && !turn.stop; t += 100) await sleep(100);
   if (b.type === 'text') for (const part of b.text.match(/.{1,12}/gs) ?? []) { stream({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: part } }, parent); await sleep(15); }
   stream({ type: 'content_block_stop', index: 0 }, parent);
   out({ type: 'assistant', message, parent_tool_use_id: parent, session_id: sid, uuid });
@@ -197,8 +201,10 @@ const tool = async (name, input, parent = null) => { const id = `toolu_${randomU
 
 // SHOT's picture: 48×32, a diagonal from warm to violet.
 const SHOT = 'iVBORw0KGgoAAAANSUhEUgAAADAAAAAgCAIAAADbtmxLAAACnElEQVR4nM3U+TdUcRzG8c9/VolEq0ikRSQSiYTZ7sy9d/btLnPn3rmzGsswxjKGktIqaZHSIilJK2mRtEjbufNr53T6wdH3P3if1znPA7+6a3521XyPyZaissUO+dd2+Zc2xaeIYqFFMR9WfmhWzoVU7xpVbxtUs/XY6yA2U6t+FVC/9GueezXPPJopN/5ExCcFYoInHjmJcY58wJJjjHaU1t6jdHdsuttW3YhFf9OsHzYahgyG63rDNZ3xCmkcJEwDuOmSxtyPmS+ozOeVlrNyyxmZFX7EZEudsm9R2aKUIv/cqliIKD6GlfPNyrkm5fuQlPKmHputw2aC2LSUon7hk2qeuvEpEZ904Y8FYsJJPOTIcQc5xpL3ae0opb1rl2pGLPpbZv2wSX/DaBiKp1zVGgdJ42XcNKAx9avNFzEp5ZxCqumTWU9XWwERmL4a66lqa2+VDRCB6a2ynTxm66m0wd9hplcKpqfSduKovbvCDojAHK+wd5fbY0coQASmq5yKlVHRwxQgAtNZRkVL6fYSGv7LlP6E6Sil20ro1mIGEIFpO0RHipmWIgYQgYkcZMJFTHMhC4jAhAvZpgNsqIAFRGBCBWzjfkdDvgMQgWnId9TnOYL7OEAEpi6PC+Zygb0cIAJTm8sF9jh9u52wDDCKZYDxx2s8OTwgAuPd5XTn8GI2D4jAuHfyrmxeyBIAERhXlsDvEJyZAiACw2cK3HaXI8MFiMA4MlxsuovZJgIiMEy6SKeJ1FYREIGh0kT7Frd1sxtW4Hz/BcYWrzFv9AAiMJZNUo0x1QOIwJg2eAypHn2KFxCBMaR4deu92mQvIAKjS/aS63xEkg8QgSGTfHiiT7PWD4jAaBL96gQ/tsYPiMBgCX7V6oByVeA3K0OO46WieP4AAAAASUVORK5CYII=';
+const THOUGHT = '**Weighing where the switch belongs**\n\nThe setting is written to settings.json, but the menu bar item reads it only once, at launch.\nWith the menu gone, nothing tells the companion the value changed.\n\nTwo ways: the companion watches settings.json, or the settings page sends it a message.\nThe settings module already has onDidChange, which costs the least and leaves the page alone.\n\nFirst check the key the page writes, then find who else reads it.\nThen change the companion to redraw her mark when the value moves.\nLast, run the companion check again.';
 async function work(said) {
-  for (const [, what, arg1] of said.matchAll(/\b(EDIT|WRITE|ASK|TASK|SUB|PLAN|SLOW|FAIL|FORM|LINK|PICK|SHOT)\b(?:\s+([\w./-]+))?/g)) {
+  for (const [, what, arg1] of said.matchAll(/\b(EDIT|WRITE|ASK|TASK|SUB|AGENT|PLAN|SLOW|FAIL|FORM|LINK|PICK|SHOT|THINK)\b(?:\s+([\w./-]+))?/g)) {
+    if (what === 'THINK') { await block({ type: 'thinking', thinking: THOUGHT, signature: 'x' }, null, 4000); continue; }
     if (what === 'SLOW') { for (let i = 0; i < 30 && !turn.stop; i++) await sleep(100); if (turn.stop) throw new Error('stop'); continue; }
     if (what === 'FAIL') return 'fail';
     if (what === 'EDIT' || what === 'WRITE') {
@@ -237,9 +243,40 @@ async function work(said) {
       const file = path.join(CONFIG, 'fake-tasks', `${task}.output`);
       mkdirSync(path.dirname(file), { recursive: true });
       writeFileSync(file, 'waiting in the background\nstill waiting\n');
-      tasks.set(task, { file });
+      // It keeps writing while it runs, as a dev server or a long test would.
+      let n = 0;
+      const beat = setInterval(() => appendFileSync(file, `tick ${++n}\n`), 400);
+      tasks.set(task, { file, stop: () => clearInterval(beat) });
       out({ type: 'system', subtype: 'task_started', task_id: task, tool_use_id: id, description: 'Wait in the background', task_type: 'local_bash', session_id: sid, uuid: randomUUID() });
-      await result(id, `Command running in background with ID: ${task}`, { stdout: '', stderr: '', backgroundTaskId: task });
+      await result(id, `Command running in background with ID: ${task}. Output is being written to: ${file}.`, { stdout: '', stderr: '', backgroundTaskId: task });
+    }
+    if (what === 'AGENT') {
+      // Claude Code keeps a sub-agent the turn waits on as a task of its own; stopping that task ends only the sub-agent.
+      const id = await tool('Agent', { subagent_type: 'Explore', description: 'Find the readme', prompt: 'Find the readme and say what it holds' });
+      const task = `a${randomUUID().slice(0, 7)}`, sub = { stop: false };
+      tasks.set(task, { stop: () => { sub.stop = true; } });
+      out({ type: 'system', subtype: 'task_started', task_id: task, tool_use_id: id, description: 'Find the readme', subagent_type: 'Explore', task_type: 'local_agent', is_backgrounded: false, session_id: sid, uuid: randomUUID() });
+      out({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'Find the readme and say what it holds' }] }, parent_tool_use_id: id, session_id: sid, uuid: randomUUID() });
+      const readme = path.join(cwd, 'README.md'), code = path.join(cwd, 'src', 'a.ts');
+      const steps = [
+        () => block({ type: 'thinking', thinking: 'The readme should be at the top of the folder.', signature: 'x' }, id),
+        async () => { const r = await tool('Glob', { pattern: '*.md' }, id); await result(r, 'README.md', {}, id); },
+        async () => { const r = await tool('Read', { file_path: readme }, id); await result(r, read(readme) ?? 'no readme', {}, id); },
+        async () => { const r = await tool('Read', { file_path: code }, id); await result(r, read(code) ?? '', {}, id); },
+        () => block({ type: 'text', text: 'The readme is a short list, and src/a.ts holds two constants.' }, id),
+      ];
+      for (const step of steps) {
+        for (let t = 0; t < 1200 && !sub.stop && !turn.stop; t += 100) await sleep(100);
+        if (sub.stop || turn.stop) break;
+        await step();
+      }
+      if (turn.stop) throw new Error('stop');
+      if (sub.stop) await result(id, 'The sub-agent was stopped before it finished.', { status: 'stopped' }, null, true);
+      else {
+        tasks.delete(task);
+        out({ type: 'system', subtype: 'task_notification', task_id: task, tool_use_id: id, status: 'completed', output_file: '', summary: 'Found the readme', session_id: sid, uuid: randomUUID() });
+        await result(id, [{ type: 'text', text: 'The readme is a short list: one, two. `src/a.ts` holds two constants.' }], { status: 'completed' });
+      }
     }
     if (what === 'SUB') {
       const id = await tool('Agent', { subagent_type: 'Explore', description: 'Look around', prompt: 'Look around this folder' });
@@ -302,10 +339,12 @@ async function run(m) {
   } else if (how === 'fail') out({ type: 'result', subtype: 'error_during_execution', is_error: true, stop_reason: null, errors: ['the stand-in was told to fail'], ...common });
   else {
     out({ type: 'result', subtype: 'success', is_error: false, stop_reason: 'end_turn', terminal_reason: 'completed', result: `好的，做完了：${said.slice(0, 80)}。`, ...common });
-    // Claude Code names the session after its first exchange.
+    // Claude Code names the session after its first exchange, asking for the name on the side: with LATE it comes after
+    // the turn has ended.
     const titled = path.join(CONFIG, 'fake-titled', sid);
     if (!existsSync(titled)) {
-      appendFileSync(TRANSCRIPT, `${JSON.stringify({ type: 'ai-title', aiTitle: `Stand-in: ${said.slice(0, 30)}`, sessionId: sid })}\n`);
+      const name = () => appendFileSync(TRANSCRIPT, `${JSON.stringify({ type: 'ai-title', aiTitle: `Stand-in: ${said.slice(0, 30)}`, sessionId: sid })}\n`);
+      if (/\bLATE\b/.test(said)) setTimeout(name, 1500); else name();
       mkdirSync(path.dirname(titled), { recursive: true }); writeFileSync(titled, '');
     }
   }
