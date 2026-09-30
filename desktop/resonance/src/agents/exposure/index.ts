@@ -73,8 +73,9 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
   const stateText = (s: Sess) => `${words[status(s)]}${s.st === 'wait' ? ` · ${waitMin(s) || '刚刚'}${waitMin(s) ? ' 分' : ''}` : ''}`;
   const stateHTML = (s: Sess, tag = 'em') => `<${tag} class="st-${status(s)}">${stateText(s)}</${tag}>`;
   const skyHeight = () => 26 + rows.length * 27 + opening.value + 34 + (resting.length ? 28 : 0);
+  // Under the words the trails bend down once, past their right edge, and stay down all the way back.
   const geo = () => geometry(width, now, Math.max(60, ...rows.map(s => now - (trails[s.id]?.segs[0]?.a ?? now))) * 1.04, skyHeight(),
-    (i, x) => (offsets.get(rows[i]?.id)?.value ?? 0) * smooth(left.value - 62, left.value - 18, x) * (1 - smooth(left.value + wordWidth + 14, left.value + wordWidth + 58, x)));
+    (i, x) => (offsets.get(rows[i]?.id)?.value ?? 0) * (1 - smooth(left.value + wordWidth + 14, left.value + wordWidth + 58, x)));
   const hz = (i: number, n: number) => width - 84 - (n - 1 - i) * Math.min(24, Math.max(8, (width - 580) / Math.max(1, n - 1)));
   const starPosition = (i: number): [number, number] => {
     const p = easeInOut(clamp(sky.value * 1.3 - i * .03));
