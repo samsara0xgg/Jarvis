@@ -14,7 +14,7 @@ import type { Agent, Answer, Catalog, Choice, Ctx, Doctor, Event, File, Item, Li
 import { claude, claudeExe, heldReq } from './claude.js';
 import { codex } from './codex.js';
 import { loginPath, version, which } from './doctor.js';
-import { findFiles, GIT, keepUpload, peek, pruneOld, resolveRefs } from './files.js';
+import { findFiles, GIT, keepUpload, peek, pruneOld, resolveRefs, sendFile } from './files.js';
 import { contentOf } from './form.js';
 import { hostKey } from './key.js';
 import { ask, socketFor, startKeeper, type Kid } from './keeper.js';
@@ -732,7 +732,9 @@ async function route(req: Req0, res: http.ServerResponse, url: URL): Promise<unk
   const x = need(parts[1]), verb = parts[2] ?? '';
   await x.kept;
   if (m === 'GET' && !verb) { await x.ensureLoaded(); return { items: x.items, live: x.live }; }
-  if (m === 'GET' && verb === 'peek') return peek(x.s.cwd, url.searchParams.get('ref') ?? '', () => baseFor(x));
+  if (m === 'GET' && verb === 'peek') return peek(x.s.cwd, url.searchParams.get('ref') ?? '', () => baseFor(x), [x.s.cwd, ...x.s.dirs ?? []]);
+  // A picture, sound, video or PDF of its folders, for the preview to show itself (anything after /file names it).
+  if (m === 'GET' && verb === 'file') { await sendFile(res, [x.s.cwd, ...x.s.dirs ?? []], x.s.cwd, url.searchParams.get('ref') ?? '', req.headers.range); return undefined; }
   // ---- the review (B6): what it changed, one file's diff, one file put back ----
   if (m === 'GET' && verb === 'changes') return parts[3] === 'diff' ? fileDiff(x, url.searchParams.get('path') ?? '') : changes(x);
   if (m === 'GET' && verb === 'export') { await x.ensureLoaded(); return exported(x); }

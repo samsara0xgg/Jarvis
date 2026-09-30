@@ -1,0 +1,126 @@
+/* What the preview sheet draws for a file, the changes it compares, and landing cut to what the repository needs
+   (review 12, 13, 17, 18). */
+.sh .pvb{margin-left:-6px}
+.op-empty{display:grid;place-items:center;min-height:100%;margin:0;padding:24px;font-size:12.5px;color:var(--faint)}
+
+/* ---------- code: line numbers, the library's colours, the line an answer named ---------- */
+.op-code{--nw:3;width:max-content;min-width:100%;padding:8px 0 22px;font:11.5px/1.62 var(--mono);color:rgb(226 230 247 / .9);tab-size:2}
+.op-code.wrap{width:auto}
+.op-ln{display:grid;grid-template-columns:calc(var(--nw) * 1ch + 22px) 14px minmax(0,1fr);align-items:start}
+.op-code.nonum .op-ln{grid-template-columns:8px 6px minmax(0,1fr)}
+.op-ln>b{padding-right:10px;text-align:right;font-weight:400;color:rgb(196 204 238 / .3);font-variant-numeric:tabular-nums;user-select:none}
+.op-ln>u{align-self:stretch;text-decoration:none;text-align:center;color:rgb(196 204 238 / .55);user-select:none}
+.op-ln>span{white-space:pre;padding-right:22px}
+.op-code.wrap .op-ln>span{white-space:pre-wrap;overflow-wrap:anywhere}
+.op-code:not(.op-dc) .op-ln.add>u{box-shadow:inset 2px 0 0 rgb(111 224 180 / .55)}
+.op-dc .op-ln{grid-template-columns:calc(var(--nw) * 1ch + 22px) 20px minmax(0,1fr)}
+.op-dc .op-ln.add{background:rgb(111 224 180 / .085)}
+.op-dc .op-ln.add>u{color:var(--mint)}
+.op-dc .op-ln.del{background:rgb(255 122 102 / .085)}
+.op-dc .op-ln.del>u{color:#ff9f8f}
+.op-dc .op-ln.del>span{color:rgb(255 214 206 / .78)}
+.op-ln.at{background:rgb(255 201 143 / .09);box-shadow:inset 2px 0 0 var(--warm)}
+.op-ln.at>b{color:var(--warm)}
+.op-hunk{padding:1px 0 1px calc(var(--nw) * 1ch + 8px);font-size:11px;line-height:1.5;color:rgb(196 204 238 / .38);background:rgb(var(--acc) / .04);user-select:none}
+.op-csv .op-ln:first-child{position:sticky;top:0;z-index:1;background:rgb(16 18 38)}
+.op-ch{color:var(--ink);font-weight:600}
+.op-cs{font-style:normal;color:rgb(196 204 238 / .32)}
+/* highlight.js's tokens, in this window's colours */
+:is(.op-code,.op-md pre) :is(.hljs-keyword,.hljs-selector-tag,.hljs-doctag,.hljs-meta .hljs-keyword){color:#c7a6ff}
+:is(.op-code,.op-md pre) :is(.hljs-string,.hljs-regexp,.hljs-addition,.hljs-meta .hljs-string,.hljs-char.escape_){color:#9ee6c0}
+:is(.op-code,.op-md pre) :is(.hljs-number,.hljs-literal,.hljs-symbol,.hljs-bullet,.hljs-variable.language_){color:#ffc98f}
+:is(.op-code,.op-md pre) :is(.hljs-title,.hljs-title.function_,.hljs-section){color:#8fc3ff}
+:is(.op-code,.op-md pre) :is(.hljs-title.class_,.hljs-type,.hljs-built_in){color:#7fd6e8}
+:is(.op-code,.op-md pre) :is(.hljs-attr,.hljs-attribute,.hljs-property,.hljs-selector-class,.hljs-selector-id,.hljs-selector-attr,.hljs-selector-pseudo){color:#a9c4ff}
+:is(.op-code,.op-md pre) :is(.hljs-tag,.hljs-punctuation,.hljs-operator){color:rgb(196 204 238 / .62)}
+:is(.op-code,.op-md pre) .hljs-name{color:#b8a6ff}
+:is(.op-code,.op-md pre) :is(.hljs-comment,.hljs-quote){color:rgb(196 204 238 / .46);font-style:italic}
+:is(.op-code,.op-md pre) .hljs-meta{color:#b3b9d6}
+:is(.op-code,.op-md pre) :is(.hljs-variable,.hljs-template-variable){color:#e6d1ff}
+:is(.op-code,.op-md pre) .hljs-deletion{color:#ff9f8f}
+:is(.op-code,.op-md pre) .hljs-emphasis{font-style:italic}
+:is(.op-code,.op-md pre) :is(.hljs-strong,.hljs-section){font-weight:600}
+:is(.op-code,.op-md pre) .hljs-link{text-decoration:underline}
+
+/* ---------- 渲染 / 源码, 全文 / 改动: on top, out of the way ---------- */
+.op-bar{position:sticky;top:0;z-index:2;height:0}
+.op-seg{position:absolute;right:10px;top:8px;display:inline-flex;gap:1px;padding:2px;border-radius:8px;background:rgb(20 22 46 / .96);box-shadow:inset 0 0 0 .5px rgb(var(--acc) / .25),0 6px 16px -8px #000}
+.op-seg button{height:22px;padding:0 10px;border-radius:6px;font-size:11.5px;color:var(--faint);transition:background 140ms,color 140ms}
+.op-seg button:hover{color:var(--ink)}
+.op-seg button[aria-pressed="true"]{background:rgb(var(--acc) / .2);color:var(--ink)}
+
+/* ---------- markdown, rendered ---------- */
+.op-md{max-width:660px;margin:0 auto;padding:22px 28px 40px;font-size:13.5px;line-height:1.75;color:rgb(226 230 247 / .9);overflow-wrap:anywhere}
+.op-md h1{margin:0 110px 14px 0;font:600 20px/1.4 var(--ui);color:var(--ink)}
+.op-md h2{margin:22px 0 8px;padding-top:12px;font:600 15px/1.4 var(--ui);color:var(--ink);box-shadow:inset 0 .5px 0 rgb(var(--acc) / .16)}
+.op-md h3,.op-md h4{margin:16px 0 6px;font:600 13.5px/1.4 var(--ui);color:var(--ink)}
+.op-md > :first-child:not(h1){margin-top:0;margin-right:110px}
+.op-md p{margin:0 0 10px}
+.op-md em{color:var(--ink)}
+.op-md strong{color:#fff;font-weight:600}
+.op-md del{color:var(--faint)}
+.op-md code{padding:1px 5px;border-radius:5px;font:12px var(--mono);background:rgb(255 255 255 / .08)}
+.op-md code.ref,.op-md a.ref{cursor:pointer}
+.op-md code.ref{color:rgb(190 205 255);background:rgb(var(--acc) / .1)}
+.op-md code.ref:hover{background:rgb(var(--acc) / .2);color:var(--ink)}
+.op-md a.ref{color:inherit;text-decoration:underline;text-decoration-color:rgb(var(--acc) / .45);text-underline-offset:3px}
+.op-md a.ref:hover{color:var(--ink);text-decoration-color:rgb(var(--acc))}
+.op-md ul,.op-md ol{margin:0 0 10px;padding-left:20px}
+.op-md li::marker{color:rgb(var(--acc))}
+.op-md li.task{list-style:none;margin-left:-20px;display:flex;align-items:baseline;gap:8px}
+.op-md li.task i{flex:none;display:inline-grid;place-items:center;width:14px;height:14px;border-radius:4px;font:700 9px/1 var(--ui);font-style:normal;color:#062419;box-shadow:inset 0 0 0 1px rgb(var(--acc) / .45);transform:translateY(2px)}
+.op-md li.task i.y{background:var(--mint);box-shadow:none}
+.op-md blockquote{margin:0 0 10px;padding:4px 12px;border-radius:0 8px 8px 0;background:rgb(var(--acc) / .05);box-shadow:inset 2px 0 0 rgb(var(--acc) / .5);color:var(--muted)}
+.op-md pre{margin:0 0 12px;padding:10px 12px;border-radius:10px;background:rgb(0 0 0 / .24);box-shadow:inset 0 0 0 .5px rgb(var(--acc) / .2);font:12px/1.6 var(--mono);white-space:pre;overflow-x:auto}
+.op-md table{width:100%;margin:0 0 12px;border-collapse:collapse;font-size:12.5px;line-height:1.5}
+.op-md th{padding:5px 10px;text-align:left;font-weight:600;color:var(--muted);box-shadow:inset 0 -.5px 0 rgb(var(--acc) / .3)}
+.op-md td{padding:6px 10px;box-shadow:inset 0 -.5px 0 rgb(var(--acc) / .12)}
+.op-md hr{margin:18px 0;border:0;height:.5px;background:rgb(var(--acc) / .2)}
+
+/* ---------- a picture: it fits; a click shows it 1:1 ---------- */
+.op-img{min-height:100%;display:grid;place-items:center;padding:18px;background:#05060b}
+.op-img img{display:block;max-width:100%;height:auto;border-radius:8px;box-shadow:0 20px 50px -20px #000,0 0 0 .5px rgb(var(--acc) / .25);cursor:zoom-in}
+.op-img.z{width:max-content;min-width:100%;place-items:start;padding:12px}
+.op-img.z img{max-width:none;cursor:zoom-out}
+
+/* ---------- the recording and the sound ---------- */
+.op-vid,.op-aud{min-height:100%;display:flex;flex-direction:column;justify-content:center;gap:10px;padding:16px 16px 20px;background:#05060b}
+.op-frame{position:relative;aspect-ratio:16 / 9;max-height:calc(100% - 50px);border-radius:8px;overflow:hidden;background:#000;box-shadow:0 20px 50px -24px #000,0 0 0 .5px rgb(var(--acc) / .22)}
+.op-frame video{display:block;width:100%;height:100%;object-fit:contain;cursor:pointer}
+.op-big{position:absolute;left:50%;top:50%;display:grid;place-items:center;width:54px;height:54px;margin:-27px 0 0 -27px;border-radius:50%;background:rgb(8 9 20 / .6);color:#fff;box-shadow:inset 0 0 0 .5px rgb(255 255 255 / .35);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);transition:opacity 180ms,transform 180ms}
+.op-big svg{width:20px;height:20px;margin-left:2px}
+.op-big:hover{transform:scale(1.05)}
+.op-vid.on .op-big{opacity:0;pointer-events:none}
+.op-ctl{display:flex;align-items:center;gap:10px;height:32px}
+.op-pp{flex:none;display:grid;place-items:center;width:30px;height:30px;border-radius:50%;background:rgb(255 255 255 / .08);color:var(--ink);transition:background 140ms}
+.op-pp:hover{background:rgb(var(--acc) / .2)}
+.op-pp svg{width:13px;height:13px}
+.op-tm{flex:none;min-width:30px;font:11px var(--mono);color:var(--faint);font-variant-numeric:tabular-nums}
+.op-dur{text-align:right}
+.op-scrub{position:relative;flex:1;height:20px;cursor:pointer;touch-action:none;border-radius:6px}
+.op-scrub::before{content:"";position:absolute;left:0;right:0;top:8.5px;height:3px;border-radius:2px;background:rgb(255 255 255 / .12)}
+.op-scrub i{position:absolute;left:0;top:8.5px;height:3px;width:0;border-radius:2px;background:rgb(var(--acc))}
+.op-scrub b{position:absolute;top:4.5px;left:0;width:11px;height:11px;margin-left:-5.5px;border-radius:50%;background:#fff;box-shadow:0 0 0 3px rgb(var(--acc) / .25),0 2px 6px rgb(0 0 0 / .5)}
+.op-scrub:focus-visible{outline:none;box-shadow:0 0 0 1px rgb(var(--acc) / .5)}
+.op-wave{position:relative;height:128px;border-radius:10px;background:rgb(255 255 255 / .03);box-shadow:inset 0 0 0 .5px rgb(var(--acc) / .18);cursor:pointer;touch-action:none}
+.op-wave canvas{display:block;width:100%;height:100%}
+
+/* ---------- a PDF: the window's own viewer, page after page ---------- */
+.pv-view .op-pdf{position:absolute;inset:0;width:100%;height:100%;border:0;background:#2b2d3a}
+
+/* ---------- a log: time, level, where from; the tail of a big one ---------- */
+.op-log{padding:8px 0 18px;font:11px/1.6 var(--mono);color:rgb(226 230 247 / .8)}
+.op-lg{padding:0 14px;white-space:pre-wrap;overflow-wrap:anywhere}
+.op-lg .t{color:rgb(196 204 238 / .4)}
+.op-lg b{font-weight:500;color:#8fc3ff}
+.op-lg.warn b{color:var(--warm)}
+.op-lg.error{background:rgb(255 106 90 / .07);color:#ffd0c8}
+.op-lg.error b{color:#ff8f80}
+.op-gap{margin:0 0 6px;padding:3px 14px;text-align:center;font:11px/1.6 var(--mono);color:rgb(196 204 238 / .42);background:rgb(var(--acc) / .04)}
+
+/* ---------- a folder ---------- */
+.op-dir{display:flex;flex-direction:column;padding:10px 8px}
+.op-dir button{display:flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:7px;text-align:left;font:12px var(--mono);color:var(--muted);transition:background 120ms,color 120ms}
+.op-dir button:hover{background:rgb(var(--acc) / .08);color:var(--ink)}
+.op-dir i{flex:none;width:10px;font-style:normal;color:rgb(var(--acc))}
+.op-dir span{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}

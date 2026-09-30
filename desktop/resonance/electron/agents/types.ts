@@ -96,9 +96,11 @@ export type Task = { id: string; kind: string; what: string; st: 'run' | 'done' 
 // A file or page a session pointed at, as the preview shows it: markdown and text come as text (with what changed, when
 // something did), pages, PDFs, images, audio and video as a file:// address for the preview's own browser, a folder as
 // its entries; anything else is for Quick Look. `line`: the line the reference named · `cut`: text past 2 MB, only the
-// last part is here.
+// last part is here · `size`: in bytes · `bytes`: GET /sessions/{id}/file gives its bytes (a picture, sound, video or
+// PDF inside the session's folders), so the preview shows it itself · `pages`: a PDF's, when it says · `hunks`: where
+// each hunk of `diff` starts in the file.
 export type Peek = { kind: 'md' | 'text' | 'web' | 'media' | 'dir' | 'quicklook'; abs: string; url?: string; text?: string; diff?: Diff; add?: number; del?: number;
-  line?: number; cut?: boolean; entries?: { name: string; dir: boolean }[] };
+  line?: number; cut?: boolean; entries?: { name: string; dir: boolean }[]; size?: number; bytes?: boolean; pages?: number; hunks?: number[] };
 // What a session changed against what landing would compare (GET /sessions/{id}/changes): per file its lines added and
 // removed and how it changed (M changed, A new, D deleted, R renamed, ? not tracked yet).
 export type Change = { path: string; add: number; del: number; st: 'M' | 'A' | 'D' | 'R' | '?'; from?: string };

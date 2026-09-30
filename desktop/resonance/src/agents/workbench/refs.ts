@@ -9,10 +9,12 @@ const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replac
 const IMG = /^(png|jpe?g|gif|webp|avif|svg|bmp|ico)$/;
 const URL_RE = /https?:\/\/[^\s<>()"'`　-〿＀-￯]+[^\s<>()"'`.,;:!?　-〿＀-￯]/g;
 // A path in code: something/with.ext, ./x.ext, ~/x.ext, or a bare name with a document or code extension; a line
-// number after a colon is allowed.
-const PATH = /^(~\/|\.{1,2}\/|\/)?[\w@+-][\w@.+-]*(\/[\w@.+-]+)*\.[A-Za-z][A-Za-z0-9]{0,7}(:\d+(:\d+)?(-\d+)?)?$/;
-const KNOWN = /\.(md|mdx|markdown|html?|tsx?|jsx?|mjs|cjs|cts|py|json|css|pdf|png|jpe?g|gif|svg|webp|ya?ml|toml|txt|sh|swift|rs|go)(:|$)/i;
-export const isPath = (c: string) => !/^https?:/i.test(c) && PATH.test(c) && (c.includes('/') || KNOWN.test(c));
+// number after a colon is allowed. Names may be in any script (docs/发布清单.pdf); a file name under a folder may hold
+// spaces (design/Startrail 发布.key) and a folder's may not, so a command with a path in it stays a command.
+const C = '\\p{L}\\p{N}_@+\\-', EXT = '\\.[A-Za-z][A-Za-z0-9]{0,7}', DIRS = `(~\\/|\\.{1,2}\\/|\\/)?[${C}][${C}.]*(\\/[${C}.]+)*`;
+const PATH = new RegExp(`^${DIRS}${EXT}(:\\d+(:\\d+)?(-\\d+)?)?$`, 'u'), SPACED = new RegExp(`^${DIRS}\\/[${C}][${C}. ]*[${C}]${EXT}$`, 'u');
+const KNOWN = /\.(md|mdx|markdown|html?|tsx?|jsx?|mjs|cjs|cts|py|json|jsonl|css|pdf|png|jpe?g|gif|svg|webp|avif|ya?ml|toml|txt|log|csv|tsv|sql|sh|swift|rs|go|rb|java|kt|mov|mp4|m4v|webm|mp3|m4a|wav|aac|flac|ogg|key|numbers|pages|docx|xlsx|pptx|zip|dmg|pkg)(:|$)/i;
+export const isPath = (c: string) => !/^https?:/i.test(c) && (PATH.test(c) || SPACED.test(c)) && (c.includes('/') || KNOWN.test(c));
 export const stripLine = (p: string) => p.replace(/(#L\d.*|:\d+(:\d+)?(-\d+)?)$/, '');
 
 export function classify(ref: string, label = ''): Ref {

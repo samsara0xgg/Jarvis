@@ -1,4 +1,4 @@
-<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: http://127.0.0.1:*; connect-src http://127.0.0.1:*"><title>Agents</title></head>
+<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: http://127.0.0.1:*; media-src http://127.0.0.1:*; frame-src http://127.0.0.1:*; connect-src http://127.0.0.1:*"><title>Agents</title></head>
 <body>
 <div class="win booting" id="win">
   <div class="w-bar"><span class="w-title">Agents</span><span class="w-off" hidden>连不上后台，正在重连…</span><button type="button" class="snd" data-act="sound" aria-pressed="true" aria-label="声音"></button></div>
@@ -48,7 +48,7 @@
           </div>
         </section>
         <section class="pn sheet pv off" aria-label="预览">
-          <div class="sh"><span class="ic"></span><b></b><small></small><button type="button" class="ib" data-act="pvflip"></button><button type="button" class="ib" data-act="pvext" aria-label="在新窗口打开" data-tip="在新窗口打开"></button><button type="button" class="ib" data-act="pvclose" aria-label="关闭预览" data-tip="关掉" data-key="←"></button></div>
+          <div class="sh"><button type="button" class="ib pvb" data-act="pvback" aria-label="返回" data-tip="返回" hidden></button><span class="ic"></span><b></b><small></small><button type="button" class="ib" data-act="pvflip"></button><button type="button" class="ib" data-act="pvext" aria-label="在新窗口打开" data-tip="在新窗口打开"></button><button type="button" class="ib" data-act="pvclose" aria-label="关闭预览" data-tip="关掉" data-key="←"></button></div>
           <div class="pv-body"><div class="pv-view"></div></div>
         </section>
         <section class="pn tm off" aria-label="终端"></section>
