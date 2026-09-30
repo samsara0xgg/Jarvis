@@ -1,0 +1,61 @@
+/* Where sessions come from: the ones in a terminal (the sky's last group, read-only, 接手), and delete that asks first. */
+
+/* ---------- the sky's last group: its rows stand where the sky's own rows stand ---------- */
+.bw-more{position:absolute;left:918px;right:0;height:0}
+.bw-more .bw-row{left:0}
+.bw-row.fr-trow:not(.on) b{color:var(--faint)}
+.bw-row em.fr-tg,.pop .fr-tg{flex:none;padding:0 5px;border-radius:4px;font:normal 10.5px/16px var(--ui);color:var(--faint);background:rgb(255 255 255 / .06)}
+.fr-tcount{position:absolute;right:20px;height:24px;padding:0 8px;border-radius:var(--r6,6px);color:var(--faint);font-size:12px;transition:background .15s,color .15s}
+.fr-tcount:hover,.fr-tcount:focus-visible{color:var(--muted);background:rgb(var(--acc) / .09)}
+/* the classic list: a line beside 已归档 */
+.fr-tlink{flex:none;display:flex;align-items:center;gap:8px;margin:0 6px 2px;padding:8px 10px;border-radius:9px;font-size:12px;color:var(--muted);transition:background .15s,color .15s}
+.fr-tlink[hidden]{display:none}
+.fr-tlink em{font-style:normal;margin-left:auto;color:var(--faint);font-variant-numeric:tabular-nums}
+.fr-tlink:hover{background:rgb(255 255 255 / .06);color:var(--ink)}
+.pop.fr-tm{max-width:min(420px,calc(100% - 24px))}
+.pop.fr-tm .fr-mt{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.pop.fr-tm .fr-k{margin-left:12px;font-size:11.5px;color:var(--faint)}
+
+/* ---------- read-only: its own header and conversation stand where the window's do ---------- */
+.win:not(.fr-ro-on) .fr-rh{display:none}
+.fr-ro-on .m-head:not(.fr-rh){display:none}
+.fr-ro-on .bd>.pn{visibility:hidden}
+.fr-rov{position:absolute;inset:0;z-index:2;display:none;flex-direction:column}
+.fr-ro-on .fr-rov{display:flex}
+.fr-rh .fr-rmk{display:grid;place-items:center;width:22px;height:22px;border-radius:6px;color:var(--faint);background:rgb(255 255 255 / .06)}
+.fr-rh .h-t b{cursor:default}
+.fr-ttag{flex:none;padding:0 6px;border-radius:4px;font-style:normal;line-height:16px;color:var(--faint);background:rgb(255 255 255 / .06)}
+.fr-rov .c-in{padding-bottom:8px}
+.fr-rq:empty{display:none}
+.fr-rq{display:flex;flex-direction:column;gap:14px}
+.fr-rbar{flex:none;padding:6px 24px 18px}
+.fr-rob{display:flex;align-items:center;gap:10px;width:100%;max-width:680px;margin:0 auto;padding:9px 9px 9px 14px;border-radius:18px;background:rgb(255 255 255 / .035);box-shadow:inset 0 0 0 .5px rgb(var(--acc) / .22)}
+.fr-rob-i{flex:none;display:grid;color:var(--faint)}
+.fr-rob-i svg{width:16px;height:16px}
+.fr-rob-t{flex:1;min-width:0;display:flex;align-items:baseline;gap:8px;white-space:nowrap;overflow:hidden}
+.fr-rob-t b{font-size:13px;font-weight:600}
+.fr-rob-t span{min-width:0;overflow:hidden;text-overflow:ellipsis;font-size:12px;color:var(--faint)}
+.fr-rbar .btn.sm{height:28px;padding:0 11px;font-size:12px;border-radius:8px}
+.fr-rob .btn svg,.fr-tkc .btn svg{width:13px;height:13px}
+.fr-tkc{width:100%;max-width:680px;margin:0 auto;padding:12px 14px 12px 16px;border-radius:18px;background:rgb(22 24 50 / .94);box-shadow:inset 0 0 0 1px rgb(255 201 143 / .34),0 18px 40px -22px #000}
+.fr-tkc-h{font:600 14px/1.4 var(--ui);overflow-wrap:anywhere}
+.fr-tkc ul{margin:6px 0 10px;padding-left:18px;font-size:12.5px;line-height:1.65;color:var(--muted)}
+.fr-tkc li::marker{color:rgb(var(--acc) / .6)}
+.fr-tkc li.warm{color:var(--warm)}
+.fr-tkc-r{display:flex;justify-content:flex-end;gap:8px}
+.fr-also{margin-top:-8px;padding-left:2px;font-size:12px;color:var(--faint)}
+
+/* ---------- delete asks first; a clean one can be taken back from the toast ---------- */
+.pop.fr-ask{width:300px;gap:6px;padding:12px 14px;white-space:normal;box-shadow:inset 0 0 0 .5px rgb(var(--acc) / .3),0 20px 44px -14px #000}
+.fr-ask-h{font:600 13.5px/1.4 var(--ui);overflow-wrap:anywhere}
+.fr-ask-b{font-size:12.5px;line-height:1.6;color:var(--muted)}
+.fr-ask-b code{padding:1px 5px;border-radius:5px;font:11.5px var(--mono);color:var(--ink);background:rgb(255 255 255 / .08)}
+.fr-ask-r{display:flex;justify-content:flex-end;gap:8px;margin-top:4px}
+.pop.fr-ask .btn{display:inline-flex;justify-content:center;height:28px;padding:0 11px;font-size:12px;border-radius:8px;color:var(--ink)}
+.pop.fr-ask .btn:hover{background:rgb(255 255 255 / .13)}
+.pop.fr-ask .btn.fr-bad{color:#ffb3a6;background:rgb(255 106 90 / .16);box-shadow:inset 0 0 0 .5px rgb(255 106 90 / .4)}
+.pop.fr-ask .btn.fr-bad:hover{background:rgb(255 106 90 / .26)}
+.toast:has(.fr-undo){display:flex;align-items:center;gap:12px;background:rgb(22 24 50 / .96);box-shadow:inset 0 0 0 .5px rgb(var(--acc,157 180 255) / .3),0 16px 40px -14px #000;color:var(--ink)}
+.toast:has(.fr-undo)[hidden]{display:none}
+.fr-undo{flex:none;padding:3px 9px;border-radius:7px;font-size:12px;font-weight:600;color:var(--warm);background:rgb(255 201 143 / .1)}
+.fr-undo:hover{background:rgb(255 201 143 / .2)}

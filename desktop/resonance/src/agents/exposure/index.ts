@@ -40,6 +40,7 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
     <button type="button" class="bw-pull" aria-expanded="false"></button>
     <div class="bw-sky" role="region" aria-label="长曝光时间线" inert>
       <div class="bw-rows"></div><div class="bw-axis"></div><div class="bw-gap" hidden></div><div class="bw-open" hidden><div class="pp-in"></div></div>
+      <div class="bw-more"></div>
     </div>
     <div class="bw-peek" hidden></div>`;
   win.append(chrome);
@@ -50,6 +51,8 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
   // ⌘K's field stands where 收起 does while it searches.
   const { el: findEl, input: findInput } = findField(); pull.after(findEl);
   const away = mountAway();
+  // Under the rows, a place for what a feature lists in the sky (the sessions in a terminal); its data-h is its height.
+  const more = $('.bw-more', chrome);
   const head = $('.m-head', win), main = $('.main', win);
   const her = new Her($<HTMLCanvasElement>('.bw-her canvas', chrome), 56, 15.6, true);
   // The window is always the long exposure; the classic layout stays in the code, unreachable, until it is removed.
@@ -89,7 +92,7 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
   const waitMin = (s: Sess) => Math.max(0, Math.round((Date.now() - since(s)) / 60000));
   const stateText = (s: Sess) => `${words[status(s)]}${s.st === 'wait' ? ` · ${waitMin(s) || '刚刚'}${waitMin(s) ? ' 分' : ''}` : ''}`;
   const stateHTML = (s: Sess, tag = 'em') => `<${tag} class="st-${status(s)}">${stateText(s)}</${tag}>`;
-  const skyHeight = () => 26 + (rows.length + xrows.length) * 27 + opening.value + 34;
+  const skyHeight = () => 26 + (rows.length + xrows.length) * 27 + opening.value + 34 + (Number(more.dataset.h) || 0);
   // Under the words the trails bend down once, past their right edge, and stay down all the way back.
   const geo = () => geometry(width, now, Math.max(60, ...rows.map(s => now - (trails[s.id]?.segs[0]?.a ?? now))) * 1.04, skyHeight(),
     (i, x) => (offsets.get(rows[i]?.id)?.value ?? 0) * (1 - smooth(left.value + wordWidth + 14, left.value + wordWidth + 58, x)));
@@ -158,6 +161,7 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
       // The lines under the sessions: 新会话 and taking an archived one back are the page's own acts.
       + xrows.map((x, j) => `<button type="button" class="bw-row bw-x${skyOn && selected === x.key ? ' sel' : ''}${x.arch ? ' arch' : ''}" data-x="${esc(x.key)}"${x.key === 'x:new' ? ' data-act="new"' : x.back ? ` data-act="unarchive" data-id="${esc(x.back)}"` : ''}${x.key === 'x:none' ? ' disabled' : ''} style="top:${15 + (rows.length + j) * 27}px"><span>${esc(x.label)}</span>${x.key === 'x:new' ? `<span class="kk">${kbd('⌘')}${kbd('N')}</span>` : x.back ? '<span class="back">拿回来</span>' : ''}</button>`).join('');
     starsEl.innerHTML = rows.map(s => { const at = waiting.place(s.id); return at === null ? '' : `<button type="button" data-session="${esc(s.id)}" aria-label="${esc(s.title)}，${words[status(s)]}" style="${at}" title="${esc(s.title)} · ${esc(s.summary)}"></button>`; }).join('');
+    more.style.top = `${15 + (rows.length + xrows.length) * 27}px`;
   }
   // A session found only in what was said stands on the newest sentence that says it; one its name matches, on its name.
   function findStop() {

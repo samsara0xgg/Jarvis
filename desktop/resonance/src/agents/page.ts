@@ -24,6 +24,7 @@ import { mountBang } from './bang';
 import './agents.css';
 import './exposure/exposure.css';
 // Features after the page's own styles, so a feature's rule stands over the page's.
+import { mountFrom } from './from';
 import { mountSettings } from './settings';
 
 declare global { interface Window { agents?: {
@@ -57,7 +58,8 @@ const API = `http://127.0.0.1:${new URLSearchParams(location.search).get('port')
 async function call<T = Record<string, unknown>>(route: string, body?: unknown, method = body === undefined ? 'GET' : 'POST'): Promise<T> {
   const r = await fetch(API + route, { method, headers: body === undefined ? undefined : { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
   const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(typeof j.error === 'string' ? j.error : `后台答不上来（${r.status}）`);
+  // `need` rides along on the error: what the host says would answer it ('force', 'auth').
+  if (!r.ok) throw Object.assign(new Error(typeof j.error === 'string' ? j.error : `后台答不上来（${r.status}）`), typeof j.need === 'string' ? { need: j.need } : {});
   return j as T;
 }
 const toastEl = $('.toast');
@@ -1202,6 +1204,8 @@ const ctx: PageCtx = {
 features.push(mountSettings(ctx));
 features.push(mountViewer(ctx));
 features.push(mountKeys(ctx));
+// A session held in a terminal is read-only here: its view takes the composer's keys before the rest.
+features.push(mountFrom(ctx));
 features.push(mountStopped(ctx));
 features.push(mountSlip(ctx));
 features.push(mountHist(ctx));
