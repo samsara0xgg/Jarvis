@@ -454,6 +454,16 @@ realtime:
     # one warning, without it.
     routine_streaming:
       enabled: false
+    # docs/plans/speak-as-written-proposal.md.  spoken_streaming streams every
+    # model request of a turn Allen spoke through the Responses API and speaks
+    # the model's own answer sentence by sentence, with no rewrite; its line
+    # before a tool call rides action.proposed as lead_in, which commentary
+    # speaks in place of the fixed acknowledge.  Speech starts before the
+    # answer is complete only with streaming_output.speak_from_segments.  It
+    # additionally requires response_run_lifecycle and downgrades once, with
+    # one warning, without it.
+    spoken_streaming:
+      enabled: false
   # ADR-0008 Step 5 (D6).  With commentary on, a user-originated turn speaks
   # one short acknowledge when it first dispatches a tool that works on
   # Allen's request (not tool_search, the clock, memory or a card), no earlier
@@ -464,7 +474,9 @@ realtime:
   # downgrades once, with one warning, without them.
   # Off since ADR 0045: every lifecycle row spoke, and "结果回来了" landed with
   # no lead-up whenever a tool finished within a second.  The acknowledge-only
-  # form (2026-09-29) waits for its live run before it ships on.
+  # form (2026-09-29) waits for its live run before it ships on.  In a
+  # spoken_streaming turn it says the model's own line before the call instead,
+  # unless that line runs over 60 characters or already claims a result.
   commentary:
     enabled: false
   # ADR-0008 D8 (Wave 5).  intent_pump replaces the daemon's "poll one

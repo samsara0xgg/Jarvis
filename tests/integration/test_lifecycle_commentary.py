@@ -811,6 +811,53 @@ def test_the_acknowledge_follows_the_tool_and_the_language_allen_used(tmp_path: 
         assert parse_response_channels(payload["text"]).voice in allowed, turn_id
 
 
+def test_a_spoken_turn_hears_the_models_own_line_unless_it_claims_a_result(
+    tmp_path: Path,
+) -> None:
+    """docs/plans/speak-as-written-proposal.md: the model's line replaces the phrase.
+
+    A line written before a bookkeeping call still speaks at the next dispatch;
+    one that already states a result, or runs past one sentence, gives way to
+    the fixed phrase.
+    """
+    runtime = _make_runtime(tmp_path)
+    reader = _reader(runtime)
+    line = "我查一下明天维多利亚的天气。"
+    cases: list[tuple[str, list[tuple[str, str | None]], str | None]] = [
+        ("T-line", [("web_search", line)], line),
+        ("T-early", [("tool_search", line), ("web_search", None)], line),
+        ("T-claim", [("web_search", "已经查到了。")], None),
+        ("T-long", [("web_search", "我查一下" + "明天维多利亚的天气" * 7)], None),
+    ]
+    with _Observer(runtime):
+        for turn_id, calls, _ in cases:
+            _user_turn(runtime.conn, turn_id, transcript="明天维多利亚天气怎么样")
+            for index, (tool_name, lead_in) in enumerate(calls):
+                action_id = f"ACT-{turn_id}-{index}"
+                emit_event(
+                    runtime.conn,
+                    type="action.proposed",
+                    payload={
+                        "action_id": action_id,
+                        "tool_name": tool_name,
+                        "turn_id": turn_id,
+                        "caller_principal": "jarvis_llm",
+                        "risk_level": "L1",
+                        **({"lead_in": lead_in} if lead_in else {}),
+                    },
+                    correlation={"action_id": action_id, "turn_id": turn_id},
+                )
+                _action_row(
+                    runtime.conn, "action.dispatched", action_id=action_id, turn_id=turn_id,
+                )
+            _wait_until_turn_spoke(reader, turn_id)
+
+    for turn_id, _, spoken in cases:
+        (payload,) = _commentary_emitted(reader, turn_id)
+        allowed = [spoken] if spoken else lang.variants(_ACKNOWLEDGE_BY_TOOL["lookup"], "zh")
+        assert parse_response_channels(payload["text"]).voice in allowed, turn_id
+
+
 def test_a_second_row_in_the_same_turn_opens_nothing(tmp_path: Path) -> None:
     """The cap: a later dispatch in the turn neither speaks nor cuts the first off."""
     runtime = _make_runtime(tmp_path)

@@ -100,6 +100,7 @@ from jarvis.decision.commentary import (
     COMMENTARY_ATTENTION_CHANNEL,
     commentary_intent_for,
     commentary_speech_text,
+    lead_in_speech_text,
 )
 from jarvis.decision.gates import ResponsePlan, pre_emit_gate
 from jarvis.decision.llm import failure_reason
@@ -1820,6 +1821,18 @@ _SELECT_ACTION_TOOL_NAME_SQL = (
 )
 
 
+# The turn's latest line before a call, up to this action's proposal: a line
+# written before a bookkeeping call (tool_search) still speaks at the next one.
+_SELECT_LEAD_IN_SQL = (
+    "SELECT json_extract(payload_json, '$.lead_in') FROM events "
+    "WHERE type = 'action.proposed' AND json_extract(payload_json, '$.turn_id') = ? "
+    "AND json_extract(payload_json, '$.lead_in') IS NOT NULL AND id <= ("
+    "SELECT id FROM events WHERE type = 'action.proposed' "
+    "AND json_extract(payload_json, '$.action_id') = ? LIMIT 1) "
+    "ORDER BY id DESC LIMIT 1"
+)
+
+
 _SELECT_TURN_ENDED_SQL = (
     "SELECT 1 FROM events WHERE type = 'turn.ended' "
     "AND json_extract(payload_json, '$.turn_id') = ? LIMIT 1"
@@ -1887,15 +1900,19 @@ def _complete_commentary(runtime: JarvisRuntime, entry: _OpenCommentary) -> None
     entry.run.mark("completed")
 
 
-def _render_commentary(
+def _render_commentary(  # noqa: PLR0913 - the run's identity plus what it says
     runtime: JarvisRuntime,
     conn: sqlite3.Connection,
     *,
     intent: PresentationIntent,
     action_event: Event,
     turn_id: str,
+    speech: str,
 ) -> _OpenCommentary:
     """Open one ``phase="commentary"`` run and deliver its single segment.
+
+    ``speech`` is the model's own line before the call when it wrote a usable
+    one, else the intent's fixed phrase.
 
     ``turn_id`` is the action's own turn, so ``response_group_id`` derives to
     that turn's group and voice_media appends the phrase to the lane instead
@@ -1943,7 +1960,7 @@ def _render_commentary(
     # No subject is in scope for a fixed lifecycle phrase, so the Pre-emit
     # Gate short-circuits to its routine pass-through and hands back the
     # token `render_response` demands.
-    plan = pre_emit_gate(commentary_speech_text(intent))
+    plan = pre_emit_gate(speech)
     _emit_pre_emit_verdict(conn, plan=plan, turn_id=turn_id)
     render_response(
         record_pre_emit_token(
@@ -1967,6 +1984,7 @@ def _render_commentary(
         turn_id=turn_id,
         action_id=intent.subject_ref,
         intent_type=intent.intent_type,
+        model_lead_in=speech != commentary_speech_text(intent),
     )
     # Registered last, once nothing above can still raise: an entry the
     # watcher never receives is an entry no close path can ever unregister,
@@ -2058,12 +2076,17 @@ def _open_commentary_in_worker_thread(  # noqa: PLR0911 - one early return per s
             # `action_snapshot` carries no `action_id`, so this is enforced
             # at the only granularity the fold supports.
             return None
+        lead_in = conn.execute(
+            _SELECT_LEAD_IN_SQL, (turn_id, action_event.payload.get("action_id"))
+        ).fetchone()
         return _render_commentary(
             runtime,
             conn,
             intent=intent,
             action_event=action_event,
             turn_id=turn_id,
+            speech=lead_in_speech_text(lead_in[0] if lead_in is not None else None)
+            or commentary_speech_text(intent),
         )
     finally:
         with contextlib.suppress(sqlite3.Error):

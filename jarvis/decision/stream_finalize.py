@@ -80,7 +80,9 @@ def finalize_stream(  # noqa: PLR0913 - explicit immutable finalizer inputs
             ("committed_prefix_differs_from_durable_chain",),
         )
     if uncommitted_suffix.strip():
-        result = (classifier or SegmentRiskClassifier()).classify(uncommitted_suffix, context)
+        result = (
+            classifier or SegmentRiskClassifier(rule_version=policy.classifier_rule_version)
+        ).classify(uncommitted_suffix, context)
         if result.risk != "routine":
             return StreamFinalizationFailure(
                 context.response_id,

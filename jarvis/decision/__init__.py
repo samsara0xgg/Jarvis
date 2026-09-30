@@ -66,7 +66,7 @@ from jarvis.decision.intent import (
     tier_0_match,
     tool_definitions_for_llm,
 )
-from jarvis.decision.llm_stream import LLMResponseFailed, LLMTextDelta
+from jarvis.decision.llm_stream import LLMResponseFailed, LLMTextDelta, LLMToolCallCompleted
 from jarvis.decision.packet import (
     SituationPacket,
     assemble_packet,
@@ -74,6 +74,7 @@ from jarvis.decision.packet import (
     format_pending_confirmation_note,
 )
 from jarvis.decision.policy import EffectivePolicy, effective_policy, surface_for
+from jarvis.decision.pre_route import SPOKEN_CHANNELS
 from jarvis.decision.response_run import ResponseCancelledError
 from jarvis.decision.stream_envelope import (
     StreamEnvelopeSplitter,
@@ -83,7 +84,7 @@ from jarvis.decision.stream_envelope import (
 )
 from jarvis.decision.stream_finalize import StreamFinalizationFailure, finalize_stream
 from jarvis.decision.stream_gate import stream_emission_gate
-from jarvis.decision.stream_risk import SegmentRiskClassifier
+from jarvis.decision.stream_risk import SPOKEN_RULE_VERSION, SegmentRiskClassifier
 from jarvis.decision.stream_sentences import SemanticAssembler
 from jarvis.decision.tier0 import render_tier0_response
 from jarvis.shared import (
@@ -115,6 +116,7 @@ if TYPE_CHECKING:
     from jarvis.decision.confirm_grammar import ConfirmGrammarTable
     from jarvis.decision.llm import ChatResult, LLMClient
     from jarvis.decision.pre_route import RoutineStreamRoute, StreamCorrection
+    from jarvis.decision.stream_envelope import EnvelopeTail
     from jarvis.decision.stream_sentences import SemanticCandidate
     from jarvis.decision.tier0 import Tier0Hit, Tier0Table
     from jarvis.shared import AuthorizationLease, RiskLevel
@@ -707,18 +709,41 @@ class _Scratch:
 
 
 _STATUS_HEADER: Final[str] = "[Current state | from the program, not the user's words]"
-# Channels whose transcript came in by voice; anything else is typed text.
-_VOICE_CHANNELS: Final[frozenset[str]] = frozenset({"inherent_ptt", "inherent_wake", "speech"})
+
+# docs/plans/speak-as-written-proposal.md: on the spoken route each sentence is
+# spoken as the model writes it, so the spoken reply comes first and is the
+# answer itself. The length default and the explicit-request override are the
+# ones the spoken-form rewrite prompt carried (ADR 0082); the line before a
+# tool call is spoken when that call is dispatched.
+_SPOKEN_REPLY_NOTE: Final[str] = (
+    "Your reply is spoken aloud as you write it. Start with the answer itself, in plain "
+    "spoken sentences in the language of the user's words: by default at most about 60 "
+    "Chinese characters or 40 English words, with no lists, headings, links, code or other "
+    "markup. When the user explicitly asks you to count, read aloud, repeat something "
+    "verbatim, go into detail or speak at a given length, say all of it. When the answer has "
+    "more that belongs on screen (a list, a table, code, links, figures to read), write the "
+    "spoken reply inside <voice></voice> and then the full written answer inside "
+    "<document></document>. Before calling a tool that does something for the user "
+    "(searching or fetching the web, looking at the screen, reading mail, checking activity, "
+    "controlling a device), first say one short line in the language of the user's words "
+    "saying what you are about to do, then call the tool in the same response; never end "
+    "your turn on that line. Say nothing before tool_search, get_current_time or remember."
+)
 
 
-def _interaction_line(packet: SituationPacket) -> str | None:
+def _interaction_line(packet: SituationPacket, ctx: DecideContext) -> str | None:
     """How this turn reached Jarvis, or None when the trigger carries no channel."""
     channel = packet.trigger_event.payload.get("channel")
     if not isinstance(channel, str) or not channel:
         return None
     if channel == "gpt_live":
         return "Channel: voice (relayed by Live; the answer will be read aloud)"
-    return "Channel: voice" if channel in _VOICE_CHANNELS else "Channel: text"
+    if channel not in SPOKEN_CHANNELS:
+        return "Channel: text"
+    route = ctx.routine_stream
+    if route is not None and route.context.route == "spoken":
+        return f"Channel: voice\n{_SPOKEN_REPLY_NOTE}"
+    return "Channel: voice"
 
 
 _HEARD_QUOTE_MAX_CHARS: Final[int] = 40
@@ -819,7 +844,7 @@ def _current_status_block(packet: SituationPacket, ctx: DecideContext) -> str | 
         line
         for line in (
             ctx.time_note,
-            _interaction_line(packet),
+            _interaction_line(packet, ctx),
             ctx.connected_apps,
             _previous_answer_line(packet),
             format_pending_confirmation_note(packet),
@@ -1046,6 +1071,8 @@ def _run_tool_use_loop(
 ) -> DecideResult:
     """Drive the Tier 2 LLM tool-use loop until text or limit."""
     if ctx.routine_stream is not None:
+        if ctx.routine_stream.context.route == "spoken":
+            return _run_spoken_stream(packet, policy, ctx, ctx.routine_stream, scratch)
         return _run_routine_stream(packet, ctx, ctx.routine_stream, scratch)
 
     messages = _loop_messages(packet, ctx)
@@ -1474,15 +1501,19 @@ def _run_tier0_path(
     )
 
 
-def _dispatch_one_tool_call(  # noqa: PLR0915 — single-pass orchestration of resolver + gate + dispatch; splitting muddles the audit trace.
+def _dispatch_one_tool_call(  # noqa: PLR0913, PLR0915 — single-pass orchestration of resolver + gate + dispatch; splitting muddles the audit trace.
     *,
     tool_call: object,
     policy: EffectivePolicy,
     ctx: DecideContext,
     scratch: _Scratch,
     messages: list[dict[str, Any]],
+    lead_in: str | None = None,
 ) -> _DispatchOutcome:
     """Resolve, gate, and dispatch one LLM-proposed tool call.
+
+    ``lead_in`` is the line the model wrote before this call on a spoken turn;
+    it rides ``action.proposed`` for the acknowledge to speak at dispatch.
 
     Returns:
         ``"continue"`` if the tool was dispatched or refused (the loop
@@ -1576,6 +1607,7 @@ def _dispatch_one_tool_call(  # noqa: PLR0915 — single-pass orchestration of r
             "target_entity_ref": target_entity_ref,
             "turn_id": scratch.turn_id,
             "arguments": dict(arguments),
+            **({"lead_in": lead_in} if lead_in else {}),
         },
         correlation=_action_correlation(action_request),
     )
@@ -1856,7 +1888,85 @@ class _StreamedText:
     last_gate_event_uid: str | None
 
 
-def _stream_routine_text(  # noqa: C901 - one provider stream feeding one gate loop
+class _SegmentSpeaker:
+    """One run's voice text through the envelope, assembler and stream gate.
+
+    Every delta passes the envelope splitter first, so the assembler and the
+    durable chunks only ever see tag-free voice text. A denied candidate seals
+    the run (D2 rule 2): ``prefix`` is what was exposed, ``voice`` all the
+    voice text written so far. ``gate_segments=False`` exposes nothing.
+    """
+
+    def __init__(
+        self,
+        ctx: DecideContext,
+        route: RoutineStreamRoute,
+        scratch: _Scratch,
+        *,
+        classifier: SegmentRiskClassifier,
+        gate_segments: bool = True,
+    ) -> None:
+        """Start with nothing exposed on ``route``'s run."""
+        self._ctx = ctx
+        self._route = route
+        self._scratch = scratch
+        self._classifier = classifier
+        self._splitter = StreamEnvelopeSplitter()
+        self._assembler = SemanticAssembler()
+        self.prefix = ""
+        self.voice = ""
+        self.emitted = 0
+        self.sealed = not gate_segments
+        self.last_gate: str | None = None
+
+    def feed(self, text: str) -> None:
+        """Take one delta; expose every sentence it completes until sealed."""
+        safe = self._splitter.feed(text)
+        self.voice += safe
+        self._assemble(safe)
+
+    def finish(self) -> EnvelopeTail:
+        """Flush the held tail and the last fragment; return the envelope's rest."""
+        tail = self._splitter.finish()
+        self.voice += tail.voice_tail
+        self._assemble(tail.voice_tail)
+        self._assemble("", final=True)
+        return tail
+
+    def _assemble(self, text: str, *, final: bool = False) -> None:
+        if self.sealed or self._assembler.blocked_reason is not None:
+            return
+        candidates = self._assembler.finish() if final else self._assembler.feed(text)
+        for candidate in candidates:
+            if not self._admit(candidate):
+                return
+
+    def _admit(self, candidate: SemanticCandidate) -> bool:
+        route = self._route
+        with route.segment_guard():
+            outcome = stream_emission_gate(
+                self._ctx.conn,
+                policy=route.policy,
+                context=route.context,
+                segment=candidate,
+                sequence=self.emitted,
+                phase="final",
+                channel="both",
+                classifier=self._classifier,
+                committed_event_bus=route.committed_event_bus,
+            )
+            self._scratch.events.append(outcome.event)
+            self.last_gate = outcome.event.event_uid
+            if outcome.permit is None:
+                self.sealed = True
+                return False
+            self._scratch.events.append(route.emit_segment(outcome.permit, candidate.text))
+        self.prefix += candidate.text
+        self.emitted += 1
+        return True
+
+
+def _stream_routine_text(
     ctx: DecideContext,
     route: RoutineStreamRoute,
     messages: list[dict[str, Any]],
@@ -1866,10 +1976,8 @@ def _stream_routine_text(  # noqa: C901 - one provider stream feeding one gate l
 ) -> _StreamedText:
     """Stream one no-tool answer, permitting and exposing sentences until sealed.
 
-    Every delta passes the envelope splitter first, so the assembler and the
-    durable chunks only ever see tag-free voice text. A denied candidate seals
-    the run (D2 rule 2); everything after the exposed prefix is the suffix the
-    finalizer judges. ``gate_segments=False`` regenerates a suffix only.
+    Everything after the exposed prefix is the suffix the finalizer judges.
+    ``gate_segments=False`` regenerates a suffix only.
     """
     _check_response_cancelled(ctx, "before provider request")
     if ctx.request_admission is not None:
@@ -1889,55 +1997,15 @@ def _stream_routine_text(  # noqa: C901 - one provider stream feeding one gate l
             turn_id=scratch.turn_id,
         ),
     )
-    splitter = StreamEnvelopeSplitter()
-    assembler = SemanticAssembler()
-    classifier = SegmentRiskClassifier()
-    prefix = ""
-    voice = ""
-    emitted = 0
-    sealed = not gate_segments
-    last_gate: str | None = None
+    speaker = _SegmentSpeaker(
+        ctx, route, scratch, classifier=SegmentRiskClassifier(), gate_segments=gate_segments,
+    )
     failed: LLMResponseFailed | None = None
-
-    def admit(candidate: SemanticCandidate) -> bool:
-        nonlocal emitted, last_gate, prefix, sealed
-        with route.segment_guard():
-            outcome = stream_emission_gate(
-                ctx.conn,
-                policy=route.policy,
-                context=route.context,
-                segment=candidate,
-                sequence=emitted,
-                phase="final",
-                channel="both",
-                classifier=classifier,
-                committed_event_bus=route.committed_event_bus,
-            )
-            scratch.events.append(outcome.event)
-            last_gate = outcome.event.event_uid
-            if outcome.permit is None:
-                sealed = True
-                return False
-            scratch.events.append(route.emit_segment(outcome.permit, candidate.text))
-        prefix += candidate.text
-        emitted += 1
-        return True
-
-    def assemble(text: str, *, final: bool = False) -> None:
-        if sealed or assembler.blocked_reason is not None:
-            return
-        candidates = assembler.finish() if final else assembler.feed(text)
-        for candidate in candidates:
-            if not admit(candidate):
-                return
-
     try:
         for event in stream:
             _check_response_cancelled(ctx, "while streaming")
             if isinstance(event, LLMTextDelta):
-                safe = splitter.feed(event.text)
-                voice += safe
-                assemble(safe)
+                speaker.feed(event.text)
             elif isinstance(event, LLMResponseFailed):
                 failed = event
     finally:
@@ -1946,17 +2014,14 @@ def _stream_routine_text(  # noqa: C901 - one provider stream feeding one gate l
     if failed is not None:
         message = f"routine stream failed before completion ({failed.error_code})"
         raise RuntimeError(message)
-    tail = splitter.finish()
-    voice += tail.voice_tail
-    assemble(tail.voice_tail)
-    assemble("", final=True)
+    tail = speaker.finish()
     return _StreamedText(
-        prefix=prefix,
-        suffix=voice[len(prefix) :],
+        prefix=speaker.prefix,
+        suffix=speaker.voice[len(speaker.prefix) :],
         document=tail.document,
         enveloped=tail.enveloped,
-        emitted_segments=emitted,
-        last_gate_event_uid=last_gate,
+        emitted_segments=speaker.emitted,
+        last_gate_event_uid=speaker.last_gate,
     )
 
 
@@ -2098,6 +2163,227 @@ def _run_routine_stream(
         route="casual_or_explanatory",
         emitted_segments=streamed.emitted_segments,
         last_gate_event_uid=streamed.last_gate_event_uid,
+    )
+
+
+# --- The spoken route (docs/plans/speak-as-written-proposal.md) -------------
+
+
+@dataclass
+class _SpokenReply:
+    """One streamed request of a spoken turn, by phase, and its calls.
+
+    ``text`` is the ``commentary`` line (``_assistant_message_for`` echoes it);
+    ``answer`` the rest, which went to the speaker as it came.
+    """
+
+    text: str = ""
+    answer: str = ""
+    tool_calls: list[LLMToolCallCompleted] = field(default_factory=list)
+
+
+def _stream_spoken_request(  # noqa: PLR0913 - one request plus the turn's seams
+    ctx: DecideContext,
+    route: RoutineStreamRoute,
+    speaker: _SegmentSpeaker,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None,
+    scratch: _Scratch,
+) -> _SpokenReply:
+    """Stream one request; answer text reaches the speaker as it arrives."""
+    _check_response_cancelled(ctx, "before provider request")
+    if ctx.request_admission is not None:
+        ctx.request_admission("decision")
+    cost_recorder = CostRecorder(
+        ctx.conn,
+        pricing_table=_pricing_table(),
+        committed_event_bus=route.committed_event_bus,
+    )
+    stream = route.open_stream(
+        cost_recorder.stream_events(
+            ctx.llm_client,
+            messages=messages,
+            system=ctx.system_prompt,
+            tools=tools,
+            kind="decision",
+            turn_id=scratch.turn_id,
+            responses=True,
+        ),
+    )
+    reply = _SpokenReply()
+    failed: LLMResponseFailed | None = None
+    try:
+        for event in stream:
+            _check_response_cancelled(ctx, "while streaming")
+            if isinstance(event, LLMTextDelta) and event.phase == "commentary":
+                reply.text += event.text
+            elif isinstance(event, LLMTextDelta):
+                if not reply.answer:
+                    record_realtime_trace("spoken_answer_first_text", turn_id=scratch.turn_id)
+                reply.answer += event.text
+                speaker.feed(event.text)
+            elif isinstance(event, LLMToolCallCompleted):
+                reply.tool_calls.append(event)
+            elif isinstance(event, LLMResponseFailed):
+                failed = event
+    finally:
+        stream.close()
+    _check_response_cancelled(ctx, "after provider stream")
+    if failed is not None:
+        message = f"spoken stream failed before completion ({failed.error_code})"
+        raise RuntimeError(message)
+    return reply
+
+
+def _run_spoken_stream(  # noqa: C901 - one request loop: calls, one continuation, the budget
+    packet: SituationPacket,
+    policy: EffectivePolicy,
+    ctx: DecideContext,
+    route: RoutineStreamRoute,
+    scratch: _Scratch,
+) -> DecideResult:
+    """A turn Allen spoke: every request streams and the answer is spoken as written.
+
+    Answer text goes through the envelope, assembler and stream gate under the
+    spoken rule version. The ``commentary`` line before a call rides that
+    call's ``action.proposed`` for the acknowledge to speak at dispatch. A
+    response that ends on such a line with no call gets one more request.
+    """
+    messages = _loop_messages(packet, ctx)
+    llm_surface = surface_for(policy, ctx.tool_registry, CallerPrincipal.JARVIS_LLM)
+    speaker = _SegmentSpeaker(
+        ctx, route, scratch, classifier=SegmentRiskClassifier(rule_version=SPOKEN_RULE_VERSION),
+    )
+    line: str | None = None
+    continued = False
+    for iteration in range(1, ctx.max_tool_iterations + 1):
+        tools = tool_definitions_for_llm(
+            [
+                _tool_to_dict(t)
+                for t in llm_surface
+                if not t.deferred or t.name in scratch.loaded_tools
+            ]
+        )
+        with realtime_trace_context(
+            turn_id=scratch.turn_id, request_kind="decision", iteration=iteration,
+        ):
+            reply = _stream_spoken_request(ctx, route, speaker, messages, tools, scratch)
+        line = reply.text.strip() or line
+        if reply.tool_calls:
+            message = _assistant_message_for(reply)
+            if reply.text.strip():
+                message["phase"] = "commentary"
+            messages.append(message)
+            for tool_call in reply.tool_calls:
+                _check_response_cancelled(ctx, "before tool proposal")
+                _dispatch_one_tool_call(
+                    tool_call=tool_call,
+                    policy=policy,
+                    ctx=ctx,
+                    scratch=scratch,
+                    messages=messages,
+                    lead_in=line,
+                )
+            line = None
+            ending = _turn_ending_draft(scratch, reply.text)
+            if ending is not None:
+                return _finish_spoken(packet, ctx, route, speaker, scratch, draft=ending)
+            packet = assemble_packet(packet.trigger_event, ctx.conn)
+            continue
+        if reply.text.strip() and not reply.answer.strip() and not continued:
+            # It said what it would do and stopped: one more request to do it.
+            messages.append({"role": "assistant", "content": reply.text, "phase": "commentary"})
+            continued = True
+            continue
+        if not reply.answer.strip():
+            speaker.feed(reply.text)  # its line was all it said, so that is the answer
+        return _finish_spoken(packet, ctx, route, speaker, scratch)
+
+    # Tool budget spent (ADR 0030): one more request, without tools, for the answer.
+    LOGGER.warning("decide(): spoken loop hit max_iterations=%d", ctx.max_tool_iterations)
+    messages.append({"role": "user", "content": _TOOL_BUDGET_ANSWER_PROMPT})
+    try:
+        reply = _stream_spoken_request(ctx, route, speaker, messages, None, scratch)
+    except ResponseCancelledError:
+        raise
+    except Exception:
+        LOGGER.exception("decide(): answer request after the tool budget failed")
+        reply = _SpokenReply()
+    if not (reply.answer + reply.text).strip():
+        speaker.feed(t("tool_budget.exhausted"))
+    elif not reply.answer.strip():
+        speaker.feed(reply.text)
+    return _finish_spoken(packet, ctx, route, speaker, scratch)
+
+
+def _finish_spoken(  # noqa: PLR0913 - the turn's handles plus the ask that may end it
+    packet: SituationPacket,
+    ctx: DecideContext,
+    route: RoutineStreamRoute,
+    speaker: _SegmentSpeaker,
+    scratch: _Scratch,
+    *,
+    draft: str | None = None,
+) -> DecideResult:
+    """Close a spoken turn: full text when nothing was exposed, else the stream's plan.
+
+    ``draft`` is a confirmation ask that ended the turn. Nothing is rewritten:
+    with no sentence exposed the text becomes an ordinary full-text answer on
+    this run; otherwise the unexposed rest is judged as the stream's suffix.
+    """
+    tail = speaker.finish()
+    suffix = speaker.voice[len(speaker.prefix) :]
+    if speaker.emitted == 0:
+        if draft is None:
+            draft = compose_envelope(suffix, tail.document) if tail.enveloped else suffix
+        return _finalize_response(draft, packet, ctx, scratch)
+    if draft is not None:
+        suffix = f"{suffix}\n\n{draft}" if suffix.strip() else f"\n\n{draft}"
+    attention = attention_policy(packet)
+    response_id = route.context.response_id
+    outcome: ResponsePlan | StreamFinalizationFailure
+    if attention != route.context.attention_channel:
+        outcome = StreamFinalizationFailure(
+            response_id,
+            "policy_mismatch",
+            committed_text_prefix(ctx.conn, response_id).prefix_hash,
+            ("attention_channel_differs_from_pinned_policy",),
+        )
+    else:
+        outcome = finalize_stream(
+            ctx.conn,
+            committed_prefix=speaker.prefix,
+            uncommitted_suffix=suffix,
+            policy=route.policy,
+            context=route.context,
+        )
+    if isinstance(outcome, StreamFinalizationFailure):
+        return DecideResult(
+            response_plan=None,
+            events_emitted=tuple(scratch.events),
+            turn_id=scratch.turn_id,
+            attention_channel=attention,
+            route="spoken",
+            emitted_segments=speaker.emitted,
+            last_gate_event_uid=speaker.last_gate,
+            stream_failure=outcome,
+        )
+    plan = outcome
+    if tail.enveloped:
+        text = compose_envelope(plan.text, tail.document)
+        plan = replace(
+            plan,
+            text=text,
+            response_hash=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        )
+    return DecideResult(
+        response_plan=plan,
+        events_emitted=tuple(scratch.events),
+        turn_id=scratch.turn_id,
+        attention_channel=attention,
+        route="spoken",
+        emitted_segments=speaker.emitted,
+        last_gate_event_uid=speaker.last_gate,
     )
 
 

@@ -889,3 +889,179 @@ def test_openai_stream_sends_preset_extra_body_on_the_wire(
             assert "extra_body" not in peer.body
 
     asyncio.run(scenario())
+
+
+def _responses_frames(*, answer: str | None = None) -> list[dict[str, Any]]:
+    """A /v1/responses stream: a commentary line then a call, or one final answer."""
+    response = {
+        "id": "provider-response", "object": "response", "created_at": 1,
+        "model": "fixture-model", "output": [], "tools": [],
+        "tool_choice": "auto", "parallel_tool_calls": True,
+    }
+    frames: list[dict[str, Any]] = [
+        {"type": "response.created", "response": {**response, "status": "in_progress"}},
+    ]
+
+    def message(index: int, item_id: str, phase: str, text: str) -> list[dict[str, Any]]:
+        item = {"type": "message", "id": item_id, "role": "assistant", "phase": phase}
+        return [
+            {"type": "response.output_item.added", "output_index": index,
+             "item": {**item, "status": "in_progress", "content": []}},
+            {"type": "response.content_part.added", "output_index": index, "item_id": item_id,
+             "content_index": 0, "part": {"type": "output_text", "text": "", "annotations": []}},
+            {"type": "response.output_text.delta", "output_index": index, "item_id": item_id,
+             "content_index": 0, "delta": text, "logprobs": []},
+            {"type": "response.output_text.done", "output_index": index, "item_id": item_id,
+             "content_index": 0, "text": text, "logprobs": []},
+            {"type": "response.output_item.done", "output_index": index,
+             "item": {**item, "status": "completed", "content": [
+                 {"type": "output_text", "text": text, "annotations": []},
+             ]}},
+        ]
+
+    if answer is not None:
+        frames += message(0, "msg-a", "final_answer", answer)
+    else:
+        call = {"type": "function_call", "id": "fc-a", "call_id": "call-a", "name": "lookup"}
+        frames += [
+            *message(0, "msg-a", "commentary", "I'll look that up."),
+            {"type": "response.output_item.added", "output_index": 1,
+             "item": {**call, "arguments": "", "status": "in_progress"}},
+            {"type": "response.function_call_arguments.delta", "output_index": 1,
+             "item_id": "fc-a", "delta": '{"q":'},
+            {"type": "response.function_call_arguments.delta", "output_index": 1,
+             "item_id": "fc-a", "delta": '"ice"}'},
+            {"type": "response.function_call_arguments.done", "output_index": 1,
+             "item_id": "fc-a", "arguments": '{"q":"ice"}'},
+            {"type": "response.output_item.done", "output_index": 1,
+             "item": {**call, "arguments": '{"q":"ice"}', "status": "completed"}},
+        ]
+    usage = {
+        "input_tokens": 12, "output_tokens": 6, "total_tokens": 18,
+        "input_tokens_details": {"cached_tokens": 4},
+        "output_tokens_details": {"reasoning_tokens": 0},
+    }
+    frames.append({
+        "type": "response.completed",
+        "response": {**response, "status": "completed", "usage": usage},
+    })
+    return [{**frame, "sequence_number": index} for index, frame in enumerate(frames)]
+
+
+def test_responses_stream_labels_text_and_assembles_the_call(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """/v1/responses: the line before a call is commentary, the call completes, usage is final."""
+    monkeypatch.setenv("TYPED_STREAM_FIXTURE_KEY", "synthetic")
+
+    async def scenario() -> None:
+        peer = _SSE(_responses_frames())
+        conn = open_event_log(tmp_path / "events.db")
+        try:
+            async with peer.running() as url:
+                handle = CostRecorder(conn).stream_events(
+                    _client("openai", url),
+                    messages=[
+                        {"role": "user", "content": "how cold is ice"},
+                        {"role": "assistant", "content": "Checking.", "phase": "commentary"},
+                    ],
+                    system="synthetic system",
+                    tools=[{"name": "lookup", "description": "Look up.", "input_schema": {
+                        "type": "object", "properties": {"q": {"type": "string"}},
+                    }}],
+                    kind="decision",
+                    turn_id="typed-responses",
+                    responses=True,
+                )
+                events = [event async for event in handle.events()]
+        finally:
+            conn.close()
+        texts = [event for event in events if isinstance(event, LLMTextDelta)]
+        assert [(event.text, event.phase) for event in texts] == [
+            ("I'll look that up.", "commentary"),
+        ]
+        calls = [event for event in events if isinstance(event, LLMToolCallCompleted)]
+        assert [(e.call_id, e.name, json.loads(e.arguments_json)) for e in calls] == [
+            ("call-a", "lookup", {"q": "ice"}),
+        ]
+        usage = next(event for event in events if isinstance(event, LLMUsageCompleted))
+        assert (usage.input_tokens, usage.output_tokens, usage.cache_read_tokens) == (12, 6, 4)
+        assert usage.usage_status == "provider_final"
+        assert isinstance(events[-1], LLMResponseCompleted)
+        assert events[-1].finish_reason == "tool_calls"
+        assert peer.path == "/v1/responses"
+        assert peer.body["instructions"] == "synthetic system"
+        assert peer.body["input"][-1] == {
+            "role": "assistant", "content": "Checking.", "phase": "commentary",
+        }
+        assert peer.body["tools"][0]["name"] == "lookup"
+        assert peer.body["store"] is False
+
+    asyncio.run(scenario())
+
+
+def test_responses_stream_answer_is_final_and_ends_without_calls(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A final answer streams as ``final_answer`` text and finishes with ``stop``."""
+    monkeypatch.setenv("TYPED_STREAM_FIXTURE_KEY", "synthetic")
+
+    async def scenario() -> None:
+        conn = open_event_log(tmp_path / "events.db")
+        try:
+            async with _SSE(_responses_frames(answer="Ice absorbs heat.")).running() as url:
+                handle = CostRecorder(conn).stream_events(
+                    _client("openai", url),
+                    messages=[{"role": "user", "content": "q"}],
+                    system="s",
+                    kind="decision",
+                    turn_id="typed-responses-answer",
+                    responses=True,
+                )
+                events = [event async for event in handle.events()]
+            costs = _costs(conn)
+        finally:
+            conn.close()
+        assert [(e.text, e.phase) for e in events if isinstance(e, LLMTextDelta)] == [
+            ("Ice absorbs heat.", "final_answer"),
+        ]
+        assert not any(isinstance(event, LLMToolCallStarted) for event in events)
+        assert isinstance(events[-1], LLMResponseCompleted)
+        assert events[-1].finish_reason == "stop"
+        assert [cost["disposition"] for cost in costs] == ["completed"]
+
+    asyncio.run(scenario())
+
+
+def test_responses_stream_failure_completes_no_call(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A ``response.failed`` event fails the stream; the half-written call never completes."""
+    monkeypatch.setenv("TYPED_STREAM_FIXTURE_KEY", "synthetic")
+    frames = _responses_frames()
+    frames[-1] = {"type": "response.failed", "sequence_number": len(frames) - 1,
+                  "response": {**frames[-1]["response"], "status": "failed"}}
+
+    async def scenario() -> None:
+        conn = open_event_log(tmp_path / "events.db")
+        try:
+            async with _SSE(frames).running() as url:
+                handle = CostRecorder(conn).stream_events(
+                    _client("openai", url),
+                    messages=[{"role": "user", "content": "q"}],
+                    system="s",
+                    kind="decision",
+                    turn_id="typed-responses-failed",
+                    responses=True,
+                )
+                events = [event async for event in handle.events()]
+        finally:
+            conn.close()
+        assert not any(isinstance(event, LLMToolCallCompleted) for event in events)
+        assert isinstance(events[-1], LLMResponseFailed)
+        assert events[-1].error_code == "provider_response_failed"
+
+    asyncio.run(scenario())
