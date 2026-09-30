@@ -41,7 +41,7 @@ class _StubRuntimePaths:
 
 
 class _ToolHungryClient:
-    """Proposes get_current_time on every request that offers tools; answers otherwise."""
+    """Proposes list_memos on every request that offers tools; answers otherwise."""
 
     def __init__(self, *, answer: str | None, fail_without_tools: bool = False) -> None:
         self._answer = answer
@@ -76,7 +76,7 @@ class _ToolHungryClient:
         self.calls.append({"tools": tools, "tool_choice": tool_choice, "last": messages[-1]})
         if tools:
             call = ToolCall(
-                call_id=f"call{len(self.calls)}", name="get_current_time", arguments_json="{}"
+                call_id=f"call{len(self.calls)}", name="list_memos", arguments_json="{}"
             )
             return self._result(None, (call,))
         if self._fail:
