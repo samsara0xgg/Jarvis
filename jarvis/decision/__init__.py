@@ -44,7 +44,7 @@ import re
 import time
 import unicodedata
 import uuid
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
@@ -115,11 +115,13 @@ if TYPE_CHECKING:
 
     from jarvis.decision.confirm_grammar import ConfirmGrammarTable
     from jarvis.decision.llm import ChatResult, LLMClient
+    from jarvis.decision.llm_stream import LLMStreamHandle
     from jarvis.decision.pre_route import RoutineStreamRoute, StreamCorrection
     from jarvis.decision.stream_envelope import EnvelopeTail
     from jarvis.decision.stream_sentences import SemanticCandidate
     from jarvis.decision.tier0 import Tier0Hit, Tier0Table
     from jarvis.shared import AuthorizationLease, RiskLevel
+    from jarvis.state.committed_event_bus import CommittedEventBus
     from jarvis.state.conversation import PresentationRecord
     from jarvis.state.projections import PendingConfirmationSlot
 
@@ -1082,13 +1084,7 @@ def _run_tool_use_loop(
         iteration += 1
         # ADR 0034: the menu is rebuilt per call, so a tool a search loaded is
         # callable from the next call on; only this caller's surface can load.
-        tools = tool_definitions_for_llm(
-            [
-                _tool_to_dict(t)
-                for t in llm_surface
-                if not t.deferred or t.name in scratch.loaded_tools
-            ]
-        )
+        tools = _tool_menu(llm_surface, scratch.loaded_tools)
         record_realtime_trace(
             "llm_chat_call_started_upper_bound",
             turn_id=scratch.turn_id,
@@ -2178,6 +2174,57 @@ def _run_routine_stream(
     )
 
 
+# --- Prefix warm ------------------------------------------------------------
+
+# Allen's next turn sends this history, then his words. OpenAI's cache
+# answered each turn's first request only up to the system prompt and tools
+# (~6k of ~45k tokens, 2026-09-30): a cached prompt is found where an earlier
+# request ended, and no earlier request ended where the history does (each
+# turn's own words carried its state lines, and its tool calls came after).
+# One request that ends exactly there, capped at the provider's minimum output,
+# is that earlier request.
+PREFIX_WARM_MAX_OUTPUT_TOKENS: Final[int] = 16
+
+
+def open_prefix_warm(  # noqa: PLR0913 — the next request's whole prefix, plus its accounting.
+    conn: sqlite3.Connection,
+    *,
+    llm_client: LLMClient,
+    system_prompt: str,
+    history: Sequence[Mapping[str, str]],
+    tool_registry: ToolRegistryLike,
+    responses: bool,
+    committed_event_bus: CommittedEventBus | None = None,
+) -> LLMStreamHandle | None:
+    """The next turn's first request up to its new message, as a request of its own.
+
+    Same system prompt, same tools and the same history messages as
+    :func:`_loop_messages` puts ahead of the next user message. A history that
+    ends on Allen's unanswered words is sent without them: the next turn folds
+    them into its own message. ``None`` when there is no history to send.
+    """
+    messages = [dict(turn) for turn in history]
+    if messages and messages[-1]["role"] == "user":
+        messages.pop()
+    if not messages:
+        return None
+    policy = effective_policy(_allowed_tool_surface(tool_registry))
+    tools = _tool_menu(surface_for(policy, tool_registry, CallerPrincipal.JARVIS_LLM), ())
+    cost_recorder = CostRecorder(
+        conn, pricing_table=_pricing_table(), committed_event_bus=committed_event_bus,
+    )
+    return cost_recorder.stream_events(
+        llm_client,
+        messages=messages,
+        system=system_prompt,
+        tools=tools,
+        kind="prefix_warm",
+        turn_id=None,
+        responses=responses,
+        max_output_tokens=PREFIX_WARM_MAX_OUTPUT_TOKENS,
+    )
+
+
 # --- The spoken route (docs/plans/speak-as-written-proposal.md) -------------
 
 
@@ -2275,13 +2322,7 @@ def _run_spoken_stream(  # noqa: C901 - one request loop: calls, one continuatio
     line: str | None = None
     continued = False
     for iteration in range(1, ctx.max_tool_iterations + 1):
-        tools = tool_definitions_for_llm(
-            [
-                _tool_to_dict(t)
-                for t in llm_surface
-                if not t.deferred or t.name in scratch.loaded_tools
-            ]
-        )
+        tools = _tool_menu(llm_surface, scratch.loaded_tools)
         with realtime_trace_context(
             turn_id=scratch.turn_id, request_kind="decision", iteration=iteration,
         ):
@@ -3450,6 +3491,15 @@ _CARD_NOTE: Final = (
 )
 
 
+def _tool_menu(
+    llm_surface: Sequence[ToolDefinitionLike], loaded: Collection[str],
+) -> list[dict[str, Any]]:
+    """One request's tools: the surface without the deferred ones not yet loaded."""
+    return tool_definitions_for_llm(
+        [_tool_to_dict(t) for t in llm_surface if not t.deferred or t.name in loaded],
+    )
+
+
 def _tool_to_dict(tool_def: ToolDefinitionLike) -> dict[str, Any]:
     """Project a ToolDefinitionLike into a dict for ``intent.build_messages``.
 
@@ -3526,6 +3576,7 @@ def _latest_event_uid_of_type(
 
 __all__ = [
     "DEFAULT_MAX_TOOL_ITERATIONS",
+    "PREFIX_WARM_MAX_OUTPUT_TOKENS",
     "AttentionChannel",
     "DecideContext",
     "DecideResult",
@@ -3545,6 +3596,7 @@ __all__ = [
     "decide",
     "effective_policy",
     "emit_turn_ended",
+    "open_prefix_warm",
     "pre_action_gate",
     "pre_emit_gate",
 ]

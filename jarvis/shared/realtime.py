@@ -98,6 +98,11 @@ class Wave4ResponseFlags:
     independent_response_cancel: bool = False
     routine_streaming: bool = False
     spoken_streaming: bool = False
+    prefix_warm: bool = False
+    """``prefix_warm.enabled``: after each turn, one capped request with the
+    next turn's prompt up to its new message, so OpenAI's cache covers the
+    history (``jarvis.decision.open_prefix_warm``). Needs the run lifecycle's
+    per-run client; without it the switch does nothing."""
     lifecycle_commentary: bool = False
     """ADR-0008 D6 (Step 5, ``realtime.commentary.enabled``).
 
@@ -125,11 +130,13 @@ class Wave4ResponseFlags:
         values = {} if raw is None else raw
         routine = values.get("routine_streaming")
         spoken = values.get("spoken_streaming")
+        warm = values.get("prefix_warm")
         return cls(
             response_run_lifecycle=values.get("response_run_lifecycle") is True,
             independent_response_cancel=values.get("independent_response_cancel") is True,
             routine_streaming=isinstance(routine, Mapping) and routine.get("enabled") is True,
             spoken_streaming=isinstance(spoken, Mapping) and spoken.get("enabled") is True,
+            prefix_warm=isinstance(warm, Mapping) and warm.get("enabled") is True,
             lifecycle_commentary=commentary is not None and commentary.get("enabled") is True,
         )
 

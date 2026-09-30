@@ -464,6 +464,15 @@ realtime:
     # one warning, without it.
     spoken_streaming:
       enabled: false
+    # After each turn, send the next turn's prompt up to its new message as a
+    # request of its own (16 output tokens), so the next turn's first request
+    # finds the whole history cached. Without it that request found only the
+    # system prompt and tools (~6k of ~45k tokens, 2026-09-30): OpenAI finds a
+    # cached prompt where an earlier request ended, and none ended there.
+    # Costs one mostly cached request per turn and counts against the
+    # per-minute token limit. OpenAI presets only.
+    prefix_warm:
+      enabled: false
   # ADR-0008 Step 5 (D6).  With commentary on, a user-originated turn speaks
   # one short acknowledge when it first dispatches a tool that works on
   # Allen's request (not tool_search, the clock, memory or a card), no earlier

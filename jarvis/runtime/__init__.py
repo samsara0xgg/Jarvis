@@ -30,6 +30,7 @@ imported by ``jarvis.cli`` only.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import contextlib
 import html
@@ -41,6 +42,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import uuid
 import webbrowser
@@ -62,6 +64,7 @@ from jarvis.decision import (
     ToolRegistryLike,
     decide,
     emit_turn_ended,
+    open_prefix_warm,
 )
 from jarvis.decision.confirm_grammar import ConfirmGrammarConfigError, load_confirm_grammar
 from jarvis.decision.cost_guard import CostRecorder
@@ -191,6 +194,7 @@ if TYPE_CHECKING:
 
     from jarvis.decision import ResponsePlan
     from jarvis.decision.confirm_grammar import ConfirmGrammarTable
+    from jarvis.decision.llm_stream import LLMStreamHandle
     from jarvis.decision.tier0 import Tier0Table
     from jarvis.shared.realtime_trace import TraceValue
 
@@ -2010,6 +2014,50 @@ def _labels_phases(base_url: str | None) -> bool:
     return "api.openai.com" in (base_url or "api.openai.com")
 
 
+def _warm_next_prefix(
+    runtime: JarvisRuntime,
+    memory: MemorySettings,
+    *,
+    llm_client: LLMClient,
+    system_prompt: str,
+    responses: bool,
+) -> None:
+    """Send the next turn's prompt prefix in the background (``open_prefix_warm``).
+
+    The history is read the way the next turn will read it, now that this
+    turn's rows are in. Its own thread and Event Log connection: the answer is
+    already on its way and nothing waits for this.
+    """
+
+    async def _drain(handle: LLMStreamHandle) -> None:
+        async for _event in handle.events():
+            pass
+
+    def _run() -> None:
+        try:
+            history = render_context(
+                memory.db_path, exclude_id="", since=runtime.session.history_since,
+            ).history
+            with contextlib.closing(
+                open_runtime_event_log(runtime.runtime_paths.event_log),
+            ) as conn:
+                handle = open_prefix_warm(
+                    conn,
+                    llm_client=llm_client,
+                    system_prompt=system_prompt,
+                    history=history,
+                    tool_registry=cast("ToolRegistryLike", runtime.tool_registry),
+                    responses=responses,
+                    committed_event_bus=runtime.committed_event_bus,
+                )
+                if handle is not None:
+                    asyncio.run(_drain(handle))
+        except Exception:  # noqa: BLE001 — a failed warm-up costs only the cache it tried to fill
+            LOGGER.warning("prefix warm failed", exc_info=True)
+
+    threading.Thread(target=_run, name="jarvis-prefix-warm", daemon=True).start()
+
+
 def _start_drive_turn_response(
     runtime: JarvisRuntime,
     *,
@@ -3243,6 +3291,22 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
                     or render_event.payload.get("text", ""),
                 ),
             )
+            if (
+                runtime.response_flags.prefix_warm
+                and run is not None
+                and run.request_client.provider == "openai"
+                and user_intent_event.payload.get("channel") != "gpt_live"
+            ):
+                _warm_next_prefix(
+                    runtime,
+                    memory,
+                    llm_client=run.request_client,
+                    system_prompt=decide_ctx.system_prompt,
+                    responses=(
+                        (stream_route is not None and stream_route.context.route == "spoken")
+                        or run.request_client.preset_snapshot.api == "responses"
+                    ),
+                )
         record_realtime_trace(
             "response_completed",
             turn_id=effective_turn_id,

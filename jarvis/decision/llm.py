@@ -564,28 +564,31 @@ class LLMClient:
             return self._chat_stream_openai(messages=messages, system=system, tools=tools)
         return self._chat_stream_anthropic(messages=messages, system=system, tools=tools)
 
-    def stream_events(
+    def stream_events(  # noqa: PLR0913 — the request, its settlement owner and two per-request knobs
         self, *, messages: list[dict[str, Any]], system: str,
         tools: list[dict[str, Any]] | None = None,
         on_settled: Callable[[StreamDisposition], object],
         responses: bool = False,
+        max_output_tokens: int | None = None,
     ) -> LLMStreamHandle:
         """Prepare an isolated typed stream; L3 must supply its cost settlement owner.
 
         ``responses`` streams an OpenAI request through /v1/responses, whose
         text carries each message's phase; Anthropic ignores it.
+        ``max_output_tokens`` caps this request below the preset's limit.
         """
         request_id = _new_llm_request_id()
         responses = responses and self._provider == "openai"
         # Capture everything before returning the lazy source. Later preset or
         # caller-message mutations cannot redirect this request or its payload.
         options = self._stream_options()
+        max_tokens = self._max_tokens if max_output_tokens is None else max_output_tokens
         body: dict[str, Any] = {"model": self._model, "stream": True}
         if responses:
             body.update({
                 "instructions": system,
                 "input": _messages_to_responses_input(copy.deepcopy(messages)),
-                "max_output_tokens": self._max_tokens,
+                "max_output_tokens": max_tokens,
                 "store": False,
             })
             if tools:
@@ -599,7 +602,7 @@ class LLMClient:
                 body["extra_body"] = copy.deepcopy(self._extra_body)
         elif self._provider == "openai":
             body.update({
-                _openai_token_key(self._base_url): self._max_tokens,
+                _openai_token_key(self._base_url): max_tokens,
                 "messages": [{"role": "system", "content": system}, *copy.deepcopy(messages)],
                 "stream_options": {"include_usage": True},
             })
@@ -611,7 +614,7 @@ class LLMClient:
                 body["extra_body"] = copy.deepcopy(self._extra_body)
         else:
             body.update({
-                "max_tokens": self._max_tokens, "system": system,
+                "max_tokens": max_tokens, "system": system,
                 "messages": copy.deepcopy(messages),
             })
             if tools:

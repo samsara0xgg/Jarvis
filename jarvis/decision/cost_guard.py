@@ -322,7 +322,7 @@ class CostRecorder:
     def stream_events(  # noqa: PLR0913 — request plus audit correlation
         self, client: LLMClient, *, messages: list[dict[str, Any]], system: str,
         tools: list[dict[str, Any]] | None = None, kind: str, turn_id: str | None,
-        run_id: str | None = None, responses: bool = False,
+        run_id: str | None = None, responses: bool = False, max_output_tokens: int | None = None,
     ) -> LLMStreamHandle:
         """Bind exactly-once accounting before any typed-stream network I/O."""
         provider, model = client.provider, client.model
@@ -350,7 +350,7 @@ class CostRecorder:
 
         return client.stream_events(
             messages=messages, system=system, tools=tools, on_settled=settled,
-            responses=responses,
+            responses=responses, max_output_tokens=max_output_tokens,
         )
 
 
