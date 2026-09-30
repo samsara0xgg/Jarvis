@@ -102,8 +102,8 @@ export type Task = { id: string; kind: string; what: string; st: 'run' | 'done' 
 export type Peek = { kind: 'md' | 'text' | 'web' | 'media' | 'dir' | 'quicklook'; abs: string; url?: string; text?: string; diff?: Diff; add?: number; del?: number;
   line?: number; cut?: boolean; entries?: { name: string; dir: boolean }[]; size?: number; bytes?: boolean; pages?: number; hunks?: number[] };
 // What a session changed against what landing would compare (GET /sessions/{id}/changes): per file its lines added and
-// removed and how it changed (M changed, A new, D deleted, R renamed, ? not tracked yet).
-export type Change = { path: string; add: number; del: number; st: 'M' | 'A' | 'D' | 'R' | '?'; from?: string };
+// removed and how it changed (M changed, A new, D deleted, R renamed, ? not tracked yet); `bin`: git counts no lines.
+export type Change = { path: string; add: number; del: number; st: 'M' | 'A' | 'D' | 'R' | '?'; from?: string; bin?: boolean };
 // A session started outside the window (a terminal, Codex's app) that it can take in (GET /import).
 export type Outside = { agent: Agent; id: string; title: string; cwd: string; updated: number; branch?: string; recent?: boolean };
 // One of them running now, as the daemon's board of Claude Code sessions sees it (GET /import/live, ADR 0049): what it
