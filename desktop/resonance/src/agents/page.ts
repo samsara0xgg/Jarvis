@@ -17,6 +17,7 @@ import * as usage from './workbench/usage';
 import { mountViewer } from './viewer';
 import { mountKeys } from './keys';
 import { mountSlip } from './slip';
+import { mountHist } from './hist';
 import './agents.css';
 import './exposure/exposure.css';
 
@@ -1192,6 +1193,7 @@ features.push(mountViewer(ctx));
 features.push(mountKeys(ctx));
 features.push(mountStopped(ctx));
 features.push(mountSlip(ctx));
+features.push(mountHist(ctx));
 
 // ---------- one loop: her every frame, moving marks at 30 fps, nothing while the window is out of sight ----------
 let lastT = performance.now(), lastMk = 0, lastAge = 0;
