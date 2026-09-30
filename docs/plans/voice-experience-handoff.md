@@ -58,6 +58,7 @@ Allen 的要求：严格审计 Jarvis 的语音交互系统（全双工对话 + 
 | `1218aea` | （第 5 条）没出声就被放掉的回答（排队中被停、被取代、还在缓冲时 run 结束）写一条 `surface.speech_dropped`，下一轮状态行说它「一个字没说出口、只显示在屏幕上」。提案 `docs/plans/unspoken-answer-proposal.md` 等 Allen 批（批后 ADR 0101） | `test_previous_answer_line.py` 2 例 |
 | `b95d0ec` | （第 6 条剩下的）TTS 中途失败时先放一声短提示音再停，不再无声无提示 | `test_wave2_streaming_media.py` 1 例 |
 | `6d9268b` | 慢结果（轮次并发）：开关 `realtime.response.slow_results`，默认关。新一轮被告知前面的问题另一轮还在答、只答新话、不再查；旧一轮工具回来前 Allen 又说了话，它的回答开头先点一下答的是哪个问题；两轮的回答谁也不打断谁、后到的不被丢，等她说完再说，同一轮的下一段排在别轮前面。提案 `docs/plans/slow-results-proposal.md` 等 Allen 批 | `test_slow_results.py` 9 例（开关关时复现实测的截断和丢答，开时按序说完；两个真 `drive_turn` 同时跑） |
+| `a0823bc` | 识别对齐言文：开关 `realtime.final_asr`（默认 `sensevoice`）。`whisper` 时每轮的字由本地 whisper-large-v3-turbo 按言文的方式出（中文、提示里带 vocab 的 user 词、不接上一窗、复读时不带词表升温重听、字幕台词当静音），只挡 0.15 s 以下和死麦（没有 0.2 s 到 0.003 RMS）；句尾没标点补「。」；SenseVoice 仍出端点用的中途稿；安静 20 s 后他一开口就后台预热。听写共用这些解码规则，提示里仍不带词表（ADR 0077）。提案 `docs/plans/whisper-final-asr-proposal.md` 等 Allen 批 | `test_whisper_final_asr.py` 16 例（替身 mlx_whisper：解码参数、复读重听、台词与回声、门槛、补句号后「好」经真 pipeline 成一轮、只预热一次、开关与没装时回落） |
 
 另两个提交：`8658592` 让星核验收脚本按 main 的新手势（点刘海）开 Dashboard；`2ae364a` 加
 `tools/voice_live_report.py`，Mac 实测后一条命令打印每轮的话、回答、播放结局、听到多少和模型被告知的截断行
@@ -365,3 +366,11 @@ session:
    开头像「对了，邮件查到了」；两段都不被截断。
 10. 语义端点：以前固定静音 0.77 s 才算说完。正常对话几轮。说完到她开口快约 0.35 s；偶尔在句中停顿处截断时，
     两段被当成一句答一次（ADR 0074）。
+11. 识别对齐言文（`realtime.final_asr: whisper`，上面的设置里没开）：以前每轮的字由 SenseVoice 出，名字和英文常
+    听错（ADR 0077 的 60 段里 Whisper 错得更少），整段平均音量低于 0.01 的轻声会被当成没说。先测完 1–10，
+    再在 settings.yaml 的 `realtime:` 下加 `final_asr: whisper`，重启 daemon（要 mlx-whisper；`uv sync --inexact`
+    会保留它）。说几句带英文和产品名的（「帮我看看 Startrail 的 PR」「打开 Claude Code」），小声说一句，再对
+    确认卡片只答一个「好」。daemon 日志有 "voice turns hear with Whisper"；`utterance.received` 里名字和英文
+    更准；小声那句也有字；「好」记成「好。」照常成一轮。说完到她开口比 SenseVoice 慢约 0.3–0.5 s；安静 20 s
+    以上后的第一句不会再多慢约 1 s（他一开口就开始预热）。说「停」、她说话时插话（ADR 0100）照常。不满意就删掉
+    那一行，回到 SenseVoice。
