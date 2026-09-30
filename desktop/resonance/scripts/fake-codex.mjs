@@ -100,6 +100,7 @@ function handle(m) {
       const cut = p.beforeTurnId ? from.turns.findIndex(x => x.id === p.beforeTurnId) : p.lastTurnId ? from.turns.findIndex(x => x.id === p.lastTurnId) + 1 : from.turns.length;
       if (cut < 0 || (p.lastTurnId && !cut)) return refuse(-32600, `no turn ${p.beforeTurnId ?? p.lastTurnId} in thread ${p.threadId}`);
       const t = thread(randomUUID(), from.cwd, p.developerInstructions ?? '', structuredClone(from.turns.slice(0, cut)));
+      if (p.excludeTurns) t.turns = [];
       threads.set(t.id, t);
       return reply({ thread: { id: t.id, ephemeral: !!p.ephemeral, forkedFromId: from.id, turns: [] } });
     }

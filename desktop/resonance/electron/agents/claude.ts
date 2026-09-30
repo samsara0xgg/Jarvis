@@ -432,7 +432,8 @@ let models: [string, string][] = [], efforts: string[] = [], probedAt = '', acco
 const OWN_UI: [string, string, string][] = [['/rewind', '回到之前的某一句', 'rewind'], ['/resume', '接手终端里开的会话', 'import'], ['/export', '导出整段对话', 'export'],
   ['/permissions', '换权限模式', 'mode'], ['/memory', '打开 CLAUDE.md', 'memory'], ['/tasks', '后台任务', 'tasks'], ['/ide', '用编辑器打开', 'editor'],
   ['/login', '环境和登录', 'doctor'], ['/status', '环境和登录', 'doctor'], ['/doctor', '环境和登录', 'doctor'], ['/diff', '看它改了什么', 'changes'],
-  ['/add-dir', '让它也能动另一个文件夹', 'dirs'], ['/model', '换模型', 'model'], ['/effort', '换力度', 'effort'], ['/new', '开新会话', 'new'], ['/fork', '从这里分叉', 'fork']];
+  ['/add-dir', '让它也能动另一个文件夹', 'dirs'], ['/model', '换模型', 'model'], ['/effort', '换力度', 'effort'], ['/new', '开新会话', 'new'], ['/fork', '从某一句之前分出一个新会话', 'fork'],
+  ['/btw', '侧问：不打断它，也不进对话', 'btw']];
 const withUi = (list: [string, string][]): [string, string, string?][] => [...OWN_UI, ...list.filter(c => !OWN_UI.some(u => u[0] === c[0]))];
 const version = () => EXE ? realpathSync(EXE) : '';
 async function probe(cwd: string) {

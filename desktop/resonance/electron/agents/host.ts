@@ -1005,10 +1005,13 @@ function pointOf(x: Session, at: string) {
 // A new session from this one (B13): the whole conversation, or up to a point (`at`; `before` leaves that point
 // out), with the files put back as they were there (`code`, Claude's checkpoints), this session archived (`archive`), and
 // a first message (`text`, `files`). With nothing before the point, the new session starts empty and needs that message.
+// `back` (/rewind): the same conversation gone back to before that point rather than a second one: it keeps the name, its
+// place in the list and its pins, and one quiet line says what went back instead of the fork line.
 async function fork(x: Session, b: Record<string, any>) {
   await x.ensureLoaded();
   const at = typeof b.at === 'string' && b.at ? b.at : undefined, before = b.before === true, code = b.code === true;
   const text = typeof b.text === 'string' ? b.text.trim() : '', files = fileList(b.files), point = at ? pointOf(x, at) : null;
+  const back = b.back === true, said = oneLine((x.items ?? []).find((it): it is Item & { k: 'you' } => it.k === 'you' && it.id === at)?.text ?? '', 18);
   if (code && !x.driver.rewind) throw new Http(409, 'Codex 不记文件的检查点，只能分叉对话');
   if (code && busy(x)) throw new Http(409, '它还在干活，先打断再退文件');
   if (code || text || files.length) signedIn(x.s.agent);
@@ -1021,10 +1024,12 @@ async function fork(x: Session, b: Record<string, any>) {
     now: undefined, since: undefined, queue: undefined, stopped: undefined, term: undefined, resets: undefined, tasks: undefined, bg: undefined, land: undefined }, x.repo);
   if (id) { sessions.set(id, f); await f.ensureLoaded(); }
   else { f.items = []; f.s.id = await f.driver.create(f); sessions.set(f.s.id, f); }
-  f.note(`从「${x.s.title}」${at ? `的${before ? '这一句之前' : '这一句'}` : ''}分叉 · 两边各走各的，用的是同一个文件夹`);
+  if (back) f.set({ title: x.s.title, named: x.s.named, pinned: x.s.pinned, parked: x.s.parked });
+  else f.note(`从「${x.s.title}」${at ? `的${before ? '这一句之前' : '这一句'}` : ''}分叉 · 两边各走各的，用的是同一个文件夹`);
   broadcast({ t: 'sess', s: f.s });
   save();
-  if (cp) { const r = await x.driver.rewind!(x, cp, false); f.note(`文件退回到了那时的样子 · ${r.files.length} 个文件`); void x.measure(); }
+  if (cp) { const r = await x.driver.rewind!(x, cp, false); f.note(back ? `退回到你说「${said}」之前 · 对话和 ${r.files.length} 个文件` : `文件退回到了那时的样子 · ${r.files.length} 个文件`); void x.measure(); }
+  else if (back) f.note(`退回到你说「${said}」之前 · 只退了对话`);
   if (b.archive === true) {
     if (busy(x)) await x.driver.interrupt(x).catch(() => {});
     await x.driver.release(x).catch(() => {});
