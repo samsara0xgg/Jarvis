@@ -338,8 +338,10 @@ kbd{padding:0 4px;border-radius:4px;font-size:10px;line-height:16px;background:r
 .opt.on{background:rgb(255 201 143 / .2);box-shadow:inset 0 0 0 1px rgb(255 201 143 / .6)}
 .plan-text{max-height:320px;overflow-y:auto;padding:8px 10px;border-radius:10px;background:rgb(0 0 0 / .2)}
 .n-row .other{height:30px;padding:0 10px;border-radius:9px;background:rgb(255 255 255 / .07);font-size:12.5px}
-.toast{position:absolute;left:50%;bottom:92px;z-index:30;max-width:min(560px,90%);padding:9px 14px;border-radius:12px;transform:translateX(-50%);
-  background:rgb(40 18 22 / .96);box-shadow:inset 0 0 0 .5px rgb(255 122 102 / .5),0 16px 40px -14px #000;color:#ffd0c8;font-size:12.5px}
+.toast{position:absolute;left:50%;bottom:92px;z-index:50;max-width:min(560px,90%);padding:9px 14px;border-radius:12px;transform:translateX(-50%);
+  background:rgb(22 24 50 / .97);box-shadow:inset 0 0 0 .5px rgb(var(--glow) / .3),0 16px 40px -14px #000;color:var(--ink);font-size:12.5px}
+/* only what went wrong is red */
+.toast.bad{background:rgb(40 18 22 / .96);box-shadow:inset 0 0 0 .5px rgb(255 122 102 / .5),0 16px 40px -14px #000;color:#ffd0c8}
 /* A conversation not read yet: its shape, at the bottom where the latest turn will be. */
 .c-in:has(> .c-items > .skel){min-height:100%}
 .c-items:has(> .skel){flex:1}

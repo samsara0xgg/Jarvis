@@ -95,7 +95,7 @@
 .bk-ex{position:absolute;z-index:28;inset:0}
 .bk-ex[hidden]{display:none}
 .bk-ex-scrim{position:absolute;inset:0;background:rgb(4 5 14 / .66)}
-.bk-ex .bk-ex-s{position:absolute;left:max(16px,calc(50% - 300px));right:max(16px,calc(50% - 300px));top:56px;bottom:22px;background:rgb(13 14 31)}
+.bk-ex .bk-ex-s{position:absolute;left:max(16px,calc(50% - 300px));right:max(16px,calc(50% - 300px));top:56px;bottom:0;margin:auto 0;height:min(640px,calc(100% - 144px));background:rgb(13 14 31)}
 .bk-ex-s .sh small{font-family:var(--ui)}
 .bk-ex .bk-x{flex:none;display:grid;place-items:center;width:28px;height:28px;border-radius:8px;color:var(--muted)}
 .bk-ex .bk-x:hover{background:rgb(255 255 255 / .08);color:var(--ink)}

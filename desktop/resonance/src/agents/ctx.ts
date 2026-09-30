@@ -49,7 +49,7 @@ export type PageCtx = {
   // Drawing is batched into one frame; `open` goes to a session (`key`: a quick fade, as switching by keyboard); `still`
   // keeps the list from gliding for a while, for a change that is not news (one version of a conversation for another).
   draw(...parts: Part[]): void; open(id: string, how?: 'click' | 'key'): void; still(ms: number): void;
-  toast(text: string): void; cue(name: string, gain?: number): void; tick(): void;
+  toast(text: string, bad?: boolean): void; cue(name: string, gain?: number): void; tick(): void;
   md(text: string): string; diff(d: [string, string][]): string;
   // The page's one popover with any lines, under an element (right-aligned when `right`) or at a point in the window.
   menu(html: string, at: HTMLElement | { x: number; y: number }, o?: { right?: boolean; cls?: string }): void;

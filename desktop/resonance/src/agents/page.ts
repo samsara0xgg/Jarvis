@@ -68,12 +68,17 @@ async function call<T = Record<string, unknown>>(route: string, body?: unknown, 
 }
 const toastEl = $('.toast');
 let toastTimer = 0;
-function toast(text: string) {
-  toastEl.textContent = text; toastEl.hidden = false;
+// A word at the bottom, clear of the composer; `bad` for what went wrong.
+function toast(text: string, bad = false) {
+  toastEl.textContent = text; toastEl.hidden = false; toastEl.classList.toggle('bad', bad);
+  const w = toastEl.parentElement!, bar = w.querySelector<HTMLElement>(w.classList.contains('fr-ro-on') ? '.fr-rbar' : '.composer .c-box');
+  // Above the slip's fuse line too, when one is up there.
+  const fuse = w.querySelector<HTMLElement>('.mt-fuse:not([hidden])'), top = Math.min(bar?.offsetParent ? bar.getBoundingClientRect().top : Infinity, fuse ? fuse.getBoundingClientRect().top : Infinity);
+  toastEl.style.bottom = `${top < Infinity ? w.getBoundingClientRect().bottom - top + 12 : 24}px`;
   anim(toastEl, [{ opacity: 0, transform: 'translate(-50%, 8px)' }, { opacity: 1, transform: 'translate(-50%, 0)' }], 320, SPRING);
   clearTimeout(toastTimer); toastTimer = window.setTimeout(() => { toastEl.hidden = true; }, 5200);
 }
-const tryCall = (route: string, body?: unknown, method?: string) => call(route, body, method).catch(e => { toast(e instanceof Error ? e.message : String(e)); return null; });
+const tryCall = (route: string, body?: unknown, method?: string) => call(route, body, method).catch(e => { toast(e instanceof Error ? e.message : String(e), true); return null; });
 
 // ---------- words ----------
 const STATE: Record<St, string> = { work: '在干活', pack: '在压缩', wait: '等你', done: '做完了', err: '出错了' };
@@ -804,7 +809,7 @@ function react(s: Sess, was: St) {
   if (s.st === 'err') { cue('error'); herSay('34', 2600, s.id); core.effect('shake', performance.now()); }
 }
 async function loadItems(id: string) {
-  const r = await call<{ items: Item[]; live: string | null }>(`/sessions/${id}`).catch(e => { toast(String(e instanceof Error ? e.message : e)); return null; });
+  const r = await call<{ items: Item[]; live: string | null }>(`/sessions/${id}`).catch(e => { toast(String(e instanceof Error ? e.message : e), true); return null; });
   if (!r) return;
   app.items.set(id, r.items);
   if (r.live) app.live.set(id, r.live); else app.live.delete(id);
@@ -983,7 +988,8 @@ async function act(a: string, el: HTMLElement) {
   else if (a === 'cloud' && s) {
     closePop();
     const text = `接着 Jarvis 里的会话「${s.title}」做下去。它停在：${s.summary}。仓库 ${s.project}，分支 ${s.branch}。`.slice(0, 590);
-    toast(await window.agents?.cloud?.(s.cwd, text) ? '在 Ghostty 里开了一个云端会话' : `没能打开 Ghostty。在终端里跑：cd ${home(s.cwd)} && claude --cloud "…"`);
+    const ok = !!await window.agents?.cloud?.(s.cwd, text);
+    toast(ok ? '在 Ghostty 里开了一个云端会话' : `没能打开 Ghostty。在终端里跑：cd ${home(s.cwd)} && claude --cloud "…"`, !ok);
   }
   else if (a === 'next') {
     const o = order().filter(x => yourTurn(byId(x)!));
@@ -1012,7 +1018,7 @@ async function act(a: string, el: HTMLElement) {
     const r = await tryCall(`/sessions/${s.id}/release`, {});
     if (!r) return;
     cue('close', .6);
-    if (!await window.agents?.terminal(String(r.cwd), String(r.cmd))) toast(`没能打开 Ghostty。在终端里跑：cd ${home(String(r.cwd))} && ${r.cmd}`);
+    if (!await window.agents?.terminal(String(r.cwd), String(r.cmd))) toast(`没能打开 Ghostty。在终端里跑：cd ${home(String(r.cwd))} && ${r.cmd}`, true);
   }
   else if (a === 'takeback' && s) { cue('open', .8); await tryCall(`/sessions/${s.id}/takeback`, {}); }
   else if (a === 'steps' || a === 'step') {

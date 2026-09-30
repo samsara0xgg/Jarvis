@@ -78,6 +78,9 @@ export function mountSlip(ctx: PageCtx): Feature {
   let seq = 0;
   ta.value = store.get('agents.slip') ?? '';
   const saveDraft = () => store.set('agents.slip', ta.value);
+  // A throw's words stay on the slip while it folds away; they leave it once it is gone, or as soon as it is wanted again.
+  let spent = false;
+  const clearSpent = () => { if (!spent) return; spent = false; ta.value = ''; charge(); };
 
   async function loadProjects() {
     const r = await ctx.call<{ list: Project[] }>('/projects').catch(() => null);
@@ -154,12 +157,22 @@ export function mountSlip(ctx: PageCtx): Feature {
     const w = win.getBoundingClientRect(), bd = (win.querySelector('.bd') ?? win).getBoundingClientRect(), width = Math.min(680, bd.width - 32);
     Object.assign(el.style, { left: `${bd.left - w.left + (bd.width - width) / 2}px`, top: `${bd.top - w.top + 10}px`, width: `${width}px` });
   }
+  // The list stays inside the window, however small: it scrolls in what room is left under it.
+  function fit() {
+    if (pick.hidden) return;
+    list.style.maxHeight = '';
+    const room = win.getBoundingClientRect().bottom - list.getBoundingClientRect().top - 22;
+    list.style.maxHeight = `${Math.round(Math.max(96, Math.min(258, room)))}px`;
+  }
+  addEventListener('resize', () => { if (S.open) { place(); fit(); } });
   function open(o: { dest?: Dest; target?: string } = {}) {
     if (S.open) { if (o.dest) { S.dest = o.dest; S.target = o.target ?? S.target; renderDest(); } closePick(); return; }
-    ctx.closeMenu();
+    ctx.closeMenu(); clearSpent();
     S.open = true; S.dest = o.dest ?? 'new'; S.target = o.target ?? S.target; S.from = document.activeElement as HTMLElement | null;
     place(); renderDest(); el.hidden = false; win.classList.add('slip-on'); charge();
-    anim(el, [{ opacity: 0, transform: 'translateY(-12px)', clipPath: 'inset(0 0 100% 0 round 16px)' }, { opacity: 1, transform: 'none', clipPath: 'inset(0 0 0 0 round 16px)' }], 320, SPRING);
+    // One motion: it drops a little and is solid early in the drop, so nothing behind reads through it.
+    el.style.transformOrigin = '';
+    anim(el, [{ opacity: 0, transform: 'translateY(-8px)' }, { opacity: 1, offset: .35 }, { opacity: 1, transform: 'none' }], 260, SPRING);
     ta.focus({ preventScroll: true }); ta.setSelectionRange(ta.value.length, ta.value.length);
     ctx.cue('open', .5);
     void loadProjects();
@@ -167,7 +180,8 @@ export function mountSlip(ctx: PageCtx): Feature {
   // Back to what you were doing: the element you left, or the composer.
   function back() {
     const f = S.from; S.from = null;
-    if (f?.isConnected && f !== document.body && !el.contains(f) && !f.closest('[hidden]') && !(f as HTMLButtonElement).disabled) f.focus({ preventScroll: true });
+    const typed = !!f?.matches('textarea,input,[contenteditable="true"]');
+    if (typed && f?.isConnected && !el.contains(f) && !f.closest('[hidden]') && !(f as HTMLInputElement).disabled) f.focus({ preventScroll: true });
     else if (ctx.current() && !ctx.ta.disabled) ctx.ta.focus({ preventScroll: true });
     // Nowhere to go back to (an empty window): the window's keys, not a hidden field's.
     else if (el.contains(document.activeElement)) (document.activeElement as HTMLElement).blur();
@@ -182,7 +196,7 @@ export function mountSlip(ctx: PageCtx): Feature {
   }
   function openPick(tab: 'where' | 'who') {
     const was = S.tab; S.tab = tab; q.value = '';
-    pick.hidden = false; renderPick(); renderDest();
+    pick.hidden = false; renderPick(); renderDest(); fit();
     if (!was) { anim(pick, [{ opacity: 0, transform: 'translateY(-4px)' }, { opacity: 1, transform: 'none' }], 200); ctx.tick(); }
     q.focus({ preventScroll: true });
   }
@@ -223,7 +237,7 @@ export function mountSlip(ctx: PageCtx): Feature {
     if (S.dest === 'new' && !S.dir) { ctx.toast('先挑一个文件夹'); openPick('where'); return; }
     if (S.dest === 'sess' && !ctx.byId(S.target)) { ctx.toast('那个会话不在了，换一个去处'); openPick('where'); return; }
     fold();
-    ta.value = ''; saveDraft();
+    spent = true; store.set('agents.slip', '');
     if (S.dest === 'keep') {
       notes.unshift({ id: `n${Date.now().toString(36)}`, text, at: Date.now() }); saveNotes();
       ctx.cue('on', .6); tell(`存下了：${oneLine(text, 40)} · 在「先存着」里`);
@@ -241,13 +255,16 @@ export function mountSlip(ctx: PageCtx): Feature {
   function fold() {
     closePick(false); S.open = false; win.classList.remove('slip-on');
     const r = dot.getBoundingClientRect(), m = el.getBoundingClientRect(), dx = r.left + r.width / 2 - m.left, dy = r.top + r.height / 2 - m.top;
-    const a = anim(el, [{ clipPath: 'inset(0 0 0 0 round 16px)', opacity: 1 }, { clipPath: `inset(${dy - 8}px ${m.width - dx - 8}px ${m.height - dy - 8}px ${dx - 8}px round 8px)`, opacity: .4 }], 190, 'cubic-bezier(.5,0,.9,.4)');
-    if (a) a.onfinish = () => { if (!S.open) el.hidden = true; }; else el.hidden = true;
+    el.style.transformOrigin = `${dx}px ${dy}px`;
+    const a = anim(el, [{ opacity: 1, transform: 'none' }, { opacity: 0, transform: 'scale(.94)' }], 200, 'cubic-bezier(.4,0,1,1)');
+    const gone = () => { if (!S.open) { el.hidden = true; clearSpent(); } };
+    if (a) a.onfinish = gone; else gone();
   }
   function ignite(f: Fuse) {
     const i = fuses.indexOf(f);
     if (i < 0) return;
-    fuses.splice(i, 1); clearTimeout(f.timer); burn();
+    // The burnt line stays up until the word of how it landed takes its place.
+    fuses.splice(i, 1); clearTimeout(f.timer); burn(true);
     void go(f, false);
   }
   // Only here does anything reach the host.
@@ -264,6 +281,7 @@ export function mountSlip(ctx: PageCtx): Feature {
       if (follow || (f.dest === 'new' && !ctx.current())) {
         for (let k = 0; k < 60 && !ctx.byId(id); k++) await new Promise(r => setTimeout(r, 50));
         if (ctx.byId(id)) { ctx.open(id); requestAnimationFrame(() => ctx.ta.focus({ preventScroll: true })); }
+        if (!fuses.length) bar.hidden = true;
         return;
       }
       const s = ctx.byId(id);
@@ -271,8 +289,9 @@ export function mountSlip(ctx: PageCtx): Feature {
       else tell(`开跑了：${oneLine(f.text, 40)}`, id);
     } catch (e) {
       // What did not reach the host is not lost: it goes back into the slip.
+      clearSpent(); if (!fuses.length) bar.hidden = true;
       ta.value = ta.value.trim() ? `${f.text}\n${ta.value}` : f.text; saveDraft();
-      ctx.toast(`${e instanceof Error ? e.message : String(e)} · 字回到纸条里了，⌘N 打开`);
+      ctx.toast(`${e instanceof Error ? e.message : String(e)} · 字回到纸条里了，⌘N 打开`, true);
     }
   }
   // The model, effort and mode last picked for this agent, when the host still offers them; otherwise its defaults.
@@ -290,7 +309,7 @@ export function mountSlip(ctx: PageCtx): Feature {
   function unthrow() {
     const f = fuses.pop();
     if (!f) return false;
-    clearTimeout(f.timer); burn();
+    clearTimeout(f.timer); burn(); clearSpent();
     const had = ta.value.trim();
     ta.value = had ? `${f.text}\n${had}` : f.text;
     S.agent = f.agent; S.dir = f.dir; S.tree = f.tree;
@@ -300,7 +319,7 @@ export function mountSlip(ctx: PageCtx): Feature {
   }
 
   // ---------- the fuse line ----------
-  let tellTimer = 0, raf = 0;
+  let tellTimer = 0, raf = 0, shown = '';
   function placeBar() {
     const w = win.getBoundingClientRect(), box = win.querySelector<HTMLElement>('.composer:not([hidden]) .c-box'), r = box?.offsetParent ? box.getBoundingClientRect() : null;
     const bd = (win.querySelector('.bd') ?? win).getBoundingClientRect();
@@ -310,13 +329,15 @@ export function mountSlip(ctx: PageCtx): Feature {
   function show(html: string) {
     const was = !bar.hidden;
     bar.innerHTML = html; bar.hidden = false; placeBar();
+    if (was) { const t = bar.querySelector('.mt-ft'); if (t && t.textContent !== shown) anim(t, [{ opacity: 0 }, { opacity: 1 }], 180); }
+    shown = bar.querySelector('.mt-ft')?.textContent ?? '';
     if (!was) anim(bar, [{ opacity: 0, transform: 'translate(-50%, 8px)' }, { opacity: 1, transform: 'translate(-50%, 0)' }], 320, SPRING);
   }
   // While throws burn, the newest shows with its ring; ⌘Z or 撤回 takes it back.
-  function burn() {
+  function burn(keep = false) {
     clearTimeout(tellTimer); cancelAnimationFrame(raf);
     const f = fuses.at(-1);
-    if (!f) { bar.hidden = true; return; }
+    if (!f) { if (!keep) bar.hidden = true; return; }
     show(`<svg class="mt-ring" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6"/><circle class="fg" cx="8" cy="8" r="6" pathLength="100" stroke-dasharray="0 100" transform="rotate(-90 8 8)"/></svg>`
       + `<span class="mt-ft">抛出去了：${esc(oneLine(f.text, 36))}${fuses.length > 1 ? `<em> · 还有 ${fuses.length - 1} 个在烧</em>` : ''}</span><button type="button" data-act="slip-back">撤回 <kbd>⌘Z</kbd></button>`);
     const fg = bar.querySelector('.fg')!;
@@ -344,6 +365,7 @@ export function mountSlip(ctx: PageCtx): Feature {
   // A window that closes while a throw burns sends nothing: the words wait in the slip.
   addEventListener('pagehide', () => {
     if (!fuses.length) return;
+    clearSpent();
     ta.value = [...fuses.map(f => f.text), ta.value.trim()].filter(Boolean).join('\n');
     fuses.splice(0).forEach(f => clearTimeout(f.timer)); saveDraft();
   });

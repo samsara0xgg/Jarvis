@@ -94,6 +94,8 @@ export function mountSettings(ctx: PageCtx): Feature {
     const daemon: Row = d.daemon.up ? { k: 'daemon', name: 'Jarvis 后台', v: 'ok', say: '开着' } : { k: 'daemon', name: 'Jarvis 后台', v: 'may', say: '没开 · 没开也能用', at: '用量环和终端里的要批，等它开了才有', plain: true };
     return [claude, codex, git, daemon];
   }
+  // A path and what follows it: the path is what gets cut, never the separator.
+  const atHTML = (at: string) => { const [p0, ...rest] = at.split(' · '); return `<span>${esc(p0)}</span>${rest.length ? `<i>· ${esc(rest.join(' · '))}</i>` : ''}`; };
   function docHTML() {
     if (!S.doc) return `<div class="fr-dl"><p class="fr-sl fr-dl-wait">${SPIN}在查…</p></div>`;
     return `<div class="fr-dl">${rows().map(r => {
@@ -101,7 +103,7 @@ export function mountSettings(ctx: PageCtx): Feature {
       const mk = q || r.v === 'wait' ? SPIN : r.v === 'ok' ? '✓' : r.v === 'bad' ? '✕' : '○';
       const fix = !q && r.fix ? `<button type="button" class="btn sm" data-act="fr-fix" data-x="${r.fix[0]}">${r.fix[1]}</button>` : '<span></span>';
       return `<div class="fr-dr ${v}" data-k="${r.k}"><span class="fr-mk" aria-label="${q ? '在查' : { ok: '好的', bad: '不行', wait: '在登', may: '可以不管' }[r.v]}">${mk}</span><b>${esc(r.name)}</b>`
-        + `<span class="fr-ds"><span>${q ? '在查…' : esc(r.say)}</span>${!q && r.at ? `<small${r.plain ? ' class="np"' : ''}>${esc(r.at)}</small>` : ''}</span>${fix}</div>`;
+        + `<span class="fr-ds"><span>${q ? '在查…' : esc(r.say)}</span>${!q && r.at ? `<small${r.plain ? ' class="np"' : ''}>${atHTML(r.at)}</small>` : ''}</span>${fix}</div>`;
     }).join('')}</div>`;
   }
   function pathHTML() {
@@ -142,7 +144,7 @@ export function mountSettings(ctx: PageCtx): Feature {
   }
   function codexCard() {
     const cx = S.doc?.codex;
-    const tag = !cx ? '' : !cx.found ? '<span class="fr-tag">没装</span>' : cx.account ? '<span class="fr-tag mint">已登录</span>' : '<span class="fr-tag warm">没登录</span>';
+    const tag = !cx ? '<span class="fr-tag">在查</span>' : !cx.found ? '<span class="fr-tag">没装</span>' : cx.account ? '<span class="fr-tag mint">已登录</span>' : '<span class="fr-tag warm">没登录</span>';
     const body = !cx ? `<p class="fr-sl">${SPIN}在查…</p>`
       : !cx.found ? `<div class="fr-kr"><span class="fr-sl">没找到 codex · 不用 Codex 可以不管</span><span class="fr-gap"></span><button type="button" class="btn sm" data-act="fr-fix" data-x="how-codex">怎么装</button><button type="button" class="btn sm" data-act="fr-fix" data-x="refind">再找一次</button></div>`
       : cx.account ? `<p class="fr-sl mint">✓ 已登录 · ChatGPT${cx.account.email ? ` · ${esc(cx.account.email)}` : ''}</p>`
@@ -267,8 +269,9 @@ export function mountSettings(ctx: PageCtx): Feature {
     veil.hidden = sheet.hidden = false; win.classList.add('fr-modal');
     drawn = ''; renderSheet();
     if (!was) {
-      anim(sheet, [{ opacity: 0, transform: 'translateY(-10px) scale(.99)' }, { opacity: 1, transform: 'none' }], 240);
-      anim(veil, [{ opacity: 0 }, { opacity: 1 }], 200);
+      // The veil is down before the sheet is solid, and the sheet is solid early in its move: nothing reads through it.
+      anim(veil, [{ opacity: 0 }, { opacity: 1 }], 140, 'linear');
+      anim(sheet, [{ opacity: 0, transform: 'translateY(-10px) scale(.99)' }, { opacity: 1, offset: .4 }, { opacity: 1, transform: 'none' }], 260);
       ctx.cue('open', .6);
       void loadSettings().then(redraw); void loadProjects().then(redraw); void recheck();
     }
@@ -332,18 +335,18 @@ export function mountSettings(ctx: PageCtx): Feature {
     }
     const how: Record<string, string> = { 'how-codex': 'https://developers.openai.com/codex/cli', 'how-git': 'https://git-scm.com/download/mac', 'how-claude': 'https://docs.anthropic.com/en/docs/claude-code/setup' };
     if (how[x]) { void window.agents?.openUrl?.(how[x]); S.howed.add(x.slice(4)); redraw(); ctx.toast('在浏览器里打开了安装说明'); return; }
-    if (x === 'refind') { await recheck(); if (!S.doc?.codex.found) ctx.toast('还是没找到 codex'); }
+    if (x === 'refind') { await recheck(); if (!S.doc?.codex.found) ctx.toast('还是没找到 codex', true); }
   }
   // 发一条试试: the notification a session would send, from one that fits the first kind switched on.
   async function testNote() {
     const n = notify(), k = (['wait', 'err', 'done'] as const).find(x => n[x]);
     if (!k) { ctx.toast('三种都关了，不会弹'); return; }
-    if (!window.agents?.notifyTest) { ctx.toast('这里弹不了通知'); return; }
+    if (!window.agents?.notifyTest) { ctx.toast('这里弹不了通知', true); return; }
     const ss = ctx.sessions().filter(s => !s.archived), s = ss.find(x => k === 'wait' ? x.st === 'wait' : k === 'err' ? x.st === 'err' : x.st === 'done') ?? ss[0];
     const sub = k === 'wait' ? '在等你' : k === 'err' ? '出错了' : '做完了';
     const ok = await window.agents?.notifyTest?.(s?.title ?? 'Startrail', sub, s?.summary ?? '通知会这样弹出来', s?.id);
     ctx.cue('mark', .6);
-    ctx.toast(ok === false ? '这台 Mac 不让它弹通知：去系统设置的通知里打开' : '发了一条：看屏幕右上角');
+    ctx.toast(ok === false ? '这台 Mac 不让它弹通知：去系统设置的通知里打开' : '发了一条：看屏幕右上角', ok === false);
   }
   async function addFolder(then?: (p: string) => void) {
     const p = await window.agents?.folder();
