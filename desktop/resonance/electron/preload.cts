@@ -123,6 +123,8 @@ contextBridge.exposeInMainWorld('agents', {
   openUrl: (url: string) => ipcRenderer.invoke('agents-open-url', url),
   openPath: (file: string) => ipcRenderer.invoke('agents-open-path', file),
   cloud: (cwd: string, text: string, term?: string) => ipcRenderer.invoke('agents-cloud', cwd, text, term),
+  onSettings: (callback: () => void) => { const listener = () => callback(); ipcRenderer.on('agents-settings', listener); return () => ipcRenderer.removeListener('agents-settings', listener); },
+  notifyTest: (title: string, sub: string, body: string, id?: string) => ipcRenderer.invoke('agents-notify-test', title, sub, body, id),
 });
 // The first launch's window (companion.ts answers only that window).
 contextBridge.exposeInMainWorld('firstRun', {
