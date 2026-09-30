@@ -7,6 +7,7 @@
 //   SUB   a sub-agent that reads a file and reports      PLAN  a to-do list
 //   SLOW  three seconds of work (to interrupt, queue behind)      FAIL  the turn ends in an error
 //   FORM  an MCP server's form to fill in                          LINK  an MCP server's page to open
+//   PICK  a question with three options to pick from (AskUserQuestion)
 // A question on the side (/btw) is answered on its own, after three seconds when it says SLOW, and can be cancelled.
 // It has three MCP servers: docs (two tools, a moment to connect), tracker (wants a sign-in) and flaky (fails until it
 // is connected again); one switched off stays off in that folder, kept in the config folder as Claude Code keeps it.
@@ -194,7 +195,7 @@ async function result(id, content, extra = {}, parent = null, isError = false) {
 const tool = async (name, input, parent = null) => { const id = `toolu_${randomUUID().slice(0, 12)}`; await block({ type: 'tool_use', id, name, input }, parent); return id; };
 
 async function work(said) {
-  for (const [, what, arg1] of said.matchAll(/\b(EDIT|WRITE|ASK|TASK|SUB|PLAN|SLOW|FAIL|FORM|LINK)\b(?:\s+([\w./-]+))?/g)) {
+  for (const [, what, arg1] of said.matchAll(/\b(EDIT|WRITE|ASK|TASK|SUB|PLAN|SLOW|FAIL|FORM|LINK|PICK)\b(?:\s+([\w./-]+))?/g)) {
     if (what === 'SLOW') { for (let i = 0; i < 30 && !turn.stop; i++) await sleep(100); if (turn.stop) throw new Error('stop'); continue; }
     if (what === 'FAIL') return 'fail';
     if (what === 'EDIT' || what === 'WRITE') {
@@ -218,6 +219,15 @@ async function work(said) {
       const ok = got?.response?.behavior === 'allow';
       note({ ev: 'permission', behavior: got?.response?.behavior, updatedPermissions: got?.response?.updatedPermissions ?? null });
       await result(id, ok ? 'asked' : `Permission denied: ${got?.response?.message ?? ''}`, ok ? { stdout: 'asked', stderr: '', interrupted: false } : {}, null, !ok);
+    }
+    if (what === 'PICK') {
+      const input = { questions: [{ question: 'Which one first?', header: 'Order', multiSelect: false,
+        options: [{ label: 'Red', description: 'the warm one' }, { label: 'Green', description: 'the calm one' }, { label: 'Blue', description: 'the cool one' }] }] };
+      const id = await tool('AskUserQuestion', input), got = await ask({ subtype: 'can_use_tool', tool_name: 'AskUserQuestion', input, tool_use_id: id });
+      if (turn.stop) throw new Error('stop');
+      const ok = got?.response?.behavior === 'allow';
+      note({ ev: 'question', behavior: got?.response?.behavior, answers: got?.response?.updatedInput?.answers ?? null });
+      await result(id, ok ? JSON.stringify(got.response.updatedInput?.answers ?? {}) : `Permission denied: ${got?.response?.message ?? ''}`, {}, null, !ok);
     }
     if (what === 'TASK') {
       const id = await tool('Bash', { command: 'sleep 100', description: 'Wait in the background', run_in_background: true }), task = `b${randomUUID().slice(0, 7)}`;
