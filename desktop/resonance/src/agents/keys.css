@@ -1,0 +1,16 @@
+/* ---------- 键位表: every key of the window on one sheet (keys.ts) ---------- */
+.keys{position:absolute;z-index:32;inset:40px 0 0;display:grid;place-items:center;background:rgb(4 5 12 / .72)}
+.bw .keys{inset:56px 0 0}
+.keys-in{width:720px;max-width:calc(100% - 40px);max-height:calc(100% - 40px);overflow:auto;padding:18px 20px 16px;border-radius:16px;outline:none;
+  background:linear-gradient(180deg,#191a33,#111228);box-shadow:inset 0 0 0 .5px rgb(var(--glow) / .35),0 30px 60px -24px #000;scrollbar-width:thin;scrollbar-color:rgb(157 180 255 / .25) transparent}
+.keys .keys-in:focus-visible{outline:none}
+.keys-in h4{display:flex;justify-content:space-between;align-items:center;margin:0 0 10px;font:600 14px var(--ui);color:var(--ink)}
+.keys-in h4 small{font:normal 11.5px var(--ui);color:var(--faint)}
+.keys kbd{display:inline-grid;place-items:center;min-width:16px;height:16px;padding:0 4px;border-radius:4px;font:500 10px/1 var(--mono);background:rgb(255 255 255 / .08);color:var(--muted);vertical-align:1px}
+.keys-g{display:grid;grid-template-columns:1fr 1fr;gap:6px 26px}
+.keys-g h5{grid-column:1 / -1;margin:8px 0 2px;font:600 11px var(--mono);letter-spacing:.08em;color:var(--warm-c)}
+.keys-g p{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin:0;padding:3px 0 5px;border-bottom:.5px solid rgb(var(--glow) / .08);font-size:12.5px;line-height:1.5;color:var(--muted)}
+.keys-g p small{display:block;font-size:11px;color:var(--faint)}
+.keys-g .kc{flex:none;display:inline-flex;align-items:center;gap:2px;padding-top:2px}
+.keys-g .kc i{font-style:normal;margin:0 3px;color:var(--faint)}
+@media (max-width:760px){.keys-g{grid-template-columns:1fr}}

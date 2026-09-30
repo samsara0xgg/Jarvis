@@ -15,6 +15,7 @@ import { mountWorkbench } from './workbench';
 import { cardsHTML, editsBefore, inline } from './workbench/refs';
 import * as usage from './workbench/usage';
 import { mountViewer } from './viewer';
+import { mountKeys } from './keys';
 import { mountSlip } from './slip';
 import './agents.css';
 import './exposure/exposure.css';
@@ -1186,8 +1187,9 @@ const ctx: PageCtx = {
   catalog: () => app.catalog,
 };
 // Each feature is mounted on the one context below; its clicks, keys, commands and menu lines are its own.
-// The picture viewer holds every key while it is open, so it comes first.
+// The picture viewer and the key sheet hold every key while they are open, so they come first.
 features.push(mountViewer(ctx));
+features.push(mountKeys(ctx));
 features.push(mountStopped(ctx));
 features.push(mountSlip(ctx));
 
