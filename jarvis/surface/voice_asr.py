@@ -30,9 +30,10 @@ from __future__ import annotations
 import logging
 import re
 import threading
+import time
 import unicodedata
-from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -485,14 +486,55 @@ class SenseVoiceRecognizer:
         return self._recognizer
 
 
+# 言文 (typeless-local asr.py at 9b11024), verbatim: what Whisper writes for
+# silence or room noise, subtitle credits from its training data. Only a
+# transcript that is nothing but one of these is dropped.
+_WHISPER_SILENCE_RE = re.compile(
+    r"^(优优独播剧场.*|字幕.{0,20}(提供|制作|by.*)|.*请不吝点赞.*|明镜与点点栏目|(谢谢|感谢)(大家)?(收看|观看)"
+    r"|thanks? (you )?(so much )?for watching|subtitles by.*)$",
+    re.IGNORECASE,
+)
+# A 2-16 character unit three times in a row, or one character eight times.
+_WHISPER_LOOP_RE = re.compile(r"(.{2,16})\1{2,}")
+_WHISPER_RUN_RE = re.compile(r"(\S)\1{7,}")
+_WHISPER_FALLBACK_TEMPERATURES = (0.0, 0.2, 0.4, 0.6, 0.8, 1.0)
+_WHISPER_TERMS_MAX_CHARS = 600
+# mlx_whisper keeps one model per process, so every recognizer shares one lock.
+_WHISPER_LOCK = threading.Lock()
+
+
+def _looks_looped(text: str) -> bool:
+    unpunctuated = re.sub(r"[\s\W_]+", "", text)
+    return bool(_WHISPER_LOOP_RE.search(unpunctuated) or _WHISPER_RUN_RE.search(text))
+
+
+def _terms_prompt(terms: Sequence[str]) -> str:
+    """言文's ``Common terms: a, b.`` line, cut at a term within 600 characters."""
+    prefix, suffix = "Common terms: ", "."
+    budget = _WHISPER_TERMS_MAX_CHARS - len(prefix) - len(suffix)
+    kept: list[str] = []
+    used = 0
+    for term in terms:
+        addition = (", " if kept else "") + term
+        if kept and used + len(addition) > budget:
+            break
+        kept.append(term)
+        used += len(addition)
+    return prefix + ", ".join(kept) + suffix if kept else ""
+
+
 class MlxWhisperRecognizer:
     """mlx-whisper backend — Apple Silicon native, recommended for EN / mixed.
 
     Confidence is a Whisper-style log-prob mean — not comparable to SenseVoice's
-    binary heuristic.
+    binary heuristic. Decoded as 言文 decodes it: no window conditions the
+    next, a looped transcript is heard again without the word list and with
+    temperature fallback, and a transcript that is only a subtitle credit is
+    silence. ``terms`` returns the user's own words for the prompt, read on
+    every call.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - the decode knobs, each a keyword
         self,
         *,
         repo: str = "mlx-community/whisper-large-v3-turbo",
@@ -502,6 +544,7 @@ class MlxWhisperRecognizer:
         # large-v3-turbo skews toward traditional CN tokens; a simplified-CN
         # prompt biases the decoder back toward simplified glyphs.
         initial_prompt: str | None = "以下是普通话的简体中文转录。",
+        terms: Callable[[], Sequence[str]] | None = None,
     ) -> None:
         """Capture mlx-whisper config; module + model load on first recognize()."""
         self._repo = str(repo)
@@ -509,10 +552,9 @@ class MlxWhisperRecognizer:
         self._temperature = float(temperature)
         self._language = language
         self._initial_prompt = initial_prompt or None
+        self._terms = terms
         self._module: Any | None = None
-        # One transcription at a time: the prewarm and a dictation stretch
-        # must not load the model twice or share Metal at once.
-        self._lock = threading.Lock()
+        self.last_used = 0.0
 
     def prewarm(self) -> None:
         """Load the model (~1.6 GB, a few seconds) by hearing half a second of silence."""
@@ -529,18 +571,21 @@ class MlxWhisperRecognizer:
                 emotion=None,
             )
 
-        with self._lock:
-            mlx_whisper = self._load()
-            transcription: Mapping[str, Any] = mlx_whisper.transcribe(
-                audio,
-                path_or_hf_repo=self._repo,
-                fp16=self._fp16,
-                temperature=self._temperature,
-                language=self._language,
-                initial_prompt=self._initial_prompt,
-                verbose=None,
-            )
-        text = str(transcription.get("text", "")).strip()
+        listed = _terms_prompt(self._terms()) if self._terms is not None else ""
+        prompt = " ".join(part for part in (self._initial_prompt, listed) if part) or None
+        with _WHISPER_LOCK:
+            transcription = self._decode(audio, prompt=prompt, temperature=self._temperature)
+            text = self._heard(transcription, prompt, self._initial_prompt, listed)
+            if _looks_looped(text):
+                # 言文 e94d055: heard again without the list, hotter where it repeats.
+                LOGGER.info("MLX Whisper looped; hearing it again with temperature fallback")
+                transcription = self._decode(
+                    audio, prompt=self._initial_prompt, temperature=_WHISPER_FALLBACK_TEMPERATURES,
+                )
+                text = self._heard(transcription, self._initial_prompt)
+            self.last_used = time.monotonic()
+        if _WHISPER_SILENCE_RE.match(re.sub(r"[\s\W_]+$|^[\s\W_]+", "", text)):
+            text = ""
         language = str(transcription.get("language") or self._language or "") or None
         confidence = _estimate_whisper_confidence(transcription)
 
@@ -557,6 +602,30 @@ class MlxWhisperRecognizer:
             emotion=None,
         )
 
+    def _decode(
+        self, audio: np.ndarray, *, prompt: str | None, temperature: float | tuple[float, ...],
+    ) -> Mapping[str, Any]:
+        result: Mapping[str, Any] = self._load().transcribe(
+            audio,
+            path_or_hf_repo=self._repo,
+            fp16=self._fp16,
+            temperature=temperature,
+            language=self._language,
+            initial_prompt=prompt,
+            condition_on_previous_text=False,
+            verbose=None,
+        )
+        return result
+
+    @staticmethod
+    def _heard(transcription: Mapping[str, Any], *prompts: str | None) -> str:
+        """The text, less a leading copy of a prompt Whisper writes on near-silence."""
+        text = str(transcription.get("text", "")).strip()
+        for prompt in prompts:
+            if prompt and text.startswith(prompt):
+                return text[len(prompt):].strip()
+        return re.sub(r"^\s*Common terms:[^\n]*\n", "", text, count=1, flags=re.IGNORECASE)
+
     def _load(self) -> Any:  # noqa: ANN401 — mlx_whisper typing is dynamic
         if self._module is not None:
             return self._module
@@ -571,6 +640,72 @@ class MlxWhisperRecognizer:
         LOGGER.info("Loaded mlx_whisper (repo=%s)", self._repo)
         self._module = mlx_whisper
         return self._module
+
+
+# 言文's gate before the model (assets/config.yaml, 5231742): at least 0.15 s,
+# and some 0.2 s of it at 0.003 RMS or more, so only a dead or muted mic is
+# cut and quiet speech is heard.
+_WHISPER_MIN_BYTES = int(0.15 * _SAMPLE_RATE) * 2
+_WHISPER_LEVEL_FLOOR = 0.003
+# 言文 c257562: after 20 s idle a pass took 1.0-1.2 s against 0.37 s warm.
+_WHISPER_WARM_IDLE_S = 20.0
+
+
+class WhisperFinalRecognizer:
+    """A voice turn's words from local Whisper as 言文 hears them; SenseVoice keeps the partials.
+
+    ``realtime.final_asr: whisper`` (docs/plans/whisper-final-asr-proposal.md).
+    The rules after the recognizer were tuned on SenseVoice, whose text
+    normalization closes every sentence; Whisper often leaves a short answer
+    bare, and a bare 「好」 is one character, which the empty filter drops. So a
+    transcript with no closing punctuation gets a stop.
+    """
+
+    def __init__(self, *, whisper: MlxWhisperRecognizer, partials: SenseVoiceRecognizer) -> None:
+        """Hear finals with ``whisper`` and endpoint snapshots with ``partials``."""
+        self._whisper = whisper
+        self._partials = partials
+        self._warming = threading.Lock()
+
+    def recognize(self, audio_pcm: bytes) -> TranscriptionResult:
+        """The authoritative transcript; nothing for a clip too short or a dead mic."""
+        if len(audio_pcm) < _WHISPER_MIN_BYTES or too_quiet_for_speech(
+            audio_pcm, floor=_WHISPER_LEVEL_FLOOR,
+        ):
+            return TranscriptionResult(
+                text="", confidence=0.0, language_detected=None, emotion=None,
+            )
+        result = self._whisper.recognize(audio_pcm)
+        text = result.text.strip()
+        if text and not unicodedata.category(text[-1]).startswith("P"):
+            text += "." if text[-1].isascii() else "。"
+        return replace(result, text=text)
+
+    def partial_text(self, audio_pcm: bytes) -> str:
+        """SenseVoice's snapshot decode for the semantic endpoint (ADR-0006 D7)."""
+        return self._partials.partial_text(audio_pcm)
+
+    def prewarm(self) -> None:
+        """Load both models before the mic opens."""
+        self._partials.prewarm()
+        self._whisper.prewarm()
+
+    def warm(self) -> None:
+        """Allen started talking: after 20 s idle, run one silent pass in the background."""
+        if time.monotonic() - self._whisper.last_used < _WHISPER_WARM_IDLE_S:
+            return
+        if not self._warming.acquire(blocking=False):
+            return
+
+        def _run() -> None:
+            try:
+                self._whisper.prewarm()
+            except Exception:  # noqa: BLE001 - a failed warm-up only leaves the next pass cold
+                LOGGER.warning("MLX Whisper warm-up failed", exc_info=True)
+            finally:
+                self._warming.release()
+
+        threading.Thread(target=_run, name="jarvis-whisper-warm", daemon=True).start()
 
 
 class LocalWhisperRecognizer:
@@ -742,8 +877,8 @@ def _rms(audio_pcm: bytes) -> float:
     return float(np.sqrt(np.mean(samples.astype(np.float64) ** 2)))
 
 
-def too_quiet_for_speech(audio_pcm: bytes) -> bool:
-    """True when no 0.2 s of PCM16 mono audio reaches SenseVoice's speech floor.
+def too_quiet_for_speech(audio_pcm: bytes, *, floor: float = _SENSEVOICE_FLOAT_RMS_FLOOR) -> bool:
+    """True when no 0.2 s of PCM16 mono audio reaches ``floor`` (SenseVoice's speech floor).
 
     The loudest window decides, not the mean: a dictation stretch that holds a
     long pause averages his words under the floor (ADR 0076).
@@ -752,11 +887,11 @@ def too_quiet_for_speech(audio_pcm: bytes) -> bool:
     window = _SAMPLE_RATE // 5
     if samples.size <= window:
         level = float(np.sqrt(np.mean(samples**2))) if samples.size else 0.0
-        return level < _SENSEVOICE_FLOAT_RMS_FLOOR
+        return level < floor
     energy = np.concatenate(([0.0], np.cumsum(samples**2)))
     hop = window // 4
     loudest = float(np.max(energy[window::hop] - energy[:-window:hop])) / window
-    return float(np.sqrt(loudest)) < _SENSEVOICE_FLOAT_RMS_FLOOR
+    return float(np.sqrt(loudest)) < floor
 
 
 def _is_punctuation_only(text: str) -> bool:
@@ -893,6 +1028,7 @@ __all__ = [
     "MlxWhisperRecognizer",
     "SenseVoiceRecognizer",
     "TranscriptionResult",
+    "WhisperFinalRecognizer",
     "is_backchannel",
     "is_empty_or_too_short",
     "is_stop_request",

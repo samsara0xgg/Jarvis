@@ -144,7 +144,7 @@ from jarvis.runtime import (
     make_turn_cancel_callable,
     save_language,
 )
-from jarvis.runtime.dictation import Dictation, polish_client, whisper_ears
+from jarvis.runtime.dictation import Dictation, load_user_terms, polish_client, whisper_ears
 from jarvis.runtime.inherent_hub import start_inherent_view
 from jarvis.runtime.night_watch import NightWatch
 from jarvis.runtime.session_compaction import CompactionSweep, preset_context_length
@@ -2187,6 +2187,24 @@ async def _commentary_heard(
     await asyncio.to_thread(_complete_commentary, runtime, entry)
 
 
+def _final_recognizer(
+    runtime: JarvisRuntime, sensevoice: voice_asr.SenseVoiceRecognizer,
+) -> voice_asr.AsrRecognizer:
+    """``realtime.final_asr``: SenseVoice, or local Whisper as 言文 hears (proposal)."""
+    realtime = runtime.config.get("realtime")
+    choice = realtime.get("final_asr") if isinstance(realtime, Mapping) else None
+    if choice != "whisper":
+        return sensevoice
+    dictation_config = runtime.config.get("dictation") or {}
+    vocab_path = Path(str(dictation_config.get("vocab_path", "")))
+    whisper = whisper_ears(terms=functools.partial(load_user_terms, vocab_path))
+    if whisper is None:
+        LOGGER.warning("realtime.final_asr: whisper needs mlx-whisper; hearing with SenseVoice")
+        return sensevoice
+    LOGGER.info("voice turns hear with Whisper; SenseVoice keeps the partials")
+    return voice_asr.WhisperFinalRecognizer(whisper=whisper, partials=sensevoice)
+
+
 def _build_voice_pipeline(
     runtime: JarvisRuntime,
     *,
@@ -2201,7 +2219,9 @@ def _build_voice_pipeline(
     L3 normalizer ships empty-population by default; config-driven
     aliases / corrections land in a follow-up.
     """
-    recognizer = voice_asr.SenseVoiceRecognizer(model_dir=sensevoice_dir)
+    recognizer = _final_recognizer(
+        runtime, voice_asr.SenseVoiceRecognizer(model_dir=sensevoice_dir),
+    )
     normalizer = voice_asr.AsrNormalizer(
         corrections=[],
         aliases={},
@@ -3296,6 +3316,7 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
             if held:
                 # His words will end in a request; have its connection open by then.
                 runtime.llm_client.warm_stream()
+                pipeline.warm_input_model()
 
         supersede_unspoken = (
             make_supersede_unspoken_callable(runtime, streaming.drop_unspoken)

@@ -110,6 +110,12 @@ class VoicePipeline:
             raise TypeError(msg)
         prewarm()
 
+    def warm_input_model(self) -> None:
+        """Allen started talking: let a recognizer that cools when idle warm up now."""
+        warm = getattr(self._recognizer, "warm", None)
+        if callable(warm):
+            warm()
+
     def partial_text(self, audio_bytes: bytes) -> str:
         """Decode one bounded snapshot for the L5 endpoint decision (ADR-0006 D7)."""
         partial = getattr(self._recognizer, "partial_text", None)

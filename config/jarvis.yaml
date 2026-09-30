@@ -373,6 +373,16 @@ realtime:
   # file's own directory, never at cwd; `~` and absolute paths as written.
   # sensevoice_dir: ~/Models/sensevoice-small-int8
   # silero_vad_path: ~/Models/silero_vad.onnx
+  # docs/plans/whisper-final-asr-proposal.md.  Which model writes a voice
+  # turn's words: sensevoice, or whisper -- the local whisper-large-v3-turbo
+  # that 言文 dictates with, decoded as it decodes: Chinese, the user terms of
+  # dictation.vocab_path in the prompt, a looped transcript heard again,
+  # subtitle credits dropped, and only a dead mic (no 0.2 s at 0.003 RMS)
+  # cut before the model.  SenseVoice still writes the partials the semantic
+  # endpoint reads.  Needs mlx-whisper (Apple silicon); without it a turn is
+  # heard by SenseVoice.  Each turn's words come about 0.3-0.5 s later
+  # (ADR 0077: 0.47-0.61 s after the stop, SenseVoice about 0.1 s).
+  final_asr: sensevoice
   # ADR-0042.  The wake word is microWakeWord's "Hey Jarvis" (pymicro-wakeword
   # hey_jarvis v2).  Its score is near-binary: a bare "Jarvis" <= 0.03, a
   # connected "Hey Jarvis" 0.80-0.996.  The gate below defaults to the model's

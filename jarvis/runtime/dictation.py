@@ -140,14 +140,33 @@ def load_vocab(path: Path) -> list[str]:
     return list(dict.fromkeys(terms))
 
 
-def whisper_ears() -> voice_asr.MlxWhisperRecognizer | None:
+def load_user_terms(path: Path) -> list[str]:
+    """The hand-kept ``user`` terms of Typlus's vocab.yaml: what 言文 puts in Whisper's prompt."""
+    try:
+        data = yaml.safe_load(path.expanduser().read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return []
+    except (OSError, yaml.YAMLError) as exc:
+        LOGGER.warning("vocab unreadable at %s: %s", path, exc)
+        return []
+    terms = data.get("user") if isinstance(data, dict) else None
+    if not isinstance(terms, list):
+        return []
+    kept = (term.strip() for term in terms if isinstance(term, str))
+    return list(dict.fromkeys(term for term in kept if term))
+
+
+def whisper_ears(
+    *, terms: Callable[[], Sequence[str]] | None = None,
+) -> voice_asr.MlxWhisperRecognizer | None:
     """ADR 0077: local Whisper in Chinese when mlx-whisper is installed; ``None`` means SenseVoice.
 
     It is installed on Allen's Mac, outside ``pyproject.toml``; the packaged app ships without it.
+    ``terms`` puts his word list in the prompt on every call.
     """
     if importlib.util.find_spec("mlx_whisper") is None:
         return None
-    return voice_asr.MlxWhisperRecognizer(language="zh")
+    return voice_asr.MlxWhisperRecognizer(language="zh", terms=terms)
 
 
 def _latin(char: str) -> bool:
