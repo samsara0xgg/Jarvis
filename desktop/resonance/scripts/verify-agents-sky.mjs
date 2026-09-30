@@ -45,7 +45,7 @@ await st.context.addInitScript(() => {
   const wrap = (k, f) => { const o = P[k]; P[k] = function (...a) { if (sky(this)) f.apply(this, a); return o.apply(this, a); }; };
   wrap('clearRect', () => { done = frame; frame = { strokes: [], texts: [], ticks: [] }; });
   // Your points: the short white tick above each thing you said.
-  wrap('fillRect', function (x, y, w, h) { if (w < 2 && h === 6) frame.ticks.push([x + w / 2, y]); });
+  wrap('fillRect', function (x, y, w, h) { if (w < 2 && h >= 6) frame.ticks.push([x + w / 2, y + h]); });
   wrap('beginPath', () => { subs = []; });
   wrap('moveTo', (x, y) => { subs.push([[x, y]]); });
   wrap('lineTo', (x, y) => { subs.at(-1)?.push([x, y]); });
@@ -168,32 +168,33 @@ try {
   await st.shot('sky-lens');
   await press('Escape', 1, 600);
 
-  // ---------- two days on one axis: the points keep apart, quiet stretches are breaks, older time slides in ----------
+  // ---------- two days on one axis: it opens on the recent stretch, older time slides in, points never pile ----------
   await p.locator('#msg').focus();
   await press('Alt+ArrowUp', 1, 1400);
-  const spread = () => p.evaluate(() => {
+  const axis = () => p.evaluate(() => {
     const rows = new Map();
     for (const [x, y] of window.__frame().ticks) rows.set(Math.round(y), [...(rows.get(Math.round(y)) ?? []), x].sort((a, b) => a - b));
     const gaps = [...rows.values()].flatMap(xs => xs.slice(1).map((x, i) => x - xs[i]));
-    const shown = [...document.querySelectorAll('.bw-axis span')].filter(el => +el.style.opacity > .5).map(el => { const r = el.getBoundingClientRect(); return { text: el.textContent, l: r.left, r: r.right, brk: el.classList.contains('brk') }; }).sort((a, b) => a.l - b.l);
-    return { points: [...rows.values()].reduce((n, xs) => n + xs.length, 0), closest: Math.min(...gaps), shown, touching: shown.slice(1).filter((w, i) => w.l < shown[i].r + 4).map(w => w.text),
-      older: !document.querySelector('.bw-older').hidden, newer: !document.querySelector('.bw-newer').hidden };
+    return { closest: Math.min(...gaps), points: [...rows.values()].reduce((n, xs) => n + xs.length, 0),
+      words: [...document.querySelectorAll('.bw-axis span')].filter(el => +el.style.opacity > .5).map(el => el.textContent) };
   });
-  let sp = await spread();
-  check('two days of sessions: no two of your points on a row stand closer than 20 px', sp.points >= 6 && sp.closest >= 20, sp);
-  check('no two words on the axis touch', !sp.touching.length, sp.shown);
-  check('what does not fit is older time past the left edge, and it says so', sp.older && !sp.newer, sp);
-  const axisNow = sp.shown.map(w => w.text).join('|');
-  await p.locator('.bw-older').click(); await p.waitForTimeout(1200);
-  sp = await spread();
-  check('更早 slides the sky to older time, 现在 › slides it back', sp.newer && sp.shown.map(w => w.text).join('|') !== axisNow && !sp.touching.length, sp);
-  const seen = [...sp.shown];
-  for (let i = 0; i < 8 && sp.older; i++) { await p.locator('.bw-older').click(); await p.waitForTimeout(900); sp = await spread(); seen.push(...sp.shown); if (sp.touching.length) break; }
-  check('all the way back, a long quiet stretch is a break saying how long, and the words still never touch', !sp.older && !sp.touching.length && seen.some(w => w.brk && /小时|天/.test(w.text)), { seen: seen.map(w => w.text), touching: sp.touching });
-  await p.locator('.bw-newer').click(); await p.waitForTimeout(1200);
-  sp = await spread();
-  check('back at now the axis reads as it did', !sp.newer && sp.shown.map(w => w.text).join('|') === axisNow, [axisNow, sp.shown.map(w => w.text).join('|')]);
-  await st.shot('sky-spread');
+  let ax = await axis();
+  check('it opens on the recent stretch: the axis runs hours back to now, the two-day sessions do not squeeze it', ax.words.includes('4 小时前') && ax.words.includes('现在') && !ax.words.some(w => w.includes('天前')), ax.words);
+  check('points on a row never pile: close ones merge, and no two stand closer than 7 px', ax.points >= 6 && ax.closest >= 7, ax);
+  await p.mouse.move(400, 200);
+  for (let i = 0; i < 12; i++) { await p.mouse.wheel(-90, 0); await p.waitForTimeout(30); }
+  await p.waitForTimeout(500);
+  ax = await axis();
+  check('a sideways swipe slides the sky to older time in cells as wide', ax.words.some(w => w.includes('天前')) && !ax.words.includes('现在') && ax.closest >= 7, ax.words);
+  await press('Escape', 1, 600);
+  await p.locator('#msg').focus();
+  await press('Alt+ArrowUp', 1, 1200);
+  for (let i = 0; i < 10 && !selected(await sky())?.text.includes('timesink'); i++) await press('ArrowUp');
+  await press('ArrowLeft'); await press('ArrowLeft', 1, 1400);
+  const needle = await p.evaluate(() => { const cv = document.querySelector('.bw-cv').getBoundingClientRect(), pop = document.querySelector('.bw-open').getBoundingClientRect(); return { left: pop.left - cv.left, right: pop.right - cv.left, width: cv.width }; });
+  s = await sky();
+  check('← to a sentence two days back slides the sky there, its words in view', s.n === '第 1 / 2 句' && needle.left >= 0 && needle.right <= needle.width - 250, { n: s.n, needle });
+  await st.shot('sky-older');
   await press('Escape', 1, 600);
 
   // ---------- ⌘K: what you said, in every session ----------
