@@ -62,10 +62,12 @@ function loadKept(): Kept {
 type Tone = 'ask' | 'done' | 'error';
 // The queue behind the pops and cards. `hold` keeps every one back (she is talking, the Dashboard is open, the keys
 // hold the island) except a card brought forward on purpose; `watched` is the session Allen has been looking at in
-// Ghostty for 1.5 s, `viewing` the one whose page is open in the island.
-export function useNotices({ port, agents, hold, watched, viewing, cue, answer }: {
-  port: string | null; agents: Agent[]; hold: boolean; watched: string | null; viewing: string | null; cue: (name: Tone | 'send' | 'close', gain?: number) => void;
-  answer: (req: AgentRequest, body: { decision: 'allow' | 'always' | 'deny'; answers?: Record<string, string>; message?: string }) => Promise<boolean>;
+// Ghostty for 1.5 s, `viewing` the one whose page is open in the island. Startrail's sessions (`a.host`) are looked at
+// while its window is in front (`agentsFront`), and their marks are the host's: `mark` changes them there.
+export function useNotices({ port, agents, hold, watched, viewing, agentsFront, cue, answer, mark }: {
+  port: string | null; agents: Agent[]; hold: boolean; watched: string | null; viewing: string | null; agentsFront: boolean; cue: (name: Tone | 'send' | 'close', gain?: number) => void;
+  answer: (req: AgentRequest, body: { decision: 'allow' | 'always' | 'deny'; answers?: Record<string, string>; message?: string }, id: string) => Promise<boolean>;
+  mark: (id: string, change: { seen: true } | { parked: boolean; archived: boolean }) => void;
 }) {
   const [, bump] = useReducer((x: number) => x + 1, 0);
   const [s] = useState(() => {
@@ -76,13 +78,18 @@ export function useNotices({ port, agents, hold, watched, viewing, cue, answer }
       soundAt: -1e9, shown: '', openedAt: 0, peek: false, touched: '', forced: '',
       // Sessions changed here before the daemon's marks arrived: their marks stay as she set them.
       loaded: false, early: new Set<string>(),
+      // The marks each of Startrail's sessions had when the lists last took them from the host.
+      synced: new Map<string, string>(),
       // Her face for a moment after an answer: pleased (with a hop) or refusing.
       over: null as { face: ExprId; until: number; hop: boolean } | null,
       timers: new Set<ReturnType<typeof setTimeout>>(),
     };
   });
   const save = () => { try { localStorage.setItem(TURN, JSON.stringify({ unread: [...s.unread], cleared: [...s.archived], last: s.last })); } catch { /* the list just is not remembered */ } };
-  const persist = (id: string) => { if (!s.loaded) s.early.add(id); if (port) saveMark(port, id, { unread: s.unread.has(id), park: s.parked.has(id), archive: s.archived.has(id) }); };
+  const persist = (id: string) => {
+    if (live.current.byId.get(id)?.host) { mark(id, { parked: s.parked.has(id), archived: s.archived.has(id) }); return; }
+    if (!s.loaded) s.early.add(id); if (port) saveMark(port, id, { unread: s.unread.has(id), park: s.parked.has(id), archive: s.archived.has(id) });
+  };
   // The daemon's marks win; the first time it has none, her profile's lists move there.
   useEffect(() => {
     if (!port) return;
@@ -99,7 +106,7 @@ export function useNotices({ port, agents, hold, watched, viewing, cue, answer }
         if (mine.archived.has(id)) s.archived.add(id); else s.archived.delete(id);
         if (mine.parked.has(id)) s.parked.set(id, mine.parked.get(id)!); else s.parked.delete(id);
       }
-      save(); bump();
+      s.synced.clear(); save(); bump();
     });
   }, [port]);
   const later = (ms: number, run: () => void) => { const t = setTimeout(() => { s.timers.delete(t); run(); }, ms); s.timers.add(t); };
@@ -133,7 +140,7 @@ export function useNotices({ port, agents, hold, watched, viewing, cue, answer }
   };
   // Out of his turn: looked at, opened or marked.
   const read = (ids: string[]) => {
-    ids.forEach(id => { if (s.unread.delete(id)) { if (!s.loaded) s.early.add(id); if (port) saveMark(port, id, { seen: true }); } });
+    ids.forEach(id => { if (!s.unread.delete(id)) return; if (live.current.byId.get(id)?.host) mark(id, { seen: true }); else { if (!s.loaded) s.early.add(id); if (port) saveMark(port, id, { seen: true }); } });
     drop(ids); save(); bump();
   };
   // Done with: off the island until it does something new, kept for the Agents window's archive.
@@ -147,25 +154,42 @@ export function useNotices({ port, agents, hold, watched, viewing, cue, answer }
     cue('close', .7); drop(ids, true); bump();
   };
   const unpark = (ids: string[]) => {
-    ids.forEach(id => { s.parked.delete(id); if (ended(live.current.byId.get(id)?.state ?? 'work')) s.unread.add(id); persist(id); });
+    ids.forEach(id => { const a = live.current.byId.get(id); s.parked.delete(id); if (!a?.host && ended(a?.state ?? 'work')) s.unread.add(id); persist(id); });
     save(); bump();
   };
+  // Startrail's sessions keep their marks in its host: the lists take what it says each time it says something new.
+  for (const a of agents) {
+    if (!a.host) continue;
+    const k = `${+a.host.unread}${+a.host.parked}${+a.host.archived}`;
+    if (s.synced.get(a.id) === k) continue;
+    s.synced.set(a.id, k);
+    if (a.host.unread) s.unread.add(a.id); else if (s.unread.delete(a.id)) drop([a.id]);
+    if (!a.host.parked) s.parked.delete(a.id); else if (!s.parked.has(a.id)) { s.parked.set(a.id, Date.now()); drop([a.id], true); }
+    if (a.host.archived) s.archived.add(a.id); else s.archived.delete(a.id);
+  }
   // What changed since the last poll. A session met for the first time only notifies through a held prompt.
   const key = agents.map(a => `${a.id}:${a.state}:${a.request?.id ?? ''}`).join('|');
   useEffect(() => {
     const now = Date.now(), touched = new Set<string>();
     for (const a of agents) {
-      const was = s.last[a.id]?.[0], looking = a.id === watched || a.id === viewing;
+      const was = s.last[a.id]?.[0], looking = a.id === watched || a.id === viewing || !!a.host && agentsFront;
       s.last[a.id] = [a.state, now];
       // A background session shows no dialog of its own while Jarvis holds its prompt, so that card comes even
       // while he looks at the session; an interactive one asks in his terminal at the same time. A new question
-      // is something new: it brings a parked session back.
+      // is something new: it brings a parked session back (Startrail's stay parked, as in her queue).
       if (a.request && !s.shownReqs.has(a.request.id)) {
         s.shownReqs.add(a.request.id);
-        if (s.parked.delete(a.id)) touched.add(a.id);
+        if (!a.host && s.parked.delete(a.id)) touched.add(a.id);
         if (!looking || a.kind === 'background') arrive({ kind: 'req', id: a.id, req: a.request });
       }
       if (!was || was === a.state) continue;
+      // Startrail's host keeps their marks: a change is only told here, a finish when the host counts it unread.
+      if (a.host) {
+        if (looking) continue;
+        if (a.state === 'wait' && !a.request) arrive({ kind: 'wait', id: a.id, line: a.last });
+        else if (ended(a.state) && !ended(was) && a.host.unread) arrive({ kind: 'pop', id: a.id, ids: [a.id] });
+        continue;
+      }
       // Anything new brings it back from the moon or the archive.
       const unarchived = s.archived.delete(a.id), unparked = s.parked.delete(a.id);
       if (unarchived || unparked) touched.add(a.id);
@@ -231,7 +255,7 @@ export function useNotices({ port, agents, hold, watched, viewing, cue, answer }
     c.pending = true; c.error = ''; bump();
     const yes = body.decision !== 'deny';
     try {
-      c.resolved = await answer(n.req, body);
+      c.resolved = await answer(n.req, body, n.id);
       c.ok = c.resolved ? text : 'Already answered somewhere else';
     }
     catch { c.error = 'Could not send your answer. Try again.'; return false; }
@@ -309,6 +333,20 @@ export function NoticeCard({ n, agent, card, count, look, onPark, onOpen, onReso
     document.addEventListener('keydown', key, true);
     return () => document.removeEventListener('keydown', key, true);
   }, [n.key, card.ok, card.pending]);
+  // A question's options answer to their digits, as in the Agents window; words typed into its field stay words.
+  useEffect(() => {
+    if (n.kind !== 'req' || n.req.tool !== 'AskUserQuestion' || card.ok || card.review) return;
+    const key = (e: KeyboardEvent) => {
+      if (!/^[1-9]$/.test(e.key) || e.metaKey || e.ctrlKey || e.altKey || e.isComposing || card.pending) return;
+      const pane = root.current?.closest('.notch-pane'), opt = root.current?.querySelectorAll<HTMLButtonElement>('.nc-opts .opt')[Number(e.key) - 1];
+      if (!opt?.checkVisibility({ opacityProperty: true, visibilityProperty: true }) || pane && !pane.classList.contains('is-open')) return;
+      if (e.target instanceof HTMLElement && e.target.closest('input,textarea,[contenteditable],[role="menu"],[role="listbox"],[role="combobox"]')) return;
+      e.preventDefault(); e.stopImmediatePropagation();
+      if (!e.repeat) opt.click();
+    };
+    document.addEventListener('keydown', key, true);
+    return () => document.removeEventListener('keydown', key, true);
+  }, [n.key, card.ok, card.review, card.pending]);
   const who = agent ? AGENT_NAME[agent.agent] : 'It';
   const label = n.kind === 'wait' ? 'Needs you' : n.req.tool === 'AskUserQuestion' ? `${who} asks` : n.req.tool === 'ExitPlanMode' ? 'Plan to review' : 'Needs your OK';
   const bar = <div className="nc-bar">

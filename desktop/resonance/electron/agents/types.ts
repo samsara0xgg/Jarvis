@@ -142,14 +142,15 @@ export type CtxRow = { n: string; t: number; kind?: 'buf' | 'free'; sub?: (strin
 export type Ctx = { used: number; max: number; model: string; rows: CtxRow[]; say: [string, string]; foot: string[] };
 // What the owner sets for the host (GET /settings, POST /settings). provider, bedrock and vertex: how Startrail's Claude
 // sessions sign in in the packaged app (ADR 0094) · notify: which moments the Mac tells you about while the window is
-// not in front · editor, terminal: where a file or a session opens outside the window (ids from the window's lists) ·
+// not in front, and whether Jarvis's notch says them instead (`notch`, on unless false) · editor, terminal: where a
+// file or a session opens outside the window (ids from the window's lists) ·
 // folders: folders you added to the project list · setup: per repository, the script a new worktree runs before its
 // first turn · land: per repository, how its landing goes (ADR 0097): the gates, each a shell command run in the
 // session's folder, the restart command run in the main checkout once the default branch has the change, and the way
 // it lands unless the owner picks another.
 export type Settings = {
   provider?: 'anthropic' | 'bedrock' | 'vertex'; bedrock?: { region: string; profile?: string }; vertex?: { region: string; project: string };
-  notify?: { done: boolean; wait: boolean; err: boolean }; editor?: string; terminal?: string;
+  notify?: { done: boolean; wait: boolean; err: boolean; notch?: boolean }; editor?: string; terminal?: string;
   folders?: string[]; setup?: Record<string, string>; land?: Record<string, { gates?: string[]; restart?: string; via?: LandVia }>;
 };
 // How Startrail's Claude sessions sign in: the dev build with Allen's subscription; the packaged app with the owner's

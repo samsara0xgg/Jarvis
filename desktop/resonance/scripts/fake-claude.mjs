@@ -11,6 +11,7 @@
 //   PICK  a question with three options to pick from (AskUserQuestion)
 //   SHOT  a tool that gives back a picture (a screenshot)
 //   THINK a thought that takes four seconds                        LATE  the session's name comes 1.5 s after the turn
+//   QUESTION  a question with two options (AskUserQuestion)
 // A question on the side (/btw) is answered on its own, after three seconds when it says SLOW, and can be cancelled.
 // It has three MCP servers: docs (two tools, a moment to connect), tracker (wants a sign-in) and flaky (fails until it
 // is connected again); one switched off stays off in that folder, kept in the config folder as Claude Code keeps it.
@@ -204,7 +205,7 @@ const tool = async (name, input, parent = null) => { const id = `toolu_${randomU
 const SHOT = 'iVBORw0KGgoAAAANSUhEUgAAADAAAAAgCAIAAADbtmxLAAACnElEQVR4nM3U+TdUcRzG8c9/VolEq0ikRSQSiYTZ7sy9d/btLnPn3rmzGsswxjKGktIqaZHSIilJK2mRtEjbufNr53T6wdH3P3if1znPA7+6a3521XyPyZaissUO+dd2+Zc2xaeIYqFFMR9WfmhWzoVU7xpVbxtUs/XY6yA2U6t+FVC/9GueezXPPJopN/5ExCcFYoInHjmJcY58wJJjjHaU1t6jdHdsuttW3YhFf9OsHzYahgyG63rDNZ3xCmkcJEwDuOmSxtyPmS+ozOeVlrNyyxmZFX7EZEudsm9R2aKUIv/cqliIKD6GlfPNyrkm5fuQlPKmHputw2aC2LSUon7hk2qeuvEpEZ904Y8FYsJJPOTIcQc5xpL3ae0opb1rl2pGLPpbZv2wSX/DaBiKp1zVGgdJ42XcNKAx9avNFzEp5ZxCqumTWU9XWwERmL4a66lqa2+VDRCB6a2ynTxm66m0wd9hplcKpqfSduKovbvCDojAHK+wd5fbY0coQASmq5yKlVHRwxQgAtNZRkVL6fYSGv7LlP6E6Sil20ro1mIGEIFpO0RHipmWIgYQgYkcZMJFTHMhC4jAhAvZpgNsqIAFRGBCBWzjfkdDvgMQgWnId9TnOYL7OEAEpi6PC+Zygb0cIAJTm8sF9jh9u52wDDCKZYDxx2s8OTwgAuPd5XTn8GI2D4jAuHfyrmxeyBIAERhXlsDvEJyZAiACw2cK3HaXI8MFiMA4MlxsuovZJgIiMEy6SKeJ1FYREIGh0kT7Frd1sxtW4Hz/BcYWrzFv9AAiMJZNUo0x1QOIwJg2eAypHn2KFxCBMaR4deu92mQvIAKjS/aS63xEkg8QgSGTfHiiT7PWD4jAaBL96gQ/tsYPiMBgCX7V6oByVeA3K0OO46WieP4AAAAASUVORK5CYII=';
 const THOUGHT = '**Weighing where the switch belongs**\n\nThe setting is written to settings.json, but the menu bar item reads it only once, at launch.\nWith the menu gone, nothing tells the companion the value changed.\n\nTwo ways: the companion watches settings.json, or the settings page sends it a message.\nThe settings module already has onDidChange, which costs the least and leaves the page alone.\n\nFirst check the key the page writes, then find who else reads it.\nThen change the companion to redraw her mark when the value moves.\nLast, run the companion check again.';
 async function work(said) {
-  for (const [, what, arg1] of said.matchAll(/\b(EDIT|WRITE|ASK|TASK|SUB|AGENT|PLAN|SLOW|FAIL|FORM|LINK|PICK|SHOT|THINK)\b(?:\s+([\w./-]+))?/g)) {
+  for (const [, what, arg1] of said.matchAll(/\b(EDIT|WRITE|ASK|TASK|SUB|AGENT|PLAN|SLOW|FAIL|FORM|LINK|PICK|SHOT|THINK|QUESTION)\b(?:\s+([\w./-]+))?/g)) {
     if (what === 'THINK') { await block({ type: 'thinking', thinking: THOUGHT, signature: 'x' }, null, 4000); continue; }
     if (what === 'SLOW') { for (let i = 0; i < 30 && !turn.stop; i++) await sleep(100); if (turn.stop) throw new Error('stop'); continue; }
     if (what === 'FAIL') return 'fail';
@@ -238,6 +239,13 @@ async function work(said) {
       const ok = got?.response?.behavior === 'allow';
       note({ ev: 'question', behavior: got?.response?.behavior, answers: got?.response?.updatedInput?.answers ?? null });
       await result(id, ok ? JSON.stringify(got.response.updatedInput?.answers ?? {}) : `Permission denied: ${got?.response?.message ?? ''}`, {}, null, !ok);
+    }
+    if (what === 'QUESTION') {
+      const input = { questions: [{ question: 'Which way?', header: 'Way', multiSelect: false, options: [{ label: 'Left', description: 'The short way' }, { label: 'Right', description: 'The long way' }] }] };
+      const id = await tool('AskUserQuestion', input), got = await ask({ subtype: 'can_use_tool', tool_name: 'AskUserQuestion', input, tool_use_id: id });
+      if (turn.stop) throw new Error('stop');
+      note({ ev: 'question', behavior: got?.response?.behavior, answers: got?.response?.updatedInput?.answers ?? null });
+      await result(id, JSON.stringify(got?.response?.updatedInput?.answers ?? {}), {});
     }
     if (what === 'TASK') {
       const id = await tool('Bash', { command: 'sleep 100', description: 'Wait in the background', run_in_background: true }), task = `b${randomUUID().slice(0, 7)}`;

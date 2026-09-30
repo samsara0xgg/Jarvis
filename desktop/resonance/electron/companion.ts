@@ -8,7 +8,7 @@ import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { daemonToken, registerDaemonBridge, sendDaemonKey } from './bridge.js';
 import { startDaemon } from './daemon.js';
 import { setupDictation } from './dictation.js';
-import { setupAgents } from './agentsWindow.js';
+import { AGENTS_PORT, setupAgents } from './agentsWindow.js';
 import { setupDashboard } from './dashboardWindow.js';
 // The companion: 星核, who lives beside the notch, with her Dashboard. She talks to the daemon on
 // JARVIS_INHERENT_BRIDGE_PORT like the capsule does; the daemon owns mic and speaker, so she never
@@ -223,7 +223,9 @@ function companion(shown?: () => void) {
   // ADR 0058: the right ⌥ dictates at the text caret; she goes there from the notch. Live only: it needs the daemon's mic.
   const dictation = demo || !material ? null : setupDictation({ companion: win, native: material, nativePath: path.join(here, '../dist-native/material.node'), preload: path.join(here, 'preload.cjs'),
     page: path.join(here, '../dist/dictation.html'), port, topInset: display => placement(display).topInset, open: openPage });
-  win.loadFile(path.join(here, '../dist/index.html'), { query: demo ? { companion: '1' } : { companion: '1', port: process.env.JARVIS_INHERENT_BRIDGE_PORT ?? '8006', ...app.isPackaged ? { packaged: '1' } : {} } });
+  // `agents`: the agent host's port where this process runs the host, so the notch follows Startrail's sessions too
+  // (src/startrail.ts); the key rides on its requests from sendDaemonKey, never in the page.
+  win.loadFile(path.join(here, '../dist/index.html'), { query: demo ? { companion: '1' } : { companion: '1', port: process.env.JARVIS_INHERENT_BRIDGE_PORT ?? '8006', ...app.isPackaged ? { packaged: '1' } : { agents: AGENTS_PORT } } });
   win.webContents.on('did-finish-load', place);
   win.once('ready-to-show', () => { place(); win.showInactive(); keepOnTop(); shown?.(); });
   win.on('blur', () => setImmediate(() => { if (!win.isDestroyed()) keepOnTop(); }));

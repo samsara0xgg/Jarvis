@@ -15,13 +15,16 @@ export type Agent = {
   // A Claude session's kind, and for a background one the id `claude attach` takes (ADR 0057). `replyable`: idle
   // at its input box, so a line typed from the island lands there (ADR 0070).
   kind?: 'interactive' | 'background'; job?: string; replyable?: boolean;
+  // One of Startrail's (src/startrail.ts): the agent host keeps its marks, and the notch follows and changes them there.
+  host?: { unread: boolean; parked: boolean; archived: boolean };
 };
 // A row as the companion sees it: with the mark it wears and its one line for the hover list.
 export type ShownAgent = Agent & { mark: MarkState; line: string };
 export const AGENT_NAME = { claude: 'Claude', codex: 'Codex' };
-// Where a session can be opened from the notch (ADR 0057): a Codex thread, or a Claude session's Ghostty terminal
-// (a background one attaches in a new tab when no terminal shows it). Other terminals cannot be found.
-export const openLabel = (a: Agent) => a.agent === 'codex' ? 'Open in Codex' : a.kind === 'background' || a.where === 'Ghostty' ? 'Open in Ghostty' : '';
+// Where a session can be opened from the notch (ADR 0057): Startrail's in its window, a Codex thread, or a Claude
+// session's Ghostty terminal (a background one attaches in a new tab when no terminal shows it). Other terminals cannot
+// be found.
+export const openLabel = (a: Agent) => a.host ? 'Open in Startrail' : a.agent === 'codex' ? 'Open in Codex' : a.kind === 'background' || a.where === 'Ghostty' ? 'Open in Ghostty' : '';
 export const DEMO_AGENTS: Agent[] = [
   { id: 'usage', state: 'wait', agent: 'codex', project: 'jarvis', title: 'Adjust the usage page', where: 'Codex', age: '2m', you: 'make the usage rings match', last: 'Wants to run npm run build' },
   { id: 'inner', state: 'work', agent: 'claude', project: 'jarvis', branch: 'companion-ball', title: 'Dashboard inner pages', where: 'Ghostty', age: '4m', you: 'add the plugins page and fix the bottom bar', last: 'Editing the design page…' },
@@ -31,7 +34,7 @@ export const DEMO_AGENTS: Agent[] = [
   { id: 'loop', state: 'done', agent: 'codex', project: 'jarvis', title: 'Evaluate the minimal loop', where: 'Codex', age: '2h', you: 'what’s the smallest loop that works?', last: 'Summarized the loop and what’s left.' },
   { id: 'cap', state: 'done', agent: 'claude', project: 'typlus', title: 'Long dictation cap', where: 'Ghostty', age: '3h', you: 'long notes get cut off', last: 'Raised the cap and installed the build.' },
 ];
-const ago = (ms: number) => { const m = Math.round((Date.now() - ms) / 60_000); return m < 1 ? 'now' : m < 60 ? `${m}m` : m < 1440 ? `${Math.floor(m / 60)}h` : `${Math.floor(m / 1440)}d`; };
+export const ago = (ms: number) => { const m = Math.round((Date.now() - ms) / 60_000); return m < 1 ? 'now' : m < 60 ? `${m}m` : m < 1440 ? `${Math.floor(m / 60)}h` : `${Math.floor(m / 1440)}d`; };
 export const fromCodex = (r: CodexSession): Agent => ({
   id: r.session_id, agent: 'codex', state: r.state === 'needs_input' ? 'wait' : r.state === 'running' ? 'work' : 'done',
   title: r.title || r.prompt || 'Codex session', project: r.cwd.split('/').filter(Boolean).pop() ?? '', where: 'Codex',

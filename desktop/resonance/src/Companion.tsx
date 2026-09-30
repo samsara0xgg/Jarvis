@@ -11,6 +11,7 @@ import { connect, type Runtime } from './runtime';
 import { usePlugins } from './PluginPanel';
 import { isMarkLook } from './AgentMarks';
 import { answerRequest, type Agent, type ShownAgent } from './agents';
+import { answerStartrail, markStartrail, useStartrail } from './startrail';
 import { NoticeCard, ended, noticeCue, useNotices } from './Notices';
 import { ActionCard, QuestionCard, type Answer, type Card, type Decide, type Question } from './ActionCard';
 import { Notch, type NotchNote } from './Notch';
@@ -211,8 +212,11 @@ export function Companion() {
   const [dashMood, setDashMood] = useState<ExprId | null>(null);
   const [receiving, setReceiving] = useState(false);
   const busy = composer || voice !== 'off' || !!reply.text || receiving || deepThinking;
-  // Every session the Dashboard's Agents data knows: the stars beside the notch, and the notices.
-  const [agents, setAgents] = useState<ShownAgent[]>([]);
+  // Every session the Dashboard's Agents data knows, and Startrail's from its host (in her queue's order, each in place
+  // of the daemon's row of it): the stars beside the notch, and the notices.
+  const [daemonAgents, setAgents] = useState<ShownAgent[]>([]);
+  const startrail = useStartrail();
+  const agents: Agent[] = useMemo(() => startrail.ids.size ? [...startrail.rows, ...daemonAgents.filter(a => !startrail.ids.has(a.id))] : daemonAgents, [startrail, daemonAgents]);
   const [agentsPresence, setAgentsPresence] = useState({ active: false, ids: [] as string[] });
   useEffect(() => window.jarvis?.onAgentsPresence?.(setAgentsPresence), []);
   const agentsFront = agentsPresence.active;
@@ -220,22 +224,24 @@ export function Companion() {
   const [ghostty, setGhostty] = useState({ front: false, title: '' }), [dwelled, setDwelled] = useState(false);
   useEffect(() => window.jarvis?.onGhostty?.(seen => setGhostty(g => g.front === seen.front && g.title === seen.title ? g : seen)), []);
   useEffect(() => { setDwelled(false); if (!ghostty.front || !ghostty.title) return; const t = setTimeout(() => setDwelled(true), 1500); return () => clearTimeout(t); }, [ghostty]);
-  const anyClaude = agents.some(a => a.agent === 'claude');
+  const anyClaude = agents.some(a => a.agent === 'claude' && !a.host);
   useEffect(() => window.jarvis?.watchGhostty?.(anyClaude), [anyClaude]);
-  const watched = dwelled ? agents.find(a => a.agent === 'claude' && sameTitle(a.title, ghostty.title))?.id ?? null : null;
+  const watched = dwelled ? agents.find(a => a.agent === 'claude' && !a.host && sameTitle(a.title, ghostty.title))?.id ?? null : null;
   // ⌥Tab (spec §15.3): each press toggles the island's list for the keys; while it holds them the window takes key
   // focus without activating the app. `viewing` is the session whose page is open in the island.
   const [keysPress, setKeysPress] = useState(0), [keysOn, setKeysOn] = useState(false), [viewing, setViewing] = useState<string | null>(null);
   // No notice while she talks, while you type to her, while the Dashboard is open or while the keys hold the island;
   // they come up after.
-  const notices = useNotices({ port, agents, hold: agentsFront || busy || dashboard || remoteOpen || detached || moving || carded || nightShown || !!nightRun || keysOn || !!menu, watched, viewing,
+  const notices = useNotices({ port, agents, hold: agentsFront || busy || dashboard || remoteOpen || detached || moving || carded || nightShown || !!nightRun || keysOn || !!menu, watched, viewing, agentsFront,
     cue: (name, gain) => { if (preferences.feedbackEnabled && !s.soundMuted) noticeCue(name, preferences.feedbackVolume, gain); },
-    answer: (req, body) => port ? answerRequest(port, req.id, body) : Promise.resolve(true) });
+    answer: (req, body, id) => agents.find(a => a.id === id)?.host ? answerStartrail(id, req, body) : port ? answerRequest(port, req.id, body) : Promise.resolve(true), mark: markStartrail });
   const notice = notices.current;
-  // Going to a session reads it: its Codex thread, or its Ghostty terminal (a new tab attaches a background one).
+  // Going to a session reads it: Startrail's window on it, its Codex thread, or its Ghostty terminal (a new tab attaches
+  // a background one).
   const jump = (a: Agent) => {
     if (ended(a.state)) notices.read([a.id]);
-    if (a.agent === 'codex') void window.jarvis?.openCodex?.(a.id);
+    if (a.host) window.jarvis?.openAgents?.(a.id);
+    else if (a.agent === 'codex') void window.jarvis?.openCodex?.(a.id);
     else void window.jarvis?.jumpGhostty?.(a.title, a.job ?? '');
   };
   // A notice hangs from the notch and she watches it from home.
