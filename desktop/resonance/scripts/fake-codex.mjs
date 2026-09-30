@@ -4,6 +4,7 @@
 // host asks of it. Threads live in memory; a turn answers from what the message asks for:
 //   FORM  an MCP server's form to fill in     LINK  an MCP server's page to open     VERIFY  an identity check
 //   SLOW  three seconds of work, until interrupted     THINK  reasoning that takes 1.2 seconds, with its summary
+//   MCP <server>  a call to that MCP server's tool that fails
 // A thread keeps its turns and lists them; one that has had a turn can be forked, through a turn or up to one, and a fork
 // with instructions of its own, as a side question's, answers 侧答：<the text>.
 // Its MCP servers are docs (connected, two tools), off (switched off in its config), remote (over HTTP, wants an OAuth
@@ -37,13 +38,20 @@ async function run(t, turnId, text) {
   const turn = t.running = { id: turnId, stop: false }, startedAt = Math.floor(Date.now() / 1000), you = { type: 'userMessage', id: randomUUID(), content: [{ type: 'text', text }] };
   tell('turn/started', { threadId: t.id, turn: { id: turnId, status: 'inProgress', items: [] } });
   tell('item/started', { threadId: t.id, turnId, item: you });
-  for (const [, what] of text.matchAll(/\b(FORM|LINK|VERIFY|SLOW|THINK)\b/g)) {
+  for (const [, what, arg1] of text.matchAll(/\b(FORM|LINK|VERIFY|SLOW|THINK|MCP)\b(?:\s+(\w+))?/g)) {
     if (what === 'SLOW') { for (let i = 0; i < 30 && !turn.stop; i++) await sleep(100); continue; }
     if (what === 'THINK') {
       const id = randomUUID();
       tell('item/started', { threadId: t.id, turnId, item: { type: 'reasoning', id, summary: [], content: [] } });
       for (let i = 0; i < 12 && !turn.stop; i++) await sleep(100);
       tell('item/completed', { threadId: t.id, turnId, item: { type: 'reasoning', id, summary: ['**Checking the ask**\n\nIt wants a short answer; nothing to change.'], content: [] } });
+      continue;
+    }
+    if (what === 'MCP') {
+      const call = { type: 'mcpToolCall', id: randomUUID(), server: arg1 ?? 'broken', tool: 'run', arguments: {}, status: 'inProgress', result: null, error: null };
+      tell('item/started', { threadId: t.id, turnId, item: call });
+      await sleep(100);
+      tell('item/completed', { threadId: t.id, turnId, item: { ...call, status: 'failed', error: { message: `tool call failed for \`${call.server}/run\`` } } });
       continue;
     }
     const base = { threadId: t.id, turnId, serverName: 'docs', _meta: null };

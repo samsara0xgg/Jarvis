@@ -1,6 +1,7 @@
 // Run after npm run build. The composer beyond typing, on the stage (scripts/agents-stage.mjs): files dropped anywhere
 // on the window, of any kind, and a right click on one; the / menu in two groups and /add-dir; each agent's permission
-// modes, with 完全放开 asked once. SHOTS=<folder> keeps a screenshot of each point.
+// modes, with 完全放开 asked once; the line under a step that ran into an MCP server that wants a sign-in or failed, and
+// /mcp with every server. SHOTS=<folder> keeps a screenshot of each point.
 // The window's own calls are recorded as the stage records them; a dropped file's path is a real file in the stage's
 // folder, and a dropped folder is told as a folder the way the Mac's drop tells it.
 import assert from 'node:assert/strict';
@@ -274,6 +275,76 @@ try {
   check('in-mode: /permissions opens the same menu', (await modeMenu()).length === 5);
   await p.keyboard.press('Escape');
 
+  // ---------- in-mcp-login: a server that wants a sign-in gets one line under the step that ran into it ----------
+  const mcpLines = sel => p.evaluate(sel => [...document.querySelectorAll(sel)].filter(e => e.checkVisibility()).map(e => ({ text: e.querySelector('span').textContent,
+    tone: /in-t-(\w+)/.exec(e.className)?.[1], acts: [...e.querySelectorAll('button')].map(b => b.textContent) })), sel);
+  const lineAt = (what, sel, pred = l => l.length) => st.until(what, async () => { const l = await mcpLines(sel); return pred(l) && l; });
+  const ml = await st.session('MCP tracker SLOW', { wait: false });
+  await st.open(ml);
+  let mq = await lineAt('the line under the live step', '.steps.live .step .in-mq');
+  check('in-mcp-login: while it works, a server that wants a sign-in gets one line under the step that ran into it: 登录 · 这次不用', mq.length === 1 && mq[0].text === 'tracker 要登录才能用'
+    && mq[0].tone === 'warm' && mq[0].acts.join() === '登录,这次不用' && await p.locator('.steps.live .step:has(> .in-mq) .a').innerText() === 'tracker · authenticate', mq);
+  await p.mouse.move(5, 5);
+  await st.shot('in-mcp-login');
+  await st.until('the sign-in turn ends', () => st.row(ml).st === 'done');
+  mq = await lineAt('the line over the answer', '.it > .in-mqs .in-mq');
+  check('in-mcp-login: once the steps fold, the same line stands right under them, above the answer', mq.length === 1 && mq[0].text === 'tracker 要登录才能用'
+    && await p.locator('.it > .in-mqs:first-child').count() === 1, mq);
+  await p.click('.steps:has(.in-mq) .s-sum'); await wait(500);
+  check('in-mcp-login: with the steps open it is under its step again, and only there', (await mcpLines('.steps.open .step .in-mq')).length === 1 && !(await mcpLines('.it > .in-mqs .in-mq')).length);
+  await p.click('.steps.open .s-sum'); await wait(500);
+  await p.click('.it > .in-mqs button[data-v="login"]');
+  const opened = await st.until('the sign-in page opened', async () => (await calls('openUrl')).find(c => c[1].startsWith('https://tracker.example.com/')));
+  const during = await mcpLines('.it > .in-mqs .in-mq');
+  check('in-mcp-login: 登录 has the session\'s Claude Code give its sign-in page, opens it in the browser, and the line waits', opened[1] === 'https://tracker.example.com/authorize?client_id=fake'
+    && st.claude().some(e => e.subtype === 'mcp_authenticate' && e.request.serverName === 'tracker') && during[0]?.text === '在浏览器里登录 tracker…' && during[0].tone === 'wait', { opened, during });
+  mq = await lineAt('signed in', '.it > .in-mqs .in-mq', l => l[0]?.tone === 'mint');
+  check('in-mcp-login: signed in, Claude Code connects it, and the line says so', mq[0].text === 'tracker 连上了 · 3 个工具' && !mq[0].acts.length, mq);
+  await st.shot('in-mcp-login-done');
+
+  // ---------- in-mcp-down: a server that failed: 重试 · 这次不用 ----------
+  const mdn = await st.session('MCP flaky');
+  await st.open(mdn);
+  mq = await lineAt('the failed line', '.it > .in-mqs .in-mq');
+  check('in-mcp-down: a server that failed gets one line saying why: 重试 · 这次不用', mq.length === 1 && mq[0].text === 'flaky connect ECONNREFUSED 127.0.0.1:9' && mq[0].tone === 'red'
+    && mq[0].acts.join() === '重试,这次不用', mq);
+  await p.mouse.move(5, 5);
+  await st.shot('in-mcp-down');
+  await p.click('.it > .in-mqs button[data-v="retry"]');
+  mq = await lineAt('connected again', '.it > .in-mqs .in-mq', l => l[0]?.tone === 'mint');
+  check('in-mcp-down: 重试 connects it again, and the line turns to 连上了', mq[0].text === 'flaky 连上了 · 1 个工具' && st.claude().some(e => e.subtype === 'mcp_reconnect' && e.request.serverName === 'flaky'), mq);
+  await st.send(mdn, 'MCP tracker');
+  const two = await lineAt('a second line', '.it > .in-mqs .in-mq', l => l.length === 2);
+  await p.click('.it > .in-mqs .in-t-warm button[data-v="skip"]'); await wait(300);
+  mq = await mcpLines('.in-mq');
+  check('in-mcp-down: 这次不用 hides the line for this session', two[1].text === 'tracker 要登录才能用' && mq.length === 1 && mq[0].text === 'flaky 连上了 · 1 个工具', { two, mq });
+
+  // ---------- in-mcp-list: /mcp, every server with its state, its tools and a switch ----------
+  const panel = () => p.evaluate(() => {
+    const el = document.querySelector('.in-mcp');
+    return el && !el.hidden ? { head: el.querySelector('.in-mh b')?.textContent, foot: el.querySelector('.in-mf')?.textContent, rows: [...el.querySelectorAll('.in-mr')].map(r => ({
+      name: r.querySelector('b').textContent, scope: r.querySelector('small')?.textContent ?? '', text: r.querySelector('.in-mt > span').textContent, st: /in-s-(\w+)/.exec(r.className)[1],
+      act: r.querySelector('.in-ma')?.textContent ?? '', on: r.querySelector('.in-sw').getAttribute('aria-checked') === 'true', grey: r.querySelector('.in-sw').getAttribute('aria-disabled') === 'true' })) } : null;
+  });
+  const row = (pl, n) => pl.rows.find(r => r.name === n);
+  await p.locator('#msg').focus();
+  await type('/mcp'); await p.keyboard.press('Enter'); await p.keyboard.press('Enter');
+  let pl = await st.until('the list', async () => { const x = await panel(); return x?.rows.length && x; });
+  check('in-mcp-list: /mcp lists every server of the session: name, where it is set, state, tools, and a switch', pl.head === '这个会话的 MCP' && pl.rows.map(r => r.name).join() === 'docs,tracker,flaky'
+    && row(pl, 'docs').text === '连上了 · 2 个工具' && row(pl, 'docs').scope === '用户' && row(pl, 'tracker').text === '要登录' && row(pl, 'tracker').act === '登录' && row(pl, 'flaky').text === '连上了 · 1 个工具'
+    && pl.rows.every(r => r.on && !r.grey) && pl.foot.includes('这个文件夹'), pl);
+  await p.mouse.move(5, 5);
+  await st.shot('in-mcp-list-claude');
+  await p.click('.in-mcp .in-mr:has(b:text-is("docs")) .in-sw');
+  pl = await st.until('docs off', async () => { const x = await panel(); return row(x, 'docs')?.st === 'off' && x; });
+  await st.shot('in-mcp-list-off');
+  check('in-mcp-list: a switch turns a Claude Code server off', !row(pl, 'docs').on && row(pl, 'docs').text === '关着' && st.claude().some(e => e.subtype === 'mcp_toggle' && e.request.serverName === 'docs' && e.request.enabled === false), pl);
+  await p.click('.in-mcp .in-mr:has(b:text-is("docs")) .in-sw');
+  pl = await st.until('docs on', async () => { const x = await panel(); return row(x, 'docs')?.st === 'on' && x; });
+  check('in-mcp-list: and on again, connected', row(pl, 'docs').on && row(pl, 'docs').text === '连上了 · 2 个工具' && st.claude().some(e => e.subtype === 'mcp_toggle' && e.request.serverName === 'docs' && e.request.enabled === true), pl);
+  await p.keyboard.press('Escape'); await wait(200);
+  check('in-mcp-list: esc closes it', !await panel());
+
   // Codex: the same place for /add-dir, which it takes each turn.
   // SLOW: the stand-in answers after a moment, as Codex does; one that ends its turn in the same breath as it starts it
   // can outrun the host learning the new thread.
@@ -298,12 +369,34 @@ try {
   await st.until('codex full', () => st.row(cx).mode === 'full');
   await wait(300);
   check('in-mode-codex: 完全放开 asks in Codex\'s words, and 放开 switches it', cxAsk.includes('不限在这个文件夹里') && await warmChip(), cxAsk);
+  // ---------- in-mcp-list, in-mcp-login: Codex's list, its switches grey; its sign-in from the line ----------
+  await p.locator('#msg').focus();
+  await type('/mcp'); await p.keyboard.press('Enter'); await p.keyboard.press('Enter');
+  pl = await st.until('the Codex list', async () => { const x = await panel(); return x?.rows.length && x; });
+  check('in-mcp-list: a Codex session lists its servers too, the switches grey', pl.rows.map(r => `${r.name}:${r.st}`).join() === 'broken:fail,docs:on,off:off,remote:auth' && row(pl, 'broken').act === '重连'
+    && row(pl, 'remote').act === '登录' && row(pl, 'docs').text === '连上了 · 2 个工具' && pl.rows.every(r => r.grey) && pl.foot === 'Codex 的 MCP 在它的 config.toml 里开关', pl);
+  await p.mouse.move(5, 5);
+  await st.shot('in-mcp-list');
+  await p.click('.in-mcp .in-mr:has(b:text-is("docs")) .in-sw', { force: true }); await wait(250);
+  check('in-mcp-list: a grey switch says why', (await p.locator('.toast').innerText()).includes('config.toml') && row(await panel(), 'docs').on);
+  await p.mouse.click(640, 200); await wait(200);
+  check('in-mcp-list: a click anywhere else closes it', !await panel());
+  await st.send(cx, 'MCP remote');
+  mq = await lineAt('the Codex line', '.it > .in-mqs .in-mq');
+  const cxLine = mq[0];
+  await p.click('.it > .in-mqs button[data-v="login"]');
+  mq = await lineAt('Codex signed in', '.it > .in-mqs .in-mq', l => l[0]?.tone === 'mint');
+  check('in-mcp-login: a Codex server that wants a sign-in, the same line; 登录 opens its page, then it is connected', cxLine.text === 'remote 要登录才能用' && cxLine.acts.join() === '登录,这次不用'
+    && (await calls('openUrl')).some(c => c[1] === 'https://remote.example.com/authorize?client_id=fake') && mq[0].text === 'remote 连上了 · 1 个工具', { cxLine, mq });
   await p.keyboard.press('Control+n');
   await wait(400);
   await p.locator('#msg').focus();
   await type('/add-dir'); await p.keyboard.press('Enter'); await p.keyboard.press('Enter');
   await wait(300);
   check('in-adddir: before there is a session it says to start one first', (await p.locator('.toast').innerText()).includes('开了会话再给它加文件夹'), await p.locator('.toast').innerText());
+  await type('/mcp'); await p.keyboard.press('Enter'); await p.keyboard.press('Enter');
+  await wait(300);
+  check('in-mcp-list: before there is a session /mcp says to start one first', (await p.locator('.toast').innerText()).includes('开了会话再看它的 MCP') && !await panel());
   await p.fill('#msg', '');
   await p.click('.tb.mode'); await wait(250);
   await p.click('.pop.on [data-k="mode"].in-warm'); await wait(300);

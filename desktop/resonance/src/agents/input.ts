@@ -1,7 +1,8 @@
 // The composer beyond typing: any file, dropped anywhere on the window or picked, goes with a message; a right click on
 // one copies it, its path, or opens it. The / menu shows the window's own commands above the agent's, and /add-dir
-// gives a session one more folder. The permission modes are each agent's own, and 完全放开 is asked once.
-import type { Agent, File as Upload, Pic, Sess } from '../../electron/agents/types';
+// gives a session one more folder. The permission modes are each agent's own, and 完全放开 is asked once. An MCP server
+// that failed or wants a sign-in gets one line under the step that ran into it; /mcp lists them all.
+import type { Agent, Mcp, File as Upload, Pic, Sess, Step } from '../../electron/agents/types';
 import type { Feature, PageCtx } from './ctx';
 import './input.css';
 
@@ -120,7 +121,130 @@ export const modesHTML = (modes: [string, string][], v: string, agent: Agent) =>
 const askHTML = (agent: Agent, v: string, label: string) => `<p><b>${esc(label)}？</b>${ASK[agent]}</p><span class="in-askb"><button type="button" class="btn" data-act="in-full-no">算了 <kbd>esc</kbd></button>`
   + `<button type="button" class="btn warm" data-act="set" data-k="mode" data-v="${esc(v)}" data-ok="1">放开 <kbd>⏎</kbd></button></span>`;
 
+// ---------- MCP: nothing while all is well; one line under the step that ran into a server that failed or wants a
+// sign-in; /mcp (and the settings sheet, through renderMcp) the whole list ----------
+// What the host last said of a session's servers; `busy`: a sign-in or a connect this window is waiting on; `fixed`: one
+// it signed in to or connected again, whose line turns mint; `skip`: 这次不用, no line for it in this session again.
+type Srv = { list?: Mcp[]; err?: string; loading?: Promise<void>; again?: number };
+const mcp = new Map<string, Srv>(), busy = new Map<string, 'login' | 'wait'>(), fixed = new Set<string>(), skip = new Set<string>(), known = new Set<string>();
+const views = new Map<HTMLElement, { sid: string; page: boolean }>();
+const SCOPE: Record<string, string> = { user: '用户', project: '项目', local: '本地', plugin: '插件', claudeai: 'claude.ai', managed: '管理员', enterprise: '管理员', dynamic: '这次加的' };
+let C: PageCtx | undefined;
+const kOf = (sid: string, n: string) => `${sid}\n${n}`;
+const norm = (n: string) => n.replace(/[^\w-]/g, '_');
+function loadMcp(sid: string): Promise<void> {
+  const m = mcp.get(sid) ?? {};
+  mcp.set(sid, m);
+  if (!C) return Promise.resolve();
+  return m.loading ??= C.call<{ servers: Mcp[] }>(`/sessions/${sid}/mcp`).then(r => { m.list = r.servers; m.err = undefined; }, e => { m.err = e instanceof Error ? e.message : String(e); })
+    .finally(() => {
+      m.loading = undefined;
+      // One still connecting is read again while a list shows it.
+      if (m.list?.some(x => x.st === 'wait') && [...views.values()].some(v => v.sid === sid) && (m.again = (m.again ?? 0) + 1) <= 8) setTimeout(() => void loadMcp(sid), 2000);
+      mcpChanged();
+    });
+}
+function mcpChanged() {
+  C?.draw('main');
+  for (const [el, v] of views) { if (el.isConnected) drawList(el, v.sid, v.page); else views.delete(el); }
+}
+// The server a step called that failed, or that was Claude Code's own authenticate call for a server that wants a sign-in
+// (it succeeds, telling the model to hand the owner a page), once the list is read; undefined until then. A step not
+// seen before reads the list again.
+function serverOf(s: Sess, st: Step, i: number, j: number): Mcp | null | undefined {
+  if (st.k !== 'tool' || !st.t.includes(' · ') || st.t.startsWith('Skill · ') || (st.ok !== false && !st.t.endsWith(' · authenticate'))) return null;
+  const m = mcp.get(s.id), key = `${s.id}:${i}:${j}`, fresh = !known.has(key);
+  known.add(key);
+  if (!m?.list) { if (!m?.loading && !m?.err) void loadMcp(s.id); return undefined; }
+  if (fresh && !m.loading) void loadMcp(s.id);
+  const n = norm(st.t.split(' · ')[0]);
+  return m.list.find(x => norm(x.name) === n) ?? null;
+}
+function lineHTML(s: Sess, m: Mcp): string {
+  const k = kOf(s.id, m.name), b = busy.get(k);
+  if (skip.has(k)) return '';
+  const act = (v: string, l: string) => `<b>·</b><button type="button" data-act="in-mq" data-v="${v}" data-sid="${esc(s.id)}" data-n="${esc(m.name)}">${l}</button>`, no = act('skip', '这次不用');
+  const [tone, text, acts] = b === 'login' ? ['wait', `在浏览器里登录 ${m.name}…`, ''] : b || m.st === 'wait' ? ['wait', `${m.name} 在连…`, '']
+    : m.st === 'auth' ? ['warm', `${m.name} 要登录才能用`, (m.can.includes('login') ? act('login', '登录') : '') + no]
+    : m.st === 'fail' ? ['red', `${m.name} ${m.why ?? '连不上'}`, (m.can.includes('reconnect') ? act('retry', '重试') : '') + no]
+    : m.st === 'off' ? ['plain', `${m.name} 关着`, (m.can.includes('on') ? act('on', '打开') : '') + no]
+    : fixed.has(k) ? ['mint', `${m.name} 连上了${m.tools ? ` · ${m.tools} 个工具` : ''}`, ''] : ['', '', ''];
+  return text ? `<div class="in-mq in-t-${tone}" data-x><i></i><span title="${esc(text)}">${esc(text)}</span>${acts}</div>` : '';
+}
+// Sign in, connect again, switch on or off: the page a sign-in opens is watched until the server is connected (three
+// minutes at most).
+async function mcpDo(s: Sess, n: string, act: 'login' | 'reconnect' | 'on' | 'off' | 'skip') {
+  const k = kOf(s.id, n), c = C;
+  if (!c || busy.has(k)) return;
+  if (act === 'skip') { skip.add(k); c.cue('close'); mcpChanged(); return; }
+  if (act !== 'off') { busy.set(k, act === 'login' ? 'login' : 'wait'); mcpChanged(); }
+  const r = await c.tryCall(`/sessions/${s.id}/mcp`, { name: n, action: act }) as { servers?: Mcp[]; url?: string } | null, m = mcp.get(s.id) ?? {};
+  mcp.set(s.id, m);
+  if (r?.servers) m.list = r.servers;
+  if (r?.url) {
+    void window.agents?.openUrl?.(r.url);
+    for (let t = Date.now(); Date.now() - t < 180_000; ) {
+      await new Promise(ok => setTimeout(ok, 2000));
+      const l = await c.call<{ servers: Mcp[] }>(`/sessions/${s.id}/mcp`).catch(() => null);
+      if (l) m.list = l.servers;
+      if (l?.servers.find(x => x.name === n)?.st === 'on') break;
+    }
+  }
+  busy.delete(k);
+  const now = m.list?.find(x => x.name === n);
+  if ((act === 'login' || act === 'reconnect') && now?.st === 'on') { fixed.add(k); skip.delete(k); c.cue('done'); }
+  else if (act === 'login' && r?.url) c.toast(`还没等到 ${n} 登好`);
+  else if (act === 'reconnect' && r) c.toast(`${n} 还是连不上`);
+  else if ((act === 'on' || act === 'off') && r) c.cue(act);
+  mcpChanged();
+}
+function rowHTML(s: Sess, m: Mcp) {
+  const b = busy.get(kOf(s.id, m.name)), on = m.st !== 'off', n = esc(m.name), can = m.can.includes(on ? 'off' : 'on');
+  const text = b === 'login' ? '在浏览器里登录…' : b || m.st === 'wait' ? '在连…' : m.st === 'on' ? `连上了${m.tools ? ` · ${m.tools} 个工具` : ''}`
+    : m.st === 'auth' ? m.why ?? '要登录' : m.st === 'fail' ? m.why ?? '连不上' : '关着';
+  const act = b || m.st === 'wait' ? '<span class="in-spin" role="img" aria-label="在连"></span>'
+    : m.st === 'auth' && m.can.includes('login') ? `<button type="button" class="in-ma in-warm" data-in-m="login" data-n="${n}">登录</button>`
+    : m.st === 'fail' && m.can.includes('reconnect') ? `<button type="button" class="in-ma" data-in-m="reconnect" data-n="${n}">重连</button>` : '';
+  const sw = `<button type="button" class="in-sw" role="switch" aria-checked="${on}" aria-label="${n}"${can ? '' : ' aria-disabled="true"'} data-in-m="sw" data-n="${n}"><i></i></button>`;
+  return `<div class="in-mr in-s-${m.st}"><i class="in-dot in-s-${b ? 'wait' : m.st}"></i><span class="in-mt"><b>${n}</b>${m.scope ? `<small>${esc(SCOPE[m.scope] ?? m.scope)}</small>` : ''}`
+    + `<span title="${esc(text)}">${esc(text)}</span></span><span class="in-mx">${act}${sw}</span></div>`;
+}
+function drawList(el: HTMLElement, sid: string, page: boolean) {
+  const s = C?.byId(sid), m = mcp.get(sid);
+  if (!s) { el.innerHTML = '<p class="in-mf">没有这个会话</p>'; return; }
+  const f = document.activeElement instanceof HTMLElement && el.contains(document.activeElement) ? [document.activeElement.dataset.n, document.activeElement.dataset.inM] : null;
+  const head = page ? `<p class="in-ms">${esc(s.title)} · ${s.agent === 'codex' ? 'Codex' : 'Claude Code'}</p>`
+    : `<p class="in-mh"><b>这个会话的 MCP</b><button type="button" class="in-mclose" data-in-m="x" aria-label="关闭">${IC.x}</button></p>`;
+  el.innerHTML = head + (!m?.list ? `<p class="in-mf in-mload">${m?.err ? esc(m.err) : '<span class="in-spin"></span>在读它的 MCP…'}</p>`
+    : !m.list.length ? '<p class="in-mf">这个会话没有 MCP</p>'
+    : m.list.map(x => rowHTML(s, x)).join('') + `<p class="in-mf">${s.agent === 'codex' ? 'Codex 的 MCP 在它的 config.toml 里开关' : '关掉的在这个文件夹里都关着，终端里的 Claude Code 也是'}</p>`);
+  // Focus stays on the same row: its button, or its switch once the button is gone.
+  if (f?.[0]) { const q = (a?: string) => a ? [...el.querySelectorAll<HTMLElement>(`[data-in-m="${a}"]`)].find(x => x.dataset.n === f[0]) : undefined; (q(f[1]) ?? q('sw'))?.focus({ preventScroll: true }); }
+  el.dispatchEvent(new Event('in-mcp-drawn'));
+}
+function onList(e: MouseEvent) {
+  const el = e.currentTarget as HTMLElement, b = (e.target as Element).closest<HTMLElement>('[data-in-m]'), v = views.get(el), s = v && C?.byId(v.sid);
+  if (!b || !s || !C) return;
+  const a = b.dataset.inM!, n = b.dataset.n ?? '';
+  if (a === 'x') { el.dispatchEvent(new Event('in-mcp-close', { bubbles: true })); return; }
+  if (a === 'sw') {
+    if (b.getAttribute('aria-disabled') === 'true') { C.toast(s.agent === 'codex' ? 'Codex 的 MCP 要在它的 config.toml 里开关' : '它现在开关不了'); return; }
+    void mcpDo(s, n, b.getAttribute('aria-checked') === 'true' ? 'off' : 'on');
+  } else if (a === 'login' || a === 'reconnect') void mcpDo(s, n, a);
+}
+// A session's whole list, drawn into `el` and kept current as it changes: /mcp shows it over the composer, and the
+// settings sheet can show it as a page of its own (`page`: a line naming the session in place of the title and ✕).
+// It is read from the host each time it is drawn afresh.
+export function renderMcp(el: HTMLElement, s: Sess, page = true) {
+  if (!views.has(el)) el.addEventListener('click', onList);
+  views.set(el, { sid: s.id, page });
+  el.classList.add('in-mcpl'); el.classList.toggle('in-page', page);
+  drawList(el, s.id, page);
+  void loadMcp(s.id);
+}
+
 export function mountInput(ctx: PageCtx): Feature {
+  C = ctx;
   const { win } = ctx;
   own = ctx.own;
   veil = document.createElement('div'); veil.className = 'in-drop'; veil.hidden = true; win.append(veil);
@@ -241,6 +365,28 @@ export function mountInput(ctx: PageCtx): Feature {
   // /permissions opens the same menu as the mode under the composer.
   ctx.own.set('mode', () => { requestAnimationFrame(() => modeChip()?.click()); });
 
+  // ---------- /mcp: the list over the composer, closed by esc, ✕ or a click anywhere else ----------
+  const panel = document.createElement('div'), list = document.createElement('div');
+  panel.className = 'in-mcp'; panel.hidden = true; panel.setAttribute('role', 'dialog'); panel.setAttribute('aria-label', 'MCP'); panel.append(list); win.append(panel);
+  let shown = '';
+  function place() {
+    const box = win.querySelector('.c-box')?.getBoundingClientRect(), w = win.getBoundingClientRect();
+    if (!box) return;
+    panel.style.left = `${Math.max(8, Math.min(box.left - w.left + 8, w.width - panel.offsetWidth - 8))}px`;
+    panel.style.top = `${Math.max(64, box.top - w.top - panel.offsetHeight - 8)}px`;
+  }
+  function openMcp(s: Sess) {
+    ctx.closeMenu(); closeDirs();
+    shown = s.id; panel.hidden = false;
+    renderMcp(list, s, false); place();
+    anim(panel, [{ opacity: 0, transform: 'translateY(4px)' }, { opacity: 1, transform: 'none' }], 160);
+  }
+  function closeMcp(focus = true) { if (!shown) return false; shown = ''; panel.hidden = true; views.delete(list); list.replaceChildren(); if (focus) ctx.ta.focus(); return true; }
+  list.addEventListener('in-mcp-drawn', () => { if (shown) place(); });
+  panel.addEventListener('in-mcp-close', () => closeMcp());
+  win.addEventListener('pointerdown', e => { if (shown && !panel.contains(e.target as Node)) closeMcp(false); }, true);
+  ctx.own.set('mcp', s => { if (s) openMcp(s); else ctx.toast('开了会话再看它的 MCP'); });
+
   // Typed with a path it adds that folder; without one it asks which.
   ctx.own.set('dirs', (s, arg) => {
     if (!s) { ctx.toast('开了会话再给它加文件夹'); return; }
@@ -262,6 +408,7 @@ export function mountInput(ctx: PageCtx): Feature {
       }
       if (a === 'set' && el.dataset.k === 'mode') { ask = null; return false; }
       if (a === 'in-full-no') { noFull(); return true; }
+      if (a === 'in-mq') { const s = ctx.byId(el.dataset.sid!), v = el.dataset.v!; if (s) void mcpDo(s, el.dataset.n!, v === 'retry' ? 'reconnect' : v as 'login' | 'on' | 'skip'); return true; }
       if (a === 'in-a' && target) {
         const t = target, v = el.dataset.v;
         ctx.closeMenu();
@@ -274,8 +421,23 @@ export function mountInput(ctx: PageCtx): Feature {
       }
       return false;
     },
-    esc() { if (!veil?.hidden) { hideVeil(); return true; } return closeDirs() || noFull(); },
-    rows(s) { return ask?.id === s.id ? `<div class="in-ask" role="alertdialog" aria-label="${esc(ask.label)}">${askHTML(s.agent, ask.v, ask.label)}</div>` : ''; },
+    esc() { if (!veil?.hidden) { hideVeil(); return true; } return closeDirs() || noFull() || closeMcp(); },
+    // The line for an MCP server under the last step of the turn that ran into it, while the steps show; folded, the same
+    // lines stand right under them, above the answer.
+    under(s, st, i, j) {
+      const m = serverOf(s, st, i, j), it = ctx.items(s.id)?.[i];
+      if (!m || it?.k !== 'steps' || it.steps.slice(j + 1).some((x, d) => serverOf(s, x, i, j + 1 + d)?.name === m.name)) return '';
+      return lineHTML(s, m);
+    },
+    answer(s, it, i, html) {
+      const prev = i > 0 ? ctx.items(s.id)?.[i - 1] : undefined, seen = new Set<string>();
+      if (prev?.k !== 'steps') return html;
+      const lines = prev.steps.map((st, j) => { const m = serverOf(s, st, i - 1, j); if (!m || seen.has(m.name)) return ''; seen.add(m.name); return lineHTML(s, m); }).join('');
+      return lines ? `<div class="in-mqs" data-x>${lines}</div>${html}` : html;
+    },
+    rows(s) {
+      if (shown && shown !== s.id) closeMcp(false);
+      return ask?.id === s.id ? `<div class="in-ask" role="alertdialog" aria-label="${esc(ask.label)}">${askHTML(s.agent, ask.v, ask.label)}</div>` : ''; },
     key(e) {
       const take = () => { e.preventDefault(); e.stopImmediatePropagation(); return true; };
       // The question takes esc, and ⏎ when nothing is being written.
