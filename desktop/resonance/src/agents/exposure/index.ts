@@ -443,7 +443,7 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
       const writes = stand ? -1e3 : needle.value;
       // Where the cells are too narrow for every label, every other one (counting back from now) keeps its words.
       const every = Math.ceil(64 / g.cell);
-      [...axis.children].forEach((el, i) => { const tick = el as HTMLElement, x = g.guides[i] === undefined ? g.x1 : g.xOf(now - g.guides[i]); tick.style.left = `${x - 30}px`; tick.style.opacity = String(g.guides[i] === undefined ? 1 : (i + 1) % every ? 0 : clamp((Math.abs(x - writes) - 34) / 26)); });
+      [...axis.children].forEach((el, i) => { const tick = el as HTMLElement, x = g.guides[i] === undefined ? g.x1 : g.xOf(now - g.guides[i]); tick.style.left = `${x - 30}px`; tick.style.opacity = String(g.guides[i] !== undefined && (i + 1) % every ? 0 : clamp((Math.abs(x - writes) - 34) / 26)); });
       // The names start a little right of the heads, so a row's star stands before its name, not on its edge.
       rowsEl.querySelectorAll<HTMLElement>('.bw-row').forEach((el, i) => { el.style.left = `${g.x1 + 12}px`; el.style.opacity = String(1 - Math.min(.4, Math.abs(i - focus.value) * .1)); });
       renderWords();
