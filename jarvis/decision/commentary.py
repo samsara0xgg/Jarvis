@@ -130,20 +130,22 @@ def commentary_intent_for(
     user_text: str = "",
     tool_name: str | None = None,
     tool_read_only: bool = False,
+    model_line: bool = False,
 ) -> PresentationIntent | None:
     """Return the D6 intent this action event permits, or ``None``.
 
     ``None`` for every event type but ``action.dispatched`` — including
     ``run.started``, ``gate.evaluated`` and ``action.cancelled`` — for a
-    bookkeeping tool, and for a row that carries no usable ``action_id``,
-    since ``subject_ref`` is that id and an intent about nothing cannot be
-    coalesced or superseded.
+    bookkeeping tool unless ``model_line`` (the model said what it is about
+    to do, so even finding a tool is that doing), and for a row that carries
+    no usable ``action_id``, since ``subject_ref`` is that id and an intent
+    about nothing cannot be coalesced or superseded.
 
     The phrase is English when ``user_text`` (what Allen said or typed this
     turn) reads as English, and an acknowledge names what ``tool_name`` does.
     """
     row = _D6_ROWS.get(event.type)
-    if row is None or tool_name in _SILENT_TOOLS:
+    if row is None or (tool_name in _SILENT_TOOLS and not model_line):
         return None
     action_id = event.payload.get("action_id")
     if not isinstance(action_id, str) or not action_id:

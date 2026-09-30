@@ -714,7 +714,10 @@ _STATUS_HEADER: Final[str] = "[Current state | from the program, not the user's 
 # spoken as the model writes it, so the spoken reply comes first and is the
 # answer itself. The length default and the explicit-request override are the
 # ones the spoken-form rewrite prompt carried (ADR 0082); the line before a
-# tool call is spoken when that call is dispatched.
+# tool call is spoken when that call is dispatched. It names no tool and gives
+# no example of one: the first version did, and the 2026-09-30 live run called
+# the clock in 4 of 8 turns and searched the web in 3 (2% and 4% of the 130
+# spoken turns before).
 _SPOKEN_REPLY_NOTE: Final[str] = (
     "Your reply is spoken aloud as you write it. Start with the answer itself, in plain "
     "spoken sentences in the language of the user's words: by default at most about 60 "
@@ -723,11 +726,9 @@ _SPOKEN_REPLY_NOTE: Final[str] = (
     "verbatim, go into detail or speak at a given length, say all of it. When the answer has "
     "more that belongs on screen (a list, a table, code, links, figures to read), write the "
     "spoken reply inside <voice></voice> and then the full written answer inside "
-    "<document></document>. Before calling a tool that does something for the user "
-    "(searching or fetching the web, looking at the screen, reading mail, checking activity, "
-    "controlling a device), first say one short line in the language of the user's words "
-    "saying what you are about to do, then call the tool in the same response; never end "
-    "your turn on that line. Say nothing before tool_search, get_current_time or remember."
+    "<document></document>. When you need a tool for what the user asked, first say one "
+    "short line in the language of the user's words saying what you are about to do, then "
+    "call the tool in the same response; never end your turn on that line."
 )
 
 
@@ -1888,6 +1889,12 @@ class _StreamedText:
     last_gate_event_uid: str | None
 
 
+# OpenAI's citation markup around a tool result the model cites (U+E200, the
+# cited turns, U+E201): no surface renders it, and TTS read it aloud as "cite
+# turn0search0" (2026-09-30 live run).
+_CITATION_RE: Final[re.Pattern[str]] = re.compile("\ue200[^\ue200\ue201]*\ue201")
+
+
 class _SegmentSpeaker:
     """One run's voice text through the envelope, assembler and stream gate.
 
@@ -1913,6 +1920,7 @@ class _SegmentSpeaker:
         self._classifier = classifier
         self._splitter = StreamEnvelopeSplitter()
         self._assembler = SemanticAssembler()
+        self._citation = ""  # an open citation, held until it closes
         self.prefix = ""
         self.voice = ""
         self.emitted = 0
@@ -1921,12 +1929,18 @@ class _SegmentSpeaker:
 
     def feed(self, text: str) -> None:
         """Take one delta; expose every sentence it completes until sealed."""
+        text = _CITATION_RE.sub("", self._citation + text)
+        cut = text.find("\ue200")
+        self._citation, text = (text[cut:], text[:cut]) if cut >= 0 else ("", text)
         safe = self._splitter.feed(text)
         self.voice += safe
         self._assemble(safe)
 
     def finish(self) -> EnvelopeTail:
         """Flush the held tail and the last fragment; return the envelope's rest."""
+        if self._citation:
+            # A citation that never closed was the model's own text after all.
+            self.feed(self._citation.replace("\ue200", ""))
         tail = self._splitter.finish()
         self.voice += tail.voice_tail
         self._assemble(tail.voice_tail)
@@ -2182,7 +2196,7 @@ class _SpokenReply:
     tool_calls: list[LLMToolCallCompleted] = field(default_factory=list)
 
 
-def _stream_spoken_request(  # noqa: PLR0913 - one request plus the turn's seams
+def _stream_spoken_request(  # noqa: C901, PLR0913 - one request, the turn's seams, one event switch
     ctx: DecideContext,
     route: RoutineStreamRoute,
     speaker: _SegmentSpeaker,
@@ -2216,6 +2230,8 @@ def _stream_spoken_request(  # noqa: PLR0913 - one request plus the turn's seams
         for event in stream:
             _check_response_cancelled(ctx, "while streaming")
             if isinstance(event, LLMTextDelta) and event.phase == "commentary":
+                if not reply.text:
+                    record_realtime_trace("spoken_line_first_text", turn_id=scratch.turn_id)
                 reply.text += event.text
             elif isinstance(event, LLMTextDelta):
                 if not reply.answer:
@@ -2223,6 +2239,10 @@ def _stream_spoken_request(  # noqa: PLR0913 - one request plus the turn's seams
                 reply.answer += event.text
                 speaker.feed(event.text)
             elif isinstance(event, LLMToolCallCompleted):
+                if not reply.tool_calls:
+                    record_realtime_trace(
+                        "spoken_call_written", turn_id=scratch.turn_id, tool_name=event.name,
+                    )
                 reply.tool_calls.append(event)
             elif isinstance(event, LLMResponseFailed):
                 failed = event
@@ -2621,7 +2641,7 @@ def _finalize_response(  # noqa: PLR0913 — draft + the three decide() handles 
     # answer. The user originally asked..." reached memory.db while voice_text
     # was clean). Text outside the envelope has no channel; drop it before the
     # gate hashes the draft.
-    draft_text = envelope_only(draft_text)
+    draft_text = envelope_only(_CITATION_RE.sub("", draft_text))
 
     # Attempt 0 — the verdict on the raw LLM draft (or, on the Tier 0
     # path, on the closed template literal — see `gate_text` in the
