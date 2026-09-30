@@ -30,3 +30,29 @@
 .in-dt svg{width:34px;height:34px;margin-bottom:4px;color:rgb(var(--acc))}
 .in-dt b{font:600 17px/1.4 var(--ui);color:var(--ink)}
 .in-dt small{font-size:12.5px;color:var(--faint)}
+/* ---------- the / menu in two groups ---------- */
+.c-menu:has(> .in-h){max-height:360px;scroll-padding-bottom:34px}
+.c-menu .in-h{padding:6px 10px 3px;font:600 10.5px/1.4 var(--mono);letter-spacing:.03em;color:var(--faint)}
+.c-menu button + .in-h{margin-top:4px;padding-top:9px;border-top:.5px solid rgb(var(--glow) / .12)}
+.c-menu .in-f{position:sticky;bottom:-5px;margin:4px -5px -5px;padding:7px 15px 8px;background:rgb(18 20 40);border-top:.5px solid rgb(var(--glow) / .12);font-size:11px;color:var(--faint)}
+.c-menu .in-f kbd{margin-right:2px}
+/* ---------- /add-dir: a sheet under the title ---------- */
+.in-sheet{position:absolute;z-index:44;left:0;right:0;top:0;bottom:0}
+.in-veil{position:absolute;inset:0;background:rgb(4 5 12 / .55)}
+.in-sh{position:absolute;left:50%;top:16px;width:min(460px,calc(100% - 24px));transform:translateX(-50%);display:flex;flex-direction:column;padding:12px 8px 8px;border-radius:14px;background:#14162c;box-shadow:inset 0 0 0 .5px rgb(var(--acc) / .32),0 30px 60px -20px #000}
+.in-shh{display:flex;align-items:baseline;gap:10px;padding:2px 10px 10px}
+.in-shh b{font:600 14px var(--ui);color:var(--ink)}
+.in-shh span{font-size:12px;color:var(--faint)}
+.in-drs{display:flex;flex-direction:column;gap:1px}
+.in-dr{display:grid;grid-template-columns:16px auto minmax(0,1fr) auto;align-items:center;gap:10px;padding:7px 10px;border-radius:8px;text-align:left;font-size:12.5px;color:var(--muted)}
+.in-dr svg{width:16px;height:16px;color:rgb(var(--acc))}
+.in-dr b{font-weight:500;color:var(--ink)}
+.in-dr span{min-width:0;font:11.5px var(--mono);color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.in-dr em{font-style:normal;font-size:11px;color:var(--faint)}
+.in-dr.in-sel,.in-dr:hover{background:rgb(var(--acc) / .14)}
+.in-dr.in-on em{color:var(--mint)}
+.in-dr.in-other{grid-template-columns:16px minmax(0,1fr)}
+.in-dr.in-other svg{color:var(--faint)}
+.in-dr.in-other b{font-weight:400;color:var(--muted)}
+.in-sep{display:block;height:1px;margin:4px 8px;background:var(--line)}
+.in-shf{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:8px;padding:8px 4px 0 10px;border-top:.5px solid rgb(var(--acc) / .12);font-size:11.5px;color:var(--faint)}

@@ -1,5 +1,6 @@
 // Run after npm run build. The composer beyond typing, on the stage (scripts/agents-stage.mjs): files dropped anywhere
-// on the window, of any kind, and a right click on one. SHOTS=<folder> keeps a screenshot of each point.
+// on the window, of any kind, and a right click on one; the / menu in two groups and /add-dir. SHOTS=<folder> keeps a
+// screenshot of each point.
 // The window's own calls are recorded as the stage records them; a dropped file's path is a real file in the stage's
 // folder, and a dropped folder is told as a folder the way the Mac's drop tells it.
 import assert from 'node:assert/strict';
@@ -170,6 +171,89 @@ try {
   const back = (await items(fk.id)).find(i => i.k === 'you' && i.files?.length);
   check('read back, the files named by path keep their paths', [F.log, F.ts, F.md, F.mov, F.key].every(f => back.files.some(b => b.path === f.path && b.name === f.name))
     && back.files.some(b => b.name === 'adr' && b.path === `${F.dir.path}/`), back.files);
+
+  // ---------- in-slash: the window's own commands above the agent's, one filter over both ----------
+  const menu = () => p.evaluate(() => {
+    const out = []; let g = null, sel = '';
+    for (const el of document.querySelector('.c-menu').children) {
+      if (el.classList.contains('in-h')) out.push(g = { head: el.textContent, cmds: [] });
+      else if (el.tagName === 'BUTTON') { g.cmds.push(el.querySelector('code').textContent); if (el.classList.contains('on')) sel = el.querySelector('code').textContent; }
+    }
+    return { groups: out, sel, foot: document.querySelector('.c-menu .in-f')?.textContent ?? '', on: document.querySelector('.c-menu').classList.contains('on') };
+  });
+  const type = async text => { await p.fill('#msg', ''); await p.locator('#msg').pressSequentially(text); await wait(500); };
+  await p.locator('#msg').focus();
+  await type('/');
+  let m = await menu();
+  check('in-slash: / opens the window\'s own commands above Claude Code\'s, with how to pick', m.on && m.groups.length === 2 && m.groups[0].head === '窗口里的' && m.groups[0].cmds.includes('/add-dir')
+    && m.groups[1].head === 'Claude Code 的' && m.groups[1].cmds.includes('/fake-skill') && !m.groups[1].cmds.includes('/add-dir') && m.sel === m.groups[0].cmds[0] && m.foot.includes('填进去'), m);
+  await st.shot('in-slash');
+  await type('/d');
+  m = await menu();
+  check('in-slash: one filter over both groups, a name that only holds it too', m.groups.length === 2 && m.groups[0].cmds.join() === '/add-dir' && m.sel === '/add-dir' && m.groups[1].cmds[0].startsWith('/d') && m.groups[1].cmds.every(c => c.slice(1).includes('d')), m);
+  await p.keyboard.press('ArrowDown'); await wait(150);
+  m = await menu();
+  const second = m.groups[1].cmds[0];
+  await p.keyboard.press('Tab'); await wait(200);
+  check('in-slash: ↓ moves past the group line to the next command, ⇥ fills it in', m.sel === second && await p.inputValue('#msg') === `${second} ` && !(await menu()).on, { m, v: await p.inputValue('#msg') });
+
+  // ---------- in-adddir: /add-dir picks a folder; the conversation says so ----------
+  for (const n of ['timesink', 'resonance-lab']) mkdirSync(path.join(st.HOME, 'Projects', n, '.git'), { recursive: true });
+  const other = path.join(st.HOME, 'elsewhere');
+  mkdirSync(other, { recursive: true });
+  await type('/add-');
+  await p.keyboard.press('Enter'); await wait(150);
+  check('in-adddir: ⏎ fills /add-dir in', await p.inputValue('#msg') === '/add-dir ');
+  await p.keyboard.press('Enter');
+  await p.waitForSelector('.in-sheet:not([hidden]) .in-dr', { timeout: 5000 });
+  await wait(300);
+  const sheetRows = () => p.evaluate(() => [...document.querySelectorAll('.in-sheet .in-dr')].map(b => b.innerText.replace(/\s+/g, ' ').trim() + (b.classList.contains('in-sel') ? '*' : '')));
+  let rows = await sheetRows();
+  check('in-adddir: /add-dir opens the folders you work in, and the Mac\'s picker for any other', rows.length === 3 && rows[0].startsWith('resonance-lab') && rows[0].endsWith('*') && rows[1].startsWith('timesink')
+    && rows[2] === '选别的文件夹…' && !rows.some(r => r.startsWith('app ')) && await p.inputValue('#msg') === '', rows);
+  await st.shot('in-adddir');
+  await p.keyboard.press('ArrowDown'); await p.keyboard.press('Enter');
+  const lab = path.join(st.HOME, 'Projects', 'timesink');
+  await st.until('the folder added', () => st.row(id).dirs?.includes(lab));
+  await wait(500);
+  const noteText = await p.locator('.conv .note').last().innerText();
+  check('in-adddir: ⏎ adds the folder for this session, and the conversation says so in one line', await p.locator('.in-sheet').isHidden() && noteText.includes('它也能动这些文件夹了') && noteText.includes('timesink'), noteText);
+  await p.evaluate(() => document.querySelectorAll('.conv').forEach(c => { c.scrollTop = c.scrollHeight; }));
+  await wait(200);
+  await st.shot('in-adddir-done');
+  await type('/add-dir'); await p.keyboard.press('Enter'); await p.keyboard.press('Enter');
+  await p.waitForSelector('.in-sheet:not([hidden]) .in-dr', { timeout: 5000 });
+  rows = await sheetRows();
+  await p.evaluate(p => { window.__folder = p; }, other);
+  await p.click('.in-sheet .in-other');
+  await st.until('the picked folder added', () => st.row(id).dirs?.includes(other));
+  check('in-adddir: a folder added shows 加过了; 选别的文件夹… asks the Mac\'s picker', rows.some(r => r.startsWith('timesink') && r.includes('加过了')) && (await calls('folder')).length === 1, rows);
+  await p.keyboard.press('Escape');
+  const third = path.join(st.HOME, 'Projects', 'resonance-lab');
+  await type(`/add-dir ${third}`); await p.keyboard.press('Enter');
+  await st.until('the typed folder added', () => st.row(id).dirs?.length === 3);
+  check('in-adddir: /add-dir with a path adds that one, keeping the others', st.row(id).dirs.join() === [lab, other, third].join(), st.row(id).dirs);
+  await type('/add-dir'); await p.keyboard.press('Enter'); await p.keyboard.press('Enter');
+  await p.waitForSelector('.in-sheet:not([hidden])', { timeout: 5000 });
+  await p.keyboard.press('Escape'); await wait(200);
+  check('in-adddir: esc puts the sheet away and nothing is added', await p.locator('.in-sheet').isHidden() && st.row(id).dirs.length === 3);
+
+  // Codex: the same place for /add-dir, which it takes each turn.
+  const cx = await st.session('hello', { agent: 'codex' });
+  await st.open(cx);
+  await p.locator('#msg').focus();
+  await type('/');
+  m = await menu();
+  check('in-slash: a Codex session\'s menu has /add-dir as the window\'s and Codex\'s own below', m.groups[0].head === '窗口里的' && m.groups[0].cmds.includes('/add-dir') && m.groups[1].head === 'Codex 的' && m.groups[1].cmds.includes('/compact'), m);
+  await type(`/add-dir ${other}`); await p.keyboard.press('Enter');
+  await st.until('codex folder added', () => st.row(cx).dirs?.includes(other));
+  check('in-adddir: a Codex session takes a folder too', (await items(cx)).some(i => i.k === 'note' && i.text.includes('elsewhere')));
+  await p.keyboard.press('Control+n');
+  await wait(400);
+  await p.locator('#msg').focus();
+  await type('/add-dir'); await p.keyboard.press('Enter'); await p.keyboard.press('Enter');
+  await wait(300);
+  check('in-adddir: before there is a session it says to start one first', (await p.locator('.toast').innerText()).includes('开了会话再给它加文件夹'), await p.locator('.toast').innerText());
 
   check('no errors on the page', !st.errors.length, st.errors);
   console.log(`\n${checks.length} checks passed`);
