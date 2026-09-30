@@ -332,11 +332,16 @@ try {
   await p.click('.fr-nav [data-p="notify"]');
   await waitFor('the switches', () => has('.fr-sw[data-k="done"]'));
   const sw = await p.locator('.fr-sw').evaluateAll(els => Object.fromEntries(els.map(e => [e.dataset.k, e.getAttribute('aria-checked')])));
-  check('通知: 做完了 off by default, waiting and errors on, no Dock row', sw.done === 'false' && sw.wait === 'true' && sw.err === 'true' && !/Dock/.test(await text('.fr-set')), sw);
+  check('通知: 做完了 off by default, waiting and errors on, the notch on, no Dock row', sw.done === 'false' && sw.wait === 'true' && sw.err === 'true' && sw.notch === 'true' && !/Dock/.test(await text('.fr-set')), sw);
   await p.click('.fr-sw[data-k="done"]');
   await waitFor('done saved', async () => (await st.call('/settings')).settings?.notify?.done === true);
   await p.click('.fr-sw[data-k="done"]');
   await waitFor('done off again', async () => (await st.call('/settings')).settings?.notify?.done === false && await has('.fr-sw[data-k="done"][aria-checked="false"]'));
+  await p.click('.fr-sw[data-k="notch"]');
+  await waitFor('notch off', async () => (await st.call('/settings')).settings?.notify?.notch === false && await has('.fr-sw[data-k="notch"][aria-checked="false"]'));
+  await p.click('.fr-sw[data-k="notch"]');
+  await waitFor('notch on again', async () => (await st.call('/settings')).settings?.notify?.notch === undefined && await has('.fr-sw[data-k="notch"][aria-checked="true"]'));
+  check('the notch switch: on unless turned off, the rest kept as they were', (await st.call('/settings')).settings?.notify?.done === false);
   check('a switch is kept at once with POST /settings', sent.filter(x => x.path === '/settings' && x.body?.notify).length >= 2 && await has('.fr-sw[data-k="done"][aria-checked="false"]'));
   await p.click('.fr-set [data-act="fr-test"]');
   await waitFor('the test note', async () => (await calls()).some(c => c[0] === 'notifyTest'));

@@ -355,6 +355,13 @@ try {
   check('in-mcp-list: and on again, connected', row(pl, 'docs').on && row(pl, 'docs').text === '连上了 · 2 个工具' && st.claude().some(e => e.subtype === 'mcp_toggle' && e.request.serverName === 'docs' && e.request.enabled === true), pl);
   await p.keyboard.press('Escape'); await wait(200);
   check('in-mcp-list: esc closes it', !await panel());
+  await p.keyboard.press('Control+,');
+  await p.waitForSelector('.fr-set .fr-nav [data-p="mcp"]', { timeout: 5000 });
+  await p.click('.fr-nav [data-p="mcp"]');
+  await st.until('the MCP page', () => p.evaluate(() => /docs/.test(document.querySelector('.fr-set .in-mcpl')?.textContent ?? '')));
+  check('settings has an MCP page: the session in front\'s list, the one /mcp shows', await p.evaluate(() => { const t = document.querySelector('.fr-set .in-mcpl').textContent; return /docs/.test(t) && /tracker/.test(t) && /flaky/.test(t); }));
+  await st.shot('in-mcp-settings');
+  await p.keyboard.press('Escape'); await wait(300);
 
   // Codex: the same place for /add-dir, which it takes each turn.
   // SLOW: the stand-in answers after a moment, as Codex does; one that ends its turn in the same breath as it starts it

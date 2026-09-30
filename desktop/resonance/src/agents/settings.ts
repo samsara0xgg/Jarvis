@@ -35,7 +35,7 @@ const store = {
 };
 const PAGES: [string, string][] = [['key', '钥匙'], ['doc', '体检'], ['notify', '通知'], ['proj', '项目']];
 const STEPS: [string, string, string][] = [['钥匙', '钥匙', '填好一个就能开始，以后在设置里还能改。'], ['体检', '体检', '看看这台 Mac 上还缺什么。'], ['项目', '选一个项目文件夹', '第一个会话在这个文件夹里开。']];
-const NOTIFY0 = { done: false, wait: true, err: true };
+const NOTIFY0: NonNullable<Settings['notify']> = { done: false, wait: true, err: true };
 type Row = { k: string; name: string; v: 'ok' | 'bad' | 'may' | 'wait'; say: string; at?: string; plain?: boolean; fix?: [string, string] };
 
 export function mountSettings(ctx: PageCtx): Feature {
@@ -157,8 +157,11 @@ export function mountSettings(ctx: PageCtx): Feature {
   function notifyHTML() {
     const n = notify(), sw = (k: 'done' | 'wait' | 'err', l: string, d: string) => `<div class="fr-tr"><span class="fr-tl"><b>${l}</b><small>${d}</small></span>`
       + `<button type="button" class="fr-sw" role="switch" data-act="fr-sw" data-k="${k}" aria-checked="${n[k]}" aria-label="${l}"><i></i></button></div>`;
+    const notch = n.notch !== false;
     return `<div class="fr-cd fr-tg0">${sw('done', '做完了', n.done ? '做完了也弹一条' : '不弹：星星落到她旁边，等你回来看')}${sw('wait', '等你批准或回答', '点它直接到那个会话')}${sw('err', '出错了', '点它直接到那个会话')}</div>`
       + '<p class="fr-fn">窗口在前台时不弹；在后面时弹出来不出声。同一个会话 20 秒内只弹一条。</p>'
+      + `<div class="fr-cd fr-tg0"><div class="fr-tr"><span class="fr-tl"><b>Jarvis 开着时用刘海说</b><small>${notch ? '要批的、要回答的从刘海垂下来就地回答，不弹系统通知' : '不用刘海，照上面弹系统通知'}</small></span>`
+      + `<button type="button" class="fr-sw" role="switch" data-act="fr-sw" data-k="notch" aria-checked="${notch}" aria-label="Jarvis 开着时用刘海说"><i></i></button></div></div>`
       + '<div class="fr-kr"><button type="button" class="btn sm" data-act="fr-test">发一条试试</button></div>';
   }
   function whenUsed(at: number) {
@@ -458,7 +461,11 @@ export function mountSettings(ctx: PageCtx): Feature {
       else if (a === 'fr-fix') void fix(el.dataset.x!);
       else if (a === 'fr-paths') { S.paths = !S.paths; redraw(); }
       else if (a === 'fr-recheck') void recheck();
-      else if (a === 'fr-sw') { const k = el.dataset.k as 'done' | 'wait' | 'err', n = { ...notify(), [k]: !notify()[k] }; ctx.cue(n[k] ? 'on' : 'off', .6); void save({ notify: n }).then(redraw); }
+      else if (a === 'fr-sw') {
+        // The notch is on unless switched off; the whole notify goes back each time.
+        const k = el.dataset.k as 'done' | 'wait' | 'err' | 'notch', on = k === 'notch' ? notify().notch === false : !notify()[k], n = { ...notify(), [k]: on };
+        ctx.cue(on ? 'on' : 'off', .6); void save({ notify: n }).then(redraw);
+      }
       else if (a === 'fr-test') void testNote();
       else if (a === 'fr-add') void addFolder();
       else if (a === 'fr-unadd') void unadd(el.dataset.path!, el.closest('.fr-pj'));
