@@ -46,7 +46,8 @@ const text = c => typeof c === 'string' ? c : Array.isArray(c) ? c.filter(b => b
 
 // ---------- the transcript, one entry per line, each pointing at the one before ----------
 let last = null, first = true;
-if (existsSync(TRANSCRIPT)) for (const l of readFileSync(TRANSCRIPT, 'utf8').split('\n')) { try { const e = JSON.parse(l); if (e.uuid && !e.isSidechain) last = e.uuid; } catch { /* not an entry */ } }
+// A message follows the last message, not a title line (a fork's transcript starts with a custom-title of its own).
+if (existsSync(TRANSCRIPT)) for (const l of readFileSync(TRANSCRIPT, 'utf8').split('\n')) { try { const e = JSON.parse(l); if (e.uuid && !e.isSidechain && (e.type === 'user' || e.type === 'assistant')) last = e.uuid; } catch { /* not an entry */ } }
 function record(e) {
   mkdirSync(path.dirname(TRANSCRIPT), { recursive: true });
   const entry = { parentUuid: last, isSidechain: false, userType: 'external', cwd, sessionId: sid, version: '9.9.9', gitBranch: 'main', timestamp: new Date().toISOString(), ...e };
