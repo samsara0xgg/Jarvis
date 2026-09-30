@@ -629,6 +629,11 @@ class DecideContext:
     # answers that said an app was not connected; this line is the current
     # fact beside them.
     connected_apps: str | None = None
+    # docs/plans/replay-as-sent-proposal.md: keeps this turn's own user
+    # message, state block and words, as the first request sends it, so later
+    # histories replay it verbatim. Set, the state block's header reads true
+    # in a replay and the voice rules ride the system prompt instead.
+    record_sent_message: Callable[[str], None] | None = None
     # ADR-0008 Step 8. ``routine_stream`` is the pre-routed streaming seam the
     # runtime bound for this run (None on every other turn, so decide() keeps
     # the batch tool loop). ``stream_correction`` marks a full-text run that
@@ -709,6 +714,10 @@ class _Scratch:
 
 
 _STATUS_HEADER: Final[str] = "[Current state | from the program, not the user's words]"
+# The same block where later turns replay it: true both live and in a replay.
+_SENT_STATUS_HEADER: Final[str] = (
+    "[State when this was said | from the program, not the user's words]"
+)
 
 # docs/plans/speak-as-written-proposal.md: on the spoken route each sentence is
 # spoken as the model writes it, so the spoken reply comes first and is the
@@ -728,6 +737,11 @@ _SPOKEN_REPLY_NOTE: Final[str] = (
     "short line in the language of the user's words saying what you are about to do, then "
     "call the tool in the same response; never end your turn on that line."
 )
+# The note as a system prompt rule, for a history that replays each state block
+# as sent: repeated in every replayed voice message it would grow the history.
+SPOKEN_REPLY_RULES: Final[str] = (
+    f'When the program\'s state says "Channel: voice": {_SPOKEN_REPLY_NOTE}'
+)
 
 
 def _interaction_line(packet: SituationPacket, ctx: DecideContext) -> str | None:
@@ -740,7 +754,7 @@ def _interaction_line(packet: SituationPacket, ctx: DecideContext) -> str | None
     if channel not in SPOKEN_CHANNELS:
         return "Channel: text"
     route = ctx.routine_stream
-    if route is not None and route.context.route == "spoken":
+    if route is not None and route.context.route == "spoken" and ctx.record_sent_message is None:
         return f"Channel: voice\n{_SPOKEN_REPLY_NOTE}"
     return "Channel: voice"
 
@@ -854,7 +868,8 @@ def _current_status_block(packet: SituationPacket, ctx: DecideContext) -> str | 
     ]
     if not lines:
         return None
-    return "\n".join((_STATUS_HEADER, *lines))
+    header = _STATUS_HEADER if ctx.record_sent_message is None else _SENT_STATUS_HEADER
+    return "\n".join((header, *lines))
 
 
 def _insert_system_notes(
@@ -871,14 +886,17 @@ def _insert_system_notes(
     rides at the head of this turn's own user message under a header that
     says it is not the user's words. A history ending on an unanswered
     user row folds that row in ahead of the header, so a request never
-    carries two user messages in a row.
+    carries two user messages in a row. With ``record_sent_message`` the
+    turn's own message is kept as sent, before any such fold.
     """
     status = _current_status_block(packet, ctx)
-    if status is not None:
-        for message in reversed(messages):
-            if message.get("role") == "user":
+    for message in reversed(messages):
+        if message.get("role") == "user":
+            if status is not None:
                 message["content"] = f"{status}\n\n{message['content']}"
-                break
+            if ctx.record_sent_message is not None:
+                ctx.record_sent_message(str(message["content"]))
+            break
     head = [dict(turn) for turn in ctx.history]
     if head and head[-1]["role"] == "user" and messages and messages[0].get("role") == "user":
         messages[0]["content"] = f"{head.pop()['content']}\n\n{messages[0]['content']}"

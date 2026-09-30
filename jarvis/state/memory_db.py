@@ -57,16 +57,25 @@ CREATE TABLE IF NOT EXISTS summaries (
     input_chars    INTEGER NOT NULL,
     output_chars   INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS sent (
+    record_id TEXT PRIMARY KEY REFERENCES records(id),
+    text      TEXT NOT NULL
+);
 """
 
 # ``PRAGMA user_version`` (ADR 0068). 0 is a file from before the stamp, same
 # schema as 1; a file above this was written by a newer Jarvis and is refused.
+# ``sent`` is additive: an older opener ignores it, so it needs no new version.
 SCHEMA_VERSION: Final[int] = 1
 DEFAULT_SEARCH_LIMIT: Final[int] = 20
 # The Live brief's label for the user's own rows; the stored source stays ``allen``.
 _USER_LABEL: Final[str] = "user"
 # The time line carries a "since the last exchange" suffix once the gap passes this.
 _GAP_NOTE_AFTER: Final[timedelta] = timedelta(minutes=30)
+# Heads a history that shows only its recent rows (``render_context(keep_rows=)``).
+_EARLIER_NOT_SHOWN: Final[str] = (
+    "[Earlier conversation is not shown here; search_records and read_records find it]"
+)
 
 # Answers written before 2026-09-21 carry the retired <voice>/<document>
 # envelope; the store keeps them as written, the prompt shows the words.
@@ -127,7 +136,9 @@ class SessionSettings:
     whole system prompt, and an empty one means no compaction ever runs.
     ``history_since`` is the ISO timestamp the prompt's history starts at;
     earlier records stay in the store for search and never reach the prompt
-    or a compaction.
+    or a compaction. ``replay_sent`` replays each turn's user message as it
+    was sent (docs/plans/replay-as-sent-proposal.md); ``recent_rows`` > 0
+    shows only the recent rows, the head moving ``recent_step_rows`` at a time.
     """
 
     idle_before_compact_s: float = 3600.0
@@ -138,6 +149,9 @@ class SessionSettings:
     live_brief_max_chars: int = 1500
     compact_prompt: str = ""
     history_since: str = ""
+    replay_sent: bool = False
+    recent_rows: int = 0
+    recent_step_rows: int = 40
 
     @classmethod
     def from_config(cls, raw: object) -> SessionSettings:
@@ -173,6 +187,9 @@ class SessionSettings:
             ),
             compact_prompt=prompt.strip() if isinstance(prompt, str) else "",
             history_since=since.strip() if isinstance(since, str) else "",
+            replay_sent=values.get("replay_sent") is True,
+            recent_rows=int(_positive("recent_rows", 0)),
+            recent_step_rows=int(_positive("recent_step_rows", defaults.recent_step_rows)),
         )
 
 
@@ -290,6 +307,19 @@ def append_record(
             "INSERT OR IGNORE INTO records (id, ts, source, text, audio_path) "
             "VALUES (?, ?, ?, ?, ?)",
             (record_id, iso_seconds(local_now()), source, text, audio_path),
+        )
+
+
+def record_sent(path: Path, record_id: str, text: str) -> None:
+    """Keep the user message a turn sent for ``record_id``; the first one stays.
+
+    Later histories replay it as sent, so a turn's request starts with the
+    previous turn's and the provider's cache, which only reuses a whole
+    earlier request, can serve it.
+    """
+    with closing(open_memory_db(path)) as conn, conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO sent (record_id, text) VALUES (?, ?)", (record_id, text),
         )
 
 
@@ -418,8 +448,14 @@ def _append_turn(turns: list[dict[str, str]], role: str, content: str) -> None:
         turns.append({"role": role, "content": content})
 
 
-def render_context(
-    path: Path, *, exclude_id: str, since: str = "", now: datetime | None = None,
+def render_context(  # noqa: PLR0913 — the window knobs ride beside the read.
+    path: Path,
+    *,
+    exclude_id: str,
+    since: str = "",
+    now: datetime | None = None,
+    keep_rows: int = 0,
+    step_rows: int = 0,
 ) -> MemoryContext:
     """Render the decision-path prompt blocks in one consistent read.
 
@@ -430,11 +466,15 @@ def render_context(
     one message. Records carry their words only (ADR 0044): no timestamp or
     source label, which the model copied into its answers; the first
     ``user`` row of each day opens with a day marker (``[9月24日 周四]`` /
-    ``[Thursday, September 24]``, in the language setting). It only
-    grows at its end between compactions, so the provider's prefix cache
-    covers it. ``now`` is the per-turn time line. ``exclude_id`` is the
-    current turn's own utterance, which the prompt already carries as the
-    live user message.
+    ``[Thursday, September 24]``, in the language setting). A row with a
+    ``sent`` message is replayed exactly as its turn sent it, state block
+    and all, without a marker. ``now`` is the per-turn time line.
+    ``exclude_id`` is the current turn's own utterance, which the prompt
+    already carries as the live user message.
+
+    ``keep_rows`` > 0 shows only the most recent rows, between ``keep_rows``
+    and ``keep_rows + step_rows - 1`` of them: the first shown row moves
+    ``step_rows`` at a time, so the history keeps its head between moves.
     """
     moment = now or local_now()
     with closing(open_memory_db(path)) as conn:
@@ -442,6 +482,13 @@ def render_context(
         current = _current_summary(conn)
         anchor = _effective_anchor(conn, current.anchor_rowid if current else None, since)
         records = _records_after(conn, anchor)
+        sent = dict(
+            conn.execute(
+                "SELECT s.record_id, s.text FROM sent s JOIN records r ON r.id = s.record_id "
+                "WHERE r.rowid > ?",
+                (anchor,),
+            ).fetchall(),
+        )
     profile_block = "\n".join(["[About the user]", *profile]) if profile else ""
     turns: list[dict[str, str]] = []
     if current is not None:
@@ -453,13 +500,23 @@ def render_context(
             f"{current.summary}",
         )
     shown = [record for record in records if record[0] != exclude_id]
+    if keep_rows > 0 and step_rows > 0 and len(shown) > keep_rows:
+        start = (len(shown) - keep_rows) // step_rows * step_rows
+        if start:
+            shown = shown[start:]
+            _append_turn(turns, "user", _EARLIER_NOT_SHOWN)
     marked_day = None
-    for _, ts, source, text in shown:
+    for record_id, ts, source, text in shown:
         role = "user" if source == "allen" else "assistant"
-        content = _plain(text)
         day = datetime.fromisoformat(ts).date()
-        if role == "user" and day != marked_day:
-            content = f"{lang.day_marker(day)}\n{content}"
+        as_sent = sent.get(record_id)
+        if as_sent is not None:
+            content = str(as_sent)
+        else:
+            content = _plain(text)
+            if role == "user" and day != marked_day:
+                content = f"{lang.day_marker(day)}\n{content}"
+        if role == "user":
             marked_day = day
         _append_turn(turns, role, content)
     last_ts = shown[-1][1] if shown else (current.anchor_ts if current else None)

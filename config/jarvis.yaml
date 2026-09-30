@@ -710,6 +710,15 @@ night:
 # the supervisor sweep while Jarvis is idle, folds the records older than
 # verbatim_window_days into one summary row, and leaves the rest verbatim.
 session:
+  # docs/plans/replay-as-sent-proposal.md。true：每轮发给模型的那条 user 消息（状态块 + 原话）
+  # 原样存下，以后的历史原样回放，于是这一轮的请求以上一轮的请求开头；OpenAI 的缓存只复用
+  # 整段旧请求（2026-09-30 实测：只差最后一句也只命中 system+工具的约 4.7k），不这样每轮第一次
+  # 请求都付全价。开着时语音规则和已连接的应用改放 system。
+  replay_sent: false
+  # 大于 0：历史只带最近这么多行（一行一条记录），更早的靠 search_records 查；开头每
+  # recent_step_rows 行才往后挪一次，挪之间历史开头不变，缓存照样命中。0 = 全带。
+  recent_rows: 0
+  recent_step_rows: 40
   idle_before_compact_s: 3600     # no record written and no Live connection for this long
   compact_at_context_ratio: 0.4   # verbatim history estimated over this share of the
                                   # decision preset's context_length is eligible
