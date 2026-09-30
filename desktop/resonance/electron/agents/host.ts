@@ -116,18 +116,20 @@ const UPLOADS = path.join(DIR, 'uploads');
 export async function sent(files: File[], agent: Agent): Promise<Sent> {
   const out: Sent = { images: [], local: [], pdfs: [], paths: [], pics: [] };
   for (const f of files) {
-    let url = f.url;
+    let url = f.url, at: { path?: string } = {};
     if (f.path) {
       const type = mimeOf(f.path), dir = (await stat(f.path)).isDirectory();
-      if (!dir && type?.startsWith('image/') && agent === 'codex') { out.local.push(f.path); out.pics.push(await picFile(f.name, f.path)); continue; }
+      // The conversation keeps where it is, so it can be opened and shown in Finder later; a folder is named with its /.
+      at = { path: dir ? `${f.path.replace(/\/+$/, '')}/` : f.path };
+      if (!dir && type?.startsWith('image/') && agent === 'codex') { out.local.push(f.path); out.pics.push({ ...await picFile(f.name, f.path), ...at }); continue; }
       const buf = !dir && type && (type.startsWith('image/') || agent === 'claude') ? await readFile(f.path) : null;
-      if (!buf || buf.length > 30 << 20) { out.paths.push(f.path); out.pics.push({ name: f.name }); continue; }
+      if (!buf || buf.length > 30 << 20) { out.paths.push(at.path!); out.pics.push({ name: f.name, ...at }); continue; }
       url = `data:${type};base64,${buf.toString('base64')}`;
     }
     const m = /^data:(image\/(?:png|jpeg|gif|webp)|application\/pdf);base64,(.+)$/s.exec(url ?? '');
-    if (m && m[1] === 'application/pdf' && agent === 'claude') { out.pdfs.push({ name: f.name, data: m[2] }); out.pics.push({ name: f.name }); }
-    else if (m && m[1] !== 'application/pdf') { out.images.push({ type: m[1], data: m[2], url: url! }); out.pics.push(pic(f.name, url)); }
-    else { out.paths.push(await keepUpload(UPLOADS, f.name, url!)); out.pics.push({ name: f.name }); }
+    if (m && m[1] === 'application/pdf' && agent === 'claude') { out.pdfs.push({ name: f.name, data: m[2] }); out.pics.push({ name: f.name, ...at }); }
+    else if (m && m[1] !== 'application/pdf') { out.images.push({ type: m[1], data: m[2], url: url! }); out.pics.push({ ...pic(f.name, url), ...at }); }
+    else { const kept = await keepUpload(UPLOADS, f.name, url!); out.paths.push(kept); out.pics.push({ name: f.name, path: kept }); }
   }
   return out;
 }

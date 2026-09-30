@@ -224,7 +224,7 @@ function said(s: Session, m: SDKMessage | { type: string; uuid?: string; message
     const raw = textOf(content), cmd = /<command-name>([^<]*)<\/command-name>[\s\S]*?(?:<command-args>([^<]*)<\/command-args>)?/.exec(raw), { text, paths } = attached(raw);
     const blocks = Array.isArray(content) ? content as Block[] : [];
     const files = [...blocks.filter(b => b.type === 'image').map((b, k) => pic(`图片 ${k + 1}`, b.source?.type === 'base64' ? `data:${b.source.media_type};base64,${b.source.data}` : '')),
-      ...blocks.filter(b => b.type === 'document').map((b, k) => ({ name: str(b.title) || `PDF ${k + 1}` })), ...paths.map(p => ({ name: p.split('/').pop() || p }))];
+      ...blocks.filter(b => b.type === 'document').map((b, k) => ({ name: str(b.title) || `PDF ${k + 1}` })), ...paths.map(p => ({ name: p.replace(/\/$/, '').split('/').pop() || p, path: p }))];
     if (cmd) s.you(`${cmd[1]} ${cmd[2] ?? ''}`.trim(), [], at, uuid);
     else if (/^\s*<(local-command|system-reminder|command-)/.test(raw)) return;
     else if (/^\[Request interrupted/.test(raw)) s.note('你打断了这一轮');

@@ -30,7 +30,8 @@ export type Req =
   | { id: string; tool: 'Form'; server: string; why: string; fields: Field[]; url?: string };
 // Epoch milliseconds when known. Missing transcript times stay missing.
 // A picture sent with a message: `img` names the host's copy of it (GET /images/{img}); without one only its name is known.
-export type Pic = { name: string; img?: string };
+// `path`: where a file sent by its path is on this Mac (a folder's ends in /).
+export type Pic = { name: string; img?: string; path?: string };
 // `id` on what you said and on an answer names that point of the conversation for fork and rewind (POST
 // /sessions/{id}/fork): Claude's message uuid, Codex's turn id. `ride`: your reactions that went to the agent with what
 // you said (m-rx).

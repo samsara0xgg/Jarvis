@@ -1,8 +1,9 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, Notification, session, shell } from 'electron';
+import { app, BrowserWindow, clipboard, ClipboardItem, dialog, ipcMain, Menu, Notification, session, shell } from 'electron';
 import { spawn, execFile } from 'node:child_process';
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { hostKey } from './agents/key.js';
 // ADR 0073: the Agents window. Its sessions run in the agent host (agents/host.ts), which this process starts when
 // nothing answers on its port and which keeps running when the companion restarts. The window talks to the host
@@ -226,6 +227,13 @@ export function setupAgents({ preload, page, host, packaged = false, trustedWind
   // The workbench (ADR 0085-0087): a page or file in the real browser or its own app, and a session handed to the cloud.
   ipcMain.handle('agents-open-url', (event, url: unknown) => { if (mine(event) && typeof url === 'string' && /^https?:\/\//i.test(url) && url.length < 4096) void shell.openExternal(url); });
   ipcMain.handle('agents-open-path', (event, file: unknown) => { if (mine(event) && typeof file === 'string' && path.isAbsolute(file) && existsSync(file)) void shell.openPath(file); });
+  // A file sent with a message onto the clipboard as Finder copies one (its file URL, in macOS's own format) with its path
+  // as text, to paste as the file itself: 'file', or 'path' when that format is refused and only the path went.
+  ipcMain.handle('agents-copy-file', async (event, file: unknown) => {
+    if (!mine(event) || !isFile(file)) return false;
+    const item = new ClipboardItem({ 'electron application/osclipboard;format="public.file-url"': pathToFileURL(file).href, 'text/plain': file });
+    return clipboard.write([item]).then(() => 'file', () => clipboard.writeText(file).then(() => 'path'));
+  });
   ipcMain.handle('agents-cloud', async (event, cwd: unknown, text: unknown, term: unknown) => {
     if (!mine(event) || !isDir(cwd) || typeof text !== 'string' || !text.trim() || text.length > 600) return false;
     return typeIn(term, cwd, `claude --cloud ${quote(text.replace(/\s+/g, ' ').trim())}`);

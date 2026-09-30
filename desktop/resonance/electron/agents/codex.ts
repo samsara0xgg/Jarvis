@@ -106,8 +106,8 @@ function commandStep(s: Session, item: any): Step {
 }
 // What Allen wrote, without the lines naming files that are not pictures; those come back as files.
 const userText = (item: any) => attached((item.content ?? []).map((c: any) => c.type === 'text' ? str(c.text) : '').join('').trim()).text.trim();
-const userFiles = (item: any) => [...(item.content ?? []).filter((c: any) => c.type === 'image' || c.type === 'localImage').map((c: any, k: number) => pic(str(c.path).split('/').pop() || `图片 ${k + 1}`, c.url)),
-  ...attached((item.content ?? []).map((c: any) => c.type === 'text' ? str(c.text) : '').join('')).paths.map(p => ({ name: p.split('/').pop() || p }))];
+const userFiles = (item: any) => [...(item.content ?? []).filter((c: any) => c.type === 'image' || c.type === 'localImage').map((c: any, k: number) => ({ ...pic(str(c.path).split('/').pop() || `图片 ${k + 1}`, c.url), ...c.path ? { path: str(c.path) } : {} })),
+  ...attached((item.content ?? []).map((c: any) => c.type === 'text' ? str(c.text) : '').join('')).paths.map(p => ({ name: p.replace(/\/$/, '').split('/').pop() || p, path: p }))];
 const firstLine = (t: string) => { const l = (t.split('\n').find(x => x.trim()) ?? '').replace(/\*\*/g, '').trim(); return l.length > 80 ? `${l.slice(0, 79)}…` : l; };
 
 // An item beginning: a step appears. Read back from history, the same item is begun and finished at once.
