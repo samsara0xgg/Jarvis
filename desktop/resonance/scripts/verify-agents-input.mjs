@@ -77,6 +77,7 @@ try {
   check('in-drop: dropped, the veil goes and the files wait in the composer, the picture as a small picture', await p.locator('.in-drop').isHidden() && cs.length === 3 && cs[0].img && cs[0].ref === F.png.path
     && cs[1].text.includes('设计评审.pdf') && cs[2].text.includes('crash.log'), cs);
   await p.click('.c-files [data-in-k="2"] .in-x', { force: true });
+  await st.until('one off', async () => (await chips()).length === 2).catch(() => {});
   check('a file comes off the composer with its ✕', (await chips()).length === 2);
   await p.evaluate(() => [...document.querySelectorAll('.c-files [data-act="unfile"]')].reverse().forEach(b => b.click()));
 
@@ -189,14 +190,24 @@ try {
   check('in-slash: / opens the window\'s own commands above Claude Code\'s, with how to pick', m.on && m.groups.length === 2 && m.groups[0].head === '窗口里的' && m.groups[0].cmds.includes('/add-dir')
     && m.groups[1].head === 'Claude Code 的' && m.groups[1].cmds.includes('/fake-skill') && !m.groups[1].cmds.includes('/add-dir') && m.sel === m.groups[0].cmds[0] && m.foot.includes('填进去'), m);
   await st.shot('in-slash');
-  await type('/d');
+  await type('/sk');
   m = await menu();
-  check('in-slash: one filter over both groups, a name that only holds it too', m.groups.length === 2 && m.groups[0].cmds.join() === '/add-dir' && m.sel === '/add-dir' && m.groups[1].cmds[0].startsWith('/d') && m.groups[1].cmds.every(c => c.slice(1).includes('d')), m);
+  check('in-slash: one filter over both groups, a name that only holds it too', m.groups.length === 2 && m.groups[0].cmds.join() === '/tasks' && m.sel === '/tasks' && m.groups[1].cmds.join() === '/fake-skill', m);
   await p.keyboard.press('ArrowDown'); await wait(150);
   m = await menu();
   const second = m.groups[1].cmds[0];
   await p.keyboard.press('Tab'); await wait(200);
   check('in-slash: ↓ moves past the group line to the next command, ⇥ fills it in', m.sel === second && await p.inputValue('#msg') === `${second} ` && !(await menu()).on, { m, v: await p.inputValue('#msg') });
+
+  // ---------- the window's own commands the page answers itself ----------
+  writeFileSync(path.join(st.row(id).cwd, 'CLAUDE.md'), '# 这个仓库\n\n- 先跑门禁\n');
+  await p.fill('#msg', '/memory '); await p.keyboard.press('Enter');
+  await p.waitForSelector('.sheet.pv:not(.off)', { timeout: 5000 });
+  check('/memory shows the folder\'s CLAUDE.md in the preview sheet', (await p.locator('.sheet.pv .sh b').innerText()) === 'CLAUDE.md' && (await p.locator('.sheet.pv .pv-view').innerText()).includes('先跑门禁') && await p.inputValue('#msg') === '');
+  await p.click('.sheet.pv [data-act="pvclose"]'); await wait(600);
+  await p.fill('#msg', '/model '); await p.keyboard.press('Enter'); await wait(300);
+  check('/model opens the model and effort menu', (await p.locator('.pop.on').innerText().catch(() => '')).includes('模型'));
+  await p.keyboard.press('Escape'); await wait(200);
 
   // ---------- in-adddir: /add-dir picks a folder; the conversation says so ----------
   for (const n of ['timesink', 'resonance-lab']) mkdirSync(path.join(st.HOME, 'Projects', n, '.git'), { recursive: true });
@@ -388,24 +399,8 @@ try {
   mq = await lineAt('Codex signed in', '.it > .in-mqs .in-mq', l => l[0]?.tone === 'mint');
   check('in-mcp-login: a Codex server that wants a sign-in, the same line; 登录 opens its page, then it is connected', cxLine.text === 'remote 要登录才能用' && cxLine.acts.join() === '登录,这次不用'
     && (await calls('openUrl')).some(c => c[1] === 'https://remote.example.com/authorize?client_id=fake') && mq[0].text === 'remote 连上了 · 1 个工具', { cxLine, mq });
-  await p.keyboard.press('Control+n');
-  await wait(400);
-  await p.locator('#msg').focus();
-  await type('/add-dir'); await p.keyboard.press('Enter'); await p.keyboard.press('Enter');
-  await wait(300);
-  check('in-adddir: before there is a session it says to start one first', (await p.locator('.toast').innerText()).includes('开了会话再给它加文件夹'), await p.locator('.toast').innerText());
-  await type('/mcp'); await p.keyboard.press('Enter'); await p.keyboard.press('Enter');
-  await wait(300);
-  check('in-mcp-list: before there is a session /mcp says to start one first', (await p.locator('.toast').innerText()).includes('开了会话再看它的 MCP') && !await panel());
-  await p.fill('#msg', '');
-  await p.click('.tb.mode'); await wait(250);
-  await p.click('.pop.on [data-k="mode"].in-warm'); await wait(300);
-  const newAsk = await p.locator('.pop.on.in-askpop').innerText().catch(() => '');
-  await p.evaluate(() => { document.querySelector('.toast').hidden = true; });
-  await st.shot('in-bypass-new');
-  await p.click('.pop.on.in-askpop [data-ok]'); await wait(300);
-  check('in-bypass: before there is a session the question stands where the menu was, and 放开 picks it for the new one', newAsk.includes('完全放开？') && await warmChip()
-    && ['bypassPermissions', 'full'].includes(await p.locator('.tb.mode').getAttribute('data-m')), newAsk);
+  // There is no composer without a session any more: a new one starts from the slip, on the last mode picked
+  // other than 完全放开, which is asked for one session at a time.
 
   check('no errors on the page', !st.errors.length, st.errors);
   console.log(`\n${checks.length} checks passed`);

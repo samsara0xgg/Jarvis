@@ -1214,6 +1214,18 @@ features.push(mountSee(ctx));
 features.push(mountMessages(ctx));
 features.push(mountBack(ctx));
 features.push(mountChanges(ctx));
+// The window's own commands no feature answers, answered here: the model and effort chip, a new session, the folder's
+// CLAUDE.md in the preview sheet (it flies back into the composer it was asked from).
+ctx.own.set('model', () => { requestAnimationFrame(() => $('.tb.model', win)?.click()); });
+ctx.own.set('effort', () => { requestAnimationFrame(() => $('.tb.model', win)?.click()); });
+ctx.own.set('new', () => { const go = Object.assign(document.createElement('button'), { type: 'button', hidden: true }); go.dataset.act = 'new'; win.append(go); go.click(); go.remove(); });
+ctx.own.set('memory', s => {
+  if (!s) { toast('开了会话再看它的 CLAUDE.md'); return; }
+  const at = ta.closest<HTMLElement>('.composer') ?? ta;
+  at.dataset.ref = 'CLAUDE.md'; at.dataset.label = 'CLAUDE.md';
+  wb.act('peek', at);
+  delete at.dataset.ref; delete at.dataset.label;
+});
 
 // ---------- one loop: her every frame, moving marks at 30 fps, nothing while the window is out of sight ----------
 let lastT = performance.now(), lastMk = 0, lastAge = 0;

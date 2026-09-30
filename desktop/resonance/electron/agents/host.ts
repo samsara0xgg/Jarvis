@@ -383,6 +383,11 @@ export class Session {
     if (i >= 0) q.splice(i, 1);
     this.set({ queue: q.length ? q : undefined });
   }
+  // What the preview may read: its folders, and every file or folder a message of it went with.
+  async roots() {
+    await this.ensureLoaded();
+    return [this.s.cwd, ...this.s.dirs ?? [], ...(this.items ?? []).flatMap(it => it.k === 'you' ? (it.files ?? []).flatMap(f => f.path ? [f.path] : []) : [])];
+  }
   // Read once, however many ask for it at the same time.
   async ensureLoaded() {
     if (this.items) return;
@@ -734,9 +739,9 @@ async function route(req: Req0, res: http.ServerResponse, url: URL): Promise<unk
   const x = need(parts[1]), verb = parts[2] ?? '';
   await x.kept;
   if (m === 'GET' && !verb) { await x.ensureLoaded(); return { items: x.items, live: x.live }; }
-  if (m === 'GET' && verb === 'peek') return peek(x.s.cwd, url.searchParams.get('ref') ?? '', () => baseFor(x), [x.s.cwd, ...x.s.dirs ?? []]);
-  // A picture, sound, video or PDF of its folders, for the preview to show itself (anything after /file names it).
-  if (m === 'GET' && verb === 'file') { await sendFile(res, [x.s.cwd, ...x.s.dirs ?? []], x.s.cwd, url.searchParams.get('ref') ?? '', req.headers.range); return undefined; }
+  if (m === 'GET' && verb === 'peek') return peek(x.s.cwd, url.searchParams.get('ref') ?? '', () => baseFor(x), await x.roots());
+  // A picture, sound, video or PDF of its folders or sent with it, for the preview to show itself (anything after /file names it).
+  if (m === 'GET' && verb === 'file') { await sendFile(res, await x.roots(), x.s.cwd, url.searchParams.get('ref') ?? '', req.headers.range); return undefined; }
   // ---- the review (B6): what it changed, one file's diff, one file put back ----
   if (m === 'GET' && verb === 'changes') return parts[3] === 'diff' ? fileDiff(x, url.searchParams.get('path') ?? '') : changes(x);
   if (m === 'GET' && verb === 'export') { await x.ensureLoaded(); return exported(x); }

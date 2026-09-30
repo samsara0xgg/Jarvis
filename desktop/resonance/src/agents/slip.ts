@@ -275,13 +275,14 @@ export function mountSlip(ctx: PageCtx): Feature {
     }
   }
   // The model, effort and mode last picked for this agent, when the host still offers them; otherwise its defaults.
+  // 完全放开 is asked for one session at a time and never carried to a new one.
   function settings(a: Agent) {
     const c = ctx.catalog()?.[a], out: Record<string, string> = {};
     if (!c) return out;
     const m = store.get(`agents.${a}.model`), e = store.get(`agents.${a}.effort`), md = store.get(`agents.${a}.mode`);
     if (m && c.models.some(x => x[0] === m)) out.model = m;
     if (e && c.efforts.includes(e)) out.effort = e;
-    if (md && c.modes.some(x => x[0] === md)) out.mode = md;
+    if (md && md !== 'bypassPermissions' && md !== 'full' && c.modes.some(x => x[0] === md)) out.mode = md;
     return out;
   }
   // ⌘Z before it has burnt: the newest throw comes back into the slip, and not a token was spent.
