@@ -419,7 +419,7 @@ function convOf(id: string): Conv {
   if (!c) {
     const root = document.createElement('div');
     root.className = 'conv';
-    root.innerHTML = '<div class="c-in"><button type="button" class="older" data-act="older" hidden></button><div class="c-items"></div><div class="it md live" hidden></div><div class="c-queue"></div><div class="ask" hidden><button type="button" data-act="land">一键落地 <kbd>⌘⏎</kbd></button><span>推送那一步会等你点头</span></div><div class="now" hidden><span class="nm"></span><span class="shine"></span><span class="el"></span><kbd>esc</kbd><span class="k">打断</span></div><p class="bg" hidden></p><div class="banner" hidden></div></div>';
+    root.innerHTML = '<div class="c-in"><button type="button" class="older" data-act="older" hidden></button><div class="c-items"></div><div class="it md live" hidden></div><div class="c-queue"></div><div class="ask" hidden></div><div class="now" hidden><span class="nm"></span><span class="shine"></span><span class="el"></span><kbd>esc</kbd><span class="k">打断</span></div><p class="bg" hidden></p><div class="banner" hidden></div></div>';
     c = { root, items: $('.c-items', root), live: $('.live', root), queue: $('.c-queue', root), now: $('.now', root), bg: $('.bg', root), term: $('.banner', root), older: $('.older', root), ask: $('.ask', root), built: false, scroll: -1 };
     convs.set(id, c);
   }
@@ -541,8 +541,9 @@ function renderConv(s: Sess, c: Conv) {
   const lastYou = items.map(it => it.k).lastIndexOf('you'), older = items.slice(0, lastYou + 1).filter(it => it.k === 'you').length;
   [...c.items.children].forEach((el, i) => el.classList.toggle('old', i <= lastYou));
   c.older.hidden = !older; patch(c.older, `更早 ${older} 轮`);
-  // The way to land what this session changed, once it is done and nothing is under way.
-  c.ask.hidden = !(s.dirty && s.st === 'done' && !s.term && !s.gone && (!s.land || s.land.s === 'done'));
+  // Landing what this session changed: the question, the key for it, where it is, or the one line once it is done.
+  const ask = wb.ask(s);
+  c.ask.hidden = !ask; if (ask) patch(c.ask, ask);
   renderLive(s, c);
   patch(c.queue, (s.queue ?? []).map((q, k) => `<div class="item">${said(s, { k: 'you', text: q, queued: true }, -1 - k, `<div class="you queued">${esc(q)}<em>排队中 · 这一步做完它就会看到</em></div>`)}</div>`).join(''));
   const working = s.st === 'work' || s.st === 'pack';

@@ -800,7 +800,17 @@ async function route(req: Req0, res: http.ServerResponse, url: URL): Promise<unk
     // ADR 0097: start (or go on from a stop) by the way picked, stop after this step, the push's yes or no, let Claude
     // fix what stopped it, stay on the branch, and the commit title the owner wrote.
     const l = x.landing, a = b.action;
-    if (a === 'start') { if (x.s.term) throw new Http(409, '在终端里，先拿回来'); l.start(b.via === 'merge' || b.via === 'pr' ? b.via : undefined); }
+    if (a === 'start') {
+      if (x.s.term) throw new Http(409, '在终端里，先拿回来');
+      const via = b.via === 'merge' || b.via === 'pr' ? b.via : undefined;
+      // Review 18: `keep` answers the first landing's question, so the way picked is the repository's from then on.
+      if (via && b.keep === true && x.repo && x.s.dirty?.ways.includes(via)) {
+        await patchSettings({ land: { ...settings.land, [x.repo]: { ...settings.land?.[x.repo], via } } });
+        await settingsChanged(auth().ready);
+        for (const y of sessions.values()) if (y !== x && y.repo === x.repo) void y.measure();
+      }
+      l.start(via);
+    }
     else if (a === 'resume') l.resume();
     else if (a === 'stop') l.stop();
     else if (a === 'allow') l.allow();
