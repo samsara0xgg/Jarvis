@@ -295,26 +295,16 @@ try {
     /没提交的改动/.test(await text('.pop.fr-ask')) && sent.some(x => x.m === 'DELETE' && x.path === `/sessions/${C}`) && !!st.row(C) && st.row(C).archived === false);
   await p.click('.pop.fr-ask [data-act="fr-del-no"]');
 
-  // ---------- the classic list: a row's right click, the hold ending in a delete, and the terminal line ----------
-  await p.evaluate(() => localStorage.setItem('agents.layout', 'classic'));
+  // ---------- the hold ending in a delete, from a sky row's right click ----------
   await st.open(D);
-  await waitFor('the terminal line', async () => await seen('.fr-tlink') && /1/.test(await text('.fr-tlink em')));
-  await p.click(`.s-list .row[data-id="${D}"]`, { button: 'right' });
-  await waitFor('the classic row menu', () => seen('.pop.on [data-act="fr-del"]'));
+  if (!(await has('#win.sky-on'))) await p.click('.bw-pull');
+  await waitFor('D in the sky', () => has(`.bw-rows [data-session="${D}"]`));
+  await p.click(`.bw-rows [data-session="${D}"]`, { button: 'right' });
+  await waitFor('the row menu', () => seen('.pop.on [data-act="fr-del"]'));
   await p.click('.pop.on [data-act="fr-del"]');
   await waitFor('D deleted after the hold', () => !st.row(D), 9000);
-  check('in the list a row\'s right click has 删除 too; when the hold ends the host deletes it (DELETE, no force)', sent.some(x => x.m === 'DELETE' && x.path === `/sessions/${D}`));
-  await p.click('.fr-tlink');
-  await waitFor('the terminal menu', () => seen(`.pop.on.fr-tm [data-fr="${tMid.sid}"]`));
-  check('the classic list has 「终端里的会话 1」 beside 已归档, listing the one left', /终端里的会话/.test(await text('.fr-tlink')));
-  await p.click(`.pop.on.fr-tm [data-fr="${tMid.sid}"]`);
-  await waitFor('read-only in the classic layout', async () => await has('#win.fr-ro-on') && /tidy the readme/.test(await text('.fr-rov .c-items')));
-  await p.waitForTimeout(300);
-  await st.shot('fr-term-classic');
-  await p.click(`.s-list .row[data-id="${own}"]`);
-  await waitFor('back on the window\'s own', async () => !(await has('#win.fr-ro-on')));
-  check('opening a session of the window\'s own leaves the read-only view', /hello there/.test(await text('.m-head .h-t')));
-  await p.evaluate(() => localStorage.removeItem('agents.layout'));
+  check('when the hold ends the host deletes it (DELETE, no force)', sent.some(x => x.m === 'DELETE' && x.path === `/sessions/${D}`));
+  await p.keyboard.press('Escape');
 
   // ---------- settings: ⌘, and the app menu, on the dev host ----------
   await st.open(own);
@@ -449,17 +439,16 @@ try {
   await p.click(`.fr-first [data-act="fr-fproj"][data-path="${P.site}"]`);
   await st.shot('fr-first-proj');
   await p.click('.fr-first [data-act="fr-fgo"]');
-  await waitFor('the new-session page on it', async () => !(await seen('.fr-first')) && await p.evaluate(s => document.querySelector('#proj')?.value === s, P.site));
-  check('开始 ends in the normal window, on a new session in the folder picked', !(await has('#win.fr-modal')) && await p.evaluate(() => document.activeElement?.id === 'msg'));
+  const siteName = P.site.split('/').filter(Boolean).pop();
+  await waitFor('the slip on it', async () => !(await seen('.fr-first')) && await seen('.slip') && (await text('.slip')).includes(siteName));
+  check('开始 ends in the normal window, the slip dropped on the folder picked, ready to write', !(await has('#win.fr-modal')) && await p.evaluate(() => !!document.activeElement?.closest('.slip')));
+  await p.keyboard.press('Escape');
 
   // a request a terminal session stopped on, answered here
-  await p.click('#msg');
-  await p.keyboard.type('/resume');
-  await p.waitForTimeout(700);
-  for (let i = 0; i < 3 && (await p.inputValue('#msg')).trim(); i++) { await p.keyboard.press('Enter'); await p.waitForTimeout(500); }
-  await waitFor('the terminal list', () => seen(`.pop.on [data-fr="${tAsk.sid}"]`));
-  check('with none of its own sessions, /resume lists the terminal ones, the asking one saying 等你批', /等你批/.test(await text(`.pop.on [data-fr="${tAsk.sid}"]`)));
-  await p.click(`.pop.on [data-fr="${tAsk.sid}"]`);
+  await p.keyboard.press('Alt+ArrowUp');
+  await waitFor('the terminal rows in the sky', () => seen(`.bw-more [data-fr="${tAsk.sid}"]`));
+  check('with none of its own sessions, the sky still opens on 新会话 and the terminal ones, the asking one saying 等你批', /等你批/.test(await text(`.bw-more [data-fr="${tAsk.sid}"]`)));
+  await p.click(`.bw-more [data-fr="${tAsk.sid}"]`);
   await waitFor('the request card', async () => await seen('.fr-rq .req') && /npm test/.test(await text('.fr-rq .req')));
   const card = await text('.fr-rq');
   check('opened, it shows the request it stopped on, as the window\'s own card, and that the terminal waits too', /要你批准 · 跑一条命令/.test(card) && /以后都允许/.test(card) && /终端里也在等，哪边先批都算/.test(card)

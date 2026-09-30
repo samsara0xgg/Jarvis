@@ -232,7 +232,8 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
   }
   // find: opened by ⌘K, searching what was said.
   function openSky(find = false) {
-    if (!enabled || !hooks.sessions().length) return;
+    // With none of its own it still opens: 新会话, and the sessions held in a terminal under it.
+    if (!enabled) return;
     // ⌘K in an open sky turns it into the search.
     if (skyOn) { if (find) { finding = true; pullLabel(); findInput.focus({ preventScroll: true }); findInput.select(); } return; }
     peek.hidden = true;
