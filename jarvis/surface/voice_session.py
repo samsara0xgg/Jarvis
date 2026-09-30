@@ -80,10 +80,10 @@ class RealtimeInputSessionConfig:
     worker_poll_s: float = 0.005
     shutdown_timeout_s: float = 3.0
     output_active_vad_mode: str = "record"
-    # Conversation mode's soft barge-in: speech over Jarvis first lowers her to
-    # this gain, and stops her once it has this much voiced time (0 stops her
-    # at onset, ADR 0041); shorter sounds end after this much silence and final
-    # ASR decides.
+    # Conversation mode's soft barge-in (ADR 0100): speech over Jarvis first
+    # lowers her to this gain, and holds her where she is once it has this much
+    # voiced time (0 stops her at onset, as ADR 0041 did); shorter sounds end
+    # after this much silence, and final ASR decides.
     barge_in_confirm_voiced_s: float = 0.8
     barge_in_yield_gain: float = 0.2
     barge_in_pause_ms: int = 350

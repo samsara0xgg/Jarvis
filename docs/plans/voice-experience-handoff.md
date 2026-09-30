@@ -31,7 +31,7 @@ Allen 的要求：严格审计 Jarvis 的语音交互系统（全双工对话 + 
 | `69f3fae` | （P1 #9/#10）首个样本前被取消（`submitted_samples` 0、quality `unknown`）记为空前缀，下一轮说"一个字没说出口"；截断行越过没得到回答的轮次往前找上一个回答，后来的回答终止回溯。spec §10 状态块一句随改 | 同文件新增 3 例，2 例父提交失败 |
 | `6853af3` | （P0 #3 后端）`/inherent/cancel-response` 接 `turn_id`：该轮所有未结束的 run 按 generation 取消（`no_open_run` 表示已无）；命名的 `foreground_output` 停止对尚未出声的回答（排队、被 ADR 0053 停住、缓冲中）直接丢弃并发 `spoken/dropped`，原先答 `stale` 后照播 | `test_stop_reaches_the_answer_shown.py` 2 例，各自在无对应修复时失败 |
 | `bb4f645` | （P0 #2–#5）星核的脸由回合推出而非共用 `phase`：在飞的话 → 在听；`turnId` 的回答从 `open` 到 `spoken` → 在说/在想；本界面发起、仍在等的回合 → 在想（打字、卡片也算）。戳一下：在说停该回答，在想按 `turn_id` 停该轮。Dashboard 尾行与气泡同用 held 文本；被取消的在显示回答一律清掉；等待中回合的失败不论 phase 都显示；`spoken` 结束静默回合的等待；断线结束当前回答；`open` 先于提交回执到达时不再等 | `verify-companion-live.mjs` 新增 6 项，父提交全部失败；合并 main 前 120/120 通过（headless Chromium + 假 daemon）。合并时与 main 的 `f2c1f95` 冲突于 `Companion.tsx`（main 把 Dashboard 移进 `dashboardContent`，`busy` 随之改用 `voice === 'thinking'`） |
-| `fe24c3a` | （P1 #7）软打断，按 §4 设计实现：会话模式下她说话时 Allen 开口先降到 0.2；浊音满 0.4 s 才停（停下后才恢复音量）；更短的声音静 350 ms 即结束交给最终识别：没字/附和恢复且不成回合，停止请求或只叫唤醒词停且不成回合，其余停并成回合；已停的若是停止词/附和也不成回合；静音 × 让步增益相乘，让步永不解除静音；`barge_in_confirm_voiced_s: 0` = ADR 0041 原样。spec §3.6.5 随改；决定写成 `docs/plans/soft-barge-in-proposal.md`（Proposed，待 Allen 接受后编号并 supersede 0041） | `test_soft_barge_in.py` 12 例（真会话 + 出厂 VAD + 真 pipeline + 事件日志），含晚到的停止不提前恢复音量。**欠 Mac 实测**（reSpeaker、外放各一次；0.4/0.2/350 未校准） |
+| `fe24c3a` | （P1 #7）软打断，按 §4 设计实现：会话模式下她说话时 Allen 开口先降到 0.2；浊音满 0.4 s 才停（停下后才恢复音量）；更短的声音静 350 ms 即结束交给最终识别：没字/附和恢复且不成回合，停止请求或只叫唤醒词停且不成回合，其余停并成回合；已停的若是停止词/附和也不成回合；静音 × 让步增益相乘，让步永不解除静音；`barge_in_confirm_voiced_s: 0` = ADR 0041 原样。spec §3.6.5 随改；决定写成提案（Proposed），2026-09-30 Allen 接受为 ADR 0100，supersede 0041 | `test_soft_barge_in.py` 12 例（真会话 + 出厂 VAD + 真 pipeline + 事件日志），含晚到的停止不提前恢复音量。**欠 Mac 实测**（reSpeaker、外放各一次；0.4/0.2/350 未校准） |
 
 | `629e408` | （Allen 用 Codex 做）明确要求数数、朗读、逐字复述、详细讲或指定长度时，口语版不再压成 60 字/一两句，按要求说全（ADR 0099 取代 0045；分支上原编 0082，2026-09-30 落 main 时因 0082 已是 keeper 改号） | Codex 的 4 个真模型用例（中英 1–50、逐字朗读、短默认）。欠 Mac 实测 |
 | `9a1c919` | （Allen 用 Codex 做）MiniMax `subtitle_type: word_streaming` 的逐字时间戳落进 `surface.playback_alignment`，听到的前缀可以停在字上而不是整段（ADR 0083）；让步/打断前已播的字保留 | `test_word_playback_cursor.py`；MiniMax 真合成 + 播放器重放 + LLM：停在 15，答"数到 15"。欠外放实测 |
@@ -43,8 +43,8 @@ Allen 的要求：严格审计 Jarvis 的语音交互系统（全双工对话 + 
 | `ed1792d` | （§3.1 第 2 条 i）TTS 预热：ADR 0053 的 hold（Allen 开口）时连好一个 MiniMax 会话（connect + task_start），回答的首个 endpoint 直接 bind；超过 60 s 的关掉重连（MiniMax 120 s 无事件断开），正在连的留给下一个回答，睡眠/关闭时关掉。TLS 到 api-uw 实测 0.11–0.15 s | `test_tts_prewarm.py` 4 例父提交全失败。第二次实测：open 0 ms，首包 0.15–0.36 s |
 | `a8234a6` | 按第二次实测：「OK可以了」（够了）算停止，前面可带 ok/okay；单独的「可以」仍是卡片的"是" | `test_soft_barge_in.py` 1 例父提交失败 |
 | `1a0b026` | 按第二次实测：她说话时 7 次 pause 都被识别成别的单个英文词（5–6 字符，Allen 说是 Pulse），合成的 pause 识别成 "Cause."；两者算停止 | 同文件 2 例父提交失败 |
-| `609d253` | （Allen 选 A）浊音满 0.8 s 不再直接停掉，而是停在原处：播放器不再消费该 generation、位置保留（`pause_generation`），最终识别是附和、没字或一个无意义的字就从原处接着说（128 样本淡入），停止请求和其他话才停掉，识别出错也停掉。spec §3.6.5、`config/jarvis.yaml` 注释、软打断提案随改 | 同文件：长「嗯」、长咳嗽各 1 例，播放器保位与淡入、下一个回答不受影响各 1 例，父提交全失败 |
-| `609d6f9` | 按第三次实测：她说话时单独一个英文词（附和声、卡片回答词、问句除外）算停止，因为 pause 每次被听成不同的英文词（2–6 字符）；"And." 算附和；「可以啦」「够啦」这类「啦」尾算停止；复述路由的「什么」「啥」不再要求问号（识别给的是「什么。」）。spec §3.6.5 与 §17、`config/jarvis.yaml` 注释、软打断提案随改 | `test_soft_barge_in.py` 3 例、`test_repeat_request.py` 1 例父提交失败 |
+| `609d253` | （Allen 选 A）浊音满 0.8 s 不再直接停掉，而是停在原处：播放器不再消费该 generation、位置保留（`pause_generation`），最终识别是附和、没字或一个无意义的字就从原处接着说（128 样本淡入），停止请求和其他话才停掉，识别出错也停掉。spec §3.6.5、`config/jarvis.yaml` 注释、软打断提案（今 ADR 0100）随改 | 同文件：长「嗯」、长咳嗽各 1 例，播放器保位与淡入、下一个回答不受影响各 1 例，父提交全失败 |
+| `609d6f9` | 按第三次实测：她说话时单独一个英文词（附和声、卡片回答词、问句除外）算停止，因为 pause 每次被听成不同的英文词（2–6 字符）；"And." 算附和；「可以啦」「够啦」这类「啦」尾算停止；复述路由的「什么」「啥」不再要求问号（识别给的是「什么。」）。spec §3.6.5 与 §17、`config/jarvis.yaml` 注释、软打断提案（今 ADR 0100）随改 | `test_soft_barge_in.py` 3 例、`test_repeat_request.py` 1 例父提交失败 |
 | `d58edd6` | 按第四次实测：日文、韩文的嗯（うん、う、ん、응、음 这类）算附和。拖长的「嗯——」被 `tts` VAD 断成三段、识别成「うん」「うん」「う」，第一段当成一句话停掉了她 | `test_soft_barge_in.py` 2 例父提交失败 |
 | `0a4bb88` | 按第四次实测：打断时她的声音从一个字中间截断，截断处只有合成的短淡出（ADR-0006 D11，48 kHz 下约 2.7 ms），Allen 听到爆音。软打断的停掉和停在原处现在先用 gain 在 20 ms 内把真实波形淡到无声，再截断或停住；停住后恢复按 yield 的 30 ms 淡入。停止按钮和其他截断不变 | `test_wave2_streaming_media.py` 2 例，去掉淡出时都失败 |
 | `35a9355` | §3.1 第 6 项：停止按钮也先在 20 ms 内淡出再截断（之前只有打断这样）；打断的淡出由发起线程直接下发，媒体线程被 SQLite 卡住时她也马上静下来，没有东西可停时增益还回去；回答音频断流后接上时，第一块从无声升回去（D12 尾部 ramp 反过来），不再直接跳回波形 | `test_wave2_streaming_media.py` 新增 3 例，去掉对应改动时各自失败 |
@@ -199,8 +199,8 @@ unreachable（Linux 平台分支，main 同样）；全量 hermetic 1214/1217，
 
 ## 4. 软打断
 
-已实现（`fe24c3a`），设计与取舍见 `docs/plans/soft-barge-in-proposal.md`，合同见 spec §3.6.5。
-提案 Status 为 Proposed：Allen 实测接受后编号进 `docs/adr/` 并 supersede 0041。
+已实现（`fe24c3a` 及 §2 里按实测的修复），设计与取舍见 ADR 0100（2026-09-30 Allen 接受，supersede 0041），
+合同见 `docs/spec.html#surface-list`。
 
 ## 5. 设计总纲（作品集文档的骨架，尚未写成）
 

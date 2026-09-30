@@ -5,9 +5,10 @@ In-memory booleans the desktop surface flips over ``POST /inherent/controls``.
 during its own speech stays). ``speech_muted`` is the TTS player's output
 gain: synthesis, timing, phases and events run exactly as unmuted, only the
 speaker is silent, so unmuting mid-sentence resumes audibly. ``conversation``
-(ADR 0041) is the surface's wave mode: capture listens without a wake word and
-speech over Jarvis stops it. Not persisted: a daemon restart comes back
-unmuted and out of conversation, and the surface re-syncs on connect.
+(ADR 0041) is the surface's wave mode: capture listens without a wake word,
+and speech over Jarvis lowers her until its words decide (ADR 0100). Not
+persisted: a daemon restart comes back unmuted and out of conversation, and
+the surface re-syncs on connect.
 """
 
 from __future__ import annotations

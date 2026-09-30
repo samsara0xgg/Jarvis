@@ -1,6 +1,6 @@
 # ADR 0041 — Wave Mode Listens Without a Wake Word
 
-**Status:** Accepted
+**Status:** Superseded-by-0100
 **Date:** 2026-09-24
 **Supersedes:** none
 
