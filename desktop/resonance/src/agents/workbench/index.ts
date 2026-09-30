@@ -6,6 +6,7 @@
 import type { Peek, Sess } from '../../../electron/agents/types';
 import { classify, stripLine, type Ref } from './refs';
 import { CLOSE_ICON, active, chipOf, panelHTML, railHTML } from './landing';
+import { QUICKLOOK, badge, drawFile, stopFile } from './open';
 import { mountTerminal, type Tab, type TPos } from './terminal';
 import './workbench.css';
 
@@ -17,6 +18,8 @@ type Hooks = {
 type Q = { x: number; y: number; w: number; h: number };
 type Pos = 'chat' | 'side' | 'stage';
 type Custom = { key: string; ic: string; b: string; small?: string; target?: 'side' | 'stage'; fill(view: HTMLElement): void };
+// What the sheet shows: a reference (a page or a file) or a feature's own, with the card it grew from.
+type Shown = Ref & { src: HTMLElement | null; abs?: string; href?: string; custom?: Custom };
 const $ = <T extends Element = HTMLElement>(s: string, root: ParentNode) => root.querySelector(s) as T;
 const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 const wait = (ms: number) => new Promise(r => setTimeout(r, ms));
@@ -26,6 +29,7 @@ const icon = {
   stage: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M9.5 2.5h4v4M6.5 13.5h-4v-4M13.5 2.5 9 7M2.5 13.5 7 9"/></svg>',
   side: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="2" y="3" width="12" height="10" rx="2"/><path d="M9.5 3v10"/></svg>',
   out: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M9 3h4v4M13 3 7.5 8.5M11 9.5V13H3V5h3.5"/></svg>',
+  back: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3.5 5.5 8l4.5 4.5"/></svg>',
 };
 // 记住习惯: a kind of page you leave the stage from at once three times running opens beside the conversation next.
 const QUICK_MS = 3000;
@@ -36,8 +40,9 @@ export function mountWorkbench(win: HTMLElement, ta: HTMLTextAreaElement, hooks:
   const bd = $('.bd', win), lp = $('.lp', bd), chat = $('.chat', bd), pv = $('.pv', bd), tm = $('.tm', bd), conv = () => $<HTMLElement>('.host .conv', chat);
   const pl = $('.pl', lp), foot = $('.lp-f', lp), br = $('.br', lp), rail = $('.rail', lp), chip = $('.land', win), hint = $('.hint', win), view = $('.pv-view', pv);
   $('.lp-h .ib', lp).innerHTML = CLOSE_ICON; $('[data-act="pvclose"]', pv).innerHTML = CLOSE_ICON; $('[data-act="pvext"]', pv).innerHTML = icon.out;
-  // titles: a commit title written before the line starts, per session
-  const S = { titles: new Map<string, string>(), pos: 'chat' as Pos, ref: null as (Ref & { src: HTMLElement | null; abs?: string; href?: string; custom?: boolean }) | null, left: false, wide: false, term: false, busy: false, openedAt: 0, doneAt: new Map<string, number>(), was: new Map<string, string>() };
+  const pvb = $('.pvb', pv); pvb.innerHTML = icon.back;
+  // titles: a commit title written before the line starts, per session · stack: what the sheet showed before, for ‹
+  const S = { titles: new Map<string, string>(), pos: 'chat' as Pos, ref: null as Shown | null, stack: [] as { ref: Shown; scroll: number }[], left: false, wide: false, term: false, busy: false, openedAt: 0, doneAt: new Map<string, number>(), was: new Map<string, string>() };
   const habit = loadHabit();
   const terminal = mountTerminal(tm, { api: hooks.api, call: hooks.call, current: () => hooks.current()?.id ?? '', toast: hooks.toast, changed: () => {} });
   terminal.onPos = p => { terminal.setPos(p); layout(); };
@@ -116,29 +121,44 @@ export function mountWorkbench(win: HTMLElement, ta: HTMLTextAreaElement, hooks:
     $('.sh b', pv).textContent = b; $('.sh small', pv).textContent = small;
   }
   let loadTok = 0;
-  async function fill(r: Ref, s: Sess) {
+  const peekOf = (s: Sess, ref: string) => hooks.call<Peek>(`/sessions/${s.id}/peek?ref=${encodeURIComponent(ref)}`).catch((e: unknown) => e instanceof Error ? e.message : String(e));
+  // Where a file is, as the head says it: its folder inside the session's, else its own with ~ for home.
+  const where = (s: Sess, abs: string) => {
+    const d = abs.slice(0, abs.lastIndexOf('/')) || '/';
+    return d === s.cwd ? s.cwd.slice(s.cwd.lastIndexOf('/') + 1) : d.startsWith(`${s.cwd}/`) ? d.slice(s.cwd.length + 1) : d.replace(/^\/Users\/[^/]+/, '~');
+  };
+  // `k`: the file as the host already read it · `scroll`: where it was, coming back to it.
+  async function fill(r: Shown, s: Sess, o: { k?: Peek; scroll?: number } = {}) {
     const tok = ++loadTok;
-    view.classList.remove('web'); view.scrollTop = 0;
+    stopFile(view); view.classList.remove('web'); view.scrollTop = 0; view.scrollLeft = 0;
+    pvb.hidden = !S.stack.length;
+    if (r.custom) { head(r.custom.ic, false, r.custom.b, r.custom.small ?? ''); view.replaceChildren(); r.custom.fill(view); if (o.scroll) view.scrollTop = o.scroll; return; }
     if (r.url) {
       let host = r.ref;
       try { host = new URL(r.ref).host.replace(/^www\./, ''); } catch { /* as written */ }
       const b = r.label || (r.kind === 'art' ? 'Artifact' : host);
       head([...b.trim()][0]?.toUpperCase() ?? '·', false, b, r.ref);
       web(r.ref, r.kind === 'pdf');
-      S.ref!.href = r.ref;
+      r.href = r.ref;
       return;
     }
-    const p = stripLine(r.ref), ext = /\.[a-z0-9]+$/i.exec(p)?.[0].toLowerCase() ?? '';
-    head(ext.length <= 6 ? ext : '.txt', true, r.label || p, '在读…');
-    view.innerHTML = '<p class="pv-wait">在读…</p>';
-    const k = await hooks.call<Peek>(`/sessions/${s.id}/peek?ref=${encodeURIComponent(r.ref)}`).catch((e: unknown) => e instanceof Error ? e.message : String(e));
-    if (tok !== loadTok || !S.ref) return;
-    if (typeof k === 'string') { view.innerHTML = `<p class="pv-err">${esc(k)}</p>`; $('.sh small', pv).textContent = '打不开'; return; }
-    S.ref.abs = k.abs;
-    const dir = k.abs.replace(/\/[^/]+$/, '').replace(/^\/Users\/[^/]+/, '~');
-    $('.sh small', pv).textContent = k.add || k.del ? `${dir} · 改了 ${(k.add ?? 0) + (k.del ?? 0)} 行` : dir;
-    if (k.kind === 'web') { web(k.url!, /\.pdf$/i.test(k.abs)); return; }
-    view.innerHTML = k.kind === 'md' ? `<div class="doc">${hooks.md(k.text ?? '')}</div>` : k.diff?.length ? `<div class="dv">${hooks.diff(k.diff)}</div>` : `<pre class="code-v">${esc(k.text ?? '')}</pre>`;
+    const p = stripLine(r.ref);
+    let k = o.k;
+    if (!k) {
+      head(badge(p), true, p.slice(p.lastIndexOf('/') + 1), '在读…');
+      view.innerHTML = '<p class="pv-wait">在读…</p>';
+      const got = await peekOf(s, r.ref);
+      if (tok !== loadTok || S.ref !== r) return;
+      if (typeof got === 'string') { view.innerHTML = `<p class="pv-err">${esc(got)}</p>`; $('.sh small', pv).textContent = '打不开'; return; }
+      k = got;
+    }
+    r.abs = k.abs;
+    const dir = where(s, k.abs), small = $('.sh small', pv);
+    head(badge(k.abs), true, k.abs.slice(k.abs.lastIndexOf('/') + 1), dir);
+    if (k.kind === 'web' && !k.bytes) { web(k.url!, false); return; }
+    // Pictures, sound, video and PDFs come from the host by their path, and only from the session's folders.
+    const src = `${hooks.api}/sessions/${s.id}/file/${encodeURIComponent(k.abs.slice(k.abs.lastIndexOf('/') + 1))}?ref=${encodeURIComponent(k.abs)}`;
+    drawFile({ view, k, src, dir, info: t => { if (tok === loadTok) small.textContent = `${dir} · ${t}`; }, scroll: o.scroll });
   }
   // Pages run in their own browser: their own session without the daemon's key, new windows go to the real browser.
   function web(url: string, pdf: boolean) {
@@ -152,17 +172,47 @@ export function mountWorkbench(win: HTMLElement, ta: HTMLTextAreaElement, hooks:
     w.addEventListener('dom-ready', () => view.querySelector('.pv-wait')?.remove(), { once: true });
     view.append(w);
   }
+  // One thing at a time: what opens while the sheet is up takes its place, and ‹ goes back to what was there.
+  function swap(next: Shown, s: Sess, k?: Peek) {
+    if (S.ref) S.stack.push({ ref: S.ref, scroll: view.scrollTop });
+    S.ref = next; cards(); void fill(next, s, { k });
+    if (!RM.matches) view.animate([{ opacity: .25 }, { opacity: 1 }], { duration: 180 });
+  }
+  function back() {
+    const s = sess(), e = S.stack.pop();
+    if (!s || !e || S.busy) return;
+    S.ref = e.ref; cards(); void fill(e.ref, s, { scroll: e.scroll });
+    if (!RM.matches) view.animate([{ opacity: .25 }, { opacity: 1 }], { duration: 180 });
+  }
   async function open(el: HTMLElement) {
     const s = sess();
     if (S.busy || !s || !el.dataset.ref) return;
-    const r = classify(el.dataset.ref, el.dataset.label ?? '');
+    const r = classify(el.dataset.ref, el.dataset.label ?? ''), inside = pv.contains(el);
+    // A file is read first: what the sheet cannot show (Keynote, a disk image, what is outside the session's folders)
+    // goes to Quick Look, and the sheet stays as it was.
+    let k: Peek | undefined;
+    if (!r.url) {
+      S.busy = true;
+      const got = await peekOf(s, r.ref);
+      S.busy = false;
+      if (sess() !== s) return;
+      if (typeof got === 'string') { hooks.toast(got); return; }
+      const ql = QUICKLOOK.test(got.abs) || got.kind === 'quicklook', out = !ql && (got.kind === 'media' || got.kind === 'web') && !got.bytes && !/\.html?$/i.test(got.abs);
+      if (ql || out) {
+        if (out) hooks.toast('不在这个会话的文件夹里，用快速查看打开');
+        void window.agents?.quickLook?.(got.abs);
+        return;
+      }
+      k = got;
+    }
     let target: Pos = r.target, note = false;
     if (target === 'stage' && habit[r.kind]?.side) { target = 'side'; note = true; }
-    if (S.ref?.key === r.key && S.pos === target) return;
-    S.busy = true;
+    if (S.ref?.key === r.key && (S.pos === target || inside)) return;
+    if (S.ref && S.pos !== 'chat' && (inside || S.pos === target)) { swap({ ...r, src: inside ? S.ref.src : el.closest<HTMLElement>('.lnk') ?? el }, s, k); return; }
+    S.busy = true; S.stack = [];
     const from = rel(el), was = S.pos;
-    S.ref = { ...r, src: el.closest('.lnk') ?? el };
-    cards(); void fill(r, s);
+    S.ref = { ...r, src: el.closest<HTMLElement>('.lnk') ?? el };
+    cards(); void fill(S.ref, s, { k });
     S.pos = target;
     pv.style.opacity = '0';
     if (target === 'stage' && was !== 'stage') { fadeConv(0); await wait(120); }
@@ -174,19 +224,20 @@ export function mountWorkbench(win: HTMLElement, ta: HTMLTextAreaElement, hooks:
     showNote(note);
     S.busy = false;
   }
-  // Anything else a feature shows beside the conversation (a subagent, a task's output, a side question): its own head
-  // and body on the same sheet, one thing at a time, in and out the way a file comes and goes. `fill` draws into the
-  // sheet and may keep drawing there while `shown()` is still its key.
+  // Anything else a feature shows beside the conversation (a subagent, a task's output, a side question, the changes):
+  // its own head and body on the same sheet, one thing at a time, in and out the way a file comes and goes. `fill`
+  // draws into the sheet and may keep drawing there while `shown()` is still its key.
   async function show(o: Custom, from: HTMLElement | null) {
     const s = sess();
     if (S.busy || !s) return;
-    const target: Pos = o.target ?? 'side';
-    if (S.ref?.key === o.key && S.pos === target) return;
-    S.busy = true;
+    const target: Pos = o.target ?? 'side', inside = !!from && pv.contains(from);
+    if (S.ref?.key === o.key && (S.pos === target || inside)) return;
+    const next: Shown = { key: o.key, ref: o.key, kind: 'file', target, label: o.b, url: false, src: from, custom: o };
+    if (S.ref && S.pos !== 'chat' && (inside || S.pos === target)) { swap({ ...next, src: inside ? S.ref.src : from }, s); return; }
+    S.busy = true; S.stack = [];
     const was = S.pos, start = from ? rel(from) : { x: bd.clientWidth - 40, y: bd.clientHeight / 2, w: 20, h: 20 };
-    S.ref = { key: o.key, ref: o.key, kind: 'file', target, label: o.b, url: false, src: from, custom: true };
-    cards(); ++loadTok; view.classList.remove('web'); view.scrollTop = 0;
-    head(o.ic, false, o.b, o.small ?? ''); view.replaceChildren(); o.fill(view);
+    S.ref = next;
+    cards(); void fill(next, s);
     S.pos = target;
     pv.style.opacity = '0';
     if (target === 'stage' && was !== 'stage') { fadeConv(0); await wait(120); }
@@ -223,7 +274,7 @@ export function mountWorkbench(win: HTMLElement, ta: HTMLTextAreaElement, hooks:
     pv.style.opacity = '0';
     requestAnimationFrame(() => layout());
     await (quick ? Promise.resolve() : ghostFly(from, to, 420));
-    S.ref = null; cards(); ++loadTok; view.replaceChildren(); showNote(false);
+    S.ref = null; S.stack = []; cards(); ++loadTok; stopFile(view); view.replaceChildren(); showNote(false);
     pv.style.opacity = ''; fadeConv(1);
     if (card && !RM.matches) card.animate([{ boxShadow: 'inset 0 0 0 1px rgb(157 180 255 / .8)' }, { boxShadow: 'inset 0 0 0 .5px rgb(157 180 255 / .22)' }], { duration: 900, easing: 'ease-out' });
     S.busy = false;
@@ -324,7 +375,7 @@ export function mountWorkbench(win: HTMLElement, ta: HTMLTextAreaElement, hooks:
     const t = e.target as HTMLElement, consume = () => { e.preventDefault(); e.stopImmediatePropagation(); };
     if (e.ctrlKey && !e.metaKey && !e.altKey && (e.code === 'Backquote' || e.key === '`')) { consume(); if (!e.repeat) toggleTerm(); return; }
     if (hooks.busy() || !S.ref || e.key !== 'ArrowLeft' || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
-    const free = t === ta ? ta.disabled || !ta.value.trim() : !t.matches('input,textarea,select,[contenteditable="true"],webview') && !t.closest('.tm');
+    const free = t === ta ? ta.disabled || !ta.value.trim() : !t.matches('input,textarea,select,[contenteditable="true"],webview') && !t.closest('.tm,.op-scrub');
     if (free) { consume(); void close(); }
   }, true);
 
@@ -332,7 +383,7 @@ export function mountWorkbench(win: HTMLElement, ta: HTMLTextAreaElement, hooks:
     layout,
     // A different session, or no session: postures start over at once; the panel stays only for a line under way.
     switched() {
-      if (S.ref) { S.ref = null; ++loadTok; view.replaceChildren(); showNote(false); fadeConv(1); }
+      if (S.ref) { S.ref = null; S.stack = []; ++loadTok; stopFile(view); view.replaceChildren(); showNote(false); fadeConv(1); }
       S.pos = 'chat'; S.busy = false;
       const s = sess(); S.left = !!s && active(s.land); S.wide = false;
       if (s) S.was.set(s.id, s.land?.s ?? '');
@@ -356,6 +407,7 @@ export function mountWorkbench(win: HTMLElement, ta: HTMLTextAreaElement, hooks:
     // The page's click handler hands over what is the workbench's.
     act(a: string, el: HTMLElement) {
       if (a === 'peek') void open(el);
+      else if (a === 'pvback') back();
       else if (a === 'pvclose') void close();
       else if (a === 'pvflip') void flip();
       else if (a === 'pvext') { const r = S.ref; if (r?.href) void window.agents?.openUrl?.(r.href); else if (r?.abs) void window.agents?.openPath?.(r.abs); }

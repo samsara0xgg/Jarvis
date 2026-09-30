@@ -20,3 +20,6 @@ and Chromium's in `LICENSES.chromium.html`; CPython's in
 - **sherpa-onnx** (Apache-2.0), **ONNX Runtime** (MIT; its
   `ThirdPartyNotices.txt` is in its package folder), **pymicro-wakeword** with
   TensorFlow Lite (Apache-2.0), **Electron** (MIT) and **CPython** (PSF).
+- **highlight.js**, the code colours in Startrail's preview, bundled into the
+  Agents window. Copyright (c) 2006, Ivan Sagalaev. BSD 3-Clause License:
+  https://github.com/highlightjs/highlight.js/blob/main/LICENSE

@@ -2,11 +2,14 @@
 // telling which of the paths an answer names are there, and keeping a copy of a file sent with a message.
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { mkdir, open, readdir, rmdir, stat, unlink, writeFile } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
+import { mkdir, open, readdir, readFile, realpath, rmdir, stat, unlink, writeFile } from 'node:fs/promises';
+import type { ServerResponse } from 'node:http';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
+import { inflateSync } from 'node:zlib';
 import type { Diff, Peek } from './types.js';
 
 const exec = promisify(execFile);
@@ -93,10 +96,11 @@ export async function resolveRefs(cwd: string, refs: string[]) {
 // ---------- the preview ----------
 // Pages, PDFs and images open in the preview's own browser, audio and video play there, markdown and text come as text
 // (the last megabyte of a big one), with what changed in it against `base`, a folder as its entries, and anything else
-// goes to Quick Look.
+// goes to Quick Look. `roots`: the session's folders; a picture, a sound, a video or a PDF inside them can be had as
+// bytes (sendFile), and the preview shows it itself.
 const WEB = /\.(html?|pdf|png|jpe?g|gif|webp|avif|svg|bmp|ico)$/i, MEDIA = /\.(mp4|m4v|mov|webm|ogv|mp3|m4a|aac|wav|ogg|oga|flac|opus)$/i, MD = /\.(md|markdown|mdx)$/i;
 const BIG = 2 << 20, TAIL = 1 << 20;
-export async function peek(cwd: string, ref: string, base: () => Promise<string>): Promise<Peek> {
+export async function peek(cwd: string, ref: string, base: () => Promise<string>, roots: string[] = []): Promise<Peek> {
   const { abs, line } = parseRef(cwd, ref);
   if (!abs) throw new Refused(400, 'ref 不对');
   const st = await stat(abs).catch(() => null), at = line ? { line } : {};
@@ -108,19 +112,22 @@ export async function peek(cwd: string, ref: string, base: () => Promise<string>
     return { kind: 'dir', abs, entries };
   }
   if (!st.isFile()) throw new Refused(415, `${ref} 不是文件`);
-  if (WEB.test(abs)) return { kind: 'web', abs, url: pathToFileURL(abs).href };
-  if (MEDIA.test(abs)) return { kind: 'media', abs, url: pathToFileURL(abs).href };
-  const cut = st.size > BIG, fh = await open(abs, 'r');
+  const size = st.size;
+  if (WEB.test(abs) || MEDIA.test(abs)) {
+    const real = await within(roots, abs), bytes = !!real && !!typeOf(real), pages = bytes && /\.pdf$/i.test(real) ? await pdfPages(real, size) : undefined;
+    return { kind: WEB.test(abs) ? 'web' : 'media', abs, url: pathToFileURL(abs).href, size, ...bytes ? { bytes } : {}, ...pages ? { pages } : {} };
+  }
+  const cut = size > BIG, fh = await open(abs, 'r');
   let buf: Buffer;
-  try { buf = Buffer.alloc(Math.min(st.size, cut ? TAIL : BIG)); await fh.read(buf, 0, buf.length, cut ? st.size - TAIL : 0); }
+  try { buf = Buffer.alloc(Math.min(size, cut ? TAIL : BIG)); await fh.read(buf, 0, buf.length, cut ? size - TAIL : 0); }
   finally { await fh.close(); }
-  if (buf.subarray(0, 8192).includes(0)) return { kind: 'quicklook', abs };
+  if (buf.subarray(0, 8192).includes(0)) return { kind: 'quicklook', abs, size };
   let text = buf.toString('utf8');
-  if (cut) return { kind: 'text', abs, text: text.slice(text.indexOf('\n') + 1), cut: true, ...at };
-  if (MD.test(abs)) return { kind: 'md', abs, text, ...at };
+  if (cut) return { kind: 'text', abs, size, text: text.slice(text.indexOf('\n') + 1), cut: true, ...at };
+  if (MD.test(abs)) return { kind: 'md', abs, size, text, ...at };
   const raw = await git(path.dirname(abs), 'diff', '--no-color', '-U3', await base(), '--', abs).catch(() => '');
   const diff = diffLines(raw), add = diff.filter(d => d[0] === '+').length, del = diff.filter(d => d[0] === '-').length;
-  return { kind: 'text', abs, text, ...at, ...(add + del ? { diff: diff.slice(0, 4000), add, del } : {}) };
+  return { kind: 'text', abs, size, text, ...at, ...(add + del ? { diff: diff.slice(0, 4000), add, del, hunks: hunksOf(raw) } : {}) };
 }
 // `git diff` output as the window's lines, a ⋯ between hunks.
 export function diffLines(raw: string): Diff {
@@ -131,6 +138,70 @@ export function diffLines(raw: string): Diff {
     if (l[0] === '+' || l[0] === '-' || l[0] === ' ') diff.push([l[0], l.slice(1)]);
   }
   return diff;
+}
+// Where each hunk starts in the file as it is now, so the window can number the lines of diffLines.
+export const hunksOf = (raw: string) => [...raw.matchAll(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/gm)].map(m => Number(m[1]));
+// How many pages a PDF says it has: its page tree's root counts them (/Type /Pages … /Count n), written in the file or
+// inside one of its compressed object streams. Undefined when it does not say.
+async function pdfPages(file: string, size: number) {
+  if (size > 64 << 20) return undefined;
+  const s = (await readFile(file).catch(() => Buffer.alloc(0))).toString('latin1');
+  const count = (t: string) => {
+    let n = 0;
+    for (const m of t.matchAll(/\/Type\s*\/Pages\b/g)) {
+      const from = t.lastIndexOf('<<', m.index), to = t.indexOf('>>', m.index), c = /\/Count\s+(\d+)/.exec(t.slice(from, to < 0 ? undefined : to));
+      if (c) n = Math.max(n, Number(c[1]));
+    }
+    return n;
+  };
+  let n = count(s);
+  for (const m of n ? [] : s.matchAll(/\/Type\s*\/ObjStm\b[^]*?stream\r?\n/g)) {
+    const at = m.index + m[0].length, end = s.indexOf('endstream', at);
+    if (end < 0) continue;
+    try { n = Math.max(n, count(inflateSync(Buffer.from(s.slice(at, end), 'latin1')).toString('latin1'))); } catch { /* not deflated */ }
+  }
+  return n || undefined;
+}
+
+// ---------- a file's own bytes, for the preview's pictures, sound, video and PDFs ----------
+// A security boundary: a file's bytes go to the window only when, with every link resolved, it is inside the session's
+// folder or a folder the session was given (C5), and only a kind the preview shows itself. A part of it when asked for
+// one, so a video can seek.
+const TYPE: Record<string, string> = {
+  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', avif: 'image/avif', svg: 'image/svg+xml', bmp: 'image/bmp', ico: 'image/x-icon',
+  mp4: 'video/mp4', m4v: 'video/mp4', mov: 'video/quicktime', webm: 'video/webm', ogv: 'video/ogg',
+  mp3: 'audio/mpeg', m4a: 'audio/mp4', aac: 'audio/aac', wav: 'audio/wav', ogg: 'audio/ogg', oga: 'audio/ogg', flac: 'audio/flac', opus: 'audio/ogg', pdf: 'application/pdf',
+};
+const typeOf = (p: string) => TYPE[path.extname(p).slice(1).toLowerCase()];
+// The file itself (its links resolved) when that is inside one of `roots` (theirs resolved too), else ''.
+async function within(roots: string[], abs: string) {
+  const real = await realpath(abs).catch(() => '');
+  if (!real) return '';
+  for (const r of roots) {
+    const top = await realpath(r).catch(() => '');
+    if (top && (real === top || real.startsWith(top.endsWith('/') ? top : `${top}/`))) return real;
+  }
+  return '';
+}
+export async function sendFile(res: ServerResponse, roots: string[], cwd: string, ref: string, range = '') {
+  const { abs } = parseRef(cwd, ref);
+  if (!abs) throw new Refused(400, 'ref 不对');
+  const real = await within(roots, abs);
+  if (!real) throw await stat(abs).then(() => new Refused(403, `${ref} 不在这个会话的文件夹里`), () => new Refused(404, `找不到 ${ref}`));
+  const type = typeOf(real), st = await stat(real);
+  if (!type || !st.isFile()) throw new Refused(415, `${ref} 不在这里打开`);
+  const size = st.size, m = /^bytes=(\d*)-(\d*)$/.exec(range.trim()), head = { 'Accept-Ranges': 'bytes', 'Cache-Control': 'no-cache', 'X-Content-Type-Options': 'nosniff', 'Access-Control-Allow-Origin': '*' };
+  let start = 0, end = size - 1, part = false;
+  if (m && (m[1] || m[2])) {
+    if (m[1]) { start = Number(m[1]); end = m[2] ? Math.min(Number(m[2]), size - 1) : size - 1; } else start = Math.max(0, size - Number(m[2]));
+    if (start >= size || start > end) { res.writeHead(416, { ...head, 'Content-Range': `bytes */${size}` }); res.end(); return; }
+    part = true;
+  }
+  // A picture drawn by its own address never runs what an SVG carries.
+  res.writeHead(part ? 206 : 200, { ...head, 'Content-Type': type, 'Content-Length': size ? end - start + 1 : 0, ...part ? { 'Content-Range': `bytes ${start}-${end}/${size}` } : {},
+    ...type === 'image/svg+xml' ? { 'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; sandbox" } : {} });
+  if (!size) { res.end(); return; }
+  createReadStream(real, { start, end }).on('error', () => res.destroy()).pipe(res);
 }
 
 // ---------- files sent with a message ----------
