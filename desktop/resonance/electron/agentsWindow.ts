@@ -1,6 +1,6 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, Notification, session, shell } from 'electron';
 import { spawn, execFile } from 'node:child_process';
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { hostKey } from './agents/key.js';
@@ -191,6 +191,14 @@ export function setupAgents({ preload, page, host, packaged = false, trustedWind
     const projects = path.join(homedir(), 'Projects');
     const r = await dialog.showOpenDialog(win!, { properties: ['openDirectory', 'createDirectory'], defaultPath: existsSync(projects) ? projects : homedir() });
     return r.canceled ? '' : r.filePaths[0] ?? '';
+  });
+  // A conversation as Markdown (/export), kept where the owner picks, ~/Downloads to start with: its path, or '' when cancelled.
+  ipcMain.handle('agents-save-file', async (event, name: unknown, text: unknown) => {
+    if (!mine(event) || typeof name !== 'string' || typeof text !== 'string' || text.length > 64 << 20) return '';
+    const r = await dialog.showSaveDialog(win!, { defaultPath: path.join(homedir(), 'Downloads', path.basename(name) || 'session.md'), filters: [{ name: 'Markdown', extensions: ['md'] }] });
+    if (r.canceled || !r.filePath) return '';
+    writeFileSync(r.filePath, text);
+    return r.filePath;
   });
   const isDir = (p: unknown): p is string => typeof p === 'string' && path.isAbsolute(p) && existsSync(p) && statSync(p).isDirectory();
   const isFile = (p: unknown): p is string => typeof p === 'string' && path.isAbsolute(p) && existsSync(p);
