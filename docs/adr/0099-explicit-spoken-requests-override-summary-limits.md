@@ -1,4 +1,4 @@
-# ADR 0082 — Explicit Spoken Requests Override Summary Limits
+# ADR 0099 — Explicit Spoken Requests Override Summary Limits
 
 **Status:** Accepted
 **Date:** 2026-09-28

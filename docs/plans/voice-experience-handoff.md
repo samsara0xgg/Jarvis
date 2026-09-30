@@ -33,7 +33,7 @@ Allen 的要求：严格审计 Jarvis 的语音交互系统（全双工对话 + 
 | `bb4f645` | （P0 #2–#5）星核的脸由回合推出而非共用 `phase`：在飞的话 → 在听；`turnId` 的回答从 `open` 到 `spoken` → 在说/在想；本界面发起、仍在等的回合 → 在想（打字、卡片也算）。戳一下：在说停该回答，在想按 `turn_id` 停该轮。Dashboard 尾行与气泡同用 held 文本；被取消的在显示回答一律清掉；等待中回合的失败不论 phase 都显示；`spoken` 结束静默回合的等待；断线结束当前回答；`open` 先于提交回执到达时不再等 | `verify-companion-live.mjs` 新增 6 项，父提交全部失败；合并 main 前 120/120 通过（headless Chromium + 假 daemon）。合并时与 main 的 `f2c1f95` 冲突于 `Companion.tsx`（main 把 Dashboard 移进 `dashboardContent`，`busy` 随之改用 `voice === 'thinking'`） |
 | `fe24c3a` | （P1 #7）软打断，按 §4 设计实现：会话模式下她说话时 Allen 开口先降到 0.2；浊音满 0.4 s 才停（停下后才恢复音量）；更短的声音静 350 ms 即结束交给最终识别：没字/附和恢复且不成回合，停止请求或只叫唤醒词停且不成回合，其余停并成回合；已停的若是停止词/附和也不成回合；静音 × 让步增益相乘，让步永不解除静音；`barge_in_confirm_voiced_s: 0` = ADR 0041 原样。spec §3.6.5 随改；决定写成 `docs/plans/soft-barge-in-proposal.md`（Proposed，待 Allen 接受后编号并 supersede 0041） | `test_soft_barge_in.py` 12 例（真会话 + 出厂 VAD + 真 pipeline + 事件日志），含晚到的停止不提前恢复音量。**欠 Mac 实测**（reSpeaker、外放各一次；0.4/0.2/350 未校准） |
 
-| `629e408` | （Allen 用 Codex 做）明确要求数数、朗读、逐字复述、详细讲或指定长度时，口语版不再压成 60 字/一两句，按要求说全（ADR 0082 取代 0045）。**编号冲突**：Allen stash 里未提交的 agents workbench ADR 草稿也叫 0082，落 main 时改一个 | Codex 的 4 个真模型用例（中英 1–50、逐字朗读、短默认）。欠 Mac 实测 |
+| `629e408` | （Allen 用 Codex 做）明确要求数数、朗读、逐字复述、详细讲或指定长度时，口语版不再压成 60 字/一两句，按要求说全（ADR 0099 取代 0045；分支上原编 0082，2026-09-30 落 main 时因 0082 已是 keeper 改号） | Codex 的 4 个真模型用例（中英 1–50、逐字朗读、短默认）。欠 Mac 实测 |
 | `9a1c919` | （Allen 用 Codex 做）MiniMax `subtitle_type: word_streaming` 的逐字时间戳落进 `surface.playback_alignment`，听到的前缀可以停在字上而不是整段（ADR 0083）；让步/打断前已播的字保留 | `test_word_playback_cursor.py`；MiniMax 真合成 + 播放器重放 + LLM：停在 15，答"数到 15"。欠外放实测 |
 | `92f072a` | 按第一次实测：她声音上把「停」听成的 ting/ding 单音（「停立」「顶」）、「等一下」、wait 算停止；一个字/一个词又不是回答字的（「五」"And."）算 `unclear`，恢复音量、不成回合（单独的对/是/好/yes 仍成回合，ADR 0062）；`barge_in_confirm_voiced_s` 0.4 → 0.8 | `test_soft_barge_in.py` 新增 7 例，父提交全失败；录音重放：那声「嗯」浊音 0.61 s，「对对对」0.64 s |
 | `2229550` | 播放器只在出声时消费增益命令：打断停下后恢复 1.0 的命令留到下一个回答才以 30 ms 斜坡生效，下一个回答开头在 0.2 上起步、整段被记成 attenuated，于是"没听全"（实测里打断后的完整回答 heard_text 全空）；静音后下一个回答首块漏音同理。现：空闲回调立即落地 | 同文件 2 例，父提交失败 |
@@ -79,7 +79,7 @@ unreachable（Linux 平台分支，main 同样）；全量 hermetic 1214/1217，
    第二次模型调用。做法（Allen："其他的都按你的想法"）：一次调用、先说后写、边写边说，去掉口语改写，每句念前过毫秒级规则；
    工具轮用模型自己的引导语（Responses API 的 `phase`，停在过程话就让它接着办，没说话的调用由第 4 项固定确认兜底）；
    边听边想；语义端点；最后按实测决定要不要开口更快的模型。D 不做。提案 `docs/plans/speak-as-written-proposal.md`（一份，
-   两件事都取代 0082、用同一套机制）。
+   两件事都取代 0099、用同一套机制）。
    **实现（2026-09-29，分支 `claude/peaceful-pasteur-wv870t`，开关 `realtime.response.spoken_streaming.enabled`
    关，tier B）**：Allen 说的一轮（`inherent_ptt`/`inherent_wake`/`speech`，且主模型在 api.openai.com）每次请求都经
    /v1/responses 流式发出；`final_answer` 文字过信封拆分和句子组装，按 `spoken-v1`（不拒任何句子）逐句出流，
@@ -144,7 +144,7 @@ unreachable（Linux 平台分支，main 同样）；全量 hermetic 1214/1217，
    canary `test_canary_realtime_adoption_tiers.py` 钉着）：第二次实测时在 `~/.jarvis/settings.yaml` 打开跑一轮，
    通过后改出厂值并把它挪进 tier A。重放脚本在该 session 的 scratchpad，没进仓库。
 4. **工具慢时的口头回应**：原提案已并入 `docs/plans/speak-as-written-proposal.md`（2026-09-29，等 Allen 批，
-   批后成为新 ADR 取代 0082）。9-26..29 的记录推翻了原设想：工具本身多在 0.5 s 内返回，慢在模型（最后一个结果到
+   批后成为新 ADR 取代 0099）。9-26..29 的记录推翻了原设想：工具本身多在 0.5 s 内返回，慢在模型（最后一个结果到
    出声中位 3.9 s），"1 s 内有结果则不说"会让最慢的轮不说；纯按时间触发会让 3 s 时还没出声的 55/117 个
    闲聊轮也说。改为：第一次调用为 Allen 办事的工具（不含 tool_search、时钟、记忆、卡片）时说一句确认，
    不早于他说完 1.5 s、回答还没出声才说，其余生命周期行不说。已实现（`a5a867d`，本地提交，开关仍关）。

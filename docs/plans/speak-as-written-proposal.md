@@ -2,7 +2,7 @@
 
 **Status:** Proposed
 **Date:** 2026-09-29
-**Supersedes:** 0082 (on acceptance; it then gets the next ADR number)
+**Supersedes:** 0099 (on acceptance; it then gets the next ADR number)
 
 ## Context
 
@@ -15,7 +15,7 @@
 - 46 spoken chat turns since the switch to gpt-6-luna (2026-09-26 to 09-29),
   from `utterance.received`: first audio p50 3.14 s, p90 6.62 s. The answer
   is written whole before anything is spoken (p50 2.52 s). 25 of them then
-  went to ADR 0082's spoken-form rewrite, a second request of p50 1.33 s:
+  went to ADR 0099's spoken-form rewrite, a second request of p50 1.33 s:
   those turns took p50 5.06 s, the 21 spoken as written p50 2.35 s.
 - On the real prompt (41.6k tokens, 24 tools, 500 history messages)
   gpt-6-luna's first token comes 1.47 s after the request with a cold cache
@@ -31,7 +31,7 @@
   0019), so a refused sentence is still spoken, only later.
 - ADR 0040 stopped asking the main model for a `<voice>` span because the
   pre-v1 span ran long (47 s for one answer); that prompt set no length.
-  The length default and the explicit-request override live in ADR 0082's
+  The length default and the explicit-request override live in ADR 0099's
   rewrite prompt.
 - The tool loop sends each request whole, and text the model writes next to
   a tool call goes only into history. Of the 16 tool turns between
@@ -92,7 +92,7 @@ Limits:
 - A response that ends on a `commentary` message without a tool call gets
   one more request.
 - Typed turns, GPT-Live, Tier 0 read-backs, confirmation asks, the repeat of
-  the last answer and other fixed Layer 3 text keep today's path; ADR 0082's
+  the last answer and other fixed Layer 3 text keep today's path; ADR 0099's
   rewrite remains only there.
 
 ## Alternatives rejected
