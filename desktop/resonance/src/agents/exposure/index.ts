@@ -5,6 +5,7 @@ import { Her } from './her';
 import { ago, drawSky, geometry } from './sky';
 import { started, timeline, type Trail, type Turn } from './timeline';
 import { mountAway } from './away';
+import { findField, hl, land, search, turnHits } from './find';
 
 type Hooks = {
   sessions(): Sess[]; items(id: string): Item[] | undefined; current(): string; chat(): boolean;
@@ -27,6 +28,9 @@ const LIVELY = 'linear(0,.045,.153,.29,.433,.568,.687,.786,.864,.924,.967,.996,1
 const rank = { err: 0, ask: 1, allow: 1, land: 2 };
 // The label in front of a reply that is not its last words: still working, waiting on you, stopped.
 const LEAD: Partial<Record<Turn['kind'], string>> = { live: '还在做', wait: '等你', err: '停了' };
+// A line under the sessions in the sky, stood on like a row: 新会话, the resting and the archived folds, an archived
+// session (back: its id, to take it back). Its key is where you stand while on it.
+type X = { key: string; label: string; arch?: boolean; back?: string };
 
 export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: Hooks) {
   const chrome = document.createElement('div'); chrome.className = 'exposure';
@@ -36,7 +40,6 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
     <button type="button" class="bw-pull" aria-expanded="false"></button>
     <div class="bw-sky" role="region" aria-label="长曝光时间线" inert>
       <div class="bw-rows"></div><div class="bw-axis"></div><div class="bw-gap" hidden></div><div class="bw-open" hidden><div class="pp-in"></div></div>
-      <button type="button" class="bw-rest" hidden></button>
     </div>
     <div class="bw-offer" hidden role="status"></div>
     <div class="bw-deck" hidden><section class="dk-card" role="dialog" aria-modal="true" aria-label="过一遍" tabindex="-1"></section></div>
@@ -45,7 +48,9 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
   const cv = $<HTMLCanvasElement>('.bw-cv', chrome), c = cv.getContext('2d')!;
   const skyEl = $('.bw-sky', chrome), rowsEl = $('.bw-rows', chrome), starsEl = $('.bw-stars', chrome), axis = $('.bw-axis', chrome);
   const pop = $('.bw-open', chrome), inner = $('.pp-in', pop), gap = $('.bw-gap', chrome), pull = $('.bw-pull', chrome);
-  const offerEl = $('.bw-offer', chrome), deckEl = $('.bw-deck', chrome), card = $('.dk-card', chrome), peek = $('.bw-peek', chrome), rest = $('.bw-rest', chrome);
+  const offerEl = $('.bw-offer', chrome), deckEl = $('.bw-deck', chrome), card = $('.dk-card', chrome), peek = $('.bw-peek', chrome);
+  // ⌘K's field stands where 收起 does while it searches.
+  const { el: findEl, input: findInput } = findField(); pull.after(findEl);
   const away = mountAway();
   const head = $('.m-head', win), main = $('.main', win);
   const her = new Her($<HTMLCanvasElement>('.bw-her canvas', chrome), 56, 15.6, true);
@@ -58,7 +63,16 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
   let openAt = performance.now(), typedAt = -Infinity, scrolledAt = -Infinity, lastCurrent = hooks.current(), lastRefresh = 0;
   let deck: Decision[] = [], deckOn = false, bookmark: { el: HTMLElement; scroll: number; focus: HTMLElement | null; row: HTMLElement | null } | null = null;
   const trails: Record<string, Trail> = {}, sources = new Map<string, { s: string; items?: Item[] }>();
-  let all: Sess[] = [], rows: Sess[] = [], resting: Sess[] = [];
+  let all: Sess[] = [], rows: Sess[] = [], resting: Sess[] = [], xrows: X[] = [];
+  // ⌘K: searching, what is typed, the sessions the host finds it in, and per session the turns that say it.
+  let finding = false, query = '', showArch = false, findSeq = 0, found = new Set<string>();
+  const hits = new Map<string, { items?: Item[]; q: string; turns: number[] }>();
+  const searching = () => finding && !!query.trim();
+  const saying = (s: Sess, q = query.trim().toLowerCase()) => {
+    const items = hooks.items(s.id), was = hits.get(s.id);
+    if (was && was.items === items && was.q === q) return was.turns;
+    const turns = turnHits(items ?? [], q); hits.set(s.id, { items, q, turns }); return turns;
+  };
   const seenErrors = new Set<string>(), loading = new Set<string>();
   let presenceKey = '', axisKey = '', revealUntil = 0;
   // hoverQi: the point of the selected row under the pointer, read in place of the one you stand on · hoverStar: the
@@ -69,12 +83,18 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
   let wordWidth = 0, wordHeight = 0, targetLeft = 0, targetTop = 0, nearNow = false, snap = true;
   const get = (id: string) => hooks.sessions().find(s => s.id === id);
   const point = () => trails[selected]?.turns[qi];
+  // Standing on a line under the sessions: no words, no needle, nothing bends.
+  const onX = () => selected.startsWith('x:');
   const index = () => Math.max(0, rows.findIndex(s => s.id === selected));
+  const stops = () => [...rows.map(s => s.id), ...xrows.filter(x => x.key !== 'x:none').map(x => x.key)];
+  const place = () => onX() ? rows.length + xrows.findIndex(x => x.key === selected) : index();
+  // Where the sky opens, and where a search starts: the session on screen, else the first.
+  const first = () => (searching() ? undefined : rows.find(s => s.id === hooks.current())?.id) ?? stops()[0] ?? '';
   const since = (s: Sess) => s.trace?.at(-1)?.at ?? hooks.items(s.id)?.find(it => it.k === 'req' && !it.done)?.at ?? s.updated;
   const waitMin = (s: Sess) => Math.max(0, Math.round((Date.now() - since(s)) / 60000));
   const stateText = (s: Sess) => `${words[status(s)]}${s.st === 'wait' ? ` · ${waitMin(s) || '刚刚'}${waitMin(s) ? ' 分' : ''}` : ''}`;
   const stateHTML = (s: Sess, tag = 'em') => `<${tag} class="st-${status(s)}">${stateText(s)}</${tag}>`;
-  const skyHeight = () => 26 + rows.length * 27 + opening.value + 34 + (resting.length ? 28 : 0);
+  const skyHeight = () => 26 + (rows.length + xrows.length) * 27 + opening.value + 34;
   // Under the words the trails bend down once, past their right edge, and stay down all the way back.
   const geo = () => geometry(width, now, Math.max(60, ...rows.map(s => now - (trails[s.id]?.segs[0]?.a ?? now))) * 1.04, skyHeight(),
     (i, x) => (offsets.get(rows[i]?.id)?.value ?? 0) * (1 - smooth(left.value + wordWidth + 14, left.value + wordWidth + 58, x)));
@@ -87,7 +107,7 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
     if (hooks.items(id) || loading.has(id)) return;
     loading.add(id); try { await hooks.load(id); } finally {
       loading.delete(id); refresh();
-      if (skyOn && selected === id && qi < 0) { latest(true); renderWords(); revealUntil = performance.now() + 800; }
+      if (skyOn && selected === id && (qi < 0 || searching())) { latest(true); findStop(); renderWords(); revealUntil = performance.now() + 800; }
     }
   }
   function holding(): Decision[] {
@@ -113,19 +133,36 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
     hooks.refresh(); refresh();
   }
   function refresh() {
-    all = hooks.sessions().filter(s => !s.archived);
-    for (const s of all) {
+    const every = hooks.sessions(), archived = every.filter(s => s.archived);
+    all = every.filter(s => !s.archived);
+    // A search reaches the archived too, so they get trails of their own while it lasts.
+    for (const s of searching() ? every : all) {
       const items = hooks.items(s.id), key = `${s.st}|${s.updated}|${s.summary}|${s.now}|${s.trace?.length}`;
       if (sources.get(s.id)?.items !== items || sources.get(s.id)?.s !== key) {
         trails[s.id] = timeline(s, items ?? []); sources.set(s.id, { s: key, items });
       }
     }
     // Pinned first, then by when each began: a row never moves because its state changed.
-    all.sort((a, b) => Number(b.pinned) - Number(a.pinned) || started(a, trails[a.id]) - started(b, trails[b.id]) || a.id.localeCompare(b.id));
-    const fold = all.length > 14 && !expandRest;
-    resting = fold ? all.filter(s => s.st === 'done' && !s.unread && Date.now() - s.updated > 3600000 && s.id !== hooks.current() && s.id !== selected) : [];
-    rows = all.filter(s => !resting.includes(s));
-    if (!rows.some(s => s.id === selected)) { selected = rows.find(s => s.id === hooks.current())?.id ?? rows[0]?.id ?? ''; latest(); }
+    const order = (a: Sess, b: Sess) => Number(b.pinned) - Number(a.pinned) || started(a, trails[a.id]) - started(b, trails[b.id]) || a.id.localeCompare(b.id);
+    all.sort(order); archived.sort(order);
+    if (searching()) {
+      // ⌘K keeps the sessions that say it (or are named by it, or the host finds it in), the archived after the rest.
+      const q = query.trim().toLowerCase();
+      rows = [...all, ...archived].filter(s => saying(s, q).length || s.title.toLowerCase().includes(q) || found.has(s.id)); resting = [];
+      xrows = rows.length ? [] : [{ key: 'x:none', label: `没找到「${query.trim()}」` }];
+    } else {
+      const fold = all.length > 14, rests = (s: Sess) => s.st === 'done' && !s.unread && Date.now() - s.updated > 3600000 && s.id !== hooks.current();
+      resting = fold && !expandRest ? all.filter(s => rests(s) && s.id !== selected) : [];
+      rows = all.filter(s => !resting.includes(s));
+      const restN = fold && expandRest ? all.filter(rests).length : resting.length;
+      xrows = [{ key: 'x:new', label: '＋ 新会话' }];
+      if (restN) xrows.push({ key: 'x:rest', label: expandRest ? `收起歇着的 ${restN} 个` : `还有 ${restN} 个在歇着` });
+      if (archived.length) {
+        xrows.push({ key: 'x:arch', label: showArch ? `收起已归档的 ${archived.length} 个` : `已归档 ${archived.length}`, arch: true });
+        if (showArch) for (const s of archived) xrows.push({ key: `x:a:${s.id}`, label: s.title, arch: true, back: s.id });
+      }
+    }
+    if (!stops().includes(selected)) { selected = first(); latest(); findStop(); }
     if (lastCurrent !== hooks.current()) { lastCurrent = hooks.current(); openAt = performance.now(); hideOffer(); }
     const h = holding();
     held.innerHTML = h.length ? `<i></i>她手里 ${h.length} 件 ${kbd('空格')}` : '';
@@ -142,42 +179,66 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
     renderRows(); if (skyOn) renderWords();
   }
   function renderRows() {
-    const key = rows.map(s => `${s.id}|${s.title}|${status(s)}|${waitMin(s)}`).join(';') + `|${selected}|${skyOn}|${nameStop}|${hooks.current()}`;
+    // While searching, a name shows what matched and how many of its sentences say it.
+    const q = searching() ? query.trim() : '', count = (s: Sess) => q ? saying(s).length : 0;
+    const key = rows.map(s => `${s.id}|${s.title}|${status(s)}|${waitMin(s)}|${s.archived}|${count(s)}`).join(';') + `|${selected}|${skyOn}|${nameStop}|${hooks.current()}|${q}|${xrows.map(x => x.key + x.label).join(',')}`;
     if (rowKey === key) return; rowKey = key;
-    rowsEl.innerHTML = rows.map((s, i) => `<button type="button" class="bw-row${selected === s.id ? ' sel' : ''}${hooks.current() === s.id ? ' on' : ''}${nameStop && selected === s.id ? ' nm' : ''}" data-session="${esc(s.id)}" style="top:${15 + i * 27}px" aria-label="${esc(s.title)}，${words[status(s)]}"><b>${esc(s.title)}</b>${stateHTML(s)}</button>`).join('');
+    rowsEl.innerHTML = rows.map((s, i) => `<button type="button" class="bw-row${selected === s.id ? ' sel' : ''}${hooks.current() === s.id ? ' on' : ''}${nameStop && selected === s.id ? ' nm' : ''}" data-session="${esc(s.id)}" style="top:${15 + i * 27}px" aria-label="${esc(s.title)}，${s.archived ? '已归档' : words[status(s)]}"><b>${hl(s.title, q)}</b>${count(s) ? `<em class="st-find">${count(s)} 处说过</em>` : ''}${s.archived ? '<em class="st-arch">已归档</em>' : stateHTML(s)}</button>`).join('')
+      // The lines under the sessions: 新会话 and taking an archived one back are the page's own acts.
+      + xrows.map((x, j) => `<button type="button" class="bw-row bw-x${skyOn && selected === x.key ? ' sel' : ''}${x.arch ? ' arch' : ''}" data-x="${esc(x.key)}"${x.key === 'x:new' ? ' data-act="new"' : x.back ? ` data-act="unarchive" data-id="${esc(x.back)}"` : ''}${x.key === 'x:none' ? ' disabled' : ''} style="top:${15 + (rows.length + j) * 27}px"><span>${esc(x.label)}</span>${x.key === 'x:new' ? `<span class="kk">${kbd('⌘')}${kbd('N')}</span>` : x.back ? '<span class="back">拿回来</span>' : ''}</button>`).join('');
     starsEl.innerHTML = rows.map((s, i) => `<button type="button" data-session="${esc(s.id)}" aria-label="${esc(s.title)}，${words[status(s)]}" style="left:${hz(i, rows.length) - 10}px" title="${esc(s.title)} · ${esc(s.summary)}"></button>`).join('');
-    rest.hidden = !resting.length; rest.textContent = `还有 ${resting.length} 个在歇着`; rest.style.top = `${26 + rows.length * 27}px`;
+  }
+  // A session found only in what was said stands on the newest sentence that says it; one its name matches, on its name.
+  function findStop() {
+    const s = get(selected), q = query.trim().toLowerCase(); if (!searching() || !s) return;
+    const turns = saying(s);
+    if (turns.length && !s.title.toLowerCase().includes(q)) { nameStop = false; qi = turns[turns.length - 1]; time = point()?.at ?? time; } else nameStop = true;
   }
   function latest(keep = false) {
+    if (onX()) return;
     const turns = trails[selected]?.turns ?? [];
     qi = turns.length - 1;
     if (keep && time !== null && turns.some(t => t.at !== undefined)) {
       qi = turns.reduce((best, t, i) => t.at !== undefined && Math.abs(t.at - time!) < Math.abs((turns[best]?.at ?? Infinity) - time!) ? i : best, turns.findIndex(t => t.at !== undefined));
     } else time = turns[qi]?.at ?? null;
   }
-  function lastParagraph(text: string) {
+  // One paragraph of what it said: the one that says q, else the last.
+  function paragraph(text: string, q = '') {
     const template = document.createElement('template'); template.innerHTML = hooks.md(text);
-    const ps = template.content.querySelectorAll('p');
-    return ps.length ? ps[ps.length - 1].textContent ?? '' : template.content.textContent ?? text;
+    const ql = q.toLowerCase(), ps = template.content.querySelectorAll('p');
+    const p = (q ? [...template.content.querySelectorAll('p,li,h1,h2,h3,h4,pre')].find(p => p.textContent?.toLowerCase().includes(ql)) : undefined) ?? ps[ps.length - 1];
+    return p ? p.textContent ?? '' : template.content.textContent ?? text;
+  }
+  // Its answer in a turn; while searching, the answer that says it, when your words do not.
+  function reply(s: Sess, t: Turn, q: string) {
+    if (t.kind !== 'sum') return t.reply;
+    const items = hooks.items(s.id) ?? [], ql = q.toLowerCase();
+    if (q && !t.you.toLowerCase().includes(ql)) for (let k = t.item + 1; k < items.length && items[k].k !== 'you'; k++) {
+      const it = items[k]; if (it.k === 'it' && it.text.toLowerCase().includes(ql)) return paragraph(it.text, q);
+    }
+    return paragraph(t.reply);
   }
   const keys = (...ks: string[]) => `<p class="pp-k">${ks.filter(Boolean).map(k => `<span>${k}</span>`).join('')}</p>`;
   // A point you said something at: when, your words, the last thing it said in that turn, the next key.
   function said(s: Sess, t: Turn, at: number, n: number) {
     const clock = t.at === undefined ? '时间未记录' : new Date(t.at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
-    return `<p class="pp-h"><span class="pp-t"><b>${clock}</b><small>第 ${at + 1} / ${n} 句</small></span></p><p class="pp-q">${esc(t.you)}</p>`
-      + `<p class="pp-a${t.kind === 'sum' ? '' : ` r-${t.kind}`}"><i>${s.agent === 'claude' ? 'Claude' : 'Codex'}</i>${LEAD[t.kind] ? `<em>${LEAD[t.kind]}</em>` : ''}${esc(t.kind === 'sum' ? lastParagraph(t.reply) : t.reply)}</p>`
+    const q = searching() ? query.trim() : '';
+    return `<p class="pp-h"><span class="pp-t"><b>${clock}</b><small>第 ${at + 1} / ${n} 句</small></span></p><p class="pp-q">${hl(t.you, q)}</p>`
+      + `<p class="pp-a${t.kind === 'sum' ? '' : ` r-${t.kind}`}"><i>${s.agent === 'claude' ? 'Claude' : 'Codex'}</i>${LEAD[t.kind] ? `<em>${LEAD[t.kind]}</em>` : ''}${hl(reply(s, t, q), q)}</p>`
       + keys(at > 0 ? `${kbd('←')} 上一句` : '', `${kbd('→')} ${at < n - 1 ? '下一句' : '到名字'}`);
   }
   // The name stop, or a session you have not said anything to: where it stands now.
   function standing(s: Sess, n: number) {
-    return `<p class="pp-h"><span class="pp-t"><b>现在</b>${stateHTML(s, 'small')}</span></p><p class="pp-her"><i>她</i>${nameStop || n ? '' : '你还没跟它说过话。'}${esc(s.now || s.summary || '')}</p>`
+    return `<p class="pp-h"><span class="pp-t"><b>现在</b>${stateHTML(s, 'small')}</span></p><p class="pp-her"><i>她</i>${nameStop || n ? '' : '你还没跟它说过话。'}${hl(s.now || s.summary || '', searching() ? query.trim() : '')}</p>`
       + (nameStop ? keys(n ? `${kbd('←')} 回到你说的` : '', `${kbd('→')} 进去`) : keys(`${kbd('→')} 到名字`));
   }
   function renderWords() {
-    const s = get(selected); if (!s || !skyOn) return;
+    if (!skyOn) return;
+    // On a line under the sessions there is nothing to read.
+    const s = get(selected); if (!s) { pop.hidden = gap.hidden = true; wordHeight = 0; popKey = ''; return; }
     // A point under the pointer is read in place of the one you stand on, without moving the needle.
     const turns = trails[selected]?.turns ?? [], at = hoverQi ?? (nameStop ? -1 : qi), t = turns[at];
-    const key = `${selected}|${at}|${nameStop}|${t?.kind}|${t?.reply}|${t?.you}|${stateText(s)}|${s.now}|${s.summary}|${turns.length}`;
+    const key = `${selected}|${at}|${nameStop}|${t?.kind}|${t?.reply}|${t?.you}|${stateText(s)}|${s.now}|${s.summary}|${turns.length}|${searching() ? query : ''}`;
     const fresh = pop.hidden; pop.hidden = gap.hidden = false;
     if (key !== popKey) {
       popKey = key;
@@ -194,22 +255,70 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
     pop.classList.toggle('sc', nearNow);
     if (fresh || reduced.matches) { left.value = targetLeft; left.velocity = 0; top.value = targetTop; top.velocity = 0; }
   }
-  function openSky() {
-    if (!enabled || !rows.length || deckOn) return;
+  // find: opened by ⌘K, searching what was said.
+  function openSky(find = false) {
+    if (!enabled || deckOn || !hooks.sessions().length) return;
+    // ⌘K in an open sky turns it into the search.
+    if (skyOn) { if (find) { finding = true; pullLabel(); findInput.focus({ preventScroll: true }); findInput.select(); } return; }
     peek.hidden = true;
+    finding = find; query = findInput.value = ''; found = new Set(); refresh();
     // It opens on the names: ↑↓ pick a session, → goes in; ← steps back into what you said.
-    selected = rows.find(s => s.id === hooks.current())?.id ?? rows[0].id; nameStop = true; latest();
+    selected = first(); nameStop = true; latest();
     skyOn = true; snap = true; hoverQi = null; revealUntil = performance.now() + 800; hideOffer();
     win.classList.add('sky-on'); skyEl.inert = false; pullLabel();
-    win.tabIndex = -1; win.focus({ preventScroll: true }); renderRows(); renderWords();
+    if (find) findInput.focus({ preventScroll: true }); else { win.tabIndex = -1; win.focus({ preventScroll: true }); }
+    renderRows(); renderWords();
     for (const s of all) void ensure(s.id);
   }
   function closeSky() {
+    const typing = findEl.contains(document.activeElement);
     skyOn = false; pop.hidden = gap.hidden = true; wordHeight = 0; popKey = ''; nameStop = false; hoverQi = null;
-    win.classList.remove('sky-on'); skyEl.inert = true; skyEl.style.cursor = ''; pullLabel(); renderRows();
+    // A search ends with the sky: the sessions come back as they were.
+    finding = false; query = findInput.value = ''; found = new Set(); findSeq++;
+    win.classList.remove('sky-on'); skyEl.inert = true; skyEl.style.cursor = ''; pullLabel(); refresh();
+    if (typing) settle();
   }
-  // The horizon is the window's drag strip, so the way in stays on it as the way out: esc, 收起.
+  // What is typed in ⌘K's field: the rows narrow at once, and widen when the host finds it where this window has not read.
+  function onFind() {
+    query = findInput.value; found = new Set(); hoverQi = null;
+    refresh(); selected = first(); nameStop = true; latest(); findStop();
+    renderRows(); renderWords(); revealUntil = performance.now() + 800;
+    const seq = ++findSeq, q = query.trim(), picked = selected;
+    if (q) window.setTimeout(() => {
+      if (seq === findSeq) void search(hooks.call, q).then(ids => {
+        if (seq !== findSeq) return;
+        found = ids; for (const id of ids) void ensure(id);
+        refresh();
+        if (selected === picked) { selected = first(); nameStop = true; latest(); findStop(); }
+        renderRows(); renderWords();
+      }, () => { /* the host could not search: what this window has read still counts */ });
+    }, 120);
+  }
+  // ↑↓ over the sessions and the lines under them. A new row keeps the moment: it lands on its own sentence nearest to
+  // where the needle stood, or, while searching, where it was found.
+  function move(d: number, keep: boolean) {
+    const list = stops(), to = list[clamp(list.indexOf(selected) + d, 0, list.length - 1)];
+    if (!to || to === selected) return;
+    selected = to; hoverQi = null; latest(keep); findStop();
+    hooks.blip(.82); renderRows(); renderWords(); revealUntil = performance.now() + 800;
+  }
+  // ⏎ into the session you stand on; from a sentence, its conversation lands on that sentence.
+  function enter() {
+    const id = selected, t = nameStop ? undefined : point(), q = searching() ? query.trim() : '', items = hooks.items(id) ?? [];
+    if (!get(id)) return;
+    closeSky(); hooks.open(id); settle();
+    if (!t) return;
+    const upto = items.findIndex((it, i) => i > t.item && it.k === 'you');
+    requestAnimationFrame(() => land(win, () => hooks.current() === id, t.item, upto < 0 ? items.length : upto, q));
+  }
+  // ⏎ or → where you stand: a session goes in; a line under the sessions does its one thing.
+  function activate() {
+    if (onX()) rowsEl.querySelector<HTMLElement>(`[data-x="${CSS.escape(selected)}"]`)?.click(); else if (selected) enter();
+  }
+  // The horizon is the window's drag strip, so the way in stays on it as the way out: esc, 收起. While searching, the
+  // field stands there instead.
   function pullLabel() {
+    pull.hidden = skyOn && finding; findEl.hidden = !(skyOn && finding);
     pull.innerHTML = skyOn ? `${kbd('esc')}<span>收起</span>` : `${kbd('←')}<span>长曝光</span>`;
     pull.setAttribute('aria-expanded', String(skyOn)); pull.setAttribute('aria-label', skyOn ? '收起长曝光' : '全部会话');
   }
@@ -218,7 +327,7 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
     if (ta.disabled) { win.tabIndex = -1; win.focus({ preventScroll: true }); } else ta.focus({ preventScroll: true });
   }
   function revealSelection() {
-    const y = 15 + index() * 27, bottom = top.value + wordHeight - 18, viewport = skyEl.clientHeight;
+    const y = 15 + place() * 27, bottom = Math.max(y + 22, top.value + wordHeight - 18), viewport = skyEl.clientHeight;
     if (!viewport) return;
     const scroll = skyEl.scrollTop;
     if (bottom - y > viewport - 24 || y < scroll + 12) skyEl.scrollTop = Math.max(0, y - 12);
@@ -378,30 +487,45 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
       return;
     }
     if (e.altKey && e.key === 'Tab') { consume(); if (!e.repeat) next(); return; }
+    // ⌘K, from anywhere: the sky, searching what was said. The side list keeps its own field for the pointer.
+    if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'k') { consume(); openSky(true); return; }
     if (skyOn) {
+      // In ⌘K's field ↑↓ walk the rows, ⏎ goes in, esc empties it and then closes; the rest is typing.
+      if (target === findInput) {
+        if (e.key === 'ArrowUp' || e.key === 'ArrowDown') { consume(); move(e.key === 'ArrowDown' ? 1 : -1, false); }
+        else if (e.key === 'Enter') { consume(); if (!e.repeat) activate(); }
+        else if (e.key === 'Escape') { consume(); if (findInput.value) { findInput.value = ''; onFind(); } else { closeSky(); settle(); } }
+        return;
+      }
       if (editable && target !== ta) { closeSky(); return; }
       if (e.altKey && e.key === 'ArrowDown') { consume(); closeSky(); settle(); return; }
       if (e.key.startsWith('Arrow') || e.key === 'Escape' || e.key === 'Enter') {
         consume(); hoverQi = null;
-        const turns = trails[selected]?.turns ?? [], was = qi, row = index();
-        if (e.key === 'Escape' || (e.key === 'ArrowDown' && row === rows.length - 1)) { closeSky(); settle(); return; }
-        if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
-          // A new row keeps the moment: it lands on its own sentence nearest to where the needle stood.
-          selected = rows[clamp(row + (e.key === 'ArrowDown' ? 1 : -1), 0, rows.length - 1)].id; latest(true);
-          if (index() !== row) hooks.blip(.82);
-        } else if (e.key === 'ArrowLeft') {
+        const turns = trails[selected]?.turns ?? [], was = qi, list = stops();
+        if (e.key === 'Escape' || (e.key === 'ArrowDown' && list.indexOf(selected) === list.length - 1)) { closeSky(); settle(); return; }
+        if (e.key === 'ArrowUp' || e.key === 'ArrowDown') { move(e.key === 'ArrowDown' ? 1 : -1, true); return; }
+        // A line under the sessions has no sentences: → and ⏎ do its one thing.
+        if (onX()) { if (e.key !== 'ArrowLeft' && !e.repeat) activate(); return; }
+        if (e.key === 'ArrowLeft') {
           if (!turns.length) { hooks.toast('你还没跟它说过话'); return; }
           if (nameStop) { nameStop = false; qi = turns.length - 1; } else qi = qi < 0 ? turns.length - 1 : Math.max(0, qi - 1);
           time = point()?.at ?? time;
           if (qi !== was) hooks.blip(1);
         } else if (e.key === 'ArrowRight' || e.key === 'Enter') {
-          if (nameStop || e.key === 'Enter') { const id = selected; closeSky(); hooks.open(id); settle(); return; }
+          if (nameStop || e.key === 'Enter') { if (!e.repeat) enter(); return; }
           // Past the last thing you said, the name is one stop before going in.
           if (qi >= turns.length - 1) { nameStop = true; hooks.cue('mic', .35); } else { qi++; time = point()?.at ?? time; hooks.blip(1); }
         }
         renderRows(); renderWords(); revealUntil = performance.now() + 800; return;
       }
       if (!e.metaKey && !e.ctrlKey && !e.altKey && (e.key.length === 1 || e.key === 'Process')) {
+        // While searching, what you type goes to the field; otherwise a space is a pause here, and a word goes to the composer.
+        if (finding) {
+          findInput.focus({ preventScroll: true });
+          if (e.key.length === 1) { consume(); findInput.setRangeText(e.key, findInput.selectionStart ?? 0, findInput.selectionEnd ?? 0, 'end'); onFind(); }
+          return;
+        }
+        if (e.key === ' ') { consume(); return; }
         closeSky(); settle();
         if (e.key.length === 1) { consume(); if (!ta.disabled) { ta.setRangeText(e.key, ta.selectionStart, ta.selectionEnd, 'end'); ta.dispatchEvent(new Event('input', { bubbles: true })); } }
       }
@@ -420,7 +544,7 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
     now = Date.now() / 60000;
     if (t - lastRefresh > 1000) { lastRefresh = t; refresh(); }
     step(sky, skyOn ? 1 : 0, 2.2, .92, dt); const selectedIndex = index();
-    step(opening, skyOn ? wordHeight : 0, 2.6, .9, dt); step(left, targetLeft, 2.8, .86, dt); step(top, targetTop, 2.8, .86, dt); step(focus, selectedIndex, 2.4, 1, dt);
+    step(opening, skyOn ? wordHeight : 0, 2.6, .9, dt); step(left, targetLeft, 2.8, .86, dt); step(top, targetTop, 2.8, .86, dt); step(focus, place(), 2.4, 1, dt);
     for (const [i, s] of rows.entries()) {
       const value = offsets.get(s.id) ?? spring(0); offsets.set(s.id, value);
       step(value, skyOn && i > selectedIndex ? wordHeight : 0, 2.6, .9, dt);
@@ -440,7 +564,7 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
     c.save();
     if (skyEl.scrollTop > 0) { c.beginPath(); c.rect(0, 56, width, height - 56); c.clip(); }
     c.translate(0, -skyEl.scrollTop);
-    drawSky(c, rows, trails, { now, p: sky.value, dev: clamp((sky.value - .18) / .82), geo: g, sel: skyOn ? selectedIndex : undefined, pt: skyOn ? at : undefined,
+    drawSky(c, rows, trails, { now, p: sky.value, dev: clamp((sky.value - .18) / .82), geo: g, sel: skyOn && !onX() ? selectedIndex : undefined, pt: skyOn ? at : undefined,
       aways: away.spans().map(s => ({ a: s.a / 60000, b: s.b === null ? null : s.b / 60000 })),
       span: stand ? undefined : [at!, (trails[selected]?.turns[qi + 1]?.at ?? Date.now()) / 60000], ndx: at === undefined ? undefined : needle.value, nm: nameStop,
       cy: needleY.value, focus: skyOn ? focus.value : undefined,
@@ -481,9 +605,24 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
   addEventListener('pointerup', () => her.pressed = false);
   win.addEventListener('pointermove', e => { const r = win.getBoundingClientRect(); her.look = [(e.clientX - r.left - width + 34) / 140, (e.clientY - r.top - 27) / 140]; });
   win.addEventListener('pointerleave', () => { her.look = null; her.pressed = false; });
-  rest.addEventListener('click', () => { expandRest = true; refresh(); });
+  // The lines under the sessions: the folds open and close here; 新会话 and 拿回来 are the page's acts (data-act).
+  rowsEl.addEventListener('click', e => {
+    const x = (e.target as HTMLElement).closest<HTMLElement>('[data-x]')?.dataset.x;
+    if (!x) return;
+    if (x === 'x:new') { closeSky(); return; }
+    if (x === 'x:rest') expandRest = !expandRest;
+    else if (x === 'x:arch') showArch = !showArch;
+    selected = x; refresh();
+    // Taken back, it is a session again: stand on its name once the page has it.
+    if (x.startsWith('x:a:')) window.setTimeout(() => { if (!skyOn) return; selected = x.slice(4); nameStop = true; latest(); refresh(); renderRows(); renderWords(); });
+  });
   skyEl.addEventListener('wheel', () => revealUntil = 0, { passive: true });
-  for (const el of [rowsEl, starsEl]) el.addEventListener('click', e => { const id = (e.target as HTMLElement).closest<HTMLElement>('[data-session]')?.dataset.session; if (id) { peek.hidden = true; closeSky(); hooks.open(id); } });
+  for (const el of [rowsEl, starsEl]) el.addEventListener('click', e => {
+    const id = (e.target as HTMLElement).closest<HTMLElement>('[data-session]')?.dataset.session; if (!id) return;
+    // A found session opens where it was found.
+    if (el === rowsEl && searching()) { selected = id; latest(); findStop(); enter(); return; }
+    peek.hidden = true; closeSky(); hooks.open(id);
+  });
   starsEl.addEventListener('pointerover', e => { const target = (e.target as HTMLElement).closest<HTMLElement>('[data-session]'), s = target && get(target.dataset.session!); if (!s) return; hoverStar = s.id; peek.innerHTML = `<b>${esc(s.title)}</b>${stateHTML(s, 'span')}<small>${esc(s.summary)}</small>`; peek.style.left = `${clamp(target.offsetLeft + 10 - 110, 12, width - 250)}px`; peek.hidden = false; });
   starsEl.addEventListener('pointerout', e => { if (!(e.relatedTarget as Element | null)?.closest?.('.bw-stars button')) { hoverStar = ''; peek.hidden = true; } });
   // What the pointer is on in the sky, with the prototype's reach: a row within half its height of its (bent) line,
@@ -522,7 +661,9 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
   win.addEventListener('scroll', e => { const el = e.target as HTMLElement; if (el.matches('.conv') && el.scrollTop < el.scrollHeight - el.clientHeight - 40) { scrolledAt = performance.now(); hideOffer(); } }, true);
   // On the window, so the keys still arrive while a request holds the composer shut and nothing inside has focus.
   addEventListener('keydown', keyboard, true);
-  win.addEventListener('compositionstart', () => { if (skyOn) { closeSky(); settle(); } }, true);
+  win.addEventListener('compositionstart', e => { if (skyOn && e.target !== findInput) { closeSky(); settle(); } }, true);
+  findInput.addEventListener('input', e => { if (!(e as InputEvent).isComposing) onFind(); });
+  findInput.addEventListener('compositionend', onFind);
   addEventListener('focus', () => offer('你回来了'));
   window.agents?.onNext?.(next);
   new ResizeObserver(() => { width = win.clientWidth; height = win.clientHeight; rowKey = ''; renderRows(); if (skyOn) renderWords(); }).observe(win);
