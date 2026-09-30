@@ -236,10 +236,22 @@ def test_a_response_that_ends_on_its_line_gets_one_more_request(tmp_path: Path) 
     assert result.response_plan.text == _LINE
 
 
+def test_citation_markup_is_never_spoken(tmp_path: Path) -> None:
+    """OpenAI's citation markup goes even when it arrives split across deltas."""
+    cite = "\ue200cite\ue202turn0search0\ue202turn0search4\ue201"
+    answer = f"这叫瑞利散射。{cite}天空因此是蓝色的。"
+    with _Peer([[("final_answer", answer)]]) as peer:
+        runtime = _spoken_runtime(tmp_path, peer.url)
+        result = _drive(runtime, _spoken(runtime.conn, "turn-cite", "天空为什么是蓝的"))
+    chunks = [payload["text"] for payload in _payloads(runtime.conn, "surface.response_chunk")]
+    assert "".join(chunks) == result.response_plan.text == "这叫瑞利散射。天空因此是蓝色的。"
+
+
 def test_an_answer_that_opens_with_markup_is_delivered_whole_unrewritten(tmp_path: Path) -> None:
     """Nothing streams past markup, so the answer goes out complete, as written."""
     answer = "**冰**从空气里吸热所以会融化。"
-    with _Peer([[("final_answer", answer)]]) as peer:
+    cite = "\ue200cite\ue202turn0search0\ue201"
+    with _Peer([[("final_answer", answer + cite)]]) as peer:
         runtime = _spoken_runtime(tmp_path, peer.url)
         result = _drive(runtime, _spoken(runtime.conn, "turn-markup", "冰为什么会化"))
     conn = runtime.conn

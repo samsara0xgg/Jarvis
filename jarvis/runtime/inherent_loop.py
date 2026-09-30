@@ -1821,8 +1821,9 @@ _SELECT_ACTION_TOOL_NAME_SQL = (
 )
 
 
-# The turn's latest line before a call, up to this action's proposal: a line
-# written before a bookkeeping call (tool_search) still speaks at the next one.
+# The turn's latest line before a call, up to this action's proposal. It speaks
+# at the dispatch of the call it came with, a bookkeeping one (tool_search)
+# included; a line never spoken there speaks at the next dispatch.
 _SELECT_LEAD_IN_SQL = (
     "SELECT json_extract(payload_json, '$.lead_in') FROM events "
     "WHERE type = 'action.proposed' AND json_extract(payload_json, '$.turn_id') = ? "
@@ -2031,11 +2032,16 @@ def _open_commentary_in_worker_thread(  # noqa: PLR0911 - one early return per s
         tool = next(
             (t for t in runtime.tool_registry.get_definitions() if t.name == tool_name), None
         )
+        lead_in = conn.execute(
+            _SELECT_LEAD_IN_SQL, (turn_id, action_event.payload.get("action_id"))
+        ).fetchone()
+        line = lead_in_speech_text(lead_in[0] if lead_in is not None else None)
         intent = commentary_intent_for(
             action_event,
             user_text=user_text,
             tool_name=tool_name,
             tool_read_only=tool is not None and tool.read_only,
+            model_line=line is not None,
         )
         if intent is None:  # a bookkeeping tool
             return None
@@ -2076,17 +2082,13 @@ def _open_commentary_in_worker_thread(  # noqa: PLR0911 - one early return per s
             # `action_snapshot` carries no `action_id`, so this is enforced
             # at the only granularity the fold supports.
             return None
-        lead_in = conn.execute(
-            _SELECT_LEAD_IN_SQL, (turn_id, action_event.payload.get("action_id"))
-        ).fetchone()
         return _render_commentary(
             runtime,
             conn,
             intent=intent,
             action_event=action_event,
             turn_id=turn_id,
-            speech=lead_in_speech_text(lead_in[0] if lead_in is not None else None)
-            or commentary_speech_text(intent),
+            speech=line or commentary_speech_text(intent),
         )
     finally:
         with contextlib.suppress(sqlite3.Error):

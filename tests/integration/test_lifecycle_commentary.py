@@ -816,9 +816,10 @@ def test_a_spoken_turn_hears_the_models_own_line_unless_it_claims_a_result(
 ) -> None:
     """docs/plans/speak-as-written-proposal.md: the model's line replaces the phrase.
 
-    A line written before a bookkeeping call still speaks at the next dispatch;
-    one that already states a result, or runs past one sentence, gives way to
-    the fixed phrase.
+    A line written with a bookkeeping call speaks at that call's dispatch (the
+    2026-09-30 live run heard it 5 s later, at the first working one); one that
+    already states a result, or runs past one sentence, gives way to the fixed
+    phrase.
     """
     runtime = _make_runtime(tmp_path)
     reader = _reader(runtime)
@@ -856,6 +857,11 @@ def test_a_spoken_turn_hears_the_models_own_line_unless_it_claims_a_result(
         (payload,) = _commentary_emitted(reader, turn_id)
         allowed = [spoken] if spoken else lang.variants(_ACKNOWLEDGE_BY_TOOL["lookup"], "zh")
         assert parse_response_channels(payload["text"]).voice in allowed, turn_id
+    subjects = {
+        started["response_group_id"]: started["active_subject_ref"]
+        for started in _typed_payloads(reader, "response.started")
+    }
+    assert subjects[stable_response_group_id("T-early")] == "ACT-T-early-0"
 
 
 def test_a_second_row_in_the_same_turn_opens_nothing(tmp_path: Path) -> None:

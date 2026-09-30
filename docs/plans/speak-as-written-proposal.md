@@ -51,6 +51,12 @@
   fixed acknowledge built behind `realtime.commentary.enabled` (a5a867d)
   speaks once per turn, at the first dispatch of a tool that works for
   Allen, no earlier than 1.5 s after his words.
+- First live run of this decision (2026-09-30, 8 spoken turns): a chat
+  answer's audio began 3.0 s after the end-of-speech cut, 1.8 s of it the
+  first token. 7 of 8 turns called a tool (27% of the 130 spoken turns
+  before), each extra request adding about 3 s, while the prompt named tools
+  as examples. A line written with a `tool_search` call waited 5 s for the
+  first working dispatch. OpenAI's citation markup reached speech.
 - Voice agent frameworks (OpenAI Realtime tool preambles, LiveKit, Pipecat,
   Vapi) stream the model's sentences into speech and let the model say the
   line before a tool call. None rewrites the answer with a second model call
@@ -73,13 +79,15 @@ Limits:
 - A sentence is spoken as soon as today's sentence assembler forms it; markup
   or an overlong sentence ends incremental speech, and the rest is spoken
   as written when the answer is complete.
-- The line before a call is spoken at the turn's first dispatch of a tool
-  that works for Allen, in place of the fixed acknowledge and under its
-  rules: once per turn, no earlier than 1.5 s after his words, not once the
-  turn has ended, not over a pending confirmation, never for GPT-Live. A
-  call that is refused or waits for confirmation dispatches nothing, so its
-  line is not spoken. A line over 60 characters, or one that states a
-  result, gives way to the fixed acknowledge.
+- The line before a call is spoken when the call it came with is
+  dispatched, even a call that only finds a tool or reads the clock, in
+  place of the fixed acknowledge and under its rules: once per turn, no
+  earlier than 1.5 s after his words, not once the turn has ended, not over
+  a pending confirmation, never for GPT-Live. A call that is refused or
+  waits for confirmation dispatches nothing, so its line waits for the next
+  dispatch. A line over 60 characters, or one that states a result, gives
+  way to the fixed acknowledge, which otherwise speaks at the first dispatch
+  of a tool that works for Allen.
 - A response that ends on a `commentary` message without a tool call gets
   one more request.
 - Typed turns, GPT-Live, Tier 0 read-backs, confirmation asks, the repeat of
