@@ -653,8 +653,10 @@ function renderComp() {
   const r = usage.ring(s, agent, app.usage, s ? app.cx.get(s.id) : undefined), eff = effort ? effort === 'xhigh' ? 'XHigh' : effort[0].toUpperCase() + effort.slice(1) : '';
   patch(tr, (c.models.length ? `<button type="button" class="tb model" data-act="menu" data-v="me" data-tip="模型和力度">${esc(labelOf(c.models, model) || '模型')}${eff ? ` <em>· ${esc(eff)}</em>` : ''}</button>` : '')
     + `<button type="button" class="ring" data-act="menu" data-v="usage" aria-label="用量" aria-haspopup="dialog" aria-expanded="${popFor === 'usage'}" data-tip="${esc(r.tip)}">${r.svg}</button>`
-    + `${busy ? `<button type="button" class="t-stop" data-act="interrupt" data-tip="打断" data-key="esc">${I.stop}</button>` : ''}`
-    + `<button type="button" class="send" data-act="send" aria-label="${newV ? '开始' : '发送'}" data-tip="${newV ? '开始' : '发送'}" data-key="↵"${blocked || app.sending || !ta.value.trim() && !app.files.length ? ' disabled' : ''}>${I.up}</button>`);
+    // One round button in one place: while it works and nothing is written it stops the turn; writing turns it back to send.
+    + (busy && !app.sending && !ta.value.trim() && !app.files.length
+      ? `<button type="button" class="send stop" data-act="interrupt" aria-label="打断" data-tip="打断" data-key="esc">${I.stop}</button>`
+      : `<button type="button" class="send" data-act="send" aria-label="${newV ? '开始' : '发送'}" data-tip="${newV ? '开始' : '发送'}" data-key="↵"${blocked || app.sending || !ta.value.trim() && !app.files.length ? ' disabled' : ''}>${I.up}</button>`));
   // A plan window used up: one line in the box with the way on.
   const out = usage.banner(agent, app.usage);
   bnEl.hidden = !out;
@@ -713,7 +715,8 @@ function menu(html: string, at: HTMLElement | { x: number; y: number }, o: { rig
   const w = win.getBoundingClientRect(), pw = pop.offsetWidth, ph = pop.offsetHeight;
   let x: number, y: number, origin: string;
   if (at instanceof HTMLElement) {
-    const r = at.getBoundingClientRect(), below = r.bottom - w.top + 6 + ph < w.height - 8;
+    // In the conversation it opens above when below would run over the composer.
+    const r = at.getBoundingClientRect(), below = r.bottom + 6 + ph < (at.closest('.host')?.getBoundingClientRect().bottom ?? w.bottom) - 8;
     x = o.right ? r.right - w.left - pw : r.left - w.left; y = below ? r.bottom - w.top + 6 : r.top - w.top - 6 - ph;
     origin = `${o.right ? '100%' : '0'} ${below ? '0' : '100%'}`;
   } else { x = at.x; y = at.y + ph > w.height - 8 ? at.y - ph : at.y; origin = '0 0'; }
@@ -769,9 +772,11 @@ let tipFor: HTMLElement | null = null, tipTimer = 0, tipGone = -1e9;
 function tipShow(el: HTMLElement) {
   if (!el.isConnected || !el.dataset.tip) return;
   patch(tipEl, `<span>${esc(el.dataset.tip)}</span>${el.dataset.key ? `<kbd>${esc(el.dataset.key)}</kbd>` : ''}`);
-  const w = win.getBoundingClientRect(), r = el.getBoundingClientRect(), t = tipEl.getBoundingClientRect(), below = r.top - w.top < t.height + 14;
+  // The head's tips go under it, off the title and its status line.
+  const w = win.getBoundingClientRect(), r = el.getBoundingClientRect(), t = tipEl.getBoundingClientRect(), head = el.closest('.m-head')?.getBoundingClientRect();
+  const below = !!head || r.top - w.top < t.height + 14;
   tipEl.style.left = `${Math.max(8, Math.min(w.width - t.width - 8, r.left - w.left + r.width / 2 - t.width / 2))}px`;
-  tipEl.style.top = `${below ? r.bottom - w.top + 7 : r.top - w.top - t.height - 7}px`;
+  tipEl.style.top = `${below ? (head ? Math.max(r.bottom, head.bottom - 6) : r.bottom) - w.top + 7 : r.top - w.top - t.height - 7}px`;
   tipEl.style.setProperty('--dy', below ? '-3px' : '3px');
   tipEl.classList.add('on');
 }

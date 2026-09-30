@@ -250,8 +250,9 @@ try {
   await st.until('on it', async () => (await shown()) === st.row(m).title);
   await selectIn(0);
   check('selecting words in an answer shows the bar over them: 引用 · 问一句', await p.evaluate(() => [...document.querySelectorAll('.bk-bar button')].map(x => x.textContent).join('|')) === '引用|问一句');
-  const barAbove = await p.evaluate(() => { const r = document.getSelection().getRangeAt(0).getBoundingClientRect(), bb = document.querySelector('.bk-bar').getBoundingClientRect(); return bb.bottom <= r.top; });
-  check('the bar sits over the selection', barAbove);
+  const barAt = await p.evaluate(() => { const r = document.getSelection().getRangeAt(0).getBoundingClientRect(), bb = document.querySelector('.bk-bar').getBoundingClientRect(), md = document.querySelector('.c-items .it .md').getBoundingClientRect();
+    return { under: bb.top >= r.bottom && bb.top - r.bottom < 12, inCol: bb.left >= md.left - .5 && bb.right <= md.right + .5 }; });
+  check('the bar sits just under the selection, inside the answer\'s column (the line above it stays readable)', barAt.under && barAt.inCol, barAt);
   await st.shot('m-sel');
   const picked = await p.evaluate(() => document.getSelection().toString().trim());
   await p.click('.bk-bar [data-act="bk-quote"]');

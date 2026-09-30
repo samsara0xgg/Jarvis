@@ -32,21 +32,31 @@
 .c-in > .ask{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .c-in > .ask button{display:inline-flex;align-items:center;gap:7px;height:30px;padding:0 12px;border-radius:9px;font-size:13px;font-weight:600;background:var(--warm-c);color:#2b1705;box-shadow:0 0 18px -6px rgb(255 201 143 / .7);transition:transform 120ms}
 .c-in > .ask button:active{transform:scale(.96)}
-.c-in > .ask button kbd{background:rgb(0 0 0 / .14);color:inherit}
+.c-in > .ask button kbd,.lp-f button.pri kbd{height:17px;padding:0 5px;font:600 11px/1 var(--code);background:rgb(43 23 5 / .16);box-shadow:inset 0 0 0 .5px rgb(43 23 5 / .3);color:#2b1705}
 .c-in > .ask span{font-size:12px;color:var(--faint)}
 /* in the narrow column only the last turn stays; the rest folds into one line you can open */
 .older{align-self:center;display:none;height:24px;padding:0 10px;border-radius:999px;font-size:11.5px;color:var(--faint);background:rgb(255 255 255 / .04)}
 .chat.nar:not(.all) .older:not([hidden]){display:inline-flex;align-items:center}
-.chat.nar .conv .c-in{padding:16px 16px 10px;font-size:13px;gap:12px}
+.chat.nar .conv .c-in{padding:16px 16px 18px;font-size:13px;gap:12px}
 .chat.nar .c-items{gap:12px}
 .chat.nar:not(.all) .item.old{display:none}
 .chat.nar .you{max-width:92%}
 .chat.nar .lnk small{display:none}
-.chat.nar .composer{padding:0 12px 12px}
+.chat.nar .composer{padding:0 16px 12px}
+.chat.nar .composer .c-menu{left:16px;right:16px}
+/* the column's edges: the composer, what sits over it and its menus line up with the text above (680 less its gutters) */
+.win .composer :is(.c-rows,.c-menu){max-width:632px}
+/* with its left end at the window's corner, the column keeps clear of the list button there */
+.bw .chat .conv .c-in,.bw .chat .composer{transition:padding-left var(--d) var(--e)}
+.bw .chat .composer :is(.c-box,.c-rows){transition:max-width var(--d) var(--e),box-shadow 240ms}
+.win.wb-nt .chat :is(.c-in,.composer,.c-box,.c-rows){transition:none}
+.bw .chat.edge .conv .c-in,.bw .chat.edge .composer{padding-left:44px}
+.bw .chat.edge .composer :is(.c-box,.c-rows,.c-menu){max-width:612px}
+.bw .chat.edge .composer .c-menu{left:44px}
 
 /* ---------- the composer, after Claude's own: one box, one row of quiet tools, one ring for everything about usage ---------- */
 .win .composer{padding:0 24px 16px}
-.win .composer .c-box{position:relative;max-width:680px;margin:0 auto;display:flex;flex-direction:column;gap:0;padding:0;border-radius:20px;background:rgb(14 15 26 / .72);box-shadow:inset 0 0 0 .5px rgb(255 255 255 / .15),0 18px 40px -24px #000;transition:box-shadow 240ms}
+.win .composer .c-box{position:relative;max-width:632px;margin:0 auto;display:flex;flex-direction:column;gap:0;padding:0;border-radius:20px;background:rgb(14 15 26 / .72);box-shadow:inset 0 0 0 .5px rgb(255 255 255 / .15),0 18px 40px -24px #000;transition:box-shadow 240ms}
 .win .composer .c-box:focus-within{box-shadow:inset 0 0 0 .5px rgb(var(--acc) / .55),0 0 0 3px rgb(var(--acc) / .07),0 18px 40px -24px #000}
 .bn{display:flex;align-items:center;gap:10px;margin:6px 6px 0;padding:6px 8px 6px 10px;border-radius:14px;background:rgb(255 122 102 / .08);font-size:12px;color:var(--muted)}
 .bn i{flex:none;width:6px;height:6px;border-radius:50%;background:#FF7A66;box-shadow:0 0 8px #FF7A66}
@@ -84,10 +94,12 @@
 .send{width:30px;height:30px;margin-left:4px;border-radius:50%;display:grid;place-items:center;background:rgb(var(--acc));color:#0b0d24;box-shadow:0 0 18px -6px rgb(var(--acc) / .8);transition:opacity 160ms,transform 120ms}
 .send:active{transform:scale(.94)}
 .send[disabled]{opacity:.35;box-shadow:none;cursor:default}
+.send.stop{background:rgb(255 255 255 / .12);color:var(--ink);box-shadow:inset 0 0 0 .5px rgb(255 255 255 / .16)}
+.send.stop:hover{background:rgb(255 255 255 / .18)}
 .chat.nar .tb .lbl{display:none}
 .chat.nar .tb.model em{display:none}
 /* the usage card */
-.pop.us{display:block;width:340px;padding:12px 14px 10px;border-radius:14px;background:rgb(20 22 44 / .96);-webkit-backdrop-filter:blur(16px);backdrop-filter:blur(16px);box-shadow:inset 0 0 0 .5px rgb(var(--acc) / .35),0 24px 60px -18px #000;white-space:normal}
+.pop.us{display:block;width:340px;padding:12px 14px 10px;border-radius:14px;background:rgb(20 22 44);box-shadow:inset 0 0 0 .5px rgb(var(--acc) / .35),0 24px 60px -18px #000;white-space:normal}
 .pop.us h5{margin:0;display:flex;justify-content:space-between;align-items:baseline;font:500 12.5px var(--ui);color:var(--muted)}
 .pop.us h5 b{font:500 12px var(--code);color:var(--muted);font-variant-numeric:tabular-nums}
 .pop.us .sec{padding:10px 0;border-bottom:.5px solid rgb(var(--acc) / .14)}
