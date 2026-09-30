@@ -41,6 +41,8 @@ export function mountTerminal(pane: HTMLElement, hooks: Hooks) {
   const fit = new FitAddon();
   term.loadAddon(fit);
   let opened = false, es: EventSource | null = null, ended = false;
+  // The host opening the shell: a command typed as the pane opens waits for it.
+  let ready: Promise<unknown> = Promise.resolve();
 
   // ---------- the shell: keys go to the host in order, output comes back on one stream ----------
   let pending = '', sending = false;
@@ -72,8 +74,9 @@ export function mountTerminal(pane: HTMLElement, hooks: Hooks) {
     if (!st.id || !st.shown || st.tab !== 'term') return;
     if (!opened) { term.open(xt); opened = true; }
     resize();
-    const id = st.id;
-    try { await hooks.call(`/term/${id}`, { cols: term.cols, rows: term.rows }); }
+    const id = st.id, made = hooks.call(`/term/${id}`, { cols: term.cols, rows: term.rows });
+    ready = made.catch(() => {});
+    try { await made; }
     catch (e) { term.reset(); term.write(`\x1b[38;2;255;179;166m${e instanceof Error ? e.message : String(e)}\x1b[0m\r\n`); return; }
     if (id !== st.id || !st.shown) return;
     if (fresh) term.reset();
@@ -166,6 +169,11 @@ export function mountTerminal(pane: HTMLElement, hooks: Hooks) {
       if (st.tab === 'log') void loadLog();
     },
     focus() { if (st.tab === 'term') term.focus(); },
+    // A one-off command (!… in the composer), typed into the shell once the host has it open.
+    run(cmd: string) {
+      if (ended) void connect(true);
+      void ready.then(() => { pending += `${cmd}\r`; if (!sending) void flush(); });
+    },
     fit: resize,
   };
   draw();
