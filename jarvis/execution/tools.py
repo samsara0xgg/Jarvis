@@ -588,7 +588,10 @@ _OUTPUT_TAIL_BYTES: Final[int] = 2048
 
 
 @tool(
-    description="Read the current local date and time (observation only).",
+    description=(
+        "Read the current local date and time (observation only). The program's state already "
+        "gives the time every turn; call this only when that is not enough."
+    ),
     input_schema={"type": "object", "properties": {}, "required": []},
     allowed_callers=frozenset({CallerPrincipal.REGEX_ROUTER, CallerPrincipal.JARVIS_LLM}),
     risk_level="L0",
