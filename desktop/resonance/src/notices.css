@@ -23,6 +23,8 @@
 .notch .c-x { margin-left:auto; display:inline-flex; align-items:center; justify-content:center; min-width:24px; height:22px; padding:0 8px; border-radius:var(--radius-control); font-size:var(--text-detail); color:var(--p-muted); white-space:nowrap; }
 .notch .c-x:hover { background:rgb(255 255 255 / .08); color:var(--p-ink); }
 .notch .nc-head { display:grid; grid-template-columns:14px minmax(0,1fr) auto; gap:0 9px; align-items:start; }
+/* the card's own head, not the night card's list head of the same name (night-card.css) */
+.notch .nc > .nc-head { min-height:0; padding:0; font-size:inherit; font-weight:inherit; letter-spacing:normal; color:var(--p-ink); }
 .notch .nc-head > .agent-mark { margin-top:4px; }
 .notch .nc-top { display:flex; align-items:baseline; gap:8px; min-width:0; }
 .notch .nc-top b { flex:1; min-width:0; font-size:var(--text-title); font-weight:600; line-height:24px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
