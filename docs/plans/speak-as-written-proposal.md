@@ -53,10 +53,11 @@
   Allen, no earlier than 1.5 s after his words.
 - First live run of this decision (2026-09-30, 8 spoken turns): a chat
   answer's audio began 3.0 s after the end-of-speech cut, 1.8 s of it the
-  first token. 7 of 8 turns called a tool (27% of the 130 spoken turns
-  before), each extra request adding about 3 s, while the prompt named tools
-  as examples. A line written with a `tool_search` call waited 5 s for the
-  first working dispatch. OpenAI's citation markup reached speech.
+  first token. 7 of 8 turns called a tool, each extra request adding about
+  3 s; replayed offline, the same utterances called the same tools as often
+  through chat completions without the voice note (2026-09-30, 24 calls). A
+  line written with a `tool_search` call waited 5 s for the first working
+  dispatch. OpenAI's citation markup reached speech.
 - Voice agent frameworks (OpenAI Realtime tool preambles, LiveKit, Pipecat,
   Vapi) stream the model's sentences into speech and let the model say the
   line before a tool call. None rewrites the answer with a second model call

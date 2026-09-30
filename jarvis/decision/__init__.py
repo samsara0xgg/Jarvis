@@ -715,9 +715,7 @@ _STATUS_HEADER: Final[str] = "[Current state | from the program, not the user's 
 # answer itself. The length default and the explicit-request override are the
 # ones the spoken-form rewrite prompt carried (ADR 0082); the line before a
 # tool call is spoken when that call is dispatched. It names no tool and gives
-# no example of one: the first version did, and the 2026-09-30 live run called
-# the clock in 4 of 8 turns and searched the web in 3 (2% and 4% of the 130
-# spoken turns before).
+# no example of one, so it cannot invite a call.
 _SPOKEN_REPLY_NOTE: Final[str] = (
     "Your reply is spoken aloud as you write it. Start with the answer itself, in plain "
     "spoken sentences in the language of the user's words: by default at most about 60 "
