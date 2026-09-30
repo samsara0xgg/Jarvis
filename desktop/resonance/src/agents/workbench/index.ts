@@ -16,6 +16,7 @@ type Hooks = {
 };
 type Q = { x: number; y: number; w: number; h: number };
 type Pos = 'chat' | 'side' | 'stage';
+type Custom = { key: string; ic: string; b: string; small?: string; target?: 'side' | 'stage'; fill(view: HTMLElement): void };
 const $ = <T extends Element = HTMLElement>(s: string, root: ParentNode) => root.querySelector(s) as T;
 const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 const wait = (ms: number) => new Promise(r => setTimeout(r, ms));
@@ -36,7 +37,7 @@ export function mountWorkbench(win: HTMLElement, ta: HTMLTextAreaElement, hooks:
   const pl = $('.pl', lp), foot = $('.lp-f', lp), br = $('.br', lp), rail = $('.rail', lp), chip = $('.land', win), hint = $('.hint', win), view = $('.pv-view', pv);
   $('.lp-h .ib', lp).innerHTML = CLOSE_ICON; $('[data-act="pvclose"]', pv).innerHTML = CLOSE_ICON; $('[data-act="pvext"]', pv).innerHTML = icon.out;
   // titles: a commit title written before the line starts, per session
-  const S = { titles: new Map<string, string>(), pos: 'chat' as Pos, ref: null as (Ref & { src: HTMLElement | null; abs?: string; href?: string }) | null, left: false, wide: false, term: false, busy: false, openedAt: 0, doneAt: new Map<string, number>(), was: new Map<string, string>() };
+  const S = { titles: new Map<string, string>(), pos: 'chat' as Pos, ref: null as (Ref & { src: HTMLElement | null; abs?: string; href?: string; custom?: boolean }) | null, left: false, wide: false, term: false, busy: false, openedAt: 0, doneAt: new Map<string, number>(), was: new Map<string, string>() };
   const habit = loadHabit();
   const terminal = mountTerminal(tm, { api: hooks.api, call: hooks.call, current: () => hooks.current()?.id ?? '', toast: hooks.toast, changed: () => {} });
   terminal.onPos = p => { terminal.setPos(p); layout(); };
@@ -173,6 +174,28 @@ export function mountWorkbench(win: HTMLElement, ta: HTMLTextAreaElement, hooks:
     showNote(note);
     S.busy = false;
   }
+  // Anything else a feature shows beside the conversation (a subagent, a task's output, a side question): its own head
+  // and body on the same sheet, one thing at a time, in and out the way a file comes and goes. `fill` draws into the
+  // sheet and may keep drawing there while `shown()` is still its key.
+  async function show(o: Custom, from: HTMLElement | null) {
+    const s = sess();
+    if (S.busy || !s) return;
+    const target: Pos = o.target ?? 'side';
+    if (S.ref?.key === o.key && S.pos === target) return;
+    S.busy = true;
+    const was = S.pos, start = from ? rel(from) : { x: bd.clientWidth - 40, y: bd.clientHeight / 2, w: 20, h: 20 };
+    S.ref = { key: o.key, ref: o.key, kind: 'file', target, label: o.b, url: false, src: from, custom: true };
+    cards(); ++loadTok; view.classList.remove('web'); view.scrollTop = 0;
+    head(o.ic, false, o.b, o.small ?? ''); view.replaceChildren(); o.fill(view);
+    S.pos = target;
+    pv.style.opacity = '0';
+    if (target === 'stage' && was !== 'stage') { fadeConv(0); await wait(120); }
+    layout(); flipIcon();
+    await ghostFly(start, rects().pv!);
+    pv.style.opacity = ''; fadeConv(1);
+    S.openedAt = performance.now();
+    S.busy = false;
+  }
   function showNote(on: boolean) {
     pv.querySelector('.pv-note')?.remove();
     if (!on) return;
@@ -185,7 +208,7 @@ export function mountWorkbench(win: HTMLElement, ta: HTMLTextAreaElement, hooks:
     if (S.busy || !S.ref) return;
     S.busy = true;
     const r = S.ref, from = rects().pv!, wasStage = S.pos === 'stage', card = r.src?.isConnected ? r.src : null;
-    if (wasStage) {
+    if (wasStage && !r.custom) {
       const h = habit[r.kind] ??= { quick: 0, side: false };
       h.quick = performance.now() - S.openedAt < QUICK_MS ? h.quick + 1 : 0;
       if (h.quick >= 3) { h.side = true; h.quick = 0; }
@@ -352,6 +375,10 @@ export function mountWorkbench(win: HTMLElement, ta: HTMLTextAreaElement, hooks:
       return true;
     },
     terminal: (on?: boolean) => toggleTerm(on),
+    show,
+    // What the sheet shows now (a file's path, a page's address or a feature's key), or ''.
+    shown: () => S.ref?.key ?? '',
+    close: () => close(),
     get pos() { return S.pos; },
   };
   // Scrolling up past the top of the narrow column brings the earlier turns back.

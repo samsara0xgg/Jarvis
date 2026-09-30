@@ -5,6 +5,8 @@
 // each session keeps its own conversation so switching is instant, and only marks that move repaint.
 import type { Agent, Catalog, Ctx, Event, File as Upload, Item, Pic, Req, Sess, St, Step, Usage } from '../../electron/agents/types';
 import { drawMark } from '../AgentMarks';
+import { features, type Own, type PageCtx } from './ctx';
+import { waitOf } from './queue';
 import { palette, play, scoreOf } from '../soundKit';
 import { Core, TAKES, pick, type ExprId } from '../starCore';
 import { mountExposure } from './exposure';
@@ -257,7 +259,7 @@ const cur = () => byId(app.cur);
 const side = $('.side', win), list = $('.s-list', side), herT = $('.her-t', side), find = $<HTMLInputElement>('#find'), archLink = $('.arch-link', side);
 const head = $('.m-head', win), hMk = $('.h-mk', head), hT = $('.h-t', head), hMeta = $('.h-meta', head);
 const hostEl = $('.host', win), comp = $('.composer', win), ta = $<HTMLTextAreaElement>('#msg'), cMenu = $('.c-menu', comp), cFiles = $('.c-files', comp), tl = $('.t-l', comp), tr = $('.t-r', comp);
-const bnEl = $('.bn', comp), hintEl = $('.hint', comp);
+const bnEl = $('.bn', comp), hintEl = $('.hint', comp), cRows = $('.c-rows', comp);
 const pop = $('.pop', win), sndBtn = $('.snd', win), offEl = $('.w-off', win);
 
 // Every change asks for a frame; one frame draws whatever was asked for since the last.
@@ -304,8 +306,8 @@ function visible() {
   const q = app.q.trim().toLowerCase();
   return app.ss.filter(s => (app.filter === 'all' || s.agent === app.filter) && (!q || `${s.title} ${s.summary} ${s.project} ${s.branch}`.toLowerCase().includes(q)));
 }
-// Parked (ADR 0069, shared with the notch) is out of his turn and quiet until he takes it back.
-const yourTurn = (s: Sess) => !s.term && !s.parked && (s.st === 'wait' || s.unread);
+// Parked (ADR 0069, shared with the notch) is out of his turn and quiet until he takes it back (queue.ts).
+const yourTurn = (s: Sess) => !!waitOf(s);
 function groups(): [string, Sess[]][] {
   const vs = visible().filter(s => !s.archived).sort((a, b) => b.updated - a.updated);
   if (app.by === 'project') return [...new Set(vs.map(s => s.project))].map(p => [p, vs.filter(s => s.project === p)]);
@@ -458,7 +460,7 @@ function reqRecord(r: Req) {
 }
 function itemHTML(s: Sess, it: Exclude<Item, { k: 'steps' }>, i = -1) {
   if (it.k === 'you') return `<div class="you">${it.files?.length ? `<span class="att">${it.files.map(picHTML).join('')}</span>` : ''}${esc(it.text)}</div>`;
-  if (it.k === 'it') { const cards = i >= 0 ? cardsHTML(it.text, editsBefore(app.items.get(s.id) ?? [], i)) : ''; return `<div class="it">${withCopy(md(it.text))}${cards ? `<div class="lnks">${cards}</div>` : ''}<div class="it-acts"><button type="button" class="ia" data-act="copy" data-tip="复制" aria-label="复制">${I.copy}</button>${it.at ? `<time>${clock(it.at)}</time>` : ''}</div></div>`; }
+  if (it.k === 'it') { const cards = i >= 0 ? cardsHTML(it.text, editsBefore(app.items.get(s.id) ?? [], i)) : ''; return `<div class="it">${features.reduce((h, f) => f.answer?.(s, it, i, h) ?? h, withCopy(md(it.text)))}${cards ? `<div class="lnks">${cards}</div>` : ''}<div class="it-acts"><button type="button" class="ia" data-act="copy" data-tip="复制" aria-label="复制">${I.copy}</button>${it.at ? `<time>${clock(it.at)}</time>` : ''}</div></div>`; }
   if (it.k === 'note') return `<p class="note">${esc(it.text)}</p>`;
   if (it.k === 'plan') return `<div class="plan"><span class="p-h">计划</span>${it.todos.map(([t, d]) => `<span class="todo d${d}"><i></i>${esc(t)}</span>`).join('')}</div>`;
   const r = it.req, a = NAME[s.agent], b = app.busy.get(s.id), busy = b?.req === r.id ? b.key : '';
@@ -542,7 +544,7 @@ function renderConv(s: Sess, c: Conv) {
 }
 // Steps keep their elements: new ones slide in while it works, and the list folds shut when the turn ends.
 function renderSteps(id: string, el: HTMLElement, it: Item & { k: 'steps' }, i: number, animate: boolean) {
-  const first = !el.firstElementChild?.classList.contains('steps');
+  const first = !el.firstElementChild?.classList.contains('steps'), s = byId(id)!;
   if (first) {
     H.delete(el);
     el.innerHTML = `<div class="steps"><button type="button" class="s-sum" data-act="steps" data-i="${i}"><span class="chev">${I.chev}</span><span class="s-t"></span></button><div class="s-wrap"><div class="s-clip"><div class="s-in"></div></div></div></div>`;
@@ -568,7 +570,8 @@ function renderSteps(id: string, el: HTMLElement, it: Item & { k: 'steps' }, i: 
     const was = r.dataset.shown === '1';
     patch(r, `<span class="k">${STEP_K[st.k]}</span><span class="a" title="${esc(st.t)}">${esc(st.t)}</span>`
       + `<span class="r">${st.add !== undefined ? `<span class="p">+${st.add}</span> <span class="m">−${st.del ?? 0}</span>` : st.ok === true ? '<span class="p">✓</span>' : st.ok === false ? '<span class="m">✕</span>' : ''}</span>`
-      + (open ? `<div class="x">${st.diff?.length ? diffHTML(st.diff) : `<pre class="out">${esc(st.out ?? '')}</pre>`}</div>` : ''));
+      + (open ? `<div class="x">${st.diff?.length ? diffHTML(st.diff) : `<pre class="out">${esc(st.out ?? '')}</pre>`}</div>` : '')
+      + features.map(f => f.under?.(s, st, i, j) ?? '').join(''));
     if (open && !was) { const x = $('.x', r); if (x) anim(x, [{ opacity: 0, transform: 'translateY(-4px)' }, { opacity: 1, transform: 'none' }], 260); }
     r.dataset.shown = open ? '1' : '';
   });
@@ -637,6 +640,7 @@ function renderComp() {
   bnEl.hidden = !out;
   if (out) patch(bnEl, `<i></i><span>${out}</span>${agent === 'claude' && s ? '<button type="button" data-act="cloud">挪到云端继续</button>' : ''}`);
   patch(hintEl, wb.hint());
+  patch(cRows, s ? features.map(f => f.rows?.(s) ?? '').join('') : '');
   patch(cFiles, app.files.map((f, k) => `<span class="c-pic"><button type="button" class="pic" data-act="view" data-tip="看大图"><img src="${f.view}" alt="${esc(f.name)}"></button><i data-act="unfile" data-k="${k}" aria-label="去掉">✕</i></span>`).join(''));
   patch(cMenu, app.picks.map(([v, d], k) => app.menu === 'at'
     ? `<button type="button" data-act="pickfile" data-v="${esc(v)}"${k === app.pick ? ' class="on"' : ''}><code>@${esc(v)}</code></button>`
@@ -668,7 +672,7 @@ function openPop(kind: string, anchor: HTMLElement) {
   const html = kind === 'plus' ? `<button type="button" data-act="attach">加图片<span class="k">也可以直接粘贴</span></button><button type="button" data-act="insert" data-v="@">提到一个文件<span class="k">@</span></button><button type="button" data-act="insert" data-v="/">命令和 skill<span class="k">/</span></button>`
     : kind === 'me' ? `<span class="ph">模型</span>${opts('model', c.models, s ? s.model : app.newSet.model)}${c.efforts.length ? `<span class="sep"></span><span class="ph">力度</span>${opts('effort', c.efforts.map(e => [e, cap(e)]), s ? s.effort : app.newSet.effort)}` : ''}`
     : kind === 'more' && s
-    ? `<button type="button" data-act="pin">${s.pinned ? '取消置顶' : '置顶'}</button><button type="button" data-act="park">${s.parked ? '不放着了' : '先放着'}</button><button type="button" data-act="rename">改名</button><button type="button" data-act="fork">从这里分叉</button><button type="button" data-act="reveal">在访达里看文件夹</button><button type="button" data-act="archive" data-id="${s.id}">归档</button><span class="sep"></span><button type="button" data-act="stop" class="bad">停掉</button>`
+    ? `<button type="button" data-act="pin">${s.pinned ? '取消置顶' : '置顶'}</button><button type="button" data-act="park">${s.parked ? '不放着了' : '先放着'}</button><button type="button" data-act="rename">改名</button><button type="button" data-act="fork">从这里分叉</button><button type="button" data-act="reveal">在访达里看文件夹</button>${features.map(f => f.more?.(s) ?? '').join('')}<button type="button" data-act="archive" data-id="${s.id}">归档</button><span class="sep"></span><button type="button" data-act="stop" class="bad">停掉</button>`
     : kind === 'model' ? opts('model', c.models, s ? s.model : app.newSet.model)
     : kind === 'effort' ? opts('effort', c.efforts.map(e => [e, e]), s ? s.effort : app.newSet.effort)
     : opts('mode', c.modes, s ? s.mode : app.newSet.mode);
@@ -680,6 +684,22 @@ function openPop(kind: string, anchor: HTMLElement) {
   pop.classList.add('on');
 }
 function closePop() { if (!popFor) return; popFor = ''; pop.classList.remove('on'); win.querySelector('.ring')?.setAttribute('aria-expanded', 'false'); }
+// A feature's lines in the same popover: under an element (to its right edge with `right`), or at a point in the window
+// (a right click), kept inside the window.
+function menu(html: string, at: HTMLElement | { x: number; y: number }, o: { right?: boolean; cls?: string } = {}) {
+  closePop();
+  pop.className = `pop${o.cls ? ` ${o.cls}` : ''}`; pop.setAttribute('role', 'menu'); pop.removeAttribute('aria-label');
+  pop.innerHTML = html; H.delete(pop); popFor = 'feature';
+  const w = win.getBoundingClientRect(), pw = pop.offsetWidth, ph = pop.offsetHeight;
+  let x: number, y: number, origin: string;
+  if (at instanceof HTMLElement) {
+    const r = at.getBoundingClientRect(), below = r.bottom - w.top + 6 + ph < w.height - 8;
+    x = o.right ? r.right - w.left - pw : r.left - w.left; y = below ? r.bottom - w.top + 6 : r.top - w.top - 6 - ph;
+    origin = `${o.right ? '100%' : '0'} ${below ? '0' : '100%'}`;
+  } else { x = at.x; y = at.y + ph > w.height - 8 ? at.y - ph : at.y; origin = '0 0'; }
+  Object.assign(pop.style, { left: `${Math.max(8, Math.min(w.width - pw - 8, x))}px`, right: 'auto', top: `${Math.max(8, Math.min(w.height - ph - 8, y))}px`, bottom: 'auto', transformOrigin: origin });
+  pop.classList.add('on');
+}
 
 // ---------- the context ring's popover: what fills the window, as the host measures it ----------
 // Claude's numbers are /context's own token counts through the Agent SDK; Codex gives only totals, so its view is plainer.
@@ -848,9 +868,16 @@ const readFile = (f: Blob & { name?: string }, k: number) => new Promise<Attache
   r.onerror = () => fail(r.error);
   r.readAsDataURL(f);
 });
+// A window command (the host names its place) runs here with what follows it, when a feature answers that place.
+function ownOf(text: string): [Own, string] | null {
+  const m = /^([/$][^\s]+)(?:\s+([\s\S]*))?$/.exec(text), place = m && cmds?.list.find(c => c[0] === m[1])?.[2], run = place ? ctx.own.get(place) : undefined;
+  return m && run ? [run, (m[2] ?? '').trim()] : null;
+}
 async function send() {
   const text = ta.value.trim();
   if ((!text && !app.files.length) || app.sending) return;
+  const own = text && !app.files.length ? ownOf(text) : null;
+  if (own) { clearTa(); app.menu = ''; app.picks = []; own[0](app.view === 'chat' ? cur() : undefined, own[1]); return; }
   if (app.view === 'new') {
     if (!app.newProject) { toast('先选一个文件夹'); return; }
     app.sending = true; draw('comp');
@@ -940,6 +967,7 @@ function archive(s: Sess) {
 async function act(a: string, el: HTMLElement) {
   const id = el.dataset.id ?? app.cur, s = byId(id);
   if (wb.act(a, el)) return;
+  for (const f of features) if (f.act?.(a, el)) return;
   if (a === 'open') open(id);
   else if (a === 'cxmore') { app.cxMore = !app.cxMore; fillUsage(); }
   else if (a === 'usagepage') { closePop(); void window.agents?.openUrl?.((s?.agent ?? app.newAgent) === 'codex' ? 'https://chatgpt.com/codex/settings/usage' : 'https://claude.ai/settings/usage'); }
@@ -1039,7 +1067,7 @@ function pickIt(v: string, isCmd: boolean) {
   app.menu = ''; app.pick = 0; app.picks = []; ta.focus(); draw('comp');
 }
 // Typing "/" at the start opens commands and skills; "@" opens files. Arrows and Enter pick from the list.
-let lookup = 0, cmds: { key: string; list: [string, string][] } | null = null;
+let lookup = 0, cmds: { key: string; list: [string, string, string?][] } | null = null;
 async function typed() {
   const v = ta.value, n = ++lookup;
   app.menu = /^[/$]\S*$/.test(v) ? 'slash' : /(^|\s)@[^\s]*$/.test(v) ? 'at' : '';
@@ -1047,10 +1075,10 @@ async function typed() {
   ta.style.height = 'auto'; ta.style.height = `${Math.min(180, ta.scrollHeight)}px`;
   const s = app.view === 'chat' ? cur() : undefined, where = s ? `id=${encodeURIComponent(s.id)}` : `agent=${app.newAgent}&cwd=${encodeURIComponent(app.newProject)}`;
   if (app.menu === 'slash') {
-    if (cmds?.key !== where) cmds = { key: where, list: (await call<{ commands: [string, string][] }>(`/commands?${where}`).catch(() => ({ commands: [] }))).commands };
+    if (cmds?.key !== where) cmds = { key: where, list: (await call<{ commands: [string, string, string?][] }>(`/commands?${where}`).catch(() => ({ commands: [] }))).commands };
     if (n !== lookup) return;
     const q = v.split(/\s/)[0];
-    app.picks = cmds.list.filter(c => c[0].startsWith(q)).slice(0, 60);
+    app.picks = cmds.list.filter(c => c[0].startsWith(q)).slice(0, 60).map(c => [c[0], c[1]]);
   } else if (app.menu === 'at') {
     const q = v.slice(v.lastIndexOf('@') + 1);
     const r = await call<{ files: string[] }>(`/files?${where}&q=${encodeURIComponent(q)}`).catch(() => ({ files: [] }));
@@ -1112,7 +1140,7 @@ addEventListener('keydown', e => {
       if (popFor) { closePop(); return; }
       if (app.sideOpen) { app.sideOpen = false; win.classList.remove('side-open'); return; }
       if (app.menu) { app.menu = ''; app.picks = []; draw('comp'); return; }
-      if (wb.esc()) { e.preventDefault(); return; }
+      if (features.some(f => f.esc?.()) || wb.esc()) { e.preventDefault(); return; }
       if (s && (s.st === 'work' || s.st === 'pack')) { e.preventDefault(); if (t === ta && ta.value.trim()) escHint(s); else interrupt(s); }
       return;
     }
@@ -1155,6 +1183,8 @@ const viewer = $<HTMLDialogElement>('.viewer', win), viewImg = $<HTMLImageElemen
 viewer.addEventListener('click', () => viewer.close());
 addEventListener('keydown', e => { if (!viewer.open) return; e.stopImmediatePropagation(); if (e.key === 'Escape') { e.preventDefault(); viewer.close(); } }, true);
 
+// Features take keys before the workbench and the Long Exposure, so what one of them has open keeps them.
+addEventListener('keydown', e => { for (const f of features) if (f.key?.(e)) return; }, true);
 const wb = mountWorkbench(win, ta, {
   api: API, call, toast, cue: (name, gain) => cue(name, gain, false, false),
   current: () => app.view === 'chat' ? cur() : undefined, chat: () => app.view === 'chat' && !!cur(),
@@ -1165,6 +1195,12 @@ const attention = mountExposure(win, ta, {
   load: loadItems, open: id => open(id, 'key', true), call, md, toast, cue: (name, gain) => cue(name, gain, false, false), blip, changed: id => stAt.get(id) ?? -1e9,
   refresh: () => draw(), back: () => wb.back(),
 });
+const ctx: PageCtx = {
+  win, ta, api: API, sessions: () => app.ss, current: () => app.view === 'chat' ? cur() : undefined, byId, items: id => app.items.get(id), chat: () => app.view === 'chat' && !!cur(),
+  call, tryCall, load: loadItems, draw, open: id => open(id), toast, cue: (name, gain) => cue(name, gain, false, false), tick, md, diff: diffHTML,
+  menu, closeMenu: closePop, wb, own: new Map(),
+};
+// Each feature is mounted on the one context below; its clicks, keys, commands and menu lines are its own.
 
 // ---------- one loop: her every frame, moving marks at 30 fps, nothing while the window is out of sight ----------
 let lastT = performance.now(), lastMk = 0, lastAge = 0;
