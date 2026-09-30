@@ -168,6 +168,8 @@ export function mountSlip(ctx: PageCtx): Feature {
     const f = S.from; S.from = null;
     if (f?.isConnected && f !== document.body && !el.contains(f) && !f.closest('[hidden]') && !(f as HTMLButtonElement).disabled) f.focus({ preventScroll: true });
     else if (ctx.current() && !ctx.ta.disabled) ctx.ta.focus({ preventScroll: true });
+    // Nowhere to go back to (an empty window): the window's keys, not a hidden field's.
+    else if (el.contains(document.activeElement)) (document.activeElement as HTMLElement).blur();
   }
   // Put away: its words stay for next time.
   function close(focus = true) {
@@ -347,7 +349,8 @@ export function mountSlip(ctx: PageCtx): Feature {
 
   return {
     act(a, target) {
-      if (a === 'new') { open(); return true; }
+      // A folder named on the act (the first run's 开始) is where the slip starts.
+      if (a === 'new') { if (target.dataset.dir) { S.dir = target.dataset.dir; S.dest = 'new'; } open(); return true; }
       if (!a.startsWith('slip-')) return false;
       if (a === 'slip-where' || a === 'slip-who') { const m = a === 'slip-where' ? 'where' : 'who'; if (S.tab === m) closePick(); else openPick(m); }
       else if (a === 'slip-tab') openPick(target.dataset.t === 'who' ? 'who' : 'where');

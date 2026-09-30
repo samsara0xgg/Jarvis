@@ -402,19 +402,13 @@ export function mountSettings(ctx: PageCtx): Feature {
     const a = anim(first, [{ opacity: 1 }, { opacity: 0 }], 260, 'cubic-bezier(.4,0,1,1)');
     if (a) a.onfinish = done; else done();
   }
-  // 开始: the window's new-session page, on the folder picked, ready for the first message.
+  // 开始: the slip drops on the folder picked, ready for the first sentence.
   function start() {
     const dir = S.first?.proj; if (!dir) return;
     closeFirst();
     store.set('agents.project', dir);
-    win.querySelector<HTMLElement>('[data-act="new"]')?.click();
-    let n = 0;
-    const pick = () => {
-      const sel = win.querySelector<HTMLSelectElement>('#proj');
-      if (sel && [...sel.options].some(o => o.value === dir)) { if (sel.value !== dir) { sel.value = dir; sel.dispatchEvent(new Event('change', { bubbles: true })); } ctx.ta.focus(); }
-      else if (n++ < 90) requestAnimationFrame(pick);
-    };
-    requestAnimationFrame(pick);
+    const go = Object.assign(document.createElement('button'), { type: 'button', hidden: true });
+    go.dataset.act = 'new'; go.dataset.dir = dir; win.append(go); go.click(); go.remove();
   }
   // A Mac the host is not ready on yet opens on the first run, once.
   void (async () => {
