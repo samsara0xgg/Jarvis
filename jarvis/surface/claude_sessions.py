@@ -404,7 +404,12 @@ class ClaudeSessions:
         projects = self._home / ".claude" / "projects"
         rows: list[ClaudeSession] = []
         seen: set[str] = set()
+        # A session open in two processes (a terminal still on one Startrail took back) is one
+        # row, the live one: two rows under one id flip the companion's notices between them.
+        agents.sort(key=lambda a: a.get("status") not in {"busy", "waiting"})
         for agent in agents:
+            if agent["sessionId"] in seen:
+                continue
             job = self._job(agent.get("id")) if agent.get("kind") == "background" else {}
             path = next(iter(projects.glob(f"*/{agent['sessionId']}.jsonl")), None)
             mtime_ns = path.stat().st_mtime_ns if path else 0
