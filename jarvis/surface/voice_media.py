@@ -17,11 +17,14 @@ import logging
 import math
 import re
 import sqlite3
+import tempfile
 import threading
 import time
 import uuid
+import wave
 from collections import deque
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 import numpy as np
@@ -77,6 +80,8 @@ _CUT_FADE_WAIT_S = 0.1
 # transport and task handshake (TLS alone took 0.11-0.15 s to api-uw on
 # 2026-09-29). MiniMax closes a started task after 120 s without an event.
 _SPARE_SESSION_MAX_AGE_S = 60.0
+# The rate the say fallback renders at; the player resamples it like provider PCM.
+_SAY_RATE_HZ = 24_000
 _CHANNEL_TAG_RE = re.compile(r"</?(?:voice|document)>")
 _RESPONSE_TERMINAL_TYPES = frozenset({"response.cancelled", "response.failed"})
 _RESPONSE_EVENT_TYPES = frozenset(
@@ -2626,24 +2631,7 @@ class StreamingTTSPipeline:
             budget.reschedule(
                 asyncio.get_running_loop().time() + self._config.response_timeout_s,
             )
-            emit_event(
-                self._require_conn(),
-                type="surface.playback_segment_prepared",
-                payload={
-                    "session_id": lease.session_id,
-                    "response_id": active.response.response_id,
-                    "turn_id": active.response.turn_id,
-                    "playback_generation_id": lease.playback_generation_id,
-                    "sequence": sequence,
-                    "speech_text": text,
-                    "speech_text_hash": hashlib.sha256(text.encode()).hexdigest(),
-                    "segment_hash": segment_hash,
-                    "source_chunk_event_uid": active.response.chunks[sequence].source_event_uid,
-                },
-                source_event_id=active.activation_event_uid,
-                correlation={"turn_id": active.response.turn_id},
-            )
-            active.prepared_text += text
+            self._prepare_segment(active, sequence, text, segment_hash)
             opened = self._player.begin_generation_segment(
                 expected_playback_generation_id=lease.playback_generation_id,
                 sequence=sequence,
@@ -2817,7 +2805,7 @@ class StreamingTTSPipeline:
                         )
                         return False
                     remaining = segments[segment_index:]
-                    return await self._run_macos_say(active, remaining)
+                    return await self._run_macos_say(active, remaining, budget=budget)
                 if last_error is not None:
                     raise last_error
                 return False
@@ -2836,6 +2824,29 @@ class StreamingTTSPipeline:
                 await session.finish()
             active.session = None
         return True
+
+    def _prepare_segment(
+        self, active: _ActiveResponse, sequence: int, text: str, segment_hash: str,
+    ) -> None:
+        """Record the segment about to be synthesized; the cursor maps onto these rows."""
+        emit_event(
+            self._require_conn(),
+            type="surface.playback_segment_prepared",
+            payload={
+                "session_id": active.lease.session_id,
+                "response_id": active.response.response_id,
+                "turn_id": active.response.turn_id,
+                "playback_generation_id": active.lease.playback_generation_id,
+                "sequence": sequence,
+                "speech_text": text,
+                "speech_text_hash": hashlib.sha256(text.encode()).hexdigest(),
+                "segment_hash": segment_hash,
+                "source_chunk_event_uid": active.response.chunks[sequence].source_event_uid,
+            },
+            source_event_id=active.activation_event_uid,
+            correlation={"turn_id": active.response.turn_id},
+        )
+        active.prepared_text += text
 
     def _record_alignment(
         self, active: _ActiveResponse, event: TTSAudioChunk, *, segment_start: int,
@@ -2916,16 +2927,68 @@ class StreamingTTSPipeline:
         self,
         active: _ActiveResponse,
         segments: list[tuple[int, str, str]],
+        *,
+        budget: asyncio.Timeout,
     ) -> bool:
-        """Compatibility fallback with exact spawn/process cancellation ownership."""
-        speech = "".join(text for _sequence, text, _hash in segments)
+        """Say ``segments`` with macOS ``say``, through the player where it can.
+
+        Each segment is rendered to a file and played like provider audio, so
+        the echo canceller hears it, the soft barge-in can lower it and the
+        cursor knows what was heard. Played straight to the speakers, as
+        before, when rendering fails. The first segment is already open.
+        """
         active.provider_label = "macos_say"
+        record_realtime_trace(
+            "tts_macos_say_started",
+            response_id=active.response.response_id,
+            playback_generation_id=active.lease.playback_generation_id,
+            cursor_quality="rendered",
+        )
+        for index, (sequence, text, segment_hash) in enumerate(segments):
+            budget.reschedule(
+                asyncio.get_running_loop().time() + self._config.response_timeout_s,
+            )
+            if index > 0:
+                self._prepare_segment(active, sequence, text, segment_hash)
+                opened = self._player.begin_generation_segment(
+                    expected_playback_generation_id=active.lease.playback_generation_id,
+                    sequence=sequence,
+                    text=text,
+                    segment_hash=segment_hash,
+                )
+                if isinstance(opened, StalePlaybackGeneration):
+                    return False
+            rendered = await self._render_macos_say(active, text)
+            if self._active is not active:
+                return False
+            if rendered is None:
+                LOGGER.warning("say could not render to a file; saying the rest aloud directly")
+                return await self._run_macos_say_aloud(active, segments[index:])
+            pcm, rate_hz = rendered
+            resampler = _SegmentResampler(
+                input_rate_hz=rate_hz, output_rate_hz=self._config.canonical_sample_rate_hz,
+            )
+            await self._write_all(
+                active, resampler.feed(pcm) + resampler.finish(), sequence=sequence,
+            )
+            finished = self._player.finish_generation_segment(
+                expected_playback_generation_id=active.lease.playback_generation_id,
+                sequence=sequence,
+            )
+            if isinstance(finished, StalePlaybackGeneration):
+                return False
+        return True
+
+    async def _say_process(
+        self, active: _ActiveResponse, *args: str,
+    ) -> int | None:
+        """Run ``say *args`` under the fallback's cancel ownership; its exit code."""
         spawn_task = asyncio.create_task(
             asyncio.create_subprocess_exec(
                 "say",
                 "-v",
                 lang.say_voice(),
-                speech,
+                *args,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
             ),
@@ -2938,18 +3001,46 @@ class StreamingTTSPipeline:
             raise
         except OSError:
             active.fallback_spawn_task = None
-            return False
+            return None
         active.fallback_spawn_task = None
         active.fallback_process = process
-        record_realtime_trace(
-            "tts_macos_say_started",
-            response_id=active.response.response_id,
-            playback_generation_id=active.lease.playback_generation_id,
-            cursor_quality="unknown",
-        )
         return_code = await process.wait()
         if active.fallback_process is process:
             active.fallback_process = None
+        return return_code
+
+    async def _render_macos_say(
+        self, active: _ActiveResponse, text: str,
+    ) -> tuple[bytes, int] | None:
+        """``text`` as ``say``'s mono int16 samples and their rate, or None."""
+        with tempfile.TemporaryDirectory(prefix="jarvis-say-") as folder:
+            path = Path(folder) / "say.wav"
+            return_code = await self._say_process(
+                active,
+                "-o",
+                str(path),
+                "--file-format=WAVE",
+                f"--data-format=LEI16@{_SAY_RATE_HZ}",
+                text,
+            )
+            if return_code != 0:
+                return None
+            try:
+                with wave.open(str(path), "rb") as reader:
+                    if reader.getsampwidth() != 2 or reader.getnchannels() != 1:  # noqa: PLR2004
+                        return None
+                    return reader.readframes(reader.getnframes()), reader.getframerate()
+            except (OSError, EOFError, wave.Error):
+                return None
+
+    async def _run_macos_say_aloud(
+        self,
+        active: _ActiveResponse,
+        segments: list[tuple[int, str, str]],
+    ) -> bool:
+        """Say ``segments`` straight to the speakers; the cursor stays unknown."""
+        speech = "".join(text for _sequence, text, _hash in segments)
+        return_code = await self._say_process(active, speech)
         if return_code != 0 or self._active is not active:
             return False
         for index, (sequence, text, segment_hash) in enumerate(segments):

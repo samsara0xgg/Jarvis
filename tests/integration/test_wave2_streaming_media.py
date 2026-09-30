@@ -9,6 +9,7 @@ import json
 import sqlite3
 import threading
 import time
+import wave
 from dataclasses import dataclass, replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -2305,7 +2306,7 @@ def test_macos_say_process_ownership_timeout_and_terminal_payload(  # noqa: PLR0
     actions: list[str] = []
     process_count = 0
 
-    async def _spawn(*_args: object, **_kwargs: object) -> _FakeSayProcess:
+    async def _spawn(*args: object, **_kwargs: object) -> _FakeSayProcess:
         nonlocal process_count
         process_count += 1
         names = ("old", "next", "error", "after-error")
@@ -2316,6 +2317,7 @@ def test_macos_say_process_ownership_timeout_and_terminal_payload(  # noqa: PLR0
             actions,
             complete_immediately=name in {"next", "after-error"},
             wait_error_once=name == "error",
+            args=args,
         )
 
     try:
@@ -2385,6 +2387,98 @@ def test_macos_say_process_ownership_timeout_and_terminal_payload(  # noqa: PLR0
     assert error_payload["provider"] == "macos_say"
 
 
+def test_macos_say_plays_through_the_player_the_echo_canceller_listens_to(
+    tmp_path: Path,
+) -> None:
+    """MiniMax down: say renders each segment to a file and the player plays it.
+
+    It used to play straight to the speakers, where the echo canceller, the
+    soft barge-in's lowering and the heard cursor never saw it.
+    """
+    db_path = tmp_path / "macos-say-rendered.db"
+    conn = open_event_log(db_path)
+    player = _player()
+    pipeline = voice_media.StreamingTTSPipeline(
+        provider=_FakeProvider(candidate_count=0),
+        player=player,
+        conn_factory=lambda: open_event_log(db_path),
+        boot_high_water_id=0,
+        config=replace(_config(), enable_macos_say_fallback=True),
+        start_player=False,
+    )
+    calls: list[tuple[object, ...]] = []
+    tone = (np.sin(np.arange(2_400) / 3.0) * 12_000).astype("<i2")  # 0.1 s at 24 kHz
+
+    async def _spawn(*args: object, **_kwargs: object) -> _FakeSayProcess:
+        calls.append(args)
+        return _FakeSayProcess("say", [], complete_immediately=True, args=args, samples=tone)
+
+    try:
+        with (
+            patch("jarvis.surface.voice_media.asyncio.create_subprocess_exec", side_effect=_spawn),
+            _CallbackPump(player, record=True) as pump,
+        ):
+            rows = _emit_response(
+                conn, response_id="RSAY", group_id="GSAY", turn_id="TSAY",
+                text=["first line. ", "second line."],
+            )
+            asyncio.run(_submit_response(pipeline, rows))
+            assert pipeline.wait_until_idle(timeout_s=3.0)
+    finally:
+        assert pipeline.close()
+        conn.close()
+    assert [(call[3], call[5:]) for call in calls] == [
+        ("-o", ("--file-format=WAVE", "--data-format=LEI16@24000", "first line.")),
+        ("-o", ("--file-format=WAVE", "--data-format=LEI16@24000", "second line.")),
+    ]
+    # What the device got, and so what the echo canceller's tap sees: both
+    # renders, 0.1 s each at the player's 8 kHz.
+    assert np.count_nonzero(np.abs(pump.signal) > 0.05) > 1_000
+    kind, payload = _terminal_for(open_event_log(db_path), response_id="RSAY")
+    assert kind == "surface.playback_completed"
+    assert payload["provider"] == "macos_say"
+    assert payload["heard_through_sequence"] == 1
+
+
+def test_a_say_that_cannot_render_says_the_rest_aloud(tmp_path: Path) -> None:
+    """A failed render falls back to the old way, straight to the speakers."""
+    db_path = tmp_path / "macos-say-aloud.db"
+    conn = open_event_log(db_path)
+    pipeline = voice_media.StreamingTTSPipeline(
+        provider=_FakeProvider(candidate_count=0),
+        player=_player(),
+        conn_factory=lambda: open_event_log(db_path),
+        boot_high_water_id=0,
+        config=replace(_config(), enable_macos_say_fallback=True),
+        start_player=False,
+    )
+    calls: list[tuple[object, ...]] = []
+
+    async def _spawn(*args: object, **_kwargs: object) -> _FakeSayProcess:
+        calls.append(args)
+        process = _FakeSayProcess("say", [], complete_immediately=True)
+        process.returncode = 1 if "-o" in args else 0
+        return process
+
+    try:
+        with patch("jarvis.surface.voice_media.asyncio.create_subprocess_exec", side_effect=_spawn):
+            rows = _emit_response(
+                conn, response_id="RALOUD", group_id="GALOUD", turn_id="TALOUD",
+                text=["first line. ", "second line."],
+            )
+            asyncio.run(_submit_response(pipeline, rows))
+            assert pipeline.wait_until_idle(timeout_s=3.0)
+    finally:
+        assert pipeline.close()
+        conn.close()
+    assert ["-o" in call for call in calls] == [True, False]
+    assert calls[1][3:] == ("first line.second line.",)
+    kind, payload = _terminal_for(open_event_log(db_path), response_id="RALOUD")
+    assert kind == "surface.playback_completed"
+    assert payload["provider"] == "macos_say"
+    assert payload["heard_through_sequence"] is None
+
+
 def test_macos_say_spawn_in_progress_cancellation_has_no_orphan(tmp_path: Path) -> None:
     """Foreground supersede cancels an in-flight say spawn before replacement."""
     db_path = tmp_path / "macos-say-spawn.db"
@@ -2403,7 +2497,7 @@ def test_macos_say_spawn_in_progress_cancellation_has_no_orphan(tmp_path: Path) 
     old_spawn_entered = threading.Event()
     spawn_count = 0
 
-    async def _spawn(*_args: object, **_kwargs: object) -> _FakeSayProcess:
+    async def _spawn(*args: object, **_kwargs: object) -> _FakeSayProcess:
         nonlocal spawn_count
         spawn_count += 1
         if spawn_count == 1:
@@ -2415,7 +2509,7 @@ def test_macos_say_spawn_in_progress_cancellation_has_no_orphan(tmp_path: Path) 
                 actions.append("spawn-cancelled:old")
                 raise
         actions.append("spawn:new")
-        return _FakeSayProcess("new", actions, complete_immediately=True)
+        return _FakeSayProcess("new", actions, complete_immediately=True, args=args)
 
     try:
         with patch(
@@ -2477,7 +2571,7 @@ def test_macos_say_late_spawn_debt_blocks_successor_until_reaped(  # noqa: PLR09
     allow_late_return = threading.Event()
     spawned = 0
 
-    async def _spawn(*_args: object, **_kwargs: object) -> _FakeSayProcess:
+    async def _spawn(*args: object, **_kwargs: object) -> _FakeSayProcess:
         nonlocal spawned
         spawned += 1
         if spawned == 1:
@@ -2492,7 +2586,7 @@ def test_macos_say_late_spawn_debt_blocks_successor_until_reaped(  # noqa: PLR09
             actions.append("spawn-return:old")
             return _FakeSayProcess("old", actions, complete_immediately=False)
         actions.append("spawn:new")
-        return _FakeSayProcess("new", actions, complete_immediately=True)
+        return _FakeSayProcess("new", actions, complete_immediately=True, args=args)
 
     successor_error: list[BaseException] = []
 
@@ -2823,13 +2917,15 @@ class _FakeOutputStream:
 
 
 class _FakeSayProcess:
-    def __init__(
+    def __init__(  # noqa: PLR0913 - one knob per say behavior under test
         self,
         name: str,
         actions: list[str],
         *,
         complete_immediately: bool,
         wait_error_once: bool = False,
+        args: tuple[object, ...] = (),
+        samples: np.ndarray | None = None,
     ) -> None:
         self.name = name
         self.actions = actions
@@ -2838,6 +2934,14 @@ class _FakeSayProcess:
         self._done = asyncio.Event()
         if complete_immediately:
             self._done.set()
+            if "-o" in args:  # say -o <file>: the fallback renders into a WAV
+                rate = int(str(args[-2]).rsplit("@", 1)[1])
+                with wave.open(str(args[args.index("-o") + 1]), "wb") as out:
+                    out.setnchannels(1)
+                    out.setsampwidth(2)
+                    out.setframerate(rate)
+                    pcm = np.zeros(0, dtype="<i2") if samples is None else samples
+                    out.writeframes(pcm.astype("<i2").tobytes())
 
     async def wait(self) -> int:
         if self._wait_error_once:
