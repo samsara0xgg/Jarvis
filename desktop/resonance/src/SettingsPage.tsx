@@ -6,10 +6,11 @@ import { SKIN_KEYS, SKINS, type Skin } from './starCore';
 import type { HomeLook } from './CompanionBall';
 import type { HomeFinish } from './homeFinish';
 import type { MarkLook } from './AgentMarks';
+import type { NightLook } from './NightCard';
 
 // Settings as a page in her panel: quick switches on top, then one list per category. Her own settings save
 // in this profile and apply at once; Jarvis's own save through the daemon and are greyed out until it serves them.
-export type Look = { skin: Skin; auto: boolean; home: HomeLook; homeFinish: HomeFinish; marks: MarkLook };
+export type Look = { skin: Skin; auto: boolean; home: HomeLook; homeFinish: HomeFinish; marks: MarkLook; night: NightLook };
 export type Cues = { on: boolean; volume: number };
 export type Controls = {
   micMuted: boolean; speechMuted: boolean; handsFree: boolean;
@@ -134,6 +135,7 @@ export function SettingsPage({ lang, port, open, cat, onCat, ctl, accounts, keyD
       { id: 'home', name: ['In the island', '在家的样子'], ctl: { k: 'seg', value: ctl.look.home, opts: [['dark', ['Dark glass', '暗玻璃']], ['eyes', ['Just her eyes', '只有两只眼']]], set: value => ctl.setLook({ home: value as HomeLook }) } },
       { id: 'home-finish', name: ['Notch home', '刘海里的家'], ctl: { k: 'seg', value: ctl.look.homeFinish, opts: [['original', ['Original', '原设计']], ['refined', ['Refined notch', '精修刘海']]], set: value => ctl.setLook({ homeFinish: value as HomeFinish }) } },
       { id: 'marks', name: ['Agent marks', '状态点'], note: ['The session marks beside the notch', '刘海旁边的会话标记'], ctl: { k: 'seg', value: ctl.look.marks, opts: [['spark', ['Spark', '星芒']], ['pixel', ['Pixel', '像素']]], set: value => ctl.setLook({ marks: value as MarkLook }) } },
+      { id: 'night', name: ['Night run cards', '挂机卡片'], note: ['Bedtime, in the night and the morning after', '睡前、半夜和早上的卡片'], ctl: { k: 'seg', value: ctl.look.night, opts: [['list', ['List', '列表']], ['trail', ['Star trail', '星轨']]], set: value => ctl.setLook({ night: value as NightLook }) } },
       { id: 'faces', name: ['Her expressions', '她的表情'], ctl: { k: 'act', label: ['Play all', '全部看一遍'], run: ctl.playFaces } },
     ] },
     { id: 'voice', icon: <Waveform/>, name: ['Voice', '语音'], daemon: true, sum: ready ? `${t(['Wake word', '唤醒'])} ${Number(v('wake_threshold') ?? 0).toFixed(2)} · ${String(v('tts_voice') ?? '—')}` : t(['Not connected yet', '还没接上']), items: [

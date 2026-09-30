@@ -14,7 +14,7 @@ import { answerRequest, type Agent, type ShownAgent } from './agents';
 import { NoticeCard, ended, noticeCue, useNotices } from './Notices';
 import { ActionCard, QuestionCard, type Answer, type Card, type Decide, type Question } from './ActionCard';
 import { Notch, type NotchNote } from './Notch';
-import { NightCard, markNightSeen, morningOf, seenNight, type NightAction, type NightState } from './NightCard';
+import { NightCard, isNightLook, markNightSeen, morningOf, seenNight, type NightAction, type NightSession, type NightState } from './NightCard';
 import { tr, useCompanionSettings, type L, type Lang } from './companionSettings';
 import { useNow, useRoute } from './homeData';
 import type { Controls as DashControls, Look } from './SettingsPage';
@@ -43,8 +43,9 @@ function loadWardrobe(): Look {
   try {
     const value = JSON.parse(localStorage.getItem(WARDROBE) ?? '{}');
     return { skin: isSkin(value.skin) ? value.skin : 'glass', auto: value.auto !== false, home: value.home === 'eyes' ? 'eyes' : 'dark',
-      homeFinish: value.homeFinish === 'original' ? 'original' : 'refined', marks: isMarkLook(value.marks) ? value.marks : 'spark' };
-  } catch { return { skin: 'glass', auto: true, home: 'dark', homeFinish: 'refined', marks: 'spark' }; }
+      homeFinish: value.homeFinish === 'original' ? 'original' : 'refined', marks: isMarkLook(value.marks) ? value.marks : 'spark',
+      night: isNightLook(value.night) ? value.night : 'list' };
+  } catch { return { skin: 'glass', auto: true, home: 'dark', homeFinish: 'refined', marks: 'spark', night: 'list' }; }
 }
 // Ghostty's title for a session is its name, sometimes behind a status mark; the board folds long names with "…".
 const bare = (text: string) => text.replace(/\s+/g, ' ').replace(/^[^\p{L}\p{N}]+/u, '').trim();
@@ -165,6 +166,12 @@ export function Companion() {
     void link.current?.nightAct(action).then(setNightState).catch(() => undefined); // a stale card: the next read shows the run as it is
   };
   const closeMorning = () => { if (morning) { markNightSeen(morning.id); setNightSeen(morning.id); } };
+  // A session on the night card: before dark the screen stays until Allen leaves it a quiet minute; then his way to it.
+  const nightGo = (session: NightSession) => {
+    if (nightRun?.phase === 'starting') nightAct('stay');
+    const known = agents.find(a => a.id === session.id);
+    if (known) jump(known); else window.jarvis?.openAgents?.();
+  };
   // Live, the daemon's phase is her voice; standby counts as listening only in wave mode (ADR 0041).
   // While your words are coming in she only listens: no answer starts then (ADR 0053), whatever text arrives.
   const inFlight = !!port && s.inFlight;
@@ -601,7 +608,8 @@ export function Companion() {
   const { out } = geo;
   const note: NotchNote | null = carded && card ? { key: `card:${card.id}`, onClose: () => undefined, card: <ActionCard key={card.id} card={card} lang={companion.lang} onDecide={decideCard}/> }
     : carded && question ? { key: `question:${question.id}`, onClose: () => undefined, card: <QuestionCard key={question.id} question={question} lang={companion.lang} onAnswer={answerQuestion}/> }
-    : nightShown && nightState ? { key: nightKey, onClose: closeMorning, card: <NightCard key={nightKey} state={nightState} morning={morning} unread={notices.unread.size} lang={companion.lang} act={nightAct} onClose={closeMorning}/> }
+    : nightShown && nightState ? { key: nightKey, onClose: closeMorning, card: <NightCard key={nightKey} state={nightState} morning={morning} unread={notices.unread.size} lang={companion.lang} marks={wardrobe.marks} look={wardrobe.night}
+      act={nightAct} onGo={nightGo} onClose={closeMorning}/> }
     : !notice ? null : notice.kind === 'pop' ? { key: notice.key, pop: notice.ids, onClose: notices.next } : { key: notice.key, id: notice.id, onClose: notices.fold,
     card: <NoticeCard key={notice.key} n={notice} card={notices.card!} agent={agents.find(a => a.id === notice.id)} count={notices.count} look={wardrobe.marks}
       onPark={() => notices.park([notice.id])} onOpen={jump} onChange={notices.bump} onResolve={(text, body) => {
@@ -642,7 +650,7 @@ export function Companion() {
         <hr/>
         {nightState && (nightRun
           ? <button role="menuitem" onClick={() => { setMenu(null); nightAct('end'); }}>{t(['End the night run', '结束挂机'])}</button>
-          : <button role="menuitem" onClick={() => { setMenu(null); nightAct('start'); }}>{t([`Off to sleep: keep running ${+nightState.hours.toFixed(2)} h`, `睡了，挂 ${+nightState.hours.toFixed(2)} 小时`])}</button>)}
+          : <button role="menuitem" onClick={() => { setMenu(null); nightAct('start'); }}>{t([`Off to sleep: keep running at least ${+nightState.hours.toFixed(2)} h`, `睡了，至少挂 ${+nightState.hours.toFixed(2)} 小时`])}</button>)}
         <button role="menuitem" onClick={() => { setMenu(null); appear(ctl.playFaces, PREVIEW.length * 1100); }}>{t(['Preview expressions', '看一遍表情'])}</button>
         <button role="menuitem" onClick={() => { setMenu(null); openDashboard(false); pinned.current = true; if (detachedMode.current) window.jarvis?.dashboardMessage?.('dashboard', { type: 'settings' }); else setSettingsFocus(n => n + 1); }}>{t(['Settings…', '设置…'])}</button>
       </div>}

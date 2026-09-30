@@ -1,13 +1,73 @@
 /* ADR 0093: the night run's cards, on the action card's surface. Moonlight for the run, the done colour for the
    morning; in the night the card and its button go quiet, since it is read with sleepy eyes in the dark. */
-.nc-night { --night-c:#b7c3ff; }
+.nc-night { --night-c:#b7c3ff; --nc-blue:#6c9cff; --nc-sep:rgb(255 255 255 / .06); }
 .nc-night .ac-label { color:var(--night-c); }
 .nc-count { margin:0; font-size:var(--text-body); color:var(--p-muted); font-variant-numeric:tabular-nums; }
 .nc-count b { font-size:var(--text-title); font-weight:600; color:var(--p-ink); margin-right:1px; }
 .nc-lines { display:flex; flex-direction:column; gap:3px; margin:0; padding:0; list-style:none; }
 .nc-lines li,.nc-line { margin:0; font-size:var(--text-detail); line-height:1.5; color:var(--p-faint); }
-.nc-lines li.is-warn { color:var(--warm-c); }
+.nc-lines li.is-warn,.nc-warm { color:var(--warm-c); }
+.nc-quiet { color:var(--p-muted); }
 .nc-night.is-dim { opacity:.66; }
 .nc-night.is-dim .ac-label i { animation:none; box-shadow:none; opacity:.7; }
 .nc-night.is-dim .ac-go { background:rgb(255 255 255 / .1); color:var(--p-ink); }
 .nc-night.is-morning .ac-label { color:var(--mint-c,#6fe0b4); }
+.nc-night .ac-meta { font-variant-numeric:tabular-nums; }
+
+/* The rules and the morning's two clocks: a name column, then the value. */
+.nc-kv { display:flex; flex-direction:column; gap:5px; margin:0; font-size:var(--text-detail); line-height:1.5; }
+.nc-kv div { display:grid; grid-template-columns:var(--nc-dt,5.5em) minmax(0,1fr); gap:10px; }
+.nc-kv dt { color:var(--p-muted); white-space:nowrap; }
+.nc-kv dd { margin:0; color:var(--p-ink); overflow-wrap:anywhere; }
+.nc-tag { display:inline-block; margin-left:6px; padding:0 5px; border-radius:var(--radius-tag); font-size:var(--text-label); font-weight:600; letter-spacing:.02em;
+  line-height:16px; vertical-align:1px; color:var(--night-c); background:rgb(183 195 255 / .14); }
+
+/* The sessions: groups under a small caps head, one row each with its mark, title and state. */
+.nc-list { display:flex; flex-direction:column; }
+.nc-sec { display:flex; flex-direction:column; }
+.nc-sec + .nc-sec { margin-top:5px; padding-top:5px; border-top:1px solid var(--nc-sep); }
+.nc-head { display:flex; align-items:center; justify-content:space-between; gap:8px; min-height:24px; padding:0 4px 0 8px; font-size:var(--text-label); font-weight:600;
+  letter-spacing:.09em; color:var(--p-faint); }
+.nc-head.is-warm { color:var(--warm-c); }
+.nc-head > span:first-child { flex:none; white-space:nowrap; }
+.nc-head em { font-style:normal; font-weight:500; letter-spacing:.03em; margin-left:5px; color:var(--p-faint); }
+.nc-hint { min-width:0; font-weight:500; letter-spacing:0; color:var(--p-faint); text-align:right; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.nc-row { display:grid; grid-template-columns:12px minmax(0,max-content) minmax(72px,1fr) auto; gap:0 9px; align-items:center; min-height:28px; padding:3px 8px;
+  border-radius:var(--radius-control); font-size:var(--text-detail); line-height:18px; }
+.nc-row b { font-weight:400; color:var(--p-muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.nc-row.is-wait b { font-weight:650; color:var(--warm-c); }
+.nc-row.is-err b { font-weight:650; color:var(--p-ink); }
+.nc-row > span:not(.agent-mark) { color:var(--p-faint); text-align:right; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.nc-night .nc-go { display:inline-flex; align-items:center; height:26px; padding:0 9px; border-radius:var(--radius-control); font-size:var(--text-detail); white-space:nowrap;
+  background:rgb(157 180 255 / .1); color:rgb(var(--glow)); transition:background var(--motion-fast) ease; }
+.nc-night .nc-go:hover { background:rgb(157 180 255 / .18); }
+.nc-night .nc-go:focus-visible { outline:2px solid rgb(var(--glow) / .6); outline-offset:1px; }
+.nc-data { margin:0; padding-top:8px; border-top:1px solid var(--nc-sep); font-size:var(--text-label); line-height:1.5; color:var(--p-faint); }
+
+/* The star-trail look: the dial, and the rules or the two clocks beside it. */
+.nc-dialrow { display:flex; align-items:center; gap:16px; }
+.nc-side { flex:1; min-width:0; display:flex; flex-direction:column; gap:9px; }
+.nc-dial { display:block; flex:none; overflow:visible; font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','PingFang SC',sans-serif; }
+.nc-dial .nc-groove { fill:none; stroke:rgb(157 180 255 / .07); }
+.nc-dial .nc-rim { fill:none; stroke:rgb(183 195 255 / .1); }
+.nc-dial .nc-hour { stroke:rgb(196 204 238 / .28); stroke-width:1; stroke-linecap:round; }
+.nc-dial .nc-num { font-size:9.5px; fill:rgb(196 204 238 / .45); }
+.nc-dial .nc-hold { fill:none; stroke:var(--night-c); stroke-linecap:round; }
+.nc-dial .nc-hold.is-both { stroke-width:2.5; stroke-opacity:.9; }
+.nc-dial .nc-hold.is-mon { stroke:var(--nc-blue); stroke-width:2.5; }
+.nc-dial .nc-hold.is-extra { stroke-width:2.5; stroke-dasharray:2 3; stroke-opacity:.75; }
+.nc-dial .nc-hold.is-plan { stroke-width:1.5; stroke-dasharray:3 4; stroke-opacity:.6; }
+.nc-dial .nc-hold.is-far { stroke-width:1; stroke-dasharray:1 5; stroke-opacity:.35; }
+.nc-dial .nc-trail { fill:none; stroke:var(--nc-blue); stroke-width:2; stroke-linecap:round; stroke-opacity:.85; }
+.nc-dial .nc-trail.is-before { stroke-opacity:.3; }
+.nc-dial .nc-mark { stroke-width:1.5; stroke-linecap:round; }
+.nc-dial .nc-mark.is-ink { stroke:var(--p-ink); }
+.nc-dial .nc-mark.is-night { stroke:var(--night-c); }
+.nc-dial .nc-lab { font-size:9.5px; }
+.nc-dial .nc-lab.is-night { fill:var(--night-c); }
+.nc-dial .nc-lab.is-blue { fill:var(--nc-blue); }
+.nc-dial .nc-big { font-size:15px; font-weight:600; fill:var(--p-ink); font-variant-numeric:tabular-nums; }
+.nc-dial .nc-small { font-size:9px; fill:var(--p-faint); }
+.nc-dial .nc-star { overflow:visible; }
+
+@media (prefers-reduced-motion:reduce) { .nc-night .nc-go { transition:none; } }
