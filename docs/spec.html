@@ -369,7 +369,7 @@ I8 到 I11 随审核链退役（ADR 0019），编号保留。
 <thead><tr><th>部分</th><th>内容</th></tr></thead>
 <tbody>
 <tr><td>系统提示</td><td>规则文件 <code>prompts/jarvis_v1.md</code> 全文，后面接「关于你」的每一行（<a href="#memory">第 3 章</a>）</td></tr>
-<tr><td>历史</td><td>对话记录逐字发送：从上一次压缩的摘要（有的话）开始，接着是摘要之后、且不早于 <code>session.history_since</code> 的每一句，只有原文，每天第一句前标上日期</td></tr>
+<tr><td>历史</td><td>对话记录逐字发送：从上一次压缩的摘要（有的话）开始，接着是摘要之后、且不早于 <code>session.history_since</code> 的每一句，只有原文，每天第一句前标上日期。<code>session.recent_records</code> 设成 N 时只发其中最近的 N 到 2N-1 句，前面加一行说明更早的有几句、用搜索工具去找；默认 0，全发</td></tr>
 <tr><td>这一句</td><td>主人这一轮说的话，前面加一块程序写的当前状态：时间、交互方式、已连接的应用、上一个回答的语音在哪里被打断、待确认的卡片、还在跑的动作</td></tr>
 <tr><td>工具</td><td>模型这一轮能用的工具定义</td></tr>
 </tbody>
@@ -377,7 +377,7 @@ I8 到 I11 随审核链退役（ADR 0019），编号保留。
 <ul>
 <li><strong>压缩。</strong>估算的逐字历史超过预设上下文的 <code>session.compact_at_context_ratio</code>（0.4，也就是 105 万 token 窗口的约 42 万），而且一小时没有新记录、没有实时语音连接时，才压缩一次：早于 <code>session.verbatim_window_days</code>（7 天）的记录折成一段摘要，最近 7 天仍然逐字。</li>
 <li>压缩本身也是一次模型调用，发出的是要折叠的那些记录。</li>
-<li><code>history_since</code> 之前的记录留在 memory.db，模型要用时通过搜索工具取回，不进每一轮的请求。</li>
+<li><code>history_since</code> 之前的记录，以及 <code>recent_records</code> 窗口之外的记录，留在 memory.db，模型要用时通过搜索工具取回，不进每一轮的请求。窗口的起点每 N 句才往后挪一次，其间历史的开头不变，服务商的缓存才接得上。</li>
 </ul>
 
 <h3 id="egress-table">按功能列出的外发</h3>

@@ -127,7 +127,8 @@ class SessionSettings:
     whole system prompt, and an empty one means no compaction ever runs.
     ``history_since`` is the ISO timestamp the prompt's history starts at;
     earlier records stay in the store for search and never reach the prompt
-    or a compaction.
+    or a compaction. ``recent_records`` (0: every record) shows only the
+    latest records of that history; see :func:`render_context`.
     """
 
     idle_before_compact_s: float = 3600.0
@@ -138,6 +139,7 @@ class SessionSettings:
     live_brief_max_chars: int = 1500
     compact_prompt: str = ""
     history_since: str = ""
+    recent_records: int = 0
 
     @classmethod
     def from_config(cls, raw: object) -> SessionSettings:
@@ -173,6 +175,7 @@ class SessionSettings:
             ),
             compact_prompt=prompt.strip() if isinstance(prompt, str) else "",
             history_since=since.strip() if isinstance(since, str) else "",
+            recent_records=int(_positive("recent_records", 0)),
         )
 
 
@@ -418,8 +421,21 @@ def _append_turn(turns: list[dict[str, str]], role: str, content: str) -> None:
         turns.append({"role": role, "content": content})
 
 
+def _hidden_records(shown: int, recent: int) -> int:
+    """How many of the oldest ``shown`` records a ``recent`` window leaves out.
+
+    The cut moves ``recent`` records at a time, so between ``recent`` and
+    ``2 * recent - 1`` records show and the history's start, which the
+    provider's prefix cache needs unchanged, holds for ``recent`` records.
+    """
+    if recent <= 0 or shown < 2 * recent:
+        return 0
+    return (shown - recent) // recent * recent
+
+
 def render_context(
     path: Path, *, exclude_id: str, since: str = "", now: datetime | None = None,
+    recent: int = 0,
 ) -> MemoryContext:
     """Render the decision-path prompt blocks in one consistent read.
 
@@ -434,7 +450,9 @@ def render_context(
     grows at its end between compactions, so the provider's prefix cache
     covers it. ``now`` is the per-turn time line. ``exclude_id`` is the
     current turn's own utterance, which the prompt already carries as the
-    live user message.
+    live user message. ``recent`` > 0 shows only the latest records (see
+    :func:`_hidden_records`); a note after the summary says how many earlier
+    ones there are and how to find them.
     """
     moment = now or local_now()
     with closing(open_memory_db(path)) as conn:
@@ -453,6 +471,16 @@ def render_context(
             f"{current.summary}",
         )
     shown = [record for record in records if record[0] != exclude_id]
+    hidden = _hidden_records(len(shown), recent)
+    if hidden:
+        first_ts = shown[hidden][1]
+        _append_turn(
+            turns,
+            "user",
+            f"[Earlier conversation · {hidden} records before {first_ts} are not shown · "
+            f"find them with search_records (to={first_ts}), then read_records]",
+        )
+        shown = shown[hidden:]
     marked_day = None
     for _, ts, source, text in shown:
         role = "user" if source == "allen" else "assistant"

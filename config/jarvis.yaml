@@ -735,6 +735,11 @@ session:
   # history_since (settings.yaml): where the prompt's history starts. Records
   # before it stay in memory.db for search_records / read_records and are never
   # shown to the model or folded into a summary. Unset = all history.
+  # recent_records > 0 shows only the latest N to 2N-1 records after the
+  # summary, with a note on how many earlier ones search_records can find; the
+  # cut moves N records at a time so the prompt cache keeps the history's start.
+  # 0 shows every record (about 500 and 40k tokens on 2026-09-30).
+  recent_records: 0
   # The summariser's whole system prompt. The nine "###" headings are
   # required: a summary missing one is rejected. Edit the text freely; the
   # headings are checked by name (jarvis/decision/compaction.py).
