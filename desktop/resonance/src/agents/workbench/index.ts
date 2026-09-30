@@ -6,7 +6,7 @@
 import type { Peek, Sess } from '../../../electron/agents/types';
 import { classify, stripLine, type Ref } from './refs';
 import { CLOSE_ICON, active, chipOf, panelHTML, railHTML } from './landing';
-import { mountTerminal, type TPos } from './terminal';
+import { mountTerminal, type Tab, type TPos } from './terminal';
 import './workbench.css';
 
 type Hooks = {
@@ -374,7 +374,7 @@ export function mountWorkbench(win: HTMLElement, ta: HTMLTextAreaElement, hooks:
       else return false;
       return true;
     },
-    terminal: (on?: boolean) => toggleTerm(on),
+    terminal: (on?: boolean, tab?: Tab, log?: string) => { if (tab) terminal.tab(tab, log); toggleTerm(on); },
     show,
     // What the sheet shows now (a file's path, a page's address or a feature's key), or ''.
     shown: () => S.ref?.key ?? '',

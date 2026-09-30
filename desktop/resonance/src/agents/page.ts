@@ -10,6 +10,7 @@ import { waitOf } from './queue';
 import { palette, play, scoreOf } from '../soundKit';
 import { Core, TAKES, pick, type ExprId } from '../starCore';
 import { mountExposure } from './exposure';
+import { mountStopped } from './exposure/waiting';
 import { mountWorkbench } from './workbench';
 import { cardsHTML, editsBefore, inline } from './workbench/refs';
 import * as usage from './workbench/usage';
@@ -466,8 +467,6 @@ function itemHTML(s: Sess, it: Exclude<Item, { k: 'steps' }>, i = -1) {
   const r = it.req, a = NAME[s.agent], b = app.busy.get(s.id), busy = b?.req === r.id ? b.key : '';
   const on = (k: string) => busy === k ? ' is-busy' : '', off = busy ? ' disabled' : '';
   if (it.done) return `<p class="note done"><span class="ok">${/^(拒绝|没回答)/.test(it.done) ? '✕' : '✓'}</span>${esc(reqRecord(r))}<span class="how">${esc(it.done)}</span></p>`;
-  // B01: she holds the request for her stack; the conversation only says so, and pressing it deals the stack.
-  if (attention.enabled) return `<button type="button" class="c-held"><i></i>这一步等你拍板，她先替你拿着 · <kbd>空格</kbd> 过一遍</button>`;
   if (r.tool === 'Ask') {
     const picked = app.asked.get(r.id) ?? [], simple = r.qs.length === 1 && !r.qs[0].multi;
     return `<div class="req ask${busy ? ' busy' : ''}"><span class="r-h">${esc(a)} 问你</span>${r.qs.map((q, qi) => `<div class="q-block"><p class="q">${esc(q.q)}</p><div class="opts">${q.opts.map(([l, d], k) =>
@@ -639,7 +638,7 @@ function renderComp() {
   const out = usage.banner(agent, app.usage);
   bnEl.hidden = !out;
   if (out) patch(bnEl, `<i></i><span>${out}</span>${agent === 'claude' && s ? '<button type="button" data-act="cloud">挪到云端继续</button>' : ''}`);
-  patch(hintEl, wb.hint());
+  patch(hintEl, wb.hint() + attention.hint());
   patch(cRows, s ? features.map(f => f.rows?.(s) ?? '').join('') : '');
   patch(cFiles, app.files.map((f, k) => `<span class="c-pic"><button type="button" class="pic" data-act="view" data-tip="看大图"><img src="${f.view}" alt="${esc(f.name)}"></button><i data-act="unfile" data-k="${k}" aria-label="去掉">✕</i></span>`).join(''));
   patch(cMenu, app.picks.map(([v, d], k) => app.menu === 'at'
@@ -1126,7 +1125,7 @@ addEventListener('keydown', e => {
     // on a focused button is that button's (the open session's own row aside), and a held key does nothing more.
     const r = s && !s.term && !popFor && !app.menu ? pendingReq(s.id) : undefined;
     const typing = (t === ta && !!ta.value.trim()) || t.tagName === 'INPUT' || t.tagName === 'SELECT';
-    if (!attention.enabled && s && r && !typing && !e.metaKey && !e.ctrlKey && !e.altKey && !e.isComposing) {
+    if (s && r && !typing && !e.metaKey && !e.ctrlKey && !e.altKey && !e.isComposing) {
       const opt = r.tool === 'Ask' && r.qs.length === 1 && !r.qs[0].multi && /^[1-9]$/.test(e.key) ? r.qs[0].opts[Number(e.key) - 1] : undefined;
       const enter = e.key === 'Enter' && !e.shiftKey && r.tool !== 'Ask' && !t.closest('button,[role="button"]:not(.row.is-on)');
       if (opt || enter || e.key === 'Escape') {
@@ -1193,7 +1192,7 @@ const wb = mountWorkbench(win, ta, {
 const attention = mountExposure(win, ta, {
   sessions: () => app.ss, items: id => app.items.get(id), current: () => app.cur, chat: () => app.view === 'chat',
   load: loadItems, open: id => open(id, 'key', true), call, md, toast, cue: (name, gain) => cue(name, gain, false, false), blip, changed: id => stAt.get(id) ?? -1e9,
-  refresh: () => draw(), back: () => wb.back(),
+  refresh: () => draw(), back: () => wb.back(), menu, closeMenu: closePop,
 });
 const ctx: PageCtx = {
   win, ta, api: API, sessions: () => app.ss, current: () => app.view === 'chat' ? cur() : undefined, byId, items: id => app.items.get(id), chat: () => app.view === 'chat' && !!cur(),
@@ -1201,6 +1200,7 @@ const ctx: PageCtx = {
   menu, closeMenu: closePop, wb, own: new Map(),
 };
 // Each feature is mounted on the one context below; its clicks, keys, commands and menu lines are its own.
+features.push(mountStopped(ctx));
 
 // ---------- one loop: her every frame, moving marks at 30 fps, nothing while the window is out of sight ----------
 let lastT = performance.now(), lastMk = 0, lastAge = 0;

@@ -147,7 +147,9 @@ export function mountTerminal(pane: HTMLElement, hooks: Hooks) {
     get pos() { return st.pos; }, get down() { return st.svc.some(s => !s.running); },
     onPos: (_: TPos) => {}, onClose: () => {},
     setPos(p: TPos) { st.pos = p; localStorage.setItem('agents.termPos', p); draw(); },
-    tab(t: Tab) {
+    // `log`: one of the logs by name, as a stopped session's 在终端里看 asks for the host's own.
+    tab(t: Tab, log?: string) {
+      if (log && LOGS.includes(log) && log !== st.log) { st.log = log; st.logAt = -1; st.logKey = ''; if (st.tab === 'log') void loadLog(); }
       if (st.tab === t) return;
       st.tab = t; draw();
       if (t === 'term') void connect(); else { es?.close(); es = null; }
