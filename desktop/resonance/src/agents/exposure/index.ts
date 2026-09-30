@@ -1,11 +1,12 @@
-import type { Item, Req, Sess } from '../../../electron/agents/types';
-import { COL, glyph, rgba, type St } from './glyph';
+import type { Item, Sess } from '../../../electron/agents/types';
+import { glyph, type St } from './glyph';
 import { clamp, dpr, easeInOut, esc, hash, lerp, reduced, smooth, spring, step } from './motion';
 import { Her } from './her';
 import { ago, drawSky, geometry } from './sky';
 import { started, timeline, type Trail, type Turn } from './timeline';
 import { mountAway } from './away';
 import { findField, hl, land, search, turnHits } from './find';
+import { mountWaiting } from './waiting';
 
 type Hooks = {
   sessions(): Sess[]; items(id: string): Item[] | undefined; current(): string; chat(): boolean;
@@ -17,15 +18,14 @@ type Hooks = {
   refresh(): void;
   // back: the workbench steps back a layer first (out of a preview) and says whether it did
   back?(): boolean;
+  // the page's one popover, at a point in the window, for her menus
+  menu(html: string, at: HTMLElement | { x: number; y: number }): void; closeMenu(): void;
 };
-type Decision = { id: string; key: string; kind: 'err' | 'ask' | 'allow' | 'land'; at: number; req?: Req };
 const kbd = (key: string) => `<kbd>${key}</kbd>`;
 const words: Record<St, string> = { work: '在干活', pack: '在整理', wait: '等你', done: '做完了', read: '看过了', err: '停了' };
 const status = (s: Sess): St => s.st === 'done' && !s.unread ? 'read' : s.st;
 const $ = <T extends HTMLElement = HTMLElement>(s: string, root: ParentNode) => root.querySelector(s) as T;
 const animate = (el: Element, frames: Keyframe[], duration: number, easing = 'cubic-bezier(.2,.8,.2,1)', more: KeyframeAnimationOptions = {}) => reduced.matches ? null : el.animate(frames, { duration, easing, ...more });
-const LIVELY = 'linear(0,.045,.153,.29,.433,.568,.687,.786,.864,.924,.967,.996,1.014,1.024,1.028,1.028,1.026,1.022,1.018,1.014,1.011,1.008,1.005,1.003,1)';
-const rank = { err: 0, ask: 1, allow: 1, land: 2 };
 // The label in front of a reply that is not its last words: still working, waiting on you, stopped.
 const LEAD: Partial<Record<Turn['kind'], string>> = { live: '还在做', wait: '等你', err: '停了' };
 // A line under the sessions in the sky, stood on like a row: 新会话, the resting and the archived folds, an archived
@@ -36,32 +36,27 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
   const chrome = document.createElement('div'); chrome.className = 'exposure';
   chrome.innerHTML = `<div class="bw-hz"></div><canvas class="bw-cv" aria-hidden="true"></canvas>
     <div class="bw-stars" aria-label="会话地平线"></div>
-    <button type="button" class="bw-her" aria-label="Jarvis：把手里的事过一遍"><canvas></canvas></button>
+    <button type="button" class="bw-her" aria-label="Jarvis：下一个等你的"><canvas></canvas></button>
     <button type="button" class="bw-pull" aria-expanded="false"></button>
     <div class="bw-sky" role="region" aria-label="长曝光时间线" inert>
       <div class="bw-rows"></div><div class="bw-axis"></div><div class="bw-gap" hidden></div><div class="bw-open" hidden><div class="pp-in"></div></div>
     </div>
-    <div class="bw-offer" hidden role="status"></div>
-    <div class="bw-deck" hidden><section class="dk-card" role="dialog" aria-modal="true" aria-label="过一遍" tabindex="-1"></section></div>
     <div class="bw-peek" hidden></div>`;
   win.append(chrome);
   const cv = $<HTMLCanvasElement>('.bw-cv', chrome), c = cv.getContext('2d')!;
   const skyEl = $('.bw-sky', chrome), rowsEl = $('.bw-rows', chrome), starsEl = $('.bw-stars', chrome), axis = $('.bw-axis', chrome);
   const pop = $('.bw-open', chrome), inner = $('.pp-in', pop), gap = $('.bw-gap', chrome), pull = $('.bw-pull', chrome);
-  const offerEl = $('.bw-offer', chrome), deckEl = $('.bw-deck', chrome), card = $('.dk-card', chrome), peek = $('.bw-peek', chrome);
+  const peek = $('.bw-peek', chrome);
   // ⌘K's field stands where 收起 does while it searches.
   const { el: findEl, input: findInput } = findField(); pull.after(findEl);
   const away = mountAway();
   const head = $('.m-head', win), main = $('.main', win);
   const her = new Her($<HTMLCanvasElement>('.bw-her canvas', chrome), 56, 15.6, true);
-  const modeButton = document.createElement('button'); modeButton.type = 'button'; modeButton.className = 'ex-mode';
-  $('.w-bar', win).append(modeButton);
-  const held = document.createElement('button'); held.type = 'button'; held.className = 'ex-held'; held.setAttribute('aria-label', '过一遍待处理事项');
-  $('.c-tools', win).append(held);
-  let enabled = localStorage.getItem('agents.layout') !== 'classic', skyOn = false, nameStop = false, selected = '', qi = -1, time: number | null = null;
-  let width = win.clientWidth, height = win.clientHeight, now = Date.now() / 60000, expandRest = false, rowKey = '', popKey = '', deckKey = '', busy = false;
-  let openAt = performance.now(), typedAt = -Infinity, scrolledAt = -Infinity, lastCurrent = hooks.current(), lastRefresh = 0;
-  let deck: Decision[] = [], deckOn = false, bookmark: { el: HTMLElement; scroll: number; focus: HTMLElement | null; row: HTMLElement | null } | null = null;
+  // The window is always the long exposure; the classic layout stays in the code, unreachable, until it is removed.
+  const enabled = true;
+  let skyOn = false, nameStop = false, selected = '', qi = -1, time: number | null = null;
+  let width = win.clientWidth, height = win.clientHeight, now = Date.now() / 60000, expandRest = false, rowKey = '', popKey = '';
+  let lastRefresh = 0, pointerAt = -Infinity;
   const trails: Record<string, Trail> = {}, sources = new Map<string, { s: string; items?: Item[] }>();
   let all: Sess[] = [], rows: Sess[] = [], resting: Sess[] = [], xrows: X[] = [];
   // ⌘K: searching, what is typed, the sessions the host finds it in, and per session the turns that say it.
@@ -73,7 +68,7 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
     if (was && was.items === items && was.q === q) return was.turns;
     const turns = turnHits(items ?? [], q); hits.set(s.id, { items, q, turns }); return turns;
   };
-  const seenErrors = new Set<string>(), loading = new Set<string>();
+  const loading = new Set<string>();
   let presenceKey = '', axisKey = '', revealUntil = 0;
   // hoverQi: the point of the selected row under the pointer, read in place of the one you stand on · hoverStar: the
   // horizon star under it · glance: the star she turns to when a session changes, until when
@@ -98,10 +93,10 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
   // Under the words the trails bend down once, past their right edge, and stay down all the way back.
   const geo = () => geometry(width, now, Math.max(60, ...rows.map(s => now - (trails[s.id]?.segs[0]?.a ?? now))) * 1.04, skyHeight(),
     (i, x) => (offsets.get(rows[i]?.id)?.value ?? 0) * (1 - smooth(left.value + wordWidth + 14, left.value + wordWidth + 58, x)));
-  const hz = (i: number, n: number) => width - 84 - (n - 1 - i) * Math.min(24, Math.max(8, (width - 580) / Math.max(1, n - 1)));
+  // A star rises from where it rests (on the horizon, or in the queue by her) to its row's head as the sky opens.
   const starPosition = (i: number): [number, number] => {
-    const p = easeInOut(clamp(sky.value * 1.3 - i * .03));
-    return [lerp(hz(i, rows.length), width - 262, p), lerp(27, 82 + i * 27, p)];
+    const p = easeInOut(clamp(sky.value * 1.3 - i * .03)), [x, y] = waiting.at(rows[i]?.id ?? '');
+    return [lerp(x, width - 262, p), lerp(y, 82 + i * 27, p)];
   };
   async function ensure(id: string) {
     if (hooks.items(id) || loading.has(id)) return;
@@ -110,25 +105,11 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
       if (skyOn && selected === id && (qi < 0 || searching())) { latest(true); findStop(); renderWords(); revealUntil = performance.now() + 800; }
     }
   }
-  function holding(): Decision[] {
-    return all.flatMap((s): Decision[] => {
-      if (s.term || s.parked) return [];
-      const it = hooks.items(s.id)?.find(it => it.k === 'req' && !it.done);
-      const key = `${s.id}:${s.st}:${since(s)}`;
-      if (s.st === 'err' && !seenErrors.has(key)) return [{ id: s.id, key, kind: 'err', at: since(s) }];
-      if (it?.k === 'req') return [{ id: s.id, key: it.req.id, kind: it.req.tool === 'Ask' ? 'ask' : 'allow', at: it.at ?? since(s), req: it.req }];
-      if (s.st === 'done' && s.unread) return [{ id: s.id, key, kind: 'land', at: s.updated }];
-      return [];
-    }).sort((a, b) => rank[a.kind] - rank[b.kind] || a.at - b.at);
-  }
   function setMode(on: boolean) {
-    closeSky(); closeDeck('go'); enabled = on;
-    localStorage.setItem('agents.layout', on ? 'exposure' : 'classic');
+    closeSky();
     if (on) win.append(head); else main.prepend(head);
     win.classList.toggle('bw', on); win.classList.toggle('m-top', on); win.classList.toggle('oc-over', on);
-    chrome.hidden = held.hidden = !on;
-    modeButton.textContent = on ? '原模式' : '长曝光';
-    modeButton.setAttribute('aria-label', on ? '切换到原模式' : '切换到长曝光');
+    chrome.hidden = !on;
     if (on) { for (const s of all) void ensure(s.id); }
     hooks.refresh(); refresh();
   }
@@ -163,17 +144,7 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
       }
     }
     if (!stops().includes(selected)) { selected = first(); latest(); findStop(); }
-    if (lastCurrent !== hooks.current()) { lastCurrent = hooks.current(); openAt = performance.now(); hideOffer(); }
-    const h = holding();
-    held.innerHTML = h.length ? `<i></i>她手里 ${h.length} 件 ${kbd('空格')}` : '';
-    held.hidden = !enabled || !h.length;
-    if (!h.length) hideOffer();
     if (enabled) for (const s of all) if (s.st === 'wait') void ensure(s.id);
-    if (deckOn && !busy) {
-      const available = new Set(h.map(d => d.key));
-      deck = deck.filter(d => available.has(d.key));
-      if (!deck.length) closeDeck('gone'); else renderDeck();
-    }
     const ids = all.map(s => s.id), presence = JSON.stringify([enabled, ids]);
     if (presence !== presenceKey) { presenceKey = presence; window.agents?.presence?.(enabled, ids); }
     renderRows(); if (skyOn) renderWords();
@@ -181,12 +152,12 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
   function renderRows() {
     // While searching, a name shows what matched and how many of its sentences say it.
     const q = searching() ? query.trim() : '', count = (s: Sess) => q ? saying(s).length : 0;
-    const key = rows.map(s => `${s.id}|${s.title}|${status(s)}|${waitMin(s)}|${s.archived}|${count(s)}`).join(';') + `|${selected}|${skyOn}|${nameStop}|${hooks.current()}|${q}|${xrows.map(x => x.key + x.label).join(',')}`;
+    const key = rows.map(s => `${s.id}|${s.title}|${status(s)}|${waitMin(s)}|${s.archived}|${count(s)}`).join(';') + `|${selected}|${skyOn}|${nameStop}|${hooks.current()}|${q}|${xrows.map(x => x.key + x.label).join(',')}|${waiting.key}`;
     if (rowKey === key) return; rowKey = key;
-    rowsEl.innerHTML = rows.map((s, i) => `<button type="button" class="bw-row${selected === s.id ? ' sel' : ''}${hooks.current() === s.id ? ' on' : ''}${nameStop && selected === s.id ? ' nm' : ''}" data-session="${esc(s.id)}" style="top:${15 + i * 27}px" aria-label="${esc(s.title)}，${s.archived ? '已归档' : words[status(s)]}"><b>${hl(s.title, q)}</b>${count(s) ? `<em class="st-find">${count(s)} 处说过</em>` : ''}${s.archived ? '<em class="st-arch">已归档</em>' : stateHTML(s)}</button>`).join('')
+    rowsEl.innerHTML = rows.map((s, i) => `<button type="button" class="bw-row${selected === s.id ? ' sel' : ''}${hooks.current() === s.id ? ' on' : ''}${nameStop && selected === s.id ? ' nm' : ''}" data-session="${esc(s.id)}" style="top:${15 + i * 27}px" aria-label="${esc(s.title)}，${s.archived ? '已归档' : words[status(s)]}"><b>${hl(s.title, q)}</b>${waiting.badge(s)}${count(s) ? `<em class="st-find">${count(s)} 处说过</em>` : ''}${s.archived ? '<em class="st-arch">已归档</em>' : stateHTML(s)}</button>`).join('')
       // The lines under the sessions: 新会话 and taking an archived one back are the page's own acts.
       + xrows.map((x, j) => `<button type="button" class="bw-row bw-x${skyOn && selected === x.key ? ' sel' : ''}${x.arch ? ' arch' : ''}" data-x="${esc(x.key)}"${x.key === 'x:new' ? ' data-act="new"' : x.back ? ` data-act="unarchive" data-id="${esc(x.back)}"` : ''}${x.key === 'x:none' ? ' disabled' : ''} style="top:${15 + (rows.length + j) * 27}px"><span>${esc(x.label)}</span>${x.key === 'x:new' ? `<span class="kk">${kbd('⌘')}${kbd('N')}</span>` : x.back ? '<span class="back">拿回来</span>' : ''}</button>`).join('');
-    starsEl.innerHTML = rows.map((s, i) => `<button type="button" data-session="${esc(s.id)}" aria-label="${esc(s.title)}，${words[status(s)]}" style="left:${hz(i, rows.length) - 10}px" title="${esc(s.title)} · ${esc(s.summary)}"></button>`).join('');
+    starsEl.innerHTML = rows.map(s => { const at = waiting.place(s.id); return at === null ? '' : `<button type="button" data-session="${esc(s.id)}" aria-label="${esc(s.title)}，${words[status(s)]}" style="${at}" title="${esc(s.title)} · ${esc(s.summary)}"></button>`; }).join('');
   }
   // A session found only in what was said stands on the newest sentence that says it; one its name matches, on its name.
   function findStop() {
@@ -257,14 +228,14 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
   }
   // find: opened by ⌘K, searching what was said.
   function openSky(find = false) {
-    if (!enabled || deckOn || !hooks.sessions().length) return;
+    if (!enabled || !hooks.sessions().length) return;
     // ⌘K in an open sky turns it into the search.
     if (skyOn) { if (find) { finding = true; pullLabel(); findInput.focus({ preventScroll: true }); findInput.select(); } return; }
     peek.hidden = true;
     finding = find; query = findInput.value = ''; found = new Set(); refresh();
     // It opens on the names: ↑↓ pick a session, → goes in; ← steps back into what you said.
     selected = first(); nameStop = true; latest();
-    skyOn = true; snap = true; hoverQi = null; revealUntil = performance.now() + 800; hideOffer();
+    skyOn = true; snap = true; hoverQi = null; revealUntil = performance.now() + 800; waiting.hide();
     win.classList.add('sky-on'); skyEl.inert = false; pullLabel();
     if (find) findInput.focus({ preventScroll: true }); else { win.tabIndex = -1; win.focus({ preventScroll: true }); }
     renderRows(); renderWords();
@@ -333,160 +304,13 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
     if (bottom - y > viewport - 24 || y < scroll + 12) skyEl.scrollTop = Math.max(0, y - 12);
     else if (bottom > scroll + viewport - 12) skyEl.scrollTop = Math.max(0, bottom - viewport + 12);
   }
-  function hideOffer() { offerEl.hidden = true; if (!deckOn) her.surface(false); }
-  function offer(reason: string) {
-    const h = holding(), conv = $('.host .conv', win);
-    if (!enabled || !h.length || deckOn || skyOn || !document.hasFocus() || ta.value.trim() || performance.now() - typedAt < 1000 || performance.now() - openAt < 5000 || performance.now() - scrolledAt < 1500 || (conv && conv.scrollTop < conv.scrollHeight - conv.clientHeight - 40)) return;
-    offerEl.innerHTML = `<p><b>${h.length} 件事等你</b><span>${reason}</span></p><button type="button" class="btn warm">过一遍 ${kbd('空格')}</button>`;
-    // She surfaces first; her words follow a beat later.
-    if (offerEl.hidden) animate(offerEl, [{ opacity: 0, transform: 'translateY(-6px) scale(.96)' }, { opacity: 1, transform: 'none' }], 380, LIVELY, { delay: 160, fill: 'backwards' });
-    offerEl.hidden = false; her.surface(true); her.say('ask', 2400);
-  }
-  function remember() {
-    const el = $('.host .conv', win); if (!el) return;
-    const bounds = el.getBoundingClientRect();
-    const row = [...el.querySelectorAll<HTMLElement>('.c-items > *')].find(r => r.getBoundingClientRect().bottom >= bounds.top + 28) ?? null;
-    bookmark = { el, scroll: el.scrollTop, focus: document.activeElement as HTMLElement | null, row };
-  }
-  function openDeck() {
-    if (!enabled || busy || deckOn) return;
-    deck = holding();
-    if (!deck.length) { hooks.toast('她手里没有事'); return; }
-    closeSky(); hideOffer(); remember(); deckOn = true; deckEl.hidden = false; peek.hidden = true;
-    main.inert = head.inert = true; her.surface(true); her.say('35', 60000); hooks.cue('open', .7);
-    animate(deckEl, [{ opacity: 0 }, { opacity: 1 }], 240);
-    renderDeck(true); card.focus({ preventScroll: true });
-  }
-  // done: every card answered · put: the rest put down, still in her hands · go: left to read one in full · gone: the
-  // cards settled elsewhere, nothing to celebrate
-  function closeDeck(how: 'done' | 'put' | 'go' | 'gone') {
-    if (!deckOn) return;
-    deckOn = false; main.inert = head.inert = false; her.surface(false); her.faceUntil = 0; deckKey = ''; deck = [];
-    const fade = animate(deckEl, [{ opacity: 1 }, { opacity: 0 }], 200);
-    if (fade) fade.onfinish = () => { if (!deckOn) deckEl.hidden = true; }; else deckEl.hidden = true;
-    if (how === 'done') { her.say('fin', 1800); her.hop(.12); hooks.cue('done', .6); hooks.toast('都处理完了 · 回到你刚才那一行'); }
-    else if (how === 'put') hooks.toast('先放下了 · 都还在她手里');
-    if (bookmark) {
-      bookmark.el.scrollTop = bookmark.scroll;
-      if (how !== 'go' && bookmark.row?.isConnected) animate(bookmark.row, [
-        { boxShadow: '0 0 0 1px rgba(255,201,143,.6), 0 0 24px -4px rgba(255,201,143,.5)', background: 'rgba(255,201,143,.07)' },
-        { boxShadow: '0 0 0 1px rgba(255,201,143,0), 0 0 24px -4px rgba(255,201,143,0)', background: 'rgba(255,201,143,0)' }], 1600, 'ease-out');
-      if (bookmark.focus?.isConnected && !bookmark.focus.matches(':disabled') && bookmark.focus !== document.body) bookmark.focus.focus({ preventScroll: true }); else settle();
-    }
-    bookmark = null;
-  }
-  // What its last turn changed, from the edit steps since the last thing you said.
-  function changes(id: string) {
-    const items = hooks.items(id) ?? [], from = items.map(it => it.k).lastIndexOf('you');
-    const edits = items.slice(from + 1).flatMap(it => it.k === 'steps' ? it.steps : []).filter(step => step.k === 'edit');
-    const add = edits.reduce((n, step) => n + (step.add ?? 0), 0), del = edits.reduce((n, step) => n + (step.del ?? 0), 0);
-    return edits.length ? ` · 改了 ${edits.length} 个 <i class="p">+${add}</i> <i class="m">−${del}</i>` : '';
-  }
-  function renderDeck(deal = false) {
-    const d = deck[0], s = d && get(d.id); if (!d || !s) return;
-    if (deckKey === d.key) return; deckKey = d.key;
-    const ownedFocus = card.contains(document.activeElement);
-    const footer = `<div class="dk-k"><button type="button" data-deck="later">${kbd('S')} 稍后</button><button type="button" data-deck="open">${kbd('⌘')}${kbd('⏎')} 去看全文</button><button type="button" data-deck="close">${kbd('esc')} 先放下</button></div>`;
-    let body = '';
-    const actions = `<div class="dk-row"><button type="button" class="btn" data-deck="deny">拒绝 ${kbd('N')}</button><button type="button" class="btn warm" data-deck="allow">允许 ${kbd('⏎')}</button></div>`;
-    if (d.kind === 'err') body = `<p class="dk-t">停了 · ${esc(s.summary)}</p><div class="dk-row"><button type="button" class="btn" data-deck="open">去看看</button><button type="button" class="btn warm" data-deck="resume">让它接着来 ${kbd('⏎')}</button></div>`;
-    else if (d.kind === 'land') body = `<p class="dk-t">做完了${changes(s.id)}</p><div class="dk-summary">${hooks.md(s.summary)}</div><p class="dk-her">收尾照你的顺序：提交 → 合进 main → 重启用到的 → 推送。推送那步再等你点头。</p><div class="dk-row"><button type="button" class="btn" data-deck="open">先看看</button><button type="button" class="btn warm" data-deck="land">收尾 ${kbd('⏎')}</button></div>`;
-    else if (d.req) {
-      const r = d.req;
-      if (r.tool === 'Ask') body = r.qs.map((q, i) => `<fieldset><legend class="dk-t">${esc(q.q)}</legend><div class="dk-opts">${q.opts.map(([label, desc], j) => `<label><input type="${q.multi ? 'checkbox' : 'radio'}" name="question-${i}" value="${esc(label)}"><span><b>${kbd(String(j + 1))} ${esc(label)}</b><small>${esc(desc)}</small></span></label>`).join('')}</div></fieldset>`).join('') + `<textarea class="dk-text" aria-label="补充回答" placeholder="也可以直接写你的回答"></textarea><div class="dk-row"><button type="button" class="btn" data-deck="deny">不回答 ${kbd('N')}</button><button type="button" class="btn warm" data-deck="allow">回答 ${kbd('⏎')}</button></div>`;
-      else if (r.tool === 'Plan') body = `<p class="dk-t">计划写好了</p><div class="dk-summary">${hooks.md(r.plan)}</div><textarea class="dk-text" aria-label="修改意见" placeholder="需要调整的地方"></textarea>${actions}`;
-      else {
-        const detail = r.tool === 'Bash' ? `<span>${esc(r.cwd)} $</span> ${esc(r.cmd)}` : r.tool === 'Edit' ? `${esc(r.file)}\n${r.diff.map(([sign, text]) => esc(sign + text)).join('\n')}`
-          : r.tool === 'Form' ? esc([r.server, r.url ?? '', ...r.fields.map(f => `· ${f.title}`)].filter(Boolean).join('\n')) : `${esc(r.name)}\n${esc(r.detail)}`;
-        body = `<p class="dk-t">${esc(r.why || '这一步需要你批准')}</p><pre class="dk-cmd">${detail}</pre>${r.tool !== 'Form' && r.always ? `<label class="dk-always"><input type="checkbox" name="always">${esc(r.always)}</label>` : ''}${actions}`;
-      }
-    }
-    // Who, how long it has waited, and one dot per card still in the stack, this one lit.
-    const m = Math.max(0, Math.round((Date.now() - d.at) / 60000)), waited = d.kind === 'land' ? m ? `${m} 分前做完` : '刚做完' : m ? `等了 ${m} 分` : '刚刚';
-    card.innerHTML = `<p class="dk-h"><span class="dk-who st-${status(s)}"><i></i>${esc(s.title)}<em>${waited}</em></span><span class="dk-dots" aria-label="还有 ${deck.length} 件">${deck.map((_, i) => `<i${i ? '' : ' class="on"'}></i>`).join('')}</span></p>${body}${footer}<p class="dk-error" role="alert" hidden></p>`;
-    if (ownedFocus) card.focus({ preventScroll: true });
-    if (deal) {
-      const bounds = card.getBoundingClientRect(), frame = win.getBoundingClientRect();
-      animate(card, [{ opacity: 0, transform: `translate(${width - 34 - (bounds.left - frame.left + bounds.width / 2)}px,${47 - (bounds.top - frame.top + bounds.height / 2)}px) scale(.12)` }, { opacity: 1, transform: 'none' }], 460, LIVELY);
-    }
-  }
-  async function decide(action: string) {
-    if (busy || !deckOn) return;
-    const d = deck[0], s = d && get(d.id); if (!d || !s) return;
-    if (action === 'close') { closeDeck('put'); return; }
-    if (action === 'open') { closeDeck('go'); hooks.open(s.id); return; }
-    if (action === 'later') {
-      if (deck.length === 1) { closeDeck('put'); return; }
-      hooks.cue('mic', .45);
-      deck.push(deck.shift()!); deckKey = ''; renderDeck(true); card.focus({ preventScroll: true });
-      return;
-    }
-    const error = $('.dk-error', card);
-    let body: Record<string, unknown>, route: string;
-    if (d.req) {
-      const text = $<HTMLTextAreaElement>('.dk-text', card)?.value.trim() || '';
-      const answers = d.req.tool === 'Ask' ? d.req.qs.map((_, i) => [...card.querySelectorAll<HTMLInputElement>(`input[name="question-${i}"]:checked`)].map(el => el.value)) : undefined;
-      if (action === 'allow' && answers && !text && answers.some(a => !a.length)) { error.textContent = '把每个问题选好，或写下你的回答'; error.hidden = false; return; }
-      body = { req: d.req.id, decision: action === 'deny' ? 'deny' : $<HTMLInputElement>('input[name="always"]', card)?.checked ? 'always' : 'allow', answers, ...(text ? { text } : {}) };
-      route = `/sessions/${s.id}/answer`;
-    } else if (action === 'land' && s.dirty) {
-      // 收尾 is the workbench's landing (ADR 0085): the host runs the line; its push still waits for Allen.
-      body = { action: 'start' }; route = `/sessions/${s.id}/land`;
-    } else {
-      body = { text: action === 'resume' ? '请从刚才出错的地方接着来，先确认当前状态。' : '请按项目约定收尾：完成验证、提交、合入 main、重启用到的服务；推送前等我确认。', files: [] };
-      route = `/sessions/${s.id}/send`;
-    }
-    busy = true; card.setAttribute('aria-busy', 'true');
-    card.querySelectorAll<HTMLButtonElement | HTMLInputElement>('button,input').forEach(b => b.disabled = true);
-    try {
-      // Do not remove a card or change its star until the real host accepts the answer.
-      await hooks.call(route, body);
-      if (d.kind === 'err') seenErrors.add(d.key);
-      hooks.cue(action === 'deny' ? 'close' : 'send', .85);
-      const i = rows.findIndex(r => r.id === s.id), target = i < 0 ? [width - 34, 27] : starPosition(i);
-      const bounds = card.getBoundingClientRect(), frame = win.getBoundingClientRect();
-      const animation = animate(card, [{ opacity: 1, transform: 'none' }, { opacity: 0, transform: `translate(${target[0] - (bounds.left - frame.left + bounds.width / 2)}px,${target[1] - (bounds.top - frame.top + bounds.height / 2)}px) scale(.1)` }], 340, 'cubic-bezier(.4,0,.6,1)');
-      if (animation) await animation.finished.catch(() => {});
-      deck.shift(); deckKey = ''; busy = false;
-      if (!deck.length) closeDeck('done'); else { renderDeck(true); card.focus({ preventScroll: true }); }
-    } catch (e) {
-      error.textContent = e instanceof Error ? e.message : String(e); error.hidden = false; busy = false;
-      card.querySelectorAll<HTMLButtonElement | HTMLInputElement>('button,input').forEach(b => b.disabled = false);
-    } finally { card.removeAttribute('aria-busy'); }
-  }
-  // ⌥⇥: straight to the next session waiting on you, without the stack.
-  function next() {
-    if (!enabled || deckOn) return;
-    const d = holding().find(d => d.id !== hooks.current());
-    if (d) hooks.open(d.id); else hooks.toast('没有别的等你的了');
-  }
   function keyboard(e: KeyboardEvent) {
     if (!enabled || e.isComposing) return;
     const target = e.target as HTMLElement, editable = target.matches('input,textarea,select,[contenteditable="true"]');
     const consume = () => { e.preventDefault(); e.stopImmediatePropagation(); };
-    if (deckOn) {
-      if (e.key === 'Escape') { consume(); if (!busy) closeDeck('put'); return; }
-      // The stack is modal: the desk's session keys wait until it is put down.
-      if (e.altKey && e.key.startsWith('Arrow')) { consume(); return; }
-      if (e.key === 'Tab') {
-        const buttons = [...card.querySelectorAll<HTMLElement>('button:not(:disabled),input,textarea')];
-        if (buttons.length && (e.shiftKey ? target === buttons[0] || target === card : target === buttons.at(-1))) { consume(); (e.shiftKey ? buttons.at(-1)! : buttons[0]).focus(); }
-        return;
-      }
-      if (editable && !(e.key === 'Enter' && (e.metaKey || e.ctrlKey))) return;
-      const d = deck[0];
-      if (e.key === 'Enter' || /^[1-9nNsS]$/.test(e.key)) {
-        consume(); if (e.repeat || busy) return;
-        if (e.key === 'Enter') void decide(e.metaKey || e.ctrlKey ? 'open' : (target.closest<HTMLElement>('[data-deck]')?.dataset.deck ?? (d.kind === 'err' ? 'resume' : d.kind === 'land' ? 'land' : 'allow')));
-        else if (/^[1-9]$/.test(e.key) && d.req?.tool === 'Ask' && d.req.qs.length === 1) {
-          const opt = card.querySelectorAll<HTMLInputElement>('input[name="question-0"]')[Number(e.key) - 1];
-          if (opt) { opt.checked = opt.type === 'radio' || !opt.checked; if (!d.req.qs[0].multi) void decide('allow'); }
-        } else if (e.key.toLowerCase() === 'n') void decide(d.req ? 'deny' : 'later');
-        else if (e.key.toLowerCase() === 's') void decide('later');
-      }
-      return;
-    }
-    if (e.altKey && e.key === 'Tab') { consume(); if (!e.repeat) next(); return; }
+    // ⌥⇥ and ⌥↓: straight to the next session waiting on you, from anywhere but another field.
+    if (e.altKey && e.key === 'Tab') { consume(); if (!e.repeat) waiting.next(); return; }
+    if (e.altKey && !e.metaKey && !e.ctrlKey && e.key === 'ArrowDown' && (!editable || target === ta)) { consume(); if (!e.repeat) waiting.next(); return; }
     // ⌘K, from anywhere: the sky, searching what was said. The side list keeps its own field for the pointer.
     if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'k') { consume(); openSky(true); return; }
     if (skyOn) {
@@ -498,7 +322,6 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
         return;
       }
       if (editable && target !== ta) { closeSky(); return; }
-      if (e.altKey && e.key === 'ArrowDown') { consume(); closeSky(); settle(); return; }
       if (e.key.startsWith('Arrow') || e.key === 'Escape' || e.key === 'Enter') {
         consume(); hoverQi = null;
         const turns = trails[selected]?.turns ?? [], was = qi, list = stops();
@@ -535,15 +358,16 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
     // An empty composer, or none to write in while a request holds it, is a pause: the keys are hers.
     const free = (target === ta || target === win || target === document.body) && (ta.disabled || !ta.value.trim());
     const plain = !e.metaKey && !e.ctrlKey && !e.altKey;
-    if (e.key === 'Escape' && !offerEl.hidden && !win.querySelector('.pop.on')) { consume(); hideOffer(); return; }
+    if (e.key === 'Escape' && !win.querySelector('.pop.on') && waiting.esc()) { consume(); return; }
     if ((free && plain && !e.shiftKey && e.key === 'ArrowLeft') || (e.altKey && e.key === 'ArrowUp')) { consume(); openSky(); return; }
-    if (free && plain && e.key === ' ') { consume(); if (!e.repeat) openDeck(); }
   }
   function frame(t: number, dt: number) {
     if (!enabled) return;
     now = Date.now() / 60000;
     if (t - lastRefresh > 1000) { lastRefresh = t; refresh(); }
     step(sky, skyOn ? 1 : 0, 2.2, .92, dt); const selectedIndex = index();
+    // Every star toward its resting place; the buttons follow when the places change.
+    if (waiting.move(dt)) renderRows();
     step(opening, skyOn ? wordHeight : 0, 2.6, .9, dt); step(left, targetLeft, 2.8, .86, dt); step(top, targetTop, 2.8, .86, dt); step(focus, place(), 2.4, 1, dt);
     for (const [i, s] of rows.entries()) {
       const value = offsets.get(s.id) ?? spring(0); offsets.set(s.id, value);
@@ -570,15 +394,22 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
       cy: needleY.value, focus: skyOn ? focus.value : undefined,
       conn: skyOn && nearNow && !pop.hidden ? { x: stand ? g.x1 : needle.value, y: needleY.value, x2: left.value + wordWidth - 16, y2: top.value + 58 } : null });
     c.restore();
-    // A star pops when its session changes state and swells under the pointer.
-    rows.forEach((s, i) => { const [x, y] = starPosition(i), sy = y - (skyOn ? skyEl.scrollTop : 0); if (skyOn && skyEl.scrollTop && sy < 65) return; c.save(); c.translate(x, sy); glyph(c, status(s), { lit: s.id === hooks.current(), t: t / 1000 + hash(s.id) * 9, since: (t - hooks.changed(s.id)) / 1000, hover: !skyOn && hoverStar === s.id, calm: reduced.matches, lift: 1.3 }); c.restore(); });
-    const h = holding(), count = Math.min(3, h.length), beadY = 49 + (deckOn ? 2 : 0);
-    for (let i = 0; i < count; i++) { const col = COL[h[i].kind === 'err' ? 'err' : h[i].kind === 'land' ? 'done' : 'wait']; c.save(); c.shadowColor = rgba(col, .9); c.shadowBlur = 5; c.fillStyle = rgba(col, 1, .25); c.beginPath(); c.arc(width - 34 + (i - (count - 1) / 2) * 8.5, beadY, 2.4, 0, Math.PI * 2); c.fill(); c.restore(); }
-    if (h.length > 3) { c.fillStyle = 'rgba(255,201,143,.9)'; c.font = '600 9px "IBM Plex Mono", ui-monospace, monospace'; c.textBaseline = 'middle'; c.fillText(`+${h.length - 3}`, width - 19, 49.5); }
+    // A star pops when its session changes state and swells under the pointer; one waiting on you is the queue's to
+    // draw while the sky is closed.
+    rows.forEach((s, i) => {
+      const [x, y] = starPosition(i), sy = y - (skyOn ? skyEl.scrollTop : 0); if (skyOn && skyEl.scrollTop && sy < 65) return;
+      if (waiting.queued(s.id) && sky.value < .02) return;
+      if (sky.value < .05) waiting.streak(c, s.id, status(s), x, sy);
+      c.save(); c.translate(x, sy); glyph(c, status(s), { lit: s.id === hooks.current(), t: t / 1000 + hash(s.id) * 9, since: (t - hooks.changed(s.id)) / 1000, hover: !skyOn && hoverStar === s.id, calm: reduced.matches, lift: 1.3 }); c.restore();
+    });
+    // Who waits: A lines them up by her, B circles her; the sky takes them back as it opens.
+    waiting.draw(c, t, 1 - clamp(sky.value * 4), skyOn ? '' : hoverStar);
     // For a moment after a session changes, she looks toward its star.
     const glancing = t < glance.until ? rows.findIndex(r => r.id === glance.id) : -1;
     if (glancing >= 0) { const [x, y] = starPosition(glancing); her.look = [clamp((x - width + 34) / 160, -1, 1), clamp((y - 27) / 160, -1, 1)]; }
     else if (glance.id) { glance.id = ''; her.look = null; }
+    // At rest, a while after the pointer last moved, her eyes are on the first one waiting.
+    else if (t - pointerAt > 1800) her.look = waiting.lookAt();
     if (skyOn) {
       pop.style.transform = `translate(${left.value}px,${top.value}px)`; pop.style.setProperty('--sx', `${needle.value - left.value}px`);
       Object.assign(gap.style, { left: `${left.value - 18}px`, width: `${wordWidth + 32}px`, top: `${top.value - 8.5}px`, height: `${Math.max(0, opening.value - 4)}px` });
@@ -597,13 +428,11 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
     starsEl.inert = skyOn; starsEl.style.pointerEvents = skyOn ? 'none' : '';
     her.frame(t, dt);
   }
-  modeButton.addEventListener('click', () => setMode(!enabled));
   pull.addEventListener('click', () => { if (!skyOn) { if (!hooks.back?.()) openSky(); } else { closeSky(); settle(); } });
-  $('.bw-her', chrome).addEventListener('click', openDeck); held.addEventListener('click', openDeck); offerEl.addEventListener('click', openDeck);
   $('.bw-her', chrome).addEventListener('pointerenter', () => her.hover = true); $('.bw-her', chrome).addEventListener('pointerleave', () => her.hover = false);
   $('.bw-her', chrome).addEventListener('pointerdown', () => her.pressed = true);
   addEventListener('pointerup', () => her.pressed = false);
-  win.addEventListener('pointermove', e => { const r = win.getBoundingClientRect(); her.look = [(e.clientX - r.left - width + 34) / 140, (e.clientY - r.top - 27) / 140]; });
+  win.addEventListener('pointermove', e => { const r = win.getBoundingClientRect(); her.look = [(e.clientX - r.left - width + 34) / 140, (e.clientY - r.top - 27) / 140]; pointerAt = performance.now(); });
   win.addEventListener('pointerleave', () => { her.look = null; her.pressed = false; });
   // The lines under the sessions: the folds open and close here; 新会话 and 拿回来 are the page's acts (data-act).
   rowsEl.addEventListener('click', e => {
@@ -652,30 +481,33 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
     if (moved) hooks.blip(1);
     renderRows(); renderWords(); revealUntil = performance.now() + 800;
   });
-  card.addEventListener('click', e => { const action = (e.target as HTMLElement).closest<HTMLElement>('[data-deck]')?.dataset.deck; if (action) void decide(action); });
-  // One question, one answer: choosing it is answering.
-  card.addEventListener('change', e => { const el = e.target as HTMLInputElement, r = deck[0]?.req; if (el.type === 'radio' && r?.tool === 'Ask' && r.qs.length === 1 && !r.qs[0].multi) void decide('allow'); });
-  win.addEventListener('click', e => { if ((e.target as HTMLElement).closest('.c-held')) openDeck(); });
-  ta.addEventListener('input', () => { typedAt = performance.now(); hideOffer(); });
-  // Reading back is scrolling away from the latest; the conversation following its own end is not.
-  win.addEventListener('scroll', e => { const el = e.target as HTMLElement; if (el.matches('.conv') && el.scrollTop < el.scrollHeight - el.clientHeight - 40) { scrolledAt = performance.now(); hideOffer(); } }, true);
   // On the window, so the keys still arrive while a request holds the composer shut and nothing inside has focus.
   addEventListener('keydown', keyboard, true);
   win.addEventListener('compositionstart', e => { if (skyOn && e.target !== findInput) { closeSky(); settle(); } }, true);
   findInput.addEventListener('input', e => { if (!(e as InputEvent).isComposing) onFind(); });
   findInput.addEventListener('compositionend', onFind);
-  addEventListener('focus', () => offer('你回来了'));
-  window.agents?.onNext?.(next);
+  // The top right: the queue by her, her list and her one line (waiting.ts).
+  const waiting = mountWaiting({
+    win, chrome, ta, her, sessions: () => hooks.sessions(), current: () => hooks.current(), rows: () => rows, width: () => width,
+    open: id => hooks.open(id), settle, call: (route, body) => hooks.call(route, body), toast: text => hooks.toast(text), cue: (name, gain) => hooks.cue(name, gain),
+    refresh: () => { hooks.refresh(); refresh(); }, menu: (html, at) => hooks.menu(html, at), closeMenu: () => hooks.closeMenu(),
+    changed: id => hooks.changed(id), sky: () => skyOn, closeSky,
+  });
+  window.agents?.onNext?.(waiting.next);
   new ResizeObserver(() => { width = win.clientWidth; height = win.clientHeight; rowKey = ''; renderRows(); if (skyOn) renderWords(); }).observe(win);
   pullLabel(); refresh(); setMode(enabled);
-  return { invalidate(id: string) { sources.delete(id); refresh(); }, get enabled() { return enabled; }, get busy() { return deckOn || skyOn; }, refresh, frame,
-    sent() { her.say('31', 1100); const sentAt = performance.now(); window.setTimeout(() => { if (typedAt <= sentAt) offer('你刚发出去一条，正好过一遍'); }, 1050); },
+  return { invalidate(id: string) { sources.delete(id); refresh(); }, get enabled() { return enabled; }, get busy() { return skyOn; }, refresh, frame,
+    sent() { her.say('31', 1100); waiting.sent(); },
     notify(s: Sess) {
       if (!enabled) return;
-      // Another session came to need you, stopped or finished: she only glances at its star.
+      // Another session came to need you, stopped or finished: she only glances at its star; one that blocks falls into
+      // the queue by her (waiting.ts).
       if (s.id !== hooks.current() && (s.st === 'wait' || s.st === 'err' || s.st === 'done')) glance = { id: s.id, until: performance.now() + 1600 };
       if (s.st === 'err' || waitMin(s) >= 10) her.say(s.st === 'err' ? '34' : 'ask', 1800);
+      waiting.notify(s);
       refresh();
     },
+    // The composer's hint for ⌥↓, with nothing written.
+    hint: () => ta.value ? '' : '<span><kbd>⌥</kbd><kbd>↓</kbd>下一个等你的</span>',
   };
 }
