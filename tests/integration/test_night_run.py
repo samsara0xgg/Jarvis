@@ -458,9 +458,12 @@ def test_spoken_requests_reach_the_run_through_tier0_and_the_tools(tmp_path: Pat
     said = {
         "我要睡觉了，让它继续跑": "start_night_run",
         "我去睡了让他继续跑。": "start_night_run",
+        "我要睡觉了，能让他继续跑吗？": "start_night_run",
+        "我去睡了，你可以让电脑继续跑吗": "start_night_run",
         "挂机两小时": "start_night_run",
         "夜间挂机": "start_night_run",
         "I'm going to bed, keep it running.": "start_night_run",
+        "I'm going to sleep, can you keep it running?": "start_night_run",
         "keep it running for two hours": "start_night_run",
         "我起来了。": "end_night_run",
         "结束挂机": "end_night_run",

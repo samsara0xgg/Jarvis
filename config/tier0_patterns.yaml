@@ -95,11 +95,11 @@
 # end time ("until seven") goes to the model, which has start_night_run.
 # 它/他/她 all come back from ASR for the same word.
 - id: night_start
-  pattern: "^(?:我(?:要去|要|去)?睡(?:觉)?了[，,]?\\s*让(?:它|他|她|电脑)继续跑吧?|(?:开始)?(?:夜间)?挂机(?:两个?小时)?)[。.!！]?$"
+  pattern: "^(?:我(?:要去|要|去)?睡(?:觉)?了[，,]?\\s*(?:你)?(?:能|可以)?让(?:它|他|她|电脑)继续跑(?:吧|吗|好吗)?|(?:开始)?(?:夜间)?挂机(?:两个?小时)?)[。.!！?？]?$"
   tool: start_night_run
   template: tier0.night
 - id: night_start_en
-  pattern: "^(?i:i'?m going to (?:bed|sleep)[,.]?\\s*keep (?:it|things) running|keep (?:it|things) running(?: for (?:two|2) hours)?|start (?:a |the )?night run)[.!]?$"
+  pattern: "^(?i:i'?m going to (?:bed|sleep)[,.]?\\s*(?:can you |could you )?keep (?:it|things) running|keep (?:it|things) running(?: for (?:two|2) hours)?|start (?:a |the )?night run)[.!?]?$"
   tool: start_night_run
   template: tier0.night
 - id: night_end

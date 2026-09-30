@@ -38,24 +38,29 @@ _START_SCHEMA: Final = {
             "type": "number",
             "minimum": MIN_HOURS,
             "maximum": MAX_HOURS,
-            "description": "How long to keep the Mac awake. Default 2.",
+            "description": "How long to keep the Mac awake, only when the user said so.",
         },
         "until": {
             "type": "string",
-            "description": "Local clock time HH:MM to keep it awake until, instead of hours.",
+            "description": (
+                "Local clock time HH:MM to keep it awake until, instead of hours, only when "
+                "the user said one."
+            ),
         },
     },
     "required": [],
 }
 _START_DESCRIPTION: Final = (
     "Start a night run: the user is going to sleep and wants the Mac to keep running "
-    "(agents, downloads, builds) with the screen off and the sound muted. Keeps the Mac "
-    "awake until the deadline (default 2 hours), then lets it sleep; brightness and sound "
-    "come back when the user gets up. The result's `spoken` is the line to say."
+    "(agents, downloads, builds) with the screen off and the sound muted. Call it right "
+    "away; when the user named no length or end time, leave both out and the default "
+    "length applies. Never ask how long. Keeps the Mac awake until the deadline, then "
+    "lets it sleep; brightness and sound come back when the user gets up. Your reply is "
+    "the result's `spoken`, word for word: it says when the screen goes off."
 )
 _END_DESCRIPTION: Final = (
     "End the night run now because the user is up: puts brightness and sound back and "
-    "lets the Mac sleep normally again. The result's `spoken` is the line to say."
+    "lets the Mac sleep normally again. Your reply is the result's `spoken`, word for word."
 )
 
 
