@@ -171,6 +171,10 @@ work_state:
 # 单独指定；不配置就沿用 work_state.preset。
 daily_report:
   preset: gpt6-sol
+  # ADR 0101: the daemon writes the day before's report once a day, at the first
+  # check after this local time (work_state.timezone); a conversation only reads
+  # it. null = never written.
+  at: "05:00"
   # Whether the report also reads ~/.codex/sessions (every Codex conversation)
   # and sends it to the model. Off unless the user turns it on.
   codex_sessions: false

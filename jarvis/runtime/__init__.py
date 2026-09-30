@@ -48,6 +48,7 @@ import uuid
 import webbrowser
 from collections.abc import Mapping  # runtime use: isinstance in the config readers.
 from dataclasses import dataclass, field, replace
+from datetime import time as clock
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, cast
@@ -135,7 +136,12 @@ from jarvis.execution.tools import (
     turn_action_ids,
 )
 from jarvis.execution.workers import Workers, make_worker_tools
-from jarvis.runtime.daily_report import PLAN_SERVER, DailyReportService, microsoft_plan
+from jarvis.runtime.daily_report import (
+    PLAN_SERVER,
+    DailyReportService,
+    DailySchedule,
+    microsoft_plan,
+)
 from jarvis.runtime.home import Home
 from jarvis.runtime.night_run import NightRun, night_settings
 from jarvis.runtime.plugin_connections import PluginConnections
@@ -458,6 +464,8 @@ class JarvisRuntime:
     settings: Settings | None = None
     # ADR 0093: the night run; the daemon ticks it. None = hand-assembled.
     night: NightRun | None = None
+    # ADR 0101: the day before's report, written once a day. None = `daily_report.at` unset.
+    daily_schedule: DailySchedule | None = None
 
 
 @dataclass(frozen=True)
@@ -996,21 +1004,21 @@ def _codex_sessions_path(config: Mapping[str, Any]) -> Path | None:
     return root if root.is_dir() else None
 
 
-def _daily_report_tool_run(
-    service: DailyReportService,
-) -> Callable[[Mapping[str, Any], ToolContext], dict[str, Any]]:
-    """Bind the service to the flat tool's ``(args, ctx)`` handler shape."""
-
-    def run(args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
-        return service.run(
-            ctx.conn,
-            local_date=args.get("local_date"),
-            timezone=args.get("timezone"),
-            regenerate=bool(args.get("regenerate", False)),
-            action_id=ctx.action_id,
-        )
-
-    return run
+def _daily_schedule(
+    service: DailyReportService, event_log: Path, config: Mapping[str, Any],
+) -> DailySchedule | None:
+    """``daily_report.at`` — when the daemon writes yesterday's report (ADR 0101); unset: off."""
+    block = config.get("daily_report")
+    raw = block.get("at") if isinstance(block, Mapping) else None
+    if raw is None:
+        return None
+    try:
+        at = clock.fromisoformat(str(raw))
+    except ValueError:
+        LOGGER.warning("daily_report.at %r is not HH:MM; no daily report is written", raw)
+        return None
+    zone = resolve_zone(None, _work_state_timezone(config))[1]
+    return DailySchedule(service, event_log_path=event_log, at=at, zone=zone)
 
 
 def _work_state_tool_refresh(
@@ -1833,7 +1841,6 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         observed_repos=_observer_repo_paths(full_config),
         timesink_db_path=_timesink_db_path(full_config),
         work_state_refresh=_work_state_tool_refresh(work_state),
-        daily_report_run=_daily_report_tool_run(daily_report),
         night=night,
         confirmation_dispatch_outbox=wave1_features.confirmation_dispatch_outbox,
         obsidian_vault_root=_obsidian_vault_root(full_config),
@@ -2001,6 +2008,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         ),
         settings=Settings(paths.root, full_config, _audio_devices),
         night=night,
+        daily_schedule=_daily_schedule(daily_report, paths.event_log, full_config),
     )
 
 

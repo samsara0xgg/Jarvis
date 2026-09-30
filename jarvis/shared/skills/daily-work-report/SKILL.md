@@ -14,9 +14,9 @@ sentences.
 
 ## When
 
-- The user asks for a work report, daily report or work summary of a day (default
-  yesterday). The entry point is the runtime's `daily_work_report` tool; these
-  instructions are the system prompt of that tool's model calls.
+- The daemon writes the report of the day before once a day (ADR 0101); these
+  instructions are the system prompt of that job's model calls. The user reads the
+  saved report later, through the voice assistant or the briefing.
 - Not for: "what am I doing now / today so far" uses `refresh_work_state`; reading a
   saved report as it is uses `get_briefing`.
 

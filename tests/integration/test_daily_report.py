@@ -15,7 +15,7 @@ import sqlite3
 import subprocess
 from contextlib import closing
 from dataclasses import replace
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
@@ -37,7 +37,7 @@ from jarvis.decision.daily_report import (
 )
 from jarvis.decision.llm import ChatResult, ToolCall
 from jarvis.execution.tools import ToolError, build_default_registry
-from jarvis.runtime.daily_report import CHECK_BUDGET, DailyReportService
+from jarvis.runtime.daily_report import CHECK_BUDGET, DailyReportService, DailySchedule
 from jarvis.state.daily_contract import DailyError
 from jarvis.state.daily_report import gather_day, resolve_day, resolve_zone, save_report
 from jarvis.state.event_log import emit_event
@@ -2164,3 +2164,18 @@ def test_overbudget_regeneration_preserves_saved_report(
     assert result["outcome"] == "failed"
     assert "nothing saved or truncated" in result["error"]
     assert rig.call("get_briefing", args) == before
+
+
+def test_schedule_writes_the_day_before_once_after_its_hour(rig: Rig) -> None:
+    """ADR 0101: nothing before 05:00 local; yesterday once after it, saved and readable."""
+    schedule = DailySchedule(
+        rig.service, event_log_path=rig.fx.paths.event_log, at=time(5), zone=TZ,
+    )
+    assert schedule.due(datetime(2026, 9, 20, 11, 59, tzinfo=UTC)) is None, "04:59 local"
+    after = datetime(2026, 9, 20, 12, 1, tzinfo=UTC)
+    assert schedule.due(after) == DAY, "05:01 local writes 2026-09-19"
+    result = schedule.write(DAY, now=NOW)
+    assert result["outcome"] == "generated", result.get("error")
+    assert schedule.due(after) is None, "one attempt per day"
+    assert rig.saved().startswith("# 工作日报 2026-09-19（America/Vancouver）")
+    assert schedule.write(DAY, now=NOW)["outcome"] == "reused", "a restart pays nothing"

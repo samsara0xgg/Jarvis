@@ -88,7 +88,9 @@ _DESCRIPTIONS = {
     ),
     "get_briefing": (
         "Read a previously saved briefing by local_date and IANA timezone. Follow next_cursor "
-        "with identical date/timezone for all content. Does not regenerate or deliver it."
+        "with identical date/timezone for all content. Does not regenerate or deliver it. "
+        "The daily work report of a day is saved here automatically early the next morning; "
+        "nothing writes one on request."
     ),
 }
 _RESULT_CAP = 16384

@@ -2,7 +2,7 @@
 
 Composition-root code: it wires L2 day evidence + the briefing store, L3
 request/rule/check/compose and a preset-bound analyst into one job. The
-conversation reaches it through one flat tool. Three steps: the model drafts
+daemon runs it once a day for the day before (ADR 0101). Three steps: the model drafts
 the report (querying the day first if it wants), the program rules on every
 completion claim and asks the model to check the rest against the cited
 originals, and only then is the summary written from the checked table.
@@ -10,9 +10,11 @@ originals, and only then is the summary written from the checked table.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import threading
+from contextlib import closing
 from datetime import UTC, date, datetime, time, timedelta
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -53,6 +55,7 @@ from jarvis.state.daily_report import (
     save_report,
     search_day,
 )
+from jarvis.state.event_log import open_runtime_event_log
 
 if TYPE_CHECKING:
     import sqlite3
@@ -480,6 +483,55 @@ class DailyReportService:
             )
             for key in keys
         )
+
+
+class DailySchedule:
+    """ADR 0101: the daemon writes the day before's report once a day; a turn only reads it."""
+
+    def __init__(
+        self,
+        service: DailyReportService,
+        *,
+        event_log_path: Path,
+        at: time,
+        zone: tzinfo,
+        poll_s: float = 60.0,
+    ) -> None:
+        """Bind the service and the local hour; nothing runs until :meth:`run`."""
+        self._service = service
+        self._event_log_path = event_log_path
+        self._at = at
+        self._zone = zone
+        self._poll_s = poll_s
+        self._last: date | None = None
+
+    def due(self, now: datetime) -> date | None:
+        """Yesterday, once ``at`` has passed today and yesterday was not tried yet."""
+        local = now.astimezone(self._zone)
+        day = local.date() - timedelta(days=1)
+        return None if local.time() < self._at or day == self._last else day
+
+    def write(self, day: date, *, now: datetime | None = None) -> dict[str, Any]:
+        """One attempt per day: a saved report is reused, a failure waits for the next day."""
+        self._last = day
+        with closing(open_runtime_event_log(self._event_log_path)) as conn:
+            return self._service.run(
+                conn, local_date=day.isoformat(), action_id=f"daily-report-{day}", now=now,
+            )
+
+    async def run(self) -> None:
+        """Check every ``poll_s``; a Mac asleep at ``at`` writes on its first check after waking."""
+        while True:
+            await asyncio.sleep(self._poll_s)
+            day = self.due(datetime.now(UTC))
+            if day is None:
+                continue
+            try:
+                result = await asyncio.to_thread(self.write, day)
+            except Exception:
+                LOGGER.exception("daily_report: scheduled run for %s failed", day)
+                continue
+            LOGGER.info("daily_report: scheduled %s -> %s", day, result["outcome"])
 
 
 def _reused(base: dict[str, Any], existing: dict[str, Any]) -> dict[str, Any]:

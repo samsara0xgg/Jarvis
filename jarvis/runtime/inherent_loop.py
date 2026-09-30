@@ -5559,6 +5559,10 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 codex=codex_board,
             )
             watchers.append(asyncio.create_task(runtime.night.run(), name="night_run"))
+        if runtime.daily_schedule is not None:
+            watchers.append(
+                asyncio.create_task(runtime.daily_schedule.run(), name="daily_report_schedule"),
+            )
         watchers.append(asyncio.create_task(
             _data_sweep_task(_media_dirs(runtime), logs_dir(runtime.runtime_paths.root)),
             name="data_sweep",

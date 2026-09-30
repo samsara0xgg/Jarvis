@@ -390,7 +390,7 @@ I8 到 I11 随审核链退役（ADR 0019），编号保留。
 <tr><td>实时语音</td><td>OpenAI Realtime</td><td>麦克风的声音、指令和最多 1500 字的记忆简报；<code>store: false</code></td><td>主人开始实时对话时连上；30 秒没有动静就挂断，一次最长 30 分钟</td><td>开</td></tr>
 <tr><td>看一眼屏幕 <code>screen_look</code></td><td>OpenAI</td><td>主显示器的一张截图，缩到 1568 像素宽以内</td><td>模型调用它（L1，不经确认），或主人说了 Tier 0 认得的那句话</td><td>开</td></tr>
 <tr><td>工作状态</td><td>OpenAI</td><td>最近两天的对话记录、按问题搜到的旧记录、本地待办、存下的知识、当天的 git 活动；打开 TimeSink 时还有各 App 的时长、窗口标题和屏幕文字的摘录</td><td>主人刷新面板或在对话里问起，而且有新证据时</td><td>用到时才调</td></tr>
-<tr><td>日报 <code>daily_work_report</code></td><td>OpenAI</td><td>那一天的对话记录和提交；打开 TimeSink 时的活动和屏幕文字；连了 Microsoft 时的日程和待办；打开 <code>daily_report.codex_sessions</code> 时那天的 Codex 对话</td><td>主人在对话里要日报时</td><td>用到时才调</td></tr>
+<tr><td>日报</td><td>OpenAI</td><td>那一天的对话记录和提交；打开 TimeSink 时的活动和屏幕文字；连了 Microsoft 时的日程和待办；打开 <code>daily_report.codex_sessions</code> 时那天的 Codex 对话</td><td>每天 <code>daily_report.at</code>（出厂 05:00）之后第一次检查时写前一天的，一天一次；对话里只读存好的</td><td>开</td></tr>
 <tr><td>听写的润色</td><td>OpenAI</td><td>本地识别出的原话、最前面的 App 和窗口标题、选中的文字，以及 <code>~/.typlus/vocab.yaml</code> 的词表</td><td>每次听写</td><td>用到时才调</td></tr>
 <tr><td>说出回答</td><td>MiniMax：先 <code>api-uw.minimax.io</code>，连不上时 <code>api.minimax.chat</code></td><td>每一句要说出来的文字</td><td>每次出声回答；两处都连不上时改用本机的 <code>say</code></td><td>有 MiniMax key 才开</td></tr>
 <tr><td>网页搜索 <code>web_search</code></td><td>Tavily 或 Exa</td><td>搜索词</td><td>模型调用它（L1）</td><td>有 key 才开</td></tr>
@@ -475,7 +475,7 @@ I8 到 I11 随审核链退役（ADR 0019），编号保留。
 <tr><td>对话（文字和语音）、深想</td><td>OpenAI key，<code>gpt-6-luna</code></td><td>开</td></tr>
 <tr><td>实时语音 GPT-Live</td><td>OpenAI key，<code>gpt-live-1</code></td><td>开（<code>realtime.gpt_live.enabled</code>）</td></tr>
 <tr><td>工作状态、看一眼屏幕、历史压缩</td><td>OpenAI key，<code>gpt-6-luna</code></td><td>用到时才调</td></tr>
-<tr><td>日报</td><td>OpenAI key，<code>gpt-6-sol</code></td><td>用到时才调</td></tr>
+<tr><td>日报</td><td>OpenAI key，<code>gpt-6-sol</code></td><td>每天一次</td></tr>
 <tr><td>听写的润色</td><td>OpenAI key，<code>gpt-5.4-mini</code></td><td>用到时才调</td></tr>
 <tr><td>说出回答的声音</td><td>现在要 MiniMax key；没有就只打字不出声</td><td>有 key 才开</td></tr>
 <tr><td>网页搜索</td><td>Tavily 或 Exa 的 key；都没有就不注册 <code>web_search</code></td><td>有 key 才开</td></tr>
