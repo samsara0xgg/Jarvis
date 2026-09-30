@@ -1,0 +1,49 @@
+/* Under each message (messages.ts): its row of acts, reactions, the box a message is changed in, its versions. */
+/* What you said has its row on the right. The latest thing you said and the latest answer keep theirs showing, and so
+   does a message with versions (stepping between them moves it); the rest show on hover. */
+.m-acts{display:flex;align-items:center;justify-content:flex-end;gap:2px;height:26px;margin-top:4px;opacity:0;transition:opacity .15s}
+.item:hover .m-acts,.m-acts:focus-within,.m-acts.on,.it-acts.on,.m-acts:has(.m-ver){opacity:1}
+.m-acts time{margin-left:4px;font-size:11.5px;color:var(--faint);font-variant-numeric:tabular-nums}
+.m-acts time.q{color:var(--warm-c)}
+.it-acts time{order:-1}
+.ia:disabled{opacity:.3;cursor:default}
+.ia:disabled:hover{background:none;color:var(--faint)}
+.m-ver{display:inline-flex;align-items:center;margin-right:2px}
+.m-ver .ia{min-width:22px;padding:0 3px}
+.m-ver .ia svg{width:12px;height:12px}
+.m-ver em{padding:0 1px;font:500 11px var(--mono);font-style:normal;color:var(--faint);font-variant-numeric:tabular-nums}
+
+/* Reactions: yours dashed until a message of yours carried them to the agent; the agent's own with a small light. */
+.rxs{display:flex;flex-wrap:wrap;gap:4px;margin-top:6px}
+.item > .rxs{justify-content:flex-end}
+.rxs .rx-c{display:inline-flex;align-items:center;height:22px;padding:0 7px;border-radius:999px;font-size:13px;line-height:1;background:rgb(255 255 255 / .06);box-shadow:inset 0 0 0 .5px rgb(var(--glow) / .3);transition:background .12s}
+.rxs button.rx-c:hover{background:rgb(var(--glow) / .16)}
+.rxs .rx-c.wait{background:none;box-shadow:none;outline:1px dashed rgb(var(--glow) / .5);outline-offset:-1px}
+.rxs .rx-c.by{box-shadow:inset 0 0 0 .5px rgb(var(--glow) / .55)}
+.rxs .rx-c.by::after{content:"";width:4px;height:4px;margin-left:4px;border-radius:50%;background:rgb(var(--glow));box-shadow:0 0 5px rgb(var(--glow))}
+.m-ride{margin:5px 2px 0;font-size:11px;color:var(--faint);text-align:right}
+/* The eight, in the page's one popover. */
+.pop.rxp{min-width:0;gap:2px;padding:5px}
+.pop.rxp .rx-row{display:flex;gap:1px}
+.pop.rxp .rx-e{display:grid;place-items:center;width:30px;height:30px;padding:0;border-radius:8px;font-size:17px;line-height:1;transition:background .12s,transform .12s}
+.pop.rxp .rx-e:hover{background:rgb(var(--glow) / .16);transform:scale(1.12)}
+.pop.rxp .rx-e.on{background:rgb(var(--glow) / .22)}
+.pop.rxp .rx-e.on::after{content:none}
+.pop.rxp small{padding:1px 6px 2px;font-size:10.5px;color:var(--faint)}
+
+/* 修改: what you said opens in place, with what sending it again will do. */
+.m-edit{display:flex;flex-direction:column;gap:6px;margin-left:auto;width:min(560px,100%);padding:9px 10px 8px 13px;border-radius:14px;background:rgb(var(--glow) / .12);
+  box-shadow:inset 0 0 0 1px rgb(var(--glow) / .5),0 0 26px -12px rgb(var(--glow) / .6)}
+.m-edit.sending{opacity:.7}
+.m-eta{width:100%;min-height:44px;max-height:220px;resize:none;border:0;padding:0;background:none;outline:none;font:13.5px/1.55 var(--ui);color:var(--ink)}
+.m-edit .m-eta:focus-visible{outline:none}
+.m-erow{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.m-erow small{font-size:11.5px;color:var(--muted)}
+.m-erow .sp{flex:1}
+.btn.sm{height:26px;padding:0 10px;border-radius:8px;font-size:12px}
+
+/* What waits in the queue reads as not yet taken, in either layout. */
+.c-queue .you.queued{background:none;box-shadow:inset 0 0 0 1px rgb(var(--glow) / .35);color:var(--muted)}
+
+/* Reading another version of a conversation you changed. */
+.m-old{align-self:center;margin:0;font-size:11.5px;color:var(--faint)}
