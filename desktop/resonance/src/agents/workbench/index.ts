@@ -11,7 +11,7 @@ import { mountTerminal, type Tab, type TPos } from './terminal';
 import './workbench.css';
 
 type Hooks = {
-  api: string; call<T = unknown>(route: string, body?: unknown, method?: string): Promise<T>; toast(t: string): void; cue(name: string, gain?: number): void;
+  api: string; call<T = unknown>(route: string, body?: unknown, method?: string): Promise<T>; toast(t: string, bad?: boolean): void; cue(name: string, gain?: number): void;
   current(): Sess | undefined; chat(): boolean; busy(): boolean; b01(): boolean;
   md(text: string): string; diff(d: NonNullable<Peek['diff']>): string; redraw(): void;
 };
@@ -206,7 +206,7 @@ export function mountWorkbench(win: HTMLElement, ta: HTMLTextAreaElement, hooks:
       const got = await peekOf(s, r.ref);
       S.busy = false;
       if (sess() !== s) return;
-      if (typeof got === 'string') { hooks.toast(got); return; }
+      if (typeof got === 'string') { hooks.toast(got, true); return; }
       const ql = QUICKLOOK.test(got.abs) || got.kind === 'quicklook', out = !ql && (got.kind === 'media' || got.kind === 'web') && !got.bytes && !/\.html?$/i.test(got.abs);
       if (ql || out) {
         if (out) hooks.toast('不在这个会话的文件夹里，用快速查看打开');
@@ -348,7 +348,7 @@ export function mountWorkbench(win: HTMLElement, ta: HTMLTextAreaElement, hooks:
   async function land(action: string, extra: Record<string, unknown> = {}) {
     const s = sess();
     if (!s) return;
-    return hooks.call(`/sessions/${s.id}/land`, { action, ...extra }).then(() => true, (e: unknown) => { hooks.toast(e instanceof Error ? e.message : String(e)); return false; });
+    return hooks.call(`/sessions/${s.id}/land`, { action, ...extra }).then(() => true, (e: unknown) => { hooks.toast(e instanceof Error ? e.message : String(e), true); return false; });
   }
   // `via`: the way picked in answer to the repository's first landing, kept for it from then on. Until it is picked,
   // ⌘⏎ only opens the panel, where the question is.

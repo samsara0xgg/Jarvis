@@ -194,8 +194,8 @@ async function mcpDo(s: Sess, n: string, act: 'login' | 'reconnect' | 'on' | 'of
   busy.delete(k);
   const now = m.list?.find(x => x.name === n);
   if ((act === 'login' || act === 'reconnect') && now?.st === 'on') { fixed.add(k); skip.delete(k); c.cue('done'); }
-  else if (act === 'login' && r?.url) c.toast(`还没等到 ${n} 登好`);
-  else if (act === 'reconnect' && r) c.toast(`${n} 还是连不上`);
+  else if (act === 'login' && r?.url) c.toast(`还没等到 ${n} 登好`, true);
+  else if (act === 'reconnect' && r) c.toast(`${n} 还是连不上`, true);
   else if ((act === 'on' || act === 'off') && r) c.cue(act);
   mcpChanged();
 }
@@ -311,7 +311,7 @@ export function mountInput(ctx: PageCtx): Feature {
         if (how === 'path') { ctx.toast('只复制了它的路径'); return; }
       }
       ctx.toast(`复制了「${t.name}」`);
-    } catch { ctx.toast(`复制不了「${t.name}」`); }
+    } catch { ctx.toast(`复制不了「${t.name}」`, true); }
   }
   // A file opens on the right in a session, with Quick Look before there is one; a folder opens in Finder.
   function open(el: HTMLElement) {
@@ -419,7 +419,7 @@ export function mountInput(ctx: PageCtx): Feature {
         const t = target, v = el.dataset.v;
         ctx.closeMenu();
         if (v === 'copy') void copy(t);
-        else if (v === 'path' && t.path) void navigator.clipboard.writeText(t.path).then(() => ctx.toast('复制了路径'), () => ctx.toast('复制不了路径'));
+        else if (v === 'path' && t.path) void navigator.clipboard.writeText(t.path).then(() => ctx.toast('复制了路径'), () => ctx.toast('复制不了路径', true));
         else if (v === 'side') open(t.el);
         else if (v === 'app' && t.path) void window.agents?.openPath?.(t.path);
         else if (v === 'finder' && t.path) void window.agents?.revealFile?.(t.path.replace(/\/$/, ''));

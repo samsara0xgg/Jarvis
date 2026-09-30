@@ -357,9 +357,9 @@ export function mountSee(ctx: PageCtx): Feature {
       const src = m.el.isConnected ? m.el : [...win.querySelectorAll<HTMLElement>('[data-ref]')].find(x => x.dataset.ref === m.ref);
       if (src) ctx.wb.act('peek', src);
     } else if (a === 'seefapp') void window.agents?.openPath?.(abs);
-    else if (a === 'seefed') { if (await window.agents?.openInEditor?.(abs, line) === false) ctx.toast('没能在编辑器里打开'); }
+    else if (a === 'seefed') { if (await window.agents?.openInEditor?.(abs, line) === false) ctx.toast('没能在编辑器里打开', true); }
     else if (a === 'seeffind') void window.agents?.revealFile?.(abs);
-    else if (a === 'seefcopy') await navigator.clipboard.writeText(abs).then(() => ctx.tick(), () => ctx.toast(`没能复制。路径是 ${abs}`));
+    else if (a === 'seefcopy') await navigator.clipboard.writeText(abs).then(() => ctx.tick(), () => ctx.toast(`没能复制。路径是 ${abs}`, true));
   }
 
   // ---------- what is open on the right is marked where it was opened from ----------
