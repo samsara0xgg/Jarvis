@@ -16,6 +16,7 @@
 .bw .item .it .md{outline:1px solid transparent;outline-offset:9px}
 .bw .item.hit{content-visibility:visible}
 .bw .item.hit .it .md{border-radius:4px;background:rgb(var(--acc) / .08);box-shadow:0 0 0 9px rgb(var(--acc) / .08);outline-color:rgb(var(--acc) / .3)}
-@media(max-width:900px){.bw-find{right:310px;width:200px}}
 /* In the long exposure ⌘K searches the sky; the side list's field stays, for the pointer, without the key. */
 .bw label.find kbd{display:none}
+/* a narrow window has no room beside the title: the field stands left of her, where the horizon stars step aside while the sky is open */
+@media(max-width:900px){.bw-find{right:96px;width:200px}}
