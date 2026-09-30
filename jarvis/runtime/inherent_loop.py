@@ -94,6 +94,7 @@ if TYPE_CHECKING:
     from jarvis.runtime.work_state import WorkStateService
     from jarvis.shared.realtime import PresentationIntent
     from jarvis.state.committed_event_bus import CommittedEventBus
+    from jarvis.surface.codex_sessions import CodexSession
 
 from jarvis.decision.commentary import (
     COMMENTARY_ATTENTION_CHANNEL,
@@ -143,6 +144,7 @@ from jarvis.runtime import (
 )
 from jarvis.runtime.dictation import Dictation, polish_client, whisper_ears
 from jarvis.runtime.inherent_hub import start_inherent_view
+from jarvis.runtime.night_watch import NightWatch
 from jarvis.runtime.session_compaction import CompactionSweep, preset_context_length
 from jarvis.runtime.settings import SETTINGS_FILE
 from jarvis.runtime.setup import Setup
@@ -214,6 +216,7 @@ from jarvis.surface import (
     voice_tts,
     voice_wake,
 )
+from jarvis.surface.claude_sessions import ClaudeSessions
 from jarvis.surface.cli import SurfaceState, emit_surface_user_intent, record_pre_emit_token
 from jarvis.surface.cli_render import render_response
 from jarvis.surface.inherent_output import InherentBroadcaster
@@ -3840,6 +3843,13 @@ def _start_repo_observer(runtime: JarvisRuntime) -> list[asyncio.Task[None]]:
 # --- ADR-0018 usage observer ---------------------------------------------------
 
 _FALLBACK_USAGE_POLL_INTERVAL_S: Final[float] = 300.0
+_AGENTS_PORT: Final = 8016
+
+
+def _agents_port() -> int:
+    """The agent host's port (ADR 0073): ``JARVIS_AGENTS_PORT``, 8016 by default."""
+    raw = os.environ.get("JARVIS_AGENTS_PORT", "")
+    return int(raw) if raw.isdigit() else _AGENTS_PORT
 
 
 def _claude_sessions_read(config: Mapping[str, Any]) -> bool:
@@ -5287,6 +5297,8 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                     ),
                 )
 
+        # ADR 0019: one Codex board, filled by the hooks' route and read by the night run.
+        codex_board: dict[str, CodexSession] = {}
         deps = InherentDeps(
             submit_callable=submit_callable,
             broadcaster=broadcaster,
@@ -5371,6 +5383,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             setup=setup,
             dictation=dictation,
             night=runtime.night,
+            codex_board=codex_board,
             cancel_response_callable=cancel_response_callable,
             controls=controls,
             live=live_voice,
@@ -5524,6 +5537,13 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         if runtime.night is not None:
             # ADR 0093: the night run mutes after the goodnight line, never under a wake capture.
             runtime.night.busy = lambda: shared_ducker.active or shared_ducker.outputting
+            # It holds the Mac past the deadline while a session it can see still works.
+            runtime.night.watch = NightWatch(
+                port=_agents_port(),
+                key=functools.partial(local_key, runtime.runtime_paths.root),
+                claude=ClaudeSessions() if _claude_sessions_read(runtime.config) else None,
+                codex=codex_board,
+            )
             watchers.append(asyncio.create_task(runtime.night.run(), name="night_run"))
         watchers.append(asyncio.create_task(
             _data_sweep_task(_media_dirs(runtime), logs_dir(runtime.runtime_paths.root)),

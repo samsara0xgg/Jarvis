@@ -54,9 +54,10 @@ _START_DESCRIPTION: Final = (
     "Start a night run: the user is going to sleep and wants the Mac to keep running "
     "(agents, downloads, builds) with the screen off and the sound muted. Call it right "
     "away; when the user named no length or end time, leave both out and the default "
-    "length applies. Never ask how long. Keeps the Mac awake until the deadline, then "
-    "lets it sleep; brightness and sound come back when the user gets up. Your reply is "
-    "the result's `spoken`, word for word: it says when the screen goes off."
+    "length applies. Never ask how long. Keeps the Mac awake at least until the deadline "
+    "and past it while an agent session is still working, then lets it sleep; brightness "
+    "and sound come back when the user gets up. Your reply is the result's `spoken`, word "
+    "for word: it says when the screen goes off."
 )
 _END_DESCRIPTION: Final = (
     "End the night run now because the user is up: puts brightness and sound back and "

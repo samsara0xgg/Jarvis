@@ -68,7 +68,7 @@ import logging
 import re
 import time
 import wave
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Annotated, Any, Final, Literal, Protocol
 
 import numpy as np
@@ -324,6 +324,9 @@ class NightRoutes(Protocol):
     def darken_now(self) -> None:
         """Dim, mute and sleep the display now instead of after the bedtime card."""
 
+    def stay(self) -> None:
+        """The owner goes to answer a session: dark waits for a quiet minute."""
+
     def end(self, *, action_id: str | None) -> dict[str, Any]:
         """End the run: put back what it changed."""
 
@@ -574,6 +577,9 @@ class InherentDeps:
     # ADR 0093: the night run the companion's cards show and its buttons
     # drive. ``None`` leaves both routes unregistered.
     night: NightRoutes | None = None
+    # ADR 0019: the Codex session board the hooks fill; the runtime shares it
+    # with the night run's watch.
+    codex_board: dict[str, CodexSession] = field(default_factory=dict)
 
 
 class _FrameRateLimiter:
@@ -1135,9 +1141,9 @@ def _register_dictation_routes(app: FastAPI, deps: InherentDeps) -> None:
 
 
 class NightRequest(BaseModel):
-    """Body of ``POST /inherent/night``: start one (for ``hours``), go dark now, or end it."""
+    """Body of ``POST /inherent/night``: start one (for ``hours``), go dark now, stay, or end it."""
 
-    action: Literal["start", "dark", "end"]
+    action: Literal["start", "dark", "stay", "end"]
     hours: float | None = Field(default=None, ge=0.25, le=12)
 
 
@@ -1154,7 +1160,7 @@ def _register_night_routes(app: FastAPI, deps: InherentDeps) -> None:
 
     @app.post("/inherent/night", status_code=200)
     async def night_act(req: NightRequest) -> dict[str, Any]:
-        """Start, go dark now, or end; answers like ``GET``."""
+        """Start, go dark now, stay lit while the owner answers a session, or end; like ``GET``."""
         if req.action == "start":
             await asyncio.to_thread(
                 functools.partial(
@@ -1163,6 +1169,8 @@ def _register_night_routes(app: FastAPI, deps: InherentDeps) -> None:
             )
         elif req.action == "dark":
             await asyncio.to_thread(night.darken_now)
+        elif req.action == "stay":
+            await asyncio.to_thread(night.stay)
         else:
             await asyncio.to_thread(functools.partial(night.end, action_id=None))
         return await asyncio.to_thread(night.snapshot)
@@ -1621,7 +1629,7 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 â
     _register_night_routes(app, deps)
 
     # ADR 0019 step 4: Allen's own Codex sessions, fed by scripts/codex_hook_log.py.
-    codex_board: dict[str, CodexSession] = {}
+    codex_board = deps.codex_board
 
     @app.post("/inherent/codex-hook", status_code=200)
     async def codex_hook(payload: dict[str, Any]) -> dict[str, bool]:

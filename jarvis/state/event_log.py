@@ -735,9 +735,14 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
     # the keep-awake assertion was granted. `saved` ({brightness, muted}: the
     # panel's level, null when unknown, and the UIDs of the output devices the
     # run mutes) is written before anything changes: it is what the return
-    # puts back, across a daemon restart too. `released` lets the Mac sleep
-    # (reason deadline | battery); `ended` closes the run (reason returned |
-    # ended | cancelled) with what was put back.
+    # puts back, across a daemon restart too. `watched` is each change the
+    # run's looks at the agent sessions saw: `seen` (any list answered),
+    # `lists` ({startrail, claude, codex}: answering or not; a list that is
+    # off is absent) and `sessions` ([{id, agent, title, st, busy, since_ms,
+    # what}], the ones working, waiting, or that worked in this run).
+    # `released` lets the Mac sleep (reason deadline | settled | blind | cap
+    # | battery); `ended` closes the run (reason returned | ended |
+    # cancelled) with what was put back.
     EventTypeSchema(
         event_type="night.started",
         owner_layer="L6",
@@ -751,6 +756,14 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         owner_layer="L6",
         actor="jarvis_runtime",
         required_payload=("night_id", "saved"),
+        optional_payload=(),
+        schema_version=1,
+    ),
+    EventTypeSchema(
+        event_type="night.watched",
+        owner_layer="L6",
+        actor="jarvis_runtime",
+        required_payload=("night_id", "seen", "lists", "sessions"),
         optional_payload=(),
         schema_version=1,
     ),

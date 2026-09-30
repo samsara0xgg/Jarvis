@@ -272,6 +272,11 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
         "en": "Okay, it keeps running until {until}. The screen goes off in {seconds} seconds."
         " Good night.",
     },
+    "night.started_watching": {
+        "zh": "好，至少挂到{until}，{working}个在干活的都停了再放开。{seconds}秒后熄屏，晚安。",
+        "en": "Okay, at least until {until}, and until the {working} sessions at work have"
+        " stopped. The screen goes off in {seconds} seconds. Good night.",
+    },
     "night.started_unguarded": {
         "zh": "好，挂到{until}，{seconds}秒后熄屏。不过没拿到防睡，Mac 可能会自己睡着。",
         "en": "Okay, until {until}; the screen goes off in {seconds} seconds. I couldn't keep"
