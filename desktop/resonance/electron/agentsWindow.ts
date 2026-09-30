@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Notification, session, shell } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, Notification, session, shell } from 'electron';
 import { spawn, execFile } from 'node:child_process';
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -117,7 +117,7 @@ const script = (title: string, sub: string, body: string) => execFile('/usr/bin/
   ['-e', 'on run a', '-e', 'display notification (item 3 of a) with title (item 1 of a) subtitle (item 2 of a)', '-e', 'end run', title, sub, body], { timeout: 8000 }, () => {});
 function watchHost(show: (id: string) => void, front: () => boolean, quiet: () => boolean) {
   const st = new Map<string, string>(), shown = new Map<string, { at: number; n?: Notification }>();
-  let notify = { done: true, wait: true, err: true }, failed = false;
+  let notify = { done: false, wait: true, err: true }, failed = false;
   const saw = (s: Row) => {
     const was = st.get(s.id), last = shown.get(s.id);
     st.set(s.id, s.st);
@@ -141,7 +141,7 @@ function watchHost(show: (id: string) => void, front: () => boolean, quiet: () =
   const take = (e: { t: string; sessions?: Row[]; s?: Row; id?: string; settings?: { notify?: typeof notify; editor?: string; terminal?: string } }) => {
     if (e.t === 'hello') { st.clear(); for (const s of e.sessions ?? []) st.set(s.id, s.st); }
     if (e.t === 'hello' || e.t === 'settings') {
-      notify = e.settings?.notify ?? { done: true, wait: true, err: true };
+      notify = e.settings?.notify ?? { done: false, wait: true, err: true };
       Object.assign(chosen, { editor: e.settings?.editor, terminal: e.settings?.terminal });
     }
     else if (e.t === 'sess' && e.s) saw(e.s);
@@ -261,6 +261,30 @@ export function setupAgents({ preload, page, host, packaged = false, trustedWind
   }
   ipcMain.on('agents-open', event => {
     if (trustedWindows().some(w => !w.isDestroyed() && event.sender === w.webContents && event.senderFrame === w.webContents.mainFrame)) void open();
+  });
+  // Settings is a sheet inside the window, opened with ⌘, or the app menu's 设置… (one window: none of its own). The
+  // rest of the menu is Electron's default, so the editing keys and ⌘W keep working.
+  async function settingsSheet() {
+    const fresh = !win || win.isDestroyed();
+    await open();
+    const w = win;
+    if (!w || w.isDestroyed()) return;
+    if (fresh || w.webContents.isLoading()) w.webContents.once('did-finish-load', () => w.webContents.send('agents-settings')); else w.webContents.send('agents-settings');
+  }
+  if (process.platform === 'darwin') Menu.setApplicationMenu(Menu.buildFromTemplate([
+    { label: app.name, submenu: [{ role: 'about' }, { type: 'separator' }, { label: '设置…', accelerator: 'CommandOrControl+,', click: () => void settingsSheet() }, { type: 'separator' },
+      { role: 'services' }, { type: 'separator' }, { role: 'hide' }, { role: 'hideOthers' }, { role: 'unhide' }, { type: 'separator' }, { role: 'quit' }] },
+    { role: 'fileMenu' }, { role: 'editMenu' }, { role: 'viewMenu' }, { role: 'windowMenu' },
+  ]));
+  // 发一条试试 in 通知: one notification as a session's would look, shown even with the window in front; the dev build's
+  // unsigned Electron says it through osascript when macOS refuses it.
+  ipcMain.handle('agents-notify-test', (event, title: unknown, sub: unknown, body: unknown, id: unknown) => {
+    if (!mine(event) || ![title, sub, body].every(v => typeof v === 'string' && v.length <= 400) || !Notification.isSupported()) return false;
+    const n = new Notification({ title: title as string, subtitle: sub as string, body: body as string });
+    if (typeof id === 'string' && id) n.on('click', () => void open(id));
+    n.on('failed', () => { if (!app.isPackaged) script(title as string, sub as string, body as string); });
+    n.show();
+    return true;
   });
   // An open window chimes on its own, so its notifications are silent.
   watchHost(id => void open(id), () => !!win && !win.isDestroyed() && win.isFocused(), () => !!win && !win.isDestroyed());
