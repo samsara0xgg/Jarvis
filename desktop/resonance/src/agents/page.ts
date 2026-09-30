@@ -16,8 +16,10 @@ import './exposure/exposure.css';
 
 declare global { interface Window { agents?: {
   presence?(enabled: boolean, ids: string[]): void; onNext?(callback: () => void): () => void; onOpen?(callback: (id: string) => void): () => void;
-  folder(): Promise<string>; terminal(cwd: string, cmd: string): Promise<boolean>; reveal(cwd: string): Promise<void>;
-  openUrl?(url: string): Promise<void>; openPath?(file: string): Promise<void>; cloud?(cwd: string, text: string): Promise<boolean>;
+  folder(): Promise<string>; terminal(cwd: string, cmd: string, term?: string): Promise<boolean>; reveal(cwd: string): Promise<void>;
+  openUrl?(url: string): Promise<void>; openPath?(file: string): Promise<void>; cloud?(cwd: string, text: string, term?: string): Promise<boolean>;
+  terminals?(): Promise<{ id: string; name: string }[]>; revealFile?(file: string): Promise<void>; quickLook?(file: string): Promise<void>;
+  editors?(): Promise<{ id: string; name: string }[]>; openInEditor?(file: string, line?: number, editor?: string): Promise<boolean>; pathOf?(file: File): string;
 } } }
 
 const $ = <T extends Element = HTMLElement>(s: string, root: ParentNode = document) => root.querySelector(s) as T;
