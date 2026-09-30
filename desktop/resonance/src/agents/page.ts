@@ -16,6 +16,7 @@ import { mountStopped } from './exposure/waiting';
 import { mountMessages } from './messages';
 import { mountWorkbench } from './workbench';
 import { cardsHTML, editsBefore, inline } from './workbench/refs';
+import { mountChanges } from './workbench/changes';
 import * as usage from './workbench/usage';
 import { mountViewer } from './viewer';
 import { mountKeys } from './keys';
@@ -1215,6 +1216,7 @@ features.push(mountBang(ctx));
 features.push(mountSee(ctx));
 features.push(mountMessages(ctx));
 features.push(mountBack(ctx));
+features.push(mountChanges(ctx));
 
 // ---------- one loop: her every frame, moving marks at 30 fps, nothing while the window is out of sight ----------
 let lastT = performance.now(), lastMk = 0, lastAge = 0;

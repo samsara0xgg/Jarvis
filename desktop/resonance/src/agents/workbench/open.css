@@ -1,6 +1,9 @@
 /* What the preview sheet draws for a file, the changes it compares, and landing cut to what the repository needs
    (review 12, 13, 17, 18). */
 .sh .pvb{margin-left:-6px}
+.pop .op-mk{margin-left:auto;padding-left:14px;font:11px var(--mono)}
+.pop .op-mk .p{color:var(--mint)}
+.pop .op-mk .m{color:#ff9f8f}
 .op-empty{display:grid;place-items:center;min-height:100%;margin:0;padding:24px;font-size:12.5px;color:var(--faint)}
 
 /* ---------- code: line numbers, the library's colours, the line an answer named ---------- */
@@ -124,3 +127,36 @@
 .op-dir button:hover{background:rgb(var(--acc) / .08);color:var(--ink)}
 .op-dir i{flex:none;width:10px;font-style:normal;color:rgb(var(--acc))}
 .op-dir span{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+/* ---------- 改动: the files on the left, the chosen one's hunks on the right ---------- */
+.op-dw{position:absolute;inset:0;container-type:inline-size}
+.op-dv{display:grid;grid-template-columns:232px minmax(0,1fr);height:100%}
+.op-dl{min-height:0;overflow-y:auto;padding:10px 8px 14px;box-shadow:inset -.5px 0 0 rgb(var(--acc) / .14);scrollbar-width:thin;scrollbar-color:rgb(var(--acc) / .2) transparent}
+.op-dsum{margin:0 8px 8px;font:11.5px var(--mono);color:var(--faint)}
+.op-dsum i,.op-pm i{font-style:normal}
+.op-dsum .p,.op-pm .p{color:var(--mint)}
+.op-dsum .m,.op-pm .m{color:#ff9f8f}
+.op-df{display:grid;grid-template-columns:16px minmax(0,1fr) auto;column-gap:7px;width:100%;padding:5px 8px;border-radius:8px;text-align:left;transition:background 120ms}
+.op-df:hover{background:rgb(var(--acc) / .07)}
+.op-df.on{background:rgb(var(--acc) / .14);box-shadow:inset 0 0 0 .5px rgb(var(--acc) / .4)}
+.op-df b{min-width:0;font:500 12px/16px var(--ui);color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.op-df small{grid-column:2 / -1;min-width:0;font:10.5px/15px var(--mono);color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.op-st{display:block;height:16px;border-radius:4px;font:600 10px/16px var(--mono);font-style:normal;text-align:center;color:var(--faint);background:rgb(255 255 255 / .06)}
+.op-st.sM,.op-st.sR{color:rgb(var(--acc));background:rgb(var(--acc) / .12)}
+.op-st.sA{color:var(--mint);background:rgb(111 224 180 / .12)}
+.op-st.sD{color:#ff8f80;background:rgb(255 122 102 / .12)}
+.op-pm{font:11px/16px var(--mono);white-space:nowrap}
+.op-pm.op-pb{color:var(--faint)}
+.op-dd{min-width:0;min-height:0;overflow:auto;scrollbar-width:thin;scrollbar-color:rgb(var(--acc) / .2) transparent}
+.op-dh{position:sticky;top:0;left:0;z-index:2;display:flex;align-items:center;gap:8px;height:36px;padding:0 14px;background:rgb(13 14 30 / .97);box-shadow:inset 0 -.5px 0 rgb(var(--acc) / .14)}
+.op-dh .op-st{flex:none;width:16px}
+.op-dp{min-width:0;font:12px var(--mono);color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+button.op-dp{text-decoration:underline;text-decoration-color:rgb(var(--acc) / .35);text-underline-offset:3px}
+button.op-dp:hover{color:rgb(var(--acc));text-decoration-color:rgb(var(--acc))}
+.op-dh .op-pm{margin-left:auto}
+.op-bin{margin:18px 14px;font:12px var(--mono);color:var(--faint)}
+.op-dc{padding-top:6px}
+@container (max-width:560px){
+  .op-dv{grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,38%) minmax(0,1fr)}
+  .op-dl{box-shadow:inset 0 -.5px 0 rgb(var(--acc) / .14)}
+}
