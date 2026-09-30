@@ -59,9 +59,10 @@ _L2_OPERATIONAL_INSERTS: dict[str, frozenset[str]] = {
     "jarvis/state/input_submission_inbox.py": frozenset({"input_submission_receipts"}),
     # memory.db (2026-09-12): a standalone SQLite file, not the event log —
     # every utterance and answer, append-only, plus the summaries that stand
-    # in for compacted history (session compaction), and the profile's name
-    # line first-run setup keeps. Not a projection of events.
-    "jarvis/state/memory_db.py": frozenset({"records", "summaries", "profile"}),
+    # in for compacted history (session compaction), the profile's name
+    # line first-run setup keeps, and the message a turn sent for its row
+    # (docs/plans/replay-as-sent-proposal.md). Not a projection of events.
+    "jarvis/state/memory_db.py": frozenset({"records", "summaries", "profile", "sent"}),
     # ADR 0019: which Codex threads this daemon opened (parent action, child
     # thread, open|closed). Topology, not a projection of events.
     "jarvis/state/worker_edges.py": frozenset({"worker_edges"}),

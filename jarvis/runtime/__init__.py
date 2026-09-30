@@ -57,6 +57,7 @@ import yaml
 
 from jarvis.decision import (
     DEFAULT_MAX_TOOL_ITERATIONS,
+    SPOKEN_REPLY_RULES,
     DecideContext,
     EntityResolverLike,
     LifecycleLike,
@@ -172,6 +173,7 @@ from jarvis.state.memory_db import (
     SessionSettings,
     append_record,
     open_memory_db,
+    record_sent,
     render_context,
 )
 from jarvis.state.projects import parse_catalog
@@ -2905,6 +2907,15 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
         if memory is not None
         else None
     )
+    # docs/plans/replay-as-sent-proposal.md: this turn's message is kept as
+    # sent for later histories; a card's button wrote no row to keep it under.
+    record_sent_message: Callable[[str], None] | None = None
+    if memory is not None and runtime.session.replay_sent:
+        record_sent_message = (
+            (lambda _text: None)
+            if card_button
+            else partial(record_sent, memory.db_path, memory_exclude_id)
+        )
     # ADR-0008 Step 2 (Wave 4A) — open the durable ResponseRun before the
     # decide loop so the per-run request client, the terminal owner and the
     # L5 ids all name the same response. Returns None with the flag off, and
@@ -2971,6 +2982,19 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
         turn_system_prompt = runtime.system_prompt
         if runtime.plugin_connections is not None:
             turn_system_prompt += "\n\n" + runtime.plugin_connections.skills_prompt()
+        connected_apps = (
+            runtime.plugin_connections.connected_apps_line()
+            if runtime.plugin_connections is not None
+            else None
+        )
+        if runtime.session.replay_sent:
+            # What every turn would repeat rides the system prompt, cached once,
+            # instead of each replayed state block.
+            if stream_route is not None and stream_route.context.route == "spoken":
+                turn_system_prompt += "\n\n" + SPOKEN_REPLY_RULES
+            if connected_apps is not None:
+                turn_system_prompt += "\n\n" + connected_apps
+                connected_apps = None
         decide_ctx = DecideContext(
             conn=runtime.conn,
             runtime_paths=runtime.runtime_paths,
@@ -3022,11 +3046,8 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             wave1_features=runtime.wave1_features,
             history=memory_context.history if memory_context is not None else (),
             time_note=memory_context.now if memory_context is not None else None,
-            connected_apps=(
-                runtime.plugin_connections.connected_apps_line()
-                if runtime.plugin_connections is not None
-                else None
-            ),
+            connected_apps=connected_apps,
+            record_sent_message=record_sent_message,
             cancellation_checkpoint=run.check_cancelled if run is not None else None,
             request_admission=(
                 partial(run.admit_request, runtime.conn) if run is not None else None
