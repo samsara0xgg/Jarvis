@@ -204,6 +204,8 @@ try {
   await page.waitForFunction(() => document.querySelector('.notch-drop')?.classList.contains('is-open'));
   await page.keyboard.press('Escape');
   await page.waitForFunction(() => !document.querySelector('.notch-drop')?.classList.contains('is-open'));
+  // A denied ask still finishes and pops; let it, so it isn't told together with the stop below.
+  await until('its finish pops', n => n.popIds.includes(front) && n.pop);
   await clear();
 
   // ---- stopped: its name pops, as stopped ----
