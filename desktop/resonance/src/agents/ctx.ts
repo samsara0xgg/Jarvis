@@ -23,6 +23,11 @@ export type Feature = {
   arg?(s: Sess, st: Step, i: number, j: number, html: string): string | undefined;
   // Rows right above the composer while a session is open, or ''.
   rows?(s: Sess): string;
+  // A message as the page draws it, what you said or an answer (item i; one still waiting in the queue comes with
+  // `queued` and i < 0): its bubble, or the answer with its row of acts last. What it becomes, with what goes under it.
+  message?(s: Sess, it: Item & { k: 'you' | 'it' }, i: number, html: string): string;
+  // A session that is part of another one (an older version of a conversation you edited): the archive does not list it.
+  hidden?(s: Sess): boolean;
 };
 // A window command the host marks with a place (claude.ts OWN_UI): typed or picked, it runs here and never reaches the
 // agent. `arg` is what follows the command.
@@ -39,8 +44,9 @@ export type PageCtx = {
   call<T = Record<string, unknown>>(route: string, body?: unknown, method?: string): Promise<T>;
   tryCall(route: string, body?: unknown, method?: string): Promise<Record<string, unknown> | null>;
   load(id: string): Promise<void>;
-  // Drawing is batched into one frame; `open` goes to a session.
-  draw(...parts: Part[]): void; open(id: string): void;
+  // Drawing is batched into one frame; `open` goes to a session (`key`: a quick fade, as switching by keyboard); `still`
+  // keeps the list from gliding for a while, for a change that is not news (one version of a conversation for another).
+  draw(...parts: Part[]): void; open(id: string, how?: 'click' | 'key'): void; still(ms: number): void;
   toast(text: string): void; cue(name: string, gain?: number): void; tick(): void;
   md(text: string): string; diff(d: [string, string][]): string;
   // The page's one popover with any lines, under an element (right-aligned when `right`) or at a point in the window.

@@ -12,6 +12,7 @@ import { palette, play, scoreOf } from '../soundKit';
 import { Core, TAKES, pick, type ExprId } from '../starCore';
 import { mountExposure } from './exposure';
 import { mountStopped } from './exposure/waiting';
+import { mountMessages } from './messages';
 import { mountWorkbench } from './workbench';
 import { cardsHTML, editsBefore, inline } from './workbench/refs';
 import * as usage from './workbench/usage';
@@ -331,7 +332,7 @@ const order = () => groups().flatMap(g => g[1].map(s => s.id));
 const label = (s: Sess) => s.term ? '在终端里' : s.stopped ? '停了' : STATE[s.st];
 
 const rowEls = new Map<string, HTMLElement>(), grpEls = new Map<string, HTMLElement>();
-let quiet = true; // the first draw, filtering and search do not animate the list
+let quiet = true, stillUntil = 0; // the first draw, filtering and search do not animate the list, nor a change that is not news
 function rowEl(s: Sess) {
   let el = rowEls.get(s.id);
   if (!el) {
@@ -351,9 +352,9 @@ function renderSide() {
   patch($('.by', side), app.by === 'state' ? '按状态' : '按项目');
   $('.new', side).classList.toggle('is-on', app.view === 'new');
   archLink.classList.toggle('is-on', app.view === 'archive');
-  patch($('em', archLink), String(visible().filter(s => s.archived).length));
+  patch($('em', archLink), String(archived().length));
 
-  const glide = !quiet && !reduced.matches, before = new Map<Element, number>();
+  const glide = !quiet && !reduced.matches && performance.now() > stillUntil, before = new Map<Element, number>();
   if (glide) for (const k of list.children) before.set(k, k.getBoundingClientRect().top);
   const want: HTMLElement[] = [];
   for (const [g, ss] of groups()) {
@@ -465,9 +466,11 @@ function reqRecord(r: Req) {
   if (r.tool === 'Edit') return `改 ${r.file}`;
   return r.tool === 'Form' ? r.server : r.name;
 }
+// A message goes through the features that draw what is under it (messages.ts).
+const said = (s: Sess, it: Item & { k: 'you' | 'it' }, i: number, html: string) => features.reduce((h, f) => f.message?.(s, it, i, h) ?? h, html);
 function itemHTML(s: Sess, it: Exclude<Item, { k: 'steps' }>, i = -1) {
-  if (it.k === 'you') return `<div class="you">${it.files?.length ? `<span class="att">${it.files.map(picHTML).join('')}</span>` : ''}${esc(it.text)}</div>`;
-  if (it.k === 'it') { const cards = i >= 0 ? cardsHTML(it.text, editsBefore(app.items.get(s.id) ?? [], i)) : ''; return `<div class="it">${features.reduce((h, f) => f.answer?.(s, it, i, h) ?? h, withCopy(md(it.text)))}${cards ? `<div class="lnks">${cards}</div>` : ''}<div class="it-acts"><button type="button" class="ia" data-act="copy" data-tip="复制" aria-label="复制">${I.copy}</button>${it.at ? `<time>${clock(it.at)}</time>` : ''}</div></div>`; }
+  if (it.k === 'you') return said(s, it, i, `<div class="you">${it.files?.length ? `<span class="att">${it.files.map(picHTML).join('')}</span>` : ''}${esc(it.text)}</div>`);
+  if (it.k === 'it') { const cards = i >= 0 ? cardsHTML(it.text, editsBefore(app.items.get(s.id) ?? [], i)) : ''; return said(s, it, i, `<div class="it">${features.reduce((h, f) => f.answer?.(s, it, i, h) ?? h, withCopy(md(it.text)))}${cards ? `<div class="lnks">${cards}</div>` : ''}<div class="it-acts"><button type="button" class="ia" data-act="copy" data-tip="复制" aria-label="复制">${I.copy}</button>${it.at ? `<time>${clock(it.at)}</time>` : ''}</div></div>`); }
   if (it.k === 'note') return `<p class="note">${esc(it.text)}</p>`;
   if (it.k === 'plan') return `<div class="plan"><span class="p-h">计划</span>${it.todos.map(([t, d]) => `<span class="todo d${d}"><i></i>${esc(t)}</span>`).join('')}</div>`;
   const r = it.req, a = NAME[s.agent], b = app.busy.get(s.id), busy = b?.req === r.id ? b.key : '';
@@ -533,7 +536,7 @@ function renderConv(s: Sess, c: Conv) {
   // The way to land what this session changed, once it is done and nothing is under way.
   c.ask.hidden = !(s.dirty && s.st === 'done' && !s.term && !s.gone && (!s.land || s.land.s === 'done'));
   renderLive(s, c);
-  patch(c.queue, (s.queue ?? []).map(q => `<div class="item"><div class="you queued">${esc(q)}<em>排队中 · 这一步做完它就会看到</em></div></div>`).join(''));
+  patch(c.queue, (s.queue ?? []).map((q, k) => `<div class="item">${said(s, { k: 'you', text: q, queued: true }, -1 - k, `<div class="you queued">${esc(q)}<em>排队中 · 这一步做完它就会看到</em></div>`)}</div>`).join(''));
   const working = s.st === 'work' || s.st === 'pack';
   if (working && c.now.hidden && c.built) anim(c.now, [{ opacity: 0 }, { opacity: 1 }], 240);
   c.now.hidden = !working;
@@ -594,8 +597,9 @@ function renderLive(s: Sess, c: Conv) {
   bs.forEach((b, i) => { let x = el.children[i]; if (!x) { x = document.createElement('div'); el.appendChild(x); } patch(x, b); });
   while (el.children.length > bs.length) el.lastElementChild!.remove();
 }
+const archived = () => visible().filter(s => s.archived && !features.some(f => f.hidden?.(s)));
 function renderArchive() {
-  const as = visible().filter(s => s.archived).sort((a, b) => b.updated - a.updated);
+  const as = archived().sort((a, b) => b.updated - a.updated);
   patch(viewArch.firstElementChild!, '<p class="lead">归档的会话还能搜到，随时能拿回来。它们的 worktree 留着，删掉时才一起删。</p>'
     + (as.length ? `<div class="a-list">${as.map(s => `<div class="a-row">${star(s.id)}<span class="a-t"><b>${esc(s.title)}</b><span>${who(s.agent)}<span class="dot">·</span>${esc(s.project)}<span class="dot">·</span>${esc(s.summary)}<span class="dot">·</span>${age(s.updated)}</span></span>`
       + `<button type="button" class="btn" data-act="unarchive" data-id="${s.id}">拿回来</button><button type="button" class="btn${app.del === s.id ? ' bad-on' : ' bad'}" data-act="delete" data-id="${s.id}">${app.del === s.id ? s.tree ? '连 worktree 一起删' : '真的删掉' : '删除'}</button></div>`).join('')}</div>`
@@ -781,7 +785,7 @@ const here = (id: string) => app.view === 'chat' && app.cur === id && document.h
 // A change Allen caused himself (an interrupt, a stop) stays quiet.
 const hush = new Map<string, number>();
 function react(s: Sess, was: St) {
-  if (s.st === was) return;
+  if (s.st === was || s.archived) return;
   attention.notify(s);
   stAt.set(s.id, performance.now());
   if ((hush.get(s.id) ?? 0) > performance.now() || s.parked) return;
@@ -1027,8 +1031,8 @@ async function act(a: string, el: HTMLElement) {
   else if (a === 'answerall' && s) { const req = el.dataset.req!; void answer(s, req, 'allow', 'all', app.asked.get(req)); app.asked.delete(req); }
   else if (a === 'copy' && s) {
     const code = el.dataset.what === 'code', item = el.closest('.item')!, it = app.items.get(s.id)?.[[...item.parentElement!.children].indexOf(item)];
-    const target = code ? el.nextElementSibling! : item.querySelector('.md')!;
-    copy(el, code || it?.k !== 'it' ? target.textContent ?? '' : it.text, target);
+    const target = code ? el.nextElementSibling! : item.querySelector('.md, .you')!;
+    copy(el, code || (it?.k !== 'it' && it?.k !== 'you') ? target.textContent ?? '' : it.text, target);
   }
   else if (a === 'cxrow') {
     const n = el.dataset.n!, o = !app.cxOpen.has(n);
@@ -1186,8 +1190,8 @@ const attention = mountExposure(win, ta, {
 });
 const ctx: PageCtx = {
   win, ta, api: API, sessions: () => app.ss, current: () => app.view === 'chat' ? cur() : undefined, byId, items: id => app.items.get(id), chat: () => app.view === 'chat' && !!cur(),
-  call, tryCall, load: loadItems, draw, open: id => open(id), toast, cue: (name, gain) => cue(name, gain, false, false), tick, md, diff: diffHTML,
-  menu, closeMenu: closePop, wb, own: new Map(),
+  call, tryCall, load: loadItems, draw, open: (id, how) => open(id, how), toast, cue: (name, gain) => cue(name, gain, false, false), tick, md, diff: diffHTML,
+  menu, closeMenu: closePop, wb, own: new Map(), still: ms => { stillUntil = performance.now() + ms; },
   catalog: () => app.catalog,
 };
 // Each feature is mounted on the one context below; its clicks, keys, commands and menu lines are its own.
@@ -1199,6 +1203,7 @@ features.push(mountSlip(ctx));
 features.push(mountHist(ctx));
 features.push(mountBang(ctx));
 features.push(mountSee(ctx));
+features.push(mountMessages(ctx));
 
 // ---------- one loop: her every frame, moving marks at 30 fps, nothing while the window is out of sight ----------
 let lastT = performance.now(), lastMk = 0, lastAge = 0;
