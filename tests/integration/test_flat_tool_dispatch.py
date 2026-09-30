@@ -105,13 +105,14 @@ def _request(
     action_id: str,
     *,
     arguments: dict[str, Any] | None = None,
+    caller: CallerPrincipal = CallerPrincipal.JARVIS_LLM,
 ) -> ActionRequest:
     """Build one ActionRequest for a fixture tool."""
     return ActionRequest(
         action_id=action_id,
         tool_name=tool_name,
         target_entity_ref=None,
-        caller_principal=CallerPrincipal.JARVIS_LLM,
+        caller_principal=caller,
         risk_level="L1",
         arguments=arguments if arguments is not None else {},
         authorization_lease=None,
@@ -152,7 +153,9 @@ def test_flat_tool_writes_the_same_terminal_row(tmp_path: Path) -> None:
     tools = (get_current_time, failing_tool, crashing_tool, long_tool)
     fx = _Fixture(tmp_path, tools=tools)
     try:
-        bundle = fx.dispatch(_request("get_current_time", "A1"))
+        bundle = fx.dispatch(
+            _request("get_current_time", "A1", caller=CallerPrincipal.REGEX_ROUTER)
+        )
         observed = _chain(fx, "A1")
         assert set(observed) == {"action_id", "semantics", "tool_output"}
         assert observed["semantics"] == "observation"

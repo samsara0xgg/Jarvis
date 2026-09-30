@@ -48,7 +48,7 @@ def test_cancel_wins_against_late_provider_tool_batch(
 ) -> None:
     """Real runtime/L3 drops late tools while retaining the provider's cost."""
     runtime = _make_runtime(tmp_path, lifecycle=True, cancel=True)
-    intent = _emit_intent(runtime.conn, "cancel-late-tools", "现在时间")
+    intent = _emit_intent(runtime.conn, "cancel-late-tools", "我记过什么")
     entered = threading.Event()
     release = threading.Event()
     calls: list[int] = []
@@ -60,7 +60,7 @@ def test_cancel_wins_against_late_provider_tool_batch(
         return ChatResult(
             text=None,
             tool_calls=(
-                ToolCall(call_id="clock-call", name="get_current_time", arguments_json="{}"),
+                ToolCall(call_id="memo-call", name="list_memos", arguments_json="{}"),
             ),
             finish_reason="tool_calls",
             input_tokens=10,

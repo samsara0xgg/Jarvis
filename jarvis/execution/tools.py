@@ -588,17 +588,16 @@ _OUTPUT_TAIL_BYTES: Final[int] = 2048
 
 
 @tool(
-    description=(
-        "Read the current local date and time (observation only). The program's state already "
-        "gives the time every turn; call this only when that is not enough."
-    ),
+    description="Read the current local date and time (observation only).",
     input_schema={"type": "object", "properties": {}, "required": []},
-    allowed_callers=frozenset({CallerPrincipal.REGEX_ROUTER, CallerPrincipal.JARVIS_LLM}),
+    # Not the model's: its state line gives the time every turn, and on
+    # 2026-09-30 reading the clock cost 3 of 8 voice turns a request round.
+    allowed_callers=frozenset({CallerPrincipal.REGEX_ROUTER}),
     risk_level="L0",
     read_only=True,
 )
 def get_current_time(_args: Mapping[str, Any], _ctx: ToolContext) -> dict[str, Any]:
-    """Read the system clock (spec §3.5.4); Tier 0's tool, jarvis_llm may call it too.
+    """Read the system clock (spec §3.5.4) for Tier 0.
 
     The payload carries the machine keys ``iso`` / ``date`` / ``time`` /
     ``weekday`` (English) plus the TTS-ready ``spoken_time`` / ``spoken_date``,
