@@ -7,7 +7,7 @@ import type { Agent, Catalog, Ctx, Event, Item, Pic, Req, Sess, St, Step, Usage 
 import { drawMark } from '../AgentMarks';
 import { features, type Own, type PageCtx } from './ctx';
 import { mountBack } from './back';
-import { attachAll, chipsHTML, dropped, fileTag, mountInput, slashHTML, slashPicks, type Attached, type Pick } from './input';
+import { attachAll, chipsHTML, dropped, fileTag, modesHTML, mountInput, slashHTML, slashPicks, type Attached, type Pick } from './input';
 import { waitOf } from './queue';
 import { mountSee } from './see';
 import { palette, play, scoreOf } from '../soundKit';
@@ -644,7 +644,7 @@ function renderComp() {
   // One row of quiet tools (the workbench composer): ＋ for pictures, files and commands, the mode; on the right the model
   // and its effort as one, the ring, and send.
   patch(tl, '<button type="button" class="tb plus" data-act="menu" data-v="plus" aria-label="添加" data-tip="图片、文件、命令">＋</button>'
-    + (c.modes.length ? `<button type="button" class="tb mode" data-act="menu" data-v="mode" data-tip="它能自己做到哪一步"><i></i><span class="lbl">${esc(labelOf(c.modes, mode) || '模式')}</span></button>` : ''));
+    + (c.modes.length ? `<button type="button" class="tb mode" data-act="menu" data-v="mode" data-m="${esc(mode)}" data-tip="它能自己做到哪一步"><i></i><span class="lbl">${esc(labelOf(c.modes, mode) || '模式')}</span></button>` : ''));
   const r = usage.ring(s, agent, app.usage, s ? app.cx.get(s.id) : undefined), eff = effort ? effort === 'xhigh' ? 'XHigh' : effort[0].toUpperCase() + effort.slice(1) : '';
   patch(tr, (c.models.length ? `<button type="button" class="tb model" data-act="menu" data-v="me" data-tip="模型和力度">${esc(labelOf(c.models, model) || '模型')}${eff ? ` <em>· ${esc(eff)}</em>` : ''}</button>` : '')
     + `<button type="button" class="ring" data-act="menu" data-v="usage" aria-label="用量" aria-haspopup="dialog" aria-expanded="${popFor === 'usage'}" data-tip="${esc(r.tip)}">${r.svg}</button>`
@@ -690,7 +690,7 @@ function openPop(kind: string, anchor: HTMLElement) {
     ? `<button type="button" data-act="pin">${s.pinned ? '取消置顶' : '置顶'}</button><button type="button" data-act="park">${s.parked ? '不放着了' : '先放着'}</button><button type="button" data-act="rename">改名</button>${features.map(f => f.more?.(s) ?? '').join('')}<button type="button" data-act="archive" data-id="${s.id}">归档</button><span class="sep"></span><button type="button" data-act="stop" class="bad">停掉</button>`
     : kind === 'model' ? opts('model', c.models, s ? s.model : app.newSet.model)
     : kind === 'effort' ? opts('effort', c.efforts.map(e => [e, e]), s ? s.effort : app.newSet.effort)
-    : opts('mode', c.modes, s ? s.mode : app.newSet.mode);
+    : modesHTML(c.modes, s ? s.mode : app.newSet.mode, s ? s.agent : app.newAgent);
   pop.innerHTML = html; popFor = kind;
   const w = win.getBoundingClientRect(), r = anchor.getBoundingClientRect(), down = kind === 'more';
   Object.assign(pop.style, down

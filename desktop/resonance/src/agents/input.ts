@@ -1,7 +1,7 @@
 // The composer beyond typing: any file, dropped anywhere on the window or picked, goes with a message; a right click on
 // one copies it, its path, or opens it. The / menu shows the window's own commands above the agent's, and /add-dir
-// gives a session one more folder.
-import type { File as Upload, Pic, Sess } from '../../electron/agents/types';
+// gives a session one more folder. The permission modes are each agent's own, and 完全放开 is asked once.
+import type { Agent, File as Upload, Pic, Sess } from '../../electron/agents/types';
 import type { Feature, PageCtx } from './ctx';
 import './input.css';
 
@@ -107,6 +107,19 @@ const day = (ms: number) => {
   return d <= 0 ? '今天' : d === 1 ? '昨天' : d < 7 ? `${d} 天前` : `${new Date(ms).getMonth() + 1} 月 ${new Date(ms).getDate()} 日`;
 };
 
+// ---------- permission modes: each agent's own (the host's catalog names them), each with what it means ----------
+// 完全放开 is Claude Code's bypassPermissions and Codex's full access: chosen, it is asked once in the window first.
+const FULL = new Set(['bypassPermissions', 'full']);
+const SUB: Record<Agent, Record<string, string>> = {
+  claude: { auto: '能做的都做，要紧的才问你', default: '改文件、跑命令前都问', acceptEdits: '改文件不问，跑命令还问', plan: '先出计划，你点头才动手', bypassPermissions: '什么都不问' },
+  codex: { auto: '在这个文件夹里改，出去要问', read: '只看不改', full: '不问你，也不限文件夹', plan: '先出计划' },
+};
+const ASK: Record<Agent, string> = { claude: '它不再问你就改文件、跑命令。只在这个会话里。', codex: '它不再问你，改文件、跑命令也不限在这个文件夹里。只在这个会话里。' };
+export const modesHTML = (modes: [string, string][], v: string, agent: Agent) => modes.map(([x, l]) => `<button type="button" data-act="set" data-k="mode" data-v="${esc(x)}" data-agent="${agent}"`
+  + `${x === v || FULL.has(x) ? ` class="${[x === v ? 'on' : '', FULL.has(x) ? 'in-warm' : ''].filter(Boolean).join(' ')}"` : ''}>${esc(l)}${SUB[agent][x] ? `<small>${SUB[agent][x]}</small>` : ''}</button>`).join('');
+const askHTML = (agent: Agent, v: string, label: string) => `<p><b>${esc(label)}？</b>${ASK[agent]}</p><span class="in-askb"><button type="button" class="btn" data-act="in-full-no">算了 <kbd>esc</kbd></button>`
+  + `<button type="button" class="btn warm" data-act="set" data-k="mode" data-v="${esc(v)}" data-ok="1">放开 <kbd>⏎</kbd></button></span>`;
+
 export function mountInput(ctx: PageCtx): Feature {
   const { win } = ctx;
   own = ctx.own;
@@ -187,7 +200,7 @@ export function mountInput(ctx: PageCtx): Feature {
   async function addDir(s: Sess, p: string) {
     if (p.replace(/\/+$/, '') === s.cwd) { ctx.toast('这就是它自己的文件夹'); return; }
     if (s.dirs?.includes(p)) { ctx.toast('这个文件夹已经加过了'); return; }
-    if (await ctx.tryCall(`/sessions/${s.id}/dirs`, { dirs: [...s.dirs ?? [], p] })) ctx.cue('mark');
+    if (await ctx.tryCall(`/sessions/${s.id}/dirs`, { dirs: [...s.dirs ?? [], p] })) ctx.cue('on');
   }
   function drawDirs() {
     if (!dirs) return;
@@ -214,6 +227,20 @@ export function mountInput(ctx: PageCtx): Feature {
     closeDirs();
     if (s && p) await addDir(s, p);
   }
+  // ---------- 完全放开, asked once: above the composer in a session, in the menu's place before there is one ----------
+  let ask: { id: string; v: string; label: string } | null = null;
+  const modeChip = () => win.querySelector<HTMLElement>('.tb.mode');
+  function askFull(el: HTMLElement) {
+    const s = ctx.current(), v = el.dataset.v!, label = el.firstChild?.textContent ?? '完全放开';
+    ctx.closeMenu();
+    ask = { id: s?.id ?? '', v, label };
+    if (s) { ctx.draw('comp'); requestAnimationFrame(() => { const a = win.querySelector('.in-ask'); if (a) anim(a, [{ opacity: 0, transform: 'translateY(4px)' }, { opacity: 1, transform: 'none' }], 180); }); }
+    else { const chip = modeChip(); if (chip) ctx.menu(`<div class="in-ask">${askHTML(el.dataset.agent === 'codex' ? 'codex' : 'claude', v, label)}</div>`, chip, { cls: 'in-askpop' }); }
+  }
+  function noFull() { if (!ask) return false; const here = !ask.id; ask = null; if (here) ctx.closeMenu(); else ctx.draw('comp'); ctx.ta.focus(); return true; }
+  // /permissions opens the same menu as the mode under the composer.
+  ctx.own.set('mode', () => { requestAnimationFrame(() => modeChip()?.click()); });
+
   // Typed with a path it adds that folder; without one it asks which.
   ctx.own.set('dirs', (s, arg) => {
     if (!s) { ctx.toast('开了会话再给它加文件夹'); return; }
@@ -227,6 +254,14 @@ export function mountInput(ctx: PageCtx): Feature {
       if (a === 'in-dir') { void pickDir(el.dataset.v!); return true; }
       if (a === 'in-dir-other') { const id = dirs?.id; closeDirs(); void window.agents?.folder().then(p => { const s = id ? ctx.byId(id) : undefined; if (p && s) void addDir(s, p); }); return true; }
       if (a === 'in-dir-x') { closeDirs(); return true; }
+      if (a === 'set' && el.dataset.k === 'mode' && FULL.has(el.dataset.v!)) {
+        const s = ctx.current();
+        if (el.dataset.ok) { ask = null; ctx.cue('on'); ctx.draw('comp'); return false; }
+        if (s?.mode === el.dataset.v) return false;
+        askFull(el); return true;
+      }
+      if (a === 'set' && el.dataset.k === 'mode') { ask = null; return false; }
+      if (a === 'in-full-no') { noFull(); return true; }
       if (a === 'in-a' && target) {
         const t = target, v = el.dataset.v;
         ctx.closeMenu();
@@ -239,10 +274,18 @@ export function mountInput(ctx: PageCtx): Feature {
       }
       return false;
     },
-    esc() { if (!veil?.hidden) { hideVeil(); return true; } return closeDirs(); },
+    esc() { if (!veil?.hidden) { hideVeil(); return true; } return closeDirs() || noFull(); },
+    rows(s) { return ask?.id === s.id ? `<div class="in-ask" role="alertdialog" aria-label="${esc(ask.label)}">${askHTML(s.agent, ask.v, ask.label)}</div>` : ''; },
     key(e) {
+      const take = () => { e.preventDefault(); e.stopImmediatePropagation(); return true; };
+      // The question takes esc, and ⏎ when nothing is being written.
+      if (ask && !dirs && !e.isComposing && (ask.id ? ask.id === ctx.current()?.id : !!win.querySelector('.pop.on.in-askpop'))) {
+        const t = e.target as HTMLElement, empty = t === ctx.ta ? !ctx.ta.value.trim() && !win.querySelector('.c-files > *') : !t.closest('input,textarea,button,[role="button"]');
+        if (e.key === 'Escape') { noFull(); return take(); }
+        if (e.key === 'Enter' && !e.shiftKey && empty) { if (!e.repeat) win.querySelector<HTMLElement>('.in-ask [data-ok]')?.click(); return take(); }
+      }
       if (!dirs || e.isComposing) return false;
-      const take = () => { e.preventDefault(); e.stopImmediatePropagation(); return true; }, n = dirs.rows.length + 1;
+      const n = dirs.rows.length + 1;
       if (e.key === 'Escape') { closeDirs(); return take(); }
       if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { dirs.at = (dirs.at + (e.key === 'ArrowDown' ? 1 : -1) + n) % n; drawDirs(); return take(); }
       if (e.key === 'Enter') { if (!e.repeat) sheet.querySelector<HTMLElement>('.in-sel')?.click(); return take(); }
