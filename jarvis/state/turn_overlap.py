@@ -1,6 +1,6 @@
 """Which of Allen's turns overlap: one still being answered, words said since.
 
-docs/plans/slow-results-proposal.md. A turn whose tool is slow can still be
+ADR 0107. A turn whose tool is slow can still be
 running when Allen says something else. The newer turn reads the older one
 here so it answers only the new words; the older turn reads the words said
 since its own so its late answer opens by pointing back at its question.

@@ -2444,7 +2444,7 @@ class StreamingTTSPipeline:
                 response.row_id,
             )
             if verdict == "enqueue_after_drain":
-                # docs/plans/slow-results-proposal.md: another turn's answer
+                # ADR 0107: another turn's answer
                 # waits until she has finished, and is not lost for arriving second.
                 self._enqueue_after_drain(response)
                 return

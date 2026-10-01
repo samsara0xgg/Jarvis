@@ -643,7 +643,7 @@ class DecideContext:
     # continues the exposed prefix of a failed stream.
     routine_stream: RoutineStreamRoute | None = None
     stream_correction: StreamCorrection | None = None
-    # docs/plans/slow-results-proposal.md (``realtime.response.slow_results``):
+    # ADR 0107 (``realtime.response.slow_results``):
     # a turn is told which earlier ones are still being answered, and a turn
     # Allen spoke past opens its answer by pointing back at his question.
     slow_results: bool = False

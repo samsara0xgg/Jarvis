@@ -113,7 +113,7 @@ class Wave4ResponseFlags:
     history (``jarvis.decision.open_prefix_warm``). Needs the run lifecycle's
     per-run client; without it the switch does nothing."""
     slow_results: bool = False
-    """``slow_results.enabled`` (docs/plans/slow-results-proposal.md): a turn
+    """``slow_results.enabled`` (ADR 0107): a turn
     is told which earlier ones are still being answered, a turn Allen spoke
     past opens by pointing back at its question, and another turn's answer
     waits for the speech lane instead of cutting in or being dropped."""

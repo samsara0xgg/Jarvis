@@ -1,6 +1,6 @@
 """A slow answer comes after the one she is saying, and says what it answers.
 
-docs/plans/slow-results-proposal.md (``realtime.response.slow_results``).
+ADR 0107 (``realtime.response.slow_results``).
 2026-09-29 live: the email took 30 s; Allen asked something else meanwhile.
 The new turn looked the email up again, its line cut off the email answer as
 it began, and the other question went unanswered. The lane cases drive the
@@ -79,7 +79,7 @@ def _outcomes(db_path: Path) -> list[tuple[str, str]]:
 
 
 def test_the_switch_is_what_the_runtime_hands_the_media_owner() -> None:
-    """Off, the shipped policy; on, a cross-group answer waits, older or newer."""
+    """Off, the old policy; on (shipped), a cross-group answer waits, older or newer."""
     off, on = make_foreground_decision_callable(), make_foreground_decision_callable(
         wait_for_lane=True,
     )
