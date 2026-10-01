@@ -974,11 +974,11 @@ _SHORT_ANSWER_RE = re.compile(
 
 # Allen sending Jarvis out of conversation mode (ADR 0102): she leaves it,
 # and it is no question to answer. Matched whole, wake phrase, case and
-# punctuation aside.
+# punctuation aside; said twice in a row counts too.
 _DISMISS_RE = re.compile(
-    r"(?:hey|hi|嘿|嗨)?(?:jarvis|贾维斯)?(?:ok|okay|好|行|嗯)?(?:你|那)?"
+    r"(?:(?:hey|hi|嘿|嗨)?(?:jarvis|贾维斯)?(?:ok|okay|好|行|嗯)?(?:你|那)?"
     r"(?:(?:可以)?退下|没事[了啦]?|就这样|先这样|拜拜|再见|结束(?:对话|会话)?|去休息"
-    r"|bye(?:bye)?|goodbye|thatsall|dismissed)(?:了|吧|啦|啊|哈)*",
+    r"|bye(?:bye)?|goodbye|thatsall|dismissed)(?:了|吧|啦|啊|哈)*)+",
 )
 # Said inside a short sentence too (「退出退出退下，暂停停一下等」, 「我让你退一下」,
 # 2026-09-30): 退下 or 退一下 anywhere, or 退出 first, in a sentence of at most
@@ -991,10 +991,11 @@ _QUESTION_END_RE = re.compile(r"(?:[?？]|吗|呢)\W*$")
 # Allen asking Jarvis to keep listening for him (ADR 0102): conversation mode
 # waits conversation_wait_s, and it is no question to answer. A lone 「等一下」
 # stays a stop request; 「等我一下」 does not stop her for good, only waits.
+# Said twice in a row counts too (「等我一下等我一下」, 2026-09-30).
 _WAIT_RE = re.compile(
-    r"(?:hey|hi|嘿|嗨)?(?:jarvis|贾维斯)?(?:ok|okay|好|行|嗯)?(?:你)?"
+    r"(?:(?:hey|hi|嘿|嗨)?(?:jarvis|贾维斯)?(?:ok|okay|好|行|嗯)?(?:你)?"
     r"(?:等(?:我|等我)(?:一下|一会儿?|下|会儿)?|稍等(?:我)?(?:一下)?|等着"
-    r"|holdon|waitforme|givemea(?:sec(?:ond)?|minute|moment))(?:啊|呀|哈|吧|please)*",
+    r"|holdon|waitforme|givemea(?:sec(?:ond)?|minute|moment))(?:啊|呀|哈|吧|please)*)+",
 )
 
 
