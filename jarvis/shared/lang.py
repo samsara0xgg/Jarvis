@@ -861,6 +861,12 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
         "zh": "这一轮出错了，没有完成。可以再说一次。",
         "en": "Something went wrong and this turn did not finish. Try again.",
     },
+    # The one line her voice says when the network drops mid-answer; the media
+    # actor synthesizes it ahead of time, while the network still works.
+    "tts.network_lost": {
+        "zh": "网好像断了，后面的我说不出来，检查一下网络吧。",
+        "en": "The network seems to be down, so I can't say the rest. Please check your connection.",
+    },
     # First-run setup: the line a picked voice says when previewed.
     "setup.preview": {
         "zh": "你好，我是 {assistant}。今天想先做点什么？",

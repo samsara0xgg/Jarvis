@@ -326,6 +326,7 @@ def _config() -> voice_media.StreamingMediaConfig:
         presentation_poll_s=0.0005,
         shutdown_timeout_s=2.0,
         enable_macos_say_fallback=False,
+        prefetch_network_lost_line=False,
     )
 
 
@@ -2497,6 +2498,7 @@ def test_a_voice_that_breaks_between_sentences_sounds_the_cut_off_cue_not_say(
     """
     db_path = tmp_path / "cut-off-between.db"
     conn = open_event_log(db_path)
+    reset_realtime_trace()
     provider = _FakeProvider({("RGAP", 0): _Behavior(fail_at_sequence=1)}, candidate_count=1)
     player = _player()
     pipeline = voice_media.StreamingTTSPipeline(
@@ -2532,9 +2534,66 @@ def test_a_voice_that_breaks_between_sentences_sounds_the_cut_off_cue_not_say(
     assert len(cue) > 500
     assert np.count_nonzero(said < cue.min()) >= 150
     assert spawned == []
+    cues = [p for p in realtime_trace_snapshot() if p.name == "tts_cut_off_cue"]
+    assert [p.attributes["cue"] for p in cues] == ["tones"]
     kind, payload = _terminal_for(open_event_log(db_path), response_id="RGAP")
     assert kind == "surface.playback_failed"
     assert payload["reason"] == "partial_tts_provider_failure"
+
+
+def test_a_break_after_a_good_answer_says_the_cached_network_lost_line_not_the_tones(
+    tmp_path: Path,
+) -> None:
+    """The first answer warms the cache; the next answer's break plays her line, not the beeps."""
+    db_path = tmp_path / "cut-off-line.db"
+    reset_realtime_trace()
+    conn = open_event_log(db_path)
+    line_amplitude = 5_000
+    provider = _FakeProvider(
+        {
+            ("RLINE-1", 0): _Behavior(),
+            ("network-lost-line", 0): _Behavior(amplitude=line_amplitude),
+            ("RLINE-2", 0): _Behavior(fail_at_sequence=1),
+        },
+        candidate_count=1,
+    )
+    player = _player()
+    pipeline = voice_media.StreamingTTSPipeline(
+        provider=provider,
+        player=player,
+        conn_factory=lambda: open_event_log(db_path),
+        boot_high_water_id=0,
+        config=replace(_config(), prefetch_network_lost_line=True),
+        start_player=False,
+    )
+    try:
+        with _CallbackPump(player, record=True) as pump:
+            first = _emit_response(
+                conn, response_id="RLINE-1", group_id="GLINE-1", turn_id="TLINE-1",
+                text=["all good."],
+            )
+            asyncio.run(_submit_response(pipeline, first))
+            assert pipeline.wait_until_idle(timeout_s=3.0)
+            _wait_until(lambda: bool(pipeline._network_lost_pcm))  # noqa: SLF001
+            pump.blocks.clear()
+            second = _emit_response(
+                conn, response_id="RLINE-2", group_id="GLINE-2", turn_id="TLINE-2",
+                text=["first sentence. ", "second sentence."],
+            )
+            asyncio.run(_submit_response(pipeline, second))
+            assert pipeline.wait_until_idle(timeout_s=3.0)
+    finally:
+        assert pipeline.close()
+        conn.close()
+    signal = pump.signal
+    line = np.flatnonzero(np.abs(signal - line_amplitude / 32_768) < 1e-3)
+    assert len(line) >= 100  # the line's 160 samples, less the declick ramps
+    assert np.abs(signal).max() < 0.17  # the tones peak at 0.18
+    cues = [p for p in realtime_trace_snapshot() if p.name == "tts_cut_off_cue"]
+    assert [p.attributes["cue"] for p in cues] == ["spoken_line"]
+    # The prefetch is a session of its own: it leaves no row in the Event Log.
+    rows = open_event_log(db_path).execute("SELECT payload_json FROM events").fetchall()
+    assert not any("network-lost-line" in row[0] for row in rows)
 
 
 def test_a_say_that_cannot_render_says_the_rest_aloud(tmp_path: Path) -> None:
