@@ -61,7 +61,7 @@ export function reducer(s: State, a: Action): State {
     // A lost link also ends the answer on screen: no `spoken` will come for it.
     case 'phase': { const inFlight = a.phase === 'hearing' || (s.inFlight && a.phase === 'processing');
       const talk = a.phase === 'error' ? ended(s.talk, s.replyAt) : s.inFlight && !inFlight ? unheld(s, s.reply) : s.talk;
-      return { ...s, phase: a.phase, reply: a.phase === 'error' ? '' : s.reply, heard: a.phase === 'hearing' ? '' : s.heard, partial: inFlight && s.inFlight ? s.partial : '', askedAt: a.phase === 'error' ? null : s.askedAt,
+      return { ...s, phase: a.phase, reply: a.phase === 'error' ? '' : s.reply, heard: a.phase === 'hearing' ? '' : s.heard, partial: a.phase === 'processing' && s.inFlight ? s.partial : '', askedAt: a.phase === 'error' ? null : s.askedAt,
         played: s.played || a.phase === 'error', inFlight, talk }; }
     case 'mic': return { ...s, micMuted: !s.micMuted };
     case 'sound': return { ...s, soundMuted: !s.soundMuted };
@@ -103,7 +103,9 @@ export function reducer(s: State, a: Action): State {
       const reply = a.message ?? '这一轮出错了，没有完成。可以再说一次。';
       return { ...t, reply, turnId: a.turnId, responseId: null, failed: true, faded: false, played: true, talk: hers(ended(s.talk, a.at), a.turnId, reply, a.at, { failed: true, said: true }),
         openSeq: t.rows.length ? t.rows[t.rows.length - 1].seq : 0 }; }
-    case 'controls': return { ...s, micMuted: a.micMuted, soundMuted: a.soundMuted, conversation: a.conversation };
+    // The daemon leaving conversation mode (idle, the end button) ends the words still coming in: no `accepted` or `empty` is owed for them.
+    case 'controls': { const next = { ...s, micMuted: a.micMuted, soundMuted: a.soundMuted, conversation: a.conversation };
+      return !a.conversation && s.inFlight ? reducer(next, { type: 'phase', phase: 'listening' }) : next; }
     // What has been heard so far of the words still coming in (ADR 0111); one that arrives after they were accepted is late.
     case 'partial': return s.inFlight ? { ...s, partial: a.text } : s;
     case 'heard': { const added = a.text.trim() ? yours({ ...s, talk: ended(s.talk, a.at) }, a.text, a.at) : { talk: s.talk, talkN: s.talkN };

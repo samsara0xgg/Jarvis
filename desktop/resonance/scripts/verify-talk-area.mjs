@@ -325,6 +325,47 @@ try {
     await s.context.close();
   }
 
+  // ---- "Hey Jarvis" and a pause: the words heard so far do not outlive their turn ----
+  {
+    const s = await scene({ captions: 'brief' });
+    const { page, emit, area, folded, posts, daemonState } = s;
+    await page.waitForTimeout(600);
+    const conversation = async on => { daemonState.controls.conversation = on; await emit('controls', { mic_muted: false, speech_muted: false, conversation: on }); };
+    const heardHi = async id => { await emit('voice', { phase: 'listening', turn_id: id }); await emit('voice', { phase: 'partial', turn_id: id, text: 'Hey hi' }); await emit('voice', { phase: 'transcribing', turn_id: id }); await page.waitForTimeout(700); };
+    await conversation(true);
+    await heardHi('w1');
+    let a = await area();
+    check('wake only, before the verdict: the pill shows what was heard, hearing', a.up && a.label === 'Hey hi' && a.state === 'hearing');
+    // The daemon ends the wake-only turn with `empty` (voice_session.py), then conversation mode times out.
+    await emit('voice', { phase: 'empty', turn_id: 'w1', reason: 'wake_only' }); await page.waitForTimeout(700);
+    a = await area();
+    check('wake only: `empty` drops the stale words and the pill goes back to listening, still up', a.up && a.label === '' && a.state === 'listening');
+    await conversation(false); await folded();
+    check('then the daemon goes idle: the pill folds', !(await area()).up);
+    // Whatever the daemon did or did not say about the turn, idle ends it on screen.
+    await conversation(true);
+    await heardHi('w2');
+    await conversation(false); await folded();
+    check('a turn nobody ended: conversation going idle still folds the pill', !(await area()).up);
+    await conversation(true);
+    await heardHi('w3');
+    await emit('voice', { phase: 'listening', turn_id: 'w4' }); await page.waitForTimeout(500); // the re-armed listen has no words yet
+    a = await area();
+    check('the re-armed listen starts with no words from the turn before', a.label === '');
+    await conversation(true);
+    await heardHi('w5');
+    // The end button with nothing to cancel (no answer, nothing being thought about): it still gets back to idle.
+    posts.length = 0;
+    await page.locator('.talk-ft .st').click(); await emit('controls', { mic_muted: false, speech_muted: false, conversation: false }); await page.waitForTimeout(1500);
+    a = await area();
+    check('the end button with no turn to cancel still ends the conversation and folds the pill', posts.some(p => p.path === '/inherent/controls' && p.body.conversation === false) && !a.up);
+    await conversation(true); await page.waitForTimeout(900); // she is asked to listen again: nothing of the ended turn is left
+    a = await area();
+    check('after the end button the next conversation starts clean: no stale words, not hearing', a.up && a.label === '' && a.state === 'listening');
+    check('no page errors (wake only)', s.errors.length === 0);
+    await s.context.close();
+  }
+
   // ---- shown nothing; and her voice off ----
   {
     const s = await scene({ captions: 'none' });

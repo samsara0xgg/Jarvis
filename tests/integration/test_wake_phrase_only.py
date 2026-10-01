@@ -142,10 +142,24 @@ class _WakeOnlyFirst(_RecordingPipeline):
         return MagicMock()
 
 
+class _VoiceLog:
+    """The voice phases the surface is sent, in order."""
+
+    def __init__(self) -> None:
+        self.phases: list[tuple[str, str, dict[str, object]]] = []
+
+    def broadcast_voice_sync(self, phase: str, *, turn_id: str, **payload: object) -> None:
+        self.phases.append((phase, turn_id, payload))
+
+
 def test_after_a_bare_wake_the_next_utterance_commits_without_a_second_wake(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """One wake hit, two speech bursts: the second is heard as the question."""
+    """One wake hit, two speech bursts: the second is heard as the question.
+
+    The surface is told the bare wake turn is over (`empty`), so the words it
+    showed for it do not stay on screen while no further turn comes.
+    """
     monkeypatch.setitem(
         voice_audio._MODE_THRESHOLDS,  # noqa: SLF001 - the shipped Silero gate, loosened for one-frame onsets
         "record",
@@ -155,13 +169,14 @@ def test_after_a_bare_wake_the_next_utterance_commits_without_a_second_wake(
     ingress = _ingress(backend)
     wake_engine = _FakeWakeEngine(detections={0})
     pipeline = _WakeOnlyFirst()
+    voice = _VoiceLog()
     with patch.object(voice_audio, "_load_silero_session", return_value=_EnergySession()):
         session = voice_session.DuplexVoiceSession(
             ingress=ingress,
             wake_engine=wake_engine,
             vad=voice_audio.SileroVad(mode="record"),
             pipeline=pipeline,
-            broadcaster=None,
+            broadcaster=voice,  # type: ignore[arg-type]
             output_active=lambda: False,
             wake_threshold=0.5,
             config=replace(
@@ -186,4 +201,7 @@ def test_after_a_bare_wake_the_next_utterance_commits_without_a_second_wake(
             time.sleep(0.002)
         _wait_until(lambda: len(pipeline.calls) == 2)
         assert session.metrics().wake_detections == 1
+        first = pipeline.calls[0]["turn_id"]
+        assert ("empty", first, {"reason": "wake_only"}) in voice.phases
+        assert [p for p, t, _ in voice.phases if t == first][-1] == "empty"
         assert session.close().definitively_closed

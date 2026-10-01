@@ -1753,6 +1753,8 @@ class DuplexVoiceSession:
                 # landed there, instead of answering an empty turn.
                 LOGGER.info("realtime wake: wake phrase only turn_id=%s", utterance.turn_id)
                 self._judge_no_words(utterance.turn_id, "", addressed=True)
+                # The surface still shows this turn as heard: end it, as voice_wake does.
+                self._broadcast("empty", turn_id=utterance.turn_id, reason="wake_only")
                 with contextlib.suppress(queue.Full):  # a newer wake is already queued
                     self._detections.put_nowait(
                         WakeDetection(
