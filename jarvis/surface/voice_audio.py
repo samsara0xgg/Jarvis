@@ -484,6 +484,9 @@ class AudioIngressConfig:
     # which is why it belongs in this block and not beside the flat realtime
     # keys both input owners share.
     device_miss_limit: int = 3
+    # ADR 0103: the input channel the wake word listens to when the device has
+    # it; every other subscriber keeps channel 0. None reads channel 0 only.
+    wake_input_channel: int | None = None
     accepted_natural_profiles: tuple[voice_backend.DeviceProfileKey, ...] = ()
 
 
@@ -501,6 +504,8 @@ class CanonicalAudioFrame:
     discontinuity_before: bool
     pcm16_mono: bytes
     measurement_boundary: str = "software_canonical_frame"
+    # The wake channel's samples for the same span (ADR 0103), when there is one.
+    wake_pcm16: bytes | None = None
 
 
 @dataclass(frozen=True)
@@ -914,11 +919,19 @@ class _PreallocatedPcmRing:
 class AudioIngressCanonicalizer:
     """Single stateful native→16 kHz mono PCM16 conversion owner."""
 
-    def __init__(self, *, sample_rate_hz: int, frame_samples: int) -> None:
+    def __init__(
+        self,
+        *,
+        sample_rate_hz: int,
+        frame_samples: int,
+        wake_channel: int | None = None,
+    ) -> None:
         """Create one canonical timeline; ``reset`` starts each epoch."""
         self._sample_rate_hz = sample_rate_hz
         self._frame_samples = frame_samples
+        self._wake_channel = wake_channel
         self._pending = bytearray()
+        self._pending_wake = bytearray()
         self._stream_epoch: int | None = None
         self._canonical_cursor = 0
         self._canonical_sequence = 0
@@ -932,6 +945,7 @@ class AudioIngressCanonicalizer:
     def reset(self, *, stream_epoch: int, discontinuity: bool) -> None:
         """Reset resampler/framer state on every epoch or discontinuity."""
         self._pending.clear()
+        self._pending_wake.clear()
         self._stream_epoch = stream_epoch
         self._canonical_cursor = 0
         self._canonical_sequence = 0
@@ -954,17 +968,15 @@ class AudioIngressCanonicalizer:
         if raw.size != expected:
             self._pending_discontinuity = True
             return ()
-        if native.channels > 1:
-            mixed = np.mean(
-                raw.reshape(native.frame_count, native.channels).astype(np.float32),
-                axis=1,
-            )
-        else:
-            mixed = raw.astype(np.float32)
+        mixed, wake = self._split_channels(raw, native)
         if native.sample_rate_hz == self._sample_rate_hz:
             canonical = np.clip(np.rint(mixed), -32768, 32767).astype("<i2")
         else:
             canonical = self._resample_linear(mixed, native.sample_rate_hz)
+        if wake is None:
+            self._pending_wake.clear()
+        elif len(self._pending_wake) == len(self._pending):
+            self._pending_wake.extend(np.ascontiguousarray(wake, dtype="<i2").tobytes())
         self._pending.extend(canonical.tobytes())
         self._last_adc_time_s = native.adc_time_s
         self._last_monotonic_ns = native.captured_monotonic_ns
@@ -973,6 +985,10 @@ class AudioIngressCanonicalizer:
         while len(self._pending) >= frame_bytes:
             payload = bytes(self._pending[:frame_bytes])
             del self._pending[:frame_bytes]
+            wake_payload = None
+            if len(self._pending_wake) >= frame_bytes:
+                wake_payload = bytes(self._pending_wake[:frame_bytes])
+                del self._pending_wake[:frame_bytes]
             frames.append(
                 CanonicalAudioFrame(
                     stream_epoch=native.stream_epoch,
@@ -984,12 +1000,31 @@ class AudioIngressCanonicalizer:
                     captured_monotonic_ns=self._last_monotonic_ns,
                     discontinuity_before=self._pending_discontinuity,
                     pcm16_mono=payload,
+                    wake_pcm16=wake_payload,
                 ),
             )
             self._pending_discontinuity = False
             self._canonical_sequence += 1
             self._canonical_cursor += self._frame_samples
         return tuple(frames)
+
+    def _split_channels(
+        self, raw: np.ndarray, native: _OwnedPcmFrame
+    ) -> tuple[np.ndarray, np.ndarray | None]:
+        """The canonical source samples, and the wake channel's when it has its own."""
+        if native.channels == 1:
+            return raw.astype(np.float32), None
+        channels = raw.reshape(native.frame_count, native.channels)
+        if self._wake_channel is None:
+            return np.mean(channels.astype(np.float32), axis=1), None
+        # ADR 0103: channel 0 for everyone, the wake channel beside it.
+        # ponytail: only at the canonical rate (the sounddevice backend always
+        # opens there); a resampled stream gives the wake word channel 0, add a
+        # second resampler state if one ever needs it.
+        wake = None
+        if native.sample_rate_hz == self._sample_rate_hz:
+            wake = channels[:, min(self._wake_channel, native.channels - 1)]
+        return channels[:, 0].astype(np.float32), wake
 
     def _resample_linear(self, samples: np.ndarray, source_rate_hz: int) -> np.ndarray:
         """Stateful bounded linear resampling for non-native fake/future backends."""
@@ -1147,6 +1182,7 @@ class AudioIngress:
         self._canonicalizer = AudioIngressCanonicalizer(
             sample_rate_hz=config.canonical_sample_rate_hz,
             frame_samples=config.canonical_frame_samples,
+            wake_channel=config.wake_input_channel,
         )
         self._subscriber_lock = threading.Lock()
         self._subscribers: dict[str, AudioSubscription] = {}
@@ -1551,6 +1587,7 @@ class AudioIngress:
         adc_time_s: float | None,
         captured_monotonic_ns: int,
         discontinuity_before: bool,
+        channels: int | None = None,
     ) -> None:
         """ADC callback sink: validate epoch and copy into one fixed ring."""
         timeline = self._active_timeline
@@ -1582,14 +1619,16 @@ class AudioIngress:
             timeline.first_callback_monotonic_ns = captured_monotonic_ns
         native_ring = timeline.native_ring
         overflow_count = native_ring.overflow_count
+        # A device with fewer channels than the format asks for opens with its own.
+        opened = native_format.channels if channels is None else channels
         published = native_ring.write(
             pcm=callback_buffer,
-            byte_count=frame_count * native_format.channels * 2,
+            byte_count=frame_count * opened * 2,
             stream_epoch=stream_epoch,
             sequence=sequence,
             sample_cursor=sample_cursor,
             sample_rate_hz=native_format.sample_rate_hz,
-            channels=native_format.channels,
+            channels=opened,
             frame_count=frame_count,
             adc_time_s=adc_time_s,
             captured_monotonic_ns=captured_monotonic_ns,
@@ -1860,9 +1899,12 @@ class AudioIngress:
         self._canonical_frames += 1
         for subscriber in self._subscriber_snapshot:
             before_overflow = subscriber.overflow_count
+            pcm = frame.pcm16_mono
+            if subscriber.purpose is SubscriberPurpose.WAKE and frame.wake_pcm16 is not None:
+                pcm = frame.wake_pcm16
             published = subscriber._ring.write(  # noqa: SLF001 - ingress owns subscriber rings
-                pcm=frame.pcm16_mono,
-                byte_count=len(frame.pcm16_mono),
+                pcm=pcm,
+                byte_count=len(pcm),
                 stream_epoch=frame.stream_epoch,
                 sequence=frame.sequence,
                 sample_cursor=frame.sample_cursor,
@@ -2662,8 +2704,12 @@ def audio_ingress_config_from_mapping(  # noqa: C901 - strict parsing plus cross
     if config.reopen_initial_backoff_s > config.reopen_max_backoff_s:
         msg = "reopen_initial_backoff_s must not exceed reopen_max_backoff_s"
         raise ValueError(msg)
+    wake_channel = values.get("wake_input_channel")
     return replace(
         config,
+        wake_input_channel=(
+            None if wake_channel is None else _positive_int("wake_input_channel", 1)
+        ),
         route_observer_enabled=_route_observer_enabled(values.get("route_observer")),
         **_barge_in_config(values.get("barge_in")),
     )

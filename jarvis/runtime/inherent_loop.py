@@ -3267,7 +3267,8 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
         backend = voice_backend.SoundDeviceDuplexBackend(
             input_format=voice_backend.AudioInputFormat(
                 sample_rate_hz=ingress_config.canonical_sample_rate_hz,
-                channels=1,
+                # ADR 0103: open up to the wake channel; a mono device opens mono.
+                channels=(ingress_config.wake_input_channel or 0) + 1,
                 callback_frame_samples=ingress_config.canonical_frame_samples,
             ),
             open_timeout_s=ingress_config.backend_open_timeout_s,
