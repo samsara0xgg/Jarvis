@@ -8,6 +8,7 @@
 /* cut short by a small window: a fade and a word at its foot until the end is in view (macOS hides the scroll bar) */
 .keys-in.more::after{content:"↓ 往下还有";position:sticky;bottom:-16px;display:flex;align-items:flex-end;justify-content:center;height:44px;margin:-44px -19px -16px;padding-bottom:8px;
   background:linear-gradient(180deg,rgb(17 18 40 / 0),#111228 70%);font:11px var(--ui);color:var(--faint);pointer-events:none}
+:lang(en) .keys-in.more::after{content:"↓ More below"}
 .keys-in h4 small{font:normal 11.5px var(--ui);color:var(--faint)}
 .keys kbd{display:inline-grid;place-items:center;min-width:16px;height:16px;padding:0 4px;border-radius:4px;font:500 10px/1 var(--mono);background:rgb(255 255 255 / .08);color:var(--muted);vertical-align:1px}
 .keys-g{display:grid;grid-template-columns:1fr 1fr;gap:6px 26px}

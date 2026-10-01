@@ -32,6 +32,7 @@ import yaml from 'highlight.js/lib/languages/yaml';
 import type { Diff, Peek } from '../../../electron/agents/types';
 import { inline } from './refs';
 import './open.css';
+import { plural, tr } from '../lang';
 
 for (const [n, l] of Object.entries({ bash, c, cpp, css, diff, go, ini, java, javascript, json, kotlin, markdown, objectivec, python, ruby, rust, scss, shell, sql, swift, typescript, xml, yaml })) hljs.registerLanguage(n, l);
 const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -174,7 +175,7 @@ function csvHTML(ls: string[]) {
 // ---------- the recording and the sound: their own controls ----------
 const PLAY = '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M5 3.2v9.6L12.8 8z"/></svg>';
 const PAUSE = '<svg viewBox="0 0 16 16" fill="currentColor"><rect x="4" y="3" width="2.8" height="10" rx="1"/><rect x="9.2" y="3" width="2.8" height="10" rx="1"/></svg>';
-const ctlHTML = '<div class="op-ctl"><button type="button" class="op-pp" aria-label="播放">' + PLAY + '</button><span class="op-tm">0:00</span><div class="op-scrub" role="slider" aria-label="进度" tabindex="0" aria-valuemin="0" aria-valuenow="0"><i></i><b></b></div><span class="op-tm op-dur">0:00</span></div>';
+const ctlHTML = `<div class="op-ctl"><button type="button" class="op-pp" aria-label="${tr('播放', 'Play')}">` + PLAY + `</button><span class="op-tm">0:00</span><div class="op-scrub" role="slider" aria-label="${tr('进度', 'Progress')}" tabindex="0" aria-valuemin="0" aria-valuenow="0"><i></i><b></b></div><span class="op-tm op-dur">0:00</span></div>`;
 // Play and pause, the time, and a scrubber that seeks while dragged; `drawn` hears every move of the playhead.
 function wire(root: HTMLElement, m: HTMLMediaElement, drawn: () => void = () => {}) {
   const pp = root.querySelector<HTMLElement>('.op-pp')!, big = root.querySelector<HTMLElement>('.op-big'), now = root.querySelector<HTMLElement>('.op-tm')!, dur = root.querySelector<HTMLElement>('.op-dur')!;
@@ -189,7 +190,7 @@ function wire(root: HTMLElement, m: HTMLMediaElement, drawn: () => void = () => 
   const tick = () => { show(); if (!m.paused) raf = requestAnimationFrame(tick); };
   const state = () => {
     const on = !m.paused;
-    pp.innerHTML = on ? PAUSE : PLAY; pp.setAttribute('aria-label', on ? '暂停' : '播放');
+    pp.innerHTML = on ? PAUSE : PLAY; pp.setAttribute('aria-label', on ? tr('暂停', 'Pause') : tr('播放', 'Play'));
     root.classList.toggle('on', on);
     cancelAnimationFrame(raf); if (on) raf = requestAnimationFrame(tick); else show();
   };
@@ -263,8 +264,8 @@ export function drawFile(f: FileView) {
   view.classList.remove('web');
   if (k.kind === 'dir') {
     const es = k.entries ?? [];
-    f.info(`${es.length} 项`);
-    view.innerHTML = `<div class="op-dir">${es.map(e => `<button type="button" data-act="peek" data-ref="${esc(`${k.abs}/${e.name}`)}"><i>${e.dir ? '▸' : ''}</i><span>${esc(e.name)}${e.dir ? '/' : ''}</span></button>`).join('') || '<p class="op-empty">空文件夹</p>'}</div>`;
+    f.info(tr(`${es.length} 项`, plural(es.length, 'item')));
+    view.innerHTML = `<div class="op-dir">${es.map(e => `<button type="button" data-act="peek" data-ref="${esc(`${k.abs}/${e.name}`)}"><i>${e.dir ? '▸' : ''}</i><span>${esc(e.name)}${e.dir ? '/' : ''}</span></button>`).join('') || tr('<p class="op-empty">空文件夹</p>', '<p class="op-empty">Empty folder</p>')}</div>`;
     return;
   }
   if (k.bytes && /^(png|jpe?g|gif|webp|avif|svg|bmp|ico)$/.test(ext)) {
@@ -272,7 +273,7 @@ export function drawFile(f: FileView) {
     view.innerHTML = `<div class="op-img"><img src="${esc(f.src)}" alt="${esc(name)}" draggable="false"></div>`;
     const box = view.firstElementChild as HTMLElement, img = box.querySelector('img')!;
     img.addEventListener('load', () => f.info(`${img.naturalWidth} × ${img.naturalHeight} · ${bytes(size)}`), { once: true });
-    img.addEventListener('error', () => { view.innerHTML = '<p class="pv-err">这张图打不开</p>'; }, { once: true });
+    img.addEventListener('error', () => { view.innerHTML = tr('<p class="pv-err">这张图打不开</p>', '<p class="pv-err">This image can\'t be opened</p>'); }, { once: true });
     // A click shows it 1:1 with the point clicked kept under the pointer; another fits it again.
     img.addEventListener('click', e => {
       const r = img.getBoundingClientRect(), fx = (e.clientX - r.left) / r.width, fy = (e.clientY - r.top) / r.height, vr = view.getBoundingClientRect();
@@ -283,28 +284,28 @@ export function drawFile(f: FileView) {
   }
   if (k.bytes && k.kind === 'media' && /^(mp4|m4v|mov|webm|ogv)$/.test(ext)) {
     f.info(bytes(size));
-    view.innerHTML = `<div class="op-vid"><div class="op-frame"><video preload="metadata" playsinline src="${esc(f.src)}"></video><button type="button" class="op-big" aria-label="播放">${PLAY}</button></div>${ctlHTML}</div>`;
+    view.innerHTML = `<div class="op-vid"><div class="op-frame"><video preload="metadata" playsinline src="${esc(f.src)}"></video><button type="button" class="op-big" aria-label="${tr('播放', 'Play')}">${PLAY}</button></div>${ctlHTML}</div>`;
     const root = view.firstElementChild as HTMLElement, v = root.querySelector('video')!;
     const said = () => { if (v.videoWidth) (root.querySelector('.op-frame') as HTMLElement).style.aspectRatio = `${v.videoWidth} / ${v.videoHeight}`; f.info(`${Number.isFinite(v.duration) ? `${clock(v.duration)} · ` : ''}${v.videoWidth ? `${v.videoWidth} × ${v.videoHeight} · ` : ''}${bytes(size)}`); };
     v.addEventListener('loadedmetadata', said); v.addEventListener('durationchange', said);
-    v.addEventListener('error', () => { view.innerHTML = '<p class="pv-err">这段视频在这里放不了：按右上角在它自己的 App 里打开</p>'; }, { once: true });
+    v.addEventListener('error', () => { view.innerHTML = `<p class="pv-err">${tr('这段视频在这里放不了：按右上角在它自己的 App 里打开', "This video can't play here. Use the button at the top right to open it in its own app.")}</p>`; }, { once: true });
     wire(root, v);
     return;
   }
   if (k.bytes && k.kind === 'media') {
     f.info(`${ext.toUpperCase()} · ${bytes(size)}`);
-    view.innerHTML = `<div class="op-aud"><div class="op-wave" aria-label="波形，点一下跳到那里"><canvas></canvas></div>${ctlHTML}<audio preload="metadata" src="${esc(f.src)}"></audio></div>`;
+    view.innerHTML = `<div class="op-aud"><div class="op-wave" aria-label="${tr('波形，点一下跳到那里', 'Waveform, click to jump there')}"><canvas></canvas></div>${ctlHTML}<audio preload="metadata" src="${esc(f.src)}"></audio></div>`;
     const root = view.firstElementChild as HTMLElement, a = root.querySelector('audio')!;
     const said = () => f.info(`${Number.isFinite(a.duration) ? `${clock(a.duration)} · ` : ''}${ext.toUpperCase()} · ${bytes(size)}`);
     a.addEventListener('loadedmetadata', said); a.addEventListener('durationchange', said);
-    a.addEventListener('error', () => { view.innerHTML = '<p class="pv-err">这段声音在这里放不了：按右上角在它自己的 App 里打开</p>'; }, { once: true });
+    a.addEventListener('error', () => { view.innerHTML = `<p class="pv-err">${tr('这段声音在这里放不了：按右上角在它自己的 App 里打开', "This audio can't play here. Use the button at the top right to open it in its own app.")}</p>`; }, { once: true });
     let redraw = () => {};
     wire(root, a, () => redraw());
     void wave(root, a, f.src, size).then(d => { redraw = d; });
     return;
   }
   if (k.bytes && ext === 'pdf') {
-    f.info(`${k.pages ? `${k.pages} 页 · ` : ''}${bytes(size)}`);
+    f.info(tr(`${k.pages ? `${k.pages} 页 · ` : ''}${bytes(size)}`, `${k.pages ? `${plural(k.pages, 'page')} · ` : ''}${bytes(size)}`));
     view.classList.add('web');
     view.innerHTML = `<iframe class="op-pdf" src="${esc(f.src)}#navpanes=0&view=FitH" title="${esc(name)}"></iframe>`;
     return;
@@ -313,7 +314,7 @@ export function drawFile(f: FileView) {
   if (k.kind === 'md') {
     const mode = f.mode ?? modes.get(k.abs) ?? 'r';
     f.info('Markdown');
-    view.innerHTML = `<div class="op-bar"><span class="op-seg" role="group" aria-label="怎么看"><button type="button" data-v="r" aria-pressed="${mode === 'r'}">渲染</button><button type="button" data-v="s" aria-pressed="${mode === 's'}">源码</button></span></div>`
+    view.innerHTML = `<div class="op-bar"><span class="op-seg" role="group" aria-label="${tr('怎么看', 'View as')}"><button type="button" data-v="r" aria-pressed="${mode === 'r'}">${tr('渲染', 'Rendered')}</button><button type="button" data-v="s" aria-pressed="${mode === 's'}">${tr('源码', 'Source')}</button></span></div>`
       + (mode === 'r' ? mdDoc(text) : rowsHTML(ls.map((t, i) => [i + 1, t, ' ']), 'markdown', { wrap: true, at: k.line }));
     // A path a document links to is where the document is, not where the session is.
     const dir = k.abs.slice(0, k.abs.lastIndexOf('/'));
@@ -326,8 +327,8 @@ export function drawFile(f: FileView) {
     return;
   }
   if (k.cut) {
-    f.info(`${sz} · 只读了最后 1 MB`);
-    const gap = `<div class="op-gap">⋯ 前面还有 ${bytes(Math.max(0, size - (1 << 20)))}</div>`;
+    f.info(tr(`${sz} · 只读了最后 1 MB`, `${sz} · last 1 MB only`));
+    const gap = `<div class="op-gap">⋯ ${tr('前面还有 ', '')}${bytes(Math.max(0, size - (1 << 20)))}${tr('', ' before')}</div>`;
     view.innerHTML = isLog(k.abs, ls) ? logHTML(ls).replace('<div class="op-log">', `<div class="op-log">${gap}`) : gap + rowsHTML(ls.map(t => [0, t, ' ']), lang, { nums: false });
     view.scrollTop = f.scroll ?? view.scrollHeight;
     return;
@@ -336,8 +337,8 @@ export function drawFile(f: FileView) {
   const changed = !!k.diff?.length, mode = changed ? f.mode ?? modes.get(k.abs) ?? 'all' : 'all';
   const added = new Set<number>();
   if (changed) for (const r of diffRows(k.diff!, k.hunks)) if (r !== '⋯' && r[2] === '+') added.add(r[0]);
-  f.info(`${ls.length} 行${k.line ? ` · 第 ${k.line} 行` : ''}${changed ? ` · +${k.add ?? 0} −${k.del ?? 0}` : ''}`);
-  const bar = changed ? `<div class="op-bar"><span class="op-seg" role="group" aria-label="看什么"><button type="button" data-v="all" aria-pressed="${mode === 'all'}">全文</button><button type="button" data-v="diff" aria-pressed="${mode === 'diff'}">改动</button></span></div>` : '';
+  f.info(tr(`${ls.length} 行${k.line ? ` · 第 ${k.line} 行` : ''}${changed ? ` · +${k.add ?? 0} −${k.del ?? 0}` : ''}`, `${plural(ls.length, 'line')}${k.line ? ` · line ${k.line}` : ''}${changed ? ` · +${k.add ?? 0} −${k.del ?? 0}` : ''}`));
+  const bar = changed ? `<div class="op-bar"><span class="op-seg" role="group" aria-label="${tr('看什么', 'Show')}"><button type="button" data-v="all" aria-pressed="${mode === 'all'}">${tr('全文', 'Full text')}</button><button type="button" data-v="diff" aria-pressed="${mode === 'diff'}">${tr('改动', 'Changes')}</button></span></div>` : '';
   view.innerHTML = bar + (mode === 'diff' ? rowsHTML(diffRows(k.diff!, k.hunks), lang, { diff: true })
     : ext === 'csv' ? csvHTML(ls)
     : isLog(k.abs, ls) && !lang ? logHTML(ls)

@@ -58,6 +58,7 @@
 .in-shf{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:8px;padding:8px 4px 0 10px;border-top:.5px solid rgb(var(--acc) / .12);font-size:11.5px;color:var(--faint)}
 /* ---------- permission modes: what each means; 完全放开 warm in the menu, asked once, the mode warm while it is on ---------- */
 .pop:has(> [data-k="mode"]){min-width:250px}
+:lang(en) .pop:has(> [data-k="mode"]){min-width:340px}
 .pop button[data-k="mode"] small{margin-left:auto;padding-left:18px;font-size:11px;color:var(--faint)}
 .pop button[data-k="mode"].on::after{margin-left:10px;padding-left:0}
 .pop button.in-warm,.pop button.in-warm.on{color:var(--warm-c)}

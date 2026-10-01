@@ -9,6 +9,7 @@ import { CLOSE_ICON, active, askHTML, chipOf, panelHTML, railHTML, svcOf } from 
 import { QUICKLOOK, badge, drawFile, stopFile } from './open';
 import { mountTerminal, type Tab, type TPos } from './terminal';
 import './workbench.css';
+import { tr } from '../lang';
 
 type Hooks = {
   api: string; call<T = unknown>(route: string, body?: unknown, method?: string): Promise<T>; toast(t: string, bad?: boolean): void; cue(name: string, gain?: number): void;
@@ -124,7 +125,7 @@ export function mountWorkbench(win: HTMLElement, ta: HTMLTextAreaElement, hooks:
   function cards() { for (const c of win.querySelectorAll<HTMLElement>('.lnk')) c.classList.toggle('on', !!S.ref && classify(c.dataset.ref!).key === S.ref.key); }
   function flipIcon() {
     const f = $<HTMLElement>('[data-act="pvflip"]', pv), st = S.pos === 'stage';
-    f.innerHTML = st ? icon.side : icon.stage; f.setAttribute('aria-label', st ? '放回旁边' : '推上舞台'); f.dataset.tip = st ? '放回旁边' : '推上舞台';
+    f.innerHTML = st ? icon.side : icon.stage; f.setAttribute('aria-label', st ? tr('放回旁边', 'Move back to side') : tr('推上舞台', 'Move to stage')); f.dataset.tip = st ? tr('放回旁边', 'Move back to side') : tr('推上舞台', 'Move to stage');
   }
   function head(ic: string, fi: boolean, b: string, small: string) {
     const i = $('.sh .ic', pv); i.textContent = ic; i.className = `ic${fi ? ' fi' : ''}`;
@@ -155,11 +156,11 @@ export function mountWorkbench(win: HTMLElement, ta: HTMLTextAreaElement, hooks:
     const p = stripLine(r.ref);
     let k = o.k;
     if (!k) {
-      head(badge(p), true, p.slice(p.lastIndexOf('/') + 1), '在读…');
-      view.innerHTML = '<p class="pv-wait">在读…</p>';
+      head(badge(p), true, p.slice(p.lastIndexOf('/') + 1), tr('在读…', 'Reading…'));
+      view.innerHTML = tr('<p class="pv-wait">在读…</p>', '<p class="pv-wait">Reading…</p>');
       const got = await peekOf(s, r.ref);
       if (tok !== loadTok || S.ref !== r) return;
-      if (typeof got === 'string') { view.innerHTML = `<p class="pv-err">${esc(got)}</p>`; $('.sh small', pv).textContent = '打不开'; return; }
+      if (typeof got === 'string') { view.innerHTML = `<p class="pv-err">${esc(got)}</p>`; $('.sh small', pv).textContent = tr('打不开', 'Can\'t open'); return; }
       k = got;
     }
     r.abs = k.abs;
@@ -173,7 +174,7 @@ export function mountWorkbench(win: HTMLElement, ta: HTMLTextAreaElement, hooks:
   // Pages run in their own browser: their own session without the daemon's key, new windows go to the real browser.
   function web(url: string, pdf: boolean) {
     view.classList.add('web');
-    view.innerHTML = '<p class="pv-wait">在打开…</p>';
+    view.innerHTML = tr('<p class="pv-wait">在打开…</p>', '<p class="pv-wait">Opening…</p>');
     const w = document.createElement('webview');
     w.setAttribute('partition', 'persist:agents-web');
     w.setAttribute('allowpopups', '');
@@ -209,7 +210,7 @@ export function mountWorkbench(win: HTMLElement, ta: HTMLTextAreaElement, hooks:
       if (typeof got === 'string') { hooks.toast(got, true); return; }
       const ql = QUICKLOOK.test(got.abs) || got.kind === 'quicklook', out = !ql && (got.kind === 'media' || got.kind === 'web') && !got.bytes && !/\.html?$/i.test(got.abs);
       if (ql || out) {
-        if (out) hooks.toast('不在这个会话的文件夹里，用快速查看打开');
+        if (out) hooks.toast(tr('不在这个会话的文件夹里，用快速查看打开', 'Outside this session\'s folder, opening with Quick Look'));
         void window.agents?.quickLook?.(got.abs);
         return;
       }
@@ -256,7 +257,7 @@ export function mountWorkbench(win: HTMLElement, ta: HTMLTextAreaElement, hooks:
   function showNote(on: boolean) {
     pv.querySelector('.pv-note')?.remove();
     if (!on) return;
-    const n = document.createElement('p'); n.className = 'pv-note'; n.innerHTML = `上次你放在旁边 · 点 ${icon.stage} 推上舞台`;
+    const n = document.createElement('p'); n.className = 'pv-note'; n.innerHTML = tr(`上次你放在旁边 · 点 ${icon.stage} 推上舞台`, `You kept it beside last time · click ${icon.stage} to move it to stage`);
     pv.append(n);
     setTimeout(() => n.animate({ opacity: [1, 0] }, { duration: 400, fill: 'forwards' }).finished.then(() => n.remove(), () => n.remove()), 4000);
   }
@@ -357,13 +358,13 @@ export function mountWorkbench(win: HTMLElement, ta: HTMLTextAreaElement, hooks:
     if (!s) return;
     const st = s.land?.s;
     if (st === 'run' || st === 'stopping' || st === 'wait' || st === 'fixing') { if (!S.left) openPanel(); return; }
-    if (!s.dirty && !s.land) { hooks.toast('没有要落地的改动'); return; }
+    if (!s.dirty && !s.land) { hooks.toast(tr('没有要落地的改动', 'Nothing to land')); return; }
     const asking = !!s.dirty?.ask && (!s.land || st === 'done');
     if (asking && !via) { if (!S.left) openPanel(); return; }
     hooks.cue('send', .7);
     if (!S.left) openPanel();
     const ok = await land(st === 'paused' || st === 'fail' ? 'resume' : 'start', asking && via ? { via, keep: true } : {});
-    if (ok && asking && via) hooks.toast(`记住了：${s.project} 以后都${via === 'pr' ? '推分支开 PR' : `合进 ${s.dirty?.into ?? 'main'}`}`);
+    if (ok && asking && via) hooks.toast(tr(`记住了：${s.project} 以后都${via === 'pr' ? '推分支开 PR' : `合进 ${s.dirty?.into ?? 'main'}`}`, `Remembered: ${s.project} will ${via === 'pr' ? 'push a branch and open a PR' : `merge into ${s.dirty?.into ?? 'main'}`} from now on`));
   }
   let msgTimer = 0;
   win.addEventListener('focusout', e => { if ((e.target as HTMLElement).id === 'landmsg') requestAnimationFrame(renderLand); });
@@ -406,8 +407,8 @@ export function mountWorkbench(win: HTMLElement, ta: HTMLTextAreaElement, hooks:
     saw,
     // The hint in an empty composer says what ← does now.
     hint() {
-      const empty = !ta.value, back = hooks.busy() ? '' : S.pos === 'stage' ? '退出舞台' : S.pos === 'side' && S.ref ? '关掉旁边' : hooks.b01() ? '长曝光' : '';
-      return empty ? `${back ? `<span><kbd>←</kbd>${back}</span>` : ''}${chat.classList.contains('nar') || !sess() ? '' : '<span class="hk2"><kbd>⌃</kbd><kbd>`</kbd>终端</span>'}` : '';
+      const empty = !ta.value, back = hooks.busy() ? '' : S.pos === 'stage' ? tr('退出舞台', 'Leave stage') : S.pos === 'side' && S.ref ? tr('关掉旁边', 'Close side view') : hooks.b01() ? tr('长曝光', 'Long Exposure') : '';
+      return empty ? tr(`${back ? `<span><kbd>←</kbd>${back}</span>` : ''}${chat.classList.contains('nar') || !sess() ? '' : '<span class="hk2"><kbd>⌃</kbd><kbd>`</kbd>终端</span>'}`, `${back ? `<span><kbd>←</kbd>${back}</span>` : ''}${chat.classList.contains('nar') || !sess() ? '' : '<span class="hk2"><kbd>⌃</kbd><kbd>`</kbd>Terminal</span>'}`) : '';
     },
     // Esc: out of the stage first, then stop a landing that is running.
     esc() {

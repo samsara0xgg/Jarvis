@@ -2,6 +2,7 @@
 // own terminal (the workbench's pane opens on 终端 and shows it running) and never reaches the agent; the composer keeps
 // the keys, as it does for a message sent.
 import type { Feature, PageCtx } from './ctx';
+import { tr } from './lang';
 
 export function mountBang(ctx: PageCtx): Feature {
   const { ta } = ctx;
@@ -10,8 +11,8 @@ export function mountBang(ctx: PageCtx): Feature {
   function run() {
     const cmd = cmdOf();
     if (cmd === null) return false;
-    if (!cmd) { ctx.toast('! 后面写一条命令'); return true; }
-    if (!ctx.wb.run(cmd)) { ctx.toast('先打开一个会话，命令在它的文件夹里跑'); return true; }
+    if (!cmd) { ctx.toast(tr('! 后面写一条命令', 'Write a command after !')); return true; }
+    if (!ctx.wb.run(cmd)) { ctx.toast(tr('先打开一个会话，命令在它的文件夹里跑', 'Open a session first: the command runs in its folder')); return true; }
     ta.value = ''; ta.dispatchEvent(new Event('input')); ctx.draw('comp');
     ctx.cue('send', .5);
     return true;

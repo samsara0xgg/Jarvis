@@ -11,6 +11,7 @@ import { COL, glyph, rgba, type C3, type St } from './glyph';
 import type { Her } from './her';
 import { clamp, dpr, esc, hash, lerp, reduced, spring, step, type Spring } from './motion';
 import './waiting.css';
+import { plural, tr } from '../lang';
 
 type Env = {
   win: HTMLElement; chrome: HTMLElement; ta: HTMLTextAreaElement; her: Her;
@@ -42,16 +43,16 @@ const LIVELY = 'linear(0,.045,.153,.29,.433,.568,.687,.786,.864,.924,.967,.996,1
 const PARK_ICON = '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="5.5"/><path d="M8 5v3.2l2 1.3"/></svg>';
 const X_ICON = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7"/></svg>';
 const waited = (s: Sess) => Math.max(0, (Date.now() - waitingSince(s)) / 60000);
-const mins = (m: number) => m < 1 ? '刚刚' : m < 60 ? `${Math.round(m)} 分` : `${+(m / 60).toFixed(1)} 小时`;
+const mins = (m: number) => m < 1 ? tr('刚刚', 'just now') : m < 60 ? tr(`${Math.round(m)} 分`, `${Math.round(m)} min`) : tr(`${+(m / 60).toFixed(1)} 小时`, `${+(m / 60).toFixed(1)} h`);
 // What each waits with, in one line: the host already words a request (reqLine) and an error in the summary.
-const lineOf = (s: Sess) => waitOf(s) === 'done' ? `做完了：${s.summary}` : s.summary;
+const lineOf = (s: Sess) => waitOf(s) === 'done' ? tr(`做完了：${s.summary}`, `Done: ${s.summary}`) : s.summary;
 // Its tail: longer the longer it has waited, full length at an hour, always short of the star behind it.
 const tail = (s: Sess) => 5 + 10 * clamp(Math.log2(1 + waited(s)) / Math.log2(61));
 const anim = (el: Element, frames: Keyframe[], ms: number, easing = 'cubic-bezier(.2,.8,.2,1)') => reduced.matches ? null : el.animate(frames, { duration: ms, easing });
 
 export function mountWaiting(env: Env) {
   const listEl = document.createElement('div'), sayEl = document.createElement('div'), ringCv = document.createElement('canvas');
-  listEl.className = 'bw-hq'; listEl.hidden = true; listEl.setAttribute('aria-label', '等你的');
+  listEl.className = 'bw-hq'; listEl.hidden = true; listEl.setAttribute('aria-label', tr('等你的', 'Waiting on you'));
   sayEl.className = 'bw-say'; sayEl.hidden = true; sayEl.setAttribute('role', 'status');
   // B's rings pass over her own glow, so they have a small canvas of their own above her.
   ringCv.className = 'bw-qb'; ringCv.setAttribute('aria-hidden', 'true');
@@ -242,12 +243,12 @@ export function mountWaiting(env: Env) {
   function next() {
     const d = others()[0];
     hideList(); hideSay();
-    if (!d) { env.toast('没有别的等你的了'); env.her.say('fin', 1100); return; }
+    if (!d) { env.toast(tr('没有别的等你的了', 'Nothing else is waiting on you')); env.her.say('fin', 1100); return; }
     env.her.hop(.16); go(d.id);
   }
   function park(id: string) {
     const s = env.sessions().find(x => x.id === id); if (!s) return;
-    hideList(); s.parked = true; env.cue('close', .6); env.toast(`先放着：${s.title}`); env.refresh();
+    hideList(); s.parked = true; env.cue('close', .6); env.toast(tr(`先放着：${s.title}`, `Parked: ${s.title}`)); env.refresh();
     env.call(`/sessions/${id}/meta`, { parked: true }).catch(e => { s.parked = false; env.toast(e instanceof Error ? e.message : String(e)); env.refresh(); });
   }
   function setLook(k: Look) {
@@ -258,7 +259,7 @@ export function mountWaiting(env: Env) {
   // row: a row of her list, which the menu stands beside (left of the list, level with the row) instead of over.
   function aside(id: string, e: MouseEvent, row?: HTMLElement) {
     e.preventDefault(); clearTimeout(listT);
-    env.menu(`<button type="button" data-q="open" data-id="${esc(id)}">打开</button><button type="button" data-q="park" data-id="${esc(id)}">${PARK_ICON}先放着</button>`, point(e));
+    env.menu(`<button type="button" data-q="open" data-id="${esc(id)}">${tr('打开', 'Open')}</button><button type="button" data-q="park" data-id="${esc(id)}">${PARK_ICON}${tr('先放着', 'Park')}</button>`, point(e));
     const pop = env.win.querySelector<HTMLElement>('.pop.on');
     if (!row || !pop) return;
     const w = env.win.getBoundingClientRect(), l = listEl.getBoundingClientRect(), r = row.getBoundingClientRect();
@@ -271,7 +272,7 @@ export function mountWaiting(env: Env) {
     const key = q.map(s => `${s.id}|${s.title}|${waitOf(s)}|${lineOf(s)}|${mins(waited(s))}`).join(';') + `|${env.current()}`;
     if (key === listKey) return; listKey = key;
     listEl.innerHTML = q.length ? q.map((s, j) => `<button type="button" class="hq-r${s.id === env.current() ? ' on' : ''}" data-id="${esc(s.id)}"><i class="hq-n">${j + 1}</i><b class="hq-g q-${waitOf(s)}" aria-hidden="true">✦</b>`
-      + `<span class="hq-t"><b>${esc(s.title)}</b><small>${esc(lineOf(s))}</small></span><em>${mins(waited(s))}</em></button>`).join('') : '<p class="hq-none">没有等你的</p>';
+      + `<span class="hq-t"><b>${esc(s.title)}</b><small>${esc(lineOf(s))}</small></span><em>${mins(waited(s))}</em></button>`).join('') : tr('<p class="hq-none">没有等你的</p>', '<p class="hq-none">Nothing waiting on you</p>');
   }
   function showList() {
     listKey = ''; renderList(); hideSay();
@@ -294,7 +295,7 @@ export function mountWaiting(env: Env) {
   }
   function say(lead: string, first: Sess, ms: number) {
     sayEl.innerHTML = `<button type="button" class="say-go" data-id="${esc(first.id)}"><span class="say-l">${esc(lead)}</span><span class="say-f"><b class="q-${waitOf(first)}" aria-hidden="true">✦</b>`
-      + `<em>${esc(first.title)}</em><i>${mins(waited(first))}</i><small>${esc(lineOf(first))}</small></span></button><button type="button" class="say-x" aria-label="收起">${X_ICON}</button>`;
+      + `<em>${esc(first.title)}</em><i>${mins(waited(first))}</i><small>${esc(lineOf(first))}</small></span></button><button type="button" class="say-x" aria-label="${tr('收起', 'Close')}">${X_ICON}</button>`;
     hideList(); sayEl.hidden = false; placeSay();
     // She surfaces from her glass; her words follow.
     env.her.surface(true); env.her.say('ask', 1100); env.her.hop(.08); env.cue('msg', .5);
@@ -304,7 +305,7 @@ export function mountWaiting(env: Env) {
   // A pause: you just sent, a turn here just ended, or you came back. At most one line a minute, never over your
   // typing (none since `quiet`: a second and a half ago, or the moment you sent), never over the sky, a menu or the
   // list; `lead` words it from how many wait.
-  function paused(lead = (n: number) => `${n} 个等你`, ms = 7000, quiet = performance.now() - 1500) {
+  function paused(lead = (n: number) => tr(`${n} 个等你`, `${n} waiting on you`), ms = 7000, quiet = performance.now() - 1500) {
     const q = others();
     if (!q.length || env.sky() || menuOpen() || !listEl.hidden) return false;
     if (Date.now() - saidAt < 60000 || typedAt > quiet) return false;
@@ -319,12 +320,12 @@ export function mountWaiting(env: Env) {
       if (s && waitOf(s) && (st === 'done' || st === 'err' || st === 'wait') && s.st === st) n[st]++;
     }
     away.clear();
-    const bits = [n.done && `${n.done} 个做完`, n.err && `${n.err} 个出错`, n.wait && `${n.wait} 个要你批`].filter(Boolean);
-    return paused(q => bits.length ? `你不在时 ${bits.join(' · ')}` : `你不在时没有新的 · ${q} 个等你`, 9000);
+    const bits = [n.done && tr(`${n.done} 个做完`, `${n.done} done`), n.err && tr(`${n.err} 个出错`, plural(n.err, 'error')), n.wait && tr(`${n.wait} 个要你批`, `${n.wait} awaiting approval`)].filter(Boolean);
+    return paused(q => bits.length ? tr(`你不在时 ${bits.join(' · ')}`, `While you were away: ${bits.join(' · ')}`) : tr(`你不在时没有新的 · ${q} 个等你`, `Nothing new while you were away · ${q} waiting on you`), 9000);
   }
 
   // ---------- wiring ----------
-  herEl.setAttribute('aria-label', 'Jarvis：下一个等你的');
+  herEl.setAttribute('aria-label', tr('Jarvis：下一个等你的', 'Jarvis: next waiting on you'));
   herEl.addEventListener('click', next);
   // A click on her keeps focus where it was, so nothing later hands focus back to her (a slip thrown after it would,
   // and her focus ring would show); the keyboard still reaches her with Tab.
@@ -335,7 +336,7 @@ export function mountWaiting(env: Env) {
   // Right-click her: how the queue is drawn.
   herEl.addEventListener('contextmenu', e => {
     e.preventDefault(); hideList();
-    env.menu(`<span class="ph">等你的</span><button type="button" data-q="look" data-v="A"${look === 'A' ? ' class="on"' : ''}>落星排队</button><button type="button" data-q="look" data-v="B"${look === 'B' ? ' class="on"' : ''}>北极星</button>`, point(e));
+    env.menu(`<span class="ph">${tr('等你的', 'Waiting on you')}</span><button type="button" data-q="look" data-v="A"${look === 'A' ? ' class="on"' : ''}>${tr('落星排队', 'Star queue')}</button><button type="button" data-q="look" data-v="B"${look === 'B' ? ' class="on"' : ''}>${tr('北极星', 'Pole star')}</button>`, point(e));
   });
   listEl.addEventListener('pointerenter', () => clearTimeout(listT));
   listEl.addEventListener('pointerleave', e => { over = ''; if (!herEl.contains(e.relatedTarget as Node | null)) listT = window.setTimeout(hideSoon, 260); });
@@ -434,19 +435,19 @@ export function mountWaiting(env: Env) {
 // The line of a stopped session, right above the composer while it stays stopped: why, 让它接着来 (a message asking it
 // to pick up where it stopped) and 在终端里看 (the workbench terminal on the host's log, where the error is in full).
 // Requests need nothing here: their cards stand in the conversation with their keys.
-const RESUME = '请从刚才出错的地方接着来，先确认当前状态。';
+const RESUME = tr('请从刚才出错的地方接着来，先确认当前状态。', 'Please pick up where it stopped, and check the current state first.');
 export function mountStopped(ctx: PageCtx): Feature {
   return {
     rows(s) {
       if (s.st !== 'err' || s.term) return '';
-      return `<div class="c-stop" role="alert"><p><b>出错了</b>${esc(s.summary || '这一轮没做完')}</p><div class="c-stop-k">`
-        + '<button type="button" class="btn warm" data-act="stopgo">让它接着来</button><button type="button" class="btn" data-act="stoplog">在终端里看</button></div></div>';
+      return `<div class="c-stop" role="alert"><p><b>${tr('出错了', 'Error')}</b>${esc(s.summary || tr('这一轮没做完', 'This turn did not finish'))}</p><div class="c-stop-k">`
+        + `<button type="button" class="btn warm" data-act="stopgo">${tr('让它接着来', 'Let it continue')}</button><button type="button" class="btn" data-act="stoplog">${tr('在终端里看', 'View in Terminal')}</button></div></div>`;
     },
     act(a) {
       const s = ctx.current();
       if (!s || (a !== 'stopgo' && a !== 'stoplog')) return false;
       if (a === 'stopgo') { ctx.cue('send', .8); void ctx.tryCall(`/sessions/${s.id}/send`, { text: RESUME, files: [] }); }
-      else ctx.wb.terminal(true, 'log', '后台');
+      else ctx.wb.terminal(true, 'log', tr('后台', 'agent host'));
       return true;
     },
   };

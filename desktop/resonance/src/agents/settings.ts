@@ -5,13 +5,14 @@
 import type { Auth, Doctor, Project, Settings } from '../../electron/agents/types';
 import type { Feature, PageCtx } from './ctx';
 import './settings.css';
+import { plural, tr } from './lang';
 
 // A page another feature adds to the sheet (the MCP list joins here): drawn into the page's body when it is opened.
 export type SettingsPage = { id: string; label: string; draw(el: HTMLElement): void };
 export const settingsPages: SettingsPage[] = [];
 // Pages the review holds do not appear, whoever adds them: 打开方式, 仓库, 语言, 手机, 定时.
 const HELD = /^(open|opener|repo|repos|lang|language|phone|mobile|timer|schedule)$/;
-const HELD_LABEL = /^(打开方式|仓库|语言|手机|定时)/;
+const HELD_LABEL = /^(打开方式|仓库|语言|手机|定时|open with|repos?|repositories|language|phone|schedule|timer)/i;
 // The sheet opened from elsewhere (接手 needs a key first): a page, and a card on it to light up.
 let opener: ((page?: string, flash?: string) => void) | null = null;
 export const showSettings = (page?: string, flash?: string) => opener?.(page, flash);
@@ -33,8 +34,8 @@ const store = {
   get(k: string) { try { return localStorage.getItem(k); } catch { return null; } },
   set(k: string, v: string) { try { localStorage.setItem(k, v); } catch { /* not remembered, that is all */ } },
 };
-const PAGES: [string, string][] = [['key', '钥匙'], ['doc', '体检'], ['notify', '通知'], ['proj', '项目']];
-const STEPS: [string, string, string][] = [['钥匙', '钥匙', '填好一个就能开始，以后在设置里还能改。'], ['体检', '体检', '看看这台 Mac 上还缺什么。'], ['项目', '选一个项目文件夹', '第一个会话在这个文件夹里开。']];
+const PAGES: [string, string][] = [['key', tr('钥匙', 'Keys')], ['doc', tr('体检', 'Health check')], ['notify', tr('通知', 'Notifications')], ['proj', tr('项目', 'Projects')]];
+const STEPS: [string, string, string][] = [[tr('钥匙', 'Keys'), tr('钥匙', 'Keys'), tr('填好一个就能开始，以后在设置里还能改。', 'Fill in one to get started; you can change it later in Settings.')], [tr('体检', 'Health check'), tr('体检', 'Health check'), tr('看看这台 Mac 上还缺什么。', 'See what this Mac is still missing.')], [tr('项目', 'Project'), tr('选一个项目文件夹', 'Choose a project folder'), tr('第一个会话在这个文件夹里开。', 'Your first session opens in this folder.')]];
 const NOTIFY0: NonNullable<Settings['notify']> = { done: false, wait: true, err: true };
 type Row = { k: string; name: string; v: 'ok' | 'bad' | 'may' | 'wait'; say: string; at?: string; plain?: boolean; fix?: [string, string] };
 
@@ -78,80 +79,80 @@ export function mountSettings(ctx: PageCtx): Feature {
   // ---------- 体检: one row each for Claude Code, Codex, git and the daemon ----------
   function rows(): Row[] {
     const d = S.doc; if (!d) return [];
-    const a = d.claude.auth, how = !a.packaged ? '用这台 Mac 上的登录' : a.provider === 'bedrock' ? `Amazon Bedrock · ${S.settings.bedrock?.region ?? ''}`
-      : a.provider === 'vertex' ? `Google Vertex · ${S.settings.vertex?.region ?? ''}` : `钥匙 ${a.hint ?? ''}`;
+    const a = d.claude.auth, how = !a.packaged ? tr('用这台 Mac 上的登录', 'Uses the login on this Mac') : a.provider === 'bedrock' ? `Amazon Bedrock · ${S.settings.bedrock?.region ?? ''}`
+      : a.provider === 'vertex' ? `Google Vertex · ${S.settings.vertex?.region ?? ''}` : tr(`钥匙 ${a.hint ?? ''}`, `Key ${a.hint ?? ''}`);
     const cv = (d.claude.version ?? '').replace(/\s*\(Claude Code\)/, ''), cx = d.codex;
-    const claude: Row = !d.claude.exe ? { k: 'claude', name: 'Claude Code', v: 'bad', say: '没找到 claude', fix: ['how-claude', '怎么装'] }
-      : !a.ready ? { k: 'claude', name: 'Claude Code', v: 'bad', say: a.why ?? '还不能开会话', at: home(d.claude.exe), fix: ['key', '填 key'] }
-      : { k: 'claude', name: 'Claude Code', v: 'ok', say: [cv, d.claude.own ? '你装的' : 'Startrail 带的', how].filter(Boolean).join(' · '), at: home(d.claude.exe) };
-    const codex: Row = !cx.found ? { k: 'codex', name: 'Codex', v: 'may', say: '没找到 codex · 不用 Codex 可以不管', at: `PATH 里 ${d.path.length} 个地方都没有`, plain: true, fix: S.howed.has('codex') ? ['refind', '再找一次'] : ['how-codex', '怎么装'] }
-      : S.signing && !cx.account ? { k: 'codex', name: 'Codex', v: 'wait', say: '在浏览器里登录…', at: home(cx.path ?? '') }
-      : cx.error ? { k: 'codex', name: 'Codex', v: 'bad', say: cx.error, at: home(cx.path ?? ''), fix: ['refind', '再查一次'] }
-      : !cx.account ? { k: 'codex', name: 'Codex', v: 'bad', say: '没登录', at: [home(cx.path ?? ''), (cx.version ?? '').replace(/^codex-cli\s*/, '')].filter(Boolean).join(' · '), fix: ['login', '登录'] }
+    const claude: Row = !d.claude.exe ? { k: 'claude', name: 'Claude Code', v: 'bad', say: tr('没找到 claude', 'claude not found'), fix: ['how-claude', tr('怎么装', 'How to install')] }
+      : !a.ready ? { k: 'claude', name: 'Claude Code', v: 'bad', say: a.why ?? tr('还不能开会话', 'Cannot start sessions yet'), at: home(d.claude.exe), fix: ['key', tr('填 key', 'Add key')] }
+      : { k: 'claude', name: 'Claude Code', v: 'ok', say: [cv, d.claude.own ? tr('你装的', 'Installed by you') : tr('Startrail 带的', 'Bundled with Startrail'), how].filter(Boolean).join(' · '), at: home(d.claude.exe) };
+    const codex: Row = !cx.found ? { k: 'codex', name: 'Codex', v: 'may', say: tr('没找到 codex · 不用 Codex 可以不管', 'codex not found · ignore if you do not use Codex'), at: tr(`PATH 里 ${d.path.length} 个地方都没有`, `Not in ${plural(d.path.length, 'PATH entry', 'PATH entries')}`), plain: true, fix: S.howed.has('codex') ? ['refind', tr('再找一次', 'Search again')] : ['how-codex', tr('怎么装', 'How to install')] }
+      : S.signing && !cx.account ? { k: 'codex', name: 'Codex', v: 'wait', say: tr('在浏览器里登录…', 'Waiting for sign-in in the browser…'), at: home(cx.path ?? '') }
+      : cx.error ? { k: 'codex', name: 'Codex', v: 'bad', say: cx.error, at: home(cx.path ?? ''), fix: ['refind', tr('再查一次', 'Check again')] }
+      : !cx.account ? { k: 'codex', name: 'Codex', v: 'bad', say: tr('没登录', 'Not signed in'), at: [home(cx.path ?? ''), (cx.version ?? '').replace(/^codex-cli\s*/, '')].filter(Boolean).join(' · '), fix: ['login', tr('登录', 'Sign in')] }
       : { k: 'codex', name: 'Codex', v: 'ok', say: [(cx.version ?? '').replace(/^codex-cli\s*/, ''), 'ChatGPT', cx.account.email].filter(Boolean).join(' · '), at: home(cx.path ?? '') };
-    const git: Row = d.git.found ? { k: 'git', name: 'git', v: 'ok', say: (d.git.version ?? '').replace(/^git version\s*/, '') || '有' }
-      : { k: 'git', name: 'git', v: 'bad', say: '没找到 git', fix: ['how-git', '怎么装'] };
-    const daemon: Row = d.daemon.up ? { k: 'daemon', name: 'Jarvis 后台', v: 'ok', say: '开着' } : { k: 'daemon', name: 'Jarvis 后台', v: 'may', say: '没开 · 没开也能用', at: '用量环和终端里的要批，等它开了才有', plain: true };
+    const git: Row = d.git.found ? { k: 'git', name: 'git', v: 'ok', say: (d.git.version ?? '').replace(/^git version\s*/, '') || tr('有', 'Found') }
+      : { k: 'git', name: 'git', v: 'bad', say: tr('没找到 git', 'git not found'), fix: ['how-git', tr('怎么装', 'How to install')] };
+    const daemon: Row = d.daemon.up ? { k: 'daemon', name: tr('Jarvis 后台', 'Jarvis daemon'), v: 'ok', say: tr('开着', 'Running') } : { k: 'daemon', name: tr('Jarvis 后台', 'Jarvis daemon'), v: 'may', say: tr('没开 · 没开也能用', 'Not running · works without it'), at: tr('用量环和终端里的要批，等它开了才有', 'The usage ring and Terminal approvals appear once it is running'), plain: true };
     return [claude, codex, git, daemon];
   }
   // A path and what follows it: the path is what gets cut, never the separator.
   const atHTML = (at: string) => { const [p0, ...rest] = at.split(' · '); return `<span>${esc(p0)}</span>${rest.length ? `<i>· ${esc(rest.join(' · '))}</i>` : ''}`; };
   function docHTML() {
-    if (!S.doc) return `<div class="fr-dl"><p class="fr-sl fr-dl-wait">${SPIN}在查…</p></div>`;
+    if (!S.doc) return `<div class="fr-dl"><p class="fr-sl fr-dl-wait">${SPIN}${tr('在查', 'Checking')}…</p></div>`;
     return `<div class="fr-dl">${rows().map(r => {
       const q = S.checking, v = q ? 'q' : r.v;
       const mk = q || r.v === 'wait' ? SPIN : r.v === 'ok' ? '✓' : r.v === 'bad' ? '✕' : '○';
       const fix = !q && r.fix ? `<button type="button" class="btn sm" data-act="fr-fix" data-x="${r.fix[0]}">${r.fix[1]}</button>` : '<span></span>';
-      return `<div class="fr-dr ${v}" data-k="${r.k}"><span class="fr-mk" aria-label="${q ? '在查' : { ok: '好的', bad: '不行', wait: '在登', may: '可以不管' }[r.v]}">${mk}</span><b>${esc(r.name)}</b>`
-        + `<span class="fr-ds"><span>${q ? '在查…' : esc(r.say)}</span>${!q && r.at ? `<small${r.plain ? ' class="np"' : ''}>${atHTML(r.at)}</small>` : ''}</span>${fix}</div>`;
+      return `<div class="fr-dr ${v}" data-k="${r.k}"><span class="fr-mk" aria-label="${q ? tr('在查', 'Checking') : { ok: tr('好的', 'OK'), bad: tr('不行', 'Problem'), wait: tr('在登', 'Signing in'), may: tr('可以不管', 'Optional') }[r.v]}">${mk}</span><b>${esc(r.name)}</b>`
+        + `<span class="fr-ds"><span>${q ? tr('在查…', 'Checking…') : esc(r.say)}</span>${!q && r.at ? `<small${r.plain ? ' class="np"' : ''}>${atHTML(r.at)}</small>` : ''}</span>${fix}</div>`;
     }).join('')}</div>`;
   }
   function pathHTML() {
     const ps = S.doc?.path ?? []; if (!ps.length) return '';
     const hit = S.doc?.codex.path ? S.doc.codex.path.replace(/\/[^/]+$/, '') : '';
-    return `<div class="fr-pa"><span>找的是你登录 shell 的 PATH：</span>${(S.paths ? ps : ps.slice(0, 3)).map(p => `<code${p === hit ? ' class="hit"' : ''}>${esc(home(p))}</code>`).join('')}`
-      + `${ps.length > 3 ? `<button type="button" class="fr-lk" data-act="fr-paths">${S.paths ? '收起' : `全部 ${ps.length} 个`}</button>` : ''}</div>`;
+    return `<div class="fr-pa"><span>${tr('找的是你登录 shell 的 PATH：', 'Searched your login shell PATH:')}</span>${(S.paths ? ps : ps.slice(0, 3)).map(p => `<code${p === hit ? ' class="hit"' : ''}>${esc(home(p))}</code>`).join('')}`
+      + `${ps.length > 3 ? `<button type="button" class="fr-lk" data-act="fr-paths">${S.paths ? tr('收起', 'Show fewer') : tr(`全部 ${ps.length} 个`, `All ${ps.length}`)}</button>` : ''}</div>`;
   }
-  const docFoot = () => `<div class="fr-df"><button type="button" class="btn sm" data-act="fr-recheck"${S.checking ? ' disabled' : ''}>重新检查</button><span>${S.checking || !S.doc ? '在查…' : '刚查过'}</span></div>`;
+  const docFoot = () => `<div class="fr-df"><button type="button" class="btn sm" data-act="fr-recheck"${S.checking ? ' disabled' : ''}>${tr('重新检查', 'Check again')}</button><span>${S.checking || !S.doc ? tr('在查…', 'Checking…') : tr('刚查过', 'Just checked')}</span></div>`;
 
   // ---------- 钥匙: how Startrail's own Claude sessions sign in (ADR 0094), and Codex's login ----------
   const lit = (on: boolean, at: number, ms: number) => { const t = Math.round(performance.now() - at); return on && t < ms ? ` fl" style="animation-delay:-${t}ms` : ''; };
-  const seg = (list: [string, string][], cur: string) => `<span class="fr-sg" role="radiogroup" aria-label="Claude 用哪家的账户">${list.map(([k, l]) => `<button type="button" role="radio" data-act="fr-prov" data-v="${k}" aria-checked="${cur === k}">${l}</button>`).join('')}</span>`;
+  const seg = (list: [string, string][], cur: string) => `<span class="fr-sg" role="radiogroup" aria-label="${tr('Claude 用哪家的账户', 'Which account Claude uses')}">${list.map(([k, l]) => `<button type="button" role="radio" data-act="fr-prov" data-v="${k}" aria-checked="${cur === k}">${l}</button>`).join('')}</span>`;
   const provider = () => S.auth?.provider ?? S.settings.provider ?? 'anthropic';
-  function claudeTag() { const a = S.auth; return !a ? '' : a.ready ? '<span class="fr-tag mint">能开会话</span>' : '<span class="fr-tag warm">还开不了</span>'; }
+  function claudeTag() { const a = S.auth; return !a ? '' : a.ready ? tr('<span class="fr-tag mint">能开会话</span>', '<span class="fr-tag mint">Ready</span>') : tr('<span class="fr-tag warm">还开不了</span>', '<span class="fr-tag warm">Not ready</span>'); }
   function claudeLine() {
-    const a = S.auth; if (!a) return `<p class="fr-sl">${SPIN}在查…</p>`;
-    if (!a.packaged) return '<p class="fr-sl mint">✓ 开发版：用这台 Mac 上 Claude Code 自己的登录</p>';
+    const a = S.auth; if (!a) return `<p class="fr-sl">${SPIN}${tr('在查', 'Checking')}…</p>`;
+    if (!a.packaged) return `<p class="fr-sl mint">✓ ${tr('开发版：用这台 Mac 上 Claude Code 自己的登录', 'Dev build: uses the login Claude Code already has on this Mac')}</p>`;
     const p = provider();
-    if (p === 'bedrock') return a.ready ? `<p class="fr-sl mint">✓ 好了 · 用这台 Mac 上 AWS 的登录${S.settings.bedrock?.profile ? `（${esc(S.settings.bedrock.profile)}）` : ''}</p>` : `<p class="fr-sl warm">${esc(a.why ?? '')}</p>`;
-    if (p === 'vertex') return a.ready ? '<p class="fr-sl mint">✓ 好了 · 用这台 Mac 上 gcloud 的登录</p>' : `<p class="fr-sl warm">${esc(a.why ?? '')}</p>`;
-    if (S.keySt === 'checking') return `<p class="fr-sl">${SPIN}在问 Anthropic…<small>列一次模型，不用 token</small></p>`;
-    if (S.keyErr) return `<p class="fr-sl red">${esc(S.keyErr)}${a.hint ? ` · 原来的 ${esc(a.hint)} 还在用` : ''}</p>`;
-    if (a.hint) return `<p class="fr-sl mint">✓ 存好了 · ${esc(a.hint)}${S.verified ? '' : '<small>没连上 Anthropic，先存下了</small>'} · <button type="button" class="fr-lk" data-act="fr-forget">删掉</button></p>`;
-    return `<p class="fr-sl warm">${esc(a.why ?? '先填一个 Anthropic API key')}</p>`;
+    if (p === 'bedrock') return a.ready ? `<p class="fr-sl mint">✓ ${tr('好了 · 用这台 Mac 上 AWS 的登录', 'Ready · uses the AWS login on this Mac')}${S.settings.bedrock?.profile ? tr(`（${esc(S.settings.bedrock.profile)}）`, ` (${esc(S.settings.bedrock.profile)})`) : ''}</p>` : `<p class="fr-sl warm">${esc(a.why ?? '')}</p>`;
+    if (p === 'vertex') return a.ready ? `<p class="fr-sl mint">✓ ${tr('好了 · 用这台 Mac 上 gcloud 的登录', 'Ready · uses the gcloud login on this Mac')}</p>` : `<p class="fr-sl warm">${esc(a.why ?? '')}</p>`;
+    if (S.keySt === 'checking') return `<p class="fr-sl">${SPIN}${tr('在问', 'Asking')} Anthropic…<small>${tr('列一次模型，不用 token', 'Lists models once, no tokens')}</small></p>`;
+    if (S.keyErr) return `<p class="fr-sl red">${esc(S.keyErr)}${a.hint ? tr(` · 原来的 ${esc(a.hint)} 还在用`, ` · your existing ${esc(a.hint)} is still in use`) : ''}</p>`;
+    if (a.hint) return `<p class="fr-sl mint">✓ ${tr('存好了', 'Saved')} · ${esc(a.hint)}${S.verified ? '' : tr('<small>没连上 Anthropic，先存下了</small>', '<small>Could not reach Anthropic, saved anyway</small>')} · <button type="button" class="fr-lk" data-act="fr-forget">${tr('删掉', 'Remove')}</button></p>`;
+    return `<p class="fr-sl warm">${esc(a.why ?? tr('先填一个 Anthropic API key', 'Add an Anthropic API key first'))}</p>`;
   }
   const verifyOff = () => !S.key.trim() || S.keySt === 'checking';
   function claudeCard() {
     const a = S.auth, p = provider(), packaged = !!a?.packaged;
     const body = !packaged ? ''
       : seg([['anthropic', 'Anthropic API key'], ['bedrock', 'Amazon Bedrock'], ['vertex', 'Google Vertex']], p) + (p === 'anthropic'
-        ? `<div class="fr-kr"><input class="fr-in" type="password" data-f="key" value="${esc(S.key)}" placeholder="${a?.hint ? `已存 ${esc(a.hint)} · 贴一个新的会换掉它` : 'sk-ant-…'}" aria-label="Anthropic API key" autocomplete="off" spellcheck="false"><button type="button" class="btn sm${a?.hint ? '' : ' warm'}" data-act="fr-verify"${verifyOff() ? ' disabled' : ''}>验证并存进钥匙串</button></div>`
+        ? `<div class="fr-kr"><input class="fr-in" type="password" data-f="key" value="${esc(S.key)}" placeholder="${a?.hint ? tr(`已存 ${esc(a.hint)} · 贴一个新的会换掉它`, `Saved ${esc(a.hint)} · paste a new one to replace it`) : 'sk-ant-…'}" aria-label="Anthropic API key" autocomplete="off" spellcheck="false"><button type="button" class="btn sm${a?.hint ? '' : ' warm'}" data-act="fr-verify"${verifyOff() ? ' disabled' : ''}>${tr('验证并存进钥匙串', 'Verify and save to Keychain')}</button></div>`
         : p === 'bedrock'
-          ? `<div class="fr-fg"><label class="fr-fr"><span>区域</span><input class="fr-in" data-f="bd-region" value="${esc(S.settings.bedrock?.region ?? '')}" placeholder="us-east-1" spellcheck="false"></label><label class="fr-fr"><span>profile</span><input class="fr-in" data-f="bd-profile" value="${esc(S.settings.bedrock?.profile ?? '')}" placeholder="可以不填" spellcheck="false"></label></div>`
-          : `<div class="fr-fg"><label class="fr-fr"><span>区域</span><input class="fr-in" data-f="vx-region" value="${esc(S.settings.vertex?.region ?? '')}" placeholder="us-east5" spellcheck="false"></label><label class="fr-fr"><span>项目</span><input class="fr-in" data-f="vx-project" value="${esc(S.settings.vertex?.project ?? '')}" placeholder="GCP 项目 ID" spellcheck="false"></label></div>`);
+          ? `<div class="fr-fg"><label class="fr-fr"><span>${tr('区域', 'Region')}</span><input class="fr-in" data-f="bd-region" value="${esc(S.settings.bedrock?.region ?? '')}" placeholder="us-east-1" spellcheck="false"></label><label class="fr-fr"><span>profile</span><input class="fr-in" data-f="bd-profile" value="${esc(S.settings.bedrock?.profile ?? '')}" placeholder="${tr('可以不填', 'Optional')}" spellcheck="false"></label></div>`
+          : `<div class="fr-fg"><label class="fr-fr"><span>${tr('区域', 'Region')}</span><input class="fr-in" data-f="vx-region" value="${esc(S.settings.vertex?.region ?? '')}" placeholder="us-east5" spellcheck="false"></label><label class="fr-fr"><span>${tr('项目', 'Project')}</span><input class="fr-in" data-f="vx-project" value="${esc(S.settings.vertex?.project ?? '')}" placeholder="GCP ${tr('项目', 'project')} ID" spellcheck="false"></label></div>`);
     return `<div class="fr-cd${lit(S.fl === 'claude', S.flAt, 1800)}" data-card="claude"><div class="fr-ch"><b>Claude Code</b><span data-slot="tag">${claudeTag()}</span></div>${body}`
-      + `<div data-slot="line">${claudeLine()}</div><p class="fr-fn">${packaged ? '只给 Startrail 自己开的 Claude 会话用；你在终端里跑的 claude 还是它自己的登录。' : '装好的 Startrail 在这里填 key；开发版不存 key。'}</p></div>`;
+      + `<div data-slot="line">${claudeLine()}</div><p class="fr-fn">${packaged ? tr('只给 Startrail 自己开的 Claude 会话用；你在终端里跑的 claude 还是它自己的登录。', 'Only for Claude sessions Startrail starts itself; claude in your terminal keeps its own login.') : tr('装好的 Startrail 在这里填 key；开发版不存 key。', 'The installed Startrail takes a key here; the dev build does not store keys.')}</p></div>`;
   }
   function codexCard() {
     const cx = S.doc?.codex;
-    const tag = !cx ? '<span class="fr-tag">在查</span>' : !cx.found ? '<span class="fr-tag">没装</span>' : cx.account ? '<span class="fr-tag mint">已登录</span>' : '<span class="fr-tag warm">没登录</span>';
-    const body = !cx ? `<p class="fr-sl">${SPIN}在查…</p>`
-      : !cx.found ? `<div class="fr-kr"><span class="fr-sl">没找到 codex · 不用 Codex 可以不管</span><span class="fr-gap"></span><button type="button" class="btn sm" data-act="fr-fix" data-x="how-codex">怎么装</button><button type="button" class="btn sm" data-act="fr-fix" data-x="refind">再找一次</button></div>`
-      : cx.account ? `<p class="fr-sl mint">✓ 已登录 · ChatGPT${cx.account.email ? ` · ${esc(cx.account.email)}` : ''}</p>`
-      : S.signing ? `<p class="fr-sl">${SPIN}在浏览器里登录…<small>登好了这里自己会变</small></p>`
-      : cx.error ? `<div class="fr-kr"><span class="fr-sl red">${esc(cx.error)}</span><span class="fr-gap"></span><button type="button" class="btn sm" data-act="fr-fix" data-x="refind">再查一次</button></div>`
-      : '<div class="fr-kr"><button type="button" class="btn sm warm" data-act="fr-fix" data-x="login">用 ChatGPT 账号登录</button></div>';
-    return `<div class="fr-cd${lit(S.fl === 'codex', S.flAt, 1800)}" data-card="codex"><div class="fr-ch"><b>Codex</b>${tag}</div>${body}<p class="fr-fn">和你终端里的 codex 是同一个登录。</p></div>`;
+    const tag = !cx ? tr('<span class="fr-tag">在查</span>', '<span class="fr-tag">Checking</span>') : !cx.found ? tr('<span class="fr-tag">没装</span>', '<span class="fr-tag">Not installed</span>') : cx.account ? tr('<span class="fr-tag mint">已登录</span>', '<span class="fr-tag mint">Signed in</span>') : tr('<span class="fr-tag warm">没登录</span>', '<span class="fr-tag warm">Not signed in</span>');
+    const body = !cx ? `<p class="fr-sl">${SPIN}${tr('在查', 'Checking')}…</p>`
+      : !cx.found ? `<div class="fr-kr"><span class="fr-sl">${tr('没找到 codex · 不用 Codex 可以不管', 'codex not found · ignore if you do not use Codex')}</span><span class="fr-gap"></span><button type="button" class="btn sm" data-act="fr-fix" data-x="how-codex">${tr('怎么装', 'How to install')}</button><button type="button" class="btn sm" data-act="fr-fix" data-x="refind">${tr('再找一次', 'Search again')}</button></div>`
+      : cx.account ? `<p class="fr-sl mint">✓ ${tr('已登录', 'Signed in')} · ChatGPT${cx.account.email ? ` · ${esc(cx.account.email)}` : ''}</p>`
+      : S.signing ? `<p class="fr-sl">${SPIN}${tr('在浏览器里登录', 'Waiting for sign-in in the browser')}…<small>${tr('登好了这里自己会变', 'This updates by itself once you are done')}</small></p>`
+      : cx.error ? `<div class="fr-kr"><span class="fr-sl red">${esc(cx.error)}</span><span class="fr-gap"></span><button type="button" class="btn sm" data-act="fr-fix" data-x="refind">${tr('再查一次', 'Check again')}</button></div>`
+      : `<div class="fr-kr"><button type="button" class="btn sm warm" data-act="fr-fix" data-x="login">${tr('用 ChatGPT 账号登录', 'Sign in with ChatGPT')}</button></div>`;
+    return `<div class="fr-cd${lit(S.fl === 'codex', S.flAt, 1800)}" data-card="codex"><div class="fr-ch"><b>Codex</b>${tag}</div>${body}<p class="fr-fn">${tr('和你终端里的 codex 是同一个登录。', 'The same login as codex in your terminal.')}</p></div>`;
   }
 
   // ---------- 通知 and 项目 ----------
@@ -160,35 +161,35 @@ export function mountSettings(ctx: PageCtx): Feature {
     const n = notify(), sw = (k: 'done' | 'wait' | 'err', l: string, d: string) => `<div class="fr-tr"><span class="fr-tl"><b>${l}</b><small>${d}</small></span>`
       + `<button type="button" class="fr-sw" role="switch" data-act="fr-sw" data-k="${k}" aria-checked="${n[k]}" aria-label="${l}"><i></i></button></div>`;
     const notch = n.notch !== false;
-    return `<div class="fr-cd fr-tg0">${sw('done', '做完了', n.done ? '做完了也弹一条' : '不弹：星星落到她旁边，等你回来看')}${sw('wait', '等你批准或回答', '点它直接到那个会话')}${sw('err', '出错了', '点它直接到那个会话')}</div>`
-      + '<p class="fr-fn">窗口在前台时不弹；在后面时弹出来不出声。同一个会话 20 秒内只弹一条。</p>'
+    return `<div class="fr-cd fr-tg0">${sw('done', tr('做完了', 'Done'), n.done ? tr('做完了也弹一条', 'Also notify when a session finishes') : tr('不弹：星星落到她旁边，等你回来看', 'Off: a star lands beside her, waiting for you to come back'))}${sw('wait', tr('等你批准或回答', 'Needs your approval or answer'), tr('点它直接到那个会话', 'Click it to go straight to that session'))}${sw('err', tr('出错了', 'Error'), tr('点它直接到那个会话', 'Click it to go straight to that session'))}</div>`
+      + `<p class="fr-fn">${tr('窗口在前台时不弹；在后面时弹出来不出声。同一个会话 20 秒内只弹一条。', 'Nothing shows while the window is in front; behind it, notifications arrive silently. One per session every 20 seconds.')}</p>`
       // The notch follows the host only in the dev build (companion.ts), so only there is it a choice.
-      + (S.auth?.packaged ? '' : `<div class="fr-cd fr-tg0"><div class="fr-tr"><span class="fr-tl"><b>Jarvis 开着时用刘海说</b><small>${notch ? '要批的、要回答的从刘海垂下来就地回答，不弹系统通知' : '不用刘海，照上面弹系统通知'}</small></span>`
-      + `<button type="button" class="fr-sw" role="switch" data-act="fr-sw" data-k="notch" aria-checked="${notch}" aria-label="Jarvis 开着时用刘海说"><i></i></button></div></div>`)
-      + '<div class="fr-kr"><button type="button" class="btn sm" data-act="fr-test">发一条试试</button></div>';
+      + (S.auth?.packaged ? '' : `<div class="fr-cd fr-tg0"><div class="fr-tr"><span class="fr-tl"><b>${tr('Jarvis 开着时用刘海说', 'Use the notch when Jarvis is running')}</b><small>${notch ? tr('要批的、要回答的从刘海垂下来就地回答，不弹系统通知', 'Approvals and questions drop from the notch to answer in place, with no system notification') : tr('不用刘海，照上面弹系统通知', 'Notch off: system notifications as above')}</small></span>`
+      + `<button type="button" class="fr-sw" role="switch" data-act="fr-sw" data-k="notch" aria-checked="${notch}" aria-label="${tr('Jarvis 开着时用刘海说', 'Use the notch when Jarvis is running')}"><i></i></button></div></div>`)
+      + `<div class="fr-kr"><button type="button" class="btn sm" data-act="fr-test">${tr('发一条试试', 'Send a test')}</button></div>`;
   }
   function whenUsed(at: number) {
     const d = new Date(at), today = new Date(); today.setHours(0, 0, 0, 0);
-    if (Date.now() - at < 3600e3) return '刚用过';
-    if (at >= today.getTime()) return '今天';
+    if (Date.now() - at < 3600e3) return tr('刚用过', 'Just used');
+    if (at >= today.getTime()) return tr('今天', 'Today');
     const days = Math.ceil((today.getTime() - d.getTime()) / 864e5);
-    return days <= 1 ? '昨天' : `${days} 天前`;
+    return days <= 1 ? tr('昨天', 'Yesterday') : tr(`${days} 天前`, `${days} d ago`);
   }
   function projHTML() {
     const used = S.list.filter(p => p.used), added = S.list.filter(p => !p.used && p.added), scan = S.list.filter(p => !p.used && !p.added);
     const row = (p: Project, x: boolean) => `<div class="fr-pj${lit(S.fk === p.path, S.fkAt, 1600)}" data-path="${esc(p.path)}"><span class="fr-pi">${I.dir}</span><b>${esc(p.name)}</b><code>${esc(home(p.path))}</code>`
-      + `<span class="fr-pm">${p.used ? `<small>${whenUsed(p.used)}</small>` : ''}${p.git ? '' : '<span class="fr-tag">不是 git</span>'}</span>`
-      + (x ? `<button type="button" class="ib fr-px" data-act="fr-unadd" data-path="${esc(p.path)}" aria-label="从列表里拿掉 ${esc(p.name)}" data-tip="拿掉">${I.x}</button>` : '<span class="fr-px"></span>') + '</div>';
+      + `<span class="fr-pm">${p.used ? `<small>${whenUsed(p.used)}</small>` : ''}${p.git ? '' : tr('<span class="fr-tag">不是 git</span>', '<span class="fr-tag">Not a git repo</span>')}</span>`
+      + (x ? `<button type="button" class="ib fr-px" data-act="fr-unadd" data-path="${esc(p.path)}" aria-label="${tr('从列表里拿掉', 'Remove')} ${esc(p.name)}${tr('', ' from the list')}" data-tip="${tr('拿掉', 'Remove')}">${I.x}</button>` : '<span class="fr-px"></span>') + '</div>';
     const sec = (t: string, ps: Project[], x = false) => ps.length ? `<p class="fr-h4">${t}</p>${ps.map(p => row(p, x)).join('')}` : '';
-    return `<div class="fr-pl0">${sec('最近用过', used)}${sec('你加的', added, true)}${sec('~/Projects 里的', scan)}${S.list.length ? '' : '<p class="fr-fn">还没有项目：加一个文件夹。</p>'}</div>`
-      + `<div class="fr-kr"><button type="button" class="btn sm" data-act="fr-add">${I.plus}添加文件夹</button><span class="fr-fn">拿掉只是不列在这里，文件夹本身不动。</span></div>`;
+    return `<div class="fr-pl0">${sec(tr('最近用过', 'Recently used'), used)}${sec(tr('你加的', 'Added by you'), added, true)}${sec(tr('~/Projects 里的', 'In ~/Projects'), scan)}${S.list.length ? '' : tr('<p class="fr-fn">还没有项目：加一个文件夹。</p>', '<p class="fr-fn">No projects yet: add a folder.</p>')}</div>`
+      + `<div class="fr-kr"><button type="button" class="btn sm" data-act="fr-add">${I.plus}${tr('添加文件夹', 'Add folder')}</button><span class="fr-fn">${tr('拿掉只是不列在这里，文件夹本身不动。', 'Removing only unlists it here; the folder itself is untouched.')}</span></div>`;
   }
   const PAGE: Record<string, () => string> = { key: () => claudeCard() + codexCard(), doc: () => docHTML() + pathHTML() + docFoot(), notify: notifyHTML, proj: projHTML };
 
   // ---------- the sheet ----------
-  win.insertAdjacentHTML('beforeend', '<div class="fr-veil" hidden></div><section class="sheet fr-set" hidden role="dialog" aria-modal="true" aria-label="设置" tabindex="-1">'
-    + '<nav class="fr-nav" aria-label="设置的几页"></nav><div class="fr-pg"><header class="fr-ph"></header><div class="fr-pb"></div></div></section>'
-    + `<section class="fr-first" hidden role="dialog" aria-modal="true" aria-label="第一次打开" tabindex="-1"><div class="fr-fl"><div class="fr-fh"><div class="fr-ft">${STEPS.map(([l], j) =>
+  win.insertAdjacentHTML('beforeend', `<div class="fr-veil" hidden></div><section class="sheet fr-set" hidden role="dialog" aria-modal="true" aria-label="${tr('设置', 'Settings')}" tabindex="-1">`
+    + `<nav class="fr-nav" aria-label="${tr('设置的几页', 'Settings pages')}"></nav><div class="fr-pg"><header class="fr-ph"></header><div class="fr-pb"></div></div></section>`
+    + `<section class="fr-first" hidden role="dialog" aria-modal="true" aria-label="${tr('第一次打开', 'First run')}" tabindex="-1"><div class="fr-fl"><div class="fr-fh"><div class="fr-ft">${STEPS.map(([l], j) =>
       `<button type="button" class="fr-fd" data-act="fr-fdot" data-k="${j}" style="left:${j * 50}%"><i></i><small>${l}</small></button>`).join('')}<span class="fr-fx"></span></div></div><div class="fr-fb"></div><div class="fr-ff"></div></div></section>`);
   const veil = win.querySelector<HTMLElement>('.fr-veil')!, sheet = win.querySelector<HTMLElement>('.fr-set')!, nav = sheet.querySelector<HTMLElement>('.fr-nav')!;
   const head = sheet.querySelector<HTMLElement>('.fr-ph')!, body = sheet.querySelector<HTMLElement>('.fr-pb')!;
@@ -196,11 +197,11 @@ export function mountSettings(ctx: PageCtx): Feature {
   function $(sel: string) { return (S.first ? first : sheet).querySelector<HTMLElement>(sel); }
   function navHTML() {
     const a = S.auth, bad = S.checking ? 0 : rows().filter(r => r.v === 'bad').length;
-    const mark: Record<string, string> = { key: (a?.packaged && !a.ready) || (S.doc?.codex.found && !S.doc.codex.account && !S.doc.codex.error) ? '<em class="fr-nd" aria-label="有要填的"></em>' : '',
-      doc: bad ? `<em class="fr-nc" aria-label="${bad} 样不行">${bad}</em>` : '' };
+    const mark: Record<string, string> = { key: (a?.packaged && !a.ready) || (S.doc?.codex.found && !S.doc.codex.account && !S.doc.codex.error) ? tr('<em class="fr-nd" aria-label="有要填的"></em>', '<em class="fr-nd" aria-label="Needs setup"></em>') : '',
+      doc: bad ? tr(`<em class="fr-nc" aria-label="${bad} 样不行">${bad}</em>`, `<em class="fr-nc" aria-label="${plural(bad, 'problem')}">${bad}</em>`) : '' };
     const item = (id: string, l: string) => `<button type="button" class="fr-ni" data-act="fr-pg" data-p="${esc(id)}"${S.page === id ? ' aria-current="page"' : ''}>${esc(l)}${mark[id] ?? ''}</button>`;
     const more = ext();
-    return `<b class="fr-nh">设置</b>${PAGES.map(([id, l]) => item(id, l)).join('')}${more.length ? `<i class="fr-nsep"></i>${more.map(p => item(p.id, p.label)).join('')}` : ''}`;
+    return `<b class="fr-nh">${tr('设置', 'Settings')}</b>${PAGES.map(([id, l]) => item(id, l)).join('')}${more.length ? `<i class="fr-nsep"></i>${more.map(p => item(p.id, p.label)).join('')}` : ''}`;
   }
   // A redraw keeps the field or button you were on, and the caret in it.
   function focusKey(root: HTMLElement) {
@@ -226,9 +227,9 @@ export function mountSettings(ctx: PageCtx): Feature {
     if (!S.open) return;
     const keep = focusKey(sheet), page = ext().find(p => p.id === S.page), turned = drawn !== S.page;
     patch(nav, navHTML());
-    patch(head, `<h3>${esc(labelOf(S.page))}</h3><span class="fr-sv" aria-live="polite">已存</span><button type="button" class="ib" data-act="fr-close" aria-label="关掉设置" data-tip="关掉" data-key="esc">${I.x}</button>`);
+    patch(head, `<h3>${esc(labelOf(S.page))}</h3><span class="fr-sv" aria-live="polite">${tr('已存', 'Saved')}</span><button type="button" class="ib" data-act="fr-close" aria-label="${tr('关掉设置', 'Close settings')}" data-tip="${tr('关掉', 'Close')}" data-key="esc">${I.x}</button>`);
     if (page) {
-      if (turned) { H.delete(body); body.replaceChildren(); try { page.draw(body); } catch (e) { console.warn('settings page', page.id, e); body.innerHTML = '<p class="fr-fn">这一页没画出来。</p>'; } }
+      if (turned) { H.delete(body); body.replaceChildren(); try { page.draw(body); } catch (e) { console.warn('settings page', page.id, e); body.innerHTML = tr('<p class="fr-fn">这一页没画出来。</p>', '<p class="fr-fn">This page failed to load.</p>'); } }
     } else patch(body, PAGE[S.page]());
     if (turned) { body.scrollTop = 0; drawn = S.page; }
     refocus(sheet, keep);
@@ -238,14 +239,14 @@ export function mountSettings(ctx: PageCtx): Feature {
     const keep = focusKey(first), i = F.step;
     first.querySelectorAll<HTMLButtonElement>('.fr-fd').forEach((d, j) => {
       d.className = `fr-fd${j < i ? ' done' : j === i ? ' cur' : ''}`; d.disabled = j >= i;
-      d.setAttribute('aria-label', `第 ${j + 1} 步 · ${STEPS[j][0]}${j < i ? ' · 做过了，点回去' : j === i ? ' · 现在' : ''}`);
+      d.setAttribute('aria-label', tr(`第 ${j + 1} 步 · ${STEPS[j][0]}${j < i ? ' · 做过了，点回去' : j === i ? ' · 现在' : ''}`, `Step ${j + 1} · ${STEPS[j][0]}${j < i ? ' · done, click to go back' : j === i ? ' · current' : ''}`));
     });
     first.querySelector<HTMLElement>('.fr-fx')!.style.width = `${i * 50}%`;
-    const list = `<div class="fr-rl" role="radiogroup" aria-label="项目文件夹">${S.list.map(p => `<button type="button" role="radio" class="fr-rad" data-act="fr-fproj" data-path="${esc(p.path)}" aria-checked="${F.proj === p.path}"><i class="fr-rd"></i><b>${esc(p.name)}</b><small>${esc(home(p.path))}${p.git ? '' : ' · 不是 git'}</small></button>`).join('')}</div>`
-      + `<button type="button" class="btn sm fr-add" data-act="fr-fadd">${I.plus}选别的文件夹…</button>`;
-    patch(fBody, `<h3><small>第 ${i + 1} 步</small>${STEPS[i][1]}</h3><p class="fr-fs">${STEPS[i][2]}</p><div class="fr-fc">${i === 0 ? claudeCard() + codexCard() : i === 1 ? docHTML() : list}</div>`);
-    patch(fFoot, `<button type="button" class="fr-lk" data-act="fr-fskip">跳过，以后在设置里填</button><span class="fr-gap"></span>${i ? '<button type="button" class="btn sm" data-act="fr-fback">上一步</button>' : ''}`
-      + (i < 2 ? '<button type="button" class="btn sm warm" data-act="fr-fnext">下一步</button>' : `<button type="button" class="btn sm warm" data-act="fr-fgo"${F.proj ? '' : ' disabled'}>开始</button>`));
+    const list = `<div class="fr-rl" role="radiogroup" aria-label="${tr('项目文件夹', 'Project folder')}">${S.list.map(p => `<button type="button" role="radio" class="fr-rad" data-act="fr-fproj" data-path="${esc(p.path)}" aria-checked="${F.proj === p.path}"><i class="fr-rd"></i><b>${esc(p.name)}</b><small>${esc(home(p.path))}${p.git ? '' : tr(' · 不是 git', ' · not git')}</small></button>`).join('')}</div>`
+      + `<button type="button" class="btn sm fr-add" data-act="fr-fadd">${I.plus}${tr('选别的文件夹', 'Choose another folder')}…</button>`;
+    patch(fBody, `<h3><small>${tr('第', 'Step')} ${i + 1}${tr(' 步', '')}</small>${STEPS[i][1]}</h3><p class="fr-fs">${STEPS[i][2]}</p><div class="fr-fc">${i === 0 ? claudeCard() + codexCard() : i === 1 ? docHTML() : list}</div>`);
+    patch(fFoot, `<button type="button" class="fr-lk" data-act="fr-fskip">${tr('跳过，以后在设置里填', 'Skip, fill in later in Settings')}</button><span class="fr-gap"></span>${i ? `<button type="button" class="btn sm" data-act="fr-fback">${tr('上一步', 'Back')}</button>` : ''}`
+      + (i < 2 ? `<button type="button" class="btn sm warm" data-act="fr-fnext">${tr('下一步', 'Next')}</button>` : `<button type="button" class="btn sm warm" data-act="fr-fgo"${F.proj ? '' : ' disabled'}>${tr('开始', 'Start')}</button>`));
     refocus(first, keep);
   }
   const redraw = () => { if (S.first) renderFirst(); else renderSheet(); };
@@ -321,32 +322,32 @@ export function mountSettings(ctx: PageCtx): Feature {
       const r = await ctx.tryCall('/doctor/login', { agent: 'codex' });
       if (!r) return;
       if (typeof r.url === 'string' && r.url) void window.agents?.openUrl?.(r.url);
-      S.signing = true; redraw(); ctx.toast('在浏览器里打开了 ChatGPT 的登录页');
+      S.signing = true; redraw(); ctx.toast(tr('在浏览器里打开了 ChatGPT 的登录页', 'Opened the ChatGPT sign-in page in your browser'));
       // Codex hears back from the browser itself; the check-up is read again until it says so, for three minutes.
       const t0 = Date.now();
       clearInterval(signTimer);
       signTimer = window.setInterval(async () => {
         const d = await ctx.call<Doctor>('/doctor').catch(() => null);
         if (d) { S.doc = d; S.auth = d.claude.auth; }
-        if (d?.codex.account || Date.now() - t0 > 180e3) { clearInterval(signTimer); S.signing = false; if (d?.codex.account) { ctx.cue('done', .7); ctx.toast(`Codex 登好了${d.codex.account.email ? ` · ${d.codex.account.email}` : ''}`); } }
+        if (d?.codex.account || Date.now() - t0 > 180e3) { clearInterval(signTimer); S.signing = false; if (d?.codex.account) { ctx.cue('done', .7); ctx.toast(tr(`Codex 登好了${d.codex.account.email ? ` · ${d.codex.account.email}` : ''}`, `Codex is signed in${d.codex.account.email ? ` · ${d.codex.account.email}` : ''}`)); } }
         redraw();
       }, 2000);
       return;
     }
     const how: Record<string, string> = { 'how-codex': 'https://developers.openai.com/codex/cli', 'how-git': 'https://git-scm.com/download/mac', 'how-claude': 'https://docs.anthropic.com/en/docs/claude-code/setup' };
-    if (how[x]) { void window.agents?.openUrl?.(how[x]); S.howed.add(x.slice(4)); redraw(); ctx.toast('在浏览器里打开了安装说明'); return; }
-    if (x === 'refind') { await recheck(); if (!S.doc?.codex.found) ctx.toast('还是没找到 codex', true); }
+    if (how[x]) { void window.agents?.openUrl?.(how[x]); S.howed.add(x.slice(4)); redraw(); ctx.toast(tr('在浏览器里打开了安装说明', 'Opened the install instructions in your browser')); return; }
+    if (x === 'refind') { await recheck(); if (!S.doc?.codex.found) ctx.toast(tr('还是没找到 codex', 'Still cannot find codex'), true); }
   }
   // 发一条试试: the notification a session would send, from one that fits the first kind switched on.
   async function testNote() {
     const n = notify(), k = (['wait', 'err', 'done'] as const).find(x => n[x]);
-    if (!k) { ctx.toast('三种都关了，不会弹'); return; }
-    if (!window.agents?.notifyTest) { ctx.toast('这里弹不了通知', true); return; }
+    if (!k) { ctx.toast(tr('三种都关了，不会弹', 'All three are off, so nothing will show')); return; }
+    if (!window.agents?.notifyTest) { ctx.toast(tr('这里弹不了通知', 'Notifications cannot be shown here'), true); return; }
     const ss = ctx.sessions().filter(s => !s.archived), s = ss.find(x => k === 'wait' ? x.st === 'wait' : k === 'err' ? x.st === 'err' : x.st === 'done') ?? ss[0];
-    const sub = k === 'wait' ? '在等你' : k === 'err' ? '出错了' : '做完了';
-    const ok = await window.agents?.notifyTest?.(s?.title ?? 'Startrail', sub, s?.summary ?? '通知会这样弹出来', s?.id);
+    const sub = k === 'wait' ? tr('在等你', 'Waiting on you') : k === 'err' ? tr('出错了', 'Error') : tr('做完了', 'Done');
+    const ok = await window.agents?.notifyTest?.(s?.title ?? 'Startrail', sub, s?.summary ?? tr('通知会这样弹出来', 'Notifications will look like this'), s?.id);
     ctx.cue('mark', .6);
-    ctx.toast(ok === false ? '这台 Mac 不让它弹通知：去系统设置的通知里打开' : '发了一条：看屏幕右上角', ok === false);
+    ctx.toast(ok === false ? tr('这台 Mac 不让它弹通知：去系统设置的通知里打开', 'This Mac is blocking its notifications: turn them on in System Settings > Notifications') : tr('发了一条：看屏幕右上角', 'Sent one: look at the top right of the screen'), ok === false);
   }
   async function addFolder(then?: (p: string) => void) {
     const p = await window.agents?.folder();
@@ -356,7 +357,7 @@ export function mountSettings(ctx: PageCtx): Feature {
     if (r.list) S.list = r.list;
     const got = S.list.find(x => x.path === p) ?? S.list.find(x => home(x.path) === home(p));
     S.fk = got?.path ?? p; S.fkAt = performance.now();
-    ctx.cue('mark', .6); ctx.toast(`加进来了：${home(p)}`);
+    ctx.cue('mark', .6); ctx.toast(tr(`加进来了：${home(p)}`, `Added: ${home(p)}`));
     then?.(got?.path ?? p);
     redraw(); saved();
   }
@@ -364,7 +365,7 @@ export function mountSettings(ctx: PageCtx): Feature {
     const r = await ctx.tryCall(`/projects?path=${encodeURIComponent(p)}`, undefined, 'DELETE') as { list?: Project[] } | null;
     if (!r) return;
     ctx.cue('close', .6);
-    const done = () => { if (r.list) S.list = r.list; ctx.toast(`从列表里拿掉了 ${home(p)} · 文件夹还在`); redraw(); saved(); };
+    const done = () => { if (r.list) S.list = r.list; ctx.toast(tr(`从列表里拿掉了 ${home(p)} · 文件夹还在`, `Removed ${home(p)} from the list · the folder is still there`)); redraw(); saved(); };
     const a = row ? anim(row, [{ opacity: 1 }, { opacity: 0, transform: 'translateX(12px)' }], 200) : null;
     if (a) a.onfinish = done; else done();
   }
@@ -461,7 +462,7 @@ export function mountSettings(ctx: PageCtx): Feature {
       else if (a === 'fr-pg') goPage(el.dataset.p!);
       else if (a === 'fr-prov') { if (provider() !== el.dataset.v) { ctx.tick(); void save({ provider: el.dataset.v as Settings['provider'] }).then(() => { S.keyErr = ''; redraw(); }); } }
       else if (a === 'fr-verify') void verify();
-      else if (a === 'fr-forget') void ctx.tryCall('/settings/key', undefined, 'DELETE').then(r => { if (!r) return; took(r as { settings: Settings; auth: Auth }); ctx.cue('close', .6); ctx.toast('从钥匙串里删掉了'); redraw(); saved(); });
+      else if (a === 'fr-forget') void ctx.tryCall('/settings/key', undefined, 'DELETE').then(r => { if (!r) return; took(r as { settings: Settings; auth: Auth }); ctx.cue('close', .6); ctx.toast(tr('从钥匙串里删掉了', 'Removed from Keychain')); redraw(); saved(); });
       else if (a === 'fr-fix') void fix(el.dataset.x!);
       else if (a === 'fr-paths') { S.paths = !S.paths; redraw(); }
       else if (a === 'fr-recheck') void recheck();
@@ -476,7 +477,7 @@ export function mountSettings(ctx: PageCtx): Feature {
       else if (a === 'fr-fnext') firstTo((S.first?.step ?? 0) + 1);
       else if (a === 'fr-fback') firstTo((S.first?.step ?? 0) - 1);
       else if (a === 'fr-fdot') { if (Number(el.dataset.k) < (S.first?.step ?? 0)) firstTo(Number(el.dataset.k)); }
-      else if (a === 'fr-fskip') { closeFirst(); settle(); ctx.toast('跳过了 · 钥匙和体检在设置里（⌘,）'); }
+      else if (a === 'fr-fskip') { closeFirst(); settle(); ctx.toast(tr('跳过了 · 钥匙和体检在设置里（⌘,）', 'Skipped · Keys and Health check are in Settings (⌘,)')); }
       else if (a === 'fr-fgo') start();
       else if (a === 'fr-fproj') { if (S.first) { S.first.proj = el.dataset.path!; ctx.tick(); renderFirst(); } }
       else if (a === 'fr-fadd') void addFolder(p => { if (S.first) S.first.proj = p; });

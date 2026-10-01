@@ -1,4 +1,5 @@
 import type { Item, Req, Sess, St, Step } from '../../../electron/agents/types';
+import { plural, tr } from '../lang.ts'; // with its extension: a check runs this module in Node
 
 export type Turn = { item: number; at?: number; you: string; reply: string; kind: 'sum' | 'live' | 'wait' | 'err' | 'steps' | 'none' };
 export type Trail = {
@@ -13,12 +14,12 @@ const kind = (st: St): Trail['segs'][number]['k'] => st === 'wait' ? 'wait' : st
 function stepsLine(steps: Step[], took?: string) {
   const n = (k: Step['k']) => steps.filter(s => s.k === k).length;
   const add = steps.reduce((a, s) => a + (s.add ?? 0), 0), del = steps.reduce((a, s) => a + (s.del ?? 0), 0);
-  return [took ? `干了 ${took}` : '干完了', n('read') + n('search') ? `读了 ${n('read') + n('search')} 个` : '', n('edit') ? `改了 ${n('edit')} 个 +${add} −${del}` : '',
-    n('bash') ? `跑了 ${n('bash')} 条` : '', n('agent') ? `${n('agent')} 个子任务` : '', n('web') ? `查了 ${n('web')} 次网页` : '', n('tool') ? `用了 ${n('tool')} 个工具` : '']
+  return [took ? tr(`干了 ${took}`, `Worked ${took}`) : tr('干完了', 'Done'), n('read') + n('search') ? tr(`读了 ${n('read') + n('search')} 个`, `Read ${plural(n('read') + n('search'), 'file')}`) : '', n('edit') ? tr(`改了 ${n('edit')} 个 +${add} −${del}`, `Edited ${plural(n('edit'), 'file')} +${add} −${del}`) : '',
+    n('bash') ? tr(`跑了 ${n('bash')} 条`, `Ran ${plural(n('bash'), 'command')}`) : '', n('agent') ? tr(`${n('agent')} 个子任务`, plural(n('agent'), 'subtask')) : '', n('web') ? tr(`查了 ${n('web')} 次网页`, plural(n('web'), 'web lookup')) : '', n('tool') ? tr(`用了 ${n('tool')} 个工具`, `Used ${plural(n('tool'), 'tool')}`) : '']
     .filter(Boolean).join(' · ');
 }
 const lastOf = (xs: Item[], k: Item['k'], open = false) => { for (let i = xs.length - 1; i >= 0; i--) if (xs[i].k === k && !(open && (xs[i] as Item & { k: 'req' }).done)) return xs[i]; };
-const asks = (r: Req) => r.tool === 'Ask' ? r.qs.map(q => q.q).join(' · ') : r.tool === 'Plan' ? '计划写好了，等你看' : r.why;
+const asks = (r: Req) => r.tool === 'Ask' ? r.qs.map(q => q.q).join(' · ') : r.tool === 'Plan' ? tr('计划写好了，等你看', 'Plan ready for your review') : r.why;
 // Transcript times and host-observed transitions only; an untimed sentence remains readable, never a made-up tick.
 export function timeline(s: Sess, items: Item[]): Trail {
   const out: Trail = { segs: [], marks: [], activity: [], turns: [] };
@@ -27,7 +28,7 @@ export function timeline(s: Sess, items: Item[]): Trail {
   const blocks: Item[][] = [];
   for (const [i, it] of items.entries()) {
     if (it.k === 'you') {
-      out.turns.push({ item: i, at: it.at, you: it.text || (it.files ?? []).map(f => f.name).join('、'), reply: '', kind: 'none' });
+      out.turns.push({ item: i, at: it.at, you: it.text || (it.files ?? []).map(f => f.name).join(tr('、', ', ')), reply: '', kind: 'none' });
       blocks.push([]);
       if (it.at !== undefined) {
         out.marks.push({ t: minute(it.at), k: 'you', turn: out.turns.length - 1 });
@@ -51,12 +52,12 @@ export function timeline(s: Sess, items: Item[]): Trail {
     const said = lastOf(after, 'it'), pending = lastOf(after, 'req', true);
     // A request splits a turn's steps into groups; the line counts them all, and its time only when there is one.
     const groups = after.filter(it => it.k === 'steps'), steps = groups.flatMap(it => it.k === 'steps' ? it.steps : []);
-    if (last && s.st === 'err') Object.assign(turn, { kind: 'err', reply: s.summary || '出错了' });
+    if (last && s.st === 'err') Object.assign(turn, { kind: 'err', reply: s.summary || tr('出错了', 'Something went wrong') });
     else if (said?.k === 'it') Object.assign(turn, { kind: 'sum', reply: said.text });
     else if (last && s.st === 'wait') Object.assign(turn, { kind: 'wait', reply: pending?.k === 'req' ? asks(pending.req) || s.summary : s.summary });
-    else if (last && (s.st === 'work' || s.st === 'pack')) Object.assign(turn, { kind: 'live', reply: s.now || '在干活…' });
+    else if (last && (s.st === 'work' || s.st === 'pack')) Object.assign(turn, { kind: 'live', reply: s.now || tr('在干活…', 'Working…') });
     else if (steps.length) Object.assign(turn, { kind: 'steps', reply: stepsLine(steps, groups.length === 1 && groups[0].k === 'steps' ? groups[0].took : undefined) });
-    else turn.reply = last ? '还没回' : '没等它回，你接着又说了一句';
+    else turn.reply = last ? tr('还没回', 'No reply yet') : tr('没等它回，你接着又说了一句', 'You wrote again before it replied');
   });
   // Observed transitions win when the agent records a last text before it actually finishes.
   for (const event of s.trace ?? []) {

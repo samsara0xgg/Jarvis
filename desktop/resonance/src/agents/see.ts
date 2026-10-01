@@ -6,14 +6,15 @@ import type { Sess, Step, Task } from '../../electron/agents/types';
 import type { Feature, PageCtx } from './ctx';
 import { classify, stripLine } from './workbench/refs';
 import './see.css';
+import { plural, tr } from './lang';
 
 const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 const reduced = matchMedia('(prefers-reduced-motion: reduce)');
 const anim = (el: Element, kf: Keyframe[], ms: number) => reduced.matches ? null : el.animate(kf, { duration: ms, easing: 'cubic-bezier(.23,1,.32,1)' });
 const STOP = '<svg viewBox="0 0 16 16" width="11" height="11" fill="currentColor" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9" rx="2"/></svg>';
 const CHEV = '<svg class="see-chev" viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg>';
-const K: Record<Step['k'], string> = { read: '读', edit: '改', bash: '跑', search: '搜', agent: '子任务', web: '网页', tool: '工具', say: '', think: '想' };
-const VERB: Partial<Record<Step['k'], string>> = { read: '在读', edit: '在改', bash: '在跑', search: '在搜', web: '在查网页', tool: '在用', agent: '在派', think: '在想', say: '在写' };
+const K: Record<Step['k'], string> = { read: tr('读', 'Read'), edit: tr('改', 'Edit'), bash: tr('跑', 'Run'), search: tr('搜', 'Search'), agent: tr('子任务', 'Subtask'), web: tr('网页', 'Web'), tool: tr('工具', 'Tool'), say: '', think: tr('想', 'Think') };
+const VERB: Partial<Record<Step['k'], string>> = { read: tr('在读', 'Reading'), edit: tr('在改', 'Editing'), bash: tr('在跑', 'Running'), search: tr('在搜', 'Searching'), web: tr('在查网页', 'Browsing'), tool: tr('在用', 'Using'), agent: tr('在派', 'Delegating'), think: tr('在想', 'Thinking'), say: tr('在写', 'Writing') };
 
 // ---------- time: running clocks tick in place ----------
 const mmss = (ms: number) => {
@@ -21,9 +22,9 @@ const mmss = (ms: number) => {
   return h ? `${h}:${String(m).padStart(2, '0')}:${s}` : `${m}:${s}`;
 };
 const secs = (ms: number) => Math.max(1, Math.round(ms / 1000));
-const took = (ms: number) => ms < 60000 ? `${secs(ms)} 秒` : ms < 3600000 ? `${Math.round(ms / 60000)} 分钟` : `${(ms / 3600000).toFixed(1)} 小时`;
+const took = (ms: number) => ms < 60000 ? tr(`${secs(ms)} 秒`, `${secs(ms)} s`) : ms < 3600000 ? tr(`${Math.round(ms / 60000)} 分钟`, `${Math.round(ms / 60000)} min`) : tr(`${(ms / 3600000).toFixed(1)} 小时`, `${(ms / 3600000).toFixed(1)} h`);
 // `s`: seconds (想 · 12 秒); otherwise m:ss.
-const clock = (t0: number, f = '') => `<em data-see-t0="${t0}"${f ? ` data-see-f="${f}"` : ''}>${f === 's' ? `${secs(Date.now() - t0)} 秒` : mmss(Date.now() - t0)}</em>`;
+const clock = (t0: number, f = '') => `<em data-see-t0="${t0}"${f ? ` data-see-f="${f}"` : ''}>${f === 's' ? tr(`${secs(Date.now() - t0)} 秒`, `${secs(Date.now() - t0)} s`) : mmss(Date.now() - t0)}</em>`;
 // A panel is redrawn only when more than its clocks changed.
 const still = (html: string) => html.replace(/(<em data-see-t0="\d+"[^>]*>)[^<]*/g, '$1');
 // Bring `el` to `html` changing only what differs, so the button under the pointer stays the same element.
@@ -178,8 +179,8 @@ export function mountSee(ctx: PageCtx): Feature {
     return m ? `${esc(m[1])} in ${fileBtn(m[2])}` : undefined;
   }
   function thinkArg(s: Sess, st: Step, i: number) {
-    if (thinking(s, st, i)) return `<span class="see-th run">在想 · ${clock(st.at ?? Date.now(), 's')}</span>`;
-    return `<span class="see-th">${st.ms && st.ms >= 1000 ? `想了 ${secs(st.ms)} 秒` : '想了一下'}</span>`;
+    if (thinking(s, st, i)) return `<span class="see-th run">${tr('在想', 'Thinking')} · ${clock(st.at ?? Date.now(), 's')}</span>`;
+    return `<span class="see-th">${st.ms && st.ms >= 1000 ? tr(`想了 ${secs(st.ms)} 秒`, `Thought for ${secs(st.ms)} s`) : tr('想了一下', 'Thought briefly')}</span>`;
   }
   const thoughtBox = (text: string) => `<div class="see-tb" data-act="seetb">${ctx.md(text)}</div>`;
 
@@ -197,13 +198,13 @@ export function mountSee(ctx: PageCtx): Feature {
   function subLine(s: Sess, st: Step, i: number) {
     const state = subState(s, st, i), n = subSteps(st), t = st.task ? s.tasks?.find(x => x.id === st.task) : undefined;
     const long = t?.ended && t.since ? ` · ${took(t.ended - t.since)}` : '';
-    return state === 'run' ? `子任务 · 在跑${n ? ` · 第 ${n} 步` : ''}` : state === 'stop' ? `子任务 · 停了 · 做到第 ${n} 步` : state === 'fail' ? `子任务 · 出错了 · ${n} 步` : `子任务 · 做完了 · ${n} 步${long}`;
+    return state === 'run' ? tr(`子任务 · 在跑${n ? ` · 第 ${n} 步` : ''}`, `Subtask · working${n ? ` · step ${n}` : ''}`) : state === 'stop' ? tr(`子任务 · 停了 · 做到第 ${n} 步`, `Subtask · stopped · at step ${n}`) : state === 'fail' ? tr(`子任务 · 出错了 · ${n} 步`, `Subtask · error · ${plural(n, 'step')}`) : tr(`子任务 · 做完了 · ${n} 步${long}`, `Subtask · done · ${plural(n, 'step')}${long}`);
   }
   function subArg(s: Sess, st: Step, i: number, j: number) {
     const state = subState(s, st, i), n = subSteps(st), key = subKey(s.id, i, j);
-    const tail = state === 'run' ? (n ? `第 ${n} 步` : '在起') : state === 'stop' ? '停了' : '';
+    const tail = state === 'run' ? (n ? tr(`第 ${n} 步`, `step ${n}`) : tr('在起', 'starting')) : state === 'stop' ? tr('停了', 'stopped') : '';
     if (ctx.wb.shown() === key) requestAnimationFrame(paintShown);
-    return `<button type="button" class="see-sa${ctx.wb.shown() === key ? ' on' : ''}" data-act="seesub" data-i="${i}" data-j="${j}">${esc(st.t || '子任务')}</button>${tail ? `<span class="see-sn">${tail}</span>` : ''}`;
+    return `<button type="button" class="see-sa${ctx.wb.shown() === key ? ' on' : ''}" data-act="seesub" data-i="${i}" data-j="${j}">${esc(st.t || tr('子任务', 'Subtask'))}</button>${tail ? `<span class="see-sn">${tail}</span>` : ''}`;
   }
 
   // ---------- the right side: a sub-agent's steps, or a background task's output ----------
@@ -211,16 +212,16 @@ export function mountSee(ctx: PageCtx): Feature {
   const view = () => win.querySelector<HTMLElement>('.pv .pv-view');
   const subNow = (st: Step) => {
     const last = st.sub?.at(-1);
-    if (!last) return '在起…';
-    if (last.k === 'think') return '在想';
-    if (last.k === 'say' || last.ok !== undefined) return '在想下一步';
-    return `${VERB[last.k] ?? '在做'} ${last.t}`;
+    if (!last) return tr('在起…', 'Starting…');
+    if (last.k === 'think') return tr('在想', 'Thinking');
+    if (last.k === 'say' || last.ok !== undefined) return tr('在想下一步', 'Thinking about the next step');
+    return tr(`${VERB[last.k] ?? '在做'} ${last.t}`, `${VERB[last.k] ?? 'Working on'} ${last.t}`);
   };
   function subRow(st: Step, j: number, open: boolean, running: boolean) {
     if (st.k === 'say') return `<p class="see-say">${esc(st.t)}</p>`;
     const more = !!(st.out || st.diff?.length);
-    const a = st.k === 'think' ? `<span class="see-th">${running ? '在想' : st.ms && st.ms >= 1000 ? `想了 ${secs(st.ms)} 秒` : '想了一下'}</span>` : fileArg(st) ?? esc(st.t);
-    const r = running ? '<span class="spin" role="img" aria-label="在做"></span>' : st.add !== undefined ? `<span class="p">+${st.add}</span> <span class="m">−${st.del ?? 0}</span>` : st.ok === true ? '<span class="p">✓</span>' : st.ok === false ? '<span class="m">✕</span>' : '';
+    const a = st.k === 'think' ? `<span class="see-th">${running ? tr('在想', 'Thinking') : st.ms && st.ms >= 1000 ? tr(`想了 ${secs(st.ms)} 秒`, `Thought for ${secs(st.ms)} s`) : tr('想了一下', 'Thought briefly')}</span>` : fileArg(st) ?? esc(st.t);
+    const r = running ? `<span class="spin" role="img" aria-label="${tr('在做', 'Working')}"></span>` : st.add !== undefined ? `<span class="p">+${st.add}</span> <span class="m">−${st.del ?? 0}</span>` : st.ok === true ? '<span class="p">✓</span>' : st.ok === false ? '<span class="m">✕</span>' : '';
     const x = open ? st.k === 'think' ? thoughtBox(st.out ?? '') : `<div class="x">${st.diff?.length ? ctx.diff(st.diff) : `<pre class="out">${esc(st.out ?? '')}</pre>`}</div>` : '';
     return `<div class="step${more ? ' more' : ''}${open ? ' open' : ''}"${more ? ` data-act="seesx" data-j="${j}" role="button" tabindex="0"` : ''}><span class="k">${K[st.k]}</span><span class="a" title="${esc(st.t)}">${a}</span><span class="r">${r}</span>${x}</div>`;
   }
@@ -229,18 +230,18 @@ export function mountSee(ctx: PageCtx): Feature {
   type Parts = [string, string, string];
   function subParts(s: Sess, st: Step, i: number): Parts {
     const state = subState(s, st, i), subs = st.sub ?? [], p = panel!;
-    const bar = state === 'run' ? `<div class="see-bar"><span class="spin" role="img" aria-label="在跑"></span><span class="see-now">${esc(subNow(st))}</span>${clock(st.at ?? Date.now())}`
-      + `${st.task ? `<button type="button" class="btn see-sm" data-act="seesubstop"${p.stopping ? ' disabled' : ''}>${STOP}${p.stopping ? '在停' : '停'}</button>` : ''}</div>` : '';
+    const bar = state === 'run' ? `<div class="see-bar"><span class="spin" role="img" aria-label="${tr('在跑', 'Working')}"></span><span class="see-now">${esc(subNow(st))}</span>${clock(st.at ?? Date.now())}`
+      + `${st.task ? `<button type="button" class="btn see-sm" data-act="seesubstop"${p.stopping ? ' disabled' : ''}>${STOP}${p.stopping ? tr('在停', 'Stopping') : tr('停', 'Stop')}</button>` : ''}</div>` : '';
     const rows = subs.map((x, k) => subRow(x, k, p.open.has(k), state === 'run' && k === subs.length - 1 && x.k !== 'say' && x.ok === undefined && !(x.k === 'think' && x.out))).join('');
-    const res = state === 'done' && st.out ? `<div class="see-res"><b>结果</b>${linkPaths(s, ctx.md(st.out))}</div>` : '';
-    return [bar, `<div class="see-steps">${rows || '<p class="see-say">还没有动作。</p>'}</div>`, res];
+    const res = state === 'done' && st.out ? `<div class="see-res"><b>${tr('结果', 'Result')}</b>${linkPaths(s, ctx.md(st.out))}</div>` : '';
+    return [bar, `<div class="see-steps">${rows || tr('<p class="see-say">还没有动作。</p>', '<p class="see-say">No actions yet.</p>')}</div>`, res];
   }
-  const taskLine = (t: Task) => t.st === 'run' ? '后台 · 在跑' : t.st === 'done' ? `后台 · 做完了${t.ended && t.since ? ` · ${took(t.ended - t.since)}` : ''}` : t.st === 'stop' ? '后台 · 停了' : '后台 · 出错了';
+  const taskLine = (t: Task) => t.st === 'run' ? tr('后台 · 在跑', 'Background · working') : t.st === 'done' ? tr(`后台 · 做完了${t.ended && t.since ? ` · ${took(t.ended - t.since)}` : ''}`, `Background · done${t.ended && t.since ? ` · ${took(t.ended - t.since)}` : ''}`) : t.st === 'stop' ? tr('后台 · 停了', 'Background · stopped') : tr('后台 · 出错了', 'Background · error');
   const noAnsi = (t: string) => t.replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, '').replace(/\u001b\][^\u0007]*(\u0007|\u001b\\)/g, '').replace(/\r(?!\n)/g, '\n');
   function outParts(t: Task | undefined): Parts {
     const p = panel!;
-    const bar = t?.st === 'run' ? `<div class="see-bar"><span class="spin" role="img" aria-label="在跑"></span><span class="see-now">在跑</span>${clock(t.since ?? Date.now())}<button type="button" class="btn see-sm" data-act="seebgstop" data-t="${esc(t.id)}">${STOP}停</button></div>` : '';
-    const body = p.out ? `<pre class="see-out">${esc(noAnsi(p.out))}</pre>` : `<p class="see-none">${p.loading ? '在读输出…' : '没有可看的输出'}</p>`;
+    const bar = t?.st === 'run' ? `<div class="see-bar"><span class="spin" role="img" aria-label="${tr('在跑', 'Working')}"></span><span class="see-now">${tr('在跑', 'Working')}</span>${clock(t.since ?? Date.now())}<button type="button" class="btn see-sm" data-act="seebgstop" data-t="${esc(t.id)}">${STOP}${tr('停', 'Stop')}</button></div>` : '';
+    const body = p.out ? `<pre class="see-out">${esc(noAnsi(p.out))}</pre>` : `<p class="see-none">${p.loading ? tr('在读输出…', 'Reading output…') : tr('没有可看的输出', 'No output to show')}</p>`;
     return [bar, body, ''];
   }
   // Redraw what is open on the right, keeping its end in view while it grows.
@@ -250,7 +251,7 @@ export function mountSee(ctx: PageCtx): Feature {
     const s = ctx.byId(p.sid);
     if (!s) return;
     let parts: Parts, line: string;
-    if (p.task) { const t = s.tasks?.find(x => x.id === p.task); parts = outParts(t); line = t ? taskLine(t) : '后台 · 结束了'; }
+    if (p.task) { const t = s.tasks?.find(x => x.id === p.task); parts = outParts(t); line = t ? taskLine(t) : tr('后台 · 结束了', 'Background · finished'); }
     else {
       const st = (itemOf(s, p.i!) as { steps?: Step[] } | undefined)?.steps?.[p.j!];
       if (!st || st.k !== 'agent') return;
@@ -279,7 +280,7 @@ export function mountSee(ctx: PageCtx): Feature {
     const key = subKey(s.id, i, j);
     if (ctx.wb.shown() === key) return;
     panel = { key, sid: s.id, i, j, out: '', fetched: 0, loading: false, open: new Set(), stopping: false };
-    void ctx.wb.show({ key, ic: '子', b: st.t || '子任务', small: subLine(s, st, i), fill: v => { v.dataset.seeKey = ''; paintShown(); requestAnimationFrame(() => { const w = view(); if (w) w.scrollTop = w.scrollHeight; }); } }, el.closest<HTMLElement>('.step') ?? el);
+    void ctx.wb.show({ key, ic: tr('子', 'S'), b: st.t || tr('子任务', 'Subtask'), small: subLine(s, st, i), fill: v => { v.dataset.seeKey = ''; paintShown(); requestAnimationFrame(() => { const w = view(); if (w) w.scrollTop = w.scrollHeight; }); } }, el.closest<HTMLElement>('.step') ?? el);
   }
   function openOut(el: HTMLElement, tid: string) {
     const s = ctx.current(), t = s?.tasks?.find(x => x.id === tid);
@@ -287,7 +288,7 @@ export function mountSee(ctx: PageCtx): Feature {
     const key = `see-bg:${s.id}:${tid}`;
     if (ctx.wb.shown() === key) return;
     panel = { key, sid: s.id, task: tid, out: '', fetched: 0, loading: true, open: new Set(), stopping: false };
-    void ctx.wb.show({ key, ic: '后', b: t.what || t.kind, small: taskLine(t), fill: v => { v.dataset.seeKey = ''; paintShown(); } }, el);
+    void ctx.wb.show({ key, ic: tr('后', 'B'), b: t.what || t.kind, small: taskLine(t), fill: v => { v.dataset.seeKey = ''; paintShown(); } }, el);
     void fetchOut();
   }
   // A task's output as the host tails it; again every two seconds or so while it runs.
@@ -308,17 +309,17 @@ export function mountSee(ctx: PageCtx): Feature {
   // ---------- background work: a row above the composer ----------
   let bgOpen = '';
   const bgOf = (s: Sess) => (s.tasks ?? []).filter(t => !t.fg);
-  const bgState = (t: Task) => t.st === 'run' ? `在跑 ${clock(t.since ?? Date.now())}` : t.st === 'done' ? `做完了${t.ended && t.since ? ` · ${took(t.ended - t.since)}` : ''}` : t.st === 'stop' ? '停了' : '出错了';
+  const bgState = (t: Task) => t.st === 'run' ? tr(`在跑 ${clock(t.since ?? Date.now())}`, `Working ${clock(t.since ?? Date.now())}`) : t.st === 'done' ? tr(`做完了${t.ended && t.since ? ` · ${took(t.ended - t.since)}` : ''}`, `Done${t.ended && t.since ? ` · ${took(t.ended - t.since)}` : ''}`) : t.st === 'stop' ? tr('停了', 'Stopped') : tr('出错了', 'Error');
   function rows(s: Sess) {
     const all = bgOf(s);
     if (!all.length) { if (bgOpen === s.id) bgOpen = ''; return ''; }
     const run = all.filter(t => t.st === 'run').length, done = all.filter(t => t.st === 'done').length, other = all.length - run - done, open = bgOpen === s.id;
-    const what = [run && `${run} 个在跑`, done && `${done} 个做完了`, other && `${other} 个停了`].filter(Boolean).join(' · '), shown = ctx.wb.shown();
+    const what = [run && tr(`${run} 个在跑`, `${run} working`), done && tr(`${done} 个做完了`, `${done} done`), other && tr(`${other} 个停了`, `${other} stopped`)].filter(Boolean).join(' · '), shown = ctx.wb.shown();
     const list = open ? `<div class="see-bgl">${all.map(t => `<div class="see-bgr ${t.st}"><i class="see-dot ${t.st}"></i><code title="${esc(t.what)}">${esc(t.what || t.kind)}</code><span class="see-bgt">${bgState(t)}</span>`
-      + `<button type="button" class="btn see-sm see-bgo${shown === `see-bg:${s.id}:${t.id}` ? ' on' : ''}" data-act="seebgout" data-t="${esc(t.id)}">看输出</button>`
-      + `${t.st === 'run' ? `<button type="button" class="btn see-sm" data-act="seebgstop" data-t="${esc(t.id)}" aria-label="停">${STOP}停</button>` : ''}</div>`).join('')}</div>` : '';
+      + `<button type="button" class="btn see-sm see-bgo${shown === `see-bg:${s.id}:${t.id}` ? ' on' : ''}" data-act="seebgout" data-t="${esc(t.id)}">${tr('看输出', 'View output')}</button>`
+      + `${t.st === 'run' ? `<button type="button" class="btn see-sm" data-act="seebgstop" data-t="${esc(t.id)}" aria-label="${tr('停', 'Stop')}">${STOP}${tr('停', 'Stop')}</button>` : ''}</div>`).join('')}</div>` : '';
     const chips = open ? '' : `<span class="see-bgs">${all.map(t => `<span class="${t.st}">${esc(t.what || t.kind)}${t.st === 'run' ? ` ${clock(t.since ?? Date.now())}` : t.st === 'done' ? ' <i>✓</i>' : ' <i>■</i>'}</span>`).join('')}</span>`;
-    return `<div class="see-bg${open ? ' open' : ''}">${list}<button type="button" class="see-bgh" data-act="seebg" aria-expanded="${open}"><i class="see-dot${run ? ' run' : ''}"></i><b>后台</b><span class="see-bgn">${what}</span>${chips}${CHEV}</button></div>`;
+    return `<div class="see-bg${open ? ' open' : ''}">${list}<button type="button" class="see-bgh" data-act="seebg" aria-expanded="${open}"><i class="see-dot${run ? ' run' : ''}"></i><b>${tr('后台', 'Background')}</b><span class="see-bgn">${what}</span>${chips}${CHEV}</button></div>`;
   }
   // The rows above the composer change height: a conversation read to its end stays at its end.
   let rowsH = 0;
@@ -344,8 +345,8 @@ export function mountSee(ctx: PageCtx): Feature {
     look(s, ref);
     menuFor = { el, ref, sid: s.id };
     // Under the file (above it when there is no room), so the menu never covers the name it is for.
-    ctx.menu(`<button type="button" data-act="seefside">在右边打开</button><button type="button" data-act="seefapp">用默认的 app 打开</button><button type="button" data-act="seefed">在编辑器里打开${editor ? `<span class="k">${esc(editor)}</span>` : ''}</button>`
-      + '<button type="button" data-act="seeffind">在访达里显示</button><span class="sep"></span><button type="button" data-act="seefcopy">复制路径</button>', el, { cls: 'see-fm' });
+    ctx.menu(`<button type="button" data-act="seefside">${tr('在右边打开', 'Open on the right')}</button><button type="button" data-act="seefapp">${tr('用默认的 app 打开', 'Open with default app')}</button><button type="button" data-act="seefed">${tr('在编辑器里打开', 'Open in editor')}${editor ? `<span class="k">${esc(editor)}</span>` : ''}</button>`
+      + `<button type="button" data-act="seeffind">${tr('在访达里显示', 'Show in Finder')}</button><span class="sep"></span><button type="button" data-act="seefcopy">${tr('复制路径', 'Copy path')}</button>`, el, { cls: 'see-fm' });
     void readEditor();
   });
   async function fileAct(a: string) {
@@ -357,9 +358,9 @@ export function mountSee(ctx: PageCtx): Feature {
       const src = m.el.isConnected ? m.el : [...win.querySelectorAll<HTMLElement>('[data-ref]')].find(x => x.dataset.ref === m.ref);
       if (src) ctx.wb.act('peek', src);
     } else if (a === 'seefapp') void window.agents?.openPath?.(abs);
-    else if (a === 'seefed') { if (await window.agents?.openInEditor?.(abs, line) === false) ctx.toast('没能在编辑器里打开', true); }
+    else if (a === 'seefed') { if (await window.agents?.openInEditor?.(abs, line) === false) ctx.toast(tr('没能在编辑器里打开', "Couldn't open in editor"), true); }
     else if (a === 'seeffind') void window.agents?.revealFile?.(abs);
-    else if (a === 'seefcopy') await navigator.clipboard.writeText(abs).then(() => ctx.tick(), () => ctx.toast(`没能复制。路径是 ${abs}`, true));
+    else if (a === 'seefcopy') await navigator.clipboard.writeText(abs).then(() => ctx.tick(), () => ctx.toast(tr(`没能复制。路径是 ${abs}`, `Couldn't copy. The path is ${abs}`), true));
   }
 
   // ---------- what is open on the right is marked where it was opened from ----------
@@ -393,7 +394,7 @@ export function mountSee(ctx: PageCtx): Feature {
   setInterval(() => {
     if (document.hidden) return;
     for (const el of win.querySelectorAll<HTMLElement>('[data-see-t0]')) {
-      const ms = Date.now() - Number(el.dataset.seeT0), t = el.dataset.seeF === 's' ? `${secs(ms)} 秒` : mmss(ms);
+      const ms = Date.now() - Number(el.dataset.seeT0), t = el.dataset.seeF === 's' ? tr(`${secs(ms)} 秒`, `${secs(ms)} s`) : mmss(ms);
       if (el.textContent !== t) el.textContent = t;
     }
     if (++beat % 4) return;
@@ -405,11 +406,11 @@ export function mountSee(ctx: PageCtx): Feature {
 
   // ---------- commands the window answers ----------
   ctx.own.set('tasks', s => {
-    if (!s || !bgOf(s).length) { ctx.toast('没有后台任务'); return; }
+    if (!s || !bgOf(s).length) { ctx.toast(tr('没有后台任务', 'No background tasks')); return; }
     bgOpen = s.id; ctx.draw('comp');
   });
   ctx.own.set('editor', s => { if (s) void openFolder(s); });
-  async function openFolder(s: Sess) { if (await window.agents?.openInEditor?.(s.cwd) === false) ctx.toast('没能在编辑器里打开'); }
+  async function openFolder(s: Sess) { if (await window.agents?.openInEditor?.(s.cwd) === false) ctx.toast(tr('没能在编辑器里打开', "Couldn't open in editor")); }
 
   return {
     arg(s, st, i, j, html) {
@@ -424,8 +425,8 @@ export function mountSee(ctx: PageCtx): Feature {
     rows,
     more(s) {
       const name = s.cwd.split('/').filter(Boolean).pop() ?? s.cwd;
-      return `<span class="sep"></span><span class="ph">${esc(name)}</span><button type="button" data-act="seeed">在编辑器里打开${editor ? `<span class="k">${esc(editor)}</span>` : ''}</button>`
-        + '<button type="button" data-act="reveal">在访达里显示</button><button type="button" data-act="seeterm">在终端里打开</button><span class="sep"></span>';
+      return `<span class="sep"></span><span class="ph">${esc(name)}</span><button type="button" data-act="seeed">${tr('在编辑器里打开', 'Open in editor')}${editor ? `<span class="k">${esc(editor)}</span>` : ''}</button>`
+        + `<button type="button" data-act="reveal">${tr('在访达里显示', 'Show in Finder')}</button><button type="button" data-act="seeterm">${tr('在终端里打开', 'Open in Terminal')}</button><span class="sep"></span>`;
     },
     act(a, el) {
       const s = ctx.current();
@@ -463,7 +464,7 @@ export function mountSee(ctx: PageCtx): Feature {
       if (a === 'seeed' && s) { ctx.closeMenu(); void openFolder(s); return true; }
       if (a === 'seeterm' && s) {
         ctx.closeMenu();
-        void window.agents?.terminal(s.cwd, '').then(ok => { if (!ok) ctx.toast(`没能打开终端。在终端里跑：cd ${s.cwd.replace(/^\/Users\/[^/]+/, '~')}`); });
+        void window.agents?.terminal(s.cwd, '').then(ok => { if (!ok) ctx.toast(tr(`没能打开终端。在终端里跑：cd ${s.cwd.replace(/^\/Users\/[^/]+/, '~')}`, `Couldn't open Terminal. Run in Terminal: cd ${s.cwd.replace(/^\/Users\/[^/]+/, '~')}`)); });
         return true;
       }
       return false;

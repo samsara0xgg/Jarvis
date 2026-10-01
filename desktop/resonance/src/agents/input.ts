@@ -6,6 +6,7 @@ import type { Agent, Mcp, File as Upload, Pic, Sess, Step } from '../../electron
 import type { Feature, PageCtx } from './ctx';
 import { settingsPages } from './settings';
 import './input.css';
+import { plural, tr } from './lang';
 
 const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 const reduced = matchMedia('(prefers-reduced-motion: reduce)');
@@ -46,12 +47,12 @@ const dataURL = (f: Blob) => new Promise<string>((done, fail) => { const r = new
 export async function attachAll(list: { f: File; dir?: boolean }[], say: (text: string) => void): Promise<Attached[]> {
   const out: Attached[] = [];
   for (const [k, { f, dir = false }] of list.entries()) {
-    const name = f.name || `图片 ${k + 1}.png`, kind = kindOf(name, f.type, dir), p = window.agents?.pathOf?.(f) ?? '', path = p.startsWith('/') ? p : '';
+    const name = f.name || tr(`图片 ${k + 1}.png`, `Image ${k + 1}.png`), kind = kindOf(name, f.type, dir), p = window.agents?.pathOf?.(f) ?? '', path = p.startsWith('/') ? p : '';
     const view = kind === 'img' && f.size <= CAP ? URL.createObjectURL(f) : '';
     if (path) { out.push({ name, path, view, kind, size: f.size }); continue; }
-    if (dir || f.size > CAP) { if (view) URL.revokeObjectURL(view); say(dir ? `找不到「${name}」在哪，文件夹要从访达拖进来` : `「${name}」超过 30 MB，从访达拖进来就只给它路径`); continue; }
+    if (dir || f.size > CAP) { if (view) URL.revokeObjectURL(view); say(dir ? tr(`找不到「${name}」在哪，文件夹要从访达拖进来`, `Can't find "${name}", drag folders in from Finder`) : tr(`「${name}」超过 30 MB，从访达拖进来就只给它路径`, `"${name}" is over 30 MB, drag it in from Finder to give just its path`)); continue; }
     try { out.push({ name, url: await dataURL(f), view, kind, size: f.size }); }
-    catch { if (view) URL.revokeObjectURL(view); say(`读不了「${name}」`); }
+    catch { if (view) URL.revokeObjectURL(view); say(tr(`读不了「${name}」`, `Can't read "${name}"`)); }
   }
   return out;
 }
@@ -61,16 +62,16 @@ const tile = (kind: Kind, name: string) => kind === 'dir' ? `<i class="in-fi in-
 // The composer's files: pictures as small pictures, anything else a chip with its type, name and size.
 export const chipsHTML = (fs: Attached[]) => fs.map((f, k) => {
   const at = `data-in-k="${k}" data-kind="${f.kind}"${f.path ? ` data-ref="${esc(f.path)}"` : ''} data-label="${esc(f.name)}"`;
-  if (f.kind === 'img' && f.view) return `<span class="c-pic" ${at}><button type="button" class="pic" data-act="view" data-tip="看大图"><img src="${f.view}" alt="${esc(f.name)}"></button><i data-act="unfile" data-k="${k}" aria-label="去掉">✕</i></span>`;
-  const big = f.kind !== 'dir' && f.size > CAP, sub = f.kind === 'dir' ? '文件夹' : big ? `${sizeOf(f.size)} · 只给路径` : sizeOf(f.size);
-  return `<span class="in-fc${big ? ' in-big' : ''}" role="button" tabindex="0" data-act="in-open" ${at} data-tip="${esc(f.path || f.name)}" aria-label="打开 ${esc(f.name)}">`
-    + `${tile(f.kind, f.name)}<span class="in-fn"><b>${esc(f.name)}</b><small>${esc(sub)}</small></span><button type="button" class="in-x" data-act="unfile" data-k="${k}" aria-label="去掉 ${esc(f.name)}">${IC.x}</button></span>`;
+  if (f.kind === 'img' && f.view) return `<span class="c-pic" ${at}><button type="button" class="pic" data-act="view" data-tip="${tr('看大图', 'View larger')}"><img src="${f.view}" alt="${esc(f.name)}"></button><i data-act="unfile" data-k="${k}" aria-label="${tr('去掉', 'Remove')}">✕</i></span>`;
+  const big = f.kind !== 'dir' && f.size > CAP, sub = f.kind === 'dir' ? tr('文件夹', 'Folder') : big ? tr(`${sizeOf(f.size)} · 只给路径`, `${sizeOf(f.size)} · path only`) : sizeOf(f.size);
+  return `<span class="in-fc${big ? ' in-big' : ''}" role="button" tabindex="0" data-act="in-open" ${at} data-tip="${esc(f.path || f.name)}" aria-label="${tr('打开', 'Open')} ${esc(f.name)}">`
+    + `${tile(f.kind, f.name)}<span class="in-fn"><b>${esc(f.name)}</b><small>${esc(sub)}</small></span><button type="button" class="in-x" data-act="unfile" data-k="${k}" aria-label="${tr('去掉', 'Remove')} ${esc(f.name)}">${IC.x}</button></span>`;
 }).join('');
 // A file a message went with, by its path: a smaller chip that opens it.
 export function fileTag(f: Pic & { path: string }) {
   const dir = f.path.endsWith('/'), kind = kindOf(f.name, '', dir);
-  return `<button type="button" class="in-mfc" data-act="in-open" data-kind="${kind}" data-ref="${esc(f.path)}" data-label="${esc(f.name)}" data-tip="${esc(f.path)}" aria-label="打开 ${esc(f.name)}">`
-    + `${tile(kind, f.name)}<span>${esc(f.name)}</span>${dir ? '<small>文件夹</small>' : ''}</button>`;
+  return `<button type="button" class="in-mfc" data-act="in-open" data-kind="${kind}" data-ref="${esc(f.path)}" data-label="${esc(f.name)}" data-tip="${esc(f.path)}" aria-label="${tr('打开', 'Open')} ${esc(f.name)}">`
+    + `${tile(kind, f.name)}<span>${esc(f.name)}</span>${dir ? tr('<small>文件夹</small>', '<small>Folder</small>') : ''}</button>`;
 }
 
 // ---------- dropping: anywhere on the window, a calm veil while files are held over it ----------
@@ -99,28 +100,28 @@ export function slashPicks(list: [string, string, string?][], q: string): Pick[]
   return [...found.filter(mine).map(c => [c[0], c[1], 'own'] as Pick), ...found.filter(c => !mine(c)).map(c => [c[0], c[1]] as Pick)].slice(0, 60);
 }
 export function slashHTML(picks: Pick[], at: number, agent: string) {
-  const rows = picks.map(([v, d, g], k) => (k && !!picks[k - 1][2] === !!g ? '' : `<p class="in-h">${g ? '窗口里的' : `${esc(agent)} 的`}</p>`)
+  const rows = picks.map(([v, d, g], k) => (k && !!picks[k - 1][2] === !!g ? '' : `<p class="in-h">${g ? tr('窗口里的', 'Window commands') : tr(`${esc(agent)} 的`, `${esc(agent)} commands`)}</p>`)
     + `<button type="button" data-act="pickcmd" data-v="${esc(v)}"${k === at ? ' class="on"' : ''}><code>${esc(v)}</code><span>${esc(d)}</span></button>`).join('');
-  return rows && `${rows}<p class="in-f"><kbd>↑</kbd><kbd>↓</kbd> 选 · <kbd>⏎</kbd> 或 <kbd>Tab</kbd> 填进去 · <kbd>esc</kbd> 收起</p>`;
+  return rows && `${rows}<p class="in-f"><kbd>↑</kbd><kbd>↓</kbd> ${tr('选', 'select')} · <kbd>⏎</kbd> ${tr('或', 'or')} <kbd>Tab</kbd> ${tr('填进去', 'insert')} · <kbd>esc</kbd> ${tr('收起', 'close')}</p>`;
 }
 const home = (p: string) => p.replace(/^\/(Users|home)\/[^/]+(?=\/|$)/, '~');
 const day = (ms: number) => {
   const d = Math.floor((new Date().setHours(24, 0, 0, 0) - ms) / 864e5);
-  return d <= 0 ? '今天' : d === 1 ? '昨天' : d < 7 ? `${d} 天前` : `${new Date(ms).getMonth() + 1} 月 ${new Date(ms).getDate()} 日`;
+  return d <= 0 ? tr('今天', 'Today') : d === 1 ? tr('昨天', 'Yesterday') : d < 7 ? tr(`${d} 天前`, `${d} d ago`) : tr(`${new Date(ms).getMonth() + 1} 月 ${new Date(ms).getDate()} 日`, new Date(ms).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }));
 };
 
 // ---------- permission modes: each agent's own (the host's catalog names them), each with what it means ----------
 // 完全放开 is Claude Code's bypassPermissions and Codex's full access: chosen, it is asked once in the window first.
 const FULL = new Set(['bypassPermissions', 'full']);
 const SUB: Record<Agent, Record<string, string>> = {
-  claude: { auto: '能做的都做，要紧的才问你', default: '改文件、跑命令前都问', acceptEdits: '改文件不问，跑命令还问', plan: '先出计划，你点头才动手', bypassPermissions: '什么都不问' },
-  codex: { auto: '在这个文件夹里改，出去要问', read: '只看不改', full: '不问你，也不限文件夹', plan: '先出计划' },
+  claude: { auto: tr('能做的都做，要紧的才问你', 'Acts, asks only if it matters'), default: tr('改文件、跑命令前都问', 'Asks before edits and commands'), acceptEdits: tr('改文件不问，跑命令还问', 'Edits freely, asks for commands'), plan: tr('先出计划，你点头才动手', 'Plans first, acts on approval'), bypassPermissions: tr('什么都不问', 'Never asks') },
+  codex: { auto: tr('在这个文件夹里改，出去要问', 'Edits in this folder, asks outside'), read: tr('只看不改', 'Read only'), full: tr('不问你，也不限文件夹', 'Never asks, any folder'), plan: tr('先出计划', 'Plans first') },
 };
-const ASK: Record<Agent, string> = { claude: '它不再问你就改文件、跑命令。只在这个会话里。', codex: '它不再问你，改文件、跑命令也不限在这个文件夹里。只在这个会话里。' };
+const ASK: Record<Agent, string> = { claude: tr('它不再问你就改文件、跑命令。只在这个会话里。', 'It will edit files and run commands without asking. This session only.'), codex: tr('它不再问你，改文件、跑命令也不限在这个文件夹里。只在这个会话里。', 'It will stop asking, and can edit files and run commands outside this folder. This session only.') };
 export const modesHTML = (modes: [string, string][], v: string, agent: Agent) => modes.map(([x, l]) => `<button type="button" data-act="set" data-k="mode" data-v="${esc(x)}" data-agent="${agent}"`
   + `${x === v || FULL.has(x) ? ` class="${[x === v ? 'on' : '', FULL.has(x) ? 'in-warm' : ''].filter(Boolean).join(' ')}"` : ''}>${esc(l)}${SUB[agent][x] ? `<small>${SUB[agent][x]}</small>` : ''}</button>`).join('');
-const askHTML = (agent: Agent, v: string, label: string) => `<p><b>${esc(label)}？</b>${ASK[agent]}</p><span class="in-askb"><button type="button" class="btn" data-act="in-full-no">算了 <kbd>esc</kbd></button>`
-  + `<button type="button" class="btn warm" data-act="set" data-k="mode" data-v="${esc(v)}" data-ok="1">放开 <kbd>⏎</kbd></button></span>`;
+const askHTML = (agent: Agent, v: string, label: string) => `<p><b>${esc(label)}${tr('？', '?')}</b>${ASK[agent]}</p><span class="in-askb"><button type="button" class="btn" data-act="in-full-no">${tr('算了', 'Cancel')} <kbd>esc</kbd></button>`
+  + `<button type="button" class="btn warm" data-act="set" data-k="mode" data-v="${esc(v)}" data-ok="1">${tr('放开', 'Turn on')} <kbd>⏎</kbd></button></span>`;
 
 // ---------- MCP: nothing while all is well; one line under the step that ran into a server that failed or wants a
 // sign-in; /mcp (and the settings sheet, through renderMcp) the whole list ----------
@@ -129,7 +130,7 @@ const askHTML = (agent: Agent, v: string, label: string) => `<p><b>${esc(label)}
 type Srv = { list?: Mcp[]; err?: string; loading?: Promise<void>; again?: number };
 const mcp = new Map<string, Srv>(), busy = new Map<string, 'login' | 'wait'>(), fixed = new Set<string>(), skip = new Set<string>(), known = new Set<string>();
 const views = new Map<HTMLElement, { sid: string; page: boolean }>();
-const SCOPE: Record<string, string> = { user: '用户', project: '项目', local: '本地', plugin: '插件', claudeai: 'claude.ai', managed: '管理员', enterprise: '管理员', dynamic: '这次加的' };
+const SCOPE: Record<string, string> = { user: tr('用户', 'User'), project: tr('项目', 'Project'), local: tr('本地', 'Local'), plugin: tr('插件', 'Plugin'), claudeai: 'claude.ai', managed: tr('管理员', 'Admin'), enterprise: tr('管理员', 'Admin'), dynamic: tr('这次加的', 'Session') };
 let C: PageCtx | undefined;
 const kOf = (sid: string, n: string) => `${sid}\n${n}`;
 const norm = (n: string) => n.replace(/[^\w-]/g, '_');
@@ -164,12 +165,12 @@ function serverOf(s: Sess, st: Step, i: number, j: number): Mcp | null | undefin
 function lineHTML(s: Sess, m: Mcp): string {
   const k = kOf(s.id, m.name), b = busy.get(k);
   if (skip.has(k)) return '';
-  const act = (v: string, l: string) => `<b>·</b><button type="button" data-act="in-mq" data-v="${v}" data-sid="${esc(s.id)}" data-n="${esc(m.name)}">${l}</button>`, no = act('skip', '这次不用');
-  const [tone, text, acts] = b === 'login' ? ['wait', `在浏览器里登录 ${m.name}…`, ''] : b || m.st === 'wait' ? ['wait', `${m.name} 在连…`, '']
-    : m.st === 'auth' ? ['warm', `${m.name} 要登录才能用`, (m.can.includes('login') ? act('login', '登录') : '') + no]
-    : m.st === 'fail' ? ['red', `${m.name} ${m.why ?? '连不上'}`, (m.can.includes('reconnect') ? act('retry', '重试') : '') + no]
-    : m.st === 'off' ? ['plain', `${m.name} 关着`, (m.can.includes('on') ? act('on', '打开') : '') + no]
-    : fixed.has(k) ? ['mint', `${m.name} 连上了${m.tools ? ` · ${m.tools} 个工具` : ''}`, ''] : ['', '', ''];
+  const act = (v: string, l: string) => `<b>·</b><button type="button" data-act="in-mq" data-v="${v}" data-sid="${esc(s.id)}" data-n="${esc(m.name)}">${l}</button>`, no = act('skip', tr('这次不用', 'Not now'));
+  const [tone, text, acts] = b === 'login' ? ['wait', tr(`在浏览器里登录 ${m.name}…`, `Signing in to ${m.name} via browser…`), ''] : b || m.st === 'wait' ? ['wait', tr(`${m.name} 在连…`, `${m.name} connecting…`), '']
+    : m.st === 'auth' ? ['warm', tr(`${m.name} 要登录才能用`, `${m.name} needs sign-in`), (m.can.includes('login') ? act('login', tr('登录', 'Sign in')) : '') + no]
+    : m.st === 'fail' ? ['red', tr(`${m.name} ${m.why ?? '连不上'}`, `${m.name} ${m.why ?? "can't connect"}`), (m.can.includes('reconnect') ? act('retry', tr('重试', 'Retry')) : '') + no]
+    : m.st === 'off' ? ['plain', tr(`${m.name} 关着`, `${m.name} is off`), (m.can.includes('on') ? act('on', tr('打开', 'Turn on')) : '') + no]
+    : fixed.has(k) ? ['mint', tr(`${m.name} 连上了${m.tools ? ` · ${m.tools} 个工具` : ''}`, `${m.name} connected${m.tools ? ` · ${plural(m.tools, 'tool')}` : ''}`), ''] : ['', '', ''];
   return text ? `<div class="in-mq in-t-${tone}" data-x><i></i><span title="${esc(text)}">${esc(text)}</span>${acts}</div>` : '';
 }
 // Sign in, connect again, switch on or off: the page a sign-in opens is watched until the server is connected (three
@@ -194,31 +195,31 @@ async function mcpDo(s: Sess, n: string, act: 'login' | 'reconnect' | 'on' | 'of
   busy.delete(k);
   const now = m.list?.find(x => x.name === n);
   if ((act === 'login' || act === 'reconnect') && now?.st === 'on') { fixed.add(k); skip.delete(k); c.cue('done'); }
-  else if (act === 'login' && r?.url) c.toast(`还没等到 ${n} 登好`, true);
-  else if (act === 'reconnect' && r) c.toast(`${n} 还是连不上`, true);
+  else if (act === 'login' && r?.url) c.toast(tr(`还没等到 ${n} 登好`, `${n} sign-in didn't finish`), true);
+  else if (act === 'reconnect' && r) c.toast(tr(`${n} 还是连不上`, `${n} still can't connect`), true);
   else if ((act === 'on' || act === 'off') && r) c.cue(act);
   mcpChanged();
 }
 function rowHTML(s: Sess, m: Mcp) {
   const b = busy.get(kOf(s.id, m.name)), on = m.st !== 'off', n = esc(m.name), can = m.can.includes(on ? 'off' : 'on');
-  const text = b === 'login' ? '在浏览器里登录…' : b || m.st === 'wait' ? '在连…' : m.st === 'on' ? `连上了${m.tools ? ` · ${m.tools} 个工具` : ''}`
-    : m.st === 'auth' ? m.why ?? '要登录' : m.st === 'fail' ? m.why ?? '连不上' : '关着';
-  const act = b || m.st === 'wait' ? '<span class="in-spin" role="img" aria-label="在连"></span>'
-    : m.st === 'auth' && m.can.includes('login') ? `<button type="button" class="in-ma in-warm" data-in-m="login" data-n="${n}">登录</button>`
-    : m.st === 'fail' && m.can.includes('reconnect') ? `<button type="button" class="in-ma" data-in-m="reconnect" data-n="${n}">重连</button>` : '';
+  const text = b === 'login' ? tr('在浏览器里登录…', 'Signing in via browser…') : b || m.st === 'wait' ? tr('在连…', 'Connecting…') : m.st === 'on' ? tr(`连上了${m.tools ? ` · ${m.tools} 个工具` : ''}`, `Connected${m.tools ? ` · ${plural(m.tools, 'tool')}` : ''}`)
+    : m.st === 'auth' ? m.why ?? tr('要登录', 'Needs sign-in') : m.st === 'fail' ? m.why ?? tr('连不上', "Can't connect") : tr('关着', 'Off');
+  const act = b || m.st === 'wait' ? `<span class="in-spin" role="img" aria-label="${tr('在连', 'Connecting')}"></span>`
+    : m.st === 'auth' && m.can.includes('login') ? `<button type="button" class="in-ma in-warm" data-in-m="login" data-n="${n}">${tr('登录', 'Sign in')}</button>`
+    : m.st === 'fail' && m.can.includes('reconnect') ? `<button type="button" class="in-ma" data-in-m="reconnect" data-n="${n}">${tr('重连', 'Reconnect')}</button>` : '';
   const sw = `<button type="button" class="in-sw" role="switch" aria-checked="${on}" aria-label="${n}"${can ? '' : ' aria-disabled="true"'} data-in-m="sw" data-n="${n}"><i></i></button>`;
   return `<div class="in-mr in-s-${m.st}"><i class="in-dot in-s-${b ? 'wait' : m.st}"></i><span class="in-mt"><b>${n}</b>${m.scope ? `<small>${esc(SCOPE[m.scope] ?? m.scope)}</small>` : ''}`
     + `<span title="${esc(text)}">${esc(text)}</span></span><span class="in-mx">${act}${sw}</span></div>`;
 }
 function drawList(el: HTMLElement, sid: string, page: boolean) {
   const s = C?.byId(sid), m = mcp.get(sid);
-  if (!s) { el.innerHTML = '<p class="in-mf">没有这个会话</p>'; return; }
+  if (!s) { el.innerHTML = tr('<p class="in-mf">没有这个会话</p>', '<p class="in-mf">No such session</p>'); return; }
   const f = document.activeElement instanceof HTMLElement && el.contains(document.activeElement) ? [document.activeElement.dataset.n, document.activeElement.dataset.inM] : null;
   const head = page ? `<p class="in-ms">${esc(s.title)} · ${s.agent === 'codex' ? 'Codex' : 'Claude Code'}</p>`
-    : `<p class="in-mh"><b>这个会话的 MCP</b><button type="button" class="in-mclose" data-in-m="x" aria-label="关闭">${IC.x}</button></p>`;
-  el.innerHTML = head + (!m?.list ? `<p class="in-mf in-mload">${m?.err ? esc(m.err) : '<span class="in-spin"></span>在读它的 MCP…'}</p>`
-    : !m.list.length ? '<p class="in-mf">这个会话没有 MCP</p>'
-    : m.list.map(x => rowHTML(s, x)).join('') + `<p class="in-mf">${s.agent === 'codex' ? 'Codex 的 MCP 在它的 config.toml 里开关' : '关掉的在这个文件夹里都关着，终端里的 Claude Code 也是'}</p>`);
+    : `<p class="in-mh"><b>${tr('这个会话的', "This session's")} MCP</b><button type="button" class="in-mclose" data-in-m="x" aria-label="${tr('关闭', 'Close')}">${IC.x}</button></p>`;
+  el.innerHTML = head + (!m?.list ? `<p class="in-mf in-mload">${m?.err ? esc(m.err) : tr('<span class="in-spin"></span>在读它的 MCP…', '<span class="in-spin"></span>Reading MCP…')}</p>`
+    : !m.list.length ? tr('<p class="in-mf">这个会话没有 MCP</p>', '<p class="in-mf">No MCP in this session</p>')
+    : m.list.map(x => rowHTML(s, x)).join('') + `<p class="in-mf">${s.agent === 'codex' ? tr('Codex 的 MCP 在它的 config.toml 里开关', 'Switch Codex MCP in its config.toml') : tr('关掉的在这个文件夹里都关着，终端里的 Claude Code 也是', 'Turned off here stays off in this folder, in Claude Code in Terminal too')}</p>`);
   // Focus stays on the same row: its button, or its switch once the button is gone.
   if (f?.[0]) { const q = (a?: string) => a ? [...el.querySelectorAll<HTMLElement>(`[data-in-m="${a}"]`)].find(x => x.dataset.n === f[0]) : undefined; (q(f[1]) ?? q('sw'))?.focus({ preventScroll: true }); }
   el.dispatchEvent(new Event('in-mcp-drawn'));
@@ -229,7 +230,7 @@ function onList(e: MouseEvent) {
   const a = b.dataset.inM!, n = b.dataset.n ?? '';
   if (a === 'x') { el.dispatchEvent(new Event('in-mcp-close', { bubbles: true })); return; }
   if (a === 'sw') {
-    if (b.getAttribute('aria-disabled') === 'true') { C.toast(s.agent === 'codex' ? 'Codex 的 MCP 要在它的 config.toml 里开关' : '它现在开关不了'); return; }
+    if (b.getAttribute('aria-disabled') === 'true') { C.toast(s.agent === 'codex' ? tr('Codex 的 MCP 要在它的 config.toml 里开关', 'Switch Codex MCP in its config.toml') : tr('它现在开关不了', "Can't switch it right now")); return; }
     void mcpDo(s, n, b.getAttribute('aria-checked') === 'true' ? 'off' : 'on');
   } else if (a === 'login' || a === 'reconnect') void mcpDo(s, n, a);
 }
@@ -251,7 +252,7 @@ export function mountInput(ctx: PageCtx): Feature {
   // The settings sheet's MCP page: the session in front's list, the same one /mcp shows.
   settingsPages.push({ id: 'mcp', label: 'MCP', draw(el) {
     const s = ctx.current();
-    if (s) renderMcp(el, s, true); else el.innerHTML = '<p class="fr-fn">开了会话再看它的 MCP：每个会话连着的服务器不一样。</p>';
+    if (s) renderMcp(el, s, true); else el.innerHTML = `<p class="fr-fn">${tr('开了会话再看它的 MCP：每个会话连着的服务器不一样。', 'Open a session to see its MCP: each session connects different servers.')}</p>`;
   } });
   veil = document.createElement('div'); veil.className = 'in-drop'; veil.hidden = true; win.append(veil);
   function showVeil(n: number) {
@@ -259,7 +260,7 @@ export function mountInput(ctx: PageCtx): Feature {
     ctx.closeMenu();
     const s = ctx.current(), head = win.querySelector('.m-head')?.getBoundingClientRect(), w = win.getBoundingClientRect();
     veil!.style.top = `${head && head.height ? head.bottom - w.top : 0}px`;
-    veil!.innerHTML = `<div class="in-dt">${IC.tray}<b>放下就行</b><small>${n ? `${n} 个文件，` : ''}放进${s ? `「${esc(s.title)}」` : '新会话'}</small></div>`;
+    veil!.innerHTML = `<div class="in-dt">${IC.tray}<b>${tr('放下就行', 'Drop to add')}</b><small>${n ? tr(`${n} 个文件，`, `${plural(n, 'file')} into `) : tr('', 'Into ')}${tr('放进', '')}${s ? tr(`「${esc(s.title)}」`, `"${esc(s.title)}"`) : tr('新会话', 'a new session')}</small></div>`;
     veil!.hidden = false; anim(veil!, [{ opacity: 0 }, { opacity: 1 }], 160);
   }
   // A picture dragged within the page says Files too; only a drag from outside counts. Enter and leave come in pairs as
@@ -290,9 +291,9 @@ export function mountInput(ctx: PageCtx): Feature {
     if (!t) return;
     e.preventDefault(); target = t;
     const b = (v: string, label: string, ic: string) => `<button type="button" data-act="in-a" data-v="${v}">${ic}${label}</button>`, w = win.getBoundingClientRect();
-    const opens = [...t.path && !t.dir && !t.src && ctx.chat() ? [b('side', '在右边打开', IC.side)] : [], ...t.path && !t.dir ? [b('app', '用默认的 app 打开', IC.out)] : [],
-      ...t.path ? [b('finder', '在访达里显示', IC.finder)] : []];
-    ctx.menu(b('copy', '复制', IC.copy) + (t.path ? b('path', '复制路径', IC.path) : '') + (opens.length ? `<span class="sep"></span>${opens.join('')}` : ''),
+    const opens = [...t.path && !t.dir && !t.src && ctx.chat() ? [b('side', tr('在右边打开', 'Open on the right'), IC.side)] : [], ...t.path && !t.dir ? [b('app', tr('用默认的 app 打开', 'Open with default app'), IC.out)] : [],
+      ...t.path ? [b('finder', tr('在访达里显示', 'Show in Finder'), IC.finder)] : []];
+    ctx.menu(b('copy', tr('复制', 'Copy'), IC.copy) + (t.path ? b('path', tr('复制路径', 'Copy path'), IC.path) : '') + (opens.length ? `<span class="sep"></span>${opens.join('')}` : ''),
       { x: e.clientX - w.left, y: e.clientY - w.top }, { cls: 'in-att' });
   });
   // A picture is copied as a picture (drawn again, since the page may not read its bytes back); any other file as the
@@ -308,15 +309,15 @@ export function mountInput(ctx: PageCtx): Feature {
       } else {
         const how = t.path ? await window.agents?.copyFile?.(t.path) : false;
         if (!how) throw new Error('not copied');
-        if (how === 'path') { ctx.toast('只复制了它的路径'); return; }
+        if (how === 'path') { ctx.toast(tr('只复制了它的路径', 'Copied its path only')); return; }
       }
-      ctx.toast(`复制了「${t.name}」`);
-    } catch { ctx.toast(`复制不了「${t.name}」`, true); }
+      ctx.toast(tr(`复制了「${t.name}」`, `Copied "${t.name}"`));
+    } catch { ctx.toast(tr(`复制不了「${t.name}」`, `Can't copy "${t.name}"`), true); }
   }
   // A file opens on the right in a session, with Quick Look before there is one; a folder opens in Finder.
   function open(el: HTMLElement) {
     const p = el.dataset.ref;
-    if (!p) { ctx.toast('发出去以后才能打开'); return; }
+    if (!p) { ctx.toast(tr('发出去以后才能打开', 'Send it first to open it')); return; }
     if (el.dataset.kind === 'dir') void window.agents?.reveal(p);
     else if (ctx.chat()) ctx.wb.act('peek', el);
     else void window.agents?.quickLook?.(p);
@@ -328,18 +329,18 @@ export function mountInput(ctx: PageCtx): Feature {
   sheet.className = 'in-sheet'; sheet.hidden = true; win.append(sheet);
   let dirs: { id: string; rows: Folder[]; at: number } | null = null;
   async function addDir(s: Sess, p: string) {
-    if (p.replace(/\/+$/, '') === s.cwd) { ctx.toast('这就是它自己的文件夹'); return; }
-    if (s.dirs?.includes(p)) { ctx.toast('这个文件夹已经加过了'); return; }
+    if (p.replace(/\/+$/, '') === s.cwd) { ctx.toast(tr('这就是它自己的文件夹', "That's already this session's folder")); return; }
+    if (s.dirs?.includes(p)) { ctx.toast(tr('这个文件夹已经加过了', 'Folder already added')); return; }
     if (await ctx.tryCall(`/sessions/${s.id}/dirs`, { dirs: [...s.dirs ?? [], p] })) ctx.cue('on');
   }
   function drawDirs() {
     if (!dirs) return;
     const s = ctx.byId(dirs.id), have = s?.dirs ?? [], at = dirs.at;
-    sheet.innerHTML = `<div class="in-veil" data-act="in-dir-x"></div><div class="in-sh" role="dialog" aria-label="再加一个文件夹"><p class="in-shh"><b>再加一个文件夹</b><span>这个会话里它也能动</span></p>`
+    sheet.innerHTML = `<div class="in-veil" data-act="in-dir-x"></div><div class="in-sh" role="dialog" aria-label="${tr('再加一个文件夹', 'Add another folder')}"><p class="in-shh"><b>${tr('再加一个文件夹', 'Add another folder')}</b><span>${tr('这个会话里它也能动', 'It can work there in this session')}</span></p>`
       + `<div class="in-drs" role="listbox">${dirs.rows.map((f, j) => `<button type="button" class="in-dr${j === at ? ' in-sel' : ''}${have.includes(f.path) ? ' in-on' : ''}" data-act="in-dir" data-v="${esc(f.path)}" role="option" aria-selected="${j === at}">`
-        + `${IC.dir}<b>${esc(f.name)}</b><span>${esc(home(f.path))}</span><em>${have.includes(f.path) ? '加过了' : f.used ? day(f.used) : ''}</em></button>`).join('')}`
-      + `${dirs.rows.length ? '<i class="in-sep"></i>' : ''}<button type="button" class="in-dr in-other${at === dirs.rows.length ? ' in-sel' : ''}" data-act="in-dir-other" role="option" aria-selected="${at === dirs.rows.length}">${IC.plus}<b>选别的文件夹…</b></button></div>`
-      + `<div class="in-shf"><span><kbd>↑</kbd><kbd>↓</kbd> 选 · <kbd>⏎</kbd> 加上</span><button type="button" class="btn" data-act="in-dir-x">取消 <kbd>esc</kbd></button></div></div>`;
+        + `${IC.dir}<b>${esc(f.name)}</b><span>${esc(home(f.path))}</span><em>${have.includes(f.path) ? tr('加过了', 'Added') : f.used ? day(f.used) : ''}</em></button>`).join('')}`
+      + `${dirs.rows.length ? '<i class="in-sep"></i>' : ''}<button type="button" class="in-dr in-other${at === dirs.rows.length ? ' in-sel' : ''}" data-act="in-dir-other" role="option" aria-selected="${at === dirs.rows.length}">${IC.plus}<b>${tr('选别的文件夹', 'Choose another folder')}…</b></button></div>`
+      + `<div class="in-shf"><span><kbd>↑</kbd><kbd>↓</kbd> ${tr('选', 'select')} · <kbd>⏎</kbd> ${tr('加上', 'add')}</span><button type="button" class="btn" data-act="in-dir-x">${tr('取消', 'Cancel')} <kbd>esc</kbd></button></div></div>`;
   }
   async function openDirs(s: Sess) {
     ctx.closeMenu();
@@ -361,7 +362,7 @@ export function mountInput(ctx: PageCtx): Feature {
   let ask: { id: string; v: string; label: string } | null = null;
   const modeChip = () => win.querySelector<HTMLElement>('.tb.mode');
   function askFull(el: HTMLElement) {
-    const s = ctx.current(), v = el.dataset.v!, label = el.firstChild?.textContent ?? '完全放开';
+    const s = ctx.current(), v = el.dataset.v!, label = el.firstChild?.textContent ?? tr('完全放开', 'Full access');
     ctx.closeMenu();
     ask = { id: s?.id ?? '', v, label };
     if (s) { ctx.draw('comp'); requestAnimationFrame(() => { const a = win.querySelector('.in-ask'); if (a) anim(a, [{ opacity: 0, transform: 'translateY(4px)' }, { opacity: 1, transform: 'none' }], 180); }); }
@@ -391,11 +392,11 @@ export function mountInput(ctx: PageCtx): Feature {
   list.addEventListener('in-mcp-drawn', () => { if (shown) place(); });
   panel.addEventListener('in-mcp-close', () => closeMcp());
   win.addEventListener('pointerdown', e => { if (shown && !panel.contains(e.target as Node)) closeMcp(false); }, true);
-  ctx.own.set('mcp', s => { if (s) openMcp(s); else ctx.toast('开了会话再看它的 MCP'); });
+  ctx.own.set('mcp', s => { if (s) openMcp(s); else ctx.toast(tr('开了会话再看它的 MCP', 'Open a session to see its MCP')); });
 
   // Typed with a path it adds that folder; without one it asks which.
   ctx.own.set('dirs', (s, arg) => {
-    if (!s) { ctx.toast('开了会话再给它加文件夹'); return; }
+    if (!s) { ctx.toast(tr('开了会话再给它加文件夹', 'Open a session to add a folder')); return; }
     if (arg.startsWith('/')) void addDir(s, arg);
     else void openDirs(s);
   });
@@ -419,7 +420,7 @@ export function mountInput(ctx: PageCtx): Feature {
         const t = target, v = el.dataset.v;
         ctx.closeMenu();
         if (v === 'copy') void copy(t);
-        else if (v === 'path' && t.path) void navigator.clipboard.writeText(t.path).then(() => ctx.toast('复制了路径'), () => ctx.toast('复制不了路径', true));
+        else if (v === 'path' && t.path) void navigator.clipboard.writeText(t.path).then(() => ctx.toast(tr('复制了路径', 'Copied path')), () => ctx.toast(tr('复制不了路径', "Can't copy path"), true));
         else if (v === 'side') open(t.el);
         else if (v === 'app' && t.path) void window.agents?.openPath?.(t.path);
         else if (v === 'finder' && t.path) void window.agents?.revealFile?.(t.path.replace(/\/$/, ''));

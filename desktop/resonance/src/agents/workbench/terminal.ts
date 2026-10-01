@@ -5,6 +5,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import type { Service } from '../../../electron/agents/types';
+import { tr } from '../lang';
 
 type Hooks = { api: string; call(route: string, body?: unknown, method?: string): Promise<unknown>; current(): string; toast(t: string, bad?: boolean): void; changed(): void };
 export type Tab = 'term' | 'svc' | 'log';
@@ -12,20 +13,20 @@ export type TPos = 'side' | 'drawer' | 'island';
 const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 const svg = (d: string) => `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true">${d}</svg>`;
 const POS: [TPos, string, string][] = [
-  ['side', '并排', svg('<rect x="2" y="3" width="12" height="10" rx="2"/><path d="M9.5 3v10"/>')],
-  ['drawer', '底部抽屉', svg('<rect x="2" y="3" width="12" height="10" rx="2"/><path d="M2 9.5h12"/>')],
-  ['island', '浮岛', svg('<rect x="2" y="3" width="12" height="10" rx="2"/><rect x="8" y="8" width="4.5" height="3.2" rx=".8"/>')],
+  ['side', tr('并排', 'Side by side'), svg('<rect x="2" y="3" width="12" height="10" rx="2"/><path d="M9.5 3v10"/>')],
+  ['drawer', tr('底部抽屉', 'Bottom drawer'), svg('<rect x="2" y="3" width="12" height="10" rx="2"/><path d="M2 9.5h12"/>')],
+  ['island', tr('浮岛', 'Floating'), svg('<rect x="2" y="3" width="12" height="10" rx="2"/><rect x="8" y="8" width="4.5" height="3.2" rx=".8"/>')],
 ];
 const X = svg('<path d="M4 4l8 8M12 4l-8 8"/>');
-const LOGS = ['companion', 'companion 错误', 'daemon', '后台'];
+const LOGS = ['companion', tr('companion 错误', 'companion errors'), 'daemon', tr('后台', 'agent host')];
 function since(ms?: number) {
   if (!ms) return '';
   const m = Math.max(0, Math.round((Date.now() - ms) / 60000));
-  return m < 1 ? '刚刚' : m < 60 ? `${m} 分钟` : m < 1440 ? `${Math.floor(m / 60)} 小时` : `${Math.floor(m / 1440)} 天`;
+  return m < 1 ? tr('刚刚', 'just now') : m < 60 ? tr(`${m} 分钟`, `${m} min`) : m < 1440 ? tr(`${Math.floor(m / 60)} 小时`, `${Math.floor(m / 60)} h`) : tr(`${Math.floor(m / 1440)} 天`, `${Math.floor(m / 1440)} d`);
 }
 
 export function mountTerminal(pane: HTMLElement, hooks: Hooks) {
-  const st = { tab: 'term' as Tab, pos: (localStorage.getItem('agents.termPos') as TPos | null) ?? 'side', shown: false, id: '', svc: [] as Service[], kicking: new Set<string>(), log: localStorage.getItem('agents.log') ?? 'companion', logAt: -1, logKey: '' };
+  const st = { tab: 'term' as Tab, pos: (localStorage.getItem('agents.termPos') as TPos | null) ?? 'side', shown: false, id: '', svc: [] as Service[], kicking: new Set<string>(), log: LOGS.find(n => n === localStorage.getItem('agents.log')) ?? 'companion', logAt: -1, logKey: '' };
   if (!POS.some(p => p[0] === st.pos)) st.pos = 'side';
   pane.innerHTML = `<div class="tm-h" role="tablist"></div><div class="tm-b"><div class="xt"></div><div class="tm-o" hidden></div></div>`;
   const head = pane.querySelector<HTMLElement>('.tm-h')!, body = pane.querySelector<HTMLElement>('.tm-b')!, xt = pane.querySelector<HTMLElement>('.xt')!, other = pane.querySelector<HTMLElement>('.tm-o')!;
@@ -84,7 +85,7 @@ export function mountTerminal(pane: HTMLElement, hooks: Hooks) {
     const s = es = new EventSource(`${hooks.api}/term/${id}/stream`);
     s.addEventListener('replay', m => { term.reset(); term.write(JSON.parse((m as MessageEvent).data) as string); });
     s.onmessage = m => term.write(JSON.parse(m.data) as string);
-    s.addEventListener('exit', () => { s.close(); if (es === s) { es = null; ended = true; term.write('\r\n\x1b[38;2;131;139;166mshell 退出了 · 按回车重开\x1b[0m\r\n'); } });
+    s.addEventListener('exit', () => { s.close(); if (es === s) { es = null; ended = true; term.write(tr('\r\n\x1b[38;2;131;139;166mshell 退出了 · 按回车重开\x1b[0m\r\n', '\r\n\x1b[38;2;131;139;166mshell exited · press Enter to restart\x1b[0m\r\n')); } });
   }
 
   // ---------- 服务 and 日志 ----------
@@ -94,7 +95,7 @@ export function mountTerminal(pane: HTMLElement, hooks: Hooks) {
     for (const s of r.services) if (st.kicking.has(s.name) && s.running && s.since && Date.now() - s.since < 60000) st.kicking.delete(s.name);
     st.svc = r.services; draw(); hooks.changed();
   }
-  const svcHTML = () => `<div class="svc">${st.svc.map(s => `<div><i class="${st.kicking.has(s.name) ? 're' : s.running ? '' : 'off'}"></i><b>${s.name}</b><button type="button" data-wb="kick" data-n="${s.name}"${st.kicking.has(s.name) ? ' disabled' : ''}>重启</button><small>${esc(s.label)} · ${st.kicking.has(s.name) ? '重启中' : s.running ? `运行中 · ${since(s.since)}` : '没在跑'}</small></div>`).join('') || '<p class="dim">在问 launchd…</p>'}</div>`;
+  const svcHTML = () => `<div class="svc">${st.svc.map(s => `<div><i class="${st.kicking.has(s.name) ? 're' : s.running ? '' : 'off'}"></i><b>${s.name}</b><button type="button" data-wb="kick" data-n="${s.name}"${st.kicking.has(s.name) ? ' disabled' : ''}>${tr('重启', 'Restart')}</button><small>${esc(s.label)} · ${st.kicking.has(s.name) ? tr('重启中', 'Restarting') : s.running ? tr(`运行中 · ${since(s.since)}`, `Running · ${since(s.since)}`) : tr('没在跑', 'Not running')}</small></div>`).join('') || tr('<p class="dim">在问 launchd…</p>', '<p class="dim">Asking launchd…</p>')}</div>`;
   const cls = (l: string) => /(error|exception|traceback|fatal|✕|✗|\bfail)/i.test(l) ? 'er' : /(warn)/i.test(l) ? 'wr' : /(ready|✓|\bok\b|listening|started)/i.test(l) ? 'ok' : '';
   let logLines: string[] = [];
   async function loadLog() {
@@ -122,10 +123,10 @@ export function mountTerminal(pane: HTMLElement, hooks: Hooks) {
 
   function draw() {
     const down = st.svc.some(s => !s.running), re = st.kicking.size > 0;
-    head.innerHTML = [['term', '终端'], ['svc', '服务'], ['log', '日志']].map(([k, t]) => `<button type="button" class="t" role="tab" data-wb="tab" data-t="${k}" aria-selected="${st.tab === k}">${t}</button>`).join('')
-      + `<span class="dot${re ? ' re' : down ? ' down' : ''}" title="${re ? '在重启' : down ? `${st.svc.filter(s => !s.running).map(s => s.name).join('、')} 没在跑` : 'daemon 和 companion 都在跑'}"></span><span class="sp"></span>`
-      + `<span class="tpos" role="group" aria-label="终端放在">${POS.map(([k, t, i]) => `<button type="button" class="ib" data-wb="pos" data-p="${k}" data-tip="放在${t}" aria-label="放在${t}" aria-pressed="${st.pos === k}">${i}</button>`).join('')}</span>`
-      + `<button type="button" class="ib" data-wb="close" aria-label="收起终端" data-tip="收起终端" data-key="⌃\`">${X}</button>`;
+    head.innerHTML = [['term', tr('终端', 'Terminal')], ['svc', tr('服务', 'Services')], ['log', tr('日志', 'Logs')]].map(([k, t]) => `<button type="button" class="t" role="tab" data-wb="tab" data-t="${k}" aria-selected="${st.tab === k}">${t}</button>`).join('')
+      + `<span class="dot${re ? ' re' : down ? ' down' : ''}" title="${re ? tr('在重启', 'Restarting') : down ? tr(`${st.svc.filter(s => !s.running).map(s => s.name).join('、')} 没在跑`, `${st.svc.filter(s => !s.running).map(s => s.name).join(', ')} not running`) : tr('daemon 和 companion 都在跑', 'daemon and companion are running')}"></span><span class="sp"></span>`
+      + `<span class="tpos" role="group" aria-label="${tr('终端放在', 'Terminal position')}">${POS.map(([k, t, i]) => tr(`<button type="button" class="ib" data-wb="pos" data-p="${k}" data-tip="放在${t}" aria-label="放在${t}" aria-pressed="${st.pos === k}">${i}</button>`, `<button type="button" class="ib" data-wb="pos" data-p="${k}" data-tip="Terminal ${t.toLowerCase()}" aria-label="Terminal ${t.toLowerCase()}" aria-pressed="${st.pos === k}">${i}</button>`)).join('')}</span>`
+      + `<button type="button" class="ib" data-wb="close" aria-label="${tr('收起终端', 'Close Terminal')}" data-tip="${tr('收起终端', 'Close Terminal')}" data-key="⌃\`">${X}</button>`;
     xt.hidden = st.tab !== 'term';
     other.hidden = st.tab === 'term';
     if (st.tab === 'svc') other.innerHTML = svcHTML();

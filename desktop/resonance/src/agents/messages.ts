@@ -7,6 +7,7 @@
 import type { Item, Sess } from '../../electron/agents/types';
 import type { Feature, PageCtx } from './ctx';
 import './messages.css';
+import { plural, stamp, tr } from './lang';
 
 type Msg = Item & { k: 'you' | 'it' };
 const RXS = ['👍', '❤️', '😂', '🎉', '🤔', '👀', '🙏', '👎'];
@@ -22,10 +23,7 @@ const I = {
   next: svg('<path d="M6 3.5 10.5 8 6 12.5"/>', 1.6),
 };
 // When a message was sent: the clock today, the date in front on other days (as the page says it).
-function clock(at: number) {
-  const d = new Date(at), t = d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
-  return d.toDateString() === new Date().toDateString() ? t : `${d.getMonth() + 1}月${d.getDate()}日 ${t}`;
-}
+const clock = stamp;
 const busy = (s: Sess) => s.st === 'work' || s.st === 'pack' || s.st === 'wait';
 const nextFrame = () => new Promise<void>(r => requestAnimationFrame(() => r()));
 
@@ -63,10 +61,10 @@ export function mountMessages(ctx: PageCtx): Feature {
   function chips(s: Sess, key: string) {
     const r = key ? s.rx?.[key] : undefined;
     if (!r?.by && !r?.mine?.length) return '';
-    const by = r.by ? `<span class="rx-c by" data-tip="${NAME[s.agent]} 看到了">${r.by}</span>` : '';
-    return `<div class="rxs">${by}${(r.mine ?? []).map(e => { const sent = !!r.sent?.includes(e); return `<button type="button" class="rx-c${sent ? '' : ' wait'}" data-act="m-rxt" data-m="${key}" data-e="${e}" data-tip="${sent ? '带给它了 · 点一下去掉' : '跟你下一句一起带给它'}" aria-label="${e}">${e}</button>`; }).join('')}</div>`;
+    const by = r.by ? `<span class="rx-c by" data-tip="${NAME[s.agent]} ${tr('看到了', 'saw this')}">${r.by}</span>` : '';
+    return `<div class="rxs">${by}${(r.mine ?? []).map(e => { const sent = !!r.sent?.includes(e); return `<button type="button" class="rx-c${sent ? '' : ' wait'}" data-act="m-rxt" data-m="${key}" data-e="${e}" data-tip="${sent ? tr('带给它了 · 点一下去掉', 'Sent to it · click to remove') : tr('跟你下一句一起带给它', 'Goes with your next message')}" aria-label="${e}">${e}</button>`; }).join('')}</div>`;
   }
-  const smile = (key: string) => `<button type="button" class="ia" data-act="m-rx" data-m="${key}" data-tip="表情" aria-label="表情">${I.smile}</button>`;
+  const smile = (key: string) => `<button type="button" class="ia" data-act="m-rx" data-m="${key}" data-tip="${tr('表情', 'React')}" aria-label="${tr('表情', 'React')}">${I.smile}</button>`;
   // On at once here; the host's row follows. It is kept there and never sent by itself.
   async function toggle(s: Sess, key: string, e: string) {
     const r = s.rx?.[key] ?? {}, on = !r.mine?.includes(e), k = key.slice(0, key.indexOf(':'));
@@ -96,8 +94,8 @@ export function mountMessages(ctx: PageCtx): Feature {
     const v = versions(s, key);
     if (!v || v.ns.length < 2) return '';
     const off = busy(s);
-    return `<span class="m-ver"><button type="button" class="ia" data-act="m-ver" data-m="${key}" data-d="-1" data-tip="上一版" aria-label="上一版"${off || v.at === 0 ? ' disabled' : ''}>${I.prev}</button>`
-      + `<em>${v.at + 1}/${v.ns.length}</em><button type="button" class="ia" data-act="m-ver" data-m="${key}" data-d="1" data-tip="下一版" aria-label="下一版"${off || v.at === v.ns.length - 1 ? ' disabled' : ''}>${I.next}</button></span>`;
+    return `<span class="m-ver"><button type="button" class="ia" data-act="m-ver" data-m="${key}" data-d="-1" data-tip="${tr('上一版', 'Previous version')}" aria-label="${tr('上一版', 'Previous version')}"${off || v.at === 0 ? ' disabled' : ''}>${I.prev}</button>`
+      + `<em>${v.at + 1}/${v.ns.length}</em><button type="button" class="ia" data-act="m-ver" data-m="${key}" data-d="1" data-tip="${tr('下一版', 'Next version')}" aria-label="${tr('下一版', 'Next version')}"${off || v.at === v.ns.length - 1 ? ' disabled' : ''}>${I.next}</button></span>`;
   }
   // Another version, with the message stepped under where it was.
   async function step(s: Sess, key: string, d: number, el: HTMLElement) {
@@ -120,16 +118,16 @@ export function mountMessages(ctx: PageCtx): Feature {
   // ---------- 修改 ----------
   function note(s: Sess) {
     const e = editing!;
-    return [busy(s) && '这一轮会停下', s.agent === 'codex' ? 'Codex 只回退对话，文件不动' : e.files === undefined ? '' : e.files < 0 ? '这一句没有检查点，文件不动'
-      : e.files ? `之后改的 ${e.files} 个文件也回去` : ''].filter(Boolean).join(' · ');
+    return [busy(s) && tr('这一轮会停下', 'This turn will stop'), s.agent === 'codex' ? tr('Codex 只回退对话，文件不动', 'Codex rewinds only the conversation, files stay') : e.files === undefined ? '' : e.files < 0 ? tr('这一句没有检查点，文件不动', 'No checkpoint for this message, files stay')
+      : e.files ? tr(`之后改的 ${e.files} 个文件也回去`, `${plural(e.files, 'file')} changed after it will go back too`) : ''].filter(Boolean).join(' · ');
   }
   function editHTML(s: Sess) {
     const e = editing!, n = note(s);
     // The words it opened with: what is typed since stays in the box, and a redraw puts it back (keep()).
     requestAnimationFrame(keep);
-    return `<div class="m-edit${e.sending ? ' sending' : ''}"><textarea class="m-eta" rows="2" aria-label="修改这一句"${e.sending ? ' disabled' : ''}>${esc(e.text)}</textarea>`
-      + `<div class="m-erow">${n ? `<small>${esc(n)}</small>` : ''}<span class="sp"></span><button type="button" class="btn sm" data-act="m-ex" data-tip="不改了" data-key="esc">取消</button>`
-      + `<button type="button" class="btn sm warm${e.sending ? ' is-busy' : ''}" data-act="m-ego"${e.sending ? ' disabled' : ''}>重发 <kbd>⌘⏎</kbd></button></div></div>`;
+    return `<div class="m-edit${e.sending ? ' sending' : ''}"><textarea class="m-eta" rows="2" aria-label="${tr('修改这一句', 'Edit this message')}"${e.sending ? ' disabled' : ''}>${esc(e.text)}</textarea>`
+      + `<div class="m-erow">${n ? `<small>${esc(n)}</small>` : ''}<span class="sp"></span><button type="button" class="btn sm" data-act="m-ex" data-tip="${tr('不改了', 'Discard changes')}" data-key="esc">${tr('取消', 'Cancel')}</button>`
+      + `<button type="button" class="btn sm warm${e.sending ? ' is-busy' : ''}" data-act="m-ego"${e.sending ? ' disabled' : ''}>${tr('重发', 'Resend')} <kbd>⌘⏎</kbd></button></div></div>`;
   }
   // The box as it is typed in, whatever redraws the conversation.
   function keep() {
@@ -186,9 +184,9 @@ export function mountMessages(ctx: PageCtx): Feature {
   }
   function queuedHTML(s: Sess, text: string) {
     const claude = s.agent === 'claude';
-    return `<div class="you queued">${esc(text)}</div><div class="m-acts on">${claude ? `<button type="button" class="ia" data-act="m-qedit" data-q="${esc(text)}" data-tip="拿回来改" data-key="↑" aria-label="拿回来改">${I.edit}</button>`
-      + `<button type="button" class="ia" data-act="m-qdrop" data-q="${esc(text)}" data-tip="撤回" aria-label="撤回">${I.x}</button>` : ''}`
-      + `<time class="q" data-tip="${claude ? '这一步做完它就会看到' : 'Codex 收下就放进这一轮了，撤不回来'}">排着</time></div>`;
+    return `<div class="you queued">${esc(text)}</div><div class="m-acts on">${claude ? `<button type="button" class="ia" data-act="m-qedit" data-q="${esc(text)}" data-tip="${tr('拿回来改', 'Take back to edit')}" data-key="↑" aria-label="${tr('拿回来改', 'Take back to edit')}">${I.edit}</button>`
+      + `<button type="button" class="ia" data-act="m-qdrop" data-q="${esc(text)}" data-tip="${tr('撤回', 'Unsend')}" aria-label="${tr('撤回', 'Unsend')}">${I.x}</button>` : ''}`
+      + `<time class="q" data-tip="${claude ? tr('这一步做完它就会看到', 'It sees this when the current step is done') : tr('Codex 收下就放进这一轮了，撤不回来', 'Codex takes it into this turn right away, so it cannot be taken back')}">${tr('排着', 'Queued')}</time></div>`;
   }
 
   return {
@@ -203,9 +201,9 @@ export function mountMessages(ctx: PageCtx): Feature {
         return `${html.slice(0, at)}${chips(s, key)}${row.replace('<div class="it-acts">', `<div class="it-acts${on}">`)}${smile(key)}</div></div>`;
       }
       if (editing?.id === s.id && editing.at === it.id && key) return editHTML(s);
-      const edit = key && !s.term && !s.gone ? `<button type="button" class="ia" data-act="m-edit" data-m="${key}" data-tip="修改" aria-label="修改">${I.edit}</button>` : '';
-      return `${html}${it.ride?.length ? `<p class="m-ride">带上了 ${it.ride.join(' ')}</p>` : ''}${chips(s, key)}<div class="m-acts${on}">${key ? verHTML(s, key) + smile(key) : ''}${edit}`
-        + `<button type="button" class="ia" data-act="copy" data-tip="复制" aria-label="复制">${I.copy}</button>${it.at ? `<time>${clock(it.at)}</time>` : ''}</div>`;
+      const edit = key && !s.term && !s.gone ? `<button type="button" class="ia" data-act="m-edit" data-m="${key}" data-tip="${tr('修改', 'Edit')}" aria-label="${tr('修改', 'Edit')}">${I.edit}</button>` : '';
+      return `${html}${it.ride?.length ? `<p class="m-ride">${tr('带上了', 'Sent with')} ${it.ride.join(' ')}</p>` : ''}${chips(s, key)}<div class="m-acts${on}">${key ? verHTML(s, key) + smile(key) : ''}${edit}`
+        + `<button type="button" class="ia" data-act="copy" data-tip="${tr('复制', 'Copy')}" aria-label="${tr('复制', 'Copy')}">${I.copy}</button>${it.at ? `<time>${clock(it.at)}</time>` : ''}</div>`;
     },
     act(a, el) {
       const s = ctx.current(), key = el.dataset.m ?? '';
@@ -215,7 +213,7 @@ export function mountMessages(ctx: PageCtx): Feature {
         const mine = s.rx?.[key]?.mine ?? [];
         rxAt = { id: s.id, key };
         ctx.menu(`<div class="rx-row">${RXS.map(e => `<button type="button" class="rx-e${mine.includes(e) ? ' on' : ''}" data-act="m-rxe" data-e="${e}" aria-label="${e}">${e}</button>`).join('')}</div>`
-          + '<small>不叫醒它 · 跟你下一句一起带过去</small>', el, { right: key.startsWith('you:'), cls: 'rxp' });
+          + `<small>${tr('不叫醒它 · 跟你下一句一起带过去', 'Does not wake it · goes with your next message')}</small>`, el, { right: key.startsWith('you:'), cls: 'rxp' });
       } else if (a === 'm-rxe') {
         const t = rxAt && ctx.byId(rxAt.id);
         ctx.closeMenu();
@@ -251,7 +249,7 @@ export function mountMessages(ctx: PageCtx): Feature {
     },
     // Reading an older version: the files are as they are now, and writing here makes it the one in the list.
     rows(s) {
-      return s.archived && s.vers ? '<p class="m-old">另一版 · 文件还是现在的样子 · 在这里写一句，就换回这一版</p>' : '';
+      return s.archived && s.vers ? `<p class="m-old">${tr('另一版 · 文件还是现在的样子 · 在这里写一句，就换回这一版', 'Other version · files stay as they are now · write here to switch to it')}</p>` : '';
     },
     hidden(s) {
       if (!s.archived || !s.vers) return false;
