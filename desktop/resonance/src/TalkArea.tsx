@@ -335,6 +335,7 @@ export function TalkArea(p: TalkProps) {
   // The written part is not her speech: it writes itself in on its own clock (whole when she is silent). The follow goes to the line she is
   // saying; with none being said (the middle level shows the written part alone, or she is done) to the front of the write-in.
   const view = useRef(v); view.current = v;
+  const high = useRef(new Map<string, { text: string; n: number }>());
   const drive = () => {
     let front: HTMLElement | null = null;
     c.ink = false;
@@ -345,7 +346,12 @@ export function TalkArea(p: TalkProps) {
       if (sr) {
         const clock = clockFor(it), done = it.failed || live.current.silent || (it.said && it.cutAt === undefined);
         const now = it.cutAt ?? Date.now();
-        const said = done ? clock.length : it.queued ? 0 : it.mark ? placed(it.spoken, clock, it.mark, now) : saidCount(clock, (now - it.from) / 1000);
+        let said = done ? clock.length : it.queued ? 0 : it.mark ? placed(it.spoken, clock, it.mark, now) : saidCount(clock, (now - it.from) / 1000);
+        // Never step back while she plays: a report behind where the pace had carried the words holds them until her voice gets there.
+        // Held or stopped, the lit words go where the audio is.
+        const top = high.current.get(it.id);
+        if (top && !done && it.mark?.hold === undefined && it.cutAt === undefined && it.spoken.startsWith(top.text)) said = Math.max(said, top.n);
+        high.current.set(it.id, { text: it.spoken, n: said });
         paint(sr, said);
         if (!done && !it.queued && it.cutAt === undefined) ahead = sr.chars[Math.max(0, said - 1)] ?? null;
       }

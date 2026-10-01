@@ -855,6 +855,12 @@ try {
     await page.waitForTimeout(300);
     a = await area();
     check(`the next report moves them on: at least up to the text before the segment now playing (${a.lit}, from ${after(upto(5))})`, a.lit >= after(upto(5)) && a.lit < after(upto(5)) + 12);
+    // her voice is slower than the pace: the next report is behind where the pace carried the words. They wait for her, never step back.
+    await skew(2500); await page.waitForTimeout(400);
+    const carried = (await area()).lit, seen = [];
+    await playing('e1', upto(5) + 3, upto(6));
+    for (let k = 0; k < 6; k++) { await page.waitForTimeout(90); seen.push((await area()).lit); }
+    check(`a report behind the paced words does not pull them back (${carried} → ${seen.join(',')}, report at ${after(upto(5) + 3)})`, carried > after(upto(5) + 3) && seen.every(n => n >= carried));
 
     // soft barge-in: she is held while Allen's words are judged; the lit words stop with her
     await playing('e1', upto(5) + 7, upto(6));
