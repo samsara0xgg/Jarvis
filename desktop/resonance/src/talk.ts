@@ -26,12 +26,12 @@ export function split(raw: string): { spoken: string; written: string } {
 }
 
 // One thing on screen: what you said, or her answer split into the part she says and the part that is written.
-export type Item = { id: string; who: 'you' | 'her'; spoken: string; written: string; failed: boolean; at: number; said: boolean; cutAt?: number; turn?: string };
+export type Item = { id: string; who: 'you' | 'her'; spoken: string; written: string; failed: boolean; at: number; said: boolean; cutAt?: number; turn?: string; queued: boolean; from: number };
 // Full: everything. The middle level: only what is written (lists, times, places, links). Hidden: nothing. An error always shows.
 export function itemsOf(lines: Line[], captions: Captions): Item[] {
   const out: Item[] = [];
   for (const l of lines) {
-    const base = { id: l.id, at: l.at, said: !!l.said, cutAt: l.cutAt, turn: l.turn };
+    const base = { id: l.id, at: l.at, said: !!l.said, cutAt: l.cutAt, turn: l.turn, queued: !!l.queued, from: l.from ?? l.at };
     if (l.failed) out.push({ ...base, who: 'her', spoken: l.text, written: '', failed: true, said: true });
     else if (l.who === 'you') { if (captions === 'all') out.push({ ...base, who: 'you', spoken: l.text, written: '', failed: false }); }
     else {

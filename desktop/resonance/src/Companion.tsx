@@ -46,7 +46,9 @@ const DEMO = [
 // Her skin, whether she changes it herself, how she looks in the island and the look of the agent marks
 // live in this companion's own profile.
 const WARDROBE = 'companion-wardrobe-v1';
-const CAPTIONS: [Captions, L][] = [['all', ['Show everything', '全部显示']], ['brief', ['Only what to read', '只显示要看的']], ['none', ['Show nothing', '不显示']]];
+// Set while this window has the microphone paused for typing.
+const PAUSED_KEY = 'companion-mic-paused';
+const CAPTIONS: [Captions, L][] = [['all', ['Show all', '全部显示']], ['brief', ['Only what to read', '只显示要看的']], ['none', ['None', '不显示']]];
 const SKIN_NAMES: Record<Skin, L> = { glass: ['Glass', '深空玻璃'], nebula: ['Nebula', '星云'], galaxy: ['Galaxy', '银河'], frost: ['Frost', '磨砂'], aurora: ['Aurora', '极光'], codex: ['Icon', '图标同款'] };
 function loadWardrobe(): Look {
   try {
@@ -124,7 +126,7 @@ export function Companion() {
   // Muting Jarvis silences her cues as well as its voice.
   const feedback = (cue: FeedbackCue) => { if (preferences.feedbackEnabled && !s.soundMuted) void playFeedback(cue, preferences.feedbackVolume); };
   const link = useRef<Runtime | null>(null);
-  useEffect(() => { if (!port) return; link.current = connect(port, dispatch); return () => { link.current?.close(); link.current = null; }; }, []);
+  useEffect(() => { if (!port) return; link.current = connect(port, dispatch); try { if (localStorage.getItem(PAUSED_KEY)) { localStorage.removeItem(PAUSED_KEY); void link.current.controls({ mic_muted: false }).catch(() => undefined); } } catch { /* nothing to give back */ } return () => { link.current?.close(); link.current = null; }; }, []);
   // ADR 0062: the card waiting for Allen's button, read every 1.5 s whether or not the Dashboard is open: closed, it
   // grows from the notch. The same card object stays while its id does, so a letter being edited keeps its text.
   // ADR 0066: the ask card rides the same tick; it hangs from the notch too, after a waiting confirmation.
@@ -195,10 +197,11 @@ export function Companion() {
   if (!inFlight) held.current = s.reply;
   const said = port ? spoken(held.current) : '';
   const reply = port ? { text: said } : simReply;
-  // ADR 0064: think mode as the daemon reads it from Allen's words (ADR 0106): an on-word makes that one turn deep. Read again as soon
+  // ADR 0064: think mode as the daemon reads it from Allen's words (ADR 0108): an on-word makes that one turn deep. Read again as soon
   // as his words go in or an answer opens; the poll catches a turn that ended some other way.
-  const think = useRoute<{ on: boolean; on_words: string }>(port, '/inherent/think', true, 30_000);
-  const deep = !!port && think.data?.on === true;
+  // `turn_id` names the turn being thought about: only that turn's own answer takes the deep look, never a stale `on` for another.
+  const think = useRoute<{ on: boolean; on_words: string; turn_id?: string | null }>(port, '/inherent/think', true, 30_000);
+  const deep = !!port && think.data?.on === true && !!s.waiting && think.data.turn_id === s.waiting;
   const words = useMemo((): Think['words'] => pattern(think.data?.on_words ?? '(?!)'), [think.data?.on_words]);
   useEffect(() => { if (s.waiting) think.reload(); }, [s.waiting, s.turnId]);
   // The turn that was thought about deeply, marked while `on` said so: `on` can go false between the daemon finishing and the answer
@@ -206,7 +209,7 @@ export function Companion() {
   const deepFor = useRef<string | null>(null);
   const thinking = voice === 'thinking' || s.askedAt !== null;
   if (deep && s.waiting && thinking) deepFor.current = s.waiting;
-  const deepThinking = (deep || !!s.waiting && deepFor.current === s.waiting) && thinking;
+  const deepThinking = !!s.waiting && deepFor.current === s.waiting && thinking;
   const clock = useNow(deepThinking ? 1000 : 3_600_000);
   const deepSecs = deepThinking ? Math.max(1, Math.ceil((clock - (s.askedAt ?? clock)) / 1000)) : 0;
   // Each deep answer's wait, pinned to the log position its row lands after (the streaming tail's rule).
@@ -305,7 +308,7 @@ export function Companion() {
     const turn = `demo-${++demoTurn.current}`, spokenWords = split(text).spoken;
     setReply({ text: plain(text) }); setTalking(true);
     dispatch({ type: 'her', turn, text, at: Date.now() });
-    after((pace(spokenWords).at(-1) ?? 0) * 1000 + 450, () => { dispatch({ type: 'said', turn }); setTalking(false); done(); });
+    after((pace(spokenWords).at(-1) ?? 0) * 1000 + 450, () => { dispatch({ type: 'said', turn, at: Date.now() }); setTalking(false); done(); });
   };
   // She takes the task in for a moment before she thinks or answers.
   const receive = () => { receiveFace.current = pick(TAKES.receive); setReceiving(true); after(700, () => setReceiving(false)); };
@@ -335,23 +338,27 @@ export function Companion() {
     stopScript(); setReceiving(false); feedback('voice-exit'); setVoice('off'); setHearing(false); setReply({ text: '' }); setTalking(false); dispatch({ type: 'cut', at: Date.now() }); };
   // Typing in a voice conversation pauses the microphone for as long as the field is up (the daemon's own mute, `controls`); a mic
   // that was already muted stays muted.
+  // The daemon keeps that mute past this window, so the flag that we set it is kept too, and a reload gives the mic back.
   const paused = useRef(false);
+  const markPaused = (on: boolean) => { try { if (on) localStorage.setItem(PAUSED_KEY, '1'); else localStorage.removeItem(PAUSED_KEY); } catch { /* the flag is a convenience */ } };
+  // If someone unmutes meanwhile it is theirs again: we leave it alone.
+  useEffect(() => { if (paused.current && !s.micMuted) { paused.current = false; markPaused(false); } }, [s.micMuted]);
   const pauseMic = (muted: boolean) => { if (port) control({ mic_muted: muted }); else if (muted !== s.micMuted) dispatch({ type: 'mic' }); };
   const closeComposer = () => {
     setComposer(false); void window.jarvis?.focus(false);
-    if (paused.current) { paused.current = false; pauseMic(false); }
+    if (paused.current) { paused.current = false; markPaused(false); pauseMic(false); }
   };
   // Poke: start a voice turn, interrupt playback, or end the session.
   const poke = () => {
     if (port) {
       if (voice === 'off') { closeComposer(); feedback('voice-enter'); void link.current?.controls({ conversation: true }).catch(() => undefined); }
       else if (voice === 'speaking') stopTalking();
-      else { endVoice(); presence.dismiss(); }
+      else { closeComposer(); endVoice(); presence.dismiss(); }
       return;
     }
     if (voice === 'off') { closeComposer(); feedback('voice-enter'); listen(true); }
     else if (voice === 'speaking') listen(false);
-    else { endVoice(); presence.dismiss(); }
+    else { closeComposer(); endVoice(); presence.dismiss(); }
   };
   const pressAt = useRef(0), latestPoke = useRef(poke);
   latestPoke.current = poke;
@@ -378,7 +385,7 @@ export function Companion() {
   };
   const openComposer = () => {
     stopScript(); setReceiving(false); setReply({ text: '' }); setTalking(false); setComposer(true);
-    if (voice !== 'off' && !s.micMuted) { paused.current = true; pauseMic(true); }
+    if (voice !== 'off' && !s.micMuted) { paused.current = true; markPaused(true); pauseMic(true); }
     void window.jarvis?.focus(true).then(() => requestAnimationFrame(aimAtCaret));
   };
   // Back to voice: the field goes, the microphone comes back, and with no conversation going she starts listening.
@@ -394,10 +401,15 @@ export function Companion() {
     dispatch({ type: 'you', text, at: Date.now() });
     receive();
     if (port) { void submit(text); return; }
-    after(700, () => say(text.includes('整理') ? '好，我来整理。' : '收到，我来处理。', () => after(1800, () => setReply({ text: '' }))));
+    const answer = text.includes('整理') ? '好，我来整理。' : '收到，我来处理。';
+    // In a voice conversation the demo answers like a real turn: she thinks, then speaks, then listens again.
+    if (voice !== 'off') { setVoice('thinking'); after(700, () => { setVoice('speaking'); say(answer, () => listen(false)); }); return; }
+    after(700, () => say(answer, () => after(1800, () => setReply({ text: '' }))));
   };
   // Typed text goes to the daemon like the capsule's; the answer comes back on the same link as a voice turn's.
   const submit = (text: string) => link.current?.submit(text).catch(() => dispatch({ type: 'phase', phase: 'error' }));
+  // Typed in the Dashboard: it is a line of the conversation under her too, above its answer.
+  const ask = (text: string) => { dispatch({ type: 'you', text, at: Date.now() }); return submit(text); };
   // A heard utterance is a task she takes in, as a typed one is.
   useEffect(() => { if (port && s.heard) receive(); }, [s.heard]);
   // The conversation of record, polled while the Dashboard shows it. The streaming answer rides as a tail on the home row
@@ -678,7 +690,7 @@ export function Companion() {
       }}/> };
   const dashboardContent = <AroundDashboard open={dashboard} port={port} onClose={closeDashboard} viewRef={dashboardView} onView={value => { if (detached && detachedMode.current) window.jarvis?.dashboardMessage?.('parent', { type: 'view', value }); }}
           onMood={dashboardMood} settingFocus={settingsFocus} onHop={height => ball.current?.hop(height)}
-          talk={port ? { rows: s.rows, tail, busy: voice === 'thinking', offline: s.phase === 'error', floor, submit, older, card, decide: decideCard, question, answer: answerQuestion,
+          talk={port ? { rows: s.rows, tail, busy: voice === 'thinking', offline: s.phase === 'error', floor, submit: ask, older, card, decide: decideCard, question, answer: answerQuestion,
             think: { on: deep, secs: deepSecs, words, thoughts } } : undefined}
           plugins={port ? plugins : undefined} pluginFocus={pluginFocus} marks={wardrobe.marks} onAgents={setAgents} unread={notices.unread}
           onAnswer={id => { if (detached) window.jarvis?.dashboardMessage?.('parent', { type: 'notice', id }); else notices.focus(id); closeDashboard(); }} ctl={ctl}/>;
@@ -719,9 +731,9 @@ export function Companion() {
       </div>
       <TalkArea lang={companion.lang} x={out.x} y={out.y + R + 11} open={presence.open && place === 'out'} level={talkLevel} lines={s.talk} voice={voice} hearing={hearing} silent={s.soundMuted}
         deep={{ look: deepLook, secs: deepSecs, thoughts }} field={composer} draft={draft} micPaused={s.micMuted}
-        onDraft={value => { const cleared = paused.current && !!draft.trim() && !value.trim(); setDraft(value); ball.current?.nudge(); requestAnimationFrame(aimAtCaret); if (cleared) closeComposer(); }}
-        onSend={send} onField={open => { if (open) openComposer(); else closeComposer(); }} onMic={backToVoice}
-        onEnd={() => { if (voice !== 'off') endVoice(); presence.dismiss(); }} onUp={setTalkUp} onSettle={() => { if (live.current.composer) aimAtCaret(); kickGlass.current(); }}
+        onDraft={value => { setDraft(value); ball.current?.nudge(); requestAnimationFrame(aimAtCaret); }}
+        onSend={send} onField={(open, empty) => { if (open) openComposer(); else { closeComposer(); if (empty && voice === 'off') presence.dismiss(); } }} onMic={backToVoice}
+        onEnd={() => { closeComposer(); if (voice !== 'off') endVoice(); presence.dismiss(); }} onUp={setTalkUp} onSettle={() => { if (live.current.composer) aimAtCaret(); kickGlass.current(); }}
         boxRef={talkBox} inputRef={input}/>
       <DuskDashboard open={dashboard} onDetach={transferDashboard} onJoinedChange={setDashboardJoined} top={geo.panelTop} width={geo.width} left={geo.center - PANEL / 2}
         islandLeft={geo.lobe.left} islandRight={geo.wingX} lightX={geo.anchors.home.x}>

@@ -230,8 +230,9 @@ export function SettingsPage({ lang, port, open, cat, onCat, ctl, accounts, keyD
   return <>
     {head(c ? t(c.name) : t(['Settings', '设置']), !c ? <span className={port && !route.data ? '' : 'is-ok'}>● {port ? route.data ? t(['Jarvis connected', 'Jarvis 已连接']) : t(['Her settings only', '只有她的设置']) : t(['Demo', '演示'])}</span> : undefined)}
     <div className="pg-body st-body"><div ref={box} className="st-box">{c ? <>
+      {c.daemon && !ready && <div className="pg-sec st-list">{c.items.filter(i => i.off === undefined).map(row)}</div>}
       {c.daemon && !ready && <p className="pg-sec st-warn">{t(route.missing || !port ? ['Jarvis doesn’t let the panel change these yet. They still live in jarvis.yaml.', 'Jarvis 还不让面板改这些，它们还在 jarvis.yaml 里。'] : ['Checking with Jarvis…', '正在问 Jarvis…'])}</p>}
-      <div className="pg-sec st-list">{c.items.map(row)}</div>
+      <div className="pg-sec st-list">{(c.daemon && !ready ? c.items.filter(i => i.off !== undefined) : c.items).map(row)}</div>
     </> : <>
       <div className="pg-sec st-quick">
         {quick(!ctl.micMuted, <Microphone/>, ['Mic', '麦克风'], ctl.micMuted ? ['Off', '关'] : ['On', '开'], () => ctl.setMic(!ctl.micMuted))}

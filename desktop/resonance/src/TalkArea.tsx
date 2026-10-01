@@ -84,7 +84,8 @@ export type TalkProps = {
   // Think mode (ADR 0064) for this turn: the deep look, the seconds counting, and how long each deep answer took.
   deep: { look: boolean; secs: number; thoughts: { turn: string; secs: number }[] };
   field: boolean; draft: string; micPaused: boolean;
-  onDraft: (value: string) => void; onSend: () => void; onField: (open: boolean) => void; onMic: () => void; onEnd: () => void;
+  onDraft: (value: string) => void; onSend: () => void; // `empty`: closing it leaves nothing to show.
+  onField: (open: boolean, empty?: boolean) => void; onMic: () => void; onEnd: () => void;
   // `onUp`: it is up (she stays out); false from the moment it folds into her. `onSettle`: a shape change has come to rest.
   onUp: (up: boolean) => void; onSettle: () => void;
   boxRef: RefObject<HTMLDivElement | null>; inputRef: RefObject<HTMLTextAreaElement | null>;
@@ -99,7 +100,7 @@ export function TalkArea(p: TalkProps) {
   const [row, setRow] = useState<Row>('ft'), [away, setAway] = useState(false), [fieldH, setFieldH] = useState(36);
   const reg = useRef<Registry>(new Map()), clocks = useRef(new Map<string, { text: string; clock: number[] }>());
   // The motion's own state: where the shape is, what is pending, and whether the reader has scrolled away from her.
-  const ctl = useRef({ at: 'gone' as 'gone' | Kind, closing: false, timers: [] as number[], staged: false, follow: true, progUntil: 0, wheelAt: 0, since: 0, fly: null as Fly | null, rise: false, back: false, shape: { w: 0, h: 0 }, litEl: null as HTMLElement | null });
+  const ctl = useRef({ at: 'gone' as 'gone' | Kind, closing: false, timers: [] as number[], staged: false, follow: true, progUntil: 0, wheelAt: 0, since: 0, fly: null as Fly | null, rise: false, back: false, shape: { w: 0, h: 0 }, lbW: 0, litEl: null as HTMLElement | null });
   const c = ctl.current;
 
   const items = useMemo(() => itemsOf(p.lines, p.level), [p.lines, p.level]);
@@ -123,7 +124,7 @@ export function TalkArea(p: TalkProps) {
     return () => clearTimeout(id);
   });
 
-  const state = p.voice === 'off' ? 'idle' : p.voice === 'speaking' ? 'speaking' : p.voice === 'thinking' ? 'thinking' : p.hearing ? 'hearing' : 'listening';
+  const state = p.voice === 'off' || p.silent && p.voice === 'speaking' ? 'idle' : p.voice === 'speaking' ? 'speaking' : p.voice === 'thinking' ? 'thinking' : p.hearing ? 'hearing' : 'listening';
   const secs = p.deep.secs;
   const status = state === 'idle' ? '' : state === 'thinking' ? secs > 0 ? t([`Thinking ${secs} s`, `深想 ${secs} 秒`]) : t(['Thinking', '在想'])
     : state === 'speaking' ? t(['Speaking · poke to interrupt', '在说 · 戳她打断']) : t(['Listening', '在听']);
@@ -157,7 +158,19 @@ export function TalkArea(p: TalkProps) {
   };
   const later = (ms: number, run: () => void) => { c.timers.push(window.setTimeout(run, ms)); };
   const stopTimers = () => { c.timers.forEach(clearTimeout); c.timers = []; };
-  const morph = (w: number, h: number, r: number, sp = OPEN) => {
+  // The pill's label grows or shrinks by the same spring as the shape, so the end button stays inside the shape, pinned to its right
+  // edge, while it widens to show what you said or closes up around the glyph.
+  const lbEl = () => ftEl.current?.querySelector<HTMLElement>('.lb') ?? null;
+  const labelWidth = () => { const el = lbEl(); if (el && !ftEl.current!.hidden) c.lbW = el.offsetWidth; };
+  const growLabel = (sp: { d: number; e: string }) => {
+    const el = lbEl(); if (!el || ftEl.current!.hidden) return;
+    const mine = el.getAnimations().filter(a => a.id === 'lbw'), now = el.offsetWidth;
+    mine.forEach(a => a.cancel());
+    const to = el.offsetWidth, from = mine.length ? now : c.lbW; c.lbW = to;
+    if (!reduced() && Math.abs(from - to) > .5) el.animate([{ width: `${from}px` }, { width: `${to}px` }], { duration: sp.d, easing: sp.e, id: 'lbw' });
+  };
+  const morph = (w: number, h: number, r: number, sp = OPEN, fit = false) => {
+    if (fit) growLabel(sp);
     const b = box.current!, cs = getComputedStyle(b);
     const from = { width: cs.width, height: cs.height, borderRadius: cs.borderTopLeftRadius }, to = { width: `${w}px`, height: `${h}px`, borderRadius: `${r}px` };
     b.getAnimations().filter(a => a.id === 'shape').forEach(a => a.cancel());
@@ -168,17 +181,23 @@ export function TalkArea(p: TalkProps) {
   };
   const rowEl = () => row === 'fd' ? fdEl.current! : ftEl.current!;
   const rowH = () => { const e = rowEl(); return e.hidden ? 44 : e.offsetHeight; };
+  // Words cut off above or below fade out at that edge.
+  const fades = () => {
+    const el = trEl.current; if (!el) return;
+    el.classList.toggle('more', el.scrollTop > 2);
+    el.classList.toggle('below', el.scrollHeight - el.scrollTop - el.clientHeight > 2);
+  };
   // Scrolled to the newest, given the height all of it would take at full width (the live element may still be narrower, and so taller).
   const toEnd = (natural: number, smooth = false) => {
     const el = trEl.current!, top = Math.max(0, natural - HEIGHT);
     if (smooth && !reduced()) { c.progUntil = performance.now() + 700; el.scrollTo({ top, behavior: 'smooth' }); }
-    else { el.scrollTop = top; el.classList.toggle('more', top > 2); }
+    else { el.scrollTop = top; fades(); }
   };
   const clearInline = () => {
     const b = box.current!;
     b.getAnimations({ subtree: true }).forEach(a => a.cancel());
     for (const k of ['width', 'height', 'border-radius', 'opacity', 'visibility', 'translate', 'scale']) b.style.removeProperty(k);
-    for (const e of [trEl.current, ftEl.current, fdEl.current] as HTMLElement[]) for (const k of ['width', 'box-sizing', 'align-self', 'flex', 'opacity', 'display']) e.style.removeProperty(k);
+    for (const e of [trEl.current, ftEl.current, fdEl.current] as HTMLElement[]) for (const k of ['width', 'height', 'box-sizing', 'align-self', 'flex', 'opacity', 'display']) e.style.removeProperty(k);
   };
   // A capsule that is about to hold words widens to 360 first, then grows down; the words come up once the shape is in.
   const widenThenGrow = () => {
@@ -197,6 +216,7 @@ export function TalkArea(p: TalkProps) {
   const settle = (to: Kind) => {
     if (to === 'area') {
       const natural = measure(WIDTH).h, h = Math.min(natural, HEIGHT);
+      labelWidth();
       if (c.shape.w < WIDTH - 4) widenThenGrow();
       else {
         if (Math.abs(c.shape.h - h) > .5) morph(WIDTH, h, 22);
@@ -204,7 +224,7 @@ export function TalkArea(p: TalkProps) {
       }
     } else {
       const n = measure(null), h = to === 'pill' ? 36 : 44;
-      if (Math.abs(c.shape.w - n.w) > .5 || Math.abs(c.shape.h - h) > .5) morph(n.w, h, h / 2);
+      if (Math.abs(c.shape.w - n.w) > .5 || Math.abs(c.shape.h - h) > .5) morph(n.w, h, h / 2, OPEN, true); else labelWidth();
     }
     c.at = to;
   };
@@ -231,7 +251,7 @@ export function TalkArea(p: TalkProps) {
     live.current.onUp(true);
     if (!reduced()) b.animate([{ opacity: 0, scale: '.6', translate: '-50% -14px' }, { opacity: 1, scale: '1', translate: '-50% 0' }], { duration: OPEN.d, easing: OPEN.e, delay: 70, fill: 'backwards' }); // she comes out of the island first
     if (to === 'area') widenThenGrow();
-    else { const n = measure(null); morph(n.w, to === 'pill' ? 36 : 44, to === 'pill' ? 18 : 22); }
+    else { const n = measure(null); c.lbW = 0; morph(n.w, to === 'pill' ? 36 : 44, to === 'pill' ? 18 : 22, OPEN, true); }
     c.at = to;
     rise(rowEl(), 60);
     riseNew();
@@ -245,7 +265,7 @@ export function TalkArea(p: TalkProps) {
     const folding = c.at === 'area' || c.at === 'capsule' && trEl.current!.childElementCount > 0;
     let wait = 0;
     if (folding) {
-      for (const e of [trEl.current!, ftEl.current!, fdEl.current!]) Object.assign(e.style, { width: `${e.offsetWidth}px`, boxSizing: 'border-box', alignSelf: 'center', flex: 'none' });
+      for (const e of [trEl.current!, ftEl.current!, fdEl.current!]) Object.assign(e.style, { width: `${e.offsetWidth}px`, height: `${e.offsetHeight}px`, boxSizing: 'border-box', alignSelf: 'center', flex: 'none' });
       [...trEl.current!.children, rowEl()].forEach(e => e.animate([{ opacity: 1, filter: 'blur(0)' }, { opacity: 0, filter: 'blur(3px)' }], { duration: 180, fill: 'forwards' }));
       morph(Math.min(measure(null, 'capsule').w, 200), 44, 22, CLOSE);
       wait = 180 + Math.round(CLOSE.d * .4);
@@ -289,9 +309,9 @@ export function TalkArea(p: TalkProps) {
       const r = it.who === 'her' && it.spoken ? reg.current.get(it.id) : undefined;
       if (!r) continue;
       const total = r.chars.length, done = it.failed || live.current.silent || (it.said && it.cutAt === undefined);
-      const lit = done ? total : Math.min(total, saidCount(clockFor(it), ((it.cutAt ?? Date.now()) - it.at) / 1000));
+      const lit = done ? total : it.queued ? 0 : Math.min(total, saidCount(clockFor(it), ((it.cutAt ?? Date.now()) - it.from) / 1000));
       paint(r, lit);
-      if (!done && it.cutAt === undefined) front = r.chars[Math.max(0, lit - 1)] ?? null;
+      if (!done && !it.queued && it.cutAt === undefined) front = r.chars[Math.max(0, lit - 1)] ?? null;
     }
     c.litEl = front;
     return front;
@@ -342,10 +362,17 @@ export function TalkArea(p: TalkProps) {
     if (c.at === 'gone' && row !== (p.field ? 'fd' : 'ft')) return; // the row it opens on is on its way
     if (c.at === 'gone') appear(v.kind);
     else { settle(v.kind); riseNew(); }
-    if (c.rise) { c.rise = false; if (c.back) { c.back = false; rowEl().animate([{ opacity: 0 }, { opacity: 0, offset: .45 }, { opacity: 1 }], { duration: 380, easing: 'ease-out' }); } else rise(rowEl(), 0); }
+    if (c.rise && row === (p.field ? 'fd' : 'ft')) { c.rise = false; if (c.back) { c.back = false; rowEl().animate([{ opacity: 0 }, { opacity: 1 }], { duration: 260, delay: Math.round(OPEN.d * .5), easing: 'ease-out', fill: 'backwards' }); /* after the sent words have left it */ } else rise(rowEl(), 0); }
     runFly();
     followLit(drive());
+    fades();
   }, [sig]);
+  useEffect(() => {
+    const el = trEl.current; if (!el) return;
+    const watch = new ResizeObserver(fades);
+    watch.observe(el);
+    return () => watch.disconnect();
+  }, []);
   useEffect(() => () => { stopTimers(); }, []);
 
   // The field grows with its words, to six lines, then scrolls.
@@ -398,7 +425,7 @@ export function TalkArea(p: TalkProps) {
   // ---- reading back through it ----
   const onScroll = () => {
     const el = trEl.current!;
-    el.classList.toggle('more', el.scrollTop > 2);
+    fades();
     // Only a scroll the reader made counts: ours (following her words) leaves the follow on.
     if (performance.now() - c.wheelAt > 450) return;
     const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
@@ -418,7 +445,7 @@ export function TalkArea(p: TalkProps) {
       placeholder={p.micPaused ? t(['The microphone pauses while you type', '打字时麦克风暂停']) : t(['Say something…', '和她说点什么…'])}
       onChange={e => p.onDraft(e.target.value)}
       onKeyDown={(e: KeyboardEvent<HTMLTextAreaElement>) => {
-        if (e.key === 'Escape') { e.preventDefault(); p.onField(false); }
+        if (e.key === 'Escape') { e.preventDefault(); p.onField(false, v.items.length === 0); }
         else if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); submit(); }
       }}/>
     <button type="submit" className={`send ${p.draft.trim() ? '' : 'off'}`} disabled={!p.draft.trim()} aria-label={t(['Send', '发送'])}><ArrowUp weight="bold"/></button>
@@ -431,8 +458,8 @@ export function TalkArea(p: TalkProps) {
       {v.items.map(it => it.who === 'you'
         ? <span key={it.id} className="tk-u" data-line={it.id}>{it.spoken}</span>
         : <Her key={it.id} it={it} reg={reg.current} ready={v.ready(it)} think={(() => { const secs = p.deep.thoughts.find(th => th.turn === it.turn)?.secs; return secs ? t([`Thought for ${secs.toFixed(1)} s`, `想了 ${secs.toFixed(1)} 秒`]) : ''; })()}/>)}
-      {away && v.items.length > 0 && <div className="tk-latest"><button type="button" onClick={latest}>{t(['Back to latest', '回到最新'])}</button></div>}
     </div>
+    {away && v.items.length > 0 && <div className="tk-latest"><button type="button" onClick={latest}>{t(['Back to latest', '回到最新'])}</button></div>}
     <div ref={ftEl} className="talk-ft" hidden={row !== 'ft'}>
       <span className={`gl ${v.state}`} aria-hidden="true"><b/><b/><b/></span>
       <span className={`lb ${shim ? 'shim' : ''} ${v.heard ? 'heard' : ''} ${v.fading ? 'fade' : ''}`} key={v.heard ? 'heard' : v.state}>{v.label}</span>
@@ -450,8 +477,9 @@ export function TalkArea(p: TalkProps) {
 // conversation; after that it starts empty.
 export function usePresence({ engaged, over, onOpen }: { engaged: boolean; over: () => boolean; onOpen: (stale: boolean) => void }) {
   const [open, setOpen] = useState(false);
-  const closedAt = useRef(0), armed = useRef(true), seen = useRef(0);
+  const closedAt = useRef(0), armed = useRef(true), seen = useRef(0), now = useRef(engaged);
   const latest = useRef({ over, onOpen }); latest.current = { over, onOpen };
+  now.current = engaged;
   useEffect(() => {
     if (!engaged) armed.current = true; // an end the person asked for ignores whatever is still winding down
     if (engaged && armed.current && !open) { latest.current.onOpen(closedAt.current > 0 && Date.now() - closedAt.current > MEMORY_MS); setOpen(true); }
@@ -468,6 +496,8 @@ export function usePresence({ engaged, over, onOpen }: { engaged: boolean; over:
     timer = window.setTimeout(check, 250);
     return () => clearTimeout(timer);
   }, [open, engaged]);
-  const dismiss = () => { armed.current = false; closedAt.current = Date.now(); setOpen(false); };
+  // An end the person asked for while it is still engaged waits for that to wind down (the next engaged-to-idle edge re-arms it); when
+  // nothing is engaged there is no such edge to come, and the next conversation must open it.
+  const dismiss = () => { if (now.current) armed.current = false; closedAt.current = Date.now(); setOpen(false); };
   return { open, dismiss };
 }

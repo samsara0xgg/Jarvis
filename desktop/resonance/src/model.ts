@@ -16,7 +16,8 @@ export interface Subtitle { role: 'user' | 'assistant'; text: string; startMs: n
 export interface Row { seq: number; id: string; ts: string; source: string; text: string }
 // One line of what is on screen under her: yours as you said it, hers as the daemon wrote it (its <voice>/<document> tags kept).
 // `at`: when it landed (hers: when she began saying it). `said`: she has finished saying it; `cutAt`: she was stopped there.
-export interface Line { id: string; who: 'you' | 'her'; text: string; turn?: string; failed?: boolean; at: number; said?: boolean; cutAt?: number }
+// `queued`: another answer of hers is still being said, so this one has not begun; `from`: when she began saying it, if that was later than `at`.
+export interface Line { id: string; who: 'you' | 'her'; text: string; turn?: string; failed?: boolean; at: number; said?: boolean; cutAt?: number; queued?: boolean; from?: number }
 const MAX_LINES = 40;
 // A same-speaker pause longer than this starts a new caption row (https://developers.openai.com/api/docs/guides/live-conversations, Display captions): an assistant resuming after an interruption must not extend the cut-off line. Application choice; tune against recordings.
 const SUBTITLE_GAP_MS = 1500;
@@ -26,25 +27,32 @@ export const idleLive: Live = { state: 'idle', sessionId: null, since: null, usa
 export interface State { mode: Mode; phase: Phase; micMuted: boolean; soundMuted: boolean; conversation: boolean; heard: string; inbox: boolean; detail: string | null; results: Result[]; reply: string; draft: string; attachment: boolean; turnId: string | null; responseId: string | null; failed: boolean; waiting: string | null; askedAt: number | null; thoughtS: number; faded: boolean; played: boolean; inFlight: boolean; live: Live; subtitles: Subtitle[]; rows: Row[]; openSeq: number; talk: Line[]; talkN: number; replyAt: number }
 export const initialState: State = { mode: 'voice', phase: 'listening', micMuted: false, soundMuted: false, conversation: false, heard: '', inbox: false, detail: null, results: [examples[0], examples[3], examples[1]], reply: '', draft: '', attachment: false, turnId: null, responseId: null, failed: false, waiting: null, askedAt: null, thoughtS: 0, faded: false, played: false, inFlight: false, live: idleLive, subtitles: [], rows: [], openSeq: 0, talk: [], talkN: 0, replyAt: 0 };
 export type Action = { type: 'mode'; mode: Mode } | { type: 'phase'; phase: Phase } | { type: 'mic' | 'sound' | 'inbox' | 'interrupt' | 'end' | 'attachment' | 'reset' } | { type: 'draft'; value: string } | { type: 'send' } | { type: 'answer' } | { type: 'detail'; id: string | null } | { type: 'dismiss'; id: string } | { type: 'example'; id: string }
-  | { type: 'open'; turnId: string; responseId: string | null; at: number } | { type: 'append'; token: string; at: number } | { type: 'settle'; turnId: string } | { type: 'pending'; turnId: string; at: number } | { type: 'failed'; turnId: string; cancelled: boolean; message: string | null; at: number } | { type: 'controls'; micMuted: boolean; soundMuted: boolean; conversation: boolean } | { type: 'heard'; text: string; at: number } | { type: 'spoken'; turnId: string }
+  | { type: 'open'; turnId: string; responseId: string | null; at: number } | { type: 'append'; token: string; at: number } | { type: 'settle'; turnId: string } | { type: 'pending'; turnId: string; at: number } | { type: 'failed'; turnId: string; cancelled: boolean; message: string | null; at: number } | { type: 'controls'; micMuted: boolean; soundMuted: boolean; conversation: boolean } | { type: 'heard'; text: string; at: number } | { type: 'spoken'; turnId: string; at: number; outcome?: string }
   | { type: 'live'; live: Live } | { type: 'subtitle'; sessionId: string; role: 'user' | 'assistant'; delta: string; startMs: number; endMs: number } | { type: 'live_dismiss' }
   | { type: 'rows'; rows: Row[] } | { type: 'older'; rows: Row[] }
-  | { type: 'you'; text: string; at: number } | { type: 'her'; turn: string; text: string; at: number } | { type: 'said'; turn: string } | { type: 'cut'; at: number } | { type: 'talk-clear' };
+  | { type: 'you'; text: string; at: number } | { type: 'her'; turn: string; text: string; at: number } | { type: 'said'; turn: string; at: number } | { type: 'cut'; at: number } | { type: 'talk-clear' };
 
 // The conversation under her. Her line is keyed by its turn and rewritten as the answer grows; a turn that is dropped takes its line away.
 const keep = (lines: Line[]) => lines.length > MAX_LINES ? lines.slice(-MAX_LINES) : lines;
 const hers = (lines: Line[], turn: string | null, text: string, at: number, extra: Partial<Line> = {}): Line[] => {
   if (!turn || !text) return lines;
   const id = `her:${turn}`, i = lines.findIndex(l => l.id === id);
-  if (i < 0) return keep([...lines, { id, who: 'her', text, turn, at, ...extra }]);
+  // An answer that arrives while an earlier one is still being said waits its turn: its clock starts when that one is over.
+  if (i < 0) return keep([...lines, { id, who: 'her', text, turn, at, ...(lines.some(l => l.who === 'her' && !l.said) ? { queued: true } : {}), ...extra }]);
   return lines[i].text === text && !Object.keys(extra).length ? lines : lines.map((l, j) => j === i ? { ...l, text, ...extra } : l);
 };
 const yours = (s: State, text: string, at: number): Pick<State, 'talk' | 'talkN'> => ({ talk: keep([...s.talk, { id: `you:${s.talkN}`, who: 'you', text, at }]), talkN: s.talkN + 1 });
 // Her words on screen stay as they were while yours are coming in; once they are in, what was written meanwhile shows (until it is dropped).
 const unheld = (s: State, reply: string): Line[] => s.turnId && !s.played ? hers(s.talk, s.turnId, reply, s.replyAt) : s.talk;
-// A line she was still saying when something else began stops where it was.
-const finished = (lines: Line[], turn: string): Line[] => lines.some(l => l.id === `her:${turn}` && !l.said) ? lines.map(l => l.id === `her:${turn}` ? { ...l, said: true } : l) : lines;
-const ended = (lines: Line[], at: number): Line[] => lines.some(l => l.who === 'her' && !l.said) ? lines.map(l => l.who === 'her' && !l.said ? { ...l, said: true, cutAt: l.cutAt ?? at } : l) : lines;
+// She has finished saying a turn's line (`cutAt`: she was stopped, or it was never said); the next answer that was waiting begins.
+const finished = (lines: Line[], turn: string, at: number, cutAt?: number): Line[] => {
+  if (!lines.some(l => l.id === `her:${turn}` && !l.said)) return lines;
+  const out = lines.map(l => l.id === `her:${turn}` ? { ...l, said: true, queued: false, ...(cutAt === undefined ? {} : { cutAt: l.cutAt ?? cutAt }) } : l);
+  const next = out.findIndex(l => l.who === 'her' && !l.said && l.queued);
+  return next >= 0 && !out.some(l => l.who === 'her' && !l.said && !l.queued) ? out.map((l, j) => j === next ? { ...l, queued: false, from: at } : l) : out;
+};
+// A line she was still saying when something else began (your words, a stop, a lost link) stops where it was.
+const ended = (lines: Line[], at: number): Line[] => lines.some(l => l.who === 'her' && !l.said) ? lines.map(l => l.who === 'her' && !l.said ? { ...l, said: true, queued: false, cutAt: l.cutAt ?? (l.queued ? l.at : at) } : l) : lines;
 export function reducer(s: State, a: Action): State {
   switch (a.type) {
     case 'reset': return { ...initialState, results: examples.slice(0, 1) };
@@ -67,7 +75,7 @@ export function reducer(s: State, a: Action): State {
     // `openSeq` remembers where the log stood when this turn opened: the streaming reply shows as a tail row until an answer row lands past it.
     // The daemon opens an answer once it is whole (ADR 0064), so the wait from `askedAt` is how long it took.
     case 'open': { const mine = a.turnId === s.waiting && s.askedAt !== null;
-      return { ...s, phase: 'processing', reply: '', replyAt: 0, talk: ended(s.talk, a.at), turnId: a.turnId, responseId: a.responseId, failed: false, faded: false, played: false, openSeq: s.rows.length ? s.rows[s.rows.length - 1].seq : 0,
+      return { ...s, phase: 'processing', reply: '', replyAt: 0, turnId: a.turnId, responseId: a.responseId, failed: false, faded: false, played: false, openSeq: s.rows.length ? s.rows[s.rows.length - 1].seq : 0,
         thoughtS: mine ? (a.at - s.askedAt!) / 1000 : 0, askedAt: mine ? null : s.askedAt }; }
     case 'append': { const reply = s.reply + a.token, replyAt = s.replyAt || a.at;
       return { ...s, reply, replyAt, phase: 'speaking', talk: s.inFlight || !s.turnId ? s.talk : hers(s.talk, s.turnId, reply, replyAt) }; }
@@ -76,7 +84,9 @@ export function reducer(s: State, a: Action): State {
     case 'settle': return s.turnId !== a.turnId ? s : s.played ? { ...s, reply: '' } : { ...s, faded: true };
     // A waiting turn answered where no words show (a silent channel) ends its wait here too.
     case 'spoken': { const t = a.turnId === s.waiting ? { ...s, askedAt: null } : s;
-      const talk = finished(s.talk, a.turnId);
+      // An answer stopped or dropped before the end was not all said: where she got to stays lit (nothing, if she never began).
+      const cut = a.outcome === 'interrupted' || a.outcome === 'failed' ? a.at : a.outcome === 'dropped' ? 0 : undefined;
+      const talk = finished(s.talk, a.turnId, a.at, cut);
       return s.turnId !== a.turnId ? { ...t, talk } : { ...t, talk, played: true, responseId: null, reply: s.faded ? '' : s.reply, phase: s.phase === 'speaking' || s.phase === 'processing' ? 'listening' : s.phase }; }
     // `waiting` is the turn this surface started (submit, card or voice `accepted`), thought about while `askedAt` is
     // set. Only its end without an answer (daemon `failed` / `cancelled`) shows, whatever else is going on, so a
@@ -116,7 +126,7 @@ export function reducer(s: State, a: Action): State {
     // The conversation under her, written by the surface itself: typed words and the demo's answers.
     case 'you': return { ...s, ...yours(s, a.text, a.at) };
     case 'her': return { ...s, talk: hers(s.talk, a.turn, a.text, a.at) };
-    case 'said': return { ...s, talk: finished(s.talk, a.turn) };
+    case 'said': return { ...s, talk: finished(s.talk, a.turn, a.at) };
     case 'cut': return { ...s, talk: ended(s.talk, a.at) };
     case 'talk-clear': return s.talk.length ? { ...s, talk: [] } : s;
     case 'detail': return { ...s, detail: a.id, results: s.results.map(r => r.id === a.id ? { ...r, read: true } : r) };

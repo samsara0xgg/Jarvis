@@ -21,12 +21,12 @@ const browser = await chromium.launch({ headless: true, channel: 'chrome', args:
 const out = { x: 195.5, y: 72 }; // where she stands out of the island in the 640 px window
 
 // One page per scenario: its own settings, a fresh fake daemon.
-async function scene({ captions = 'brief', lang = 'en', reduced = false } = {}) {
+async function scene({ captions = 'brief', lang = 'en', reduced = false, demo = false } = {}) {
   const context = await browser.newContext({ viewport: { width: 640, height: 722 }, deviceScaleFactor: 2, reducedMotion: reduced ? 'reduce' : 'no-preference' });
   const page = await context.newPage();
   const errors = [], posts = [];
   page.on('pageerror', e => errors.push(e.message));
-  const daemonState = { controls: { mic_muted: false, speech_muted: false, conversation: false }, typed: 0, think: { on: false, on_words: '深想' } };
+  const daemonState = { controls: { mic_muted: false, speech_muted: false, conversation: false }, typed: 0, think: { on: false, on_words: '深想', turn_id: null } };
   await page.route(`http://127.0.0.1:${daemon}/**`, async route => {
     const url = new URL(route.request().url()), method = route.request().method();
     const body = method === 'POST' ? JSON.parse(route.request().postData() || '{}') : null;
@@ -56,11 +56,11 @@ async function scene({ captions = 'brief', lang = 'en', reduced = false } = {}) 
     window.WebSocket = class { constructor(url) { this.url = url; window.__sockets.push(this); setTimeout(() => this.onopen?.(), 0); } send() {} close() { this.onclose?.(); } };
     window.__emit = (op, payload) => window.__sockets.at(-1).onmessage({ data: JSON.stringify({ op, payload }) });
   }, [captions, lang]);
-  await page.goto(`http://127.0.0.1:${web}/?companion=1&port=${daemon}`);
+  await page.goto(`http://127.0.0.1:${web}/?companion=1${demo ? '' : `&port=${daemon}`}`);
   await page.addStyleTag({ content: `html,body{height:100%}body{background:linear-gradient(160deg,#7f98b8,#5d7898 55%,#4a6484)!important}
     body::before{content:'';position:fixed;inset:0 0 auto;height:32px;background:rgb(255 255 255/.18)}
     body::after{content:'';position:fixed;z-index:10;pointer-events:none;top:0;left:227.5px;width:185px;height:32px;background:#000;border-radius:0 0 10px 10px}` });
-  await page.waitForFunction(() => window.__sockets?.length === 1);
+  if (!demo) await page.waitForFunction(() => window.__sockets?.length === 1);
   const emit = (op, payload) => page.evaluate(([op, payload]) => window.__emit(op, payload), [op, payload]);
   const move = async (x, y) => { await page.mouse.move(x, y); await page.evaluate(([x, y]) => window.__cursor({ x, y }), [x, y]); };
   const skew = ms => page.evaluate(ms => { window.__skew += ms; }, ms);
@@ -290,6 +290,7 @@ try {
     await turn('n2', '几点了', '<voice>现在下午四点，我没有出声。</voice>'); await settled();
     a = await area();
     check('her voice off: the captions are all shown, whatever the setting, and the words are all there to read, not lit as she goes', a.kind === 'area' && a.you === '几点了' && a.her === '现在下午四点，我没有出声。' && a.all === a.hers);
+    check('and the footer is neutral: no “Speaking · poke to interrupt” and no speaking bars for a voice that is off', a.state === 'idle' && a.label === '');
     await shot('15-voice-off');
     check('no page errors (none)', s.errors.length === 0);
     await s.context.close();
@@ -304,13 +305,13 @@ try {
     await page.locator('.companion-hit').click({ button: 'right', force: true });
     await page.getByRole('menu').waitFor();
     const radio = name => page.getByRole('menuitemradio', { name });
-    check('her menu has the three caption levels, the middle one chosen by default', await radio('Show everything').count() === 1 && await radio('Only what to read').getAttribute('aria-checked') === 'true' && await radio('Show nothing').count() === 1);
-    await radio('Show everything').click(); await page.waitForTimeout(300);
+    check('her menu has the three caption levels, the middle one chosen by default', await radio('Show all').count() === 1 && await radio('Only what to read').getAttribute('aria-checked') === 'true' && await radio('None').count() === 1);
+    await radio('Show all').click(); await page.waitForTimeout(300);
     check('choosing one persists it with the other companion settings', await page.evaluate(() => JSON.parse(localStorage.getItem('companion-settings-v1')).captions === 'all'));
     await page.reload(); await page.waitForTimeout(800);
     await move(out.x, out.y); await page.waitForTimeout(900);
     await page.locator('.companion-hit').click({ button: 'right', force: true });
-    check('and it is still chosen after a restart', await radio('Show everything').getAttribute('aria-checked') === 'true');
+    check('and it is still chosen after a restart', await radio('Show all').getAttribute('aria-checked') === 'true');
     check('no page errors (menu)', s.errors.length === 0);
     await s.context.close();
   }
@@ -360,14 +361,14 @@ try {
     const { page, emit, area, turn, shot, settled, daemonState } = s;
     await page.waitForTimeout(600);
     await emit('voice', { phase: 'listening', turn_id: 'd1' });
-    daemonState.think = { on: true, on_words: '深想' };
+    daemonState.think = { on: true, on_words: '深想', turn_id: 'd1' };
     await emit('voice', { phase: 'accepted', turn_id: 'd1', text: '深想一下，我下周该不该换工作' });
     await page.waitForTimeout(2600);
     let a = await area();
     check('a deep turn pending: the area takes the deep look, and the footer counts the seconds', a.deep && /^Thinking \d+ s$/.test(a.label) && await page.evaluate(() => getComputedStyle(document.querySelector('.talk')).getPropertyValue('--lit').trim() === 'rgb(154, 134, 255)'));
     check('its base is the deep gradient, its glyph the deep colour', await page.evaluate(() => getComputedStyle(document.querySelector('.tk-deep')).opacity === '1' && getComputedStyle(document.querySelector('.talk .gl'), '::before').backgroundColor !== 'rgba(0, 0, 0, 0)'));
     await shot('30-deep-thinking');
-    daemonState.think = { on: false, on_words: '深想' }; // the daemon's `on` ends with the turn, around the answer opening
+    daemonState.think = { on: false, on_words: '深想', turn_id: null }; // the daemon's `on` ends with the turn, around the answer opening
     await emit('open', { turn_id: 'd1', response_id: 'r-d1' }); await emit('append', { turn_id: 'd1', token: '<voice>先别急着换，下周你手上有两个关键交付。</voice>' }); await emit('done', { turn_id: 'd1', fadeMs: 100 });
     await page.waitForTimeout(1200);
     a = await area();
@@ -394,6 +395,235 @@ try {
     const a = await area(), running = await page.evaluate(() => document.querySelector('.talk').getAnimations({ subtree: true }).filter(x => x.playState === 'running' && x.effect.getComputedTiming().iterations !== Infinity).length);
     check(`reduced motion: it is simply there at its size (${Math.round(a.r.w)} x ${Math.round(a.r.h)}), no shape animation running (${running})`, a.up && Math.round(a.r.w) === 360 && a.her === '你好，Allen。' && running === 0);
     check('no page errors (reduced)', s.errors.length === 0);
+    await s.context.close();
+  }
+
+  // ---- review round: endings, queues, the fold, the pill's motion, the copy ----
+  {
+    const s = await scene({ captions: 'all' });
+    const { page, emit, move, skew, area, settled, turn, posts } = s;
+    await page.waitForTimeout(600);
+    const mic = () => posts.filter(p => p.path === '/inherent/controls' && 'mic_muted' in p.body).map(p => p.body.mic_muted);
+    const lits = () => page.evaluate(() => [...document.querySelectorAll('.talk .tk-h')].map(h => [h.querySelectorAll('i.on').length, h.querySelectorAll('.tk-s.all').length]));
+
+    // stop pressed while the area lingers must not leave the next conversation without it
+    await emit('controls', { mic_muted: false, speech_muted: false, conversation: true }); s.daemonState.controls.conversation = true;
+    await turn('r1', '几点了', '<voice>现在下午四点。</voice>'); await emit('voice', { phase: 'spoken', turn_id: 'r1' }); await settled();
+    await emit('controls', { mic_muted: false, speech_muted: false, conversation: false }); s.daemonState.controls.conversation = false; await settled();
+    let a = await area();
+    check('a turn is over and she is not listening: it lingers', a.up && a.state === 'idle');
+    await page.locator('.talk-ft .st').click(); await page.waitForTimeout(900);
+    check('the end button while it lingers folds it', !(await area()).up);
+    await emit('controls', { mic_muted: false, speech_muted: false, conversation: true }); s.daemonState.controls.conversation = true; await emit('voice', { phase: 'listening', turn_id: 'r2' }); await settled();
+    check('and the next conversation opens it again (it is not left off for good)', (await area()).up);
+
+    // an answer queued behind one still being said does not cut it, and starts only when it is over
+    await emit('voice', { phase: 'accepted', turn_id: 'r2', text: '念长一点' }); await emit('open', { turn_id: 'r2', response_id: 'r-r2' });
+    await emit('append', { turn_id: 'r2', token: `<voice>${long}</voice>` }); await emit('done', { turn_id: 'r2', fadeMs: 100 });
+    await skew(4000); await page.waitForTimeout(300);
+    const first = (await lits()).at(-1)[0];
+    await emit('open', { turn_id: 'q2', response_id: 'r-q2' }); await emit('append', { turn_id: 'q2', token: '<voice>第二个回答，排在后面。</voice>' }); await emit('done', { turn_id: 'q2', fadeMs: 100 });
+    await skew(4000); await page.waitForTimeout(300);
+    let l = await lits();
+    check(`the answer queued behind it does not cut it: the first goes on lighting (${first} → ${l.at(-2)[0]}), the second has not begun (${l.at(-1)[0]})`, l.at(-2)[0] > first + 10 && l.at(-1)[0] === 0 && l.at(-2)[1] === 0);
+    await emit('voice', { phase: 'spoken', turn_id: 'r2' }); await skew(1500); await page.waitForTimeout(300);
+    l = await lits();
+    check(`when the first is over the second begins (${l.at(-1)[0]})`, l.at(-1)[0] > 0 && l.at(-2)[1] === 1);
+    await emit('voice', { phase: 'spoken', turn_id: 'q2' });
+
+    // playback stopped: where she got to stays lit, not everything
+    await emit('open', { turn_id: 'q3', response_id: 'r-q3' }); await emit('append', { turn_id: 'q3', token: `<voice>${long}</voice>` }); await emit('done', { turn_id: 'q3', fadeMs: 100 });
+    await skew(4000); await page.waitForTimeout(300);
+    await emit('voice', { phase: 'spoken', turn_id: 'q3', output_outcome: 'interrupted' }); await page.waitForTimeout(400);
+    l = await lits();
+    const total = await page.evaluate(() => [...document.querySelectorAll('.talk .tk-h')].at(-1).querySelectorAll('i').length);
+    check(`a spoken that says it was interrupted leaves it lit only as far as she got (${l.at(-1)[0]} of ${total})`, l.at(-1)[0] > 5 && l.at(-1)[0] < total - 20 && l.at(-1)[1] === 0);
+
+    // poking her to end the voice while the field is open gives the microphone back and closes the field
+    await page.locator('.talk-ft .kb').click(); await page.waitForTimeout(700);
+    check('the field is open and the microphone is paused', (await area()).fieldShown && mic().at(-1) === true);
+    await page.keyboard.type('一些字');
+    await page.keyboard.press('Control+A'); await page.keyboard.press('Backspace'); await page.waitForTimeout(300);
+    check('select-all and delete keeps the field open', (await area()).fieldShown);
+    await move(out.x, out.y); await page.locator('.companion-hit').click({ force: true });
+    await page.waitForTimeout(900);
+    a = await area();
+    check('poking her to end the voice closes the field and unmutes the microphone', !a.fieldShown && mic().at(-1) === false && posts.some(p => p.path === '/inherent/controls' && p.body.conversation === false));
+    check('and no key is left behind saying we paused it', await page.evaluate(() => localStorage.getItem('companion-mic-paused') === null));
+    check('no page errors (review round)', s.errors.length === 0);
+    await s.context.close();
+  }
+
+  // a mic paused for typing is given back after a reload, unless someone else unmuted it meanwhile
+  {
+    const s = await scene({ captions: 'all' });
+    const { page, emit, turn, posts } = s;
+    await page.waitForTimeout(600);
+    await emit('controls', { mic_muted: false, speech_muted: false, conversation: true }); s.daemonState.controls.conversation = true;
+    await turn('p1', '你好', '<voice>你好。</voice>'); await page.waitForTimeout(800);
+    await page.locator('.talk-ft .kb').click(); await page.waitForTimeout(700);
+    check('opening the field in a voice conversation records that we paused the microphone', await page.evaluate(() => localStorage.getItem('companion-mic-paused') === '1'));
+    const before = posts.filter(p => p.path === '/inherent/controls' && p.body.mic_muted === false).length;
+    await page.reload(); await page.waitForFunction(() => window.__sockets?.length === 1); await page.waitForTimeout(900);
+    check('a reload with the field open gives the microphone back and clears the record', posts.filter(p => p.path === '/inherent/controls' && p.body.mic_muted === false).length === before + 1 && await page.evaluate(() => localStorage.getItem('companion-mic-paused') === null));
+    await s.context.close();
+    const t = await scene({ captions: 'all' });
+    await t.page.waitForTimeout(600);
+    await t.emit('controls', { mic_muted: false, speech_muted: false, conversation: true }); t.daemonState.controls.conversation = true;
+    await t.turn('p2', '你好', '<voice>你好。</voice>'); await t.page.waitForTimeout(800);
+    await t.page.locator('.talk-ft .kb').click(); await t.page.waitForTimeout(700);
+    const n = t.posts.filter(p => p.path === '/inherent/controls' && p.body.mic_muted === false).length;
+    await t.emit('controls', { mic_muted: false, speech_muted: false, conversation: true }); // someone else unmutes it
+    await t.page.waitForTimeout(300);
+    await t.page.keyboard.press('Escape'); await t.page.waitForTimeout(500);
+    check('a microphone someone else unmuted while the field was up is left as it is when it closes', t.posts.filter(p => p.path === '/inherent/controls' && p.body.mic_muted === false).length === n && await t.page.evaluate(() => localStorage.getItem('companion-mic-paused') === null));
+    await t.context.close();
+  }
+
+  // Esc on an empty field with nothing to show does not leave an empty capsule up
+  {
+    const s = await scene({ captions: 'all' });
+    const { page, move, area, folded } = s;
+    await page.waitForTimeout(600);
+    await move(out.x, out.y); await page.waitForTimeout(700);
+    await page.locator('.companion-chip button').click(); await page.waitForTimeout(900);
+    check('the keyboard opens the field with nothing to show yet', (await area()).fieldShown);
+    await page.keyboard.press('Escape');
+    await folded(2500);
+    check('Esc on the empty field folds it at once, not 8 s later', !(await area()).up);
+    await s.context.close();
+  }
+
+  // deep: a stale answer of the daemon for a cancelled turn does not leak onto the next ordinary turn
+  {
+    const s = await scene({ captions: 'all' });
+    const { page, emit, area, daemonState } = s;
+    await page.waitForTimeout(600);
+    await emit('voice', { phase: 'listening', turn_id: 'c1' });
+    daemonState.think = { on: true, on_words: '深想', turn_id: 'c1' };
+    await emit('voice', { phase: 'accepted', turn_id: 'c1', text: '深想一下' }); await page.waitForTimeout(1500);
+    check('a deep turn pending takes the deep look', (await area()).deep);
+    await emit('cancelled', { turn_id: 'c1' }); await page.waitForTimeout(500);
+    await emit('voice', { phase: 'listening', turn_id: 'c2' }); await emit('voice', { phase: 'accepted', turn_id: 'c2', text: '现在几点' }); await page.waitForTimeout(1500);
+    const a = await area();
+    check('the daemon still answers on:true for the cancelled turn: the next ordinary turn is not deep', !a.deep && a.label === 'Thinking');
+    await s.context.close();
+  }
+
+  // the bottom of the transcript fades like the top, and “Back to latest” is not in the faded transcript
+  {
+    const s = await scene({ captions: 'all' });
+    const { page, emit, skew, area, turn } = s;
+    await page.waitForTimeout(600);
+    await emit('controls', { mic_muted: false, speech_muted: false, conversation: true }); s.daemonState.controls.conversation = true;
+    await turn('f1', '念一遍', ['<voice>', long, long, '</voice>']); await skew(70_000); await page.waitForTimeout(1200);
+    await emit('voice', { phase: 'spoken', turn_id: 'f1' }); await page.waitForTimeout(800);
+    check('at the end of a long transcript only the top fades', await page.evaluate(() => { const t = document.querySelector('.talk-tr'); return t.classList.contains('more') && !t.classList.contains('below'); }));
+    await page.mouse.move(196, 240); await page.mouse.wheel(0, -90); await page.waitForTimeout(600);
+    check('scrolled into the middle it fades at both edges, and the chip sits outside the faded words', await page.evaluate(() => { const t = document.querySelector('.talk-tr'); return t.classList.contains('more') && t.classList.contains('below') && !t.querySelector('.tk-latest') && !!document.querySelector('.talk > .tk-latest button'); }));
+    await page.mouse.wheel(0, -2000); await page.waitForTimeout(600);
+    check('at the top only the bottom fades', await page.evaluate(() => { const t = document.querySelector('.talk-tr'); return !t.classList.contains('more') && t.classList.contains('below'); }));
+    // the fold keeps what was on screen
+    await page.locator('.talk .tk-latest button').click(); await page.waitForTimeout(1000);
+    const start = (await area()).tr.top;
+    await page.evaluate(() => { window.__st = []; const tr = document.querySelector('.talk-tr'); window.__sample = setInterval(() => { if (document.querySelector('.talk').hasAttribute('data-hit')) window.__st.push(tr.scrollTop); }, 16); });
+    await emit('controls', { mic_muted: false, speech_muted: false, conversation: false }); s.daemonState.controls.conversation = false;
+    await skew(9000); await s.folded();
+    const seen = await page.evaluate(() => { clearInterval(window.__sample); return window.__st; });
+    check(`while it folds the transcript stays where it was and does not jump to the top (${start} px, ${Math.min(...seen)} px lowest of ${seen.length} samples)`, start > 20 && seen.length > 3 && Math.min(...seen) >= start - 3);
+    await s.context.close();
+  }
+
+  // the brief pill: its button stays inside the shape, pinned to the right, while it widens and closes up
+  {
+    const s = await scene({ captions: 'brief', lang: 'zh' });
+    const { page, emit, skew, area, settled } = s;
+    await page.waitForTimeout(600);
+    await page.evaluate(() => {
+      window.__rec = [];
+      const f = () => { const t = document.querySelector('.talk'), b = t.getBoundingClientRect(), st = t.querySelector('.talk-ft .st')?.getBoundingClientRect(), gl = t.querySelector('.talk-ft .gl')?.getBoundingClientRect();
+        if (t.hasAttribute('data-hit') && st) window.__rec.push({ bw: b.width, out: st.right - b.right, gl: gl.left - b.left }); requestAnimationFrame(f); };
+      f();
+    });
+    await emit('voice', { phase: 'listening', turn_id: 'k1' }); await settled();
+    await page.evaluate(() => { window.__rec.length = 0; });
+    await emit('voice', { phase: 'accepted', turn_id: 'k1', text: '明天上午十点提醒我开会' }); await page.waitForTimeout(900);
+    let rec = await page.evaluate(() => window.__rec.filter(r => r.bw >= 72));
+    check(`widening to show what you said: the end button is inside the shape and pinned right in every frame (${rec.length} frames, ${Math.max(...rec.map(r => r.out)).toFixed(1)} to ${Math.min(...rec.map(r => r.out)).toFixed(1)})`, rec.length > 8 && rec.every(r => r.out <= 1 && r.out >= -9));
+    await emit('open', { turn_id: 'k1', response_id: 'r-k1' }); await emit('append', { turn_id: 'k1', token: '<voice>好。</voice>' }); await emit('done', { turn_id: 'k1', fadeMs: 100 });
+    await skew(2700); await page.evaluate(() => { window.__rec.length = 0; }); await skew(300); await page.waitForTimeout(900);
+    rec = await page.evaluate(() => window.__rec.filter(r => r.bw >= 72));
+    check(`closing up around the glyph: the end button does not jump left while the shape is still wide (${rec.length} frames, ${Math.max(...rec.map(r => r.out)).toFixed(1)} to ${Math.min(...rec.map(r => r.out)).toFixed(1)})`, rec.length > 3 && rec.every(r => r.out <= 1 && r.out >= -9));
+    const end = await area();
+    check('and it ends as the 36 tall pill round the glyph and the button', end.r.h === 36 && end.r.w < 100);
+    await s.context.close();
+  }
+
+  // sending from the field: the footer waits until the sent words have left it
+  {
+    const s = await scene({ captions: 'all' });
+    const { page, emit, turn } = s;
+    await page.waitForTimeout(600);
+    await emit('controls', { mic_muted: false, speech_muted: false, conversation: true }); s.daemonState.controls.conversation = true;
+    await turn('g1', '你好', '<voice>你好。</voice>'); await emit('voice', { phase: 'spoken', turn_id: 'g1' }); await page.waitForTimeout(900);
+    await page.locator('.talk-ft .kb').click(); await page.waitForTimeout(800);
+    await page.keyboard.type('帮我把周五的会议改到下午'); await page.keyboard.press('Enter');
+    await page.waitForTimeout(110);
+    const early = await page.evaluate(() => parseFloat(getComputedStyle(document.querySelector('.talk-ft')).opacity));
+    await page.waitForTimeout(1100);
+    const late = await page.evaluate(() => parseFloat(getComputedStyle(document.querySelector('.talk-ft')).opacity));
+    check(`the footer is not there while the ghost of what you sent leaves the field (${early.toFixed(2)}), and is there after (${late.toFixed(2)})`, early < .1 && late > .95);
+    await s.context.close();
+  }
+
+  // typed in the Dashboard: the question is in the conversation under her above its answer
+  {
+    const s = await scene({ captions: 'all' });
+    const { page, move, emit } = s;
+    await page.waitForTimeout(600);
+    await move(600, 650);
+    await page.locator('.companion-island-target').click({ position: { x: 155, y: 14 }, force: true });
+    await page.locator('.companion-dashboard.is-open').waitFor(); await page.waitForTimeout(900);
+    await page.locator('.ad .cmp input').first().fill('明天有什么会'); await page.keyboard.press('Enter'); await page.waitForTimeout(400);
+    await emit('open', { turn_id: 'typed-1', response_id: 'r-t1' }); await emit('append', { turn_id: 'typed-1', token: '<voice>明天有两个会。</voice>' }); await emit('done', { turn_id: 'typed-1', fadeMs: 100 });
+    await emit('voice', { phase: 'spoken', turn_id: 'typed-1' }); await page.waitForTimeout(300);
+    await page.locator('.companion-island-target').click({ position: { x: 155, y: 14 }, force: true }); await move(600, 650); await page.waitForTimeout(1200);
+    await emit('controls', { mic_muted: false, speech_muted: false, conversation: true }); s.daemonState.controls.conversation = true; await emit('voice', { phase: 'listening', turn_id: 'typed-2' }); await page.waitForTimeout(1500);
+    const text = await page.evaluate(() => [...document.querySelectorAll('.talk [data-line]')].map(n => n.textContent));
+    check('a question typed in the Dashboard is a line of the conversation, above its answer', text[0] === '明天有什么会' && text[1] === '明天有两个会。');
+    await s.context.close();
+  }
+
+  // the copy: one set of caption names, and the control is not under the “can't change these yet” banner
+  {
+    const s = await scene({ captions: 'brief', lang: 'en' });
+    const { page, move } = s;
+    await page.waitForTimeout(600);
+    await move(600, 650);
+    await page.locator('.companion-island-target').click({ position: { x: 155, y: 14 }, force: true });
+    await page.locator('.companion-dashboard.is-open').waitFor(); await page.waitForTimeout(900);
+    await page.locator('.ad .corner [data-row="settings"]').click(); await page.waitForTimeout(700);
+    await page.locator('.ad [data-cat="voice"]').click(); await page.waitForTimeout(700);
+    const names = await page.locator('.ad [role=radiogroup][aria-label="Captions"] button').allTextContents();
+    check(`Settings names the levels ${names.join(' / ')}`, names.join() === 'Show all,Only what to read,None');
+    check('the captions control sits above the banner, which is about what the daemon keeps', await page.evaluate(() => { const warn = document.querySelector('.ad .st-warn'), group = document.querySelector('.ad [role=radiogroup][aria-label="Captions"]');
+      return !!warn && !!group && !!(warn.compareDocumentPosition(group) & Node.DOCUMENT_POSITION_PRECEDING); }));
+    await s.context.close();
+  }
+
+  // the demo (no daemon): typing in the middle of a voice turn answers like a real turn, the footer follows
+  {
+    const s = await scene({ captions: 'all', demo: true });
+    const { page, move, area } = s;
+    await page.waitForTimeout(800);
+    await move(out.x, out.y); await page.locator('.companion-hit').click({ force: true }); await page.waitForTimeout(1200);
+    await page.locator('.talk-ft .kb').click(); await page.waitForTimeout(800);
+    await page.keyboard.type('收到吗'); await page.keyboard.press('Enter'); await page.waitForTimeout(300);
+    let a = await area();
+    check('demo: after typing mid-voice the footer says Thinking, not Listening', a.state === 'thinking' && a.label === 'Thinking');
+    await page.waitForTimeout(1500);
+    a = await area();
+    check('demo: then she speaks, and the answer is lit as she says it', a.state === 'speaking' && a.her !== '');
     await s.context.close();
   }
 

@@ -43,8 +43,11 @@
 .talk-tr::-webkit-scrollbar { display:none; }
 /* the air above and below the words is part of what scrolls, so the transcript can shrink to nothing while the shape is still growing */
 .talk-tr::before { content:''; flex:none; height:10px; }
-.talk-tr::after { content:''; flex:none; height:0; margin-top:-2px; }
+.talk-tr::after { content:''; flex:none; height:8px; margin-top:-2px; }
+/* what is cut off above and below fades out instead of ending hard at an edge */
 .talk-tr.more { -webkit-mask-image:linear-gradient(transparent,#000 30px); mask-image:linear-gradient(transparent,#000 30px); }
+.talk-tr.below { -webkit-mask-image:linear-gradient(#000 calc(100% - 26px),transparent); mask-image:linear-gradient(#000 calc(100% - 26px),transparent); }
+.talk-tr.more.below { -webkit-mask-image:linear-gradient(transparent,#000 30px,#000 calc(100% - 26px),transparent); mask-image:linear-gradient(transparent,#000 30px,#000 calc(100% - 26px),transparent); }
 .talk-tr:empty { display:none; }
 .tk-u { align-self:flex-end; max-width:86%; margin-top:10px; font-size:var(--text-detail); line-height:18px; color:rgb(238 240 251 / .55); text-align:right; white-space:pre-line; overflow-wrap:anywhere; }
 .tk-u:first-child { margin-top:0; }
@@ -80,16 +83,17 @@
 .talk .doc time { flex:none; min-width:38px; font-size:12.5px; color:rgb(235 238 245 / .55); font-variant-numeric:tabular-nums; }
 .talk .doc strong { font-weight:600; color:#fff; }
 .talk .doc code { padding:1px 4px; border-radius:var(--radius-tag); font:var(--text-mono)/1.4 ui-monospace,Menlo,monospace; background:rgb(255 255 255 / .08); }
-/* back to the newest, once you have scrolled away from it */
-.tk-latest { position:sticky; bottom:0; height:0; z-index:3; overflow:visible; pointer-events:none; }
-.tk-latest button { position:absolute; left:50%; bottom:8px; translate:-50% 0; padding:5px 12px; border-radius:99px; pointer-events:auto; font-size:var(--text-label); letter-spacing:.02em; color:#eef0fb;
+/* back to the newest, once you have scrolled away from it: a line of no height between the transcript and the bottom row, so the
+   fade does not take it and it sits on the faded bottom of the words, not on the ones being said */
+.tk-latest { position:relative; flex:none; height:0; z-index:3; overflow:visible; pointer-events:none; }
+.tk-latest button { position:absolute; left:50%; bottom:4px; translate:-50% 0; padding:5px 12px; border-radius:99px; pointer-events:auto; font-size:var(--text-label); letter-spacing:.02em; color:#eef0fb;
   background:rgb(60 62 110 / .92); box-shadow:inset 0 0 0 .5px rgb(255 255 255 / .16),0 6px 14px -6px #000a; animation:talk-in .2s ease-out; }
 .tk-latest button:hover { background:rgb(78 80 132 / .96); }
 @keyframes talk-in { from { opacity:0; translate:-50% 4px; } }
 
 /* the bottom row: your state ... */
 .talk-ft { position:relative; z-index:2; flex:none; display:flex; align-items:center; gap:8px; height:44px; padding:0 7px 0 16px; }
-.talk .lb { font-size:12px; letter-spacing:.02em; color:rgb(235 238 245 / .56); white-space:nowrap; }
+.talk .lb { box-sizing:border-box; overflow:hidden; font-size:12px; letter-spacing:.02em; color:rgb(235 238 245 / .56); white-space:nowrap; }
 .talk .lb:empty { display:none; }
 .talk .lb.heard { color:rgb(235 238 245 / .72); animation:talk-in-text .24s ease-out; }
 @keyframes talk-in-text { from { opacity:0; } }
@@ -138,8 +142,12 @@
 .tk-ghost { position:absolute; margin:0; font-size:var(--text-body); line-height:20px; color:#fff; transform-origin:0 0; white-space:pre-wrap; overflow-wrap:anywhere; }
 
 /* only a heard sentence and the end button: the smaller pill (the other two caption levels) */
-.talk[data-kind=pill] .talk-ft { height:36px; gap:10px; padding:0 5px 0 13px; }
-.talk[data-kind=pill] .lb { flex:none; max-width:220px; overflow:hidden; text-overflow:ellipsis; font-size:var(--text-detail); color:rgb(235 238 245 / .58); }
+.talk[data-kind=pill] .talk-ft { height:36px; gap:0; padding:0 5px 0 13px; }
+/* the label stays in the row even when empty (it is what grows and shrinks with the shape); its gap is its own padding */
+.talk[data-kind=pill] .lb:empty { display:block; padding:0; }
+.talk[data-kind=pill] .lb:not(:empty) { padding-left:10px; }
+.talk[data-kind=pill] .st { margin-left:10px; }
+.talk[data-kind=pill] .lb { flex:none; max-width:220px; text-overflow:ellipsis; font-size:var(--text-detail); color:rgb(235 238 245 / .58); }
 .talk[data-kind=pill] .lb.heard { color:rgb(235 238 245 / .72); }
 .talk[data-kind=pill] .ib { width:26px; height:26px; }
 .talk[data-kind=pill] .kb,.talk[data-kind=pill] .sp { display:none; }
