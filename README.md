@@ -2,6 +2,8 @@
   <img src="docs/assets/poster.png" alt="Jarvis, a glass ball with two glowing eyes, beside the words Jarvis, by Allen Shi" width="100%">
 </p>
 
+> **Demo video coming later today (October 1, 2026).** A short walkthrough of Jarvis running on my Mac will be posted right here.
+
 <p align="center">
   <img src="https://img.shields.io/badge/macOS-000000?logo=apple&logoColor=white" alt="macOS">
   <img src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white" alt="Python 3.12">
