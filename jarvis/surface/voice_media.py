@@ -80,6 +80,10 @@ _CUT_FADE_WAIT_S = 0.1
 # transport and task handshake (TLS alone took 0.11-0.15 s to api-uw on
 # 2026-09-29). MiniMax closes a started task after 120 s without an event.
 _SPARE_SESSION_MAX_AGE_S = 60.0
+# The cut-off line is synthesized ahead of time as a response of its own; this
+# id never reaches the Event Log's response rows, only tts.usage_observed.
+_NETWORK_LOST_RESPONSE_ID = "network-lost-line"
+_NETWORK_LOST_PREFETCH_TIMEOUT_S = 20.0
 # The rate the say fallback renders at; the player resamples it like provider PCM.
 _SAY_RATE_HZ = 24_000
 _CHANNEL_TAG_RE = re.compile(r"</?(?:voice|document)>")
@@ -264,6 +268,7 @@ class StreamingMediaConfig:
     durability_retry_s: float = 0.02
     enable_macos_say_fallback: bool = True
     speak_from_segments: bool = False
+    prefetch_network_lost_line: bool = True
 
     def __post_init__(self) -> None:
         """Reject unbounded or non-positive actor budgets."""
@@ -714,6 +719,9 @@ class StreamingTTSPipeline:
         self._spare: TTSSession | None = None
         self._spare_ready_at = 0.0
         self._spare_task: asyncio.Task[None] | None = None
+        # Canonical PCM of the spoken "tts.network_lost" line, per language, in memory.
+        self._network_lost_pcm: dict[str, bytes] = {}
+        self._network_lost_task: asyncio.Task[None] | None = None
         self._thread = threading.Thread(
             target=self._thread_main,
             name="jarvis-media-owner",
@@ -1715,6 +1723,72 @@ class StreamingTTSPipeline:
             return
         self._spare, self._spare_ready_at = session, asyncio.get_running_loop().time()
         record_realtime_trace("tts_session_prewarmed", measurement_semantics="spare_connected")
+
+    def _prefetch_network_lost_line(self) -> None:
+        """Once the network has just worked, have the cut-off line synthesized in the background."""
+        if (
+            not self._config.prefetch_network_lost_line
+            or lang.language() in self._network_lost_pcm
+            or self._network_lost_task is not None
+            or self._power_suspended
+            or not self._accepting.is_set()
+        ):
+            return
+        self._network_lost_task = asyncio.create_task(
+            self._synthesize_network_lost_line(lang.language()),
+            name="tts-network-lost-prefetch",
+        )
+
+    async def _synthesize_network_lost_line(self, code: lang.Language) -> None:
+        """Own session, no player, no response rows: a failure only leaves the tones."""
+        session: TTSSession | None = None
+        try:
+            session = self._provider.create_tts_session(
+                endpoint_index=0,
+                idle_close_s=self._config.session_idle_close_s,
+                command_queue_capacity=self._config.session_command_capacity,
+                audio_queue_capacity=self._config.session_audio_capacity,
+            )
+            parts: list[bytes] = []
+            async with asyncio.timeout(_NETWORK_LOST_PREFETCH_TIMEOUT_S):
+                await session.open(_NETWORK_LOST_RESPONSE_ID, 0)
+                await session.send(
+                    TTSResponseSegment(
+                        response_id=_NETWORK_LOST_RESPONSE_ID,
+                        playback_generation_id=0,
+                        sequence=0,
+                        text=lang.t("tts.network_lost", lang=code),
+                    ),
+                )
+                resampler: _SegmentResampler | None = None
+                async for event in session.audio_events():
+                    if isinstance(event, TTSAudioChunk):
+                        if event.pcm:
+                            resampler = resampler or _SegmentResampler(
+                                input_rate_hz=event.sample_rate_hz,
+                                output_rate_hz=self._config.canonical_sample_rate_hz,
+                            )
+                            parts.append(resampler.feed(event.pcm))
+                        continue
+                    if resampler is not None:
+                        parts.append(resampler.finish())
+                    self._emit_tts_usage(
+                        event.usage, response_id=_NETWORK_LOST_RESPONSE_ID, sequence=0,
+                    )
+                    break
+            if parts:
+                self._network_lost_pcm[code] = b"".join(parts)
+                record_realtime_trace(
+                    "tts_network_lost_line_cached",
+                    language=code,
+                    pcm_bytes=len(self._network_lost_pcm[code]),
+                )
+        except Exception:  # noqa: BLE001 - the tones remain the fallback
+            LOGGER.debug("network-lost line was not synthesized", exc_info=True)
+        finally:
+            self._network_lost_task = None
+            if session is not None:
+                await self._wait_task_bounded(asyncio.create_task(session.close()), timeout_s=0.5)
 
     def _spare_fresh(self) -> bool:
         return asyncio.get_running_loop().time() - self._spare_ready_at <= _SPARE_SESSION_MAX_AGE_S
@@ -2794,6 +2868,7 @@ class StreamingTTSPipeline:
                             response_id=active.response.response_id,
                             sequence=sequence,
                         )
+                        self._prefetch_network_lost_line()
                         break
                     break
                 except asyncio.CancelledError:
@@ -2877,14 +2952,16 @@ class StreamingTTSPipeline:
         return True
 
     async def _play_cut_off_cue(self, active: _ActiveResponse, *, sequence: int) -> None:
-        """Play what was accepted to its end, then the cut-off cue, before the terminal."""
-        cue = _cut_off_cue(self._config.canonical_sample_rate_hz)
+        """Play what was accepted to its end, then her spoken line or tones, before the terminal."""
+        line = self._network_lost_pcm.get(lang.language())
+        cue = line or _cut_off_cue(self._config.canonical_sample_rate_hz)
         await self._write_all(active, cue, sequence=sequence)
         record_realtime_trace(
             "tts_cut_off_cue",
             response_id=active.response.response_id,
             playback_generation_id=active.lease.playback_generation_id,
             segment_sequence=sequence,
+            cue="spoken_line" if line else "tones",
         )
         while self._active is active:
             snapshot = self._player.poll_generation(active.lease.playback_generation_id)
@@ -3773,6 +3850,9 @@ class StreamingTTSPipeline:
     async def _shutdown_owned(self) -> None:
         self._accepting.clear()
         await self._close_spare()
+        if self._network_lost_task is not None:
+            self._network_lost_task.cancel()
+            await self._wait_task_bounded(self._network_lost_task, timeout_s=0.5)
         if self._active is not None:
             await self._interrupt_active(reason="media_owner_shutdown")
         while self._fallback_janitors:
@@ -3956,6 +4036,9 @@ def streaming_media_config_from_mapping(
             defaults.enable_macos_say_fallback,
         ),
         speak_from_segments=_boolean("speak_from_segments", defaults.speak_from_segments),
+        prefetch_network_lost_line=_boolean(
+            "prefetch_network_lost_line", defaults.prefetch_network_lost_line,
+        ),
     )
 
 
