@@ -1486,3 +1486,24 @@ def test_a_closed_commentary_is_no_longer_a_cancel_target(tmp_path: Path) -> Non
         if payload["reason"] == "shutdown"
     ]
     assert [payload["response_id"] for payload in cancelled] == [unheard_id]
+
+
+@pytest.mark.parametrize(
+    ("reason", "heard", "language"),
+    [("wait", "等我一下。", "zh"), ("dismissed", "Okay, bye.", "en")],
+)
+def test_words_that_steer_the_mode_get_one_fixed_line_and_no_turn(
+    tmp_path: Path, reason: str, heard: str, language: lang.Language,
+) -> None:
+    """ADR 0102: 「等我一下」 or a dismissal is answered by a fixed line, never a model."""
+    runtime = _make_runtime(tmp_path, commentary=False)
+
+    inherent_loop._say_conversation_line(runtime, "T-words", reason, heard)  # noqa: SLF001
+
+    assert _typed_payloads(runtime.conn, "surface.conversation_words") == [
+        {"turn_id": "T-words", "reason": reason, "transcript": heard},
+    ]
+    assert _only_phrase(runtime.conn) in lang.variants(f"conversation.{reason}", language)
+    assert _count(runtime.conn, "response.completed") == 1
+    assert _count(runtime.conn, "utterance.received") == 0
+    assert fold_conversation_history(iter_events(runtime.conn)).turns == ()

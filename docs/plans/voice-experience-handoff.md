@@ -191,6 +191,10 @@ unreachable（Linux 平台分支，main 同样）；全量 hermetic 1214/1217，
 卡死 lane）、F15（单一入口模式下从不压低其他 app 的声音）；前端 F15–F19（上一句残留在待机条、300 ms
 单击延迟、卡片关闭后键盘焦点、`append` 无 turn id、麦克风开关同一提示音）。
 
+对话模式里的「等我一下」和退下类说法（ADR 0102）是 `jarvis/surface/voice_asr.py` 里的固定模式匹配，不经
+LLM：说法不在表里就成了一轮；SenseVoice 常把「退下」听成「对下」「配下」。Allen 2026-10-01：以后要打磨。
+她的回话也是固定的，`jarvis/shared/lang.py` 的 `conversation.wait` / `conversation.dismissed` 各五句随机一句。
+
 ### 3.3 GPT-Live（Allen 2026-09-28：延后）
 
 - 请求按到达墙钟冻结（Live F3，`voice_live.py` `_settle_request`；阶段 C 清单 #13）：600 ms 无新片段即冻结、

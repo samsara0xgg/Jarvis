@@ -977,6 +977,7 @@ class DuplexVoiceSession:
         mic_muted: Callable[[], bool] | None = None,
         conversation: Callable[[], bool] | None = None,
         set_conversation: Callable[[bool, str], None] | None = None,
+        answer_words: Callable[[str, str, str], None] | None = None,
         stop_speaking: Callable[[], object] | None = None,
         hold_output: Callable[[bool], None] | None = None,
         supersede_unspoken: Callable[[str], None] | None = None,
@@ -990,7 +991,9 @@ class DuplexVoiceSession:
         wake hit, and speech that starts while Jarvis is speaking calls
         ``stop_speaking``. ``set_conversation(on, reason)`` flips it (ADR
         0102): a wake hit turns it on, and a dismissal (退下) or
-        ``conversation_idle_exit_s`` of quiet turns it off. With
+        ``conversation_idle_exit_s`` of quiet turns it off;
+        ``answer_words(turn_id, reason, text)`` has her say one line back to
+        a dismissal or 「等我一下」 (``reason`` ``dismissed`` or ``wait``). With
         ``yield_speaking`` and ``pause_speaking`` it first only lowers her
         (``barge_in_yield_gain``) and holds her where she is once the speech
         has ``barge_in_confirm_voiced_s`` of voice; final ASR then decides: a
@@ -1011,6 +1014,7 @@ class DuplexVoiceSession:
         self._mic_muted = mic_muted
         self._conversation = conversation
         self._set_conversation = set_conversation
+        self._answer_words = answer_words
         # ADR 0102: when conversation mode last had an accepted turn or Jarvis's
         # speech; an accepted turn waits for her answer, 「等我一下」 holds it.
         self._conversation_busy_at = time.monotonic()
@@ -1489,6 +1493,11 @@ class DuplexVoiceSession:
             voice_asr.is_backchannel(text) or voice_asr.is_unclear_sound(text)
         ):
             reason = "backchannel" if voice_asr.is_backchannel(text) else "unclear"
+        if reason in {"dismissed", "wait"} and self._answer_words is not None:
+            try:
+                self._answer_words(turn_id, reason, text)
+            except Exception:  # noqa: BLE001 - her answer cannot break capture
+                LOGGER.warning("answer_words failed reason=%s", reason, exc_info=True)
         if reason is not None:
             raise voice_pipeline.VoicePipelineAbsorbedError(reason)
 
