@@ -5,6 +5,7 @@
 import type { Pic, Step } from '../../electron/agents/types';
 import type { Feature, PageCtx } from './ctx';
 import './viewer.css';
+import { tr } from './lang';
 
 type Shot = { url: string; name: string };
 const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -20,7 +21,7 @@ const I = {
 
 export function mountViewer(ctx: PageCtx): Feature {
   const dlg = document.createElement('dialog');
-  dlg.className = 'ql'; dlg.setAttribute('aria-label', '大图');
+  dlg.className = 'ql'; dlg.setAttribute('aria-label', tr('大图', 'Large image'));
   ctx.win.append(dlg);
   const V = { open: false, list: [] as Shot[], i: 0, zoom: false, size: '' };
 
@@ -45,11 +46,11 @@ export function mountViewer(ctx: PageCtx): Feature {
   function render() {
     const x = V.list[V.i], many = V.list.length > 1;
     dlg.innerHTML = `<div class="ql-h"><b>${esc(x.name)}</b><small class="ql-n"></small><span class="sp"></span>`
-      + `<button type="button" class="ql-l" data-act="ql-copy">${I.copy}<span>复制图片</span></button>`
-      + (ctx.current() ? `<button type="button" class="ql-l" data-act="ql-stage">${I.stage}<span>放上舞台</span></button>` : '')
-      + `<button type="button" class="ql-x" data-act="ql-close" aria-label="关闭">${I.x}</button></div>`
+      + `<button type="button" class="ql-l" data-act="ql-copy">${I.copy}<span>${tr('复制图片', 'Copy image')}</span></button>`
+      + (ctx.current() ? `<button type="button" class="ql-l" data-act="ql-stage">${I.stage}<span>${tr('放上舞台', 'Move to stage')}</span></button>` : '')
+      + `<button type="button" class="ql-x" data-act="ql-close" aria-label="${tr('关闭', 'Close')}">${I.x}</button></div>`
       + `<div class="ql-b${V.zoom ? ' z' : ''}" tabindex="-1"><img src="${esc(x.url)}" alt="${esc(x.name)}" crossorigin="anonymous" data-act="ql-zoom">`
-      + (many ? `<button type="button" class="ql-nav prev" data-act="ql-prev" aria-label="上一张">${I.prev}</button><button type="button" class="ql-nav next" data-act="ql-next" aria-label="下一张">${I.next}</button>` : '') + '</div>'
+      + (many ? `<button type="button" class="ql-nav prev" data-act="ql-prev" aria-label="${tr('上一张', 'Previous image')}">${I.prev}</button><button type="button" class="ql-nav next" data-act="ql-next" aria-label="${tr('下一张', 'Next image')}">${I.next}</button>` : '') + '</div>'
       + (many ? `<div class="ql-f">${V.list.map((y, j) => `<button type="button" data-act="ql-go" data-j="${j}" class="${j === V.i ? 'on' : ''}" aria-label="${esc(y.name)}"><img src="${esc(y.url)}" alt=""></button>`).join('')}</div>` : '');
     const img = big()!, n = dlg.querySelector<HTMLElement>('.ql-n')!;
     const count = many ? `${V.i + 1} / ${V.list.length}` : '';
@@ -110,8 +111,8 @@ export function mountViewer(ctx: PageCtx): Feature {
     const img = big(), say = (ok: boolean) => {
       if (!btn) return;
       const l = btn.querySelector('span')!;
-      l.textContent = ok ? '复制好了' : '没能复制'; btn.classList.toggle('ok', ok);
-      clearTimeout(Number(btn.dataset.t)); btn.dataset.t = String(setTimeout(() => { l.textContent = '复制图片'; btn.classList.remove('ok'); }, 1500));
+      l.textContent = ok ? tr('复制好了', 'Copied') : tr('没能复制', 'Could not copy'); btn.classList.toggle('ok', ok);
+      clearTimeout(Number(btn.dataset.t)); btn.dataset.t = String(setTimeout(() => { l.textContent = tr('复制图片', 'Copy image'); btn.classList.remove('ok'); }, 1500));
     };
     ctx.tick();
     try {
@@ -128,7 +129,7 @@ export function mountViewer(ctx: PageCtx): Feature {
     const x = V.list[V.i], from = thumbOf(x.url)?.closest<HTMLElement>('[data-act="view"]') ?? null, size = V.size;
     close(true);
     // The sheet's badge is a word, as a file's is its extension.
-    void ctx.wb.show({ key: `pic:${x.url}`, ic: '图', b: x.name, small: size, target: 'stage',
+    void ctx.wb.show({ key: `pic:${x.url}`, ic: tr('图', 'IMG'), b: x.name, small: size, target: 'stage',
       fill(view) { const im = document.createElement('img'); im.className = 'ql-stage'; im.src = x.url; im.alt = x.name; view.append(im); } }, from);
   }
   // esc on a modal dialog cancels it: the same way out as everything else.

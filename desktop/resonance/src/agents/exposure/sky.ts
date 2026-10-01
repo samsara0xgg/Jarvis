@@ -2,6 +2,9 @@
 import { COL, glyph, rgba, tint } from './glyph';
 import { clamp } from './motion';
 import { activityAt, type Trail } from './timeline';
+import { tr } from '../lang';
+// How wide the names' column is at the sky's right edge; the English names run longer.
+export const NAMES = tr(262, 306);
 export type Geo = {
   width: number; x0: number; x1: number; span: number; cell: number; rowH: number; band: [number, number]; minutes: boolean;
   y(i: number): number; yx(i: number, x: number): number; top: number; bottom: number;
@@ -26,10 +29,10 @@ const besides = (c: CanvasRenderingContext2D, g: Geo, card: DrawOptions['card'])
   c.beginPath(); c.rect(0, 0, g.width, g.bottom + 40); c.roundRect(card.x, card.y, card.w, card.h, 12); c.clip('evenodd');
 };
 // How long ago, in the axis's words: minutes, then hours, then days.
-export const ago = (m: number) => m < .5 ? '现在' : m < 60 ? `${Math.round(m)} 分前` : m < 600 ? `${+(m / 60).toFixed(1)} 小时前`
-  : m < 1440 ? `${Math.round(m / 60)} 小时前` : `${+(m / 1440).toFixed(1)} 天前`;
+export const ago = (m: number) => m < .5 ? tr('现在', 'Now') : m < 60 ? tr(`${Math.round(m)} 分前`, `${Math.round(m)} min ago`) : m < 600 ? tr(`${+(m / 60).toFixed(1)} 小时前`, `${+(m / 60).toFixed(1)} h ago`)
+  : m < 1440 ? tr(`${Math.round(m / 60)} 小时前`, `${Math.round(m / 60)} h ago`) : tr(`${+(m / 1440).toFixed(1)} 天前`, `${+(m / 1440).toFixed(1)} d ago`);
 // How long you were away, in the same words.
-const gone = (m: number) => m < 60 ? `${Math.max(1, Math.round(m))} 分` : m < 1440 ? `${+(m / 60).toFixed(m < 600 ? 1 : 0)} 小时` : `${+(m / 1440).toFixed(1)} 天`;
+const gone = (m: number) => m < 60 ? tr(`${Math.max(1, Math.round(m))} 分`, `${Math.max(1, Math.round(m))} min`) : m < 1440 ? tr(`${+(m / 60).toFixed(m < 600 ? 1 : 0)} 小时`, `${+(m / 60).toFixed(m < 600 ? 1 : 0)} h`) : tr(`${+(m / 1440).toFixed(1)} 天`, `${+(m / 1440).toFixed(1)} d`);
 const UI = '-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Helvetica Neue", sans-serif';
 const pl = (c: CanvasRenderingContext2D, a: number, b: number, f: (x: number) => number) => {
   c.moveTo(a, f(a)); for (let x = a + 4; x < b; x += 4) c.lineTo(x, f(x)); c.lineTo(b, f(b));
@@ -41,7 +44,7 @@ const MARKS = [5, 15, 30, 60, 120, 240, 480, 1440, 2880, 5760, 11520, 23040, 432
 // step of the ruler is a cell as wide as the next, and the recent stretch fills the sky from its oldest moment, not from
 // the next mark past it; older time goes on past the left edge in cells as wide, and the sky slides right (pan) to it.
 export function geometry(width: number, now: number, recent: number, all: number, height: number, bend: (i: number, x: number) => number, pan = 0): Geo {
-  const x0 = 30, x1 = width - 262, range = x1 - x0, ladder = [0, ...MARKS], reach = Math.max(all, recent);
+  const x0 = 30, x1 = width - NAMES, range = x1 - x0, ladder = [0, ...MARKS], reach = Math.max(all, recent);
   // How many cells back a moment is: whole cells to the mark before it, and the part of the next.
   const cells = (m: number) => {
     let i = 1; while (i < ladder.length - 1 && m > ladder[i]) i++;
@@ -69,7 +72,7 @@ function awayLines(c: CanvasRenderingContext2D, aways: { a: number; b: number | 
     if (xb - xa < 1 || xb < dev) continue;
     // The left end shows only once the exposure has developed that far back.
     const x0 = Math.max(dev, xa), y0 = g.bottom - 14, open = aw.b === null, edge = xa >= dev;
-    const label = `你不在 · ${gone(b - aw.a)}`;
+    const label = tr(`你不在 · ${gone(b - aw.a)}`, `Away · ${gone(b - aw.a)}`);
     c.font = `500 10px ${UI}`; c.textBaseline = 'middle';
     // The words sit on the bracket, in a break of its line, when they fit; else just left of it.
     const w = c.measureText(label).width, inside = xb - x0 > w + 24, mid = (x0 + xb) / 2;
@@ -207,10 +210,10 @@ export function drawSky(e: CanvasRenderingContext2D, t: { id: string }[], n: Rec
                     n.b === null &&
                     ((e.font = `600 10px "IBM Plex Mono", ui-monospace, monospace`),
                     // Only where the wait is long enough to hold its words clear of the head: the row says it anyway.
-                    c - s > e.measureText(`${Math.round(i - n.a)} 分`).width + 22) &&
+                    c - s > e.measureText(tr(`${Math.round(i - n.a)} 分`, `${Math.round(i - n.a)} min`)).width + 22) &&
                     ((e.fillStyle = rgba(COL.wait, 0.95)),
                     (e.textBaseline = `bottom`),
-                    e.fillText(`${Math.round(i - n.a)} 分`, s + 2, Yx(s) - 4)))
+                    e.fillText(tr(`${Math.round(i - n.a)} 分`, `${Math.round(i - n.a)} min`), s + 2, Yx(s) - 4)))
                 : n.k === `stop` &&
                   ((e.strokeStyle = `rgba(255,106,90,.28)`),
                   e.setLineDash([2, 5]),

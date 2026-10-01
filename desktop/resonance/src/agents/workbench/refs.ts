@@ -2,6 +2,7 @@
 // things to open. Pages, artifacts, PDFs and images want width and open on the stage; documents, code and diffs open
 // beside the conversation.
 import type { Item, Step } from '../../../electron/agents/types';
+import { plural, tr } from '../lang';
 
 export type Kind = 'art' | 'web' | 'pdf' | 'img' | 'file';
 export type Ref = { key: string; ref: string; kind: Kind; target: 'side' | 'stage'; label: string; url: boolean };
@@ -78,8 +79,8 @@ export function cardsHTML(text: string, edits: Step[]) {
     seen.add(r.key);
     const lines = mine.reduce((n, s) => n + (s.add ?? 0) + (s.del ?? 0), 0), p = stripLine(ref), dir = p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : '.';
     const ext = /\.[a-z0-9]+$/i.exec(p)?.[0].toLowerCase() ?? '';
-    cards.push({ r, b: label || p, sub: `${dir}${lines ? ` · 改了 ${lines} 行` : ''}`, ic: ext.length <= 6 ? ext : '.txt', fi: true, rank: 2, at });
+    cards.push({ r, b: label || p, sub: tr(`${dir}${lines ? ` · 改了 ${lines} 行` : ''}`, `${dir}${lines ? ` · ${plural(lines, 'line')} changed` : ''}`), ic: ext.length <= 6 ? ext : '.txt', fi: true, rank: 2, at });
   });
   cards.sort((a, b) => a.rank - b.rank || a.at - b.at);
-  return cards.slice(0, 3).map(c => `<button type="button" class="lnk" data-act="peek" data-ref="${esc(c.r.ref)}" data-label="${esc(c.r.label)}"><span class="ic${c.fi ? ' fi' : ''}">${esc(c.ic)}</span><span><b>${esc(c.b)}</b><small>${esc(c.sub)}</small></span><em>${c.r.target === 'stage' ? '舞台' : '并排'}</em></button>`).join('');
+  return cards.slice(0, 3).map(c => `<button type="button" class="lnk" data-act="peek" data-ref="${esc(c.r.ref)}" data-label="${esc(c.r.label)}"><span class="ic${c.fi ? ' fi' : ''}">${esc(c.ic)}</span><span><b>${esc(c.b)}</b><small>${esc(c.sub)}</small></span><em>${c.r.target === 'stage' ? tr('舞台', 'Stage') : tr('并排', 'Side')}</em></button>`).join('');
 }

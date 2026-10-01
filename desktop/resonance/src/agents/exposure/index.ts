@@ -2,11 +2,12 @@ import type { Item, Sess } from '../../../electron/agents/types';
 import { glyph, type St } from './glyph';
 import { clamp, dpr, easeInOut, esc, hash, lerp, reduced, smooth, spring, step } from './motion';
 import { Her } from './her';
-import { ago, drawSky, geometry } from './sky';
+import { ago, drawSky, geometry, NAMES } from './sky';
 import { started, timeline, type Trail, type Turn } from './timeline';
 import { mountAway } from './away';
 import { findField, hl, land, search, turnHits } from './find';
 import { mountWaiting } from './waiting';
+import { hhmm, plural, tr } from '../lang';
 
 type Hooks = {
   sessions(): Sess[]; items(id: string): Item[] | undefined; current(): string; chat(): boolean;
@@ -22,12 +23,12 @@ type Hooks = {
   menu(html: string, at: HTMLElement | { x: number; y: number }): void; closeMenu(): void;
 };
 const kbd = (key: string) => `<kbd>${key}</kbd>`;
-const words: Record<St, string> = { work: '在干活', pack: '在整理', wait: '等你', done: '做完了', read: '看过了', err: '停了' };
+const words: Record<St, string> = { work: tr('在干活', 'Working'), pack: tr('在整理', 'Compacting'), wait: tr('等你', 'Waiting on you'), done: tr('做完了', 'Done'), read: tr('看过了', 'Seen'), err: tr('停了', 'Stopped') };
 const status = (s: Sess): St => s.st === 'done' && !s.unread ? 'read' : s.st;
 const $ = <T extends HTMLElement = HTMLElement>(s: string, root: ParentNode) => root.querySelector(s) as T;
 const animate = (el: Element, frames: Keyframe[], duration: number, easing = 'cubic-bezier(.2,.8,.2,1)', more: KeyframeAnimationOptions = {}) => reduced.matches ? null : el.animate(frames, { duration, easing, ...more });
 // The label in front of a reply that is not its last words: still working, waiting on you, stopped.
-const LEAD: Partial<Record<Turn['kind'], string>> = { live: '还在做', wait: '等你', err: '停了' };
+const LEAD: Partial<Record<Turn['kind'], string>> = { live: tr('还在做', 'Still working'), wait: tr('等你', 'Waiting on you'), err: tr('停了', 'Stopped') };
 // A line under the sessions in the sky, stood on like a row: 新会话, the resting and the archived folds, an archived
 // session (back: its id, to take it back). Its key is where you stand while on it.
 type X = { key: string; label: string; arch?: boolean; back?: string; line: number; end?: boolean };
@@ -35,10 +36,10 @@ type X = { key: string; label: string; arch?: boolean; back?: string; line: numb
 export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: Hooks) {
   const chrome = document.createElement('div'); chrome.className = 'exposure';
   chrome.innerHTML = `<div class="bw-hz"></div><canvas class="bw-cv" aria-hidden="true"></canvas>
-    <div class="bw-stars" aria-label="会话地平线"></div>
-    <button type="button" class="bw-her" aria-label="Jarvis：下一个等你的"><canvas></canvas></button>
+    <div class="bw-stars" aria-label="${tr('会话地平线', 'Session horizon')}"></div>
+    <button type="button" class="bw-her" aria-label="${tr('Jarvis：下一个等你的', 'Jarvis: next waiting on you')}"><canvas></canvas></button>
     <button type="button" class="bw-pull" aria-expanded="false"></button>
-    <div class="bw-sky" role="region" aria-label="长曝光时间线" inert>
+    <div class="bw-sky" role="region" aria-label="${tr('长曝光时间线', 'Long Exposure timeline')}" inert>
       <div class="bw-rows"></div><div class="bw-axis"></div><div class="bw-gap" hidden></div><div class="bw-open" hidden><div class="pp-in"></div></div>
       <div class="bw-more"></div>
     </div>
@@ -96,7 +97,7 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
   const first = () => (searching() ? undefined : rows.find(s => s.id === hooks.current())?.id) ?? stops()[0] ?? '';
   const since = (s: Sess) => s.trace?.at(-1)?.at ?? hooks.items(s.id)?.find(it => it.k === 'req' && !it.done)?.at ?? s.updated;
   const waitMin = (s: Sess) => Math.max(0, Math.round((Date.now() - since(s)) / 60000));
-  const stateText = (s: Sess) => `${words[status(s)]}${s.st === 'wait' ? ` · ${waitMin(s) || '刚刚'}${waitMin(s) ? ' 分' : ''}` : ''}`;
+  const stateText = (s: Sess) => s.st === 'wait' ? tr(`${words[status(s)]} · ${waitMin(s) || '刚刚'}${waitMin(s) ? ' 分' : ''}`, `Waiting · ${waitMin(s) ? `${waitMin(s)} min` : 'just now'}`) : words[status(s)];
   const stateHTML = (s: Sess, tag = 'em') => `<${tag} class="st-${status(s)}">${stateText(s)}</${tag}>`;
   const skyHeight = () => 26 + (rows.length + xLines()) * 27 + opening.value + 34 + (more.hidden ? 0 : Number(more.dataset.h) || 0);
   // Under the words the trails bend down once, past their right edge, and stay down all the way back.
@@ -134,7 +135,7 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
   const starPosition = (i: number): [number, number] => {
     // Staggered by row, but the last one still lands by the time the sky is open.
     const p = easeInOut(clamp(sky.value * 1.3 - i * Math.min(.03, .3 / Math.max(1, rows.length - 1)))), [x, y] = waiting.at(rows[i]?.id ?? '');
-    return [lerp(x, width - 262, p), lerp(y, 82 + i * 27, p)];
+    return [lerp(x, width - NAMES, p), lerp(y, 82 + i * 27, p)];
   };
   // One the host could not read is tried again after a while, not on every refresh its own failure sets off.
   const tried = new Map<string, number>();
@@ -172,7 +173,7 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
       // ⌘K keeps the sessions that say it (or are named by it, or the host finds it in), the archived after the rest.
       const q = query.trim().toLowerCase();
       rows = [...all, ...archived].filter(s => saying(s, q).length || s.title.toLowerCase().includes(q) || found.has(s.id)); resting = folds = [];
-      xrows = rows.length ? [] : [{ key: 'x:none', label: `没找到「${query.trim()}」`, line: 0 }];
+      xrows = rows.length ? [] : [{ key: 'x:none', label: tr(`没找到「${query.trim()}」`, `No match for "${query.trim()}"`), line: 0 }];
     } else {
       // Read sessions whose last moment is before the stretch you have been working in rest behind one line, and past
       // fourteen sessions so do the ones read and idle an hour; a slide back to their time brings them in under the rest.
@@ -184,8 +185,8 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
       resting = folded.filter(s => !shown.includes(s));
       rows = [...all.filter(s => !folded.includes(s)), ...shown];
       const n = resting.length + archived.length;
-      xrows = [{ key: 'x:new', label: '＋ 新会话', line: 0 }];
-      if (openMore || n) xrows.push({ key: 'x:more', label: openMore ? '收起' : `还有 ${n} 个 ›`, line: 0, end: true });
+      xrows = [{ key: 'x:new', label: tr('＋ 新会话', '+ New session'), line: 0 }];
+      if (openMore || n) xrows.push({ key: 'x:more', label: openMore ? tr('收起', 'Close') : tr(`还有 ${n} 个 ›`, `${n} more ›`), line: 0, end: true });
       if (openMore) archived.forEach((s, j) => xrows.push({ key: `x:a:${s.id}`, label: s.title, arch: true, back: s.id, line: j + 1 }));
     }
     if (!stops().includes(selected)) { selected = first(); latest(); findStop(); }
@@ -204,10 +205,10 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
     more.hidden = searching();
     moreRows().forEach((b, i) => b.classList.toggle('sel', skyOn && selected === `m:${i}`));
     if (rowKey === key) return; rowKey = key;
-    rowsEl.innerHTML = rows.map((s, i) => `<button type="button" class="bw-row${selected === s.id ? ' sel' : ''}${hooks.current() === s.id ? ' on' : ''}${nameStop && selected === s.id ? ' nm' : ''}" data-session="${esc(s.id)}" style="top:${15 + i * 27}px" aria-label="${esc(s.title)}，${s.archived ? '已归档' : words[status(s)]}"><b>${hl(s.title, q)}</b>${count(s) ? `<em class="st-find">${count(s)} 处说过</em>` : ''}${s.archived ? '<em class="st-arch">已归档</em>' : stateHTML(s)}</button>`).join('')
+    rowsEl.innerHTML = rows.map((s, i) => `<button type="button" class="bw-row${selected === s.id ? ' sel' : ''}${hooks.current() === s.id ? ' on' : ''}${nameStop && selected === s.id ? ' nm' : ''}" data-session="${esc(s.id)}" style="top:${15 + i * 27}px" aria-label="${esc(s.title)}${tr('，', ', ')}${s.archived ? tr('已归档', 'Archived') : words[status(s)]}"><b>${hl(s.title, q)}</b>${count(s) ? tr(`<em class="st-find">${count(s)} 处说过</em>`, `<em class="st-find">${plural(count(s), 'match', 'matches')}</em>`) : ''}${s.archived ? tr('<em class="st-arch">已归档</em>', '<em class="st-arch">Archived</em>') : stateHTML(s)}</button>`).join('')
       // The lines under the sessions: 新会话 and taking an archived one back are the page's own acts.
-      + xrows.map(x => `<button type="button" class="bw-row bw-x${skyOn && selected === x.key ? ' sel' : ''}${x.arch ? ' arch' : ''}${x.end ? ' end' : x.line === 0 && xrows.some(y => y.end) ? ' start' : ''}" data-x="${esc(x.key)}"${x.key === 'x:new' ? ' data-act="new" title="⌘N"' : x.back ? ` data-act="unarchive" data-id="${esc(x.back)}"` : ''}${x.key === 'x:none' ? ' disabled' : ''} style="top:${15 + (rows.length + x.line) * 27}px"><span>${esc(x.label)}</span>${x.back ? '<span class="back">拿回来</span>' : ''}</button>`).join('');
-    starsEl.innerHTML = rows.map(s => { const at = waiting.place(s.id); return at === null ? '' : `<button type="button" data-session="${esc(s.id)}" aria-label="${esc(s.title)}，${words[status(s)]}" style="${at}" title="${esc(s.title)} · ${esc(s.summary)}"></button>`; }).join('');
+      + xrows.map(x => `<button type="button" class="bw-row bw-x${skyOn && selected === x.key ? ' sel' : ''}${x.arch ? ' arch' : ''}${x.end ? ' end' : x.line === 0 && xrows.some(y => y.end) ? ' start' : ''}" data-x="${esc(x.key)}"${x.key === 'x:new' ? ' data-act="new" title="⌘N"' : x.back ? ` data-act="unarchive" data-id="${esc(x.back)}"` : ''}${x.key === 'x:none' ? ' disabled' : ''} style="top:${15 + (rows.length + x.line) * 27}px"><span>${esc(x.label)}</span>${x.back ? tr('<span class="back">拿回来</span>', '<span class="back">Restore</span>') : ''}</button>`).join('');
+    starsEl.innerHTML = rows.map(s => { const at = waiting.place(s.id); return at === null ? '' : `<button type="button" data-session="${esc(s.id)}" aria-label="${esc(s.title)}${tr('，', ', ')}${words[status(s)]}" style="${at}" title="${esc(s.title)} · ${esc(s.summary)}"></button>`; }).join('');
     more.style.top = `${15 + (rows.length + xLines()) * 27}px`;
   }
   // A session found only in what was said stands on the newest sentence that says it; one its name matches, on its name.
@@ -243,16 +244,16 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
   const keys = (...ks: string[]) => `<p class="pp-k">${ks.filter(Boolean).map(k => `<span>${k}</span>`).join('')}</p>`;
   // A point you said something at: when, your words, the last thing it said in that turn, the next key.
   function said(s: Sess, t: Turn, at: number, n: number) {
-    const clock = t.at === undefined ? '时间未记录' : new Date(t.at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
+    const clock = t.at === undefined ? tr('时间未记录', 'Time not recorded') : hhmm(t.at);
     const q = searching() ? query.trim() : '';
-    return `<p class="pp-h"><span class="pp-t"><b>${clock}</b><small>第 ${at + 1} / ${n} 句</small></span></p><p class="pp-q">${hl(t.you, q)}</p>`
+    return `<p class="pp-h"><span class="pp-t"><b>${clock}</b><small>${tr('第', 'Message')} ${at + 1} / ${n}${tr(' 句', '')}</small></span></p><p class="pp-q">${hl(t.you, q)}</p>`
       + `<p class="pp-a${t.kind === 'sum' ? '' : ` r-${t.kind}`}"><i>${s.agent === 'claude' ? 'Claude' : 'Codex'}</i>${LEAD[t.kind] ? `<em>${LEAD[t.kind]}</em>` : ''}${hl(reply(s, t, q), q)}</p>`
-      + keys(at > 0 ? `${kbd('←')} 上一句` : '', `${kbd('→')} ${at < n - 1 ? '下一句' : '到名字'}`, `${kbd('⏎')} 进去`);
+      + keys(at > 0 ? tr(`${kbd('←')} 上一句`, `${kbd('←')} Previous`) : '', tr(`${kbd('→')} ${at < n - 1 ? '下一句' : '到名字'}`, `${kbd('→')} ${at < n - 1 ? 'Next' : 'To name'}`), tr(`${kbd('⏎')} 进去`, `${kbd('⏎')} Open`));
   }
   // The name stop, or a session you have not said anything to: where it stands now.
   function standing(s: Sess, n: number) {
-    return `<p class="pp-h"><span class="pp-t"><b>现在</b>${stateHTML(s, 'small')}</span></p><p class="pp-her"><i>她</i>${nameStop || n ? '' : '你还没跟它说过话。'}${hl(s.now || s.summary || '', searching() ? query.trim() : '')}</p>`
-      + (nameStop ? keys(n ? `${kbd('←')} 回到你说的` : '', `${kbd('→')} 进去`) : keys(`${kbd('→')} 到名字`));
+    return `<p class="pp-h"><span class="pp-t"><b>${tr('现在', 'Now')}</b>${stateHTML(s, 'small')}</span></p><p class="pp-her"><i>${tr('她', 'She')}</i>${nameStop || n ? '' : tr('你还没跟它说过话。', 'You haven\'t said anything to it yet. ')}${hl(s.now || s.summary || '', searching() ? query.trim() : '')}</p>`
+      + (nameStop ? keys(n ? tr(`${kbd('←')} 回到你说的`, `${kbd('←')} Your messages`) : '', tr(`${kbd('→')} 进去`, `${kbd('→')} Open`)) : keys(tr(`${kbd('→')} 到名字`, `${kbd('→')} To name`)));
   }
   function renderWords() {
     if (!skyOn) return;
@@ -271,7 +272,7 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
     // The last 110 px before now stay straight; the words never invade the names.
     pop.style.maxWidth = `${Math.min(480, Math.max(210, width - 420))}px`;
     wordWidth = pop.offsetWidth; wordHeight = pop.offsetHeight + 18;
-    const x = t?.at === undefined ? width - 262 : geo().xOf(t.at / 60000);
+    const x = t?.at === undefined ? width - NAMES : geo().xOf(t.at / 60000);
     targetLeft = clamp(x - 10, 24, width - 372 - wordWidth); targetTop = 48 + index() * 27;
     nearNow = t?.at === undefined || x > targetLeft + wordWidth - 12;
     pop.classList.toggle('sc', nearNow);
@@ -347,9 +348,9 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
   // field stands there instead.
   function pullLabel() {
     pull.hidden = skyOn && finding; findEl.hidden = !(skyOn && finding);
-    if (!pull.firstElementChild) pull.innerHTML = `<span class="pl-in">${kbd('←')}<span>长曝光</span></span><span class="pl-out" aria-hidden="true">${kbd('esc')}<span>收起</span></span>`;
+    if (!pull.firstElementChild) pull.innerHTML = `<span class="pl-in">${kbd('←')}<span>${tr('长曝光', 'Long Exposure')}</span></span><span class="pl-out" aria-hidden="true">${kbd('esc')}<span>${tr('收起', 'Close')}</span></span>`;
     pull.querySelector('.pl-in')!.setAttribute('aria-hidden', String(skyOn)); pull.querySelector('.pl-out')!.setAttribute('aria-hidden', String(!skyOn));
-    pull.setAttribute('aria-expanded', String(skyOn)); pull.setAttribute('aria-label', skyOn ? '收起长曝光' : '全部会话');
+    pull.setAttribute('aria-expanded', String(skyOn)); pull.setAttribute('aria-label', skyOn ? tr('收起长曝光', 'Close Long Exposure') : tr('全部会话', 'All sessions'));
   }
   // Back to where you were writing; while a request holds the composer shut, the window keeps the keys.
   function settle() {
@@ -390,7 +391,7 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
         // A line under the sessions has no sentences: → and ⏎ do its one thing.
         if (onX()) { if (e.key !== 'ArrowLeft' && !e.repeat) activate(); return; }
         if (e.key === 'ArrowLeft') {
-          if (!turns.length) { hooks.toast('你还没跟它说过话'); return; }
+          if (!turns.length) { hooks.toast(tr('你还没跟它说过话', 'You haven\'t said anything to it yet')); return; }
           if (nameStop) { nameStop = false; qi = turns.length - 1; } else qi = qi < 0 ? turns.length - 1 : Math.max(0, qi - 1);
           time = point()?.at ?? time;
           if (qi !== was) hooks.blip(1);
@@ -515,7 +516,7 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
       axis.style.top = `${foot - 26}px`;
       const labels = g.guides.map(ago), guidesKey = labels.join(',');
       if (axisKey !== guidesKey) {
-        axisKey = guidesKey; axis.innerHTML = labels.map(label => `<span>${label}</span>`).join('') + '<span class="nowl">现在</span>';
+        axisKey = guidesKey; axis.innerHTML = labels.map(label => `<span>${label}</span>`).join('') + tr('<span class="nowl">现在</span>', '<span class="nowl">Now</span>');
         axisW = [...axis.children].map(el => { const r = document.createRange(); r.selectNodeContents(el); return r.getBoundingClientRect().width; });
       }
       // The axis steps aside where the needle writes its own time, in a pill as wide as its words (sky.ts draws it).
@@ -524,12 +525,12 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
       const pill = stand ? 0 : c.measureText(ago(Math.max(0, now - g.tOf(needle.value)))).width + 12;
       const writes = stand ? -1e3 : clamp(needle.value, g.x0 + pill / 2, g.x1 - pill / 2);
       // Where the cells are too narrow for every label, every other one (counting back from now) keeps its words.
-      const every = Math.ceil(64 / g.cell);
+      const every = Math.ceil(tr(64, Math.max(56, ...axisW) + 8) / g.cell);
       // Slid back in time, the words fade out toward an edge with more time past it.
       [...axis.children].forEach((el, i) => {
         const tick = el as HTMLElement, x = g.guides[i] === undefined ? g.xOf(now) : g.xOf(now - g.guides[i]);
         const edge = Math.min(clamp((x - g.x0 - (g.panMax - g.pan > 8 ? 30 : -30)) / 24), clamp((g.x1 + 30 - x) / 24));
-        tick.style.left = `${x - 30}px`; tick.style.opacity = String(Math.min(edge, g.guides[i] !== undefined && (i + 1) % every ? 0 : clamp((Math.abs(x - writes) - pill / 2 - (axisW[i] || 40) / 2 - 4) / 14)));
+        tick.style.left = `${x - tr(30, 36)}px`; tick.style.opacity = String(Math.min(edge, g.guides[i] !== undefined && (i + 1) % every ? 0 : clamp((Math.abs(x - writes) - pill / 2 - (axisW[i] || 40) / 2 - 4) / 14)));
       });
       // The names start a little right of the heads, so a row's star stands before its name, not on its edge.
       rowsEl.querySelectorAll<HTMLElement>('.bw-row').forEach((el, i) => { if (!el.classList.contains('end')) el.style.left = `${g.x1 + 12}px`; el.style.opacity = String(1 - Math.min(.4, Math.abs(i - focus.value) * .1)); });
@@ -629,6 +630,6 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
       refresh();
     },
     // The composer's hint for ⌥↓, with nothing written.
-    hint: () => ta.value ? '' : '<span><kbd>⌥</kbd><kbd>↓</kbd>下一个等你的</span>',
+    hint: () => ta.value ? '' : tr('<span><kbd>⌥</kbd><kbd>↓</kbd>下一个等你的</span>', '<span><kbd>⌥</kbd><kbd>↓</kbd>Next waiting</span>'),
   };
 }

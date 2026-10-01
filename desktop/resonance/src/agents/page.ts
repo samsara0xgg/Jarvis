@@ -29,6 +29,7 @@ import './exposure/exposure.css';
 // Features after the page's own styles, so a feature's rule stands over the page's.
 import { mountFrom } from './from';
 import { mountSettings } from './settings';
+import { en, plural, stamp, tr } from './lang';
 
 declare global { interface Window { agents?: {
   presence?(enabled: boolean, ids: string[]): void; onNext?(callback: () => void): () => void; onOpen?(callback: (id: string) => void): () => void;
@@ -63,7 +64,7 @@ async function call<T = Record<string, unknown>>(route: string, body?: unknown, 
   const r = await fetch(API + route, { method, headers: body === undefined ? undefined : { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
   const j = await r.json().catch(() => ({}));
   // `need` rides along on the error: what the host says would answer it ('force', 'auth').
-  if (!r.ok) throw Object.assign(new Error(typeof j.error === 'string' ? j.error : `后台答不上来（${r.status}）`), typeof j.need === 'string' ? { need: j.need } : {});
+  if (!r.ok) throw Object.assign(new Error(typeof j.error === 'string' ? j.error : tr(`后台答不上来（${r.status}）`, `The agent host did not answer (${r.status})`)), typeof j.need === 'string' ? { need: j.need } : {});
   return j as T;
 }
 const toastEl = $('.toast');
@@ -81,19 +82,16 @@ function toast(text: string, bad = false) {
 const tryCall = (route: string, body?: unknown, method?: string) => call(route, body, method).catch(e => { toast(e instanceof Error ? e.message : String(e), true); return null; });
 
 // ---------- words ----------
-const STATE: Record<St, string> = { work: '在干活', pack: '在压缩', wait: '等你', done: '做完了', err: '出错了' };
+const STATE: Record<St, string> = { work: tr('在干活', 'Working'), pack: tr('在压缩', 'Compacting'), wait: tr('等你', 'Waiting on you'), done: tr('做完了', 'Done'), err: tr('出错了', 'Error') };
 const NAME: Record<Agent, string> = { claude: 'Claude Code', codex: 'Codex' };
 const home = (p: string) => p.replace(/^\/Users\/[^/]+/, '~');
 function age(ms: number) {
   const m = Math.floor((Date.now() - ms) / 60000);
-  return m < 1 ? '刚刚' : m < 60 ? `${m} 分钟` : m < 1440 ? `${Math.floor(m / 60)} 小时` : `${Math.floor(m / 1440)} 天`;
+  return m < 1 ? tr('刚刚', 'just now') : m < 60 ? tr(`${m} 分钟`, `${m} min`) : m < 1440 ? tr(`${Math.floor(m / 60)} 小时`, `${Math.floor(m / 60)} h`) : tr(`${Math.floor(m / 1440)} 天`, `${Math.floor(m / 1440)} d`);
 }
 // When an answer came: the clock today, the date in front on other days.
-function clock(at: number) {
-  const d = new Date(at), t = d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
-  return d.toDateString() === new Date().toDateString() ? t : `${d.getMonth() + 1}月${d.getDate()}日 ${t}`;
-}
-function ago(since?: number) { const t = (Date.now() - (since ?? Date.now())) / 1000; return t < 60 ? `${Math.max(1, Math.round(t))} 秒` : `${Math.round(t / 60)} 分钟`; }
+const clock = stamp;
+function ago(since?: number) { const t = (Date.now() - (since ?? Date.now())) / 1000; return t < 60 ? tr(`${Math.max(1, Math.round(t))} 秒`, `${Math.max(1, Math.round(t))} s`) : tr(`${Math.round(t / 60)} 分钟`, `${Math.round(t / 60)} min`); }
 
 // ---------- markdown, the part agents use, block by block so a stream only redraws its last block ----------
 // Links, addresses and paths in the text open in the workbench (workbench/refs.ts).
@@ -149,14 +147,14 @@ const I = {
   copy: svg('<rect x="5.5" y="5.5" width="8" height="8" rx="2"/><path d="M10.5 5.5v-2a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2"/>', 12),
   check: svg('<path d="m3.5 8.5 3 3 6-7"/>', 12, ' stroke-width="1.8"'),
 };
-const STEP_K: Record<Step['k'], string> = { read: '读', edit: '改', bash: '跑', search: '搜', agent: '子任务', web: '网页', tool: '工具', say: '', think: '想' };
+const STEP_K: Record<Step['k'], string> = { read: tr('读', 'Read'), edit: tr('改', 'Edit'), bash: tr('跑', 'Run'), search: tr('搜', 'Search'), agent: tr('子任务', 'Subtask'), web: tr('网页', 'Web'), tool: tr('工具', 'Tool'), say: '', think: tr('想', 'Think') };
 const who = (a: Agent) => `<span class="who ${a}">${a === 'claude' ? 'Claude' : 'Codex'}</span>`;
 const diffHTML = (d: [string, string][]) => `<div class="diff">${d.map(([s, t]) => `<code class="${s === '+' ? 'add' : s === '-' ? 'del' : ''}"><b>${s === ' ' ? '' : s === '-' ? '−' : '+'}</b><span>${esc(t)}</span></code>`).join('')}</div>`;
 function stepsSummary(steps: Step[]) {
   const n = (k: Step['k']) => steps.filter(s => s.k === k).length;
   const add = steps.reduce((a, s) => a + (s.add ?? 0), 0), del = steps.reduce((a, s) => a + (s.del ?? 0), 0);
-  return [n('read') + n('search') ? `读了 ${n('read') + n('search')} 个` : '', n('edit') ? `改了 ${n('edit')} 个 <span class="p">+${add}</span> <span class="m">−${del}</span>` : '',
-    n('bash') ? `跑了 ${n('bash')} 条` : '', n('agent') ? `${n('agent')} 个子任务` : '', n('web') ? `查了 ${n('web')} 次网页` : '', n('tool') ? `用了 ${n('tool')} 个工具` : '']
+  return [n('read') + n('search') ? tr(`读了 ${n('read') + n('search')} 个`, `Read ${plural(n('read') + n('search'), 'file')}`) : '', n('edit') ? tr(`改了 ${n('edit')} 个 <span class="p">+${add}</span> <span class="m">−${del}</span>`, `Edited ${plural(n('edit'), 'file')} <span class="p">+${add}</span> <span class="m">−${del}</span>`) : '',
+    n('bash') ? tr(`跑了 ${n('bash')} 条`, `Ran ${plural(n('bash'), 'command')}`) : '', n('agent') ? tr(`${n('agent')} 个子任务`, plural(n('agent'), 'subtask')) : '', n('web') ? tr(`查了 ${n('web')} 次网页`, plural(n('web'), 'web lookup')) : '', n('tool') ? tr(`用了 ${n('tool')} 个工具`, `Used ${plural(n('tool'), 'tool')}`) : '']
     .filter(Boolean).join(' · ');
 }
 
@@ -280,7 +278,15 @@ const byId = (id: string) => app.ss.find(s => s.id === id);
 const cur = () => byId(app.cur);
 const side = $('.side', win), list = $('.s-list', side), herT = $('.her-t', side), find = $<HTMLInputElement>('#find'), archLink = $('.arch-link', side);
 const head = $('.m-head', win), hMk = $('.h-mk', head), hT = $('.h-t', head), hMeta = $('.h-meta', head);
-const hostEl = $('.host', win), comp = $('.composer', win), ta = $<HTMLTextAreaElement>('#msg'), cMenu = $('.c-menu', comp), cFiles = $('.c-files', comp), tl = $('.t-l', comp), tr = $('.t-r', comp);
+const hostEl = $('.host', win), comp = $('.composer', win), ta = $<HTMLTextAreaElement>('#msg'), cMenu = $('.c-menu', comp), cFiles = $('.c-files', comp), tl = $('.t-l', comp), tRight = $('.t-r', comp);
+// English runs longer than the room beside the key hints: the hints give way when the placeholder would run under them.
+const hintCv = document.createElement('canvas').getContext('2d')!;
+function fitHint() {
+  if (!en || !ta.clientWidth) return;
+  hintCv.font = getComputedStyle(ta).font;
+  hintEl.style.visibility = hintCv.measureText(ta.placeholder).width + hintEl.offsetWidth + 32 > ta.clientWidth ? 'hidden' : '';
+}
+new ResizeObserver(fitHint).observe(ta);
 const bnEl = $('.bn', comp), hintEl = $('.hint', comp), cRows = $('.c-rows', comp);
 const pop = $('.pop', win), sndBtn = $('.snd', win), offEl = $('.w-off', win);
 
@@ -335,15 +341,15 @@ function groups(): [string, Sess[]][] {
   if (app.by === 'project') return [...new Set(vs.map(s => s.project))].map(p => [p, vs.filter(s => s.project === p)]);
   const rest = vs.filter(s => !s.pinned && !s.parked);
   return ([
-    ['置顶', vs.filter(s => s.pinned && !s.parked)],
-    ['轮到你', rest.filter(yourTurn)],
-    ['在干活', rest.filter(s => !yourTurn(s) && (s.st === 'work' || s.st === 'pack'))],
-    ['做完了', rest.filter(s => !yourTurn(s) && (s.st === 'done' || s.st === 'err' || s.st === 'wait'))],
-    ['先放着', vs.filter(s => s.parked)],
+    [tr('置顶', 'Pinned'), vs.filter(s => s.pinned && !s.parked)],
+    [tr('轮到你', 'Waiting on you'), rest.filter(yourTurn)],
+    [tr('在干活', 'Working'), rest.filter(s => !yourTurn(s) && (s.st === 'work' || s.st === 'pack'))],
+    [tr('做完了', 'Done'), rest.filter(s => !yourTurn(s) && (s.st === 'done' || s.st === 'err' || s.st === 'wait'))],
+    [tr('先放着', 'Parked'), vs.filter(s => s.parked)],
   ] as [string, Sess[]][]).filter(g => g[1].length);
 }
 const order = () => groups().flatMap(g => g[1].map(s => s.id));
-const label = (s: Sess) => s.term ? '在终端里' : s.stopped ? '停了' : STATE[s.st];
+const label = (s: Sess) => s.term ? tr('在终端里', 'In Terminal') : s.stopped ? tr('停了', 'Stopped') : STATE[s.st];
 
 const rowEls = new Map<string, HTMLElement>(), grpEls = new Map<string, HTMLElement>();
 let quiet = true, stillUntil = 0; // the first draw, filtering and search do not animate the list, nor a change that is not news
@@ -360,10 +366,10 @@ function rowEl(s: Sess) {
 function renderSide() {
   const live = app.ss.filter(s => !s.archived && !s.parked), nWait = live.filter(yourTurn).length, nWork = live.filter(s => s.st === 'work' || s.st === 'pack').length;
   patch(herT, nWait
-    ? `<b class="warm">${nWait} 个轮到你</b><span>${nWork ? `${nWork} 个在干活 · ` : ''}点我去下一个</span>`
-    : nWork ? `<b>${nWork} 个在干活</b><span>没有要你管的</span>` : live.length ? '<b>都做完了</b><span>想到什么就开一个新的</span>' : '<b>还没有会话</b><span>点「新会话」开一个</span>');
+    ? `<b class="warm">${nWait} ${tr('个轮到你', 'waiting on you')}</b><span>${nWork ? tr(`${nWork} 个在干活 · `, `${nWork} working · `) : ''}${tr('点我去下一个', 'Click me for the next one')}</span>`
+    : nWork ? `<b>${nWork} ${tr('个在干活', 'working')}</b><span>${tr('没有要你管的', 'Nothing needs you')}</span>` : live.length ? `<b>${tr('都做完了', 'All done')}</b><span>${tr('想到什么就开一个新的', 'Start a new one when something comes up')}</span>` : `<b>${tr('还没有会话', 'No sessions yet')}</b><span>${tr('点「新会话」开一个', 'Click "New session" to start one')}</span>`);
   side.querySelectorAll<HTMLElement>('.seg button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.v === app.filter)));
-  patch($('.by', side), app.by === 'state' ? '按状态' : '按项目');
+  patch($('.by', side), app.by === 'state' ? tr('按状态', 'By status') : tr('按项目', 'By project'));
   $('.new', side).classList.toggle('is-on', app.view === 'new');
   archLink.classList.toggle('is-on', app.view === 'archive');
   patch($('em', archLink), String(archived().length));
@@ -379,9 +385,9 @@ function renderSide() {
       const el = rowEl(s);
       cls(el, `row${s.id === app.cur && app.view === 'chat' ? ' is-on' : ''}${s.st === 'wait' && !s.term ? ' is-ask' : ''}${s.unread ? ' is-new' : ''}${s.st === 'err' ? ' is-err' : ''}`);
       patch(el.children[1], `<b>${esc(s.title)}</b><span class="age">${s.unread ? '<i class="nd"></i>' : ''}${age(s.updated)}</span>`
-        + `<span class="sum">${who(s.agent)}<span class="dot">·</span><span class="t">${esc(s.term ? '在终端里' : s.summary)}</span></span>`);
-      patch(el.children[2], `<i data-act="pin" data-id="${s.id}" data-tip="${s.pinned ? '取消置顶' : '置顶'}"${s.pinned ? ' class="on"' : ''}>${I.pin}</i>`
-        + `<i data-act="park" data-id="${s.id}" data-tip="${s.parked ? '拿回来' : '先放着'}"${s.parked ? ' class="on"' : ''}>${I.park}</i><i data-act="archive" data-id="${s.id}" data-tip="归档">${I.box}</i>`);
+        + `<span class="sum">${who(s.agent)}<span class="dot">·</span><span class="t">${esc(s.term ? tr('在终端里', 'In Terminal') : s.summary)}</span></span>`);
+      patch(el.children[2], `<i data-act="pin" data-id="${s.id}" data-tip="${s.pinned ? tr('取消置顶', 'Unpin') : tr('置顶', 'Pin')}"${s.pinned ? ' class="on"' : ''}>${I.pin}</i>`
+        + `<i data-act="park" data-id="${s.id}" data-tip="${s.parked ? tr('拿回来', 'Unpark') : tr('先放着', 'Park')}"${s.parked ? ' class="on"' : ''}>${I.park}</i><i data-act="archive" data-id="${s.id}" data-tip="${tr('归档', 'Archive')}">${I.box}</i>`);
       want.push(el);
     }
   }
@@ -389,7 +395,7 @@ function renderSide() {
   while (list.children.length > want.length) { const x = list.lastElementChild as HTMLElement; for (const a of x.getAnimations()) a.cancel(); x.style.pointerEvents = ''; x.remove(); }
   const empty = $('.empty', side);
   empty.hidden = want.length > 0 || !app.ss.some(s => !s.archived);
-  patch(empty, '没有对得上的会话。');
+  patch(empty, tr('没有对得上的会话。', 'No matching sessions.'));
   // FLIP: every row that moved starts where it was and springs to where it is; a new one drops in.
   if (glide) for (const el of want) {
     const b = before.get(el), t = el.getBoundingClientRect().top;
@@ -404,17 +410,17 @@ function renderHead() {
   const s = cur(), chat = app.view === 'chat' && !!s;
   head.classList.toggle('plain', !chat);
   if (!chat) {
-    patch(hMk, ''); patch(hT, `<b>${app.view === 'archive' ? '已归档' : '没有开着的会话'}</b>`);
-    patch(hMeta, app.view === 'archive' ? '<span>还能搜到，随时能拿回来</span>' : '<span>⌘N 落下一张纸条，写一句要它做什么</span>');
+    patch(hMk, ''); patch(hT, `<b>${app.view === 'archive' ? tr('已归档', 'Archived') : tr('没有开着的会话', 'No open sessions')}</b>`);
+    patch(hMeta, app.view === 'archive' ? tr('<span>还能搜到，随时能拿回来</span>', '<span>Still searchable, restore any time</span>') : `<span>⌘N ${tr('落下一张纸条，写一句要它做什么', 'drops a note: one line on what you want done')}</span>`);
     return;
   }
   patch(hMk, star(s.id, 13));
-  if (app.renaming) { if (patch(hT, `<input id="rename" class="rename" value="${esc(s.title)}" aria-label="会话名字" autocomplete="off">`)) { const r = $<HTMLInputElement>('#rename', hT); r.focus(); r.select(); } }
-  else patch(hT, `<b data-act="rename" data-tip="点一下改名">${esc(s.title)}</b>`);
-  patch(hMeta, `${who(s.agent)}<span class="dot">·</span><span title="${esc(s.cwd)}">${esc(s.project)}</span><span class="dot">·</span><span class="br">⎇ ${esc(s.branch || '—')}</span><span class="dot">·</span><span class="st st-${s.st}">${label(s)}</span>`);
+  if (app.renaming) { if (patch(hT, `<input id="rename" class="rename" value="${esc(s.title)}" aria-label="${tr('会话名字', 'Session name')}" autocomplete="off">`)) { const r = $<HTMLInputElement>('#rename', hT); r.focus(); r.select(); } }
+  else patch(hT, `<b data-act="rename" data-tip="${tr('点一下改名', 'Click to rename')}">${esc(s.title)}</b>`);
+  patch(hMeta, `${who(s.agent)}<span class="dot">·</span><span class="pj" title="${esc(s.cwd)}">${esc(s.project)}</span><span class="dot">·</span><span class="br">⎇ ${esc(s.branch || '—')}</span><span class="dot">·</span><span class="st st-${s.st}">${label(s)}</span>`);
   const tb = $('[data-act="terminal"]', head);
-  patch($('span', tb), s.term ? '拿回来' : '在终端打开');
-  if (s.term) delete tb.dataset.tip; else tb.dataset.tip = `在 Ghostty 里接着聊 · ${s.agent === 'codex' ? 'codex resume' : 'claude --resume'}`;
+  patch($('span', tb), s.term ? tr('拿回来', 'Take back') : tr('在终端打开', 'Open in Terminal'));
+  if (s.term) delete tb.dataset.tip; else tb.dataset.tip = tr(`在 Ghostty 里接着聊 · ${s.agent === 'codex' ? 'codex resume' : 'claude --resume'}`, `Continue in Ghostty · ${s.agent === 'codex' ? 'codex resume' : 'claude --resume'}`);
 }
 
 // ---------- the conversation: one kept per session, so switching is instant and each keeps its place ----------
@@ -425,7 +431,7 @@ function convOf(id: string): Conv {
   if (!c) {
     const root = document.createElement('div');
     root.className = 'conv';
-    root.innerHTML = '<div class="c-in"><button type="button" class="older" data-act="older" hidden></button><div class="c-items"></div><div class="it md live" hidden></div><div class="c-queue"></div><div class="ask" hidden></div><div class="now" hidden><span class="nm"></span><span class="shine"></span><span class="el"></span><kbd>esc</kbd><span class="k">打断</span></div><p class="bg" hidden></p><div class="banner" hidden></div></div>';
+    root.innerHTML = `<div class="c-in"><button type="button" class="older" data-act="older" hidden></button><div class="c-items"></div><div class="it md live" hidden></div><div class="c-queue"></div><div class="ask" hidden></div><div class="now" hidden><span class="nm"></span><span class="shine"></span><span class="el"></span><kbd>esc</kbd><span class="k">${tr('打断', 'Interrupt')}</span></div><p class="bg" hidden></p><div class="banner" hidden></div></div>`;
     c = { root, items: $('.c-items', root), live: $('.live', root), queue: $('.c-queue', root), now: $('.now', root), bg: $('.bg', root), term: $('.banner', root), older: $('.older', root), ask: $('.ask', root), built: false, scroll: -1 };
     convs.set(id, c);
   }
@@ -468,50 +474,50 @@ function renderMain() {
 }
 
 function reqHead(r: Req) {
-  if (r.tool === 'Bash') return '要你批准 · 跑一条命令';
-  if (r.tool === 'Edit') return '要你批准 · 改一个文件';
-  if (r.tool === 'Plan') return '计划写好了';
-  return `要你批准 · ${r.tool === 'Tool' ? esc(r.name) : r.tool === 'Form' ? esc(r.server) : ''}`;
+  if (r.tool === 'Bash') return tr('要你批准 · 跑一条命令', 'Needs your approval · run a command');
+  if (r.tool === 'Edit') return tr('要你批准 · 改一个文件', 'Needs your approval · edit a file');
+  if (r.tool === 'Plan') return tr('计划写好了', 'Plan ready');
+  return tr(`要你批准 · ${r.tool === 'Tool' ? esc(r.name) : r.tool === 'Form' ? esc(r.server) : ''}`, `Needs your approval · ${r.tool === 'Tool' ? esc(r.name) : r.tool === 'Form' ? esc(r.server) : ''}`);
 }
 function reqRecord(r: Req) {
   if (r.tool === 'Ask') return r.qs.map(q => q.q).join(' · ');
-  if (r.tool === 'Plan') return '计划';
+  if (r.tool === 'Plan') return tr('计划', 'Plan');
   if (r.tool === 'Bash') return r.cmd;
-  if (r.tool === 'Edit') return `改 ${r.file}`;
+  if (r.tool === 'Edit') return tr(`改 ${r.file}`, `Edit ${r.file}`);
   return r.tool === 'Form' ? r.server : r.name;
 }
 // A message goes through the features that draw what is under it (messages.ts).
 const said = (s: Sess, it: Item & { k: 'you' | 'it' }, i: number, html: string) => features.reduce((h, f) => f.message?.(s, it, i, h) ?? h, html);
 function itemHTML(s: Sess, it: Exclude<Item, { k: 'steps' }>, i = -1) {
   if (it.k === 'you') return said(s, it, i, `<div class="you">${it.files?.length ? `<span class="att">${it.files.map(picHTML).join('')}</span>` : ''}${esc(it.text)}</div>`);
-  if (it.k === 'it') { const cards = i >= 0 ? cardsHTML(it.text, editsBefore(app.items.get(s.id) ?? [], i)) : ''; return said(s, it, i, `<div class="it">${features.reduce((h, f) => f.answer?.(s, it, i, h) ?? h, withCopy(md(it.text)))}${cards ? `<div class="lnks">${cards}</div>` : ''}<div class="it-acts"><button type="button" class="ia" data-act="copy" data-tip="复制" aria-label="复制">${I.copy}</button>${it.at ? `<time>${clock(it.at)}</time>` : ''}</div></div>`); }
+  if (it.k === 'it') { const cards = i >= 0 ? cardsHTML(it.text, editsBefore(app.items.get(s.id) ?? [], i)) : ''; return said(s, it, i, `<div class="it">${features.reduce((h, f) => f.answer?.(s, it, i, h) ?? h, withCopy(md(it.text)))}${cards ? `<div class="lnks">${cards}</div>` : ''}<div class="it-acts"><button type="button" class="ia" data-act="copy" data-tip="${tr('复制', 'Copy')}" aria-label="${tr('复制', 'Copy')}">${I.copy}</button>${it.at ? `<time>${clock(it.at)}</time>` : ''}</div></div>`); }
   if (it.k === 'note') return `<p class="note">${esc(it.text)}</p>`;
-  if (it.k === 'plan') return `<div class="plan"><span class="p-h">计划</span>${it.todos.map(([t, d]) => `<span class="todo d${d}"><i></i>${esc(t)}</span>`).join('')}</div>`;
+  if (it.k === 'plan') return `<div class="plan"><span class="p-h">${tr('计划', 'Plan')}</span>${it.todos.map(([t, d]) => `<span class="todo d${d}"><i></i>${esc(t)}</span>`).join('')}</div>`;
   const r = it.req, a = NAME[s.agent], b = app.busy.get(s.id), busy = b?.req === r.id ? b.key : '';
   const on = (k: string) => busy === k ? ' is-busy' : '', off = busy ? ' disabled' : '';
-  if (it.done) return `<p class="note done"><span class="ok">${/^(拒绝|没回答)/.test(it.done) ? '✕' : '✓'}</span>${esc(reqRecord(r))}<span class="how">${esc(it.done)}</span></p>`;
+  if (it.done) return `<p class="note done"><span class="ok">${/^(拒绝|没回答|Denied|Not answered)/.test(it.done) ? '✕' : '✓'}</span>${esc(reqRecord(r))}<span class="how">${esc(it.done)}</span></p>`;
   if (r.tool === 'Ask') {
     const picked = app.asked.get(r.id) ?? [], simple = r.qs.length === 1 && !r.qs[0].multi;
-    return `<div class="req ask${busy ? ' busy' : ''}"><span class="r-h">${esc(a)} 问你</span>${r.qs.map((q, qi) => `<div class="q-block"><p class="q">${esc(q.q)}</p><div class="opts">${q.opts.map(([l, d], k) =>
+    return `<div class="req ask${busy ? ' busy' : ''}"><span class="r-h">${esc(a)} ${tr('问你', 'asks you')}</span>${r.qs.map((q, qi) => `<div class="q-block"><p class="q">${esc(q.q)}</p><div class="opts">${q.opts.map(([l, d], k) =>
       `<button type="button" class="opt${picked[qi]?.includes(l) ? ' on' : ''}${on(`opt:${l}`)}" data-act="${simple ? 'answer' : 'pickopt'}" data-q="${qi}" data-v="${esc(l)}" data-req="${esc(r.id)}"${off}><i>${k + 1}</i><span><b>${esc(l)}</b>${d ? `<small>${esc(d)}</small>` : ''}</span></button>`).join('')}</div></div>`).join('')}`
-      + (simple ? '' : `<div class="choice"><button type="button" class="btn warm${on('all')}" data-act="answerall" data-req="${esc(r.id)}"${busy || !r.qs.every((_, qi) => picked[qi]?.length) ? ' disabled' : ''}>好了</button></div>`)
-      + `<p class="hint">${simple ? '按数字键选，' : ''}<kbd>esc</kbd> 不回答，也可以直接在下面打字回答。</p></div>`;
+      + (simple ? '' : `<div class="choice"><button type="button" class="btn warm${on('all')}" data-act="answerall" data-req="${esc(r.id)}"${busy || !r.qs.every((_, qi) => picked[qi]?.length) ? ' disabled' : ''}>${tr('好了', 'Done')}</button></div>`)
+      + `<p class="hint">${simple ? tr('按数字键选，', 'Press a number to choose. ') : ''}<kbd>esc</kbd> ${tr('不回答，也可以直接在下面打字回答。', 'skips it, or just type your answer below.')}</p></div>`;
   }
   if (r.tool === 'Plan') return `<div class="req${busy ? ' busy' : ''}"><span class="r-h">${reqHead(r)}</span><div class="plan-text">${md(r.plan)}</div><div class="choice">`
-    + `<button type="button" class="btn${on('deny')}" data-act="deny" data-req="${esc(r.id)}"${off}>再想想<kbd>esc</kbd></button><button type="button" class="btn warm${on('allow')}" data-act="allow" data-req="${esc(r.id)}"${off}>就这么做<kbd>↵</kbd></button></div>`
-    + '<p class="hint">点「再想想」前可以在下面写哪里要改。</p></div>';
+    + `<button type="button" class="btn${on('deny')}" data-act="deny" data-req="${esc(r.id)}"${off}>${tr('再想想', 'Think again')}<kbd>esc</kbd></button><button type="button" class="btn warm${on('allow')}" data-act="allow" data-req="${esc(r.id)}"${off}>${tr('就这么做', 'Go ahead')}<kbd>↵</kbd></button></div>`
+    + `<p class="hint">${tr('点「再想想」前可以在下面写哪里要改。', 'Before you click "Think again", write below what to change.')}</p></div>`;
   const what = r.tool === 'Bash' ? `<pre class="cmd"><span>${esc(home(r.cwd))} $</span> ${esc(r.cmd)}</pre>`
     : r.tool === 'Edit' ? `<div class="file">${I.doc}${esc(r.file)}</div>${r.diff.length ? diffHTML(r.diff) : ''}`
     : `<pre class="cmd">${esc(r.tool === 'Form' ? [r.url ?? '', ...r.fields.map(f => `· ${f.title}`)].filter(Boolean).join('\n') : r.detail)}</pre>`;
   return `<div class="req${busy ? ' busy' : ''}"><span class="r-h">${reqHead(r)}</span>${r.why ? `<p class="why">${esc(r.why)}</p>` : ''}${what}<div class="choice">`
-    + `<button type="button" class="btn${on('deny')}" data-act="deny" data-req="${esc(r.id)}"${off}>拒绝<kbd>esc</kbd></button>${r.tool !== 'Form' && r.always ? `<button type="button" class="btn${on('always')}" data-act="always" data-req="${esc(r.id)}"${off}>${esc(r.always)}</button>` : ''}`
-    + `<button type="button" class="btn warm${on('allow')}" data-act="allow" data-req="${esc(r.id)}"${off}>允许<kbd>↵</kbd></button></div></div>`;
+    + `<button type="button" class="btn${on('deny')}" data-act="deny" data-req="${esc(r.id)}"${off}>${tr('拒绝', 'Deny')}<kbd>esc</kbd></button>${r.tool !== 'Form' && r.always ? `<button type="button" class="btn${on('always')}" data-act="always" data-req="${esc(r.id)}"${off}>${esc(r.always)}</button>` : ''}`
+    + `<button type="button" class="btn warm${on('allow')}" data-act="allow" data-req="${esc(r.id)}"${off}>${tr('允许', 'Allow')}<kbd>↵</kbd></button></div></div>`;
 }
 // A picture shows itself and opens large; one the host kept no copy of stays a named chip.
-const picHTML = (f: Pic) => f.img ? `<button type="button" class="pic" data-act="view" data-tip="看大图"><img src="${API}/images/${esc(f.img)}" alt="${esc(f.name)}" loading="lazy" decoding="async"></button>`
+const picHTML = (f: Pic) => f.img ? `<button type="button" class="pic" data-act="view" data-tip="${tr('看大图', 'View larger')}"><img src="${API}/images/${esc(f.img)}" alt="${esc(f.name)}" loading="lazy" decoding="async"></button>`
   : f.path ? fileTag(f as Pic & { path: string }) : `<span class="thumb">${I.img}${esc(f.name)}</span>`;
 // Code blocks in a finished answer get their own copy button.
-const withCopy = (html: string) => html.replace(/<pre>/g, `<div class="code"><button type="button" class="cp" data-act="copy" data-what="code">${I.copy}<span>复制</span></button><pre>`).replace(/<\/pre>/g, '</pre></div>');
+const withCopy = (html: string) => html.replace(/<pre>/g, `<div class="code"><button type="button" class="cp" data-act="copy" data-what="code">${I.copy}<span>${tr('复制', 'Copy')}</span></button><pre>`).replace(/<\/pre>/g, '</pre></div>');
 // A new item arrives the way it happened: yours rises from the composer, a request drops in, the rest fade.
 function enter(el: HTMLElement, it: Item) {
   if (it.k === 'you') { el.style.transformOrigin = '100% 100%'; anim(el, [{ opacity: 0, transform: 'translateY(14px) scale(.97)' }, { opacity: 1, transform: 'none' }], 460, SPRING); }
@@ -546,23 +552,23 @@ function renderConv(s: Sess, c: Conv) {
   // In the stage's narrow column only the last turn stays: everything up to the last thing Allen said folds into one line.
   const lastYou = items.map(it => it.k).lastIndexOf('you'), older = items.slice(0, lastYou + 1).filter(it => it.k === 'you').length;
   [...c.items.children].forEach((el, i) => el.classList.toggle('old', i <= lastYou));
-  c.older.hidden = !older; patch(c.older, `更早 ${older} 轮`);
+  c.older.hidden = !older; patch(c.older, tr(`更早 ${older} 轮`, `Show ${plural(older, 'earlier turn')}`));
   // Landing what this session changed: the question, the key for it, where it is, or the one line once it is done.
   const ask = wb.ask(s);
   c.ask.hidden = !ask; if (ask) patch(c.ask, ask);
   renderLive(s, c);
-  patch(c.queue, (s.queue ?? []).map((q, k) => `<div class="item">${said(s, { k: 'you', text: q, queued: true }, -1 - k, `<div class="you queued">${esc(q)}<em>排队中 · 这一步做完它就会看到</em></div>`)}</div>`).join(''));
+  patch(c.queue, (s.queue ?? []).map((q, k) => `<div class="item">${said(s, { k: 'you', text: q, queued: true }, -1 - k, `<div class="you queued">${esc(q)}<em>${tr('排队中 · 这一步做完它就会看到', 'Queued · it sees this after the current step')}</em></div>`)}</div>`).join(''));
   const working = s.st === 'work' || s.st === 'pack';
   if (working && c.now.hidden && c.built) anim(c.now, [{ opacity: 0 }, { opacity: 1 }], 240);
   c.now.hidden = !working;
   if (working) {
     patch($('.nm', c.now), star(s.id, 10));
-    patch($('.shine', c.now), `${esc(s.st === 'pack' ? '在压缩上下文' : s.now ?? '在想')}…`);
+    patch($('.shine', c.now), tr(`${esc(s.st === 'pack' ? '在压缩上下文' : s.now ?? '在想')}…`, `${esc(s.st === 'pack' ? 'Compacting context' : s.now ?? 'Thinking')}…`));
     patch($('.el', c.now), s.since ? `· ${ago(s.since)}` : '');
   }
   if (s.term && c.term.hidden && c.built) anim(c.term, [{ opacity: 0, transform: 'translateY(6px)' }, { opacity: 1, transform: 'none' }], 420, SPRING);
   c.term.hidden = !s.term;
-  if (s.term) patch(c.term, `${I.term}<span><b>在终端里打开着。</b>Jarvis 先放手，一次只有一边能写。</span><button type="button" class="btn" data-act="takeback">拿回来</button>`);
+  if (s.term) patch(c.term, `${I.term}<span><b>${tr('在终端里打开着。', 'Open in Terminal.')}</b>Jarvis ${tr('先放手，一次只有一边能写。', 'steps back: only one side can write at a time.')}</span><button type="button" class="btn" data-act="takeback">${tr('拿回来', 'Take back')}</button>`);
   c.built = true;
   if (stick && !built) toEnd(c.root); else if (stick) c.root.scrollTop = c.root.scrollHeight;
 }
@@ -581,7 +587,7 @@ function renderSteps(id: string, el: HTMLElement, it: Item & { k: 'steps' }, i: 
   box.classList.toggle('live', live); box.classList.toggle('open', live || !!o.open); box.classList.toggle('tail', !o.open);
   btn.setAttribute('aria-expanded', String(!!o.open));
   const sum = stepsSummary(it.steps);
-  patch(btn.lastElementChild!, `${live ? '正在干' : it.took ? `干了 ${esc(it.took)}` : '干完了'}${sum ? ` · ${sum}` : ''}`);
+  patch(btn.lastElementChild!, tr(`${live ? '正在干' : it.took ? `干了 ${esc(it.took)}` : '干完了'}${sum ? ` · ${sum}` : ''}`, `${live ? 'Working' : it.took ? `Worked ${esc(it.took)}` : 'Done'}${sum ? ` · ${sum}` : ''}`));
   // A folded list draws its rows only once it is opened.
   if (!live && !o.open) { if (rows.childElementCount && first) rows.replaceChildren(); if (!rows.childElementCount) return; }
   it.steps.forEach((st, j) => {
@@ -615,14 +621,14 @@ function renderLive(s: Sess, c: Conv) {
 const archived = () => visible().filter(s => s.archived && !features.some(f => f.hidden?.(s)));
 function renderArchive() {
   const as = archived().sort((a, b) => b.updated - a.updated);
-  patch(viewArch.firstElementChild!, '<p class="lead">归档的会话还能搜到，随时能拿回来。它们的 worktree 留着，删掉时才一起删。</p>'
+  patch(viewArch.firstElementChild!, `<p class="lead">${tr('归档的会话还能搜到，随时能拿回来。它们的 worktree 留着，删掉时才一起删。', 'Archived sessions stay searchable and can be restored any time. Their worktrees are kept and only removed when you delete the session.')}</p>`
     + (as.length ? `<div class="a-list">${as.map(s => `<div class="a-row">${star(s.id)}<span class="a-t"><b>${esc(s.title)}</b><span>${who(s.agent)}<span class="dot">·</span>${esc(s.project)}<span class="dot">·</span>${esc(s.summary)}<span class="dot">·</span>${age(s.updated)}</span></span>`
-      + `<button type="button" class="btn" data-act="unarchive" data-id="${s.id}">拿回来</button><button type="button" class="btn${app.del === s.id ? ' bad-on' : ' bad'}" data-act="delete" data-id="${s.id}">${app.del === s.id ? s.tree ? '连 worktree 一起删' : '真的删掉' : '删除'}</button></div>`).join('')}</div>`
-      : '<p class="empty">没有归档的会话。</p>'));
+      + `<button type="button" class="btn" data-act="unarchive" data-id="${s.id}">${tr('拿回来', 'Restore')}</button><button type="button" class="btn${app.del === s.id ? ' bad-on' : ' bad'}" data-act="delete" data-id="${s.id}">${app.del === s.id ? s.tree ? tr('连 worktree 一起删', 'Delete with worktree') : tr('真的删掉', 'Delete for good') : tr('删除', 'Delete')}</button></div>`).join('')}</div>`
+      : tr('<p class="empty">没有归档的会话。</p>', '<p class="empty">No archived sessions.</p>')));
 }
 // Nothing open: a session starts from the slip (slip.ts), which an empty window drops by itself; this is what is under it.
 function renderNew() {
-  patch(viewNew.firstElementChild!, '<div class="n-empty"><p>没有开着的会话。写一句要它做什么，抛出去就开跑。</p><button type="button" class="btn" data-act="new">写一句 <kbd>⌘N</kbd></button></div>');
+  patch(viewNew.firstElementChild!, `<div class="n-empty"><p>${tr('没有开着的会话。写一句要它做什么，抛出去就开跑。', 'No open sessions. Write one line on what you want done and it starts right away.')}</p><button type="button" class="btn" data-act="new">${tr('写一句', 'Write a note')} <kbd>⌘N</kbd></button></div>`);
 }
 
 // ---------- the composer: stays in the page so what you type survives every redraw; only its parts change ----------
@@ -643,25 +649,26 @@ function renderComp() {
   const blocked = !!s && (!!s.term || (!!pend && pend.tool !== 'Ask' && pend.tool !== 'Plan'));
   ta.disabled = blocked || app.sending;
   const short = agent === 'codex' ? 'Codex' : 'Claude';
-  ta.placeholder = newV ? `要 ${NAME[agent]} 做什么？` : s!.term ? '在终端里 · 拿回来才能在这里写' : blocked ? '先回答上面的请求'
-    : pend?.tool === 'Ask' ? '打字回答它的问题' : pend?.tool === 'Plan' ? '哪里要改？写了再点「再想想」' : busy ? `给 ${short} 发消息 · 这一步做完它就会看到` : `给 ${short} 发消息`;
+  ta.placeholder = newV ? tr(`要 ${NAME[agent]} 做什么？`, `What should ${NAME[agent]} do?`) : s!.term ? tr('在终端里 · 拿回来才能在这里写', 'In Terminal · take it back to write here') : blocked ? tr('先回答上面的请求', 'Answer the request above first')
+    : pend?.tool === 'Ask' ? tr('打字回答它的问题', 'Type your answer to its question') : pend?.tool === 'Plan' ? tr('哪里要改？写了再点「再想想」', 'What should change? Write it, then click "Think again"') : busy ? tr(`给 ${short} 发消息 · 这一步做完它就会看到`, `Queue a message for ${short}`) : tr(`给 ${short} 发消息`, `Message ${short}`);
   const model = newV ? app.newSet.model : s!.model, effort = newV ? app.newSet.effort : s!.effort, mode = newV ? app.newSet.mode : s!.mode;
   // One row of quiet tools (the workbench composer): ＋ for pictures, files and commands, the mode; on the right the model
   // and its effort as one, the ring, and send.
-  patch(tl, '<button type="button" class="tb plus" data-act="menu" data-v="plus" aria-label="添加" data-tip="图片、文件、命令">＋</button>'
-    + (c.modes.length ? `<button type="button" class="tb mode" data-act="menu" data-v="mode" data-m="${esc(mode)}" data-tip="它能自己做到哪一步"><i></i><span class="lbl">${esc(labelOf(c.modes, mode) || '模式')}</span></button>` : ''));
+  patch(tl, `<button type="button" class="tb plus" data-act="menu" data-v="plus" aria-label="${tr('添加', 'Add')}" data-tip="${tr('图片、文件、命令', 'Images, files, commands')}">${tr('＋', '+')}</button>`
+    + (c.modes.length ? `<button type="button" class="tb mode" data-act="menu" data-v="mode" data-m="${esc(mode)}" data-tip="${tr('它能自己做到哪一步', 'How far it can go on its own')}"><i></i><span class="lbl">${esc(labelOf(c.modes, mode) || tr('模式', 'Mode'))}</span></button>` : ''));
   const r = usage.ring(s, agent, app.usage, s ? app.cx.get(s.id) : undefined), eff = effort ? effort === 'xhigh' ? 'XHigh' : effort[0].toUpperCase() + effort.slice(1) : '';
-  patch(tr, (c.models.length ? `<button type="button" class="tb model" data-act="menu" data-v="me" data-tip="模型和力度">${esc(labelOf(c.models, model) || '模型')}${eff ? ` <em>· ${esc(eff)}</em>` : ''}</button>` : '')
-    + `<button type="button" class="ring" data-act="menu" data-v="usage" aria-label="用量" aria-haspopup="dialog" aria-expanded="${popFor === 'usage'}" data-tip="${esc(r.tip)}">${r.svg}</button>`
+  patch(tRight, (c.models.length ? `<button type="button" class="tb model" data-act="menu" data-v="me" data-tip="${tr('模型和力度', 'Model and effort')}">${esc(labelOf(c.models, model) || tr('模型', 'Model'))}${eff ? ` <em>· ${esc(eff)}</em>` : ''}</button>` : '')
+    + `<button type="button" class="ring" data-act="menu" data-v="usage" aria-label="${tr('用量', 'Usage')}" aria-haspopup="dialog" aria-expanded="${popFor === 'usage'}" data-tip="${esc(r.tip)}">${r.svg}</button>`
     // One round button in one place: while it works and nothing is written it stops the turn; writing turns it back to send.
     + (busy && !app.sending && !ta.value.trim() && !app.files.length
-      ? `<button type="button" class="send stop" data-act="interrupt" aria-label="打断" data-tip="打断" data-key="esc">${I.stop}</button>`
-      : `<button type="button" class="send" data-act="send" aria-label="${newV ? '开始' : '发送'}" data-tip="${newV ? '开始' : '发送'}" data-key="↵"${blocked || app.sending || !ta.value.trim() && !app.files.length ? ' disabled' : ''}>${I.up}</button>`));
+      ? `<button type="button" class="send stop" data-act="interrupt" aria-label="${tr('打断', 'Interrupt')}" data-tip="${tr('打断', 'Interrupt')}" data-key="esc">${I.stop}</button>`
+      : `<button type="button" class="send" data-act="send" aria-label="${newV ? tr('开始', 'Start') : tr('发送', 'Send')}" data-tip="${newV ? tr('开始', 'Start') : tr('发送', 'Send')}" data-key="↵"${blocked || app.sending || !ta.value.trim() && !app.files.length ? ' disabled' : ''}>${I.up}</button>`));
   // A plan window used up: one line in the box with the way on.
   const out = usage.banner(agent, app.usage);
   bnEl.hidden = !out;
-  if (out) patch(bnEl, `<i></i><span>${out}</span>${agent === 'claude' && s ? '<button type="button" data-act="cloud">挪到云端继续</button>' : ''}`);
+  if (out) patch(bnEl, `<i></i><span>${out}</span>${agent === 'claude' && s ? `<button type="button" data-act="cloud">${tr('挪到云端继续', 'Continue in the cloud')}</button>` : ''}`);
   patch(hintEl, wb.hint() + attention.hint());
+  fitHint();
   patch(cRows, s ? features.map(f => f.rows?.(s) ?? '').join('') : '');
   patch(cFiles, chipsHTML(app.files));
   const menuHTML = app.menu === 'slash' ? slashHTML(app.picks, app.pick, NAME[agent])
@@ -678,7 +685,7 @@ function openPop(kind: string, anchor: HTMLElement) {
   const s = app.view === 'chat' ? cur() : undefined, c = choice(s ? s.agent : app.newAgent);
   // The ring's card: the context window and the plan's windows, above the ring.
   if (kind === 'usage') {
-    pop.className = 'pop us'; pop.setAttribute('role', 'dialog'); pop.setAttribute('aria-label', '用量');
+    pop.className = 'pop us'; pop.setAttribute('role', 'dialog'); pop.setAttribute('aria-label', tr('用量', 'Usage'));
     popFor = kind; H.delete(pop); fillUsage();
     const w = win.getBoundingClientRect(), r = anchor.getBoundingClientRect();
     Object.assign(pop.style, { left: `${Math.max(8, Math.min(w.width - 350, r.right - w.left - 340))}px`, right: 'auto', top: 'auto', bottom: `${w.bottom - r.top + 8}px`, transformOrigin: '100% 100%' });
@@ -691,10 +698,10 @@ function openPop(kind: string, anchor: HTMLElement) {
   pop.className = 'pop'; pop.setAttribute('role', 'menu'); pop.removeAttribute('aria-label');
   const opts = (k: 'model' | 'effort' | 'mode', vs: [string, string][], v: string) => vs.map(([x, l]) => `<button type="button" data-act="set" data-k="${k}" data-v="${esc(x)}"${x === v ? ' class="on"' : ''}>${esc(l)}</button>`).join('');
   const cap = (e: string) => e === 'xhigh' ? 'XHigh' : e[0].toUpperCase() + e.slice(1);
-  const html = kind === 'plus' ? `<button type="button" data-act="attach">加文件<span class="k">也可以拖进来</span></button><button type="button" data-act="insert" data-v="@">提到一个文件<span class="k">@</span></button><button type="button" data-act="insert" data-v="/">命令和 skill<span class="k">/</span></button>`
-    : kind === 'me' ? `<span class="ph">模型</span>${opts('model', c.models, s ? s.model : app.newSet.model)}${c.efforts.length ? `<span class="sep"></span><span class="ph">力度</span>${opts('effort', c.efforts.map(e => [e, cap(e)]), s ? s.effort : app.newSet.effort)}` : ''}`
+  const html = kind === 'plus' ? `<button type="button" data-act="attach">${tr('加文件', 'Add files')}<span class="k">${tr('也可以拖进来', 'or drag them in')}</span></button><button type="button" data-act="insert" data-v="@">${tr('提到一个文件', 'Mention a file')}<span class="k">@</span></button><button type="button" data-act="insert" data-v="/">${tr('命令和 skill', 'Commands and skills')}<span class="k">/</span></button>`
+    : kind === 'me' ? `<span class="ph">${tr('模型', 'Model')}</span>${opts('model', c.models, s ? s.model : app.newSet.model)}${c.efforts.length ? `<span class="sep"></span><span class="ph">${tr('力度', 'Effort')}</span>${opts('effort', c.efforts.map(e => [e, cap(e)]), s ? s.effort : app.newSet.effort)}` : ''}`
     : kind === 'more' && s
-    ? `<button type="button" data-act="pin">${s.pinned ? '取消置顶' : '置顶'}</button><button type="button" data-act="park">${s.parked ? '不放着了' : '先放着'}</button><button type="button" data-act="rename">改名</button>${features.map(f => f.more?.(s) ?? '').join('')}<button type="button" data-act="archive" data-id="${s.id}">归档</button><span class="sep"></span><button type="button" data-act="stop" class="bad">停掉</button>`
+    ? tr(`<button type="button" data-act="pin">${s.pinned ? '取消置顶' : '置顶'}</button><button type="button" data-act="park">${s.parked ? '不放着了' : '先放着'}</button><button type="button" data-act="rename">改名</button>${features.map(f => f.more?.(s) ?? '').join('')}<button type="button" data-act="archive" data-id="${s.id}">归档</button><span class="sep"></span><button type="button" data-act="stop" class="bad">停掉</button>`, `<button type="button" data-act="pin">${s.pinned ? 'Unpin' : 'Pin'}</button><button type="button" data-act="park">${s.parked ? 'Unpark' : 'Park'}</button><button type="button" data-act="rename">Rename</button>${features.map(f => f.more?.(s) ?? '').join('')}<button type="button" data-act="archive" data-id="${s.id}">Archive</button><span class="sep"></span><button type="button" data-act="stop" class="bad">Stop</button>`)
     : kind === 'model' ? opts('model', c.models, s ? s.model : app.newSet.model)
     : kind === 'effort' ? opts('effort', c.efforts.map(e => [e, e]), s ? s.effort : app.newSet.effort)
     : modesHTML(c.modes, s ? s.mode : app.newSet.mode, s ? s.agent : app.newAgent);
@@ -727,8 +734,9 @@ function menu(html: string, at: HTMLElement | { x: number; y: number }, o: { rig
 // ---------- the context ring's popover: what fills the window, as the host measures it ----------
 // Claude's numbers are /context's own token counts through the Agent SDK; Codex gives only totals, so its view is plainer.
 const kt = (n: number) => n >= 1e6 ? `${+(n / 1e6).toFixed(1)}M` : n >= 1000 ? `${n >= 1e5 ? Math.round(n / 1000) : +(n / 1000).toFixed(1)}k` : String(Math.round(n));
-const CX_COLOR: Record<string, string> = { 系统提示词: '#8fb1ff', 内置工具: '#c7a8ff', 'MCP 说明': '#7fd4e8', 'MCP 工具': '#7fd4e8', '自定义 agent': '#f2b596',
-  记忆文件: '#ffc98f', Skills: '#6fe0b4', 对话: '#e8ebff', 发过去的: '#a9bfff', 它上一次写的: '#6fe0b4' };
+// The host names them in its language, so both are here.
+const CX_COLOR: Record<string, string> = { 系统提示词: '#8fb1ff', 'System prompt': '#8fb1ff', 内置工具: '#c7a8ff', 'Built-in tools': '#c7a8ff', 'MCP 说明': '#7fd4e8', 'MCP instructions': '#7fd4e8', 'MCP 工具': '#7fd4e8', 'MCP tools': '#7fd4e8',
+  '自定义 agent': '#f2b596', 'Custom agents': '#f2b596', 记忆文件: '#ffc98f', 'Memory files': '#ffc98f', Skills: '#6fe0b4', 对话: '#e8ebff', Conversation: '#e8ebff', 发过去的: '#a9bfff', Sent: '#a9bfff', 它上一次写的: '#6fe0b4', 'Its last reply': '#6fe0b4' };
 async function loadCtx(id: string) {
   const r = await call<Ctx>(`/sessions/${id}/context`).catch((e: unknown) => e instanceof Error ? e.message : String(e));
   // A reading that fails after one that worked keeps the one that worked.
@@ -749,7 +757,7 @@ function fillUsage() {
 // What fills the context window, row by row, for the card's 都占了什么.
 function ctxDetail(s: Sess) {
   const x = app.cx.get(s.id), m = labelOf(choice(s.agent).models, s.model) || (typeof x === 'object' ? x.model : '');
-  if (typeof x !== 'object' || !x.max) return `<p class="cx-sub">${esc(m)}</p><p class="cx-say">${x === undefined ? '在量…' : typeof x === 'string' ? esc(x) : `<b>${esc(x.say[0])}</b>${esc(x.say[1])}`}</p>`;
+  if (typeof x !== 'object' || !x.max) return `<p class="cx-sub">${esc(m)}</p><p class="cx-say">${x === undefined ? tr('在量…', 'Measuring…') : typeof x === 'string' ? esc(x) : `<b>${esc(x.say[0])}</b>${esc(x.say[1])}`}</p>`;
   return `<p class="cx-sub">${esc(m)}</p><p class="cx-say"><b>${esc(x.say[0])}</b>${esc(x.say[1])}</p><div class="cx-rows">${x.rows.map(r => {
       const has = !!r.sub?.length, o = has && app.cxOpen.has(r.n), tag = has ? 'button' : 'div';
       return `<${tag}${has ? ` type="button" data-act="cxrow" aria-expanded="${o}"` : ''} class="cx-r${o ? ' open' : ''}" data-n="${esc(r.n)}"><i class="sw${r.kind ? ` ${r.kind}` : ''}"${r.kind ? '' : ` style="background:${CX_COLOR[r.n] ?? '#9aa3c7'}"`}></i><span>${esc(r.n)}</span><span class="n">${kt(r.t)}</span><span class="cv">${has ? I.chev : ''}</span></${tag}>`
@@ -896,7 +904,7 @@ async function send() {
   const own = text && !app.files.length ? ownOf(text) : null;
   if (own) { clearTa(); app.menu = ''; app.picks = []; own[0](app.view === 'chat' ? cur() : undefined, own[1]); return; }
   if (app.view === 'new') {
-    if (!app.newProject) { toast('先选一个文件夹'); return; }
+    if (!app.newProject) { toast(tr('先选一个文件夹', 'Pick a folder first')); return; }
     app.sending = true; draw('comp');
     const r = await tryCall('/sessions', { agent: app.newAgent, cwd: app.newProject, tree: app.newTree, text, files: app.files, ...app.newSet });
     app.sending = false;
@@ -939,9 +947,9 @@ function copy(el: HTMLElement, text: string, target: Element) {
   const words = el.classList.contains('cp'), say = (t: string) => words ? `<span>${t}</span>` : '';
   const done = (ok: boolean) => {
     el.classList.remove('ok', 'no'); el.classList.add(ok ? 'ok' : 'no');
-    patch(el, ok ? `${I.check}${say('复制好了')}` : `${I.copy}<span>选好了，按 ⌘C</span>`);
+    patch(el, ok ? tr(`${I.check}${say('复制好了')}`, `${I.check}${say('Copied')}`) : `${I.copy}<span>${tr('选好了，按', 'Selected, press')} ⌘C</span>`);
     clearTimeout(Number(el.dataset.t));
-    el.dataset.t = String(setTimeout(() => { el.classList.remove('ok', 'no'); patch(el, `${I.copy}${say('复制')}`); }, 1500));
+    el.dataset.t = String(setTimeout(() => { el.classList.remove('ok', 'no'); patch(el, tr(`${I.copy}${say('复制')}`, `${I.copy}${say('Copy')}`)); }, 1500));
   };
   tick();
   navigator.clipboard.writeText(text).then(() => done(true), () => {
@@ -955,10 +963,10 @@ function escHint(s: Sess) {
   const c = convs.get(s.id);
   if (!c) return;
   const k = $('.k', c.now), kb = $('kbd', c.now);
-  k.textContent = '输入框里有字，没打断 · 清空再按'; k.classList.add('warn');
+  k.textContent = tr('输入框里有字，没打断 · 清空再按', 'Text in the box, not interrupted · clear it and press again'); k.classList.add('warn');
   anim(kb, [{ transform: 'none' }, { transform: 'translateX(-3px)' }, { transform: 'translateX(3px)' }, { transform: 'translateX(-2px)' }, { transform: 'none' }], 320);
   clearTimeout(Number(k.dataset.t));
-  k.dataset.t = String(setTimeout(() => { k.textContent = '打断'; k.classList.remove('warn'); }, 2200));
+  k.dataset.t = String(setTimeout(() => { k.textContent = tr('打断', 'Interrupt'); k.classList.remove('warn'); }, 2200));
 }
 function interrupt(s: Sess) {
   hush.set(s.id, performance.now() + 2500);
@@ -992,9 +1000,9 @@ async function act(a: string, el: HTMLElement) {
   // 挪到云端继续: the session's work goes on in a Claude Code cloud session, started from its folder in Ghostty.
   else if (a === 'cloud' && s) {
     closePop();
-    const text = `接着 Jarvis 里的会话「${s.title}」做下去。它停在：${s.summary}。仓库 ${s.project}，分支 ${s.branch}。`.slice(0, 590);
+    const text = tr(`接着 Jarvis 里的会话「${s.title}」做下去。它停在：${s.summary}。仓库 ${s.project}，分支 ${s.branch}。`, `Continue the Jarvis session "${s.title}". It stopped at: ${s.summary}. Repository ${s.project}, branch ${s.branch}.`).slice(0, 590);
     const ok = !!await window.agents?.cloud?.(s.cwd, text);
-    toast(ok ? '在 Ghostty 里开了一个云端会话' : `没能打开 Ghostty。在终端里跑：cd ${home(s.cwd)} && claude --cloud "…"`, !ok);
+    toast(ok ? tr('在 Ghostty 里开了一个云端会话', 'Opened a cloud session in Ghostty') : tr(`没能打开 Ghostty。在终端里跑：cd ${home(s.cwd)} && claude --cloud "…"`, `Could not open Ghostty. Run in a terminal: cd ${home(s.cwd)} && claude --cloud "…"`), !ok);
   }
   else if (a === 'next') {
     const o = order().filter(x => yourTurn(byId(x)!));
@@ -1023,7 +1031,7 @@ async function act(a: string, el: HTMLElement) {
     const r = await tryCall(`/sessions/${s.id}/release`, {});
     if (!r) return;
     cue('close', .6);
-    if (!await window.agents?.terminal(String(r.cwd), String(r.cmd))) toast(`没能打开 Ghostty。在终端里跑：cd ${home(String(r.cwd))} && ${r.cmd}`, true);
+    if (!await window.agents?.terminal(String(r.cwd), String(r.cmd))) toast(tr(`没能打开 Ghostty。在终端里跑：cd ${home(String(r.cwd))} && ${r.cmd}`, `Could not open Ghostty. Run in a terminal: cd ${home(String(r.cwd))} && ${r.cmd}`), true);
   }
   else if (a === 'takeback' && s) { cue('open', .8); await tryCall(`/sessions/${s.id}/takeback`, {}); }
   else if (a === 'steps' || a === 'step') {
@@ -1073,7 +1081,7 @@ function setSound(on: boolean) {
   snd.on = on; store.set('agents.sound', on ? 'on' : 'off');
   if (on) cue('speakerOn', 1, true);
   sndBtn.innerHTML = on ? I.sound : I.mute;
-  sndBtn.setAttribute('aria-pressed', String(on)); sndBtn.dataset.tip = on ? '声音开着 · 点一下关' : '声音关了 · 点一下开';
+  sndBtn.setAttribute('aria-pressed', String(on)); sndBtn.dataset.tip = on ? tr('声音开着 · 点一下关', 'Sound on · click to turn off') : tr('声音关了 · 点一下开', 'Sound off · click to turn on');
 }
 function pickIt(v: string, isCmd: boolean) {
   if (isCmd) ta.value = `${v} `;
@@ -1231,7 +1239,7 @@ ctx.own.set('model', () => { requestAnimationFrame(() => $('.tb.model', win)?.cl
 ctx.own.set('effort', () => { requestAnimationFrame(() => $('.tb.model', win)?.click()); });
 ctx.own.set('new', () => { const go = Object.assign(document.createElement('button'), { type: 'button', hidden: true }); go.dataset.act = 'new'; win.append(go); go.click(); go.remove(); });
 ctx.own.set('memory', s => {
-  if (!s) { toast('开了会话再看它的 CLAUDE.md'); return; }
+  if (!s) { toast(tr('开了会话再看它的 CLAUDE.md', 'Open a session to see its CLAUDE.md')); return; }
   const at = ta.closest<HTMLElement>('.composer') ?? ta;
   at.dataset.ref = 'CLAUDE.md'; at.dataset.label = 'CLAUDE.md';
   wb.act('peek', at);

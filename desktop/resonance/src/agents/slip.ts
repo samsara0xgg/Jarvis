@@ -6,6 +6,7 @@
 import type { Agent, Project, Sess } from '../../electron/agents/types';
 import type { Feature, PageCtx } from './ctx';
 import './slip.css';
+import { tr } from './lang';
 
 type Dest = 'new' | 'sess' | 'keep';
 type Tab = '' | 'where' | 'who';
@@ -17,7 +18,7 @@ type Fuse = { id: number; text: string; dest: 'new' | 'sess'; target: string; ag
 const FUSE = 3000;
 const NAME: Record<Agent, string> = { claude: 'Claude Code', codex: 'Codex' };
 // What each agent runs on when the host has not listed its models yet.
-const PLAN: Record<Agent, string> = { claude: '用你的 Claude 订阅', codex: '用你的 ChatGPT 登录' };
+const PLAN: Record<Agent, string> = { claude: tr('用你的 Claude 订阅', 'Uses your Claude subscription'), codex: tr('用你的 ChatGPT 登录', 'Uses your ChatGPT sign-in') };
 const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 const home = (p: string) => p.replace(/^\/Users\/[^/]+/, '~');
 const oneLine = (s: string, n = 80) => { const t = s.replace(/\s+/g, ' ').trim(); return t.length > n ? `${t.slice(0, n - 1)}…` : t; };
@@ -35,28 +36,28 @@ const FOLDER = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stro
 function when(at?: number) {
   if (!at) return '';
   const d = new Date(at), now = new Date(), days = Math.round((new Date(now.toDateString()).getTime() - new Date(d.toDateString()).getTime()) / 864e5);
-  if (Date.now() - at < 3600e3) return '刚用过';
-  if (days <= 0) return '今天';
-  if (days === 1) return '昨天';
-  if (days < 7) return `${days} 天前`;
-  if (days < 14) return '上周';
-  return d.getFullYear() === now.getFullYear() ? `${d.getMonth() + 1} 月 ${d.getDate()} 日` : `${d.getFullYear()} 年 ${d.getMonth() + 1} 月`;
+  if (Date.now() - at < 3600e3) return tr('刚用过', 'Used just now');
+  if (days <= 0) return tr('今天', 'Today');
+  if (days === 1) return tr('昨天', 'Yesterday');
+  if (days < 7) return tr(`${days} 天前`, `${days} d ago`);
+  if (days < 14) return tr('上周', 'Last week');
+  return d.getFullYear() === now.getFullYear() ? tr(`${d.getMonth() + 1} 月 ${d.getDate()} 日`, d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })) : tr(`${d.getFullYear()} 年 ${d.getMonth() + 1} 月`, d.toLocaleDateString('en-US', { month: 'short', year: 'numeric' }));
 }
 function ago(at: number) {
   const m = Math.floor((Date.now() - at) / 60000);
-  return m < 1 ? '刚' : m < 60 ? `${m} 分钟前` : m < 1440 ? `${Math.floor(m / 60)} 小时前` : `${Math.floor(m / 1440)} 天前`;
+  return m < 1 ? tr('刚', 'just now') : m < 60 ? tr(`${m} 分钟前`, `${m} min ago`) : m < 1440 ? tr(`${Math.floor(m / 60)} 小时前`, `${Math.floor(m / 60)} h ago`) : tr(`${Math.floor(m / 1440)} 天前`, `${Math.floor(m / 1440)} d ago`);
 }
 // What a message thrown to a session will do there.
-const say = (s: Sess) => s.st === 'work' || s.st === 'pack' ? '在跑，这一轮完了接着' : s.st === 'wait' ? '在等你，接着干完再说' : s.st === 'err' || s.stopped ? '停了，发过去接着做' : '做完了，接着往下做';
+const say = (s: Sess) => s.st === 'work' || s.st === 'pack' ? tr('在跑，这一轮完了接着', 'Working, queued for after this turn') : s.st === 'wait' ? tr('在等你，接着干完再说', 'Waiting on you, queued for after') : s.st === 'err' || s.stopped ? tr('停了，发过去接着做', 'Stopped, sending resumes it') : tr('做完了，接着往下做', 'Done, continues from here');
 
 export function mountSlip(ctx: PageCtx): Feature {
   const { win } = ctx;
   const el = document.createElement('div');
-  el.className = 'slip'; el.hidden = true; el.setAttribute('role', 'dialog'); el.setAttribute('aria-label', '纸条：写一句，抛给一个会话');
-  el.innerHTML = '<div class="mt-box"><span class="mt-dot" aria-hidden="true"></span><textarea class="mt-ta" rows="1" placeholder="冒出来的念头，写一句" aria-label="要它做什么" spellcheck="false"></textarea></div><div class="mt-dest"></div>'
-    + '<div class="mt-pick" hidden><div class="mp-h"><span class="mp-tabs" role="tablist" aria-label="挑什么"><button type="button" role="tab" data-act="slip-tab" data-t="where">去处</button><button type="button" role="tab" data-act="slip-tab" data-t="who">用谁</button></span>'
-    + '<input class="mp-q" type="text" autocomplete="off" spellcheck="false" aria-label="筛选"><span class="mp-k"><span><kbd>↑</kbd><kbd>↓</kbd></span><span><kbd>⏎</kbd> 选</span><span><kbd>⇥</kbd> 换</span><span><kbd>esc</kbd> 回去</span></span></div>'
-    + '<div class="mp-list" role="listbox" aria-label="去处"></div></div>';
+  el.className = 'slip'; el.hidden = true; el.setAttribute('role', 'dialog'); el.setAttribute('aria-label', tr('纸条：写一句，抛给一个会话', 'Note: write a line, send it to a session'));
+  el.innerHTML = `<div class="mt-box"><span class="mt-dot" aria-hidden="true"></span><textarea class="mt-ta" rows="1" placeholder="${tr('冒出来的念头，写一句', 'A passing thought, one line')}" aria-label="${tr('要它做什么', 'What should it do')}" spellcheck="false"></textarea></div><div class="mt-dest"></div>`
+    + `<div class="mt-pick" hidden><div class="mp-h"><span class="mp-tabs" role="tablist" aria-label="${tr('挑什么', 'Choose')}"><button type="button" role="tab" data-act="slip-tab" data-t="where">${tr('去处', 'Where')}</button><button type="button" role="tab" data-act="slip-tab" data-t="who">${tr('用谁', 'With')}</button></span>`
+    + `<input class="mp-q" type="text" autocomplete="off" spellcheck="false" aria-label="${tr('筛选', 'Filter')}"><span class="mp-k"><span><kbd>↑</kbd><kbd>↓</kbd></span><span><kbd>⏎</kbd> ${tr('选', 'select')}</span><span><kbd>⇥</kbd> ${tr('换', 'switch')}</span><span><kbd>esc</kbd> ${tr('回去', 'back')}</span></span></div>`
+    + `<div class="mp-list" role="listbox" aria-label="${tr('去处', 'Where')}"></div></div>`;
   // The fuse: one quiet line above the composer while a throw burns, and a moment after it lands.
   const bar = document.createElement('div');
   bar.className = 'mt-fuse'; bar.hidden = true; bar.setAttribute('role', 'status');
@@ -103,29 +104,29 @@ export function mountSlip(ctx: PageCtx): Feature {
   // The destination reads as one sentence: 去「新会话 · app」用「Claude Code」新 worktree.
   function renderDest() {
     const t = S.dest === 'sess' ? ctx.byId(S.target) : undefined, p = project(), expanded = (m: Tab) => String(S.tab === m);
-    const tok = S.dest === 'new' ? `<span class="mt-ic ic-new" aria-hidden="true"></span>新会话<i class="sep">·</i>${S.dir ? esc(dirName()) : '挑一个文件夹'}`
-      : S.dest === 'keep' ? '<span class="mt-ic ic-keep" aria-hidden="true"></span>先存着'
-      : t ? `<b class="st-${t.st}" aria-hidden="true">✦</b><span class="mt-tt">${esc(t.title)}</span>` : '没有能排进的会话';
-    const who = `<span class="mt-w">用</span><button type="button" class="mt-tok" data-act="slip-who" aria-haspopup="listbox" aria-expanded="${expanded('who')}">${NAME[S.agent]}<i aria-hidden="true">▾</i></button>`
-      + (p && !p.git ? '' : `<button type="button" class="mt-sw" data-act="slip-tree" aria-pressed="${S.tree}" data-tip="${S.tree ? '单独一个 worktree，不碰你现在的分支' : '就在这个文件夹现在的分支上改'}">${TREE}${S.tree ? '新 worktree' : '当前分支'}</button>`);
-    const keys = `<span class="mt-k"><span><kbd>⇥</kbd> 去处</span><span><kbd>⏎</kbd> ${S.dest === 'keep' ? '存下' : '抛出去'}</span>${S.dest === 'keep' ? '' : '<span><kbd>⌘</kbd><kbd>⏎</kbd> 跟过去</span>'}</span>`;
-    dest.innerHTML = `<span class="mt-w">${S.dest === 'sess' ? '排进' : '去'}</span><button type="button" class="mt-tok" data-act="slip-where" aria-haspopup="listbox" aria-expanded="${expanded('where')}">${tok}<i aria-hidden="true">▾</i></button>`
-      + (S.dest === 'new' ? who : `<span class="mt-say">${S.dest === 'keep' ? '不开跑，不花 token' : t ? say(t) : ''}</span>`) + keys;
+    const tok = S.dest === 'new' ? `<span class="mt-ic ic-new" aria-hidden="true"></span>${tr('新会话', 'New session')}<i class="sep">·</i>${S.dir ? esc(dirName()) : tr('挑一个文件夹', 'Choose a folder')}`
+      : S.dest === 'keep' ? `<span class="mt-ic ic-keep" aria-hidden="true"></span>${tr('先存着', 'Save for later')}`
+      : t ? `<b class="st-${t.st}" aria-hidden="true">✦</b><span class="mt-tt">${esc(t.title)}</span>` : tr('没有能排进的会话', 'No session to queue in');
+    const who = `<span class="mt-w">${tr('用', 'with')}</span><button type="button" class="mt-tok" data-act="slip-who" aria-haspopup="listbox" aria-expanded="${expanded('who')}">${NAME[S.agent]}<i aria-hidden="true">▾</i></button>`
+      + (p && !p.git ? '' : `<button type="button" class="mt-sw" data-act="slip-tree" aria-pressed="${S.tree}" data-tip="${S.tree ? tr('单独一个 worktree，不碰你现在的分支', 'Its own worktree, leaves your current branch alone') : tr('就在这个文件夹现在的分支上改', 'Edits on the current branch of this folder')}">${TREE}${S.tree ? tr('新 worktree', 'New worktree') : tr('当前分支', 'Current branch')}</button>`);
+    const keys = `<span class="mt-k"><span><kbd>⇥</kbd> ${tr('去处', 'where')}</span><span><kbd>⏎</kbd> ${S.dest === 'keep' ? tr('存下', 'save') : tr('抛出去', 'send')}</span>${S.dest === 'keep' ? '' : tr('<span><kbd>⌘</kbd><kbd>⏎</kbd> 跟过去</span>', '<span><kbd>⌘</kbd><kbd>⏎</kbd> send and follow</span>')}</span>`;
+    dest.innerHTML = `<span class="mt-w">${S.dest === 'sess' ? tr('排进', 'Queue in') : tr('去', 'To')}</span><button type="button" class="mt-tok" data-act="slip-where" aria-haspopup="listbox" aria-expanded="${expanded('where')}">${tok}<i aria-hidden="true">▾</i></button>`
+      + (S.dest === 'new' ? who : `<span class="mt-say">${S.dest === 'keep' ? tr('不开跑，不花 token', "Doesn't run, costs no tokens") : t ? say(t) : ''}</span>`) + keys;
   }
   // The list: folders, sessions and 先存着 under 去处; the agents (and the branch) under 用谁. Typing narrows it.
   function groups(): [string, Row[]][] {
     const f = q.value.trim().toLowerCase(), fits = (x: Row) => !f || `${x.label} ${x.sub}`.toLowerCase().includes(f);
     if (S.tab === 'who') {
-      const p = project(), who: [string, Row[]][] = [['新会话用', agents().map(a => ({ kind: 'agent' as const, v: a, label: NAME[a], sub: modelsOf(a), on: S.agent === a })).filter(fits)]];
-      if (!p || p.git) who.push(['在哪条分支上', [{ kind: 'tree' as const, v: 'on', label: '新 worktree', sub: '单独一个 worktree，不碰你现在的分支', on: S.tree }, { kind: 'tree' as const, v: 'off', label: '当前分支', sub: '就在这个文件夹现在的分支上改', on: !S.tree }].filter(fits)]);
+      const p = project(), who: [string, Row[]][] = [[tr('新会话用', 'New session with'), agents().map(a => ({ kind: 'agent' as const, v: a, label: NAME[a], sub: modelsOf(a), on: S.agent === a })).filter(fits)]];
+      if (!p || p.git) who.push([tr('在哪条分支上', 'On which branch'), [{ kind: 'tree' as const, v: 'on', label: tr('新 worktree', 'New worktree'), sub: tr('单独一个 worktree，不碰你现在的分支', 'Its own worktree, leaves your current branch alone'), on: S.tree }, { kind: 'tree' as const, v: 'off', label: tr('当前分支', 'Current branch'), sub: tr('就在这个文件夹现在的分支上改', 'Edits on the current branch of this folder'), on: !S.tree }].filter(fits)]);
       return who.filter(g => g[1].length);
     }
     const ps = S.dir && !S.projects.some(p => p.path === S.dir) ? [{ path: S.dir, name: dirName(), git: true }, ...S.projects] : S.projects;
     const dirs: Row[] = ps.map(p => ({ kind: 'dir' as const, v: p.path, label: p.name, sub: home(p.path), when: when(p.used), on: S.dest === 'new' && S.dir === p.path })).filter(fits);
-    if (!f) dirs.push({ kind: 'other', v: '', label: '别的文件夹…', sub: '弹出选文件夹的窗口' });
+    if (!f) dirs.push({ kind: 'other', v: '', label: tr('别的文件夹…', 'Another folder…'), sub: tr('弹出选文件夹的窗口', 'Opens a folder picker') });
     const sess: Row[] = queueable().map(s => ({ kind: 'sess' as const, v: s.id, label: s.title, sub: say(s), st: s.st, on: S.dest === 'sess' && S.target === s.id })).filter(fits);
-    const keep: Row[] = [{ kind: 'keep' as const, v: '', label: '先存着', sub: '不开跑，不花 token', on: S.dest === 'keep' }, ...notes.map(n => ({ kind: 'note' as const, v: n.id, label: oneLine(n.text), sub: `${ago(n.at)}存的`, at: n.at }))].filter(fits);
-    return ([['新会话，在', dirs], ['排进', sess], ['先存着', keep]] as [string, Row[]][]).filter(g => g[1].length);
+    const keep: Row[] = [{ kind: 'keep' as const, v: '', label: tr('先存着', 'Save for later'), sub: tr('不开跑，不花 token', "Doesn't run, costs no tokens"), on: S.dest === 'keep' }, ...notes.map(n => ({ kind: 'note' as const, v: n.id, label: oneLine(n.text), sub: tr(`${ago(n.at)}存的`, `Saved ${ago(n.at)}`), at: n.at }))].filter(fits);
+    return ([[tr('新会话，在', 'New session in'), dirs], [tr('排进', 'Queue in'), sess], [tr('先存着', 'Save for later'), keep]] as [string, Row[]][]).filter(g => g[1].length);
   }
   const lit = (label: string) => {
     const f = q.value.trim(), at = f ? label.toLowerCase().indexOf(f.toLowerCase()) : -1;
@@ -142,12 +143,12 @@ export function mountSlip(ctx: PageCtx): Feature {
     list.innerHTML = gs.map(([h, rows]) => `<div class="mp-g" role="group" aria-label="${esc(h)}"><p class="mp-gh">${esc(h)}</p>${rows.map(x => {
       const j = n++;
       return `<div class="mp-it${j === S.i ? ' on' : ''}${x.kind === 'other' ? ' other' : ''}" role="option" aria-selected="${j === S.i}" data-act="slip-row" data-j="${j}">${ic(x)}<span class="mp-l">${lit(x.label)}</span>`
-        + `<span class="mp-s${x.kind === 'dir' ? '' : ' say'}">${esc(x.sub)}</span>${x.when ? `<em>${esc(x.when)}</em>` : ''}${x.on ? '<i class="mp-ck" aria-label="现在的去处">✓</i>' : ''}`
-        + `${x.kind === 'note' ? `<i class="mp-x" data-act="slip-drop" data-id="${esc(x.v)}" aria-label="扔掉这条">✕</i>` : ''}</div>`;
-    }).join('')}</div>`).join('') || `<p class="mp-none">没有对得上「${esc(q.value.trim())}」的。换几个字，或者 esc 回到纸条。</p>`;
+        + `<span class="mp-s${x.kind === 'dir' ? '' : ' say'}">${esc(x.sub)}</span>${x.when ? `<em>${esc(x.when)}</em>` : ''}${x.on ? tr('<i class="mp-ck" aria-label="现在的去处">✓</i>', '<i class="mp-ck" aria-label="Current destination">✓</i>') : ''}`
+        + `${x.kind === 'note' ? `<i class="mp-x" data-act="slip-drop" data-id="${esc(x.v)}" aria-label="${tr('扔掉这条', 'Discard this note')}">✕</i>` : ''}</div>`;
+    }).join('')}</div>`).join('') || `<p class="mp-none">${tr(`没有对得上「${esc(q.value.trim())}」的。换几个字，或者 esc 回到纸条。`, `No match for "${esc(q.value.trim())}". Try other words, or press esc to go back to the note.`)}</p>`;
     el.querySelectorAll<HTMLElement>('.mp-tabs button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.t === S.tab)));
-    list.setAttribute('aria-label', S.tab === 'who' ? '用谁' : '去处');
-    q.placeholder = S.tab === 'who' ? '筛 agent 或模型' : '打几个字筛文件夹和会话';
+    list.setAttribute('aria-label', S.tab === 'who' ? tr('用谁', 'With') : tr('去处', 'Where'));
+    q.placeholder = S.tab === 'who' ? tr('筛 agent 或模型', 'Filter agents or models') : tr('打几个字筛文件夹和会话', 'Type to filter folders and sessions');
     list.querySelector('.mp-it.on')?.scrollIntoView({ block: 'nearest' });
   }
 
@@ -234,13 +235,13 @@ export function mountSlip(ctx: PageCtx): Feature {
   function throwIt(follow: boolean) {
     const text = ta.value.trim();
     if (!text) { anim(el, [{ transform: 'none' }, { transform: 'translateX(-6px)' }, { transform: 'translateX(5px)' }, { transform: 'translateX(-3px)' }, { transform: 'none' }], 260); return; }
-    if (S.dest === 'new' && !S.dir) { ctx.toast('先挑一个文件夹'); openPick('where'); return; }
-    if (S.dest === 'sess' && !ctx.byId(S.target)) { ctx.toast('那个会话不在了，换一个去处'); openPick('where'); return; }
+    if (S.dest === 'new' && !S.dir) { ctx.toast(tr('先挑一个文件夹', 'Choose a folder first')); openPick('where'); return; }
+    if (S.dest === 'sess' && !ctx.byId(S.target)) { ctx.toast(tr('那个会话不在了，换一个去处', 'That session is gone, choose another destination')); openPick('where'); return; }
     fold();
     spent = true; store.set('agents.slip', '');
     if (S.dest === 'keep') {
       notes.unshift({ id: `n${Date.now().toString(36)}`, text, at: Date.now() }); saveNotes();
-      ctx.cue('on', .6); tell(`存下了：${oneLine(text, 40)} · 在「先存着」里`);
+      ctx.cue('on', .6); tell(tr(`存下了：${oneLine(text, 40)} · 在「先存着」里`, `Saved: ${oneLine(text, 40)} · in "Save for later"`));
       back(); return;
     }
     const f: Fuse = { id: ++seq, text, dest: S.dest, target: S.target, agent: S.agent, dir: S.dir, tree: S.tree, at: performance.now(), timer: 0 };
@@ -285,13 +286,13 @@ export function mountSlip(ctx: PageCtx): Feature {
         return;
       }
       const s = ctx.byId(id);
-      if (f.dest === 'sess') tell(s && (s.st === 'work' || s.st === 'pack' || s.st === 'wait') ? `排进了「${oneLine(s.title, 24)}」：这一轮完了接着` : `发给「${oneLine(s?.title ?? '', 24)}」了，直接开始`);
-      else tell(`开跑了：${oneLine(f.text, 40)}`, id);
+      if (f.dest === 'sess') tell(s && (s.st === 'work' || s.st === 'pack' || s.st === 'wait') ? tr(`排进了「${oneLine(s.title, 24)}」：这一轮完了接着`, `Queued in "${oneLine(s.title, 24)}": runs after this turn`) : tr(`发给「${oneLine(s?.title ?? '', 24)}」了，直接开始`, `Sent to "${oneLine(s?.title ?? '', 24)}", starting now`));
+      else tell(tr(`开跑了：${oneLine(f.text, 40)}`, `Started: ${oneLine(f.text, 40)}`), id);
     } catch (e) {
       // What did not reach the host is not lost: it goes back into the slip.
       clearSpent(); if (!fuses.length) bar.hidden = true;
       ta.value = ta.value.trim() ? `${f.text}\n${ta.value}` : f.text; saveDraft();
-      ctx.toast(`${e instanceof Error ? e.message : String(e)} · 字回到纸条里了，⌘N 打开`, true);
+      ctx.toast(tr(`${e instanceof Error ? e.message : String(e)} · 字回到纸条里了，⌘N 打开`, `${e instanceof Error ? e.message : String(e)} · your words are back in the note, ⌘N to open`), true);
     }
   }
   // The model, effort and mode last picked for this agent, when the host still offers them; otherwise its defaults.
@@ -339,7 +340,7 @@ export function mountSlip(ctx: PageCtx): Feature {
     const f = fuses.at(-1);
     if (!f) { if (!keep) bar.hidden = true; return; }
     show(`<svg class="mt-ring" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6"/><circle class="fg" cx="8" cy="8" r="6" pathLength="100" stroke-dasharray="0 100" transform="rotate(-90 8 8)"/></svg>`
-      + `<span class="mt-ft">抛出去了：${esc(oneLine(f.text, 36))}${fuses.length > 1 ? `<em> · 还有 ${fuses.length - 1} 个在烧</em>` : ''}</span><button type="button" data-act="slip-back">撤回 <kbd>⌘Z</kbd></button>`);
+      + `<span class="mt-ft">${tr('抛出去了：', 'Sent: ')}${esc(oneLine(f.text, 36))}${fuses.length > 1 ? `<em> · ${tr('还有 ', '')}${fuses.length - 1} ${tr('个在烧', 'more pending')}</em>` : ''}</span><button type="button" data-act="slip-back">${tr('撤回', 'Undo')} <kbd>⌘Z</kbd></button>`);
     const fg = bar.querySelector('.fg')!;
     const frame = () => {
       const t = performance.now() - f.at, k = Math.min(1, reduced.matches ? Math.floor(t / 1000) / 3 : t / FUSE);
@@ -351,7 +352,7 @@ export function mountSlip(ctx: PageCtx): Feature {
   // A word once it has landed, with the way there when it started a session.
   function tell(text: string, id = '') {
     if (fuses.length) return;
-    show(`<span class="mt-ft">${esc(text)}</span>${id ? `<button type="button" data-act="slip-go" data-id="${esc(id)}">过去</button>` : ''}`);
+    show(`<span class="mt-ft">${esc(text)}</span>${id ? `<button type="button" data-act="slip-go" data-id="${esc(id)}">${tr('过去', 'Open')}</button>` : ''}`);
     clearTimeout(tellTimer); tellTimer = window.setTimeout(() => { if (!fuses.length) bar.hidden = true; }, 4200);
   }
 

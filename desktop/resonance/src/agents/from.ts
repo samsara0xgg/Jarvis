@@ -8,6 +8,7 @@ import type { Auth, Item, Live, Outside, Req, Sess, Step } from '../../electron/
 import type { Feature, PageCtx } from './ctx';
 import { showSettings } from './settings';
 import './from.css';
+import { hhmm, plural, tr } from './lang';
 
 const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 const reduced = matchMedia('(prefers-reduced-motion: reduce)');
@@ -22,11 +23,11 @@ const I = {
   chev: svg('<path d="M6 3.5 10.5 8 6 12.5"/>', 11),
   more: '<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" aria-hidden="true"><circle cx="3.5" cy="8" r="1.3"/><circle cx="8" cy="8" r="1.3"/><circle cx="12.5" cy="8" r="1.3"/></svg>',
 };
-const K: Record<Step['k'], string> = { read: '读', edit: '改', bash: '跑', search: '搜', agent: '子任务', web: '网页', tool: '工具', say: '', think: '想' };
+const K: Record<Step['k'], string> = { read: tr('读', 'Read'), edit: tr('改', 'Edit'), bash: tr('跑', 'Run'), search: tr('搜', 'Search'), agent: tr('子任务', 'Subtask'), web: tr('网页', 'Web'), tool: tr('工具', 'Tool'), say: '', think: tr('想', 'Think') };
 const kbd = (k: string) => `<kbd>${k}</kbd>`;
 function age(ms: number) {
   const m = Math.floor((Date.now() - ms) / 60000);
-  return m < 1 ? '刚刚' : m < 60 ? `${m} 分钟前` : m < 1440 ? `${Math.floor(m / 60)} 小时前` : `${Math.floor(m / 1440)} 天前`;
+  return m < 1 ? tr('刚刚', 'Just now') : m < 60 ? tr(`${m} 分钟前`, `${m} min ago`) : m < 1440 ? tr(`${Math.floor(m / 60)} 小时前`, `${Math.floor(m / 60)} h ago`) : tr(`${Math.floor(m / 1440)} 天前`, `${Math.floor(m / 1440)} d ago`);
 }
 const resumeOf = (o: Outside) => `cd ${home(o.cwd)} && ${o.agent === 'codex' ? `codex resume ${o.id}` : `claude --resume ${o.id}`}`;
 // How long a clean delete waits for 撤销 before the host really deletes it.
@@ -82,7 +83,7 @@ export function mountFrom(ctx: PageCtx): Feature {
   const sky = win.querySelector<HTMLElement>('.bw-more'), rowsEl = win.querySelector<HTMLElement>('.bw-rows');
   const stateOf = (o: Outside) => {
     const l = liveOf(o.id);
-    return l?.st === 'wait' ? ['wait', l.req ? '等你批' : '等你'] : l?.st === 'work' ? ['work', '在干活'] : ['read', age(o.updated)];
+    return l?.st === 'wait' ? ['wait', l.req ? tr('等你批', 'Needs approval') : tr('等你', 'Waiting on you')] : l?.st === 'work' ? ['work', tr('在干活', 'Working')] : ['read', age(o.updated)];
   };
   function drawSky() {
     if (!sky) return;
@@ -90,9 +91,9 @@ export function mountFrom(ctx: PageCtx): Feature {
     const shown = T.list.filter(o => T.group || must(o)), n = T.group ? T.list.length : T.list.length - shown.length;
     const rows = shown.map((o, k) => {
       const [st, word] = stateOf(o);
-      return `<button type="button" class="bw-row fr-trow${o.id === T.cur?.id ? ' on' : ''}" data-act="fr-topen" data-fr="${esc(o.id)}" style="top:${2 + k * 27}px" aria-label="${esc(o.title)}，在终端里，${word}"><b>${esc(o.title)}</b><em class="fr-tg">终端</em><em class="st-${st}">${word}</em></button>`;
+      return `<button type="button" class="bw-row fr-trow${o.id === T.cur?.id ? ' on' : ''}" data-act="fr-topen" data-fr="${esc(o.id)}" style="top:${2 + k * 27}px" aria-label="${esc(o.title)}${tr('，在终端里，', ', in Terminal, ')}${word}"><b>${esc(o.title)}</b><em class="fr-tg">${tr('终端', 'Terminal')}</em><em class="st-${st}">${word}</em></button>`;
     }).join('');
-    const line = n ? `<button type="button" class="fr-tcount" data-act="fr-tgroup" style="top:${2 + shown.length * 27}px" aria-expanded="${T.group}">${T.group ? `收起终端里的 ${n} 个` : `终端里还有 ${n} 个`}</button>` : '';
+    const line = n ? `<button type="button" class="fr-tcount" data-act="fr-tgroup" style="top:${2 + shown.length * 27}px" aria-expanded="${T.group}">${T.group ? tr(`收起终端里的 ${n} 个`, `Hide ${n} in Terminal`) : tr(`终端里还有 ${n} 个`, `${n} more in Terminal`)}</button>` : '';
     patch(sky, rows + line);
     sky.dataset.h = String(shown.length * 27 + (n ? 30 : 0));
   }
@@ -107,13 +108,13 @@ export function mountFrom(ctx: PageCtx): Feature {
   }).observe(win, { attributes: true, attributeFilter: ['class'] });
   let skyWas = false;
   const side = win.querySelector<HTMLElement>('.arch-link');
-  side?.insertAdjacentHTML('beforebegin', `<button type="button" class="fr-tlink" data-act="fr-tlist" hidden>${I.term}终端里的会话<em></em></button>`);
+  side?.insertAdjacentHTML('beforebegin', `<button type="button" class="fr-tlink" data-act="fr-tlist" hidden>${I.term}${tr('终端里的会话', 'Terminal sessions')}<em></em></button>`);
   const sideLink = win.querySelector<HTMLElement>('.fr-tlink');
   function drawSide() { if (!sideLink) return; sideLink.hidden = !T.list.length; patch(sideLink.querySelector('em')!, String(T.list.length)); }
   // /resume, and the classic list's line: the newest of them in the page's one popover.
   function listMenu(at: HTMLElement) {
-    if (!T.list.length) { ctx.toast('这台 Mac 上没有别处开的会话'); return; }
-    ctx.menu(`<span class="ph">终端里开的会话</span>${T.list.slice(0, 30).map(o => `<button type="button" data-act="fr-topen" data-fr="${esc(o.id)}"><span class="fr-tg">终端</span><span class="fr-mt">${esc(o.title)}</span><span class="fr-k">${stateOf(o)[1]}</span></button>`).join('')}`, at, { cls: 'fr-tm' });
+    if (!T.list.length) { ctx.toast(tr('这台 Mac 上没有别处开的会话', 'No sessions open elsewhere on this Mac')); return; }
+    ctx.menu(`<span class="ph">${tr('终端里开的会话', 'Sessions open in Terminal')}</span>${T.list.slice(0, 30).map(o => `<button type="button" data-act="fr-topen" data-fr="${esc(o.id)}"><span class="fr-tg">${tr('终端', 'Terminal')}</span><span class="fr-mt">${esc(o.title)}</span><span class="fr-k">${stateOf(o)[1]}</span></button>`).join('')}`, at, { cls: 'fr-tm' });
   }
   async function showTerminals() {
     await refreshList();
@@ -128,7 +129,7 @@ export function mountFrom(ctx: PageCtx): Feature {
   // ---------- the read-only view ----------
   const bd = win.querySelector<HTMLElement>('.bd')!;
   const rh = document.createElement('header'); rh.className = 'm-head fr-rh';
-  const rv = document.createElement('section'); rv.className = 'fr-rov'; rv.setAttribute('aria-label', '在终端里开的会话');
+  const rv = document.createElement('section'); rv.className = 'fr-rov'; rv.setAttribute('aria-label', tr('在终端里开的会话', 'Session open in Terminal'));
   rv.innerHTML = '<div class="conv"><div class="c-in"><div class="c-items"></div><div class="fr-rq"></div></div></div><div class="fr-rbar"></div>';
   bd.append(rv);
   const conv = rv.querySelector<HTMLElement>('.conv')!, itemsEl = rv.querySelector<HTMLElement>('.c-items')!, rqEl = rv.querySelector<HTMLElement>('.fr-rq')!, bar = rv.querySelector<HTMLElement>('.fr-rbar')!;
@@ -152,26 +153,26 @@ export function mountFrom(ctx: PageCtx): Feature {
     win.classList.remove('fr-ro-on');
     drawSky();
   }
-  const words = (o: Outside) => { const l = liveOf(o.id); return l?.st === 'wait' ? (l.req ? '在终端里等你批' : '在终端里等你') : l?.st === 'work' ? '在终端里跑着' : '在终端里开的'; };
+  const words = (o: Outside) => { const l = liveOf(o.id); return l?.st === 'wait' ? (l.req ? tr('在终端里等你批', 'Needs approval in Terminal') : tr('在终端里等你', 'Waiting on you in Terminal')) : l?.st === 'work' ? tr('在终端里跑着', 'Running in Terminal') : tr('在终端里开的', 'Open in Terminal'); };
   function stepsLine(steps: Step[]) {
     const n = (k: Step['k']) => steps.filter(s => s.k === k).length, add = steps.reduce((a, s) => a + (s.add ?? 0), 0), del = steps.reduce((a, s) => a + (s.del ?? 0), 0);
-    return [n('read') + n('search') ? `读了 ${n('read') + n('search')} 个` : '', n('edit') ? `改了 ${n('edit')} 个 <span class="p">+${add}</span> <span class="m">−${del}</span>` : '',
-      n('bash') ? `跑了 ${n('bash')} 条` : '', n('agent') ? `${n('agent')} 个子任务` : '', n('web') ? `查了 ${n('web')} 次网页` : '', n('tool') ? `用了 ${n('tool')} 个工具` : ''].filter(Boolean).join(' · ');
+    return [n('read') + n('search') ? tr(`读了 ${n('read') + n('search')} 个`, `Read ${plural(n('read') + n('search'), 'file')}`) : '', n('edit') ? tr(`改了 ${n('edit')} 个 <span class="p">+${add}</span> <span class="m">−${del}</span>`, `Edited ${plural(n('edit'), 'file')} <span class="p">+${add}</span> <span class="m">−${del}</span>`) : '',
+      n('bash') ? tr(`跑了 ${n('bash')} 条`, `Ran ${plural(n('bash'), 'command')}`) : '', n('agent') ? tr(`${n('agent')} 个子任务`, plural(n('agent'), 'subtask')) : '', n('web') ? tr(`查了 ${n('web')} 次网页`, plural(n('web'), 'web lookup')) : '', n('tool') ? tr(`用了 ${n('tool')} 个工具`, `Used ${plural(n('tool'), 'tool')}`) : ''].filter(Boolean).join(' · ');
   }
-  const clock = (at?: number) => at ? new Date(at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false }) : '';
+  const clock = (at?: number) => at ? hhmm(at) : '';
   function itemHTML(it: Item, i: number) {
     if (it.k === 'you') return `<div class="you">${it.files?.length ? `<span class="att">${it.files.map(f => `<span class="thumb">${esc(f.name)}</span>`).join('')}</span>` : ''}${esc(it.text)}</div>`;
     if (it.k === 'it') return `<div class="it">${ctx.md(it.text)}${it.at ? `<div class="it-acts"><time>${clock(it.at)}</time></div>` : ''}</div>`;
     if (it.k === 'note') return `<p class="note">${esc(it.text)}</p>`;
-    if (it.k === 'plan') return `<div class="plan"><span class="p-h">计划</span>${it.todos.map(([t, d]) => `<span class="todo d${d}"><i></i>${esc(t)}</span>`).join('')}</div>`;
-    if (it.k === 'req') return it.done ? `<p class="note done"><span class="ok">${/^(拒绝|没回答)/.test(it.done) ? '✕' : '✓'}</span>${esc(recordOf(it.req))}<span class="how">${esc(it.done)}</span></p>` : '';
+    if (it.k === 'plan') return `<div class="plan"><span class="p-h">${tr('计划', 'Plan')}</span>${it.todos.map(([t, d]) => `<span class="todo d${d}"><i></i>${esc(t)}</span>`).join('')}</div>`;
+    if (it.k === 'req') return it.done ? `<p class="note done"><span class="ok">${/^(拒绝|没回答|Denied|Not answered)/.test(it.done) ? '✕' : '✓'}</span>${esc(recordOf(it.req))}<span class="how">${esc(it.done)}</span></p>` : '';
     const open = T.opened.has(i), sum = stepsLine(it.steps);
-    return `<div class="steps ${open ? 'open' : 'tail'}"${it.steps.length ? '' : ' hidden'}><button type="button" class="s-sum" data-act="fr-rsteps" data-i="${i}" aria-expanded="${open}"><span class="chev">${I.chev}</span><span class="s-t">${it.took ? `干了 ${esc(it.took)}` : '干完了'}${sum ? ` · ${sum}` : ''}</span></button>`
+    return `<div class="steps ${open ? 'open' : 'tail'}"${it.steps.length ? '' : ' hidden'}><button type="button" class="s-sum" data-act="fr-rsteps" data-i="${i}" aria-expanded="${open}"><span class="chev">${I.chev}</span><span class="s-t">${it.took ? tr(`干了 ${esc(it.took)}`, `Worked ${esc(it.took)}`) : tr('干完了', 'Done')}${sum ? ` · ${sum}` : ''}</span></button>`
       + `<div class="s-wrap"><div class="s-clip"><div class="s-in">${open ? it.steps.map(st => st.k === 'say' ? `<div class="step say">${esc(st.t)}</div>`
         : `<div class="step"><span class="k">${K[st.k]}</span><span class="a" title="${esc(st.t)}">${esc(st.t)}</span><span class="r">${st.add !== undefined ? `<span class="p">+${st.add}</span> <span class="m">−${st.del ?? 0}</span>` : st.ok === true ? '<span class="p">✓</span>' : st.ok === false ? '<span class="m">✕</span>' : ''}</span></div>`).join('') : ''}</div></div></div></div>`;
   }
   function recordOf(r: Req) {
-    return r.tool === 'Ask' ? r.qs.map(q => q.q).join(' · ') : r.tool === 'Plan' ? '计划' : r.tool === 'Bash' ? r.cmd : r.tool === 'Edit' ? `改 ${r.file}` : r.tool === 'Form' ? r.server : r.name;
+    return r.tool === 'Ask' ? r.qs.map(q => q.q).join(' · ') : r.tool === 'Plan' ? tr('计划', 'Plan') : r.tool === 'Bash' ? r.cmd : r.tool === 'Edit' ? tr(`改 ${r.file}`, `Edit ${r.file}`) : r.tool === 'Form' ? r.server : r.name;
   }
   // The request it stopped on in the terminal, the window's own card; answering it here lets the terminal go on.
   function reqHTML(r: Req) {
@@ -179,46 +180,46 @@ export function mountFrom(ctx: PageCtx): Feature {
     const who = T.cur?.agent === 'codex' ? 'Codex' : 'Claude Code';
     if (r.tool === 'Ask') {
       const simple = r.qs.length === 1 && !r.qs[0].multi;
-      return `<div class="req ask${busy}"><span class="r-h">${who} 问你</span>${r.qs.map((q, qi) => `<div class="q-block"><p class="q">${esc(q.q)}</p><div class="opts">${q.opts.map(([l, d], k) =>
+      return `<div class="req ask${busy}"><span class="r-h">${who} ${tr('问你', 'asks you')}</span>${r.qs.map((q, qi) => `<div class="q-block"><p class="q">${esc(q.q)}</p><div class="opts">${q.opts.map(([l, d], k) =>
         `<button type="button" class="opt${T.asked[qi]?.includes(l) ? ' on' : ''}${on(`opt:${l}`)}" data-act="${simple ? 'fr-ropt' : 'fr-rpick'}" data-q="${qi}" data-v="${esc(l)}"${off}><i>${k + 1}</i><span><b>${esc(l)}</b>${d ? `<small>${esc(d)}</small>` : ''}</span></button>`).join('')}</div></div>`).join('')}`
-        + (simple ? '' : `<div class="choice"><button type="button" class="btn warm${on('all')}" data-act="fr-rall"${off || !r.qs.every((_, qi) => T.asked[qi]?.length) ? ' disabled' : ''}>好了</button></div>`)
-        + `<p class="hint">${simple ? '按数字键选，' : ''}${kbd('esc')} 不回答</p></div>`;
+        + (simple ? '' : `<div class="choice"><button type="button" class="btn warm${on('all')}" data-act="fr-rall"${off || !r.qs.every((_, qi) => T.asked[qi]?.length) ? ' disabled' : ''}>${tr('好了', 'Done')}</button></div>`)
+        + `<p class="hint">${simple ? tr('按数字键选，', 'Press a number to choose. ') : ''}${kbd('esc')} ${tr('不回答', 'skips it')}</p></div>`;
     }
-    const head = r.tool === 'Bash' ? '要你批准 · 跑一条命令' : r.tool === 'Edit' ? '要你批准 · 改一个文件' : r.tool === 'Plan' ? '计划写好了' : `要你批准 · ${esc(r.tool === 'Tool' ? r.name : r.tool === 'Form' ? r.server : '')}`;
+    const head = r.tool === 'Bash' ? tr('要你批准 · 跑一条命令', 'Needs your approval · run a command') : r.tool === 'Edit' ? tr('要你批准 · 改一个文件', 'Needs your approval · edit a file') : r.tool === 'Plan' ? tr('计划写好了', 'Plan ready') : tr(`要你批准 · ${esc(r.tool === 'Tool' ? r.name : r.tool === 'Form' ? r.server : '')}`, `Needs your approval · ${esc(r.tool === 'Tool' ? r.name : r.tool === 'Form' ? r.server : '')}`);
     const what = r.tool === 'Plan' ? `<div class="plan-text">${ctx.md(r.plan)}</div>` : r.tool === 'Bash' ? `<pre class="cmd"><span>${esc(home(r.cwd))} $</span> ${esc(r.cmd)}</pre>`
       : r.tool === 'Edit' ? `<div class="file">${esc(r.file)}</div>${r.diff.length ? ctx.diff(r.diff) : ''}` : r.tool === 'Tool' ? `<pre class="cmd">${esc(r.detail)}</pre>` : '';
     const why = r.tool !== 'Plan' && r.tool !== 'Form' && r.why ? `<p class="why">${esc(r.why)}</p>` : '';
     const always = r.tool !== 'Plan' && r.tool !== 'Form' && r.always ? `<button type="button" class="btn${on('always')}" data-act="fr-ralways"${off}>${esc(r.always)}</button>` : '';
-    return `<div class="req${busy}"><span class="r-h">${head}</span>${why}${what}<div class="choice"><button type="button" class="btn${on('deny')}" data-act="fr-rdeny"${off}>${r.tool === 'Plan' ? '再想想' : '拒绝'}${kbd('esc')}</button>${always}`
-      + `<button type="button" class="btn warm${on('allow')}" data-act="fr-rallow"${off}>${r.tool === 'Plan' ? '就这么做' : '允许'}${kbd('↵')}</button></div></div>`;
+    return `<div class="req${busy}"><span class="r-h">${head}</span>${why}${what}<div class="choice"><button type="button" class="btn${on('deny')}" data-act="fr-rdeny"${off}>${r.tool === 'Plan' ? tr('再想想', 'Think again') : tr('拒绝', 'Deny')}${kbd('esc')}</button>${always}`
+      + `<button type="button" class="btn warm${on('allow')}" data-act="fr-rallow"${off}>${r.tool === 'Plan' ? tr('就这么做', 'Go ahead') : tr('允许', 'Allow')}${kbd('↵')}</button></div></div>`;
   }
   // What 接手 changes, said once before it happens.
   function takeHTML(o: Outside) {
     const a = T.auth, claude = o.agent === 'claude', need = claude && a && !a.ready, l = liveOf(o.id);
-    const how = !claude ? '之后用同一个 ChatGPT 登录。' : !a ? '' : !a.packaged ? '之后用这台 Mac 上 Claude Code 自己的登录。'
-      : a.provider === 'bedrock' ? '之后用你的 Amazon Bedrock 账户。' : a.provider === 'vertex' ? '之后用你的 Google Vertex 账户。' : `之后用你的 API key（${a.hint ?? ''}），不再走订阅。`;
-    const now = l?.st === 'work' ? '它这会儿正在终端里跑：先在那边停下，再接过来。' : l?.st === 'wait' ? '它在终端里等你批：先在这里批了，或者在那边关掉。'
-      : o.recent ? '它两分钟内还在终端里动过，可能还开着：先在那边关掉。' : '';
-    const lines = [['', '接过来以后在这里接着聊，终端里那个就别再用了。'], ['', need ? '' : how], ['warm', need ? `还开不了：${a!.why ?? '先填一个 Anthropic API key'}。` : ''], ['warm', now]]
+    const how = !claude ? tr('之后用同一个 ChatGPT 登录。', 'From then on it uses the same ChatGPT login.') : !a ? '' : !a.packaged ? tr('之后用这台 Mac 上 Claude Code 自己的登录。', 'From then on it uses the login Claude Code already has on this Mac.')
+      : a.provider === 'bedrock' ? tr('之后用你的 Amazon Bedrock 账户。', 'From then on it uses your Amazon Bedrock account.') : a.provider === 'vertex' ? tr('之后用你的 Google Vertex 账户。', 'From then on it uses your Google Vertex account.') : tr(`之后用你的 API key（${a.hint ?? ''}），不再走订阅。`, `From then on it uses your API key (${a.hint ?? ''}), not a subscription.`);
+    const now = l?.st === 'work' ? tr('它这会儿正在终端里跑：先在那边停下，再接过来。', 'It is running in Terminal right now: stop it there first, then take it over.') : l?.st === 'wait' ? tr('它在终端里等你批：先在这里批了，或者在那边关掉。', 'It is waiting for approval in Terminal: approve here, or close it there.')
+      : o.recent ? tr('它两分钟内还在终端里动过，可能还开着：先在那边关掉。', 'It was active in Terminal within the last two minutes and may still be open: close it there first.') : '';
+    const lines = [['', tr('接过来以后在这里接着聊，终端里那个就别再用了。', 'After taking over, continue here and leave the Terminal one alone.')], ['', need ? '' : how], ['warm', need ? tr(`还开不了：${a!.why ?? '先填一个 Anthropic API key'}。`, `Cannot open yet: ${a!.why ?? 'add an Anthropic API key first'}.`) : ''], ['warm', now]]
       .filter(x => x[1]).map(([c, t]) => `<li${c ? ` class="${c}"` : ''}>${esc(t)}</li>`).join('');
-    const go = need ? `<button type="button" class="btn sm warm" data-act="fr-take-key">先填 key ${kbd('⏎')}</button>` : `<button type="button" class="btn sm warm" data-act="fr-take-yes">接手 ${kbd('⏎')}</button>`;
-    return `<div class="fr-tkc" role="group" aria-label="接手"><p class="fr-tkc-h">接手「${esc(o.title)}」？</p><ul>${lines}</ul><div class="fr-tkc-r"><button type="button" class="btn sm" data-act="fr-take-no">算了 ${kbd('esc')}</button>${go}</div></div>`;
+    const go = need ? `<button type="button" class="btn sm warm" data-act="fr-take-key">${tr('先填', 'Add')} key ${kbd('⏎')}</button>` : `<button type="button" class="btn sm warm" data-act="fr-take-yes">${tr('接手', 'Take over')} ${kbd('⏎')}</button>`;
+    return `<div class="fr-tkc" role="group" aria-label="${tr('接手', 'Take over')}"><p class="fr-tkc-h">${tr('接手「', 'Take over "')}${esc(o.title)}${tr('」？', '"?')}</p><ul>${lines}</ul><div class="fr-tkc-r"><button type="button" class="btn sm" data-act="fr-take-no">${tr('算了', 'Cancel')} ${kbd('esc')}</button>${go}</div></div>`;
   }
   function drawRO(fresh = false) {
     const o = T.cur; if (!o) return;
     const l = liveOf(o.id), st = l?.st === 'wait' ? 'wait' : l?.st === 'work' ? 'work' : 'done';
     patch(rh, `<span class="h-mk fr-rmk">${I.term}</span><div class="h-main"><div class="h-t"><b>${esc(o.title)}</b></div><div class="h-meta"><span class="who ${o.agent}">${o.agent === 'claude' ? 'Claude' : 'Codex'}</span><span class="dot">·</span>`
-      + `<span title="${esc(o.cwd)}">${esc(o.cwd.split('/').pop() || o.cwd)}</span>${o.branch ? `<span class="dot">·</span><span class="br">⎇ ${esc(o.branch)}</span>` : ''}<span class="dot">·</span><span class="st-${st}">${st === 'wait' ? '等你' : st === 'work' ? '在干活' : age(o.updated)}</span>`
-      + '<span class="dot">·</span><i class="fr-ttag">在终端里 · 只能看</i></div></div>'
-      + `<button type="button" class="h-btn" data-act="fr-take">${I.take}<span>接手</span></button><button type="button" class="h-btn icon" data-act="fr-rmore" aria-label="更多" data-tip="接手、复制 resume 命令">${I.more}</button>`);
+      + `<span title="${esc(o.cwd)}">${esc(o.cwd.split('/').pop() || o.cwd)}</span>${o.branch ? `<span class="dot">·</span><span class="br">⎇ ${esc(o.branch)}</span>` : ''}<span class="dot">·</span><span class="st-${st}">${st === 'wait' ? tr('等你', 'Waiting on you') : st === 'work' ? tr('在干活', 'Working') : age(o.updated)}</span>`
+      + `<span class="dot">·</span><i class="fr-ttag">${tr('在终端里 · 只能看', 'In Terminal · view only')}</i></div></div>`
+      + `<button type="button" class="h-btn" data-act="fr-take">${I.take}<span>${tr('接手', 'Take over')}</span></button><button type="button" class="h-btn icon" data-act="fr-rmore" aria-label="${tr('更多', 'More')}" data-tip="${tr('接手、复制 resume 命令', 'Take over, copy resume command')}">${I.more}</button>`);
     const stick = fresh || conv.scrollTop >= conv.scrollHeight - conv.clientHeight - 40;
-    patch(itemsEl, T.items === null ? '<p class="loading">在读这个会话…</p>'
-      : (T.items.map((it, i) => { const h = itemHTML(it, i); return h ? `<div class="item">${h}</div>` : ''; }).join('') || '<p class="loading">它的记录里还没有话。</p>')
-      + (T.why ? `<p class="note">读不出来：${esc(T.why)}</p>` : ''));
+    patch(itemsEl, T.items === null ? tr('<p class="loading">在读这个会话…</p>', '<p class="loading">Reading this session…</p>')
+      : (T.items.map((it, i) => { const h = itemHTML(it, i); return h ? `<div class="item">${h}</div>` : ''; }).join('') || tr('<p class="loading">它的记录里还没有话。</p>', '<p class="loading">Nothing in its record yet.</p>'))
+      + (T.why ? `<p class="note">${tr('读不出来：', 'Could not read it: ')}${esc(T.why)}</p>` : ''));
     const r = reqOf(o.id);
-    patch(rqEl, r ? `<div class="item">${reqHTML(r)}</div><p class="fr-also">终端里也在等，哪边先批都算</p>` : '');
+    patch(rqEl, r ? `<div class="item">${reqHTML(r)}</div><p class="fr-also">${tr('终端里也在等，哪边先批都算', 'Also waiting in Terminal: whichever side approves first counts')}</p>` : '');
     patch(bar, T.take ? takeHTML(o)
-      : `<div class="fr-rob"><span class="fr-rob-i">${I.term}</span><span class="fr-rob-t"><b>${words(o)}</b><span>这里只能看</span></span><button type="button" class="btn sm" data-act="fr-take">${I.take}接手</button></div>`);
+      : `<div class="fr-rob"><span class="fr-rob-i">${I.term}</span><span class="fr-rob-t"><b>${words(o)}</b><span>${tr('这里只能看', 'View only here')}</span></span><button type="button" class="btn sm" data-act="fr-take">${I.take}${tr('接手', 'Take over')}</button></div>`);
     if (stick) conv.scrollTop = conv.scrollHeight;
   }
   // A session the window opens is where you went: the read-only view steps aside.
@@ -244,7 +245,7 @@ export function mountFrom(ctx: PageCtx): Feature {
     if (!ok) { T.busy = ''; drawRO(); void refreshLive(); return; }
     // Gone from here at once; the terminal goes on, and its transcript shows what came of it.
     T.live.set(o.id, { id: o.id, st: decision === 'deny' ? 'done' : 'work' }); T.asked = []; T.busy = '';
-    ctx.toast(decision === 'deny' ? '拒绝了 · 终端那边接着往下走' : '批了 · 终端那边接着跑');
+    ctx.toast(decision === 'deny' ? tr('拒绝了 · 终端那边接着往下走', 'Denied · Terminal carries on') : tr('批了 · 终端那边接着跑', 'Allowed · Terminal carries on'));
     drawRO(); drawSky();
     setTimeout(() => { if (T.cur === o) void readItems(); }, 1200);
   }
@@ -277,8 +278,8 @@ export function mountFrom(ctx: PageCtx): Feature {
   // ---------- delete ----------
   const moreBtn = () => win.querySelector<HTMLElement>('.m-head:not(.fr-rh) [data-act="menu"][data-v="more"]');
   function askHTML(s: Sess, how: 'ahead' | 'dirty') {
-    return `<p class="fr-ask-h">删掉「${esc(s.title)}」？</p><p class="fr-ask-b">${how === 'ahead' ? `<code>${esc(s.branch)}</code> 上还有没合进去的提交。` : 'worktree 里还有没提交的改动。'}删之前会先备份。</p>`
-      + `<div class="fr-ask-r"><button type="button" class="btn sm fr-bad" data-act="fr-del-yes" data-id="${esc(s.id)}">删掉</button><button type="button" class="btn sm" data-act="fr-del-no" data-id="${esc(s.id)}">先留着</button></div>`;
+    return `<p class="fr-ask-h">${tr('删掉「', 'Delete "')}${esc(s.title)}${tr('」？', '"?')}</p><p class="fr-ask-b">${how === 'ahead' ? `<code>${esc(s.branch)}</code> ${tr('上还有没合进去的提交。', 'has commits that are not merged yet.')}` : tr('worktree 里还有没提交的改动。', 'The worktree has uncommitted changes.')}${tr('删之前会先备份。', ' It is backed up before deleting.')}</p>`
+      + `<div class="fr-ask-r"><button type="button" class="btn sm fr-bad" data-act="fr-del-yes" data-id="${esc(s.id)}">${tr('删掉', 'Delete')}</button><button type="button" class="btn sm" data-act="fr-del-no" data-id="${esc(s.id)}">${tr('先留着', 'Keep')}</button></div>`;
   }
   function ask(s: Sess, how: 'ahead' | 'dirty', at: HTMLElement | { x: number; y: number }) {
     ctx.menu(askHTML(s, how), at, { right: at instanceof HTMLElement, cls: 'fr-ask' });
@@ -308,9 +309,9 @@ export function mountFrom(ctx: PageCtx): Feature {
     s.archived = true; s.pinned = false; ctx.draw();
     void ctx.call(`/sessions/${s.id}/meta`, { archived: true }).catch(() => {});
     ctx.cue('close', .8);
-    ctx.toast(`删了「${s.title}」`);
+    ctx.toast(tr(`删了「${s.title}」`, `Deleted "${s.title}"`));
     const t = win.querySelector<HTMLElement>('.toast');
-    t?.insertAdjacentHTML('beforeend', ` <button type="button" class="fr-undo" data-act="fr-undel" data-id="${esc(s.id)}">撤销</button>`);
+    t?.insertAdjacentHTML('beforeend', ` <button type="button" class="fr-undo" data-act="fr-undel" data-id="${esc(s.id)}">${tr('撤销', 'Undo')}</button>`);
   }
   function unhold(id: string) {
     const h = holds.get(id), s = ctx.byId(id);
@@ -318,7 +319,7 @@ export function mountFrom(ctx: PageCtx): Feature {
     clearTimeout(h.t); holds.delete(id);
     s.archived = false; s.pinned = h.pinned; s.parked = h.parked; ctx.draw();
     void ctx.tryCall(`/sessions/${id}/meta`, { archived: false, pinned: h.pinned, parked: h.parked });
-    ctx.toast(`撤销了，「${s.title}」还在`);
+    ctx.toast(tr(`撤销了，「${s.title}」还在`, `Undone · "${s.title}" is still here`));
     if (h.was) ctx.open(id);
     ctx.cue('open', .7);
   }
@@ -330,7 +331,7 @@ export function mountFrom(ctx: PageCtx): Feature {
     if (!(r instanceof Error)) return;
     // Git would lose something after all: the question, and the row is back until it is answered.
     const back = () => { s.archived = false; ctx.draw(); void ctx.tryCall(`/sessions/${id}/meta`, { archived: false }); };
-    if (r.need === 'force') { back(); ask(s, /没提交/.test(r.message) ? 'dirty' : 'ahead', { x: Math.max(8, win.clientWidth / 2 - 150), y: 70 }); return; }
+    if (r.need === 'force') { back(); ask(s, /没提交|uncommitted/i.test(r.message) ? 'dirty' : 'ahead', { x: Math.max(8, win.clientWidth / 2 - 150), y: 70 }); return; }
     back(); ctx.toast(r.message, true);
   }
   async function force(id: string) {
@@ -339,7 +340,7 @@ export function mountFrom(ctx: PageCtx): Feature {
     const r = await ctx.tryCall(`/sessions/${id}?force=1`, undefined, 'DELETE');
     if (!r) return;
     ctx.cue('close');
-    ctx.toast(typeof r.kept === 'string' && r.kept ? `删了 · ${s.dirty?.ahead || !s.dirty ? '提交' : '改动'}备份在 ${r.kept}` : `删了「${s.title}」`);
+    ctx.toast(typeof r.kept === 'string' && r.kept ? tr(`删了 · ${s.dirty?.ahead || !s.dirty ? '提交' : '改动'}备份在 ${r.kept}`, `Deleted · ${s.dirty?.ahead || !s.dirty ? 'commits' : 'changes'} backed up in ${r.kept}`) : tr(`删了「${s.title}」`, `Deleted "${s.title}"`));
   }
   // A row's right click, in the sky and in the classic list: the row's own lines, and 删除.
   win.addEventListener('contextmenu', e => {
@@ -349,13 +350,13 @@ export function mountFrom(ctx: PageCtx): Feature {
     const r = win.getBoundingClientRect(), at = { x: e.clientX - r.left, y: e.clientY - r.top };
     if (row.dataset.fr) {
       const o = T.list.find(x => x.id === row.dataset.fr); if (!o) return;
-      ctx.menu(`<button type="button" data-act="fr-topen" data-fr="${esc(o.id)}" data-take="1">接手</button><button type="button" data-act="fr-resume" data-fr="${esc(o.id)}">复制 resume 命令</button>`, at);
+      ctx.menu(`<button type="button" data-act="fr-topen" data-fr="${esc(o.id)}" data-take="1">${tr('接手', 'Take over')}</button><button type="button" data-act="fr-resume" data-fr="${esc(o.id)}">${tr('复制 resume 命令', 'Copy resume command')}</button>`, at);
       return;
     }
     const s = ctx.byId(row.dataset.session ?? row.dataset.id ?? ''); if (!s) return;
     point = at;
-    ctx.menu(`<button type="button" data-act="pin" data-id="${esc(s.id)}">${s.pinned ? '取消置顶' : '置顶'}</button><button type="button" data-act="park" data-id="${esc(s.id)}">${s.parked ? '不放着了' : '先放着'}</button>`
-      + `<button type="button" data-act="archive" data-id="${esc(s.id)}">归档</button><span class="sep"></span><button type="button" class="bad" data-act="fr-del" data-id="${esc(s.id)}">删除</button>`, at);
+    ctx.menu(`<button type="button" data-act="pin" data-id="${esc(s.id)}">${s.pinned ? tr('取消置顶', 'Unpin') : tr('置顶', 'Pin')}</button><button type="button" data-act="park" data-id="${esc(s.id)}">${s.parked ? tr('不放着了', 'Unpark') : tr('先放着', 'Park')}</button>`
+      + `<button type="button" data-act="archive" data-id="${esc(s.id)}">${tr('归档', 'Archive')}</button><span class="sep"></span><button type="button" class="bad" data-act="fr-del" data-id="${esc(s.id)}">${tr('删除', 'Delete')}</button>`, at);
   }, true);
 
   // ---------- polling: the list now and then, what runs in a terminal every few seconds ----------
@@ -363,9 +364,9 @@ export function mountFrom(ctx: PageCtx): Feature {
   setInterval(() => { if (!document.hidden) void refreshList(); }, 60000);
   setInterval(() => { if (!document.hidden && (T.list.length || T.cur)) void refreshLive(); }, 2500);
 
-  const nudge = () => { if (performance.now() - T.nudged < 3000) return; T.nudged = performance.now(); ctx.toast('它在终端里：接手以后才能在这里说'); };
+  const nudge = () => { if (performance.now() - T.nudged < 3000) return; T.nudged = performance.now(); ctx.toast(tr('它在终端里：接手以后才能在这里说', 'It is in Terminal: take it over to write here')); };
   return {
-    more: s => `<button type="button" class="bad" data-act="fr-del" data-id="${esc(s.id)}">删除</button>`,
+    more: s => `<button type="button" class="bad" data-act="fr-del" data-id="${esc(s.id)}">${tr('删除', 'Delete')}</button>`,
     key(e) {
       const o = T.cur, k = e.key, t = e.target as HTMLElement;
       if (!o || e.isComposing || win.classList.contains('fr-modal') || win.querySelector('.pop.on')) return false;
@@ -388,7 +389,7 @@ export function mountFrom(ctx: PageCtx): Feature {
         if (k === 'Escape') return take(() => void answer('deny', 'deny'));
       }
       // The window's own session is behind this view: its keys (esc, ⏎, digits) must not reach it.
-      if (k === 'Escape') return take(() => { if (liveOf(o.id)?.st === 'work') ctx.toast('它在终端里跑：要停去那边停，或者先接手'); });
+      if (k === 'Escape') return take(() => { if (liveOf(o.id)?.st === 'work') ctx.toast(tr('它在终端里跑：要停去那边停，或者先接手', 'It is running in Terminal: stop it there, or take it over first')); });
       if (k === 'Enter' && !onBtn) return take(() => {});
       if (k === 'Enter' || (plain && /^[1-9]$/.test(k))) { e.stopImmediatePropagation(); return true; }
       if (plain && k.length === 1 && k !== ' ' && k !== '?' && !onBtn) return take(nudge);
@@ -415,7 +416,7 @@ export function mountFrom(ctx: PageCtx): Feature {
       }
       if (a === 'fr-resume') {
         const o = T.list.find(x => x.id === el.dataset.fr) ?? T.cur; ctx.closeMenu();
-        if (o) { const c = resumeOf(o); void navigator.clipboard.writeText(c).then(() => ctx.toast(`复制了：${c}`), () => ctx.toast(`在终端里跑：${c}`)); ctx.tick(); }
+        if (o) { const c = resumeOf(o); void navigator.clipboard.writeText(c).then(() => ctx.toast(tr(`复制了：${c}`, `Copied: ${c}`)), () => ctx.toast(tr(`在终端里跑：${c}`, `Run in Terminal: ${c}`))); ctx.tick(); }
         return true;
       }
       if (!T.cur) return false;
@@ -423,7 +424,7 @@ export function mountFrom(ctx: PageCtx): Feature {
       if (a === 'fr-take-no') { T.take = false; drawRO(); ctx.tick(); return true; }
       if (a === 'fr-take-yes') { void takeOver(); return true; }
       if (a === 'fr-take-key') { T.take = false; drawRO(); showSettings('key', 'claude'); return true; }
-      if (a === 'fr-rmore') { ctx.menu(`<button type="button" data-act="fr-take">接手</button><button type="button" data-act="fr-resume" data-fr="${esc(T.cur.id)}">复制 resume 命令</button>`, el, { right: true }); return true; }
+      if (a === 'fr-rmore') { ctx.menu(`<button type="button" data-act="fr-take">${tr('接手', 'Take over')}</button><button type="button" data-act="fr-resume" data-fr="${esc(T.cur.id)}">${tr('复制 resume 命令', 'Copy resume command')}</button>`, el, { right: true }); return true; }
       if (a === 'fr-rsteps') { const i = Number(el.dataset.i); if (T.opened.has(i)) T.opened.delete(i); else T.opened.add(i); drawRO(); return true; }
       if (a === 'fr-rallow' || a === 'fr-ralways' || a === 'fr-rdeny') { void answer(a === 'fr-rallow' ? 'allow' : a === 'fr-ralways' ? 'always' : 'deny', a.slice(4)); return true; }
       if (a === 'fr-ropt') { void answer('allow', `opt:${el.dataset.v}`, [[el.dataset.v!]]); return true; }

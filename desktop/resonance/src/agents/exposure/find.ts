@@ -4,12 +4,13 @@
 import type { Item } from '../../../electron/agents/types';
 import { esc } from './motion';
 import './find.css';
+import { tr } from '../lang';
 
 const ICON = '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><circle cx="7" cy="7" r="4.3"/><path d="m10.3 10.3 3.2 3.2"/></svg>';
 // The field in the horizon, where 收起 stands while the sky is open.
 export function findField() {
   const el = document.createElement('label'); el.className = 'bw-find'; el.hidden = true;
-  el.innerHTML = `${ICON}<input type="text" placeholder="搜标题，也搜说过的话" aria-label="搜说过的话" autocomplete="off" spellcheck="false"><kbd>esc</kbd>`;
+  el.innerHTML = `${ICON}<input type="text" placeholder="${tr('搜标题，也搜说过的话', 'Search titles and messages')}" aria-label="${tr('搜说过的话', 'Search what was said')}" autocomplete="off" spellcheck="false"><kbd>esc</kbd>`;
   return { el, input: el.querySelector('input')! };
 }
 // The text with what you typed lit, wherever it is.

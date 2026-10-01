@@ -6,6 +6,7 @@
 import type { File as Upload, Item, Sess } from '../../electron/agents/types';
 import type { Feature, PageCtx } from './ctx';
 import './back.css';
+import { hhmm, plural, tr } from './lang';
 
 type You = Item & { k: 'you' };
 type Answer = Item & { k: 'it' };
@@ -32,7 +33,7 @@ const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 const frame = () => new Promise(r => requestAnimationFrame(r));
 // What you said, short enough to quote: one line, no end punctuation.
 const said = (t: string, n: number) => { const x = t.replace(/\s+/g, ' ').replace(/[。！？!?.，,；;：:\s]+$/, ''); return x.length > n ? `${x.slice(0, n - 1)}…` : x; };
-const clock = (at?: number) => at ? new Date(at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false }) : '';
+const clock = (at?: number) => at ? hhmm(at) : '';
 const nums = (a: number, d: number) => `<span class="p">+${a}</span> <span class="m">−${d}</span>`;
 const busy = (s: Sess) => s.st === 'work' || s.st === 'pack' || s.st === 'wait';
 const svg = (d: string, w = 13) => `<svg viewBox="0 0 16 16" width="${w}" height="${w}" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
@@ -48,7 +49,7 @@ export function mountBack(ctx: PageCtx): Feature {
   const comp = win.querySelector<HTMLElement>('.composer')!, box = comp.querySelector<HTMLElement>('.c-box')!, host = win.querySelector<HTMLElement>('.host')!;
   const pk = document.createElement('div'), bar = document.createElement('div'), ex = document.createElement('div');
   pk.className = 'bk-pk'; pk.hidden = true; pk.setAttribute('role', 'dialog');
-  bar.className = 'bk-bar'; bar.hidden = true; bar.setAttribute('role', 'toolbar'); bar.setAttribute('aria-label', '选中的字');
+  bar.className = 'bk-bar'; bar.hidden = true; bar.setAttribute('role', 'toolbar'); bar.setAttribute('aria-label', tr('选中的字', 'Selected text'));
   ex.className = 'bk-ex'; ex.hidden = true;
   comp.append(pk); win.append(bar, ex);
   // The composer keeps the keys while a row is clicked, and selected words stay selected while the bar is.
@@ -83,11 +84,11 @@ export function mountBack(ctx: PageCtx): Feature {
     return { list, wrote: F.wrote, add: list.reduce((a, f) => a + (f.add ?? 0), 0), del: list.reduce((a, f) => a + (f.del ?? 0), 0) };
   }
   function optsOf(s: Sess, r: Row): Opt[] {
-    if (s.agent === 'codex') return [{ v: 1, l: '对话和文件都退', off: true }, { v: 2, l: '只退对话' }, { v: 3, l: '只退文件', off: true }, { v: 0, l: '算了' }];
+    if (s.agent === 'codex') return [{ v: 1, l: tr('对话和文件都退', 'Rewind conversation and files'), off: true }, { v: 2, l: tr('只退对话', 'Rewind conversation only') }, { v: 3, l: tr('只退文件', 'Rewind files only'), off: true }, { v: 0, l: tr('算了', 'Cancel') }];
     const F = filesOf(s, r), n = F.list.length, cannot = !!PK.dry && PK.dry.at === r.it?.id && !PK.dry.can;
-    const fs = cannot ? '文件回不去' : n ? `${n} 个文件${F.add || F.del ? ` ${nums(F.add, F.del)}` : ''}` : PK.dry?.at === r.it?.id ? '文件没有要退的' : '这之后没改文件';
-    return [{ v: 1, l: '对话和文件都退', sub: fs, off: !n || cannot, files: F }, { v: 2, l: '只退对话', sub: n ? '文件留着' : '' },
-      { v: 3, l: '只退文件', sub: cannot ? '文件回不去' : n ? '对话留着' : '', off: !n || cannot, files: F }, { v: 0, l: '算了' }];
+    const fs = cannot ? tr('文件回不去', "Files can't be restored") : n ? tr(`${n} 个文件${F.add || F.del ? ` ${nums(F.add, F.del)}` : ''}`, `${plural(n, 'file')}${F.add || F.del ? ` ${nums(F.add, F.del)}` : ''}`) : PK.dry?.at === r.it?.id ? tr('文件没有要退的', 'No files to rewind') : tr('这之后没改文件', 'No files changed after this');
+    return [{ v: 1, l: tr('对话和文件都退', 'Rewind conversation and files'), sub: fs, off: !n || cannot, files: F }, { v: 2, l: tr('只退对话', 'Rewind conversation only'), sub: n ? tr('文件留着', 'Files stay') : '' },
+      { v: 3, l: tr('只退文件', 'Rewind files only'), sub: cannot ? tr('文件回不去', "Files can't be restored") : n ? tr('对话留着', 'Conversation stays') : '', off: !n || cannot, files: F }, { v: 0, l: tr('算了', 'Cancel') }];
   }
   const firstOn = (opts: Opt[]) => Math.max(0, opts.findIndex(o => !o.off));
   const liveRow = (s: Sess, r: Row) => busy(s) && r.i === lastYou(s.id);
@@ -95,19 +96,19 @@ export function mountBack(ctx: PageCtx): Feature {
     const fork = PK.kind === 'fork', cx = s.agent === 'codex';
     const rows = PK.rows.map((r, j) => {
       const on = j === PK.sel, a = `type="button" class="bk-r${r.it ? '' : ' bk-now'}${on ? ' bk-sel' : ''}" data-act="bk-row" data-j="${j}" role="option" aria-selected="${on}"`;
-      if (!r.it) return `<button ${a}><span class="bk-r-t">整段对话</span><span class="bk-r-m">现在</span></button>`;
+      if (!r.it) return `<button ${a}><span class="bk-r-t">${tr('整段对话', 'Whole conversation')}</span><span class="bk-r-m">${tr('现在', 'Now')}</span></button>`;
       let meta = '';
-      if (liveRow(s, r)) meta = '<span class="bk-r-live">在干活</span>';
-      else if (!fork && !cx) { const F = edits(s, r.i); meta = `<span class="bk-r-f">${F.list.length ? `${F.list.length} 个文件 ${nums(F.add, F.del)}` : '没改文件'}</span>`; }
-      return `<button ${a}><span class="bk-r-t">${esc(r.it.text.replace(/\s+/g, ' ') || '（图片）')}</span>${meta}<span class="bk-r-m">${clock(r.it.at)}</span></button>`;
+      if (liveRow(s, r)) meta = tr('<span class="bk-r-live">在干活</span>', '<span class="bk-r-live">Working</span>');
+      else if (!fork && !cx) { const F = edits(s, r.i); meta = `<span class="bk-r-f">${F.list.length ? tr(`${F.list.length} 个文件 ${nums(F.add, F.del)}`, `${plural(F.list.length, 'file')} ${nums(F.add, F.del)}`) : tr('没改文件', 'No file changes')}</span>`; }
+      return `<button ${a}><span class="bk-r-t">${esc(r.it.text.replace(/\s+/g, ' ') || tr('（图片）', '(image)'))}</span>${meta}<span class="bk-r-m">${clock(r.it.at)}</span></button>`;
     }).join('');
-    return `<p class="bk-pk-h">${fork ? '分叉 · 从哪一句之前分出去' : '退回 · 退到哪一句之前'}</p><div class="bk-pk-l" role="listbox" aria-label="你说过的话">${rows}</div>`
-      + `<p class="bk-pk-f">${kbd('↑')}${kbd('↓')} 选 · ${kbd('⏎')} ${fork ? '分叉' : '下一步'} · ${kbd('esc')} 收起</p>`;
+    return `<p class="bk-pk-h">${fork ? tr('分叉 · 从哪一句之前分出去', 'Fork · from before which message') : tr('退回 · 退到哪一句之前', 'Rewind · to before which message')}</p><div class="bk-pk-l" role="listbox" aria-label="${tr('你说过的话', 'Your messages')}">${rows}</div>`
+      + `<p class="bk-pk-f">${kbd('↑')}${kbd('↓')} ${tr('选', 'select')} · ${kbd('⏎')} ${fork ? tr('分叉', 'Fork') : tr('下一步', 'Next')} · ${kbd('esc')} ${tr('收起', 'close')}</p>`;
   }
   function flHTML(F: Files) {
     const show = F.list.slice(0, 4), more = F.list.length - show.length;
-    return `<div class="bk-fl">${show.map(f => `<div><code>${esc(f.p)}</code><span>${f.add !== undefined ? nums(f.add, f.del ?? 0) : ''}</span></div>`).join('')}${more > 0 ? `<div><span>另外 ${more} 个</span></div>` : ''}`
-      + `${F.wrote.map(f => `<p class="bk-warn">命令写的 <code>${esc(f)}</code> 不在这里，要自己看</p>`).join('')}</div>`;
+    return `<div class="bk-fl">${show.map(f => `<div><code>${esc(f.p)}</code><span>${f.add !== undefined ? nums(f.add, f.del ?? 0) : ''}</span></div>`).join('')}${more > 0 ? `<div><span>${tr('另外 ', '')}${more} ${tr('个', 'more')}</span></div>` : ''}`
+      + `${F.wrote.map(f => `<p class="bk-warn">${tr('命令写的 ', '')}<code>${esc(f)}</code> ${tr('不在这里，要自己看', 'was written by a command and is not listed here, check it yourself')}</p>`).join('')}</div>`;
   }
   function optsHTML(s: Sess) {
     const r = PK.rows[PK.sel], opts = optsOf(s, r);
@@ -116,16 +117,16 @@ export function mountBack(ctx: PageCtx): Feature {
       return `<button type="button" class="bk-r bk-o${on ? ' bk-sel' : ''}${o.off ? ' bk-off' : ''}" data-act="bk-opt" data-j="${j}" role="option" aria-selected="${on}"${o.off ? ' aria-disabled="true"' : ''}>`
         + `${kbd(String(j + 1))}<span class="bk-r-t">${o.l}</span>${o.sub ? `<span class="bk-r-f">${o.sub}</span>` : ''}</button>${F ? flHTML(F) : ''}`;
     }).join('');
-    const d = PK.dry, why = s.agent === 'codex' ? 'Codex 不记文件的检查点，只能退对话' : d && d.at === r.it?.id && !d.can ? `文件回不去：${d.why ?? '没有那时的检查点'}` : '';
-    return `<p class="bk-pk-h">退回到你说「${esc(said(r.it!.text, 18))}」之前</p>${why ? `<p class="bk-pk-w">${esc(why)}</p>` : ''}<div class="bk-pk-l" role="listbox" aria-label="退什么">${rows}</div>`
-      + `<p class="bk-pk-f">${PK.going ? '在退回…' : `${kbd('↑')}${kbd('↓')} 选 · ${kbd('⏎')} 确定 · ${kbd('esc')} 换一句`}</p>`;
+    const d = PK.dry, why = s.agent === 'codex' ? tr('Codex 不记文件的检查点，只能退对话', 'Codex keeps no file checkpoints, so only the conversation can be rewound') : d && d.at === r.it?.id && !d.can ? tr(`文件回不去：${d.why ?? '没有那时的检查点'}`, `Files can't be restored: ${d.why ?? 'no checkpoint from then'}`) : '';
+    return `<p class="bk-pk-h">${tr('退回到你说「', 'Rewind to before you said "')}${esc(said(r.it!.text, 18))}${tr('」之前', '"')}</p>${why ? `<p class="bk-pk-w">${esc(why)}</p>` : ''}<div class="bk-pk-l" role="listbox" aria-label="${tr('退什么', 'Rewind what')}">${rows}</div>`
+      + `<p class="bk-pk-f">${PK.going ? tr('在退回…', 'Rewinding…') : tr(`${kbd('↑')}${kbd('↓')} 选 · ${kbd('⏎')} 确定 · ${kbd('esc')} 换一句`, `${kbd('↑')}${kbd('↓')} select · ${kbd('⏎')} confirm · ${kbd('esc')} back`)}</p>`;
   }
   function askHTML(s: Sess) {
-    const doing = s.st === 'wait' ? '在等你回答' : s.st === 'pack' ? '在压缩上下文' : s.now ?? '在想', m = /^(在\S+) (.+)$/.exec(doing);
-    const opts = [['先打断它', '再选退什么'], ['算了', '']];
-    return `<p class="bk-pk-h bk-warm">它还在干活，先打断它？</p><p class="bk-pk-p">退回之前要先停下这一轮：它${m ? `${esc(m[1])} <code>${esc(m[2])}</code>` : esc(doing)}，会停在半路。</p>`
-      + `<div class="bk-pk-l" role="listbox" aria-label="先打断它吗">${opts.map(([l, sub], j) => `<button type="button" class="bk-r bk-o${j === PK.opt ? ' bk-sel' : ''}" data-act="bk-opt" data-j="${j}" role="option" aria-selected="${j === PK.opt}">${kbd(String(j + 1))}<span class="bk-r-t">${l}</span>${sub ? `<span class="bk-r-f">${sub}</span>` : ''}</button>`).join('')}</div>`
-      + `<p class="bk-pk-f">${kbd('⏎')} 确定 · ${kbd('esc')} 换一句</p>`;
+    const doing = s.st === 'wait' ? tr('在等你回答', 'Waiting for your answer') : s.st === 'pack' ? tr('在压缩上下文', 'Compacting context') : s.now ?? tr('在想', 'Thinking'), m = s.st === 'wait' || s.st === 'pack' ? null : /^(在\S+|[A-Za-z]+ing) (.+)$/.exec(doing);
+    const opts = [[tr('先打断它', 'Interrupt it'), tr('再选退什么', 'then choose what to rewind')], [tr('算了', 'Cancel'), '']];
+    return tr(`<p class="bk-pk-h bk-warm">它还在干活，先打断它？</p><p class="bk-pk-p">退回之前要先停下这一轮：它${m ? `${esc(m[1])} <code>${esc(m[2])}</code>` : esc(doing)}，会停在半路。</p>`, `<p class="bk-pk-h bk-warm">It is still working. Interrupt it first?</p><p class="bk-pk-p">Rewinding has to stop this turn first: it is ${m ? `${esc(m[1].toLowerCase())} <code>${esc(m[2])}</code>` : esc(doing.toLowerCase())} and would be cut off halfway.</p>`)
+      + `<div class="bk-pk-l" role="listbox" aria-label="${tr('先打断它吗', 'Interrupt it first?')}">${opts.map(([l, sub], j) => `<button type="button" class="bk-r bk-o${j === PK.opt ? ' bk-sel' : ''}" data-act="bk-opt" data-j="${j}" role="option" aria-selected="${j === PK.opt}">${kbd(String(j + 1))}<span class="bk-r-t">${l}</span>${sub ? `<span class="bk-r-f">${sub}</span>` : ''}</button>`).join('')}</div>`
+      + `<p class="bk-pk-f">${kbd('⏎')} ${tr('确定', 'confirm')} · ${kbd('esc')} ${tr('换一句', 'back')}</p>`;
   }
   // Edge to edge with the composer box, just above it. The conversation makes room under its end for it, so the last
   // turn is read above the list rather than under it.
@@ -147,7 +148,7 @@ export function mountBack(ctx: PageCtx): Feature {
     // Until you move, the first choice that can be made is picked, as what the files would do becomes known.
     if (PK.stage === 'opts' && !PK.moved && !PK.going) PK.opt = firstOn(optsOf(s, PK.rows[PK.sel]));
     patch(pk, PK.stage === 'list' ? listHTML(s) : PK.stage === 'ask' ? askHTML(s) : optsHTML(s));
-    pk.setAttribute('aria-label', PK.kind === 'fork' ? '分叉' : '退回');
+    pk.setAttribute('aria-label', PK.kind === 'fork' ? tr('分叉', 'Fork') : tr('退回', 'Rewind'));
     pk.hidden = false; place();
     const l = pk.querySelector<HTMLElement>('.bk-pk-l'), r = pk.querySelector<HTMLElement>('.bk-r.bk-sel');
     if (l && r) { if (r.offsetTop < l.scrollTop) l.scrollTop = r.offsetTop - 2; else if (r.offsetTop + r.offsetHeight > l.scrollTop + l.clientHeight) l.scrollTop = r.offsetTop + r.offsetHeight - l.clientHeight + 2; }
@@ -156,10 +157,10 @@ export function mountBack(ctx: PageCtx): Feature {
   function closePick() { if (!PK.open && pk.hidden) return; PK.open = false; PK.rows = []; PK.going = false; pk.hidden = true; patch(pk, ''); unpad(); }
   function openPick(kind: 'rewind' | 'fork', s: Sess | undefined) {
     if (!s || !ctx.chat() || ctx.current()?.id !== s.id) return;
-    if (s.term) { ctx.toast('在终端里，先拿回来'); return; }
+    if (s.term) { ctx.toast(tr('在终端里，先拿回来', 'In Terminal, take it back first')); return; }
     const items = ctx.items(s.id) ?? [];
     const rows: Row[] = items.flatMap((it, i) => it.k === 'you' && !it.queued && it.id && (it.text || it.files?.length) ? [{ it, i }] : []);
-    if (!rows.length) { ctx.toast('这个会话里你还没说过话'); return; }
+    if (!rows.length) { ctx.toast(tr('这个会话里你还没说过话', "You haven't said anything in this session yet")); return; }
     if (kind === 'fork') rows.push({ i: items.length });
     ctx.closeMenu(); closeBar(); closeEx(true);
     Object.assign(PK, { open: true, kind, stage: 'list', sid: s.id, rows, sel: rows.length - 1, opt: 0, going: false, dry: null });
@@ -231,7 +232,7 @@ export function mountBack(ctx: PageCtx): Feature {
     const it = r.it!, id = s.id;
     PK.going = true; drawPick();
     const fail = () => { PK.going = false; if (PK.open) drawPick(); };
-    if (!await idle(id)) { fail(); ctx.toast('它还没停下来，等一下再退'); return; }
+    if (!await idle(id)) { fail(); ctx.toast(tr('它还没停下来，等一下再退', "It hasn't stopped yet, try again in a moment")); return; }
     if (v === 3) {
       if (!await ctx.tryCall(`/sessions/${id}/rewind`, { at: it.id })) { fail(); return; }
       closePick(); ctx.cue('back');
@@ -298,7 +299,7 @@ export function mountBack(ctx: PageCtx): Feature {
     const item = md.closest('.item'), i = item?.parentElement ? [...item.parentElement.children].indexOf(item) : -1;
     if (ctx.items(s.id)?.[i]?.k !== 'it') { closeBar(); return; }
     Object.assign(SEL, { text, sid: s.id, i, inQ: q?.dataset.q ?? '', para: blk && !q ? [...md.children].filter(x => !x.hasAttribute('data-x')).indexOf(blk) : -1 });
-    patch(bar, `<button type="button" data-act="bk-quote">${I.quote}<span>引用</span></button><button type="button" data-act="bk-ask">${I.btw}<span>问一句</span></button>`);
+    patch(bar, `<button type="button" data-act="bk-quote">${I.quote}<span>${tr('引用', 'Quote')}</span></button><button type="button" data-act="bk-ask">${I.btw}<span>${tr('问一句', 'Ask')}</span></button>`);
     bar.hidden = false;
     // Under the words, from where they start and inside the answer's column, so it covers neither the line above nor
     // the margin; over them only when the composer is too close below.
@@ -333,18 +334,18 @@ export function mountBack(ctx: PageCtx): Feature {
   }
   // An answer's own markdown, drawn the way the page draws answers, without a second .md inside the first.
   const mdIn = (t: string) => { const h = ctx.md(t); return h.startsWith('<div class="md">') ? h.slice(16, -6) : h; };
-  const qaHTML = (q: Side) => q.qa.map((x, j) => `<div class="bk-qa"><p class="bk-qq">${esc(x.q)}</p>${x.a === undefined ? '<div class="bk-sk" role="img" aria-label="在想"><i></i><i></i></div>'
+  const qaHTML = (q: Side) => q.qa.map((x, j) => `<div class="bk-qa"><p class="bk-qq">${esc(x.q)}</p>${x.a === undefined ? `<div class="bk-sk" role="img" aria-label="${tr('在想', 'Thinking')}"><i></i><i></i></div>`
     : x.err ? `<p class="bk-qa-a bk-err">${esc(x.a)}</p>`
-    : `<div class="bk-qa-a">${mdIn(x.a)}</div><div class="bk-qb"><button type="button" data-act="bk-q-copy" data-q="${q.id}" data-j="${j}">${I.copy}复制</button><button type="button" data-act="bk-q-put" data-q="${q.id}" data-j="${j}">放进输入框</button></div>`}</div>`).join('');
+    : `<div class="bk-qa-a">${mdIn(x.a)}</div><div class="bk-qb"><button type="button" data-act="bk-q-copy" data-q="${q.id}" data-j="${j}">${I.copy}${tr('复制', 'Copy')}</button><button type="button" data-act="bk-q-put" data-q="${q.id}" data-j="${j}">${tr('放进输入框', 'Put in composer')}</button></div>`}</div>`).join('');
   // The box keeps no value in its markup: what you type is put back after a redraw, so typing never redraws it.
-  const inHTML = (q: Side) => `<label class="bk-q-in"><input type="text" class="bk-qi" data-q="${q.id}" placeholder="${q.qa.length ? '接着问' : '问这一段'}" aria-label="侧问" autocomplete="off" spellcheck="false">${kbd('⏎')}</label>`;
-  const blockHTML = (q: Side) => `<div class="bk-q" data-x data-q="${q.id}"><div class="bk-q-h"><span class="bk-q-k">${I.btw}侧问</span><span class="bk-q-w">${q.words ? `「${esc(q.words)}」` : ''}</span>`
-    + `<button type="button" class="bk-q-b" data-act="bk-q-right" data-q="${q.id}">拖到右边</button><button type="button" class="bk-q-b" data-act="bk-q-min" data-q="${q.id}">收起</button></div>`
+  const inHTML = (q: Side) => `<label class="bk-q-in"><input type="text" class="bk-qi" data-q="${q.id}" placeholder="${q.qa.length ? tr('接着问', 'Ask a follow-up') : tr('问这一段', 'Ask about this paragraph')}" aria-label="${tr('侧问', 'Side question')}" autocomplete="off" spellcheck="false">${kbd('⏎')}</label>`;
+  const blockHTML = (q: Side) => `<div class="bk-q" data-x data-q="${q.id}"><div class="bk-q-h"><span class="bk-q-k">${I.btw}${tr('侧问', 'Side question')}</span><span class="bk-q-w">${q.words ? tr(`「${esc(q.words)}」`, `"${esc(q.words)}"`) : ''}</span>`
+    + `<button type="button" class="bk-q-b" data-act="bk-q-right" data-q="${q.id}">${tr('拖到右边', 'Move right')}</button><button type="button" class="bk-q-b" data-act="bk-q-min" data-q="${q.id}">${tr('收起', 'Collapse')}</button></div>`
     + `<div class="bk-q-s">${qaHTML(q)}</div>${inHTML(q)}</div>`;
-  const panelHTML = (q: Side) => `<div class="bk-sp" data-q="${q.id}">${q.words ? `<p class="bk-sp-w">「${esc(q.words)}」</p>` : ''}<div class="bk-sp-s">${qaHTML(q)}</div><div class="bk-sp-in">${inHTML(q)}</div></div>`;
+  const panelHTML = (q: Side) => `<div class="bk-sp" data-q="${q.id}">${q.words ? `<p class="bk-sp-w">${tr('「', '"')}${esc(q.words)}${tr('」', '"')}</p>` : ''}<div class="bk-sp-s">${qaHTML(q)}</div><div class="bk-sp-in">${inHTML(q)}</div></div>`;
   function markIn(blk: Element, q: Side) {
     const on = right(q), n = q.qa.length;
-    const b = `<button type="button" class="bk-mk${on ? ' bk-on' : ''}" data-x data-act="bk-mk" data-q="${q.id}" data-n="${n > 1 ? n : ''}" data-tip="${on ? '侧问 · 在右边' : '侧问 · 点开'}" aria-label="侧问${q.words ? `：${esc(q.words)}` : ''}">${I.btw}</button>`;
+    const b = `<button type="button" class="bk-mk${on ? ' bk-on' : ''}" data-x data-act="bk-mk" data-q="${q.id}" data-n="${n > 1 ? n : ''}" data-tip="${on ? tr('侧问 · 在右边', 'Side question · on the right') : tr('侧问 · 点开', 'Side question · click to open')}" aria-label="${tr('侧问', 'Side question')}${q.words ? tr(`：${esc(q.words)}`, `: ${esc(q.words)}`) : ''}">${I.btw}</button>`;
     const at = /^(UL|OL)$/.test(blk.tagName) ? blk.lastElementChild : /^(P|LI|H[1-6]|BLOCKQUOTE)$/.test(blk.tagName) ? blk : null;
     if (at) at.insertAdjacentHTML('beforeend', b); else blk.insertAdjacentHTML('afterend', `<div class="bk-mkr" data-x>${b}</div>`);
   }
@@ -405,7 +406,7 @@ export function mountBack(ctx: PageCtx): Feature {
     if (v) v.scrollTop = v.scrollHeight;
     if (fresh) anim(sp.querySelector('.bk-qa:last-child .bk-qa-a'), [{ opacity: 0 }, { opacity: 1 }], 220);
     const i = sp.querySelector<HTMLInputElement>('.bk-qi');
-    if (i) i.placeholder = q.qa.length ? '接着问' : '问这一段';
+    if (i) i.placeholder = q.qa.length ? tr('接着问', 'Ask a follow-up') : tr('问这一段', 'Ask about this paragraph');
   }
   // One question at a time: it goes with this side talk so far, and the session's own turn goes on.
   async function ask(q: Side, text: string) {
@@ -416,8 +417,8 @@ export function mountBack(ctx: PageCtx): Feature {
     q.qa.push(x); q.draft = ''; q.asking = true; q.pin = true; caret = 0;
     for (const i of win.querySelectorAll<HTMLInputElement>(`.bk-qi[data-q="${q.id}"]`)) i.value = '';
     sync(q); ctx.cue('send', .5);
-    try { x.a = (await ctx.call<{ text: string }>(`/sessions/${q.sid}/side`, { text, history })).text || '（没有回答）'; }
-    catch (e) { x.a = `没问成：${e instanceof Error ? e.message : String(e)}`; x.err = true; }
+    try { x.a = (await ctx.call<{ text: string }>(`/sessions/${q.sid}/side`, { text, history })).text || tr('（没有回答）', '(no answer)'); }
+    catch (e) { x.a = tr(`没问成：${e instanceof Error ? e.message : String(e)}`, `Couldn't ask: ${e instanceof Error ? e.message : String(e)}`); x.err = true; }
     q.asking = false;
     sync(q, true);
   }
@@ -447,7 +448,7 @@ export function mountBack(ctx: PageCtx): Feature {
     if (ctx.current()?.id !== q.sid) return;
     q.st = 'min';
     if (focusQ === q.id) focusQ = '';
-    void ctx.wb.show({ key: `btw:${q.id}`, ic: '问', b: '侧问', small: '不打断它 · 不进对话', fill: v => { v.innerHTML = panelHTML(q); v.scrollTop = v.scrollHeight; } }, from);
+    void ctx.wb.show({ key: `btw:${q.id}`, ic: tr('问', 'Q'), b: tr('侧问', 'Side question'), small: tr('不打断它 · 不进对话', "Doesn't interrupt it · not in the conversation"), fill: v => { v.innerHTML = panelHTML(q); v.scrollTop = v.scrollHeight; } }, from);
     ctx.draw('main');
     setTimeout(() => { if (right(q)) focusIn(q); }, 520);
   }
@@ -457,7 +458,7 @@ export function mountBack(ctx: PageCtx): Feature {
     const items = ctx.items(s.id) ?? [];
     let i = items.length - 1;
     while (i >= 0 && items[i].k !== 'it') i--;
-    if (i < 0) { ctx.toast('还没有回答可以问'); return; }
+    if (i < 0) { ctx.toast(tr('还没有回答可以问', 'No answer to ask about yet')); return; }
     const it = items[i] as Answer, t = document.createElement('template');
     t.innerHTML = ctx.md(it.text);
     const q = sideAt(s, it, i, Math.max(0, (t.content.firstElementChild?.childElementCount ?? 1) - 1), '');
@@ -505,11 +506,11 @@ export function mountBack(ctx: PageCtx): Feature {
     const r = await ctx.tryCall(`/sessions/${s.id}/export`);
     if (!r) return;
     X.name = String(r.name); X.text = String(r.text);
-    const lines = X.text.trimEnd().split('\n').length, turns = (X.text.match(/^## 你/gm) ?? []).length;
-    ex.innerHTML = `<div class="bk-ex-scrim" data-act="bk-ex-x"></div><section class="sheet bk-ex-s" role="dialog" aria-modal="true" aria-label="导出成 Markdown">`
-      + `<div class="sh"><span class="ic fi">MD</span><b>${esc(X.name)}</b><small>整段对话 · ${turns} 轮 · ${lines} 行</small><button type="button" class="bk-x" data-act="bk-ex-x" aria-label="关掉" data-tip="关掉" data-key="esc">${I.x}</button></div>`
+    const lines = X.text.trimEnd().split('\n').length, turns = (X.text.match(/^## (你|You)/gm) ?? []).length;
+    ex.innerHTML = `<div class="bk-ex-scrim" data-act="bk-ex-x"></div><section class="sheet bk-ex-s" role="dialog" aria-modal="true" aria-label="${tr('导出成', 'Export as')} Markdown">`
+      + tr(`<div class="sh"><span class="ic fi">MD</span><b>${esc(X.name)}</b><small>整段对话 · ${turns} 轮 · ${lines} 行</small><button type="button" class="bk-x" data-act="bk-ex-x" aria-label="关掉" data-tip="关掉" data-key="esc">${I.x}</button></div>`, `<div class="sh"><span class="ic fi">MD</span><b>${esc(X.name)}</b><small>Whole conversation · ${plural(turns, 'turn')} · ${plural(lines, 'line')}</small><button type="button" class="bk-x" data-act="bk-ex-x" aria-label="Close" data-tip="Close" data-key="esc">${I.x}</button></div>`)
       + `<div class="pv-body"><div class="pv-view"><div class="bk-md">${ctx.md(X.text)}</div></div></div>`
-      + `<div class="bk-ex-f"><span>你说的、它答的原样留着，每一步一行</span><button type="button" class="btn" data-act="bk-ex-copy">${I.copy}复制</button><button type="button" class="btn warm" data-act="bk-ex-save">存成文件… ${kbd('⏎')}</button></div></section>`;
+      + `<div class="bk-ex-f"><span>${tr('你说的、它答的原样留着，每一步一行', 'Kept as written, one line per step')}</span><button type="button" class="btn" data-act="bk-ex-copy">${I.copy}${tr('复制', 'Copy')}</button><button type="button" class="btn warm" data-act="bk-ex-save">${tr('存成文件', 'Save as file')}… ${kbd('⏎')}</button></div></section>`;
     ex.hidden = false;
     anim(ex.querySelector('.bk-ex-s'), [{ opacity: 0, transform: 'translateY(-10px)' }, { opacity: 1, transform: 'none' }], 220);
     anim(ex.querySelector('.bk-ex-scrim'), [{ opacity: 0 }, { opacity: 1 }], 200);
@@ -522,18 +523,18 @@ export function mountBack(ctx: PageCtx): Feature {
     if (!quiet) { ctx.cue('close', .6); ta.focus({ preventScroll: true }); }
   }
   async function copyEx() {
-    try { await navigator.clipboard.writeText(X.text); ctx.tick(); ctx.toast(`复制了 Markdown · ${X.text.trimEnd().split('\n').length} 行`); }
-    catch { ctx.toast('剪贴板用不了，存成文件吧', true); }
+    try { await navigator.clipboard.writeText(X.text); ctx.tick(); ctx.toast(tr(`复制了 Markdown · ${X.text.trimEnd().split('\n').length} 行`, `Copied Markdown · ${plural(X.text.trimEnd().split('\n').length, 'line')}`)); }
+    catch { ctx.toast(tr('剪贴板用不了，存成文件吧', 'Clipboard unavailable, save it as a file instead'), true); }
     // ⏎ still saves after a copy.
     ex.querySelector<HTMLElement>('[data-act="bk-ex-save"]')?.focus({ preventScroll: true });
   }
   // Kept where you pick in the Mac's own save dialog (agentsWindow.ts), ~/Downloads to start with.
   async function saveEx() {
-    if (!window.agents?.saveFile) { ctx.toast('这里存不了文件，先复制吧'); return; }
-    const p = await window.agents.saveFile(X.name, X.text).catch((e: unknown) => { ctx.toast(`没存成：${e instanceof Error ? e.message : String(e)}`, true); return ''; });
+    if (!window.agents?.saveFile) { ctx.toast(tr('这里存不了文件，先复制吧', "Can't save files here, copy it instead")); return; }
+    const p = await window.agents.saveFile(X.name, X.text).catch((e: unknown) => { ctx.toast(tr(`没存成：${e instanceof Error ? e.message : String(e)}`, `Couldn't save: ${e instanceof Error ? e.message : String(e)}`), true); return ''; });
     if (!p) return;
     closeEx(true); ta.focus({ preventScroll: true });
-    ctx.cue('done', .6); ctx.toast(`存到了 ${p.replace(/^\/Users\/[^/]+/, '~')}`);
+    ctx.cue('done', .6); ctx.toast(tr(`存到了 ${p.replace(/^\/Users\/[^/]+/, '~')}`, `Saved to ${p.replace(/^\/Users\/[^/]+/, '~')}`));
   }
 
   // ---------- where they are reached: / commands, the title menu, what you send, clicks, keys ----------
@@ -557,13 +558,13 @@ export function mountBack(ctx: PageCtx): Feature {
       else if (a === 'bk-mk' && q) openSide(q);
       else if (a === 'bk-q-min' && q) fold(q);
       else if (a === 'bk-q-right' && q) { if (performance.now() - dragAt > 300) toRight(q, el.closest<HTMLElement>('.bk-q')); }
-      else if (a === 'bk-q-copy' && q) { const x = q.qa[j]; if (x?.a) navigator.clipboard.writeText(x.a).then(() => { ctx.tick(); ctx.toast('复制了这个回答'); }, () => ctx.toast('剪贴板用不了', true)); }
+      else if (a === 'bk-q-copy' && q) { const x = q.qa[j]; if (x?.a) navigator.clipboard.writeText(x.a).then(() => { ctx.tick(); ctx.toast(tr('复制了这个回答', 'Copied this answer')); }, () => ctx.toast(tr('剪贴板用不了', 'Clipboard unavailable'), true)); }
       else if (a === 'bk-q-put' && q) {
         const x = q.qa[j];
         if (!x?.a) return true;
         ta.value = `${x.a.split('\n').map(l => `> ${l}`).join('\n')}\n\n${ta.value}`; ta.dispatchEvent(new Event('input', { bubbles: true }));
         ta.focus({ preventScroll: true }); ta.setSelectionRange(ta.value.length, ta.value.length);
-        ctx.toast('放进输入框了：发出去，它才进对话');
+        ctx.toast(tr('放进输入框了：发出去，它才进对话', 'Put in the composer: it joins the conversation once sent'));
       }
       else if (a === 'bk-ex-x') closeEx();
       else if (a === 'bk-ex-copy') void copyEx();
@@ -607,7 +608,7 @@ export function mountBack(ctx: PageCtx): Feature {
       }
       return false;
     },
-    more: () => '<button type="button" data-act="bk-fork">分叉…<span class="k">/fork</span></button><button type="button" data-act="bk-export">导出成 Markdown…<span class="k">/export</span></button>',
+    more: () => `<button type="button" data-act="bk-fork">${tr('分叉', 'Fork')}…<span class="k">/fork</span></button><button type="button" data-act="bk-export">${tr('导出成', 'Export as')} Markdown…<span class="k">/export</span></button>`,
     answer(s, it, i, html) {
       const m = byKey.get(keyOf(s.id, it, i));
       if (!m?.size || (!it.id && i < 0)) return html;
@@ -629,9 +630,9 @@ export function mountBack(ctx: PageCtx): Feature {
       else if (PK.open) drawPick();
       const p = later.get(s.id);
       if (!p) return '';
-      const [b, t] = p.kind === 'back' ? ['退回到最开头', `发出去就从这一句重新开始${p.code ? '，文件也退回去' : ''}，原来的归档`]
-        : p.at ? ['从这一句分叉', '改完发出去是一个新会话，原来的不动'] : ['从现在分叉', '发出去是一个新会话，原来的不动'];
-      return `<div class="bk-bn"><i></i><span><b>${b}</b> · ${t}</span><button type="button" data-act="bk-unfork">取消</button></div>`;
+      const [b, t] = p.kind === 'back' ? [tr('退回到最开头', 'Rewind to the start'), tr(`发出去就从这一句重新开始${p.code ? '，文件也退回去' : ''}，原来的归档`, `sending restarts from here${p.code ? ', files go back too' : ''}; the original is archived`)]
+        : p.at ? [tr('从这一句分叉', 'Fork from this message'), tr('改完发出去是一个新会话，原来的不动', 'sending your edit starts a new session; the original stays as is')] : [tr('从现在分叉', 'Fork from now'), tr('发出去是一个新会话，原来的不动', 'sending starts a new session; the original stays as is')];
+      return `<div class="bk-bn"><i></i><span><b>${b}</b> · ${t}</span><button type="button" data-act="bk-unfork">${tr('取消', 'Cancel')}</button></div>`;
     },
     send(s, text, files) {
       const p = later.get(s.id);
