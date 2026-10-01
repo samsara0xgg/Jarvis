@@ -182,6 +182,25 @@ export function Companion() {
   const voice = !port ? simVoice : inFlight ? 'listening' : answering && s.reply ? 'speaking' : answering || s.askedAt !== null ? 'thinking'
     : s.conversation && s.phase !== 'error' ? 'listening' : 'off';
   const caption = port ? s.heard : simCaption, hearing = port ? inFlight : simHearing, talking = port ? false : simTalking;
+  // The daemon sends her what she heard whole, on `accepted`; the strip lays it out as it would have come in (about 30 ms a
+  // character, never longer than 1.2 s in all), so it visibly grows. A caption that extends the last one carries on from it.
+  const [typed, setTyped] = useState(''), typedNow = useRef('');
+  useEffect(() => {
+    const chars = [...caption];
+    let at = caption.startsWith(typedNow.current) ? [...typedNow.current].length : 0;
+    const show = () => { typedNow.current = chars.slice(0, at).join(''); setTyped(typedNow.current); };
+    show();
+    if (at >= chars.length) return;
+    const each = Math.min(30, 1200 / chars.length), from = performance.now(), start = at;
+    const timer = setInterval(() => {
+      at = Math.min(chars.length, start + Math.ceil((performance.now() - from) / each));
+      show();
+      if (at >= chars.length) clearInterval(timer);
+    }, 16);
+    return () => clearInterval(timer);
+  }, [caption]);
+  const stripText = useRef<HTMLSpanElement>(null);
+  useLayoutEffect(() => { const el = stripText.current; if (el) el.scrollTop = el.scrollHeight; }, [typed]);
   // Her words on screen, here and on the Dashboard, stay as they were while yours are still coming in: cut off, or
   // none. An answer written meanwhile is dropped once your words are in (ADR 0074).
   const held = useRef('');
@@ -590,7 +609,7 @@ export function Companion() {
     kick();
     return () => { cancelAnimationFrame(frame); observer.disconnect(); el.removeEventListener('transitionrun', kick); };
   }, []);
-  useEffect(() => kickGlass.current(), [place, chip, composer, dashboard, voice, reply.text, caption, notice?.key, card?.id, nightKey]);
+  useEffect(() => kickGlass.current(), [place, chip, composer, dashboard, voice, reply.text, typed, notice?.key, card?.id, nightKey]);
 
   // What Settings in the panel reads and changes here: the daemon's switches, her look, her cues.
   const control = (patch: { mic_muted?: boolean; speech_muted?: boolean; conversation?: boolean }) => void link.current?.controls(patch).catch(() => undefined);
@@ -685,11 +704,11 @@ export function Companion() {
       <div className={`companion-strip ${strip ? 'is-open' : ''} ${hearing ? 'is-hearing' : ''} ${deep ? 'is-deep' : ''}`} data-hit={strip || undefined} data-glass="14"
         style={{ left: out.x, top: out.y + R + 11 }} inert={!strip} role="status">
         <span className="strip-mic"><Microphone size={14} weight="fill"/></span>
-        <span className={`strip-text ${caption ? '' : 'is-empty'}`}>{caption || t(['Listening…', '在听…'])}</span>
+        <span ref={stripText} className={`strip-text ${caption ? '' : 'is-empty'}`}>{caption ? typed : t(['Listening…', '在听…'])}</span>
         {deepSecs > 0 && <span className="strip-think">{t([`Thinking ${deepSecs} s`, `深想 ${deepSecs} 秒`])}</span>}
         <button className="strip-stop" aria-label={t(['End voice', '结束语音'])} onClick={endVoice}><Stop size={11} weight="fill"/></button>
       </div>
-      <div className={`companion-bubble ${bubble ? 'is-open' : ''} ${answerSecs ? 'is-deep' : ''}`} data-glass="14" style={{ left: out.x, top: out.y + R + 11 }} role="status">
+      <div className={`companion-bubble ${bubble ? 'is-open' : ''} ${answerSecs ? 'is-deep' : ''}`} data-hit={bubble || undefined} data-glass="14" style={{ left: out.x, top: out.y + R + 11 }} role="status">
         {answerSecs > 0 && <small className="bubble-think">{t([`Thought for ${answerSecs.toFixed(1)} s`, `想了 ${answerSecs.toFixed(1)} 秒`])}</small>}
         <span className="bubble-text"><span className="bubble-ghost">{reply.text}</span><span>{reply.text.slice(0, reply.shown)}</span></span>
       </div>
