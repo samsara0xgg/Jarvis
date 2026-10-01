@@ -2377,6 +2377,12 @@ def make_supersede_unspoken_callable(
     the new turn's prompt folds its words in (ADR 0044). A card it put up and
     that still waits is rejected with rule ``superseded`` (ADR 0074), so the
     new turn asks afresh.
+
+    With ``slow_results`` on, a turn that already dispatched an action is
+    skipped: it is working on a lookup, not half of a split sentence, and the
+    new question gets its own answer while the lookup's follows. Live test
+    2026-10-01: a weekday question 7 s after a Micron search was dispatched
+    cancelled it, re-ran the search for 24 s and never answered the weekday.
     """
     cancel = make_response_cancel_callable(runtime)
     registry = runtime.response_runs
@@ -2408,6 +2414,19 @@ def make_supersede_unspoken_callable(
                     (since_ms,),
                 )
             }
+            if runtime.response_flags.slow_results:
+                # The action names its turn in `correlation_json` (L4 stamps it
+                # from the ActionRequest), so this is a durable read, and it is
+                # after `since_ms` because the turn's utterance was.
+                working = {
+                    str(row[0])
+                    for row in conn.execute(
+                        "SELECT json_extract(correlation_json, '$.turn_id') FROM events "
+                        "WHERE ts_epoch_ms >= ? AND type = 'action.dispatched'",
+                        (since_ms,),
+                    )
+                }
+                runs = [run for run in runs if run.turn_id not in working]
             # ponytail: a run that passed the completion hold just before Allen
             # started talking can complete between this drop and its cancel; its
             # queued audio is then lost while its row stays. A millisecond window.
