@@ -21,7 +21,8 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 const freePort = () => new Promise(r => { const s = http.createServer().listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => r(p)); }); });
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png', '.svg': 'image/svg+xml', '.woff2': 'font/woff2', '.wav': 'audio/wav', '.mp3': 'audio/mpeg', '.json': 'application/json', '.webp': 'image/webp' };
 
-export async function stage({ viewport = { width: 1280, height: 820 }, shots = process.env.SHOTS, headless = true } = {}) {
+// `language`: what the stand-in daemon answers on /inherent/language ('en' for English; left out, it answers nothing and Startrail stays Chinese).
+export async function stage({ viewport = { width: 1280, height: 820 }, shots = process.env.SHOTS, headless = true, language } = {}) {
   if (!existsSync(path.join(app, 'dist', 'agents.html')) || !existsSync(path.join(app, 'dist-electron', 'agents', 'host.js'))) throw new Error('run npm run build first');
   const tmp = realpathSync(await mkdtemp(path.join(os.tmpdir(), 'jarvis-agents-stage-')));
   const HOME = path.join(tmp, 'home'), CONFIG = path.join(HOME, '.claude'), BIN = path.join(tmp, 'bin');
@@ -44,7 +45,7 @@ export async function stage({ viewport = { width: 1280, height: 820 }, shots = p
   await writeFile(path.join(BIN, 'security'), '#!/bin/sh\nexit 44\n'); chmodSync(path.join(BIN, 'security'), 0o755);
 
   // ---------- the daemon (marks only) and Anthropic's API (the model list only) ----------
-  const daemon = http.createServer((q, r) => { r.writeHead(200, { 'Content-Type': 'application/json' }); r.end(JSON.stringify(q.url === '/inherent/agent-marks' ? { marks: {} } : {})); });
+  const daemon = http.createServer((q, r) => { r.writeHead(200, { 'Content-Type': 'application/json' }); r.end(JSON.stringify(q.url === '/inherent/agent-marks' ? { marks: {} } : q.url === '/inherent/language' && language ? { language } : {})); });
   const api = http.createServer((q, r) => { r.writeHead(q.url.startsWith('/v1/models') ? 200 : 404, { 'Content-Type': 'application/json' }); r.end('{"data":[]}'); });
   await new Promise(r => daemon.listen(0, '127.0.0.1', r)); await new Promise(r => api.listen(0, '127.0.0.1', r));
 
