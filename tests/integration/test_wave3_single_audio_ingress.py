@@ -1753,6 +1753,58 @@ def test_wake_prediction_failure_downgrades_only_wake_then_recovers() -> None:
         assert session.close().definitively_closed
 
 
+def test_wake_scores_from_the_floor_up_are_logged_once_per_attempt(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A miss logs its peak when the score falls back; a score under the floor logs nothing."""
+
+    class _ScoredWakeEngine(_FakeWakeEngine):
+        scores = (0.05, 0.3, 0.6, 0.02, 0.15, 0.0)
+
+        def predict(self, _frame_bytes: bytes) -> dict[str, float]:
+            call = self.calls
+            self.calls += 1
+            return {self.model_name: self.scores[call] if call < len(self.scores) else 0.0}
+
+    caplog.set_level("INFO", logger="jarvis.surface.voice_session")
+    backend = _FakeBackend()
+    ingress = voice_audio.AudioIngress(
+        backend=backend,
+        config=replace(
+            voice_audio.AudioIngressConfig(),
+            worker_poll_s=0.0005,
+            route_poll_s=60.0,
+            shutdown_timeout_s=1.0,
+        ),
+    )
+    engine = _ScoredWakeEngine(set())
+    with patch.object(voice_audio, "_load_silero_session", return_value=_EnergySession()):
+        session = voice_session.DuplexVoiceSession(
+            ingress=ingress,
+            wake_engine=engine,
+            vad=voice_audio.SileroVad(mode="record"),
+            pipeline=_RecordingPipeline(),
+            broadcaster=None,
+            output_active=None,
+            wake_threshold=0.95,
+            config=replace(
+                voice_session.RealtimeInputSessionConfig(),
+                worker_poll_s=0.001,
+                shutdown_timeout_s=1.0,
+            ),
+        )
+        assert session.start().started
+        epoch = ingress.stream_epoch
+        assert epoch is not None
+        for value in range(24):
+            backend.emit(epoch=epoch, value=value + 1)
+            time.sleep(0.002)
+        _wait_until(lambda: engine.calls > len(_ScoredWakeEngine.scores))
+        assert session.close().definitively_closed
+    logged = [r.getMessage() for r in caplog.records if r.getMessage().startswith("wake score")]
+    assert logged == ["wake score 0.600, below 0.95", "wake score 0.150, below 0.95"]
+
+
 def test_stuck_backend_and_full_commit_queue_are_bounded_and_auditable() -> None:
     """Stuck close never authorizes reopen; full final-ASR queue rejects newest."""
     backend = _FakeBackend(stop_status=voice_backend.BackendStopStatus.CLOSE_UNCERTAIN)
