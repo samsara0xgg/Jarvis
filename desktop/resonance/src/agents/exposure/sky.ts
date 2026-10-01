@@ -57,9 +57,8 @@ export function geometry(width: number, now: number, recent: number, all: number
     xOf: at => xAgo(now - at), tOf: x => now - agoX(x), guides: MARKS.filter(m => m <= reach), pan, panMax,
   };
 }
-// 离开线: while you were away. A thin bracket along the top from the moment you left to the moment you came back, a
-// dotted hairline down from each end and how long above it; nothing covers the trails, so it reads as a note on the
-// time, not a filter.
+// 离开线: while you were away. A thin bracket just above the time axis, from the moment you left to the moment you came
+// back, with how long in a break of its line; it is a note on the time, so nothing in the sky above it is touched.
 function awayLines(c: CanvasRenderingContext2D, aways: { a: number; b: number | null }[], g: Geo, dev: number, now: number) {
   for (const aw of aways) {
     const a = Math.max(aw.a, now - g.span), b = Math.min(aw.b ?? now, now);
@@ -67,7 +66,7 @@ function awayLines(c: CanvasRenderingContext2D, aways: { a: number; b: number | 
     const xa = g.xOf(a), xb = g.xOf(b);
     if (xb - xa < 1 || xb < dev) continue;
     // The left end shows only once the exposure has developed that far back.
-    const x0 = Math.max(dev, xa), y0 = g.top + 11, open = aw.b === null, edge = xa >= dev;
+    const x0 = Math.max(dev, xa), y0 = g.bottom - 10, open = aw.b === null, edge = xa >= dev;
     const label = `你不在 · ${gone(b - aw.a)}`;
     c.font = `500 10px ${UI}`; c.textBaseline = 'middle';
     // The words sit on the bracket, in a break of its line, when they fit; else just left of it.
@@ -79,12 +78,6 @@ function awayLines(c: CanvasRenderingContext2D, aways: { a: number; b: number | 
     c.lineTo(xb, y0);
     if (!open) c.lineTo(xb, y0 + 4);
     c.stroke();
-    const down = c.createLinearGradient(0, y0, 0, g.bottom);
-    down.addColorStop(0, 'rgba(214,224,255,.3)'); down.addColorStop(1, 'rgba(214,224,255,0)');
-    c.strokeStyle = down; c.setLineDash([1, 3]); c.beginPath();
-    if (edge) { c.moveTo(xa, y0 + 6); c.lineTo(xa, g.bottom); }
-    if (!open) { c.moveTo(xb, y0 + 6); c.lineTo(xb, g.bottom); }
-    c.stroke(); c.setLineDash([]);
     c.fillStyle = 'rgba(214,224,255,.74)';
     if (inside) { c.textAlign = 'center'; c.fillText(label, mid, y0 + .5); }
     else { c.textAlign = 'right'; c.fillText(label, x0 - 6, y0 + .5); }
