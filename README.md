@@ -54,7 +54,7 @@ A Python daemon owns the microphone, speaker, models, memory and tools. The comp
 
 ## Run it
 
-You need macOS, Python 3.12+, [uv](https://docs.astral.sh/uv/) and Node.js (tested with Node 24). On a MacBook it sits beside the notch; on a screen without one it lives in a small black pill at the top.
+You need macOS (built and tested on Apple Silicon), Node.js (tested with Node 24) and the Xcode Command Line Tools (`xcode-select --install`). Running it for real also needs Python 3.12+ and [uv](https://docs.astral.sh/uv/). On a MacBook it sits beside the notch; on a screen without one it lives in a small black pill at the top.
 
 ### Try the demo
 
