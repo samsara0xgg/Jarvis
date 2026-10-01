@@ -30,6 +30,11 @@ export function split(raw: string): { spoken: string; written: string } {
   return { spoken, written: words(written) === words(spoken) ? '' : written };
 }
 
+// What makes a written part worth reading over hearing: a list, heading, table, code, a link, or a clock time. A written part that is
+// only sentences says what she says at more length, and cannot be lit in step with her voice.
+const READ = /^\s*(?:[-*•+]\s|\d+[.)、]\s|#{1,6}\s|\|)|```|https?:\/\/|\b\d{1,2}[:：]\d{2}\b/m;
+export const worthReading = (written: string) => READ.test(written);
+
 // One thing on screen: what you said, or her answer split into the part she says and the part that is written.
 export type Item = { id: string; who: 'you' | 'her'; spoken: string; written: string; failed: boolean; at: number; said: boolean; cutAt?: number; turn?: string; queued: boolean; from: number; mark?: Mark;
   // She says something besides what is written, though it is not shown (the middle level shows the written part alone): the written part writes itself in.
@@ -46,6 +51,8 @@ export function itemsOf(lines: Line[], captions: Captions, before?: Item): Item[
     else {
       const { spoken, written } = split(l.text);
       if (captions === 'all' && (spoken || written)) out.push({ ...base, who: 'her', spoken, written, failed: false });
+      // The middle level: a written part worth reading shows alone; one that is only sentences gives way to what she says, lit as she says it.
+      else if (captions === 'brief' && written && spoken && !worthReading(written)) out.push({ ...base, who: 'her', spoken, written: '', failed: false });
       else if (captions === 'brief' && written) out.push({ ...base, who: 'her', spoken: '', voiced: !!spoken, written, failed: false });
       // A spoken-only answer that follows an answer on screen (a shorter version, a correction, then another) shows too,
       // so the area never reads one answer while she says another.

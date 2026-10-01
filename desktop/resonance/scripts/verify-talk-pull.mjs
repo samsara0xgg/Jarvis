@@ -10,7 +10,7 @@ const checks = [], check = (name, pass) => { assert.ok(pass, name); checks.push(
 
 const you = (n, text) => ({ id: `you:${n}`, who: 'you', text, at: n * 1000 });
 const her = (n, text, extra = {}) => ({ id: `her:t${n}`, who: 'her', text, turn: `t${n}`, at: n * 1000 + 500, said: true, ...extra });
-const two = [you(1, 'one'), her(1, '<voice>first spoken</voice><document>first written</document>'), you(2, 'two'), her(2, '<voice>second spoken</voice><document>second written</document>')];
+const two = [you(1, 'one'), her(1, '<voice>first spoken</voice><document>first written at 9:00</document>'), you(2, 'two'), her(2, '<voice>second spoken</voice><document>second written at 10:00</document>')];
 const texts = items => items.map(it => it.spoken || it.written || it.voiced).join('|');
 
 check('exchanges split at each thing you said', exchangesOf(two).length === 2 && exchangesOf(two)[1][0].id === 'you:2');
@@ -21,7 +21,7 @@ s = shownOf(two, 'all', 1);
 check('pulled once: the older exchange is above the latest, nothing older is left', s.older === 0 && texts(s.items) === 'one|first spoken|two|second spoken');
 check('pulling more than there is does nothing', shownOf(two, 'all', 5).older === 0 && shownOf(two, 'all', 5).items.length === 4);
 s = shownOf(two, 'brief', 0);
-check('brief: the latest written part alone (what she says is only timed)', texts(s.items) === 'second written' && s.older === 1);
+check('brief: the latest written part alone (what she says is only timed)', texts(s.items) === 'second written at 10:00' && s.older === 1);
 check('none: nothing shows, and an earlier exchange that shows nothing is not offered', shownOf(two, 'none', 0).items.length === 0 && shownOf(two, 'none', 0).older === 0);
 const pending = [...two, you(3, 'three')];
 check('a new question puts the previous answer away at once', texts(shownOf(pending, 'all', 0).items) === 'three' && shownOf(pending, 'all', 0).older === 2);
@@ -33,6 +33,11 @@ check('pulled once after opening: the last exchange from before comes down', tex
 check('the first thing said after opening is the exchange that shows', texts(shownOf([...two, you(6, 'six')], 'all', 0, 5000).items) === 'six' && shownOf([...two, you(6, 'six')], 'all', 0, 5000).older === 2);
 const shorter = [you(1, 'one'), her(1, '<voice>a</voice><document>a list</document>'), you(2, 'shorter'), her(2, 'just the first')];
 check('brief: a spoken-only follow-up to an answer that showed takes its place', texts(shownOf(shorter, 'brief', 0).items) === 'just the first');
+const prose = [you(1, 'next week'), her(1, '<voice>Nothing next week.</voice><document>Your calendar is empty next week (October 5 to 11), and your To Do list has no open tasks.</document>')];
+check('brief: a written part that is only sentences gives way to what she says, lit as she says it', texts(shownOf(prose, 'brief', 0).items) === 'Nothing next week.' && !shownOf(prose, 'brief', 0).items[0].written);
+const timed = [you(1, 'today'), her(1, '<voice>Three meetings.</voice><document>Standup at 10:00, review after lunch.</document>')];
+check('brief: a written part with a clock time is worth reading and shows alone', texts(shownOf(timed, 'brief', 0).items) === 'Standup at 10:00, review after lunch.');
+check('all: both parts show as before', shownOf(prose, 'all', 0).items.at(-1).written.startsWith('Your calendar'));
 check('a session that is empty shows nothing', shownOf([], 'all', 0).items.length === 0 && shownOf([], 'all', 0).key === '');
 check('a failed answer is part of its exchange', shownOf([you(1, 'a'), her(1, 'no', { failed: true })], 'brief', 0).items.length === 1);
 
