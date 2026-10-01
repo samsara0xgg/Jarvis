@@ -64,7 +64,7 @@ To see the companion on its built-in demo data, with no daemon and no keys, past
 curl -fsSL https://raw.githubusercontent.com/samsara0xgg/Jarvis/main/scripts/try-demo.sh | bash
 ```
 
-It checks for the Xcode Command Line Tools and Node.js 24, lists anything missing and asks before installing it, then clones Jarvis into `~/Jarvis`, installs its npm dependencies and starts the demo. The first run takes a few minutes.
+It checks for the Xcode Command Line Tools and Node.js 24, lists anything missing and asks before installing it, then clones Jarvis into `~/Jarvis`, installs its npm dependencies and starts the demo. The first run takes a few minutes. You can [read the script](scripts/try-demo.sh) before running it.
 
 <details>
 <summary>Prefer to do it by hand?</summary>
