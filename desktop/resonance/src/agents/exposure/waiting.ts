@@ -31,7 +31,10 @@ const CUE: Record<Wait, string> = { ask: 'ask', err: 'error', done: 'done' };
 // her glass. A star coming to wait (or going back once read) rises off the line as it travels (LIFT) and settles into
 // its place, so it never crosses the others; they ease aside along the line.
 const BASE = 28, LIFT = 15;
-const QA = { max: 6, dx: 26, right: 76 }, QB = { max: 4, r0: 19, dr: 3, right: 34, y: BASE };
+// B's rings are orbits seen a little from above: wider than tall, the innermost still clear of her glass and the
+// outermost's top inside the window.
+const QA = { max: 6, dx: 26, right: 76 }, QB = { max: 4, r0: 19, dr: 3, ry0: 17.4, dry: 1.4, right: 34, y: BASE };
+const ry = (j: number) => QB.ry0 + j * QB.dry;
 // The rings' canvas, in css px from the window's top right corner (its size is in waiting.css too).
 const RING = { w: 100, h: 72 };
 const LIVELY = 'linear(0,.045,.153,.29,.433,.568,.687,.786,.864,.924,.967,.996,1.014,1.024,1.028,1.028,1.026,1.022,1.018,1.014,1.011,1.008,1.005,1.003,1)';
@@ -81,7 +84,17 @@ export function mountWaiting(env: Env) {
     const cx = w - QB.right;
     if (j >= QB.max) return [cx - QB.r0, QB.y];
     const r = QB.r0 + j * QB.dr, a = -Math.PI / 2 + Math.PI * 2 * Math.max(.02, clamp(waited(s) / 60));
-    return [cx + Math.cos(a) * r, QB.y + Math.sin(a) * r];
+    return [cx + Math.cos(a) * r, QB.y + Math.sin(a) * ry(j)];
+  }
+  // The horizon's stars stay right of 长曝光 (and the title before it), wherever the layout puts it: read again when
+  // the width changes, and once a second for a layout switched under the same width.
+  let floorW = -1, floorAt = 0, floorX = 496;
+  function floorOf(w: number) {
+    const t = performance.now();
+    if (w === floorW && t - floorAt < 1000) return floorX;
+    floorW = w; floorAt = t;
+    const pr = env.chrome.querySelector<HTMLElement>('.bw-pull')?.getBoundingClientRect();
+    return floorX = pr?.width ? Math.round(pr.right - env.win.getBoundingClientRect().left + 16) : 496;
   }
   // Whether the resting places changed.
   function layout() {
@@ -89,7 +102,8 @@ export function mountWaiting(env: Env) {
     // The rows as the page has them now: the long exposure refreshes its own copy only once a second.
     const fresh = new Map(env.sessions().map(s => [s.id, s])), rows = env.rows().map(s => fresh.get(s.id) ?? s);
     const w = env.width(), cur = env.current(), q = queue(rows).filter(s => s.id !== cur || waitOf(s) !== 'done');
-    const key = `${look}|${w}|${cur}|${look === 'B' ? Math.floor(Date.now() / 60000) : ''}|${rows.map(s => s.id + (q.includes(s) ? `.${q.indexOf(s)}${waitOf(s)}` : '')).join(',')}`;
+    const floor = floorOf(w);
+    const key = `${look}|${w}|${floor}|${cur}|${look === 'B' ? Math.floor(Date.now() / 60000) : ''}|${rows.map(s => s.id + (q.includes(s) ? `.${q.indexOf(s)}${waitOf(s)}` : '')).join(',')}`;
     if (key === slotKey) return false;
     const was = place;
     slotKey = key; line = q; slots = new Map(); place = new Map(q.map((s, j) => [s.id, j]));
@@ -99,9 +113,9 @@ export function mountWaiting(env: Env) {
     const calm = rows.filter(s => !place.has(s.id)), n = calm.length;
     // the horizon ends a clear gap before the line, or before its +N
     const right = look === 'B' ? w - QB.right - QB.r0 - QB.dr * (QB.max - 1) - 30 : q.length ? lineX(q.length - 1, w) - 44 : w - 84;
-    // 24 px apart, closer when there are many, never further in than the title leaves room for
-    const gap = Math.min(24, Math.max(8, (right - 496) / Math.max(1, n - 1)));
-    calm.forEach((s, i) => slots.set(s.id, [right - (n - 1 - i) * gap, BASE]));
+    // 24 px apart, closer when there are many, never in past the floor
+    const gap = Math.min(24, Math.max(3, (right - floor) / Math.max(1, n - 1)));
+    calm.forEach((s, i) => slots.set(s.id, [Math.max(floor, right - (n - 1 - i) * gap), BASE]));
     arrivals();
     if (!listEl.hidden) renderList();
     return true;
@@ -193,13 +207,13 @@ export function mountWaiting(env: Env) {
     const q = line, n = Math.min(q.length, QB.max), w = env.width(), cx = w - QB.right, cy = QB.y, nums = !listEl.hidden, order = nums ? queue(env.sessions()).map(s => s.id) : [];
     // the orbits in use, faint, and a tick at twelve: where every wait begins
     o.save(); o.lineWidth = .6;
-    for (let j = 0; j < n; j++) { o.strokeStyle = 'rgba(157,180,255,.1)'; o.beginPath(); o.arc(cx, cy, QB.r0 + j * QB.dr, 0, Math.PI * 2); o.stroke(); }
-    const rt = QB.r0 + (n - 1) * QB.dr; o.strokeStyle = 'rgba(214,224,255,.3)'; o.lineWidth = 1;
-    o.beginPath(); o.moveTo(cx, cy - QB.r0 + 1.5); o.lineTo(cx, cy - rt - 2.5); o.stroke();
+    for (let j = 0; j < n; j++) { o.strokeStyle = 'rgba(157,180,255,.1)'; o.beginPath(); o.ellipse(cx, cy, QB.r0 + j * QB.dr, ry(j), 0, 0, Math.PI * 2); o.stroke(); }
+    o.strokeStyle = 'rgba(214,224,255,.3)'; o.lineWidth = 1;
+    o.beginPath(); o.moveTo(cx, cy - ry(0) + 1.5); o.lineTo(cx, cy - ry(n - 1) - 2.5); o.stroke();
     o.restore();
     for (let j = n - 1; j >= 0; j--) {
       const s = q[j], r = QB.r0 + j * QB.dr, col = COLOR[waitOf(s)!], k = Math.max(.02, clamp(waited(s) / 60)), on = hover === s.id || over === s.id;
-      const a0 = -Math.PI / 2, a1 = a0 + Math.PI * 2 * k, hx = cx + Math.cos(a1) * r, hy = cy + Math.sin(a1) * r;
+      const a0 = -Math.PI / 2, a1 = a0 + Math.PI * 2 * k, hx = cx + Math.cos(a1) * r, hy = cy + Math.sin(a1) * ry(j);
       // a star still on its way in draws where it is, with its light trail; its ring fades in as it arrives
       const [sx, sy] = at(s.id), far = Math.hypot(sx - hx, sy - hy) > 3;
       drawTrail(far ? c : o, trailPoint(s.id, far ? sx : hx, far ? sy : hy, t), col, t);
@@ -208,7 +222,7 @@ export function mountWaiting(env: Env) {
       for (let m = 0; m < N; m++) {
         const u1 = (m + 1) / N;
         o.strokeStyle = rgba(col, (.1 + .72 * u1 * u1) * (j === 0 || on ? 1 : .78) * (far ? .25 : 1), .2);
-        o.beginPath(); o.arc(cx, cy, r, lerp(a0, a1, m / N), lerp(a0, a1, u1) + .002); o.stroke();
+        o.beginPath(); o.ellipse(cx, cy, r, ry(j), 0, lerp(a0, a1, m / N), lerp(a0, a1, u1) + .002); o.stroke();
       }
       o.restore();
       star(far ? c : o, s, far ? sx : hx, far ? sy : hy, t, on ? 1.8 : 1.45, far ? .9 : (j === 0 ? .66 : .52) * (on ? 1.3 : 1), on);
