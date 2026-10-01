@@ -112,11 +112,11 @@ const BASIS: Record<Basis, L> = { observed: ['Observed', '看到的'], stated: [
 // `question` is the ask card (ADR 0066), in the same place, until it is filled in, dismissed or talked over.
 type Talk = { rows: Row[]; tail: string; busy: boolean; offline: boolean; floor: boolean; submit: (text: string) => void; older: () => Promise<boolean>; card?: Card | null; decide?: Decide;
   question?: Question | null; answer?: Answer; think: Think };
-// Think mode (ADR 0064): whether it is on, the seconds of the deep answer still coming, the words that switch it,
-// each deep answer's wait by the log position its row lands after, and the chip's × (saying the off-word).
-export type Think = { on: boolean; secs: number; words: [RegExp | null, RegExp | null]; thoughts: { after: number; secs: number }[]; exit: () => void };
-// The mode a sentence leaves: its off-word ends it, its on-word starts it, otherwise it stays as it was.
-const deepAfter = (think: Think, text: string) => think.words[1]?.test(text) ? false : think.words[0]?.test(text) ? true : think.on;
+// Think mode (ADR 0064): whether this turn is deep, the seconds of the deep answer still coming, the words that make a turn deep,
+// and each deep answer's wait by the log position its row lands after.
+export type Think = { on: boolean; secs: number; words: RegExp | null; thoughts: { after: number; secs: number }[] };
+// A sentence with an on-word in it is a deep turn.
+const deepAfter = (think: Think, text: string) => !!think.words?.test(text);
 const when = (ts: string) => { const d = new Date(ts); return Number.isNaN(d.getTime()) ? '' : d.toDateString() === new Date().toDateString() ? hm(d.getTime()) : `${d.getMonth() + 1}/${d.getDate()} ${hm(d.getTime())}`; };
 const dayLabel = (lang: Lang, day: string) => { const d = new Date(day); return d.toDateString() === new Date(Date.now() - 86_400_000).toDateString() ? tr(lang, ['yesterday', '昨天']) : `${d.toLocaleDateString(lang === 'zh' ? 'zh-CN' : 'en-US', { weekday: 'short' })} ${d.getMonth() + 1}/${d.getDate()}`; };
 // The conversation of record as turns, each dated by the row that opens it: your rows open one, and Jarvis's rows after it answer it.
@@ -839,7 +839,7 @@ function HomeBlock({ id, pop, lang, onClose, children }: { id: BlockId; pop: boo
 // The companion window takes no key focus until you reach for a text box.
 const focusWindow = (event: { currentTarget: HTMLElement }) => { const el = event.currentTarget; void window.jarvis?.focus(true).then(() => el.focus({ preventScroll: true })); };
 
-// In think mode the box is deep and carries a chip whose × says the off-word; typing an on-word deepens it before you send.
+// Typing an on-word deepens the box before you send.
 function Ask({ className, onAsk, think, text, setText }: { className: string; onAsk: (text: string) => void; think?: Think; text: string; setText: (text: string) => void }) {
   const t = useT();
   const deep = !!think && deepAfter(think, text);
@@ -848,8 +848,7 @@ function Ask({ className, onAsk, think, text, setText }: { className: string; on
     if (!text.trim()) return;
     onAsk(text.trim()); setText(''); event.currentTarget.querySelector('input')?.blur();
   }}>
-    {think?.on && <span className="think-chip">{t(['Deep', '深想'])}<button type="button" aria-label={t(['Stop thinking deeply', '退出深想'])} onClick={think.exit}>×</button></span>}
-    <input aria-label={t(['Message Jarvis', '给 Jarvis 发消息'])} placeholder={think?.on ? t(['Say “stop thinking” to go back', '说「不用想了」回到平时']) : t(['Ask Jarvis…', '问问 Jarvis…'])} autoComplete="off" value={text} onChange={event => setText(event.target.value)}
+    <input aria-label={t(['Message Jarvis', '给 Jarvis 发消息'])} placeholder={t(['Ask Jarvis…', '问问 Jarvis…'])} autoComplete="off" value={text} onChange={event => setText(event.target.value)}
       onPointerDown={focusWindow} onKeyDown={event => { if (event.key === 'Enter' && event.nativeEvent.isComposing) event.preventDefault(); }}/>
     <button className="send" aria-label={t(['Send', '发送'])} disabled={!text.trim()}><ArrowUp size={13} weight="bold"/></button>
   </form>;

@@ -117,7 +117,7 @@ try {
     else if (['/inherent/confirmation', '/inherent/clarification'].includes(url.pathname)) data = { card: null };
     else if (url.pathname === '/inherent/controls') data = { mic_muted: false, speech_muted: false, conversation: false };
     else if (url.pathname === '/inherent/language') data = { language: 'en' };
-    else if (url.pathname === '/inherent/think') data = { on: false, on_words: 'think deeply', off_words: 'stop thinking' };
+    else if (url.pathname === '/inherent/think') data = { on: false, on_words: 'think deeply' };
     else { data = {}; status = 404; }
     await route.fulfill({ status, contentType: 'application/json', headers: { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': '*', 'Access-Control-Allow-Methods': '*' }, body: JSON.stringify(data) });
   });

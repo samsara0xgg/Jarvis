@@ -82,7 +82,7 @@ async function runCase(dpr, notch, finish) {
       else if (['/inherent/confirmation', '/inherent/clarification'].includes(pathname)) data = { card: null };
       else if (pathname === '/inherent/controls') data = { mic_muted: false, speech_muted: false, conversation: false };
       else if (pathname === '/inherent/language') data = { language: 'en' };
-      else if (pathname === '/inherent/think') data = { on: false, on_words: 'think deeply', off_words: 'stop thinking' };
+      else if (pathname === '/inherent/think') data = { on: false, on_words: 'think deeply' };
       else { status = 404; data = {}; }
       if (req.method() === 'POST' && !['/inherent/controls', '/inherent/projects/refresh'].includes(pathname) && !pathname.startsWith('/inherent/agent-marks/')) report.unexpectedRequests.push(pathname);
       await route.fulfill({ status, contentType: 'application/json', headers: { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': '*', 'Access-Control-Allow-Methods': '*' }, body: JSON.stringify(data) });

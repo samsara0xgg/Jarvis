@@ -207,18 +207,23 @@ export function Companion() {
   if (!inFlight) held.current = s.reply;
   const said = port ? spoken(held.current) : '';
   const reply = port ? { text: said, shown: said.length } : simReply;
-  // ADR 0064: think mode as the daemon reads it from Allen's words (ADR 0061), read again as soon as his words go in
-  // or an answer opens; the poll catches the ten quiet minutes that end it.
-  const think = useRoute<{ on: boolean; on_words: string; off_words: string }>(port, '/inherent/think', true, 30_000);
+  // ADR 0064: think mode as the daemon reads it from Allen's words (ADR 0105): an on-word makes that one turn deep. Read again as soon
+  // as his words go in or an answer opens; the poll catches a turn that ended some other way.
+  const think = useRoute<{ on: boolean; on_words: string }>(port, '/inherent/think', true, 30_000);
   const deep = !!port && think.data?.on === true;
-  const words = useMemo((): Think['words'] => [pattern(think.data?.on_words ?? '(?!)'), pattern(think.data?.off_words ?? '(?!)')], [think.data?.on_words, think.data?.off_words]);
+  const words = useMemo((): Think['words'] => pattern(think.data?.on_words ?? '(?!)'), [think.data?.on_words]);
   useEffect(() => { if (s.waiting) think.reload(); }, [s.waiting, s.turnId]);
-  const deepThinking = deep && (voice === 'thinking' || s.askedAt !== null);
+  // The turn that was thought about deeply, marked while `on` said so: `on` can go false between the daemon finishing and the answer
+  // opening here, and that must not take the turn's "thought for" line with it.
+  const deepFor = useRef<string | null>(null);
+  const thinking = voice === 'thinking' || s.askedAt !== null;
+  if (deep && s.waiting && thinking) deepFor.current = s.waiting;
+  const deepThinking = (deep || !!s.waiting && deepFor.current === s.waiting) && thinking;
   const clock = useNow(deepThinking ? 1000 : 3_600_000);
   const deepSecs = deepThinking ? Math.max(1, Math.ceil((clock - (s.askedAt ?? clock)) / 1000)) : 0;
   // Each deep answer's wait, pinned to the log position its row lands after (the streaming tail's rule).
   const [thoughts, setThoughts] = useState<{ turn: string; after: number; secs: number }[]>([]);
-  useEffect(() => { if (deep && s.thoughtS && s.turnId) setThoughts(v => [...v.slice(-50), { turn: s.turnId!, after: s.openSeq, secs: s.thoughtS }]); }, [s.turnId]);
+  useEffect(() => { if (s.turnId && deepFor.current === s.turnId && s.thoughtS) setThoughts(v => [...v.slice(-50), { turn: s.turnId!, after: s.openSeq, secs: s.thoughtS }]); }, [s.turnId]);
   const answerSecs = thoughts.at(-1)?.turn === s.turnId ? thoughts.at(-1)!.secs : 0;
   const [pressed, setPressed] = useState(false);
   const [wardrobe, setWardrobe] = useState(loadWardrobe);
@@ -657,7 +662,7 @@ export function Companion() {
   const dashboardContent = <AroundDashboard open={dashboard} port={port} onClose={closeDashboard} viewRef={dashboardView} onView={value => { if (detached && detachedMode.current) window.jarvis?.dashboardMessage?.('parent', { type: 'view', value }); }}
           onMood={dashboardMood} settingFocus={settingsFocus} onHop={height => ball.current?.hop(height)}
           talk={port ? { rows: s.rows, tail, busy: voice === 'thinking', offline: s.phase === 'error', floor, submit, older, card, decide: decideCard, question, answer: answerQuestion,
-            think: { on: deep, secs: deepSecs, words, thoughts, exit: () => void submit(t(['stop thinking', '不用想了'])) } } : undefined}
+            think: { on: deep, secs: deepSecs, words, thoughts } } : undefined}
           plugins={port ? plugins : undefined} pluginFocus={pluginFocus} marks={wardrobe.marks} onAgents={setAgents} unread={notices.unread}
           onAnswer={id => { if (detached) window.jarvis?.dashboardMessage?.('parent', { type: 'notice', id }); else notices.focus(id); closeDashboard(); }} ctl={ctl}/>;
   if (detached) return <IconContext.Provider value={{ size: 16, weight: 'regular' }}>

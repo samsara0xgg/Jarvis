@@ -53,7 +53,7 @@ function Dashboard({ mode, generation }) {
   return <AroundDashboard open port="61988" onClose={noop} onMood={noop} onHop={noop} ctl={ctl} viewRef={ref}
     onView={value => { window.fixture.lastView = value; }}
     talk={{ rows: loaded, tail: '', busy: false, offline: mode === 'failure', floor, older, submit: noop,
-      think: { on: false, secs: 0, words: [null, null], thoughts: [], exit: noop } }}/>
+      think: { on: false, secs: 0, words: null, thoughts: [] } }}/>
 }
 function App() {
   const [state, setState] = useState({ mode: 'source', generation: 1 });

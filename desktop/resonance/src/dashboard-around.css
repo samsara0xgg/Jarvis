@@ -174,9 +174,6 @@
   background:radial-gradient(120% 160% at 0 50%,rgb(var(--deep) / .26),transparent 62%),linear-gradient(90deg,#05061a,#090a24); box-shadow:inset 0 0 0 .5px rgb(var(--deep) / .55); }
 .ad .pg-input.is-deep::before { opacity:1; }
 .ad .pg-input.is-deep .send:not(:disabled) { background:var(--deep-hi); }
-.ad .think-chip { display:inline-flex; align-items:center; gap:4px; flex:none; height:20px; margin-left:-6px; padding:0 3px 0 7px; border-radius:var(--radius-control); font-size:var(--text-label); white-space:nowrap; color:var(--deep-hi); background:rgb(var(--deep) / .16); box-shadow:inset 0 0 0 .5px rgb(var(--deep) / .4); }
-.ad .think-chip button { display:grid; place-items:center; width:15px; height:15px; padding:0; border-radius:50%; color:inherit; font-size:var(--text-detail); line-height:1; }
-.ad .think-chip button:hover { background:rgb(var(--deep) / .25); }
 .ad .tr-think { font-size:var(--text-detail); color:var(--deep-hi); font-variant-numeric:tabular-nums; }
 .ad .who .is-deep { font-style:normal; color:var(--deep-hi); }
 
