@@ -37,7 +37,12 @@ from jarvis.decision.daily_report import (
 )
 from jarvis.decision.llm import ChatResult, ToolCall
 from jarvis.execution.tools import ToolError, build_default_registry
-from jarvis.runtime.daily_report import CHECK_BUDGET, DailyReportService, DailySchedule
+from jarvis.runtime.daily_report import (
+    CHECK_BUDGET,
+    DailyReportService,
+    DailySchedule,
+    past_day_answer,
+)
 from jarvis.state.daily_contract import DailyError
 from jarvis.state.daily_report import gather_day, resolve_day, resolve_zone, save_report
 from jarvis.state.event_log import emit_event
@@ -604,6 +609,33 @@ def test_microsoft_plan_is_context_and_the_next_days_section(rig: Rig) -> None:
     ]
     assert "Old chore" not in material, "only tasks completed on the report day are listed"
     assert content.index("## 核心摘要") < content.index("## 2026-09-20 的日程与待办")
+
+
+def test_a_past_day_question_to_refresh_work_state_gets_the_saved_report(rig: Rig) -> None:
+    """Yesterday comes from its saved report at once; other past days are pointed at it."""
+    conn = rig.fx.conn
+    unsaved = past_day_answer(rig.service, conn, "我昨天干了什么", now=NOW)
+    assert unsaved is not None
+    assert unsaved["outcome"] == "past_day", "nothing saved yet: pointed at daily_work_report"
+    first = rig.run()
+    calls = len(rig.reporter.catalogs)
+    for question in ("What did I do yesterday?", "我昨天干了什么"):
+        answer = past_day_answer(rig.service, conn, question, now=NOW)
+        assert answer is not None
+        assert answer["outcome"] == "reused"
+        assert answer["local_date"] == DAY.isoformat()
+        assert answer["summary"] == first["summary"]
+        assert "force=true" in answer["note"]
+    pointed = past_day_answer(rig.service, conn, "What did I do the day before yesterday?", now=NOW)
+    assert pointed is not None
+    assert pointed["outcome"] == "past_day"
+    assert "daily_work_report" in pointed["note"]
+    last_week = past_day_answer(rig.service, conn, "上周我都在忙什么", now=NOW)
+    assert last_week is not None
+    assert last_week["outcome"] == "past_day"
+    for now_question in ("what am I doing now", "我今天到现在做了什么", None):
+        assert past_day_answer(rig.service, conn, now_question, now=NOW) is None
+    assert len(rig.reporter.catalogs) == calls, "no model call on any of these"
 
 
 def test_an_unreadable_plan_is_stated_and_the_report_still_saves(rig: Rig) -> None:

@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import threading
 from contextlib import closing
 from datetime import UTC, date, datetime, time, timedelta
@@ -185,6 +186,17 @@ class DailyReportService:
         self._lock = threading.Lock()
         self.plan_reader: PlanReader | None = None
         """Set by the runtime once MCP servers are up (ADR 0036); None means not wired."""
+
+    def saved(
+        self, conn: sqlite3.Connection, *, now: datetime | None = None
+    ) -> dict[str, Any] | None:
+        """Yesterday's saved report as a reused run returns it; None when there is none."""
+        zone_name, zone = resolve_zone(None, self._tz)
+        day = resolve_day(None, zone, now or datetime.now(UTC))
+        existing = existing_report(conn, day.isoformat(), zone_name)
+        if existing is None:
+            return None
+        return _reused({"local_date": day.isoformat(), "timezone": zone_name}, existing)
 
     def run(  # noqa: PLR0913 — one keyword per request field plus the writer and the clock.
         self,
@@ -532,6 +544,46 @@ class DailySchedule:
                 LOGGER.exception("daily_report: scheduled run for %s failed", day)
                 continue
             LOGGER.info("daily_report: scheduled %s -> %s", day, result["outcome"])
+
+
+# "What did I do yesterday" kept reaching refresh_work_state, whatever its description said
+# (2026-10-01: 11.5 s of analysing today, answered with today's state). A question naming a past
+# day is the saved report's: yesterday's is returned at once, another past day is pointed at
+# daily_work_report.
+_PAST_DAY = re.compile(
+    r"前天|上周|上个?星期|上个?礼拜|上个?月|\d+\s*天前"
+    r"|day before yesterday|last (?:week|month)|\d+\s*days? ago",
+    re.IGNORECASE,
+)
+_YESTERDAY = re.compile(r"昨天|昨日|昨晚|yesterday", re.IGNORECASE)
+_NOT_NOW = (
+    "This question names a past day, so the current work state was not analysed. If the user meant "
+    "what is happening now, call refresh_work_state again with force=true."
+)
+
+
+def past_day_answer(
+    service: DailyReportService,
+    conn: sqlite3.Connection,
+    question: object,
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any] | None:
+    """For refresh_work_state: the saved report a past-day question needs; None for now."""
+    if not isinstance(question, str):
+        return None
+    if not (_PAST_DAY.search(question) or _YESTERDAY.search(question)):
+        return None
+    report = None if _PAST_DAY.search(question) else service.saved(conn, now=now)
+    if report is not None:
+        return {**report, "note": "Yesterday's saved daily report (summary). " + _NOT_NOW}
+    return {
+        "outcome": "past_day",
+        "error": None,
+        "state": None,
+        "note": "Call daily_work_report with that day's local_date: it reuses a saved report "
+        "at once. " + _NOT_NOW,
+    }
 
 
 def _reused(base: dict[str, Any], existing: dict[str, Any]) -> dict[str, Any]:

@@ -141,6 +141,7 @@ from jarvis.runtime.daily_report import (
     DailyReportService,
     DailySchedule,
     microsoft_plan,
+    past_day_answer,
 )
 from jarvis.runtime.home import Home
 from jarvis.runtime.night_run import NightRun, night_settings
@@ -1023,10 +1024,18 @@ def _daily_schedule(
 
 def _work_state_tool_refresh(
     service: WorkStateService,
+    daily_report: DailyReportService,
 ) -> Callable[[Mapping[str, Any], ToolContext], dict[str, Any]]:
-    """Bind the service to the flat tool's ``(args, ctx)`` handler shape."""
+    """Bind the service to the flat tool's ``(args, ctx)`` handler shape.
+
+    A question about a past day gets that day's saved report instead of an analysis of now.
+    """
 
     def refresh(args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
+        if not args.get("force"):
+            past = past_day_answer(daily_report, ctx.conn, args.get("question"))
+            if past is not None:
+                return past
         return service.refresh(
             ctx.conn,
             question=args.get("question"),
@@ -1840,7 +1849,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         memory_db_path=memory.db_path,
         observed_repos=_observer_repo_paths(full_config),
         timesink_db_path=_timesink_db_path(full_config),
-        work_state_refresh=_work_state_tool_refresh(work_state),
+        work_state_refresh=_work_state_tool_refresh(work_state, daily_report),
         night=night,
         confirmation_dispatch_outbox=wave1_features.confirmation_dispatch_outbox,
         obsidian_vault_root=_obsidian_vault_root(full_config),
