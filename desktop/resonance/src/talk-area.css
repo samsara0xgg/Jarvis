@@ -83,6 +83,13 @@
 .talk .doc time { flex:none; min-width:38px; font-size:12.5px; color:rgb(235 238 245 / .55); font-variant-numeric:tabular-nums; }
 .talk .doc strong { font-weight:600; color:#fff; }
 .talk .doc code { padding:1px 4px; border-radius:var(--radius-tag); font:var(--text-mono)/1.4 ui-monospace,Menlo,monospace; background:rgb(255 255 255 / .08); }
+/* pulling up for an earlier exchange: the content follows (--pull), "Earlier" shows in the gap, the answer that yielded fades above */
+.talk-tr > * { translate:0 var(--pull,0px); }
+.tk-more { position:absolute; z-index:3; top:0; left:50%; translate:-50% 0; opacity:0; pointer-events:none; font-size:var(--text-label); letter-spacing:.02em; color:rgb(235 238 245 / .62); }
+.tk-earlier { align-self:center; flex:none; padding:3px 10px; border-radius:99px; font-size:var(--text-label); letter-spacing:.02em; color:rgb(235 238 245 / .66); background:rgb(255 255 255 / .07); }
+.tk-earlier:hover { background:rgb(255 255 255 / .13); }
+.tk-gone { position:absolute; left:0; right:0; overflow:hidden; pointer-events:none; }
+.tk-gone > div { display:flex; flex-direction:column; gap:4px; padding:10px 16px 0; }
 /* back to the newest, once you have scrolled away from it: a line of no height between the transcript and the bottom row, so the
    fade does not take it and it sits on the faded bottom of the words, not on the ones being said */
 .tk-latest { position:relative; flex:none; height:0; z-index:3; overflow:visible; pointer-events:none; }

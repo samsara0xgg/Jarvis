@@ -454,7 +454,7 @@ try {
     await s.context.close();
   }
 
-  // ---- showing and hiding: 8 s after a turn, never under the pointer, ten minutes of memory ----
+  // ---- showing and hiding: 8 s after a turn, never under the pointer, a new session each time it opens (ADR 0113) ----
   {
     const s = await scene({ captions: 'all' });
     const { page, emit, move, skew, area, turn, folded, shot } = s;
@@ -469,11 +469,11 @@ try {
     const lingered = (Date.now() - spokenAt) / 1000;
     check(`it folds away 8 s after the turn (${lingered.toFixed(1)} s)`, lingered > 7.5 && lingered < 10.5);
     check('and she goes back into the island', await page.waitForFunction(() => document.querySelector('.companion-hit')?.dataset.place === 'home', null, { timeout: 4000 }).then(() => true, () => false));
-    // within ten minutes it continues
+    // opened again, however soon, it starts empty
     await skew(5 * 60_000);
     await emit('voice', { phase: 'listening', turn_id: 'c2' }); await page.waitForTimeout(1200);
     a = await area();
-    check('opened again within ten minutes it continues the same conversation', a.up && a.yous === 1 && a.her === '明天上午十点。');
+    check('opened again 5 minutes later it starts empty: the last session is not shown', a.up && a.yous === 0 && a.hers === 0 && a.kind === 'capsule');
     await emit('voice', { phase: 'empty', turn_id: 'c2' }); await emit('controls', { mic_muted: false, speech_muted: false, conversation: false });
     // never while the pointer is over it
     await page.waitForTimeout(500);
@@ -484,7 +484,7 @@ try {
     await move(600, 650);
     await folded(6000);
     check('and folds once the pointer has gone', !(await area()).up);
-    // after ten minutes it starts empty
+    // and so it does after ten
     await skew(11 * 60_000);
     await emit('voice', { phase: 'listening', turn_id: 'c3' }); await page.waitForTimeout(1200);
     a = await area();

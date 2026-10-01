@@ -235,7 +235,7 @@ export function Companion() {
   const engaged = voice !== 'off' || composer || receiving;
   const presence = usePresence({ engaged,
     over: () => { const r = talkBox.current?.getBoundingClientRect(), p = cursor.current; return place === 'out' && !!r && p.x >= r.left - 6 && p.x <= r.right + 6 && p.y >= r.top - 6 && p.y <= r.bottom + 6; },
-    onOpen: stale => { if (stale) dispatch({ type: 'talk-clear' }); } });
+    onOpen: () => dispatch({ type: 'talk-clear' }) });
   const talkLevel: Captions = level(companion.captions, s.soundMuted);
   // The deep look belongs to the turn: its answer being thought about, or said or shown. Listening to the next one, or waiting on it, is back to normal.
   const deepLook = deepThinking || (answerSecs > 0 && s.waiting === s.turnId && voice !== 'listening');
