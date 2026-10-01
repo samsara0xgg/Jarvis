@@ -1,5 +1,5 @@
 import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
-import { CaretRight, Cpu, Globe, House, Key, LockSimple, Microphone, Planet, Robot, SlidersHorizontal, SpeakerHigh, Waveform, Bell } from '@phosphor-icons/react';
+import { CaretRight, Check, Cpu, Globe, House, Key, LockSimple, Microphone, Planet, Robot, SlidersHorizontal, SpeakerHigh, Waveform, Bell } from '@phosphor-icons/react';
 import { tr, useCompanionSettings, type L, type Lang } from './companionSettings';
 import { postRoute, useRoute } from './homeData';
 import { SKIN_KEYS, SKINS, type Skin } from './starCore';
@@ -78,7 +78,7 @@ export function SettingsPage({ lang, port, open, cat, onCat, ctl, accounts, keyD
   const [s, update] = useCompanionSettings();
   const route = useRoute<Daemon>(port, '/inherent/settings', open, 60_000);
   const setup = useRoute<Setup>(port, '/inherent/setup', open && cat === 'accounts', 30_000);
-  const [demo, setDemo] = useState(DEMO), [draft, setDraft] = useState<Record<string, number>>({});
+  const [demo, setDemo] = useState(DEMO), [phase, setPhase] = useState<'going' | 'done' | null>(null), [draft, setDraft] = useState<Record<string, number>>({});
   const daemon = port ? route.data : demo, ready = !!daemon;
   const v = (key: string) => daemon?.values[key];
   const save = async (key: string, value: unknown) => {
@@ -88,8 +88,20 @@ export function SettingsPage({ lang, port, open, cat, onCat, ctl, accounts, keyD
   };
   const restart = async () => {
     if (!port) { setDemo(d => ({ ...d, restart_pending: false })); notify(t(['Restarted.', '已重启。'])); return; }
-    try { await postRoute(port, '/inherent/restart', {}); notify(t(['Restarting Jarvis…', '正在重启 Jarvis…'])); }
-    catch { notify(t(['Jarvis can’t restart itself yet.', 'Jarvis 还不能自己重启。'])); }
+    if (phase) return;
+    try { await postRoute(port, '/inherent/restart', {}); } catch { notify(t(['Jarvis can’t restart itself yet.', 'Jarvis 还不能自己重启。'])); return; }
+    // The daemon is back once it answers after being away, or answers with nothing pending; launchd needs 10 to 25 s.
+    setPhase('going');
+    let wasAway = false;
+    for (const end = Date.now() + 60_000; Date.now() < end;) {
+      await new Promise(r => setTimeout(r, 1000));
+      try {
+        const r = await fetch(`http://127.0.0.1:${port}/inherent/settings`, { signal: AbortSignal.timeout(2000) });
+        if (r.ok && (wasAway || !(await r.json() as Daemon).restart_pending)) { setPhase('done'); route.reload(); notify(t(['Restarted.', '已重启。'])); setTimeout(() => setPhase(null), 1600); return; }
+      } catch { wasAway = true; }
+    }
+    setPhase(null);
+    notify(t(['Jarvis is taking longer than usual to come back.', 'Jarvis 重启比平时慢。']));
   };
   // Daemon items: a value, its options, and how to save it; greyed out while the daemon does not serve settings.
   const dSwitch = (key: string): Ctl => ({ k: 'switch', on: v(key) === true, set: on => void save(key, on) });
@@ -243,7 +255,9 @@ export function SettingsPage({ lang, port, open, cat, onCat, ctl, accounts, keyD
         <span className="st-ic">{x.icon}</span><span className="st-tx"><b>{t(x.name)}</b><small className={x.warm ? 'is-warm' : ''}>{x.sum}</small></span><CaretRight size={12}/>
       </button>)}</div>
     </>}</div></div>
-    {daemon?.restart_pending && <div className="st-restart"><span>{t(['Some changes apply after a restart', '有改动要重启 Jarvis 才生效'])}</span><button onClick={() => void restart()}>{t(['Restart', '重启'])}</button></div>}
+    {(daemon?.restart_pending || phase) && <div className={`st-restart${phase ? ` is-${phase}` : ''}`}>
+      <span key={phase ?? 'ask'}>{phase === 'done' ? t(['Restarted.', '已重启。']) : phase ? t(['Restarting Jarvis…', '正在重启 Jarvis…']) : t(['Some changes apply after a restart', '有改动要重启 Jarvis 才生效'])}</span>
+      {phase === 'done' ? <Check size={13} weight="bold"/> : phase ? <i className="st-dot"/> : <button onClick={() => void restart()}>{t(['Restart', '重启'])}</button>}</div>}
   </>;
 }
 
