@@ -87,7 +87,7 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
   // Standing on a line under the sessions: no words, no needle, nothing bends.
   const onX = () => selected.startsWith('x:') || selected.startsWith('m:');
   // The rows another feature puts at the sky's foot (the terminal's sessions) are stops too, after its own lines.
-  const moreRows = () => [...more.querySelectorAll<HTMLElement>('button')];
+  const moreRows = () => more.hidden ? [] : [...more.querySelectorAll<HTMLElement>('button')];
   const index = () => Math.max(0, rows.findIndex(s => s.id === selected));
   const stops = () => [...rows.map(s => s.id), ...xrows.filter(x => x.key !== 'x:none').map(x => x.key), ...moreRows().map((_, i) => `m:${i}`)];
   const xLines = () => xrows.reduce((n, x) => Math.max(n, x.line + 1), 0);
@@ -98,7 +98,7 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
   const waitMin = (s: Sess) => Math.max(0, Math.round((Date.now() - since(s)) / 60000));
   const stateText = (s: Sess) => `${words[status(s)]}${s.st === 'wait' ? ` · ${waitMin(s) || '刚刚'}${waitMin(s) ? ' 分' : ''}` : ''}`;
   const stateHTML = (s: Sess, tag = 'em') => `<${tag} class="st-${status(s)}">${stateText(s)}</${tag}>`;
-  const skyHeight = () => 26 + (rows.length + xLines()) * 27 + opening.value + 34 + (Number(more.dataset.h) || 0);
+  const skyHeight = () => 26 + (rows.length + xLines()) * 27 + opening.value + 34 + (more.hidden ? 0 : Number(more.dataset.h) || 0);
   // Under the words the trails bend down once, past their right edge, and stay down all the way back.
   const geo = () => geometry(width, now, ...reach(), skyHeight(),
     (i, x) => (offsets.get(rows[i]?.id)?.value ?? 0) * (1 - smooth(left.value + wordWidth + 14, left.value + wordWidth + 58, x)), pan.value);
@@ -194,6 +194,8 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
     // While searching, a name shows what matched and how many of its sentences say it.
     const q = searching() ? query.trim() : '', count = (s: Sess) => q ? saying(s).length : 0;
     const key = rows.map(s => `${s.id}|${s.title}|${status(s)}|${waitMin(s)}|${s.archived}|${count(s)}`).join(';') + `|${selected}|${skyOn}|${nameStop}|${hooks.current()}|${q}|${xrows.map(x => x.key + x.label).join(',')}|${waiting.key}`;
+    // A search looks through the window's own sessions: the terminal's group steps out while it runs.
+    more.hidden = searching();
     moreRows().forEach((b, i) => b.classList.toggle('sel', skyOn && selected === `m:${i}`));
     if (rowKey === key) return; rowKey = key;
     rowsEl.innerHTML = rows.map((s, i) => `<button type="button" class="bw-row${selected === s.id ? ' sel' : ''}${hooks.current() === s.id ? ' on' : ''}${nameStop && selected === s.id ? ' nm' : ''}" data-session="${esc(s.id)}" style="top:${15 + i * 27}px" aria-label="${esc(s.title)}，${s.archived ? '已归档' : words[status(s)]}"><b>${hl(s.title, q)}</b>${count(s) ? `<em class="st-find">${count(s)} 处说过</em>` : ''}${s.archived ? '<em class="st-arch">已归档</em>' : stateHTML(s)}</button>`).join('')

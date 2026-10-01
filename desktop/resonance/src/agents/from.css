@@ -6,7 +6,7 @@
 .bw-row.fr-trow:not(.on) b{color:var(--faint)}
 .bw-row em.fr-tg,.pop .fr-tg{flex:none;padding:0 5px;border-radius:4px;font:normal 10.5px/16px var(--ui);color:var(--faint);background:rgb(255 255 255 / .06)}
 .fr-tcount{position:absolute;right:20px;height:24px;padding:0 8px;border-radius:var(--r6,6px);color:var(--faint);font-size:12px;transition:background .15s,color .15s}
-.fr-tcount:hover,.fr-tcount:focus-visible{color:var(--muted);background:rgb(var(--acc) / .09)}
+.fr-tcount:hover,.fr-tcount:focus-visible,.fr-tcount.sel{color:var(--muted);background:rgb(var(--acc) / .09)}
 /* the classic list: a line beside 已归档 */
 .fr-tlink{flex:none;display:flex;align-items:center;gap:8px;margin:0 6px 2px;padding:8px 10px;border-radius:9px;font-size:12px;color:var(--muted);transition:background .15s,color .15s}
 .fr-tlink[hidden]{display:none}
