@@ -46,39 +46,37 @@ _ABBREVIATIONS: Final[tuple[str, ...]] = (
 
 
 def split_into_sentences(text: str) -> list[str]:
-    """Split *text* into stripped sentence strings.
+    """Split *text* into sentence strings that join back to ``text.strip()``.
 
     Boundaries are ASCII ``.!?``, CJK ``。！？``, and newline. The decimal
     guard keeps ``3.14`` intact; the abbreviation guard keeps ``Dr.``,
     ``e.g.``, etc. intact (case-sensitive, per legacy).
 
-    Returns ``[]`` for empty / whitespace-only input. Returns
-    ``[text.strip()]`` when the (stripped) input contains no boundary
-    after the guards. Otherwise returns the list of stripped sentences
-    with empty intermediates dropped.
+    The whitespace between sentences stays with the sentence that follows it:
+    the surface shows the chunks joined, and stripped ones glued the words
+    together (``attic.Its``). Returns ``[]`` for empty / whitespace-only input
+    and ``[text.strip()]`` when the input has no boundary after the guards.
     """
-    if not text.strip():
+    text = text.strip()
+    if not text:
         return []
 
     protected = _protected_dot_positions(text)
     sentences: list[str] = []
     start = 0
-    n = len(text)
 
-    for i in range(n):
-        ch = text[i]
+    for i, ch in enumerate(text):
         if ch not in _DELIMITERS:
             continue
         if ch == "." and _is_protected_dot(text, i, protected):
             continue
-        chunk = text[start : i + 1].strip()
-        if chunk:
+        chunk = text[start : i + 1]
+        if chunk.strip():  # a bare line break rides with the next sentence
             sentences.append(chunk)
-        start = i + 1
+            start = i + 1
 
-    remainder = text[start:].strip()
-    if remainder:
-        sentences.append(remainder)
+    if start < len(text):
+        sentences.append(text[start:])
 
     return sentences
 
