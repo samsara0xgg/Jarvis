@@ -225,5 +225,7 @@
 .bw .pop,.bw .tip{z-index:30}
 .bw ::selection{background:rgb(157 180 255 / .3);color:var(--ink)}
 .bw textarea{caret-color:var(--warm)}
+/* narrower still, the branch goes before it would shrink to nothing between two dots */
+@media(max-width:820px){.bw .h-meta .br,.bw .h-meta .br+.dot{display:none}}
 @media(max-width:900px){.bw .m-head{width:calc(100vw - 486px)}.bw .bw-pull{right:310px}.bw .bw-open .pp-in{gap:6px 8px}}
 @media(prefers-reduced-motion:reduce){.bw *,.bw *::before,.bw *::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
