@@ -640,6 +640,17 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         optional_payload=(),
         schema_version=1,
     ),
+    # ADR 0102: Allen's words that steered conversation mode instead of making
+    # a turn (「等我一下」 holds it, a dismissal ends it). No turn rows exist
+    # for them; this row is the trigger of the one fixed line she says back.
+    EventTypeSchema(
+        event_type="surface.conversation_words",
+        owner_layer="L5",
+        actor="jarvis_runtime",
+        required_payload=("turn_id", "reason", "transcript"),
+        optional_payload=(),
+        schema_version=1,
+    ),
     # ADR-0006 §4.2: the fourth exit from playback, which appends no terminal.
     # The media lane fails closed and speaks nothing further until the process
     # restarts; without this row that outcome is unprovable after the fact.

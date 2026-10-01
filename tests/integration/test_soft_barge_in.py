@@ -88,6 +88,7 @@ class _Rig:
         self.phases: list[tuple[str, object]] = []
         self.conversation = True
         self.conversation_changes: list[tuple[bool, str]] = []
+        self.answers: list[str] = []
         self.speaking = speaking
         self.db = tmp_path / "events.db"
         open_event_log(self.db).close()
@@ -122,6 +123,7 @@ class _Rig:
                 mic_muted=lambda: False,
                 conversation=lambda: self.conversation,
                 set_conversation=self._set_conversation,
+                answer_words=lambda _turn_id, reason, _text: self.answers.append(reason),
                 stop_speaking=self._stop,
                 supersede_unspoken=lambda _turn_id: self.output.append("supersede"),
                 yield_speaking=lambda gain: self.output.append(f"gain {gain}"),
@@ -228,6 +230,7 @@ def test_a_dismissal_stops_her_ends_the_mode_and_is_no_turn(
         rig.close()
     assert ("stop" in rig.output) is speaking
     assert rig.conversation_changes == [(False, "dismissed")]
+    assert rig.answers == ["dismissed"]
     assert rig.turns() == []
     assert ("empty", "dismissed") in rig.phases
 
@@ -245,6 +248,7 @@ def test_a_lone_word_in_the_mode_is_dropped_and_keeps_nothing_open(
         rig.close()
     assert rig.turns() == []
     assert ("empty", reason) in rig.phases
+    assert rig.answers == []
     assert rig.conversation_changes == [(False, "idle")]
 
 
@@ -259,6 +263,7 @@ def test_wait_for_me_holds_the_mode_then_quiet_ends_it(tmp_path: Path) -> None:
     finally:
         rig.close()
     assert held == []
+    assert rig.answers == ["wait"]
     assert rig.conversation_changes == [(False, "idle")]
     assert rig.turns() == []
     assert ("empty", "wait") in rig.phases

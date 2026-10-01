@@ -905,4 +905,13 @@ VARIANTS: Final[dict[str, dict[Language, tuple[str, ...]]]] = {
         "zh": ("我让 Codex 去做。", "交给 Codex 去办。"),
         "en": ("I'll hand this to Codex.", "Passing this to Codex."),
     },
+    # ADR 0102: her answer to 「等我一下」 and to a dismissal, one picked at random.
+    "conversation.wait": {
+        "zh": ("好，等你吧。", "好，你先忙。", "不急，我等你。", "好的，我等着。", "嗯，你忙完叫我。"),
+        "en": ("Sure, I'll wait.", "Take your time.", "No rush.", "Okay, I'm here.", "Sure, go ahead."),
+    },
+    "conversation.dismissed": {
+        "zh": ("好，再见。", "好，有事再叫我。", "好的，回头见。", "嗯，那我先下了。", "好，需要再喊我。"),
+        "en": ("Okay, bye.", "Sure, call me if you need me.", "See you.", "Alright, I'll step away.", "Bye for now."),
+    },
 }

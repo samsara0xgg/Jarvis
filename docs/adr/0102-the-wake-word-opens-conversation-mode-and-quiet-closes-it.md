@@ -54,12 +54,18 @@ Its limits:
   wake phrase, 你/那, and 了/吧/啦), or a sentence of at most 16 characters,
   not a question, that holds 退下 or 退一下 or starts with 退出; Allen's
   first live dismissals were 「退出退出退下，暂停停一下等」 and 「我让你退一下」.
-  It stops her if she is talking, ends the mode, and is no turn.
+  It stops her if she is talking, ends the mode, and is no turn; she says
+  one fixed goodbye back.
 - A wait request is an utterance that is only 等我一下, 等等我, 稍等, 你等着,
   hold on, wait for me or give me a second. It stops her if she is talking,
   holds the mode `conversation_wait_s` (shipped 60 s) past it, and is no
-  turn. A lone 「等一下」 stays ADR 0100's stop request.
+  turn; she says one fixed line back that she will wait. A lone 「等一下」
+  stays ADR 0100's stop request.
 - Both phrase lists are fixed patterns in `jarvis/surface/voice_asr.py`.
+  Her lines back are five wordings each in `jarvis/shared/lang.py`
+  (`conversation.dismissed`, `conversation.wait`), one picked at random and
+  spoken through the commentary path: no model, no turn. A
+  `surface.conversation_words` row records the words that triggered it.
 - Mute and GPT-Live still close the mode as before, and the last surface
   disconnecting still clears it.
 

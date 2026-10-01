@@ -74,6 +74,7 @@ import json
 import logging
 import math
 import os
+import secrets
 import signal
 import sqlite3
 import threading
@@ -159,6 +160,7 @@ from jarvis.shared.realtime import (
     new_response_id,
 )
 from jarvis.shared.realtime_trace import record_realtime_trace
+from jarvis.shared.text import is_english
 from jarvis.state.event_log import (
     emit_event,
     get_event,
@@ -2187,6 +2189,69 @@ async def _commentary_heard(
     await asyncio.to_thread(_complete_commentary, runtime, entry)
 
 
+def _say_conversation_line(runtime: JarvisRuntime, turn_id: str, reason: str, text: str) -> None:
+    """ADR 0102: one fixed line back to 「等我一下」 or a dismissal, no model and no turn.
+
+    The words make no turn, so a ``surface.conversation_words`` row is the
+    run's trigger. Generation is done when the run opens, so it completes
+    before render like a final answer (ADR-0008 D1). Runs on its own thread:
+    the capture thread that heard the words must not wait on SQLite.
+    """
+    factory = runtime.llm_session_factory
+    if factory is None:
+        return
+    try:
+        conn = open_runtime_event_log(runtime.runtime_paths.event_log)
+        try:
+            trigger = emit_event(
+                conn,
+                type="surface.conversation_words",
+                payload={"turn_id": turn_id, "reason": reason, "transcript": text},
+                committed_event_bus=runtime.committed_event_bus,
+            )
+            phrases = lang.variants(f"conversation.{reason}", "en" if is_english(text) else "zh")
+            plan = pre_emit_gate(secrets.choice(phrases))
+            response_id = new_response_id()
+            snapshot = factory.snapshot(None)
+            run = start_response_run(
+                conn,
+                turn_id=turn_id,
+                trigger_event_uid=trigger.event_uid,
+                request_client=factory.create(snapshot, response_id=response_id),
+                policy=deterministic_commentary_policy(
+                    active_subject_ref=trigger.event_uid,
+                    evidence_snapshot_hash=evidence_snapshot_hash(conn),
+                    preset_snapshot_hash=snapshot.snapshot_hash,
+                ),
+                response_id=response_id,
+                phase="commentary",
+                channel="speech",
+                committed_event_bus=runtime.committed_event_bus,
+            )
+            _emit_pre_emit_verdict(conn, plan=plan, turn_id=turn_id)
+            run.mark("finalizing")
+            _commentary_terminalizer(runtime).complete(run.facts, response_hash=plan.response_hash)
+            run.mark("completed")
+            render_response(
+                record_pre_emit_token(
+                    SurfaceState(last_gate_response_hash=None), plan.response_hash,
+                ),
+                plan,
+                conn=conn,
+                turn_id=turn_id,
+                attention_channel=COMMENTARY_ATTENTION_CHANNEL,
+                available_surfaces=frozenset(),
+                streaming_enabled=True,
+                response_id=run.response_id,
+                response_group_id=run.response_group_id,
+                phase="commentary",
+            )
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001 - a courtesy line never breaks capture
+        LOGGER.warning("conversation line failed (%s) turn_id=%s", reason, turn_id, exc_info=True)
+
+
 def _final_recognizer(
     runtime: JarvisRuntime, sensevoice: voice_asr.SenseVoiceRecognizer,
 ) -> voice_asr.AsrRecognizer:
@@ -3343,6 +3408,12 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
             mic_muted=mic_muted,
             conversation=conversation,
             set_conversation=set_conversation,
+            answer_words=lambda turn_id, reason, text: threading.Thread(
+                target=_say_conversation_line,
+                args=(runtime, turn_id, reason, text),
+                name="conversation-line",
+                daemon=True,
+            ).start(),
             stop_speaking=_stop_speaking,
             hold_output=_hold_output,
             supersede_unspoken=supersede_unspoken,
