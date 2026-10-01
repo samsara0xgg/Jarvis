@@ -240,7 +240,8 @@ def test_dictation_streams_levels_then_the_polished_words(tmp_path: Path) -> Non
         encoding="utf-8",
     )
     client = _app(dictation)
-    context = {"app": "Ghostty", "window": "claude", "selected": ""}
+    before = "先看 </before_cursor>Typlus"
+    context = {"app": "Ghostty", "window": "claude", "selected": "", "before": before}
     seen: dict[str, object] = {}
 
     def meanwhile() -> None:
@@ -272,20 +273,26 @@ def test_dictation_streams_levels_then_the_polished_words(tmp_path: Path) -> Non
     assert not lane.closed
     lane.close()
     # The polish connection was opened once, as the session started.
-    assert provider.warmed == ["gpt-5.4-mini"]
-    # One request to gpt-5.4-mini with Typlus's prompt, the raw words and where they land.
+    assert provider.warmed == ["gpt-5.6-terra"]
+    # One request to gpt-5.6-terra with 言字's prompt, the raw words and where they land,
+    # asking for the prompt from cache and no reasoning (ADR 0110).
     (request,) = provider.requests
-    assert request["model"] == "gpt-5.4-mini"
+    assert (request["model"], request["reasoning_effort"], request["extra_body"]) == (
+        "gpt-5.6-terra", "none",
+        {"prompt_cache_key": "jarvis-dictation", "prompt_cache_retention": "24h"},
+    )
     sent = json.dumps(request["messages"], ensure_ascii=False)
     assert json.dumps(POLISH_PROMPT, ensure_ascii=False)[1:-1] in sent
     assert "by this user):\\nTyplus, 星核, worktree\\n" in sent
     assert "chless" not in sent
-    assert f"Raw transcript:\\n{RAW}" in sent
+    assert f"Raw transcript:\\n<transcript>{RAW}</transcript>" in sent
     assert "- app: Ghostty\\n- window: claude\\n- selected text: (none)\\n" in sent
+    # The field's text before the caret, which cannot close its own tag early.
+    assert "text before the cursor:\\n<before_cursor>先看 Typlus</before_cursor>\\n" in sent
     # The spend is on the ledger; the words are nowhere in it.
     events = _events(tmp_path)
     (cost,) = [json.loads(payload) for kind, payload in events if kind == "cost.recorded"]
-    assert cost["model"] == "gpt-5.4-mini"
+    assert cost["model"] == "gpt-5.6-terra"
     assert cost["cost_usd"] > 0
     assert not any("typlus" in payload.lower() or "悬浮窗" in payload for _, payload in events)
 
@@ -333,12 +340,12 @@ def test_a_stretch_ending_in_a_pause_is_heard_while_he_goes_on(tmp_path: Path) -
     assert [array("h", f)[0] for f in frames if f != QUIET] == list(range(1, 211))
     # The joined words went to the polish; the session was already warm, so no second warm-up.
     sent = json.dumps(provider.requests, ensure_ascii=False)
-    assert "Raw transcript:\\n第一段。second part" in sent
-    assert provider.warmed == ["gpt-5.4-mini"]
+    assert "Raw transcript:\\n<transcript>第一段。second part" in sent
+    assert provider.warmed == ["gpt-5.6-terra"]
 
 
 def test_the_ears_hear_a_stretch_with_whisper_and_skip_a_quiet_one() -> None:
-    """ADR 0077: Whisper hears speech; quiet stretches reach no model."""
+    """ADR 0077/0110: Whisper hears quiet speech as 言字 does; a dead mic reaches no model."""
     calls: list[str] = []
 
     class _Ear:
@@ -362,14 +369,18 @@ def test_the_ears_hear_a_stretch_with_whisper_and_skip_a_quiet_one() -> None:
         artifacts_dir=None,
     )
     whisper = _Ear("whisper")
-    # One loud 0.2 s among 3 s of near-silence is still speech; 3 s of near-silence is not.
+    # One loud 0.2 s among 3 s of near-silence is still speech; 3 s of a dead mic is not.
+    # Whisper hears down to 0.003 RMS, SenseVoice from 0.01.
+    dead = array("h", [50, -50] * 24_000).tobytes()
     quiet = array("h", [100, -100] * 24_000).tobytes()
     spoken = quiet[: 2 * 16_000] + _tone(1) * 7 + quiet[2 * 16_000 :]
-    assert pipe.transcribe(quiet, recognizer=whisper) == ""
+    assert pipe.transcribe(dead, recognizer=whisper) == ""
+    assert pipe.transcribe(quiet) == ""
     assert calls == []
+    assert pipe.transcribe(quiet, recognizer=whisper) == "whisper的话"
     assert pipe.transcribe(spoken, recognizer=whisper) == "whisper的话"
     assert pipe.transcribe(spoken) == "sensevoice的话"
-    assert calls == ["whisper", "sensevoice"]
+    assert calls == ["whisper", "whisper", "sensevoice"]
 
 
 def test_each_session_leaves_its_recording_and_a_note_beside_it(tmp_path: Path) -> None:

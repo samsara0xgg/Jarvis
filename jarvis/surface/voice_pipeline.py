@@ -130,15 +130,15 @@ class VoicePipeline:
     ) -> str:
         """Dictation (ADR 0076/0077): one stretch between his pauses, heard and corrected, no emit.
 
-        ``recognizer`` hears it instead of the voice path's own (local Whisper).
-        ``""`` when no 0.2 s of it is loud enough to be speech; the caller
-        judges the joined stretches as a whole.
+        ``recognizer`` hears it instead of the voice path's own, as 言字 does
+        (local Whisper, ADR 0110). ``""`` when nothing in it is speech; the
+        caller judges the joined stretches as a whole.
         """
+        if recognizer is not None:
+            return self._normalizer.normalize(voice_asr.dictation_text(audio_bytes, recognizer))
         if voice_asr.too_quiet_for_speech(audio_bytes):
             return ""
-        if recognizer is None:
-            return self._normalizer.normalize(self.partial_text(audio_bytes))
-        return self._normalizer.normalize(recognizer.recognize(audio_bytes).text)
+        return self._normalizer.normalize(self.partial_text(audio_bytes))
 
     def _judge(
         self,

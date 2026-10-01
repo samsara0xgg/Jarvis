@@ -105,6 +105,17 @@ llm:
       base_url: "https://api.openai.com/v1"
       api_key_env: OPENAI_API_KEY
       max_tokens: 4096
+    # 听写润色（ADR 0110），和言字 0.4.0 默认用的同一个。系统提示词加词表过了
+    # 1024 token，固定 cache key 让每次听写都命中缓存（言字实测 1525 token 命中）。
+    gpt56-terra:
+      model: gpt-5.6-terra
+      base_url: "https://api.openai.com/v1"
+      api_key_env: OPENAI_API_KEY
+      max_tokens: 4096
+      reasoning_effort: none
+      extra_body:
+        prompt_cache_key: jarvis-dictation
+        prompt_cache_retention: 24h
 
   # 流式回复的句子切分调优
   sentence_divider:
@@ -750,8 +761,11 @@ memory:
 # Dictation (ADR 0058): the companion's typing tool. Recorded from the live mic,
 # heard by the voice path's SenseVoice, polished by this preset, never stored.
 dictation:
-  polish_preset: gpt54-mini
-  vocab_path: ~/.typlus/vocab.yaml   # Typlus's word list, read on every dictation; absent = none
+  polish_preset: gpt56-terra
+  vocab_path: ~/.typlus/vocab.yaml   # 言字's word list, read on every dictation; absent = none
+  # What local Whisper hears (ADR 0110): "" lets it tell each stretch's language, as
+  # 言字 ships; zh or en skips that pass (~0.5 s faster) but garbles the other language.
+  language: ""
 
 # The night run (ADR 0093): "我要睡觉了，让它继续跑" keeps the Mac awake this long,
 # screen off and sound muted. Before `morning` an unlock is only a look; from it on,

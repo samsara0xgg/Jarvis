@@ -1121,6 +1121,7 @@ class DictationRequest(BaseModel):
     app: str = Field(default="", max_length=200)
     window: str = Field(default="", max_length=500)
     selected: str = Field(default="", max_length=20000)
+    before: str = Field(default="", max_length=1000)
 
 
 def _register_dictation_routes(app: FastAPI, deps: InherentDeps) -> None:

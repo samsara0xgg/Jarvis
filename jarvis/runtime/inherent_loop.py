@@ -5361,7 +5361,11 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             except ValueError:
                 LOGGER.exception("dictation off: its polish preset is not configured")
             else:
-                whisper = whisper_ears()
+                vocab_path = Path(str(dictation_config.get("vocab_path", "")))
+                whisper = whisper_ears(
+                    language=str(dictation_config.get("language") or ""),
+                    terms=functools.partial(load_user_terms, vocab_path),
+                )
                 if whisper is not None:  # its ~1.6 GB loads now, not inside his first tap
                     threading.Thread(
                         target=whisper.prewarm, name="jarvis-dictation-whisper", daemon=True,
@@ -5376,7 +5380,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                         else functools.partial(voice_pipe.transcribe, recognizer=whisper)
                     ),
                     client=client,
-                    vocab_path=Path(str(dictation_config.get("vocab_path", ""))),
+                    vocab_path=vocab_path,
                     event_log_path=runtime.runtime_paths.event_log,
                     pricing_table=load_pricing_table(repo_root() / "data" / "pricing.json"),
                     recordings=(
@@ -5384,6 +5388,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                         if runtime.memory is not None and runtime.memory.retain_audio
                         else None
                     ),
+                    warm_ears=whisper.warm if whisper is not None else None,
                 )
 
         # ADR 0019: one Codex board, filled by the hooks' route and read by the night run.

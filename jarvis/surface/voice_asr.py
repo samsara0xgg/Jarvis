@@ -499,6 +499,7 @@ _WHISPER_LOOP_RE = re.compile(r"(.{2,16})\1{2,}")
 _WHISPER_RUN_RE = re.compile(r"(\S)\1{7,}")
 _WHISPER_FALLBACK_TEMPERATURES = (0.0, 0.2, 0.4, 0.6, 0.8, 1.0)
 _WHISPER_TERMS_MAX_CHARS = 600
+_WHISPER_WINDOW_S = 30
 # mlx_whisper keeps one model per process, so every recognizer shares one lock.
 _WHISPER_LOCK = threading.Lock()
 
@@ -554,11 +555,29 @@ class MlxWhisperRecognizer:
         self._initial_prompt = initial_prompt or None
         self._terms = terms
         self._module: Any | None = None
+        self._warming = threading.Lock()
         self.last_used = 0.0
 
     def prewarm(self) -> None:
         """Load the model (~1.6 GB, a few seconds) by hearing half a second of silence."""
         self.recognize(bytes(_SAMPLE_RATE))
+
+    def warm(self) -> None:
+        """Allen started talking: after 20 s idle, run one silent pass in the background."""
+        if time.monotonic() - self.last_used < _WHISPER_WARM_IDLE_S:
+            return
+        if not self._warming.acquire(blocking=False):
+            return
+
+        def _run() -> None:
+            try:
+                self.prewarm()
+            except Exception:  # noqa: BLE001 - a failed warm-up only leaves the next pass cold
+                LOGGER.warning("MLX Whisper warm-up failed", exc_info=True)
+            finally:
+                self._warming.release()
+
+        threading.Thread(target=_run, name="jarvis-whisper-warm", daemon=True).start()
 
     def recognize(self, audio_pcm: bytes) -> TranscriptionResult:
         """Transcribe PCM16 mono 16 kHz audio with mlx-whisper."""
@@ -571,7 +590,9 @@ class MlxWhisperRecognizer:
                 emotion=None,
             )
 
-        listed = _terms_prompt(self._terms()) if self._terms is not None else ""
+        # 言字 050d27f: the list only for audio within one 30 s window; across windows it looped.
+        fits = audio.size <= _WHISPER_WINDOW_S * _SAMPLE_RATE
+        listed = _terms_prompt(self._terms()) if self._terms is not None and fits else ""
         prompt = " ".join(part for part in (self._initial_prompt, listed) if part) or None
         with _WHISPER_LOCK:
             transcription = self._decode(audio, prompt=prompt, temperature=self._temperature)
@@ -665,7 +686,6 @@ class WhisperFinalRecognizer:
         """Hear finals with ``whisper`` and endpoint snapshots with ``partials``."""
         self._whisper = whisper
         self._partials = partials
-        self._warming = threading.Lock()
 
     def recognize(self, audio_pcm: bytes) -> TranscriptionResult:
         """The authoritative transcript; nothing for a clip too short or a dead mic."""
@@ -692,20 +712,45 @@ class WhisperFinalRecognizer:
 
     def warm(self) -> None:
         """Allen started talking: after 20 s idle, run one silent pass in the background."""
-        if time.monotonic() - self._whisper.last_used < _WHISPER_WARM_IDLE_S:
-            return
-        if not self._warming.acquire(blocking=False):
-            return
+        self._whisper.warm()
 
-        def _run() -> None:
-            try:
-                self._whisper.prewarm()
-            except Exception:  # noqa: BLE001 - a failed warm-up only leaves the next pass cold
-                LOGGER.warning("MLX Whisper warm-up failed", exc_info=True)
-            finally:
-                self._warming.release()
 
-        threading.Thread(target=_run, name="jarvis-whisper-warm", daemon=True).start()
+# 言字 a50ba52: a fragment this short heard as another language is noise, unless it is
+# confidently English; Chinese is never dropped for being short.
+_SHORT_FRAGMENT_CHARS = 5
+_SHORT_ENGLISH_CONFIDENCE = 0.4
+# 言字 5fddcba: Whisper often closes a Chinese clause with a half-width mark.
+_HALF_WIDTH_AFTER_CJK = re.compile(r"(?<=[\u3400-\u9fff\uf900-\ufaff])\s*([,?!:;])\s*")
+_FULL_WIDTH = dict(zip(",?!:;", "，？！：；", strict=True))
+
+
+def full_width_punctuation(text: str) -> str:
+    """``,?!:;`` after a Chinese character become full-width; "3,000" and English stay."""
+    return _HALF_WIDTH_AFTER_CJK.sub(lambda match: _FULL_WIDTH[match.group(1)], text)
+
+
+def dictation_text(audio_pcm: bytes, recognizer: AsrRecognizer) -> str:
+    """One dictation stretch heard by local Whisper as 言字 0.4.0 hears it (ADR 0110).
+
+    Only a dead or muted mic is cut before the model, a short fragment heard
+    as neither Chinese nor confident English is noise, and Chinese clauses get
+    full-width punctuation.
+    """
+    if too_quiet_for_speech(audio_pcm, floor=_WHISPER_LEVEL_FLOOR):
+        return ""
+    heard = recognizer.recognize(audio_pcm)
+    text = heard.text.strip()
+    language = (heard.language_detected or "").lower()
+    if (
+        language not in {"", "zh"}
+        and len(text) <= _SHORT_FRAGMENT_CHARS
+        and not (language == "en" and heard.confidence >= _SHORT_ENGLISH_CONFIDENCE)
+    ):
+        LOGGER.info(
+            "dictation dropped a short %s fragment (confidence %.2f)", language, heard.confidence,
+        )
+        return ""
+    return full_width_punctuation(text)
 
 
 class LocalWhisperRecognizer:
@@ -1083,6 +1128,8 @@ __all__ = [
     "TranscriptionResult",
     "WhisperFinalRecognizer",
     "caption_text",
+    "dictation_text",
+    "full_width_punctuation",
     "is_backchannel",
     "is_dismissal",
     "is_empty_or_too_short",

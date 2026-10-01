@@ -24,7 +24,7 @@ import numpy as np
 import pytest
 
 from jarvis.runtime import inherent_loop
-from jarvis.runtime.dictation import load_user_terms
+from jarvis.runtime.dictation import load_user_terms, whisper_ears
 from jarvis.state.event_log import open_event_log
 from jarvis.surface import voice_asr, voice_pipeline
 
@@ -43,14 +43,16 @@ class _Whisper:
         self.started = threading.Event()
         self.release = threading.Event()
         self.release.set()
+        self.language = "zh"
+        self.logprob = -0.1
 
     def transcribe(self, _audio: np.ndarray, **kwargs: Any) -> dict[str, Any]:  # noqa: ANN401
         self.calls.append(kwargs)
         self.started.set()
         self.release.wait(5)
         text = self.texts.pop(0) if self.texts else ""
-        return {"text": text, "language": "zh", "segments": [
-            {"avg_logprob": -0.1, "no_speech_prob": 0.0},
+        return {"text": text, "language": self.language, "segments": [
+            {"avg_logprob": self.logprob, "no_speech_prob": 0.0},
         ]}
 
 
@@ -112,6 +114,44 @@ def test_subtitle_credits_and_the_prompt_echo_are_silence(
     """What Whisper writes for room noise is dropped only when it is all there is."""
     whisper.texts = [heard]
     assert voice_asr.MlxWhisperRecognizer(language="zh").recognize(_speech(1.0, 0.1)).text == kept
+
+
+def test_dictation_hears_a_stretch_as_yana_does(whisper: _Whisper) -> None:
+    """ADR 0110: Whisper tells the language; the word list only within one 30 s window.
+
+    Quiet speech is heard and a dead mic is not; Chinese clauses get full-width punctuation.
+    """
+    ears = whisper_ears(language="", terms=lambda: ["Claude Code"])
+    assert ears is not None
+    whisper.texts = ["用Claude Code跑一下,好吗?", "后半段"]
+    assert voice_asr.dictation_text(_speech(2.0, 0.005), ears) == "用Claude Code跑一下，好吗？"
+    assert voice_asr.dictation_text(_speech(31.0, 0.1), ears) == "后半段"
+    short, long = whisper.calls
+    assert short["language"] is None
+    assert short["initial_prompt"] == "Common terms: Claude Code."
+    assert long["initial_prompt"] is None
+    assert voice_asr.dictation_text(_speech(2.0, 0.002), ears) == ""
+    assert len(whisper.calls) == 2  # the dead mic never reached the model
+
+
+@pytest.mark.parametrize(
+    ("heard", "language", "logprob", "kept"),
+    [
+        ("好", "zh", -0.1, "好"),
+        ("Okay.", "en", -0.1, "Okay."),
+        ("you", "en", -2.0, ""),
+        ("ねえ", "ja", -0.1, ""),
+        ("This is longer than five.", "en", -2.0, "This is longer than five."),
+    ],
+)
+def test_a_short_fragment_in_another_language_is_noise(
+    whisper: _Whisper, heard: str, language: str, logprob: float, kept: str,
+) -> None:
+    """言字 a50ba52: Chinese is never too short; short non-Chinese only as confident English."""
+    whisper.texts, whisper.language, whisper.logprob = [heard], language, logprob
+    ears = whisper_ears(language="")
+    assert ears is not None
+    assert voice_asr.dictation_text(_speech(1.0, 0.1), ears) == kept
 
 
 def _final() -> tuple[voice_asr.WhisperFinalRecognizer, MagicMock]:
@@ -185,7 +225,7 @@ def test_his_first_words_after_a_quiet_spell_warm_whisper_once(whisper: _Whisper
     pipeline.warm_input_model()  # still warming: no second pass
     whisper.release.set()
     deadline = time.monotonic() + 2
-    while len(whisper.calls) < 1 or ears._warming.locked():  # noqa: SLF001 - wait for the pass
+    while len(whisper.calls) < 1 or ears._whisper._warming.locked():  # noqa: SLF001 - wait for the pass
         assert time.monotonic() < deadline
         time.sleep(0.01)
     pipeline.warm_input_model()  # just used: warm enough
