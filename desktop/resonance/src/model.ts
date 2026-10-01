@@ -17,7 +17,9 @@ export interface Row { seq: number; id: string; ts: string; source: string; text
 // One line of what is on screen under her: yours as you said it, hers as the daemon wrote it (its <voice>/<document> tags kept).
 // `at`: when it landed (hers: when she began saying it). `said`: she has finished saying it; `cutAt`: she was stopped there.
 // `queued`: another answer of hers is still being said, so this one has not begun; `from`: when she began saying it, if that was later than `at`.
-export interface Line { id: string; who: 'you' | 'her'; text: string; turn?: string; failed?: boolean; at: number; said?: boolean; cutAt?: number; queued?: boolean; from?: number }
+export interface Line { id: string; who: 'you' | 'her'; text: string; turn?: string; failed?: boolean; at: number; said?: boolean; cutAt?: number; queued?: boolean; from?: number;
+  // What the daemon last reported she has played of it (ADR 0112); the lit text follows this when it is there.
+  heard?: string }
 const MAX_LINES = 40;
 // A same-speaker pause longer than this starts a new caption row (https://developers.openai.com/api/docs/guides/live-conversations, Display captions): an assistant resuming after an interruption must not extend the cut-off line. Application choice; tune against recordings.
 const SUBTITLE_GAP_MS = 1500;
@@ -30,7 +32,7 @@ export type Action = { type: 'mode'; mode: Mode } | { type: 'phase'; phase: Phas
   | { type: 'open'; turnId: string; responseId: string | null; at: number } | { type: 'append'; token: string; at: number } | { type: 'settle'; turnId: string } | { type: 'pending'; turnId: string; at: number } | { type: 'failed'; turnId: string; cancelled: boolean; message: string | null; at: number } | { type: 'controls'; micMuted: boolean; soundMuted: boolean; conversation: boolean } | { type: 'heard'; text: string; at: number } | { type: 'partial'; text: string } | { type: 'spoken'; turnId: string; at: number; outcome?: string }
   | { type: 'live'; live: Live } | { type: 'subtitle'; sessionId: string; role: 'user' | 'assistant'; delta: string; startMs: number; endMs: number } | { type: 'live_dismiss' }
   | { type: 'rows'; rows: Row[] } | { type: 'older'; rows: Row[] }
-  | { type: 'you'; text: string; at: number } | { type: 'her'; turn: string; text: string; at: number } | { type: 'said'; turn: string; at: number } | { type: 'cut'; at: number } | { type: 'talk-clear' };
+  | { type: 'you'; text: string; at: number } | { type: 'her'; turn: string; text: string; at: number } | { type: 'said'; turn: string; at: number } | { type: 'cut'; at: number } | { type: 'talk-clear' } | { type: 'playback'; turn: string; heard: string };
 
 // The conversation under her. Her line is keyed by its turn and rewritten as the answer grows; a turn that is dropped takes its line away.
 const keep = (lines: Line[]) => lines.length > MAX_LINES ? lines.slice(-MAX_LINES) : lines;
@@ -132,6 +134,7 @@ export function reducer(s: State, a: Action): State {
     case 'her': return { ...s, talk: hers(s.talk, a.turn, a.text, a.at) };
     case 'said': return { ...s, talk: finished(s.talk, a.turn, a.at) };
     case 'cut': return { ...s, talk: ended(s.talk, a.at) };
+    case 'playback': return s.talk.some(l => l.id === `her:${a.turn}` && l.heard !== a.heard) ? { ...s, talk: s.talk.map(l => l.id === `her:${a.turn}` ? { ...l, heard: a.heard } : l) } : s;
     case 'talk-clear': return s.talk.length ? { ...s, talk: [] } : s;
     case 'detail': return { ...s, detail: a.id, results: s.results.map(r => r.id === a.id ? { ...r, read: true } : r) };
     case 'dismiss': return { ...s, detail: null, results: s.results.filter(r => r.id !== a.id) };

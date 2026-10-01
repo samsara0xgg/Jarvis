@@ -27,6 +27,8 @@ export function split(raw: string): { spoken: string; written: string } {
 
 // One thing on screen: what you said, or her answer split into the part she says and the part that is written.
 export type Item = { id: string; who: 'you' | 'her'; spoken: string; written: string; failed: boolean; at: number; said: boolean; cutAt?: number; turn?: string; queued: boolean; from: number;
+  // What the daemon reports she has played of it (ADR 0112).
+  heard?: string;
   // What she says, when it is not shown (the middle level shows the written part alone): her speech still times how that is lit.
   voiced?: string };
 // Full: everything. The middle level: only what is written (lists, times, places, links), and what she says right after it.
@@ -34,7 +36,7 @@ export type Item = { id: string; who: 'you' | 'her'; spoken: string; written: st
 export function itemsOf(lines: Line[], captions: Captions): Item[] {
   const out: Item[] = [];
   for (const l of lines) {
-    const base = { id: l.id, at: l.at, said: !!l.said, cutAt: l.cutAt, turn: l.turn, queued: !!l.queued, from: l.from ?? l.at };
+    const base = { id: l.id, at: l.at, said: !!l.said, cutAt: l.cutAt, turn: l.turn, queued: !!l.queued, from: l.from ?? l.at, heard: l.heard };
     if (l.failed) out.push({ ...base, who: 'her', spoken: l.text, written: '', failed: true, said: true });
     else if (l.who === 'you') { if (captions === 'all') out.push({ ...base, who: 'you', spoken: l.text, written: '', failed: false }); }
     else {
@@ -55,8 +57,10 @@ export function kindOf(captions: Captions, items: Item[], field: boolean, expand
   return expanded && items.length ? 'area' : 'pill';
 }
 
-// How far she has got is estimated, not reported: the daemon only says when she has finished. About 4.5 characters a
-// second for Chinese, counting its punctuation; Latin letters are spoken about three times as fast.
+// How far she has got is reported by a daemon that does (ADR 0112, heard.ts). Without that, or for a line it has said
+// nothing about within GRACE_MS of her starting (its first word is still on the way), it is estimated: about 4.5
+// characters a second for Chinese, counting its punctuation; Latin letters are spoken about three times as fast.
+export const GRACE_MS = 1500;
 export const SPEED = 4.5;
 const WIDE = /[⺀-鿿豈-﫿＀-￯　-〿]/;
 const cost = (ch: string) => WIDE.test(ch) ? 1 : /[A-Za-z0-9]/.test(ch) ? .32 : /\s/.test(ch) ? .25 : .8;

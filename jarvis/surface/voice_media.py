@@ -33,6 +33,7 @@ from jarvis.shared import Event, lang
 from jarvis.shared.realtime_trace import record_realtime_trace
 from jarvis.state.event_log import emit_event
 from jarvis.state.lifecycle_terminal import terminalize_playback
+from jarvis.surface.heard_feed import HeardFeed
 from jarvis.surface.voice_ledger import (
     AcceptedSamples,
     ForegroundBusy,
@@ -642,6 +643,7 @@ class StreamingTTSPipeline:
         self._conn_factory = conn_factory
         self._config = config or StreamingMediaConfig()
         self._broadcaster = broadcaster
+        self._heard_feed = HeardFeed(broadcaster)
         self._ducker = ducker
         self._foreground_decision = foreground_decision_callable
         self._start_player = start_player
@@ -3495,6 +3497,7 @@ class StreamingTTSPipeline:
         snapshot: OutputTimelineSnapshot,
     ) -> None:
         sequence = snapshot.heard_through_sequence
+        self._offer_heard(active, snapshot)
         if not snapshot.heard_text or snapshot.heard_text == active.last_checkpoint_text:
             return
         for attempt in range(1, self._config.checkpoint_retry_attempts + 1):
@@ -3548,6 +3551,21 @@ class StreamingTTSPipeline:
                 continue
             active.last_checkpoint_text = snapshot.heard_text
             return
+
+    def _offer_heard(
+        self,
+        active: _ActiveResponse,
+        snapshot: OutputTimelineSnapshot,
+        *,
+        final: bool = False,
+    ) -> None:
+        self._heard_feed.offer(
+            turn_id=active.response.turn_id,
+            response_id=active.response.response_id,
+            playback_generation_id=active.lease.playback_generation_id,
+            heard=snapshot.heard_text,
+            final=final,
+        )
 
     async def _commit_terminal_durable(  # noqa: PLR0913 - mirrors terminal payload owner
         self,
@@ -3666,6 +3684,7 @@ class StreamingTTSPipeline:
         speech_text_hash: str | None,
         retryable: bool | None,
     ) -> None:
+        self._offer_heard(active, snapshot, final=True)
         payload: dict[str, object] = {
             "session_id": active.lease.session_id,
             "response_id": active.response.response_id,

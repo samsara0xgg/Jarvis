@@ -3,7 +3,8 @@ import { ArrowUp, Keyboard, Microphone, Stop } from '@phosphor-icons/react';
 import { Markdown, inline } from './Markdown';
 import { tr, type L, type Lang } from './companionSettings';
 import type { Line } from './model';
-import { HEARD_MS, HEIGHT, LINGER_MS, MEMORY_MS, WIDTH, itemsOf, kindOf, pace, said as saidCount, sentences, type Captions, type Item, type Kind, type Voice } from './talk';
+import { heardCount } from './heard';
+import { GRACE_MS, HEARD_MS, HEIGHT, LINGER_MS, MEMORY_MS, WIDTH, itemsOf, kindOf, pace, said as saidCount, sentences, type Captions, type Item, type Kind, type Voice } from './talk';
 import './talk-area.css';
 
 // Springs as CSS linear() curves: response in seconds, damping fraction (1 = no overshoot).
@@ -315,15 +316,20 @@ export function TalkArea(p: TalkProps) {
     r.p.classList.toggle('all', lit >= r.chars.length);
     r.lit = lit;
   };
-  // Light up as far as she has got. The daemon only says when she has finished, so how far is estimated from when she began.
+  // Light up as far as she has got.
   const view = useRef(v); view.current = v;
+  const reported = useRef(false);
   const drive = () => {
     let front: HTMLElement | null = null;
     for (const it of view.current.items) {
       const sr = it.who === 'her' && it.spoken ? reg.current.get(it.id) : undefined, wr = it.who === 'her' ? reg.current.get(`${it.id}:w`) : undefined;
       if (!sr && !wr) continue;
       const clock = clockFor(it), done = it.failed || live.current.silent || (it.said && it.cutAt === undefined);
-      const said = done ? clock.length : it.queued ? 0 : saidCount(clock, ((it.cutAt ?? Date.now()) - it.from) / 1000);
+      // Where the daemon says she is, when it says; the lit text stops when that stops (held, ducked, cut). A line it has not
+      // reported on yet waits for its first word, then falls back to the estimate.
+      if (it.heard !== undefined) reported.current = true;
+      const at = (it.cutAt ?? Date.now()) - it.from, heard = it.heard === undefined ? undefined : heardCount(it.spoken || it.voiced || '', it.heard);
+      const said = done ? clock.length : it.queued ? 0 : heard ?? (reported.current && it.heard === undefined && at < GRACE_MS ? 0 : saidCount(clock, at / 1000));
       // The written part is lit by the same share of her speech as it has characters; the follow goes to the lower front.
       for (const r of [sr, wr]) {
         if (!r) continue;

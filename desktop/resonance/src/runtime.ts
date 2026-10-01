@@ -68,6 +68,7 @@ export function connect(port: string, dispatch: (a: Action) => void): Runtime {
         if (msg.op === 'failed') setTimeout(() => dispatch({ type: 'settle', turnId }), 8000); // long enough to read why
       }
       else if (msg.op === 'voice') { const a = voicePhase[String(p.phase)]; if (a) dispatch(a); if (p.phase === 'spoken') dispatch({ type: 'spoken', turnId, at: Date.now(), outcome: typeof p.output_outcome === 'string' ? p.output_outcome : undefined }); if (p.phase === 'accepted' && turnId) dispatch({ type: 'pending', turnId, at: Date.now() }); if (p.phase === 'accepted' && typeof p.text === 'string') dispatch({ type: 'heard', text: p.text, at: Date.now() }); if (p.phase === 'partial' && typeof p.text === 'string') dispatch({ type: 'partial', text: p.text }); }
+      else if (msg.op === 'playback' && typeof p.heard === 'string') dispatch({ type: 'playback', turn: turnId, heard: p.heard });
       else if (msg.op === 'live') dispatch({ type: 'live', live: liveFrom(p) });
       // ADR 0102: the wake word, a dismissal or quiet flips conversation mode from the daemon's side.
       else if (msg.op === 'controls') dispatch({ type: 'controls', micMuted: p.mic_muted === true, soundMuted: p.speech_muted === true, conversation: p.conversation === true });
