@@ -144,6 +144,8 @@
 .tk-ghost { position:absolute; margin:0; font-size:var(--text-body); line-height:20px; color:#fff; transform-origin:0 0; white-space:pre-wrap; overflow-wrap:anywhere; }
 
 /* only a heard sentence and the end button: the smaller pill (the other two caption levels) */
+/* the transcript of an answer shown earlier is folded away in it, and must not give the pill its width */
+.talk[data-kind=pill] .talk-tr { display:none; }
 .talk[data-kind=pill] .talk-ft { height:36px; gap:0; padding:0 5px 0 13px; }
 /* the label stays in the row even when empty (it is what grows and shrinks with the shape); its gap is its own padding */
 .talk[data-kind=pill] .lb:empty { display:block; padding:0; }

@@ -301,6 +301,30 @@ try {
     await s.context.close();
   }
 
+  // ---- the pill after an answer was shown: it fits its words, not the transcript folded away in it ----
+  {
+    const s = await scene({ captions: 'brief' });
+    const { page, emit, skew, area, turn, folded } = s;
+    await page.waitForTimeout(600);
+    await turn('f1', '我今天有什么安排', written);
+    await page.waitForTimeout(2000);
+    await emit('voice', { phase: 'spoken', turn_id: 'f1' });
+    await skew(9000); await folded(); await page.waitForTimeout(1600);
+    await emit('voice', { phase: 'listening', turn_id: 'f2' });
+    await emit('voice', { phase: 'partial', turn_id: 'f2', text: '再查一下' }); await page.waitForTimeout(900);
+    const fit = () => page.evaluate(() => { const t = document.querySelector('.talk'), kids = [...t.querySelector('.talk-ft').children].filter(k => getComputedStyle(k).display !== 'none'), tb = t.getBoundingClientRect();
+      return { shell: tb.width, content: kids.at(-1).getBoundingClientRect().right - tb.left + 5 }; });
+    let a = await area(), f = await fit();
+    check('after an answer was shown and folded, the pill is a pill again and as wide as its words, not as wide as that answer', a.kind === 'pill' && Math.abs(f.shell - f.content) < 4);
+    await emit('voice', { phase: 'partial', turn_id: 'f2', text: '再查一下明天上午的天气怎么样' }); await page.waitForTimeout(700);
+    const longer = await fit();
+    await emit('voice', { phase: 'accepted', turn_id: 'f2', text: '好。' }); await page.waitForTimeout(1500);
+    f = await fit();
+    check('it widens with what you say and goes back to fit a shorter sentence', longer.shell > 150 && f.shell < longer.shell - 40 && Math.abs(f.shell - f.content) < 4);
+    check('no page errors (fit)', s.errors.length === 0);
+    await s.context.close();
+  }
+
   // ---- shown nothing; and her voice off ----
   {
     const s = await scene({ captions: 'none' });
