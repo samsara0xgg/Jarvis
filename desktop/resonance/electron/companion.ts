@@ -228,7 +228,13 @@ function companion(shown?: () => void) {
   // (src/startrail.ts); the key rides on its requests from sendDaemonKey, never in the page.
   win.loadFile(path.join(here, '../dist/index.html'), { query: demo ? { companion: '1' } : { companion: '1', port: process.env.JARVIS_INHERENT_BRIDGE_PORT ?? '8006', ...app.isPackaged ? { packaged: '1' } : { agents: AGENTS_PORT } } });
   win.webContents.on('did-finish-load', place);
-  win.once('ready-to-show', () => { place(); win.showInactive(); keepOnTop(); shown?.(); if (demo) void demoBanner(); });
+  // Rects the page last asked the native glass to draw; the pre-warm below only runs while there are none.
+  let glass = 0;
+  win.once('ready-to-show', () => {
+    place(); win.showInactive(); keepOnTop(); shown?.(); if (demo) void demoBanner();
+    // Pre-warms the first hover: one transparent off-screen view allocates the native material view now, not on the chip's first update.
+    if (material && !glass) { const handle = win.getNativeWindowHandle(); material.update(handle, [{ x: -64, y: -64, width: 1, height: 1, radius: 0, opacity: 0 }], 1); material.update(handle, [], 1); }
+  });
   win.on('blur', () => setImmediate(() => { if (!win.isDestroyed()) keepOnTop(); }));
   screen.on('display-added', place); screen.on('display-removed', place); screen.on('display-metrics-changed', place);
   // The hardware cutout and click-through space get no reliable DOM pointer events,
@@ -293,6 +299,7 @@ function companion(shown?: () => void) {
     const sender = mine(event);
     if (!sender || !material || !Array.isArray(payload?.rects)) return;
     const rects = payload.rects.slice(0, 16).filter((r: Record<string, number>) => r && ['x', 'y', 'width', 'height', 'radius', 'opacity'].every(k => Number.isFinite(r[k])) && r.width > 0 && r.height > 0);
+    if (sender === win) glass = rects.length;
     material.update(sender.getNativeWindowHandle(), rects, 1);
   });
   // ADR 0057: which Claude session Allen is looking at. One long-lived script reads Ghostty's front terminal

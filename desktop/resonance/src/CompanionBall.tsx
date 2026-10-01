@@ -62,6 +62,8 @@ export function CompanionBall({ width, height, lobe, target, look, handle, skin,
     let away = false, awayAt = -1e9, happyUntil = 0, leftHome = true;
     let attentionId: string | undefined, attentionAt = 0;
     let homeLeftAt = -1;
+    // One unseen frame at startup (warmUp) forces the out/peek painters, so nothing compiles on the first hover.
+    let warming = false;
     const fit = () => {
       const k = Math.min(2, devicePixelRatio || 1), w = Math.round(size.current.width * k), h = Math.round(size.current.height * k);
       if (k === d && cv.width === w && cv.height === h) return;
@@ -134,9 +136,10 @@ export function CompanionBall({ width, height, lobe, target, look, handle, skin,
         poi: interest ? { g: [ix / reach, iy / reach], at: attentionAt, why: 'notice' } : null });
 
       // Where she is (spring position, flight squash, the pivot on the Dashboard edge), then her own motion.
-      const a = s.shine.value * seen, scale = s.scale.value, x = slipX ?? s.x.value, y = s.y.value + slipY, pivot = s.pivot.value * R;
+      const a = warming ? 1 : s.shine.value * seen, scale = s.scale.value, x = slipX ?? s.x.value, y = s.y.value + slipY, pivot = s.pivot.value * R;
       const speed = Math.hypot(s.x.velocity, s.y.velocity), flight = firm ? 0 : Math.min(.09, speed / 4000);
       const angle = Math.atan2(s.y.velocity, s.x.velocity), squat = 1 - .05 * s.dock.value;
+      if (warming) core.st.orbitK = 1;
       const [jx, jy, bx, by] = core.pose(1);
       const pose = (c: CanvasRenderingContext2D, cx: number, cy: number) => {
         c.translate(cx, cy + pivot * scale); c.rotate(angle); c.scale(1 + flight, 1 / Math.sqrt(1 + flight)); c.rotate(-angle);
@@ -150,7 +153,7 @@ export function CompanionBall({ width, height, lobe, target, look, handle, skin,
       // The goo only matters where the ball meets the island, and not while she is out at the caret.
       silhouette.current!.style.display = y - R * scale - island.current.lobe.height < 26 && slipX === null && !hidden ? '' : 'none';
 
-      const { lobe, path } = island.current, S = Math.round(2 * B * R * d);
+      const { lobe, path } = island.current, S = Math.round(2 * B * R * d), contact = warming ? 1 : s.dock.value;
       // Dark glass: how much of her is still inside the island, glowing through its black.
       const inside = t.home === 'dark' && !hidden ? seen * (1 - smooth(0, R, y - t.anchors.home.y)) : 0;
       ctx.setTransform(d, 0, 0, d, 0, 0); ctx.clearRect(0, 0, size.current.width, size.current.height);
@@ -165,10 +168,10 @@ export function CompanionBall({ width, height, lobe, target, look, handle, skin,
         const g = ctx.createRadialGradient(0, .28 * R, 0, 0, .28 * R, 1.15 * R);
         g.addColorStop(0, `rgba(0,0,0,${.45 * (1 - s.dock.value)})`); g.addColorStop(.6, `rgba(0,0,0,${.3 * (1 - s.dock.value)})`); g.addColorStop(1, 'rgba(0,0,0,0)');
         ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, .28 * R, 1.15 * R, 0, 2 * Math.PI); ctx.fill();
-        if (s.dock.value > .01) {
+        if (contact > .01) {
           ctx.save(); ctx.translate(0, .98 * R); ctx.scale(1, .18);
           const c = ctx.createRadialGradient(0, 0, 0, 0, 0, .8 * R);
-          c.addColorStop(0, `rgba(0,0,0,${.6 * s.dock.value})`); c.addColorStop(1, 'rgba(0,0,0,0)');
+          c.addColorStop(0, `rgba(0,0,0,${.6 * contact})`); c.addColorStop(1, 'rgba(0,0,0,0)');
           ctx.fillStyle = c; ctx.beginPath(); ctx.arc(0, 0, .8 * R, 0, 2 * Math.PI); ctx.fill(); ctx.restore();
         }
         core.inside(ctx, R, S); core.glass(ctx, R, S);
@@ -204,9 +207,9 @@ export function CompanionBall({ width, height, lobe, target, look, handle, skin,
         ctx.strokeStyle = rim; ctx.lineWidth = .8; ctx.beginPath(); ctx.moveTo(lobe.left, lobe.height - .5); ctx.lineTo(lobe.right, lobe.height - .5); ctx.stroke();
         ctx.restore();
       }
-      if (t.home === 'dark' && t.homeFinish === 'refined' && homeLeftAt >= 0 && !hidden) {
-        const warm = clamp01(1 - (now - homeLeftAt) / 2500), rgb = core.light.glow.map(v => Math.round(v * 255)).join(',');
-        ctx.save(); ctx.globalAlpha = (1 - inside) * s.fold.value;
+      if ((warming || t.home === 'dark' && t.homeFinish === 'refined' && homeLeftAt >= 0) && !hidden) {
+        const warm = warming ? 1 : clamp01(1 - (now - homeLeftAt) / 2500), rgb = core.light.glow.map(v => Math.round(v * 255)).join(',');
+        ctx.save(); ctx.globalAlpha = warming ? 1 : (1 - inside) * s.fold.value;
         paintAway(ctx, rgb, homeRect, path, t.anchors.home, warm, firm ? 0 : now / 1000);
         ctx.restore();
       }
@@ -264,6 +267,15 @@ export function CompanionBall({ width, height, lobe, target, look, handle, skin,
       if (tick) { clearTimeout(tick); tick = undefined; }
       if (!frame) { last = 0; frame = requestAnimationFrame(draw); }
     };
+    // Pre-warms the first hover: the frame is flushed to the GPU, then cleared in the same task, so it is never presented.
+    const warmUp = () => {
+      cancelAnimationFrame(frame); clearTimeout(tick); frame = 0; tick = undefined;
+      warming = true; draw(performance.now()); warming = false;
+      ectx.drawImage(cv, 0, 0, 1, 1, 0, 0, 1, 1); ectx.clearRect(0, 0, 1, 1);
+      ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, cv.width, cv.height);
+      last = 0; wake.current();
+    };
+    const idle = typeof requestIdleCallback === 'function' ? requestIdleCallback(warmUp, { timeout: 2000 }) : window.setTimeout(warmUp, 800);
     handle.current = {
       nudge: () => { core.s.gy.velocity += 1.6; wake.current(); },
       // A new screen: already in its island, with a small bump out of it.
@@ -278,7 +290,7 @@ export function CompanionBall({ width, height, lobe, target, look, handle, skin,
       hop: height => { core.hop(performance.now(), height); wake.current(); },
     };
     wake.current();
-    return () => { cancelAnimationFrame(frame); clearTimeout(tick); wake.current = () => {}; handle.current = null; };
+    return () => { typeof requestIdleCallback === 'function' ? cancelIdleCallback(idle) : clearTimeout(idle); cancelAnimationFrame(frame); clearTimeout(tick); wake.current = () => {}; handle.current = null; };
   }, []);
   return <>
     <svg className="companion-stage" width={width} height={height} viewBox={`0 0 ${width} ${height}`} aria-hidden="true">

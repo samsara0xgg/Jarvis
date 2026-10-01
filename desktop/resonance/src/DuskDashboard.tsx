@@ -82,6 +82,19 @@ export function DuskDashboard({ open, top, width, left, islandLeft, islandRight,
   }, [top, width, left, islandLeft, islandRight, detached]);
   useLayoutEffect(() => () => { joined.current = false; joinedChange.current?.(false); }, []);
   useLayoutEffect(() => wake.current(), [open]);
+  // Pre-warms the first hover: the closed Dashboard is painted once, at an opacity too low to see, so its first reveal is not its first paint.
+  useLayoutEffect(() => {
+    const el = root.current!, body = content.current!;
+    let first = 0, second = 0, third = 0;
+    first = requestAnimationFrame(() => {
+      if (latest.current) return;
+      el.style.visibility = 'visible'; el.style.opacity = '.002'; el.style.pointerEvents = 'none'; el.style.setProperty('--dusk-height', `${el.offsetHeight}px`);
+      body.style.clipPath = 'none'; body.style.opacity = '1';
+      // The draw loop puts every one of these back from its own state; the opacity is released only after it has run.
+      second = requestAnimationFrame(() => { second = requestAnimationFrame(() => { wake.current(); third = requestAnimationFrame(() => { el.style.opacity = ''; el.style.pointerEvents = ''; }); }); });
+    });
+    return () => { cancelAnimationFrame(first); cancelAnimationFrame(second); cancelAnimationFrame(third); el.style.opacity = ''; el.style.pointerEvents = ''; };
+  }, []);
   useLayoutEffect(() => {
     const el = root.current!;
     const tear = () => { if (latest.current) void detach(); };
