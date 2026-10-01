@@ -140,6 +140,8 @@ export function SettingsPage({ lang, port, open, cat, onCat, ctl, accounts, keyD
     ] },
     { id: 'voice', icon: <Waveform/>, name: ['Voice', '语音'], daemon: true, sum: ready ? `${t(['Wake word', '唤醒'])} ${Number(v('wake_threshold') ?? 0).toFixed(2)} · ${String(v('tts_voice') ?? '—')}` : t(['Not connected yet', '还没接上']), items: [
       { id: 'wave', name: ['Talk without the wake word', '免唤醒词对话'], note: ['Until you stop it. Only on headphones or the reSpeaker: on the Mac speakers she hears herself', '直到你停下。只在耳机或 reSpeaker 上用：Mac 自带喇叭她会听到自己'], ctl: { k: 'switch', on: ctl.handsFree, set: ctl.setHandsFree } },
+      { id: 'captions', name: ['Captions', '字幕'], note: ['What she says shows as text under her. Only what to read: her spoken lines stay off, and times, lists, links and errors show. With her voice muted, everything shows', '她念的话在她身下出字。只显示要看的：她念的话不出字，有时间、列表、链接，或出错时才出。关掉她的声音时按“全部显示”'],
+        ctl: { k: 'seg', value: s.captions, opts: [['all', ['Show all', '全部显示']], ['brief', ['Only what to read', '只显示要看的']], ['none', ['None', '不显示']]], set: value => update({ captions: value as typeof s.captions }) } },
       { id: 'wake', name: ['Wake word sensitivity', '唤醒词灵敏度'], note: ['Higher means fewer false wakes', '越高越少误唤醒'], ctl: dRange('wake_threshold', .8, .99, .01), off },
       { id: 'voice', name: ['Jarvis’s voice', 'Jarvis 的声音'], ctl: dPick('tts_voice'), off },
       { id: 'vol', name: ['Voice volume', '说话音量'], note: ['Above 100% it crackles', '超过 100% 会破音'], ctl: dRange('tts_volume', .3, 1, .05, true), off },

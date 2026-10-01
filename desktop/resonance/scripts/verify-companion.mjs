@@ -24,6 +24,7 @@ try {
   await page.addInitScript(() => {
     // Retained original-home regression; verify-character-material covers the refined default.
     localStorage.setItem('companion-wardrobe-v1', JSON.stringify({ ...JSON.parse(localStorage.getItem('companion-wardrobe-v1') ?? '{}'), homeFinish: 'original' }));
+    localStorage.setItem('companion-settings-v1', JSON.stringify({ ...JSON.parse(localStorage.getItem('companion-settings-v1') ?? '{}'), captions: 'all' }));
     window.__state = { passthrough: true, glass: [], ready: 0 };
     window.jarvis = {
       placement: async () => ({ docked: false, topInset: 32, notchWidth: 185, surfaceWidth: 640, compactWidth: 0, displayId: 1 }),
@@ -68,10 +69,10 @@ try {
   check('refinement clicking pinned home closes it until the pointer leaves', await page.locator('.companion-dashboard.is-open').count() === 0);
   await move(600, 560); await waitPlace('home');
   await hit.click({ button: 'right', force: true });
-  check('refinement right-click opens skin and expression controls', await page.getByRole('menuitemradio').count() === 6 && await page.getByRole('menuitem', { name: 'Preview expressions' }).count() === 1);
+  check('refinement right-click opens skin and expression controls', await page.getByRole('menuitemradio').count() === 9 && await page.getByRole('menuitem', { name: 'Preview expressions' }).count() === 1);
   await page.getByRole('menuitem', { name: 'Settings…', exact: true }).click();
   await page.waitForFunction(() => document.querySelector('.ad .pg-head h3')?.textContent === 'Settings');
-  check('refinement her menu opens settings directly without starting voice', await page.locator('.companion-strip.is-open').count() === 0);
+  check('refinement her menu opens settings directly without starting voice', await page.locator('.talk[data-hit]').count() === 0);
   await page.locator('.companion-island-target').click({ position: { x: 155, y: 14 }, force: true });
   await move(600, 560); await waitPlace('home');
   const alphaAt = (x, y) => page.evaluate(([x, y]) => { const c = document.querySelector('.companion-canvas'), r = c.getBoundingClientRect(), k = c.width / r.width;
@@ -155,18 +156,20 @@ try {
   await page.waitForTimeout(400);
   await move(out.x + 26 + 12 + 16, out.y);
   await page.locator('.companion-chip button').click();
-  check('03 composer opens beneath her', await page.locator('.companion-composer.is-open').count() === 1);
+  check('03 the field opens beneath her, in the talk area', await page.locator('.talk[data-hit][data-kind=area] textarea').isVisible());
   await page.keyboard.type('帮我整理今天的任务', { delay: 60 });
   await page.waitForTimeout(700);
-  check('03 draft is typed into the composer', await page.locator('.companion-composer input').inputValue() === '帮我整理今天的任务');
-  check('03 composer has native glass behind it', await page.evaluate(() => window.__state.glass.some(r => Math.round(r.width) === 360 && r.opacity > .9)));
+  check('03 draft is typed into the composer', await page.locator('.talk textarea').inputValue() === '帮我整理今天的任务');
+  check('03 the talk area has native glass behind it, with its own corner radius', await page.evaluate(() => window.__state.glass.some(r => Math.round(r.width) === 360 && r.opacity > .9 && Math.round(r.radius) === 22)));
   await shot('03-composer', { x: 20, y: 0, width: 400, height: 210 });
   await page.keyboard.press('Enter');
-  await page.locator('.companion-bubble.is-open').waitFor();
+  await page.waitForFunction(() => document.querySelector('.talk .tk-u')?.textContent === '帮我整理今天的任务');
+  check('03 what you typed lands right-aligned in the transcript', await page.evaluate(() => { const u = document.querySelector('.talk .tk-u').getBoundingClientRect(), a = document.querySelector('.talk').getBoundingClientRect(); return a.right - u.right < 20; }));
+  await page.waitForFunction(() => document.querySelector('.talk .tk-h')?.textContent.includes('好，我来整理。'), null, { timeout: 5000 });
   await page.waitForTimeout(500);
-  await shot('03-reply');
-  await page.waitForFunction(() => !document.querySelector('.companion-bubble.is-open'), null, { timeout: 6000 });
-  check('03 text reply types out and clears', true);
+  await shot('03-reply', { x: 20, y: 0, width: 400, height: 260 });
+  await page.waitForFunction(() => !document.querySelector('.talk[data-hit]'), null, { timeout: 16000 });
+  check('03 the reply stays on screen, then the area folds into her', true);
 
   // A partial wardrobe hold cancels, and a short click starts voice on release without a double-click timer.
   const originalSkin = await wardrobe();
@@ -175,11 +178,11 @@ try {
   check('refinement charge ring appears after 200 ms', await page.locator('.companion-canvas').getAttribute('data-charge') === 'holding');
   await page.mouse.up(); await page.waitForTimeout(60);
   check('refinement releasing an unfinished hold cancels without talking or changing skin',
-    await page.locator('.companion-strip.is-open').count() === 0 && (await wardrobe()).skin === originalSkin.skin);
+    await page.locator('.talk[data-hit]').count() === 0 && (await wardrobe()).skin === originalSkin.skin);
   await page.evaluate(() => {
     document.querySelector('.companion-hit').addEventListener('pointerup', () => {
       const at = performance.now();
-      const observe = () => { if (document.querySelector('.companion-strip.is-open')) window.__clickLatency = performance.now() - at; else requestAnimationFrame(observe); };
+      const observe = () => { if (document.querySelector('.talk[data-hit]')) window.__clickLatency = performance.now() - at; else requestAnimationFrame(observe); };
       requestAnimationFrame(observe);
     }, { once: true });
   });
@@ -188,31 +191,32 @@ try {
   const box = await hit.boundingBox();
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.mouse.down();
-  await page.waitForTimeout(60);
-  await shot('02-press');
+  await page.waitForTimeout(60); // a click is released inside 200 ms; a screenshot here can take longer than that
   await page.mouse.up();
-  await page.locator('.companion-strip.is-open').waitFor();
+  await page.locator('.talk[data-hit]').waitFor();
+  await shot('02-poke', { x: 20, y: 0, width: 400, height: 210 });
   await page.waitForFunction(() => typeof window.__clickLatency === 'number');
   const clickLatency = await page.evaluate(() => window.__clickLatency);
   check(`refinement click starts listening within 100 ms of release (${clickLatency.toFixed(1)} ms)`, clickLatency < 100);
   // Her face follows on the next animation frame.
   const face = (...ids) => page.waitForFunction(v => v.includes(document.querySelector('.companion-canvas')?.dataset.face), ids, { timeout: 1500 }).then(() => ids[0], () => null);
-  check('04 poke starts listening with a live caption strip and one of her two listening faces', await face('35', '35b') === '35');
-  await page.waitForFunction(() => document.querySelector('.strip-text')?.textContent === '把今天的任务整理一下', null, { timeout: 5000 });
+  check('04 poke starts listening with the talk area under her and one of her two listening faces', await face('35', '35b') === '35');
+  // (the earlier typed turn is still in the conversation: reopened within ten minutes, the area continues it)
+  await page.waitForFunction(() => [...document.querySelectorAll('.talk .tk-u')].at(-1)?.textContent === '把今天的任务整理一下', null, { timeout: 5000 });
   await page.waitForTimeout(250);
   check('04 once the caption ends she takes the task in, one of four takes', await face('31', '31b', '31c', '31d') === '31');
   check('04 then she thinks before answering', await face('30') === '30');
   await shot('04-thinking');
-  await page.locator('.companion-bubble.is-open').waitFor({ timeout: 5000 });
+  await page.waitForFunction(() => [...document.querySelectorAll('.talk .tk-h')].at(-1)?.textContent.includes('好，我来整理。'), null, { timeout: 5000 });
   await page.waitForTimeout(500);
-  check('05 she answers in a bubble beneath her, with her replying face', (await page.locator('.companion-bubble').textContent()).includes('好，我来整理。') && await face('39', '39b', '39c') === '39');
+  check('05 she answers in the area beneath her, with her replying face', await page.locator('.talk[data-state=speaking]').count() === 1 && await face('39', '39b', '39c') === '39');
   await shot('05-speaking');
   await hit.click({ force: true });
   await page.waitForTimeout(600);
-  check('05 poke while speaking interrupts and keeps listening', await page.locator('.companion-strip.is-open').count() === 1 && await page.locator('.companion-bubble.is-open').count() === 0);
+  check('05 poke while speaking interrupts and keeps listening', await page.locator('.talk[data-hit][data-state=listening]').count() === 1);
   await hit.click({ force: true });
   await page.waitForTimeout(600);
-  check('05 poke while listening ends voice', await page.locator('.companion-strip.is-open').count() === 0);
+  check('05 poke while listening ends voice', await page.locator('.talk[data-hit]').count() === 0);
 
   await move(320, 14);
   await page.locator('.companion-dashboard.is-open').waitFor();
@@ -234,12 +238,12 @@ try {
   await move(600, 560);
   await page.waitForTimeout(1200);
   check('06 a click on the notch opens the Dashboard, and it stays when the cursor leaves',
-    await page.locator('.companion-dashboard.is-open').count() === 1 && await page.locator('.companion-strip.is-open').count() === 0);
+    await page.locator('.companion-dashboard.is-open').count() === 1 && await page.locator('.talk[data-hit]').count() === 0);
   await page.locator('.companion-island-target').click({ position: { x: 155, y: 14 }, force: true });
   await page.waitForFunction(() => !document.querySelector('.companion-dashboard.is-open'), null, { timeout: 3000 });
   await waitPlace('home');
   await page.waitForTimeout(400);
-  check('06 another notch click closes it, and neither click starts voice', await page.locator('.companion-strip.is-open').count() === 0);
+  check('06 another notch click closes it, and neither click starts voice', await page.locator('.talk[data-hit]').count() === 0);
   await move(600, 560);
 
   // 09: the Dashboard around her. The home's blocks in their default order; each row grows into its page
@@ -491,7 +495,7 @@ try {
   await page.waitForTimeout(520);
   await shot('08-flash');
   await wearsSoon('nebula');
-  check('08 holding her changes her into the next skin instead of starting voice', await page.locator('.companion-strip.is-open').count() === 0 && await skinOn() === 'nebula');
+  check('08 holding her changes her into the next skin instead of starting voice', await page.locator('.talk[data-hit]').count() === 0 && await skinOn() === 'nebula');
   await page.waitForTimeout(1400);
   await shot('08-nebula');
   // Her bright, strongly coloured pixels: the icon skin's painted sky has plenty; without it loaded she would be

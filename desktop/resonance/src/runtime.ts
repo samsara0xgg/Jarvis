@@ -61,13 +61,13 @@ export function connect(port: string, dispatch: (a: Action) => void): Runtime {
       const p = msg.payload ?? {};
       const turnId = String(p.turn_id ?? '');
       if (msg.op === 'open') dispatch({ type: 'open', turnId, responseId: typeof p.response_id === 'string' ? p.response_id : null, at: Date.now() });
-      else if (msg.op === 'append') dispatch({ type: 'append', token: String(p.token ?? '') });
+      else if (msg.op === 'append') dispatch({ type: 'append', token: String(p.token ?? ''), at: Date.now() });
       else if (msg.op === 'done') setTimeout(() => dispatch({ type: 'settle', turnId }), Number(p.fadeMs ?? 5000));
       else if (msg.op === 'failed' || msg.op === 'cancelled') {
-        dispatch({ type: 'failed', turnId, cancelled: msg.op === 'cancelled', message: typeof p.message === 'string' ? p.message : null });
+        dispatch({ type: 'failed', turnId, cancelled: msg.op === 'cancelled', message: typeof p.message === 'string' ? p.message : null, at: Date.now() });
         if (msg.op === 'failed') setTimeout(() => dispatch({ type: 'settle', turnId }), 8000); // long enough to read why
       }
-      else if (msg.op === 'voice') { const a = voicePhase[String(p.phase)]; if (a) dispatch(a); if (p.phase === 'spoken') dispatch({ type: 'spoken', turnId }); if (p.phase === 'accepted' && turnId) dispatch({ type: 'pending', turnId, at: Date.now() }); if (p.phase === 'accepted' && typeof p.text === 'string') dispatch({ type: 'heard', text: p.text }); }
+      else if (msg.op === 'voice') { const a = voicePhase[String(p.phase)]; if (a) dispatch(a); if (p.phase === 'spoken') dispatch({ type: 'spoken', turnId }); if (p.phase === 'accepted' && turnId) dispatch({ type: 'pending', turnId, at: Date.now() }); if (p.phase === 'accepted' && typeof p.text === 'string') dispatch({ type: 'heard', text: p.text, at: Date.now() }); }
       else if (msg.op === 'live') dispatch({ type: 'live', live: liveFrom(p) });
       // ADR 0102: the wake word, a dismissal or quiet flips conversation mode from the daemon's side.
       else if (msg.op === 'controls') dispatch({ type: 'controls', micMuted: p.mic_muted === true, soundMuted: p.speech_muted === true, conversation: p.conversation === true });

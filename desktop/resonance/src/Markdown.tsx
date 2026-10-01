@@ -3,7 +3,7 @@ import type { ReactNode } from 'react';
 // The markdown Jarvis's answers actually use (memory.db, 2026-09-25): headings, bold, code ticks, lists (some nested), tables.
 // Built as React elements, never innerHTML, so nothing in an answer can inject markup into the window.
 // ponytail: no links, italics or quotes; none appear in the answers yet. Add them when they do.
-const inline = (text: string): ReactNode[] => text.split(/(\*\*[^*]+\*\*|`[^`]+`)/).map((part, i) =>
+export const inline = (text: string): ReactNode[] => text.split(/(\*\*[^*]+\*\*|`[^`]+`)/).map((part, i) =>
   i % 2 === 0 ? part : part[0] === '`' ? <code key={i}>{part.slice(1, -1)}</code> : <strong key={i}>{inline(part.slice(2, -2))}</strong>);
 
 type Item = { indent: number; start: number | null; text: string };

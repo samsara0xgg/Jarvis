@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react';
-import { IconContext, Keyboard, Paperclip, ArrowUp, Microphone, Stop } from '@phosphor-icons/react';
+import { IconContext, Keyboard } from '@phosphor-icons/react';
 import { CompanionBall, HOLD_MS, R, type BallHandle, type Lobe, type Place, type Point } from './CompanionBall';
 import { PREVIEW, SKIN_KEYS, TAKES, isSkin, pick, type ExprId, type Skin } from './starCore';
 import { AroundDashboard, type DashboardView, type DashboardViewHandle, type Think } from './AroundDashboard';
@@ -7,6 +7,8 @@ import { DuskDashboard, DockingDrop } from './DuskDashboard';
 import { playFeedback, stopFeedback, warmFeedback, type FeedbackCue } from './feedback';
 import { usePreferences } from './preferences';
 import { initialState, plain, reducer, visible } from './model';
+import { TalkArea, usePresence } from './TalkArea';
+import { level, pace, split, type Captions } from './talk';
 import { connect, type Runtime } from './runtime';
 import { usePlugins } from './PluginPanel';
 import { isMarkLook } from './AgentMarks';
@@ -32,13 +34,19 @@ const PANEL = 360;
 // checks, `--demo`) the scripted demo below plays instead.
 const port = new URLSearchParams(location.search).get('port');
 const detached = new URLSearchParams(location.search).has('detached');
-// Her bubble carries what she says aloud: the spoken form when the answer has one (ADR 0040), else its text.
+// What she says aloud: the spoken form when the answer has one (ADR 0040), else its text. It decides whether an answer is on screen.
 const spoken = (reply: string) => { const voice = /<voice>([\s\S]*?)(?:<\/voice>|$)/.exec(reply); return voice ? plain(voice[1]) : plain(reply); };
-// Prototype script: every transcript and reply below is simulated.
-const HEARD = '把今天的任务整理一下';
+// Prototype script: every transcript and reply below is simulated. Each poke plays the next of these (the answers carry the daemon's
+// <voice> and <document> tags): a short answer, one with a written part, and one she is asked to read out in full.
+const DEMO = [
+  { heard: '把今天的任务整理一下', reply: '好，我来整理。' },
+  { heard: '明天有什么安排', reply: '<voice>明天有三个安排，我列在下面了。最早的是十点和设计组的周会。</voice><document>## 10 月 2 日 周五\n- 10:00 设计组周会（线上）\n- 14:00 和产品组过 Startrail 发布清单\n- 16:30 牙医，Main Street</document>' },
+  { heard: '把明天的安排从头到尾念一遍', reply: '好，我按顺序念。第一件，十点和设计组开周会，线上。第二件，下午两点和产品组过 Startrail 的发布清单。第三件，四点半看牙医，诊所在 Main Street 上，记得提前十分钟出门。第四件，晚上七点和朋友吃饭，订的是那家川菜馆。第五件，睡前把后天要带的东西收拾好，别忘了充电器。' },
+];
 // Her skin, whether she changes it herself, how she looks in the island and the look of the agent marks
 // live in this companion's own profile.
 const WARDROBE = 'companion-wardrobe-v1';
+const CAPTIONS: [Captions, L][] = [['all', ['Show everything', '全部显示']], ['brief', ['Only what to read', '只显示要看的']], ['none', ['Show nothing', '不显示']]];
 const SKIN_NAMES: Record<Skin, L> = { glass: ['Glass', '深空玻璃'], nebula: ['Nebula', '星云'], galaxy: ['Galaxy', '银河'], frost: ['Frost', '磨砂'], aurora: ['Aurora', '极光'], codex: ['Icon', '图标同款'] };
 function loadWardrobe(): Look {
   try {
@@ -109,9 +117,8 @@ export function Companion() {
   const [composer, setComposer] = useState(false);
   const [draft, setDraft] = useState('');
   const [simVoice, setVoice] = useState<'off' | 'listening' | 'thinking' | 'speaking'>('off');
-  const [simCaption, setCaption] = useState('');
   const [simHearing, setHearing] = useState(false);
-  const [simReply, setReply] = useState({ text: '', shown: 0 });
+  const [simReply, setReply] = useState({ text: '' });
   const [simTalking, setTalking] = useState(false);
   const [s, dispatch] = useReducer(reducer, initialState);
   // Muting Jarvis silences her cues as well as its voice.
@@ -181,32 +188,13 @@ export function Companion() {
   const answering = !!s.turnId && !s.played;
   const voice = !port ? simVoice : inFlight ? 'listening' : answering && s.reply ? 'speaking' : answering || s.askedAt !== null ? 'thinking'
     : s.conversation && s.phase !== 'error' ? 'listening' : 'off';
-  const caption = port ? s.heard : simCaption, hearing = port ? inFlight : simHearing, talking = port ? false : simTalking;
-  // The daemon sends her what she heard whole, on `accepted`; the strip lays it out as it would have come in (about 30 ms a
-  // character, never longer than 1.2 s in all), so it visibly grows. A caption that extends the last one carries on from it.
-  const [typed, setTyped] = useState(''), typedNow = useRef('');
-  useEffect(() => {
-    const chars = [...caption];
-    let at = caption.startsWith(typedNow.current) ? [...typedNow.current].length : 0;
-    const show = () => { typedNow.current = chars.slice(0, at).join(''); setTyped(typedNow.current); };
-    show();
-    if (at >= chars.length) return;
-    const each = Math.min(30, 1200 / chars.length), from = performance.now(), start = at;
-    const timer = setInterval(() => {
-      at = Math.min(chars.length, start + Math.ceil((performance.now() - from) / each));
-      show();
-      if (at >= chars.length) clearInterval(timer);
-    }, 16);
-    return () => clearInterval(timer);
-  }, [caption]);
-  const stripText = useRef<HTMLSpanElement>(null);
-  useLayoutEffect(() => { const el = stripText.current; if (el) el.scrollTop = el.scrollHeight; }, [typed]);
+  const hearing = port ? inFlight : simHearing, talking = port ? false : simTalking;
   // Her words on screen, here and on the Dashboard, stay as they were while yours are still coming in: cut off, or
   // none. An answer written meanwhile is dropped once your words are in (ADR 0074).
   const held = useRef('');
   if (!inFlight) held.current = s.reply;
   const said = port ? spoken(held.current) : '';
-  const reply = port ? { text: said, shown: said.length } : simReply;
+  const reply = port ? { text: said } : simReply;
   // ADR 0064: think mode as the daemon reads it from Allen's words (ADR 0105): an on-word makes that one turn deep. Read again as soon
   // as his words go in or an answer opens; the poll catches a turn that ended some other way.
   const think = useRoute<{ on: boolean; on_words: string }>(port, '/inherent/think', true, 30_000);
@@ -214,7 +202,7 @@ export function Companion() {
   const words = useMemo((): Think['words'] => pattern(think.data?.on_words ?? '(?!)'), [think.data?.on_words]);
   useEffect(() => { if (s.waiting) think.reload(); }, [s.waiting, s.turnId]);
   // The turn that was thought about deeply, marked while `on` said so: `on` can go false between the daemon finishing and the answer
-  // opening here, and that must not take the turn's "thought for" line with it.
+  // opening here, and that must not take the turn's deep look, or its "thought for" line, with it.
   const deepFor = useRef<string | null>(null);
   const thinking = voice === 'thinking' || s.askedAt !== null;
   if (deep && s.waiting && thinking) deepFor.current = s.waiting;
@@ -235,7 +223,19 @@ export function Companion() {
   // The page open in the Dashboard sets her face while nothing else is going on.
   const [dashMood, setDashMood] = useState<ExprId | null>(null);
   const [receiving, setReceiving] = useState(false);
-  const busy = composer || voice !== 'off' || !!reply.text || receiving || deepThinking;
+  // The talk area under her: up from the moment she starts listening (or you press the keyboard) until a turn is over and she
+  // is not listening, then folded away 8 s later, never while the pointer is over it. She stays out until it folds into her. While
+  // she is at home for something else (the Dashboard, a card, a notice) it is not shown.
+  const [talkUp, setTalkUp] = useState(false);
+  const talkBox = useRef<HTMLDivElement>(null);
+  const engaged = voice !== 'off' || composer || receiving;
+  const presence = usePresence({ engaged,
+    over: () => { const r = talkBox.current?.getBoundingClientRect(), p = cursor.current; return place === 'out' && !!r && p.x >= r.left - 6 && p.x <= r.right + 6 && p.y >= r.top - 6 && p.y <= r.bottom + 6; },
+    onOpen: stale => { if (stale) dispatch({ type: 'talk-clear' }); } });
+  const talkLevel: Captions = level(companion.captions, s.soundMuted);
+  // The deep look belongs to the turn: its answer being thought about, or said or shown. Listening to the next one, or waiting on it, is back to normal.
+  const deepLook = deepThinking || (answerSecs > 0 && s.waiting === s.turnId && voice !== 'listening');
+  const busy = composer || voice !== 'off' || !!reply.text || receiving || deepThinking || talkUp;
   // Every session the Dashboard's Agents data knows, and Startrail's from its host (in her queue's order, each in place
   // of the daemon's row of it): the stars beside the notch, and the notices.
   const [daemonAgents, setAgents] = useState<ShownAgent[]>([]);
@@ -290,7 +290,7 @@ export function Companion() {
   const live = useRef({ geo, dashboard, chip, composer, place, wardrobe, noticeLook, openBy: companion.openBy });
   live.current = { geo, dashboard, chip, composer, place, wardrobe, noticeLook, openBy: companion.openBy };
   const ball = useRef<BallHandle | null>(null), look = useRef<Point | null>(null), cursor = useRef<Point>({ x: -1e4, y: -1e4 });
-  const input = useRef<HTMLInputElement>(null), root = useRef<HTMLElement>(null), pressing = useRef(false);
+  const input = useRef<HTMLTextAreaElement>(null), root = useRef<HTMLElement>(null), pressing = useRef(false);
 
   const zoneTimer = useRef<ReturnType<typeof setTimeout>>(undefined), pending = useRef<Zone>('none');
   const dashTimer = useRef<ReturnType<typeof setTimeout>>(undefined), dashEntered = useRef(false), pinned = useRef(false), dashClosedHere = useRef(false), interactive = useRef(false);
@@ -298,29 +298,31 @@ export function Companion() {
   const after = (ms: number, run: () => void) => { script.current.push(setTimeout(run, ms)); };
   const stopScript = () => { script.current.forEach(clearTimeout); script.current = []; };
   useEffect(() => stopScript, []);
+  // The demo's answer lands whole, like the daemon's; the area lights it as she says it, and she is done after about as long as that takes.
+  const demoTurn = useRef(0), demoAt = useRef(0);
   const say = (text: string, done: () => void) => {
     replyFace.current = pick(TAKES.reply);
-    setReply({ text, shown: 0 }); setTalking(true);
-    for (let i = 1; i <= text.length; i++) after(i * 115, () => setReply({ text, shown: i }));
-    after(text.length * 115 + 450, () => { setTalking(false); done(); });
+    const turn = `demo-${++demoTurn.current}`, spokenWords = split(text).spoken;
+    setReply({ text: plain(text) }); setTalking(true);
+    dispatch({ type: 'her', turn, text, at: Date.now() });
+    after((pace(spokenWords).at(-1) ?? 0) * 1000 + 450, () => { dispatch({ type: 'said', turn }); setTalking(false); done(); });
   };
   // She takes the task in for a moment before she thinks or answers.
   const receive = () => { receiveFace.current = pick(TAKES.receive); setReceiving(true); after(700, () => setReceiving(false)); };
   const listen = (scripted: boolean) => {
     // Each turn she picks one of her takes for listening, receiving and replying.
     listenFace.current = pick(TAKES.listen);
-    stopScript(); setReceiving(false); setVoice('listening'); setCaption(''); setHearing(false); setReply({ text: '', shown: 0 }); setTalking(false);
+    stopScript(); setReceiving(false); setVoice('listening'); setHearing(false); setReply({ text: '' }); setTalking(false); dispatch({ type: 'cut', at: Date.now() });
     if (!scripted) return;
-    const end = 650 + HEARD.length * 115;
+    const turn = DEMO[demoAt.current++ % DEMO.length], end = 650 + turn.heard.length * 60;
     after(650, () => setHearing(true));
-    for (let i = 1; i <= HEARD.length; i++) after(650 + i * 115, () => setCaption(HEARD.slice(0, i)));
-    after(end + 250, () => { setHearing(false); setVoice('thinking'); receive(); });
-    after(end + 1700, () => { setVoice('speaking'); say('好，我来整理。', () => listen(false)); });
+    after(end + 250, () => { setHearing(false); dispatch({ type: 'you', text: turn.heard, at: Date.now() }); setVoice('thinking'); receive(); });
+    after(end + 1700, () => { setVoice('speaking'); say(turn.reply, () => listen(false)); });
   };
   // Whatever she is saying or about to say stops: the answer on screen by its response, or the turn she is still
-  // thinking about by its turn.
+  // thinking about by its turn. Where she had got to stays lit; the rest of it waits, dim.
   const stopTalking = () => {
-    if (answering) void link.current?.cancel(s.responseId).catch(() => undefined);
+    if (answering) { dispatch({ type: 'cut', at: Date.now() }); void link.current?.cancel(s.responseId).catch(() => undefined); }
     else if (s.askedAt !== null && s.waiting) void link.current?.stopTurn(s.waiting).catch(() => undefined);
   };
   const endVoice = () => {
@@ -330,19 +332,26 @@ export function Companion() {
       stopTalking();
       return;
     }
-    stopScript(); setReceiving(false); feedback('voice-exit'); setVoice('off'); setCaption(''); setHearing(false); setReply({ text: '', shown: 0 }); setTalking(false); };
-  const closeComposer = () => { setComposer(false); void window.jarvis?.focus(false); };
+    stopScript(); setReceiving(false); feedback('voice-exit'); setVoice('off'); setHearing(false); setReply({ text: '' }); setTalking(false); dispatch({ type: 'cut', at: Date.now() }); };
+  // Typing in a voice conversation pauses the microphone for as long as the field is up (the daemon's own mute, `controls`); a mic
+  // that was already muted stays muted.
+  const paused = useRef(false);
+  const pauseMic = (muted: boolean) => { if (port) control({ mic_muted: muted }); else if (muted !== s.micMuted) dispatch({ type: 'mic' }); };
+  const closeComposer = () => {
+    setComposer(false); void window.jarvis?.focus(false);
+    if (paused.current) { paused.current = false; pauseMic(false); }
+  };
   // Poke: start a voice turn, interrupt playback, or end the session.
   const poke = () => {
     if (port) {
       if (voice === 'off') { closeComposer(); feedback('voice-enter'); void link.current?.controls({ conversation: true }).catch(() => undefined); }
       else if (voice === 'speaking') stopTalking();
-      else endVoice();
+      else { endVoice(); presence.dismiss(); }
       return;
     }
     if (voice === 'off') { closeComposer(); feedback('voice-enter'); listen(true); }
     else if (voice === 'speaking') listen(false);
-    else endVoice();
+    else { endVoice(); presence.dismiss(); }
   };
   const pressAt = useRef(0), latestPoke = useRef(poke);
   latestPoke.current = poke;
@@ -358,26 +367,34 @@ export function Companion() {
   const cancel = () => { pressing.current = false; setPressed(false); };
 
   const measure = useRef<CanvasRenderingContext2D | null>(null);
-  // She watches the caret while you type.
+  // She watches the caret while you type: along the last line of the field, wrapped at its width.
   const aimAtCaret = () => {
     const el = input.current, ctx = measure.current ??= document.createElement('canvas').getContext('2d');
     if (!el || !ctx) return;
-    const style = getComputedStyle(el), r = el.getBoundingClientRect(), pad = parseFloat(style.paddingLeft);
+    const style = getComputedStyle(el), r = el.getBoundingClientRect(), pad = parseFloat(style.paddingLeft), room = Math.max(1, r.width - 2 * pad);
     ctx.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
-    const width = ctx.measureText(el.value.slice(0, el.selectionStart ?? el.value.length)).width;
-    look.current = { x: Math.min(r.right - pad, r.left + pad + width - el.scrollLeft), y: r.top + r.height / 2 };
+    const before = el.value.slice(0, el.selectionStart ?? el.value.length), width = ctx.measureText(before.slice(before.lastIndexOf('\n') + 1)).width % room;
+    look.current = { x: Math.min(r.right - pad, r.left + pad + width), y: Math.min(r.bottom - 18, Math.max(r.top + 18, r.top + r.height / 2)) };
   };
   const openComposer = () => {
-    stopScript(); setReceiving(false); setReply({ text: '', shown: 0 }); setTalking(false); setComposer(true);
-    void window.jarvis?.focus(true).then(() => requestAnimationFrame(() => { input.current?.focus(); aimAtCaret(); }));
+    stopScript(); setReceiving(false); setReply({ text: '' }); setTalking(false); setComposer(true);
+    if (voice !== 'off' && !s.micMuted) { paused.current = true; pauseMic(true); }
+    void window.jarvis?.focus(true).then(() => requestAnimationFrame(aimAtCaret));
+  };
+  // Back to voice: the field goes, the microphone comes back, and with no conversation going she starts listening.
+  const backToVoice = () => {
+    const was = voice;
+    closeComposer();
+    if (was === 'off') { feedback('voice-enter'); if (port) void link.current?.controls({ conversation: true }).catch(() => undefined); else listen(true); }
   };
   const send = () => {
     const text = draft.trim();
     if (!text) return;
     setDraft(''); closeComposer(); stopScript();
+    dispatch({ type: 'you', text, at: Date.now() });
     receive();
     if (port) { void submit(text); return; }
-    after(700, () => say(text.includes('整理') ? '好，我来整理。' : '收到，我来处理。', () => after(1800, () => setReply({ text: '', shown: 0 }))));
+    after(700, () => say(text.includes('整理') ? '好，我来整理。' : '收到，我来处理。', () => after(1800, () => setReply({ text: '' }))));
   };
   // Typed text goes to the daemon like the capsule's; the answer comes back on the same link as a voice turn's.
   const submit = (text: string) => link.current?.submit(text).catch(() => dispatch({ type: 'phase', phase: 'error' }));
@@ -588,7 +605,7 @@ export function Companion() {
     document.addEventListener('pointerdown', dismiss); document.addEventListener('keydown', escape, true);
     return () => { document.removeEventListener('pointerdown', dismiss); document.removeEventListener('keydown', escape, true); void window.jarvis?.focus(false); };
   }, [menu]);
-  useEffect(refreshHit, [place, chip, composer, dashboard, menu, voice, reply.text, notice?.key, card?.id, nightKey]);
+  useEffect(refreshHit, [place, chip, composer, dashboard, menu, voice, reply.text, talkUp, notice?.key, card?.id, nightKey]);
 
   // Native frosted glass behind every visible panel, following its transitions.
   const kickGlass = useRef(() => {});
@@ -600,12 +617,15 @@ export function Companion() {
         const r = node.getBoundingClientRect();
         let opacity = 1;
         for (let n: HTMLElement | null = node; n && n !== el; n = n.parentElement) { const cs = getComputedStyle(n); opacity *= cs.visibility === 'hidden' ? 0 : Number(cs.opacity); }
-        return { x: r.x, y: r.y, width: r.width, height: r.height, radius: Number(node.dataset.glass) * r.width / (node.offsetWidth || 1), opacity };
+        // `css`: the shape's own corner radius as it is right now (the talk area morphs from a capsule to a panel).
+        const radius = node.dataset.glass === 'css' ? parseFloat(getComputedStyle(node).borderTopLeftRadius) || 0 : Number(node.dataset.glass);
+        return { x: r.x, y: r.y, width: r.width, height: r.height, radius: radius * r.width / (node.offsetWidth || 1), opacity };
       }).filter(r => r.opacity > .01 && r.width > 0 && r.height > 0);
       const key = JSON.stringify(rects);
       if (key !== sent) { sent = key; window.jarvis?.material(rects, 1); }
     };
-    const tick = () => { update(); frame = performance.now() < deadline ? requestAnimationFrame(tick) : 0; };
+    // It also re-reads what is under the cursor: a panel growing under a resting pointer takes the clicks as it arrives.
+    const tick = () => { update(); refreshHit(); frame = performance.now() < deadline ? requestAnimationFrame(tick) : 0; };
     const kick = () => { deadline = performance.now() + 700; if (!frame) frame = requestAnimationFrame(tick); };
     kickGlass.current = kick;
     const observer = new ResizeObserver(kick);
@@ -614,7 +634,7 @@ export function Companion() {
     kick();
     return () => { cancelAnimationFrame(frame); observer.disconnect(); el.removeEventListener('transitionrun', kick); };
   }, []);
-  useEffect(() => kickGlass.current(), [place, chip, composer, dashboard, voice, reply.text, typed, notice?.key, card?.id, nightKey]);
+  useEffect(() => kickGlass.current(), [place, chip, composer, dashboard, voice, reply.text, talkUp, notice?.key, card?.id, nightKey]);
 
   // What Settings in the panel reads and changes here: the daemon's switches, her look, her cues.
   const control = (patch: { mic_muted?: boolean; speech_muted?: boolean; conversation?: boolean }) => void link.current?.controls(patch).catch(() => undefined);
@@ -656,9 +676,6 @@ export function Companion() {
         if (notice.kind !== 'req') return;
         void notices.resolve(notice, text, body).then(ok => { if (ok && body.decision !== 'deny') ball.current?.hop(.14); });
       }}/> };
-  // The strip and her bubble share one spot: her words keep it until yours are in, then the strip shows them whole.
-  const yours = voice === 'thinking' && !!caption;
-  const strip = place === 'out' && (yours || ((voice === 'listening' || voice === 'thinking') && !reply.text)), bubble = place === 'out' && !!reply.text && !yours;
   const dashboardContent = <AroundDashboard open={dashboard} port={port} onClose={closeDashboard} viewRef={dashboardView} onView={value => { if (detached && detachedMode.current) window.jarvis?.dashboardMessage?.('parent', { type: 'view', value }); }}
           onMood={dashboardMood} settingFocus={settingsFocus} onHop={height => ball.current?.hop(height)}
           talk={port ? { rows: s.rows, tail, busy: voice === 'thinking', offline: s.phase === 'error', floor, submit, older, card, decide: decideCard, question, answer: answerQuestion,
@@ -688,6 +705,9 @@ export function Companion() {
         }}>
         {SKIN_KEYS.map(skin => <button key={skin} role="menuitemradio" aria-checked={wardrobe.skin === skin} onClick={() => { choose(skin); setMenu(null); }}>{t(SKIN_NAMES[skin])}</button>)}
         <hr/>
+        <div className="companion-menu-label" role="presentation">{t(['Captions', '字幕'])}</div>
+        {CAPTIONS.map(([key, name]) => <button key={key} role="menuitemradio" aria-checked={companion.captions === key} onClick={() => { updateCompanion({ captions: key }); setMenu(null); }}>{t(name)}</button>)}
+        <hr/>
         {nightState && (nightRun
           ? <button role="menuitem" onClick={() => { setMenu(null); nightAct('end'); }}>{t(['End the night run', '结束挂机'])}</button>
           : <button role="menuitem" onClick={() => { setMenu(null); nightAct('start'); }}>{t([`Off to sleep: keep running at least ${+nightState.hours.toFixed(2)} h`, `睡了，至少挂 ${+nightState.hours.toFixed(2)} 小时`])}</button>)}
@@ -697,26 +717,12 @@ export function Companion() {
       <div className={`companion-chip ${chip ? 'is-open' : ''}`} data-hit={chip || undefined} data-glass="10" style={{ left: out.x + R + 12, top: out.y - 13 }}>
         <button aria-label={t(['Type to her', '文字输入'])} tabIndex={chip ? 0 : -1} onClick={openComposer}><Keyboard/></button>
       </div>
-      <form className={`companion-composer ${composer && place === 'out' ? 'is-open' : ''}`} data-hit={composer || undefined} data-glass="14"
-        style={{ left: out.x - PANEL / 2, top: out.y + R + 11 }} inert={!composer} onTransitionEnd={aimAtCaret}
-        onSubmit={event => { event.preventDefault(); send(); }}>
-        <button type="button" className="composer-attach" disabled aria-label={t(['Attach (not wired yet)', '添加附件（还没接）'])}><Paperclip/></button>
-        <input ref={input} aria-label={t(['Type to her', '文字输入'])} placeholder={t(['Say something…', '和她说点什么…'])} value={draft}
-          onChange={event => { setDraft(event.target.value); ball.current?.nudge(); requestAnimationFrame(aimAtCaret); }}
-          onSelect={aimAtCaret} onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); closeComposer(); } }}/>
-        <button type="submit" className="composer-send" disabled={!draft.trim()} aria-label={t(['Send', '发送'])}><ArrowUp weight="bold"/></button>
-      </form>
-      <div className={`companion-strip ${strip ? 'is-open' : ''} ${hearing ? 'is-hearing' : ''} ${deep ? 'is-deep' : ''}`} data-hit={strip || undefined} data-glass="14"
-        style={{ left: out.x, top: out.y + R + 11 }} inert={!strip} role="status">
-        <span className="strip-mic"><Microphone size={14} weight="fill"/></span>
-        <span ref={stripText} className={`strip-text ${caption ? '' : 'is-empty'}`}>{caption ? typed : t(['Listening…', '在听…'])}</span>
-        {deepSecs > 0 && <span className="strip-think">{t([`Thinking ${deepSecs} s`, `深想 ${deepSecs} 秒`])}</span>}
-        <button className="strip-stop" aria-label={t(['End voice', '结束语音'])} onClick={endVoice}><Stop size={11} weight="fill"/></button>
-      </div>
-      <div className={`companion-bubble ${bubble ? 'is-open' : ''} ${answerSecs ? 'is-deep' : ''}`} data-hit={bubble || undefined} data-glass="14" style={{ left: out.x, top: out.y + R + 11 }} role="status">
-        {answerSecs > 0 && <small className="bubble-think">{t([`Thought for ${answerSecs.toFixed(1)} s`, `想了 ${answerSecs.toFixed(1)} 秒`])}</small>}
-        <span className="bubble-text"><span className="bubble-ghost">{reply.text}</span><span>{reply.text.slice(0, reply.shown)}</span></span>
-      </div>
+      <TalkArea lang={companion.lang} x={out.x} y={out.y + R + 11} open={presence.open && place === 'out'} level={talkLevel} lines={s.talk} voice={voice} hearing={hearing} silent={s.soundMuted}
+        deep={{ look: deepLook, secs: deepSecs, thoughts }} field={composer} draft={draft} micPaused={s.micMuted}
+        onDraft={value => { const cleared = paused.current && !!draft.trim() && !value.trim(); setDraft(value); ball.current?.nudge(); requestAnimationFrame(aimAtCaret); if (cleared) closeComposer(); }}
+        onSend={send} onField={open => { if (open) openComposer(); else closeComposer(); }} onMic={backToVoice}
+        onEnd={() => { if (voice !== 'off') endVoice(); presence.dismiss(); }} onUp={setTalkUp} onSettle={() => { if (live.current.composer) aimAtCaret(); kickGlass.current(); }}
+        boxRef={talkBox} inputRef={input}/>
       <DuskDashboard open={dashboard} onDetach={transferDashboard} onJoinedChange={setDashboardJoined} top={geo.panelTop} width={geo.width} left={geo.center - PANEL / 2}
         islandLeft={geo.lobe.left} islandRight={geo.wingX} lightX={geo.anchors.home.x}>
         {dashboardContent}

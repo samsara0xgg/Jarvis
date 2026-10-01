@@ -112,6 +112,8 @@ try {
     return structuredClone(snapshot);
   });
   await page.addInitScript(fake => {
+    // Her words show in full, in the talk area under her.
+    localStorage.setItem('companion-settings-v1', JSON.stringify({ ...JSON.parse(localStorage.getItem('companion-settings-v1') ?? '{}'), captions: 'all' }));
     window.__state = { opened: [], accounts: [], jumps: [] };
     window.jarvis = {
       placement: async () => ({ docked: false, topInset: 32, notchWidth: 185, surfaceWidth: 640, compactWidth: 0, displayId: 1 }),
@@ -178,13 +180,18 @@ try {
   const island = () => page.locator('.companion-island-target').click({ force: true });
   const closeDash = async () => { for (let i = 0; i < 2 && await page.locator('.companion-dashboard.is-open').count(); i++) { await island(); await page.waitForTimeout(200); } };
   const move = async (x, y) => { await page.mouse.move(x, y); await page.evaluate(([x, y]) => window.__cursor({ x, y }), [x, y]); };
-  const waitPlace = async value => { await page.waitForFunction(v => document.querySelector('.companion-hit')?.dataset.place === v, value, { timeout: 5000 }); await page.waitForTimeout(700); };
+  // She stays out until the talk area under her has folded away, 8 s after a turn ends.
+  const waitPlace = async (value, timeout = 5000) => { await page.waitForFunction(v => document.querySelector('.companion-hit')?.dataset.place === v, value, { timeout }); await page.waitForTimeout(700); };
   const face = (...ids) => page.waitForFunction(v => v.includes(document.querySelector('.companion-canvas')?.dataset.face), ids, { timeout: 2500 }).then(() => ids[0], () => null);
   const shot = (name, clip = { x: 120, y: 0, width: 400, height: 240 }) => page.screenshot({ path: path.join(dir, `${name}.png`), clip });
   const panelShot = name => shot(name, { x: 150, y: 0, width: 340, height: 722 });
   const openRow = name => page.locator(`.ad [data-row="${name}"]`).evaluate(el => (el.matches('button') ? el : el.querySelector('button')).click());
   const back = async () => { await page.locator('.ad .pg-back').click(); await page.waitForTimeout(700); };
   const text = selector => page.locator(selector).first().textContent();
+  // The talk area: whether it is up, what she is doing, your last words and her last words in it.
+  const area = () => page.evaluate(() => { const t = document.querySelector('.talk[data-hit]'), last = sel => [...document.querySelectorAll(sel)].at(-1)?.textContent ?? '';
+    return { open: !!t, state: t?.dataset.state ?? '', you: last('.talk .tk-u'), her: last('.talk .tk-h .tk-s'), err: last('.talk .tk-h.is-err .tk-s') }; });
+  const folded = () => page.waitForFunction(() => !document.querySelector('.talk[data-hit]'), null, { timeout: 20_000 });
   // At the top of the Conversation page, a fresh scroll up past the resistance; true when the words in view stayed put.
   const pullUp = async () => {
     const pageBody = page.locator('.ad .pg-body');
@@ -274,42 +281,41 @@ try {
     await move(out.x, out.y); await waitPlace('out');
     await hit.click({ force: true }); await page.waitForTimeout(600);
     check('L2 a poke asks the daemon for wave mode', posts.at(-1)?.path === '/inherent/controls' && posts.at(-1).body.conversation === true);
-    check('L2 in wave mode she listens, strip open, one of her listening faces', await page.locator('.companion-strip.is-open').count() === 1 && await face('35', '35b') === '35');
+    check('L2 in wave mode she listens, the talk area open, one of her listening faces', (await area()).open && (await area()).state === 'listening' && await face('35', '35b') === '35');
     await page.evaluate(() => window.__emit('voice', { phase: 'listening', turn_id: 'v1' }));
     await page.waitForTimeout(150);
-    check('L3 speech heard lights the strip', await page.locator('.companion-strip.is-hearing').count() === 1);
+    check('L3 speech heard quickens her glyph', (await area()).state === 'hearing');
     await page.evaluate(() => window.__emit('voice', { phase: 'accepted', turn_id: 'v1', text: '明天早上九点提醒我开会' }));
     await page.waitForTimeout(150);
-    check('L3 the accepted words show in the strip and she takes them in', await text('.strip-text') === '明天早上九点提醒我开会' && await face('31', '31b', '31c', '31d') === '31');
+    check('L3 the accepted words show right-aligned in the transcript and she takes them in', (await area()).you === '明天早上九点提醒我开会' && await face('31', '31b', '31c', '31d') === '31');
     await shot('L3-heard', { x: 0, y: 0, width: 400, height: 240 });
     await page.evaluate(() => window.__emit('open', { turn_id: 'v1', response_id: 'resp-1' }));
-    check('L3 then she thinks', await face('30') === '30');
+    check('L3 then she thinks, the footer says so', await face('30') === '30' && (await area()).state === 'thinking' && /^(Thinking|在想)$/.test(await page.locator('.talk .lb').textContent()));
     await page.evaluate(() => { window.__emit('append', { turn_id: 'v1', token: '<voice>好的，明早九点' }); window.__emit('append', { turn_id: 'v1', token: '提醒你开会。</voice>' }); });
-    await page.locator('.companion-bubble.is-open').waitFor();
-    check('L3 her bubble says the spoken form, tags gone, with her replying face', await text('.bubble-text span:last-child') === '好的，明早九点提醒你开会。' && await face('39', '39b', '39c') === '39');
+    await page.waitForFunction(() => document.querySelector('.talk .tk-h .tk-s')?.textContent === '好的，明早九点提醒你开会。');
+    check('L3 her words come under yours, the spoken form with the tags gone, with her replying face', (await area()).state === 'speaking' && await face('39', '39b', '39c') === '39');
     await page.waitForTimeout(500); await shot('L3-reply', { x: 0, y: 0, width: 400, height: 240 });
     await hit.click({ force: true }); await page.waitForTimeout(600);
     check('L4 a poke while she speaks cuts the answer off', posts.at(-1)?.path === '/inherent/cancel-response' && posts.at(-1).body.response_id === 'resp-1');
     await page.evaluate(() => { window.__emit('done', { turn_id: 'v1', fadeMs: 200 }); window.__emit('voice', { phase: 'spoken', turn_id: 'v1' }); });
-    await page.waitForFunction(() => !document.querySelector('.companion-bubble.is-open'), null, { timeout: 3000 });
-    check('L4 after the answer settles she is back to listening', await page.locator('.companion-strip.is-open').count() === 1);
-    const only = async () => [await page.locator('.companion-bubble.is-open').count(), await page.locator('.companion-strip.is-open').count()].join();
+    await page.waitForFunction(() => document.querySelector('.talk[data-state=listening]'), null, { timeout: 3000 });
+    check('L4 after the answer settles she is back to listening, her words still in the transcript', (await area()).open && (await area()).her === '好的，明早九点提醒你开会。');
+    const only = async () => { const a = await area(); return `${a.state}|${a.you}|${a.her}`; };
     const turn = (id, heard, said) => page.evaluate(([id, heard, said]) => { window.__emit('voice', { phase: 'listening', turn_id: id }); window.__emit('voice', { phase: 'accepted', turn_id: id, text: heard });
       window.__emit('open', { turn_id: id, response_id: `resp-${id}` }); window.__emit('append', { turn_id: id, token: `<voice>${said}</voice>` }); }, [id, heard, said]);
     // A long answer: its fade (`done` + fadeMs) is over while she is still saying it.
     await turn('v1b', '讲讲今天的安排', '上午十点有组会，下午两点和导师见面，晚上七点健身。');
     await page.evaluate(() => window.__emit('done', { turn_id: 'v1b', fadeMs: 150 }));
     await page.waitForTimeout(500);
-    check('L4 a long answer stays up while she still says it, the strip shut', await only() === '1,0' && await face('39', '39b', '39c') === '39');
+    check('L4 a long answer stays up while she still says it', (await only()).startsWith('speaking|讲讲今天的安排|上午十点有组会') && await face('39', '39b', '39c') === '39');
     await page.evaluate(() => window.__emit('voice', { phase: 'spoken', turn_id: 'v1b' }));
     await page.waitForTimeout(150);
-    check('L4 it goes when she stops talking, and she listens again', await only() === '0,1');
+    check('L4 when she stops talking she listens again and the footer no longer says the sentence', (await area()).state === 'listening' && /^(Listening|在听)$/.test(await page.locator('.talk .lb').textContent()));
     // A short answer: she stops talking before its fade is over; it keeps the spot until then.
     await turn('v1c', '能听到我说话吗', '能听到，Allen。我在。');
     await page.evaluate(() => { window.__emit('done', { turn_id: 'v1c', fadeMs: 150 }); window.__emit('voice', { phase: 'spoken', turn_id: 'v1c' }); });
     await page.waitForTimeout(50);
-    check('L4 a short answer keeps the spot while it fades, the strip shut', await only() === '1,0');
-    await page.waitForFunction(() => !document.querySelector('.companion-bubble.is-open'), null, { timeout: 3000 });
+    check('L4 a short answer is in the transcript whole', (await area()).her === '能听到，Allen。我在。' && (await area()).state === 'listening');
     // Cutting in: the daemon hears you, stops her (`spoken`), then transcribes; her words hold until yours are in.
     await turn('v1d', '再讲一遍', '好的，上午十点有组会，下午两点和导师见面……');
     await page.evaluate(() => window.__emit('done', { turn_id: 'v1d', fadeMs: 100 }));
@@ -319,29 +325,29 @@ try {
     const cutIn = await only();
     await page.evaluate(() => window.__emit('voice', { phase: 'transcribing', turn_id: 'v1e' }));
     await page.waitForTimeout(150);
-    check('L4 cutting in, her words stay while yours come in', cutIn === '1,0' && await only() === '1,0');
+    check('L4 cutting in, her words stay while yours come in', cutIn.endsWith('|再讲一遍|好的，上午十点有组会，下午两点和导师见面……') && await only() === cutIn);
     await page.evaluate(() => window.__emit('voice', { phase: 'accepted', turn_id: 'v1e', text: '等一下，下午那个改到三点' }));
     await page.waitForTimeout(150);
-    check('L4 once yours are in, the strip shows them whole', await only() === '0,1' && await text('.strip-text') === '等一下，下午那个改到三点');
+    check('L4 once yours are in, they show whole under her cut-off words', (await area()).you === '等一下，下午那个改到三点' && (await area()).her === '好的，上午十点有组会，下午两点和导师见面……');
     await page.evaluate(() => { window.__emit('open', { turn_id: 'v1e', response_id: 'resp-v1e' }); window.__emit('append', { turn_id: 'v1e', token: '<voice>好，改到三点。</voice>' }); });
     await page.waitForTimeout(150);
-    check('L4 then her answer', await only() === '1,0' && await text('.bubble-text span:last-child') === '好，改到三点。');
+    check('L4 then her answer', (await area()).her === '好，改到三点。' && (await area()).state === 'speaking');
     await page.evaluate(() => { window.__emit('done', { turn_id: 'v1e', fadeMs: 100 }); window.__emit('voice', { phase: 'spoken', turn_id: 'v1e' }); });
-    await page.waitForFunction(() => document.querySelector('.companion-strip.is-open') && !document.querySelector('.companion-bubble.is-open'), null, { timeout: 3000 });
+    await page.waitForFunction(() => document.querySelector('.talk[data-state=listening]'), null, { timeout: 3000 });
     // A split sentence (ADR 0053): the first half's answer text lands while he says the second half; she only listens.
     await page.evaluate(() => { window.__emit('voice', { phase: 'listening', turn_id: 'v1f' }); window.__emit('voice', { phase: 'accepted', turn_id: 'v1f', text: '怎么说' }); });
     await page.waitForTimeout(300); // live, the second half starts after the first is accepted
     await page.evaluate(() => { window.__emit('voice', { phase: 'listening', turn_id: 'v1g' }); window.__emit('open', { turn_id: 'v1f', response_id: 'resp-v1f' }); window.__emit('append', { turn_id: 'v1f', token: '<voice>你想让我怎么说？</voice>' }); });
     await page.waitForTimeout(150);
-    check('L4 an answer written while he still talks stays off screen; she listens', await only() === '0,1' && await page.locator('.companion-strip.is-hearing').count() === 1 && await face('35', '35b') === '35');
+    check('L4 an answer written while he still talks stays off screen; she listens', !(await area()).her.includes('你想让我怎么说') && (await area()).state === 'hearing' && await face('35', '35b') === '35');
     await page.evaluate(() => { window.__emit('voice', { phase: 'transcribing', turn_id: 'v1g' }); window.__emit('voice', { phase: 'accepted', turn_id: 'v1g', text: '到一半停了' }); window.__emit('cancelled', { turn_id: 'v1f' }); });
     await page.waitForTimeout(150);
-    check('L4 then the strip shows his second half, still no bubble', await only() === '0,1' && await text('.strip-text') === '到一半停了');
+    check('L4 then his second half shows, still without that answer', (await area()).you === '到一半停了' && !(await area()).her.includes('你想让我怎么说'));
     await page.evaluate(() => { window.__emit('open', { turn_id: 'v1g', response_id: 'resp-v1g' }); window.__emit('append', { turn_id: 'v1g', token: '<voice>刚才是我说到一半断了。</voice>' }); });
     await page.waitForTimeout(150);
-    check('L4 and one answer to both halves', await only() === '1,0' && await text('.bubble-text span:last-child') === '刚才是我说到一半断了。');
+    check('L4 and one answer to both halves', (await area()).her === '刚才是我说到一半断了。' && !(await page.locator('.talk').textContent()).includes('你想让我怎么说'));
     await page.evaluate(() => { window.__emit('done', { turn_id: 'v1g', fadeMs: 100 }); window.__emit('voice', { phase: 'spoken', turn_id: 'v1g' }); });
-    await page.waitForFunction(() => document.querySelector('.companion-strip.is-open') && !document.querySelector('.companion-bubble.is-open'), null, { timeout: 3000 });
+    await page.waitForFunction(() => document.querySelector('.talk[data-state=listening]'), null, { timeout: 3000 });
     // A cough as her answer is written (ADR 0053): the answer waits for it; when it comes to nothing she says it, with
     // her speaking face, and a poke stops that answer. Her face follows the turn, never the microphone.
     await page.evaluate(() => { window.__emit('voice', { phase: 'listening', turn_id: 'v1h' }); window.__emit('voice', { phase: 'accepted', turn_id: 'v1h', text: '明天几点开会' }); });
@@ -351,35 +357,34 @@ try {
     const coughing = await only();
     await page.evaluate(() => window.__emit('voice', { phase: 'empty', turn_id: 'v1i' }));
     await page.waitForTimeout(150);
-    check('L4 a cough holds her answer, then she says it with her speaking face', coughing === '0,1' && await only() === '1,0'
-      && await text('.bubble-text span:last-child') === '明天上午十点。' && await face('39', '39b', '39c') === '39');
+    check('L4 a cough holds her answer, then she says it with her speaking face', !coughing.endsWith('|明天上午十点。') && (await area()).her === '明天上午十点。' && (await area()).state === 'speaking' && await face('39', '39b', '39c') === '39');
     await hit.click({ force: true }); await page.waitForTimeout(600);
     check('L4 and a poke stops that answer', posts.at(-1)?.path === '/inherent/cancel-response' && posts.at(-1).body.response_id === 'resp-v1h');
     await page.evaluate(() => { window.__emit('done', { turn_id: 'v1h', fadeMs: 100 }); window.__emit('voice', { phase: 'spoken', turn_id: 'v1h', output_outcome: 'dropped' }); });
-    await page.waitForFunction(() => document.querySelector('.companion-strip.is-open') && !document.querySelector('.companion-bubble.is-open'), null, { timeout: 3000 });
-    await page.locator('.strip-stop').click(); await page.waitForTimeout(300);
-    check('L5 the strip’s stop ends wave mode', posts.at(-1)?.path === '/inherent/controls' && posts.at(-1).body.conversation === false && await page.locator('.companion-strip.is-open').count() === 0);
+    await page.waitForFunction(() => document.querySelector('.talk[data-state=listening]'), null, { timeout: 3000 });
+    await page.locator('.talk .st').click(); await page.waitForTimeout(300);
+    check('L5 the area’s end button ends wave mode and folds the area into her', posts.at(-1)?.path === '/inherent/controls' && posts.at(-1).body.conversation === false && !(await area()).open);
     await move(600, 560); await waitPlace('home');
 
     // A wake-word turn she did not start still brings her out, and markdown never shows.
     await page.evaluate(() => window.__emit('voice', { phase: 'listening', turn_id: 'v2' }));
     await waitPlace('out');
-    check('L6 a wake-word turn brings her out listening', await page.locator('.companion-strip.is-open').count() === 1);
+    check('L6 a wake-word turn brings her out listening, with the area under her', (await area()).open);
     await page.evaluate(() => { window.__emit('voice', { phase: 'accepted', turn_id: 'v2', text: '几点了' }); window.__emit('open', { turn_id: 'v2', response_id: 'resp-2' }); window.__emit('append', { turn_id: 'v2', token: '现在是 **下午四点**。' }); });
-    await page.locator('.companion-bubble.is-open').waitFor();
-    check('L6 her bubble drops markdown', await text('.bubble-text span:last-child') === '现在是 下午四点。');
+    await page.waitForFunction(() => document.querySelector('.talk .tk-h .tk-s'));
+    check('L6 her words drop the markdown', (await area()).her === '现在是 下午四点。');
     await page.evaluate(() => { window.__emit('done', { turn_id: 'v2', fadeMs: 200 }); window.__emit('voice', { phase: 'spoken', turn_id: 'v2' }); });
-    await waitPlace('home');
-    check('L6 once it settles she goes home, wave mode off', await page.locator('.companion-strip.is-open').count() === 0);
+    await waitPlace('home', 20_000);
+    check('L6 8 s after the turn the area folds into her and she goes home, wave mode off', !(await area()).open);
     // A turn that fails says why in Jarvis's own words (a refused key, no credit…) where the answer would be.
     const quota = 'The account is out of credit. Add credit, then try again.';
     await page.evaluate(() => { window.__emit('voice', { phase: 'listening', turn_id: 'v2f' }); window.__emit('voice', { phase: 'accepted', turn_id: 'v2f', text: 'what is on today' }); });
     await waitPlace('out');
     await page.evaluate(text => window.__emit('failed', { turn_id: 'v2f', reason: 'quota', message: text }), quota);
-    const said = await page.waitForFunction(text => document.querySelector('.companion-bubble.is-open .bubble-text span:last-child')?.textContent === text, quota, { timeout: 5000 }).then(() => true, () => false);
-    check('L6 a failed turn shows the daemon’s reason in her bubble, with her sorry face', said && await face('38') === '38');
-    await page.waitForTimeout(700); await shot('L6-failed', { x: 0, y: 0, width: 400, height: 240 });
-    await page.waitForFunction(() => !document.querySelector('.companion-bubble.is-open'), null, { timeout: 10_000 });
+    const said = await page.waitForFunction(text => document.querySelector('.talk .tk-h.is-err .tk-s')?.textContent === text, quota, { timeout: 5000 }).then(() => true, () => false);
+    check('L6 a failed turn shows the daemon’s reason in the area, with her sorry face', said && await face('38') === '38');
+    await page.waitForTimeout(700); await shot('L6-failed', { x: 0, y: 0, width: 400, height: 260 });
+    await folded();
     await move(600, 560); await waitPlace('home');
     check('L6 and after 8 s it leaves and she goes home', true);
     // A poke while she thinks: that turn has no answer to name yet, so it is stopped by its turn, not the last answer's id.
@@ -398,7 +403,7 @@ try {
     await move(out.x, out.y); await waitPlace('out');
     await move(out.x + 26 + 12 + 16, out.y);
     await page.locator('.companion-chip button').click();
-    await page.waitForFunction(() => document.activeElement?.matches('.companion-composer input'));
+    await page.waitForFunction(() => document.activeElement?.matches('.talk textarea'));
     await page.keyboard.type('帮我看看日程', { delay: 30 });
     await page.keyboard.press('Enter');
     await page.waitForTimeout(300);
@@ -407,9 +412,9 @@ try {
     check('L7 she thinks about a typed turn too, out of the island', await face('30') === '30' && await page.locator('.companion-hit').getAttribute('data-place') === 'out');
     const offline = 'Jarvis could not reach the model. Check the network, then try again.';
     await page.evaluate(text => window.__emit('failed', { turn_id: 'typed-1', reason: 'network', message: text }), offline);
-    const typedSaid = await page.waitForFunction(text => document.querySelector('.companion-bubble.is-open .bubble-text span:last-child')?.textContent === text, offline, { timeout: 3000 }).then(() => true, () => false);
-    check('L7 and its failure says why in her bubble', typedSaid && await face('38') === '38');
-    await page.waitForFunction(() => !document.querySelector('.companion-bubble.is-open'), null, { timeout: 10_000 });
+    const typedSaid = await page.waitForFunction(text => [...document.querySelectorAll('.talk .tk-h.is-err .tk-s')].at(-1)?.textContent === text, offline, { timeout: 3000 }).then(() => true, () => false);
+    check('L7 and its failure says why in the area', typedSaid && await face('38') === '38');
+    await folded();
     await waitPlace('home');
 
     // The Dashboard on live data.

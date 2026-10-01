@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 
 // Settings that belong to her and live in this companion's own profile: the language of her panel,
-// how the Dashboard opens, which screen she lives on, how the home is arranged, and which Agents it shows.
+// how the Dashboard opens, which screen she lives on, how the home is arranged, which Agents it shows,
+// and how much of what she says shows as text under her (captions: all, only what is worth reading, none).
 // Jarvis's own settings (voice, models, data) are the daemon's, on /inherent/settings.
 export type Lang = 'en' | 'zh';
 export type L = readonly [string, string]; // [English, 中文]
@@ -23,6 +24,7 @@ export const defaultSettings = {
   talk: 'after' as TalkMode, foryou: true, brief: true, mail: true, forecast: true,
   claude: true, codex: true, stale: 'day' as Stale,
   dictation: true,
+  captions: 'brief' as 'all' | 'brief' | 'none',
 };
 export type CompanionSettings = typeof defaultSettings;
 export const HOME_DEFAULTS: Partial<CompanionSettings> = { order: BLOCKS, hidden: [], talk: 'after', foryou: true, brief: true, mail: true, forecast: true };
@@ -43,7 +45,7 @@ function load(): CompanionSettings {
       order, hidden: Array.isArray(v.hidden) ? v.hidden.filter((id: unknown) => BLOCKS.includes(id as BlockId) && !isPop(id as BlockId)) : [],
       talk: one(v.talk, ['after', 'always', 'never'], d.talk), foryou: flag(v.foryou, d.foryou), brief: flag(v.brief, d.brief), mail: flag(v.mail, d.mail), forecast: flag(v.forecast, d.forecast),
       claude: flag(v.claude, d.claude), codex: flag(v.codex, d.codex), stale: one(v.stale, ['hour', 'day', 'never'], d.stale),
-      dictation: flag(v.dictation, d.dictation),
+      dictation: flag(v.dictation, d.dictation), captions: one(v.captions, ['all', 'brief', 'none'], d.captions),
     };
   } catch { return d; }
 }

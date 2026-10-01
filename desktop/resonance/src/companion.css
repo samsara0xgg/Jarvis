@@ -22,60 +22,6 @@
 .companion-chip button { width:100%; height:100%; display:grid; place-items:center; padding:0; border-radius:inherit; color:#d9dce2; }
 .companion-chip button:hover { color:#fff; background:rgb(255 255 255 / .07); }
 
-.companion-composer {
-  position:absolute; z-index:3; width:360px; height:48px; display:flex; align-items:center; gap:6px; padding:0 8px; border-radius:var(--radius-block);
-  background:var(--glass); box-shadow:var(--edge),0 14px 32px -16px #000c;
-  opacity:0; transform:translateY(-10px) scale(.4,.7); transform-origin:50% -18px; pointer-events:none;
-  transition:opacity var(--exit-fast) var(--ease-in),transform var(--exit-slow) var(--spring-panel-exit);
-}
-.companion-composer.is-open { opacity:1; transform:none; pointer-events:auto; transition:opacity var(--motion-fast) ease,transform var(--motion-slow) var(--spring); }
-.companion-composer > * { opacity:0; transition:opacity var(--exit-fast) var(--ease-in); }
-.companion-composer.is-open > * { opacity:1; transition:opacity var(--motion-fast) ease var(--motion-fast); }
-.companion-composer input {
-  flex:1; min-width:0; height:32px; padding:0 10px; border:0; border-radius:var(--radius-control); outline:none;
-  background:rgb(255 255 255 / .06); box-shadow:inset 0 0 0 .5px rgb(255 255 255 / .1); color:#f2f3f5; font-size:var(--text-detail); caret-color:var(--mint);
-}
-.companion-composer input::placeholder { color:var(--p-faint); }
-.companion-composer input:focus-visible { outline:none; box-shadow:inset 0 0 0 .5px rgb(255 255 255 / .2); }
-.composer-attach { width:28px; height:28px; display:grid; place-items:center; padding:0; border-radius:var(--radius-control); color:#b7bbc4; }
-.composer-send { width:30px; height:30px; display:grid; place-items:center; padding:0; border-radius:50%; background:var(--mint); color:#090b14; transition:transform var(--motion-fast) ease,background var(--motion-fast) ease; }
-.composer-send:disabled { background:rgb(255 255 255 / .08); color:#9da2ab; opacity:1; }
-.composer-send:active:not(:disabled) { transform:scale(.92); }
-
-.companion-strip,.companion-bubble {
-  position:absolute; z-index:3; display:flex; align-items:center; background:var(--glass); box-shadow:var(--edge),0 12px 28px -14px #000c;
-  opacity:0; transform:translateX(-50%) translateY(-8px) scale(.9); transform-origin:50% 0; pointer-events:none;
-  transition:opacity var(--exit-fast) var(--ease-in),transform var(--exit-slow) var(--spring-panel-exit);
-}
-.companion-strip.is-open,.companion-bubble.is-open { opacity:1; transform:translateX(-50%); pointer-events:auto; transition:opacity var(--motion-fast) ease 60ms,transform var(--motion-slow) var(--spring) 60ms; }
-/* Her view of your words: 256 px wide at least, growing with them to 360, then taller; the mic and stop stay level with the first line. */
-.companion-strip { width:max-content; min-width:256px; max-width:360px; min-height:38px; align-items:flex-start; gap:8px; padding:10px 6px 10px 9px; border-radius:var(--radius-block); }
-.strip-mic { position:relative; flex:none; margin-top:-2px; width:22px; height:22px; display:grid; place-items:center; color:var(--mint); }
-.strip-mic::before { content:''; position:absolute; inset:0; border-radius:50%; background:var(--mint); opacity:.14; animation:strip-breathe 2.4s ease-in-out infinite; }
-.companion-strip.is-hearing .strip-mic::before { opacity:.24; animation-duration:.9s; }
-@keyframes strip-breathe { 0%,100% { transform:scale(.8); } 50% { transform:scale(1.08); } }
-.strip-mic svg { position:relative; }
-.strip-text { flex:1; min-width:0; max-height:108px; overflow-y:auto; overflow-wrap:anywhere; scrollbar-width:none; font-size:var(--text-detail); line-height:18px; }
-.strip-text.is-empty { color:var(--p-faint); }
-.strip-stop { flex:none; margin-top:-4px; width:26px; height:26px; display:grid; place-items:center; padding:0; border-radius:var(--radius-control); color:#e8e9ec; background:rgb(255 255 255 / .08); }
-.strip-stop:hover { background:rgb(255 255 255 / .15); }
-.companion-bubble { min-height:36px; max-width:360px; padding:9px 15px; border-radius:var(--radius-block); font-size:var(--text-detail); line-height:18px; }
-/* The full reply reserves the size up front, so typing never resizes the bubble. Past ten lines it
-   scrolls in place instead of growing; the whole of it is also in the Dashboard's conversation. */
-.bubble-text { display:grid; max-height:180px; overflow-y:auto; overscroll-behavior:contain; scrollbar-width:thin; scrollbar-color:rgb(255 255 255 / .28) transparent; }
-.bubble-text > span { grid-area:1 / 1; overflow-wrap:anywhere; }
-.bubble-ghost { visibility:hidden; }
-/* Think mode (ADR 0064): the strip goes deep, the seconds of a deep answer count up in it, and her words say how long she thought. */
-.companion-strip::before { content:''; position:absolute; inset:0; border-radius:inherit; pointer-events:none; opacity:0; transition:opacity var(--motion-slow) var(--ease-out);
-  background:radial-gradient(120% 160% at 0 50%,rgb(var(--deep) / .26),transparent 62%),linear-gradient(90deg,#05061a,#090a24); box-shadow:inset 0 0 0 .5px rgb(var(--deep) / .55); }
-.companion-strip.is-deep::before { opacity:1; }
-.companion-strip > * { position:relative; }
-.companion-strip.is-deep .strip-mic { color:var(--deep-hi); }
-.companion-strip.is-deep .strip-mic::before { background:var(--deep); }
-.strip-think { flex:none; font-size:var(--text-label); color:var(--deep-hi); font-variant-numeric:tabular-nums; }
-.companion-bubble.is-deep { flex-direction:column; align-items:stretch; gap:2px; }
-.bubble-think { font-size:var(--text-label); line-height:14px; color:var(--deep-hi); }
-
 /* Her light as "r g b", written by the ball whenever it changes. Think mode's colour is fixed: her deep light's glow. */
 :root { --glow:157 180 255; --deep:154 134 255; --deep-hi:color-mix(in srgb,rgb(var(--deep)) 55%,#fff); }
 /* The backdrop joins the island. Her colour starts below a 28 pt black band,
@@ -105,9 +51,7 @@
 .companion-dashboard:has(.ad[data-deep]) { --dusk-glow:var(--deep); }
 
 @media(prefers-reduced-motion:reduce) {
-  .companion-chip,.companion-chip.is-open,.companion-composer,.companion-composer.is-open,.companion-strip,.companion-strip.is-open,
-  .companion-bubble,.companion-bubble.is-open,.companion-dashboard,.companion-dashboard.is-open { transition-property:opacity,visibility; }
-  .strip-mic::before { animation:none; }
+  .companion-chip,.companion-chip.is-open,.companion-dashboard,.companion-dashboard.is-open { transition-property:opacity,visibility; }
   .companion-island { transition:none; }
 }
 
@@ -119,6 +63,7 @@
 .companion-menu button:hover,.companion-menu button:focus-visible { background:rgb(var(--glow) / .14); outline:none; }
 .companion-menu button[aria-checked=true] { color:rgb(var(--glow)); background:rgb(var(--glow) / .08); }
 .companion-menu hr { border:0; border-top:1px solid rgb(196 204 238 / .15); margin:6px 0; }
+.companion-menu-label { padding:4px 10px 2px; font-size:var(--text-label); letter-spacing:.02em; color:var(--p-faint); }
 .companion ::selection { background:rgb(var(--glow) / .3); color:#fff; }
 
 .dusk-material,.dusk-content { transform:translateY(var(--dusk-tear,0px)); }
