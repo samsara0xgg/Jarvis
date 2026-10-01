@@ -9,8 +9,9 @@ import { fieldsOf } from './form.js';
 import { broadcast, catalogChanged, find, Http, kt, log, pic, picFile, sent, type Driver, type Session } from './host.js';
 import type { Choice, Diff, File, Mcp, Outside, Question, Req, Step } from './types.js';
 import { diffOf } from './claude.js';
+import { tr } from './lang.js';
 
-const MODES: [string, string][] = [['auto', '自动'], ['read', '只读'], ['full', '完全放开'], ['plan', '计划模式']];
+const MODES = (): [string, string][] => [['auto', tr('自动', 'Auto')], ['read', tr('只读', 'Read-only')], ['full', tr('完全放开', 'Full access')], ['plan', tr('计划模式', 'Plan mode')]];
 // The session's extra folders (C5) are writable too.
 function policy(mode: string, dirs: string[] = []) {
   if (mode === 'read') return { approvalPolicy: 'on-request', sandbox: 'read-only', sandboxPolicy: { type: 'readOnly', networkAccess: false } };
@@ -48,12 +49,12 @@ function start() {
     c.on('exit', code => {
       log('codex app-server exited', code);
       if (child === c) { child = null; ready = null; }
-      for (const w of waits.values()) w.no(new Error('Codex 的后台退出了'));
+      for (const w of waits.values()) w.no(new Error(tr('Codex 的后台退出了', 'The Codex host exited')));
       waits.clear();
       // Every thread it held is gone with it: the next send resumes them.
-      for (const s of loaded) { const r = rt(s); r.loaded = false; if (r.turn) { r.turn = undefined; s.end(undefined, false, 'err', 'Codex 的后台退出了，这一轮断了'); } }
+      for (const s of loaded) { const r = rt(s); r.loaded = false; if (r.turn) { r.turn = undefined; s.end(undefined, false, 'err', tr('Codex 的后台退出了，这一轮断了', 'The Codex host exited and this turn was cut off')); } }
       loaded.clear();
-      for (const x of sides.values()) x.fail(new Http(502, 'Codex 的后台退出了'));
+      for (const x of sides.values()) x.fail(new Http(502, tr('Codex 的后台退出了', 'The Codex host exited')));
       sides.clear();
     });
     rpc('initialize', { clientInfo: { name: 'jarvis-agents', title: 'Jarvis', version: '1' },
@@ -106,7 +107,7 @@ function commandStep(s: Session, item: any): Step {
 }
 // What Allen wrote, without the lines naming files that are not pictures; those come back as files.
 const userText = (item: any) => attached((item.content ?? []).map((c: any) => c.type === 'text' ? str(c.text) : '').join('').trim()).text.trim();
-const userFiles = (item: any) => [...(item.content ?? []).filter((c: any) => c.type === 'image' || c.type === 'localImage').map((c: any, k: number) => ({ ...pic(str(c.path).split('/').pop() || `图片 ${k + 1}`, c.url), ...c.path ? { path: str(c.path) } : {} })),
+const userFiles = (item: any) => [...(item.content ?? []).filter((c: any) => c.type === 'image' || c.type === 'localImage').map((c: any, k: number) => ({ ...pic(str(c.path).split('/').pop() || tr(`图片 ${k + 1}`, `Image ${k + 1}`), c.url), ...c.path ? { path: str(c.path) } : {} })),
   ...attached((item.content ?? []).map((c: any) => c.type === 'text' ? str(c.text) : '').join('')).paths.map(p => ({ name: p.replace(/\/$/, '').split('/').pop() || p, path: p }))];
 const firstLine = (t: string) => { const l = (t.split('\n').find(x => x.trim()) ?? '').replace(/\*\*/g, '').trim(); return l.length > 80 ? `${l.slice(0, 79)}…` : l; };
 
@@ -118,7 +119,7 @@ function begun(s: Session, item: any, at?: number, live = true) {
     if (!live) s.you(text, userFiles(item), at);
     else if (q.includes(text)) { s.dequeue(text); s.you(text, userFiles(item)); s.begin(); }
   } else if (item.type === 'agentMessage') r.text.set(item.id, '');
-  else if (item.type === 'reasoning') { if (live) { s.set({ now: '在想' }); (r.thinking ??= new Map()).set(item.id, Date.now()); } }
+  else if (item.type === 'reasoning') { if (live) { s.set({ now: tr('在想', 'Thinking') }); (r.thinking ??= new Map()).set(item.id, Date.now()); } }
   else if (item.type === 'commandExecution') s.tool(item.id, commandStep(s, item), at);
   else if (item.type === 'fileChange') { const st = fileSteps(s, item.changes); r.steps.set(item.id, st); st.forEach((x, i) => s.tool(`${item.id}:${i}`, x, at)); }
   else if (item.type === 'mcpToolCall') s.tool(item.id, { k: 'tool', t: `${str(item.server)} · ${str(item.tool)}` }, at);
@@ -126,7 +127,7 @@ function begun(s: Session, item: any, at?: number, live = true) {
   else if (item.type === 'webSearch') s.tool(item.id, { k: 'web', t: str(item.query) || str(item.action?.url) }, at);
   else if (item.type === 'collabAgentToolCall') s.tool(item.id, { k: 'agent', t: str(item.prompt).split('\n')[0].slice(0, 80) || str(item.tool) }, at);
   else if (item.type === 'imageView') { s.tool(item.id, { k: 'read', t: rel(s, str(item.path)) }, at); void picFile(str(item.path).split('/').pop() ?? '', str(item.path)).then(p => { if (p.img) s.toolDone(item.id, { pics: [p] }); }); }
-  else if (item.type === 'contextCompaction' && live) s.set({ st: 'pack', now: '在压缩上下文' });
+  else if (item.type === 'contextCompaction' && live) s.set({ st: 'pack', now: tr('在压缩上下文', 'Compacting context') });
 }
 function finished(s: Session, item: any, at?: number) {
   const r = rt(s);
@@ -141,7 +142,7 @@ function finished(s: Session, item: any, at?: number) {
     const text = item.error?.message ?? (item.result?.content ?? item.contentItems ?? []).map((c: any) => str(c.text)).join('\n');
     s.toolDone(item.id, { ok: item.status === 'completed' && item.success !== false, out: String(text).slice(0, 6000) });
   } else if (item.type === 'webSearch' || item.type === 'collabAgentToolCall' || item.type === 'imageView') s.toolDone(item.id, { ok: item.status !== 'failed' });
-  else if (item.type === 'contextCompaction') { s.note('上下文压缩过了'); if (s.s.st === 'pack') s.set({ st: 'work', now: '在想' }); }
+  else if (item.type === 'contextCompaction') { s.note(tr('上下文压缩过了', 'Context compacted')); if (s.s.st === 'pack') s.set({ st: 'work', now: tr('在想', 'Thinking') }); }
   // Its reasoning, as the summary Codex gives (B18), and how long it thought when it came live.
   else if (item.type === 'reasoning') {
     const t = (item.summary ?? []).map(str).join('\n\n').trim(), t0 = r.thinking?.get(item.id);
@@ -179,7 +180,7 @@ function receive(m: Msg) {
     else if (m.method === 'item/completed' && p.item?.type === 'agentMessage' && str(p.item.text)) side.last = str(p.item.text);
     else if (m.method === 'turn/completed') {
       if (p.turn?.status === 'completed' && side.last) side.done(side.last);
-      else side.fail(new Http(502, str(p.turn?.error?.message) ? `Codex 出错：${str(p.turn.error.message).slice(0, 120)}` : 'Codex 没答上来'));
+      else side.fail(new Http(502, str(p.turn?.error?.message) ? tr(`Codex 出错：${str(p.turn.error.message).slice(0, 120)}`, `Codex error: ${str(p.turn.error.message).slice(0, 120)}`) : tr('Codex 没答上来', 'Codex did not answer')));
     }
     return;
   }
@@ -200,13 +201,13 @@ function receive(m: Msg) {
       if (w && u?.last) s.set({ ctx: Math.min(100, Math.round(u.last.totalTokens / w * 100)) });
       break;
     }
-    case 'error': if (p.willRetry) s.set({ now: `出错了，在重试：${str(p.error?.message).slice(0, 60)}` }); break;
-    case 'serverRequest/resolved': for (const [k, x] of r.pending) if (String(x.rpc) === String(p.requestId)) { r.pending.delete(k); s.answered(k, '别处回答了'); } break;
+    case 'error': if (p.willRetry) s.set({ now: tr(`出错了，在重试：${str(p.error?.message).slice(0, 60)}`, `Error, retrying: ${str(p.error?.message).slice(0, 60)}`) }); break;
+    case 'serverRequest/resolved': for (const [k, x] of r.pending) if (String(x.rpc) === String(p.requestId)) { r.pending.delete(k); s.answered(k, tr('别处回答了', 'Answered elsewhere')); } break;
     case 'turn/completed': {
       r.turn = undefined; r.ended = p.turn?.id; r.text.clear(); r.out.clear();
       const t = p.turn ?? {}, queue = s.s.queue ?? [];
-      if (t.status === 'interrupted') { s.end(undefined, false, 'done', '你打断了这一轮', false); s.note('你打断了这一轮 · 发一句就能接着来'); }
-      else if (t.status === 'failed') s.end(undefined, false, 'err', `Codex 出错：${str(t.error?.message).slice(0, 120) || '这一轮没做完'}`);
+      if (t.status === 'interrupted') { s.end(undefined, false, 'done', tr('你打断了这一轮', 'You interrupted this turn'), false); s.note(tr('你打断了这一轮 · 发一句就能接着来', 'You interrupted this turn · send a line to continue')); }
+      else if (t.status === 'failed') s.end(undefined, false, 'err', tr(`Codex 出错：${str(t.error?.message).slice(0, 120) || '这一轮没做完'}`, `Codex error: ${str(t.error?.message).slice(0, 120) || 'this turn did not finish'}`));
       else s.end();
       // What Allen sent too late for the turn to take goes next.
       if (queue.length) { for (const q of queue) s.dequeue(q); void codex.send(s, queue.join('\n\n'), []); }
@@ -222,14 +223,14 @@ function asked(m: Msg, s: Session | undefined) {
   const r = rt(s), key = `x${String(m.id)}`;
   let req: Req | null = null, kind: Pending['kind'] = 'cmd';
   if (m.method === 'item/commandExecution/requestApproval') {
-    req = { id: key, tool: 'Bash', why: str(p.reason), cmd: unwrap(str(p.command)) || '（这条命令）', cwd: str(p.cwd) || s.s.cwd, always: '这个会话都允许' };
+    req = { id: key, tool: 'Bash', why: str(p.reason), cmd: unwrap(str(p.command)) || tr('（这条命令）', '(this command)'), cwd: str(p.cwd) || s.s.cwd, always: tr('这个会话都允许', 'Allow for this session') };
   } else if (m.method === 'item/fileChange/requestApproval') {
     kind = 'file';
     const st = r.steps.get(p.itemId)?.[0];
-    req = { id: key, tool: 'Edit', why: str(p.reason), file: st?.t ?? '（一个文件）', diff: (r.steps.get(p.itemId) ?? []).flatMap(x => x.diff ?? []).slice(0, 400), always: '这个会话都允许' };
+    req = { id: key, tool: 'Edit', why: str(p.reason), file: st?.t ?? tr('（一个文件）', '(a file)'), diff: (r.steps.get(p.itemId) ?? []).flatMap(x => x.diff ?? []).slice(0, 400), always: tr('这个会话都允许', 'Allow for this session') };
   } else if (m.method === 'item/permissions/requestApproval') {
     kind = 'perm';
-    req = { id: key, tool: 'Tool', why: str(p.reason), name: '更多权限', detail: JSON.stringify(p.permissions, null, 1).slice(0, 800), always: '这个会话都允许' };
+    req = { id: key, tool: 'Tool', why: str(p.reason), name: tr('更多权限', 'More permissions'), detail: JSON.stringify(p.permissions, null, 1).slice(0, 800), always: tr('这个会话都允许', 'Allow for this session') };
   } else if (m.method === 'item/tool/requestUserInput') {
     kind = 'ask';
     const qs: Question[] = (p.questions ?? []).map((q: any) => ({ q: str(q.question), head: str(q.header), opts: (q.options ?? []).map((o: any) => [str(o.label), str(o.description)]) }));
@@ -239,7 +240,7 @@ function asked(m: Msg, s: Session | undefined) {
     const url = p.mode === 'url' ? str(p.url) : '', server = str(p.serverName);
     if ((p.mode === 'url' && !/^https?:\/\//i.test(url)) || p.mode === 'openai/userVerification') {
       write({ id: m.id, result: { action: 'decline', content: null, _meta: null } });
-      s.note(p.mode === 'url' ? `${server} 要打开的不是网页，先拒绝了` : `${server} 要验证你的身份，这个窗口还做不了，先拒绝了`);
+      s.note(p.mode === 'url' ? tr(`${server} 要打开的不是网页，先拒绝了`, `${server} asked to open something that is not a web page, so it was declined`) : tr(`${server} 要验证你的身份，这个窗口还做不了，先拒绝了`, `${server} asked you to verify your identity, which this window cannot do yet, so it was declined`));
       return;
     }
     kind = 'form';
@@ -248,7 +249,7 @@ function asked(m: Msg, s: Session | undefined) {
   if (!req) {
     // Anything newer than this window: say no, and say so.
     write({ id: m.id, error: { code: -32601, message: 'not supported here' } });
-    s.note(`Codex 要的东西这个窗口还接不了（${m.method}），先拒绝了`);
+    s.note(tr(`Codex 要的东西这个窗口还接不了（${m.method}），先拒绝了`, `Codex asked for something this window cannot handle yet (${m.method}), so it was declined`));
     return;
   }
   r.pending.set(key, { rpc: m.id!, kind, params: p });
@@ -261,7 +262,7 @@ async function readCatalog() {
   const ms = (r.data ?? []).filter(m => !m.hidden).sort((a, b) => Number(b.isDefault) - Number(a.isDefault));
   const def = ms[0];
   catalogCache.c = { models: ms.map(m => [str(m.model) || str(m.id), str(m.displayName) || str(m.model)]),
-    efforts: (def?.supportedReasoningEfforts ?? []).map((e: any) => str(e.reasoningEffort)), modes: MODES, always: '这个会话都允许' };
+    efforts: (def?.supportedReasoningEfforts ?? []).map((e: any) => str(e.reasoningEffort)), modes: MODES(), always: tr('这个会话都允许', 'Allow for this session') };
   catalogCache.at = Date.now();
   void catalogChanged();
 }
@@ -299,7 +300,7 @@ async function turn(s: Session, input: unknown[]) {
 export const codex: Driver = {
   async catalog() {
     if (!catalogCache.c) reading ??= readCatalog().catch(e => { log('codex catalog', e); }).finally(() => { reading = null; });
-    return catalogCache.c ?? { models: [], efforts: [], modes: MODES, always: '这个会话都允许' };
+    return catalogCache.c ? { ...catalogCache.c, modes: MODES(), always: tr('这个会话都允许', 'Allow for this session') } : { models: [], efforts: [], modes: MODES(), always: tr('这个会话都允许', 'Allow for this session') };
   },
   async create(s) {
     const pol = policy(s.s.mode, s.s.dirs);
@@ -317,7 +318,7 @@ export const codex: Driver = {
     if (review && !r.turn) {
       s.you(text); s.begin();
       try { r.turn = (await call<{ turn: { id: string } }>('review/start', { threadId: s.s.id, target: reviewTarget((review[1] ?? '').trim()) })).turn.id; }
-      catch (e) { s.end(undefined, false, 'err', `Codex 没接这次审查：${String(e instanceof Error ? e.message : e).slice(0, 120)}`); }
+      catch (e) { s.end(undefined, false, 'err', tr(`Codex 没接这次审查：${String(e instanceof Error ? e.message : e).slice(0, 120)}`, `Codex did not take this review: ${String(e instanceof Error ? e.message : e).slice(0, 120)}`)); }
       return;
     }
     const said = /^\/init\s*$/.test(text.trim()) ? INIT : attach(text, x.paths);
@@ -332,7 +333,7 @@ export const codex: Driver = {
     }
     s.you(text, pics); s.begin();
     try { await turn(s, input); if (rt(s).turn) { s.ref(rt(s).turn!); s.youId(rt(s).turn!); } }
-    catch (e) { s.end(undefined, false, 'err', `Codex 没接：${String(e instanceof Error ? e.message : e).slice(0, 120)}`); }
+    catch (e) { s.end(undefined, false, 'err', tr(`Codex 没接：${String(e instanceof Error ? e.message : e).slice(0, 120)}`, `Codex did not take it: ${String(e instanceof Error ? e.message : e).slice(0, 120)}`)); }
   },
   answer(s, a) {
     const r = rt(s), p = r.pending.get(a.req);
@@ -342,17 +343,17 @@ export const codex: Driver = {
     if (p.kind === 'form') {
       const give = a.decision === 'allow' || a.decision === 'always', url = p.params.mode === 'url';
       result = { action: give ? 'accept' : a.decision === 'cancel' ? 'cancel' : 'decline', content: give && !url ? a.values ?? {} : null, _meta: null };
-      done = !give ? a.decision === 'cancel' ? '取消了' : '不提供，继续' : url ? '同意打开网页' : '已提供';
+      done = !give ? a.decision === 'cancel' ? tr('取消了', 'Cancelled') : tr('不提供，继续', 'Declined, continuing') : url ? tr('同意打开网页', 'Agreed to open the page') : tr('已提供', 'Provided');
     } else if (p.kind === 'ask') {
       const qs = p.params.questions ?? [];
       result = { answers: Object.fromEntries(qs.map((q: any, i: number) => [q.id, { answers: a.text !== undefined && i === 0 ? [a.text] : a.answers?.[i] ?? [] }])) };
-      done = a.decision === 'deny' ? '没回答' : `你${a.text !== undefined ? '回答' : '选了'}：${a.text ?? (a.answers ?? []).flat().join(' · ')}`;
+      done = a.decision === 'deny' ? tr('没回答', 'Not answered') : tr(`你${a.text !== undefined ? '回答' : '选了'}：${a.text ?? (a.answers ?? []).flat().join(' · ')}`, `You ${a.text !== undefined ? 'answered' : 'chose'}: ${a.text ?? (a.answers ?? []).flat().join(' · ')}`);
     } else if (p.kind === 'perm') {
       result = a.decision === 'deny' ? { permissions: {}, scope: 'turn' } : { permissions: p.params.permissions ?? {}, scope: a.decision === 'always' ? 'session' : 'turn' };
-      done = a.decision === 'deny' ? '拒绝了' : a.decision === 'always' ? '已允许 · 这个会话都允许' : '已允许';
+      done = a.decision === 'deny' ? tr('拒绝了', 'Denied') : a.decision === 'always' ? tr('已允许 · 这个会话都允许', 'Allowed · for this session') : tr('已允许', 'Allowed');
     } else {
       result = { decision: a.decision === 'deny' ? 'decline' : a.decision === 'always' ? 'acceptForSession' : 'accept' };
-      done = a.decision === 'deny' ? '拒绝了' : a.decision === 'always' ? '已允许 · 这个会话都允许' : '已允许';
+      done = a.decision === 'deny' ? tr('拒绝了', 'Denied') : a.decision === 'always' ? tr('已允许 · 这个会话都允许', 'Allowed · for this session') : tr('已允许', 'Allowed');
     }
     write({ id: p.rpc, result });
     s.answered(a.req, done);
@@ -366,7 +367,7 @@ export const codex: Driver = {
     const r = rt(s);
     for (const [k, p] of r.pending) {
       write({ id: p.rpc, result: p.kind === 'ask' ? { answers: {} } : p.kind === 'perm' ? { permissions: {}, scope: 'turn' } : p.kind === 'form' ? { action: 'cancel', content: null, _meta: null } : { decision: 'cancel' } });
-      s.answered(k, '没回答');
+      s.answered(k, tr('没回答', 'Not answered'));
     }
     r.pending.clear();
     if (r.turn) await call('turn/interrupt', { threadId: s.s.id, turnId: r.turn }).catch(() => {});
@@ -392,7 +393,7 @@ export const codex: Driver = {
         const at = t.startedAt ? t.startedAt * 1000 : undefined;
         for (const item of t.items ?? []) { begun(s, item, at, false); finished(s, item, at); if (item.type === 'userMessage' && t.id) s.youId(t.id); }
         if (t.id) s.ref(t.id);
-        if (t.status === 'interrupted') s.note('你打断了这一轮');
+        if (t.status === 'interrupted') s.note(tr('你打断了这一轮', 'You interrupted this turn'));
         s.end(t.completedAt ? t.completedAt * 1000 : undefined, true);
       }
     });
@@ -421,34 +422,34 @@ export const codex: Driver = {
   // The window draws its own place for the ones with a third entry (B9).
   async commands(cwd) {
     const list = await skillsOf(cwd);
-    return [['/compact', '把对话压缩一下，腾出上下文'], ['/review', '审查没提交的改动 · base <分支> · commit <sha> · 或写要求'], ['/init', '写一份 AGENTS.md'],
-      ['/model', '换模型', 'model'], ['/reasoning', '换力度', 'effort'], ['/plan', '切到计划模式'], ['/new', '开新会话', 'new'], ['/fork', '从某一句之前分出一个新会话', 'fork'],
-      ['/rewind', '回到之前的某一句', 'rewind'], ['/side', '侧问：不打断它，也不进对话', 'btw'],
-      ['/status', '看版本、登录和后台开没开', 'doctor'], ['/diff', '看它改了什么', 'changes'], ['/export', '导出整段对话', 'export'], ['/resume', '接手别处开的会话', 'import'],
-      ['/add-dir', '让它也能动另一个文件夹', 'dirs'], ['/mcp', '看它用的 MCP', 'mcp'], ...list.map(k => [`$${k.name}`, k.about] as [string, string])];
+    return [['/compact', tr('把对话压缩一下，腾出上下文', 'Compact the conversation to free up context')], ['/review', `${tr('审查没提交的改动', 'Review uncommitted changes')} · base <${tr('分支', 'branch')}> · commit <sha> · ${tr('或写要求', 'or write what to look for')}`], ['/init', tr('写一份 AGENTS.md', 'Write an AGENTS.md')],
+      ['/model', tr('换模型', 'Change the model'), 'model'], ['/reasoning', tr('换力度', 'Change the effort'), 'effort'], ['/plan', tr('切到计划模式', 'Switch to plan mode')], ['/new', tr('开新会话', 'Start a new session'), 'new'], ['/fork', tr('从某一句之前分出一个新会话', 'Fork a new session from before a message'), 'fork'],
+      ['/rewind', tr('回到之前的某一句', 'Go back to an earlier message'), 'rewind'], ['/side', tr('侧问：不打断它，也不进对话', 'Side question: does not interrupt it or enter the conversation'), 'btw'],
+      ['/status', tr('看版本、登录和后台开没开', 'See the version, the login and whether the host is running'), 'doctor'], ['/diff', tr('看它改了什么', 'See what it changed'), 'changes'], ['/export', tr('导出整段对话', 'Export the whole conversation'), 'export'], ['/resume', tr('接手别处开的会话', 'Take over a session opened elsewhere'), 'import'],
+      ['/add-dir', tr('让它也能动另一个文件夹', 'Let it work in another folder too'), 'dirs'], ['/mcp', tr('看它用的 MCP', 'See the MCP servers it uses'), 'mcp'], ...list.map(k => [`$${k.name}`, k.about] as [string, string])];
   },
   resume: s => `codex resume ${s.s.id}`,
   // Codex reports totals only, and only while it works: what the last request sent and what it wrote.
   async context(s) {
     const u = rt(s).usage, last = u?.last, max = u?.modelContextWindow ?? 0, model = s.s.model;
-    if (!last || !max) return { used: 0, max: 0, model, rows: [], say: ['还没有数。', 'Codex 只在干活时报用量，下一轮之后再看。'], foot: [] };
+    if (!last || !max) return { used: 0, max: 0, model, rows: [], say: [tr('还没有数。', 'No numbers yet.'), tr('Codex 只在干活时报用量，下一轮之后再看。', ' Codex reports usage only while it works; check again after the next turn.')], foot: [] };
     const inp = last.inputTokens ?? 0, hit = Math.min(inp, last.cachedInputTokens ?? 0), out = last.outputTokens ?? 0, used = Math.min(max, last.totalTokens ?? inp + out);
-    return { used, max, model, say: ['Codex 只报总数', `，不分系统提示、工具和对话。上一次请求发过去 ${kt(inp)}${inp ? `，${Math.round(hit / inp * 100)}% 读自缓存` : ''}。`],
-      rows: [{ n: '发过去的', t: inp, sub: [['读自缓存', hit], ['新的', inp - hit]] }, { n: '它上一次写的', t: out, sub: [['其中思考', last.reasoningOutputTokens ?? 0]] },
-        { n: '还空着', t: max - used, kind: 'free' }],
-      foot: [`整个会话累计：发出 ${kt(u.total?.inputTokens ?? 0)}，写了 ${kt(u.total?.outputTokens ?? 0)}`, '快满时 Codex 会自己压缩'] };
+    return { used, max, model, say: [tr('Codex 只报总数', 'Codex reports totals only'), tr(`，不分系统提示、工具和对话。上一次请求发过去 ${kt(inp)}${inp ? `，${Math.round(hit / inp * 100)}% 读自缓存` : ''}。`, `, with no split into system prompt, tools and conversation. The last request sent ${kt(inp)}${inp ? `, ${Math.round(hit / inp * 100)}% read from cache` : ''}.`)],
+      rows: [{ n: tr('发过去的', 'Sent'), t: inp, sub: [[tr('读自缓存', 'Read from cache'), hit], [tr('新的', 'New'), inp - hit]] }, { n: tr('它上一次写的', 'Its last reply'), t: out, sub: [[tr('其中思考', 'of which reasoning'), last.reasoningOutputTokens ?? 0]] },
+        { n: tr('还空着', 'Free'), t: max - used, kind: 'free' }],
+      foot: [tr(`整个会话累计：发出 ${kt(u.total?.inputTokens ?? 0)}，写了 ${kt(u.total?.outputTokens ?? 0)}`, `This session so far: ${kt(u.total?.inputTokens ?? 0)} sent, ${kt(u.total?.outputTokens ?? 0)} written`), tr('快满时 Codex 会自己压缩', 'Codex compacts itself when nearly full')] };
   },
   async side(s, text, history, signal) {
     const said = history.length ? `Earlier in this side conversation:\n\n${history.map(([q, a]) => `Q: ${q}\nA: ${a}`).join('\n\n')}\n\nNow: ${text}` : text;
     const fork = await call<{ thread: { id: string } }>('thread/fork', { threadId: s.s.id, ephemeral: true, excludeTurns: true, developerInstructions: SIDE, approvalPolicy: 'never', sandbox: 'read-only' })
-      .catch(e => { throw /no rollout found/i.test(String(e)) ? new Http(409, '这段对话还没存下来，等第一轮答完再问') : e; });
+      .catch(e => { throw /no rollout found/i.test(String(e)) ? new Http(409, tr('这段对话还没存下来，等第一轮答完再问', 'This conversation is not saved yet, ask again after the first turn is answered')) : e; });
     const id = fork.thread.id, model = s.s.model || catalogCache.c?.models[0]?.[0] || '';
     try {
       return await new Promise<string>((done, fail) => {
         const x: Side = { last: '', done, fail };
         sides.set(id, x);
-        if (signal.aborted) { fail(new Error('不问了')); return; }
-        signal.addEventListener('abort', () => fail(new Error('不问了')));
+        if (signal.aborted) { fail(new Error(tr('不问了', 'Cancelled'))); return; }
+        signal.addEventListener('abort', () => fail(new Error(tr('不问了', 'Cancelled'))));
         call<{ turn: { id: string } }>('turn/start', { threadId: id, input: [{ type: 'text', text: said, text_elements: [] }], model: model || undefined, effort: s.s.effort || undefined,
           approvalPolicy: 'never', sandboxPolicy: { type: 'readOnly', networkAccess: false },
           ...(model ? { collaborationMode: { mode: 'default', settings: { model, reasoning_effort: s.s.effort || null, developer_instructions: null } } } : {}) }).then(r => { x.turn ??= r.turn.id; }, fail);
@@ -468,11 +469,11 @@ export const codex: Driver = {
   // done in that file, not here. A sign-in is a page to open, and its end comes as an `mcp` event.
   async mcpAct(s, name, act) {
     const one = (await servers(s)).find(m => m.name === name);
-    if (!one) throw new Http(404, '没有这个 MCP');
-    if (!one.can.includes(act)) throw new Http(409, act === 'login' ? '它不用登录' : act === 'reconnect' ? '连不了' : 'Codex 的 MCP 要在它的 config.toml 里开关');
+    if (!one) throw new Http(404, tr('没有这个 MCP', 'No such MCP server'));
+    if (!one.can.includes(act)) throw new Http(409, act === 'login' ? tr('它不用登录', 'It needs no sign-in') : act === 'reconnect' ? tr('连不了', 'Cannot reconnect') : tr('Codex 的 MCP 要在它的 config.toml 里开关', 'Codex MCP servers are switched in its config.toml'));
     if (act === 'reconnect') { await call('config/mcpServer/reload', undefined); return servers(s); }
     const url = (await call<{ authorizationUrl?: string }>('mcpServer/oauth/login', { name, ...rt(s).loaded ? { threadId: s.s.id } : {} })).authorizationUrl ?? '';
-    if (!/^https?:\/\//i.test(url)) throw new Http(502, 'Codex 没给能打开的登录页');
+    if (!/^https?:\/\//i.test(url)) throw new Http(502, tr('Codex 没给能打开的登录页', 'Codex gave no sign-in page to open'));
     return { url };
   },
 };
@@ -493,7 +494,7 @@ async function servers(s: Session): Promise<Mcp[]> {
       : m.authStatus === 'notLoggedIn' || /auth required/i.test(err) ? 'auth' : m.serverInfo ? 'on' : err ? 'fail' : 'off';
     const login = m.authStatus === 'notLoggedIn' || (m.authStatus === 'oAuth' && st === 'auth'), tools = Object.keys(m.tools ?? {}).length;
     return { name: str(m.name), st, ...tools ? { tools } : {}, ...m.pluginId ? { scope: 'plugin' } : {},
-      ...st === 'fail' && err ? { why: err.slice(0, 200) } : st === 'auth' ? { why: login ? '要登录' : '要登录：在 config.toml 里给它配 token' } : {},
+      ...st === 'fail' && err ? { why: err.slice(0, 200) } : st === 'auth' ? { why: login ? tr('要登录', 'Sign-in needed') : tr('要登录：在 config.toml 里给它配 token', 'Sign-in needed: give it a token in config.toml') } : {},
       can: login ? ['reconnect', 'login'] : ['reconnect'] };
   });
 }

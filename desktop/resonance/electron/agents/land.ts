@@ -17,6 +17,7 @@ import { GIT } from './files.js';
 import { DIR, log, sharing, type Session } from './host.js';
 import { auth, settings } from './settings.js';
 import type { Land, LandSt, LandVia } from './types.js';
+import { plural, tr } from './lang.js';
 
 const exec = promisify(execFile);
 const STEPS = ['diff', 'gate', 'commit', 'merge', 'restart', 'push', 'clean'] as const;
@@ -42,7 +43,7 @@ function run(cmd: string, args: string[], cwd: string, hold?: (c: ChildProcess |
     let out = '', ended = false;
     const c = spawn(cmd, args, { cwd, env: { ...shellEnv(), ...extra }, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
     const end = (code: number) => { if (ended) return; ended = true; clearTimeout(timer); hold?.(null); done({ code, out }); };
-    const timer = setTimeout(() => { out += `\n超过 ${Math.round(ms / 60e3)} 分钟，停掉了`; kill(c); }, ms);
+    const timer = setTimeout(() => { out += tr(`\n超过 ${Math.round(ms / 60e3)} 分钟，停掉了`, `\nStopped after ${Math.round(ms / 60e3)} minutes`); kill(c); }, ms);
     hold?.(c);
     const keep = (b: Buffer) => { out = (out + b.toString('utf8')).slice(-96e3); };
     c.stdout!.on('data', keep); c.stderr!.on('data', keep);
@@ -54,7 +55,7 @@ function run(cmd: string, args: string[], cwd: string, hold?: (c: ChildProcess |
 function tail(out: string, n = 5) {
   const lines = out.replace(/\x1b\[[0-9;]*m/g, '').split('\n').map(l => l.trimEnd()).filter(l => l.trim());
   const bad = lines.filter(l => /(error|fail|✕|✗|assert|refused|rejected|conflict|fatal|denied|not found)/i.test(l));
-  return (bad.length ? bad.slice(-n) : lines.slice(-n)).join('\n').slice(0, 900) || '没有输出';
+  return (bad.length ? bad.slice(-n) : lines.slice(-n)).join('\n').slice(0, 900) || tr('没有输出', 'No output');
 }
 async function lines(file: string) {
   try {
@@ -147,12 +148,12 @@ type GateDef = { n: string; cmd: string; args: string[]; dir: string; group: 'py
 const UV = (...a: string[]) => ['run', '--frozen', '--no-sync', ...a];
 function gatesFor(repo: string, top: string, paths: string[]): { defs: GateDef[]; say: string } {
   const own = settings.land?.[repo]?.gates;
-  if (own?.length) return { defs: own.map(g => ({ n: cut(g), cmd: SHELL(), args: ['-lc', g], dir: top, group: 'own' })), say: `你给这个仓库配的门禁，${own.length} 项` };
-  if (!isJarvis(top)) return { defs: [], say: '这个仓库没配门禁' };
+  if (own?.length) return { defs: own.map(g => ({ n: cut(g), cmd: SHELL(), args: ['-lc', g], dir: top, group: 'own' })), say: tr(`你给这个仓库配的门禁，${own.length} 项`, `${plural(own.length, 'check')} you set for this repo`) };
+  if (!isJarvis(top)) return { defs: [], say: tr('这个仓库没配门禁', 'This repo has no checks set') };
   const py = paths.some(p => PY.test(p)), desk = paths.some(p => DESK.test(p)), adr = paths.some(p => ADR.test(p)), d = path.join(top, 'desktop', 'resonance');
   const defs: GateDef[] = [];
   if (py) {
-    if (!existsSync(path.join(top, '.venv', 'bin', 'ruff'))) defs.push({ n: '环境', cmd: 'bash', args: ['scripts/init.sh', '--fix'], dir: top, group: 'py' });
+    if (!existsSync(path.join(top, '.venv', 'bin', 'ruff'))) defs.push({ n: tr('环境', 'Environment'), cmd: 'bash', args: ['scripts/init.sh', '--fix'], dir: top, group: 'py' });
     defs.push(
       { n: 'lint-imports', cmd: 'uv', args: UV('lint-imports'), dir: top, group: 'py', count: o => { const m = /Contracts: (\d+) kept, (\d+) broken/.exec(o); return m ? `KEPT (${m[1]}/${Number(m[1]) + Number(m[2])})` : 'KEPT'; } },
       { n: 'ruff', cmd: 'uv', args: UV('ruff', 'check', '.'), dir: top, group: 'py', count: () => 'clean' },
@@ -172,21 +173,21 @@ function gatesFor(repo: string, top: string, paths: string[]): { defs: GateDef[]
     );
   }
   if (adr) defs.push({ n: 'check_adrs', cmd: 'uv', args: UV('python', 'scripts/check_adrs.py'), dir: top, group: 'adr', count: () => 'clean' });
-  const say = py && desk ? 'Python 和 desktop 都改了：Tier 1 五项，再加类型检查、构建、两套 companion 验收'
-    : py ? 'Python 的改动：Tier 1 五项（lint-imports、ruff、mypy、验收、uv audit）'
-    : desk ? 'desktop 的改动：类型检查、构建、两套 companion 验收'
-    : adr ? 'ADR 的格式检查' : '只改了文档，不用跑门禁';
+  const say = py && desk ? tr('Python 和 desktop 都改了：Tier 1 五项，再加类型检查、构建、两套 companion 验收', 'Python and desktop both changed: the five Tier 1 checks, plus typecheck, build and both companion acceptance suites')
+    : py ? tr('Python 的改动：Tier 1 五项（lint-imports、ruff、mypy、验收、uv audit）', 'Python changes: the five Tier 1 checks (lint-imports, ruff, mypy, acceptance, uv audit)')
+    : desk ? tr('desktop 的改动：类型检查、构建、两套 companion 验收', 'desktop changes: typecheck, build, both companion acceptance suites')
+    : adr ? tr('ADR 的格式检查', 'ADR format check') : tr('只改了文档，不用跑门禁', 'Only docs changed, no checks to run');
   return { defs, say };
 }
 // own: the owner's restart command for the repository, run in the main checkout once the default branch has the change.
 function restartFor(repo: string, top: string, paths: string[]): { labels: string[]; own?: string; say: string } {
   const own = settings.land?.[repo]?.restart;
-  if (own) return { labels: [cut(own)], own, say: '跑你给这个仓库配的重启命令' };
-  if (!isJarvis(top)) return { labels: [], say: '这个仓库没配重启' };
+  if (own) return { labels: [cut(own)], own, say: tr('跑你给这个仓库配的重启命令', 'Run the restart command you set for this repo') };
+  if (!isJarvis(top)) return { labels: [], say: tr('这个仓库没配重启', 'This repo has no restart set') };
   const daemon = paths.some(p => DAEMON.test(p)), companion = paths.some(p => DESK.test(p));
   const labels = [...daemon ? ['daemon'] : [], ...companion ? ['companion'] : []];
-  const say = daemon && companion ? 'daemon 和 desktop/resonance 都改了，两个都重启' : companion ? '只改了 desktop/resonance，所以只重启 companion'
-    : daemon ? '改了 daemon 跑的代码，所以只重启 daemon' : '没碰 daemon 和 companion，不用重启';
+  const say = daemon && companion ? tr('daemon 和 desktop/resonance 都改了，两个都重启', 'daemon and desktop/resonance both changed, so both restart') : companion ? tr('只改了 desktop/resonance，所以只重启 companion', 'Only desktop/resonance changed, so only the companion restarts')
+    : daemon ? tr('改了 daemon 跑的代码，所以只重启 daemon', 'The code the daemon runs changed, so only the daemon restarts') : tr('没碰 daemon 和 companion，不用重启', 'Neither the daemon nor the companion was touched, no restart needed');
   return { labels, say };
 }
 export const LABEL: Record<string, string> = { daemon: 'com.allen.jarvis', companion: 'com.allen.jarvis.resonance' };
@@ -266,7 +267,7 @@ export class Landing {
     if (STEPS[this.land.i] === 'gate') {
       this.tok++; if (this.child) kill(this.child);
       this.land.gates = this.land.gates.map(g => ({ n: g.n, st: 'todo' }));
-      this.pause(at('gate'), '门禁可以立刻停，它不改任何东西。「继续」会从门禁重新跑。');
+      this.pause(at('gate'), tr('门禁可以立刻停，它不改任何东西。「继续」会从门禁重新跑。', 'Checks can stop right away, they change nothing. "Continue" reruns them from the start.'));
       return;
     }
     this.halt = true; this.land.s = 'stopping'; this.emit();
@@ -275,11 +276,11 @@ export class Landing {
   deny() {
     if (this.land.s !== 'wait') return;
     const { via, into, branch } = this.land;
-    this.pause(at('push'), `没推：${via === 'pr' ? '提交留在这个分支上，没开 PR' : branch === into ? `提交留在本地的 ${into} 上` : `${into} 已经合好了，只是留在本地`}。「继续」会再问你一次。`);
+    this.pause(at('push'), tr(`没推：${via === 'pr' ? '提交留在这个分支上，没开 PR' : branch === into ? `提交留在本地的 ${into} 上` : `${into} 已经合好了，只是留在本地`}。「继续」会再问你一次。`, `Not pushed: ${via === 'pr' ? 'the commit stays on this branch, no PR opened' : branch === into ? `the commit stays local on ${into}` : `${into} is merged, just kept local`}. "Continue" asks you once more.`));
   }
   // A step's name as the window shows it.
   private title(i: number) {
-    return STEPS[i] === 'merge' ? `合进 ${this.land.into}` : STEPS[i] === 'push' && this.land.via === 'pr' ? '推分支、开 PR' : ['改动', '门禁', '提交', '', '重启', '推送', '清理 worktree'][i];
+    return STEPS[i] === 'merge' ? tr(`合进 ${this.land.into}`, `Merge into ${this.land.into}`) : STEPS[i] === 'push' && this.land.via === 'pr' ? tr('推分支、开 PR', 'Push branch, open PR') : [tr('改动', 'Changes'), tr('门禁', 'Checks'), tr('提交', 'Commit'), '', tr('重启', 'Restart'), tr('推送', 'Push'), tr('清理 worktree', 'Clean up worktree')][i];
   }
   // 留在分支上: the line stops where it is; nothing else is undone.
   stay() { this.tok++; if (this.child) kill(this.child); this.fixing = false; this.x.set({ land: undefined }); void this.refresh(); }
@@ -292,10 +293,10 @@ export class Landing {
   async fix() {
     if (this.land.s !== 'fail') return;
     const i = this.land.i, g = this.land.gates.find(x => x.st === 'er');
-    const what = STEPS[i] === 'gate' && g ? `「门禁」：${g.n} 没过` : `「${this.title(i)}」`;
-    const text = `落地停在${what}。\n\n\`\`\`\n${(g ? this.outs.get(g.n) ?? '' : '').split('\n').slice(-60).join('\n') || this.land.why}\n\`\`\`\n\n请把它修好。修完我会从这一步重新跑落地，不用你提交或合入。`;
+    const what = STEPS[i] === 'gate' && g ? tr(`「门禁」：${g.n} 没过`, `"Checks": ${g.n} failed`) : tr(`「${this.title(i)}」`, `"${this.title(i)}"`);
+    const text = tr(`落地停在${what}。\n\n\`\`\`\n${(g ? this.outs.get(g.n) ?? '' : '').split('\n').slice(-60).join('\n') || this.land.why}\n\`\`\`\n\n请把它修好。修完我会从这一步重新跑落地，不用你提交或合入。`, `Landing stopped at ${what}.\n\n\`\`\`\n${(g ? this.outs.get(g.n) ?? '' : '').split('\n').slice(-60).join('\n') || this.land.why}\n\`\`\`\n\nPlease fix it. Once it is fixed I will rerun landing from this step; you do not need to commit or merge.`);
     this.failed = i; this.fixing = true;
-    this.land.s = 'fixing'; this.land.why = `${this.x.s.agent === 'codex' ? 'Codex' : 'Claude'} 在修，修完从「${this.title(i)}」重新跑`; this.land.acts = ['stay'];
+    this.land.s = 'fixing'; this.land.why = tr(`${this.x.s.agent === 'codex' ? 'Codex' : 'Claude'} 在修，修完从「${this.title(i)}」重新跑`, `${this.x.s.agent === 'codex' ? 'Codex' : 'Claude'} is fixing it, then landing reruns from "${this.title(i)}"`); this.land.acts = ['stay'];
     this.emit();
     await this.x.ensureLoaded();
     this.x.set({ unread: false, updated: Date.now() });
@@ -305,7 +306,7 @@ export class Landing {
   saw(st: string) {
     if (!this.fixing || this.x.s.land?.s !== 'fixing') return;
     if (st === 'done') { this.fixing = false; this.land.gates = this.land.gates.map(g => ({ n: g.n, st: 'todo' })); this.draft = null; void this.from(this.failed <= at('gate') ? 0 : this.failed); }
-    else if (st === 'err') { this.fixing = false; this.pause(this.failed, `${this.x.s.agent === 'codex' ? 'Codex' : 'Claude'} 没修完：它停了。`); }
+    else if (st === 'err') { this.fixing = false; this.pause(this.failed, tr(`${this.x.s.agent === 'codex' ? 'Codex' : 'Claude'} 没修完：它停了。`, `${this.x.s.agent === 'codex' ? 'Codex' : 'Claude'} did not finish the fix: it stopped.`)); }
   }
   private pause(i: number, why: string) {
     this.land.s = 'paused'; this.land.i = i; this.mark(i, 'paused'); this.land.why = why; this.land.acts = ['resume', 'stay']; this.emit();
@@ -317,7 +318,7 @@ export class Landing {
     this.halt = false;
     for (let k = i; k < STEPS.length; k++) {
       if (!live()) return;
-      if (this.halt) { this.halt = false; this.pause(k, '打断在这里：上一步跑完了，这一步还没开始。'); return; }
+      if (this.halt) { this.halt = false; this.pause(k, tr('打断在这里：上一步跑完了，这一步还没开始。', 'Interrupted here: the previous step finished, this one has not started.')); return; }
       Object.assign(this.land, { s: 'run', i: k, why: undefined, acts: undefined });
       this.mark(k, 'run'); this.emit();
       const t0 = Date.now();
@@ -335,10 +336,10 @@ export class Landing {
   // ----- the steps -----
   private async diff(_: () => boolean): Promise<Done> {
     const c = this.c = await changesOf(this.x);
-    if (!c) return { why: '读不出这个会话的 git 状态：不在 git 仓库里，或者没在一个分支上', acts: ['stay'] };
-    if (!c.files.length && !c.ahead) return { why: '没有要落地的改动', acts: ['stay'] };
+    if (!c) return { why: tr('读不出这个会话的 git 状态：不在 git 仓库里，或者没在一个分支上', 'Cannot read this session\'s git state: not in a git repository, or not on a branch'), acts: ['stay'] };
+    if (!c.files.length && !c.ahead) return { why: tr('没有要落地的改动', 'Nothing to land'), acts: ['stay'] };
     const ways = await waysOf(this.x, c);
-    if (!ways.length) return { why: `这个会话不在自己的 worktree 里，也不在 ${c.into} 上，仓库又没有 origin：没法落地`, acts: ['stay'] };
+    if (!ways.length) return { why: tr(`这个会话不在自己的 worktree 里，也不在 ${c.into} 上，仓库又没有 origin：没法落地`, `This session is not in its own worktree or on ${c.into}, and the repo has no origin: it cannot land`), acts: ['stay'] };
     const via = this.want && ways.includes(this.want) ? this.want : ways[0], pr = via === 'pr', into = c.into;
     const paths = c.files.map(f => f[0]);
     Object.assign(this.land, { files: c.files, branch: c.branch, into, via });
@@ -346,12 +347,12 @@ export class Landing {
     this.defs = g.defs; this.land.gates = g.defs.map(d => ({ n: d.n, st: 'todo' })); this.land.restart = pr ? [] : r.labels; this.own = r.own;
     const s = this.land.steps, onto = c.branch !== into, tree = onto && this.x.s.tree, gh = pr && !!await ghExe(), origin = !!await originOf(c.top);
     s[at('gate')].d = g.say;
-    s[at('commit')].d = !c.uncommitted.length ? '改动都已经提交了' : existsSync(path.join(c.top, '.claude', 'skills', 'commit', 'SKILL.md')) ? 'commit skill 起草，跑之前可以改' : '照这个仓库最近的提交起草，跑之前可以改';
-    s[at('merge')] = { ...s[at('merge')], d: pr ? `开 PR，不合进 ${into}` : onto ? undefined : `就在 ${into} 上`, cmd: !pr && onto ? [...c.linear ? [] : [`git rebase ${into}`], `git merge --ff-only ${c.branch}`] : undefined };
-    s[at('restart')] = { ...s[at('restart')], d: pr ? '开 PR 不重启' : r.say, cmd: pr ? undefined : r.own ? [r.own] : r.labels.map(l => `launchctl kickstart -k gui/$UID/${LABEL[l]}`) };
-    s[at('push')] = { ...s[at('push')], d: !origin ? '这个仓库没有 origin，不推' : pr && !gh ? '等你点头 · 没装 gh，推完给你开 PR 的链接' : '等你点头',
+    s[at('commit')].d = !c.uncommitted.length ? tr('改动都已经提交了', 'All changes are already committed') : existsSync(path.join(c.top, '.claude', 'skills', 'commit', 'SKILL.md')) ? tr('commit skill 起草，跑之前可以改', 'Drafted by the commit skill, editable before it runs') : tr('照这个仓库最近的提交起草，跑之前可以改', 'Drafted from this repo\'s recent commits, editable before it runs');
+    s[at('merge')] = { ...s[at('merge')], d: pr ? tr(`开 PR，不合进 ${into}`, `Open a PR, no merge into ${into}`) : onto ? undefined : tr(`就在 ${into} 上`, `Right on ${into}`), cmd: !pr && onto ? [...c.linear ? [] : [`git rebase ${into}`], `git merge --ff-only ${c.branch}`] : undefined };
+    s[at('restart')] = { ...s[at('restart')], d: pr ? tr('开 PR 不重启', 'Opening a PR, no restart') : r.say, cmd: pr ? undefined : r.own ? [r.own] : r.labels.map(l => `launchctl kickstart -k gui/$UID/${LABEL[l]}`) };
+    s[at('push')] = { ...s[at('push')], d: !origin ? tr('这个仓库没有 origin，不推', 'This repo has no origin, nothing to push') : pr && !gh ? tr('等你点头 · 没装 gh，推完给你开 PR 的链接', 'Waiting for your OK · gh is not installed, you get a link to open the PR after the push') : tr('等你点头', 'Waiting for your OK'),
       cmd: !origin ? undefined : pr ? [`git push -u origin ${c.branch}`, ...gh ? [`gh pr create --base ${into} --head ${c.branch}`] : []] : [`git push origin ${into}`] };
-    s[at('clean')] = { ...s[at('clean')], d: pr ? 'PR 还开着，worktree 留着接着改' : tree ? undefined : '不是它自己的 worktree', cmd: !pr && tree ? ['git worktree remove', 'git branch -d'] : undefined };
+    s[at('clean')] = { ...s[at('clean')], d: pr ? tr('PR 还开着，worktree 留着接着改', 'The PR is still open, the worktree stays for more changes') : tree ? undefined : tr('不是它自己的 worktree', 'Not its own worktree'), cmd: !pr && tree ? ['git worktree remove', 'git branch -d'] : undefined };
     if (c.uncommitted.length && !this.draft && !this.edited) this.startDraft(c);
     return 'ok';
   }
@@ -372,7 +373,7 @@ export class Landing {
       const r = await run(d.cmd, d.args, d.dir, c => { this.child = c; });
       if (!live()) return 'skip';
       this.outs.set(d.n, r.out);
-      if (r.code !== 0) { this.land.gates[k] = { n: d.n, st: 'er' }; return { why: `${d.n} 没过：\n${tail(r.out)}`, acts: ['fix', 'stay'] }; }
+      if (r.code !== 0) { this.land.gates[k] = { n: d.n, st: 'er' }; return { why: tr(`${d.n} 没过：\n${tail(r.out)}`, `${d.n} failed:\n${tail(r.out)}`), acts: ['fix', 'stay'] }; }
       const say = d.count?.(r.out);
       this.land.gates[k] = { n: d.n, st: 'ok', ...(say && /\d/.test(say) && d.group === 'desk' ? { say: `${d.n} ${say}` } : {}) };
     }
@@ -394,7 +395,7 @@ export class Landing {
     if (!c.uncommitted.length) return 'skip';
     if (this.draft) await Promise.race([this.draft, new Promise(r => setTimeout(r, 90e3))]);
     const title = this.land.msg.trim();
-    if (!title) return { why: '提交标题是空的：在上面写一句，再按「继续」', acts: ['resume', 'stay'] };
+    if (!title) return { why: tr('提交标题是空的：在上面写一句，再按「继续」', 'The commit title is empty: write one above, then press "Continue"'), acts: ['resume', 'stay'] };
     const body = this.body || c.uncommitted.map(p => `- ${p}`).join('\n');
     const file = path.join(tmpdir(), `jarvis-land-${this.x.s.id}.txt`);
     await writeFile(file, [title, body, this.evidence()].filter(Boolean).join('\n\n') + '\n');
@@ -404,7 +405,7 @@ export class Landing {
         if (r.code !== 0) return { why: tail(r.out), acts: ['fix', 'stay'] };
       }
       const r = await run('git', ['commit', '-F', file], c.top, h => { this.child = h; });
-      if (r.code !== 0) return { why: `提交没成：\n${tail(r.out)}`, acts: ['fix', 'stay'] };
+      if (r.code !== 0) return { why: tr(`提交没成：\n${tail(r.out)}`, `Commit failed:\n${tail(r.out)}`), acts: ['fix', 'stay'] };
     } finally { await rm(file, { force: true }); }
     return 'ok';
   }
@@ -412,7 +413,7 @@ export class Landing {
     const c = this.c!, into = this.land.into;
     if (this.land.via === 'pr' || c.branch === into) return 'skip';
     const repo = this.x.repo, head = (await git(repo, 'branch', '--show-current').catch(() => '')).trim();
-    if (head !== into) return { why: `主检出现在在 ${head || '一个分离的提交'} 上，不在 ${into}：先切回 ${into} 再继续`, acts: ['resume', 'stay'] };
+    if (head !== into) return { why: tr(`主检出现在在 ${head || '一个分离的提交'} 上，不在 ${into}：先切回 ${into} 再继续`, `The main checkout is on ${head || 'a detached commit'}, not ${into}: switch back to ${into} first, then continue`), acts: ['resume', 'stay'] };
     if (!await git(c.top, 'merge-base', '--is-ancestor', into, 'HEAD').then(() => true, () => false)) {
       // Only this branch's own commits move onto the default branch; a conflict that needs judgment stops the line with
       // both sides named.
@@ -420,24 +421,24 @@ export class Landing {
       if (r.code !== 0) {
         const both = (await git(c.top, 'diff', '--name-only', '--diff-filter=U').catch(() => '')).split('\n').filter(Boolean);
         await run('git', ['rebase', '--abort'], c.top);
-        return { why: both.length ? `合入冲突：${both.slice(0, 4).join('、')}${both.length > 4 ? ` 等 ${both.length} 个` : ''}两边都改了` : `挪到 ${into} 上没成：\n${tail(r.out)}`, acts: ['fix', 'stay'] };
+        return { why: both.length ? tr(`合入冲突：${both.slice(0, 4).join('、')}${both.length > 4 ? ` 等 ${both.length} 个` : ''}两边都改了`, `Merge conflict: ${both.slice(0, 4).join(', ')}${both.length > 4 ? ` and ${both.length - 4} more` : ''} changed on both sides`) : tr(`挪到 ${into} 上没成：\n${tail(r.out)}`, `Moving onto ${into} failed:\n${tail(r.out)}`), acts: ['fix', 'stay'] };
       }
     }
     const r = await run('git', ['merge', '--ff-only', c.branch], repo, h => { this.child = h; });
-    return r.code === 0 ? 'ok' : { why: `合不进 ${into}：\n${tail(r.out)}`, acts: ['resume', 'stay'] };
+    return r.code === 0 ? 'ok' : { why: tr(`合不进 ${into}：\n${tail(r.out)}`, `Could not merge into ${into}:\n${tail(r.out)}`), acts: ['resume', 'stay'] };
   }
   private async restart(_: () => boolean): Promise<Done> {
     if (this.land.via === 'pr') return 'skip';
     if (this.own) {
       const r = await run(SHELL(), ['-lc', this.own], this.x.repo, h => { this.child = h; }, 10 * 60e3);
-      return r.code === 0 ? 'ok' : { why: `重启命令没跑成：\n${tail(r.out)}`, acts: ['resume', 'stay'] };
+      return r.code === 0 ? 'ok' : { why: tr(`重启命令没跑成：\n${tail(r.out)}`, `The restart command failed:\n${tail(r.out)}`), acts: ['resume', 'stay'] };
     }
     const ls = this.land.restart ?? [];
     if (!ls.length) return 'skip';
     for (const l of ls) {
       if (l === 'companion') { await mkdir(DIR, { recursive: true }); await writeFile(REOPEN(), JSON.stringify({ id: this.x.s.id, at: Date.now() })); }
       const r = await kick(LABEL[l]);
-      if (r.code !== 0) return { why: `${l} 没重启：\n${tail(r.out)}`, acts: ['resume', 'stay'] };
+      if (r.code !== 0) return { why: tr(`${l} 没重启：\n${tail(r.out)}`, `${l} did not restart:\n${tail(r.out)}`), acts: ['resume', 'stay'] };
     }
     return 'ok';
   }
@@ -446,14 +447,14 @@ export class Landing {
     if (!await originOf(repo)) return 'skip';
     if (!this.go) {
       Object.assign(this.land, { s: 'wait', acts: ['allow', 'deny'],
-        why: via === 'pr' ? '推送前停下来等你：你点「允许」才推这个分支、开 PR。' : `推送前停下来等你：你点「允许」才推。拒绝的话，${into} 留在本地。` });
+        why: via === 'pr' ? tr('推送前停下来等你：你点「允许」才推这个分支、开 PR。', 'Stopped before the push, waiting for you: click "Allow" to push this branch and open a PR.') : tr(`推送前停下来等你：你点「允许」才推。拒绝的话，${into} 留在本地。`, `Stopped before the push, waiting for you: click "Allow" to push. If you deny, ${into} stays local.`) });
       this.mark(at('push'), 'wait'); this.emit();
       return 'wait';
     }
     this.go = false;
     if (via === 'pr') return this.pullRequest();
     const r = await run('git', ['push', 'origin', into], repo, h => { this.child = h; }, 5 * 60e3);
-    return r.code === 0 ? 'ok' : { why: `没推上去：\n${tail(r.out)}`, acts: ['resume', 'stay'] };
+    return r.code === 0 ? 'ok' : { why: tr(`没推上去：\n${tail(r.out)}`, `Push failed:\n${tail(r.out)}`), acts: ['resume', 'stay'] };
   }
   // The branch goes to origin and a pull request asks for it against the default branch, opened with gh when it is
   // installed: the only commit's title and body, or the latest title over a list of them all. Without gh, the address
@@ -461,9 +462,9 @@ export class Landing {
   private async pullRequest(): Promise<Done> {
     const c = this.c!, into = this.land.into, step = this.land.steps[at('push')];
     const p = await run('git', ['push', '-u', 'origin', c.branch], c.top, h => { this.child = h; }, 5 * 60e3);
-    if (p.code !== 0) return { why: `分支没推上去：\n${tail(p.out)}`, acts: ['resume', 'stay'] };
+    if (p.code !== 0) return { why: tr(`分支没推上去：\n${tail(p.out)}`, `Branch push failed:\n${tail(p.out)}`), acts: ['resume', 'stay'] };
     const link = [...p.out.matchAll(/^remote:\s+(https?:\/\/\S+)/gm)].map(m => m[1]).find(u => /pull|merge_request|compare/i.test(u)), exe = await ghExe();
-    if (!exe) { this.land.pr = link; step.d = link ? '分支推上去了。没装 gh：点链接开 PR' : '分支推上去了。没装 gh，PR 要你自己开'; return 'ok'; }
+    if (!exe) { this.land.pr = link; step.d = link ? tr('分支推上去了。没装 gh：点链接开 PR', 'Branch pushed. gh is not installed: click the link to open the PR') : tr('分支推上去了。没装 gh，PR 要你自己开', 'Branch pushed. gh is not installed, so you open the PR yourself'); return 'ok'; }
     const ref = await has(c.top, `refs/heads/${into}`) ? into : `origin/${into}`;
     const log = (await git(c.top, 'log', '--reverse', '--format=%s%x1f%b%x1e', `${ref}..HEAD`)).split('\x1e').map(e => e.trim()).filter(Boolean).map(e => e.split('\x1f'));
     const title = log.at(-1)?.[0] || c.branch, body = log.length === 1 ? (log[0][1] ?? '').trim() : log.map(e => `- ${e[0]}`).join('\n');
@@ -471,19 +472,19 @@ export class Landing {
       { GH_PROMPT_DISABLED: '1', GH_NO_UPDATE_NOTIFIER: '1' });
     const url = /https?:\/\/\S+\/pull\/\d+/.exec(r.out)?.[0];
     if (r.code === 0 || (url && /already exists/i.test(r.out))) {
-      this.land.pr = url ?? link; step.d = r.code === 0 ? 'PR 开好了' : '分支推上去了，PR 本来就开着';
+      this.land.pr = url ?? link; step.d = r.code === 0 ? tr('PR 开好了', 'PR opened') : tr('分支推上去了，PR 本来就开着', 'Branch pushed, the PR was already open');
       if (url) this.x.set({ pr: url });
       return 'ok';
     }
-    return { why: `分支推上去了，PR 没开成：\n${tail(r.out)}`, acts: ['resume', 'stay'] };
+    return { why: tr(`分支推上去了，PR 没开成：\n${tail(r.out)}`, `Branch pushed, but the PR was not opened:\n${tail(r.out)}`), acts: ['resume', 'stay'] };
   }
   private async clean(_: () => boolean): Promise<Done> {
     const c = this.c!;
     if (this.land.via === 'pr' || c.branch === this.land.into || !this.x.s.tree) return 'skip';
-    if (sharing(this.x)) { this.land.steps[at('clean')].d = '分叉还在用这个 worktree，先留着'; return 'skip'; }
+    if (sharing(this.x)) { this.land.steps[at('clean')].d = tr('分叉还在用这个 worktree，先留着', 'A fork still uses this worktree, so it stays for now'); return 'skip'; }
     await this.x.driver.release(this.x).catch(() => {});
     const r = await run('git', ['worktree', 'remove', c.top], this.x.repo, h => { this.child = h; });
-    if (r.code !== 0) return { why: `worktree 没删掉：\n${tail(r.out)}`, acts: ['resume', 'stay'] };
+    if (r.code !== 0) return { why: tr(`worktree 没删掉：\n${tail(r.out)}`, `Could not remove the worktree:\n${tail(r.out)}`), acts: ['resume', 'stay'] };
     await run('git', ['branch', '-d', c.branch], this.x.repo);
     this.x.set({ tree: false, gone: true });
     return 'ok';

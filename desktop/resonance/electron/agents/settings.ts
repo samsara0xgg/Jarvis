@@ -11,6 +11,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { agentsDir } from './key.js';
 import type { Auth, Settings } from './types.js';
+import { tr } from './lang.js';
 
 const exec = promisify(execFile);
 export const PACKAGED = process.env.JARVIS_AGENTS_PACKAGED === '1';
@@ -81,7 +82,7 @@ async function writeItem(o: Record<string, string>) {
     let err = '';
     c.stderr.on('data', d => { err += d; });
     c.on('error', fail);
-    c.on('close', code => code === 0 ? done() : fail(new Error(`钥匙串没存上：${err.trim().slice(-200) || code}`)));
+    c.on('close', code => code === 0 ? done() : fail(new Error(tr(`钥匙串没存上：${err.trim().slice(-200) || code}`, `The Keychain did not save it: ${err.trim().slice(-200) || code}`))));
     c.stdin.end(`add-generic-password -U -s ${SERVICE} -a "${ACCOUNT()}" -X ${data}\n`);
   });
 }
@@ -89,16 +90,16 @@ async function loadKey() {
   try { key = (await readItem()).ANTHROPIC_API_KEY ?? null; keyErr = ''; } catch (e) { key = null; keyErr = String(e); }
 }
 // A key is checked against the API before it is kept: listing models costs nothing and says whether the key works.
-const devBuild = () => Object.assign(new Error('开发版用这台 Mac 上 Claude Code 自己的登录，不存 key'), { status: 409 });
+const devBuild = () => Object.assign(new Error(tr('开发版用这台 Mac 上 Claude Code 自己的登录，不存 key', 'The dev build uses the Claude Code login on this Mac and stores no key')), { status: 409 });
 export async function saveKey(k: string) {
   if (!PACKAGED) throw devBuild();
   const v = k.trim();
-  if (!/^\S{20,400}$/.test(v)) throw Object.assign(new Error('这不像一个 API key'), { status: 400 });
+  if (!/^\S{20,400}$/.test(v)) throw Object.assign(new Error(tr('这不像一个 API key', 'That does not look like an API key')), { status: 400 });
   const base = (process.env.ANTHROPIC_BASE_URL ?? 'https://api.anthropic.com').replace(/\/+$/, '');
   let verified = false;
   try {
     const r = await fetch(`${base}/v1/models?limit=1`, { headers: { 'x-api-key': v, 'anthropic-version': '2023-06-01' }, signal: AbortSignal.timeout(10000) });
-    if (r.status === 401 || r.status === 403) throw Object.assign(new Error('Anthropic 说这个 key 不对'), { status: 400 });
+    if (r.status === 401 || r.status === 403) throw Object.assign(new Error(tr('Anthropic 说这个 key 不对', 'Anthropic says this key is not valid')), { status: 400 });
     verified = r.ok;
   } catch (e) { if ((e as { status?: number }).status) throw e; }
   await writeItem({ ...await readItem(), ANTHROPIC_API_KEY: v });
@@ -128,8 +129,8 @@ export function keyEnv(): Record<string, string | undefined> {
 export function auth(): Auth {
   if (!PACKAGED) return { packaged: false, mode: 'subscription', ready: true };
   const provider = settings.provider ?? 'anthropic';
-  const why = provider === 'bedrock' ? settings.bedrock?.region ? '' : '选了 Amazon Bedrock，还没填区域'
-    : provider === 'vertex' ? settings.vertex?.region && settings.vertex.project ? '' : '选了 Google Vertex，还没填区域和项目'
-    : key ? '' : keyErr ? `读不出钥匙串里的 key：${keyErr.slice(0, 120)}` : '先填一个 Anthropic API key';
+  const why = provider === 'bedrock' ? settings.bedrock?.region ? '' : tr('选了 Amazon Bedrock，还没填区域', 'Amazon Bedrock is selected but no region is set')
+    : provider === 'vertex' ? settings.vertex?.region && settings.vertex.project ? '' : tr('选了 Google Vertex，还没填区域和项目', 'Google Vertex is selected but no region and project are set')
+    : key ? '' : keyErr ? tr(`读不出钥匙串里的 key：${keyErr.slice(0, 120)}`, `Could not read the key from the Keychain: ${keyErr.slice(0, 120)}`) : tr('先填一个 Anthropic API key', 'Enter an Anthropic API key first');
   return { packaged: true, mode: 'key', provider, ready: !why, ...why ? { why } : {}, ...key ? { hint: `…${key.slice(-4)}` } : {} };
 }

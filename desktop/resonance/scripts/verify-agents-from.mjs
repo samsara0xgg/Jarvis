@@ -385,7 +385,7 @@ try {
   check('POST /settings keeps 做完了 off unless it is sent as true', n1.settings.notify.done === false && n2.settings.notify.done === false && n2.settings.notify.wait === false, [n1.settings.notify, n2.settings.notify]);
   const win = readFileSync(path.join(app, 'dist-electron', 'agentsWindow.js'), 'utf8'), pre = readFileSync(path.join(app, 'dist-electron', 'preload.cjs'), 'utf8');
   check('the built window: no 做完了 notification until it is switched on, a 设置… ⌘, item that tells the page, and a test notification',
-    !/done: true, wait: true, err: true/.test(win) && (win.match(/done: false, wait: true, err: true/g) ?? []).length === 2 && /label: '设置…', accelerator: 'CommandOrControl\+,'/.test(win)
+    !/done: true, wait: true, err: true/.test(win) && (win.match(/done: false, wait: true, err: true/g) ?? []).length === 2 && /label: tr\('设置…', 'Settings…'\), accelerator: 'CommandOrControl\+,'/.test(win)
     && /send\('agents-settings'\)/.test(win) && /ipcMain\.handle\('agents-notify-test'/.test(win) && /agents-settings/.test(pre) && /agents-notify-test/.test(pre));
 
   // ---------- the packaged host ----------

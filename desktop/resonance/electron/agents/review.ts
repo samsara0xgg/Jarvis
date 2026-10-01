@@ -9,6 +9,7 @@ import { diffLines, GIT, hunksOf, Refused } from './files.js';
 import { changesOf } from './land.js';
 import type { Change, Diff } from './types.js';
 import type { Session } from './host.js';
+import { tr } from './lang.js';
 
 const exec = promisify(execFile);
 const git = async (cwd: string, ...args: string[]) => (await exec('git', [...GIT, '-C', cwd, ...args], { maxBuffer: 64 << 20 })).stdout;
@@ -18,7 +19,7 @@ export async function baseOf(x: Session): Promise<{ top: string; base: string; i
   const c = await changesOf(x).catch(() => null);
   if (c) return { top: c.top, base: c.base, into: c.into, branch: c.branch };
   const top = (await git(x.s.cwd, 'rev-parse', '--show-toplevel').catch(() => '')).trim();
-  if (!top) throw new Refused(409, '这个会话的文件夹不在 git 里');
+  if (!top) throw new Refused(409, tr('这个会话的文件夹不在 git 里', 'This session\'s folder is not in a git repository'));
   return { top, base: 'HEAD' };
 }
 export async function changes(x: Session): Promise<{ base: string; top: string; files: Change[]; into?: string; branch?: string }> {
@@ -46,7 +47,7 @@ export async function changes(x: Session): Promise<{ base: string; top: string; 
 }
 const inside = (top: string, file: string) => {
   const abs = path.resolve(top, file);
-  if (abs !== top && !abs.startsWith(`${top}/`)) throw new Refused(400, '这个文件不在会话的仓库里');
+  if (abs !== top && !abs.startsWith(`${top}/`)) throw new Refused(400, tr('这个文件不在会话的仓库里', 'This file is not in the session\'s repository'));
   return path.relative(top, abs);
 };
 // `hunks`: where each hunk starts in the file as it is now · `bin`: git shows no lines of it.

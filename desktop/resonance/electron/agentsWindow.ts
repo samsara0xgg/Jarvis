@@ -5,6 +5,7 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { hostKey } from './agents/key.js';
+import { en, setLang, tr } from './agents/lang.js';
 // ADR 0073: the Agents window. Its sessions run in the agent host (agents/host.ts), which this process starts when
 // nothing answers on its port and which keeps running when the companion restarts. The window talks to the host
 // itself; from here it only asks for what a page may not do: a folder picker and a terminal tab.
@@ -25,6 +26,14 @@ async function replaceOld() {
     try { process.kill(pid, 'SIGTERM'); } catch { continue; }
     for (let i = 0; i < 40; i++) { await wait(250); try { process.kill(pid, 0); } catch { break; } }
   }
+}
+// ADR 0109: Jarvis's own language, as the agent host holds it (it asks the daemon). The notifications and the menu follow
+// it; read when the window opens and once a minute. While the host does not answer, the last answer stands.
+let langChanged = () => {};
+async function readLang() {
+  const was = en;
+  try { setLang((await (await fetch(`http://127.0.0.1:${AGENTS_PORT}/lang`, { headers: { Authorization: `Bearer ${hostKey()}` }, signal: AbortSignal.timeout(2500) })).json()).language); } catch { /* host away */ }
+  if (en !== was) langChanged();
 }
 let starting: Promise<void> | null = null;
 // `packaged`: the installed app, where Claude signs in with the owner's own key (ADR 0094).
@@ -82,7 +91,7 @@ end run` },
     tell current session of w to write text (item 1 of argv)
   end tell
 end run` },
-  { id: 'terminal', name: '终端', app: 'Terminal.app', script: `on run argv
+  { id: 'terminal', get name() { return tr('终端', 'Terminal'); }, app: 'Terminal.app', script: `on run argv
   tell application "Terminal"
     activate
     do script (item 1 of argv)
@@ -128,7 +137,7 @@ function watchHost(show: (id: string) => void, front: () => boolean, quiet: () =
     const kind = s.st === 'wait' ? 'wait' : s.st === 'err' ? 'err' : s.st === 'done' && s.unread && ['work', 'pack', 'wait'].includes(was) ? 'done' : null;
     if (!kind || !notify[kind] || (last && Date.now() - last.at < 20e3)) return;
     last?.n?.close();
-    const sub = kind === 'wait' ? '在等你' : kind === 'err' ? '出错了' : '做完了';
+    const sub = kind === 'wait' ? tr('在等你', 'Waiting on you') : kind === 'err' ? tr('出错了', 'Error') : tr('做完了', 'Done');
     if (failed && !app.isPackaged) { shown.set(s.id, { at: Date.now() }); script(s.title, sub, s.summary); return; }
     const n = new Notification({ title: s.title, subtitle: sub, body: s.summary, silent: quiet() });
     n.on('click', () => show(s.id));
@@ -246,6 +255,7 @@ export function setupAgents({ preload, page, host, packaged = false, trustedWind
   async function open(id = '') {
     if (win && !win.isDestroyed()) { win.show(); win.focus(); if (id) win.webContents.send('agents-open-session', id); return; }
     await ensureHost(host, packaged);
+    await readLang();
     win = new BrowserWindow({ width: 1180, height: 780, minWidth: 720, minHeight: 520, show: false, title: 'Agents',
       titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 14, y: 14 }, backgroundColor: '#0c0d20',
       // Her sounds play before the window is first touched: a session finishing while the window just sits open chimes.
@@ -290,11 +300,13 @@ export function setupAgents({ preload, page, host, packaged = false, trustedWind
     if (!w || w.isDestroyed()) return;
     if (fresh || w.webContents.isLoading()) w.webContents.once('did-finish-load', () => w.webContents.send('agents-settings')); else w.webContents.send('agents-settings');
   }
-  if (process.platform === 'darwin') Menu.setApplicationMenu(Menu.buildFromTemplate([
-    { label: app.name, submenu: [{ role: 'about' }, { type: 'separator' }, { label: '设置…', accelerator: 'CommandOrControl+,', click: () => void settingsSheet() }, { type: 'separator' },
+  const buildMenu = () => process.platform === 'darwin' && Menu.setApplicationMenu(Menu.buildFromTemplate([
+    { label: app.name, submenu: [{ role: 'about' }, { type: 'separator' }, { label: tr('设置…', 'Settings…'), accelerator: 'CommandOrControl+,', click: () => void settingsSheet() }, { type: 'separator' },
       { role: 'services' }, { type: 'separator' }, { role: 'hide' }, { role: 'hideOthers' }, { role: 'unhide' }, { type: 'separator' }, { role: 'quit' }] },
     { role: 'fileMenu' }, { role: 'editMenu' }, { role: 'viewMenu' }, { role: 'windowMenu' },
   ]));
+  buildMenu(); langChanged = buildMenu;
+  void readLang(); setInterval(() => void readLang(), 60e3).unref();
   // 发一条试试 in 通知: one notification as a session's would look, shown even with the window in front; the dev build's
   // unsigned Electron says it through osascript when macOS refuses it.
   ipcMain.handle('agents-notify-test', (event, title: unknown, sub: unknown, body: unknown, id: unknown) => {
