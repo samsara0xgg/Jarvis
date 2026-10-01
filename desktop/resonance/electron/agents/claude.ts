@@ -18,6 +18,7 @@ import { catalogChanged, Http, KEEPER, kt, log, pic, rode, sent, type Driver, ty
 import { ask, lines, parse, type Head } from './keeper.js';
 import { auth, keyEnv } from './settings.js';
 import type { Choice, Ctx, CtxRow, Diff, Field, File, Mcp, Pic, Req, Step, Task } from './types.js';
+import { plural, tr } from './lang.js';
 
 // In the dev build Allen's subscription, in the packaged app the owner's own key or cloud account (ADR 0094), and never
 // a key or token this process happens to have; nothing that says this runs inside another Claude Code session. The
@@ -36,7 +37,7 @@ export function claudeExe() {
   try { return createRequire(import.meta.url).resolve(`@anthropic-ai/claude-agent-sdk-${process.platform}-${process.arch}/claude`); } catch { return ''; }
 }
 const PROMPT = { type: 'preset', preset: 'claude_code' } as const;
-const MODES: [string, string][] = [['auto', '自动'], ['default', '改之前问我'], ['acceptEdits', '自动接受修改'], ['plan', '计划模式'], ['bypassPermissions', '完全放开']];
+const MODES = (): [string, string][] => [['auto', tr('自动', 'Auto')], ['default', tr('改之前问我', 'Ask before edits')], ['acceptEdits', tr('自动接受修改', 'Auto-accept edits')], ['plan', tr('计划模式', 'Plan mode')], ['bypassPermissions', tr('完全放开', 'Full access')]];
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
 
 // A queue the session reads from; it ends only when the session is let go.
@@ -83,7 +84,7 @@ const rt = (s: Session): Rt => (s.rt.claude ??= { pending: new Map(), queued: ne
 // goes on in the last one.
 const ids = (s: Session) => [s.s.id, ...s.s.resets ?? []];
 const cur = (s: Session) => ids(s).at(-1)!;
-const CLEARED = '上下文清空了 · 上面的它已经不记得了';
+const CLEARED = () => tr('上下文清空了 · 上面的它已经不记得了', 'Context cleared · it no longer remembers anything above');
 
 // ---------- what a tool call looks like as a step ----------
 const str = (v: unknown) => typeof v === 'string' ? v : '';
@@ -139,7 +140,7 @@ function planOf(s: Session, name: string, input: Record<string, unknown>, result
   s.plan([...r.tasks.values()]);
 }
 function reqOf(s: Session, id: string, name: string, input: Record<string, unknown>, o: { title?: string; description?: string; displayName?: string; suggestions?: PermissionUpdate[] }): Req {
-  const always = o.suggestions?.length ? '以后都允许' : '';
+  const always = o.suggestions?.length ? tr('以后都允许', 'Always allow') : '';
   if (name === 'AskUserQuestion' && Array.isArray(input.questions)) return { id, tool: 'Ask', qs: input.questions.map((q: Record<string, unknown>) => ({
     q: str(q.question), head: str(q.header), multi: q.multiSelect === true,
     opts: Array.isArray(q.options) ? q.options.map((x: Record<string, unknown>) => [str(x.label), str(x.description)] as [string, string]) : [] })) };
@@ -155,7 +156,7 @@ export const heldReq = (id: string, tool: string, input: Record<string, unknown>
 const textOf = (c: unknown): string => typeof c === 'string' ? c : Array.isArray(c) ? c.map(b => b?.type === 'text' ? str(b.text) : '').filter(Boolean).join('\n') : '';
 // Pictures a tool gave back (a screenshot, an image it read).
 const picsOf = (c: unknown): Pic[] => Array.isArray(c) ? c.filter(b => b?.type === 'image' && b.source?.type === 'base64')
-  .map((b, k) => pic(`图片 ${k + 1}`, `data:${b.source.media_type};base64,${b.source.data}`)) : [];
+  .map((b, k) => pic(tr(`图片 ${k + 1}`, `Image ${k + 1}`), `data:${b.source.media_type};base64,${b.source.data}`)) : [];
 const firstLine = (t: string) => oneLine(t.split('\n').find(l => l.trim()) ?? '', 80);
 
 // ---------- one message from the session, live or from its transcript ----------
@@ -225,11 +226,11 @@ function said(s: Session, m: SDKMessage | { type: string; uuid?: string; message
     // lines of their own at the end.
     const raw = textOf(content), cmd = /<command-name>([^<]*)<\/command-name>[\s\S]*?(?:<command-args>([^<]*)<\/command-args>)?/.exec(raw), { text, paths } = attached(raw);
     const blocks = Array.isArray(content) ? content as Block[] : [];
-    const files = [...blocks.filter(b => b.type === 'image').map((b, k) => pic(`图片 ${k + 1}`, b.source?.type === 'base64' ? `data:${b.source.media_type};base64,${b.source.data}` : '')),
+    const files = [...blocks.filter(b => b.type === 'image').map((b, k) => pic(tr(`图片 ${k + 1}`, `Image ${k + 1}`), b.source?.type === 'base64' ? `data:${b.source.media_type};base64,${b.source.data}` : '')),
       ...blocks.filter(b => b.type === 'document').map((b, k) => ({ name: str(b.title) || `PDF ${k + 1}` })), ...paths.map(p => ({ name: p.replace(/\/$/, '').split('/').pop() || p, path: p }))];
     if (cmd) s.you(`${cmd[1]} ${cmd[2] ?? ''}`.trim(), [], at, uuid);
     else if (/^\s*<(local-command|system-reminder|command-)/.test(raw)) return;
-    else if (/^\[Request interrupted/.test(raw)) s.note('你打断了这一轮');
+    else if (/^\[Request interrupted/.test(raw)) s.note(tr('你打断了这一轮', 'You interrupted this turn'));
     else if (text.trim() || files.length) s.you(text.trim(), files, at, uuid);
   }
 }
@@ -285,23 +286,23 @@ function ensure(s: Session) {
   const options: Options = {
     cwd: s.s.cwd, env: claudeEnv(), pathToClaudeCodeExecutable: EXE, systemPrompt: PROMPT, includePartialMessages: true,
     model: s.s.model || undefined, effort: (EFFORTS.includes(s.s.effort) ? s.s.effort : undefined) as Options['effort'],
-    permissionMode: (MODES.some(m => m[0] === s.s.mode) ? s.s.mode : 'auto') as Options['permissionMode'], allowDangerouslySkipPermissions: true,
+    permissionMode: (MODES().some(m => m[0] === s.s.mode) ? s.s.mode : 'auto') as Options['permissionMode'], allowDangerouslySkipPermissions: true,
     enableFileCheckpointing: true, forwardSubagentText: true, extraArgs: { 'thinking-display': 'summarized' },
     ...s.s.dirs?.length ? { additionalDirectories: s.s.dirs } : {},
     canUseTool: (name, input, o) => new Promise<PermissionResult>(resolve => {
       const id = o.toolUseID || randomUUID();
       r.pending.set(id, { resolve, name, input, suggestions: o.suggestions });
       s.ask(reqOf(s, id, name, input, o));
-      o.signal.addEventListener('abort', () => { if (r.pending.delete(id)) s.answered(id, '没回答'); });
+      o.signal.addEventListener('abort', () => { if (r.pending.delete(id)) s.answered(id, tr('没回答', 'Not answered')); });
     }),
     // An MCP server's form, or a page it wants opened, a sign-in most often (C3); one that is not a web page is refused.
     onElicitation: (e, o) => new Promise<ElicitationResult | null>(resolve => {
       const url = e.mode === 'url' ? str(e.url) : '', server = e.displayName || e.serverName;
-      if (e.mode === 'url' && !/^https?:\/\//i.test(url)) { s.note(`${server} 要打开的不是网页，先拒绝了`); resolve({ action: 'decline' }); return; }
+      if (e.mode === 'url' && !/^https?:\/\//i.test(url)) { s.note(tr(`${server} 要打开的不是网页，先拒绝了`, `${server} asked to open something that is not a web page, so it was declined`)); resolve({ action: 'decline' }); return; }
       const id = o.requestId || randomUUID(), fields = url ? [] : fieldsOf(e.requestedSchema);
       r.pending.set(id, { form: resolve, fields, ...url ? { url } : {} });
       s.ask({ id, tool: 'Form', server, why: e.message || str(e.title), fields, ...url ? { url } : {} });
-      o.signal.addEventListener('abort', () => { if (r.pending.delete(id)) s.answered(id, '没回答'); });
+      o.signal.addEventListener('abort', () => { if (r.pending.delete(id)) s.answered(id, tr('没回答', 'Not answered')); });
     }),
     spawnClaudeCodeProcess: viaKeeper(s),
     ...(r.fresh ? { sessionId: s.s.id } : { resume: cur(s) }),
@@ -310,7 +311,7 @@ function ensure(s: Session) {
   const q = r.q = query({ prompt: input, options });
   void (async () => {
     try { for await (const m of q) frame(s, m); }
-    catch (e) { log('claude session', s.s.id, e); if (r.q === q) s.end(undefined, false, 'err', `Claude 停了：${String(e instanceof Error ? e.message : e).slice(0, 120)}`); }
+    catch (e) { log('claude session', s.s.id, e); if (r.q === q) s.end(undefined, false, 'err', tr(`Claude 停了：${String(e instanceof Error ? e.message : e).slice(0, 120)}`, `Claude stopped: ${String(e instanceof Error ? e.message : e).slice(0, 120)}`)); }
     finally { if (r.q === q) { r.q = undefined; r.input = undefined; } }
   })();
   return r;
@@ -322,7 +323,7 @@ function frame(s: Session, m: SDKMessage) {
   if (typeof any.session_id === 'string' && any.session_id && !ids(s).includes(any.session_id)) {
     r.tasks.clear(); r.usage = undefined;
     s.set({ resets: [...s.s.resets ?? [], any.session_id], ctx: 0 });
-    s.note(CLEARED);
+    s.note(CLEARED());
   }
   // A message sent while it worked is taken when Claude Code starts it: folded into the running turn at its next step,
   // or run as the next turn.
@@ -346,21 +347,21 @@ function frame(s: Session, m: SDKMessage) {
     const aborted = String(res.terminal_reason ?? '').startsWith('aborted') || !!r.interrupted;
     r.interrupted = false; r.think = undefined;
     // What Allen sent while it worked runs next, interrupted or not.
-    if (r.queued.size) { s.end(undefined, true); if (aborted) s.note('你打断了这一轮'); return; }
-    if (aborted) { s.end(undefined, false, 'done', '你打断了这一轮', false); s.note('你打断了这一轮 · 发一句就能接着来'); return; }
-    if (res.is_error || res.subtype !== 'success') s.end(undefined, false, 'err', oneLine((res.errors as string[] | undefined)?.join(' · ') || str(res.result) || '出错了'));
+    if (r.queued.size) { s.end(undefined, true); if (aborted) s.note(tr('你打断了这一轮', 'You interrupted this turn')); return; }
+    if (aborted) { s.end(undefined, false, 'done', tr('你打断了这一轮', 'You interrupted this turn'), false); s.note(tr('你打断了这一轮 · 发一句就能接着来', 'You interrupted this turn · send a line to continue')); return; }
+    if (res.is_error || res.subtype !== 'success') s.end(undefined, false, 'err', oneLine((res.errors as string[] | undefined)?.join(' · ') || str(res.result) || tr('出错了', 'Error')));
     else { s.end(); if ((r.titled = (r.titled ?? 0) + 1) <= 3) void titleOf(s); }
     return;
   }
   if (m.type !== 'system') return;
   const sub = any.subtype;
   if (sub === 'init') { if (Array.isArray(any.slash_commands)) cmdCache.set(s.s.cwd, { at: Date.now(), list: (any.slash_commands as string[]).map(c => [`/${c}`, ''] as [string, string]) }); }
-  else if (sub === 'status') s.set(any.status === 'compacting' ? { st: 'pack', now: '在压缩上下文' } : s.s.st === 'pack' ? { st: 'work', now: '在想' } : {});
-  else if (sub === 'compact_boundary') s.note('上下文压缩过了');
-  else if (sub === 'api_retry') s.set({ now: `API 出错，第 ${any.attempt} 次重试`, summary: `API 出错，第 ${any.attempt} 次重试` });
+  else if (sub === 'status') s.set(any.status === 'compacting' ? { st: 'pack', now: tr('在压缩上下文', 'Compacting context') } : s.s.st === 'pack' ? { st: 'work', now: tr('在想', 'Thinking') } : {});
+  else if (sub === 'compact_boundary') s.note(tr('上下文压缩过了', 'Context compacted'));
+  else if (sub === 'api_retry') s.set({ now: tr(`API 出错，第 ${any.attempt} 次重试`, `API error, retry ${any.attempt}`), summary: tr(`API 出错，第 ${any.attempt} 次重试`, `API error, retry ${any.attempt}`) });
   else if (sub === 'background_tasks_changed' && Array.isArray(any.tasks)) {
     const ts = any.tasks as { task_id: string; description: string }[];
-    s.set({ bg: ts.length ? `${ts.length} 个后台任务 · ${ts.map(t => t.description).join('、').slice(0, 80)}` : undefined });
+    s.set({ bg: ts.length ? tr(`${ts.length} 个后台任务 · ${ts.map(t => t.description).join('、').slice(0, 80)}`, `${plural(ts.length, 'background task')} · ${ts.map(t => t.description).join(', ').slice(0, 80)}`) : undefined });
   }
   // Its background work, one entry per task (B17); the call that started one knows it, so a sub-agent stops on its own.
   else if (sub === 'task_started') {
@@ -376,7 +377,7 @@ function frame(s: Session, m: SDKMessage) {
   else if (sub === 'task_notification') s.task(str(any.task_id), { st: TASK_ST[str(any.status)] ?? 'done', ended: Date.now(), ...any.output_file ? { out: str(any.output_file) } : {} });
   // Skills and commands that came or went while it ran.
   else if (sub === 'commands_changed' && Array.isArray(any.commands)) cmdCache.set(s.s.cwd, { at: Date.now(), list: (any.commands as { name: string; description?: string; argumentHint?: string }[]).map(c => [`/${c.name}`, [c.description, c.argumentHint].filter(Boolean).join(' · ')] as [string, string]) });
-  else if (sub === 'permission_denied') s.note(`自动模式没让它${str(any.tool_name) ? `用 ${any.tool_name}` : '做这一步'}${any.message ? `：${oneLine(str(any.message), 80)}` : ''}`);
+  else if (sub === 'permission_denied') s.note(tr(`自动模式没让它${str(any.tool_name) ? `用 ${any.tool_name}` : '做这一步'}${any.message ? `：${oneLine(str(any.message), 80)}` : ''}`, `Auto mode did not let it ${str(any.tool_name) ? `use ${any.tool_name}` : 'do this step'}${any.message ? `: ${oneLine(str(any.message), 80)}` : ''}`));
 }
 const oneLine = (t: string, n = 120) => { const x = t.replace(/\s+/g, ' ').trim(); return x.length > n ? `${x.slice(0, n - 1)}…` : x; };
 const TASK_ST: Record<string, Task['st']> = { pending: 'run', running: 'run', paused: 'run', completed: 'done', failed: 'fail', killed: 'stop', stopped: 'stop' };
@@ -392,19 +393,19 @@ async function titleOf(s: Session, again = true) {
 }
 
 // ---------- the context window, as /context counts it (getContextUsage, token counts, not estimates) ----------
-const CTX_NAME: Record<string, string> = { 'System prompt': '系统提示词', 'System tools': '内置工具', 'MCP server instructions': 'MCP 说明', 'MCP tools': 'MCP 工具',
-  'Custom agents': '自定义 agent', 'Memory files': '记忆文件', Skills: 'Skills', Messages: '对话', 'Compact buffer': '留给压缩', 'Free space': '还空着' };
+const CTX_NAME = (): Record<string, string> => ({ 'System prompt': tr('系统提示词', 'System prompt'), 'System tools': tr('内置工具', 'Built-in tools'), 'MCP server instructions': tr('MCP 说明', 'MCP instructions'), 'MCP tools': tr('MCP 工具', 'MCP tools'),
+  'Custom agents': tr('自定义 agent', 'Custom agents'), 'Memory files': tr('记忆文件', 'Memory files'), Skills: 'Skills', Messages: tr('对话', 'Conversation'), 'Compact buffer': tr('留给压缩', 'Reserved for compaction'), 'Free space': tr('还空着', 'Free') });
 // The biggest few, the rest as one line.
 function top(xs: [string, number][], n = 6): [string, number][] {
   const s = xs.filter(x => x[1] > 0).sort((a, b) => b[1] - a[1]);
-  return s.length > n + 1 ? [...s.slice(0, n), [`其余 ${s.length - n} 个`, s.slice(n).reduce((a, x) => a + x[1], 0)]] : s;
+  return s.length > n + 1 ? [...s.slice(0, n), [tr(`其余 ${s.length - n} 个`, `${s.length - n} more`), s.slice(n).reduce((a, x) => a + x[1], 0)]] : s;
 }
 function ctxOf(s: Session, u: SDKControlGetContextUsageResponse): Ctx {
   const b = u.messageBreakdown, msgs = u.categories.find(c => c.name === 'Messages')?.tokens ?? 0;
   // The split inside the conversation is Claude Code's own estimate and does not add up to the counted total, so it is
   // scaled to that total.
-  const parts: [string, number][] = b ? [['工具结果', b.toolResultTokens], ['它写的', b.assistantMessageTokens], ['工具调用', b.toolCallTokens], ['你说的', b.userMessageTokens],
-    ['附带的提醒和说明', b.attachmentTokens], ['其他', b.redirectedContextTokens + b.unattributedTokens]] : [];
+  const parts: [string, number][] = b ? [[tr('工具结果', 'Tool results'), b.toolResultTokens], [tr('它写的', 'What it wrote'), b.assistantMessageTokens], [tr('工具调用', 'Tool calls'), b.toolCallTokens], [tr('你说的', 'What you said'), b.userMessageTokens],
+    [tr('附带的提醒和说明', 'Attached reminders and notes'), b.attachmentTokens], [tr('其他', 'Other'), b.redirectedContextTokens + b.unattributedTokens]] : [];
   const k = msgs / (parts.reduce((a, p) => a + p[1], 0) || 1), scale = (xs: [string, number][]) => xs.map(([n, t]) => [n, Math.round(t * k)] as [string, number]);
   const tools = top(scale((b?.toolCallsByType ?? []).map(t => [t.name, t.callTokens + t.resultTokens])), 5);
   const sub: Record<string, CtxRow['sub']> = {
@@ -414,36 +415,36 @@ function ctxOf(s: Session, u: SDKControlGetContextUsageResponse): Ctx {
     'Custom agents': top(u.agents.map(x => [x.agentType, x.tokens])),
     'Memory files': u.memoryFiles.map(x => [rel(s, x.path), x.tokens]),
     Skills: top((u.skills?.skillFrontmatter ?? []).map(x => [x.name, x.tokens])),
-    Messages: parts.length ? ['大约的分法', ...top(scale(parts)), ...tools.length ? ['最占地方的工具', ...tools] : []] : [],
+    Messages: parts.length ? [tr('大约的分法', 'Approximate split'), ...top(scale(parts)), ...tools.length ? [tr('最占地方的工具', 'Tools taking the most space'), ...tools] : []] : [],
   };
-  const rows: CtxRow[] = u.categories.filter(c => c.kind !== 'deferred').map(c => ({ n: CTX_NAME[c.name] ?? c.name, t: c.tokens,
+  const rows: CtxRow[] = u.categories.filter(c => c.kind !== 'deferred').map(c => ({ n: CTX_NAME()[c.name] ?? c.name, t: c.tokens,
     ...c.kind === 'buffer' ? { kind: 'buf' as const } : c.kind === 'free' ? { kind: 'free' as const } : {}, ...sub[c.name]?.length ? { sub: sub[c.name] } : {} }));
   const fixed = u.totalTokens - msgs, mem = u.categories.find(c => c.name === 'Memory files')?.tokens ?? 0;
   const deferred = u.categories.filter(c => c.kind === 'deferred').reduce((a, c) => a + c.tokens, 0);
-  const say: [string, string] = u.percentage >= 75 ? ['快满了。', u.isAutoCompactEnabled ? '再满一点它会自己压缩。' : '发 /compact 能把对话缩成一段摘要。']
-    : msgs > fixed ? ['对话占了大头', tools[0] ? `，里面最多的是 ${tools[0][0]} 的来回，大约 ${kt(tools[0][1])}。` : '。']
-    : ['还很空。', `一开会话，系统提示、工具、记忆和 Skills 就先占了 ${kt(fixed)}${mem ? `，其中记忆文件 ${kt(mem)}` : ''}。`];
+  const say: [string, string] = u.percentage >= 75 ? [tr('快满了。', 'Nearly full.'), u.isAutoCompactEnabled ? tr('再满一点它会自己压缩。', ' It compacts itself when it fills up a little more.') : tr('发 /compact 能把对话缩成一段摘要。', ' Send /compact to shrink the conversation into a summary.')]
+    : msgs > fixed ? [tr('对话占了大头', 'The conversation takes most of it'), tools[0] ? tr(`，里面最多的是 ${tools[0][0]} 的来回，大约 ${kt(tools[0][1])}。`, `, mostly the back-and-forth with ${tools[0][0]}, about ${kt(tools[0][1])}.`) : tr('。', '.')]
+    : [tr('还很空。', 'Plenty of room.'), tr(`一开会话，系统提示、工具、记忆和 Skills 就先占了 ${kt(fixed)}${mem ? `，其中记忆文件 ${kt(mem)}` : ''}。`, ` A new session starts with the system prompt, tools, memory and Skills taking ${kt(fixed)}${mem ? `, of which memory files ${kt(mem)}` : ''}.`)];
   return { used: u.totalTokens, max: u.maxTokens, model: u.model, rows, say,
-    foot: [...deferred ? [`还有 ${kt(deferred)} 的工具没载入，用到才占地方`] : [], u.isAutoCompactEnabled ? '快满时会自己压缩' : '自动压缩关着 · 快满了要自己发 /compact'] };
+    foot: [...deferred ? [tr(`还有 ${kt(deferred)} 的工具没载入，用到才占地方`, `${kt(deferred)} of tools are not loaded yet and only take space when used`)] : [], u.isAutoCompactEnabled ? tr('快满时会自己压缩', 'Compacts itself when nearly full') : tr('自动压缩关着 · 快满了要自己发 /compact', 'Auto-compact is off · send /compact yourself when it is nearly full')] };
 }
 
 // ---------- menus: what a fresh session in a folder offers, asked of a session that never gets a message ----------
 const cmdCache = new Map<string, { at: number; list: [string, string][] }>();
 let models: [string, string][] = [], efforts: string[] = [], probedAt = '', account: Record<string, string> | null = null;
 // Commands whose screen in the terminal the window draws itself (B8): the third entry names its place for them.
-const OWN_UI: [string, string, string][] = [['/rewind', '回到之前的某一句', 'rewind'], ['/resume', '接手终端里开的会话', 'import'], ['/export', '导出整段对话', 'export'],
-  ['/permissions', '换权限模式', 'mode'], ['/memory', '打开 CLAUDE.md', 'memory'], ['/tasks', '后台任务', 'tasks'], ['/ide', '用编辑器打开', 'editor'],
-  ['/login', '看用的哪份登录，没登就在这里登', 'doctor'], ['/status', '看版本、登录和后台开没开', 'doctor'], ['/doctor', '体检：claude、codex、git 都装好没有', 'doctor'], ['/diff', '看它改了什么', 'changes'],
-  ['/add-dir', '让它也能动另一个文件夹', 'dirs'], ['/model', '换模型', 'model'], ['/effort', '换力度', 'effort'], ['/new', '开新会话', 'new'], ['/fork', '从某一句之前分出一个新会话', 'fork'],
-  ['/btw', '侧问：不打断它，也不进对话', 'btw'], ['/mcp', '看它用的 MCP，在这里开关', 'mcp']];
-const withUi = (list: [string, string][]): [string, string, string?][] => [...OWN_UI, ...list.filter(c => !OWN_UI.some(u => u[0] === c[0]))];
+const OWN_UI = (): [string, string, string][] => [['/rewind', tr('回到之前的某一句', 'Go back to an earlier message'), 'rewind'], ['/resume', tr('接手终端里开的会话', 'Take over a session opened in Terminal'), 'import'], ['/export', tr('导出整段对话', 'Export the whole conversation'), 'export'],
+  ['/permissions', tr('换权限模式', 'Change the permission mode'), 'mode'], ['/memory', tr('打开 CLAUDE.md', 'Open CLAUDE.md'), 'memory'], ['/tasks', tr('后台任务', 'Background tasks'), 'tasks'], ['/ide', tr('用编辑器打开', 'Open in an editor'), 'editor'],
+  ['/login', tr('看用的哪份登录，没登就在这里登', 'See which login is used, sign in here if none'), 'doctor'], ['/status', tr('看版本、登录和后台开没开', 'See the version, the login and whether the host is running'), 'doctor'], ['/doctor', tr('体检：claude、codex、git 都装好没有', 'Check-up: are claude, codex and git installed'), 'doctor'], ['/diff', tr('看它改了什么', 'See what it changed'), 'changes'],
+  ['/add-dir', tr('让它也能动另一个文件夹', 'Let it work in another folder too'), 'dirs'], ['/model', tr('换模型', 'Change the model'), 'model'], ['/effort', tr('换力度', 'Change the effort'), 'effort'], ['/new', tr('开新会话', 'Start a new session'), 'new'], ['/fork', tr('从某一句之前分出一个新会话', 'Fork a new session from before a message'), 'fork'],
+  ['/btw', tr('侧问：不打断它，也不进对话', 'Side question: does not interrupt it or enter the conversation'), 'btw'], ['/mcp', tr('看它用的 MCP，在这里开关', 'See the MCP servers it uses and switch them here'), 'mcp']];
+const withUi = (list: [string, string][]): [string, string, string?][] => [...OWN_UI(), ...list.filter(c => !OWN_UI().some(u => u[0] === c[0]))];
 const version = () => EXE ? realpathSync(EXE) : '';
 async function probe(cwd: string) {
   probedAt = version();
   const input = pushable<SDKUserMessage>();
   const q = query({ prompt: input, options: { cwd, env: claudeEnv(), pathToClaudeCodeExecutable: EXE, systemPrompt: PROMPT } });
   try {
-    const init = await Promise.race([q.initializationResult(), new Promise<never>((_, no) => setTimeout(() => no(new Error('Claude 没有及时答应')), 30000))]);
+    const init = await Promise.race([q.initializationResult(), new Promise<never>((_, no) => setTimeout(() => no(new Error(tr('Claude 没有及时答应', 'Claude did not answer in time'))), 30000))]);
     cmdCache.set(cwd, { at: Date.now(), list: init.commands.map(c => [`/${c.name}`, [c.description, c.argumentHint].filter(Boolean).join(' · ')] as [string, string]) });
     account = Object.fromEntries(Object.entries(init.account ?? {}).filter(([, v]) => typeof v === 'string')) as Record<string, string>;
     const ms = init.models.map(m => [m.value, m.displayName] as [string, string]);
@@ -467,7 +468,7 @@ export const claude: Driver = {
   // Mac's own Claude Code login (ADR 0094).
   async catalog(): Promise<Choice> {
     if (auth().ready) probed ??= probe(homedir()).catch(e => { log('claude probe', e); probed = null; });
-    return { models, efforts: efforts.length ? efforts : EFFORTS, modes: MODES, always: '以后都允许' };
+    return { models, efforts: efforts.length ? efforts : EFFORTS, modes: MODES(), always: tr('以后都允许', 'Always allow') };
   },
   async create(s) { rt(s).fresh = true; return randomUUID(); },
   // Pictures go as images and PDFs as documents; any other file is named at the end of the text (B7).
@@ -490,7 +491,7 @@ export const claude: Driver = {
   },
   async stopTask(s, id) {
     const q = rt(s).q;
-    if (!q) throw new Error('它现在没在跑');
+    if (!q) throw new Error(tr('它现在没在跑', 'It is not running right now'));
     await q.stopTask(id);
   },
   async rewind(s, at, dry) {
@@ -504,29 +505,29 @@ export const claude: Driver = {
     let done: string;
     // A form: what was filled in (the host checked it against the fields), not given, or the call it came from cancelled.
     if ('form' in p) {
-      if (a.decision === 'deny') { p.form({ action: 'decline' }); done = '不提供，继续'; }
-      else if (a.decision === 'cancel') { p.form({ action: 'cancel' }); done = '取消了'; }
-      else { p.form({ action: 'accept', ...p.url ? {} : { content: (a.values ?? {}) as ElicitationResult['content'] } }); done = p.url ? '同意打开网页' : '已提供'; }
+      if (a.decision === 'deny') { p.form({ action: 'decline' }); done = tr('不提供，继续', 'Declined, continuing'); }
+      else if (a.decision === 'cancel') { p.form({ action: 'cancel' }); done = tr('取消了', 'Cancelled'); }
+      else { p.form({ action: 'accept', ...p.url ? {} : { content: (a.values ?? {}) as ElicitationResult['content'] } }); done = p.url ? tr('同意打开网页', 'Agreed to open the page') : tr('已提供', 'Provided'); }
     } else if (p.name === 'AskUserQuestion') {
       const qs = (p.input.questions ?? []) as { question: string }[];
-      if (a.decision === 'deny') { p.resolve({ behavior: 'deny', message: 'The user dismissed the question.' }); done = '没回答'; }
+      if (a.decision === 'deny') { p.resolve({ behavior: 'deny', message: 'The user dismissed the question.' }); done = tr('没回答', 'Not answered'); }
       else {
         const answers = Object.fromEntries(qs.map((q, i) => [q.question, a.text !== undefined && i === 0 ? a.text : (a.answers?.[i] ?? []).join(', ')]));
         p.resolve({ behavior: 'allow', updatedInput: { ...p.input, answers } });
-        done = `你${a.text !== undefined ? '回答' : '选了'}：${Object.values(answers).filter(Boolean).join(' · ')}`;
+        done = tr(`你${a.text !== undefined ? '回答' : '选了'}：${Object.values(answers).filter(Boolean).join(' · ')}`, `You ${a.text !== undefined ? 'answered' : 'chose'}: ${Object.values(answers).filter(Boolean).join(' · ')}`);
       }
     } else if (p.name === 'ExitPlanMode') {
-      if (a.decision === 'deny') { p.resolve({ behavior: 'deny', message: a.text || 'The user wants to rethink this plan before you start.' }); done = a.text ? `再想想：${a.text}` : '再想想'; }
+      if (a.decision === 'deny') { p.resolve({ behavior: 'deny', message: a.text || 'The user wants to rethink this plan before you start.' }); done = a.text ? tr(`再想想：${a.text}`, `Think again: ${a.text}`) : tr('再想想', 'Think again'); }
       else {
         const next = r.prev && r.prev !== 'plan' ? r.prev : 'auto';
         p.resolve({ behavior: 'allow', updatedInput: p.input, updatedPermissions: [{ type: 'setMode', mode: next as 'auto', destination: 'session' }] });
         s.set({ mode: next });
-        done = '就这么做';
+        done = tr('就这么做', 'Go ahead');
       }
-    } else if (a.decision === 'deny') { p.resolve({ behavior: 'deny', message: a.text || 'The user said no.' }); done = a.text ? `拒绝了：${a.text}` : '拒绝了'; }
+    } else if (a.decision === 'deny') { p.resolve({ behavior: 'deny', message: a.text || 'The user said no.' }); done = a.text ? tr(`拒绝了：${a.text}`, `Denied: ${a.text}`) : tr('拒绝了', 'Denied'); }
     else {
       p.resolve({ behavior: 'allow', updatedInput: p.input, ...(a.decision === 'always' && p.suggestions?.length ? { updatedPermissions: p.suggestions } : {}) });
-      done = a.decision === 'always' ? '已允许 · 以后都允许' : '已允许';
+      done = a.decision === 'always' ? tr('已允许 · 以后都允许', 'Allowed · always') : tr('已允许', 'Allowed');
     }
     s.answered(a.req, done);
   },
@@ -576,7 +577,7 @@ export const claude: Driver = {
         // The line sits after the /clear that drew it, where it came live.
         const lead = k && /<command-name>\/(clear|reset|new)</.test(textOf((msgs[0]?.message as { content?: unknown } | undefined)?.content)) ? 1 : 0;
         read(msgs.slice(0, lead));
-        if (k) s.note(CLEARED);
+        if (k) s.note(CLEARED());
         read(msgs.slice(lead));
       });
     }, r.open);
@@ -601,7 +602,7 @@ export const claude: Driver = {
       const upTo = before ? msgs[i - 1]?.uuid : at;
       return upTo ? (await forkSession(id, { dir: s.s.cwd, upToMessageId: upTo, title })).sessionId : null;
     }
-    throw new Error('它的记录里没有这一句');
+    throw new Error(tr('它的记录里没有这一句', 'That message is not in its history'));
   },
   // A transcript that is already gone counts as deleted.
   async remove(s) {
@@ -631,17 +632,17 @@ export const claude: Driver = {
   async mcpAct(s, name, act) {
     if (act === 'login') {
       const q = ensure(s).q!, one = (await servers(q, true, false)).find(m => m.name === name);
-      if (!one) throw new Http(404, '没有这个 MCP');
-      if (!one.can.includes('login')) throw new Http(409, '它不用登录');
+      if (!one) throw new Http(404, tr('没有这个 MCP', 'No such MCP server'));
+      if (!one.can.includes('login')) throw new Http(409, tr('它不用登录', 'It needs no sign-in'));
       const r = await (q as unknown as SignIn).mcpAuthenticate(name), url = str(r?.authUrl);
       if (r?.requiresUserAction === false) return servers(q, true, true);
-      if (!/^https?:\/\//i.test(url)) throw new Http(502, 'Claude Code 没给能打开的登录页');
+      if (!/^https?:\/\//i.test(url)) throw new Http(502, tr('Claude Code 没给能打开的登录页', 'Claude Code gave no sign-in page to open'));
       return { url };
     }
     return asking(s, async (q, live) => {
       const one = (await servers(q, live, false)).find(m => m.name === name);
-      if (!one) throw new Http(404, '没有这个 MCP');
-      if (!one.can.includes(act)) throw new Http(409, act === 'reconnect' ? '它现在没在跑，下次开始时会重新连' : act === 'on' ? '它开着' : '它关着');
+      if (!one) throw new Http(404, tr('没有这个 MCP', 'No such MCP server'));
+      if (!one.can.includes(act)) throw new Http(409, act === 'reconnect' ? tr('它现在没在跑，下次开始时会重新连', 'It is not running right now and will reconnect on the next start') : act === 'on' ? tr('它开着', 'It is already on') : tr('它关着', 'It is already off'));
       if (act === 'reconnect') await q.reconnectMcpServer(name);
       else await q.toggleMcpServer(name, act === 'on');
       return servers(q, live, true);
@@ -651,7 +652,7 @@ export const claude: Driver = {
   async side(s, text, history, signal) {
     return asking(s, async q => {
       const r = await (q as unknown as Sideways).askSideQuestion(text, { history: history.map(([question, response]) => ({ question, response })), signal });
-      if (!r?.response) throw new Http(502, 'Claude 没答上来');
+      if (!r?.response) throw new Http(502, tr('Claude 没答上来', 'Claude did not answer'));
       return r.response;
     }, true);
   },
@@ -664,7 +665,7 @@ async function asking<T>(s: Session, f: (q: Query, live: boolean) => Promise<T>,
   if (running) return f(running, true);
   const input = pushable<SDKUserMessage>();
   const q = query({ prompt: input, options: { cwd: s.s.cwd, env: claudeEnv(), pathToClaudeCodeExecutable: EXE, systemPrompt: PROMPT, model: s.s.model || undefined,
-    permissionMode: (MODES.some(m => m[0] === s.s.mode) ? s.s.mode : 'auto') as Options['permissionMode'], ...resume ? { resume: cur(s) } : {} } });
+    permissionMode: (MODES().some(m => m[0] === s.s.mode) ? s.s.mode : 'auto') as Options['permissionMode'], ...resume ? { resume: cur(s) } : {} } });
   try { return await f(q, false); } finally { q.close(); input.end(); }
 }
 // Its MCP servers (C3). `settle`: wait, up to 15 seconds, for the ones still connecting (a query that has just started,
@@ -676,7 +677,7 @@ async function servers(q: Query, live: boolean, settle: boolean): Promise<Mcp[]>
   return list.map(m => {
     const st = MCP_ST[m.status] ?? 'wait', scope = m.source || m.scope;
     return { name: m.name, st, ...m.tools ? { tools: m.tools.length } : {}, ...scope ? { scope } : {},
-      ...st === 'fail' && m.error ? { why: oneLine(m.error, 200) } : st === 'auth' ? { why: '要登录' } : {},
+      ...st === 'fail' && m.error ? { why: oneLine(m.error, 200) } : st === 'auth' ? { why: tr('要登录', 'Sign-in needed') } : {},
       can: st === 'off' ? ['on'] : [...live ? ['off', 'reconnect'] as const : ['off'] as const, ...st === 'auth' ? ['login'] as const : []] };
   });
 }

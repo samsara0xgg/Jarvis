@@ -11,6 +11,7 @@ import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { inflateSync } from 'node:zlib';
 import type { Diff, Peek } from './types.js';
+import { tr } from './lang.js';
 
 const exec = promisify(execFile);
 // What every git the host runs starts with: reading never takes the index lock. A status, or a diff that meets a file
@@ -102,16 +103,16 @@ const WEB = /\.(html?|pdf|png|jpe?g|gif|webp|avif|svg|bmp|ico)$/i, MEDIA = /\.(m
 const BIG = 2 << 20, TAIL = 1 << 20;
 export async function peek(cwd: string, ref: string, base: () => Promise<string>, roots: string[] = []): Promise<Peek> {
   const { abs, line } = parseRef(cwd, ref);
-  if (!abs) throw new Refused(400, 'ref 不对');
+  if (!abs) throw new Refused(400, tr('ref 不对', 'Invalid ref'));
   const st = await stat(abs).catch(() => null), at = line ? { line } : {};
-  if (!st) throw new Refused(404, `找不到 ${ref}`);
+  if (!st) throw new Refused(404, tr(`找不到 ${ref}`, `${ref} not found`));
   if (st.isDirectory()) {
     const ds = await readdir(abs, { withFileTypes: true });
     const entries = ds.filter(d => d.name !== '.DS_Store').map(d => ({ name: d.name, dir: d.isDirectory() }))
       .sort((a, b) => Number(b.dir) - Number(a.dir) || a.name.localeCompare(b.name)).slice(0, 500);
     return { kind: 'dir', abs, entries };
   }
-  if (!st.isFile()) throw new Refused(415, `${ref} 不是文件`);
+  if (!st.isFile()) throw new Refused(415, tr(`${ref} 不是文件`, `${ref} is not a file`));
   const size = st.size;
   if (WEB.test(abs) || MEDIA.test(abs)) {
     const real = await within(roots, abs), bytes = !!real && !!typeOf(real), pages = bytes && /\.pdf$/i.test(real) ? await pdfPages(real, size) : undefined;
@@ -185,11 +186,11 @@ async function within(roots: string[], abs: string) {
 }
 export async function sendFile(res: ServerResponse, roots: string[], cwd: string, ref: string, range = '') {
   const { abs } = parseRef(cwd, ref);
-  if (!abs) throw new Refused(400, 'ref 不对');
+  if (!abs) throw new Refused(400, tr('ref 不对', 'Invalid ref'));
   const real = await within(roots, abs);
-  if (!real) throw await stat(abs).then(() => new Refused(403, `${ref} 不在这个会话的文件夹里`), () => new Refused(404, `找不到 ${ref}`));
+  if (!real) throw await stat(abs).then(() => new Refused(403, tr(`${ref} 不在这个会话的文件夹里`, `${ref} is not in this session's folder`)), () => new Refused(404, tr(`找不到 ${ref}`, `${ref} not found`)));
   const type = typeOf(real), st = await stat(real);
-  if (!type || !st.isFile()) throw new Refused(415, `${ref} 不在这里打开`);
+  if (!type || !st.isFile()) throw new Refused(415, tr(`${ref} 不在这里打开`, `${ref} cannot be opened here`));
   const size = st.size, m = /^bytes=(\d*)-(\d*)$/.exec(range.trim()), head = { 'Accept-Ranges': 'bytes', 'Cache-Control': 'no-cache', 'X-Content-Type-Options': 'nosniff', 'Access-Control-Allow-Origin': '*' };
   let start = 0, end = size - 1, part = false;
   if (m && (m[1] || m[2])) {
@@ -209,7 +210,7 @@ export async function sendFile(res: ServerResponse, roots: string[], cwd: string
 // names where. A copy written more than 30 days ago goes when the host starts (pruneOld).
 export async function keepUpload(dir: string, name: string, url: string) {
   const m = /^data:[^;,]*(?:;[^,]*)?,/.exec(url);
-  if (!m) throw new Refused(400, `${name} 不对`);
+  if (!m) throw new Refused(400, tr(`${name} 不对`, `${name} is not valid`));
   const buf = m[0].includes(';base64') ? Buffer.from(url.slice(m[0].length), 'base64') : Buffer.from(decodeURIComponent(url.slice(m[0].length)));
   const safe = path.basename(name).replace(/[\0/:]/g, '_').slice(0, 200) || 'file';
   const at = path.join(dir, createHash('sha256').update(buf).digest('hex').slice(0, 16));

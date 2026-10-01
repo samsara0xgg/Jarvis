@@ -22,6 +22,7 @@ import { LABEL, Landing, REOPEN, dirtyOf, shellEnv } from './land.js';
 import { baseOf, changes, fileDiff, revert } from './review.js';
 import { auth, forgetKey, loadSettings, PACKAGED, patchSettings, saveKey, settings } from './settings.js';
 import { inputTerm, killTerm, openTerm, resizeTerm, streamTerm } from './term.js';
+import { en, plural, setLang, tr } from './lang.js';
 
 const exec = promisify(execFile);
 const ROOT = process.env.JARVIS_RUNTIME_ROOT ?? path.join(homedir(), '.jarvis');
@@ -83,9 +84,9 @@ const DRIVERS: Record<Agent, Driver> = { claude, codex };
 // ---------- time and text ----------
 export const took = (ms: number) => {
   const s = Math.max(1, Math.round(ms / 1000));
-  if (s < 60) return `${s} 秒`;
+  if (s < 60) return tr(`${s} 秒`, `${s} s`);
   const m = Math.round(s / 60);
-  return m < 60 ? `${m} 分钟` : `${Math.floor(m / 60)} 小时${m % 60 ? ` ${m % 60} 分` : ''}`;
+  return m < 60 ? tr(`${m} 分钟`, `${m} min`) : tr(`${Math.floor(m / 60)} 小时${m % 60 ? ` ${m % 60} 分` : ''}`, `${Math.round(m / 6) / 10} h`);
 };
 // A token count as the popover says it: 950, 12.4k, 958k, 1M.
 export const kt = (n: number) => n >= 1e6 ? `${+(n / 1e6).toFixed(1)}M` : n >= 1000 ? `${n >= 1e5 ? Math.round(n / 1000) : +(n / 1000).toFixed(1)}k` : String(Math.round(n));
@@ -155,16 +156,16 @@ export const firstSentence = (text: string) => oneLine((text.split('\n').find(l 
   .replace(/^\s*(?:[-*#>]+|\d+[.)])\s*/, '').replace(/\*\*|`/g, '').split(/(?<=[。！？])|(?<=[.!?])\s+(?=[A-Z"'(])/)[0].replace(/[：:]\s*$/, ''));
 const base = (p: string) => p.split('/').pop() ?? p;
 const NOW: Record<Step['k'], (t: string) => string> = {
-  read: t => `在读 ${base(t)}`, edit: t => `在改 ${base(t)}`, bash: t => `在跑 ${oneLine(t, 40)}`, search: t => `在搜 ${oneLine(t, 40)}`,
-  agent: () => '在开子任务', web: () => '在查网页', tool: t => `在用 ${oneLine(t, 40)}`, say: () => '在写', think: () => '在想',
+  read: t => tr(`在读 ${base(t)}`, `Reading ${base(t)}`), edit: t => tr(`在改 ${base(t)}`, `Editing ${base(t)}`), bash: t => tr(`在跑 ${oneLine(t, 40)}`, `Running ${oneLine(t, 40)}`), search: t => tr(`在搜 ${oneLine(t, 40)}`, `Searching ${oneLine(t, 40)}`),
+  agent: () => tr('在开子任务', 'Starting a subtask'), web: () => tr('在查网页', 'Searching the web'), tool: t => tr(`在用 ${oneLine(t, 40)}`, `Using ${oneLine(t, 40)}`), say: () => tr('在写', 'Writing'), think: () => tr('在想', 'Thinking'),
 };
 export function reqLine(r: Req) {
-  if (r.tool === 'Ask') return `问你：${oneLine(r.qs[0]?.q ?? '', 60)}`;
-  if (r.tool === 'Plan') return '计划写好了，等你点头';
-  if (r.tool === 'Bash') return `想跑 ${oneLine(r.cmd, 60)}`;
-  if (r.tool === 'Edit') return `想改 ${base(r.file)}`;
-  if (r.tool === 'Form') return r.url ? `${r.server} 要你打开一个网页` : `${r.server} 要你填一张表`;
-  return `想用 ${r.name}`;
+  if (r.tool === 'Ask') return tr(`问你：${oneLine(r.qs[0]?.q ?? '', 60)}`, `Asks: ${oneLine(r.qs[0]?.q ?? '', 60)}`);
+  if (r.tool === 'Plan') return tr('计划写好了，等你点头', 'Plan ready for your approval');
+  if (r.tool === 'Bash') return tr(`想跑 ${oneLine(r.cmd, 60)}`, `Wants to run ${oneLine(r.cmd, 60)}`);
+  if (r.tool === 'Edit') return tr(`想改 ${base(r.file)}`, `Wants to edit ${base(r.file)}`);
+  if (r.tool === 'Form') return r.url ? tr(`${r.server} 要你打开一个网页`, `${r.server} wants you to open a web page`) : tr(`${r.server} 要你填一张表`, `${r.server} wants you to fill in a form`);
+  return tr(`想用 ${r.name}`, `Wants to use ${r.name}`);
 }
 
 // ---------- one session: its row, its conversation, and the turn being built ----------
@@ -241,7 +242,7 @@ export class Session {
   begin() {
     this.turn = { group: -1, pending: null, block: '', tools: new Map(), plan: -1 };
     // Tasks that ended go when the next turn begins.
-    if (!this.quiet) this.set({ st: 'work', stopped: false, since: Date.now(), now: '在想', summary: '在想', updated: Date.now(),
+    if (!this.quiet) this.set({ st: 'work', stopped: false, since: Date.now(), now: tr('在想', 'Thinking'), summary: tr('在想', 'Thinking'), updated: Date.now(),
       ...this.s.tasks?.some(t => t.st !== 'run') ? { tasks: this.s.tasks.filter(t => t.st === 'run') } : {} });
   }
   private need() { if (!this.turn) this.begin(); return this.turn!; }
@@ -285,7 +286,7 @@ export class Session {
   delta(text: string) {
     const t = this.need();
     t.block = text; this.showLive();
-    if (!this.quiet && this.s.now !== '在写') this.set({ now: '在写', summary: '在写回答' });
+    if (!this.quiet && this.s.now !== tr('在写', 'Writing')) this.set({ now: tr('在写', 'Writing'), summary: tr('在写回答', 'Writing the answer') });
   }
   // A text block is complete.
   say(text: string, at?: number) {
@@ -348,7 +349,7 @@ export class Session {
     (this.items![i] as Item & { k: 'req' }).done = done;
     this.items![i].ended = this.time();
     this.changed(i);
-    if (!this.pending()) this.set({ st: 'work', now: '在想', summary: '在想' });
+    if (!this.pending()) this.set({ st: 'work', now: tr('在想', 'Thinking'), summary: tr('在想', 'Thinking') });
   }
   pending() { return this.items?.find(it => it.k === 'req' && !it.done) as (Item & { k: 'req' }) | undefined; }
   // The turn ends: what it wrote last is the answer, the steps fold, and the row says how it went. `why` is the row's
@@ -367,11 +368,11 @@ export class Session {
       if (!this.quiet) broadcast({ t: 'live', id: this.s.id, text: null });
     }
     // Requests nobody answered die with the turn.
-    for (const it of this.items ?? []) if (it.k === 'req' && !it.done) it.done = '没回答';
+    for (const it of this.items ?? []) if (it.k === 'req' && !it.done) it.done = tr('没回答', 'Not answered');
     if (silent || this.quiet) return;
     const last = [...this.items ?? []].reverse().find(it => it.k === 'it');
     this.set({ st, now: undefined, since: undefined, updated: Date.now(), unread,
-      summary: why || (st === 'err' ? '出错了' : last?.k === 'it' ? firstSentence(last.text) : this.s.summary) });
+      summary: why || (st === 'err' ? tr('出错了', 'Error') : last?.k === 'it' ? firstSentence(last.text) : this.s.summary) });
     void this.measure();
   }
   // What landing would take now, for the conversation's 一键落地.
@@ -391,7 +392,7 @@ export class Session {
   // Read once, however many ask for it at the same time.
   async ensureLoaded() {
     if (this.items) return;
-    await (this.loading ??= this.driver.load(this).catch(e => { log('load', this.s.id, e); this.items = [{ k: 'note', text: `读不出这个会话的记录：${String(e)}` }]; })
+    await (this.loading ??= this.driver.load(this).catch(e => { log('load', this.s.id, e); this.items = [{ k: 'note', text: tr(`读不出这个会话的记录：${String(e)}`, `Could not read this session's history: ${String(e)}`) }]; })
       .finally(() => { this.loading = undefined; }));
   }
 }
@@ -433,7 +434,7 @@ async function restore(kids: Map<string, Kid>) {
     // A turn that was running goes on in the keeper; without its child there, it went with the host.
     if ((s.st === 'work' || s.st === 'wait' || s.st === 'pack') && !kids.has(s.id)) Object.assign(s, {
       st: 'err', trace: [...s.trace ?? [], { at: Date.now(), st: 'err' }],
-      summary: 'Jarvis 的后台重启了，这一轮断了 · 发一句接着来',
+      summary: tr('Jarvis 的后台重启了，这一轮断了 · 发一句接着来', 'The Jarvis host restarted and this turn was cut off · send a line to continue'),
     });
     s.parked ??= false;
     sessions.set(s.id, new Session(s, repo));
@@ -475,7 +476,7 @@ async function worktree(repo: string, hint: string, from = '') {
   const slug = hint.toLowerCase().match(/[a-z0-9]+/g)?.slice(0, 4).join('-').slice(0, 32) || 'session';
   const name = `${slug}-${randomUUID().slice(0, 4)}`, at = path.join(repo, '.claude', 'worktrees', name), branch = `worktree-${name}`;
   const start = from ? (await git(repo, 'rev-parse', '--verify', '--quiet', `${from}^{commit}`).catch(() => '')).trim() : 'HEAD';
-  if (!start) throw new Http(400, `没有 ${from} 这个分支或提交`);
+  if (!start) throw new Http(400, tr(`没有 ${from} 这个分支或提交`, `No branch or commit named ${from}`));
   await git(repo, 'worktree', 'add', '-b', branch, at, start);
   await include(repo, at);
   return { cwd: at, branch };
@@ -496,17 +497,17 @@ async function include(repo: string, at: string) {
 async function setup(x: Session) {
   const cmd = settings.setup?.[x.repo];
   if (!cmd) return;
-  x.set({ now: '在准备 worktree', summary: '在准备 worktree' });
+  x.set({ now: tr('在准备 worktree', 'Preparing worktree'), summary: tr('在准备 worktree', 'Preparing worktree') });
   const env = shellEnv(), r = await new Promise<{ code: number; out: string }>(done => {
     let out = '';
     const c = spawn(env.SHELL || '/bin/zsh', ['-lc', cmd], { cwd: x.s.cwd, detached: true, stdio: ['ignore', 'pipe', 'pipe'], env: { ...env, JARVIS_WORKTREE: x.s.cwd, JARVIS_REPO: x.repo } });
     const keep = (b: Buffer) => { out = (out + b.toString('utf8')).slice(-8000); };
     c.stdout!.on('data', keep); c.stderr!.on('data', keep);
-    const timer = setTimeout(() => { out += '\n超过 10 分钟，停掉了'; try { process.kill(-c.pid!, 'SIGTERM'); } catch { c.kill(); } }, 10 * 60e3);
+    const timer = setTimeout(() => { out += tr('\n超过 10 分钟，停掉了', '\nStopped after 10 minutes'); try { process.kill(-c.pid!, 'SIGTERM'); } catch { c.kill(); } }, 10 * 60e3);
     c.on('error', e => { clearTimeout(timer); done({ code: 1, out: String(e) }); });
     c.on('close', code => { clearTimeout(timer); done({ code: code ?? 1, out }); });
   });
-  x.note(r.code ? `worktree 的准备脚本没跑成（退出码 ${r.code}）：${oneLine(r.out.trim().split('\n').slice(-5).join(' · '), 400)}` : 'worktree 准备好了');
+  x.note(r.code ? tr(`worktree 的准备脚本没跑成（退出码 ${r.code}）：${oneLine(r.out.trim().split('\n').slice(-5).join(' · '), 400)}`, `The worktree setup script failed (exit code ${r.code}): ${oneLine(r.out.trim().split('\n').slice(-5).join(' · '), 400)}`) : tr('worktree 准备好了', 'Worktree ready'));
 }
 // The project list (A8): the folders sessions ran in, the latest first, then folders the owner added, then the git
 // repositories in ~/Projects.
@@ -531,12 +532,19 @@ async function projects(): Promise<Project[]> {
 
 // ---------- the daemon's marks (ADR 0069): unread, parked and archived, one file the notch shares ----------
 const DAEMON = `http://127.0.0.1:${process.env.JARVIS_INHERENT_BRIDGE_PORT ?? '8006'}`;
-async function daemon(route: string, body?: unknown) {
-  const r = await fetch(DAEMON + route, { method: body ? 'POST' : 'GET', signal: AbortSignal.timeout(5000),
+async function daemon(route: string, body?: unknown, ms = 5000) {
+  const r = await fetch(DAEMON + route, { method: body ? 'POST' : 'GET', signal: AbortSignal.timeout(ms),
     headers: { Authorization: `Bearer ${token || await readToken()}`, ...(body ? { 'Content-Type': 'application/json' } : {}) }, body: body ? JSON.stringify(body) : undefined });
   if (r.status === 401) await readToken();
   if (!r.ok) throw new Error(`daemon answered ${r.status}`);
   return r.json();
+}
+// ADR 0109: Jarvis's own language, which the daemon keeps in settings.yaml. Read when a window asks (/lang) and at start;
+// while the daemon does not answer, the last answer stands. The menus built in it are built again.
+async function readLang() {
+  const was = en;
+  try { setLang(((await daemon('/inherent/language', undefined, 1500)) as { language?: string }).language); } catch { /* daemon away */ }
+  if (en !== was) catalog = null;
 }
 // A mark that does not reach the daemon stays in this host's file, and the next change sends it again.
 function markOut(id: string, change: Record<string, boolean>) { daemon(`/inherent/agent-marks/${encodeURIComponent(id)}`, change).catch(e => log('marks out', id, String(e))); }
@@ -564,7 +572,7 @@ async function authorized(req: Req0) {
 async function body(req: Req0): Promise<Record<string, any>> {
   const chunks: Buffer[] = [];
   let n = 0;
-  for await (const c of req) { n += c.length; if (n > 48 << 20) throw new Error('太大了'); chunks.push(c); }
+  for await (const c of req) { n += c.length; if (n > 48 << 20) throw new Error(tr('太大了', 'Too large')); chunks.push(c); }
   return n ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {};
 }
 // `need` names what the window can answer with: 'auth' is Claude's sign-in in the packaged app (ADR 0094), 'force' a
@@ -577,8 +585,8 @@ async function settingsChanged(was: boolean) {
   broadcast({ t: 'settings', settings, auth: auth() });
   if (auth().ready !== was) await catalogChanged();
 }
-const need = (id: string) => { const x = sessions.get(id); if (!x) throw new Http(404, '没有这个会话'); return x; };
-const str = (v: unknown, name: string) => { if (typeof v !== 'string') throw new Http(400, `${name} 不对`); return v; };
+const need = (id: string) => { const x = sessions.get(id); if (!x) throw new Http(404, tr('没有这个会话', 'No such session')); return x; };
+const str = (v: unknown, name: string) => { if (typeof v !== 'string') throw new Http(400, tr(`${name} 不对`, `${name} is not valid`)); return v; };
 const pathOf = (p: string) => p ? path.resolve(p.replace(/^~(?=\/|$)/, homedir())) : '';
 // Files sent with a message: a data: URL, or a file or folder on this Mac by its path (one dropped on the window).
 const fileList = (v: unknown): File[] => Array.isArray(v) ? v.slice(0, 20).filter(f => typeof f?.name === 'string'
@@ -592,6 +600,7 @@ const baseFor = (x: Session) => baseOf(x).then(b => b.base, () => 'HEAD');
 async function route(req: Req0, res: http.ServerResponse, url: URL): Promise<unknown> {
   const m = req.method ?? 'GET', parts = url.pathname.split('/').filter(Boolean);
   if (m === 'GET' && url.pathname === '/health') return { ok: true, pid: process.pid };
+  if (m === 'GET' && url.pathname === '/lang') { await readLang(); return { language: en ? 'en' : 'zh' }; }
   if (m === 'GET' && url.pathname === '/events') {
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*' });
     await ready;
@@ -604,7 +613,7 @@ async function route(req: Req0, res: http.ServerResponse, url: URL): Promise<unk
   }
   if (m === 'GET' && parts[0] === 'images' && parts.length === 2) {
     const f = /^[0-9a-f]{32}\.(png|jpeg|gif|webp)$/.exec(parts[1]), buf = f && await readFile(path.join(IMAGES, parts[1])).catch(() => null);
-    if (!buf) throw new Http(404, '没有这张图');
+    if (!buf) throw new Http(404, tr('没有这张图', 'No such image'));
     res.writeHead(200, { 'Content-Type': `image/${f![1]}`, 'Cache-Control': 'max-age=31536000, immutable', 'Access-Control-Allow-Origin': '*' });
     res.end(buf);
     return undefined;
@@ -619,7 +628,7 @@ async function route(req: Req0, res: http.ServerResponse, url: URL): Promise<unk
     if (m === 'POST' && url.pathname === '/settings') await patchSettings(await body(req));
     else if (m === 'POST') r = await saveKey(str((await body(req)).key, 'key'));
     else if (m === 'DELETE' && url.pathname === '/settings/key') await forgetKey();
-    else throw new Http(405, '不行');
+    else throw new Http(405, tr('不行', 'Not allowed'));
     await settingsChanged(was);
     return { ...r, settings, auth: auth() };
   }
@@ -627,16 +636,16 @@ async function route(req: Req0, res: http.ServerResponse, url: URL): Promise<unk
   if (url.pathname === '/projects') {
     if (m === 'POST' || m === 'DELETE') {
       const p = pathOf(m === 'POST' ? str((await body(req)).path, 'path') : url.searchParams.get('path') ?? '');
-      if (m === 'POST' && !(await stat(p).catch(() => null))?.isDirectory()) throw new Http(400, '没有这个文件夹');
+      if (m === 'POST' && !(await stat(p).catch(() => null))?.isDirectory()) throw new Http(400, tr('没有这个文件夹', 'No such folder'));
       await patchSettings({ folders: [...m === 'POST' ? [p] : [], ...(settings.folders ?? []).filter(f => f !== p)] });
       await settingsChanged(auth().ready);
-    } else if (m !== 'GET') throw new Http(405, '不行');
+    } else if (m !== 'GET') throw new Http(405, tr('不行', 'Not allowed'));
     const list = await projects();
     return { projects: list.map(p => p.path), list };
   }
   if (m === 'GET' && url.pathname === '/doctor') return doctor();
   if (m === 'POST' && url.pathname === '/doctor/login') {
-    if ((await body(req)).agent !== 'codex' || !codex.login) throw new Http(400, '只有 Codex 在这里登录');
+    if ((await body(req)).agent !== 'codex' || !codex.login) throw new Http(400, tr('只有 Codex 在这里登录', 'Only Codex signs in here'));
     return { url: await codex.login() };
   }
   // A session's folder, or for a session not started yet the folder and agent it will have.
@@ -677,21 +686,21 @@ async function route(req: Req0, res: http.ServerResponse, url: URL): Promise<unk
     const answers = b.answers && typeof b.answers === 'object' && !Array.isArray(b.answers)
       ? Object.fromEntries(Object.entries(b.answers as Record<string, unknown>).filter((e): e is [string, string] => typeof e[1] === 'string')) : undefined;
     await daemon(`/inherent/claude-requests/${encodeURIComponent(str(b.req, 'req'))}`, { decision, ...answers ? { answers } : {}, ...typeof b.text === 'string' && b.text.trim() ? { message: b.text.trim() } : {} })
-      .catch((e: unknown) => { throw new Http(409, /\b404\b/.test(String(e)) ? '它已经不在等了：终端那边答过了，或者它往下走了' : '没送到 Jarvis 后台：它开着吗？'); });
+      .catch((e: unknown) => { throw new Http(409, /\b404\b/.test(String(e)) ? tr('它已经不在等了：终端那边答过了，或者它往下走了', 'It is no longer waiting: answered in the terminal, or it moved on') : tr('没送到 Jarvis 后台：它开着吗？', 'Did not reach the Jarvis daemon: is it running?')); });
     return { ok: true };
   }
   if (m === 'POST' && url.pathname === '/sessions') {
     const b = await body(req), agent = b.agent === 'codex' ? 'codex' : 'claude', text = str(b.text, 'text').trim(), files = fileList(b.files), dirs = dirList(b.dirs);
     signedIn(agent);
     let cwd = pathOf(str(b.cwd, 'cwd'));
-    if (!(await stat(cwd).catch(() => null))?.isDirectory()) throw new Http(400, '没有这个文件夹');
-    if (!text && !files.length) throw new Http(400, '要它做什么？');
+    if (!(await stat(cwd).catch(() => null))?.isDirectory()) throw new Http(400, tr('没有这个文件夹', 'No such folder'));
+    if (!text && !files.length) throw new Http(400, tr('要它做什么？', 'What should it do?'));
     const repo = await repoOf(cwd), from = typeof b.base === 'string' ? b.base.trim() : '';
     let branch = await branchOf(cwd), tree = false;
     if (b.tree && repo) { ({ cwd, branch } = await worktree(repo, text, from)); tree = true; }
     const cat = (await getCatalog())[agent];
-    const s: Sess = { id: '', agent, title: oneLine(text || files[0]?.name || '新会话', 48), cwd, project: base(repo || cwd), branch, tree,
-      st: 'work', pinned: false, parked: false, archived: false, unread: false, created: Date.now(), trace: [{ at: Date.now(), st: 'work' }], updated: Date.now(), summary: '在想',
+    const s: Sess = { id: '', agent, title: oneLine(text || files[0]?.name || tr('新会话', 'New session'), 48), cwd, project: base(repo || cwd), branch, tree,
+      st: 'work', pinned: false, parked: false, archived: false, unread: false, created: Date.now(), trace: [{ at: Date.now(), st: 'work' }], updated: Date.now(), summary: tr('在想', 'Thinking'),
       model: typeof b.model === 'string' ? b.model : cat.models[0]?.[0] ?? '', effort: typeof b.effort === 'string' ? b.effort : 'high',
       mode: typeof b.mode === 'string' ? b.mode : cat.modes[0]?.[0] ?? '', ctx: 0, ...dirs.length ? { dirs } : {}, ...tree && from ? { base: from } : {} };
     const x = new Session(s, repo);
@@ -702,7 +711,7 @@ async function route(req: Req0, res: http.ServerResponse, url: URL): Promise<unk
     save();
     // A new worktree's setup script runs first, so the answer comes back before it ends; a send that fails then shows
     // on the row.
-    if (tree && settings.setup?.[repo]) void setup(x).then(() => x.driver.send(x, text, files)).catch(e => { log('first send', s.id, e); x.end(undefined, false, 'err', `没发出去：${oneLine(String(e instanceof Error ? e.message : e), 120)}`); });
+    if (tree && settings.setup?.[repo]) void setup(x).then(() => x.driver.send(x, text, files)).catch(e => { log('first send', s.id, e); x.end(undefined, false, 'err', tr(`没发出去：${oneLine(String(e instanceof Error ? e.message : e), 120)}`, `Not sent: ${oneLine(String(e instanceof Error ? e.message : e), 120)}`)); });
     else await x.driver.send(x, text, files);
     return { id: s.id };
   }
@@ -711,8 +720,8 @@ async function route(req: Req0, res: http.ServerResponse, url: URL): Promise<unk
   if (m === 'GET' && url.pathname === '/services') return { services: await services() };
   if (m === 'POST' && parts[0] === 'services' && parts[2] === 'restart') {
     const label = LABEL[parts[1]];
-    if (!label) throw new Http(404, '没有这个服务');
-    if (!(await services()).some(v => v.name === parts[1] && v.loaded)) throw new Http(409, '这台 Mac 上没有装这个服务');
+    if (!label) throw new Http(404, tr('没有这个服务', 'No such service'));
+    if (!(await services()).some(v => v.name === parts[1] && v.loaded)) throw new Http(409, tr('这台 Mac 上没有装这个服务', 'This service is not installed on this Mac'));
     // The companion takes the window with it; the one that comes up opens it again where it was.
     const b = await body(req);
     if (parts[1] === 'companion' && typeof b.id === 'string') { await mkdir(DIR, { recursive: true }); await writeFile(REOPEN(), JSON.stringify({ id: b.id, at: Date.now() })); }
@@ -724,18 +733,18 @@ async function route(req: Req0, res: http.ServerResponse, url: URL): Promise<unk
     const x = need(parts[1]), verb = parts[2] ?? '';
     if (m === 'GET' && verb === 'stream') { streamTerm(x.s.id, req, res); return undefined; }
     if (m === 'DELETE' && !verb) { killTerm(x.s.id); return { ok: true }; }
-    if (m !== 'POST') throw new Http(405, '不行');
+    if (m !== 'POST') throw new Http(405, tr('不行', 'Not allowed'));
     const b = await body(req), size = (v: unknown, lo: number) => Math.max(lo, Math.min(500, Math.round(Number(v)) || lo));
     if (!verb) {
-      if (!existsSync(x.s.cwd)) throw new Http(409, '这个会话的文件夹已经不在了');
+      if (!existsSync(x.s.cwd)) throw new Http(409, tr('这个会话的文件夹已经不在了', 'This session\'s folder no longer exists'));
       await openTerm(x.s.id, x.s.cwd, size(b.cols, 20), size(b.rows, 4));
       return { ok: true };
     }
     if (verb === 'input') { if (typeof b.data === 'string' && b.data.length <= 65536) inputTerm(x.s.id, b.data); return { ok: true }; }
     if (verb === 'resize') { resizeTerm(x.s.id, size(b.cols, 20), size(b.rows, 4)); return { ok: true }; }
-    throw new Http(404, '没有这个动作');
+    throw new Http(404, tr('没有这个动作', 'No such action'));
   }
-  if (parts[0] !== 'sessions' || !parts[1]) throw new Http(404, '没有这个地方');
+  if (parts[0] !== 'sessions' || !parts[1]) throw new Http(404, tr('没有这个地方', 'Not found'));
   const x = need(parts[1]), verb = parts[2] ?? '';
   await x.kept;
   if (m === 'GET' && !verb) { await x.ensureLoaded(); return { items: x.items, live: x.live }; }
@@ -747,8 +756,8 @@ async function route(req: Req0, res: http.ServerResponse, url: URL): Promise<unk
   if (m === 'GET' && verb === 'export') { await x.ensureLoaded(); return exported(x); }
   // What putting the files back to a point would change (B13).
   if (m === 'GET' && verb === 'rewind') {
-    if (!x.driver.rewind) throw new Http(409, 'Codex 不记文件的检查点');
-    if (x.s.term) throw new Http(409, '在终端里，先拿回来');
+    if (!x.driver.rewind) throw new Http(409, tr('Codex 不记文件的检查点', 'Codex keeps no file checkpoints'));
+    if (x.s.term) throw new Http(409, tr('在终端里，先拿回来', 'In Terminal: take it back first'));
     signedIn(x.s.agent);
     await x.ensureLoaded();
     const p = pointOf(x, url.searchParams.get('at') ?? '');
@@ -756,7 +765,7 @@ async function route(req: Req0, res: http.ServerResponse, url: URL): Promise<unk
   }
   if (m === 'GET' && verb === 'tasks' && parts[3]) {
     const t = x.s.tasks?.find(y => y.id === parts[3]);
-    if (!t) throw new Http(404, '没有这个任务');
+    if (!t) throw new Http(404, tr('没有这个任务', 'No such task'));
     return { task: t, out: t.out && path.isAbsolute(t.out) ? await tail(t.out) : '' };
   }
   if (m === 'DELETE' && !verb) {
@@ -770,25 +779,25 @@ async function route(req: Req0, res: http.ServerResponse, url: URL): Promise<unk
       // Git's own checks decide: a worktree with changes, or a branch with commits nothing else has, stays, unless
       // Allen says to delete it anyway; then everything in it is kept first.
       const merged = await git(x.repo, 'merge-base', '--is-ancestor', x.s.branch, 'HEAD').then(() => true, () => false);
-      if (!merged && !force) throw new Http(409, `${x.s.branch} 上还有没合进去的提交：先合进去，或者确定就删（会先备份）`, 'force');
+      if (!merged && !force) throw new Http(409, tr(`${x.s.branch} 上还有没合进去的提交：先合进去，或者确定就删（会先备份）`, `${x.s.branch} has commits that are not merged: merge them first, or confirm the delete (a backup is made first)`), 'force');
       if (force) {
         kept = await keep(x);
         await git(x.repo, 'worktree', 'remove', '--force', x.s.cwd);
         await git(x.repo, 'branch', '-D', x.s.branch).catch(() => {});
       } else {
-        try { await git(x.repo, 'worktree', 'remove', x.s.cwd); } catch { throw new Http(409, 'worktree 里还有没提交的改动：先提交，或者确定就删（会先备份）', 'force'); }
+        try { await git(x.repo, 'worktree', 'remove', x.s.cwd); } catch { throw new Http(409, tr('worktree 里还有没提交的改动：先提交，或者确定就删（会先备份）', 'The worktree has uncommitted changes: commit them first, or confirm the delete (a backup is made first)'), 'force'); }
         await git(x.repo, 'branch', '-d', x.s.branch).catch(() => {});
       }
     }
     // The agent can refuse too (Codex keeps a thread a fork still reads from): then the session stays.
-    try { await x.driver.remove(x); } catch (e) { log('remove', x.s.id, e); throw new Http(409, `删不掉：${e instanceof Error ? e.message : String(e)}`); }
+    try { await x.driver.remove(x); } catch (e) { log('remove', x.s.id, e); throw new Http(409, tr(`删不掉：${e instanceof Error ? e.message : String(e)}`, `Could not delete: ${e instanceof Error ? e.message : String(e)}`)); }
     sessions.delete(x.s.id);
     broadcast({ t: 'gone', id: x.s.id });
     save();
     return { ok: true, ...kept ? { kept } : {} };
   }
   if (m === 'GET' && verb === 'context') {
-    if (x.s.term) throw new Http(409, '在终端里，拿回来才看得到');
+    if (x.s.term) throw new Http(409, tr('在终端里，拿回来才看得到', 'In Terminal: take it back to see this'));
     signedIn(x.s.agent);
     const c = await x.driver.context(x);
     // The ring takes the measured number.
@@ -796,19 +805,19 @@ async function route(req: Req0, res: http.ServerResponse, url: URL): Promise<unk
     return c;
   }
   if (m === 'GET' && verb === 'mcp') {
-    if (!x.driver.mcp) throw new Http(409, '看不到它的 MCP');
-    if (x.s.term) throw new Http(409, '在终端里，拿回来才看得到');
+    if (!x.driver.mcp) throw new Http(409, tr('看不到它的 MCP', 'Cannot see its MCP servers'));
+    if (x.s.term) throw new Http(409, tr('在终端里，拿回来才看得到', 'In Terminal: take it back to see this'));
     signedIn(x.s.agent);
     return { servers: await x.driver.mcp(x) };
   }
-  if (m !== 'POST') throw new Http(405, '不行');
+  if (m !== 'POST') throw new Http(405, tr('不行', 'Not allowed'));
   const b = await body(req);
   if (verb === 'land') {
     // ADR 0097: start (or go on from a stop) by the way picked, stop after this step, the push's yes or no, let Claude
     // fix what stopped it, stay on the branch, and the commit title the owner wrote.
     const l = x.landing, a = b.action;
     if (a === 'start') {
-      if (x.s.term) throw new Http(409, '在终端里，先拿回来');
+      if (x.s.term) throw new Http(409, tr('在终端里，先拿回来', 'In Terminal: take it back first'));
       const via = b.via === 'merge' || b.via === 'pr' ? b.via : undefined;
       // Review 18: `keep` answers the first landing's question, so the way picked is the repository's from then on.
       if (via && b.keep === true && x.repo && x.s.dirty?.ways.includes(via)) {
@@ -824,13 +833,13 @@ async function route(req: Req0, res: http.ServerResponse, url: URL): Promise<unk
     else if (a === 'deny') l.deny();
     else if (a === 'stay') l.stay();
     else if (a === 'msg') l.message(str(b.msg, 'msg'));
-    else if (a === 'fix') { if (x.s.term) throw new Http(409, '在终端里，先拿回来'); signedIn(x.s.agent); await l.fix(); }
-    else throw new Http(400, '没有这个动作');
+    else if (a === 'fix') { if (x.s.term) throw new Http(409, tr('在终端里，先拿回来', 'In Terminal: take it back first')); signedIn(x.s.agent); await l.fix(); }
+    else throw new Http(400, tr('没有这个动作', 'No such action'));
     return { ok: true };
   }
   if (verb === 'send') {
-    if (x.s.term) throw new Http(409, '在终端里，先拿回来');
-    if (x.s.gone || !existsSync(x.s.cwd)) throw new Http(409, '这个会话已经落地，它的 worktree 清掉了：开个新会话接着做');
+    if (x.s.term) throw new Http(409, tr('在终端里，先拿回来', 'In Terminal: take it back first'));
+    if (x.s.gone || !existsSync(x.s.cwd)) throw new Http(409, tr('这个会话已经落地，它的 worktree 清掉了：开个新会话接着做', 'This session has landed and its worktree was cleaned up: start a new session to continue'));
     const text = str(b.text, 'text').trim(), files = fileList(b.files);
     if (!text && !files.length) return { ok: true };
     // The model, the effort and plan mode typed as a command: the host sets them, as the menus do (B9).
@@ -846,9 +855,9 @@ async function route(req: Req0, res: http.ServerResponse, url: URL): Promise<unk
   // A reaction of yours on a message, on or off (m-rx): kept here, never sent by itself.
   if (verb === 'rx') {
     const k = b.k === 'it' ? 'it' : 'you', at = str(b.at, 'at'), e = str(b.e, 'e');
-    if (!RX.includes(e)) throw new Http(400, '没有这个表情');
+    if (!RX.includes(e)) throw new Http(400, tr('没有这个表情', 'No such reaction'));
     await x.ensureLoaded();
-    if (!x.items?.some(it => it.k === k && it.id === at)) throw new Http(404, '这个会话里没有这一句');
+    if (!x.items?.some(it => it.k === k && it.id === at)) throw new Http(404, tr('这个会话里没有这一句', 'That message is not in this session'));
     const key = `${k}:${at}`, r = x.s.rx?.[key] ?? {}, on = !r.mine?.includes(e), rx = { ...x.s.rx };
     const mine = on ? [...r.mine ?? [], e] : (r.mine ?? []).filter(y => y !== e), sent = (r.sent ?? []).filter(y => y !== e);
     const next: Rx = { ...mine.length ? { mine } : {}, ...sent.length ? { sent } : {}, ...r.by ? { by: r.by } : {} };
@@ -859,7 +868,7 @@ async function route(req: Req0, res: http.ServerResponse, url: URL): Promise<unk
   if (verb === 'edit') return { id: await edit(x, b) };
   if (verb === 'answer') {
     const open = x.pending()?.req;
-    if (!open || open.id !== b.req) throw new Http(409, '这张请求已经处理过了');
+    if (!open || open.id !== b.req) throw new Http(409, tr('这张请求已经处理过了', 'This request was already handled'));
     // A form (C3) can also be cancelled, and what was filled in must fit its fields before it goes.
     const form = open.tool === 'Form' ? open : null;
     const decision = b.decision === 'deny' || (b.decision === 'cancel' && !form) ? 'deny' : b.decision === 'cancel' ? 'cancel' : b.decision === 'always' ? 'always' : 'allow';
@@ -873,9 +882,9 @@ async function route(req: Req0, res: http.ServerResponse, url: URL): Promise<unk
   // An MCP server switched on or off, connected again, or signed in to (C3): the list after it, or the page to open.
   if (verb === 'mcp') {
     const act: McpAct | null = b.action === 'on' || b.action === 'off' || b.action === 'reconnect' || b.action === 'login' ? b.action : null;
-    if (!act) throw new Http(400, '没有这个动作');
-    if (!x.driver.mcpAct) throw new Http(409, '管不了它的 MCP');
-    if (x.s.term) throw new Http(409, '在终端里，先拿回来');
+    if (!act) throw new Http(400, tr('没有这个动作', 'No such action'));
+    if (!x.driver.mcpAct) throw new Http(409, tr('管不了它的 MCP', 'Cannot manage its MCP servers'));
+    if (x.s.term) throw new Http(409, tr('在终端里，先拿回来', 'In Terminal: take it back first'));
     signedIn(x.s.agent);
     const r = await x.driver.mcpAct(x, str(b.name, 'name'), act);
     return Array.isArray(r) ? { ok: true, servers: r } : r;
@@ -883,19 +892,19 @@ async function route(req: Req0, res: http.ServerResponse, url: URL): Promise<unk
   // A question on the side (C7): the answer comes back to this request, and the session's own turn goes on. `history`
   // is [question, answer] pairs of this side talk; closing the request drops the question.
   if (verb === 'side') {
-    if (!x.driver.side) throw new Http(409, '侧问不了');
-    if (x.s.term) throw new Http(409, '在终端里，先拿回来');
-    if (x.s.gone || !existsSync(x.s.cwd)) throw new Http(409, '这个会话已经落地，它的 worktree 清掉了');
+    if (!x.driver.side) throw new Http(409, tr('侧问不了', 'Cannot take a side question'));
+    if (x.s.term) throw new Http(409, tr('在终端里，先拿回来', 'In Terminal: take it back first'));
+    if (x.s.gone || !existsSync(x.s.cwd)) throw new Http(409, tr('这个会话已经落地，它的 worktree 清掉了', 'This session has landed and its worktree was cleaned up'));
     const text = str(b.text, 'text').trim();
-    if (!text) throw new Http(400, '要问什么？');
+    if (!text) throw new Http(400, tr('要问什么？', 'What do you want to ask?'));
     signedIn(x.s.agent);
     await x.ensureLoaded();
-    if (!x.items?.some(i => i.k === 'you')) throw new Http(409, '先说一句，才能侧问');
+    if (!x.items?.some(i => i.k === 'you')) throw new Http(409, tr('先说一句，才能侧问', 'Say something first, then ask a side question'));
     const history = (Array.isArray(b.history) ? b.history : []).filter((h: unknown): h is [string, string] => Array.isArray(h) && typeof h[0] === 'string' && typeof h[1] === 'string').slice(-20);
     const gone = new AbortController();
     res.once('close', () => { if (!res.writableFinished) gone.abort(); });
     try { return { text: await x.driver.side(x, text, history, gone.signal) }; }
-    catch (e) { if (gone.signal.aborted) throw new Http(499, '不问了'); throw e; }
+    catch (e) { if (gone.signal.aborted) throw new Http(499, tr('不问了', 'Cancelled')); throw e; }
   }
   if (verb === 'interrupt') { if (busy(x)) await x.driver.interrupt(x); return { ok: true }; }
   if (verb === 'stop') {
@@ -906,7 +915,7 @@ async function route(req: Req0, res: http.ServerResponse, url: URL): Promise<unk
   }
   if (verb === 'set') {
     const k: 'model' | 'effort' | 'mode' | null = b.key === 'model' || b.key === 'effort' || b.key === 'mode' ? b.key : null;
-    if (!k) throw new Http(400, 'key 不对');
+    if (!k) throw new Http(400, tr('key 不对', 'Invalid key'));
     await setKey(x, k, str(b.value, 'value'));
     return { ok: true };
   }
@@ -925,30 +934,30 @@ async function route(req: Req0, res: http.ServerResponse, url: URL): Promise<unk
   if (verb === 'fork') return { id: await fork(x, b) };
   // Files put back as they were at a point, the conversation staying as it is (B13).
   if (verb === 'rewind') {
-    if (!x.driver.rewind) throw new Http(409, 'Codex 不记文件的检查点');
-    if (x.s.term) throw new Http(409, '在终端里，先拿回来');
-    if (busy(x)) throw new Http(409, '它还在干活，先打断');
+    if (!x.driver.rewind) throw new Http(409, tr('Codex 不记文件的检查点', 'Codex keeps no file checkpoints'));
+    if (x.s.term) throw new Http(409, tr('在终端里，先拿回来', 'In Terminal: take it back first'));
+    if (busy(x)) throw new Http(409, tr('它还在干活，先打断', 'It is still working: interrupt it first'));
     signedIn(x.s.agent);
     await x.ensureLoaded();
     const p = pointOf(x, str(b.at, 'at'));
     if (!p.checkpoint) return { can: true, files: [], add: 0, del: 0 };
     const r = await x.driver.rewind(x, p.checkpoint, false);
-    if (!r.can) throw new Http(409, r.why ? `文件回不去：${r.why}` : '文件回不去了');
-    x.note(`文件退回到了${p.kind === 'you' ? '你发这一句之前' : '这个回答结束时'}的样子 · ${r.files.length} 个文件`);
+    if (!r.can) throw new Http(409, r.why ? tr(`文件回不去：${r.why}`, `Files cannot go back: ${r.why}`) : tr('文件回不去了', 'Files cannot go back'));
+    x.note(tr(`文件退回到了${p.kind === 'you' ? '你发这一句之前' : '这个回答结束时'}的样子 · ${r.files.length} 个文件`, `Files rewound to how they were ${p.kind === 'you' ? 'before you sent this message' : 'when this answer ended'} · ${plural(r.files.length, 'file')}`));
     void x.measure();
     return r;
   }
   if (verb === 'changes' && parts[3] === 'revert') {
-    if (busy(x)) throw new Http(409, '它还在干活，先打断再撤');
+    if (busy(x)) throw new Http(409, tr('它还在干活，先打断再撤', 'It is still working: interrupt it first, then undo'));
     const r = await revert(x, str(b.path, 'path'), TRASH);
     void x.measure();
     return r;
   }
   // A message sent while it worked, taken back before the agent took it (B11).
   if (verb === 'queue') {
-    if (b.action !== 'cancel') throw new Http(400, '没有这个动作');
-    if (!x.driver.unqueue) throw new Http(409, 'Codex 收下就放进这一轮了，撤不回来');
-    if (!await x.driver.unqueue(x, str(b.text, 'text'))) throw new Http(409, '它已经收下了，撤不回来');
+    if (b.action !== 'cancel') throw new Http(400, tr('没有这个动作', 'No such action'));
+    if (!x.driver.unqueue) throw new Http(409, tr('Codex 收下就放进这一轮了，撤不回来', 'Codex takes it into the current turn right away, so it cannot be withdrawn'));
+    if (!await x.driver.unqueue(x, str(b.text, 'text'))) throw new Http(409, tr('它已经收下了，撤不回来', 'It has already taken it, so it cannot be withdrawn'));
     // The reactions it carried wait for the next message again.
     const took = x.carrying.get(b.text), rx = { ...x.s.rx };
     if (took) {
@@ -959,37 +968,37 @@ async function route(req: Req0, res: http.ServerResponse, url: URL): Promise<unk
     return { ok: true };
   }
   if (verb === 'tasks' && parts[3] && parts[4] === 'stop') {
-    if (!x.s.tasks?.some(y => y.id === parts[3] && y.st === 'run')) throw new Http(404, '没有这个在跑的任务');
-    if (!x.driver.stopTask) throw new Http(409, '停不了');
+    if (!x.s.tasks?.some(y => y.id === parts[3] && y.st === 'run')) throw new Http(404, tr('没有这个在跑的任务', 'No such running task'));
+    if (!x.driver.stopTask) throw new Http(409, tr('停不了', 'Cannot be stopped'));
     await x.driver.stopTask(x, parts[3]);
     return { ok: true };
   }
   if (verb === 'dirs') {
-    if (x.s.agent === 'claude' && busy(x)) throw new Http(409, '它还在干活，这一轮做完再加');
+    if (x.s.agent === 'claude' && busy(x)) throw new Http(409, tr('它还在干活，这一轮做完再加', 'It is still working: add folders when this turn ends'));
     const dirs = dirList(b.dirs);
     x.set({ dirs: dirs.length ? dirs : undefined });
     // Claude Code reads them as it starts, so the next message starts it again with them; Codex takes them each turn.
     if (x.s.agent === 'claude') await x.driver.release(x);
-    if (x.items) x.note(dirs.length ? `它也能动这些文件夹了：${dirs.map(d => d.replace(homedir(), '~')).join('、')}` : '它只动自己的文件夹了');
+    if (x.items) x.note(dirs.length ? tr(`它也能动这些文件夹了：${dirs.map(d => d.replace(homedir(), '~')).join('、')}`, `It can now also work in these folders: ${dirs.map(d => d.replace(homedir(), '~')).join(', ')}`) : tr('它只动自己的文件夹了', 'It works only in its own folder now'));
     return { ok: true, dirs };
   }
   if (verb === 'release') {
-    if (x.s.st === 'work') throw new Http(409, '它还在干活，等这一步做完或先打断');
+    if (x.s.st === 'work') throw new Http(409, tr('它还在干活，等这一步做完或先打断', 'It is still working: wait for this step to finish or interrupt it'));
     await x.driver.release(x);
     x.set({ term: true });
     await x.ensureLoaded();
-    x.note(`在终端里打开 · ${x.driver.resume(x)}`);
+    x.note(tr(`在终端里打开 · ${x.driver.resume(x)}`, `Opened in Terminal · ${x.driver.resume(x)}`));
     return { cwd: x.s.cwd, cmd: x.driver.resume(x) };
   }
   if (verb === 'takeback') {
     x.set({ term: false, stopped: false });
     await x.driver.load(x);
-    x.note('回到 Jarvis · 接着终端停下的地方');
+    x.note(tr('回到 Jarvis · 接着终端停下的地方', 'Back in Jarvis · continuing where the terminal stopped'));
     const last = [...x.items ?? []].reverse().find(it => it.k === 'it');
     x.set({ summary: last?.k === 'it' ? firstSentence(last.text) : x.s.summary, updated: Date.now() });
     return { ok: true };
   }
-  throw new Http(404, '没有这个动作');
+  throw new Http(404, tr('没有这个动作', 'No such action'));
 }
 
 // ---------- what the routes do ----------
@@ -997,7 +1006,7 @@ async function setKey(x: Session, k: 'model' | 'effort' | 'mode', v: string) {
   if (x.s[k] === v) return;
   await x.driver.set(x, k, v);
   x.set({ [k]: v });
-  if (x.items) x.note(`${k === 'model' ? '模型' : k === 'effort' ? '力度' : '模式'}换成 ${label(x.s.agent, k, v)}${x.s.st === 'work' ? ' · 从下一步开始' : ''}`);
+  if (x.items) x.note(tr(`${k === 'model' ? '模型' : k === 'effort' ? '力度' : '模式'}换成 ${label(x.s.agent, k, v)}${x.s.st === 'work' ? ' · 从下一步开始' : ''}`, `${k === 'model' ? 'Model' : k === 'effort' ? 'Effort' : 'Mode'} set to ${label(x.s.agent, k, v)}${x.s.st === 'work' ? ' · from the next step' : ''}`));
 }
 // `/model x` (a model's id or name, or part of one), `/effort x` (`/reasoning x`, as Codex says it) and `/plan`.
 async function typed(x: Session, name: string, arg: string) {
@@ -1005,18 +1014,18 @@ async function typed(x: Session, name: string, arg: string) {
   if (name === 'plan') return setKey(x, 'mode', 'plan');
   if (name === 'model') {
     const hit = c.models.find(([v, l]) => v.toLowerCase() === low || l.toLowerCase() === low) ?? c.models.find(([v, l]) => v.toLowerCase().includes(low) || l.toLowerCase().includes(low));
-    if (!hit) throw new Http(400, `没有 ${arg} 这个模型`);
+    if (!hit) throw new Http(400, tr(`没有 ${arg} 这个模型`, `No model named ${arg}`));
     return setKey(x, 'model', hit[0]);
   }
   const e = c.efforts.find(v => v.toLowerCase() === low);
-  if (!e) throw new Http(400, `力度只有 ${c.efforts.join('、')}`);
+  if (!e) throw new Http(400, tr(`力度只有 ${c.efforts.join('、')}`, `Effort can only be ${c.efforts.join(', ')}`));
   return setKey(x, 'effort', e);
 }
 // A point of the conversation (what you said, or an answer, by its `id`) and the checkpoint its files go back to: what
 // you said goes back to before it, an answer to the next thing you said, or with nothing after it to where they are now.
 function pointOf(x: Session, at: string) {
   const items = x.items ?? [], i = at ? items.findIndex(it => (it.k === 'you' || it.k === 'it') && it.id === at) : -1;
-  if (i < 0) throw new Http(404, '这个会话里没有这一句');
+  if (i < 0) throw new Http(404, tr('这个会话里没有这一句', 'That message is not in this session'));
   if (items[i].k === 'you') return { kind: 'you' as const, checkpoint: at };
   const next = items.slice(i + 1).find((it): it is Item & { k: 'you' } => it.k === 'you' && !!it.id);
   return { kind: 'it' as const, checkpoint: next?.id ?? null };
@@ -1031,24 +1040,24 @@ async function fork(x: Session, b: Record<string, any>) {
   const at = typeof b.at === 'string' && b.at ? b.at : undefined, before = b.before === true, code = b.code === true;
   const text = typeof b.text === 'string' ? b.text.trim() : '', files = fileList(b.files), point = at ? pointOf(x, at) : null;
   const back = b.back === true, said = oneLine((x.items ?? []).find((it): it is Item & { k: 'you' } => it.k === 'you' && it.id === at)?.text ?? '', 18);
-  if (code && !x.driver.rewind) throw new Http(409, 'Codex 不记文件的检查点，只能分叉对话');
-  if (code && busy(x)) throw new Http(409, '它还在干活，先打断再退文件');
+  if (code && !x.driver.rewind) throw new Http(409, tr('Codex 不记文件的检查点，只能分叉对话', 'Codex keeps no file checkpoints, so only the conversation can be forked'));
+  if (code && busy(x)) throw new Http(409, tr('它还在干活，先打断再退文件', 'It is still working: interrupt it before rewinding files'));
   if (code || text || files.length) signedIn(x.s.agent);
   const cp = code ? point?.checkpoint ?? null : null;
-  if (cp) { const d = await x.driver.rewind!(x, cp, true); if (!d.can) throw new Http(409, d.why ? `文件回不去：${d.why}` : '文件回不去了'); }
+  if (cp) { const d = await x.driver.rewind!(x, cp, true); if (!d.can) throw new Http(409, d.why ? tr(`文件回不去：${d.why}`, `Files cannot go back: ${d.why}`) : tr('文件回不去了', 'Files cannot go back')); }
   const id = await x.driver.fork(x, at, before);
-  if (!id && !text && !files.length) throw new Http(409, '这是第一句，前面没有可以留下的：写一句新的发出去');
-  const f = new Session({ ...x.s, id: id ?? '', title: `${x.s.title}（分叉）`, named: false, pinned: false, parked: false, archived: false, unread: false, st: 'done', updated: Date.now(),
+  if (!id && !text && !files.length) throw new Http(409, tr('这是第一句，前面没有可以留下的：写一句新的发出去', 'This is the first message, so nothing before it can be kept: write a new one and send it'));
+  const f = new Session({ ...x.s, id: id ?? '', title: tr(`${x.s.title}（分叉）`, `${x.s.title} (fork)`), named: false, pinned: false, parked: false, archived: false, unread: false, st: 'done', updated: Date.now(),
     trace: [...x.s.trace ?? [], { at: Date.now(), st: 'done' }],
     now: undefined, since: undefined, queue: undefined, stopped: undefined, term: undefined, resets: undefined, tasks: undefined, bg: undefined, land: undefined }, x.repo);
   if (id) { sessions.set(id, f); await f.ensureLoaded(); }
   else { f.items = []; f.s.id = await f.driver.create(f); sessions.set(f.s.id, f); }
   if (back) f.set({ title: x.s.title, named: x.s.named, pinned: x.s.pinned, parked: x.s.parked });
-  else f.note(`从「${x.s.title}」${at ? `的${before ? '这一句之前' : '这一句'}` : ''}分叉 · 两边各走各的，用的是同一个文件夹`);
+  else f.note(tr(`从「${x.s.title}」${at ? `的${before ? '这一句之前' : '这一句'}` : ''}分叉 · 两边各走各的，用的是同一个文件夹`, `Forked from "${x.s.title}"${at ? ` ${before ? 'before this message' : 'at this message'}` : ''} · each side goes its own way, in the same folder`));
   broadcast({ t: 'sess', s: f.s });
   save();
-  if (cp) { const r = await x.driver.rewind!(x, cp, false); f.note(back ? `退回到你说「${said}」之前 · 对话和 ${r.files.length} 个文件` : `文件退回到了那时的样子 · ${r.files.length} 个文件`); void x.measure(); }
-  else if (back) f.note(`退回到你说「${said}」之前 · 只退了对话`);
+  if (cp) { const r = await x.driver.rewind!(x, cp, false); f.note(back ? tr(`退回到你说「${said}」之前 · 对话和 ${r.files.length} 个文件`, `Rewound to before you said "${said}" · conversation and ${plural(r.files.length, 'file')}`) : tr(`文件退回到了那时的样子 · ${r.files.length} 个文件`, `Files rewound to how they were then · ${plural(r.files.length, 'file')}`)); void x.measure(); }
+  else if (back) f.note(tr(`退回到你说「${said}」之前 · 只退了对话`, `Rewound to before you said "${said}" · conversation only`));
   if (b.archive === true) {
     if (busy(x)) await x.driver.interrupt(x).catch(() => {});
     await x.driver.release(x).catch(() => {});
@@ -1091,14 +1100,14 @@ function same(a: Item[], b: Item[]) {
 // message's pictures. The new session reads as the same conversation, with its title, place in the list, marks and the
 // reactions on what stays; this one is archived as the version before it, and the page steps between them (m-ver).
 async function edit(x: Session, b: Record<string, any>) {
-  if (x.s.term) throw new Http(409, '在终端里，先拿回来');
-  if (x.s.gone || !existsSync(x.s.cwd)) throw new Http(409, '这个会话已经落地，它的 worktree 清掉了：开个新会话接着做');
+  if (x.s.term) throw new Http(409, tr('在终端里，先拿回来', 'In Terminal: take it back first'));
+  if (x.s.gone || !existsSync(x.s.cwd)) throw new Http(409, tr('这个会话已经落地，它的 worktree 清掉了：开个新会话接着做', 'This session has landed and its worktree was cleaned up: start a new session to continue'));
   const at = str(b.at, 'at'), text = str(b.text, 'text').trim();
-  if (!text) throw new Http(400, '要改成什么？');
+  if (!text) throw new Http(400, tr('要改成什么？', 'What should it say instead?'));
   signedIn(x.s.agent);
   await x.ensureLoaded();
   const items = x.items ?? [], i = items.findIndex(it => it.k === 'you' && it.id === at);
-  if (i < 0) throw new Http(404, '这个会话里没有这一句');
+  if (i < 0) throw new Http(404, tr('这个会话里没有这一句', 'That message is not in this session'));
   // An older version edited becomes the current one first.
   if (x.s.archived && x.s.vers) await current(x);
   const old = items[i] as Item & { k: 'you' }, was = busy(x), marks = { pinned: x.s.pinned, parked: x.s.parked };
@@ -1131,8 +1140,8 @@ async function edit(x: Session, b: Record<string, any>) {
   let back = 0;
   if (d?.can) back = (await x.driver.rewind!(x, at, false)).files.length;
   await x.driver.release(x).catch(() => {});
-  f.note(['改过这一句', was && '那一轮停下了', !x.driver.rewind ? 'Codex 只回退对话，文件不动' : !d?.can ? '这一句没有文件的检查点，文件还是现在的样子'
-    : back ? `之后改的 ${back} 个文件回去了` : ''].filter(Boolean).join(' · '));
+  f.note([tr('改过这一句', 'Edited this message'), was && tr('那一轮停下了', 'that turn was stopped'), !x.driver.rewind ? tr('Codex 只回退对话，文件不动', 'Codex rewinds the conversation only; files stay') : !d?.can ? tr('这一句没有文件的检查点，文件还是现在的样子', 'No file checkpoint for this message; files stay as they are now')
+    : back ? tr(`之后改的 ${back} 个文件回去了`, `${plural(back, 'file')} changed after it went back`) : ''].filter(Boolean).join(' · '));
   broadcast({ t: 'sess', s: f.s });
   save();
   if (f.s.parked) markOut(f.s.id, { park: true });
@@ -1196,9 +1205,9 @@ async function outsideOf(cwd: string): Promise<Outside[]> {
 }
 // One of them as its transcript has it, read into a row nobody lists: the window shows it and nothing here changes.
 async function readOutside(agent: Agent, id: string, cwd: string) {
-  if ([...sessions.values()].some(x => x.s.id === id || x.s.resets?.includes(id))) throw new Http(409, '这个会话已经在列表里了');
+  if ([...sessions.values()].some(x => x.s.id === id || x.s.resets?.includes(id))) throw new Http(409, tr('这个会话已经在列表里了', 'This session is already in the list'));
   const o = (await DRIVERS[agent].outside(cwd)).find(y => y.id === id);
-  if (!o) throw new Http(404, '找不到这个会话');
+  if (!o) throw new Http(404, tr('找不到这个会话', 'Session not found'));
   const x = new Session({ id, agent, title: o.title, cwd: o.cwd, project: base(o.cwd), branch: o.branch ?? '', tree: false, st: 'done', pinned: false, parked: false,
     archived: false, unread: false, updated: o.updated, summary: '', model: '', effort: '', mode: '', ctx: 0 }, '');
   await x.driver.load(x);
@@ -1216,23 +1225,23 @@ async function liveOutside(): Promise<Live[]> {
 }
 // One of them, taken in: read back from its own transcript, it goes on here; a recent one takes a second, sure press.
 async function take(agent: Agent, id: string, cwd: string, force: boolean) {
-  if ([...sessions.values()].some(x => x.s.id === id || x.s.resets?.includes(id))) throw new Http(409, '这个会话已经在列表里了');
+  if ([...sessions.values()].some(x => x.s.id === id || x.s.resets?.includes(id))) throw new Http(409, tr('这个会话已经在列表里了', 'This session is already in the list'));
   const o = (await DRIVERS[agent].outside(cwd)).find(y => y.id === id) ?? (cwd ? (await DRIVERS[agent].outside('')).find(y => y.id === id) : undefined);
-  if (!o) throw new Http(404, '找不到这个会话');
-  if (!force && Date.now() - o.updated < RECENT) throw new Http(409, '它两分钟内还在别处动过，可能还开着：先在那边关掉，确定就再点一次', 'force');
-  if (!(await stat(o.cwd).catch(() => null))?.isDirectory()) throw new Http(409, '它的文件夹已经不在了');
+  if (!o) throw new Http(404, tr('找不到这个会话', 'Session not found'));
+  if (!force && Date.now() - o.updated < RECENT) throw new Http(409, tr('它两分钟内还在别处动过，可能还开着：先在那边关掉，确定就再点一次', 'It was active elsewhere in the last two minutes and may still be open: close it there first, or click again to confirm'), 'force');
+  if (!(await stat(o.cwd).catch(() => null))?.isDirectory()) throw new Http(409, tr('它的文件夹已经不在了', 'Its folder no longer exists'));
   const repo = await repoOf(o.cwd), cat = (await getCatalog())[agent];
   // A worktree where Claude Code makes its own (`claude --worktree`) lands like one this window made.
   const tree = !!repo && o.cwd.startsWith(`${path.join(repo, '.claude', 'worktrees')}/`);
   const s: Sess = { id, agent, title: o.title, cwd: o.cwd, project: base(repo || o.cwd), branch: await branchOf(o.cwd), tree,
     st: 'done', pinned: false, parked: false, archived: false, unread: false, created: o.updated, trace: [{ at: Date.now(), st: 'done' }], updated: Date.now(),
-    summary: '从别处接手', model: cat.models[0]?.[0] ?? '', effort: 'high', mode: cat.modes[0]?.[0] ?? '', ctx: 0 };
+    summary: tr('从别处接手', 'Taken over from elsewhere'), model: cat.models[0]?.[0] ?? '', effort: 'high', mode: cat.modes[0]?.[0] ?? '', ctx: 0 };
   const x = new Session(s, repo);
   sessions.set(id, x);
   await x.ensureLoaded();
   const last = [...x.items ?? []].reverse().find(it => it.k === 'it');
   if (last?.k === 'it') s.summary = firstSentence(last.text);
-  x.note(`从${agent === 'claude' ? '终端' : ' Codex '}接手 · 在这里接着聊，那边别同时开着`);
+  x.note(tr(`从${agent === 'claude' ? '终端' : ' Codex '}接手 · 在这里接着聊，那边别同时开着`, `Taken over from ${agent === 'claude' ? 'Terminal' : 'Codex'} · continue here, and do not keep it open there at the same time`));
   broadcast({ t: 'sess', s });
   save();
   void x.measure();
@@ -1255,14 +1264,14 @@ async function search(q: string, all: boolean) {
   return hits;
 }
 // The whole conversation as Markdown (C2): what you said, its answers, each step on one line.
-const STEP_NAME: Record<Step['k'], string> = { read: '读', edit: '改', bash: '跑', search: '搜', agent: '子任务', web: '网页', tool: '工具', say: '说', think: '想' };
+const STEP_NAME = (): Record<Step['k'], string> => ({ read: tr('读', 'Read'), edit: tr('改', 'Edit'), bash: tr('跑', 'Run'), search: tr('搜', 'Search'), agent: tr('子任务', 'Subtask'), web: tr('网页', 'Web'), tool: tr('工具', 'Tool'), say: tr('说', 'Say'), think: tr('想', 'Think') });
 function exported(x: Session) {
-  const who = x.s.agent === 'claude' ? 'Claude' : 'Codex', when = (at?: number) => at ? ` · ${new Date(at).toLocaleString('zh-CN', { hour12: false })}` : '';
+  const who = x.s.agent === 'claude' ? 'Claude' : 'Codex', when = (at?: number) => at ? tr(` · ${new Date(at).toLocaleString('zh-CN', { hour12: false })}`, ` · ${new Date(at).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })}`) : '';
   const out = [`# ${x.s.title}`, '', `${who} · ${x.s.cwd.replace(homedir(), '~')}${x.s.branch ? ` · ${x.s.branch}` : ''}`, ''];
   for (const it of x.items ?? []) {
-    if (it.k === 'you') out.push(`## 你${when(it.at)}`, '', it.text, ...it.files?.length ? ['', `附带：${it.files.map(f => f.name).join('、')}`] : [], '');
+    if (it.k === 'you') out.push(tr(`## 你${when(it.at)}`, `## You${when(it.at)}`), '', it.text, ...it.files?.length ? ['', tr(`附带：${it.files.map(f => f.name).join('、')}`, `Attached: ${it.files.map(f => f.name).join(', ')}`)] : [], '');
     else if (it.k === 'it') out.push(`## ${who}${when(it.at)}`, '', it.text, '');
-    else if (it.k === 'steps') out.push(...it.steps.map(st => `- ${STEP_NAME[st.k]} ${oneLine(st.t, 200)}`), '');
+    else if (it.k === 'steps') out.push(...it.steps.map(st => `- ${STEP_NAME()[st.k]} ${oneLine(st.t, 200)}`), '');
     else if (it.k === 'plan') out.push(...it.todos.map(([t, d]) => `- [${d === 2 ? 'x' : ' '}] ${t}`), '');
     else if (it.k === 'req') out.push(`> ${reqLine(it.req)}${it.done ? ` · ${it.done}` : ''}`, '');
     else out.push(`> ${it.text}`, '');
@@ -1302,7 +1311,8 @@ async function services(): Promise<Service[]> {
   }));
 }
 // The logs the 日志 tab reads: from a byte offset on, or the last 48 kB to start with.
-const LOGS: Record<string, string> = { companion: 'resonance.out.log', 'companion 错误': 'resonance.err.log', daemon: 'daemon.err.log', 后台: 'agents-host.out.log' };
+// The names the page shows, in either language.
+const LOGS: Record<string, string> = { companion: 'resonance.out.log', 'companion 错误': 'resonance.err.log', 'companion errors': 'resonance.err.log', daemon: 'daemon.err.log', 后台: 'agents-host.out.log', 'agent host': 'agents-host.out.log' };
 async function logs(name: string, from: number) {
   const file = LOGS[name] ?? LOGS.companion, p = path.join(ROOT, 'logs', file), size = (await stat(p).catch(() => null))?.size ?? 0;
   if (from >= 0 && from === size) return { name, file, size, text: '' };
@@ -1344,7 +1354,7 @@ async function takeBack(x: Session, k: Kid) {
   const was = busy(x);
   try {
     await x.driver.adopt!(x, k.busy, was);
-    if (k.busy && x.s.st !== 'wait' && x.s.st !== 'pack') x.set({ st: 'work', now: x.s.now ?? '在想' });
+    if (k.busy && x.s.st !== 'wait' && x.s.st !== 'pack') x.set({ st: 'work', now: x.s.now ?? tr('在想', 'Thinking') });
     log('took back', x.s.id.slice(0, 8), k.busy ? 'busy' : 'idle');
   } catch (e) { log('boot', x.s.id, e); }
 }
@@ -1363,7 +1373,7 @@ export async function main() {
       res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
       res.end(JSON.stringify(v));
     };
-    if (!(await authorized(req))) { reply(401, { error: '没有钥匙' }); return; }
+    if (!(await authorized(req))) { reply(401, { error: tr('没有钥匙', 'No key') }); return; }
     try {
       const out = await route(req, res, url);
       if (out !== undefined) reply(200, out);
@@ -1392,5 +1402,6 @@ export async function main() {
   // come in at the same pace.
   setInterval(() => { for (const c of clients) c.write(': \n\n'); if (clients.size) void marksIn(); }, 20000).unref();
   void marksIn();
+  void readLang();
 }
 if (process.argv[1] && import.meta.url.endsWith(path.basename(process.argv[1]))) void main();
