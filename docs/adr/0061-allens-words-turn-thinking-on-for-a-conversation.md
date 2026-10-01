@@ -1,6 +1,6 @@
 # ADR 0061 — Allen's words turn thinking on for a conversation
 
-**Status:** Accepted
+**Status:** Superseded-by-0108
 **Date:** 2026-09-26
 **Supersedes:** none
 

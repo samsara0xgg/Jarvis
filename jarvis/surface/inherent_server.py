@@ -242,7 +242,7 @@ class CancelResponseRequest(BaseModel):
     unrecognized string is answered with ``{"outcome": "unsupported_scope"}``.
 
     A turn still being thought about has no answer on the wire to name yet
-    (its ``open`` leaves once the answer is whole, ADR 0064): ``turn_id`` in
+    (its ``open`` leaves once the answer is whole, ADR 0108): ``turn_id`` in
     place of ``response_id`` cancels every run of that turn still open, as
     ``generation``, and answers ``no_open_run`` when none is.
     """
@@ -533,8 +533,8 @@ class InherentDeps:
     # nothing (``None``). ``None`` leaves both routes unregistered.
     question_read: Callable[[], dict[str, Any]] | None = None
     question_answer: Callable[[str, dict[str, str] | None], str | None] | None = None
-    # ADR 0064: whether Allen's words have thinking on now (ADR 0061), and the
-    # words that switch it. A small SQLite read on the loop thread; ``None``
+    # ADR 0108: whether a turn that thinks is under way, which one, and the
+    # words that make one. A small SQLite read on the loop thread; ``None``
     # leaves the route unregistered.
     think_read: Callable[[], dict[str, Any]] | None = None
     # ADR 0051: the companion home's reads and its one write, all off the loop
@@ -1635,7 +1635,7 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 â
 
         @app.get("/inherent/think")
         async def think() -> dict[str, Any]:
-            """ADR 0064: ``{on, on_words, off_words}`` for the companion's deep look."""
+            """ADR 0108: ``{on, on_words, turn_id}`` for the companion's deep look."""
             return think_read()
 
     _register_home_routes(app, deps)

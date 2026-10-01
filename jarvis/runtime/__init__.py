@@ -445,7 +445,7 @@ class JarvisRuntime:
     # empty tuple = no cue can veto the routine route (the other pre-route
     # conditions still apply).
     tool_cues: ToolCueTable = ()
-    # ADR 0061: `llm.think`, the words that switch a conversation's thinking on. None = never.
+    # ADR 0108: `llm.think`, the words that make one turn think. None = never.
     think_mode: ThinkMode | None = None
     # ADR 0019: the resident codex app-server and the four worker tools bound
     # to it. None = a hand-assembled runtime without workers.
@@ -684,7 +684,7 @@ def _max_tool_iterations(config: Mapping[str, Any]) -> int:
 
 
 def _think_mode(llm_config: Mapping[str, Any], config_path: Path) -> ThinkMode | None:
-    """``llm.think`` (ADR 0061); a broken block stops boot like a broken tool-cue table."""
+    """``llm.think`` (ADR 0108); a broken block stops boot like a broken tool-cue table."""
     try:
         return load_think_mode(llm_config)
     except ThinkModeConfigError as exc:
@@ -2097,7 +2097,7 @@ def _start_drive_turn_response(
 
     response_id = new_response_id()
     think = runtime.think_mode
-    preset = think.preset_for(runtime.conn, int(time.time() * 1000)) if think else None
+    preset = think.preset_for(runtime.conn, user_intent_event) if think else None
     snapshot = runtime.llm_session_factory.snapshot(preset)
     request_client = runtime.llm_session_factory.create(snapshot, response_id=response_id)
     policy = legacy_full_text_policy(
@@ -2288,7 +2288,7 @@ def make_turn_cancel_callable(runtime: JarvisRuntime) -> Callable[[str, str], st
     """Build the ``(turn_id, reason) -> outcome`` seam behind a turn stop.
 
     The surface's stop while Jarvis is still thinking: that turn's answer has
-    no response id on the wire until it is whole (ADR 0064), so the surface
+    no response id on the wire until it is whole (ADR 0108), so the surface
     names the turn and every run of it still open is cancelled as
     ``generation``. ``no_open_run`` when none is open: the answer is out, and
     the surface stops that by its response id.

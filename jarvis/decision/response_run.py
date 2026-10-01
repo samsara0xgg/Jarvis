@@ -735,7 +735,7 @@ def start_response_run(  # noqa: PLR0913 — the ADR-0008 §4.2 response.started
         "provider": snapshot.provider,
         "model": snapshot.model,
     }
-    if snapshot.reasoning_effort is not None:  # ADR 0061: whether this answer thought
+    if snapshot.reasoning_effort is not None:  # ADR 0108: whether this answer thought
         payload["reasoning_effort"] = snapshot.reasoning_effort
     if corrects_response_id is not None:
         payload["corrects_response_id"] = corrects_response_id

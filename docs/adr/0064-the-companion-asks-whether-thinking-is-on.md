@@ -1,6 +1,6 @@
 # ADR 0064 — The companion asks whether thinking is on
 
-**Status:** Accepted
+**Status:** Superseded-by-0108
 **Date:** 2026-09-26
 **Supersedes:** none
 

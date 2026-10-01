@@ -1,7 +1,7 @@
 """A stop reaches whatever answer the companion shows, audible yet or not.
 
 The companion shows an answer from its ``open``, which leaves once the whole
-answer exists (ADR 0064). Two stops missed it:
+answer exists (ADR 0108). Two stops missed it:
 
 - While Jarvis was still thinking there was no response id to name, so the
   stop named the previous answer's and the new one was spoken anyway.

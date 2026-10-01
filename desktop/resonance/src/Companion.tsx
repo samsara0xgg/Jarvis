@@ -195,7 +195,7 @@ export function Companion() {
   if (!inFlight) held.current = s.reply;
   const said = port ? spoken(held.current) : '';
   const reply = port ? { text: said } : simReply;
-  // ADR 0064: think mode as the daemon reads it from Allen's words (ADR 0105): an on-word makes that one turn deep. Read again as soon
+  // ADR 0064: think mode as the daemon reads it from Allen's words (ADR 0106): an on-word makes that one turn deep. Read again as soon
   // as his words go in or an answer opens; the poll catches a turn that ended some other way.
   const think = useRoute<{ on: boolean; on_words: string }>(port, '/inherent/think', true, 30_000);
   const deep = !!port && think.data?.on === true;
