@@ -150,6 +150,14 @@ export function drawSky(e: CanvasRenderingContext2D, t: { id: string }[], n: Rec
           e.beginPath(),
           pl(e, Math.max(d, o.xOf(h)), c, Yx),
           e.stroke());
+        // From its first moment to its last a session reads as one line: the rests between its turns are a fine thread.
+        let life = Math.min(i, Math.max(...p.segs.filter(g => g.k !== `idle`).map(g => g.b ?? i), ...p.marks.map(m => m.t)));
+        life > h &&
+          ((e.strokeStyle = `rgba(196,204,238,.2)`),
+          (e.lineWidth = 1),
+          e.beginPath(),
+          pl(e, Math.max(d, o.xOf(h)), o.xOf(life), Yx),
+          e.stroke());
         for (let g of o.gaps ?? []) {
           let gx = (o.xOf(g.a) + o.xOf(g.b)) / 2,
             f = Yx(gx);
