@@ -27,7 +27,10 @@
 - ADR 0074 still covers the short case: within 10 s of a question, with
   nothing of its answer heard, a new sentence cancels that turn and both
   are answered as one. A lookup past 10 s, or one whose line was already
-  said, keeps running.
+  said, keeps running. With this flag on, so does one that has already
+  dispatched a tool, however recently he asked (live test 2026-10-01: a
+  weekday question 7 s after a search started cancelled it, and the
+  weekday was never answered).
 
 ## Decision
 

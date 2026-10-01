@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -261,6 +262,65 @@ def test_a_dropped_turn_takes_its_waiting_card_with_it(
     ).slot
     assert slot is not None
     assert not slot.is_live(int(time.time() * 1000))
+    runtime.conn.close()
+
+
+@pytest.mark.parametrize(
+    ("slow", "dispatched", "superseded"),
+    [(True, True, False), (True, False, True), (False, True, True)],
+)
+def test_a_turn_already_working_on_a_tool_is_superseded_only_without_slow_results(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    slow: bool,  # noqa: FBT001 - pytest parameter
+    dispatched: bool,  # noqa: FBT001 - pytest parameter
+    superseded: bool,  # noqa: FBT001 - pytest parameter
+) -> None:
+    """With slow_results on, a turn that dispatched a tool is kept.
+
+    Live test 2026-10-01: a sentence 7 s after a search began must not cancel
+    it. Without a dispatched action, or with the flag off, ADR 0053/0074 still
+    drops the unspoken answer.
+    """
+    runtime = _make_runtime(tmp_path, lifecycle=True, cancel=True)
+    runtime = replace(runtime, response_flags=replace(runtime.response_flags, slow_results=slow))
+    _script_decide(monkeypatch, _final_result())
+    assert runtime.response_runs is not None
+    runtime.response_runs.hold_completion(held=True)
+    intent = _emit_intent(runtime.conn, "T-first")
+    _heard(runtime.conn, "T-first")
+    if dispatched:
+        emit_event(
+            runtime.conn,
+            type="action.dispatched",
+            payload={"action_id": "A-first"},
+            correlation={"turn_id": "T-first", "action_id": "A-first"},
+        )
+    dropped: list[frozenset[str]] = []
+
+    def _drop(turn_ids: frozenset[str]) -> frozenset[str]:
+        dropped.append(turn_ids)
+        return turn_ids
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(
+            _drive_turn_on_own_connection,
+            runtime,
+            user_intent_event=intent,
+            available_surfaces=frozenset(),
+            streaming_enabled=True,
+        )
+        _wait_open(runtime, 1)
+        make_supersede_unspoken_callable(runtime, _drop)("T-next")
+        if superseded:
+            with pytest.raises(ResponseCancelledError):
+                future.result(timeout=10)
+        runtime.response_runs.hold_completion(held=False)
+        if not superseded:
+            future.result(timeout=10)
+
+    assert dropped == [frozenset({"T-first"} if superseded else ())]
+    assert len(_payloads(runtime.conn, "response.cancelled")) == int(superseded)
     runtime.conn.close()
 
 
