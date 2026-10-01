@@ -1543,6 +1543,10 @@ class AudioStreamPlayer:
             lease.playback_generation_id if paused and lease is not None else -1
         )
 
+    def generation_held(self, generation_id: int) -> bool:
+        """Whether this generation is held in place by :meth:`pause_generation`."""
+        return self._paused_generation == generation_id
+
     def duck(self, target_gain: float = 0.3, ramp_ms: int = 30) -> None:
         """Ramp gain down to ``target_gain`` over ``ramp_ms`` (user-speech ducking)."""
         self.set_gain(target_gain, float(ramp_ms))

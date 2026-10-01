@@ -3,7 +3,7 @@ import { ArrowUp, Keyboard, Microphone, Stop } from '@phosphor-icons/react';
 import { Markdown, inline } from './Markdown';
 import { tr, type L, type Lang } from './companionSettings';
 import type { Line } from './model';
-import { HEARD_MS, HEIGHT, LINGER_MS, MEMORY_MS, WIDTH, itemsOf, kindOf, pace, said as saidCount, sentences, type Captions, type Item, type Kind, type Voice } from './talk';
+import { HEARD_MS, HEIGHT, LINGER_MS, MEMORY_MS, WIDTH, itemsOf, kindOf, pace, placed, said as saidCount, sentences, type Captions, type Item, type Kind, type Voice } from './talk';
 import './talk-area.css';
 
 // Springs as CSS linear() curves: response in seconds, damping fraction (1 = no overshoot).
@@ -315,7 +315,7 @@ export function TalkArea(p: TalkProps) {
     r.p.classList.toggle('all', lit >= r.chars.length);
     r.lit = lit;
   };
-  // Light up as far as she has got. The daemon only says when she has finished, so how far is estimated from when she began.
+  // Light up as far as she has got: where the daemon last put her voice (ADR 0112), carried on at pace; with no report, estimated from when she began.
   const view = useRef(v); view.current = v;
   const drive = () => {
     let front: HTMLElement | null = null;
@@ -323,7 +323,8 @@ export function TalkArea(p: TalkProps) {
       const sr = it.who === 'her' && it.spoken ? reg.current.get(it.id) : undefined, wr = it.who === 'her' ? reg.current.get(`${it.id}:w`) : undefined;
       if (!sr && !wr) continue;
       const clock = clockFor(it), done = it.failed || live.current.silent || (it.said && it.cutAt === undefined);
-      const said = done ? clock.length : it.queued ? 0 : saidCount(clock, ((it.cutAt ?? Date.now()) - it.from) / 1000);
+      const now = it.cutAt ?? Date.now();
+      const said = done ? clock.length : it.queued ? 0 : it.mark ? placed(it.spoken || it.voiced || '', clock, it.mark, now) : saidCount(clock, (now - it.from) / 1000);
       // The written part is lit by the same share of her speech as it has characters; the follow goes to the lower front.
       for (const r of [sr, wr]) {
         if (!r) continue;

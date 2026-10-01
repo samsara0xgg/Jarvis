@@ -732,6 +732,105 @@ try {
     await s.context.close();
   }
 
+  // ---- English, kept in step with where her voice really is (ADR 0112) ----
+  // The daemon says how many letters and digits she has played and how many the segment playing now reaches; the lit words
+  // follow that, carried on at pace in between, and stop where she is held or stopped. Nothing here is estimated from a clock
+  // alone: the clock is skewed by a minute and the lit words stay where she is.
+  {
+    const s = await scene({ captions: 'all', lang: 'en' });
+    const { page, emit, skew, shot, area, turn } = s;
+    await page.waitForTimeout(600);
+    const sentenceList = ['Mara found a brass compass in her grandfather’s attic.', ' Its needle pointed not north, but toward whatever someone had lost.', ' She followed it through town, returning a red scarf, a missing violin, and a little boy’s courage before his school play.',
+      ' At sunset, the compass led her to the harbor, where her grandfather waited beside his old sailboat.', ' “I lost my first adventure,” he said.', ' Together they sailed around the bay, laughing as the wind filled the sails.', ' When they returned, the compass needle rested quietly.'];
+    const story = sentenceList.join('');
+    // The characters said once `n` letters and digits have been (and the marks right after the last): what the page must have lit.
+    const L = /[\p{L}\p{N}]/u, chars = [...story];
+    const after = n => { let seen = 0, i = 0; if (n <= 0) return 0; for (; i < chars.length; i++) if (L.test(chars[i]) && ++seen === n) { i++; break; } while (i < chars.length && !/\s/.test(chars[i]) && !L.test(chars[i])) i++; return i; };
+    const letters = text => [...text].filter(c => L.test(c)).length;
+    const upto = k => letters(sentenceList.slice(0, k).join('')); // letters through the first k sentences
+    const playing = (turnId, played, ahead, held = false) => emit('voice', { phase: 'playing', turn_id: turnId, played, ahead, held });
+    await emit('controls', { mic_muted: false, speech_muted: false, conversation: true }); s.daemonState.controls.conversation = true;
+
+    await turn('e1', 'tell me a story', sentenceList, { done: true });
+    await page.waitForTimeout(1200);
+    let a = await area();
+    check('English: sentences keep the space between them (no “attic.Its”, “lost.She”)', a.her === story && !/[.”]\p{Lu}/u.test(a.her));
+    check('English: the space is drawn as a space, not collapsed away by the page', await page.evaluate(() => { const t = document.querySelector('.talk .tk-s').innerText; return t.includes('attic. Its needle') && t.includes('lost. She followed') && t.includes('play. At sunset') && t.includes('boat. “I lost'); }));
+    await shot('en-01-spaces');
+
+    // she is far ahead of where the clock puts her: the first report catches the lit words up at once
+    const lit0 = a.lit;
+    await playing('e1', upto(3), upto(3));
+    await page.waitForTimeout(300);
+    a = await area();
+    check(`anchored: the first report puts the lit words at the end of the third sentence at once (${lit0} → ${a.lit}, wanted ${after(upto(3))})`, a.lit === after(upto(3)) && lit0 < 60);
+    await shot('en-02-caught-up');
+    // …and not a character past the report, whatever the clock says
+    await skew(60_000); await page.waitForTimeout(400);
+    a = await area();
+    check(`anchored: a minute of the clock later the lit words have not moved past the report (${a.lit})`, a.lit === after(upto(3)) && a.all === 0);
+    // while she is inside the next segment the clock carries the words on, but never past its end
+    await playing('e1', upto(3), upto(4));
+    await skew(1500); await page.waitForTimeout(400);
+    a = await area();
+    check(`between reports the lit words move on at pace inside the segment she is in (${a.lit})`, a.lit > after(upto(3)) && a.lit <= after(upto(4)));
+    await skew(60_000); await page.waitForTimeout(400);
+    a = await area();
+    check(`…and stop at the end of that segment until the next one starts (${a.lit} of ${after(upto(4))})`, a.lit === after(upto(4)));
+    await playing('e1', upto(5), upto(6));
+    await page.waitForTimeout(300);
+    a = await area();
+    check(`the next report moves them on: at least up to the text before the segment now playing (${a.lit}, from ${after(upto(5))})`, a.lit >= after(upto(5)) && a.lit < after(upto(5)) + 12);
+
+    // soft barge-in: she is held while Allen's words are judged; the lit words stop with her
+    await playing('e1', upto(5) + 7, upto(6));
+    await page.waitForTimeout(300);
+    await playing('e1', upto(5) + 7, upto(6), true);
+    await page.waitForTimeout(300);
+    const before = (await area()).lit;
+    await skew(30_000); await page.waitForTimeout(500);
+    a = await area();
+    check(`held: the lit words do not move while she is held, a half minute of the clock later (${before} → ${a.lit})`, a.lit === before && a.all === 0 && before >= after(upto(5) + 7));
+    await playing('e1', upto(5) + 7, upto(6), false);
+    await page.waitForTimeout(300);
+    check('let go: they go on from where she was held, not from where the clock has got to', (await area()).lit - before <= 6);
+    await skew(1500); await page.waitForTimeout(400);
+    a = await area();
+    check(`let go: and then they move again (${before} → ${a.lit})`, a.lit > before + 6 && a.lit <= after(upto(6)));
+
+    // stopped for good: held at the stop, then the terminal event much later; nothing moves after the audio did
+    await playing('e1', upto(6) - 12, upto(6), true);
+    await page.waitForTimeout(300);
+    const stopped = (await area()).lit;
+    await skew(8000);
+    await emit('voice', { phase: 'spoken', turn_id: 'e1', output_outcome: 'interrupted' });
+    await skew(8000); await page.waitForTimeout(500);
+    a = await area();
+    check(`interrupted: the lit words stop where the audio stopped, not at the terminal event and not at the end (${stopped} → ${a.lit})`, a.lit === stopped && a.all === 0 && stopped === after(upto(6) - 12));
+    await shot('en-03-interrupted');
+    check('no page errors (English anchors)', s.errors.length === 0);
+    await s.context.close();
+  }
+
+  // interrupted with no report in between (a hard stop that the daemon answers only with the terminal event): the lit words stop at that event
+  {
+    const s = await scene({ captions: 'all', lang: 'en' });
+    const { page, emit, skew, area, turn } = s;
+    await page.waitForTimeout(600);
+    const text = 'The harbor was quiet that morning, and the boats rocked slowly against the old wooden pier while the gulls circled above them.';
+    await emit('controls', { mic_muted: false, speech_muted: false, conversation: true }); s.daemonState.controls.conversation = true;
+    await turn('h1', 'go on', [text], { done: true });
+    await emit('voice', { phase: 'playing', turn_id: 'h1', played: 4, ahead: 40, held: false });
+    await skew(2000); await page.waitForTimeout(300);
+    await emit('voice', { phase: 'spoken', turn_id: 'h1', output_outcome: 'interrupted' });
+    await page.waitForTimeout(300);
+    const at = (await area()).lit;
+    await skew(20_000); await page.waitForTimeout(500);
+    const a = await area();
+    check(`interrupted without a hold: the lit words stop at the terminal event and stay (${at}), whatever the clock does after`, a.lit === at && at > 4 && a.all === 0);
+    await s.context.close();
+  }
+
   // the copy: one set of caption names, and the control is not under the “can't change these yet” banner
   {
     const s = await scene({ captions: 'brief', lang: 'en' });

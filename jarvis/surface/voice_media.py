@@ -400,6 +400,8 @@ class _ActiveResponse:
     prepared_text: str = ""
     starvation_gaps_at_start: int = 0
     host_underflows_at_start: int = 0
+    last_position: tuple[int, int, bool] | None = None
+    position_stopped: bool = False
 
 
 @dataclass(frozen=True)
@@ -2697,6 +2699,7 @@ class StreamingTTSPipeline:
                 if isinstance(snapshot, StalePlaybackGeneration):
                     return
                 await self._checkpoint_if_advanced(active, snapshot)
+                self._broadcast_position(active, snapshot)
                 await asyncio.sleep(self._config.presentation_poll_s)
         except asyncio.CancelledError:
             raise
@@ -3438,6 +3441,9 @@ class StreamingTTSPipeline:
         # Generation tombstone is the first irreversible publication.  Only
         # after it lands do we cancel network/fallback work.
         snapshot = await self._interrupt_snapshot(active)
+        if snapshot is not None:
+            # The caption stops now, not after the terminal commit.
+            self._broadcast_position(active, snapshot, stopped=True)
         await self._cancel_active_io(active, reason=reason)
         if snapshot is None:
             self._isolate_terminal_debt(
@@ -3757,6 +3763,36 @@ class StreamingTTSPipeline:
         except Exception:  # noqa: BLE001 - see docstring
             LOGGER.warning(
                 "could not record dropped speech %s", response.response_id, exc_info=True,
+            )
+
+    def _broadcast_position(
+        self,
+        active: _ActiveResponse,
+        snapshot: OutputTimelineSnapshot,
+        *,
+        stopped: bool = False,
+    ) -> None:
+        """Tell the screen where her voice is, when that changed (ADR 0112).
+
+        Held (a soft barge-in being judged) or ``stopped``, the caption stops
+        with her; nothing is said after a stop, which is the last report.
+        """
+        callback = getattr(self._broadcaster, "broadcast_voice_sync", None)
+        if not callable(callback) or active.position_stopped:
+            return
+        active.position_stopped = stopped
+        held = stopped or self._player.generation_held(active.lease.playback_generation_id) is True
+        position = (snapshot.played_letters, snapshot.playing_letters, held)
+        if position == active.last_position or not isinstance(position[0], int):
+            return
+        active.last_position = position
+        with contextlib.suppress(Exception):
+            callback(
+                "playing",
+                turn_id=active.response.turn_id,
+                played=position[0],
+                ahead=position[1],
+                held=held,
             )
 
     def _broadcast_spoken(self, turn_id: str, *, event_type: str = "no_speech") -> None:

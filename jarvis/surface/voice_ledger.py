@@ -104,6 +104,11 @@ class OutputTimelineSnapshot:
     all_segments_closed: bool
     heard_partial_sequence: int | None = None
     heard_partial_text_end: int = 0
+    # Where playback is, for the screen's captions: letters and digits of the
+    # speech played so far whatever its gain (heard_text is stricter), and of
+    # the speech through the end of the segment playing now.
+    played_letters: int = 0
+    playing_letters: int = 0
 
     @property
     def heard_text_hash(self) -> str:
@@ -357,6 +362,7 @@ class PlaybackLedger:
             heard_through = sequence
         if any(not chunk.closed for chunk in self._chunks.values()):
             all_closed = False
+        played, playing = self._played_letters()
         return OutputTimelineSnapshot(
             lease=self.lease,
             accepted_samples=self._accepted_cursor,
@@ -370,7 +376,36 @@ class PlaybackLedger:
             all_segments_closed=all_closed,
             heard_partial_sequence=partial_sequence,
             heard_partial_text_end=partial_end,
+            played_letters=played,
+            playing_letters=playing,
         )
+
+    def _played_letters(self) -> tuple[int, int]:
+        """Letters and digits played so far, and through the segment playing now.
+
+        Unlike ``heard_text`` this ignores audibility: a duck or hold keeps her
+        place, and the caption follows her place, not what a microphone could
+        have caught.
+        """
+        before = 0
+        for sequence in sorted(self._chunks):
+            chunk = self._chunks[sequence]
+            end = chunk.output_end_cursor
+            if chunk.closed and end is not None and end <= self._estimated_audible_cursor:
+                before += _letters(chunk.text)
+                continue
+            said = 0
+            for text_end, sample_end in chunk.word_boundaries:
+                if sample_end > self._estimated_audible_cursor:
+                    break
+                said = text_end
+            return before + _letters(chunk.text[:said]), before + _letters(chunk.text)
+        return before, before
+
+
+def _letters(text: str) -> int:
+    """Count letters and digits: what survives the differences between speech and caption text."""
+    return sum(ch.isalnum() for ch in text)
 
 
 _AUDIBILITY_RANK: dict[AudibilityClass, int] = {

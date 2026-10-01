@@ -17,7 +17,10 @@ export interface Row { seq: number; id: string; ts: string; source: string; text
 // One line of what is on screen under her: yours as you said it, hers as the daemon wrote it (its <voice>/<document> tags kept).
 // `at`: when it landed (hers: when she began saying it). `said`: she has finished saying it; `cutAt`: she was stopped there.
 // `queued`: another answer of hers is still being said, so this one has not begun; `from`: when she began saying it, if that was later than `at`.
-export interface Line { id: string; who: 'you' | 'her'; text: string; turn?: string; failed?: boolean; at: number; said?: boolean; cutAt?: number; queued?: boolean; from?: number }
+// `mark`: where her voice was when the daemon last said (ADR 0112): `n` letters and digits played, `ahead` through the segment playing,
+// as of `at`; `hold`: when she was held or stopped there, so the lit words stop with her.
+export interface Mark { n: number; ahead: number; at: number; hold?: number }
+export interface Line { id: string; who: 'you' | 'her'; text: string; turn?: string; failed?: boolean; at: number; said?: boolean; cutAt?: number; queued?: boolean; from?: number; mark?: Mark }
 const MAX_LINES = 40;
 // A same-speaker pause longer than this starts a new caption row (https://developers.openai.com/api/docs/guides/live-conversations, Display captions): an assistant resuming after an interruption must not extend the cut-off line. Application choice; tune against recordings.
 const SUBTITLE_GAP_MS = 1500;
@@ -27,7 +30,7 @@ export const idleLive: Live = { state: 'idle', sessionId: null, since: null, usa
 export interface State { mode: Mode; phase: Phase; micMuted: boolean; soundMuted: boolean; conversation: boolean; heard: string; partial: string; inbox: boolean; detail: string | null; results: Result[]; reply: string; draft: string; attachment: boolean; turnId: string | null; responseId: string | null; failed: boolean; waiting: string | null; askedAt: number | null; thoughtS: number; faded: boolean; played: boolean; inFlight: boolean; live: Live; subtitles: Subtitle[]; rows: Row[]; openSeq: number; talk: Line[]; talkN: number; replyAt: number }
 export const initialState: State = { mode: 'voice', phase: 'listening', micMuted: false, soundMuted: false, conversation: false, heard: '', partial: '', inbox: false, detail: null, results: [examples[0], examples[3], examples[1]], reply: '', draft: '', attachment: false, turnId: null, responseId: null, failed: false, waiting: null, askedAt: null, thoughtS: 0, faded: false, played: false, inFlight: false, live: idleLive, subtitles: [], rows: [], openSeq: 0, talk: [], talkN: 0, replyAt: 0 };
 export type Action = { type: 'mode'; mode: Mode } | { type: 'phase'; phase: Phase } | { type: 'mic' | 'sound' | 'inbox' | 'interrupt' | 'end' | 'attachment' | 'reset' } | { type: 'draft'; value: string } | { type: 'send' } | { type: 'answer' } | { type: 'detail'; id: string | null } | { type: 'dismiss'; id: string } | { type: 'example'; id: string }
-  | { type: 'open'; turnId: string; responseId: string | null; at: number } | { type: 'append'; token: string; at: number } | { type: 'settle'; turnId: string } | { type: 'pending'; turnId: string; at: number } | { type: 'failed'; turnId: string; cancelled: boolean; message: string | null; at: number } | { type: 'controls'; micMuted: boolean; soundMuted: boolean; conversation: boolean } | { type: 'heard'; text: string; at: number } | { type: 'partial'; text: string } | { type: 'spoken'; turnId: string; at: number; outcome?: string }
+  | { type: 'open'; turnId: string; responseId: string | null; at: number } | { type: 'append'; token: string; at: number } | { type: 'settle'; turnId: string } | { type: 'pending'; turnId: string; at: number } | { type: 'failed'; turnId: string; cancelled: boolean; message: string | null; at: number } | { type: 'controls'; micMuted: boolean; soundMuted: boolean; conversation: boolean } | { type: 'heard'; text: string; at: number } | { type: 'partial'; text: string } | { type: 'spoken'; turnId: string; at: number; outcome?: string } | { type: 'playing'; turnId: string; played: number; ahead: number; held: boolean; at: number }
   | { type: 'live'; live: Live } | { type: 'subtitle'; sessionId: string; role: 'user' | 'assistant'; delta: string; startMs: number; endMs: number } | { type: 'live_dismiss' }
   | { type: 'rows'; rows: Row[] } | { type: 'older'; rows: Row[] }
   | { type: 'you'; text: string; at: number } | { type: 'her'; turn: string; text: string; at: number } | { type: 'said'; turn: string; at: number } | { type: 'cut'; at: number } | { type: 'talk-clear' };
@@ -53,6 +56,14 @@ const finished = (lines: Line[], turn: string, at: number, cutAt?: number): Line
 };
 // A line she was still saying when something else began (your words, a stop, a lost link) stops where it was.
 const ended = (lines: Line[], at: number): Line[] => lines.some(l => l.who === 'her' && !l.said) ? lines.map(l => l.who === 'her' && !l.said ? { ...l, said: true, queued: false, cutAt: l.cutAt ?? (l.queued ? l.at : at) } : l) : lines;
+// Where her voice is, from the daemon (ADR 0112). The same place again only holds or lets go the clock of the lit words:
+// held it stops, let go it goes on from there.
+const marked = (lines: Line[], a: { turnId: string; played: number; ahead: number; held: boolean; at: number }): Line[] => {
+  const l = lines.find(l => l.id === `her:${a.turnId}`), m = l?.mark;
+  if (!l || l.said || m && m.n === a.played && m.ahead === a.ahead && !m.hold === !a.held) return lines;
+  const mark: Mark = m && m.n === a.played && m.ahead === a.ahead ? a.held ? { ...m, hold: a.at } : { n: m.n, ahead: m.ahead, at: m.at + a.at - m.hold! } : { n: a.played, ahead: a.ahead, at: a.at, ...(a.held ? { hold: a.at } : {}) };
+  return lines.map(x => x === l ? { ...x, mark } : x);
+};
 export function reducer(s: State, a: Action): State {
   switch (a.type) {
     case 'reset': return { ...initialState, results: examples.slice(0, 1) };
@@ -131,6 +142,7 @@ export function reducer(s: State, a: Action): State {
     case 'you': return { ...s, ...yours(s, a.text, a.at) };
     case 'her': return { ...s, talk: hers(s.talk, a.turn, a.text, a.at) };
     case 'said': return { ...s, talk: finished(s.talk, a.turn, a.at) };
+    case 'playing': { const talk = marked(s.talk, a); return talk === s.talk ? s : { ...s, talk }; }
     case 'cut': return { ...s, talk: ended(s.talk, a.at) };
     case 'talk-clear': return s.talk.length ? { ...s, talk: [] } : s;
     case 'detail': return { ...s, detail: a.id, results: s.results.map(r => r.id === a.id ? { ...r, read: true } : r) };

@@ -1,4 +1,4 @@
-import { plain, type Line } from './model';
+import { plain, type Line, type Mark } from './model';
 
 // The talk area under her: what it shows at each caption level, and how far along her words are.
 // Captions (Settings › Voice, her right-click menu): everything, only what is worth reading, or nothing.
@@ -26,7 +26,7 @@ export function split(raw: string): { spoken: string; written: string } {
 }
 
 // One thing on screen: what you said, or her answer split into the part she says and the part that is written.
-export type Item = { id: string; who: 'you' | 'her'; spoken: string; written: string; failed: boolean; at: number; said: boolean; cutAt?: number; turn?: string; queued: boolean; from: number;
+export type Item = { id: string; who: 'you' | 'her'; spoken: string; written: string; failed: boolean; at: number; said: boolean; cutAt?: number; turn?: string; queued: boolean; from: number; mark?: Mark;
   // What she says, when it is not shown (the middle level shows the written part alone): her speech still times how that is lit.
   voiced?: string };
 // Full: everything. The middle level: only what is written (lists, times, places, links), and what she says right after it.
@@ -34,7 +34,7 @@ export type Item = { id: string; who: 'you' | 'her'; spoken: string; written: st
 export function itemsOf(lines: Line[], captions: Captions): Item[] {
   const out: Item[] = [];
   for (const l of lines) {
-    const base = { id: l.id, at: l.at, said: !!l.said, cutAt: l.cutAt, turn: l.turn, queued: !!l.queued, from: l.from ?? l.at };
+    const base = { id: l.id, at: l.at, said: !!l.said, cutAt: l.cutAt, turn: l.turn, queued: !!l.queued, from: l.from ?? l.at, mark: l.mark };
     if (l.failed) out.push({ ...base, who: 'her', spoken: l.text, written: '', failed: true, said: true });
     else if (l.who === 'you') { if (captions === 'all') out.push({ ...base, who: 'you', spoken: l.text, written: '', failed: false }); }
     else {
@@ -55,7 +55,8 @@ export function kindOf(captions: Captions, items: Item[], field: boolean, expand
   return expanded && items.length ? 'area' : 'pill';
 }
 
-// How far she has got is estimated, not reported: the daemon only says when she has finished. About 4.5 characters a
+// How far she has got: the daemon says where her voice is (ADR 0112) and the pace below carries it on until the next report;
+// until the first report, and for a daemon that sends none, it is all estimated from when she began. About 4.5 characters a
 // second for Chinese, counting its punctuation; Latin letters are spoken about three times as fast.
 export const SPEED = 4.5;
 const WIDE = /[⺀-鿿豈-﫿＀-￯　-〿]/;
@@ -70,6 +71,22 @@ export function said(clock: number[], seconds: number): number {
   let lo = 0, hi = clock.length;
   while (lo < hi) { const mid = (lo + hi) >> 1; if (clock[mid] <= seconds) lo = mid + 1; else hi = mid; }
   return lo;
+}
+// The daemon counts letters and digits of what was played (speech and caption differ in marks, spaces and markdown): this many
+// characters of the text have been said, the marks right after the last of them included.
+const LETTER = /[\p{L}\p{N}]/u;
+export function reach(chars: string[], n: number): number {
+  let seen = 0, i = 0;
+  if (n <= 0) return 0;
+  for (; i < chars.length; i++) if (LETTER.test(chars[i]) && ++seen === n) { i++; break; }
+  while (seen >= n && i < chars.length && !/\s/.test(chars[i]) && !LETTER.test(chars[i])) i++;
+  return i;
+}
+// Characters said at `now` by the last report: from where it put her, at pace, no further than the end of the segment it says she is in;
+// held (a barge-in being judged) or stopped, the report's clock stops.
+export function placed(text: string, clock: number[], m: Mark, now: number): number {
+  const chars = [...text], at = reach(chars, m.n), from = at ? clock[at - 1] : 0;
+  return Math.max(at, Math.min(said(clock, from + (Math.min(now, m.hold ?? now) - m.at) / 1000), reach(chars, m.ahead)));
 }
 // The text cut into sentences: each ends at its terminal mark, or at a line break.
 export function sentences(text: string): string[][] {
