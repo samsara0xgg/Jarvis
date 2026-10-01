@@ -1,4 +1,4 @@
-# ADR 0102 — Jarvis's notch says what Startrail would notify
+# ADR 0104 — Jarvis's notch says what Startrail would notify
 
 **Status:** Accepted
 **Date:** 2026-09-30

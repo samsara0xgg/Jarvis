@@ -3,7 +3,7 @@ import type { Event, Item, Req, Sess } from '../electron/agents/types';
 import { queue, waitOf, waitingSince } from './agents/queue';
 import { ago, type Agent, type AgentRequest, type Answer, type Said } from './agents';
 
-// Startrail's sessions in Jarvis's notch (ADR 0073, 0095, 0102). The page follows the agent host's own event stream and
+// Startrail's sessions in Jarvis's notch (ADR 0073, 0095, 0104). The page follows the agent host's own event stream and
 // answers through its routes, as the Agents window does: main adds the host's key to every request on the host's port
 // (bridge.ts), so the page never holds it. Main names the port only where it runs the host (the dev build; not the
 // design checks, not the packaged app). While the owner leaves `notify.notch` on (the host's settings), the notch says

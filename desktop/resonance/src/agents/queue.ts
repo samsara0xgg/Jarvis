@@ -1,4 +1,4 @@
-// Who waits on you (ADR 0102): one rule for her queue, the list, the next key and the notch. A session waits when it asks (a
+// Who waits on you (ADR 0104): one rule for her queue, the list, the next key and the notch. A session waits when it asks (a
 // request to allow, a question, a plan), when it stopped on an error you have not read, or when it finished and you have
 // not read it. Parked, archived and terminal-held sessions never wait. Asks come first, then errors, then finished
 // ones; within each, the one that has waited longest.
