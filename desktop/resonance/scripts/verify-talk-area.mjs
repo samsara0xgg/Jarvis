@@ -280,6 +280,18 @@ try {
     check('an answer with a written part: the pill grows into the area showing only the written part', a.kind === 'area' && a.rows === 3 && a.hers === 0 && a.yous === 0 && Math.round(a.r.w) === 360);
     await shot('12-written-only');
     await emit('voice', { phase: 'spoken', turn_id: 'b2' });
+    // A follow-up answered in speech only ("shorter, please"): the area follows her, not the written answer before it.
+    const shorter = '短一点：十点开会，两点半评审，五点健身。';
+    await turn('b2s', '说短一点', shorter); await page.waitForTimeout(2000);
+    a = await area();
+    check('a spoken-only follow-up to a written answer shows under it, so the area never reads one answer while she says another', a.kind === 'area' && a.her === shorter && a.hers === 1 && a.yous === 0);
+    await shot('12a-follow-up');
+    await emit('voice', { phase: 'spoken', turn_id: 'b2s' });
+    const shortest = '十点、两点半、五点。';
+    await turn('b2t', '再短一点', shortest); await page.waitForTimeout(2000);
+    a = await area();
+    check('and a second spoken-only follow-up replaces the first in turn', a.kind === 'area' && a.her === shortest && a.hers === 2);
+    await emit('voice', { phase: 'spoken', turn_id: 'b2t' });
     await emit('voice', { phase: 'listening', turn_id: 'b3' }); await emit('voice', { phase: 'accepted', turn_id: 'b3', text: '再查一下' });
     await emit('failed', { turn_id: 'b3', reason: 'network', message: 'The network is down, so that turn did not finish.' }); await page.waitForTimeout(800);
     a = await area();
