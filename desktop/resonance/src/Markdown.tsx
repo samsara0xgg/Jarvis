@@ -1,10 +1,11 @@
-import type { ReactNode } from 'react';
+import { Fragment, type ReactNode } from 'react';
 
 // The markdown Jarvis's answers actually use (memory.db, 2026-09-25): headings, bold, code ticks, lists (some nested), tables.
 // Built as React elements, never innerHTML, so nothing in an answer can inject markup into the window.
 // ponytail: no links, italics or quotes; none appear in the answers yet. Add them when they do.
-export const inline = (text: string): ReactNode[] => text.split(/(\*\*[^*]+\*\*|`[^`]+`)/).map((part, i) =>
-  i % 2 === 0 ? part : part[0] === '`' ? <code key={i}>{part.slice(1, -1)}</code> : <strong key={i}>{inline(part.slice(2, -2))}</strong>);
+// `spell`: how plain text is set (the talk area lights it a character at a time); code stays whole.
+export const inline = (text: string, spell?: (text: string) => ReactNode): ReactNode[] => text.split(/(\*\*[^*]+\*\*|`[^`]+`)/).map((part, i) =>
+  i % 2 === 0 ? spell ? <Fragment key={i}>{spell(part)}</Fragment> : part : part[0] === '`' ? <code key={i}>{part.slice(1, -1)}</code> : <strong key={i}>{inline(part.slice(2, -2), spell)}</strong>);
 
 type Item = { indent: number; start: number | null; text: string };
 const ITEM = /^(\s*)(?:[-*•]|(\d+)[.)])\s+(.*)$/;
@@ -20,7 +21,7 @@ const nest = (items: Item[]): ReactNode => {
 };
 const cells = (line: string) => line.trim().replace(/^\||\|$/g, '').split('|').map(c => c.trim());
 
-export function Markdown({ text }: { text: string }) {
+export function Markdown({ text, spell }: { text: string; spell?: (text: string) => ReactNode }) {
   const lines = text.split('\n'), blocks: ReactNode[] = [];
   for (let i = 0; i < lines.length;) {
     const line = lines[i], key = blocks.length;
@@ -51,7 +52,7 @@ export function Markdown({ text }: { text: string }) {
     } else {
       const para: string[] = [];
       for (; i < lines.length && lines[i].trim() && !/^(#{1,6}\s|\s*\||\s*```)/.test(lines[i]) && !ITEM.test(lines[i]); i++) para.push(lines[i]);
-      blocks.push(<p key={key}>{inline(para.join('\n'))}</p>);
+      blocks.push(<p key={key}>{inline(para.join('\n'), spell)}</p>);
     }
   }
   return <div className="md">{blocks}</div>;

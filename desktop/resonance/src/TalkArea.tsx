@@ -30,6 +30,8 @@ const STAGGER = 700;
 type Spoken = { p: HTMLElement; chars: HTMLElement[]; spans: HTMLElement[]; lit: number };
 type Registry = Map<string, Spoken>;
 type Fly = { text: string; rect: DOMRect };
+// A character each, for the driver to light.
+const spell = (text: string) => [...text].map((ch, j) => <i key={j}>{ch}</i>);
 
 // Her spoken line, a span per character grouped by sentence: the driver lights them as she says them.
 const Said = memo(function Said({ id, text, reg }: { id: string; text: string; reg: Registry }) {
@@ -45,10 +47,10 @@ const Said = memo(function Said({ id, text, reg }: { id: string; text: string; r
 // The written part: runs of list items become the grouped list (a time, then the words as written), headings and everything else
 // go through the same Markdown the Dashboard uses.
 const ITEM = /^(\s*)([-*•]|\d+[.)])\s+(.*)$/, TIME = /^(\d{1,2}[:：]\d{2}(?:\s*[-–~～至]\s*\d{1,2}[:：]\d{2})?)\s+(.*)$/;
-function Written({ text }: { text: string }) {
+function Written({ text, lit }: { text: string; lit: boolean }) {
   const out: ReactNode[] = [];
   let md: string[] = [], rows: { lead: string; body: string }[] = [];
-  const flushMd = () => { if (md.join('').trim()) out.push(<Markdown key={out.length} text={md.join('\n')}/>); md = []; };
+  const flushMd = () => { if (md.join('').trim()) out.push(<Markdown key={out.length} text={md.join('\n')} spell={lit ? spell : undefined}/>); md = []; };
   const flushRows = () => {
     if (rows.length) out.push(<div className="doc" key={out.length}>{rows.map((row, i) => <div key={i}>{row.lead && <time>{row.lead}</time>}<span>{inline(row.body)}</span></div>)}</div>);
     rows = [];
@@ -67,10 +69,18 @@ function Written({ text }: { text: string }) {
 }
 
 function Her({ it, reg, think, ready }: { it: Item; reg: Registry; think: string; ready: boolean }) {
+  // The written part's plain paragraphs are lit in step with her speech, as far along as it has got (lists, headings and code come whole).
+  const w = useRef<HTMLDivElement>(null), lit = !!(it.spoken || it.voiced);
+  useLayoutEffect(() => {
+    const el = w.current, chars = el && lit ? [...el.querySelectorAll<HTMLElement>('.md p i')] : [];
+    if (!el || !chars.length) return;
+    reg.set(`${it.id}:w`, { p: el, chars, spans: [...el.querySelectorAll<HTMLElement>('.md p')].filter(p => p.querySelector('i')), lit: -1 });
+    return () => { reg.delete(`${it.id}:w`); };
+  }, [it.id, it.written, lit, ready, reg]);
   return <div className={`tk-h ${it.failed ? 'is-err' : ''}`} data-line={it.id}>
     {think && <small className="tk-think">{think}</small>}
     {it.spoken && <Said id={it.id} text={it.spoken} reg={reg}/>}
-    {it.written && ready && <div className="tk-w" data-written><Written text={it.written}/></div>}
+    {it.written && ready && <div ref={w} className="tk-w" data-written><Written text={it.written} lit={lit}/></div>}
   </div>;
 }
 
@@ -292,15 +302,16 @@ export function TalkArea(p: TalkProps) {
   // ---- the words she is saying ----
   const clockFor = (it: Item) => {
     const hit = clocks.current.get(it.id);
-    if (hit && hit.text === it.spoken) return hit.clock;
-    const clock = pace(it.spoken); clocks.current.set(it.id, { text: it.spoken, clock }); return clock;
+    const text = it.spoken || it.voiced || '';
+    if (hit && hit.text === text) return hit.clock;
+    const clock = pace(text); clocks.current.set(it.id, { text, clock }); return clock;
   };
   const paint = (r: Spoken, lit: number) => {
     if (r.lit === lit) return;
     const [a, b] = r.lit < 0 ? [0, r.chars.length] : [Math.min(r.lit, lit), Math.max(r.lit, lit)];
     for (let j = a; j < b; j++) r.chars[j].classList.toggle('on', j < lit);
     let k = 0;
-    for (const sp of r.spans) { const end = k + sp.children.length; sp.classList.toggle('done', end < lit && lit < r.chars.length); k = end; }
+    for (const sp of r.spans) { const end = k + sp.querySelectorAll('i').length; sp.classList.toggle('done', end < lit && lit < r.chars.length); k = end; }
     r.p.classList.toggle('all', lit >= r.chars.length);
     r.lit = lit;
   };
@@ -309,12 +320,17 @@ export function TalkArea(p: TalkProps) {
   const drive = () => {
     let front: HTMLElement | null = null;
     for (const it of view.current.items) {
-      const r = it.who === 'her' && it.spoken ? reg.current.get(it.id) : undefined;
-      if (!r) continue;
-      const total = r.chars.length, done = it.failed || live.current.silent || (it.said && it.cutAt === undefined);
-      const lit = done ? total : it.queued ? 0 : Math.min(total, saidCount(clockFor(it), ((it.cutAt ?? Date.now()) - it.from) / 1000));
-      paint(r, lit);
-      if (!done && !it.queued && it.cutAt === undefined) front = r.chars[Math.max(0, lit - 1)] ?? null;
+      const sr = it.who === 'her' && it.spoken ? reg.current.get(it.id) : undefined, wr = it.who === 'her' ? reg.current.get(`${it.id}:w`) : undefined;
+      if (!sr && !wr) continue;
+      const clock = clockFor(it), done = it.failed || live.current.silent || (it.said && it.cutAt === undefined);
+      const said = done ? clock.length : it.queued ? 0 : saidCount(clock, ((it.cutAt ?? Date.now()) - it.from) / 1000);
+      // The written part is lit by the same share of her speech as it has characters; the follow goes to the lower front.
+      for (const r of [sr, wr]) {
+        if (!r) continue;
+        const total = r.chars.length, lit = Math.floor(total * said / clock.length);
+        paint(r, lit);
+        if (!done && !it.queued && it.cutAt === undefined) front = r.chars[Math.max(0, lit - 1)] ?? null;
+      }
     }
     c.litEl = front;
     return front;
@@ -330,7 +346,7 @@ export function TalkArea(p: TalkProps) {
       el.scrollTo({ top: Math.max(0, Math.min(bottom - room * .7, el.scrollHeight - room)), behavior: reduced() ? 'auto' : 'smooth' });
     }
   };
-  const speaking = v.items.some(it => it.who === 'her' && it.spoken && !it.said);
+  const speaking = v.items.some(it => it.who === 'her' && (it.spoken || it.voiced) && !it.said);
   const steps = useRef({ drive, followLit }); steps.current = { drive, followLit };
   useEffect(() => {
     if (!speaking) return;

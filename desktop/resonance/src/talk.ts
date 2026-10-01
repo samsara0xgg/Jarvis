@@ -26,7 +26,9 @@ export function split(raw: string): { spoken: string; written: string } {
 }
 
 // One thing on screen: what you said, or her answer split into the part she says and the part that is written.
-export type Item = { id: string; who: 'you' | 'her'; spoken: string; written: string; failed: boolean; at: number; said: boolean; cutAt?: number; turn?: string; queued: boolean; from: number };
+export type Item = { id: string; who: 'you' | 'her'; spoken: string; written: string; failed: boolean; at: number; said: boolean; cutAt?: number; turn?: string; queued: boolean; from: number;
+  // What she says, when it is not shown (the middle level shows the written part alone): her speech still times how that is lit.
+  voiced?: string };
 // Full: everything. The middle level: only what is written (lists, times, places, links), and what she says right after it.
 // Hidden: nothing. An error always shows.
 export function itemsOf(lines: Line[], captions: Captions): Item[] {
@@ -38,7 +40,7 @@ export function itemsOf(lines: Line[], captions: Captions): Item[] {
     else {
       const { spoken, written } = split(l.text);
       if (captions === 'all' && (spoken || written)) out.push({ ...base, who: 'her', spoken, written, failed: false });
-      else if (captions === 'brief' && written) out.push({ ...base, who: 'her', spoken: '', written, failed: false });
+      else if (captions === 'brief' && written) out.push({ ...base, who: 'her', spoken: '', voiced: spoken, written, failed: false });
       // A spoken-only answer that follows an answer on screen (a shorter version, a correction, then another) shows too,
       // so the area never reads one answer while she says another.
       else if (captions === 'brief' && spoken && out.at(-1)?.who === 'her' && !out.at(-1)?.failed) out.push({ ...base, who: 'her', spoken, written: '', failed: false });

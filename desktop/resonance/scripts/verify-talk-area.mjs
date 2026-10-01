@@ -301,6 +301,49 @@ try {
     await s.context.close();
   }
 
+  // ---- the written part's paragraphs are lit as she speaks, like her spoken line: grey until reached ----
+  for (const captions of ['brief', 'all']) {
+    const s = await scene({ captions });
+    const { page, emit, skew, shot, area, turn } = s;
+    await page.waitForTimeout(600);
+    const para = '下午三点之后的三场会议都已经往后推了一个小时，对应的日历邀请也已经更新。我给王老师发了一条消息，说明了改期的原因，并且问他明天上午是否方便再约一次。周五的评审会议和你的健身课时间冲突了，我没有擅自改动，等你决定。';
+    const doc = `<voice>好，我把今天的情况都写在下面了，你慢慢看，有不清楚的地方再问我。</voice><document>${para}\n\n### 今天\n- 10:00 和 Anna 的产品会 · 3F 会议室\n- 14:30 评审会议\n- 17:00 健身课\n\n**提醒**：明早九点交报告。</document>`;
+    // What the written block shows now: characters lit or grey, in order, and what it is made of.
+    const wr = () => page.evaluate(() => {
+      const w = [...document.querySelectorAll('.talk .tk-w')].at(-1), cs = [...w.querySelectorAll('.md p i')], on = cs.filter(i => i.classList.contains('on')), off = cs.filter(i => !i.classList.contains('on'));
+      const col = i => i && getComputedStyle(i).color, sp = [...document.querySelectorAll('.talk .tk-s i')];
+      return { total: cs.length, on: on.length, off: off.length, prefix: cs.slice(0, on.length).every(i => i.classList.contains('on')), all: w.classList.contains('all'), h: w.getBoundingClientRect().height,
+        onColor: col(on[0]), offColor: col(off.at(-1)), text: [...w.querySelectorAll('.md p')].map(p => p.textContent).join('|'), rows: w.querySelectorAll('.doc > div').length, inDoc: w.querySelectorAll('.doc i, h5 i, code i').length,
+        bold: [...w.querySelectorAll('strong')].map(b => b.textContent).join(), boldChars: w.querySelectorAll('strong i').length, spokenOn: sp.filter(i => i.classList.contains('on')).length, spoken: sp.length };
+    });
+    await turn('w1', '我今天有什么安排', doc);
+    await page.waitForTimeout(1200);
+    let a = await area(), m = await wr();
+    check(`written lit (${captions}): the paragraphs are a character each, grey until she reaches them (${m.on} of ${m.total} lit)`, m.total > 100 && m.on > 0 && m.off > 0 && m.prefix);
+    await skew(2500); await page.waitForTimeout(500);
+    const m2 = await wr();
+    check(`written lit (${captions}): midway through her speech some but not all are lit, in order (${m2.on} of ${m2.total})`, m2.on > m.on && m2.off > 0 && m2.on / m2.total > .2 && m2.on / m2.total < .8 && m2.prefix && !m2.all);
+    check(`written lit (${captions}): lit characters are bright, unread ones the same dim grey as her spoken line`, m2.onColor === 'rgb(238, 240, 251)' && m2.offColor === 'rgba(238, 240, 251, 0.28)');
+    if (captions === 'all') check(`written lit (all): it keeps pace with her spoken line (${m2.spokenOn}/${m2.spoken} and ${m2.on}/${m2.total})`, Math.abs(m2.spokenOn / m2.spoken - m2.on / m2.total) < .12);
+    check(`written lit (${captions}): the list stays the grouped .doc rows, whole, and headings and code are not split`, m2.rows === 3 && m2.inDoc === 0 && (await page.locator('.talk .doc time').allTextContents()).join() === '10:00,14:30,17:00');
+    check(`written lit (${captions}): Markdown still renders: the bold stays bold, the text is as written`, m2.bold === '提醒' && m2.boldChars === 2 && m2.text === `${para}|提醒：明早九点交报告。`);
+    await shot(`written-lit-${captions}-mid`);
+    await skew(1200); await page.waitForTimeout(500);
+    const m3 = await wr();
+    check(`written lit (${captions}): further on, more is lit and she has not finished (${m3.on} of ${m3.total})`, m3.on > m2.on && m3.off > 0 && m3.prefix && !m3.all);
+    await emit('voice', { phase: 'spoken', turn_id: 'w1' }); await page.waitForTimeout(500);
+    const m4 = await wr();
+    check(`written lit (${captions}): when she has finished all of it is lit`, m4.on === m4.total && m4.off === 0 && m4.all);
+    check(`written lit (${captions}): no layout jump while it is lit: the block is as tall at the end as at the start (${Math.round(m.h)}, ${Math.round(m4.h)})`, Math.abs(m.h - m4.h) < 1.5 && Math.abs(m2.h - m4.h) < 1.5);
+    await shot(`written-lit-${captions}-done`);
+    // Nothing spoken: the document stays as it was, whole.
+    await turn('w2', '写在文档里', `<document>${para}</document>`); await page.waitForTimeout(1500);
+    const bare = await page.evaluate(() => { const w = [...document.querySelectorAll('.talk .tk-w')].at(-1); return { chars: w.querySelectorAll('i').length, text: w.textContent }; });
+    check(`written lit (${captions}): an answer with nothing spoken is a plain block, not split into characters`, bare.chars === 0 && bare.text === para);
+    check(`no page errors (written lit, ${captions})`, s.errors.length === 0);
+    await s.context.close();
+  }
+
   // ---- the pill after an answer was shown: it fits its words, not the transcript folded away in it ----
   {
     const s = await scene({ captions: 'brief' });
