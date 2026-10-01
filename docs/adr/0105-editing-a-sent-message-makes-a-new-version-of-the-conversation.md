@@ -1,4 +1,4 @@
-# ADR 0103 — Editing a sent message makes a new version of the conversation
+# ADR 0105 — Editing a sent message makes a new version of the conversation
 
 **Status:** Accepted
 **Date:** 2026-09-30

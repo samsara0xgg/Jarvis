@@ -1086,7 +1086,7 @@ function same(a: Item[], b: Item[]) {
   }
   return out;
 }
-// What you said, changed and sent again (m-edit, ADR 0103): a running turn stops, the conversation goes back to before that message
+// What you said, changed and sent again (m-edit, ADR 0105): a running turn stops, the conversation goes back to before that message
 // (Claude: the files too, from its checkpoints; Codex: the conversation only), and the new words go with the old
 // message's pictures. The new session reads as the same conversation, with its title, place in the list, marks and the
 // reactions on what stays; this one is archived as the version before it, and the page steps between them (m-ver).
