@@ -282,15 +282,20 @@ def test_a_turn_holds_the_mode_until_her_answer_then_quiet_ends_it(tmp_path: Pat
     assert rig.conversation_changes == [(False, "idle")]
 
 
-def test_dismissals_are_whole_phrases() -> None:
-    """Only a sentence that is nothing but the dismissal ends the mode."""
+def test_dismissals_are_whole_phrases_or_short_orders() -> None:
+    """A dismissal is the whole sentence, or 退下 / 退一下 / a leading 退出 in a short one."""
     said = (
         "退下。", "你可以退下了", "没事了。", "就这样吧!",
         "Hey, Jarvis, 退下。", "Bye bye.", "That's all.",
+        "退出退出退下, 暂停停一下等。", "我让你退一下。", "退出。",
     )
     for heard in said:
         assert voice_asr.is_dismissal(heard), heard
-    for heard in ("退下以后呢?", "跟妈妈说再见", "就这样做", "结束了吗?", "By the way", "停。"):
+    not_said = (
+        "退下以后呢?", "你会退下吗", "跟妈妈说再见", "就这样做", "结束了吗?", "By the way", "停。",
+        "怎么退出 vim", "他从董事会退下来以后去做了投资, 后来怎么样了",
+    )
+    for heard in not_said:
         assert not voice_asr.is_dismissal(heard), heard
     for heard in ("等我一下。", "你等我一下", "稍等一下", "Hold on.", "Give me a second."):
         assert voice_asr.is_wait_request(heard), heard
