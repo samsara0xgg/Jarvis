@@ -429,7 +429,7 @@ def test_disabled_partial_asr_keeps_acoustic_pause_and_emits_no_new_traces() -> 
 
 
 def test_captions_show_what_is_heard_while_the_pause_still_ends_the_utterance() -> None:
-    """ADR 0109: ``captions`` shows each changed hypothesis; the endpoint stays acoustic."""
+    """ADR 0111: ``captions`` shows each changed hypothesis; the endpoint stays acoustic."""
     shown: list[tuple[str, str]] = []
     harness = _Harness(
         _ScriptedDecoder(["把灯", "把灯打开。", "把灯打开。"]),

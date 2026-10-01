@@ -79,7 +79,7 @@ export type TalkProps = {
   // Whether it is on screen at all, the caption level that applies now, and what there is to show.
   open: boolean; level: Captions; lines: Line[];
   voice: Voice; hearing: boolean;
-  // What has been heard so far of the words still coming in (ADR 0109): the label follows it, and the pill and its end button follow the label.
+  // What has been heard so far of the words still coming in (ADR 0111): the label follows it, and the pill and its end button follow the label.
   partial: string;
   // Her voice is off: nothing is being said, so her words are all there to read, not lit as they go.
   silent: boolean;

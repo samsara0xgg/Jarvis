@@ -55,7 +55,7 @@ _PARTIAL_DROP_DEGRADE_THRESHOLD = 3
 class PartialAsrConfig:
     """ADR-0006 D7 rolling-partial and semantic-hold bounds; off by default.
 
-    ``captions`` (ADR 0109) runs the same partial decode only to show what is
+    ``captions`` (ADR 0111) runs the same partial decode only to show what is
     being heard; the utterance still ends on the acoustic pause unless
     ``enabled`` also holds.
     """
@@ -449,7 +449,7 @@ class UtteranceAssembler:
         """Create bounded idle/pre-roll/utterance storage around one VAD.
 
         ``on_partial(turn_id, text)`` is told each time what has been heard so
-        far changes (ADR 0109); it only shows it and never decides anything.
+        far changes (ADR 0111); it only shows it and never decides anything.
         """
         self._vad = vad
         self._config = config
@@ -1797,7 +1797,7 @@ class DuplexVoiceSession:
             self._diagnostic_last_cursor = frame.sample_cursor + frame.frame_count
 
     def _show_partial(self, turn_id: str, text: str) -> None:
-        """ADR 0109: what has been heard so far, for the surface to show while he speaks."""
+        """ADR 0111: what has been heard so far, for the surface to show while he speaks."""
         self._broadcast("partial", turn_id=turn_id, text=text)
 
     def _broadcast(self, phase: str, *, turn_id: str, **payload: object) -> None:

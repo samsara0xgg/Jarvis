@@ -104,7 +104,7 @@ export function reducer(s: State, a: Action): State {
       return { ...t, reply, turnId: a.turnId, responseId: null, failed: true, faded: false, played: true, talk: hers(ended(s.talk, a.at), a.turnId, reply, a.at, { failed: true, said: true }),
         openSeq: t.rows.length ? t.rows[t.rows.length - 1].seq : 0 }; }
     case 'controls': return { ...s, micMuted: a.micMuted, soundMuted: a.soundMuted, conversation: a.conversation };
-    // What has been heard so far of the words still coming in (ADR 0109); one that arrives after they were accepted is late.
+    // What has been heard so far of the words still coming in (ADR 0111); one that arrives after they were accepted is late.
     case 'partial': return s.inFlight ? { ...s, partial: a.text } : s;
     case 'heard': { const added = a.text.trim() ? yours({ ...s, talk: ended(s.talk, a.at) }, a.text, a.at) : { talk: s.talk, talkN: s.talkN };
       return { ...s, heard: a.text, partial: '', inFlight: false, ...added, talk: s.inFlight ? unheld({ ...s, talk: added.talk }, s.reply) : added.talk }; }

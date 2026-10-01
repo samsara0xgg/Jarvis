@@ -889,7 +889,7 @@ def normalize_partial_text(text: str) -> str:
 
 
 def caption_text(text: str) -> str:
-    """Return one partial hypothesis as the surface shows it (ADR 0109).
+    """Return one partial hypothesis as the surface shows it (ADR 0111).
 
     SenseVoice ends every snapshot with a period, which would blink on and off
     as the revisions change.

@@ -250,7 +250,7 @@ try {
     check('the default level: a 36 tall pill, glyph and end button, no “Listening” text', a.kind === 'pill' && Math.round(a.r.h) === 36 && a.label === '' && a.state === 'hearing');
     check('the pill is glass, fully round', await page.evaluate(() => window.__state.glass.some(g => Math.round(g.height) === 36 && Math.round(g.radius) === 18)));
     await shot('10-pill');
-    // What you say shows while you are still saying it (ADR 0109): the pill widens with the words, the end button stays right behind them.
+    // What you say shows while you are still saying it (ADR 0111): the pill widens with the words, the end button stays right behind them.
     const said = '明天上午十点提醒我开会然后把下午的评审改到四点再通知王老师';
     const live = async n => { await emit('voice', { phase: 'partial', turn_id: 'b1', text: [...said].slice(0, n).join('') }); await page.waitForTimeout(550); };
     const behind = () => page.evaluate(() => { const t = document.querySelector('.talk'), lb = t.querySelector('.lb'), st = t.querySelector('.st'), r = t.getBoundingClientRect(), l = lb.getBoundingClientRect(), b = st.getBoundingClientRect();
