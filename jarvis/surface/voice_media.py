@@ -2828,6 +2828,18 @@ class StreamingTTSPipeline:
                     )
                     endpoint_index += 1
             else:
+                if accepted_total > 0:
+                    # The same break between two sentences: no endpoint can say
+                    # the next one, and waiting for the whole text to hand it to
+                    # `say` waits on a model that is offline too (Wi-Fi off,
+                    # 2026-10-01: silence until Allen spoke).
+                    await self._play_cut_off_cue(active, sequence=sequence)
+                    await self._fail_active(
+                        active,
+                        reason="partial_tts_provider_failure",
+                        retryable=False,
+                    )
+                    return False
                 if self._config.enable_macos_say_fallback:
                     while live and await self._await_segments(active, segments):
                         if active.response.tagged:
