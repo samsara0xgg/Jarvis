@@ -13,6 +13,8 @@
   <img src="https://img.shields.io/badge/MCP-1C1C1C?logo=modelcontextprotocol&logoColor=white" alt="MCP">
 </p>
 
+> **Update, October 1:** a demo video of Jarvis is being edited and will be added here later today. Check back soon.
+
 Jarvis sits next to the MacBook notch as a small glass ball with eyes. It answers when you talk to it, keeps a record of your day, and tells you when a Claude Code or Codex session needs you.
 
 ## What it does
