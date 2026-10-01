@@ -1,6 +1,6 @@
 # ADR 0077 — Dictation Hears With Local Whisper
 
-**Status:** Accepted
+**Status:** Superseded-by-0110
 **Date:** 2026-09-27
 **Supersedes:** 0058
 
