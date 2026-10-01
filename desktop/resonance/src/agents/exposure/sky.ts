@@ -68,7 +68,7 @@ function awayLines(c: CanvasRenderingContext2D, aways: { a: number; b: number | 
     const xa = g.xOf(a), xb = g.xOf(b);
     if (xb - xa < 1 || xb < dev) continue;
     // The left end shows only once the exposure has developed that far back.
-    const x0 = Math.max(dev, xa), y0 = g.bottom - 10, open = aw.b === null, edge = xa >= dev;
+    const x0 = Math.max(dev, xa), y0 = g.bottom - 14, open = aw.b === null, edge = xa >= dev;
     const label = `你不在 · ${gone(b - aw.a)}`;
     c.font = `500 10px ${UI}`; c.textBaseline = 'middle';
     // The words sit on the bracket, in a break of its line, when they fit; else just left of it.

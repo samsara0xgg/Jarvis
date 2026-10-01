@@ -72,7 +72,7 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
     const turns = turnHits(items ?? [], q); hits.set(s.id, { items, q, turns }); return turns;
   };
   const loading = new Set<string>();
-  let presenceKey = '', axisKey = '', revealUntil = 0;
+  let presenceKey = '', axisKey = '', axisW: number[] = [], revealUntil = 0;
   // hoverQi: the point of the selected row under the pointer, read in place of the one you stand on · hoverStar: the
   // horizon star under it · glance: the star she turns to when a session changes, until when
   let hoverQi: number | null = null, hoverStar = '', glance = { id: '', until: 0 };
@@ -506,17 +506,22 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
       Object.assign(gap.style, { left: `${left.value - 18}px`, width: `${wordWidth + 32}px`, top: `${top.value - 8.5}px`, height: `${Math.max(0, opening.value - 4)}px` });
       axis.style.top = `${foot - 26}px`;
       const labels = g.guides.map(ago), guidesKey = labels.join(',');
-      if (axisKey !== guidesKey) { axisKey = guidesKey; axis.innerHTML = labels.map(label => `<span>${label}</span>`).join('') + '<span class="nowl">现在</span>'; }
-      // The axis steps aside where the needle writes its own time.
+      if (axisKey !== guidesKey) {
+        axisKey = guidesKey; axis.innerHTML = labels.map(label => `<span>${label}</span>`).join('') + '<span class="nowl">现在</span>';
+        axisW = [...axis.children].map(el => { const r = document.createRange(); r.selectNodeContents(el); return r.getBoundingClientRect().width; });
+      }
+      // The axis steps aside where the needle writes its own time, in a pill as wide as its words (sky.ts draws it).
       // Off the sky's edge (slid back past it), the time sits at that edge.
-      const writes = stand ? -1e3 : clamp(needle.value, g.x0 + 28, g.x1 - 28);
+      c.font = '500 10px "IBM Plex Mono", ui-monospace, monospace';
+      const pill = stand ? 0 : c.measureText(ago(Math.max(0, now - g.tOf(needle.value)))).width + 12;
+      const writes = stand ? -1e3 : clamp(needle.value, g.x0 + pill / 2, g.x1 - pill / 2);
       // Where the cells are too narrow for every label, every other one (counting back from now) keeps its words.
       const every = Math.ceil(64 / g.cell);
       // Slid back in time, the words fade out toward an edge with more time past it.
       [...axis.children].forEach((el, i) => {
         const tick = el as HTMLElement, x = g.guides[i] === undefined ? g.xOf(now) : g.xOf(now - g.guides[i]);
         const edge = Math.min(clamp((x - g.x0 - (g.panMax - g.pan > 8 ? 30 : -30)) / 24), clamp((g.x1 + 30 - x) / 24));
-        tick.style.left = `${x - 30}px`; tick.style.opacity = String(Math.min(edge, g.guides[i] !== undefined && (i + 1) % every ? 0 : clamp((Math.abs(x - writes) - 34) / 26)));
+        tick.style.left = `${x - 30}px`; tick.style.opacity = String(Math.min(edge, g.guides[i] !== undefined && (i + 1) % every ? 0 : clamp((Math.abs(x - writes) - pill / 2 - (axisW[i] || 40) / 2 - 4) / 14)));
       });
       // The names start a little right of the heads, so a row's star stands before its name, not on its edge.
       rowsEl.querySelectorAll<HTMLElement>('.bw-row').forEach((el, i) => { if (!el.classList.contains('end')) el.style.left = `${g.x1 + 12}px`; el.style.opacity = String(1 - Math.min(.4, Math.abs(i - focus.value) * .1)); });
