@@ -1,7 +1,7 @@
-# ADR NNNN — An Answer Let Go Before It Played Is Recorded as Never Spoken
+# ADR 0106 — An Answer Let Go Before It Played Is Recorded as Never Spoken
 
-**Status:** Proposed
-**Date:** 2026-09-30
+**Status:** Accepted
+**Date:** 2026-10-01
 **Supersedes:** none
 
 ## Context

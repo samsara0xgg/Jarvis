@@ -1,7 +1,7 @@
-# ADR NNNN — A Slow Answer Waits Its Turn and Says What It Answers
+# ADR 0107 — A Slow Answer Waits Its Turn and Says What It Answers
 
-**Status:** Proposed
-**Date:** 2026-09-30
+**Status:** Accepted
+**Date:** 2026-10-01
 **Supersedes:** none
 
 ## Context
@@ -34,7 +34,7 @@
 
 ## Decision
 
-Behind `realtime.response.slow_results.enabled` (off by default), when
+Behind `realtime.response.slow_results.enabled` (on by default since Allen accepted this on 2026-10-01, after the live test), when
 another of Allen's turns is still running:
 
 1. The new turn's state block names each earlier question another turn is

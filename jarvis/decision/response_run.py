@@ -790,7 +790,7 @@ def decide_foreground(
     utterance therefore always carries the highest row id and always wins;
     only a straggler from an older turn is declined.
 
-    ``wait_for_lane`` (docs/plans/slow-results-proposal.md): no answer cuts
+    ``wait_for_lane`` (ADR 0107): no answer cuts
     another or is lost for arriving second; a cross-group candidate waits
     until the lane drains, whichever turn is newer.
 

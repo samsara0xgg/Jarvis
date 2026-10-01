@@ -631,7 +631,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
     # queued, displaced by a foreground grant, or ended by L3 while it was
     # still buffering. It never reached a lease, so it carries no generation
     # and no playback terminal; without it the next turn read no playback as
-    # heard whole (docs/plans/unspoken-answer-proposal.md).
+    # heard whole (ADR 0106).
     EventTypeSchema(
         event_type="surface.speech_dropped",
         owner_layer="L5",
