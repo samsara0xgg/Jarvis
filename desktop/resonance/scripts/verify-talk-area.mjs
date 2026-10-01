@@ -105,7 +105,7 @@ const sheet = async (list, name, crop, cols = 8) => {
 
 try {
   for (let i = 0; i < 50; i++) { try { await fetch(`http://127.0.0.1:${web}/`); break; } catch { await new Promise(r => setTimeout(r, 100)); } }
-  const long = '好的，我把这件事从头到尾说清楚。第一，今天下午三点之后的三场会议我都已经往后推了一个小时，对应的日历邀请也已经更新。第二，我给王老师发了一条消息，说明了改期的原因，并且问他明天上午是否方便再约一次。第三，周五的评审会议和你的健身课时间冲突了，我没有擅自改动，等你决定。第四，下周一的飞机票价格上涨了大约一成，如果你还想订的话，最好今天就定下来，我可以随时帮你处理。另外，第一，今天下午三点之后的三场会议我都已经往后推了一个小时，对应的日历邀请也已经更新。第二，我给王老师发了一条消息。';
+  const long = '好的，我把这件事从头到尾说清楚。第一，今天下午三点之后的三场会议我都已经往后推了一个小时，对应的日历邀请也已经更新。第二，我给王老师发了一条消息，说明了改期的原因，并且问他明天上午是否方便再约一次。第三，周五的评审会议和你的健身课时间冲突了，我没有擅自改动，等你决定。第四，下周一的飞机票价格上涨了大约一成，如果你还想订的话，最好今天就定下来，我可以随时帮你处理。另外，第一，今天下午三点之后的三场会议我都已经往后推了一个小时，对应的日历邀请也已经更新。第二，我给王老师发了一条消息。第三，周五的评审会议和你的健身课时间冲突了，我没有擅自改动，等你决定。第四，下周一的飞机票价格上涨了大约一成，如果你还想订的话，最好今天就定下来。';
   const written = '<voice>今天有三件事，我列在下面了。</voice><document>### 今天\n- 10:00 和 Anna 的产品会 · 3F 会议室\n- 14:30 评审会议 · https://zoom.us/j/123\n- 17:00 健身课\n\n**提醒**：明早九点交报告。</document>';
 
   // ---- everything: the area, its states, its words ----
@@ -180,7 +180,7 @@ try {
     await turn('v4', '我今天有什么安排', written, { spoken: false });
     await page.waitForTimeout(350);
     a = await area();
-    check('written part: it comes up behind the spoken line, a moment after it', a.hers >= 2 && a.rows === 0);
+    check('written part: it comes up behind the spoken line, a moment after it', a.hers >= 1 && a.rows === 0);
     await page.waitForTimeout(1500);
     a = await area();
     check('written part: the spoken line on top, then the grouped list with the times, the places and the link as written', a.rows === 3
@@ -189,7 +189,7 @@ try {
     await emit('voice', { phase: 'spoken', turn_id: 'v4' });
     await page.waitForTimeout(900);
     a = await area();
-    check(`she has finished and there is more than fits: the view rests at the end, the written part's last line in sight (${a.tr.top} of ${a.tr.scroll - a.tr.client})`, a.tr.scroll > a.tr.client && a.tr.end);
+    check(`she has finished: the view rests at the end, the written part's last line in sight (${a.tr.top} of ${a.tr.scroll - a.tr.client})`, a.tr.end);
 
     // typing in the middle of the conversation
     await page.locator('.talk-ft .kb').click(); await page.waitForTimeout(900);
@@ -208,7 +208,7 @@ try {
     await shot('07-typing');
     await page.keyboard.press('Escape'); await page.waitForTimeout(700);
     a = await area();
-    check('Esc closes the field and the area stays, with the mic back on', !a.fieldShown && a.up && posts.filter(p => p.path === '/inherent/controls').at(-1).body.mic_muted === false && a.yous >= 3);
+    check('Esc closes the field and the area stays, with the mic back on', !a.fieldShown && a.up && posts.filter(p => p.path === '/inherent/controls').at(-1).body.mic_muted === false && a.yous >= 1);
     await page.locator('.talk-ft .kb').click(); await page.waitForTimeout(700);
     await page.locator('.talk textarea').fill('把周五的会议改到下午');
     await page.keyboard.press('Enter');
@@ -290,7 +290,7 @@ try {
     const shortest = '十点、两点半、五点。';
     await turn('b2t', '再短一点', shortest); await page.waitForTimeout(2000);
     a = await area();
-    check('and a second spoken-only follow-up replaces the first in turn', a.kind === 'area' && a.her === shortest && a.hers === 2);
+    check('and a second spoken-only follow-up replaces the first in turn', a.kind === 'area' && a.her === shortest && a.hers === 1);
     await emit('voice', { phase: 'spoken', turn_id: 'b2t' });
     await emit('voice', { phase: 'listening', turn_id: 'b3' }); await emit('voice', { phase: 'accepted', turn_id: 'b3', text: '再查一下' });
     await emit('failed', { turn_id: 'b3', reason: 'network', message: 'The network is down, so that turn did not finish.' }); await page.waitForTimeout(800);
@@ -340,7 +340,7 @@ try {
     await shot(`write-in-${captions}-done`);
     // Her voice never reports in: the written part still finishes on its own, and her spoken line is not the one that decides it.
     await turn('w3', '再说一遍', doc, { spoken: false });
-    await page.waitForFunction(() => document.querySelectorAll('.talk .tk-w').length === 2);
+    await page.waitForFunction(() => !!document.querySelector('.talk [data-line="her:w3"] .tk-w'));
     await skew(3600); await page.waitForTimeout(500);
     const m5 = await wr(page);
     check(`write-in (${captions}): with her voice still going (it never says it has finished) it is all lit on its own (${m5.on} of ${m5.total})`, m5.total > 100 && m5.on === m5.total && m5.all && (captions === 'brief' || !m5.spokenAll));
@@ -515,7 +515,7 @@ try {
     await s.context.close();
   }
 
-  // ---- showing and hiding: 8 s after a turn, never under the pointer, ten minutes of memory ----
+  // ---- showing and hiding: 8 s after a turn, never under the pointer, a new session each time it opens (ADR 0113) ----
   {
     const s = await scene({ captions: 'all' });
     const { page, emit, move, skew, area, turn, folded, shot } = s;
@@ -530,11 +530,11 @@ try {
     const lingered = (Date.now() - spokenAt) / 1000;
     check(`it folds away 8 s after the turn (${lingered.toFixed(1)} s)`, lingered > 7.5 && lingered < 10.5);
     check('and she goes back into the island', await page.waitForFunction(() => document.querySelector('.companion-hit')?.dataset.place === 'home', null, { timeout: 4000 }).then(() => true, () => false));
-    // within ten minutes it continues
+    // opened again, however soon, it starts empty
     await skew(5 * 60_000);
     await emit('voice', { phase: 'listening', turn_id: 'c2' }); await page.waitForTimeout(1200);
     a = await area();
-    check('opened again within ten minutes it continues the same conversation', a.up && a.yous === 1 && a.her === '明天上午十点。');
+    check('opened again 5 minutes later it starts empty: the last session is not shown', a.up && a.yous === 0 && a.hers === 0 && a.kind === 'capsule');
     await emit('voice', { phase: 'empty', turn_id: 'c2' }); await emit('controls', { mic_muted: false, speech_muted: false, conversation: false });
     // never while the pointer is over it
     await page.waitForTimeout(500);
@@ -545,7 +545,7 @@ try {
     await move(600, 650);
     await folded(6000);
     check('and folds once the pointer has gone', !(await area()).up);
-    // after ten minutes it starts empty
+    // and so it does after ten
     await skew(11 * 60_000);
     await emit('voice', { phase: 'listening', turn_id: 'c3' }); await page.waitForTimeout(1200);
     a = await area();
@@ -577,7 +577,7 @@ try {
     await emit('voice', { phase: 'listening', turn_id: 'n1' }); await emit('voice', { phase: 'accepted', turn_id: 'n1', text: '现在几点' });
     await page.waitForTimeout(1200);
     a = await area();
-    check('the next, normal turn is normal again: no deep look, plain “Thinking”', !a.deep && a.label === 'Thinking' && a.think !== '' /* hers, still above her deep words */ && await page.evaluate(() => getComputedStyle(document.querySelector('.talk')).getPropertyValue('--lit').trim() !== 'rgb(154, 134, 255)'));
+    check('the next, normal turn is normal again: no deep look, plain “Thinking”', !a.deep && a.label === 'Thinking' && await page.evaluate(() => getComputedStyle(document.querySelector('.talk')).getPropertyValue('--lit').trim() !== 'rgb(154, 134, 255)'));
     await shot('32-normal-again');
     check('no page errors (deep)', s.errors.length === 0);
     await s.context.close();
@@ -780,7 +780,7 @@ try {
   // typed in the Dashboard: the question is in the conversation under her above its answer
   {
     const s = await scene({ captions: 'all' });
-    const { page, move, emit } = s;
+    const { page, move, emit, shot } = s;
     await page.waitForTimeout(600);
     await move(600, 650);
     await page.locator('.companion-island-target').click({ position: { x: 155, y: 14 }, force: true });
@@ -790,8 +790,19 @@ try {
     await emit('voice', { phase: 'spoken', turn_id: 'typed-1' }); await page.waitForTimeout(300);
     await page.locator('.companion-island-target').click({ position: { x: 155, y: 14 }, force: true }); await move(600, 650); await page.waitForTimeout(1200);
     await emit('controls', { mic_muted: false, speech_muted: false, conversation: true }); s.daemonState.controls.conversation = true; await emit('voice', { phase: 'listening', turn_id: 'typed-2' }); await page.waitForTimeout(1500);
-    const text = await page.evaluate(() => [...document.querySelectorAll('.talk [data-line]')].map(n => n.textContent));
-    check('a question typed in the Dashboard is a line of the conversation, above its answer', text[0] === '明天有什么会' && text[1] === '明天有两个会。');
+    const lines = () => page.evaluate(() => [...document.querySelectorAll('.talk-tr [data-line]')].map(n => n.textContent));
+    check('opened after a question typed in the Dashboard: it starts empty', (await lines()).length === 0);
+    await emit('voice', { phase: 'accepted', turn_id: 'typed-2', text: '后天呢' });
+    await emit('open', { turn_id: 'typed-2', response_id: 'r-t2' }); await emit('append', { turn_id: 'typed-2', token: '<voice>后天没有会。</voice>' }); await emit('done', { turn_id: 'typed-2', fadeMs: 100 });
+    await emit('voice', { phase: 'spoken', turn_id: 'typed-2' }); await page.waitForTimeout(1500);
+    check('the new exchange alone shows', (await lines()).join('|') === '后天呢|后天没有会。');
+    const r = await page.locator('.talk-tr').boundingBox();
+    await page.mouse.move(r.x + r.width / 2, r.y + r.height / 2);
+    for (let i = 0; i < 14; i++) { await page.mouse.wheel(0, -60); await page.waitForTimeout(16); }
+    await page.waitForTimeout(1200);
+    await shot('40-pulled-earlier');
+    const text = await lines();
+    check(`pulled up, the question typed in the Dashboard is a line of the conversation, above its answer and above the new exchange (${text.join('|')})`, text.join('|') === '明天有什么会|明天有两个会。|后天呢|后天没有会。');
     await s.context.close();
   }
 

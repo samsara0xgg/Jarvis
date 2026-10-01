@@ -1,9 +1,9 @@
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from 'react';
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject, type WheelEvent } from 'react';
 import { ArrowUp, Keyboard, Microphone, Stop } from '@phosphor-icons/react';
 import { Markdown, inline } from './Markdown';
 import { tr, type L, type Lang } from './companionSettings';
 import type { Line } from './model';
-import { HEARD_MS, HEIGHT, LINGER_MS, MEMORY_MS, WIDTH, itemsOf, kindOf, pace, placed, said as saidCount, sentences, ink, type Captions, type Item, type Kind, type Voice } from './talk';
+import { GESTURE_GAP, HEARD_MS, HEIGHT, LINGER_MS, PULL_AT, WIDTH, calm, ink, kindOf, pace, placed, pull, said as saidCount, sentences, shownOf, stretch, type Captions, type Item, type Kind, type Pull, type Voice } from './talk';
 import './talk-area.css';
 
 // Springs as CSS linear() curves: response in seconds, damping fraction (1 = no overshoot).
@@ -95,6 +95,8 @@ export type TalkProps = {
   lang: Lang; x: number; y: number;
   // Whether it is on screen at all, the caption level that applies now, and what there is to show.
   open: boolean; level: Captions; lines: Line[];
+  // When it last opened: lines from before wait above, to be pulled up.
+  since: number;
   voice: Voice; hearing: boolean;
   // What has been heard so far of the words still coming in (ADR 0111): the label follows it, and the pill and its end button follow the label.
   partial: string;
@@ -119,10 +121,17 @@ export function TalkArea(p: TalkProps) {
   const [row, setRow] = useState<Row>('ft'), [away, setAway] = useState(false), [fieldH, setFieldH] = useState(36), [inking, setInking] = useState(false);
   const reg = useRef<Registry>(new Map()), clocks = useRef(new Map<string, { text: string; clock: number[] }>());
   // The motion's own state: where the shape is, what is pending, and whether the reader has scrolled away from her.
-  const ctl = useRef({ at: 'gone' as 'gone' | Kind, closing: false, timers: [] as number[], staged: false, follow: true, progUntil: 0, wheelAt: 0, since: 0, fly: null as Fly | null, rise: false, back: false, shape: { w: 0, h: 0 }, lbW: 0, litEl: null as HTMLElement | null, ink: false });
+  const ctl = useRef({ at: 'gone' as 'gone' | Kind, closing: false, timers: [] as number[], staged: false, follow: true, progUntil: 0, wheelAt: 0, since: 0, pull: calm as Pull, pullTimer: 0, key: '', ghost: null as { nodes: Node[]; top: number } | null, reveal: false, fly: null as Fly | null, rise: false, back: false, shape: { w: 0, h: 0 }, lbW: 0, litEl: null as HTMLElement | null, ink: false });
   const c = ctl.current;
 
-  const items = useMemo(() => itemsOf(p.lines, p.level), [p.lines, p.level]);
+  // Only the latest exchange shows; `rev.n` earlier ones of this session have been pulled up above it, and a new question puts them away again.
+  const [rev, setRev] = useState({ key: '', n: 0 }), moreEl = useRef<HTMLSpanElement>(null);
+  const keyNow = useMemo(() => shownOf(p.lines, p.level, 0, p.since).key, [p.lines, p.level, p.since]);
+  const back = rev.key === keyNow ? rev.n : 0;
+  const shown = useMemo(() => shownOf(p.lines, p.level, back, p.since), [p.lines, p.level, back, p.since]);
+  const items = shown.items;
+  // The answer that yields to the next question is copied before the page changes, to fade out above the new one.
+  if (shown.key !== c.key && c.key && shown.key && c.at === 'area' && trEl.current && !reduced()) c.ghost = { nodes: [...trEl.current.children].map(n => n.cloneNode(true)), top: trEl.current.scrollTop };
   // The pill and the footer show what you just said for a moment, so you see what she heard.
   const lastYou = useMemo(() => [...p.lines].reverse().find(l => l.who === 'you'), [p.lines]);
   const freshMs = p.level === 'brief' && lastYou ? lastYou.at + HEARD_MS - Date.now() : 0;
@@ -388,6 +397,23 @@ export function TalkArea(p: TalkProps) {
     const ids = [0, 120, 320, 700].map(ms => window.setTimeout(() => { if (document.activeElement !== ta) ta.focus({ preventScroll: true }); }, ms));
     return () => ids.forEach(clearTimeout);
   }, [row, p.open]);
+  // A new question: the previous answer slides up and fades out above, and the reader is back with the latest.
+  useLayoutEffect(() => {
+    const g = c.ghost; c.ghost = null;
+    const changed = c.key !== shown.key; c.key = shown.key;
+    if (!changed) return;
+    c.follow = true; setAway(false);
+    const tr = trEl.current, host = flyEl.current;
+    if (!g || !tr || !host || !g.nodes.length) return;
+    const layer = document.createElement('div'), inner = document.createElement('div');
+    layer.className = 'tk-gone'; layer.setAttribute('aria-hidden', 'true');
+    Object.assign(layer.style, { top: `${tr.offsetTop}px`, height: `${tr.clientHeight}px` });
+    inner.style.translate = `0 ${-g.top}px`;
+    g.nodes.forEach(n => { inner.appendChild(n); (n as Element).querySelectorAll?.('[data-line],[data-written]').forEach(e => { e.removeAttribute('data-line'); e.removeAttribute('data-written'); }); });
+    layer.appendChild(inner); host.appendChild(layer);
+    const done = () => layer.remove();
+    layer.animate([{ opacity: 1, translate: '0 0', filter: 'blur(0)' }, { opacity: 0, translate: '0 -8px', filter: 'blur(3px)' }], { duration: 180, easing: 'cubic-bezier(.5,0,.9,.4)', fill: 'forwards' }).finished.then(done, done);
+  }, [shown.key]);
   // ---- keep the shape and the words in step with what is showing ----
   const sig = [p.open, v.kind, row, v.items.map(it => `${it.id}:${it.spoken.length}:${it.written.length}:${v.ready(it)}`).join(), v.label, fieldH, p.level, p.silent].join('|');
   useLayoutEffect(() => {
@@ -397,6 +423,8 @@ export function TalkArea(p: TalkProps) {
     if (c.at === 'gone' && row !== (p.field ? 'fd' : 'ft')) return; // the row it opens on is on its way
     if (c.at === 'gone') appear(v.kind);
     else { settle(v.kind); riseNew(); }
+    // An earlier exchange has just been pulled up: it is what to look at, from its top, unless all of it fits.
+    if (c.reveal) { c.reveal = false; if (c.at === 'area') { const fits = measure(WIDTH).h <= HEIGHT; c.follow = fits; setAway(!fits); trEl.current!.scrollTop = 0; } }
     if (c.rise && row === (p.field ? 'fd' : 'ft')) { c.rise = false; if (c.back) { c.back = false; rowEl().animate([{ opacity: 0 }, { opacity: 1 }], { duration: 260, delay: Math.round(OPEN.d * .5), easing: 'ease-out', fill: 'backwards' }); /* after the sent words have left it */ } else rise(rowEl(), 0); }
     runFly();
     followLit(drive());
@@ -409,7 +437,7 @@ export function TalkArea(p: TalkProps) {
     watch.observe(el);
     return () => watch.disconnect();
   }, []);
-  useEffect(() => () => { stopTimers(); }, []);
+  useEffect(() => () => { stopTimers(); clearTimeout(c.pullTimer); }, []);
 
   // The field grows with its words, to six lines, then scrolls.
   // (Its width is still changing while the area opens, so it is fitted again whenever that changes; empty, it is one line, whatever
@@ -467,6 +495,34 @@ export function TalkArea(p: TalkProps) {
     const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
     if (atEnd !== c.follow) { c.follow = atEnd; setAway(!atEnd); }
   };
+  // Pulling up at the very top: the content follows the fingers with growing resistance, a faint "Earlier" shows how far, and past
+  // PULL_AT one earlier exchange comes up while the content springs back. With reduced motion there is no stretch, only a button.
+  const offset = (x: number) => {
+    trEl.current!.style.setProperty('--pull', `${x}px`);
+    const m = moreEl.current; if (!m) return;
+    m.style.opacity = String(Math.min(1, x / PULL_AT)); m.style.translate = `-50% ${(10 + x) / 2 - 7}px`;
+  };
+  const springBack = () => {
+    const tr = trEl.current; if (!tr) return;
+    const x = parseFloat(tr.style.getPropertyValue('--pull')) || 0, o = Math.min(1, x / PULL_AT);
+    offset(0);
+    if (x > .5) {
+      [...tr.children].forEach(n => n.animate([{ translate: `0 ${x}px` }, { translate: '0 0' }], { duration: CLOSE.d, easing: CLOSE.e }));
+      moreEl.current?.animate([{ opacity: o }, { opacity: 0 }], { duration: CLOSE.d, easing: 'ease-out' });
+    }
+  };
+  const reveal = () => { c.follow = false; c.reveal = true; setRev({ key: shown.key, n: back + 1 }); };
+  const onWheel = (e: WheelEvent<HTMLDivElement>) => {
+    const now = performance.now(), el = trEl.current!;
+    c.wheelAt = now;
+    if (reduced() || !shown.older) return;
+    const was = c.pull, next = pull(was, e.deltaY, now, el.scrollTop <= 0, true);
+    c.pull = next;
+    if (next.d !== was.d) offset(stretch(next.d));
+    clearTimeout(c.pullTimer);
+    if (next.spent && !was.spent) { reveal(); springBack(); }
+    else c.pullTimer = window.setTimeout(springBack, GESTURE_GAP);
+  };
   const latest = () => {
     const el = trEl.current!;
     c.follow = true; setAway(false); c.progUntil = performance.now() + 700;
@@ -490,11 +546,13 @@ export function TalkArea(p: TalkProps) {
   return <div ref={box} className="talk" data-kind={v.kind} data-state={v.state} data-deep={v.deep || undefined} data-hit={p.open || undefined} data-glass="css" inert={!p.open}
     style={{ left: p.x, top: p.y }} role="region" aria-label={t(['Conversation', '对话'])}>
     <span className="tk-deep" aria-hidden="true"/>
-    <div ref={trEl} className="talk-tr" role="log" aria-live="polite" onScroll={onScroll} onWheel={() => { c.wheelAt = performance.now(); }}>
+    <div ref={trEl} className="talk-tr" role="log" aria-live="polite" onScroll={onScroll} onWheel={onWheel}>
+      {reduced() && shown.older > 0 && v.items.length > 0 && <button type="button" className="tk-earlier" onClick={reveal}>{t(['Earlier', '更早'])}</button>}
       {v.items.map(it => it.who === 'you'
         ? <span key={it.id} className="tk-u" data-line={it.id}>{it.spoken}</span>
         : <Her key={it.id} it={it} reg={reg.current} ready={v.ready(it)} silent={p.silent} think={(() => { const secs = p.deep.thoughts.find(th => th.turn === it.turn)?.secs; return secs ? t([`Thought for ${secs.toFixed(1)} s`, `想了 ${secs.toFixed(1)} 秒`]) : ''; })()}/>)}
     </div>
+    {!reduced() && shown.older > 0 && v.items.length > 0 && <span ref={moreEl} className="tk-more" aria-hidden="true">{t(['Earlier', '更早'])}</span>}
     {away && v.items.length > 0 && <div className="tk-latest"><button type="button" onClick={latest}>{t(['Back to latest', '回到最新'])}</button></div>}
     <div ref={ftEl} className="talk-ft" hidden={row !== 'ft'}>
       <span className={`gl ${v.state}`} aria-hidden="true"><b/><b/><b/></span>
@@ -509,16 +567,16 @@ export function TalkArea(p: TalkProps) {
 }
 
 // When it is up: from the moment she starts listening (or you press the keyboard) until a turn is over and she is not listening,
-// then the area folds away LINGER_MS later, never while the pointer is over it. Opening again within MEMORY_MS continues the same
-// conversation; after that it starts empty.
-export function usePresence({ engaged, over, onOpen }: { engaged: boolean; over: () => boolean; onOpen: (stale: boolean) => void }) {
+// then the area folds away LINGER_MS later, never while the pointer is over it. Every time it opens it is a new session: `onOpen`
+// clears what the last one said. A follow-up while she still listens never folds it, so it stays in the session.
+export function usePresence({ engaged, over, onOpen }: { engaged: boolean; over: () => boolean; onOpen: () => void }) {
   const [open, setOpen] = useState(false);
-  const closedAt = useRef(0), armed = useRef(true), seen = useRef(0), now = useRef(engaged);
+  const armed = useRef(true), seen = useRef(0), now = useRef(engaged);
   const latest = useRef({ over, onOpen }); latest.current = { over, onOpen };
   now.current = engaged;
   useEffect(() => {
     if (!engaged) armed.current = true; // an end the person asked for ignores whatever is still winding down
-    if (engaged && armed.current && !open) { latest.current.onOpen(closedAt.current > 0 && Date.now() - closedAt.current > MEMORY_MS); setOpen(true); }
+    if (engaged && armed.current && !open) { latest.current.onOpen(); setOpen(true); }
   }, [engaged]);
   useEffect(() => {
     if (!open || engaged) return;
@@ -526,7 +584,7 @@ export function usePresence({ engaged, over, onOpen }: { engaged: boolean; over:
     let timer = 0;
     const check = () => {
       if (latest.current.over()) seen.current = Date.now();
-      if (Date.now() - idle >= LINGER_MS && Date.now() - seen.current >= 1000) { closedAt.current = Date.now(); setOpen(false); }
+      if (Date.now() - idle >= LINGER_MS && Date.now() - seen.current >= 1000) setOpen(false);
       else timer = window.setTimeout(check, 250);
     };
     timer = window.setTimeout(check, 250);
@@ -534,6 +592,6 @@ export function usePresence({ engaged, over, onOpen }: { engaged: boolean; over:
   }, [open, engaged]);
   // An end the person asked for while it is still engaged waits for that to wind down (the next engaged-to-idle edge re-arms it); when
   // nothing is engaged there is no such edge to come, and the next conversation must open it.
-  const dismiss = () => { if (now.current) armed.current = false; closedAt.current = Date.now(); setOpen(false); };
+  const dismiss = () => { if (now.current) armed.current = false; setOpen(false); };
   return { open, dismiss };
 }

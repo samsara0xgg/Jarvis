@@ -233,9 +233,11 @@ export function Companion() {
   const [talkUp, setTalkUp] = useState(false);
   const talkBox = useRef<HTMLDivElement>(null);
   const engaged = voice !== 'off' || composer || receiving;
+  // When the area last opened: what was said before then waits above, to be pulled up (ADR 0113).
+  const [talkFrom, setTalkFrom] = useState(0);
   const presence = usePresence({ engaged,
     over: () => { const r = talkBox.current?.getBoundingClientRect(), p = cursor.current; return place === 'out' && !!r && p.x >= r.left - 6 && p.x <= r.right + 6 && p.y >= r.top - 6 && p.y <= r.bottom + 6; },
-    onOpen: stale => { if (stale) dispatch({ type: 'talk-clear' }); } });
+    onOpen: () => setTalkFrom(Date.now()) });
   const talkLevel: Captions = level(companion.captions, s.soundMuted);
   // The deep look belongs to the turn: its answer being thought about, or said or shown. Listening to the next one, or waiting on it, is back to normal.
   const deepLook = deepThinking || (answerSecs > 0 && s.waiting === s.turnId && voice !== 'listening');
@@ -731,7 +733,7 @@ export function Companion() {
       <div className={`companion-chip ${chip ? 'is-open' : ''}`} data-hit={chip || undefined} data-glass="10" style={{ left: out.x + R + 12, top: out.y - 13 }}>
         <button aria-label={t(['Type to her', '文字输入'])} tabIndex={chip ? 0 : -1} onClick={openComposer}><Keyboard/></button>
       </div>
-      <TalkArea lang={companion.lang} x={out.x} y={out.y + R + 11} open={presence.open && place === 'out'} level={talkLevel} lines={s.talk} voice={voice} hearing={hearing} partial={partial} silent={s.soundMuted}
+      <TalkArea lang={companion.lang} x={out.x} y={out.y + R + 11} open={presence.open && place === 'out'} level={talkLevel} lines={s.talk} since={talkFrom} voice={voice} hearing={hearing} partial={partial} silent={s.soundMuted}
         deep={{ look: deepLook, secs: deepSecs, thoughts }} field={composer} draft={draft} micPaused={s.micMuted}
         onDraft={value => { setDraft(value); ball.current?.nudge(); requestAnimationFrame(aimAtCaret); }}
         onSend={send} onField={(open, empty) => { if (open) openComposer(); else { closeComposer(); if (empty && voice === 'off') presence.dismiss(); } }} onMic={backToVoice}

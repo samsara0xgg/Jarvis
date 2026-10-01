@@ -9,8 +9,13 @@ export type Kind = 'capsule' | 'pill' | 'area';
 export const WIDTH = 360, HEIGHT = 360;
 // What you just said stays in the pill this long, so you see what she heard.
 export const HEARD_MS = 3000;
-// After a turn is over and she is not listening, the area folds away; reopening within the window continues it.
-export const LINGER_MS = 8000, MEMORY_MS = 10 * 60_000;
+// After a turn is over and she is not listening, the area folds away; opening it again starts a new session (ADR 0113).
+export const LINGER_MS = 8000;
+// Pulling up past the first answer for an earlier one (ADR 0113). These cannot be tuned without a trackpad; change them here.
+// The content follows the fingers by `stretch` (never further than PULL_DIM, ever more slowly), the pull counts once the stretch is
+// PULL_AT; wheel events less than GESTURE_GAP apart are one gesture; MOMENTUM_FALL smaller steps in a row mean the fingers are up
+// and the rest is inertia.
+export const PULL_DIM = 120, PULL_DAMP = .55, PULL_AT = 60, GESTURE_GAP = 150, MOMENTUM_FALL = 3;
 
 // With her voice turned off nothing else would reach you, so every level shows everything.
 export const level = (captions: Captions, voiceOff: boolean): Captions => voiceOff ? 'all' : captions;
@@ -31,7 +36,8 @@ export type Item = { id: string; who: 'you' | 'her'; spoken: string; written: st
   voiced?: boolean };
 // Full: everything. The middle level: only what is written (lists, times, places, links), and what she says right after it.
 // Hidden: nothing. An error always shows.
-export function itemsOf(lines: Line[], captions: Captions): Item[] {
+// `before`: what was shown just ahead of these lines (the previous exchange's last item).
+export function itemsOf(lines: Line[], captions: Captions, before?: Item): Item[] {
   const out: Item[] = [];
   for (const l of lines) {
     const base = { id: l.id, at: l.at, said: !!l.said, cutAt: l.cutAt, turn: l.turn, queued: !!l.queued, from: l.from ?? l.at, mark: l.mark };
@@ -43,7 +49,7 @@ export function itemsOf(lines: Line[], captions: Captions): Item[] {
       else if (captions === 'brief' && written) out.push({ ...base, who: 'her', spoken: '', voiced: !!spoken, written, failed: false });
       // A spoken-only answer that follows an answer on screen (a shorter version, a correction, then another) shows too,
       // so the area never reads one answer while she says another.
-      else if (captions === 'brief' && spoken && out.at(-1)?.who === 'her' && !out.at(-1)?.failed) out.push({ ...base, who: 'her', spoken, written: '', failed: false });
+      else if (captions === 'brief' && spoken && (out.at(-1) ?? before)?.who === 'her' && !(out.at(-1) ?? before)?.failed) out.push({ ...base, who: 'her', spoken, written: '', failed: false });
     }
   }
   return out;
@@ -114,4 +120,40 @@ export function sentences(text: string): string[][] {
   });
   if (sentence.length) out.push(sentence);
   return out;
+}
+
+// A session is what has been said since the area was last opened. One exchange is what you said and her answers to it; the
+// area shows the latest, and the earlier ones of the session wait above it until they are pulled up (`back` of them, newest first).
+// An earlier exchange with no answer at this caption level is not worth a pull.
+export function exchangesOf(lines: Line[]): Line[][] {
+  const out: Line[][] = [];
+  for (const l of lines) { if (l.who === 'you' || !out.length) out.push([l]); else out[out.length - 1].push(l); }
+  return out;
+}
+// `since`: when the area opened; an exchange begun before then is an earlier one, so every opening starts empty.
+export function shownOf(lines: Line[], captions: Captions, back: number, since = 0): { items: Item[]; older: number; key: string } {
+  // Each exchange is read after the one before it, so a spoken-only follow-up to an answer that showed shows too (talk.ts itemsOf).
+  let last: Item | undefined;
+  const all = exchangesOf(lines);
+  const each = all.map(e => { const its = itemsOf(e, captions, last); last = its.at(-1) ?? (e.some(l => l.who === 'you') ? undefined : last); return its; });
+  const fresh = all.length > 0 && all[all.length - 1][0].at >= since, latest = fresh ? each.pop() : undefined;
+  const earlier = each.filter(its => its.some(it => it.who === 'her'));
+  const n = Math.max(0, Math.min(back, earlier.length));
+  return { items: [...earlier.slice(earlier.length - n).flat(), ...(latest ?? [])], older: earlier.length - n, key: fresh ? all[all.length - 1][0].id : all.length ? `before:${since}` : '' };
+}
+
+// The rubber band: how far the content has followed a pull of `d` px of finger, with the resistance growing as it goes.
+export const stretch = (d: number) => (1 - 1 / (d * PULL_DAMP / PULL_DIM + 1)) * PULL_DIM;
+// One gesture on the wheel or trackpad. It counts only if it began with the content already at the top (a flick that arrives at the top
+// does not pull), and ends when the events stop for GESTURE_GAP. Once the stretch passes PULL_AT it is `spent` (the caller loads
+// the earlier exchange once) and nothing more in that gesture counts; inertia after the fingers lift never adds to a pull.
+export type Pull = { t: number; live: boolean; d: number; prev: number; fall: number; spent: boolean };
+export const calm: Pull = { t: -Infinity, live: false, d: 0, prev: 0, fall: 0, spent: false };
+export function pull(p: Pull, dy: number, t: number, top: boolean, room: boolean): Pull {
+  const s = { ...(t - p.t > GESTURE_GAP ? { ...calm, live: top && room } : p), t };
+  if (!s.live || s.spent || !top) return s;
+  const a = Math.abs(dy), fall = a < s.prev ? s.fall + 1 : 0;
+  if (fall >= MOMENTUM_FALL) return { ...s, prev: a, fall, live: false };
+  const d = Math.max(0, s.d - dy);
+  return { ...s, d, prev: a, fall, spent: stretch(d) >= PULL_AT };
 }
