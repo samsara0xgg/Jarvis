@@ -64,7 +64,12 @@ To see the companion on its built-in demo data, with no daemon and no keys, past
 curl -fsSL https://raw.githubusercontent.com/samsara0xgg/Jarvis/main/scripts/try-demo.sh | bash
 ```
 
-It checks for the Xcode Command Line Tools and Node.js 24, lists anything missing and asks before installing it, then clones Jarvis into `~/Jarvis`, installs its npm dependencies and starts the demo. The first run takes a few minutes. To do the same by hand:
+It checks for the Xcode Command Line Tools and Node.js 24, lists anything missing and asks before installing it, then clones Jarvis into `~/Jarvis`, installs its npm dependencies and starts the demo. The first run takes a few minutes.
+
+<details>
+<summary>Prefer to do it by hand?</summary>
+
+With the Xcode Command Line Tools and Node.js 24 installed:
 
 ```bash
 git clone https://github.com/samsara0xgg/Jarvis
@@ -72,6 +77,8 @@ cd Jarvis/desktop/resonance
 npm ci
 npm run companion -- --demo
 ```
+
+</details>
 
 What the demo shows: the companion beside the notch, its agent stars, and the Dashboard filled with sample data (calendar, to-dos, mail, the morning brief, agents). What it doesn't: it doesn't listen or speak, nothing in it is your own data, and the full Agents window (Startrail) doesn't open. Those need the full setup below. Press Ctrl+C in the terminal to quit.
 
