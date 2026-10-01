@@ -417,7 +417,10 @@ class InherentBroadcaster:
         """
         async with self._lock:
             if not self._clients:
-                LOGGER.warning(
+                # A live caption goes out every 240 ms; nobody listening is no warning each time.
+                payload = msg.get("payload")
+                quiet = isinstance(payload, dict) and payload.get("phase") == "partial"
+                (LOGGER.debug if quiet else LOGGER.warning)(
                     "InherentBroadcaster: no clients connected for turn_id=%s "
                     "op=%s; envelope dropped (ADR-0003 F5, deferred to ADR-0007).",
                     turn_id,

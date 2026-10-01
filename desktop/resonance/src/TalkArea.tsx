@@ -18,8 +18,8 @@ function spring(response: number, damping: number) {
   points[n] = 1;
   return { d: Math.round(T * 1000), e: linearOK ? `linear(${points.join(',')})` : 'cubic-bezier(.2,.9,.3,1.08)' };
 }
-// Opening answers a touch with a slight rebound; closing does not rebound.
-const OPEN = spring(.42, .8), CLOSE = spring(.3, 1);
+// Opening answers a touch with a slight rebound; closing does not rebound. Following your words as they come in is quicker and has none.
+const OPEN = spring(.42, .8), CLOSE = spring(.3, 1), FOLLOW = spring(.2, 1);
 const reduced = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 const rise = (el: Element, delay = 120) => {
   if (!reduced()) el.animate([{ opacity: 0, translate: '0 6px', filter: 'blur(4px)' }, { opacity: 1, translate: '0 0', filter: 'blur(0)' }], { duration: 220, delay, easing: 'cubic-bezier(.2,.8,.2,1)', fill: 'backwards' });
@@ -79,6 +79,8 @@ export type TalkProps = {
   // Whether it is on screen at all, the caption level that applies now, and what there is to show.
   open: boolean; level: Captions; lines: Line[];
   voice: Voice; hearing: boolean;
+  // What has been heard so far of the words still coming in (ADR 0109): the label follows it, and the pill and its end button follow the label.
+  partial: string;
   // Her voice is off: nothing is being said, so her words are all there to read, not lit as they go.
   silent: boolean;
   // Think mode (ADR 0064) for this turn: the deep look, the seconds counting, and how long each deep answer took.
@@ -128,14 +130,15 @@ export function TalkArea(p: TalkProps) {
   const secs = p.deep.secs;
   const status = state === 'idle' ? '' : state === 'thinking' ? secs > 0 ? t([`Thinking ${secs} s`, `深想 ${secs} 秒`]) : t(['Thinking', '在想'])
     : state === 'speaking' ? t(['Speaking · poke to interrupt', '在说 · 戳她打断']) : t(['Listening', '在听']);
-  const heard = freshMs > 0 && lastYou ? lastYou.text.replace(/\s+/g, ' ') : '';
+  const coming = state === 'hearing' ? p.partial.replace(/\s+/g, ' ') : '';
+  const heard = coming || (freshMs > 0 && lastYou ? lastYou.text.replace(/\s+/g, ' ') : '');
   const expanded = items.some(it => it.at > c.since);
   const kind = kindOf(p.level, items, p.field, expanded);
   // The pill shows what you just said, then nothing but the state's glyph (and, with the middle level, the seconds a deep answer is taking);
   // the footer under the area says what she is doing.
   const label = kind === 'pill' ? heard || (p.level === 'brief' && state === 'thinking' && secs > 0 ? status : '') : heard || status;
   // While it folds away it keeps what it was showing.
-  const cur = { items, kind, state, label, heard: !!heard, fading, deep: p.deep.look, ready };
+  const cur = { items, kind, state, label, heard: !!heard, fading: fading && !coming, deep: p.deep.look, ready };
   const frozen = useRef(cur);
   if (p.open) frozen.current = cur;
   const v = frozen.current;
@@ -224,7 +227,7 @@ export function TalkArea(p: TalkProps) {
       }
     } else {
       const n = measure(null), h = to === 'pill' ? 36 : 44;
-      if (Math.abs(c.shape.w - n.w) > .5 || Math.abs(c.shape.h - h) > .5) morph(n.w, h, h / 2, OPEN, true); else labelWidth();
+      if (Math.abs(c.shape.w - n.w) > .5 || Math.abs(c.shape.h - h) > .5) morph(n.w, h, h / 2, v.state === 'hearing' && v.heard ? FOLLOW : OPEN, true); else labelWidth();
     }
     c.at = to;
   };
@@ -462,7 +465,7 @@ export function TalkArea(p: TalkProps) {
     {away && v.items.length > 0 && <div className="tk-latest"><button type="button" onClick={latest}>{t(['Back to latest', '回到最新'])}</button></div>}
     <div ref={ftEl} className="talk-ft" hidden={row !== 'ft'}>
       <span className={`gl ${v.state}`} aria-hidden="true"><b/><b/><b/></span>
-      <span className={`lb ${shim ? 'shim' : ''} ${v.heard ? 'heard' : ''} ${v.fading ? 'fade' : ''}`} key={v.heard ? 'heard' : v.state}>{v.label}</span>
+      <span className={`lb ${shim ? 'shim' : ''} ${v.heard ? 'heard' : ''} ${v.fading ? 'fade' : ''}`} key={v.heard ? 'heard' : v.state}>{v.heard ? <span dir="ltr">{v.label}</span> : v.label}</span>
       <span className="sp"/>
       <button type="button" className="ib kb" aria-label={t(['Type to her', '文字输入'])} onClick={() => p.onField(true)}><Keyboard/></button>
       <button type="button" className="ib st" aria-label={t(['End voice', '结束语音'])} onClick={p.onEnd}><Stop weight="fill"/></button>

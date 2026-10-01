@@ -843,6 +843,15 @@ def normalize_partial_text(text: str) -> str:
     return " ".join(folded.split())
 
 
+def caption_text(text: str) -> str:
+    """Return one partial hypothesis as the surface shows it (ADR 0109).
+
+    SenseVoice ends every snapshot with a period, which would blink on and off
+    as the revisions change.
+    """
+    return text.strip().rstrip("。.")
+
+
 def looks_complete(text: str) -> bool:
     """Return whether a normalized stable prefix reads as a finished clause."""
     # SenseVoice appends a period to every snapshot ("...的话。"), so the
@@ -1073,6 +1082,7 @@ __all__ = [
     "SenseVoiceRecognizer",
     "TranscriptionResult",
     "WhisperFinalRecognizer",
+    "caption_text",
     "is_backchannel",
     "is_dismissal",
     "is_empty_or_too_short",

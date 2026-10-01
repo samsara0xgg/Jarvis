@@ -692,8 +692,12 @@ realtime:
     # pause (ADR 0074 answers the two parts once), and a hum before a
     # one-second pause stays one utterance. 320 cut one in seven. Still off:
     # tier B, it ships on only after a live run.
+    # captions (ADR 0109): the same decode, only to show what is heard so far
+    # in the companion while he is still speaking; the utterance still ends on
+    # the acoustic pause.
     partial_asr:
       enabled: false
+      captions: true
       interval_ms: 240
       candidate_ms: 400
       max_hold_ms: 800

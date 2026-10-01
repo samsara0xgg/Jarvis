@@ -120,6 +120,7 @@ export function Companion() {
   const [draft, setDraft] = useState('');
   const [simVoice, setVoice] = useState<'off' | 'listening' | 'thinking' | 'speaking'>('off');
   const [simHearing, setHearing] = useState(false);
+  const [simPartial, setPartial] = useState('');
   const [simReply, setReply] = useState({ text: '' });
   const [simTalking, setTalking] = useState(false);
   const [s, dispatch] = useReducer(reducer, initialState);
@@ -190,7 +191,7 @@ export function Companion() {
   const answering = !!s.turnId && !s.played;
   const voice = !port ? simVoice : inFlight ? 'listening' : answering && s.reply ? 'speaking' : answering || s.askedAt !== null ? 'thinking'
     : s.conversation && s.phase !== 'error' ? 'listening' : 'off';
-  const hearing = port ? inFlight : simHearing, talking = port ? false : simTalking;
+  const hearing = port ? inFlight : simHearing, talking = port ? false : simTalking, partial = port ? s.partial : simPartial;
   // Her words on screen, here and on the Dashboard, stay as they were while yours are still coming in: cut off, or
   // none. An answer written meanwhile is dropped once your words are in (ADR 0074).
   const held = useRef('');
@@ -315,11 +316,12 @@ export function Companion() {
   const listen = (scripted: boolean) => {
     // Each turn she picks one of her takes for listening, receiving and replying.
     listenFace.current = pick(TAKES.listen);
-    stopScript(); setReceiving(false); setVoice('listening'); setHearing(false); setReply({ text: '' }); setTalking(false); dispatch({ type: 'cut', at: Date.now() });
+    stopScript(); setReceiving(false); setVoice('listening'); setHearing(false); setPartial(''); setReply({ text: '' }); setTalking(false); dispatch({ type: 'cut', at: Date.now() });
     if (!scripted) return;
     const turn = DEMO[demoAt.current++ % DEMO.length], end = 650 + turn.heard.length * 60;
     after(650, () => setHearing(true));
-    after(end + 250, () => { setHearing(false); dispatch({ type: 'you', text: turn.heard, at: Date.now() }); setVoice('thinking'); receive(); });
+    [...turn.heard].forEach((_, i, chars) => after(650 + (i + 1) * 60, () => setPartial(chars.slice(0, i + 1).join(''))));
+    after(end + 250, () => { setHearing(false); setPartial(''); dispatch({ type: 'you', text: turn.heard, at: Date.now() }); setVoice('thinking'); receive(); });
     after(end + 1700, () => { setVoice('speaking'); say(turn.reply, () => listen(false)); });
   };
   // Whatever she is saying or about to say stops: the answer on screen by its response, or the turn she is still
@@ -335,7 +337,7 @@ export function Companion() {
       stopTalking();
       return;
     }
-    stopScript(); setReceiving(false); feedback('voice-exit'); setVoice('off'); setHearing(false); setReply({ text: '' }); setTalking(false); dispatch({ type: 'cut', at: Date.now() }); };
+    stopScript(); setReceiving(false); feedback('voice-exit'); setVoice('off'); setHearing(false); setPartial(''); setReply({ text: '' }); setTalking(false); dispatch({ type: 'cut', at: Date.now() }); };
   // Typing in a voice conversation pauses the microphone for as long as the field is up (the daemon's own mute, `controls`); a mic
   // that was already muted stays muted.
   // The daemon keeps that mute past this window, so the flag that we set it is kept too, and a reload gives the mic back.
@@ -729,7 +731,7 @@ export function Companion() {
       <div className={`companion-chip ${chip ? 'is-open' : ''}`} data-hit={chip || undefined} data-glass="10" style={{ left: out.x + R + 12, top: out.y - 13 }}>
         <button aria-label={t(['Type to her', '文字输入'])} tabIndex={chip ? 0 : -1} onClick={openComposer}><Keyboard/></button>
       </div>
-      <TalkArea lang={companion.lang} x={out.x} y={out.y + R + 11} open={presence.open && place === 'out'} level={talkLevel} lines={s.talk} voice={voice} hearing={hearing} silent={s.soundMuted}
+      <TalkArea lang={companion.lang} x={out.x} y={out.y + R + 11} open={presence.open && place === 'out'} level={talkLevel} lines={s.talk} voice={voice} hearing={hearing} partial={partial} silent={s.soundMuted}
         deep={{ look: deepLook, secs: deepSecs, thoughts }} field={composer} draft={draft} micPaused={s.micMuted}
         onDraft={value => { setDraft(value); ball.current?.nudge(); requestAnimationFrame(aimAtCaret); }}
         onSend={send} onField={(open, empty) => { if (open) openComposer(); else { closeComposer(); if (empty && voice === 'off') presence.dismiss(); } }} onMic={backToVoice}

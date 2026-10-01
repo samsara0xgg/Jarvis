@@ -119,6 +119,7 @@ class _Harness:
         partial: voice_session.PartialAsrConfig,
         required_misses: int = 10,
         min_voiced_s: float = 0.032,
+        on_partial: Callable[[str, str], None] | None = None,
     ) -> None:
         reset_realtime_trace()
         self._patch = patch.object(
@@ -141,6 +142,7 @@ class _Harness:
             frame_samples=_FRAME,
             session_id="S-partial",
             lane=self.lane,
+            on_partial=on_partial,
         )
         self.assembler.prepare()
         self.assembler.arm(voice_session.WakeDetection(1, 0, 0, 0.9))
@@ -426,6 +428,28 @@ def test_disabled_partial_asr_keeps_acoustic_pause_and_emits_no_new_traces() -> 
     assert _traces("asr_partial") == []
 
 
+def test_captions_show_what_is_heard_while_the_pause_still_ends_the_utterance() -> None:
+    """ADR 0109: ``captions`` shows each changed hypothesis; the endpoint stays acoustic."""
+    shown: list[tuple[str, str]] = []
+    harness = _Harness(
+        _ScriptedDecoder(["把灯", "把灯打开。", "把灯打开。"]),
+        partial=voice_session.PartialAsrConfig(captions=True, interval_ms=32),
+        required_misses=2,
+        on_partial=lambda turn_id, text: shown.append((turn_id, text)),
+    )
+    try:
+        outcomes = harness.feed_many([_SPEECH] * 4 + [_SILENCE] * 2)
+    finally:
+        harness.close()
+    utterance = outcomes[-1]
+    assert isinstance(utterance, voice_session.CapturedUtterance)
+    assert utterance.endpoint_reason == "acoustic_pause"
+    # It grows, the trailing period is dropped, and a repeat is not sent again.
+    assert [text for _, text in shown] == ["把灯", "把灯打开"]
+    assert {turn_id for turn_id, _ in shown} == {utterance.turn_id}
+    assert _traces("endpoint_decision") == []
+
+
 # ---------------------------------------------------------------------------
 # Late revision after commit: full session, real VoicePipeline and Event Log.
 # ---------------------------------------------------------------------------
@@ -704,10 +728,12 @@ def test_partial_asr_config_defaults_off_and_parses_block() -> None:
     parse = voice_session.realtime_input_session_config_from_mapping
     assert parse({}).partial_asr == voice_session.PartialAsrConfig()
     assert parse({}).partial_asr.enabled is False
+    assert parse({}).partial_asr.captions is False
     parsed = parse(
         {
             "partial_asr": {
                 "enabled": True,
+                "captions": True,
                 "interval_ms": 200,
                 "candidate_ms": 192,
                 "max_hold_ms": 800,
@@ -717,6 +743,7 @@ def test_partial_asr_config_defaults_off_and_parses_block() -> None:
     ).partial_asr
     assert parsed == voice_session.PartialAsrConfig(
         enabled=True,
+        captions=True,
         interval_ms=200,
         candidate_ms=192,
         max_hold_ms=800,
@@ -724,6 +751,8 @@ def test_partial_asr_config_defaults_off_and_parses_block() -> None:
     )
     with pytest.raises(ValueError, match=r"partial_asr\.enabled"):
         parse({"partial_asr": {"enabled": "yes"}})
+    with pytest.raises(ValueError, match=r"partial_asr\.captions"):
+        parse({"partial_asr": {"captions": "yes"}})
     with pytest.raises(ValueError, match=r"partial_asr\.interval_ms"):
         parse({"partial_asr": {"interval_ms": 0}})
     with pytest.raises(ValueError, match="partial_asr must be a mapping"):

@@ -53,9 +53,15 @@ _PARTIAL_DROP_DEGRADE_THRESHOLD = 3
 
 @dataclass(frozen=True)
 class PartialAsrConfig:
-    """ADR-0006 D7 rolling-partial and semantic-hold bounds; off by default."""
+    """ADR-0006 D7 rolling-partial and semantic-hold bounds; off by default.
+
+    ``captions`` (ADR 0109) runs the same partial decode only to show what is
+    being heard; the utterance still ends on the acoustic pause unless
+    ``enabled`` also holds.
+    """
 
     enabled: bool = False
+    captions: bool = False
     interval_ms: int = 240
     candidate_ms: int = 320
     max_hold_ms: int = 900
@@ -428,7 +434,7 @@ class PartialAsrLane:
 class UtteranceAssembler:
     """Wake-armed VAD/pre-roll assembly with explicit gap failure."""
 
-    def __init__(  # noqa: PLR0913 - keyword-only composition boundary
+    def __init__(  # noqa: PLR0913, PLR0915 - keyword-only composition boundary
         self,
         *,
         vad: voice_audio.SileroVad,
@@ -438,8 +444,13 @@ class UtteranceAssembler:
         session_id: str,
         lane: PartialAsrLane | None = None,
         output_active: Callable[[], bool] | None = None,
+        on_partial: Callable[[str, str], None] | None = None,
     ) -> None:
-        """Create bounded idle/pre-roll/utterance storage around one VAD."""
+        """Create bounded idle/pre-roll/utterance storage around one VAD.
+
+        ``on_partial(turn_id, text)`` is told each time what has been heard so
+        far changes (ADR 0109); it only shows it and never decides anything.
+        """
         self._vad = vad
         self._config = config
         self._output_active = output_active
@@ -448,6 +459,8 @@ class UtteranceAssembler:
         self._frame_samples = frame_samples
         self._session_id = session_id
         self._lane = lane
+        self._on_partial = on_partial
+        self._shown_partial = ""
         self._partial = config.partial_asr
         self._frame_ms = frame_samples * 1_000.0 / sample_rate_hz
 
@@ -719,6 +732,8 @@ class UtteranceAssembler:
         speech = event is voice_audio.VadEvent.SPEECH_ACTIVE
         if speech:
             self._voiced_frames += 1
+        if self._partial.captions and not self._partial.enabled:
+            self._caption_tick()
         endpoint_reason = self._endpoint(speech=speech)
         if endpoint_reason is None:
             return None
@@ -868,6 +883,15 @@ class UtteranceAssembler:
             stable_prefix_len=len(self._stable_prefix),
         )
 
+    def _caption_tick(self) -> None:
+        """Captions only: decode the utterance so far on the interval, endpoint stays acoustic."""
+        if self._degraded:
+            return
+        self._pull_revisions()
+        self._frames_since_snapshot += 1
+        if self._frames_since_snapshot >= self._interval_frames:
+            self._submit_snapshot()
+
     def _submit_snapshot(self) -> None:
         if self._lane is None:
             return
@@ -901,6 +925,10 @@ class UtteranceAssembler:
         if revision.failed:
             self._degrade("partial_decode_failed", decode_ms=round(revision.decode_ms, 3))
             return
+        shown = voice_asr.caption_text(revision.text)
+        if shown and shown != self._shown_partial and self._on_partial is not None:
+            self._shown_partial = shown
+            self._on_partial(self._turn_id, shown)
         normalized = voice_asr.normalize_partial_text(revision.text)
         if self._previous_partial is not None:
             common = os.path.commonprefix([self._previous_partial, normalized])
@@ -955,6 +983,7 @@ class UtteranceAssembler:
         self._snapshot_count = 0
         self._accepted_revision = 0
         self._previous_partial = None
+        self._shown_partial = ""
         self._stable_prefix = ""
         self._degraded = False
         self._set_phase(None, "")
@@ -1043,9 +1072,9 @@ class DuplexVoiceSession:
         self._config = config
         self._session_id = "S" + secrets.token_hex(8)
         self._partial_lane: PartialAsrLane | None = None
-        if config.partial_asr.enabled:
+        if config.partial_asr.enabled or config.partial_asr.captions:
             if not callable(getattr(pipeline, "partial_text", None)):
-                msg = "partial_asr.enabled requires a pipeline exposing partial_text()"
+                msg = "partial_asr.enabled or captions requires a pipeline exposing partial_text()"
                 raise TypeError(msg)
             self._partial_lane = PartialAsrLane(pipeline)  # type: ignore[arg-type]
         self._wake_subscription = ingress.subscribe(
@@ -1071,6 +1100,7 @@ class DuplexVoiceSession:
             session_id=self._session_id,
             lane=self._partial_lane,
             output_active=output_active,
+            on_partial=self._show_partial,
         )
         self._detections: queue.Queue[WakeDetection] = queue.Queue(
             maxsize=config.detection_queue_capacity,
@@ -1766,6 +1796,10 @@ class DuplexVoiceSession:
             self._diagnostic_frames += 1
             self._diagnostic_last_cursor = frame.sample_cursor + frame.frame_count
 
+    def _show_partial(self, turn_id: str, text: str) -> None:
+        """ADR 0109: what has been heard so far, for the surface to show while he speaks."""
+        self._broadcast("partial", turn_id=turn_id, text=text)
+
     def _broadcast(self, phase: str, *, turn_id: str, **payload: object) -> None:
         if self._broadcaster is None:
             return
@@ -1971,8 +2005,13 @@ def _partial_asr_config_from_mapping(raw: object) -> PartialAsrConfig:
             raise ValueError(msg)
         return value
 
+    captions = raw.get("captions", defaults.captions)
+    if not isinstance(captions, bool):
+        msg = "realtime.single_audio_ingress.partial_asr.captions must be a boolean"
+        raise ValueError(msg)  # noqa: TRY004 - runtime downgrades on ValueError
     return PartialAsrConfig(
         enabled=enabled,
+        captions=captions,
         interval_ms=_positive_int("interval_ms", defaults.interval_ms),
         candidate_ms=_positive_int("candidate_ms", defaults.candidate_ms),
         max_hold_ms=_positive_int("max_hold_ms", defaults.max_hold_ms),

@@ -124,6 +124,10 @@ try {
     check('it hangs under her: centred on her, 11 px below her', Math.abs(a.r.x + a.r.w / 2 - out.x) < 1.5 && Math.abs(a.r.y - (out.y + 26 + 11)) < 1.5);
     check('it is glass for the native material, round as the capsule', await page.evaluate(() => window.__state.glass.some(g => Math.round(g.height) === 44 && Math.round(g.radius) === 22)));
     await shot('01-capsule');
+    await emit('voice', { phase: 'partial', turn_id: 'v1', text: '帮我查一下明天的天气' }); await page.waitForTimeout(600);
+    a = await area();
+    check('the capsule takes the words as they come in, in place of “Listening”, and widens', a.kind === 'capsule' && a.label === '帮我查一下明天的天气' && a.r.w > 183 && a.r.w <= 360.5);
+    await shot('01a-capsule-live');
     await emit('voice', { phase: 'empty', turn_id: 'v1' });
 
     // you said, she thinks, she answers
@@ -246,9 +250,23 @@ try {
     check('the default level: a 36 tall pill, glyph and end button, no “Listening” text', a.kind === 'pill' && Math.round(a.r.h) === 36 && a.label === '' && a.state === 'hearing');
     check('the pill is glass, fully round', await page.evaluate(() => window.__state.glass.some(g => Math.round(g.height) === 36 && Math.round(g.radius) === 18)));
     await shot('10-pill');
+    // What you say shows while you are still saying it (ADR 0109): the pill widens with the words, the end button stays right behind them.
+    const said = '明天上午十点提醒我开会然后把下午的评审改到四点再通知王老师';
+    const live = async n => { await emit('voice', { phase: 'partial', turn_id: 'b1', text: [...said].slice(0, n).join('') }); await page.waitForTimeout(550); };
+    const behind = () => page.evaluate(() => { const t = document.querySelector('.talk'), lb = t.querySelector('.lb'), st = t.querySelector('.st'), r = t.getBoundingClientRect(), l = lb.getBoundingClientRect(), b = st.getBoundingClientRect();
+      return { w: r.width, label: lb.textContent, gap: b.left - l.right, inside: b.right <= r.right + .5, clipped: lb.scrollWidth > lb.clientWidth + 1, ellipsis: getComputedStyle(lb).textOverflow }; });
+    await live(3); const p1 = await behind();
+    await live(10); const p2 = await behind();
+    check('while you speak the pill shows the words so far and widens with them', p1.label === [...said].slice(0, 3).join('') && p2.label === [...said].slice(0, 10).join('') && p2.w > p1.w + 40);
+    check('the end button rides right behind the words, not at some far edge', Math.abs(p2.gap - 10) < 3 && p2.inside);
+    await shot('10a-live');
+    await live(27); const p3 = await behind();
+    check('a long sentence stops at 360 wide, shows its newest words behind an ellipsis, and the end button stays inside', p3.w <= 360.5 && p3.clipped && p3.ellipsis === 'ellipsis' && p3.inside && p3.label === [...said].slice(0, 27).join(''));
+    await shot('10b-live-long');
     await emit('voice', { phase: 'accepted', turn_id: 'b1', text: '明天上午十点提醒我开会' }); await page.waitForTimeout(800);
+    await emit('voice', { phase: 'partial', turn_id: 'b1', text: '迟到的一句' }); await page.waitForTimeout(400);
     a = await area();
-    check('it shows what you just said for a moment', a.kind === 'pill' && a.label === '明天上午十点提醒我开会' && a.r.w > 150);
+    check('it shows what you just said for a moment, and a partial that comes in after it is ignored', a.kind === 'pill' && a.label === '明天上午十点提醒我开会' && a.r.w > 150);
     await shot('11-heard');
     await emit('open', { turn_id: 'b1', response_id: 'r-b1' }); await emit('append', { turn_id: 'b1', token: '<voice>好，明早十点提醒你开会。</voice>' }); await emit('done', { turn_id: 'b1', fadeMs: 100 });
     await skew(3500); await page.waitForTimeout(900);

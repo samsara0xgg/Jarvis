@@ -24,10 +24,10 @@ const SUBTITLE_GAP_MS = 1500;
 export const idleLive: Live = { state: 'idle', sessionId: null, since: null, usageS: null, usageFinal: false, reason: null, speaking: false, hearing: false, error: null, notice: null };
 // `conversation` is the daemon's wave mode (ADR 0041), from every controls answer; `heard` is the last accepted transcript.
 // `askedAt`: when this surface's turn went in, until its answer opens; `thoughtS`: how long that answer took to come (ADR 0064).
-export interface State { mode: Mode; phase: Phase; micMuted: boolean; soundMuted: boolean; conversation: boolean; heard: string; inbox: boolean; detail: string | null; results: Result[]; reply: string; draft: string; attachment: boolean; turnId: string | null; responseId: string | null; failed: boolean; waiting: string | null; askedAt: number | null; thoughtS: number; faded: boolean; played: boolean; inFlight: boolean; live: Live; subtitles: Subtitle[]; rows: Row[]; openSeq: number; talk: Line[]; talkN: number; replyAt: number }
-export const initialState: State = { mode: 'voice', phase: 'listening', micMuted: false, soundMuted: false, conversation: false, heard: '', inbox: false, detail: null, results: [examples[0], examples[3], examples[1]], reply: '', draft: '', attachment: false, turnId: null, responseId: null, failed: false, waiting: null, askedAt: null, thoughtS: 0, faded: false, played: false, inFlight: false, live: idleLive, subtitles: [], rows: [], openSeq: 0, talk: [], talkN: 0, replyAt: 0 };
+export interface State { mode: Mode; phase: Phase; micMuted: boolean; soundMuted: boolean; conversation: boolean; heard: string; partial: string; inbox: boolean; detail: string | null; results: Result[]; reply: string; draft: string; attachment: boolean; turnId: string | null; responseId: string | null; failed: boolean; waiting: string | null; askedAt: number | null; thoughtS: number; faded: boolean; played: boolean; inFlight: boolean; live: Live; subtitles: Subtitle[]; rows: Row[]; openSeq: number; talk: Line[]; talkN: number; replyAt: number }
+export const initialState: State = { mode: 'voice', phase: 'listening', micMuted: false, soundMuted: false, conversation: false, heard: '', partial: '', inbox: false, detail: null, results: [examples[0], examples[3], examples[1]], reply: '', draft: '', attachment: false, turnId: null, responseId: null, failed: false, waiting: null, askedAt: null, thoughtS: 0, faded: false, played: false, inFlight: false, live: idleLive, subtitles: [], rows: [], openSeq: 0, talk: [], talkN: 0, replyAt: 0 };
 export type Action = { type: 'mode'; mode: Mode } | { type: 'phase'; phase: Phase } | { type: 'mic' | 'sound' | 'inbox' | 'interrupt' | 'end' | 'attachment' | 'reset' } | { type: 'draft'; value: string } | { type: 'send' } | { type: 'answer' } | { type: 'detail'; id: string | null } | { type: 'dismiss'; id: string } | { type: 'example'; id: string }
-  | { type: 'open'; turnId: string; responseId: string | null; at: number } | { type: 'append'; token: string; at: number } | { type: 'settle'; turnId: string } | { type: 'pending'; turnId: string; at: number } | { type: 'failed'; turnId: string; cancelled: boolean; message: string | null; at: number } | { type: 'controls'; micMuted: boolean; soundMuted: boolean; conversation: boolean } | { type: 'heard'; text: string; at: number } | { type: 'spoken'; turnId: string; at: number; outcome?: string }
+  | { type: 'open'; turnId: string; responseId: string | null; at: number } | { type: 'append'; token: string; at: number } | { type: 'settle'; turnId: string } | { type: 'pending'; turnId: string; at: number } | { type: 'failed'; turnId: string; cancelled: boolean; message: string | null; at: number } | { type: 'controls'; micMuted: boolean; soundMuted: boolean; conversation: boolean } | { type: 'heard'; text: string; at: number } | { type: 'partial'; text: string } | { type: 'spoken'; turnId: string; at: number; outcome?: string }
   | { type: 'live'; live: Live } | { type: 'subtitle'; sessionId: string; role: 'user' | 'assistant'; delta: string; startMs: number; endMs: number } | { type: 'live_dismiss' }
   | { type: 'rows'; rows: Row[] } | { type: 'older'; rows: Row[] }
   | { type: 'you'; text: string; at: number } | { type: 'her'; turn: string; text: string; at: number } | { type: 'said'; turn: string; at: number } | { type: 'cut'; at: number } | { type: 'talk-clear' };
@@ -61,7 +61,7 @@ export function reducer(s: State, a: Action): State {
     // A lost link also ends the answer on screen: no `spoken` will come for it.
     case 'phase': { const inFlight = a.phase === 'hearing' || (s.inFlight && a.phase === 'processing');
       const talk = a.phase === 'error' ? ended(s.talk, s.replyAt) : s.inFlight && !inFlight ? unheld(s, s.reply) : s.talk;
-      return { ...s, phase: a.phase, reply: a.phase === 'error' ? '' : s.reply, heard: a.phase === 'hearing' ? '' : s.heard, askedAt: a.phase === 'error' ? null : s.askedAt,
+      return { ...s, phase: a.phase, reply: a.phase === 'error' ? '' : s.reply, heard: a.phase === 'hearing' ? '' : s.heard, partial: inFlight && s.inFlight ? s.partial : '', askedAt: a.phase === 'error' ? null : s.askedAt,
         played: s.played || a.phase === 'error', inFlight, talk }; }
     case 'mic': return { ...s, micMuted: !s.micMuted };
     case 'sound': return { ...s, soundMuted: !s.soundMuted };
@@ -104,8 +104,10 @@ export function reducer(s: State, a: Action): State {
       return { ...t, reply, turnId: a.turnId, responseId: null, failed: true, faded: false, played: true, talk: hers(ended(s.talk, a.at), a.turnId, reply, a.at, { failed: true, said: true }),
         openSeq: t.rows.length ? t.rows[t.rows.length - 1].seq : 0 }; }
     case 'controls': return { ...s, micMuted: a.micMuted, soundMuted: a.soundMuted, conversation: a.conversation };
+    // What has been heard so far of the words still coming in (ADR 0109); one that arrives after they were accepted is late.
+    case 'partial': return s.inFlight ? { ...s, partial: a.text } : s;
     case 'heard': { const added = a.text.trim() ? yours({ ...s, talk: ended(s.talk, a.at) }, a.text, a.at) : { talk: s.talk, talkN: s.talkN };
-      return { ...s, heard: a.text, inFlight: false, ...added, talk: s.inFlight ? unheld({ ...s, talk: added.talk }, s.reply) : added.talk }; }
+      return { ...s, heard: a.text, partial: '', inFlight: false, ...added, talk: s.inFlight ? unheld({ ...s, talk: added.talk }, s.reply) : added.talk }; }
     // A new session id starts a fresh transcript; a closed session keeps its lines on screen until dismissed.
     case 'live': return { ...s, live: a.live, subtitles: a.live.sessionId && a.live.sessionId !== s.live.sessionId ? [] : s.subtitles };
     case 'subtitle': {

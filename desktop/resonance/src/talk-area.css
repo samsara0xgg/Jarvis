@@ -96,6 +96,8 @@
 .talk .lb { box-sizing:border-box; overflow:hidden; font-size:12px; letter-spacing:.02em; color:rgb(235 238 245 / .56); white-space:nowrap; }
 .talk .lb:empty { display:none; }
 .talk .lb.heard { color:rgb(235 238 245 / .72); animation:talk-in-text .24s ease-out; }
+/* what you say shows its end: the words that no longer fit give way on the left, as an ellipsis, so the newest are always there */
+.talk .lb.heard { direction:rtl; text-overflow:ellipsis; }
 @keyframes talk-in-text { from { opacity:0; } }
 .talk .lb.fade { opacity:0; transition:opacity .2s ease; }
 /* a light sweeps across "thinking" */
@@ -147,11 +149,11 @@
 .talk[data-kind=pill] .lb:empty { display:block; padding:0; }
 .talk[data-kind=pill] .lb:not(:empty) { padding-left:10px; }
 .talk[data-kind=pill] .st { margin-left:10px; }
-.talk[data-kind=pill] .lb { flex:none; max-width:220px; text-overflow:ellipsis; font-size:var(--text-detail); color:rgb(235 238 245 / .58); }
+.talk[data-kind=pill] .lb { flex:none; max-width:290px; text-overflow:ellipsis; font-size:var(--text-detail); color:rgb(235 238 245 / .58); }
 .talk[data-kind=pill] .lb.heard { color:rgb(235 238 245 / .72); }
 .talk[data-kind=pill] .ib { width:26px; height:26px; }
 .talk[data-kind=pill] .kb,.talk[data-kind=pill] .sp { display:none; }
-.talk[data-kind=capsule] .lb { flex:none; max-width:220px; overflow:hidden; text-overflow:ellipsis; }
+.talk[data-kind=capsule] .lb { flex:none; max-width:230px; overflow:hidden; text-overflow:ellipsis; }
 
 @media (prefers-reduced-motion:reduce) {
   .talk .gl::after,.talk .gl.speaking b,.talk .lb.shim,.talk .lb.heard,.tk-latest button,.talk[data-state=speaking] { animation:none; }
