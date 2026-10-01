@@ -33,7 +33,7 @@ const daemon = http.createServer((q, r) => {
   const json = (v, code = 200) => { r.writeHead(code, { ...cors, 'Content-Type': 'application/json' }); r.end(JSON.stringify(v)); };
   if (q.method === 'POST' && u.pathname.startsWith('/inherent/agent-marks/')) { daemonMarks.push(decodeURIComponent(u.pathname.split('/').pop())); json({}); return; }
   const fixed = { '/inherent/claude-sessions': { sessions: [] }, '/inherent/codex-sessions': { sessions: [] }, '/inherent/agent-marks': { marks: {} },
-    '/inherent/confirmation': { card: null }, '/inherent/clarification': { card: null }, '/inherent/think': { on: false, on_words: '(?!)', off_words: '(?!)' },
+    '/inherent/confirmation': { card: null }, '/inherent/clarification': { card: null }, '/inherent/think': { on: false, on_words: '(?!)', turn_id: null },
     '/inherent/language': { language: 'en' }, '/inherent/conversation': { rows: [] } }[u.pathname];
   json(fixed ?? { detail: 'Not Found' }, fixed ? 200 : 404);
 });

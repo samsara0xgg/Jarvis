@@ -169,7 +169,7 @@
 .ad .fold-body pre { margin:6px 0 0; padding:0 0 0 10px; border-left:2px solid rgb(var(--glow) / .25); font-size:var(--text-detail); line-height:1.55; font-family:inherit; color:var(--p-muted); white-space:pre-wrap; }
 .ad .pg-input { position:sticky; bottom:0; z-index:2; margin-top:auto; display:flex; align-items:center; gap:6px; flex:none; height:34px; padding:0 4px 0 12px; border-radius:var(--radius-block); background:rgb(12 12 12 / .95); box-shadow:inset 0 0 0 .5px rgb(var(--glow) / .3),0 -12px 18px -8px rgb(0 0 0 / .9); }
 .ad .pg-input:focus-within { box-shadow:inset 0 0 0 .5px rgb(var(--glow) / .6),0 -12px 18px -8px rgb(0 0 0 / .9); }
-/* Think mode (ADR 0064): the box goes deep, its ring included, and a chip on the left says so; × says the off-word. */
+/* Think mode (ADR 0064): a sentence with an on-word in it makes the box deep, its ring included. */
 .ad .pg-input::before { content:''; position:absolute; inset:0; z-index:-1; border-radius:inherit; pointer-events:none; opacity:0; transition:opacity var(--motion-slow) ease;
   background:radial-gradient(120% 160% at 0 50%,rgb(var(--deep) / .26),transparent 62%),linear-gradient(90deg,#05061a,#090a24); box-shadow:inset 0 0 0 .5px rgb(var(--deep) / .55); }
 .ad .pg-input.is-deep::before { opacity:1; }
