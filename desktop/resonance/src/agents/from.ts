@@ -318,7 +318,7 @@ export function mountFrom(ctx: PageCtx): Feature {
     clearTimeout(h.t); holds.delete(id);
     s.archived = false; s.pinned = h.pinned; s.parked = h.parked; ctx.draw();
     void ctx.tryCall(`/sessions/${id}/meta`, { archived: false, pinned: h.pinned, parked: h.parked });
-    win.querySelector('.toast .fr-undo')?.remove();
+    ctx.toast(`撤销了，「${s.title}」还在`);
     if (h.was) ctx.open(id);
     ctx.cue('open', .7);
   }
