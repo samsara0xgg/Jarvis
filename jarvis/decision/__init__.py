@@ -647,6 +647,9 @@ class DecideContext:
     # a turn is told which earlier ones are still being answered, and a turn
     # Allen spoke past opens its answer by pointing back at his question.
     slow_results: bool = False
+    # The ``reply_language`` setting: "en" or "zh" pins the language of the
+    # spoken form (ADR 0045), "follow" leaves it to Allen's words this turn.
+    reply_language: str = "follow"
 
 
 @dataclass(frozen=True)
@@ -2634,12 +2637,13 @@ _WRITTEN_MARKUP_RE: Final[re.Pattern[str]] = re.compile(
     r"^\s*(?:[-*•+]\s|\d+[.)、]|#{1,6}\s|>|\|)|```|\*\*|[(（]",  # noqa: RUF001 — the fullwidth bracket is the Chinese aside being matched.
     re.MULTILINE,
 )
-# One prompt per language, picked from the script of the user's own words: a
-# prompt asked to "keep the original language" still answered an English
-# answer in Chinese (smoke run 2026-09-24). ~60 Chinese characters and ~40
-# English words are both about 13 s of speech. Neither names Allen: with his
-# name in the prompt every spoken form opened with his name. The question goes
-# along so the rewrite knows which sentence answers it.
+# One prompt per language, picked from the reply language setting, else from
+# the script of the user's own words: a prompt asked to "keep the original
+# language" still answered an English answer in Chinese (smoke run 2026-09-24).
+# ~60 Chinese characters and ~40 English words are both about 13 s of speech.
+# Neither names Allen: with his name in the prompt every spoken form opened
+# with his name. The question goes along so the rewrite knows which sentence
+# answers it.
 _SPOKEN_FORM_PROMPT_ZH: Final[str] = (
     "Rewrite the answer the user gives you as a spoken reply in Mandarin Chinese, "
     "to be read aloud as is. By default, use at most three sentences and 60 Chinese characters, "
@@ -2688,6 +2692,9 @@ def _with_spoken_form(
 ) -> ResponsePlan:
     """ADR 0045: speak a short spoken form, in the language Allen used.
 
+    A ``reply_language`` of ``en`` or ``zh`` replaces "the language Allen
+    used" with that language.
+
     Asked for when the answer is long or written, or in another language than
     Allen's words this turn. The whole answer moves unchanged to the document
     channel, so the screen, memory.db and the backend history keep it while
@@ -2703,6 +2710,11 @@ def _with_spoken_form(
     # spoken_time into a Chinese answer).
     heard = packet.trigger_event.payload.get("transcript")
     english = is_english(heard if isinstance(heard, str) and heard else text)
+    # A pinned reply language beats his words: a Chinese option tapped on an
+    # ask card ran as his words, and the English answer was then spoken as a
+    # Chinese rewrite by an English voice.
+    if ctx.reply_language in ("en", "zh"):
+        english = ctx.reply_language == "en"
     if (
         ctx.stream_correction is not None
         or packet.trigger_event.payload.get("channel") == "gpt_live"

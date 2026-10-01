@@ -3081,6 +3081,8 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             ),
             routine_stream=stream_route,
             slow_results=runtime.response_flags.slow_results,
+            # The same boot value as the system prompt's reply-language line.
+            reply_language=str(runtime.config.get("reply_language", "follow")),
         )
 
         # SQLite row id of the surface.user_intent event — used as the

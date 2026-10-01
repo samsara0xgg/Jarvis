@@ -735,7 +735,10 @@ def _turn_of(action_id: str) -> str | None:
         "properties": {
             "question": {
                 "type": "string",
-                "description": "One short sentence at the top of the card, in the user's language.",
+                "description": (
+                    "One short sentence at the top of the card, in the language "
+                    "you answer in."
+                ),
             },
             "fields": {
                 "type": "array",
@@ -748,14 +751,18 @@ def _turn_of(action_id: str) -> str | None:
                         "label": {
                             "type": "string",
                             "description": (
-                                "Short name of the detail in the user's language, e.g. "
-                                "delivery address. A remembered answer is kept under it."
+                                "Short name of the detail in the language you answer "
+                                "in, e.g. delivery address. A remembered answer is "
+                                "kept under it."
                             ),
                         },
                         "choices": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "2-6 options when the answer is one of a few.",
+                            "description": (
+                                "2-6 options when the answer is one of a few, in the "
+                                "same language as the question."
+                            ),
                         },
                         "value": {
                             "type": "string",
