@@ -972,8 +972,38 @@ _SHORT_ANSWER_RE = re.compile(
 )
 
 
+# Allen sending Jarvis out of conversation mode (ADR 0102): she leaves it,
+# and it is no question to answer. Matched whole, wake phrase, case and
+# punctuation aside.
+_DISMISS_RE = re.compile(
+    r"(?:hey|hi|嘿|嗨)?(?:jarvis|贾维斯)?(?:ok|okay|好|行|嗯)?(?:你|那)?"
+    r"(?:(?:可以)?退下|没事[了啦]?|就这样|先这样|拜拜|再见|结束(?:对话|会话)?|去休息"
+    r"|bye(?:bye)?|goodbye|thatsall|dismissed)(?:了|吧|啦|啊|哈)*",
+)
+
+
+# Allen asking Jarvis to keep listening for him (ADR 0102): conversation mode
+# waits conversation_wait_s, and it is no question to answer. A lone 「等一下」
+# stays a stop request; 「等我一下」 does not stop her for good, only waits.
+_WAIT_RE = re.compile(
+    r"(?:hey|hi|嘿|嗨)?(?:jarvis|贾维斯)?(?:ok|okay|好|行|嗯)?(?:你)?"
+    r"(?:等(?:我|等我)(?:一下|一会儿?|下|会儿)?|稍等(?:我)?(?:一下)?|等着"
+    r"|holdon|waitforme|givemea(?:sec(?:ond)?|minute|moment))(?:啊|呀|哈|吧|please)*",
+)
+
+
 def _squashed(text: str) -> str:
     return re.sub(r"[\W_]+", "", text.lower())
+
+
+def is_dismissal(text: str) -> bool:
+    """True when ``text`` only sends Jarvis out of conversation mode (退下, 没事了, bye)."""
+    return _DISMISS_RE.fullmatch(_squashed(text)) is not None
+
+
+def is_wait_request(text: str) -> bool:
+    """True when ``text`` only asks Jarvis to wait for Allen (等我一下, hold on)."""
+    return _WAIT_RE.fullmatch(_squashed(text)) is not None
 
 
 def is_backchannel(text: str) -> bool:
@@ -1030,9 +1060,11 @@ __all__ = [
     "TranscriptionResult",
     "WhisperFinalRecognizer",
     "is_backchannel",
+    "is_dismissal",
     "is_empty_or_too_short",
     "is_stop_request",
     "is_unclear_sound",
+    "is_wait_request",
     "is_wake_only",
     "looks_complete",
     "normalize_partial_text",

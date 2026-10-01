@@ -379,6 +379,14 @@ class InherentBroadcaster:
         """
         await self._send_all({"op": op, "payload": dict(payload)}, turn_id="")
 
+    def broadcast_op_sync(self, op: str, **payload: object) -> None:
+        """Worker-thread → :meth:`broadcast_op`, dropped like :meth:`broadcast_voice_sync`."""
+        loop = self._loop
+        if loop is None:
+            LOGGER.warning("broadcast_op_sync before attach_loop; envelope dropped (op=%s).", op)
+            return
+        asyncio.run_coroutine_threadsafe(self.broadcast_op(op, **payload), loop)
+
     async def _send_all(self, msg: dict[str, object], *, turn_id: str) -> None:
         """Serialize one envelope with registration snapshots and live sends."""
         async with self._send_lock:

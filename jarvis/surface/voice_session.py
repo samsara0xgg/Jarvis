@@ -62,6 +62,11 @@ class PartialAsrConfig:
     post_roll_ms: int = 200
 
 
+# ADR 0102: how long an accepted turn keeps conversation mode open while its
+# answer has not started; a slower answer arrives after the mode has ended.
+_ANSWER_WAIT_S = 30.0
+
+
 @dataclass(frozen=True)
 class RealtimeInputSessionConfig:
     """Hard bounds for wake framing, utterance assembly, and worker queues."""
@@ -87,6 +92,11 @@ class RealtimeInputSessionConfig:
     barge_in_confirm_voiced_s: float = 0.8
     barge_in_yield_gain: float = 0.2
     barge_in_pause_ms: int = 350
+    # ADR 0102: conversation mode ends this long after Jarvis last spoke or
+    # Allen's last turn was accepted (never mid-utterance); 「等我一下」 holds
+    # it open for conversation_wait_s instead.
+    conversation_idle_exit_s: float = 10.0
+    conversation_wait_s: float = 60.0
     partial_asr: PartialAsrConfig = PartialAsrConfig()
 
 
@@ -948,7 +958,7 @@ class UtteranceAssembler:
 class DuplexVoiceSession:
     """Own wake/capture/commit workers around one continuously sampled ingress."""
 
-    def __init__(  # noqa: PLR0913 - keyword-only composition boundary
+    def __init__(  # noqa: PLR0913, PLR0915 - keyword-only composition boundary
         self,
         *,
         ingress: voice_audio.AudioIngress,
@@ -961,6 +971,7 @@ class DuplexVoiceSession:
         config: RealtimeInputSessionConfig,
         mic_muted: Callable[[], bool] | None = None,
         conversation: Callable[[], bool] | None = None,
+        set_conversation: Callable[[bool, str], None] | None = None,
         stop_speaking: Callable[[], object] | None = None,
         hold_output: Callable[[bool], None] | None = None,
         supersede_unspoken: Callable[[str], None] | None = None,
@@ -972,12 +983,15 @@ class DuplexVoiceSession:
         ``conversation`` reads the surface's conversation switch (ADR 0041):
         while it is on and the mic is live, capture stays armed without a
         wake hit, and speech that starts while Jarvis is speaking calls
-        ``stop_speaking``. With ``yield_speaking`` and ``pause_speaking`` it
-        first only lowers her (``barge_in_yield_gain``) and holds her where
-        she is once the speech has ``barge_in_confirm_voiced_s`` of voice;
-        final ASR then decides: a listening sound, one syllable that says
-        nothing, or nothing lets her go on from there with the gain back, a
-        stop request stops her, and none becomes a turn.
+        ``stop_speaking``. ``set_conversation(on, reason)`` flips it (ADR
+        0102): a wake hit turns it on, and a dismissal (退下) or
+        ``conversation_idle_exit_s`` of quiet turns it off. With
+        ``yield_speaking`` and ``pause_speaking`` it first only lowers her
+        (``barge_in_yield_gain``) and holds her where she is once the speech
+        has ``barge_in_confirm_voiced_s`` of voice; final ASR then decides: a
+        listening sound, one syllable that says nothing, or nothing lets her
+        go on from there with the gain back, a stop request stops her, and
+        none becomes a turn.
 
         ADR 0053: ``hold_output(True)`` from an utterance's speech onset
         until it is accepted or comes to nothing, so no answer starts while
@@ -991,6 +1005,12 @@ class DuplexVoiceSession:
         self._output_active = output_active
         self._mic_muted = mic_muted
         self._conversation = conversation
+        self._set_conversation = set_conversation
+        # ADR 0102: when conversation mode last had an accepted turn or Jarvis's
+        # speech; an accepted turn waits for her answer, 「等我一下」 holds it.
+        self._conversation_busy_at = time.monotonic()
+        self._awaiting_answer = False
+        self._conversation_hold_until = 0.0
         self._stop_speaking = stop_speaking
         self._hold_output = hold_output
         self._supersede_unspoken = supersede_unspoken
@@ -1281,6 +1301,38 @@ class DuplexVoiceSession:
             self._assembler.reset_to_idle()
             self._conversation_armed = False
 
+    def _change_conversation(self, *, on: bool, reason: str) -> None:
+        if self._set_conversation is None:
+            return
+        try:
+            self._set_conversation(on, reason)
+        except Exception:  # noqa: BLE001 - the switch cannot break capture
+            LOGGER.warning("set_conversation failed on=%s reason=%s", on, reason, exc_info=True)
+
+    def _leave_idle_conversation(self) -> None:
+        """ADR 0102: conversation mode ends ``conversation_idle_exit_s`` after it was last used.
+
+        Used is Jarvis speaking or one of Allen's turns accepted; other voice
+        (a hum, a word that says nothing, room talk heard as nothing) does not
+        count, but the mode never ends while an utterance is still coming in.
+        An accepted turn holds it until her answer starts, for at most
+        ``_ANSWER_WAIT_S``; 「等我一下」 holds it ``conversation_wait_s``. The
+        clock starts over while the mode is off, so it counts from its start.
+        """
+        now = time.monotonic()
+        if self._set_conversation is None or not self._conversation_open() or self._speaking():
+            self._conversation_busy_at = now
+            self._awaiting_answer = False
+            return
+        if self._assembler.active or self._in_flight or now < self._conversation_hold_until:
+            return
+        if self._awaiting_answer and now - self._conversation_busy_at < _ANSWER_WAIT_S:
+            return
+        if now - self._conversation_busy_at >= self._config.conversation_idle_exit_s:
+            self._conversation_busy_at = now
+            self._awaiting_answer = False
+            self._change_conversation(on=False, reason="idle")
+
     def _speaking(self) -> bool:
         try:
             return self._output_active is not None and self._output_active()
@@ -1372,8 +1424,14 @@ class DuplexVoiceSession:
 
         A listening sound or one syllable that says nothing lets her go on (from
         where she was held, if they were long) and a stop request stops her;
-        none of them is a turn. Anything else stops her and is a turn.
+        none of them is a turn. Anything else stops her and is a turn. In
+        conversation mode (ADR 0102) a dismissal (退下) stops her and ends the
+        mode, 「等我一下」 stops her and holds the mode, and with her silent a
+        listening sound or one syllable that says nothing is dropped; none of
+        them is a turn. A turn restarts the mode's clock.
         """
+        if self._conversation_open():
+            self._judge_conversation_words(turn_id, text)
         with self._barge_lock:
             state = self._barges.get(turn_id)
         if state is not None:
@@ -1396,7 +1454,30 @@ class DuplexVoiceSession:
                 raise voice_pipeline.VoicePipelineAbsorbedError(
                     "stop_request" if stop else verdict,
                 )
+        self._conversation_busy_at = time.monotonic()
+        self._awaiting_answer = True
+        self._conversation_hold_until = 0.0
         self._supersede(turn_id)
+
+    def _judge_conversation_words(self, turn_id: str, text: str) -> None:
+        """ADR 0102's no-turn words in conversation mode; returns when they are none."""
+        with self._barge_lock:
+            over_her = turn_id in self._barges
+        reason = None
+        if voice_asr.is_dismissal(text):
+            reason = "dismissed"
+            self._settle_barge_in(turn_id, go_on=False)
+            self._change_conversation(on=False, reason=reason)
+        elif voice_asr.is_wait_request(text):
+            reason = "wait"
+            self._settle_barge_in(turn_id, go_on=False)
+            self._conversation_hold_until = time.monotonic() + self._config.conversation_wait_s
+        elif not over_her and (
+            voice_asr.is_backchannel(text) or voice_asr.is_unclear_sound(text)
+        ):
+            reason = "backchannel" if voice_asr.is_backchannel(text) else "unclear"
+        if reason is not None:
+            raise voice_pipeline.VoicePipelineAbsorbedError(reason)
 
     def _judge_no_words(self, turn_id: str, heard: str, *, addressed: bool = False) -> None:
         """No turn in it: her name or a lone stop word over her stops her, anything else not."""
@@ -1435,6 +1516,7 @@ class DuplexVoiceSession:
             if frame is None:
                 continue
             self._keep_conversation_armed(frame)
+            self._leave_idle_conversation()
             was_active = self._assembler.active
             outcome = self._assembler.feed(frame)
             is_active = self._assembler.active
@@ -1489,6 +1571,9 @@ class DuplexVoiceSession:
                     if self._assembler.active:
                         self._mark_in_flight(self._assembler.turn_id, active=True)
                     self._broadcast("listening", turn_id=turn_id)
+                    # ADR 0102: the wake word opens conversation mode, as a tap does.
+                    if not self._conversation_open():
+                        self._change_conversation(on=True, reason="wake")
                     for outcome in outcomes:
                         self._handle_capture_outcome(outcome)
             finally:
@@ -1816,6 +1901,10 @@ def realtime_input_session_config_from_mapping(
         barge_in_confirm_voiced_s=confirm_voiced_s,
         barge_in_yield_gain=yield_gain,
         barge_in_pause_ms=_positive_int("barge_in_pause_ms", defaults.barge_in_pause_ms),
+        conversation_idle_exit_s=_positive_float(
+            "conversation_idle_exit_s", defaults.conversation_idle_exit_s,
+        ),
+        conversation_wait_s=_positive_float("conversation_wait_s", defaults.conversation_wait_s),
         partial_asr=_partial_asr_config_from_mapping(values.get("partial_asr")),
     )
 
