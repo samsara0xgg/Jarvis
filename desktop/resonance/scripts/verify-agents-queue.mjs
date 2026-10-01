@@ -94,15 +94,13 @@ try {
   check('B survives a reload, and A takes the rings away again', kept && await ink('.bw-qb') === 0 && await p.evaluate(() => localStorage.getItem('agents.queue')) === 'A');
   await away();
 
-  // ---------- the long exposure's rows carry the numbers ----------
+  // ---------- the long exposure's rows carry no numbers: the order is by her, the sky shows how long each waited ----------
   await p.focus('#msg');
   await p.keyboard.press('Alt+ArrowUp');
   await sleep(1400);
   const badges = await p.$$eval('.bw-row', els => els.map(e => [e.dataset.session, e.querySelector('.qn')?.textContent ?? '']));
   await st.shot('q-sky');
-  const num = Object.fromEntries(badges);
-  check('the long exposure numbers its rows in the same order, and none on ones that do not wait',
-    num[ask] === '1' && num[pick] === '2' && num[ask2] === '3' && num[pick2] === '4' && num[fail] === '5' && num[edit] === '' && num[home] === '', badges);
+  check('the long exposure\'s rows carry no queue numbers', badges.length > 0 && badges.every(([, n]) => n === ''), badges);
   await p.keyboard.press('Escape');
   await sleep(900);
 

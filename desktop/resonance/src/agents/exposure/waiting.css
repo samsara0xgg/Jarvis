@@ -29,9 +29,6 @@
 .say-x svg{width:12px;height:12px}
 :is(.hq-g,.say-f b).q-ask{color:var(--warm)} :is(.hq-g,.say-f b).q-err{color:var(--red)} :is(.hq-g,.say-f b).q-done{color:var(--mint)}
 /* the sky's rows carry her numbers */
-.bw-row .qn{flex:none;display:inline-grid;place-items:center;min-width:15px;height:15px;padding:0 3px;border-radius:8px;font:600 9.5px/1 var(--code);font-style:normal;color:#1c1206;background:var(--warm)}
-.bw-row .qn.q-err{background:var(--red);color:#2a0703}
-.bw-row .qn.q-done{background:var(--mint);color:#062419}
 /* a stopped session's line, above the composer */
 .c-stop{align-self:center;width:min(100%,632px);display:flex;flex-direction:column;gap:8px;padding:9px 12px 10px;border-radius:10px;background:rgb(255 106 90 / .08);box-shadow:inset 0 0 0 .5px rgb(255 106 90 / .35);font-size:13px;line-height:1.55;color:var(--muted)}
 .c-stop p{margin:0;overflow-wrap:anywhere}

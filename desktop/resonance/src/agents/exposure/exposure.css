@@ -151,7 +151,6 @@
 .bw-open .pp-q{max-width:100%}
 .bw-open .pp-a i,.bw-open .pp-her i{display:inline;margin:0 8px 0 0}
 /* past the last thing you said, the name column is the stop before going in */
-.bw.m-top .bw-row.nm{background:rgb(var(--acc) / .15);box-shadow:inset 0 0 0 .5px rgb(var(--acc) / .5)}
 .bw-row.nm b{color:var(--ink);font-weight:600}
 .bw-row.nm::after{content:"›";flex:none;margin-left:-2px;font:600 15px/1 var(--ui);color:rgb(var(--acc))}
 .dc-line{top:74px}

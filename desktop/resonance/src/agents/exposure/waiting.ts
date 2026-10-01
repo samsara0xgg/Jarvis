@@ -408,11 +408,6 @@ export function mountWaiting(env: Env) {
       const [x, y] = look === 'B' ? ringHead(f, 0, env.width()) : at(f.id);
       return [clamp((x - env.width() + 34) / 50, -.8, .8), clamp((y - 28) / 36, -.8, .8)];
     },
-    // The sky's rows carry the same numbers, in the same order.
-    badge(s: Sess) {
-      const j = queue(env.sessions()).indexOf(s), k = waitOf(s);
-      return j >= 0 && k ? `<i class="qn q-${k}" aria-label="第 ${j + 1} 个等你">${j + 1}</i>` : '';
-    },
     sent() { const t = performance.now(); window.setTimeout(() => paused(undefined, undefined, t), 1050); },
     notify(s: Sess) {
       if (blurAt) away.set(s.id, s.st);
