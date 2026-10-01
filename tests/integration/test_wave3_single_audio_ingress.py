@@ -315,11 +315,13 @@ def _ingress(
     *,
     native_capacity: int = 64,
     subscriber_capacity: int = 16,
+    wake_input_channel: int | None = None,
 ) -> voice_audio.AudioIngress:
     return voice_audio.AudioIngress(
         backend=backend,
         config=replace(
             voice_audio.AudioIngressConfig(),
+            wake_input_channel=wake_input_channel,
             native_ring_capacity=native_capacity,
             default_subscriber_capacity=subscriber_capacity,
             worker_poll_s=0.0005,
@@ -407,6 +409,7 @@ def test_sounddevice_backend_asserts_one_default_input_owner_and_uses_callback()
         adc_time_s: float | None,
         captured_monotonic_ns: int,
         discontinuity_before: bool,
+        channels: int | None = None,
     ) -> None:
         del (
             stream_epoch,
@@ -415,6 +418,7 @@ def test_sounddevice_backend_asserts_one_default_input_owner_and_uses_callback()
             adc_time_s,
             captured_monotonic_ns,
             discontinuity_before,
+            channels,
         )
         copied.append(bytes(memoryview(callback_buffer)))
 
@@ -891,6 +895,70 @@ def test_wake_capture_diagnostics_share_cursor_and_own_callback_buffers() -> Non
     assert result.definitively_closed
     assert result.open_subscribers == 0
     assert backend.max_active_owner_count == 1
+
+
+def test_the_wake_word_hears_its_own_channel_and_the_rest_hear_channel_zero() -> None:
+    """ADR 0103: on a two-channel device wake reads channel 1, capture channel 0, one cursor."""
+
+    class _StereoBackend(_FakeBackend):
+        def emit_stereo(self, *, epoch: int, left: int, right: int) -> None:
+            frame = np.empty((512, 2), dtype="<i2")
+            frame[:, 0], frame[:, 1] = left, right
+            self.sinks[epoch](
+                stream_epoch=epoch,
+                attempt_id=self.attempts[epoch],
+                callback_buffer=bytearray(frame.tobytes()),
+                frame_count=512,
+                adc_time_s=time.monotonic(),
+                captured_monotonic_ns=time.monotonic_ns(),
+                discontinuity_before=False,
+                channels=2,
+            )
+
+    assert voice_audio.audio_ingress_config_from_mapping(
+        {"wake_input_channel": 1},
+    ).wake_input_channel == 1
+    backend = _StereoBackend()
+    backend.format = voice_backend.AudioInputFormat(16_000, 2, 512)
+    ingress = _ingress(backend, wake_input_channel=1)
+    wake = ingress.subscribe(name="wake-test", purpose=voice_audio.SubscriberPurpose.WAKE)
+    capture = ingress.subscribe(
+        name="capture-test",
+        purpose=voice_audio.SubscriberPurpose.CAPTURE,
+    )
+    assert ingress.start().started
+    epoch = ingress.stream_epoch
+    assert epoch is not None
+    for value in range(1, 4):
+        backend.emit_stereo(epoch=epoch, left=value, right=100 + value)
+    wake_frames = _read_frames(wake, 3)
+    capture_frames = _read_frames(capture, 3)
+    assert [frame.sample_cursor for frame in wake_frames] == [0, 512, 1024]
+    assert [frame.sample_cursor for frame in capture_frames] == [0, 512, 1024]
+    assert [frame.pcm16_mono for frame in wake_frames] == [_pcm(101), _pcm(102), _pcm(103)]
+    assert [frame.pcm16_mono for frame in capture_frames] == [_pcm(1), _pcm(2), _pcm(3)]
+    assert ingress.close().definitively_closed
+
+
+def test_a_mono_microphone_opens_mono_when_a_wake_channel_is_asked_for() -> None:
+    """ADR 0103: the profile never asks a device for more channels than it has."""
+    devices = {
+        3: {"index": 3, "name": "MacBook Pro Microphone", "max_input_channels": 1},
+        5: {"index": 5, "name": "reSpeaker XVF3800 4-Mic Array", "max_input_channels": 2},
+    }
+    fake_sd = MagicMock()
+    fake_sd.query_devices = lambda device, _kind: devices[device] if isinstance(
+        device, int,
+    ) else next(one for one in devices.values() if one["name"] == device)
+    fake_sd.default.device = (3, 4)
+    asked = voice_backend.AudioInputFormat(16_000, 2, 512)
+    with patch.dict("sys.modules", {"sounddevice": fake_sd}):
+        mono = voice_backend._default_input_device_profile(asked)
+        stereo = voice_backend._default_input_device_profile(
+            asked, "reSpeaker XVF3800 4-Mic Array",
+        )
+    assert mono.input_format.channels == 1
+    assert stereo.input_format.channels == 2
 
 
 def test_wake_window_and_pre_roll_are_contiguous_without_missing_or_duplicate() -> None:

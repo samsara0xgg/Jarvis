@@ -307,8 +307,13 @@ class InputFrameSink(Protocol):
         adc_time_s: float | None,
         captured_monotonic_ns: int,
         discontinuity_before: bool,
+        channels: int | None = None,
     ) -> None:
-        """Copy one callback-owned buffer before the call returns."""
+        """Copy one callback-owned buffer before the call returns.
+
+        ``channels`` is the count the stream opened with, when it is fewer than
+        the backend's format asks for.
+        """
         ...
 
 
@@ -609,11 +614,13 @@ def _default_input_device_profile(
                 input_index = int(default_device)
         raw = sd.query_devices(input_index, "input")
     name = str(raw.get("name", f"input-{input_index}"))
+    # ADR 0103: a wake channel is only asked for; a mono microphone opens mono.
+    available = int(raw.get("max_input_channels", input_format.channels) or 1)
     return InputDeviceProfile(
         device_uid=f"sounddevice:{input_index}:{name}",
         device_name=name,
         backend="sounddevice",
-        input_format=input_format,
+        input_format=replace(input_format, channels=min(input_format.channels, available)),
         device_index=input_index,
     )
 
@@ -891,6 +898,8 @@ class SoundDeviceDuplexBackend:
             / self._input_format.sample_rate_hz
             * 1_000_000_000
         )
+        # The device's own channel count, set before the stream starts (ADR 0103).
+        opened_channels = [self._input_format.channels]
 
         def _callback(
             callback_buffer: Any,  # noqa: ANN401
@@ -915,6 +924,7 @@ class SoundDeviceDuplexBackend:
                     adc_time_s=adc_time_s,
                     captured_monotonic_ns=callback_started_ns,
                     discontinuity_before=discontinuity,
+                    channels=opened_channels[0],
                 )
             except Exception:  # noqa: BLE001 - callback must fail closed without logging
                 self._callback_fault = (
@@ -933,8 +943,9 @@ class SoundDeviceDuplexBackend:
             stream: Any | None = None
             try:
                 profile = _default_input_device_profile(self._input_format, self._device)
+                opened_channels[0] = profile.input_format.channels
                 stream = _open_sounddevice_input_stream(
-                    input_format=self._input_format,
+                    input_format=profile.input_format,
                     device_index=profile.device_index,
                     callback=_callback,
                     finished_callback=_finished_callback,
@@ -1112,7 +1123,7 @@ class SoundDeviceDuplexBackend:
             backend="sounddevice",
             device_uid=attempt.profile.device_uid,
             sample_rate_hz=self._input_format.sample_rate_hz,
-            channels=self._input_format.channels,
+            channels=attempt.profile.input_format.channels,
             callback_frame_samples=self._input_format.callback_frame_samples,
             measurement_boundary="portaudio_stream_started_not_first_callback",
         )
