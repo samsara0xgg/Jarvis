@@ -35,28 +35,26 @@ const pl = (c: CanvasRenderingContext2D, a: number, b: number, f: (x: number) =>
 // The ruler's marks, in minutes ago. Every cell between two marks is equally wide and time runs evenly inside it, so a
 // cell near now holds minutes and one far back holds hours or days: recent time spreads out, a long history still fits.
 const MARKS = [5, 15, 30, 60, 120, 240, 480, 1440, 2880, 5760, 11520, 23040, 43200];
-// recent: how far back the sky opens (the stretch you have been working in); all: how far back any session goes. The
-// cells are sized to the recent stretch, so old sessions never squeeze it: the ruler goes on past the left edge in cells
-// as wide, and the sky slides right (pan) to show them.
+// recent: how far back the sky opens (the stretch you have been working in); all: how far back any session goes. Each
+// step of the ruler is a cell as wide as the next, and the recent stretch fills the sky from its oldest moment, not from
+// the next mark past it; older time goes on past the left edge in cells as wide, and the sky slides right (pan) to it.
 export function geometry(width: number, now: number, recent: number, all: number, height: number, bend: (i: number, x: number) => number, pan = 0): Geo {
-  const x0 = 30, x1 = width - 262, range = x1 - x0;
-  const upto = (span: number) => { const edge = MARKS.find(m => m >= span) ?? span; return [0, ...MARKS.filter(m => m < edge), edge]; };
-  const near = upto(recent), ticks = upto(Math.max(all, recent)), cell = range / (near.length - 1);
-  const extent = cell * (ticks.length - 1), panMax = Math.max(0, extent - range);
+  const x0 = 30, x1 = width - 262, range = x1 - x0, ladder = [0, ...MARKS], reach = Math.max(all, recent);
+  // How many cells back a moment is: whole cells to the mark before it, and the part of the next.
+  const cells = (m: number) => {
+    let i = 1; while (i < ladder.length - 1 && m > ladder[i]) i++;
+    return i - 1 + (m - ladder[i - 1]) / (ladder[i] - ladder[i - 1]);
+  };
+  const cell = range / cells(recent), extent = cell * cells(reach), panMax = Math.max(0, extent - range);
   pan = clamp(pan, 0, panMax);
-  const edge = ticks.at(-1)!;
-  const xAgo = (m: number) => {
-    m = clamp(m, 0, edge);
-    let i = 1; while (i < ticks.length - 1 && m > ticks[i]) i++;
-    return x1 + pan - cell * (i - 1 + (m - ticks[i - 1]) / (ticks[i] - ticks[i - 1]));
-  };
+  const xAgo = (m: number) => x1 + pan - cell * cells(clamp(m, 0, reach));
   const agoX = (x: number) => {
-    const k = clamp((x1 + pan - x) / cell, 0, ticks.length - 1), i = Math.min(ticks.length - 2, Math.floor(k));
-    return ticks[i] + (ticks[i + 1] - ticks[i]) * (k - i);
+    const k = clamp((x1 + pan - x) / cell, 0, cells(reach)), i = Math.min(ladder.length - 2, Math.floor(k));
+    return ladder[i] + (ladder[i + 1] - ladder[i]) * (k - i);
   };
-  return { width, x0, x1, span: edge, cell, rowH: 27, band: [18, width], minutes: true,
+  return { width, x0, x1, span: reach, cell, rowH: 27, band: [18, width], minutes: true,
     y: i => 82 + i * 27, yx: (i, x) => 82 + i * 27 + bend(i, x), top: 56, bottom: 56 + height - 22,
-    xOf: at => xAgo(now - at), tOf: x => now - agoX(x), guides: ticks.slice(1), pan, panMax,
+    xOf: at => xAgo(now - at), tOf: x => now - agoX(x), guides: MARKS.filter(m => m <= reach), pan, panMax,
   };
 }
 // 离开线: while you were away. A thin bracket along the top from the moment you left to the moment you came back, a
