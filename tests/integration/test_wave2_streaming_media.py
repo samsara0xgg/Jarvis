@@ -49,6 +49,7 @@ class _Behavior:
     sample_rate_hz: int = 8_000
     late_after_abort: bool = False
     amplitude: int = 2_000
+    fail_at_sequence: int | None = None  # fails before that segment's audio
 
 
 class _FakeSession:
@@ -104,12 +105,15 @@ class _FakeSession:
         )
         return self._events()
 
-    async def _events(self) -> AsyncIterator[voice_tts.TTSAudioEvent]:
+    async def _events(self) -> AsyncIterator[voice_tts.TTSAudioEvent]:  # noqa: C901 - one branch per fake failure mode
         while not self._closed:
             if self._behavior.outcome == "fail_before":
                 msg = "fake connect/read failure before prefix"
                 raise OSError(msg)
             segment = await self._segments.get()
+            if segment.sequence == self._behavior.fail_at_sequence:
+                msg = "fake failure before this segment's audio"
+                raise OSError(msg)
             gate = self._provider.segment_gates.get((self._response_id, segment.sequence))
             while gate is not None and not gate.is_set() and not self._closed:  # noqa: ASYNC110
                 await asyncio.sleep(0.001)
@@ -2481,6 +2485,56 @@ def test_a_voice_that_breaks_mid_sentence_plays_out_then_sounds_the_cut_off_cue(
     assert kind == "surface.playback_failed"
     assert payload["reason"] == "partial_tts_provider_failure"
     assert payload["heard_through_sequence"] is None
+
+
+def test_a_voice_that_breaks_between_sentences_sounds_the_cut_off_cue_not_say(
+    tmp_path: Path,
+) -> None:
+    """The first sentence played, then no endpoint can say the second: a cue, then the terminal.
+
+    Handing the rest to `say` meant waiting for the whole text, which with
+    the network down never came (2026-10-01).
+    """
+    db_path = tmp_path / "cut-off-between.db"
+    conn = open_event_log(db_path)
+    provider = _FakeProvider({("RGAP", 0): _Behavior(fail_at_sequence=1)}, candidate_count=1)
+    player = _player()
+    pipeline = voice_media.StreamingTTSPipeline(
+        provider=provider,
+        player=player,
+        conn_factory=lambda: open_event_log(db_path),
+        boot_high_water_id=0,
+        config=replace(_config(), enable_macos_say_fallback=True),
+        start_player=False,
+    )
+    spawned: list[tuple[object, ...]] = []
+
+    async def _spawn(*args: object, **_kwargs: object) -> None:
+        spawned.append(args)
+
+    try:
+        with (
+            patch("jarvis.surface.voice_media.asyncio.create_subprocess_exec", side_effect=_spawn),
+            _CallbackPump(player, record=True) as pump,
+        ):
+            rows = _emit_response(
+                conn, response_id="RGAP", group_id="GGAP", turn_id="TGAP",
+                text=["first sentence. ", "second sentence."],
+            )
+            asyncio.run(_submit_response(pipeline, rows))
+            assert pipeline.wait_until_idle(timeout_s=3.0)
+    finally:
+        assert pipeline.close()
+        conn.close()
+    signal = pump.signal
+    said = np.flatnonzero(np.abs(signal - 2_000 / 32_768) < 1e-3)
+    cue = np.flatnonzero(np.abs(signal) > 0.1)
+    assert len(cue) > 500
+    assert np.count_nonzero(said < cue.min()) >= 150
+    assert spawned == []
+    kind, payload = _terminal_for(open_event_log(db_path), response_id="RGAP")
+    assert kind == "surface.playback_failed"
+    assert payload["reason"] == "partial_tts_provider_failure"
 
 
 def test_a_say_that_cannot_render_says_the_rest_aloud(tmp_path: Path) -> None:
