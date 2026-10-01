@@ -4,7 +4,7 @@
 
 > **Demo video coming later today (October 1, 2026).** A short walkthrough of Jarvis running on my Mac will be posted right here.
 >
-> **In a rush?** You can try a demo on your own Mac in about a minute, with no keys or setup. [Click here to try it.](#try-the-demo)
+> **In a rush?** You can try a demo on your own Mac with one command, no keys or setup. [Click here to try it.](#try-the-demo)
 
 <p align="center">
   <img src="https://img.shields.io/badge/macOS-000000?logo=apple&logoColor=white" alt="macOS">
@@ -58,7 +58,13 @@ You need macOS (built and tested on Apple Silicon), Node.js (tested with Node 24
 
 ### Try the demo
 
-To see the companion on its built-in demo data, with no daemon and no keys:
+To see the companion on its built-in demo data, with no daemon and no keys, paste this into Terminal:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/samsara0xgg/Jarvis/main/scripts/try-demo.sh | bash
+```
+
+It checks for the Xcode Command Line Tools and Node.js 24, lists anything missing and asks before installing it, then clones Jarvis into `~/Jarvis`, installs its npm dependencies and starts the demo. The first run takes a few minutes. To do the same by hand:
 
 ```bash
 git clone https://github.com/samsara0xgg/Jarvis
