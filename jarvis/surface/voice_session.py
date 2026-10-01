@@ -66,6 +66,11 @@ class PartialAsrConfig:
 # answer has not started; a slower answer arrives after the mode has ended.
 _ANSWER_WAIT_S = 30.0
 
+# A wake score at or above this is logged, one line per attempt with its peak,
+# so a wake that did not fire shows how close it came. Allen's missed takes on
+# 2026-09-30 peaked at 0.06-0.21; 20 minutes of room talk never reached 0.1.
+_WAKE_LOG_FLOOR = 0.1
+
 
 @dataclass(frozen=True)
 class RealtimeInputSessionConfig:
@@ -1164,9 +1169,10 @@ class DuplexVoiceSession:
         )
         return VoiceSessionStartResult(started=True, ingress=ingress_result)
 
-    def _wake_loop(self) -> None:  # noqa: C901, PLR0912 - linear drain/decision/suppress/fault loop
+    def _wake_loop(self) -> None:  # noqa: C901, PLR0912, PLR0915 - linear drain/decision/suppress/fault loop
         framer = WakeWindowFramer()
         consecutive_prediction_failures = 0
+        near_peak = 0.0
         while not self._stop.is_set():
             frame = self._wake_subscription.read(timeout_s=self._config.worker_poll_s)
             if frame is None:
@@ -1203,7 +1209,14 @@ class DuplexVoiceSession:
                     )
                 consecutive_prediction_failures = 0
                 if probability < self._wake_threshold:
+                    if probability >= _WAKE_LOG_FLOOR:
+                        near_peak = max(near_peak, probability)
+                    elif near_peak:
+                        LOGGER.info("wake score %.3f, below %.2f", near_peak, self._wake_threshold)
+                        near_peak = 0.0
                     continue
+                LOGGER.info("wake score %.3f", probability)
+                near_peak = 0.0
                 self._wake_detections += 1
                 try:
                     output_active = bool(
