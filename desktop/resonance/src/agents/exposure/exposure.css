@@ -211,7 +211,9 @@
 .bw .bw-row em.st-wait{color:var(--warm)}.bw .bw-row em.st-err{color:var(--red)}.bw .bw-row em.st-done{color:var(--mint)}.bw .bw-row em.st-work{color:var(--blue)}
 .bw-row.bw-x{gap:7px;font-size:12px;color:var(--faint);white-space:nowrap}
 .bw-x span:first-child{min-width:0;overflow:hidden;text-overflow:ellipsis}
-.bw-x .kk{margin-left:auto;display:inline-flex;gap:2px}
+/* ＋ 新会话 and the fold share one line: 新会话 at its start, 还有 N 个 at its end */
+.bw-x.start{right:auto}
+.bw-x.end{left:auto}
 .bw-x.sel,.bw-x:hover{color:var(--muted)}
 .bw-x.arch{color:rgb(196 204 238 / .42)}
 .bw-x .back{margin-left:auto;font-size:11px;color:rgb(var(--acc));opacity:0}

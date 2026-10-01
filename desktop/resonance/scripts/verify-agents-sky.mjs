@@ -97,7 +97,9 @@ try {
   await press('Alt+ArrowUp', 1, 1400);
   let s = await sky();
   check('⌥↑ opens the sky on the last thing you said to the session on screen, its words out', s.on && selected(s)?.id === live && !selected(s).nm && /^第 (\d+) \/ \1 句$/.test(s.n ?? '') && s.words?.includes('进去'), [s.n, s.rows]);
-  check('under the sessions it lists ＋ 新会话 with ⌘N and the archived fold', s.rows.some(r => r.x === 'x:new' && r.text.includes('＋ 新会话') && r.text.includes('⌘N')) && s.rows.some(r => r.x === 'x:arch' && r.text === '已归档 1'), s.rows.map(r => r.text));
+  await st.until('the day-old session resting', async () => (await sky()).rows.some(r => r.x === 'x:more'), 6000);
+  s = await sky();
+  check('under the sessions one line: ＋ 新会话, and at its end what rests behind it — the day-old session and the archived one', s.rows.some(r => r.x === 'x:new' && r.text === '＋ 新会话') && s.rows.some(r => r.x === 'x:more' && r.text === '还有 2 个 ›') && !s.rows.some(r => r.text.includes('timesink')), s.rows.map(r => r.text));
   await st.shot('sky');
   await press(' ');
   s = await sky();
@@ -127,9 +129,12 @@ try {
   for (let i = 0; i < 12 && selected(await sky())?.x !== 'x:new'; i++) await press('ArrowDown');
   s = await sky();
   check('↓ walks on past the sessions onto ＋ 新会话, where there are no words to read', selected(s)?.x === 'x:new' && s.words === null, selected(s));
-  await press('ArrowDown'); await press('ArrowRight', 1, 400);
+  await press('ArrowDown');
   s = await sky();
-  check('→ on 已归档 opens the fold: the archived session, to take back', s.rows.some(r => r.x === 'x:arch' && r.text === '收起已归档的 1 个') && s.rows.some(r => r.x === `x:a:${tray}` && r.text.includes('tray theme') && r.text.includes('拿回来')), s.rows.map(r => r.text));
+  check('↓ again steps along the same line to what rests', selected(s)?.x === 'x:more', selected(s));
+  await press('ArrowRight', 1, 400);
+  s = await sky();
+  check('→ on it opens the fold: the resting session as a row, and the archived one to take back', s.rows.some(r => r.x === 'x:more' && r.text === '收起') && s.rows.some(r => r.id && r.text.includes('timesink')) && s.rows.some(r => r.x === `x:a:${tray}` && r.text.includes('tray theme') && r.text.includes('拿回来')), s.rows.map(r => r.text));
   await press('ArrowDown'); await press('Enter', 1, 700);
   await st.until('tray taken back', () => st.row(tray)?.archived === false, 5000);
   s = await sky();
@@ -183,11 +188,10 @@ try {
   await p.waitForTimeout(500);
   ax = await axis();
   check('a sideways swipe slides the sky to older time in cells as wide', ax.words.some(w => w.includes('天前')) && !ax.words.includes('现在') && ax.closest >= 7, ax.words);
-  await press('Escape', 1, 600);
-  await p.locator('#msg').focus();
-  await press('Alt+ArrowUp', 1, 1200);
-  for (let i = 0; i < 10 && !selected(await sky())?.text.includes('timesink'); i++) await press('ArrowUp');
-  await press('ArrowLeft'); await press('ArrowLeft', 1, 1400);
+  s = await sky();
+  check('slid back to its time, the resting session comes in under the rest, and stays while the sky is open', s.rows.findIndex(r => r.text.includes('timesink')) > s.rows.findIndex(r => r.id === live) && s.rows.some(r => r.x === 'x:more' && r.text === '还有 1 个 ›'), s.rows.map(r => r.text));
+  for (let i = 0; i < 10 && !selected(await sky())?.text.includes('timesink'); i++) await press('ArrowDown');
+  await press('ArrowLeft', 1, 1400);
   const needle = await p.evaluate(() => { const cv = document.querySelector('.bw-cv').getBoundingClientRect(), pop = document.querySelector('.bw-open').getBoundingClientRect(); return { left: pop.left - cv.left, right: pop.right - cv.left, width: cv.width }; });
   s = await sky();
   check('← to a sentence two days back slides the sky there, its words in view', s.n === '第 1 / 2 句' && needle.left >= 0 && needle.right <= needle.width - 250, { n: s.n, needle });
@@ -218,7 +222,7 @@ try {
   check('the search reaches an archived session this window had not read, and stands on its sentence', selected(s)?.id === tray && selected(s).text.includes('已归档') && s.q === '托盘图标要跟着暗色模式变', [selected(s), s.q]);
   await press('Escape', 1, 400);
   s = await sky();
-  check('esc empties the field first, and the sessions come back', s.on && s.value === '' && s.rows.filter(r => r.id).length >= 6, s.rows.length);
+  check('esc empties the field first, and the sessions come back, the day-old one resting again', s.on && s.value === '' && s.rows.filter(r => r.id).length >= 5 && s.rows.some(r => r.x === 'x:more'), s.rows.map(r => r.text));
   await p.keyboard.type('zzqx'); await p.waitForTimeout(700);
   s = await sky();
   check('nothing found says so in the sky', s.rows.length === 1 && s.rows[0].text === '没找到「zzqx」' && s.rows[0].off, s.rows.map(r => r.text));
@@ -238,10 +242,12 @@ try {
     const f = window.__frame(), dpr = document.querySelector('.bw-cv').width / document.querySelector('.bw-cv').getBoundingClientRect().width;
     const bracket = f.strokes.filter(k => /214, 224, 255, 0\.55/.test(k.style)).flatMap(k => k.subs);
     const xs = bracket.flat().map(pt => pt[0]), ys = bracket.flat().map(pt => pt[1]), x0 = Math.min(...xs), x1 = Math.max(...xs);
-    // Between the first two rows, across the span, away from the time guides: nothing may be drawn there.
+    // Between the first two rows (the second and third when the first is the one you stand on, whose band is lit), across
+    // the span, away from the time guides: nothing may be drawn there.
     const guides = f.strokes.filter(k => /157, 180, 255, 0\.06/.test(k.style)).map(k => k.subs[0][0][0]);
+    const sel = [...document.querySelectorAll('.bw-rows .bw-row[data-session]')].findIndex(b => b.classList.contains('sel')), gapY = 90 + (sel === 0 ? 27 : 0);
     const c = document.querySelector('.bw-cv').getContext('2d'); let tint = 0;
-    for (let x = Math.ceil(x0 + 4); x < x1 - 4; x++) if (!guides.some(g => Math.abs(g - x) < 3)) tint = Math.max(tint, c.getImageData(Math.round(x * dpr), Math.round(90 * dpr), 1, 1).data[3]);
+    for (let x = Math.ceil(x0 + 4); x < x1 - 4; x++) if (!guides.some(g => Math.abs(g - x) < 3)) tint = Math.max(tint, c.getImageData(Math.round(x * dpr), Math.round(gapY * dpr), 1, 1).data[3]);
     return { label: f.texts.find(t => t.startsWith('你不在')), x0, x1, top: Math.min(...ys), bottom: Math.max(...ys), tint };
   });
   let a = await away();
@@ -263,13 +269,14 @@ try {
   await p.locator('#msg').focus();
   await press('Alt+ArrowUp', 1, 1200);
   s = await sky();
-  const rest = s.rows.find(r => r.x === 'x:rest'), before = s.rows.filter(r => r.id).length;
-  check('past fourteen sessions the long-read ones fold into one line under the sessions', /^还有 \d+ 个在歇着$/.test(rest?.text ?? '') && !s.rows.some(r => r.text.includes('旧事')), s.rows.map(r => r.text));
-  for (let i = 0; i < 20 && selected(await sky())?.x !== 'x:rest'; i++) await press('ArrowDown', 1, 150);
+  const rest = s.rows.find(r => r.x === 'x:more'), before = s.rows.filter(r => r.id).length;
+  check('past fourteen sessions the long-read ones rest behind the same line', /^还有 \d+ 个 ›$/.test(rest?.text ?? '') && !s.rows.some(r => r.text.includes('旧事')), s.rows.map(r => r.text));
+  for (let i = 0; i < 20 && selected(await sky())?.x !== 'x:more'; i++) await press('ArrowDown', 1, 150);
   await press('ArrowRight', 1, 500);
   s = await sky();
-  const n = Number(rest.text.match(/\d+/)[0]);
-  check('→ on it opens the fold, and folds it again from the same line', s.rows.filter(r => r.id).length === before + n && selected(s)?.text === `收起歇着的 ${n} 个`, s.rows.map(r => r.text));
+  // The archived one counts behind the line too, and opens as a line of its own.
+  const n = Number(rest.text.match(/\d+/)[0]) - 1;
+  check('→ on it opens the fold, and folds it again from the same line', s.rows.filter(r => r.id).length === before + n && selected(s)?.text === '收起', s.rows.map(r => r.text));
   await press('Escape', 1, 400);
 
   check('no errors on the page', !st.errors.length, st.errors);

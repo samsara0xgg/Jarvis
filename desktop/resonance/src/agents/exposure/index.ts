@@ -30,7 +30,7 @@ const animate = (el: Element, frames: Keyframe[], duration: number, easing = 'cu
 const LEAD: Partial<Record<Turn['kind'], string>> = { live: '还在做', wait: '等你', err: '停了' };
 // A line under the sessions in the sky, stood on like a row: 新会话, the resting and the archived folds, an archived
 // session (back: its id, to take it back). Its key is where you stand while on it.
-type X = { key: string; label: string; arch?: boolean; back?: string };
+type X = { key: string; label: string; arch?: boolean; back?: string; line: number; end?: boolean };
 
 export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: Hooks) {
   const chrome = document.createElement('div'); chrome.className = 'exposure';
@@ -58,12 +58,12 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
   // The window is always the long exposure; the classic layout stays in the code, unreachable, until it is removed.
   const enabled = true;
   let skyOn = false, nameStop = false, selected = '', qi = -1, time: number | null = null;
-  let width = win.clientWidth, height = win.clientHeight, now = Date.now() / 60000, expandRest = false, rowKey = '', popKey = '';
+  let width = win.clientWidth, height = win.clientHeight, now = Date.now() / 60000, openMore = false, back = Infinity, rowKey = '', popKey = '';
   let lastRefresh = 0, pointerAt = -Infinity;
   const trails: Record<string, Trail> = {}, sources = new Map<string, { s: string; items?: Item[] }>();
-  let all: Sess[] = [], rows: Sess[] = [], resting: Sess[] = [], xrows: X[] = [];
+  let all: Sess[] = [], rows: Sess[] = [], resting: Sess[] = [], folds: Sess[] = [], xrows: X[] = [];
   // ⌘K: searching, what is typed, the sessions the host finds it in, and per session the turns that say it.
-  let finding = false, query = '', showArch = false, findSeq = 0, found = new Set<string>();
+  let finding = false, query = '', findSeq = 0, found = new Set<string>();
   const hits = new Map<string, { items?: Item[]; q: string; turns: number[] }>();
   const searching = () => finding && !!query.trim();
   const saying = (s: Sess, q = query.trim().toLowerCase()) => {
@@ -90,30 +90,44 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
   const moreRows = () => [...more.querySelectorAll<HTMLElement>('button')];
   const index = () => Math.max(0, rows.findIndex(s => s.id === selected));
   const stops = () => [...rows.map(s => s.id), ...xrows.filter(x => x.key !== 'x:none').map(x => x.key), ...moreRows().map((_, i) => `m:${i}`)];
-  const place = () => selected.startsWith('m:') ? rows.length + xrows.length + Number(selected.slice(2)) : onX() ? rows.length + xrows.findIndex(x => x.key === selected) : index();
+  const xLines = () => xrows.reduce((n, x) => Math.max(n, x.line + 1), 0);
+  const place = () => selected.startsWith('m:') ? rows.length + xLines() + Number(selected.slice(2)) : onX() ? rows.length + (xrows.find(x => x.key === selected)?.line ?? 0) : index();
   // Where the sky opens, and where a search starts: the session on screen, else the first.
   const first = () => (searching() ? undefined : rows.find(s => s.id === hooks.current())?.id) ?? stops()[0] ?? '';
   const since = (s: Sess) => s.trace?.at(-1)?.at ?? hooks.items(s.id)?.find(it => it.k === 'req' && !it.done)?.at ?? s.updated;
   const waitMin = (s: Sess) => Math.max(0, Math.round((Date.now() - since(s)) / 60000));
   const stateText = (s: Sess) => `${words[status(s)]}${s.st === 'wait' ? ` · ${waitMin(s) || '刚刚'}${waitMin(s) ? ' 分' : ''}` : ''}`;
   const stateHTML = (s: Sess, tag = 'em') => `<${tag} class="st-${status(s)}">${stateText(s)}</${tag}>`;
-  const skyHeight = () => 26 + (rows.length + xrows.length) * 27 + opening.value + 34 + (Number(more.dataset.h) || 0);
+  const skyHeight = () => 26 + (rows.length + xLines()) * 27 + opening.value + 34 + (Number(more.dataset.h) || 0);
   // Under the words the trails bend down once, past their right edge, and stay down all the way back.
   const geo = () => geometry(width, now, ...reach(), skyHeight(),
     (i, x) => (offsets.get(rows[i]?.id)?.value ?? 0) * (1 - smooth(left.value + wordWidth + 14, left.value + wordWidth + 58, x)), pan.value);
   // How far back the sky opens, and how far back it goes. It opens on the stretch you have been working in: back from
   // the newest moment in any row until three quiet hours; an older session's line comes in from the left edge instead
   // of squeezing that stretch, and what is older is a slide away.
-  function reach(): [number, number] {
-    const key = `${trailsSeen}|${rows.map(s => s.id).join(',')}|${Math.floor(now)}`;
-    if (key === spansKey) return spans;
-    spansKey = key;
-    const at = rows.flatMap(s => { const t = trails[s.id]; return t ? [...t.marks.map(m => m.t), ...t.segs.flatMap(g => g.b === null ? [g.a] : [g.a, g.b])] : []; })
-      .filter(t => t <= now).sort((a, b) => b - a);
+  // Every moment a session marks on its trail: what you said, and where each stretch began and ended; one still going
+  // reaches now, except resting, which only says when it began.
+  const moments = (s: Sess) => { const t = trails[s.id]; return t ? [...t.marks.map(m => m.t), ...t.segs.flatMap(g => g.b === null ? g.k === 'idle' ? [g.a] : [g.a, now] : [g.a, g.b])].filter(m => m <= now) : []; };
+  let endsAt = -1; const ends = new Map<string, number>();
+  const ended = (s: Sess) => {
+    if (endsAt !== trailsSeen) { endsAt = trailsSeen; ends.clear(); }
+    // A session taken in from a terminal is dated by when it was taken in, so its trail says when it last did anything.
+    let e = ends.get(s.id); if (e === undefined) { const m = moments(s); ends.set(s.id, e = m.length ? Math.max(...m) : s.updated / 60000); }
+    return e;
+  };
+  // The stretch you have been working in: back from the newest moment until three quiet hours.
+  function stretch(ss: Sess[]) {
+    const at = ss.flatMap(moments).sort((a, b) => b - a);
     let from = at[0] ?? now;
     for (const t of at) { if (from - t > 180) break; from = t; }
-    const recent = Math.max(60, now - from) * 1.04;
-    spans = [recent, Math.max(recent, ...rows.map(s => (now - (trails[s.id]?.segs[0]?.a ?? now)) * 1.04))];
+    return from;
+  }
+  function reach(): [number, number] {
+    const key = `${trailsSeen}|${rows.map(s => s.id).join(',')}|${all.length}|${Math.floor(now)}`;
+    if (key === spansKey) return spans;
+    spansKey = key;
+    const recent = Math.max(60, now - stretch(rows)) * 1.04;
+    spans = [recent, Math.max(recent, ...all.map(s => (now - (trails[s.id]?.segs[0]?.a ?? now)) * 1.04))];
     return spans;
   }
   // A star rises from where it rests (on the horizon, or in the queue by her) to its row's head as the sky opens.
@@ -152,19 +166,22 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
     if (searching()) {
       // ⌘K keeps the sessions that say it (or are named by it, or the host finds it in), the archived after the rest.
       const q = query.trim().toLowerCase();
-      rows = [...all, ...archived].filter(s => saying(s, q).length || s.title.toLowerCase().includes(q) || found.has(s.id)); resting = [];
-      xrows = rows.length ? [] : [{ key: 'x:none', label: `没找到「${query.trim()}」` }];
+      rows = [...all, ...archived].filter(s => saying(s, q).length || s.title.toLowerCase().includes(q) || found.has(s.id)); resting = folds = [];
+      xrows = rows.length ? [] : [{ key: 'x:none', label: `没找到「${query.trim()}」`, line: 0 }];
     } else {
-      const fold = all.length > 14, rests = (s: Sess) => s.st === 'done' && !s.unread && Date.now() - s.updated > 3600000 && s.id !== hooks.current();
-      resting = fold && !expandRest ? all.filter(s => rests(s) && s.id !== selected) : [];
-      rows = all.filter(s => !resting.includes(s));
-      const restN = fold && expandRest ? all.filter(rests).length : resting.length;
-      xrows = [{ key: 'x:new', label: '＋ 新会话' }];
-      if (restN) xrows.push({ key: 'x:rest', label: expandRest ? `收起歇着的 ${restN} 个` : `还有 ${restN} 个在歇着` });
-      if (archived.length) {
-        xrows.push({ key: 'x:arch', label: showArch ? `收起已归档的 ${archived.length} 个` : `已归档 ${archived.length}`, arch: true });
-        if (showArch) for (const s of archived) xrows.push({ key: `x:a:${s.id}`, label: s.title, arch: true, back: s.id });
-      }
+      // Read sessions whose last moment is before the stretch you have been working in rest behind one line, and past
+      // fourteen sessions so do the ones read and idle an hour; a slide back to their time brings them in under the rest.
+      const from = stretch(all), cur = hooks.current();
+      // The one you stand on stays among them, so a row never moves under you as you walk.
+      const rests = (s: Sess) => status(s) === 'read' && !s.pinned && s.id !== cur
+        && (ended(s) < from || (all.length > 14 && Date.now() - s.updated > 3600000));
+      const folded = folds = all.filter(rests), shown = openMore ? folded : folded.filter(s => ended(s) >= back || s.id === selected);
+      resting = folded.filter(s => !shown.includes(s));
+      rows = [...all.filter(s => !folded.includes(s)), ...shown];
+      const n = resting.length + archived.length;
+      xrows = [{ key: 'x:new', label: '＋ 新会话', line: 0 }];
+      if (openMore || n) xrows.push({ key: 'x:more', label: openMore ? '收起' : `还有 ${n} 个 ›`, line: 0, end: true });
+      if (openMore) archived.forEach((s, j) => xrows.push({ key: `x:a:${s.id}`, label: s.title, arch: true, back: s.id, line: j + 1 }));
     }
     if (!stops().includes(selected)) { selected = first(); latest(); findStop(); }
     if (enabled) for (const s of all) if (s.st === 'wait') void ensure(s.id);
@@ -180,9 +197,9 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
     if (rowKey === key) return; rowKey = key;
     rowsEl.innerHTML = rows.map((s, i) => `<button type="button" class="bw-row${selected === s.id ? ' sel' : ''}${hooks.current() === s.id ? ' on' : ''}${nameStop && selected === s.id ? ' nm' : ''}" data-session="${esc(s.id)}" style="top:${15 + i * 27}px" aria-label="${esc(s.title)}，${s.archived ? '已归档' : words[status(s)]}"><b>${hl(s.title, q)}</b>${count(s) ? `<em class="st-find">${count(s)} 处说过</em>` : ''}${s.archived ? '<em class="st-arch">已归档</em>' : stateHTML(s)}</button>`).join('')
       // The lines under the sessions: 新会话 and taking an archived one back are the page's own acts.
-      + xrows.map((x, j) => `<button type="button" class="bw-row bw-x${skyOn && selected === x.key ? ' sel' : ''}${x.arch ? ' arch' : ''}" data-x="${esc(x.key)}"${x.key === 'x:new' ? ' data-act="new"' : x.back ? ` data-act="unarchive" data-id="${esc(x.back)}"` : ''}${x.key === 'x:none' ? ' disabled' : ''} style="top:${15 + (rows.length + j) * 27}px"><span>${esc(x.label)}</span>${x.key === 'x:new' ? `<span class="kk">${kbd('⌘')}${kbd('N')}</span>` : x.back ? '<span class="back">拿回来</span>' : ''}</button>`).join('');
+      + xrows.map(x => `<button type="button" class="bw-row bw-x${skyOn && selected === x.key ? ' sel' : ''}${x.arch ? ' arch' : ''}${x.end ? ' end' : x.line === 0 && xrows.some(y => y.end) ? ' start' : ''}" data-x="${esc(x.key)}"${x.key === 'x:new' ? ' data-act="new" title="⌘N"' : x.back ? ` data-act="unarchive" data-id="${esc(x.back)}"` : ''}${x.key === 'x:none' ? ' disabled' : ''} style="top:${15 + (rows.length + x.line) * 27}px"><span>${esc(x.label)}</span>${x.back ? '<span class="back">拿回来</span>' : ''}</button>`).join('');
     starsEl.innerHTML = rows.map(s => { const at = waiting.place(s.id); return at === null ? '' : `<button type="button" data-session="${esc(s.id)}" aria-label="${esc(s.title)}，${words[status(s)]}" style="${at}" title="${esc(s.title)} · ${esc(s.summary)}"></button>`; }).join('');
-    more.style.top = `${15 + (rows.length + xrows.length) * 27}px`;
+    more.style.top = `${15 + (rows.length + xLines()) * 27}px`;
   }
   // A session found only in what was said stands on the newest sentence that says it; one its name matches, on its name.
   function findStop() {
@@ -258,7 +275,7 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
     // ⌘K in an open sky turns it into the search.
     if (skyOn) { if (find) { finding = true; pullLabel(); findInput.focus({ preventScroll: true }); findInput.select(); } return; }
     peek.hidden = true;
-    finding = find; query = findInput.value = ''; found = new Set(); refresh();
+    finding = find; query = findInput.value = ''; found = new Set(); openMore = false; back = Infinity; refresh();
     // It opens on the last thing you said to the session on screen, with its words out; ↑↓ keep the moment, ⏎ goes in
     // from any sentence. A session you have said nothing to opens on its name.
     selected = first(); nameStop = false; latest(); nameStop = !trails[selected]?.turns.length;
@@ -421,6 +438,10 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
     step(pan, panTo = clamp(panTo, 0, geo().panMax), 2.6, 1, dt);
     // What is drawn moves with the sky: the needle keeps its point instead of trailing behind.
     needle.value += pan.value - was;
+    // Slid back, the folded sessions whose time comes into view join the rows under the rest, and stay until the sky
+    // closes, so walking the rows never makes one vanish.
+    const g1 = geo(), seen = pan.value > 1 ? g1.tOf(g1.x0) : Infinity;
+    if (seen < back && folds.some(s => ended(s) >= seen && ended(s) < back)) { back = seen; refresh(); }
     // At the name stop the needle's point slides on to now and waits by the name; the needle itself steps aside.
     const g = geo(), turn = point(), at = turn?.at !== undefined ? turn.at / 60000 : undefined, stand = nameStop || at === undefined;
     const nx = stand ? g.x1 : g.xOf(at!), ny = g.y(selectedIndex);
@@ -483,7 +504,8 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
       const labels = g.guides.map(ago), guidesKey = labels.join(',');
       if (axisKey !== guidesKey) { axisKey = guidesKey; axis.innerHTML = labels.map(label => `<span>${label}</span>`).join('') + '<span class="nowl">现在</span>'; }
       // The axis steps aside where the needle writes its own time.
-      const writes = stand ? -1e3 : needle.value;
+      // Off the sky's edge (slid back past it), the time sits at that edge.
+      const writes = stand ? -1e3 : clamp(needle.value, g.x0 + 28, g.x1 - 28);
       // Where the cells are too narrow for every label, every other one (counting back from now) keeps its words.
       const every = Math.ceil(64 / g.cell);
       // Slid back in time, the words fade out toward an edge with more time past it.
@@ -493,7 +515,7 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
         tick.style.left = `${x - 30}px`; tick.style.opacity = String(Math.min(edge, g.guides[i] !== undefined && (i + 1) % every ? 0 : clamp((Math.abs(x - writes) - 34) / 26)));
       });
       // The names start a little right of the heads, so a row's star stands before its name, not on its edge.
-      rowsEl.querySelectorAll<HTMLElement>('.bw-row').forEach((el, i) => { el.style.left = `${g.x1 + 12}px`; el.style.opacity = String(1 - Math.min(.4, Math.abs(i - focus.value) * .1)); });
+      rowsEl.querySelectorAll<HTMLElement>('.bw-row').forEach((el, i) => { if (!el.classList.contains('end')) el.style.left = `${g.x1 + 12}px`; el.style.opacity = String(1 - Math.min(.4, Math.abs(i - focus.value) * .1)); });
       renderWords();
       if (skyOn && t < revealUntil) revealSelection();
     }
@@ -513,8 +535,7 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
     const x = (e.target as HTMLElement).closest<HTMLElement>('[data-x]')?.dataset.x;
     if (!x) return;
     if (x === 'x:new') { closeSky(); return; }
-    if (x === 'x:rest') expandRest = !expandRest;
-    else if (x === 'x:arch') showArch = !showArch;
+    if (x === 'x:more') openMore = !openMore;
     selected = x; refresh();
     // Taken back, it is a session again: stand on its name once the page has it.
     if (x.startsWith('x:a:')) window.setTimeout(() => { if (!skyOn) return; selected = x.slice(4); nameStop = true; latest(); refresh(); renderRows(); renderWords(); });
