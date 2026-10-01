@@ -12,6 +12,8 @@ export type Geo = {
 type DrawOptions = {
   now: number; p: number; geo: Geo; dev: number; sel?: number; pt?: number; span?: [number, number];
   a?: number; thick?: number; focus?: number; base?: number; ndx?: number; cy?: number; nm?: boolean;
+  // the axis stands at the foot of a sky taller than the window, over the rows scrolling under it
+  foot?: boolean;
   conn?: { x: number; y: number; x2: number; y2: number; a?: number } | null;
   // The times you were away (minutes; b null while you still are), drawn as the away line.
   aways?: { a: number; b: number | null }[];
@@ -112,7 +114,6 @@ export function drawSky(e: CanvasRenderingContext2D, t: { id: string }[], n: Rec
       e.lineTo(c, o.bottom),
       e.stroke(),
       e.setLineDash([]),
-      awayLines(e, r.aways ?? [], o, d, i),
       e.restore(),
       t.forEach((t, s) => {
         let f = o.y(s),
@@ -286,6 +287,15 @@ export function drawSky(e: CanvasRenderingContext2D, t: { id: string }[], n: Rec
         }
         e.restore();
       }));
+    // The note on the time, over the trails; at a sky's foot, over a band the rows go under.
+    e.save(); e.globalAlpha = Math.min(1, a * 1.4) * l; besides(e, o, r.card);
+    if (r.foot) {
+      const band = e.createLinearGradient(0, o.bottom - 34, 0, o.bottom - 14);
+      band.addColorStop(0, 'rgba(5,6,15,0)'); band.addColorStop(1, 'rgba(5,6,15,.96)');
+      e.fillStyle = band; e.fillRect(0, o.bottom - 34, c + 30, 80);
+    }
+    awayLines(e, r.aways ?? [], o, d, i);
+    e.restore();
     if (r.ndx !== void 0 && r.pt !== void 0 && !r.nm) {
       let t = r.ndx,
         n = e.createLinearGradient(0, o.top, 0, o.bottom);

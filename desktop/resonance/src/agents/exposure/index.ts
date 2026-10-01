@@ -132,7 +132,8 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
   }
   // A star rises from where it rests (on the horizon, or in the queue by her) to its row's head as the sky opens.
   const starPosition = (i: number): [number, number] => {
-    const p = easeInOut(clamp(sky.value * 1.3 - i * .03)), [x, y] = waiting.at(rows[i]?.id ?? '');
+    // Staggered by row, but the last one still lands by the time the sky is open.
+    const p = easeInOut(clamp(sky.value * 1.3 - i * Math.min(.03, .3 / Math.max(1, rows.length - 1)))), [x, y] = waiting.at(rows[i]?.id ?? '');
     return [lerp(x, width - 262, p), lerp(y, 82 + i * 27, p)];
   };
   async function ensure(id: string) {
@@ -350,9 +351,10 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
     // Against the height the sky is opening to: mid-way it is short, and scrolling then would hide the rows at its top.
     const y = 15 + place() * 27, bottom = Math.max(y + 22, top.value + wordHeight - 18), viewport = Math.min(height - 56, skyHeight() - opening.value + wordHeight);
     if (!viewport || !skyEl.clientHeight) return;
-    const scroll = skyEl.scrollTop;
-    if (bottom - y > viewport - 24 || y < scroll + 12) skyEl.scrollTop = Math.max(0, y - 12);
-    else if (bottom > scroll + viewport - 12) skyEl.scrollTop = Math.max(0, bottom - viewport + 12);
+    // A sky that scrolls keeps its axis at the foot: what you stand on stays clear of it.
+    const scroll = skyEl.scrollTop, foot = skyHeight() > height - 56 ? 40 : 12;
+    if (bottom - y > viewport - 12 - foot || y < scroll + 12) skyEl.scrollTop = Math.max(0, y - 12);
+    else if (bottom > scroll + viewport - foot) skyEl.scrollTop = Math.max(0, bottom - viewport + foot);
   }
   function keyboard(e: KeyboardEvent) {
     if (!enabled || e.isComposing) return;
@@ -448,6 +450,8 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
     if (snap || sky.value < .3) { needle.value = nx; needle.velocity = 0; needleY.value = ny; needleY.velocity = 0; snap = false; }
     else if (skyOn) { step(needle, nx, 2.8, .82, dt); step(needleY, ny, 2.8, .86, dt); }
     const skyPx = Math.min(height - 56, sky.value * skyHeight());
+    // A sky taller than the window scrolls; its time axis stays at the foot of what shows, over the rows going under it.
+    const full = skyHeight(), foot = skyOn && full > height - 56 ? Math.min(full, skyEl.scrollTop + height - 56) : full;
     win.style.setProperty('--sky', `${sky.value * skyHeight()}px`); win.style.setProperty('--skp', String(sky.value));
     skyEl.style.height = `${skyPx}px`;
     skyEl.style.opacity = String(clamp((sky.value - .35) / .5)); skyEl.style.pointerEvents = skyOn ? 'auto' : 'none';
@@ -465,7 +469,7 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
     c.translate(0, -skyEl.scrollTop);
     // Slid back in time, what is newer than the sky's right edge goes under it rather than under the names.
     if (g.pan > .5) { c.beginPath(); c.rect(0, 0, g.x1 + 1, canvasHeight + skyEl.scrollTop); c.clip(); }
-    drawSky(c, rows, trails, { now, p: sky.value, dev: clamp((sky.value - .18) / .82), geo: g, sel: shown && !onX() ? selectedIndex : undefined, pt: shown ? at : undefined,
+    drawSky(c, rows, trails, { now, p: sky.value, dev: clamp((sky.value - .18) / .82), geo: foot < full ? { ...g, bottom: 56 + foot - 22 } : g, foot: foot < full, sel: shown && !onX() ? selectedIndex : undefined, pt: shown ? at : undefined,
       aways: away.spans().map(s => ({ a: s.a / 60000, b: s.b === null ? null : s.b / 60000 })),
       span: stand ? undefined : [at!, (trails[selected]?.turns[qi + 1]?.at ?? Date.now()) / 60000], ndx: at === undefined ? undefined : needle.value, nm: nameStop,
       cy: needleY.value, focus: shown ? focus.value : undefined,
@@ -500,7 +504,7 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
     if (shown) {
       pop.style.transform = `translate(${left.value}px,${top.value}px)`; pop.style.setProperty('--sx', `${needle.value - left.value}px`);
       Object.assign(gap.style, { left: `${left.value - 18}px`, width: `${wordWidth + 32}px`, top: `${top.value - 8.5}px`, height: `${Math.max(0, opening.value - 4)}px` });
-      axis.style.top = `${skyHeight() - 26}px`;
+      axis.style.top = `${foot - 26}px`;
       const labels = g.guides.map(ago), guidesKey = labels.join(',');
       if (axisKey !== guidesKey) { axisKey = guidesKey; axis.innerHTML = labels.map(label => `<span>${label}</span>`).join('') + '<span class="nowl">现在</span>'; }
       // The axis steps aside where the needle writes its own time.
