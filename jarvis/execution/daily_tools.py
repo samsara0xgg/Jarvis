@@ -101,15 +101,17 @@ _RESULT_CAPS = {"query_activity": _ACTIVITY_RESULT_CAP}
 _WRITES = frozenset({"save_knowledge", "save_briefing"})
 _WORK_STATE_DESCRIPTION = (
     "Investigate and update the user's persisted current work state. Call this when they ask "
-    "what they are doing now, what they did today/recently, or how something discussed earlier is "
-    "progressing. It reads the latest TimeSink app/window/screen data, recent conversation "
+    "what they are doing now, what they did today so far, or how something discussed earlier is "
+    "progressing; not for yesterday or another past day (daily_work_report, which reuses the "
+    "saved report). It reads the latest TimeSink app/window/screen data, recent conversation "
     "records, knowledge and Git observations, runs one analysis and saves the "
     "result; outcome=reused means nothing new was observed and the saved state still holds, "
     "no_evidence means there is no data, failed keeps the previous state. Pass the user's "
     "question verbatim and put facts he just stated into note (they count as new evidence). "
     "Every claim in the state carries basis stated/observed/inferred; never present an "
-    "inferred item as fact, and never mark todos done from it. Use force only when asked to "
-    "re-analyse. For more detail on one item use query_activity/read_activity/read_records."
+    "inferred item as fact, and never mark todos done from it. Use force only when the user "
+    "explicitly asks to re-analyse. For more detail on one item use "
+    "query_activity/read_activity/read_records."
 )
 
 

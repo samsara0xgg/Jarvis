@@ -626,7 +626,16 @@ _MEMO_MAX_CHARS: Final[int] = 2000
     ),
     input_schema={
         "type": "object",
-        "properties": {"text": {"type": "string", "description": "Memo text."}},
+        "properties": {
+            "text": {
+                "type": "string",
+                "description": (
+                    "Memo text. It is read later, so write a relative day or time "
+                    "(tomorrow, Friday, next week) as the date it means, e.g. "
+                    "Demo on Friday, 2 October 2026."
+                ),
+            },
+        },
         "required": ["text"],
     },
     allowed_callers=frozenset({CallerPrincipal.REGEX_ROUTER, CallerPrincipal.JARVIS_LLM}),
