@@ -74,16 +74,20 @@ class _ScriptedAsr:
 class _Rig:
     """Jarvis talking in conversation mode while Allen makes one sound."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - each switch a test flips
         self,
         tmp_path: Path,
         heard: str,
         *,
         speaking: bool = True,
         confirm_voiced_s: float = 0.4,
+        idle_exit_s: float = 10.0,
+        wait_s: float = 60.0,
     ) -> None:
         self.output: list[str] = []
         self.phases: list[tuple[str, object]] = []
+        self.conversation = True
+        self.conversation_changes: list[tuple[bool, str]] = []
         self.speaking = speaking
         self.db = tmp_path / "events.db"
         open_event_log(self.db).close()
@@ -112,15 +116,22 @@ class _Rig:
                     worker_poll_s=0.001,
                     shutdown_timeout_s=1.0,
                     barge_in_confirm_voiced_s=confirm_voiced_s,
+                    conversation_idle_exit_s=idle_exit_s,
+                    conversation_wait_s=wait_s,
                 ),
                 mic_muted=lambda: False,
-                conversation=lambda: True,
+                conversation=lambda: self.conversation,
+                set_conversation=self._set_conversation,
                 stop_speaking=self._stop,
                 supersede_unspoken=lambda _turn_id: self.output.append("supersede"),
                 yield_speaking=lambda gain: self.output.append(f"gain {gain}"),
                 pause_speaking=lambda paused: self.output.append("pause" if paused else "go on"),
             )
             assert self.session.start().started
+
+    def _set_conversation(self, on: bool, reason: str) -> None:  # noqa: FBT001 - session callback shape
+        self.conversation_changes.append((on, reason))
+        self.conversation = on
 
     def _stop(self) -> None:
         self.output.append("stop")
@@ -146,6 +157,15 @@ class _Rig:
             _wait_until(lambda: self.output[-1:] == ["gain 1.0"])
         else:
             _wait_until(lambda: any(phase in {"accepted", "empty"} for phase, _ in self.phases))
+
+    def room(self, seconds: float) -> None:
+        """Nobody talking for ``seconds``."""
+        epoch = self.ingress.stream_epoch
+        assert epoch is not None
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            self.backend.emit(epoch=epoch, value=ROOM)
+            time.sleep(0.002)
 
     def turns(self) -> list[str]:
         with contextlib.closing(open_event_log(self.db)) as conn:
@@ -194,6 +214,89 @@ def test_a_listening_sound_keeps_her_talking_and_is_no_turn(tmp_path: Path) -> N
     assert rig.speaking
     assert rig.turns() == []
     assert ("empty", "backchannel") in rig.phases
+
+
+@pytest.mark.parametrize("speaking", [True, False])
+def test_a_dismissal_stops_her_ends_the_mode_and_is_no_turn(
+    tmp_path: Path, speaking: bool,  # noqa: FBT001 - pytest parameter
+) -> None:
+    """ADR 0102: 「好, 退下吧」 in conversation mode, over her or not."""
+    rig = _Rig(tmp_path, "好, 退下吧。", speaking=speaking)
+    try:
+        rig.say(SHORT)
+    finally:
+        rig.close()
+    assert ("stop" in rig.output) is speaking
+    assert rig.conversation_changes == [(False, "dismissed")]
+    assert rig.turns() == []
+    assert ("empty", "dismissed") in rig.phases
+
+
+@pytest.mark.parametrize(("heard", "reason"), [("The.", "unclear"), ("嗯。", "backchannel")])
+def test_a_lone_word_in_the_mode_is_dropped_and_keeps_nothing_open(
+    tmp_path: Path, heard: str, reason: str,
+) -> None:
+    """ADR 0102: with her silent, a hum or a lone word is no turn and the quiet clock runs on."""
+    rig = _Rig(tmp_path, heard, speaking=False, idle_exit_s=0.05)
+    try:
+        rig.say(SHORT)
+        rig.room(0.2)
+    finally:
+        rig.close()
+    assert rig.turns() == []
+    assert ("empty", reason) in rig.phases
+    assert rig.conversation_changes == [(False, "idle")]
+
+
+def test_wait_for_me_holds_the_mode_then_quiet_ends_it(tmp_path: Path) -> None:
+    """ADR 0102: 「等我一下」 is no turn and keeps the mode open its wait, not forever."""
+    rig = _Rig(tmp_path, "等我一下。", speaking=False, idle_exit_s=0.05, wait_s=0.6)
+    try:
+        rig.say(SHORT)
+        rig.room(0.1)
+        held = list(rig.conversation_changes)
+        rig.room(0.8)
+    finally:
+        rig.close()
+    assert held == []
+    assert rig.conversation_changes == [(False, "idle")]
+    assert rig.turns() == []
+    assert ("empty", "wait") in rig.phases
+
+
+def test_a_turn_holds_the_mode_until_her_answer_then_quiet_ends_it(tmp_path: Path) -> None:
+    """ADR 0102: an accepted turn waits for her answer; the clock starts again after she speaks."""
+    rig = _Rig(tmp_path, "给我讲个故事。", speaking=False, idle_exit_s=0.1)
+    try:
+        rig.say(SHORT)
+        rig.room(0.3)
+        waiting = list(rig.conversation_changes)
+        rig.speaking = True
+        rig.room(0.05)
+        rig.speaking = False
+        rig.room(0.3)
+    finally:
+        rig.close()
+    assert waiting == []
+    assert rig.turns() == ["给我讲个故事。"]
+    assert rig.conversation_changes == [(False, "idle")]
+
+
+def test_dismissals_are_whole_phrases() -> None:
+    """Only a sentence that is nothing but the dismissal ends the mode."""
+    said = (
+        "退下。", "你可以退下了", "没事了。", "就这样吧!",
+        "Hey, Jarvis, 退下。", "Bye bye.", "That's all.",
+    )
+    for heard in said:
+        assert voice_asr.is_dismissal(heard), heard
+    for heard in ("退下以后呢?", "跟妈妈说再见", "就这样做", "结束了吗?", "By the way", "停。"):
+        assert not voice_asr.is_dismissal(heard), heard
+    for heard in ("等我一下。", "你等我一下", "稍等一下", "Hold on.", "Give me a second."):
+        assert voice_asr.is_wait_request(heard), heard
+        assert not voice_asr.is_stop_request(heard), heard
+    for heard in ("等一下。", "等我回来再说", "Wait."):
+        assert not voice_asr.is_wait_request(heard), heard
 
 
 @pytest.mark.parametrize(
@@ -364,24 +467,24 @@ def test_a_long_hum_or_cough_holds_her_then_she_goes_on(
 
 def test_zero_confirm_time_stops_her_at_onset(tmp_path: Path) -> None:
     """``barge_in_confirm_voiced_s: 0`` is ADR 0041 as it shipped: no yield, a turn."""
-    rig = _Rig(tmp_path, "嗯嗯。", confirm_voiced_s=0.0)
+    rig = _Rig(tmp_path, "你是谁?", confirm_voiced_s=0.0)
     try:
         rig.say(SHORT)
     finally:
         rig.close()
     assert rig.output == ["stop", "supersede"]
-    assert rig.turns() == ["嗯嗯。"]
+    assert rig.turns() == ["你是谁?"]
 
 
 def test_a_sound_while_she_is_silent_is_an_ordinary_utterance(tmp_path: Path) -> None:
-    """Nothing to yield: no gain change, and his words are judged as ever."""
-    rig = _Rig(tmp_path, "嗯嗯。", speaking=False)
+    """Nothing to yield: no gain change, and his words are a turn (a lone hum is ADR 0102's)."""
+    rig = _Rig(tmp_path, "你是谁?", speaking=False)
     try:
         rig.say(SHORT)
     finally:
         rig.close()
     assert rig.output == ["supersede"]
-    assert rig.turns() == ["嗯嗯。"]
+    assert rig.turns() == ["你是谁?"]
 
 
 def test_a_yield_never_lifts_the_speech_mute(tmp_path: Path) -> None:

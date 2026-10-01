@@ -38,7 +38,7 @@ _SPEECH = [0, 0, 10_000, 11_000, 12_000, 0, 0, 0, 0, 0]
 class _Session:
     """One duplex session whose switches the test flips while it runs."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - each switch a test flips
         self,
         monkeypatch: pytest.MonkeyPatch,
         *,
@@ -46,19 +46,23 @@ class _Session:
         pipeline: _RecordingPipeline | None = None,
         hold_output: Callable[[bool], None] | None = None,
         supersede_unspoken: Callable[[str], None] | None = None,
+        conversation: bool = True,
+        wake: bool = False,
+        idle_exit_s: float = 30.0,
     ) -> None:
         monkeypatch.setitem(
             voice_audio._MODE_THRESHOLDS,  # noqa: SLF001 - loosened for one-frame onsets
             "record",
             voice_audio.VadThresholds(0.4, -45.0, 1, 1, 2),
         )
-        self.conversation = True
+        self.conversation = conversation
+        self.changes: list[tuple[bool, str]] = []
         self.muted = False
         self.speaking = speaking
         self.stopped = threading.Event()
         self.backend = _FakeBackend()
         self.ingress = _ingress(self.backend)
-        self.wake_engine = _FakeWakeEngine(detections=set())
+        self.wake_engine = _FakeWakeEngine(detections=None if wake else set())
         self.pipeline = pipeline or _RecordingPipeline()
         with patch.object(voice_audio, "_load_silero_session", return_value=_EnergySession()):
             self.session = voice_session.DuplexVoiceSession(
@@ -76,14 +80,28 @@ class _Session:
                     max_utterance_s=2.0,
                     worker_poll_s=0.001,
                     shutdown_timeout_s=1.0,
+                    conversation_idle_exit_s=idle_exit_s,
                 ),
                 mic_muted=lambda: self.muted,
                 conversation=lambda: self.conversation,
+                set_conversation=self._set_conversation,
                 stop_speaking=self.stopped.set,
                 hold_output=hold_output,
                 supersede_unspoken=supersede_unspoken,
             )
             assert self.session.start().started
+
+    def _set_conversation(self, on: bool, reason: str) -> None:  # noqa: FBT001 - session callback shape
+        self.changes.append((on, reason))
+        self.conversation = on
+
+    def idle(self, seconds: float) -> None:
+        epoch = self.ingress.stream_epoch
+        assert epoch is not None
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            self.backend.emit(epoch=epoch, value=0)
+            time.sleep(0.002)
 
     def speak(self) -> None:
         epoch = self.ingress.stream_epoch
@@ -160,3 +178,28 @@ def test_the_surface_sets_the_switch_and_its_last_disconnect_clears_it() -> None
             assert client.post("/inherent/controls", json={}).json()["conversation"] is True
         _wait_until(lambda: not controls.conversation)
         assert client.post("/inherent/controls", json={}).json()["conversation"] is False
+
+
+def test_the_wake_word_opens_conversation_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ADR 0102: a wake hit flips the switch as a tap would; later speech needs no wake."""
+    rig = _Session(monkeypatch, conversation=False, wake=True)
+    rig.idle(0.1)
+    _wait_until(lambda: rig.changes == [(True, "wake")])
+    rig.wake_engine._detections = set()  # noqa: SLF001 - no more wake hits from here
+    rig.speak()
+    _wait_until(lambda: len(rig.pipeline.calls) >= 1)
+    rig.close()
+    assert rig.changes == [(True, "wake")]
+
+
+def test_quiet_ends_conversation_mode_but_her_speech_does_not(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ADR 0102: nobody talking and Jarvis silent ends it; while she talks it stays."""
+    rig = _Session(monkeypatch, speaking=True, idle_exit_s=0.05)
+    rig.idle(0.2)
+    assert rig.changes == []
+    rig.speaking = False
+    rig.idle(0.2)
+    rig.close()
+    assert rig.changes == [(False, "idle")]

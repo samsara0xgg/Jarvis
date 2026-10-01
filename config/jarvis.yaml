@@ -668,6 +668,15 @@ realtime:
     barge_in_confirm_voiced_s: 0.8
     barge_in_yield_gain: 0.2
     barge_in_pause_ms: 350
+    # ADR 0102: the wake word opens conversation mode as a tap does; it ends on
+    # a tap, a dismissal (退下, 没事了, 就这样吧, bye), or conversation_idle_exit_s
+    # after Jarvis last spoke or Allen's last turn was accepted. Hums, lone
+    # words and room talk heard as nothing do not keep it open; 「等我一下」 holds
+    # it conversation_wait_s. Phone speakers wait 5-10 s (Alexa about 5-7,
+    # Google 8-10); 2026-09-30 two 20-minute recordings of Allen's room replayed
+    # in the mode made 40 and 183 turns of talk not meant for Jarvis.
+    conversation_idle_exit_s: 10.0
+    conversation_wait_s: 60.0
     # ADR-0006 D7. Rolling partial SenseVoice decode plus a semantic endpoint
     # hold: after candidate_ms of silence a finished-looking stable prefix ends
     # the utterance; an unfinished one (a dangling 然后/的话/, or a lone 嗯) holds

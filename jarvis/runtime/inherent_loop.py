@@ -3179,6 +3179,7 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
     voice: _VoiceKnobs | None = None,
     mic_muted: Callable[[], bool] | None = None,
     conversation: Callable[[], bool] | None = None,
+    set_conversation: Callable[[bool, str], None] | None = None,
     echo_canceller: voice_aec.EchoCanceller | None = None,
 ) -> tuple[voice_session.DuplexVoiceSession | None, bool]:
     """Start Wave 3 or return whether a device-open attempt was made.
@@ -3340,6 +3341,7 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
             config=session_config,
             mic_muted=mic_muted,
             conversation=conversation,
+            set_conversation=set_conversation,
             stop_speaking=_stop_speaking,
             hold_output=_hold_output,
             supersede_unspoken=supersede_unspoken,
@@ -3438,6 +3440,7 @@ def _spawn_voice_input_owners(  # noqa: PLR0913 - composition boundary dependenc
     voice: _VoiceKnobs | None = None,
     mic_muted: Callable[[], bool] | None = None,
     conversation: Callable[[], bool] | None = None,
+    set_conversation: Callable[[bool, str], None] | None = None,
     echo_canceller: voice_aec.EchoCanceller | None = None,
 ) -> _VoiceInputOwners:
     """Select Wave 3 or legacy wake without ever opening both input owners."""
@@ -3451,6 +3454,7 @@ def _spawn_voice_input_owners(  # noqa: PLR0913 - composition boundary dependenc
         voice=knobs,
         mic_muted=mic_muted,
         conversation=conversation,
+        set_conversation=set_conversation,
         echo_canceller=echo_canceller,
     )
     wake_listener: voice_wake.WakeListener | None = None
@@ -4860,6 +4864,13 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         # ADR-0015: the two mute switches the desktop surface flips over
         # POST /inherent/controls: mic on the wake threads, speech as the player's gain.
         controls = voice_controls.VoiceControls()
+
+        def _set_conversation(on: bool, reason: str) -> None:  # noqa: FBT001 - session callback shape
+            """ADR 0102: voice flips conversation mode; the surface hears it as a controls push."""
+            state = controls.update(conversation=on)
+            LOGGER.info("controls: conversation=%s (%s)", on, reason)
+            broadcaster.broadcast_op_sync("controls", **state)
+
         voice_input_owners = _VoiceInputOwners(
             duplex_session=None,
             wake_listener=None,
@@ -4944,6 +4955,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                         voice=voice_knobs,
                         mic_muted=_old_chain_input_blocked,
                         conversation=controls.conversation_is_on,
+                        set_conversation=_set_conversation,
                         echo_canceller=echo_canceller,
                     )
                     duplex_voice_session = voice_input_owners.duplex_session
