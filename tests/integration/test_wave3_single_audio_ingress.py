@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import asyncio
+import ctypes
+import sys
 import threading
 import time
 from dataclasses import replace
@@ -4670,3 +4672,18 @@ def test_listening_carries_the_armed_turn_id_when_arm_replay_itself_expires(
     assert turn_id != ""
     assert recorder.voice_calls == [("listening", turn_id), ("empty", turn_id)]
     assert recorder.payloads[1] == {"reason": "armed_no_speech_timeout"}
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS thread QoS")
+def test_a_listening_thread_runs_at_user_interactive_qos() -> None:
+    """A render that saturates the Mac must not starve the wake word (2026-10-01)."""
+    classes: list[int] = []
+
+    def listen() -> None:
+        voice_audio.prefer_this_thread()
+        classes.append(ctypes.CDLL(None).qos_class_self())
+
+    thread = threading.Thread(target=listen)
+    thread.start()
+    thread.join()
+    assert classes == [0x21]

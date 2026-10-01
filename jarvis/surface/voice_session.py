@@ -1174,6 +1174,7 @@ class DuplexVoiceSession:
         return VoiceSessionStartResult(started=True, ingress=ingress_result)
 
     def _wake_loop(self) -> None:  # noqa: C901, PLR0912, PLR0915 - linear drain/decision/suppress/fault loop
+        voice_audio.prefer_this_thread()
         framer = WakeWindowFramer()
         consecutive_prediction_failures = 0
         near_peak = 0.0
@@ -1532,6 +1533,7 @@ class DuplexVoiceSession:
             LOGGER.exception("realtime supersede_unspoken failed turn_id=%s", turn_id)
 
     def _capture_loop(self) -> None:
+        voice_audio.prefer_this_thread()
         while not self._stop.is_set():
             self._drain_detection_commands()
             frame = self._capture_subscription.read(timeout_s=self._config.worker_poll_s)
@@ -1684,6 +1686,7 @@ class DuplexVoiceSession:
         self._assembler.prepare()
 
     def _commit_loop(self) -> None:
+        voice_audio.prefer_this_thread()
         while not self._stop.is_set():
             try:
                 utterance = self._commits.get(timeout=self._config.worker_poll_s)

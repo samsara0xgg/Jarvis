@@ -25,8 +25,10 @@ ONNX I/O (pre-v4 silero_vad.onnx shipped with sherpa-onnx)::
 
 from __future__ import annotations
 
+import ctypes
 import enum
 import logging
+import sys
 import threading
 import time
 from collections import deque
@@ -54,6 +56,24 @@ _SILERO_FRAME_MS = SILERO_CHUNK_SAMPLES / _SAMPLE_RATE * 1000.0
 _PREWARM_FRAMES = 5
 _REQUIRED_SESSION_SUBSCRIBERS = 3
 _CAPABILITY_DISPATCH_CAPACITY = 32
+_QOS_CLASS_USER_INTERACTIVE = 0x21  # <sys/qos.h>
+
+
+def prefer_this_thread() -> None:
+    """Run the calling thread at macOS's user-interactive QoS; elsewhere a no-op.
+
+    Listening threads must not starve while other work saturates the Mac: a
+    video render at load 274 (2026-10-01) left "Hey Jarvis" scoring 0.30 and
+    0.73. A failed call leaves the thread at its default class.
+    """
+    if sys.platform != "darwin":
+        return
+    try:
+        failed = ctypes.CDLL(None).pthread_set_qos_class_self_np(_QOS_CLASS_USER_INTERACTIVE, 0)
+    except (AttributeError, OSError):
+        failed = -1
+    if failed:
+        LOGGER.warning("%s stays at its default QoS", threading.current_thread().name)
 
 
 class VadEvent(enum.Enum):
@@ -1646,6 +1666,7 @@ class AudioIngress:
 
     def _run_worker(self) -> None:  # noqa: C901, PLR0912, PLR0915 - one owner loop serializes frame/fault/route ordering
         """Canonicalize/fan out frames and own bounded fault recovery."""
+        prefer_this_thread()
         last_fault_poll = 0.0
         last_route_poll = 0.0
         while not self._worker_stop.is_set():
