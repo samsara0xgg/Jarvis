@@ -287,7 +287,7 @@ def test_dismissals_are_whole_phrases_or_short_orders() -> None:
     said = (
         "退下。", "你可以退下了", "没事了。", "就这样吧!",
         "Hey, Jarvis, 退下。", "Bye bye.", "That's all.",
-        "退出退出退下, 暂停停一下等。", "我让你退一下。", "退出。",
+        "退出退出退下, 暂停停一下等。", "我让你退一下。", "退出。", "没事了没事了。",
     )
     for heard in said:
         assert voice_asr.is_dismissal(heard), heard
@@ -297,7 +297,11 @@ def test_dismissals_are_whole_phrases_or_short_orders() -> None:
     )
     for heard in not_said:
         assert not voice_asr.is_dismissal(heard), heard
-    for heard in ("等我一下。", "你等我一下", "稍等一下", "Hold on.", "Give me a second."):
+    waits = (
+        "等我一下。", "你等我一下", "稍等一下", "Hold on.", "Give me a second.",
+        "等我一下等我一下。",
+    )
+    for heard in waits:
         assert voice_asr.is_wait_request(heard), heard
         assert not voice_asr.is_stop_request(heard), heard
     for heard in ("等一下。", "等我回来再说", "Wait."):
