@@ -52,7 +52,7 @@ A Python daemon owns the microphone, speaker, models, memory and tools. The comp
 
 ## Run it
 
-You need macOS, Python 3.12+, [uv](https://docs.astral.sh/uv/) and Node.js. On a MacBook it sits beside the notch; on a screen without one it lives in a small black pill at the top.
+You need macOS, Python 3.12+, [uv](https://docs.astral.sh/uv/) and Node.js (tested with Node 24). On a MacBook it sits beside the notch; on a screen without one it lives in a small black pill at the top.
 
 To see the companion on its built-in demo data, with no daemon and no keys:
 
@@ -76,6 +76,8 @@ cd desktop/resonance
 npm ci
 npm run companion
 ```
+
+On its first start the daemon downloads its speech models (about 240 MB) and runs text-only until they finish; voice works after that.
 
 The first time it starts, the companion walks you through setup: your name, its language, an OpenAI key (required) and a MiniMax key for its voice. Each key is checked before it is saved to your login Keychain. You can also put keys in `~/.jarvis/env`, one `KEY=value` per line.
 
