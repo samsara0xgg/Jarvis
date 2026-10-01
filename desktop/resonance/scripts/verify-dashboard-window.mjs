@@ -68,11 +68,12 @@ try {
     return p.contextIsolation && p.sandbox && !p.nodeIntegration;
   }));
   const bridge = await child.evaluate(async () => ({
-    plugin: await window.jarvis.plugins('read').catch(error => error.message),
+    plugin: await window.jarvis.plugins('connect', { plugin_id: 'x' }).catch(error => error.message),
+    plugins: await window.jarvis.plugins('read').then(r => r.plugins.length, error => error.message),
     usage: await window.jarvis.usageBalance('openai', 1).catch(error => error.message),
     account: await window.jarvis.openAccount('openai'), titles: await window.jarvis.codexTitles([]),
   }));
-  check('child reaches shared service handlers while demo remains offline', bridge.plugin.includes('此预览未连接') && bridge.usage.includes('preview is not connected') && bridge.account === false && Object.keys(bridge.titles).length === 0);
+  check('child reaches shared service handlers while demo remains offline', bridge.plugin.includes('not connected to the plugin service') && bridge.plugins === 0 && bridge.usage.includes('preview is not connected') && bridge.account === false && Object.keys(bridge.titles).length === 0);
   await app.evaluate(({ BrowserWindow }) => {
     const child = BrowserWindow.getAllWindows().find(w => w.webContents.getURL().includes('detached=1'));
     globalThis.passCalls = 0; const original = child.setIgnoreMouseEvents.bind(child);

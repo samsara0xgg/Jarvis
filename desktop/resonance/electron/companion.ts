@@ -10,6 +10,7 @@ import { startDaemon } from './daemon.js';
 import { setupDictation } from './dictation.js';
 import { AGENTS_PORT, setupAgents } from './agentsWindow.js';
 import { setupDashboard } from './dashboardWindow.js';
+import { demoBanner } from './demoBanner.js';
 // The companion: 星核, who lives beside the notch, with her Dashboard. She talks to the daemon on
 // JARVIS_INHERENT_BRIDGE_PORT like the capsule does; the daemon owns mic and speaker, so she never
 // records audio or plays speech herself. `--demo` runs her on the built-in demo data instead.
@@ -227,7 +228,7 @@ function companion(shown?: () => void) {
   // (src/startrail.ts); the key rides on its requests from sendDaemonKey, never in the page.
   win.loadFile(path.join(here, '../dist/index.html'), { query: demo ? { companion: '1' } : { companion: '1', port: process.env.JARVIS_INHERENT_BRIDGE_PORT ?? '8006', ...app.isPackaged ? { packaged: '1' } : { agents: AGENTS_PORT } } });
   win.webContents.on('did-finish-load', place);
-  win.once('ready-to-show', () => { place(); win.showInactive(); keepOnTop(); shown?.(); });
+  win.once('ready-to-show', () => { place(); win.showInactive(); keepOnTop(); shown?.(); if (demo) void demoBanner(); });
   win.on('blur', () => setImmediate(() => { if (!win.isDestroyed()) keepOnTop(); }));
   screen.on('display-added', place); screen.on('display-removed', place); screen.on('display-metrics-changed', place);
   // The hardware cutout and click-through space get no reliable DOM pointer events,

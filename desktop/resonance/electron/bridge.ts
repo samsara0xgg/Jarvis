@@ -43,7 +43,9 @@ export function registerDaemonBridge(win: BrowserWindow, { lab = false, verifica
     const operations = ['read', 'icon', 'open', 'connect', 'cancel', 'reopen', 'disable', 'approval'];
     if (!operations.includes(operation) || !data || typeof data !== 'object' || Array.isArray(data)) throw new Error('无效的插件操作');
     const testPort = verification ? process.env.RESONANCE_PLUGIN_TEST_PORT : undefined;
-    if (lab || (verification && (!testPort || testPort === '8006'))) throw new Error('此预览未连接插件服务');
+    // The demo polls 'read' every 1.5 s; an empty list keeps the console quiet. Anything else says why it cannot run.
+    if (lab && operation === 'read') return { plugins: [], request: null };
+    if (lab || (verification && (!testPort || testPort === '8006'))) throw new Error('This preview is not connected to the plugin service');
     const port = testPort ?? process.env.JARVIS_INHERENT_BRIDGE_PORT ?? '8006';
     if (!/^\d{1,5}$/.test(port) || Number(port) > 65535) throw new Error('插件服务端口无效');
     const root = (verification ? process.env.RESONANCE_PLUGIN_TEST_ROOT : undefined) ?? process.env.JARVIS_RUNTIME_ROOT ?? path.join(homedir(), '.jarvis');
