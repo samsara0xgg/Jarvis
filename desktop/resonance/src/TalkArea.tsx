@@ -3,7 +3,7 @@ import { ArrowUp, Keyboard, Microphone, Stop } from '@phosphor-icons/react';
 import { Markdown, inline } from './Markdown';
 import { tr, type L, type Lang } from './companionSettings';
 import type { Line } from './model';
-import { HEARD_MS, HEIGHT, LINGER_MS, MEMORY_MS, WIDTH, itemsOf, kindOf, pace, placed, said as saidCount, sentences, type Captions, type Item, type Kind, type Voice } from './talk';
+import { HEARD_MS, HEIGHT, LINGER_MS, MEMORY_MS, WIDTH, itemsOf, kindOf, pace, placed, said as saidCount, sentences, ink, type Captions, type Item, type Kind, type Voice } from './talk';
 import './talk-area.css';
 
 // Springs as CSS linear() curves: response in seconds, damping fraction (1 = no overshoot).
@@ -27,7 +27,8 @@ const rise = (el: Element, delay = 120) => {
 // The written part comes up this long after her spoken line, so the area grows twice: to the line, then to the rest.
 const STAGGER = 700;
 
-type Spoken = { p: HTMLElement; chars: HTMLElement[]; spans: HTMLElement[]; lit: number };
+// `ink`: the written part's own write-in, when it began and when each character is reached.
+type Spoken = { p: HTMLElement; chars: HTMLElement[]; spans: HTMLElement[]; lit: number; ink?: { t0: number; clock: number[] } };
 type Registry = Map<string, Spoken>;
 type Fly = { text: string; rect: DOMRect };
 // A character each, for the driver to light.
@@ -68,13 +69,19 @@ function Written({ text, lit }: { text: string; lit: boolean }) {
   return <>{out}</>;
 }
 
-function Her({ it, reg, think, ready }: { it: Item; reg: Registry; think: string; ready: boolean }) {
-  // The written part's plain paragraphs are lit in step with her speech, as far along as it has got (lists, headings and code come whole).
-  const w = useRef<HTMLDivElement>(null), lit = !!(it.spoken || it.voiced);
+function Her({ it, reg, think, ready, silent }: { it: Item; reg: Registry; think: string; ready: boolean; silent: boolean }) {
+  // The written part's plain paragraphs write themselves in at their own pace once it shows (lists, headings and code come whole). Decided
+  // when it first shows: with no voice, or her voice already done, or reduced motion, it is there whole and nothing animates.
+  const w = useRef<HTMLDivElement>(null), t0 = useRef(0), writes = useRef<boolean | null>(null);
+  if (writes.current === null && it.written && ready) writes.current = !!(it.spoken || it.voiced) && !silent && !it.failed && !(it.said && it.cutAt === undefined) && !reduced();
+  const lit = !!writes.current;
   useLayoutEffect(() => {
     const el = w.current, chars = el && lit ? [...el.querySelectorAll<HTMLElement>('.md p i')] : [];
     if (!el || !chars.length) return;
-    reg.set(`${it.id}:w`, { p: el, chars, spans: [...el.querySelectorAll<HTMLElement>('.md p')].filter(p => p.querySelector('i')), lit: -1 });
+    t0.current ||= Date.now();
+    // (the paragraph that is still coming in re-registers with each token and picks up where the clock is)
+    const clock = ink([...el.querySelectorAll('.md p')].filter(p => p.querySelector('i')).map(p => [...p.querySelectorAll('i')].map(i => i.textContent!)));
+    reg.set(`${it.id}:w`, { p: el, chars, spans: [], lit: -1, ink: { t0: t0.current, clock } });
     return () => { reg.delete(`${it.id}:w`); };
   }, [it.id, it.written, lit, ready, reg]);
   return <div className={`tk-h ${it.failed ? 'is-err' : ''}`} data-line={it.id}>
@@ -109,10 +116,10 @@ export function TalkArea(p: TalkProps) {
   const box = p.boxRef, trEl = useRef<HTMLDivElement>(null), ftEl = useRef<HTMLDivElement>(null), fdEl = useRef<HTMLFormElement>(null), flyEl = useRef<HTMLDivElement>(null);
   const live = useRef(p); live.current = p;
   const [, redraw] = useState(0);
-  const [row, setRow] = useState<Row>('ft'), [away, setAway] = useState(false), [fieldH, setFieldH] = useState(36);
+  const [row, setRow] = useState<Row>('ft'), [away, setAway] = useState(false), [fieldH, setFieldH] = useState(36), [inking, setInking] = useState(false);
   const reg = useRef<Registry>(new Map()), clocks = useRef(new Map<string, { text: string; clock: number[] }>());
   // The motion's own state: where the shape is, what is pending, and whether the reader has scrolled away from her.
-  const ctl = useRef({ at: 'gone' as 'gone' | Kind, closing: false, timers: [] as number[], staged: false, follow: true, progUntil: 0, wheelAt: 0, since: 0, fly: null as Fly | null, rise: false, back: false, shape: { w: 0, h: 0 }, lbW: 0, litEl: null as HTMLElement | null });
+  const ctl = useRef({ at: 'gone' as 'gone' | Kind, closing: false, timers: [] as number[], staged: false, follow: true, progUntil: 0, wheelAt: 0, since: 0, fly: null as Fly | null, rise: false, back: false, shape: { w: 0, h: 0 }, lbW: 0, litEl: null as HTMLElement | null, ink: false });
   const c = ctl.current;
 
   const items = useMemo(() => itemsOf(p.lines, p.level), [p.lines, p.level]);
@@ -302,7 +309,7 @@ export function TalkArea(p: TalkProps) {
   // ---- the words she is saying ----
   const clockFor = (it: Item) => {
     const hit = clocks.current.get(it.id);
-    const text = it.spoken || it.voiced || '';
+    const text = it.spoken;
     if (hit && hit.text === text) return hit.clock;
     const clock = pace(text); clocks.current.set(it.id, { text, clock }); return clock;
   };
@@ -316,22 +323,29 @@ export function TalkArea(p: TalkProps) {
     r.lit = lit;
   };
   // Light up as far as she has got: where the daemon last put her voice (ADR 0112), carried on at pace; with no report, estimated from when she began.
+  // The written part is not her speech: it writes itself in on its own clock (whole when she is silent). The follow goes to the line she is
+  // saying; with none being said (the middle level shows the written part alone, or she is done) to the front of the write-in.
   const view = useRef(v); view.current = v;
   const drive = () => {
     let front: HTMLElement | null = null;
+    c.ink = false;
     for (const it of view.current.items) {
-      const sr = it.who === 'her' && it.spoken ? reg.current.get(it.id) : undefined, wr = it.who === 'her' ? reg.current.get(`${it.id}:w`) : undefined;
-      if (!sr && !wr) continue;
-      const clock = clockFor(it), done = it.failed || live.current.silent || (it.said && it.cutAt === undefined);
-      const now = it.cutAt ?? Date.now();
-      const said = done ? clock.length : it.queued ? 0 : it.mark ? placed(it.spoken || it.voiced || '', clock, it.mark, now) : saidCount(clock, (now - it.from) / 1000);
-      // The written part is lit by the same share of her speech as it has characters; the follow goes to the lower front.
-      for (const r of [sr, wr]) {
-        if (!r) continue;
-        const total = r.chars.length, lit = Math.floor(total * said / clock.length);
-        paint(r, lit);
-        if (!done && !it.queued && it.cutAt === undefined) front = r.chars[Math.max(0, lit - 1)] ?? null;
+      if (it.who !== 'her') continue;
+      const sr = it.spoken ? reg.current.get(it.id) : undefined, wr = reg.current.get(`${it.id}:w`);
+      let ahead: HTMLElement | null = null;
+      if (sr) {
+        const clock = clockFor(it), done = it.failed || live.current.silent || (it.said && it.cutAt === undefined);
+        const now = it.cutAt ?? Date.now();
+        const said = done ? clock.length : it.queued ? 0 : it.mark ? placed(it.spoken, clock, it.mark, now) : saidCount(clock, (now - it.from) / 1000);
+        paint(sr, said);
+        if (!done && !it.queued && it.cutAt === undefined) ahead = sr.chars[Math.max(0, said - 1)] ?? null;
       }
+      if (wr?.ink) {
+        const n = it.failed || live.current.silent ? wr.chars.length : saidCount(wr.ink.clock, (Date.now() - wr.ink.t0) / 1000);
+        paint(wr, n);
+        if (n < wr.chars.length) { c.ink = true; ahead ||= wr.chars[Math.max(0, n - 1)]; }
+      }
+      if (ahead) front = ahead;
     }
     c.litEl = front;
     return front;
@@ -347,13 +361,14 @@ export function TalkArea(p: TalkProps) {
       el.scrollTo({ top: Math.max(0, Math.min(bottom - room * .7, el.scrollHeight - room)), behavior: reduced() ? 'auto' : 'smooth' });
     }
   };
-  const speaking = v.items.some(it => it.who === 'her' && (it.spoken || it.voiced) && !it.said);
+  // Ticking while she is saying a line or a written part is still writing itself in (`c.ink`, set by the driver).
+  const speaking = v.items.some(it => it.who === 'her' && it.spoken && !it.said);
   const steps = useRef({ drive, followLit }); steps.current = { drive, followLit };
   useEffect(() => {
-    if (!speaking) return;
-    const id = window.setInterval(() => steps.current.followLit(steps.current.drive()), 90);
+    if (!speaking && !inking) return;
+    const id = window.setInterval(() => { steps.current.followLit(steps.current.drive()); if (!c.ink) setInking(false); }, 90);
     return () => clearInterval(id);
-  }, [speaking]);
+  }, [speaking, inking]);
 
   // ---- the bottom row: your state, or the field you type in ----
   const swapTo = (want: Row) => {
@@ -385,6 +400,7 @@ export function TalkArea(p: TalkProps) {
     if (c.rise && row === (p.field ? 'fd' : 'ft')) { c.rise = false; if (c.back) { c.back = false; rowEl().animate([{ opacity: 0 }, { opacity: 1 }], { duration: 260, delay: Math.round(OPEN.d * .5), easing: 'ease-out', fill: 'backwards' }); /* after the sent words have left it */ } else rise(rowEl(), 0); }
     runFly();
     followLit(drive());
+    setInking(c.ink);
     fades();
   }, [sig]);
   useEffect(() => {
@@ -477,7 +493,7 @@ export function TalkArea(p: TalkProps) {
     <div ref={trEl} className="talk-tr" role="log" aria-live="polite" onScroll={onScroll} onWheel={() => { c.wheelAt = performance.now(); }}>
       {v.items.map(it => it.who === 'you'
         ? <span key={it.id} className="tk-u" data-line={it.id}>{it.spoken}</span>
-        : <Her key={it.id} it={it} reg={reg.current} ready={v.ready(it)} think={(() => { const secs = p.deep.thoughts.find(th => th.turn === it.turn)?.secs; return secs ? t([`Thought for ${secs.toFixed(1)} s`, `想了 ${secs.toFixed(1)} 秒`]) : ''; })()}/>)}
+        : <Her key={it.id} it={it} reg={reg.current} ready={v.ready(it)} silent={p.silent} think={(() => { const secs = p.deep.thoughts.find(th => th.turn === it.turn)?.secs; return secs ? t([`Thought for ${secs.toFixed(1)} s`, `想了 ${secs.toFixed(1)} 秒`]) : ''; })()}/>)}
     </div>
     {away && v.items.length > 0 && <div className="tk-latest"><button type="button" onClick={latest}>{t(['Back to latest', '回到最新'])}</button></div>}
     <div ref={ftEl} className="talk-ft" hidden={row !== 'ft'}>
