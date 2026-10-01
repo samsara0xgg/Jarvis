@@ -125,7 +125,7 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
     if (hooks.items(id) || loading.has(id)) return;
     loading.add(id); try { await hooks.load(id); } finally {
       loading.delete(id); refresh();
-      if (skyOn && selected === id && (qi < 0 || searching())) { latest(true); findStop(); renderWords(); revealUntil = performance.now() + 800; }
+      if (skyOn && selected === id && (qi < 0 || searching())) { latest(true); if (qi >= 0 && !searching()) nameStop = false; findStop(); renderWords(); revealUntil = performance.now() + 800; }
     }
   }
   function setMode(on: boolean) {
@@ -221,7 +221,7 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
     const q = searching() ? query.trim() : '';
     return `<p class="pp-h"><span class="pp-t"><b>${clock}</b><small>第 ${at + 1} / ${n} 句</small></span></p><p class="pp-q">${hl(t.you, q)}</p>`
       + `<p class="pp-a${t.kind === 'sum' ? '' : ` r-${t.kind}`}"><i>${s.agent === 'claude' ? 'Claude' : 'Codex'}</i>${LEAD[t.kind] ? `<em>${LEAD[t.kind]}</em>` : ''}${hl(reply(s, t, q), q)}</p>`
-      + keys(at > 0 ? `${kbd('←')} 上一句` : '', `${kbd('→')} ${at < n - 1 ? '下一句' : '到名字'}`);
+      + keys(at > 0 ? `${kbd('←')} 上一句` : '', `${kbd('→')} ${at < n - 1 ? '下一句' : '到名字'}`, `${kbd('⏎')} 进去`);
   }
   // The name stop, or a session you have not said anything to: where it stands now.
   function standing(s: Sess, n: number) {
@@ -259,8 +259,9 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
     if (skyOn) { if (find) { finding = true; pullLabel(); findInput.focus({ preventScroll: true }); findInput.select(); } return; }
     peek.hidden = true;
     finding = find; query = findInput.value = ''; found = new Set(); refresh();
-    // It opens on the names: ↑↓ pick a session, → goes in; ← steps back into what you said.
-    selected = first(); nameStop = true; latest();
+    // It opens on the last thing you said to the session on screen, with its words out; ↑↓ keep the moment, ⏎ goes in
+    // from any sentence. A session you have said nothing to opens on its name.
+    selected = first(); nameStop = false; latest(); nameStop = !trails[selected]?.turns.length;
     pan.value = panTo = 0; pan.velocity = 0; follow = '';
     skyOn = true; snap = true; hoverQi = null; revealUntil = performance.now() + 800; waiting.hide();
     pop.hidden = gap.hidden = true; popKey = '';

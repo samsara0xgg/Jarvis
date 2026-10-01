@@ -96,7 +96,7 @@ try {
   await p.locator('#msg').focus();
   await press('Alt+ArrowUp', 1, 1400);
   let s = await sky();
-  check('⌥↑ opens the sky standing on the name of the session on screen', s.on && selected(s)?.id === live && selected(s).nm, s.rows);
+  check('⌥↑ opens the sky on the last thing you said to the session on screen, its words out', s.on && selected(s)?.id === live && !selected(s).nm && /^第 (\d+) \/ \1 句$/.test(s.n ?? '') && s.words?.includes('进去'), [s.n, s.rows]);
   check('under the sessions it lists ＋ 新会话 with ⌘N and the archived fold', s.rows.some(r => r.x === 'x:new' && r.text.includes('＋ 新会话') && r.text.includes('⌘N')) && s.rows.some(r => r.x === 'x:arch' && r.text === '已归档 1'), s.rows.map(r => r.text));
   await st.shot('sky');
   await press(' ');
@@ -104,10 +104,7 @@ try {
   check('a space in the sky is a pause, not a word for the composer', s.on && s.composer === '', s.composer);
   await press('ArrowUp');
   s = await sky();
-  check('↑ moves to the session above, still on its name', selected(s)?.id === menu && selected(s).nm, selected(s));
-  await press('ArrowLeft');
-  s = await sky();
-  check('← steps back into what you said, the newest sentence first', s.n === '第 12 / 12 句' && s.q === said[11] && !selected(s).nm, [s.n, s.q]);
+  check('↑ moves to the session above, onto what you said nearest that moment', selected(s)?.id === menu && !selected(s).nm && s.n === '第 12 / 12 句' && s.q === said[11], [selected(s), s.n, s.q]);
   await press('ArrowLeft', 2);
   s = await sky();
   check('← again reads the sentence before, one at a time', s.n === '第 10 / 12 句' && s.q === said[9], [s.n, s.q]);
@@ -150,7 +147,7 @@ try {
   await p.locator('#msg').focus();
   await press('Alt+ArrowUp', 1, 1000);
   for (let i = 0; i < 8 && selected(await sky())?.id !== host; i++) await press('ArrowUp');
-  await press('ArrowLeft', 1, 1600);
+  await p.waitForTimeout(1600);
   s = await sky();
   const lens = await p.evaluate(() => {
     const cv = document.querySelector('.bw-cv').getBoundingClientRect(), pop = document.querySelector('.bw-open').getBoundingClientRect();
