@@ -3,6 +3,8 @@
 </p>
 
 > **Demo video coming later today (October 1, 2026).** A short walkthrough of Jarvis running on my Mac will be posted right here.
+>
+> **In a rush?** You can try a demo on your own Mac in about a minute, with no keys or setup. [Click here to try it.](#try-the-demo)
 
 <p align="center">
   <img src="https://img.shields.io/badge/macOS-000000?logo=apple&logoColor=white" alt="macOS">
@@ -54,15 +56,22 @@ A Python daemon owns the microphone, speaker, models, memory and tools. The comp
 
 You need macOS, Python 3.12+, [uv](https://docs.astral.sh/uv/) and Node.js (tested with Node 24). On a MacBook it sits beside the notch; on a screen without one it lives in a small black pill at the top.
 
+### Try the demo
+
 To see the companion on its built-in demo data, with no daemon and no keys:
 
 ```bash
-cd desktop/resonance
+git clone https://github.com/samsara0xgg/Jarvis
+cd Jarvis/desktop/resonance
 npm ci
 npm run companion -- --demo
 ```
 
-To run it for real, start the daemon:
+What the demo shows: the companion beside the notch, its agent stars, and the Dashboard filled with sample data (calendar, to-dos, mail, the morning brief, agents). What it doesn't: it doesn't listen or speak, nothing in it is your own data, and the full Agents window (Startrail) doesn't open. Those need the full setup below. Press Ctrl+C in the terminal to quit.
+
+### Run it for real
+
+Start the daemon:
 
 ```bash
 uv sync
