@@ -136,11 +136,15 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
     const p = easeInOut(clamp(sky.value * 1.3 - i * Math.min(.03, .3 / Math.max(1, rows.length - 1)))), [x, y] = waiting.at(rows[i]?.id ?? '');
     return [lerp(x, width - 262, p), lerp(y, 82 + i * 27, p)];
   };
+  // One the host could not read is tried again after a while, not on every refresh its own failure sets off.
+  const tried = new Map<string, number>();
+  // A session taken back stands on its name, even when its trail arrives after.
+  let held = '';
   async function ensure(id: string) {
-    if (hooks.items(id) || loading.has(id)) return;
-    loading.add(id); try { await hooks.load(id); } finally {
+    if (hooks.items(id) || loading.has(id) || performance.now() - (tried.get(id) ?? -Infinity) < 30000) return;
+    loading.add(id); tried.set(id, performance.now()); try { await hooks.load(id); } finally {
       loading.delete(id); refresh();
-      if (skyOn && selected === id && (qi < 0 || searching())) { latest(true); if (qi >= 0 && !searching()) nameStop = false; findStop(); renderWords(); revealUntil = performance.now() + 800; }
+      if (skyOn && selected === id && (qi < 0 || searching())) { latest(true); if (qi >= 0 && !searching() && held !== id) nameStop = false; findStop(); renderWords(); revealUntil = performance.now() + 800; }
     }
   }
   function setMode(on: boolean) {
@@ -185,7 +189,9 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
       if (openMore) archived.forEach((s, j) => xrows.push({ key: `x:a:${s.id}`, label: s.title, arch: true, back: s.id, line: j + 1 }));
     }
     if (!stops().includes(selected)) { selected = first(); latest(); findStop(); }
-    if (enabled) for (const s of all) if (s.st === 'wait') void ensure(s.id);
+    // With reduced motion the sky opens in one frame: the rows it would show have their trails read ahead, so it opens
+    // with every one of them drawn.
+    if (enabled) for (const s of all) if (s.st === 'wait' || reduced.matches && rows.includes(s)) void ensure(s.id);
     const ids = all.map(s => s.id), presence = JSON.stringify([enabled, ids]);
     if (presence !== presenceKey) { presenceKey = presence; window.agents?.presence?.(enabled, ids); }
     renderRows(); if (skyOn) renderWords();
@@ -281,7 +287,7 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
     finding = find; query = findInput.value = ''; found = new Set(); openMore = false; back = Infinity; refresh();
     // It opens on the last thing you said to the session on screen, with its words out; ↑↓ keep the moment, ⏎ goes in
     // from any sentence. A session you have said nothing to opens on its name.
-    selected = first(); nameStop = false; latest(); nameStop = !trails[selected]?.turns.length;
+    selected = first(); nameStop = false; held = ''; latest(); nameStop = !trails[selected]?.turns.length;
     pan.value = panTo = 0; pan.velocity = 0; follow = '';
     skyOn = true; snap = true; hoverQi = null; revealUntil = performance.now() + 800; waiting.hide();
     pop.hidden = gap.hidden = true; popKey = '';
@@ -549,7 +555,7 @@ export function mountExposure(win: HTMLElement, ta: HTMLTextAreaElement, hooks: 
     if (x === 'x:more') openMore = !openMore;
     selected = x; refresh();
     // Taken back, it is a session again: stand on its name once the page has it.
-    if (x.startsWith('x:a:')) window.setTimeout(() => { if (!skyOn) return; selected = x.slice(4); nameStop = true; latest(); refresh(); renderRows(); renderWords(); });
+    if (x.startsWith('x:a:')) window.setTimeout(() => { if (!skyOn) return; selected = held = x.slice(4); nameStop = true; latest(); refresh(); renderRows(); renderWords(); });
   });
   skyEl.addEventListener('wheel', () => revealUntil = 0, { passive: true });
   // Sideways (or with ⇧) the sky slides through time: toward what is older, and back to now.
