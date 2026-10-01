@@ -51,8 +51,10 @@ Its limits:
   an accepted turn holds it until her answer starts, for at most 30 s.
 - A dismissal is an utterance that is only 退下, 没事了, 就这样吧, 先这样,
   拜拜, 再见, 结束对话, 去休息, bye, goodbye or that's all (with an optional
-  wake phrase, 你/那, and 了/吧/啦). It stops her if she is talking, ends the
-  mode, and is no turn.
+  wake phrase, 你/那, and 了/吧/啦), or a sentence of at most 16 characters,
+  not a question, that holds 退下 or 退一下 or starts with 退出; Allen's
+  first live dismissals were 「退出退出退下，暂停停一下等」 and 「我让你退一下」.
+  It stops her if she is talking, ends the mode, and is no turn.
 - A wait request is an utterance that is only 等我一下, 等等我, 稍等, 你等着,
   hold on, wait for me or give me a second. It stops her if she is talking,
   holds the mode `conversation_wait_s` (shipped 60 s) past it, and is no

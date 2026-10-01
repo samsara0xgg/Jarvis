@@ -980,6 +980,12 @@ _DISMISS_RE = re.compile(
     r"(?:(?:可以)?退下|没事[了啦]?|就这样|先这样|拜拜|再见|结束(?:对话|会话)?|去休息"
     r"|bye(?:bye)?|goodbye|thatsall|dismissed)(?:了|吧|啦|啊|哈)*",
 )
+# Said inside a short sentence too (「退出退出退下，暂停停一下等」, 「我让你退一下」,
+# 2026-09-30): 退下 or 退一下 anywhere, or 退出 first, in a sentence of at most
+# _DISMISS_WORD_MAX_CHARS that is no question.
+_DISMISS_WORD_RE = re.compile(r"退下|退一下|^退出")
+_DISMISS_WORD_MAX_CHARS = 16
+_QUESTION_END_RE = re.compile(r"(?:[?？]|吗|呢)\W*$")
 
 
 # Allen asking Jarvis to keep listening for him (ADR 0102): conversation mode
@@ -997,8 +1003,15 @@ def _squashed(text: str) -> str:
 
 
 def is_dismissal(text: str) -> bool:
-    """True when ``text`` only sends Jarvis out of conversation mode (退下, 没事了, bye)."""
-    return _DISMISS_RE.fullmatch(_squashed(text)) is not None
+    """True when ``text`` sends Jarvis out of conversation mode (退下, 没事了, bye)."""
+    squashed = _squashed(text)
+    if _DISMISS_RE.fullmatch(squashed) is not None:
+        return True
+    return (
+        len(squashed) <= _DISMISS_WORD_MAX_CHARS
+        and _QUESTION_END_RE.search(text) is None
+        and _DISMISS_WORD_RE.search(squashed) is not None
+    )
 
 
 def is_wait_request(text: str) -> bool:
