@@ -558,7 +558,7 @@ _PAST_DAY = re.compile(
 _YESTERDAY = re.compile(r"昨天|昨日|昨晚|yesterday", re.IGNORECASE)
 _NOT_NOW = (
     "This question names a past day, so the current work state was not analysed. If the user meant "
-    "what is happening now, call refresh_work_state again with force=true."
+    "what is happening now, call refresh_work_state again with a question that names no past day."
 )
 
 

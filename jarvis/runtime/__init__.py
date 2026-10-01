@@ -1032,10 +1032,10 @@ def _work_state_tool_refresh(
     """
 
     def refresh(args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
-        if not args.get("force"):
-            past = past_day_answer(daily_report, ctx.conn, args.get("question"))
-            if past is not None:
-                return past
+        # force too: the model passed force=true for "what did I do yesterday" (2026-10-01).
+        past = past_day_answer(daily_report, ctx.conn, args.get("question"))
+        if past is not None:
+            return past
         return service.refresh(
             ctx.conn,
             question=args.get("question"),

@@ -169,7 +169,9 @@ def build_work_state_tool(refresh: WorkStateRefresh | None) -> tuple[Tool, ...]:
         return ()
 
     def handle(args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
-        values = dict(args)
+        # An empty note or question is the model leaving it out (2026-10-01: note="" failed the
+        # first call of a turn, one round lost).
+        values = {k: v for k, v in args.items() if not (k in ("note", "question") and v == "")}
         try:
             validate(values, SCHEMAS["refresh_work_state"])
             return refresh(values, ctx)

@@ -17,7 +17,9 @@ from contextlib import closing
 from dataclasses import replace
 from datetime import UTC, date, datetime, time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any, cast
+from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -37,6 +39,7 @@ from jarvis.decision.daily_report import (
 )
 from jarvis.decision.llm import ChatResult, ToolCall
 from jarvis.execution.tools import ToolError, build_default_registry
+from jarvis.runtime import _work_state_tool_refresh
 from jarvis.runtime.daily_report import (
     CHECK_BUDGET,
     DailyReportService,
@@ -51,7 +54,7 @@ from tests.integration.test_flat_tool_dispatch import _Fixture, _request
 from tests.integration.test_timesink_activity import add_capture, add_span, source
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Sequence
+    from collections.abc import Iterator, Mapping, Sequence
 
 __all__ = ["source"]
 
@@ -625,7 +628,7 @@ def test_a_past_day_question_to_refresh_work_state_gets_the_saved_report(rig: Ri
         assert answer["outcome"] == "reused"
         assert answer["local_date"] == DAY.isoformat()
         assert answer["summary"] == first["summary"]
-        assert "force=true" in answer["note"]
+        assert "names no past day" in answer["note"]
     pointed = past_day_answer(rig.service, conn, "What did I do the day before yesterday?", now=NOW)
     assert pointed is not None
     assert pointed["outcome"] == "past_day"
@@ -636,6 +639,28 @@ def test_a_past_day_question_to_refresh_work_state_gets_the_saved_report(rig: Ri
     for now_question in ("what am I doing now", "我今天到现在做了什么", None):
         assert past_day_answer(rig.service, conn, now_question, now=NOW) is None
     assert len(rig.reporter.catalogs) == calls, "no model call on any of these"
+
+
+def test_refresh_work_state_answers_yesterday_from_the_report_even_with_force(rig: Rig) -> None:
+    """The model passed force=true for yesterday; the binding still never analyses now."""
+    rig.run()
+    asked: list[Mapping[str, Any]] = []
+
+    class Analysis:
+        def refresh(self, _conn: object, **kwargs: Any) -> dict[str, Any]:  # noqa: ANN401
+            asked.append(kwargs)
+            return {"outcome": "analyzed"}
+
+    refresh = _work_state_tool_refresh(cast("Any", Analysis()), rig.service)
+    ctx = cast("Any", SimpleNamespace(conn=rig.fx.conn, action_id="ws1"))
+    with patch("jarvis.runtime.daily_report.datetime") as clock:
+        clock.now.return_value = NOW
+        answer = refresh({"question": "What did I do yesterday?", "force": True}, ctx)
+    assert answer["outcome"] == "reused"
+    assert answer["local_date"] == DAY.isoformat()
+    assert asked == []
+    assert refresh({"question": "What am I doing now?"}, ctx)["outcome"] == "analyzed"
+    assert len(asked) == 1
 
 
 def test_an_unreadable_plan_is_stated_and_the_report_still_saves(rig: Rig) -> None:
