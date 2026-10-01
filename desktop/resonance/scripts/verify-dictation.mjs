@@ -28,6 +28,7 @@ try {
     window.dictation = {
       onStart: cb => { on.start = cb; }, onFinish: cb => { on.finish = cb; }, onCancel: cb => { on.cancel = cb; }, onCursor: cb => { on.cursor = cb; },
       paste: text => window.__log.push(['paste', text]), copy: text => window.__log.push(['copy', text]),
+      target: async () => window.__target ?? 'ok',
       home: happy => window.__log.push(['home', happy]), done: () => window.__log.push(['done']),
       passthrough: () => {}, focus: value => window.__log.push(['focus', value]), open: page => window.__log.push(['open', page]), again: () => window.__log.push(['again']),
     };
@@ -45,7 +46,7 @@ try {
   const start = async (trusted = true) => {
     await page.evaluate(trusted => window.__on.start({ caret: trusted ? { l: 300, t: 300, r: 302, b: 318 } : null, lineRight: 480,
       element: trusted ? { l: 100, t: 280, r: 900, b: 520 } : null, pointer: { x: 600, y: 600 }, top: 32, skin: 'glass', lang: 'zh', port: '9999',
-      trusted, grantee: 'node', context: { app: 'Notes', window: '', selected: '' } }), trusted);
+      trusted, grantee: 'node', context: { app: 'Notes', window: '', selected: '', before: '' } }), trusted);
     await page.waitForTimeout(500); // up through her hole and listening
     await push({ level: .4 });
   };
@@ -156,6 +157,32 @@ try {
   await page.evaluate(() => window.__on.finish());
   await page.waitForTimeout(600);
   check('07 the right ⌥ in the box pastes what is there', (await log()).some(([k, v]) => k === 'paste' && v === SPOKEN));
+  await page.waitForTimeout(700);
+  await log();
+
+  // ADR 0110: the text box she started at lost its focus for good, or another app came to the front: the words are
+  // copied and shown, never pasted into whatever has the keyboard now.
+  for (const where of ['lost', 'elsewhere']) {
+    await page.evaluate(w => { window.__target = w; }, where);
+    await start();
+    await page.evaluate(() => window.__on.finish());
+    await push({ state: 'thinking', seconds: 2 });
+    await push({ text: SPOKEN, raw: SPOKEN });
+    await page.waitForTimeout(600);
+    const gone = await log();
+    check(`08 ${where}: copied and shown in a card, not pasted`, !gone.some(([k]) => k === 'paste')
+      && gone.some(([k, v]) => k === 'copy' && v === SPOKEN) && (await page.locator('#bubble.card b').textContent()) === '原来的输入框不在了');
+    await page.locator('#bubble.card .x').click();
+    await page.waitForTimeout(700);
+    await log();
+  }
+  await page.evaluate(() => { window.__target = 'blind'; });
+  await start();
+  await page.evaluate(() => window.__on.finish());
+  await push({ state: 'thinking', seconds: 2 });
+  await push({ text: SPOKEN, raw: SPOKEN });
+  await page.waitForTimeout(600);
+  check('08 blind (the app shows no field to check against): pasted as before', (await log()).some(([k, v]) => k === 'paste' && v === SPOKEN));
   check('no page errors', errors.length === 0);
   console.log(`${checks.length} checks passed`);
 } finally {

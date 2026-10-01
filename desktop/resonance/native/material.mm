@@ -219,6 +219,64 @@ static bool boundsFor(AXUIElementRef element, CFIndex location, CFIndex length, 
   if (value) CFRelease(value);
   return ok && out->size.height > 1 && out->size.height < 200 && (out->origin.x != 0 || out->origin.y != 0);
 }
+// ADR 0110, as 言字 sends it: up to 300 characters before the caret, so the polish spells names the way the field
+// already does. Asked for as a range so a long document is never read whole; never from a password field.
+static NSString *textBefore(AXUIElementRef element, CFIndex caret) {
+  if (caret <= 0) return nil;
+  for (NSString *role in @[textAttribute(element, kAXRoleAttribute) ?: @"", textAttribute(element, kAXSubroleAttribute) ?: @""])
+    if ([role isEqualToString:@"AXSecureTextField"]) return nil;
+  const CFIndex start = MAX(0, caret - 300);
+  CFRange range = CFRangeMake(start, caret - start);
+  AXValueRef param = AXValueCreate(kAXValueTypeCFRange, &range);
+  CFTypeRef value = nullptr;
+  AXUIElementCopyParameterizedAttributeValue(element, kAXStringForRangeParameterizedAttribute, param, &value);
+  CFRelease(param);
+  NSString *text = nil;
+  if (value && CFGetTypeID(value) == CFStringGetTypeID()) text = (__bridge_transfer NSString *)value;
+  else if (value) CFRelease(value);
+  if (!text.length) { // an app that answers no ranged query: its whole value, unless it is a document
+    NSString *whole = textAttribute(element, kAXValueAttribute);
+    if (whole.length >= (NSUInteger)caret && whole.length <= 200000) text = [whole substringWithRange:NSMakeRange(start, caret - start)];
+  }
+  return [text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+}
+// ADR 0110, 言字 0.4.0's fix for apps (Claude) whose text box loses focus while the words are polished: the app and
+// the text field the dictation started in, held from caret() until the paste.
+static pid_t startPid = 0;
+static AXUIElementRef startField = nullptr;
+static bool isTextField(AXUIElementRef element) {
+  if (!element) return false;
+  NSString *role = textAttribute(element, kAXRoleAttribute) ?: @"";
+  if ([role isEqualToString:@"AXWebArea"]) return false; // a whole page, not a field
+  if ([@[@"AXTextArea", @"AXTextField", @"AXComboBox", @"AXSearchField"] containsObject:role]) return true;
+  CFTypeRef editable = copyAttribute(element, CFSTR("AXEditable"));
+  const bool yes = editable && CFGetTypeID(editable) == CFBooleanGetTypeID() && CFBooleanGetValue((CFBooleanRef)editable);
+  if (editable) CFRelease(editable);
+  return yes;
+}
+static bool focusIsTextField(pid_t pid) {
+  AXUIElementRef app = AXUIElementCreateApplication(pid);
+  AXUIElementSetMessagingTimeout(app, 0.25);
+  AXUIElementRef focused = (AXUIElementRef)copyAttribute(app, kAXFocusedUIElementAttribute);
+  CFRelease(app);
+  const bool yes = isTextField(focused);
+  if (focused) CFRelease(focused);
+  return yes;
+}
+// Just before the ⌘V: "ok" the caret is in a text field of the app the dictation started in (put back there if the app
+// had moved focus away), "blind" nothing to check against, "elsewhere" another app is in front, "lost" the field is gone
+// and could not be focused again. Only "ok" and "blind" are pasted into.
+static napi_value pasteTarget(napi_env env, napi_callback_info info) {
+  const char *where = "blind";
+  const pid_t front = NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier;
+  if (startPid && front && front != startPid) where = "elsewhere";
+  else if (startField && focusIsTextField(startPid)) where = "ok";
+  else if (startField) {
+    AXUIElementSetAttributeValue(startField, kAXFocusedAttribute, kCFBooleanTrue);
+    where = focusIsTextField(startPid) ? "ok" : "lost";
+  }
+  napi_value result; napi_create_string_utf8(env, where, NAPI_AUTO_LENGTH, &result); return result;
+}
 // ADR 0058: where the words will land. The focused element's caret (or the end of its selection), the right end of
 // the caret's line and the element's frame, in global top-left points like Electron's, plus the app, its window's title
 // and the selected text for the polish. Needs Accessibility: without it only `trusted: false` and the app come back.
@@ -229,6 +287,8 @@ static napi_value caret(napi_env env, napi_callback_info info) {
   setString(env, result, "app", front.localizedName);
   const bool trusted = AXIsProcessTrusted();
   napi_value value; napi_get_boolean(env, trusted, &value); napi_set_named_property(env, result, "trusted", value);
+  startPid = front.processIdentifier;
+  if (startField) { CFRelease(startField); startField = nullptr; }
   if (!trusted || !front) return result;
   AXUIElementRef app = AXUIElementCreateApplication(front.processIdentifier);
   // A hung app must not hold the companion's main thread for AX's default six seconds.
@@ -239,6 +299,7 @@ static napi_value caret(napi_env env, napi_callback_info info) {
   AXUIElementRef focused = (AXUIElementRef)copyAttribute(app, kAXFocusedUIElementAttribute);
   CFRelease(app);
   if (!focused) return result;
+  if (isTextField(focused)) { startField = (AXUIElementRef)CFRetain(focused); AXUIElementSetMessagingTimeout(startField, 0.25); }
   CGPoint origin; CGSize size;
   CFTypeRef position = copyAttribute(focused, kAXPositionAttribute), extent = copyAttribute(focused, kAXSizeAttribute);
   if (position && extent && AXValueGetValue((AXValueRef)position, kAXValueTypeCGPoint, &origin) && AXValueGetValue((AXValueRef)extent, kAXValueTypeCGSize, &size))
@@ -249,6 +310,7 @@ static napi_value caret(napi_env env, napi_callback_info info) {
   CFTypeRef selection = copyAttribute(focused, kAXSelectedTextRangeAttribute);
   CFRange range;
   if (selection && AXValueGetValue((AXValueRef)selection, kAXValueTypeCFRange, &range)) {
+    setString(env, result, "before", textBefore(focused, range.location));
     const CFIndex at = range.location + range.length;
     CGRect box;
     // An empty range has no box in most apps: measure the character before the caret and take its right edge,
@@ -298,6 +360,7 @@ static napi_value init(napi_env env, napi_value exports) {
   napi_create_function(env, "leftMouseDown", NAPI_AUTO_LENGTH, leftMouseDown, nullptr, &fn); napi_set_named_property(env, exports, "leftMouseDown", fn);
   napi_create_function(env, "rightOption", NAPI_AUTO_LENGTH, rightOption, nullptr, &fn); napi_set_named_property(env, exports, "rightOption", fn);
   napi_create_function(env, "caret", NAPI_AUTO_LENGTH, caret, nullptr, &fn); napi_set_named_property(env, exports, "caret", fn);
+  napi_create_function(env, "pasteTarget", NAPI_AUTO_LENGTH, pasteTarget, nullptr, &fn); napi_set_named_property(env, exports, "pasteTarget", fn);
   napi_create_function(env, "accessibility", NAPI_AUTO_LENGTH, accessibility, nullptr, &fn); napi_set_named_property(env, exports, "accessibility", fn);
   napi_create_function(env, "paste", NAPI_AUTO_LENGTH, paste, nullptr, &fn); napi_set_named_property(env, exports, "paste", fn);
   return exports;

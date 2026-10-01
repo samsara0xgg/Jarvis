@@ -6,8 +6,9 @@ import path from 'node:path';
 // (src/dictation.ts), the daemon records, hears and polishes, and the words are pasted where the caret is.
 // Typlus keeps F5 and the right ⌘, so both tools can run side by side.
 type Box = { x: number; y: number; width: number; height: number };
-type Caret = { app: string; trusted: boolean; window?: string; selected?: string; caret?: Box; lineRight?: number; element?: Box };
+type Caret = { app: string; trusted: boolean; window?: string; selected?: string; before?: string; caret?: Box; lineRight?: number; element?: Box };
 type Native = { rightOption(): { down: boolean; others: boolean; keyIdle: number }; caret(): Caret; accessibility(prompt: boolean): boolean; paste(): boolean;
+  pasteTarget(): 'ok' | 'blind' | 'elsewhere' | 'lost';
   setFrame(handle: Buffer, bounds: Box): unknown };
 // A tap is shorter than this, alone, and no key goes down while it is held.
 const TAP_S = .5;
@@ -33,7 +34,7 @@ export function setupDictation({ companion, native, nativePath, preload, page, p
   // `on`: Settings › General › Dictation; off, a tap starts nothing (one already running still finishes).
   let busy = false, on = true, asked = false, skin = 'glass', lang = 'zh', origin = { x: 0, y: 0 };
   let option = { down: false, at: 0, clean: false };
-  const mine = (event: Electron.IpcMainEvent) => event.sender === overlay.webContents;
+  const mine = (event: Electron.IpcMainEvent | Electron.IpcMainInvokeEvent) => event.sender === overlay.webContents;
   const cancel = () => overlay.webContents.send('dictation-cancel');
 
   // A grant made while she runs counts only in a fresh process; this one keeps the answer it started with. Once the
@@ -67,7 +68,7 @@ export function setupDictation({ companion, native, nativePath, preload, page, p
     overlay.webContents.send('dictation-start', {
       caret: local(at.caret), lineRight: at.lineRight === undefined ? null : at.lineRight - o.x, element: local(at.element),
       pointer: { x: pointer.x - o.x, y: pointer.y - o.y }, top: topInset(display), skin, lang, port, trusted: at.trusted, grantee: GRANTEE,
-      context: { app: at.app, window: at.window ?? '', selected: at.selected ?? '' },
+      context: { app: at.app, window: at.window ?? '', selected: at.selected ?? '', before: at.before ?? '' },
     });
     companion.webContents.send('dictation', 'out');
     if (!globalShortcut.isRegistered('Escape')) globalShortcut.register('Escape', cancel);
@@ -81,6 +82,8 @@ export function setupDictation({ companion, native, nativePath, preload, page, p
     clipboard.writeText(text);
     native.paste();
   });
+  // ADR 0110: just before she dives, whether the words can still go where the dictation started.
+  ipcMain.handle('dictation-target', event => mine(event) ? native.pasteTarget() : 'lost');
   ipcMain.on('dictation-copy', (event, text) => { if (mine(event) && typeof text === 'string') clipboard.writeText(text); });
   ipcMain.on('dictation-home', (event, happy) => { if (mine(event)) companion.webContents.send('dictation', happy === true ? 'happy' : 'home'); });
   ipcMain.on('dictation-done', event => {

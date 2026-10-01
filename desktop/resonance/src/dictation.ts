@@ -11,7 +11,7 @@ type Lang = 'zh' | 'en';
 // Everything in this window's own points; the window covers the caret's screen.
 export type DictationStart = {
   caret: Rect | null; lineRight: number | null; element: Rect | null; pointer: Pt; top: number;
-  skin: string; lang: Lang; port: string; trusted: boolean; grantee: string; context: { app: string; window: string; selected: string };
+  skin: string; lang: Lang; port: string; trusted: boolean; grantee: string; context: { app: string; window: string; selected: string; before: string };
 };
 declare global { interface Window { dictation: {
   onStart: (cb: (start: DictationStart) => void) => void;
@@ -19,6 +19,7 @@ declare global { interface Window { dictation: {
   onCancel: (cb: () => void) => void;
   onCursor: (cb: (point: Pt) => void) => void;
   paste: (text: string) => void;
+  target: () => Promise<string>;
   copy: (text: string) => void;
   home: (happy: boolean) => void;
   done: () => void;
@@ -38,6 +39,7 @@ const T = {
   off: ['Jarvis’s voice is off, so dictation can’t listen.', 'Jarvis 的语音没开，听写用不了'],
   offline: ['Can’t reach Jarvis.', '连不上 Jarvis'],
   cardTitle: ['No text box', '没找到输入框'],
+  goneTitle: ['The text box is gone', '原来的输入框不在了'],
   noAccessTitle: ['No Accessibility access yet', '还没有辅助功能权限'],
   copied: ['Copied', '已复制'],
   pasteIt: ['Paste it anywhere', '直接粘贴就行'],
@@ -151,7 +153,7 @@ async function record(start: DictationStart, session: number) {
 function received(line: { level?: number; state?: string; text?: string; raw?: string; error?: string }) {
   const now = performance.now();
   if (typeof line.level === 'number') P.target = line.level;
-  // The daemon stops by itself after nine minutes.
+  // The daemon stops by itself after fifteen minutes.
   if (line.state === 'thinking' && active()) { P.state = 'think'; P.t0 = now; }
   if (P.state !== 'think' && !active()) return;
   if (typeof line.error === 'string') {
@@ -190,15 +192,23 @@ function outcome(now: number, words: string) {
   if (!words) { P.state = 'miss'; P.t0 = now; showBubble(t(T.miss), '', 'hint', 1900); return; }
   text = words;
   if (P.edit) { P.state = 'edit'; P.t0 = now; showEditor(words); return; }
-  deliver(now);
+  void deliver(now);
 }
-function deliver(now: number) {
-  if (canPaste()) {
-    // no pause for a victory lap: she dives at once, and the words come out as the hole shuts
-    const c = P.info.caret;
-    P.state = 'leave'; P.t0 = now;
-    dig(c ? c.l : P.x, c ? Math.max(c.b, P.y + R) : P.y + R, now + 70);
-  } else { window.dictation.copy(text); P.state = 'card'; P.t0 = now; showCard(text); }
+// ADR 0110, as 言字 0.4.0: the words go in only where the dictation started; that text box gone or another app in
+// front, they are copied and shown instead.
+async function deliver(now: number) {
+  const session = P.session, where = canPaste() ? await window.dictation.target() : 'none';
+  if (session !== P.session) return;
+  if (where !== 'ok' && where !== 'blind') {
+    window.dictation.copy(text); P.state = 'card'; P.t0 = performance.now();
+    showCard(text, where === 'none' ? undefined : T.goneTitle);
+    return;
+  }
+  now = performance.now();
+  // no pause for a victory lap: she dives at once, and the words come out as the hole shuts
+  const c = P.info.caret;
+  P.state = 'leave'; P.t0 = now;
+  dig(c ? c.l : P.x, c ? Math.max(c.b, P.y + R) : P.y + R, now + 70);
 }
 // The fixed words go in the way the spoken ones would; nothing left in the box sends nothing.
 function submit(now: number) {
@@ -206,7 +216,7 @@ function submit(now: number) {
   if (P.state !== 'edit' || !box) return;
   text = box.value.trim();
   window.dictation.focus(false); hideBubble();
-  if (text) deliver(now); else dissolve(now);
+  if (text) void deliver(now); else dissolve(now);
 }
 function error(message: string, note: string) { const now = performance.now(); P.state = 'error'; P.t0 = now; showBubble(message, note, 'err', 3000); }
 function fail(message: string) { abort?.abort(); error(message, ''); }
@@ -252,11 +262,11 @@ function showBubble(message: string, note: string, kind: string, ms: number, act
   bubble.hidden = false; placeBubble();
   bubbleTimer = setTimeout(hideBubble, ms);
 }
-function showCard(words: string) {
+function showCard(words: string, title?: [string, string]) {
   clearTimeout(bubbleTimer);
   bubble.className = 'bubble card';
   bubble.innerHTML = '<div class="card-top"><b></b><button type="button" class="x">×</button></div><div class="card-text"></div><div class="card-foot"><span class="copied"></span><span></span></div>';
-  bubble.querySelector('b')!.textContent = t(P.trusted ? T.cardTitle : T.noAccessTitle);
+  bubble.querySelector('b')!.textContent = t(title ?? (P.trusted ? T.cardTitle : T.noAccessTitle));
   bubble.querySelector('.x')!.setAttribute('aria-label', t(T.close));
   bubble.querySelector('.card-text')!.textContent = words;
   const [copied, paste] = bubble.querySelectorAll('.card-foot span');
