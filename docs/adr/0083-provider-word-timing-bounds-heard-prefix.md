@@ -44,3 +44,7 @@ Word evidence needs an additional durable mapping and remains dependent
 on the provider's alignment quality. Missing or inconsistent timing keeps
 the position conservative rather than reconstructing it from the written
 answer. Quiet speech after ducking is not promoted to confirmed hearing.
+
+Amended 2026-10-02: the barge-in yield (gain 0.2) is quieter, not silent;
+words played at or above gain 0.15 count as heard (Allen heard 「四」 under
+the yield while she recorded 3). Only a fade toward silence stays unconfirmed.

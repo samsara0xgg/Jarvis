@@ -470,6 +470,11 @@ _TAIL_RAMP_STEPS = np.arange(_DECLICK_SAMPLES - 1, -1, -1, dtype=np.float32)
 _HEAD_RAMP_STEPS = np.arange(_DECLICK_SAMPLES, dtype=np.float32)
 
 
+# A block whose gain stays at or above this is heard: the barge-in yield
+# (0.2) is quieter, not silent, and Allen hears the words under it.
+_HEARD_GAIN_FLOOR = 0.15
+
+
 class _GainRamp:
     """Linear gain ramp applied inside the PortAudio callback.
 
@@ -496,7 +501,7 @@ class _GainRamp:
 
     def _next_audibility_class(self) -> AudibilityClass:
         """Classify the next post-gain block before advancing the ramp."""
-        if self.is_normal:
+        if self.is_normal or min(self._current, self._target) >= _HEARD_GAIN_FLOOR:
             return "normal"
         if self._current == 0.0 and self._target == 0.0 and self._remaining == 0:
             return "muted"

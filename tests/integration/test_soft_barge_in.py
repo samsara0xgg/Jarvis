@@ -780,3 +780,15 @@ def test_a_later_answer_never_starts_held() -> None:
     player.retire_generation(first)
     _, block = _speak(player, "R2")
     assert np.all(block == 1.0)
+
+
+def test_words_under_her_barge_in_yield_still_count_as_heard() -> None:
+    """Live 2026-10-02: Allen heard 「四」 at the yield gain; a fade to silence is not heard."""
+    from jarvis.surface.voice_tts import _GainRamp  # noqa: PLC0415
+
+    ramp = _GainRamp()
+    ramp.set_target(0.2, 480)  # the yield
+    assert ramp.apply(np.ones(1024, dtype=np.float32)) == "normal"
+    assert ramp.apply(np.ones(1024, dtype=np.float32)) == "normal"
+    ramp.set_target(0.0, 480)  # the hold's fade-out
+    assert ramp.apply(np.ones(1024, dtype=np.float32)) == "attenuated"
