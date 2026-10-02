@@ -14,6 +14,13 @@
 //   QUESTION  a question with two options (AskUserQuestion)
 //   MCP <server>  a call to that MCP server's tool that fails; to tracker, while it wants a sign-in, the authenticate
 //                 call Claude Code gives the model in its tools' place, which hands back the page to open
+// As a project's coordinator (the SDK told it of an in-process MCP server, `startrail`) it reads only what follows the last
+// `[Startrail]` line of a message, and answers these lines there (the ids and JSON are the test's own):
+//   COORD <tool> <json>  calls that tool of the startrail server the way Claude Code does (an mcp_message control request:
+//                        initialize and tools/call) and logs the result as {ev: 'coord'}; Write and Edit ask the owner's
+//                        canUseTool first, and write the file when it says yes
+//   BIG                  the turn's tokens are over 100000 (the context a coordinator is replaced at)
+//   FAIL                 the turn ends in an error
 // A question on the side (/btw) is answered on its own, after three seconds when it says SLOW, and can be cancelled.
 // It has three MCP servers: docs (two tools, a moment to connect), tracker (wants a sign-in: its page is given, and it is
 // signed in to and connected, three tools, a moment later) and flaky (fails until it is connected again); one switched
@@ -38,6 +45,9 @@ const CONFIG = process.env.CLAUDE_CONFIG_DIR ?? path.join(homedir(), '.claude');
 const TRANSCRIPT = path.join(CONFIG, 'projects', cwd.replace(/[^a-zA-Z0-9]/g, '-'), `${sid}.jsonl`);
 const HISTORY = path.join(CONFIG, 'fake-file-history', `${sid}.json`);
 let model = arg('model') ?? 'fake-sonnet';
+// A project's coordinator is given an in-process MCP server; `big`: its turns report a context past 100000 tokens.
+let coordMode = false, big = false;
+const tokens = () => ({ input_tokens: big ? 120000 : 1200, output_tokens: 40, cache_read_input_tokens: 18000, cache_creation_input_tokens: 800 });
 
 const note = o => { if (process.env.FAKE_CLAUDE_LOG) appendFileSync(process.env.FAKE_CLAUDE_LOG, `${JSON.stringify({ at: Date.now(), pid: process.pid, sid, ...o })}\n`); };
 const env = process.env;
@@ -137,7 +147,8 @@ function answer(m) {
   const refuse = error => out({ type: 'control_response', response: { subtype: 'error', request_id: m.request_id, error } });
   // `append`, `snapshot`: what a preset system prompt is given (a project's instructions and memory) and whether it is recorded
   note({ ev: 'control', subtype: r.subtype, ...r.subtype === 'initialize' ? { system: [r.systemPrompt ?? []].flat().filter(t => typeof t === 'string').join('\n') || null,
-    append: r.appendSystemPrompt ?? null, snapshot: r.systemPromptSnapshot ?? null } : { request: r } });
+    append: r.appendSystemPrompt ?? null, snapshot: r.systemPromptSnapshot ?? null, sdk: r.sdkMcpServers ?? null } : { request: r } });
+  if (r.subtype === 'initialize') coordMode = (r.sdkMcpServers ?? []).includes('startrail');
   if (r.subtype === 'initialize') return reply({ commands: COMMANDS, agents: [{ name: 'Explore', description: 'Looks around' }], output_style: 'default', available_output_styles: ['default'],
     models: MODELS, account: { email: 'owner@example.com', subscriptionType: env.ANTHROPIC_API_KEY ? 'api' : 'fake', apiKeySource: env.ANTHROPIC_API_KEY ? 'ANTHROPIC_API_KEY' : 'none' }, pid: process.pid });
   // A question still out is withdrawn, as Claude Code does when a turn is interrupted.
@@ -195,7 +206,7 @@ const stream = (event, parent = null) => out({ type: 'stream_event', event, pare
 async function block(b, parent = null, ms = 0) {
   if (turn.stop) throw new Error('stop');
   const uuid = randomUUID(), message = { id: `msg_${randomUUID().slice(0, 8)}`, type: 'message', role: 'assistant', model, content: [b], stop_reason: null,
-    usage: { input_tokens: 1200, output_tokens: 40, cache_read_input_tokens: 18000, cache_creation_input_tokens: 800 } };
+    usage: tokens() };
   stream({ type: 'content_block_start', index: 0, content_block: b.type === 'text' ? { type: 'text', text: '' } : b.type === 'thinking' ? { type: 'thinking', thinking: '' } : { ...b, input: {} } }, parent);
   for (let t = 0; t < ms && !turn.stop; t += 100) await sleep(100);
   if (b.type === 'text') for (const part of b.text.match(/.{1,12}/gs) ?? []) { stream({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: part } }, parent); await sleep(15); }
@@ -331,6 +342,31 @@ async function work(said) {
   }
   return 'ok';
 }
+// ---------- a project's coordinator: its tool calls, made as Claude Code makes them ----------
+let rpc = 0, handshook = false;
+const mcp = async (message) => (await ask({ subtype: 'mcp_message', server_name: 'startrail', message: { jsonrpc: '2.0', ...message } }))?.response?.mcp_response;
+async function coordWork(said) {
+  const wake = said.slice(said.lastIndexOf('[Startrail]'));
+  if (/^BIG$/m.test(wake)) big = true;
+  if (/^FAIL$/m.test(wake)) return 'fail';
+  for (const [, name, json] of wake.matchAll(/COORD (\w+) (\{.*\})/g)) {
+    const args = JSON.parse(json);
+    if (name === 'Write' || name === 'Edit') {
+      const got = await ask({ subtype: 'can_use_tool', tool_name: name, input: args, tool_use_id: `toolu_${randomUUID().slice(0, 12)}` }), ok = got?.response?.behavior === 'allow';
+      if (ok) writeFileSync(args.file_path, args.content ?? '');
+      note({ ev: 'coord', tool: name, args, behavior: got?.response?.behavior, message: got?.response?.message ?? null });
+      continue;
+    }
+    if (!handshook) {
+      handshook = true;
+      await mcp({ id: ++rpc, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'fake-claude', version: '9.9.9' } } });
+      await mcp({ method: 'notifications/initialized' });
+    }
+    const r = (await mcp({ id: ++rpc, method: 'tools/call', params: { name, arguments: args } }))?.result;
+    note({ ev: 'coord', tool: name, args, error: r?.isError === true, result: r?.content?.map(c => c.text).join('\n') ?? null });
+  }
+  return 'ok';
+}
 async function run(m) {
   // A one-shot query's message comes with no id of its own.
   m.uuid ??= randomUUID();
@@ -349,14 +385,14 @@ async function run(m) {
   try {
     stream({ type: 'message_start', message: { id: `msg_${m.uuid.slice(0, 8)}`, type: 'message', role: 'assistant', model, content: [], usage: { input_tokens: 1200, output_tokens: 0 } } });
     await block({ type: 'thinking', thinking: `**Reading the ask**\n\nThe owner wrote: ${said.slice(0, 200)}`, signature: 'x' });
-    how = await work(said);
+    how = await (coordMode ? coordWork(said) : work(said));
     if (how === 'ok') await block({ type: 'text', text: `好的，做完了：${said.slice(0, 80)}。\n\n第二段在这里。` });
   } catch (e) {
     if (String(e.message) !== 'stop') throw e;
     how = 'stop';
   }
   const common = { duration_ms: Date.now() - t0, duration_api_ms: Date.now() - t0, num_turns: 1, session_id: sid, total_cost_usd: 0, uuid: randomUUID(), permission_denials: [], user_message_uuid: m.uuid,
-    usage: { input_tokens: 1200, output_tokens: 40, cache_read_input_tokens: 18000, cache_creation_input_tokens: 800 },
+    usage: tokens(),
     modelUsage: { [model]: { inputTokens: 1200, outputTokens: 40, cacheReadInputTokens: 18000, cacheCreationInputTokens: 800, webSearchRequests: 0, costUSD: 0, contextWindow: 200000, maxOutputTokens: 32000 } } };
   if (how === 'stop') {
     record({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: '[Request interrupted by user]' }] }, uuid: randomUUID() });
