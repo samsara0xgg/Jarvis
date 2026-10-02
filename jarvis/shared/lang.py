@@ -826,6 +826,17 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
         "en": "I used up this turn's tool calls before I had an answer. Try asking a smaller"
         " part of the question.",
     },
+    # What the companion shows under her while a tool is really running
+    # (ADR 0114): one fixed line per kind of work, never a model's words.
+    "tool_status.web": {"zh": "正在搜索网页…", "en": "Searching the web..."},
+    "tool_status.page": {"zh": "正在读取网页…", "en": "Reading the page..."},
+    "tool_status.screen": {"zh": "正在看你的屏幕…", "en": "Looking at your screen..."},
+    "tool_status.work_state": {"zh": "正在更新你的工作状态…", "en": "Updating your work state..."},
+    "tool_status.report": {"zh": "正在写今天的工作报告…", "en": "Writing your daily report..."},
+    "tool_status.calendar": {"zh": "正在查看你的日程…", "en": "Checking your calendar..."},
+    "tool_status.mail": {"zh": "正在查看你的邮件…", "en": "Checking your mail..."},
+    "tool_status.notion": {"zh": "正在搜索 Notion…", "en": "Searching Notion..."},
+    "tool_status.generic": {"zh": "正在处理…", "en": "Working on it..."},
     # Why a turn failed, one per llm.failure_reason; the desktop shows it in
     # place of an answer.
     "failure.missing_key": {

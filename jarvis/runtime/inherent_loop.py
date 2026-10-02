@@ -151,6 +151,8 @@ from jarvis.runtime.night_watch import NightWatch
 from jarvis.runtime.session_compaction import CompactionSweep, preset_context_length
 from jarvis.runtime.settings import SETTINGS_FILE
 from jarvis.runtime.setup import Setup
+from jarvis.runtime.tool_status import EVENT_TYPES as _TOOL_STATUS_EVENT_TYPES
+from jarvis.runtime.tool_status import ToolStatus
 from jarvis.shared import Event, lang
 from jarvis.shared.pricing import load_pricing_table
 from jarvis.shared.realtime import (
@@ -1515,6 +1517,47 @@ async def _broadcast_response_event(
         )
     else:  # response.cancelled
         await broadcaster.broadcast_op("cancelled", turn_id=turn_id)
+
+
+async def _tool_status_watcher(
+    runtime: JarvisRuntime,
+    broadcaster: InherentBroadcaster,
+    *,
+    poll_interval_s: float = _DEFAULT_POLL_INTERVAL_S,
+) -> None:
+    """Background task: tell the surface which tool is really running (ADR 0114).
+
+    One cursor over the action and turn-end rows, anchored like
+    :func:`_response_watcher`. Whenever the line to show changes, one
+    ``{"op": "tool", "payload": {"turn_id", "label"}}`` envelope goes out; an
+    empty label clears it. The label is fixed text from the language table.
+    """
+    after_id = _latest_id(runtime.conn)
+    status = ToolStatus()
+    sent = ("", "")
+    LOGGER.info("tool_status_watcher started (after_id=%d)", after_id)
+    try:
+        while True:
+            try:
+                for row_id, ev in _fetch_events_after(
+                    runtime.conn, after_id=after_id, event_types=_TOOL_STATUS_EVENT_TYPES,
+                ):
+                    after_id = max(after_id, row_id)
+                    status.feed(ev, time.monotonic())
+                shown = status.shown(time.monotonic())
+                turn_id, label = (shown.turn_id, lang.t(shown.key)) if shown else (sent[0], "")
+                if (turn_id, label) != sent:
+                    sent = (turn_id, label)
+                    if broadcaster.has_clients:
+                        await broadcaster.broadcast_op("tool", turn_id=turn_id, label=label)
+            except Exception:
+                LOGGER.exception("tool_status_watcher: poll failed at %d; retrying", after_id)
+                await asyncio.sleep(_WATCHER_RETRY_S)
+                continue
+            await asyncio.sleep(poll_interval_s)
+    except asyncio.CancelledError:
+        LOGGER.info("tool_status_watcher cancelled")
+        raise
 
 
 async def _tts_watcher(  # noqa: C901, PLR0912 - ordered durable dispatch FSM
@@ -5569,6 +5612,12 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                     voiced=tts_pipe is not None,
                 ),
                 name="response_watcher",
+            ),
+        )
+        watchers.append(
+            asyncio.create_task(
+                _tool_status_watcher(runtime, broadcaster, poll_interval_s=poll_interval_s),
+                name="tool_status_watcher",
             ),
         )
         if setup is not None:
