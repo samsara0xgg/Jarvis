@@ -2257,6 +2257,20 @@ def _start_drive_turn_response(
     )
     if runtime.response_flags.independent_response_cancel and runtime.response_runs is not None:
         runtime.response_runs.register(run)
+        if runtime.response_runs.turn_stopped(turn_id):
+            # The stop button hit this turn before its run opened (the turn
+            # cancel found nothing to cancel). Checked after registering, so a
+            # stop landing at any moment either sees the run or is seen here.
+            request_response_cancel(
+                runtime.response_runs,
+                terminalizer,
+                ResponseCancelRequest(
+                    request_id="CREQ" + uuid.uuid4().hex,
+                    response_id=run.response_id,
+                    scope="generation",
+                    reason="user_stop",
+                ),
+            )
     if context is None:
         return run, terminalizer, None
     transcript_raw = user_intent_event.payload.get("transcript", "")
@@ -2385,6 +2399,16 @@ def make_foreground_decision_callable(
     return partial(decide_foreground, wait_for_lane=True) if wait_for_lane else decide_foreground
 
 
+def _turn_has_run(event_log_path: Path, turn_id: str) -> bool:
+    """Whether the turn already opened a response run (its answer is out or over)."""
+    with contextlib.closing(open_runtime_event_log(event_log_path)) as conn:
+        return conn.execute(
+            "SELECT 1 FROM events WHERE type = 'response.started' "
+            "AND json_extract(payload_json, '$.turn_id') = ? LIMIT 1",
+            (turn_id,),
+        ).fetchone() is not None
+
+
 def make_turn_cancel_callable(runtime: JarvisRuntime) -> Callable[[str, str], str]:
     """Build the ``(turn_id, reason) -> outcome`` seam behind a turn stop.
 
@@ -2396,15 +2420,21 @@ def make_turn_cancel_callable(runtime: JarvisRuntime) -> Callable[[str, str], st
     """
     cancel = make_response_cancel_callable(runtime)
     registry = runtime.response_runs
+    event_log_path = runtime.runtime_paths.event_log
 
     def _cancel_turn(turn_id: str, reason: str) -> str:
+        if registry is not None and reason == "user_stop":
+            # Before the scan: a run opening meanwhile checks this on its own.
+            registry.mark_turn_stopped(turn_id)
         runs = [] if registry is None else [
             run for run in registry.open_runs() if run.turn_id == turn_id
         ]
         outcomes = [cancel(run.response_id, "generation", reason) for run in runs]
-        if not outcomes:
+        if outcomes:
+            return "cancelled" if "cancelled" in outcomes else outcomes[0]
+        if registry is None or reason != "user_stop" or _turn_has_run(event_log_path, turn_id):
             return "no_open_run"
-        return "cancelled" if "cancelled" in outcomes else outcomes[0]
+        return "stopped_before_start"
 
     return _cancel_turn
 
@@ -3101,6 +3131,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
     # sweep will refuse to close for the life of the process, so a crashed
     # turn would permanently protect the very orphan it created.
     try:
+        _raise_if_cancelled("before the model")  # a stop that came before the run opened
         if continuation is not None:
             _raise_if_cancelled("before continuation")
             if continuation.failure is not None:

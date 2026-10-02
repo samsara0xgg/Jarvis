@@ -244,7 +244,9 @@ class CancelResponseRequest(BaseModel):
     A turn still being thought about has no answer on the wire to name yet
     (its ``open`` leaves once the answer is whole, ADR 0108): ``turn_id`` in
     place of ``response_id`` cancels every run of that turn still open, as
-    ``generation``, and answers ``no_open_run`` when none is.
+    ``generation``, and answers ``no_open_run`` when none is. A ``user_stop``
+    for a turn whose run has not opened yet is kept and applied when it does
+    (``stopped_before_start``): the model is never asked.
     """
 
     response_id: str = ""

@@ -16,9 +16,12 @@ import asyncio
 import time
 from typing import TYPE_CHECKING
 
+import pytest
 from fastapi.testclient import TestClient
 
-from jarvis.runtime import make_response_cancel_callable, make_turn_cancel_callable
+from jarvis.decision.response_run import ResponseCancelledError
+from jarvis.runtime import drive_turn, make_response_cancel_callable, make_turn_cancel_callable
+from jarvis.runtime.inherent_loop import _turn_over_or_answering
 from jarvis.state.event_log import open_event_log
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
@@ -29,7 +32,12 @@ from tests.integration.test_wave2_streaming_media import (
     _RecordingBroadcaster,
     _submit_response,
 )
-from tests.integration.test_wave4a_response_run import _make_runtime, _open_run
+from tests.integration.test_wave4a_response_run import (
+    _emit_intent,
+    _make_runtime,
+    _open_run,
+    _script_decide,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -67,6 +75,40 @@ def test_a_turn_still_thinking_is_stopped_by_its_turn(tmp_path: Path) -> None:
     assert cancelled == [("RESP-think", "user_stop")]
     assert thinking.cancellation_token.is_cancelled
     assert not other.cancellation_token.is_cancelled
+
+
+def test_a_stop_before_the_run_opens_still_stops_the_turn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pressed after turn.started but before the run opens: no model, no words."""
+    runtime = _make_runtime(tmp_path, lifecycle=True, cancel=True)
+    intent = _emit_intent(runtime.conn, "T-early", "Explain how a transformer works.")
+    asked: list[str] = []
+    _script_decide(monkeypatch, lambda *_a, **_k: asked.append("decide"))
+    try:
+        outcome = make_turn_cancel_callable(runtime)("T-early", "user_stop")
+        with pytest.raises(ResponseCancelledError):
+            drive_turn(
+                runtime, user_intent_event=intent, available_surfaces=frozenset(),
+                streaming_enabled=True,
+            )
+        rows = runtime.conn.execute(
+            "SELECT type, json_extract(payload_json, '$.reason') FROM events "
+            "WHERE type IN ('response.cancelled', 'response.completed', 'turn.ended', "
+            "'surface.response_chunk', 'surface.playback_started')",
+        ).fetchall()
+        wait_line_owed = not _turn_over_or_answering(runtime.conn, "T-early")
+        assert runtime.response_runs is not None
+        leaked = runtime.response_runs.open_runs()
+        again = make_turn_cancel_callable(runtime)("T-early", "user_stop")
+    finally:
+        runtime.conn.close()
+    assert outcome == "stopped_before_start"
+    assert asked == []
+    assert rows == [("response.cancelled", "user_stop")]
+    assert not wait_line_owed
+    assert leaked == ()
+    assert again == "no_open_run"
 
 
 def test_a_stop_drops_an_answer_parked_while_allen_talks(tmp_path: Path) -> None:

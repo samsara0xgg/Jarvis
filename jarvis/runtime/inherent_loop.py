@@ -2213,7 +2213,11 @@ def _open_commentary_in_worker_thread(  # noqa: C901, PLR0911 - one early return
                 # `action_snapshot` carries no `action_id`, so this is enforced
                 # at the only granularity the fold supports.
                 return None
-            if _turn_over_or_answering(conn, turn_id):
+            if _turn_over_or_answering(conn, turn_id) or (
+                runtime.response_runs is not None and runtime.response_runs.turn_stopped(turn_id)
+            ):
+                # The stop button's mark covers a turn still queued, whose run
+                # has not opened to write its response.cancelled yet.
                 # Last before the render, after the slow projection rebuild: the
                 # answer is out or on its way (a quick answer, or a Tier 0 turn
                 # that ends before its tool's rows reach this watcher), and a

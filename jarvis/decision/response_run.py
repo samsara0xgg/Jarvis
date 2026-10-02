@@ -416,6 +416,12 @@ class ResponseRun:
         )
 
 
+# A stop that finds no run open waits this long for the turn's run to open
+# (the turn may queue behind others); bounded so a stream of stops cannot grow it.
+_STOPPED_TURN_MEMORY_S = 120.0
+_STOPPED_TURN_MEMORY_MAX = 64
+
+
 class ResponseRunRegistry:
     """Lock-guarded live-run index; the cancel entry point's only lookup."""
 
@@ -428,6 +434,8 @@ class ResponseRunRegistry:
         # it is written or heard.
         self._allen_quiet = threading.Event()
         self._allen_quiet.set()
+        # Turns the stop button hit before their run opened, as expiry times.
+        self._stopped_turns: dict[str, float] = {}
 
     def hold_completion(self, *, held: bool) -> None:
         """Hold, or release, every run's completion while Allen is talking."""
@@ -439,6 +447,22 @@ class ResponseRunRegistry:
     def wait_completion_allowed(self, timeout_s: float) -> bool:
         """Wait up to ``timeout_s`` for Allen to stop; True once no hold is on."""
         return self._allen_quiet.wait(timeout_s)
+
+    def mark_turn_stopped(self, turn_id: str) -> None:
+        """Remember that the stop button hit ``turn_id``, for runs not yet open."""
+        now = time.monotonic()
+        with self._lock:
+            self._stopped_turns = {
+                t: until for t, until in self._stopped_turns.items() if until > now and t != turn_id
+            }
+            self._stopped_turns[turn_id] = now + _STOPPED_TURN_MEMORY_S
+            while len(self._stopped_turns) > _STOPPED_TURN_MEMORY_MAX:
+                del self._stopped_turns[next(iter(self._stopped_turns))]
+
+    def turn_stopped(self, turn_id: str) -> bool:
+        """Whether the stop button hit ``turn_id`` recently enough to still bind it."""
+        with self._lock:
+            return self._stopped_turns.get(turn_id, 0.0) > time.monotonic()
 
     def register(self, run: ResponseRun) -> None:
         """Add ``run`` under its response id."""
