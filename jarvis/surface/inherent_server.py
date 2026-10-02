@@ -546,6 +546,10 @@ class InherentDeps:
     # ADR 0124: archive junk letters (ids, archive) or put them back (archive False).
     mail_archive: Callable[[list[str], bool], Awaitable[None]] | None = None
     brief_read: Callable[[], dict[str, Any] | None] | None = None
+    # ADR 0125: does a finished agent turn's ending ask Allen something? ``asks`` waits for Jev
+    # (off the loop thread); ``peek`` never waits, for the terminal sessions' board. None = off.
+    turn_end_asks: Callable[[str, str], Awaitable[bool | None]] | None = None
+    turn_end_peek: Callable[[str, str, bool], bool | None] | None = None
     # ADR 0052: the Settings page's file, read and saved off the loop thread;
     # a ValueError from saving is a 400. ``None`` leaves the routes unregistered.
     settings_read: Callable[[], Awaitable[dict[str, Any]]] | None = None
@@ -1011,6 +1015,13 @@ class TodoRequest(BaseModel):
 
     id: str
     done: bool
+
+
+class TurnEndRequest(BaseModel):
+    """Body of ``POST /inherent/agents/turn-end`` (ADR 0125): a finished turn's last message."""
+
+    session_id: str = Field(min_length=1, max_length=_SESSION_ID_CHARS)
+    text: str = Field(max_length=100_000)
 
 
 class MailArchiveRequest(BaseModel):
@@ -1687,7 +1698,7 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 â
 
     # ADR 0046: Allen's own Claude Code sessions, read from Claude Code's own state;
     # ADR 0049: with the prompts Jarvis holds for them and their compacting / stopped marks.
-    claude_board = ClaudeSessions()
+    claude_board = ClaudeSessions(deps.turn_end_peek)
     claude_hooks = ClaudeHooks()
 
     @app.get("/inherent/claude-sessions")
@@ -1720,6 +1731,13 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 â
         except (OSError, RuntimeError) as exc:
             raise HTTPException(status_code=502, detail=str(exc)[:200]) from None
         return {"ok": True}
+
+    @app.post("/inherent/agents/turn-end", status_code=200)
+    async def turn_end(req: TurnEndRequest) -> dict[str, bool | None]:
+        """ADR 0125: does the end of a finished agent turn ask Allen something; null = unknown."""
+        if deps.turn_end_asks is None:
+            return {"asks": None}
+        return {"asks": await deps.turn_end_asks(req.session_id, req.text)}
 
     if deps.agent_marks_path is not None:
         marks = AgentMarks(deps.agent_marks_path)

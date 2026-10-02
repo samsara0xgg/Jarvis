@@ -111,6 +111,7 @@ from jarvis.decision.stream_gate import routine_stream_policy, spoken_stream_pol
 from jarvis.decision.surrogate_route import SurrogateRoute
 from jarvis.decision.think_mode import ThinkMode, ThinkModeConfigError, load_think_mode
 from jarvis.decision.tier0 import Tier0ConfigError, load_tier0_table, validate_tier0_table
+from jarvis.decision.turn_end_asks import TurnEndAsks
 from jarvis.deployment import RuntimePaths, bootstrap_runtime, load_env_file
 from jarvis.deployment.launchd import logs_dir
 from jarvis.deployment.models import default_sensevoice_dir, default_silero_vad_path
@@ -466,6 +467,8 @@ class JarvisRuntime:
     projects: ProjectsService | None = None
     # ADR 0051: the companion home's Today, mail and brief reads. None = hand-assembled.
     home: Home | None = None
+    # ADR 0125: Jev's read of whether a finished agent turn asks Allen something. None = off.
+    turn_end_asks: TurnEndAsks | None = None
     # ADR 0052: the Settings page's file. None = hand-assembled.
     settings: Settings | None = None
     # ADR 0093: the night run; the daemon ticks it. None = hand-assembled.
@@ -1040,6 +1043,28 @@ def _mail_reply(config: Mapping[str, Any], config_path: Path) -> MailReply | Non
     # min_confidence is the choice question's bar; this route asks none, so it stays unused.
     route = SurrogateRoute(model=model.strip(), min_confidence=1.0, timeout_ms=timeout)
     return MailReply(route, float(bars[1]), float(bars[0]), float(bars[2]))
+
+
+def _turn_end_asks(config: Mapping[str, Any], config_path: Path) -> TurnEndAsks | None:
+    """``agents.turn_end_asks`` (ADR 0125): off unless enabled; bad values stop boot."""
+    agents = config.get("agents")
+    block = agents.get("turn_end_asks") if isinstance(agents, Mapping) else None
+    if not isinstance(block, Mapping) or block.get("enabled") is not True:
+        return None
+    model, bar, timeout = block.get("model"), block.get("at"), block.get("timeout_ms")
+    if (
+        not isinstance(model, str) or not model.strip()
+        or isinstance(bar, bool) or not isinstance(bar, int | float) or not 0 < bar <= 1
+        or isinstance(timeout, bool) or not isinstance(timeout, int) or timeout <= 0
+    ):
+        msg = (
+            f"runtime: {config_path} agents.turn_end_asks needs model (text), at in (0, 1]"
+            " and timeout_ms (positive int)"
+        )
+        raise RuntimeBootstrapError(msg)
+    # min_confidence is the choice question's bar; this route asks none, so it stays unused.
+    route = SurrogateRoute(model=model.strip(), min_confidence=1.0, timeout_ms=timeout)
+    return TurnEndAsks(route, float(bar))
 
 
 def _daily_report_preset(config: Mapping[str, Any]) -> str:
@@ -2080,6 +2105,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
             _home_weather(full_config),
             _mail_reply(full_config, config_path),
         ),
+        turn_end_asks=_turn_end_asks(full_config, config_path),
         settings=Settings(paths.root, full_config, _audio_devices),
         night=night,
         daily_schedule=_daily_schedule(daily_report, paths.event_log, full_config),

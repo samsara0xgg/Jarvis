@@ -89,6 +89,7 @@ import uvicorn
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from jarvis.decision.turn_end_asks import TurnEndAsks
     from jarvis.deployment.sleep_wake import PowerObserver
     from jarvis.runtime.home import Home
     from jarvis.runtime.settings import Settings
@@ -4296,6 +4297,11 @@ async def _archive_mail(home: Home, ids: list[str], archive: bool) -> None:  # n
     await asyncio.to_thread(functools.partial(home.archive, ids, undo=not archive))
 
 
+async def _turn_end_asks(asks: TurnEndAsks, session_id: str, text: str) -> bool | None:
+    """``POST /inherent/agents/turn-end``: Jev's answer, waited for off the loop thread."""
+    return await asyncio.to_thread(asks.asks, session_id, text)
+
+
 async def _save_settings(settings: Settings, changes: dict[str, Any]) -> dict[str, Any]:
     """``POST /inherent/settings``: one file write, off the loop thread."""
     return await asyncio.to_thread(settings.update, changes)
@@ -5674,6 +5680,11 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 None if runtime.home is None
                 else functools.partial(runtime.home.brief, runtime.conn)
             ),
+            turn_end_asks=(
+                None if runtime.turn_end_asks is None
+                else functools.partial(_turn_end_asks, runtime.turn_end_asks)
+            ),
+            turn_end_peek=None if runtime.turn_end_asks is None else runtime.turn_end_asks.peek,
             settings_read=(
                 None if runtime.settings is None
                 else functools.partial(asyncio.to_thread, runtime.settings.read)

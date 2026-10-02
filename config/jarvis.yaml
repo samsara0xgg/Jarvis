@@ -212,6 +212,20 @@ home:
     junk_at: 0.9
     timeout_ms: 1500
 
+# ADR 0125.  When a coding-agent session (Startrail's host, or a terminal Claude Code
+# session on the daemon's board) finishes a turn, ask Jev (through OpenRouter) whether the
+# last 600 characters of its final message ask Allen to decide, choose, approve, answer or
+# provide something.  At probability >= at the finish is told as a "needs you" notice;
+# anything else (below the bar, timeout, error, no key) leaves it a plain finish.  Only
+# those 600 characters leave the Mac, once per turn ending; requests carry provider.zdr:
+# true.  Needs OPENROUTER_API_KEY in ~/.jarvis/env.  Off here; switch it on in settings.yaml.
+agents:
+  turn_end_asks:
+    enabled: false
+    model: typesafe/jev-1.13
+    at: 0.95
+    timeout_ms: 1500
+
 # ADR 0037 — 项目清单，每个用户在自己的 settings.yaml 里维护。Resonance 的
 # 「项目」模块只把 TimeSink 里的活动归到这些 id（或「不属于任何项目」），用的是
 # work_state.preset。条目形如 {id, name, repos?, hints?}：

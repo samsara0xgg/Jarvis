@@ -27,12 +27,18 @@ import termios
 import threading
 import time
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 RETENTION_MS = 24 * 60 * 60 * 1000
 REFRESH_S = 3.0
 _TAIL_BYTES = 512 * 1024
 _TEXT_CHARS = 160
+# ADR 0125: a finish is asked about only while it is news, and only its last 600 characters.
+_ASK_WINDOW_MS = 15 * 60 * 1000
+_TAIL_CHARS = 600
 # The island's conversation page: this much of the transcript's end, at most this many messages.
 _CONVERSATION_BYTES = 2 * 1024 * 1024
 _MESSAGES = 60
@@ -92,7 +98,7 @@ def _newest_blocks(entry: dict[str, Any]) -> tuple[str, str]:
         if not isinstance(block, dict):
             continue
         if block.get("type") == "text" and str(block.get("text", "")).strip():
-            return tool, _short(block["text"])
+            return tool, str(block["text"])
         if block.get("type") == "tool_use" and not tool:
             tool = _tool(block)
     return tool, ""
@@ -104,7 +110,7 @@ def read_transcript(path: Path) -> dict[str, str]:
     ``tool`` is set only when the newest assistant block is a tool call, i.e.
     what the session is doing (or asking to do) right now.
     """
-    out = {"prompt": "", "branch": "", "tool": "", "last_message": ""}
+    out = {"prompt": "", "branch": "", "tool": "", "last_message": "", "tail": ""}
     with path.open("rb") as fh:
         size = fh.seek(0, 2)
         fh.seek(max(0, size - _TAIL_BYTES))
@@ -127,7 +133,7 @@ def read_transcript(path: Path) -> dict[str, str]:
             tool, text = _newest_blocks(entry)
             out["tool"] = out["tool"] or tool
             if text:
-                answered, out["last_message"] = True, text
+                answered, out["last_message"], out["tail"] = True, _short(text), text[-_TAIL_CHARS:]
         if out["prompt"] and out["branch"] and answered:
             break
     return out
@@ -303,8 +309,14 @@ def _terminals(pids: list[int]) -> dict[int, str]:
 class ClaudeSessions:
     """Newest-first Claude Code session rows, rebuilt at most every ``REFRESH_S``."""
 
-    def __init__(self) -> None:
-        """Find ``claude`` once; launchd's PATH lacks ``~/.local/bin``."""
+    def __init__(self, asks: Callable[[str, str, bool], bool | None] | None = None) -> None:
+        """Find ``claude`` once; launchd's PATH lacks ``~/.local/bin``.
+
+        ``asks(session, tail, send)`` (ADR 0125) tells, without waiting, whether a finished
+        session's last message asks Allen something, asking Jev only when ``send``; its row
+        says so as ``asks``, or None while that is not known.
+        """
+        self._asks = asks
         self._home = Path.home()
         self._claude = shutil.which("claude") or str(self._home / ".local" / "bin" / "claude")
         self._lock = threading.Lock()
@@ -362,7 +374,7 @@ class ClaudeSessions:
 
     def _transcript(self, path: Path | None, mtime_ns: int) -> dict[str, str]:
         if path is None:
-            return {"prompt": "", "branch": "", "tool": "", "last_message": ""}
+            return {"prompt": "", "branch": "", "tool": "", "last_message": "", "tail": ""}
         cached = self._transcripts.get(path)
         if cached is None or cached[0] != mtime_ns:
             cached = self._transcripts[path] = (mtime_ns, read_transcript(path))
@@ -419,6 +431,15 @@ class ClaudeSessions:
             seen.add(agent["sessionId"])
             tx = self._transcript(path, mtime_ns)
             cwd = str(agent.get("cwd") or "")
+            phase = _phase(agent, job)
+            # An answer already in stays; Jev is asked only while the finish is news.
+            asks = (
+                self._asks(
+                    agent["sessionId"], tx["tail"], now_ms - updated_ms < _ASK_WINDOW_MS,
+                )
+                if self._asks and phase == "done" and tx["tail"]
+                else None
+            )
             rows.append(
                 {
                     "agent": "claude",
@@ -428,7 +449,7 @@ class ClaudeSessions:
                     "job_id": str(agent.get("id") or "")
                     if agent.get("kind") == "background"
                     else "",
-                    "phase": _phase(agent, job),
+                    "phase": phase,
                     "title": _short(agent.get("name")) or tx["prompt"] or _project(cwd),
                     "project": _project(cwd),
                     "branch": tx["branch"],
@@ -441,6 +462,7 @@ class ClaudeSessions:
                     or tx["tool"]
                     or _short(agent.get("waitingFor")),
                     "last_message": tx["last_message"],
+                    "asks": asks,
                     # Idle at its input box: a line typed through a hidden attach lands there.
                     "replyable": agent.get("kind") == "background"
                     and agent.get("status") == "idle"
