@@ -36,7 +36,9 @@ Its limits:
 - The text is chosen by tool name and written in the daemon's language; no
   model writes it and nothing about the tool's arguments or result is sent.
 - It shows only for the turn the surface is waiting on, and ends when the
-  answer opens.
+  answer opens. Until then the surface keeps a tool's line through the
+  daemon's clearing until the next tool's line replaces it (2026-10-02,
+  Allen: each tool's line holds until the next one).
 
 ## Alternatives rejected
 

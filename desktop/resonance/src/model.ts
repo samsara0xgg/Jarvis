@@ -129,9 +129,10 @@ export function reducer(s: State, a: Action): State {
     case 'controls': { const next = { ...s, micMuted: a.micMuted, soundMuted: a.soundMuted, conversation: a.conversation };
       return !a.conversation && s.inFlight ? reducer(next, { type: 'phase', phase: 'listening' }) : next; }
     // What has been heard so far of the words still coming in (ADR 0111); one that arrives after they were accepted is late.
-    // The tool this turn is waiting on, as the daemon's fixed line; an empty label clears it. It goes when the daemon clears it, when the turn's
+    // The tool this turn is waiting on, as the daemon's fixed line. Until the turn's answer opens, a tool's line stays until the next one takes
+    // its place (the daemon's clearing between two tools is not shown); once it has opened, an empty label clears it. It also goes when the
     // answer opens (above), or when the turn ends without one.
-    case 'tool': return { ...s, tool: a.label ? { turnId: a.turnId, label: a.label } : null };
+    case 'tool': return { ...s, tool: a.label ? { turnId: a.turnId, label: a.label } : s.tool?.turnId === a.turnId && s.turnId !== a.turnId ? s.tool : null };
     case 'partial': return s.inFlight ? { ...s, partial: a.text } : s;
     case 'heard': { const added = a.text.trim() ? yours({ ...s, talk: ended(s.talk, a.at) }, a.text, a.at) : { talk: s.talk, talkN: s.talkN };
       return { ...s, heard: a.text, partial: '', inFlight: false, ...added, talk: s.inFlight ? unheld({ ...s, talk: added.talk }, s.reply) : added.talk }; }

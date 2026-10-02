@@ -720,7 +720,7 @@ try {
     check(`${captions}: a second tool replaces it with the latest`, a.label === 'Looking at your screen...');
     await emit('tool', { turn_id: 'k1', label: '' }); await settled();
     a = await area();
-    check(`${captions}: the daemon clearing it brings the plain state back`, a.state === 'thinking' && a.label === base);
+    check(`${captions}: before her answer opens, the daemon clearing it between two tools keeps the last line`, a.state === 'thinking' && a.label === 'Looking at your screen...');
     await emit('tool', { turn_id: 'k1', label: 'Searching the web...' }); await settled();
     // ADR 0121: the daemon's wait line ("One moment.") comes as a commentary-phase response of the same turn, and a wait line is speech only.
     const waitLine = async () => {
