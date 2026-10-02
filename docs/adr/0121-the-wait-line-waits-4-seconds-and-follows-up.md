@@ -33,12 +33,12 @@
 
 ## Decision
 
-A voice turn says its first wait line 4.0 s after his words with nothing of the
+A voice turn says its first wait line 8.0 s (first shipped as 4.0 s) after his words with nothing of the
 answer started, tool or not; the dispatch of a tool speaks only for
 `LONG_WAIT_TOOLS` (ADR 0117), no earlier than the 1.5 s floor. While the
 answer still has not started, a follow-up from `commentary.still` ("Still
-working on it.") is said at 12 s and at 25 s after his words, at most three
-lines per turn, never over a pending confirmation. The answer's first chunk or
+working on it.") is said at 25 s after his words, at most two
+lines per turn (first shipped as 12 s and 25 s, three lines), never over a pending confirmation. The answer's first chunk or
 playback start, a turn's end, and a pending confirmation are checked last,
 right before the line is rendered and once more right after; a line that is
 emitted but has not reached the speaker when the answer starts is cancelled and
@@ -74,9 +74,13 @@ line and no longer feeds the commentary decision.
 
 ## Consequences
 
-- A toolless turn that answers between 2.5 s and 4.0 s is silent for that
+- A toolless turn that answers between 2.5 s and 8.0 s is silent for that
   stretch, with only the status line under the orb.
 - A long-wait tool dispatched late can say its line shortly before a follow-up
-  at 12 s or 25 s; the cap and the clocks do not look at each other.
-- The 4.0 s, 12 s and 25 s are hand-kept numbers from one week of the owner's
+  at 25 s; the cap and the clocks do not look at each other.
+- 2026-10-02, the owner found the line said too often ("hold on" every little
+  while): in 6 hours 16 of 83 turns heard 26 lines, and 8 of those 16 were
+  answered before 8 s. The clock moved to 8.0 s and the follow-ups to one at
+  25 s, two lines at most.
+- The 8.0 s and 25 s are hand-kept numbers from one week of the owner's
   log; if the model's latency changes they move by hand.

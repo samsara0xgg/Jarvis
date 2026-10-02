@@ -1322,10 +1322,10 @@ def _clocks(monkeypatch: pytest.MonkeyPatch, *, first: float, then: tuple[float,
 
 
 def test_the_shipped_numbers_are_the_owners() -> None:
-    """4.0 s clock, follow-ups at 12 s and 25 s, three lines at most, 1.5 s floor (ADR 0121)."""
-    assert _SHIPPED_CLOCK_S == 4.0
-    assert _SHIPPED_FOLLOW_UPS_S == (12.0, 25.0)
-    assert _SHIPPED_MAX_LINES == 3
+    """8.0 s clock, one follow-up at 25 s, two lines at most, 1.5 s floor (ADR 0121)."""
+    assert _SHIPPED_CLOCK_S == 8.0
+    assert _SHIPPED_FOLLOW_UPS_S == (25.0,)
+    assert _SHIPPED_MAX_LINES == 2
     assert _SHIPPED_FLOOR_S == 1.5
 
 
@@ -1393,8 +1393,8 @@ def test_an_answer_within_the_clock_hears_no_line_with_or_without_a_quick_tool(
 def test_a_turn_says_a_line_at_the_clock_and_a_follow_up_at_each_later_clock(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """First line from the wait pool, then two from the still pool, at their times."""
-    _clocks(monkeypatch, first=0.3, then=(0.9, 1.5))
+    """First line from the wait pool, then one from the still pool, at their times."""
+    _clocks(monkeypatch, first=0.3, then=(0.9,))
     runtime = _make_runtime(tmp_path)
     reader = _reader(runtime)
     with _Observer(runtime):
@@ -1413,7 +1413,7 @@ def test_a_turn_says_a_line_at_the_clock_and_a_follow_up_at_each_later_clock(
         )
     ]
     assert all(
-        stamp >= bound * 1000 for stamp, bound in zip(stamps, (0.3, 0.9, 1.5), strict=True)
+        stamp >= bound * 1000 for stamp, bound in zip(stamps, (0.3, 0.9), strict=True)
     )
 
 

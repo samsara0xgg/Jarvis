@@ -1762,16 +1762,18 @@ does. A Tier 0 turn ends within about 1 s, so the floor and the turn-ended
 check keep it silent.
 """
 
-_COMMENTARY_AFTER_S: Final[float] = 4.0
+_COMMENTARY_AFTER_S: Final[float] = 8.0
 """How long after Allen's words, with nothing of the answer started, the line
 speaks whether or not a tool is involved (ADR 0121: a toolless turn answers at
-a median 2.8 s and p90 5.0 s, so 2.5 s fired right before the answer)."""
+a median 2.8 s and p90 5.0 s, so 2.5 s fired right before the answer; 2026-10-02
+Allen moved it from 4 s to 8 s: 8 of 16 turns that heard a line at 4 s were
+answered before 8 s)."""
 
-_COMMENTARY_STILL_AFTER_S: Final[tuple[float, ...]] = (12.0, 25.0)
+_COMMENTARY_STILL_AFTER_S: Final[tuple[float, ...]] = (25.0,)
 """How long after Allen's words each follow-up ("still working") may speak while
 the answer still has not started (ADR 0121)."""
 
-_COMMENTARY_MAX_LINES: Final = 3
+_COMMENTARY_MAX_LINES: Final = 2
 """The most lines one turn says: the first and the follow-ups (ADR 0121)."""
 
 _COMMENTARY_SHUTDOWN_BUDGET_S: Final[float] = 0.5
