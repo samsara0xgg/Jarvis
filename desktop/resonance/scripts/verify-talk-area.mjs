@@ -31,7 +31,7 @@ async function scene({ captions = 'brief', lang = 'en', reduced = false, demo = 
   const page = await context.newPage();
   const errors = [], posts = [];
   page.on('pageerror', e => errors.push(e.message));
-  const daemonState = { controls: { mic_muted: false, speech_muted: false, conversation: false }, typed: 0, think: { on: false, on_words: '深想', turn_id: null } };
+  const daemonState = { controls: { mic_muted: false, speech_muted: false, conversation: false }, typed: 0, think: { on: false, on_words: '深想', turn_id: null }, card: null, question: null }; // card, question: what the daemon is waiting on (a decision or an answer takes it away)
   await page.route(`http://127.0.0.1:${daemon}/**`, async route => {
     const url = new URL(route.request().url()), method = route.request().method();
     const body = method === 'POST' ? JSON.parse(route.request().postData() || '{}') : null;
@@ -42,7 +42,8 @@ async function scene({ captions = 'brief', lang = 'en', reduced = false, demo = 
     if (url.pathname === '/inherent/cancel-response') return json({});
     if (url.pathname === '/inherent/think') return json(daemonState.think);
     if (url.pathname === '/inherent/language') return json({ language: lang });
-    if (url.pathname === '/inherent/confirmation' || url.pathname === '/inherent/clarification') return json({ card: null });
+    if (url.pathname === '/inherent/confirmation') { if (method === 'POST') { daemonState.card = null; return json({}); } return json({ card: daemonState.card }); }
+    if (url.pathname === '/inherent/clarification') { if (method === 'POST') { daemonState.question = null; return json({}); } return json({ card: daemonState.question }); }
     return route.fulfill({ status: 404, contentType: 'application/json', body: '{"detail":"Not Found"}' });
   });
   await page.addInitScript(([captions, lang, buttons]) => {
@@ -1278,6 +1279,74 @@ try {
     check('in English the copy button says “Copy”, then “Copied ✓”', await page.locator('.talk .cp').textContent() === 'Copy' && (await page.locator('.talk .cp').click(), await page.waitForTimeout(150), await page.locator('.talk .cp').textContent()) === 'Copied ✓');
     await shot('16-table');
     check('no page errors (table)', s.errors.length === 0);
+    await s.context.close();
+  }
+
+  // ---- her confirm and question cards: in the area while you talk to her, in the notch when you are not ----
+  const letter = { id: 'C1', tool: 'mcp__gmail__gmail_send', action: '发这封邮件', source: 'gmail', letter: true, args: { to: 'wang@example.com', subject: '明天的会改到三点', body: '小王，\n\n明天上午的会改到下午三点，地点不变。\n\nAllen' } };
+  const ask = { id: 'Q1', question: '周六晚上订几个人、几点？', fields: [{ label: '人数', choices: ['2人', '3人', '4人'] }, { label: '时间', value: '19:00' }] };
+  {
+    const s = await scene({ captions: 'brief', lang: 'zh' });
+    const { page, move, skew, shot, area, settled, turn, folded, posts, daemonState } = s;
+    await page.waitForTimeout(600);
+    await turn('d1', '给小王发封邮件，说明天的会改到三点', '<voice>写好了，你看一下，没问题就发。</voice>', { spoken: true });
+    await page.waitForTimeout(600);
+    daemonState.card = letter;
+    await page.waitForSelector('.talk .ac', { timeout: 6000 }); await settled();
+    let a = await area();
+    const seen = await page.evaluate(() => { const t = document.querySelector('.talk'), tr = t.querySelector('.talk-tr'), ac = t.querySelector('.ac'), cs = getComputedStyle(ac);
+      return { last: tr.lastElementChild === ac, notch: document.querySelectorAll('.notch .ac').length, place: document.querySelector('.companion-hit')?.dataset.place,
+        glass: cs.borderRadius !== '0px' && cs.boxShadow !== 'none' && cs.paddingTop === '10px', warm: getComputedStyle(ac.querySelector('.ac-label')).color, margin: cs.marginTop }; });
+    check('a confirmation arrives while she is talking: the card is in the area (opened out of the pill), the last thing in the transcript', a.up && a.kind === 'area' && seen.last);
+    check('the notch shows nothing for it and she stays out', seen.notch === 0 && seen.place === 'out');
+    check('it has the card’s own glass look (not the notch’s bare one), the host colours (warm label), 6 px under her line', seen.glass && seen.warm === 'rgb(255, 201, 143)' && seen.margin === '6px');
+    check(`the area grew to hold it: 360 wide, ${Math.round(a.r.h)} tall, and what does not fit scrolls (view at the end)`, Math.round(a.r.w) === 360 && a.r.h <= 360.5 && (a.tr.scroll <= a.tr.client + 1 || a.tr.end));
+    await shot('17-confirm-in-area', { x: 10, y: 20, width: 380, height: 560 });
+    await skew(12_000); await page.waitForTimeout(1500);
+    check('the area does not fold while the card waits, past the 8 s it would have', (await area()).up && await page.locator('.talk .ac').count() === 1);
+    await page.locator('.talk .ac-subject').click();
+    check('the letter’s fields are editable there: typing works and the window took key focus', await page.evaluate(() => window.__state.focus === true));
+    await page.locator('.talk .ac-subject').fill('改到三点半');
+    await page.keyboard.press('Meta+Enter'); await page.waitForTimeout(400);
+    check('⌘⏎ sends what the card holds, once', posts.filter(p => p.path === '/inherent/confirmation').length === 1 && posts.find(p => p.path === '/inherent/confirmation').body.decision === 'accept' && posts.find(p => p.path === '/inherent/confirmation').body.edits.subject === '改到三点半');
+    await page.waitForTimeout(1800);
+    check('once decided the card is gone from the area (and does not turn up in the notch)', await page.locator('.talk .ac').count() === 0 && await page.locator('.notch .ac').count() === 0);
+    await skew(12_000);
+    await folded(6000);
+    check('and the area folds after its 8 s as it always does', !(await area()).up);
+    check('no page errors (confirm in the area)', s.errors.length === 0);
+    await s.context.close();
+  }
+
+  {
+    const s = await scene({ captions: 'all', lang: 'zh' });
+    const { page, emit, shot, area, settled, turn, posts, daemonState } = s;
+    await page.waitForTimeout(600);
+    await emit('controls', { mic_muted: false, speech_muted: false, conversation: true }); s.daemonState.controls.conversation = true;
+    await turn('d2', '帮我订周六晚上的餐厅', '<voice>好，几个人？</voice>', { spoken: true });
+    daemonState.question = ask;
+    await page.waitForSelector('.talk .ac[data-question]', { timeout: 6000 }); await settled();
+    const a = await area();
+    check('a question arrives while she is talking: it is in the area after her line, and the notch is empty', a.up && a.kind === 'area' && await page.evaluate(() => { const tr = document.querySelector('.talk-tr'), ac = tr.lastElementChild; return ac.matches('.ac[data-question]') && !!(tr.querySelector('.tk-h').compareDocumentPosition(ac) & Node.DOCUMENT_POSITION_FOLLOWING) && document.querySelectorAll('.notch .ac').length === 0; }));
+    await shot('18-question-in-area', { x: 10, y: 20, width: 380, height: 560 });
+    await page.getByRole('radio', { name: '3人' }).click();
+    await page.locator('.talk .qc-input').fill('20:00');
+    await page.getByRole('button', { name: '好了' }).click(); await page.waitForTimeout(400);
+    const answer = posts.find(p => p.path === '/inherent/clarification');
+    check('its answer goes to the daemon as filled in', !!answer && answer.body.clarification_id === 'Q1' && answer.body.answers['人数'] === '3人' && answer.body.answers['时间'] === '20:00');
+    check('no page errors (question in the area)', s.errors.length === 0);
+    await s.context.close();
+  }
+
+  {
+    const s = await scene({ captions: 'brief', lang: 'zh' });
+    const { page, area, shot, daemonState } = s;
+    await page.waitForTimeout(600);
+    daemonState.card = letter;
+    await page.waitForSelector('.notch .ac', { timeout: 6000 }); await page.waitForTimeout(1200);
+    check('a confirmation with no conversation is in the notch as before: she is at home, no talk area', await page.locator('.talk .ac').count() === 0 && !(await area()).up && await page.evaluate(() => document.querySelector('.companion-hit')?.dataset.place === 'home'));
+    await shot('19-card-in-notch', { x: 60, y: 0, width: 520, height: 420 });
+    check('no page errors (card in the notch)', s.errors.length === 0);
     await s.context.close();
   }
 

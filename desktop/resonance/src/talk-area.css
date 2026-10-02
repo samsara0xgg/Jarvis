@@ -105,6 +105,9 @@
 .talk .sub { display:block; margin-top:2px; font-size:12px; color:rgb(235 238 245 / .5); }
 .talk .doc { overflow:hidden; }
 .talk .doc > div:has(.lk):hover { background:rgb(255 255 255 / .04); }
+/* a confirm or question card that comes up in the transcript: the card's own glass, on the host colours it reads */
+.talk { --p-ink:#eef0fb; --p-muted:rgb(196 204 238 / .68); --p-faint:rgb(196 204 238 / .58); --p-line:rgb(157 180 255 / .13); --warm-c:#ffc98f; }
+.talk-tr > .ac { margin-top:6px; }
 /* pulling up for an earlier exchange: the content follows (--pull), "Earlier" shows in the gap, the answer that yielded fades above */
 .talk-tr > * { translate:0 var(--pull,0px); }
 .tk-more { position:absolute; z-index:3; top:0; left:50%; translate:-50% 0; opacity:0; pointer-events:none; font-size:var(--text-label); letter-spacing:.02em; color:rgb(235 238 245 / .62); }

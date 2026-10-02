@@ -1,4 +1,4 @@
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject, type WheelEvent } from 'react';
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactElement, type ReactNode, type RefObject, type WheelEvent } from 'react';
 import { ArrowUp, Keyboard, LinkSimple, Microphone, Stop } from '@phosphor-icons/react';
 import { Lk, Markdown, inline } from './Markdown';
 import { tr, type L, type Lang } from './companionSettings';
@@ -121,6 +121,8 @@ export type TalkProps = {
   // Think mode (ADR 0064) for this turn: the deep look, the seconds counting, and how long each deep answer took.
   deep: { look: boolean; secs: number; thoughts: { turn: string; secs: number }[] };
   field: boolean; draft: string; micPaused: boolean;
+  // A confirm or question card waiting on you while you talk (keyed by its id): it comes up at the end of the transcript, after her latest line, and the area stays up and grows to hold it.
+  card?: ReactElement;
   onDraft: (value: string) => void; onSend: () => void; // `empty`: closing it leaves nothing to show.
   onField: (open: boolean, empty?: boolean) => void; onMic: () => void; onEnd: () => void;
   // `onUp`: it is up (she stays out); false from the moment it folds into her. `onSettle`: a shape change has come to rest.
@@ -180,7 +182,7 @@ export function TalkArea(p: TalkProps) {
   const coming = state === 'hearing' ? p.partial.replace(/\s+/g, ' ') : '';
   const heard = coming || (freshMs > 0 && lastYou ? lastYou.text.replace(/\s+/g, ' ') : '');
   const expanded = items.some(it => it.at > c.since);
-  const kind = kindOf(p.level, items, p.field, expanded);
+  const kind = kindOf(p.level, items, p.field || !!p.card, expanded); // (a waiting card needs the whole area, as the field does)
   // The pill shows what you just said, then nothing but the state's glyph (and, with the middle level, the seconds a deep answer is taking);
   // the footer under the area says what she is doing.
   const label = kind === 'pill' ? heard || (p.level === 'brief' && (tool || state === 'thinking' && secs > 0) ? status : '') : heard || status;
@@ -293,6 +295,7 @@ export function TalkArea(p: TalkProps) {
   // Each line that is new comes up (6 pt, out of a blur), unless the whole transcript is coming up with the shape.
   const riseNew = () => {
     const el = trEl.current!;
+    el.querySelectorAll<HTMLElement>(':scope > .ac:not([data-seen])').forEach(n => { n.setAttribute('data-seen', ''); if (!c.staged) rise(n); }); // a card that has just come up
     el.querySelectorAll<HTMLElement>('[data-line]:not([data-seen])').forEach(n => { n.setAttribute('data-seen', ''); if (!c.staged && !c.fly) rise(n); });
     el.querySelectorAll<HTMLElement>('[data-written]:not([data-seen])').forEach(w => {
       w.setAttribute('data-seen', '');
@@ -458,7 +461,7 @@ export function TalkArea(p: TalkProps) {
     layer.animate([{ opacity: 1, translate: '0 0', filter: 'blur(0)' }, { opacity: 0, translate: '0 -8px', filter: 'blur(3px)' }], { duration: 180, easing: 'cubic-bezier(.5,0,.9,.4)', fill: 'forwards' }).finished.then(done, done);
   }, [shown.key]);
   // ---- keep the shape and the words in step with what is showing ----
-  const sig = [p.open, v.kind, row, v.items.map(it => `${it.id}:${it.spoken.length}:${it.written.length}:${v.ready(it)}`).join(), v.label, fieldH, p.level, p.silent].join('|');
+  const sig = [p.open, v.kind, row, v.items.map(it => `${it.id}:${it.spoken.length}:${it.written.length}:${v.ready(it)}`).join(), v.label, fieldH, p.level, p.silent, p.card?.key].join('|');
   useLayoutEffect(() => {
     drive();
     if (!p.open) { if (c.at !== 'gone' && !c.closing) close(); return; }
@@ -595,6 +598,7 @@ export function TalkArea(p: TalkProps) {
       {v.items.map(it => it.who === 'you'
         ? <span key={it.id} className="tk-u" data-line={it.id}>{it.spoken}</span>
         : <Her key={it.id} it={it} reg={reg.current} ready={v.ready(it)} silent={p.silent} lang={p.lang} think={(() => { const secs = p.deep.thoughts.find(th => th.turn === it.turn)?.secs; return secs ? t([`Thought for ${secs.toFixed(1)} s`, `想了 ${secs.toFixed(1)} 秒`]) : ''; })()}/>)}
+      {p.card}
     </div>
     {!reduced() && shown.older > 0 && v.items.length > 0 && <span ref={moreEl} className="tk-more" aria-hidden="true">{t(['Earlier', '更早'])}</span>}
     {away && v.items.length > 0 && <div className="tk-latest"><button type="button" onClick={latest}>{t(['Back to latest', '回到最新'])}</button></div>}

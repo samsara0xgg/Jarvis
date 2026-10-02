@@ -163,8 +163,9 @@ export function Companion() {
     if (answers) ball.current?.hop(.14);
     void link.current?.answer(id, answers).catch(() => undefined); // a stale card: the next read shows what waits now
   };
-  // With the Dashboard closed the card hangs from the notch, ahead of the agents' notices, and she watches it from home.
-  const carded = (!!card || !!question) && !dashboard && !remoteOpen && !moving;
+  // With the Dashboard closed the card hangs from the notch, ahead of the agents' notices, and she watches it from home; unless the talk
+  // area is up for a conversation Allen started: then it comes up in the area, after her latest line, and she stays out (`carded` below).
+  const cardWaits = (!!card || !!question) && !dashboard && !remoteOpen && !moving;
   // ADR 0093: the night run's cards come next: before the screen goes, when it wakes in the night, and the morning after
   // until its ×. While one is up, or a run is on, the agents' notices wait; she sleeps in the island through the night.
   const [nightSeen, setNightSeen] = useState(seenNight), nightClock = useNow(nightState?.last ? 60_000 : 3_600_000);
@@ -234,18 +235,22 @@ export function Companion() {
   // she is at home for something else (the Dashboard, a card, a notice) it is not shown.
   const [talkUp, setTalkUp] = useState(false);
   const talkBox = useRef<HTMLDivElement>(null);
-  const engaged = voice !== 'off' || composer || receiving;
+  // A card waiting while the area is up keeps it up: it does not fold on you while you read what she asks (`talkOpen`: whether it was up a moment ago).
+  const talkOpen = useRef(false);
+  const engaged = voice !== 'off' || composer || receiving || cardWaits && talkOpen.current;
   // When the area last opened: what was said before then waits above, to be pulled up (ADR 0113).
   const [talkFrom, setTalkFrom] = useState(0);
   const presence = usePresence({ engaged,
     over: () => { const r = talkBox.current?.getBoundingClientRect(), p = cursor.current; return place === 'out' && !!r && p.x >= r.left - 6 && p.x <= r.right + 6 && p.y >= r.top - 6 && p.y <= r.bottom + 6; },
     onOpen: () => setTalkFrom(Date.now()) });
+  talkOpen.current = presence.open;
   const talkLevel: Captions = level(companion.captions, s.soundMuted);
   // Without the buttons nothing is drawn while she only listens: the pill comes with your first words (or once there is something of this session to show).
   const quiet = !companion.talkButtons && voice === 'listening' && !partial.trim() && !composer && !s.talk.some(l => l.at >= talkFrom);
   // The deep look belongs to the turn: its answer being thought about, or said or shown. Listening to the next one, or waiting on it, is back to normal.
   const deepLook = deepThinking || (answerSecs > 0 && s.waiting === s.turnId && voice !== 'listening');
   const busy = composer || voice !== 'off' || !!reply.text || receiving || deepThinking || talkUp;
+  const inTalk = cardWaits && presence.open && !quiet && busy, carded = cardWaits && !inTalk;
   // Every session the Dashboard's Agents data knows, and Startrail's from its host (in her queue's order, each in place
   // of the daemon's row of it): the stars beside the notch, and the notices.
   const [daemonAgents, setAgents] = useState<ShownAgent[]>([]);
@@ -688,8 +693,9 @@ export function Companion() {
   };
 
   const { out } = geo;
-  const note: NotchNote | null = carded && card ? { key: `card:${card.id}`, onClose: () => undefined, card: <ActionCard key={card.id} card={card} lang={companion.lang} onDecide={decideCard}/> }
-    : carded && question ? { key: `question:${question.id}`, onClose: () => undefined, card: <QuestionCard key={question.id} question={question} lang={companion.lang} onAnswer={answerQuestion}/> }
+  const cardView = card ? <ActionCard key={card.id} card={card} lang={companion.lang} onDecide={decideCard}/>
+    : question ? <QuestionCard key={question.id} question={question} lang={companion.lang} onAnswer={answerQuestion}/> : undefined;
+  const note: NotchNote | null = carded && cardView ? { key: card ? `card:${card.id}` : `question:${question?.id}`, onClose: () => undefined, card: cardView }
     : nightShown && nightState ? { key: nightKey, onClose: closeMorning, card: <NightCard key={nightKey} state={nightState} morning={morning} unread={notices.unread.size} lang={companion.lang} marks={wardrobe.marks} look={wardrobe.night}
       act={nightAct} onGo={nightGo} onClose={closeMorning}/> }
     : !notice ? null : notice.kind === 'pop' ? { key: notice.key, pop: notice.ids, onClose: notices.next } : { key: notice.key, id: notice.id, onClose: notices.fold,
@@ -740,7 +746,7 @@ export function Companion() {
         <button aria-label={t(['Type to her', '文字输入'])} tabIndex={chip ? 0 : -1} onClick={openComposer}><Keyboard/></button>
       </div>
       <TalkArea lang={companion.lang} x={out.x} y={out.y + R + 11} open={presence.open && place === 'out' && !quiet} level={talkLevel} lines={s.talk} since={talkFrom} voice={voice} hearing={hearing} partial={partial} tool={tool} silent={s.soundMuted} buttons={companion.talkButtons}
-        deep={{ look: deepLook, secs: deepSecs, thoughts }} field={composer} draft={draft} micPaused={s.micMuted}
+        deep={{ look: deepLook, secs: deepSecs, thoughts }} field={composer} draft={draft} micPaused={s.micMuted} card={inTalk ? cardView : undefined}
         onDraft={value => { setDraft(value); ball.current?.nudge(); requestAnimationFrame(aimAtCaret); }}
         onSend={send} onField={(open, empty) => { if (open) openComposer(); else { closeComposer(); if (empty && voice === 'off') presence.dismiss(); } }} onMic={backToVoice}
         onEnd={() => { closeComposer(); if (voice !== 'off') endVoice(); presence.dismiss(); }} onUp={setTalkUp} onSettle={() => { if (live.current.composer) aimAtCaret(); kickGlass.current(); }}
