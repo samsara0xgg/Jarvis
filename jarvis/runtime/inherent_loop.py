@@ -2628,6 +2628,10 @@ def _build_tts_pipeline(  # noqa: C901 - rollout/degradation capability boundary
             ring_seconds=streaming_ring_seconds,
             lazy_open=True,
             generation_safe=True,
+            # 2048 frames (43 ms) of slack: with 1024 the Python callback still
+            # missed CoreAudio's cycle under load (~40 overloads a minute on the
+            # Multi-Output device, 2026-10-02), each one a pop in her voice.
+            blocksize=2048,
             device=output_device,
             playback_tap=echo_canceller.add_playback if echo_canceller is not None else None,
             volume=playback_volume,
