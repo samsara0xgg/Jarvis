@@ -6,7 +6,7 @@ import { AroundDashboard, type DashboardView, type DashboardViewHandle, type Thi
 import { DuskDashboard, DockingDrop } from './DuskDashboard';
 import { playFeedback, stopFeedback, warmFeedback, type FeedbackCue } from './feedback';
 import { usePreferences } from './preferences';
-import { initialState, plain, reducer, visible } from './model';
+import { initialState, plain, reducer, toolLine, visible } from './model';
 import { TalkArea, usePresence } from './TalkArea';
 import { level, pace, split, type Captions } from './talk';
 import { connect, type Runtime } from './runtime';
@@ -191,8 +191,8 @@ export function Companion() {
   const answering = !!s.turnId && !s.played;
   const voice = !port ? simVoice : inFlight ? 'listening' : answering && s.reply ? 'speaking' : answering || s.askedAt !== null ? 'thinking'
     : s.conversation && s.phase !== 'error' ? 'listening' : 'off';
-  // The tool a turn still being thought about is waiting on (the daemon's fixed line); once the answer opens it is gone.
-  const tool = port && s.tool && s.tool.turnId === s.waiting && s.askedAt !== null ? s.tool.label : '';
+  // The tool the turn is waiting on (the daemon's fixed line); once the answer opens it is gone.
+  const tool = port ? toolLine(s) : '';
   const hearing = port ? inFlight : simHearing, talking = port ? false : simTalking, partial = port ? s.partial : simPartial;
   // Her words on screen, here and on the Dashboard, stay as they were while yours are still coming in: cut off, or
   // none. An answer written meanwhile is dropped once your words are in (ADR 0074).

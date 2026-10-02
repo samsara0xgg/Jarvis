@@ -156,21 +156,24 @@ export function TalkArea(p: TalkProps) {
 
   const state = p.voice === 'off' || p.silent && p.voice === 'speaking' ? 'idle' : p.voice === 'speaking' ? 'speaking' : p.voice === 'thinking' ? 'thinking' : p.hearing ? 'hearing' : 'listening';
   const secs = p.deep.secs;
-  const status = state === 'idle' ? '' : state === 'thinking' ? p.tool ? p.tool : secs > 0 ? t([`Thinking ${secs} s`, `深想 ${secs} 秒`]) : t(['Thinking', '在想'])
-    : state === 'speaking' ? t(['Speaking · poke to interrupt', '在说 · 戳她打断']) : t(['Listening', '在听']);
+  // The running tool's line stands for her state whatever she is doing meanwhile (thinking, saying a wait line, finishing an earlier answer); only
+  // your own words coming in take the row. This is the one place it is placed: the pill's label and the footer's.
+  const tool = state === 'hearing' ? '' : p.tool;
+  const status = tool || (state === 'idle' ? '' : state === 'thinking' ? secs > 0 ? t([`Thinking ${secs} s`, `深想 ${secs} 秒`]) : t(['Thinking', '在想'])
+    : state === 'speaking' ? t(['Speaking · poke to interrupt', '在说 · 戳她打断']) : t(['Listening', '在听']));
   const coming = state === 'hearing' ? p.partial.replace(/\s+/g, ' ') : '';
   const heard = coming || (freshMs > 0 && lastYou ? lastYou.text.replace(/\s+/g, ' ') : '');
   const expanded = items.some(it => it.at > c.since);
   const kind = kindOf(p.level, items, p.field, expanded);
   // The pill shows what you just said, then nothing but the state's glyph (and, with the middle level, the seconds a deep answer is taking);
   // the footer under the area says what she is doing.
-  const label = kind === 'pill' ? heard || (p.level === 'brief' && state === 'thinking' && (secs > 0 || p.tool) ? status : '') : heard || status;
+  const label = kind === 'pill' ? heard || (p.level === 'brief' && (tool || state === 'thinking' && secs > 0) ? status : '') : heard || status;
   // While it folds away it keeps what it was showing.
-  const cur = { items, kind, state, label, heard: !!heard, fading: fading && !coming, deep: p.deep.look, ready };
+  const cur = { items, kind, state, label, heard: !!heard, tool: !!tool, fading: fading && !coming, deep: p.deep.look, ready };
   const frozen = useRef(cur);
   if (p.open) frozen.current = cur;
   const v = frozen.current;
-  const shim = v.state === 'thinking' && !v.heard;
+  const shim = (v.state === 'thinking' || v.tool) && !v.heard;
 
   // ---- shape ----
   // The natural size of what it is now showing, measured on a hidden copy: the live element is mid-animation, and measuring it

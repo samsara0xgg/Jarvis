@@ -65,7 +65,8 @@ async function scene({ captions = 'brief', lang = 'en', reduced = false, demo = 
     body::before{content:'';position:fixed;inset:0 0 auto;height:32px;background:rgb(255 255 255/.18)}
     body::after{content:'';position:fixed;z-index:10;pointer-events:none;top:0;left:227.5px;width:185px;height:32px;background:#000;border-radius:0 0 10px 10px}` });
   if (!demo) await page.waitForFunction(() => window.__sockets?.length === 1);
-  const emit = (op, payload) => page.evaluate(([op, payload]) => window.__emit(op, payload), [op, payload]);
+  // (After `listening` the area opens and stamps the session's start: words heard before that stamp belong to an earlier session, so it is given a moment.)
+  const emit = async (op, payload) => { await page.evaluate(([op, payload]) => window.__emit(op, payload), [op, payload]); if (op === 'voice' && payload.phase === 'listening') await page.waitForTimeout(150); };
   const move = async (x, y) => { await page.mouse.move(x, y); await page.evaluate(([x, y]) => window.__cursor({ x, y }), [x, y]); };
   const skew = ms => page.evaluate(ms => { window.__skew += ms; }, ms);
   const shot = (name, clip = { x: 10, y: 20, width: 380, height: 460 }) => page.screenshot({ path: path.join(dir, `${name}.png`), clip });
@@ -751,6 +752,30 @@ try {
     a = await area();
     check(`${captions}: and her answer's open still clears it`, a.footer.indexOf('Searching') < 0 && a.label.indexOf('Searching') < 0);
     await emit('voice', { phase: 'spoken', turn_id: 'k3' });
+    // The line is the tool's, not her state's: it stays while she says something else. (1) The turn's first words opened before the tool ran.
+    await emit('voice', { phase: 'listening', turn_id: 'k5' }); await emit('voice', { phase: 'accepted', turn_id: 'k5', text: '再搜一下' });
+    await emit('open', { turn_id: 'k5', response_id: 'r-k5' }); await emit('append', { turn_id: 'k5', token: '<voice>好，我来查一下。</voice>' });
+    await skew(3500); await settled();
+    await emit('tool', { turn_id: 'k5', label: 'Searching the web...' }); await settled();
+    a = await area();
+    check(`${captions}: a tool that runs after her first words opened still shows its line, while she says them`, a.label === 'Searching the web...' && a.state === 'speaking');
+    await shot(`41-tool-while-speaking-${captions}`);
+    await emit('tool', { turn_id: 'k5', label: '' }); await settled();
+    a = await area();
+    check(`${captions}: the daemon clearing it while she speaks takes the line and nothing else`, a.state === 'speaking' && a.label === (captions === 'all' ? 'Speaking · poke to interrupt' : ''));
+    await emit('voice', { phase: 'spoken', turn_id: 'k5' });
+    // (2) An earlier answer is still being said when the next turn's tool starts.
+    await emit('voice', { phase: 'listening', turn_id: 'k6' }); await emit('voice', { phase: 'accepted', turn_id: 'k6', text: '先说一个' });
+    await emit('open', { turn_id: 'k6', response_id: 'r-k6' }); await emit('append', { turn_id: 'k6', token: '<voice>今天有三条新闻，我慢慢给你说。</voice>' }); await emit('done', { turn_id: 'k6', fadeMs: 100 });
+    await emit('voice', { phase: 'listening', turn_id: 'k7' }); await emit('voice', { phase: 'accepted', turn_id: 'k7', text: '再查一个' });
+    await skew(3500); await settled();
+    await emit('tool', { turn_id: 'k7', label: 'Searching the web...' }); await settled();
+    a = await area();
+    check(`${captions}: an earlier answer still being said does not hide the next turn's tool line`, a.label === 'Searching the web...');
+    await emit('voice', { phase: 'spoken', turn_id: 'k6' }); await settled();
+    a = await area();
+    check(`${captions}: and its end does not take the line either`, a.label === 'Searching the web...' && a.state === 'thinking');
+    await emit('failed', { turn_id: 'k7', reason: 'error', message: 'x' }); await settled();
     await emit('voice', { phase: 'listening', turn_id: 'k2' }); await emit('voice', { phase: 'accepted', turn_id: 'k2', text: '再查一个' });
     await skew(3500); await settled();
     await emit('tool', { turn_id: 'k2', label: 'Searching the web...' }); await settled();

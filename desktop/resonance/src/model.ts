@@ -75,7 +75,7 @@ export function reducer(s: State, a: Action): State {
     case 'phase': { const inFlight = a.phase === 'hearing' || (s.inFlight && a.phase === 'processing');
       const talk = a.phase === 'error' ? ended(s.talk, s.replyAt) : s.inFlight && !inFlight ? unheld(s, s.reply) : s.talk;
       return { ...s, phase: a.phase, reply: a.phase === 'error' ? '' : s.reply, heard: a.phase === 'hearing' ? '' : s.heard, partial: a.phase === 'processing' && s.inFlight ? s.partial : '', askedAt: a.phase === 'error' ? null : s.askedAt,
-        played: s.played || a.phase === 'error', inFlight, talk }; }
+        played: s.played || a.phase === 'error', inFlight, talk, tool: a.phase === 'error' ? null : s.tool }; }
     case 'mic': return { ...s, micMuted: !s.micMuted };
     case 'sound': return { ...s, soundMuted: !s.soundMuted };
     case 'interrupt': return { ...s, phase: 'listening' };
@@ -88,7 +88,7 @@ export function reducer(s: State, a: Action): State {
     // `openSeq` remembers where the log stood when this turn opened: the streaming reply shows as a tail row until an answer row lands past it.
     // The daemon opens an answer once it is whole (ADR 0064), so the wait from `askedAt` is how long it took.
     case 'open': { const mine = a.turnId === s.waiting && s.askedAt !== null;
-      return { ...s, phase: 'processing', reply: '', replyAt: 0, apart: '', turnId: a.turnId, responseId: a.responseId, failed: false, faded: false, played: false, openSeq: s.rows.length ? s.rows[s.rows.length - 1].seq : 0,
+      return { ...s, tool: s.tool?.turnId === a.turnId ? null : s.tool, phase: 'processing', reply: '', replyAt: 0, apart: '', turnId: a.turnId, responseId: a.responseId, failed: false, faded: false, played: false, openSeq: s.rows.length ? s.rows[s.rows.length - 1].seq : 0,
         thoughtS: mine ? (a.at - s.askedAt!) / 1000 : 0, askedAt: mine ? null : s.askedAt }; }
     // A chunk belongs to the turn it carries: a late one of an earlier turn (a slow tool turn's answer, ADR 0107) grows that turn's own line, never the newest turn's reply.
     case 'append': { if (a.turnId && a.turnId !== s.turnId) { const old = s.talk.find(l => l.id === `her:${a.turnId}`); return old ? { ...s, talk: hers(s.talk, a.turnId, old.text + a.token, old.at) } : s; }
@@ -120,7 +120,7 @@ export function reducer(s: State, a: Action): State {
     // answer on screen goes whoever asked for it: it was stopped, or dropped for the words after it (ADR 0074).
     case 'failed': { const shown = a.turnId === s.turnId, gone = { reply: '', played: true, responseId: null }, dropped = s.talk.filter(l => l.id !== `her:${a.turnId}`);
       if (a.turnId !== s.waiting) return shown && a.cancelled ? { ...s, ...gone, talk: dropped } : s;
-      const t = { ...s, askedAt: null, phase: s.phase === 'processing' ? 'listening' as const : s.phase };
+      const t = { ...s, askedAt: null, tool: null, phase: s.phase === 'processing' ? 'listening' as const : s.phase };
       if (a.cancelled) return shown ? { ...t, ...gone, talk: dropped } : t;
       const reply = a.message ?? '这一轮出错了，没有完成。可以再说一次。';
       return { ...t, reply, turnId: a.turnId, responseId: null, failed: true, faded: false, played: true, talk: hers(ended(s.talk, a.at), a.turnId, reply, a.at, { failed: true, said: true }),
@@ -129,7 +129,8 @@ export function reducer(s: State, a: Action): State {
     case 'controls': { const next = { ...s, micMuted: a.micMuted, soundMuted: a.soundMuted, conversation: a.conversation };
       return !a.conversation && s.inFlight ? reducer(next, { type: 'phase', phase: 'listening' }) : next; }
     // What has been heard so far of the words still coming in (ADR 0111); one that arrives after they were accepted is late.
-    // The tool this turn is waiting on, as the daemon's fixed line; an empty label clears it. It shows only while the turn is still thought about.
+    // The tool this turn is waiting on, as the daemon's fixed line; an empty label clears it. It goes when the daemon clears it, when the turn's
+    // answer opens (above), or when the turn ends without one.
     case 'tool': return { ...s, tool: a.label ? { turnId: a.turnId, label: a.label } : null };
     case 'partial': return s.inFlight ? { ...s, partial: a.text } : s;
     case 'heard': { const added = a.text.trim() ? yours({ ...s, talk: ended(s.talk, a.at) }, a.text, a.at) : { talk: s.talk, talkN: s.talkN };
@@ -167,3 +168,6 @@ export function reducer(s: State, a: Action): State {
 export const visible = (reply: string) => reply.slice(Math.max(0, reply.indexOf('<document>'))).replace(/<\/voice>/g, '\n').replace(/<\/?(voice|document)>/g, '').replace(/<\/?[a-z]*$/, '').trim();
 // Plain words for her bubble and the Dashboard: the answer's markdown emphasis and code ticks dropped.
 export const plain = (text: string) => visible(text).replace(/\*\*|`/g, '');
+// The line of the tool this surface's turn is waiting on ("Searching the web..."), or ''. What her voice is doing does not decide it (a wait line
+// being said, an earlier answer still going): every place that shows it reads this one rule.
+export const toolLine = (s: State): string => s.tool && s.tool.turnId === s.waiting ? s.tool.label : '';
