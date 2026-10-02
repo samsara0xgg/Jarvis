@@ -54,6 +54,16 @@ class _Jev:
                 outer.requests.append(json.loads(self.rfile.read(size)))
                 outer.headers.append(dict(self.headers))
                 time.sleep(outer.delay_s)
+                if outer.mode == "trickle":
+                    # Every read lands inside the phase timeout; the whole never ends in time.
+                    self.send_response(200)
+                    self.send_header("Content-Length", "100")
+                    self.end_headers()
+                    for _ in range(30):
+                        self.wfile.write(b" ")
+                        self.wfile.flush()
+                        time.sleep(0.1)
+                    return
                 if outer.mode == "error":
                     self.send_response(500)
                     self.end_headers()
@@ -210,6 +220,19 @@ def test_anything_else_falls_through_to_the_model(  # noqa: PLR0913 — one para
     assert (event["choice"], event["confidence"], event["error"], event["accepted"]) == (
         choice, confidence, error, False,
     )
+
+
+def test_the_deadline_is_for_the_whole_call_not_each_phase(tmp_path: Path, jev: _Jev) -> None:
+    """A reply that trickles in, each read within the phase timeout, is cut at 0.4 s."""
+    jev.mode = "trickle"
+    started = time.monotonic()
+    result, conn, llm = _say(tmp_path, "do you have the time", _route(jev))
+    assert result.response_plan is not None
+    assert llm.chat_calls == 1
+    (event,) = _events(conn, "route.surrogate_decided")
+    assert (event["error"], event["accepted"]) == ("timeout", False)
+    assert 400 <= event["latency_ms"] <= 450
+    assert time.monotonic() - started < 2.0
 
 
 def test_a_missing_key_never_calls_and_warns_once(

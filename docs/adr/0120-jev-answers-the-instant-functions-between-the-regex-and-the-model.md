@@ -76,9 +76,9 @@ Tier 0 path unchanged; every other outcome falls through to the model.
 
 - Allen's words and two earlier exchanges leave the Mac on every turn Tier 0
   did not answer, once he enables it; spec #egress says so.
-- A turn that Jev does not accept is 0.14 s slower in the median and up to
-  about 0.4 s plus one connection phase slower on a timeout: the timeout bounds
-  each HTTP phase, and a late answer is discarded rather than used.
+- A turn that Jev does not accept is 0.14 s slower in the median and at most
+  `timeout_ms` slower on a failure: the call runs on a worker and the turn stops
+  waiting at the deadline, connect included; a late answer is discarded.
 - A wrong route (23 of 505 turns in the eval) is a spoken answer to a question
   Allen did not ask; the event log is how they are found.
 - The option descriptions are part of the measured behaviour: changing one

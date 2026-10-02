@@ -16,6 +16,8 @@ from __future__ import annotations
 import logging
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeout
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Final
 
@@ -45,6 +47,7 @@ _CONTEXT_EXCHANGES: Final[int] = 2
 _CONTEXT_WINDOW_MS: Final[int] = 600_000
 _ANSWER_CHARS: Final[int] = 200
 _KEEPALIVE_S: Final[float] = 30.0
+_WORKERS: Final[int] = 4
 
 
 @dataclass(frozen=True)
@@ -138,8 +141,19 @@ class SurrogateRoute:
     min_confidence: float
     timeout_ms: int
     url: str = SURROGATE_URL
-    _client: httpx.Client | None = field(default=None, init=False, repr=False)
+    _client: httpx.Client = field(init=False, repr=False)
+    _pool: ThreadPoolExecutor = field(init=False, repr=False)
     _warned: set[str] = field(default_factory=set, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        """Open the client and the worker pool; no network yet."""
+        # httpx bounds each phase, not the whole call, so the call runs on a worker and
+        # the turn stops waiting at the deadline; a stalled worker ends on its own phase
+        # timeout, and its late answer is dropped.
+        self._client = httpx.Client(
+            timeout=self.timeout_ms / 1000, limits=httpx.Limits(keepalive_expiry=_KEEPALIVE_S),
+        )
+        self._pool = ThreadPoolExecutor(max_workers=_WORKERS, thread_name_prefix="jarvis-jev")
 
     def accepts(self, answer: SurrogateAnswer) -> bool:
         """Whether the answer is a confident choice of a function, not ``none``."""
@@ -161,6 +175,11 @@ class SurrogateRoute:
                 answer.error,
             )
         return answer
+
+    def _post(self, key: str, body: dict[str, Any]) -> Any:  # noqa: ANN401 — decoded JSON
+        reply = self._client.post(self.url, json=body, headers={"Authorization": f"Bearer {key}"})
+        reply.raise_for_status()
+        return reply.json()
 
     def _call(
         self, state: str, options: Sequence[SurrogateOption], started: float,
@@ -184,27 +203,14 @@ class SurrogateRoute:
                 "criteria": {**{o.id: o.description for o in options}, NONE: _NONE_DESCRIPTION},
             }},
         }
-        timeout_s = self.timeout_ms / 1000
         try:
-            if self._client is None:
-                self._client = httpx.Client(
-                    timeout=timeout_s,
-                    limits=httpx.Limits(keepalive_expiry=_KEEPALIVE_S),
-                )
-            reply = self._client.post(
-                self.url, json=body, headers={"Authorization": f"Bearer {key}"},
-            )
-            reply.raise_for_status()
-            parsed = reply.json()
-        except httpx.TimeoutException:
+            parsed = self._pool.submit(self._post, key, body).result(self.timeout_ms / 1000)
+        except (httpx.TimeoutException, FutureTimeout):
             return done(error="timeout")
         except httpx.HTTPError:
             return done(error="http")
         except ValueError:
             return done(error="bad_json")
-        if (time.monotonic() - started) * 1000 > self.timeout_ms:
-            # httpx bounds each phase, not the whole call; a late answer is never used.
-            return done(error="timeout")
         return _read_answer(parsed, options, done)
 
 
