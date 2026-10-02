@@ -34,9 +34,9 @@ export type Req =
 export type Pic = { name: string; img?: string; path?: string };
 // `id` on what you said and on an answer names that point of the conversation for fork and rewind (POST
 // /sessions/{id}/fork): Claude's message uuid, Codex's turn id. `ride`: your reactions that went to the agent with what
-// you said (m-rx).
+// you said (m-rx). `by`: 'coord' when the project's coordinator wrote it (ADR 0119), not you.
 export type Item = ({ at?: number; ended?: number } & (
-  | { k: 'you'; text: string; files?: Pic[]; queued?: boolean; id?: string; ride?: string[] }
+  | { k: 'you'; text: string; files?: Pic[]; queued?: boolean; id?: string; ride?: string[]; by?: 'coord' }
   | { k: 'it'; text: string; id?: string }
   | { k: 'steps'; steps: Step[]; took?: string; live?: boolean }
   | { k: 'plan'; todos: [string, 0 | 1 | 2][] }
@@ -59,8 +59,9 @@ export type Sess = {
   // dirs: folders it may work in besides its own · named: the title is yours, so it is never replaced by a generated one
   // · base: what its worktree started from
   tasks?: Task[]; dirs?: string[]; named?: boolean; base?: string;
-  // proj: the project (Proj) it is a thread of; `project` above is its repository folder, not this
-  proj?: string;
+  // proj: the project (Proj) it is a thread of; `project` above is its repository folder, not this · root: the stream
+  // message (Feed) its coordinator started it for
+  proj?: string; root?: string;
   // ADR 0097 · dirty: what landing would take (files, lines, commits the default branch does not have yet), the default
   // branch it lands into and the ways it can, the default first; absent outside git, with nothing to land or no way to.
   // `ask`: its repository has no way of its own yet and could go either, so the first landing asks which (and keeps the
@@ -77,8 +78,17 @@ export type Sess = {
 // A project groups sessions (its threads) and gives each the same instructions, memory and shared folder. It lives in
 // `projects/<id>/` of the host's folder: project.json, memory/ (MEMORY.md is the index) and files/. `folder` is where a
 // thread starts and `agent`, `model`, `effort`, `mode` what it starts with when the new session says nothing else.
+// `coord`: its coordinator (ADR 0119), a Claude session that hears the stream and routes work, with its own model and
+// effort; on from the start for a new project, off for one made before there was a stream.
 // Not the project list (Project), which is the repository folders.
-export type Proj = { id: string; name: string; goal: string; instructions: string; folder: string; agent: Agent; model: string; effort: string; mode: string; created: number; archived: boolean };
+export type Proj = { id: string; name: string; goal: string; instructions: string; folder: string; agent: Agent; model: string; effort: string; mode: string; created: number; archived: boolean;
+  coord: { on: boolean; model: string; effort: string } };
+// One message in a project's stream (ADR 0118), kept in projects/<id>/feed.jsonl. `by`: you · its coordinator · the host
+// itself (an approval a thread waits for: `alert`, struck through and edited once answered). `root`: the message it
+// answers · `in`: a message of yours written inside a thread, which the stream keeps so the coordinator can cite it ·
+// `thread`: the session an alert or a draft concerns · `draft`: words for the coordinator's thread that you send as your own
+// with one click (`sent`: when) · `edited`: when its text last changed.
+export type Feed = { id: string; at: number; by: 'you' | 'coord' | 'host'; text: string; root?: string; in?: string; thread?: string; draft?: { text: string; sent?: number }; alert?: boolean; edited?: number };
 // Where a thread stands in its project, worked out when read, never kept: wait for you · work running · review has a
 // pull request open · landing under way · idle · done (archived, or untouched for a week).
 export type Bucket = 'wait' | 'work' | 'review' | 'landing' | 'idle' | 'done';
@@ -176,6 +186,9 @@ export type Auth = { packaged: boolean; mode: 'subscription' | 'key'; provider?:
 export type Event =
   | { t: 'hello'; sessions: Sess[]; projs: Proj[]; catalog: Catalog; settings?: Settings; auth?: Auth }
   | { t: 'proj'; p: Proj }
+  // Messages of a project's stream that are new or changed; and what its coordinator is doing (work · idle · err with `why`).
+  | { t: 'feed'; proj: string; msgs: Feed[] }
+  | { t: 'coord'; proj: string; st: 'work' | 'idle' | 'err'; why?: string }
   | { t: 'settings'; settings: Settings; auth: Auth }
   // A sign-in the check-up started (Codex's ChatGPT login) finished.
   | { t: 'signin'; agent: Agent; ok: boolean; why?: string }

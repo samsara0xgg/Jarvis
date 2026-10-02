@@ -6,13 +6,14 @@ import http from 'node:http';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
-import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { copyFile, mkdir, open, readFile, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
-import type { Agent, Answer, Bucket, Catalog, Choice, Ctx, Doctor, Event, File, Item, Live, Mcp, McpAct, Outside, Pic, Proj, Project, Req, Rx, Service, Sess, St, Step, Task, Usage, UsageWindow } from './types.js';
+import type { Agent, Answer, Bucket, Catalog, Choice, Ctx, Doctor, Event, Feed, File, Item, Live, Mcp, McpAct, Outside, Pic, Proj, Project, Req, Rx, Service, Sess, St, Step, Task, Usage, UsageWindow } from './types.js';
 import { claude, claudeExe, heldReq } from './claude.js';
 import { codex } from './codex.js';
+import { coordSt, coordStopAll, coordSync, coordWake } from './coord.js';
 import { loginPath, version, which } from './doctor.js';
 import { findFiles, GIT, keepUpload, peek, pruneOld, resolveRefs, sendFile } from './files.js';
 import { contentOf } from './form.js';
@@ -141,11 +142,14 @@ async function pruneImages() {
     if (Date.now() - (await stat(p)).mtimeMs > 30 * 864e5) await unlink(p).catch(() => {});
   }
 }
-const oneLine = (t: string, n = 120) => { const x = t.replace(/\s+/g, ' ').trim(); return x.length > n ? `${x.slice(0, n - 1)}…` : x; };
+export const oneLine = (t: string, n = 120) => { const x = t.replace(/\s+/g, ' ').trim(); return x.length > n ? `${x.slice(0, n - 1)}…` : x; };
 // ---------- reactions (m-rx): they never wake the agent; the next message you send carries the ones still waiting as a
 // line in front of your words, and what you said shows which went with it ----------
 export const RX = ['👍', '❤️', '😂', '🎉', '🤔', '👀', '🙏', '👎'];
 const RIDE = /^\[Reactions: ([^\n]*)\]\n\n/;
+// What a message from a project's coordinator (ADR 0119) starts with: Session.you() takes it off and marks the item.
+export const COORD_HEAD = '[From: coordinator]';
+const FROM = /^\[From: coordinator\]\n+/;
 // What you said without that line, and the reactions it carried.
 export function rode(text: string) {
   const m = RIDE.exec(text);
@@ -196,6 +200,7 @@ export class Session {
 
   // `daemon`: these are the daemon's marks coming in, not a change to send it.
   set(p: Partial<Sess>, daemon = false) {
+    const was = this.s.st;
     if (p.st && p.st !== this.s.st && !this.quiet) {
       const at = Date.now();
       this.s.trace = [...this.s.trace ?? [], { at, st: p.st }];
@@ -204,7 +209,11 @@ export class Session {
     const changed: string[] = [];
     for (const [k, v] of Object.entries(p)) if ((this.s as Record<string, unknown>)[k] !== v) { (this.s as Record<string, unknown>)[k] = v; changed.push(k); }
     if (!changed.length || this.quiet) return;
-    if (changed.includes('st')) this.landingOf?.saw(this.s.st);
+    if (changed.includes('st')) {
+      this.landingOf?.saw(this.s.st);
+      // A turn the owner ended themselves (stopped, or interrupted: `unread` false) is not news for a project's coordinator.
+      if (this.s.proj) projSaw(this, was, p.stopped === true || p.unread === false);
+    }
     if (!daemon) {
       const m: Record<string, boolean> = {};
       if (changed.includes('unread')) Object.assign(m, this.s.unread ? { unread: true } : { seen: true });
@@ -246,12 +255,13 @@ export class Session {
       ...this.s.tasks?.some(t => t.st !== 'run') ? { tasks: this.s.tasks.filter(t => t.st === 'run') } : {} });
   }
   private need() { if (!this.turn) this.begin(); return this.turn!; }
-  // The line of reactions it carried is not what you said: it shows as the reactions under it.
+  // The line of reactions it carried is not what you said: it shows as the reactions under it. Nor is the line that says
+  // the project's coordinator wrote it (ADR 0119): the words show as its own, marked `by`.
   you(text: string, files: Pic[] = [], at?: number, id?: string) {
     this.end(undefined, true);
-    const r = rode(text);
+    const r = rode(text), c = FROM.exec(r.text);
     if (!this.quiet) this.carrying.delete(r.text);
-    this.push({ k: 'you', text: r.text, at: this.time(at), ...(files.length ? { files } : {}), ...(id ? { id } : {}), ...(r.ride.length ? { ride: r.ride } : {}) });
+    this.push({ k: 'you', text: c ? r.text.slice(c[0].length) : r.text, at: this.time(at), ...(files.length ? { files } : {}), ...(id ? { id } : {}), ...(r.ride.length ? { ride: r.ride } : {}), ...(c ? { by: 'coord' as const } : {}) });
   }
   // The agent took a message you sent while it worked: its 👀 on it (m-eyes).
   looked(id: string) { const k = `you:${id}`; this.set({ rx: { ...this.s.rx, [k]: { ...this.s.rx?.[k], by: '👀' } } }); }
@@ -466,7 +476,7 @@ export async function catalogChanged() { catalog = null; broadcast({ t: 'catalog
 // ---------- git: projects, worktrees ----------
 const git = async (cwd: string, ...args: string[]) => (await exec('git', [...GIT, '-C', cwd, ...args], { maxBuffer: 64 << 20 })).stdout;
 // The repository a folder belongs to, with a worktree counted as its main checkout.
-async function repoOf(cwd: string) {
+export async function repoOf(cwd: string) {
   try { return path.dirname((await git(cwd, 'rev-parse', '--path-format=absolute', '--git-common-dir')).trim()); } catch { return ''; }
 }
 async function branchOf(cwd: string) { try { return (await git(cwd, 'branch', '--show-current')).trim(); } catch { return ''; } }
@@ -587,7 +597,7 @@ async function settingsChanged(was: boolean) {
 }
 const need = (id: string) => { const x = sessions.get(id); if (!x) throw new Http(404, tr('没有这个会话', 'No such session')); return x; };
 const str = (v: unknown, name: string) => { if (typeof v !== 'string') throw new Http(400, tr(`${name} 不对`, `${name} is not valid`)); return v; };
-const pathOf = (p: string) => p ? path.resolve(p.replace(/^~(?=\/|$)/, homedir())) : '';
+export const pathOf = (p: string) => p ? path.resolve(p.replace(/^~(?=\/|$)/, homedir())) : '';
 // Files sent with a message: a data: URL, or a file or folder on this Mac by its path (one dropped on the window).
 const fileList = (v: unknown): File[] => Array.isArray(v) ? v.slice(0, 20).filter(f => typeof f?.name === 'string'
   && (typeof f.url === 'string' ? f.url.startsWith('data:') : typeof f.path === 'string' && path.isAbsolute(f.path) && existsSync(f.path)))
@@ -690,35 +700,7 @@ async function route(req: Req0, res: http.ServerResponse, url: URL): Promise<unk
     return { ok: true };
   }
   if (parts[0] === 'proj') return projRoute(req, m, parts, url);
-  if (m === 'POST' && url.pathname === '/sessions') {
-    const b = await body(req), pj = b.proj == null ? undefined : liveProj(b.proj), agent: Agent = b.agent === 'codex' || b.agent === 'claude' ? b.agent : pj?.agent ?? 'claude';
-    const text = str(b.text, 'text').trim(), files = fileList(b.files), dirs = dirList(b.dirs);
-    // A project's model, effort and mode are for its own agent: another agent picked in the request takes its own.
-    const mine = pj?.agent === agent ? pj : undefined;
-    signedIn(agent);
-    let cwd = pathOf(str(b.cwd ?? pj?.folder, 'cwd'));
-    if (!(await stat(cwd).catch(() => null))?.isDirectory()) throw new Http(400, tr('没有这个文件夹', 'No such folder'));
-    if (!text && !files.length) throw new Http(400, tr('要它做什么？', 'What should it do?'));
-    const repo = await repoOf(cwd), from = typeof b.base === 'string' ? b.base.trim() : '';
-    let branch = await branchOf(cwd), tree = false;
-    if (b.tree && repo) { ({ cwd, branch } = await worktree(repo, text, from)); tree = true; }
-    const cat = (await getCatalog())[agent];
-    const s: Sess = { id: '', agent, title: oneLine(text || files[0]?.name || tr('新会话', 'New session'), 48), cwd, project: base(repo || cwd), branch, tree,
-      st: 'work', pinned: false, parked: false, archived: false, unread: false, created: Date.now(), trace: [{ at: Date.now(), st: 'work' }], updated: Date.now(), summary: tr('在想', 'Thinking'),
-      model: typeof b.model === 'string' ? b.model : mine?.model || cat.models[0]?.[0] || '', effort: typeof b.effort === 'string' ? b.effort : mine?.effort || 'high',
-      mode: typeof b.mode === 'string' ? b.mode : mine?.mode || cat.modes[0]?.[0] || '', ctx: 0, ...dirs.length ? { dirs } : {}, ...tree && from ? { base: from } : {}, ...pj ? { proj: pj.id } : {} };
-    const x = new Session(s, repo);
-    x.items = [];
-    s.id = await x.driver.create(x);
-    sessions.set(s.id, x);
-    broadcast({ t: 'sess', s });
-    save();
-    // A new worktree's setup script runs first, so the answer comes back before it ends; a send that fails then shows
-    // on the row.
-    if (tree && settings.setup?.[repo]) void setup(x).then(() => x.driver.send(x, text, files)).catch(e => { log('first send', s.id, e); x.end(undefined, false, 'err', tr(`没发出去：${oneLine(String(e instanceof Error ? e.message : e), 120)}`, `Not sent: ${oneLine(String(e instanceof Error ? e.message : e), 120)}`)); });
-    else await x.driver.send(x, text, files);
-    return { id: s.id };
-  }
+  if (m === 'POST' && url.pathname === '/sessions') return { id: (await startSession(await body(req))).s.id };
   // ---- the workbench (ADR 0085, 0086): plan usage, Jarvis's services and logs, a terminal per session ----
   if (m === 'GET' && url.pathname === '/usage') return usage();
   if (m === 'GET' && url.pathname === '/services') return { services: await services() };
@@ -842,18 +824,14 @@ async function route(req: Req0, res: http.ServerResponse, url: URL): Promise<unk
     return { ok: true };
   }
   if (verb === 'send') {
-    if (x.s.term) throw new Http(409, tr('在终端里，先拿回来', 'In Terminal: take it back first'));
-    if (x.s.gone || !existsSync(x.s.cwd)) throw new Http(409, tr('这个会话已经落地，它的 worktree 清掉了：开个新会话接着做', 'This session has landed and its worktree was cleaned up: start a new session to continue'));
+    sendable(x);
     const text = str(b.text, 'text').trim(), files = fileList(b.files);
     if (!text && !files.length) return { ok: true };
     // The model, the effort and plan mode typed as a command: the host sets them, as the menus do (B9).
     const cmd = files.length ? null : /^\/(model|effort|reasoning|plan)(?:\s+(\S+))?$/.exec(text);
     if (cmd && (cmd[1] === 'plan' || cmd[2])) { await typed(x, cmd[1], cmd[2] ?? ''); return { ok: true }; }
-    signedIn(x.s.agent);
-    await x.ensureLoaded();
-    x.set({ unread: false, updated: Date.now() });
-    if (x.s.archived && x.s.vers) await current(x);
-    await x.driver.send(x, carry(x, text), files);
+    await deliver(x, text, files, true);
+    ownerIn(x, text);
     return { ok: true };
   }
   // A reaction of yours on a message, on or off (m-rx): kept here, never sent by itself.
@@ -939,6 +917,8 @@ async function route(req: Req0, res: http.ServerResponse, url: URL): Promise<unk
   // Into a project or out of it (`proj` null): its agent reads the project's instructions when it next starts.
   if (verb === 'proj') {
     x.set({ proj: b.proj === null ? undefined : liveProj(b.proj).id });
+    // A Claude Code that is idle is let go, as a change of folders does, so its next start reads the project (or the lack of one).
+    if (x.s.agent === 'claude' && !busy(x)) await x.driver.release(x);
     return { ok: true };
   }
   // Files put back as they were at a point, the conversation staying as it is (B13).
@@ -1015,29 +995,96 @@ async function route(req: Req0, res: http.ServerResponse, url: URL): Promise<unk
 // threads (sessions with `proj`) read them when their agent starts, so a change reaches a thread at its next start.
 const PROJS = path.resolve(DIR, 'projects');
 const projs = new Map<string, Proj>();
-const projDir = (id: string) => path.join(PROJS, id);
+export const projDir = (id: string) => path.join(PROJS, id);
+export const projOf = (id: string) => projs.get(id);
 export const projFor = (x: Session) => projs.get(x.s.proj ?? '');
+// A short random id: `p` + 10 characters for a project, `m` + 10 for a message of its stream.
+const newId = (c: string) => `${c}${Array.from(randomBytes(10), b => (b % 36).toString(36)).join('')}`;
 // The folders an agent may write in besides its own: memory/ and files/.
 export const projDirs = (p: Proj) => ['memory', 'files'].map(d => path.join(projDir(p.id), d));
-// What every thread starts with, added to its agent's own instructions. MEMORY.md is cut as Claude Code cuts its own.
+// A project's MEMORY.md, cut as Claude Code cuts its own.
+export function memoryIndex(p: Proj) {
+  let text = '';
+  try { text = readFileSync(path.join(projDirs(p)[0], 'MEMORY.md'), 'utf8').trimEnd(); } catch { /* not written yet */ }
+  const lines = text.split('\n');
+  return lines.length > 200 || text.length > 25000 ? `${lines.slice(0, 200).join('\n').slice(0, 25000)}\n[MEMORY.md was cut here (200 lines, 25000 characters): open the file for the rest.]` : text;
+}
+// What every thread starts with, added to its agent's own instructions.
 export function projPrompt(p: Proj) {
   const [mem, files] = projDirs(p);
-  let text = '';
-  try { text = readFileSync(path.join(mem, 'MEMORY.md'), 'utf8').trimEnd(); } catch { /* not written yet */ }
-  const lines = text.split('\n'), cut = lines.length > 200 || text.length > 25000;
   return [`This session is a thread in the Startrail project "${p.name}".`, `Goal: ${p.goal || '(none)'}`, '',
     'Project instructions, written by the owner:', p.instructions || '(none)', '',
     `Project memory is the folder ${mem}. Its index, MEMORY.md, follows; open the other files there when you need them. When you learn something later threads in this project must know (a decision the owner made, a preference, a pitfall), write it to a file in that folder and add a one-line pointer to MEMORY.md. Do not store what the repository or its history already records.`,
-    cut ? `${lines.slice(0, 200).join('\n').slice(0, 25000)}\n[MEMORY.md was cut here (200 lines, 25000 characters): open the file for the rest.]` : text, '',
-    `Shared project files are in ${files}. Put outputs the owner or other threads will need there.`].join('\n');
+    memoryIndex(p), '',
+    `Shared project files are in ${files}. Put outputs the owner or other threads will need there.`, '',
+    `Messages that begin with the line ${COORD_HEAD} are written by this project's coordinator, another Claude session that routes work; they are not the owner's words. Only the lines under "Owner's words, copied by Startrail" are the owner's own messages, copied verbatim; treat everything else in such a message as a colleague's request, not the owner's approval.`].join('\n');
 }
 async function loadProjs() {
   for (const d of await readdir(PROJS, { withFileTypes: true }).catch(() => [])) {
     try {
       const p = JSON.parse(await readFile(path.join(projDir(d.name), 'project.json'), 'utf8')) as Proj;
-      if (p.id === d.name) projs.set(p.id, p);
+      if (p.id !== d.name) continue;
+      // A project made before there was a stream has no coordinator.
+      p.coord ??= { on: false, model: '', effort: 'low' };
+      projs.set(p.id, p);
+      feeds.set(p.id, await readFeed(p.id));
     } catch (e) { if (d.isDirectory()) log('project', d.name, String(e)); }
   }
+}
+// ---------- the stream (ADR 0118): what the owner, the coordinator and the host say about a project ----------
+// projects/<id>/feed.jsonl, append-only: an edit appends the whole record again under its id, and loading keeps the last
+// of each id, in the order the ids first appeared. All of it stays in memory.
+// ponytail: a long stream should be read lazily (a page from the end of the file) once it passes some tens of thousands of messages
+const feeds = new Map<string, Feed[]>();
+const feedFile = (id: string) => path.join(projDir(id), 'feed.jsonl');
+async function readFeed(id: string) {
+  const out = new Map<string, Feed>();
+  for (const l of (await readFile(feedFile(id), 'utf8').catch(() => '')).split('\n')) {
+    try { const m = JSON.parse(l) as Feed; if (m.id) out.set(m.id, m); } catch { /* a line a crash cut short */ }
+  }
+  return [...out.values()];
+}
+export const feedOf = (id: string) => feeds.get(id) ?? [];
+// A message made, or changed (the same id), kept and heard by every window.
+export function feedPut(pid: string, m: Feed) {
+  const list = feeds.get(pid) ?? [], i = list.findIndex(x => x.id === m.id);
+  if (i >= 0) list[i] = m; else list.push(m);
+  feeds.set(pid, list);
+  appendFileSync(feedFile(pid), `${JSON.stringify(m)}\n`);
+  broadcast({ t: 'feed', proj: pid, msgs: [m] });
+  return m;
+}
+export const feedAdd = (pid: string, f: Omit<Feed, 'id' | 'at'>) => feedPut(pid, { id: newId('m'), at: Date.now(), ...f });
+// An alert once handled: struck through, with what was done.
+const handled = (m: Feed): Feed => ({ ...m, text: `~~${m.text}~~ ${tr('已处理', 'Handled')}`, edited: Date.now() });
+const openAlert = (pid: string, thread: string) => feedOf(pid).find(m => m.alert && m.thread === thread && !m.edited);
+// What the owner writes inside a project's thread is also in its stream, with the thread (`in`), and wakes the coordinator
+// (ADR 0119). A command (/compact) is not a message for the coordinator.
+function ownerIn(x: Session, text: string, started = false) {
+  const pj = projFor(x);
+  if (!pj || !text || text.startsWith('/')) return;
+  const m = feedAdd(pj.id, { by: 'you', text, in: x.s.id });
+  coordWake(pj.id, `owner ${started ? 'started' : 'wrote in'} thread "${x.s.title}" (${x.s.id}, ${m.id}): ${text}`);
+}
+// A project thread's state changed. An approval it waits for is a post of the host's (no model involved), struck through
+// once answered; a turn that ended wakes the coordinator unless the owner ended it themselves.
+function projSaw(x: Session, was: St, byOwner: boolean) {
+  const pj = projFor(x), now = x.s.st;
+  if (!pj) return;
+  const open = openAlert(pj.id, x.s.id);
+  if (now === 'wait' && !open) {
+    const req = x.pending()?.req, what = req ? reqLine(req) : x.s.summary;
+    feedAdd(pj.id, { by: 'host', alert: true, thread: x.s.id, text: tr(`「${x.s.title}」在等你：${what}`, `"${x.s.title}" is waiting for you: ${what}`) });
+  } else if (was === 'wait' && open) feedPut(pj.id, handled(open));
+  if (byOwner || x.s.archived || !(was === 'work' || was === 'pack' || was === 'wait')) return;
+  let answer = '';
+  for (let i = (x.items?.length ?? 0) - 1; i >= 0 && !answer; i--) { const it = x.items![i]; if (it.k === 'you') break; if (it.k === 'it') answer = it.text; }
+  if (now === 'done') coordWake(pj.id, `thread "${x.s.title}" (${x.s.id}) finished a turn: ${oneLine(answer, 600)}`);
+  else if (now === 'err') coordWake(pj.id, `thread "${x.s.title}" (${x.s.id}) failed: ${x.s.summary}`);
+}
+// At boot, an approval nobody waits on any more (its turn went with the host) is handled.
+function closeAlerts() {
+  for (const [pid, list] of feeds) for (const m of list) if (m.alert && !m.edited && sessions.get(m.thread ?? '')?.s.st !== 'wait') feedPut(pid, handled(m));
 }
 async function saveProj(p: Proj) {
   const dir = projDir(p.id), file = path.join(dir, 'project.json');
@@ -1057,7 +1104,7 @@ export function bucket(s: Sess): Bucket {
   if (s.pr) return 'review';
   return Date.now() - s.updated > 7 * 864e5 ? 'done' : 'idle';
 }
-const threads = (id: string) => [...sessions.values()].map(x => x.s).filter(s => s.proj === id);
+export const threads = (id: string) => [...sessions.values()].map(x => x.s).filter(s => s.proj === id);
 function counts(id: string) {
   const c = Object.fromEntries(BUCKETS.map(k => [k, 0])) as Record<Bucket, number>;
   for (const s of threads(id)) c[bucket(s)]++;
@@ -1071,9 +1118,9 @@ function liveProj(v: unknown) {
   if (p.archived) throw new Http(409, tr('这个项目已经归档了', 'This project is archived'));
   return p;
 }
-// The fields of a project a request gives, each checked.
-async function projFields(b: Record<string, any>): Promise<Partial<Proj>> {
-  const o: Partial<Proj> = {};
+// The fields of a project a request gives, each checked; `coord` may give only some of its three.
+async function projFields(b: Record<string, any>): Promise<Partial<Omit<Proj, 'coord'>> & { coord?: Partial<Proj['coord']> }> {
+  const o: Awaited<ReturnType<typeof projFields>> = {};
   if (b.name !== undefined) {
     o.name = oneLine(str(b.name, 'name'), 80);
     if (!o.name) throw new Http(400, tr('项目要有名字', 'A project needs a name'));
@@ -1096,22 +1143,69 @@ async function projFields(b: Record<string, any>): Promise<Partial<Proj>> {
     if (typeof b.archived !== 'boolean') throw new Http(400, tr('archived 不对', 'archived is not valid'));
     o.archived = b.archived;
   }
+  if (b.coord !== undefined) {
+    const c = b.coord;
+    if (!c || typeof c !== 'object' || Array.isArray(c)) throw new Http(400, tr('coord 不对', 'coord is not valid'));
+    o.coord = {};
+    if (c.on !== undefined) {
+      if (typeof c.on !== 'boolean') throw new Http(400, tr('coord.on 不对', 'coord.on is not valid'));
+      o.coord.on = c.on;
+    }
+    if (c.model !== undefined) o.coord.model = str(c.model, 'coord.model').trim();
+    if (c.effort !== undefined) {
+      if (!(await getCatalog()).claude.efforts.includes(c.effort)) throw new Http(400, tr('coord.effort 不对', 'coord.effort is not valid'));
+      o.coord.effort = c.effort;
+    }
+  }
   return o;
 }
+// The Claude menu's Sonnet, the model a new project's coordinator starts with.
+const sonnet = (c: Choice) => (c.models.find(([v, l]) => /sonnet/i.test(`${v} ${l}`)) ?? c.models[0])?.[0] ?? '';
 // A memory file of a project: inside memory/, ending in .md.
 function memFile(dir: string, v: unknown) {
   const rel = str(v, 'path'), abs = path.resolve(dir, rel);
   if (rel.includes('\0') || !abs.startsWith(dir + path.sep) || !abs.endsWith('.md')) throw new Http(400, tr('记忆文件要放在 memory 文件夹里，并以 .md 结尾', 'A memory file must be inside the memory folder and end in .md'));
   return abs;
 }
+// The stream: a page of it, a post of the owner's (which wakes the coordinator), and a coordinator's draft sent on.
+async function feedRoute(req: Req0, m: string, p: Proj, parts: string[], url: URL): Promise<unknown> {
+  const list = feedOf(p.id);
+  if (!parts[3]) {
+    if (m === 'GET') {
+      const n = Math.max(1, Math.min(200, Math.floor(Number(url.searchParams.get('n') ?? 50)) || 50)), before = url.searchParams.get('before');
+      const end = before ? list.findIndex(x => x.id === before) : list.length;
+      if (end < 0) throw new Http(404, tr('没有这条消息', 'No such message'));
+      return { feed: list.slice(Math.max(0, end - n), end) };
+    }
+    if (m !== 'POST') throw new Http(405, tr('不行', 'Not allowed'));
+    const text = str((await body(req)).text, 'text').trim();
+    if (!text) throw new Http(400, tr('要说什么？', 'What do you want to say?'));
+    if (text.length > 20000) throw new Http(400, tr('最多 20000 字', 'At most 20000 characters'));
+    const msg = feedAdd(p.id, { by: 'you', text });
+    coordWake(p.id, `owner posted in the stream (${msg.id}): ${text}`);
+    return { msg };
+  }
+  const msg = list.find(x => x.id === parts[3]);
+  if (!msg) throw new Http(404, tr('没有这条消息', 'No such message'));
+  if (m !== 'POST' || parts[4] !== 'send' || parts[5]) throw new Http(404, tr('没有这个地方', 'Not found'));
+  if (!msg.draft) throw new Http(404, tr('这条消息没有草稿', 'This message has no draft'));
+  if (msg.draft.sent) throw new Http(409, tr('已经发出去了', 'Already sent'));
+  const x = sessions.get(msg.thread ?? '');
+  if (!x) throw new Http(404, tr('这个会话已经不在了', 'That session is gone'));
+  sendable(x);
+  // Marked first, so a second click is refused while the first is on its way; put back if it does not go.
+  feedPut(p.id, { ...msg, draft: { ...msg.draft, sent: Date.now() } });
+  try { await deliver(x, msg.draft.text, [], true); } catch (e) { feedPut(p.id, msg); throw e; }
+  return { ok: true };
+}
 async function projRoute(req: Req0, m: string, parts: string[], url: URL): Promise<unknown> {
   if (!parts[1]) {
     if (m === 'GET') return { projs: [...projs.values()].sort((a, b) => b.created - a.created).map(p => ({ ...p, counts: counts(p.id) })) };
     if (m !== 'POST') throw new Http(405, tr('不行', 'Not allowed'));
-    const b = await body(req), f = await projFields({ ...b, name: str(b.name, 'name'), folder: str(b.folder, 'folder') });
-    const agent = f.agent ?? 'claude', cat = (await getCatalog())[agent];
+    const b = await body(req), { coord, ...f } = await projFields({ ...b, name: str(b.name, 'name'), folder: str(b.folder, 'folder') });
+    const agent = f.agent ?? 'claude', all = await getCatalog(), cat = all[agent];
     const p: Proj = { goal: '', instructions: '', agent, model: cat.models[0]?.[0] ?? '', effort: 'high', mode: cat.modes[0]?.[0] ?? '', ...f as Pick<Proj, 'name' | 'folder'>,
-      id: `p${Array.from(randomBytes(10), c => (c % 36).toString(36)).join('')}`, created: Date.now(), archived: false };
+      id: newId('p'), created: Date.now(), archived: false, coord: { on: true, model: sonnet(all.claude), effort: 'low', ...coord } };
     await saveProj(p);
     await writeFile(path.join(projDirs(p)[0], 'MEMORY.md'), `# ${p.name}\n`);
     projs.set(p.id, p);
@@ -1120,14 +1214,16 @@ async function projRoute(req: Req0, m: string, parts: string[], url: URL): Promi
   }
   const p = needProj(parts[1]);
   if (!parts[2]) {
-    if (m === 'GET') return { proj: p, threads: threads(p.id).sort((a, b) => b.updated - a.updated).map(s => ({ s, bucket: bucket(s) })) };
+    if (m === 'GET') return { proj: p, threads: threads(p.id).sort((a, b) => b.updated - a.updated).map(s => ({ s, bucket: bucket(s) })), coord: { st: coordSt(p.id) } };
     if (m !== 'POST') throw new Http(405, tr('不行', 'Not allowed'));
-    const f = await projFields(await body(req)), next: Proj = { ...projs.get(p.id)!, ...f };
+    const { coord, ...f } = await projFields(await body(req)), next: Proj = { ...p, ...f, coord: { ...p.coord, ...coord } };
     await saveProj(next);
     projs.set(next.id, next);
     broadcast({ t: 'proj', p: next });
+    coordSync(next, p);
     return { proj: next };
   }
+  if (parts[2] === 'feed') return feedRoute(req, m, p, parts, url);
   if (parts[2] !== 'memory' || parts[3]) throw new Http(404, tr('没有这个地方', 'Not found'));
   const dir = projDirs(p)[0], at = url.searchParams.get('path');
   if (m === 'GET' && at === null) {
@@ -1152,6 +1248,53 @@ async function projRoute(req: Req0, m: string, parts: string[], url: URL): Promi
 }
 
 // ---------- what the routes do ----------
+// A new session from a request's body: the window's POST /sessions, and a coordinator's start_thread (ADR 0119), which
+// gives the title (kept: it is never replaced by a generated one) and the stream message the thread answers. What the owner
+// starts a project's session with is also said in the project's stream (ADR 0118).
+export async function startSession(b: Record<string, any>, by?: { title: string; root?: string }) {
+  const pj = b.proj == null ? undefined : liveProj(b.proj), agent: Agent = b.agent === 'codex' || b.agent === 'claude' ? b.agent : pj?.agent ?? 'claude';
+  const text = str(b.text, 'text').trim(), files = fileList(b.files), dirs = dirList(b.dirs);
+  // A project's model, effort and mode are for its own agent: another agent picked in the request takes its own.
+  const mine = pj?.agent === agent ? pj : undefined;
+  signedIn(agent);
+  let cwd = pathOf(str(b.cwd ?? pj?.folder, 'cwd'));
+  if (!(await stat(cwd).catch(() => null))?.isDirectory()) throw new Http(400, tr('没有这个文件夹', 'No such folder'));
+  if (!text && !files.length) throw new Http(400, tr('要它做什么？', 'What should it do?'));
+  const repo = await repoOf(cwd), from = typeof b.base === 'string' ? b.base.trim() : '';
+  let branch = await branchOf(cwd), tree = false;
+  if (b.tree && repo) { ({ cwd, branch } = await worktree(repo, by?.title ?? text, from)); tree = true; }
+  const cat = (await getCatalog())[agent];
+  const s: Sess = { id: '', agent, title: oneLine(by?.title ?? (text || files[0]?.name || tr('新会话', 'New session')), by ? 80 : 48), cwd, project: base(repo || cwd), branch, tree,
+    st: 'work', pinned: false, parked: false, archived: false, unread: false, created: Date.now(), trace: [{ at: Date.now(), st: 'work' }], updated: Date.now(), summary: tr('在想', 'Thinking'),
+    model: typeof b.model === 'string' ? b.model : mine?.model || cat.models[0]?.[0] || '', effort: typeof b.effort === 'string' ? b.effort : mine?.effort || 'high',
+    mode: typeof b.mode === 'string' ? b.mode : mine?.mode || cat.modes[0]?.[0] || '', ctx: 0, ...dirs.length ? { dirs } : {}, ...tree && from ? { base: from } : {}, ...pj ? { proj: pj.id } : {}, ...by ? { named: true, ...by.root ? { root: by.root } : {} } : {} };
+  const x = new Session(s, repo);
+  x.items = [];
+  s.id = await x.driver.create(x);
+  sessions.set(s.id, x);
+  broadcast({ t: 'sess', s });
+  save();
+  if (!by) ownerIn(x, text, true);
+  // A new worktree's setup script runs first, so the answer comes back before it ends; a send that fails then shows
+  // on the row.
+  if (tree && settings.setup?.[repo]) void setup(x).then(() => x.driver.send(x, text, files)).catch(e => { log('first send', s.id, e); x.end(undefined, false, 'err', tr(`没发出去：${oneLine(String(e instanceof Error ? e.message : e), 120)}`, `Not sent: ${oneLine(String(e instanceof Error ? e.message : e), 120)}`)); });
+  else await x.driver.send(x, text, files);
+  return x;
+}
+// Whether a message can go into this session now.
+export function sendable(x: Session) {
+  if (x.s.term) throw new Http(409, tr('在终端里，先拿回来', 'In Terminal: take it back first'));
+  if (x.s.gone || !existsSync(x.s.cwd)) throw new Http(409, tr('这个会话已经落地，它的 worktree 清掉了：开个新会话接着做', 'This session has landed and its worktree was cleaned up: start a new session to continue'));
+}
+// One message into a session, as the window's send does it (a busy session queues it). `owner`: the message is the owner's own,
+// so it clears the unread mark and carries the reactions still waiting; a coordinator's message (ADR 0119) does neither.
+export async function deliver(x: Session, text: string, files: File[], owner: boolean) {
+  signedIn(x.s.agent);
+  await x.ensureLoaded();
+  if (owner) x.set({ unread: false, updated: Date.now() });
+  if (x.s.archived && x.s.vers) await current(x);
+  await x.driver.send(x, owner ? carry(x, text) : text, files);
+}
 async function setKey(x: Session, k: 'model' | 'effort' | 'mode', v: string) {
   if (x.s[k] === v) return;
   await x.driver.set(x, k, v);
@@ -1491,6 +1634,7 @@ async function boot() {
   await loadSettings();
   await restore(kids);
   await loadProjs();
+  closeAlerts();
   await pruneImages();
   await Promise.all([pruneOld(UPLOADS), pruneOld(TRASH)]);
   for (const x of sessions.values()) {
@@ -1545,6 +1689,7 @@ export async function main() {
     if (stopping) return;
     stopping = true;
     try { saveNow(); } catch (e) { log('save', e); }
+    coordStopAll();
     try { process.kill(-process.pid, 'SIGTERM'); } catch { /* not a group leader: started by hand */ }
     process.exit(0);
   });

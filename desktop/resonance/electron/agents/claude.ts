@@ -41,7 +41,7 @@ const MODES = (): [string, string][] => [['auto', tr('自动', 'Auto')], ['defau
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
 
 // A queue the session reads from; it ends only when the session is let go.
-function pushable<T>() {
+export function pushable<T>() {
   const buf: T[] = [];
   let wake: (() => void) | null = null, done = false;
   return {
