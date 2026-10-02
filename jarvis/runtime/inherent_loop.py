@@ -2632,6 +2632,9 @@ def _build_tts_pipeline(  # noqa: C901 - rollout/degradation capability boundary
             # missed CoreAudio's cycle under load (~40 overloads a minute on the
             # Multi-Output device, 2026-10-02), each one a pop in her voice.
             blocksize=2048,
+            # The host buffer behind it: final ASR and turn start still stall the
+            # callback past 43 ms when Allen stops talking, a pop if she is speaking.
+            latency=0.12,
             device=output_device,
             playback_tap=echo_canceller.add_playback if echo_canceller is not None else None,
             volume=playback_volume,
