@@ -2,9 +2,11 @@
   <img src="docs/assets/poster.png" alt="Jarvis, a glass ball with two glowing eyes, beside the words Jarvis, by Allen Shi" width="100%">
 </p>
 
-> **Demo video coming later today (October 2, 2026).** A short walkthrough of Jarvis running on my Mac will be posted right here.
+> **Demo video coming soon.** A short walkthrough of Jarvis running on my Mac will be posted right here.
 >
-> **In a rush?** You can try a demo on your own Mac with one command, no keys or setup. [Click here to try it.](#try-the-demo)
+> **Status:** Jarvis is my personal assistant. I built it for my own Mac and use it every day, and I'm still expanding and refining it quickly. It isn't a product you can download and use yet; a public version for other people is planned for later.
+>
+> **In a rush?** You can see the interface on sample data with one command, no keys or setup. [Click here to try the demo.](#try-the-demo)
 
 <p align="center">
   <img src="https://img.shields.io/badge/macOS-000000?logo=apple&logoColor=white" alt="macOS">
@@ -53,6 +55,8 @@ Jarvis sits next to the MacBook notch as a small glass ball with eyes. It answer
 A Python daemon owns the microphone, speaker, models, memory and tools. The companion is Electron with React and TypeScript, with a small AppKit module for the glass. They talk over localhost with a per-machine key. Wake word: microWakeWord. Speech recognition: SenseVoice with Silero VAD. Speech: MiniMax. Storage: SQLite. The full design is in [docs/spec.html](docs/spec.html).
 
 ## Run it
+
+Jarvis is built for one person and one machine, so the setup below is a developer's setup, not an installer. A public version will take some time.
 
 You need macOS (built and tested on Apple Silicon), Node.js (tested with Node 24) and the Xcode Command Line Tools (`xcode-select --install`). Running it for real also needs Python 3.12+ and [uv](https://docs.astral.sh/uv/). On a MacBook it sits beside the notch; on a screen without one it lives in a small black pill at the top.
 
