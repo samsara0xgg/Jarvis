@@ -44,7 +44,8 @@ def test_tts_audio_is_kept_per_segment_with_what_was_sent(tmp_path: Path) -> Non
         with patch.object(voice_tts, "_ws_connect", side_effect=_connect):
             session = voice_tts.MiniMaxTTSSession(
                 api_key="key", endpoint="https://example.test", voice="Warm_Bestie",
-                model="speech-x", volume=1, sample_rate_hz=8_000, connect_timeout_s=0.2,
+                model="speech-x", volume=1, language="en",
+                sample_rate_hz=8_000, connect_timeout_s=0.2,
                 first_chunk_timeout_s=0.2, between_chunk_timeout_s=0.2, idle_close_s=1.0,
                 command_queue_capacity=1, audio_queue_capacity=4, recorder=recorder,
             )

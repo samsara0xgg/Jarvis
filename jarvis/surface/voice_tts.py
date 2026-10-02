@@ -27,7 +27,7 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
 
 import numpy as np
 
@@ -2053,6 +2053,11 @@ DEFAULT_TTS_TOTAL_TIMEOUT_S = 30.0
 DEFAULT_TTS_SESSION_CLOSE_TIMEOUT_S = 1.0
 
 
+# MiniMax reads a task in the language it guesses from the text unless told, and
+# guesses wrong on short English (Romanian for a spoken time). Fixed per task_start.
+_LANGUAGE_BOOST: Final = {"zh": "Chinese", "en": "English"}
+
+
 class MiniMaxWSClient:
     """One-shot MiniMax TTS WebSocket client with primary/fallback endpoint.
 
@@ -2120,6 +2125,7 @@ class MiniMaxWSClient:
         self,
         *,
         endpoint_index: int,
+        language: lang.Language,
         idle_close_s: float,
         command_queue_capacity: int,
         audio_queue_capacity: int,
@@ -2137,6 +2143,7 @@ class MiniMaxWSClient:
             voice=self._voice,
             model=self._model,
             volume=self._volume,
+            language=language,
             sample_rate_hz=self._sr_in,
             connect_timeout_s=self._connect_timeout,
             first_chunk_timeout_s=self._first_chunk_timeout,
@@ -2285,6 +2292,7 @@ class MiniMaxWSClient:
         task_start = {
             "event": "task_start",
             "model": self._model,
+            "language_boost": _LANGUAGE_BOOST[lang.text_language(text)],
             "voice_setting": {
                 "voice_id": self._voice,
                 "speed": 1.0,
@@ -2417,6 +2425,7 @@ class MiniMaxTTSSession:
         voice: str,
         model: str,
         volume: int,
+        language: lang.Language,
         sample_rate_hz: int,
         connect_timeout_s: float,
         first_chunk_timeout_s: float,
@@ -2433,6 +2442,7 @@ class MiniMaxTTSSession:
         self._voice = voice
         self._model = model
         self._volume = volume
+        self._language = language
         self._sample_rate_hz = sample_rate_hz
         self._connect_timeout_s = connect_timeout_s
         self._first_chunk_timeout_s = first_chunk_timeout_s
@@ -2537,6 +2547,7 @@ class MiniMaxTTSSession:
             task_start = {
                 "event": "task_start",
                 "model": self._model,
+                "language_boost": _LANGUAGE_BOOST[self._language],
                 "subtitle_enable": True,
                 "subtitle_type": "word_streaming",
                 "voice_setting": {

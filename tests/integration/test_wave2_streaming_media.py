@@ -190,6 +190,7 @@ class _FakeProvider:
         self.late_pcm_release = threading.Event()
         self.late_yields: list[tuple[str, int]] = []
         self.created = 0
+        self.languages: list[str] = []
         self.connect_error: Exception | None = None
 
     @property
@@ -200,12 +201,14 @@ class _FakeProvider:
         self,
         *,
         endpoint_index: int,
+        language: str,
         idle_close_s: float,
         command_queue_capacity: int,
         audio_queue_capacity: int,
     ) -> voice_tts.TTSSession:
         del idle_close_s, command_queue_capacity, audio_queue_capacity
         self.created += 1
+        self.languages.append(language)
         return _FakeSession(
             self,
             endpoint_index=endpoint_index,
@@ -3197,6 +3200,7 @@ def test_minimax_session_single_reader_writer_backpressure_and_watchdog() -> Non
                 voice="voice",
                 model="model",
                 volume=5,
+                language="en",
                 sample_rate_hz=8_000,
                 connect_timeout_s=0.2,
                 first_chunk_timeout_s=0.2,
@@ -3249,6 +3253,7 @@ def test_minimax_session_single_reader_writer_backpressure_and_watchdog() -> Non
                 voice="voice",
                 model="model",
                 volume=5,
+                language="en",
                 sample_rate_hz=8_000,
                 connect_timeout_s=0.2,
                 first_chunk_timeout_s=0.2,
@@ -3789,6 +3794,7 @@ def test_production_builder_puts_the_configured_request_volume_on_the_wire(
             async def _open_then_close() -> None:
                 session = provider.create_tts_session(
                     endpoint_index=0,
+                    language="en",
                     idle_close_s=5.0,
                     command_queue_capacity=1,
                     audio_queue_capacity=1,

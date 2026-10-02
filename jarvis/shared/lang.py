@@ -22,6 +22,7 @@ Layer rules: stdlib only.
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, Final, Literal, get_args
 
 if TYPE_CHECKING:
@@ -31,6 +32,7 @@ Language = Literal["zh", "en"]
 LANGUAGES: Final[tuple[Language, ...]] = get_args(Language)
 
 _current: Language = "zh"
+_CJK: Final = re.compile("[\u4e00-\u9fff]")
 
 
 def normalize(code: object) -> Language | None:
@@ -55,6 +57,11 @@ def set_language(code: str) -> Language:
 def language() -> Language:
     """The language fixed text is written in right now."""
     return _current
+
+
+def text_language(text: str) -> Language:
+    """``zh`` when the text holds any CJK character, else ``en``: what a voice is told to read."""
+    return "zh" if _CJK.search(text) else "en"
 
 
 def language_name(lang: Language | None = None) -> str:

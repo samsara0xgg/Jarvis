@@ -61,10 +61,10 @@ class _AlignedSession(_FakeSession):
 
 class _AlignedProvider(_FakeProvider):
     def create_tts_session(
-        self, *, endpoint_index: int, idle_close_s: float,
+        self, *, endpoint_index: int, language: str, idle_close_s: float,
         command_queue_capacity: int, audio_queue_capacity: int,
     ) -> voice_tts.TTSSession:
-        del idle_close_s, command_queue_capacity, audio_queue_capacity
+        del language, idle_close_s, command_queue_capacity, audio_queue_capacity
         return _AlignedSession(self, endpoint_index=endpoint_index)
 
 
@@ -211,7 +211,8 @@ def test_minimax_blocks_numeric_syllables_and_summary_only_terminal() -> None:  
         with patch.object(voice_tts, "_ws_connect", side_effect=connect):
             session = voice_tts.MiniMaxTTSSession(
                 api_key="test", endpoint="https://example.test", voice="voice", model="model",
-                volume=1, sample_rate_hz=8_000, connect_timeout_s=1, first_chunk_timeout_s=1,
+                volume=1, language="en",
+                sample_rate_hz=8_000, connect_timeout_s=1, first_chunk_timeout_s=1,
                 between_chunk_timeout_s=1, idle_close_s=60, command_queue_capacity=2,
                 audio_queue_capacity=16,
             )

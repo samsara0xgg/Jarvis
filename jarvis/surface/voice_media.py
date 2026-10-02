@@ -239,11 +239,12 @@ class StreamingTTSProvider(Protocol):
         self,
         *,
         endpoint_index: int,
+        language: lang.Language,
         idle_close_s: float,
         command_queue_capacity: int,
         audio_queue_capacity: int,
     ) -> TTSSession:
-        """Create a closed response-scoped session."""
+        """Create a closed response-scoped session that reads ``language``."""
 
 
 @dataclass(frozen=True)
@@ -726,6 +727,7 @@ class StreamingTTSPipeline:
         self._yield_gain = 1.0
         # Connected for the next answer while Allen talks; actor-owned.
         self._spare: TTSSession | None = None
+        self._spare_language: lang.Language = "en"
         self._spare_ready_at = 0.0
         self._spare_task: asyncio.Task[None] | None = None
         # Canonical PCM of the spoken "tts.network_lost" line, per language, in memory.
@@ -1708,17 +1710,21 @@ class StreamingTTSPipeline:
             if self._spare_fresh():
                 return
             await self._drop_spare()
+        # His words are not recognized yet, so the spare reads the system language;
+        # an answer in the other one does not take it.
+        language = lang.language()
         session = self._provider.create_tts_session(
             endpoint_index=0,
+            language=language,
             idle_close_s=self._config.session_idle_close_s,
             command_queue_capacity=self._config.session_command_capacity,
             audio_queue_capacity=self._config.session_audio_capacity,
         )
         self._spare_task = asyncio.create_task(
-            self._connect_spare(session), name="tts-spare-connect",
+            self._connect_spare(session, language), name="tts-spare-connect",
         )
 
-    async def _connect_spare(self, session: TTSSession) -> None:
+    async def _connect_spare(self, session: TTSSession, language: lang.Language) -> None:
         try:
             await session.connect()
         except Exception:  # noqa: BLE001 - a spare that cannot connect is only not used
@@ -1731,6 +1737,7 @@ class StreamingTTSPipeline:
             await self._wait_task_bounded(asyncio.create_task(session.close()), timeout_s=0.5)
             return
         self._spare, self._spare_ready_at = session, asyncio.get_running_loop().time()
+        self._spare_language = language
         record_realtime_trace("tts_session_prewarmed", measurement_semantics="spare_connected")
 
     def _prefetch_network_lost_line(self) -> None:
@@ -1754,6 +1761,7 @@ class StreamingTTSPipeline:
         try:
             session = self._provider.create_tts_session(
                 endpoint_index=0,
+                language=code,
                 idle_close_s=self._config.session_idle_close_s,
                 command_queue_capacity=self._config.session_command_capacity,
                 audio_queue_capacity=self._config.session_audio_capacity,
@@ -1802,12 +1810,12 @@ class StreamingTTSPipeline:
     def _spare_fresh(self) -> bool:
         return asyncio.get_running_loop().time() - self._spare_ready_at <= _SPARE_SESSION_MAX_AGE_S
 
-    async def _take_spare(self) -> TTSSession | None:
-        """The connected spare for an answer's first endpoint, if it is still fresh.
+    async def _take_spare(self, language: lang.Language) -> TTSSession | None:
+        """The connected spare for an answer's first endpoint, if fresh and in its language.
 
         One still connecting is left to become the next answer's spare.
         """
-        if self._spare is not None and self._spare_fresh():
+        if self._spare is not None and self._spare_fresh() and self._spare_language == language:
             spare, self._spare = self._spare, None
             return spare
         await self._drop_spare()
@@ -2805,10 +2813,12 @@ class StreamingTTSPipeline:
                     return False
                 try:
                     if session is None:
+                        language = lang.text_language(text)
                         session = (
-                            await self._take_spare() if endpoint_index == 0 else None
+                            await self._take_spare(language) if endpoint_index == 0 else None
                         ) or self._provider.create_tts_session(
                             endpoint_index=endpoint_index,
+                            language=language,
                             idle_close_s=self._config.session_idle_close_s,
                             command_queue_capacity=self._config.session_command_capacity,
                             audio_queue_capacity=self._config.session_audio_capacity,
