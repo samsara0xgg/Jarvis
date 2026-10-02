@@ -682,15 +682,24 @@ def summary_of(content: str) -> str:
 
 BRIEF_LEAD = 110
 """Characters of the day's main line the home's brief card shows."""
-BRIEF_ACTIVITY = 280
-"""Characters of one item's activity the brief page shows."""
-_BRIEF_SECTIONS = ("items", "decisions", "open", "next", "suggestions")
-_BRIEF_ORDER = ("items", "open", "next", "decisions", "suggestions")
+BRIEF_NOTE = 160
+"""Characters of one item's activity the brief page shows when a row is opened."""
+_BRIEF_SECTIONS = ("items", "open", "next", "decisions", "suggestions")
 """What a morning wants first: the day, then what is left, then what Allen said comes next."""
 _REFS_TAIL = re.compile(r"\s*[（(](?:引用|Sources)[：:][^）)]*[）)]\s*$")
 _GROUP = re.compile(r"[（(][^（()）]*[）)]")
 _SENTENCE_END = "。.!?！？；;"
 _NO_ITEM = ("report.no_items", "report.no_decisions", "report.no_open", "report.no_next")
+_TAGS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("check", ("invalid", "self_report", "unchecked", "unsupported_shows", "unsupported")),
+    ("part", ("partial",)),
+    ("going", ("report.status.attempted",)),
+    ("done", ("merged", "user", "committed", "page", "screen")),
+    ("discussed", ("report.status.discussed",)),
+    ("browsed", ("report.status.browsed",)),
+)
+"""A status's kind and the saved wordings that mean it, the first kind found winning: an
+item with one part unchecked is unchecked, one with a part still going is not done."""
 
 
 def _clip(text: str, limit: int) -> str:
@@ -726,8 +735,18 @@ def _plain(status: str) -> str:
     return status.strip()
 
 
-def _brief_items(lines: Sequence[str]) -> list[str]:
-    """Each work item as a bold title and short status with its activity nested under it."""
+def _tag_of(status: str) -> str:
+    """The kind of a saved status (see ``_TAGS``), or an empty string when it is none of them."""
+    for tag, keys in _TAGS:
+        for key in keys:
+            wordings = TEXT[key if key.startswith("report.") else f"report.claim.{key}"]
+            if any(w.partition("{")[0] in status for w in wordings.values()):
+                return tag
+    return ""
+
+
+def _brief_items(lines: Sequence[str]) -> list[dict[str, str]]:
+    """Each work item as a title, a kind and its short status, and its activity as the note."""
     refs = tuple(text.partition("{")[0] for text in TEXT["report.refs"].values())
     entries: list[list[str]] = []
     for line in lines:
@@ -738,16 +757,20 @@ def _brief_items(lines: Sequence[str]) -> list[str]:
     out = []
     for head, *activity in entries:
         title, status = _status_of(head)
-        row = f"- **{title.replace('*', '')}**"
-        if status := _plain(status):
-            row += f" · {status}"
-        if text := _clip(" ".join(" ".join(activity).split()), BRIEF_ACTIVITY):
-            row += f"\n  - {text}"
+        row = {"text": title}
+        if tag := _tag_of(status):
+            row |= {
+                "tag": tag,
+                "label": t(f"brief.tag.{tag}"),
+                "status": _clip(_plain(status), BRIEF_NOTE // 2),
+            }
+        if note := _clip(" ".join(" ".join(activity).split()), BRIEF_NOTE):
+            row["note"] = note
         out.append(row)
     return out
 
 
-def _brief_bullets(lines: Sequence[str]) -> list[str]:
+def _brief_bullets(lines: Sequence[str]) -> list[dict[str, str]]:
     """A bulleted section without its citations and without the line that says it is empty."""
     empty = {
         text.removeprefix("- ")
@@ -755,50 +778,51 @@ def _brief_bullets(lines: Sequence[str]) -> list[str]:
         for text in TEXT[key].values()
     }
     found = [_REFS_TAIL.sub("", line[2:]).strip() for line in lines if line.startswith("- ")]
-    return [f"- {text}" for text in found if text and text not in empty]
+    return [{"text": text} for text in found if text and text not in empty]
 
 
-def brief_of(content: str) -> dict[str, str | int]:
+def brief_of(content: str) -> dict[str, Any]:
     """The home's morning brief from a saved report (either language).
-
-    Returns ``summary``, ``body`` and ``items``, the count of work items.
 
     The saved report is an audit: statuses with commit numbers, a citation line under
     every item, the coverage of the material, the sources. This keeps what a person reads
-    over breakfast: the day's main line (``summary`` is its first sentences, ``body`` opens
-    with all of it), each work item with its short status and activity, what is still open,
-    the next steps Allen named, the decisions and the suggestions. Statuses lose their
-    brackets but keep their words, so a claim nobody checked still says so.
+    over breakfast, as data the page lays out: ``summary`` (the day's main line cut to a
+    sentence for the card), ``lead`` (twice as much, for the page), ``items`` (how many
+    work items) and ``sections``, each a title and rows of ``text`` with, for work items,
+    a ``tag`` (done, check, part, going, discussed, browsed), its ``label`` and plain
+    ``status``, and the activity as ``note``. A claim nobody checked keeps saying so in
+    its tag.
     """
     names = {
         heading: key
         for key in ("summary", *_BRIEF_SECTIONS)
         for heading in TEXT[f"report.h.{key}"].values()
     }
-    sections: dict[str, list[str]] = {}
+    found: dict[str, list[str]] = {}
     here: list[str] | None = None
     for line in content.splitlines():
         if line.startswith("## "):
             key = names.get(line.strip())
-            here = sections.setdefault(key, []) if key and key not in sections else None
+            here = found.setdefault(key, []) if key and key not in found else None
         elif here is not None:
             here.append(line)
-    lead_lines = [ln.strip() for ln in sections.get("summary", []) if ln.strip()] or [
+    lead_lines = [ln.strip() for ln in found.get("summary", []) if ln.strip()] or [
         ln.strip() for ln in content.splitlines() if ln.strip() and not ln.startswith("#")
     ]
     lead = " ".join(lead_lines[0].split()) if lead_lines else ""
     rows = {
-        key: (_brief_items if key == "items" else _brief_bullets)(sections.get(key, []))
+        key: (_brief_items if key == "items" else _brief_bullets)(found.get(key, []))
         for key in _BRIEF_SECTIONS
     }
-    body = [lead, ""]
-    for key in _BRIEF_ORDER:
-        if rows[key]:
-            body += [t(f"brief.h.{key}"), *rows[key], ""]
     return {
         "summary": _clip(lead, BRIEF_LEAD),
-        "body": "\n".join(body).strip(),
+        "lead": _clip(lead, BRIEF_LEAD * 2),
         "items": len(rows["items"]),
+        "sections": [
+            {"key": key, "title": t(f"brief.h.{key}"), "rows": rows[key]}
+            for key in _BRIEF_SECTIONS
+            if rows[key]
+        ],
     }
 
 

@@ -578,51 +578,79 @@ def test_report_generates_saves_and_reads_back(rig: Rig) -> None:
     assert "- 微软日历与待办：未接入，没有日程和待办" in content, "no plan reader was wired"
 
 
+def _brief_rows(view: dict[str, Any]) -> dict[str, list[dict[str, str]]]:
+    return {section["key"]: section["rows"] for section in view["sections"]}
+
+
 def test_the_brief_reads_the_saved_report_for_a_person(rig: Rig) -> None:
     """The home's brief keeps the day, what is left and what Allen named, not the audit trail."""
     assert rig.run()["outcome"] == "generated"
     content = rig.saved()
-    zh = [
-        "主要在 Jarvis 仓库上改每日工具，并看了一轮招聘页面。",
-        "",
-        "## 昨天做了什么",
-        "- **每日工具的读取修复** · 已提交",
-        "  - 改完 TimeSink 读取边界并提交。",
-        "- **浏览招聘页面** · 浏览",
-        "  - 在 Chrome 里翻了职位列表。",
-        "- **演示界面显示已部署** · 页面显示已完成",
-        "  - 屏幕上出现“部署成功”。",
-        "- **没有依据的事项** · 讨论",
-        "  - 引用了不存在的键。",
-        "",
-        "## 还没完成",
-        "- 屏幕采集还没跑满一天。",
-        "",
-        "## 你说过的下一步",
-        "- 明天继续写日报工具。",
-        "",
-        "## 定下来的事",
-        "- 待办先放在本地。　理由：Allen 自己说的。",
-        "",
-        "## 可以考虑",
-        "- 可以给屏幕采集加一条健康事件。",
+    view = brief_of(content)
+    lead = "主要在 Jarvis 仓库上改每日工具，并看了一轮招聘页面。"
+    assert (view["summary"], view["lead"], view["items"]) == (lead, lead, 4)
+    assert [(s["key"], s["title"]) for s in view["sections"]] == [
+        ("items", "昨天做了什么"),
+        ("open", "还没完成"),
+        ("next", "你说过的下一步"),
+        ("decisions", "定下来的事"),
+        ("suggestions", "可以考虑"),
     ]
-    assert brief_of(content) == {"summary": zh[0], "body": "\n".join(zh), "items": 4}
+    rows = _brief_rows(view)
+    assert rows["items"] == [
+        {
+            "text": "每日工具的读取修复",
+            "tag": "done",
+            "label": "已完成",
+            "status": "已提交",
+            "note": "改完 TimeSink 读取边界并提交。",
+        },
+        {
+            "text": "浏览招聘页面",
+            "tag": "browsed",
+            "label": "浏览",
+            "status": "浏览",
+            "note": "在 Chrome 里翻了职位列表。",
+        },
+        {
+            "text": "演示界面显示已部署",
+            "tag": "done",
+            "label": "已完成",
+            "status": "页面显示已完成",
+            "note": "屏幕上出现“部署成功”。",
+        },
+        {
+            "text": "没有依据的事项",
+            "tag": "discussed",
+            "label": "讨论",
+            "status": "讨论",
+            "note": "引用了不存在的键。",
+        },
+    ]
+    assert rows["open"] == [{"text": "屏幕采集还没跑满一天。"}]
+    assert rows["next"] == [{"text": "明天继续写日报工具。"}]
+    assert rows["decisions"] == [{"text": "待办先放在本地。　理由：Allen 自己说的。"}]
+    assert rows["suggestions"] == [{"text": "可以给屏幕采集加一条健康事件。"}]
     for audit in ("引用：", "abc1234", "证据引用", "数据覆盖", "event:", "模型 canned"):
-        assert audit not in brief_of(content)["body"]
-    # The same report read in the other language: headings follow the language, rows do not.
+        assert audit not in str(view)
+    # The same report read in the other language: titles and words follow it, rows do not.
     set_language("en")
-    english = str(brief_of(content)["body"]).splitlines()
-    assert [ln for ln in english if ln.startswith("## ")] == [
-        "## Yesterday",
-        "## Still open",
-        "## Next steps you named",
-        "## Decided",
-        "## Worth considering",
+    english = brief_of(content)
+    assert [s["title"] for s in english["sections"]] == [
+        "Yesterday",
+        "Still open",
+        "Next steps you named",
+        "Decided",
+        "Worth considering",
     ]
-    assert [ln for ln in english if not ln.startswith("## ")] == [
-        ln for ln in zh if not ln.startswith("## ")
+    assert [row["label"] for row in _brief_rows(english)["items"]] == [
+        "Done",
+        "Browsed",
+        "Done",
+        "Discussed",
     ]
+    for key in ("open", "next", "decisions", "suggestions"):
+        assert _brief_rows(english)[key] == rows[key]
 
 
 def test_the_brief_of_a_report_without_work_is_its_main_line() -> None:
@@ -647,10 +675,31 @@ def test_the_brief_of_a_report_without_work_is_its_main_line() -> None:
         ]
     )
     view = brief_of(content)
-    assert view["items"] == 0
-    assert view["body"] == ("No work items could be drawn from the day. " + "Long. " * 40).rstrip()
+    assert (view["items"], view["sections"]) == (0, [])
+    assert str(view["lead"]).startswith("No work items could be drawn from the day.")
+    assert len(str(view["lead"])) <= BRIEF_LEAD * 2
     assert len(str(view["summary"])) <= BRIEF_LEAD
     assert str(view["summary"]).startswith("No work items could be drawn from the day.")
+
+
+def test_the_brief_marks_what_nobody_checked_and_what_is_going_on() -> None:
+    """A claim without proof keeps saying so; an item with a part still going is not done."""
+    content = (
+        "## 核心摘要\n一天。\n## 工作事项\n"
+        "### 1. 夜间挂机 — 据代理自述已完成，尚未核实（A3）\n跑通了。\n引用：#1\n"
+        "### 2. 语音 — 前端：已合并到 main（提交 abc1234，main）；后端：尝试/进行中\n"
+        "前端合并了，后端还在改。\n引用：#2\n"
+        "### 3. 日历 — 部分完成：只显示了一半\n引用：#3\n"
+    )
+    rows = _brief_rows(brief_of(content))["items"]
+    assert [(row["text"], row["tag"]) for row in rows] == [
+        ("夜间挂机", "check"),
+        ("语音", "going"),
+        ("日历", "part"),
+    ]
+    assert rows[0]["status"] == "据代理自述已完成，尚未核实"
+    assert rows[1]["status"] == "前端：已合并到 main；后端：尝试/进行中"
+    assert "note" not in rows[2], "a citation line is not a note"
 
 
 def test_microsoft_plan_is_context_and_the_next_days_section(rig: Rig) -> None:

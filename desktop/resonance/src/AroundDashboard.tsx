@@ -14,6 +14,7 @@ import { cleanError, usePluginIcon, type Plugin, type PluginRequest, type usePlu
 import { HOME_DEFAULTS, isPop, tr, useCompanionSettings, useT, type BlockId, type L, type Lang } from './companionSettings';
 import { demoBrief, demoMail, demoNotices, demoToday, postRoute, useNow, useRoute, type Brief, type Mail, type Notice, type Today, type WxKind } from './homeData';
 import { ArrangeHome, BLOCK } from './ArrangeHome';
+import { BriefPage } from './BriefPage';
 import { SettingsPage, type Account, type AccountKeyDrafts, type Controls } from './SettingsPage';
 import { ActionCard, MailCard, QuestionCard, type Answer, type Card, type Decide, type Question } from './ActionCard';
 import { MOTION } from './motion';
@@ -753,7 +754,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
     arrange: () => <>{back(t(['Arrange the home', '编辑首页']))}<ArrangeHome lang={lang}/></>,
     brief: () => <>
       {back(t(['Morning brief', '早报']), brief?.date)}
-      <div className="pg-body">{brief ? <div className="pg-sec brief-md"><Markdown text={brief.body}/></div> : <p className="pg-sec muted">{t(['No brief today yet.', '今天的早报还没写好。'])}</p>}</div>
+      <div className="pg-body">{brief ? <BriefPage brief={brief}/> : <p className="pg-sec muted">{t(['No brief today yet.', '今天的早报还没写好。'])}</p>}</div>
     </>,
     projects: () => <>
       {back(t(TITLES.projects), t(['last 7 days', '最近 7 天']))}

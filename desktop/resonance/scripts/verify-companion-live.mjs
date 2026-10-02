@@ -575,7 +575,8 @@ try {
     fixtures['/inherent/today'] = { weather: { now_c: 12, summary: 'Rain from 9 PM' },
       events: [{ id: 'e1', title: 'Office hours', start: iso(Date.now() - 60_000), end: iso(Date.now() + 30 * 60_000) }],
       todos: [{ id: 't1', title: 'Send the A3 draft', due: iso(Date.now() + 60_000) }] };
-    fixtures['/inherent/brief'] = { date: today, summary: 'Two agents finished overnight.', body: '**Overnight**\n\n- Two agents finished.', items: 1 };
+    fixtures['/inherent/brief'] = { date: today, summary: 'Two agents finished overnight.', items: 1,
+      sections: [{ key: 'items', title: 'Yesterday', rows: [{ text: 'Two agents finished', tag: 'done', label: 'Done' }] }] };
     fixtures['/inherent/mail'] = { unread: [{ id: 'm1', from: 'Prof. Lee', subject: 'Office hours moved', received: iso(Date.now() - 600_000) }] };
     fixtures['/inherent/notices'] = { notices: [{ id: 'n1', text: 'Reminder: call the dentist', at: iso(Date.now()) }] };
     fixtures['/inherent/settings'] = { values: { reply_language: 'follow', wake_threshold: .95, tts_voice: 'Warm Bestie', tts_volume: 1, output_device: 'System default', input_device: 'System default',

@@ -539,6 +539,21 @@ def test_brief_is_yesterdays_saved_report_read_for_a_person(tmp_path: Path) -> N
     assert body == {
         "date": today.isoformat(),
         "summary": "写了首页的后端。",
-        "body": "写了首页的后端。\n\n## 昨天做了什么\n- **首页后端** · 已提交\n  - 写好三条路由。",
+        "lead": "写了首页的后端。",
         "items": 1,
+        "sections": [
+            {
+                "key": "items",
+                "title": "昨天做了什么",
+                "rows": [
+                    {
+                        "text": "首页后端",
+                        "tag": "done",
+                        "label": "已完成",
+                        "status": "已提交",
+                        "note": "写好三条路由。",
+                    }
+                ],
+            }
+        ],
     }

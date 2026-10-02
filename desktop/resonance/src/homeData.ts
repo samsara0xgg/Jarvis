@@ -8,8 +8,12 @@ export type TodayEvent = { id: string; title: string; start: string; end?: strin
 export type Todo = { id: string; title: string; due?: string };
 // GET /inherent/today. POST /inherent/today/todo { id, done } checks one off in Microsoft To Do.
 export type Today = { weather?: Weather | null; events: TodayEvent[]; todos: Todo[] };
-// GET /inherent/brief: today's brief, 404 before it is written. `summary` is the day's main line (card); `body` is markdown for the page.
-export type Brief = { date: string; summary: string; body: string; items?: number };
+// GET /inherent/brief: today's brief, 404 before it is written. `summary` is the day's main line cut short (card), `lead` more of it (page).
+// `sections` are what the page lists, in order; a work item carries `tag` (its kind), `label` (that kind in words) and its `note`.
+export type BriefTag = 'done' | 'check' | 'part' | 'going' | 'discussed' | 'browsed';
+export type BriefRow = { text: string; note?: string; status?: string; tag?: BriefTag; label?: string };
+export type BriefSection = { key: 'items' | 'open' | 'next' | 'decisions' | 'suggestions'; title: string; rows: BriefRow[] };
+export type Brief = { date: string; summary: string; lead?: string; items?: number; sections: BriefSection[] };
 // POST /inherent/mail/archive { ids } takes letters the last answer called junk out of the inbox; /unarchive { ids } puts them back.
 // GET /inherent/mail: unread mail from people (not newsletters or notifications), newest first.
 // `reply` (ADR 0123): 'yes' = Jev is very sure it needs Allen's reply, 'fyi' = very sure it does not, null = no mark.
@@ -59,10 +63,12 @@ export function demoToday(): Today {
 }
 export const demoBrief = (): Brief => ({ date: new Date().toLocaleDateString('en-CA'), items: 3,
   summary: 'Yesterday the companion went live with the Claude sessions. Today: A3 is due at midnight.',
-  body: 'Yesterday the companion went live with the Claude sessions. Today: A3 is due at midnight.\n\n## Yesterday\n'
-    + '- **The companion goes live with Claude sessions** · committed\n  Sessions show on the home and answer from there.\n'
-    + '- **Plugin panels show each plugin’s own logo** · committed\n  The generic icon is gone.\n'
-    + '- **CSC370 A3** · in progress\n  The write-up is half done.\n\n## Still open\n- Two agents are waiting for you.' });
+  sections: [
+    { key: 'items', title: 'Yesterday', rows: [
+      { text: 'The companion goes live with Claude sessions', tag: 'done', label: 'Done', status: 'committed', note: 'Sessions show on the home and answer from there.' },
+      { text: 'Plugin panels show each plugin’s own logo', tag: 'done', label: 'Done', status: 'committed', note: 'The generic icon is gone.' },
+      { text: 'CSC370 A3', tag: 'going', label: 'In progress', status: 'attempted / in progress', note: 'The write-up is half done.' }] },
+    { key: 'open', title: 'Still open', rows: [{ text: 'Two agents are waiting for you.' }] }] });
 export const demoMail = (): Mail[] => [
   { id: 'lee', from: 'Prof. Lee', subject: 'Office hours move to Thursday', received: at(-40), reply: 'fyi' },
   { id: 'mom', from: 'Mom', subject: 'Still on for tonight?', received: at(-95), reply: 'yes' },

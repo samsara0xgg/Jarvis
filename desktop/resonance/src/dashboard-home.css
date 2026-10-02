@@ -62,14 +62,34 @@
 .ad .r-brief .text { overflow-wrap:anywhere; }
 .ad .r-brief .meta { display:inline-flex; align-items:center; gap:3px; }
 .ad .r-brief .meta svg { color:var(--p-faint); }
-/* The brief page: the day's main line, then short sections. An item's activity sits under its title, quieter. */
-.ad .brief-md { gap:0; }
-.ad .brief-md .md { gap:6px; }
-.ad .brief-md .md > p:first-child { padding-bottom:12px; border-bottom:1px solid var(--p-line); line-height:1.6; }
-.ad .brief-md .md h5 { margin-top:14px; font-size:var(--text-label); font-weight:600; letter-spacing:.09em; text-transform:uppercase; color:var(--p-faint); }
-.ad .brief-md .md > div > ul { gap:11px; }
-.ad .brief-md .md li > ul { margin-top:2px; padding-left:0; list-style:none; }
-.ad .brief-md .md li > ul > li { font-size:var(--text-detail); line-height:1.5; color:var(--p-muted); }
+/* The brief page: the day's main line, then short rows under plain headings. A work item opens to its note; most mornings it fits without scrolling. */
+.ad .bf { --bf-done:var(--status-done); --bf-check:var(--status-ask); --bf-part:var(--status-ask); --bf-going:var(--status-work); --bf-discussed:var(--p-faint); --bf-browsed:var(--p-faint); --bf-quiet:var(--p-faint);
+  display:flex; flex-direction:column; gap:12px; }
+.ad .bf > .muted { padding:0 8px; }
+.ad .bf-lead { padding:0 8px 10px; border-bottom:1px solid var(--p-line); line-height:1.5; overflow-wrap:anywhere; }
+.ad .bf-sec { display:flex; flex-direction:column; }
+.ad .bf-sec h4 { display:flex; align-items:baseline; gap:6px; padding:0 8px 3px; font-size:var(--text-label); font-weight:600; letter-spacing:.09em; text-transform:uppercase; color:var(--p-faint); }
+.ad .bf-sec h4 b { font-weight:500; letter-spacing:0; font-variant-numeric:tabular-nums; }
+.ad .bf-sec ul { display:flex; flex-direction:column; margin:0; padding:0; list-style:none; }
+.ad .bf-row { --c:var(--p-faint); display:block; width:100%; padding:5px 8px; border-radius:var(--radius-control); text-align:left; }
+.ad button.bf-row:hover { background:rgb(var(--glow) / .07); }
+.ad .bf-line { display:flex; align-items:center; gap:8px; }
+.ad .bf-dot { flex:none; width:6px; height:6px; border-radius:50%; background:var(--c); }
+.ad .bf-dot.is-quiet { width:4px; height:4px; margin:0 1px; opacity:.7; }
+.ad .bf-title { flex:1; min-width:0; line-height:1.4; overflow-wrap:anywhere; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+.ad .bf-row[aria-expanded=true] .bf-title { display:block; }
+.ad .bf-tag { flex:none; padding:0 6px; border-radius:var(--radius-tag); font-size:var(--text-label); font-weight:600; line-height:17px; white-space:nowrap; color:var(--c); background:color-mix(in srgb,var(--c) 14%,transparent); }
+.ad .bf-caret { flex:none; color:var(--p-faint); transition:transform var(--motion-fast); }
+.ad .bf-row[aria-expanded=true] .bf-caret { transform:rotate(180deg); }
+.ad .bf-more-body { display:grid; grid-template-rows:0fr; transition:grid-template-rows var(--exit-medium) var(--ease-in); }
+.ad .bf-more-body[data-open=true] { grid-template-rows:1fr; transition-duration:var(--motion-medium); transition-timing-function:var(--ease-out); }
+.ad .bf-more-body > div { overflow:hidden; padding:0 8px 0 22px; font-size:var(--text-detail); line-height:1.5; color:var(--p-muted); }
+.ad .bf-more-body p + p { margin-top:2px; color:var(--p-faint); }
+.ad .bf-more-body[data-open=true] > div { padding-bottom:6px; }
+.ad .bf-rest { align-self:flex-start; margin:2px 8px 0; padding:2px 0; font-size:var(--text-label); color:var(--p-muted); }
+.ad .bf-rest:hover { color:var(--p-ink); }
+.ad .bf-later .fold { margin-top:0; }
+.ad .bf-later .fold-body .bf-sec { margin-top:10px; }
 
 /* Today: the weather in the header, the next hours in the morning, then events and to-dos in one list. */
 .ad .r-today { padding-bottom:10px; }
