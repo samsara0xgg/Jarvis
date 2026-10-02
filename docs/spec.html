@@ -389,6 +389,7 @@ I8 到 I11 随审核链退役（ADR 0019），编号保留。
 <tr><td>历史压缩</td><td>OpenAI</td><td>上一段摘要和要折叠的记录</td><td>见上</td><td>开</td></tr>
 <tr><td>缓存预热</td><td>OpenAI</td><td>下一轮请求里「这一句」之前的部分：系统提示、历史（到这一轮的回答为止）和工具，只让它回 16 个 token。OpenAI 只在旧请求结束的地方找得到缓存，这样下一轮开头整段都在缓存里</td><td>打开 <code>realtime.response.prefix_warm</code> 时，每一轮用 OpenAI 答完之后</td><td>关</td></tr>
 <tr><td>即时功能的判断（Jev）</td><td>OpenRouter，转给 TypeSafe 的 <code>typesafe/jev-1.13</code></td><td>主人这一句话，加上前面最多两轮（主人的话，和助手回答的前 200 个字，十分钟以内），以及即时功能的选项说明；key 放在请求头里，不记进事件；请求带 <code>provider.zdr: true</code>（<code>realtime.surrogate_route.zdr</code>，出厂开），只路由到零数据留存的端点</td><td>打开 <code>realtime.surrogate_route</code> 时，每一轮 Tier 0 没命中的话；等待上限 0.4 秒</td><td>关</td></tr>
+<tr><td>邮件要不要回的判断（Jev）</td><td>OpenRouter，转给 TypeSafe 的 <code>typesafe/jev-1.13</code></td><td>首页每封未读邮件的发件人显示名（没有显示名时写 unknown）和主题，别的都不发：没有地址、正文和摘要；key 放在请求头里；请求带 <code>provider.zdr: true</code></td><td>打开 <code>home.mail_reply</code> 时，首页读未读邮件、遇到这次启动后还没问过的那封；一次等待上限 1.5 秒，没答上的下次再问</td><td>关</td></tr>
 <tr><td>实时语音</td><td>OpenAI Realtime</td><td>麦克风的声音、指令和最多 1500 字的记忆简报；<code>store: false</code></td><td>主人开始实时对话时连上；30 秒没有动静就挂断，一次最长 30 分钟</td><td>开</td></tr>
 <tr><td>看一眼屏幕 <code>screen_look</code></td><td>OpenAI</td><td>主显示器的一张截图，缩到 1568 像素宽以内</td><td>模型调用它（L1，不经确认），或主人说了 Tier 0 认得的那句话</td><td>开</td></tr>
 <tr><td>工作状态</td><td>OpenAI</td><td>最近两天的对话记录、按问题搜到的旧记录、本地待办、存下的知识、当天的 git 活动；打开 TimeSink 时还有各 App 的时长、窗口标题和屏幕文字的摘录</td><td>主人刷新面板或在对话里问起，而且有新证据时</td><td>用到时才调</td></tr>
@@ -414,7 +415,7 @@ I8 到 I11 随审核链退役（ADR 0019），编号保留。
 <li>每家服务商的 key 只发给那一家。</li>
 <li>读进对话的东西，不管来自邮件、网页、截图还是插件，都会随下一次请求发给模型服务商。</li>
 </ul>
-<div class="gap">现在有两处说法和上表对不上。首次设置请求屏幕录制权限时说「截图只留在本机」，但看一眼屏幕会把截图发给 OpenAI（改14）。<code>config/jarvis.yaml</code> 里 Gmail 插件的注释说邮件只在本机和 Google 之间走，这只对首页的未读邮件成立；对话里读到的邮件会发给 OpenAI。</div>
+<div class="gap">现在有两处说法和上表对不上。首次设置请求屏幕录制权限时说「截图只留在本机」，但看一眼屏幕会把截图发给 OpenAI（改14）。<code>config/jarvis.yaml</code> 里 Gmail 插件的注释说邮件只在本机和 Google 之间走，这只对首页的未读邮件成立（打开 <code>home.mail_reply</code> 时，发件人显示名和主题另发给 OpenRouter，见上表）；对话里读到的邮件会发给 OpenAI。</div>
 </section>
 
 <section id="threats">

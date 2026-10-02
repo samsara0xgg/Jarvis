@@ -179,54 +179,62 @@ class SurrogateRoute:
     def start(self, state: str, options: Sequence[SurrogateOption]) -> SurrogateCall:
         """Send the question now; the call is read later with :meth:`SurrogateCall.result`."""
         started = time.monotonic()
+        question = {
+            "type": "choice",
+            "instructions": _INSTRUCTIONS,
+            "criteria": {**{o.id: o.description for o in options}, NONE: _NONE_DESCRIPTION},
+        }
+        return SurrogateCall(self, options, started, self.post(state, {"route": question}))
+
+    def post(self, state: str, questions: dict[str, Any]) -> Future[Reply] | None:
+        """Send one decisions request on a worker; ``None`` when there is no key."""
         key = os.environ.get(KEY_ENV, "").strip()
         if not key:
-            return SurrogateCall(self, options, started, None)
-        body: dict[str, Any] = {
-            "model": self.model,
-            "state": state,
-            "questions": {"route": {
-                "type": "choice",
-                "instructions": _INSTRUCTIONS,
-                "criteria": {**{o.id: o.description for o in options}, NONE: _NONE_DESCRIPTION},
-            }},
-        }
+            return None
+        body: dict[str, Any] = {"model": self.model, "state": state, "questions": questions}
         if self.zdr:
             body["provider"] = {"zdr": True}
-        return SurrogateCall(self, options, started, self._pool.submit(self._fetch, key, body))
+        return self._pool.submit(self._fetch, key, body)
 
-    def _fetch(self, key: str, body: dict[str, Any]) -> _Reply:
+    def _fetch(self, key: str, body: dict[str, Any]) -> Reply:
         """On a worker: one POST; the outcome and when it came, never an exception."""
         try:
             reply = self._client.post(
                 self.url, json=body, headers={"Authorization": f"Bearer {key}"},
             )
             reply.raise_for_status()
-            return _Reply(reply.json(), None, time.monotonic())
+            return Reply(reply.json(), None, time.monotonic())
         except httpx.TimeoutException:
-            return _Reply(None, "timeout", time.monotonic())
+            return Reply(None, "timeout", time.monotonic())
         except httpx.HTTPStatusError as exc:
             # OpenRouter answers 404 when no endpoint satisfies the provider preferences.
             # The call is never repeated without ``zdr``: no route means no call.
             no_route = self.zdr and exc.response.status_code == _NO_ROUTE_STATUS
-            return _Reply(None, "no_zdr_route" if no_route else "http", time.monotonic())
+            return Reply(None, "no_zdr_route" if no_route else "http", time.monotonic())
         except httpx.HTTPError:
-            return _Reply(None, "http", time.monotonic())
+            return Reply(None, "http", time.monotonic())
         except ValueError:
-            return _Reply(None, "bad_json", time.monotonic())
+            return Reply(None, "bad_json", time.monotonic())
 
-    def warn_once(self, error: str) -> None:
+    def warn_once(
+        self,
+        error: str,
+        what: str = "surrogate route",
+        then: str = "turns fall through to the model",
+    ) -> None:
         """Log a failure kind the first time only, so a dead endpoint is not a line per turn."""
         if error not in self._warned:
             self._warned.add(error)
             LOGGER.warning(
-                "surrogate route: %s; turns fall through to the model (logged once per kind)",
-                "no zero-retention route" if error == "no_zdr_route" else error,
+                "%s: %s; %s (logged once per kind)",
+                what, "no zero-retention route" if error == "no_zdr_route" else error, then,
             )
 
 
 @dataclass(frozen=True)
-class _Reply:
+class Reply:
+    """One decisions request's outcome: the decoded body or an error kind, and when it ended."""
+
     parsed: Any
     error: str | None
     finished: float
@@ -237,7 +245,7 @@ class SurrogateCall:
 
     def __init__(
         self, route: SurrogateRoute, options: Sequence[SurrogateOption], started: float,
-        future: Future[_Reply] | None,
+        future: Future[Reply] | None,
     ) -> None:
         """Wrap the worker's future; ``None`` means nothing was sent (no key)."""
         self.route = route

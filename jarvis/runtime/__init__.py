@@ -72,6 +72,7 @@ from jarvis.decision.confirm_grammar import ConfirmGrammarConfigError, load_conf
 from jarvis.decision.cost_guard import CostRecorder
 from jarvis.decision.llm import LLMClient
 from jarvis.decision.llm_session import LLMSessionFactory
+from jarvis.decision.mail_reply import MailReply
 from jarvis.decision.packet import assemble_packet
 from jarvis.decision.policy import (
     PolicyConsistencyError,
@@ -1012,6 +1013,32 @@ def _home_weather(config: Mapping[str, Any]) -> Mapping[str, Any] | None:
     block = config.get("home")
     place = block.get("weather") if isinstance(block, Mapping) else None
     return place if isinstance(place, Mapping) else None
+
+
+def _mail_reply(config: Mapping[str, Any], config_path: Path) -> MailReply | None:
+    """``home.mail_reply`` (ADR 0123): off unless enabled; bad values stop boot."""
+    home = config.get("home")
+    block = home.get("mail_reply") if isinstance(home, Mapping) else None
+    if not isinstance(block, Mapping) or block.get("enabled") is not True:
+        return None
+    model, timeout = block.get("model"), block.get("timeout_ms")
+    bars = [  # fyi_at, yes_at
+        v for v in (block.get("fyi_at"), block.get("yes_at"))
+        if isinstance(v, int | float) and not isinstance(v, bool)
+    ]
+    if (
+        not isinstance(model, str) or not model.strip()
+        or isinstance(timeout, bool) or not isinstance(timeout, int) or timeout <= 0
+        or len(bars) != 2 or not 0 <= bars[0] < bars[1] <= 1  # noqa: PLR2004 — fyi_at, yes_at
+    ):
+        msg = (
+            f"runtime: {config_path} home.mail_reply needs model (text), timeout_ms (positive"
+            " int) and fyi_at < yes_at, both in [0, 1]"
+        )
+        raise RuntimeBootstrapError(msg)
+    # min_confidence is the choice question's bar; this route asks none, so it stays unused.
+    route = SurrogateRoute(model=model.strip(), min_confidence=1.0, timeout_ms=timeout)
+    return MailReply(route, float(bars[1]), float(bars[0]))
 
 
 def _daily_report_preset(config: Mapping[str, Any]) -> str:
@@ -2050,6 +2077,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
             plugin_connections,
             resolve_zone(None, _work_state_timezone(full_config)),
             _home_weather(full_config),
+            _mail_reply(full_config, config_path),
         ),
         settings=Settings(paths.root, full_config, _audio_devices),
         night=night,

@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
     from datetime import tzinfo
 
+    from jarvis.decision.mail_reply import MailReply
     from jarvis.execution.mcp_tools import McpServers
     from jarvis.runtime.plugin_connections import PluginConnections
 
@@ -88,14 +89,17 @@ class Home:
         connections: PluginConnections,
         zone: tuple[str, tzinfo],
         weather_at: Mapping[str, Any] | None,
+        mail_reply: MailReply | None = None,
     ) -> None:
         """Bind the live connections, the local zone (name, zone) and the forecast's place.
 
         ``weather_at`` holds ``latitude`` and ``longitude``; None leaves the weather out.
+        ``mail_reply`` marks letters that need a reply (ADR 0123); None leaves them all unmarked.
         """
         self._connections = connections
         self._zone_name, self._zone = zone
         self._weather_at = weather_at
+        self._mail_reply = mail_reply
 
     def _servers(self, server: str = PLAN_SERVER) -> McpServers:
         """The live client of ``server``; LookupError (the routes' 404) when it is not connected."""
@@ -159,7 +163,8 @@ class Home:
         """Unread Primary mail in Gmail, newest first, without no-reply and notification senders.
 
         Two read-only tools of the ``gmail`` server: a search in Gmail's own terms,
-        then each hit's headers; nothing is marked read.
+        then each hit's headers; nothing is marked read. Each letter's ``reply`` is "yes",
+        "fyi" or None (ADR 0123).
         """
         servers = self._servers(MAIL_SERVER)
         # Gmail's own sort into Primary is the "from people" filter.
@@ -168,8 +173,17 @@ class Home:
             _letter(_gmail(servers, "gmail_get", {"messageId": hit["id"], "format": "metadata"}))
             for hit in _gmail(servers, "gmail_search", query).get("messages") or []
         ]
-        people = [one for one in unread if not _NOT_A_PERSON.search(one.pop("address"))]
-        return {"unread": sorted(people, key=lambda one: one["received"], reverse=True)}
+        people = [one for one in unread if not _NOT_A_PERSON.search(one["address"])]
+        marks = {} if self._mail_reply is None else self._mail_reply.marks([
+            # A sender with no display name shows its address; the address is never sent.
+            (one["id"], "" if one["from"] == one["address"] else one["from"], one["subject"])
+            for one in people
+        ])
+        letters: list[dict[str, str | None]] = []
+        for one in people:
+            del one["address"]
+            letters.append({**one, "reply": marks.get(one["id"])})
+        return {"unread": sorted(letters, key=lambda one: str(one["received"]), reverse=True)}
 
     def brief(self, conn: sqlite3.Connection) -> dict[str, Any] | None:
         """This morning's brief: yesterday's saved daily report, whole; None before it exists."""

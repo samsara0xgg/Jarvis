@@ -12,17 +12,25 @@ Gmail.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import functools
 import io
 import json
 import sqlite3
+import threading
+import time
 import urllib.request
-from datetime import datetime, time, timedelta
+from datetime import datetime, timedelta
+from datetime import time as clock
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
+import pytest
 from fastapi.testclient import TestClient
 
+from jarvis.decision.mail_reply import MailReply
+from jarvis.decision.surrogate_route import SurrogateRoute
 from jarvis.execution.tools import ToolError
 from jarvis.runtime.home import Home
 from jarvis.state.daily_report import save_report
@@ -31,10 +39,8 @@ from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Iterator, Mapping
     from pathlib import Path
-
-    import pytest
 
 ZONE = "America/Vancouver"
 LIST = {"displayName": "Tasks", "wellknownListName": "defaultList", "id": "AQMkADAw-list="}
@@ -80,6 +86,11 @@ LETTERS: list[dict[str, Any]] = [
         "id": "199a1c0d4103", "threadId": "199a1c0d4103", "labelIds": ["UNREAD", "INBOX"],
         "subject": "今晚还来吗？", "from": "妈妈 <mom@example.com>",  # noqa: RUF001 — her words.
         "to": "allen@example.com", "date": "Thu, 25 Sep 2026 15:05:00 -0700",
+    },
+    {
+        "id": "199a1c0d4104", "threadId": "199a1c0d4104", "labelIds": ["UNREAD", "INBOX"],
+        "subject": "Your receipt", "from": "billing@shop.example",  # no display name
+        "to": "allen@example.com", "date": "Thu, 25 Sep 2026 12:00:00 -0700",
     },
 ]
 WEATHER: dict[str, Any] = {
@@ -221,7 +232,7 @@ def test_today_serves_calendar_open_todos_and_weather(monkeypatch: pytest.Monkey
     # The calendar is read for the local day the request falls on.
     view = next(args for tool, args in server.calls if tool == "get-calendar-view")
     start = datetime.fromisoformat(view["startDateTime"])
-    assert start.timetz() == time(tzinfo=start.tzinfo)
+    assert start.timetz() == clock(tzinfo=start.tzinfo)
     assert start.date() == datetime.now(ZoneInfo(ZONE)).date()
     assert datetime.fromisoformat(view["endDateTime"]) - start == timedelta(days=1)
     assert {"todoTaskListId": "AQMkADAw-list=", "fetchAllPages": True} in [
@@ -266,17 +277,143 @@ def test_mail_is_unread_primary_gmail_from_people() -> None:
     assert reply.json() == {"unread": [
         {
             "id": "199a1c0d4103", "from": "妈妈", "subject": "今晚还来吗？",  # noqa: RUF001 — her words.
-            "received": "2026-09-25T22:05:00+00:00",
+            "received": "2026-09-25T22:05:00+00:00", "reply": None,
         },
         {
             "id": "199a1c0d4101", "from": "Prof. Lee", "subject": "Office hours move to Thursday",
-            "received": "2026-09-25T21:40:00+00:00",
+            "received": "2026-09-25T21:40:00+00:00", "reply": None,
+        },
+        {
+            "id": "199a1c0d4104", "from": "billing@shop.example", "subject": "Your receipt",
+            "received": "2026-09-25T19:00:00+00:00", "reply": None,
         },
     ]}
     assert gmail.calls == [
         ("gmail_search", {"query": "category:primary is:unread", "maxResults": 20}),
         *[("gmail_get", {"messageId": one["id"], "format": "metadata"}) for one in LETTERS],
     ]
+
+
+class _Jev:
+    """A fake decisions endpoint (ADR 0123): answers P(needs a reply) by the subject line."""
+
+    def __init__(self) -> None:
+        self.requests: list[dict[str, Any]] = []
+        self.odds = {
+            "Office hours move to Thursday": 0.97, "今晚还来吗？": 0.04,  # noqa: RUF001 — her words.
+            "Your receipt": 0.5,
+        }
+        self.status = 200
+        self.delay_s = 0.0
+        outer = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:
+                request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                outer.requests.append(request)
+                time.sleep(outer.delay_s)
+                subject = request["state"].split("Subject: ", 1)[1]
+                body = json.dumps({
+                    "answers": {"reply": {"noul": outer.odds[subject]}}, "usage": {"cost": 0.00001},
+                }).encode()
+                self.send_response(outer.status)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                with contextlib.suppress(BrokenPipeError):  # the client gave up on a slow call
+                    self.wfile.write(body)
+
+            def log_message(self, *_args: object) -> None:
+                return
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def reply(self, *, timeout_ms: int = 1500) -> MailReply:
+        route = SurrogateRoute(
+            model="typesafe/jev-1.13", min_confidence=1.0, timeout_ms=timeout_ms,
+            url=f"http://127.0.0.1:{self.server.server_address[1]}/decisions",
+        )
+        return MailReply(route, 0.9, 0.1)
+
+
+@pytest.fixture
+def jev(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Jev]:
+    """A fake endpoint, and a key for the daemon to find."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key-not-a-secret")
+    fake = _Jev()
+    yield fake
+    fake.server.shutdown()
+    fake.server.server_close()
+
+
+def _marks(client: TestClient) -> dict[str, str | None]:
+    return {one["id"]: one["reply"] for one in client.get("/inherent/mail").json()["unread"]}
+
+
+def _with_jev(mail_reply: MailReply) -> TestClient:
+    home = Home(
+        _Connections(_Microsoft(), _Gmail()),  # type: ignore[arg-type]
+        (ZONE, ZoneInfo(ZONE)), None, mail_reply,
+    )
+    return _client(home)
+
+
+def test_mail_reply_sends_only_name_and_subject_and_marks_by_threshold(jev: _Jev) -> None:
+    """Each person's letter is asked once, name and subject only, zdr on; the bars map to marks."""
+    client = _with_jev(jev.reply())
+    assert _marks(client) == {
+        "199a1c0d4101": "yes", "199a1c0d4103": "fyi", "199a1c0d4104": None,
+    }
+    sent = sorted(jev.requests, key=lambda one: one["state"])
+    assert [one["state"] for one in sent] == [
+        "From: Prof. Lee\nSubject: Office hours move to Thursday",
+        "From: unknown\nSubject: Your receipt",
+        "From: 妈妈\nSubject: 今晚还来吗？",  # noqa: RUF001 — her words.
+    ]
+    for one in sent:
+        assert set(one) == {"model", "state", "questions", "provider"}
+        assert one["model"] == "typesafe/jev-1.13"
+        assert one["provider"] == {"zdr": True}
+        assert one["questions"]["reply"]["type"] == "noul"
+        assert one["questions"]["reply"]["instructions"]
+    assert "@" not in json.dumps(jev.requests)  # no address, and the no-reply sender is not asked
+    # A second poll asks nothing: the answers are cached per message id.
+    assert _marks(client)["199a1c0d4101"] == "yes"
+    assert len(jev.requests) == 3
+
+
+def test_mail_reply_off_or_without_a_key_marks_nothing(
+    jev: _Jev, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Off: no call. On without OPENROUTER_API_KEY: no call. Either way, reply is null."""
+    assert set(_marks(_client(_home(_Microsoft(), _Gmail()))).values()) == {None}
+    monkeypatch.delenv("OPENROUTER_API_KEY")
+    assert set(_marks(_with_jev(jev.reply())).values()) == {None}
+    assert jev.requests == []
+
+
+def test_mail_reply_errors_leave_letters_unmarked_and_are_retried(jev: _Jev) -> None:
+    """An HTTP error is not cached: the poll shows no mark, and a later poll asks again."""
+    client = _with_jev(jev.reply())
+    jev.status = 500
+    assert set(_marks(client).values()) == {None}
+    assert len(jev.requests) == 3
+    jev.status = 200
+    assert _marks(client)["199a1c0d4101"] == "yes"
+    assert len(jev.requests) == 6
+
+
+def test_mail_reply_slow_answers_wait_only_the_deadline(jev: _Jev) -> None:
+    """Past timeout_ms the route answers unmarked at once; a later poll asks again."""
+    jev.delay_s = 0.6
+    client = _with_jev(jev.reply(timeout_ms=150))
+    began = time.monotonic()
+    assert set(_marks(client).values()) == {None}
+    assert time.monotonic() - began < 0.5
+    jev.delay_s = 0.0
+    time.sleep(0.8)  # the abandoned calls end on their own
+    assert _marks(client)["199a1c0d4101"] == "yes"
+    assert len(jev.requests) == 6
 
 
 def test_a_gmail_error_answer_is_the_homes_502() -> None:

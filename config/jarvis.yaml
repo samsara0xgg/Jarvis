@@ -193,7 +193,20 @@ daily_report:
 # GMAIL_ADDRESS + GMAIL_APP_PASSWORD），都不经过模型；天气来自 Open-Meteo（不用 key），
 # 按 weather 的经纬度，每个用户在自己的 settings.yaml 里写，例如
 # home: {weather: {latitude: 48.48, longitude: -123.38}}。不写就不显示天气。
-home: {}
+home:
+  # ADR 0123.  Ask Jev (TypeSafe's hosted decision model, through OpenRouter) once per
+  # unread letter on the home whether it needs Allen's own reply; only the sender's
+  # display name and the subject leave the Mac.  A letter is marked yes at
+  # probability >= yes_at, fyi at <= fyi_at, and left unmarked in between, on
+  # a late answer (timeout_ms is the wait per mail poll; the answer is kept for the
+  # next one) or on any error.  Needs OPENROUTER_API_KEY in ~/.jarvis/env.  Off
+  # here; switch it on in settings.yaml.  Requests carry provider.zdr: true.
+  mail_reply:
+    enabled: false
+    model: typesafe/jev-1.13
+    yes_at: 0.9
+    fyi_at: 0.1
+    timeout_ms: 1500
 
 # ADR 0037 — 项目清单，每个用户在自己的 settings.yaml 里维护。Resonance 的
 # 「项目」模块只把 TimeSink 里的活动归到这些 id（或「不属于任何项目」），用的是
