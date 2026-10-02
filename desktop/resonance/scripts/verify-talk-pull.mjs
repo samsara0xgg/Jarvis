@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 // talk.ts imports './model' without an extension, as the bundler allows.
 register('data:text/javascript,' + encodeURIComponent(`export async function resolve(s, c, next) {
   try { return await next(s, c); } catch (e) { if (s.startsWith('.') && !/\\.\\w+$/.test(s)) return next(s + '.ts', c); throw e; } }`));
+const { reducer, initialState } = await import('../src/model.ts');
 const { shownOf, exchangesOf, stretch, pull, calm, PULL_AT, PULL_DIM, GESTURE_GAP } = await import('../src/talk.ts');
 const checks = [], check = (name, pass) => { assert.ok(pass, name); checks.push(name); console.log(`PASS ${name}`); };
 
@@ -68,4 +69,10 @@ check('nothing older: no pull at all', run(swipe, { room: false }).p.d === 0);
 check('mouse-wheel notches, each its own gesture, never add up', run(Array.from({ length: 10 }, () => [-100, 200])).spent === 0);
 check('a pull that is let back down eases off', (() => { const a = run(swipe.slice(0, 4)).p; return pull(a, 30, a.t + 16, true, true).d < a.d; })());
 check('once spent, the rest of the gesture adds nothing', run([...swipe, ...swipe]).p.d === run(swipe).p.d || run([...swipe, ...swipe]).spent === 1);
+// A late chunk of an earlier turn (ADR 0107) grows that turn's own line; the newest turn's answer is untouched.
+const run2 = (acts) => acts.reduce(reducer, initialState);
+const late = run2([{ type: 'open', turnId: 'A', responseId: 'ra', at: 1 }, { type: 'append', turnId: 'A', token: '<voice>我查完了；', at: 2 }, { type: 'open', turnId: 'B', responseId: 'rb', at: 3 },
+  { type: 'append', turnId: 'B', token: '<voice>我是 Jarvis。</voice>', at: 4 }, { type: 'append', turnId: 'A', token: '也做了展示准备。</voice>', at: 5 }]);
+const lt = Object.fromEntries(late.talk.map(l => [l.id, l.text]));
+check('a late chunk of an earlier turn stays on that turn\'s line, not the newest turn\'s', lt['her:B'] === '<voice>我是 Jarvis。</voice>' && lt['her:A'] === '<voice>我查完了；也做了展示准备。</voice>' && late.reply === '<voice>我是 Jarvis。</voice>');
 console.log(`${checks.length} checks passed`);
