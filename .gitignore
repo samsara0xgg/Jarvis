@@ -44,3 +44,4 @@ AGENTS.md
 # Side projects the owner keeps in the local checkout only, never pushed
 /desktop/caption-translator/
 /hardware/
+native/voice_out/.build/
