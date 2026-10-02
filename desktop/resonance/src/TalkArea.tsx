@@ -1,6 +1,6 @@
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject, type WheelEvent } from 'react';
-import { ArrowUp, Keyboard, Microphone, Stop } from '@phosphor-icons/react';
-import { Markdown, inline } from './Markdown';
+import { ArrowUp, Keyboard, LinkSimple, Microphone, Stop } from '@phosphor-icons/react';
+import { Lk, Markdown, inline } from './Markdown';
 import { tr, type L, type Lang } from './companionSettings';
 import type { Line } from './model';
 import { GESTURE_GAP, HEARD_MS, HEIGHT, LINGER_MS, PULL_AT, WIDTH, calm, ink, kindOf, pace, placed, pull, said as saidCount, sentences, shownOf, stretch, type Captions, type Item, type Kind, type Pull, type Voice } from './talk';
@@ -45,24 +45,36 @@ const Said = memo(function Said({ id, text, reg }: { id: string; text: string; r
   return <p ref={el} className="tk-s" data-id={id}>{sentences(text).map((sentence, i) => <span key={i}>{sentence.map((ch, j) => <i key={j}>{ch}</i>)}</span>)}</p>;
 });
 
-// The written part: runs of list items become the grouped list (a time, then the words as written), headings and everything else
+// The written part: runs of list items become the grouped list (a lead column, then the words as written), headings and everything else
 // go through the same Markdown the Dashboard uses.
-const ITEM = /^(\s*)([-*•]|\d+[.)])\s+(.*)$/, TIME = /^(\d{1,2}[:：]\d{2}(?:\s*[-–~～至]\s*\d{1,2}[:：]\d{2})?)\s+(.*)$/;
+// A lead is a clock time, a day or a date at the start of an item, with a space after it: 10:00, 周五前, 下周一, 10/8 14:30, Tomorrow 9:00.
+const CLOCK = '\\d{1,2}[:：]\\d{2}(?:\\s*[-–~～至]\\s*\\d{1,2}[:：]\\d{2})?';
+const DAY = '今天|明天|后天|[这本下上]?(?:周|星期)[一二三四五六日天]|\\d{1,2}月\\d{1,2}[日号]|\\d{1,2}/\\d{1,2}|Today|Tomorrow|Mon(?:day)?|Tue(?:s(?:day)?)?|Wed(?:nesday)?|Thu(?:r(?:s(?:day)?)?)?|Fri(?:day)?|Sat(?:urday)?|Sun(?:day)?';
+const ITEM = /^(\s*)([-*•]|\d+[.)])\s+(.*)$/, LEAD = new RegExp(`^((?:${DAY})(?:之前|[前后]|上午|下午|晚上|早上)?(?:\\s*${CLOCK})?|${CLOCK})\\s+(.*)$`, 'i');
+type Entry = { lead: string; n: boolean; body: string; sub: string[] };
+// A row's words: "Title · https://… · more" is the title as the link (the address itself is not shown); what follows the first " · " is dimmer.
+const words = (body: string) => {
+  const [head, ...rest] = body.split(' · ');
+  const url = /^https?:\/\/\S+$/.test(rest[0]?.trim() ?? '') && !/\]\(|https?:\/\//.test(head) ? rest.shift()!.trim() : '';
+  return <>{url ? <Lk url={url}>{inline(head)}</Lk> : inline(head)}{rest.length > 0 && <span className="mt"> · {inline(rest.join(' · '))}</span>}</>;
+};
 function Written({ text, lit }: { text: string; lit: boolean }) {
   const out: ReactNode[] = [];
-  let md: string[] = [], rows: { lead: string; body: string }[] = [];
+  let md: string[] = [], rows: Entry[] = [];
   const flushMd = () => { if (md.join('').trim()) out.push(<Markdown key={out.length} text={md.join('\n')} spell={lit ? spell : undefined}/>); md = []; };
   const flushRows = () => {
-    if (rows.length) out.push(<div className="doc" key={out.length}>{rows.map((row, i) => <div key={i}>{row.lead && <time>{row.lead}</time>}<span>{inline(row.body)}</span></div>)}</div>);
+    if (rows.length) out.push(<div className="doc" key={out.length}>{rows.map((row, i) => <div key={i}>
+      {row.lead && (row.n ? <span className="n">{row.lead}</span> : <time>{row.lead}</time>)}
+      <span>{words(row.body)}{row.sub.map((line, j) => <span className="sub" key={j}>{inline(line)}</span>)}</span></div>)}</div>);
     rows = [];
   };
   for (const line of text.split('\n')) {
     const m = ITEM.exec(line);
     if (m && !m[1]) {
       flushMd();
-      const when = TIME.exec(m[3]);
-      rows.push(when ? { lead: when[1], body: when[2] } : { lead: /^\d/.test(m[2]) ? m[2] : '', body: m[3] });
-    } else if (rows.length && (m || /^\s+\S/.test(line))) rows[rows.length - 1].body += ` ${(m ? m[3] : line).trim()}`;
+      const when = LEAD.exec(m[3]), num = /^\d/.test(m[2]);
+      rows.push(when ? { lead: when[1], n: false, body: when[2], sub: [] } : { lead: num ? m[2].slice(0, -1) : '', n: num, body: m[3], sub: [] });
+    } else if (rows.length && (m || /^\s+\S/.test(line))) rows[rows.length - 1].sub.push((m ? m[3] : line).trim()); // a nested item or an indented line is the row's second line
     else { flushRows(); md.push(line); }
   }
   flushRows(); flushMd();
@@ -122,6 +134,8 @@ export function TalkArea(p: TalkProps) {
   const box = p.boxRef, trEl = useRef<HTMLDivElement>(null), ftEl = useRef<HTMLDivElement>(null), fdEl = useRef<HTMLFormElement>(null), flyEl = useRef<HTMLDivElement>(null);
   const live = useRef(p); live.current = p;
   const [, redraw] = useState(0);
+  // The address of the link under the pointer: the footer shows it in place of her state, until the pointer leaves.
+  const [url, setUrl] = useState('');
   const [row, setRow] = useState<Row>('ft'), [away, setAway] = useState(false), [fieldH, setFieldH] = useState(36), [inking, setInking] = useState(false);
   const reg = useRef<Registry>(new Map()), clocks = useRef(new Map<string, { text: string; clock: number[] }>());
   // The motion's own state: where the shape is, what is pending, and whether the reader has scrolled away from her.
@@ -175,6 +189,7 @@ export function TalkArea(p: TalkProps) {
   const frozen = useRef(cur);
   if (p.open) frozen.current = cur;
   const v = frozen.current;
+  useEffect(() => { if (!p.open || v.kind !== 'area') setUrl(''); }, [p.open, v.kind]); // (no pointer-leave comes when the transcript goes away under it)
   const shim = (v.state === 'thinking' || !!v.tool) && !v.heard;
   // The tool line that has just been replaced or has ended stays a moment, fading out under the line that takes its place (or the answer that
   // comes up): where it was, and how far in.
@@ -574,7 +589,8 @@ export function TalkArea(p: TalkProps) {
   return <div ref={box} className="talk" data-kind={v.kind} data-state={v.state} data-deep={v.deep || undefined} data-buttons={p.buttons || undefined} data-hit={p.open || undefined} data-glass="css" inert={!p.open}
     style={{ left: p.x, top: p.y }} role="region" aria-label={t(['Conversation', '对话'])}>
     <span className="tk-deep" aria-hidden="true"/>
-    <div ref={trEl} className="talk-tr" role="log" aria-live="polite" onScroll={onScroll} onWheel={onWheel}>
+    <div ref={trEl} className="talk-tr" role="log" aria-live="polite" onScroll={onScroll} onWheel={onWheel}
+      onPointerOver={e => setUrl((e.target as Element).closest('a.lk')?.getAttribute('href') ?? '')} onPointerLeave={() => setUrl('')}>
       {reduced() && shown.older > 0 && v.items.length > 0 && <button type="button" className="tk-earlier" onClick={reveal}>{t(['Earlier', '更早'])}</button>}
       {v.items.map(it => it.who === 'you'
         ? <span key={it.id} className="tk-u" data-line={it.id}>{it.spoken}</span>
@@ -584,7 +600,8 @@ export function TalkArea(p: TalkProps) {
     {away && v.items.length > 0 && <div className="tk-latest"><button type="button" onClick={latest}>{t(['Back to latest', '回到最新'])}</button></div>}
     <div ref={ftEl} className="talk-ft" hidden={row !== 'ft'}>
       <span className={`gl ${v.state}`} aria-hidden="true"><b/><b/><b/></span>
-      <span className={`lb ${shim ? 'shim' : ''} ${toolNow ? 'tool' : ''} ${v.heard ? 'heard' : ''} ${v.fading ? 'fade' : ''}`} key={v.heard ? 'heard' : toolNow ? `tool:${toolNow}` : v.state}>{v.heard ? <span dir="ltr">{v.label}</span> : v.label}</span>
+      {url ? <span className="lb url" key="url"><LinkSimple/><span>{url}</span></span>
+        : <span className={`lb ${shim ? 'shim' : ''} ${toolNow ? 'tool' : ''} ${v.heard ? 'heard' : ''} ${v.fading ? 'fade' : ''}`} key={v.heard ? 'heard' : toolNow ? `tool:${toolNow}` : v.state}>{v.heard ? <span dir="ltr">{v.label}</span> : v.label}</span>}
       {gone && <span className="lb-old" aria-hidden="true" style={{ left: gone.left }} onAnimationEnd={() => setGone(null)}>{gone.text}</span>}
       {p.buttons && <>
         <span className="sp"/>

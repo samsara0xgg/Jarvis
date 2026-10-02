@@ -1,11 +1,22 @@
 import { Fragment, type ReactNode } from 'react';
 
-// The markdown Jarvis's answers actually use (memory.db, 2026-09-25): headings, bold, code ticks, lists (some nested), tables.
+// The markdown Jarvis's answers actually use (memory.db, 2026-09-25): headings, bold, code ticks, lists (some nested), tables; links since they began to carry sources.
 // Built as React elements, never innerHTML, so nothing in an answer can inject markup into the window.
-// ponytail: no links, italics or quotes; none appear in the answers yet. Add them when they do.
-// `spell`: how plain text is set (the talk area lights it a character at a time); code stays whole.
-export const inline = (text: string, spell?: (text: string) => ReactNode): ReactNode[] => text.split(/(\*\*[^*]+\*\*|`[^`]+`)/).map((part, i) =>
-  i % 2 === 0 ? spell ? <Fragment key={i}>{spell(part)}</Fragment> : part : part[0] === '`' ? <code key={i}>{part.slice(1, -1)}</code> : <strong key={i}>{inline(part.slice(2, -2), spell)}</strong>);
+// ponytail: no italics or quotes; none appear in the answers yet. Add them when they do.
+// The one way a link opens: in the browser, through the shell, never by navigating this window.
+export const openLink = (url: string) => { void window.jarvis?.openUrl?.(url); };
+export const Lk = ({ url, children }: { url: string; children: ReactNode }) => <a className="lk" href={url} onClick={e => { e.preventDefault(); openLink(url); }}>{children}</a>;
+// A bare address reads short: no scheme, no www., no trailing slash, cut at 32.
+const short = (url: string) => { const s = url.replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, ''); return s.length > 32 ? `${s.slice(0, 31)}…` : s; };
+// `spell`: how plain text is set (the talk area lights it a character at a time); code and links stay whole.
+// A bare address ends on a character that is not punctuation, and stops at the first space, bracket or CJK character.
+export const inline = (text: string, spell?: (text: string) => ReactNode): ReactNode[] => text.split(/(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\(https?:\/\/[^\s)]+\)|https?:\/\/[^\s<>()"\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]*[^\s<>()"\u3000-\u303f\u4e00-\u9fff\uff00-\uffef.,;:!?])/).map((part, i) => {
+  if (i % 2 === 0) return spell ? <Fragment key={i}>{spell(part)}</Fragment> : part;
+  if (part[0] === '`') return <code key={i}>{part.slice(1, -1)}</code>;
+  if (part[0] === '[') { const at = part.indexOf(']('); return <Lk key={i} url={part.slice(at + 2, -1)}>{part.slice(1, at)}</Lk>; }
+  if (part[0] === 'h') return <Lk key={i} url={part}>{short(part)}</Lk>;
+  return <strong key={i}>{inline(part.slice(2, -2), spell)}</strong>;
+});
 
 type Item = { indent: number; start: number | null; text: string };
 const ITEM = /^(\s*)(?:[-*•]|(\d+)[.)])\s+(.*)$/;

@@ -83,6 +83,13 @@ export function registerDaemonBridge(win: BrowserWindow, { lab = false, verifica
     try { await shell.openExternal(`https://mail.google.com/mail/u/0/#all/${id}`); return true; }
     catch { return false; }
   });
+  // A link in her words opens in the browser: any http(s) address, nothing else (no file:, no app schemes).
+  ipcMain.handle('open-url', async (event, url) => {
+    if (!fromThisWindow(event) || typeof url !== 'string' || !/^https?:\/\//i.test(url) || url.length >= 4096) return false;
+    if (verification || lab) return false;
+    try { await shell.openExternal(url); return true; }
+    catch { return false; }
+  });
   // A Usage page write (ADR 0048/0065): main reads the desktop credential and posts to the
   // daemon; the renderer only names what to do.
   const usagePost = async (route: string, body: Record<string, unknown>, failed: string) => {

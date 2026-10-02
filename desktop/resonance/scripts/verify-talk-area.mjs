@@ -51,11 +51,13 @@ async function scene({ captions = 'brief', lang = 'en', reduced = false, demo = 
     window.__skew = 0;
     Date.now = () => real() + window.__skew;
     window.__state = { passthrough: true, glass: [], focus: null };
+    window.__opened = []; window.__copied = []; // what the page asked the shell to open and to copy
     window.jarvis = {
       placement: async () => ({ docked: false, topInset: 32, notchWidth: 185, surfaceWidth: 640, compactWidth: 0, displayId: 1 }),
       onPlacement: () => () => {}, onDisplayLeave: () => () => {}, displayReady: () => {}, companionSettings: () => {},
       onCursor: cb => { window.__cursor = cb; return () => {}; }, onCommand: cb => { window.__command = cb; return () => {}; },
       passthrough: v => { window.__state.passthrough = v; }, focus: async on => { window.__state.focus = on; }, material: rects => { window.__state.glass = rects; },
+      openUrl: async url => { window.__opened.push(url); return true; }, copy: async text => { window.__copied.push(text); return true; },
     };
     window.__sockets = [];
     window.WebSocket = class { constructor(url) { this.url = url; window.__sockets.push(this); setTimeout(() => this.onopen?.(), 0); } send() {} close() { this.onclose?.(); } };
@@ -189,8 +191,8 @@ try {
     check('written part: it comes up behind the spoken line, a moment after it', a.hers >= 1 && a.rows === 0);
     await page.waitForTimeout(1500);
     a = await area();
-    check('written part: the spoken line on top, then the grouped list with the times, the places and the link as written', a.rows === 3
-      && (await page.locator('.talk .doc time').allTextContents()).join() === '10:00,14:30,17:00' && (await page.locator('.talk .doc').last().textContent()).includes('https://zoom.us/j/123') && (await page.locator('.talk .doc').last().textContent()).includes('3F 会议室'));
+    check('written part: the spoken line on top, then the grouped list with the times, the places and the link (its title, the address behind it)', a.rows === 3
+      && (await page.locator('.talk .doc time').allTextContents()).join() === '10:00,14:30,17:00' && (await page.locator('.talk .doc a.lk').getAttribute('href')) === 'https://zoom.us/j/123' && (await page.locator('.talk .doc').last().textContent()).includes('3F 会议室'));
     await shot('06-written');
     await emit('voice', { phase: 'spoken', turn_id: 'v4' });
     await page.waitForTimeout(900);
@@ -323,7 +325,7 @@ try {
     check('a structured answer at the middle level: the area opens with her spoken line and the written part under it', a.kind === 'area' && a.her === line && a.hers === 1 && a.rows === 3);
     check('her spoken line is lit with her voice, the written part is not', a.lit > 0 && a.lit < [...line].length && await page.evaluate(() => !document.querySelector('.talk [data-written] i.on')));
     const order = await page.evaluate(() => { const t = document.querySelector('.talk'), s = t.querySelector('.tk-s').getBoundingClientRect(), w = t.querySelector('[data-written]').getBoundingClientRect(); return { below: w.top >= s.bottom - 1, text: t.querySelector('[data-written]').textContent }; });
-    check('the written part sits below the spoken line and holds the details', order.below && order.text.includes('Anna') && order.text.includes('zoom.us'));
+    check('the written part sits below the spoken line and holds the details', order.below && order.text.includes('Anna') && order.text.includes('评审会议'));
     await shot('13b-structured-brief');
     await emit('voice', { phase: 'spoken', turn_id: 'sa1' });
     // The same answer without the signal is the old one: a <document> shows alone.
@@ -1198,6 +1200,53 @@ try {
     await skew(20_000); await page.waitForTimeout(500);
     const a = await area();
     check(`interrupted without a hold: the lit words stop at the terminal event and stay (${at}), whatever the clock does after`, a.lit === at && at > 4 && a.all === 0);
+    await s.context.close();
+  }
+
+  // ---- links, dates and sub-lines in her list; numbered steps; the footer shows where a link goes ----
+  {
+    const s = await scene({ captions: 'all', lang: 'zh' });
+    const { page, emit, move, shot, area, turn } = s;
+    await page.waitForTimeout(600);
+    await emit('controls', { mic_muted: false, speech_muted: false, conversation: true }); s.daemonState.controls.conversation = true;
+    const far = 'https://example.com/a/very/long/path/that/keeps/going/and/going/on';
+    await turn('k1', '给我资料和日程', `<voice>都在下面了。</voice><document>- The Rust Book · https://doc.rust-lang.org/book/ · 官方教程\n- 书签 ${far}\n- 看 [文档](https://docs.rs/serde) 和 \`ls https://not.a.link\`\n- 今天 回邮件\n  附上时间表\n- 10/8 14:30 牙医 · Castro 牙科\n- Tomorrow 9:00 standup\n- 下周一 订机票\n  - 价格在涨\n- 周五之前 交报告\n- 2月3日下午 开会\n- Monitor the logs</document>`, { spoken: true });
+    await page.waitForTimeout(1800);
+    const rows = await page.evaluate(() => [...document.querySelectorAll('.talk .doc > div')].map(r => ({ text: r.textContent, lk: [...r.querySelectorAll('.lk')].map(a => [a.textContent, a.getAttribute('href')]), mt: [...r.querySelectorAll('.mt')].map(m => m.textContent),
+      time: r.querySelector('time')?.textContent ?? '', sub: [...r.querySelectorAll('.sub')].map(m => m.textContent), left: r.querySelector(':scope > span:last-child').getBoundingClientRect().left, tw: r.querySelector('time')?.getBoundingClientRect().width ?? 0, th: r.querySelector('time')?.getBoundingClientRect().height ?? 0 })));
+    const cut = far.replace(/^https?:\/\//, '');
+    check('a markdown link and a bare address are links: the text of one, the short form of the other (no scheme, cut with an ellipsis)', rows[2].lk[0][0] === '文档' && rows[2].lk[0][1] === 'https://docs.rs/serde' && rows[1].lk[0][0] === `${cut.slice(0, 31)}…` && rows[1].lk[0][1] === far);
+    check('an address inside code ticks stays code', rows[2].lk.length === 1 && rows[2].text.includes('ls https://not.a.link'));
+    check('a “Title · address · more” row: the title is the link, the address is not shown, what follows is dim with its separator', rows[0].lk.length === 1 && rows[0].lk[0].join() === 'The Rust Book,https://doc.rust-lang.org/book/' && !rows[0].text.includes('https://') && rows[0].mt.join() === ' · 官方教程');
+    check('date leads sit in the lead column: 今天, 10/8 14:30, Tomorrow 9:00, 下周一, 周五之前, 2月3日下午; a word that only starts like a day (Monitor) is not one',
+      rows.slice(3, 9).map(r => r.time).join('|') === '今天|10/8 14:30|Tomorrow 9:00|下周一|周五之前|2月3日下午');
+    check('an indented line and a nested item are each a dim second line of their row, not glued on', rows[3].sub.join() === '附上时间表' && rows[6].sub.join() === '价格在涨' && await page.evaluate(() => [...document.querySelectorAll('.talk .doc .sub')].every(e => getComputedStyle(e).display === 'block')));
+    check('the lead column is 44 wide and the words of every dated row start at the same x; “10/8 14:30” wraps to two lines', rows.slice(3, 9).every(r => Math.abs(r.tw - 44) < .6 && Math.abs(r.left - rows[3].left) < .6) && rows[4].th > 26);
+    check('“Monitor the logs” is a plain row (no lead column)', rows[9].time === '' && rows[9].lk.length === 0);
+    await page.locator('.talk .doc a.lk').first().click();
+    check('clicking a link asks the shell to open its full address, and the page does not navigate', await page.evaluate(() => window.__opened.join() === 'https://doc.rust-lang.org/book/' && location.search.includes('companion=1')));
+    await page.locator('.talk .doc > div').nth(1).locator('a.lk').hover(); await page.waitForTimeout(250);
+    check('hovering a link shows its full address in the footer in place of her state', await page.locator('.talk .lb.url span').textContent() === far && await page.locator('.talk .lb.url svg').count() === 1);
+    check('the row that holds a link takes the faint hover background', await page.evaluate(() => getComputedStyle(document.querySelectorAll('.talk .doc > div')[1]).backgroundColor !== 'rgba(0, 0, 0, 0)'));
+    await shot('13-links-schedule');
+    await move(out.x, out.y + 24); await page.waitForTimeout(250);
+    check('the pointer leaving the link puts her state back in the footer', await page.locator('.talk .lb.url').count() === 0 && (await area()).label !== far);
+    check('no page errors (links)', s.errors.length === 0);
+    await s.context.close();
+  }
+
+  {
+    const s = await scene({ captions: 'all', lang: 'zh' });
+    const { page, emit, shot, turn } = s;
+    await page.waitForTimeout(600);
+    await emit('controls', { mic_muted: false, speech_muted: false, conversation: true }); s.daemonState.controls.conversation = true;
+    await turn('k2', '怎么重装', '<voice>分两步。</voice><document>1. 退出伴侣\n2. 在终端运行 `npm ci`\n3. 重启，看她有没有回来</document>', { spoken: true });
+    await page.waitForTimeout(1800);
+    const n = await page.evaluate(() => { const glow = (() => { const e = document.createElement('i'); e.style.color = 'rgb(var(--glow))'; document.body.append(e); const c = getComputedStyle(e).color; e.remove(); return c; })();
+      return [...document.querySelectorAll('.talk .doc .n')].map(e => ({ text: e.textContent, color: getComputedStyle(e).color === glow, row: getComputedStyle(e.parentElement).columnGap })); });
+    check('numbered steps lead with the bare number in her colour, a 10 px gap, no “1.” and no time column', n.map(e => e.text).join() === '1,2,3' && n.every(e => e.color && e.row === '10px') && await page.locator('.talk .doc time').count() === 0);
+    await shot('14-steps');
+    check('no page errors (steps)', s.errors.length === 0);
     await s.context.close();
   }
 

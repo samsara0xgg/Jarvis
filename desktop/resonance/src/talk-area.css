@@ -80,9 +80,19 @@
 .talk .doc { border-radius:14px; background:rgb(255 255 255 / .045); box-shadow:inset 0 0 0 .5px rgb(255 255 255 / .07); }
 .talk .doc > div { position:relative; display:flex; align-items:baseline; gap:12px; padding:9px 12px; font-size:13.5px; line-height:18px; color:#eef0fb; white-space:pre-line; overflow-wrap:anywhere; }
 .talk .doc > div + div::before { content:''; position:absolute; top:0; left:12px; right:0; height:.5px; background:rgb(255 255 255 / .1); }
-.talk .doc time { flex:none; min-width:38px; font-size:12.5px; color:rgb(235 238 245 / .55); font-variant-numeric:tabular-nums; }
+.talk .doc time { flex:none; width:44px; min-width:38px; overflow-wrap:normal; font-size:12.5px; color:rgb(235 238 245 / .55); font-variant-numeric:tabular-nums; }
+.talk .doc .n { flex:none; min-width:16px; font-size:12.5px; color:rgb(var(--glow)); font-variant-numeric:tabular-nums; }
+.talk .doc > div:has(> .n) { gap:10px; }
 .talk .doc strong { font-weight:600; color:#fff; }
 .talk .doc code { padding:1px 4px; border-radius:var(--radius-tag); font:var(--text-mono)/1.4 ui-monospace,Menlo,monospace; background:rgb(255 255 255 / .08); }
+/* a link: the glow colour lightened, a hairline underline that fills in on hover (or on its whole row) */
+.lk { color:color-mix(in srgb,rgb(var(--glow)) 70%,#fff); text-decoration:underline; text-decoration-thickness:1px; text-underline-offset:3px; text-decoration-color:rgb(var(--glow) / .45); cursor:pointer; transition:text-decoration-color .14s ease; }
+.lk:hover,.talk .doc > div:hover .lk { text-decoration-color:currentColor; }
+/* what follows a row's title (the separators with it) is dimmer; a nested line is a second line under it */
+.talk .mt { color:rgb(235 238 245 / .5); }
+.talk .sub { display:block; margin-top:2px; font-size:12px; color:rgb(235 238 245 / .5); }
+.talk .doc { overflow:hidden; }
+.talk .doc > div:has(.lk):hover { background:rgb(255 255 255 / .04); }
 /* pulling up for an earlier exchange: the content follows (--pull), "Earlier" shows in the gap, the answer that yielded fades above */
 .talk-tr > * { translate:0 var(--pull,0px); }
 .tk-more { position:absolute; z-index:3; top:0; left:50%; translate:-50% 0; opacity:0; pointer-events:none; font-size:var(--text-label); letter-spacing:.02em; color:rgb(235 238 245 / .62); }
@@ -102,6 +112,11 @@
 .talk-ft { position:relative; z-index:2; flex:none; display:flex; align-items:center; gap:8px; height:44px; padding:0 7px 0 16px; }
 .talk .lb { box-sizing:border-box; overflow:hidden; font-size:12px; letter-spacing:.02em; color:rgb(235 238 245 / .56); white-space:nowrap; }
 .talk .lb:empty { display:none; }
+/* the address of the hovered link takes the label's place, up to the buttons */
+.talk .lb.url { flex:1 1 auto; min-width:0; display:flex; align-items:center; gap:6px; color:rgb(235 238 245 / .62); }
+.talk .lb.url svg { width:12px; height:12px; flex:none; }
+.talk .lb.url span { min-width:0; overflow:hidden; text-overflow:ellipsis; }
+.talk .lb.url ~ .sp { display:none; }
 .talk .lb.heard { color:rgb(235 238 245 / .72); animation:talk-in-text .24s ease-out; }
 /* what you say shows its end: the words that no longer fit give way on the left, as an ellipsis, so the newest are always there */
 .talk .lb.heard { direction:rtl; text-overflow:ellipsis; }
