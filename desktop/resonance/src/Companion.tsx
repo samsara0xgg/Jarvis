@@ -191,6 +191,8 @@ export function Companion() {
   const answering = !!s.turnId && !s.played;
   const voice = !port ? simVoice : inFlight ? 'listening' : answering && s.reply ? 'speaking' : answering || s.askedAt !== null ? 'thinking'
     : s.conversation && s.phase !== 'error' ? 'listening' : 'off';
+  // The tool a turn still being thought about is waiting on (the daemon's fixed line); once the answer opens it is gone.
+  const tool = port && s.tool && s.tool.turnId === s.waiting && s.askedAt !== null ? s.tool.label : '';
   const hearing = port ? inFlight : simHearing, talking = port ? false : simTalking, partial = port ? s.partial : simPartial;
   // Her words on screen, here and on the Dashboard, stay as they were while yours are still coming in: cut off, or
   // none. An answer written meanwhile is dropped once your words are in (ADR 0074).
@@ -733,7 +735,7 @@ export function Companion() {
       <div className={`companion-chip ${chip ? 'is-open' : ''}`} data-hit={chip || undefined} data-glass="10" style={{ left: out.x + R + 12, top: out.y - 13 }}>
         <button aria-label={t(['Type to her', '文字输入'])} tabIndex={chip ? 0 : -1} onClick={openComposer}><Keyboard/></button>
       </div>
-      <TalkArea lang={companion.lang} x={out.x} y={out.y + R + 11} open={presence.open && place === 'out'} level={talkLevel} lines={s.talk} since={talkFrom} voice={voice} hearing={hearing} partial={partial} silent={s.soundMuted}
+      <TalkArea lang={companion.lang} x={out.x} y={out.y + R + 11} open={presence.open && place === 'out'} level={talkLevel} lines={s.talk} since={talkFrom} voice={voice} hearing={hearing} partial={partial} tool={tool} silent={s.soundMuted}
         deep={{ look: deepLook, secs: deepSecs, thoughts }} field={composer} draft={draft} micPaused={s.micMuted}
         onDraft={value => { setDraft(value); ball.current?.nudge(); requestAnimationFrame(aimAtCaret); }}
         onSend={send} onField={(open, empty) => { if (open) openComposer(); else { closeComposer(); if (empty && voice === 'off') presence.dismiss(); } }} onMic={backToVoice}

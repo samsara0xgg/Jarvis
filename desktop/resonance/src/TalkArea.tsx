@@ -100,6 +100,8 @@ export type TalkProps = {
   voice: Voice; hearing: boolean;
   // What has been heard so far of the words still coming in (ADR 0111): the label follows it, and the pill and its end button follow the label.
   partial: string;
+  // The tool the turn is waiting on, as the daemon's fixed line ("Searching the web..."); empty when none is running.
+  tool: string;
   // Her voice is off: nothing is being said, so her words are all there to read, not lit as they go.
   silent: boolean;
   // Think mode (ADR 0064) for this turn: the deep look, the seconds counting, and how long each deep answer took.
@@ -154,7 +156,7 @@ export function TalkArea(p: TalkProps) {
 
   const state = p.voice === 'off' || p.silent && p.voice === 'speaking' ? 'idle' : p.voice === 'speaking' ? 'speaking' : p.voice === 'thinking' ? 'thinking' : p.hearing ? 'hearing' : 'listening';
   const secs = p.deep.secs;
-  const status = state === 'idle' ? '' : state === 'thinking' ? secs > 0 ? t([`Thinking ${secs} s`, `深想 ${secs} 秒`]) : t(['Thinking', '在想'])
+  const status = state === 'idle' ? '' : state === 'thinking' ? p.tool ? p.tool : secs > 0 ? t([`Thinking ${secs} s`, `深想 ${secs} 秒`]) : t(['Thinking', '在想'])
     : state === 'speaking' ? t(['Speaking · poke to interrupt', '在说 · 戳她打断']) : t(['Listening', '在听']);
   const coming = state === 'hearing' ? p.partial.replace(/\s+/g, ' ') : '';
   const heard = coming || (freshMs > 0 && lastYou ? lastYou.text.replace(/\s+/g, ' ') : '');
@@ -162,7 +164,7 @@ export function TalkArea(p: TalkProps) {
   const kind = kindOf(p.level, items, p.field, expanded);
   // The pill shows what you just said, then nothing but the state's glyph (and, with the middle level, the seconds a deep answer is taking);
   // the footer under the area says what she is doing.
-  const label = kind === 'pill' ? heard || (p.level === 'brief' && state === 'thinking' && secs > 0 ? status : '') : heard || status;
+  const label = kind === 'pill' ? heard || (p.level === 'brief' && state === 'thinking' && (secs > 0 || p.tool) ? status : '') : heard || status;
   // While it folds away it keeps what it was showing.
   const cur = { items, kind, state, label, heard: !!heard, fading: fading && !coming, deep: p.deep.look, ready };
   const frozen = useRef(cur);

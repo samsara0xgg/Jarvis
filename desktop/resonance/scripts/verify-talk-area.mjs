@@ -16,7 +16,11 @@ mkdirSync(dir, { recursive: true });
 const frames = process.argv.includes('--frames');
 const web = Number(process.env.COMPANION_PORT ?? 5193), daemon = 8798;
 const server = spawn(path.join(root, 'node_modules/.bin/vite'), ['preview', '--port', String(web), '--strictPort'], { cwd: root, stdio: 'ignore' });
-const checks = [], check = (name, pass) => { assert.ok(pass, name); checks.push(name); console.log(`PASS ${name}`); };
+// TALK_KEEP_GOING=1: a failed check is printed and the run goes on (exit 1 at the end), to see every result past a known-flaky one.
+const checks = [], failed = [], check = (name, pass) => {
+  if (!pass && process.env.TALK_KEEP_GOING) { failed.push(name); console.log(`FAIL ${name}`); return; }
+  assert.ok(pass, name); checks.push(name); console.log(`PASS ${name}`);
+};
 const browser = await chromium.launch({ headless: true, channel: 'chrome', args: ['--disable-web-security'] });
 const out = { x: 195.5, y: 72 }; // where she stands out of the island in the 640 px window
 
@@ -610,6 +614,50 @@ try {
     await s.context.close();
   }
 
+  // ---- a slow tool shows its fixed line while the turn waits on it, at both levels that show state ----
+  for (const captions of ['all', 'brief']) {
+    const s = await scene({ captions });
+    const { page, emit, skew, area, settled, shot } = s;
+    const base = captions === 'all' ? 'Thinking' : '';
+    await page.waitForTimeout(600);
+    await emit('voice', { phase: 'listening', turn_id: 'k1' });
+    await emit('voice', { phase: 'accepted', turn_id: 'k1', text: '帮我查一下今天的新闻' });
+    await skew(3500); await settled(); // (the pill shows what she heard for 3 s)
+    let a = await area();
+    check(`${captions}: waiting with no tool running, the footer is the plain state (“${base}”)`, a.state === 'thinking' && a.label === base);
+    await emit('tool', { turn_id: 'someone-else', label: 'Looking at your screen...' }); await settled();
+    a = await area();
+    check(`${captions}: a tool line for another turn does not show`, a.label === base);
+    await emit('tool', { turn_id: 'k1', label: 'Searching the web...' }); await settled();
+    a = await area();
+    const fit = await page.evaluate(() => { const t = document.querySelector('.talk'), lb = t.querySelector('.lb'), r = t.getBoundingClientRect(), st = t.querySelector('.st').getBoundingClientRect();
+      return { clipped: lb.scrollWidth > lb.clientWidth + 1, shim: lb.classList.contains('shim'), inside: st.right <= r.right + .5 }; });
+    check(`${captions}: while the tool runs the line “Searching the web...” shows under her, shimmering, unclipped, the end button inside`, a.state === 'thinking' && a.label === 'Searching the web...' && fit.shim && !fit.clipped && fit.inside);
+    await shot(`40-tool-${captions}`);
+    await emit('tool', { turn_id: 'k1', label: 'Looking at your screen...' }); await settled();
+    a = await area();
+    check(`${captions}: a second tool replaces it with the latest`, a.label === 'Looking at your screen...');
+    await emit('tool', { turn_id: 'k1', label: '' }); await settled();
+    a = await area();
+    check(`${captions}: the daemon clearing it brings the plain state back`, a.state === 'thinking' && a.label === base);
+    await emit('tool', { turn_id: 'k1', label: 'Searching the web...' }); await settled();
+    await emit('open', { turn_id: 'k1', response_id: 'r-k1' }); await emit('append', { turn_id: 'k1', token: '<voice>今天有三条新闻。</voice>' }); await emit('done', { turn_id: 'k1', fadeMs: 100 });
+    await page.waitForTimeout(1200);
+    a = await area();
+    check(`${captions}: when her answer opens the line is gone`, !/\.\.\.$/.test(a.label) && a.footer.indexOf('Searching') < 0);
+    await emit('voice', { phase: 'spoken', turn_id: 'k1' });
+    await emit('voice', { phase: 'listening', turn_id: 'k2' }); await emit('voice', { phase: 'accepted', turn_id: 'k2', text: '再查一个' });
+    await skew(3500); await settled();
+    await emit('tool', { turn_id: 'k2', label: 'Searching the web...' }); await settled();
+    a = await area();
+    check(`${captions}: a second turn shows its tool too`, a.label === 'Searching the web...');
+    await emit('failed', { turn_id: 'k2', reason: 'error', message: 'x' }); await settled();
+    a = await area();
+    check(`${captions}: the turn ending without an answer takes the line with it`, !a.label.includes('Searching') && !a.footer.includes('Searching'));
+    check(`${captions}: no page errors (tool line)`, s.errors.length === 0);
+    await s.context.close();
+  }
+
   // ---- reduced motion ----
   {
     const s = await scene({ captions: 'all', reduced: true });
@@ -989,7 +1037,8 @@ try {
   }
 
   writeFileSync(path.join(dir, 'verification.json'), JSON.stringify({ checks }, null, 2));
-  console.log(`${checks.length} checks passed; evidence in ${dir}`);
+  console.log(`${checks.length} checks passed, ${failed.length} failed; evidence in ${dir}`);
+  if (failed.length) process.exitCode = 1;
 } finally {
   await browser.close();
   server.kill();
