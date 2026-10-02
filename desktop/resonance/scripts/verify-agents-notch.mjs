@@ -146,6 +146,10 @@ try {
   const plain = await st.session('hello plain');
   await until('a plain finish pops', n => n.popIds.includes(plain));
   check('a finish Jev does not read as asking stays a pop, with no asks', st.row(plain).asks === undefined && st.turnEnds.some(t => t.session_id === plain), st.turnEnds);
+  // ADR 0128: the owner's first message after that scored finish is told to the daemon, once and with nothing else.
+  await st.send(plain, 'and again');
+  await st.until('the daemon is told the owner answered', () => st.answered.length);
+  check('the first message after a scored finish tells the daemon the session, only that', st.answered.length === 1 && JSON.stringify(st.answered[0]) === JSON.stringify({ session_id: plain }), st.answered);
   await clear();
   const asking = await st.session('hello ASKSYOU', { wait: false });
   await st.until('the host holds it as asking', () => st.row(asking)?.st === 'done' && st.row(asking)?.asks === true);

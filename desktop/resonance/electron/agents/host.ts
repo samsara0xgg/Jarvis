@@ -393,7 +393,16 @@ export class Session {
   // for: late, off, below its bar or failed, it changes nothing, and it holds only for the turn ending it was asked about.
   private async asksOf(text: string, ended: number) {
     const r = await daemon('/inherent/agents/turn-end', { session_id: this.s.id, text: text.slice(-600) }, 4000).catch(() => null) as { asks?: boolean | null } | null;
+    this.scored = typeof r?.asks === 'boolean';
     if (r?.asks === true && this.s.st === 'done' && this.s.unread && this.s.updated === ended) this.set({ asks: true });
+  }
+  // ADR 0128: the owner's first message after a finish the daemon scored is that finish's outcome. The daemon holds the
+  // finish's time and verdict, so only the session goes; never waited for.
+  private scored = false;
+  heard() {
+    if (!this.scored) return;
+    this.scored = false;
+    void daemon('/inherent/agents/turn-end/answered', { session_id: this.s.id }, 2000).catch(() => {});
   }
   // What landing would take now, for the conversation's 一键落地.
   async measure() { const d = await dirtyOf(this); if (JSON.stringify(d) !== JSON.stringify(this.s.dirty)) this.set({ dirty: d }); }
@@ -1304,6 +1313,7 @@ export async function deliver(x: Session, text: string, files: File[], owner: bo
   if (owner) x.set({ unread: false, updated: Date.now() });
   if (x.s.archived && x.s.vers) await current(x);
   await x.driver.send(x, owner ? carry(x, text) : text, files);
+  if (owner) x.heard();
 }
 async function setKey(x: Session, k: 'model' | 'effort' | 'mode', v: string) {
   if (x.s[k] === v) return;

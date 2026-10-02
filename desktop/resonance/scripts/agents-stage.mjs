@@ -45,11 +45,16 @@ export async function stage({ viewport = { width: 1280, height: 820 }, shots = p
   await writeFile(path.join(BIN, 'security'), '#!/bin/sh\nexit 44\n'); chmodSync(path.join(BIN, 'security'), 0o755);
 
   // ---------- the daemon (marks, and Jev's read of a turn ending: asks when the text says ASKSYOU) and Anthropic's API (the model list only) ----------
-  const turnEnds = [];
+  const turnEnds = [], answered = [];
   const daemon = http.createServer((q, r) => {
     if (q.method === 'POST' && q.url === '/inherent/agents/turn-end') {
       let b = ''; q.on('data', c => { b += c; });
       q.on('end', () => { const t = JSON.parse(b); turnEnds.push(t); r.writeHead(200, { 'Content-Type': 'application/json' }); r.end(JSON.stringify({ asks: /ASKSYOU/.test(t.text) })); });
+      return;
+    }
+    if (q.method === 'POST' && q.url === '/inherent/agents/turn-end/answered') {
+      let b = ''; q.on('data', c => { b += c; });
+      q.on('end', () => { answered.push(JSON.parse(b)); r.writeHead(200, { 'Content-Type': 'application/json' }); r.end('{"ok":true}'); });
       return;
     }
     r.writeHead(200, { 'Content-Type': 'application/json' }); r.end(JSON.stringify(q.url === '/inherent/agent-marks' ? { marks: {} } : q.url === '/inherent/language' && language ? { language } : {}));
@@ -133,7 +138,7 @@ export async function stage({ viewport = { width: 1280, height: 820 }, shots = p
   if (shots) await mkdir(shots, { recursive: true });
 
   const st = {
-    tmp, repo, HOME, API, key, call, until, row, rows, events, page, browser, context, errors, shots, turnEnds,
+    tmp, repo, HOME, API, key, call, until, row, rows, events, page, browser, context, errors, shots, turnEnds, answered,
     claude: () => lines(log), codex: () => lines(cxlog),
     // A session with its first turn done (or stopped on what it asks), the way the window starts one.
     async session(text, o = {}) {
