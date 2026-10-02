@@ -124,18 +124,21 @@ function typeIn(term: unknown, cwd: string, cmd: string) {
 // macOS posts notifications only for a signed app: the dev build's Electron is not, and each one fails with
 // UNErrorDomain 1. There the notification goes through osascript instead, which cannot open the session when clicked.
 // In the installed app a failure is the owner's no, and nothing goes round it.
-type Row = { id: string; title: string; summary: string; st: string; unread: boolean; archived: boolean; parked: boolean };
+type Row = { id: string; title: string; summary: string; st: string; unread: boolean; archived: boolean; parked: boolean; asks?: boolean };
+// ADR 0125: a finish the daemon's Jev read as asking you something is told as a wait (src/agents/queue.ts `asksYou`).
+const stOf = (s: Row) => s.st === 'done' && s.unread && s.asks ? 'wait' : s.st;
 const script = (title: string, sub: string, body: string) => execFile('/usr/bin/osascript',
   ['-e', 'on run a', '-e', 'display notification (item 3 of a) with title (item 1 of a) subtitle (item 2 of a)', '-e', 'end run', title, sub, body], { timeout: 8000 }, () => {});
 function watchHost(show: (id: string) => void, front: () => boolean, quiet: () => boolean) {
   const st = new Map<string, string>(), shown = new Map<string, { at: number; n?: Notification }>();
   let notify: { done: boolean; wait: boolean; err: boolean; notch?: boolean } = { done: false, wait: true, err: true }, failed = false;
   const saw = (s: Row) => {
-    const was = st.get(s.id), last = shown.get(s.id);
-    st.set(s.id, s.st);
-    if (was === undefined || was === s.st || s.archived || front() || (notify.notch !== false && !app.isPackaged) || !Notification.isSupported()) return;
-    const kind = s.st === 'wait' ? 'wait' : s.st === 'err' ? 'err' : s.st === 'done' && s.unread && ['work', 'pack', 'wait'].includes(was) ? 'done' : null;
-    if (!kind || !notify[kind] || (last && Date.now() - last.at < 20e3)) return;
+    const was = st.get(s.id), now = stOf(s), last = shown.get(s.id);
+    st.set(s.id, now);
+    if (was === undefined || was === now || s.archived || front() || (notify.notch !== false && !app.isPackaged) || !Notification.isSupported()) return;
+    const kind = now === 'wait' ? 'wait' : now === 'err' ? 'err' : now === 'done' && s.unread && ['work', 'pack', 'wait'].includes(was) ? 'done' : null;
+    // A finish that turns out to ask replaces its own "Done" banner at once, not 20 seconds later.
+    if (!kind || !notify[kind] || (last && Date.now() - last.at < 20e3 && was !== 'done')) return;
     last?.n?.close();
     const sub = kind === 'wait' ? tr('在等你', 'Waiting on you') : kind === 'err' ? tr('出错了', 'Error') : tr('做完了', 'Done');
     if (failed && !app.isPackaged) { shown.set(s.id, { at: Date.now() }); script(s.title, sub, s.summary); return; }
@@ -151,7 +154,7 @@ function watchHost(show: (id: string) => void, front: () => boolean, quiet: () =
     n.show();
   };
   const take = (e: { t: string; sessions?: Row[]; s?: Row; id?: string; settings?: { notify?: typeof notify; editor?: string; terminal?: string } }) => {
-    if (e.t === 'hello') { st.clear(); for (const s of e.sessions ?? []) st.set(s.id, s.st); }
+    if (e.t === 'hello') { st.clear(); for (const s of e.sessions ?? []) st.set(s.id, stOf(s)); }
     if (e.t === 'hello' || e.t === 'settings') {
       notify = e.settings?.notify ?? { done: false, wait: true, err: true };
       Object.assign(chosen, { editor: e.settings?.editor, terminal: e.settings?.terminal });

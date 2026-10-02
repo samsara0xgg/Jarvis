@@ -201,6 +201,8 @@ export class Session {
   // `daemon`: these are the daemon's marks coming in, not a change to send it.
   set(p: Partial<Sess>, daemon = false) {
     const was = this.s.st;
+    // Leaving done ends what it asked (ADR 0125).
+    if (p.st && p.st !== was && this.s.asks) p = { ...p, asks: undefined };
     if (p.st && p.st !== this.s.st && !this.quiet) {
       const at = Date.now();
       this.s.trace = [...this.s.trace ?? [], { at, st: p.st }];
@@ -366,12 +368,13 @@ export class Session {
   // line when the answer is not; a turn Allen ended himself is not unread.
   end(at?: number, silent = false, st: St = 'done', why = '', unread = true) {
     const t = this.turn;
+    let said = '';
     if (t) {
       if (t.group >= 0) {
         const g = this.items![t.group] as Item & { k: 'steps' };
         if (g?.k === 'steps' && g.live) { g.live = false; if (t.start !== undefined) g.took = took((at ?? (this.quiet ? t.last : undefined) ?? Date.now()) - t.start); this.changed(t.group); }
       }
-      const text = [t.pending, t.block].filter(Boolean).join('\n\n');
+      const text = said = [t.pending, t.block].filter(Boolean).join('\n\n');
       if (text) this.push({ k: 'it', text, at: this.time(at ?? (this.quiet ? t.last : undefined)), ...t.ref ? { id: t.ref } : {} });
       this.turn = null;
       clearTimeout(this.liveTimer); this.live = null;
@@ -381,9 +384,16 @@ export class Session {
     for (const it of this.items ?? []) if (it.k === 'req' && !it.done) it.done = tr('没回答', 'Not answered');
     if (silent || this.quiet) return;
     const last = [...this.items ?? []].reverse().find(it => it.k === 'it');
-    this.set({ st, now: undefined, since: undefined, updated: Date.now(), unread,
+    this.set({ st, now: undefined, since: undefined, updated: Date.now(), unread, asks: undefined,
       summary: why || (st === 'err' ? tr('出错了', 'Error') : last?.k === 'it' ? firstSentence(last.text) : this.s.summary) });
     void this.measure();
+    if (st === 'done' && unread && !why && said) void this.asksOf(said, this.s.updated);
+  }
+  // ADR 0125: a plain finish the daemon's Jev reads as asking you something becomes one that waits on you. Never waited
+  // for: late, off, below its bar or failed, it changes nothing, and it holds only for the turn ending it was asked about.
+  private async asksOf(text: string, ended: number) {
+    const r = await daemon('/inherent/agents/turn-end', { session_id: this.s.id, text: text.slice(-600) }, 4000).catch(() => null) as { asks?: boolean | null } | null;
+    if (r?.asks === true && this.s.st === 'done' && this.s.unread && this.s.updated === ended) this.set({ asks: true });
   }
   // What landing would take now, for the conversation's 一键落地.
   async measure() { const d = await dirtyOf(this); if (JSON.stringify(d) !== JSON.stringify(this.s.dirty)) this.set({ dirty: d }); }

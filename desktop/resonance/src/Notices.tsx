@@ -186,7 +186,8 @@ export function useNotices({ port, agents, hold, watched, viewing, agentsFront, 
       // Startrail's host keeps their marks: a change is only told here, a finish when the host counts it unread.
       if (a.host) {
         if (looking) continue;
-        if (a.state === 'wait' && !a.request) arrive({ kind: 'wait', id: a.id, line: a.last });
+        // A finish that turned out to ask (ADR 0125) takes the place of the pop it came with.
+        if (a.state === 'wait' && !a.request) { if (ended(was)) drop([a.id]); arrive({ kind: 'wait', id: a.id, line: a.last }); }
         else if (ended(a.state) && !ended(was) && a.host.unread) arrive({ kind: 'pop', id: a.id, ids: [a.id] });
         continue;
       }

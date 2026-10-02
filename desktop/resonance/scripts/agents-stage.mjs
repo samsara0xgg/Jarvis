@@ -44,8 +44,16 @@ export async function stage({ viewport = { width: 1280, height: 820 }, shots = p
   // macOS's security tool: nothing kept; the dev build reads no key anyway.
   await writeFile(path.join(BIN, 'security'), '#!/bin/sh\nexit 44\n'); chmodSync(path.join(BIN, 'security'), 0o755);
 
-  // ---------- the daemon (marks only) and Anthropic's API (the model list only) ----------
-  const daemon = http.createServer((q, r) => { r.writeHead(200, { 'Content-Type': 'application/json' }); r.end(JSON.stringify(q.url === '/inherent/agent-marks' ? { marks: {} } : q.url === '/inherent/language' && language ? { language } : {})); });
+  // ---------- the daemon (marks, and Jev's read of a turn ending: asks when the text says ASKSYOU) and Anthropic's API (the model list only) ----------
+  const turnEnds = [];
+  const daemon = http.createServer((q, r) => {
+    if (q.method === 'POST' && q.url === '/inherent/agents/turn-end') {
+      let b = ''; q.on('data', c => { b += c; });
+      q.on('end', () => { const t = JSON.parse(b); turnEnds.push(t); r.writeHead(200, { 'Content-Type': 'application/json' }); r.end(JSON.stringify({ asks: /ASKSYOU/.test(t.text) })); });
+      return;
+    }
+    r.writeHead(200, { 'Content-Type': 'application/json' }); r.end(JSON.stringify(q.url === '/inherent/agent-marks' ? { marks: {} } : q.url === '/inherent/language' && language ? { language } : {}));
+  });
   const api = http.createServer((q, r) => { r.writeHead(q.url.startsWith('/v1/models') ? 200 : 404, { 'Content-Type': 'application/json' }); r.end('{"data":[]}'); });
   await new Promise(r => daemon.listen(0, '127.0.0.1', r)); await new Promise(r => api.listen(0, '127.0.0.1', r));
 
@@ -125,7 +133,7 @@ export async function stage({ viewport = { width: 1280, height: 820 }, shots = p
   if (shots) await mkdir(shots, { recursive: true });
 
   const st = {
-    tmp, repo, HOME, API, key, call, until, row, rows, events, page, browser, context, errors, shots,
+    tmp, repo, HOME, API, key, call, until, row, rows, events, page, browser, context, errors, shots, turnEnds,
     claude: () => lines(log), codex: () => lines(cxlog),
     // A session with its first turn done (or stopped on what it asks), the way the window starts one.
     async session(text, o = {}) {

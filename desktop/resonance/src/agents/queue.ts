@@ -7,9 +7,11 @@ import type { Sess } from '../../electron/agents/types';
 export type Wait = 'ask' | 'err' | 'done';
 const RANK: Record<Wait, number> = { ask: 0, err: 1, done: 2 };
 
+// ADR 0125: a finish whose last message the daemon's Jev read as asking you something waits like a question, until read.
+export const asksYou = (s: Sess) => s.st === 'done' && s.unread && !!s.asks;
 export function waitOf(s: Sess): Wait | null {
   if (s.archived || s.parked || s.term) return null;
-  if (s.st === 'wait') return 'ask';
+  if (s.st === 'wait' || asksYou(s)) return 'ask';
   if (s.unread && s.st === 'err') return 'err';
   if (s.unread && s.st === 'done') return 'done';
   return null;

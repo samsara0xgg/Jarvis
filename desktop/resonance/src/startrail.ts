@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useReducer, useState } from 'react';
 import type { Event, Item, Req, Sess } from '../electron/agents/types';
-import { queue, waitOf, waitingSince } from './agents/queue';
+import { asksYou, queue, waitOf, waitingSince } from './agents/queue';
 import { ago, type Agent, type AgentRequest, type Answer, type Said } from './agents';
 
 // Startrail's sessions in Jarvis's notch (ADR 0073, 0095, 0104). The page follows the agent host's own event stream and
@@ -18,7 +18,7 @@ const lineOf = (it: Item): Line => it.k === 'req' ? { req: it.req, done: !!it.do
 const pendingOf = (l: Line[]) => l.find((x): x is { req: Req; done: boolean } => !!x && 'req' in x && !x.done)?.req;
 const youOf = (l: Line[]) => [...l].reverse().find((x): x is { you: string } => !!x && 'you' in x)?.you ?? '';
 // What changes a row: the rest of a session (what it is doing now, its context, its tasks) moves nothing here.
-const keyOf = (s: Sess) => [s.st, s.title, s.project, s.branch, s.summary, s.now, s.unread, s.parked, s.archived, s.term, s.updated].join('|');
+const keyOf = (s: Sess) => [s.st, s.asks, s.title, s.project, s.branch, s.summary, s.now, s.unread, s.parked, s.archived, s.term, s.updated].join('|');
 
 // A request as Jarvis's card reads one: Claude Code's own shapes, as the daemon hands them over. Claude's "always"
 // keeps its own rule for this command or tool; for an edit it means accepting edits for the session, and Codex's holds
@@ -42,7 +42,7 @@ function requestOf(s: Sess, r: Req): AgentRequest | undefined {
 }
 function rowOf(s: Sess, l: Line[] | undefined): Agent {
   const req = s.st === 'wait' && l ? pendingOf(l) : undefined;
-  return { id: s.id, agent: s.agent, title: s.title, project: s.project, branch: s.branch || undefined, state: s.st, where: 'Startrail',
+  return { id: s.id, agent: s.agent, title: s.title, project: s.project, branch: s.branch || undefined, state: asksYou(s) ? 'wait' : s.st, where: 'Startrail',
     age: ago(s.updated), you: l ? youOf(l) : '', last: (s.st === 'work' || s.st === 'pack') && s.now || s.summary, at: waitingSince(s),
     request: req && requestOf(s, req), error: s.st === 'err' ? s.summary : undefined, host: { unread: s.unread, parked: s.parked, archived: s.archived } };
 }

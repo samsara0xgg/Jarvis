@@ -55,6 +55,9 @@ export type Sess = {
   // the key, the last is the one it goes on in.
   resets?: string[];
   now?: string; bg?: string; term?: boolean; stopped?: boolean; since?: number; queue?: string[];
+  // ADR 0125 · asks: the daemon's Jev read the end of its last message as asking you something: while it is done and
+  // unread it waits on you like a question (src/agents/queue.ts `asksYou`), with no request to answer
+  asks?: boolean;
   // tasks: its background work (shells, sub-agents, monitors) while it runs, with the ones that ended this turn ·
   // dirs: folders it may work in besides its own · named: the title is yours, so it is never replaced by a generated one
   // · base: what its worktree started from

@@ -8,7 +8,7 @@ import { drawMark } from '../AgentMarks';
 import { features, type Own, type PageCtx } from './ctx';
 import { mountBack } from './back';
 import { attachAll, chipsHTML, dropped, fileTag, modesHTML, mountInput, slashHTML, slashPicks, type Attached, type Pick } from './input';
-import { waitOf } from './queue';
+import { asksYou, waitOf } from './queue';
 import { mountSee } from './see';
 import { palette, play, scoreOf } from '../soundKit';
 import { Core, TAKES, pick, type ExprId } from '../starCore';
@@ -812,11 +812,14 @@ const here = (id: string) => app.view === 'chat' && app.cur === id && document.h
 // A state change is where she and the sound answer: a finish chimes (softly if you are watching), a question asks.
 // A change Allen caused himself (an interrupt, a stop) stays quiet.
 const hush = new Map<string, number>();
-function react(s: Sess, was: St) {
-  if (s.st === was || s.archived) return;
+// `asked`: it already waited as a finish that asks (ADR 0125), so its asking now is not news.
+function react(s: Sess, was: St, asked: boolean) {
+  const asks = asksYou(s) && !asked;
+  if ((s.st === was && !asks) || s.archived) return;
   attention.notify(s);
   stAt.set(s.id, performance.now());
   if ((hush.get(s.id) ?? 0) > performance.now() || s.parked) return;
+  if (asks) { cue('ask'); herSay('ask', 2800, s.id); return; }
   if (s.st === 'done' && was !== 'done') { cue('done', here(s.id) ? .45 : 1); herSay('fin', 2400, s.id); core.hop(performance.now(), .14); }
   if (s.st === 'wait') { cue('ask'); herSay('ask', 2800, s.id); }
   if (s.st === 'err') { cue('error'); herSay('34', 2600, s.id); core.effect('shake', performance.now()); }
@@ -851,11 +854,11 @@ function apply(e: Event) {
     draw(); return;
   }
   if (e.t === 'sess') {
-    const i = app.ss.findIndex(s => s.id === e.s.id), was = i >= 0 ? app.ss[i].st : e.s.st;
+    const i = app.ss.findIndex(s => s.id === e.s.id), was = i >= 0 ? app.ss[i].st : e.s.st, asked = i >= 0 && asksYou(app.ss[i]);
     // Looking at it when it finishes is having seen it: it never goes to 「轮到你」.
     if (!attention.busy && e.s.unread && here(e.s.id) && e.s.st !== 'wait') { e.s.unread = false; void call(`/sessions/${e.s.id}/meta`, { seen: true }).catch(() => {}); }
     if (i >= 0) app.ss[i] = e.s; else app.ss.push(e.s);
-    react(e.s, was);
+    react(e.s, was, asked);
     touch(e.s.id); wb.saw(e.s); return;
   }
   if (e.t === 'items') {

@@ -142,6 +142,24 @@ try {
   check('a click on the popped name opens it in Startrail and reads it there', (await page.evaluate(() => window.__state.opened)).includes(ask));
   await clear();
 
+  // ---- a finish the daemon's Jev reads as asking something waits like a question (ADR 0125) ----
+  const plain = await st.session('hello plain');
+  await until('a plain finish pops', n => n.popIds.includes(plain));
+  check('a finish Jev does not read as asking stays a pop, with no asks', st.row(plain).asks === undefined && st.turnEnds.some(t => t.session_id === plain), st.turnEnds);
+  await clear();
+  const asking = await st.session('hello ASKSYOU', { wait: false });
+  await st.until('the host holds it as asking', () => st.row(asking)?.st === 'done' && st.row(asking)?.asks === true);
+  n = await cardFor(asking);
+  check('a finish read as asking comes as a Needs you card, not a pop', /needs you/i.test(n.card) && !n.pop, n);
+  check('it waits in 轮到你 as an ask, ahead of finished ones', expected()[0] === asking && count(n, 'turn') === expected().length, { counts: n.counts, queue: expected() });
+  const sent = st.turnEnds.find(t => t.session_id === asking);
+  check('the host sent the daemon the session and the end of the last message, at most 600 characters', sent && sent.text.includes('ASKSYOU') && sent.text.length <= 600, sent);
+  await page.keyboard.press('Escape');
+  await st.call(`/sessions/${asking}/meta`, { seen: true });
+  n = await until('reading it ends the card', n => !n.open && !n.card);
+  check('reading it ends the wait, as for any finish', st.row(asking).unread === false && !expected().includes(asking), { queue: expected() });
+  await clear();
+
   // ---- a question: its options answer to their digits ----
   const asks = await st.session('hello QUESTION', { wait: false });
   n = await cardFor(asks);
