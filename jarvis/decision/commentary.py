@@ -25,7 +25,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, Final
 
-from jarvis.shared.lang import SLOW_TOOLS, variants
+from jarvis.shared.lang import LONG_WAIT_TOOLS, SLOW_TOOLS, variants
 from jarvis.shared.realtime import PresentationIntent, PresentationIntentType
 from jarvis.shared.text import is_english
 
@@ -116,12 +116,14 @@ def commentary_intent_for(
     if row is None:
         return None
     subject = event.event_uid
+    intent_type, key = row
     if event.type == "action.dispatched":
         action_id = event.payload.get("action_id")
         if tool_name not in SLOW_TOOLS or not isinstance(action_id, str) or not action_id:
             return None
         subject = action_id
-    intent_type, key = row
+        if tool_name in LONG_WAIT_TOOLS:
+            key = "commentary.long_wait"
     return PresentationIntent(
         intent_type=intent_type,
         surface_hint="speech",

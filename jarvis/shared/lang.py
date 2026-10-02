@@ -93,6 +93,10 @@ SLOW_TOOLS: Final[dict[str, str]] = {
     "daily_work_report": "tool_status.report",
 }
 
+# The slowest of them (daily_work_report 58 s, refresh_work_state 7.6 s median,
+# p90 13.5 s): their wait line says it will take a while (ADR 0117).
+LONG_WAIT_TOOLS: Final = frozenset({"daily_work_report", "refresh_work_state"})
+
 
 # --- What a confirmed tool does (ADR 0062) ----------------------------------
 
@@ -930,6 +934,14 @@ VARIANTS: Final[dict[str, dict[Language, tuple[str, ...]]]] = {
     "commentary.wait": {
         "zh": ("稍等。", "等一下。", "正在办。", "马上好。"),
         "en": ("One moment.", "Hold on.", "On it.", "Almost there."),
+    },
+    # ADR 0117: the same line for LONG_WAIT_TOOLS, which says he can ask something else.
+    "commentary.long_wait": {
+        "zh": ("这个要等一会儿，你可以先问别的。", "这个得花点时间，有别的事可以先问我。", "要等一会儿，你先忙别的也行。"),
+        "en": (
+            "This will take a little while. You can ask me something else meanwhile.",
+            "This one takes a bit. Feel free to ask me something else.",
+        ),
     },
     # ADR 0102: her answer to 「等我一下」 and to a dismissal, one picked at random.
     "conversation.wait": {

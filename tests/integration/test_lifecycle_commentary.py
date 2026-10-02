@@ -52,7 +52,7 @@ from jarvis.runtime import (
     tool_status,
 )
 from jarvis.shared import Event, lang
-from jarvis.shared.lang import SLOW_TOOLS
+from jarvis.shared.lang import LONG_WAIT_TOOLS, SLOW_TOOLS
 from jarvis.shared.realtime import (
     Wave1FeatureFlags,
     new_response_id,
@@ -87,6 +87,8 @@ if TYPE_CHECKING:
 
 _WAIT_ZH: Final = lang.variants("commentary.wait", "zh")
 _WAIT_EN: Final = lang.variants("commentary.wait", "en")
+_LONG_ZH: Final = lang.variants("commentary.long_wait", "zh")
+_LONG_EN: Final = lang.variants("commentary.long_wait", "en")
 
 
 @pytest.fixture(autouse=True)
@@ -203,6 +205,18 @@ def test_the_owners_pool_is_what_the_table_holds() -> None:
     """2026-10-02, Allen: these four in each language, 「马上好」 included."""
     assert _WAIT_ZH == ("稍等。", "等一下。", "正在办。", "马上好。")
     assert _WAIT_EN == ("One moment.", "Hold on.", "On it.", "Almost there.")
+
+
+def test_the_long_wait_pool_and_its_tools_are_what_the_owner_chose() -> None:
+    """2026-10-02, Allen: the two slowest jobs say it will take a while."""
+    assert len(_LONG_ZH) == 3
+    assert all("别的" in line for line in _LONG_ZH)
+    assert _LONG_EN == (
+        "This will take a little while. You can ask me something else meanwhile.",
+        "This one takes a bit. Feel free to ask me something else.",
+    )
+    assert set(LONG_WAIT_TOOLS) == {"daily_work_report", "refresh_work_state"}
+    assert set(SLOW_TOOLS) >= LONG_WAIT_TOOLS
 
 
 def test_non_mapped_event_types_return_none() -> None:
@@ -853,8 +867,11 @@ def test_every_phrase_of_the_pool_can_be_heard(
     [
         ("Search the web for today's weather in Vancouver.", "web_search", _WAIT_EN),
         ("帮我搜一下今天温哥华的天气", "web_search", _WAIT_ZH),
-        ("Write today's report", "daily_work_report", _WAIT_EN),
-        ("把今天的工作报告写一下", "daily_work_report", _WAIT_ZH),
+        ("Write today's report", "daily_work_report", _LONG_EN),
+        ("把今天的工作报告写一下", "daily_work_report", _LONG_ZH),
+        ("Refresh my work state", "refresh_work_state", _LONG_EN),
+        ("刷新一下工作状态", "refresh_work_state", _LONG_ZH),
+        ("Look at my screen", "screen_look", _WAIT_EN),
     ],
 )
 def test_a_slow_tool_says_one_pool_line_in_the_language_allen_used(
@@ -1177,6 +1194,26 @@ def test_a_turn_never_hears_two_lines(
         _settle(_CLOCK_S + 0.4)
 
     assert len(_commentary_emitted(reader, "T-two")) == 1
+
+
+def test_a_long_tool_after_the_clock_line_adds_no_second_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ADR 0117: the clock spoke first, so the long line is not said; one line per turn."""
+    monkeypatch.setattr(inherent_loop, "_COMMENTARY_AFTER_S", _CLOCK_S)
+    runtime = _make_runtime(tmp_path)
+    reader = _reader(runtime)
+    with _Observer(runtime):
+        _user_turn(runtime.conn, "T-late-long")
+        _wait_until_turn_spoke(reader, "T-late-long")
+        _dispatch(
+            runtime.conn, action_id="ACT-late", turn_id="T-late-long",
+            tool_name="daily_work_report",
+        )
+        _settle(_CLOCK_S + 0.4)
+
+    assert _only_phrase(reader) in _WAIT_ZH
+    assert len(_commentary_emitted(reader, "T-late-long")) == 1
 
 
 def test_a_typed_turn_and_a_live_turn_hear_nothing(
