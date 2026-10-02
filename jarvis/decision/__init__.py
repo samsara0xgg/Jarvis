@@ -95,6 +95,7 @@ from jarvis.shared import (
     Event,
     RawResult,
     RawResultBundle,
+    llm_io_log,
 )
 from jarvis.shared.lang import action, letter_to, t
 from jarvis.shared.pricing import compute_cost_usd, load_pricing_table
@@ -2222,16 +2223,16 @@ def _stream_routine_text(
         pricing_table=_pricing_table(),
         committed_event_bus=route.committed_event_bus,
     )
-    stream = route.open_stream(
-        cost_recorder.stream_events(
+    with llm_io_log.labels(response_id=route.context.response_id):
+        handle = cost_recorder.stream_events(
             ctx.llm_client,
             messages=messages,
             system=ctx.system_prompt,
             tools=None,
             kind="decision",
             turn_id=scratch.turn_id,
-        ),
-    )
+        )
+    stream = route.open_stream(handle)
     speaker = _SegmentSpeaker(
         ctx, route, scratch, classifier=SegmentRiskClassifier(), gate_segments=gate_segments,
     )
@@ -2485,8 +2486,8 @@ def _stream_spoken_request(  # noqa: C901, PLR0913 - one request, the turn's sea
         pricing_table=_pricing_table(),
         committed_event_bus=route.committed_event_bus,
     )
-    stream = route.open_stream(
-        cost_recorder.stream_events(
+    with llm_io_log.labels(response_id=route.context.response_id):
+        handle = cost_recorder.stream_events(
             ctx.llm_client,
             messages=messages,
             system=ctx.system_prompt,
@@ -2495,8 +2496,8 @@ def _stream_spoken_request(  # noqa: C901, PLR0913 - one request, the turn's sea
             turn_id=scratch.turn_id,
             responses=True,
             text_format=SPOKEN_REPLY_FORMAT if route.structured else None,
-        ),
-    )
+        )
+    stream = route.open_stream(handle)
     speaker.begin_request()
     reply = _SpokenReply()
     failed: LLMResponseFailed | None = None

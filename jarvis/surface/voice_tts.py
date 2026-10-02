@@ -35,6 +35,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Mapping
 
     from jarvis.surface import voice_ducking
+    from jarvis.surface.voice_artifact_store import TtsRecorder
 
 from jarvis.shared import lang
 from jarvis.shared.realtime_trace import (
@@ -2084,8 +2085,10 @@ class MiniMaxWSClient:
         between_chunk_timeout_s: float = DEFAULT_TTS_BETWEEN_CHUNK_TIMEOUT_S,
         total_timeout_s: float = DEFAULT_TTS_TOTAL_TIMEOUT_S,
         session_close_timeout_s: float = DEFAULT_TTS_SESSION_CLOSE_TIMEOUT_S,
+        recorder: TtsRecorder | None = None,
     ) -> None:
         """Configure endpoints, voice, audio shape and deadlines; does not connect yet."""
+        self._recorder = recorder
         self._api_key = api_key
         self._voice = voice
         self._primary_endpoint = primary_endpoint
@@ -2141,6 +2144,7 @@ class MiniMaxWSClient:
             idle_close_s=idle_close_s,
             command_queue_capacity=command_queue_capacity,
             audio_queue_capacity=audio_queue_capacity,
+            recorder=self._recorder,
         )
 
     async def synthesize(self, text: str) -> bytes:
@@ -2159,7 +2163,17 @@ class MiniMaxWSClient:
                     pcm_bytes=len(chunk),
                 )
             chunks.append(chunk)
-        return b"".join(chunks)
+        pcm = b"".join(chunks)
+        if self._recorder is not None and pcm:
+            # ADR 0118: the legacy path has no response id; this is the provider's float32
+            # PCM after the resampler, kept as int16.
+            heard = np.frombuffer(pcm, dtype=np.float32)
+            self._recorder.keep(
+                f"batch-{time.time_ns() // 1_000_000}", 0,
+                (heard * 32768).clip(-32768, 32767).astype("<i2").tobytes(),
+                sample_rate_hz=self._sr_out, text=text, voice=self._voice, model=self._model,
+            )
+        return pcm
 
     async def synthesize_stream(self, text: str) -> AsyncIterator[bytes]:
         """Yield PCM under one total deadline and one cancellable session."""
@@ -2410,7 +2424,10 @@ class MiniMaxTTSSession:
         idle_close_s: float,
         command_queue_capacity: int,
         audio_queue_capacity: int,
+        recorder: TtsRecorder | None = None,
     ) -> None:
+        self._recorder = recorder
+        self._heard: list[bytes] = []  # ADR 0118: this segment's provider PCM, when recording
         self._api_key = api_key
         self._endpoint = endpoint
         self._voice = voice
@@ -2629,6 +2646,8 @@ class MiniMaxTTSSession:
             if self._close_complete:
                 return
             self._closing = True
+            if self._active_sequence is not None:
+                self._keep_heard(self._active_sequence, complete=False)
             current = asyncio.current_task()
             tasks = tuple(
                 task
@@ -2749,6 +2768,7 @@ class MiniMaxTTSSession:
                         audio_hex = audio_hex[:-1]
                     pcm = bytes.fromhex(audio_hex)
                     if pcm:
+                        self._hear(pcm)
                         await self._events.put(
                             TTSAudioChunk(
                                 sequence=sequence,
@@ -2758,6 +2778,7 @@ class MiniMaxTTSSession:
                         )
                         first_for_segment = False
                 if obj.get("is_final"):
+                    self._keep_heard(sequence, complete=True)
                     usage_raw = obj.get("extra_info")
                     usage = usage_raw if isinstance(usage_raw, dict) else None
                     await self._events.put(
@@ -2770,6 +2791,20 @@ class MiniMaxTTSSession:
             raise
         except Exception as exc:  # noqa: BLE001 - provider reader boundary
             await self._publish_failure(exc)
+
+    def _hear(self, pcm: bytes) -> None:
+        if self._recorder is not None:
+            self._heard.append(pcm)
+
+    def _keep_heard(self, sequence: int, *, complete: bool) -> None:
+        """ADR 0118: hand what the provider sent for this segment to the recorder, off this loop."""
+        if self._recorder is None or not self._heard:
+            return
+        pcm, self._heard = b"".join(self._heard), []
+        self._recorder.keep(
+            self._response_id or "unbound", sequence, pcm, sample_rate_hz=self._sample_rate_hz,
+            text=self._active_text, voice=self._voice, model=self._model, complete=complete,
+        )
 
     async def _publish_alignment(self, sequence: int, subtitle: object, *, final: bool) -> None:
         boundaries = _subtitle_boundaries(subtitle, self._active_text, final=final)

@@ -9,12 +9,15 @@ path lands on ``utterance.received.audio_artifact_ref`` and from there on
 
 from __future__ import annotations
 
+import json
+import logging
 import subprocess
 import wave
-from typing import TYPE_CHECKING
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
+from pathlib import Path
 
-if TYPE_CHECKING:
-    from pathlib import Path
+LOGGER = logging.getLogger(__name__)
 
 _AAC_BITRATE: str = "32000"
 _TRANSCODE_TIMEOUT_S: float = 30.0
@@ -63,4 +66,53 @@ def persist(
     return str(m4a_path)
 
 
-__all__ = ["persist"]
+class TtsRecorder:
+    """Test-time copy of what MiniMax returned for each segment (ADR 0118).
+
+    ``tts-<response_id>-<sequence>.m4a`` (or ``.wav``) and a one-line
+    ``.json`` of the text sent, voice, model and rate, in the recordings
+    folder, so the retention of ADR 0067 deletes them with the input audio.
+    The write runs on a thread of its own after the segment ends; a failure
+    costs one warning, never playback.
+    """
+
+    def __init__(self, folder: Path) -> None:
+        """Keep recordings under ``folder`` (``memory.audio_dir``)."""
+        self._folder = folder
+        self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="jarvis-tts-keep")
+        self._warned = False
+
+    def keep(  # noqa: PLR0913 - one segment's audio and the note that goes beside it
+        self, response_id: str, sequence: int, pcm: bytes, *, sample_rate_hz: int,
+        text: str, voice: str, model: str, complete: bool = True,
+    ) -> None:
+        """Queue ``pcm`` (mono PCM16 LE, as the provider sent it) to be written."""
+        if pcm:
+            self._pool.submit(
+                self._save, f"tts-{response_id}-{sequence}", pcm, sample_rate_hz,
+                {"response_id": response_id, "sequence": sequence, "text": text,
+                 "voice": voice, "model": model, "complete": complete},
+            )
+
+    def _save(self, name: str, pcm: bytes, sample_rate_hz: int, note: dict[str, object]) -> None:
+        try:
+            path = persist(
+                pcm, turn_id=name, sample_rate_hz=sample_rate_hz, artifacts_dir=self._folder,
+            )
+            note = {
+                "saved": datetime.now().astimezone().isoformat(timespec="seconds"),
+                "seconds": round(len(pcm) / 2 / sample_rate_hz, 2),
+                "sample_rate_hz": sample_rate_hz,
+                "audio": None if path is None else Path(path).name,
+                **note,
+            }
+            (self._folder / f"{name}.json").write_text(
+                json.dumps(note, ensure_ascii=False) + "\n", encoding="utf-8",
+            )
+        except Exception as exc:  # noqa: BLE001 - a diagnostic copy must never break speech
+            if not self._warned:
+                self._warned = True
+                LOGGER.warning("tts recording not kept: %s", exc)
+
+
+__all__ = ["TtsRecorder", "persist"]

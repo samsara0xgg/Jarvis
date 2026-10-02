@@ -137,6 +137,7 @@ from jarvis.runtime import (
     _timesink_db_path,
     _timesink_poll_interval_s,
     _wait_for_next_trigger,
+    diagnostics_flag,
     drive_turn,
     make_barge_in_interrupt_callable,
     make_foreground_decision_callable,
@@ -210,6 +211,7 @@ from jarvis.state.projections import (
 from jarvis.state.trigger_consumption import trigger_was_consumed
 from jarvis.surface import (
     voice_aec,
+    voice_artifact_store,
     voice_asr,
     voice_audio,
     voice_backend,
@@ -2463,6 +2465,13 @@ def _build_tts_pipeline(  # noqa: C901 - rollout/degradation capability boundary
         else media_config.ring_seconds
     )
 
+    # ADR 0118: with the diagnostics switch on, her audio is kept beside the recordings.
+    recorder = (
+        voice_artifact_store.TtsRecorder(runtime.memory.audio_dir)
+        if diagnostics_flag(runtime.config, "record_tts_audio") and runtime.memory is not None
+        else None
+    )
+
     def _new_provider() -> voice_tts.MiniMaxWSClient:
         return voice_tts.MiniMaxWSClient(
             api_key=api_key,
@@ -2478,6 +2487,7 @@ def _build_tts_pipeline(  # noqa: C901 - rollout/degradation capability boundary
             between_chunk_timeout_s=knobs.tts_between_chunk_timeout_s,
             total_timeout_s=knobs.tts_total_timeout_s,
             session_close_timeout_s=knobs.tts_session_close_timeout_s,
+            recorder=recorder,
             **volume_kwargs,
         )
 

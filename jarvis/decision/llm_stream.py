@@ -597,9 +597,15 @@ class LLMStreamHandle:
     def __init__(
         self, *, normalizer: StreamNormalizer, source: AsyncIterator[Mapping[str, Any]],
         on_settled: Callable[[StreamDisposition], object],
+        tap: Callable[[LLMStreamEvent], object] | None = None,
     ) -> None:
-        """Bind a lazy provider source and its L3 accounting owner before I/O."""
+        """Bind a lazy provider source and its L3 accounting owner before I/O.
+
+        ``tap`` sees each text delta and assembled tool call as the stream
+        normalizes it, before the consumer does (the test-time request log).
+        """
         self._normalizer = normalizer
+        self._tap = tap
         self._source = source
         self._on_settled = on_settled
         self._claimed = False
@@ -687,11 +693,16 @@ class LLMStreamHandle:
                     raw = await self._read
                 except StopAsyncIteration:
                     proposals = self._normalizer.complete()
+                    if self._tap is not None:
+                        for proposal in proposals:
+                            self._tap(proposal)
                     outcome = "completed"
                     break
                 for event in self._normalizer.feed(raw):
                     if self._cancelled():
                         return
+                    if self._tap is not None:
+                        self._tap(event)
                     yield event
         except asyncio.CancelledError:
             if not self._cancelled():

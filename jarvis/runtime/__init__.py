@@ -110,6 +110,7 @@ from jarvis.decision.stream_gate import routine_stream_policy, spoken_stream_pol
 from jarvis.decision.think_mode import ThinkMode, ThinkModeConfigError, load_think_mode
 from jarvis.decision.tier0 import Tier0ConfigError, load_tier0_table, validate_tier0_table
 from jarvis.deployment import RuntimePaths, bootstrap_runtime, load_env_file
+from jarvis.deployment.launchd import logs_dir
 from jarvis.deployment.models import default_sensevoice_dir, default_silero_vad_path
 from jarvis.deployment.night_power import MacPower
 from jarvis.execution.mcp_oauth import DEFAULT_OAUTH_CALLBACK_PORT
@@ -152,7 +153,7 @@ from jarvis.runtime.settings import REPLY_LINES, SETUP_VOICES, Settings, apply_s
 from jarvis.runtime.setup import write_setting
 from jarvis.runtime.stream_bridge import LoopBoundTokenStream
 from jarvis.runtime.work_state import WorkStateService, build_analyst
-from jarvis.shared import CallerPrincipal, Event, lang
+from jarvis.shared import CallerPrincipal, Event, lang, llm_io_log
 from jarvis.shared.action_admission import bind_action_admission
 from jarvis.shared.lang import language_name
 from jarvis.shared.pricing import load_pricing_table
@@ -1556,6 +1557,12 @@ def _configure_realtime_trace_export(paths: RuntimePaths) -> None:
         raise RuntimeBootstrapError(msg) from exc
 
 
+def diagnostics_flag(config: Mapping[str, Any], key: str) -> bool:
+    """A ``diagnostics:`` switch (ADR 0118); absent or anything but ``true`` is off."""
+    block = config.get("diagnostics")
+    return isinstance(block, Mapping) and block.get(key) is True
+
+
 def _load_runtime_env_and_trace(paths: RuntimePaths) -> None:
     """Load fill-only runtime env, then apply its optional trace destination."""
     load_env_file(paths.root)
@@ -1773,6 +1780,8 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
     # user's settings.yaml for this boot.
     full_config = apply_settings(_load_full_config(config_path, paths.settings), paths.root)
     lang.set_language(_language(full_config))
+    log_llm_io = diagnostics_flag(full_config, "log_llm_io")
+    llm_io_log.configure(logs_dir(paths.root) / "llm-io.jsonl" if log_llm_io else None)
     realtime_block = full_config.setdefault("realtime", {})
     if not realtime_block.get("tts_voice"):
         realtime_block["tts_voice"] = SETUP_VOICES[lang.language()][0]

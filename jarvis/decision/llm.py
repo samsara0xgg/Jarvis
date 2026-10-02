@@ -37,6 +37,7 @@ import yaml
 
 from jarvis.decision.llm_io import stream_openai, warm_openai
 from jarvis.decision.llm_stream import LLMStreamHandle, StreamNormalizer
+from jarvis.shared import llm_io_log
 from jarvis.shared.realtime import LLMUsageStatus
 from jarvis.shared.realtime_trace import record_realtime_trace
 
@@ -519,6 +520,14 @@ class LLMClient:
         self._last_metadata["llm_request_id"] = _new_llm_request_id()
 
         component = f"llm.{self._provider}"
+        record = llm_io_log.start(
+            {
+                "model": self._model, "system": system, "messages": copy.deepcopy(messages),
+                "tools": _tool_names(tools), "tool_choice": tool_choice,
+            },
+            call="chat", api=self._api or self._provider,
+            llm_request_id=self._last_metadata["llm_request_id"],
+        ) if llm_io_log.enabled() else None
         try:
             if self._provider == "openai" and self._api == "responses":
                 result = self._chat_openai_responses(
@@ -540,10 +549,27 @@ class LLMClient:
                     system=system,
                     tools=tools,
                 )
-        except Exception:
+        except Exception as exc:
+            if record is not None:
+                record.end(error=type(exc).__name__, message=str(exc))
             if self._tracker is not None:
                 self._tracker.record_failure(component)  # type: ignore[attr-defined]
             raise
+        if record is not None:
+            record.end(
+                text=result.text,
+                tool_calls=[
+                    {"call_id": c.call_id, "name": c.name, "arguments": c.arguments_json}
+                    for c in result.tool_calls
+                ],
+                finish_reason=result.finish_reason,
+                provider_response_id=result.provider_response_id,
+                usage={
+                    "input": result.input_tokens, "output": result.output_tokens,
+                    "cache_read": result.cache_read_in, "cache_write": result.cache_write_in,
+                    "status": result.usage_status,
+                },
+            )
         if self._tracker is not None:
             self._tracker.record_success(component)  # type: ignore[attr-defined]
         return result
@@ -624,12 +650,18 @@ class LLMClient:
             })
             if tools:
                 body["tools"] = copy.deepcopy(tools)
+        record = llm_io_log.start(
+            {**{k: v for k, v in body.items() if k != "tools"}, "tools": _tool_names(tools)},
+            call="stream", api="responses" if responses else self._provider,
+            llm_request_id=request_id,
+        ) if llm_io_log.enabled() else None
         return LLMStreamHandle(
             normalizer=StreamNormalizer(self._provider, request_id, responses=responses),
             source=self._typed_provider_events(
                 self._provider, options, body, responses=responses,
             ),
-            on_settled=on_settled,
+            on_settled=on_settled if record is None else _logged_settle(record, on_settled),
+            tap=None if record is None else record.tap,
         )
 
     @staticmethod
@@ -1303,6 +1335,32 @@ class LLMClient:
 
 
 # --- private helpers --------------------------------------------------------
+
+
+def _logged_settle(
+    record: llm_io_log.Record, owner: Callable[[StreamDisposition], object],
+) -> Callable[[StreamDisposition], object]:
+    """The settlement owner, after the request log has its line."""
+
+    def settled(disposition: StreamDisposition) -> object:
+        usage = disposition.usage
+        record.end(
+            outcome=disposition.outcome, finish_reason=disposition.finish_reason,
+            error=disposition.error_code, provider_response_id=disposition.provider_response_id,
+            usage={
+                "input": usage.input_tokens, "output": usage.output_tokens,
+                "cache_read": usage.cache_read_tokens, "cache_write": usage.cache_write_tokens,
+                "status": usage.usage_status,
+            },
+        )
+        return owner(disposition)
+
+    return settled
+
+
+def _tool_names(tools: list[dict[str, Any]] | None) -> list[str]:
+    """The request log names the tools; their schemas are the code's to say."""
+    return [str(tool.get("name") or tool.get("function", {}).get("name")) for tool in tools or ()]
 
 
 def _tools_to_openai(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:

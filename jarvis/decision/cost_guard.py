@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, Any
 
+from jarvis.shared import llm_io_log
 from jarvis.shared.pricing import compute_cost_usd
 from jarvis.shared.realtime import (
     CostAccountingDisposition,
@@ -204,12 +205,13 @@ class CostRecorder:
     ) -> ChatResult:
         """Run normal chat and commit completion or error exactly once."""
         try:
-            result = client.chat(
-                messages=messages,
-                system=system,
-                tools=tools,
-                tool_choice=tool_choice,
-            )
+            with llm_io_log.labels(kind=kind, turn_id=turn_id, run_id=run_id):
+                result = client.chat(
+                    messages=messages,
+                    system=system,
+                    tools=tools,
+                    tool_choice=tool_choice,
+                )
         except BaseException as exc:
             outcome: LLMRequestOutcome = (
                 "cancelled"
@@ -349,10 +351,12 @@ class CostRecorder:
                 turn_id=turn_id, run_id=run_id,
             )
 
-        return client.stream_events(
-            messages=messages, system=system, tools=tools, on_settled=settled,
-            responses=responses, max_output_tokens=max_output_tokens, text_format=text_format,
-        )
+        with llm_io_log.labels(kind=kind, turn_id=turn_id, run_id=run_id):
+            return client.stream_events(
+                messages=messages, system=system, tools=tools, on_settled=settled,
+                responses=responses, max_output_tokens=max_output_tokens,
+                text_format=text_format,
+            )
 
 
 __all__ = ["CostRecorder", "MissingLLMRequestIdentityError"]
