@@ -104,6 +104,8 @@ export type TalkProps = {
   tool: string;
   // Her voice is off: nothing is being said, so her words are all there to read, not lit as they go.
   silent: boolean;
+  // The keyboard and end buttons in the bottom row (the `talkButtons` setting); without them her own tap is how voice ends.
+  buttons: boolean;
   // Think mode (ADR 0064) for this turn: the deep look, the seconds counting, and how long each deep answer took.
   deep: { look: boolean; secs: number; thoughts: { turn: string; secs: number }[] };
   field: boolean; draft: string; micPaused: boolean;
@@ -169,11 +171,20 @@ export function TalkArea(p: TalkProps) {
   // the footer under the area says what she is doing.
   const label = kind === 'pill' ? heard || (p.level === 'brief' && (tool || state === 'thinking' && secs > 0) ? status : '') : heard || status;
   // While it folds away it keeps what it was showing.
-  const cur = { items, kind, state, label, heard: !!heard, tool: !!tool, fading: fading && !coming, deep: p.deep.look, ready };
+  const cur = { items, kind, state, label, heard: !!heard, tool, fading: fading && !coming, deep: p.deep.look, ready };
   const frozen = useRef(cur);
   if (p.open) frozen.current = cur;
   const v = frozen.current;
-  const shim = (v.state === 'thinking' || v.tool) && !v.heard;
+  const shim = (v.state === 'thinking' || !!v.tool) && !v.heard;
+  // The tool line that has just been replaced or has ended stays a moment, fading out under the line that takes its place (or the answer that
+  // comes up): where it was, and how far in.
+  const toolNow = v.tool && !v.heard ? v.tool : '', lastTool = useRef('');
+  const [gone, setGone] = useState<{ text: string; left: number } | null>(null);
+  useLayoutEffect(() => {
+    const was = lastTool.current; lastTool.current = toolNow;
+    const lb = lbEl();
+    if (was && was !== toolNow && lb && !reduced()) setGone({ text: was, left: lb.offsetLeft + parseFloat(getComputedStyle(lb).paddingLeft) });
+  }, [toolNow]);
 
   // ---- shape ----
   // The natural size of what it is now showing, measured on a hidden copy: the live element is mid-animation, and measuring it
@@ -560,7 +571,7 @@ export function TalkArea(p: TalkProps) {
     <button type="submit" className={`send ${p.draft.trim() ? '' : 'off'}`} disabled={!p.draft.trim()} aria-label={t(['Send', '发送'])}><ArrowUp weight="bold"/></button>
   </form>;
 
-  return <div ref={box} className="talk" data-kind={v.kind} data-state={v.state} data-deep={v.deep || undefined} data-hit={p.open || undefined} data-glass="css" inert={!p.open}
+  return <div ref={box} className="talk" data-kind={v.kind} data-state={v.state} data-deep={v.deep || undefined} data-buttons={p.buttons || undefined} data-hit={p.open || undefined} data-glass="css" inert={!p.open}
     style={{ left: p.x, top: p.y }} role="region" aria-label={t(['Conversation', '对话'])}>
     <span className="tk-deep" aria-hidden="true"/>
     <div ref={trEl} className="talk-tr" role="log" aria-live="polite" onScroll={onScroll} onWheel={onWheel}>
@@ -573,10 +584,13 @@ export function TalkArea(p: TalkProps) {
     {away && v.items.length > 0 && <div className="tk-latest"><button type="button" onClick={latest}>{t(['Back to latest', '回到最新'])}</button></div>}
     <div ref={ftEl} className="talk-ft" hidden={row !== 'ft'}>
       <span className={`gl ${v.state}`} aria-hidden="true"><b/><b/><b/></span>
-      <span className={`lb ${shim ? 'shim' : ''} ${v.heard ? 'heard' : ''} ${v.fading ? 'fade' : ''}`} key={v.heard ? 'heard' : v.state}>{v.heard ? <span dir="ltr">{v.label}</span> : v.label}</span>
-      <span className="sp"/>
-      <button type="button" className="ib kb" aria-label={t(['Type to her', '文字输入'])} onClick={() => p.onField(true)}><Keyboard/></button>
-      <button type="button" className="ib st" aria-label={t(['End voice', '结束语音'])} onClick={p.onEnd}><Stop weight="fill"/></button>
+      <span className={`lb ${shim ? 'shim' : ''} ${toolNow ? 'tool' : ''} ${v.heard ? 'heard' : ''} ${v.fading ? 'fade' : ''}`} key={v.heard ? 'heard' : toolNow ? `tool:${toolNow}` : v.state}>{v.heard ? <span dir="ltr">{v.label}</span> : v.label}</span>
+      {gone && <span className="lb-old" aria-hidden="true" style={{ left: gone.left }} onAnimationEnd={() => setGone(null)}>{gone.text}</span>}
+      {p.buttons && <>
+        <span className="sp"/>
+        <button type="button" className="ib kb" aria-label={t(['Type to her', '文字输入'])} onClick={() => p.onField(true)}><Keyboard/></button>
+        <button type="button" className="ib st" aria-label={t(['End voice', '结束语音'])} onClick={p.onEnd}><Stop weight="fill"/></button>
+      </>}
     </div>
     {field}
     <div ref={flyEl} className="tk-fly" aria-hidden="true"/>

@@ -113,7 +113,7 @@ try {
   });
   await page.addInitScript(fake => {
     // Her words show in full, in the talk area under her.
-    localStorage.setItem('companion-settings-v1', JSON.stringify({ ...JSON.parse(localStorage.getItem('companion-settings-v1') ?? '{}'), captions: 'all' }));
+    localStorage.setItem('companion-settings-v1', JSON.stringify({ ...JSON.parse(localStorage.getItem('companion-settings-v1') ?? '{}'), captions: 'all', talkButtons: true }));
     window.__state = { opened: [], accounts: [], jumps: [] };
     window.jarvis = {
       placement: async () => ({ docked: false, topInset: 32, notchWidth: 185, surfaceWidth: 640, compactWidth: 0, displayId: 1 }),

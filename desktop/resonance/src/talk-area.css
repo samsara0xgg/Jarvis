@@ -111,6 +111,10 @@
 .talk .lb.shim { background:linear-gradient(90deg,rgb(235 238 245 / .42) 30%,#fff 50%,rgb(235 238 245 / .42) 70%) 0 0 / 250% 100%; -webkit-background-clip:text; background-clip:text; color:transparent; animation:talk-shim 1.5s linear infinite; }
 .talk[data-deep] .lb.shim { background-image:linear-gradient(90deg,rgb(var(--deep) / .7) 30%,var(--deep-hi) 50%,rgb(var(--deep) / .7) 70%); font-variant-numeric:tabular-nums; }
 @keyframes talk-shim { from { background-position:100% 0; } to { background-position:-150% 0; } }
+/* a running tool: the same sweep, in her state's colour; a new line comes in as the old one fades out under it (.lb-old) */
+.talk .lb.shim.tool { background-image:linear-gradient(90deg,color-mix(in srgb,var(--lit) 62%,rgb(235 238 245 / .3)) 30%,#fff 50%,color-mix(in srgb,var(--lit) 62%,rgb(235 238 245 / .3)) 70%); animation:talk-shim 1.5s linear infinite,talk-in-text .24s ease-out; }
+.talk .lb-old { position:absolute; top:50%; translate:0 -50%; font-size:12px; letter-spacing:.02em; white-space:nowrap; color:rgb(235 238 245 / .5); pointer-events:none; animation:talk-out .24s ease-out forwards; }
+@keyframes talk-out { to { opacity:0; } }
 .talk .sp { flex:1; }
 .talk .ib { flex:none; width:30px; height:30px; padding:0; border-radius:50%; display:grid; place-items:center; color:rgb(255 255 255 / .86); background:rgb(255 255 255 / .08); box-shadow:inset 0 0 0 .5px rgb(255 255 255 / .08);
   transition:transform .18s ease,background .18s ease,color .2s ease; }
@@ -162,9 +166,15 @@
 .talk[data-kind=pill] .lb.heard { color:rgb(235 238 245 / .72); }
 .talk[data-kind=pill] .ib { width:26px; height:26px; }
 .talk[data-kind=pill] .kb,.talk[data-kind=pill] .sp { display:none; }
+.talk[data-kind=pill] .lb-old { font-size:var(--text-detail); }
+/* without the buttons the row is balanced: the pill is a circle round its glyph and closes evenly round its words */
+.talk:not([data-buttons]) .talk-ft { padding-right:16px; }
+.talk[data-kind=pill]:not([data-buttons]) .talk-ft { padding:0 11px; }
+.talk[data-kind=pill]:not([data-buttons]) .lb:not(:empty) { padding-right:3px; }
 .talk[data-kind=capsule] .lb { flex:none; max-width:230px; overflow:hidden; text-overflow:ellipsis; }
 
 @media (prefers-reduced-motion:reduce) {
-  .talk .gl::after,.talk .gl.speaking b,.talk .lb.shim,.talk .lb.heard,.tk-latest button,.talk[data-state=speaking] { animation:none; }
+  .talk .gl::after,.talk .gl.speaking b,.talk .lb.shim,.talk .lb.shim.tool,.talk .lb.heard,.tk-latest button,.talk[data-state=speaking] { animation:none; }
+  .talk .lb-old { display:none; }
   .talk,.tk-deep,.tk-s i,.tk-w .md p i { transition-duration:.01s; }
 }

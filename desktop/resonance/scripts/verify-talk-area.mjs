@@ -25,7 +25,8 @@ const browser = await chromium.launch({ headless: true, channel: 'chrome', args:
 const out = { x: 195.5, y: 72 }; // where she stands out of the island in the 640 px window
 
 // One page per scenario: its own settings, a fresh fake daemon.
-async function scene({ captions = 'brief', lang = 'en', reduced = false, demo = false } = {}) {
+// `buttons`: the `talkButtons` setting. Most scenes below run with it on (the keyboard and end buttons, the pill as soon as she listens); the ones for the default, without them, say `buttons: false`.
+async function scene({ captions = 'brief', lang = 'en', reduced = false, demo = false, buttons = true } = {}) {
   const context = await browser.newContext({ viewport: { width: 640, height: 722 }, deviceScaleFactor: 2, reducedMotion: reduced ? 'reduce' : 'no-preference' });
   const page = await context.newPage();
   const errors = [], posts = [];
@@ -44,8 +45,8 @@ async function scene({ captions = 'brief', lang = 'en', reduced = false, demo = 
     if (url.pathname === '/inherent/confirmation' || url.pathname === '/inherent/clarification') return json({ card: null });
     return route.fulfill({ status: 404, contentType: 'application/json', body: '{"detail":"Not Found"}' });
   });
-  await page.addInitScript(([captions, lang]) => {
-    try { if (!localStorage.getItem('companion-settings-v1')) localStorage.setItem('companion-settings-v1', JSON.stringify({ lang, captions })); } catch { /* private window */ } // (once: a reload keeps what was chosen)
+  await page.addInitScript(([captions, lang, buttons]) => {
+    try { if (!localStorage.getItem('companion-settings-v1')) localStorage.setItem('companion-settings-v1', JSON.stringify({ lang, captions, talkButtons: buttons })); } catch { /* private window */ } // (once: a reload keeps what was chosen)
     const real = Date.now.bind(Date);
     window.__skew = 0;
     Date.now = () => real() + window.__skew;
@@ -59,7 +60,7 @@ async function scene({ captions = 'brief', lang = 'en', reduced = false, demo = 
     window.__sockets = [];
     window.WebSocket = class { constructor(url) { this.url = url; window.__sockets.push(this); setTimeout(() => this.onopen?.(), 0); } send() {} close() { this.onclose?.(); } };
     window.__emit = (op, payload) => window.__sockets.at(-1).onmessage({ data: JSON.stringify({ op, payload }) });
-  }, [captions, lang]);
+  }, [captions, lang, buttons]);
   await page.goto(`http://127.0.0.1:${web}/?companion=1${demo ? '' : `&port=${daemon}`}`);
   await page.addStyleTag({ content: `html,body{height:100%}body{background:linear-gradient(160deg,#7f98b8,#5d7898 55%,#4a6484)!important}
     body::before{content:'';position:fixed;inset:0 0 auto;height:32px;background:rgb(255 255 255/.18)}
@@ -785,6 +786,90 @@ try {
     a = await area();
     check(`${captions}: the turn ending without an answer takes the line with it`, !a.label.includes('Searching') && !a.footer.includes('Searching'));
     check(`${captions}: no page errors (tool line)`, s.errors.length === 0);
+    await s.context.close();
+  }
+
+  // ---- the default, without the buttons: a tap shows nothing; the pill comes with your words; a running tool is a state of the pill; a tap ends voice ----
+  for (const captions of ['brief', 'all']) {
+    const s = await scene({ captions, buttons: false });
+    const { page, emit, move, skew, shot, area, settled, posts } = s;
+    const hit = page.locator('.companion-hit'), tap = async () => { await hit.click({ force: true }); await page.waitForTimeout(500); };
+    const last = path => posts.filter(p => p.path === path).at(-1)?.body;
+    const buttons = () => page.locator('.talk .kb, .talk .st').count();
+    await page.waitForTimeout(800);
+    await move(out.x, out.y); await page.waitForTimeout(500);
+    await tap(); await page.waitForTimeout(700);
+    let a = await area();
+    check(`${captions}: a tap to talk starts voice and draws nothing: no pill, no capsule`, last('/inherent/controls')?.conversation === true && !a.up && a.vis === 'hidden');
+    await emit('voice', { phase: 'listening', turn_id: 'nb1' }); await page.waitForTimeout(700);
+    a = await area();
+    check(`${captions}: listening on its own draws nothing either`, !a.up && a.vis === 'hidden');
+    await tap();
+    check(`${captions}: a tap while she only listens ends voice`, last('/inherent/controls')?.conversation === false);
+    await emit('controls', { mic_muted: false, speech_muted: false, conversation: true }); s.daemonState.controls.conversation = true;
+    await emit('voice', { phase: 'listening', turn_id: 'nb2' }); await page.waitForTimeout(500);
+    await emit('voice', { phase: 'partial', turn_id: 'nb2', text: '帮我查一下今天的新闻' }); await page.waitForTimeout(800);
+    a = await area();
+    check(`${captions}: your first words bring the pill (“${a.label}”), with no buttons in it`, a.up && a.kind === (captions === 'all' ? 'capsule' : 'pill') && a.label === '帮我查一下今天的新闻' && await buttons() === 0);
+    await shot(`nb-${captions}-speak`);
+    await emit('voice', { phase: 'accepted', turn_id: 'nb2', text: '帮我查一下今天的新闻' }); await skew(3500); await settled();
+    await emit('tool', { turn_id: 'nb2', label: 'Searching the web...' }); await settled();
+    a = await area();
+    const look = () => page.evaluate(() => { const t = document.querySelector('.talk'), lb = t.querySelector('.lb'), r = t.getBoundingClientRect(), g = t.querySelector('.gl').getBoundingClientRect();
+      return { shim: lb.classList.contains('shim') && lb.classList.contains('tool'), clipped: lb.scrollWidth > lb.clientWidth + 1, old: [...t.querySelectorAll('.lb-old')].map(e => e.textContent), left: g.left - r.left, right: r.right - lb.getBoundingClientRect().right }; });
+    let l = await look();
+    check(`${captions}: a running tool shows on the pill as an in-progress line, shimmering, unclipped, balanced in the pill (${Math.round(l.left)} px left of the glyph, ${Math.round(l.right)} px right of the words)`, a.label === 'Searching the web...' && l.shim && !l.clipped && l.old.length === 0 && (captions === 'all' || Math.abs(l.left - l.right) < 12) && await buttons() === 0);
+    await shot(`nb-${captions}-tool1`);
+    await emit('tool', { turn_id: 'nb2', label: 'Looking at your screen...' });
+    l = await look();
+    check(`${captions}: the next tool's line replaces it with the old one fading out under it`, l.old.join() === 'Searching the web...');
+    await shot(`nb-${captions}-tool2-fading`);
+    await settled();
+    l = await look(); a = await area();
+    check(`${captions}: and the old one is gone once it has faded`, a.label === 'Looking at your screen...' && l.old.length === 0 && !l.clipped);
+    // the wait line, then the answer: the line goes and the pill grows into the area
+    await emit('open', { turn_id: 'nb2', response_id: 'r-wait', response_phase: 'commentary' }); await emit('append', { turn_id: 'nb2', token: '<voice>One moment.</voice>', response_phase: 'commentary' }); await emit('done', { turn_id: 'nb2', fadeMs: 100, response_phase: 'commentary' });
+    await emit('voice', { phase: 'playing', turn_id: 'nb2', played: 3, ahead: 6, held: false, response_phase: 'commentary' }); await page.waitForTimeout(700);
+    a = await area();
+    check(`${captions}: it stays through her wait line`, a.label === 'Looking at your screen...' && a.hers === 0);
+    await emit('open', { turn_id: 'nb2', response_id: 'r-nb2' });
+    await emit('append', { turn_id: 'nb2', token: `<voice>好，我把新闻都写在下面。</voice><document>${para}\n\n${tail}</document>` }); await emit('done', { turn_id: 'nb2', fadeMs: 100 });
+    await emit('voice', { phase: 'playing', turn_id: 'nb2', played: 2, ahead: 8, held: false });
+    await page.waitForTimeout(250); l = await look();
+    check(`${captions}: when the answer comes the line fades out as it rises in`, l.old.length <= 1 && !(await area()).label.includes('Looking'));
+    await page.waitForTimeout(1500); a = await area();
+    check(`${captions}: the pill has grown into the area with the answer, no buttons, the footer only her state`, a.kind === 'area' && await buttons() === 0 && /^Speaking/.test(a.footer.trim()) && !a.footer.includes('Looking'));
+    await shot(`nb-${captions}-answer`);
+    // a tap while she speaks interrupts her and keeps listening; the next one ends voice
+    const n = posts.length;
+    await tap();
+    check(`${captions}: a tap while she speaks stops what she is saying and does not end voice`, posts.slice(n).some(p => p.path === '/inherent/cancel-response' && p.body.response_id === 'r-nb2') && !posts.slice(n).some(p => p.path === '/inherent/controls' && p.body.conversation === false));
+    await emit('done', { turn_id: 'nb2', fadeMs: 100 }); await emit('voice', { phase: 'spoken', turn_id: 'nb2', output_outcome: 'interrupted' }); await page.waitForTimeout(500);
+    await tap();
+    check(`${captions}: and the next tap ends voice`, last('/inherent/controls')?.conversation === false);
+    // a tap while she thinks ends voice and stops the turn
+    await emit('controls', { mic_muted: false, speech_muted: false, conversation: true }); s.daemonState.controls.conversation = true;
+    await emit('voice', { phase: 'listening', turn_id: 'nb3' }); await emit('voice', { phase: 'accepted', turn_id: 'nb3', text: '再查一个' }); await page.waitForTimeout(500);
+    const m = posts.length;
+    await tap();
+    check(`${captions}: a tap while she thinks ends voice and stops that turn`, posts.slice(m).some(p => p.path === '/inherent/controls' && p.body.conversation === false) && posts.slice(m).some(p => p.path === '/inherent/cancel-response' && p.body.turn_id === 'nb3'));
+    check(`${captions}: no page errors (no buttons)`, s.errors.length === 0);
+    await s.context.close();
+  }
+
+  // typing stays reachable with voice on: the keyboard chip by her opens the field and pauses the microphone
+  {
+    const s = await scene({ captions: 'brief', buttons: false });
+    const { page, emit, move, area, posts } = s;
+    await page.waitForTimeout(800);
+    await emit('controls', { mic_muted: false, speech_muted: false, conversation: true }); s.daemonState.controls.conversation = true;
+    await emit('voice', { phase: 'listening', turn_id: 'ch1' }); await page.waitForTimeout(500);
+    await move(out.x, out.y); await page.waitForTimeout(700);
+    check('no buttons: with voice on the keyboard chip by her is there', await page.locator('.companion-chip.is-open').count() === 1);
+    await page.locator('.companion-chip button').click(); await page.waitForTimeout(900);
+    const a = await area();
+    check('no buttons: the chip opens the typing field and pauses the microphone', a.fieldShown && posts.some(p => p.path === '/inherent/controls' && p.body.mic_muted === true));
+    check('no page errors (chip with voice on)', s.errors.length === 0);
     await s.context.close();
   }
 

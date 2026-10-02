@@ -25,6 +25,8 @@ export const defaultSettings = {
   claude: true, codex: true, stale: 'day' as Stale,
   dictation: true,
   captions: 'brief' as 'all' | 'brief' | 'none',
+  // The talk area's keyboard and stop buttons, and a pill that shows as soon as she listens. Off: nothing is drawn until you speak, and her own tap ends voice.
+  talkButtons: false,
 };
 export type CompanionSettings = typeof defaultSettings;
 export const HOME_DEFAULTS: Partial<CompanionSettings> = { order: BLOCKS, hidden: [], talk: 'after', foryou: true, brief: true, mail: true, forecast: true };
@@ -45,7 +47,7 @@ function load(): CompanionSettings {
       order, hidden: Array.isArray(v.hidden) ? v.hidden.filter((id: unknown) => BLOCKS.includes(id as BlockId) && !isPop(id as BlockId)) : [],
       talk: one(v.talk, ['after', 'always', 'never'], d.talk), foryou: flag(v.foryou, d.foryou), brief: flag(v.brief, d.brief), mail: flag(v.mail, d.mail), forecast: flag(v.forecast, d.forecast),
       claude: flag(v.claude, d.claude), codex: flag(v.codex, d.codex), stale: one(v.stale, ['hour', 'day', 'never'], d.stale),
-      dictation: flag(v.dictation, d.dictation), captions: one(v.captions, ['all', 'brief', 'none'], d.captions),
+      dictation: flag(v.dictation, d.dictation), captions: one(v.captions, ['all', 'brief', 'none'], d.captions), talkButtons: flag(v.talkButtons, d.talkButtons),
     };
   } catch { return d; }
 }
