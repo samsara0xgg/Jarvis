@@ -182,6 +182,7 @@ class NativeAudioStreamPlayer(AudioStreamPlayer):
         self._buffer_frames = int(buffer_frames)
         self._extra_args = extra_args
         self._proc: subprocess.Popen[bytes] | None = None
+        self._helper_died = False
         self._pipe_lock = threading.Lock()
         self._ready = threading.Event()
         self._got_ready = False
@@ -288,6 +289,7 @@ class NativeAudioStreamPlayer(AudioStreamPlayer):
             unexpected = self._lifecycle_state == "open"
             if unexpected:
                 self._lifecycle_state = "closed"
+                self._helper_died = True
         self._ready.set()
         if unexpected:
             LOGGER.warning(
@@ -444,7 +446,16 @@ class NativeAudioStreamPlayer(AudioStreamPlayer):
         response_group_id: str,
         turn_id: str,
     ) -> GenerationLease | ForegroundBusy:
-        """Mint the lease, then tell the helper which generation may play."""
+        """Mint the lease, then tell the helper which generation may play.
+
+        A helper that died since the last answer is started again first: the
+        media actor starts the player once, at boot, so without this she would
+        stay silent until the daemon restarts.
+        """
+        if self._helper_died:
+            self._helper_died = False
+            restarted = self.start()
+            LOGGER.warning("voice-out helper restarted for the next answer: %s", restarted.status)
         lease = super().activate_generation(
             session_id=session_id,
             response_id=response_id,

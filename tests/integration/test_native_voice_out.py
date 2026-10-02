@@ -304,6 +304,19 @@ def test_a_killed_helper_stops_the_player_and_restart_brings_it_back(rig: _Rig) 
     print(f"A1 kill: pid {pid} killed, is_running False, restart -> {restarted.status}")  # noqa: T201
 
 
+def test_the_next_answer_after_a_helper_crash_starts_it_again(rig: _Rig) -> None:
+    """Nothing else restarts the helper, so her next answer must, or she stays silent."""
+    first = rig.speak(_tone(0.6))
+    rig.until(lambda: rig.player.played_samples > 0, "audio playing")
+    pid = rig.player._proc.pid  # type: ignore[union-attr]  # noqa: SLF001
+    os.kill(pid, signal.SIGKILL)
+    rig.until(lambda: not rig.player.is_running, "player noticing the dead helper")
+    rig.player.settle_interrupted_generation(expected_playback_generation_id=first)
+    again = rig.speak(_tone(0.2), "R2")
+    assert rig.player.is_running
+    rig.presented(again)
+
+
 def test_the_helper_is_rebuilt_only_when_missing_or_older_than_its_source(tmp_path: Path) -> None:
     """The helper builds once and is rebuilt only when main.swift is newer than the binary."""
     source = tmp_path / "main.swift"
