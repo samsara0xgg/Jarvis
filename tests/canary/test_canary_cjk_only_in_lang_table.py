@@ -33,7 +33,11 @@ _MATCHERS: Final[dict[str, frozenset[str]]] = {
     ),
     # A model-written line before a tool call that already claims a result is not spoken.
     "jarvis/decision/commentary.py": frozenset({"_RESULT_CLAIM"}),
-    "jarvis/decision/daily_report.py": frozenset({"_COMPLETION_WORDS", "_TITLE_TERM", "_BREAKS"}),
+    # The brief reads a saved report's own brackets, citation tails and sentence ends.
+    "jarvis/decision/daily_report.py": frozenset(
+        {"_COMPLETION_WORDS", "_TITLE_TERM", "_BREAKS", "_REFS_TAIL", "_GROUP", "_SENTENCE_END",
+         "_clip", "_status_of"}
+    ),
     "jarvis/decision/pre_route.py": frozenset({"_DEMONSTRATIVE_TASK_RE"}),
     "jarvis/decision/stream_gate.py": frozenset({"routine_stream_policy"}),
     "jarvis/decision/stream_risk.py": frozenset(

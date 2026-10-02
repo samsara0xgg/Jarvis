@@ -517,8 +517,8 @@ def test_without_microsoft_or_gmail_the_home_says_not_connected() -> None:
     assert client.post("/inherent/today/todo", json={"id": "a|b", "done": True}).status_code == 404
 
 
-def test_brief_is_yesterdays_saved_report_whole(tmp_path: Path) -> None:
-    """GET /inherent/brief: 404 until yesterday's report is saved, then all of it, dated today."""
+def test_brief_is_yesterdays_saved_report_read_for_a_person(tmp_path: Path) -> None:
+    """GET /inherent/brief: 404 until yesterday's report is saved, then its reading view."""
     open_event_log(tmp_path / "events.db").close()
     # The daemon reads on its loop thread; TestClient serves from its own thread.
     conn = sqlite3.connect(tmp_path / "events.db", check_same_thread=False)
@@ -526,10 +526,19 @@ def test_brief_is_yesterdays_saved_report_whole(tmp_path: Path) -> None:
     assert client.get("/inherent/brief").status_code == 404
     today = datetime.now(ZoneInfo(ZONE)).date()
     yesterday = (today - timedelta(days=1)).isoformat()
-    content = f"# 工作日报 {yesterday}\n\n## 核心摘要\n写了首页的后端。\n\n## 细节\n" + "长" * 9000
+    content = (
+        f"# 工作日报 {yesterday}\n\n## 核心摘要\n写了首页的后端。\n有实证：1 首页后端（已提交）\n\n"  # noqa: RUF001
+        "## 工作事项\n### 1. 首页后端 — 已提交（提交 abc1234，main）\n写好三条路由。\n引用：#1\n\n"  # noqa: RUF001
+        "## 数据覆盖与不确定性\n- " + "长" * 9000 + "\n\n## 证据引用\n#1 event:abc\n"
+    )
     save_report(
         conn, memory_path=None, timesink_path=None, day=yesterday, zone=ZONE,
         content=content, source_refs=[], coverage={}, expected_version=0, action_id="brief",
     )
     body = client.get("/inherent/brief").json()
-    assert body == {"date": today.isoformat(), "summary": "写了首页的后端。", "body": content}
+    assert body == {
+        "date": today.isoformat(),
+        "summary": "写了首页的后端。",
+        "body": "写了首页的后端。\n\n## 昨天做了什么\n- **首页后端** · 已提交\n  - 写好三条路由。",
+        "items": 1,
+    }

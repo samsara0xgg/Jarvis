@@ -18,11 +18,12 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import TYPE_CHECKING, Any, NoReturn
 
-from jarvis.shared.lang import language_name, t
+from jarvis.shared.lang import TEXT, language_name, t
 from jarvis.shared.skills import load_skill
 from jarvis.state.daily_report import MAX_DETAILS, MAX_HITS, is_question, summary_section
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
     from datetime import datetime
 
     from jarvis.decision.llm import ChatResult
@@ -677,6 +678,128 @@ def summary_of(content: str) -> str:
     if body is None:
         return content[:_SERVED]
     return " ".join(body.split())[:_SERVED]
+
+
+BRIEF_LEAD = 110
+"""Characters of the day's main line the home's brief card shows."""
+BRIEF_ACTIVITY = 280
+"""Characters of one item's activity the brief page shows."""
+_BRIEF_SECTIONS = ("items", "decisions", "open", "next", "suggestions")
+_BRIEF_ORDER = ("items", "open", "next", "decisions", "suggestions")
+"""What a morning wants first: the day, then what is left, then what Allen said comes next."""
+_REFS_TAIL = re.compile(r"\s*[（(](?:引用|Sources)[：:][^）)]*[）)]\s*$")
+_GROUP = re.compile(r"[（(][^（()）]*[）)]")
+_SENTENCE_END = "。.!?！？；;"
+_NO_ITEM = ("report.no_items", "report.no_decisions", "report.no_open", "report.no_next")
+
+
+def _clip(text: str, limit: int) -> str:
+    """At most ``limit`` characters, cut at a sentence end when one falls in the second half."""
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    ends = [cut.rfind(mark) for mark in _SENTENCE_END]
+    if (end := max(ends)) >= limit // 2:
+        return cut[: end + 1]
+    return cut.rstrip("，,、 ") + "…"
+
+
+def _status_of(head: str) -> tuple[str, str]:
+    """An item heading's title and status, split at the last ``" — "`` outside any brackets."""
+    depth, split = 0, -1
+    for at, char in enumerate(head):
+        if char in "（(":
+            depth += 1
+        elif char in "）)":
+            depth = max(0, depth - 1)
+        elif depth == 0 and head.startswith(" — ", at):
+            split = at
+    if split < 0:
+        return head, ""
+    return head[:split], head[split + 3 :]
+
+
+def _plain(status: str) -> str:
+    """A status without the keys, commits and quotes in its brackets: those are the audit's."""
+    while (shorter := _GROUP.sub("", status)) != status:
+        status = shorter
+    return status.strip()
+
+
+def _brief_items(lines: Sequence[str]) -> list[str]:
+    """Each work item as a bold title and short status with its activity nested under it."""
+    refs = tuple(text.partition("{")[0] for text in TEXT["report.refs"].values())
+    entries: list[list[str]] = []
+    for line in lines:
+        if line.startswith("### "):
+            entries.append([re.sub(r"^\d+\.\s+", "", line[4:]).strip()])
+        elif entries and line.strip() and not line.startswith(refs):
+            entries[-1].append(line.strip())
+    out = []
+    for head, *activity in entries:
+        title, status = _status_of(head)
+        row = f"- **{title.replace('*', '')}**"
+        if status := _plain(status):
+            row += f" · {status}"
+        if text := _clip(" ".join(" ".join(activity).split()), BRIEF_ACTIVITY):
+            row += f"\n  - {text}"
+        out.append(row)
+    return out
+
+
+def _brief_bullets(lines: Sequence[str]) -> list[str]:
+    """A bulleted section without its citations and without the line that says it is empty."""
+    empty = {
+        text.removeprefix("- ")
+        for key in (*_NO_ITEM, "report.none")
+        for text in TEXT[key].values()
+    }
+    found = [_REFS_TAIL.sub("", line[2:]).strip() for line in lines if line.startswith("- ")]
+    return [f"- {text}" for text in found if text and text not in empty]
+
+
+def brief_of(content: str) -> dict[str, str | int]:
+    """The home's morning brief from a saved report (either language).
+
+    Returns ``summary``, ``body`` and ``items``, the count of work items.
+
+    The saved report is an audit: statuses with commit numbers, a citation line under
+    every item, the coverage of the material, the sources. This keeps what a person reads
+    over breakfast: the day's main line (``summary`` is its first sentences, ``body`` opens
+    with all of it), each work item with its short status and activity, what is still open,
+    the next steps Allen named, the decisions and the suggestions. Statuses lose their
+    brackets but keep their words, so a claim nobody checked still says so.
+    """
+    names = {
+        heading: key
+        for key in ("summary", *_BRIEF_SECTIONS)
+        for heading in TEXT[f"report.h.{key}"].values()
+    }
+    sections: dict[str, list[str]] = {}
+    here: list[str] | None = None
+    for line in content.splitlines():
+        if line.startswith("## "):
+            key = names.get(line.strip())
+            here = sections.setdefault(key, []) if key and key not in sections else None
+        elif here is not None:
+            here.append(line)
+    lead_lines = [ln.strip() for ln in sections.get("summary", []) if ln.strip()] or [
+        ln.strip() for ln in content.splitlines() if ln.strip() and not ln.startswith("#")
+    ]
+    lead = " ".join(lead_lines[0].split()) if lead_lines else ""
+    rows = {
+        key: (_brief_items if key == "items" else _brief_bullets)(sections.get(key, []))
+        for key in _BRIEF_SECTIONS
+    }
+    body = [lead, ""]
+    for key in _BRIEF_ORDER:
+        if rows[key]:
+            body += [t(f"brief.h.{key}"), *rows[key], ""]
+    return {
+        "summary": _clip(lead, BRIEF_LEAD),
+        "body": "\n".join(body).strip(),
+        "items": len(rows["items"]),
+    }
 
 
 # --- claims: what a completed part asserts, what the program rules, what the check found ---

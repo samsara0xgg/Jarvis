@@ -16,7 +16,7 @@ from datetime import UTC, date, datetime, time, timedelta
 from email.utils import parseaddr, parsedate_to_datetime
 from typing import TYPE_CHECKING, Any
 
-from jarvis.decision.daily_report import summary_of
+from jarvis.decision.daily_report import brief_of
 from jarvis.execution.tools import ToolError
 from jarvis.runtime.daily_report import PLAN_SERVER, _graph
 from jarvis.state.daily_contract import DailyError
@@ -215,7 +215,7 @@ class Home:
             self._junk = self._junk.difference(ids)
 
     def brief(self, conn: sqlite3.Connection) -> dict[str, Any] | None:
-        """This morning's brief: yesterday's saved daily report, whole; None before it exists."""
+        """This morning's brief: yesterday's report read for a person; None before it exists."""
         today = datetime.now(self._zone).date()
         args: dict[str, Any] = {
             "local_date": (today - timedelta(days=1)).isoformat(),
@@ -231,8 +231,7 @@ class Home:
         while part["next_cursor"]:
             part = get_briefing(conn, {**args, "cursor": part["next_cursor"]})
             chunks.append(part["content"])
-        body = "".join(chunks)
-        return {"date": today.isoformat(), "summary": summary_of(body), "body": body}
+        return {"date": today.isoformat(), **brief_of("".join(chunks))}
 
 
 def _gmail(servers: McpServers, tool: str, args: Mapping[str, Any]) -> dict[str, Any]:

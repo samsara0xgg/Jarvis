@@ -26,6 +26,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from jarvis.decision.daily_report import (
+    BRIEF_LEAD,
     CONTENT_LIMIT,
     DETAILS_TOOL_NAME,
     JUDGE_TOOL_NAME,
@@ -34,6 +35,7 @@ from jarvis.decision.daily_report import (
     SKILL,
     SUMMARY_TOOL_NAME,
     DailyReportParseError,
+    brief_of,
     compose_report,
     parse_report,
     screen_claims,
@@ -47,6 +49,7 @@ from jarvis.runtime.daily_report import (
     DailySchedule,
     past_day_answer,
 )
+from jarvis.shared.lang import set_language
 from jarvis.state.daily_contract import DailyError
 from jarvis.state.daily_report import gather_day, resolve_day, resolve_zone, save_report
 from jarvis.state.event_log import emit_event
@@ -573,6 +576,81 @@ def test_report_generates_saves_and_reads_back(rig: Rig) -> None:
     assert saved["coverage"]["agent"] == "unavailable", "no Codex session directory was given"
     assert "- 代理会话：Codex 本机会话目录不可读" in content
     assert "- 微软日历与待办：未接入，没有日程和待办" in content, "no plan reader was wired"
+
+
+def test_the_brief_reads_the_saved_report_for_a_person(rig: Rig) -> None:
+    """The home's brief keeps the day, what is left and what Allen named, not the audit trail."""
+    assert rig.run()["outcome"] == "generated"
+    content = rig.saved()
+    zh = [
+        "主要在 Jarvis 仓库上改每日工具，并看了一轮招聘页面。",
+        "",
+        "## 昨天做了什么",
+        "- **每日工具的读取修复** · 已提交",
+        "  - 改完 TimeSink 读取边界并提交。",
+        "- **浏览招聘页面** · 浏览",
+        "  - 在 Chrome 里翻了职位列表。",
+        "- **演示界面显示已部署** · 页面显示已完成",
+        "  - 屏幕上出现“部署成功”。",
+        "- **没有依据的事项** · 讨论",
+        "  - 引用了不存在的键。",
+        "",
+        "## 还没完成",
+        "- 屏幕采集还没跑满一天。",
+        "",
+        "## 你说过的下一步",
+        "- 明天继续写日报工具。",
+        "",
+        "## 定下来的事",
+        "- 待办先放在本地。　理由：Allen 自己说的。",
+        "",
+        "## 可以考虑",
+        "- 可以给屏幕采集加一条健康事件。",
+    ]
+    assert brief_of(content) == {"summary": zh[0], "body": "\n".join(zh), "items": 4}
+    for audit in ("引用：", "abc1234", "证据引用", "数据覆盖", "event:", "模型 canned"):
+        assert audit not in brief_of(content)["body"]
+    # The same report read in the other language: headings follow the language, rows do not.
+    set_language("en")
+    english = str(brief_of(content)["body"]).splitlines()
+    assert [ln for ln in english if ln.startswith("## ")] == [
+        "## Yesterday",
+        "## Still open",
+        "## Next steps you named",
+        "## Decided",
+        "## Worth considering",
+    ]
+    assert [ln for ln in english if not ln.startswith("## ")] == [
+        ln for ln in zh if not ln.startswith("## ")
+    ]
+
+
+def test_the_brief_of_a_report_without_work_is_its_main_line() -> None:
+    """Placeholders for nothing found are not rows; a report in English reads the same way."""
+    content = "\n".join(
+        [
+            "# Work report 2026-09-19 (UTC)",
+            "## Summary",
+            "No work items could be drawn from the day. " + "Long. " * 40,
+            "",
+            "## Work items",
+            "- No clear work items could be drawn from the material.",
+            "",
+            "## Decisions and changes of plan",
+            "No clear decisions or changes of plan in the material.",
+            "## Unfinished, blocked and to confirm",
+            "- No clear unfinished items or blockers in the material.",
+            "## Suggestions (from the model, not the user's commitments)",
+            "- None.",
+            "## Sources",
+            "#1 event:abc",
+        ]
+    )
+    view = brief_of(content)
+    assert view["items"] == 0
+    assert view["body"] == ("No work items could be drawn from the day. " + "Long. " * 40).rstrip()
+    assert len(str(view["summary"])) <= BRIEF_LEAD
+    assert str(view["summary"]).startswith("No work items could be drawn from the day.")
 
 
 def test_microsoft_plan_is_context_and_the_next_days_section(rig: Rig) -> None:

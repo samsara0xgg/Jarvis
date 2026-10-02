@@ -605,6 +605,12 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
         "en": "## Calendar and to-dos for {day} (Microsoft Calendar and To Do, read at generation)",
     },
     "report.item": {"zh": "### {index}. {title} — {status}", "en": "### {index}. {title} — {status}"},
+    # The home's morning brief: the saved report re-read for a person, not for an audit.
+    "brief.h.items": {"zh": "## 昨天做了什么", "en": "## Yesterday"},
+    "brief.h.open": {"zh": "## 还没完成", "en": "## Still open"},
+    "brief.h.next": {"zh": "## 你说过的下一步", "en": "## Next steps you named"},
+    "brief.h.decisions": {"zh": "## 定下来的事", "en": "## Decided"},
+    "brief.h.suggestions": {"zh": "## 可以考虑", "en": "## Worth considering"},
     "report.no_items": {
         "zh": "- 材料中未能归并出明确的工作事项。",
         "en": "- No clear work items could be drawn from the material.",
