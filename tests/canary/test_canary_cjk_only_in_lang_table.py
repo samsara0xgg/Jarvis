@@ -51,6 +51,8 @@ _MATCHERS: Final[dict[str, frozenset[str]]] = {
     # Typlus's polish prompt (ADR 0058) names the Chinese phantoms the recognizer emits
     # and Chinese dictations that must not be answered, as the words the model will read.
     "jarvis/runtime/dictation.py": frozenset({"POLISH_PROMPT"}),
+    # A question naming a past day is the saved report's to answer; these read the question.
+    "jarvis/runtime/daily_report.py": frozenset({"_PAST_DAY", "_YESTERDAY"}),
     "jarvis/execution/tool_search.py": frozenset({"_TOKEN"}),
     "jarvis/shared/text.py": frozenset({"is_english"}),
     "jarvis/state/daily_report.py": frozenset({"MILESTONES", "_QUESTION"}),
