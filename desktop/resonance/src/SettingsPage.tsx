@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { CaretRight, Check, Cpu, Globe, House, Key, LockSimple, Microphone, Planet, Robot, SlidersHorizontal, SpeakerHigh, Waveform, Bell } from '@phosphor-icons/react';
 import { tr, useCompanionSettings, type L, type Lang } from './companionSettings';
 import { postRoute, useRoute } from './homeData';
@@ -78,6 +78,8 @@ export function SettingsPage({ lang, port, open, cat, onCat, ctl, accounts, keyD
   const [s, update] = useCompanionSettings();
   const route = useRoute<Daemon>(port, '/inherent/settings', open, 60_000);
   const setup = useRoute<Setup>(port, '/inherent/setup', open && cat === 'accounts', 30_000);
+  // A microphone or speaker plugged in since the last fetch: ask again whenever the Voice category opens.
+  useEffect(() => { if (cat === 'voice') route.reload(); }, [cat]);
   const [demo, setDemo] = useState(DEMO), [draft, setDraft] = useState<Record<string, number>>({});
   // The restart banner: changes waiting, going down and coming back, back (then gone), or too slow to come back.
   const [phase, setPhase] = useState<'wait' | 'going' | 'back' | 'slow'>('wait');
