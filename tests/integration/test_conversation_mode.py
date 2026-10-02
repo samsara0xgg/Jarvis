@@ -212,12 +212,19 @@ def test_a_turn_still_working_keeps_conversation_mode_open_past_the_quiet_window
 ) -> None:
     """ADR 0102: a turn working past the window ends nothing; quiet after it does."""
     working = [True]
-    rig = _Session(monkeypatch, idle_exit_s=0.05, turn_working=lambda: working[0])
-    rig.idle(0.2)
-    assert rig.changes == []
-    working[0] = False
-    rig.idle(0.02)
-    assert rig.changes == []  # counts from the turn's end, not from before it
-    rig.idle(0.2)
-    rig.close()
-    assert rig.changes == [(False, "idle")]
+    calls = [0]
+
+    def turn_working() -> bool:
+        calls[0] += 1
+        return working[0]
+
+    rig = _Session(monkeypatch, idle_exit_s=0.05, turn_working=turn_working)
+    try:
+        rig.idle(0.2)
+        assert rig.changes == []
+        assert 1 <= calls[0] <= 6  # asked when the window runs out, not on every frame
+        working[0] = False
+        rig.idle(0.2)
+        assert rig.changes == [(False, "idle")]
+    finally:
+        rig.close()

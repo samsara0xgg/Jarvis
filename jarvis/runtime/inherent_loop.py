@@ -3585,7 +3585,14 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
 
         def _turn_working() -> bool:
             # ADR 0102: conversation mode's quiet clock does not run while a turn works.
-            conn = open_runtime_event_log(runtime.runtime_paths.event_log)
+            # Runs on the session's capture worker, never the audio callback; the
+            # deadline bounds the open so a locked log cannot stall capture.
+            try:
+                conn = open_runtime_event_log(
+                    runtime.runtime_paths.event_log, deadline=time.monotonic() + 0.25,
+                )
+            except sqlite3.Error:
+                return False
             try:
                 return any_turn_in_flight(
                     conn, since_ms=int(time.time() * 1000) - _TURN_WORKING_WINDOW_MS,

@@ -51,8 +51,9 @@ Its limits:
   an accepted turn holds it until her answer starts, for at most 30 s, and
   a turn of Allen's words with no `turn.ended`, `turn.failed` or cancelled
   run holds it for as long as it works (up to 5 min after it began), so a
-  wait line does not count as the answer; the 10 s then counts from the
-  turn's end or her last word, whichever is later.
+  wait line does not count as the answer. It is asked only when the 10 s
+  runs out, and a working turn postpones the close by another 10 s, so the
+  mode ends 0 to 10 s after the turn is over.
 - A dismissal is an utterance that is only 退下, 没事了, 就这样吧, 先这样,
   拜拜, 再见, 结束对话, 去休息, bye, goodbye or that's all (with an optional
   wake phrase, 你/那, and 了/吧/啦), or a sentence of at most 16 characters,

@@ -1367,16 +1367,12 @@ class DuplexVoiceSession:
         count, but the mode never ends while an utterance is still coming in.
         An accepted turn holds it until her answer starts, for at most
         ``_ANSWER_WAIT_S``, and a turn still working holds it as long as it
-        works (a wait line is not its answer); 「等我一下」 holds it
+        works (a wait line is not its answer), checked once per window; 「等我一下」 holds it
         ``conversation_wait_s``. The clock starts over while the mode is off,
         so it counts from its start.
         """
         now = time.monotonic()
         if self._set_conversation is None or not self._conversation_open() or self._speaking():
-            self._conversation_busy_at = now
-            self._awaiting_answer = False
-            return
-        if self._turn_working is not None and self._turn_working():
             self._conversation_busy_at = now
             self._awaiting_answer = False
             return
@@ -1387,7 +1383,10 @@ class DuplexVoiceSession:
         if now - self._conversation_busy_at >= self._config.conversation_idle_exit_s:
             self._conversation_busy_at = now
             self._awaiting_answer = False
-            self._change_conversation(on=False, reason="idle")
+            # Asked only here, when the mode would close, so a turn still working
+            # postpones the close by one more window.
+            if self._turn_working is None or not self._turn_working():
+                self._change_conversation(on=False, reason="idle")
 
     def _speaking(self) -> bool:
         try:
