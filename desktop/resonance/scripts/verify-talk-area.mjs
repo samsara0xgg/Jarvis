@@ -414,7 +414,7 @@ try {
   }
   {
     const s = await scene({ captions: 'brief' });
-    const { page, skew, shot, turn, area, settled } = s;
+    const { page, emit, skew, shot, turn, area, settled } = s;
     await page.waitForTimeout(600);
     await turn('l2', '全部告诉我', `<voice>好，都写在下面。</voice><document>${[para, para, para, para, para].join('\n\n')}\n\n${tail}</document>`, { spoken: false });
     await page.waitForSelector('.talk .tk-w'); await settled();
@@ -424,7 +424,12 @@ try {
       return { front: !!on && on.top >= tr.top && on.bottom <= tr.bottom, top: t.scrollTop, scroll: t.scrollHeight - t.clientHeight, lit: document.querySelectorAll('.talk .tk-w i.on').length, all: document.querySelectorAll('.talk .tk-w i').length };
     });
     let a = await see();
-    check(`follow (brief): nothing spoken on screen, the view follows the write-in front down (${a.lit} of ${a.all} lit, scrolled ${a.top} of ${a.scroll})`, a.lit > 0 && a.lit < a.all && a.front && a.top > 40);
+    check(`follow (brief): she is still saying it, so the write-in does not take the view down: it stays at the top (${a.lit} of ${a.all} lit, scrolled ${a.top} of ${a.scroll})`, a.lit > 0 && a.lit < a.all && a.top < 3 && a.scroll > 100);
+    await shot('write-in-brief-holds');
+    await emit('voice', { phase: 'spoken', turn_id: 'l2' });
+    await skew(1500); await page.waitForTimeout(900);
+    a = await see();
+    check(`follow (brief): once her voice is done the view follows the write-in front down (${a.lit} of ${a.all} lit, scrolled ${a.top} of ${a.scroll})`, a.lit > 0 && a.front && a.top > 40);
     await shot('write-in-brief-follows');
     await page.mouse.move(196, 240); await page.mouse.wheel(0, -3000); await page.waitForTimeout(700);
     await skew(1500); await page.waitForTimeout(700);
@@ -432,6 +437,80 @@ try {
     check(`follow (brief): scrolled away by hand, it stays where the reader is while the write-in goes on (${b.top}; ${a.lit} → ${b.lit} lit)`, b.top < 5 && b.lit > a.lit);
     check('no page errors (follow, brief)', s.errors.length === 0);
     await s.context.close();
+  }
+
+  // ---- a long answer opens showing its top; the view goes down only as her lit words do, never with the write-in ----
+  {
+    const spokenLine = '好，都写在下面。这件事我从头到尾说一遍，你慢慢听，不清楚的地方再问我。';
+    const doc = `<document>${[para, para, para, para].join('\n\n')}\n\n${tail}</document>`;
+    // The view's scroll position, sampled every 40 ms from before the answer comes: its highest, and where it is now.
+    const watch = page => page.evaluate(() => { const tr = document.querySelector('.talk-tr'); window.__top = [0]; window.__iv = setInterval(() => window.__top.push(tr.scrollTop), 40); });
+    const seen = page => page.evaluate(() => { const t = document.querySelector('.talk-tr'); return { max: Math.max(...window.__top), now: t.scrollTop, room: t.scrollHeight - t.clientHeight }; });
+    const answer = async (s, id, text) => {
+      await s.emit('voice', { phase: 'listening', turn_id: id }); await s.emit('voice', { phase: 'accepted', turn_id: id, text: '全部告诉我' });
+      await s.emit('open', { turn_id: id, response_id: `r-${id}` }); await s.emit('append', { turn_id: id, token: text }); await s.emit('done', { turn_id: id, fadeMs: 100 });
+      await s.emit('voice', { phase: 'playing', turn_id: id, played: 2, ahead: 8, held: false });
+    };
+    // The middle level shows a written part alone while she says something else: nothing of hers is on screen to follow.
+    for (const [how, fieldFirst] of [['the pill grows into the area', false], ['the typing field keeps the area up', true]]) {
+      const s = await scene({ captions: 'brief' });
+      const { page, emit, move, skew, shot, settled } = s;
+      await page.waitForTimeout(600);
+      if (fieldFirst) { await move(out.x, out.y); await page.waitForTimeout(700); await page.locator('.companion-chip button').click(); await page.waitForTimeout(900); } // (the typing field keeps the area up)
+      await emit('controls', { mic_muted: false, speech_muted: false, conversation: true }); s.daemonState.controls.conversation = true;
+      await emit('voice', { phase: 'listening', turn_id: 'tp0' });
+      await watch(page);
+      await answer(s, 'tp1', `<voice>${spokenLine}</voice>${doc}`);
+      await page.waitForSelector('.talk .tk-w'); await page.waitForTimeout(900);
+      let a = await seen(page);
+      check(`a long answer, middle level (${how}): it opens at its top (highest scroll ${a.max}, of ${a.room})`, a.room > 100 && a.max < 3);
+      await shot(`talk-long-brief-first-${fieldFirst ? 'up' : 'pill'}`);
+      await skew(10_000); await page.waitForTimeout(900);
+      a = await seen(page);
+      check(`a long answer, middle level (${how}): the write-in is all in and she is still saying it, and the view has stayed at the top (highest scroll ${a.max})`, await page.evaluate(() => { const w = document.querySelectorAll('.talk .tk-w i'); return w.length > 100 && [...w].every(i => i.classList.contains('on')); }) && a.max < 3);
+      await shot(`talk-long-brief-mid-${fieldFirst ? 'up' : 'pill'}`);
+      await page.evaluate(() => clearInterval(window.__iv));
+      check(`no page errors (long answer, middle level, ${how})`, s.errors.length === 0);
+      await s.context.close();
+    }
+    // Everything: her spoken line is short and the written part under it is long; she says the line, the write-in does not take the view.
+    {
+      const s = await scene({ captions: 'all' });
+      const { page, emit, skew, shot, area } = s;
+      await page.waitForTimeout(600);
+      await emit('controls', { mic_muted: false, speech_muted: false, conversation: true }); s.daemonState.controls.conversation = true;
+      await watch(page);
+      await answer(s, 'tp2', `<voice>${spokenLine}</voice>${doc}`);
+      await page.waitForSelector('.talk .tk-w'); await page.waitForTimeout(900);
+      await skew(10_000); await page.waitForTimeout(900);
+      const a = await seen(page);
+      check(`a long answer, everything: the write-in is all in, the view stayed at the top with her spoken line (highest scroll ${a.max})`, a.room > 100 && a.max < 3 && await page.evaluate(() => [...document.querySelectorAll('.talk .tk-w i')].every(i => i.classList.contains('on'))));
+      await page.evaluate(() => clearInterval(window.__iv));
+      check('no page errors (long answer, everything, written part)', s.errors.length === 0);
+      await s.context.close();
+    }
+    // Everything, her words alone: it opens at the top and the view goes down with the lit words.
+    {
+      const s = await scene({ captions: 'all' });
+      const { page, emit, shot } = s;
+      await page.waitForTimeout(600);
+      await emit('controls', { mic_muted: false, speech_muted: false, conversation: true }); s.daemonState.controls.conversation = true;
+      await emit('voice', { phase: 'listening', turn_id: 'tp3' }); await page.waitForTimeout(700);
+      await watch(page);
+      await answer(s, 'tp3', `<voice>${long}${long}</voice>`);
+      await page.waitForTimeout(1200);
+      let a = await seen(page);
+      check(`a long answer, everything: it opens at its top (highest scroll ${a.max}, of ${a.room})`, a.room > 100 && a.max < 3);
+      await shot('talk-long-all-first');
+      await emit('voice', { phase: 'playing', turn_id: 'tp3', played: 330, ahead: 340, held: false }); await page.waitForTimeout(900); // (her voice is that far on)
+      a = await seen(page);
+      const front = await page.evaluate(() => { const tr = document.querySelector('.talk-tr').getBoundingClientRect(), on = [...document.querySelectorAll('.talk .tk-s i.on')].at(-1).getBoundingClientRect(); return on.top >= tr.top && on.bottom <= tr.bottom; });
+      check(`a long answer, everything: partway through the view has gone down with the lit words, which are in sight (scrolled ${a.now} of ${a.room})`, a.now > 20 && a.now < a.room - 20 && front);
+      await shot('talk-long-all-mid');
+      await page.evaluate(() => clearInterval(window.__iv));
+      check('no page errors (long answer, everything)', s.errors.length === 0);
+      await s.context.close();
+    }
   }
 
   // ---- the pill after an answer was shown: it fits its words, not the transcript folded away in it ----

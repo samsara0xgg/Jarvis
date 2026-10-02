@@ -123,7 +123,7 @@ export function TalkArea(p: TalkProps) {
   const [row, setRow] = useState<Row>('ft'), [away, setAway] = useState(false), [fieldH, setFieldH] = useState(36), [inking, setInking] = useState(false);
   const reg = useRef<Registry>(new Map()), clocks = useRef(new Map<string, { text: string; clock: number[] }>());
   // The motion's own state: where the shape is, what is pending, and whether the reader has scrolled away from her.
-  const ctl = useRef({ at: 'gone' as 'gone' | Kind, closing: false, timers: [] as number[], staged: false, follow: true, progUntil: 0, wheelAt: 0, since: 0, pull: calm as Pull, pullTimer: 0, key: '', ghost: null as { nodes: Node[]; top: number } | null, reveal: false, fly: null as Fly | null, rise: false, back: false, shape: { w: 0, h: 0 }, lbW: 0, litEl: null as HTMLElement | null, ink: false });
+  const ctl = useRef({ at: 'gone' as 'gone' | Kind, closing: false, timers: [] as number[], staged: false, follow: true, progUntil: 0, wheelAt: 0, since: 0, pull: calm as Pull, pullTimer: 0, key: '', ghost: null as { nodes: Node[]; top: number } | null, reveal: false, fly: null as Fly | null, rise: false, back: false, shape: { w: 0, h: 0 }, lbW: 0, litEl: null as HTMLElement | null, ink: false, still: false });
   const c = ctl.current;
 
   // Only the latest exchange shows; `rev.n` earlier ones of this session have been pulled up above it, and a new question puts them away again.
@@ -238,9 +238,11 @@ export function TalkArea(p: TalkProps) {
     later(140, () => {
       const natural = measure(WIDTH).h, grown = Math.min(natural, HEIGHT);
       morph(WIDTH, grown, 22);
-      c.follow = true; setAway(false); toEnd(natural);
+      c.follow = true; setAway(false);
+      // An answer her voice is on opens at its top; the view goes down with her lit words, never ahead of them.
+      if (c.litEl || c.still) { tr.scrollTop = 0; fades(); } else toEnd(natural);
       if (hasWords) { tr.style.removeProperty('opacity'); rise(tr); }
-      c.staged = false; riseNew();
+      c.staged = false; riseNew(); followLit(c.litEl);
     });
   };
   // Grow (or shrink) to what is showing now.
@@ -251,7 +253,7 @@ export function TalkArea(p: TalkProps) {
       if (c.shape.w < WIDTH - 4) widenThenGrow();
       else {
         if (Math.abs(c.shape.h - h) > .5) morph(WIDTH, h, 22);
-        if (!c.staged && c.follow) { if (c.litEl) followLit(c.litEl); else toEnd(natural, true); }
+        if (!c.staged && c.follow) { if (c.litEl) followLit(c.litEl); else if (!c.still) toEnd(natural, true); }
       }
     } else {
       const n = measure(null), h = to === 'pill' ? 36 : 44;
@@ -335,14 +337,17 @@ export function TalkArea(p: TalkProps) {
   };
   // Light up as far as she has got: where the daemon last put her voice (ADR 0112), carried on at pace; with no report, estimated from when she began.
   // The written part is not her speech: it writes itself in on its own clock (whole when she is silent). The follow goes to the line she is
-  // saying; with none being said (the middle level shows the written part alone, or she is done) to the front of the write-in.
+  // saying, and never to the write-in while her voice is on the answer: that is faster than she is. Only with her voice done, or off, does
+  // it follow the front of the write-in. While she says a written part that shows alone (the middle level) there is nothing of hers to
+  // follow: the view stays (`c.still`).
   const view = useRef(v); view.current = v;
   const high = useRef(new Map<string, { text: string; n: number }>());
   const drive = () => {
-    let front: HTMLElement | null = null;
+    let front: HTMLElement | null = null, going = false;
     c.ink = false;
     for (const it of view.current.items) {
       if (it.who !== 'her') continue;
+      const voiced = !!(it.spoken || it.voiced) && !it.said && !it.failed && !live.current.silent;
       const sr = it.spoken ? reg.current.get(it.id) : undefined, wr = reg.current.get(`${it.id}:w`);
       let ahead: HTMLElement | null = null;
       if (sr) {
@@ -360,11 +365,12 @@ export function TalkArea(p: TalkProps) {
       if (wr?.ink) {
         const n = it.failed || live.current.silent ? wr.chars.length : saidCount(wr.ink.clock, (Date.now() - wr.ink.t0) / 1000);
         paint(wr, n);
-        if (n < wr.chars.length) { c.ink = true; ahead ||= wr.chars[Math.max(0, n - 1)]; }
+        if (n < wr.chars.length) { c.ink = true; if (!voiced) ahead ||= wr.chars[Math.max(0, n - 1)]; }
       }
       if (ahead) front = ahead;
+      going ||= voiced;
     }
-    c.litEl = front;
+    c.litEl = front; c.still = going && !front;
     return front;
   };
   const followLit = (front: HTMLElement | null) => {
