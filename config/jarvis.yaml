@@ -482,7 +482,7 @@ realtime:
     # model request of a turn Allen spoke through the Responses API and speaks
     # the model's own answer sentence by sentence, with no rewrite; its line
     # before a tool call rides action.proposed as lead_in, which commentary
-    # speaks in place of the fixed acknowledge.  Speech starts before the
+    # speaks in place of the fixed line.  Speech starts before the
     # answer is complete only with streaming_output.speak_from_segments.  It
     # additionally requires response_run_lifecycle and downgrades once, with
     # one warning, without it.  first_clause_chars > 0 lets the first thing
@@ -514,21 +514,26 @@ realtime:
     # cutting her off (newer turn) or never being said (older turn).
     slow_results:
       enabled: true
-  # ADR-0008 Step 5 (D6).  With commentary on, a user-originated turn speaks
-  # one short acknowledge when it first dispatches a tool that works on
-  # Allen's request (not tool_search, the clock, memory or a card), no earlier
-  # than 1.5 s after his words and only while its answer is not out, in a
-  # `phase="commentary"` ResponseRun sharing that turn's response_group_id;
-  # the final answer is never dropped or superseded by it.  It additionally
-  # requires realtime.enabled and response.response_run_lifecycle and
-  # downgrades once, with one warning, without them.
-  # Off since ADR 0045: every lifecycle row spoke, and "结果回来了" landed with
-  # no lead-up whenever a tool finished within a second.  The acknowledge-only
-  # form (2026-09-29) waits for its live run before it ships on.  In a
-  # spoken_streaming turn it says the model's own line before the call instead,
-  # unless that line runs over 60 characters or already claims a result.
+  # ADR-0008 Step 5 (D6), as ADR 0115 reshapes it.  With commentary on, a turn
+  # Allen spoke says one short fixed line (a random pick from a small pool, in
+  # the language of his words) when it is taking a while: at the dispatch of a
+  # slow tool (web_search, web_fetch, screen_look, refresh_work_state,
+  # daily_work_report; no earlier than 1.5 s after his words), or 2.5 s after
+  # his words with nothing of the answer started, tool or not.  Never after the
+  # answer has started or the turn has ended, never twice in a turn, never over
+  # a pending confirmation, never for a typed or GPT-Live turn.  It is a
+  # `phase="commentary"` ResponseRun sharing the turn's response_group_id; the
+  # final answer is never dropped or superseded by it.  No model writes the
+  # line.  It additionally requires realtime.enabled and
+  # response.response_run_lifecycle and downgrades once, with one warning,
+  # without them.
+  # Off from ADR 0045 to ADR 0115: every lifecycle row spoke, and "结果回来了"
+  # landed with no lead-up whenever a tool finished within a second.  In a
+  # spoken_streaming turn it says the model's own line before the call instead
+  # of the pool, unless that line runs over 60 characters or already claims a
+  # result.
   commentary:
-    enabled: false
+    enabled: true
   # ADR-0008 D8 (Wave 5).  intent_pump replaces the daemon's "poll one
   # event, await its whole turn" watcher with a durable-claim queue: each
   # trigger is claimed once by an idempotent turn.started, the cursor

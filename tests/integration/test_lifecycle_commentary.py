@@ -1,4 +1,4 @@
-"""ADR-0008 D6 acceptance: deterministic lifecycle commentary.
+"""ADR-0008 D6 / ADR 0115 acceptance: the one wait line of a turn Allen spoke.
 
 Every check runs against a real on-disk Event Log and the shipped runtime
 observer; nothing about the commentary path is faked, because the property
@@ -12,6 +12,8 @@ import ast
 import asyncio
 import contextlib
 import json
+import operator
+import secrets
 import threading
 import time
 from dataclasses import FrozenInstanceError, replace
@@ -24,7 +26,6 @@ from fastapi.testclient import TestClient
 
 from jarvis import runtime as runtime_module
 from jarvis.decision.commentary import (
-    _ACKNOWLEDGE_BY_TOOL,
     _D6_ROWS,
     COMMENTARY_ATTENTION_CHANNEL,
     commentary_intent_for,
@@ -48,8 +49,10 @@ from jarvis.runtime import (
     inherent_loop,
     make_barge_in_interrupt_callable,
     make_response_cancel_callable,
+    tool_status,
 )
 from jarvis.shared import Event, lang
+from jarvis.shared.lang import SLOW_TOOLS
 from jarvis.shared.realtime import (
     Wave1FeatureFlags,
     new_response_id,
@@ -82,10 +85,23 @@ if TYPE_CHECKING:
 # --- helpers ---------------------------------------------------------------
 
 
+_WAIT_ZH: Final = lang.variants("commentary.wait", "zh")
+_WAIT_EN: Final = lang.variants("commentary.wait", "en")
+
+
 @pytest.fixture(autouse=True)
 def _no_acknowledge_floor(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Rows here follow their turn at once; the 1.5 s floor has its own test."""
+    """Rows here follow their turn at once; the 1.5 s floor has its own test.
+
+    The 2.5 s clock is parked far away so a turn only speaks for a dispatch;
+    the clock's own tests bring it in.
+    """
     monkeypatch.setattr(inherent_loop, "_COMMENTARY_EARLIEST_S", 0.0)
+    monkeypatch.setattr(inherent_loop, "_COMMENTARY_AFTER_S", 600.0)
+
+
+def _first(phrases: tuple[str, ...]) -> str:
+    return phrases[0]
 
 
 def _action_event(event_type: str, *, action_id: str = "ACT-1") -> Event:
@@ -104,52 +120,93 @@ def _action_event(event_type: str, *, action_id: str = "ACT-1") -> Event:
 # --- D6 mapping ------------------------------------------------------------
 
 
-def test_the_dispatch_row_is_the_one_that_speaks() -> None:
-    """The acknowledge alone, with the action id as subject.
+def _utterance_event(*, text: str = "现在几点") -> Event:
+    """One committed-shaped row carrying his words, without touching the log."""
+    return Event(
+        event_uid="uid-utterance-1",
+        type="utterance.received",
+        schema_version=1,
+        ts_epoch_ms=1_700_000_000_000,
+        payload={"transcript": text, "turn_id": "T-1"},
+        source_event_id=None,
+        correlation={"turn_id": "T-1"},
+    )
 
-    The phrase is no longer one literal per row, so the pin is membership in
-    the row's declared set plus the intent type it carries. Which member a
-    given id selects is pinned by
-    ``test_six_turns_speak_variants_from_the_acknowledge_set``.
+
+def test_two_rows_speak_a_slow_tools_dispatch_and_his_words() -> None:
+    """A slow tool's dispatch (the action id is the subject) and his words (the row is).
+
+    Which phrase the picker takes is the runtime's business; the pin is that
+    the phrase comes from the row's declared pool and nothing else.
     """
-    assert set(_D6_ROWS) == {"action.dispatched"}
-    intent = commentary_intent_for(_action_event("action.dispatched", action_id="ACT-7"))
+    assert set(_D6_ROWS) == {"action.dispatched", "utterance.received"}
+    intent = commentary_intent_for(
+        _action_event("action.dispatched", action_id="ACT-7"),
+        tool_name="web_search",
+        pick=_first,
+    )
     assert intent is not None
     assert intent.intent_type == "acknowledge"
-    assert intent.content_hint in lang.variants(_D6_ROWS["action.dispatched"][1], "zh")
+    assert intent.content_hint == _WAIT_ZH[0]
     assert intent.subject_ref == "ACT-7"
     assert intent.surface_hint == "speech"
     assert intent.freshness_required is True
 
+    spoken = _utterance_event()
+    by_words = commentary_intent_for(spoken, user_text="现在几点", pick=_first)
+    assert by_words is not None
+    assert by_words.subject_ref == spoken.event_uid
+    assert by_words.content_hint == _WAIT_ZH[0]
+
+
+def test_the_slow_list_is_one_table_and_the_status_line_reads_it() -> None:
+    """ADR 0114's tools and this one's are the same five, from one place."""
+    assert set(SLOW_TOOLS) == {
+        "web_search", "web_fetch", "screen_look", "refresh_work_state", "daily_work_report",
+    }
+    for tool_name in SLOW_TOOLS:
+        assert commentary_intent_for(
+            _action_event("action.dispatched"), tool_name=tool_name, pick=_first,
+        ) is not None, tool_name
+        assert tool_status.plan(tool_name) == (SLOW_TOOLS[tool_name], 0.0)
+
 
 @pytest.mark.parametrize(
-    "tool_name", ["tool_search", "get_current_time", "remember", "ask_user", "withdraw_card"],
+    "tool_name",
+    ["tool_search", "get_current_time", "remember", "ask_user", "write_file", "spawn_worker", None],
 )
-def test_a_bookkeeping_tool_says_nothing(tool_name: str) -> None:
+def test_a_tool_off_the_slow_list_says_nothing_at_dispatch(tool_name: str | None) -> None:
     """Finding a tool, the clock, a kept fact or a card is not what Allen asked for.
 
     2026-09-25: a clock lookup nobody asked for was announced mid-chat (ADR 0045).
+    Quick tools are covered by the clock instead: nothing is said unless the
+    turn is still silent at 2.5 s.
     """
     event = _action_event("action.dispatched")
-    assert commentary_intent_for(event, tool_name=tool_name) is None
-    assert commentary_intent_for(event, tool_name="web_search", tool_read_only=True) is not None
+    assert commentary_intent_for(event, tool_name=tool_name, pick=_first) is None
 
 
-def test_a_phrase_is_stable_across_processes_for_one_action_id() -> None:
-    """sha256, not builtin `hash()`: the choice is the same on every run.
+@pytest.mark.parametrize(("text", "pool"), [("现在几点", _WAIT_ZH), ("What time is it", _WAIT_EN)])
+def test_the_pool_follows_the_language_of_his_words(text: str, pool: tuple[str, ...]) -> None:
+    """Every phrase of the language is reachable and none of the other's is."""
+    seen = set()
+    for index in range(len(pool)):
+        intent = commentary_intent_for(
+            _utterance_event(text=text), user_text=text, pick=operator.itemgetter(index),
+        )
+        assert intent is not None
+        seen.add(intent.content_hint)
+    assert seen == set(pool)
 
-    Builtin `hash()` is seeded per process by ``PYTHONHASHSEED``, so the same
-    action would say different things across daemon restarts and this literal
-    could not exist. A change to the acknowledge set is expected to fail this
-    line — update it deliberately.
-    """
-    intent = commentary_intent_for(_action_event("action.dispatched", action_id="ACT-7"))
-    assert intent is not None
-    assert intent.content_hint == "好，我来办。"  # noqa: RUF001 - Chinese comma
+
+def test_the_owners_pool_is_what_the_table_holds() -> None:
+    """2026-10-02, Allen: these four in each language, 「马上好」 included."""
+    assert _WAIT_ZH == ("稍等。", "等一下。", "正在办。", "马上好。")
+    assert _WAIT_EN == ("One moment.", "Hold on.", "On it.", "Almost there.")
 
 
 def test_non_mapped_event_types_return_none() -> None:
-    """Only the dispatch row speaks: a tool's progress, result or failure is silent.
+    """Only the two rows speak: a tool's progress, result or failure is silent.
 
     ADR 0045: the result row's 「结果回来了」 followed a quick tool with nothing
     before it.
@@ -157,7 +214,8 @@ def test_non_mapped_event_types_return_none() -> None:
     for event_type in ("action.running", "action.result_observed", "action.failed",
                        "memo.captured", "gate.evaluated", "action.cancelled",
                        "action.timeout_assumed", "turn.started", "response.completed"):
-        assert commentary_intent_for(_action_event(event_type)) is None, event_type
+        event = _action_event(event_type)
+        assert commentary_intent_for(event, tool_name="web_search", pick=_first) is None, event_type
 
 
 def test_mapped_row_without_action_id_returns_none() -> None:
@@ -167,16 +225,18 @@ def test_mapped_row_without_action_id_returns_none() -> None:
         type="action.dispatched",
         schema_version=1,
         ts_epoch_ms=1_700_000_000_000,
-        payload={"tool_name": "get_current_time"},
+        payload={"tool_name": "web_search"},
         source_event_id=None,
         correlation=None,
     )
-    assert commentary_intent_for(event) is None
+    assert commentary_intent_for(event, tool_name="web_search", pick=_first) is None
 
 
 def test_intent_is_frozen_and_never_an_event() -> None:
     """Spec §3.6.3: PresentationIntent is a contract object, not a log row."""
-    intent = commentary_intent_for(_action_event("action.dispatched"))
+    intent = commentary_intent_for(
+        _action_event("action.dispatched"), tool_name="web_search", pick=_first,
+    )
     assert intent is not None
     assert tuple(intent.__dataclass_fields__) == (
         "intent_type",
@@ -228,11 +288,11 @@ def _config(*, enabled: bool, lifecycle: bool, commentary: bool) -> dict[str, ob
     }
 
 
-def test_shipped_config_turns_commentary_off() -> None:
-    """ADR 0045: the shipped switch is off, so no tool turn speaks a phrase."""
+def test_shipped_config_turns_commentary_on() -> None:
+    """ADR 0115: the shipped switch is on, so a slow turn says its wait line."""
     shipped = yaml.safe_load((repo_root() / "config" / "jarvis.yaml").read_text())
-    assert shipped["realtime"]["commentary"] == {"enabled": False}
-    assert _wave4_response_activation(shipped).flags.lifecycle_commentary is False
+    assert shipped["realtime"]["commentary"] == {"enabled": True}
+    assert _wave4_response_activation(shipped).flags.lifecycle_commentary is True
 
 
 def test_commentary_requires_the_response_run_lifecycle() -> None:
@@ -340,15 +400,20 @@ def _user_turn(
     turn_id: str,
     *,
     transcript: str = "现在几点",
+    typed: str | None = None,
 ) -> Event:
-    """Emit the user-intent trigger and the turn claim it originates."""
+    """Emit the trigger and the turn claim it originates.
+
+    By default Allen spoke (``utterance.received``); ``typed`` names the
+    channel of a ``surface.user_intent`` instead (the keyboard, or GPT-Live).
+    """
     intent = emit_event(
         conn,
-        type="surface.user_intent",
+        type="surface.user_intent" if typed else "utterance.received",
         payload={
             "transcript": transcript,
             "turn_id": turn_id,
-            "channel": "cli_stdin",
+            "channel": typed or "inherent_wake",
             "language": "zh-CN",
         },
         correlation={"turn_id": turn_id},
@@ -385,6 +450,31 @@ def _action_row(
         source_event_id=source_event_id,
         correlation=correlation,
     )
+
+
+def _dispatch(
+    conn: sqlite3.Connection,
+    *,
+    action_id: str,
+    turn_id: str,
+    tool_name: str = "web_search",
+    lead_in: str | None = None,
+) -> Event:
+    """Emit one tool call's proposal and its dispatch; the dispatch is returned."""
+    emit_event(
+        conn,
+        type="action.proposed",
+        payload={
+            "action_id": action_id,
+            "tool_name": tool_name,
+            "turn_id": turn_id,
+            "caller_principal": "jarvis_llm",
+            "risk_level": "L1",
+            **({"lead_in": lead_in} if lead_in else {}),
+        },
+        correlation={"action_id": action_id, "turn_id": turn_id},
+    )
+    return _action_row(conn, "action.dispatched", action_id=action_id, turn_id=turn_id)
 
 
 def _typed_payloads(conn: sqlite3.Connection, event_type: str) -> list[dict[str, Any]]:
@@ -512,8 +602,7 @@ def test_action_row_speaks_one_commentary_run_in_the_turn_group(tmp_path: Path) 
     reader = _reader(runtime)
     intent = _user_turn(runtime.conn, "T-ack")
     with _Observer(runtime):
-        dispatched = _action_row(
-            runtime.conn, "action.dispatched", action_id="ACT-ack", turn_id="T-ack",
+        dispatched = _dispatch(runtime.conn, action_id="ACT-ack", turn_id="T-ack",
         )
         _wait_until(lambda: _count(reader, "surface.response_emitted") == 1)
 
@@ -537,10 +626,8 @@ def test_action_row_speaks_one_commentary_run_in_the_turn_group(tmp_path: Path) 
         assert payload["phase"] == "commentary"
         assert payload["response_id"] == started[0]["response_id"]
         assert payload["response_group_id"] == started[0]["response_group_id"]
-    assert _spoken(reader) == [
-        commentary_intent_for(dispatched).content_hint,  # type: ignore[union-attr]
-    ]
-    assert _spoken(reader)[0] in lang.variants(_D6_ROWS["action.dispatched"][1], "zh")
+    assert len(_spoken(reader)) == 1
+    assert _spoken(reader)[0] in _WAIT_ZH
     assert _typed_payloads(reader, "surface.response_open")[0]["attention_channel"] == (
         COMMENTARY_ATTENTION_CHANNEL
     )
@@ -559,7 +646,7 @@ def test_action_on_a_turn_with_no_turn_started_stays_silent(tmp_path: Path) -> N
     runtime = _make_runtime(tmp_path)
     reader = _reader(runtime)
     with _Observer(runtime):
-        _action_row(runtime.conn, "action.dispatched", action_id="ACT-sys", turn_id="T-sys")
+        _dispatch(runtime.conn, action_id="ACT-sys", turn_id="T-sys")
         _action_row(runtime.conn, "action.running", action_id="ACT-sys", turn_id="T-sys")
         _settle()
         assert _count(reader, "response.started") == 0
@@ -567,7 +654,7 @@ def test_action_on_a_turn_with_no_turn_started_stays_silent(tmp_path: Path) -> N
         # Positive control: the same observer, alive, does speak for a claimed
         # turn — the silence above is the filter, not a stalled watcher.
         _user_turn(runtime.conn, "T-user")
-        _action_row(runtime.conn, "action.dispatched", action_id="ACT-user", turn_id="T-user")
+        _dispatch(runtime.conn, action_id="ACT-user", turn_id="T-user")
         _wait_until(lambda: _count(reader, "surface.response_emitted") == 1)
     assert _typed_payloads(reader, "response.started")[0]["active_subject_ref"] == "ACT-user"
 
@@ -592,12 +679,12 @@ def test_a_turn_whose_answer_is_out_stays_silent(tmp_path: Path) -> None:
             },
             correlation={"turn_id": "T-t0"},
         )
-        _action_row(runtime.conn, "action.dispatched", action_id="ACT-t0", turn_id="T-t0")
+        _dispatch(runtime.conn, action_id="ACT-t0", turn_id="T-t0")
         _settle()
         assert _count(reader, "response.started") == 0
         # Positive control: a turn still at work speaks.
         _user_turn(runtime.conn, "T-live")
-        _action_row(runtime.conn, "action.dispatched", action_id="ACT-live", turn_id="T-live")
+        _dispatch(runtime.conn, action_id="ACT-live", turn_id="T-live")
         _wait_until(lambda: _count(reader, "surface.response_emitted") == 1)
 
 
@@ -619,12 +706,12 @@ def test_reconciliation_originated_turn_stays_silent(tmp_path: Path) -> None:
         correlation={"turn_id": "T-recon"},
     )
     with _Observer(runtime):
-        _action_row(runtime.conn, "action.dispatched", action_id="ACT-r", turn_id="T-recon")
+        _dispatch(runtime.conn, action_id="ACT-r", turn_id="T-recon")
         _settle()
         assert _count(reader, "response.started") == 0
         # Positive control, as above.
         _user_turn(runtime.conn, "T-user")
-        _action_row(runtime.conn, "action.dispatched", action_id="ACT-user", turn_id="T-user")
+        _dispatch(runtime.conn, action_id="ACT-user", turn_id="T-user")
         _wait_until(lambda: _count(reader, "surface.response_emitted") == 1)
     assert _typed_payloads(reader, "response.started")[0]["active_subject_ref"] == "ACT-user"
 
@@ -655,7 +742,7 @@ def test_live_pending_confirmation_silences_commentary(tmp_path: Path) -> None:
         correlation={"turn_id": "T-conf"},
     )
     with _Observer(runtime):
-        _action_row(runtime.conn, "action.dispatched", action_id="ACT-c", turn_id="T-conf")
+        _dispatch(runtime.conn, action_id="ACT-c", turn_id="T-conf")
         _settle()
         assert _count(reader, "response.started") == 0
 
@@ -669,11 +756,11 @@ def test_live_pending_confirmation_silences_commentary(tmp_path: Path) -> None:
             },
             correlation={"turn_id": "T-conf"},
         )
-        _action_row(runtime.conn, "action.dispatched", action_id="ACT-c2", turn_id="T-conf")
+        _dispatch(runtime.conn, action_id="ACT-c2", turn_id="T-conf")
         _wait_until(lambda: _count(reader, "surface.response_emitted") == 1)
     # `_only_phrase` asserts there is exactly one; the second dispatch spoke and
     # the silenced first one did not take the turn's slot with it.
-    assert _only_phrase(reader) in lang.variants(_D6_ROWS["action.dispatched"][1], "zh")
+    assert _only_phrase(reader) in _WAIT_ZH
     assert _typed_payloads(reader, "response.started")[0]["active_subject_ref"] == "ACT-c2"
 
 
@@ -722,8 +809,7 @@ def test_one_turn_with_three_actions_speaks_exactly_one_commentary(
     _user_turn(runtime.conn, "T-cap")
     with _Observer(runtime):
         for action_id in ("ACT-c1", "ACT-c2", "ACT-c3"):
-            dispatched = _action_row(
-                runtime.conn, "action.dispatched", action_id=action_id, turn_id="T-cap",
+            dispatched = _dispatch(runtime.conn, action_id=action_id, turn_id="T-cap",
             )
             _action_row(
                 runtime.conn, "action.running", action_id=action_id, turn_id="T-cap",
@@ -739,76 +825,51 @@ def test_one_turn_with_three_actions_speaks_exactly_one_commentary(
     assert len(_commentary_emitted(reader, "T-cap")) == 1
 
 
-def test_six_turns_speak_variants_from_the_acknowledge_set(tmp_path: Path) -> None:
-    """Six turns, six action ids: every phrase is declared, and they differ.
+def test_every_phrase_of_the_pool_can_be_heard(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Four turns, a picker that walks the pool: each phrase is one turn's line.
 
-    Under the cap the acknowledge is the phrase actually heard, so one fixed
-    acknowledge would be the same sentence on every single turn. Selection is
-    a sha256 digest of the action id, so this is not a coin flip — it passes
-    always or fails always, on every process and platform. The six ids were
-    chosen for that reason: `ACT-v1..ACT-v6` land on three of the three
-    declared variants, and a change to the set is expected to move them.
+    The runtime picks with ``secrets.choice``, so the walk replaces it for the
+    test only; a phrase outside the pool, or one the runtime never offers,
+    shows up here.
     """
+    walk = iter(range(len(_WAIT_ZH)))
+    monkeypatch.setattr(secrets, "choice", lambda phrases: phrases[next(walk)])
     runtime = _make_runtime(tmp_path)
     reader = _reader(runtime)
-    action_ids = [f"ACT-v{index}" for index in range(1, 7)]
     with _Observer(runtime):
-        for index, action_id in enumerate(action_ids):
+        for index in range(len(_WAIT_ZH)):
             turn_id = f"T-v{index}"
             _user_turn(runtime.conn, turn_id)
-            _action_row(
-                runtime.conn, "action.dispatched", action_id=action_id, turn_id=turn_id,
-            )
+            _dispatch(runtime.conn, action_id=f"ACT-v{index}", turn_id=turn_id)
             _wait_until_turn_spoke(reader, turn_id)
 
-    spoken = _spoken(reader)
-    assert len(spoken) == len(action_ids)
-    variants = lang.variants(_D6_ROWS["action.dispatched"][1], "zh")
-    assert all(phrase in variants for phrase in spoken), spoken
-    assert len(set(spoken)) >= 2, spoken
+    assert _spoken(reader) == list(_WAIT_ZH)
 
 
-def test_the_acknowledge_follows_the_tool_and_the_language_allen_used(tmp_path: Path) -> None:
-    """2026-09-24 live: an English web search heard "这就去办。".
-
-    A read-only tool acknowledges as a lookup, ``spawn_worker`` as a hand-off
-    to Codex, and an English turn hears English; a writing tool on a Chinese
-    turn keeps the generic row.
-    """
+@pytest.mark.parametrize(
+    ("transcript", "tool_name", "pool"),
+    [
+        ("Search the web for today's weather in Vancouver.", "web_search", _WAIT_EN),
+        ("帮我搜一下今天温哥华的天气", "web_search", _WAIT_ZH),
+        ("Write today's report", "daily_work_report", _WAIT_EN),
+        ("把今天的工作报告写一下", "daily_work_report", _WAIT_ZH),
+    ],
+)
+def test_a_slow_tool_says_one_pool_line_in_the_language_allen_used(
+    tmp_path: Path, transcript: str, tool_name: str, pool: tuple[str, ...],
+) -> None:
+    """2026-09-24 live: an English web search heard "这就去办。"."""
     runtime = _make_runtime(tmp_path)
     reader = _reader(runtime)
-    cases = [
-        ("T-en", "Search the web for today's weather in Vancouver.", "web_search",
-         lang.variants(_ACKNOWLEDGE_BY_TOOL["lookup"], "en")),
-        ("T-zh", "帮我搜一下今天温哥华的天气", "web_search",
-         lang.variants(_ACKNOWLEDGE_BY_TOOL["lookup"], "zh")),
-        ("T-cx", "让 Codex 把测试修好", "spawn_worker",
-         lang.variants(_ACKNOWLEDGE_BY_TOOL["codex"], "zh")),
-        ("T-wr", "把这段写进文件", "write_file",
-         lang.variants(_D6_ROWS["action.dispatched"][1], "zh")),
-    ]
     with _Observer(runtime):
-        for turn_id, transcript, tool_name, _ in cases:
-            _user_turn(runtime.conn, turn_id, transcript=transcript)
-            action_id = f"ACT-{turn_id}"
-            emit_event(
-                runtime.conn,
-                type="action.proposed",
-                payload={
-                    "action_id": action_id,
-                    "tool_name": tool_name,
-                    "turn_id": turn_id,
-                    "caller_principal": "jarvis_llm",
-                    "risk_level": "L1",
-                },
-                correlation={"action_id": action_id, "turn_id": turn_id},
-            )
-            _action_row(runtime.conn, "action.dispatched", action_id=action_id, turn_id=turn_id)
-            _wait_until_turn_spoke(reader, turn_id)
+        _user_turn(runtime.conn, "T-lang", transcript=transcript)
+        _dispatch(runtime.conn, action_id="ACT-lang", turn_id="T-lang", tool_name=tool_name)
+        _wait_until_turn_spoke(reader, "T-lang")
+        _settle()
 
-    for turn_id, _, _, allowed in cases:
-        (payload,) = _commentary_emitted(reader, turn_id)
-        assert parse_response_channels(payload["text"]).voice in allowed, turn_id
+    assert _only_phrase(reader) in pool
 
 
 def test_a_spoken_turn_hears_the_models_own_line_unless_it_claims_a_result(
@@ -816,7 +877,7 @@ def test_a_spoken_turn_hears_the_models_own_line_unless_it_claims_a_result(
 ) -> None:
     """docs/plans/speak-as-written-proposal.md: the model's line replaces the phrase.
 
-    A line written with a bookkeeping call speaks at that call's dispatch (the
+    A line written with a bookkeeping call speaks at the next slow dispatch (the
     2026-09-30 live run heard it 5 s later, at the first working one); one that
     already states a result, or runs past one sentence, gives way to the fixed
     phrase.
@@ -834,34 +895,25 @@ def test_a_spoken_turn_hears_the_models_own_line_unless_it_claims_a_result(
         for turn_id, calls, _ in cases:
             _user_turn(runtime.conn, turn_id, transcript="明天维多利亚天气怎么样")
             for index, (tool_name, lead_in) in enumerate(calls):
-                action_id = f"ACT-{turn_id}-{index}"
-                emit_event(
+                _dispatch(
                     runtime.conn,
-                    type="action.proposed",
-                    payload={
-                        "action_id": action_id,
-                        "tool_name": tool_name,
-                        "turn_id": turn_id,
-                        "caller_principal": "jarvis_llm",
-                        "risk_level": "L1",
-                        **({"lead_in": lead_in} if lead_in else {}),
-                    },
-                    correlation={"action_id": action_id, "turn_id": turn_id},
-                )
-                _action_row(
-                    runtime.conn, "action.dispatched", action_id=action_id, turn_id=turn_id,
+                    action_id=f"ACT-{turn_id}-{index}",
+                    turn_id=turn_id,
+                    tool_name=tool_name,
+                    lead_in=lead_in,
                 )
             _wait_until_turn_spoke(reader, turn_id)
 
     for turn_id, _, spoken in cases:
         (payload,) = _commentary_emitted(reader, turn_id)
-        allowed = [spoken] if spoken else lang.variants(_ACKNOWLEDGE_BY_TOOL["lookup"], "zh")
+        allowed = [spoken] if spoken else _WAIT_ZH
         assert parse_response_channels(payload["text"]).voice in allowed, turn_id
     subjects = {
         started["response_group_id"]: started["active_subject_ref"]
         for started in _typed_payloads(reader, "response.started")
     }
-    assert subjects[stable_response_group_id("T-early")] == "ACT-T-early-0"
+    # The first call is not on the slow list: its line speaks at the second.
+    assert subjects[stable_response_group_id("T-early")] == "ACT-T-early-1"
 
 
 def test_a_second_row_in_the_same_turn_opens_nothing(tmp_path: Path) -> None:
@@ -870,11 +922,10 @@ def test_a_second_row_in_the_same_turn_opens_nothing(tmp_path: Path) -> None:
     reader = _reader(runtime)
     _user_turn(runtime.conn, "T-coal")
     with _Observer(runtime):
-        dispatched = _action_row(
-            runtime.conn, "action.dispatched", action_id="ACT-c", turn_id="T-coal",
+        dispatched = _dispatch(runtime.conn, action_id="ACT-c", turn_id="T-coal",
         )
         _wait_until(lambda: _count(reader, "surface.response_emitted") == 1)
-        _action_row(runtime.conn, "action.dispatched", action_id="ACT-c2", turn_id="T-coal")
+        _dispatch(runtime.conn, action_id="ACT-c2", turn_id="T-coal")
         _settle()
 
     assert [p["active_subject_ref"] for p in _typed_payloads(reader, "response.started")] == [
@@ -890,7 +941,7 @@ def test_a_commentary_that_reached_the_speaker_finishes(tmp_path: Path) -> None:
     reader = _reader(runtime)
     _user_turn(runtime.conn, "T-heard")
     with _Observer(runtime):
-        _action_row(runtime.conn, "action.dispatched", action_id="ACT-h", turn_id="T-heard")
+        _dispatch(runtime.conn, action_id="ACT-h", turn_id="T-heard")
         _wait_until(lambda: _count(reader, "surface.response_emitted") == 1)
         first = _typed_payloads(reader, "response.started")[0]
         emit_event(
@@ -908,13 +959,12 @@ def test_a_commentary_that_reached_the_speaker_finishes(tmp_path: Path) -> None:
             correlation={"turn_id": "T-heard"},
         )
         _wait_until(lambda: _count(reader, "response.completed") == 1)
-        _action_row(runtime.conn, "action.dispatched", action_id="ACT-h1", turn_id="T-heard")
+        _dispatch(runtime.conn, action_id="ACT-h1", turn_id="T-heard")
         _settle()
         # Positive control: the observer is alive and the silence above is
         # the cap, not a stalled watcher.
         _user_turn(runtime.conn, "T-heard-2")
-        _action_row(
-            runtime.conn, "action.dispatched", action_id="ACT-h2", turn_id="T-heard-2",
+        _dispatch(runtime.conn, action_id="ACT-h2", turn_id="T-heard-2",
         )
         _wait_until(lambda: len(_commentary_emitted(reader, "T-heard-2")) == 1)
 
@@ -938,8 +988,7 @@ def test_the_acknowledge_outlives_its_tool_until_the_answer_is_out(tmp_path: Pat
     runtime = _make_runtime(tmp_path)
     reader = _reader(runtime)
     _user_turn(runtime.conn, "T-late")
-    dispatched = _action_row(
-        runtime.conn, "action.dispatched", action_id="ACT-l", turn_id="T-late",
+    dispatched = _dispatch(runtime.conn, action_id="ACT-l", turn_id="T-late",
     )
     _action_row(
         runtime.conn, "action.result_observed", action_id="ACT-l", turn_id="T-late",
@@ -947,7 +996,7 @@ def test_the_acknowledge_outlives_its_tool_until_the_answer_is_out(tmp_path: Pat
     )
     opened = inherent_loop._open_commentary_in_worker_thread(  # noqa: SLF001
         runtime,
-        action_event=dispatched,
+        trigger_event=dispatched,
     )
     assert opened is not None
     assert _count(reader, "response.started") == 1
@@ -967,7 +1016,7 @@ def test_an_answer_out_within_the_floor_hears_no_acknowledge(
     reader = _reader(runtime)
     with _Observer(runtime):
         _user_turn(runtime.conn, "T-quick")
-        _action_row(runtime.conn, "action.dispatched", action_id="ACT-q", turn_id="T-quick")
+        _dispatch(runtime.conn, action_id="ACT-q", turn_id="T-quick")
         time.sleep(floor_s / 3)
         emit_event(
             runtime.conn,
@@ -982,12 +1031,213 @@ def test_an_answer_out_within_the_floor_hears_no_acknowledge(
         _settle(floor_s + 0.2)
         assert _count(reader, "response.started") == 0
         asked = _user_turn(runtime.conn, "T-slow")
-        _action_row(runtime.conn, "action.dispatched", action_id="ACT-s", turn_id="T-slow")
+        _dispatch(runtime.conn, action_id="ACT-s", turn_id="T-slow")
         _wait_until(lambda: _count(reader, "response.started") == 1)
     (spoke_at,) = reader.execute(
         "SELECT ts_epoch_ms FROM events WHERE type = 'response.started'",
     ).fetchone()
     assert spoke_at - asked.ts_epoch_ms >= floor_s * 1000
+
+
+# --- observer: the 2.5 s clock and the answer-started rule (ADR 0115) -------
+
+_CLOCK_S: Final = 0.4
+"""The clock the tests run at, in place of the owner's 2.5 s."""
+
+
+def _answer_started(conn: sqlite3.Connection, turn_id: str, *, phase: str = "final") -> None:
+    """The row a spoken_streaming turn commits with its first answer segment."""
+    emit_event(
+        conn,
+        type="surface.response_open",
+        payload={
+            "turn_id": turn_id,
+            "query": "",
+            "kind": "stream",
+            "required_gate_mode": "sentence",
+            "attention_channel": "voice_notify",
+            "response_id": f"R-{turn_id}-{phase}",
+            "response_group_id": stable_response_group_id(turn_id),
+            "phase": phase,
+            "channel": "both",
+        },
+        correlation={"turn_id": turn_id},
+    )
+
+
+def _end_turn(conn: sqlite3.Connection, turn_id: str) -> None:
+    emit_event(
+        conn,
+        type="turn.ended",
+        payload={
+            "turn_id": turn_id,
+            "final_response_hash": "0" * 64,
+            "consumed_trigger_event_uid": f"uid-{turn_id}",
+        },
+        correlation={"turn_id": turn_id},
+    )
+
+
+@pytest.mark.parametrize(
+    ("transcript", "pool"),
+    [("明天天气怎么样", _WAIT_ZH), ("What's the weather tomorrow", _WAIT_EN)],
+)
+def test_a_turn_with_no_answer_at_the_clock_says_one_line_with_or_without_a_tool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, transcript: str, pool: tuple[str, ...],
+) -> None:
+    """No tool at all, and a quick one: the line comes from the clock, once, in his language."""
+    monkeypatch.setattr(inherent_loop, "_COMMENTARY_AFTER_S", _CLOCK_S)
+    runtime = _make_runtime(tmp_path)
+    reader = _reader(runtime)
+    with _Observer(runtime):
+        spoke = _user_turn(runtime.conn, "T-bare", transcript=transcript)
+        _user_turn(runtime.conn, "T-quick", transcript=transcript)
+        _dispatch(
+            runtime.conn, action_id="ACT-quick", turn_id="T-quick", tool_name="get_current_time",
+        )
+        _wait_until(lambda: len(_spoken(reader)) == 2)
+        _settle()
+
+    assert len(_commentary_emitted(reader, "T-bare")) == 1
+    assert len(_commentary_emitted(reader, "T-quick")) == 1
+    assert set(_spoken(reader)) <= set(pool)
+    started = {p["turn_id"]: p for p in _typed_payloads(reader, "response.started")}
+    assert started["T-bare"]["active_subject_ref"] == spoke.event_uid
+    source = reader.execute(
+        "SELECT source_event_id FROM events WHERE type = 'response.started' "
+        "AND json_extract(payload_json, '$.turn_id') = 'T-bare'",
+    ).fetchone()
+    assert source[0] == spoke.event_uid
+    (said_at,) = reader.execute(
+        "SELECT ts_epoch_ms FROM events WHERE type = 'response.started' "
+        "AND json_extract(payload_json, '$.turn_id') = 'T-bare'",
+    ).fetchone()
+    assert said_at - spoke.ts_epoch_ms >= _CLOCK_S * 1000
+
+
+def test_an_answer_that_starts_before_the_clock_hears_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Spoken streaming: the first segment's open row is "the answer started".
+
+    The turn has not ended and is still writing; a line now would talk over its
+    first sentence. A commentary-phase open of the same turn is not an answer.
+    """
+    monkeypatch.setattr(inherent_loop, "_COMMENTARY_AFTER_S", _CLOCK_S)
+    runtime = _make_runtime(tmp_path)
+    reader = _reader(runtime)
+    with _Observer(runtime):
+        _user_turn(runtime.conn, "T-streaming")
+        _answer_started(runtime.conn, "T-streaming")
+        _settle(_CLOCK_S + 0.3)
+        assert _count(reader, "response.started") == 0
+        # Positive controls: the clock is alive, and a commentary open is no answer.
+        _user_turn(runtime.conn, "T-silent")
+        _answer_started(runtime.conn, "T-silent", phase="commentary")
+        _wait_until_turn_spoke(reader, "T-silent")
+
+    assert _commentary_emitted(reader, "T-streaming") == []
+
+
+def test_a_slow_tools_line_is_not_said_once_the_answer_has_started(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The dispatch trigger holds the same rule as the clock."""
+    floor_s = 0.4
+    monkeypatch.setattr(inherent_loop, "_COMMENTARY_EARLIEST_S", floor_s)
+    runtime = _make_runtime(tmp_path)
+    reader = _reader(runtime)
+    with _Observer(runtime):
+        _user_turn(runtime.conn, "T-early-answer")
+        _dispatch(runtime.conn, action_id="ACT-ea", turn_id="T-early-answer")
+        _answer_started(runtime.conn, "T-early-answer")
+        _settle(floor_s + 0.3)
+        assert _count(reader, "response.started") == 0
+        _user_turn(runtime.conn, "T-still-working")
+        _dispatch(runtime.conn, action_id="ACT-sw", turn_id="T-still-working")
+        _wait_until_turn_spoke(reader, "T-still-working")
+
+
+@pytest.mark.parametrize("slow_first", [True, False])
+def test_a_turn_never_hears_two_lines(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, slow_first: bool,
+) -> None:
+    """The dispatch and the clock of one turn share its one slot, in either order."""
+    monkeypatch.setattr(inherent_loop, "_COMMENTARY_AFTER_S", _CLOCK_S)
+    runtime = _make_runtime(tmp_path)
+    reader = _reader(runtime)
+    with _Observer(runtime):
+        _user_turn(runtime.conn, "T-two")
+        if slow_first:
+            _dispatch(runtime.conn, action_id="ACT-two", turn_id="T-two")
+            _wait_until_turn_spoke(reader, "T-two")
+        else:
+            _wait_until_turn_spoke(reader, "T-two")
+            _dispatch(runtime.conn, action_id="ACT-two", turn_id="T-two")
+        _settle(_CLOCK_S + 0.4)
+
+    assert len(_commentary_emitted(reader, "T-two")) == 1
+
+
+def test_a_typed_turn_and_a_live_turn_hear_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only words he spoke (`utterance.received`) earn a line, by either trigger."""
+    monkeypatch.setattr(inherent_loop, "_COMMENTARY_AFTER_S", _CLOCK_S)
+    runtime = _make_runtime(tmp_path)
+    reader = _reader(runtime)
+    with _Observer(runtime):
+        for turn_id, channel in (("T-typed", "cli_stdin"), ("T-live", "gpt_live")):
+            _user_turn(runtime.conn, turn_id, typed=channel)
+            _dispatch(runtime.conn, action_id=f"ACT-{turn_id}", turn_id=turn_id)
+        _settle(_CLOCK_S + 0.3)
+        assert _count(reader, "response.started") == 0
+        # Positive control: the same observer speaks for a turn he spoke.
+        _user_turn(runtime.conn, "T-voice")
+        _wait_until_turn_spoke(reader, "T-voice")
+
+
+def test_the_models_own_line_is_said_at_the_clock_too(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A line written before a quick call speaks if the answer is still not out at 2.5 s."""
+    monkeypatch.setattr(inherent_loop, "_COMMENTARY_AFTER_S", _CLOCK_S)
+    runtime = _make_runtime(tmp_path)
+    reader = _reader(runtime)
+    line = "我看一下现在几点。"
+    with _Observer(runtime):
+        _user_turn(runtime.conn, "T-lead")
+        _dispatch(
+            runtime.conn, action_id="ACT-lead", turn_id="T-lead",
+            tool_name="get_current_time", lead_in=line,
+        )
+        _wait_until_turn_spoke(reader, "T-lead")
+
+    assert _only_phrase(reader) == line
+
+
+def test_a_confirmation_pending_at_the_clock_keeps_it_silent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The ask owns the surface (ADR-0014), whichever trigger would have spoken."""
+    monkeypatch.setattr(inherent_loop, "_COMMENTARY_AFTER_S", _CLOCK_S)
+    runtime = _make_runtime(tmp_path)
+    reader = _reader(runtime)
+    emit_event(
+        runtime.conn,
+        type="confirmation.requested",
+        payload={
+            "confirmation_id": "CONF-clock",
+            "action_snapshot": {"tool_name": "write_file", "risk_level": "high"},
+            "template_line": "要写入吗",
+            "expires_at_ms": int(time.time() * 1000) + 600_000,
+        },
+        correlation={"turn_id": "T-ask"},
+    )
+    with _Observer(runtime):
+        _user_turn(runtime.conn, "T-ask")
+        _settle(_CLOCK_S + 0.3)
+        assert _count(reader, "response.started") == 0
 
 
 # --- observer: the final is never delayed, dropped or superseded ------------
@@ -1062,7 +1312,7 @@ def test_final_shares_the_group_keeps_phase_final_and_plays_after_the_commentary
     intent = _user_turn(runtime.conn, "T-both")
     _script_final(monkeypatch)
     with _Observer(runtime):
-        _action_row(runtime.conn, "action.dispatched", action_id="ACT-b", turn_id="T-both")
+        _dispatch(runtime.conn, action_id="ACT-b", turn_id="T-both")
         _wait_until(lambda: _count(reader, "surface.response_emitted") == 1)
         _drive_final(runtime, intent)
         _settle()
@@ -1190,7 +1440,7 @@ def test_flag_off_event_log_is_what_the_observer_never_touched(
     off_reader = _reader(off)
     _script_final(monkeypatch)
     off_intent = _user_turn(off.conn, "T-cmp")
-    _action_row(off.conn, "action.dispatched", action_id="ACT-cmp", turn_id="T-cmp")
+    _dispatch(off.conn, action_id="ACT-cmp", turn_id="T-cmp")
     _drive_final(off, off_intent)
     assert off.response_flags.lifecycle_commentary is False
 
@@ -1198,7 +1448,7 @@ def test_flag_off_event_log_is_what_the_observer_never_touched(
     on_reader = _reader(on)
     on_intent = _user_turn(on.conn, "T-cmp")
     with _Observer(on):
-        _action_row(on.conn, "action.dispatched", action_id="ACT-cmp", turn_id="T-cmp")
+        _dispatch(on.conn, action_id="ACT-cmp", turn_id="T-cmp")
         _wait_until(lambda: _count(on_reader, "surface.response_emitted") == 1)
         _drive_final(on, on_intent)
         _settle()
@@ -1266,7 +1516,7 @@ def test_two_presentation_records_under_one_turn_stay_consistent(
     intent = _user_turn(runtime.conn, "T-fold")
     _script_final(monkeypatch)
     with _Observer(runtime):
-        _action_row(runtime.conn, "action.dispatched", action_id="ACT-f", turn_id="T-fold")
+        _dispatch(runtime.conn, action_id="ACT-f", turn_id="T-fold")
         _wait_until(lambda: _count(reader, "surface.response_emitted") == 1)
         _drive_final(runtime, intent)
         _settle()
@@ -1287,8 +1537,7 @@ def test_commentary_leaves_the_next_turns_pre_route_alone(tmp_path: Path) -> Non
     reader = _reader(runtime)
     _user_turn(runtime.conn, "T-route")
     with _Observer(runtime):
-        dispatched = _action_row(
-            runtime.conn, "action.dispatched", action_id="ACT-rt", turn_id="T-route",
+        dispatched = _dispatch(runtime.conn, action_id="ACT-rt", turn_id="T-route",
         )
         _wait_until(lambda: _count(reader, "surface.response_emitted") == 1)
     # Close the action so the status board is quiet; the history is then the
@@ -1357,8 +1606,7 @@ def test_an_unheard_commentary_answers_cancel_response_and_writes_its_row(
     reader = _reader(runtime)
     _user_turn(runtime.conn, "T-opcancel")
     with _Observer(runtime):
-        _action_row(
-            runtime.conn, "action.dispatched", action_id="ACT-op", turn_id="T-opcancel",
+        _dispatch(runtime.conn, action_id="ACT-op", turn_id="T-opcancel",
         )
         _wait_until(lambda: _count(reader, "surface.response_emitted") == 1)
         response_id = _open_commentary_id(runtime, reader)
@@ -1393,8 +1641,7 @@ def test_barge_in_while_a_commentary_is_open_still_cancels_the_final_run(
 
     _user_turn(runtime.conn, "T-comm")
     with _Observer(runtime):
-        _action_row(
-            runtime.conn, "action.dispatched", action_id="ACT-bi", turn_id="T-comm",
+        _dispatch(runtime.conn, action_id="ACT-bi", turn_id="T-comm",
         )
         _wait_until(lambda: _count(reader, "surface.response_emitted") == 1)
         commentary_id = _open_commentary_id(runtime, reader)
@@ -1440,8 +1687,7 @@ def test_a_closed_commentary_is_no_longer_a_cancel_target(tmp_path: Path) -> Non
     _user_turn(runtime.conn, "T-closed")
     with _Observer(runtime):
         # Close path 1: the phrase reached the speaker.
-        _action_row(
-            runtime.conn, "action.dispatched", action_id="ACT-cl", turn_id="T-closed",
+        _dispatch(runtime.conn, action_id="ACT-cl", turn_id="T-closed",
         )
         _wait_until(lambda: _count(reader, "surface.response_emitted") == 1)
         heard_id = _open_commentary_id(runtime, reader)
@@ -1467,8 +1713,7 @@ def test_a_closed_commentary_is_no_longer_a_cancel_target(tmp_path: Path) -> Non
         # per-turn cap the watcher never supersedes, so this is the reachable
         # `_cancel_unheard_commentary` caller, and it needs its own turn.
         _user_turn(runtime.conn, "T-closed-2")
-        _action_row(
-            runtime.conn, "action.dispatched", action_id="ACT-cl2", turn_id="T-closed-2",
+        _dispatch(runtime.conn, action_id="ACT-cl2", turn_id="T-closed-2",
         )
         _wait_until(lambda: len(_commentary_emitted(reader, "T-closed-2")) == 1)
         unheard_id = _open_commentary_id(runtime, reader)

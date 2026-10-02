@@ -78,6 +78,22 @@ def variants(key: str, lang: Language | None = None) -> tuple[str, ...]:
     return VARIANTS[key][lang or _current]
 
 
+# --- Slow tools (ADR 0114, ADR 0115) -----------------------------------------
+
+# Tools slow enough to name at once, and the ``tool_status.*`` line each shows
+# under the ball; the same tools make her say a wait line at their dispatch.
+# Measured run times (2026-09): web_search 1.9 s, screen_look 3.3 s,
+# refresh_work_state 7.6 s median, daily_work_report 58 s. Everything else on
+# the owner's log is under 0.6 s.
+SLOW_TOOLS: Final[dict[str, str]] = {
+    "web_search": "tool_status.web",
+    "web_fetch": "tool_status.page",
+    "screen_look": "tool_status.screen",
+    "refresh_work_state": "tool_status.work_state",
+    "daily_work_report": "tool_status.report",
+}
+
+
 # --- What a confirmed tool does (ADR 0062) ----------------------------------
 
 # (what the card and the ask call it, the line once it ran) per tool.
@@ -907,20 +923,13 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
     "voice.English_Trustworth_Man.note": {"zh": "浑厚，真诚", "en": "resonant, sincere"},
 }
 
-# Sentences with several wordings of one observed truth; the caller picks one
-# stably (ADR-0008 D6 commentary, spoken in the language of the user's words).
+# Sentences with several wordings of one thing to say; the caller picks one
+# at random (ADR 0115: the wait line; ADR 0102: the conversation lines).
 VARIANTS: Final[dict[str, dict[Language, tuple[str, ...]]]] = {
-    "commentary.dispatched": {
-        "zh": ("这就去办。", "好，我来办。"),
-        "en": ("On it.", "I'll take care of it."),
-    },
-    "commentary.lookup": {
-        "zh": ("我查一下。", "我去看看。", "稍等，我查查。"),
-        "en": ("Let me check.", "Looking it up.", "One sec, checking."),
-    },
-    "commentary.codex": {
-        "zh": ("我让 Codex 去做。", "交给 Codex 去办。"),
-        "en": ("I'll hand this to Codex.", "Passing this to Codex."),
+    # ADR 0115: the one line said when a turn is taking a while.
+    "commentary.wait": {
+        "zh": ("稍等。", "等一下。", "正在办。", "马上好。"),
+        "en": ("One moment.", "Hold on.", "On it.", "Almost there."),
     },
     # ADR 0102: her answer to 「等我一下」 and to a dismissal, one picked at random.
     "conversation.wait": {

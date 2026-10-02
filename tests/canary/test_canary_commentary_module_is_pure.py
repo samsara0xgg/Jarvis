@@ -1,22 +1,20 @@
 """Canary — the D6 commentary decision stays pure (ADR-0008 D6).
 
-D6 forbids three hallucinations by name: "马上好" with no evidence,
+D6 forbade three hallucinations by name: "马上好" with no evidence,
 "已经查到了" before ``action.result_observed``, and timer-based fake progress
-when no lifecycle row changed. ``jarvis/decision/commentary.py`` makes all
-three unreachable by construction rather than merely discouraged — it derives
-the phrase from the committed event alone. That property is one import away
-from being lost, and the loss is silent: a module that reads a clock still
-returns a sentence, and every existing test still passes.
+when no lifecycle row changed. ADR 0115 lets the owner's wait line say 「马上好」
+and lets a 2.5 s clock speak it, but the clock and the dice stay in the
+runtime: ``jarvis/decision/commentary.py`` still derives the phrase from the
+committed event alone and is handed the picker. That property is one import
+away from being lost, and the loss is silent: a module that reads a clock
+still returns a sentence, and every existing test still passes.
 
-Adding the phrasing sets put a digest call in that module, which is the exact
-moment a ``random.choice`` looks like the obvious way to vary a sentence. So
-the two things this pins are:
+So the two things this pins are:
 
 1. **No source of non-determinism or ambient state is imported or called.**
    ``time``, ``random``, ``secrets``, ``datetime`` and ``os`` are absent, and
-   builtin ``hash()`` — randomised per process by ``PYTHONHASHSEED``, so the
-   same action would say different things across daemon restarts — is never
-   called.
+   builtin ``hash()`` — randomised per process by ``PYTHONHASHSEED`` — is
+   never called.
 2. **No module-level mutable state.** A dict or list rebound at import time is
    a stored index by another name; the module's answer must depend on nothing
    but its argument.
@@ -61,7 +59,6 @@ def test_commentary_imports_no_clock_randomness_or_environment() -> None:
             imported.add(node.module.split(".")[0])
     assert imported, "the module should import something"
     assert imported & _FORBIDDEN_MODULES == set(), sorted(imported & _FORBIDDEN_MODULES)
-    assert "hashlib" in imported, "the digest is the sanctioned source of variation"
 
 
 def test_commentary_never_calls_builtin_hash() -> None:
@@ -77,11 +74,11 @@ def test_commentary_never_calls_builtin_hash() -> None:
 def test_commentary_defines_no_module_level_mutable_state() -> None:
     """Every module-level binding is a constant, a tuple, or a frozen mapping.
 
-    The two dicts are the phrase tables `_D6_ROWS` and `_ACKNOWLEDGE_BY_TOOL`,
-    whose leaves are tuples: read-only by convention and by `Final`, and
-    nothing in the module rebinds or mutates them; `__all__` is an export
-    declaration. Any *other* module-level dict,
-    list or set is a stored index, which is what "no stored index" forbids.
+    The one dict is the row table `_D6_ROWS`, whose leaves are tuples:
+    read-only by convention and by `Final`, and nothing in the module rebinds
+    or mutates it; `__all__` is an export declaration. Any *other* module-level
+    dict, list or set is a stored index, which is what "no stored index"
+    forbids.
     """
     offenders: list[str] = []
     for node in _module().body:
@@ -89,10 +86,8 @@ def test_commentary_defines_no_module_level_mutable_state() -> None:
             continue
         targets = node.targets if isinstance(node, ast.Assign) else [node.target]
         names = [t.id for t in targets if isinstance(t, ast.Name)]
-        if names in (["_D6_ROWS"], ["_ACKNOWLEDGE_BY_TOOL"]) or all(
-            n.startswith("__") for n in names
-        ):
-            # The phrase tables' leaves are tuples and nothing rebinds them;
+        if names == ["_D6_ROWS"] or all(n.startswith("__") for n in names):
+            # The row table's leaves are tuples and nothing rebinds it;
             # `__all__` is an export declaration, not state.
             continue
         if node.value is None or isinstance(node.value, _IMMUTABLE_LITERALS):
@@ -106,7 +101,7 @@ def test_commentary_defines_no_module_level_mutable_state() -> None:
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
         and isinstance(node.func.value, ast.Name)
-        and node.func.value.id in {"_D6_ROWS", "_ACKNOWLEDGE_BY_TOOL"}
+        and node.func.value.id == "_D6_ROWS"
         and node.func.attr in _MUTATING_METHODS
     ]
     assert mutating == [], mutating

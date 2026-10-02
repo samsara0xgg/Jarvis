@@ -12,22 +12,14 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, Final, NamedTuple
 
+from jarvis.shared.lang import SLOW_TOOLS
+
 if TYPE_CHECKING:
     from jarvis.shared import Event
 
 SHOW_AFTER_S: Final[float] = 1.5
 """A tool not on the slow list shows its line only after running this long."""
 
-# Measured run times (2026-09): web_search 1.9 s, screen_look 3.3 s,
-# refresh_work_state 7.6 s median, daily_work_report 58 s. Everything else on
-# the owner's log is under 0.6 s.
-_SLOW_TOOLS: Final[dict[str, str]] = {
-    "web_search": "tool_status.web",
-    "web_fetch": "tool_status.page",
-    "screen_look": "tool_status.screen",
-    "refresh_work_state": "tool_status.work_state",
-    "daily_work_report": "tool_status.report",
-}
 # MCP reads (mcp__<server>__<tool>) were instant in the log, so they get their
 # own line but only once they are slow too.
 _MCP_SERVERS: Final[dict[str, str]] = {
@@ -48,7 +40,7 @@ EVENT_TYPES: Final[tuple[str, ...]] = (
 
 def plan(tool_name: str) -> tuple[str, float]:
     """The language key a running tool shows, and how long it runs before it does."""
-    if key := _SLOW_TOOLS.get(tool_name):
+    if key := SLOW_TOOLS.get(tool_name):
         return key, 0.0
     parts = tool_name.split("__")
     if len(parts) == 3 and parts[0] == "mcp" and _READ_TOOL.search(parts[2]):  # noqa: PLR2004

@@ -1728,32 +1728,38 @@ async def _tts_watcher(  # noqa: C901, PLR0912 - ordered durable dispatch FSM
 #
 # Nothing here re-enters `decide()`: `_RUNTIME_TRIGGER_TYPES` is untouched and
 # no model is ever called to produce a phrase (ADR-0008 D6, "a deep model is
-# never called only to generate 我在查").
+# never called only to generate 我在查"). A turn he spoke says one fixed line
+# when it is taking a while (ADR 0115): at a slow tool's dispatch, or once
+# `_COMMENTARY_AFTER_S` have passed with nothing of the answer started.
 
-_COMMENTARY_ACTION_TYPES: Final[tuple[str, ...]] = ("action.dispatched",)
-"""The one D6 row that speaks (:data:`jarvis.decision.commentary._D6_ROWS`)."""
+_COMMENTARY_ACTION_TYPES: Final[tuple[str, ...]] = ("action.dispatched", "utterance.received")
+"""The D6 rows that speak (:data:`jarvis.decision.commentary._D6_ROWS`)."""
 
 _COMMENTARY_EARLIEST_S: Final[float] = 1.5
-"""How long after Allen's words an acknowledge may start.
+"""How long after Allen's words a slow tool's line may start.
 
 An answer that begins within it needs no lead-in: a light switched in 0.4 s
-(2026-09-26 to 09-29). The acknowledge speaks for the turn, not for the one
-tool: tools mostly return within 0.5 s while the answer follows seconds
-later, so a tool that has already finished does not silence it; an answer
-that is out does.
+(2026-09-26 to 09-29). The line speaks for the turn, not for the one tool:
+a tool that has already finished does not silence it; an answer that is out
+does.
 """
+
+_COMMENTARY_AFTER_S: Final[float] = 2.5
+"""How long after Allen's words, with nothing of the answer started, the line
+speaks whether or not a tool is involved (ADR 0115; the owner's number)."""
 
 _COMMENTARY_SHUTDOWN_BUDGET_S: Final[float] = 0.5
 """Whole-budget SQLite wait the teardown cancel may spend on the event loop."""
 
-_COMMENTARY_ORIGIN_TRIGGER_TYPES: Final[frozenset[str]] = frozenset(
-    {"surface.user_intent", "utterance.received"},
-)
-"""What makes a turn user-originated — the predicate L2 already enforces for
-ordinary streaming (`jarvis/state/stream_emission.py`). A reconciliation or
-supervisor-sweep turn writes no `turn.started` at all, so "no claim row" and
-"not user-originated" are the same condition.
+_COMMENTARY_ORIGIN_TRIGGER_TYPE: Final = "utterance.received"
+"""What makes a turn one he spoke. A typed turn (`surface.user_intent`), a
+GPT-Live relay (also `surface.user_intent`) and a reconciliation or
+supervisor-sweep turn (no `turn.started` at all) never match it.
 """
+
+_COMMENTARY_LOCK: Final = threading.Lock()
+"""One decide-and-render at a time, so the dispatch and the clock of the same
+turn cannot both find it unspoken."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1765,7 +1771,7 @@ class _OpenCommentary:
     did is cancelled at teardown.
     """
 
-    action_id: str
+    subject_ref: str
     run: ResponseRun
     registry: ResponseRunRegistry
     response_hash: str
@@ -1830,58 +1836,66 @@ def _emit_pre_emit_verdict(
 
 
 def _commentary_turn(
-    conn: sqlite3.Connection, action_event: Event,
+    conn: sqlite3.Connection, event: Event,
 ) -> tuple[str, str, int] | None:
-    """Return this action's user-originated turn, Allen's words and when, or ``None``.
+    """Return this row's turn Allen spoke, his words and when, or ``None``.
 
-    Durable reads and no heuristics: the action names its turn, that turn's
+    Durable reads and no heuristics: the row names its turn, that turn's
     ``turn.started`` names the trigger it was claimed from, and the trigger's
-    own type decides whether Allen asked for this.
+    own type decides whether Allen spoke this.
     """
-    # `action.dispatched` always names its turn (`_action_correlation` fills
-    # it from the ActionRequest).
-    turn_id = (action_event.correlation or {}).get("turn_id")
+    # Both rows that speak name their turn (`_action_correlation` fills it
+    # from the ActionRequest; the voice pipeline writes it on his words).
+    turn_id = (event.correlation or {}).get("turn_id")
     if not isinstance(turn_id, str) or not turn_id:
         return None
     started = next(
         (
-            event
-            for event in iter_events_of_types(conn, ("turn.started",))
-            if event.payload.get("turn_id") == turn_id
+            row
+            for row in iter_events_of_types(conn, ("turn.started",))
+            if row.payload.get("turn_id") == turn_id
         ),
         None,
     )
     if started is None or started.source_event_id is None:
         return None
     trigger = get_event(conn, started.source_event_id)
-    if trigger is None or trigger.type not in _COMMENTARY_ORIGIN_TRIGGER_TYPES:
+    if trigger is None or trigger.type != _COMMENTARY_ORIGIN_TRIGGER_TYPE:
         return None
     transcript = trigger.payload.get("transcript")
     return turn_id, transcript if isinstance(transcript, str) else "", trigger.ts_epoch_ms
 
 
 _SELECT_ACTION_TOOL_NAME_SQL = (
-    "SELECT json_extract(payload_json, '$.tool_name') FROM events "
+    "SELECT id, json_extract(payload_json, '$.tool_name') FROM events "
     "WHERE type = 'action.proposed' AND json_extract(payload_json, '$.action_id') = ? LIMIT 1"
 )
 
 
-# The turn's latest line before a call, up to this action's proposal. It speaks
-# at the dispatch of the call it came with, a bookkeeping one (tool_search)
-# included; a line never spoken there speaks at the next dispatch.
+# The turn's latest line before a call, up to the row that speaks (a call's
+# proposal, or the latest row for the clock). It speaks in place of the fixed
+# phrase; a line never spoken at one dispatch speaks at the next.
 _SELECT_LEAD_IN_SQL = (
     "SELECT json_extract(payload_json, '$.lead_in') FROM events "
     "WHERE type = 'action.proposed' AND json_extract(payload_json, '$.turn_id') = ? "
-    "AND json_extract(payload_json, '$.lead_in') IS NOT NULL AND id <= ("
-    "SELECT id FROM events WHERE type = 'action.proposed' "
-    "AND json_extract(payload_json, '$.action_id') = ? LIMIT 1) "
+    "AND json_extract(payload_json, '$.lead_in') IS NOT NULL AND id <= ? "
     "ORDER BY id DESC LIMIT 1"
 )
 
 
 _SELECT_TURN_ENDED_SQL = (
-    "SELECT 1 FROM events WHERE type = 'turn.ended' "
+    "SELECT 1 FROM events WHERE type IN ('turn.ended', 'turn.failed') "
     "AND json_extract(payload_json, '$.turn_id') = ? LIMIT 1"
+)
+
+# The answer is `phase="final"`: its first segment commits `surface.response_open`
+# together with `surface.response_chunk` in a spoken_streaming turn, and the
+# whole answer does at once in any other turn. `response.started` does not
+# count: it opens the run before the model is asked.
+_SELECT_ANSWER_STARTED_SQL = (
+    "SELECT 1 FROM events WHERE type = 'surface.response_open' "
+    "AND json_extract(payload_json, '$.turn_id') = ? "
+    "AND json_extract(payload_json, '$.phase') IS NOT 'commentary' LIMIT 1"
 )
 
 _SELECT_COMMENTARY_IN_TURN_SQL = (
@@ -1951,7 +1965,7 @@ def _render_commentary(  # noqa: PLR0913 - the run's identity plus what it says
     conn: sqlite3.Connection,
     *,
     intent: PresentationIntent,
-    action_event: Event,
+    trigger_event: Event,
     turn_id: str,
     speech: str,
 ) -> _OpenCommentary:
@@ -1963,8 +1977,9 @@ def _render_commentary(  # noqa: PLR0913 - the run's identity plus what it says
     ``turn_id`` is the action's own turn, so ``response_group_id`` derives to
     that turn's group and voice_media appends the phrase to the lane instead
     of interrupting whatever else that group is saying. The trigger is the
-    action event itself: D6's "truth derives from the durable action event"
-    is literally this run's ``source_event_id``.
+    row that justified the phrase, a slow tool's dispatch or his words: D6's
+    "truth derives from the durable event" is literally this run's
+    ``source_event_id``.
 
     A request client is built only because ``response.started`` carries the
     preset snapshot. No request is ever issued, so the run has no cost
@@ -1979,7 +1994,7 @@ def _render_commentary(  # noqa: PLR0913 - the run's identity plus what it says
     run = start_response_run(
         conn,
         turn_id=turn_id,
-        trigger_event_uid=action_event.event_uid,
+        trigger_event_uid=trigger_event.event_uid,
         request_client=factory.create(snapshot, response_id=response_id),
         policy=deterministic_commentary_policy(
             active_subject_ref=intent.subject_ref,
@@ -1991,7 +2006,8 @@ def _render_commentary(  # noqa: PLR0913 - the run's identity plus what it says
         channel="speech",
         committed_event_bus=runtime.committed_event_bus,
     )
-    run.link_action(intent.subject_ref)
+    if trigger_event.type == "action.dispatched":
+        run.link_action(intent.subject_ref)
     # Same condition the normal response path registers under
     # (`jarvis/runtime/__init__.py`): with the operator cancel seam live the
     # commentary run is reachable by id like any final run; without it no run
@@ -2028,7 +2044,7 @@ def _render_commentary(  # noqa: PLR0913 - the run's identity plus what it says
         response_id=run.response_id,
         response_group_id=run.response_group_id,
         turn_id=turn_id,
-        action_id=intent.subject_ref,
+        subject_ref=intent.subject_ref,
         intent_type=intent.intent_type,
         model_lead_in=speech != commentary_speech_text(intent),
     )
@@ -2037,19 +2053,29 @@ def _render_commentary(  # noqa: PLR0913 - the run's identity plus what it says
     # and in the runtime registry that would be a permanently open run.
     registry.register(run)
     return _OpenCommentary(
-        action_id=intent.subject_ref,
+        subject_ref=intent.subject_ref,
         run=run,
         registry=registry,
         response_hash=plan.response_hash,
     )
 
 
+def _hold_until(said_at_ms: int, after_s: float, stop: threading.Event) -> bool:
+    """Wait until ``after_s`` past his words; ``False`` if shutdown came first."""
+    return not stop.wait(max(said_at_ms / 1000 + after_s - time.time(), 0.0))
+
+
 def _open_commentary_in_worker_thread(  # noqa: PLR0911 - one early return per suppression rule
     runtime: JarvisRuntime,
     *,
-    action_event: Event,
+    trigger_event: Event,
+    stop: threading.Event | None = None,
 ) -> _OpenCommentary | None:
-    """Decide and deliver one action row's commentary on a worker thread.
+    """Decide and deliver one row's commentary on a worker thread.
+
+    The row is a slow tool's ``action.dispatched`` or the ``utterance.received``
+    that carries his words; the second one is the clock of ADR 0115 and waits
+    :data:`_COMMENTARY_AFTER_S` after his words before it looks at anything.
 
     Opens its own connection for the same ``check_same_thread`` reason
     :func:`_drive_turn_in_worker_thread` does, and for a second one: the
@@ -2057,117 +2083,136 @@ def _open_commentary_in_worker_thread(  # noqa: PLR0911 - one early return per s
     the TTS watcher polls on.
 
     Returns ``None`` — writing nothing at all — when the row maps to no D6
-    intent, when the turn is not user-originated, when the turn came from
-    GPT-Live, when the turn has ended by ``_COMMENTARY_EARLIEST_S`` after
-    Allen's words, when this turn already opened its one commentary, or when a
-    confirmation is still awaiting an answer.
+    intent (a quick tool), when the turn is not one he spoke (typed, GPT-Live,
+    system), when the turn has ended or its answer has started by the time the
+    wait is over, when this turn already opened its one commentary, or when a
+    confirmation is still awaiting an answer. ``stop`` ends the wait early at
+    shutdown.
     """
-    if commentary_intent_for(action_event) is None:
-        return None
+    clock = trigger_event.type == "utterance.received"
+    stop = stop or threading.Event()
     conn = open_runtime_event_log(runtime.runtime_paths.event_log)
     try:
-        turn = _commentary_turn(conn, action_event)
+        if clock and not _hold_until(trigger_event.ts_epoch_ms, _COMMENTARY_AFTER_S, stop):
+            return None  # before the lookup below: the claim row lands just after his words
+        turn = _commentary_turn(conn, trigger_event)
         if turn is None:
             return None
         turn_id, user_text, said_at_ms = turn
-        row = conn.execute(
-            _SELECT_ACTION_TOOL_NAME_SQL, (action_event.payload.get("action_id"),)
-        ).fetchone()
-        tool_name = row[0] if row is not None and isinstance(row[0], str) else None
-        tool = next(
-            (t for t in runtime.tool_registry.get_definitions() if t.name == tool_name), None
-        )
-        lead_in = conn.execute(
-            _SELECT_LEAD_IN_SQL, (turn_id, action_event.payload.get("action_id"))
-        ).fetchone()
-        line = lead_in_speech_text(lead_in[0] if lead_in is not None else None)
+        tool_name: str | None = None
+        bound_id = _latest_id(conn)
+        if not clock:
+            row = conn.execute(
+                _SELECT_ACTION_TOOL_NAME_SQL, (trigger_event.payload.get("action_id"),),
+            ).fetchone()
+            if row is not None:
+                bound_id, tool_name = row
         intent = commentary_intent_for(
-            action_event,
-            user_text=user_text,
-            tool_name=tool_name,
-            tool_read_only=tool is not None and tool.read_only,
-            model_line=line is not None,
+            trigger_event, user_text=user_text, tool_name=tool_name, pick=secrets.choice,
         )
-        if intent is None:  # a bookkeeping tool
+        if intent is None:  # a quick tool
             return None
-        if _turn_intent_channel(conn, turn_id) == LIVE_PRINCIPAL:
-            # ADR-0016 D8. Suppressed at the source, not by the TTS filter:
-            # the run this would open hard-codes its own channel and attention
-            # channel, so nothing downstream could tell it came from Live.
-            # Live already narrates its own progress through a thinking
-            # append, so synthesizing "我去查一下" is a duplicate and a
-            # MiniMax request the local chain must not make.
-            LOGGER.info(
-                "commentary: turn_id=%s submitted on %s — no commentary run opened for %s.",
-                turn_id,
-                LIVE_PRINCIPAL,
-                action_event.type,
-            )
-            return None
+        lead_in = conn.execute(_SELECT_LEAD_IN_SQL, (turn_id, bound_id)).fetchone()
+        line = lead_in_speech_text(lead_in[0] if lead_in is not None else None)
         # A quick answer needs no lead-in: give it until the floor to begin.
-        wait_s = said_at_ms / 1000 + _COMMENTARY_EARLIEST_S - time.time()
-        if wait_s > 0:
-            time.sleep(wait_s)
-        if conn.execute(_SELECT_TURN_ENDED_SQL, (turn_id,)).fetchone() is not None:
-            # The answer is already out (a quick answer, or a Tier 0 turn that
-            # ends before its tool's rows reach this watcher): a phrase now
-            # would follow the answer.
+        if not clock and not _hold_until(said_at_ms, _COMMENTARY_EARLIEST_S, stop):
             return None
-        if _turn_already_spoke_commentary(conn, turn_id):
-            # One phrase per turn. Checked here, after the origin filter and
-            # before every write, so that the three suppression paths below
-            # never consume the turn's only slot: a turn whose first
-            # qualifying row is silenced still speaks on a later row.
-            return None
-        projections = rebuild_projections(conn)
-        slot = projections.pending_confirmations.slot
-        if slot is not None and slot.is_live(int(time.time() * 1000)):
-            # ADR-0014: new commentary never overwrites an unresolved
-            # confirmation. The slot is globally unique and its
-            # `action_snapshot` carries no `action_id`, so this is enforced
-            # at the only granularity the fold supports.
-            return None
-        return _render_commentary(
-            runtime,
-            conn,
-            intent=intent,
-            action_event=action_event,
-            turn_id=turn_id,
-            speech=line or commentary_speech_text(intent),
-        )
+        with _COMMENTARY_LOCK:
+            if (
+                conn.execute(_SELECT_TURN_ENDED_SQL, (turn_id,)).fetchone() is not None
+                or conn.execute(_SELECT_ANSWER_STARTED_SQL, (turn_id,)).fetchone() is not None
+            ):
+                # The answer is out or on its way (a quick answer, or a Tier 0
+                # turn that ends before its tool's rows reach this watcher): a
+                # phrase now would talk over it or follow it.
+                return None
+            if _turn_already_spoke_commentary(conn, turn_id):
+                # One phrase per turn. Checked here, after the origin filter and
+                # before every write, so that the suppression path below never
+                # consumes the turn's only slot: a turn whose first qualifying
+                # row is silenced still speaks on a later row. Under the lock,
+                # because the dispatch and the clock of one turn race.
+                return None
+            projections = rebuild_projections(conn)
+            slot = projections.pending_confirmations.slot
+            if slot is not None and slot.is_live(int(time.time() * 1000)):
+                # ADR-0014: new commentary never overwrites an unresolved
+                # confirmation. The slot is globally unique and its
+                # `action_snapshot` carries no `action_id`, so this is enforced
+                # at the only granularity the fold supports.
+                return None
+            return _render_commentary(
+                runtime,
+                conn,
+                intent=intent,
+                trigger_event=trigger_event,
+                turn_id=turn_id,
+                speech=line or commentary_speech_text(intent),
+            )
     finally:
         with contextlib.suppress(sqlite3.Error):
             conn.close()
 
 
-async def _commentary_watcher(
+async def _commentary_watcher(  # noqa: C901 - the row handlers share the watcher's state
     runtime: JarvisRuntime,
     *,
     poll_interval_s: float = _DEFAULT_POLL_INTERVAL_S,
 ) -> None:
-    """Background task: speak one deterministic acknowledge per tool turn.
+    """Background task: speak one deterministic wait line per turn he spoke.
 
-    One cursor over ``action.dispatched`` plus ``surface.playback_started``,
-    anchored at the boot high-water mark exactly like ``_tts_watcher`` — a
-    historical action from a previous session must never speak fake progress.
-    ``surface.playback_started`` closes a phrase that reached the speaker.
+    One cursor over ``action.dispatched``, ``utterance.received`` plus
+    ``surface.playback_started``, anchored at the boot high-water mark exactly
+    like ``_tts_watcher`` — a historical action from a previous session must
+    never speak fake progress. ``surface.playback_started`` closes a phrase
+    that reached the speaker.
 
-    Audibility is decided by the per-turn cap in
-    :func:`_open_commentary_in_worker_thread`, not here: a turn speaks at
-    most one phrase, and the first row of that turn that actually opens one
-    wins. The ``spoken`` set below is the cheaper guard in front of it — one
-    entry per ``(action_id, event type)``, so a repeated row on a turn that
-    never opened anything (a system turn, a live confirmation slot) is dropped
-    before the thread hop and the projection rebuild. It decides work, not
-    what is heard.
+    Each row that may speak gets a task of its own, because the clock row
+    waits seconds and must not hold back the rows behind it. Audibility is
+    decided by the per-turn cap in :func:`_open_commentary_in_worker_thread`,
+    not here: a turn speaks at most one phrase, and the first row of that turn
+    that actually opens one wins. The ``spoken`` set below is the cheaper
+    guard in front of it — one entry per ``(subject, event type)``, so a
+    repeated row is dropped before the thread hop and the projection rebuild.
+    It decides work, not what is heard.
 
-    Per-event dispatch is wrapped in a catch-all for the same reason
+    Per-row dispatch is wrapped in a catch-all for the same reason
     ``_tts_watcher``'s is: commentary is a courtesy, and a failure to produce
     it must never stall the watcher or the turn it is commenting on.
     """
     after_id = _latest_id(runtime.conn)
-    open_by_action: dict[str, _OpenCommentary] = {}
+    open_by_subject: dict[str, _OpenCommentary] = {}
     spoken: set[tuple[str, str]] = set()
+    tasks: set[asyncio.Task[None]] = set()
+    stop = threading.Event()
+
+    async def _speak(ev: Event, subject: str) -> None:
+        opened = await asyncio.to_thread(
+            _open_commentary_in_worker_thread, runtime, trigger_event=ev, stop=stop,
+        )
+        if opened is not None:
+            open_by_subject[subject] = opened
+
+    async def _on_row(ev: Event) -> None:
+        try:
+            if ev.type == "surface.playback_started":
+                await _commentary_heard(runtime, open_by_subject, ev)
+                return
+            subject = _event_action_id(ev) or ev.event_uid
+            if (subject, ev.type) in spoken:
+                return
+            spoken.add((subject, ev.type))
+            task = asyncio.create_task(_speak(ev, subject))
+            tasks.add(task)
+            task.add_done_callback(_task_done)
+        except Exception as exc:  # noqa: BLE001 — commentary must not crash the watcher.
+            LOGGER.warning("commentary_watcher: %s raised: %r", ev.type, exc)
+
+    def _task_done(task: asyncio.Task[None]) -> None:
+        tasks.discard(task)
+        if not task.cancelled() and (exc := task.exception()) is not None:
+            LOGGER.warning("commentary_watcher: a line raised: %r", exc)
+
     LOGGER.info("commentary_watcher started (after_id=%d)", after_id)
     try:
         while True:
@@ -2178,32 +2223,14 @@ async def _commentary_watcher(
             )
             for row_id, ev in new_events:
                 after_id = max(after_id, row_id)
-                try:
-                    if ev.type == "surface.playback_started":
-                        await _commentary_heard(runtime, open_by_action, ev)
-                        continue
-                    action_id = _event_action_id(ev)
-                    if action_id is None or (action_id, ev.type) in spoken:
-                        continue
-                    spoken.add((action_id, ev.type))
-                    opened = await asyncio.to_thread(
-                        _open_commentary_in_worker_thread,
-                        runtime,
-                        action_event=ev,
-                    )
-                    if opened is not None:
-                        open_by_action[action_id] = opened
-                except Exception as exc:  # noqa: BLE001 — commentary must not crash the watcher.
-                    LOGGER.warning(
-                        "commentary_watcher: dispatch raised on %s action_id=%s: %r",
-                        ev.type,
-                        _event_action_id(ev),
-                        exc,
-                    )
+                await _on_row(ev)
             await asyncio.sleep(poll_interval_s)
     except asyncio.CancelledError:
+        stop.set()
+        for task in tasks:
+            task.cancel()
         shutdown_deadline = time.monotonic() + _COMMENTARY_SHUTDOWN_BUDGET_S
-        for entry in open_by_action.values():
+        for entry in open_by_subject.values():
             with contextlib.suppress(Exception):
                 _cancel_unheard_commentary(
                     runtime,
@@ -2217,18 +2244,18 @@ async def _commentary_watcher(
 
 async def _commentary_heard(
     runtime: JarvisRuntime,
-    open_by_action: dict[str, _OpenCommentary],
+    open_by_subject: dict[str, _OpenCommentary],
     event: Event,
 ) -> None:
     """Close the commentary run this playback belongs to, if it is ours."""
     response_id = event.payload.get("response_id")
     entry = next(
-        (item for item in open_by_action.values() if item.run.response_id == response_id),
+        (item for item in open_by_subject.values() if item.run.response_id == response_id),
         None,
     )
     if entry is None:
         return
-    del open_by_action[entry.action_id]
+    del open_by_subject[entry.subject_ref]
     await asyncio.to_thread(_complete_commentary, runtime, entry)
 
 
