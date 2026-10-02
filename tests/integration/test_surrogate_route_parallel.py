@@ -1,4 +1,4 @@
-"""ADR 0120 — Jev beside the model's request on the spoken stream path.
+"""ADR 0122 — Jev beside the model's request on the spoken stream path.
 
 Real ``drive_turn``/``decide()`` and a real Event Log over the localhost
 /v1/responses peer of ``test_spoken_streaming`` and the fake decisions endpoint

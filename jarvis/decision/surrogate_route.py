@@ -1,4 +1,4 @@
-"""L3 surrogate route (ADR 0120): Jev between the Tier 0 regex and the model.
+"""L3 surrogate route (ADR 0122): Jev between the Tier 0 regex and the model.
 
 When no Tier 0 row matched, one choice question goes to Jev, TypeSafe's hosted
 decision model reached through OpenRouter: which of Tier 0's instant
@@ -48,6 +48,7 @@ _CONTEXT_WINDOW_MS: Final[int] = 600_000
 _ANSWER_CHARS: Final[int] = 200
 _KEEPALIVE_S: Final[float] = 30.0
 _WORKERS: Final[int] = 4
+_NO_ROUTE_STATUS: Final[int] = 404
 
 
 @dataclass(frozen=True)
@@ -142,7 +143,7 @@ class SurrogateRoute:
     timeout_ms: int
     url: str = SURROGATE_URL
     # Spoken stream path only: the model's request is sent without waiting for Jev, and its
-    # first output is held until Jev has answered (ADR 0120). Off, Jev is asked first.
+    # first output is held until Jev has answered (ADR 0122). Off, Jev is asked first.
     parallel: bool = False
     # OpenRouter's per-request ``provider.zdr``: route only to zero-data-retention endpoints.
     zdr: bool = True
@@ -202,6 +203,11 @@ class SurrogateRoute:
             return _Reply(reply.json(), None, time.monotonic())
         except httpx.TimeoutException:
             return _Reply(None, "timeout", time.monotonic())
+        except httpx.HTTPStatusError as exc:
+            # OpenRouter answers 404 when no endpoint satisfies the provider preferences.
+            # The call is never repeated without ``zdr``: no route means no call.
+            no_route = self.zdr and exc.response.status_code == _NO_ROUTE_STATUS
+            return _Reply(None, "no_zdr_route" if no_route else "http", time.monotonic())
         except httpx.HTTPError:
             return _Reply(None, "http", time.monotonic())
         except ValueError:
@@ -213,7 +219,7 @@ class SurrogateRoute:
             self._warned.add(error)
             LOGGER.warning(
                 "surrogate route: %s; turns fall through to the model (logged once per kind)",
-                error,
+                "no zero-retention route" if error == "no_zdr_route" else error,
             )
 
 

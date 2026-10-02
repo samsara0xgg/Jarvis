@@ -448,7 +448,7 @@ class JarvisRuntime:
     # empty tuple = no cue can veto the routine route (the other pre-route
     # conditions still apply).
     tool_cues: ToolCueTable = ()
-    # ADR 0120: Jev between Tier 0 and the model; None = off (``realtime.surrogate_route``).
+    # ADR 0122: Jev between Tier 0 and the model; None = off (``realtime.surrogate_route``).
     surrogate_route: SurrogateRoute | None = None
     # ADR 0108: `llm.think`, the words that make one turn think. None = never.
     think_mode: ThinkMode | None = None
@@ -680,7 +680,7 @@ def _confirmation_ttl_ms(config: Mapping[str, Any]) -> int:
 
 
 def _surrogate_route(config: Mapping[str, Any], config_path: Path) -> SurrogateRoute | None:
-    """``realtime.surrogate_route`` (ADR 0120): off unless enabled; bad values stop boot."""
+    """``realtime.surrogate_route`` (ADR 0122): off unless enabled; bad values stop boot."""
     realtime = config.get("realtime")
     block = realtime.get("surrogate_route") if isinstance(realtime, Mapping) else None
     if not isinstance(block, Mapping) or block.get("enabled") is not True:

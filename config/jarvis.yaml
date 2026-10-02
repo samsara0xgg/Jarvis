@@ -537,7 +537,7 @@ realtime:
   # result.
   commentary:
     enabled: true
-  # ADR 0120.  When no Tier 0 row matches, ask Jev (TypeSafe's hosted decision
+  # ADR 0122.  When no Tier 0 row matches, ask Jev (TypeSafe's hosted decision
   # model, through OpenRouter) which of the instant no-argument functions
   # Allen asked for; at min_confidence or above, run it as Tier 0 would, else
   # the model answers as before.  Allen's words and the last two exchanges

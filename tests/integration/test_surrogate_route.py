@@ -1,4 +1,4 @@
-"""ADR 0120 — Jev between the Tier 0 regex and the model, against a fake endpoint.
+"""ADR 0122 — Jev between the Tier 0 regex and the model, against a fake endpoint.
 
 The endpoint is a local HTTP server that answers like OpenRouter's decisions
 API (``answers.route.choice`` / ``confidence``, ``usage.cost``) or fails in a
@@ -64,8 +64,8 @@ class _Jev:
                         self.wfile.flush()
                         time.sleep(0.1)
                     return
-                if outer.mode == "error":
-                    self.send_response(500)
+                if outer.mode in ("error", "no_route"):
+                    self.send_response(500 if outer.mode == "error" else 404)
                     self.end_headers()
                     return
                 body = (
@@ -222,10 +222,11 @@ def test_repeat_with_nothing_said_yet_goes_to_the_model(tmp_path: Path, jev: _Je
         ({"confidence": 0.89}, "time", 0.89, None),
         ({"choice": "none", "confidence": 0.99}, "none", 0.99, None),
         ({"mode": "error"}, None, None, "http"),
+        ({"mode": "no_route"}, None, None, "no_zdr_route"),
         ({"mode": "garbage"}, None, None, "bad_json"),
         ({"delay_s": 0.6}, None, None, "timeout"),
     ],
-    ids=["below_threshold", "none", "http_error", "bad_json", "timeout"],
+    ids=["below_threshold", "none", "http_error", "no_zdr_route", "bad_json", "timeout"],
 )
 def test_anything_else_falls_through_to_the_model(  # noqa: PLR0913 — one parameter per expected field.
     tmp_path: Path, jev: _Jev, setup: dict[str, Any],
@@ -243,6 +244,8 @@ def test_anything_else_falls_through_to_the_model(  # noqa: PLR0913 — one para
     assert (event["choice"], event["confidence"], event["error"], event["accepted"]) == (
         choice, confidence, error, False,
     )
+    assert len(jev.requests) == 1  # never repeated without zdr
+    assert jev.requests[0]["provider"] == {"zdr": True}
 
 
 def test_the_deadline_is_for_the_whole_call_not_each_phase(tmp_path: Path, jev: _Jev) -> None:

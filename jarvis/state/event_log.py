@@ -258,7 +258,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         optional_payload=("final_response_hash", "consumed_trigger_event_uid"),
         schema_version=1,
     ),
-    # ADR 0120 — one row per Jev call (the surrogate route between Tier 0 and the
+    # ADR 0122 — one row per Jev call (the surrogate route between Tier 0 and the
     # model), whatever came of it: ``choice`` and ``confidence`` are null when
     # ``error`` says why there was no usable answer.  ``aborted`` is true when the
     # model's request had been sent and was stopped; its cost, when the provider

@@ -1,4 +1,4 @@
-# ADR 0120 — Jev answers the instant functions between the regex and the model
+# ADR 0122 — Jev answers the instant functions between the regex and the model
 
 **Status:** Accepted
 **Date:** 2026-10-02
@@ -67,6 +67,9 @@ Tier 0 path unchanged; every other outcome falls through to the model.
   evaluate `provider` preferences (`provider.only` with an unknown provider
   returned 404), so the field is not ignored; whether it filters anything is
   unproven, since the model's one endpoint passed.
+  When OpenRouter answers 404 (no endpoint satisfies the request), the call
+  is not repeated without `zdr`: the turn falls through to the model and one
+  warning, "no zero-retention route", is logged.
 - **Default off** in the repo; Allen enables it in `settings.yaml`.
 
 ## Alternatives rejected
@@ -108,4 +111,3 @@ Tier 0 path unchanged; every other outcome falls through to the model.
 - The option descriptions are part of the measured behaviour: changing one
   means a new options version, and the logged choices before it no longer
   compare.
-- If another ADR takes number 0120 first, this one needs renumbering.

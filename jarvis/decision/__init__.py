@@ -660,7 +660,7 @@ class DecideContext:
     # The ``reply_language`` setting: "en" or "zh" pins the language of the
     # spoken form (ADR 0045), "follow" leaves it to Allen's words this turn.
     reply_language: str = "follow"
-    # ADR 0120 (``realtime.surrogate_route``): Jev between Tier 0 and the model.
+    # ADR 0122 (``realtime.surrogate_route``): Jev between Tier 0 and the model.
     # None (the default) never asks.
     surrogate_route: SurrogateRoute | None = None
 
@@ -737,7 +737,7 @@ class _Scratch:
     confirmation_answered_this_turn: bool = False
     # ADR 0034: deferred tools a `loaded_tools` result put on this turn's menu.
     loaded_tools: set[str] = field(default_factory=set)
-    # ADR 0120: Jev's question sent for this turn while the model's request is held.
+    # ADR 0122: Jev's question sent for this turn while the model's request is held.
     surrogate: PendingSurrogate | None = None
 
 
@@ -1250,7 +1250,7 @@ def _run_instant_route(
 ) -> DecideResult | None:
     """Tier 0, then (only on a miss) Jev; None means the model answers.
 
-    ADR 0120. On the spoken stream path with ``parallel`` on, Jev's question is
+    ADR 0122. On the spoken stream path with ``parallel`` on, Jev's question is
     only sent here; the model's request goes out at once and its first output
     waits for Jev (:func:`_settle_surrogate`). Everywhere else Jev is asked first.
     """
