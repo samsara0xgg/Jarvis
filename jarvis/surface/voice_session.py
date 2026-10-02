@@ -1658,6 +1658,8 @@ class DuplexVoiceSession:
         if verdict in {"dismissed", "wait"}:
             self._settle_barge_in(turn_id, go_on=False)
             if verdict == "dismissed":
+                # An answer still on its way would come after her goodbye (live 2026-10-02).
+                self._supersede(turn_id)
                 self._change_conversation(on=False, reason=verdict)
             else:
                 self._conversation_hold_until = (

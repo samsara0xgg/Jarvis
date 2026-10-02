@@ -55,27 +55,30 @@ if TYPE_CHECKING:
 class _AcceptingPipeline(_RecordingPipeline):
     """ASR that accepts every utterance, or finds nothing in it."""
 
-    def __init__(self, record: list[str], *, empty: bool = False) -> None:
+    def __init__(
+        self, record: list[str], *, empty: bool = False, said: str = "明天上午十点提醒我",
+    ) -> None:
         super().__init__()
         self._record = record
         self._empty = empty
+        self._said = said
 
     def run_turn(self, **kwargs: Any) -> Any:  # noqa: ANN401
         if self._empty:
             msg = "silence"
             raise voice_pipeline.VoicePipelineEmptyError(msg)
-        kwargs["before_emit"]("明天上午十点提醒我")
+        kwargs["before_emit"](self._said)
         self._record.append("utterance.received")
         return super().run_turn(**kwargs)
 
 
 def _capture_rig(
-    monkeypatch: pytest.MonkeyPatch, *, empty: bool = False,
+    monkeypatch: pytest.MonkeyPatch, *, empty: bool = False, said: str = "明天上午十点提醒我",
 ) -> tuple[_Session, list[str]]:
     record: list[str] = []
     rig = _Session(
         monkeypatch,
-        pipeline=_AcceptingPipeline(record, empty=empty),
+        pipeline=_AcceptingPipeline(record, empty=empty, said=said),
         hold_output=lambda held: record.append("hold" if held else "release"),
         supersede_unspoken=lambda turn_id: record.append(f"supersede {turn_id}"),
     )
@@ -105,6 +108,21 @@ def test_a_sound_that_comes_to_nothing_releases_and_drops_nothing(
         rig.speak()
         _wait_until(lambda: "release" in record)
         assert record == ["hold", "release"]
+    finally:
+        rig.close()
+
+
+def test_a_dismissal_drops_the_answer_still_on_its_way(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Live 2026-10-02: an answer to the sentence before 「退下吧」 played after her goodbye."""
+    rig, record = _capture_rig(monkeypatch, said="退下吧")
+    try:
+        rig.speak()
+        _wait_until(lambda: "release" in record)
+        # The words were no turn, so nothing is written; the earlier answer is dropped.
+        assert record[0] == "hold"
+        assert record[1].startswith("supersede T")
+        assert record[2:] == ["release"]
+        assert rig.changes == [(False, "dismissed")]
     finally:
         rig.close()
 
