@@ -1918,6 +1918,13 @@ _SELECT_TURN_ENDED_SQL = (
     "AND json_extract(payload_json, '$.turn_id') = ? LIMIT 1"
 )
 
+# His next words cancel this turn's answer: it will never come, so no wait line is owed.
+_SELECT_TURN_SUPERSEDED_SQL = (
+    "SELECT 1 FROM events WHERE type = 'response.cancelled' "
+    "AND json_extract(payload_json, '$.reason') = 'superseded' "
+    "AND json_extract(payload_json, '$.turn_id') = ? LIMIT 1"
+)
+
 # The answer is `phase="final"` (or any phase but commentary): its first segment
 # commits `surface.response_open` together with `surface.response_chunk` in a
 # spoken_streaming turn, and the whole answer does at once in any other turn;
@@ -1953,9 +1960,10 @@ def _turn_commentary_count(conn: sqlite3.Connection, turn_id: str) -> int:
 
 
 def _turn_over_or_answering(conn: sqlite3.Connection, turn_id: str) -> bool:
-    """Return whether the turn has ended or its answer has started."""
+    """Return whether the turn has ended, been superseded or its answer has started."""
     return (
         conn.execute(_SELECT_TURN_ENDED_SQL, (turn_id,)).fetchone() is not None
+        or conn.execute(_SELECT_TURN_SUPERSEDED_SQL, (turn_id,)).fetchone() is not None
         or conn.execute(_SELECT_ANSWER_STARTED_SQL, (turn_id,)).fetchone() is not None
     )
 

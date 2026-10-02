@@ -1471,6 +1471,29 @@ def test_a_turn_that_ends_gets_no_more_lines(
         _wait_until_turn_spoke(reader, "T-open")
 
 
+def test_a_turn_his_next_words_supersede_gets_no_more_lines(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Live 2026-10-01: three interruptions in a row each kept saying 'still working'."""
+    _clocks(monkeypatch, first=0.3, then=(0.9, 1.5))
+    runtime = _make_runtime(tmp_path)
+    reader = _reader(runtime)
+    with _Observer(runtime):
+        _user_turn(runtime.conn, "T-cut")
+        _wait_until(lambda: len(_lines(reader, "T-cut")) == 1)
+        emit_event(
+            runtime.conn,
+            type="response.cancelled",
+            payload={
+                "response_id": "RESP-cut", "response_group_id": "RGRP-cut",
+                "turn_id": "T-cut", "reason": "superseded",
+            },
+            correlation={"turn_id": "T-cut"},
+        )
+        _settle(1.6)
+    assert len(_lines(reader, "T-cut")) == 1
+
+
 def test_a_long_wait_tool_speaks_at_dispatch_and_the_follow_ups_still_come(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
