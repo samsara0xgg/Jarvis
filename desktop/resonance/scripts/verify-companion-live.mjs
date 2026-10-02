@@ -594,8 +594,8 @@ try {
     await page.locator('.ad [data-block="today"] .td').click(); await page.waitForTimeout(400);
     check('L14 checking a to-do posts { id, done } to /inherent/today/todo', posts.at(-1)?.path === '/inherent/today/todo' && posts.at(-1).body.id === 't1' && posts.at(-1).body.done === true
       && await page.locator('.ad .td[aria-pressed="true"]').count() === 1);
-    await page.locator('.ad .brief-go').click(); await page.waitForTimeout(900);
-    check('L14 Read the brief opens its page', await text('.ad .pg-head h3') === 'Morning brief' && (await text('.ad .pg-body')).includes('Two agents finished'));
+    await page.locator('.ad [data-block="brief"] .fill').click(); await page.waitForTimeout(900);
+    check('L14 the brief card opens its page', await text('.ad .pg-head h3') === 'Morning brief' && (await text('.ad .pg-body')).includes('Two agents finished'));
     await back();
     check('L14 a brief you read does not come back today', await page.locator('.ad [data-block="brief"]').count() === 0);
     await page.locator('.ad .corner [data-row="settings"]').click(); await page.waitForTimeout(900);

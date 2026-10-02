@@ -8,7 +8,7 @@ export type TodayEvent = { id: string; title: string; start: string; end?: strin
 export type Todo = { id: string; title: string; due?: string };
 // GET /inherent/today. POST /inherent/today/todo { id, done } checks one off in Microsoft To Do.
 export type Today = { weather?: Weather | null; events: TodayEvent[]; todos: Todo[] };
-// GET /inherent/brief: today's brief, 404 before it is written.
+// GET /inherent/brief: today's brief, 404 before it is written. `summary` is the day's main line (card); `body` is markdown for the page.
 export type Brief = { date: string; summary: string; body: string; items?: number };
 // POST /inherent/mail/archive { ids } takes letters the last answer called junk out of the inbox; /unarchive { ids } puts them back.
 // GET /inherent/mail: unread mail from people (not newsletters or notifications), newest first.
@@ -57,9 +57,12 @@ export function demoToday(): Today {
     todos: [{ id: 'a3', title: 'CSC370 A3 write-up', due: tonight() }, { id: 'lee', title: 'Reply to Prof. Lee' }],
   };
 }
-export const demoBrief = (): Brief => ({ date: new Date().toLocaleDateString('en-CA'), items: 5,
+export const demoBrief = (): Brief => ({ date: new Date().toLocaleDateString('en-CA'), items: 3,
   summary: 'Yesterday the companion went live with the Claude sessions. Today: A3 is due at midnight.',
-  body: '**Yesterday**\n\n- The companion went live with the Claude sessions.\n- Plugin panels show each plugin’s own logo.\n\n**Today**\n\n- CSC370 A3 is due at midnight.\n- Call with Mom this evening.\n- Two agents are waiting for you.' });
+  body: 'Yesterday the companion went live with the Claude sessions. Today: A3 is due at midnight.\n\n## Yesterday\n'
+    + '- **The companion goes live with Claude sessions** · committed\n  Sessions show on the home and answer from there.\n'
+    + '- **Plugin panels show each plugin’s own logo** · committed\n  The generic icon is gone.\n'
+    + '- **CSC370 A3** · in progress\n  The write-up is half done.\n\n## Still open\n- Two agents are waiting for you.' });
 export const demoMail = (): Mail[] => [
   { id: 'lee', from: 'Prof. Lee', subject: 'Office hours move to Thursday', received: at(-40), reply: 'fyi' },
   { id: 'mom', from: 'Mom', subject: 'Still on for tonight?', received: at(-95), reply: 'yes' },

@@ -56,13 +56,20 @@
 .ad .fy-b { flex:none; padding:2px 9px; border-radius:var(--radius-control); font-size:var(--text-detail); font-weight:500; background:rgb(var(--glow) / .16); color:var(--p-ink); }
 .ad .fy-b:hover { background:rgb(var(--glow) / .26); }
 
-/* Morning brief. */
+/* Morning brief: the whole card opens the page; its text is the day's main line, two lines at most. */
 .ad .r-brief { background:linear-gradient(180deg,rgb(255 214 150 / .09),transparent 80%); }
 .ad .r-brief .label { color:#ffd9a0; }
-.ad .r-brief .text { display:block; overflow:visible; overflow-wrap:anywhere; }
-.ad .brief-go { display:inline-flex; align-self:flex-start; align-items:center; gap:4px; margin-top:7px; padding:3px 6px 3px 9px; border-radius:var(--radius-control); background:rgb(var(--glow) / .14); font-size:var(--text-detail); color:var(--p-ink); }
-.ad .brief-go:hover { background:rgb(var(--glow) / .22); }
-.ad .brief-go svg { color:var(--p-faint); }
+.ad .r-brief .text { overflow-wrap:anywhere; }
+.ad .r-brief .meta { display:inline-flex; align-items:center; gap:3px; }
+.ad .r-brief .meta svg { color:var(--p-faint); }
+/* The brief page: the day's main line, then short sections. An item's activity sits under its title, quieter. */
+.ad .brief-md { gap:0; }
+.ad .brief-md .md { gap:6px; }
+.ad .brief-md .md > p:first-child { padding-bottom:12px; border-bottom:1px solid var(--p-line); line-height:1.6; }
+.ad .brief-md .md h5 { margin-top:14px; font-size:var(--text-label); font-weight:600; letter-spacing:.09em; text-transform:uppercase; color:var(--p-faint); }
+.ad .brief-md .md > div > ul { gap:11px; }
+.ad .brief-md .md li > ul { margin-top:2px; padding-left:0; list-style:none; }
+.ad .brief-md .md li > ul > li { font-size:var(--text-detail); line-height:1.5; color:var(--p-muted); }
 
 /* Today: the weather in the header, the next hours in the morning, then events and to-dos in one list. */
 .ad .r-today { padding-bottom:10px; }

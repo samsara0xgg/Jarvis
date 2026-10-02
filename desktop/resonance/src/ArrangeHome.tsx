@@ -6,7 +6,7 @@ import { HOME_DEFAULTS, isPop, tr, useCompanionSettings, type BlockId, type L, t
 export const BLOCK: Record<BlockId, { icon: ReactNode; name: L; when?: L }> = {
   talk: { icon: <ChatCircle/>, name: ['Conversation', '对话'], when: ['After you talk, for 10 min', '你开口后出现，10 分钟后收起'] },
   foryou: { icon: <Bell/>, name: ['For you', '找你的事'], when: ['When Jarvis needs you', 'Jarvis 有事找你时'] },
-  brief: { icon: <SunHorizon/>, name: ['Morning brief', '早报'], when: ['Once it is written, until you read it', '写好后出现，看过就收起'] },
+  brief: { icon: <SunHorizon/>, name: ['Morning brief', '早报'], when: ['Once each morning, the first time you open', '每天早上第一次打开时出现'] },
   today: { icon: <CalendarBlank/>, name: ['Today', '今天'] },
   mail: { icon: <EnvelopeSimple/>, name: ['Mail', '邮件'], when: ['Unread mail from people', '有人发来的未读邮件'] },
   agents: { icon: <Robot/>, name: ['Agents', 'Agents'] },

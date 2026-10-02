@@ -61,6 +61,8 @@ const RESET_ANSWERS: Record<string, L> = {
 const STALE_MS = { hour: 3_600_000, day: 86_400_000, never: Infinity };
 // Hidden rows stay hidden until the session is given a new prompt.
 const HIDDEN = 'companion-hidden-agents-v1';
+// The day whose brief you have seen: it shows the first time the home opens that morning, then not again that day.
+const BRIEF_READ = 'companion-brief-read-v1';
 
 // Plugins: the daemon's catalog through the window's plugin bridge when live, a demo catalog otherwise.
 // Both are drawn from one shape; a live plugin's request adds what Jarvis asked and how far sign-in got.
@@ -160,7 +162,9 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
     || Number(b.supported) - Number(a.supported) || a.name.localeCompare(b.name)).map(p => p.id);
   const [query, setQuery] = useState('');
   const [token, setToken] = useState('');
-  const [briefRead, setBriefRead] = useState('');
+  const [briefRead, setBriefRead] = useState(() => { if (!port) return ''; try { return localStorage.getItem(BRIEF_READ) ?? ''; } catch { return ''; } });
+  useEffect(() => { if (port) try { localStorage.setItem(BRIEF_READ, briefRead); } catch { /* shows again after a restart */ } }, [briefRead]);
+  const briefShown = useRef('');
   const [dismissed, setDismissed] = useState<Partial<Record<BlockId, string>>>({});
   const [homeDraft, setHomeDraft] = useState(''), [talkDraft, setTalkDraft] = useState('');
   const [accountKeyDrafts, setAccountKeyDrafts] = useState<AccountKeyDrafts>({});
@@ -236,6 +240,8 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
     if (open) return;
     conversationRestore.current = null; restoredScroll.current = null; setRestoringConversation(false);
     closing.current = false; setPage(null); setPlugin(null); setSettingsCat(null); setUnfolded(null); setReset(null); react('02', 0);
+    // Having been on the home once is having seen the brief; the next opening that day leaves it out.
+    if (briefShown.current) { setBriefRead(briefShown.current); briefShown.current = ''; }
     if (home.current) stopMotion(home.current);
     if (view.current?.contains(document.activeElement)) { (document.activeElement as HTMLElement).blur(); void window.jarvis?.focus(false); }
   }, [open]);
@@ -584,11 +590,17 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
     mail: !settings.mail ? undefined : marked ? [mailYes[0], mailJunk[0]].filter(m => m).sort((a, b) => Date.parse(b.received) - Date.parse(a.received))[0]?.id : mail[0]?.id,
   };
   const shows = (id: BlockId) => isPop(id) ? popKey[id] !== undefined && dismissed[id] !== popKey[id] : !settings.hidden.includes(id);
+  if (open && shows('brief') && popKey.brief) briefShown.current = popKey.brief;
   const blocks = settings.order.filter(shows);
   const dismiss = (id: BlockId) => {
     const key = popKey[id], el = home.current?.querySelector<HTMLElement>(`[data-block="${id}"]`);
     if (key === undefined) return;
-    const apply = () => { setDismissed(v => ({ ...v, [id]: key })); notify(t(['Closed · comes back with the next one', '关掉了 · 有新的会再出现']), () => setDismissed(({ [id]: _, ...rest }) => rest)); };
+    const apply = () => {
+      const was = briefRead;
+      if (id === 'brief') setBriefRead(key);
+      setDismissed(v => ({ ...v, [id]: key }));
+      notify(t(['Closed · comes back with the next one', '关掉了 · 有新的会再出现']), () => { setDismissed(({ [id]: _, ...rest }) => rest); if (id === 'brief') setBriefRead(was); });
+    };
     if (!el || reduced.matches) { apply(); return; }
     el.style.height = `${el.offsetHeight}px`; void el.offsetHeight; el.classList.add('is-leaving');
     later(EXIT_MS, apply);
@@ -736,12 +748,12 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
       keyDrafts={accountKeyDrafts} onKeyDraft={(provider, value) => setAccountKeyDrafts(drafts => ({ ...drafts, [provider]: value }))}
       hiddenAgents={Object.keys(hidden).length} onUnhideAgents={() => { setHidden({}); notify(t(['Hidden sessions are back.', '隐藏的会话回来了。'])); }}
       onArrange={() => { setSettingsCat(null); setPage('arrange'); react('14', 1200); }} onPlugins={() => { setSettingsCat(null); setPage('plugins'); }}
-      onResetHome={() => { updateSettings(HOME_DEFAULTS); setDismissed({}); react('10', 1400); notify(t(['The home is back to how it started.', '首页恢复默认了。'])); }}
+      onResetHome={() => { updateSettings(HOME_DEFAULTS); setDismissed({}); setBriefRead(''); react('10', 1400); notify(t(['The home is back to how it started.', '首页恢复默认了。'])); }}
       notify={text => notify(text)} head={(title, meta) => back(title, meta)}/>,
     arrange: () => <>{back(t(['Arrange the home', '编辑首页']))}<ArrangeHome lang={lang}/></>,
     brief: () => <>
       {back(t(['Morning brief', '早报']), brief?.date)}
-      <div className="pg-body">{brief ? <div className="pg-sec"><Markdown text={brief.body}/></div> : <p className="pg-sec muted">{t(['No brief today yet.', '今天的早报还没写好。'])}</p>}</div>
+      <div className="pg-body">{brief ? <div className="pg-sec brief-md"><Markdown text={brief.body}/></div> : <p className="pg-sec muted">{t(['No brief today yet.', '今天的早报还没写好。'])}</p>}</div>
     </>,
     projects: () => <>
       {back(t(TITLES.projects), t(['last 7 days', '最近 7 天']))}
@@ -787,11 +799,12 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
               {forYou.slice(0, 3).map(f => <div className="fy" key={f.id}><span className={`nd ${f.ask ? '' : 'is-note'}`}/><span className="fy-t" title={f.text}>{f.text}</span>
                 {f.act && <button className="fy-b" onClick={f.act[1]}>{t(f.act[0])}</button>}</div>)}
             </>,
-            brief: () => brief && <>
-              <span className="head"><span className="label">{t(['Morning brief', '早报'])}</span>{brief.items ? <span className="meta">{t([`${brief.items} items`, `${brief.items} 条`])}</span> : null}</span>
-              <p className="text">{brief.summary}</p>
-              <button className="brief-go" data-row="brief" onClick={e => { const el = e.currentTarget.closest<HTMLElement>('.row'); setBriefRead(brief.date); openPage('brief', el); }}>{t(['Read the brief', '看早报'])}<CaretRight size={11}/></button>
-            </>,
+            brief: () => brief && <button className="fill" data-row="brief" aria-label={t(['Read the morning brief', '看早报'])}
+              onClick={e => { setBriefRead(brief.date); openPage('brief', e.currentTarget.parentElement); }}>
+              <span className="head"><span className="label">{t(['Morning brief', '早报'])}</span>
+                <span className="meta">{brief.items ? t([`${brief.items} items`, `${brief.items} 条`]) : t(['Read', '看全文'])}<CaretRight size={10}/></span></span>
+              <span className="text">{brief.summary}</span>
+            </button>,
             today: () => <>
               <span className="head"><span className="label">{t(['Today', '今天'])}</span>{wx && <span className="meta wx">{WX[wx.hours?.[0]?.kind ?? 'cloud']}{Math.round(wx.now_c)}°{wx.summary ? ` · ${wx.summary}` : ''}</span>}</span>
               {forecast && <span className="fc">{forecast.map(h => <span key={h.at} className={h.kind === 'rain' || h.kind === 'storm' ? 'is-rain' : ''}><em>{timeOf(Date.parse(h.at)).replace(':00', '')}</em>{WX[h.kind]}<b>{Math.round(h.temp_c)}°</b></span>)}</span>}

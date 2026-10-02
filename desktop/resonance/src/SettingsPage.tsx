@@ -135,7 +135,7 @@ export function SettingsPage({ lang, port, open, cat, onCat, ctl, accounts, keyD
       { id: 'arrange', name: ['Arrange the home', '编辑首页'], note: ['Or hold any block on the home', '也可以在首页长按任意一块'], ctl: { k: 'act', label: ['Edit', '编辑'], run: onArrange } },
       { id: 'talk', name: ['Conversation on top', '对话放在顶部'], note: ['After I talk = until 10 min after the last turn', '我开口后 = 最后一句之后 10 分钟内'], ctl: { k: 'seg', value: s.talk, opts: [['after', ['After I talk', '我开口后']], ['always', ['Always', '一直']], ['never', ['Never', '不放']]], set: value => update({ talk: value as typeof s.talk }) } },
       { id: 'foryou', name: ['Things for you show up', '找你的事自己出现'], note: ['Sign-ins and reminders from Jarvis', 'Jarvis 要你登录、提醒你的事'], ctl: { k: 'switch', on: s.foryou, set: on => update({ foryou: on }) } },
-      { id: 'brief', name: ['Morning brief shows up', '早报自己出现'], note: ['Once it is written, until you read it', '写好后出现，看过就收起'], ctl: { k: 'switch', on: s.brief, set: on => update({ brief: on }) } },
+      { id: 'brief', name: ['Morning brief shows up', '早报自己出现'], note: ['Once each morning, the first time you open', '每天早上第一次打开时出现'], ctl: { k: 'switch', on: s.brief, set: on => update({ brief: on }) } },
       { id: 'mail', name: ['Unread mail shows up', '未读邮件自己出现'], note: ['Only mail from people', '只算人发来的'], ctl: { k: 'switch', on: s.mail, set: on => update({ mail: on }) } },
       { id: 'forecast', name: ['Forecast in the morning', '早上显示天气预报'], note: ['The next hours on Today, before 11 AM', '11 点前在“今天”里显示接下来几个小时'], ctl: { k: 'switch', on: s.forecast, set: on => update({ forecast: on }) } },
       { id: 'reset', name: ['Reset the home', '恢复默认首页'], ctl: { k: 'act', label: ['Reset', '恢复'], run: onResetHome } },
