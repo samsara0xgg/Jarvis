@@ -81,7 +81,10 @@ class MailReply:
         if probability is not None:
             self._asked[message_id] = probability
             self.spent_usd += cost
-            LOGGER.info("mail reply: one letter asked, $%.6f (total $%.6f)", cost, self.spent_usd)
+            LOGGER.info(
+                "mail reply: one letter asked, id %s p=%.3f mark=%s, $%.6f (total $%.6f)",
+                message_id, probability, self._mark(probability), cost, self.spent_usd,
+            )
             while len(self._asked) > _CACHE_MAX:
                 del self._asked[next(iter(self._asked))]
         if error is not None:

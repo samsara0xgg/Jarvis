@@ -358,9 +358,12 @@ def _with_jev(mail_reply: MailReply) -> TestClient:
     return _client(home)
 
 
-def test_mail_reply_sends_only_name_and_subject_and_marks_by_threshold(jev: _Jev) -> None:
+def test_mail_reply_sends_only_name_and_subject_and_marks_by_threshold(
+    jev: _Jev, caplog: pytest.LogCaptureFixture,
+) -> None:
     """Each person's letter is asked once, name and subject only, zdr on; the bars map to marks."""
     client = _with_jev(jev.reply())
+    caplog.set_level("INFO", logger="jarvis.decision.mail_reply")
     assert _marks(client) == {
         "199a1c0d4101": "yes", "199a1c0d4103": "fyi", "199a1c0d4104": None,
     }
@@ -377,6 +380,11 @@ def test_mail_reply_sends_only_name_and_subject_and_marks_by_threshold(jev: _Jev
         assert one["questions"]["reply"]["type"] == "noul"
         assert one["questions"]["reply"]["instructions"]
     assert "@" not in json.dumps(jev.requests)  # no address, and the no-reply sender is not asked
+    # The log line names the letter by Gmail id with Jev's probability and the mark, never the text.
+    lines = [one.getMessage() for one in caplog.records if "one letter asked" in one.getMessage()]
+    assert any("id 199a1c0d4101 p=0.970 mark=yes" in line for line in lines)
+    assert any("id 199a1c0d4103 p=0.040 mark=fyi" in line for line in lines)
+    assert not any(word in line for line in lines for word in ("Office", "Lee", "Prof"))
     # A second poll asks nothing: the answers are cached per message id.
     assert _marks(client)["199a1c0d4101"] == "yes"
     assert len(jev.requests) == 3
