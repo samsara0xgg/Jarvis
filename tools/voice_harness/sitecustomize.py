@@ -17,6 +17,7 @@ live daemon, the runner itself and any child of the test daemon stay untouched. 
 from __future__ import annotations
 
 import contextlib
+import itertools
 import json
 import os
 import re
@@ -49,7 +50,12 @@ def _install(root: Path) -> None:
     log_dir = root / "harness"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_lock = threading.Lock()
-    pieces: list[tuple[str | None, list[bytes]]] = []
+    # (text, fingerprints, order its wav was loaded in): a piece is used up by the
+    # recognition that matches it, so a question spooled in several scenarios is
+    # heard once per recognition, not once per scenario.
+    pieces: list[tuple[str | None, list[bytes], int]] = []
+    pieces_lock = threading.Lock()
+    loaded = itertools.count(1)
 
     def log(name: str, **fields: object) -> None:
         line = json.dumps({"t_wall": time.time(), **fields}, ensure_ascii=False)
@@ -108,10 +114,12 @@ def _install(root: Path) -> None:
                 pcm = reader.readframes(reader.getnframes())
             script = wav_path.with_suffix(".script.json")
             if script.exists():
-                pieces.extend(
-                    (piece["text"], fingerprints(pcm, piece["start"], piece["end"]))
-                    for piece in json.loads(script.read_text(encoding="utf-8"))["pieces"]
-                )
+                with pieces_lock:
+                    order = next(loaded)
+                    pieces.extend(
+                        (piece["text"], fingerprints(pcm, piece["start"], piece["end"]), order)
+                        for piece in json.loads(script.read_text(encoding="utf-8"))["pieces"]
+                    )
             meta = {
                 "wav": wav_path.name,
                 "duration_s": len(pcm) / 2 / _RATE,
@@ -174,14 +182,22 @@ def _install(root: Path) -> None:
 
     # --- scripted final ASR -------------------------------------------------------------
     def script_for(audio: bytes) -> list[str] | None:
-        found: list[tuple[int, str]] = []
-        for text, chunks in pieces:
-            if text is None or not chunks:
-                continue
-            hits = [audio.find(chunk) for chunk in chunks]
-            if sum(h >= 0 for h in hits) / len(chunks) >= _MATCH_FRACTION:
-                found.append((min(h for h in hits if h >= 0), text))
-        return [text for _, text in sorted(found)] or None
+        found: list[tuple[int, str, int]] = []
+        with pieces_lock:
+            for piece in tuple(pieces):
+                text, chunks, order = piece
+                if text is None or not chunks:
+                    continue
+                hits = [audio.find(chunk) for chunk in chunks]
+                if sum(h >= 0 for h in hits) / len(chunks) >= _MATCH_FRACTION:
+                    found.append((min(h for h in hits if h >= 0), text, order))
+                    pieces.remove(piece)
+        if not found:
+            return None
+        # The captured audio is the newest wav's; an older wav's piece of the same
+        # words that never got heard is stale, used up here without being said.
+        newest = max(order for *_, order in found)
+        return [text for _, text, order in sorted(found) if order == newest] or None
 
     class ScriptedRecognizer:
         """Delegates everything to the real recognizer except ``recognize``."""

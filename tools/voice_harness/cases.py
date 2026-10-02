@@ -837,6 +837,17 @@ SCENARIOS: tuple[Scenario, ...] = (
         ),
     ),
     Scenario(
+        "stop_thinking_open",
+        (
+            Controls(True),
+            Say(Q_LONG, long=True),
+            WaitFor("turn.started"),
+            Sleep(2.0),
+            PressStop("turn"),
+            WaitIdle(),
+        ),
+    ),
+    Scenario(
         "language",
         (
             Controls(True),
@@ -909,6 +920,12 @@ CASES: tuple[Case, ...] = (
         "stop_thinking",
         check_stop_thinking,
         doc="user_stop on a thinking turn leaves no spoken answer",
+    ),
+    Case(
+        "stop_button_stops_thinking_run_open",
+        "stop_thinking_open",
+        check_stop_thinking,
+        doc="user_stop after the turn's run opened, before any answer, leaves no spoken answer",
     ),
     Case(
         "synthesis_language",
