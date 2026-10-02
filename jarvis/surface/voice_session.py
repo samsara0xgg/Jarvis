@@ -1008,6 +1008,7 @@ class DuplexVoiceSession:
         set_conversation: Callable[[bool, str], None] | None = None,
         answer_words: Callable[[str, str, str], None] | None = None,
         turn_working: Callable[[], bool] | None = None,
+        recent_speech: Callable[[], str] | None = None,
         stop_speaking: Callable[[], object] | None = None,
         hold_output: Callable[[bool], None] | None = None,
         supersede_unspoken: Callable[[str], None] | None = None,
@@ -1029,7 +1030,9 @@ class DuplexVoiceSession:
         has ``barge_in_confirm_voiced_s`` of voice; final ASR then decides: a
         listening sound, one syllable that says nothing, or nothing lets her
         go on from there with the gain back, a stop request stops her, and
-        none becomes a turn.
+        none becomes a turn. ``recent_speech()`` is what she said lately: words
+        over her that are a copy of it are her own voice in the mic (echo), no
+        turn, and she goes on.
 
         ADR 0053: ``hold_output(True)`` from an utterance's speech onset
         until it is accepted or comes to nothing, so no answer starts while
@@ -1046,6 +1049,7 @@ class DuplexVoiceSession:
         self._set_conversation = set_conversation
         self._answer_words = answer_words
         self._turn_working = turn_working
+        self._recent_speech = recent_speech
         # ADR 0102: when conversation mode last had an accepted turn or Jarvis's
         # speech; an accepted turn waits for her answer, 「等我一下」 holds it.
         self._conversation_busy_at = time.monotonic()
@@ -1493,11 +1497,13 @@ class DuplexVoiceSession:
             backchannel = voice_asr.is_backchannel(text)
             stop = voice_asr.is_stop_request(text)
             unclear = not stop and voice_asr.is_unclear_sound(text)
-            self._settle_barge_in(turn_id, go_on=backchannel or unclear)
+            echo = not (backchannel or stop or unclear) and self._is_own_echo(text)
+            self._settle_barge_in(turn_id, go_on=backchannel or unclear or echo)
             verdict = (
                 "backchannel" if backchannel
                 else "stop" if stop
                 else "unclear" if unclear
+                else "echo" if echo
                 else "turn"
             )
             record_realtime_trace(
@@ -1505,6 +1511,8 @@ class DuplexVoiceSession:
                 session_id=self._session_id,
                 verdict=verdict,
             )
+            if echo:
+                LOGGER.info("words over Jarvis were her own voice (echo) turn_id=%s", turn_id)
             if verdict != "turn":
                 raise voice_pipeline.VoicePipelineAbsorbedError(
                     "stop_request" if stop else verdict,
@@ -1513,6 +1521,16 @@ class DuplexVoiceSession:
         self._awaiting_answer = True
         self._conversation_hold_until = 0.0
         self._supersede(turn_id)
+
+    def _is_own_echo(self, text: str) -> bool:
+        """Whether ``text`` copies what she said lately; no answer means no."""
+        if self._recent_speech is None:
+            return False
+        try:
+            return voice_asr.is_own_echo(text, self._recent_speech())
+        except Exception:  # noqa: BLE001 - her recent words cannot break capture
+            LOGGER.debug("recent_speech failed", exc_info=True)
+            return False
 
     def _judge_conversation_words(self, turn_id: str, text: str) -> None:
         """ADR 0102's no-turn words in conversation mode; returns when they are none."""

@@ -34,6 +34,7 @@ import time
 import unicodedata
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -1132,6 +1133,28 @@ def is_unclear_sound(text: str) -> bool:
         return False
     words = re.findall(r"[a-z']+|\w", stripped.lower())
     return len(words) == 1 and _SHORT_ANSWER_RE.fullmatch(words[0]) is None
+
+
+# Her own voice reaching the mic is transcribed as a clipped, slightly wrong copy
+# of what she said; the 2026-10-02 echoes scored 0.78-1.0 and Allen's own
+# barge-ins at most 0.75 (one lone "ok" aside).
+_OWN_ECHO_MIN_RATIO = 0.8
+
+
+def is_own_echo(heard: str, said: str) -> bool:
+    """True when ``heard`` is, or nearly is, a stretch of what Jarvis ``said``."""
+    h, s = (_squashed(unicodedata.normalize("NFKC", t)) for t in (heard, said))
+    if not h or not s:
+        return False
+    if h in s:
+        return True
+    n = len(h)
+    return any(
+        SequenceMatcher(None, h, s[i : i + w]).ratio() >= _OWN_ECHO_MIN_RATIO
+        for i in range(max(1, len(s) - n + 1))
+        for w in (n - 2, n, n + 2)
+        if w > 0
+    )
 
 
 def is_empty_or_too_short(text: str, *, audio_pcm: bytes) -> bool:

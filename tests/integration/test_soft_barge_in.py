@@ -43,6 +43,7 @@ from tests.integration.test_wave3_single_audio_ingress import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
 VOICE, ROOM = 8_000, 30  # constant frames at about -12 and -60 dBFS
@@ -83,6 +84,7 @@ class _Rig:
         confirm_voiced_s: float = 0.4,
         idle_exit_s: float = 10.0,
         wait_s: float = 60.0,
+        recent_speech: Callable[[], str] | None = None,
     ) -> None:
         self.output: list[str] = []
         self.phases: list[tuple[str, object]] = []
@@ -128,6 +130,7 @@ class _Rig:
                 supersede_unspoken=lambda _turn_id: self.output.append("supersede"),
                 yield_speaking=lambda gain: self.output.append(f"gain {gain}"),
                 pause_speaking=lambda paused: self.output.append("pause" if paused else "go on"),
+                recent_speech=recent_speech,
             )
             assert self.session.start().started
 
@@ -511,6 +514,141 @@ def test_a_long_hum_or_cough_holds_her_then_she_goes_on(
     assert rig.speaking
     assert rig.turns() == []
     assert ("empty", reason) in rig.phases
+
+
+_SAID = "Your demo is scheduled for Friday, October 9. It isn't on your calendar."
+
+
+@pytest.mark.parametrize("voiced", [SHORT, LONG])
+def test_her_own_words_over_her_are_echo_she_goes_on_and_it_is_no_turn(
+    tmp_path: Path, voiced: int,
+) -> None:
+    """2026-10-02: the board's echo canceller did not converge; her voice in the mic stopped her."""
+    rig = _Rig(tmp_path, "Your demo is.", recent_speech=lambda: _SAID)
+    try:
+        rig.say(voiced)
+    finally:
+        rig.close()
+    assert rig.output == (
+        ["gain 0.2", "gain 1.0"] if voiced == SHORT else ["gain 0.2", "pause", "go on", "gain 1.0"]
+    )
+    assert rig.speaking
+    assert rig.turns() == []
+    assert ("empty", "echo") in rig.phases
+
+
+def _raises() -> str:
+    message = "event log locked"
+    raise OSError(message)
+
+
+@pytest.mark.parametrize("recent_speech", [lambda: _SAID, lambda: "", _raises, None])
+def test_words_that_are_not_her_own_still_stop_her_and_are_a_turn(
+    tmp_path: Path, recent_speech: Callable[[], str] | None,
+) -> None:
+    """No match, nothing said lately, a failing lookup or none bound: as before."""
+    rig = _Rig(tmp_path, "明天的会改到三点", recent_speech=recent_speech)
+    try:
+        rig.say(SHORT)
+    finally:
+        rig.close()
+    assert rig.output == ["gain 0.2", "stop", "gain 1.0", "supersede"]
+    assert rig.turns() == ["明天的会改到三点"]
+
+
+def test_a_failing_lookup_leaves_her_own_words_a_turn_as_before(tmp_path: Path) -> None:
+    """Without her recent words there is no echo to tell: the words are a turn."""
+    rig = _Rig(tmp_path, "Your demo is.", recent_speech=_raises)
+    try:
+        rig.say(SHORT)
+    finally:
+        rig.close()
+    assert rig.output == ["gain 0.2", "stop", "gain 1.0", "supersede"]
+    assert rig.turns() == ["Your demo is."]
+
+
+def test_a_stop_word_she_said_herself_still_stops_her(tmp_path: Path) -> None:
+    """Echo is judged after stop requests: 「Wait.」 stops her even when she just said it."""
+    rig = _Rig(tmp_path, "Wait.", recent_speech=lambda: "Okay, wait a moment, I'll check.")
+    try:
+        rig.say(SHORT)
+    finally:
+        rig.close()
+    assert rig.output == ["gain 0.2", "stop", "gain 1.0"]
+    assert rig.turns() == []
+    assert ("empty", "stop_request") in rig.phases
+
+
+# (what final ASR heard over her, what she had said in the 30 s before), from the
+# event log: the first five are 2026-10-02 echoes, the rest Allen's own barge-ins.
+_ECHOES = [
+    (
+        "Your demo is.",
+        "Your demo is scheduled for Friday, October 9. It isn't on your calendar.",
+    ),
+    (
+        "I don't age.",
+        "I don't age like a person, but I'm here and ready to help.",
+    ),
+    (
+        "Go ahead and read.",
+        "I'm an AI assistant. Okay, go ahead and restart it. I'll be here.",
+    ),
+    (
+        "不询问猫头鹰。",
+        "小鹿。 它们一路询问猫头鹰,松鼠和河狸,终于找到回家的路。 从此,小鹿成了好朋友。",
+    ),
+    (
+        "You're aging.",
+        "Sure, go ahead. How's your day going? Yes, your agent workspace was another main focus.",
+    ),
+]
+_GENUINE = [
+    (
+        "那太阳呢？",  # noqa: RUF001 - as final ASR wrote it
+        "- Its gravity is about one-sixth of Earth's. The Moon is about 384,400 km away.",
+    ),
+    (
+        "一个月前的今天发生了什么？",  # noqa: RUF001 - as final ASR wrote it
+        "大约一周前,我看到你在推进 Jarvis 的自动日报能力:日报技能已经进了 main。",
+    ),
+    (
+        "他的活动。",
+        "我能确认的是今天上午的进展:你推进了 Timesink 的 Focus 页面,设置侧栏和趋势指标。",
+    ),
+    (
+        "呃,可 you.",
+        "Tandoori Trails is one option; enter your address to see its delivery availability.",
+    ),
+    (
+        "Wait,呃.",
+        "What I can access depends on the permissions you've granted. You're welcome, Allen.",
+    ),
+    (
+        "哈哈哈,没事没事。",
+        "你刚才说了句 The words I sick too,我以为你是在说自己也生病了,所以才那样回应。",
+    ),
+    (
+        "继续讲。",
+        "好,我给你讲个大约一百字的长城故事。 好,先等一下。",
+    ),
+    (
+        "讲故事。",
+        "It's 8:03 PM. 从前,有只小狐狸捡到一颗星星。 它爬上山顶,把星星送回夜空。",
+    ),
+]
+
+
+@pytest.mark.parametrize(("heard", "said"), _ECHOES)
+def test_her_echo_in_the_mic_is_known_from_the_event_log_rows(heard: str, said: str) -> None:
+    """Each 2026-10-02 echo is a copy of her recent words."""
+    assert voice_asr.is_own_echo(heard, said)
+
+
+@pytest.mark.parametrize(("heard", "said"), _GENUINE)
+def test_allens_own_words_over_her_are_not_her_echo(heard: str, said: str) -> None:
+    """His barge-ins on other days are not a copy of her recent words."""
+    assert not voice_asr.is_own_echo(heard, said)
 
 
 def test_zero_confirm_time_stops_her_at_onset(tmp_path: Path) -> None:

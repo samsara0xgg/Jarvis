@@ -1786,6 +1786,7 @@ supervisor-sweep turn (no `turn.started` at all) never match it.
 """
 
 _TURN_WORKING_WINDOW_MS: Final[int] = 5 * 60 * 1000
+_RECENT_SPEECH_WINDOW_MS: Final[int] = 60 * 1000
 """A turn of his words still open this long after it began is the supervisor's, not
 conversation mode's to wait for (the window ADR 0107 gives a turn in flight)."""
 
@@ -3618,6 +3619,24 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
             finally:
                 conn.close()
 
+        def _recent_speech() -> str:
+            # What she said in the last minute, to tell her own voice in the mic
+            # from Allen's words over her. Same worker and open as _turn_working.
+            conn = open_runtime_event_log(
+                runtime.runtime_paths.event_log, deadline=time.monotonic() + 0.25,
+            )
+            try:
+                rows = conn.execute(
+                    "SELECT coalesce(json_extract(payload_json, '$.voice_text'), "
+                    "json_extract(payload_json, '$.text')) FROM events "
+                    "WHERE type IN ('surface.response_chunk', 'surface.response_emitted') "
+                    "AND ts_epoch_ms >= ? ORDER BY id",
+                    (int(time.time() * 1000) - _RECENT_SPEECH_WINDOW_MS,),
+                )
+                return " ".join(text for (text,) in rows if text)
+            finally:
+                conn.close()
+
         session = voice_session.DuplexVoiceSession(
             ingress=ingress,
             wake_engine=engine,
@@ -3637,6 +3656,7 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
                 daemon=True,
             ).start(),
             turn_working=_turn_working,
+            recent_speech=_recent_speech,
             stop_speaking=_stop_speaking,
             hold_output=_hold_output,
             supersede_unspoken=supersede_unspoken,

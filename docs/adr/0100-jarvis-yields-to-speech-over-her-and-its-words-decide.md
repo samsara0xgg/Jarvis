@@ -129,6 +129,9 @@ Its limits:
 - A sound split by a pause longer than `barge_in_pause_ms` is judged in
   parts; ADR 0074's merge still joins the second part to the first when both
   are turns.
+- Words over her that copy what she said in the last minute (at least 0.8
+  similarity) are her own voice in the mic, not Allen's: no turn, and she goes
+  on. A stop request still stops her.
 - Words judged no turn leave no recording or transcript, only their length
   and verdict in the realtime trace.
 
