@@ -212,12 +212,19 @@ class InherentBroadcaster:
                 is read for the envelope's correlation field and the F5 log
                 via :meth:`_send_all`; with ``written_apart`` set (ADR 0114),
                 ``payload["document_text"]`` rides the envelope as ``written``.
+                ``payload["voice_text"]`` (the whole spoken answer, never the
+                written part) rides it as ``spoken``: the streamed chunks may
+                hold only its first sentence while the voice says all of it.
         """
         turn_id = str(event.payload.get("turn_id", "<unknown>"))
         payload: dict[str, object] = {"fadeMs": 5000, "turn_id": turn_id}
         written = event.payload.get("document_text")
         if event.payload.get("written_apart") is True and isinstance(written, str) and written:
             payload["written"] = written
+        spoken = event.payload.get("voice_text")
+        # A commentary run's wait line is not the answer: it never stands in for it.
+        if isinstance(spoken, str) and spoken and event.payload.get("phase") != "commentary":
+            payload["spoken"] = spoken
         msg: dict[str, object] = {"op": "done", "payload": payload}
         await self._send_all(msg, turn_id=turn_id)
 

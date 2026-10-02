@@ -185,6 +185,32 @@ def test_the_done_envelope_carries_written_only_when_it_is_apart() -> None:
     assert whole == empty == {"op": "done", "payload": {"fadeMs": 5000, "turn_id": "t1"}}
 
 
+def test_the_done_envelope_carries_the_whole_spoken_answer() -> None:
+    """``spoken`` is ``voice_text`` (never the written part), so the screen holds all she says."""
+
+    async def _run() -> dict[str, Any]:
+        sent: list[dict[str, Any]] = []
+
+        class _Client:
+            async def send_json(self, message: dict[str, Any]) -> None:
+                sent.append(message)
+
+        broadcaster = InherentBroadcaster()
+        await broadcaster.register(_Client())  # type: ignore[arg-type]
+        payload = {
+            "turn_id": "t1",
+            "voice_text": "Yes. And the rest.",
+            "document_text": "d",
+            "written_apart": True,
+        }
+        await broadcaster.broadcast_done(SimpleNamespace(payload=payload))  # type: ignore[arg-type]
+        return sent[0]
+
+    done = asyncio.run(_run())
+    assert done["payload"]["spoken"] == "Yes. And the rest."
+    assert done["payload"]["written"] == "d"
+
+
 def test_the_first_spoken_sentence_commits_before_written_has_arrived(tmp_path: Path) -> None:
     """Spoken streams first: its first sentence is a durable chunk while the reply is still open."""
     spoken = "我能听见你。今天也辛苦了。"

@@ -75,4 +75,9 @@ const late = run2([{ type: 'open', turnId: 'A', responseId: 'ra', at: 1 }, { typ
   { type: 'append', turnId: 'B', token: '<voice>我是 Jarvis。</voice>', at: 4 }, { type: 'append', turnId: 'A', token: '也做了展示准备。</voice>', at: 5 }]);
 const lt = Object.fromEntries(late.talk.map(l => [l.id, l.text]));
 check('a late chunk of an earlier turn stays on that turn\'s line, not the newest turn\'s', lt['her:B'] === '<voice>我是 Jarvis。</voice>' && lt['her:A'] === '<voice>我查完了；也做了展示准备。</voice>' && late.reply === '<voice>我是 Jarvis。</voice>');
+// `done` carries the whole spoken answer: the line holds all of it though only its first sentence streamed (turn T42e99f29).
+const whole = run2([{ type: 'open', turnId: 'A', responseId: 'ra', at: 1 }, { type: 'append', turnId: 'A', token: 'Yes.', at: 2 }, { type: 'whole', turnId: 'A', text: 'Yes. Yesterday you mainly worked on Jarvis.', at: 3 }]);
+check('done with the full spoken text: her line holds all of it, not only what streamed', whole.talk.find(l => l.id === 'her:A').text === 'Yes. Yesterday you mainly worked on Jarvis.' && whole.reply === 'Yes. Yesterday you mainly worked on Jarvis.');
+const older = reducer(reducer(run2([{ type: 'open', turnId: 'A', responseId: 'ra', at: 1 }, { type: 'append', turnId: 'A', token: 'Yes.', at: 2 }, { type: 'open', turnId: 'B', responseId: 'rb', at: 3 }, { type: 'append', turnId: 'B', token: 'Hi.', at: 4 }]), { type: 'whole', turnId: 'A', text: 'Yes. All of it.', at: 5 }), { type: 'whole', turnId: 'B', text: 'H', at: 6 });
+check('a done of an older turn only touches that turn\'s line, and never shortens one', older.talk.find(l => l.id === 'her:A').text === 'Yes. All of it.' && older.talk.find(l => l.id === 'her:B').text === 'Hi.' && older.reply === 'Hi.');
 console.log(`${checks.length} checks passed`);
