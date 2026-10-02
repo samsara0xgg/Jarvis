@@ -85,6 +85,8 @@ class _Rig:
         idle_exit_s: float = 10.0,
         wait_s: float = 60.0,
         recent_speech: Callable[[], str] | None = None,
+        ask_words: Callable[[str, str, str, bool, bool], str | None] | None = None,
+        note_words: Callable[[str, str, str, bool, bool], None] | None = None,
     ) -> None:
         self.output: list[str] = []
         self.phases: list[tuple[str, object]] = []
@@ -131,6 +133,8 @@ class _Rig:
                 yield_speaking=lambda gain: self.output.append(f"gain {gain}"),
                 pause_speaking=lambda paused: self.output.append("pause" if paused else "go on"),
                 recent_speech=recent_speech,
+                ask_words=ask_words,
+                note_words=note_words,
             )
             assert self.session.start().started
 

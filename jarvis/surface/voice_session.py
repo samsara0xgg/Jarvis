@@ -1015,6 +1015,8 @@ class DuplexVoiceSession:
         answer_words: Callable[[str, str, str], None] | None = None,
         turn_working: Callable[[], bool] | None = None,
         recent_speech: Callable[[], str] | None = None,
+        ask_words: Callable[[str, str, str, bool, bool], str | None] | None = None,
+        note_words: Callable[[str, str, str, bool, bool], None] | None = None,
         stop_speaking: Callable[[], object] | None = None,
         hold_output: Callable[[bool], None] | None = None,
         supersede_unspoken: Callable[[str], None] | None = None,
@@ -1040,6 +1042,14 @@ class DuplexVoiceSession:
         over her that are a copy of it are her own voice in the mic (echo), no
         turn, and she goes on.
 
+        With ``ask_words(turn_id, text, recent_speech, over_her, confirm)`` (ADR 0130)
+        a short line the regexes call a turn, over her or in conversation mode, is put to
+        Jev, which may call it keep_going, stop, wait or dismiss; ``confirm`` marks a
+        dismissal the regex found only inside a sentence, which counts only if Jev says
+        dismiss. It returns that choice, or None for a turn, and blocks up to its own
+        timeout. ``note_words(turn_id, verdict, text, over_her, conversation)`` records a
+        line the regexes settled alone.
+
         ADR 0053: ``hold_output(True)`` from an utterance's speech onset
         until it is accepted or comes to nothing, so no answer starts while
         Allen is talking; ``supersede_unspoken(turn_id)`` once it is
@@ -1056,6 +1066,8 @@ class DuplexVoiceSession:
         self._answer_words = answer_words
         self._turn_working = turn_working
         self._recent_speech = recent_speech
+        self._ask_words = ask_words
+        self._note_words = note_words
         # ADR 0102: when conversation mode last had an accepted turn or Jarvis's
         # speech; an accepted turn waits for her answer, 「等我一下」 holds it.
         self._conversation_busy_at = time.monotonic()
@@ -1498,40 +1510,116 @@ class DuplexVoiceSession:
         conversation mode (ADR 0102) a dismissal (退下) stops her and ends the
         mode, 「等我一下」 stops her and holds the mode, and with her silent a
         listening sound or one syllable that says nothing is dropped; none of
-        them is a turn. A turn restarts the mode's clock.
+        them is a turn. A turn restarts the mode's clock. With Jev (ADR 0130)
+        a short line the regexes call a turn may be one of these too.
         """
-        if self._conversation_open():
-            self._judge_conversation_words(turn_id, text)
+        conversation = self._conversation_open()
         with self._barge_lock:
-            state = self._barges.get(turn_id)
-        if state is not None:
-            backchannel = voice_asr.is_backchannel(text)
-            stop = voice_asr.is_stop_request(text)
-            unclear = not stop and voice_asr.is_unclear_sound(text)
-            echo = not (backchannel or stop or unclear) and self._is_own_echo(text)
-            self._settle_barge_in(turn_id, go_on=backchannel or unclear or echo)
-            verdict = (
-                "backchannel" if backchannel
-                else "stop" if stop
-                else "unclear" if unclear
-                else "echo" if echo
-                else "turn"
-            )
-            record_realtime_trace(
-                "conversation_barge_in_judged",
-                session_id=self._session_id,
-                verdict=verdict,
-            )
-            if echo:
-                LOGGER.info("words over Jarvis were her own voice (echo) turn_id=%s", turn_id)
-            if verdict != "turn":
-                raise voice_pipeline.VoicePipelineAbsorbedError(
-                    "stop_request" if stop else verdict,
-                )
+            over_her = turn_id in self._barges
+        verdict = self._words_verdict(
+            turn_id, text, conversation=conversation, over_her=over_her,
+        )
+        self._act_on_words(turn_id, text, verdict, over_her=over_her)
         self._conversation_busy_at = time.monotonic()
         self._awaiting_answer = True
         self._conversation_hold_until = 0.0
         self._supersede(turn_id)
+
+    def _words_verdict(
+        self, turn_id: str, text: str, *, conversation: bool, over_her: bool,
+    ) -> str:
+        """dismissed, wait, backchannel, unclear, stop, echo or turn; Jev settles what is left."""
+        ask = self._ask_words
+        # With Jev, a dismissal found only inside a sentence must be confirmed by it.
+        loose = (
+            ask is not None and conversation
+            and voice_asr.is_dismissal(text) and not voice_asr.is_whole_dismissal(text)
+        )
+        verdict = self._regex_words(
+            text, conversation=conversation, over_her=over_her, whole_only=ask is not None,
+        )
+        if ask is None:
+            return verdict
+        if verdict != "turn":
+            if self._note_words is not None:
+                self._note_words(turn_id, verdict, text, over_her, conversation)
+            return verdict
+        if not (over_her or conversation):
+            return verdict
+        try:
+            choice = ask(turn_id, text, self._recent(), over_her, loose)
+        except Exception:  # noqa: BLE001 - Jev cannot break capture; the line stays a turn
+            LOGGER.warning("ask_words failed turn_id=%s", turn_id, exc_info=True)
+            return verdict
+        return _jev_verdict(choice, conversation=conversation, over_her=over_her)
+
+    def _regex_words(
+        self, text: str, *, conversation: bool, over_her: bool, whole_only: bool,
+    ) -> str:
+        """What the regexes make of ``text``; ``whole_only`` leaves out the loose dismissal."""
+        checks: list[tuple[str, Callable[[str], bool]]] = []
+        if conversation:
+            dismissal = voice_asr.is_whole_dismissal if whole_only else voice_asr.is_dismissal
+            checks += [("dismissed", dismissal), ("wait", voice_asr.is_wait_request)]
+            if not over_her:
+                checks += [
+                    ("backchannel", voice_asr.is_backchannel),
+                    ("unclear", voice_asr.is_unclear_sound),
+                ]
+        if over_her:
+            checks += [
+                ("backchannel", voice_asr.is_backchannel),
+                ("stop", voice_asr.is_stop_request),
+                ("unclear", voice_asr.is_unclear_sound),
+            ]
+        for verdict, test in checks:
+            if test(text):
+                return verdict
+        return "echo" if over_her and self._is_own_echo(text) else "turn"
+
+    def _act_on_words(self, turn_id: str, text: str, verdict: str, *, over_her: bool) -> None:
+        """Carry out a verdict; raises when the words are no turn."""
+        if verdict in {"dismissed", "wait"}:
+            self._settle_barge_in(turn_id, go_on=False)
+            if verdict == "dismissed":
+                self._change_conversation(on=False, reason=verdict)
+            else:
+                self._conversation_hold_until = (
+                    time.monotonic() + self._config.conversation_wait_s
+                )
+            if self._answer_words is not None:
+                try:
+                    self._answer_words(turn_id, verdict, text)
+                except Exception:  # noqa: BLE001 - her answer cannot break capture
+                    LOGGER.warning("answer_words failed reason=%s", verdict, exc_info=True)
+            raise voice_pipeline.VoicePipelineAbsorbedError(verdict)
+        if not over_her:
+            if verdict != "turn":
+                raise voice_pipeline.VoicePipelineAbsorbedError(verdict)
+            return
+        with self._barge_lock:
+            if turn_id not in self._barges:
+                return
+        self._settle_barge_in(turn_id, go_on=verdict in {"backchannel", "unclear", "echo"})
+        record_realtime_trace(
+            "conversation_barge_in_judged", session_id=self._session_id, verdict=verdict,
+        )
+        if verdict == "echo":
+            LOGGER.info("words over Jarvis were her own voice (echo) turn_id=%s", turn_id)
+        if verdict != "turn":
+            raise voice_pipeline.VoicePipelineAbsorbedError(
+                "stop_request" if verdict == "stop" else verdict,
+            )
+
+    def _recent(self) -> str:
+        """What she said lately, for Jev's context; none when it cannot be read."""
+        if self._recent_speech is None:
+            return ""
+        try:
+            return self._recent_speech()
+        except Exception:  # noqa: BLE001 - her recent words cannot break capture
+            LOGGER.debug("recent_speech failed", exc_info=True)
+            return ""
 
     def _is_own_echo(self, text: str) -> bool:
         """Whether ``text`` copies what she said lately; no answer means no."""
@@ -1542,31 +1630,6 @@ class DuplexVoiceSession:
         except Exception:  # noqa: BLE001 - her recent words cannot break capture
             LOGGER.debug("recent_speech failed", exc_info=True)
             return False
-
-    def _judge_conversation_words(self, turn_id: str, text: str) -> None:
-        """ADR 0102's no-turn words in conversation mode; returns when they are none."""
-        with self._barge_lock:
-            over_her = turn_id in self._barges
-        reason = None
-        if voice_asr.is_dismissal(text):
-            reason = "dismissed"
-            self._settle_barge_in(turn_id, go_on=False)
-            self._change_conversation(on=False, reason=reason)
-        elif voice_asr.is_wait_request(text):
-            reason = "wait"
-            self._settle_barge_in(turn_id, go_on=False)
-            self._conversation_hold_until = time.monotonic() + self._config.conversation_wait_s
-        elif not over_her and (
-            voice_asr.is_backchannel(text) or voice_asr.is_unclear_sound(text)
-        ):
-            reason = "backchannel" if voice_asr.is_backchannel(text) else "unclear"
-        if reason in {"dismissed", "wait"} and self._answer_words is not None:
-            try:
-                self._answer_words(turn_id, reason, text)
-            except Exception:  # noqa: BLE001 - her answer cannot break capture
-                LOGGER.warning("answer_words failed reason=%s", reason, exc_info=True)
-        if reason is not None:
-            raise voice_pipeline.VoicePipelineAbsorbedError(reason)
 
     def _judge_no_words(self, turn_id: str, heard: str, *, addressed: bool = False) -> None:
         """No turn in it: her name or a lone stop word over her stops her, anything else not."""
@@ -2005,6 +2068,23 @@ def realtime_input_session_config_from_mapping(
         conversation_wait_s=_positive_float("conversation_wait_s", defaults.conversation_wait_s),
         partial_asr=_partial_asr_config_from_mapping(values.get("partial_asr")),
     )
+
+
+def _jev_verdict(choice: str | None, *, conversation: bool, over_her: bool) -> str:
+    """Jev's choice as the verdict the regex path would have given (ADR 0130).
+
+    Dismiss and wait only mean something in conversation mode; over her outside it they
+    stop her, and a stop with her silent has nothing to stop. Everything else is a turn.
+    """
+    if choice == "keep_going":
+        return "backchannel"
+    if choice == "dismiss" and conversation:
+        return "dismissed"
+    if choice == "wait" and conversation:
+        return "wait"
+    if choice in {"stop", "wait", "dismiss"} and over_her:
+        return "stop"
+    return "turn"
 
 
 def _barge_in_yield(

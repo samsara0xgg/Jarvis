@@ -1080,11 +1080,16 @@ def _squashed(text: str) -> str:
     return re.sub(r"[\W_]+", "", text.lower())
 
 
+def is_whole_dismissal(text: str) -> bool:
+    """True when ``text`` is a dismissal whole (退下, 没事了, bye); not one inside a sentence."""
+    return _DISMISS_RE.fullmatch(_squashed(text)) is not None
+
+
 def is_dismissal(text: str) -> bool:
     """True when ``text`` sends Jarvis out of conversation mode (退下, 没事了, bye)."""
-    squashed = _squashed(text)
-    if _DISMISS_RE.fullmatch(squashed) is not None:
+    if is_whole_dismissal(text):
         return True
+    squashed = _squashed(text)
     return (
         len(squashed) <= _DISMISS_WORD_MAX_CHARS
         and _QUESTION_END_RE.search(text) is None
@@ -1185,6 +1190,7 @@ __all__ = [
     "is_unclear_sound",
     "is_wait_request",
     "is_wake_only",
+    "is_whole_dismissal",
     "looks_complete",
     "normalize_partial_text",
     "too_quiet_for_speech",

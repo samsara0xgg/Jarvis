@@ -3711,6 +3711,8 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
             ).start(),
             turn_working=_turn_working,
             recent_speech=_recent_speech,
+            ask_words=runtime.voice_words.ask if runtime.voice_words is not None else None,
+            note_words=runtime.voice_words.note if runtime.voice_words is not None else None,
             stop_speaking=_stop_speaking,
             hold_output=_hold_output,
             supersede_unspoken=supersede_unspoken,

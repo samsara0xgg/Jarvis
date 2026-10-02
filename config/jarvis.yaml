@@ -229,11 +229,11 @@ agents:
     question_at: 0.8
     timeout_ms: 1500
 
-# ADR 0128.  Every Jev call (the instant route, the mail marks, the turn-end asks) is appended
-# to ~/.jarvis/jev/decisions.jsonl with the text it was sent, the questions and Jev's raw answer,
+# ADR 0128.  Every Jev call (the instant route, the mail marks, the turn-end asks, the voice
+# words) is appended to ~/.jarvis/jev/decisions.jsonl with the text it was sent, the questions and Jev's raw answer,
 # plus a line per mail archive or undo, so a small model can be trained on it later.  It holds
 # what Allen said and the senders and subjects of his mail; it never leaves the Mac, is cut by
-# nothing, and grows by a few KB per call.  Written only while one of those three is on.
+# nothing, and grows by a few KB per call.  Written only while one of those four is on.
 jev_log:
   enabled: true
 
@@ -613,6 +613,22 @@ realtime:
     # request fails over to the model if none can serve it.  Checked 2026-10-02: the
     # decisions endpoint accepts it for typesafe/jev-1.13.
     zdr: true
+  # ADR 0130.  A short line (at most max_chars characters without punctuation) heard
+  # over her voice or in hands-free mode that the word lists call a turn is asked of
+  # Jev, which answers go on, stop, wait, leave hands-free mode, or none; at `at` or
+  # above it is acted on as the word list would have, else it stays a turn.  A
+  # dismissal the word list finds only inside a sentence (我让你退下) counts only when
+  # Jev confirms it.  She is held for at most timeout_ms while Jev answers.  The line
+  # and her latest words leave the Mac for OpenRouter (zero data retention); every
+  # call, and every line the word lists settled alone, is kept in
+  # ~/.jarvis/jev/decisions.jsonl.  Needs OPENROUTER_API_KEY like surrogate_route;
+  # without it a dismissal found only inside a sentence is a turn.  Off here.
+  jev_words:
+    enabled: false
+    model: typesafe/jev-1.13
+    at: 0.95
+    timeout_ms: 800
+    max_chars: 24
   # ADR-0008 D8 (Wave 5).  intent_pump replaces the daemon's "poll one
   # event, await its whole turn" watcher with a durable-claim queue: each
   # trigger is claimed once by an idempotent turn.started, the cursor
