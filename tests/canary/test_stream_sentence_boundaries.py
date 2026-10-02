@@ -3,6 +3,8 @@
 # ruff: noqa: RUF001 — bilingual sentence/quotation fixtures need exact punctuation.
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from jarvis.decision.stream_sentences import SemanticAssembler, SemanticCandidate
@@ -40,6 +42,11 @@ def _assemble(
         "A short final fragment",
         "Water absorbs energy from the warmer air, and the molecules gain motion, "
         "so the solid structure loosens, and the ice turns into liquid.",
+        "A transformer reads text as tokens, then uses attention to decide which other "
+        "tokens matter for understanding each one. It processes those relationships "
+        "through layers and predicts the next token, repeating this to generate an answer.",
+        "The long rolling hills near the coast stretch out toward the horizon under a pale "
+        "morning sky while the quiet tide slowly drags the cold grey water over the sand.",
     ],
 )
 def test_plain_prose_keeps_exact_prefix_across_chunk_boundaries(text: str) -> None:
@@ -49,8 +56,11 @@ def test_plain_prose_keeps_exact_prefix_across_chunk_boundaries(text: str) -> No
         candidates, assembler = _assemble(text, width)
         assert assembler.blocked_reason is None, (text, width, assembler.blocked_reason)
         assert "".join(candidate.text for candidate in candidates) + assembler.pending_text == text
-        assert all(0 < len(candidate.text) <= 60 for candidate in candidates)
         parts = [candidate.text for candidate in candidates]
+        for part in candidates:
+            # 60 when a clause or sentence end lies within it, else up to 240.
+            bound = 60 if re.search(r"[,;，；.!?。！？]", part.text[:60]) else 240
+            assert 0 < len(part.text) <= bound, (text, width, part)
         if reference is None:
             reference = parts
         assert parts == reference, (text, width, parts, reference)
@@ -82,7 +92,7 @@ def test_plain_prose_keeps_exact_prefix_across_chunk_boundaries(text: str) -> No
         "- A list item. Next.",
         'He said, "An unfinished quotation.',
         "A" * 2100,
-        "The count is 1,234,567,890,123,456,789,012,345,678,901,234,567,890.",
+        "The count is " + ",".join(["123"] * 70) + ".",
     ],
 )
 def test_unsupported_or_unbounded_tail_never_becomes_a_candidate(tail: str) -> None:
@@ -137,5 +147,41 @@ def test_the_first_clause_can_end_the_first_candidate(text: str, parts: list[str
     """first_clause_chars=6: only the first candidate may end at a clause end."""
     for width in (1, 2, 5, len(text)):
         candidates, assembler = _assemble(text, width, first_clause_chars=6)
+        assert assembler.blocked_reason is None, (text, width, assembler.blocked_reason)
+        assert [candidate.text for candidate in candidates] == parts, (text, width)
+
+
+@pytest.mark.parametrize(
+    ("text", "parts"),
+    [
+        (
+            "A transformer reads text as tokens, then uses attention to decide which other "
+            "tokens matter for understanding each one. It processes those relationships "
+            "through layers and predicts the next token, repeating this to generate an answer.",
+            [
+                "A transformer reads text as tokens,",
+                " then uses attention to decide which other tokens matter for understanding "
+                "each one.",
+                " It processes those relationships through layers and predicts the next token,",
+                " repeating this to generate an answer.",
+            ],
+        ),
+        (
+            "The long rolling hills near the coast stretch out toward the horizon under a pale "
+            "morning sky while the quiet tide slowly drags the cold grey water over the sand.",
+            [
+                "The long rolling hills near the coast stretch out toward the horizon under a "
+                "pale morning sky while the quiet tide slowly drags the cold grey water over "
+                "the sand.",
+            ],
+        ),
+    ],
+)
+def test_a_long_clause_streams_at_its_first_boundary_within_240(
+    text: str, parts: list[str],
+) -> None:
+    """No boundary inside 60 code points: the first one up to 240 ends the candidate."""
+    for width in (1, 2, 5, len(text)):
+        candidates, assembler = _assemble(text, width)
         assert assembler.blocked_reason is None, (text, width, assembler.blocked_reason)
         assert [candidate.text for candidate in candidates] == parts, (text, width)

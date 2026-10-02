@@ -13,6 +13,7 @@ from jarvis.decision.stream_risk import (
     ResponseRiskContext,
     SegmentRiskClassifier,
 )
+from jarvis.decision.stream_sentences import SPEECH_CANDIDATE_MAX_CHARS
 from jarvis.shared.stream_emission import EmissionPermit, StreamGateAssessment
 from jarvis.state.stream_emission import StreamEmissionError, append_stream_gate
 
@@ -110,7 +111,8 @@ def stream_emission_gate(  # noqa: PLR0913 - explicit immutable gate inputs
     candidate_shape_valid = (
         segment.boundary in {"sentence", "subclause", "final"}
         and bool(segment.text.strip())
-        and len(segment.text) <= (60 if channel in {"speech", "both"} else 2048)
+        and len(segment.text)
+        <= (SPEECH_CANDIDATE_MAX_CHARS if channel in {"speech", "both"} else 2048)
     )
     eligible = (
         result.risk == "routine"

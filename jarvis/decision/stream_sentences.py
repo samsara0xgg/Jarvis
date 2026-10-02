@@ -138,26 +138,33 @@ def _sentence_boundary(
     return _boundary_end(text, index, final=final)
 
 
+SPEECH_CANDIDATE_MAX_CHARS = 240  # code points; the stream gate admits no longer speech chunk
+
+
 class SemanticAssembler:
     """Preserve text exactly and stop when no bounded safe candidate exists.
 
-    Speech uses the ADR's initial 60-code-point limit; documents may request
-    a larger explicit limit. A forced split chooses punctuation, never an
-    arbitrary character offset. The engine must stop feeding this assembler
-    once ``blocked_reason`` is set, and buffer/finalize the remaining draft.
+    Speech uses the ADR's 60-code-point limit; documents may request a larger
+    explicit limit. With no clause or sentence end inside that limit, the first
+    one up to ``max_speech_chars`` still ends a candidate, so a long
+    clause streams instead of blocking the rest of the answer. A forced split
+    chooses punctuation, never an arbitrary character offset. The engine must
+    stop feeding this assembler once ``blocked_reason`` is set, and
+    buffer/finalize the remaining draft.
     ``first_clause_chars`` (0: off) lets the first candidate end at a clause
     end once it is that long, so speech starts before the first sentence does.
     """
 
     def __init__(
         self, *, max_candidate_chars: int = 60, max_buffer_chars: int = 2048,
-        first_clause_chars: int = 0,
+        first_clause_chars: int = 0, max_speech_chars: int = SPEECH_CANDIDATE_MAX_CHARS,
     ) -> None:
         """Set positive candidate and pending-text bounds."""
         if not 1 <= max_candidate_chars <= max_buffer_chars:
             message = "candidate bound must be positive and no larger than buffer bound"
             raise ValueError(message)
         self._max_candidate = max_candidate_chars
+        self._max_speech = min(max(max_speech_chars, max_candidate_chars), max_buffer_chars)
         self._max_buffer = max_buffer_chars
         self._first_clause = first_clause_chars
         self._released = False
@@ -209,7 +216,9 @@ class SemanticAssembler:
         protected = _protected_dots(self._buffer)
         clauses: list[int] = []
         for index, char in enumerate(self._buffer):
-            if index >= self._max_candidate:
+            # Past the candidate bound only the first boundary counts, and only
+            # while no clause end was found inside it.
+            if index >= self._max_speech or (index >= self._max_candidate and clauses):
                 break
             numeric_comma = (
                 char == ","
@@ -223,6 +232,10 @@ class SemanticAssembler:
                 and _balanced_prose(self._buffer[: index + 1])
             ):
                 clauses.append(index + 1)
+                if index >= self._max_candidate:
+                    if final or index + 1 < len(self._buffer):  # 1,000 is no clause end
+                        return index + 1, "subclause"
+                    clauses.pop()
                 if (
                     not self._released
                     and 0 < self._first_clause <= index + 1
@@ -230,11 +243,11 @@ class SemanticAssembler:
                 ):
                     return index + 1, "subclause"
             end = _sentence_boundary(self._buffer, index, protected, final=final)
-            if end is not None and end <= self._max_candidate:
+            if end is not None and (end <= self._max_candidate or not clauses):
                 return end, "sentence"
         if len(self._buffer) > self._max_candidate and clauses:
             return clauses[-1], "subclause"
-        if final and len(self._buffer) <= self._max_candidate and _balanced_prose(self._buffer):
+        if final and len(self._buffer) <= self._max_speech and _balanced_prose(self._buffer):
             return len(self._buffer), "final"
         return None
 
@@ -245,7 +258,7 @@ class SemanticAssembler:
             if boundary is None:
                 if _unsupported_syntax(self._buffer, final=final):
                     self._blocked_reason = "unsupported_speech_syntax"
-                elif len(self._buffer) > self._max_candidate:
+                elif len(self._buffer) > self._max_speech:
                     self._blocked_reason = "no_safe_bounded_boundary"
                 elif final:
                     self._blocked_reason = "no_safe_final_boundary"

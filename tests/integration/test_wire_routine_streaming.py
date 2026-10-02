@@ -544,7 +544,7 @@ def test_flag_off_keeps_the_full_text_path_and_records_no_route(tmp_path: Path) 
 _LONG_TAIL = (
     "冰在温度升高时会慢慢从固体变成液体这个过程叫做融化它需要从周围吸收热量"
     "因此冰块周围的空气会变凉一些这也是夏天冰饮让人觉得凉快的原因"
-)
+) * 4  # past the 240-code-point speech bound with no boundary
 
 
 def test_blocked_routine_tail_is_the_approved_suffix(tmp_path: Path) -> None:
