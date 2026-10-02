@@ -157,6 +157,7 @@ class NativeAudioStreamPlayer(AudioStreamPlayer):
     """
 
     _READY_TIMEOUT_S = 5.0
+    _ACK_WAIT_S = 0.05
 
     def __init__(
         self,
@@ -472,14 +473,23 @@ class NativeAudioStreamPlayer(AudioStreamPlayer):
         *,
         expected_playback_generation_id: int,
     ) -> OutputTimelineSnapshot | StalePlaybackGeneration | None:
-        """``None`` until the helper acked the discard; every earlier report is then in the ring."""
+        """Freeze once the helper acked the discard; every report before the ack is then in the ring.
+
+        The ack comes one render callback after the DISCARD frame (about 11 ms),
+        so this waits for it, bounded, instead of returning ``None`` at once: the
+        media actor yields to its other tasks on ``None``, and a response task
+        that reads the tombstone in that window ends its own turn as a failure
+        before the interrupt's terminal commits.  ``None`` is the bounded answer
+        for an ack that is slower than that; a dead helper never acks, so it
+        freezes at once.
+        """
         mirror = self._mirror
-        if (
-            expected_playback_generation_id in self._tombstoned_generations
-            and mirror.acked_seq < mirror.discard_seq
-            and self.is_running
-        ):
-            return None
+        if expected_playback_generation_id in self._tombstoned_generations:
+            deadline = time.monotonic() + self._ACK_WAIT_S
+            while mirror.acked_seq < mirror.discard_seq and self.is_running:
+                if time.monotonic() >= deadline:
+                    return None
+                time.sleep(0.0005)
         return super().settle_interrupted_generation(
             expected_playback_generation_id=expected_playback_generation_id,
         )

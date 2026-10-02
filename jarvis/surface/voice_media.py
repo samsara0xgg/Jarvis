@@ -3465,7 +3465,9 @@ class StreamingTTSPipeline:
         reason: str,
         retryable: bool,
     ) -> None:
-        if self._active is not active:
+        # An interrupt already owns this response's terminal: a response task that
+        # sees the tombstone while the interrupt settles must not race it to a failure.
+        if self._active is not active or active.terminal_commit_pending:
             return
         active.terminal_commit_pending = True
         snapshot = await self._interrupt_snapshot(active)
