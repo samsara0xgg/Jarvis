@@ -1,4 +1,4 @@
-# ADR 0118 — Test-time recordings of her voice and of the model requests are off-by-default switches
+# ADR 0120 — Test-time recordings of her voice and of the model requests are off-by-default switches
 
 **Status:** Accepted
 **Date:** 2026-10-01

@@ -609,7 +609,7 @@ I8 到 I11 随审核链退役（ADR 0019），编号保留。
 <li><strong>截图</strong>超过 <code>tools.screen.retention_days</code>（默认 7）天的删掉。</li>
 <li>两者都按文件修改时间算，写 <code>null</code> 就永久保留；启动时和之后每小时检查一次。memory.db 里的对话记录不删，它指向的录音可能已经不在了。</li>
 <li><strong>日志</strong>每个文件超过 10 MB 就挪开一份，连当前的最多留 3 份。日志只记发生了什么和长度，不记主人说的话、实时语音的转写或回答的文字。</li>
-<li><strong>测试记录</strong>是上一条的例外，默认都关（<code>diagnostics.record_tts_audio</code>、<code>diagnostics.log_llm_io</code>，ADR 0118）。前者把她每段语音的音频存进录音目录，随录音的保留期删；后者把发给模型的每个请求和回来的回答逐行写进 <code>logs/llm-io.jsonl</code>，里面有主人说的话和她的回答，不裁剪，要自己删。</li>
+<li><strong>测试记录</strong>是上一条的例外，默认都关（<code>diagnostics.record_tts_audio</code>、<code>diagnostics.log_llm_io</code>，ADR 0120）。前者把她每段语音的音频存进录音目录，随录音的保留期删；后者把发给模型的每个请求和回来的回答逐行写进 <code>logs/llm-io.jsonl</code>，里面有主人说的话和她的回答，不裁剪，要自己删。</li>
 </ul>
 
 <h3 id="export-erase">导出与抹掉（ADR 0067）</h3>

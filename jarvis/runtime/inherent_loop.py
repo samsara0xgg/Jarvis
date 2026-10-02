@@ -2465,7 +2465,7 @@ def _build_tts_pipeline(  # noqa: C901 - rollout/degradation capability boundary
         else media_config.ring_seconds
     )
 
-    # ADR 0118: with the diagnostics switch on, her audio is kept beside the recordings.
+    # ADR 0120: with the diagnostics switch on, her audio is kept beside the recordings.
     recorder = (
         voice_artifact_store.TtsRecorder(runtime.memory.audio_dir)
         if diagnostics_flag(runtime.config, "record_tts_audio") and runtime.memory is not None

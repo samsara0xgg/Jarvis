@@ -1,4 +1,4 @@
-"""Test-time record of every model request and what came back (ADR 0118).
+"""Test-time record of every model request and what came back (ADR 0120).
 
 ``diagnostics.log_llm_io`` turns it on; off, :func:`start` returns ``None`` and
 nothing else here runs. One JSON line per request goes to ``llm-io.jsonl``,

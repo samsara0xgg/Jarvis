@@ -1,4 +1,4 @@
-"""ADR 0118: the two test-time recordings, with a fake MiniMax socket and a localhost SSE peer."""
+"""ADR 0120: the two test-time recordings, with a fake MiniMax socket and a localhost SSE peer."""
 
 from __future__ import annotations
 

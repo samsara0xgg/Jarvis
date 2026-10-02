@@ -67,7 +67,7 @@ def persist(
 
 
 class TtsRecorder:
-    """Test-time copy of what MiniMax returned for each segment (ADR 0118).
+    """Test-time copy of what MiniMax returned for each segment (ADR 0120).
 
     ``tts-<response_id>-<sequence>.m4a`` (or ``.wav``) and a one-line
     ``.json`` of the text sent, voice, model and rate, in the recordings

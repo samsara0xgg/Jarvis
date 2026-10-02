@@ -2165,7 +2165,7 @@ class MiniMaxWSClient:
             chunks.append(chunk)
         pcm = b"".join(chunks)
         if self._recorder is not None and pcm:
-            # ADR 0118: the legacy path has no response id; this is the provider's float32
+            # ADR 0120: the legacy path has no response id; this is the provider's float32
             # PCM after the resampler, kept as int16.
             heard = np.frombuffer(pcm, dtype=np.float32)
             self._recorder.keep(
@@ -2427,7 +2427,7 @@ class MiniMaxTTSSession:
         recorder: TtsRecorder | None = None,
     ) -> None:
         self._recorder = recorder
-        self._heard: list[bytes] = []  # ADR 0118: this segment's provider PCM, when recording
+        self._heard: list[bytes] = []  # ADR 0120: this segment's provider PCM, when recording
         self._api_key = api_key
         self._endpoint = endpoint
         self._voice = voice
@@ -2797,7 +2797,7 @@ class MiniMaxTTSSession:
             self._heard.append(pcm)
 
     def _keep_heard(self, sequence: int, *, complete: bool) -> None:
-        """ADR 0118: hand what the provider sent for this segment to the recorder, off this loop."""
+        """ADR 0120: hand what the provider sent for this segment to the recorder, off this loop."""
         if self._recorder is None or not self._heard:
             return
         pcm, self._heard = b"".join(self._heard), []

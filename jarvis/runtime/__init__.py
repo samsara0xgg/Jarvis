@@ -1558,7 +1558,7 @@ def _configure_realtime_trace_export(paths: RuntimePaths) -> None:
 
 
 def diagnostics_flag(config: Mapping[str, Any], key: str) -> bool:
-    """A ``diagnostics:`` switch (ADR 0118); absent or anything but ``true`` is off."""
+    """A ``diagnostics:`` switch (ADR 0120); absent or anything but ``true`` is off."""
     block = config.get("diagnostics")
     return isinstance(block, Mapping) and block.get(key) is True
 

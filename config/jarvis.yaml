@@ -768,7 +768,7 @@ memory:
   retain_audio: false    # true keeps each utterance's audio (AAC via afconvert, WAV fallback)
   audio_retention_days: 30   # ADR 0067: kept recordings older than this are deleted; null = forever
 
-# Test-time recordings (ADR 0118); both off by default, switched on in settings.yaml.
+# Test-time recordings (ADR 0120); both off by default, switched on in settings.yaml.
 # They keep what she said and what the model was sent, so they hold speech: delete by hand.
 diagnostics:
   record_tts_audio: false   # keep MiniMax's audio per segment in memory.audio_dir (ADR 0067 retention)
