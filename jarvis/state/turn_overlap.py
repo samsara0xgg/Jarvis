@@ -72,6 +72,29 @@ def turns_in_flight(
     )
 
 
+def any_turn_in_flight(conn: sqlite3.Connection, *, since_ms: int) -> bool:
+    """Whether a turn started from Allen's words at or after ``since_ms`` is not yet over."""
+    return (
+        conn.execute(
+            f"""
+            SELECT 1 FROM events s JOIN events t ON t.event_uid = s.source_event_id
+            WHERE s.type = 'turn.started' AND s.ts_epoch_ms >= ?
+              AND t.type IN ({", ".join("?" * len(_INPUT_TYPES))})
+              AND NOT EXISTS (
+                SELECT 1 FROM events e
+                WHERE e.type IN ({", ".join("?" * len(_TURN_CLOSED_TYPES))})
+                  AND e.ts_epoch_ms >= s.ts_epoch_ms
+                  AND json_extract(e.payload_json, '$.turn_id')
+                      = json_extract(s.payload_json, '$.turn_id')
+              )
+            LIMIT 1
+            """,  # noqa: S608 - only placeholders are interpolated
+            (since_ms, *_INPUT_TYPES, *_TURN_CLOSED_TYPES),
+        ).fetchone()
+        is not None
+    )
+
+
 def words_since(conn: sqlite3.Connection, *, trigger_event_uid: str) -> tuple[str, ...]:
     """What Allen said or typed after this trigger, oldest first."""
     rows = conn.execute(

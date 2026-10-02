@@ -1007,6 +1007,7 @@ class DuplexVoiceSession:
         conversation: Callable[[], bool] | None = None,
         set_conversation: Callable[[bool, str], None] | None = None,
         answer_words: Callable[[str, str, str], None] | None = None,
+        turn_working: Callable[[], bool] | None = None,
         stop_speaking: Callable[[], object] | None = None,
         hold_output: Callable[[bool], None] | None = None,
         supersede_unspoken: Callable[[str], None] | None = None,
@@ -1044,6 +1045,7 @@ class DuplexVoiceSession:
         self._conversation = conversation
         self._set_conversation = set_conversation
         self._answer_words = answer_words
+        self._turn_working = turn_working
         # ADR 0102: when conversation mode last had an accepted turn or Jarvis's
         # speech; an accepted turn waits for her answer, 「等我一下」 holds it.
         self._conversation_busy_at = time.monotonic()
@@ -1364,11 +1366,17 @@ class DuplexVoiceSession:
         (a hum, a word that says nothing, room talk heard as nothing) does not
         count, but the mode never ends while an utterance is still coming in.
         An accepted turn holds it until her answer starts, for at most
-        ``_ANSWER_WAIT_S``; 「等我一下」 holds it ``conversation_wait_s``. The
-        clock starts over while the mode is off, so it counts from its start.
+        ``_ANSWER_WAIT_S``, and a turn still working holds it as long as it
+        works (a wait line is not its answer); 「等我一下」 holds it
+        ``conversation_wait_s``. The clock starts over while the mode is off,
+        so it counts from its start.
         """
         now = time.monotonic()
         if self._set_conversation is None or not self._conversation_open() or self._speaking():
+            self._conversation_busy_at = now
+            self._awaiting_answer = False
+            return
+        if self._turn_working is not None and self._turn_working():
             self._conversation_busy_at = now
             self._awaiting_answer = False
             return

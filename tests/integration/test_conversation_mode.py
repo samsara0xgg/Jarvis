@@ -49,6 +49,7 @@ class _Session:
         conversation: bool = True,
         wake: bool = False,
         idle_exit_s: float = 30.0,
+        turn_working: Callable[[], bool] | None = None,
     ) -> None:
         monkeypatch.setitem(
             voice_audio._MODE_THRESHOLDS,  # noqa: SLF001 - loosened for one-frame onsets
@@ -85,6 +86,7 @@ class _Session:
                 mic_muted=lambda: self.muted,
                 conversation=lambda: self.conversation,
                 set_conversation=self._set_conversation,
+                turn_working=turn_working,
                 stop_speaking=self.stopped.set,
                 hold_output=hold_output,
                 supersede_unspoken=supersede_unspoken,
@@ -200,6 +202,22 @@ def test_quiet_ends_conversation_mode_but_her_speech_does_not(
     rig.idle(0.2)
     assert rig.changes == []
     rig.speaking = False
+    rig.idle(0.2)
+    rig.close()
+    assert rig.changes == [(False, "idle")]
+
+
+def test_a_turn_still_working_keeps_conversation_mode_open_past_the_quiet_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ADR 0102: a turn working past the window ends nothing; quiet after it does."""
+    working = [True]
+    rig = _Session(monkeypatch, idle_exit_s=0.05, turn_working=lambda: working[0])
+    rig.idle(0.2)
+    assert rig.changes == []
+    working[0] = False
+    rig.idle(0.02)
+    assert rig.changes == []  # counts from the turn's end, not from before it
     rig.idle(0.2)
     rig.close()
     assert rig.changes == [(False, "idle")]

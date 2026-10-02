@@ -209,6 +209,7 @@ from jarvis.state.projections import (
     rebuild_projections,
 )
 from jarvis.state.trigger_consumption import trigger_was_consumed
+from jarvis.state.turn_overlap import any_turn_in_flight
 from jarvis.surface import (
     voice_aec,
     voice_artifact_store,
@@ -1781,6 +1782,10 @@ _COMMENTARY_ORIGIN_TRIGGER_TYPE: Final = "utterance.received"
 GPT-Live relay (also `surface.user_intent`) and a reconciliation or
 supervisor-sweep turn (no `turn.started` at all) never match it.
 """
+
+_TURN_WORKING_WINDOW_MS: Final[int] = 5 * 60 * 1000
+"""A turn of his words still open this long after it began is the supervisor's, not
+conversation mode's to wait for (the window ADR 0107 gives a turn in flight)."""
 
 _COMMENTARY_LOCK: Final = threading.Lock()
 """One decide-and-render at a time, so the dispatch and the clock of the same
@@ -3578,6 +3583,18 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
             if path is not None:
                 LOGGER.info("echo diagnostics written: %s", path)
 
+        def _turn_working() -> bool:
+            # ADR 0102: conversation mode's quiet clock does not run while a turn works.
+            conn = open_runtime_event_log(runtime.runtime_paths.event_log)
+            try:
+                return any_turn_in_flight(
+                    conn, since_ms=int(time.time() * 1000) - _TURN_WORKING_WINDOW_MS,
+                )
+            except sqlite3.Error:
+                return False
+            finally:
+                conn.close()
+
         session = voice_session.DuplexVoiceSession(
             ingress=ingress,
             wake_engine=engine,
@@ -3596,6 +3613,7 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
                 name="conversation-line",
                 daemon=True,
             ).start(),
+            turn_working=_turn_working,
             stop_speaking=_stop_speaking,
             hold_output=_hold_output,
             supersede_unspoken=supersede_unspoken,

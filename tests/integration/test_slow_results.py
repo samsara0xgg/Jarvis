@@ -25,7 +25,7 @@ from jarvis.decision.response_run import decide_foreground
 from jarvis.runtime import make_foreground_decision_callable
 from jarvis.shared.realtime import Wave4ResponseFlags
 from jarvis.state.event_log import emit_event, open_event_log
-from jarvis.state.turn_overlap import turns_in_flight
+from jarvis.state.turn_overlap import any_turn_in_flight, turns_in_flight
 from jarvis.surface import voice_media
 from tests.integration.test_foreground_arbitration import _emit_emitted, _emit_open, _whole
 from tests.integration.test_spoken_streaming import (
@@ -294,3 +294,22 @@ def test_a_turn_that_ended_or_was_cancelled_is_not_in_flight(tmp_path: Path) -> 
     # Before the window, and from the current trigger's own point of view.
     assert turns_in_flight(conn, trigger_event_uid=now.event_uid, since_ms=10**15) == ()
     assert turns_in_flight(conn, trigger_event_uid=starts["T1"].event_uid, since_ms=0) == ()
+
+
+def test_any_turn_in_flight_is_his_words_with_no_end_yet(tmp_path: Path) -> None:
+    """ADR 0102's quiet clock waits for a turn of his words only until it ends or fails."""
+    conn = open_event_log(tmp_path / "events.db")
+
+    def start(turn_id: str, trigger_type: str) -> None:
+        said = emit_event(conn, type=trigger_type, payload={"transcript": "x", "turn_id": turn_id})
+        emit_event(conn, type="turn.started", payload={"turn_id": turn_id},
+                   source_event_id=said.event_uid)
+
+    assert not any_turn_in_flight(conn, since_ms=0)
+    start("T0", "turn.ended")  # a trigger that is not his words
+    assert not any_turn_in_flight(conn, since_ms=0)
+    start("T1", "utterance.received")
+    assert any_turn_in_flight(conn, since_ms=0)
+    assert not any_turn_in_flight(conn, since_ms=10**15)
+    emit_event(conn, type="turn.failed", payload={"turn_id": "T1", "exception_repr": "x"})
+    assert not any_turn_in_flight(conn, since_ms=0)

@@ -48,7 +48,11 @@ Its limits:
   sound or one syllable that says nothing, said while she is silent, is
   dropped as no turn; it and an utterance heard as nothing do not keep the
   mode open. The mode never ends while an utterance is still coming in, and
-  an accepted turn holds it until her answer starts, for at most 30 s.
+  an accepted turn holds it until her answer starts, for at most 30 s, and
+  a turn of Allen's words with no `turn.ended`, `turn.failed` or cancelled
+  run holds it for as long as it works (up to 5 min after it began), so a
+  wait line does not count as the answer; the 10 s then counts from the
+  turn's end or her last word, whichever is later.
 - A dismissal is an utterance that is only 退下, 没事了, 就这样吧, 先这样,
   拜拜, 再见, 结束对话, 去休息, bye, goodbye or that's all (with an optional
   wake phrase, 你/那, and 了/吧/啦), or a sentence of at most 16 characters,
@@ -91,8 +95,9 @@ Its limits:
 
 - Any speech in the room within 10 s of her last word, or of Allen's last
   accepted turn, still becomes a turn, as after a tap.
-- An answer that has not started 30 s after its turn was accepted arrives
-  after the mode has ended and cannot be interrupted by voice.
+- An answer that has not started 30 s after its turn was accepted, from a
+  turn no longer working, arrives after the mode has ended and cannot be
+  interrupted by voice.
 - A tap-opened mode now also ends after 10 s of quiet.
 - A lone 「嗯」, 「啊」 or "The." said in the mode while she is silent is never
   answered; a lone card answer (好, 对, yes) still is.
