@@ -92,7 +92,13 @@ final class Engine: @unchecked Sendable {
     let ringSize: Int
     let mask: Int
     var bufferFrames: Int
-    var deviceLatencyNs: Int64 = 0
+    // Read by the render callback: an atomic, not a var, so the callback pays for no
+    // exclusivity check.
+    private let deviceLatencyPub = Atomic<Int64>(0)
+    var deviceLatencyNs: Int64 {
+        get { deviceLatencyPub.load(ordering: .relaxed) }
+        set { deviceLatencyPub.store(newValue, ordering: .relaxed) }
+    }
 
     // Sample ring: the stdin thread produces, the render thread consumes.
     let pcm: UnsafeMutablePointer<Float>
