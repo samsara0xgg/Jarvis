@@ -60,6 +60,8 @@ export function connect(port: string, dispatch: (a: Action) => void): Runtime {
       try { msg = JSON.parse(String(e.data)); } catch { return; }
       const p = msg.payload ?? {};
       const turnId = String(p.turn_id ?? '');
+      // A wait line ("One moment.", ADR 0116) is speech only: not her answer, so it opens nothing, shows no text and ends no wait (ADR 0121).
+      if (p.response_phase === 'commentary') return;
       if (msg.op === 'open') dispatch({ type: 'open', turnId, responseId: typeof p.response_id === 'string' ? p.response_id : null, at: Date.now() });
       else if (msg.op === 'append') dispatch({ type: 'append', turnId, token: String(p.token ?? ''), at: Date.now() });
       else if (msg.op === 'done') { if (typeof p.spoken === 'string' && p.spoken) dispatch({ type: 'whole', turnId, text: p.spoken, at: Date.now() }); if (typeof p.written === 'string' && p.written) dispatch({ type: 'written', turnId, text: p.written }); setTimeout(() => dispatch({ type: 'settle', turnId }), Number(p.fadeMs ?? 5000)); }

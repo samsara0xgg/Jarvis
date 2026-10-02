@@ -641,11 +641,37 @@ try {
     a = await area();
     check(`${captions}: the daemon clearing it brings the plain state back`, a.state === 'thinking' && a.label === base);
     await emit('tool', { turn_id: 'k1', label: 'Searching the web...' }); await settled();
+    // ADR 0121: the daemon's wait line ("One moment.") comes as a commentary-phase response of the same turn, and a wait line is speech only.
+    const waitLine = async () => {
+      await emit('open', { turn_id: 'k1', response_id: 'r-wait', response_phase: 'commentary' });
+      await emit('append', { turn_id: 'k1', token: '<voice>One moment.</voice>', response_phase: 'commentary' });
+      await emit('done', { turn_id: 'k1', fadeMs: 100, response_phase: 'commentary' });
+      await emit('voice', { phase: 'playing', turn_id: 'k1', played: 3, ahead: 6, held: false, response_phase: 'commentary' });
+      await emit('voice', { phase: 'spoken', turn_id: 'k1', output_outcome: 'completed', response_phase: 'commentary' });
+      await page.waitForTimeout(1200);
+    };
+    await waitLine();
+    a = await area();
+    check(`${captions}: a wait line neither clears the tool line nor shows as her answer`, a.label === 'Searching the web...' && a.state === 'thinking' && !a.her.includes('moment') && a.hers === 0);
     await emit('open', { turn_id: 'k1', response_id: 'r-k1' }); await emit('append', { turn_id: 'k1', token: '<voice>今天有三条新闻。</voice>' }); await emit('done', { turn_id: 'k1', fadeMs: 100 });
     await page.waitForTimeout(1200);
     a = await area();
     check(`${captions}: when her answer opens the line is gone`, !/\.\.\.$/.test(a.label) && a.footer.indexOf('Searching') < 0);
     await emit('voice', { phase: 'spoken', turn_id: 'k1' });
+    // The live order: her wait line opens first, the tool starts after it, and the line still shows.
+    await emit('voice', { phase: 'listening', turn_id: 'k3' }); await emit('voice', { phase: 'accepted', turn_id: 'k3', text: '搜一下' });
+    await emit('open', { turn_id: 'k3', response_id: 'r-wait3', response_phase: 'commentary' });
+    await emit('append', { turn_id: 'k3', token: '<voice>On it.</voice>', response_phase: 'commentary' });
+    await emit('done', { turn_id: 'k3', fadeMs: 100, response_phase: 'commentary' });
+    await skew(3500); await settled(); // (the pill shows what she heard for 3 s)
+    await emit('tool', { turn_id: 'k3', label: 'Searching the web...' }); await settled();
+    a = await area();
+    check(`${captions}: a wait line before the tool starts still lets the tool line show`, a.label === 'Searching the web...' && a.state === 'thinking');
+    await emit('open', { turn_id: 'k3', response_id: 'r-k3' }); await emit('append', { turn_id: 'k3', token: '<voice>好了。</voice>' }); await emit('done', { turn_id: 'k3', fadeMs: 100 });
+    await page.waitForTimeout(1200);
+    a = await area();
+    check(`${captions}: and her answer's open still clears it`, a.footer.indexOf('Searching') < 0 && a.label.indexOf('Searching') < 0);
+    await emit('voice', { phase: 'spoken', turn_id: 'k3' });
     await emit('voice', { phase: 'listening', turn_id: 'k2' }); await emit('voice', { phase: 'accepted', turn_id: 'k2', text: '再查一个' });
     await skew(3500); await settled();
     await emit('tool', { turn_id: 'k2', label: 'Searching the web...' }); await settled();
