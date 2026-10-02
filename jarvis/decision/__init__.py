@@ -88,6 +88,14 @@ from jarvis.decision.stream_gate import stream_emission_gate
 from jarvis.decision.stream_json import SpokenJsonExtractor
 from jarvis.decision.stream_risk import SPOKEN_RULE_VERSION, SegmentRiskClassifier
 from jarvis.decision.stream_sentences import SemanticAssembler
+from jarvis.decision.surrogate_route import (
+    OPTIONS_VERSION,
+    REPEAT,
+    SurrogateRoute,
+    conversation_state,
+    offered,
+    tier0_hit,
+)
 from jarvis.decision.tier0 import render_tier0_response
 from jarvis.shared import (
     ActionRequest,
@@ -652,6 +660,9 @@ class DecideContext:
     # The ``reply_language`` setting: "en" or "zh" pins the language of the
     # spoken form (ADR 0045), "follow" leaves it to Allen's words this turn.
     reply_language: str = "follow"
+    # ADR 0120 (``realtime.surrogate_route``): Jev between Tier 0 and the model.
+    # None (the default) never asks.
+    surrogate_route: SurrogateRoute | None = None
 
 
 @dataclass(frozen=True)
@@ -863,6 +874,11 @@ def _repeat_of_last_answer(packet: SituationPacket) -> str | None:
         or _REPEAT_REQUEST_RE.fullmatch(re.sub(r"[\s,，。.!！]+", "", transcript.lower())) is None  # noqa: RUF001 — the fullwidth marks are Allen's own punctuation.
     ):
         return None
+    return _last_spoken_voice(packet)
+
+
+def _last_spoken_voice(packet: SituationPacket) -> str | None:
+    """The voice text of the last final answer before this turn, if any."""
     history = packet.conversation_history
     turns = history.turns if history is not None else ()
     index = next((i for i, t in enumerate(turns) if t.turn_id == packet.current_turn_id), 0)
@@ -1218,14 +1234,81 @@ def _handle_utterance(
     # Tier 0 deterministic shortcut (spec §17): hit → dispatch through
     # the full gate/audit chain with caller_principal=regex_router,
     # LLM never invoked. Miss / no table → Tier 2 loop.
-    hit = tier_0_match(packet, ctx.tier0_table)
-    if hit is not None:
-        return _run_tier0_path(hit, packet, policy, ctx, scratch)
+    instant = _run_instant_route(packet, policy, ctx, scratch)
+    if instant is not None:
+        return instant
 
     # Tier 2 tool-use loop. Each iteration calls the LLM, dispatches any
     # tool_calls (through the Pre-action Gate), and either continues (if more tool calls) or breaks
     # (if the LLM returned text — which goes to Pre-emit Gate).
     return _run_tool_use_loop(packet, policy, ctx, scratch)
+
+
+def _run_instant_route(
+    packet: SituationPacket,
+    policy: EffectivePolicy,
+    ctx: DecideContext,
+    scratch: _Scratch,
+) -> DecideResult | None:
+    """Tier 0, then (only on a miss) Jev; None means the model answers."""
+    hit = tier_0_match(packet, ctx.tier0_table)
+    if hit is not None:
+        return _run_tier0_path(hit, packet, policy, ctx, scratch)
+    return _run_surrogate_route(packet, policy, ctx, scratch)
+
+
+def _run_surrogate_route(
+    packet: SituationPacket,
+    policy: EffectivePolicy,
+    ctx: DecideContext,
+    scratch: _Scratch,
+) -> DecideResult | None:
+    """Ask Jev which instant function Allen wants (ADR 0120); None means the model answers.
+
+    The function runs through the very path a Tier 0 regex hit takes, so the
+    gates, confirmation rules and the spoken answer are unchanged. The call
+    and its outcome are recorded either way.
+    """
+    route = ctx.surrogate_route
+    trigger = packet.trigger_event
+    words = trigger.payload.get("transcript")
+    if (
+        route is None
+        or trigger.type not in ("surface.user_intent", "utterance.received")
+        or not isinstance(words, str)
+        or not words.strip()
+    ):
+        return None
+    options = offered(ctx.tier0_table)
+    answer = route.ask(conversation_state(packet, ctx.conn, words), options)
+    chosen = next((o for o in options if o.id == answer.choice), None)
+    hit = tier0_hit(chosen, ctx.tier0_table) if chosen is not None else None
+    repeated = _last_spoken_voice(packet) if chosen is not None and chosen.id == REPEAT else None
+    accepted = route.accepts(answer) and (hit is not None or repeated is not None)
+    scratch.events.append(
+        emit_event(
+            ctx.conn,
+            type="route.surrogate_decided",
+            payload={
+                "turn_id": scratch.turn_id,
+                "options_version": OPTIONS_VERSION,
+                "model": route.model,
+                "choice": answer.choice,
+                "confidence": answer.confidence,
+                "latency_ms": answer.latency_ms,
+                "accepted": accepted,
+                "error": answer.error,
+                "cost_usd": answer.cost_usd,
+            },
+            source_event_id=trigger.event_uid,
+            correlation={"turn_id": scratch.turn_id} if scratch.turn_id else None,
+        ),
+    )
+    if accepted and repeated is not None:
+        return _finalize_response(repeated, packet, ctx, scratch)
+    if accepted and hit is not None:
+        return _run_tier0_path(hit, packet, policy, ctx, scratch)
+    return None
 
 
 def _run_tool_use_loop(

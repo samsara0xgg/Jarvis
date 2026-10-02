@@ -107,6 +107,7 @@ from jarvis.decision.response_run import (
     start_response_run,
 )
 from jarvis.decision.stream_gate import routine_stream_policy, spoken_stream_policy
+from jarvis.decision.surrogate_route import SurrogateRoute
 from jarvis.decision.think_mode import ThinkMode, ThinkModeConfigError, load_think_mode
 from jarvis.decision.tier0 import Tier0ConfigError, load_tier0_table, validate_tier0_table
 from jarvis.deployment import RuntimePaths, bootstrap_runtime, load_env_file
@@ -447,6 +448,8 @@ class JarvisRuntime:
     # empty tuple = no cue can veto the routine route (the other pre-route
     # conditions still apply).
     tool_cues: ToolCueTable = ()
+    # ADR 0120: Jev between Tier 0 and the model; None = off (``realtime.surrogate_route``).
+    surrogate_route: SurrogateRoute | None = None
     # ADR 0108: `llm.think`, the words that make one turn think. None = never.
     think_mode: ThinkMode | None = None
     # ADR 0019: the resident codex app-server and the four worker tools bound
@@ -674,6 +677,26 @@ def _confirmation_ttl_ms(config: Mapping[str, Any]) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         return _FALLBACK_CONFIRMATION_TTL_MS
     return value if value > 0 else _FALLBACK_CONFIRMATION_TTL_MS
+
+
+def _surrogate_route(config: Mapping[str, Any], config_path: Path) -> SurrogateRoute | None:
+    """``realtime.surrogate_route`` (ADR 0120): off unless enabled; bad values stop boot."""
+    realtime = config.get("realtime")
+    block = realtime.get("surrogate_route") if isinstance(realtime, Mapping) else None
+    if not isinstance(block, Mapping) or block.get("enabled") is not True:
+        return None
+    model, bar, timeout = block.get("model"), block.get("min_confidence"), block.get("timeout_ms")
+    if (
+        not isinstance(model, str) or not model.strip()
+        or isinstance(bar, bool) or not isinstance(bar, int | float) or not 0 < bar <= 1
+        or isinstance(timeout, bool) or not isinstance(timeout, int) or timeout <= 0
+    ):
+        msg = (
+            f"runtime: {config_path} realtime.surrogate_route needs model (text),"
+            " min_confidence (0-1] and timeout_ms (positive int)"
+        )
+        raise RuntimeBootstrapError(msg)
+    return SurrogateRoute(model=model.strip(), min_confidence=float(bar), timeout_ms=timeout)
 
 
 def _max_tool_iterations(config: Mapping[str, Any]) -> int:
@@ -1999,6 +2022,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         response_runs=response_runs,
         committed_event_bus=committed_event_bus,
         input_flags=_wave5_input_flags(full_config),
+        surrogate_route=_surrogate_route(full_config, config_path),
         memory=memory,
         session=session,
         workers=workers,
@@ -3102,6 +3126,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             ),
             routine_stream=stream_route,
             slow_results=runtime.response_flags.slow_results,
+            surrogate_route=runtime.surrogate_route,
             # The same boot value as the system prompt's reply-language line.
             reply_language=str(runtime.config.get("reply_language", "follow")),
         )

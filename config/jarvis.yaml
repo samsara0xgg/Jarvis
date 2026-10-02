@@ -537,6 +537,20 @@ realtime:
   # result.
   commentary:
     enabled: true
+  # ADR 0120.  When no Tier 0 row matches, ask Jev (TypeSafe's hosted decision
+  # model, through OpenRouter) which of the instant no-argument functions
+  # Allen asked for; at min_confidence or above, run it as Tier 0 would, else
+  # the model answers as before.  Allen's words and the last two exchanges
+  # leave the Mac for OpenRouter on every turn Tier 0 did not answer.  A call
+  # past timeout_ms, an HTTP error, a missing key or a bad answer falls
+  # through to the model.  Needs an OPENROUTER_API_KEY=... line in
+  # ~/.jarvis/env, like the other provider keys.  Each call is a route.surrogate_decided
+  # event.  Off here; switch it on in settings.yaml.
+  surrogate_route:
+    enabled: false
+    model: typesafe/jev-1.13
+    min_confidence: 0.9
+    timeout_ms: 400
   # ADR-0008 D8 (Wave 5).  intent_pump replaces the daemon's "poll one
   # event, await its whole turn" watcher with a durable-claim queue: each
   # trigger is claimed once by an idempotent turn.started, the cursor

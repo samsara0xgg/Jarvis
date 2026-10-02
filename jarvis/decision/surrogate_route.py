@@ -1,0 +1,262 @@
+"""L3 surrogate route (ADR 0120): Jev between the Tier 0 regex and the model.
+
+When no Tier 0 row matched, one choice question goes to Jev, TypeSafe's hosted
+decision model reached through OpenRouter: which of Tier 0's instant
+no-argument functions does Allen want right now, or none. The caller runs the
+function only when the answer is confident enough; every other outcome
+(below the bar, ``none``, timeout, HTTP error, missing key, bad JSON) is a
+fall-through to the model, and every call is recorded as a
+``route.surrogate_decided`` event for a later local model to learn from.
+
+Layer rules: stdlib + ``httpx`` + L2 state + L3 siblings; no wiring.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import time
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Final
+
+import httpx
+
+from jarvis.decision.stream_envelope import split_envelope
+from jarvis.decision.tier0 import Tier0Hit
+from jarvis.state.event_log import get_event
+
+if TYPE_CHECKING:
+    import sqlite3
+    from collections.abc import Callable, Sequence
+
+    from jarvis.decision.packet import SituationPacket
+    from jarvis.decision.tier0 import Tier0Table
+
+LOGGER = logging.getLogger(__name__)
+
+SURROGATE_URL: Final[str] = "https://openrouter.ai/api/alpha/decisions"
+KEY_ENV: Final[str] = "OPENROUTER_API_KEY"
+# Bump when an option, a description or the instructions change: the logged
+# choices are only comparable within one version.
+OPTIONS_VERSION: Final[str] = "1"
+NONE: Final[str] = "none"
+REPEAT: Final[str] = "repeat"
+_CONTEXT_EXCHANGES: Final[int] = 2
+_CONTEXT_WINDOW_MS: Final[int] = 600_000
+_ANSWER_CHARS: Final[int] = 200
+_KEEPALIVE_S: Final[float] = 30.0
+
+
+@dataclass(frozen=True)
+class SurrogateOption:
+    """One instant function Jev may choose: a Tier 0 row, or the repeat shortcut."""
+
+    id: str
+    pattern_id: str | None
+    description: str
+
+
+# The Tier 0 rows in config/tier0_patterns.yaml that take no argument from
+# Allen's words, plus the repeat shortcut. note_capture and the open_* rows
+# need free text, so they are not here.
+OPTIONS: Final[tuple[SurrogateOption, ...]] = (
+    SurrogateOption("time", "time_now", "Asks what time it is now."),
+    SurrogateOption(
+        "date", "date_today",
+        "Asks today's date or which day of the week today is (not another day).",
+    ),
+    SurrogateOption(
+        "clipboard", "read_clipboard", "Asks to read out or say what is on the clipboard.",
+    ),
+    SurrogateOption(
+        "screen", "screen_look",
+        "Asks the assistant to look at the screen or say what is on the user's screen.",
+    ),
+    SurrogateOption(
+        "night_start", "night_start",
+        "Says they are going to sleep and wants the computer to keep running overnight"
+        " (start a night run).",
+    ),
+    SurrogateOption(
+        "night_end", "night_end", "Says they are up or awake and wants the overnight run ended.",
+    ),
+    SurrogateOption(
+        "list_notes", "note_list", "Asks to list or read back their saved notes or memos.",
+    ),
+    SurrogateOption(
+        REPEAT, None,
+        "Asks the assistant to say its last answer again, or says they did not hear or catch it.",
+    ),
+)
+_NONE_DESCRIPTION: Final[str] = "Anything else, including small talk and questions."
+_INSTRUCTIONS: Final[str] = (
+    "The text is a short transcript. The last line starting with 'User:' is the one being"
+    " judged; earlier lines are context. A user speaks to a voice assistant. Which one of the"
+    " assistant's instant no-argument functions is the user asking for right now, or none?"
+    " Choose none if the request needs details, a search, a conversation, an action on something"
+    " specific, or is anything else. The text is machine transcription in Chinese, English or"
+    " both, and may be garbled."
+)
+
+
+def offered(table: Tier0Table | None) -> tuple[SurrogateOption, ...]:
+    """The options this boot can run: repeat, and the rows that are in the Tier 0 table."""
+    ids = {p.pattern_id for p in table or ()}
+    return tuple(o for o in OPTIONS if o.pattern_id is None or o.pattern_id in ids)
+
+
+def tier0_hit(option: SurrogateOption, table: Tier0Table | None) -> Tier0Hit | None:
+    """The hit Tier 0 would have made for this option's row, so the same path runs it."""
+    for row in table or ():
+        if row.pattern_id == option.pattern_id:
+            return Tier0Hit(
+                pattern_id=row.pattern_id,
+                tool_name=row.tool_name,
+                tool_args=dict(row.arg_template),
+                response_template=row.response_template,
+                max_spoken_bytes=row.max_spoken_bytes,
+            )
+    return None
+
+
+@dataclass(frozen=True)
+class SurrogateAnswer:
+    """What one call came to; ``error`` names why there is no usable choice."""
+
+    choice: str | None
+    confidence: float | None
+    latency_ms: int
+    cost_usd: float | None = None
+    error: str | None = None
+
+
+@dataclass(eq=False)
+class SurrogateRoute:
+    """Jev's settings and its HTTP client, built once at boot."""
+
+    model: str
+    min_confidence: float
+    timeout_ms: int
+    url: str = SURROGATE_URL
+    _client: httpx.Client | None = field(default=None, init=False, repr=False)
+    _warned: set[str] = field(default_factory=set, init=False, repr=False)
+
+    def accepts(self, answer: SurrogateAnswer) -> bool:
+        """Whether the answer is a confident choice of a function, not ``none``."""
+        return (
+            answer.error is None
+            and answer.choice not in (None, NONE)
+            and answer.confidence is not None
+            and answer.confidence >= self.min_confidence
+        )
+
+    def ask(self, state: str, options: Sequence[SurrogateOption]) -> SurrogateAnswer:
+        """One choice question; never raises."""
+        started = time.monotonic()
+        answer = self._call(state, options, started)
+        if answer.error is not None and answer.error not in self._warned:
+            self._warned.add(answer.error)
+            LOGGER.warning(
+                "surrogate route: %s; turns fall through to the model (logged once per kind)",
+                answer.error,
+            )
+        return answer
+
+    def _call(
+        self, state: str, options: Sequence[SurrogateOption], started: float,
+    ) -> SurrogateAnswer:
+        def done(
+            *, choice: str | None = None, confidence: float | None = None,
+            cost_usd: float | None = None, error: str | None = None,
+        ) -> SurrogateAnswer:
+            elapsed = int((time.monotonic() - started) * 1000)
+            return SurrogateAnswer(choice, confidence, elapsed, cost_usd, error)
+
+        key = os.environ.get(KEY_ENV, "").strip()
+        if not key:
+            return done(error="no_key")
+        body = {
+            "model": self.model,
+            "state": state,
+            "questions": {"route": {
+                "type": "choice",
+                "instructions": _INSTRUCTIONS,
+                "criteria": {**{o.id: o.description for o in options}, NONE: _NONE_DESCRIPTION},
+            }},
+        }
+        timeout_s = self.timeout_ms / 1000
+        try:
+            if self._client is None:
+                self._client = httpx.Client(
+                    timeout=timeout_s,
+                    limits=httpx.Limits(keepalive_expiry=_KEEPALIVE_S),
+                )
+            reply = self._client.post(
+                self.url, json=body, headers={"Authorization": f"Bearer {key}"},
+            )
+            reply.raise_for_status()
+            parsed = reply.json()
+        except httpx.TimeoutException:
+            return done(error="timeout")
+        except httpx.HTTPError:
+            return done(error="http")
+        except ValueError:
+            return done(error="bad_json")
+        if (time.monotonic() - started) * 1000 > self.timeout_ms:
+            # httpx bounds each phase, not the whole call; a late answer is never used.
+            return done(error="timeout")
+        return _read_answer(parsed, options, done)
+
+
+def _read_answer(
+    parsed: Any,  # noqa: ANN401 — the decoded JSON body, any shape until checked
+    options: Sequence[SurrogateOption],
+    done: Callable[..., SurrogateAnswer],
+) -> SurrogateAnswer:
+    """The choice and confidence out of Jev's body, or ``bad_json``."""
+    try:
+        route = parsed["answers"]["route"]
+        choice, confidence = route["choice"], route["confidence"]
+        cost = (parsed.get("usage") or {}).get("cost")
+    except (KeyError, TypeError, AttributeError):
+        return done(error="bad_json")
+    if (
+        choice not in {o.id for o in options} | {NONE}
+        or isinstance(confidence, bool)
+        or not isinstance(confidence, int | float)
+    ):
+        return done(error="bad_json")
+    paid = float(cost) if isinstance(cost, int | float) and not isinstance(cost, bool) else None
+    return done(choice=choice, confidence=float(confidence), cost_usd=paid)
+
+
+def _line(text: str) -> str:
+    return " ".join(text.split())
+
+
+def conversation_state(packet: SituationPacket, conn: sqlite3.Connection, words: str) -> str:
+    """The previous two exchanges within ten minutes, then ``User: <words>``.
+
+    Her answer is the voice text of the last final response, cut to 200
+    characters; a turn that got no answer contributes only his words.
+    """
+    history = packet.conversation_history
+    turns = history.turns if history is not None else ()
+    index = next((i for i, t in enumerate(turns) if t.turn_id == packet.current_turn_id), 0)
+    now_ms = packet.trigger_event.ts_epoch_ms
+    lines: list[str] = []
+    for turn in turns[max(0, index - _CONTEXT_EXCHANGES):index]:
+        said = get_event(conn, turn.input_event_uid)
+        if said is None or now_ms - said.ts_epoch_ms > _CONTEXT_WINDOW_MS or not turn.user_text:
+            continue
+        lines.append(f"User: {_line(turn.user_text)}")
+        answer = " ".join(
+            _line(split_envelope(r.panel_available)[0])
+            for r in turn.responses
+            if r.phase == "final"
+        ).strip()
+        if answer:
+            cut = answer if len(answer) <= _ANSWER_CHARS else answer[:_ANSWER_CHARS] + "..."
+            lines.append(f"Assistant: {cut}")
+    lines.append(f"User: {_line(words)}")
+    return "\n".join(lines)

@@ -258,6 +258,17 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         optional_payload=("final_response_hash", "consumed_trigger_event_uid"),
         schema_version=1,
     ),
+    # ADR 0120 — one row per Jev call (the surrogate route between Tier 0 and the
+    # model), whatever came of it: ``choice`` and ``confidence`` are null when
+    # ``error`` says why there was no usable answer.
+    EventTypeSchema(
+        event_type="route.surrogate_decided",
+        owner_layer="L3",
+        actor="jarvis_runtime",
+        required_payload=("turn_id", "options_version", "accepted"),
+        optional_payload=("model", "choice", "confidence", "latency_ms", "error", "cost_usd"),
+        schema_version=1,
+    ),
     EventTypeSchema(
         event_type="utterance.received",
         owner_layer="L5",
