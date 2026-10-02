@@ -522,14 +522,15 @@ export function Companion() {
     outingTimers.current = [setTimeout(run, lead), setTimeout(() => { setOuting(false); setPreview(null); }, lead + stay)];
   };
   useEffect(() => () => outingTimers.current.forEach(clearTimeout), []);
-  const wear = (skin: Skin) => { if (skin === worn.current) return; worn.current = skin; window.jarvis?.wearing?.(skin); appear(() => ball.current?.change(skin), 2600); };
+  // `quiet`: changed where she is, without coming out (her own timed change must not pull the eye while Allen works).
+  const wear = (skin: Skin, quiet = false) => { if (skin === worn.current) return; worn.current = skin; window.jarvis?.wearing?.(skin); if (quiet) ball.current?.change(skin); else appear(() => ball.current?.change(skin), 2600); };
   // At the caret she wears what she wears here.
   useEffect(() => window.jarvis?.wearing?.(worn.current), []);
   const choose = (skin: Skin) => { setWardrobe(value => ({ ...value, skin })); wear(skin); };
-  // On her own she tries another skin, and the next time changes back to yours.
+  // On her own she tries another skin, and the next time changes back to yours, in the island.
   const selfChange = () => {
     const mine = live.current.wardrobe.skin, others = SKIN_KEYS.filter(key => key !== mine);
-    wear(worn.current === mine ? others[Math.floor(Math.random() * others.length)] : mine);
+    wear(worn.current === mine ? others[Math.floor(Math.random() * others.length)] : mine, true);
   };
   useEffect(() => {
     try { localStorage.setItem(WARDROBE, JSON.stringify(wardrobe)); } catch { /* the pick just is not remembered */ }
