@@ -765,7 +765,8 @@ _SPOKEN_REPLY_NOTE_STRUCTURED: Final[str] = (
     'figures to read) goes in "written", and then "spoken" says the details are on screen; '
     '"written" is empty when there is nothing more, and holds nothing that is not in the '
     "conversation or a tool result. When you need a tool for what the user asked, call it "
-    "first and answer after its result."
+    "first and answer after its result: the JSON reply ends the turn, so it is never a "
+    "promise to look something up or to do something next."
 )
 # The text format of every request of a structured spoken turn (Responses API
 # ``text.format``). ``spoken`` comes first: it is what streams into speech.
@@ -782,7 +783,8 @@ SPOKEN_REPLY_FORMAT: Final[dict[str, Any]] = {
                     "The complete spoken answer, in the language of the user's words: plain "
                     "sentences, at most two short sentences unless the user explicitly asked "
                     "to hear more (a story, counting, reading aloud). When written has "
-                    "details, say they are on screen."
+                    "details, say they are on screen. It ends the turn: never a promise to "
+                    "check something first."
                 ),
             },
             "written": {
