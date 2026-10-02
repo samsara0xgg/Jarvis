@@ -150,7 +150,7 @@ def test_a_confident_choice_runs_the_tier0_function(tmp_path: Path, jev: _Jev) -
     assert result.response_plan.text != LLM_ANSWER
     (event,) = _events(conn, "route.surrogate_decided")
     assert event == {
-        "turn_id": "T9", "options_version": "1", "model": "typesafe/jev-1.13",
+        "turn_id": "T9", "options_version": "2", "model": "typesafe/jev-1.13",
         "choice": "time", "confidence": 0.95, "accepted": True, "error": None,
         "cost_usd": 0.0000123, "latency_ms": event["latency_ms"],
         "parallel": False, "aborted": False, "aborted_cost_usd": None,
@@ -385,12 +385,12 @@ def test_the_shipped_config_is_off_and_enabling_it_reads_the_block() -> None:
     assert _surrogate_route(config, path) is None
     block = config["realtime"]["surrogate_route"]
     assert (block["model"], block["min_confidence"], block["timeout_ms"]) == (
-        "typesafe/jev-1.13", 0.9, 400,
+        "typesafe/jev-1.13", 0.95, 400,
     )
     block["enabled"] = True
     route = _surrogate_route(config, path)
     assert route is not None
-    assert (route.model, route.min_confidence, route.timeout_ms) == ("typesafe/jev-1.13", 0.9, 400)
+    assert (route.model, route.min_confidence, route.timeout_ms) == ("typesafe/jev-1.13", 0.95, 400)
     assert (route.parallel, route.zdr) == (True, True)
     block["zdr"] = False
     off = _surrogate_route(config, path)

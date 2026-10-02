@@ -40,7 +40,7 @@ SURROGATE_URL: Final[str] = "https://openrouter.ai/api/alpha/decisions"
 KEY_ENV: Final[str] = "OPENROUTER_API_KEY"
 # Bump when an option, a description or the instructions change: the logged
 # choices are only comparable within one version.
-OPTIONS_VERSION: Final[str] = "1"
+OPTIONS_VERSION: Final[str] = "2"
 NONE: Final[str] = "none"
 REPEAT: Final[str] = "repeat"
 _CONTEXT_EXCHANGES: Final[int] = 2
@@ -89,7 +89,9 @@ OPTIONS: Final[tuple[SurrogateOption, ...]] = (
     ),
     SurrogateOption(
         REPEAT, None,
-        "Asks the assistant to say its last answer again, or says they did not hear or catch it.",
+        "Asks the assistant to say its very last answer again word for word, or says they did not"
+        " hear or catch it. Not when they point to an earlier or particular answer (the story,"
+        " what it said about X).",
     ),
 )
 _NONE_DESCRIPTION: Final[str] = "Anything else, including small talk and questions."

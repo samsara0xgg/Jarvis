@@ -32,7 +32,9 @@
 When no Tier 0 row matched and `realtime.surrogate_route.enabled` is true, ask
 Jev one choice question over the Tier 0 functions that take no argument from
 Allen's words (plus the repeat shortcut), and when it answers with confidence
-at or above `min_confidence` (0.9) and not `none`, run that function through the
+at or above `min_confidence` (0.95; 0.9 until 2026-10-02, when Allen raised it:
+a slower answer over a wrong one, and 0.95 cuts the eval's wrong routes from 23 to 16)
+and not `none`, run that function through the
 Tier 0 path unchanged; every other outcome falls through to the model.
 
 - **Layer.** The decision and the HTTP call live in L3 (`jarvis/decision/`,

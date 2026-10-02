@@ -549,7 +549,7 @@ realtime:
   surrogate_route:
     enabled: false
     model: typesafe/jev-1.13
-    min_confidence: 0.9
+    min_confidence: 0.95
     timeout_ms: 400
     # On a turn Allen spoke through spoken_streaming, the model's request goes out
     # without waiting for Jev; its first output is held until Jev has answered
