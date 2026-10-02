@@ -8,10 +8,11 @@ snapshot of the live databases, her voice sent to BlackHole 16ch), boots ``jarvi
 into the daemon's spool backend, and asserts over the Event Log, the websocket feed and the
 TTS notes. Nothing under ``~/.jarvis`` is written and the live daemon is never contacted.
 
-Other switches: ``--list`` (cases), ``--asr real`` (SenseVoice decodes the speech instead of
-scripted text), ``--terse`` (shorter answers, cheaper TTS; judges streaming less reliably),
-``--offline`` (dummy API keys: voice input only, no spend), ``--replay RUN_DIR`` (re-evaluate a
-finished run), ``--repo PATH`` (test another checkout). Every run writes ``report.md``.
+Other switches: ``--native-player`` (her voice from the Swift helper, ADR 0129), ``--list``
+(cases), ``--asr real`` (SenseVoice decodes the speech instead of scripted text), ``--terse``
+(shorter answers, cheaper TTS; judges streaming less reliably), ``--offline`` (dummy API keys:
+voice input only, no spend), ``--replay RUN_DIR`` (re-evaluate a finished run), ``--repo PATH``
+(test another checkout). Every run writes ``report.md``.
 """
 
 # ruff: noqa: T201, S603, S607, PLR0913, C901, PLR0915, D103, ANN401, D102, D107, TRY003, EM101, EM102, PLR2004, ARG002
@@ -102,7 +103,7 @@ _SETTINGS_OVERRIDES: dict[str, object] = {
 }
 
 
-def prepare_root(root: Path, *, offline: bool) -> None:
+def prepare_root(root: Path, *, offline: bool, native_player: bool = False) -> None:
     """Rebuild ``root`` from the live runtime (read-only on ``~/.jarvis``)."""
     if root.resolve() == LIVE.resolve() or LIVE.resolve() in root.resolve().parents:
         sys.exit(f"refusing to use {root}: it is the live runtime")
@@ -123,6 +124,7 @@ def prepare_root(root: Path, *, offline: bool) -> None:
     settings = yaml.safe_load((LIVE / "settings.yaml").read_text(encoding="utf-8")) or {}
     for dotted, value in _SETTINGS_OVERRIDES.items():
         _set(settings, dotted, value)
+    _set(settings, "realtime.streaming_output.native_player", native_player)
     (root / "settings.yaml").write_text(
         yaml.safe_dump(settings, allow_unicode=True, sort_keys=False),
         encoding="utf-8",
@@ -826,6 +828,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="dummy API keys: every LLM and TTS call is refused, so zero spend (voice input only)",
     )
+    parser.add_argument(
+        "--native-player",
+        action="store_true",
+        help="realtime.streaming_output.native_player: true (ADR 0129); default false",
+    )
     parser.add_argument("--port", type=int, default=8026)
     parser.add_argument(
         "--replay",
@@ -914,7 +921,7 @@ def main() -> int:
     if _port_open(args.port):
         print(f"port {args.port} is already in use", file=sys.stderr)
         return 2
-    prepare_root(ROOT, offline=args.offline)
+    prepare_root(ROOT, offline=args.offline, native_player=args.native_player)
     run_dir = ROOT / "runs" / datetime.now().strftime("%Y%m%d-%H%M%S")  # noqa: DTZ005
     run_dir.mkdir(parents=True)
     env = {

@@ -364,6 +364,7 @@ def _round(value: float | None, digits: int = 2) -> float | str:
 
 Q_SLOW = "How much time did I spend in Xcode today?"
 Q_LONG = "Explain how a transformer model works."
+Q_COUNT = "Count slowly from one to ten."
 Q_CALENDAR = "What's on my calendar today, and give me a tip for staying focused?"
 Q_SPLIT: tuple[str | float, ...] = ("What's the weather like", 0.9, "tomorrow in Victoria?")
 Q_EN = "Tell me one fun fact about octopuses."
@@ -812,6 +813,15 @@ SCENARIOS: tuple[Scenario, ...] = (
             WaitIdle(),
         ),
     ),
+    Scenario(
+        "count_to_ten",
+        (
+            Controls(True),
+            Say(Q_COUNT, long=True),
+            SayWhen("surface.playback_started", 3.0, "Stop.", where=_final),
+            WaitIdle(),
+        ),
+    ),
     Scenario("split_utterance", (Controls(True), Say(list(Q_SPLIT), asr="scripted"), WaitIdle())),
     Scenario("calendar_tool", (Controls(True), Say(Q_CALENDAR, long=True), WaitIdle(timeout=150))),
     Scenario(
@@ -877,6 +887,12 @@ CASES: tuple[Case, ...] = (
         "talk_over",
         check_stop_word,
         doc="'stop' over her voice stops her within 1.5 s of its end, no new turn",
+    ),
+    Case(
+        "count_to_ten_interrupted",
+        "count_to_ten",
+        check_stop_word,
+        doc="'stop' three seconds into counting one to ten stops her within 1.5 s, no new turn",
     ),
     Case(
         "split_utterance_one_turn",
