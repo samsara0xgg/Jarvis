@@ -1022,23 +1022,24 @@ def _mail_reply(config: Mapping[str, Any], config_path: Path) -> MailReply | Non
     if not isinstance(block, Mapping) or block.get("enabled") is not True:
         return None
     model, timeout = block.get("model"), block.get("timeout_ms")
-    bars = [  # fyi_at, yes_at
-        v for v in (block.get("fyi_at"), block.get("yes_at"))
+    bars = [  # fyi_at, yes_at, junk_at
+        v for v in (block.get("fyi_at"), block.get("yes_at"), block.get("junk_at"))
         if isinstance(v, int | float) and not isinstance(v, bool)
     ]
     if (
         not isinstance(model, str) or not model.strip()
         or isinstance(timeout, bool) or not isinstance(timeout, int) or timeout <= 0
-        or len(bars) != 2 or not 0 <= bars[0] < bars[1] <= 1  # noqa: PLR2004 — fyi_at, yes_at
+        or len(bars) != 3 or not 0 <= bars[0] < bars[1] <= 1  # noqa: PLR2004 — fyi_at, yes_at
+        or not 0 < bars[2] <= 1
     ):
         msg = (
             f"runtime: {config_path} home.mail_reply needs model (text), timeout_ms (positive"
-            " int) and fyi_at < yes_at, both in [0, 1]"
+            " int), fyi_at < yes_at, both in [0, 1], and junk_at in (0, 1]"
         )
         raise RuntimeBootstrapError(msg)
     # min_confidence is the choice question's bar; this route asks none, so it stays unused.
     route = SurrogateRoute(model=model.strip(), min_confidence=1.0, timeout_ms=timeout)
-    return MailReply(route, float(bars[1]), float(bars[0]))
+    return MailReply(route, float(bars[1]), float(bars[0]), float(bars[2]))
 
 
 def _daily_report_preset(config: Mapping[str, Any]) -> str:

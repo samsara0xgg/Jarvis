@@ -94,6 +94,10 @@
 .ad .ml span { overflow:hidden; text-overflow:ellipsis; }
 .ad .ml em { flex:none; margin-left:auto; font-style:normal; font-size:var(--text-label); color:var(--warm-c); }
 
+.ad .mj { display:flex; align-items:center; gap:8px; margin-top:6px; font-size:var(--text-detail); line-height:17px; color:var(--p-muted); }
+.ad .mj button { margin-left:auto; padding:3px 9px; border-radius:var(--radius-control); background:rgb(var(--glow) / .14); color:var(--p-ink); }
+.ad .mj button:hover { background:rgb(var(--glow) / .22); }
+
 /* A switch, shared by Settings and the arrange page. */
 .ad .sw { position:relative; flex:none; width:34px; height:20px; padding:0; border-radius:var(--radius-control); background:rgb(255 255 255 / .14); transition:background var(--motion-fast); }
 .ad .sw::after { content:''; position:absolute; left:2px; top:2px; width:16px; height:16px; border-radius:50%; background:#fff; box-shadow:0 1px 3px rgb(0 0 0 / .4); transition:transform var(--motion-medium) var(--spring); }

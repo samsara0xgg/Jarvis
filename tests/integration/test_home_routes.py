@@ -92,6 +92,21 @@ LETTERS: list[dict[str, Any]] = [
         "subject": "Your receipt", "from": "billing@shop.example",  # no display name
         "to": "allen@example.com", "date": "Thu, 25 Sep 2026 12:00:00 -0700",
     },
+    {
+        "id": "199a1c0d4105", "threadId": "199a1c0d4105", "labelIds": ["UNREAD", "INBOX"],
+        "subject": "50% off everything this weekend", "from": "Shop Deals <deals@shop.example>",
+        "to": "allen@example.com", "date": "Thu, 25 Sep 2026 11:00:00 -0700",
+    },
+    {
+        "id": "199a1c0d4106", "threadId": "199a1c0d4106", "labelIds": ["UNREAD", "INBOX"],
+        "subject": "Our weekly newsletter", "from": "Weekly Brew <hello@brew.example>",
+        "to": "allen@example.com", "date": "Thu, 25 Sep 2026 10:00:00 -0700",
+    },
+    {
+        "id": "199a1c0d4107", "threadId": "199a1c0d4107", "labelIds": ["UNREAD", "INBOX"],
+        "subject": "Quick question about your listing", "from": "Sam <sam@example.com>",
+        "to": "allen@example.com", "date": "Thu, 25 Sep 2026 09:00:00 -0700",
+    },
 ]
 WEATHER: dict[str, Any] = {
     "current": {"time": 1790400600, "temperature_2m": 10.5, "weather_code": 0},
@@ -140,6 +155,9 @@ class _Gmail:
         if tool == "gmail_search":
             hits = [{"id": one["id"], "threadId": one["threadId"]} for one in LETTERS]
             return {"text": json.dumps({"messages": hits, "resultSizeEstimate": len(hits)})}
+        if tool == "gmail_batchModify":
+            body = {"modifiedCount": len(args["messageIds"]), "status": "success"}
+            return {"text": json.dumps(body)}
         letter = next(one for one in LETTERS if one["id"] == args["messageId"])
         return {"text": json.dumps({**letter, "snippet": "", "body": "", "attachments": []})}
 
@@ -162,12 +180,16 @@ def _client(home: Home, conn: sqlite3.Connection | None = None) -> TestClient:
     async def set_todo(todo_id: str, done: bool) -> None:  # noqa: FBT001 — the route's body.
         await asyncio.to_thread(functools.partial(home.set_todo, todo_id, done=done))
 
+    async def archive(ids: list[str], archive: bool) -> None:  # noqa: FBT001 — the route's body.
+        await asyncio.to_thread(functools.partial(home.archive, ids, undo=not archive))
+
     return TestClient(create_app(InherentDeps(
         submit_callable=lambda _text: None,
         broadcaster=InherentBroadcaster(),
         today_read=functools.partial(asyncio.to_thread, home.today),
         todo_set=set_todo,
         mail_read=functools.partial(asyncio.to_thread, home.mail),
+        mail_archive=archive,
         brief_read=None if conn is None else functools.partial(home.brief, conn),
     )))
 
@@ -274,22 +296,21 @@ def test_mail_is_unread_primary_gmail_from_people() -> None:
     """GET /inherent/mail: unread Primary Gmail by read-only tools, no-reply out, newest first."""
     gmail = _Gmail()
     reply = _client(_home(_Microsoft(), gmail)).get("/inherent/mail")
-    assert reply.json() == {"unread": [
-        {
-            "id": "199a1c0d4103", "from": "妈妈", "subject": "今晚还来吗？",  # noqa: RUF001 — her words.
-            "received": "2026-09-25T22:05:00+00:00", "reply": None,
-        },
-        {
-            "id": "199a1c0d4101", "from": "Prof. Lee", "subject": "Office hours move to Thursday",
-            "received": "2026-09-25T21:40:00+00:00", "reply": None,
-        },
-        {
-            "id": "199a1c0d4104", "from": "billing@shop.example", "subject": "Your receipt",
-            "received": "2026-09-25T19:00:00+00:00", "reply": None,
-        },
-    ]}
+    letters = reply.json()["unread"]
+    assert [(one["id"], one["from"], one["reply"], one["junk"]) for one in letters] == [
+        ("199a1c0d4103", "妈妈", None, False),
+        ("199a1c0d4101", "Prof. Lee", None, False),
+        ("199a1c0d4104", "billing@shop.example", None, False),
+        ("199a1c0d4105", "Shop Deals", None, False),
+        ("199a1c0d4106", "Weekly Brew", None, False),
+        ("199a1c0d4107", "Sam", None, False),
+    ]
+    assert letters[0] == {
+        "id": "199a1c0d4103", "from": "妈妈", "subject": "今晚还来吗？",  # noqa: RUF001 — her words.
+        "received": "2026-09-25T22:05:00+00:00", "reply": None, "junk": False,
+    }
     assert gmail.calls == [
-        ("gmail_search", {"query": "category:primary is:unread", "maxResults": 20}),
+        ("gmail_search", {"query": "in:inbox category:primary is:unread", "maxResults": 20}),
         *[("gmail_get", {"messageId": one["id"], "format": "metadata"}) for one in LETTERS],
     ]
 
@@ -299,9 +320,14 @@ class _Jev:
 
     def __init__(self) -> None:
         self.requests: list[dict[str, Any]] = []
+        # subject -> (P(needs a reply), P(junk))
         self.odds = {
-            "Office hours move to Thursday": 0.97, "今晚还来吗？": 0.04,  # noqa: RUF001 — her words.
-            "Your receipt": 0.5,
+            "Office hours move to Thursday": (0.97, 0.02),
+            "今晚还来吗？": (0.04, 0.01),  # noqa: RUF001 — her words.
+            "Your receipt": (0.5, 0.5),
+            "50% off everything this weekend": (0.03, 0.95),
+            "Our weekly newsletter": (0.05, 0.89),  # just under the junk bar
+            "Quick question about your listing": (0.95, 0.99),  # junk-looking, but may need a reply
         }
         self.status = 200
         self.delay_s = 0.0
@@ -313,8 +339,10 @@ class _Jev:
                 outer.requests.append(request)
                 time.sleep(outer.delay_s)
                 subject = request["state"].split("Subject: ", 1)[1]
+                reply, junk = outer.odds[subject]
                 body = json.dumps({
-                    "answers": {"reply": {"noul": outer.odds[subject]}}, "usage": {"cost": 0.00001},
+                    "answers": {"reply": {"noul": reply}, "junk": {"noul": junk}},
+                    "usage": {"cost": 0.00001},
                 }).encode()
                 self.send_response(outer.status)
                 self.send_header("Content-Length", str(len(body)))
@@ -333,7 +361,7 @@ class _Jev:
             model="typesafe/jev-1.13", min_confidence=1.0, timeout_ms=timeout_ms,
             url=f"http://127.0.0.1:{self.server.server_address[1]}/decisions",
         )
-        return MailReply(route, 0.9, 0.1)
+        return MailReply(route, 0.9, 0.1, 0.9)
 
 
 @pytest.fixture
@@ -348,6 +376,10 @@ def jev(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Jev]:
 
 def _marks(client: TestClient) -> dict[str, str | None]:
     return {one["id"]: one["reply"] for one in client.get("/inherent/mail").json()["unread"]}
+
+
+def _junk(client: TestClient) -> list[str]:
+    return sorted(one["id"] for one in client.get("/inherent/mail").json()["unread"] if one["junk"])
 
 
 def _with_jev(mail_reply: MailReply) -> TestClient:
@@ -366,10 +398,16 @@ def test_mail_reply_sends_only_name_and_subject_and_marks_by_threshold(
     caplog.set_level("INFO", logger="jarvis.decision.mail_reply")
     assert _marks(client) == {
         "199a1c0d4101": "yes", "199a1c0d4103": "fyi", "199a1c0d4104": None,
+        "199a1c0d4105": "fyi", "199a1c0d4106": "fyi", "199a1c0d4107": "yes",
     }
+    # Junk at the bar only: 0.95 is, 0.89 is not, and a letter that may need a reply never is.
+    assert _junk(client) == ["199a1c0d4105"]
     sent = sorted(jev.requests, key=lambda one: one["state"])
     assert [one["state"] for one in sent] == [
         "From: Prof. Lee\nSubject: Office hours move to Thursday",
+        "From: Sam\nSubject: Quick question about your listing",
+        "From: Shop Deals\nSubject: 50% off everything this weekend",
+        "From: Weekly Brew\nSubject: Our weekly newsletter",
         "From: unknown\nSubject: Your receipt",
         "From: 妈妈\nSubject: 今晚还来吗？",  # noqa: RUF001 — her words.
     ]
@@ -377,17 +415,19 @@ def test_mail_reply_sends_only_name_and_subject_and_marks_by_threshold(
         assert set(one) == {"model", "state", "questions", "provider"}
         assert one["model"] == "typesafe/jev-1.13"
         assert one["provider"] == {"zdr": True}
-        assert one["questions"]["reply"]["type"] == "noul"
-        assert one["questions"]["reply"]["instructions"]
+        assert set(one["questions"]) == {"reply", "junk"}
+        for question in one["questions"].values():
+            assert question["type"] == "noul"
+            assert question["instructions"]
     assert "@" not in json.dumps(jev.requests)  # no address, and the no-reply sender is not asked
     # The log line names the letter by Gmail id with Jev's probability and the mark, never the text.
     lines = [one.getMessage() for one in caplog.records if "one letter asked" in one.getMessage()]
-    assert any("id 199a1c0d4101 p=0.970 mark=yes" in line for line in lines)
-    assert any("id 199a1c0d4103 p=0.040 mark=fyi" in line for line in lines)
-    assert not any(word in line for line in lines for word in ("Office", "Lee", "Prof"))
+    assert any("id 199a1c0d4101 reply p=0.970 mark=yes junk p=0.020 junk=False" in x for x in lines)
+    assert any("id 199a1c0d4105 reply p=0.030 mark=fyi junk p=0.950 junk=True" in x for x in lines)
+    assert not any(word in line for line in lines for word in ("Office", "Lee", "Prof", "off"))
     # A second poll asks nothing: the answers are cached per message id.
     assert _marks(client)["199a1c0d4101"] == "yes"
-    assert len(jev.requests) == 3
+    assert len(jev.requests) == 6
 
 
 def test_mail_reply_off_or_without_a_key_marks_nothing(
@@ -405,10 +445,10 @@ def test_mail_reply_errors_leave_letters_unmarked_and_are_retried(jev: _Jev) -> 
     client = _with_jev(jev.reply())
     jev.status = 500
     assert set(_marks(client).values()) == {None}
-    assert len(jev.requests) == 3
+    assert len(jev.requests) == 6
     jev.status = 200
     assert _marks(client)["199a1c0d4101"] == "yes"
-    assert len(jev.requests) == 6
+    assert len(jev.requests) == 12
 
 
 def test_mail_reply_slow_answers_wait_only_the_deadline(jev: _Jev) -> None:
@@ -421,7 +461,43 @@ def test_mail_reply_slow_answers_wait_only_the_deadline(jev: _Jev) -> None:
     jev.delay_s = 0.0
     time.sleep(0.8)  # the abandoned calls end on their own
     assert _marks(client)["199a1c0d4101"] == "yes"
-    assert len(jev.requests) == 6
+    assert len(jev.requests) == 12
+
+
+def test_junk_is_archived_only_when_offered_and_undone_only_when_archived(jev: _Jev) -> None:
+    """Archive removes INBOX from exactly the offered ids, never deletes; unarchive adds it back."""
+    gmail = _Gmail()
+    home = Home(
+        _Connections(_Microsoft(), gmail),  # type: ignore[arg-type]
+        (ZONE, ZoneInfo(ZONE)), None, jev.reply(),
+    )
+    client = _client(home)
+    junk, other = "199a1c0d4105", "199a1c0d4101"
+
+    def changes() -> list[dict[str, Any]]:
+        return [args for tool, args in gmail.calls if tool == "gmail_batchModify"]
+
+    # Nothing was offered yet, so nothing can be archived.
+    assert client.post("/inherent/mail/archive", json={"ids": [junk]}).status_code == 400
+    assert _junk(client) == [junk]
+    for ids in ([other], [junk, other], [], ["nope"]):
+        assert client.post("/inherent/mail/archive", json={"ids": ids}).status_code == 400
+    assert client.post("/inherent/mail/unarchive", json={"ids": [junk]}).status_code == 400
+    assert changes() == []
+    assert client.post("/inherent/mail/archive", json={"ids": [junk]}).status_code == 200
+    assert changes() == [{"messageIds": [junk], "removeLabelIds": ["INBOX"]}]
+    # Once archived it is no longer on offer, and the other letters are untouched.
+    assert client.post("/inherent/mail/archive", json={"ids": [junk]}).status_code == 400
+    assert client.post("/inherent/mail/unarchive", json={"ids": [other]}).status_code == 400
+    assert client.post("/inherent/mail/unarchive", json={"ids": [junk]}).status_code == 200
+    assert changes()[-1] == {"messageIds": [junk], "addLabelIds": ["INBOX"]}
+    assert len(changes()) == 2
+    # Taken back: it stays in the list but is not suggested again.
+    assert _junk(client) == []
+    assert {tool for tool, _ in gmail.calls} == {"gmail_search", "gmail_get", "gmail_batchModify"}
+    assert all("TRASH" not in json.dumps(args) for _, args in gmail.calls)
+    # The request body of the questions is still name and subject only.
+    assert all(set(one) == {"model", "state", "questions", "provider"} for one in jev.requests)
 
 
 def test_a_gmail_error_answer_is_the_homes_502() -> None:

@@ -4291,6 +4291,11 @@ async def _set_todo(home: Home, todo_id: str, done: bool) -> None:  # noqa: FBT0
     await asyncio.to_thread(functools.partial(home.set_todo, todo_id, done=done))
 
 
+async def _archive_mail(home: Home, ids: list[str], archive: bool) -> None:  # noqa: FBT001 — the route's body.
+    """``POST /inherent/mail/archive`` and ``/unarchive``: one Gmail label change, off the loop."""
+    await asyncio.to_thread(functools.partial(home.archive, ids, undo=not archive))
+
+
 async def _save_settings(settings: Settings, changes: dict[str, Any]) -> dict[str, Any]:
     """``POST /inherent/settings``: one file write, off the loop thread."""
     return await asyncio.to_thread(settings.update, changes)
@@ -5661,6 +5666,9 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             mail_read=(
                 None if runtime.home is None
                 else functools.partial(asyncio.to_thread, runtime.home.mail)
+            ),
+            mail_archive=(
+                None if runtime.home is None else functools.partial(_archive_mail, runtime.home)
             ),
             brief_read=(
                 None if runtime.home is None

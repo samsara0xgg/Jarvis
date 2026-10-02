@@ -543,6 +543,8 @@ class InherentDeps:
     today_read: Callable[[], Awaitable[dict[str, Any]]] | None = None
     todo_set: Callable[[str, bool], Awaitable[None]] | None = None
     mail_read: Callable[[], Awaitable[dict[str, Any]]] | None = None
+    # ADR 0124: archive junk letters (ids, archive) or put them back (archive False).
+    mail_archive: Callable[[list[str], bool], Awaitable[None]] | None = None
     brief_read: Callable[[], dict[str, Any] | None] | None = None
     # ADR 0052: the Settings page's file, read and saved off the loop thread;
     # a ValueError from saving is a 400. ``None`` leaves the routes unregistered.
@@ -1011,6 +1013,12 @@ class TodoRequest(BaseModel):
     done: bool
 
 
+class MailArchiveRequest(BaseModel):
+    """Body of ``POST /inherent/mail/archive`` and ``/unarchive`` (ADR 0124): Gmail message ids."""
+
+    ids: list[str] = Field(max_length=20)
+
+
 async def _home_call[T](call: Awaitable[T]) -> T:
     """ADR 0051: not connected is 404 (the home's fallback), a bad id 400, anything else 502."""
     try:
@@ -1047,6 +1055,21 @@ def _register_home_routes(app: FastAPI, deps: InherentDeps) -> None:  # noqa: C9
         async def mail() -> dict[str, Any]:
             """Unread mail from people, newest first."""
             return await _home_call(mail_read())
+
+        if deps.mail_archive is not None:
+            mail_archive = deps.mail_archive
+
+            @app.post("/inherent/mail/archive", status_code=200)
+            async def mail_archive_route(req: MailArchiveRequest) -> dict[str, bool]:
+                """Archive the junk letters Allen tapped; an id not offered as junk is a 400."""
+                await _home_call(mail_archive(req.ids, True))  # noqa: FBT003 — the route's body.
+                return {"ok": True}
+
+            @app.post("/inherent/mail/unarchive", status_code=200)
+            async def mail_unarchive_route(req: MailArchiveRequest) -> dict[str, bool]:
+                """Undo: put letters archived by the route above back in the inbox."""
+                await _home_call(mail_archive(req.ids, False))  # noqa: FBT003 — the route's body.
+                return {"ok": True}
 
     if deps.brief_read is not None:
         brief_read = deps.brief_read

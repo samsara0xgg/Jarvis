@@ -539,12 +539,26 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
   const models = useRoute<{ voice_models?: { state: 'ready' | 'downloading' | 'failed'; done: number; total: number } }>(port, '/inherent/setup', open && !voiceIn, 3000).data?.voice_models;
   useEffect(() => { if (models?.state === 'ready') setVoiceIn(true); }, [models?.state]);
   const demoPops = useMemo(() => ({ brief: demoBrief(), mail: demoMail(), notices: demoNotices() }), []);
-  const brief = port ? briefRoute.data : demoPops.brief, mail = port ? mailRoute.data?.unread ?? [] : demoPops.mail;
+  // Letters archived from the home's junk line leave the list at once; the daemon stops serving them from the next poll.
+  const [archived, setArchived] = useState<string[]>([]);
+  const brief = port ? briefRoute.data : demoPops.brief, mail = (port ? mailRoute.data?.unread ?? [] : demoPops.mail).filter(m => !archived.includes(m.id));
   const notices = port ? noticeRoute.data?.notices ?? [] : demoPops.notices;
-  // Letters that need a reply come first, then the unmarked, then the FYI ones; newest first inside each (the sort is stable).
-  const rank = (m: Mail) => m.reply === 'yes' ? 0 : m.reply === 'fyi' ? 2 : 1;
+  // Letters that need a reply come first, then the unmarked, then the FYI ones, junk last; newest first inside each (the sort is stable).
+  const rank = (m: Mail) => m.junk ? 3 : m.reply === 'yes' ? 0 : m.reply === 'fyi' ? 2 : 1;
   const mailRanked = [...mail].sort((a, b) => rank(a) - rank(b));
-  const mailYes = mail.filter(m => m.reply === 'yes'), marked = mail.some(m => m.reply != null);
+  const mailYes = mail.filter(m => m.reply === 'yes'), mailJunk = mail.filter(m => m.junk), marked = mail.some(m => m.reply != null || m.junk);
+  const archiveJunk = async () => {
+    const ids = mailJunk.map(m => m.id);
+    if (!ids.length) return;
+    setArchived(a => [...a, ...ids]);
+    const back = () => setArchived(a => a.filter(id => !ids.includes(id)));
+    try { if (port) await postRoute(port, '/inherent/mail/archive', { ids }); }
+    catch { back(); notify(t(['Couldn’t archive. Try again.', '归档没成功，请再试一次。'])); return; }
+    notify(t([`Archived ${ids.length} · still in All Mail`, `已归档 ${ids.length} 封 · 仍在“所有邮件”里`]), async () => {
+      try { if (port) await postRoute(port, '/inherent/mail/unarchive', { ids }); back(); mailRoute.reload(); }
+      catch { notify(t(['Couldn’t put them back.', '放不回收件箱。'])); }
+    });
+  };
   // For you: what Jarvis itself wants from you. Agents keep their own row.
   type ForYou = { id: string; text: string; ask?: boolean; act?: [L, () => void] };
   const signIn = (id: string): [L, () => void] => [['Sign in', '登录'], () => { openPage('plugins', home.current?.querySelector<HTMLElement>('[data-block="foryou"]')); setPlugin(id); }];
@@ -566,8 +580,8 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
       : settings.talk === 'after' && (talking || (talkAt > 0 && tick - talkAt < TALK_STAYS)) ? `t${talkAt}` : undefined,
     foryou: settings.foryou && forYou.length ? forYou.map(f => f.id).join('|') : undefined,
     brief: settings.brief && brief?.date === localDate && briefRead !== brief.date ? brief.date : undefined,
-    // With Jev's marks the pop-up is for the newest letter that needs a reply; without any mark it is the newest letter.
-    mail: !settings.mail ? undefined : marked ? mailYes[0]?.id : mail[0]?.id,
+    // With Jev's marks the pop-up is for the newest letter that needs a reply or is junk to clear; without any mark it is the newest letter.
+    mail: !settings.mail ? undefined : marked ? [mailYes[0], mailJunk[0]].filter(m => m).sort((a, b) => Date.parse(b.received) - Date.parse(a.received))[0]?.id : mail[0]?.id,
   };
   const shows = (id: BlockId) => isPop(id) ? popKey[id] !== undefined && dismissed[id] !== popKey[id] : !settings.hidden.includes(id);
   const blocks = settings.order.filter(shows);
@@ -792,6 +806,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
             mail: () => <>
               <span className="head"><span className="label">{t(['Mail', '邮件'])}</span><span className="meta">{t([`${mail.length} unread`, `${mail.length} 封未读`])}{mailYes.length > 0 && t([` · ${mailYes.length} need a reply`, ` · ${mailYes.length} 封要回`])}</span></span>
               {mailRanked.slice(0, 2).map(m => <button className="ml" key={m.id} title={t(['Open in Gmail', '在 Gmail 里打开'])} onClick={() => void window.jarvis?.openMail?.(m.id)}><EnvelopeSimple size={13}/><b>{m.from}</b><span>{m.subject}</span>{m.reply === 'yes' && <em>{t(['Reply', '要回'])}</em>}</button>)}
+              {mailJunk.length > 0 && <span className="mj"><span>{t([`${mailJunk.length} look like junk`, `${mailJunk.length} 封像垃圾邮件`])}</span><button onClick={() => void archiveJunk()}>{t(['Archive', '一键归档'])}</button></span>}
             </>,
             agents: () => <button className="fill" data-row="agents" aria-label={t(['Open Agents', '打开 Agents'])} onClick={e => openPage('agents', e.currentTarget.parentElement)}>
               <span className="head"><span className="label">Agents</span><span className="head-r">

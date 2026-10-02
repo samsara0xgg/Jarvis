@@ -389,7 +389,7 @@ I8 到 I11 随审核链退役（ADR 0019），编号保留。
 <tr><td>历史压缩</td><td>OpenAI</td><td>上一段摘要和要折叠的记录</td><td>见上</td><td>开</td></tr>
 <tr><td>缓存预热</td><td>OpenAI</td><td>下一轮请求里「这一句」之前的部分：系统提示、历史（到这一轮的回答为止）和工具，只让它回 16 个 token。OpenAI 只在旧请求结束的地方找得到缓存，这样下一轮开头整段都在缓存里</td><td>打开 <code>realtime.response.prefix_warm</code> 时，每一轮用 OpenAI 答完之后</td><td>关</td></tr>
 <tr><td>即时功能的判断（Jev）</td><td>OpenRouter，转给 TypeSafe 的 <code>typesafe/jev-1.13</code></td><td>主人这一句话，加上前面最多两轮（主人的话，和助手回答的前 200 个字，十分钟以内），以及即时功能的选项说明；key 放在请求头里，不记进事件；请求带 <code>provider.zdr: true</code>（<code>realtime.surrogate_route.zdr</code>，出厂开），只路由到零数据留存的端点</td><td>打开 <code>realtime.surrogate_route</code> 时，每一轮 Tier 0 没命中的话；等待上限 0.4 秒</td><td>关</td></tr>
-<tr><td>邮件要不要回的判断（Jev）</td><td>OpenRouter，转给 TypeSafe 的 <code>typesafe/jev-1.13</code></td><td>首页每封未读邮件的发件人显示名（没有显示名时写 unknown）和主题，别的都不发：没有地址、正文和摘要；key 放在请求头里；请求带 <code>provider.zdr: true</code></td><td>打开 <code>home.mail_reply</code> 时，首页读未读邮件、遇到这次启动后还没问过的那封；一次等待上限 1.5 秒，没答上的下次再问</td><td>关</td></tr>
+<tr><td>邮件要不要回、是不是垃圾邮件的判断（Jev）</td><td>OpenRouter，转给 TypeSafe 的 <code>typesafe/jev-1.13</code></td><td>首页每封未读邮件的发件人显示名（没有显示名时写 unknown）和主题，别的都不发：没有地址、正文和摘要；要不要回和是不是垃圾邮件是同一个请求里的两个问题；key 放在请求头里；请求带 <code>provider.zdr: true</code></td><td>打开 <code>home.mail_reply</code> 时，首页读未读邮件、遇到这次启动后还没问过的那封；一次等待上限 1.5 秒，没答上的下次再问</td><td>关</td></tr>
 <tr><td>实时语音</td><td>OpenAI Realtime</td><td>麦克风的声音、指令和最多 1500 字的记忆简报；<code>store: false</code></td><td>主人开始实时对话时连上；30 秒没有动静就挂断，一次最长 30 分钟</td><td>开</td></tr>
 <tr><td>看一眼屏幕 <code>screen_look</code></td><td>OpenAI</td><td>主显示器的一张截图，缩到 1568 像素宽以内</td><td>模型调用它（L1，不经确认），或主人说了 Tier 0 认得的那句话</td><td>开</td></tr>
 <tr><td>工作状态</td><td>OpenAI</td><td>最近两天的对话记录、按问题搜到的旧记录、本地待办、存下的知识、当天的 git 活动；打开 TimeSink 时还有各 App 的时长、窗口标题和屏幕文字的摘录</td><td>主人刷新面板或在对话里问起，而且有新证据时</td><td>用到时才调</td></tr>
@@ -398,7 +398,7 @@ I8 到 I11 随审核链退役（ADR 0019），编号保留。
 <tr><td>说出回答</td><td>MiniMax：先 <code>api-uw.minimax.io</code>，连不上时 <code>api.minimax.chat</code></td><td>每一句要说出来的文字</td><td>每次出声回答；两处都连不上时改用本机的 <code>say</code></td><td>有 MiniMax key 才开</td></tr>
 <tr><td>网页搜索 <code>web_search</code></td><td>Tavily 或 Exa</td><td>搜索词</td><td>模型调用它（L1）</td><td>有 key 才开</td></tr>
 <tr><td>读网页 <code>web_fetch</code></td><td>有 Tavily key 时是 Tavily，否则是网址所在的网站</td><td>网址。直接取时带着 User-Agent <code>Jarvis/1.0 (+https://github.com/alllllenshi/jarvis)</code>（改4）</td><td>模型调用它（L1，不经确认）</td><td>开</td></tr>
-<tr><td>插件和 MCP 服务</td><td>各自的服务：GitHub 到 <code>api.githubcopilot.com</code>，Notion 到 <code>mcp.notion.com</code>，Gmail 经本机的服务到 Google，Hue 只到局域网里的 bridge</td><td>工具的参数。工具的结果回到对话，随下一次请求发给 OpenAI</td><td>模型调用它们；首页也直接读日程、待办和未读邮件，这一步不经过模型</td><td>主人连上才有</td></tr>
+<tr><td>插件和 MCP 服务</td><td>各自的服务：GitHub 到 <code>api.githubcopilot.com</code>，Notion 到 <code>mcp.notion.com</code>，Gmail 经本机的服务到 Google，Hue 只到局域网里的 bridge</td><td>工具的参数。工具的结果回到对话，随下一次请求发给 OpenAI</td><td>模型调用它们；首页也直接读日程、待办和未读邮件，这一步不经过模型。首页上写 Gmail 只有一处：主人点「一键归档」时，把垃圾邮件的 Gmail 邮件 id 发给本机的 Gmail 服务，去掉这些邮件的收件箱标签（邮件留在「所有邮件」里，点撤销就加回来）；从不自动归档，也从不删除（ADR 0124）</td><td>主人连上才有</td></tr>
 <tr><td>远程 MCP 的登录</td><td>那个服务的授权服务器</td><td>动态注册一个叫 <code>Jarvis</code> 的客户端，然后在浏览器里授权</td><td>主人登录时</td><td>—</td></tr>
 <tr><td>天气</td><td>Open-Meteo</td><td>主人写在设置里的经纬度</td><td>首页刷新时</td><td>不写经纬度就不查</td></tr>
 <tr><td>测 key</td><td>OpenAI、MiniMax、Tavily；安装版的 Agents 窗口测 Anthropic</td><td>首次设置那次对话带着主人和助手的名字；其余只是列模型、合成一个词、搜一次（<a href="#spend">第 7 章</a>）</td><td>首次设置时；OpenAI 和 MiniMax 在后台每次启动时重测；Anthropic 在主人存 key 时</td><td>—</td></tr>

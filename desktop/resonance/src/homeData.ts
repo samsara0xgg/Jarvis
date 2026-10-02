@@ -10,9 +10,11 @@ export type Todo = { id: string; title: string; due?: string };
 export type Today = { weather?: Weather | null; events: TodayEvent[]; todos: Todo[] };
 // GET /inherent/brief: today's brief, 404 before it is written.
 export type Brief = { date: string; summary: string; body: string; items?: number };
+// POST /inherent/mail/archive { ids } takes letters the last answer called junk out of the inbox; /unarchive { ids } puts them back.
 // GET /inherent/mail: unread mail from people (not newsletters or notifications), newest first.
 // `reply` (ADR 0123): 'yes' = Jev is very sure it needs Allen's reply, 'fyi' = very sure it does not, null = no mark.
-export type Mail = { id: string; from: string; subject: string; received: string; reply?: 'yes' | 'fyi' | null };
+// `junk` (ADR 0124): Jev is very sure it is junk Allen did not ask for; the home offers to archive it, never does by itself.
+export type Mail = { id: string; from: string; subject: string; received: string; reply?: 'yes' | 'fyi' | null; junk?: boolean };
 // GET /inherent/notices: what Jarvis itself wants from you (reminders, its questions); agents are not in it.
 export type Notice = { id: string; text: string; at: string };
 
@@ -61,6 +63,7 @@ export const demoBrief = (): Brief => ({ date: new Date().toLocaleDateString('en
 export const demoMail = (): Mail[] => [
   { id: 'lee', from: 'Prof. Lee', subject: 'Office hours move to Thursday', received: at(-40), reply: 'fyi' },
   { id: 'mom', from: 'Mom', subject: 'Still on for tonight?', received: at(-95), reply: 'yes' },
+  { id: 'deals', from: 'Shop Deals', subject: '50% off everything this weekend', received: at(-130), reply: 'fyi', junk: true },
 ];
 export const demoNotices = (): Notice[] => [{ id: 'mic', text: 'Reminder: test the mic at 4 PM', at: at(-5) }];
 

@@ -2,8 +2,8 @@
 
 Calendar and To Do come through the live ``microsoft`` connection's tools and mail
 through the live ``gmail`` connection's, outside any model turn; the weather from
-Open-Meteo. The one write is a to-do's status, and only because Allen clicked its
-checkbox on the home.
+Open-Meteo. The writes are a to-do's status and a letter's INBOX label, each only
+because Allen clicked it on the home (ADR 0124 for the letters).
 """
 
 from __future__ import annotations
@@ -48,6 +48,7 @@ _ID_SEP = "|"
 MAIL_SERVER = "gmail"
 """Google's Workspace MCP server with only Gmail switched on (ADR 0055)."""
 _MAIL_LIMIT = 20
+_INBOX = "INBOX"
 _NOT_A_PERSON = re.compile(r"no-?reply|notification|mailer-daemon|bounce", re.IGNORECASE)
 
 
@@ -100,6 +101,10 @@ class Home:
         self._zone_name, self._zone = zone
         self._weather_at = weather_at
         self._mail_reply = mail_reply
+        # Gmail ids: what the last mail() offered as junk, what Allen archived, what he took back.
+        self._junk: frozenset[str] = frozenset()
+        self._archived: set[str] = set()
+        self._kept: set[str] = set()
 
     def _servers(self, server: str = PLAN_SERVER) -> McpServers:
         """The live client of ``server``; LookupError (the routes' 404) when it is not connected."""
@@ -164,11 +169,12 @@ class Home:
 
         Two read-only tools of the ``gmail`` server: a search in Gmail's own terms,
         then each hit's headers; nothing is marked read. Each letter's ``reply`` is "yes",
-        "fyi" or None (ADR 0123).
+        "fyi" or None (ADR 0123) and its ``junk`` a bool (ADR 0124); the junk ids are
+        remembered as the only ones :meth:`archive` accepts.
         """
         servers = self._servers(MAIL_SERVER)
         # Gmail's own sort into Primary is the "from people" filter.
-        query = {"query": "category:primary is:unread", "maxResults": _MAIL_LIMIT}
+        query = {"query": "in:inbox category:primary is:unread", "maxResults": _MAIL_LIMIT}
         unread = [
             _letter(_gmail(servers, "gmail_get", {"messageId": hit["id"], "format": "metadata"}))
             for hit in _gmail(servers, "gmail_search", query).get("messages") or []
@@ -179,11 +185,34 @@ class Home:
             (one["id"], "" if one["from"] == one["address"] else one["from"], one["subject"])
             for one in people
         ])
-        letters: list[dict[str, str | None]] = []
+        letters: list[dict[str, str | bool | None]] = []
         for one in people:
             del one["address"]
-            letters.append({**one, "reply": marks.get(one["id"])})
+            reply, junk = marks.get(one["id"], (None, False))
+            letters.append({**one, "reply": reply, "junk": junk and one["id"] not in self._kept})
+        self._junk = frozenset(str(one["id"]) for one in letters if one["junk"])
         return {"unread": sorted(letters, key=lambda one: str(one["received"]), reverse=True)}
+
+    def archive(self, ids: list[str], *, undo: bool = False) -> None:
+        """Take letters out of the inbox, or put them back: Allen's own tap, never a proposal.
+
+        Only ids the last :meth:`mail` offered as junk are archived and only ids archived
+        here are restored; anything else is a ValueError (the route's 400). Archiving is
+        removing the INBOX label: the letter stays in All Mail, and nothing is deleted.
+        """
+        allowed = self._archived if undo else self._junk
+        if not ids or not allowed.issuperset(ids):
+            msg = "not letters the home offered" if not undo else "not letters the home archived"
+            raise ValueError(msg)
+        labels = {"addLabelIds" if undo else "removeLabelIds": [_INBOX]}
+        _gmail(self._servers(MAIL_SERVER), "gmail_batchModify", {"messageIds": ids, **labels})
+        LOGGER.info("mail %s: %s", "unarchive" if undo else "archive", " ".join(ids))
+        if undo:
+            self._archived.difference_update(ids)
+            self._kept.update(ids)  # taken back: not suggested as junk again
+        else:
+            self._archived.update(ids)
+            self._junk = self._junk.difference(ids)
 
     def brief(self, conn: sqlite3.Connection) -> dict[str, Any] | None:
         """This morning's brief: yesterday's saved daily report, whole; None before it exists."""
