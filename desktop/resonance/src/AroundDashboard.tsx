@@ -625,7 +625,8 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
   };
   const holdMove = (e: PointerEvent) => { const h = hold.current; if (h && Math.hypot(e.clientX - h.x, e.clientY - h.y) > 6) cancelHold(); };
 
-  // The home follows its blocks; the resting input keeps its space even on a short display.
+  // The home follows its blocks, so the input sits right under the last one; a page needs room to read, so it keeps at least VIEW_MIN.
+  // Either way the resting input keeps its space even on a short display.
   const inner = useRef<HTMLDivElement>(null), [viewH, setViewH] = useState(VIEW_MIN);
   useLayoutEffect(() => {
     const el = inner.current;
@@ -636,7 +637,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
       let top = 0;
       for (let node: HTMLElement | null = viewport; node; node = node.offsetParent as HTMLElement | null) top += node.offsetTop;
       const available = Math.max(0, window.innerHeight - top - parseFloat(getComputedStyle(panel).paddingBottom) - 12);
-      setViewH(Math.round(Math.min(available, VIEW_MAX, Math.max(VIEW_MIN, CORNER + HOME_GAP + el.offsetHeight))));
+      setViewH(Math.round(Math.min(available, VIEW_MAX, Math.max(page ? VIEW_MIN : 0, CORNER + HOME_GAP + el.offsetHeight))));
     };
     fit();
     let frame = 0;
