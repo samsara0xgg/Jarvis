@@ -704,6 +704,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
             "attention_channel",
             "voice_text",
             "document_text",
+            "written_apart",
             "response_hash",
             "response_id",
             "response_group_id",

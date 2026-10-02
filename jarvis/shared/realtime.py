@@ -77,6 +77,12 @@ class Wave1FeatureFlags:
         )
 
 
+def _structured(spoken: object) -> bool:
+    if not isinstance(spoken, Mapping):
+        return False
+    return spoken.get("enabled") is True and spoken.get("structured") is True
+
+
 def _first_clause_chars(spoken: object) -> int:
     value = spoken.get("first_clause_chars") if isinstance(spoken, Mapping) else None
     return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
@@ -107,6 +113,10 @@ class Wave4ResponseFlags:
     """``spoken_streaming.first_clause_chars``: a spoken answer's first
     sentence is said from its first clause end at or past this many
     characters, not from its end (0: off)."""
+    spoken_structured: bool = False
+    """``spoken_streaming.structured`` (ADR 0114): the spoken route's requests
+    carry a strict schema with ``spoken`` and ``written``. Only with
+    ``spoken_streaming`` on."""
     prefix_warm: bool = False
     """``prefix_warm.enabled``: after each turn, one capped request with the
     next turn's prompt up to its new message, so OpenAI's cache covers the
@@ -152,6 +162,7 @@ class Wave4ResponseFlags:
             routine_streaming=isinstance(routine, Mapping) and routine.get("enabled") is True,
             spoken_streaming=isinstance(spoken, Mapping) and spoken.get("enabled") is True,
             spoken_first_clause_chars=_first_clause_chars(spoken),
+            spoken_structured=_structured(spoken),
             prefix_warm=isinstance(warm, Mapping) and warm.get("enabled") is True,
             slow_results=isinstance(slow, Mapping) and slow.get("enabled") is True,
             lifecycle_commentary=commentary is not None and commentary.get("enabled") is True,

@@ -58,7 +58,6 @@ import yaml
 
 from jarvis.decision import (
     DEFAULT_MAX_TOOL_ITERATIONS,
-    SPOKEN_REPLY_RULES,
     DecideContext,
     EntityResolverLike,
     LifecycleLike,
@@ -67,6 +66,7 @@ from jarvis.decision import (
     decide,
     emit_turn_ended,
     open_prefix_warm,
+    spoken_reply_rules,
 )
 from jarvis.decision.confirm_grammar import ConfirmGrammarConfigError, load_confirm_grammar
 from jarvis.decision.cost_guard import CostRecorder
@@ -2189,6 +2189,7 @@ def _start_drive_turn_response(
         first_clause_chars=(
             runtime.response_flags.spoken_first_clause_chars if route == "spoken" else 0
         ),
+        structured=route == "spoken" and runtime.response_flags.spoken_structured,
     )
     record_realtime_trace(
         "routine_stream_route_opened", turn_id=turn_id, response_id=response_id,
@@ -3027,7 +3028,9 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             # What every turn would repeat rides the system prompt, cached once,
             # instead of each replayed state block.
             if stream_route is not None and stream_route.context.route == "spoken":
-                turn_system_prompt += "\n\n" + SPOKEN_REPLY_RULES
+                turn_system_prompt += "\n\n" + spoken_reply_rules(
+                    structured=stream_route.structured,
+                )
             if connected_apps is not None:
                 turn_system_prompt += "\n\n" + connected_apps
                 connected_apps = None
@@ -3116,6 +3119,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
         final_attention_channel: str = "voice_notify"
         iterations = continuation.iterations if continuation is not None else 0
         streamed = False
+        written_apart = False
         last_gate_event_uid: str | None = None
 
         while response_plan is None and iterations < max_iterations:
@@ -3177,6 +3181,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             if response_plan is not None:
                 final_attention_channel = result.attention_channel
                 streamed = result.route in {"casual_or_explanatory", "spoken"}
+                written_apart = result.written_apart
                 last_gate_event_uid = result.last_gate_event_uid
                 break
 
@@ -3336,6 +3341,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             response_id=run.response_id if run is not None else None,
             response_group_id=run.response_group_id if run is not None else None,
             delivery_terminal_only=streamed,
+            written_apart=written_apart,
         )
         rendered = capture.getvalue()
         sys.stdout.write(rendered)
@@ -3348,15 +3354,19 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
                 append_record(memory.db_path, record_id=mail[0], source="mail", text=mail[1])
             # The full answer text, not the spoken form (ADR 0040), which
             # lives only in the voice channel; the audit event's uid is the
-            # record id.
+            # record id. A written part that only adds to the spoken part
+            # (ADR 0114) is not the full answer: both go in.
+            answer = str(
+                render_event.payload.get("document_text")
+                or render_event.payload.get("text", ""),
+            )
+            if render_event.payload.get("written_apart") is True:
+                answer = f"{render_event.payload.get('voice_text', '')}\n\n{answer}"
             append_record(
                 memory.db_path,
                 record_id=render_event.event_uid,
                 source="jarvis",
-                text=str(
-                    render_event.payload.get("document_text")
-                    or render_event.payload.get("text", ""),
-                ),
+                text=answer,
             )
             if (
                 runtime.response_flags.prefix_warm

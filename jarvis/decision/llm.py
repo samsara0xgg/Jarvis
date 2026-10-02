@@ -564,18 +564,21 @@ class LLMClient:
             return self._chat_stream_openai(messages=messages, system=system, tools=tools)
         return self._chat_stream_anthropic(messages=messages, system=system, tools=tools)
 
-    def stream_events(  # noqa: PLR0913 — the request, its settlement owner and two per-request knobs
+    def stream_events(  # noqa: C901, PLR0913 — the request, its settlement owner, per-request knobs
         self, *, messages: list[dict[str, Any]], system: str,
         tools: list[dict[str, Any]] | None = None,
         on_settled: Callable[[StreamDisposition], object],
         responses: bool = False,
         max_output_tokens: int | None = None,
+        text_format: Mapping[str, Any] | None = None,
     ) -> LLMStreamHandle:
         """Prepare an isolated typed stream; L3 must supply its cost settlement owner.
 
         ``responses`` streams an OpenAI request through /v1/responses, whose
         text carries each message's phase; Anthropic ignores it.
         ``max_output_tokens`` caps this request below the preset's limit.
+        ``text_format`` is the Responses API ``text.format`` (a strict
+        json_schema, ADR 0114); only a ``responses`` request carries it.
         """
         request_id = _new_llm_request_id()
         responses = responses and self._provider == "openai"
@@ -598,6 +601,8 @@ class LLMClient:
                 ]
             if self._reasoning_effort:
                 body["reasoning"] = {"effort": self._reasoning_effort}
+            if text_format:
+                body["text"] = {"format": copy.deepcopy(dict(text_format))}
             if self._extra_body:
                 body["extra_body"] = copy.deepcopy(self._extra_body)
         elif self._provider == "openai":

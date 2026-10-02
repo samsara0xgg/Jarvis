@@ -27,6 +27,8 @@ ADR 0045 (2026-09-25): Allen heard "结果回来了" out of nowhere after fast t
 2026-09-29) is tier B: it ships off until its live run on the Mac.
 ``response.prefix_warm`` (2026-09-30) is tier B too: one more request per
 turn, off until a live run shows the next turn's first request cached.
+``response.spoken_streaming.structured`` (ADR 0114, 2026-10-02) is tier B: off
+until a live run of the schema answer on the Mac.
 """
 
 from __future__ import annotations
@@ -52,6 +54,7 @@ _TIER_A_ENABLED = (
 _TIER_B_AND_C_DISABLED = (
     "response.routine_streaming.enabled",
     "response.spoken_streaming.enabled",
+    "response.spoken_streaming.structured",
     "response.prefix_warm.enabled",
     "streaming_output.speak_from_segments",
     "single_audio_ingress.partial_asr.enabled",

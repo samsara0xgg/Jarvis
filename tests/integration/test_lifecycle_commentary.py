@@ -1014,6 +1014,7 @@ def _script_final(monkeypatch: pytest.MonkeyPatch) -> None:
             response_plan=_plan(),
             events_emitted=(),
             stream_failure=None,
+            written_apart=False,
             route=None,
             last_gate_event_uid=None,
             turn_id=None,

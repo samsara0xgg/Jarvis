@@ -256,6 +256,7 @@ def render_response(  # noqa: C901, PLR0912, PLR0913, PLR0915 — closed dispatc
     response_group_id: str | None = None,
     delivery_terminal_only: bool = False,
     phase: str = "final",
+    written_apart: bool = False,
 ) -> tuple[SurfaceState, Event]:
     """Render an approved ResponsePlan across all surfaces for ``attention_channel``.
 
@@ -349,6 +350,9 @@ def render_response(  # noqa: C901, PLR0912, PLR0913, PLR0915 — closed dispatc
             run passes ``"commentary"``, which is what makes
             :mod:`jarvis.surface.voice_media` buffer it as a commentary
             and stamp the phase on ``surface.playback_started``.
+        written_apart: ADR 0114 — the document is what the voice leaves
+            out, not the whole answer; stamped on the audit event so the
+            Inherent surface can show both.
 
     Returns:
         ``(next_state, event)`` — the :class:`SurfaceState` with the
@@ -514,6 +518,8 @@ def render_response(  # noqa: C901, PLR0912, PLR0913, PLR0915 — closed dispatc
         "attention_channel": attention_channel,
         "response_hash": response_plan.response_hash,
     }
+    if written_apart and document_text.strip():
+        audit_payload["written_apart"] = True
     if binding is not None:
         audit_payload.update(
             {

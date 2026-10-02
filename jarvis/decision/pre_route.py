@@ -203,6 +203,7 @@ class RoutineStreamRoute:
     segment_guard: Callable[[], AbstractContextManager[None]]
     committed_event_bus: CommittedEventBus | None = None
     first_clause_chars: int = 0  # SemanticAssembler's; 0 waits for a sentence end
+    structured: bool = False  # ADR 0114: the spoken route's reply is a {spoken, written} schema
 
 
 @dataclass(frozen=True)

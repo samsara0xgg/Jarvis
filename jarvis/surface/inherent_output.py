@@ -23,7 +23,9 @@ Step 2 wire schema (three envelopes per turn, mirrored from
 2. ``{"op": "append", "payload": {"token": <text>, "turn_id": <id>}}`` (x N)
                                         ← from ``surface.response_chunk``
 3. ``{"op": "done",   "payload": {"fadeMs": 5000, "turn_id": <id>}}``
-                                        ← from ``surface.response_emitted``
+                                        ← from ``surface.response_emitted``;
+   plus ``"written": <text>`` when the event says ``written_apart`` (ADR 0114):
+   the details the answer's spoken part leaves out, which no chunk carried.
 
 ``turn_id`` is additive (the legacy swift card ignores unknown payload
 keys) and it is what makes the ADR-0009 D2 CLI client correct rather
@@ -202,16 +204,17 @@ class InherentBroadcaster:
         guard: the ``done`` envelope always sends.
 
         Args:
-            event: The ``surface.response_emitted`` event. Only
-                ``payload["turn_id"]`` is read — for the envelope's
-                correlation field and the F5 log via
-                :meth:`_send_all`.
+            event: The ``surface.response_emitted`` event. ``payload["turn_id"]``
+                is read for the envelope's correlation field and the F5 log
+                via :meth:`_send_all`; with ``written_apart`` set (ADR 0114),
+                ``payload["document_text"]`` rides the envelope as ``written``.
         """
         turn_id = str(event.payload.get("turn_id", "<unknown>"))
-        msg: dict[str, object] = {
-            "op": "done",
-            "payload": {"fadeMs": 5000, "turn_id": turn_id},
-        }
+        payload: dict[str, object] = {"fadeMs": 5000, "turn_id": turn_id}
+        written = event.payload.get("document_text")
+        if event.payload.get("written_apart") is True and isinstance(written, str) and written:
+            payload["written"] = written
+        msg: dict[str, object] = {"op": "done", "payload": payload}
         await self._send_all(msg, turn_id=turn_id)
 
     async def broadcast_voice(

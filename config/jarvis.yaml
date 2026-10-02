@@ -488,10 +488,15 @@ realtime:
     # one warning, without it.  first_clause_chars > 0 lets the first thing
     # said end at the first clause end (，；,;) at or past that many
     # characters, so speech starts before the first sentence is written;
-    # 0 waits for the sentence's end.
+    # 0 waits for the sentence's end.  structured (ADR 0114, only with
+    # spoken_streaming on) sends every request of such a turn with a strict
+    # JSON schema {spoken, written}: the spoken line is streamed and said as
+    # written, the written part (lists, times, links) is for the screen only,
+    # shown under the spoken line.
     spoken_streaming:
       enabled: false
       first_clause_chars: 0
+      structured: false
     # After each turn, send the next turn's prompt up to its new message as a
     # request of its own (16 output tokens), so the next turn's first request
     # finds the whole history cached. Without it that request found only the

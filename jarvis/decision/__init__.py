@@ -77,6 +77,7 @@ from jarvis.decision.policy import EffectivePolicy, effective_policy, surface_fo
 from jarvis.decision.pre_route import SPOKEN_CHANNELS
 from jarvis.decision.response_run import ResponseCancelledError
 from jarvis.decision.stream_envelope import (
+    EnvelopeTail,
     StreamEnvelopeSplitter,
     compose_envelope,
     envelope_only,
@@ -84,6 +85,7 @@ from jarvis.decision.stream_envelope import (
 )
 from jarvis.decision.stream_finalize import StreamFinalizationFailure, finalize_stream
 from jarvis.decision.stream_gate import stream_emission_gate
+from jarvis.decision.stream_json import SpokenJsonExtractor
 from jarvis.decision.stream_risk import SPOKEN_RULE_VERSION, SegmentRiskClassifier
 from jarvis.decision.stream_sentences import SemanticAssembler
 from jarvis.decision.tier0 import render_tier0_response
@@ -118,7 +120,6 @@ if TYPE_CHECKING:
     from jarvis.decision.llm import ChatResult, LLMClient
     from jarvis.decision.llm_stream import LLMStreamHandle
     from jarvis.decision.pre_route import RoutineStreamRoute, StreamCorrection
-    from jarvis.decision.stream_envelope import EnvelopeTail
     from jarvis.decision.stream_sentences import SemanticCandidate
     from jarvis.decision.tier0 import Tier0Hit, Tier0Table
     from jarvis.shared import AuthorizationLease, RiskLevel
@@ -678,6 +679,8 @@ class DecideResult:
             source on the routine route.
         stream_failure: A typed finalization refusal; the runtime fails
             the run with its prefix hash and opens a correction run.
+        written_apart: ADR 0114 — the plan's ``<document>`` is what its
+            ``<voice>`` leaves out, not the whole answer.
     """
 
     response_plan: ResponsePlan | None
@@ -688,6 +691,7 @@ class DecideResult:
     emitted_segments: int = 0
     last_gate_event_uid: str | None = None
     stream_failure: StreamFinalizationFailure | None = None
+    written_apart: bool = False
 
 
 # --- Internal scratch state for one decide() invocation --------------------
@@ -747,11 +751,67 @@ _SPOKEN_REPLY_NOTE: Final[str] = (
     "short line in the language of the user's words saying what you are about to do, then "
     "call the tool in the same response; never end your turn on that line."
 )
-# The note as a system prompt rule, for a history that replays each state block
-# as sent: repeated in every replayed voice message it would grow the history.
-SPOKEN_REPLY_RULES: Final[str] = (
-    f'When the program\'s state says "Channel: voice": {_SPOKEN_REPLY_NOTE}'
+# ADR 0114: with ``structured`` the reply is a strict {spoken, written} schema,
+# so the note asks for no tags and the two fields' descriptions carry the rest.
+# Nothing is said before a call: the model's text before one never reached
+# speech, and under the schema it has no place to go.
+_SPOKEN_REPLY_NOTE_STRUCTURED: Final[str] = (
+    'Your reply is a JSON object with "spoken" and "written"; "spoken" is read aloud as you '
+    'write it. Put the answer itself in "spoken", in plain spoken sentences in the language '
+    "of the user's words: by default at most two short sentences, with no lists, headings, "
+    "links, code or other markup. When the user explicitly asks you to count, read aloud, "
+    "tell a story, repeat something verbatim, go into detail or speak at a given length, say "
+    'all of it in "spoken". What belongs only on screen (a list, a table, code, links, times, '
+    'figures to read) goes in "written", and then "spoken" says the details are on screen; '
+    '"written" is empty when there is nothing more, and holds nothing that is not in the '
+    "conversation or a tool result. When you need a tool for what the user asked, call it "
+    "first and answer after its result."
 )
+# The text format of every request of a structured spoken turn (Responses API
+# ``text.format``). ``spoken`` comes first: it is what streams into speech.
+SPOKEN_REPLY_FORMAT: Final[dict[str, Any]] = {
+    "type": "json_schema",
+    "name": "spoken_reply",
+    "strict": True,
+    "schema": {
+        "type": "object",
+        "properties": {
+            "spoken": {
+                "type": "string",
+                "description": (
+                    "The complete spoken answer, in the language of the user's words: plain "
+                    "sentences, at most two short sentences unless the user explicitly asked "
+                    "to hear more (a story, counting, reading aloud). When written has "
+                    "details, say they are on screen."
+                ),
+            },
+            "written": {
+                "type": "string",
+                "description": (
+                    "Details for the screen only (lists, times, links, figures). An empty "
+                    "string when there is nothing more. Never invent facts that are not in "
+                    "the conversation or the tool results."
+                ),
+            },
+        },
+        "required": ["spoken", "written"],
+        "additionalProperties": False,
+    },
+}
+
+
+def spoken_reply_note(*, structured: bool) -> str:
+    """The note a spoken-route turn's prompt carries, for the reply shape it will get."""
+    return _SPOKEN_REPLY_NOTE_STRUCTURED if structured else _SPOKEN_REPLY_NOTE
+
+
+def spoken_reply_rules(*, structured: bool) -> str:
+    """The note as a system prompt rule, for a history that replays each state block.
+
+    As sent, repeated in every replayed voice message it would grow the history.
+    """
+    note = spoken_reply_note(structured=structured)
+    return f'When the program\'s state says "Channel: voice": {note}'
 
 
 def _interaction_line(packet: SituationPacket, ctx: DecideContext) -> str | None:
@@ -765,7 +825,7 @@ def _interaction_line(packet: SituationPacket, ctx: DecideContext) -> str | None
         return "Channel: text"
     route = ctx.routine_stream
     if route is not None and route.context.route == "spoken" and ctx.record_sent_message is None:
-        return f"Channel: voice\n{_SPOKEN_REPLY_NOTE}"
+        return f"Channel: voice\n{spoken_reply_note(structured=route.structured)}"
     return "Channel: voice"
 
 
@@ -1999,6 +2059,10 @@ class _SegmentSpeaker:
     durable chunks only ever see tag-free voice text. A denied candidate seals
     the run (D2 rule 2): ``prefix`` is what was exposed, ``voice`` all the
     voice text written so far. ``gate_segments=False`` exposes nothing.
+
+    On a structured route (ADR 0114) a request's text is a JSON object and its
+    ``spoken`` string takes the splitter's place; ``written`` becomes the
+    document. Text that is not that object goes through the splitter as above.
     """
 
     def __init__(
@@ -2018,30 +2082,88 @@ class _SegmentSpeaker:
         self._splitter = StreamEnvelopeSplitter()
         self._assembler = SemanticAssembler(first_clause_chars=route.first_clause_chars)
         self._citation = ""  # an open citation, held until it closes
+        self._json: SpokenJsonExtractor | None = None  # this request's reply, once it is JSON
+        self._raw = ""  # this request's text while it may still be JSON
+        self._plain = False  # this request's text is not the schema's JSON
+        self._written: list[str] = []  # each finished request's written part
         self.prefix = ""
         self.voice = ""
         self.emitted = 0
         self.sealed = not gate_segments
         self.last_gate: str | None = None
+        self.written_apart = False  # the document is what the spoken text leaves out
+
+    def begin_request(self) -> None:
+        """A new request starts: its text is judged afresh, the last one's written part kept."""
+        self._close_json()
+        self._raw, self._plain = "", False
 
     def feed(self, text: str) -> None:
         """Take one delta; expose every sentence it completes until sealed."""
+        if not self._route.structured or self._plain:
+            self._feed_text(text)
+            return
+        self._raw += text
+        if self._json is None:
+            if not self._raw.strip():
+                return
+            if not self._raw.lstrip().startswith("{"):
+                self._fall_back()
+                return
+            self._json = SpokenJsonExtractor()
+            text = self._raw
+        spoken = self._json.feed(text)
+        if self._json.failed and not self._json.has_spoken:
+            self._fall_back()
+            return
+        self._expose(self._uncited(spoken.lstrip() if not self.voice else spoken))
+
+    def _fall_back(self) -> None:
+        """Not the schema's JSON after all: the request's text is read as it would be without it."""
+        self._json, self._plain, text, self._raw = None, True, self._raw, ""
+        self._feed_text(text)
+
+    def _close_json(self) -> None:
+        if self._json is not None and self._json.written.strip():
+            self._written.append(self._json.written.strip())
+        self._json = None
+
+    def _uncited(self, text: str) -> str:
         text = _CITATION_RE.sub("", self._citation + text)
         cut = text.find("\ue200")
         self._citation, text = (text[cut:], text[:cut]) if cut >= 0 else ("", text)
-        safe = self._splitter.feed(text)
+        return text
+
+    def _feed_text(self, text: str) -> None:
+        self._expose(self._splitter.feed(self._uncited(text)))
+
+    def _expose(self, safe: str) -> None:
         self.voice += safe
         self._assemble(safe)
 
     def finish(self) -> EnvelopeTail:
         """Flush the held tail and the last fragment; return the envelope's rest."""
+        if self._json is not None and self._json.complete and not self._json.has_spoken:
+            self._fall_back()  # an object with no spoken string is not the schema's
         if self._citation:
             # A citation that never closed was the model's own text after all.
-            self.feed(self._citation.replace("\ue200", ""))
+            held = self._citation.replace("\ue200", "")
+            self._citation = ""
+            if self._json is not None:
+                self._expose(held)
+            else:
+                self._feed_text(held)
         tail = self._splitter.finish()
+        self._close_json()
         self.voice += tail.voice_tail
         self._assemble(tail.voice_tail)
         self._assemble("", final=True)
+        if self._written:
+            self.written_apart = True
+            parts = [*self._written, tail.document] if tail.document else self._written
+            return EnvelopeTail(
+                tail.voice_tail, _CITATION_RE.sub("", "\n\n".join(parts)), enveloped=True,
+            )
         return tail
 
     def _assemble(self, text: str, *, final: bool = False) -> None:
@@ -2370,8 +2492,10 @@ def _stream_spoken_request(  # noqa: C901, PLR0913 - one request, the turn's sea
             kind="decision",
             turn_id=scratch.turn_id,
             responses=True,
+            text_format=SPOKEN_REPLY_FORMAT if route.structured else None,
         ),
     )
+    speaker.begin_request()
     reply = _SpokenReply()
     failed: LLMResponseFailed | None = None
     try:
@@ -2499,7 +2623,10 @@ def _finish_spoken(  # noqa: PLR0913 - the turn's handles plus the ask that may 
     if speaker.emitted == 0:
         if draft is None:
             draft = compose_envelope(suffix, tail.document) if tail.enveloped else suffix
-        return _finalize_response(draft, packet, ctx, scratch)
+        result = _finalize_response(draft, packet, ctx, scratch)
+        plan = result.response_plan
+        written_apart = speaker.written_apart and plan is not None and split_envelope(plan.text)[2]
+        return replace(result, written_apart=written_apart)
     if draft is not None:
         suffix = f"{suffix}\n\n{draft}" if suffix.strip() else f"\n\n{draft}"
     attention = attention_policy(packet)
@@ -2547,6 +2674,7 @@ def _finish_spoken(  # noqa: PLR0913 - the turn's handles plus the ask that may 
         route="spoken",
         emitted_segments=speaker.emitted,
         last_gate_event_uid=speaker.last_gate,
+        written_apart=speaker.written_apart,
     )
 
 
