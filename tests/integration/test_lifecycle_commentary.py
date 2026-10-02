@@ -1471,10 +1471,11 @@ def test_a_turn_that_ends_gets_no_more_lines(
         _wait_until_turn_spoke(reader, "T-open")
 
 
-def test_a_turn_his_next_words_supersede_gets_no_more_lines(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("reason", ["superseded", "barge_in", "user_stop"])
+def test_a_turn_whose_answer_he_cancelled_gets_no_more_lines(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reason: str,
 ) -> None:
-    """Live 2026-10-01: three interruptions in a row each kept saying 'still working'."""
+    """Live 2026-10-01: interrupted or stopped turns kept saying 'still working'."""
     _clocks(monkeypatch, first=0.3, then=(0.9, 1.5))
     runtime = _make_runtime(tmp_path)
     reader = _reader(runtime)
@@ -1486,7 +1487,7 @@ def test_a_turn_his_next_words_supersede_gets_no_more_lines(
             type="response.cancelled",
             payload={
                 "response_id": "RESP-cut", "response_group_id": "RGRP-cut",
-                "turn_id": "T-cut", "reason": "superseded",
+                "turn_id": "T-cut", "reason": reason,
             },
             correlation={"turn_id": "T-cut"},
         )

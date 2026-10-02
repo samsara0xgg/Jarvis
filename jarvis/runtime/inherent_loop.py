@@ -1918,10 +1918,11 @@ _SELECT_TURN_ENDED_SQL = (
     "AND json_extract(payload_json, '$.turn_id') = ? LIMIT 1"
 )
 
-# His next words cancel this turn's answer: it will never come, so no wait line is owed.
+# His next words, his barge-in or the stop button cancel this turn's answer: it will
+# never come, so no wait line is owed. (answer_started only ever cancels a wait line.)
 _SELECT_TURN_SUPERSEDED_SQL = (
     "SELECT 1 FROM events WHERE type = 'response.cancelled' "
-    "AND json_extract(payload_json, '$.reason') = 'superseded' "
+    "AND json_extract(payload_json, '$.reason') IN ('superseded', 'barge_in', 'user_stop') "
     "AND json_extract(payload_json, '$.turn_id') = ? LIMIT 1"
 )
 
