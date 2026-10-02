@@ -135,7 +135,9 @@ const FORM = { type: 'object', required: ['name', 'count'], properties: {
 function answer(m) {
   const r = m.request, reply = response => out({ type: 'control_response', response: { subtype: 'success', request_id: m.request_id, response } });
   const refuse = error => out({ type: 'control_response', response: { subtype: 'error', request_id: m.request_id, error } });
-  note({ ev: 'control', subtype: r.subtype, ...r.subtype === 'initialize' ? { system: [r.systemPrompt ?? []].flat().filter(t => typeof t === 'string').join('\n') || null } : { request: r } });
+  // `append`, `snapshot`: what a preset system prompt is given (a project's instructions and memory) and whether it is recorded
+  note({ ev: 'control', subtype: r.subtype, ...r.subtype === 'initialize' ? { system: [r.systemPrompt ?? []].flat().filter(t => typeof t === 'string').join('\n') || null,
+    append: r.appendSystemPrompt ?? null, snapshot: r.systemPromptSnapshot ?? null } : { request: r } });
   if (r.subtype === 'initialize') return reply({ commands: COMMANDS, agents: [{ name: 'Explore', description: 'Looks around' }], output_style: 'default', available_output_styles: ['default'],
     models: MODELS, account: { email: 'owner@example.com', subscriptionType: env.ANTHROPIC_API_KEY ? 'api' : 'fake', apiKeySource: env.ANTHROPIC_API_KEY ? 'ANTHROPIC_API_KEY' : 'none' }, pid: process.pid });
   // A question still out is withdrawn, as Claude Code does when a turn is interrupted.
