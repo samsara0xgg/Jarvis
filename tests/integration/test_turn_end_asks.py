@@ -22,7 +22,7 @@ import pytest
 import yaml
 from fastapi.testclient import TestClient
 
-from jarvis.decision.surrogate_route import SurrogateRoute
+from jarvis.decision.surrogate_route import JevLog, SurrogateRoute
 from jarvis.decision.turn_end_asks import TurnEndAsks
 from jarvis.runtime import RuntimeBootstrapError, _turn_end_asks
 from jarvis.surface.inherent_output import InherentBroadcaster
@@ -71,10 +71,12 @@ class _Jev:
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
 
-    def asks(self, *, at: float = 0.95, timeout_ms: int = 1500) -> TurnEndAsks:
+    def asks(
+        self, *, at: float = 0.95, timeout_ms: int = 1500, log: JevLog | None = None,
+    ) -> TurnEndAsks:
         route = SurrogateRoute(
             model="typesafe/jev-1.13", min_confidence=1.0, timeout_ms=timeout_ms,
-            url=f"http://127.0.0.1:{self.server.server_address[1]}/decisions",
+            url=f"http://127.0.0.1:{self.server.server_address[1]}/decisions", log=log,
         )
         return TurnEndAsks(route, at)
 
@@ -178,6 +180,42 @@ def test_the_log_names_the_session_and_never_the_text(
     assert "session sess-7 p=0.960 asks=True, $0.000030" in lines[0]
     assert SECRET not in lines[0]
     assert "Which" not in lines[0]
+
+
+def test_each_turn_end_call_is_a_line_in_the_local_dataset(jev: _Jev, tmp_path: Path) -> None:
+    """ADR 0128: the 600-character tail Jev saw and its answer, then the decision, by session id."""
+    path = tmp_path / "jev" / "decisions.jsonl"
+    client = _client(jev.asks(log=JevLog(path)))
+    assert _post(client, SECRET + "x" * 700 + ASK, "sess-7").json() == {"asks": True}
+    assert _post(client, REPORT, "sess-8").json() == {"asks": False}
+    jev.status = 500
+    assert _post(client, ASK, "sess-9").json() == {"asks": None}
+    time.sleep(0.3)  # the decision line is written on the worker that finished the call
+    lines = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    calls = {one["ref"]: one for one in lines if one["kind"] == "call"}
+    decisions = {one["ref"]: one["asks"] for one in lines if one["kind"] == "decision"}
+    assert set(calls) == {"sess-7", "sess-8", "sess-9"}
+    assert decisions == {"sess-7": True, "sess-8": False}  # a failed call decides nothing
+    first = calls["sess-7"]
+    assert first["use"] == "turn_end"
+    assert first["model"] == "typesafe/jev-1.13"
+    assert first["state"] == (SECRET + "x" * 700 + ASK)[-600:]
+    assert first["questions"] == jev.requests[0]["questions"]
+    assert first["answers"] == {"asks": {"noul": 0.96}}
+    assert (first["error"], first["cost_usd"]) == (None, 0.00003)
+    assert (calls["sess-9"]["error"], calls["sess-9"]["answers"]) == ("http", None)
+    text = path.read_text(encoding="utf-8").lower()
+    assert "test-key-not-a-secret" not in text
+    assert "authorization" not in text
+
+
+def test_an_unwritable_dataset_changes_no_verdict(jev: _Jev, tmp_path: Path) -> None:
+    """The verdict is the same with the dataset path blocked by a file."""
+    blocker = tmp_path / "blocker"
+    blocker.write_text("a file where the folder should be")
+    client = _client(jev.asks(log=JevLog(blocker / "decisions.jsonl")))
+    assert _post(client, ASK).json() == {"asks": True}
+    assert _post(client, REPORT, "s2").json() == {"asks": False}
 
 
 def test_the_terminal_board_gets_asks_without_waiting(

@@ -68,7 +68,7 @@ class TurnEndAsks:
         with self._lock:
             call = self._calls.get(key)
             if call is None:
-                call = self._route.post(tail, _QUESTION) if send else None
+                call = self._route.post(tail, _QUESTION, "turn_end", session_id) if send else None
                 if call is None:  # no key: nothing was sent, nothing is kept
                     return None
                 self._calls[key] = call
@@ -88,6 +88,7 @@ class TurnEndAsks:
         odds, cost, error = _read(call)
         if odds is not None:
             self.spent_usd += cost
+            self._route.note("decision", "turn_end", session_id, asks=odds >= self._at)
             LOGGER.info(
                 "turn end asks: session %s p=%.3f asks=%s, $%.6f (total $%.6f)",
                 session_id, odds, odds >= self._at, cost, self.spent_usd,

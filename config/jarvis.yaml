@@ -226,6 +226,14 @@ agents:
     at: 0.95
     timeout_ms: 1500
 
+# ADR 0128.  Every Jev call (the instant route, the mail marks, the turn-end asks) is appended
+# to ~/.jarvis/jev/decisions.jsonl with the text it was sent, the questions and Jev's raw answer,
+# plus a line per mail archive or undo, so a small model can be trained on it later.  It holds
+# what Allen said and the senders and subjects of his mail; it never leaves the Mac, is cut by
+# nothing, and grows by a few KB per call.  Written only while one of those three is on.
+jev_log:
+  enabled: true
+
 # ADR 0037 — 项目清单，每个用户在自己的 settings.yaml 里维护。Resonance 的
 # 「项目」模块只把 TimeSink 里的活动归到这些 id（或「不属于任何项目」），用的是
 # work_state.preset。条目形如 {id, name, repos?, hints?}：

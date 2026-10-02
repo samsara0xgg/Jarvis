@@ -1261,7 +1261,7 @@ def _run_instant_route(
     hit = tier_0_match(packet, ctx.tier0_table)
     if hit is not None:
         return _run_tier0_path(hit, packet, policy, ctx, scratch)
-    pending = _start_surrogate(packet, ctx)
+    pending = _start_surrogate(packet, ctx, scratch.turn_id)
     if pending is None:
         return None
     if _surrogate_runs_parallel(ctx):
@@ -1287,8 +1287,14 @@ def _surrogate_runs_parallel(ctx: DecideContext) -> bool:
     )
 
 
-def _start_surrogate(packet: SituationPacket, ctx: DecideContext) -> PendingSurrogate | None:
-    """Send Jev's question for this utterance, or None when there is nothing to ask."""
+def _start_surrogate(
+    packet: SituationPacket, ctx: DecideContext, turn_id: str | None,
+) -> PendingSurrogate | None:
+    """Send Jev's question for this utterance, or None when there is nothing to ask.
+
+    ``turn_id`` tags the call's line in the Jev dataset, so it joins to the call's
+    ``route.surrogate_decided`` event.
+    """
     route = ctx.surrogate_route
     trigger = packet.trigger_event
     words = trigger.payload.get("transcript")
@@ -1300,7 +1306,7 @@ def _start_surrogate(packet: SituationPacket, ctx: DecideContext) -> PendingSurr
     ):
         return None
     options = offered(ctx.tier0_table)
-    call = route.start(conversation_state(packet, ctx.conn, words), options)
+    call = route.start(conversation_state(packet, ctx.conn, words), options, turn_id)
     return PendingSurrogate(
         call, options, ctx.tier0_table, _last_spoken_voice(packet), trigger.event_uid,
     )

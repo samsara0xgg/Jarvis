@@ -8,17 +8,23 @@ function only when the answer is confident enough; every other outcome
 fall-through to the model, and every call is recorded as a
 ``route.surrogate_decided`` event for a later local model to learn from.
 
+Every call that ends, answered or failed, is also appended to the local Jev dataset
+(ADR 0128) with what Jev saw, so a small model can be trained on it later.
+
 Layer rules: stdlib + ``httpx`` + L2 state + L3 siblings; no wiring.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeout
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Final
 
 import httpx
@@ -30,6 +36,7 @@ from jarvis.state.event_log import get_event
 if TYPE_CHECKING:
     import sqlite3
     from collections.abc import Sequence
+    from pathlib import Path
 
     from jarvis.decision.packet import SituationPacket
     from jarvis.decision.tier0 import Tier0Table
@@ -49,6 +56,37 @@ _ANSWER_CHARS: Final[int] = 200
 _KEEPALIVE_S: Final[float] = 30.0
 _WORKERS: Final[int] = 4
 _NO_ROUTE_STATUS: Final[int] = 404
+
+
+class JevLog:
+    """The Jev dataset (ADR 0128): one JSON line per call, decision or outcome, appended.
+
+    Calls end on worker threads, so appends take one lock. The file is private to the owner
+    (0600), made at the first line, never rotated. A write that fails is logged once and
+    dropped: the dataset is never a reason for a decision to change.
+    """
+
+    def __init__(self, path: Path) -> None:
+        """Append to ``path``; nothing is touched until the first line."""
+        self._path = path
+        self._lock = threading.Lock()
+        self._warned = False
+
+    def append(self, kind: str, use: str, ref: str | None, **fields: Any) -> None:  # noqa: ANN401 - the line's own fields
+        """One line: when, kind, use, the ``ref`` of that use, then ``fields``; never raises."""
+        stamp = datetime.now(UTC).isoformat(timespec="milliseconds")
+        line = {"ts": stamp, "kind": kind, "use": use, "ref": ref, **fields}
+        try:
+            text = json.dumps(line, ensure_ascii=False, default=str) + "\n"
+            with self._lock:
+                self._path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                descriptor = os.open(self._path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+                with os.fdopen(descriptor, "a", encoding="utf-8") as sink:
+                    sink.write(text)
+        except (OSError, TypeError, ValueError) as exc:
+            if not self._warned:
+                self._warned = True
+                LOGGER.warning("jev log: cannot write %s: %s (logged once)", self._path, exc)
 
 
 @dataclass(frozen=True)
@@ -149,6 +187,8 @@ class SurrogateRoute:
     parallel: bool = False
     # OpenRouter's per-request ``provider.zdr``: route only to zero-data-retention endpoints.
     zdr: bool = True
+    # The local dataset (ADR 0128); None = off.
+    log: JevLog | None = None
     _client: httpx.Client = field(init=False, repr=False)
     _pool: ThreadPoolExecutor = field(init=False, repr=False)
     _warned: set[str] = field(default_factory=set, init=False, repr=False)
@@ -176,28 +216,59 @@ class SurrogateRoute:
         """One choice question, waited for up to the deadline; never raises."""
         return self.start(state, options).result()
 
-    def start(self, state: str, options: Sequence[SurrogateOption]) -> SurrogateCall:
-        """Send the question now; the call is read later with :meth:`SurrogateCall.result`."""
+    def start(
+        self, state: str, options: Sequence[SurrogateOption], ref: str | None = None,
+    ) -> SurrogateCall:
+        """Send the question now (``ref``: the turn id, for the dataset); read it later."""
         started = time.monotonic()
         question = {
             "type": "choice",
             "instructions": _INSTRUCTIONS,
             "criteria": {**{o.id: o.description for o in options}, NONE: _NONE_DESCRIPTION},
         }
-        return SurrogateCall(self, options, started, self.post(state, {"route": question}))
+        future = self.post(state, {"route": question}, "route", ref)
+        return SurrogateCall(self, options, started, future)
 
-    def post(self, state: str, questions: dict[str, Any]) -> Future[Reply] | None:
-        """Send one decisions request on a worker; ``None`` when there is no key."""
+    def post(
+        self, state: str, questions: dict[str, Any], use: str, ref: str | None = None,
+    ) -> Future[Reply] | None:
+        """Send one decisions request on a worker; ``None`` when there is no key.
+
+        ``use`` ("route", "mail" or "turn_end") and ``ref`` (the turn, letter or session the
+        caller will name again) tag the call's line in the dataset.
+        """
         key = os.environ.get(KEY_ENV, "").strip()
         if not key:
             return None
         body: dict[str, Any] = {"model": self.model, "state": state, "questions": questions}
         if self.zdr:
             body["provider"] = {"zdr": True}
-        return self._pool.submit(self._fetch, key, body)
+        return self._pool.submit(self._fetch, key, body, use, ref)
 
-    def _fetch(self, key: str, body: dict[str, Any]) -> Reply:
-        """On a worker: one POST; the outcome and when it came, never an exception."""
+    def note(self, kind: str, use: str, ref: str | None, **fields: Any) -> None:  # noqa: ANN401 - the line's own fields
+        """Append a line to the dataset when it is on; never raises."""
+        if self.log is not None:
+            self.log.append(kind, use, ref, **fields)
+
+    def _fetch(self, key: str, body: dict[str, Any], use: str, ref: str | None) -> Reply:
+        """On a worker: one POST, then its line in the dataset; never an exception."""
+        started = time.monotonic()
+        reply = self._post(key, body)
+        if self.log is not None:
+            parsed = reply.parsed if isinstance(reply.parsed, dict) else {}
+            answers = parsed.get("answers")
+            usage = parsed.get("usage")
+            cost = usage.get("cost") if isinstance(usage, dict) else None
+            self.log.append(
+                "call", use, ref, model=self.model, state=body["state"],
+                questions=body["questions"], answers=answers,
+                error=reply.error or (None if isinstance(answers, dict) else "bad_json"),
+                latency_ms=int((reply.finished - started) * 1000), cost_usd=cost,
+            )
+        return reply
+
+    def _post(self, key: str, body: dict[str, Any]) -> Reply:
+        """One POST; the outcome and when it came, never an exception."""
         try:
             reply = self._client.post(
                 self.url, json=body, headers={"Authorization": f"Bearer {key}"},

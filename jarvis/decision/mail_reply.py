@@ -74,7 +74,7 @@ class MailReply:
                 "reply": {"type": "noul", "instructions": _INSTRUCTIONS},
                 "junk": {"type": "noul", "instructions": _JUNK_INSTRUCTIONS},
             }
-            future = self._route.post(state, question)
+            future = self._route.post(state, question, "mail", message_id)
             if future is None:  # no key
                 break
             sent[message_id] = future
@@ -83,6 +83,11 @@ class MailReply:
             if future in done:
                 self._settle(message_id, future)
         return {one[0]: self._mark(self._asked.get(one[0])) for one in letters}
+
+    def outcome(self, message_ids: Sequence[str], what: str) -> None:
+        """Allen archived or took back (``what``) letters: a signal on the junk mark (ADR 0128)."""
+        for message_id in message_ids:
+            self._route.note("outcome", "mail", message_id, outcome=what)
 
     def _mark(self, odds: tuple[float, float] | None) -> tuple[str | None, bool]:
         if odds is None:
@@ -99,6 +104,7 @@ class MailReply:
             self._asked[message_id] = odds
             self.spent_usd += cost
             mark, junk = self._mark(odds)
+            self._route.note("decision", "mail", message_id, mark=mark, junk=junk)
             LOGGER.info(
                 "mail reply: one letter asked, id %s reply p=%.3f mark=%s junk p=%.3f junk=%s,"
                 " $%.6f (total $%.6f)",

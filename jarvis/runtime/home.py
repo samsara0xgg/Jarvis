@@ -207,6 +207,8 @@ class Home:
         labels = {"addLabelIds" if undo else "removeLabelIds": [_INBOX]}
         _gmail(self._servers(MAIL_SERVER), "gmail_batchModify", {"messageIds": ids, **labels})
         LOGGER.info("mail %s: %s", "unarchive" if undo else "archive", " ".join(ids))
+        if self._mail_reply is not None:  # an undo says the junk mark was wrong (ADR 0128)
+            self._mail_reply.outcome(ids, "unarchive" if undo else "archive")
         if undo:
             self._archived.difference_update(ids)
             self._kept.update(ids)  # taken back: not suggested as junk again

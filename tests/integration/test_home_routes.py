@@ -30,7 +30,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from jarvis.decision.mail_reply import MailReply
-from jarvis.decision.surrogate_route import SurrogateRoute
+from jarvis.decision.surrogate_route import JevLog, SurrogateRoute
 from jarvis.execution.tools import ToolError
 from jarvis.runtime.home import Home
 from jarvis.state.daily_report import save_report
@@ -356,10 +356,10 @@ class _Jev:
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
 
-    def reply(self, *, timeout_ms: int = 1500) -> MailReply:
+    def reply(self, *, timeout_ms: int = 1500, log: JevLog | None = None) -> MailReply:
         route = SurrogateRoute(
             model="typesafe/jev-1.13", min_confidence=1.0, timeout_ms=timeout_ms,
-            url=f"http://127.0.0.1:{self.server.server_address[1]}/decisions",
+            url=f"http://127.0.0.1:{self.server.server_address[1]}/decisions", log=log,
         )
         return MailReply(route, 0.9, 0.1, 0.9)
 
@@ -557,3 +557,63 @@ def test_brief_is_yesterdays_saved_report_read_for_a_person(tmp_path: Path) -> N
             }
         ],
     }
+
+
+def test_mail_calls_marks_and_archives_are_lines_in_the_local_dataset(
+    jev: _Jev, tmp_path: Path,
+) -> None:
+    """ADR 0128: a line per letter asked, its mark, and an archive or undo that joins by id."""
+    path = tmp_path / "jev" / "decisions.jsonl"
+    client = _with_jev(jev.reply(log=JevLog(path)))
+    junk = "199a1c0d4105"
+    assert _junk(client) == [junk]
+    assert client.post("/inherent/mail/archive", json={"ids": [junk]}).status_code == 200
+    assert client.post("/inherent/mail/unarchive", json={"ids": [junk]}).status_code == 200
+    lines = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    calls = [one for one in lines if one["kind"] == "call"]
+    asked = {one["id"] for one in LETTERS if one["id"] != "199a1c0d4102"}  # the no-reply sender
+    assert sorted(one["ref"] for one in calls) == sorted(asked)
+    assert {one["use"] for one in lines} == {"mail"}
+    (shop,) = [one for one in calls if one["ref"] == junk]
+    assert shop["state"] == "From: Shop Deals\nSubject: 50% off everything this weekend"
+    assert shop["model"] == "typesafe/jev-1.13"
+    assert shop["answers"] == {"reply": {"noul": 0.03}, "junk": {"noul": 0.95}}
+    assert set(shop["questions"]) == {"reply", "junk"}
+    assert shop["questions"]["junk"]["type"] == "noul"
+    assert (shop["error"], shop["cost_usd"]) == (None, 0.00001)
+    assert shop["latency_ms"] >= 0
+    assert shop["ts"].endswith("+00:00")
+    decisions = {one["ref"]: one for one in lines if one["kind"] == "decision"}
+    assert len(decisions) == 6
+    assert (decisions[junk]["mark"], decisions[junk]["junk"]) == ("fyi", True)
+    assert (decisions["199a1c0d4101"]["mark"], decisions["199a1c0d4101"]["junk"]) == ("yes", False)
+    assert [(one["ref"], one["outcome"]) for one in lines if one["kind"] == "outcome"] == [
+        (junk, "archive"), (junk, "unarchive"),
+    ]
+    text = path.read_text(encoding="utf-8").lower()
+    assert "test-key-not-a-secret" not in text
+    assert "authorization" not in text
+
+
+def test_a_failed_mail_call_names_its_error_and_an_unwritable_dataset_changes_no_mark(
+    jev: _Jev, tmp_path: Path,
+) -> None:
+    """HTTP 500: a call line with the error, no decision. A blocked path: the same marks as ever."""
+    path = tmp_path / "jev" / "decisions.jsonl"
+    jev.status = 500
+    assert set(_marks(_with_jev(jev.reply(log=JevLog(path)))).values()) == {None}
+    lines = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    assert len(lines) == 6
+    assert {(one["kind"], one["use"], one["error"], one["answers"]) for one in lines} == {
+        ("call", "mail", "http", None),
+    }
+    jev.status = 200
+    blocker = tmp_path / "blocker"
+    blocker.write_text("a file where the folder should be")
+    client = _with_jev(jev.reply(log=JevLog(blocker / "decisions.jsonl")))
+    assert _marks(client) == {
+        "199a1c0d4101": "yes", "199a1c0d4103": "fyi", "199a1c0d4104": None,
+        "199a1c0d4105": "fyi", "199a1c0d4106": "fyi", "199a1c0d4107": "yes",
+    }
+    assert _junk(client) == ["199a1c0d4105"]
+    assert client.post("/inherent/mail/archive", json={"ids": ["199a1c0d4105"]}).status_code == 200

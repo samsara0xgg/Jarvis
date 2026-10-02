@@ -108,7 +108,7 @@ from jarvis.decision.response_run import (
     start_response_run,
 )
 from jarvis.decision.stream_gate import routine_stream_policy, spoken_stream_policy
-from jarvis.decision.surrogate_route import SurrogateRoute
+from jarvis.decision.surrogate_route import JevLog, SurrogateRoute
 from jarvis.decision.think_mode import ThinkMode, ThinkModeConfigError, load_think_mode
 from jarvis.decision.tier0 import Tier0ConfigError, load_tier0_table, validate_tier0_table
 from jarvis.decision.turn_end_asks import TurnEndAsks
@@ -683,7 +683,17 @@ def _confirmation_ttl_ms(config: Mapping[str, Any]) -> int:
     return value if value > 0 else _FALLBACK_CONFIRMATION_TTL_MS
 
 
-def _surrogate_route(config: Mapping[str, Any], config_path: Path) -> SurrogateRoute | None:
+def _jev_log(config: Mapping[str, Any], root: Path) -> JevLog | None:
+    """``jev_log`` (ADR 0128): on unless ``enabled: false``; the file is made at the first line."""
+    block = config.get("jev_log")
+    if isinstance(block, Mapping) and block.get("enabled") is False:
+        return None
+    return JevLog(root / "jev" / "decisions.jsonl")
+
+
+def _surrogate_route(
+    config: Mapping[str, Any], config_path: Path, log: JevLog | None = None,
+) -> SurrogateRoute | None:
     """``realtime.surrogate_route`` (ADR 0122): off unless enabled; bad values stop boot."""
     realtime = config.get("realtime")
     block = realtime.get("surrogate_route") if isinstance(realtime, Mapping) else None
@@ -702,7 +712,7 @@ def _surrogate_route(config: Mapping[str, Any], config_path: Path) -> SurrogateR
         raise RuntimeBootstrapError(msg)
     return SurrogateRoute(
         model=model.strip(), min_confidence=float(bar), timeout_ms=timeout,
-        parallel=block.get("parallel") is True, zdr=block.get("zdr") is not False,
+        parallel=block.get("parallel") is True, zdr=block.get("zdr") is not False, log=log,
     )
 
 
@@ -1018,7 +1028,9 @@ def _home_weather(config: Mapping[str, Any]) -> Mapping[str, Any] | None:
     return place if isinstance(place, Mapping) else None
 
 
-def _mail_reply(config: Mapping[str, Any], config_path: Path) -> MailReply | None:
+def _mail_reply(
+    config: Mapping[str, Any], config_path: Path, log: JevLog | None = None,
+) -> MailReply | None:
     """``home.mail_reply`` (ADR 0123): off unless enabled; bad values stop boot."""
     home = config.get("home")
     block = home.get("mail_reply") if isinstance(home, Mapping) else None
@@ -1041,11 +1053,15 @@ def _mail_reply(config: Mapping[str, Any], config_path: Path) -> MailReply | Non
         )
         raise RuntimeBootstrapError(msg)
     # min_confidence is the choice question's bar; this route asks none, so it stays unused.
-    route = SurrogateRoute(model=model.strip(), min_confidence=1.0, timeout_ms=timeout)
+    route = SurrogateRoute(
+        model=model.strip(), min_confidence=1.0, timeout_ms=timeout, log=log,
+    )
     return MailReply(route, float(bars[1]), float(bars[0]), float(bars[2]))
 
 
-def _turn_end_asks(config: Mapping[str, Any], config_path: Path) -> TurnEndAsks | None:
+def _turn_end_asks(
+    config: Mapping[str, Any], config_path: Path, log: JevLog | None = None,
+) -> TurnEndAsks | None:
     """``agents.turn_end_asks`` (ADR 0125): off unless enabled; bad values stop boot."""
     agents = config.get("agents")
     block = agents.get("turn_end_asks") if isinstance(agents, Mapping) else None
@@ -1063,7 +1079,9 @@ def _turn_end_asks(config: Mapping[str, Any], config_path: Path) -> TurnEndAsks 
         )
         raise RuntimeBootstrapError(msg)
     # min_confidence is the choice question's bar; this route asks none, so it stays unused.
-    route = SurrogateRoute(model=model.strip(), min_confidence=1.0, timeout_ms=timeout)
+    route = SurrogateRoute(
+        model=model.strip(), min_confidence=1.0, timeout_ms=timeout, log=log,
+    )
     return TurnEndAsks(route, float(bar))
 
 
@@ -2062,6 +2080,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         committed_event_bus.publish if committed_event_bus is not None else None
     )
 
+    jev_log = _jev_log(full_config, paths.root)
     return JarvisRuntime(
         config=full_config,
         runtime_paths=paths,
@@ -2078,7 +2097,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         response_runs=response_runs,
         committed_event_bus=committed_event_bus,
         input_flags=_wave5_input_flags(full_config),
-        surrogate_route=_surrogate_route(full_config, config_path),
+        surrogate_route=_surrogate_route(full_config, config_path, jev_log),
         memory=memory,
         session=session,
         workers=workers,
@@ -2103,9 +2122,9 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
             plugin_connections,
             resolve_zone(None, _work_state_timezone(full_config)),
             _home_weather(full_config),
-            _mail_reply(full_config, config_path),
+            _mail_reply(full_config, config_path, jev_log),
         ),
-        turn_end_asks=_turn_end_asks(full_config, config_path),
+        turn_end_asks=_turn_end_asks(full_config, config_path, jev_log),
         settings=Settings(paths.root, full_config, _audio_devices),
         night=night,
         daily_schedule=_daily_schedule(daily_report, paths.event_log, full_config),

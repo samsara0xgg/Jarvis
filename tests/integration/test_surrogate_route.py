@@ -13,6 +13,7 @@ import logging
 import threading
 import time
 from dataclasses import replace
+from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import TYPE_CHECKING, Any
 
@@ -20,7 +21,7 @@ import pytest
 
 from jarvis.decision import decide
 from jarvis.decision.stream_envelope import compose_envelope
-from jarvis.decision.surrogate_route import OPTIONS, SurrogateRoute, tier0_hit
+from jarvis.decision.surrogate_route import OPTIONS, JevLog, SurrogateRoute, tier0_hit
 from jarvis.decision.tier0 import load_tier0_table
 from jarvis.state.event_log import emit_event
 from tests.canary._helpers import repo_root
@@ -105,9 +106,10 @@ def jev(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Jev]:
     fake.server.server_close()
 
 
-def _route(jev: _Jev, *, timeout_ms: int = 400) -> SurrogateRoute:
+def _route(jev: _Jev, *, timeout_ms: int = 400, log: JevLog | None = None) -> SurrogateRoute:
     return SurrogateRoute(
         model="typesafe/jev-1.13", min_confidence=0.9, timeout_ms=timeout_ms, url=jev.url,
+        log=log,
     )
 
 
@@ -277,6 +279,83 @@ def test_a_missing_key_never_calls_and_warns_once(
     assert jev.requests == []
     assert len(caplog.records) == 1
     assert KEY not in caplog.text
+
+
+def _logged(path: Path) -> list[dict[str, Any]]:
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+
+def test_each_route_call_is_a_line_in_the_local_dataset(
+    tmp_path: Path, jev: _Jev, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ADR 0128: what Jev saw and said, tagged with the turn id; a failed call names its error."""
+    path = tmp_path / "jev" / "decisions.jsonl"
+    route = _route(jev, timeout_ms=300, log=JevLog(path))
+    _say(tmp_path, "do you have the time", route)
+    (line,) = _logged(path)
+    stamp = datetime.fromisoformat(line.pop("ts"))
+    assert stamp.utcoffset() == timedelta(0)
+    assert 0 <= line.pop("latency_ms") < 400
+    assert line == {
+        "kind": "call", "use": "route", "ref": "T9", "model": "typesafe/jev-1.13",
+        "state": "User: do you have the time", "questions": jev.requests[0]["questions"],
+        "answers": {"route": {"choice": "time", "confidence": 0.95}},
+        "error": None, "cost_usd": 0.0000123,
+    }
+    assert line["questions"]["route"]["type"] == "choice"
+    for mode, error in (("error", "http"), ("no_route", "no_zdr_route"), ("garbage", "bad_json")):
+        jev.mode = mode
+        (tmp_path / mode).mkdir()
+        _say(tmp_path / mode, "do you have the time", route)
+        failed = _logged(path)[-1]
+        assert (failed["use"], failed["ref"], failed["error"]) == ("route", "T9", error)
+        assert (failed["answers"], failed["cost_usd"]) == (None, None)
+        assert failed["state"] == "User: do you have the time"
+    assert len(_logged(path)) == 4
+    monkeypatch.delenv("OPENROUTER_API_KEY")  # nothing is sent, so nothing is kept
+    (tmp_path / "nokey").mkdir()
+    _say(tmp_path / "nokey", "do you have the time", route)
+    assert len(_logged(path)) == 4
+    text = path.read_text(encoding="utf-8").lower()
+    assert KEY not in text
+    assert "authorization" not in text
+    assert "bearer" not in text
+    assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_a_dataset_that_cannot_be_written_changes_no_decision(
+    tmp_path: Path, jev: _Jev, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An unwritable path is one warning in all; the turn runs the function as it would."""
+    blocker = tmp_path / "blocker"
+    blocker.write_text("a file where the folder should be")
+    route = _route(jev, log=JevLog(blocker / "decisions.jsonl"))
+    with caplog.at_level(logging.WARNING, logger="jarvis.decision.surrogate_route"):
+        for turn in ("a", "b"):
+            (tmp_path / turn).mkdir()
+            _result, conn, llm = _say(tmp_path / turn, "do you have the time", route)
+            assert [p["pattern_id"] for p in _ran_tier0(conn)] == ["time_now"]
+            assert llm.chat_calls == 0
+    assert len(caplog.records) == 1
+    assert "jev log" in caplog.text
+    assert KEY not in caplog.text
+
+
+def test_the_dataset_is_on_unless_the_config_turns_it_off(tmp_path: Path) -> None:
+    """``jev_log`` ships on, under the runtime root; ``enabled: false`` builds no writer."""
+    import yaml  # noqa: PLC0415 — only this test reads the file
+
+    from jarvis.runtime import _jev_log  # noqa: PLC0415
+
+    config = yaml.safe_load((repo_root() / "config" / "jarvis.yaml").read_text(encoding="utf-8"))
+    assert config["jev_log"] == {"enabled": True}
+    log = _jev_log(config, tmp_path)
+    assert log is not None
+    assert not (tmp_path / "jev").exists()  # made at the first line
+    log.append("call", "route", "T1")
+    assert len(_logged(tmp_path / "jev" / "decisions.jsonl")) == 1
+    assert _jev_log({}, tmp_path) is not None
+    assert _jev_log({"jev_log": {"enabled": False}}, tmp_path) is None
 
 
 def test_a_tier0_regex_match_never_asks_jev(tmp_path: Path, jev: _Jev) -> None:
