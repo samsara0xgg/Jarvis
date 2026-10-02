@@ -32,8 +32,9 @@ import re
 import threading
 import time
 import unicodedata
+from collections import deque
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Protocol
@@ -714,6 +715,182 @@ class WhisperFinalRecognizer:
     def warm(self) -> None:
         """Allen started talking: after 20 s idle, run one silent pass in the background."""
         self._whisper.warm()
+
+
+# ADR 0132: a clip with less speech than this is heard by SenseVoice alone; Whisper writes words
+# for it that were never said ("Yeah" became "Thank you").
+_HYBRID_MIN_SPEECH_S = 1.0
+# Prepared passes held at once. Each is dropped when committed or discarded, so this only bounds
+# a pass nobody collected.
+_HYBRID_MAX_PREPARED = 4
+
+
+@dataclass
+class _PreparedFinal:
+    """One hearing started ahead of its commit: the audio it heard and what came of it."""
+
+    audio_pcm: bytes
+    speech_s: float
+    done: threading.Event = field(default_factory=threading.Event)
+    result: TranscriptionResult | None = None
+    error: Exception | None = None
+    dropped: bool = False
+
+
+class HybridFinalRecognizer:
+    """SenseVoice for the captions and short clips; Whisper, in SenseVoice's language, for the rest.
+
+    ``realtime.final_asr: hybrid`` (ADR 0132). SenseVoice always hears the utterance first and
+    names its language. With 1 s of speech or more, Whisper large-v3-turbo hears it again with
+    that language fixed and no word list: ``zh`` and ``yue`` (SenseVoice misreading Mandarin)
+    to the Chinese Whisper, ``en`` to the English one; any other language, an empty Whisper
+    transcript or a Whisper error keeps SenseVoice's words.
+
+    :meth:`prepare` starts that work when Allen goes quiet, so :meth:`recognize_prepared` finds
+    it done, or nearly, when the endpoint commits. mlx cannot be interrupted, so one worker
+    thread runs the passes one after another.
+    """
+
+    def __init__(
+        self,
+        *,
+        sensevoice: SenseVoiceRecognizer,
+        whisper_zh: MlxWhisperRecognizer,
+        whisper_en: MlxWhisperRecognizer,
+    ) -> None:
+        """``whisper_zh`` and ``whisper_en`` are built without a word list and share one model."""
+        self._sensevoice = sensevoice
+        self._whisper_zh = whisper_zh
+        self._whisper_en = whisper_en
+        self._by_language = {"zh": whisper_zh, "yue": whisper_zh, "en": whisper_en}
+        self._lock = threading.Lock()
+        self._prepared: dict[str, _PreparedFinal] = {}
+        self._queue: deque[_PreparedFinal] = deque()
+        self._worker: threading.Thread | None = None
+
+    def recognize(self, audio_pcm: bytes) -> TranscriptionResult:
+        """The transcript when no speech span is known (PTT, the legacy wake path).
+
+        ponytail: the clip's whole length stands for its speech, so trailing silence can send
+        a short utterance to Whisper; upgrade path is a VAD span from the caller.
+        """
+        return self._hear(audio_pcm, len(audio_pcm) / 2 / _SAMPLE_RATE)
+
+    def prepare(self, utterance_id: str, audio_pcm: bytes, speech_s: float) -> None:
+        """Hear ``audio_pcm`` in the background for ``utterance_id``; only enqueues, never waits.
+
+        A later call for the same id replaces the earlier one, which is skipped if it has not
+        started; a running pass cannot be stopped and finishes first. With under 1 s of
+        speech nothing is prepared: SenseVoice hears the committed audio, as it does without
+        the hybrid, rather than the audio up to the pause.
+        """
+        if speech_s < _HYBRID_MIN_SPEECH_S:
+            return
+        entry = _PreparedFinal(audio_pcm, speech_s)
+        with self._lock:
+            self._drop(utterance_id)
+            self._prepared[utterance_id] = entry
+            while len(self._prepared) > _HYBRID_MAX_PREPARED:
+                self._drop(next(iter(self._prepared)))
+            self._queue.append(entry)
+            if self._worker is None:
+                self._worker = threading.Thread(
+                    target=self._work, name="jarvis-hybrid-final", daemon=True,
+                )
+                self._worker.start()
+
+    def discard(self, utterance_id: str) -> None:
+        """Forget ``utterance_id``'s prepared pass: Allen spoke again, or it never committed."""
+        with self._lock:
+            self._drop(utterance_id)
+
+    def recognize_prepared(
+        self, utterance_id: str, audio_pcm: bytes, speech_s: float,
+    ) -> TranscriptionResult:
+        """The transcript of committed ``audio_pcm``, from the prepared pass when it heard a prefix.
+
+        It waits for that pass to finish, however far along it is. Without a usable pass it
+        hears the audio now, with ``speech_s`` as the speech it holds.
+        """
+        with self._lock:
+            entry = self._prepared.pop(utterance_id, None)
+            if entry is not None and not audio_pcm.startswith(entry.audio_pcm):
+                entry.dropped = True
+                entry = None
+        if entry is None:
+            return self._hear(audio_pcm, speech_s)
+        entry.done.wait()
+        if entry.error is not None:
+            raise entry.error
+        if entry.result is None:  # pragma: no cover - the worker sets one of the two
+            msg = "hybrid final pass finished without a result"
+            raise RuntimeError(msg)
+        return entry.result
+
+    def partial_text(self, audio_pcm: bytes) -> str:
+        """SenseVoice's snapshot decode: the captions and the semantic endpoint."""
+        return self._sensevoice.partial_text(audio_pcm)
+
+    def prewarm(self) -> None:
+        """Load SenseVoice and both Whisper passes before the mic opens."""
+        self._sensevoice.prewarm()
+        self._whisper_zh.prewarm()
+        self._whisper_en.prewarm()
+
+    def warm(self) -> None:
+        """Allen started talking: after 20 s without a Whisper pass, run one silent pass."""
+        last = max(self._whisper_zh.last_used, self._whisper_en.last_used)
+        if time.monotonic() - last >= _WHISPER_WARM_IDLE_S:
+            self._whisper_zh.warm()
+
+    def _drop(self, utterance_id: str) -> None:
+        """Forget a prepared pass (the lock is held); one not yet started is skipped."""
+        entry = self._prepared.pop(utterance_id, None)
+        if entry is not None:
+            entry.dropped = True
+
+    def _work(self) -> None:
+        while True:
+            with self._lock:
+                if not self._queue:
+                    self._worker = None
+                    return
+                entry = self._queue.popleft()
+            if entry.dropped:
+                continue
+            try:
+                entry.result = self._hear(entry.audio_pcm, entry.speech_s)
+            except Exception as exc:  # noqa: BLE001 - re-raised to whoever collects this pass
+                entry.error = exc
+            finally:
+                entry.done.set()
+
+    def _hear(self, audio_pcm: bytes, speech_s: float) -> TranscriptionResult:
+        heard = self._sensevoice.recognize(audio_pcm)
+        whisper = self._by_language.get(heard.language_detected or "")
+        if (
+            whisper is None
+            or speech_s < _HYBRID_MIN_SPEECH_S
+            or len(audio_pcm) < _WHISPER_MIN_BYTES
+            or too_quiet_for_speech(audio_pcm, floor=_WHISPER_LEVEL_FLOOR)
+        ):
+            return heard
+        try:
+            result = whisper.recognize(audio_pcm)
+        except Exception:  # noqa: BLE001 - Whisper is the upgrade; SenseVoice's words still stand
+            LOGGER.warning("hybrid final: Whisper failed; SenseVoice's words stand", exc_info=True)
+            return heard
+        text = result.text.strip()
+        if not text:
+            return heard
+        if not unicodedata.category(text[-1]).startswith("P"):
+            text += "." if text[-1].isascii() else "。"  # SenseVoice closes every sentence
+        return replace(
+            result,
+            text=text,
+            language_detected=heard.language_detected,
+            emotion=heard.emotion,
+        )
 
 
 # 言字 a50ba52: a fragment this short heard as another language is noise, unless it is

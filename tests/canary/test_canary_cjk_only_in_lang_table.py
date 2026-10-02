@@ -72,7 +72,7 @@ _MATCHERS: Final[dict[str, frozenset[str]]] = {
          "_DISMISS_WORD_RE", "_QUESTION_END_RE",
          "_SHORT_ANSWER_RE",
          "caption_text", "is_backchannel", "is_unclear_sound", "_WHISPER_SILENCE_RE",
-         "WhisperFinalRecognizer.recognize", "_FULL_WIDTH"}
+         "WhisperFinalRecognizer.recognize", "HybridFinalRecognizer._hear", "_FULL_WIDTH"}
     ),
     "jarvis/surface/voice_live.py": frozenset({"_SENTENCE_ENDS"}),
 }

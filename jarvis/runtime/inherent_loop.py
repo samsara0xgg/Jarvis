@@ -2452,9 +2452,18 @@ def _say_conversation_line(runtime: JarvisRuntime, turn_id: str, reason: str, te
 def _final_recognizer(
     runtime: JarvisRuntime, sensevoice: voice_asr.SenseVoiceRecognizer,
 ) -> voice_asr.AsrRecognizer:
-    """``realtime.final_asr``: SenseVoice, or local Whisper as 言文 hears (proposal)."""
+    """``realtime.final_asr``: SenseVoice, Whisper as 言文 hears (proposal), or both (ADR 0132)."""
     realtime = runtime.config.get("realtime")
     choice = realtime.get("final_asr") if isinstance(realtime, Mapping) else None
+    if choice == "hybrid":
+        whisper_zh, whisper_en = whisper_ears(language="zh"), whisper_ears(language="en")
+        if whisper_zh is None or whisper_en is None:
+            LOGGER.warning("realtime.final_asr: hybrid needs mlx-whisper; hearing with SenseVoice")
+            return sensevoice
+        LOGGER.info("voice turns of 1 s or more hear with Whisper; SenseVoice keeps the rest")
+        return voice_asr.HybridFinalRecognizer(
+            sensevoice=sensevoice, whisper_zh=whisper_zh, whisper_en=whisper_en,
+        )
     if choice != "whisper":
         return sensevoice
     dictation_config = runtime.config.get("dictation") or {}

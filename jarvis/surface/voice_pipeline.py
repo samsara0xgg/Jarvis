@@ -125,6 +125,22 @@ class VoicePipeline:
         text: str = partial(audio_bytes)
         return text
 
+    def prepare_final(self, utterance_id: str, audio_bytes: bytes, speech_s: float) -> None:
+        """Allen went quiet: a recognizer that can hear ahead of the commit starts now.
+
+        Only a hint, handed over and never waited for; ``run_turn`` for the same
+        ``utterance_id`` collects the result. A recognizer without ``prepare`` ignores it.
+        """
+        prepare = getattr(self._recognizer, "prepare", None)
+        if callable(prepare):
+            prepare(utterance_id, audio_bytes, speech_s)
+
+    def discard_final(self, utterance_id: str) -> None:
+        """He spoke again, or the utterance never committed: drop what was prepared for it."""
+        discard = getattr(self._recognizer, "discard", None)
+        if callable(discard):
+            discard(utterance_id)
+
     def transcribe(
         self, audio_bytes: bytes, *, recognizer: voice_asr.AsrRecognizer | None = None,
     ) -> str:
@@ -158,7 +174,7 @@ class VoicePipeline:
                 )
             raise
 
-    def run_turn(  # noqa: C901, PLR0912, PLR0913 — wake/PTT toggles widen the signature; splitting would shred the single locked critical section.
+    def run_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — wake/PTT toggles widen the signature; splitting would shred the single locked critical section.
         self,
         *,
         audio_bytes: bytes,
@@ -173,6 +189,7 @@ class VoicePipeline:
         endpoint_reason: str | None = None,
         before_emit: Callable[[str], None] | None = None,
         wake_lead: bool = True,
+        speech_s: float = 0.0,
     ) -> Event:
         """Execute one voice turn end-to-end. Returns the emitted Event row.
 
@@ -211,6 +228,9 @@ class VoicePipeline:
             wake_lead: The wake word opened this turn, or it was said over
                 her, so a wake phrase is a lead to cut; ``False`` keeps a
                 bare "Hey Jarvis" as a greeting.
+            speech_s: Seconds of speech in ``audio_bytes``. Used only by a
+                recognizer that was handed a ``prepare_final`` for the
+                supplied ``utterance_id`` and has nothing usable of it.
 
         Raises:
             VoiceInputBusyError: VOICE_INPUT_LOCK contention (PTT path: 503).
@@ -223,6 +243,7 @@ class VoicePipeline:
                 it as empty).
             Exception: any unexpected ASR failure (caller decides reaction).
         """
+        prepared = utterance_id is not None
         utterance_id = utterance_id or "U" + secrets.token_hex(8)
         if not lock_already_held:
             acquired = VOICE_INPUT_LOCK.acquire(timeout=lock_acquire_timeout_s)
@@ -243,7 +264,11 @@ class VoicePipeline:
                 audio_bytes=len(audio_bytes),
                 measurement_boundary="authoritative_asr_call_started",
             )
-            tr = self._recognizer.recognize(audio_bytes)
+            recognize_prepared = getattr(self._recognizer, "recognize_prepared", None)
+            if prepared and callable(recognize_prepared):
+                tr = recognize_prepared(utterance_id, audio_bytes, speech_s)
+            else:
+                tr = self._recognizer.recognize(audio_bytes)
             record_realtime_trace(
                 "asr_final",
                 turn_id=turn_id,

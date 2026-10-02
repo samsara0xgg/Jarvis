@@ -49,6 +49,9 @@ _WAKE_WINDOW_SAMPLES = 1280
 # means partial decode cannot keep pace; the utterance falls back to
 # acoustic endpointing instead of building a backlog.
 _PARTIAL_DROP_DEGRADE_THRESHOLD = 3
+# ADR 0132: a pause this many silent frames long (6 x 32 ms = 192 ms, a quarter of the
+# acoustic endpoint's 24) is the hint for final ASR to start hearing the utterance so far.
+_PREPARE_SILENT_FRAMES = 6
 
 
 @dataclass(frozen=True)
@@ -164,6 +167,9 @@ class CapturedUtterance:
     audio_bytes: bytes
     # Armed by a wake-word hit, not by conversation mode's always-on arm.
     woken: bool = True
+    # Seconds from its first speech frame to its last: what final ASR may use when nothing
+    # was prepared (ADR 0132).
+    speech_s: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -284,6 +290,7 @@ class _PipelinePort(Protocol):
         endpoint_reason: str | None = ...,
         before_emit: Callable[[str], None] | None = ...,
         wake_lead: bool = ...,
+        speech_s: float = ...,
     ) -> Event:
         """Run final ASR and commit ``utterance.received``."""
         ...
@@ -448,11 +455,17 @@ class UtteranceAssembler:
         lane: PartialAsrLane | None = None,
         output_active: Callable[[], bool] | None = None,
         on_partial: Callable[[str, str], None] | None = None,
+        prepare_final: Callable[[str, bytes, float], None] | None = None,
+        discard_final: Callable[[str], None] | None = None,
     ) -> None:
         """Create bounded idle/pre-roll/utterance storage around one VAD.
 
         ``on_partial(turn_id, text)`` is told each time what has been heard so
         far changes (ADR 0111); it only shows it and never decides anything.
+        ``prepare_final(utterance_id, audio, speech_s)`` is called at a pause of
+        ``_PREPARE_SILENT_FRAMES`` and ``discard_final(utterance_id)`` when
+        speech resumes or the utterance ends without a commit (ADR 0132); both
+        only hand work over, so capture never waits for final ASR.
         """
         self._vad = vad
         self._config = config
@@ -463,6 +476,8 @@ class UtteranceAssembler:
         self._session_id = session_id
         self._lane = lane
         self._on_partial = on_partial
+        self._prepare_final = prepare_final
+        self._discard_final = discard_final
         self._shown_partial = ""
         self._partial = config.partial_asr
         self._frame_ms = frame_samples * 1_000.0 / sample_rate_hz
@@ -519,6 +534,12 @@ class UtteranceAssembler:
         self._short_sound_silence = 0
         self._consecutive_silence = 0
         self._last_speech_index = -1
+        # The utterance's first and last speech frame (indices into _audio_frames), the
+        # silent frames since, and whether final ASR was handed a pause to prepare.
+        self._speech_first = -1
+        self._speech_last = -1
+        self._silent_run = 0
+        self._prepared = False
         self._hold_frames = 0
         self._frames_since_snapshot = 0
         self._snapshot_count = 0
@@ -575,6 +596,10 @@ class UtteranceAssembler:
     def voiced_frames(self) -> int:
         """Return the speech frames of the active utterance so far."""
         return self._voiced_frames
+
+    def discard_prepared(self, utterance_id: str) -> None:
+        """Drop what final ASR prepared for a committed utterance that is not going to hear it."""
+        self._hint(self._discard_final, utterance_id)
 
     def yield_endpoint(self, *, on: bool) -> None:
         """While on, the active utterance also ends after ``barge_in_pause_ms`` of silence.
@@ -737,12 +762,53 @@ class UtteranceAssembler:
         speech = event is voice_audio.VadEvent.SPEECH_ACTIVE
         if speech:
             self._voiced_frames += 1
+        self._hint_final_asr(speech=speech)
         if self._partial.captions and not self._partial.enabled:
             self._caption_tick()
         endpoint_reason = self._endpoint(speech=speech)
         if endpoint_reason is None:
             return None
         return self._commit(frame, endpoint_reason)
+
+    def _hint_final_asr(self, *, speech: bool) -> None:
+        """Tell final ASR where the speech so far ends, so it can start before the endpoint commits.
+
+        Called on every frame of an active utterance. A pause of ``_PREPARE_SILENT_FRAMES``
+        prepares the audio so far (once per pause); any speech after that discards it.
+        """
+        index = len(self._audio_frames) - 1
+        if speech:
+            if self._speech_first < 0:
+                self._speech_first = index
+            self._speech_last = index
+            self._silent_run = 0
+            if self._prepared:
+                self._prepared = False
+                self._hint(self._discard_final, self._utterance_id)
+        elif self._speech_first >= 0:
+            self._silent_run += 1
+            if self._silent_run == _PREPARE_SILENT_FRAMES and self._prepare_final is not None:
+                self._prepared = True
+                self._hint(
+                    self._prepare_final,
+                    self._utterance_id,
+                    b"".join(self._audio_frames),
+                    self._speech_s(),
+                )
+
+    def _speech_s(self) -> float:
+        if self._speech_first < 0:
+            return 0.0
+        return (self._speech_last - self._speech_first + 1) * self._frame_ms / 1_000.0
+
+    @staticmethod
+    def _hint(hint: Callable[..., None] | None, *args: object) -> None:
+        if hint is None:
+            return
+        try:
+            hint(*args)
+        except Exception:  # noqa: BLE001 - a hint to final ASR never breaks capture
+            LOGGER.warning("final ASR hint failed", exc_info=True)
 
     def _endpoint(self, *, speech: bool) -> str | None:
         """Return why the utterance ends on this frame, or ``None`` while it goes on."""
@@ -814,7 +880,9 @@ class UtteranceAssembler:
             endpoint_reason=endpoint_reason,
             audio_bytes=b"".join(frames),
             woken=self._woken,
+            speech_s=self._speech_s(),
         )
+        self._prepared = False  # the commit collects it; reset_to_idle must not discard it
         self.reset_to_idle()
         self._set_phase(EndpointPhase.FINALIZING_ASR, utterance.utterance_id)
         return utterance
@@ -968,6 +1036,8 @@ class UtteranceAssembler:
 
     def reset_to_idle(self) -> None:
         """Clear every utterance-local mutable field."""
+        if self._prepared:
+            self._hint(self._discard_final, self._utterance_id)
         self._state = _AssemblerState.IDLE
         self._stream_epoch = None
         self._expected_cursor = None
@@ -984,6 +1054,10 @@ class UtteranceAssembler:
         self._yield_silence = 0
         self._consecutive_silence = 0
         self._last_speech_index = -1
+        self._speech_first = -1
+        self._speech_last = -1
+        self._silent_run = 0
+        self._prepared = False
         self._hold_frames = 0
         self._frames_since_snapshot = 0
         self._snapshot_count = 0
@@ -1125,6 +1199,8 @@ class DuplexVoiceSession:
             lane=self._partial_lane,
             output_active=output_active,
             on_partial=self._show_partial,
+            prepare_final=getattr(pipeline, "prepare_final", None),
+            discard_final=getattr(pipeline, "discard_final", None),
         )
         self._detections: queue.Queue[WakeDetection] = queue.Queue(
             maxsize=config.detection_queue_capacity,
@@ -1797,6 +1873,7 @@ class DuplexVoiceSession:
         try:
             self._commits.put_nowait(outcome)
         except queue.Full:
+            self._assembler.discard_prepared(outcome.utterance_id)
             self._end_barge_in(outcome.turn_id)
             self._mark_in_flight(outcome.turn_id, active=False)
             self._commit_queue_full += 1
@@ -1840,6 +1917,7 @@ class DuplexVoiceSession:
                         endpoint_reason=utterance.endpoint_reason,
                         before_emit=functools.partial(self._judge_words, utterance.turn_id),
                         wake_lead=utterance.woken or self._over_her(utterance.turn_id),
+                        speech_s=utterance.speech_s,
                     )
                 self._assembler.mark_committed(utterance.utterance_id)
             except voice_pipeline.VoicePipelineAbsorbedError as absorbed:
@@ -1874,6 +1952,8 @@ class DuplexVoiceSession:
                 LOGGER.exception("realtime wake: ASR commit failed turn_id=%s", utterance.turn_id)
                 self._broadcast("error", turn_id=utterance.turn_id, reason="asr_error")
             finally:
+                # Collected by run_turn; a turn that never reached ASR drops what was prepared.
+                self._assembler.discard_prepared(utterance.utterance_id)
                 self._end_barge_in(utterance.turn_id)
                 self._mark_in_flight(utterance.turn_id, active=False)
                 self._commits.task_done()
