@@ -8,9 +8,9 @@ the whole of that decision: one pure function from a single committed event
 
 The function is deliberately total and side-effect free: no clock, no DB
 read, no LLM, no timer, no randomness (the runtime hands in the choice).  The
-two rows that speak are a slow tool's dispatch and, since ADR 0116, the
-row that carries Allen's words; the runtime owns the 2.5 s clock that lets
-the second one speak, and every suppression rule.  D6's ban on a phrase that
+two rows that speak are the dispatch of one of the two slowest tools and,
+since ADR 0116, the row that carries Allen's words; the runtime owns the clocks
+that let the second one speak (ADR 0121), and every suppression rule.  D6's ban on a phrase that
 claims a result before ``action.result_observed`` stands for the runtime's own
 lines, with one owner's exception named in ADR 0116 (「马上好」); "a deep model
 is never called only to generate 我在查" is a property of the call graph.
@@ -25,7 +25,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, Final
 
-from jarvis.shared.lang import LONG_WAIT_TOOLS, SLOW_TOOLS, variants
+from jarvis.shared.lang import LONG_WAIT_TOOLS, variants
 from jarvis.shared.realtime import PresentationIntent, PresentationIntentType
 from jarvis.shared.text import is_english
 
@@ -50,11 +50,13 @@ _D6_ROWS: Final[dict[str, tuple[PresentationIntentType, str]]] = {
 """The rows that speak -> the key of the phrases they permit, in Chinese and
 in English, in the language table.
 
-A dispatch speaks only for a tool on the slow list. The utterance row is the
-"nothing of the answer has started" check, run by the runtime once its clock
-says the turn is taking a while. The result row's 「结果回来了」 was heard with
-nothing before it after a quick tool (ADR 0045), and a tool's own end says
-nothing about when the answer comes, so no other row speaks.
+A dispatch speaks only for a tool on ``LONG_WAIT_TOOLS`` (ADR 0121: waits of
+about 2 s need no voice). The utterance row is the "nothing of the answer has
+started" check, run by the runtime once its clock says the turn is taking a
+while, and again for the follow-ups ("still working") of a longer wait. The
+result row's 「结果回来了」 was heard with nothing before it after a quick tool
+(ADR 0045), and a tool's own end says nothing about when the answer comes, so no
+other row speaks.
 
 The key holds a small set because one fixed phrase repeated on every turn is
 the "one moment while I process that" shape OpenAI's Realtime preamble
@@ -99,18 +101,20 @@ def commentary_intent_for(
     *,
     user_text: str = "",
     tool_name: str | None = None,
+    still: bool = False,
     pick: Callable[[tuple[str, ...]], str],
 ) -> PresentationIntent | None:
     """Return the D6 intent this event permits, or ``None``.
 
     ``None`` for every event type but ``action.dispatched`` of a tool on
-    :data:`~jarvis.shared.lang.SLOW_TOOLS` and ``utterance.received``, and for
+    :data:`~jarvis.shared.lang.LONG_WAIT_TOOLS` and ``utterance.received``, and for
     a dispatch row that carries no usable ``action_id``, since ``subject_ref``
     is that id and an intent about nothing cannot be coalesced or superseded.
     The utterance row's subject is the row itself.
 
     The phrase is English when ``user_text`` (what Allen said this turn) reads
-    as English; ``pick`` chooses one of the language's phrases.
+    as English; ``pick`` chooses one of the language's phrases. ``still`` makes
+    the utterance row say a follow-up of a wait that goes on, not the first line.
     """
     row = _D6_ROWS.get(event.type)
     if row is None:
@@ -119,11 +123,12 @@ def commentary_intent_for(
     intent_type, key = row
     if event.type == "action.dispatched":
         action_id = event.payload.get("action_id")
-        if tool_name not in SLOW_TOOLS or not isinstance(action_id, str) or not action_id:
+        if tool_name not in LONG_WAIT_TOOLS or not isinstance(action_id, str) or not action_id:
             return None
         subject = action_id
-        if tool_name in LONG_WAIT_TOOLS:
-            key = "commentary.long_wait"
+        key = "commentary.long_wait"
+    elif still:
+        key = "commentary.still"
     return PresentationIntent(
         intent_type=intent_type,
         surface_hint="speech",

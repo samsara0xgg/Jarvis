@@ -78,10 +78,11 @@ def variants(key: str, lang: Language | None = None) -> tuple[str, ...]:
     return VARIANTS[key][lang or _current]
 
 
-# --- Slow tools (ADR 0115, ADR 0116) -----------------------------------------
+# --- Slow tools (ADR 0115, ADR 0117) -----------------------------------------
 
 # Tools slow enough to name at once, and the ``tool_status.*`` line each shows
-# under the ball; the same tools make her say a wait line at their dispatch.
+# under the ball. Only the two on LONG_WAIT_TOOLS also make her say a wait line
+# at their dispatch (ADR 0121).
 # Measured run times (2026-09): web_search 1.9 s, screen_look 3.3 s,
 # refresh_work_state 7.6 s median, daily_work_report 58 s. Everything else on
 # the owner's log is under 0.6 s.
@@ -934,6 +935,11 @@ VARIANTS: Final[dict[str, dict[Language, tuple[str, ...]]]] = {
     "commentary.wait": {
         "zh": ("稍等。", "等一下。", "正在办。", "马上好。"),
         "en": ("One moment.", "Hold on.", "On it.", "Almost there."),
+    },
+    # ADR 0121: the follow-up lines while a turn's answer has still not started.
+    "commentary.still": {
+        "zh": ("还在弄，再等一下。", "还没好，再稍等一会儿。", "还在处理，再等等。"),
+        "en": ("Still working on it.", "Still on it, one more moment."),
     },
     # ADR 0117: the same line for LONG_WAIT_TOOLS, which says he can ask something else.
     "commentary.long_wait": {

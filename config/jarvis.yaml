@@ -516,12 +516,15 @@ realtime:
       enabled: true
   # ADR-0008 Step 5 (D6), as ADR 0116 reshapes it.  With commentary on, a turn
   # Allen spoke says one short fixed line (a random pick from a small pool, in
-  # the language of his words) when it is taking a while: at the dispatch of a
-  # slow tool (web_search, web_fetch, screen_look, refresh_work_state,
-  # daily_work_report; no earlier than 1.5 s after his words), or 2.5 s after
-  # his words with nothing of the answer started, tool or not.  Never after the
-  # answer has started or the turn has ended, never twice in a turn, never over
-  # a pending confirmation, never for a typed or GPT-Live turn.  It is a
+  # the language of his words) when it is taking a while (ADR 0121): 4.0 s after
+  # his words with nothing of the answer started, tool or not, or at the
+  # dispatch of refresh_work_state or daily_work_report (no earlier than 1.5 s
+  # after his words), whose line says it will take a while.  While the answer
+  # still has not started, a follow-up ("still working") at 12 s and at 25 s,
+  # three lines at most per turn.  Never after the answer has started or the
+  # turn has ended (a line emitted but not yet heard is dropped when the answer
+  # starts), never over a pending confirmation, never for a typed or GPT-Live
+  # turn.  It is a
   # `phase="commentary"` ResponseRun sharing the turn's response_group_id; the
   # final answer is never dropped or superseded by it.  No model writes the
   # line.  It additionally requires realtime.enabled and

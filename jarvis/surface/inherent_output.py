@@ -27,6 +27,11 @@ Step 2 wire schema (three envelopes per turn, mirrored from
    plus ``"written": <text>`` when the event says ``written_apart`` (ADR 0114):
    the details the answer's spoken part leaves out, which no chunk carried.
 
+A wait line (a ``phase="commentary"`` response, ADR 0116) goes out in the same
+three envelopes with ``"response_phase": "commentary"`` added, so a client can
+treat it as speech only and not as her answer (ADR 0121); an answer's envelopes
+carry no such key.
+
 While a tool is really running, the runtime also sends
 ``{"op": "tool", "payload": {"turn_id": <id>, "label": <fixed line>}}`` (an
 empty ``label`` clears it; ADR 0115), from the ``action.*`` rows.
@@ -79,6 +84,12 @@ if TYPE_CHECKING:
 
 
 LOGGER = logging.getLogger("jarvis.surface.inherent_output")
+
+
+def _mark_wait_line(event: Event, payload: dict[str, object]) -> None:
+    """Add ``response_phase: "commentary"`` when the row belongs to a wait line (ADR 0121)."""
+    if event.payload.get("phase") == "commentary":
+        payload["response_phase"] = "commentary"
 
 
 class InherentBroadcaster:
@@ -172,6 +183,7 @@ class InherentBroadcaster:
         response_id = event.payload.get("response_id")
         if isinstance(response_id, str):
             payload["response_id"] = response_id
+        _mark_wait_line(event, payload)
         msg: dict[str, object] = {"op": "open", "payload": payload}
         await self._send_all(msg, turn_id=turn_id)
 
@@ -192,10 +204,9 @@ class InherentBroadcaster:
         if not text:
             return
         turn_id = str(event.payload.get("turn_id", "<unknown>"))
-        msg: dict[str, object] = {
-            "op": "append",
-            "payload": {"token": text, "turn_id": turn_id},
-        }
+        payload: dict[str, object] = {"token": text, "turn_id": turn_id}
+        _mark_wait_line(event, payload)
+        msg: dict[str, object] = {"op": "append", "payload": payload}
         await self._send_all(msg, turn_id=turn_id)
 
     async def broadcast_done(self, event: Event) -> None:
@@ -225,6 +236,7 @@ class InherentBroadcaster:
         # A commentary run's wait line is not the answer: it never stands in for it.
         if isinstance(spoken, str) and spoken and event.payload.get("phase") != "commentary":
             payload["spoken"] = spoken
+        _mark_wait_line(event, payload)
         msg: dict[str, object] = {"op": "done", "payload": payload}
         await self._send_all(msg, turn_id=turn_id)
 

@@ -309,6 +309,9 @@ _TTS_SILENT_CHANNELS: frozenset[str] = frozenset(
 # which is what "queue for review" means.
 _BROADCAST_SILENT_CHANNELS: frozenset[str] = frozenset({"silent_log"})
 
+_WAIT_LINES_REMEMBERED: Final = 256
+"""How many wait-line response ids the response watcher keeps before it starts over."""
+
 # The rows that close a response: its render, or its run's terminal.
 _RESPONSE_TERMINAL_TYPES: frozenset[str] = frozenset(
     {"surface.response_emitted", "response.cancelled", "response.failed"},
@@ -1464,6 +1467,7 @@ async def _response_watcher(
     """
     after_id = _latest_id(runtime.conn)
     silent_turns: set[str] = set()
+    wait_lines: set[str] = set()  # response ids of wait lines, whose cancel is not the turn's
     LOGGER.info("response_watcher started (after_id=%d)", after_id)
     try:
         while True:
@@ -1483,6 +1487,14 @@ async def _response_watcher(
                         consumer="response_watcher",
                     ):
                         continue
+                    response_id = ev.payload.get("response_id")
+                    is_line = ev.payload.get("phase") == "commentary"
+                    if ev.type == "surface.response_open" and is_line:
+                        if len(wait_lines) > _WAIT_LINES_REMEMBERED:
+                            wait_lines.clear()
+                        wait_lines.add(str(response_id))
+                    elif ev.type == "response.cancelled" and response_id in wait_lines:
+                        continue  # a wait line taken back says nothing about the turn (ADR 0121)
                     await _broadcast_response_event(
                         broadcaster, ev, turn_id=turn_id, voiced=voiced,
                     )
@@ -1731,8 +1743,10 @@ async def _tts_watcher(  # noqa: C901, PLR0912 - ordered durable dispatch FSM
 # Nothing here re-enters `decide()`: `_RUNTIME_TRIGGER_TYPES` is untouched and
 # no model is ever called to produce a phrase (ADR-0008 D6, "a deep model is
 # never called only to generate 我在查"). A turn he spoke says one fixed line
-# when it is taking a while (ADR 0116): at a slow tool's dispatch, or once
-# `_COMMENTARY_AFTER_S` have passed with nothing of the answer started.
+# when it is taking a while (ADR 0116, 0121): at the dispatch of one of the two
+# slowest tools, or once `_COMMENTARY_AFTER_S` have passed with nothing of the
+# answer started; then a follow-up at each of `_COMMENTARY_STILL_AFTER_S` while
+# the answer still has not started, at most `_COMMENTARY_MAX_LINES` in all.
 
 _COMMENTARY_ACTION_TYPES: Final[tuple[str, ...]] = ("action.dispatched", "utterance.received")
 """The D6 rows that speak (:data:`jarvis.decision.commentary._D6_ROWS`)."""
@@ -1743,12 +1757,21 @@ _COMMENTARY_EARLIEST_S: Final[float] = 1.5
 An answer that begins within it needs no lead-in: a light switched in 0.4 s
 (2026-09-26 to 09-29). The line speaks for the turn, not for the one tool:
 a tool that has already finished does not silence it; an answer that is out
-does.
+does. A Tier 0 turn ends within about 1 s, so the floor and the turn-ended
+check keep it silent.
 """
 
-_COMMENTARY_AFTER_S: Final[float] = 2.5
+_COMMENTARY_AFTER_S: Final[float] = 4.0
 """How long after Allen's words, with nothing of the answer started, the line
-speaks whether or not a tool is involved (ADR 0116; the owner's number)."""
+speaks whether or not a tool is involved (ADR 0121: a toolless turn answers at
+a median 2.8 s and p90 5.0 s, so 2.5 s fired right before the answer)."""
+
+_COMMENTARY_STILL_AFTER_S: Final[tuple[float, ...]] = (12.0, 25.0)
+"""How long after Allen's words each follow-up ("still working") may speak while
+the answer still has not started (ADR 0121)."""
+
+_COMMENTARY_MAX_LINES: Final = 3
+"""The most lines one turn says: the first and the follow-ups (ADR 0121)."""
 
 _COMMENTARY_SHUTDOWN_BUDGET_S: Final[float] = 0.5
 """Whole-budget SQLite wait the teardown cancel may spend on the event loop."""
@@ -1890,35 +1913,46 @@ _SELECT_TURN_ENDED_SQL = (
     "AND json_extract(payload_json, '$.turn_id') = ? LIMIT 1"
 )
 
-# The answer is `phase="final"`: its first segment commits `surface.response_open`
-# together with `surface.response_chunk` in a spoken_streaming turn, and the
-# whole answer does at once in any other turn. `response.started` does not
-# count: it opens the run before the model is asked.
+# The answer is `phase="final"` (or any phase but commentary): its first segment
+# commits `surface.response_open` together with `surface.response_chunk` in a
+# spoken_streaming turn, and the whole answer does at once in any other turn;
+# `surface.playback_started` is the answer reaching the speaker. Any of the three
+# counts. `response.started` does not: it opens the run before the model is asked.
 _SELECT_ANSWER_STARTED_SQL = (
-    "SELECT 1 FROM events WHERE type = 'surface.response_open' "
+    "SELECT 1 FROM events WHERE type IN "
+    "('surface.response_open', 'surface.response_chunk', 'surface.playback_started') "
     "AND json_extract(payload_json, '$.turn_id') = ? "
     "AND json_extract(payload_json, '$.phase') IS NOT 'commentary' LIMIT 1"
 )
 
-_SELECT_COMMENTARY_IN_TURN_SQL = (
-    "SELECT 1 FROM events WHERE type = 'response.started' "
+_SELECT_COMMENTARY_COUNT_SQL = (
+    "SELECT COUNT(*) FROM events WHERE type = 'response.started' "
     "AND json_extract(payload_json, '$.phase') = 'commentary' "
-    "AND json_extract(payload_json, '$.turn_id') = ? LIMIT 1"
+    "AND json_extract(payload_json, '$.turn_id') = ?"
 )
 
 
-def _turn_already_spoke_commentary(conn: sqlite3.Connection, turn_id: str) -> bool:
-    """Return whether this turn has already opened its one commentary run.
+def _turn_commentary_count(conn: sqlite3.Connection, turn_id: str) -> int:
+    """Return how many commentary runs this turn has opened.
 
     ``start_response_run`` writes ``response.started`` first, before the
     Pre-emit Gate and the three surface rows, so it is the earliest durable
     mark of "this turn already spoke" and the only one that beats a second
-    action row racing in on the next 10 ms poll. Reading the log rather than
+    row racing in on the next 10 ms poll. Reading the log rather than
     in-memory observer state is what makes the cap survive a restart, and
-    what makes it hold when two actions of the same turn open on different
+    what makes it hold when two rows of the same turn open on different
     worker threads.
     """
-    return conn.execute(_SELECT_COMMENTARY_IN_TURN_SQL, (turn_id,)).fetchone() is not None
+    row = conn.execute(_SELECT_COMMENTARY_COUNT_SQL, (turn_id,)).fetchone()
+    return int(row[0]) if row is not None else 0
+
+
+def _turn_over_or_answering(conn: sqlite3.Connection, turn_id: str) -> bool:
+    """Return whether the turn has ended or its answer has started."""
+    return (
+        conn.execute(_SELECT_TURN_ENDED_SQL, (turn_id,)).fetchone() is not None
+        or conn.execute(_SELECT_ANSWER_STARTED_SQL, (turn_id,)).fetchone() is not None
+    )
 
 
 def _cancel_unheard_commentary(
@@ -2062,22 +2096,42 @@ def _render_commentary(  # noqa: PLR0913 - the run's identity plus what it says
     )
 
 
+def _commentary_turn_is_over(runtime: JarvisRuntime, trigger_event: Event) -> bool:
+    """Whether the turn this row belongs to can no longer say a line.
+
+    True for a turn he did not speak, one that has ended and one whose answer has
+    started: the later clocks of the row have nothing left to watch for.
+    """
+    conn = open_runtime_event_log(runtime.runtime_paths.event_log)
+    try:
+        turn = _commentary_turn(conn, trigger_event)
+        return turn is None or _turn_over_or_answering(conn, turn[0])
+    finally:
+        with contextlib.suppress(sqlite3.Error):
+            conn.close()
+
+
 def _hold_until(said_at_ms: int, after_s: float, stop: threading.Event) -> bool:
     """Wait until ``after_s`` past his words; ``False`` if shutdown came first."""
     return not stop.wait(max(said_at_ms / 1000 + after_s - time.time(), 0.0))
 
 
-def _open_commentary_in_worker_thread(  # noqa: PLR0911 - one early return per suppression rule
+def _open_commentary_in_worker_thread(  # noqa: C901, PLR0911 - one early return per suppression rule
     runtime: JarvisRuntime,
     *,
     trigger_event: Event,
     stop: threading.Event | None = None,
+    after_s: float | None = None,
+    still: bool = False,
 ) -> _OpenCommentary | None:
     """Decide and deliver one row's commentary on a worker thread.
 
-    The row is a slow tool's ``action.dispatched`` or the ``utterance.received``
-    that carries his words; the second one is the clock of ADR 0116 and waits
-    :data:`_COMMENTARY_AFTER_S` after his words before it looks at anything.
+    The row is the ``action.dispatched`` of a long-wait tool or the
+    ``utterance.received`` that carries his words; the second one is the clock
+    of ADR 0116 and waits ``after_s`` (default :data:`_COMMENTARY_AFTER_S`) after
+    his words before it looks at anything. ``still`` makes it a follow-up line
+    of a wait that goes on (ADR 0121), which may be any of the turn's lines up
+    to :data:`_COMMENTARY_MAX_LINES`; the first line needs the turn to have none.
 
     Opens its own connection for the same ``check_same_thread`` reason
     :func:`_drive_turn_in_worker_thread` does, and for a second one: the
@@ -2085,17 +2139,20 @@ def _open_commentary_in_worker_thread(  # noqa: PLR0911 - one early return per s
     the TTS watcher polls on.
 
     Returns ``None`` — writing nothing at all — when the row maps to no D6
-    intent (a quick tool), when the turn is not one he spoke (typed, GPT-Live,
-    system), when the turn has ended or its answer has started by the time the
-    wait is over, when this turn already opened its one commentary, or when a
-    confirmation is still awaiting an answer. ``stop`` ends the wait early at
-    shutdown.
+    intent (a tool off the long-wait list), when the turn is not one he spoke
+    (typed, GPT-Live, system), when the turn has ended or its answer has started
+    by the time the wait is over, when this turn already said its lines, or when
+    a confirmation is still awaiting an answer. The ended and answer-started
+    checks are the last thing before the line is rendered. An answer that begins
+    after them is the media owner's to resolve: it drops a line that has not
+    started playing (ADR 0121). ``stop`` ends the wait early at shutdown.
     """
     clock = trigger_event.type == "utterance.received"
     stop = stop or threading.Event()
     conn = open_runtime_event_log(runtime.runtime_paths.event_log)
     try:
-        if clock and not _hold_until(trigger_event.ts_epoch_ms, _COMMENTARY_AFTER_S, stop):
+        clock_s = _COMMENTARY_AFTER_S if after_s is None else after_s
+        if clock and not _hold_until(trigger_event.ts_epoch_ms, clock_s, stop):
             return None  # before the lookup below: the claim row lands just after his words
         turn = _commentary_turn(conn, trigger_event)
         if turn is None:
@@ -2110,30 +2167,27 @@ def _open_commentary_in_worker_thread(  # noqa: PLR0911 - one early return per s
             if row is not None:
                 bound_id, tool_name = row
         intent = commentary_intent_for(
-            trigger_event, user_text=user_text, tool_name=tool_name, pick=secrets.choice,
+            trigger_event,
+            user_text=user_text,
+            tool_name=tool_name,
+            still=still,
+            pick=secrets.choice,
         )
-        if intent is None:  # a quick tool
+        if intent is None:  # a tool that does not take long
             return None
-        lead_in = conn.execute(_SELECT_LEAD_IN_SQL, (turn_id, bound_id)).fetchone()
-        line = lead_in_speech_text(lead_in[0] if lead_in is not None else None)
+        line = None
+        if not still:  # the model's own line replaces the first line only
+            lead_in = conn.execute(_SELECT_LEAD_IN_SQL, (turn_id, bound_id)).fetchone()
+            line = lead_in_speech_text(lead_in[0] if lead_in is not None else None)
         # A quick answer needs no lead-in: give it until the floor to begin.
         if not clock and not _hold_until(said_at_ms, _COMMENTARY_EARLIEST_S, stop):
             return None
         with _COMMENTARY_LOCK:
-            if (
-                conn.execute(_SELECT_TURN_ENDED_SQL, (turn_id,)).fetchone() is not None
-                or conn.execute(_SELECT_ANSWER_STARTED_SQL, (turn_id,)).fetchone() is not None
-            ):
-                # The answer is out or on its way (a quick answer, or a Tier 0
-                # turn that ends before its tool's rows reach this watcher): a
-                # phrase now would talk over it or follow it.
-                return None
-            if _turn_already_spoke_commentary(conn, turn_id):
-                # One phrase per turn. Checked here, after the origin filter and
-                # before every write, so that the suppression path below never
-                # consumes the turn's only slot: a turn whose first qualifying
-                # row is silenced still speaks on a later row. Under the lock,
-                # because the dispatch and the clock of one turn race.
+            if _turn_commentary_count(conn, turn_id) >= (_COMMENTARY_MAX_LINES if still else 1):
+                # The turn's lines are said. Checked after the origin filter and
+                # before every write, so that a suppression path below never
+                # consumes a slot, and under the lock, because the dispatch and
+                # the clocks of one turn race.
                 return None
             projections = rebuild_projections(conn)
             slot = projections.pending_confirmations.slot
@@ -2142,6 +2196,12 @@ def _open_commentary_in_worker_thread(  # noqa: PLR0911 - one early return per s
                 # confirmation. The slot is globally unique and its
                 # `action_snapshot` carries no `action_id`, so this is enforced
                 # at the only granularity the fold supports.
+                return None
+            if _turn_over_or_answering(conn, turn_id):
+                # Last before the render, after the slow projection rebuild: the
+                # answer is out or on its way (a quick answer, or a Tier 0 turn
+                # that ends before its tool's rows reach this watcher), and a
+                # phrase now would talk over it or follow it.
                 return None
             return _render_commentary(
                 runtime,
@@ -2161,50 +2221,71 @@ async def _commentary_watcher(  # noqa: C901 - the row handlers share the watche
     *,
     poll_interval_s: float = _DEFAULT_POLL_INTERVAL_S,
 ) -> None:
-    """Background task: speak one deterministic wait line per turn he spoke.
+    """Background task: speak the deterministic wait lines of a turn he spoke.
 
-    One cursor over ``action.dispatched``, ``utterance.received`` plus
-    ``surface.playback_started``, anchored at the boot high-water mark exactly
-    like ``_tts_watcher`` — a historical action from a previous session must
-    never speak fake progress. ``surface.playback_started`` closes a phrase
-    that reached the speaker.
+    One cursor over ``action.dispatched``, ``utterance.received``,
+    ``surface.speech_dropped`` plus ``surface.playback_started``, anchored at
+    the boot high-water mark exactly like ``_tts_watcher`` — a historical
+    action from a previous session must never speak fake progress.
+    ``surface.playback_started`` closes a phrase that reached the speaker;
+    ``surface.speech_dropped`` is the media owner discarding one that had not
+    started when its turn's answer opened (ADR 0121), so its run is cancelled.
 
     Each row that may speak gets a task of its own, because the clock row
     waits seconds and must not hold back the rows behind it. Audibility is
-    decided by the per-turn cap in :func:`_open_commentary_in_worker_thread`,
-    not here: a turn speaks at most one phrase, and the first row of that turn
-    that actually opens one wins. The ``spoken`` set below is the cheaper
-    guard in front of it — one entry per ``(subject, event type)``, so a
-    repeated row is dropped before the thread hop and the projection rebuild.
-    It decides work, not what is heard.
+    decided by the per-turn count in :func:`_open_commentary_in_worker_thread`,
+    not here: a turn says at most :data:`_COMMENTARY_MAX_LINES` lines, and the
+    first row of that turn that actually opens one wins. The ``spoken`` set
+    below is the cheaper guard in front of it — one entry per
+    ``(subject, event type)``, so a repeated row is dropped before the thread
+    hop and the projection rebuild. It decides work, not what is heard.
 
     Per-row dispatch is wrapped in a catch-all for the same reason
     ``_tts_watcher``'s is: commentary is a courtesy, and a failure to produce
     it must never stall the watcher or the turn it is commenting on.
     """
     after_id = _latest_id(runtime.conn)
-    open_by_subject: dict[str, _OpenCommentary] = {}
+    open_by_subject: dict[str, _OpenCommentary] = {}  # by response id
     spoken: set[tuple[str, str]] = set()
     tasks: set[asyncio.Task[None]] = set()
     stop = threading.Event()
 
-    async def _speak(ev: Event, subject: str) -> None:
-        opened = await asyncio.to_thread(
-            _open_commentary_in_worker_thread, runtime, trigger_event=ev, stop=stop,
-        )
-        if opened is not None:
-            open_by_subject[subject] = opened
+    async def _speak(ev: Event) -> None:
+        # The clock row keeps watching the turn: the first line, then a follow-up
+        # at each later time while the answer has still not started.
+        schedule: list[tuple[float | None, bool]] = [(None, False)]
+        if ev.type == "utterance.received":
+            schedule = [(_COMMENTARY_AFTER_S, False)]
+            schedule += [(after_s, True) for after_s in _COMMENTARY_STILL_AFTER_S]
+        for after_s, still in schedule:
+            opened = await asyncio.to_thread(
+                _open_commentary_in_worker_thread,
+                runtime,
+                trigger_event=ev,
+                stop=stop,
+                after_s=after_s,
+                still=still,
+            )
+            if opened is not None:
+                open_by_subject[opened.run.response_id] = opened
+            elif len(schedule) > 1 and (
+                stop.is_set() or await asyncio.to_thread(_commentary_turn_is_over, runtime, ev)
+            ):
+                return
 
     async def _on_row(ev: Event) -> None:
         try:
             if ev.type == "surface.playback_started":
                 await _commentary_heard(runtime, open_by_subject, ev)
                 return
+            if ev.type == "surface.speech_dropped":
+                await _commentary_dropped(runtime, open_by_subject, ev)
+                return
             subject = _event_action_id(ev) or ev.event_uid
             if (subject, ev.type) in spoken:
                 return
             spoken.add((subject, ev.type))
-            task = asyncio.create_task(_speak(ev, subject))
+            task = asyncio.create_task(_speak(ev))
             tasks.add(task)
             task.add_done_callback(_task_done)
         except Exception as exc:  # noqa: BLE001 — commentary must not crash the watcher.
@@ -2221,7 +2302,11 @@ async def _commentary_watcher(  # noqa: C901 - the row handlers share the watche
             new_events = _fetch_events_after(
                 runtime.conn,
                 after_id=after_id,
-                event_types=(*_COMMENTARY_ACTION_TYPES, "surface.playback_started"),
+                event_types=(
+                    *_COMMENTARY_ACTION_TYPES,
+                    "surface.speech_dropped",
+                    "surface.playback_started",
+                ),
             )
             for row_id, ev in new_events:
                 after_id = max(after_id, row_id)
@@ -2244,6 +2329,23 @@ async def _commentary_watcher(  # noqa: C901 - the row handlers share the watche
         raise
 
 
+async def _commentary_dropped(
+    runtime: JarvisRuntime,
+    open_by_subject: dict[str, _OpenCommentary],
+    event: Event,
+) -> None:
+    """Cancel the commentary run whose phrase the media owner discarded unplayed.
+
+    The answer of the turn opened before the phrase started: the phrase was
+    never spoken, so its run must not stay open until teardown.
+    """
+    entry = open_by_subject.pop(str(event.payload.get("response_id")), None)
+    if entry is not None:
+        await asyncio.to_thread(
+            _cancel_unheard_commentary, runtime, entry, reason="answer_started",
+        )
+
+
 async def _commentary_heard(
     runtime: JarvisRuntime,
     open_by_subject: dict[str, _OpenCommentary],
@@ -2257,7 +2359,7 @@ async def _commentary_heard(
     )
     if entry is None:
         return
-    del open_by_subject[entry.subject_ref]
+    del open_by_subject[entry.run.response_id]
     await asyncio.to_thread(_complete_commentary, runtime, entry)
 
 

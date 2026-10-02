@@ -92,6 +92,9 @@ _RESPONSE_EVENT_TYPES = frozenset(
     {"surface.response_open", "surface.response_chunk", "surface.response_emitted"}
     | _RESPONSE_TERMINAL_TYPES,
 )
+_ANSWERED_GROUPS_LIMIT = 256
+"""How many recent groups whose answer opened the media owner remembers."""
+
 _TTS_SILENT_CHANNELS = frozenset({"queue_review", "silent_log", "badge_card"})
 _SELECT_EVENT_ROWS_THROUGH = (
     "SELECT id, event_uid, type, schema_version, ts_epoch_ms, payload_json, "
@@ -712,6 +715,10 @@ class StreamingTTSPipeline:
         # ponytail: only grows, one short id per spoken turn; trim it if a
         # daemon ever runs for months.
         self._started_turns: set[str] = set()
+        # ADR 0121: groups whose answer (any phase but commentary) has opened. A
+        # wait line of such a group that has not started is dropped, never played
+        # behind the answer. Insertion-ordered so the oldest can be trimmed.
+        self._answered_groups: dict[str, None] = {}
         # The player's gain is the mute's (ADR-0015 D2) times a barge-in
         # yield's, so a yield never lifts a mute.
         self._gain_lock = threading.Lock()
@@ -1627,7 +1634,7 @@ class StreamingTTSPipeline:
             self._responses.pop(waiting.response_id, None)
             self._registry.terminalize(waiting.response_id)
             self._record_dropped(waiting, reason=reason)
-            self._broadcast_spoken(waiting.turn_id, event_type="dropped")
+            self._broadcast_spoken(waiting, event_type="dropped")
             record_realtime_trace(
                 "media_stop_foreground_waiting", response_id=waiting.response_id, reason=reason,
             )
@@ -2261,7 +2268,7 @@ class StreamingTTSPipeline:
             detail="hint row was absent or not a response event",
         )
 
-    async def _handle_event(  # noqa: PLR0911 - closed three-event dispatch
+    async def _handle_event(  # noqa: C901, PLR0911 - closed three-event dispatch
         self,
         *,
         row_id: int,
@@ -2294,7 +2301,7 @@ class StreamingTTSPipeline:
                     response_id,
                     "streaming response open requires stable response_group_id",
                 )
-            self._responses[response_id] = _ResponseBuffer(
+            opened = _ResponseBuffer(
                 row_id=row_id,
                 source_event_id=event.event_uid,
                 response_id=response_id,
@@ -2305,6 +2312,9 @@ class StreamingTTSPipeline:
                 gate_mode=str(payload.get("required_gate_mode", "sentence")),
                 stream=payload.get("kind") == "stream",
             )
+            if not self._admit_open(opened):
+                return outcome
+            self._responses[response_id] = opened
             # Only a stream open's chunks are single gate-permitted segments.
             self._responses[response_id].incremental = (
                 self._config.speak_from_segments and self._responses[response_id].stream
@@ -2374,7 +2384,7 @@ class StreamingTTSPipeline:
         self._responses.pop(response.response_id, None)
         self._registry.terminalize(response.response_id)
         self._record_dropped(response, reason=reason)
-        self._broadcast_spoken(response.turn_id, event_type="dropped")
+        self._broadcast_spoken(response, event_type="dropped")
 
     async def _response_emitted(self, response: _ResponseBuffer, event: Event) -> None:
         """Complete the buffer; a scheduled response finishes its own segment loop."""
@@ -2410,7 +2420,43 @@ class StreamingTTSPipeline:
             self._responses.pop(old.response_id, None)
             # Its text may already be on screen: the surface ends its turn on `spoken`.
             self._record_dropped(old, reason="displaced")
-            self._broadcast_spoken(old.turn_id, event_type="dropped")
+            self._broadcast_spoken(old, event_type="dropped")
+
+    def _admit_open(self, opened: _ResponseBuffer) -> bool:
+        """Apply ADR 0121 to a response's open row; ``False`` when it is dropped.
+
+        A wait line whose group's answer is already out would queue behind the
+        answer and be heard after all of it, so it never starts. An answer's open
+        drops the group's wait lines that have not started.
+        """
+        if opened.phase != "commentary":
+            self._answer_opened(opened.response_group_id)
+            return True
+        if opened.response_group_id not in self._answered_groups:
+            return True
+        self._registry.terminalize(opened.response_id)
+        self._record_dropped(opened, reason="answer_started")
+        return False
+
+    def _answer_opened(self, group_id: str) -> None:
+        """Note that this group's answer opened and drop its unplayed wait lines.
+
+        A line already playing is left to finish: interrupting it would also
+        purge the answer queued behind it.
+        """
+        self._answered_groups[group_id] = None
+        while len(self._answered_groups) > _ANSWERED_GROUPS_LIMIT:
+            del self._answered_groups[next(iter(self._answered_groups))]
+        for line in list(self._responses.values()):
+            if (
+                line.phase == "commentary"
+                and line.response_group_id == group_id
+                and not (self._active is not None and self._active.response is line)
+            ):
+                self._unschedule(line)
+                self._responses.pop(line.response_id, None)
+                self._registry.terminalize(line.response_id)
+                self._record_dropped(line, reason="answer_started")
 
     def _unschedule(self, response: _ResponseBuffer) -> None:
         response.scheduled = False
@@ -2427,7 +2473,7 @@ class StreamingTTSPipeline:
         if not speech:
             self._responses.pop(response.response_id, None)
             self._registry.terminalize(response.response_id)
-            self._broadcast_spoken(response.turn_id)
+            self._broadcast_spoken(response)
             return
         active = self._active
         if active is None:
@@ -3722,7 +3768,7 @@ class StreamingTTSPipeline:
             await self._wait_task_bounded(presentation, timeout_s=0.25)
         self._responses.pop(active.response.response_id, None)
         self._player.retire_generation(active.lease.playback_generation_id)
-        self._broadcast_spoken(active.response.turn_id, event_type=event_type)
+        self._broadcast_spoken(active.response, event_type=event_type)
         if start_successor and asyncio.current_task() is active.task:
             # Keep the durable-but-cleaning response as the lane owner. New
             # deliveries queue behind its terminal_commit_pending marker until
@@ -3793,16 +3839,25 @@ class StreamingTTSPipeline:
                 played=position[0],
                 ahead=position[1],
                 held=held,
+                **self._wait_line_mark(active.response),
             )
 
-    def _broadcast_spoken(self, turn_id: str, *, event_type: str = "no_speech") -> None:
+    @staticmethod
+    def _wait_line_mark(response: _ResponseBuffer) -> dict[str, str]:
+        """``response_phase`` for a wait line's voice ops, nothing for an answer (ADR 0121)."""
+        return {"response_phase": "commentary"} if response.phase == "commentary" else {}
+
+    def _broadcast_spoken(
+        self, response: _ResponseBuffer, *, event_type: str = "no_speech",
+    ) -> None:
         callback = getattr(self._broadcaster, "broadcast_voice_sync", None)
         if callable(callback):
             with contextlib.suppress(Exception):
                 callback(
                     "spoken",
-                    turn_id=turn_id,
+                    turn_id=response.turn_id,
                     output_outcome=event_type.removeprefix("surface.playback_"),
+                    **self._wait_line_mark(response),
                 )
 
     def _emit_lane_isolated(
