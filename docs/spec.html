@@ -596,7 +596,7 @@ I8 到 I11 随审核链退役（ADR 0019），编号保留。
 <tr><td><code>artifacts/screen_artifacts/</code></td><td>看一眼屏幕时的截图</td><td>见<a href="#retention">保留期</a></td></tr>
 <tr><td><code>aec-diagnostics/</code></td><td>回声消除的诊断录音：麦克风、播放和消除后三轨</td><td>默认不写（<code>echo_diagnostics</code>）；写了就不删</td></tr>
 <tr><td><code>codex-hooks/</code></td><td>Codex hook 事件的完整内容</td><td>每种事件 10 MB，留两份旧的；不在保留期清理之内</td></tr>
-<tr><td><code>jev/decisions.jsonl</code></td><td>Jev 的每次调用：发给它的文字和问题、它的原始回答、耗时和花费；首页邮件的标记，以及主人对垃圾邮件的归档和撤销；即时功能那一轮的 turn id，用来对上事件日志里的 <code>route.surrogate_decided</code>。里面有主人说的话和邮件的发件人和主题，只在本机，不外发，留着是为了以后训练一个本地的小模型（ADR 0128）</td><td>默认开（<code>jev_log.enabled</code>），只在 Jev 的三个功能（<code>realtime.surrogate_route</code>、<code>home.mail_reply</code>、<code>agents.turn_end_asks</code>）开着时才写；不裁剪，每次调用约 1.5 KB，要自己删</td></tr>
+<tr><td><code>jev/decisions.jsonl</code></td><td>Jev 的每次调用：发给它的文字和问题、它的原始回答、耗时和花费；首页邮件的标记，以及主人对垃圾邮件的归档和撤销；agent 做完一轮后主人在那个会话里发的第一条消息（只记隔了多久和 Jev 当时的判断，不记内容）；即时功能那一轮的 turn id，用来对上事件日志里的 <code>route.surrogate_decided</code>。里面有主人说的话和邮件的发件人和主题，只在本机，不外发，留着是为了以后训练一个本地的小模型（ADR 0128）</td><td>默认开（<code>jev_log.enabled</code>），只在 Jev 的三个功能（<code>realtime.surrogate_route</code>、<code>home.mail_reply</code>、<code>agents.turn_end_asks</code>）开着时才写；不裁剪，每次调用约 1.5 KB，要自己删</td></tr>
 <tr><td><code>agents/</code></td><td>Agents 窗口的会话列表和设置、项目（<code>projects/&lt;id&gt;/</code>：设置、消息流 <code>feed.jsonl</code>、记忆和共享文件夹）、贴进会话的图片和文件、审阅时放回原样的文件留下的副本、宿主的钥匙 <code>host-key</code>（0600）、<code>keeper.sock</code></td><td>图片、文件和副本 30 天</td></tr>
 <tr><td><code>settings.yaml</code>、<code>settings.json</code></td><td>主人的设置（<a href="#formats">第 3 章</a>）</td><td>—</td></tr>
 <tr><td><code>env</code></td><td>主人自己写的明文变量（<a href="#key-storage">第 7 章</a>）</td><td>—</td></tr>

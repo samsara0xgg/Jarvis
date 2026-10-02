@@ -552,6 +552,9 @@ class InherentDeps:
     # (off the loop thread); ``peek`` never waits, for the terminal sessions' board. None = off.
     turn_end_asks: Callable[[str, str], Awaitable[bool | None]] | None = None
     turn_end_peek: Callable[[str, str, bool], bool | None] | None = None
+    # ADR 0128: Allen's messages (epoch seconds) in a session; the first after a scored finish
+    # is logged.
+    turn_end_answered: Callable[[str, list[float]], None] | None = None
     # ADR 0052: the Settings page's file, read and saved off the loop thread;
     # a ValueError from saving is a 400. ``None`` leaves the routes unregistered.
     settings_read: Callable[[], Awaitable[dict[str, Any]]] | None = None
@@ -1024,6 +1027,12 @@ class TurnEndRequest(BaseModel):
 
     session_id: str = Field(min_length=1, max_length=_SESSION_ID_CHARS)
     text: str = Field(max_length=100_000)
+
+
+class TurnEndAnswered(BaseModel):
+    """Body of ``POST /inherent/agents/turn-end/answered`` (ADR 0128): the session he wrote in."""
+
+    session_id: str = Field(min_length=1, max_length=_SESSION_ID_CHARS)
 
 
 class MailArchiveRequest(BaseModel):
@@ -1700,7 +1709,7 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 â
 
     # ADR 0046: Allen's own Claude Code sessions, read from Claude Code's own state;
     # ADR 0049: with the prompts Jarvis holds for them and their compacting / stopped marks.
-    claude_board = ClaudeSessions(deps.turn_end_peek)
+    claude_board = ClaudeSessions(deps.turn_end_peek, deps.turn_end_answered)
     claude_hooks = ClaudeHooks()
 
     @app.get("/inherent/claude-sessions")
@@ -1740,6 +1749,13 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 â
         if deps.turn_end_asks is None:
             return {"asks": None}
         return {"asks": await deps.turn_end_asks(req.session_id, req.text)}
+
+    @app.post("/inherent/agents/turn-end/answered", status_code=200)
+    async def turn_end_answered(req: TurnEndAnswered) -> dict[str, bool]:
+        """ADR 0128: Allen just sent a message in a Startrail session; fire and forget."""
+        if deps.turn_end_answered is not None:
+            deps.turn_end_answered(req.session_id, [time.time()])
+        return {"ok": True}
 
     if deps.agent_marks_path is not None:
         marks = AgentMarks(deps.agent_marks_path)

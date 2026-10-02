@@ -104,13 +104,29 @@ def _newest_blocks(entry: dict[str, Any]) -> tuple[str, str]:
     return tool, ""
 
 
-def read_transcript(path: Path) -> dict[str, str]:
+def _said_at(entry: dict[str, Any]) -> float | None:
+    """When Allen typed this entry (epoch seconds); None unless it is his own words.
+
+    A user entry whose ``origin`` names something else (a task notification, a peer or
+    subagent hand-back) is not him; an entry without ``origin`` cannot be told apart.
+    """
+    origin = entry.get("origin")
+    if (isinstance(origin, dict) and origin.get("kind") != "human") or not _said(entry):
+        return None
+    ms = _iso_ms(entry.get("timestamp"))
+    return ms / 1000 if ms else None
+
+
+def read_transcript(path: Path) -> dict[str, Any]:
     """Last prompt, branch, current tool and last answer from the transcript tail.
 
     ``tool`` is set only when the newest assistant block is a tool call, i.e.
-    what the session is doing (or asking to do) right now.
+    what the session is doing (or asking to do) right now. ``said`` is when Allen
+    sent each message in the tail, newest first (ADR 0128).
     """
-    out = {"prompt": "", "branch": "", "tool": "", "last_message": "", "tail": ""}
+    out: dict[str, Any] = {
+        "prompt": "", "branch": "", "tool": "", "last_message": "", "tail": "", "said": [],
+    }
     with path.open("rb") as fh:
         size = fh.seek(0, 2)
         fh.seek(max(0, size - _TAIL_BYTES))
@@ -134,8 +150,8 @@ def read_transcript(path: Path) -> dict[str, str]:
             out["tool"] = out["tool"] or tool
             if text:
                 answered, out["last_message"], out["tail"] = True, _short(text), text[-_TAIL_CHARS:]
-        if out["prompt"] and out["branch"] and answered:
-            break
+        if entry.get("type") == "user" and (at := _said_at(entry)) is not None:
+            out["said"].append(at)
     return out
 
 
@@ -309,20 +325,26 @@ def _terminals(pids: list[int]) -> dict[int, str]:
 class ClaudeSessions:
     """Newest-first Claude Code session rows, rebuilt at most every ``REFRESH_S``."""
 
-    def __init__(self, asks: Callable[[str, str, bool], bool | None] | None = None) -> None:
+    def __init__(
+        self,
+        asks: Callable[[str, str, bool], bool | None] | None = None,
+        answered: Callable[[str, list[float]], None] | None = None,
+    ) -> None:
         """Find ``claude`` once; launchd's PATH lacks ``~/.local/bin``.
 
         ``asks(session, tail, send)`` (ADR 0125) tells, without waiting, whether a finished
         session's last message asks Allen something, asking Jev only when ``send``; its row
-        says so as ``asks``, or None while that is not known.
+        says so as ``asks``, or None while that is not known. ``answered(session, times)`` (ADR
+        0128) is told when Allen sent each message in a session's transcript.
         """
         self._asks = asks
+        self._answered = answered
         self._home = Path.home()
         self._claude = shutil.which("claude") or str(self._home / ".local" / "bin" / "claude")
         self._lock = threading.Lock()
         self._at = -REFRESH_S
         self._board: dict[str, Any] = {"sessions": [], "error": None}
-        self._transcripts: dict[Path, tuple[int, dict[str, str]]] = {}
+        self._transcripts: dict[Path, tuple[int, dict[str, Any]]] = {}
         self._reply_lock = threading.Lock()
 
     def read(self) -> dict[str, Any]:
@@ -372,9 +394,11 @@ class ClaudeSessions:
         msg = "the reply did not reach the session"
         raise RuntimeError(msg)
 
-    def _transcript(self, path: Path | None, mtime_ns: int) -> dict[str, str]:
+    def _transcript(self, path: Path | None, mtime_ns: int) -> dict[str, Any]:
         if path is None:
-            return {"prompt": "", "branch": "", "tool": "", "last_message": "", "tail": ""}
+            return {
+                "prompt": "", "branch": "", "tool": "", "last_message": "", "tail": "", "said": [],
+            }
         cached = self._transcripts.get(path)
         if cached is None or cached[0] != mtime_ns:
             cached = self._transcripts[path] = (mtime_ns, read_transcript(path))
@@ -432,6 +456,8 @@ class ClaudeSessions:
             tx = self._transcript(path, mtime_ns)
             cwd = str(agent.get("cwd") or "")
             phase = _phase(agent, job)
+            if self._answered and tx["said"]:
+                self._answered(agent["sessionId"], tx["said"])
             # An answer already in stays; Jev is asked only while the finish is news.
             asks = (
                 self._asks(

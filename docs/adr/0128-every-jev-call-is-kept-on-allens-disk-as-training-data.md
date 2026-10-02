@@ -56,13 +56,24 @@ every Jev call goes through; keep it on whenever a Jev feature is on, and let
   a hundred calls a day is about 55 MB a year.
 - **Outcome signals that exist:** the route's `accepted` and `aborted` and the
   Tier 0 action of that turn (in the event log, by turn id); a mail archive or
-  undo (this file).
+  undo (this file); the first message Allen sends in a session after a finish
+  Jev scored, asks or not (this file: `outcome: "answered"` with `after_s`, the
+  seconds since the finish, and the `asks` that finish got, keyed by session
+  id, never his words). A Startrail session's host tells the daemon at his first
+  message after the finish it posted; the terminal board reads the transcript's
+  user turns after it. A finish nobody answers gets no line: absence after N
+  hours is the negative, and N is the reader's to choose.
 - **Outcome signals still missing:** no control anywhere says "Jev was wrong";
   a function the route ran that Allen cancels or rephrases at once is not tied
   to the call; whether Allen replied to a letter marked `yes`, or ignored a junk
-  offer, is not observed; the board sees Allen open or answer a finish told as
-  "needs you" but does not log it; a finish Jev did not flag that turned out to
-  ask, and every `fyi` mark, have no signal at all.
+  offer, is not observed; a finish he opened but did not answer leaves nothing;
+  every `fyi` mark has no signal at all. The answered line is also blind where
+  the data is: a finish whose text repeats the session's previous ending
+  counts as the same ending; a terminal session is missed if no board read falls
+  between its finish and the next one; and a transcript that has no `origin`
+  cannot tell Allen's message from one a tool sent for him, so only an
+  `origin` of another kind is left out. `after_s` counts from when Jev was
+  first asked, a few seconds after the finish on the terminal board.
 
 ## Alternatives rejected
 

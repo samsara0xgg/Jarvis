@@ -15,6 +15,7 @@ import json
 import os
 import threading
 import time
+from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import TYPE_CHECKING, Any
 
@@ -99,6 +100,7 @@ def _client(asks: TurnEndAsks | None) -> TestClient:
         submit_callable=_noop,
         broadcaster=InherentBroadcaster(),
         turn_end_asks=None if asks is None else functools.partial(_ask, asks),
+        turn_end_answered=None if asks is None else asks.answered,
     )
     return TestClient(create_app(deps))
 
@@ -290,6 +292,109 @@ def test_the_terminal_board_gets_asks_without_waiting(
     assert asks.peek("old-session", ASK, False) is None  # noqa: FBT003
     assert asks.peek("s-bg", ASK, False) is True  # noqa: FBT003
     assert len(jev.requests) == 1
+
+
+def _outcomes(path: Path) -> list[dict[str, Any]]:
+    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    return [one for one in map(json.loads, lines) if one["kind"] == "outcome"]
+
+
+def test_a_startrail_answer_after_a_scored_finish_is_one_outcome_line(
+    jev: _Jev, tmp_path: Path,
+) -> None:
+    """ADR 0128: the first message after a scored finish writes its delay and verdict, once."""
+    path = tmp_path / "jev" / "decisions.jsonl"
+    client = _client(jev.asks(log=JevLog(path)))
+
+    def answered(session_id: str) -> Any:  # noqa: ANN401
+        return client.post("/inherent/agents/turn-end/answered", json={"session_id": session_id})
+
+    assert answered("never-finished").status_code == 200  # no finish was scored: nothing
+    assert _post(client, ASK, "s1").json() == {"asks": True}
+    assert _post(client, REPORT, "s2").json() == {"asks": False}
+    jev.status = 500
+    assert _post(client, ASK + " Or the old one?", "s3").json() == {"asks": None}
+    time.sleep(0.3)  # the verdict is kept on the worker that finished the call
+    for session_id in ("s1", "s1", "s2", "s3"):
+        assert answered(session_id).json() == {"ok": True}
+    answers = {one["ref"]: one for one in _outcomes(path)}
+    assert set(answers) == {"s1", "s2"}  # s3 was never scored; a second message adds none
+    assert len(_outcomes(path)) == 2
+    first = answers["s1"]
+    assert set(first) == {"ts", "kind", "use", "ref", "outcome", "after_s", "asks"}
+    assert (first["use"], first["outcome"], first["asks"]) == ("turn_end", "answered", True)
+    assert 0.3 <= first["after_s"] < 5
+    assert answers["s2"]["asks"] is False
+    # A new finish is a new thing to answer.
+    jev.status = 200
+    assert _post(client, REPORT + " Done again.", "s1").json() == {"asks": False}
+    time.sleep(0.3)
+    answered("s1")
+    assert [one["asks"] for one in _outcomes(path) if one["ref"] == "s1"] == [True, False]
+    assert SECRET not in path.read_text(encoding="utf-8")
+
+
+def _entry(kind: str, text: str, **fields: Any) -> str:  # noqa: ANN401
+    now = datetime.now(UTC).isoformat()
+    if kind == "assistant":
+        return json.dumps({
+            "type": "assistant", "gitBranch": "main", "timestamp": now,
+            "message": {"content": [{"type": "text", "text": text}]},
+        })
+    return json.dumps({
+        "type": "user", "timestamp": now, "message": {"role": "user", "content": text}, **fields,
+    })
+
+
+def test_the_terminal_board_writes_the_outcome_once_and_only_for_allens_own_message(
+    jev: _Jev, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A user turn after a scored finish: Allen's counts once; a task notification does not."""
+    bin_dir = _home(
+        tmp_path,
+        [{
+            "sessionId": "s-bg", "id": "job1", "kind": "background", "status": "idle",
+            "state": "done", "name": "brief", "cwd": "/x/jarvis", "startedAt": NOW_MS - 1000,
+        }],
+    )
+    transcript = tmp_path / ".claude" / "projects" / "-x-jarvis" / "s-bg.jsonl"
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    path = tmp_path / "jev" / "decisions.jsonl"
+    asks = jev.asks(log=JevLog(path))
+
+    def read_board() -> dict[str, Any]:
+        client = TestClient(create_app(InherentDeps(
+            submit_callable=_noop, broadcaster=InherentBroadcaster(), claude_sessions_read=True,
+            turn_end_peek=asks.peek, turn_end_answered=asks.answered,
+        )))
+        rows = client.get("/inherent/claude-sessions").json()["sessions"]
+        return {r["session_id"]: r for r in rows}
+
+    transcript.write_text(_entry("assistant", ASK) + "\n")
+    assert read_board()["s-bg"]["asks"] is None  # asked now, not waited for
+    time.sleep(0.4)
+    assert read_board()["s-bg"]["asks"] is True
+    assert _outcomes(path) == []  # no message yet
+    with transcript.open("a") as handle:
+        handle.write(_entry(
+            "user", "a notification", origin={"kind": "task-notification"},
+        ) + "\n")
+    read_board()
+    assert _outcomes(path) == []  # not Allen
+    with transcript.open("a") as handle:
+        handle.write(
+            _entry("user", "the new queue " + SECRET, origin={"kind": "human"}) + "\n",
+        )
+    for _ in range(3):
+        read_board()
+    (line,) = _outcomes(path)
+    assert (line["ref"], line["use"], line["outcome"], line["asks"]) == (
+        "s-bg", "turn_end", "answered", True,
+    )
+    assert set(line) == {"ts", "kind", "use", "ref", "outcome", "after_s", "asks"}
+    assert 0 < line["after_s"] < 10
+    assert SECRET not in path.read_text(encoding="utf-8")
 
 
 def test_the_shipped_config_is_off_and_enabling_it_reads_the_block() -> None:

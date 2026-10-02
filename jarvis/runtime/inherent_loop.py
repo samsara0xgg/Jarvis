@@ -5713,6 +5713,9 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 else functools.partial(_turn_end_asks, runtime.turn_end_asks)
             ),
             turn_end_peek=None if runtime.turn_end_asks is None else runtime.turn_end_asks.peek,
+            turn_end_answered=(
+                None if runtime.turn_end_asks is None else runtime.turn_end_asks.answered
+            ),
             settings_read=(
                 None if runtime.settings is None
                 else functools.partial(asyncio.to_thread, runtime.settings.read)

@@ -10,6 +10,10 @@ reports flagged); every other outcome (below the bar, timeout, HTTP error, no ke
 nothing: the finish is told as a plain finish, exactly as before. Each turn ending is
 asked once, keyed by session id and a hash of the text.
 
+The first message Allen sends in a session after a finish that was scored is its outcome
+(ADR 0128): one ``outcome`` line in the Jev dataset, with how long after the finish and the
+verdict that finish got, never his words; a finish nobody answers gets no line.
+
 Layer rules: stdlib + L3 siblings; no wiring.
 """
 
@@ -19,10 +23,14 @@ import hashlib
 import logging
 import re
 import threading
+import time
 from concurrent.futures import Future, wait
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from jarvis.decision.surrogate_route import Reply, SurrogateRoute
 
 LOGGER = logging.getLogger(__name__)
@@ -39,6 +47,7 @@ _QUESTION: Final[dict[str, dict[str, str]]] = {
     "asks": {"type": "noul", "instructions": _INSTRUCTIONS},
 }
 _CACHE_MAX: Final[int] = 500
+_ENDINGS_MAX: Final[int] = 500
 # The final paragraph: after the last blank line, else the last _PARAGRAPH_CHARS.
 _PARAGRAPH_CHARS: Final[int] = 300
 # A question mark in a URL's query or in inline code asks nobody.
@@ -55,6 +64,16 @@ def _asks_text(tail: str) -> bool:
     return "?" in prose or "\uff1f" in prose
 
 
+@dataclass(slots=True)
+class _Ending:
+    """A session's latest ending: when Jev was first asked, its verdict, and if it was answered."""
+
+    key: tuple[str, str]
+    at: float
+    asks: bool | None = None
+    answered: bool = False
+
+
 class TurnEndAsks:
     """Jev's question over a turn ending, with one answer kept per turn ending."""
 
@@ -63,8 +82,9 @@ class TurnEndAsks:
         self._route = route
         self._at = at
         self._question_at = question_at
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()  # a call already done runs its callback under it
         self._calls: dict[tuple[str, str], Future[Reply]] = {}
+        self._endings: dict[str, _Ending] = {}
         self.spent_usd = 0.0
 
     def asks(self, session_id: str, text: str) -> bool | None:
@@ -91,7 +111,11 @@ class TurnEndAsks:
                 if call is None:  # no key: nothing was sent, nothing is kept
                     return None
                 self._calls[key] = call
-                call.add_done_callback(lambda done: self._settle(session_id, tail, done))
+                self._endings.pop(session_id, None)  # re-inserted last: the oldest go first
+                self._endings[session_id] = _Ending(key, time.time())
+                while len(self._endings) > _ENDINGS_MAX:
+                    del self._endings[next(iter(self._endings))]
+                call.add_done_callback(lambda done: self._settle(key, tail, done))
                 while len(self._calls) > _CACHE_MAX:
                     del self._calls[next(iter(self._calls))]
             return call
@@ -105,12 +129,36 @@ class TurnEndAsks:
     def _decide(self, odds: float, tail: str) -> bool:
         return odds >= self._at or (odds >= self._question_at and _asks_text(tail))
 
-    def _settle(self, session_id: str, tail: str, call: Future[Reply]) -> None:
+    def answered(self, session_id: str, said_at: Iterable[float]) -> None:
+        """Allen's messages in a session (epoch seconds); the first after a scored finish is logged.
+
+        One ``outcome`` line per finish, however often this is told; nothing for a session whose
+        latest finish was never scored. Only the time and the verdict are written, no text.
+        """
+        with self._lock:
+            ending = self._endings.get(session_id)
+            if ending is None or ending.asks is None or ending.answered:
+                return
+            first = min((at for at in said_at if at > ending.at), default=None)
+            if first is None:
+                return
+            ending.answered = True
+        self._route.note(
+            "outcome", "turn_end", session_id,
+            outcome="answered", after_s=round(first - ending.at, 1), asks=ending.asks,
+        )
+
+    def _settle(self, key: tuple[str, str], tail: str, call: Future[Reply]) -> None:
         """On the worker, once per call: count its cost, log it (never the text), warn once."""
+        session_id = key[0]
         odds, cost, error = _read(call)
         if odds is not None:
             self.spent_usd += cost
             asks = self._decide(odds, tail)
+            with self._lock:
+                ending = self._endings.get(session_id)
+                if ending is not None and ending.key == key:
+                    ending.asks = asks
             self._route.note("decision", "turn_end", session_id, asks=asks)
             LOGGER.info(
                 "turn end asks: session %s p=%.3f asks=%s, $%.6f (total $%.6f)",
