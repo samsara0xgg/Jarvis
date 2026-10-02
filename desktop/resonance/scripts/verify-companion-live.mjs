@@ -362,6 +362,18 @@ try {
     check('L4 and a poke stops that answer', posts.at(-1)?.path === '/inherent/cancel-response' && posts.at(-1).body.response_id === 'resp-v1h');
     await page.evaluate(() => { window.__emit('done', { turn_id: 'v1h', fadeMs: 100 }); window.__emit('voice', { phase: 'spoken', turn_id: 'v1h', output_outcome: 'dropped' }); });
     await page.waitForFunction(() => document.querySelector('.talk[data-state=listening]'), null, { timeout: 3000 });
+    // Her wait line ends while her answer is already streaming (turn T1fa1e063): that end is the wait line's, not the answer's, so a poke still stops the answer by its id.
+    await page.evaluate(() => { window.__emit('voice', { phase: 'listening', turn_id: 'v1w' }); window.__emit('voice', { phase: 'accepted', turn_id: 'v1w', text: '天空为什么是蓝的' }); });
+    await page.waitForTimeout(150);
+    await page.evaluate(() => {
+      window.__emit('open', { turn_id: 'v1w', response_id: 'resp-wait', response_phase: 'commentary' }); window.__emit('append', { turn_id: 'v1w', token: '<voice>马上。</voice>', response_phase: 'commentary' }); window.__emit('done', { turn_id: 'v1w', fadeMs: 100, response_phase: 'commentary' });
+      window.__emit('open', { turn_id: 'v1w', response_id: 'resp-v1w' }); window.__emit('append', { turn_id: 'v1w', token: '<voice>阳光里有很多颜色，' }); window.__emit('voice', { phase: 'spoken', turn_id: 'v1w', output_outcome: 'completed', response_phase: 'commentary' });
+    });
+    await page.waitForTimeout(150);
+    await hit.click({ force: true }); await page.waitForTimeout(600);
+    check('L4 a wait line ending mid-answer does not stop a poke reaching the answer', posts.at(-1)?.path === '/inherent/cancel-response' && posts.at(-1).body.response_id === 'resp-v1w');
+    await page.evaluate(() => { window.__emit('done', { turn_id: 'v1w', fadeMs: 100 }); window.__emit('voice', { phase: 'spoken', turn_id: 'v1w', output_outcome: 'interrupted' }); });
+    await page.waitForFunction(() => document.querySelector('.talk[data-state=listening]'), null, { timeout: 3000 });
     await page.locator('.talk .st').click(); await page.waitForTimeout(300);
     check('L5 the area’s end button ends wave mode and folds the area into her', posts.at(-1)?.path === '/inherent/controls' && posts.at(-1).body.conversation === false && !(await area()).open);
     await move(600, 560); await waitPlace('home');
