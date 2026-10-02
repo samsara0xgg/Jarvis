@@ -39,6 +39,8 @@ _MATCHERS: Final[dict[str, frozenset[str]]] = {
          "_clip", "_status_of"}
     ),
     "jarvis/decision/pre_route.py": frozenset({"_DEMONSTRATIVE_TASK_RE"}),
+    # A coding agent's final paragraph asks Allen when it holds a full-width question mark too.
+    "jarvis/decision/turn_end_asks.py": frozenset({"_asks_text"}),
     "jarvis/decision/stream_gate.py": frozenset({"routine_stream_policy"}),
     "jarvis/decision/stream_risk.py": frozenset(
         {"_HIGH", "_CONSEQUENTIAL", "_AMBIGUOUS", "_PERSONAL_OR_IMPERATIVE",

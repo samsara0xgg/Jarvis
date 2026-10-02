@@ -1068,21 +1068,24 @@ def _turn_end_asks(
     if not isinstance(block, Mapping) or block.get("enabled") is not True:
         return None
     model, bar, timeout = block.get("model"), block.get("at"), block.get("timeout_ms")
+    question_bar = block.get("question_at")
     if (
         not isinstance(model, str) or not model.strip()
         or isinstance(bar, bool) or not isinstance(bar, int | float) or not 0 < bar <= 1
+        or isinstance(question_bar, bool) or not isinstance(question_bar, int | float)
+        or not 0 < question_bar <= bar
         or isinstance(timeout, bool) or not isinstance(timeout, int) or timeout <= 0
     ):
         msg = (
-            f"runtime: {config_path} agents.turn_end_asks needs model (text), at in (0, 1]"
-            " and timeout_ms (positive int)"
+            f"runtime: {config_path} agents.turn_end_asks needs model (text), at in (0, 1],"
+            " question_at in (0, at] and timeout_ms (positive int)"
         )
         raise RuntimeBootstrapError(msg)
     # min_confidence is the choice question's bar; this route asks none, so it stays unused.
     route = SurrogateRoute(
         model=model.strip(), min_confidence=1.0, timeout_ms=timeout, log=log,
     )
-    return TurnEndAsks(route, float(bar))
+    return TurnEndAsks(route, float(bar), float(question_bar))
 
 
 def _daily_report_preset(config: Mapping[str, Any]) -> str:

@@ -29,8 +29,9 @@
 When `agents.turn_end_asks.enabled` is true and `OPENROUTER_API_KEY` is set,
 ask Jev once per finished turn whether the last 600 characters of the agent's
 final message ask Allen to decide, choose, approve, answer or provide
-something, and when its probability reaches `at` (0.95) tell that finish as
-the "needs you" notice a question would be: a card with the message's first
+something, and when its probability reaches `at` (0.95), or `question_at`
+(0.8) with a question mark in the final paragraph outside URLs and inline code
+or a `needs input:` line, tell that finish as the "needs you" notice a question would be: a card with the message's first
 line, the ask cue, a banner of kind `wait`, and the queue's ask rank.
 
 - **Upgrade only.** Below the bar, on a timeout, an error, no key, the feature
@@ -63,7 +64,12 @@ line, the ask cue, a banner of kind `wait`, and the queue's ask rank.
   handling and cost log; the host already reaches the daemon with the local key.
 - **A lower bar to catch more asks** — 0.95 already leaves 38 of the 101 asks
   as plain finishes; the owner's rule makes a wrongly flagged report cost more
-  than a missed ask, which is only today's behaviour.
+  than a missed ask, which is only today's behaviour. 2026-10-02: a live
+  "Do you want me to translate it?" scored 0.88. On 298 new real endings
+  (Claude's labels), the question-mark clause at 0.8 raised asks caught from
+  88 to 101 of 134 with no report flagged; over all 3402 endings its only
+  false hit was a `?` in a URL, now ignored. About two thirds of what it adds
+  are "want me to also do X?" offers, which the owner counts as asks.
 - **Wait for Jev before showing `done`** — a 1.5 s ceiling on every finish for
   a feature that upgrades 6 in 10 asks; the finish shows at once and upgrades
   when the answer lands.

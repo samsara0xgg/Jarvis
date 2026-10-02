@@ -215,7 +215,9 @@ home:
 # ADR 0125.  When a coding-agent session (Startrail's host, or a terminal Claude Code
 # session on the daemon's board) finishes a turn, ask Jev (through OpenRouter) whether the
 # last 600 characters of its final message ask Allen to decide, choose, approve, answer or
-# provide something.  At probability >= at the finish is told as a "needs you" notice;
+# provide something.  At probability >= at the finish is told as a "needs you" notice,
+# and at >= question_at too when its final paragraph has a question mark outside URLs and
+# inline code, or the ending has a "needs input:" line;
 # anything else (below the bar, timeout, error, no key) leaves it a plain finish.  Only
 # those 600 characters leave the Mac, once per turn ending; requests carry provider.zdr:
 # true.  Needs OPENROUTER_API_KEY in ~/.jarvis/env.  Off here; switch it on in settings.yaml.
@@ -224,6 +226,7 @@ agents:
     enabled: false
     model: typesafe/jev-1.13
     at: 0.95
+    question_at: 0.8
     timeout_ms: 1500
 
 # ADR 0128.  Every Jev call (the instant route, the mail marks, the turn-end asks) is appended

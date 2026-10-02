@@ -3,7 +3,10 @@
 When a coding-agent session finishes a turn, the end of its last message is sent to
 Jev, TypeSafe's hosted decision model reached through OpenRouter, as one yes/no
 question (``noul``). A probability at or above ``at`` makes the finish count as
-"needs you"; every other outcome (below the bar, timeout, HTTP error, no key) means
+"needs you", and so does one at or above ``question_at`` when the final paragraph
+holds a question mark outside URLs and inline code, or a ``needs input:`` line
+(2026-10-02, offline on 298 real endings: 88 -> 101 of 134 asks caught, 0 of 164
+reports flagged); every other outcome (below the bar, timeout, HTTP error, no key) means
 nothing: the finish is told as a plain finish, exactly as before. Each turn ending is
 asked once, keyed by session id and a hash of the text.
 
@@ -14,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 import threading
 from concurrent.futures import Future, wait
 from typing import TYPE_CHECKING, Final
@@ -35,15 +39,30 @@ _QUESTION: Final[dict[str, dict[str, str]]] = {
     "asks": {"type": "noul", "instructions": _INSTRUCTIONS},
 }
 _CACHE_MAX: Final[int] = 500
+# The final paragraph: after the last blank line, else the last _PARAGRAPH_CHARS.
+_PARAGRAPH_CHARS: Final[int] = 300
+# A question mark in a URL's query or in inline code asks nobody.
+_NOT_PROSE: Final = re.compile(r"https?://\S+|`[^`]*`")
+_NEEDS_INPUT: Final = re.compile(r"needs input:", re.IGNORECASE)
+
+
+def _asks_text(tail: str) -> bool:
+    """Whether the ending itself reads as a question to Allen (the lower bar applies)."""
+    if _NEEDS_INPUT.search(tail):
+        return True
+    paragraph = tail.rsplit("\n\n", 1)[1] if "\n\n" in tail else tail[-_PARAGRAPH_CHARS:]
+    prose = _NOT_PROSE.sub("", paragraph)
+    return "?" in prose or "\uff1f" in prose
 
 
 class TurnEndAsks:
     """Jev's question over a turn ending, with one answer kept per turn ending."""
 
-    def __init__(self, route: SurrogateRoute, at: float) -> None:
+    def __init__(self, route: SurrogateRoute, at: float, question_at: float) -> None:
         """``route`` is the transport; its ``timeout_ms`` bounds :meth:`asks`."""
         self._route = route
         self._at = at
+        self._question_at = question_at
         self._lock = threading.Lock()
         self._calls: dict[tuple[str, str], Future[Reply]] = {}
         self.spent_usd = 0.0
@@ -54,12 +73,12 @@ class TurnEndAsks:
         if call is None:
             return None
         wait([call], timeout=self._route.timeout_ms / 1000)
-        return self._verdict(call)
+        return self._verdict(call, text[-TAIL_CHARS:])
 
     def peek(self, session_id: str, text: str, send: bool = True) -> bool | None:  # noqa: FBT001, FBT002 — the board's callable.
         """Never blocks: the answer if in, else (with ``send``) start the call; None for now."""
         call = self._call(session_id, text, send=send)
-        return None if call is None else self._verdict(call)
+        return None if call is None else self._verdict(call, text[-TAIL_CHARS:])
 
     def _call(self, session_id: str, text: str, *, send: bool = True) -> Future[Reply] | None:
         """The call for this turn ending, sent now if it is new; None when there is no key."""
@@ -72,26 +91,30 @@ class TurnEndAsks:
                 if call is None:  # no key: nothing was sent, nothing is kept
                     return None
                 self._calls[key] = call
-                call.add_done_callback(lambda done: self._settle(session_id, done))
+                call.add_done_callback(lambda done: self._settle(session_id, tail, done))
                 while len(self._calls) > _CACHE_MAX:
                     del self._calls[next(iter(self._calls))]
             return call
 
-    def _verdict(self, call: Future[Reply]) -> bool | None:
+    def _verdict(self, call: Future[Reply], tail: str) -> bool | None:
         if not call.done():
             return None
         odds = _read(call)[0]
-        return None if odds is None else odds >= self._at
+        return None if odds is None else self._decide(odds, tail)
 
-    def _settle(self, session_id: str, call: Future[Reply]) -> None:
+    def _decide(self, odds: float, tail: str) -> bool:
+        return odds >= self._at or (odds >= self._question_at and _asks_text(tail))
+
+    def _settle(self, session_id: str, tail: str, call: Future[Reply]) -> None:
         """On the worker, once per call: count its cost, log it (never the text), warn once."""
         odds, cost, error = _read(call)
         if odds is not None:
             self.spent_usd += cost
-            self._route.note("decision", "turn_end", session_id, asks=odds >= self._at)
+            asks = self._decide(odds, tail)
+            self._route.note("decision", "turn_end", session_id, asks=asks)
             LOGGER.info(
                 "turn end asks: session %s p=%.3f asks=%s, $%.6f (total $%.6f)",
-                session_id, odds, odds >= self._at, cost, self.spent_usd,
+                session_id, odds, asks, cost, self.spent_usd,
             )
         if error is not None:
             self._route.warn_once(error, "turn end asks", "finishes stay plain finishes")

@@ -55,7 +55,10 @@ class _Jev:
                 outer.requests.append(request)
                 time.sleep(outer.delay_s)
                 text = request["state"]
-                odds = 0.96 if "Which one" in text else 0.949 if "borderline" in text else 0.02
+                odds = (
+                    0.96 if "Which one" in text else 0.949 if "borderline" in text
+                    else 0.85 if "MID" in text else 0.02
+                )
                 body = json.dumps(
                     {"answers": {"asks": {"noul": odds}}, "usage": {"cost": 0.00003}}
                 ).encode()
@@ -78,7 +81,7 @@ class _Jev:
             model="typesafe/jev-1.13", min_confidence=1.0, timeout_ms=timeout_ms,
             url=f"http://127.0.0.1:{self.server.server_address[1]}/decisions", log=log,
         )
-        return TurnEndAsks(route, at)
+        return TurnEndAsks(route, at, min(at, 0.8))
 
 
 @pytest.fixture
@@ -134,6 +137,25 @@ def test_the_bar_and_what_is_sent(jev: _Jev) -> None:
     assert question["type"] == "noul"
     assert question["instructions"].startswith("The text is the end of a coding assistant's")
     assert question["instructions"].endswith("The text may be in Chinese, English or both.")
+
+
+@pytest.mark.parametrize(
+    ("ending", "asks"),
+    [
+        ("MID done.\n\nDo you want me to translate it? Or tell me which file.", True),
+        ("MID done.\n\n要我顺手把测试也补上吗\uff1f", True),
+        ("MID done.\n\nneeds input: run the command above and paste the output", True),
+        ("MID done.\n\nOpen http://localhost:5173/?cam=06 to see it.", False),
+        ("MID done.\n\nThe flag is `--dry-run?`, set in the script.", False),
+        ("MID done? Yes.\n\nEverything is committed and pushed.", False),
+    ],
+)
+def test_a_question_in_the_last_paragraph_lowers_the_bar(
+    jev: _Jev, ending: str, *, asks: bool,
+) -> None:
+    """At 0.85 (under 0.95, over 0.8) only a real question or needs input: counts."""
+    client = _client(jev.asks())
+    assert _post(client, ending).json() == {"asks": asks}
 
 
 def test_a_turn_ending_is_asked_once(jev: _Jev) -> None:
@@ -276,7 +298,9 @@ def test_the_shipped_config_is_off_and_enabling_it_reads_the_block() -> None:
     config = yaml.safe_load(path.read_text(encoding="utf-8"))
     assert _turn_end_asks(config, path) is None
     block = config["agents"]["turn_end_asks"]
-    assert (block["model"], block["at"], block["timeout_ms"]) == ("typesafe/jev-1.13", 0.95, 1500)
+    assert (block["model"], block["at"], block["question_at"], block["timeout_ms"]) == (
+        "typesafe/jev-1.13", 0.95, 0.8, 1500,
+    )
     block["enabled"] = True
     asks = _turn_end_asks(config, path)
     assert asks is not None
