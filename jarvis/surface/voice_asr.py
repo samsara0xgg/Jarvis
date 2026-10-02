@@ -997,25 +997,33 @@ def strip_wake_lead(text: str) -> str:
 # the 2026-09-28 live test, and a drawn-out one as three pieces of Japanese
 # 「うん」「う」 in the 2026-09-29 one; final ASR guesses Korean on short sounds
 # too.
-_BACKCHANNEL_RE = re.compile(
-    r"(?:[嗯哼哦噢喔唔呃额啊哈呵]|对对+|是是+|好好+|行行+)+"
+_BACKCHANNEL_UNIT = (
+    r"[嗯哼哦噢喔唔呃额啊哈呵]|对对+|是是+|好好+|行行+"
     r"|[あうえおんぁぅぇぉっはふへほアウエオンァゥェォッハフヘホー]+|[응음으흠어아]+"
-    r"|(?:mm+|m+h+m+|uhhuh|hm+|uh+|um+|oh+|ah+|ha|and)+",
+    r"|mm+|m+h+m+|uhhuh|hm+|uh+|um+|oh+|ah+|ha|and"
+    # SenseVoice's 「嗯哼」 comes back as 「嗯h」: only the hum's own letters, so
+    # 「嗯ok」 stays the stop request it is.
+    r"|[嗯呃][hm]+"
 )
+_BACKCHANNEL_RE = re.compile(rf"(?:{_BACKCHANNEL_UNIT})+")
 # A request to stop talking: she stops, and it is not a question to answer.
 # Over her voice a lone 「停」 comes back as any ting/ding syllable, sometimes
 # with a stray tail: 「停立」 and 「顶」 in the 2026-09-28 live test. 「OK可以了」
 # and 「可以啦」 (enough) in the 2026-09-29 ones; a lone 「可以」 still answers
 # a card. A lone English word is one too (is_stop_request).
-_STOP_REQUEST_RE = re.compile(
+_STOP_PHRASE = (
     r"(?:ok|okay|嗯|哎|唉|好|行|那|你|好[了啦]|行[了啦])?"
-    r"(?:停+(?:一下|下)?|先停(?:一下)?|暂停(?:一下)?|等(?:一下|等|下)?|别说[了啦]|不要说[了啦]"
+    r"(?:停+(?:一下|下来|下)?|先停(?:一下)?|暂停(?:一下)?|等(?:一下|等|下)?"
+    r"|(?:别|不要)说[了啦话]"
     r"|不用说[了啦]|别念[了啦]|闭嘴|安静(?:一下|一点|点)?|够[了啦]|可以[了啦]|好[了啦]好[了啦]"
     r"|行[了啦]行[了啦])(?:吧|啊|呀|哈|啦)?"
-    r"|[停亭婷庭廷挺艇听厅顶鼎定丁叮钉][立啲一]?"
-    r"|(?:ok|okay|please|jarvis|hey)*"
+)
+_STOP_REQUEST_RE = re.compile(
+    _STOP_PHRASE
+    + r"|[停亭婷庭廷挺艇听厅顶鼎定丁叮钉][立啲一]?"
+    r"|(?:(?:ok|okay|please|jarvis|hey)*"
     r"(?:stop(?:it|talking|that)?|wait|pause|enough|bequiet|quiet|shutup|hush)"
-    r"(?:please|jarvis|now)*",
+    r"(?:please|jarvis|now)*)+",
 )
 # What final ASR makes of a hum or a cough over her is often one syllable:
 # 「五」 in the 2026-09-28 live test, answered as a question. A lone word
@@ -1046,10 +1054,24 @@ _QUESTION_END_RE = re.compile(r"(?:[?？]|吗|呢)\W*$")
 # waits conversation_wait_s, and it is no question to answer. A lone 「等一下」
 # stays a stop request; 「等我一下」 does not stop her for good, only waits.
 # Said twice in a row counts too (「等我一下等我一下」, 2026-09-30).
-_WAIT_RE = re.compile(
-    r"(?:(?:hey|hi|嘿|嗨)?(?:jarvis|贾维斯)?(?:ok|okay|好|行|嗯)?(?:你)?"
+_WAIT_UNIT = (
+    r"(?:hey|hi|嘿|嗨)?(?:jarvis|贾维斯)?(?:ok|okay|好|行|嗯)?(?:你)?"
     r"(?:等(?:我|等我)(?:一下|一会儿?|下|会儿)?|稍等(?:我)?(?:一下)?|等着"
-    r"|holdon|waitforme|givemea(?:sec(?:ond)?|minute|moment))(?:啊|呀|哈|吧|please)*)+",
+    r"|holdon|waitforme|givemea(?:sec(?:ond)?|minute|moment))(?:啊|呀|哈|吧|please)*"
+)
+_WAIT_RE = re.compile(rf"(?:{_WAIT_UNIT})+")
+# Over her voice Allen says them in any run and mix (「嗯哼停」, 「停下来停下来停」,
+# 「你别说话你别说话停」, 「嗯等我一下」): all of it stop phrases, wait phrases and
+# listening sounds, ignoring punctuation. A stop phrase anywhere makes it a
+# stop request, else a wait phrase makes it a wait, else it is a listening
+# sound. Any other word keeps it a turn. The cap bounds the regex's backtracking.
+_SOUND_RUN_MAX_CHARS = 24
+_STOP_RUN_RE = re.compile(
+    rf"(?:{_WAIT_UNIT}|{_BACKCHANNEL_UNIT})*(?:{_STOP_PHRASE})"
+    rf"(?:{_STOP_PHRASE}|{_WAIT_UNIT}|{_BACKCHANNEL_UNIT})*",
+)
+_WAIT_RUN_RE = re.compile(
+    rf"(?:{_BACKCHANNEL_UNIT})*(?:{_WAIT_UNIT})(?:{_WAIT_UNIT}|{_BACKCHANNEL_UNIT})*",
 )
 
 
@@ -1071,7 +1093,8 @@ def is_dismissal(text: str) -> bool:
 
 def is_wait_request(text: str) -> bool:
     """True when ``text`` only asks Jarvis to wait for Allen (等我一下, hold on)."""
-    return _WAIT_RE.fullmatch(_squashed(text)) is not None
+    squashed = _squashed(text)
+    return len(squashed) <= _SOUND_RUN_MAX_CHARS and _WAIT_RUN_RE.fullmatch(squashed) is not None
 
 
 def is_backchannel(text: str) -> bool:
@@ -1092,6 +1115,8 @@ def is_stop_request(text: str) -> bool:
     """
     squashed = _squashed(text)
     if _STOP_REQUEST_RE.fullmatch(squashed) is not None:
+        return True
+    if len(squashed) <= _SOUND_RUN_MAX_CHARS and _STOP_RUN_RE.fullmatch(squashed) is not None:
         return True
     return (
         is_unclear_sound(text)

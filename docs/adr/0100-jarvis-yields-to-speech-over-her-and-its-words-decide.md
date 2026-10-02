@@ -55,6 +55,13 @@ Its limits:
   「停」, 「等一下」, "wait", "pause", 「可以了」 and 「够啦」 style endings, and
   any lone English word that is no listening sound, no card's answer and no
   question. A listening sound includes Japanese and Korean hums.
+- Stop phrases, wait phrases (ADR 0102) and listening sounds count in any
+  repetition or mix, punctuation aside: 「停下来停下来停」, 「你别说话你别说话停」
+  and 「嗯哼停」 are one stop request, 「嗯哼等我一下」 a wait. A stop phrase in
+  the run makes it a stop request, else a wait phrase makes it a wait request,
+  else it is a listening sound; any other word keeps it a turn (「停一下，帮我
+  查天气」). A lone 嗯/呃 with only the hum's own letters after it (「嗯h」) is a
+  listening sound.
 - A lone 对/好/是/yes or any other one-word card answer, and a lone 「可以」,
   stay turns; a listening sound or a lone word asked as a question is a turn.
 - A stop or a hold first fades her to silence over 20 ms; going on from a

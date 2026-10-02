@@ -59,7 +59,8 @@ _MATCHERS: Final[dict[str, frozenset[str]]] = {
     "jarvis/surface/voice_asr.py": frozenset(
         {"_MISPLACED_PERIOD", "_ACTION_WORDS", "MlxWhisperRecognizer.__init__",
          "_TERMINAL_PUNCTUATION", "_DANGLING_SUFFIXES", "_is_punctuation_only", "_WAKE_ONLY_RE",
-         "_WAKE_LEAD_RE", "_BACKCHANNEL_RE", "_STOP_REQUEST_RE", "_DISMISS_RE", "_WAIT_RE",
+         "_WAKE_LEAD_RE", "_BACKCHANNEL_UNIT", "_STOP_PHRASE",
+         "_STOP_REQUEST_RE", "_DISMISS_RE", "_WAIT_UNIT",
          "_DISMISS_WORD_RE", "_QUESTION_END_RE",
          "_SHORT_ANSWER_RE",
          "caption_text", "is_backchannel", "is_unclear_sound", "_WHISPER_SILENCE_RE",

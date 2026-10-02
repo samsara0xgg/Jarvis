@@ -313,6 +313,38 @@ def test_dismissals_are_whole_phrases_or_short_orders() -> None:
         assert not voice_asr.is_wait_request(heard), heard
 
 
+def test_runs_of_stop_wait_and_listening_sounds_are_judged_whole() -> None:
+    """A run of them is one verdict (stop, wait, sound, in that order); other words, a turn."""
+    stops = (
+        "停下来停下来停下来停。", "你别说话你别说话停。", "嗯哼停。", "等一下等一下。",
+        "停停下来。", "闭嘴闭嘴。", "别说了别说了。", "嗯, 停, 停下来。", "好了好了。",
+        "Stop stop.", "嗯等我一下, 停。",
+    )
+    for heard in stops:
+        assert voice_asr.is_stop_request(heard), heard
+        assert not voice_asr.is_backchannel(heard), heard
+    waits = ("嗯哼等我一下。", "嗯, 等我一下等我一下。", "稍等一下, 嗯。")
+    for heard in waits:
+        assert voice_asr.is_wait_request(heard), heard
+        assert not voice_asr.is_stop_request(heard), heard
+    sounds = ("嗯h。", "呃hm。", "嗯哼。", "嗯嗯哼哼。", "Mm-hmm.")
+    for heard in sounds:
+        assert voice_asr.is_backchannel(heard), heard
+        assert not voice_asr.is_stop_request(heard), heard
+        assert not voice_asr.is_wait_request(heard), heard
+    turns = (
+        "停一下, 帮我查天气。", "等一下我要问你个问题。", "嗯哼, 然后呢。",
+        "停下来停下来, 为什么?", "等我一下, 我去拿手机。", "好。", "对。", "Yeah.", "嗯ok。",
+        "你别说话了吗?",
+    )
+    for heard in turns:
+        assert not voice_asr.is_backchannel(heard), heard
+        assert not voice_asr.is_stop_request(heard), heard
+        assert not voice_asr.is_wait_request(heard), heard
+    for heard in ("退下退下。", "没事了没事了。", "Bye bye bye."):
+        assert voice_asr.is_dismissal(heard), heard
+
+
 @pytest.mark.parametrize(
     ("heard", "reason"),
     [
@@ -327,6 +359,8 @@ def test_dismissals_are_whole_phrases_or_short_orders() -> None:
         # "That's enough" in the 2026-09-29 live tests, each taken for a turn.
         ("OK可以了。", "stop_request"),
         ("可以啦。", "stop_request"),
+        # Said in a run, as the 2026-09-30 live tests heard it: still no turn.
+        ("停下来停下来停。", "stop_request"),
         # 「pause」 over her comes back as some other lone English word
         # (2026-09-29 live tests; a synthesized one); any such word stops her.
         ("Pulse.", "stop_request"),
