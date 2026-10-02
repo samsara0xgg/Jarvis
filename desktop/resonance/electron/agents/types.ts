@@ -59,6 +59,8 @@ export type Sess = {
   // dirs: folders it may work in besides its own · named: the title is yours, so it is never replaced by a generated one
   // · base: what its worktree started from
   tasks?: Task[]; dirs?: string[]; named?: boolean; base?: string;
+  // proj: the project (Proj) it is a thread of; `project` above is its repository folder, not this
+  proj?: string;
   // ADR 0097 · dirty: what landing would take (files, lines, commits the default branch does not have yet), the default
   // branch it lands into and the ways it can, the default first; absent outside git, with nothing to land or no way to.
   // `ask`: its repository has no way of its own yet and could go either, so the first landing asks which (and keeps the
@@ -72,6 +74,14 @@ export type Sess = {
   // versions, each with its family and this version's number
   rx?: Record<string, Rx>; vers?: { root: string; at: Record<string, [string, number]> };
 };
+// A project groups sessions (its threads) and gives each the same instructions, memory and shared folder. It lives in
+// `projects/<id>/` of the host's folder: project.json, memory/ (MEMORY.md is the index) and files/. `folder` is where a
+// thread starts and `agent`, `model`, `effort`, `mode` what it starts with when the new session says nothing else.
+// Not the project list (Project), which is the repository folders.
+export type Proj = { id: string; name: string; goal: string; instructions: string; folder: string; agent: Agent; model: string; effort: string; mode: string; created: number; archived: boolean };
+// Where a thread stands in its project, worked out when read, never kept: wait for you · work running · review has a
+// pull request open · landing under way · idle · done (archived, or untouched for a week).
+export type Bucket = 'wait' | 'work' | 'review' | 'landing' | 'idle' | 'done';
 // Reactions on one message (m-rx): yours in the order you added them, those already carried to the agent with a message
 // you sent after them (`sent`), and the agent's own (`by`: 👀 when it took a message you sent while it worked).
 export type Rx = { mine?: string[]; sent?: string[]; by?: string };
@@ -164,7 +174,8 @@ export type Settings = {
 // characters.
 export type Auth = { packaged: boolean; mode: 'subscription' | 'key'; provider?: 'anthropic' | 'bedrock' | 'vertex'; ready: boolean; why?: string; hint?: string };
 export type Event =
-  | { t: 'hello'; sessions: Sess[]; catalog: Catalog; settings?: Settings; auth?: Auth }
+  | { t: 'hello'; sessions: Sess[]; projs: Proj[]; catalog: Catalog; settings?: Settings; auth?: Auth }
+  | { t: 'proj'; p: Proj }
   | { t: 'settings'; settings: Settings; auth: Auth }
   // A sign-in the check-up started (Codex's ChatGPT login) finished.
   | { t: 'signin'; agent: Agent; ok: boolean; why?: string }

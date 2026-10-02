@@ -6,13 +6,14 @@ import { homedir } from 'node:os';
 import { createInterface } from 'node:readline';
 import { attach, attached } from './files.js';
 import { fieldsOf } from './form.js';
-import { broadcast, catalogChanged, find, Http, kt, log, pic, picFile, sent, type Driver, type Session } from './host.js';
+import { broadcast, catalogChanged, find, Http, kt, log, pic, picFile, projDirs, projFor, projPrompt, sent, type Driver, type Session } from './host.js';
 import type { Choice, Diff, File, Mcp, Outside, Question, Req, Step } from './types.js';
 import { diffOf } from './claude.js';
 import { tr } from './lang.js';
 
 const MODES = (): [string, string][] => [['auto', tr('自动', 'Auto')], ['read', tr('只读', 'Read-only')], ['full', tr('完全放开', 'Full access')], ['plan', tr('计划模式', 'Plan mode')]];
-// The session's extra folders (C5) are writable too.
+// The session's extra folders (C5), and in a project its memory and files, are writable too.
+const roots = (s: Session) => { const p = projFor(s); return [...s.s.dirs ?? [], ...p ? projDirs(p) : []]; };
 function policy(mode: string, dirs: string[] = []) {
   if (mode === 'read') return { approvalPolicy: 'on-request', sandbox: 'read-only', sandboxPolicy: { type: 'readOnly', networkAccess: false } };
   if (mode === 'full') return { approvalPolicy: 'never', sandbox: 'danger-full-access', sandboxPolicy: { type: 'dangerFullAccess' } };
@@ -270,8 +271,8 @@ let reading: Promise<void> | null = null;
 async function resume(s: Session) {
   const r = rt(s);
   if (r.loaded) return;
-  const pol = policy(s.s.mode, s.s.dirs);
-  await call('thread/resume', { threadId: s.s.id, cwd: s.s.cwd, approvalPolicy: pol.approvalPolicy, approvalsReviewer: 'user', sandbox: pol.sandbox, excludeTurns: true });
+  const pol = policy(s.s.mode, roots(s)), pj = projFor(s);
+  await call('thread/resume', { threadId: s.s.id, cwd: s.s.cwd, approvalPolicy: pol.approvalPolicy, approvalsReviewer: 'user', sandbox: pol.sandbox, excludeTurns: true, ...pj ? { developerInstructions: projPrompt(pj) } : {} });
   r.loaded = true; loaded.add(s);
 }
 const skills = new Map<string, { at: number; list: { name: string; path: string; about: string }[] }>();
@@ -284,7 +285,7 @@ async function skillsOf(cwd: string) {
   return list;
 }
 async function turn(s: Session, input: unknown[]) {
-  const pol = policy(s.s.mode, s.s.dirs), model = s.s.model || catalogCache.c?.models[0]?.[0] || '';
+  const pol = policy(s.s.mode, roots(s)), model = s.s.model || catalogCache.c?.models[0]?.[0] || '';
   const params = { threadId: s.s.id, input, model: model || undefined, effort: s.s.effort || undefined, approvalPolicy: pol.approvalPolicy, sandboxPolicy: pol.sandboxPolicy,
     ...(model ? { collaborationMode: { mode: s.s.mode === 'plan' ? 'plan' : 'default', settings: { model, reasoning_effort: s.s.effort || null, developer_instructions: null } } } : {}) };
   const running = (id: string) => { if (rt(s).ended !== id) rt(s).turn = id; };
@@ -303,8 +304,9 @@ export const codex: Driver = {
     return catalogCache.c ? { ...catalogCache.c, modes: MODES(), always: tr('这个会话都允许', 'Allow for this session') } : { models: [], efforts: [], modes: MODES(), always: tr('这个会话都允许', 'Allow for this session') };
   },
   async create(s) {
-    const pol = policy(s.s.mode, s.s.dirs);
-    const r = await call<{ thread: { id: string } }>('thread/start', { cwd: s.s.cwd, model: s.s.model || undefined, approvalPolicy: pol.approvalPolicy, approvalsReviewer: 'user', sandbox: pol.sandbox });
+    const pol = policy(s.s.mode, roots(s)), pj = projFor(s);
+    const r = await call<{ thread: { id: string } }>('thread/start', { cwd: s.s.cwd, model: s.s.model || undefined, approvalPolicy: pol.approvalPolicy, approvalsReviewer: 'user', sandbox: pol.sandbox,
+      ...pj ? { developerInstructions: projPrompt(pj) } : {} });
     const x = rt(s); x.loaded = true; loaded.add(s);
     return r.thread.id;
   },

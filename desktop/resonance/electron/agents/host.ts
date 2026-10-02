@@ -3,14 +3,14 @@
 // Agents window talks to it over local HTTP and one event stream. Conversations are read back from each agent's own
 // transcript; this process keeps only what the agents do not: pinned, archived, which agent, the worktree it made.
 import http from 'node:http';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
-import { existsSync, mkdirSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { copyFile, mkdir, open, readFile, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
-import type { Agent, Answer, Catalog, Choice, Ctx, Doctor, Event, File, Item, Live, Mcp, McpAct, Outside, Pic, Project, Req, Rx, Service, Sess, St, Step, Task, Usage, UsageWindow } from './types.js';
+import type { Agent, Answer, Bucket, Catalog, Choice, Ctx, Doctor, Event, File, Item, Live, Mcp, McpAct, Outside, Pic, Proj, Project, Req, Rx, Service, Sess, St, Step, Task, Usage, UsageWindow } from './types.js';
 import { claude, claudeExe, heldReq } from './claude.js';
 import { codex } from './codex.js';
 import { loginPath, version, which } from './doctor.js';
@@ -606,7 +606,7 @@ async function route(req: Req0, res: http.ServerResponse, url: URL): Promise<unk
     await ready;
     clients.add(res);
     req.on('close', () => clients.delete(res));
-    const hello: Event = { t: 'hello', sessions: [...sessions.values()].map(x => x.s), catalog: await getCatalog(), settings, auth: auth() };
+    const hello: Event = { t: 'hello', sessions: [...sessions.values()].map(x => x.s), projs: [...projs.values()], catalog: await getCatalog(), settings, auth: auth() };
     res.write(`data: ${JSON.stringify(hello)}\n\n`);
     void marksIn();
     return undefined;
@@ -689,10 +689,14 @@ async function route(req: Req0, res: http.ServerResponse, url: URL): Promise<unk
       .catch((e: unknown) => { throw new Http(409, /\b404\b/.test(String(e)) ? tr('它已经不在等了：终端那边答过了，或者它往下走了', 'It is no longer waiting: answered in the terminal, or it moved on') : tr('没送到 Jarvis 后台：它开着吗？', 'Did not reach the Jarvis daemon: is it running?')); });
     return { ok: true };
   }
+  if (parts[0] === 'proj') return projRoute(req, m, parts, url);
   if (m === 'POST' && url.pathname === '/sessions') {
-    const b = await body(req), agent = b.agent === 'codex' ? 'codex' : 'claude', text = str(b.text, 'text').trim(), files = fileList(b.files), dirs = dirList(b.dirs);
+    const b = await body(req), pj = b.proj == null ? undefined : liveProj(b.proj), agent: Agent = b.agent === 'codex' || b.agent === 'claude' ? b.agent : pj?.agent ?? 'claude';
+    const text = str(b.text, 'text').trim(), files = fileList(b.files), dirs = dirList(b.dirs);
+    // A project's model, effort and mode are for its own agent: another agent picked in the request takes its own.
+    const mine = pj?.agent === agent ? pj : undefined;
     signedIn(agent);
-    let cwd = pathOf(str(b.cwd, 'cwd'));
+    let cwd = pathOf(str(b.cwd ?? pj?.folder, 'cwd'));
     if (!(await stat(cwd).catch(() => null))?.isDirectory()) throw new Http(400, tr('没有这个文件夹', 'No such folder'));
     if (!text && !files.length) throw new Http(400, tr('要它做什么？', 'What should it do?'));
     const repo = await repoOf(cwd), from = typeof b.base === 'string' ? b.base.trim() : '';
@@ -701,8 +705,8 @@ async function route(req: Req0, res: http.ServerResponse, url: URL): Promise<unk
     const cat = (await getCatalog())[agent];
     const s: Sess = { id: '', agent, title: oneLine(text || files[0]?.name || tr('新会话', 'New session'), 48), cwd, project: base(repo || cwd), branch, tree,
       st: 'work', pinned: false, parked: false, archived: false, unread: false, created: Date.now(), trace: [{ at: Date.now(), st: 'work' }], updated: Date.now(), summary: tr('在想', 'Thinking'),
-      model: typeof b.model === 'string' ? b.model : cat.models[0]?.[0] ?? '', effort: typeof b.effort === 'string' ? b.effort : 'high',
-      mode: typeof b.mode === 'string' ? b.mode : cat.modes[0]?.[0] ?? '', ctx: 0, ...dirs.length ? { dirs } : {}, ...tree && from ? { base: from } : {} };
+      model: typeof b.model === 'string' ? b.model : mine?.model || cat.models[0]?.[0] || '', effort: typeof b.effort === 'string' ? b.effort : mine?.effort || 'high',
+      mode: typeof b.mode === 'string' ? b.mode : mine?.mode || cat.modes[0]?.[0] || '', ctx: 0, ...dirs.length ? { dirs } : {}, ...tree && from ? { base: from } : {}, ...pj ? { proj: pj.id } : {} };
     const x = new Session(s, repo);
     x.items = [];
     s.id = await x.driver.create(x);
@@ -932,6 +936,11 @@ async function route(req: Req0, res: http.ServerResponse, url: URL): Promise<unk
     return { ok: true };
   }
   if (verb === 'fork') return { id: await fork(x, b) };
+  // Into a project or out of it (`proj` null): its agent reads the project's instructions when it next starts.
+  if (verb === 'proj') {
+    x.set({ proj: b.proj === null ? undefined : liveProj(b.proj).id });
+    return { ok: true };
+  }
   // Files put back as they were at a point, the conversation staying as it is (B13).
   if (verb === 'rewind') {
     if (!x.driver.rewind) throw new Http(409, tr('Codex 不记文件的检查点', 'Codex keeps no file checkpoints'));
@@ -999,6 +1008,147 @@ async function route(req: Req0, res: http.ServerResponse, url: URL): Promise<unk
     return { ok: true };
   }
   throw new Http(404, tr('没有这个动作', 'No such action'));
+}
+
+// ---------- projects: threads that share instructions, memory and files ----------
+// A project lives in projects/<id>/ of the host's folder: project.json, memory/ (MEMORY.md is its index) and files/. Its
+// threads (sessions with `proj`) read them when their agent starts, so a change reaches a thread at its next start.
+const PROJS = path.resolve(DIR, 'projects');
+const projs = new Map<string, Proj>();
+const projDir = (id: string) => path.join(PROJS, id);
+export const projFor = (x: Session) => projs.get(x.s.proj ?? '');
+// The folders an agent may write in besides its own: memory/ and files/.
+export const projDirs = (p: Proj) => ['memory', 'files'].map(d => path.join(projDir(p.id), d));
+// What every thread starts with, added to its agent's own instructions. MEMORY.md is cut as Claude Code cuts its own.
+export function projPrompt(p: Proj) {
+  const [mem, files] = projDirs(p);
+  let text = '';
+  try { text = readFileSync(path.join(mem, 'MEMORY.md'), 'utf8').trimEnd(); } catch { /* not written yet */ }
+  const lines = text.split('\n'), cut = lines.length > 200 || text.length > 25000;
+  return [`This session is a thread in the Startrail project "${p.name}".`, `Goal: ${p.goal || '(none)'}`, '',
+    'Project instructions, written by the owner:', p.instructions || '(none)', '',
+    `Project memory is the folder ${mem}. Its index, MEMORY.md, follows; open the other files there when you need them. When you learn something later threads in this project must know (a decision the owner made, a preference, a pitfall), write it to a file in that folder and add a one-line pointer to MEMORY.md. Do not store what the repository or its history already records.`,
+    cut ? `${lines.slice(0, 200).join('\n').slice(0, 25000)}\n[MEMORY.md was cut here (200 lines, 25000 characters): open the file for the rest.]` : text, '',
+    `Shared project files are in ${files}. Put outputs the owner or other threads will need there.`].join('\n');
+}
+async function loadProjs() {
+  for (const d of await readdir(PROJS, { withFileTypes: true }).catch(() => [])) {
+    try {
+      const p = JSON.parse(await readFile(path.join(projDir(d.name), 'project.json'), 'utf8')) as Proj;
+      if (p.id === d.name) projs.set(p.id, p);
+    } catch (e) { if (d.isDirectory()) log('project', d.name, String(e)); }
+  }
+}
+async function saveProj(p: Proj) {
+  const dir = projDir(p.id), file = path.join(dir, 'project.json');
+  await mkdir(path.join(dir, 'memory'), { recursive: true });
+  await mkdir(path.join(dir, 'files'), { recursive: true });
+  await writeFile(`${file}.tmp`, JSON.stringify(p, null, 1));
+  await rename(`${file}.tmp`, file);
+}
+// Where a thread stands, worked out when asked and never kept; the first rule that fits wins.
+const BUCKETS: Bucket[] = ['wait', 'work', 'review', 'landing', 'idle', 'done'];
+export function bucket(s: Sess): Bucket {
+  if (s.archived) return 'done';
+  if (s.st === 'wait' || s.st === 'err') return 'wait';
+  if (s.st === 'work' || s.st === 'pack') return 'work';
+  if (s.land && s.land.s !== 'done') return 'landing';
+  // ponytail: the host does not know when a pull request is merged or closed, so a thread with one stays in review until it is archived; ask the forge (gh pr view) if that matters
+  if (s.pr) return 'review';
+  return Date.now() - s.updated > 7 * 864e5 ? 'done' : 'idle';
+}
+const threads = (id: string) => [...sessions.values()].map(x => x.s).filter(s => s.proj === id);
+function counts(id: string) {
+  const c = Object.fromEntries(BUCKETS.map(k => [k, 0])) as Record<Bucket, number>;
+  for (const s of threads(id)) c[bucket(s)]++;
+  return c;
+}
+const needProj = (id: string) => { const p = projs.get(id); if (!p) throw new Http(404, tr('没有这个项目', 'No such project')); return p; };
+// A project a session can start in or move into: one that exists and is not archived.
+function liveProj(v: unknown) {
+  const p = projs.get(str(v, 'proj'));
+  if (!p) throw new Http(400, tr('没有这个项目', 'No such project'));
+  if (p.archived) throw new Http(409, tr('这个项目已经归档了', 'This project is archived'));
+  return p;
+}
+// The fields of a project a request gives, each checked.
+async function projFields(b: Record<string, any>): Promise<Partial<Proj>> {
+  const o: Partial<Proj> = {};
+  if (b.name !== undefined) {
+    o.name = oneLine(str(b.name, 'name'), 80);
+    if (!o.name) throw new Http(400, tr('项目要有名字', 'A project needs a name'));
+  }
+  if (b.goal !== undefined) o.goal = str(b.goal, 'goal').trim();
+  if (b.instructions !== undefined) {
+    o.instructions = str(b.instructions, 'instructions');
+    if (o.instructions.length > 16000) throw new Http(400, tr('项目说明最多 16000 字', 'Project instructions can be at most 16000 characters'));
+  }
+  if (b.folder !== undefined) {
+    o.folder = pathOf(str(b.folder, 'folder'));
+    if (!(await stat(o.folder).catch(() => null))?.isDirectory()) throw new Http(400, tr('没有这个文件夹', 'No such folder'));
+  }
+  if (b.agent !== undefined) {
+    if (b.agent !== 'claude' && b.agent !== 'codex') throw new Http(400, tr('agent 不对', 'agent is not valid'));
+    o.agent = b.agent;
+  }
+  for (const k of ['model', 'effort', 'mode'] as const) if (b[k] !== undefined) o[k] = str(b[k], k);
+  if (b.archived !== undefined) {
+    if (typeof b.archived !== 'boolean') throw new Http(400, tr('archived 不对', 'archived is not valid'));
+    o.archived = b.archived;
+  }
+  return o;
+}
+// A memory file of a project: inside memory/, ending in .md.
+function memFile(dir: string, v: unknown) {
+  const rel = str(v, 'path'), abs = path.resolve(dir, rel);
+  if (rel.includes('\0') || !abs.startsWith(dir + path.sep) || !abs.endsWith('.md')) throw new Http(400, tr('记忆文件要放在 memory 文件夹里，并以 .md 结尾', 'A memory file must be inside the memory folder and end in .md'));
+  return abs;
+}
+async function projRoute(req: Req0, m: string, parts: string[], url: URL): Promise<unknown> {
+  if (!parts[1]) {
+    if (m === 'GET') return { projs: [...projs.values()].sort((a, b) => b.created - a.created).map(p => ({ ...p, counts: counts(p.id) })) };
+    if (m !== 'POST') throw new Http(405, tr('不行', 'Not allowed'));
+    const b = await body(req), f = await projFields({ ...b, name: str(b.name, 'name'), folder: str(b.folder, 'folder') });
+    const agent = f.agent ?? 'claude', cat = (await getCatalog())[agent];
+    const p: Proj = { goal: '', instructions: '', agent, model: cat.models[0]?.[0] ?? '', effort: 'high', mode: cat.modes[0]?.[0] ?? '', ...f as Pick<Proj, 'name' | 'folder'>,
+      id: `p${Array.from(randomBytes(10), c => (c % 36).toString(36)).join('')}`, created: Date.now(), archived: false };
+    await saveProj(p);
+    await writeFile(path.join(projDirs(p)[0], 'MEMORY.md'), `# ${p.name}\n`);
+    projs.set(p.id, p);
+    broadcast({ t: 'proj', p });
+    return { proj: p };
+  }
+  const p = needProj(parts[1]);
+  if (!parts[2]) {
+    if (m === 'GET') return { proj: p, threads: threads(p.id).sort((a, b) => b.updated - a.updated).map(s => ({ s, bucket: bucket(s) })) };
+    if (m !== 'POST') throw new Http(405, tr('不行', 'Not allowed'));
+    const f = await projFields(await body(req)), next: Proj = { ...projs.get(p.id)!, ...f };
+    await saveProj(next);
+    projs.set(next.id, next);
+    broadcast({ t: 'proj', p: next });
+    return { proj: next };
+  }
+  if (parts[2] !== 'memory' || parts[3]) throw new Http(404, tr('没有这个地方', 'Not found'));
+  const dir = projDirs(p)[0], at = url.searchParams.get('path');
+  if (m === 'GET' && at === null) {
+    const files: { path: string; size: number }[] = [];
+    for (const n of (await readdir(dir, { recursive: true }).catch(() => [] as string[])).sort()) {
+      const st = n.endsWith('.md') ? await stat(path.join(dir, n)).catch(() => null) : null;
+      if (st?.isFile()) files.push({ path: n, size: st.size });
+    }
+    return { files };
+  }
+  if (m === 'GET') {
+    const abs = memFile(dir, at), text = await readFile(abs, 'utf8').catch(() => null);
+    if (text === null) throw new Http(404, tr('没有这个记忆文件', 'No such memory file'));
+    return { path: path.relative(dir, abs), text };
+  }
+  if (m !== 'PUT') throw new Http(405, tr('不行', 'Not allowed'));
+  const b = await body(req), abs = memFile(dir, b.path), text = str(b.text, 'text');
+  if (Buffer.byteLength(text) > 64 << 10) throw new Http(400, tr('记忆文件最多 64 KB', 'A memory file can be at most 64 KB'));
+  await mkdir(path.dirname(abs), { recursive: true });
+  await writeFile(abs, text);
+  return { ok: true, path: path.relative(dir, abs) };
 }
 
 // ---------- what the routes do ----------
@@ -1340,6 +1490,7 @@ async function boot() {
   } catch (e) { log('keeper', e); }
   await loadSettings();
   await restore(kids);
+  await loadProjs();
   await pruneImages();
   await Promise.all([pruneOld(UPLOADS), pruneOld(TRASH)]);
   for (const x of sessions.values()) {
@@ -1365,7 +1516,7 @@ export async function main() {
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1');
     if (req.method === 'OPTIONS') {
-      res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET, POST, DELETE', 'Access-Control-Allow-Headers': 'Content-Type, Authorization', 'Access-Control-Max-Age': '600' });
+      res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE', 'Access-Control-Allow-Headers': 'Content-Type, Authorization', 'Access-Control-Max-Age': '600' });
       res.end(); return;
     }
     const reply = (code: number, v: unknown) => {

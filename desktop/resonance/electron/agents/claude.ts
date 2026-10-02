@@ -14,7 +14,7 @@ import net from 'node:net';
 import { PassThrough } from 'node:stream';
 import { attach, attached } from './files.js';
 import { fieldsOf } from './form.js';
-import { catalogChanged, Http, KEEPER, kt, log, pic, rode, sent, type Driver, type Session } from './host.js';
+import { catalogChanged, Http, KEEPER, kt, log, pic, projDirs, projFor, projPrompt, rode, sent, type Driver, type Session } from './host.js';
 import { ask, lines, parse, type Head } from './keeper.js';
 import { auth, keyEnv } from './settings.js';
 import type { Choice, Ctx, CtxRow, Diff, Field, File, Mcp, Pic, Req, Step, Task } from './types.js';
@@ -282,13 +282,17 @@ function ensure(s: Session) {
   const input = r.input = pushable<SDKUserMessage>();
   // File checkpoints make rewind possible (B13; they do not cover what a shell command changed); a sub-agent's text and
   // Claude's summarized thinking come through so the window can show them (B16, B18); the extra folders are the
-  // session's own (C5). Bypassing permissions is allowed as a mode, never the default (C4).
+  // session's own (C5) and, in a project, its memory and files. A thread in a project gets its instructions and memory
+  // appended to the system prompt, rendered anew at every start: `snapshot: false`, or a resumed session would keep the
+  // prompt it first recorded and never see a memory edit, a move into the project or out of it. Bypassing permissions is
+  // allowed as a mode, never the default (C4).
+  const pj = projFor(s), dirs = [...s.s.dirs ?? [], ...pj ? projDirs(pj) : []];
   const options: Options = {
-    cwd: s.s.cwd, env: claudeEnv(), pathToClaudeCodeExecutable: EXE, systemPrompt: PROMPT, includePartialMessages: true,
+    cwd: s.s.cwd, env: claudeEnv(), pathToClaudeCodeExecutable: EXE, systemPrompt: pj ? { ...PROMPT, append: projPrompt(pj), snapshot: false } : PROMPT, includePartialMessages: true,
     model: s.s.model || undefined, effort: (EFFORTS.includes(s.s.effort) ? s.s.effort : undefined) as Options['effort'],
     permissionMode: (MODES().some(m => m[0] === s.s.mode) ? s.s.mode : 'auto') as Options['permissionMode'], allowDangerouslySkipPermissions: true,
     enableFileCheckpointing: true, forwardSubagentText: true, extraArgs: { 'thinking-display': 'summarized' },
-    ...s.s.dirs?.length ? { additionalDirectories: s.s.dirs } : {},
+    ...dirs.length ? { additionalDirectories: dirs } : {},
     canUseTool: (name, input, o) => new Promise<PermissionResult>(resolve => {
       const id = o.toolUseID || randomUUID();
       r.pending.set(id, { resolve, name, input, suggestions: o.suggestions });
