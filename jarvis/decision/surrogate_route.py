@@ -144,6 +144,8 @@ class SurrogateRoute:
     # Spoken stream path only: the model's request is sent without waiting for Jev, and its
     # first output is held until Jev has answered (ADR 0120). Off, Jev is asked first.
     parallel: bool = False
+    # OpenRouter's per-request ``provider.zdr``: route only to zero-data-retention endpoints.
+    zdr: bool = True
     _client: httpx.Client = field(init=False, repr=False)
     _pool: ThreadPoolExecutor = field(init=False, repr=False)
     _warned: set[str] = field(default_factory=set, init=False, repr=False)
@@ -177,7 +179,7 @@ class SurrogateRoute:
         key = os.environ.get(KEY_ENV, "").strip()
         if not key:
             return SurrogateCall(self, options, started, None)
-        body = {
+        body: dict[str, Any] = {
             "model": self.model,
             "state": state,
             "questions": {"route": {
@@ -186,6 +188,8 @@ class SurrogateRoute:
                 "criteria": {**{o.id: o.description for o in options}, NONE: _NONE_DESCRIPTION},
             }},
         }
+        if self.zdr:
+            body["provider"] = {"zdr": True}
         return SurrogateCall(self, options, started, self._pool.submit(self._fetch, key, body))
 
     def _fetch(self, key: str, body: dict[str, Any]) -> _Reply:

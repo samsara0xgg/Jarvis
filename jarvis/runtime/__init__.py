@@ -698,7 +698,7 @@ def _surrogate_route(config: Mapping[str, Any], config_path: Path) -> SurrogateR
         raise RuntimeBootstrapError(msg)
     return SurrogateRoute(
         model=model.strip(), min_confidence=float(bar), timeout_ms=timeout,
-        parallel=block.get("parallel") is True,
+        parallel=block.get("parallel") is True, zdr=block.get("zdr") is not False,
     )
 
 

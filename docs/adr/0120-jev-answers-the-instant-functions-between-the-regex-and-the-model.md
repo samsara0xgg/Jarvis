@@ -60,6 +60,13 @@ Tier 0 path unchanged; every other outcome falls through to the model.
   would run, the stream is stopped at once (it settles as cancelled, with no
   failure or cancel notice) and the Tier 0 function runs. The batch path and
   the routine stream cannot be stopped mid-request or are off, and ask Jev first.
+- **Egress (`zdr`, default true).** Every request carries OpenRouter's
+  `provider: {"zdr": true}`, so it is routed only to zero-data-retention
+  endpoints. Checked on 2026-10-02 with one real call: the decisions endpoint
+  accepted it for `typesafe/jev-1.13` (HTTP 200, the same answer), and it does
+  evaluate `provider` preferences (`provider.only` with an unknown provider
+  returned 404), so the field is not ignored; whether it filters anything is
+  unproven, since the model's one endpoint passed.
 - **Default off** in the repo; Allen enables it in `settings.yaml`.
 
 ## Alternatives rejected

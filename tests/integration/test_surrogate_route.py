@@ -181,6 +181,16 @@ def test_the_request_asks_one_choice_question_over_the_options(tmp_path: Path, j
     assert question["type"] == "choice"
     assert set(question["criteria"]) == {o.id for o in OPTIONS} | {"none"}
     assert question["criteria"]["none"] == "Anything else, including small talk and questions."
+    assert body["provider"] == {"zdr": True}
+
+
+def test_with_zdr_off_the_request_names_no_provider_preference(tmp_path: Path, jev: _Jev) -> None:
+    """The switch is the only thing that puts ``provider`` in the body."""
+    route = SurrogateRoute(
+        model="typesafe/jev-1.13", min_confidence=0.9, timeout_ms=400, url=jev.url, zdr=False,
+    )
+    _say(tmp_path, "do you have the time", route)
+    assert "provider" not in jev.requests[0]
 
 
 def test_repeat_says_the_last_answer_again(tmp_path: Path, jev: _Jev) -> None:
@@ -378,7 +388,11 @@ def test_the_shipped_config_is_off_and_enabling_it_reads_the_block() -> None:
     route = _surrogate_route(config, path)
     assert route is not None
     assert (route.model, route.min_confidence, route.timeout_ms) == ("typesafe/jev-1.13", 0.9, 400)
-    assert route.parallel is True
+    assert (route.parallel, route.zdr) == (True, True)
+    block["zdr"] = False
+    off = _surrogate_route(config, path)
+    assert off is not None
+    assert off.zdr is False
     block["timeout_ms"] = 0
     with pytest.raises(RuntimeBootstrapError):
         _surrogate_route(config, path)

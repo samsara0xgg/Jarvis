@@ -558,6 +558,10 @@ realtime:
     # is thrown away (route.surrogate_decided: aborted, aborted_cost_usd).  false:
     # Jev is asked first, on every path.  Other paths always ask Jev first.
     parallel: true
+    # Ask OpenRouter (provider.zdr) to route only to zero-data-retention endpoints; the
+    # request fails over to the model if none can serve it.  Checked 2026-10-02: the
+    # decisions endpoint accepts it for typesafe/jev-1.13.
+    zdr: true
   # ADR-0008 D8 (Wave 5).  intent_pump replaces the daemon's "poll one
   # event, await its whole turn" watcher with a durable-claim queue: each
   # trigger is claimed once by an idempotent turn.started, the cursor
