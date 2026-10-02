@@ -87,6 +87,39 @@ def test_a_spare_in_the_answers_language_is_used(tmp_path: Path) -> None:
     assert provider.languages == ["zh"]
 
 
+def test_the_next_spare_reads_the_language_of_the_last_answer(tmp_path: Path) -> None:
+    """A Chinese answer makes the next spare zh, whatever the system language, and it is used."""
+    lang.set_language("en")
+    provider = _FakeProvider(candidate_count=1)
+    db = tmp_path / "events.db"
+    conn = open_event_log(db)
+    player = _player()
+    pipeline = voice_media.StreamingTTSPipeline(
+        provider=provider, player=player, conn_factory=lambda: open_event_log(db),
+        boot_high_water_id=0, config=_config(), start_player=False,
+    )
+    try:
+        with _CallbackPump(player):
+            for turn, response_id in enumerate(("R1", "R2"), start=1):
+                pipeline.hold_output(held=True)
+                _wait_until(lambda n=turn: provider.actions.count("connect") == n)
+                pipeline.hold_output(held=False)
+                rows = _emit_response(
+                    conn, response_id=response_id, group_id=f"G{turn}", turn_id=f"T{turn}",
+                    text="\u4f60\u597d\u3002",
+                )
+                asyncio.run(_submit_response(pipeline, rows))
+                _wait_for(conn, "surface.playback_completed", response_id, 1)
+        assert pipeline.wait_until_idle(timeout_s=2.0)
+    finally:
+        assert pipeline.close()
+        conn.close()
+    # R1: an en spare misses a Chinese answer; R2: the zh spare is taken, nothing new is created.
+    assert provider.languages == ["en", "zh", "zh"]
+    assert provider.opened == [("R1", 0), ("R2", 0)]
+    assert provider.created == 3
+
+
 def test_a_stale_spare_is_closed_and_the_answer_connects_its_own(tmp_path: Path) -> None:
     """Past its age a spare may already be closed by MiniMax: never trusted."""
     provider = _FakeProvider(candidate_count=1)

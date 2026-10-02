@@ -728,6 +728,8 @@ class StreamingTTSPipeline:
         # Connected for the next answer while Allen talks; actor-owned.
         self._spare: TTSSession | None = None
         self._spare_language: lang.Language = "en"
+        # Language of the last answer's first segment: what he speaks, so what the next spare reads.
+        self._last_answer_language: lang.Language | None = None
         self._spare_ready_at = 0.0
         self._spare_task: asyncio.Task[None] | None = None
         # Canonical PCM of the spoken "tts.network_lost" line, per language, in memory.
@@ -1710,9 +1712,10 @@ class StreamingTTSPipeline:
             if self._spare_fresh():
                 return
             await self._drop_spare()
-        # His words are not recognized yet, so the spare reads the system language;
-        # an answer in the other one does not take it.
-        language = lang.language()
+        # His words are not recognized yet, so the spare reads the language of his
+        # last answer (the system language before any); an answer in the other one
+        # does not take it.
+        language = self._last_answer_language or lang.language()
         session = self._provider.create_tts_session(
             endpoint_index=0,
             language=language,
@@ -2813,7 +2816,7 @@ class StreamingTTSPipeline:
                     return False
                 try:
                     if session is None:
-                        language = lang.text_language(text)
+                        language = self._last_answer_language = lang.text_language(text)
                         session = (
                             await self._take_spare(language) if endpoint_index == 0 else None
                         ) or self._provider.create_tts_session(
