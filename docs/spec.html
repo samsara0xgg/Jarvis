@@ -400,7 +400,7 @@ I8 到 I11 随审核链退役（ADR 0019），编号保留。
 <tr><td>天气</td><td>Open-Meteo</td><td>主人写在设置里的经纬度</td><td>首页刷新时</td><td>不写经纬度就不查</td></tr>
 <tr><td>测 key</td><td>OpenAI、MiniMax、Tavily；安装版的 Agents 窗口测 Anthropic</td><td>首次设置那次对话带着主人和助手的名字；其余只是列模型、合成一个词、搜一次（<a href="#spend">第 7 章</a>）</td><td>首次设置时；OpenAI 和 MiniMax 在后台每次启动时重测；Anthropic 在主人存 key 时</td><td>—</td></tr>
 <tr><td>下载</td><td>语音模型从 <code>huggingface.co</code> 和 <code>github.com</code>；Hue 插件的 <code>huemcp</code> 从 PyPI</td><td>只有下载请求</td><td>缺什么就下什么</td><td>自动；哪些核对哈希见<a href="#threat-table">第 6 章</a></td></tr>
-<tr><td>Agents 窗口</td><td>Anthropic（安装版里也可以是 Amazon Bedrock 或 Google Vertex）和 OpenAI，经主人自己的 Claude Code 和 Codex</td><td>那些会话本身的内容，照主人给它们的设置</td><td>主人用这个窗口时；<code>claude update</code> 在宿主启动时和之后每小时一次</td><td>安装版里关（改19）</td></tr>
+<tr><td>Agents 窗口</td><td>Anthropic（安装版里也可以是 Amazon Bedrock 或 Google Vertex）和 OpenAI，经主人自己的 Claude Code 和 Codex</td><td>那些会话本身的内容，照主人给它们的设置</td><td>主人用这个窗口时；开着协调者的项目里，主人在项目里说话或项目的会话做完一轮时，协调者再跑一轮（ADR 0119）；<code>claude update</code> 在宿主启动时和之后每小时一次</td><td>安装版里关（改19）</td></tr>
 <tr><td>用量页</td><td>Anthropic、ChatGPT、OpenAI、DeepSeek、MiniMax</td><td>各家的登录或 key，只问用量和余额（<a href="#usage-page">第 8 章</a>）</td><td>打开后每 5 分钟</td><td>关</td></tr>
 </tbody>
 </table>
@@ -547,6 +547,9 @@ I8 到 I11 随审核链退役（ADR 0019），编号保留。
 <li>主人给消息加的表情不叫醒 agent：宿主按消息记下，主人发的下一句前面带一行 <code>[Reactions: …]</code> 一起过去，每个只带一次。</li>
 <li>Claude 会话清空上下文（<code>/clear</code>）后，Claude Code 换一个新的 session id 接着写。窗口里的一行按先后记下每个 id，在最后一个里继续，读回时依次读全部记录，并在清空处标一行（ADR 0088）。</li>
 <li>一键落地把会话的改动落到仓库的默认分支（origin 的 HEAD 指的那个，没有就 <code>main</code>，再没有就 <code>master</code>），两种走法：合入是提交、快进合进默认分支、重启、主人允许后推默认分支、删掉会话的 worktree；开 PR 是提交、主人允许后推会话的分支并用 <code>gh</code> 开 PR，不重启，worktree 留着。没装 <code>gh</code> 时停在推好的分支和远端给的开 PR 链接。门禁、重启命令和默认走法按仓库在设置里配；没配时 Jarvis 仓库用 <code>docs/git-guide.md</code> 的门禁和重启，别的仓库没有。Jarvis 仓库默认合入；别的仓库两条都能走又没配过时，第一次落地先问主人走哪条，答案记进这个仓库的设置，之后不再问（没答就开始的按开 PR）；会话就在默认分支上只能合入，不在自己 worktree 里的别的分支只能开 PR（ADR 0097）。</li>
+<li>会话可以属于一个项目（ADR 0118）。项目是 <code>agents/projects/</code> 下的一个文件夹：设置（名字、目标、最多 16000 字的项目说明、默认文件夹、agent、模型、力度和模式）、以 <code>MEMORY.md</code> 为索引的记忆文件夹和共享文件夹。会话在项目里开，或者之后移进去、移出来。它的 agent 每次启动都拿到项目说明和截到 200 行、25000 字的记忆索引（Claude 接在 Claude Code 自己的系统提示后面，Codex 作为 developer instructions），并能读写记忆和共享文件夹；正在跑的进程到下次启动才看到改过的说明和记忆。项目里的会话按等你、在跑、落地中、待审、闲着、完成分组，读的时候现算，7 天没动的算完成。</li>
+<li>项目可以开一个协调者（ADR 0119，新项目默认开，Sonnet、低力度，按项目换）：宿主替项目跑的一个 Claude 会话，用它自己的提示词，不读主人的 Claude Code 设置、CLAUDE.md 和 hook，能读文件，只能写项目的记忆和共享文件夹，不能跑命令。它的普通文字谁也看不到，只有工具调用到主人面前：在项目的消息流里发言、改自己的发言、带一份简报开会话、给会话捎话、替主人起草一句话、列出和读项目的会话。宿主只在三种时候叫醒它：主人在消息流里说话，主人在项目的会话里说话，项目的会话做完一轮或出错；1.5 秒内的事并成一条，不定时叫。上一个的上下文过了 10 万 token 或闲了一小时，就换一个新的，交给它项目说明、记忆索引、会话列表和消息流最近 30 条。</li>
+<li>协调者写给会话的话第一行是 <code>[From: coordinator]</code>，窗口里记成协调者说的，不是主人。它要转述主人的话只能给出那条消息的 id，由宿主把原文一字不改地附在后面；项目会话的提示里写明只有这部分算主人的话。草稿在消息流里是一张卡，主人按一下就作为主人自己的话发到那个会话，不叫醒协调者。项目的会话等主人批准时，宿主自己在消息流里发一行，等完了把它划掉并写上已处理；这不经过模型，也不叫醒协调者。</li>
 <li>宿主在启动时和之后每小时替主人跑一次 <code>claude update</code>，升级主人自己的 Claude Code。</li>
 <li>开发版里这些会话用这台 Mac 上 Claude Code 自己的登录。安装版里窗口开的每个 <code>claude</code> 只拿主人自己的 Anthropic key，或 Amazon Bedrock、Google Vertex 的设置，放在那个进程的环境里；都没有就不开 Claude 会话，并说缺什么。Claude Code 自己的登录不读、不改、不限制：宿主的环境、它开的终端和 <code>claude update</code> 都拿不到 key（ADR 0094）。</li>
 <li>在 App 里运行 Claude Code 要先同意 Anthropic 的商业条款。Allen 确认之前，安装版不带 Claude Code，也不开这个窗口（改19，定6）。</li>
@@ -589,7 +592,7 @@ I8 到 I11 随审核链退役（ADR 0019），编号保留。
 <tr><td><code>artifacts/screen_artifacts/</code></td><td>看一眼屏幕时的截图</td><td>见<a href="#retention">保留期</a></td></tr>
 <tr><td><code>aec-diagnostics/</code></td><td>回声消除的诊断录音：麦克风、播放和消除后三轨</td><td>默认不写（<code>echo_diagnostics</code>）；写了就不删</td></tr>
 <tr><td><code>codex-hooks/</code></td><td>Codex hook 事件的完整内容</td><td>每种事件 10 MB，留两份旧的；不在保留期清理之内</td></tr>
-<tr><td><code>agents/</code></td><td>Agents 窗口的会话列表和设置、贴进会话的图片和文件、审阅时放回原样的文件留下的副本、宿主的钥匙 <code>host-key</code>（0600）、<code>keeper.sock</code></td><td>图片、文件和副本 30 天</td></tr>
+<tr><td><code>agents/</code></td><td>Agents 窗口的会话列表和设置、项目（<code>projects/&lt;id&gt;/</code>：设置、消息流 <code>feed.jsonl</code>、记忆和共享文件夹）、贴进会话的图片和文件、审阅时放回原样的文件留下的副本、宿主的钥匙 <code>host-key</code>（0600）、<code>keeper.sock</code></td><td>图片、文件和副本 30 天</td></tr>
 <tr><td><code>settings.yaml</code>、<code>settings.json</code></td><td>主人的设置（<a href="#formats">第 3 章</a>）</td><td>—</td></tr>
 <tr><td><code>env</code></td><td>主人自己写的明文变量（<a href="#key-storage">第 7 章</a>）</td><td>—</td></tr>
 <tr><td><code>plugin-access.json</code>、<code>inherent-v2.token</code></td><td>本机接口的令牌，0600；后者每次启动都换</td><td>—</td></tr>
