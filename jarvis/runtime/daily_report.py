@@ -15,8 +15,10 @@ import json
 import logging
 import re
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from datetime import UTC, date, datetime, time, timedelta
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 from jarvis.decision.daily_report import (
@@ -61,8 +63,8 @@ from jarvis.state.event_log import open_runtime_event_log
 if TYPE_CHECKING:
     import sqlite3
     from collections.abc import Callable, Mapping, Sequence
+    from concurrent.futures import Future
     from datetime import tzinfo
-    from pathlib import Path
 
     from jarvis.decision.daily_report import Claim
     from jarvis.decision.llm import ChatResult
@@ -156,6 +158,19 @@ class Reporter(Protocol):
     ) -> ChatResult:
         """Send the request through the given log connection's cost accounting."""
         ...
+
+
+def _record_verdicts(index: int, pending: list[Claim], future: Future[ChatResult]) -> None:
+    """One item's verdicts from its finished call; a failed or malformed one leaves its claims."""
+    try:
+        parse_verdicts(future.result(), pending)
+    except DailyReportParseError as exc:
+        LOGGER.warning("daily_report: item %s check unusable: %s", index, exc)
+    except Exception as exc:  # noqa: BLE001 — the provider failed; nothing is assumed.
+        LOGGER.warning("daily_report: item %s check failed: %s", index, exc)
+    for claim in pending:
+        if claim.verdict is None:
+            claim.unchecked = t("report.unchecked.failed")
 
 
 class DailyReportService:
@@ -384,60 +399,53 @@ class DailyReportService:
         """One verification call per item with claims the program could not rule on, in order.
 
         The call sees the item, its claimed parts and the cited originals, and
-        nothing else. Past the budget, or once the provider fails, the
-        remaining claims stay unverified — never assumed; a malformed verdict
-        leaves its own claims unverified and the next item is still checked.
+        nothing else. Items past the budget stay unverified — never assumed.
+        The calls run together, so a failed call (or a malformed verdict)
+        leaves only its own item's claims unverified.
         """
-        made = 0
-        provider_down = False
+        assert self._reporter is not None  # noqa: S101 — checked by the caller.
+        jobs: list[tuple[int, list[Claim], str, list[dict[str, Any]]]] = []
         for index, item in enumerate(report["items"], 1):
             pending = [c for c in claims if c.item == index and c.needs_check]
             if not pending:
                 continue
-            if provider_down or made >= self._check_budget:
+            if len(jobs) >= self._check_budget:
                 for claim in pending:
-                    claim.unchecked = t(
-                        "report.unchecked.failed" if provider_down else "report.unchecked.budget"
-                    )
+                    claim.unchecked = t("report.unchecked.budget")
                 continue
-            made += 1
-            provider_down = not self._check_item(conn, evidence, index, item, pending)
-            for claim in pending:
-                if claim.verdict is None:
-                    claim.unchecked = t("report.unchecked.failed")
-        return made
+            keys = list(dict.fromkeys(key for claim in pending for key in claim.refs))
+            originals = claim_originals(
+                keys,
+                evidence,
+                terms=title_terms(item["title"]),
+                conn=conn,
+                memory_path=self._memory_path,
+                timesink_path=self._timesink_path,
+            )
+            jobs.append((index, pending, *build_check_request(item, pending, originals)))
+        if not jobs:
+            return 0
+        # The log connection is bound to this thread and the model call writes its cost row
+        # through it, so each worker opens its own on the same file.
+        log_path = Path(conn.execute("PRAGMA database_list").fetchone()[2])
+        with ThreadPoolExecutor(len(jobs), thread_name_prefix="jarvis-report-check") as pool:
+            futures = [
+                pool.submit(self._judge, log_path, system, messages)
+                for _, _, system, messages in jobs
+            ]
+            for (index, pending, _, _), future in zip(jobs, futures, strict=True):
+                _record_verdicts(index, pending, future)
+        return len(jobs)
 
-    def _check_item(
-        self,
-        conn: sqlite3.Connection,
-        evidence: DayEvidence,
-        index: int,
-        item: dict[str, Any],
-        pending: list[Claim],
-    ) -> bool:
-        """One item's verification call; False when the provider failed, not when a reply did."""
+    def _judge(
+        self, log_path: Path, system: str, messages: list[dict[str, Any]]
+    ) -> ChatResult:
+        """One verification call on a worker thread, accounted through its own log connection."""
         assert self._reporter is not None  # noqa: S101 — checked by the caller.
-        keys = list(dict.fromkeys(key for claim in pending for key in claim.refs))
-        originals = claim_originals(
-            keys,
-            evidence,
-            terms=title_terms(item["title"]),
-            conn=conn,
-            memory_path=self._memory_path,
-            timesink_path=self._timesink_path,
-        )
-        system, messages = build_check_request(item, pending, originals)
-        try:
-            result = self._reporter.analyze(
+        with closing(open_runtime_event_log(log_path)) as conn:
+            return self._reporter.analyze(
                 conn, system=system, messages=messages, tools=[JUDGE_TOOL], tool_choice="auto"
             )
-            parse_verdicts(result, pending)
-        except DailyReportParseError as exc:
-            LOGGER.warning("daily_report: item %s check unusable: %s", index, exc)
-        except Exception as exc:  # noqa: BLE001 — the provider failed; nothing is assumed.
-            LOGGER.warning("daily_report: item %s check failed: %s", index, exc)
-            return False
-        return True
 
     def _summarise(
         self,

@@ -13,6 +13,7 @@ import os
 import re
 import sqlite3
 import subprocess
+import time as clock
 from contextlib import closing
 from dataclasses import replace
 from datetime import UTC, date, datetime, time
@@ -255,6 +256,10 @@ class CannedReporter:
         self.malformed = False
         self.malformed_once = False
         self.malformed_checks: set[str] = set()
+        self.fail_check_titles: set[str] = set()
+        self.check_delay = 0.0
+        self.check_spans: list[tuple[float, float]] = []
+        """(start, end) of each check call, to show whether they overlapped."""
         self.ask_details: list[str] | None = None
         self.script: list[list[tuple[str, dict[str, Any]]]] = []
         """Tool calls to make on each round before reporting: [[(tool, args), ...], ...]."""
@@ -323,10 +328,16 @@ class CannedReporter:
 
     def _judge(self, content: str) -> ChatResult:
         self.checks.append(content)
+        started = clock.monotonic()
+        clock.sleep(self.check_delay)
+        self.check_spans.append((started, clock.monotonic()))
         if self.fail_checks:
             msg = "provider down during the checks"
             raise ConnectionError(msg)
         title = content.partition("\n")[0].removeprefix("Item: ")
+        if title in self.fail_check_titles:
+            msg = "provider down for one check"
+            raise ConnectionError(msg)
         if title in self.malformed_checks:
             return _call(JUDGE_TOOL_NAME, {"verdicts": "not a list"})
         claimed = content.split("Parts claimed done:", 1)[1].split("The cited originals:", 1)[0]
@@ -1286,8 +1297,7 @@ def test_a_branch_commit_is_committed_not_merged(
         result = rig.run()
         assert result["outcome"] == "generated", result.get("error")
         assert result["checks"] == 2, "only the code parts need a model; merging is a repo fact"
-        check = rig.reporter.checks[0]
-        assert "Item: TimeSink 截屏采集" in check
+        check = next(c for c in rig.reporter.checks if "Item: TimeSink 截屏采集" in c)
         assert "1. 代码 (cites g1, g2)" in check
         assert "合并" not in check.split("The cited originals:")[0]
         assert "[g1] kind=commit\n未进 main\n" in check
@@ -1382,9 +1392,12 @@ def test_agent_claims_of_tests_and_deployment_are_self_report(
         assert result["outcome"] == "generated", result.get("error")
         assert result["checks"] == 3
         titles = [c.partition("\n")[0] for c in rig.reporter.checks]
-        assert titles == ["Item: 日报工具", "Item: 测试数核对", "Item: 用户确认的重启"]
-        assert "1. 代码 (cites g1)" in rig.reporter.checks[0]
-        assert "2. " not in rig.reporter.checks[0].split("The cited originals:")[0], (
+        assert sorted(titles) == sorted(
+            ["Item: 日报工具", "Item: 测试数核对", "Item: 用户确认的重启"]
+        )
+        first = next(c for c in rig.reporter.checks if c.startswith("Item: 日报工具"))
+        assert "1. 代码 (cites g1)" in first
+        assert "2. " not in first.split("The cited originals:")[0], (
             "the self-reported parts are ruled by the program, not sent to the model"
         )
         content = rig.saved()
@@ -1519,8 +1532,7 @@ def test_an_unrelated_citation_is_ruled_unsupported_by_the_check(
     result = rig.run()
     assert result["outcome"] == "generated", result.get("error")
     assert result["checks"] == 2
-    check = rig.reporter.checks[0]
-    assert check.startswith("Item: 信息汇总模块验收\n")
+    check = next(c for c in rig.reporter.checks if c.startswith("Item: 信息汇总模块验收\n"))
     assert f"1. the whole item (cites {s})" in check
     assert f"[{s}] kind=screen\nChrome — cc | rules\nRBC Workday My Applications" in check
     content = rig.saved()
@@ -1576,7 +1588,7 @@ def test_an_exhausted_check_budget_leaves_claims_unverified(
         rig.reporter.fail_checks = True
         failed = rig.run(regenerate=True)
         assert failed["outcome"] == "generated", failed.get("error")
-        assert failed["checks"] == 1, "the provider failed once; the rest is not retried"
+        assert failed["checks"] == 2, "the calls run together; each failed one marks its own item"
         content = rig.saved()
         assert "### 1. 投递申请 — 声称完成，未核实（核查失败）" in content
         assert "### 2. 更新简历 — 声称完成，未核实（核查失败）" in content
@@ -1590,6 +1602,43 @@ def test_an_exhausted_check_budget_leaves_claims_unverified(
         content = rig.saved()
         assert "### 1. 投递申请 — 声称完成，未核实（核查失败）" in content
         assert "### 2. 更新简历 — 用户确认完成（r2）" in content
+    finally:
+        rig.fx.close()
+
+
+def test_checks_run_together_and_a_failed_call_leaves_the_others(
+    tmp_path: Path, source: sqlite3.Connection
+) -> None:
+    """The item checks overlap in time, within the budget, in item order; a failure is its own."""
+    add_span(source, "2026-09-19 16:00:00.000", "2026-09-19 17:00:00.000")
+    rig = Rig(tmp_path, timesink=tmp_path / "timesink.sqlite", check_budget=3)
+    for number in range(1, 5):
+        rig.record(f"rec-{number}", f"事项{number}完成了。", ts="2026-09-19T11:00:00-07:00")
+    rig.reporter.report = _items(
+        *(_whole_item(f"事项{n}", "completed", [f"r{n}"]) for n in range(1, 5))
+    )
+    rig.reporter.check_delay = 0.3
+    try:
+        result = rig.run()
+        assert result["outcome"] == "generated", result.get("error")
+        assert result["checks"] == 3, "the budget still caps the calls"
+        spans = rig.reporter.check_spans
+        assert len(spans) == 3
+        latest_start, earliest_end = max(s for s, _ in spans), min(e for _, e in spans)
+        assert latest_start < earliest_end, "the calls overlapped"
+        assert sorted(c.partition("\n")[0] for c in rig.reporter.checks) == [
+            "Item: 事项1", "Item: 事项2", "Item: 事项3",
+        ], "the first items in order get the calls"
+        content = rig.saved()
+        assert "### 4. 事项4 — 声称完成，未核实（核查预算耗尽）" in content
+
+        rig.reporter.fail_check_titles = {"事项2"}
+        failed = rig.run(regenerate=True)
+        assert failed["outcome"] == "generated", failed.get("error")
+        content = rig.saved()
+        assert "### 1. 事项1 — 用户确认完成（r1）" in content
+        assert "### 2. 事项2 — 声称完成，未核实（核查失败）" in content
+        assert "### 3. 事项3 — 用户确认完成（r3）" in content
     finally:
         rig.fx.close()
 
