@@ -53,10 +53,12 @@ export function requestLine(r: AgentRequest) {
 type ClaudeSession = {
   session_id: string; kind: 'interactive' | 'background'; job_id?: string; phase: 'needs_input' | 'working' | 'done'; title: string; project: string; branch: string; where: string; prompt: string; activity: string;
   last_message: string; updated_ms: number; compacting?: boolean; error?: string; request?: AgentRequest | null; replyable?: boolean;
+  // ADR 0125: the daemon's Jev read a finished turn's ending as asking Allen something (null: not known)
+  asks?: boolean | null;
 };
 export const fromClaude = (r: ClaudeSession): Agent => ({
   id: r.session_id, agent: 'claude', title: r.title || r.prompt || 'Claude session', project: r.project, branch: r.branch || undefined,
-  state: r.request || r.phase === 'needs_input' ? 'wait' : r.error ? 'err' : r.phase === 'working' ? r.compacting ? 'pack' : 'work' : 'done',
+  state: r.request || r.phase === 'needs_input' || r.phase === 'done' && r.asks === true ? 'wait' : r.error ? 'err' : r.phase === 'working' ? r.compacting ? 'pack' : 'work' : 'done',
   where: r.where === 'background' ? 'Background' : r.where, age: ago(r.updated_ms), you: r.prompt,
   last: r.request ? requestLine(r.request) : r.compacting ? 'Compacting its context' : r.phase === 'done' ? r.last_message : r.activity || r.last_message,
   request: r.request ?? undefined, error: r.error || undefined, at: r.updated_ms, kind: r.kind, job: r.job_id || undefined,

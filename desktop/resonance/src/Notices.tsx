@@ -197,7 +197,8 @@ export function useNotices({ port, agents, hold, watched, viewing, agentsFront, 
       if (!ended(a.state)) {
         // Working again (or asking): it leaves his turn.
         if (s.unread.delete(a.id)) touched.add(a.id);
-        if (a.state === 'wait' && !a.request && !looking) arrive({ kind: 'wait', id: a.id, line: a.last });
+        // A finish that turned out to ask (ADR 0125) takes the place of the pop it came with.
+        if (a.state === 'wait' && !a.request && !looking) { if (ended(was)) drop([a.id]); arrive({ kind: 'wait', id: a.id, line: a.last }); }
       } else if (!ended(was) && !looking) { s.unread.add(a.id); touched.add(a.id); arrive({ kind: 'pop', id: a.id, ids: [a.id] }); }
     }
     touched.forEach(persist);
