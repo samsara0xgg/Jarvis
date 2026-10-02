@@ -473,7 +473,7 @@ class NativeAudioStreamPlayer(AudioStreamPlayer):
         *,
         expected_playback_generation_id: int,
     ) -> OutputTimelineSnapshot | StalePlaybackGeneration | None:
-        """Freeze once the helper acked the discard; every report before the ack is then in the ring.
+        """Freeze once the helper acked the discard (every report before it is then in).
 
         The ack comes one render callback after the DISCARD frame (about 11 ms),
         so this waits for it, bounded, instead of returning ``None`` at once: the
