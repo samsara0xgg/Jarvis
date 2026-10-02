@@ -52,6 +52,14 @@ Tier 0 path unchanged; every other outcome falls through to the model.
   the pairs. The key is never in an event or a log line.
 - **Key.** `OPENROUTER_API_KEY`, read from the environment at each call, filled
   like the other provider keys.
+- **Parallel (`parallel`, default true; false asks Jev first everywhere).** On a
+  turn Allen spoke through `spoken_streaming`, plain or structured, the model's
+  request is sent without waiting for Jev. Nothing of it may take effect before
+  Jev has answered: its first event is held, for at most what is left of Jev's
+  deadline, before any sentence is spoken or tool dispatched. If Jev's choice
+  would run, the stream is stopped at once (it settles as cancelled, with no
+  failure or cancel notice) and the Tier 0 function runs. The batch path and
+  the routine stream cannot be stopped mid-request or are off, and ask Jev first.
 - **Default off** in the repo; Allen enables it in `settings.yaml`.
 
 ## Alternatives rejected
@@ -66,6 +74,9 @@ Tier 0 path unchanged; every other outcome falls through to the model.
   turn would then pay for both, and a wrong Jev route could already be spoken
   when the model's answer arrives; falling through only on a miss costs one
   0.14 s call at worst and nothing when Tier 0 hit.
+- **Parallel on the batch path too.** Its request is one blocking call that cannot
+  be aborted; answering from Tier 0 meanwhile would put it on a worker thread,
+  abandon it, and share the Event Log connection with cost accounting.
 - **A separate answer path for Jev's choices.** It would copy the Tier 0
   gate, confirmation and template handling, and the two paths would drift.
 - **Read the key from the `jarvis-eval-openrouter` Keychain item directly.**
@@ -74,6 +85,12 @@ Tier 0 path unchanged; every other outcome falls through to the model.
 
 ## Consequences
 
+- With `parallel` on, about 6% of turns (Allen's estimate; the log will say) pay
+  for a model request that is thrown away. Stopped before its first event, the provider
+  reports no usage, so the aborted request's cost is unknown: the
+  `route.surrogate_decided` row says `aborted` and carries `aborted_cost_usd` and
+  `aborted_input_tokens` (both null then), and the matching `cost.recorded` row has
+  disposition `cancelled`. Spend is estimated from the count of aborted rows.
 - Allen's words and two earlier exchanges leave the Mac on every turn Tier 0
   did not answer, once he enables it; spec #egress says so.
 - A turn that Jev does not accept is 0.14 s slower in the median and at most
