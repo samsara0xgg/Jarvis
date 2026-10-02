@@ -1214,7 +1214,7 @@ try {
     await turn('k1', '给我资料和日程', `<voice>都在下面了。</voice><document>- The Rust Book · https://doc.rust-lang.org/book/ · 官方教程\n- 书签 ${far}\n- 看 [文档](https://docs.rs/serde) 和 \`ls https://not.a.link\`\n- 今天 回邮件\n  附上时间表\n- 10/8 14:30 牙医 · Castro 牙科\n- Tomorrow 9:00 standup\n- 下周一 订机票\n  - 价格在涨\n- 周五之前 交报告\n- 2月3日下午 开会\n- Monitor the logs</document>`, { spoken: true });
     await page.waitForTimeout(1800);
     const rows = await page.evaluate(() => [...document.querySelectorAll('.talk .doc > div')].map(r => ({ text: r.textContent, lk: [...r.querySelectorAll('.lk')].map(a => [a.textContent, a.getAttribute('href')]), mt: [...r.querySelectorAll('.mt')].map(m => m.textContent),
-      time: r.querySelector('time')?.textContent ?? '', sub: [...r.querySelectorAll('.sub')].map(m => m.textContent), left: r.querySelector(':scope > span:last-child').getBoundingClientRect().left, tw: r.querySelector('time')?.getBoundingClientRect().width ?? 0, th: r.querySelector('time')?.getBoundingClientRect().height ?? 0 })));
+      time: r.querySelector('time')?.textContent ?? '', sub: [...r.querySelectorAll('.sub')].map(m => m.textContent), left: r.querySelector(':scope > span:last-child').getBoundingClientRect().left, tw: r.querySelector('time')?.getBoundingClientRect().width ?? 0, tl: r.querySelector('time')?.getBoundingClientRect().left ?? 0, th: r.querySelector('time')?.getBoundingClientRect().height ?? 0 })));
     const cut = far.replace(/^https?:\/\//, '');
     check('a markdown link and a bare address are links: the text of one, the short form of the other (no scheme, cut with an ellipsis)', rows[2].lk[0][0] === '文档' && rows[2].lk[0][1] === 'https://docs.rs/serde' && rows[1].lk[0][0] === `${cut.slice(0, 31)}…` && rows[1].lk[0][1] === far);
     check('an address inside code ticks stays code', rows[2].lk.length === 1 && rows[2].text.includes('ls https://not.a.link'));
@@ -1222,7 +1222,7 @@ try {
     check('date leads sit in the lead column: 今天, 10/8 14:30, Tomorrow 9:00, 下周一, 周五之前, 2月3日下午; a word that only starts like a day (Monitor) is not one',
       rows.slice(3, 9).map(r => r.time).join('|') === '今天|10/8 14:30|Tomorrow 9:00|下周一|周五之前|2月3日下午');
     check('an indented line and a nested item are each a dim second line of their row, not glued on', rows[3].sub.join() === '附上时间表' && rows[6].sub.join() === '价格在涨' && await page.evaluate(() => [...document.querySelectorAll('.talk .doc .sub')].every(e => getComputedStyle(e).display === 'block')));
-    check('the lead column is 44 wide and the words of every dated row start at the same x; “10/8 14:30” wraps to two lines', rows.slice(3, 9).every(r => Math.abs(r.tw - 44) < .6 && Math.abs(r.left - rows[3].left) < .6) && rows[4].th > 26);
+    check('the dated rows share one lead column no wider than 72: their words start at the same x, clear of every lead; “Tomorrow 9:00” wraps to two lines', rows.slice(3, 9).every(r => r.tw <= 72.5 && r.tl + r.tw + 10 <= r.left && Math.abs(r.left - rows[3].left) < .6) && rows[5].th > 26);
     check('“Monitor the logs” is a plain row (no lead column)', rows[9].time === '' && rows[9].lk.length === 0);
     await page.locator('.talk .doc a.lk').first().click();
     check('clicking a link asks the shell to open its full address, and the page does not navigate', await page.evaluate(() => window.__opened.join() === 'https://doc.rust-lang.org/book/' && location.search.includes('companion=1')));
