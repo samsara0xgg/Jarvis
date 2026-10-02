@@ -260,13 +260,18 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
     ),
     # ADR 0120 — one row per Jev call (the surrogate route between Tier 0 and the
     # model), whatever came of it: ``choice`` and ``confidence`` are null when
-    # ``error`` says why there was no usable answer.
+    # ``error`` says why there was no usable answer.  ``aborted`` is true when the
+    # model's request had been sent and was stopped; its cost, when the provider
+    # reported usage, is ``aborted_cost_usd`` (else null, with the input tokens).
     EventTypeSchema(
         event_type="route.surrogate_decided",
         owner_layer="L3",
         actor="jarvis_runtime",
         required_payload=("turn_id", "options_version", "accepted"),
-        optional_payload=("model", "choice", "confidence", "latency_ms", "error", "cost_usd"),
+        optional_payload=(
+            "model", "choice", "confidence", "latency_ms", "error", "cost_usd",
+            "parallel", "aborted", "aborted_cost_usd", "aborted_input_tokens",
+        ),
         schema_version=1,
     ),
     EventTypeSchema(

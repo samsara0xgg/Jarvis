@@ -696,7 +696,10 @@ def _surrogate_route(config: Mapping[str, Any], config_path: Path) -> SurrogateR
             " min_confidence (0-1] and timeout_ms (positive int)"
         )
         raise RuntimeBootstrapError(msg)
-    return SurrogateRoute(model=model.strip(), min_confidence=float(bar), timeout_ms=timeout)
+    return SurrogateRoute(
+        model=model.strip(), min_confidence=float(bar), timeout_ms=timeout,
+        parallel=block.get("parallel") is True,
+    )
 
 
 def _max_tool_iterations(config: Mapping[str, Any]) -> int:

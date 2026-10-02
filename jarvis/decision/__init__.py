@@ -90,11 +90,11 @@ from jarvis.decision.stream_risk import SPOKEN_RULE_VERSION, SegmentRiskClassifi
 from jarvis.decision.stream_sentences import SemanticAssembler
 from jarvis.decision.surrogate_route import (
     OPTIONS_VERSION,
-    REPEAT,
+    PendingSurrogate,
+    SurrogateAction,
     SurrogateRoute,
     conversation_state,
     offered,
-    tier0_hit,
 )
 from jarvis.decision.tier0 import render_tier0_response
 from jarvis.shared import (
@@ -117,7 +117,7 @@ from jarvis.state.authorized_dispatch_outbox import (
     authorize_confirmation_dispatch,
 )
 from jarvis.state.cost_accounting import record_run_cost_once
-from jarvis.state.event_log import emit_event, iter_events_of_types
+from jarvis.state.event_log import emit_event, iter_events_for_turn, iter_events_of_types
 from jarvis.state.projections import make_snapshot
 from jarvis.state.stream_emission import committed_text_prefix
 from jarvis.state.turn_overlap import TurnInFlight, turns_in_flight, words_since
@@ -737,6 +737,8 @@ class _Scratch:
     confirmation_answered_this_turn: bool = False
     # ADR 0034: deferred tools a `loaded_tools` result put on this turn's menu.
     loaded_tools: set[str] = field(default_factory=set)
+    # ADR 0120: Jev's question sent for this turn while the model's request is held.
+    surrogate: PendingSurrogate | None = None
 
 
 _STATUS_HEADER: Final[str] = "[Current state | from the program, not the user's words]"
@@ -1237,11 +1239,7 @@ def _handle_utterance(
     instant = _run_instant_route(packet, policy, ctx, scratch)
     if instant is not None:
         return instant
-
-    # Tier 2 tool-use loop. Each iteration calls the LLM, dispatches any
-    # tool_calls (through the Pre-action Gate), and either continues (if more tool calls) or breaks
-    # (if the LLM returned text — which goes to Pre-emit Gate).
-    return _run_tool_use_loop(packet, policy, ctx, scratch)
+    return _run_model_path(packet, policy, ctx, scratch)
 
 
 def _run_instant_route(
@@ -1250,25 +1248,43 @@ def _run_instant_route(
     ctx: DecideContext,
     scratch: _Scratch,
 ) -> DecideResult | None:
-    """Tier 0, then (only on a miss) Jev; None means the model answers."""
+    """Tier 0, then (only on a miss) Jev; None means the model answers.
+
+    ADR 0120. On the spoken stream path with ``parallel`` on, Jev's question is
+    only sent here; the model's request goes out at once and its first output
+    waits for Jev (:func:`_settle_surrogate`). Everywhere else Jev is asked first.
+    """
     hit = tier_0_match(packet, ctx.tier0_table)
     if hit is not None:
         return _run_tier0_path(hit, packet, policy, ctx, scratch)
-    return _run_surrogate_route(packet, policy, ctx, scratch)
+    pending = _start_surrogate(packet, ctx)
+    if pending is None:
+        return None
+    if _surrogate_runs_parallel(ctx):
+        scratch.surrogate = pending
+        return None
+    pending.settled = True
+    action = pending.action()
+    _record_surrogate(pending, ctx, scratch, accepted=action is not None)
+    return _act_on_surrogate(action, packet, policy, ctx, scratch) if action else None
 
 
-def _run_surrogate_route(
-    packet: SituationPacket,
-    policy: EffectivePolicy,
-    ctx: DecideContext,
-    scratch: _Scratch,
-) -> DecideResult | None:
-    """Ask Jev which instant function Allen wants (ADR 0120); None means the model answers.
+class _SurrogateTookTurn(Exception):  # noqa: N818 — a signal, not an error
+    """Jev chose a function while the model's request was still held back."""
 
-    The function runs through the very path a Tier 0 regex hit takes, so the
-    gates, confirmation rules and the spoken answer are unchanged. The call
-    and its outcome are recorded either way.
-    """
+
+def _surrogate_runs_parallel(ctx: DecideContext) -> bool:
+    route = ctx.routine_stream
+    return (
+        ctx.surrogate_route is not None
+        and ctx.surrogate_route.parallel
+        and route is not None
+        and route.context.route == "spoken"
+    )
+
+
+def _start_surrogate(packet: SituationPacket, ctx: DecideContext) -> PendingSurrogate | None:
+    """Send Jev's question for this utterance, or None when there is nothing to ask."""
     route = ctx.surrogate_route
     trigger = packet.trigger_event
     words = trigger.payload.get("transcript")
@@ -1280,11 +1296,27 @@ def _run_surrogate_route(
     ):
         return None
     options = offered(ctx.tier0_table)
-    answer = route.ask(conversation_state(packet, ctx.conn, words), options)
-    chosen = next((o for o in options if o.id == answer.choice), None)
-    hit = tier0_hit(chosen, ctx.tier0_table) if chosen is not None else None
-    repeated = _last_spoken_voice(packet) if chosen is not None and chosen.id == REPEAT else None
-    accepted = route.accepts(answer) and (hit is not None or repeated is not None)
+    call = route.start(conversation_state(packet, ctx.conn, words), options)
+    return PendingSurrogate(
+        call, options, ctx.tier0_table, _last_spoken_voice(packet), trigger.event_uid,
+    )
+
+
+def _record_surrogate(
+    pending: PendingSurrogate,
+    ctx: DecideContext,
+    scratch: _Scratch,
+    *,
+    accepted: bool,
+    aborted: bool = False,
+) -> None:
+    """Write the call's ``route.surrogate_decided`` event, with an aborted request's cost."""
+    route = pending.call.route
+    answer = pending.call.result()
+    spent: Mapping[str, Any] = {}
+    if aborted and scratch.turn_id is not None:
+        for event in iter_events_for_turn(ctx.conn, scratch.turn_id, ("cost.recorded",)):
+            spent = event.payload  # the aborted request is the turn's only one
     scratch.events.append(
         emit_event(
             ctx.conn,
@@ -1299,16 +1331,71 @@ def _run_surrogate_route(
                 "accepted": accepted,
                 "error": answer.error,
                 "cost_usd": answer.cost_usd,
+                "parallel": route.parallel,
+                "aborted": aborted,
+                "aborted_cost_usd": spent.get("cost_usd"),
+                "aborted_input_tokens": spent.get("tokens_in"),
             },
-            source_event_id=trigger.event_uid,
+            source_event_id=pending.trigger_uid,
             correlation={"turn_id": scratch.turn_id} if scratch.turn_id else None,
         ),
     )
-    if accepted and repeated is not None:
-        return _finalize_response(repeated, packet, ctx, scratch)
-    if accepted and hit is not None:
-        return _run_tier0_path(hit, packet, policy, ctx, scratch)
-    return None
+
+
+def _act_on_surrogate(
+    action: SurrogateAction,
+    packet: SituationPacket,
+    policy: EffectivePolicy,
+    ctx: DecideContext,
+    scratch: _Scratch,
+) -> DecideResult:
+    """Run what Jev chose through the path a Tier 0 hit (or the repeat shortcut) takes."""
+    if action.repeated is not None:
+        return _finalize_response(action.repeated, packet, ctx, scratch)
+    if action.hit is None:  # a SurrogateAction always carries one of the two
+        message = "surrogate action with nothing to run"
+        raise RuntimeError(message)
+    return _run_tier0_path(action.hit, packet, policy, ctx, scratch)
+
+
+def _settle_surrogate(ctx: DecideContext, scratch: _Scratch) -> None:
+    """The model's request has output: nothing of it may show until Jev has answered.
+
+    Called before the first event of a request is used, so no sentence, line
+    or tool call can precede Jev's decision. Waits for what is left of Jev's
+    deadline. When Jev chose a function it raises :class:`_SurrogateTookTurn`,
+    which unwinds the stream (closing it, settling it as cancelled) up to
+    :func:`_run_model_path`; otherwise it records the call and returns.
+    """
+    pending = scratch.surrogate
+    if pending is None or pending.settled:
+        return
+    pending.settled = True
+    if pending.action() is not None:
+        raise _SurrogateTookTurn
+    _record_surrogate(pending, ctx, scratch, accepted=False)
+
+
+def _run_model_path(
+    packet: SituationPacket,
+    policy: EffectivePolicy,
+    ctx: DecideContext,
+    scratch: _Scratch,
+) -> DecideResult:
+    """The model's loop, which Jev may take the turn from while its request is held."""
+    pending = scratch.surrogate
+    try:
+        return _run_tool_use_loop(packet, policy, ctx, scratch)
+    except _SurrogateTookTurn:
+        action = pending.action() if pending is not None else None
+        if pending is None or action is None:
+            raise
+        _record_surrogate(pending, ctx, scratch, accepted=True, aborted=True)
+        return _act_on_surrogate(action, packet, policy, ctx, scratch)
+    finally:
+        if pending is not None and not pending.settled:
+            pending.settled = True
+            _record_surrogate(pending, ctx, scratch, accepted=False)
 
 
 def _run_tool_use_loop(
@@ -2581,11 +2668,16 @@ def _stream_spoken_request(  # noqa: C901, PLR0913 - one request, the turn's sea
             text_format=SPOKEN_REPLY_FORMAT if route.structured else None,
         )
     stream = route.open_stream(handle)
+    pending = scratch.surrogate
+    if pending is not None and not pending.settled:
+        # Jev's answer ends this request while it waits for its first event.
+        stream.interrupt_when(pending.accepted_early)
     speaker.begin_request()
     reply = _SpokenReply()
     failed: LLMResponseFailed | None = None
     try:
         for event in stream:
+            _settle_surrogate(ctx, scratch)
             _check_response_cancelled(ctx, "while streaming")
             if isinstance(event, LLMTextDelta) and event.phase == "commentary":
                 if not reply.text:
@@ -2604,6 +2696,7 @@ def _stream_spoken_request(  # noqa: C901, PLR0913 - one request, the turn's sea
                 reply.tool_calls.append(event)
             elif isinstance(event, LLMResponseFailed):
                 failed = event
+        _settle_surrogate(ctx, scratch)  # a stream cut short by Jev's answer has no event
     finally:
         stream.close()
     _check_response_cancelled(ctx, "after provider stream")

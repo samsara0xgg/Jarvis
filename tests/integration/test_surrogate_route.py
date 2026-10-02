@@ -153,9 +153,22 @@ def test_a_confident_choice_runs_the_tier0_function(tmp_path: Path, jev: _Jev) -
         "turn_id": "T9", "options_version": "1", "model": "typesafe/jev-1.13",
         "choice": "time", "confidence": 0.95, "accepted": True, "error": None,
         "cost_usd": 0.0000123, "latency_ms": event["latency_ms"],
+        "parallel": False, "aborted": False, "aborted_cost_usd": None,
+        "aborted_input_tokens": None,
     }
     assert 0 <= event["latency_ms"] < 400
     assert jev.headers[0]["Authorization"] == f"Bearer {KEY}"
+
+
+def test_the_batch_path_stays_sequential_even_with_parallel_on(tmp_path: Path, jev: _Jev) -> None:
+    """Only the spoken stream path overlaps the model's request; this one asks Jev first."""
+    route = SurrogateRoute(
+        model="typesafe/jev-1.13", min_confidence=0.9, timeout_ms=400, url=jev.url, parallel=True,
+    )
+    _result, conn, llm = _say(tmp_path, "do you have the time", route)
+    assert llm.chat_calls == 0
+    (event,) = _events(conn, "route.surrogate_decided")
+    assert (event["accepted"], event["aborted"], event["parallel"]) == (True, False, True)
 
 
 def test_the_request_asks_one_choice_question_over_the_options(tmp_path: Path, jev: _Jev) -> None:
@@ -365,6 +378,7 @@ def test_the_shipped_config_is_off_and_enabling_it_reads_the_block() -> None:
     route = _surrogate_route(config, path)
     assert route is not None
     assert (route.model, route.min_confidence, route.timeout_ms) == ("typesafe/jev-1.13", 0.9, 400)
+    assert route.parallel is True
     block["timeout_ms"] = 0
     with pytest.raises(RuntimeBootstrapError):
         _surrogate_route(config, path)

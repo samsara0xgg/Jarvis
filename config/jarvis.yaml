@@ -551,6 +551,13 @@ realtime:
     model: typesafe/jev-1.13
     min_confidence: 0.9
     timeout_ms: 400
+    # On a turn Allen spoke through spoken_streaming, the model's request goes out
+    # without waiting for Jev; its first output is held until Jev has answered
+    # (at most timeout_ms after Jev was asked), and a request Jev's choice makes
+    # unnecessary is stopped.  About 6% of turns then pay for a model request that
+    # is thrown away (route.surrogate_decided: aborted, aborted_cost_usd).  false:
+    # Jev is asked first, on every path.  Other paths always ask Jev first.
+    parallel: true
   # ADR-0008 D8 (Wave 5).  intent_pump replaces the daemon's "poll one
   # event, await its whole turn" watcher with a durable-claim queue: each
   # trigger is claimed once by an idempotent turn.started, the cursor

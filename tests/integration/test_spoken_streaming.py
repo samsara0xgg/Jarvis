@@ -92,8 +92,10 @@ class _Peer:
 
     def __init__(
         self, outputs: list[list[tuple[str, str]]], *, hold: bool = False, hold_at: str = "。.",
+        first_event_delay_s: float = 0.0,
     ) -> None:
         self.outputs = list(outputs)
+        self.first_event_delay_s = first_event_delay_s
         self.hold = hold
         self.hold_at = hold_at
         self.holding = threading.Event()
@@ -136,6 +138,7 @@ class _Peer:
                 b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n"
             )
             answer = ""
+            await asyncio.sleep(self.first_event_delay_s)
             for frame in _frames(self.outputs.pop(0)):
                 writer.write(f"event: {frame['type']}\ndata: {json.dumps(frame)}\n\n".encode())
                 await writer.drain()

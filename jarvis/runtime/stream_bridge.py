@@ -13,12 +13,13 @@ import asyncio
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
 
     from jarvis.decision.llm_stream import LLMStreamEvent, LLMStreamHandle, StreamDisposition
     from jarvis.decision.response_run import ResponseCancellationToken
 
 _CANCEL_POLL_S = 0.05
+_INTERRUPT_POLL_S = 0.02
 
 
 class LoopBoundTokenStream:
@@ -37,6 +38,11 @@ class LoopBoundTokenStream:
         self._cancel_poll_s = cancel_poll_s
         self._loop: asyncio.AbstractEventLoop | None = None
         self._closed = False
+        self._interrupt: Callable[[], bool] | None = None
+
+    def interrupt_when(self, predicate: Callable[[], bool]) -> None:
+        """End the stream, settled as cancelled, soon after ``predicate()`` turns true."""
+        self._interrupt = predicate
 
     @property
     def disposition(self) -> StreamDisposition | None:
@@ -50,8 +56,14 @@ class LoopBoundTokenStream:
 
     async def _cancel_when_token_set(self) -> None:
         # ponytail: 50 ms poll; a token callback would need a new L3 seam.
-        while not self._token.is_cancelled:  # noqa: ASYNC110 - a threading.Event set by another thread
-            await asyncio.sleep(self._cancel_poll_s)
+        while not self._token.is_cancelled:
+            if self._interrupt is not None and self._interrupt():
+                await self._handle.cancel("interrupted")
+                return
+            await asyncio.sleep(
+                self._cancel_poll_s if self._interrupt is None
+                else min(self._cancel_poll_s, _INTERRUPT_POLL_S),
+            )
         await self._handle.cancel(self._token.reason or "cancelled")
 
     def __iter__(self) -> Iterator[LLMStreamEvent]:

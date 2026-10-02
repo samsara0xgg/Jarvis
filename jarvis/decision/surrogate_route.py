@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 import os
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeout
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Final
@@ -29,7 +29,7 @@ from jarvis.state.event_log import get_event
 
 if TYPE_CHECKING:
     import sqlite3
-    from collections.abc import Callable, Sequence
+    from collections.abc import Sequence
 
     from jarvis.decision.packet import SituationPacket
     from jarvis.decision.tier0 import Tier0Table
@@ -141,6 +141,9 @@ class SurrogateRoute:
     min_confidence: float
     timeout_ms: int
     url: str = SURROGATE_URL
+    # Spoken stream path only: the model's request is sent without waiting for Jev, and its
+    # first output is held until Jev has answered (ADR 0120). Off, Jev is asked first.
+    parallel: bool = False
     _client: httpx.Client = field(init=False, repr=False)
     _pool: ThreadPoolExecutor = field(init=False, repr=False)
     _warned: set[str] = field(default_factory=set, init=False, repr=False)
@@ -165,35 +168,15 @@ class SurrogateRoute:
         )
 
     def ask(self, state: str, options: Sequence[SurrogateOption]) -> SurrogateAnswer:
-        """One choice question; never raises."""
+        """One choice question, waited for up to the deadline; never raises."""
+        return self.start(state, options).result()
+
+    def start(self, state: str, options: Sequence[SurrogateOption]) -> SurrogateCall:
+        """Send the question now; the call is read later with :meth:`SurrogateCall.result`."""
         started = time.monotonic()
-        answer = self._call(state, options, started)
-        if answer.error is not None and answer.error not in self._warned:
-            self._warned.add(answer.error)
-            LOGGER.warning(
-                "surrogate route: %s; turns fall through to the model (logged once per kind)",
-                answer.error,
-            )
-        return answer
-
-    def _post(self, key: str, body: dict[str, Any]) -> Any:  # noqa: ANN401 — decoded JSON
-        reply = self._client.post(self.url, json=body, headers={"Authorization": f"Bearer {key}"})
-        reply.raise_for_status()
-        return reply.json()
-
-    def _call(
-        self, state: str, options: Sequence[SurrogateOption], started: float,
-    ) -> SurrogateAnswer:
-        def done(
-            *, choice: str | None = None, confidence: float | None = None,
-            cost_usd: float | None = None, error: str | None = None,
-        ) -> SurrogateAnswer:
-            elapsed = int((time.monotonic() - started) * 1000)
-            return SurrogateAnswer(choice, confidence, elapsed, cost_usd, error)
-
         key = os.environ.get(KEY_ENV, "").strip()
         if not key:
-            return done(error="no_key")
+            return SurrogateCall(self, options, started, None)
         body = {
             "model": self.model,
             "state": state,
@@ -203,37 +186,154 @@ class SurrogateRoute:
                 "criteria": {**{o.id: o.description for o in options}, NONE: _NONE_DESCRIPTION},
             }},
         }
+        return SurrogateCall(self, options, started, self._pool.submit(self._fetch, key, body))
+
+    def _fetch(self, key: str, body: dict[str, Any]) -> _Reply:
+        """On a worker: one POST; the outcome and when it came, never an exception."""
         try:
-            parsed = self._pool.submit(self._post, key, body).result(self.timeout_ms / 1000)
-        except (httpx.TimeoutException, FutureTimeout):
-            return done(error="timeout")
+            reply = self._client.post(
+                self.url, json=body, headers={"Authorization": f"Bearer {key}"},
+            )
+            reply.raise_for_status()
+            return _Reply(reply.json(), None, time.monotonic())
+        except httpx.TimeoutException:
+            return _Reply(None, "timeout", time.monotonic())
         except httpx.HTTPError:
-            return done(error="http")
+            return _Reply(None, "http", time.monotonic())
         except ValueError:
-            return done(error="bad_json")
-        return _read_answer(parsed, options, done)
+            return _Reply(None, "bad_json", time.monotonic())
+
+    def warn_once(self, error: str) -> None:
+        """Log a failure kind the first time only, so a dead endpoint is not a line per turn."""
+        if error not in self._warned:
+            self._warned.add(error)
+            LOGGER.warning(
+                "surrogate route: %s; turns fall through to the model (logged once per kind)",
+                error,
+            )
+
+
+@dataclass(frozen=True)
+class _Reply:
+    parsed: Any
+    error: str | None
+    finished: float
+
+
+class SurrogateCall:
+    """One question in flight; the deadline runs from when it was sent."""
+
+    def __init__(
+        self, route: SurrogateRoute, options: Sequence[SurrogateOption], started: float,
+        future: Future[_Reply] | None,
+    ) -> None:
+        """Wrap the worker's future; ``None`` means nothing was sent (no key)."""
+        self.route = route
+        self._options = options
+        self._started = started
+        self._future = future
+        self._answer: SurrogateAnswer | None = None
+
+    def finished(self) -> bool:
+        """Whether :meth:`result` would return without waiting."""
+        return self._future is None or self._future.done()
+
+    def result(self) -> SurrogateAnswer:
+        """The answer, waiting only for what is left of the deadline; never raises."""
+        if self._answer is None:
+            self._answer = self._resolve()
+            if self._answer.error is not None:
+                self.route.warn_once(self._answer.error)
+        return self._answer
+
+    def _resolve(self) -> SurrogateAnswer:
+        limit_ms = self.route.timeout_ms
+
+        def failed(error: str, latency_ms: int) -> SurrogateAnswer:
+            return SurrogateAnswer(None, None, latency_ms, None, error)
+
+        if self._future is None:
+            return failed("no_key", 0)
+        left_s = max(0.0, limit_ms / 1000 - (time.monotonic() - self._started))
+        try:
+            reply = self._future.result(left_s)
+        except FutureTimeout:
+            return failed("timeout", limit_ms)
+        latency_ms = int((reply.finished - self._started) * 1000)
+        if reply.error is not None:
+            return failed(reply.error, latency_ms)
+        if latency_ms > limit_ms:
+            return failed("timeout", latency_ms)  # the deadline is for the whole call
+        return _read_answer(reply.parsed, self._options, latency_ms)
+
+
+@dataclass(frozen=True)
+class SurrogateAction:
+    """What an accepted answer runs: the Tier 0 hit, or the last answer said again."""
+
+    hit: Tier0Hit | None = None
+    repeated: str | None = None
+
+
+class PendingSurrogate:
+    """A question sent for this turn and not yet acted on or dropped."""
+
+    def __init__(
+        self, call: SurrogateCall, options: Sequence[SurrogateOption], table: Tier0Table | None,
+        repeatable: str | None, trigger_uid: str,
+    ) -> None:
+        """``repeatable`` is the last voice answer, what the repeat option would say."""
+        self.trigger_uid = trigger_uid
+        self.call = call
+        self.settled = False
+        self._options = options
+        self._table = table
+        self._repeatable = repeatable
+        self._action: SurrogateAction | None = None
+        self._resolved = False
+
+    def action(self) -> SurrogateAction | None:
+        """What to run, or None for the model; waits for what is left of the deadline."""
+        if not self._resolved:
+            self._resolved = True
+            answer = self.call.result()
+            chosen = next((o for o in self._options if o.id == answer.choice), None)
+            if chosen is not None and self.call.route.accepts(answer):
+                if chosen.id == REPEAT:
+                    if self._repeatable is not None:
+                        self._action = SurrogateAction(repeated=self._repeatable)
+                else:
+                    hit = tier0_hit(chosen, self._table)
+                    if hit is not None:
+                        self._action = SurrogateAction(hit=hit)
+        return self._action
+
+    def accepted_early(self) -> bool:
+        """Without waiting: has it answered already with something that would run?"""
+        return self.call.finished() and self.action() is not None
 
 
 def _read_answer(
     parsed: Any,  # noqa: ANN401 — the decoded JSON body, any shape until checked
     options: Sequence[SurrogateOption],
-    done: Callable[..., SurrogateAnswer],
+    latency_ms: int,
 ) -> SurrogateAnswer:
     """The choice and confidence out of Jev's body, or ``bad_json``."""
+    bad = SurrogateAnswer(None, None, latency_ms, None, "bad_json")
     try:
         route = parsed["answers"]["route"]
         choice, confidence = route["choice"], route["confidence"]
         cost = (parsed.get("usage") or {}).get("cost")
     except (KeyError, TypeError, AttributeError):
-        return done(error="bad_json")
+        return bad
     if (
         choice not in {o.id for o in options} | {NONE}
         or isinstance(confidence, bool)
         or not isinstance(confidence, int | float)
     ):
-        return done(error="bad_json")
+        return bad
     paid = float(cost) if isinstance(cost, int | float) and not isinstance(cost, bool) else None
-    return done(choice=choice, confidence=float(confidence), cost_usd=paid)
+    return SurrogateAnswer(choice, float(confidence), latency_ms, paid, None)
 
 
 def _line(text: str) -> str:

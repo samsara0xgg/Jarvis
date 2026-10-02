@@ -132,6 +132,15 @@ class SyncTokenStream(Protocol):
         """Stop reading and settle the stream as cancelled, once."""
         ...
 
+    def interrupt_when(self, predicate: Callable[[], bool]) -> None:
+        """End the stream, settled as cancelled, soon after ``predicate()`` turns true.
+
+        ``predicate`` is polled on the stream's own loop, so it must not block;
+        it is how a decision made elsewhere stops a request still waiting for
+        its first event.
+        """
+        ...
+
     def close(self) -> None:
         """Release the stream and its loop; settles an unsettled stream as cancelled."""
         ...
