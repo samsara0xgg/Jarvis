@@ -220,6 +220,7 @@ from jarvis.surface import (
     voice_ducking,
     voice_live,
     voice_media,
+    voice_native_out,
     voice_pipeline,
     voice_session,
     voice_tts,
@@ -2514,6 +2515,38 @@ def _build_echo_canceller(runtime: JarvisRuntime) -> voice_aec.EchoCanceller | N
     return voice_aec.EchoCanceller(history_s=8.0 if diagnostics else 0.0)
 
 
+def _native_streaming_player(
+    *,
+    echo_canceller: voice_aec.EchoCanceller | None,
+    **kwargs: Any,  # noqa: ANN401 - NativeAudioStreamPlayer's keyword surface
+) -> voice_tts.AudioStreamPlayer | None:
+    """The native (ADR 0129) player, started; ``None`` keeps her on the Python player.
+
+    Her voice must never disappear because of this switch: an echo canceller
+    (its far end is fed from the Python callback), a helper that cannot be
+    built, or one that does not come up each log one warning and fall back.
+    """
+    if echo_canceller is not None:
+        LOGGER.warning(
+            "realtime.streaming_output.native_player ignored: echo cancellation needs the "
+            "Python player's playback tap.",
+        )
+        return None
+    try:
+        player = voice_native_out.NativeAudioStreamPlayer(generation_safe=True, **kwargs)
+        started = player.start()
+    except Exception as exc:  # noqa: BLE001 - the switch must fail safe
+        LOGGER.warning("native voice output unavailable (%r); using the Python player.", exc)
+        return None
+    if not started.started:
+        LOGGER.warning(
+            "native voice output did not start (%s); using the Python player.",
+            started.reason,
+        )
+        return None
+    return player
+
+
 def _build_tts_pipeline(  # noqa: C901 - rollout/degradation capability boundary
     runtime: JarvisRuntime,
     broadcaster: InherentBroadcaster,
@@ -2623,7 +2656,17 @@ def _build_tts_pipeline(  # noqa: C901 - rollout/degradation capability boundary
         and media_config is not None
     )
     if streaming_requested and streaming_capable:
-        player = voice_tts.AudioStreamPlayer(
+        player = (
+            _native_streaming_player(
+                echo_canceller=echo_canceller,
+                sample_rate_hz=output_sample_rate_hz,
+                ring_seconds=streaming_ring_seconds,
+                device=output_device,
+                volume=playback_volume,
+            )
+            if streaming.get("native_player") is True
+            else None
+        ) or voice_tts.AudioStreamPlayer(
             sample_rate_hz=output_sample_rate_hz,
             ring_seconds=streaming_ring_seconds,
             lazy_open=True,
@@ -2659,6 +2702,8 @@ def _build_tts_pipeline(  # noqa: C901 - rollout/degradation capability boundary
                     "uncertain in %s; this boot is downgraded to text-only.",
                     exc.phase,
                 )
+                if isinstance(player, voice_native_out.NativeAudioStreamPlayer):
+                    player.stop()
                 return None
             LOGGER.warning(
                 "realtime.streaming_output startup failed closed in %s (%r); "
@@ -2674,6 +2719,8 @@ def _build_tts_pipeline(  # noqa: C901 - rollout/degradation capability boundary
                 exc,
             )
             provider = _new_provider()
+        if isinstance(player, voice_native_out.NativeAudioStreamPlayer):
+            player.stop()  # the legacy player below owns the speaker now
     if streaming_requested and media_config is not None and not streaming_capable:
         LOGGER.warning(
             "realtime.streaming_output capability/config validation failed; "
