@@ -20,15 +20,18 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 import yaml
 
-from jarvis.shared.lang import TEXT, t
+from jarvis.shared.lang import TEXT, spoken_date, spoken_time, t
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
     from pathlib import Path
+
+    from jarvis.shared.lang import Language
 
 LOGGER = logging.getLogger(__name__)
 
@@ -276,8 +279,13 @@ def match_tier0(transcript: str, table: Tier0Table) -> Tier0Hit | None:
     return None
 
 
-def render_tier0_response(hit: Tier0Hit, payload: Mapping[str, Any]) -> str:
-    """Fill the hit's reply, in the current language, from tool payload scalars + captured args.
+def render_tier0_response(
+    hit: Tier0Hit, payload: Mapping[str, Any], lang: Language | None = None
+) -> str:
+    """Fill the hit's reply in ``lang`` (default: current) from payload scalars and captured args.
+
+    A clock payload (``iso``) is re-read in ``lang``: the tool said it in the
+    system language.
 
     An unusable template must not crash the turn. Every value is
     stringified first, so the reachable ``str.format`` failure family is
@@ -294,14 +302,19 @@ def render_tier0_response(hit: Tier0Hit, payload: Mapping[str, Any]) -> str:
     }
     variables.update(hit.tool_args)
     try:
-        return t(hit.response_template).format(**variables)
+        if lang is not None and isinstance(payload.get("iso"), str):
+            moment = datetime.fromisoformat(payload["iso"])
+            variables.update(
+                spoken_time=spoken_time(moment, lang), spoken_date=spoken_date(moment, lang)
+            )
+        return t(hit.response_template, lang=lang).format(**variables)
     except (KeyError, IndexError, ValueError, AttributeError, TypeError) as exc:
         LOGGER.warning(
             "tier0 render: template for %r is unusable: %r",
             hit.pattern_id,
             exc,
         )
-        return t("tier0.template_broken", pattern_id=hit.pattern_id)
+        return t("tier0.template_broken", lang=lang, pattern_id=hit.pattern_id)
 
 
 __all__ = [

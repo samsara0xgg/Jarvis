@@ -6,7 +6,9 @@ replies, spoken time and date, limitation and error lines, report headings,
 date markers, GPT-Live's persona and appends) is looked up here by key, in
 the language picked by ``language`` in ``settings.yaml`` (default: the
 system language; the composition root calls :func:`set_language`, and the
-desktop settings switch calls it again at run time).
+desktop settings switch calls it again at run time). A line said back to his
+words takes :func:`reply_language` instead: the ``reply_language`` setting, or
+the language of his words.
 
 Text for models is English and lives with its caller, telling the model to
 answer in the user's language. Input matchers (regexes, word lists,
@@ -24,6 +26,8 @@ from __future__ import annotations
 
 import re
 from typing import TYPE_CHECKING, Final, Literal, get_args
+
+from jarvis.shared.text import is_english
 
 if TYPE_CHECKING:
     from datetime import date, datetime
@@ -62,6 +66,19 @@ def language() -> Language:
 def text_language(text: str) -> Language:
     """``zh`` when the text holds any CJK character, else ``en``: what a voice is told to read."""
     return "zh" if _CJK.search(text) else "en"
+
+
+def reply_language(heard: object, pinned: str = "follow") -> Language | None:
+    """The language a fixed reply to ``heard`` is written in (``reply_language`` setting).
+
+    ``en`` / ``zh`` pins it; ``follow`` takes the language of his words. None
+    when there are no words, so the lookup keeps the system language.
+    """
+    if pinned in LANGUAGES:
+        return normalize(pinned)
+    if isinstance(heard, str) and heard.strip():
+        return "en" if is_english(heard) else "zh"
+    return None
 
 
 def language_name(lang: Language | None = None) -> str:

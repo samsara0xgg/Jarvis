@@ -56,6 +56,9 @@ longer tells what a running daemon uses. A microphone unplugged at boot
 leaves Jarvis deaf until it is plugged back or the choice is reset. The
 reply language is one line at the end of the conversation prompt, and an
 `en` or `zh` choice also fixes the language of the spoken form (ADR 0045)
-instead of Allen's words that turn; GPT-Live keeps its own instructions and
+instead of Allen's words that turn. The fixed lines said back to his words
+(Tier 0 answers, the consent ask and its answers, conversation-mode lines)
+take the same language, or his words' under `follow`, not the `language`
+setting; text with no words of his keeps that setting. GPT-Live keeps its own instructions and
 is not changed by it. The voice list is
 MiniMax's Mandarin system voices as of 2026-09-25, kept in code.

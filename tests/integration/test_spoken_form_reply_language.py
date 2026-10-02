@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
@@ -24,12 +25,15 @@ from jarvis.decision import (
 )
 from jarvis.decision.llm import ChatResult, LLMClient
 from jarvis.decision.stream_envelope import split_envelope
+from jarvis.decision.tier0 import load_tier0_table
 from jarvis.execution.tools import ActionLifecycle, build_default_registry
+from jarvis.shared import lang
 from jarvis.state.event_log import emit_event, open_event_log
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
-    from pathlib import Path
+
+TIER0_TABLE = Path(__file__).parents[2] / "config" / "tier0_patterns.yaml"
 
 TRANSCRIPT = "日期: 这周五，10月2日"  # noqa: RUF001 — fullwidth comma, a Chinese ask-card answer.
 LONG_ENGLISH = (
@@ -153,3 +157,62 @@ def test_short_english_answer_under_follow_is_rewritten_in_chinese(tmp_path: Pat
     """Without the setting, a Chinese transcript still gets a Chinese rewrite (ADR 0045)."""
     systems, _ = _spoken_form_system(tmp_path, "follow", answer="Friday works.")
     assert systems[1:] == [_SPOKEN_FORM_PROMPT_ZH]
+
+
+def _tier0_answer(tmp_path: Path, transcript: str, reply_language: str) -> str:
+    """One real Tier 0 turn (no model call) with the system language English."""
+    lang.set_language("en")
+
+    class _NoModel:
+        model = "stub-model"
+
+        def chat(self, **_: object) -> ChatResult:
+            msg = "Tier 0 never asks the model"
+            raise AssertionError(msg)
+
+    conn = open_event_log(tmp_path / "events.db")
+    paths = _StubRuntimePaths(
+        event_log=tmp_path / "events.db", artifacts_root=tmp_path / "artifacts"
+    )
+    paths.artifacts_root.mkdir(parents=True, exist_ok=True)
+    ctx = DecideContext(
+        conn=conn,
+        runtime_paths=cast("RuntimePathsLike", paths),
+        tool_registry=cast("ToolRegistryLike", build_default_registry()),
+        lifecycle=cast("LifecycleLike", ActionLifecycle()),
+        llm_client=cast("LLMClient", _NoModel()),
+        system_prompt="stub system prompt",
+        tier0_table=load_tier0_table(TIER0_TABLE),
+        reply_language=reply_language,
+    )
+    trigger = emit_event(
+        conn,
+        type="surface.user_intent",
+        payload={"transcript": transcript, "turn_id": "T_tier0"},
+        correlation={"turn_id": "T_tier0"},
+    )
+    result = decide(trigger, ctx)
+    assert result.response_plan is not None
+    return split_envelope(result.response_plan.text)[0] or result.response_plan.text
+
+
+@pytest.mark.parametrize(
+    ("transcript", "reply_language", "language", "opening"),
+    [
+        ("现在几点？", "follow", "zh", "现在是"),  # noqa: RUF001 — Allen's fullwidth question mark.
+        ("今天几号", "follow", "zh", "今天是"),
+        ("What time is it?", "follow", "en", "It's "),
+        ("What's the date?", "follow", "en", "Today is "),
+        ("现在几点？", "en", "en", "It's "),  # noqa: RUF001
+        ("What time is it?", "zh", "zh", "现在是"),
+    ],
+)
+def test_tier0_answer_follows_the_reply_language(
+    tmp_path: Path, transcript: str, reply_language: str, language: str, opening: str
+) -> None:
+    """System language en: a Tier 0 time or date answer is in his words' language, or the pin."""
+    said = _tier0_answer(tmp_path, transcript, reply_language)
+    assert said.startswith(opening), said
+    assert any("\u4e00" <= ch <= "\u9fff" for ch in said) is (language == "zh"), said
+    if opening in ("现在是", "It's "):  # the clock itself, not only the sentence around it
+        assert ("AM" in said or "PM" in said) is (language == "en"), said

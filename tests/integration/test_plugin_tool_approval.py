@@ -32,6 +32,7 @@ from jarvis.decision.llm import ChatResult, LLMClient, ToolCall
 from jarvis.execution.mcp_tools import McpServers
 from jarvis.execution.tool_search import build_tool_search
 from jarvis.execution.tools import ActionLifecycle, build_default_registry
+from jarvis.shared import lang
 from jarvis.shared.realtime import Wave1FeatureFlags
 from jarvis.state.event_log import emit_event, open_event_log
 
@@ -207,6 +208,27 @@ def test_searched_plugin_tool_asks_then_runs_on_yes(tmp_path: Path, servers: Mcp
         assert json.loads(_rows(ctx.conn, "action.result_observed")[-1]["tool_output"]) == {
             "sum": 42
         }
+    finally:
+        ctx.conn.close()
+
+
+@pytest.mark.parametrize(
+    ("words", "ask", "ran"),
+    [
+        (("用 add 工具算 17 加 25", "可以"), ASK, "已执行 echo add。"),
+        (("use the add tool to add 17 and 25", "yes"), "Shall I run echo add?", "Ran echo add."),
+    ],
+)
+def test_the_ask_and_its_answer_follow_the_words_not_the_system_language(
+    tmp_path: Path, servers: McpServers, words: tuple[str, str], ask: str, ran: str
+) -> None:
+    """System language en: the consent question and the line after the yes follow his words."""
+    lang.set_language("en")
+    ctx = _context(tmp_path, servers, _ScriptedClient())
+    try:
+        assert _say(ctx, words[0], "T1") == ask
+        assert _rows(ctx.conn, "confirmation.requested")[0]["template_line"] == ask
+        assert _say(ctx, words[1], "T2") == ran
     finally:
         ctx.conn.close()
 

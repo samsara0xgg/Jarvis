@@ -105,7 +105,7 @@ from jarvis.shared import (
     RawResultBundle,
     llm_io_log,
 )
-from jarvis.shared.lang import action, letter_to, t
+from jarvis.shared.lang import action, letter_to, reply_language, t
 from jarvis.shared.pricing import compute_cost_usd, load_pricing_table
 from jarvis.shared.realtime import AlreadyConsumed, Wave1FeatureFlags, stable_authorization_identity
 from jarvis.shared.realtime_trace import realtime_trace_context, record_realtime_trace
@@ -132,6 +132,7 @@ if TYPE_CHECKING:
     from jarvis.decision.stream_sentences import SemanticCandidate
     from jarvis.decision.tier0 import Tier0Hit, Tier0Table
     from jarvis.shared import AuthorizationLease, RiskLevel
+    from jarvis.shared.lang import Language
     from jarvis.state.committed_event_bus import CommittedEventBus
     from jarvis.state.conversation import PresentationRecord
     from jarvis.state.projections import PendingConfirmationSlot
@@ -739,6 +740,9 @@ class _Scratch:
     loaded_tools: set[str] = field(default_factory=set)
     # ADR 0122: Jev's question sent for this turn while the model's request is held.
     surrogate: PendingSurrogate | None = None
+    # The language this turn's fixed lines are written in: his words' (or the pinned
+    # reply language); None keeps the system language (no words, e.g. a card button).
+    lang: Language | None = None
 
 
 _STATUS_HEADER: Final[str] = "[Current state | from the program, not the user's words]"
@@ -1096,7 +1100,7 @@ def decide(trigger: Event, ctx: DecideContext) -> DecideResult:
     Returns:
         Frozen :class:`DecideResult`.
     """
-    scratch = _Scratch()
+    scratch = _Scratch(lang=reply_language(trigger.payload.get("transcript"), ctx.reply_language))
     packet = assemble_packet(trigger, ctx.conn)
     policy = effective_policy(_allowed_tool_surface(ctx.tool_registry))
 
@@ -1510,7 +1514,11 @@ def _run_tool_use_loop(
     LOGGER.warning("decide(): tool-use loop hit max_iterations=%d", ctx.max_tool_iterations)
     answer = _answer_after_tool_budget(ctx, messages, scratch)
     return _finalize_response(
-        answer, packet, ctx, scratch, model_answer=answer != t("tool_budget.exhausted"),
+        answer,
+        packet,
+        ctx,
+        scratch,
+        model_answer=answer != t("tool_budget.exhausted", lang=scratch.lang),
     )
 
 
@@ -1559,12 +1567,12 @@ def _answer_after_tool_budget(
         raise
     except Exception:
         LOGGER.exception("decide(): answer request after the tool budget failed")
-        return t("tool_budget.exhausted")
+        return t("tool_budget.exhausted", lang=scratch.lang)
     scratch.events.append(
         _emit_cost_recorded(ctx, chat_result, kind="decision", turn_id=scratch.turn_id),
     )
     _check_response_cancelled(ctx, "after provider response")
-    return (chat_result.text or "").strip() or t("tool_budget.exhausted")
+    return (chat_result.text or "").strip() or t("tool_budget.exhausted", lang=scratch.lang)
 
 
 def _turn_ending_draft(scratch: _Scratch, llm_text: str | None) -> str | None:
@@ -1616,12 +1624,12 @@ _CONFIRM_REQUIRED_TOOL_RESULT_TEXT: Final[str] = (
 # rendered from the frozen arguments only; the card shows the arguments.
 
 
-def _ask_line(tool_name: str, arguments: Mapping[str, Any]) -> str:
+def _ask_line(tool_name: str, arguments: Mapping[str, Any], lang: Language | None) -> str:
     """``confirm.ask_letter`` for a letter (to, subject, body), else ``confirm.ask_tool``."""
     to = letter_to(dict(arguments))
     if to is not None:
-        return t("confirm.ask_letter", to=to, subject=arguments["subject"])
-    return t("confirm.ask_tool", action=action(tool_name)[0])
+        return t("confirm.ask_letter", lang=lang, to=to, subject=arguments["subject"])
+    return t("confirm.ask_tool", lang=lang, action=action(tool_name, lang)[0])
 
 
 _TIER0_SPOKEN_PREVIEW_MAX_BYTES: Final[int] = 200
@@ -1746,7 +1754,7 @@ def _run_tier0_path(
         # LLM to ask/answer a confirmation, so if a misconfiguration
         # ever slipped past the boot check, refusing here (rather than
         # e.g. crashing) is still the correct, safe behavior.
-        return _finalize_response(t("tier0.gate_refused"), packet, ctx, scratch)
+        return _finalize_response(t("tier0.gate_refused", lang=scratch.lang), packet, ctx, scratch)
 
     authorized_event = emit_event(
         ctx.conn,
@@ -1799,7 +1807,7 @@ def _run_tier0_path(
             hit.tool_name,
             primary_slot.error,
         )
-        draft = t("tier0.tool_error")
+        draft = t("tier0.tool_error", lang=scratch.lang)
         return _finalize_response(draft, packet, ctx, scratch)
 
     # MUST-FIX 2 (ADR-0011 §12): `primary_slot.payload` may carry
@@ -1817,6 +1825,7 @@ def _run_tier0_path(
             primary_slot.payload,
             hit.max_spoken_bytes or _TIER0_SPOKEN_PREVIEW_MAX_BYTES,
         ),
+        scratch.lang,
     )
     # Form, not length, picks the channel (spec §18.3 voice = conclusion,
     # panel = evidence): a multi-line render is material for the card.
@@ -1981,6 +1990,7 @@ def _dispatch_one_tool_call(  # noqa: PLR0913, PLR0915 — single-pass orchestra
             canonical_target=write_target_canonical or "",
             tool_def=tool_def,
             source_event_id=gate_event.event_uid,
+            lang=scratch.lang,
         )
         scratch.events.append(confirmation_event)
         scratch.pending_confirmation_template_line = str(
@@ -2776,7 +2786,7 @@ def _run_spoken_stream(  # noqa: C901 - one request loop: calls, one continuatio
         LOGGER.exception("decide(): answer request after the tool budget failed")
         reply = _SpokenReply()
     if not (reply.answer + reply.text).strip():
-        speaker.feed(t("tool_budget.exhausted"))
+        speaker.feed(t("tool_budget.exhausted", lang=scratch.lang))
     elif not reply.answer.strip():
         speaker.feed(reply.text)
     return _finish_spoken(packet, ctx, route, speaker, scratch)
@@ -3016,12 +3026,10 @@ def _with_spoken_form(
     # (2026-09-24, "What time is it?" copied get_current_time's Chinese
     # spoken_time into a Chinese answer).
     heard = packet.trigger_event.payload.get("transcript")
-    english = is_english(heard if isinstance(heard, str) and heard else text)
     # A pinned reply language beats his words: a Chinese option tapped on an
     # ask card ran as his words, and the English answer was then spoken as a
     # Chinese rewrite by an English voice.
-    if ctx.reply_language in ("en", "zh"):
-        english = ctx.reply_language == "en"
+    english = is_english(text) if scratch.lang is None else scratch.lang == "en"
     if (
         ctx.stream_correction is not None
         or packet.trigger_event.payload.get("channel") == "gpt_live"
@@ -3295,6 +3303,7 @@ def _stage_and_request_confirmation(  # noqa: PLR0913 — one keyword per D3 sna
     canonical_target: str,
     tool_def: ToolDefinitionLike,
     source_event_id: str,
+    lang: Language | None,
 ) -> Event:
     """Freeze the action snapshot, stage its content, emit the ask.
 
@@ -3336,6 +3345,7 @@ def _stage_and_request_confirmation(  # noqa: PLR0913 — one keyword per D3 sna
             ``confirm_required`` — mirrors every other downstream event
             in this function chaining off the gate verdict that caused
             it (e.g. ``action.authorized``).
+        lang: The language the ask line is written in (``_Scratch.lang``).
 
     Returns:
         The emitted ``confirmation.requested`` :class:`Event`.
@@ -3360,7 +3370,7 @@ def _stage_and_request_confirmation(  # noqa: PLR0913 — one keyword per D3 sna
             payload={
                 "confirmation_id": confirmation_id,
                 "action_snapshot": generic_snapshot,
-                "template_line": _ask_line(action_request.tool_name, arguments),
+                "template_line": _ask_line(action_request.tool_name, arguments, lang),
                 "expires_at_ms": expires_at_ms,
             },
             source_event_id=source_event_id,
@@ -3394,6 +3404,7 @@ def _stage_and_request_confirmation(  # noqa: PLR0913 — one keyword per D3 sna
 
     template_line = t(
         "confirm.ask_write",
+        lang=lang,
         tool_name=action_request.tool_name,
         canonical_target=canonical_target,
         mode=mode_str,
@@ -3521,7 +3532,7 @@ def _handle_card_decision(  # noqa: PLR0913 — the answer path's inputs plus th
         decision.get("confirmation_id") != slot.confirmation_id
     ):
         scratch.confirmation_answered_this_turn = True
-        return _finalize_response(t("confirm.stale"), packet, ctx, scratch)
+        return _finalize_response(t("confirm.stale", lang=scratch.lang), packet, ctx, scratch)
     if decision.get("decision") != "accept":
         return _handle_confirmation_rejected(slot, _CARD_DISMISS, "", packet, ctx, scratch)
     edits = decision.get("edits")
@@ -3564,7 +3575,7 @@ def _revise_confirmation(
         payload={
             "confirmation_id": _new_confirmation_id(),
             "action_snapshot": {**slot.snapshot, "args_meta": arguments},
-            "template_line": _ask_line(tool_name, arguments),
+            "template_line": _ask_line(tool_name, arguments, scratch.lang),
             "expires_at_ms": _now_epoch_ms() + ctx.confirmation_ttl_ms,
         },
         source_event_id=_latest_event_uid_of_type(ctx.conn, event_type="confirmation.requested"),
@@ -3598,11 +3609,15 @@ def _handle_confirmation_rejected(  # noqa: PLR0913 — one keyword per D6 answe
         rejected_event = _record_confirmation_answer(slot, grammar_hit, transcript, ctx, scratch)
     except ConfirmationRevalidationError:
         scratch.confirmation_answered_this_turn = True
-        return _finalize_response(t("confirm.stale"), packet, ctx, scratch)
+        return _finalize_response(t("confirm.stale", lang=scratch.lang), packet, ctx, scratch)
     scratch.events.append(rejected_event)
     scratch.confirmation_answered_this_turn = True
 
-    draft = t("confirm.rejected", action=action(str(slot.snapshot.get("tool_name", "")))[0])
+    draft = t(
+        "confirm.rejected",
+        lang=scratch.lang,
+        action=action(str(slot.snapshot.get("tool_name", "")), scratch.lang)[0],
+    )
     return _finalize_response(draft, packet, ctx, scratch)
 
 
@@ -3648,7 +3663,7 @@ def _handle_confirmation_accepted(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR
         accepted_event = _record_confirmation_answer(slot, grammar_hit, transcript, ctx, scratch)
     except ConfirmationRevalidationError:
         scratch.confirmation_answered_this_turn = True
-        return _finalize_response(t("confirm.stale"), packet, ctx, scratch)
+        return _finalize_response(t("confirm.stale", lang=scratch.lang), packet, ctx, scratch)
     scratch.events.append(accepted_event)
     scratch.confirmation_answered_this_turn = True
 
@@ -3674,10 +3689,12 @@ def _handle_confirmation_accepted(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR
                 content_text = content_bytes_data.decode("utf-8")
 
     if staged and content_text is None:
-        return _finalize_response(t("confirm.content_mismatch"), packet, ctx, scratch)
+        return _finalize_response(
+            t("confirm.content_mismatch", lang=scratch.lang), packet, ctx, scratch
+        )
     tool_def = _find_tool_def(ctx.tool_registry, tool_name)
     if tool_def is None:
-        return _finalize_response(t("confirm.tool_gone"), packet, ctx, scratch)
+        return _finalize_response(t("confirm.tool_gone", lang=scratch.lang), packet, ctx, scratch)
 
     target_entity_ref_raw = snapshot.get("target_entity_ref")
     target_entity_ref = target_entity_ref_raw if isinstance(target_entity_ref_raw, str) else None
@@ -3781,9 +3798,11 @@ def _handle_confirmation_accepted(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR
                 correlation=_action_correlation(action_request),
             )
         except ConfirmationRevalidationError:
-            return _finalize_response(t("confirm.stale"), packet, ctx, scratch)
+            return _finalize_response(t("confirm.stale", lang=scratch.lang), packet, ctx, scratch)
         if isinstance(authorization, AlreadyConsumed):
-            return _finalize_response(t("confirm.accepted"), packet, ctx, scratch)
+            return _finalize_response(
+                t("confirm.accepted", lang=scratch.lang), packet, ctx, scratch
+            )
         gate_event = authorization.gate_event
     else:
         gate_event = emit_event(
@@ -3796,7 +3815,7 @@ def _handle_confirmation_accepted(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR
     scratch.events.append(gate_event)
 
     if gate.outcome != "pass":
-        draft = t("confirm.reproposal_refused", outcome=gate.outcome)
+        draft = t("confirm.reproposal_refused", lang=scratch.lang, outcome=gate.outcome)
         return _finalize_response(draft, packet, ctx, scratch)
 
     # --- 6. action.authorized + lifecycle, dispatch, interpret -------------
@@ -3826,7 +3845,9 @@ def _handle_confirmation_accepted(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR
             ctx.lifecycle,
         )
     except AuthorizedDispatchAlreadyStarted:
-        return _finalize_response(t("confirm.accepted"), packet, ctx, scratch)
+        return _finalize_response(
+            t("confirm.accepted", lang=scratch.lang), packet, ctx, scratch
+        )
     record_realtime_trace(
         "action_dispatch_returned",
         turn_id=scratch.turn_id,
@@ -3844,16 +3865,17 @@ def _handle_confirmation_accepted(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR
     primary_result_slot = bundle.slots[0]
 
     if primary_result_slot.error is not None:
-        draft = t("confirm.dispatch_error", error=primary_result_slot.error)
+        draft = t("confirm.dispatch_error", lang=scratch.lang, error=primary_result_slot.error)
         return _finalize_response(draft, packet, ctx, scratch)
 
     if not staged:
-        draft = t("confirm.tool_ran", done=action(tool_name)[1])
+        draft = t("confirm.tool_ran", lang=scratch.lang, done=action(tool_name, scratch.lang)[1])
         return _finalize_response(draft, packet, ctx, scratch)
     path_written = primary_result_slot.payload.get("path", "?")
     bytes_written = primary_result_slot.payload.get("bytes_written", "?")
     draft = t(
         "confirm.write_ran",
+        lang=scratch.lang,
         path=path_written,
         bytes_written=bytes_written,
     )

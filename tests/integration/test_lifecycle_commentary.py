@@ -2387,3 +2387,15 @@ def test_words_that_steer_the_mode_get_one_fixed_line_and_no_turn(
     assert _count(runtime.conn, "response.completed") == 1
     assert _count(runtime.conn, "utterance.received") == 0
     assert fold_conversation_history(iter_events(runtime.conn)).turns == ()
+
+
+def test_a_pinned_reply_language_picks_the_conversation_line_over_his_words(
+    tmp_path: Path,
+) -> None:
+    """``reply_language: en`` answers a Chinese 「等我一下」 in English."""
+    runtime = _make_runtime(tmp_path, commentary=False)
+    runtime = replace(runtime, config={**runtime.config, "reply_language": "en"})
+
+    inherent_loop._say_conversation_line(runtime, "T-words", "wait", "等我一下。")  # noqa: SLF001
+
+    assert _only_phrase(runtime.conn) in lang.variants("conversation.wait", "en")

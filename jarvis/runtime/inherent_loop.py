@@ -164,7 +164,6 @@ from jarvis.shared.realtime import (
     new_response_id,
 )
 from jarvis.shared.realtime_trace import record_realtime_trace
-from jarvis.shared.text import is_english
 from jarvis.state.event_log import (
     emit_event,
     get_event,
@@ -2400,7 +2399,8 @@ def _say_conversation_line(runtime: JarvisRuntime, turn_id: str, reason: str, te
                 payload={"turn_id": turn_id, "reason": reason, "transcript": text},
                 committed_event_bus=runtime.committed_event_bus,
             )
-            phrases = lang.variants(f"conversation.{reason}", "en" if is_english(text) else "zh")
+            said_in = lang.reply_language(text, str(runtime.config.get("reply_language", "follow")))
+            phrases = lang.variants(f"conversation.{reason}", said_in)
             plan = pre_emit_gate(secrets.choice(phrases))
             response_id = new_response_id()
             snapshot = factory.snapshot(None)
