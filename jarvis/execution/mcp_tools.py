@@ -54,7 +54,7 @@ from jarvis.execution.tools import Tool, ToolContext, ToolError
 from jarvis.shared import CallerPrincipal
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Coroutine
+    from collections.abc import Callable, Collection, Coroutine
     from pathlib import Path
 
     from mcp.client._transport import Transport
@@ -240,13 +240,16 @@ class McpServers:
         token_dir: Path | None = None,
         callback_port: int = DEFAULT_OAUTH_CALLBACK_PORT,
         open_url: Callable[[str], object] | None = None,
+        always_loaded: Collection[str] = (),
     ) -> None:
         """Start the loop thread; nothing connects until :meth:`connect`.
 
         ``token_dir`` holds one OAuth token file per server. ``open_url`` is the
         login command's browser; without it an OAuth server is only reused,
-        never logged in.
+        never logged in. ``always_loaded`` names tools (``mcp__<server>__<tool>``)
+        that stay on the model's menu without a ``tool_search`` (ADR 0127).
         """
+        self._always_loaded = frozenset(always_loaded)
         self._timeout_s = timeout_s
         self._token_dir = token_dir
         self._callback_port = callback_port
@@ -426,8 +429,9 @@ class McpServers:
         def call(args: Mapping[str, Any], _ctx: ToolContext) -> dict[str, Any]:
             return run(args)
 
+        name = mcp_tool_name(server, listed.name)
         return Tool(
-            name=mcp_tool_name(server, listed.name),
+            name=name,
             description=description,
             input_schema=schema,
             handler=call,
@@ -435,7 +439,7 @@ class McpServers:
             risk_level="L3" if ask else ("L0" if read_only else "L1"),
             read_only=read_only,
             requires_confirmation=ask,
-            deferred=True,
+            deferred=name not in self._always_loaded,
         )
 
     def _call(

@@ -125,6 +125,19 @@ def test_listed_tools_dispatch_through_the_real_log(tmp_path: Path, servers: Mcp
         fx.close()
 
 
+def test_always_loaded_names_stay_off_tool_search() -> None:
+    """ADR 0127: only the named tool leaves the deferred set; the rest wait behind tool_search."""
+    mcp = McpServers(timeout_s=20, always_loaded=["mcp__echo__echo", "mcp__nobody__nothing"])
+    try:
+        deferred = {t.name: t.deferred for t in mcp.connect(ECHO)}
+    finally:
+        mcp.stop()
+    assert deferred == {
+        "mcp__echo__echo": False, "mcp__echo__add": True,
+        "mcp__echo__send": True, "mcp__echo__boom": True,
+    }
+
+
 def test_codex_approval_modes_move_the_risk(servers: McpServers) -> None:
     """Server default and per-tool override, Codex's keys; an unknown mode keeps the server off."""
     spec = ECHO["echo"]

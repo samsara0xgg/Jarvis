@@ -356,6 +356,15 @@ tools:
     # OAuth 登录时浏览器跳回本机的端口。它写进了向对方注册的 redirect
     # URI，改了就要对该 server 重新 mcp-login。
     oauth_callback_port: 8789
+    # ADR 0127 — 这些工具（mcp__<server>__<tool>）不排在 tool_search 后面，
+    # 一开始就在模型的菜单上：日程、待办、邮件的读取，省掉搜索和 list-accounts
+    # 这类探路调用。名字对不上任何已连接的工具就什么也不做。
+    always_loaded:
+      - mcp__microsoft__get-calendar-view
+      - mcp__microsoft__list-todo-task-lists
+      - mcp__microsoft__list-todo-tasks
+      - mcp__gmail__gmail_search
+      - mcp__gmail__gmail_get
     servers: {}
     # 例：
     # servers:
