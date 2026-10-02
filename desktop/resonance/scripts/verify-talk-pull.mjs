@@ -38,6 +38,15 @@ check('brief: a written part that is only sentences gives way to what she says, 
 const timed = [you(1, 'today'), her(1, '<voice>Three meetings.</voice><document>Standup at 10:00, review after lunch.</document>')];
 check('brief: a written part with a clock time is worth reading and shows alone', texts(shownOf(timed, 'brief', 0).items) === 'Standup at 10:00, review after lunch.');
 check('all: both parts show as before', shownOf(prose, 'all', 0).items.at(-1).written.startsWith('Your calendar'));
+// ADR 0114: the written part of a structured answer is what her spoken line leaves out, so both show.
+const apart = [you(1, 'today'), her(1, 'Three meetings, the times are on screen.', { written: '- 10:00 standup\n- 14:30 review' })];
+for (const level of ['brief', 'all']) {
+  const items = shownOf(apart, level, 0).items.filter(it => it.who === 'her');
+  check(`${level}: a structured answer shows her spoken line and the written part with it`, items.length === 1 && items[0].spoken === 'Three meetings, the times are on screen.' && items[0].written.startsWith('- 10:00'));
+}
+check('a structured answer whose written part is only sentences still shows both at brief', shownOf([you(1, 'a'), her(1, 'It is on screen.', { written: 'The longer answer, in plain sentences.' })], 'brief', 0).items.at(-1).spoken === 'It is on screen.');
+check('none: a structured answer shows nothing', shownOf(apart, 'none', 0).items.length === 0);
+check('without the signal a <document> still shows alone at brief, as before', texts(shownOf(timed, 'brief', 0).items) === 'Standup at 10:00, review after lunch.');
 check('a session that is empty shows nothing', shownOf([], 'all', 0).items.length === 0 && shownOf([], 'all', 0).key === '');
 check('a failed answer is part of its exchange', shownOf([you(1, 'a'), her(1, 'no', { failed: true })], 'brief', 0).items.length === 1);
 

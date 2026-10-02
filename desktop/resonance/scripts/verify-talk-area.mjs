@@ -301,6 +301,33 @@ try {
     await s.context.close();
   }
 
+  // ---- a structured answer (ADR 0114): her spoken line, lit as she says it, and the written part under it, at the middle level ----
+  {
+    const s = await scene({ captions: 'brief' });
+    const { page, emit, shot, area } = s;
+    await page.waitForTimeout(600);
+    const line = '今天有三件事，时间我写在屏幕上了。', details = '- 10:00 和 Anna 的产品会 · 3F 会议室\n- 14:30 评审会议 · https://zoom.us/j/123\n- 17:00 健身课';
+    await emit('voice', { phase: 'listening', turn_id: 'sa1' }); await emit('voice', { phase: 'accepted', turn_id: 'sa1', text: '我今天有什么安排' });
+    await emit('open', { turn_id: 'sa1', response_id: 'r-sa1' }); await emit('append', { turn_id: 'sa1', token: line });
+    await emit('done', { turn_id: 'sa1', fadeMs: 100, written: details });
+    await emit('voice', { phase: 'playing', turn_id: 'sa1', played: 5, ahead: 12, held: false });
+    await page.waitForSelector('.talk [data-written]', { timeout: 6000 }); await page.waitForTimeout(1500);
+    let a = await area();
+    console.log(JSON.stringify({ kind: a.kind, her: a.her, hers: a.hers, rows: a.rows }));
+    check('a structured answer at the middle level: the area opens with her spoken line and the written part under it', a.kind === 'area' && a.her === line && a.hers === 1 && a.rows === 3);
+    check('her spoken line is lit with her voice, the written part is not', a.lit > 0 && a.lit < [...line].length && await page.evaluate(() => !document.querySelector('.talk [data-written] i.on')));
+    const order = await page.evaluate(() => { const t = document.querySelector('.talk'), s = t.querySelector('.tk-s').getBoundingClientRect(), w = t.querySelector('[data-written]').getBoundingClientRect(); return { below: w.top >= s.bottom - 1, text: t.querySelector('[data-written]').textContent }; });
+    check('the written part sits below the spoken line and holds the details', order.below && order.text.includes('Anna') && order.text.includes('zoom.us'));
+    await shot('13b-structured-brief');
+    await emit('voice', { phase: 'spoken', turn_id: 'sa1' });
+    // The same answer without the signal is the old one: a <document> shows alone.
+    await s.turn('sa2', '再说一遍', written); await page.waitForTimeout(2000);
+    a = await area();
+    check('an answer with a <document> and no signal still shows the document alone', a.kind === 'area' && a.hers === 0 && a.rows === 3);
+    check('no page errors (structured)', s.errors.length === 0);
+    await s.context.close();
+  }
+
   // ---- the written part writes itself in on a clock of its own, quickly: not tied to her voice, and the screen stays on what she says ----
   const para = '下午三点之后的三场会议都已经往后推了一个小时，对应的日历邀请也已经更新。我给王老师发了一条消息，说明了改期的原因，并且问他明天上午是否方便再约一次。周五的评审会议和你的健身课时间冲突了，我没有擅自改动，等你决定。';
   const tail = '### 今天\n- 10:00 和 Anna 的产品会 · 3F 会议室\n- 14:30 评审会议\n- 17:00 健身课\n\n**提醒**：明早九点交报告。';

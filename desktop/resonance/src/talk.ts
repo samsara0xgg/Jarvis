@@ -50,7 +50,9 @@ export function itemsOf(lines: Line[], captions: Captions, before?: Item): Item[
     else if (l.who === 'you') { if (captions === 'all') out.push({ ...base, who: 'you', spoken: l.text, written: '', failed: false }); }
     else {
       const { spoken, written } = split(l.text);
-      if (captions === 'all' && (spoken || written)) out.push({ ...base, who: 'her', spoken, written, failed: false });
+      // ADR 0114: a written part that adds to what she says (not the whole answer) shows under it, at the middle level too.
+      if (l.written && captions !== 'none') out.push({ ...base, who: 'her', spoken, written: l.written, failed: false });
+      else if (captions === 'all' && (spoken || written)) out.push({ ...base, who: 'her', spoken, written, failed: false });
       // The middle level: a written part worth reading shows alone; one that is only sentences gives way to what she says, lit as she says it.
       else if (captions === 'brief' && written && spoken && !worthReading(written)) out.push({ ...base, who: 'her', spoken, written: '', failed: false });
       else if (captions === 'brief' && written) out.push({ ...base, who: 'her', spoken: '', voiced: !!spoken, written, failed: false });

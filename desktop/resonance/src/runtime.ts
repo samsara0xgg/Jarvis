@@ -62,7 +62,7 @@ export function connect(port: string, dispatch: (a: Action) => void): Runtime {
       const turnId = String(p.turn_id ?? '');
       if (msg.op === 'open') dispatch({ type: 'open', turnId, responseId: typeof p.response_id === 'string' ? p.response_id : null, at: Date.now() });
       else if (msg.op === 'append') dispatch({ type: 'append', token: String(p.token ?? ''), at: Date.now() });
-      else if (msg.op === 'done') setTimeout(() => dispatch({ type: 'settle', turnId }), Number(p.fadeMs ?? 5000));
+      else if (msg.op === 'done') { if (typeof p.written === 'string' && p.written) dispatch({ type: 'written', turnId, text: p.written }); setTimeout(() => dispatch({ type: 'settle', turnId }), Number(p.fadeMs ?? 5000)); }
       else if (msg.op === 'failed' || msg.op === 'cancelled') {
         dispatch({ type: 'failed', turnId, cancelled: msg.op === 'cancelled', message: typeof p.message === 'string' ? p.message : null, at: Date.now() });
         if (msg.op === 'failed') setTimeout(() => dispatch({ type: 'settle', turnId }), 8000); // long enough to read why
