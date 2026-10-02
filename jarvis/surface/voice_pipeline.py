@@ -172,6 +172,7 @@ class VoicePipeline:
         utterance_id: str | None = None,
         endpoint_reason: str | None = None,
         before_emit: Callable[[str], None] | None = None,
+        wake_lead: bool = True,
     ) -> Event:
         """Execute one voice turn end-to-end. Returns the emitted Event row.
 
@@ -207,6 +208,9 @@ class VoicePipeline:
                 previous sentence there, so the new turn can never see it
                 (ADR 0053), and raises :class:`VoicePipelineAbsorbedError`
                 for words spoken over Jarvis that are no turn.
+            wake_lead: The wake word opened this turn, or it was said over
+                her, so a wake phrase is a lead to cut; ``False`` keeps a
+                bare "Hey Jarvis" as a greeting.
 
         Raises:
             VoiceInputBusyError: VOICE_INPUT_LOCK contention (PTT path: 503).
@@ -257,7 +261,14 @@ class VoicePipeline:
                 msg = f"empty utterance for turn_id={turn_id}"
                 raise VoicePipelineEmptyError(msg, heard=tr.text)
             said = voice_asr.strip_wake_lead(tr.text) if channel == "inherent_wake" else tr.text
-            if channel == "inherent_wake" and (
+            if channel == "inherent_wake" and not wake_lead and (
+                voice_asr.is_wake_only(tr.text) or not said.strip()
+            ):
+                # A turn he opened himself (a tap, conversation mode): a bare
+                # "Hey Jarvis" is a greeting to answer, not a wake to wait past.
+                # A lead before more words is still cut, so Tier 0 matches.
+                said = tr.text
+            elif channel == "inherent_wake" and (
                 voice_asr.is_wake_only(tr.text) or not said.strip()
             ):
                 # Not a question: the wake owner keeps listening for the next

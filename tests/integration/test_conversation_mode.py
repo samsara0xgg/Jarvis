@@ -125,6 +125,8 @@ def test_wave_mode_commits_speech_with_no_wake_hit(monkeypatch: pytest.MonkeyPat
     _wait_until(lambda: len(rig.pipeline.calls) == 2)
     assert rig.session.metrics().wake_detections == 0
     assert rig.pipeline.calls[0]["utterance_id"] != rig.pipeline.calls[1]["utterance_id"]
+    # No wake word opened them, so a "Hey Jarvis" in them is a greeting, kept.
+    assert [call["wake_lead"] for call in rig.pipeline.calls] == [False, False]
     assert not rig.stopped.is_set()
     rig.close()
 

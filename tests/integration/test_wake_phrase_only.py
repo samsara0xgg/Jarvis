@@ -131,6 +131,27 @@ def test_a_wake_phrase_said_with_the_request_is_cut_off_the_front(
         assert hit.pattern_id == "time_now"
 
 
+@pytest.mark.parametrize(
+    ("text", "committed"),
+    [
+        # Live 2026-10-02: Allen opened her with a tap, then greeted her.
+        ("Hey, Jarvis.", "Hey, Jarvis."),
+        ("嘿，Jarvis。", "嘿，Jarvis。"),
+        # A lead before a request is still cut, so Tier 0 still anchors.
+        ("Hey, Jarvis, 现在几点了？", "现在几点了？"),
+    ],
+)
+def test_a_greeting_in_a_turn_he_opened_himself_is_kept(
+    tmp_path: Path, text: str, committed: str,
+) -> None:
+    """No wake word opened the turn, so a bare "Hey Jarvis" is a turn to answer."""
+    _pipeline(tmp_path, text).run_turn(
+        audio_bytes=_AUDIO, turn_id="T-greet", channel="inherent_wake", language="zh-CN",
+        wake_lead=False,
+    )
+    assert _transcripts(tmp_path) == [committed]
+
+
 class _WakeOnlyFirst(_RecordingPipeline):
     """The first commit is a bare wake phrase; later ones are questions."""
 

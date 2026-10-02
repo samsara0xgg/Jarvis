@@ -162,6 +162,8 @@ class CapturedUtterance:
     end_sample_cursor: int
     endpoint_reason: str
     audio_bytes: bytes
+    # Armed by a wake-word hit, not by conversation mode's always-on arm.
+    woken: bool = True
 
 
 @dataclass(frozen=True)
@@ -281,6 +283,7 @@ class _PipelinePort(Protocol):
         utterance_id: str | None = ...,
         endpoint_reason: str | None = ...,
         before_emit: Callable[[str], None] | None = ...,
+        wake_lead: bool = ...,
     ) -> Event:
         """Run final ASR and commit ``utterance.received``."""
         ...
@@ -507,6 +510,7 @@ class UtteranceAssembler:
         self._utterance_id = ""
         self._turn_id = ""
         self._wake_cursor = 0
+        self._woken = True
         self._armed_deadline_cursor = 0
         self._armed_deadline_monotonic_ns = 0
         self._audio_frames: list[bytes] = []
@@ -610,6 +614,7 @@ class UtteranceAssembler:
         no ``armed_no_speech_timeout_s`` deadline, until the owner resets it.
         """
         self._state = _AssemblerState.ARMED
+        self._woken = expires
         self._stream_epoch = detection.stream_epoch
         self._expected_cursor = detection.input_sample_cursor
         self._utterance_id = "U" + secrets.token_hex(8)
@@ -808,6 +813,7 @@ class UtteranceAssembler:
             end_sample_cursor=end_sample_cursor,
             endpoint_reason=endpoint_reason,
             audio_bytes=b"".join(frames),
+            woken=self._woken,
         )
         self.reset_to_idle()
         self._set_phase(EndpointPhase.FINALIZING_ASR, utterance.utterance_id)
@@ -1472,6 +1478,11 @@ class DuplexVoiceSession:
             self._barges.pop(turn_id, None)
             self._set_yield_locked()
 
+    def _over_her(self, turn_id: str) -> bool:
+        """Said while she was speaking: her name alone stops her and he goes on."""
+        with self._barge_lock:
+            return turn_id in self._barges
+
     def _end_barge_in(self, turn_id: str) -> None:
         """Its words are lost before a verdict: held, she stops; only lowered, she goes on."""
         with self._barge_lock:
@@ -1765,6 +1776,7 @@ class DuplexVoiceSession:
                         utterance_id=utterance.utterance_id,
                         endpoint_reason=utterance.endpoint_reason,
                         before_emit=functools.partial(self._judge_words, utterance.turn_id),
+                        wake_lead=utterance.woken or self._over_her(utterance.turn_id),
                     )
                 self._assembler.mark_committed(utterance.utterance_id)
             except voice_pipeline.VoicePipelineAbsorbedError as absorbed:
