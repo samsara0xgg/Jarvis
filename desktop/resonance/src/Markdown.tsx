@@ -1,4 +1,4 @@
-import { Fragment, type ReactNode } from 'react';
+import { Fragment, useEffect, useState, type ReactNode } from 'react';
 
 // The markdown Jarvis's answers actually use (memory.db, 2026-09-25): headings, bold, code ticks, lists (some nested), tables; links since they began to carry sources.
 // Built as React elements, never innerHTML, so nothing in an answer can inject markup into the window.
@@ -30,9 +30,21 @@ const nest = (items: Item[]): ReactNode => {
   }
   return items[0].start === null ? <ul>{out}</ul> : <ol start={items[0].start}>{out}</ol>;
 };
+// A column of figures (¥1899, 8h, 30%) is set right-aligned.
+const NUM = /^[¥$€£]?[\d.,]+\s*[%a-zA-Z\u4e00-\u9fff]{0,3}$/;
+// The code block's copy button: the shell's clipboard, the page's own when the shell has none; the label says so for a moment.
+function Copy({ text, label, done }: { text: string; label: string; done: string }) {
+  const [ok, setOk] = useState(false);
+  useEffect(() => { if (!ok) return; const id = setTimeout(() => setOk(false), 1500); return () => clearTimeout(id); }, [ok]);
+  const copy = async () => {
+    try { if (!await window.jarvis?.copy?.(text).catch(() => false)) await navigator.clipboard.writeText(text); setOk(true); } catch { /* not copied: the label stays */ }
+  };
+  return <button type="button" className={`cp${ok ? ' done' : ''}`} onClick={() => void copy()}>{ok ? done : label}</button>;
+}
 const cells = (line: string) => line.trim().replace(/^\||\|$/g, '').split('|').map(c => c.trim());
 
-export function Markdown({ text, spell }: { text: string; spell?: (text: string) => ReactNode }) {
+// `copy`: the talk area's code blocks carry a copy button with these two labels; the Dashboard's do not.
+export function Markdown({ text, spell, copy }: { text: string; spell?: (text: string) => ReactNode; copy?: { label: string; done: string } }) {
   const lines = text.split('\n'), blocks: ReactNode[] = [];
   for (let i = 0; i < lines.length;) {
     const line = lines[i], key = blocks.length;
@@ -40,16 +52,18 @@ export function Markdown({ text, spell }: { text: string; spell?: (text: string)
     if (line.trimStart().startsWith('```')) {
       const body: string[] = [];
       for (i++; i < lines.length && !lines[i].trimStart().startsWith('```'); i++) body.push(lines[i]);
-      i++; blocks.push(<pre key={key}>{body.join('\n')}</pre>);
+      i++;
+      blocks.push(copy ? <div className="code" key={key}><pre><code>{body.join('\n')}</code></pre><Copy text={body.join('\n')} label={copy.label} done={copy.done}/></div> : <pre key={key}>{body.join('\n')}</pre>);
     } else if (/^#{1,6}\s/.test(line)) {
       blocks.push(<h5 key={key}>{inline(line.replace(/^#+\s+/, ''))}</h5>); i++;
     } else if (line.trimStart().startsWith('|')) {
       const rows: string[][] = [];
       for (; i < lines.length && lines[i].trimStart().startsWith('|'); i++) if (!/^[\s|:-]+$/.test(lines[i])) rows.push(cells(lines[i]));
       const [head = [], ...body] = rows;
+      const num = head.map((_, n) => body.length > 0 && body.every(r => NUM.test(r[n] ?? '')) ? 'num' : undefined);
       blocks.push(<div className="md-table" key={key}><table>
-        <thead><tr>{head.map((c, n) => <th key={n}>{inline(c)}</th>)}</tr></thead>
-        <tbody>{body.map((r, m) => <tr key={m}>{r.map((c, n) => <td key={n}>{inline(c)}</td>)}</tr>)}</tbody>
+        <thead><tr>{head.map((c, n) => <th key={n} className={num[n]}>{inline(c)}</th>)}</tr></thead>
+        <tbody>{body.map((r, m) => <tr key={m}>{r.map((c, n) => <td key={n} className={num[n]}>{inline(c)}</td>)}</tr>)}</tbody>
       </table></div>);
     } else if (ITEM.test(line)) {
       const items: Item[] = [];

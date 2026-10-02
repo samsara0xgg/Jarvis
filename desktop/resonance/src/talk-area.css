@@ -72,10 +72,22 @@
 .tk-w .md pre { margin:0; padding:8px 10px; border-radius:var(--radius-control); font:var(--text-mono)/1.5 ui-monospace,Menlo,monospace; background:rgb(255 255 255 / .06); white-space:pre; overflow-x:auto; scrollbar-width:thin; }
 .tk-w .md ul,.tk-w .md ol { margin:0; padding-left:18px; display:flex; flex-direction:column; gap:3px; }
 .tk-w .md li::marker { color:rgb(var(--glow)); }
-.tk-w .md-table { overflow-x:auto; scrollbar-width:thin; }
-.tk-w .md table { border-collapse:collapse; font-size:var(--text-detail); line-height:1.45; }
+/* a table sits on the same card as the list rows: full width, its text in line with the card's 12 px, header small and dim, figures right-aligned */
+.tk-w .md-table { overflow-x:auto; scrollbar-width:thin; padding:2px 0; border-radius:14px; background:rgb(255 255 255 / .045); box-shadow:inset 0 0 0 .5px rgb(255 255 255 / .07); }
+.tk-w .md table { width:100%; border-collapse:collapse; font-size:var(--text-detail); line-height:1.45; }
 .tk-w .md th,.tk-w .md td { padding:5px 8px; border-bottom:.5px solid rgb(255 255 255 / .1); text-align:left; vertical-align:top; }
-.tk-w .md th { font-weight:600; color:rgb(235 238 245 / .6); white-space:nowrap; }
+.tk-w .md th { font-size:11.5px; font-weight:400; color:rgb(235 238 245 / .5); white-space:nowrap; }
+.tk-w .md th:first-child,.tk-w .md td:first-child { padding-left:12px; }
+.tk-w .md th:last-child,.tk-w .md td:last-child { padding-right:12px; }
+.tk-w .md .num { text-align:right; font-variant-numeric:tabular-nums; }
+.tk-w .md tr:last-child td { border-bottom:0; }
+/* a code block carries its copy button top-right; the command keeps clear of it, and inside a block the code is plain, not the inline chip */
+.tk-w .md .code { position:relative; }
+.tk-w .md .code pre { padding-right:64px; }
+.tk-w .md pre code { padding:0; background:none; border-radius:0; }
+.tk-w .cp { position:absolute; top:5px; right:6px; height:22px; padding:0 8px; border-radius:6px; font-size:11px; line-height:22px; white-space:nowrap; color:rgb(235 238 245 / .8); background:rgb(255 255 255 / .08); transition:background .14s ease; }
+.tk-w .cp:hover { background:rgb(255 255 255 / .14); }
+.tk-w .cp.done { color:rgb(var(--glow)); }
 .tk-w > * + * { margin-top:8px; }
 .talk .doc { border-radius:14px; background:rgb(255 255 255 / .045); box-shadow:inset 0 0 0 .5px rgb(255 255 255 / .07); }
 .talk .doc > div { position:relative; display:flex; align-items:baseline; gap:12px; padding:9px 12px; font-size:13.5px; line-height:18px; color:#eef0fb; white-space:pre-line; overflow-wrap:anywhere; }

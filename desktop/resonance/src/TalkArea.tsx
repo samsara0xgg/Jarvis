@@ -58,10 +58,10 @@ const words = (body: string) => {
   const url = /^https?:\/\/\S+$/.test(rest[0]?.trim() ?? '') && !/\]\(|https?:\/\//.test(head) ? rest.shift()!.trim() : '';
   return <>{url ? <Lk url={url}>{inline(head)}</Lk> : inline(head)}{rest.length > 0 && <span className="mt"> · {inline(rest.join(' · '))}</span>}</>;
 };
-function Written({ text, lit }: { text: string; lit: boolean }) {
+function Written({ text, lit, lang }: { text: string; lit: boolean; lang: Lang }) {
   const out: ReactNode[] = [];
   let md: string[] = [], rows: Entry[] = [];
-  const flushMd = () => { if (md.join('').trim()) out.push(<Markdown key={out.length} text={md.join('\n')} spell={lit ? spell : undefined}/>); md = []; };
+  const flushMd = () => { if (md.join('').trim()) out.push(<Markdown key={out.length} text={md.join('\n')} spell={lit ? spell : undefined} copy={{ label: tr(lang, ['Copy', '复制']), done: tr(lang, ['Copied ✓', '已复制 ✓']) }}/>); md = []; };
   const flushRows = () => {
     if (rows.length) out.push(<div className="doc" key={out.length}>{rows.map((row, i) => <div key={i}>
       {row.lead && (row.n ? <span className="n">{row.lead}</span> : <time>{row.lead}</time>)}
@@ -81,7 +81,7 @@ function Written({ text, lit }: { text: string; lit: boolean }) {
   return <>{out}</>;
 }
 
-function Her({ it, reg, think, ready, silent }: { it: Item; reg: Registry; think: string; ready: boolean; silent: boolean }) {
+function Her({ it, reg, think, ready, silent, lang }: { it: Item; reg: Registry; think: string; ready: boolean; silent: boolean; lang: Lang }) {
   // The written part's plain paragraphs write themselves in at their own pace once it shows (lists, headings and code come whole). Decided
   // when it first shows: with no voice, or her voice already done, or reduced motion, it is there whole and nothing animates.
   const w = useRef<HTMLDivElement>(null), t0 = useRef(0), writes = useRef<boolean | null>(null);
@@ -99,7 +99,7 @@ function Her({ it, reg, think, ready, silent }: { it: Item; reg: Registry; think
   return <div className={`tk-h ${it.failed ? 'is-err' : ''}`} data-line={it.id}>
     {think && <small className="tk-think">{think}</small>}
     {it.spoken && <Said id={it.id} text={it.spoken} reg={reg}/>}
-    {it.written && ready && <div ref={w} className="tk-w" data-written><Written text={it.written} lit={lit}/></div>}
+    {it.written && ready && <div ref={w} className="tk-w" data-written><Written text={it.written} lit={lit} lang={lang}/></div>}
   </div>;
 }
 
@@ -594,7 +594,7 @@ export function TalkArea(p: TalkProps) {
       {reduced() && shown.older > 0 && v.items.length > 0 && <button type="button" className="tk-earlier" onClick={reveal}>{t(['Earlier', '更早'])}</button>}
       {v.items.map(it => it.who === 'you'
         ? <span key={it.id} className="tk-u" data-line={it.id}>{it.spoken}</span>
-        : <Her key={it.id} it={it} reg={reg.current} ready={v.ready(it)} silent={p.silent} think={(() => { const secs = p.deep.thoughts.find(th => th.turn === it.turn)?.secs; return secs ? t([`Thought for ${secs.toFixed(1)} s`, `想了 ${secs.toFixed(1)} 秒`]) : ''; })()}/>)}
+        : <Her key={it.id} it={it} reg={reg.current} ready={v.ready(it)} silent={p.silent} lang={p.lang} think={(() => { const secs = p.deep.thoughts.find(th => th.turn === it.turn)?.secs; return secs ? t([`Thought for ${secs.toFixed(1)} s`, `想了 ${secs.toFixed(1)} 秒`]) : ''; })()}/>)}
     </div>
     {!reduced() && shown.older > 0 && v.items.length > 0 && <span ref={moreEl} className="tk-more" aria-hidden="true">{t(['Earlier', '更早'])}</span>}
     {away && v.items.length > 0 && <div className="tk-latest"><button type="button" onClick={latest}>{t(['Back to latest', '回到最新'])}</button></div>}

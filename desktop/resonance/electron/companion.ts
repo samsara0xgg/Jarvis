@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, screen, session, shell, systemPreferences, desktopCapturer, Notification, globalShortcut } from 'electron';
+import { app, BrowserWindow, clipboard, ipcMain, screen, session, shell, systemPreferences, desktopCapturer, Notification, globalShortcut } from 'electron';
 import path from 'node:path';
 import { existsSync } from 'node:fs';
 import { userInfo } from 'node:os';
@@ -283,6 +283,12 @@ function companion(shown?: () => void) {
   ipcMain.on('display-ready', event => { if (mine(event) === win && moving) move(); });
   ipcMain.handle('placement', event => { const sender = mine(event); return sender === win ? placement(target()) : sender ? dashboard.placement() : null; });
   // Settings › Advanced › Quit, the installed app's only way out (no Dock icon); the daemon stops with it (daemon.ts).
+  // A copy button in her words (a command in a code block): the text goes to the clipboard.
+  ipcMain.handle('copy', (event, text) => {
+    if (!mine(event) || typeof text !== 'string' || text.length > 100000) return false;
+    clipboard.writeText(text);
+    return true;
+  });
   ipcMain.on('quit', event => { if (mine(event) && app.isPackaged) app.quit(); });
   ipcMain.on('passthrough', (event, enabled) => { if (mine(event) === win && typeof enabled === 'boolean') { pass = enabled; win.setIgnoreMouseEvents(enabled || tucked, { forward: true }); } });
   ipcMain.handle('focus-input', (event, enabled) => {

@@ -1240,13 +1240,44 @@ try {
     const { page, emit, shot, turn } = s;
     await page.waitForTimeout(600);
     await emit('controls', { mic_muted: false, speech_muted: false, conversation: true }); s.daemonState.controls.conversation = true;
-    await turn('k2', '怎么重装', '<voice>分两步。</voice><document>1. 退出伴侣\n2. 在终端运行 `npm ci`\n3. 重启，看她有没有回来</document>', { spoken: true });
+    await turn('k2', '怎么重装', '<voice>分三步。</voice><document>1. 退出伴侣\n2. 在终端运行 `npm ci`\n\n```\nlsof -nP -iTCP:8006 -sTCP:LISTEN\n```</document>', { spoken: true });
     await page.waitForTimeout(1800);
     const n = await page.evaluate(() => { const glow = (() => { const e = document.createElement('i'); e.style.color = 'rgb(var(--glow))'; document.body.append(e); const c = getComputedStyle(e).color; e.remove(); return c; })();
       return [...document.querySelectorAll('.talk .doc .n')].map(e => ({ text: e.textContent, color: getComputedStyle(e).color === glow, row: getComputedStyle(e.parentElement).columnGap })); });
-    check('numbered steps lead with the bare number in her colour, a 10 px gap, no “1.” and no time column', n.map(e => e.text).join() === '1,2,3' && n.every(e => e.color && e.row === '10px') && await page.locator('.talk .doc time').count() === 0);
+    check('numbered steps lead with the bare number in her colour, a 10 px gap, no “1.” and no time column', n.map(e => e.text).join() === '1,2' && n.every(e => e.color && e.row === '10px') && await page.locator('.talk .doc time').count() === 0);
+    const code = page.locator('.talk .md .code');
+    check('a code block carries a “复制” button top-right, with the command clear of it and the code plain, not the inline chip', await code.count() === 1 && await code.locator('.cp').textContent() === '复制'
+      && await page.evaluate(() => { const pre = document.querySelector('.talk .md .code pre'), cp = document.querySelector('.talk .md .code .cp'), co = getComputedStyle(pre.querySelector('code')), a = pre.getBoundingClientRect(), b = cp.getBoundingClientRect(); return Math.abs(a.right - b.right) < 8 && b.top < a.top + 10 && co.backgroundColor === 'rgba(0, 0, 0, 0)' && co.paddingLeft === '0px'; }));
     await shot('14-steps');
+    await code.locator('.cp').click(); await page.waitForTimeout(150);
+    check('clicking it copies the command through the shell’s clipboard and the label turns to “已复制 ✓” in her colour', await page.evaluate(() => window.__copied.join() === 'lsof -nP -iTCP:8006 -sTCP:LISTEN') && await code.locator('.cp.done').textContent() === '已复制 ✓'
+      && await page.evaluate(() => { const e = document.createElement('i'); e.style.color = 'rgb(var(--glow))'; document.body.append(e); const c = getComputedStyle(e).color; e.remove(); return getComputedStyle(document.querySelector('.talk .cp.done')).color === c; }));
+    await shot('15-code-copied');
+    await page.waitForTimeout(1900);
+    check('after about a second and a half it is “复制” again', await code.locator('.cp').textContent() === '复制' && await code.locator('.cp.done').count() === 0);
     check('no page errors (steps)', s.errors.length === 0);
+    await s.context.close();
+  }
+
+  {
+    const s = await scene({ captions: 'all', lang: 'en' });
+    const { page, emit, shot, turn } = s;
+    await page.waitForTimeout(600);
+    await emit('controls', { mic_muted: false, speech_muted: false, conversation: true }); s.daemonState.controls.conversation = true;
+    await turn('k3', 'compare them', '<voice>Mostly noise cancelling and battery.</voice><document>| Model | ANC | Battery | Price |\n|---|---|---|---|\n| AirPods Pro 3 | Strong | 8h | ¥1899 |\n| Sony XM6 | Very strong | 30h | ¥2499 |\n| Bose QC Ultra | Very strong | 24h | ¥2299 |\n\n```\nkill 4321\n```</document>', { spoken: true });
+    await page.waitForTimeout(1800);
+    const tb = await page.evaluate(() => {
+      const t = document.querySelector('.talk .md-table'), c = getComputedStyle(t), r = t.getBoundingClientRect(), w = document.querySelector('.talk .tk-w').getBoundingClientRect();
+      const al = sel => [...t.querySelectorAll(sel)].map(e => getComputedStyle(e).textAlign), last = [...t.querySelectorAll('tbody tr:last-child td')].map(e => getComputedStyle(e).borderBottomWidth);
+      const th = getComputedStyle(t.querySelector('th'));
+      return { bg: c.backgroundColor, radius: c.borderTopLeftRadius, full: Math.abs(r.width - w.width) < 1, head: al('th').join(), body: al('tbody tr:first-child td').join(), nums: t.querySelectorAll('.num').length, last, th: [th.fontSize, th.fontWeight], tab: getComputedStyle(t.querySelector('td.num')).fontVariantNumeric };
+    });
+    check('a table sits on the .doc surface (same fill and 14 px radius), full width of the written part', tb.bg.startsWith('rgba(255, 255, 255, 0.04') && tb.radius === '14px' && tb.full);
+    check('its header is 11.5 px regular and dim; the figure columns (Battery, Price) are right-aligned with tabular digits and the text columns are not', tb.th.join() === '11.5px,400' && tb.head === 'left,left,right,right' && tb.body === 'left,left,right,right' && tb.nums === 8 && tb.tab.includes('tabular-nums'));
+    check('no line under the last row', tb.last.every(w => w === '0px'));
+    check('in English the copy button says “Copy”, then “Copied ✓”', await page.locator('.talk .cp').textContent() === 'Copy' && (await page.locator('.talk .cp').click(), await page.waitForTimeout(150), await page.locator('.talk .cp').textContent()) === 'Copied ✓');
+    await shot('16-table');
+    check('no page errors (table)', s.errors.length === 0);
     await s.context.close();
   }
 
