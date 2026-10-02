@@ -11,7 +11,8 @@ export type Today = { weather?: Weather | null; events: TodayEvent[]; todos: Tod
 // GET /inherent/brief: today's brief, 404 before it is written.
 export type Brief = { date: string; summary: string; body: string; items?: number };
 // GET /inherent/mail: unread mail from people (not newsletters or notifications), newest first.
-export type Mail = { id: string; from: string; subject: string; received: string };
+// `reply` (ADR 0123): 'yes' = Jev is very sure it needs Allen's reply, 'fyi' = very sure it does not, null = no mark.
+export type Mail = { id: string; from: string; subject: string; received: string; reply?: 'yes' | 'fyi' | null };
 // GET /inherent/notices: what Jarvis itself wants from you (reminders, its questions); agents are not in it.
 export type Notice = { id: string; text: string; at: string };
 
@@ -58,8 +59,8 @@ export const demoBrief = (): Brief => ({ date: new Date().toLocaleDateString('en
   summary: 'Yesterday the companion went live with the Claude sessions. Today: A3 is due at midnight.',
   body: '**Yesterday**\n\n- The companion went live with the Claude sessions.\n- Plugin panels show each plugin’s own logo.\n\n**Today**\n\n- CSC370 A3 is due at midnight.\n- Call with Mom this evening.\n- Two agents are waiting for you.' });
 export const demoMail = (): Mail[] => [
-  { id: 'lee', from: 'Prof. Lee', subject: 'Office hours move to Thursday', received: at(-40) },
-  { id: 'mom', from: 'Mom', subject: 'Still on for tonight?', received: at(-95) },
+  { id: 'lee', from: 'Prof. Lee', subject: 'Office hours move to Thursday', received: at(-40), reply: 'fyi' },
+  { id: 'mom', from: 'Mom', subject: 'Still on for tonight?', received: at(-95), reply: 'yes' },
 ];
 export const demoNotices = (): Notice[] => [{ id: 'mic', text: 'Reminder: test the mic at 4 PM', at: at(-5) }];
 

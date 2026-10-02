@@ -541,6 +541,10 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
   const demoPops = useMemo(() => ({ brief: demoBrief(), mail: demoMail(), notices: demoNotices() }), []);
   const brief = port ? briefRoute.data : demoPops.brief, mail = port ? mailRoute.data?.unread ?? [] : demoPops.mail;
   const notices = port ? noticeRoute.data?.notices ?? [] : demoPops.notices;
+  // Letters that need a reply come first, then the unmarked, then the FYI ones; newest first inside each (the sort is stable).
+  const rank = (m: Mail) => m.reply === 'yes' ? 0 : m.reply === 'fyi' ? 2 : 1;
+  const mailRanked = [...mail].sort((a, b) => rank(a) - rank(b));
+  const mailYes = mail.filter(m => m.reply === 'yes'), marked = mail.some(m => m.reply != null);
   // For you: what Jarvis itself wants from you. Agents keep their own row.
   type ForYou = { id: string; text: string; ask?: boolean; act?: [L, () => void] };
   const signIn = (id: string): [L, () => void] => [['Sign in', '登录'], () => { openPage('plugins', home.current?.querySelector<HTMLElement>('[data-block="foryou"]')); setPlugin(id); }];
@@ -562,7 +566,8 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
       : settings.talk === 'after' && (talking || (talkAt > 0 && tick - talkAt < TALK_STAYS)) ? `t${talkAt}` : undefined,
     foryou: settings.foryou && forYou.length ? forYou.map(f => f.id).join('|') : undefined,
     brief: settings.brief && brief?.date === localDate && briefRead !== brief.date ? brief.date : undefined,
-    mail: settings.mail && mail.length ? mail[0].id : undefined,
+    // With Jev's marks the pop-up is for the newest letter that needs a reply; without any mark it is the newest letter.
+    mail: !settings.mail ? undefined : marked ? mailYes[0]?.id : mail[0]?.id,
   };
   const shows = (id: BlockId) => isPop(id) ? popKey[id] !== undefined && dismissed[id] !== popKey[id] : !settings.hidden.includes(id);
   const blocks = settings.order.filter(shows);
@@ -785,8 +790,8 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
               </span>
             </>,
             mail: () => <>
-              <span className="head"><span className="label">{t(['Mail', '邮件'])}</span><span className="meta">{t([`${mail.length} unread`, `${mail.length} 封未读`])}</span></span>
-              {mail.slice(0, 2).map(m => <span className="ml" key={m.id}><EnvelopeSimple size={13}/><b>{m.from}</b><span>{m.subject}</span></span>)}
+              <span className="head"><span className="label">{t(['Mail', '邮件'])}</span><span className="meta">{t([`${mail.length} unread`, `${mail.length} 封未读`])}{mailYes.length > 0 && t([` · ${mailYes.length} need a reply`, ` · ${mailYes.length} 封要回`])}</span></span>
+              {mailRanked.slice(0, 2).map(m => <span className="ml" key={m.id}><EnvelopeSimple size={13}/><b>{m.from}</b><span>{m.subject}</span>{m.reply === 'yes' && <em>{t(['Reply', '要回'])}</em>}</span>)}
             </>,
             agents: () => <button className="fill" data-row="agents" aria-label={t(['Open Agents', '打开 Agents'])} onClick={e => openPage('agents', e.currentTarget.parentElement)}>
               <span className="head"><span className="label">Agents</span><span className="head-r">
