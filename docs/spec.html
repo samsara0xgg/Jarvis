@@ -304,6 +304,7 @@ header strong { color: var(--fg-strong); }
 <ol>
 <li><strong>输入。</strong>一句语音、一段文字、一张卡片的答案或一个按钮。</li>
 <li><strong>Tier 0。</strong>先对一张封闭的全句正则表（<code>config/tier0_patterns.yaml</code>）。命中就直接调那一行指定的工具，用语言表里的话回答，不调模型。每一行的工具必须是 <code>regex_router</code> 能用的，回答里不许出现「完成了」一类的词。在它之前还有一步：整句只是要助手再说一遍（「什么」「再说一遍」「没听清」，what? / pardon / say that again 这类），而之前有说出口的回答时，把最近那个回答的语音部分原样再说一遍，也不调模型。</li>
+<li><strong>Jev（ADR 0120，<code>realtime.surrogate_route</code>，出厂关）。</strong>Tier 0 没命中、而且这一项打开时，问 TypeSafe 的 Jev 一个选择题：主人要的是 Tier 0 里哪一个不需要参数的即时功能（时间、日期、剪贴板、屏幕、开始或结束挂机、念便签，或者再说一遍），还是都不是。置信度不低于 <code>min_confidence</code>（0.9）且选的不是「都不是」，就按 Tier 0 命中的同一条路径执行；其余情况（低于门槛、都不是、超过 <code>timeout_ms</code>（400）、HTTP 出错、没有 key、答案读不懂）都当作没问，交给模型。每次调用记成一条 <code>route.surrogate_decided</code> 事件。</li>
 <li><strong>模型的工具循环。</strong>没命中就把请求发给模型（组成见<a href="#request">第 5 章</a>）。一轮里带工具的请求最多 <code>llm.max_tool_iterations</code> 次（不写是 5，出厂配置是 40，ADR 0060）；到顶后再发一次不带工具的请求来收尾。</li>
 <li><strong>每个工具调用都先变成一个动作请求，</strong>过前置闸门，通过了才执行；闸门的每次判断和动作的每一步都记成事件。</li>
 </ol>
@@ -387,6 +388,7 @@ I8 到 I11 随审核链退役（ADR 0019），编号保留。
 <tr><td>对话、深想</td><td>OpenAI</td><td>上面的四部分，加上这一轮每个工具的结果。两种接口都不让 OpenAI 留存：chat/completions 默认不存，深想走的 Responses 带 <code>store: false</code></td><td>每一轮</td><td>开</td></tr>
 <tr><td>历史压缩</td><td>OpenAI</td><td>上一段摘要和要折叠的记录</td><td>见上</td><td>开</td></tr>
 <tr><td>缓存预热</td><td>OpenAI</td><td>下一轮请求里「这一句」之前的部分：系统提示、历史（到这一轮的回答为止）和工具，只让它回 16 个 token。OpenAI 只在旧请求结束的地方找得到缓存，这样下一轮开头整段都在缓存里</td><td>打开 <code>realtime.response.prefix_warm</code> 时，每一轮用 OpenAI 答完之后</td><td>关</td></tr>
+<tr><td>即时功能的判断（Jev）</td><td>OpenRouter，转给 TypeSafe 的 <code>typesafe/jev-1.13</code></td><td>主人这一句话，加上前面最多两轮（主人的话，和助手回答的前 200 个字，十分钟以内），以及即时功能的选项说明；key 放在请求头里，不记进事件</td><td>打开 <code>realtime.surrogate_route</code> 时，每一轮 Tier 0 没命中的话；等待上限 0.4 秒</td><td>关</td></tr>
 <tr><td>实时语音</td><td>OpenAI Realtime</td><td>麦克风的声音、指令和最多 1500 字的记忆简报；<code>store: false</code></td><td>主人开始实时对话时连上；30 秒没有动静就挂断，一次最长 30 分钟</td><td>开</td></tr>
 <tr><td>看一眼屏幕 <code>screen_look</code></td><td>OpenAI</td><td>主显示器的一张截图，缩到 1568 像素宽以内</td><td>模型调用它（L1，不经确认），或主人说了 Tier 0 认得的那句话</td><td>开</td></tr>
 <tr><td>工作状态</td><td>OpenAI</td><td>最近两天的对话记录、按问题搜到的旧记录、本地待办、存下的知识、当天的 git 活动；打开 TimeSink 时还有各 App 的时长、窗口标题和屏幕文字的摘录</td><td>主人刷新面板或在对话里问起，而且有新证据时</td><td>用到时才调</td></tr>
