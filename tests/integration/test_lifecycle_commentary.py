@@ -1,4 +1,4 @@
-"""ADR-0008 D6 / ADR 0115 acceptance: the one wait line of a turn Allen spoke.
+"""ADR-0008 D6 / ADR 0116 acceptance: the one wait line of a turn Allen spoke.
 
 Every check runs against a real on-disk Event Log and the shipped runtime
 observer; nothing about the commentary path is faked, because the property
@@ -160,7 +160,7 @@ def test_two_rows_speak_a_slow_tools_dispatch_and_his_words() -> None:
 
 
 def test_the_slow_list_is_one_table_and_the_status_line_reads_it() -> None:
-    """ADR 0114's tools and this one's are the same five, from one place."""
+    """ADR 0115's tools and this one's are the same five, from one place."""
     assert set(SLOW_TOOLS) == {
         "web_search", "web_fetch", "screen_look", "refresh_work_state", "daily_work_report",
     }
@@ -289,7 +289,7 @@ def _config(*, enabled: bool, lifecycle: bool, commentary: bool) -> dict[str, ob
 
 
 def test_shipped_config_turns_commentary_on() -> None:
-    """ADR 0115: the shipped switch is on, so a slow turn says its wait line."""
+    """ADR 0116: the shipped switch is on, so a slow turn says its wait line."""
     shipped = yaml.safe_load((repo_root() / "config" / "jarvis.yaml").read_text())
     assert shipped["realtime"]["commentary"] == {"enabled": True}
     assert _wave4_response_activation(shipped).flags.lifecycle_commentary is True
@@ -1039,7 +1039,7 @@ def test_an_answer_out_within_the_floor_hears_no_acknowledge(
     assert spoke_at - asked.ts_epoch_ms >= floor_s * 1000
 
 
-# --- observer: the 2.5 s clock and the answer-started rule (ADR 0115) -------
+# --- observer: the 2.5 s clock and the answer-started rule (ADR 0116) -------
 
 _CLOCK_S: Final = 0.4
 """The clock the tests run at, in place of the owner's 2.5 s."""

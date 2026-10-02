@@ -78,7 +78,7 @@ def variants(key: str, lang: Language | None = None) -> tuple[str, ...]:
     return VARIANTS[key][lang or _current]
 
 
-# --- Slow tools (ADR 0114, ADR 0115) -----------------------------------------
+# --- Slow tools (ADR 0115, ADR 0116) -----------------------------------------
 
 # Tools slow enough to name at once, and the ``tool_status.*`` line each shows
 # under the ball; the same tools make her say a wait line at their dispatch.
@@ -843,7 +843,7 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
         " part of the question.",
     },
     # What the companion shows under her while a tool is really running
-    # (ADR 0114): one fixed line per kind of work, never a model's words.
+    # (ADR 0115): one fixed line per kind of work, never a model's words.
     "tool_status.web": {"zh": "正在搜索网页…", "en": "Searching the web..."},
     "tool_status.page": {"zh": "正在读取网页…", "en": "Reading the page..."},
     "tool_status.screen": {"zh": "正在看你的屏幕…", "en": "Looking at your screen..."},
@@ -924,9 +924,9 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
 }
 
 # Sentences with several wordings of one thing to say; the caller picks one
-# at random (ADR 0115: the wait line; ADR 0102: the conversation lines).
+# at random (ADR 0116: the wait line; ADR 0102: the conversation lines).
 VARIANTS: Final[dict[str, dict[Language, tuple[str, ...]]]] = {
-    # ADR 0115: the one line said when a turn is taking a while.
+    # ADR 0116: the one line said when a turn is taking a while.
     "commentary.wait": {
         "zh": ("稍等。", "等一下。", "正在办。", "马上好。"),
         "en": ("One moment.", "Hold on.", "On it.", "Almost there."),

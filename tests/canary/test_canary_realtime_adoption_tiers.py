@@ -21,7 +21,7 @@ The evidence for tier A is the live burns ADR 0006 records (4/4, 3/3 and
 10/10).
 
 ``commentary`` was on from ADR 0040 (2026-09-24) and off from ADR 0045
-(2026-09-25): Allen heard "结果回来了" out of nowhere after fast tools. ADR 0115
+(2026-09-25): Allen heard "结果回来了" out of nowhere after fast tools. ADR 0116
 (2026-10-02) turned it on again in its narrow form, the owner's decision; it
 is not pinned off here any more, and its live run on the Mac is still owed.
 

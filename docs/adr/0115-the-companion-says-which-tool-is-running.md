@@ -1,4 +1,4 @@
-# ADR 0114 — The companion says which tool is running
+# ADR 0115 — The companion says which tool is running
 
 **Status:** Accepted
 **Date:** 2026-10-01

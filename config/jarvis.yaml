@@ -514,7 +514,7 @@ realtime:
     # cutting her off (newer turn) or never being said (older turn).
     slow_results:
       enabled: true
-  # ADR-0008 Step 5 (D6), as ADR 0115 reshapes it.  With commentary on, a turn
+  # ADR-0008 Step 5 (D6), as ADR 0116 reshapes it.  With commentary on, a turn
   # Allen spoke says one short fixed line (a random pick from a small pool, in
   # the language of his words) when it is taking a while: at the dispatch of a
   # slow tool (web_search, web_fetch, screen_look, refresh_work_state,
@@ -527,7 +527,7 @@ realtime:
   # line.  It additionally requires realtime.enabled and
   # response.response_run_lifecycle and downgrades once, with one warning,
   # without them.
-  # Off from ADR 0045 to ADR 0115: every lifecycle row spoke, and "结果回来了"
+  # Off from ADR 0045 to ADR 0116: every lifecycle row spoke, and "结果回来了"
   # landed with no lead-up whenever a tool finished within a second.  In a
   # spoken_streaming turn it says the model's own line before the call instead
   # of the pool, unless that line runs over 60 characters or already claims a

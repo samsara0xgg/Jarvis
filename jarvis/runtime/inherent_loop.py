@@ -1525,7 +1525,7 @@ async def _tool_status_watcher(
     *,
     poll_interval_s: float = _DEFAULT_POLL_INTERVAL_S,
 ) -> None:
-    """Background task: tell the surface which tool is really running (ADR 0114).
+    """Background task: tell the surface which tool is really running (ADR 0115).
 
     One cursor over the action and turn-end rows, anchored like
     :func:`_response_watcher`. Whenever the line to show changes, one
@@ -1729,7 +1729,7 @@ async def _tts_watcher(  # noqa: C901, PLR0912 - ordered durable dispatch FSM
 # Nothing here re-enters `decide()`: `_RUNTIME_TRIGGER_TYPES` is untouched and
 # no model is ever called to produce a phrase (ADR-0008 D6, "a deep model is
 # never called only to generate 我在查"). A turn he spoke says one fixed line
-# when it is taking a while (ADR 0115): at a slow tool's dispatch, or once
+# when it is taking a while (ADR 0116): at a slow tool's dispatch, or once
 # `_COMMENTARY_AFTER_S` have passed with nothing of the answer started.
 
 _COMMENTARY_ACTION_TYPES: Final[tuple[str, ...]] = ("action.dispatched", "utterance.received")
@@ -1746,7 +1746,7 @@ does.
 
 _COMMENTARY_AFTER_S: Final[float] = 2.5
 """How long after Allen's words, with nothing of the answer started, the line
-speaks whether or not a tool is involved (ADR 0115; the owner's number)."""
+speaks whether or not a tool is involved (ADR 0116; the owner's number)."""
 
 _COMMENTARY_SHUTDOWN_BUDGET_S: Final[float] = 0.5
 """Whole-budget SQLite wait the teardown cancel may spend on the event loop."""
@@ -2074,7 +2074,7 @@ def _open_commentary_in_worker_thread(  # noqa: PLR0911 - one early return per s
     """Decide and deliver one row's commentary on a worker thread.
 
     The row is a slow tool's ``action.dispatched`` or the ``utterance.received``
-    that carries his words; the second one is the clock of ADR 0115 and waits
+    that carries his words; the second one is the clock of ADR 0116 and waits
     :data:`_COMMENTARY_AFTER_S` after his words before it looks at anything.
 
     Opens its own connection for the same ``check_same_thread`` reason

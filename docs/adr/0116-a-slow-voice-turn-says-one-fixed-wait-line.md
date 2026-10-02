@@ -1,4 +1,4 @@
-# ADR 0115 — A slow voice turn says one fixed wait line
+# ADR 0116 — A slow voice turn says one fixed wait line
 
 **Status:** Accepted
 **Date:** 2026-10-02
@@ -42,7 +42,7 @@ Turn `realtime.commentary.enabled` on, and let a turn Allen spoke
 language table in the language of his words, when either happens:
 
 - a tool on the slow list (`SLOW_TOOLS` in `jarvis/shared/lang.py`, the same
-  table ADR 0114's status line reads) is dispatched, no earlier than 1.5 s
+  table ADR 0115's status line reads) is dispatched, no earlier than 1.5 s
   after his words; or
 - 2.5 s after his words with nothing of the answer started, whether or not a
   tool is involved.
@@ -65,7 +65,7 @@ the L3 function stays pure and is handed the picker.
 ## Alternatives rejected
 
 - **Keep commentary off and rely on the status line under the ball (ADR
-  0114).** It is silent: away from the screen there is no sign she heard him,
+  0115).** It is silent: away from the screen there is no sign she heard him,
   which is what Allen asked to fix.
 - **Speak at every tool dispatch, as D6 did.** Every tool but the five on the
   slow list returned in under 0.6 s, so most tool turns would announce work

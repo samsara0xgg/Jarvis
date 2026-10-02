@@ -2,7 +2,7 @@
 
 D6 forbade three hallucinations by name: "马上好" with no evidence,
 "已经查到了" before ``action.result_observed``, and timer-based fake progress
-when no lifecycle row changed. ADR 0115 lets the owner's wait line say 「马上好」
+when no lifecycle row changed. ADR 0116 lets the owner's wait line say 「马上好」
 and lets a 2.5 s clock speak it, but the clock and the dice stay in the
 runtime: ``jarvis/decision/commentary.py`` still derives the phrase from the
 committed event alone and is handed the picker. That property is one import

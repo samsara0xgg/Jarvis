@@ -1,4 +1,4 @@
-"""What the companion shows while a tool is really running — ADR 0114 (runtime).
+"""What the companion shows while a tool is really running — ADR 0115 (runtime).
 
 A pure fold from the Event Log's action rows to one fixed line (a key of the
 language table), so the line is driven by the real action lifecycle and costs

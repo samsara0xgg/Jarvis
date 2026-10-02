@@ -29,7 +29,7 @@ Step 2 wire schema (three envelopes per turn, mirrored from
 
 While a tool is really running, the runtime also sends
 ``{"op": "tool", "payload": {"turn_id": <id>, "label": <fixed line>}}`` (an
-empty ``label`` clears it; ADR 0114), from the ``action.*`` rows.
+empty ``label`` clears it; ADR 0115), from the ``action.*`` rows.
 
 ``turn_id`` is additive (the legacy swift card ignores unknown payload
 keys) and it is what makes the ADR-0009 D2 CLI client correct rather

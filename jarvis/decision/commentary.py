@@ -1,4 +1,4 @@
-"""L3 deterministic lifecycle commentary (ADR-0008 D6, as ADR 0115 amends it).
+"""L3 deterministic lifecycle commentary (ADR-0008 D6, as ADR 0116 amends it).
 
 D6 splits a response into two phases: a short ``commentary`` while real work
 continues, and the ``final`` answer once the evidence is in.  This module is
@@ -8,11 +8,11 @@ the whole of that decision: one pure function from a single committed event
 
 The function is deliberately total and side-effect free: no clock, no DB
 read, no LLM, no timer, no randomness (the runtime hands in the choice).  The
-two rows that speak are a slow tool's dispatch and, since ADR 0115, the
+two rows that speak are a slow tool's dispatch and, since ADR 0116, the
 row that carries Allen's words; the runtime owns the 2.5 s clock that lets
 the second one speak, and every suppression rule.  D6's ban on a phrase that
 claims a result before ``action.result_observed`` stands for the runtime's own
-lines, with one owner's exception named in ADR 0115 (「马上好」); "a deep model
+lines, with one owner's exception named in ADR 0116 (「马上好」); "a deep model
 is never called only to generate 我在查" is a property of the call graph.
 
 Whether an intent is *delivered* — origin, confirmation, one per turn — is the
@@ -60,7 +60,7 @@ The key holds a small set because one fixed phrase repeated on every turn is
 the "one moment while I process that" shape OpenAI's Realtime preamble
 guidance names as the thing to avoid. The phrases claim only that the turn is
 still working, except the owner's 「马上好」 / "Almost there.", which claims
-progress nobody knows (ADR 0115).
+progress nobody knows (ADR 0116).
 """
 
 _LEAD_IN_MAX_CHARS: Final = 60

@@ -1,6 +1,6 @@
 # ADR 0099 — Explicit Spoken Requests Override Summary Limits
 
-**Status:** Superseded-by-0115
+**Status:** Superseded-by-0116
 **Date:** 2026-09-28
 **Supersedes:** 0045
 
