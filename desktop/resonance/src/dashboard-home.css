@@ -87,7 +87,8 @@
 .ad .td-list .muted { padding:2px 0; }
 
 /* Mail from people. */
-.ad .ml { display:flex; align-items:center; gap:6px; margin-top:4px; font-size:var(--text-detail); line-height:17px; color:var(--p-muted); white-space:nowrap; overflow:hidden; }
+.ad .ml { display:flex; width:100%; text-align:left; border-radius:var(--radius-control); align-items:center; gap:6px; margin-top:4px; font-size:var(--text-detail); line-height:17px; color:var(--p-muted); white-space:nowrap; overflow:hidden; }
+.ad .ml:hover span { color:var(--p-ink); }
 .ad .ml svg { flex:none; color:var(--p-faint); }
 .ad .ml b { flex:none; font-weight:500; color:var(--p-ink); }
 .ad .ml span { overflow:hidden; text-overflow:ellipsis; }

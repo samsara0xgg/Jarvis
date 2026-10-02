@@ -43,6 +43,7 @@ declare global { interface Window { jarvis?: {
   onAgentsPresence?: (cb: (value: { active: boolean; ids: string[] }) => void) => () => void;
   codexTitles: (ids: string[]) => Promise<Record<string, string>>;
   openAccount: (service: string) => Promise<boolean>;
+  openMail?: (id: string) => Promise<boolean>;
   usageReset: (service: 'codex', requestId: string) => Promise<{ code: string; windows_reset: number }>;
   usageBalance: (service: 'openai', usd: number) => Promise<{ recorded: boolean }>;
   plugins: (operation: string, data?: Record<string, unknown>) => Promise<PluginSnapshot>;

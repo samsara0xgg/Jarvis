@@ -69,6 +69,7 @@ contextBridge.exposeInMainWorld('jarvis', {
   openAgents: (id?: string) => ipcRenderer.send('agents-open', id),
   codexTitles: (ids: string[]) => ipcRenderer.invoke('codex-titles', ids),
   openAccount: (service: string) => ipcRenderer.invoke('open-account', service),
+  openMail: (id: string) => ipcRenderer.invoke('open-mail', id),
   usageReset: (service: string, requestId: string) => ipcRenderer.invoke('usage-reset', service, requestId),
   usageBalance: (service: string, usd: number) => ipcRenderer.invoke('usage-balance', service, usd),
   plugins: (operation: string, data: Record<string, unknown> = {}) => ipcRenderer.invoke('plugins', operation, data),

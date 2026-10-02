@@ -76,6 +76,13 @@ export function registerDaemonBridge(win: BrowserWindow, { lab = false, verifica
     try { await shell.openExternal(ACCOUNT_PAGES[service]); return true; }
     catch { return false; }
   });
+  // A Mail row opens its letter in Gmail's default account: the renderer names a message id, never a URL.
+  ipcMain.handle('open-mail', async (event, id) => {
+    if (!fromThisWindow(event) || typeof id !== 'string' || !/^[0-9a-z]{1,64}$/i.test(id)) return false;
+    if (verification || lab) return false;
+    try { await shell.openExternal(`https://mail.google.com/mail/u/0/#all/${id}`); return true; }
+    catch { return false; }
+  });
   // A Usage page write (ADR 0048/0065): main reads the desktop credential and posts to the
   // daemon; the renderer only names what to do.
   const usagePost = async (route: string, body: Record<string, unknown>, failed: string) => {

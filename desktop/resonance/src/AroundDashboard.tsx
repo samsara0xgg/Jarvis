@@ -791,7 +791,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
             </>,
             mail: () => <>
               <span className="head"><span className="label">{t(['Mail', '邮件'])}</span><span className="meta">{t([`${mail.length} unread`, `${mail.length} 封未读`])}{mailYes.length > 0 && t([` · ${mailYes.length} need a reply`, ` · ${mailYes.length} 封要回`])}</span></span>
-              {mailRanked.slice(0, 2).map(m => <span className="ml" key={m.id}><EnvelopeSimple size={13}/><b>{m.from}</b><span>{m.subject}</span>{m.reply === 'yes' && <em>{t(['Reply', '要回'])}</em>}</span>)}
+              {mailRanked.slice(0, 2).map(m => <button className="ml" key={m.id} title={t(['Open in Gmail', '在 Gmail 里打开'])} onClick={() => void window.jarvis?.openMail?.(m.id)}><EnvelopeSimple size={13}/><b>{m.from}</b><span>{m.subject}</span>{m.reply === 'yes' && <em>{t(['Reply', '要回'])}</em>}</button>)}
             </>,
             agents: () => <button className="fill" data-row="agents" aria-label={t(['Open Agents', '打开 Agents'])} onClick={e => openPage('agents', e.currentTarget.parentElement)}>
               <span className="head"><span className="label">Agents</span><span className="head-r">
