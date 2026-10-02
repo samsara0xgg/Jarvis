@@ -209,9 +209,32 @@ def _install(root: Path) -> None:
             return getattr(self._real, name)
 
         def recognize(self, audio_pcm: bytes) -> voice_asr.TranscriptionResult:
+            return self._answer(audio_pcm, lambda: self._real.recognize(audio_pcm))
+
+        def recognize_prepared(
+            self, utterance_id: str, audio_pcm: bytes, speech_s: float,
+        ) -> voice_asr.TranscriptionResult:
+            """The hybrid's commit (ADR 0132): scripted text wins, else the real prepared pass."""
+            real = getattr(self._real, "recognize_prepared", None)
+            if real is None:
+                return self.recognize(audio_pcm)
+            return self._answer(
+                audio_pcm,
+                lambda: real(utterance_id, audio_pcm, speech_s),
+                discard=lambda: self._real.discard(utterance_id),
+            )
+
+        def _answer(
+            self,
+            audio_pcm: bytes,
+            hear: Any,  # noqa: ANN401
+            discard: Any = None,  # noqa: ANN401
+        ) -> voice_asr.TranscriptionResult:
             started = time.time()
             texts = script_for(audio_pcm)
             if texts is not None:
+                if discard is not None:
+                    discard()
                 text = " ".join(texts)
                 result = voice_asr.TranscriptionResult(
                     text=text,
@@ -221,7 +244,7 @@ def _install(root: Path) -> None:
                 )
                 mode = "scripted"
             else:
-                result = self._real.recognize(audio_pcm)
+                result = hear()
                 mode = "real"
             log(
                 "asr.jsonl",

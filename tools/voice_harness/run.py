@@ -8,7 +8,9 @@ snapshot of the live databases, her voice sent to BlackHole 16ch), boots ``jarvi
 into the daemon's spool backend, and asserts over the Event Log, the websocket feed and the
 TTS notes. Nothing under ``~/.jarvis`` is written and the live daemon is never contacted.
 
-Other switches: ``--native-player`` (her voice from the Swift helper, ADR 0129), ``--list``
+Other switches: ``--native-player`` (her voice from the Swift helper, ADR 0129),
+``--final-asr {sensevoice,hybrid,whisper}`` (realtime.final_asr, ADR 0132; only ``--asr real``
+turns reach it), ``--list``
 (cases), ``--asr real`` (SenseVoice decodes the speech instead of scripted text), ``--terse``
 (shorter answers, cheaper TTS; judges streaming less reliably), ``--offline`` (dummy API keys:
 voice input only, no spend), ``--replay RUN_DIR`` (re-evaluate a finished run), ``--repo PATH``
@@ -103,7 +105,9 @@ _SETTINGS_OVERRIDES: dict[str, object] = {
 }
 
 
-def prepare_root(root: Path, *, offline: bool, native_player: bool = False) -> None:
+def prepare_root(
+    root: Path, *, offline: bool, native_player: bool = False, final_asr: str = "sensevoice"
+) -> None:
     """Rebuild ``root`` from the live runtime (read-only on ``~/.jarvis``)."""
     if root.resolve() == LIVE.resolve() or LIVE.resolve() in root.resolve().parents:
         sys.exit(f"refusing to use {root}: it is the live runtime")
@@ -125,6 +129,7 @@ def prepare_root(root: Path, *, offline: bool, native_player: bool = False) -> N
     for dotted, value in _SETTINGS_OVERRIDES.items():
         _set(settings, dotted, value)
     _set(settings, "realtime.streaming_output.native_player", native_player)
+    _set(settings, "realtime.final_asr", final_asr)
     (root / "settings.yaml").write_text(
         yaml.safe_dump(settings, allow_unicode=True, sort_keys=False),
         encoding="utf-8",
@@ -717,7 +722,8 @@ def write_report(
         "",
         f"- repo: `{args.repo}` @ `{env['commit']}`",
         f"- command: `{' '.join(sys.argv)}`",
-        f"- asr: `{args.asr}` terse: `{args.terse}` offline: `{args.offline}`",
+        f"- asr: `{args.asr}` final_asr: `{args.final_asr}` terse: `{args.terse}` "
+        f"offline: `{args.offline}`",
         f"- spend: **${spend[0]:.4f}** of ${args.budget:.2f} budget ({_parts(spend[1])})",
         f"- system volume before/after: `{env['volume_before']}` / `{env['volume_after']}` "
         f"({'unchanged' if env['volume_before'] == env['volume_after'] else 'CHANGED'})",
@@ -833,6 +839,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="realtime.streaming_output.native_player: true (ADR 0129); default false",
     )
+    parser.add_argument(
+        "--final-asr",
+        choices=("sensevoice", "hybrid", "whisper"),
+        default="sensevoice",
+        help="realtime.final_asr: which model writes a voice turn's words (ADR 0132)",
+    )
     parser.add_argument("--port", type=int, default=8026)
     parser.add_argument(
         "--replay",
@@ -921,7 +933,9 @@ def main() -> int:
     if _port_open(args.port):
         print(f"port {args.port} is already in use", file=sys.stderr)
         return 2
-    prepare_root(ROOT, offline=args.offline, native_player=args.native_player)
+    prepare_root(
+        ROOT, offline=args.offline, native_player=args.native_player, final_asr=args.final_asr
+    )
     run_dir = ROOT / "runs" / datetime.now().strftime("%Y%m%d-%H%M%S")  # noqa: DTZ005
     run_dir.mkdir(parents=True)
     env = {
