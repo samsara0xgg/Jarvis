@@ -2,7 +2,7 @@
   <img src="docs/assets/poster.png" alt="Jarvis, a glass ball with two glowing eyes, beside the words Jarvis, by Allen Shi" width="100%">
 </p>
 
-> **Demo video coming later today (October 1, 2026).** A short walkthrough of Jarvis running on my Mac will be posted right here.
+> **Demo video coming later today (October 2, 2026).** A short walkthrough of Jarvis running on my Mac will be posted right here.
 >
 > **In a rush?** You can try a demo on your own Mac with one command, no keys or setup. [Click here to try it.](#try-the-demo)
 
