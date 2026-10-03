@@ -741,6 +741,7 @@ _HYBRID_MAX_PREPARED = 4
 class _PreparedFinal:
     """One hearing started ahead of its commit: the audio it heard and what came of it."""
 
+    utterance_id: str
     audio_pcm: bytes
     speech_s: float
     done: threading.Event = field(default_factory=threading.Event)
@@ -764,7 +765,8 @@ class HybridFinalRecognizer:
 
     :meth:`prepare` starts that work when Allen goes quiet, so :meth:`recognize_prepared` finds
     it done, or nearly, when the endpoint commits. mlx cannot be interrupted, so one worker
-    thread runs the passes one after another.
+    thread runs the passes one after another. ADR 0143: each finished pass is also handed to
+    :meth:`on_prepared_text`'s listener, so the captions can show Whisper's words for it.
     """
 
     def __init__(
@@ -788,6 +790,15 @@ class HybridFinalRecognizer:
         self._prepared: dict[str, _PreparedFinal] = {}
         self._queue: deque[_PreparedFinal] = deque()
         self._worker: threading.Thread | None = None
+        self._on_prepared_text: Callable[[str, int, str], None] | None = None
+
+    def on_prepared_text(self, listener: Callable[[str, int, str], None] | None) -> None:
+        """Call ``listener(utterance_id, audio_bytes, text)`` on the worker thread for each pass.
+
+        Called once per pass that finished with text, even when its entry was dropped while it
+        ran (Allen kept speaking): ``audio_bytes`` is how much audio the text covers.
+        """
+        self._on_prepared_text = listener
 
     def recognize(self, audio_pcm: bytes) -> TranscriptionResult:
         """The transcript when no speech span is known (PTT, the legacy wake path).
@@ -807,7 +818,7 @@ class HybridFinalRecognizer:
         """
         if speech_s < _HYBRID_MIN_SPEECH_S:
             return
-        entry = _PreparedFinal(audio_pcm, speech_s)
+        entry = _PreparedFinal(utterance_id, audio_pcm, speech_s)
         with self._lock:
             self._drop(utterance_id)
             self._prepared[utterance_id] = entry
@@ -885,6 +896,16 @@ class HybridFinalRecognizer:
                 entry.error = exc
             finally:
                 entry.done.set()
+            self._announce(entry)
+
+    def _announce(self, entry: _PreparedFinal) -> None:
+        listener = self._on_prepared_text
+        if listener is None or entry.result is None or not entry.result.text.strip():
+            return
+        try:
+            listener(entry.utterance_id, len(entry.audio_pcm), entry.result.text)
+        except Exception:  # noqa: BLE001 - the captions never break final ASR
+            LOGGER.warning("prepared text listener failed", exc_info=True)
 
     def _hear(self, audio_pcm: bytes, speech_s: float) -> TranscriptionResult:
         result = self._hear_once(audio_pcm, speech_s)

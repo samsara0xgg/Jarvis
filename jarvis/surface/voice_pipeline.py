@@ -135,6 +135,18 @@ class VoicePipeline:
         if callable(prepare):
             prepare(utterance_id, audio_bytes, speech_s)
 
+    def on_prepared_text(self, listener: Callable[[str, int, str], None]) -> bool:
+        """Hand ``listener`` the text of each pass the recognizer prepared (ADR 0143).
+
+        Returns whether the recognizer prepares at all; one that does not never calls it.
+        The listener runs on the recognizer's worker thread.
+        """
+        register = getattr(self._recognizer, "on_prepared_text", None)
+        if not callable(register):
+            return False
+        register(listener)
+        return True
+
     def discard_final(self, utterance_id: str) -> None:
         """He spoke again, or the utterance never committed: drop what was prepared for it."""
         discard = getattr(self._recognizer, "discard", None)

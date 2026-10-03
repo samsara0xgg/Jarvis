@@ -112,6 +112,8 @@ export type TalkProps = {
   voice: Voice; hearing: boolean;
   // What has been heard so far of the words still coming in (ADR 0111): the label follows it, and the pill and its end button follow the label.
   partial: string;
+  // With a hybrid final recognizer (ADR 0143) the part of `partial` a finished pass settled; the rest is still only a guess and shows dimmer. Null: all one colour.
+  settled: string | null;
   // The tool the turn is waiting on, as the daemon's fixed line ("Searching the web..."); empty when none is running.
   tool: string;
   // Her voice is off: nothing is being said, so her words are all there to read, not lit as they go.
@@ -180,6 +182,7 @@ export function TalkArea(p: TalkProps) {
   const status = tool || (state === 'idle' ? '' : state === 'thinking' ? secs > 0 ? t([`Thinking deeply · ${secs} s`, `深想中 · ${secs} 秒`]) : t(['Thinking', '在想'])
     : state === 'speaking' ? t(['Speaking · poke to interrupt', '在说 · 戳她打断']) : t(['Listening', '在听']));
   const coming = state === 'hearing' ? p.partial.replace(/\s+/g, ' ') : '';
+  const split = coming && p.settled !== null ? Math.min(coming.length, p.settled.replace(/\s+/g, ' ').length) : -1;
   const heard = coming || (freshMs > 0 && lastYou ? lastYou.text.replace(/\s+/g, ' ') : '');
   const expanded = items.some(it => it.at > c.since);
   const kind = kindOf(p.level, items, p.field || !!p.card, expanded); // (a waiting card needs the whole area, as the field does)
@@ -190,7 +193,7 @@ export function TalkArea(p: TalkProps) {
   const open = p.open && !(kind === 'pill' && !label && !p.buttons);
   // While it folds away it keeps what it was showing.
   // The final words take the place of what was heard so far as a new label, so they come in again and the change is seen.
-  const cur = { items, kind, state, label, heard: !!heard, final: !!heard && !coming, tool, fading: fading && !coming, deep: p.deep.look, ready };
+  const cur = { items, kind, state, label, split, heard: !!heard, final: !!heard && !coming, tool, fading: fading && !coming, deep: p.deep.look, ready };
   const frozen = useRef(cur);
   if (open) frozen.current = cur;
   const v = frozen.current;
@@ -608,7 +611,7 @@ export function TalkArea(p: TalkProps) {
     <div ref={ftEl} className="talk-ft" hidden={row !== 'ft'}>
       <span className={`gl ${v.state}`} aria-hidden="true"><b/><b/><b/></span>
       {url ? <span className="lb url" key="url"><LinkSimple/><span>{url}</span></span>
-        : <span className={`lb ${shim ? 'shim' : ''} ${toolNow ? 'tool' : ''} ${v.heard ? 'heard' : ''} ${v.fading ? 'fade' : ''}`} key={v.heard ? v.final ? 'heard-final' : 'heard' : toolNow ? `tool:${toolNow}` : v.state}>{v.heard ? <span dir="ltr">{v.label}</span> : v.label}</span>}
+        : <span className={`lb ${shim ? 'shim' : ''} ${toolNow ? 'tool' : ''} ${v.heard ? 'heard' : ''} ${v.fading ? 'fade' : ''}`} key={v.heard ? v.final ? 'heard-final' : 'heard' : toolNow ? `tool:${toolNow}` : v.state}>{v.heard ? <span dir="ltr">{v.split < 0 ? v.label : <>{v.label.slice(0, v.split)}<span className="tail">{v.label.slice(v.split)}</span></>}</span> : v.label}</span>}
       {gone && <span className="lb-old" aria-hidden="true" style={{ left: gone.left }} onAnimationEnd={() => setGone(null)}>{gone.text}</span>}
       {p.buttons && <>
         <span className="sp"/>

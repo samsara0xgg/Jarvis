@@ -738,6 +738,28 @@ try {
     await s.context.close();
   }
 
+  // ---- with a hybrid final recognizer (ADR 0143) the words a finished pass settled show in full colour, the rest dimmer ----
+  {
+    const s = await scene({ captions: 'brief' });
+    const { page, emit } = s;
+    await page.waitForTimeout(600);
+    const parts = () => page.evaluate(() => { const lb = document.querySelector('.talk .lb.heard'), tail = lb?.querySelector('.tail'); return { text: lb?.textContent ?? '', tail: tail?.textContent ?? null, lb: lb && getComputedStyle(lb).color, tc: tail && getComputedStyle(tail).color }; });
+    await emit('voice', { phase: 'listening', turn_id: 'st' }); await emit('voice', { phase: 'partial', turn_id: 'st', text: '帮我查一下', settled: '', tail: '帮我查一下' }); await page.waitForTimeout(500);
+    let a = await parts();
+    check('settled captions: before any pass settles, the whole line is the dimmer tail', a.tail === '帮我查一下' && a.text === '帮我查一下' && a.tc !== a.lb);
+    await emit('voice', { phase: 'partial', turn_id: 'st', text: '帮我查一下明天的天气怎么样', settled: '帮我查一下明天的天气', tail: '怎么样' }); await page.waitForTimeout(500);
+    a = await parts();
+    check('settled captions: the settled words keep the caption colour and the tail is dimmer', a.text === '帮我查一下明天的天气怎么样' && a.tail === '怎么样' && a.tc !== a.lb);
+    await page.screenshot({ path: path.join(dir, 'captions-settled-tail.png'), clip: { x: 0, y: 40, width: 640, height: 130 } });
+    await emit('voice', { phase: 'partial', turn_id: 'st', text: '帮我查一下明天的天气怎么样呢' }); await page.waitForTimeout(500);
+    a = await parts();
+    check('settled captions: a partial without the split (SenseVoice or Whisper alone) is one colour, as before', a.text === '帮我查一下明天的天气怎么样呢' && a.tail === null);
+    await emit('voice', { phase: 'accepted', turn_id: 'st', text: '帮我查一下明天的天气怎么样？' }); await page.waitForTimeout(300);
+    a = await parts();
+    check('settled captions: the final words are one colour', a.text === '帮我查一下明天的天气怎么样？' && a.tail === null);
+    await s.context.close();
+  }
+
   // ---- a slow tool shows its fixed line while the turn waits on it, at both levels that show state ----
   for (const captions of ['all', 'brief']) {
     const s = await scene({ captions });

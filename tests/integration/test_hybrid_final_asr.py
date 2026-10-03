@@ -386,6 +386,141 @@ def test_the_session_prepares_each_pause_discards_on_speech_and_commits_the_prep
     assert zh.recognize.call_count <= 2  # the first pause's pass may or may not have started
 
 
+def test_each_finished_pass_is_announced_even_when_its_entry_was_dropped_meanwhile() -> None:
+    """ADR 0143: the captions use a pass for the audio up to a pause after Allen kept speaking."""
+    told: list[tuple[str, int, str]] = []
+    gate = threading.Event()
+    ears = _hybrid(_sensevoice("zh"), zh=_whisper("你好吗", gate=gate))
+    ears.on_prepared_text(lambda *heard: told.append(heard))
+    audio = _audio(2.0)
+    ears.prepare("U1", audio, 2.0)
+    _wait_until(lambda: ears._whisper_zh.peak == 1)  # the pass is running
+    ears.discard("U1")  # he spoke again: nobody will collect it
+    gate.set()
+    _wait_until(lambda: told == [("U1", len(audio), "你好吗。")])
+
+
+def test_a_pass_with_no_words_or_a_failing_listener_costs_nothing() -> None:
+    """Nothing is announced for empty text, and a listener that raises never breaks the pass."""
+    told: list[str] = []
+    ears = _hybrid(_sensevoice("zh", text=""), zh=_whisper(""))
+    ears.on_prepared_text(lambda *heard: told.append(heard[2]))
+    ears.prepare("U1", _audio(2.0), 2.0)
+    assert ears.recognize_prepared("U1", _audio(2.0), 2.0).text == ""
+    ears = _hybrid(_sensevoice("zh"), zh=_whisper("好"))
+    ears.on_prepared_text(lambda *_heard: 1 / 0)
+    ears.prepare("U2", _audio(2.0), 2.0)
+    assert ears.recognize_prepared("U2", _audio(2.0), 2.0).text == "好。"
+    assert told == []
+
+
+@pytest.mark.parametrize("hybrid", [True, False])
+def test_the_captions_show_the_prepared_pass_as_settled_and_the_rest_as_tail(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, hybrid: bool,
+) -> None:
+    """Conversation mode, real pipeline and session: a pause's Whisper words become ``settled``.
+
+    SenseVoice's partials say 尾 and the number of frames they were given; Whisper's pass says
+    "whisper words". After the pause the caption is Whisper's words plus what was said after it.
+    With SenseVoice alone the caption is the partials, as before, and carries no split.
+    """
+    monkeypatch.setitem(
+        voice_audio._MODE_THRESHOLDS, "record", voice_audio.VadThresholds(0.4, -45.0, 1, 1, 40),
+    )
+    sensevoice = _sensevoice("zh")
+    sensevoice.partial_text.side_effect = lambda audio: f"尾{len(audio) // _FRAME_BYTES}"
+    broadcaster = MagicMock()
+    pipeline = voice_pipeline.VoicePipeline(
+        conn_factory=lambda: open_event_log(tmp_path / "events.db"),
+        recognizer=_hybrid(sensevoice, zh=_whisper("whisper words")) if hybrid else sensevoice,
+        normalizer=voice_asr.AsrNormalizer(corrections=[], aliases={}, fuzzy_enabled=False),
+        broadcaster=None,
+        artifacts_dir=None,
+    )
+    backend = _FakeBackend()
+    ingress = _ingress(backend)
+    with patch.object(voice_audio, "_load_silero_session", return_value=_EnergySession()):
+        session = voice_session.DuplexVoiceSession(
+            ingress=ingress,
+            wake_engine=_FakeWakeEngine(detections=set()),
+            vad=voice_audio.SileroVad(mode="record"),
+            pipeline=pipeline,
+            broadcaster=broadcaster,
+            output_active=lambda: False,
+            wake_threshold=0.5,
+            config=replace(
+                voice_session.RealtimeInputSessionConfig(),
+                pre_roll_ms=64,
+                min_voiced_s=0.032,
+                max_utterance_s=10.0,
+                worker_poll_s=0.001,
+                shutdown_timeout_s=1.0,
+                partial_asr=voice_session.PartialAsrConfig(captions=True, interval_ms=32),
+            ),
+            conversation=lambda: True,
+        )
+        assert session.start().started
+    epoch = ingress.stream_epoch
+    assert epoch is not None
+
+    def partials() -> list[dict[str, Any]]:
+        return [
+            {"phase": call.args[0], **call.kwargs}
+            for call in broadcaster.broadcast_voice_sync.call_args_list
+            if call.args[0] == "partial"
+        ]
+
+    def frames(value: int, count: int) -> None:
+        for _ in range(count):
+            backend.emit(epoch=epoch, value=value)
+            time.sleep(0.002)
+
+    try:
+        frames(0, 4)
+        frames(10_000, 40)  # 1.3 s of speech: long enough for Whisper
+        frames(0, 8)  # a pause: the pass for the audio so far
+        if hybrid:
+            _wait_until(
+                lambda: any(p["settled"] == "whisper words" for p in partials()), timeout_s=5,
+            )
+        else:
+            time.sleep(0.3)  # nothing settles it; give a pass the time it would need
+        frames(10_000, 6)  # more words after it; captions move on with each frame
+        _wait_until(
+            lambda: frames(10_000, 1) or "尾" in partials()[-1]["text"], timeout_s=5,
+        )
+    finally:
+        assert session.close().definitively_closed
+
+    shown = partials()
+    last = shown[-1]
+    if not hybrid:
+        assert all(set(p) == {"phase", "turn_id", "text"} for p in shown)
+        assert "whisper words" not in last["text"]
+        return
+    assert shown[0]["settled"] == ""  # before any pass the whole caption is tail
+    assert last["settled"] == "whisper words"
+    assert last["text"] == last["settled"] + last["tail"]
+    # The tail decodes only the frames after the cut, so it is far shorter than the utterance.
+    assert int(last["tail"].removeprefix("尾")) < 40
+
+
+def test_a_recognizer_that_prepares_nothing_has_no_prepared_text(tmp_path: Path) -> None:
+    """SenseVoice alone and Whisper alone: registering a listener is a no-op, captions stay tail."""
+    told: list[tuple[str, int, str]] = []
+    for recognizer in (
+        _sensevoice("zh"),
+        voice_asr.WhisperFinalRecognizer(
+            whisper=MagicMock(spec=voice_asr.MlxWhisperRecognizer),
+            partials=_sensevoice("zh"),
+        ),
+    ):
+        pipeline = _pipeline(tmp_path, recognizer)
+        assert not pipeline.on_prepared_text(lambda *heard: told.append(heard))
+    assert told == []
+    assert _pipeline(tmp_path, _hybrid(_sensevoice("zh"))).on_prepared_text(lambda *_heard: None)
+
+
 @pytest.mark.parametrize(
     ("first", "again", "kept", "second_passes"),
     [

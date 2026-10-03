@@ -143,6 +143,7 @@
 .talk .lb.url span { min-width:0; overflow:hidden; text-overflow:ellipsis; }
 .talk .lb.url ~ .sp { display:none; }
 .talk .lb.heard { color:rgb(235 238 245 / .72); animation:talk-in-text .24s ease-out; }
+.talk .lb.heard .tail { color:rgb(235 238 245 / .42); }
 /* what you say shows its end: the words that no longer fit give way on the left, as an ellipsis, so the newest are always there */
 .talk .lb.heard { direction:rtl; text-overflow:ellipsis; }
 @keyframes talk-in-text { from { opacity:0; } }

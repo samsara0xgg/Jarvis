@@ -119,7 +119,7 @@ class _Harness:
         partial: voice_session.PartialAsrConfig,
         required_misses: int = 10,
         min_voiced_s: float = 0.032,
-        on_partial: Callable[[str, str], None] | None = None,
+        on_partial: Callable[[str, str, str], None] | None = None,
     ) -> None:
         reset_realtime_trace()
         self._patch = patch.object(
@@ -435,7 +435,7 @@ def test_captions_show_what_is_heard_while_the_pause_still_ends_the_utterance() 
         _ScriptedDecoder(["把灯", "把灯打开。", "把灯打开。"]),
         partial=voice_session.PartialAsrConfig(captions=True, interval_ms=32),
         required_misses=2,
-        on_partial=lambda turn_id, text: shown.append((turn_id, text)),
+        on_partial=lambda turn_id, settled, tail: shown.append((turn_id, settled + tail)),
     )
     try:
         outcomes = harness.feed_many([_SPEECH] * 4 + [_SILENCE] * 2)
@@ -448,6 +448,156 @@ def test_captions_show_what_is_heard_while_the_pause_still_ends_the_utterance() 
     assert [text for _, text in shown] == ["把灯", "把灯打开"]
     assert {turn_id for turn_id, _ in shown} == {utterance.turn_id}
     assert _traces("endpoint_decision") == []
+
+
+class _RecordingDecoder(_ScriptedDecoder):
+    """A scripted decoder that also keeps how long each snapshot it decoded was."""
+
+    def __init__(self, texts: list[str]) -> None:
+        super().__init__(texts)
+        self.frames_heard: list[int] = []
+
+    def partial_text(self, audio_bytes: bytes) -> str:
+        self.frames_heard.append(len(audio_bytes) // (_FRAME * 2))
+        return super().partial_text(audio_bytes)
+
+
+def _caption_harness(
+    decoder: _ScriptedDecoder,
+    shown: list[tuple[str, str]],
+    *,
+    enabled: bool = False,
+) -> _Harness:
+    return _Harness(
+        decoder,
+        partial=voice_session.PartialAsrConfig(captions=True, enabled=enabled, interval_ms=32),
+        required_misses=40,
+        on_partial=lambda _turn_id, settled, tail: shown.append((settled, tail)),
+    )
+
+
+def _utterance_id(harness: _Harness) -> str:
+    return harness.assembler._utterance_id  # noqa: SLF001 - minted by arm(), no accessor
+
+
+def test_a_finished_pass_settles_the_captions_and_the_tail_decodes_only_what_follows() -> None:
+    """ADR 0143: the pass's words are ``settled``; later partials decode the audio after its cut."""
+    shown: list[tuple[str, str]] = []
+    decoder = _RecordingDecoder(["把灯", "把灯打开", "把灯打开", "然后关门。"])
+    harness = _caption_harness(decoder, shown)
+    try:
+        harness.feed_many([_SPEECH] * 3)
+        harness.assembler.settle(_utterance_id(harness), 3 * _FRAME * 2, "把灯打开。")
+        harness.feed_many([_SPEECH] * 4 + [_SILENCE] * 2)
+    finally:
+        harness.close()
+    # Before the pass the whole caption is tail; the pass moves its words to settled and clears
+    # the tail until the audio after the cut has been decoded.
+    assert shown[:2] == [("", "把灯"), ("", "把灯打开")]
+    assert shown[2] == ("把灯打开", "")
+    assert shown[3] == ("把灯打开", "然后关门")
+    # Three whole snapshots, then only what follows the 3-frame cut: 1, 2, ... 6 frames.
+    assert decoder.frames_heard == [1, 2, 3, 1, 2, 3, 4, 5, 6]
+
+
+def test_nothing_said_after_the_cut_decodes_no_tail() -> None:
+    """A pause after the settled audio has no speech to decode: the tail stays empty."""
+    shown: list[tuple[str, str]] = []
+    decoder = _RecordingDecoder(["把灯打开。"])
+    harness = _caption_harness(decoder, shown)
+    try:
+        harness.feed_many([_SPEECH] * 3)
+        harness.assembler.settle(_utterance_id(harness), 3 * _FRAME * 2, "把灯打开。")
+        harness.feed_many([_SILENCE] * 6)
+    finally:
+        harness.close()
+    assert shown == [("", "把灯打开"), ("把灯打开", "")]
+    assert decoder.calls == 3
+
+
+def test_a_newer_pass_replaces_an_older_one_and_a_tail_decoded_before_it_is_dropped() -> None:
+    """Each pass covers a longer prefix; a tail decoded for the old cut is not shown on the new."""
+    shown: list[tuple[str, str]] = []
+    decoder = _RecordingDecoder(["首", "首二", "首三", "旧尾", "新尾"])
+    harness = _caption_harness(decoder, shown)
+    try:
+        harness.feed_many([_SPEECH] * 3)
+        harness.assembler.settle(_utterance_id(harness), 2 * _FRAME * 2, "甲。")
+        harness.feed(_SPEECH, decode=False)  # takes the pass; its tail decode is not run yet
+        harness.assembler.settle(_utterance_id(harness), 4 * _FRAME * 2, "甲乙。")
+        harness.lane.run_once(timeout_s=0)  # the tail for the 2-frame cut, now out of date
+        harness.feed_many([_SPEECH] * 2)
+    finally:
+        harness.close()
+    assert ("甲", "") in shown
+    assert ("甲", "旧尾") not in shown
+    assert ("甲乙", "旧尾") not in shown
+    assert shown[-1] == ("甲乙", "新尾")
+
+
+def test_a_pass_from_another_utterance_or_an_empty_one_is_ignored() -> None:
+    """The pass runs on its own thread: by the time it finishes the utterance may be over."""
+    shown: list[tuple[str, str]] = []
+    harness = _caption_harness(_RecordingDecoder(["把灯"]), shown)
+    try:
+        harness.feed_many([_SPEECH] * 2)
+        harness.assembler.settle("U-old", 2 * _FRAME * 2, "上一句。")
+        harness.feed(_SPEECH)
+        harness.assembler.settle(_utterance_id(harness), 3 * _FRAME * 2, "  。")
+        harness.feed(_SPEECH)
+    finally:
+        harness.close()
+    assert shown == [("", "把灯")]
+
+
+def test_a_pass_that_finishes_after_the_utterance_ended_is_dropped_with_it() -> None:
+    """A late pass for the utterance just committed is not shown on the next one."""
+    shown: list[tuple[str, str]] = []
+    harness = _Harness(
+        _RecordingDecoder(["把灯"]),
+        partial=voice_session.PartialAsrConfig(captions=True, interval_ms=32),
+        required_misses=2,
+        on_partial=lambda _turn_id, settled, tail: shown.append((settled, tail)),
+    )
+    try:
+        old = _utterance_id(harness)
+        outcomes = harness.feed_many([_SPEECH] * 3 + [_SILENCE] * 2)
+        assert isinstance(outcomes[-1], voice_session.CapturedUtterance)
+        harness.assembler.settle(old, 3 * _FRAME * 2, "上一句。")
+        harness.assembler.arm(voice_session.WakeDetection(1, 0, 0, 0.9))
+        harness.feed_many([_SPEECH] * 3)
+    finally:
+        harness.close()
+    assert shown
+    assert all(settled == "" for settled, _ in shown)
+
+
+def test_the_semantic_endpoint_keeps_decoding_the_whole_utterance() -> None:
+    """With ``enabled`` the endpoint needs whole-utterance hypotheses: no settle, no cut."""
+    shown: list[tuple[str, str]] = []
+    decoder = _RecordingDecoder(["把灯", "把灯打开"])
+    harness = _caption_harness(decoder, shown, enabled=True)
+    try:
+        harness.feed_many([_SPEECH] * 2)
+        harness.assembler.settle(_utterance_id(harness), 2 * _FRAME * 2, "把灯。")
+        harness.feed_many([_SPEECH] * 2)
+    finally:
+        harness.close()
+    assert all(settled == "" for settled, _ in shown)
+    assert decoder.frames_heard == [1, 2, 3, 4]
+
+
+def test_latin_words_meeting_at_the_cut_keep_their_space() -> None:
+    """``text`` is ``settled + tail`` exactly, so the space between English words rides the tail."""
+    shown: list[tuple[str, str]] = []
+    harness = _caption_harness(_RecordingDecoder(["how are you"]), shown)
+    try:
+        harness.feed_many([_SPEECH] * 2)
+        harness.assembler.settle(_utterance_id(harness), 2 * _FRAME * 2, "Hello world.")
+        harness.feed_many([_SPEECH] * 2)
+    finally:
+        harness.close()
+    assert shown[-1] == ("Hello world", " how are you")
 
 
 # ---------------------------------------------------------------------------

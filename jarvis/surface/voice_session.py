@@ -152,6 +152,8 @@ class PartialSnapshot:
     utterance_id: str
     revision: int
     audio_bytes: bytes
+    # Bytes of the utterance's audio that ``audio_bytes`` leaves out: the settled part (ADR 0143).
+    cut_bytes: int = 0
 
 
 @dataclass(frozen=True)
@@ -163,6 +165,7 @@ class PartialRevision:
     text: str
     decode_ms: float
     failed: bool = False
+    cut_bytes: int = 0
 
 
 @dataclass(frozen=True)
@@ -453,6 +456,7 @@ class PartialAsrLane:
                 text=text,
                 decode_ms=decode_ms,
                 failed=failed,
+                cut_bytes=snapshot.cut_bytes,
             )
         return True
 
@@ -476,14 +480,16 @@ class UtteranceAssembler:
         session_id: str,
         lane: PartialAsrLane | None = None,
         output_active: Callable[[], bool] | None = None,
-        on_partial: Callable[[str, str], None] | None = None,
+        on_partial: Callable[[str, str, str], None] | None = None,
         prepare_final: Callable[[str, bytes, float], None] | None = None,
         discard_final: Callable[[str], None] | None = None,
     ) -> None:
         """Create bounded idle/pre-roll/utterance storage around one VAD.
 
-        ``on_partial(turn_id, text)`` is told each time what has been heard so
-        far changes (ADR 0111); it only shows it and never decides anything.
+        ``on_partial(turn_id, settled, tail)`` is told each time what has been heard so
+        far changes (ADR 0111, 0143); it only shows it and never decides anything.
+        ``settled`` is the words of the audio a finished final-ASR pass heard (see
+        :meth:`settle`), ``tail`` what was said after it.
         ``prepare_final(utterance_id, audio, speech_s)`` is called at a pause of
         ``_PREPARE_SILENT_FRAMES`` and ``discard_final(utterance_id)`` when
         speech resumes or the utterance ends without a commit (ADR 0132); both
@@ -500,7 +506,15 @@ class UtteranceAssembler:
         self._on_partial = on_partial
         self._prepare_final = prepare_final
         self._discard_final = discard_final
-        self._shown_partial = ""
+        self._shown_partial = ("", "")
+        self._frame_bytes = frame_samples * 2
+        # ADR 0143: the words of the audio up to a pause that a finished final-ASR pass heard.
+        # ``settle`` runs on that pass's thread and only fills the inbox; the capture thread,
+        # which owns the utterance, takes it from there.
+        self._settled_text = ""
+        self._settled_cut = 0
+        self._settled_inbox: tuple[str, int, str] | None = None
+        self._settled_lock = threading.Lock()
         self._partial = config.partial_asr
         self._frame_ms = frame_samples * 1_000.0 / sample_rate_hz
 
@@ -624,6 +638,15 @@ class UtteranceAssembler:
     def voiced_frames(self) -> int:
         """Return the speech frames of the active utterance so far."""
         return self._voiced_frames
+
+    def settle(self, utterance_id: str, audio_bytes: int, text: str) -> None:
+        """ASR heard the first ``audio_bytes`` of ``utterance_id``'s audio: ``text``.
+
+        ADR 0143. Safe from any thread; the newest call wins, and one for an utterance that is
+        no longer the current one is ignored when the capture thread takes it.
+        """
+        with self._settled_lock:
+            self._settled_inbox = (utterance_id, audio_bytes, text)
 
     def discard_prepared(self, utterance_id: str) -> None:
         """Drop what final ASR prepared for a committed utterance that is not going to hear it."""
@@ -1020,15 +1043,46 @@ class UtteranceAssembler:
         """Captions only: decode the utterance so far on the interval, endpoint stays acoustic."""
         if self._degraded:
             return
+        self._take_settled()
         self._pull_revisions()
         self._frames_since_snapshot += 1
         if self._frames_since_snapshot >= self._interval_frames:
             self._submit_snapshot()
 
+    def _take_settled(self) -> None:
+        """Make a finished final-ASR pass the settled words, and decode only what follows it."""
+        with self._settled_lock:
+            heard, self._settled_inbox = self._settled_inbox, None
+        if heard is None:
+            return
+        utterance_id, cut_bytes, text = heard
+        words = voice_asr.caption_text(text)
+        if utterance_id != self._utterance_id or not words or cut_bytes <= self._settled_cut:
+            return
+        self._settled_text = words
+        self._settled_cut = cut_bytes
+        self._frames_since_snapshot = self._interval_frames  # the tail is decoded on this tick
+        self._show_caption("")
+
+    def _show_caption(self, tail: str) -> None:
+        settled = self._settled_text
+        if tail and settled and all(c.isalnum() and c.isascii() for c in (settled[-1], tail[0])):
+            tail = " " + tail  # two Latin words meeting at the cut
+        shown = (settled, tail)
+        if (settled or tail) and shown != self._shown_partial and self._on_partial is not None:
+            self._shown_partial = shown
+            self._on_partial(self._turn_id, settled, tail)
+
     def _submit_snapshot(self) -> None:
         if self._lane is None:
             return
         self._frames_since_snapshot = 0
+        audio = b"".join(self._audio_frames)
+        cut = self._settled_cut
+        if cut:
+            audio = audio[cut:]
+            if not any(self._speech_flags[cut // self._frame_bytes :]):
+                return  # nothing said since the settled audio: no tail to decode
         self._snapshot_count += 1
         # ponytail: whole-utterance snapshot, bounded by max_utterance_s and the
         # over-budget degrade (measured ~15 ms decode per audio second, so
@@ -1038,7 +1092,8 @@ class UtteranceAssembler:
             PartialSnapshot(
                 utterance_id=self._utterance_id,
                 revision=self._snapshot_count,
-                audio_bytes=b"".join(self._audio_frames),
+                audio_bytes=audio,
+                cut_bytes=cut,
             ),
         )
         if drops >= _PARTIAL_DROP_DEGRADE_THRESHOLD:
@@ -1058,10 +1113,9 @@ class UtteranceAssembler:
         if revision.failed:
             self._degrade("partial_decode_failed", decode_ms=round(revision.decode_ms, 3))
             return
-        shown = voice_asr.caption_text(revision.text)
-        if shown and shown != self._shown_partial and self._on_partial is not None:
-            self._shown_partial = shown
-            self._on_partial(self._turn_id, shown)
+        if revision.cut_bytes != self._settled_cut:
+            return  # decoded before a newer pass settled more; its words are settled now
+        self._show_caption(voice_asr.caption_text(revision.text))
         normalized = voice_asr.normalize_partial_text(revision.text)
         if self._previous_partial is not None:
             common = os.path.commonprefix([self._previous_partial, normalized])
@@ -1125,7 +1179,11 @@ class UtteranceAssembler:
         self._snapshot_count = 0
         self._accepted_revision = 0
         self._previous_partial = None
-        self._shown_partial = ""
+        self._shown_partial = ("", "")
+        self._settled_text = ""
+        self._settled_cut = 0
+        with self._settled_lock:
+            self._settled_inbox = None
         self._stable_prefix = ""
         self._degraded = False
         self._set_phase(None, "")
@@ -1273,6 +1331,11 @@ class DuplexVoiceSession:
             prepare_final=getattr(pipeline, "prepare_final", None),
             discard_final=getattr(pipeline, "discard_final", None),
         )
+        # ADR 0143: with a final recognizer that hears ahead, captions say which words it settled.
+        self._captions_settle = False
+        listen = getattr(pipeline, "on_prepared_text", None)
+        if config.partial_asr.captions and not config.partial_asr.enabled and callable(listen):
+            self._captions_settle = bool(listen(self._assembler.settle))
         self._detections: queue.Queue[WakeDetection] = queue.Queue(
             maxsize=config.detection_queue_capacity,
         )
@@ -2085,9 +2148,18 @@ class DuplexVoiceSession:
             self._diagnostic_frames += 1
             self._diagnostic_last_cursor = frame.sample_cursor + frame.frame_count
 
-    def _show_partial(self, turn_id: str, text: str) -> None:
-        """ADR 0111: what has been heard so far, for the surface to show while he speaks."""
-        self._broadcast("partial", turn_id=turn_id, text=text)
+    def _show_partial(self, turn_id: str, settled: str, tail: str) -> None:
+        """ADR 0111, 0143: what has been heard so far, for the surface to show while he speaks.
+
+        ``text`` is the two joined, for a surface that does not tell them apart; ``settled`` and
+        ``tail`` are sent only when a final pass can settle words, so a surface can dim the tail.
+        """
+        if self._captions_settle:
+            self._broadcast(
+                "partial", turn_id=turn_id, text=settled + tail, settled=settled, tail=tail,
+            )
+        else:
+            self._broadcast("partial", turn_id=turn_id, text=settled + tail)
 
     def _broadcast(self, phase: str, *, turn_id: str, **payload: object) -> None:
         if self._broadcaster is None:
