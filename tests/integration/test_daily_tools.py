@@ -141,6 +141,8 @@ def test_record_pages_are_complete_and_snapshot_stable(daily: DailyHarness) -> N
     assert len(ids) == len(set(ids)) == 35
     assert "late" not in ids
     assert daily.call("search_records", {})["records"][0]["id"] == "late"
+    oldest = daily.call("search_records", {"order": "oldest", "limit": 2})["records"]
+    assert [r["id"] for r in oldest] == ["r0", "r1"]
     assert (
         daily.call("search_records", {"keyword": "changed", "cursor": first["next_cursor"]})["code"]
         == "cursor_mismatch"

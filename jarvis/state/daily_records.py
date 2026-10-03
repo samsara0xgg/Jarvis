@@ -38,8 +38,11 @@ def search_records(path: Path | None, args: dict[str, Any]) -> dict[str, Any]:
     with closing(read_connection(path)) as conn:
         high = int(conn.execute("SELECT COALESCE(MAX(rowid), 0) FROM records").fetchone()[0])
         snapshot, offset = cursor_position(args.get("cursor"), binding, [high, 0])
+        # Newest first unless asked for the earliest: the first thing said in a month
+        # took 22 pages from the newest end (live 2026-10-02).
+        direction = "ASC" if args.get("order") == "oldest" else "DESC"
         rows = conn.execute(
-            "SELECT id,ts,source,text FROM records WHERE rowid <= ? ORDER BY rowid DESC",
+            f"SELECT id,ts,source,text FROM records WHERE rowid <= ? ORDER BY rowid {direction}",  # noqa: S608
             (snapshot,),
         ).fetchall()
     found = []

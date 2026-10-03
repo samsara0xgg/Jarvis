@@ -30,7 +30,8 @@ if TYPE_CHECKING:
 _DESCRIPTIONS = {
     "search_records": (
         "Search past conversations by keyword/time [from,to). Returns identified excerpts, "
-        "not full text. Follow next_cursor with identical arguments for every page; "
+        "not full text, newest first; order=oldest starts from the earliest (the first thing "
+        "said in a period). Follow next_cursor with identical arguments for every page; "
         "read_records retrieves originals."
     ),
     "read_records": (

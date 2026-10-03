@@ -86,7 +86,13 @@ _COVERAGE = object_fields(
 
 SCHEMAS: dict[str, dict[str, Any]] = {
     "search_records": object_fields(
-        {"keyword": text_field(500), "from": text_field(50), "to": text_field(50), **_PAGE}
+        {
+            "keyword": text_field(500),
+            "from": text_field(50),
+            "to": text_field(50),
+            "order": enum_field("newest", "oldest"),
+            **_PAGE,
+        }
     ),
     "read_records": object_fields(
         {
