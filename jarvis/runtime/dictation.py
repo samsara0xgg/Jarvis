@@ -200,13 +200,18 @@ def whisper_ears(
 
     It is installed on Allen's Mac, outside ``pyproject.toml``; the packaged app ships without it.
     ``language`` ``""`` lets Whisper tell; only Chinese gets the simplified-Chinese prompt.
-    ``terms`` puts his word list in the prompt on every call; ``prompt`` replaces the Chinese one.
+    ``terms`` puts his word list in the prompt on every call; ``prompt`` replaces the Chinese one
+    for the ADR 0137 command pass, which decodes at most 16 tokens and never retries a loop.
     """
     if importlib.util.find_spec("mlx_whisper") is None:
         return None
     if language == "zh":
         if prompt:
-            return voice_asr.MlxWhisperRecognizer(language="zh", initial_prompt=prompt, terms=terms)
+            # A command is a few words: a short decode, and a loop is no command (2026-10-03,
+            # a looped pass retried hotter for about 5 s while his next lines queued).
+            return voice_asr.MlxWhisperRecognizer(
+                language="zh", initial_prompt=prompt, terms=terms, max_tokens=16, retry_loops=False,
+            )
         return voice_asr.MlxWhisperRecognizer(language="zh", terms=terms)
     return voice_asr.MlxWhisperRecognizer(language=language or None, initial_prompt=None, terms=terms)
 

@@ -67,3 +67,9 @@ line carries only whether it found a command (ADR 0067).
   (退下, 退下吧, 再见), one, 体育, became 停.
 - A command misheard as something that already is a command, a question or
   a listening sound is not recovered.
+- Amended 2026-10-03: the second pass decodes at most 16 tokens and hears a
+  looped transcript as no command, without the temperature-fallback retry.
+  At 10:22:15 a looped pass was retried hotter for about 4 s while his next
+  lines queued, and a line said meanwhile is dropped when the queue fills; that drop is
+  now logged. On ten recent short turns the capped pass took 0.33-0.40 s,
+  and 0.72 s for the one that looped.

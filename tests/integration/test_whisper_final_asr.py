@@ -98,6 +98,17 @@ def test_a_looped_transcript_is_heard_again_without_the_list(whisper: _Whisper) 
     assert again["initial_prompt"] == _SIMPLIFIED
 
 
+def test_the_command_pass_decodes_short_and_hears_a_loop_as_nothing(whisper: _Whisper) -> None:
+    """ADR 0137: at most 16 tokens, and a loop is no command, never retried hotter."""
+    whisper.texts = ["退下退下退下退下退下退下", "退下。"]
+    ears = whisper_ears(language="zh", prompt="常用口令：退下。")
+    assert ears is not None
+    assert ears.recognize(_speech(1.0, 0.1)).text == ""
+    (call,) = whisper.calls
+    assert call["sample_len"] == 16
+    assert call["temperature"] == 0.0
+
+
 @pytest.mark.parametrize(
     ("heard", "kept"),
     [

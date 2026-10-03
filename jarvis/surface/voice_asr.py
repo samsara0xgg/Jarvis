@@ -548,9 +548,17 @@ class MlxWhisperRecognizer:
         # prompt biases the decoder back toward simplified glyphs.
         initial_prompt: str | None = "以下是普通话的简体中文转录。",
         terms: Callable[[], Sequence[str]] | None = None,
+        max_tokens: int | None = None,
+        retry_loops: bool = True,
     ) -> None:
-        """Capture mlx-whisper config; module + model load on first recognize()."""
+        """Capture mlx-whisper config; module + model load on first recognize().
+
+        ``max_tokens`` caps one decode; ``retry_loops`` ``False`` hears a looped transcript
+        as nothing.
+        """
         self._repo = str(repo)
+        self._max_tokens = max_tokens
+        self._retry_loops = retry_loops
         self._fp16 = bool(fp16)
         self._temperature = float(temperature)
         self._language = language
@@ -599,7 +607,10 @@ class MlxWhisperRecognizer:
         with _WHISPER_LOCK:
             transcription = self._decode(audio, prompt=prompt, temperature=self._temperature)
             text = self._heard(transcription, prompt, self._initial_prompt, listed)
-            if _looks_looped(text):
+            if _looks_looped(text) and not self._retry_loops:
+                LOGGER.info("MLX Whisper looped; heard as nothing")
+                text = ""
+            elif _looks_looped(text):
                 # 言文 e94d055: heard again without the list, hotter where it repeats.
                 LOGGER.info("MLX Whisper looped; hearing it again with temperature fallback")
                 transcription = self._decode(
@@ -637,6 +648,7 @@ class MlxWhisperRecognizer:
             initial_prompt=prompt,
             condition_on_previous_text=False,
             verbose=None,
+            **({"sample_len": self._max_tokens} if self._max_tokens else {}),
         )
         return result
 

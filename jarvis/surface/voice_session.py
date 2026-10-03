@@ -1966,6 +1966,9 @@ class DuplexVoiceSession:
             self._end_barge_in(outcome.turn_id)
             self._mark_in_flight(outcome.turn_id, active=False)
             self._commit_queue_full += 1
+            LOGGER.warning(
+                "voice turn dropped: the transcription queue is full (turn=%s)", outcome.turn_id,
+            )
             record_realtime_trace(
                 "audio_input_commit_queue_full",
                 session_id=outcome.session_id,

@@ -1,7 +1,7 @@
 # ADR 0054 — Jarvis re-reads the audio devices when they change and nobody speaks
 
 **Status:** Accepted
-**Date:** 2026-09-26
+**Date:** 2026-09-26 (amended 2026-10-03: retry a microphone that is down)
 **Supersedes:** ADR 0052's "a saved change applies on the next restart" for the microphone and the speaker only; the rest of ADR 0052 stands.
 
 ## Context
@@ -29,6 +29,13 @@
   re-read took 0.31–0.33 s over three rounds: 0.24 s closing, 0.007 s
   initialising PortAudio, 0.07 s reopening. The microphone delivered 29
   callbacks in the second after each round.
+- 2026-10-03: the microphone stayed shut from 23:49 until a restart at
+  10:16. A device change at 23:49:25 re-read the devices, but the
+  reSpeaker, though listed, failed to open, and a failed open after a
+  re-read counted as handled, so nothing tried again. At the 09:48:52 wake
+  it failed again, the wake parked input and output both, and a parked
+  microphone was never re-read. The same failed open after a re-read is in
+  the log on 2026-09-29, 09-30 and 10-02.
 - Allen asked on 2026-09-26 for all of these: reconnect by itself, re-read
   only when a device really changed, wait until she has finished speaking,
   reopen her speech channels (GPT-Live's included), and let the Settings
@@ -44,7 +51,11 @@ the microphone is newly lost, or when the Settings page picks a microphone
 or speaker, wait until nothing is playing, Allen is not mid-sentence and
 GPT-Live is silent. Then park new answers, close every stream, initialise
 PortAudio again, and reopen the microphone and the speakers on those
-devices. A picked device that is absent stays closed until it comes back.
+devices. A picked device that is absent stays closed until it comes back. A
+microphone that is down while its device is there, lost or parked by a wake
+that failed, is re-read again after 2, 5 and 15 s, then every 30 s, until it
+opens; a parked one wakes again after the re-read. Nothing is re-read from
+the system's sleep notice until a wake has run.
 The Settings page lists the devices CoreAudio has now. Jarvis never changes
 the Mac's own default devices.
 
@@ -80,4 +91,6 @@ while it initialises, so any daemon log line written in those milliseconds
 is lost. The re-read uses sounddevice's private `_terminate` and
 `_initialize`, so a sounddevice upgrade has to be checked against them. A
 coreaudiod restart that keeps the same device ids is recovered only through
-the lost-microphone trigger.
+the lost-microphone trigger. A microphone that never opens though its device
+is listed closes the speakers for a third of a second every 30 s while
+nobody speaks.

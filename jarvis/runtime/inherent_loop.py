@@ -3026,12 +3026,8 @@ class _VoicePowerTransition:
     input_skipped_reason: str | None = None
 
 
-# ADR 0054: asleep, or a close not proven, so re-initialising PortAudio could
-# free a stream still open.
-_NOT_REFRESHABLE = frozenset({
-    voice_audio.InputCapabilityState.SUSPENDED,
-    voice_audio.InputCapabilityState.CLOSE_UNCERTAIN,
-})
+_SUSPENDED = voice_audio.InputCapabilityState.SUSPENDED
+_CLOSE_UNCERTAIN = voice_audio.InputCapabilityState.CLOSE_UNCERTAIN
 
 
 class _VoicePowerCoordinator:
@@ -3055,6 +3051,8 @@ class _VoicePowerCoordinator:
         self._pending_wake_done = threading.Event()
         self._pending_wake_done.set()
         self._pending_wake_state: Literal["idle", "in_flight", "recovered"] = "idle"
+        # ADR 0054: from the system's sleep notice until a wake has run to its end.
+        self._asleep = False
 
     @staticmethod
     def _input_resume_succeeded(result: object | None) -> bool:
@@ -3078,6 +3076,7 @@ class _VoicePowerCoordinator:
         # longer restore input/output after this linearization point.
         with self._intent_lock:
             self._pending_wake_generation += 1
+            self._asleep = True
         if not self._lock.acquire(
             timeout=max(0.0, deadline - time.monotonic()),
         ):
@@ -3116,7 +3115,18 @@ class _VoicePowerCoordinator:
         finally:
             self._lock.release()
 
-    def on_wake(  # noqa: C901, PLR0912, PLR0915 - ordered cross-device CAS
+    def on_wake(self) -> _VoicePowerTransition:
+        """Wake both devices; awake again once it has run, unless a newer sleep came meanwhile."""
+        with self._intent_lock:
+            generation = self._pending_wake_generation
+        try:
+            return self._wake()
+        finally:
+            with self._intent_lock:
+                if generation == self._pending_wake_generation:
+                    self._asleep = False
+
+    def _wake(  # noqa: C901, PLR0912, PLR0915 - ordered cross-device CAS
         self,
     ) -> _VoicePowerTransition:
         """Create fresh output ownership before re-enabling input decisions."""
@@ -3429,21 +3439,30 @@ class _VoicePowerCoordinator:
             done.set()
             LOGGER.exception("failed to start pending wake continuation")
 
+    @property
+    def asleep(self) -> bool:
+        """The system said it sleeps and no wake has run to its end since."""
+        return self._asleep
+
     def quiet(self) -> bool:
-        """Nothing plays, Allen is not mid-sentence, and the mic is not asleep or in doubt."""
+        """Awake, nothing plays, Allen is not mid-sentence, and no close is in doubt."""
         ingress = self._session.ingress
         return (
-            not self._media.is_output_active()
+            not self._asleep
+            and not self._media.is_output_active()
             and not ingress.capture_active
-            and ingress.capability.state not in _NOT_REFRESHABLE
+            and ingress.capability.state is not _CLOSE_UNCERTAIN
         )
 
-    def refresh_devices(self, *, input_device: str | None, output_device: str | None) -> str:
+    def refresh_devices(  # noqa: PLR0911 - each refusal is its own answer
+        self, *, input_device: str | None, output_device: str | None,
+    ) -> str:
         """Close every stream, re-read PortAudio's devices, reopen on these (ADR 0054).
 
         Starts only while :meth:`quiet`; an answer arriving meanwhile parks and
         starts afterwards. The caller has already closed any GPT-Live speaker.
-        Answers ``refreshed ...`` only when PortAudio initialised again.
+        Answers ``refreshed ...`` only when PortAudio initialised again. A wake
+        whose microphone failed left both devices parked: re-read, then wake again.
         """
         ingress = self._session.ingress
         if not self._lock.acquire(timeout=self._TOTAL_TRANSITION_BOUND_S):
@@ -3452,40 +3471,61 @@ class _VoicePowerCoordinator:
             if self._shutdown.is_set():
                 return "closed"
             state = ingress.capability.state
-            if state in _NOT_REFRESHABLE:
-                return f"skipped:{state.value}"
-            nothing_playing = self._media.hold_for_devices(held=True)
-            try:
-                if not nothing_playing:
-                    return "busy:speaking"
-                if ingress.capture_active:
-                    return "busy:listening"
-                stopped = ingress.stop_for_sleep(
-                    deadline=time.monotonic() + self._TOTAL_TRANSITION_BOUND_S,
-                )
+            if self._asleep or state is _CLOSE_UNCERTAIN:
+                return f"skipped:{'asleep' if self._asleep else state.value}"
+            if state is _SUSPENDED:
+                if self._pending_wake_state != "idle":
+                    return "busy:wake_in_flight"
                 player = self._media.player
-                closed = player.stop()
-                if (stopped is None or stopped.definitively_closed) and closed.definitively_closed:
-                    voice_backend.reinitialize_portaudio()
-                    outcome = "refreshed"
-                else:
-                    outcome = "not_refreshed:close_uncertain"
+                if not player.stop().definitively_closed:
+                    return "not_refreshed:close_uncertain"
+                voice_backend.reinitialize_portaudio()
                 player.set_device(output_device)
-                started = player.start()
                 ingress.set_input_device(input_device)
-                resumed = ingress.resume_after_wake(
-                    deadline=time.monotonic() + self._TOTAL_TRANSITION_BOUND_S,
-                )
-                if not started.started:
-                    ingress.report_output_unavailable(reason=f"device_refresh:{started.reason}")
-                return (
-                    f"{outcome} speaker={started.status}:{started.reason} "
-                    f"microphone={self._input_resume_reason(resumed)}"
-                )
-            finally:
-                self._media.hold_for_devices(held=False)
+            else:
+                return self._reopen_locked(input_device, output_device)
         finally:
             self._lock.release()
+        woke = self.on_wake()
+        speaker = woke.output_result
+        return (
+            f"refreshed_and_woke speaker={speaker and f'{speaker.status}:{speaker.reason}'} "
+            f"microphone={self._input_resume_reason(woke.input_result)}"
+        )
+
+    def _reopen_locked(self, input_device: str | None, output_device: str | None) -> str:
+        """Close both devices while nothing plays, re-read PortAudio, reopen on these."""
+        ingress = self._session.ingress
+        nothing_playing = self._media.hold_for_devices(held=True)
+        try:
+            if not nothing_playing:
+                return "busy:speaking"
+            if ingress.capture_active:
+                return "busy:listening"
+            stopped = ingress.stop_for_sleep(
+                deadline=time.monotonic() + self._TOTAL_TRANSITION_BOUND_S,
+            )
+            player = self._media.player
+            closed = player.stop()
+            if (stopped is None or stopped.definitively_closed) and closed.definitively_closed:
+                voice_backend.reinitialize_portaudio()
+                outcome = "refreshed"
+            else:
+                outcome = "not_refreshed:close_uncertain"
+            player.set_device(output_device)
+            started = player.start()
+            ingress.set_input_device(input_device)
+            resumed = ingress.resume_after_wake(
+                deadline=time.monotonic() + self._TOTAL_TRANSITION_BOUND_S,
+            )
+            if not started.started:
+                ingress.report_output_unavailable(reason=f"device_refresh:{started.reason}")
+            return (
+                f"{outcome} speaker={started.status}:{started.reason} "
+                f"microphone={self._input_resume_reason(resumed)}"
+            )
+        finally:
+            self._media.hold_for_devices(held=False)
 
     def close(self, *, timeout_s: float | None = None) -> bool:
         """Revoke any pending wake before input/output owner shutdown."""
@@ -4575,6 +4615,8 @@ class _AudioDeviceChoice:
 
 
 _AUDIO_DEVICE_POLL_S = 1.0
+# ADR 0054: a microphone that stays shut while its device is there is tried again after these.
+_MIC_RETRY_S = (2.0, 5.0, 15.0, 30.0)
 
 
 def _device_targets(choice: _AudioDeviceChoice) -> tuple[int | None, int | None] | None:
@@ -4595,26 +4637,30 @@ async def _watch_audio_devices(
     live_voice: voice_live.LiveVoice | None,
     choice: _AudioDeviceChoice,
 ) -> None:
-    """ADR 0054: re-read the devices when the ones to be on change, the mic is lost, or on a pick.
+    """ADR 0054: re-read the devices when the ones to be on change, the mic is down, or on a pick.
 
     PortAudio lists only the devices there were when it initialised, so a
     microphone plugged back in stays invisible to every reopen until then.
     Other devices coming and going (a phone's microphone does, every minute or
     so) are not a reason: each re-read leaves the microphone deaf for a moment.
+    A microphone that is down while its device is there (lost, or parked by a
+    wake that failed) is tried again, sooner first, until it opens.
     """
     seen = await asyncio.to_thread(_device_targets, choice)
     if seen is None:
         return
-    handled_loss = -1
+    retries, retry_at = 0, 0.0
     while True:
         await asyncio.sleep(_AUDIO_DEVICE_POLL_S)
         now = await asyncio.to_thread(_device_targets, choice)
-        capability = ingress.capability
-        lost = (
-            capability.state is voice_audio.InputCapabilityState.LOCAL_CAPTURE_UNAVAILABLE
-            and capability.version != handled_loss
+        state = ingress.capability.state
+        down = state is voice_audio.InputCapabilityState.LOCAL_CAPTURE_UNAVAILABLE or (
+            state is _SUSPENDED and not coordinator.asleep
         )
-        if now is None or not (now != seen or lost or choice.changed) or not coordinator.quiet():
+        if not down:
+            retries, retry_at = 0, 0.0
+        retry = down and now is not None and now[0] is not None and time.monotonic() >= retry_at
+        if now is None or not (now != seen or retry or choice.changed) or not coordinator.quiet():
             continue
         wanted = (choice.input_device, choice.output_device)
         paused = (
@@ -4637,9 +4683,11 @@ async def _watch_audio_devices(
         )
         if outcome.startswith("refreshed"):
             seen = now
-            handled_loss = ingress.capability.version
             if (choice.input_device, choice.output_device) == wanted:
                 choice.changed = False
+        if not outcome.startswith("busy"):
+            retry_at = time.monotonic() + _MIC_RETRY_S[min(retries, len(_MIC_RETRY_S) - 1)]
+            retries += 1
 
 
 def _start_audio_device_watch(

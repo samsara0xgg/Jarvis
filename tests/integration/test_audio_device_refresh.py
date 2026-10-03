@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import itertools
 import time
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
@@ -44,10 +45,11 @@ from tests.integration.test_wave2_streaming_media import (
 from tests.integration.test_wave3_single_audio_ingress import _wait_until
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Callable
     from pathlib import Path
 
 _LOST = voice_audio.InputCapabilityState.LOCAL_CAPTURE_UNAVAILABLE
+_PARKED = voice_audio.InputCapabilityState.SUSPENDED
 
 
 def _capability(
@@ -153,6 +155,53 @@ def test_nothing_closes_while_she_speaks_or_he_talks(
     coordinator = _coordinator(actions, monkeypatch, **setup)
     assert coordinator.refresh_devices(input_device=None, output_device=None) == outcome
     assert actions == expected
+
+
+def test_a_wake_that_left_the_microphone_parked_re_reads_and_wakes_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Awake but parked: speaker closed, PortAudio anew, devices set, then the wake runs again."""
+    actions: list[str] = []
+    coordinator = _coordinator(actions, monkeypatch)
+    coordinator._session.ingress.capability = _capability(_PARKED, 4)
+    woke = inherent_loop._VoicePowerTransition(
+        voice_backend.BackendStartResult(voice_backend.BackendStartStatus.STARTED, 5, None),
+        voice_media.MediaPowerTransitionResult("resumed", 2, "fresh"),
+        0.0,
+        0.0,
+    )
+    monkeypatch.setattr(coordinator, "_wake", lambda: actions.append("woke") or woke)
+    outcome = coordinator.refresh_devices(input_device="reSpeaker", output_device="Speakers")
+    assert actions == [
+        "speaker closed", "devices re-read", "speaker=Speakers", "microphone=reSpeaker", "woke",
+    ]
+    assert outcome == "refreshed_and_woke speaker=resumed:fresh microphone=started"
+
+
+def test_nothing_is_touched_while_the_mac_sleeps(monkeypatch: pytest.MonkeyPatch) -> None:
+    """From the sleep notice until a wake has run, the watch is not quiet and a refresh skips."""
+    actions: list[str] = []
+    coordinator = _coordinator(actions, monkeypatch)
+    coordinator._session.ingress.capability = _capability(_PARKED, 4)
+    coordinator._media.is_output_active.return_value = False
+    coordinator.before_sleep()
+    actions.clear()
+    assert coordinator.asleep
+    assert not coordinator.quiet()
+    assert coordinator.refresh_devices(input_device=None, output_device=None) == "skipped:asleep"
+    assert actions == []
+
+    def _wake_into_a_new_sleep() -> object:
+        coordinator.before_sleep()  # the lid closes again while the wake runs
+        return None
+
+    monkeypatch.setattr(coordinator, "_wake", _wake_into_a_new_sleep)
+    coordinator.on_wake()
+    assert coordinator.asleep
+    monkeypatch.setattr(coordinator, "_wake", lambda: None)
+    coordinator.on_wake()
+    assert not coordinator.asleep
+    assert coordinator.quiet()
 
 
 # --- media lane ------------------------------------------------------------------
@@ -285,6 +334,67 @@ def test_the_watch_re_reads_only_when_the_device_to_be_on_changes(
             await watch
 
     asyncio.run(_scenario())
+
+
+def test_the_watch_keeps_trying_a_microphone_that_is_there_but_shut(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Failed opens with the device present: tried again, later each time, until it opens.
+
+    A microphone parked by a failed wake counts as down once awake; asleep it waits.
+    """
+    _system(monkeypatch, {"reSpeaker": 142}, {"Speakers": 55})
+    monkeypatch.setattr(inherent_loop, "_MIC_RETRY_S", (0.05, 0.15))
+    ingress = MagicMock()
+    ingress.capability = _capability(_LOST, 1)
+    opens_after = {"tries": 4}
+    refreshes: list[float] = []
+
+    def _refresh(**_kwargs: object) -> str:
+        refreshes.append(time.monotonic())
+        opened = len(refreshes) >= opens_after["tries"]
+        ingress.capability = _capability(
+            voice_audio.InputCapabilityState.AVAILABLE if opened else _LOST,
+            ingress.capability.version + 1,
+        )
+        return "refreshed speaker=started microphone=" + ("started" if opened else "failed_closed")
+
+    coordinator = MagicMock(spec=inherent_loop._VoicePowerCoordinator)
+    coordinator.quiet.return_value = True
+    coordinator.asleep = False
+    coordinator.refresh_devices.side_effect = _refresh
+
+    async def _scenario() -> None:
+        watch = asyncio.create_task(
+            inherent_loop._watch_audio_devices(
+                coordinator, ingress, None, inherent_loop._AudioDeviceChoice(None, None),
+            ),
+        )
+        await _until(lambda: len(refreshes) == 4)
+        gaps = [b - a for a, b in itertools.pairwise(refreshes)]
+        assert gaps[0] >= 0.05
+        assert gaps[1] >= 0.15
+        await asyncio.sleep(0.3)
+        assert len(refreshes) == 4  # open: no more tries
+        coordinator.asleep = True
+        ingress.capability = _capability(_PARKED, 9)  # the Mac sleeps
+        await asyncio.sleep(0.3)
+        assert len(refreshes) == 4
+        opens_after["tries"] = 5
+        coordinator.asleep = False  # the wake ran but left it parked
+        await _until(lambda: len(refreshes) == 5)
+        watch.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await watch
+
+    asyncio.run(_scenario())
+
+
+async def _until(predicate: Callable[[], bool], timeout_s: float = 3.0) -> None:
+    deadline = time.monotonic() + timeout_s
+    while not predicate():
+        assert time.monotonic() < deadline
+        await asyncio.sleep(0.01)
 
 
 def test_the_watch_waits_while_gpt_live_talks(monkeypatch: pytest.MonkeyPatch) -> None:
