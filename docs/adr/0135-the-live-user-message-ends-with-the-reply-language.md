@@ -12,6 +12,13 @@
 - Replayed against gpt-6-luna with the recorded instructions and history,
   `[Reply language for this turn: English|Chinese]` after the user's words took
   28 wrong samples from 10 wrong to 0, and harmed no zh or en turn.
+- A tester asked in Chinese for a web search; the results came back in English and so
+  did the answer. After tool results the line in the live message sits far behind them.
+  Replayed offline (gpt-6-luna, the owner's full history, a Chinese ask for Rust links,
+  three rounds of English results): English answers 5 of 5 with no line, 0 of 6 with the
+  line only in the live message, 0 of 5 with a line only after the results. The offline
+  replay never failed with the live-message line, so it cannot rank the placements;
+  the fix follows the report.
 - The `follow` rule knows two languages. Japanese words in the same replay were
   forced to Chinese, so a line for them would be wrong.
 - Everything ahead of the live message is byte-identical between turns for the
@@ -23,6 +30,13 @@ The live user message ends, after a blank line, with
 `[Reply language for this turn: English]` or `[...: Chinese]`, naming the
 language `decide()` already picked for this turn (the `reply_language` setting,
 else the language of his words).
+
+Each tool loop, the tool loop and the spoken stream alike, then adds the same line as
+one short user item after every batch of tool results, so the request that asks for
+the answer ends with it (the late-answer note, which names the language itself, may
+follow). The live message keeps its own line; the line is computed once
+per turn, and an item after a batch leaves every earlier request's items as the prefix
+of the next one. Only the live message is recorded as sent; the trailing items are not.
 
 Limits: no line when the words contain kana or hangul, or when there are no
 words and nothing is pinned. A pinned `en` or `zh` adds the line to every turn,
@@ -36,6 +50,9 @@ after the status block's header and the words.
   request, missing the prefix cache once.
 - **A line on every history message** — it would rewrite the cached prefix
   for a decision that only matters on the turn being answered.
+- **End the last tool result with the line** — equal offline (0 of 5 English),
+  but it edits the tool's data, needs the last result found in every loop, and
+  moves with each batch, so the earlier request's tail stops being a prefix.
 - **Name the language for Japanese and Korean too** — the `follow` rule picks
   `zh` or `en` only, and the replay answered Japanese in Chinese; no language
   is better than a wrong one until the rule knows more than two.
@@ -45,6 +62,7 @@ after the status block's header and the words.
 - `record_sent_message` stores the live message as sent, so later turns replay
   it with its line. History then shows the line on every past user turn, and a
   turn whose language the rule got wrong keeps that wrong line in the prompt.
-- Each live message is one short line longer on every turn.
+- Each live message is one short line longer on every turn; each tool batch adds one
+  more short item to that turn's requests, never to history.
 - Japanese and Korean turns still rely on the system prompt alone and keep the
   7% mismatch rate.

@@ -1066,7 +1066,7 @@ def _insert_system_notes(
     packet: SituationPacket,
     ctx: DecideContext,
     lang: Language | None,
-) -> None:
+) -> str | None:
     """History ahead of the conversation; this turn's state on the user message.
 
     The history messages are byte-identical between turns except at their
@@ -1079,9 +1079,11 @@ def _insert_system_notes(
     carries two user messages in a row. With ``record_sent_message`` the
     turn's own message is kept as sent, before any such fold. The reply-language
     line ends this message only, so the history ahead of it keeps its cache
-    prefix; the kept message carries it too, so later turns replay it.
+    prefix; the kept message carries it too, so later turns replay it. The line is
+    returned for the tool loops, which repeat it after tool results (ADR 0135).
     """
     status = _current_status_block(packet, ctx)
+    line = None
     for message in reversed(messages):
         if message.get("role") == "user":
             line = _reply_language_line(lang, str(message["content"]))
@@ -1096,6 +1098,20 @@ def _insert_system_notes(
     if head and head[-1]["role"] == "user" and messages and messages[0].get("role") == "user":
         messages[0]["content"] = f"{head.pop()['content']}\n\n{messages[0]['content']}"
     messages[0:0] = head
+    return line
+
+
+def _add_reply_language_note(messages: list[dict[str, Any]], line: str | None) -> None:
+    """End the next request with the reply-language line once tool results sit above it.
+
+    Offline, after English tool results the line in the live message alone is far
+    enough back to lose to them; one short user item last in the request restored it
+    (ADR 0135). Added after each batch of results, so every request keeps the
+    items of the one before it as its prefix. The late-answer note, which ends with
+    "Answer in the language the user spoke", still goes after it.
+    """
+    if line is not None:
+        messages.append({"role": "user", "content": line})
 
 
 # --- decide() entry point ---------------------------------------------------
@@ -1445,7 +1461,7 @@ def _run_tool_use_loop(
             return _run_spoken_stream(packet, policy, ctx, ctx.routine_stream, scratch)
         return _run_routine_stream(packet, ctx, ctx.routine_stream, scratch)
 
-    messages = _loop_messages(packet, ctx, scratch.lang)
+    messages, language_line = _loop_messages(packet, ctx, scratch.lang)
     llm_surface = surface_for(policy, ctx.tool_registry, CallerPrincipal.JARVIS_LLM)
     late_noted = False
 
@@ -1528,6 +1544,7 @@ def _run_tool_use_loop(
             # Refresh the packet so the next LLM call sees the log as the
             # tool dispatches left it.
             packet = assemble_packet(packet.trigger_event, ctx.conn)
+            _add_reply_language_note(messages, language_line)
             late_noted = late_noted or _add_late_answer_note(messages, packet, ctx)
             continue
 
@@ -2214,15 +2231,15 @@ def _handle_action_terminal_failure(
 
 def _loop_messages(
     packet: SituationPacket, ctx: DecideContext, lang: Language | None
-) -> list[dict[str, Any]]:
-    """Build the tool loop's messages: history, system notes, correction prefix."""
+) -> tuple[list[dict[str, Any]], str | None]:
+    """The tool loop's messages (history, system notes, correction prefix) and its language line."""
     messages = build_llm_messages(packet)
-    _insert_system_notes(messages, packet, ctx, lang)
+    line = _insert_system_notes(messages, packet, ctx, lang)
     if ctx.stream_correction is not None:
         # The failed stream's exposed prefix is the model's own prior text;
         # the correction continues it and never rewrites it (ADR-0008 D3).
         messages.append(_assistant_text_message(ctx.stream_correction.committed_prefix))
-    return messages
+    return messages, line
 
 
 def _with_correction_prefix(plan: ResponsePlan, ctx: DecideContext) -> ResponsePlan:
@@ -2763,7 +2780,7 @@ def _run_spoken_stream(  # noqa: C901 - one request loop: calls, one continuatio
     call's ``action.proposed`` for the acknowledge to speak at dispatch. A
     response that ends on such a line with no call gets one more request.
     """
-    messages = _loop_messages(packet, ctx, scratch.lang)
+    messages, language_line = _loop_messages(packet, ctx, scratch.lang)
     llm_surface = surface_for(policy, ctx.tool_registry, CallerPrincipal.JARVIS_LLM)
     speaker = _SegmentSpeaker(
         ctx, route, scratch, classifier=SegmentRiskClassifier(rule_version=SPOKEN_RULE_VERSION),
@@ -2797,6 +2814,7 @@ def _run_spoken_stream(  # noqa: C901 - one request loop: calls, one continuatio
             if ending is not None:
                 return _finish_spoken(packet, ctx, route, speaker, scratch, draft=ending)
             packet = assemble_packet(packet.trigger_event, ctx.conn)
+            _add_reply_language_note(messages, language_line)
             late_noted = late_noted or _add_late_answer_note(messages, packet, ctx)
             continue
         if reply.text.strip() and not reply.answer.strip() and not continued:

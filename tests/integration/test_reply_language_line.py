@@ -1,8 +1,10 @@
-"""ADR 0135: the live user message ends with a line naming the reply language.
+"""ADR 0135: the live message and the request after tool results end with the language line.
 
 Drives the real ``decide()`` with a stub model that records the messages it was sent.
 Real case (2026-10-02): with ``reply_language: follow`` the model answered in the other
 language on 7% of turns; one line after his words fixed 10 of 28 such samples to 0.
+After English tool results the same line at the end of the request kept a Chinese ask
+answered in Chinese (offline replay: 5 of 5 English without it, 0 of 5 with it).
 """
 
 from __future__ import annotations
@@ -20,7 +22,7 @@ from jarvis.decision import (
     ToolRegistryLike,
     decide,
 )
-from jarvis.decision.llm import ChatResult, LLMClient
+from jarvis.decision.llm import ChatResult, LLMClient, ToolCall
 from jarvis.execution.tools import ActionLifecycle, build_default_registry
 from jarvis.state.event_log import emit_event, open_event_log
 
@@ -39,8 +41,9 @@ class _StubRuntimePaths:
 
 
 class _RecordingClient:
-    def __init__(self) -> None:
+    def __init__(self, *, call_a_tool: bool = False) -> None:
         self.live: list[str] = []
+        self.call_a_tool = call_a_tool
         self.model = "stub-model"
 
     @property
@@ -67,11 +70,14 @@ class _RecordingClient:
         tools: list[dict[str, Any]] | None = None,  # noqa: ARG002
         tool_choice: str | None = "auto",  # noqa: ARG002
     ) -> ChatResult:
+        first = not self.live
         self.live.append(str(messages[-1]["content"]))
+        calls = (ToolCall(call_id="call1", name="list_memos", arguments_json="{}"),)
+        use_tool = self.call_a_tool and first
         return ChatResult(
-            text="Okay.",
-            tool_calls=(),
-            finish_reason="stop",
+            text=None if use_tool else "Okay.",
+            tool_calls=calls if use_tool else (),
+            finish_reason="tool_calls" if use_tool else "stop",
             input_tokens=0,
             output_tokens=0,
             raw={},
@@ -81,9 +87,11 @@ class _RecordingClient:
         )
 
 
-def _live_message(tmp_path: Path, transcript: str, reply_language: str) -> tuple[str, list[str]]:
-    """The first request's last message, and what ``record_sent_message`` kept."""
-    llm = _RecordingClient()
+def _run(
+    tmp_path: Path, transcript: str, reply_language: str, *, call_a_tool: bool = False
+) -> tuple[_RecordingClient, list[str]]:
+    """Drive one turn; the stub model, and what ``record_sent_message`` kept."""
+    llm = _RecordingClient(call_a_tool=call_a_tool)
     kept: list[str] = []
     conn = open_event_log(tmp_path / "events.db")
     paths = _StubRuntimePaths(
@@ -107,6 +115,12 @@ def _live_message(tmp_path: Path, transcript: str, reply_language: str) -> tuple
         correlation={"turn_id": "T_line"},
     )
     decide(trigger, ctx)
+    return llm, kept
+
+
+def _live_message(tmp_path: Path, transcript: str, reply_language: str) -> tuple[str, list[str]]:
+    """The first request's last message, and what ``record_sent_message`` kept."""
+    llm, kept = _run(tmp_path, transcript, reply_language)
     return llm.live[0], kept
 
 
@@ -144,3 +158,28 @@ def test_no_words_get_no_line_under_follow(tmp_path: Path) -> None:
     """No words and nothing pinned: nothing to name."""
     live, _ = _live_message(tmp_path, "   ", "follow")
     assert "Reply language" not in live
+
+
+@pytest.mark.parametrize(
+    ("transcript", "line"),
+    [
+        ("What is on my calendar tomorrow?", ENGLISH_LINE),
+        ("帮我上网搜一下明天温哥华会不会下雨", CHINESE_LINE),
+    ],
+)
+def test_request_after_tool_results_ends_with_the_line(
+    tmp_path: Path, transcript: str, line: str
+) -> None:
+    """English tool results sit between his words and the answer: the line goes last."""
+    llm, kept = _run(tmp_path, transcript, "follow", call_a_tool=True)
+    assert llm.live[1] == line  # the second request; a third is the answer check
+    assert kept == [llm.live[0]]  # the stored message is still the live one, line once
+
+
+@pytest.mark.parametrize("transcript", ["明日の会議は何時ですか", "   "])
+def test_request_after_tool_results_has_no_line_when_there_is_none(
+    tmp_path: Path, transcript: str
+) -> None:
+    """Kana words and no words name no language, after tool results as before them."""
+    llm, _ = _run(tmp_path, transcript, "follow", call_a_tool=True)
+    assert "Reply language" not in llm.live[1]

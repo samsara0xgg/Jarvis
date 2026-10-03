@@ -266,6 +266,8 @@ def test_the_line_before_a_call_rides_its_proposal_and_never_streams(tmp_path: P
     assert [item["call_id"] for item in second if item.get("type") == "function_call_output"] == [
         "call-1",
     ]
+    # ADR 0135: the language line is the last item once tool results sit above his words.
+    assert second[-1] == {"role": "user", "content": "[Reply language for this turn: Chinese]"}
 
 
 def test_a_response_that_ends_on_its_line_gets_one_more_request(tmp_path: Path) -> None:
