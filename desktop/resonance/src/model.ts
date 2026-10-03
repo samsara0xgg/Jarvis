@@ -21,7 +21,8 @@ export interface Row { seq: number; id: string; ts: string; source: string; text
 // as of `at`; `hold`: when she was held or stopped there, so the lit words stop with her.
 export interface Mark { n: number; ahead: number; at: number; hold?: number }
 // `written`: the details her spoken `text` leaves out, shown under it and not the whole answer (ADR 0114); a `<document>` in `text` is the whole answer.
-export interface Line { id: string; who: 'you' | 'her'; text: string; turn?: string; failed?: boolean; at: number; said?: boolean; cutAt?: number; queued?: boolean; from?: number; mark?: Mark; written?: string }
+// `late`: it came while Allen's next words were coming in, so it shows with them, above them.
+export interface Line { id: string; who: 'you' | 'her'; text: string; turn?: string; failed?: boolean; at: number; said?: boolean; cutAt?: number; queued?: boolean; from?: number; mark?: Mark; written?: string; late?: boolean }
 const MAX_LINES = 40;
 // A same-speaker pause longer than this starts a new caption row (https://developers.openai.com/api/docs/guides/live-conversations, Display captions): an assistant resuming after an interruption must not extend the cut-off line. Application choice; tune against recordings.
 const SUBTITLE_GAP_MS = 1500;
@@ -48,7 +49,7 @@ const hers = (lines: Line[], turn: string | null, text: string, at: number, extr
 };
 const yours = (s: State, text: string, at: number): Pick<State, 'talk' | 'talkN'> => ({ talk: keep([...s.talk, { id: `you:${s.talkN}`, who: 'you', text, at }]), talkN: s.talkN + 1 });
 // Her words on screen stay as they were while yours are coming in; once they are in, what was written meanwhile shows (until it is dropped).
-const unheld = (s: State, reply: string): Line[] => s.turnId && !s.played ? hers(s.talk, s.turnId, reply, s.replyAt, s.apart ? { written: s.apart } : {}) : s.talk;
+const unheld = (s: State, reply: string, late = false): Line[] => s.turnId && !s.played ? hers(s.talk, s.turnId, reply, s.replyAt, { ...(s.apart ? { written: s.apart } : {}), ...(late && !s.talk.some(l => l.id === `her:${s.turnId}`) ? { late } : {}) }) : s.talk;
 // She has finished saying a turn's line (`cutAt`: she was stopped, or it was never said); the next answer that was waiting begins.
 const finished = (lines: Line[], turn: string, at: number, cutAt?: number): Line[] => {
   if (!lines.some(l => l.id === `her:${turn}` && !l.said)) return lines;
@@ -134,8 +135,9 @@ export function reducer(s: State, a: Action): State {
     // answer opens (above), or when the turn ends without one.
     case 'tool': return { ...s, tool: a.label ? { turnId: a.turnId, label: a.label } : s.tool?.turnId === a.turnId && s.turnId !== a.turnId ? s.tool : null };
     case 'partial': return s.inFlight ? { ...s, partial: a.text } : s;
-    case 'heard': { const added = a.text.trim() ? yours({ ...s, talk: ended(s.talk, a.at) }, a.text, a.at) : { talk: s.talk, talkN: s.talkN };
-      return { ...s, heard: a.text, partial: '', inFlight: false, ...added, talk: s.inFlight ? unheld({ ...s, talk: added.talk }, s.reply) : added.talk }; }
+    // What was written while your words came in answers the words before them: it goes above yours, and shows with them (talk.ts shownOf).
+    case 'heard': { const before = a.text.trim() ? ended(s.talk, a.at) : s.talk, talk = s.inFlight ? unheld({ ...s, talk: before }, s.reply, !!a.text.trim()) : before;
+      return { ...s, heard: a.text, partial: '', inFlight: false, ...(a.text.trim() ? yours({ ...s, talk }, a.text, a.at) : { talk }) }; }
     // A new session id starts a fresh transcript; a closed session keeps its lines on screen until dismissed.
     case 'live': return { ...s, live: a.live, subtitles: a.live.sessionId && a.live.sessionId !== s.live.sessionId ? [] : s.subtitles };
     case 'subtitle': {

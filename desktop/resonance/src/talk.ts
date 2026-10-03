@@ -36,7 +36,7 @@ const READ = /^\s*(?:[-*•+]\s|\d+[.)、]\s|#{1,6}\s|\|)|```|https?:\/\/|\b\d{1
 export const worthReading = (written: string) => READ.test(written);
 
 // One thing on screen: what you said, or her answer split into the part she says and the part that is written.
-export type Item = { id: string; who: 'you' | 'her'; spoken: string; written: string; failed: boolean; at: number; said: boolean; cutAt?: number; turn?: string; queued: boolean; from: number; mark?: Mark;
+export type Item = { id: string; who: 'you' | 'her'; spoken: string; written: string; failed: boolean; at: number; said: boolean; cutAt?: number; turn?: string; queued: boolean; from: number; mark?: Mark; late?: boolean;
   // She says something besides what is written, though it is not shown (the middle level shows the written part alone): the written part writes itself in.
   voiced?: boolean };
 // Full: everything. The middle level: only what is written (lists, times, places, links), and what she says right after it.
@@ -45,7 +45,7 @@ export type Item = { id: string; who: 'you' | 'her'; spoken: string; written: st
 export function itemsOf(lines: Line[], captions: Captions, before?: Item): Item[] {
   const out: Item[] = [];
   for (const l of lines) {
-    const base = { id: l.id, at: l.at, said: !!l.said, cutAt: l.cutAt, turn: l.turn, queued: !!l.queued, from: l.from ?? l.at, mark: l.mark };
+    const base = { id: l.id, at: l.at, said: !!l.said, cutAt: l.cutAt, turn: l.turn, queued: !!l.queued, from: l.from ?? l.at, mark: l.mark, late: l.late };
     if (l.failed) out.push({ ...base, who: 'her', spoken: l.text, written: '', failed: true, said: true });
     else if (l.who === 'you') { if (captions === 'all') out.push({ ...base, who: 'you', spoken: l.text, written: '', failed: false }); }
     else {
@@ -148,9 +148,12 @@ export function shownOf(lines: Line[], captions: Captions, back: number, since =
   const all = exchangesOf(lines);
   const each = all.map(e => { const its = itemsOf(e, captions, last); last = its.at(-1) ?? (e.some(l => l.who === 'you') ? undefined : last); return its; });
   const fresh = all.length > 0 && all[all.length - 1][0].at >= since, latest = fresh ? each.pop() : undefined;
+  // An answer that only came while the latest words were coming in shows with them, above them, not with the exchange it answers.
+  const late = latest && each.length ? each[each.length - 1].filter(it => it.late) : [];
+  if (late.length) each[each.length - 1] = each[each.length - 1].filter(it => !it.late);
   const earlier = each.filter(its => its.some(it => it.who === 'her'));
   const n = Math.max(0, Math.min(back, earlier.length));
-  return { items: [...earlier.slice(earlier.length - n).flat(), ...(latest ?? [])], older: earlier.length - n, key: fresh ? all[all.length - 1][0].id : all.length ? `before:${since}` : '' };
+  return { items: [...earlier.slice(earlier.length - n).flat(), ...late, ...(latest ?? [])], older: earlier.length - n, key: fresh ? all[all.length - 1][0].id : all.length ? `before:${since}` : '' };
 }
 
 // The rubber band: how far the content has followed a pull of `d` px of finger, with the resistance growing as it goes.
