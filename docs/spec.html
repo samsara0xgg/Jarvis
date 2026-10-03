@@ -281,7 +281,8 @@ header strong { color: var(--fg-strong); }
 <thead><tr><th>表</th><th>存什么</th><th>谁写</th></tr></thead>
 <tbody>
 <tr><td><code>records</code></td><td>逐字的对话，一行一句，标着是谁说的；留了录音时带录音路径</td><td>每一轮</td></tr>
-<tr><td><code>profile</code></td><td>「关于你」：一行一个主题的长期事实，每一轮都放进系统提示</td><td>首次设置写主人的名字；之后是模型调用 <code>remember</code> 和待填卡片的答案，同一主题覆盖旧的一行（ADR 0066）</td></tr>
+<tr><td><code>core_memory</code></td><td>「关于你」：六个固定分区的长期记忆，每一轮都放进系统提示；只追加，每个版本一行，最新的一行有效，旧版本留作回看；由原话和 <code>remember</code> 派生，不是证据（ADR 0145）</td><td>首次设置写主人的名字；<code>remember</code> 和待填卡片的答案立即写新版本，同一主题覆盖旧的一条（ADR 0066）；每晚在 <code>day_summary</code> 的任务里，模型逐天提出加、改写、标过时，过了检查才落一个新版本</td></tr>
+<tr><td><code>profile</code></td><td>旧的「关于你」：只在第一次读取时迁移成核心记忆的第一个版本，之后不再读也不再写</td><td>无</td></tr>
 <tr><td><code>summaries</code></td><td>历史压缩出的摘要</td><td>压缩（空闲时，或 <code>recent_records</code> 窗口移动后；<a href="#request">第 5 章</a>）</td></tr>
 <tr><td><code>day_summaries</code></td><td>过去每一天的对话摘要；只追加，每天最新的一行有效，是派生数据，原话以 <code>records</code> 为准（ADR 0142）</td><td>每天 <code>day_summary.at</code> 之后，补写所有有记录、还没摘要的过去日期；<code>recall</code> 把它们放在原话之前返回</td></tr>
 </tbody>
