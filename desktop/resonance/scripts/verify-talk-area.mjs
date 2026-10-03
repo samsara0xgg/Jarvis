@@ -901,11 +901,15 @@ try {
     const mic = () => posts.filter(p => p.path === '/inherent/controls' && 'mic_muted' in p.body).map(p => p.body.mic_muted);
     const lits = () => page.evaluate(() => [...document.querySelectorAll('.talk .tk-h')].map(h => [h.querySelectorAll('i.on').length, h.querySelectorAll('.tk-s.all').length]));
 
-    // stop pressed while the area lingers must not leave the next conversation without it
+    // conversation mode ending from the daemon (a dismissal, or quiet) folds the area at once
     await emit('controls', { mic_muted: false, speech_muted: false, conversation: true }); s.daemonState.controls.conversation = true;
     await turn('r1', '几点了', '<voice>现在下午四点。</voice>'); await emit('voice', { phase: 'spoken', turn_id: 'r1' }); await settled();
     await emit('controls', { mic_muted: false, speech_muted: false, conversation: false }); s.daemonState.controls.conversation = false; await settled();
     let a = await area();
+    check('conversation mode ending from the daemon folds it at once', !a.up);
+    // a turn over outside conversation mode lingers; stop pressed then must not leave the next conversation without it
+    await turn('r1b', '几点了', '<voice>现在下午四点。</voice>'); await emit('voice', { phase: 'spoken', turn_id: 'r1b' }); await settled();
+    a = await area();
     check('a turn is over and she is not listening: it lingers', a.up && a.state === 'idle');
     await page.locator('.talk-ft .st').click(); await page.waitForTimeout(900);
     check('the end button while it lingers folds it', !(await area()).up);
@@ -1010,7 +1014,7 @@ try {
     const s = await scene({ captions: 'all' });
     const { page, emit, skew, area, turn } = s;
     await page.waitForTimeout(600);
-    await emit('controls', { mic_muted: false, speech_muted: false, conversation: true }); s.daemonState.controls.conversation = true;
+    // outside conversation mode, so the area lingers and then folds on its own (a dismissal folds it at once)
     await turn('f1', '念一遍', ['<voice>', long, long, '</voice>']); await skew(70_000); await page.waitForTimeout(1200);
     await emit('voice', { phase: 'spoken', turn_id: 'f1' }); await page.waitForTimeout(800);
     check('at the end of a long transcript only the top fades', await page.evaluate(() => { const t = document.querySelector('.talk-tr'); return t.classList.contains('more') && !t.classList.contains('below'); }));
@@ -1022,7 +1026,6 @@ try {
     await page.locator('.talk .tk-latest button').click(); await page.waitForTimeout(1000);
     const start = (await area()).tr.top;
     await page.evaluate(() => { window.__st = []; const tr = document.querySelector('.talk-tr'); window.__sample = setInterval(() => { if (document.querySelector('.talk').hasAttribute('data-hit')) window.__st.push(tr.scrollTop); }, 16); });
-    await emit('controls', { mic_muted: false, speech_muted: false, conversation: false }); s.daemonState.controls.conversation = false;
     await skew(9000); await s.folded();
     const seen = await page.evaluate(() => { clearInterval(window.__sample); return window.__st; });
     check(`while it folds the transcript stays where it was and does not jump to the top (${start} px, ${Math.min(...seen)} px lowest of ${seen.length} samples)`, start > 20 && seen.length > 3 && Math.min(...seen) >= start - 3);
