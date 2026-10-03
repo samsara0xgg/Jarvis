@@ -31,6 +31,7 @@ recording minus the spend observed since.
 
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import functools
 import json
@@ -38,6 +39,7 @@ import logging
 import math
 import os
 import re
+import shutil
 import subprocess
 import time
 import urllib.error
@@ -192,6 +194,32 @@ def _read_claude_credentials() -> dict[str, Any] | None:
     return from_file if isinstance(from_file, dict) else None
 
 
+def _refresh_claude_login() -> None:
+    """Have Claude Code renew its own 8-hour access token, which it does only when it runs.
+
+    The Claude desktop app keeps its own login, so the Keychain token goes stale whenever
+    the terminal CLI and the Agents window sit unused. ``/usage`` is a local command: it
+    makes no model request, but it calls the API, so the CLI refreshes and stores the token
+    first. Jarvis never writes the Keychain itself.
+    """
+    claude = shutil.which("claude") or str(Path.home() / ".local" / "bin" / "claude")
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("ANTHROPIC_", "CLAUDE"))}
+    with contextlib.suppress(OSError, subprocess.SubprocessError):
+        subprocess.run(  # noqa: S603
+            [claude, "-p", "/usage"], capture_output=True, check=False, timeout=60, env=env,
+            cwd=Path.home(),
+        )
+
+
+def _claude_oauth() -> dict[str, Any] | None:
+    """Claude Code's OAuth block, renewed through the CLI first when its token has expired."""
+    oauth = (_read_claude_credentials() or {}).get("claudeAiOauth")
+    if oauth and (oauth.get("expiresAt") or math.inf) <= _now_ms():
+        _refresh_claude_login()
+        oauth = (_read_claude_credentials() or {}).get("claudeAiOauth")
+    return oauth if isinstance(oauth, dict) else None
+
+
 def _claude_plan_label(oauth: Mapping[str, Any]) -> str:
     tier = str(oauth.get("rateLimitTier") or "")
     match = re.search(r"(\d+)x", tier, re.IGNORECASE)
@@ -232,8 +260,7 @@ def collect_claude(*, timeout_s: float) -> UsageSnapshot | None:
     ``None`` when the route answers 429: it refuses polls closer than about five minutes
     apart, which says nothing about the account, so the last reading stands.
     """
-    creds = _read_claude_credentials()
-    oauth = (creds or {}).get("claudeAiOauth") if creds else None
+    oauth = _claude_oauth()
     if not oauth or not oauth.get("accessToken"):
         return UsageSnapshot("claude", "unconfigured", {}, "no Claude Code login")
     try:
