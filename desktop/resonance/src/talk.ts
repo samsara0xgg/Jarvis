@@ -21,8 +21,8 @@ export const PULL_DIM = 120, PULL_DAMP = .55, PULL_AT = 60, GESTURE_GAP = 150, M
 export const level = (captions: Captions, voiceOff: boolean): Captions => voiceOff ? 'all' : captions;
 
 // Her answer is `<voice>` (what she says) and `<document>` (what is written); an answer with neither tag is both at once (ADR 0040).
-// The same words twice are shown once.
-const words = (text: string) => text.replace(/[\s*`#|:\-–—，。！？、,.!?]/g, '');
+// The same words twice are shown once, whatever marks, brackets or spaces set them apart (her voice drops the brackets the written copy keeps).
+const words = (text: string) => text.replace(/[^\p{L}\p{N}]/gu, '');
 export function split(raw: string): { spoken: string; written: string } {
   const voice = /<voice>([\s\S]*?)(?:<\/voice>|$)/.exec(raw), doc = /<document>([\s\S]*?)(?:<\/document>|$)/.exec(raw);
   const spoken = voice ? plain(voice[1]) : doc ? '' : plain(raw);
@@ -51,7 +51,9 @@ export function itemsOf(lines: Line[], captions: Captions, before?: Item): Item[
     else {
       const { spoken, written } = split(l.text);
       // ADR 0114: a written part that adds to what she says (not the whole answer) shows under it, at the middle level too.
-      if (l.written && captions !== 'none') out.push({ ...base, who: 'her', spoken, written: l.written, failed: false });
+      // A written part that only repeats what she says (the daemon sends one for a plain-text answer) shows once, as her line.
+      const again = !!l.written && words(l.written) === words(spoken);
+      if (l.written && captions !== 'none') out.push({ ...base, who: 'her', spoken, written: again ? '' : l.written, failed: false });
       else if (captions === 'all' && (spoken || written)) out.push({ ...base, who: 'her', spoken, written, failed: false });
       // The middle level: a written part worth reading shows alone; one that is only sentences gives way to what she says, lit as she says it.
       else if (captions === 'brief' && written && spoken && !worthReading(written)) out.push({ ...base, who: 'her', spoken, written: '', failed: false });
