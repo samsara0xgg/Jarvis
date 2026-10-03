@@ -227,8 +227,8 @@ day_summary:
 
 # ADR 0145 — 核心记忆：每晚（在 day_summary 的每日任务里，摘要写完之后）把每个还没整理过的
 # 过去日期交给模型，改核心记忆里的条目（加、改写、标过时），从旧到新逐天做。
-# 答案要先过检查：JSON 合法、条目号存在、引用的 record_id 是那一天的、过时条目不超过
-# max_stale、整份不超过 max_chars；有一条不过就整份丢掉，同一次运行再问一次，还不过就停在
+# 答案要先过检查：JSON 合法、条目号存在、引用的记录标签（r1, r2, ... 按时间排，存储前换回
+# 真正的 record_id）是那一天的、过时条目不超过 max_stale、整份不超过 max_chars；有一条不过就整份丢掉，同一次运行再问一次，还不过就停在
 # 这一天，下次接着来。没有 core_memory 块 = 不整理（渲染、迁移、remember 照常用核心记忆）。
 core_memory:
   preset: gpt6-luna
@@ -243,9 +243,9 @@ core_memory:
     jarvis_live are the assistant.
 
     Answer with JSON only: {"changes": [...]}. Each change is one of:
-    {"op": "add", "section": "<section>", "text": "<item>", "sources": ["<record_id>"]}
-    {"op": "rewrite", "item": <N>, "text": "<item>", "sources": ["<record_id>"]}
-    {"op": "stale", "item": <N>, "sources": ["<record_id>"]}
+    {"op": "add", "section": "<section>", "text": "<item>", "sources": ["<label>"]}
+    {"op": "rewrite", "item": <N>, "text": "<item>", "sources": ["<label>"]}
+    {"op": "stale", "item": <N>, "sources": ["<label>"]}
     A rewrite may also carry "section" to move the item. The sections are, exactly:
     关于你, 偏好, 常提到的人, 正在做的事, 定下来的规矩, 承诺和待办.
 
@@ -258,10 +258,15 @@ core_memory:
       the user withdrew.
     - A preference, rule or decision needs the user's own words; the assistant's
       suggestions are not enough.
+    - A one-time request, a joke, or an instruction for a single task or session
+      is not a lasting preference or rule. A single bug or fix of the day is not
+      an ongoing project; keep the project and where it stands instead.
+    - Leave out words that look like speech-recognition errors or that you
+      cannot make clear sense of.
     - One line per item, in the language the user speaks, with calendar dates
       (2026-10-09, not "next Friday"). Keep names, numbers and codes exactly as
       the records give them.
-    - Every change cites the record_ids of that day it rests on.
+    - Every change cites the labels (r1, r2, ...) of that day's records it rests on.
     - Rewrite an existing item rather than add a near-duplicate. Mark an item
       stale when the day shows it is over or no longer true (a finished task, a
       past date, a changed plan).

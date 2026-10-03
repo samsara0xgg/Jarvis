@@ -22,7 +22,8 @@ Keep the user's lasting facts as core memory: one append-only table of versions 
 document with six fixed sections, whose latest row is current and replaces `profile` in
 every prompt. `remember` and first-run setup append a version at once. Each night, in
 the day-summary job, a model reads each unconsolidated past day with the current note
-and proposes typed changes (add, rewrite, stale), each citing that day's record ids;
+and proposes typed changes (add, rewrite, stale), each citing that day's records by short labels (r1, r2, ...) that are mapped to
+record ids before storing;
 the whole list lands as one version only if every gate passes, and is otherwise dropped
 and asked once more. A day that fails both attempts stops the chain and is retried on
 the next run. Older versions are kept for review and undo; `profile` is migrated once

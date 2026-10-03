@@ -250,8 +250,8 @@ def test_the_schedule_consolidates_each_day_in_order_after_the_summaries(tmp_pat
     model = _Consolidator()
     model.script[d4] = [
         _changes(
-            {"op": "add", "section": "偏好", "text": "喜欢咖啡", "sources": [_rid(4, 1)]},
-            {"op": "add", "section": "正在做的事", "text": "写论文", "sources": [_rid(4, 1)]},
+            {"op": "add", "section": "偏好", "text": "喜欢咖啡", "sources": ["r1"]},
+            {"op": "add", "section": "正在做的事", "text": "写论文", "sources": ["r1"]},
         ),
     ]
     model.script[d3] = [
@@ -260,10 +260,10 @@ def test_the_schedule_consolidates_each_day_in_order_after_the_summaries(tmp_pat
                 "op": "rewrite",
                 "item": 2,
                 "text": "  更喜欢\n茶  ",
-                "sources": [_rid(3, 1)],
+                "sources": ["r1"],
                 "section": "定下来的规矩",
             },
-            {"op": "stale", "item": 3, "sources": [_rid(3, 1)]},
+            {"op": "stale", "item": 3, "sources": ["r1"]},
         ),
     ]
     schedule = _schedule(tmp_path, model)
@@ -274,7 +274,7 @@ def test_the_schedule_consolidates_each_day_in_order_after_the_summaries(tmp_pat
     assert "[1] 城市: Victoria" in model.inputs[d4]
     assert "### 偏好\n[2] 喜欢咖啡\n### 正在做的事\n[3] 写论文" in model.inputs[d3]
     assert f"[Summary of {d3}]\n## {d3} (the whole day, word for word)" in model.inputs[d3]
-    assert f"{_rid(3, 1)} | {_stamp(3, 9)} | allen | 第3天说的话" in model.inputs[d3]
+    assert f"r1 | {_stamp(3, 9)} | allen | 第3天说的话" in model.inputs[d3]
     assert _items(path) == {"关于你": ["城市: Victoria"], "定下来的规矩": ["更喜欢 茶"]}
     after = [v[:2] for v in _versions(path)]
     assert after == [
@@ -302,7 +302,7 @@ def test_the_schedule_consolidates_each_day_in_order_after_the_summaries(tmp_pat
 
 
 def _bad_answers() -> dict[str, tuple[str, dict[str, int]]]:
-    rid = _rid(3, 1)
+    rid = "r1"
     stale = {"op": "stale", "item": 1, "sources": [rid]}
     return {
         "not json": ("sure, here you go", {}),
@@ -312,7 +312,11 @@ def _bad_answers() -> dict[str, tuple[str, dict[str, int]]]:
             {},
         ),
         "foreign record id": (
-            _changes({"op": "add", "section": "偏好", "text": "x", "sources": [_rid(2, 1)]}),
+            _changes({"op": "add", "section": "偏好", "text": "x", "sources": ["r2"]}),
+            {},
+        ),
+        "a real record id instead of a label": (
+            _changes({"op": "add", "section": "偏好", "text": "x", "sources": [_rid(3, 1)]}),
             {},
         ),
         "no sources": (_changes({"op": "add", "section": "偏好", "text": "x", "sources": []}), {}),
@@ -359,6 +363,32 @@ def test_a_rejected_answer_stores_nothing_and_is_asked_once_more(
     assert core_memory_pending_days(path, TODAY) == [d3, d2]
 
 
+def test_sources_are_short_labels_in_time_order_and_stored_as_real_ids(tmp_path: Path) -> None:
+    """The model sees r1, r2, ... and never the 32-hex ids; the store keeps the real ones."""
+    path = tmp_path / "memory.db"
+    _insert(
+        path,
+        [
+            (_rid(3, 2), _stamp(3, 9, 1), "jarvis", "好的"),  # inserted first, later in time
+            (_rid(3, 1), _stamp(3, 9), "allen", "我喜欢茶"),
+        ],
+    )
+    d3 = _day(3).isoformat()
+    model = _Consolidator()
+    model.script[d3] = [
+        _changes({"op": "add", "section": "偏好", "text": "喜欢茶", "sources": ["r1", "r2"]}),
+    ]
+    _schedule(tmp_path, model).write(TODAY)
+    assert (
+        f"r1 | {_stamp(3, 9)} | allen | 我喜欢茶\nr2 | {_stamp(3, 9, 1)} | jarvis | 好的"
+        in (model.inputs[d3])
+    )
+    assert _rid(3, 1) not in model.inputs[d3]
+    assert current_core_memory(path).doc["偏好"][0]["sources"] == [_rid(3, 1), _rid(3, 2)]
+    nightly = _versions(path)[-1]
+    assert nightly[2][0]["sources"] == [_rid(3, 1), _rid(3, 2)]
+
+
 def test_a_second_attempt_that_passes_lands(tmp_path: Path) -> None:
     """The retry reads the same input and may fix the answer."""
     path = tmp_path / "memory.db"
@@ -369,7 +399,7 @@ def test_a_second_attempt_that_passes_lands(tmp_path: Path) -> None:
         "nope",
         "```json\n"
         + _changes(
-            {"op": "add", "section": "承诺和待办", "text": "周五交稿", "sources": [_rid(3, 1)]},
+            {"op": "add", "section": "承诺和待办", "text": "周五交稿", "sources": ["r1"]},
         )
         + "\n```",
     ]
@@ -385,7 +415,7 @@ def test_a_failing_day_stops_the_chain_and_the_next_run_resumes_from_it(tmp_path
     d4, d3, d2 = (_day(n).isoformat() for n in (4, 3, 2))
     model = _Consolidator()
     model.script[d4] = [
-        _changes({"op": "add", "section": "偏好", "text": "喜欢咖啡", "sources": [_rid(4, 1)]}),
+        _changes({"op": "add", "section": "偏好", "text": "喜欢咖啡", "sources": ["r1"]}),
     ]
     model.script[d3] = [TimeoutError("provider unreachable")]
     schedule = _schedule(tmp_path, model)
@@ -396,7 +426,7 @@ def test_a_failing_day_stops_the_chain_and_the_next_run_resumes_from_it(tmp_path
     assert core_memory_pending_days(path, TODAY) == [d3, d2]
 
     model.script[d3] = [
-        _changes({"op": "stale", "item": 1, "sources": [_rid(3, 1)]}),
+        _changes({"op": "stale", "item": 1, "sources": ["r1"]}),
     ]
     model.asked.clear()
     schedule.write(TODAY + timedelta(days=1))
@@ -420,7 +450,7 @@ def test_a_remember_during_the_call_makes_the_answer_stale(tmp_path: Path) -> No
 
     model = _Racing()
     model.script[d3] = [
-        _changes({"op": "stale", "item": 1, "sources": [_rid(3, 1)]}),
+        _changes({"op": "stale", "item": 1, "sources": ["r1"]}),
         '{"changes": []}',
     ]
     _schedule(tmp_path, model).write(TODAY)

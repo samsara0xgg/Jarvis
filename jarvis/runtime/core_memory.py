@@ -16,7 +16,7 @@ from contextlib import closing
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
 
-from jarvis.decision.core_memory import build_core_memory_messages, check_core_memory
+from jarvis.decision.core_memory import build_core_memory_messages, check_core_memory, day_labels
 from jarvis.decision.cost_guard import CostRecorder
 from jarvis.state.event_log import open_runtime_event_log
 from jarvis.state.memory_db import (
@@ -104,7 +104,7 @@ def consolidate_day(
         result.text,
         result.finish_reason,
         doc=base.doc,
-        record_ids={rid for rid, _, _, _ in records},
+        labels=day_labels(records),
         max_stale=settings.max_stale,
         max_chars=settings.max_chars,
         day=day,

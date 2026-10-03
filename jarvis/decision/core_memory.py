@@ -13,10 +13,19 @@ from typing import TYPE_CHECKING, Any, Final
 from jarvis.state import core_memory
 
 if TYPE_CHECKING:
-    from collections.abc import Collection, Sequence
+    from collections.abc import Mapping, Sequence
 
 _OPS: Final[frozenset[str]] = frozenset({"add", "rewrite", "stale"})
 _FENCE: Final[str] = "```"
+
+
+def day_labels(records: Sequence[tuple[str, str, str, str]]) -> dict[str, str]:
+    """``{label: record id}`` with labels r1, r2, ... in time order.
+
+    A 32-hex record id is easy for a model to mistype; a short label is not, and the
+    runtime maps it back before anything is stored.
+    """
+    return {f"r{number}": record[0] for number, record in enumerate(records, start=1)}
 
 
 def build_core_memory_messages(
@@ -34,9 +43,13 @@ def build_core_memory_messages(
         f"[Summary of {day}]",
         day_summary or "(none)",
         "",
-        f"[Records of {day}, oldest first; each line: record_id | time | speaker | words]",
+        f"[Records of {day}, oldest first; each line: label | time | speaker | words;"
+        " sources cite these labels]",
     ]
-    lines.extend(f"{rid} | {ts} | {source} | {text}" for rid, ts, source, text in records)
+    lines.extend(
+        f"{label} | {record[1]} | {record[2]} | {record[3]}"
+        for label, record in zip(day_labels(records), records, strict=True)
+    )
     return [{"role": "user", "content": "\n".join(lines)}]
 
 
@@ -52,13 +65,14 @@ def _parse(text: str) -> list[Any] | str:
     return changes if isinstance(changes, list) else 'no "changes" list'
 
 
-def _sources(raw: dict[str, Any], allowed: Collection[str]) -> list[str] | str:
+def _sources(raw: dict[str, Any], labels: Mapping[str, str]) -> list[str] | str:
+    """The real record ids of the cited labels, or why the citation fails."""
     cited = raw.get("sources")
-    if not (isinstance(cited, list) and cited and all(isinstance(rid, str) for rid in cited)):
+    if not (isinstance(cited, list) and cited and all(isinstance(label, str) for label in cited)):
         return f"{raw['op']} cites no sources"
-    if foreign := sorted(set(cited) - set(allowed)):
-        return f"cites record ids that are not that day's: {', '.join(foreign[:5])}"
-    return cited
+    if foreign := sorted(set(cited) - set(labels)):
+        return f"cites labels that are not that day's: {', '.join(foreign[:5])}"
+    return [labels[label] for label in cited]
 
 
 def _target(raw: dict[str, Any], items: int) -> int | str:
@@ -82,11 +96,11 @@ def _wording(raw: dict[str, Any]) -> dict[str, str] | str:
     return wording
 
 
-def _clean(raw: object, *, items: int, sources: Collection[str]) -> dict[str, Any] | str:
+def _clean(raw: object, *, items: int, labels: Mapping[str, str]) -> dict[str, Any] | str:
     """One well-formed change, or why it is not."""
     if not isinstance(raw, dict) or raw.get("op") not in _OPS:
         return "an op is not add, rewrite or stale"
-    cited = _sources(raw, sources)
+    cited = _sources(raw, labels)
     if isinstance(cited, str):
         return cited
     change: dict[str, Any] = {"op": raw["op"], "sources": cited}
@@ -125,12 +139,15 @@ def check_core_memory(  # noqa: PLR0913 — the answer and every gate's input.
     finish_reason: str | None,
     *,
     doc: core_memory.Doc,
-    record_ids: Collection[str],
+    labels: Mapping[str, str],
     max_stale: int,
     max_chars: int,
     day: str,
 ) -> tuple[list[dict[str, Any]], None] | tuple[None, str]:
-    """``(changes, None)`` when the answer may land, else ``(None, why)``."""
+    """``(changes, None)`` when the answer may land, else ``(None, why)``.
+
+    ``labels`` is :func:`day_labels` of that day; the changes come back with real record ids.
+    """
     if finish_reason in ("length", "max_tokens"):
         return None, "cut off by the output limit"
     parsed = _parse(text or "")
@@ -138,7 +155,7 @@ def check_core_memory(  # noqa: PLR0913 — the answer and every gate's input.
         return None, parsed
     changes: list[dict[str, Any]] = []
     for raw in parsed:
-        cleaned = _clean(raw, items=core_memory.item_count(doc), sources=record_ids)
+        cleaned = _clean(raw, items=core_memory.item_count(doc), labels=labels)
         if isinstance(cleaned, str):
             return None, cleaned
         changes.append(cleaned)
@@ -146,4 +163,4 @@ def check_core_memory(  # noqa: PLR0913 — the answer and every gate's input.
     return (changes, None) if reason is None else (None, reason)
 
 
-__all__ = ["build_core_memory_messages", "check_core_memory"]
+__all__ = ["build_core_memory_messages", "check_core_memory", "day_labels"]
