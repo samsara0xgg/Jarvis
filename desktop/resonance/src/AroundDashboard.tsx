@@ -17,6 +17,7 @@ import { ArrangeHome, BLOCK } from './ArrangeHome';
 import { BriefPage } from './BriefPage';
 import { SettingsPage, type Account, type AccountKeyDrafts, type Controls } from './SettingsPage';
 import { ActionCard, MailCard, QuestionCard, type Answer, type Card, type Decide, type Question } from './ActionCard';
+import { MailLetter, MailList, type MailAct, type MailFilter } from './MailPage';
 import { MOTION } from './motion';
 import './dashboard-around.css';
 import './dashboard-home.css';
@@ -25,9 +26,9 @@ import './dashboard-home.css';
 // blocks: the ones you keep, in your order, and the ones that show up when there is something. A block grows
 // into its page in place; the panel follows the blocks up to VIEW_MAX. Her light accents the surface;
 // measurements and agent states keep their own stable colours.
-type Page = 'conversation' | 'now' | 'agents' | 'usage' | 'plugins' | 'projects' | 'settings' | 'arrange' | 'brief';
+type Page = 'conversation' | 'now' | 'agents' | 'usage' | 'plugins' | 'projects' | 'settings' | 'arrange' | 'brief' | 'mail';
 export type DashboardView = {
-  page: Page | null; plugin: string | null; settingsCat: string | null; unfolded: string | null;
+  page: Page | null; plugin: string | null; letter: Mail | null; settingsCat: string | null; unfolded: string | null;
   query: string; token: string; homeDraft: string; talkDraft: string; days: number; scroll: number;
   accountKeyDrafts: AccountKeyDrafts; conversationFirstSeq: number | null;
   briefRead: string; dismissed: Partial<Record<BlockId, string>>; hidden: Record<string, string>;
@@ -35,7 +36,7 @@ export type DashboardView = {
   questionDraft: { id: string; value: Record<string, string> } | null;
 };
 export type DashboardViewHandle = { snapshot: () => DashboardView; restore: (value: DashboardView) => void };
-const TITLES: Record<Page, L> = { conversation: ['Conversation', '对话'], now: ['Right now', '现在'], agents: ['Agents', 'Agents'], usage: ['Usage', '用量'], plugins: ['Plugins', '插件'], projects: ['Projects', '项目'], settings: ['Settings', '设置'], arrange: ['Arrange the home', '编辑首页'], brief: ['Morning brief', '早报'] };
+const TITLES: Record<Page, L> = { conversation: ['Conversation', '对话'], now: ['Right now', '现在'], agents: ['Agents', 'Agents'], usage: ['Usage', '用量'], plugins: ['Plugins', '插件'], projects: ['Projects', '项目'], settings: ['Settings', '设置'], arrange: ['Arrange the home', '编辑首页'], brief: ['Morning brief', '早报'], mail: ['Mail', '邮件'] };
 // The home follows its blocks from the old fixed height up to this, then scrolls inside the panel.
 const VIEW_MIN = 466, VIEW_MAX = 600, CORNER = 28, HOME_GAP = 8, HOLD = 560, TALK_STAYS = 10 * 60_000;
 // The room the resting input keeps under the home (the panel's bottom padding, 58 against a page's 12): a page, where the input is gone, takes it.
@@ -157,6 +158,8 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
   const quota = useUsage(port), codex = useCodexSessions(port), work = useWorkState(port), projects = useProjects(port, open), claudeRows = useClaudeSessions(port);
   const [page, setPage] = useState<Page | null>(null);
   const [plugin, setPlugin] = useState<string | null>(null);
+  // The Mail page: the letter open on it (null = the list) and the list's filter.
+  const [letter, setLetter] = useState<Mail | null>(null), [mailFilter, setMailFilter] = useState<MailFilter>('all');
   const [settingsCat, setSettingsCat] = useState<string | null>(null);
   const [demoPlugins, setPlugins] = useState(DEMO_PLUGINS);
   const snapshot = live?.snapshot;
@@ -201,7 +204,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
   const restoredScroll = useRef<number | null>(null);
   const conversationRestore = useRef<{ firstSeq: number | null; scroll: number; loading: boolean; paused: boolean } | null>(null);
   const [restoringConversation, setRestoringConversation] = useState(false), [restoreRevision, setRestoreRevision] = useState(0);
-  const snapshotView = (): DashboardView => ({ page, plugin, settingsCat, unfolded, query, token, homeDraft, talkDraft, days,
+  const snapshotView = (): DashboardView => ({ page, plugin, letter, settingsCat, unfolded, query, token, homeDraft, talkDraft, days,
     accountKeyDrafts, conversationFirstSeq: conversationRestore.current?.firstSeq ?? (page === 'conversation' ? talk?.rows[0]?.seq ?? null : null),
     scroll: conversationRestore.current?.scroll ?? pageEl.current?.querySelector('.pg-body')?.scrollTop ?? 0, actionDraft, questionDraft, briefRead, dismissed, hidden });
   useImperativeHandle(viewRef, () => ({ snapshot: snapshotView, restore: value => {
@@ -211,7 +214,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
     // A reused window can still hold the previous page's filled opacity animation.
     // Keep the overview hidden only when the restored view is another page.
     if (value.page && home.current) home.current.animate([{ opacity: 0 }, { opacity: 0 }], { duration: 0, fill: 'forwards' });
-    setReset(null); setPage(value.page); setPlugin(value.plugin); setSettingsCat(value.settingsCat); setUnfolded(value.unfolded);
+    setReset(null); setPage(value.page); setPlugin(value.plugin); setLetter(value.letter ?? null); setSettingsCat(value.settingsCat); setUnfolded(value.unfolded);
     setQuery(value.query); setToken(value.token); setHomeDraft(value.homeDraft); setTalkDraft(value.talkDraft); setDays(value.days);
     setAccountKeyDrafts(value.accountKeyDrafts); setActionDraft(value.actionDraft); setQuestionDraft(value.questionDraft); setBriefRead(value.briefRead); setDismissed(value.dismissed); setHidden(value.hidden);
     const history = value.page === 'conversation' && !!talk;
@@ -225,7 +228,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
       restoredScroll.current = null;
     }
     publishView.current?.(snapshotView());
-  }, [page, plugin, settingsCat, unfolded, query, token, homeDraft, talkDraft, days, accountKeyDrafts, actionDraft, questionDraft, briefRead, dismissed, hidden, restoringConversation]);
+  }, [page, plugin, letter, settingsCat, unfolded, query, token, homeDraft, talkDraft, days, accountKeyDrafts, actionDraft, questionDraft, briefRead, dismissed, hidden, restoringConversation]);
 
   // Her face follows the page; '02' is her resting face, so it hands control back to the companion.
   const react = (expr: ExprId, ms: number, after: ExprId = '02') => {
@@ -242,7 +245,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
   useEffect(() => {
     if (open) return;
     conversationRestore.current = null; restoredScroll.current = null; setRestoringConversation(false);
-    closing.current = false; setPage(null); setPlugin(null); setSettingsCat(null); setUnfolded(null); setReset(null); react('02', 0);
+    closing.current = false; setPage(null); setPlugin(null); setLetter(null); setSettingsCat(null); setUnfolded(null); setReset(null); react('02', 0);
     // Having been on the home once is having seen the brief; the next opening that day leaves it out.
     if (briefShown.current) { setBriefRead(briefShown.current); briefShown.current = ''; }
     if (home.current) stopMotion(home.current);
@@ -261,13 +264,14 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
   const openPage = (name: Page, el?: HTMLElement | null) => {
     if (page || closing.current) return;
     origin.current = el ?? home.current?.querySelector<HTMLElement>(`[data-row="${name}"]`) ?? null;
-    setPage(name); setPlugin(null); setSettingsCat(null);
+    setPage(name); setPlugin(null); setLetter(null); setSettingsCat(null);
     if (name === 'conversation') { setDays(1); react(pick(TAKES.reply), 2600); }
     else if (name === 'now') react('37', 2400);
     else if (name === 'projects') { react('40', 1500); void projects.refresh(); }
     else if (name === 'settings') react('30', 1400);
     else if (name === 'arrange') react('14', 1200);
     else if (name === 'brief') react('10', 1600);
+    else if (name === 'mail') react('02', 0);
     else { react('02', 0); if (name === 'agents') onHop(.2); }
   };
   // The row grows into the page: its outline opens to the whole panel and its title slides up to the top.
@@ -305,16 +309,16 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
     back?.animate([{ opacity: 0 }, { opacity: 1 }], { duration: dur(MOTION.fast), delay: dur(MOTION.fast * MOTION.exit), fill: 'backwards' });
     shrink.onfinish = () => {
       if (!closing.current) return;
-      closing.current = false; setPage(null); setPlugin(null); setSettingsCat(null); react('02', 0);
+      closing.current = false; setPage(null); setPlugin(null); setLetter(null); setSettingsCat(null); react('02', 0);
       back?.classList.remove('is-holding');
       (back?.matches('button') ? back : back?.querySelector('button'))?.focus({ preventScroll: true });
     };
   };
-  const goUp = () => { if (page === 'plugins' && plugin) setPlugin(null); else if (page === 'settings' && settingsCat) setSettingsCat(null); else if (page) closePage(); else onClose(); };
+  const goUp = () => { if (page === 'plugins' && plugin) setPlugin(null); else if (page === 'mail' && letter) setLetter(null); else if (page === 'settings' && settingsCat) setSettingsCat(null); else if (page) closePage(); else onClose(); };
   const keys = (event: KeyboardEvent) => {
     if (event.key !== 'Escape') return;
     event.stopPropagation();
-    if ((event.target as Element).matches('input,select')) (event.target as HTMLElement).blur(); else goUp();
+    if ((event.target as Element).matches('input,select,textarea')) (event.target as HTMLElement).blur(); else goUp();
   };
 
   const ask = (text: string) => {
@@ -435,6 +439,15 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
     if (plugin) body()?.scrollTo({ top: 0 });
     else pageEl.current?.querySelector<HTMLElement>(`[data-plugin="${prev}"]`)?.focus({ preventScroll: true });
   }, [plugin, page]);
+  // A letter opens the same way: it pushes in from the right, and the list slides back from the left.
+  const shownLetter = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    const prev = shownLetter.current; shownLetter.current = letter?.id ?? null;
+    if (page !== 'mail' || prev === shownLetter.current) return;
+    pageEl.current?.querySelector(letter ? '.mp-det' : '.mp-list')?.animate([{ transform: `translateX(${letter ? 36 : -36}px)`, opacity: 0 }, { transform: 'none', opacity: 1 }], { duration: dur(letter ? PAGE_MS : EXIT_MS), easing: PAGE_EASE });
+    if (letter) body()?.scrollTo({ top: 0 });
+    else pageEl.current?.querySelector<HTMLElement>(`[data-id="${prev}"]`)?.focus({ preventScroll: true });
+  }, [letter, page]);
   const openPlugin = async (id: string) => { if (!live || await live.action('open', { plugin_id: id })) setPlugin(id); };
   // Live, every act is an operation on this plugin's request; the next snapshot redraws the page.
   const liveAct = async (id: string, act: string, value?: string) => {
@@ -567,6 +580,19 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
     notify(t([`Archived ${ids.length} · still in All Mail`, `已归档 ${ids.length} 封 · 仍在“所有邮件”里`]), async () => {
       try { if (port) await postRoute(port, '/inherent/mail/unarchive', { ids }); back(); mailRoute.reload(); }
       catch { notify(t(['Couldn’t put them back.', '放不回收件箱。'])); }
+    });
+  };
+  // A letter opened on the Mail page leaves the list at once, whichever way it goes; the strip undoes it. The daemon's list catches up on its next poll.
+  const DONE: Record<MailAct, [L, string]> = { trash: [['Moved to Trash', '已移到废纸篓'], 'untrash'], archive: [['Archived · still in All Mail', '已归档 · 仍在“所有邮件”里'], 'unarchive'], read: [['Marked as read', '已标为已读'], 'unread'] };
+  const actOnLetter = async (kind: MailAct, m: Mail) => {
+    const ids = [m.id], [done, undo] = DONE[kind];
+    setArchived(a => [...a, m.id]); setLetter(null);
+    const back = () => setArchived(a => a.filter(id => id !== m.id));
+    try { if (port) await postRoute(port, `/inherent/mail/${kind}`, { ids }); }
+    catch { back(); notify(t(['That didn’t go through. Try again.', '没成功，请再试一次。'])); return; }
+    notify(t(done), async () => {
+      try { if (port) await postRoute(port, `/inherent/mail/${undo}`, { ids }); back(); mailRoute.reload(); }
+      catch { notify(t(['Couldn’t put it back.', '放不回去。'])); }
     });
   };
   // For you: what Jarvis itself wants from you. Agents keep their own row.
@@ -761,6 +787,11 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
       {back(t(['Morning brief', '早报']), brief?.date)}
       <div className="pg-body">{brief ? <BriefPage brief={brief}/> : <p className="pg-sec muted">{t(['No brief today yet.', '今天的早报还没写好。'])}</p>}</div>
     </>,
+    mail: () => <>
+      {back(t(TITLES.mail), !letter && t([`${mail.length} unread`, `${mail.length} 封未读`]))}
+      <div className="pg-body">{letter ? <MailLetter key={letter.id} port={port} letter={letter} onAct={kind => void actOnLetter(kind, letter)}/>
+        : <MailList mail={mailRanked} filter={mailFilter} onFilter={setMailFilter} onOpen={setLetter}/>}</div>
+    </>,
     projects: () => <>
       {back(t(TITLES.projects), t(['last 7 days', '最近 7 天']))}
       <div className="pg-body">{projects.missing ? <p className="pg-sec muted">{t(['No projects set up. List them under projects in ~/.jarvis/settings.yaml.', '还没设置项目。在 ~/.jarvis/settings.yaml 的 projects 下列出来。'])}</p> : !projectsView ? <p className="pg-sec muted">{t(['Syncing…', '同步中…'])}</p> : <>
@@ -823,8 +854,8 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
               </span>
             </>,
             mail: () => <>
-              <span className="head"><span className="label">{t(['Mail', '邮件'])}</span><span className="meta">{t([`${mail.length} unread`, `${mail.length} 封未读`])}{mailYes.length > 0 && t([` · ${mailYes.length} need a reply`, ` · ${mailYes.length} 封要回`])}</span></span>
-              {mailRanked.slice(0, 2).map(m => <button className="ml" key={m.id} title={t(['Open in Gmail', '在 Gmail 里打开'])} onClick={() => void window.jarvis?.openMail?.(m.id)}><EnvelopeSimple size={13}/><b>{m.from}</b><span>{m.subject}</span>{m.reply === 'yes' && <em>{t(['Reply', '要回'])}</em>}</button>)}
+              <button className="head" data-row="mail" aria-label={t(['Open Mail', '打开邮件'])} onClick={e => openPage('mail', e.currentTarget.parentElement)}><span className="label">{t(['Mail', '邮件'])}</span><span className="meta">{t([`${mail.length} unread`, `${mail.length} 封未读`])}{mailYes.length > 0 && t([` · ${mailYes.length} need a reply`, ` · ${mailYes.length} 封要回`])}<CaretRight size={10}/></span></button>
+              {mailRanked.slice(0, 2).map(m => <button className="ml" key={m.id} title={t(['Open', '打开'])} onClick={e => { openPage('mail', e.currentTarget.parentElement); setLetter(m); }}><EnvelopeSimple size={13}/><b>{m.from}</b><span>{m.subject}</span>{m.reply === 'yes' && <em>{t(['Reply', '要回'])}</em>}</button>)}
               {mailJunk.length > 0 && <span className="mj"><span>{t([`${mailJunk.length} look like junk`, `${mailJunk.length} 封像垃圾邮件`])}</span><button onClick={() => void archiveJunk()}>{t(['Archive', '一键归档'])}</button></span>}
             </>,
             agents: () => <button className="fill" data-row="agents" aria-label={t(['Open Agents', '打开 Agents'])} onClick={e => openPage('agents', e.currentTarget.parentElement)}>

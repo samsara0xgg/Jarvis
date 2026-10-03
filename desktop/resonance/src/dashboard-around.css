@@ -361,3 +361,47 @@
   .ad *, .ad *::before, .ad *::after { animation:none !important; }
   .ad *, .ad *::before, .ad *::after { transition:none !important; }
 }
+
+/* Mail: the list, and one letter pushed in from the right. */
+.ad .r-mail .head { cursor:pointer; }
+.ad .mp-list, .ad .mp-det { display:flex; flex-direction:column; gap:14px; }
+.ad .mp-chips { flex-direction:row; flex-wrap:wrap; gap:6px; }
+.ad .mp-chip { display:inline-flex; align-items:center; gap:5px; padding:3px 10px; border-radius:var(--radius-tag); background:rgb(255 255 255 / .05); font-size:var(--text-detail); color:var(--p-muted); transition:background var(--motion-fast),color var(--motion-fast); }
+.ad .mp-chip:hover { color:var(--p-ink); }
+.ad .mp-chip[aria-pressed="true"] { background:rgb(var(--glow) / .16); color:var(--p-ink); }
+.ad .mp-chip em { font-style:normal; font-size:var(--text-label); font-variant-numeric:tabular-nums; color:var(--p-faint); }
+.ad .mp-rows { gap:2px; }
+.ad .mp-row { display:flex; flex-direction:column; gap:2px; width:100%; padding:7px 6px; border-radius:var(--radius-control); text-align:left; font-size:var(--text-detail); line-height:17px; color:var(--p-muted); white-space:nowrap; }
+.ad .mp-row:hover { background:rgb(var(--glow) / .08); }
+.ad .mp-top, .ad .mp-line { display:flex; align-items:center; gap:8px; min-width:0; }
+.ad .mp-row b { min-width:0; overflow:hidden; text-overflow:ellipsis; font-weight:600; color:var(--p-ink); }
+.ad .mp-sub { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; }
+.ad .mp-row time { flex:none; margin-left:auto; font-size:var(--text-label); font-variant-numeric:tabular-nums; color:var(--p-faint); }
+.ad .mp-tag { flex:none; padding:0 6px; border-radius:var(--radius-tag); background:rgb(255 255 255 / .05); font-style:normal; font-size:var(--text-label); line-height:16px; color:var(--p-faint); }
+.ad .mp-mark.is-yes { background:color-mix(in srgb,var(--warm-c) 14%,transparent); color:var(--warm-c); }
+.ad .mp-mark.is-fyi { color:var(--p-muted); }
+.ad .mp-tag.is-hot { background:color-mix(in srgb,var(--alert-c) 16%,transparent); color:var(--alert-c); }
+.ad .mp-tag.is-mid { color:var(--p-ink); }
+.ad .mp-head { gap:4px; }
+.ad .mp-who { display:flex; align-items:baseline; gap:6px; min-width:0; font-size:var(--text-body); }
+.ad .mp-who b { flex:none; font-weight:600; }
+.ad .mp-who small { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:var(--text-label); color:var(--p-faint); }
+.ad .mp-who time { flex:none; margin-left:auto; font-size:var(--text-label); font-variant-numeric:tabular-nums; color:var(--p-faint); }
+.ad .mp-subject { font-size:var(--text-title); font-weight:600; line-height:1.3; letter-spacing:-.01em; overflow-wrap:anywhere; }
+.ad .mp-text { white-space:pre-wrap; overflow-wrap:anywhere; font-size:var(--text-body); line-height:1.55; color:var(--p-ink); }
+.ad .mp-bar { flex-direction:row; flex-wrap:wrap; align-items:center; gap:6px; padding-top:10px; border-top:1px solid var(--p-line); }
+.ad .mp-end { display:inline-flex; gap:6px; margin-left:auto; }
+.ad .mp-draft { gap:6px; padding:10px; border-radius:var(--radius-block); background:rgb(255 255 255 / .035); animation:ad-rise var(--motion-fast) both; }
+.ad .mp-to { display:flex; align-items:center; gap:7px; min-width:0; padding-bottom:6px; border-bottom:.5px solid var(--p-line); font-size:var(--text-detail); color:var(--p-faint); }
+.ad .mp-to em { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-style:normal; color:var(--p-muted); }
+.ad .mp-edit { display:block; width:calc(100% + 10px); min-width:0; margin:0 -5px; padding:2px 5px; border:0; border-radius:var(--radius-control); background:transparent; color:var(--p-ink); font:inherit; font-size:var(--text-body); line-height:1.5; outline:none; resize:none; }
+.ad .mp-subj { font-weight:600; }
+.ad .mp-edit:hover { background:rgb(255 255 255 / .04); }
+.ad .mp-edit:focus-visible { background:rgb(255 255 255 / .06); box-shadow:0 0 0 1px rgb(var(--glow) / .45); }
+.ad .mp-bodytext { min-height:4.5em; white-space:pre-wrap; overflow-wrap:anywhere; overflow:hidden; }
+.ad span.mt { display:block; }
+.ad .mt-del { display:inline-block; overflow:hidden; vertical-align:bottom; white-space:pre; }
+.ad .mp-foot { display:flex; align-items:center; justify-content:flex-end; gap:6px; }
+.ad .mp-quiet { animation:ad-breathe 1.6s ease-in-out infinite; }
+.ad .mp-sent { padding:2px 0; }
+.ad .mp-draft .btn:disabled { opacity:.45; }

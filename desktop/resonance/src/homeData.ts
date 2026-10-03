@@ -19,7 +19,10 @@ export type Brief = { date: string; summary: string; lead?: string; items?: numb
 // `reply` (ADR 0123): 'yes' = Jev is very sure it needs Allen's reply, 'fyi' = very sure it does not, null = no mark.
 // `junk` (ADR 0124): Jev is very sure it is junk Allen did not ask for; the home offers to archive it, never does by itself.
 // `importance`: Jev's 0-3 score when it rated the letter (ADR 0141); it only orders the list.
-export type Mail = { id: string; from: string; subject: string; received: string; reply?: 'yes' | 'fyi' | null; junk?: boolean; importance?: number };
+// `thread_id` ties a letter to the reply card; `address` is the sender's; `category` is Jev's topic ('job_search' feeds the page's filter).
+// GET /inherent/mail/{id}: the letter itself, { id, thread_id, from, address, to, subject, received, text } with the body as plain text.
+// POST /inherent/mail/{trash,untrash,read,unread} { ids } move letters out of and back into the unread list, like archive above.
+export type Mail = { id: string; from: string; subject: string; received: string; reply?: 'yes' | 'fyi' | null; junk?: boolean; importance?: number; thread_id?: string; address?: string; category?: string };
 // GET /inherent/notices: what Jarvis itself wants from you (reminders, its questions); agents are not in it.
 export type Notice = { id: string; text: string; at: string };
 
@@ -71,10 +74,17 @@ export const demoBrief = (): Brief => ({ date: new Date().toLocaleDateString('en
       { text: 'CSC370 A3', tag: 'going', label: 'In progress', status: 'attempted / in progress', note: 'The write-up is half done.' }] },
     { key: 'open', title: 'Still open', rows: [{ text: 'Two agents are waiting for you.' }] }] });
 export const demoMail = (): Mail[] => [
-  { id: 'lee', from: 'Prof. Lee', subject: 'Office hours move to Thursday', received: at(-40), reply: 'fyi' },
-  { id: 'mom', from: 'Mom', subject: 'Still on for tonight?', received: at(-95), reply: 'yes' },
-  { id: 'deals', from: 'Shop Deals', subject: '50% off everything this weekend', received: at(-130), reply: 'fyi', junk: true },
+  { id: 'lee', from: 'Prof. Lee', address: 'lee@uni.example', thread_id: 't-lee', subject: 'Office hours move to Thursday', received: at(-40), reply: 'fyi', importance: 1 },
+  { id: 'mom', from: 'Mom', address: 'mom@home.example', thread_id: 't-mom', subject: 'Still on for tonight?', received: at(-95), reply: 'yes', importance: 2.7 },
+  { id: 'hire', from: 'Northwind Recruiting', address: 'jobs@northwind.example', thread_id: 't-hire', subject: 'Interview slots for next week', received: at(-300), reply: 'yes', importance: 1.6, category: 'job_search' },
+  { id: 'deals', from: 'Shop Deals', address: 'hi@shop.example', thread_id: 't-deals', subject: '50% off everything this weekend', received: at(-130), reply: 'fyi', junk: true, importance: .2 },
 ];
+export const demoMailText: Record<string, string> = {
+  lee: 'Hi all,\n\nOffice hours move to Thursday, 3 to 5 PM, in room 214.\nThe A3 questions are still welcome by email: https://courses.example/csc370/a3\n\nProf. Lee',
+  mom: 'Are you still coming for dinner tonight?\n\nI am making the soup you like. Call me when you leave.\n\nMom',
+  hire: 'Hello,\n\nWe would like to talk about the role. Could you do Tuesday 10:00 or Wednesday 14:00?\nThe job post: https://jobs.northwind.example/roles/4821\n\nBest,\nNorthwind Recruiting',
+  deals: 'Everything is half price this weekend only. https://shop.example/sale',
+};
 export const demoNotices = (): Notice[] => [{ id: 'mic', text: 'Reminder: test the mic at 4 PM', at: at(-5) }];
 
 // Refreshes a clock-driven view every `ms`.
