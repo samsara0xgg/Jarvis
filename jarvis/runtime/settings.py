@@ -4,7 +4,7 @@ The desktop Settings page reads and writes ``<runtime root>/settings.json``
 through ``/inherent/settings``. Every value is read once at boot, so a saved
 change waits for a restart; ``restart_pending`` says whether one does. The
 microphone and speaker are the exception: a running voice chain takes them at
-once (ADR 0054).
+once (ADR 0054), and so are the reSpeaker board's lights and output levels (ADR 0147).
 """
 
 from __future__ import annotations
@@ -68,10 +68,24 @@ PATHS: dict[str, tuple[str, ...]] = {
     "keep_audio": ("memory", "retain_audio"),
     "audio_days": ("memory", "audio_retention_days"),
     "screenshot_days": ("tools", "screen", "retention_days"),
+    **{key: ("respeaker", key.removeprefix("board_")) for key in (
+        "board_light", "board_brightness", "board_speed", "board_color",
+        "board_direction_colors", "board_ring_colors", "board_headphone", "board_lineout",
+    )},
 }
-_DEFAULTS: dict[str, Any] = {"reply_language": "follow", "tts_volume": 1.0}
+# ADR 0147: the board's factory look on firmware 2.1.1; the board is left alone until one is saved.
+_BOARD_DEFAULTS: dict[str, Any] = {
+    "board_light": "direction", "board_brightness": 1.0, "board_speed": 8, "board_color": "#002040",
+    "board_direction_colors": ["#002040", "#00c066"], "board_ring_colors": ["#002040"] * 12,
+    "board_headphone": 8, "board_lineout": 8,
+}
+_DEFAULTS: dict[str, Any] = {"reply_language": "follow", "tts_volume": 1.0, **_BOARD_DEFAULTS}
 _DEVICES = {"output_device": "output", "input_device": "input"}
 _RANGES = {"wake_threshold": (0.80, 0.99), "tts_volume": (0.3, 1.0)}
+BOARD_LIGHTS = ("off", "breath", "rainbow", "solid", "direction", "ring")
+_LEVELS = {"board_speed": (1, 255), "board_headphone": (0, 9), "board_lineout": (0, 9)}
+_COLOR = re.compile(r"#[0-9a-f]{6}")
+_COLORS = {"board_color": None, "board_direction_colors": 2, "board_ring_colors": 12}
 _SWITCHES = ("gpt_live", "timesink", "keep_audio")
 # ADR 0067: how many days recordings and screenshots are kept; None is forever.
 RETENTION_DAYS = (7, 30, 90, None)
@@ -108,7 +122,26 @@ def _valid(key: str, value: object) -> bool:
         return value is None or isinstance(value, str)
     if key == "tts_voice":
         return value in VOICES
-    return key == "reply_language" and value in ("follow", "zh", "en")
+    return _valid_board(key, value) if key in _BOARD_DEFAULTS else (
+        key == "reply_language" and value in ("follow", "zh", "en")
+    )
+
+
+def _valid_board(key: str, value: object) -> bool:
+    """ADR 0147's keys: a light, a brightness, a level, or ``#rrggbb`` colors."""
+    if key == "board_light":
+        return value in BOARD_LIGHTS
+    if key == "board_brightness":
+        number = isinstance(value, int | float) and not isinstance(value, bool)
+        return number and 0.0 <= value <= 1.0  # type: ignore[operator]
+    if key in _LEVELS:
+        low, high = _LEVELS[key]
+        return type(value) is int and low <= value <= high
+    count = _COLORS[key]
+    colors = [value] if count is None else value if isinstance(value, list) else []
+    return bool(colors) and (count is None or len(colors) == count) and all(
+        isinstance(one, str) and _COLOR.fullmatch(one) is not None for one in colors
+    )
 
 
 def _saved(root: Path) -> dict[str, Any]:
@@ -171,6 +204,8 @@ class Settings:
         }
         # ADR 0054: set by the voice chain; takes (microphone, speaker) at once.
         self.on_devices: Callable[[str | None, str | None], None] | None = None
+        # ADR 0147: set by the runtime; puts a saved board look (see :meth:`board`) on the board.
+        self.on_board: Callable[[dict[str, Any]], object] | None = None
 
     def read(self) -> dict[str, Any]:
         """``{values, options, defaults, restart_pending}`` in the shapes the page shows."""
@@ -207,7 +242,21 @@ class Settings:
             for key in picked:
                 self._booted[key] = stored[key]
             self.on_devices(self._booted["input_device"], self._booted["output_device"])
+        changed = stored.keys() & _BOARD_DEFAULTS.keys()
+        board = self.board() if changed else None
+        if board is not None and self.on_board is not None:
+            for key in changed:
+                self._booted[key] = stored[key]
+            self.on_board(board)
         return self.read()
+
+    def board(self) -> dict[str, Any] | None:
+        """The board look to keep (``light``, ``brightness``, ...); None until one is saved."""
+        saved = _saved(self._root)
+        if not saved.keys() & _BOARD_DEFAULTS.keys():
+            return None
+        current = {**self._booted, **saved}
+        return {key.removeprefix("board_"): current[key] for key in _BOARD_DEFAULTS}
 
     def _shown(self, key: str, value: object) -> object:
         if key in _DEVICES:
@@ -228,6 +277,8 @@ class Settings:
                 raise ValueError(msg)
         if key == "tts_voice":
             value = next((one for one in VOICES if voice_name(one) == value), value)
+        if key in _COLORS and isinstance(value, str | list):
+            value = value.lower() if isinstance(value, str) else [str(one).lower() for one in value]
         if not _valid(key, value):
             msg = f"{key} cannot be {value!r}"
             raise ValueError(msg)

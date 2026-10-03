@@ -562,6 +562,8 @@ class InherentDeps:
     # a ValueError from saving is a 400. ``None`` leaves the routes unregistered.
     settings_read: Callable[[], Awaitable[dict[str, Any]]] | None = None
     settings_update: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]] | None = None
+    # ADR 0147: the reSpeaker board's {present, firmware, direction, speech}, read off the loop.
+    board_status: Callable[[], Awaitable[dict[str, Any]]] | None = None
     # Settings > Restart: answer, then TERM this process; registered only when
     # launchd's KeepAlive is there to bring the daemon back.
     restart: Callable[[], None] | None = None
@@ -1119,6 +1121,14 @@ def _register_home_routes(app: FastAPI, deps: InherentDeps) -> None:  # noqa: C9
         async def settings_save(req: SettingsRequest) -> dict[str, Any]:
             """Save the changed values for the next boot; answers like ``GET``."""
             return await _home_call(settings_update(req.changes))
+
+    if deps.board_status is not None:
+        board_status = deps.board_status
+
+        @app.get("/inherent/board")
+        async def board() -> dict[str, Any]:
+            """The reSpeaker board as the Settings page shows it (ADR 0147)."""
+            return await board_status()
 
     if deps.restart is not None:
         restart = deps.restart

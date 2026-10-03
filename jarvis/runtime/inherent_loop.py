@@ -220,6 +220,7 @@ from jarvis.state.projections import (
 from jarvis.state.trigger_consumption import trigger_was_consumed
 from jarvis.state.turn_overlap import any_turn_in_flight
 from jarvis.surface import (
+    respeaker_board,
     voice_aec,
     voice_artifact_store,
     voice_asr,
@@ -4758,6 +4759,30 @@ async def _watch_audio_devices(
             retries += 1
 
 
+# ADR 0147: how often the reSpeaker's saved lights and levels are checked; a replug, a reboot
+# and the board's boot animation (rainbow, then direction after 2 s) put its factory values back.
+_BOARD_POLL_S = 2.0
+
+
+def _put_board(look: dict[str, Any]) -> str:
+    """Put a saved board look on the reSpeaker if it is not there; one log line when written."""
+    outcome = respeaker_board.ensure(look)
+    if outcome == "applied":
+        LOGGER.info("reSpeaker board: lights %s at %.0f%% put back on the board",
+                    look["light"], 100 * look["brightness"])
+    return outcome
+
+
+async def _watch_board(settings: Settings) -> None:
+    """Keep the Settings page's board look on the reSpeaker (ADR 0147); no look saved, no writes."""
+    settings.on_board = _put_board
+    while True:
+        look = await asyncio.to_thread(settings.board)
+        if look is not None:
+            await asyncio.to_thread(_put_board, look)
+        await asyncio.sleep(_BOARD_POLL_S)
+
+
 def _start_audio_device_watch(
     runtime: JarvisRuntime,
     coordinator: _VoicePowerCoordinator,
@@ -5977,6 +6002,10 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 None if runtime.settings is None
                 else functools.partial(_save_settings, runtime.settings)
             ),
+            board_status=(
+                None if runtime.settings is None
+                else functools.partial(asyncio.to_thread, respeaker_board.status)
+            ),
             restart=_restart_soon if spawned_by_agent() else None,
             data_export=functools.partial(asyncio.to_thread, _export_data, runtime),
             data_clear=functools.partial(
@@ -6205,6 +6234,8 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             _data_sweep_task(_media_dirs(runtime), logs_dir(runtime.runtime_paths.root)),
             name="data_sweep",
         ))
+        if runtime.settings is not None:
+            watchers.append(asyncio.create_task(_watch_board(runtime.settings), name="board_watch"))
         for watcher in watchers:
             watcher.add_done_callback(_log_watcher_death)
 

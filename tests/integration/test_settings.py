@@ -85,6 +85,10 @@ def test_the_page_reads_what_jarvis_booted_with(tmp_path: Path) -> None:
         "repos": ["~/Projects/jarvis", "~/Projects/typlus"],
         "model_conversation": "gpt-5.6-luna", "model_background": "gpt-6-luna",
         "model_report": "gpt-6-sol",
+        # ADR 0147: the board's factory look until the page saves one.
+        "board_light": "direction", "board_brightness": 1.0, "board_speed": 8,
+        "board_color": "#002040", "board_direction_colors": ["#002040", "#00c066"],
+        "board_ring_colors": ["#002040"] * 12, "board_headphone": 8, "board_lineout": 8,
     }
     assert body["options"]["input_device"] == ["System default", *DEVICES["input"]]
     assert body["options"]["output_device"] == ["System default", *DEVICES["output"]]
