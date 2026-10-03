@@ -147,7 +147,13 @@ from jarvis.runtime import (
     make_turn_cancel_callable,
     save_language,
 )
-from jarvis.runtime.dictation import Dictation, load_user_terms, polish_client, whisper_ears
+from jarvis.runtime.dictation import (
+    COMMAND_PROMPT,
+    Dictation,
+    load_user_terms,
+    polish_client,
+    whisper_ears,
+)
 from jarvis.runtime.inherent_hub import start_inherent_view
 from jarvis.runtime.night_watch import NightWatch
 from jarvis.runtime.session_compaction import CompactionSweep, preset_context_length
@@ -2463,7 +2469,10 @@ def _final_recognizer(
             return sensevoice
         LOGGER.info("voice turns of 1 s or more hear with Whisper; SenseVoice keeps the rest")
         return voice_asr.HybridFinalRecognizer(
-            sensevoice=sensevoice, whisper_zh=whisper_zh, whisper_en=whisper_en,
+            sensevoice=sensevoice,
+            whisper_zh=whisper_zh,
+            whisper_en=whisper_en,
+            whisper_command=whisper_ears(language="zh", prompt=COMMAND_PROMPT),
         )
     if choice != "whisper":
         return sensevoice

@@ -746,6 +746,10 @@ class HybridFinalRecognizer:
     to the Chinese Whisper, ``en`` to the English one; any other language, an empty Whisper
     transcript or a Whisper error keeps SenseVoice's words.
 
+    ADR 0137: with ``whisper_command`` set, a short unclear Chinese line (2-4 characters, no
+    question, no command already) is heard once more by it, and a Chinese command it returns
+    stands in for the line.
+
     :meth:`prepare` starts that work when Allen goes quiet, so :meth:`recognize_prepared` finds
     it done, or nearly, when the endpoint commits. mlx cannot be interrupted, so one worker
     thread runs the passes one after another.
@@ -757,11 +761,16 @@ class HybridFinalRecognizer:
         sensevoice: SenseVoiceRecognizer,
         whisper_zh: MlxWhisperRecognizer,
         whisper_en: MlxWhisperRecognizer,
+        whisper_command: MlxWhisperRecognizer | None = None,
     ) -> None:
-        """``whisper_zh`` and ``whisper_en`` are built without a word list and share one model."""
+        """The Whispers are built without a word list and share one model.
+
+        ``whisper_command`` is the Chinese one with the command prompt; ``None`` never hears twice.
+        """
         self._sensevoice = sensevoice
         self._whisper_zh = whisper_zh
         self._whisper_en = whisper_en
+        self._whisper_command = whisper_command
         self._by_language = {"zh": whisper_zh, "yue": whisper_zh, "en": whisper_en}
         self._lock = threading.Lock()
         self._prepared: dict[str, _PreparedFinal] = {}
@@ -866,6 +875,31 @@ class HybridFinalRecognizer:
                 entry.done.set()
 
     def _hear(self, audio_pcm: bytes, speech_s: float) -> TranscriptionResult:
+        result = self._hear_once(audio_pcm, speech_s)
+        if (
+            self._whisper_command is None
+            or not _short_unclear(result)
+            or len(audio_pcm) < _WHISPER_MIN_BYTES
+            or too_quiet_for_speech(audio_pcm, floor=_WHISPER_LEVEL_FLOOR)
+        ):
+            return result
+        try:
+            again = self._whisper_command.recognize(audio_pcm)
+        except Exception:  # noqa: BLE001 - the first transcript still stands
+            LOGGER.warning("short line heard again: Whisper failed; first stands", exc_info=True)
+            return result
+        text = again.text.strip()
+        command = _chinese_command(text)
+        LOGGER.info("short line heard again: command=%s", command)  # never the words (ADR 0067)
+        if not command:
+            return result
+        if not unicodedata.category(text[-1]).startswith("P"):
+            text += "。"
+        return replace(
+            again, text=text, language_detected=result.language_detected, emotion=result.emotion,
+        )
+
+    def _hear_once(self, audio_pcm: bytes, speech_s: float) -> TranscriptionResult:
         heard = self._sensevoice.recognize(audio_pcm)
         whisper = self._by_language.get(heard.language_detected or "")
         if (
@@ -891,6 +925,36 @@ class HybridFinalRecognizer:
             language_detected=heard.language_detected,
             emotion=heard.emotion,
         )
+
+
+_CJK_ONLY_RE = re.compile(r"[\u3400-\u9fff\uf900-\ufaff]+")
+_SHORT_LINE_CHARS = (2, 4)
+
+
+def _short_unclear(result: TranscriptionResult) -> bool:
+    """ADR 0137: 2-4 Chinese characters, no question, and none of the commands already."""
+    text = result.text
+    squashed = _squashed(text)
+    return (
+        result.language_detected in {"zh", "yue"}
+        and _SHORT_LINE_CHARS[0] <= len(squashed) <= _SHORT_LINE_CHARS[1]
+        and _CJK_ONLY_RE.fullmatch(squashed) is not None
+        and not text.rstrip().endswith(("?", "\uff1f"))
+        and not (
+            is_dismissal(text) or is_stop_request(text) or is_wait_request(text)
+            or is_backchannel(text)
+        )
+    )
+
+
+def _chinese_command(text: str) -> bool:
+    """A dismissal, a wait or a stop phrase written in Chinese characters alone."""
+    squashed = _squashed(text)
+    return _CJK_ONLY_RE.fullmatch(squashed) is not None and (
+        is_whole_dismissal(text)
+        or is_wait_request(text)
+        or re.fullmatch(_STOP_PHRASE, squashed) is not None
+    )
 
 
 # 言字 a50ba52: a fragment this short heard as another language is noise, unless it is

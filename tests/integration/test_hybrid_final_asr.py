@@ -88,10 +88,16 @@ def _whisper(
 
 
 def _hybrid(
-    sensevoice: MagicMock, zh: MagicMock | None = None, en: MagicMock | None = None,
+    sensevoice: MagicMock,
+    zh: MagicMock | None = None,
+    en: MagicMock | None = None,
+    command: MagicMock | None = None,
 ) -> voice_asr.HybridFinalRecognizer:
     return voice_asr.HybridFinalRecognizer(
-        sensevoice=sensevoice, whisper_zh=zh or _whisper(), whisper_en=en or _whisper(),
+        sensevoice=sensevoice,
+        whisper_zh=zh or _whisper(),
+        whisper_en=en or _whisper(),
+        whisper_command=command,
     )
 
 
@@ -378,3 +384,58 @@ def test_the_session_prepares_each_pause_discards_on_speech_and_commits_the_prep
     # frames in, 6 more than prepared) would say "heard <that length>".
     assert _transcripts(tmp_path) == [f"heard {last[2]}."]
     assert zh.recognize.call_count <= 2  # the first pause's pass may or may not have started
+
+
+@pytest.mark.parametrize(
+    ("first", "again", "kept", "second_passes"),
+    [
+        ("对下。", "退下", "退下。", 1),  # misheard 退下, heard again as the command
+        ("对下。", "退下吧。", "退下吧。", 1),
+        ("你是谁？", "再见。", "你是谁？", 0),  # a question is not a mishearing
+        ("对下。", "Peace out!", "对下。", 1),  # English from the second pass is never a command
+        ("开灯。", "开灯。", "开灯。", 1),  # heard again, nothing new: the first stands
+        ("对下。", "对象。", "对下。", 1),
+        ("退下。", "退下。", "退下。", 0),  # a command already
+        ("等我一下。", "退下。", "等我一下。", 0),
+        ("请你退下吧。", "退下。", "请你退下吧。", 0),  # six characters: not a short line
+        ("嗯嗯。", "退下。", "嗯嗯。", 0),  # a listening sound already
+    ],
+)
+def test_a_short_unclear_line_is_heard_again_for_a_command(
+    first: str, again: str, kept: str, second_passes: int,
+) -> None:
+    """ADR 0137: only a 2-4 character non-question line that is no command gets a second hearing."""
+    command = _whisper(again)
+    zh = _whisper("whisper must not hear a short clip")
+    ears = _hybrid(_sensevoice("zh", first), zh=zh, command=command)
+    heard = ears.recognize_prepared("U1", _audio(0.5), 0.5)
+    assert heard.text == kept
+    assert command.recognize.call_count == second_passes
+    assert heard.language_detected == "zh"
+    assert heard.emotion == "NEUTRAL"
+
+
+def test_a_long_turns_short_looking_whisper_text_is_heard_again_too() -> None:
+    """The check runs on whichever transcript was decided, Whisper's included."""
+    command = _whisper("退下")
+    ears = _hybrid(_sensevoice("zh"), zh=_whisper("对下"), command=command)
+    assert ears.recognize_prepared("U1", _audio(2.0), 2.0).text == "退下。"
+    assert command.recognize.call_count == 1
+
+
+def test_a_failing_second_hearing_keeps_the_first_transcript() -> None:
+    """A second pass that raises costs nothing."""
+    command = _whisper(RuntimeError("mlx failed"))
+    ears = _hybrid(_sensevoice("zh", "对下。"), command=command)
+    assert ears.recognize_prepared("U1", _audio(0.5), 0.5).text == "对下。"
+    assert command.recognize.call_count == 1
+
+
+def test_no_second_hearing_without_the_command_whisper_or_for_other_languages() -> None:
+    """No ``whisper_command`` is the old behavior; English lines are never heard again."""
+    plain = _hybrid(_sensevoice("zh", "对下。"))
+    assert plain.recognize_prepared("U1", _audio(0.5), 0.5).text == "对下。"
+    command = _whisper("退下")
+    ears = _hybrid(_sensevoice("en", "对下。"), command=command)
+    assert ears.recognize_prepared("U1", _audio(0.5), 0.5).text == "对下。"
+    assert command.recognize.call_count == 0

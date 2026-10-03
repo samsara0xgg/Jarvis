@@ -186,18 +186,27 @@ def load_user_terms(path: Path) -> list[str]:
     return list(dict.fromkeys(term for term in kept if term))
 
 
+# ADR 0137: the second hearing of a short unclear line leans toward the spoken commands.
+COMMAND_PROMPT = "以下是普通话的简体中文转录，常用口令：退下，停，等我一下，继续说。"
+
+
 def whisper_ears(
-    *, language: str = "zh", terms: Callable[[], Sequence[str]] | None = None,
+    *,
+    language: str = "zh",
+    terms: Callable[[], Sequence[str]] | None = None,
+    prompt: str | None = None,
 ) -> voice_asr.MlxWhisperRecognizer | None:
     """ADR 0077/0110: local Whisper when mlx-whisper is installed; ``None`` means SenseVoice.
 
     It is installed on Allen's Mac, outside ``pyproject.toml``; the packaged app ships without it.
     ``language`` ``""`` lets Whisper tell; only Chinese gets the simplified-Chinese prompt.
-    ``terms`` puts his word list in the prompt on every call.
+    ``terms`` puts his word list in the prompt on every call; ``prompt`` replaces the Chinese one.
     """
     if importlib.util.find_spec("mlx_whisper") is None:
         return None
     if language == "zh":
+        if prompt:
+            return voice_asr.MlxWhisperRecognizer(language="zh", initial_prompt=prompt, terms=terms)
         return voice_asr.MlxWhisperRecognizer(language="zh", terms=terms)
     return voice_asr.MlxWhisperRecognizer(language=language or None, initial_prompt=None, terms=terms)
 

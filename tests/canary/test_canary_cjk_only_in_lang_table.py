@@ -56,7 +56,7 @@ _MATCHERS: Final[dict[str, frozenset[str]]] = {
     "jarvis/execution/tools.py": frozenset({"_ASK_SECRET_RE"}),
     # Typlus's polish prompt (ADR 0058) names the Chinese phantoms the recognizer emits
     # and Chinese dictations that must not be answered, as the words the model will read.
-    "jarvis/runtime/dictation.py": frozenset({"POLISH_PROMPT"}),
+    "jarvis/runtime/dictation.py": frozenset({"POLISH_PROMPT", "COMMAND_PROMPT"}),
     # A question naming a past day is the saved report's to answer; these read the question.
     "jarvis/runtime/daily_report.py": frozenset({"_PAST_DAY", "_YESTERDAY"}),
     "jarvis/execution/tool_search.py": frozenset({"_TOKEN"}),
@@ -72,7 +72,8 @@ _MATCHERS: Final[dict[str, frozenset[str]]] = {
          "_DISMISS_WORD_RE", "_QUESTION_END_RE",
          "_SHORT_ANSWER_RE",
          "caption_text", "is_backchannel", "is_unclear_sound", "_WHISPER_SILENCE_RE",
-         "WhisperFinalRecognizer.recognize", "HybridFinalRecognizer._hear", "_FULL_WIDTH"}
+         "WhisperFinalRecognizer.recognize", "HybridFinalRecognizer._hear",
+         "HybridFinalRecognizer._hear_once", "_short_unclear", "_FULL_WIDTH"}
     ),
     "jarvis/surface/voice_live.py": frozenset({"_SENTENCE_ENDS"}),
 }
