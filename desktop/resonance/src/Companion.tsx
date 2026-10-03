@@ -244,6 +244,13 @@ export function Companion() {
     over: () => { const r = talkBox.current?.getBoundingClientRect(), p = cursor.current; return place === 'out' && !!r && p.x >= r.left - 6 && p.x <= r.right + 6 && p.y >= r.top - 6 && p.y <= r.bottom + 6; },
     onOpen: () => setTalkFrom(Date.now()) });
   talkOpen.current = presence.open;
+  // ADR 0102: conversation mode ending from the daemon's side (a dismissal, or quiet) sends her home now: the area folds and her
+  // last answer leaves once she has stopped saying it, not 8 s after.
+  const wasConversation = useRef(s.conversation);
+  useEffect(() => {
+    if (port && wasConversation.current && !s.conversation) { presence.dismiss(); if (s.turnId) dispatch({ type: 'settle', turnId: s.turnId }); }
+    wasConversation.current = s.conversation;
+  }, [s.conversation]);
   const talkLevel: Captions = level(companion.captions, s.soundMuted);
   // Without the buttons nothing is drawn while she only listens: the pill comes with your first words (or once there is something of this session to show).
   const quiet = !companion.talkButtons && voice === 'listening' && !partial.trim() && !composer && !s.talk.some(l => l.at >= talkFrom);
