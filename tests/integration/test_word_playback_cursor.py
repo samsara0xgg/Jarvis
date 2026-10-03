@@ -96,7 +96,8 @@ def test_counting_cut_at_fifteen_keeps_fifteen_in_next_turn(
             for event in iter_events(conn)
         ))
         if quiet_tail:
-            player.set_gain(0.2, ramp_ms=0)
+            # Under the heard floor: words at the barge-in yield (0.2) count as heard (ADR 0083).
+            player.set_gain(0.1, ramp_ms=0)
             pump.step(frames=_SAMPLES_PER_WORD)
         pipeline.stop_foreground_output("R", reason="barge_in")
         assert pipeline.wait_until_idle(timeout_s=2)
