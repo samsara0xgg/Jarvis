@@ -550,6 +550,19 @@ class InherentDeps:
     mail_read: Callable[[], Awaitable[dict[str, Any]]] | None = None
     # ADR 0124: archive junk letters (ids, archive) or put them back (archive False).
     mail_archive: Callable[[list[str], bool], Awaitable[None]] | None = None
+    # ADR 0147, the Dashboard's mail page: one letter whole, its read and trash taps, what is
+    # open on screen (kind, id, title, sender; kind None closes), and the reply draft under
+    # the open letter. ``None`` leaves a route unregistered (404).
+    mail_letter: Callable[[str], Awaitable[dict[str, Any]]] | None = None
+    mail_mark_read: Callable[[list[str], bool], Awaitable[None]] | None = None
+    mail_trash: Callable[[list[str], bool], Awaitable[None]] | None = None
+    focus_set: (
+        Callable[[Literal["mail", "agent", "brief"] | None, str, str, str], None] | None
+    ) = None
+    mail_draft_read: Callable[[str], Awaitable[dict[str, Any]]] | None = None
+    mail_draft_save: Callable[[str, str, str], Awaitable[dict[str, Any]]] | None = None
+    mail_draft_send: Callable[[str, str, str], Awaitable[None]] | None = None
+    mail_draft_discard: Callable[[str], Awaitable[None]] | None = None
     brief_read: Callable[[], dict[str, Any] | None] | None = None
     # ADR 0125: does a finished agent turn's ending ask Allen something? ``asks`` waits for Jev
     # (off the loop thread); ``peek`` never waits, for the terminal sessions' board. None = off.
@@ -1046,6 +1059,23 @@ class MailArchiveRequest(BaseModel):
     ids: list[str] = Field(max_length=20)
 
 
+class MailDraftRequest(BaseModel):
+    """Body of ``POST /inherent/mail/{id}/draft`` and ``/draft/send`` (ADR 0147): Allen's edit."""
+
+    subject: str = Field(default="", max_length=300)
+    body: str = Field(max_length=8000)
+
+
+class FocusRequest(BaseModel):
+    """Body of ``POST /inherent/focus`` (ADR 0147): what the Dashboard has open."""
+
+    kind: Literal["mail", "agent", "brief"] | None = None
+    id: str = Field(default="", max_length=200)
+    thread_id: str = Field(default="", max_length=200)
+    sender: str = Field(default="", max_length=500)
+    subject: str = Field(default="", max_length=500)
+
+
 async def _home_call[T](call: Awaitable[T]) -> T:
     """ADR 0051: not connected is 404 (the home's fallback), a bad id 400, anything else 502."""
     try:
@@ -1057,6 +1087,90 @@ async def _home_call[T](call: Awaitable[T]) -> T:
     except Exception as exc:  # noqa: BLE001 — Microsoft or the network failing is the home's 502.
         LOGGER.warning("home route failed: %s: %s", type(exc).__name__, exc)
         raise HTTPException(status_code=502, detail=str(exc)[:200]) from None
+
+
+def _register_mail_page_routes(app: FastAPI, deps: InherentDeps) -> None:  # noqa: C901 — one closed route table.
+    """ADR 0147: the Dashboard's mail page: a letter whole, read and trash, focus, the draft."""
+    if deps.mail_letter is not None:
+        mail_letter = deps.mail_letter
+
+        @app.get("/inherent/mail/{message_id}")
+        async def mail_letter_route(message_id: str) -> dict[str, Any]:
+            """One letter whole: headers and a plain-text body (ADR 0147)."""
+            return await _home_call(mail_letter(message_id))
+
+    if deps.mail_mark_read is not None:
+        mail_mark_read = deps.mail_mark_read
+
+        @app.post("/inherent/mail/read", status_code=200)
+        async def mail_read_route(req: MailArchiveRequest) -> dict[str, bool]:
+            """Mark the letters Allen opened read; an id not listed or open is a 400."""
+            await _home_call(mail_mark_read(req.ids, True))  # noqa: FBT003 — the route's body.
+            return {"ok": True}
+
+        @app.post("/inherent/mail/unread", status_code=200)
+        async def mail_unread_route(req: MailArchiveRequest) -> dict[str, bool]:
+            """Mark letters unread again."""
+            await _home_call(mail_mark_read(req.ids, False))  # noqa: FBT003 — the route's body.
+            return {"ok": True}
+
+    if deps.mail_trash is not None:
+        mail_trash = deps.mail_trash
+
+        @app.post("/inherent/mail/trash", status_code=200)
+        async def mail_trash_route(req: MailArchiveRequest) -> dict[str, bool]:
+            """Move letters to Gmail's Trash (recoverable there); never a permanent delete."""
+            await _home_call(mail_trash(req.ids, True))  # noqa: FBT003 — the route's body.
+            return {"ok": True}
+
+        @app.post("/inherent/mail/untrash", status_code=200)
+        async def mail_untrash_route(req: MailArchiveRequest) -> dict[str, bool]:
+            """Undo: take letters out of the Trash and back into the inbox."""
+            await _home_call(mail_trash(req.ids, False))  # noqa: FBT003 — the route's body.
+            return {"ok": True}
+
+    if deps.focus_set is not None:
+        focus_set = deps.focus_set
+
+        @app.post("/inherent/focus", status_code=200)
+        async def focus(req: FocusRequest) -> dict[str, bool]:
+            """What the Dashboard has open; repeated every 20 s, a null kind closes (ADR 0147)."""
+            focus_set(req.kind, req.id, req.subject, req.sender)
+            return {"ok": True}
+
+    if deps.mail_draft_read is not None:
+        draft_read = deps.mail_draft_read
+
+        @app.get("/inherent/mail/{message_id}/draft")
+        async def mail_draft_route(message_id: str) -> dict[str, Any]:
+            """``{draft: {revision, to, subject, body, by} | null}`` under the letter."""
+            return await _home_call(draft_read(message_id))
+
+    if deps.mail_draft_save is not None:
+        draft_save = deps.mail_draft_save
+
+        @app.post("/inherent/mail/{message_id}/draft", status_code=200)
+        async def mail_draft_save_route(message_id: str, req: MailDraftRequest) -> dict[str, Any]:
+            """Save Allen's own edit of the draft; answers like ``GET``."""
+            return await _home_call(draft_save(message_id, req.subject, req.body))
+
+    if deps.mail_draft_send is not None:
+        draft_send = deps.mail_draft_send
+
+        @app.post("/inherent/mail/{message_id}/draft/send", status_code=200)
+        async def mail_draft_send_route(message_id: str, req: MailDraftRequest) -> dict[str, bool]:
+            """Save the edit and put the send card up; nothing leaves until he presses it."""
+            await _home_call(draft_send(message_id, req.subject, req.body))
+            return {"ok": True}
+
+    if deps.mail_draft_discard is not None:
+        draft_discard = deps.mail_draft_discard
+
+        @app.post("/inherent/mail/{message_id}/draft/discard", status_code=200)
+        async def mail_draft_discard_route(message_id: str) -> dict[str, bool]:
+            """Drop the draft."""
+            await _home_call(draft_discard(message_id))
+            return {"ok": True}
 
 
 def _register_home_routes(app: FastAPI, deps: InherentDeps) -> None:  # noqa: C901 — one closed route table.
@@ -1707,6 +1821,7 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 �
             return think_read()
 
     _register_home_routes(app, deps)
+    _register_mail_page_routes(app, deps)
     _register_data_routes(app, deps)
     _register_setup_routes(app, deps)
     _register_dictation_routes(app, deps)

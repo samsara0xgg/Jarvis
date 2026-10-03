@@ -82,15 +82,17 @@ import time
 import uuid
 from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final, Literal
+from typing import TYPE_CHECKING, Any, Final, Literal, cast
 
 import uvicorn
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from jarvis.decision import ToolRegistryLike
     from jarvis.decision.turn_end_asks import TurnEndAsks
     from jarvis.deployment.sleep_wake import PowerObserver
+    from jarvis.runtime.dashboard import MailDrafts
     from jarvis.runtime.home import Home
     from jarvis.runtime.settings import Settings
     from jarvis.runtime.work_state import WorkStateService
@@ -98,6 +100,7 @@ if TYPE_CHECKING:
     from jarvis.state.committed_event_bus import CommittedEventBus
     from jarvis.surface.codex_sessions import CodexSession
 
+from jarvis.decision import request_confirmation
 from jarvis.decision.commentary import (
     COMMENTARY_ATTENTION_CHANNEL,
     commentary_intent_for,
@@ -129,6 +132,7 @@ from jarvis.runtime import (
     TurnSuspended,
     WaitingTurn,
     _assistant_name,
+    _confirmation_ttl_ms,
     _event_action_id,
     _jev_log,
     _new_turn_id,
@@ -4561,6 +4565,104 @@ async def _archive_mail(home: Home, ids: list[str], archive: bool) -> None:  # n
     await asyncio.to_thread(functools.partial(home.archive, ids, undo=not archive))
 
 
+def _draft_deps(runtime: JarvisRuntime, home: Home | None) -> dict[str, Any]:
+    """The four draft routes' callables (ADR 0147), or none while the mail page is off."""
+    drafts = runtime.mail_drafts
+    if home is None or drafts is None:
+        return {}
+
+    async def read(letter_id: str) -> dict[str, Any]:
+        return await asyncio.to_thread(_draft_view, home, drafts, letter_id)
+
+    async def save(letter_id: str, subject: str, body: str) -> dict[str, Any]:
+        return await asyncio.to_thread(_save_draft, home, drafts, letter_id, subject, body)
+
+    async def send(letter_id: str, subject: str, body: str) -> None:
+        await asyncio.to_thread(_send_draft, runtime, home, drafts, letter_id, subject, body)
+
+    async def discard(letter_id: str) -> None:
+        await asyncio.to_thread(drafts.discard, letter_id)
+
+    return {
+        "mail_draft_read": read,
+        "mail_draft_save": save,
+        "mail_draft_send": send,
+        "mail_draft_discard": discard,
+    }
+
+
+async def _mail_letter(home: Home, message_id: str) -> dict[str, Any]:
+    """``GET /inherent/mail/{id}`` (ADR 0147): one Gmail read, off the loop thread."""
+    return await asyncio.to_thread(home.letter, message_id)
+
+
+def _draft_view(home: Home, drafts: MailDrafts, letter_id: str) -> dict[str, Any]:
+    """``{draft: {revision, to, subject, body, by} | null}``: the letter gives ``to`` and "Re:"."""
+    draft = drafts.get(letter_id)
+    if draft is None:
+        return {"draft": None}
+    letter = home.letter(letter_id)
+    subject = letter["subject"]
+    return {"draft": {
+        "revision": draft.revision,
+        "to": letter["address"],
+        "subject": draft.subject or (
+            subject if subject.lower().startswith("re:") else f"Re: {subject}"
+        ),
+        "body": draft.body,
+        "by": draft.by,
+    }}
+
+
+def _save_draft(
+    home: Home, drafts: MailDrafts, letter_id: str, subject: str, body: str,
+) -> dict[str, Any]:
+    """``POST /inherent/mail/{id}/draft``: Allen's edit becomes the draft."""
+    drafts.edit(letter_id, subject, body)
+    return _draft_view(home, drafts, letter_id)
+
+
+def _send_draft(  # noqa: PLR0913 — the route's body plus what the card needs.
+    runtime: JarvisRuntime, home: Home, drafts: MailDrafts, letter_id: str, subject: str, body: str,
+) -> None:
+    """``POST /inherent/mail/{id}/draft/send``: save the edit, raise the send card (no model turn).
+
+    The card is the confirmed ``gmail_send`` ADR 0033 asks for, with the letter's thread; his
+    button on it is what sends. A ValueError (empty body) is the route's 400, a missing
+    gmail send tool its 404.
+    """
+    if not body.strip():
+        msg = "the draft is empty"
+        raise ValueError(msg)
+    view = _save_draft(home, drafts, letter_id, subject, body)["draft"]
+    args = {
+        "to": view["to"], "subject": view["subject"], "body": view["body"],
+        "threadId": home.letter(letter_id)["thread_id"],
+    }
+    conn = open_runtime_event_log(runtime.runtime_paths.event_log)
+    try:
+        asked = request_confirmation(
+            conn, cast("ToolRegistryLike", runtime.tool_registry), "mcp__gmail__gmail_send", args,
+            ttl_ms=_confirmation_ttl_ms(runtime.config), lang=lang.language(),
+        )
+    finally:
+        with contextlib.suppress(sqlite3.Error):
+            conn.close()
+    if asked is None:
+        msg = "gmail send is not connected"
+        raise LookupError(msg)
+
+
+async def _mail_read(home: Home, ids: list[str], read: bool) -> None:  # noqa: FBT001 — the route's body.
+    """``POST /inherent/mail/read`` and ``/unread`` (ADR 0147): one label change, off the loop."""
+    await asyncio.to_thread(functools.partial(home.mark_read, ids, unread=not read))
+
+
+async def _mail_trash(home: Home, ids: list[str], trash: bool) -> None:  # noqa: FBT001 — the route's body.
+    """``POST /inherent/mail/trash`` and ``/untrash`` (ADR 0147): one label change, off the loop."""
+    await asyncio.to_thread(functools.partial(home.trash, ids, undo=not trash))
+
+
 async def _turn_end_asks(asks: TurnEndAsks, session_id: str, text: str) -> bool | None:
     """``POST /inherent/agents/turn-end``: Jev's answer, waited for off the loop thread."""
     return await asyncio.to_thread(asks.asks, session_id, text)
@@ -5929,6 +6031,8 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
 
         # ADR 0019: one Codex board, filled by the hooks' route and read by the night run.
         codex_board: dict[str, CodexSession] = {}
+        # ADR 0147: the Dashboard's mail page exists only with ``dashboard.mail.enabled``.
+        mail_home = None if runtime.focus is None else runtime.home
         deps = InherentDeps(
             submit_callable=submit_callable,
             broadcaster=broadcaster,
@@ -5983,6 +6087,11 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             mail_archive=(
                 None if runtime.home is None else functools.partial(_archive_mail, runtime.home)
             ),
+            mail_letter=None if mail_home is None else functools.partial(_mail_letter, mail_home),
+            mail_mark_read=None if mail_home is None else functools.partial(_mail_read, mail_home),
+            mail_trash=None if mail_home is None else functools.partial(_mail_trash, mail_home),
+            focus_set=None if runtime.focus is None else runtime.focus.set,
+            **_draft_deps(runtime, mail_home),
             brief_read=(
                 None if runtime.home is None
                 else functools.partial(runtime.home.brief, runtime.conn)

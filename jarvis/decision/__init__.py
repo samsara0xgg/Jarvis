@@ -645,6 +645,9 @@ class DecideContext:
     # answers that said an app was not connected; this line is the current
     # fact beside them.
     connected_apps: str | None = None
+    # ADR 0147: lines about what is going on around Allen right now, from the composition
+    # root's producers (the Dashboard's open item first); each ends the state block.
+    live_context: tuple[str, ...] = ()
     # docs/plans/replay-as-sent-proposal.md: keeps this turn's own user
     # message, state block and words, as the first request sends it, so later
     # histories replay it verbatim. Set, the state block's header reads true
@@ -1042,6 +1045,7 @@ def _current_status_block(packet: SituationPacket, ctx: DecideContext) -> str | 
             format_pending_confirmation_note(packet),
             format_pending_clarification_note(packet),
             _format_open_actions_note(packet),
+            *ctx.live_context,
         )
         if line
     ]
@@ -3494,6 +3498,46 @@ def _stage_and_request_confirmation(  # noqa: PLR0913 — one keyword per D3 sna
     )
 
 
+def request_confirmation(  # noqa: PLR0913 — the tool, its frozen arguments and the card's two settings.
+    conn: sqlite3.Connection,
+    registry: ToolRegistryLike,
+    tool_name: str,
+    arguments: Mapping[str, Any],
+    *,
+    ttl_ms: int,
+    lang: Language | None = None,
+) -> str | None:
+    """Put a card on screen for a call Allen himself started, with no model turn (ADR 0147).
+
+    Freezes ``arguments`` exactly as ``_stage_and_request_confirmation`` does for an MCP tool;
+    his button then runs the usual answer path (lease, gate, dispatch). The confirmation id,
+    or None when the tool is not on the menu or does not ask first. ``write_file`` stages
+    content and is never raised this way.
+    """
+    tool_def = _find_tool_def(registry, tool_name)
+    if tool_def is None or not tool_def.requires_confirmation or tool_name == "write_file":
+        return None
+    confirmation_id = _new_confirmation_id()
+    emit_event(
+        conn,
+        type="confirmation.requested",
+        payload={
+            "confirmation_id": confirmation_id,
+            "action_snapshot": {
+                "tool_name": tool_name,
+                "caller": CallerPrincipal.JARVIS_LLM.value,
+                "canonical_target": "",
+                "target_entity_ref": None,
+                "risk_level": tool_def.risk_level,
+                "args_meta": dict(arguments),
+            },
+            "template_line": _ask_line(tool_name, arguments, lang),
+            "expires_at_ms": _now_epoch_ms() + ttl_ms,
+        },
+    )
+    return confirmation_id
+
+
 # --- ADR-0012 D6 — the answer path ------------------------------------------
 #
 # `_handle_confirmation_accepted` is the ONLY function in this module (and,
@@ -4109,4 +4153,5 @@ __all__ = [
     "open_prefix_warm",
     "pre_action_gate",
     "pre_emit_gate",
+    "request_confirmation",
 ]

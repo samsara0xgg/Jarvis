@@ -8,13 +8,14 @@ because Allen clicked it on the home (ADR 0124 for the letters).
 
 from __future__ import annotations
 
+import html
 import json
 import logging
 import re
 import urllib.request
 from datetime import UTC, date, datetime, time, timedelta
 from email.utils import parseaddr, parsedate_to_datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 from jarvis.decision.daily_report import brief_of
 from jarvis.execution.tools import ToolError
@@ -25,10 +26,12 @@ from jarvis.state.daily_store import get_briefing
 if TYPE_CHECKING:
     import sqlite3
     from collections.abc import Mapping
+    from collections.abc import Set as AbstractSet
     from datetime import tzinfo
 
     from jarvis.decision.mail_reply import MailReply
     from jarvis.execution.mcp_tools import McpServers
+    from jarvis.runtime.dashboard import FocusState
     from jarvis.runtime.plugin_connections import PluginConnections
 
 LOGGER = logging.getLogger(__name__)
@@ -49,7 +52,37 @@ MAIL_SERVER = "gmail"
 """Google's Workspace MCP server with only Gmail switched on (ADR 0055)."""
 _MAIL_LIMIT = 20
 _INBOX = "INBOX"
+_LETTERS_KEPT = 50
+_MAIL_BODY_CHARS: Final = 4000
+_HTML_HINT_RE: Final = re.compile(r"<(?:html|body|div|p|br|table|span)\b", re.IGNORECASE)
+_HTML_DROP_RE: Final = re.compile(r"<(style|script|head)\b.*?</\1\s*>", re.IGNORECASE | re.DOTALL)
+_HTML_BREAK_RE: Final = re.compile(r"<(?:br|/p|/div|/tr|/li|/h\d)\b[^>]*>", re.IGNORECASE)
+_HTML_TAG_RE: Final = re.compile(r"<[^>]+>")
+_HTML_LINK_RE: Final = re.compile(
+    r"""<a\b[^>]*?\bhref\s*=\s*["']([^"']+)["'][^>]*>(.*?)</a\s*>""", re.IGNORECASE | re.DOTALL,
+)
+
+
+def _link_text(link: re.Match[str]) -> str:
+    url, label = link.group(1), _HTML_TAG_RE.sub("", link.group(2)).strip()
+    return url if not label or label == url else f"{label} ({url})"
 _NOT_A_PERSON = re.compile(r"no-?reply|notification|mailer-daemon|bounce", re.IGNORECASE)
+
+
+def mail_body(body: str, *, links: bool = False) -> str:
+    """The message body as plain text, capped; an HTML-only message loses its markup.
+
+    ``links`` keeps each anchor's address as ``text (url)`` for the page; the model's
+    mail record (ADR 0063) leaves them out.
+    """
+    if _HTML_HINT_RE.search(body):
+        # ponytail: tag stripping, not an HTML renderer; tables and quoted replies stay flat.
+        if links:
+            body = _HTML_LINK_RE.sub(_link_text, body)
+        body = _HTML_TAG_RE.sub("", _HTML_BREAK_RE.sub("\n", _HTML_DROP_RE.sub("", body)))
+        body = html.unescape(body)
+    body = re.sub(r"\n[ \t]*\n(?:[ \t]*\n)+", "\n\n", body).strip()
+    return body if len(body) <= _MAIL_BODY_CHARS else f"{body[:_MAIL_BODY_CHARS]}…"
 
 
 def _kind(code: int) -> str:
@@ -91,20 +124,28 @@ class Home:
         zone: tuple[str, tzinfo],
         weather_at: Mapping[str, Any] | None,
         mail_reply: MailReply | None = None,
+        focus: FocusState | None = None,
     ) -> None:
         """Bind the live connections, the local zone (name, zone) and the forecast's place.
 
         ``weather_at`` holds ``latitude`` and ``longitude``; None leaves the weather out.
         ``mail_reply`` marks letters that need a reply (ADR 0123); None leaves them all unmarked.
+        ``focus`` switches the Dashboard's mail page on (ADR 0147): its open letter may be read,
+        archived and trashed, not only the junk offered.
         """
         self._connections = connections
         self._zone_name, self._zone = zone
         self._weather_at = weather_at
         self._mail_reply = mail_reply
-        # Gmail ids: what the last mail() offered as junk, what Allen archived, what he took back.
+        self._focus = focus
+        # Gmail ids: what the last mail() listed, what it offered as junk, what Allen archived,
+        # what he took back.
+        self._listed: frozenset[str] = frozenset()
         self._junk: frozenset[str] = frozenset()
         self._archived: set[str] = set()
+        self._archived_junk: set[str] = set()
         self._kept: set[str] = set()
+        self._letters: dict[str, dict[str, str]] = {}
 
     def _servers(self, server: str = PLAN_SERVER) -> McpServers:
         """The live client of ``server``; LookupError (the routes' 404) when it is not connected."""
@@ -188,7 +229,6 @@ class Home:
         ])
         letters: list[dict[str, str | bool | float | None]] = []
         for one in people:
-            del one["address"]
             reply, junk = marks.get(one["id"], (None, False))
             rated = None if self._mail_reply is None else self._mail_reply.rating(one["id"])
             # A letter not rated yet has no importance or category: the UI keeps its order.
@@ -198,31 +238,98 @@ class Home:
             letters.append({
                 **one, "reply": reply, "junk": junk and one["id"] not in self._kept, **rating,
             })
+        self._listed = frozenset(str(one["id"]) for one in letters)
         self._junk = frozenset(str(one["id"]) for one in letters if one["junk"])
         return {"unread": sorted(letters, key=lambda one: str(one["received"]), reverse=True)}
+
+    def _actionable(self) -> frozenset[str]:
+        """The ids a tap may change: the junk offered; with the mail page on, any listed or open."""
+        if self._focus is None:
+            return self._junk
+        return self._listed.union(filter(None, [self._focus.mail_id()]))
+
+    def _modify(
+        self, ids: list[str], labels: Mapping[str, list[str]], *, allowed: AbstractSet[str],
+    ) -> None:
+        if not ids or not set(ids) <= allowed:
+            msg = "not letters the home offered"
+            raise ValueError(msg)
+        _gmail(self._servers(MAIL_SERVER), "gmail_batchModify", {"messageIds": ids, **labels})
 
     def archive(self, ids: list[str], *, undo: bool = False) -> None:
         """Take letters out of the inbox, or put them back: Allen's own tap, never a proposal.
 
-        Only ids the last :meth:`mail` offered as junk are archived and only ids archived
-        here are restored; anything else is a ValueError (the route's 400). Archiving is
-        removing the INBOX label: the letter stays in All Mail, and nothing is deleted.
+        Only ids the last :meth:`mail` offered as junk (with the mail page on, any it listed
+        and the open letter, ADR 0147) are archived and only ids archived here (or, with the
+        page on, those) are restored; anything else is a ValueError (the route's 400).
+        Archiving is removing the INBOX label: the letter stays in All Mail, and nothing is
+        deleted.
         """
-        allowed = self._archived if undo else self._junk
-        if not ids or not allowed.issuperset(ids):
-            msg = "not letters the home offered" if not undo else "not letters the home archived"
-            raise ValueError(msg)
+        allowed: AbstractSet[str]
+        if undo:
+            allowed = self._archived | (self._actionable() if self._focus else frozenset())
+        else:
+            allowed = self._actionable()
         labels = {"addLabelIds" if undo else "removeLabelIds": [_INBOX]}
-        _gmail(self._servers(MAIL_SERVER), "gmail_batchModify", {"messageIds": ids, **labels})
+        self._modify(ids, labels, allowed=allowed)
         LOGGER.info("mail %s: %s", "unarchive" if undo else "archive", " ".join(ids))
-        if self._mail_reply is not None:  # an undo says the junk mark was wrong (ADR 0128)
-            self._mail_reply.outcome(ids, "unarchive" if undo else "archive")
+        # Only junk offers are the model's marks to learn from (ADR 0128).
+        pairs: AbstractSet[str] = self._archived_junk if undo else self._junk
+        outcome = [one for one in ids if one in pairs]
+        if self._mail_reply is not None and outcome:
+            self._mail_reply.outcome(outcome, "unarchive" if undo else "archive")
         if undo:
             self._archived.difference_update(ids)
+            self._archived_junk.difference_update(ids)
             self._kept.update(ids)  # taken back: not suggested as junk again
         else:
             self._archived.update(ids)
+            self._archived_junk.update(outcome)
             self._junk = self._junk.difference(ids)
+
+    def letter(self, message_id: str) -> dict[str, str]:
+        """One letter whole for the Dashboard's page (ADR 0147): headers and a plain-text body.
+
+        Read like :meth:`mail` reads, outside any turn, and kept for the session; an id Gmail
+        does not know is a LookupError (the route's 404). The text is shown to Allen only:
+        it never goes to Jev or the model from here.
+        """
+        if message_id not in self._letters:
+            args = {"messageId": message_id, "format": "full"}
+            try:
+                message = _gmail(self._servers(MAIL_SERVER), "gmail_get", args)
+            except ToolError as exc:
+                if "not found" in str(exc).lower() or "404" in str(exc):
+                    raise LookupError(str(exc)) from exc
+                raise
+            head = _letter(message)
+            self._letters[message_id] = {
+                "id": head["id"],
+                "thread_id": head["thread_id"],
+                "from": head["from"],
+                "address": head["address"],
+                "to": str(message.get("to") or ""),
+                "subject": head["subject"],
+                "received": head["received"],
+                "text": mail_body(str(message.get("body") or ""), links=True),
+            }
+            while len(self._letters) > _LETTERS_KEPT:
+                del self._letters[next(iter(self._letters))]
+        return self._letters[message_id]
+
+    def mark_read(self, ids: list[str], *, unread: bool = False) -> None:
+        """Mark letters read (drop UNREAD) once Allen opened them, or unread again."""
+        labels = {"addLabelIds" if unread else "removeLabelIds": ["UNREAD"]}
+        self._modify(ids, labels, allowed=self._actionable())
+
+    def trash(self, ids: list[str], *, undo: bool = False) -> None:
+        """Move letters to Gmail's Trash (kept 30 days there, never deleted here), or back."""
+        labels = {"removeLabelIds": ["TRASH"], "addLabelIds": [_INBOX]} if undo else {
+            "addLabelIds": ["TRASH"],
+        }
+        self._modify(ids, labels, allowed=self._actionable())
+        LOGGER.info("mail %s: %s", "untrash" if undo else "trash", " ".join(ids))
+        self._junk = self._junk.difference(ids)
 
     def brief(self, conn: sqlite3.Connection) -> dict[str, Any] | None:
         """This morning's brief: yesterday's report read for a person; None before it exists."""
@@ -260,7 +367,7 @@ def _gmail(servers: McpServers, tool: str, args: Mapping[str, Any]) -> dict[str,
 
 
 def _letter(message: Mapping[str, Any]) -> dict[str, str]:
-    """One ``gmail_get`` answer in metadata format: its id, sender, subject and Date header."""
+    """One ``gmail_get`` answer in metadata format: ids, sender, subject and Date header."""
     name, address = parseaddr(str(message.get("from") or ""))
     try:
         received = parsedate_to_datetime(str(message["date"])).astimezone(UTC).isoformat()
@@ -268,6 +375,7 @@ def _letter(message: Mapping[str, Any]) -> dict[str, str]:
         received = ""  # no usable Date header: the letter still shows, sorted last
     return {
         "id": str(message["id"]),
+        "thread_id": str(message.get("threadId") or message["id"]),
         "from": name or address,
         "address": address,
         "subject": str(message.get("subject") or ""),

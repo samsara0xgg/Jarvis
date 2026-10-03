@@ -33,7 +33,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
-import html
 import io
 import json
 import logging
@@ -149,7 +148,13 @@ from jarvis.runtime.daily_report import (
     microsoft_plan,
     past_day_answer,
 )
-from jarvis.runtime.home import Home
+from jarvis.runtime.dashboard import (
+    DRAFT_LINE_CHARS,
+    DRAFT_LINE_PREFIX,
+    FocusState,
+    MailDrafts,
+)
+from jarvis.runtime.home import Home, mail_body
 from jarvis.runtime.night_run import NightRun, night_settings
 from jarvis.runtime.plugin_connections import PluginConnections
 from jarvis.runtime.plugins import Plugins, load_plugins
@@ -474,6 +479,12 @@ class JarvisRuntime:
     projects: ProjectsService | None = None
     # ADR 0051: the companion home's Today, mail and brief reads. None = hand-assembled.
     home: Home | None = None
+    # ADR 0147: the Dashboard's mail page (``dashboard.mail.enabled``): what is open on screen
+    # and the reply drafts. None = off.
+    focus: FocusState | None = None
+    mail_drafts: MailDrafts | None = None
+    # ADR 0147: one line each for the state block, in order; None skips a producer.
+    live_context: tuple[Callable[[], str | None], ...] = ()
     # ADR 0125: Jev's read of whether a finished agent turn asks Allen something. None = off.
     turn_end_asks: TurnEndAsks | None = None
     # ADR 0130: Jev's read of short words heard over her voice or in hands-free mode. None = off.
@@ -1049,6 +1060,32 @@ def _home_weather(config: Mapping[str, Any]) -> Mapping[str, Any] | None:
     block = config.get("home")
     place = block.get("weather") if isinstance(block, Mapping) else None
     return place if isinstance(place, Mapping) else None
+
+
+def _dashboard_mail(config: Mapping[str, Any]) -> bool:
+    """``dashboard.mail.enabled`` (ADR 0147): the Dashboard's mail page; off unless true."""
+    block = config.get("dashboard")
+    mail = block.get("mail") if isinstance(block, Mapping) else None
+    return isinstance(mail, Mapping) and mail.get("enabled") is True
+
+
+_LIVE_LINE_CHARS: Final = 200
+
+
+def _live_lines(producers: tuple[Callable[[], str | None], ...]) -> tuple[str, ...]:
+    """ADR 0147: what each live-context producer says now; a raising one is skipped, logged."""
+    lines: list[str] = []
+    for produce in producers:
+        try:
+            line = produce()
+        except Exception:  # a producer must never fail a turn.
+            LOGGER.exception("live context: a producer failed, skipped")
+            continue
+        if line:
+            # The open letter's draft is the one line that may run long.
+            limit = DRAFT_LINE_CHARS if line.startswith(DRAFT_LINE_PREFIX) else _LIVE_LINE_CHARS
+            lines.append(line[:limit])
+    return tuple(lines)
 
 
 def _mail_reply(
@@ -2101,7 +2138,10 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         MacPower(),
         zone=resolve_zone(None, _work_state_timezone(full_config))[1],
     )
+    focus = FocusState() if _dashboard_mail(full_config) else None
+    mail_drafts = None if focus is None else MailDrafts(focus)
     registry = build_default_registry(
+        mail_drafts=mail_drafts,
         memory_db_path=memory.db_path,
         observed_repos=_observer_repo_paths(full_config),
         timesink_db_path=_timesink_db_path(full_config),
@@ -2273,6 +2313,12 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
             resolve_zone(None, _work_state_timezone(full_config)),
             _home_weather(full_config),
             _mail_reply(full_config, config_path, jev_log),
+            focus,
+        ),
+        focus=focus,
+        mail_drafts=mail_drafts,
+        live_context=(
+            () if focus is None or mail_drafts is None else (focus.line, mail_drafts.line)
         ),
         turn_end_asks=_turn_end_asks(full_config, config_path, jev_log),
         voice_words=_voice_words(full_config, config_path, jev_log),
@@ -3123,21 +3169,6 @@ def run_turn(
 
 
 _MAIL_GET: Final[str] = "mcp__gmail__gmail_get"
-_MAIL_BODY_CHARS: Final[int] = 4000
-_HTML_HINT_RE: Final = re.compile(r"<(?:html|body|div|p|br|table|span)\b", re.IGNORECASE)
-_HTML_DROP_RE: Final = re.compile(r"<(style|script|head)\b.*?</\1\s*>", re.IGNORECASE | re.DOTALL)
-_HTML_BREAK_RE: Final = re.compile(r"<(?:br|/p|/div|/tr|/li|/h\d)\b[^>]*>", re.IGNORECASE)
-_HTML_TAG_RE: Final = re.compile(r"<[^>]+>")
-
-
-def _mail_body(body: str) -> str:
-    """The message body as plain text, capped; an HTML-only message loses its markup."""
-    if _HTML_HINT_RE.search(body):
-        # ponytail: tag stripping, not an HTML renderer; tables and quoted replies stay flat.
-        body = _HTML_TAG_RE.sub("", _HTML_BREAK_RE.sub("\n", _HTML_DROP_RE.sub("", body)))
-        body = html.unescape(body)
-    body = re.sub(r"\n[ \t]*\n(?:[ \t]*\n)+", "\n\n", body).strip()
-    return body if len(body) <= _MAIL_BODY_CHARS else f"{body[:_MAIL_BODY_CHARS]}…"
 
 
 def _fetched_mail(conn: sqlite3.Connection, turn_id: str) -> tuple[str, str] | None:
@@ -3175,7 +3206,7 @@ def _fetched_mail(conn: sqlite3.Connection, turn_id: str) -> tuple[str, str] | N
         )
         if isinstance(message.get(key), str) and message[key]
     ]
-    body = _mail_body(str(message.get("body") or ""))
+    body = mail_body(str(message.get("body") or ""))
     return str(row[0]), "\n".join(headers) + "\n\n" + body
 
 
@@ -3442,6 +3473,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             history=memory_context.history if memory_context is not None else (),
             time_note=memory_context.now if memory_context is not None else None,
             connected_apps=connected_apps,
+            live_context=_live_lines(runtime.live_context),
             record_sent_message=record_sent_message,
             cancellation_checkpoint=run.check_cancelled if run is not None else None,
             request_admission=(
