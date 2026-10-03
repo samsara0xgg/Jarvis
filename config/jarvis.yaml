@@ -732,8 +732,8 @@ realtime:
     # what Jarvis played, mic after cancellation) to <runtime>/aec-diagnostics.
     echo_diagnostics: false
     # The input channel the wake word listens to (ADR 0103), and final ASR
-    # for speech over Jarvis (ADR 0133); every other listener keeps channel 0,
-    # and a mono microphone opens mono. The
+    # whenever that channel is clean enough (ADR 0133); every other listener
+    # keeps channel 0, and a mono microphone opens mono. The
     # reSpeaker XVF3800 sends an echo-cancelled, noise-gated mix on 0, which
     # scored Allen's "Hey Jarvis" 0-0.45, and a beam without echo
     # cancellation on 1, which scored the same takes 0.96-0.996. Null listens

@@ -691,11 +691,11 @@ class _StereoBackend(_FakeBackend):
 BEAM = 3  # what channel 1 carries over channel 0, per sample
 
 
-@pytest.mark.parametrize(("speaking", "offset"), [(True, BEAM), (False, 0)])
-def test_words_over_her_are_heard_from_the_beam_channel_and_only_those(
-    tmp_path: Path, speaking: bool, offset: int,  # noqa: FBT001 - pytest parameter
+@pytest.mark.parametrize("speaking", [True, False])
+def test_words_are_heard_from_a_clean_beam_channel_over_her_or_not(
+    tmp_path: Path, speaking: bool,  # noqa: FBT001 - pytest parameter
 ) -> None:
-    """ADR 0133: her echo suppressor clips channel 0's start; over her, ASR hears channel 1."""
+    """ADR 0133: a clean beam is what final ASR hears, over her or not."""
     rig = _Rig(
         tmp_path, "你是谁?", speaking=speaking,
         backend=_StereoBackend(), wake_input_channel=1,
@@ -706,11 +706,11 @@ def test_words_over_her_are_heard_from_the_beam_channel_and_only_those(
         rig.close()
     (heard,) = rig.asr.heard
     samples = set(np.frombuffer(heard, dtype="<i2").tolist())
-    assert samples == {ROOM + offset, VOICE + offset}
+    assert samples == {ROOM + BEAM, VOICE + BEAM}
 
 
-def test_a_device_with_no_wake_channel_hears_channel_zero_over_her(tmp_path: Path) -> None:
-    """ADR 0133: a mono microphone, or the setting off, is as before."""
+def test_a_device_with_no_wake_channel_hears_channel_zero(tmp_path: Path) -> None:
+    """ADR 0133: a mono microphone, or the setting off, hears channel 0."""
     rig = _Rig(tmp_path, "你是谁?")
     try:
         rig.say(SHORT)
@@ -721,11 +721,12 @@ def test_a_device_with_no_wake_channel_hears_channel_zero_over_her(tmp_path: Pat
 
 
 def _assembler_run(
-    *, beam: bool, over_her: bool, lose_beam_at: int | None = None,
+    *, beam: bool, background: int = 100, lose_beam_at: int | None = None,
 ) -> tuple[list[voice_session.CapturedUtterance], list[bytes], list[bytes | None]]:
     """One conversation-mode utterance: its commit, what ASR was prepared with, each frame's beam.
 
-    Channel 0 is flat per frame; the beam of frame ``i`` is ``1000 + i`` so each frame is its own.
+    Channel 0 is flat per frame; the beam of frame ``i`` is ``background + i`` (``VOICE + i``
+    where he speaks), so each frame is its own and no beam sample equals a channel-0 one.
     """
     commits: list[voice_session.CapturedUtterance] = []
     prepared: list[bytes] = []
@@ -746,11 +747,11 @@ def _assembler_run(
                     voice_session.WakeDetection(1, index * 512, index, 1.0), expires=False,
                 )
             wake = (
-                np.full(512, 1000 + index, dtype="<i2").tobytes()
+                np.full(512, (VOICE if value == VOICE else background) + index, dtype="<i2")
+                .tobytes()
                 if beam and index != lose_beam_at else None
             )
             beams.append(wake)
-            was_active = assembler.active
             outcome = assembler.feed(
                 voice_audio.CanonicalAudioFrame(
                     stream_epoch=1,
@@ -765,17 +766,18 @@ def _assembler_run(
                     wake_pcm16=wake,
                 ),
             )
-            if over_her and assembler.active and not was_active:
-                assembler.hear_beam()  # what the session does at the onset of speech over her
             if isinstance(outcome, voice_session.CapturedUtterance):
                 commits.append(outcome)
                 break
     return commits, prepared, beams
 
 
-def test_over_her_final_asr_hears_the_beam_for_exactly_the_utterances_frames() -> None:
+def test_a_clean_beam_is_what_final_asr_hears_for_exactly_the_utterances_frames(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     """Pre-roll to last frame, by cursor; the prepared pass is a prefix of the commit's audio."""
-    (utterance,), prepared, beams = _assembler_run(beam=True, over_her=True)
+    with caplog.at_level("INFO", logger="jarvis.surface.voice_session"):
+        (utterance,), prepared, beams = _assembler_run(beam=True)
     first = utterance.start_sample_cursor // 512
     last = utterance.end_sample_cursor // 512
     expected = b"".join(item for item in beams[first:last] if item is not None)
@@ -783,20 +785,29 @@ def test_over_her_final_asr_hears_the_beam_for_exactly_the_utterances_frames() -
     assert utterance.audio_bytes == expected
     assert prepared
     assert all(
-        utterance.audio_bytes.startswith(audio) and np.frombuffer(audio, "<i2")[0] >= 1000
+        utterance.audio_bytes.startswith(audio) and np.frombuffer(audio, "<i2")[0] >= 100
         for audio in prepared
     )
+    lines = [r.message for r in caplog.records if "final ASR heard" in r.message]
+    assert len(lines) == 1
+    assert lines[0].startswith("final ASR heard channel 1 (beam snr ")
 
 
-def test_an_utterance_not_over_her_hears_channel_zero_whatever_the_device_has() -> None:
-    """The beam is in every frame and not asked for: commit and prepared pass are channel 0."""
-    (utterance,), prepared, _ = _assembler_run(beam=True, over_her=False)
+def test_a_loud_beam_background_gives_the_utterance_channel_zero(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Speech 8000 over a background near 3000 is snr under 5: commit and prepared are channel 0."""
+    with caplog.at_level("INFO", logger="jarvis.surface.voice_session"):
+        (utterance,), prepared, _ = _assembler_run(beam=True, background=3_000)
     assert set(np.frombuffer(utterance.audio_bytes, dtype="<i2").tolist()) <= {ROOM, VOICE}
     assert prepared
     assert all(
         utterance.audio_bytes.startswith(audio)
         and set(np.frombuffer(audio, dtype="<i2").tolist()) <= {ROOM, VOICE}
         for audio in prepared
+    )
+    assert any(
+        r.message.startswith("final ASR heard channel 0 (beam snr ") for r in caplog.records
     )
 
 
@@ -805,10 +816,16 @@ def test_one_frame_missing_the_beam_gives_the_utterance_channel_zero_and_one_log
 ) -> None:
     """A gap in the beam never splices two channels into one utterance."""
     with caplog.at_level("INFO", logger="jarvis.surface.voice_session"):
-        (utterance,), prepared, _ = _assembler_run(beam=True, over_her=True, lose_beam_at=20)
+        (utterance,), prepared, _ = _assembler_run(beam=True, lose_beam_at=20)
     assert set(np.frombuffer(utterance.audio_bytes, dtype="<i2").tolist()) <= {ROOM, VOICE}
     assert prepared
     assert sum("wake channel missing" in record.message for record in caplog.records) == 1
+
+
+def test_a_device_without_a_beam_gives_the_utterance_channel_zero() -> None:
+    """No wake channel at all is channel 0 too."""
+    (utterance,), _, _ = _assembler_run(beam=False)
+    assert set(np.frombuffer(utterance.audio_bytes, dtype="<i2").tolist()) <= {ROOM, VOICE}
 
 
 def test_zero_confirm_time_stops_her_at_onset(tmp_path: Path) -> None:

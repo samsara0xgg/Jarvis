@@ -33,6 +33,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
+import numpy as np
+
 from jarvis.shared.realtime_trace import realtime_trace_context, record_realtime_trace
 from jarvis.surface import voice_asr, voice_audio, voice_pipeline
 
@@ -52,6 +54,26 @@ _PARTIAL_DROP_DEGRADE_THRESHOLD = 3
 # ADR 0132: a pause this many silent frames long (6 x 32 ms = 192 ms, a quarter of the
 # acoustic endpoint's 24) is the hint for final ASR to start hearing the utterance so far.
 _PREPARE_SILENT_FRAMES = 6
+# Final ASR hears the beam at or above this speech-to-background level: music alone was 13-18,
+# TV speech at 5.4-9.4 still left only his words, at 2.3-3.9 it replaced them (2026-10-02).
+_BEAM_MIN_SNR = 5.0
+
+
+def _beam_snr(beam: list[bytes], speech: list[bool]) -> float | None:
+    """Median frame rms of the speech frames over that of the others; ``None`` with no speech.
+
+    No other frame, or silence in them, is a clean beam: infinite.
+    """
+    levels = [
+        float(np.sqrt(np.mean(np.square(np.frombuffer(item, dtype="<i2").astype(np.float64)))))
+        for item in beam
+    ]
+    voiced = [level for level, flag in zip(levels, speech, strict=True) if flag]
+    rest = [level for level, flag in zip(levels, speech, strict=True) if not flag]
+    if not voiced:
+        return None
+    background = float(np.median(rest)) if rest else 0.0
+    return float("inf") if background == 0.0 else float(np.median(voiced)) / background
 
 
 @dataclass(frozen=True)
@@ -530,9 +552,10 @@ class UtteranceAssembler:
         self._armed_deadline_monotonic_ns = 0
         self._audio_frames: list[bytes] = []
         # The wake channel's samples of each frame in _audio_frames (None where it had none),
-        # and whether final ASR hears them instead (ADR 0133), which it announced once.
+        # which of those frames the VAD marked as speech, and whether the fallback to
+        # channel 0 was announced (ADR 0133).
         self._beam_frames: list[bytes | None] = []
-        self._hear_beam = False
+        self._speech_flags: list[bool] = []
         self._beam_fallback_logged = False
         self._start_cursor = 0
         self._voiced_frames = 0
@@ -663,6 +686,7 @@ class UtteranceAssembler:
         )
         self._audio_frames.clear()
         self._beam_frames.clear()
+        self._speech_flags.clear()
         self._speech_pre_roll.clear()
         self._voiced_frames = 0
         replay = tuple(
@@ -761,6 +785,8 @@ class UtteranceAssembler:
             self._state = _AssemblerState.ACTIVE
             self._audio_frames = [item.pcm16_mono for item in self._speech_pre_roll]
             self._beam_frames = [item.wake_pcm16 for item in self._speech_pre_roll]
+            # Pre-roll is not speech; this frame's own flag is appended below.
+            self._speech_flags = [False] * (len(self._speech_pre_roll) - 1)
             self._start_cursor = self._speech_pre_roll[0].sample_cursor
             self._speech_pre_roll.clear()
             self._set_phase(EndpointPhase.SPEECH_ACTIVE, self._utterance_id)
@@ -768,6 +794,7 @@ class UtteranceAssembler:
             self._audio_frames.append(frame.pcm16_mono)
             self._beam_frames.append(frame.wake_pcm16)
         speech = event is voice_audio.VadEvent.SPEECH_ACTIVE
+        self._speech_flags.append(speech)
         if speech:
             self._voiced_frames += 1
         self._hint_final_asr(speech=speech)
@@ -800,32 +827,30 @@ class UtteranceAssembler:
                 self._hint(
                     self._prepare_final,
                     self._utterance_id,
-                    self._final_audio(self._audio_frames, self._beam_frames),
+                    self._final_audio(self._audio_frames, self._beam_frames, self._speech_flags)[0],
                     self._speech_s(),
                 )
 
-    def hear_beam(self) -> None:
-        """Final ASR hears the wake channel for the rest of this utterance (ADR 0133).
+    def _final_audio(
+        self, frames: list[bytes], beam: list[bytes | None], speech: list[bool],
+    ) -> tuple[bytes, str]:
+        """The audio final ASR hears for these frames, and which channel it was.
 
-        For speech that began over Jarvis: the board's echo suppressor clips the start of
-        it on channel 0. VAD, endpointing and captions stay on channel 0.
+        Channel 1 (the beam, ADR 0133) when it is clean enough: speech over background by
+        ``_BEAM_MIN_SNR``, as the channel-0 VAD marked the frames. Both channels carry the
+        same frames, so the spans match exactly; one frame without the wake channel, or no
+        speech frame, gives the utterance channel 0.
         """
-        self._hear_beam = True
-
-    def _final_audio(self, frames: list[bytes], beam: list[bytes | None]) -> bytes:
-        """The audio final ASR hears for these frames: the wake channel's when asked for.
-
-        Both channels carry the same frames, so the spans match exactly; one frame without
-        the wake channel gives the utterance channel 0.
-        """
-        if self._hear_beam:
-            heard = [item for item in beam if item is not None]
-            if len(heard) == len(frames):
-                return b"".join(heard)
-            if not self._beam_fallback_logged:
-                self._beam_fallback_logged = True
-                LOGGER.info("wake channel missing from the utterance's frames: heard channel 0")
-        return b"".join(frames)
+        heard = [item for item in beam if item is not None]
+        if len(heard) == len(frames):
+            snr = _beam_snr(heard, speech)
+            if snr is not None and snr >= _BEAM_MIN_SNR:
+                return b"".join(heard), f"channel 1 (beam snr {snr:.1f})"
+            return b"".join(frames), f"channel 0 (beam snr {'-' if snr is None else f'{snr:.1f}'})"
+        if not self._beam_fallback_logged:
+            self._beam_fallback_logged = True
+            LOGGER.info("wake channel missing from the utterance's frames: heard channel 0")
+        return b"".join(frames), "channel 0 (no beam)"
 
     def _speech_s(self) -> float:
         if self._speech_first < 0:
@@ -890,7 +915,7 @@ class UtteranceAssembler:
             endpoint_reason=endpoint_reason,
             measurement_boundary="software_correlated_vad_assembler",
         )
-        frames, beam = self._audio_frames, self._beam_frames
+        frames, beam, flags = self._audio_frames, self._beam_frames, self._speech_flags
         end_sample_cursor = frame.sample_cursor + frame.frame_count
         if (
             self._partial.enabled
@@ -900,8 +925,10 @@ class UtteranceAssembler:
             # Post-roll: keep a bounded silence tail after the last speech
             # frame instead of the whole hold window.
             kept = self._last_speech_index + 1 + self._post_roll_frames
-            frames, beam = frames[:kept], beam[:kept]
+            frames, beam, flags = frames[:kept], beam[:kept], flags[:kept]
             end_sample_cursor = self._start_cursor + len(frames) * self._frame_samples
+        audio, heard = self._final_audio(frames, beam, flags)
+        LOGGER.info("final ASR heard %s", heard)
         utterance = CapturedUtterance(
             session_id=self._session_id,
             utterance_id=self._utterance_id,
@@ -910,7 +937,7 @@ class UtteranceAssembler:
             start_sample_cursor=self._start_cursor,
             end_sample_cursor=end_sample_cursor,
             endpoint_reason=endpoint_reason,
-            audio_bytes=self._final_audio(frames, beam),
+            audio_bytes=audio,
             woken=self._woken,
             speech_s=self._speech_s(),
         )
@@ -1080,7 +1107,7 @@ class UtteranceAssembler:
         self._armed_deadline_monotonic_ns = 0
         self._audio_frames.clear()
         self._beam_frames.clear()
-        self._hear_beam = False
+        self._speech_flags.clear()
         self._beam_fallback_logged = False
         self._speech_pre_roll.clear()
         self._voiced_frames = 0
@@ -1545,7 +1572,6 @@ class DuplexVoiceSession:
             self._barges[self._assembler.turn_id] = "yielding"
             self._set_yield_locked()
         self._assembler.yield_endpoint(on=True)
-        self._assembler.hear_beam()  # ADR 0133: her echo suppressor clips the start on channel 0
 
     def _confirm_barge_in(self) -> None:
         """Enough voice over her: she holds where she is until it is judged (capture thread).
