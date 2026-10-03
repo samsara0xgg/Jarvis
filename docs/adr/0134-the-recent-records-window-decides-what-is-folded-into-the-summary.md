@@ -65,6 +65,7 @@ summary the run before wrote.
   for a number said the night before still failed, and one answered with a
   wrong figure. Exact wording is a `search_records` and `read_records` call,
   which the summary's header says.
-- `summary_max_chars` rose from 8000 to 12000 and the prompt's target to
+- `summary_max_chars` rose from 8000 to 20000 and the prompt's target to
   9000: luna wrote 9628 characters for 18 days under an 8000 cap and was
-  rejected. A fold costs one summariser call, about 0.01 USD.
+  rejected, then 13455 in the first live fold under a 12000 cap; its retry
+  landed at 8314. A fold costs one summariser call, about 0.01 USD.

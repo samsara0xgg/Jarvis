@@ -912,10 +912,11 @@ session:
                                   # decision preset's context_length is eligible
   verbatim_window_days: 7         # records younger than this survive a compaction verbatim
   compact_preset: gpt6-luna       # the summariser; rare and off the latency path
-  summary_max_chars: 12000        # a longer summary is rejected and nothing is stored; the prompt
+  summary_max_chars: 20000        # a longer summary is rejected and nothing is stored; the prompt
                                   # asks for 9000, the rest is the margin the model overshoots by
                                   # (live 2026-09-14: deep wrote 4.5k-6.2k chars for 38k of history;
-                                  # 2026-10-02: luna wrote 9.6k chars for 18 days, over an 8000 cap)
+                                  # 2026-10-02: luna wrote 9.6k chars for 18 days, over an 8000 cap,
+                                  # then 13.5k live, over a 12000 one; the retry landed at 8.3k)
   live_brief_max_chars: 1500      # the GPT-Live startup brief budget
   # history_since (settings.yaml): where the prompt's history starts. Records
   # before it stay in memory.db for search_records / read_records and are never
