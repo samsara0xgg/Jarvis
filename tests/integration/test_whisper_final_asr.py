@@ -109,6 +109,18 @@ def test_the_command_pass_decodes_short_and_hears_a_loop_as_nothing(whisper: _Wh
     assert call["temperature"] == 0.0
 
 
+@pytest.mark.parametrize("language", ["zh", "en"])
+def test_a_voice_turn_hears_a_loop_as_nothing_without_a_hotter_retry(
+    whisper: _Whisper, language: str,
+) -> None:
+    """2026-10-03: his laughter looped, a 4.6 s hotter retry still looped; SenseVoice must stand."""
+    whisper.texts = ["beginning, beginning, beginning, beginning,", "beginning."]
+    ears = whisper_ears(language=language, retry_loops=False)
+    assert ears is not None
+    assert ears.recognize(_speech(1.0, 0.1)).text == ""
+    assert len(whisper.calls) == 1
+
+
 @pytest.mark.parametrize(
     ("heard", "kept"),
     [

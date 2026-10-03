@@ -2563,7 +2563,10 @@ def _final_recognizer(
     realtime = runtime.config.get("realtime")
     choice = realtime.get("final_asr") if isinstance(realtime, Mapping) else None
     if choice == "hybrid":
-        whisper_zh, whisper_en = whisper_ears(language="zh"), whisper_ears(language="en")
+        # A loop is heard as nothing, so SenseVoice's words stand: a hotter retry took 4.6 s on
+        # his laughter and still gave 886 characters of "beginning," (2026-10-03 15:56).
+        whisper_zh = whisper_ears(language="zh", retry_loops=False)
+        whisper_en = whisper_ears(language="en", retry_loops=False)
         if whisper_zh is None or whisper_en is None:
             LOGGER.warning("realtime.final_asr: hybrid needs mlx-whisper; hearing with SenseVoice")
             return sensevoice

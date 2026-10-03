@@ -195,6 +195,7 @@ def whisper_ears(
     language: str = "zh",
     terms: Callable[[], Sequence[str]] | None = None,
     prompt: str | None = None,
+    retry_loops: bool = True,
 ) -> voice_asr.MlxWhisperRecognizer | None:
     """ADR 0077/0110: local Whisper when mlx-whisper is installed; ``None`` means SenseVoice.
 
@@ -202,6 +203,7 @@ def whisper_ears(
     ``language`` ``""`` lets Whisper tell; only Chinese gets the simplified-Chinese prompt.
     ``terms`` puts his word list in the prompt on every call; ``prompt`` replaces the Chinese one
     for the ADR 0137 command pass, which decodes at most 16 tokens and never retries a loop.
+    ``retry_loops`` ``False`` hears a looped transcript as nothing instead of retrying it hotter.
     """
     if importlib.util.find_spec("mlx_whisper") is None:
         return None
@@ -212,8 +214,10 @@ def whisper_ears(
             return voice_asr.MlxWhisperRecognizer(
                 language="zh", initial_prompt=prompt, terms=terms, max_tokens=16, retry_loops=False,
             )
-        return voice_asr.MlxWhisperRecognizer(language="zh", terms=terms)
-    return voice_asr.MlxWhisperRecognizer(language=language or None, initial_prompt=None, terms=terms)
+        return voice_asr.MlxWhisperRecognizer(language="zh", terms=terms, retry_loops=retry_loops)
+    return voice_asr.MlxWhisperRecognizer(
+        language=language or None, initial_prompt=None, terms=terms, retry_loops=retry_loops,
+    )
 
 
 def _latin(char: str) -> bool:
