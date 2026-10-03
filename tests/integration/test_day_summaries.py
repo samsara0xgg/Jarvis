@@ -16,7 +16,11 @@ import pytest
 
 from jarvis.decision.day_summary import REQUIRED_HEADINGS
 from jarvis.decision.llm import ChatResult
-from jarvis.runtime.day_summary import DaySummarySchedule, DaySummarySettings
+from jarvis.runtime.day_summary import (
+    VERBATIM_UNDER_CHARS,
+    DaySummarySchedule,
+    DaySummarySettings,
+)
 from jarvis.state.event_log import open_event_log
 from jarvis.state.memory_db import (
     MemorySettings,
@@ -48,7 +52,10 @@ def _stamp(ago: int, hour: int, minute: int = 0, *, utc: bool = False) -> str:
     return (moment.astimezone(UTC) if utc else moment).isoformat(timespec="seconds")
 
 
-def _insert(path: Path, rows: list[tuple[str, str, str, str]]) -> None:
+def _insert(path: Path, rows: list[tuple[str, str, str, str]], *, pad: bool = False) -> None:
+    """``pad`` lengthens every record past the verbatim threshold, so its day is summarised."""
+    if pad:
+        rows = [(rid, ts, src, text + "长" * VERBATIM_UNDER_CHARS) for rid, ts, src, text in rows]
     with closing(open_memory_db(path)) as conn, conn:
         conn.executemany("INSERT INTO records (id, ts, source, text) VALUES (?, ?, ?, ?)", rows)
 
@@ -130,6 +137,7 @@ def test_the_schedule_summarises_exactly_the_past_days_with_records_and_none_yet
             (_rid(1, 1), _stamp(1, 23, 59, utc=True), "allen", "跨零点"),
             (_rid(0, 1), _stamp(0, 0, 1), "allen", "今天"),
         ],
+        pad=True,
     )
     append_day_summary(
         path,
@@ -183,6 +191,7 @@ def test_a_failing_call_does_not_stop_the_days_after_it(tmp_path: Path) -> None:
     _insert(
         path,
         [(_rid(3, 1), _stamp(3, 9), "allen", "a"), (_rid(2, 1), _stamp(2, 9), "allen", "b")],
+        pad=True,
     )
     summariser = _Summariser()
     real_chat = summariser.chat
@@ -198,6 +207,24 @@ def test_a_failing_call_does_not_stop_the_days_after_it(tmp_path: Path) -> None:
     assert outcomes[_day(3).isoformat()] == "failed"
     assert outcomes[_day(2).isoformat()].startswith("landed")
     assert set(_stored(path)) == {_day(2).isoformat()}
+
+
+def test_a_short_day_is_kept_word_for_word_without_a_model_call(tmp_path: Path) -> None:
+    """Under the threshold the day's own lines are its entry; the model is not asked."""
+    path = tmp_path / "memory.db"
+    _insert(
+        path,
+        [
+            (_rid(2, 1), _stamp(2, 9), "allen", "早"),
+            (_rid(2, 2), _stamp(2, 9, 1), "jarvis", "早上好"),
+        ],
+    )
+    summariser = _Summariser()
+    outcomes = _schedule(tmp_path, summariser).write(TODAY)
+    assert outcomes[_day(2).isoformat()].startswith("verbatim (2 records")
+    assert summariser.asked == []
+    entry = _stored(path)[_day(2).isoformat()][-1]
+    assert entry.endswith("09:00 user: 早\n09:01 assistant: 早上好")
 
 
 def test_the_schedule_is_off_without_a_block_or_an_at() -> None:

@@ -25,7 +25,9 @@ history), and have `recall` return the current summary of each day in its range
 before the lines. Today is never summarised. The records stay the source of
 truth: a summary that fails its gates (missing heading, over the size cap, cites
 a record id that is not that day's) is not stored and is tried again on the next
-run.
+run (asked once more in the same run first). A day with under 1500 characters of
+records is stored word for word as its entry, with no model call: a summary of a few
+lines is no shorter than the lines.
 
 ## Alternatives rejected
 
@@ -42,6 +44,6 @@ run.
 
 - The summary rows are derived data: nothing may read them as fact where a
   record can be read, and `recall` points back to ids through the lines.
-- A day whose summary keeps failing its gates costs one paid call per run.
+- A day whose summary keeps failing its gates costs two paid calls per run.
 - Summaries ride the first `recall` page and count against its budget, so a
   range of many days leaves less room for lines on that page.

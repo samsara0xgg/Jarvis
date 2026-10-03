@@ -40,6 +40,9 @@ LOGGER = logging.getLogger(__name__)
 
 KIND: Final[str] = "day_summary"
 _DEFAULT_MAX_CHARS: Final[int] = 3000
+# A day this short is kept as its own words, no model call: a summary of a few lines is
+# no shorter than the lines (2026-09-22: 6 records, 891 chars, a 379-char summary).
+VERBATIM_UNDER_CHARS: Final[int] = 1500
 
 
 @dataclass(frozen=True)
@@ -84,6 +87,23 @@ def write_day_summary(
     records = day_records(memory.db_path, day)
     if not records:
         return "no records"
+    input_chars = sum(len(text) for _, _, _, text in records)
+    if input_chars < VERBATIM_UNDER_CHARS:
+        lines = [
+            f"{ts[11:16]} {'user' if source == 'allen' else 'assistant'}: {text}"
+            for _, ts, source, text in records
+        ]
+        summary = "\n".join([f"## {day} (the whole day, word for word)", *lines])
+        append_day_summary(
+            memory.db_path,
+            day=day,
+            summary=summary,
+            model="verbatim",
+            record_count=len(records),
+            input_chars=input_chars,
+            output_chars=len(summary),
+        )
+        return f"verbatim ({len(records)} records, {len(summary)} chars)"
     result = cost_recorder.chat(
         client,
         messages=build_day_summary_messages(day=day, records=records),
@@ -109,7 +129,7 @@ def write_day_summary(
         summary=summary,
         model=result.model_used or client.model,
         record_count=len(records),
-        input_chars=sum(len(text) for _, _, _, text in records),
+        input_chars=input_chars,
         output_chars=len(summary),
     )
     return f"landed ({len(records)} records, {len(summary)} chars)"
