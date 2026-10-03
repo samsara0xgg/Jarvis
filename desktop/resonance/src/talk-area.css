@@ -12,7 +12,7 @@
     radial-gradient(260px circle at 0 100%,rgb(91 58 168 / .22),transparent),linear-gradient(rgb(16 17 40 / .95),rgb(9 10 24 / .97));
   -webkit-backdrop-filter:blur(24px) saturate(150%); backdrop-filter:blur(24px) saturate(150%);
   box-shadow:inset 0 1px 0 rgb(255 255 255 / .05),0 24px 48px -16px rgb(0 0 0 / .72),0 2px 8px rgb(0 0 0 / .3);
-  transition:--lit .7s ease,--amt .7s ease,box-shadow .7s ease;
+  transition:--lit .7s ease,--amt .7s ease;
 }
 .talk[data-hit] { pointer-events:auto; }
 .talk [hidden] { display:none !important; }
@@ -28,17 +28,13 @@
 .talk[data-state=thinking] { --lit:rgb(185 168 255); --amt:24%; }
 .talk[data-state=speaking] { animation:talk-lit 2.6s ease-in-out infinite; }
 @keyframes talk-lit { 50% { --amt:30%; } }
-/* The deep look (ADR 0064, 0108): unlike the dusk, a near-black indigo with violet light coming in from the top edge, a violet rim and a
-   violet glow around the shape; while the turn is thought about a light runs slowly round the rim. */
+/* The deep look (ADR 0064, 0108) keeps the dusk: her light goes to the deep colour, and while the turn is thought about a fine light
+   runs slowly round the rim. The rest is in the footer's 「深想中 · N 秒」 and the violet rule beside a deep answer. */
 @property --rim { syntax:'<angle>'; inherits:false; initial-value:0deg; }
-.talk[data-deep] { --lit:rgb(var(--deep)); --amt:34%;
-  box-shadow:inset 0 1px 0 rgb(255 255 255 / .05),0 0 0 1px rgb(var(--deep) / .62),0 0 30px 0 rgb(var(--deep) / .5),0 24px 48px -16px rgb(0 0 0 / .72); }
-.talk[data-deep][data-state=thinking] { --amt:40%; }
-.tk-deep { position:absolute; inset:0; z-index:0; border-radius:inherit; pointer-events:none; opacity:0; transition:opacity .7s ease;
-  background:radial-gradient(300px 120px at 50% -30px,color-mix(in srgb,var(--lit) var(--amt),transparent),transparent),
-    radial-gradient(120% 160% at 0 100%,rgb(var(--deep) / .2),transparent 62%),linear-gradient(#07071c,#04040f); }
+.talk[data-deep] { --lit:rgb(var(--deep)); }
+.tk-deep { position:absolute; inset:0; z-index:0; border-radius:inherit; pointer-events:none; opacity:0; }
 .tk-deep::after { content:''; position:absolute; inset:0; border-radius:inherit; padding:1px; opacity:0; transition:opacity .5s ease;
-  background:conic-gradient(from var(--rim),transparent 0 62%,rgb(var(--deep) / .9) 80%,#fff 86%,rgb(var(--deep) / .9) 90%,transparent 100%);
+  background:conic-gradient(from var(--rim),transparent 0 70%,rgb(var(--deep) / .6) 84%,rgb(255 255 255 / .75) 88%,rgb(var(--deep) / .6) 92%,transparent 100%);
   -webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0); -webkit-mask-composite:xor; mask:linear-gradient(#000 0 0) content-box exclude,linear-gradient(#000 0 0); }
 .talk[data-deep][data-state=thinking] .tk-deep::after { opacity:1; animation:talk-rim 3.2s linear infinite; }
 @keyframes talk-rim { to { --rim:360deg; } }

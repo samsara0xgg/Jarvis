@@ -687,7 +687,7 @@ try {
     await page.waitForTimeout(2600);
     let a = await area();
     check('a deep turn pending: the area takes the deep look, and the footer counts the seconds', a.deep && /^Thinking deeply · \d+ s$/.test(a.label) && await page.evaluate(() => getComputedStyle(document.querySelector('.talk')).getPropertyValue('--lit').trim() === 'rgb(154, 134, 255)'));
-    check('its base is the deep gradient, its glyph the deep colour', await page.evaluate(() => getComputedStyle(document.querySelector('.tk-deep')).opacity === '1' && getComputedStyle(document.querySelector('.talk .gl'), '::before').backgroundColor !== 'rgba(0, 0, 0, 0)'));
+    check('its rim layer is up, its glyph the deep colour', await page.evaluate(() => getComputedStyle(document.querySelector('.tk-deep')).opacity === '1' && getComputedStyle(document.querySelector('.talk .gl'), '::before').backgroundColor !== 'rgba(0, 0, 0, 0)'));
     check('while it is thought about a light runs round its rim', await page.evaluate(() => { const r = getComputedStyle(document.querySelector('.tk-deep'), '::after'); return r.opacity === '1' && r.animationName === 'talk-rim'; }));
     await shot('30-deep-thinking');
     daemonState.think = { on: false, on_words: '深想', turn_id: null }; // the daemon's `on` ends with the turn, around the answer opening
