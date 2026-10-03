@@ -4635,7 +4635,7 @@ _AUDIO_DEVICE_POLL_S = 1.0
 _MIC_RETRY_S = (2.0, 5.0, 15.0, 30.0)
 
 
-def _output_or_default(name: str | int | None) -> str | None:
+def _output_or_default(name: str | None) -> str | None:
     """The picked speaker if CoreAudio lists it, else ``None``: the system default (ADR 0054)."""
     devices = voice_backend.coreaudio_devices("output") if isinstance(name, str) else None
     if devices is None or name in devices[1]:

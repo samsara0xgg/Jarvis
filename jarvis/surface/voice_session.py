@@ -1734,7 +1734,9 @@ class DuplexVoiceSession:
         if verdict in {"dismissed", "wait"}:
             self._settle_barge_in(turn_id, go_on=False)
             if verdict == "dismissed":
-                # An answer still on its way would come after her goodbye (live 2026-10-02).
+                # An answer still on its way would come after her goodbye (live 2026-10-02),
+                # however old it is (live 2026-10-03: a 50 s old answer spoke after it).
+                self._cancel_runs()
                 self._supersede(turn_id)
                 self._change_conversation(on=False, reason=verdict)
             else:
@@ -1777,13 +1779,17 @@ class DuplexVoiceSession:
         surface flipped it. Blocks on SQLite and the player, so not on the capture
         thread.
         """
-        if self._cancel_voice_runs is not None:
-            try:
-                self._cancel_voice_runs()
-            except Exception:  # noqa: BLE001 - what is audible must still stop
-                LOGGER.warning("cancel_voice_runs failed", exc_info=True)
+        self._cancel_runs()
         self._stop_now()
         self._answer("T" + secrets.token_hex(4), "dismissed", "")
+
+    def _cancel_runs(self) -> None:
+        if self._cancel_voice_runs is None:
+            return
+        try:
+            self._cancel_voice_runs()
+        except Exception:  # noqa: BLE001 - what is audible must still stop
+            LOGGER.warning("cancel_voice_runs failed", exc_info=True)
 
     def _recent(self) -> str:
         """What she said lately, for Jev's context; none when it cannot be read."""

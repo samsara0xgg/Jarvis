@@ -255,6 +255,7 @@ def test_a_dismissal_stops_her_ends_the_mode_and_is_no_turn(
     finally:
         rig.close()
     assert ("stop" in rig.output) is speaking
+    assert "cancel runs" in rig.output  # every answer still on its way, any age
     assert rig.conversation_changes == [(False, "dismissed")]
     assert rig.answers == ["dismissed"]
     assert rig.turns() == []
