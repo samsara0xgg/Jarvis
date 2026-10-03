@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
-import { CaretRight, Check, Cpu, Globe, House, Key, LockSimple, Microphone, Planet, Robot, SlidersHorizontal, SpeakerHigh, Waveform, Bell } from '@phosphor-icons/react';
+import { CaretRight, Check, Cpu, Globe, House, Key, Lightbulb, LockSimple, Microphone, Planet, Robot, SlidersHorizontal, SpeakerHigh, Waveform, Bell } from '@phosphor-icons/react';
 import { tr, useCompanionSettings, type L, type Lang } from './companionSettings';
 import { postRoute, useRoute } from './homeData';
 import { SKIN_KEYS, SKINS, type Skin } from './starCore';
@@ -27,10 +27,15 @@ type Daemon = { values: Record<string, unknown>; options?: Record<string, string
 const DEMO: Daemon = {
   values: { reply_language: 'follow', wake_threshold: .95, tts_voice: 'Warm Bestie', tts_volume: 1, output_device: 'System default', input_device: 'System default',
     gpt_live: true, timesink: true, keep_audio: true, repos: ['jarvis', 'typlus', 'timesink', 'guard-mode', 'drum-machine-pro', 'simple-wiki'],
-    model_conversation: 'gpt-5.6-luna', model_background: 'GPT-6 luna', model_report: 'GPT-6 sol · flex' },
+    model_conversation: 'gpt-5.6-luna', model_background: 'GPT-6 luna', model_report: 'GPT-6 sol · flex',
+    board_light: 'direction', board_brightness: .4, board_speed: 8, board_color: '#002040', board_direction_colors: ['#002040', '#00c066'],
+    board_ring_colors: Array<string>(12).fill('#002040'), board_headphone: 8, board_lineout: 8 },
   options: { tts_voice: ['Warm Bestie', 'Explorative Girl'], output_device: ['System default', 'Multi-Output Device 2', 'MacBook Pro Speakers'], input_device: ['System default', 'reSpeaker XVF3800', 'MacBook Pro Microphone'] },
   defaults: { output_device: 'MacBook Pro Speakers', input_device: 'MacBook Pro Microphone' },
 };
+// The reSpeaker board: GET /inherent/board answers whether it is plugged in and what it hears; its settings live in /inherent/settings and apply at once.
+type Board = { present: boolean; firmware: string | null; direction: number | null; speech: boolean };
+const DEMO_BOARD: Board = { present: true, firmware: '2.1.1', direction: 251, speech: false };
 const STALE: Record<'hour' | 'day' | 'never', L> = { hour: ['1 h', '1 小时'], day: ['1 day', '1 天'], never: ['never', '不收'] };
 const SKIN_EN: Record<Skin, string> = { glass: 'Glass', nebula: 'Nebula', galaxy: 'Galaxy', frost: 'Frost', aurora: 'Aurora', codex: 'Icon' };
 const SKIN_BG: Record<Skin, string> = {
@@ -62,6 +67,7 @@ type Ctl =
   | { k: 'switch'; on: boolean; set: (on: boolean) => void }
   | { k: 'seg'; value: string; opts: [string, L][]; set: (value: string) => void }
   | { k: 'range'; value: number; min: number; max: number; step: number; pct?: boolean; set: (value: number) => void }
+  | { k: 'colors'; values: string[]; labels?: L[]; set: (values: string[], now?: boolean) => void }
   | { k: 'pick'; value: string; opts: string[]; set: (value: string) => void; device?: { fallback: string | null } }
   | { k: 'info'; text: string; tone?: 'ok' | 'warn' }
   | { k: 'act'; label: L; run: () => void }
@@ -80,15 +86,17 @@ export function SettingsPage({ lang, port, open, cat, onCat, ctl, accounts, keyD
   const [s, update] = useCompanionSettings();
   const route = useRoute<Daemon>(port, '/inherent/settings', open, 60_000);
   const setup = useRoute<Setup>(port, '/inherent/setup', open && cat === 'accounts', 30_000);
+  const boardRoute = useRoute<Board>(port, '/inherent/board', open && cat === 'board', 1000), board = port ? boardRoute.data : DEMO_BOARD;
   // A microphone or speaker plugged in since the last fetch: ask again whenever the Voice category opens.
   useEffect(() => { if (cat === 'voice') route.reload(); }, [cat]);
-  const [demo, setDemo] = useState(DEMO), [draft, setDraft] = useState<Record<string, number>>({});
+  const [demo, setDemo] = useState(DEMO), [draft, setDraft] = useState<Record<string, number>>({}), [picks, setPicks] = useState<Record<string, string[]>>({});
   // The restart banner: changes waiting, going down and coming back, back (then gone), or too slow to come back.
   const [phase, setPhase] = useState<'wait' | 'going' | 'back' | 'slow'>('wait');
   const daemon = port ? route.data : demo, ready = !!daemon;
   const v = (key: string) => daemon?.values[key];
   const save = async (key: string, value: unknown) => {
-    if (!port) { setDemo(d => ({ ...d, values: { ...d.values, [key]: value }, restart_pending: true })); return; }
+    // The board's settings apply live: only the others wait for a restart.
+    if (!port) { setDemo(d => ({ ...d, values: { ...d.values, [key]: value }, ...key.startsWith('board_') ? {} : { restart_pending: true } })); return; }
     try { await postRoute(port, '/inherent/settings', { changes: { [key]: value } }); route.reload(); }
     catch { notify(t(['Jarvis didn’t save that.', 'Jarvis 没存上。'])); }
   };
@@ -114,6 +122,18 @@ export function SettingsPage({ lang, port, open, cat, onCat, ctl, accounts, keyD
   const dRange = (key: string, min: number, max: number, step: number, pct?: boolean): Ctl =>
     ({ k: 'range', value: draft[key] ?? (typeof v(key) === 'number' ? v(key) as number : min), min, max, step, pct, set: value => { setDraft(d => ({ ...d, [key]: value })); } });
   const commit = (key: string) => { if (draft[key] !== undefined) { void save(key, draft[key]); setDraft(({ [key]: _, ...rest }) => rest); } };
+  // The board's colors: the swatch follows the pointer from a local pick; the daemon hears it at most every 150 ms, and at once when the picker lets go.
+  // A pick is dropped once the daemon reports it back.
+  const lag = useRef<{ t?: ReturnType<typeof setTimeout>; go: () => void }>({ go() {} });
+  const dColors = (key: string, n: number, labels?: L[]): Ctl => {
+    const saved = [v(key)].flat() as unknown[];
+    return { k: 'colors', labels, values: picks[key] ?? Array.from({ length: n }, (_, i) => String(saved[i] ?? '#000000')), set: (next, now) => {
+      setPicks(p => ({ ...p, [key]: next }));
+      lag.current.go = () => { clearTimeout(lag.current.t); lag.current.t = undefined; void save(key, n === 1 ? next[0] : next); };
+      if (now) lag.current.go(); else lag.current.t ??= setTimeout(() => lag.current.go(), 150);
+    } };
+  };
+  useEffect(() => setPicks(p => { const keep = Object.entries(p).filter(([k, c]) => `${c}`.toLowerCase() !== `${v(k)}`.toLowerCase()); return keep.length === Object.keys(p).length ? p : Object.fromEntries(keep); }), [daemon]);
   const dInfo = (key: string): Ctl => ({ k: 'info', text: Array.isArray(v(key)) ? t([`${(v(key) as unknown[]).length} folders`, `${(v(key) as unknown[]).length} 个`]) : String(v(key) ?? '—') });
   const off = !ready;
   const keyCtl = (provider: Provider): Ctl => {
@@ -125,6 +145,11 @@ export function SettingsPage({ lang, port, open, cat, onCat, ctl, accounts, keyD
 
   const reply: [string, L][] = [['follow', ['Follow me', '跟着我']], ['zh', ['中文', '中文']], ['en', ['English', 'English']]];
   const replyName = t(reply.find(([k]) => k === v('reply_language'))?.[1] ?? ['—', '—']);
+  // The board's lights: a short name for the category's line, and what each does for the list.
+  const lights: [string, L, L][] = [['off', ['Off', '关'], ['Off', '关']], ['breath', ['Breathe', '呼吸'], ['Breathe: one color fades in and out', '呼吸：一种颜色慢慢亮了又暗']],
+    ['rainbow', ['Rainbow', '彩虹'], ['Rainbow: colors go round', '彩虹：几种颜色轮流转']], ['solid', ['Solid', '单色'], ['Solid: one color stays on', '单色：一种颜色常亮']],
+    ['direction', ['Direction', '方向'], ['Direction: lights up toward the voice', '方向：朝说话的人那边亮']], ['ring', ['Ring', '环形'], ['Ring: a color for each light', '环形：每颗灯各一种颜色']]];
+  const light = String(v('board_light') ?? 'off'), lit = lights.find(([k]) => k === light), lightName = t(lit?.[1] ?? ['—', '—']);
   const cats: Cat[] = [
     { id: 'general', icon: <Globe/>, name: ['General', '通用'], sum: `${lang === 'zh' ? '中文' : 'English'} · ${t(['answers', '回答'])} ${replyName}`, items: [
       { id: 'lang', name: ['Interface language', '界面语言'], note: ['Her panel, and what Jarvis says on its own: the time, confirmations, reports', '她的面板，和 Jarvis 自己说的固定句子：报时、确认、日报'], ctl: { k: 'seg', value: lang, opts: [['en', ['English', 'English']], ['zh', ['中文', '中文']]], set: value => {
@@ -165,6 +190,24 @@ export function SettingsPage({ lang, port, open, cat, onCat, ctl, accounts, keyD
       { id: 'out', name: ['Speaker', '扬声器'], ctl: dDevice('output_device'), off },
       { id: 'in', name: ['Microphone', '麦克风'], ctl: dDevice('input_device'), off },
       { id: 'live', name: ['GPT-Live', 'GPT-Live'], ctl: dSwitch('gpt_live'), off },
+    ] },
+    { id: 'board', icon: <Lightbulb/>, name: ['Mic board', '麦克风'], daemon: true, sum: !ready ? t(['Not connected yet', '还没接上']) : board?.present === false ? t(['Not plugged in', '没接上']) : `${lightName} · ${pct(Number(v('board_brightness') ?? 0))}`, items: [
+      { id: 'board', name: ['Board', '板子'], ctl: { k: 'info', tone: board ? board.present ? 'ok' : 'warn' : undefined,
+        text: !board ? '—' : board.present ? `XVF3800 · ${t(['fw', '固件'])} ${board.firmware ?? '—'}` : t(['Not plugged in', '没接上']) }, off },
+      { id: 'dir', name: ['Sound from', '声音方向'], note: ['In the board’s own degrees', '用的是板子自己的角度'], ctl: { k: 'info',
+        text: board?.present && board.direction != null ? `${board.direction}°${t(board.speech ? [' · someone talking', ' · 有人在说话'] : [' · quiet', ' · 安静'])}` : '—' }, off },
+      { id: 'light', name: ['Lights', '灯'], ctl: { k: 'pick', value: t(lit?.[2] ?? ['—', '—']), opts: lights.map(l => t(l[2])),
+        set: label => { const key = lights.find(l => t(l[2]) === label)?.[0]; if (key) void save('board_light', key); } }, off },
+      ...light === 'breath' || light === 'solid' ? [{ id: 'colors', name: ['Color', '颜色'] as L, ctl: dColors('board_color', 1), off }] : [],
+      ...light === 'direction' ? [{ id: 'colors', name: ['Colors', '颜色'] as L, note: ['The base lights the whole ring; the second color points at whoever is talking', '底色是整圈常亮的颜色，方向色只点亮有人说话的那个方向'] as L,
+        ctl: dColors('board_direction_colors', 2, [['Base', '底色'], ['Toward the voice', '方向色']]), off }] : [],
+      ...light === 'ring' ? [{ id: 'colors', name: ['Color', '颜色'] as L, note: ['One color per light', '每颗灯一种颜色'] as L,
+        ctl: dColors('board_ring_colors', 12, Array.from({ length: 12 }, (_, i): L => [`${i + 1}`, `${i + 1}`])), off }] : [],
+      ...light !== 'off' ? [{ id: 'bright', name: ['Brightness', '亮度'] as L, ctl: dRange('board_brightness', 0, 1, .05, true), off,
+        ...light === 'solid' || light === 'direction' || light === 'ring' ? { note: ['Dims the colors themselves', '把颜色本身调暗'] as L } : {} }] : [],
+      ...light === 'breath' || light === 'rainbow' ? [{ id: 'speed', name: ['Speed', '速度'] as L, ctl: dRange('board_speed', 1, 32, 1), off }] : [],
+      { id: 'hp', name: ['Headphone jack volume', '耳机口音量'], note: ['Only matters with something plugged into the board', '板子上插了耳机或音箱才有用'], ctl: dRange('board_headphone', 0, 9, 1), off },
+      { id: 'line', name: ['Line-out volume', '线路输出音量'], ctl: dRange('board_lineout', 0, 9, 1), off },
     ] },
     { id: 'sounds', icon: <Bell/>, name: ['Sounds', '提示音'], sum: ctl.cues.on ? `${t(['On', '开'])} · ${pct(ctl.cues.volume)}` : t(['Off', '关']), items: [
       { id: 'cues', name: ['Sound cues', '提示音'], note: ['Her own cues. The mute button silences them too', '她自己的提示音。静音键也会关掉它们'], ctl: { k: 'switch', on: ctl.cues.on, set: on => ctl.setCues({ on }) } },
@@ -223,7 +266,7 @@ export function SettingsPage({ lang, port, open, cat, onCat, ctl, accounts, keyD
     if (x.k === 'switch') return <button className="sw" role="switch" aria-checked={x.on} aria-label={t(i.name)} disabled={i.off} onClick={() => x.set(!x.on)}/>;
     if (x.k === 'info' || x.k === 'key') return <span className={`st-val ${x.tone ? `is-${x.tone}` : ''}`}>{x.text}</span>;
     if (x.k === 'act') return <button className="btn btn-ghost st-act" disabled={i.off} onClick={x.run}>{t(x.label)}</button>;
-    if (x.k === 'range') return <span className="st-val">{x.pct ? pct(x.value) : x.value.toFixed(2)}</span>;
+    if (x.k === 'range') return <span className="st-val">{x.pct ? pct(x.value) : x.step >= 1 ? String(x.value) : x.value.toFixed(2)}</span>;
     return null;
   };
   const below = (i: Item) => {
@@ -241,6 +284,12 @@ export function SettingsPage({ lang, port, open, cat, onCat, ctl, accounts, keyD
       <button key={o} role="radio" aria-checked={x.value === o} disabled={i.off} onClick={() => x.set(o)}>{o}</button>)}</div>;
     if (x.k === 'range') return <input className="st-range" type="range" aria-label={t(i.name)} min={x.min} max={x.max} step={x.step} value={x.value} disabled={i.off}
       onChange={e => x.set(Number(e.target.value))} onPointerUp={() => commit(keyOf(i))} onKeyUp={() => commit(keyOf(i))}/>;
+    if (x.k === 'colors') return <div className="st-colors" role="group" aria-label={t(i.name)}>{x.values.map((c, j) => {
+      const label = x.labels?.[j], to = (value: string) => x.values.map((o, k) => k === j ? value : o);
+      return <label key={j}><input type="color" value={c} disabled={i.off} aria-label={label ? `${t(i.name)} ${t(label)}` : t(i.name)} onChange={e => x.set(to(e.target.value))}
+        ref={el => { if (!el) return; const done = () => x.set(to(el.value), true); el.addEventListener('change', done); return () => el.removeEventListener('change', done); }}/>
+        {label && <small>{t(label)}</small>}</label>;
+    })}</div>;
     if (x.k === 'skins') return <div className="st-skins" role="radiogroup" aria-label={t(i.name)}>{SKIN_KEYS.map(k =>
       <button key={k} role="radio" aria-checked={ctl.look.skin === k} onClick={() => ctl.setLook({ skin: k })}><i style={{ background: SKIN_BG[k] }}/>{lang === 'zh' ? SKINS[k].name : SKIN_EN[k]}</button>)}</div>;
     if (x.k === 'key') return <KeyField provider={x.provider} name={t(i.name)} port={port} lang={lang} value={keyDrafts[x.provider] ?? ''}
@@ -248,7 +297,7 @@ export function SettingsPage({ lang, port, open, cat, onCat, ctl, accounts, keyD
     return null;
   };
   // Only the daemon's ranges wait for the release to save; hers apply as they move.
-  const keyOf = (i: Item) => ({ wake: 'wake_threshold', vol: 'tts_volume' } as Record<string, string>)[i.id] ?? '';
+  const keyOf = (i: Item) => ({ wake: 'wake_threshold', vol: 'tts_volume', bright: 'board_brightness', speed: 'board_speed', hp: 'board_headphone', line: 'board_lineout' } as Record<string, string>)[i.id] ?? '';
 
   return <>
     {head(c ? t(c.name) : t(['Settings', '设置']), !c ? <span className={port && !route.data ? '' : 'is-ok'}>● {port ? route.data ? t(['Jarvis connected', 'Jarvis 已连接']) : t(['Her settings only', '只有她的设置']) : t(['Demo', '演示'])}</span> : undefined)}

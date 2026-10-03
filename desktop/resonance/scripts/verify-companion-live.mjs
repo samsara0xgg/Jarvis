@@ -589,8 +589,10 @@ try {
       { id: 'm1', from: 'Prof. Lee', subject: 'Office hours moved', received: iso(Date.now() - 600_000), importance: 2.8 }] };
     fixtures['/inherent/notices'] = { notices: [{ id: 'n1', text: 'Reminder: call the dentist', at: iso(Date.now()) }] };
     fixtures['/inherent/settings'] = { values: { reply_language: 'follow', wake_threshold: .95, tts_voice: 'Warm Bestie', tts_volume: 1, output_device: 'System default', input_device: 'System default',
-      gpt_live: true, mac_aec: false, timesink: true, keep_audio: true, repos: ['jarvis'], model_conversation: 'gpt-5.6-luna', model_background: 'GPT-6 luna', model_report: 'GPT-6 sol' },
+      gpt_live: true, mac_aec: false, timesink: true, keep_audio: true, repos: ['jarvis'], model_conversation: 'gpt-5.6-luna', model_background: 'GPT-6 luna', model_report: 'GPT-6 sol',
+      board_light: 'direction', board_brightness: .4, board_speed: 8, board_color: '#002040', board_direction_colors: ['#002040', '#00c066'], board_ring_colors: Array(12).fill('#002040'), board_headphone: 8, board_lineout: 8 },
       options: { tts_voice: ['Warm Bestie', 'Explorative Girl'], output_device: ['System default'], input_device: ['System default'] } };
+    fixtures['/inherent/board'] = { present: true, firmware: '2.1.1', direction: 251, speech: false };
     await closeDash();
     await page.waitForFunction(() => !document.querySelector('.companion-dashboard.is-open'), null, { timeout: 3000 });
     await island();
@@ -617,6 +619,21 @@ try {
       && posts.at(-1)?.path === '/inherent/settings' && posts.at(-1).body.changes?.tts_voice === 'Explorative Girl'
       && await page.locator('.ad .st-opts button[aria-checked="true"]', { hasText: 'Explorative Girl' }).count() === 1);
     await panelShot('L14-settings-voice');
+    // Settings › Mic board: the board's status from /inherent/board, and only the controls the chosen light uses.
+    await back(); await page.locator('.ad [data-cat="board"]').click(); await page.waitForTimeout(1500);
+    const swatches = page.locator('.ad [data-item="colors"] input[type="color"]'), boardItem = id => page.locator(`.ad [data-item="${id}"]`).count();
+    check('L14 Mic board says the board is plugged in and where the sound comes from', (await text('.ad [data-item="board"] .st-val')) === 'XVF3800 · fw 2.1.1' && (await text('.ad [data-item="dir"] .st-val')) === '251° · quiet');
+    check('L14 the Direction light shows two colors and a brightness, but no speed', await swatches.count() === 2 && await boardItem('bright') === 1 && await boardItem('speed') === 0);
+    await swatches.nth(1).fill('#ff0000'); await page.waitForTimeout(500);
+    check('L14 a picked color posts board_direction_colors and keeps its swatch', posts.at(-1)?.body.changes?.board_direction_colors?.join() === '#002040,#ff0000' && await swatches.nth(1).inputValue() === '#ff0000');
+    await page.locator('.ad [data-item="light"] .st-opts button', { hasText: 'Ring' }).click(); await page.waitForTimeout(600);
+    check('L14 the Ring light posts board_light and shows twelve swatches', posts.at(-1)?.body.changes?.board_light === 'ring' && await swatches.count() === 12);
+    await page.locator('.ad [data-item="light"] .st-opts button', { hasText: 'Breathe' }).click(); await page.waitForTimeout(600);
+    check('L14 Breathe shows one color and a speed', await swatches.count() === 1 && await boardItem('speed') === 1);
+    await page.locator('.ad [data-item="light"] .st-opts button', { hasText: 'Off' }).click(); await page.waitForTimeout(600);
+    check('L14 Off hides the colors and the brightness, and keeps the jack volumes', await swatches.count() === 0 && await boardItem('bright') === 0 && await boardItem('hp') === 1 && await boardItem('line') === 1);
+    await page.locator('.ad [data-item="light"] .st-opts button', { hasText: 'Solid' }).click(); await page.waitForTimeout(600);
+    await panelShot('L14-settings-board');
     // One language switch: Interface language flips her panel and tells Jarvis to say its own phrases in it.
     const langName = () => text('.ad [data-item="lang"] .st-name');
     await back(); await page.locator('.ad [data-cat="general"]').click(); await page.waitForTimeout(500);
