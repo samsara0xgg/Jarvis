@@ -1,8 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Archive, Trash } from '@phosphor-icons/react';
+import { Archive, ArrowSquareOut, EnvelopeOpen, Trash } from '@phosphor-icons/react';
 import { useT, type L } from './companionSettings';
 import { demoMailText, postRoute, type Mail } from './homeData';
-import { Lk } from './Markdown';
+import { Lk, short } from './Markdown';
 import { MorphText } from './MorphText';
 import { useMailDraft } from './useMailDraft';
 
@@ -40,7 +40,20 @@ export function MailList({ mail, filter, onFilter, onOpen }: { mail: Mail[]; fil
 
 type Detail = { thread_id?: string; address?: string; text: string };
 const URL_AT = /(https?:\/\/[^\s<>()"]*[^\s<>()".,;:!?])/;
-const linked = (text: string) => text.split(URL_AT).map((part, i) => i % 2 ? <Lk key={i} url={part}>{part}</Lk> : part);
+const linked = (text: string) => text.split(URL_AT).map((part, i) => i % 2 ? <Lk key={i} url={part}>{short(part)}</Lk> : part);
+// Mail as it comes, made readable: a link in angle brackets (`click here <url>`, often broken over lines) sits in the sentence,
+// trailing spaces go, runs of blank lines close up to one, and an earlier letter quoted under it folds away.
+const tidy = (text: string) => text.replace(/\s*<(https?:\/\/[^\s>]+)\s*>[ \t]*/g, ' $1 ').replace(/[ \t]+$/gm, '').replace(/\n{3,}/g, '\n\n').trim();
+const QUOTED = /^(?:On .{4,200} wrote:|在.{2,200}写道[:：]|-{2,} ?Original Message ?-{2,}|>)/m;
+function Body({ text }: { text: string }) {
+  const t = useT(), [open, setOpen] = useState(false);
+  const all = tidy(text), at = all.search(QUOTED), main = at > 0 ? all.slice(0, at).trim() : all, quoted = at > 0 ? all.slice(at) : '';
+  return <>
+    <p className="mp-text">{linked(main)}</p>
+    {quoted && <button className="btn-text mp-quoted" aria-expanded={open} onClick={() => setOpen(v => !v)}>{open ? t(['Hide the quoted letter', '收起引用的信']) : t(['Show the quoted letter', '显示引用的信'])}</button>}
+    {quoted && open && <p className="mp-text mp-quote">{linked(quoted)}</p>}
+  </>;
+}
 
 export function MailLetter({ port, letter, onAct }: { port: string | null; letter: Mail; onAct: (kind: MailAct) => void }) {
   const t = useT();
@@ -73,16 +86,16 @@ export function MailLetter({ port, letter, onAct }: { port: string | null; lette
       <span className="mp-who"><b>{letter.from}</b>{address && <small>&lt;{address}&gt;</small>}<time>{fullStamp(letter.received)}</time></span>
       <p className="mp-subject">{letter.subject}</p>
     </header>
-    <div className="pg-sec mp-body">{detail === 'failed' ? <p className="muted">{t(['Can’t read this one yet. You can open it in Gmail.', '正文还读不到，可以在 Gmail 里看'])}</p>
-      : body ? <p className="mp-text">{linked(body.text)}</p> : <p className="muted">{t(['Loading…', '正在读…'])}</p>}</div>
     <div className="pg-sec mp-bar">
-      <button className="btn btn-ghost" data-act="gmail" onClick={() => void window.jarvis?.openMail?.(letter.id)}>{t(['Open in Gmail', '在 Gmail 打开'])}</button>
-      <button className="btn btn-ghost" data-act="read" onClick={() => onAct('read')}>{t(['Mark as read', '标为已读'])}</button>
-      <button className="btn btn-ghost" data-act="draft" onClick={() => void d.ask()}>{t(['Ask Jarvis to draft a reply', '让 Jarvis 起草回复'])}</button>
+      <button className="btn btn-ghost" data-act="draft" onClick={() => void d.ask()}>{t(['Draft a reply with Jarvis', '让 Jarvis 起草回复'])}</button>
       <span className="mp-end">
+        <button className="icon-btn" data-act="gmail" aria-label={t(['Open in Gmail', '在 Gmail 打开'])} title={t(['Open in Gmail', '在 Gmail 打开'])} onClick={() => void window.jarvis?.openMail?.(letter.id)}><ArrowSquareOut size={14}/></button>
+        <button className="icon-btn" data-act="read" aria-label={t(['Mark as read', '标为已读'])} title={t(['Mark as read', '标为已读'])} onClick={() => onAct('read')}><EnvelopeOpen size={14}/></button>
         <button className="icon-btn" data-act="trash" aria-label={t(['Trash', '删除'])} title={t(['Trash', '删除'])} onClick={() => onAct('trash')}><Trash size={14}/></button>
         <button className="icon-btn" data-act="archive" aria-label={t(['Archive', '归档'])} title={t(['Archive', '归档'])} onClick={() => onAct('archive')}><Archive size={14}/></button></span>
     </div>
+    <div className="pg-sec mp-body">{detail === 'failed' ? <p className="muted">{t(['Can’t read this one yet. You can open it in Gmail.', '正文还读不到，可以在 Gmail 里看'])}</p>
+      : body ? <Body text={body.text}/> : <p className="muted">{t(['Loading…', '正在读…'])}</p>}</div>
     <DraftArea d={d}/>
   </div>;
 }

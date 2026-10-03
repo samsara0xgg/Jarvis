@@ -48,7 +48,7 @@ const MAIL = [
   { id: 'm4', from: 'Shop Deals', address: 'hi@shop.example', thread_id: 't4', subject: '50% off everything', received: today.toISOString(), reply: 'fyi', junk: true, importance: .2 },
   { id: 'm5', from: 'Weekly digest', address: 'news@digest.example', thread_id: 't5', subject: 'This week in tech', received: new Date().toISOString() },
 ];
-const TEXT = { m1: 'Hi all,\n\nOffice hours move to Thursday.\nQuestions on A3: https://courses.example/csc370/a3.\n\nProf. Lee', m2: 'Dinner tonight?\n\nMom', m3: 'Can you do Tuesday?\n\nNorthwind' };
+const TEXT = { m1: 'Hi all,\n\nOffice hours move to Thursday.\nQuestions on A3: https://courses.example/csc370/a3.\n\nProf. Lee', m2: 'Dinner tonight?\n\nMom', m3: 'Please click here\n<https://jobs.example/listing?id=7\n>  to see the slots.  \n\n\n\nNorthwind\n\nOn Mon, Oct 1, 2026 at 9:00 AM Allen wrote:\n> Any slots?' };
 const DRAFT1 = 'Hi Prof. Lee,\n\nThursday works for me. I will bring my questions about A3.\n\nAllen';
 const DRAFT2 = 'Hi Prof. Lee,\n\nThanks for the update. Thursday at 3 suits me fine. I will bring my questions about A3 and a printed copy of the plan.\n\nBest,\nAllen';
 const daemon = { unread: new Set(MAIL.map(m => m.id)), drafts: {}, off: true, card: null };
@@ -222,6 +222,9 @@ try {
   await page.locator('.mp-row[data-id="m3"]').click();
   check('while a body loads the page says so', await page.locator('.mp-body .muted').textContent() === 'Loading…');
   await until(() => document.querySelector('.mp-text'));
+  check('mail as it comes reads tidy: the <url> sits in the sentence as a short link, blank runs close up, the quoted letter folds away',
+    await page.locator('.mp-text').first().textContent() === 'Please click here jobs.example/listing?id=7 to see the slots.\n\nNorthwind' && await count('.mp-quote') === 0
+    && (await page.locator('.mp-quoted').click(), await page.locator('.mp-quote').textContent()).startsWith('On Mon, Oct 1'));
   await page.locator('[data-act="read"]').click(); await page.waitForTimeout(600);
   check('标为已读 posts /read, returns to the list, removes the letter and shows an undo strip',
     JSON.stringify(sent('/inherent/mail/read').at(-1)?.body) === '{"ids":["m3"]}' && await count('.mp-list') === 1 && await count('.mp-row[data-id="m3"]') === 0 && (await strip()).includes('Marked as read'));
@@ -252,7 +255,8 @@ try {
   check('in Chinese the chips and tags read 全部 / 要回 / 找工作, 紧急, 知会', (await chips()).join('|').startsWith('全部') && (await chips()).join('|').includes('要回') && (await chips()).join('|').includes('找工作')
     && (await tagsOf('m1')).join('|') === '知会|紧急');
   await page.locator('.mp-row[data-id="m1"]').click(); await page.waitForTimeout(1200);
-  check('and the letter’s buttons read 在 Gmail 打开 / 标为已读 / 让 Jarvis 起草回复', (await texts('.mp-bar .btn')).join('|') === '在 Gmail 打开|标为已读|让 Jarvis 起草回复');
+  check('and the letter’s bar reads 让 Jarvis 起草回复 with 在 Gmail 打开 / 标为已读 / 删除 / 归档 as named icons', (await texts('.mp-bar .btn')).join('|') === '让 Jarvis 起草回复'
+    && (await page.locator('.mp-bar .icon-btn').evaluateAll(els => els.map(e => e.getAttribute('aria-label')))).join('|') === '在 Gmail 打开|标为已读|删除|归档');
   check('no unhandled renderer errors', errors.length === 0);
   writeFileSync(path.join(dir, 'checks.json'), JSON.stringify({ checks, errors, posts }, null, 2));
   console.log(`Mail page: ${checks.length} checks passed`);

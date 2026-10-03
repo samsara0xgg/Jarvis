@@ -7,7 +7,7 @@ import { Fragment, useEffect, useState, type ReactNode } from 'react';
 export const openLink = (url: string) => { void window.jarvis?.openUrl?.(url); };
 export const Lk = ({ url, children }: { url: string; children: ReactNode }) => <a className="lk" href={url} onClick={e => { e.preventDefault(); openLink(url); }}>{children}</a>;
 // A bare address reads short: no scheme, no www., no trailing slash, cut at 32.
-const short = (url: string) => { const s = url.replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, ''); return s.length > 32 ? `${s.slice(0, 31)}…` : s; };
+export const short = (url: string) => { const s = url.replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, ''); return s.length > 32 ? `${s.slice(0, 31)}…` : s; };
 // `spell`: how plain text is set (the talk area lights it a character at a time); code and links stay whole.
 // A bare address ends on a character that is not punctuation, and stops at the first space, bracket or CJK character.
 export const inline = (text: string, spell?: (text: string) => ReactNode): ReactNode[] => text.split(/(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\(https?:\/\/[^\s)]+\)|https?:\/\/[^\s<>()"\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]*[^\s<>()"\u3000-\u303f\u4e00-\u9fff\uff00-\uffef.,;:!?])/).map((part, i) => {
