@@ -5822,6 +5822,9 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 make_turn_cancel_callable(runtime) if cancel_response_callable is not None else None
             ),
             controls=controls,
+            dismiss_callable=(
+                None if duplex_voice_session is None else duplex_voice_session.dismiss
+            ),
             live=live_voice,
             v2=InherentV2Deps(
                 token_matches=functools.partial(inherent_v2_token_matches, v2_token),

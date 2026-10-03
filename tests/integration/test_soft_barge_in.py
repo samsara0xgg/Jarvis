@@ -97,6 +97,9 @@ class _Rig:
         note_words: Callable[[str, str, str, bool, bool], None] | None = None,
         backend: _FakeBackend | None = None,
         wake_input_channel: int | None = None,
+        output_active: Callable[[], bool] | None = None,
+        stop_speaking: Callable[[], object] | None = None,
+        answer_words: Callable[[str, str, str], None] | None = None,
     ) -> None:
         self.output: list[str] = []
         self.phases: list[tuple[str, object]] = []
@@ -123,7 +126,7 @@ class _Rig:
                 vad=voice_audio.SileroVad(mode="record"),
                 pipeline=pipeline,
                 broadcaster=self,
-                output_active=lambda: self.speaking,
+                output_active=output_active or (lambda: self.speaking),
                 wake_threshold=0.5,
                 config=replace(
                     voice_session.RealtimeInputSessionConfig(),
@@ -138,8 +141,9 @@ class _Rig:
                 mic_muted=lambda: False,
                 conversation=lambda: self.conversation,
                 set_conversation=self._set_conversation,
-                answer_words=lambda _turn_id, reason, _text: self.answers.append(reason),
-                stop_speaking=self._stop,
+                answer_words=answer_words
+                or (lambda _turn_id, reason, _text: self.answers.append(reason)),
+                stop_speaking=stop_speaking or self._stop,
                 supersede_unspoken=lambda _turn_id: self.output.append("supersede"),
                 yield_speaking=lambda gain: self.output.append(f"gain {gain}"),
                 pause_speaking=lambda paused: self.output.append("pause" if paused else "go on"),
@@ -251,6 +255,22 @@ def test_a_dismissal_stops_her_ends_the_mode_and_is_no_turn(
     assert rig.answers == ["dismissed"]
     assert rig.turns() == []
     assert ("empty", "dismissed") in rig.phases
+
+
+@pytest.mark.parametrize("speaking", [True, False])
+def test_leaving_from_the_surface_does_what_a_dismissal_does_without_the_words(
+    tmp_path: Path, speaking: bool,  # noqa: FBT001 - pytest parameter
+) -> None:
+    """ADR 0138: ``dismiss()`` stops her if she talks, drops what is on its way, says goodbye."""
+    rig = _Rig(tmp_path, "", speaking=speaking)
+    try:
+        rig.session.dismiss()
+    finally:
+        rig.close()
+    assert rig.output == (["stop", "supersede"] if speaking else ["supersede"])
+    assert rig.answers == ["dismissed"]
+    # The surface turned the mode off itself; nothing is flipped a second time.
+    assert rig.conversation_changes == []
 
 
 @pytest.mark.parametrize(("heard", "reason"), [("The.", "unclear"), ("嗯。", "backchannel")])

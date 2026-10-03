@@ -493,6 +493,9 @@ class InherentDeps:
     # ADR-0015: the mute switches behind ``POST /inherent/controls``. ``None``
     # (the default) leaves the route unregistered.
     controls: VoiceControls | None = None
+    # Called once when ``POST /inherent/controls`` turns conversation mode from
+    # on to off: the surface's exit, which is a dismissal said without words.
+    dismiss_callable: Callable[[], None] | None = None
     # GPT-Live phase A controller; ``None`` means ``live`` requests are refused.
     live: LiveVoice | None = None
     # ADR-0018: the quota dashboard's read model and its on-demand poll.
@@ -1367,7 +1370,11 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 â
 
         @app.post("/inherent/controls", status_code=200)
         async def set_controls(req: ControlsRequest) -> dict[str, object]:
-            """Flip the mute switches and drive GPT-Live; answer with the full state."""
+            """Flip the mute switches and drive GPT-Live; answer with the full state.
+
+            Conversation going on to off is the surface's exit: she is stopped and
+            says her goodbye, as for a spoken dismissal (``dismiss_callable``).
+            """
             before = controls.conversation
             state: dict[str, object] = dict(
                 controls.update(
@@ -1383,6 +1390,11 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 â
                 )
             if state["conversation"] != before:
                 LOGGER.info("controls: conversation=%s", state["conversation"])
+                if before and deps.dismiss_callable is not None:
+                    try:
+                        await asyncio.to_thread(deps.dismiss_callable)
+                    except Exception:  # noqa: BLE001 - the switch is already flipped
+                        LOGGER.warning("controls: dismissal failed", exc_info=True)
             if deps.live is None:
                 if req.live is not None:
                     state["live"] = {"state": "unavailable", "reason": "gpt_live_disabled"}

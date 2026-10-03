@@ -1727,11 +1727,7 @@ class DuplexVoiceSession:
                 self._conversation_hold_until = (
                     time.monotonic() + self._config.conversation_wait_s
                 )
-            if self._answer_words is not None:
-                try:
-                    self._answer_words(turn_id, verdict, text)
-                except Exception:  # noqa: BLE001 - her answer cannot break capture
-                    LOGGER.warning("answer_words failed reason=%s", verdict, exc_info=True)
+            self._answer(turn_id, verdict, text)
             raise voice_pipeline.VoicePipelineAbsorbedError(verdict)
         if not over_her:
             if verdict != "turn":
@@ -1750,6 +1746,27 @@ class DuplexVoiceSession:
             raise voice_pipeline.VoicePipelineAbsorbedError(
                 "stop_request" if verdict == "stop" else verdict,
             )
+
+    def _answer(self, turn_id: str, reason: str, text: str) -> None:
+        if self._answer_words is None:
+            return
+        try:
+            self._answer_words(turn_id, reason, text)
+        except Exception:  # noqa: BLE001 - her answer cannot break capture
+            LOGGER.warning("answer_words failed reason=%s", reason, exc_info=True)
+
+    def dismiss(self) -> None:
+        """Allen left conversation mode from the surface: a dismissal without the words.
+
+        As for 退下: what is audible stops at once, an answer still on its way is
+        dropped, and she says the one goodbye line. The mode is already off, since
+        the surface flipped it. Blocks on the player and SQLite, so not on the
+        capture thread.
+        """
+        turn_id = "T" + secrets.token_hex(4)
+        self._stop_now()
+        self._supersede(turn_id)
+        self._answer(turn_id, "dismissed", "")
 
     def _recent(self) -> str:
         """What she said lately, for Jev's context; none when it cannot be read."""
