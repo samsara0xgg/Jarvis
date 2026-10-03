@@ -80,6 +80,7 @@
 .tk-w .md th:first-child,.tk-w .md td:first-child { padding-left:12px; }
 .tk-w .md th:last-child,.tk-w .md td:last-child { padding-right:12px; }
 .tk-w .md .num { text-align:right; font-variant-numeric:tabular-nums; }
+.tk-w .md .key { white-space:nowrap; }
 .tk-w .md tr:last-child td { border-bottom:0; }
 /* a code block carries its copy button top-right; the command keeps clear of it, and inside a block the code is plain, not the inline chip */
 .tk-w .md .code { position:relative; }

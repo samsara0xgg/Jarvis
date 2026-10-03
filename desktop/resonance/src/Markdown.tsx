@@ -60,7 +60,8 @@ export function Markdown({ text, spell, copy }: { text: string; spell?: (text: s
       const rows: string[][] = [];
       for (; i < lines.length && lines[i].trimStart().startsWith('|'); i++) if (!/^[\s|:-]+$/.test(lines[i])) rows.push(cells(lines[i]));
       const [head = [], ...body] = rows;
-      const num = head.map((_, n) => body.length > 0 && body.every(r => NUM.test(r[n] ?? '')) ? 'num' : undefined);
+      // A first column of short labels (形态, 优势, Price) keeps each label on one line.
+      const num = head.map((_, n) => body.length > 0 && body.every(r => NUM.test(r[n] ?? '')) ? 'num' : n === 0 && body.length > 0 && body.every(r => [...(r[0] ?? '')].length <= 6) ? 'key' : undefined);
       blocks.push(<div className="md-table" key={key}><table>
         <thead><tr>{head.map((c, n) => <th key={n} className={num[n]}>{inline(c)}</th>)}</tr></thead>
         <tbody>{body.map((r, m) => <tr key={m}>{r.map((c, n) => <td key={n} className={num[n]}>{inline(c)}</td>)}</tr>)}</tbody>
