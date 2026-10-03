@@ -130,6 +130,7 @@ from jarvis.runtime import (
     WaitingTurn,
     _assistant_name,
     _event_action_id,
+    _jev_log,
     _new_turn_id,
     _observer_poll_interval_s,
     _observer_repo_paths,
@@ -6226,6 +6227,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                         core_memory=CoreMemorySettings.from_config(
                             runtime.config.get("core_memory"),
                         ),
+                        jev_log=_jev_log(runtime.config, runtime.runtime_paths.root),
                     ).run(),
                     name="day_summary_schedule",
                 ),

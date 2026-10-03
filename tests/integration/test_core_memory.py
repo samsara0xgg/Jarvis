@@ -7,15 +7,19 @@ answers per day from a script and records what it was asked.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
+import threading
 from contextlib import closing
 from datetime import datetime, time, timedelta
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import TYPE_CHECKING, Any
 
 import pytest
 
 from jarvis.decision.llm import ChatResult
+from jarvis.decision.surrogate_route import KEY_ENV, JevLog, SurrogateRoute
 from jarvis.runtime.core_memory import CoreMemorySettings
 from jarvis.runtime.day_summary import DaySummarySchedule, DaySummarySettings
 from jarvis.state import core_memory
@@ -466,3 +470,215 @@ def test_consolidation_is_off_without_a_core_memory_block() -> None:
     on = CoreMemorySettings.from_config({"preset": "p", "prompt": " x "})
     assert on is not None
     assert (on.prompt, on.max_chars, on.max_stale) == ("x", 4000, 5)
+
+
+# --- the Jev review gate --------------------------------------------------------
+
+
+class _Jev:
+    """A fake decisions endpoint: records each request and answers by a marker in the item."""
+
+    def __init__(self) -> None:
+        self.requests: list[dict[str, Any]] = []
+        self.status = 200
+        outer = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:
+                request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                outer.requests.append(request)
+                text = request["state"]
+                choice, confidence = (
+                    ("keep", 0.95)
+                    if "HIGH" in text
+                    else ("keep", 0.6)
+                    if "LOW" in text
+                    else ("one_off", 0.99)
+                )
+                body = json.dumps(
+                    {
+                        "answers": {"review": {"choice": choice, "confidence": confidence}},
+                        "usage": {"cost": 0.00003},
+                    },
+                ).encode()
+                self.send_response(outer.status)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                with contextlib.suppress(BrokenPipeError):
+                    self.wfile.write(body)
+
+            def log_message(self, *_args: object) -> None:
+                return
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def route(self, log: JevLog | None = None) -> SurrogateRoute:
+        return SurrogateRoute(
+            model="m",
+            min_confidence=1.0,
+            timeout_ms=2000,
+            url=f"http://127.0.0.1:{self.server.server_port}/",
+            log=log,
+        )
+
+
+@pytest.fixture
+def jev(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Jev]:
+    """A fake Jev endpoint and a key in the environment."""
+    monkeypatch.setenv(KEY_ENV, "test-key-not-a-secret")
+    fake = _Jev()
+    try:
+        yield fake
+    finally:
+        fake.server.shutdown()
+
+
+def _reviewed(
+    tmp_path: Path,
+    model: _Consolidator,
+    route: SurrogateRoute | None,
+    review_min_confidence: float | None = None,
+) -> DaySummarySchedule:
+    schedule = _schedule(tmp_path, model)
+    schedule._core_memory = CoreMemorySettings(  # noqa: SLF001 — the review knobs under test
+        preset="c",
+        prompt="consolidate",
+        review_min_confidence=review_min_confidence,
+    )
+    schedule._review = route  # noqa: SLF001 — the transport seam
+    return schedule
+
+
+def test_jev_keeps_a_confident_keep_and_drops_only_the_rest_with_a_log(
+    tmp_path: Path,
+    jev: _Jev,
+) -> None:
+    """A keep at the bar lands; a lower keep or another choice drops just that change, logged."""
+    path = tmp_path / "memory.db"
+    _days(path, 3)
+    remember_fact(path, "城市", "Victoria")
+    d3 = _day(3).isoformat()
+    kept = {"op": "add", "section": "偏好", "text": "HIGH 喜欢咖啡", "sources": ["r1"]}
+    unsure = {"op": "add", "section": "偏好", "text": "LOW 喜欢茶", "sources": ["r1"]}
+    joke = {"op": "rewrite", "item": 1, "text": "JOKE 住在火星", "sources": ["r1"]}
+    stale = {"op": "stale", "item": 1, "sources": ["r1"]}
+    model = _Consolidator()
+    model.script[d3] = [_changes(kept, unsure, joke)]
+    jev_log = tmp_path / "jev.jsonl"
+
+    _reviewed(
+        tmp_path,
+        model,
+        jev.route(JevLog(jev_log)),
+        review_min_confidence=0.9,
+    ).write(TODAY)
+
+    assert _items(path) == {"关于你": ["城市: Victoria"], "偏好": ["HIGH 喜欢咖啡"]}
+    logged = _versions(path)[-1][2]
+    assert [c["op"] for c in logged] == ["add", "dropped", "dropped"]
+    assert logged[1] == {
+        "op": "dropped",
+        "change": {**unsure, "sources": [_rid(3, 1)]},
+        "choice": "keep",
+        "confidence": 0.6,
+    }
+    assert (logged[2]["choice"], logged[2]["confidence"]) == ("one_off", 0.99)
+    assert current_core_memory(path).upto_day == d3
+    # The question carries the item, its section (a rewrite's from the document) and the line.
+    states = sorted(r["state"] for r in jev.requests)
+    assert len(states) == 3
+    joke_state = (
+        f"Section: 关于你\nItem: JOKE 住在火星\nCited lines:\n{_stamp(3, 9)} | allen | 第3天说的话"
+    )
+    assert joke_state in states
+    assert _rid(3, 1) not in "".join(states)
+    assert set(jev.requests[0]["questions"]["review"]["criteria"]) == {
+        "keep",
+        "garbled",
+        "one_off",
+        "not_users",
+    }
+    # Every call is in the Jev dataset, input and output.
+    lines = [json.loads(line) for line in jev_log.read_text().splitlines()]
+    assert [(line["use"], line["kind"]) for line in lines] == [("core_memory", "call")] * 3
+    assert {line["answers"]["review"]["choice"] for line in lines} == {"keep", "one_off"}
+
+    # A stale change is never reviewed.
+    jev.requests.clear()
+    _days(path, 2)
+    d2 = _day(2).isoformat()
+    model.script[d2] = [_changes({**stale, "item": 1})]
+    _reviewed(
+        tmp_path,
+        model,
+        jev.route(),
+        review_min_confidence=0.9,
+    ).write(TODAY)
+    assert jev.requests == []
+    assert _items(path) == {"偏好": ["HIGH 喜欢咖啡"]}
+
+
+@pytest.mark.parametrize("failure", ["http", "no_key"])
+def test_a_jev_failure_rejects_the_day_like_a_gate_and_stops_the_chain(
+    tmp_path: Path,
+    jev: _Jev,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    """Nothing is stored, the day is asked once more, and the next day is not reached."""
+    path = tmp_path / "memory.db"
+    _days(path, 3, 2)
+    d3, d2 = _day(3).isoformat(), _day(2).isoformat()
+    model = _Consolidator()
+    model.script[d3] = [
+        _changes({"op": "add", "section": "偏好", "text": "HIGH 喜欢咖啡", "sources": ["r1"]}),
+    ]
+    if failure == "http":
+        jev.status = 500
+    else:
+        monkeypatch.delenv(KEY_ENV)
+    current_core_memory(path)  # the first read migrates; that version is not the night's
+    before = _versions(path)
+
+    schedule = _reviewed(tmp_path, model, jev.route(), review_min_confidence=0.9)
+    schedule.write(TODAY)
+
+    assert model.asked == [d3, d3]
+    assert _versions(path) == before
+    assert core_memory_pending_days(path, TODAY) == [d3, d2]
+
+    # Jev back: the next run lands the day.
+    jev.status = 200
+    monkeypatch.setenv(KEY_ENV, "test-key-not-a-secret")
+    model.asked.clear()
+    schedule.write(TODAY)
+    assert model.asked == [d3, d2]
+    assert _items(path) == {"偏好": ["HIGH 喜欢咖啡"]}
+
+
+def test_review_is_off_without_review_min_confidence(tmp_path: Path, jev: _Jev) -> None:
+    """No key in the block, no Jev call; the block parses the bar, model and timeout."""
+    path = tmp_path / "memory.db"
+    _days(path, 3)
+    d3 = _day(3).isoformat()
+    model = _Consolidator()
+    model.script[d3] = [
+        _changes({"op": "add", "section": "偏好", "text": "JOKE 住在火星", "sources": ["r1"]}),
+    ]
+    _reviewed(tmp_path, model, jev.route()).write(TODAY)
+    assert jev.requests == []
+    assert _items(path) == {"偏好": ["JOKE 住在火星"]}
+
+    off = CoreMemorySettings.from_config({"preset": "p", "prompt": "x"})
+    on = CoreMemorySettings.from_config(
+        {"preset": "p", "prompt": "x", "review_min_confidence": 0.8},
+    )
+    assert off is not None
+    assert (off.review_min_confidence, off.review_model, off.review_timeout_ms) == (
+        None,
+        "typesafe/jev-1.13",
+        10_000,
+    )
+    assert on is not None
+    assert on.review_min_confidence == 0.8

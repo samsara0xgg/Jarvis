@@ -230,10 +230,17 @@ day_summary:
 # 答案要先过检查：JSON 合法、条目号存在、引用的记录标签（r1, r2, ... 按时间排，存储前换回
 # 真正的 record_id）是那一天的、过时条目不超过 max_stale、整份不超过 max_chars；有一条不过就整份丢掉，同一次运行再问一次，还不过就停在
 # 这一天，下次接着来。没有 core_memory 块 = 不整理（渲染、迁移、remember 照常用核心记忆）。
+# 过了检查之后、写入之前，每条 add 和 rewrite 再交给 Jev 审一次（stale 不审）：只有 Jev 答 keep
+# 且置信度 >= review_min_confidence 才写入，其余只丢那一条，并连同 Jev 的答案和置信度记进该版本的
+# changes（op: dropped）；Jev 调用失败（超时、HTTP 错误、没有 key、答案读不懂）按检查不过处理，
+# 整天不写、照常重试。不写 review_min_confidence = 不审。0.9 来自 2026-10-03 对 33 条夜间条目的
+# 标定：只有 0.9 能挡住全部 7 条该丢的，代价是几乎只剩最明确的事实能留下（宁可漏记，不可记错）。
+# review_model、review_timeout_ms 可选，缺省 typesafe/jev-1.13、10000；每次调用都记在 ~/.jarvis/jev/decisions.jsonl。
 core_memory:
   preset: gpt6-luna
   max_chars: 4000
   max_stale: 5
+  review_min_confidence: 0.9
   prompt: |
     You maintain {assistant}'s core memory about the user: a short note that is
     loaded into every conversation and holds what matters over weeks, not days.
@@ -321,10 +328,10 @@ agents:
     timeout_ms: 1500
 
 # ADR 0128.  Every Jev call (the instant route, the mail marks, the turn-end asks, the voice
-# words) is appended to ~/.jarvis/jev/decisions.jsonl with the text it was sent, the questions and Jev's raw answer,
+# words, the core memory review) is appended to ~/.jarvis/jev/decisions.jsonl with the text it was sent, the questions and Jev's raw answer,
 # plus a line per mail archive or undo, so a small model can be trained on it later.  It holds
 # what Allen said and the senders and subjects of his mail; it never leaves the Mac, is cut by
-# nothing, and grows by a few KB per call.  Written only while one of those four is on.
+# nothing, and grows by a few KB per call.  Written only while one of those five is on.
 jev_log:
   enabled: true
 

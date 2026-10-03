@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any, Final
 
 from jarvis.decision.cost_guard import CostRecorder
 from jarvis.decision.day_summary import build_day_summary_messages, check_day_summary
+from jarvis.decision.surrogate_route import JevLog, SurrogateRoute
 from jarvis.runtime.core_memory import CoreMemorySettings, run_core_memory
 from jarvis.runtime.session_compaction import build_compact_client
 from jarvis.state.event_log import open_runtime_event_log
@@ -186,6 +187,7 @@ class DaySummarySchedule:
         event_log_path: Path,
         pricing_table: Mapping[str, Mapping[str, float]],
         core_memory: CoreMemorySettings | None = None,
+        jev_log: JevLog | None = None,
         poll_s: float = 60.0,
     ) -> None:
         """Bind the store and the knobs; nothing runs until :meth:`run`."""
@@ -195,6 +197,8 @@ class DaySummarySchedule:
         self._event_log_path = event_log_path
         self._pricing_table = pricing_table
         self._core_memory = core_memory
+        self._jev_log = jev_log
+        self._review: SurrogateRoute | None = None
         self._poll_s = poll_s
         self._client: LLMClient | None = None
         self._core_client: LLMClient | None = None
@@ -229,10 +233,18 @@ class DaySummarySchedule:
         try:
             if self._core_client is None:
                 self._core_client = build_compact_client(self._llm_config, settings.preset)
+            if self._review is None and settings.review_min_confidence is not None:
+                self._review = SurrogateRoute(
+                    model=settings.review_model,
+                    min_confidence=1.0,  # the choice bar of the route's own question: unused
+                    timeout_ms=settings.review_timeout_ms,
+                    log=self._jev_log,
+                )
             core_outcomes = run_core_memory(
                 self._memory,
                 settings,
                 self._core_client,
+                review=self._review,
                 event_log_path=self._event_log_path,
                 pricing_table=self._pricing_table,
                 today=today,

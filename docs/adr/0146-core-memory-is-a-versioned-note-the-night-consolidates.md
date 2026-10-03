@@ -50,3 +50,16 @@ into the first version and never deleted or read again.
   later day until it passes.
 - The prompt block now carries section headings and more than facts about the user;
   it keeps the label `[About the user]`.
+
+> **Amendment (2026-10-03) — Jev reviews each add and rewrite.** A model's change
+> list that passes the gates is still the model's own reading: on 33 real nightly
+> items it filed speech-recognition errors, a one-session instruction and a private
+> incident as lasting facts. Before a version is written, each `add` and `rewrite`
+> goes to Jev (ADR 0122) as one question: keep, garbled, one_off or not_users. Only
+> `keep` at `review_min_confidence` or above lands; any other answer drops that one
+> change and writes it, with Jev's answer and confidence, into the version's
+> `changes` as a dropped entry. A Jev failure rejects the day like a gate. `stale`
+> is not reviewed. Absent key = no review. Rejected: dropping the whole list on one
+> bad item (a day of good items lost) and writing a failed review unreviewed (one
+> wrong line is read by every turn). At 0.9 the 33 items kept 3 of 26 good ones and
+> dropped all 7 bad ones; at 0.8, 2 bad ones got through.
