@@ -207,7 +207,7 @@ def _client(
         mail_read=functools.partial(asyncio.to_thread, home.mail),
         mail_archive=archive,
         brief_read=None if conn is None else functools.partial(home.brief, conn),
-        # ADR 0147: the mail page's routes, wired as inherent_loop wires them.
+        # ADR 0148: the mail page's routes, wired as inherent_loop wires them.
         **({} if focus is None else {
             "mail_letter": functools.partial(asyncio.to_thread, home.letter),
             "mail_mark_read": _flag(home.mark_read, "unread"),
@@ -719,7 +719,7 @@ def test_a_failed_mail_call_names_its_error_and_an_unwritable_dataset_changes_no
 
 
 def test_the_open_letter_is_read_whole_marked_read_archived_and_trashed() -> None:
-    """ADR 0147: GET letter caches by id; taps act only on listed or open ids, each with an undo."""
+    """ADR 0148: GET letter caches by id; taps act only on listed or open ids, each with an undo."""
     gmail = _Gmail()
     focus = FocusState()
     home = Home(
@@ -779,7 +779,7 @@ def test_with_the_mail_page_off_its_routes_are_404_and_archive_stays_junk_only()
 
 
 def test_the_page_text_keeps_links_as_urls_and_the_models_record_does_not() -> None:
-    """ADR 0147: an anchor shows as ``text (url)`` on the page only; the cap is 4000."""
+    """ADR 0148: an anchor shows as ``text (url)`` on the page only; the cap is 4000."""
     from jarvis.runtime.home import mail_body  # noqa: PLC0415
 
     html_body = '<p>Join <a href="https://x.example/a">the call</a> or <a href="https://y.example">https://y.example</a></p>'
@@ -816,7 +816,7 @@ def _drafts_client(gmail: _Gmail | None = None) -> tuple[TestClient, FocusState,
 
 
 def test_the_draft_is_jarvis_then_allens_edit_with_a_revision_each_and_can_be_discarded() -> None:
-    """ADR 0147: GET {draft: null} first; Jarvis's body, then his hand edit, bump the revision."""
+    """ADR 0148: GET {draft: null} first; Jarvis's body, then his hand edit, bump the revision."""
     client, focus, drafts = _drafts_client()
     letter = "199a1c0d4101"
     assert client.get(f"/inherent/mail/{letter}/draft").json() == {"draft": None}

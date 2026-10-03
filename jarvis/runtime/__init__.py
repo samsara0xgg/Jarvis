@@ -483,7 +483,7 @@ class JarvisRuntime:
     # and the reply drafts. None = off.
     focus: FocusState | None = None
     mail_drafts: MailDrafts | None = None
-    # ADR 0147: one line each for the state block, in order; None skips a producer.
+    # ADR 0148: one line each for the state block, in order; None skips a producer.
     live_context: tuple[Callable[[], str | None], ...] = ()
     # ADR 0125: Jev's read of whether a finished agent turn asks Allen something. None = off.
     turn_end_asks: TurnEndAsks | None = None
@@ -1073,7 +1073,7 @@ _LIVE_LINE_CHARS: Final = 200
 
 
 def _live_lines(producers: tuple[Callable[[], str | None], ...]) -> tuple[str, ...]:
-    """ADR 0147: what each live-context producer says now; a raising one is skipped, logged."""
+    """ADR 0148: what each live-context producer says now; a raising one is skipped, logged."""
     lines: list[str] = []
     for produce in producers:
         try:

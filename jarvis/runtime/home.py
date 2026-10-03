@@ -260,7 +260,7 @@ class Home:
         """Take letters out of the inbox, or put them back: Allen's own tap, never a proposal.
 
         Only ids the last :meth:`mail` offered as junk (with the mail page on, any it listed
-        and the open letter, ADR 0147) are archived and only ids archived here (or, with the
+        and the open letter, ADR 0148) are archived and only ids archived here (or, with the
         page on, those) are restored; anything else is a ValueError (the route's 400).
         Archiving is removing the INBOX label: the letter stays in All Mail, and nothing is
         deleted.

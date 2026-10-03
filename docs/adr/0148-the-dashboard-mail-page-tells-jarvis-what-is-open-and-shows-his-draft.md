@@ -1,4 +1,4 @@
-# ADR 0147 — The Dashboard Mail Page Tells Jarvis What Is Open and Shows His Draft
+# ADR 0148 — The Dashboard Mail Page Tells Jarvis What Is Open and Shows His Draft
 
 **Status:** Accepted
 **Date:** 2026-10-03

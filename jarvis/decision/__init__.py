@@ -645,7 +645,7 @@ class DecideContext:
     # answers that said an app was not connected; this line is the current
     # fact beside them.
     connected_apps: str | None = None
-    # ADR 0147: lines about what is going on around Allen right now, from the composition
+    # ADR 0148: lines about what is going on around Allen right now, from the composition
     # root's producers (the Dashboard's open item first); each ends the state block.
     live_context: tuple[str, ...] = ()
     # docs/plans/replay-as-sent-proposal.md: keeps this turn's own user
@@ -3507,7 +3507,7 @@ def request_confirmation(  # noqa: PLR0913 — the tool, its frozen arguments an
     ttl_ms: int,
     lang: Language | None = None,
 ) -> str | None:
-    """Put a card on screen for a call Allen himself started, with no model turn (ADR 0147).
+    """Put a card on screen for a call Allen himself started, with no model turn (ADR 0148).
 
     Freezes ``arguments`` exactly as ``_stage_and_request_confirmation`` does for an MCP tool;
     his button then runs the usual answer path (lease, gate, dispatch). The confirmation id,

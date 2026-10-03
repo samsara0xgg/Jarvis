@@ -4566,7 +4566,7 @@ async def _archive_mail(home: Home, ids: list[str], archive: bool) -> None:  # n
 
 
 def _draft_deps(runtime: JarvisRuntime, home: Home | None) -> dict[str, Any]:
-    """The four draft routes' callables (ADR 0147), or none while the mail page is off."""
+    """The four draft routes' callables (ADR 0148), or none while the mail page is off."""
     drafts = runtime.mail_drafts
     if home is None or drafts is None:
         return {}
@@ -4592,7 +4592,7 @@ def _draft_deps(runtime: JarvisRuntime, home: Home | None) -> dict[str, Any]:
 
 
 async def _mail_letter(home: Home, message_id: str) -> dict[str, Any]:
-    """``GET /inherent/mail/{id}`` (ADR 0147): one Gmail read, off the loop thread."""
+    """``GET /inherent/mail/{id}`` (ADR 0148): one Gmail read, off the loop thread."""
     return await asyncio.to_thread(home.letter, message_id)
 
 
@@ -4654,12 +4654,12 @@ def _send_draft(  # noqa: PLR0913 — the route's body plus what the card needs.
 
 
 async def _mail_read(home: Home, ids: list[str], read: bool) -> None:  # noqa: FBT001 — the route's body.
-    """``POST /inherent/mail/read`` and ``/unread`` (ADR 0147): one label change, off the loop."""
+    """``POST /inherent/mail/read`` and ``/unread`` (ADR 0148): one label change, off the loop."""
     await asyncio.to_thread(functools.partial(home.mark_read, ids, unread=not read))
 
 
 async def _mail_trash(home: Home, ids: list[str], trash: bool) -> None:  # noqa: FBT001 — the route's body.
-    """``POST /inherent/mail/trash`` and ``/untrash`` (ADR 0147): one label change, off the loop."""
+    """``POST /inherent/mail/trash`` and ``/untrash`` (ADR 0148): one label change, off the loop."""
     await asyncio.to_thread(functools.partial(home.trash, ids, undo=not trash))
 
 

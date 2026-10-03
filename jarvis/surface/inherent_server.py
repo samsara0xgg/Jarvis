@@ -1060,7 +1060,7 @@ class MailArchiveRequest(BaseModel):
 
 
 class MailDraftRequest(BaseModel):
-    """Body of ``POST /inherent/mail/{id}/draft`` and ``/draft/send`` (ADR 0147): Allen's edit."""
+    """Body of ``POST /inherent/mail/{id}/draft`` and ``/draft/send`` (ADR 0148): Allen's edit."""
 
     subject: str = Field(default="", max_length=300)
     body: str = Field(max_length=8000)
@@ -1096,7 +1096,7 @@ def _register_mail_page_routes(app: FastAPI, deps: InherentDeps) -> None:  # noq
 
         @app.get("/inherent/mail/{message_id}")
         async def mail_letter_route(message_id: str) -> dict[str, Any]:
-            """One letter whole: headers and a plain-text body (ADR 0147)."""
+            """One letter whole: headers and a plain-text body (ADR 0148)."""
             return await _home_call(mail_letter(message_id))
 
     if deps.mail_mark_read is not None:
