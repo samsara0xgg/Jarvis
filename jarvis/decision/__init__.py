@@ -784,8 +784,11 @@ _SPOKEN_REPLY_NOTE_STRUCTURED: Final[str] = (
     "of the user's words: by default at most two short sentences, with no lists, headings, "
     "links, code or other markup. When the user explicitly asks you to count, read aloud, "
     "tell a story, repeat something verbatim, go into detail or speak at a given length, say "
-    'all of it in "spoken". What belongs only on screen (a list, a table, code, links, times, '
-    'figures to read) goes in "written", and then "spoken" says the details are on screen; '
+    'all of it in "spoken". When the user asks what happened or what was talked about in a '
+    'period, tell it in "spoken" in up to four sentences, keeping only the main points. What '
+    "belongs only on screen (a list, a table, code, links, times, figures to read) goes in "
+    '"written", shaped as a list, table, code or links, never as a paragraph that carries on '
+    'from "spoken"; then "spoken" says the details are on screen; '
     '"written" is empty when there is nothing more, and holds nothing that is not in the '
     "conversation or a tool result. When you need a tool for what the user asked, call it "
     "first and answer after its result: the JSON reply ends the turn, so it is never a "
@@ -805,17 +808,18 @@ SPOKEN_REPLY_FORMAT: Final[dict[str, Any]] = {
                 "description": (
                     "The complete spoken answer, in the language of the user's words: plain "
                     "sentences, at most two short sentences unless the user explicitly asked "
-                    "to hear more (a story, counting, reading aloud). When written has "
-                    "details, say they are on screen. It ends the turn: never a promise to "
-                    "check something first."
+                    "to hear more (a story, counting, reading aloud, what happened in a "
+                    "period). When written has details, say they are on screen. It ends "
+                    "the turn: never a promise to check something first."
                 ),
             },
             "written": {
                 "type": "string",
                 "description": (
-                    "Details for the screen only (lists, times, links, figures). An empty "
-                    "string when there is nothing more. Never invent facts that are not in "
-                    "the conversation or the tool results."
+                    "Details for the screen only (lists, times, links, figures), shaped as "
+                    "a list, table, code or links, never prose that carries on from spoken. "
+                    "An empty string when there is nothing more. Never invent facts that are "
+                    "not in the conversation or the tool results."
                 ),
             },
         },
