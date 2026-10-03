@@ -42,8 +42,9 @@ _DESCRIPTIONS = {
         "identical arguments for every page; read_records retrieves originals."
     ),
     "recall": (
-        "What was said in a day or range [from,to), in time order: one line per record (time, "
-        "speaker, text; long answers are cut and name the record id for read_records). "
+        "What was said in a day or range [from,to), in time order: first the summary of each "
+        "past day in the range (written each night; today has none), then one line per record "
+        "(time, speaker, text; long answers are cut and name the record id for read_records). "
         "from/to: bare date (local midnight) or ISO time with offset; to defaults to one day "
         "after from. Use it for 'what did we talk about on <date>' / 'what did I do "
         "yesterday' instead of paging search_records; follow next_cursor with identical "

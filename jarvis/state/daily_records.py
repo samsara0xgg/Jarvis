@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import sqlite3
 from contextlib import closing
+from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
 from jarvis.state.daily_contract import (
@@ -12,6 +13,7 @@ from jarvis.state.daily_contract import (
     DailyError,
     cursor_position,
     day_window,
+    encoded,
     fingerprint,
     make_cursor,
     page_rows,
@@ -19,6 +21,7 @@ from jarvis.state.daily_contract import (
     timestamp,
     window,
 )
+from jarvis.state.memory_db import latest_day_summaries
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -104,7 +107,11 @@ _USER_CUT = 3000
 
 
 def recall(path: Path | None, args: dict[str, Any]) -> dict[str, Any]:
-    """Compact time-ordered lines for [from, to), filling each page's budget."""
+    """The summaries of the days in [from, to), then compact time-ordered lines.
+
+    The summaries ride the first page and count against its budget, so a page never
+    outgrows the result cap.
+    """
     start, end = day_window(args)
     binding = fingerprint(
         ["recall", _identity(path), {k: v for k, v in args.items() if k != "cursor"}]
@@ -115,6 +122,11 @@ def recall(path: Path | None, args: dict[str, Any]) -> dict[str, Any]:
         rows = conn.execute(
             "SELECT id,ts,source,text FROM records WHERE rowid <= ? ORDER BY rowid", (snapshot,)
         ).fetchall()
+        # A day belongs to the range when its local midnight-to-midnight meets [start, end).
+        first_day = start.astimezone().date()
+        last_day = (end - timedelta(microseconds=1)).astimezone().date()
+        found_days = latest_day_summaries(conn, first_day.isoformat(), last_day.isoformat())
+    summaries = [{"day": day, "summary": summary} for day, summary in found_days]
     lines = []
     for record_id, ts, source, text in rows:
         if not start <= timestamp(ts) < end:
@@ -132,11 +144,12 @@ def recall(path: Path | None, args: dict[str, Any]) -> dict[str, Any]:
         snapshot,
         offset,
         key="lines",
-        budget=RECALL_PAGE_BUDGET,
+        budget=RECALL_PAGE_BUDGET - (len(encoded(summaries)) if offset == 0 else 0),
     )
     return {
         "from": start.isoformat(timespec="seconds"),
         "to": end.isoformat(timespec="seconds"),
+        "summaries": summaries if offset == 0 else [],
         **page,
         "total": len(lines),
     }
