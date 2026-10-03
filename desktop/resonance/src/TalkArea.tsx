@@ -186,13 +186,15 @@ export function TalkArea(p: TalkProps) {
   // The pill shows what you just said, then nothing but the state's glyph (and, with the middle level, the seconds a deep answer is taking);
   // the footer under the area says what she is doing.
   const label = kind === 'pill' ? heard || (p.level === 'brief' && (tool || state === 'thinking' && secs > 0) ? status : '') : heard || status;
+  // A pill with nothing to say and no buttons is not shown: her face says she is listening or speaking.
+  const open = p.open && !(kind === 'pill' && !label && !p.buttons);
   // While it folds away it keeps what it was showing.
   // The final words take the place of what was heard so far as a new label, so they come in again and the change is seen.
   const cur = { items, kind, state, label, heard: !!heard, final: !!heard && !coming, tool, fading: fading && !coming, deep: p.deep.look, ready };
   const frozen = useRef(cur);
-  if (p.open) frozen.current = cur;
+  if (open) frozen.current = cur;
   const v = frozen.current;
-  useEffect(() => { if (!p.open || v.kind !== 'area') setUrl(''); }, [p.open, v.kind]); // (no pointer-leave comes when the transcript goes away under it)
+  useEffect(() => { if (!open || v.kind !== 'area') setUrl(''); }, [open, v.kind]); // (no pointer-leave comes when the transcript goes away under it)
   const shim = (v.state === 'thinking' || !!v.tool) && !v.heard;
   // The tool line that has just been replaced or has ended stays a moment, fading out under the line that takes its place (or the answer that
   // comes up): where it was, and how far in.
@@ -439,11 +441,11 @@ export function TalkArea(p: TalkProps) {
     if (want !== row) swapTo(want);
   }, [p.field, row]);
   useEffect(() => {
-    if (row !== 'fd' || !p.open) return;
+    if (row !== 'fd' || !open) return;
     const ta = p.inputRef.current; if (!ta) return;
     const ids = [0, 120, 320, 700].map(ms => window.setTimeout(() => { if (document.activeElement !== ta) ta.focus({ preventScroll: true }); }, ms));
     return () => ids.forEach(clearTimeout);
-  }, [row, p.open]);
+  }, [row, open]);
   // A new question: the previous answer slides up and fades out above, and the reader is back with the latest.
   useLayoutEffect(() => {
     const g = c.ghost; c.ghost = null;
@@ -462,10 +464,10 @@ export function TalkArea(p: TalkProps) {
     layer.animate([{ opacity: 1, translate: '0 0', filter: 'blur(0)' }, { opacity: 0, translate: '0 -8px', filter: 'blur(3px)' }], { duration: 180, easing: 'cubic-bezier(.5,0,.9,.4)', fill: 'forwards' }).finished.then(done, done);
   }, [shown.key]);
   // ---- keep the shape and the words in step with what is showing ----
-  const sig = [p.open, v.kind, row, v.items.map(it => `${it.id}:${it.spoken.length}:${it.written.length}:${v.ready(it)}`).join(), v.label, fieldH, p.level, p.silent, p.card?.key].join('|');
+  const sig = [open, v.kind, row, v.items.map(it => `${it.id}:${it.spoken.length}:${it.written.length}:${v.ready(it)}`).join(), v.label, fieldH, p.level, p.silent, p.card?.key].join('|');
   useLayoutEffect(() => {
     drive();
-    if (!p.open) { if (c.at !== 'gone' && !c.closing) close(); return; }
+    if (!open) { if (c.at !== 'gone' && !c.closing) close(); return; }
     if (c.closing) abortClose();
     if (c.at === 'gone' && row !== (p.field ? 'fd' : 'ft')) return; // the row it opens on is on its way
     if (c.at === 'gone') appear(v.kind);
@@ -517,7 +519,7 @@ export function TalkArea(p: TalkProps) {
   const runFly = () => {
     const f = c.fly; if (!f) return;
     const mine = [...trEl.current!.querySelectorAll<HTMLElement>('.tk-u')].at(-1);
-    if (row === 'fd' || !p.open) return;
+    if (row === 'fd' || !open) return;
     c.fly = null;
     const host = flyEl.current!, b = box.current!;
     if (!mine || mine.dataset.flown) return;
@@ -590,7 +592,7 @@ export function TalkArea(p: TalkProps) {
     <button type="submit" className={`send ${p.draft.trim() ? '' : 'off'}`} disabled={!p.draft.trim()} aria-label={t(['Send', '发送'])}><ArrowUp weight="bold"/></button>
   </form>;
 
-  return <div ref={box} className="talk" data-kind={v.kind} data-state={v.state} data-deep={v.deep || undefined} data-buttons={p.buttons || undefined} data-hit={p.open || undefined} data-glass="css" inert={!p.open}
+  return <div ref={box} className="talk" data-kind={v.kind} data-state={v.state} data-deep={v.deep || undefined} data-buttons={p.buttons || undefined} data-hit={open || undefined} data-glass="css" inert={!open}
     style={{ left: p.x, top: p.y }} role="region" aria-label={t(['Conversation', '对话'])}>
     <span className="tk-deep" aria-hidden="true"/>
     <div ref={trEl} className="talk-tr" role="log" aria-live="polite" onScroll={onScroll} onWheel={onWheel}

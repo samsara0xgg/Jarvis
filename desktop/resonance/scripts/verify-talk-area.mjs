@@ -856,6 +856,7 @@ try {
     check(`${captions}: your first words bring the pill (“${a.label}”), with no buttons in it`, a.up && a.kind === (captions === 'all' ? 'capsule' : 'pill') && a.label === '帮我查一下今天的新闻' && await buttons() === 0);
     await shot(`nb-${captions}-speak`);
     await emit('voice', { phase: 'accepted', turn_id: 'nb2', text: '帮我查一下今天的新闻' }); await skew(3500); await settled();
+    if (captions === 'brief') { a = await area(); check('brief: once your words have faded, a pill with nothing to say folds away: no lone dot under her', !a.up && a.vis === 'hidden'); }
     await emit('tool', { turn_id: 'nb2', label: 'Searching the web...' }); await settled();
     a = await area();
     const look = () => page.evaluate(() => { const t = document.querySelector('.talk'), lb = t.querySelector('.lb'), r = t.getBoundingClientRect(), g = t.querySelector('.gl').getBoundingClientRect();
