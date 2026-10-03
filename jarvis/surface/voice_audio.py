@@ -670,6 +670,9 @@ class _PcmSlot:
     """One preallocated ring slot; metadata is published after byte copy."""
 
     storage: bytearray
+    # The wake channel's samples beside ``storage`` (ADR 0133); only a capture ring has it.
+    beam: bytearray | None = None
+    beam_length: int = 0
     committed_index: int = -1
     length: int = 0
     stream_epoch: int = 0
@@ -681,6 +684,13 @@ class _PcmSlot:
     adc_time_s: float | None = None
     captured_monotonic_ns: int = 0
     discontinuity_before: bool = False
+
+    def store_beam(self, beam: bytes | None) -> None:
+        """Keep the wake channel's samples beside the frame, or none when it has no room."""
+        self.beam_length = 0
+        if self.beam is not None and beam is not None and len(beam) <= len(self.beam):
+            self.beam[: len(beam)] = beam
+            self.beam_length = len(beam)
 
 
 @dataclass(frozen=True)
@@ -697,6 +707,7 @@ class _OwnedPcmFrame:
     captured_monotonic_ns: int
     discontinuity_before: bool
     pcm: bytes
+    beam: bytes | None = None
 
 
 @dataclass
@@ -730,13 +741,20 @@ class _PreallocatedPcmRing:
         capacity: int,
         max_frame_bytes: int,
         serialized_publication: bool = False,
+        beam_frame_bytes: int = 0,
     ) -> None:
         if capacity <= 0 or max_frame_bytes <= 0:
             msg = "PCM ring capacity and max_frame_bytes must be positive"
             raise ValueError(msg)
         self._capacity = capacity
         self._max_frame_bytes = max_frame_bytes
-        self._slots = [_PcmSlot(storage=bytearray(max_frame_bytes)) for _ in range(capacity)]
+        self._slots = [
+            _PcmSlot(
+                storage=bytearray(max_frame_bytes),
+                beam=bytearray(beam_frame_bytes) if beam_frame_bytes else None,
+            )
+            for _ in range(capacity)
+        ]
         self._write_index = 0
         self._read_index = 0
         self._drop_before_index = 0
@@ -766,6 +784,7 @@ class _PreallocatedPcmRing:
         purpose: SubscriberPurpose,
         active: bool,
         publication_token: object | None = None,
+        beam: bytes | None = None,
         _publication_lock_held: bool = False,
     ) -> bool:
         """Copy one frame without blocking; return whether it was published."""
@@ -787,6 +806,7 @@ class _PreallocatedPcmRing:
                     purpose=purpose,
                     active=active,
                     publication_token=publication_token,
+                    beam=beam,
                     _publication_lock_held=True,
                 )
         if (
@@ -826,6 +846,7 @@ class _PreallocatedPcmRing:
             self._producer_pending_discontinuity = True
             return False
         slot.length = byte_count
+        slot.store_beam(beam)
         slot.stream_epoch = stream_epoch
         slot.sequence = sequence
         slot.sample_cursor = sample_cursor
@@ -871,6 +892,11 @@ class _PreallocatedPcmRing:
             self._consumer_pending_discontinuity = True
             return None
         payload = bytes(memoryview(slot.storage)[: slot.length])
+        beam = (
+            bytes(memoryview(slot.beam)[: slot.beam_length])
+            if slot.beam is not None and slot.beam_length
+            else None
+        )
         frame = _OwnedPcmFrame(
             stream_epoch=slot.stream_epoch,
             sequence=slot.sequence,
@@ -884,6 +910,7 @@ class _PreallocatedPcmRing:
                 slot.discontinuity_before or self._consumer_pending_discontinuity
             ),
             pcm=payload,
+            beam=beam,
         )
         hook = self._consumer_before_commit_hook
         if hook is not None:
@@ -1135,6 +1162,7 @@ class AudioSubscription:
                     captured_monotonic_ns=native.captured_monotonic_ns,
                     discontinuity_before=native.discontinuity_before,
                     pcm16_mono=native.pcm,
+                    wake_pcm16=native.beam,
                 )
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -1280,6 +1308,13 @@ class AudioIngress:
             capacity=resolved_capacity,
             max_frame_bytes=self._config.canonical_frame_samples * 2,
             serialized_publication=True,
+            # ADR 0133: the capture lane carries the wake channel beside channel 0.
+            beam_frame_bytes=(
+                self._config.canonical_frame_samples * 2
+                if purpose is SubscriberPurpose.CAPTURE
+                and self._config.wake_input_channel is not None
+                else 0
+            ),
         )
         subscription = AudioSubscription(
             ingress=self,
@@ -1938,6 +1973,7 @@ class AudioIngress:
                 purpose=subscriber.purpose,
                 active=subscriber.active_utterance,
                 publication_token=timeline,
+                beam=frame.wake_pcm16 if subscriber.purpose is SubscriberPurpose.CAPTURE else None,
             )
             if subscriber.overflow_count > before_overflow:
                 record_realtime_trace(
