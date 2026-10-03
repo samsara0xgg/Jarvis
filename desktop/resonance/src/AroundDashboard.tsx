@@ -38,6 +38,8 @@ export type DashboardViewHandle = { snapshot: () => DashboardView; restore: (val
 const TITLES: Record<Page, L> = { conversation: ['Conversation', '对话'], now: ['Right now', '现在'], agents: ['Agents', 'Agents'], usage: ['Usage', '用量'], plugins: ['Plugins', '插件'], projects: ['Projects', '项目'], settings: ['Settings', '设置'], arrange: ['Arrange the home', '编辑首页'], brief: ['Morning brief', '早报'] };
 // The home follows its blocks from the old fixed height up to this, then scrolls inside the panel.
 const VIEW_MIN = 466, VIEW_MAX = 600, CORNER = 28, HOME_GAP = 8, HOLD = 560, TALK_STAYS = 10 * 60_000;
+// The room the resting input keeps under the home (the panel's bottom padding, 58 against a page's 12): a page, where the input is gone, takes it.
+const DOCK = 46;
 const WX: Record<WxKind, ReactNode> = { sun: <Sun/>, cloud: <Cloud/>, rain: <CloudRain/>, snow: <CloudSnow/>, fog: <CloudFog/>, storm: <CloudLightning/> };
 const PAGE_MS = MOTION.medium, EXIT_MS = PAGE_MS * MOTION.exit;
 const PAGE_EASE = 'cubic-bezier(.16,1,.3,1)', EXIT_EASE = 'cubic-bezier(.7,0,.84,0)';
@@ -637,7 +639,8 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
       let top = 0;
       for (let node: HTMLElement | null = viewport; node; node = node.offsetParent as HTMLElement | null) top += node.offsetTop;
       const available = Math.max(0, window.innerHeight - top - parseFloat(getComputedStyle(panel).paddingBottom) - 12);
-      setViewH(Math.round(Math.min(available, VIEW_MAX, Math.max(page ? VIEW_MIN : 0, CORNER + HOME_GAP + el.offsetHeight))));
+      const homeH = CORNER + HOME_GAP + el.offsetHeight;
+      setViewH(Math.round(Math.min(available, page ? Math.min(VIEW_MAX, Math.max(VIEW_MIN, homeH)) + DOCK : Math.min(VIEW_MAX, homeH))));
     };
     fit();
     let frame = 0;

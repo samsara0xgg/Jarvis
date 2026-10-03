@@ -96,6 +96,8 @@
 .ad .cmp { display:flex; align-items:center; gap:6px; width:100%; height:36px; padding:0 5px 0 12px; border-radius:var(--radius-control); background:rgb(255 255 255 / .07); box-shadow:inset 0 0 0 1px rgb(255 255 255 / .1); transition:background var(--motion-fast),box-shadow var(--motion-fast); }
 .ad .cmp:hover, .ad .cmp:focus-within { background:rgb(255 255 255 / .09); box-shadow:inset 0 0 0 1px rgb(var(--glow) / .45); }
 .ad[data-page] .cmp-hit { opacity:0; pointer-events:none; }
+/* With the input gone a page reaches down to the panel's edge (AroundDashboard DOCK). */
+.ad[data-page] { padding-bottom:12px; }
 .ad .cmp input, .ad .pg-input input { flex:1; min-width:0; border:0; background:none; color:var(--p-ink); font-size:var(--text-body); outline:none; }
 .ad .cmp input::placeholder, .ad .pg-input input::placeholder { color:var(--p-faint); }
 .ad .send { display:grid; place-items:center; flex:none; width:26px; height:26px; padding:0; border-radius:50%; background:rgb(var(--glow)); color:#0d1022; }
