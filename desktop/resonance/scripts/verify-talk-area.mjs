@@ -705,6 +705,37 @@ try {
     await s.context.close();
   }
 
+  // ---- an answer written while your next words came in goes above them; a deep turn after it counts its seconds while the earlier answer is still said ----
+  {
+    const s = await scene({ captions: 'all' });
+    const { page, emit, area, daemonState } = s;
+    await page.waitForTimeout(600);
+    await emit('voice', { phase: 'listening', turn_id: 'w1' }); await emit('voice', { phase: 'accepted', turn_id: 'w1', text: '温哥华明天天气怎么样' });
+    await emit('voice', { phase: 'listening', turn_id: 'd2' }); await emit('voice', { phase: 'partial', turn_id: 'd2', text: '想一想' });
+    await emit('open', { turn_id: 'w1', response_id: 'r-w1' }); await emit('append', { turn_id: 'w1', token: '<voice>温哥华明天晴，最高十八度。</voice>' }); await emit('done', { turn_id: 'w1', fadeMs: 100 });
+    daemonState.think = { on: true, on_words: '想一想', turn_id: 'd2' };
+    await emit('voice', { phase: 'accepted', turn_id: 'd2', text: '想一想我是谁' });
+    await page.waitForTimeout(2600);
+    const order = await page.evaluate(() => [...document.querySelectorAll('.talk-tr .tk-u, .talk-tr .tk-h')].map(e => e.classList.contains('tk-u') ? `you:${e.textContent}` : `her:${e.textContent}`));
+    const weather = order.findIndex(x => x.startsWith('her:') && x.includes('十八度')), you = order.findIndex(x => x === 'you:想一想我是谁');
+    check(`an answer that came while your next words were coming in sits above them, not under them (${order.join(' | ')})`, weather >= 0 && you > weather);
+    const a = await area();
+    check(`a deep turn waiting while the earlier answer is still said: the footer counts its seconds (${a.label})`, a.deep && /^Thinking \d+ s$/.test(a.label));
+    check('no page errors (answer above your next words)', s.errors.length === 0);
+    await s.context.close();
+  }
+  // ---- the final words come in again over what was heard so far ----
+  {
+    const s = await scene({ captions: 'brief' });
+    const { page, emit } = s;
+    await page.waitForTimeout(600);
+    await emit('voice', { phase: 'listening', turn_id: 'hf' }); await emit('voice', { phase: 'partial', turn_id: 'hf', text: '帮我查一下温哥' }); await page.waitForTimeout(500);
+    await page.evaluate(() => { window.__lb = document.querySelector('.talk .lb.heard'); });
+    await emit('voice', { phase: 'accepted', turn_id: 'hf', text: '帮我查一下温哥华的天气' }); await page.waitForTimeout(300);
+    check('the final words replace the partial ones as a new label that fades in', await page.evaluate(() => { const lb = document.querySelector('.talk .lb.heard'); return !!window.__lb && !!lb && lb !== window.__lb && lb.textContent === '帮我查一下温哥华的天气' && getComputedStyle(lb).animationName === 'talk-in-text'; }));
+    await s.context.close();
+  }
+
   // ---- a slow tool shows its fixed line while the turn waits on it, at both levels that show state ----
   for (const captions of ['all', 'brief']) {
     const s = await scene({ captions });
