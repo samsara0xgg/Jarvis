@@ -15,9 +15,10 @@ PAGE_BUDGET = 11000
 # CJK text tokenizes near one token per character, ASCII JSON near four characters per
 # token, so a full page is roughly 15k-45k tokens against the decision model's 1M window).
 ACTIVITY_PAGE_BUDGET = 48000
-# recall holds a whole day on one page: every page is another model round trip of ~2.6 s,
-# and the busiest day so far (2026-10-01, 268 records) renders to 21k characters.
-RECALL_PAGE_BUDGET = 32000
+# recall returns a range in one call: every page is another model round trip of ~2.6 s,
+# while 100k more characters of input cost the model well under that. Everything since
+# 2026-09-12 (1528 records) renders to 118k characters; the cap only stops a runaway range.
+RECALL_PAGE_BUDGET = 200000
 MAX_TEXT_JSON_CHARS = 4000
 _CURSOR_PARTS = 2
 DETAIL_CHARS = 3500

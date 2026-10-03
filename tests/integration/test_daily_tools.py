@@ -198,7 +198,7 @@ def test_recall_pages_lose_and_repeat_nothing(daily: DailyHarness) -> None:
                 f"m{i}",
                 f"2026-10-01T{i // 60:02d}:{i % 60:02d}:00+00:00",
                 "allen",
-                f"m{i:03d} " + "y" * 100,
+                f"m{i:03d} " + "y" * 600,
             )
             for i in range(400)
         ],
