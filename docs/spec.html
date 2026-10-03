@@ -276,13 +276,14 @@ header strong { color: var(--fg-strong); }
 <p>投影只能从事件折出来，模型、工具和界面都不能直接改它。现在在用的投影：待确认的卡片、待填的卡片（ADR 0066）、还没结束的动作，和一块状态板（最近几轮、观察到的仓库和提交、电源变化）。每次决策读的是当时折好的快照。</p>
 
 <h3 id="memory">记忆</h3>
-<p>memory.db 有三张表：</p>
+<p>memory.db 的主要表：</p>
 <table>
 <thead><tr><th>表</th><th>存什么</th><th>谁写</th></tr></thead>
 <tbody>
 <tr><td><code>records</code></td><td>逐字的对话，一行一句，标着是谁说的；留了录音时带录音路径</td><td>每一轮</td></tr>
 <tr><td><code>profile</code></td><td>「关于你」：一行一个主题的长期事实，每一轮都放进系统提示</td><td>首次设置写主人的名字；之后是模型调用 <code>remember</code> 和待填卡片的答案，同一主题覆盖旧的一行（ADR 0066）</td></tr>
 <tr><td><code>summaries</code></td><td>历史压缩出的摘要</td><td>压缩（空闲时，或 <code>recent_records</code> 窗口移动后；<a href="#request">第 5 章</a>）</td></tr>
+<tr><td><code>day_summaries</code></td><td>过去每一天的对话摘要；只追加，每天最新的一行有效，是派生数据，原话以 <code>records</code> 为准（ADR 0142）</td><td>每天 <code>day_summary.at</code> 之后，补写所有有记录、还没摘要的过去日期；<code>recall</code> 把它们放在原话之前返回</td></tr>
 </tbody>
 </table>
 <ul>
@@ -593,7 +594,7 @@ I8 到 I11 随审核链退役（ADR 0019），编号保留。
 <table>
 <thead><tr><th>位置</th><th>装什么</th><th>留多久</th></tr></thead>
 <tbody>
-<tr><td><code>memory.db</code></td><td>主人说的每一句和每一个回答、「关于你」、压缩摘要</td><td>永久；代码里没有删它的路径，只有「抹掉全部数据」</td></tr>
+<tr><td><code>memory.db</code></td><td>主人说的每一句和每一个回答、「关于你」、压缩摘要和每日摘要</td><td>永久；代码里没有删它的路径，只有「抹掉全部数据」</td></tr>
 <tr><td><code>mac_events.db</code></td><td>事件日志：动作、确认、花费、观察到的状态，以及待办、知识、日报和工作状态的每一版</td><td>永久，不裁剪</td></tr>
 <tr><td><code>memory/audio/</code></td><td>对话和听写的录音；每次听写还有一份 JSON，记着原话和润色后的文字（ADR 0084）</td><td>默认不录；见<a href="#retention">保留期</a></td></tr>
 <tr><td><code>artifacts/screen_artifacts/</code></td><td>看一眼屏幕时的截图</td><td>见<a href="#retention">保留期</a></td></tr>

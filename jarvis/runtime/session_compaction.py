@@ -129,7 +129,7 @@ def build_compact_client(llm_config: Mapping[str, Any], preset_name: str) -> LLM
     presets = llm_config.get("presets")
     preset = presets.get(preset_name) if isinstance(presets, Mapping) else None
     if preset is None:
-        msg = f"session.compact_preset {preset_name!r} is not under llm.presets"
+        msg = f"preset {preset_name!r} is not under llm.presets"
         raise ValueError(msg)
     if not isinstance(preset, Mapping):
         msg = f"llm.presets.{preset_name} is not a mapping"

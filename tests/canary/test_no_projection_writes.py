@@ -62,7 +62,9 @@ _L2_OPERATIONAL_INSERTS: dict[str, frozenset[str]] = {
     # in for compacted history (session compaction), the profile's name
     # line first-run setup keeps, and the message a turn sent for its row
     # (docs/plans/replay-as-sent-proposal.md). Not a projection of events.
-    "jarvis/state/memory_db.py": frozenset({"records", "summaries", "profile", "sent"}),
+    "jarvis/state/memory_db.py": frozenset(
+        {"records", "summaries", "profile", "sent", "day_summaries"},
+    ),
     # ADR 0019: which Codex threads this daemon opened (parent action, child
     # thread, open|closed). Topology, not a projection of events.
     "jarvis/state/worker_edges.py": frozenset({"worker_edges"}),

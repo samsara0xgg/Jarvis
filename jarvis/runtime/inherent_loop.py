@@ -148,6 +148,7 @@ from jarvis.runtime import (
     make_turn_cancel_callable,
     save_language,
 )
+from jarvis.runtime.day_summary import DaySummarySchedule, DaySummarySettings
 from jarvis.runtime.dictation import (
     COMMAND_PROMPT,
     Dictation,
@@ -6144,6 +6145,22 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         if runtime.daily_schedule is not None:
             watchers.append(
                 asyncio.create_task(runtime.daily_schedule.run(), name="daily_report_schedule"),
+            )
+        day_summary = DaySummarySettings.from_config(runtime.config.get("day_summary"))
+        if day_summary is not None and runtime.memory is not None:
+            # ADR 0142: past days' conversation summaries, written once a day.
+            llm_config = runtime.config.get("llm")
+            watchers.append(
+                asyncio.create_task(
+                    DaySummarySchedule(
+                        memory=runtime.memory,
+                        settings=day_summary,
+                        llm_config=llm_config if isinstance(llm_config, Mapping) else {},
+                        event_log_path=runtime.runtime_paths.event_log,
+                        pricing_table=load_pricing_table(repo_root() / "data" / "pricing.json"),
+                    ).run(),
+                    name="day_summary_schedule",
+                ),
             )
         watchers.append(asyncio.create_task(
             _data_sweep_task(_media_dirs(runtime), logs_dir(runtime.runtime_paths.root)),

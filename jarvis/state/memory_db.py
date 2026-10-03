@@ -24,10 +24,11 @@ from __future__ import annotations
 
 import re
 import sqlite3
+import uuid
 from collections.abc import Mapping, Sequence
 from contextlib import closing
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Final, NamedTuple
 
@@ -61,11 +62,22 @@ CREATE TABLE IF NOT EXISTS sent (
     record_id TEXT PRIMARY KEY REFERENCES records(id),
     text      TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS day_summaries (
+    id           TEXT PRIMARY KEY,
+    day          TEXT NOT NULL,
+    ts           TEXT NOT NULL,
+    summary      TEXT NOT NULL,
+    model        TEXT,
+    record_count INTEGER NOT NULL,
+    input_chars  INTEGER NOT NULL,
+    output_chars INTEGER NOT NULL
+);
 """
 
 # ``PRAGMA user_version`` (ADR 0068). 0 is a file from before the stamp, same
 # schema as 1; a file above this was written by a newer Jarvis and is refused.
-# ``sent`` is additive: an older opener ignores it, so it needs no new version.
+# ``sent`` and ``day_summaries`` are additive: an older opener ignores them, so they need no
+# new version.
 SCHEMA_VERSION: Final[int] = 1
 DEFAULT_SEARCH_LIMIT: Final[int] = 20
 # The Live brief's label for the user's own rows; the stored source stays ``allen``.
@@ -746,6 +758,85 @@ def append_summary(  # noqa: PLR0913 — the row's columns, all required.
     return summary_id
 
 
+def append_day_summary(  # noqa: PLR0913 — the row's columns, all required.
+    path: Path,
+    *,
+    day: str,
+    summary: str,
+    model: str,
+    record_count: int,
+    input_chars: int,
+    output_chars: int,
+) -> str:
+    """Append one day's summary and return its id; the latest row of a day is current.
+
+    Older rows of the same day stay as history. ``day`` is a local calendar date
+    (``YYYY-MM-DD``). The summary is derived: ``records`` stays the source of truth.
+    """
+    summary_id = f"day-summary:{day}:{uuid.uuid4().hex}"
+    with closing(open_memory_db(path)) as conn, conn:
+        conn.execute(
+            "INSERT INTO day_summaries (id, day, ts, summary, model, record_count, "
+            "input_chars, output_chars) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                summary_id,
+                day,
+                iso_seconds(local_now()),
+                summary,
+                model,
+                record_count,
+                input_chars,
+                output_chars,
+            ),
+        )
+    return summary_id
+
+
+def latest_day_summaries(
+    conn: sqlite3.Connection, first_day: str, last_day: str,
+) -> list[tuple[str, str]]:
+    """``(day, summary)`` of the current row of each day in ``[first_day, last_day]``, by day."""
+    rows = conn.execute(
+        "SELECT day, summary FROM day_summaries WHERE day >= ? AND day <= ? "
+        "ORDER BY day, rowid",
+        (first_day, last_day),
+    ).fetchall()
+    return list(dict(rows).items())  # a later row of the same day replaces the earlier one
+
+
+def pending_days(path: Path, today: date) -> list[tuple[str, int, int]]:
+    """Local dates before ``today`` with records and no summary row, oldest first.
+
+    Each is ``(day, record_count, input_chars)``. The date is the record's ``ts`` on this
+    Mac's zone, not the offset it was stored with.
+    """
+    days: dict[str, list[int]] = {}
+    with closing(open_memory_db(path)) as conn:
+        done = {str(row[0]) for row in conn.execute("SELECT DISTINCT day FROM day_summaries")}
+        for ts, size in conn.execute("SELECT ts, length(text) FROM records"):
+            day = datetime.fromisoformat(ts).astimezone().date()
+            if day < today and (key := day.isoformat()) not in done:
+                tally = days.setdefault(key, [0, 0])
+                tally[0] += 1
+                tally[1] += int(size)
+    return [(day, days[day][0], days[day][1]) for day in sorted(days)]
+
+
+def day_records(path: Path, day: str) -> tuple[Record, ...]:
+    """Every record whose local date is ``day``, oldest first, full text."""
+    start = datetime.fromisoformat(day).astimezone()
+    after = (date.fromisoformat(day) + timedelta(days=1)).isoformat()
+    end = datetime.fromisoformat(after).astimezone()
+    with closing(open_memory_db(path)) as conn:
+        rows = conn.execute(
+            "SELECT id, ts, source, text FROM records "
+            "WHERE datetime(ts) >= datetime(?) AND datetime(ts) < datetime(?) "
+            "ORDER BY datetime(ts), rowid",
+            (start.isoformat(), end.isoformat()),
+        ).fetchall()
+    return tuple((str(rid), str(ts), str(source), str(text)) for rid, ts, source, text in rows)
+
+
 __all__ = [
     "DEFAULT_SEARCH_LIMIT",
     "CompactionRange",
@@ -754,13 +845,17 @@ __all__ = [
     "Record",
     "SessionSettings",
     "VerbatimStats",
+    "append_day_summary",
     "append_record",
     "append_summary",
     "brief_note",
     "compaction_range",
+    "day_records",
     "iso_seconds",
+    "latest_day_summaries",
     "local_now",
     "open_memory_db",
+    "pending_days",
     "remember_fact",
     "render_context",
     "search_records",

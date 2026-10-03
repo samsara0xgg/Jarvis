@@ -67,11 +67,13 @@ def check_summary(
     *,
     max_chars: int,
     known_ids: Collection[str],
+    headings: Sequence[str] = REQUIRED_HEADINGS,
 ) -> str | None:
     """Return why the summary must not be stored, or None when it may.
 
     ``known_ids`` are the ids it may cite (the folded records plus whatever
-    the previous summary already cited). The cap is the only size gate: a
+    the previous summary already cited); ``headings`` are the ones it must
+    carry. The cap is the only size gate: a
     "smaller than what it replaces" rule is implied by the cap for any
     range worth compacting and blocks a small range forever, because the
     template and its record-id citations have a fixed overhead (live
@@ -80,7 +82,7 @@ def check_summary(
     body = (text or "").strip()
     if not body:
         return "empty"
-    missing = [heading for heading in REQUIRED_HEADINGS if heading not in body]
+    missing = [heading for heading in headings if heading not in body]
     unknown = sorted(cited_record_ids(body) - set(known_ids))
     gates: tuple[tuple[bool, str], ...] = (
         (finish_reason in ("length", "max_tokens"), "cut off by the output limit"),
