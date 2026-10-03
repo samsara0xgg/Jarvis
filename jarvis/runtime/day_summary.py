@@ -135,13 +135,18 @@ def run_day_summaries(  # noqa: PLR0913 — the store, the knobs, the client and
         cost_recorder = CostRecorder(conn, pricing_table=pricing_table)
         for day, _count, _chars in pending_days(memory.db_path, today):
             try:
-                outcomes[day] = write_day_summary(
-                    day,
-                    memory=memory,
-                    settings=settings,
-                    client=client,
-                    cost_recorder=cost_recorder,
-                )
+                # One retry on a rejected answer: the live backfill of 2026-10-03 lost
+                # 2026-10-01 to a single mistyped record id (1 of 16 days).
+                for _attempt in range(2):
+                    outcomes[day] = write_day_summary(
+                        day,
+                        memory=memory,
+                        settings=settings,
+                        client=client,
+                        cost_recorder=cost_recorder,
+                    )
+                    if not outcomes[day].startswith("rejected"):
+                        break
             except Exception:
                 LOGGER.exception("day_summary: %s failed; nothing stored", day)
                 outcomes[day] = "failed"

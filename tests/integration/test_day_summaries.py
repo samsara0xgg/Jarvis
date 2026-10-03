@@ -154,7 +154,9 @@ def test_the_schedule_summarises_exactly_the_past_days_with_records_and_none_yet
     assert _run_once(schedule, datetime.now().astimezone().replace(hour=4, minute=59)) is None
     outcomes = _run_once(schedule, datetime.now().astimezone().replace(hour=5, minute=0))
     assert outcomes is not None
-    assert summariser.asked == [_day(5).isoformat(), _day(3).isoformat(), _day(1).isoformat()]
+    # A rejected answer is asked once more in the same run.
+    d5, d3, d1 = (_day(i).isoformat() for i in (5, 3, 1))
+    assert summariser.asked == [d5, d5, d3, d1, d1]
     assert set(summariser.systems) == {"summarise"}
     assert outcomes[_day(5).isoformat()].startswith("rejected (cites record ids")
     assert outcomes[_day(1).isoformat()].startswith("rejected (missing headings")
