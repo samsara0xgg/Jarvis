@@ -384,6 +384,9 @@ _WAKE_FRAME_SAMPLES: int = 1280
 # ``_MODE_THRESHOLDS`` keys).  A closed set: ADR-0006 D8 names both and
 # ``realtime.single_audio_ingress.output_active_vad_mode`` selects between them.
 _VAD_MODES: Final[tuple[str, ...]] = ("record", "tts")
+# ADR 0142: how long an ask card from a barge-pause fragment stays off the screen, so a
+# continuation that folds the fragment in (ADR 0074) arrives before it ever shows.
+_FRAGMENT_CARD_HOLD_MS: Final[int] = 1_500
 _CARD_EVENT_TYPES: Final[tuple[str, ...]] = (
     "confirmation.requested", "confirmation.accepted", "confirmation.rejected", "gate.evaluated",
 )
@@ -581,6 +584,30 @@ def _vad_profiles(raw: object) -> dict[str, voice_audio.VadThresholds]:
         )
         return defaults
     return parsed
+
+
+def _visible_ask_card(conn: sqlite3.Connection, now_ms: int) -> PendingClarification | None:
+    """ADR 0066: the ask card to show, or ``None``.
+
+    ADR 0142: a card its turn put up from a barge-pause fragment stays hidden for
+    ``_FRAGMENT_CARD_HOLD_MS``; a continuation arriving by then closes it unseen.
+    """
+    slot = PendingClarification.from_events(iter_events_of_types(conn, CLARIFICATION_EVENT_TYPES))
+    if slot is None or not slot.waiting:
+        return None
+    asked = conn.execute(
+        "SELECT ts_epoch_ms FROM events WHERE type = 'clarification.requested' "
+        "AND json_extract(payload_json, '$.clarification_id') = ?",
+        (slot.clarification_id,),
+    ).fetchone()
+    if asked is not None and now_ms - int(asked[0]) < _FRAGMENT_CARD_HOLD_MS and conn.execute(
+        "SELECT 1 FROM events WHERE type = 'utterance.received' "
+        "AND json_extract(correlation_json, '$.turn_id') = ? "
+        "AND json_extract(payload_json, '$.endpoint_reason') = 'barge_pause' LIMIT 1",
+        (slot.asked_turn_id,),
+    ).fetchone() is not None:
+        return None
+    return slot
 
 
 def _voice_knobs(config: Mapping[str, Any]) -> _VoiceKnobs:
@@ -5733,13 +5760,11 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             """ADR 0066: the ask card waiting to be filled in, or ``None``."""
             conn = open_runtime_event_log(runtime.runtime_paths.event_log)
             try:
-                slot = PendingClarification.from_events(
-                    iter_events_of_types(conn, CLARIFICATION_EVENT_TYPES),
-                )
+                slot = _visible_ask_card(conn, int(time.time() * 1000))
             finally:
                 with contextlib.suppress(sqlite3.Error):
                     conn.close()
-            if slot is None or not slot.waiting:
+            if slot is None:
                 return {"card": None}
             fields = [
                 {k: f[k] for k in ("label", "choices", "value") if k in f} for f in slot.fields

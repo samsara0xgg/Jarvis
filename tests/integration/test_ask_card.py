@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from jarvis.decision.packet import assemble_packet, format_pending_clarification_note
+from jarvis.runtime.inherent_loop import _FRAGMENT_CARD_HOLD_MS, _visible_ask_card
 from jarvis.state.event_log import emit_event, iter_events_of_types, open_event_log
 from jarvis.state.memory_db import remember_fact, render_context
 from jarvis.state.projections import CLARIFICATION_EVENT_TYPES, PendingClarification
@@ -141,3 +142,50 @@ def test_a_kept_fact_is_one_about_the_user_line_and_its_topic_rewrites_it_in_pla
     assert render_context(db, exclude_id="").profile == (
         "[About the user]\n- 送餐地址: 2 Sample Rd\n- 饮食偏好: 不吃香菜"
     )
+
+
+def _heard(conn: sqlite3.Connection, turn_id: str, reason: str) -> None:
+    emit_event(
+        conn, type="utterance.received",
+        payload={"transcript": "hi", "turn_id": turn_id, "endpoint_reason": reason},
+        correlation={"turn_id": turn_id},
+    )
+
+
+def _asked_at(conn: sqlite3.Connection) -> int:
+    ask = list(iter_events_of_types(conn, ("clarification.requested",)))[-1]
+    return ask.ts_epoch_ms
+
+
+def test_a_card_from_a_barge_pause_fragment_waits_out_the_hold_before_it_shows(
+    conn: sqlite3.Connection,
+) -> None:
+    """ADR 0142: the fragment's card is hidden for the hold, then shown if nothing folded it."""
+    _heard(conn, "T-ask", "barge_pause")
+    _ask(conn, "Q1")
+    at = _asked_at(conn)
+    assert _visible_ask_card(conn, at + _FRAGMENT_CARD_HOLD_MS - 1) is None
+    shown = _visible_ask_card(conn, at + _FRAGMENT_CARD_HOLD_MS)
+    assert shown is not None
+    assert shown.clarification_id == "Q1"
+
+
+def test_a_continuation_inside_the_hold_closes_the_fragment_card_unseen(
+    conn: sqlite3.Connection,
+) -> None:
+    """ADR 0142: the rest of his sentence folds the fragment in before the hold ends."""
+    _heard(conn, "T-ask", "barge_pause")
+    _ask(conn, "Q1")
+    at = _asked_at(conn)
+    _heard(conn, "T-rest", "acoustic_pause")
+    assert _visible_ask_card(conn, at + 10) is None
+    assert _visible_ask_card(conn, at + _FRAGMENT_CARD_HOLD_MS + 1) is None
+
+
+def test_a_card_from_any_other_turn_shows_at_once(conn: sqlite3.Connection) -> None:
+    """ADR 0142: only a barge-pause fragment's card is held."""
+    _heard(conn, "T-ask", "acoustic_pause")
+    _ask(conn, "Q1")
+    shown = _visible_ask_card(conn, _asked_at(conn))
+    assert shown is not None
+    assert shown.clarification_id == "Q1"
