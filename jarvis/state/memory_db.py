@@ -197,11 +197,16 @@ class MemoryContext(NamedTuple):
 
 
 class VerbatimStats(NamedTuple):
-    """Size and span of the records the prompt currently shows verbatim."""
+    """Size and span of the records the prompt currently shows verbatim.
+
+    ``hidden`` is how many of them a ``recent_records`` window cuts off
+    (see :func:`_hidden_records`): the part of history no summary covers yet.
+    """
 
     chars: int
     oldest_ts: str | None
     newest_ts: str | None
+    hidden: int = 0
 
 
 class CompactionRange(NamedTuple):
@@ -497,7 +502,8 @@ def render_context(
             turns,
             "user",
             f"[Conversation summary · up to {current.anchor_ts} · look up exact wording, "
-            "numbers and agreement with read_records by record_id]\n"
+            "numbers and agreement with read_records by record_id, or find a record "
+            "with search_records]\n"
             f"{current.summary}",
         )
     shown = [record for record in records if record[0] != exclude_id]
@@ -627,7 +633,7 @@ def conversation_rows(
     ]
 
 
-def verbatim_stats(path: Path, *, since: str = "") -> VerbatimStats:
+def verbatim_stats(path: Path, *, since: str = "", recent: int = 0) -> VerbatimStats:
     """Size and time span of the records after the current anchor.
 
     Aggregated in SQL: the sweep calls this on every tick, on the loop thread.
@@ -635,8 +641,8 @@ def verbatim_stats(path: Path, *, since: str = "") -> VerbatimStats:
     with closing(open_memory_db(path)) as conn:
         current = _current_summary(conn)
         anchor = _effective_anchor(conn, current.anchor_rowid if current else None, since)
-        chars, oldest, newest = conn.execute(
-            "SELECT COALESCE(SUM(length(text)), 0), "
+        chars, count, oldest, newest = conn.execute(
+            "SELECT COALESCE(SUM(length(text)), 0), COUNT(*), "
             "(SELECT ts FROM records WHERE rowid > ? ORDER BY rowid LIMIT 1), "
             "(SELECT ts FROM records WHERE rowid > ? ORDER BY rowid DESC LIMIT 1) "
             "FROM records WHERE rowid > ?",
@@ -646,16 +652,24 @@ def verbatim_stats(path: Path, *, since: str = "") -> VerbatimStats:
         int(chars),
         str(oldest) if oldest is not None else None,
         str(newest) if newest is not None else None,
+        _hidden_records(int(count), recent),
     )
 
 
 def compaction_range(
-    path: Path, *, window_days: int, since: str = "", now: datetime | None = None,
+    path: Path,
+    *,
+    window_days: int,
+    since: str = "",
+    now: datetime | None = None,
+    recent: int = 0,
 ) -> CompactionRange | None:
     """The records a compaction would fold, or None when there are none.
 
-    Those after the current anchor and older than ``window_days``, taken as
-    a prefix in insertion order so the new anchor leaves nothing older
+    With ``recent`` > 0 the record window decides: the records
+    :func:`render_context` leaves out of the prompt, nothing else. With 0,
+    those after the current anchor and older than ``window_days``. Either
+    way a prefix in insertion order, so the new anchor leaves nothing older
     behind it.
     """
     cutoff = (now or local_now()) - timedelta(days=window_days)
@@ -664,10 +678,13 @@ def compaction_range(
         anchor = _effective_anchor(conn, current.anchor_rowid if current else None, since)
         records = _records_after(conn, anchor)
     older: list[Record] = []
-    for record in records:
-        if datetime.fromisoformat(record[1]) >= cutoff:
-            break
-        older.append(record)
+    if recent > 0:
+        older = records[: _hidden_records(len(records), recent)]
+    else:
+        for record in records:
+            if datetime.fromisoformat(record[1]) >= cutoff:
+                break
+            older.append(record)
     if not older:
         return None
     return CompactionRange(
@@ -686,8 +703,8 @@ def append_summary(  # noqa: PLR0913 — the row's columns, all required.
     model: str,
     input_chars: int,
     output_chars: int,
-) -> bool:
-    """Commit one summary row, or return False when the world moved.
+) -> str | None:
+    """Commit one summary row and return its id, or None when the world moved.
 
     The row lands only if ``base_id`` is still the current summary and the
     new anchor exists and lies after the current one; a job that finished
@@ -700,18 +717,19 @@ def append_summary(  # noqa: PLR0913 — the row's columns, all required.
             current = _current_summary(conn)
             if (current.id if current else None) != base_id:
                 conn.execute("ROLLBACK")
-                return False
+                return None
             anchor = conn.execute(
                 "SELECT rowid FROM records WHERE id = ?", (upto_record_id,),
             ).fetchone()
             if anchor is None or (current is not None and int(anchor[0]) <= current.anchor_rowid):
                 conn.execute("ROLLBACK")
-                return False
+                return None
+            summary_id = f"summary:{upto_record_id}"
             conn.execute(
                 "INSERT INTO summaries (id, ts, base_id, upto_record_id, summary, model, "
                 "input_chars, output_chars) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
-                    f"summary:{upto_record_id}",
+                    summary_id,
                     iso_seconds(local_now()),
                     base_id,
                     upto_record_id,
@@ -725,7 +743,7 @@ def append_summary(  # noqa: PLR0913 — the row's columns, all required.
         except BaseException:
             conn.execute("ROLLBACK")
             raise
-    return True
+    return summary_id
 
 
 __all__ = [

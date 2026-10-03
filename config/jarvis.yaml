@@ -912,16 +912,22 @@ session:
                                   # decision preset's context_length is eligible
   verbatim_window_days: 7         # records younger than this survive a compaction verbatim
   compact_preset: gpt6-luna       # the summariser; rare and off the latency path
-  summary_max_chars: 8000         # a longer summary is rejected and nothing is stored
-                                  # (live 2026-09-14: deep wrote 4.5k-6.2k chars for 38k of history)
+  summary_max_chars: 12000        # a longer summary is rejected and nothing is stored; the prompt
+                                  # asks for 9000, the rest is the margin the model overshoots by
+                                  # (live 2026-09-14: deep wrote 4.5k-6.2k chars for 38k of history;
+                                  # 2026-10-02: luna wrote 9.6k chars for 18 days, over an 8000 cap)
   live_brief_max_chars: 1500      # the GPT-Live startup brief budget
   # history_since (settings.yaml): where the prompt's history starts. Records
   # before it stay in memory.db for search_records / read_records and are never
   # shown to the model or folded into a summary. Unset = all history.
   # recent_records > 0 shows only the latest N to 2N-1 records after the
-  # summary, with a note on how many earlier ones search_records can find; the
-  # cut moves N records at a time so the prompt cache keeps the history's start.
-  # 0 shows every record (about 500 and 40k tokens on 2026-09-30).
+  # summary; the cut moves N records at a time so the prompt cache keeps the
+  # history's start. The records it cuts are folded into the summary in the
+  # background right away (ADR 0134), so the idle, size and age settings above
+  # then do not apply; until a fold lands a note says how many records
+  # search_records can find. 2026-10-02, N=120: 0.99 s to first token against
+  # 2.29 s for all 18 days. 0 shows every record (about 500 and 40k tokens on
+  # 2026-09-30) and compacts by the settings above.
   recent_records: 0
   # The summariser's whole system prompt. The nine "###" headings are
   # required: a summary missing one is rejected. Edit the text freely; the
@@ -953,7 +959,7 @@ session:
       what was settled to the answered or finished items, and drop only what is
       plainly out of date. Carry the "Confirmed decisions and user corrections"
       section forward unchanged, quotes and record_ids included.
-    - Write less rather than invent. Keep the whole summary under 8000 characters.
+    - Write less rather than invent. Keep the whole summary under 9000 characters.
 
     Output exactly this structure. All nine ### headings are required; write
     "none" under a heading with nothing in it:

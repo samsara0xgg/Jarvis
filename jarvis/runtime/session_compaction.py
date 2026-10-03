@@ -1,15 +1,17 @@
 """Runtime wiring for compacting the running conversation.
 
 On every supervisor tick the sweep asks whether the conversation is
-eligible: Jarvis idle for ``session.idle_before_compact_s`` with no Live
-connection open, the verbatim history estimated past
-``session.compact_at_context_ratio`` of the decision preset's
-``context_length``, and at least one record older than
-``session.verbatim_window_days``. When it is, one job runs off the loop
-thread on a dedicated client pinned to ``session.compact_preset``; L3
-builds the input and gates the answer, L2 commits the row only if the
+eligible. With ``session.recent_records`` off: Jarvis idle for
+``session.idle_before_compact_s`` with no Live connection open, the verbatim
+history estimated past ``session.compact_at_context_ratio`` of the decision
+preset's ``context_length``, and at least one record older than
+``session.verbatim_window_days``. With it on, the window alone decides
+(ADR 0134): the records it cuts out of the prompt are folded as soon as they
+exist, whatever the idle time, size or age. When eligible, one job runs off
+the loop thread on a dedicated client pinned to ``session.compact_preset``;
+L3 builds the input and gates the answer, L2 commits the row only if the
 summary it extends is still current. A failed job changes nothing and is
-tried again on a later tick.
+tried again on a later tick (window mode: after the next record).
 """
 
 from __future__ import annotations
@@ -27,6 +29,7 @@ from jarvis.decision.llm import LLMClient
 from jarvis.state.event_log import open_runtime_event_log
 from jarvis.state.memory_db import (
     MemorySettings,
+    Record,
     SessionSettings,
     VerbatimStats,
     append_summary,
@@ -47,6 +50,12 @@ CHARS_PER_TOKEN: Final[float] = 1.5
 # Bounds on the one summariser call; it is off the latency path and thinks.
 _COMPACT_CALL_TIMEOUT_S: Final[float] = 600.0
 _COMPACT_CALL_MAX_RETRIES: Final[int] = 1
+# One summariser call reads at most this many characters of records (about
+# 125k tokens at 1.6 characters per token; luna's limit is 200k a minute). A
+# fold of 1080 records (160k characters, 2026-10-02) is one call; a longer
+# one is a chain of calls, each extending the summary the one before wrote.
+_CHUNK_CHARS: Final[int] = 200_000
+_LINE_OVERHEAD_CHARS: Final[int] = 80  # record_id | time | speaker | in front of the words
 
 
 def blocked_reason(  # noqa: PLR0911 — one linear condition list; each return names the blocker.
@@ -80,6 +89,24 @@ def blocked_reason(  # noqa: PLR0911 — one linear condition list; each return 
     cutoff = now - timedelta(days=settings.verbatim_window_days)
     if datetime.fromisoformat(stats.oldest_ts) >= cutoff:
         return f"nothing older than {settings.verbatim_window_days} days"
+    return None
+
+
+def window_blocked_reason(
+    stats: VerbatimStats, *, settings: SessionSettings, last_tried_ts: str | None,
+) -> str | None:
+    """Why a window fold must not start now, or None when it is due.
+
+    Due when the window hides records no summary covers. A fold that was
+    tried and did not land is not retried until a newer record exists, so a
+    persistent failure costs one paid call per turn, not one per tick.
+    """
+    if not settings.compact_prompt:
+        return "session.compact_prompt is empty"
+    if not stats.hidden:
+        return "the window hides nothing no summary covers"
+    if stats.newest_ts == last_tried_ts:
+        return "already tried since the newest record"
     return None
 
 
@@ -137,51 +164,77 @@ def run_compaction(  # noqa: PLR0913 — the store, the knobs, the client and th
         window_days=settings.verbatim_window_days,
         since=settings.history_since,
         now=now,
+        recent=settings.recent_records,
     )
     if span is None:
-        return "nothing older than the verbatim window"
+        return "nothing to fold"
+    base_id, previous_summary = span.base_id, span.previous_summary
+    landed_records = 0
     with closing(open_runtime_event_log(event_log_path)) as conn:
         cost_recorder = CostRecorder(conn, pricing_table=pricing_table)
-        result = cost_recorder.chat(
-            client,
-            messages=build_compaction_messages(
-                previous_summary=span.previous_summary, records=span.records,
-            ),
-            system=settings.compact_prompt,
-            tools=None,
-            tool_choice=None,
-            kind="compaction",
-            turn_id=None,
-        )
-    range_chars = sum(len(text) for _, _, _, text in span.records)
-    range_chars += len(span.previous_summary or "")
-    known_ids = {record_id for record_id, _, _, _ in span.records}
-    if span.previous_summary:
-        known_ids |= cited_record_ids(span.previous_summary)
-    reason = check_summary(
-        result.text,
-        result.finish_reason,
-        max_chars=settings.summary_max_chars,
-        known_ids=known_ids,
-    )
-    if reason is not None:
-        return f"summary rejected ({reason}); the previous summary stays"
-    summary = (result.text or "").strip()
-    landed = append_summary(
-        memory.db_path,
-        base_id=span.base_id,
-        upto_record_id=span.records[-1][0],
-        summary=summary,
-        model=result.model_used or client.model,
-        input_chars=range_chars,
-        output_chars=len(summary),
-    )
-    if not landed:
-        return "summary discarded: the base summary is no longer current"
-    return (
-        f"summary landed: {len(span.records)} records ({range_chars} chars) -> "
-        f"{len(summary)} chars, anchor {span.records[-1][0]}"
-    )
+        for chunk in _chunks(span.records):
+            result = cost_recorder.chat(
+                client,
+                messages=build_compaction_messages(
+                    previous_summary=previous_summary, records=chunk,
+                ),
+                system=settings.compact_prompt,
+                tools=None,
+                tool_choice=None,
+                kind="compaction",
+                turn_id=None,
+            )
+            range_chars = sum(len(text) for _, _, _, text in chunk) + len(previous_summary or "")
+            known_ids = {record_id for record_id, _, _, _ in chunk}
+            if previous_summary:
+                known_ids |= cited_record_ids(previous_summary)
+            reason = check_summary(
+                result.text,
+                result.finish_reason,
+                max_chars=settings.summary_max_chars,
+                known_ids=known_ids,
+            )
+            if reason is not None:
+                return (
+                    f"summary rejected ({reason}) after {landed_records} of "
+                    f"{len(span.records)} records; the last landed summary stays"
+                )
+            summary = (result.text or "").strip()
+            landed_id = append_summary(
+                memory.db_path,
+                base_id=base_id,
+                upto_record_id=chunk[-1][0],
+                summary=summary,
+                model=result.model_used or client.model,
+                input_chars=range_chars,
+                output_chars=len(summary),
+            )
+            if landed_id is None:
+                return "summary discarded: the base summary is no longer current"
+            base_id, previous_summary = landed_id, summary
+            landed_records += len(chunk)
+            LOGGER.info(
+                "compaction: %d of %d records folded (%d chars -> %d), anchor %s",
+                landed_records, len(span.records), range_chars, len(summary), chunk[-1][0],
+            )
+    return f"summary landed: {landed_records} records, anchor {span.records[-1][0]}"
+
+
+def _chunks(records: tuple[Record, ...]) -> list[tuple[Record, ...]]:
+    """``records`` in order, cut into runs of at most ``_CHUNK_CHARS`` characters.
+
+    A single record over the limit is a run of its own.
+    """
+    runs: list[list[Record]] = [[]]
+    size = 0
+    for record in records:
+        cost = len(record[3]) + _LINE_OVERHEAD_CHARS
+        if runs[-1] and size + cost > _CHUNK_CHARS:
+            runs.append([])
+            size = 0
+        runs[-1].append(record)
+        size += cost
+    return [tuple(run) for run in runs]
 
 
 class CompactionSweep:
@@ -209,33 +262,50 @@ class CompactionSweep:
         self._client: LLMClient | None = None
         self._task: asyncio.Task[None] | None = None
         self._last_attempt: datetime | None = None
+        self._last_tried_ts: str | None = None
 
     def tick(self) -> None:
         """Start a job if one is due and none is running. Loop thread only."""
         if self._task is not None and not self._task.done():
             return
         now = local_now()
+        windowed = self._settings.recent_records > 0
         # A rejected or failed summary is retried no sooner than one idle
         # period later: every attempt is a paid call on the deep preset (live
         # 2026-09-14: a persistent length rejection retried on every tick).
+        # Window mode retries after the next record instead (ADR 0134).
         if (
-            self._last_attempt is not None
+            not windowed
+            and self._last_attempt is not None
             and (now - self._last_attempt).total_seconds() < self._settings.idle_before_compact_s
         ):
             return
-        stats = verbatim_stats(self._memory.db_path, since=self._settings.history_since)
-        reason = blocked_reason(
-            stats,
-            now=now,
-            settings=self._settings,
-            live_open=self._live_open(),
-            context_length=self._context_length(),
+        stats = verbatim_stats(
+            self._memory.db_path,
+            since=self._settings.history_since,
+            recent=self._settings.recent_records,
         )
+        if windowed:
+            reason = window_blocked_reason(
+                stats, settings=self._settings, last_tried_ts=self._last_tried_ts,
+            )
+        else:
+            reason = blocked_reason(
+                stats,
+                now=now,
+                settings=self._settings,
+                live_open=self._live_open(),
+                context_length=self._context_length(),
+            )
         if reason is not None:
             LOGGER.debug("compaction not due: %s", reason)
             return
-        LOGGER.info("compaction due: %d verbatim chars since %s", stats.chars, stats.oldest_ts)
+        LOGGER.info(
+            "compaction due: %d verbatim chars since %s, %d hidden by the window",
+            stats.chars, stats.oldest_ts, stats.hidden,
+        )
         self._last_attempt = now
+        self._last_tried_ts = stats.newest_ts
         self._task = asyncio.create_task(self._run(), name="session_compaction")
 
     async def _run(self) -> None:
@@ -263,4 +333,5 @@ __all__ = [
     "build_compact_client",
     "preset_context_length",
     "run_compaction",
+    "window_blocked_reason",
 ]
