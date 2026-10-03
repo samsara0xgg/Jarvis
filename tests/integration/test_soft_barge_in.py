@@ -100,6 +100,7 @@ class _Rig:
         output_active: Callable[[], bool] | None = None,
         stop_speaking: Callable[[], object] | None = None,
         answer_words: Callable[[str, str, str], None] | None = None,
+        cancel_voice_runs: Callable[[], None] | None = None,
     ) -> None:
         self.output: list[str] = []
         self.phases: list[tuple[str, object]] = []
@@ -145,6 +146,7 @@ class _Rig:
                 or (lambda _turn_id, reason, _text: self.answers.append(reason)),
                 stop_speaking=stop_speaking or self._stop,
                 supersede_unspoken=lambda _turn_id: self.output.append("supersede"),
+                cancel_voice_runs=cancel_voice_runs or (lambda: self.output.append("cancel runs")),
                 yield_speaking=lambda gain: self.output.append(f"gain {gain}"),
                 pause_speaking=lambda paused: self.output.append("pause" if paused else "go on"),
                 recent_speech=recent_speech,
@@ -261,13 +263,13 @@ def test_a_dismissal_stops_her_ends_the_mode_and_is_no_turn(
 def test_leaving_from_the_surface_does_what_a_dismissal_does_without_the_words(
     tmp_path: Path, speaking: bool,  # noqa: FBT001 - pytest parameter
 ) -> None:
-    """ADR 0138: ``dismiss()`` stops her if she talks, drops what is on its way, says goodbye."""
+    """ADR 0138: ``dismiss()`` ends every answer being written, stops her, says goodbye."""
     rig = _Rig(tmp_path, "", speaking=speaking)
     try:
         rig.session.dismiss()
     finally:
         rig.close()
-    assert rig.output == (["stop", "supersede"] if speaking else ["supersede"])
+    assert rig.output == (["cancel runs", "stop"] if speaking else ["cancel runs"])
     assert rig.answers == ["dismissed"]
     # The surface turned the mode off itself; nothing is flipped a second time.
     assert rig.conversation_changes == []

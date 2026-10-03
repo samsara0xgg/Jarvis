@@ -1156,6 +1156,7 @@ class DuplexVoiceSession:
         stop_speaking: Callable[[], object] | None = None,
         hold_output: Callable[[bool], None] | None = None,
         supersede_unspoken: Callable[[str], None] | None = None,
+        cancel_voice_runs: Callable[[], None] | None = None,
         yield_speaking: Callable[[float], None] | None = None,
         pause_speaking: Callable[[bool], None] | None = None,
     ) -> None:
@@ -1190,6 +1191,9 @@ class DuplexVoiceSession:
         until it is accepted or comes to nothing, so no answer starts while
         Allen is talking; ``supersede_unspoken(turn_id)`` once it is
         accepted, before ``utterance.received`` is written.
+
+        ADR 0138: ``cancel_voice_runs()`` ends every answer still being written for
+        the speaker, for :meth:`dismiss`.
         """
         self._ingress = ingress
         self._wake_engine = wake_engine
@@ -1212,6 +1216,7 @@ class DuplexVoiceSession:
         self._stop_speaking = stop_speaking
         self._hold_output = hold_output
         self._supersede_unspoken = supersede_unspoken
+        self._cancel_voice_runs = cancel_voice_runs
         self._yield_speaking = yield_speaking
         self._pause_speaking = pause_speaking
         # Soft barge-in: the turns spoken over Jarvis until final ASR has
@@ -1758,15 +1763,18 @@ class DuplexVoiceSession:
     def dismiss(self) -> None:
         """Allen left conversation mode from the surface: a dismissal without the words.
 
-        As for 退下: what is audible stops at once, an answer still on its way is
-        dropped, and she says the one goodbye line. The mode is already off, since
-        the surface flipped it. Blocks on the player and SQLite, so not on the
-        capture thread.
+        Every answer still being written is cancelled, what is audible stops at once,
+        and she says the one goodbye line. The mode is already off, since the
+        surface flipped it. Blocks on SQLite and the player, so not on the capture
+        thread.
         """
-        turn_id = "T" + secrets.token_hex(4)
+        if self._cancel_voice_runs is not None:
+            try:
+                self._cancel_voice_runs()
+            except Exception:  # noqa: BLE001 - what is audible must still stop
+                LOGGER.warning("cancel_voice_runs failed", exc_info=True)
         self._stop_now()
-        self._supersede(turn_id)
-        self._answer(turn_id, "dismissed", "")
+        self._answer("T" + secrets.token_hex(4), "dismissed", "")
 
     def _recent(self) -> str:
         """What she said lately, for Jev's context; none when it cannot be read."""

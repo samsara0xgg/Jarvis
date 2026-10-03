@@ -2392,6 +2392,67 @@ async def _commentary_heard(
     await asyncio.to_thread(_complete_commentary, runtime, entry)
 
 
+def _last_words(conn: sqlite3.Connection) -> str:
+    """What Allen last said or typed to her; empty when nothing was heard yet."""
+    row = conn.execute(
+        "SELECT json_extract(payload_json, '$.transcript') FROM events "
+        "WHERE type IN ('utterance.received', 'surface.user_intent') ORDER BY id DESC LIMIT 1",
+    ).fetchone()
+    return row[0] if row is not None and isinstance(row[0], str) else ""
+
+
+def _make_cancel_voice_runs(runtime: JarvisRuntime) -> Callable[[], None]:
+    """ADR 0138: the ``() -> None`` that ends every answer still being written for the speaker.
+
+    An exit from the surface must leave nothing that can speak after her goodbye,
+    whatever its age or number. Every open run of a turn that came from Allen's
+    words, that is not for a document alone, and whose policy lets its generation
+    be cancelled, is cancelled as ``user_stop``; its turn is marked stopped so a run
+    of it opening later is cancelled at its open, and the media owner drops what
+    it had of a cancelled run. A turn submitted on a channel the speaker is silent
+    for (``_TTS_SILENT_CHANNELS``) and background turns are left alone.
+    """
+    cancel = make_response_cancel_callable(runtime)
+    registry = runtime.response_runs
+    event_log_path = runtime.runtime_paths.event_log
+
+    def _from_his_words(conn: sqlite3.Connection, turn_id: str) -> bool:
+        channels = [
+            row[0]
+            for row in conn.execute(
+                "SELECT json_extract(payload_json, '$.channel') FROM events "
+                "WHERE type IN ('utterance.received', 'surface.user_intent') "
+                "AND json_extract(payload_json, '$.turn_id') = ?",
+                (turn_id,),
+            )
+        ]
+        return bool(channels) and not any(channel in _TTS_SILENT_CHANNELS for channel in channels)
+
+    def _cancel_voice_runs() -> None:
+        if registry is None:  # pragma: no cover - wiring pairs the two flags
+            return
+        runs = [
+            run
+            for run in registry.open_runs()
+            if run.channel != "document" and run.interrupt_policy.generation_action == "cancel"
+        ]
+        if not runs:
+            return
+        with contextlib.closing(
+            open_runtime_event_log(event_log_path, deadline=time.monotonic() + 1.0),
+        ) as conn:
+            runs = [run for run in runs if _from_his_words(conn, run.turn_id)]
+        for run in runs:
+            registry.mark_turn_stopped(run.turn_id)
+        for run in runs:
+            outcome = cancel(run.response_id, "generation", "user_stop")
+            LOGGER.info(
+                "exit: run %s of turn %s cancelled -> %s", run.response_id, run.turn_id, outcome,
+            )
+
+    return _cancel_voice_runs
+
+
 def _say_conversation_line(runtime: JarvisRuntime, turn_id: str, reason: str, text: str) -> None:
     """ADR 0102: one fixed line back to 「等我一下」 or a dismissal, no model and no turn.
 
@@ -2412,7 +2473,10 @@ def _say_conversation_line(runtime: JarvisRuntime, turn_id: str, reason: str, te
                 payload={"turn_id": turn_id, "reason": reason, "transcript": text},
                 committed_event_bus=runtime.committed_event_bus,
             )
-            said_in = lang.reply_language(text, str(runtime.config.get("reply_language", "follow")))
+            # An exit from the surface has no words: take the language of what he said last.
+            said_in = lang.reply_language(
+                text or _last_words(conn), str(runtime.config.get("reply_language", "follow")),
+            )
             phrases = lang.variants(f"conversation.{reason}", said_in)
             plan = pre_emit_gate(secrets.choice(phrases))
             response_id = new_response_id()
@@ -3667,6 +3731,9 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
             if streaming is not None and runtime.response_runs is not None
             else None
         )
+        cancel_voice_runs = (
+            _make_cancel_voice_runs(runtime) if runtime.response_runs is not None else None
+        )
 
         def _dump_echo_history(canceller: voice_aec.EchoCanceller) -> None:
             path = canceller.dump(runtime.runtime_paths.root / "aec-diagnostics")
@@ -3735,6 +3802,7 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
             stop_speaking=_stop_speaking,
             hold_output=_hold_output,
             supersede_unspoken=supersede_unspoken,
+            cancel_voice_runs=cancel_voice_runs,
             yield_speaking=streaming.set_yield_gain if streaming is not None else None,
             pause_speaking=streaming.pause_speaking if streaming is not None else None,
         )
