@@ -552,9 +552,10 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
   const [archived, setArchived] = useState<string[]>([]);
   const brief = port ? briefRoute.data : demoPops.brief, mail = (port ? mailRoute.data?.unread ?? [] : demoPops.mail).filter(m => !archived.includes(m.id));
   const notices = port ? noticeRoute.data?.notices ?? [] : demoPops.notices;
-  // Letters that need a reply come first, then the unmarked, then the FYI ones, junk last; newest first inside each (the sort is stable).
+  // Letters Jev rated come first, most important first (ADR 0141); then the unrated ones that need a reply, the unmarked, the FYI ones;
+  // junk always last; newest first inside each (the sort is stable).
   const rank = (m: Mail) => m.junk ? 3 : m.reply === 'yes' ? 0 : m.reply === 'fyi' ? 2 : 1;
-  const mailRanked = [...mail].sort((a, b) => rank(a) - rank(b));
+  const mailRanked = [...mail].sort((a, b) => Number(!!a.junk) - Number(!!b.junk) || (b.importance ?? -1) - (a.importance ?? -1) || rank(a) - rank(b));
   const mailYes = mail.filter(m => m.reply === 'yes'), mailJunk = mail.filter(m => m.junk), marked = mail.some(m => m.reply != null || m.junk);
   const archiveJunk = async () => {
     const ids = mailJunk.map(m => m.id);

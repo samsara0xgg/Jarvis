@@ -18,7 +18,8 @@ export type Brief = { date: string; summary: string; lead?: string; items?: numb
 // GET /inherent/mail: unread mail from people (not newsletters or notifications), newest first.
 // `reply` (ADR 0123): 'yes' = Jev is very sure it needs Allen's reply, 'fyi' = very sure it does not, null = no mark.
 // `junk` (ADR 0124): Jev is very sure it is junk Allen did not ask for; the home offers to archive it, never does by itself.
-export type Mail = { id: string; from: string; subject: string; received: string; reply?: 'yes' | 'fyi' | null; junk?: boolean };
+// `importance`: Jev's 0-3 score when it rated the letter (ADR 0141); it only orders the list.
+export type Mail = { id: string; from: string; subject: string; received: string; reply?: 'yes' | 'fyi' | null; junk?: boolean; importance?: number };
 // GET /inherent/notices: what Jarvis itself wants from you (reminders, its questions); agents are not in it.
 export type Notice = { id: string; text: string; at: string };
 

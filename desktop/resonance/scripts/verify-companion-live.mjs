@@ -583,7 +583,10 @@ try {
       todos: [{ id: 't1', title: 'Send the A3 draft', due: iso(Date.now() + 60_000) }] };
     fixtures['/inherent/brief'] = { date: today, summary: 'Two agents finished overnight.', items: 1,
       sections: [{ key: 'items', title: 'Yesterday', rows: [{ text: 'Two agents finished', tag: 'done', label: 'Done' }] }] };
-    fixtures['/inherent/mail'] = { unread: [{ id: 'm1', from: 'Prof. Lee', subject: 'Office hours moved', received: iso(Date.now() - 600_000) }] };
+    // (ADR 0141: the letters Jev rated come first, most important first; the unrated newest letter after them.)
+    fixtures['/inherent/mail'] = { unread: [{ id: 'm3', from: 'Weekly digest', subject: 'This week in tech', received: iso(Date.now() - 60_000) },
+      { id: 'm2', from: 'Shop', subject: '20% off', received: iso(Date.now() - 300_000), importance: .4 },
+      { id: 'm1', from: 'Prof. Lee', subject: 'Office hours moved', received: iso(Date.now() - 600_000), importance: 2.8 }] };
     fixtures['/inherent/notices'] = { notices: [{ id: 'n1', text: 'Reminder: call the dentist', at: iso(Date.now()) }] };
     fixtures['/inherent/settings'] = { values: { reply_language: 'follow', wake_threshold: .95, tts_voice: 'Warm Bestie', tts_volume: 1, output_device: 'System default', input_device: 'System default',
       gpt_live: true, mac_aec: false, timesink: true, keep_audio: true, repos: ['jarvis'], model_conversation: 'gpt-5.6-luna', model_background: 'GPT-6 luna', model_report: 'GPT-6 sol' },
@@ -597,6 +600,8 @@ try {
       (await text('.ad [data-block="today"] .ev span')) === 'Office hours' && (await text('.ad [data-block="today"] .wx')).includes('12°') && (await text('.ad [data-block="today"] .td span')) === 'Send the A3 draft');
     check('L14 the brief, the mail and Jarvis’s reminder show up', await page.locator('.ad [data-block="brief"]').count() === 1
       && (await text('.ad [data-block="mail"] .ml b')) === 'Prof. Lee' && (await text('.ad [data-block="foryou"]')).includes('call the dentist'));
+    check('L14 the mail lists the letters Jev rated by importance, ahead of an unrated newer one',
+      (await page.locator('.ad [data-block="mail"] .ml b').allTextContents()).join(',') === 'Prof. Lee,Shop');
     await panelShot('L14-home');
     await page.locator('.ad [data-block="today"] .td').click(); await page.waitForTimeout(400);
     check('L14 checking a to-do posts { id, done } to /inherent/today/todo', posts.at(-1)?.path === '/inherent/today/todo' && posts.at(-1).body.id === 't1' && posts.at(-1).body.done === true
