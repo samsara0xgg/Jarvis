@@ -787,8 +787,8 @@ realtime:
     # ADR 0129.  Render her voice in the Swift helper native/voice_out instead of
     # the Python PortAudio callback, which skips CoreAudio cycles (a pop) whenever
     # another daemon thread holds the GIL.  Built with swiftc on first start; if
-    # that fails, the Python player is used.  With echo_cancellation on, the helper
-    # streams back the blocks it renders as the canceller's far end.
+    # that fails, the Python player is used.  Unless echo_cancellation is false, the
+    # helper streams back the blocks it renders as the canceller's far end.
     native_player: false
   # ADR-0006 Step 5. Disabled by default. When enabled it additionally
   # requires the Wave-1 transactional/terminal switches above and a live
@@ -800,9 +800,10 @@ realtime:
     backend: sounddevice
     # Software echo cancellation (WebRTC AEC3): what the streaming player
     # sends to the speakers is subtracted from every mic frame, so Jarvis does
-    # not hear itself over the laptop speakers. The reSpeaker board does its
-    # own; turn this off when it is the input.
-    echo_cancellation: true
+    # not hear itself over the laptop speakers. auto: on for any microphone
+    # but the reSpeaker, whose board does its own (decided at each mic open,
+    # ADR 0143). true: always on. false: not built, the player has no tap.
+    echo_cancellation: auto
     # Every conversation barge-in writes the last 8 s as a 3-channel WAV (mic,
     # what Jarvis played, mic after cancellation) to <runtime>/aec-diagnostics.
     echo_diagnostics: false

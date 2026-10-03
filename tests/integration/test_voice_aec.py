@@ -90,3 +90,24 @@ def test_echo_is_removed_and_talk_over_survives(tmp_path: Path) -> None:
     mic_ch, played_ch, cleaned_ch = (tracks.reshape(-1, 3)[echo_only, i] / 32767 for i in range(3))
     assert _db(played_ch) > -30.0, "the played track is silent"
     assert _db(mic_ch) - _db(cleaned_ch) >= 20.0, "the dump's mic and cleaned tracks match"
+
+
+def test_echo_cancellation_config_auto_true_false() -> None:
+    """Auto follows the microphone, true cancels every one, false builds nothing."""
+    from types import SimpleNamespace  # noqa: PLC0415
+
+    from jarvis.runtime.inherent_loop import _build_echo_canceller  # noqa: PLC0415
+
+    def built(*, setting: object) -> EchoCanceller | None:
+        ingress = {} if setting is None else {"echo_cancellation": setting}
+        runtime = SimpleNamespace(config={"realtime": {"single_audio_ingress": ingress}})
+        return _build_echo_canceller(runtime)  # type: ignore[arg-type]
+
+    frame = np.full(512, 1000, dtype="<i2").tobytes()
+    for setting, respeaker_passes in ((None, True), ("auto", True), (True, False)):
+        canceller = built(setting=setting)
+        assert canceller is not None
+        canceller.set_input_device("reSpeaker XVF3800 4-Mic Array")
+        out = canceller.clean(frame, stream_epoch=1, discontinuity=False)
+        assert (out == frame) is respeaker_passes
+    assert built(setting=False) is None

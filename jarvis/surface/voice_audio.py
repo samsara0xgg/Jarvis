@@ -1588,6 +1588,10 @@ class AudioIngress:
             if commit_allowed:
                 self._opening_timeline = None
                 self._native_ring = native_ring
+                if self._echo_canceller is not None:
+                    self._echo_canceller.set_input_device(
+                        result.profile.device_name if result.profile is not None else "",
+                    )
                 self._active_timeline = timeline
                 self._active_epoch = epoch
                 native_ring.set_publication_token(timeline)

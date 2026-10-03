@@ -12,6 +12,11 @@ Threads: :meth:`EchoCanceller.add_playback` runs on the PortAudio output
 callback and only writes a preallocated ring; every WebRTC call runs on the
 ingress worker inside :meth:`EchoCanceller.clean`.
 
+The canceller always exists and the player always taps into it; each mic open
+tells it which microphone it got (:meth:`EchoCanceller.set_input_device`). The
+reSpeaker's board cancels its own echo, so that mic passes through untouched;
+any other microphone is cancelled here.
+
 Diagnostics (``history_s > 0``): the last few seconds of mic-before, what
 Jarvis played, and mic-after are kept in lockstep 10 ms chunks, and
 :meth:`EchoCanceller.dump` writes them as one 3-channel 16 kHz WAV.
@@ -19,6 +24,7 @@ Jarvis played, and mic-after are kept in lockstep 10 ms chunks, and
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 import wave
@@ -32,6 +38,11 @@ from jarvis.surface.voice_tts import _RingBuffer  # the player's own SPSC ring
 if TYPE_CHECKING:
     from pathlib import Path
 
+LOGGER = logging.getLogger(__name__)
+
+# The XVF3800 board cancels the echo itself (it sends the cleaned mix on channel 0).
+_SELF_CANCELLING_MIC = "respeaker"
+
 # ~1.4 s at 48 kHz; the ingress worker drains it every 32 ms mic frame.
 _PLAYBACK_RING_SAMPLES = 65_536
 
@@ -39,8 +50,13 @@ _PLAYBACK_RING_SAMPLES = 65_536
 class EchoCanceller:
     """One WebRTC echo canceller shared by the player and the mic ingress."""
 
-    def __init__(self, *, mic_rate_hz: int = 16_000, history_s: float = 0.0) -> None:
-        """Load the WebRTC module now, so a missing wheel fails at startup."""
+    def __init__(
+        self, *, mic_rate_hz: int = 16_000, history_s: float = 0.0, follow_device: bool = True,
+    ) -> None:
+        """Load the WebRTC module now, so a missing wheel fails at startup.
+
+        ``follow_device`` False cancels whatever microphone is open (a debug override).
+        """
         from livekit import rtc  # noqa: PLC0415 - lazy: the wheel loads a native library
 
         self._rtc = rtc
@@ -49,6 +65,8 @@ class EchoCanceller:
         self._playback = _RingBuffer(_PLAYBACK_RING_SAMPLES)
         self._playback_rate_hz = 0
         self._playback_chunk = np.zeros(0, dtype=np.float32)
+        self._follow_device = follow_device
+        self._bypass = False
         self._stream_epoch: int | None = None
         # Diagnostics: (mic, played, cleaned) int16 bytes per 10 ms chunk.
         self._history: deque[tuple[bytes, bytes, bytes]] | None = (
@@ -57,8 +75,18 @@ class EchoCanceller:
         self._history_lock = threading.Lock()
         self._restart()
 
+    def set_input_device(self, name: str) -> None:
+        """A microphone just opened: pass it through if it cancels its own echo, else cancel."""
+        self._bypass = self._follow_device and _SELF_CANCELLING_MIC in name.lower()
+        LOGGER.info(
+            "echo cancellation %s on microphone %r",
+            "off (the microphone does its own)" if self._bypass else "on", name,
+        )
+
     def add_playback(self, block: np.ndarray, sample_rate_hz: int) -> None:
         """Output callback: queue the float32 block the device is about to play."""
+        if self._bypass:
+            return
         self._playback_rate_hz = sample_rate_hz
         self._playback.write(block)
 
@@ -67,8 +95,11 @@ class EchoCanceller:
 
         The mic frame (512 samples) is not a multiple of WebRTC's 10 ms, so
         output runs one 10 ms chunk behind input; that fixed lag keeps every
-        returned frame full.
+        returned frame full. A microphone that cancels its own echo comes back
+        as it came.
         """
+        if self._bypass:
+            return pcm16
         if stream_epoch != self._stream_epoch or discontinuity:
             self._stream_epoch = stream_epoch
             self._restart()

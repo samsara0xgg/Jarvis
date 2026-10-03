@@ -45,7 +45,7 @@ YAML: dict[str, Any] = {
         "tts_voice": "Chinese (Mandarin)_Warm_Bestie",
         "output_device": None,
         "gpt_live": {"enabled": True},
-        "single_audio_ingress": {"echo_cancellation": False},
+        "single_audio_ingress": {"echo_cancellation": "auto"},
     },
 }
 DEVICES = {
@@ -80,7 +80,7 @@ def test_the_page_reads_what_jarvis_booted_with(tmp_path: Path) -> None:
     assert body["values"] == {
         "reply_language": "follow", "wake_threshold": 0.95, "tts_voice": "暖心闺蜜",
         "tts_volume": 1.0, "output_device": "System default", "input_device": "System default",
-        "gpt_live": True, "mac_aec": False, "timesink": True, "keep_audio": True,
+        "gpt_live": True, "timesink": True, "keep_audio": True,
         "audio_days": 30, "screenshot_days": 7,
         "repos": ["~/Projects/jarvis", "~/Projects/typlus"],
         "model_conversation": "gpt-5.6-luna", "model_background": "gpt-6-luna",
@@ -103,7 +103,7 @@ def test_saving_waits_for_the_next_boot(tmp_path: Path) -> None:
     """POST writes the file; the running view says restart, the next boot reads the new values."""
     changes = {
         "input_device": "MacBook Pro Microphone", "tts_voice": "Crisp Girl",
-        "wake_threshold": 0.9, "reply_language": "en", "mac_aec": True,
+        "wake_threshold": 0.9, "reply_language": "en",
         "audio_days": None, "screenshot_days": 90,
     }
     body = _client(tmp_path).post("/inherent/settings", json={"changes": changes}).json()
@@ -111,16 +111,14 @@ def test_saving_waits_for_the_next_boot(tmp_path: Path) -> None:
     assert {key: body["values"][key] for key in changes} == changes
     assert json.loads((tmp_path / "settings.json").read_text()) == {
         "input_device": "MacBook Pro Microphone", "tts_voice": "Chinese (Mandarin)_Crisp_Girl",
-        "wake_threshold": 0.9, "reply_language": "en", "mac_aec": True,
+        "wake_threshold": 0.9, "reply_language": "en",
         "audio_days": None, "screenshot_days": 90,
     }
     booted = apply_settings(YAML, tmp_path)
     assert booted["memory"]["audio_retention_days"] is None
     assert booted["tools"]["screen"]["retention_days"] == 90
     assert booted["realtime"]["input_device"] == "MacBook Pro Microphone"
-    assert booted["realtime"]["single_audio_ingress"]["echo_cancellation"] is True
     assert booted["reply_language"] == "en"
-    assert YAML["realtime"]["single_audio_ingress"]["echo_cancellation"] is False
     after_restart = _client(tmp_path).get("/inherent/settings").json()
     assert after_restart["restart_pending"] is False
     assert after_restart["values"]["tts_voice"] == "Crisp Girl"
@@ -146,6 +144,18 @@ def test_a_value_the_page_cannot_hold_is_refused(tmp_path: Path) -> None:
     ):
         assert client.post("/inherent/settings", json={"changes": changes}).status_code == 400
     assert not (tmp_path / "settings.json").exists()
+
+
+def test_an_old_saved_mac_aec_is_ignored(tmp_path: Path) -> None:
+    """Echo cancellation follows the microphone now: the page has no such key, a saved one is inert."""
+    (tmp_path / "settings.json").write_text(json.dumps({"mac_aec": True, "timesink": False}))
+    booted = apply_settings(YAML, tmp_path)
+    assert booted["realtime"]["single_audio_ingress"]["echo_cancellation"] == "auto"
+    assert booted["observer"]["timesink"]["enabled"] is False
+    body = _client(tmp_path).get("/inherent/settings").json()
+    assert "mac_aec" not in body["values"]
+    refused = _client(tmp_path).post("/inherent/settings", json={"changes": {"mac_aec": True}})
+    assert refused.status_code == 400
 
 
 def test_a_broken_file_boots_on_the_yaml(tmp_path: Path) -> None:

@@ -318,9 +318,11 @@ def _ingress(
     native_capacity: int = 64,
     subscriber_capacity: int = 16,
     wake_input_channel: int | None = None,
+    echo_canceller: Any = None,  # noqa: ANN401
 ) -> voice_audio.AudioIngress:
     return voice_audio.AudioIngress(
         backend=backend,
+        echo_canceller=echo_canceller,
         config=replace(
             voice_audio.AudioIngressConfig(),
             wake_input_channel=wake_input_channel,
@@ -1235,6 +1237,52 @@ def test_fault_reopen_sleep_wake_and_late_epoch_callback_rejection() -> None:
     assert ingress.metrics().late_epoch_callbacks_rejected == 2
     assert ingress.close().definitively_closed
     assert backend.max_active_owner_count == 1
+
+
+def test_echo_cancellation_follows_the_microphone_each_open_without_a_player_rebuild(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """ADR 0143: the reSpeaker passes through, any other microphone is cancelled, per open."""
+    from jarvis.surface.voice_aec import EchoCanceller  # noqa: PLC0415
+
+    canceller = EchoCanceller()
+    player = voice_tts.AudioStreamPlayer(
+        sample_rate_hz=48000, lazy_open=True, playback_tap=canceller.add_playback,
+    )
+    tap = player._playback_tap
+    backend = _FakeBackend()
+    ingress = _ingress(backend, echo_canceller=canceller)
+    capture = ingress.subscribe(
+        name="aec-capture", purpose=voice_audio.SubscriberPurpose.CAPTURE,
+    )
+
+    def heard() -> np.ndarray:
+        epoch = ingress.stream_epoch
+        for _ in range(3):  # past the canceller's 10 ms lead
+            backend.emit(epoch=epoch, value=1000)
+        return np.frombuffer(_read_frames(capture, 3)[-1].pcm16_mono, dtype="<i2")
+
+    with caplog.at_level("INFO", logger="jarvis.surface.voice_aec"):
+        backend.device_uid = "reSpeaker XVF3800 4-Mic Array"
+        assert ingress.start().started
+        assert np.all(heard() == 1000)  # untouched
+        assert ingress.stop_for_sleep() is not None
+        backend.device_uid = "MacBook Pro Microphone"
+        assert ingress.resume_after_wake() is not None
+        assert not np.all(heard() == 1000)  # cancelled: the DC the high-pass drops is gone
+        assert ingress.stop_for_sleep() is not None
+        backend.device_uid = "RESPEAKER Lite"
+        assert ingress.resume_after_wake() is not None
+        assert np.all(heard() == 1000)  # the name test ignores case
+    assert [r.getMessage() for r in caplog.records] == [
+        "echo cancellation off (the microphone does its own) on microphone "
+        "'reSpeaker XVF3800 4-Mic Array'",
+        "echo cancellation on on microphone 'MacBook Pro Microphone'",
+        "echo cancellation off (the microphone does its own) on microphone "
+        "'RESPEAKER Lite'",
+    ]
+    assert player._playback_tap is tap  # the same player and tap served all three opens
+    assert ingress.close().definitively_closed
 
 
 def test_device_fault_close_race_revokes_reopen_before_shutdown() -> None:

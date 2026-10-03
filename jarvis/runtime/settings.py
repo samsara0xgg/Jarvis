@@ -64,7 +64,6 @@ PATHS: dict[str, tuple[str, ...]] = {
     "output_device": ("realtime", "output_device"),
     "input_device": ("realtime", "input_device"),
     "gpt_live": ("realtime", "gpt_live", "enabled"),
-    "mac_aec": ("realtime", "single_audio_ingress", "echo_cancellation"),
     "timesink": ("observer", "timesink", "enabled"),
     "keep_audio": ("memory", "retain_audio"),
     "audio_days": ("memory", "audio_retention_days"),
@@ -73,7 +72,7 @@ PATHS: dict[str, tuple[str, ...]] = {
 _DEFAULTS: dict[str, Any] = {"reply_language": "follow", "tts_volume": 1.0}
 _DEVICES = {"output_device": "output", "input_device": "input"}
 _RANGES = {"wake_threshold": (0.80, 0.99), "tts_volume": (0.3, 1.0)}
-_SWITCHES = ("gpt_live", "mac_aec", "timesink", "keep_audio")
+_SWITCHES = ("gpt_live", "timesink", "keep_audio")
 # ADR 0067: how many days recordings and screenshots are kept; None is forever.
 RETENTION_DAYS = (7, 30, 90, None)
 _RETENTION = ("audio_days", "screenshot_days")

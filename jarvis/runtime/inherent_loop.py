@@ -2620,17 +2620,24 @@ def _build_voice_pipeline(
 
 
 def _build_echo_canceller(runtime: JarvisRuntime) -> voice_aec.EchoCanceller | None:
-    """One canceller for the streaming player and the mic ingress, when enabled."""
+    """One canceller for the streaming player and the mic ingress.
+
+    ``echo_cancellation`` is ``auto`` (the default: on for any microphone but the
+    reSpeaker, which does its own), ``true`` (always on) or ``false`` (none built).
+    """
     realtime_raw = runtime.config.get("realtime")
     realtime = realtime_raw if isinstance(realtime_raw, Mapping) else {}
     ingress_raw = realtime.get("single_audio_ingress")
     ingress = ingress_raw if isinstance(ingress_raw, Mapping) else {}
-    if ingress.get("echo_cancellation") is not True:
+    mode = ingress.get("echo_cancellation", "auto")
+    if mode is False:
         return None
     # Diagnostics keep the last 8 s of mic / played / cleaned audio in memory;
     # every conversation barge-in writes them under <runtime>/aec-diagnostics.
     diagnostics = ingress.get("echo_diagnostics") is True
-    return voice_aec.EchoCanceller(history_s=8.0 if diagnostics else 0.0)
+    return voice_aec.EchoCanceller(
+        history_s=8.0 if diagnostics else 0.0, follow_device=mode is not True,
+    )
 
 
 def _native_streaming_player(

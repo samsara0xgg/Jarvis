@@ -26,7 +26,7 @@ export type Account = { name: string; ok: boolean; text: string };
 type Daemon = { values: Record<string, unknown>; options?: Record<string, string[]>; defaults?: Record<string, string | null>; restart_pending?: boolean };
 const DEMO: Daemon = {
   values: { reply_language: 'follow', wake_threshold: .95, tts_voice: 'Warm Bestie', tts_volume: 1, output_device: 'System default', input_device: 'System default',
-    gpt_live: true, mac_aec: false, timesink: true, keep_audio: true, repos: ['jarvis', 'typlus', 'timesink', 'guard-mode', 'drum-machine-pro', 'simple-wiki'],
+    gpt_live: true, timesink: true, keep_audio: true, repos: ['jarvis', 'typlus', 'timesink', 'guard-mode', 'drum-machine-pro', 'simple-wiki'],
     model_conversation: 'gpt-5.6-luna', model_background: 'GPT-6 luna', model_report: 'GPT-6 sol · flex' },
   options: { tts_voice: ['Warm Bestie', 'Explorative Girl'], output_device: ['System default', 'Multi-Output Device 2', 'MacBook Pro Speakers'], input_device: ['System default', 'reSpeaker XVF3800', 'MacBook Pro Microphone'] },
   defaults: { output_device: 'MacBook Pro Speakers', input_device: 'MacBook Pro Microphone' },
@@ -165,7 +165,6 @@ export function SettingsPage({ lang, port, open, cat, onCat, ctl, accounts, keyD
       { id: 'out', name: ['Speaker', '扬声器'], ctl: dDevice('output_device'), off },
       { id: 'in', name: ['Microphone', '麦克风'], ctl: dDevice('input_device'), off },
       { id: 'live', name: ['GPT-Live', 'GPT-Live'], ctl: dSwitch('gpt_live'), off },
-      { id: 'aec', name: ['Echo cancellation on the Mac', 'Mac 上的回声消除'], note: ['Off while the reSpeaker does it', 'reSpeaker 负责时关着'], ctl: dSwitch('mac_aec'), off },
     ] },
     { id: 'sounds', icon: <Bell/>, name: ['Sounds', '提示音'], sum: ctl.cues.on ? `${t(['On', '开'])} · ${pct(ctl.cues.volume)}` : t(['Off', '关']), items: [
       { id: 'cues', name: ['Sound cues', '提示音'], note: ['Her own cues. The mute button silences them too', '她自己的提示音。静音键也会关掉它们'], ctl: { k: 'switch', on: ctl.cues.on, set: on => ctl.setCues({ on }) } },
