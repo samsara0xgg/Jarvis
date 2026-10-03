@@ -384,7 +384,7 @@ _WAKE_FRAME_SAMPLES: int = 1280
 # ``_MODE_THRESHOLDS`` keys).  A closed set: ADR-0006 D8 names both and
 # ``realtime.single_audio_ingress.output_active_vad_mode`` selects between them.
 _VAD_MODES: Final[tuple[str, ...]] = ("record", "tts")
-# ADR 0142: how long an ask card from a barge-pause fragment stays off the screen, so a
+# ADR 0144: how long an ask card from a barge-pause fragment stays off the screen, so a
 # continuation that folds the fragment in (ADR 0074) arrives before it ever shows.
 _FRAGMENT_CARD_HOLD_MS: Final[int] = 1_500
 _CARD_EVENT_TYPES: Final[tuple[str, ...]] = (
@@ -589,7 +589,7 @@ def _vad_profiles(raw: object) -> dict[str, voice_audio.VadThresholds]:
 def _visible_ask_card(conn: sqlite3.Connection, now_ms: int) -> PendingClarification | None:
     """ADR 0066: the ask card to show, or ``None``.
 
-    ADR 0142: a card its turn put up from a barge-pause fragment stays hidden for
+    ADR 0144: a card its turn put up from a barge-pause fragment stays hidden for
     ``_FRAGMENT_CARD_HOLD_MS``; a continuation arriving by then closes it unseen.
     """
     slot = PendingClarification.from_events(iter_events_of_types(conn, CLARIFICATION_EVENT_TYPES))

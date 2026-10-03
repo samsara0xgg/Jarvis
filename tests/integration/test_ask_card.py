@@ -160,7 +160,7 @@ def _asked_at(conn: sqlite3.Connection) -> int:
 def test_a_card_from_a_barge_pause_fragment_waits_out_the_hold_before_it_shows(
     conn: sqlite3.Connection,
 ) -> None:
-    """ADR 0142: the fragment's card is hidden for the hold, then shown if nothing folded it."""
+    """ADR 0144: the fragment's card is hidden for the hold, then shown if nothing folded it."""
     _heard(conn, "T-ask", "barge_pause")
     _ask(conn, "Q1")
     at = _asked_at(conn)
@@ -173,7 +173,7 @@ def test_a_card_from_a_barge_pause_fragment_waits_out_the_hold_before_it_shows(
 def test_a_continuation_inside_the_hold_closes_the_fragment_card_unseen(
     conn: sqlite3.Connection,
 ) -> None:
-    """ADR 0142: the rest of his sentence folds the fragment in before the hold ends."""
+    """ADR 0144: the rest of his sentence folds the fragment in before the hold ends."""
     _heard(conn, "T-ask", "barge_pause")
     _ask(conn, "Q1")
     at = _asked_at(conn)
@@ -183,7 +183,7 @@ def test_a_continuation_inside_the_hold_closes_the_fragment_card_unseen(
 
 
 def test_a_card_from_any_other_turn_shows_at_once(conn: sqlite3.Connection) -> None:
-    """ADR 0142: only a barge-pause fragment's card is held."""
+    """ADR 0144: only a barge-pause fragment's card is held."""
     _heard(conn, "T-ask", "acoustic_pause")
     _ask(conn, "Q1")
     shown = _visible_ask_card(conn, _asked_at(conn))
