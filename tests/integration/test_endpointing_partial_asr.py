@@ -481,7 +481,7 @@ def _utterance_id(harness: _Harness) -> str:
 
 
 def test_a_finished_pass_settles_the_captions_and_the_tail_decodes_only_what_follows() -> None:
-    """ADR 0143: the pass's words are ``settled``; later partials decode the audio after its cut."""
+    """ADR 0145: the pass's words are ``settled``; later partials decode the audio after its cut."""
     shown: list[tuple[str, str]] = []
     decoder = _RecordingDecoder(["把灯", "把灯打开", "把灯打开", "然后关门。"])
     harness = _caption_harness(decoder, shown)

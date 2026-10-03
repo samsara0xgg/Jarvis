@@ -112,7 +112,7 @@ export type TalkProps = {
   voice: Voice; hearing: boolean;
   // What has been heard so far of the words still coming in (ADR 0111): the label follows it, and the pill and its end button follow the label.
   partial: string;
-  // With a hybrid final recognizer (ADR 0143) the part of `partial` a finished pass settled; the rest is still only a guess and shows dimmer. Null: all one colour.
+  // With a hybrid final recognizer (ADR 0145) the part of `partial` a finished pass settled; the rest is still only a guess and shows dimmer. Null: all one colour.
   settled: string | null;
   // The tool the turn is waiting on, as the daemon's fixed line ("Searching the web..."); empty when none is running.
   tool: string;

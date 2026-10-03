@@ -152,7 +152,7 @@ class PartialSnapshot:
     utterance_id: str
     revision: int
     audio_bytes: bytes
-    # Bytes of the utterance's audio that ``audio_bytes`` leaves out: the settled part (ADR 0143).
+    # Bytes of the utterance's audio that ``audio_bytes`` leaves out: the settled part (ADR 0145).
     cut_bytes: int = 0
 
 
@@ -487,7 +487,7 @@ class UtteranceAssembler:
         """Create bounded idle/pre-roll/utterance storage around one VAD.
 
         ``on_partial(turn_id, settled, tail)`` is told each time what has been heard so
-        far changes (ADR 0111, 0143); it only shows it and never decides anything.
+        far changes (ADR 0111, 0145); it only shows it and never decides anything.
         ``settled`` is the words of the audio a finished final-ASR pass heard (see
         :meth:`settle`), ``tail`` what was said after it.
         ``prepare_final(utterance_id, audio, speech_s)`` is called at a pause of
@@ -508,7 +508,7 @@ class UtteranceAssembler:
         self._discard_final = discard_final
         self._shown_partial = ("", "")
         self._frame_bytes = frame_samples * 2
-        # ADR 0143: the words of the audio up to a pause that a finished final-ASR pass heard.
+        # ADR 0145: the words of the audio up to a pause that a finished final-ASR pass heard.
         # ``settle`` runs on that pass's thread and only fills the inbox; the capture thread,
         # which owns the utterance, takes it from there.
         self._settled_text = ""
@@ -642,7 +642,7 @@ class UtteranceAssembler:
     def settle(self, utterance_id: str, audio_bytes: int, text: str) -> None:
         """ASR heard the first ``audio_bytes`` of ``utterance_id``'s audio: ``text``.
 
-        ADR 0143. Safe from any thread; the newest call wins, and one for an utterance that is
+        ADR 0145. Safe from any thread; the newest call wins, and one for an utterance that is
         no longer the current one is ignored when the capture thread takes it.
         """
         with self._settled_lock:
@@ -1331,7 +1331,7 @@ class DuplexVoiceSession:
             prepare_final=getattr(pipeline, "prepare_final", None),
             discard_final=getattr(pipeline, "discard_final", None),
         )
-        # ADR 0143: with a final recognizer that hears ahead, captions say which words it settled.
+        # ADR 0145: with a final recognizer that hears ahead, captions say which words it settled.
         self._captions_settle = False
         listen = getattr(pipeline, "on_prepared_text", None)
         if config.partial_asr.captions and not config.partial_asr.enabled and callable(listen):
@@ -2149,7 +2149,7 @@ class DuplexVoiceSession:
             self._diagnostic_last_cursor = frame.sample_cursor + frame.frame_count
 
     def _show_partial(self, turn_id: str, settled: str, tail: str) -> None:
-        """ADR 0111, 0143: what has been heard so far, for the surface to show while he speaks.
+        """ADR 0111, 0145: what has been heard so far, for the surface to show while he speaks.
 
         ``text`` is the two joined, for a surface that does not tell them apart; ``settled`` and
         ``tail`` are sent only when a final pass can settle words, so a surface can dim the tail.

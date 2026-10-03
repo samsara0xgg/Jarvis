@@ -738,7 +738,7 @@ try {
     await s.context.close();
   }
 
-  // ---- with a hybrid final recognizer (ADR 0143) the words a finished pass settled show in full colour, the rest dimmer ----
+  // ---- with a hybrid final recognizer (ADR 0145) the words a finished pass settled show in full colour, the rest dimmer ----
   {
     const s = await scene({ captions: 'brief' });
     const { page, emit } = s;

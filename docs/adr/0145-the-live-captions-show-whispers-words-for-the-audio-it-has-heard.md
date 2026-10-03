@@ -1,4 +1,4 @@
-# ADR 0143 — The live captions show Whisper's words for the audio it has heard
+# ADR 0145 — The live captions show Whisper's words for the audio it has heard
 
 **Status:** Accepted
 **Date:** 2026-10-03

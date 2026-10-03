@@ -136,7 +136,7 @@ class VoicePipeline:
             prepare(utterance_id, audio_bytes, speech_s)
 
     def on_prepared_text(self, listener: Callable[[str, int, str], None]) -> bool:
-        """Hand ``listener`` the text of each pass the recognizer prepared (ADR 0143).
+        """Hand ``listener`` the text of each pass the recognizer prepared (ADR 0145).
 
         Returns whether the recognizer prepares at all; one that does not never calls it.
         The listener runs on the recognizer's worker thread.

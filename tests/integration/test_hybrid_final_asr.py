@@ -387,7 +387,7 @@ def test_the_session_prepares_each_pause_discards_on_speech_and_commits_the_prep
 
 
 def test_each_finished_pass_is_announced_even_when_its_entry_was_dropped_meanwhile() -> None:
-    """ADR 0143: the captions use a pass for the audio up to a pause after Allen kept speaking."""
+    """ADR 0145: the captions use a pass for the audio up to a pause after Allen kept speaking."""
     told: list[tuple[str, int, str]] = []
     gate = threading.Event()
     ears = _hybrid(_sensevoice("zh"), zh=_whisper("你好吗", gate=gate))

@@ -765,7 +765,7 @@ class HybridFinalRecognizer:
 
     :meth:`prepare` starts that work when Allen goes quiet, so :meth:`recognize_prepared` finds
     it done, or nearly, when the endpoint commits. mlx cannot be interrupted, so one worker
-    thread runs the passes one after another. ADR 0143: each finished pass is also handed to
+    thread runs the passes one after another. ADR 0145: each finished pass is also handed to
     :meth:`on_prepared_text`'s listener, so the captions can show Whisper's words for it.
     """
 
@@ -901,6 +901,8 @@ class HybridFinalRecognizer:
     def _announce(self, entry: _PreparedFinal) -> None:
         listener = self._on_prepared_text
         if listener is None or entry.result is None or not entry.result.text.strip():
+            return
+        if _looks_looped(entry.result.text):  # a looped prefix would sit on screen until the next pass
             return
         try:
             listener(entry.utterance_id, len(entry.audio_pcm), entry.result.text)
