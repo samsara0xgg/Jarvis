@@ -225,7 +225,7 @@ day_summary:
     ### Decisions and facts the user stated
     ### Unfinished
 
-# ADR 0145 — 核心记忆：每晚（在 day_summary 的每日任务里，摘要写完之后）把每个还没整理过的
+# ADR 0146 — 核心记忆：每晚（在 day_summary 的每日任务里，摘要写完之后）把每个还没整理过的
 # 过去日期交给模型，改核心记忆里的条目（加、改写、标过时），从旧到新逐天做。
 # 答案要先过检查：JSON 合法、条目号存在、引用的记录标签（r1, r2, ... 按时间排，存储前换回
 # 真正的 record_id）是那一天的、过时条目不超过 max_stale、整份不超过 max_chars；有一条不过就整份丢掉，同一次运行再问一次，还不过就停在

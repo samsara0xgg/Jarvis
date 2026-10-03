@@ -1,4 +1,4 @@
-"""Runtime wiring for the nightly core memory consolidation (ADR 0145).
+"""Runtime wiring for the nightly core memory consolidation (ADR 0146).
 
 Runs inside the daily day-summary job, right after the summaries are written: every
 local day after the current version's ``upto_day`` that has a day summary, up to

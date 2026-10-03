@@ -1,4 +1,4 @@
-# ADR 0145 — Core Memory Is a Versioned Note the Night Consolidates
+# ADR 0146 — Core Memory Is a Versioned Note the Night Consolidates
 
 **Status:** Accepted
 **Date:** 2026-10-03

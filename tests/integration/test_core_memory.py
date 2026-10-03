@@ -1,4 +1,4 @@
-"""Core memory (ADR 0145): migration, rendering, ``remember`` versions and the nightly pass.
+"""Core memory (ADR 0146): migration, rendering, ``remember`` versions and the nightly pass.
 
 Real memory.db, real ``DaySummarySchedule`` and the real ``remember`` tool through the
 default registry; only the consolidator's provider call is faked, by a client that

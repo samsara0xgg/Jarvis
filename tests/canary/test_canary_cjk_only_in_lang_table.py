@@ -61,7 +61,7 @@ _MATCHERS: Final[dict[str, frozenset[str]]] = {
     "jarvis/runtime/daily_report.py": frozenset({"_PAST_DAY", "_YESTERDAY"}),
     "jarvis/execution/tool_search.py": frozenset({"_TOKEN"}),
     "jarvis/shared/text.py": frozenset({"is_english"}),
-    # The six core-memory section names (ADR 0145) are stored keys and the exact words the
+    # The six core-memory section names (ADR 0146) are stored keys and the exact words the
     # consolidation prompt and the `remember` enum name; they are not translated.
     "jarvis/state/core_memory.py": frozenset({"SECTIONS"}),
     "jarvis/state/daily_report.py": frozenset({"MILESTONES", "_QUESTION"}),

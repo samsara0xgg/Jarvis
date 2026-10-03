@@ -65,7 +65,7 @@ _L2_OPERATIONAL_INSERTS: dict[str, frozenset[str]] = {
     "jarvis/state/memory_db.py": frozenset(
         {"records", "summaries", "sent", "day_summaries"},
     ),
-    # ADR 0145: the versions of the user's core memory, derived from records and
+    # ADR 0146: the versions of the user's core memory, derived from records and
     # `remember` calls, appended by their one L2 owner.
     "jarvis/state/core_memory.py": frozenset({"core_memory"}),
     # ADR 0019: which Codex threads this daemon opened (parent action, child

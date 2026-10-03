@@ -1,4 +1,4 @@
-"""L2 core memory: the append-only versioned note about the user (ADR 0145).
+"""L2 core memory: the append-only versioned note about the user (ADR 0146).
 
 One ``core_memory`` row is one version of a document with six fixed sections; the
 latest row is current and every older row stays as history. This module owns the

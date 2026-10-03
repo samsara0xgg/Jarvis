@@ -1,4 +1,4 @@
-"""L3 core memory consolidation: the model's input and the gate on its answer (ADR 0145).
+"""L3 core memory consolidation: the model's input and the gate on its answer (ADR 0146).
 
 One local day goes in with the current core memory; typed changes come out, or the
 reason to store nothing. The gates are mechanical and reject the whole list on any

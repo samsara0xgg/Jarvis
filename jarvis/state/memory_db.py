@@ -3,7 +3,7 @@
 One standalone SQLite file (``memory.db``), deliberately separate from the
 runtime Event Log so the runtime can be rewritten without touching it.
 Append-only: rows are never updated or deleted. The user's lasting facts are
-``core_memory`` versions (ADR 0145); the legacy ``profile`` table is read once, to
+``core_memory`` versions (ADR 0146); the legacy ``profile`` table is read once, to
 migrate it into the first version. Every writer opens its own
 short-lived connection, so callers on any thread can write without sharing
 state.
@@ -288,7 +288,7 @@ def _keep_item(
     section: str | None,
     origin: str,
 ) -> None:
-    """Append a core-memory version that keeps ``text`` under ``topic`` (ADR 0145)."""
+    """Append a core-memory version that keeps ``text`` under ``topic`` (ADR 0146)."""
     now = local_now()
     with closing(open_memory_db(path)) as conn, core_memory.write_transaction(conn):
         base = core_memory.current(conn, iso_seconds(now))
@@ -322,7 +322,7 @@ def set_user_name(path: Path, name: str) -> None:
 
 
 def remember_fact(path: Path, topic: str, fact: str, section: str | None = None) -> None:
-    """Keep ``fact`` in core memory under ``topic``; the same topic replaces it (ADR 0066, 0145).
+    """Keep ``fact`` in core memory under ``topic``; the same topic replaces it (ADR 0066, 0146).
 
     The item keeps its place in the block, so rewriting a fact never reorders the prompt's
     ``[About the user]`` lines. A new topic goes to the end of ``section`` (default: 关于你).
@@ -479,7 +479,7 @@ def _current_summary(conn: sqlite3.Connection) -> _Summary | None:
 
 
 def _core_memory_lines(conn: sqlite3.Connection) -> list[str]:
-    """The rendered core memory, one prompt line each (ADR 0145)."""
+    """The rendered core memory, one prompt line each (ADR 0146)."""
     version = core_memory.current(conn, iso_seconds(local_now()))
     return core_memory.render(version.doc).splitlines()
 
