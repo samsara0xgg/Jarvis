@@ -560,10 +560,25 @@ realtime:
   # (ADR 0077: 0.47-0.61 s after the stop, SenseVoice about 0.1 s).
   # hybrid (ADR 0132): SenseVoice writes the captions and any utterance with
   # under 1 s of speech; Whisper, with SenseVoice's language fixed (zh, yue
-  # and en; no word list), writes the rest.  It starts when Allen has been
-  # quiet 192 ms, so its words are ready by the 768 ms endpoint.  Needs
-  # mlx-whisper like whisper.
+  # and en), writes the rest.  It starts when Allen has been quiet 192 ms, so
+  # its words are ready by the 768 ms endpoint.  Needs mlx-whisper like whisper.
   final_asr: sensevoice
+  # ADR 0150.  Hybrid's Chinese and English Whisper passes hear this short word
+  # list ("Common terms: a, b.").  Keep it to a dozen or so words: the 61-term
+  # Typlus vocabulary made the replay worse.
+  final_asr_terms:
+    - Jarvis
+    - Jev
+    - Claude Code
+    - Codex
+    - TimeSink
+    - reSpeaker
+    - GPT-Live
+    - co-op
+    - 多伦多
+    - Victoria
+    - YANA
+    - Startrail
   # ADR-0042.  The wake word is microWakeWord's "Hey Jarvis" (pymicro-wakeword
   # hey_jarvis v2).  Its score is near-binary: a bare "Jarvis" <= 0.03, a
   # connected "Hey Jarvis" 0.80-0.996.  The gate below defaults to the model's

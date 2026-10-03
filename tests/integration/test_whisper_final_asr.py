@@ -24,7 +24,7 @@ import numpy as np
 import pytest
 
 from jarvis.runtime import inherent_loop
-from jarvis.runtime.dictation import load_user_terms, whisper_ears
+from jarvis.runtime.dictation import COMMAND_PROMPT, load_user_terms, whisper_ears
 from jarvis.state.event_log import open_event_log
 from jarvis.surface import voice_asr, voice_pipeline
 
@@ -287,3 +287,28 @@ def test_without_mlx_whisper_the_switch_keeps_sensevoice(
     sensevoice = MagicMock(spec=voice_asr.SenseVoiceRecognizer)
     chosen = inherent_loop._final_recognizer(_runtime(tmp_path, "whisper"), sensevoice)  # noqa: SLF001
     assert chosen is sensevoice
+
+
+def test_hybrid_gives_the_two_passes_the_word_list_but_not_the_command_pass(
+    whisper: _Whisper, tmp_path: Path,
+) -> None:
+    """ADR 0150: the ADR 0137 command pass keeps its own prompt and its 16-token cap."""
+    runtime = _runtime(tmp_path, "hybrid")
+    runtime.config["realtime"]["final_asr_terms"] = ["Jarvis", "co-op"]
+    sensevoice = MagicMock(spec=voice_asr.SenseVoiceRecognizer)
+    chosen = inherent_loop._final_recognizer(runtime, sensevoice)  # noqa: SLF001
+    assert isinstance(chosen, voice_asr.HybridFinalRecognizer)
+    for ears, language in ((chosen._whisper_zh, "zh"), (chosen._whisper_en, "en")):  # noqa: SLF001
+        whisper.calls.clear()
+        whisper.texts = ["ok"]
+        ears.recognize(_speech(1.0, 0.1))
+        prompt = whisper.calls[0]["initial_prompt"]
+        assert prompt.endswith("Common terms: Jarvis, co-op.")
+        assert prompt.startswith(_SIMPLIFIED) is (language == "zh")
+    command = chosen._whisper_command  # noqa: SLF001
+    assert command is not None
+    whisper.calls.clear()
+    whisper.texts = ["退下。"]
+    command.recognize(_speech(1.0, 0.1))
+    assert whisper.calls[0]["initial_prompt"] == COMMAND_PROMPT
+    assert whisper.calls[0]["sample_len"] == 16

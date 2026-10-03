@@ -755,9 +755,9 @@ class HybridFinalRecognizer:
 
     ``realtime.final_asr: hybrid`` (ADR 0132). SenseVoice always hears the utterance first and
     names its language. With 1 s of speech or more, Whisper large-v3-turbo hears it again with
-    that language fixed and no word list: ``zh`` and ``yue`` (SenseVoice misreading Mandarin)
-    to the Chinese Whisper, ``en`` to the English one; any other language, an empty Whisper
-    transcript or a Whisper error keeps SenseVoice's words.
+    that language fixed (ADR 0150: with a short word list in its prompt): ``zh`` and ``yue``
+    (SenseVoice misreading Mandarin) to the Chinese Whisper, ``en`` to the English one; any
+    other language, an empty Whisper transcript or a Whisper error keeps SenseVoice's words.
 
     ADR 0137: with ``whisper_command`` set, a short unclear Chinese line (2-4 characters, no
     question, no command already) is heard once more by it, and a Chinese command it returns
@@ -777,7 +777,7 @@ class HybridFinalRecognizer:
         whisper_en: MlxWhisperRecognizer,
         whisper_command: MlxWhisperRecognizer | None = None,
     ) -> None:
-        """The Whispers are built without a word list and share one model.
+        """The Whispers share one model; ``realtime.final_asr_terms`` is theirs.
 
         ``whisper_command`` is the Chinese one with the command prompt; ``None`` never hears twice.
         """
