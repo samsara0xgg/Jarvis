@@ -28,7 +28,7 @@ laughs, read once.
 
 Its limits:
 
-- It names a non-neutral emotion of the clip that became the turn, a sound
+- It names a HAPPY tone of the clip that became the turn, a sound
   event in it (Laughter, Cough, Sneeze, Cry, Breath, Applause), and each laugh
   (哈哈 or the Laughter event) dropped as a listening sound since she last
   answered, counted apart for those said while she was speaking. Neutral,
@@ -49,8 +49,10 @@ Its limits:
 
 ## Consequences
 
-- The emotion label is SenseVoice's guess: 10 of 725 clips read ANGRY, mostly
-  ordinary questions, so she is told it may be wrong and nothing acts on it.
+- Only HAPPY is passed on: it sat on his laughing lines, while 6 of the 10
+  ANGRY clips were plain lines ("确认。") and the one SAD was a garbled clip.
+  HAPPY is still a guess (some bright explanations carry it), so she is told
+  it may be wrong and nothing acts on it.
 - A laugh that SenseVoice transcribes as other text, or one under the speech
   gate, is not counted; only 哈哈-like text and the Laughter event are.
 - Cues from a clip whose turn is later superseded still reach the next turn.

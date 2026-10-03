@@ -13,12 +13,11 @@ import threading
 import time
 from typing import Final
 
-# SenseVoice emotion and event labels worth telling her; BGM (11% of clean speech in the
-# 2026-10-03 replay), Speech, NEUTRAL and EMO_UNKNOWN say nothing.
-_TONES: Final = {
-    "HAPPY": "happy", "SAD": "sad", "ANGRY": "angry", "FEARFUL": "afraid",
-    "DISGUSTED": "disgusted", "SURPRISED": "surprised",
-}
+# SenseVoice emotion and event labels worth telling her. Only HAPPY: in the 2026-10-03
+# replay of 725 clips it sat on his laughing lines, while 6 of 10 ANGRY were plain lines
+# ("确认。") and SAD fired once on a garbled clip. BGM (11% of clean speech), Speech,
+# NEUTRAL and EMO_UNKNOWN say nothing.
+_TONES: Final = {"HAPPY": "happy"}
 _SOUNDS: Final = {
     "Laughter": "a laugh", "Cough": "a cough", "Sneeze": "a sneeze", "Cry": "crying",
     "Breath": "a breath", "Applause": "applause",
