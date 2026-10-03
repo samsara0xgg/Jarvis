@@ -42,7 +42,8 @@ async function scene({ captions = 'brief', lang = 'en', reduced = false, demo = 
     if (url.pathname === '/inherent/cancel-response') return json({});
     if (url.pathname === '/inherent/think') return json(daemonState.think);
     if (url.pathname === '/inherent/language') return json({ language: lang });
-    if (url.pathname === '/inherent/confirmation') { if (method === 'POST') { daemonState.card = null; return json({}); } return json({ card: daemonState.card }); }
+    // (`lag`: the daemon still lists a decided card for this long, as a read already on its way does.)
+    if (url.pathname === '/inherent/confirmation') { if (method === 'POST') { setTimeout(() => { daemonState.card = null; }, daemonState.lag ?? 0); return json({}); } return json({ card: daemonState.card }); }
     if (url.pathname === '/inherent/clarification') { if (method === 'POST') { daemonState.question = null; return json({}); } return json({ card: daemonState.question }); }
     return route.fulfill({ status: 404, contentType: 'application/json', body: '{"detail":"Not Found"}' });
   });
@@ -1307,14 +1308,38 @@ try {
     await page.locator('.talk .ac-subject').click();
     check('the letter’s fields are editable there: typing works and the window took key focus', await page.evaluate(() => window.__state.focus === true));
     await page.locator('.talk .ac-subject').fill('改到三点半');
+    daemonState.lag = 3000;
     await page.keyboard.press('Meta+Enter'); await page.waitForTimeout(400);
     check('⌘⏎ sends what the card holds, once', posts.filter(p => p.path === '/inherent/confirmation').length === 1 && posts.find(p => p.path === '/inherent/confirmation').body.decision === 'accept' && posts.find(p => p.path === '/inherent/confirmation').body.edits.subject === '改到三点半');
     await page.waitForTimeout(1800);
-    check('once decided the card is gone from the area (and does not turn up in the notch)', await page.locator('.talk .ac').count() === 0 && await page.locator('.notch .ac').count() === 0);
+    check('once decided the card is gone from the area (and does not turn up in the notch), even while the daemon still lists it', await page.locator('.talk .ac').count() === 0 && await page.locator('.notch .ac').count() === 0);
     await skew(12_000);
     await folded(6000);
     check('and the area folds after its 8 s as it always does', !(await area()).up);
     check('no page errors (confirm in the area)', s.errors.length === 0);
+    await s.context.close();
+  }
+  {
+    const s = await scene({ captions: 'all', lang: 'zh' });
+    const { page, emit, settled, daemonState } = s;
+    await page.waitForTimeout(600);
+    await emit('controls', { mic_muted: false, speech_muted: false, conversation: true }); s.daemonState.controls.conversation = true;
+    await emit('voice', { phase: 'listening', turn_id: 'q9' }); await emit('voice', { phase: 'accepted', turn_id: 'q9', text: '加两个日程' });
+    daemonState.question = { id: 'Q9', question: '周六和周日具体是哪一天？', fields: [{ label: '周六', value: '10月3日' }] };
+    await page.waitForTimeout(2500);
+    check('a card that comes while the turn is still thought about waits: nothing in the area yet', await page.locator('.talk .ac').count() === 0 && await page.locator('.notch .ac').count() === 0);
+    await emit('open', { turn_id: 'q9', response_id: 'r-q9' }); await emit('append', { turn_id: 'q9', token: '请在卡片上确认日期。' }); await emit('done', { turn_id: 'q9', fadeMs: 100 });
+    await page.waitForSelector('.talk .ac', { timeout: 6000 }); await settled();
+    check('once her line about it is up, the card comes, under that line', await page.evaluate(() => { const tr = document.querySelector('.talk .talk-tr'); return tr.lastElementChild.matches('.ac') && tr.lastElementChild.previousElementSibling?.textContent.includes('请在卡片上确认'); }));
+    await page.locator('.talk .ac .qc-input').first().fill('10月3日'); await page.locator('.talk .ac .ac-go').click(); await page.waitForTimeout(400);
+    await emit('voice', { phase: 'listening', turn_id: 'q10' }); await emit('voice', { phase: 'accepted', turn_id: 'q10', text: '周六: 10月3日' });
+    await emit('open', { turn_id: 'q10', response_id: 'r-q10' }); await emit('append', { turn_id: 'q10', token: '记下了：10月3日周六和朋友吃饭。' }); await emit('done', { turn_id: 'q10', fadeMs: 100, spoken: '记下了：10月3日周六和朋友吃饭。', written: '记下了：10月3日（周六）和朋友吃饭。' });
+    await page.waitForTimeout(1800);
+    check('a written part that only repeats her line with brackets added is shown once, as her line', await page.evaluate(() => [...document.querySelectorAll('.talk .tk-h')].filter(h => h.textContent.includes('记下了')).length === 1 && document.querySelectorAll('.talk .tk-w').length === 0));
+    await s.turn('t9', '比较一下', '<voice>主要差在形态。</voice><document>| 对比 | AirPods Pro 3 | Sony WH-1000XM6 |\n|---|---|---|\n| 更适合 | 通勤、运动、苹果设备日常使用 | 长时间听歌、飞机或办公室降噪 |\n| 优势 | 体积小，切换苹果设备方便 | 头戴舒适度与续航较好 |</document>', { spoken: true });
+    await page.waitForTimeout(1800);
+    check('a first column of short labels keeps each label on one line (更适合 does not break)', await page.evaluate(() => { const td = [...document.querySelectorAll('.talk .md-table td.key')].find(e => e.textContent === '更适合'); if (!td) return false; const r = document.createRange(); r.selectNodeContents(td); return r.getClientRects().length === 1; }));
+    check('no page errors (card timing, repeated written part)', s.errors.length === 0);
     await s.context.close();
   }
 
