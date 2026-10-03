@@ -27,7 +27,7 @@ import uuid
 from collections.abc import Mapping, Sequence
 from contextlib import closing
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Final, NamedTuple
 
@@ -89,6 +89,10 @@ CREATE TABLE IF NOT EXISTS core_memory (
 # so they need no new version.
 SCHEMA_VERSION: Final[int] = 1
 DEFAULT_SEARCH_LIMIT: Final[int] = 20
+# ``session.context`` value for ADR 0147's history layout; anything else is the rolling summary.
+DAY_SUMMARIES_CONTEXT: Final[str] = "day_summaries"
+# ADR 0147: the cap on the raw history cuts the oldest records in blocks of this many.
+_RAW_CUT_BLOCK: Final[int] = 50
 # The Live brief's label for the user's own rows; the stored source stays ``allen``.
 _USER_LABEL: Final[str] = "user"
 # The time line carries a "since the last exchange" suffix once the gap passes this.
@@ -156,7 +160,9 @@ class SessionSettings:
     or a compaction. ``recent_records`` (0: every record) shows only the
     latest records of that history; see :func:`render_context`.
     ``replay_sent`` replays each turn's user message as it was sent
-    (docs/plans/replay-as-sent-proposal.md).
+    (docs/plans/replay-as-sent-proposal.md). ``context`` ``day_summaries`` (ADR 0147)
+    swaps the rolling summary and the recent window for the latest day summaries and
+    every record from the day after the newest one, capped at ``context_raw_max_chars``.
     """
 
     idle_before_compact_s: float = 3600.0
@@ -169,6 +175,8 @@ class SessionSettings:
     history_since: str = ""
     recent_records: int = 0
     replay_sent: bool = False
+    context: str = "rolling"
+    context_raw_max_chars: int = 40000
 
     @classmethod
     def from_config(cls, raw: object) -> SessionSettings:
@@ -206,6 +214,14 @@ class SessionSettings:
             history_since=since.strip() if isinstance(since, str) else "",
             recent_records=int(_positive("recent_records", 0)),
             replay_sent=values.get("replay_sent") is True,
+            context=(
+                DAY_SUMMARIES_CONTEXT
+                if values.get("context") == DAY_SUMMARIES_CONTEXT
+                else defaults.context
+            ),
+            context_raw_max_chars=int(
+                _positive("context_raw_max_chars", defaults.context_raw_max_chars),
+            ),
         )
 
 
@@ -559,9 +575,61 @@ def _hidden_records(shown: int, recent: int) -> int:
     return (shown - recent) // recent * recent
 
 
-def render_context(
+def _day_head(conn: sqlite3.Connection) -> tuple[date, str] | None:
+    """ADR 0147: the boundary day and the summaries message's text, or None with no summary.
+
+    The boundary is the day after the newest local day with a day summary; the message is the
+    current rows of the three latest days, oldest first, each under the heading it was stored with.
+    """
+    days = [
+        str(day)
+        for (day,) in conn.execute(
+            "SELECT DISTINCT day FROM day_summaries ORDER BY day DESC LIMIT 3",
+        )
+    ]
+    if not days:
+        return None
+    rows = latest_day_summaries(conn, days[-1], days[0])
+    head = (
+        "[Earlier days · summaries only · for exact words, numbers or details of these or "
+        "older days use recall, search_records, read_records]"
+    )
+    boundary = date.fromisoformat(days[0]) + timedelta(days=1)
+    return boundary, "\n\n".join([head, *(summary for _, summary in rows)])
+
+
+def _raw_cut(sizes: Sequence[int], max_chars: int) -> int:
+    """How many of the oldest records to hide so the rest fit ``max_chars``, in blocks of 50."""
+    cut, total = 0, sum(sizes)
+    while total > max_chars and cut + _RAW_CUT_BLOCK < len(sizes):
+        total -= sum(sizes[cut : cut + _RAW_CUT_BLOCK])
+        cut += _RAW_CUT_BLOCK
+    return cut
+
+
+def _append_records(
+    turns: list[dict[str, str]], shown: Sequence[Record], sent: Mapping[str, str],
+) -> None:
+    """Each record as its message: as sent when kept, else its words, a day marker on a new day."""
+    marked_day = None
+    for record_id, ts, source, text in shown:
+        role = "user" if source == "allen" else "assistant"
+        day = datetime.fromisoformat(ts).date()
+        as_sent = sent.get(record_id)
+        if as_sent is not None:
+            content = str(as_sent)
+        else:
+            content = _plain(text)
+            if role == "user" and day != marked_day:
+                content = f"{lang.day_marker(day)}\n{content}"
+        if role == "user":
+            marked_day = day
+        _append_turn(turns, role, content)
+
+
+def render_context(  # noqa: PLR0913 — one read, two layouts, one render.
     path: Path, *, exclude_id: str, since: str = "", now: datetime | None = None,
-    recent: int = 0,
+    recent: int = 0, context: str = "rolling", raw_max_chars: int = 40000,
 ) -> MemoryContext:
     """Render the decision-path prompt blocks in one consistent read.
 
@@ -580,12 +648,21 @@ def render_context(
     which the prompt already carries as the live user message. ``recent`` > 0
     shows only the latest records (see :func:`_hidden_records`); a note after
     the summary says how many earlier ones there are and how to find them.
+
+    ``context`` ``day_summaries`` (ADR 0147) replaces the summary and ``recent`` with the
+    latest three day summaries, a line naming the boundary day, and every record from that day
+    on, the oldest hidden in blocks of 50 while they exceed ``raw_max_chars``. With no day
+    summary stored it renders the rolling layout.
     """
     moment = now or local_now()
     with closing(open_memory_db(path)) as conn:
         profile = _core_memory_lines(conn)
-        current = _current_summary(conn)
+        day_head = _day_head(conn) if context == DAY_SUMMARIES_CONTEXT else None
+        current = None if day_head else _current_summary(conn)
         anchor = _effective_anchor(conn, current.anchor_rowid if current else None, since)
+        if day_head:
+            start = datetime.combine(day_head[0], time.min).astimezone()
+            anchor = _effective_anchor(conn, anchor, iso_seconds(start))
         records = _records_after(conn, anchor)
         sent = dict(
             conn.execute(
@@ -594,9 +671,20 @@ def render_context(
                 (anchor,),
             ).fetchall(),
         )
+        last = conn.execute(
+            "SELECT ts FROM records WHERE id != ? ORDER BY rowid DESC LIMIT 1", (exclude_id,),
+        ).fetchone()
     profile_block = "\n".join(["[About the user]", *profile]) if profile else ""
     turns: list[dict[str, str]] = []
-    if current is not None:
+    if day_head:
+        _append_turn(turns, "user", day_head[1])
+        _append_turn(
+            turns,
+            "user",
+            f"[From {day_head[0].isoformat()} 00:00 on, every word said is below; before that "
+            "only the summaries above and the core memory]",
+        )
+    elif current is not None:
         _append_turn(
             turns,
             "user",
@@ -606,31 +694,28 @@ def render_context(
             f"{current.summary}",
         )
     shown = [record for record in records if record[0] != exclude_id]
-    hidden = _hidden_records(len(shown), recent)
+    if day_head:
+        hidden = _raw_cut([len(sent.get(r[0]) or _plain(r[3])) for r in shown], raw_max_chars)
+    else:
+        hidden = _hidden_records(len(shown), recent)
     if hidden:
         first_ts = shown[hidden][1]
+        where = "use recall or search_records" if day_head else (
+            f"find them with search_records (to={first_ts}), then read_records"
+        )
         _append_turn(
             turns,
             "user",
-            f"[Earlier conversation · {hidden} records before {first_ts} are not shown · "
-            f"find them with search_records (to={first_ts}), then read_records]",
+            f"[Earlier conversation · {hidden} records before {first_ts} are not shown · {where}]",
         )
         shown = shown[hidden:]
-    marked_day = None
-    for record_id, ts, source, text in shown:
-        role = "user" if source == "allen" else "assistant"
-        day = datetime.fromisoformat(ts).date()
-        as_sent = sent.get(record_id)
-        if as_sent is not None:
-            content = str(as_sent)
-        else:
-            content = _plain(text)
-            if role == "user" and day != marked_day:
-                content = f"{lang.day_marker(day)}\n{content}"
-        if role == "user":
-            marked_day = day
-        _append_turn(turns, role, content)
-    last_ts = shown[-1][1] if shown else (current.anchor_ts if current else None)
+    _append_records(turns, shown, sent)
+    last_ts = shown[-1][1] if shown else None
+    if not shown:
+        if day_head and last:
+            last_ts = str(last[0])
+        elif current:
+            last_ts = current.anchor_ts
     return MemoryContext(profile_block, tuple(turns), _now_line(moment, last_ts))
 
 
@@ -927,6 +1012,7 @@ def day_records(path: Path, day: str) -> tuple[Record, ...]:
 
 
 __all__ = [
+    "DAY_SUMMARIES_CONTEXT",
     "DEFAULT_SEARCH_LIMIT",
     "CompactionRange",
     "MemoryContext",

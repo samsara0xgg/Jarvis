@@ -2367,6 +2367,8 @@ def _warm_next_prefix(
             history = render_context(
                 memory.db_path, exclude_id="", since=runtime.session.history_since,
                 recent=runtime.session.recent_records,
+                context=runtime.session.context,
+                raw_max_chars=runtime.session.context_raw_max_chars,
             ).history
             with contextlib.closing(
                 open_runtime_event_log(runtime.runtime_paths.event_log),
@@ -3326,6 +3328,8 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
         render_context(
             memory.db_path, exclude_id=memory_exclude_id, since=runtime.session.history_since,
             recent=runtime.session.recent_records,
+            context=runtime.session.context,
+            raw_max_chars=runtime.session.context_raw_max_chars,
         )
         if memory is not None
         else None

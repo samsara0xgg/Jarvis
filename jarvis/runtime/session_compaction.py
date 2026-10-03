@@ -28,6 +28,7 @@ from jarvis.decision.cost_guard import CostRecorder
 from jarvis.decision.llm import LLMClient
 from jarvis.state.event_log import open_runtime_event_log
 from jarvis.state.memory_db import (
+    DAY_SUMMARIES_CONTEXT,
     MemorySettings,
     Record,
     SessionSettings,
@@ -268,6 +269,8 @@ class CompactionSweep:
         """Start a job if one is due and none is running. Loop thread only."""
         if self._task is not None and not self._task.done():
             return
+        if self._settings.context == DAY_SUMMARIES_CONTEXT:
+            return  # ADR 0147: the day summaries stand in for the rolling one; nothing is folded
         now = local_now()
         windowed = self._settings.recent_records > 0
         # A rejected or failed summary is retried no sooner than one idle
