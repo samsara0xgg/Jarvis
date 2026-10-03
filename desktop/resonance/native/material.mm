@@ -188,6 +188,17 @@ static napi_value rightOption(napi_env env, napi_callback_info info) {
   setNumber(env, result, "keyIdle", CGEventSourceSecondsSinceLastEventType(kCGEventSourceStateHIDSystemState, kCGEventKeyDown));
   return result;
 }
+// Her shortcut, a double tap of the left ⌘ alone, read the same way: whether it is down, whether any other modifier is.
+static napi_value leftCommand(napi_env env, napi_callback_info info) {
+  const CGEventFlags flags = CGEventSourceFlagsState(kCGEventSourceStateHIDSystemState);
+  const CGEventFlags others = kCGEventFlagMaskAlternate | kCGEventFlagMaskControl | kCGEventFlagMaskShift | 0x10; // 0x10: right ⌘
+  napi_value result; napi_create_object(env, &result);
+  napi_value value;
+  napi_get_boolean(env, (flags & 0x08) != 0, &value); napi_set_named_property(env, result, "down", value); // 0x08: left ⌘
+  napi_get_boolean(env, (flags & others) != 0, &value); napi_set_named_property(env, result, "others", value);
+  setNumber(env, result, "keyIdle", CGEventSourceSecondsSinceLastEventType(kCGEventSourceStateHIDSystemState, kCGEventKeyDown));
+  return result;
+}
 static void setString(napi_env env, napi_value obj, const char *key, NSString *text) {
   napi_value value; napi_create_string_utf8(env, (text ?: @"").UTF8String, NAPI_AUTO_LENGTH, &value);
   napi_set_named_property(env, obj, key, value);
@@ -359,6 +370,7 @@ static napi_value init(napi_env env, napi_value exports) {
   napi_create_function(env, "commandDown", NAPI_AUTO_LENGTH, commandDown, nullptr, &fn); napi_set_named_property(env, exports, "commandDown", fn);
   napi_create_function(env, "leftMouseDown", NAPI_AUTO_LENGTH, leftMouseDown, nullptr, &fn); napi_set_named_property(env, exports, "leftMouseDown", fn);
   napi_create_function(env, "rightOption", NAPI_AUTO_LENGTH, rightOption, nullptr, &fn); napi_set_named_property(env, exports, "rightOption", fn);
+  napi_create_function(env, "leftCommand", NAPI_AUTO_LENGTH, leftCommand, nullptr, &fn); napi_set_named_property(env, exports, "leftCommand", fn);
   napi_create_function(env, "caret", NAPI_AUTO_LENGTH, caret, nullptr, &fn); napi_set_named_property(env, exports, "caret", fn);
   napi_create_function(env, "pasteTarget", NAPI_AUTO_LENGTH, pasteTarget, nullptr, &fn); napi_set_named_property(env, exports, "pasteTarget", fn);
   napi_create_function(env, "accessibility", NAPI_AUTO_LENGTH, accessibility, nullptr, &fn); napi_set_named_property(env, exports, "accessibility", fn);

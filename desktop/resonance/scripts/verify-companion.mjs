@@ -145,10 +145,9 @@ try {
   await page.waitForFunction(() => document.querySelector('.companion-hit')?.dataset.place === 'peek');
   check('01 peeks when the cursor approaches the island', true);
   await shot('01-peek');
-  await page.locator('.companion-dashboard.is-open').waitFor();
-  await waitPlace('home');
-  check('01 resting on her home goes on from the peek to the Dashboard, and she is home', await dashOpen() === 1);
-  await move(600, 560); await dashGone(); await waitPlace('home');
+  await page.waitForTimeout(900);
+  check('01 resting on her home stays a peek: the Dashboard does not open', await dashOpen() === 0 && await place() === 'peek');
+  await move(600, 560); await waitPlace('home');
   await move(out.x, out.y - 6);
   await page.waitForTimeout(700);
   check('02 hovering under the island leaves her home: no ball, no chip, clicks pass through',
@@ -657,10 +656,9 @@ try {
   await move(320, 14);
   await page.waitForFunction(() => document.querySelector('.companion-hit')?.dataset.place === 'peek');
   check('07 the pill centre makes her peek', true);
-  await page.locator('.companion-dashboard.is-open').waitFor();
-  await waitPlace('home');
-  check('07 resting on the pill goes on to open the Dashboard', await dashOpen() === 1);
-  await move(600, 560); await dashGone(); await waitPlace('home');
+  await page.waitForTimeout(900);
+  check('07 resting on the pill centre stays a peek', await dashOpen() === 0);
+  await move(600, 560); await waitPlace('home');
   await move(320, out.y);
   await page.waitForTimeout(700);
   check('07 hovering under the pill leaves her home', await place() === 'home');

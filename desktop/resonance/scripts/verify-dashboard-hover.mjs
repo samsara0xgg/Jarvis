@@ -1,4 +1,5 @@
-// The Dashboard comes by a rest on the island and folds by itself; passing under the island leaves her home.
+// The Dashboard comes by a rest on the notch and folds by itself; a rest on her is only a peek, so a click on her starts voice;
+// passing under the island leaves her home.
 // Headless Chrome against the built page with the native bridge stubbed, like verify-companion.
 // Run after `npm run build`. Screenshots land in evidence/dashboard-hover/.
 import { chromium } from 'playwright';
@@ -58,16 +59,24 @@ try {
   await glide({ x: 60, y: 12 }, { x: 600, y: 12 }, 180); await page.waitForTimeout(500);
   check('a quick pass across the island does not open the Dashboard', !await open());
 
-  // A rest on her home (left of the notch), not only on the notch, opens it, after about 0.3 s.
+  // A rest on her (left of the notch) is only a peek: the Dashboard stays shut, and a click on her starts voice.
   await move(...Object.values(far)); await page.waitForTimeout(300);
-  await move(190, 14);
+  await move(190, 14); await page.waitForTimeout(1200);
+  check('a rest on her makes her peek and leaves the Dashboard shut', await place() === 'peek' && !await open());
+  await hit.click({ force: true }); await page.locator('.talk[data-hit]').waitFor({ timeout: 3000 });
+  check('… so a click on her starts voice, with no Dashboard', !await open());
+  await hit.click({ force: true }); // while she listens, a second click ends voice
+  await move(...Object.values(far)); await page.waitForFunction(() => !document.querySelector('.talk[data-hit]'), null, { timeout: 16000 });
+  await page.waitForFunction(() => document.querySelector('.companion-hit')?.dataset.place === 'home', null, { timeout: 16000 });
+  // A rest on the notch opens it, after about 0.3 s.
+  await move(320, 14);
   await page.waitForTimeout(200);
-  check('0.2 s into a rest on her home it is not open yet', !await open());
+  check('0.2 s into a rest on the notch it is not open yet', !await open());
   await page.waitForTimeout(400);
   check('0.6 s into it the Dashboard is open', await open());
   await page.waitForTimeout(500);
   check('… and she stays in her home', await place() === 'home');
-  await shot('02-rest-on-her-home');
+  await shot('02-rest-on-the-notch');
   // Leaving folds it ~0.6 s later; coming back within that keeps it.
   await move(320, 200); await page.waitForTimeout(300);
   await move(...Object.values(far)); await page.waitForTimeout(350);
@@ -105,11 +114,13 @@ try {
   await move(far.x - 1, far.y); await page.waitForTimeout(1000);
   check('once the field lets go, it folds', !await open());
 
-  // A screen with no notch: the whole pill is the place to rest.
+  // A screen with no notch: the pill's ends open it, its middle is her.
   await page.evaluate(() => window.__placement({ docked: false, topInset: 32, notchWidth: 0, surfaceWidth: 640, compactWidth: 0, displayId: 2 }));
   await page.waitForTimeout(900);
-  await move(320, 14); await page.waitForTimeout(700);
-  check('without a notch a rest on the middle of the pill opens it', await open());
+  await move(320, 14); await page.waitForTimeout(900);
+  check('without a notch a rest on the middle of the pill (her) only peeks', !await open() && await place() === 'peek');
+  await move(375, 14); await page.waitForTimeout(700);
+  check('… and a rest on an end of the pill opens it', await open());
   await shot('03-external-pill');
   await move(...Object.values(far)); await page.waitForTimeout(1000);
   check('… and it folds when the pointer leaves', !await open());

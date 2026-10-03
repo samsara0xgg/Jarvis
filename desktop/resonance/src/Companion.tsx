@@ -78,8 +78,9 @@ function layout({ topInset, notchWidth, surfaceWidth: width }: Placement) {
     lobe: notchWidth ? { x: lobe.left, y: 0, w: notchLeft - lobe.left, h: topInset } : { x: center - 36, y: 0, w: 72, h: topInset },
     ball: { x: x - R - 12, y: topInset, w: 2 * R + 24, h: out.y + R + 12 - topInset },
     chip: { x: x + R + 4, y: out.y - 18, w: 44, h: 36 },
-    // A rest anywhere a click opens the Dashboard opens it: her home and the notch, or the whole pill.
-    dash: [{ x: lobe.left, y: 0, w: (notchWidth ? wingX : lobe.right) - lobe.left, h: topInset + 4 }],
+    // A rest on the notch opens the Dashboard, or on the pill's two ends; on her it is only a peek, so a click on her stays hers (voice).
+    dash: notchWidth ? [{ x: notchLeft, y: 0, w: notchWidth, h: topInset + 4 }]
+      : [{ x: lobe.left, y: 0, w: 30, h: topInset + 4 }, { x: center + 36, y: 0, w: 30, h: topInset + 4 }],
     panel: { x: center - PANEL / 2 - 10, y: 0, w: PANEL + 20, h: panelTop + 660 },
   } };
 }
@@ -584,6 +585,8 @@ export function Companion() {
   useEffect(() => window.jarvis?.onCommand(command => {
     if (command === 'dashboard-detach') document.querySelector<HTMLElement>('.companion-dashboard')?.dispatchEvent(new Event('dashboard-detach'));
     if (command === 'agent-keys' && !detached) { setDashboard(false); closeComposer(); setKeysPress(n => n + 1); }
+    // Double left ⌘ (electron/companion.ts): the same poke as a click on her.
+    if (command === 'poke' && !detached) latestPoke.current();
   }), []);
   useEffect(() => window.jarvis?.onDisplayLeave(() => {
     closeComposer(); setMenu(null); setDashboard(false); clearTimeout(zoneTimer.current); clearTimeout(dashTimer.current); dashTimer.current = undefined; pending.current = 'none'; setZone('none'); setMoving(true);
