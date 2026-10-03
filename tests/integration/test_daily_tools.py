@@ -200,21 +200,21 @@ def test_recall_pages_lose_and_repeat_nothing(daily: DailyHarness) -> None:
                 "allen",
                 f"m{i:03d} " + "y" * 100,
             )
-            for i in range(300)
+            for i in range(400)
         ],
     )
     args = {"from": "2026-10-01T00:00:00+00:00"}
     page = daily.call("recall", args)
     lines = list(page["lines"])
     pages = 1
-    assert page["total"] == 300
+    assert page["total"] == 400
     assert page["next_cursor"]
     while page["next_cursor"]:
         page = daily.call("recall", {**args, "cursor": page["next_cursor"]})
         lines.extend(page["lines"])
         pages += 1
     assert pages > 1
-    assert [line.split()[3] for line in lines] == [f"m{i:03d}" for i in range(300)]
+    assert [line.split()[3] for line in lines] == [f"m{i:03d}" for i in range(400)]
 
 
 def test_record_pages_are_complete_and_snapshot_stable(daily: DailyHarness) -> None:

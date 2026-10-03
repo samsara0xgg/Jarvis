@@ -15,6 +15,9 @@ PAGE_BUDGET = 11000
 # CJK text tokenizes near one token per character, ASCII JSON near four characters per
 # token, so a full page is roughly 15k-45k tokens against the decision model's 1M window).
 ACTIVITY_PAGE_BUDGET = 48000
+# recall holds a whole day on one page: every page is another model round trip of ~2.6 s,
+# and the busiest day so far (2026-10-01, 268 records) renders to 21k characters.
+RECALL_PAGE_BUDGET = 32000
 MAX_TEXT_JSON_CHARS = 4000
 _CURSOR_PARTS = 2
 DETAIL_CHARS = 3500
@@ -396,9 +399,10 @@ def page_rows(  # noqa: PLR0913 — page query, binding and its persisted positi
     offset: int,
     *,
     key: str = "items",
+    budget: int = PAGE_BUDGET,
 ) -> dict[str, Any]:
     """Return whole rows within a budget; never silently cut a record in half."""
-    selected = fit(rows[offset : offset + args.get("limit", 20)], PAGE_BUDGET)
+    selected = fit(rows[offset : offset + args.get("limit", 20)], budget)
     if not selected and offset < len(rows):
         msg = "Record exceeds page budget; use its detail reader"
         raise DailyError(msg, "result_too_large")

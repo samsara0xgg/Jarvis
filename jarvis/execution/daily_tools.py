@@ -10,6 +10,7 @@ from jarvis.shared.skills import load_skill
 from jarvis.state import daily_activity, daily_records, daily_store
 from jarvis.state.daily_contract import (
     ACTIVITY_PAGE_BUDGET,
+    RECALL_PAGE_BUDGET,
     SCHEMAS,
     DailyError,
     encoded,
@@ -117,7 +118,7 @@ _RESULT_CAP = 16384
 # One activity page is the row budget plus its header (dictionary, totals, coverage, notes);
 # the handler rejects anything larger instead of letting the dispatcher window strings.
 _ACTIVITY_RESULT_CAP = ACTIVITY_PAGE_BUDGET + 16384
-_RESULT_CAPS = {"query_activity": _ACTIVITY_RESULT_CAP}
+_RESULT_CAPS = {"query_activity": _ACTIVITY_RESULT_CAP, "recall": RECALL_PAGE_BUDGET + 4096}
 _WRITES = frozenset({"save_knowledge", "save_briefing"})
 _WORK_STATE_DESCRIPTION = (
     "Investigate and update the user's persisted current work state. Call this when they ask "

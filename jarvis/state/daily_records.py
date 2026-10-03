@@ -8,6 +8,7 @@ from contextlib import closing
 from typing import TYPE_CHECKING, Any
 
 from jarvis.state.daily_contract import (
+    RECALL_PAGE_BUDGET,
     DailyError,
     cursor_position,
     day_window,
@@ -124,7 +125,15 @@ def recall(path: Path | None, args: dict[str, Any]) -> dict[str, Any]:
         if len(text) > cap:
             line += f" …[+{len(text) - cap} chars, read_records {record_id}]"
         lines.append(line)
-    page = page_rows(lines, {"limit": len(lines)}, binding, snapshot, offset, key="lines")
+    page = page_rows(
+        lines,
+        {"limit": len(lines)},
+        binding,
+        snapshot,
+        offset,
+        key="lines",
+        budget=RECALL_PAGE_BUDGET,
+    )
     return {
         "from": start.isoformat(timespec="seconds"),
         "to": end.isoformat(timespec="seconds"),
