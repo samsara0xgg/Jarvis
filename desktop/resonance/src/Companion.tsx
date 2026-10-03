@@ -134,6 +134,8 @@ export function Companion() {
   // ADR 0093: so does the night run; a daemon without its route leaves it as it was.
   const [card, setCard] = useState<Card | null>(null);
   const [question, setQuestion] = useState<Question | null>(null);
+  // Cards already answered here: a read that left before the answer reached the daemon still carries them, and must not put them back up.
+  const answered = useRef(new Set<string>());
   const [nightState, setNightState] = useState<NightState | null>(null);
   useEffect(() => {
     if (!port) return;
@@ -141,8 +143,9 @@ export function Companion() {
     const load = async () => { try {
       const [next, asked, dusk] = await Promise.all([link.current?.card(), link.current?.question(), link.current?.night().catch(() => undefined)]);
       if (stop) return;
-      setCard(current => current?.id === next?.id ? current : next ?? null);
-      setQuestion(current => current?.id === asked?.id ? current : asked ?? null);
+      const fresh = <T extends { id: string }>(c: T | null | undefined) => c && !answered.current.has(c.id) ? c : null;
+      setCard(current => current?.id === fresh(next)?.id ? current : fresh(next));
+      setQuestion(current => current?.id === fresh(asked)?.id ? current : fresh(asked));
       if (dusk) setNightState(current => JSON.stringify(current) === JSON.stringify(dusk) ? current : dusk);
     } catch { /* daemon away; the next tick retries */ } };
     void load();
@@ -152,14 +155,14 @@ export function Companion() {
   const decideCard: Decide = (decision, edits) => {
     if (!card) return;
     const id = card.id;
-    setCard(null);
+    answered.current.add(id); setCard(null);
     if (decision === 'accept') ball.current?.hop(.14);
     void link.current?.decide(id, decision, edits).catch(() => undefined); // a stale card: the next read shows what waits now
   };
   const answerQuestion: Answer = answers => {
     if (!question) return;
     const id = question.id;
-    setQuestion(null);
+    answered.current.add(id); setQuestion(null);
     if (answers) ball.current?.hop(.14);
     void link.current?.answer(id, answers).catch(() => undefined); // a stale card: the next read shows what waits now
   };
@@ -258,6 +261,8 @@ export function Companion() {
   const deepLook = deepThinking || (answerSecs > 0 && s.waiting === s.turnId && voice !== 'listening');
   const busy = composer || voice !== 'off' || !!reply.text || receiving || deepThinking || talkUp;
   const inTalk = cardWaits && presence.open && !quiet && busy, carded = cardWaits && !inTalk;
+  // In the area the card comes after her line about it: while the turn is still being thought about it waits (the card arrives before the line that asks you to look at it).
+  const cardShown = inTalk && voice !== 'thinking';
   // Every session the Dashboard's Agents data knows, and Startrail's from its host (in her queue's order, each in place
   // of the daemon's row of it): the stars beside the notch, and the notices.
   const [daemonAgents, setAgents] = useState<ShownAgent[]>([]);
@@ -753,7 +758,7 @@ export function Companion() {
         <button aria-label={t(['Type to her', '文字输入'])} tabIndex={chip ? 0 : -1} onClick={openComposer}><Keyboard/></button>
       </div>
       <TalkArea lang={companion.lang} x={out.x} y={out.y + R + 11} open={presence.open && place === 'out' && !quiet} level={talkLevel} lines={s.talk} since={talkFrom} voice={voice} hearing={hearing} partial={partial} tool={tool} silent={s.soundMuted} buttons={companion.talkButtons}
-        deep={{ look: deepLook, secs: deepSecs, thoughts }} field={composer} draft={draft} micPaused={s.micMuted} card={inTalk ? cardView : undefined}
+        deep={{ look: deepLook, secs: deepSecs, thoughts }} field={composer} draft={draft} micPaused={s.micMuted} card={cardShown ? cardView : undefined}
         onDraft={value => { setDraft(value); ball.current?.nudge(); requestAnimationFrame(aimAtCaret); }}
         onSend={send} onField={(open, empty) => { if (open) openComposer(); else { closeComposer(); if (empty && voice === 'off') presence.dismiss(); } }} onMic={backToVoice}
         onEnd={() => { closeComposer(); if (voice !== 'off') endVoice(); presence.dismiss(); }} onUp={setTalkUp} onSettle={() => { if (live.current.composer) aimAtCaret(); kickGlass.current(); }}
