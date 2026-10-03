@@ -85,6 +85,7 @@ _TOOL_LINES: Final = (
     ("web_fetch", "commentary.tool.web"),
     ("screen_look", "commentary.tool.screen"),
     ("search_records", "commentary.tool.records"),
+    ("recall", "commentary.tool.records"),
     ("mcp__gmail__", "commentary.tool.mail"),
     ("mcp__microsoft__", "commentary.tool.calendar"),
 )

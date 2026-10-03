@@ -32,10 +32,21 @@ _DESCRIPTIONS = {
         "Search past conversations by keyword/time [from,to). from/to: ISO time with offset, "
         "or a bare date (midnight local). keyword: words separated by spaces match a record "
         "holding ANY of them, case-insensitive, literal text in the conversation's language. "
-        "speaker=user keeps only the user's lines, assistant only yours. Newest first; "
+        "With a keyword, results are ranked by relevance (records holding more and rarer "
+        'words first); "unmatched" lists words found nowhere: retry with different words, in '
+        "the conversation's language. speaker=user keeps only the user's lines, assistant "
+        "only yours. Otherwise newest first; "
         "order=oldest starts from the earliest (the first thing said in a period). Returns "
         "identified excerpts, not full text, and total (all matches). Follow next_cursor with "
         "identical arguments for every page; read_records retrieves originals."
+    ),
+    "recall": (
+        "What was said in a day or range [from,to), in time order: one line per record (time, "
+        "speaker, text; long answers are cut and name the record id for read_records). "
+        "from/to: bare date (local midnight) or ISO time with offset; to defaults to one day "
+        "after from. Use it for 'what did we talk about on <date>' / 'what did I do "
+        "yesterday' instead of paging search_records; follow next_cursor with identical "
+        "arguments until null."
     ),
     "read_records": (
         "Read exact original conversation text by record_ids from search_records. Returns "
@@ -97,6 +108,11 @@ _DESCRIPTIONS = {
         "nothing writes one on request."
     ),
 }
+_RECORD_READERS = {
+    "search_records": daily_records.search_records,
+    "read_records": daily_records.read_records,
+    "recall": daily_records.recall,
+}
 _RESULT_CAP = 16384
 # One activity page is the row budget plus its header (dictionary, totals, coverage, notes);
 # the handler rejects anything larger instead of letting the dispatcher window strings.
@@ -127,10 +143,8 @@ def _read(  # noqa: PLR0913 — request context and independent configured sourc
     repos: tuple[str, ...],
     timesink_path: Path | None,
 ) -> dict[str, Any]:
-    if name == "search_records":
-        return daily_records.search_records(memory_path, values)
-    if name == "read_records":
-        return daily_records.read_records(memory_path, values)
+    if name in _RECORD_READERS:
+        return _RECORD_READERS[name](memory_path, values)
     if name == "query_activity":
         return daily_activity.query_activity(ctx.conn, values, repos, timesink_path)
     if name == "read_activity":
@@ -247,5 +261,5 @@ def build_daily_tools(
             max_result_chars=_RESULT_CAPS.get(name, _RESULT_CAP),
         )
         for name, description in _DESCRIPTIONS.items()
-        if memory_path is not None or name not in {"search_records", "read_records"}
+        if memory_path is not None or name not in _RECORD_READERS
     )

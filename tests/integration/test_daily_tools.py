@@ -144,6 +144,79 @@ def test_record_search_takes_dates_any_word_and_speaker(daily: DailyHarness) -> 
     assert [r["id"] for r in mine] == ["reply"]
 
 
+def test_keyword_search_ranks_rare_words_first_and_reports_unmatched(
+    daily: DailyHarness,
+) -> None:
+    """A record with two rare words outranks newer ones holding only the common word."""
+    daily.record("rare", "calendar alpha beta")
+    for i in range(5):
+        daily.record(f"day{i}", f"calendar day {i}")
+    found = daily.call("search_records", {"keyword": "calendar alpha beta ghost"})
+    assert [r["id"] for r in found["records"]] == ["rare", "day4", "day3", "day2", "day1", "day0"]
+    assert found["unmatched"] == ["ghost"]
+    oldest = daily.call("search_records", {"keyword": "calendar", "order": "oldest"})
+    assert [r["id"] for r in oldest["records"]][:2] == ["rare", "day0"]
+    assert "unmatched" not in daily.call("search_records", {})
+
+
+def _insert(daily: DailyHarness, rows: list[tuple[str, str, str, str]]) -> None:
+    with closing(open_memory_db(daily.memory)) as conn, conn:
+        conn.executemany("INSERT INTO records(id,ts,source,text) VALUES(?,?,?,?)", rows)
+
+
+def test_recall_lists_a_day_compactly_in_order(daily: DailyHarness) -> None:
+    """Time-ordered one-line records; a long reply is cut with its id, the window is half-open."""
+    long_reply = "a" * 150 + "b" * 40
+    _insert(
+        daily,
+        [
+            ("before", "2026-09-30T23:59:59+00:00", "allen", "yesterday"),
+            ("u1", "2026-10-01T08:05:00+00:00", "allen", "x" * 400),
+            ("a1", "2026-10-01T08:05:09+00:00", "jarvis", long_reply),
+            ("a2", "2026-10-01T09:30:00+00:00", "jarvis_live", "short"),
+            ("next", "2026-10-02T00:00:00+00:00", "allen", "tomorrow"),
+        ],
+    )
+    page = daily.call("recall", {"from": "2026-10-01T00:00:00+00:00"})
+    assert page["lines"] == [
+        "10-01 08:05 user: " + "x" * 400,
+        "10-01 08:05 assistant: " + "a" * 150 + " …[+40 chars, read_records a1]",
+        "10-01 09:30 assistant: short",
+    ]
+    assert (page["count"], page["total"], page["next_cursor"]) == (3, 3, None)
+    empty = daily.call("recall", {"from": "2026-01-01T00:00:00+00:00"})
+    assert (empty["lines"], empty["total"]) == ([], 0)
+    assert daily.call("recall", {"from": "2026-13-45"})["code"] == "invalid_argument"
+
+
+def test_recall_pages_lose_and_repeat_nothing(daily: DailyHarness) -> None:
+    """A range larger than one page continues by cursor with every line exactly once."""
+    _insert(
+        daily,
+        [
+            (
+                f"m{i}",
+                f"2026-10-01T{i // 60:02d}:{i % 60:02d}:00+00:00",
+                "allen",
+                f"m{i:03d} " + "y" * 100,
+            )
+            for i in range(300)
+        ],
+    )
+    args = {"from": "2026-10-01T00:00:00+00:00"}
+    page = daily.call("recall", args)
+    lines = list(page["lines"])
+    pages = 1
+    assert page["total"] == 300
+    assert page["next_cursor"]
+    while page["next_cursor"]:
+        page = daily.call("recall", {**args, "cursor": page["next_cursor"]})
+        lines.extend(page["lines"])
+        pages += 1
+    assert pages > 1
+    assert [line.split()[3] for line in lines] == [f"m{i:03d}" for i in range(300)]
+
+
 def test_record_pages_are_complete_and_snapshot_stable(daily: DailyHarness) -> None:
     """Read more than the former 20-record limit, with inserts between pages."""
     for i in range(35):

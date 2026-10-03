@@ -6,7 +6,7 @@ import base64
 import hashlib
 import json
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 PAGE_BUDGET = 11000
@@ -95,6 +95,9 @@ SCHEMAS: dict[str, dict[str, Any]] = {
             "speaker": enum_field("user", "assistant"),
             **_PAGE,
         }
+    ),
+    "recall": object_fields(
+        {"from": text_field(50), "to": text_field(50), "cursor": _CURSOR}, "from"
     ),
     "read_records": object_fields(
         {
@@ -313,7 +316,11 @@ def _bound(value: str) -> datetime:
     window's edge is a day boundary where Allen is, so the Mac's zone is the right one.
     """
     if _BARE_DATE.fullmatch(value):
-        return datetime.fromisoformat(value).astimezone()
+        try:
+            return datetime.fromisoformat(value).astimezone()
+        except ValueError:
+            msg = "Not a calendar date"
+            raise DailyError(msg) from None
     return timestamp(value)
 
 
@@ -322,6 +329,24 @@ def window(args: dict[str, Any]) -> tuple[datetime | None, datetime | None]:
     start = _bound(args["from"]) if "from" in args else None
     end = _bound(args["to"]) if "to" in args else None
     if start and end and start >= end:
+        msg = "from must precede to"
+        raise DailyError(msg)
+    return start, end
+
+
+def day_window(args: dict[str, Any]) -> tuple[datetime, datetime]:
+    """Validate a window whose start is required and whose end defaults to one day later.
+
+    The default end is the next calendar date for a bare date, 24 hours for a timestamp.
+    """
+    start = _bound(args["from"])
+    if "to" in args:
+        end = _bound(args["to"])
+    elif _BARE_DATE.fullmatch(args["from"]):
+        end = _bound((start.date() + timedelta(days=1)).isoformat())
+    else:
+        end = start + timedelta(days=1)
+    if start >= end:
         msg = "from must precede to"
         raise DailyError(msg)
     return start, end
@@ -364,7 +389,7 @@ def cursor_position(raw: str | None, binding: str, initial: list[int]) -> list[i
 
 
 def page_rows(  # noqa: PLR0913 — page query, binding and its persisted position travel together.
-    rows: list[dict[str, Any]],
+    rows: list[Any],
     args: dict[str, Any],
     binding: str,
     snapshot: int,
@@ -386,9 +411,9 @@ def page_rows(  # noqa: PLR0913 — page query, binding and its persisted positi
     }
 
 
-def fit(rows: list[dict[str, Any]], budget: int) -> list[dict[str, Any]]:
+def fit(rows: list[Any], budget: int) -> list[Any]:
     """Take whole leading rows while their JSON encoding stays within budget."""
-    selected: list[dict[str, Any]] = []
+    selected: list[Any] = []
     for row in rows:
         if len(encoded([*selected, row])) > budget:
             break
