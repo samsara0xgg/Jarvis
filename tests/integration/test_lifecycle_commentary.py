@@ -141,13 +141,13 @@ def _utterance_event(*, text: str = "现在几点") -> Event:
     )
 
 
-def test_two_rows_speak_a_long_wait_tools_dispatch_and_his_words() -> None:
-    """A long-wait tool's dispatch (the action id is the subject) and his words (the row is).
+def test_three_rows_speak_a_long_wait_tools_dispatch_his_words_and_jevs_prediction() -> None:
+    """A long-wait tool's dispatch (the action id is the subject), his words and Jev's group.
 
     Which phrase the picker takes is the runtime's business; the pin is that
     the phrase comes from the row's declared pool and nothing else.
     """
-    assert set(_D6_ROWS) == {"action.dispatched", "utterance.received"}
+    assert set(_D6_ROWS) == {"action.dispatched", "utterance.received", "route.tool_predicted"}
     intent = commentary_intent_for(
         _action_event("action.dispatched", action_id="ACT-7"),
         tool_name="refresh_work_state",
@@ -2464,3 +2464,105 @@ def test_a_pinned_reply_language_picks_the_conversation_line_over_his_words(
     inherent_loop._say_conversation_line(runtime, "T-words", "wait", "等我一下。")  # noqa: SLF001
 
     assert _only_phrase(runtime.conn) in lang.variants("conversation.wait", "en")
+
+
+# --- observer: ADR 0140 -----------------------------------------------------
+
+
+def _predicted(conn: sqlite3.Connection, turn_id: str, group: str) -> Event:
+    """Jev's ``route.tool_predicted`` for the turn, as the one-shot writes it."""
+    return emit_event(
+        conn,
+        type="route.tool_predicted",
+        payload={"turn_id": turn_id, "group": group, "confidence": 0.97},
+        correlation={"turn_id": turn_id},
+    )
+
+
+@pytest.mark.parametrize(
+    ("group", "key"),
+    [
+        ("calendar_todo_read", "calendar"), ("mail_read", "mail"), ("web_search", "web"),
+        ("comms_write", "generic"),
+    ],
+)
+@pytest.mark.parametrize("language", ["zh", "en"])
+def test_a_predicted_group_has_the_line_of_that_kind_of_work(
+    group: str, key: str, language: lang.Language,
+) -> None:
+    """The pool is the dispatch line's of that kind of tool, in the language of his words."""
+    event = Event(
+        event_uid="uid-predicted",
+        type="route.tool_predicted",
+        schema_version=1,
+        ts_epoch_ms=1_700_000_000_000,
+        payload={"turn_id": "T-1", "group": group, "confidence": 0.97},
+        source_event_id=None,
+        correlation={"turn_id": "T-1"},
+    )
+    text = "明天有什么安排" if language == "zh" else "What is on my calendar tomorrow"
+    intent = commentary_intent_for(event, user_text=text, pick=_first)
+    assert intent is not None
+    assert intent.content_hint == _tool_pool(key, language)[0]
+    assert intent.subject_ref == "uid-predicted"
+    for silent in ("records_notes", "agents_night", "device_actions", "none", "nonsense"):
+        quiet = replace(event, payload={**event.payload, "group": silent})
+        assert commentary_intent_for(quiet, user_text=text, pick=_first) is None
+
+
+def test_a_predicted_line_speaks_at_once_and_the_dispatch_and_the_clock_add_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Before any tool, floor or clock: one line; the web dispatch and the clock stay quiet."""
+    _clocks(monkeypatch, first=0.5, then=(600.0, 1200.0))
+    monkeypatch.setattr(inherent_loop, "_COMMENTARY_EARLIEST_S", 600.0)  # a dispatch would wait
+    runtime = _make_runtime(tmp_path)
+    reader = _reader(runtime)
+    with _Observer(runtime):
+        _user_turn(runtime.conn, "T-p", transcript="明天天气怎么样")
+        _predicted(runtime.conn, "T-p", "web_search")
+        _wait_until_turn_spoke(reader, "T-p")
+        _dispatch(runtime.conn, action_id="ACT-p", turn_id="T-p", tool_name="web_search")
+        _settle(0.8)  # past the clock
+    assert _lines(reader, "T-p") == [_only_phrase(reader)]
+    assert _only_phrase(reader) in _tool_pool("web", "zh")
+
+
+def test_a_predicted_line_after_the_first_line_or_the_answer_says_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A line already said keeps the turn at one; an answer that is out silences it."""
+    monkeypatch.setattr(inherent_loop, "_COMMENTARY_EARLIEST_S", 0.0)
+    runtime = _make_runtime(tmp_path)
+    reader = _reader(runtime)
+    with _Observer(runtime):
+        _user_turn(runtime.conn, "T-d", transcript="明天天气怎么样")
+        _dispatch(runtime.conn, action_id="ACT-d", turn_id="T-d", tool_name="web_search")
+        _wait_until_turn_spoke(reader, "T-d")
+        _predicted(runtime.conn, "T-d", "web_search")
+        _user_turn(runtime.conn, "T-o", transcript="明天天气怎么样")
+        emit_event(
+            runtime.conn,
+            type="turn.ended",
+            payload={
+                "turn_id": "T-o",
+                "final_response_hash": "0" * 64,
+                "consumed_trigger_event_uid": "uid-o",
+            },
+            correlation={"turn_id": "T-o"},
+        )
+        _predicted(runtime.conn, "T-o", "web_search")
+        _settle(0.5)
+    assert len(_lines(reader, "T-d")) == 1
+    assert _lines(reader, "T-o") == []
+
+
+def test_a_predicted_line_for_a_typed_turn_says_nothing(tmp_path: Path) -> None:
+    """Only a turn he spoke hears a wait line."""
+    runtime = _make_runtime(tmp_path)
+    reader = _reader(runtime)
+    with _Observer(runtime):
+        _user_turn(runtime.conn, "T-k", typed="keyboard")
+        _predicted(runtime.conn, "T-k", "mail_read")
+        _settle(0.5)
+    assert _count(reader, "response.started") == 0

@@ -95,6 +95,7 @@ class _Rig:
         recent_speech: Callable[[], str] | None = None,
         ask_words: Callable[[str, str, str, bool, bool], str | None] | None = None,
         note_words: Callable[[str, str, str, bool, bool], None] | None = None,
+        begin_line: Callable[[str, str, str, bool, bool], None] | None = None,
         backend: _FakeBackend | None = None,
         wake_input_channel: int | None = None,
         output_active: Callable[[], bool] | None = None,
@@ -152,6 +153,7 @@ class _Rig:
                 recent_speech=recent_speech,
                 ask_words=ask_words,
                 note_words=note_words,
+                begin_line=begin_line,
             )
             assert self.session.start().started
 

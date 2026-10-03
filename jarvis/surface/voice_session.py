@@ -1153,6 +1153,7 @@ class DuplexVoiceSession:
         recent_speech: Callable[[], str] | None = None,
         ask_words: Callable[[str, str, str, bool, bool], str | None] | None = None,
         note_words: Callable[[str, str, str, bool, bool], None] | None = None,
+        begin_line: Callable[[str, str, str, bool, bool], None] | None = None,
         stop_speaking: Callable[[], object] | None = None,
         hold_output: Callable[[bool], None] | None = None,
         supersede_unspoken: Callable[[str], None] | None = None,
@@ -1185,7 +1186,9 @@ class DuplexVoiceSession:
         dismissal the regex found only inside a sentence, which counts only if Jev says
         dismiss. It returns that choice, or None for a turn, and blocks up to its own
         timeout. ``note_words(turn_id, verdict, text, over_her, conversation)`` records a
-        line the regexes settled alone.
+        line the regexes settled alone. ``begin_line(turn_id, text, recent_speech, over_her,
+        conversation)`` (ADR 0139) is called for every line the regexes call a turn, before
+        ``ask_words``, and sends the line's one Jev request without waiting for it.
 
         ADR 0053: ``hold_output(True)`` from an utterance's speech onset
         until it is accepted or comes to nothing, so no answer starts while
@@ -1208,6 +1211,7 @@ class DuplexVoiceSession:
         self._recent_speech = recent_speech
         self._ask_words = ask_words
         self._note_words = note_words
+        self._begin_line = begin_line
         # ADR 0102: when conversation mode last had an accepted turn or Jarvis's
         # speech; an accepted turn waits for her answer, 「等我一下」 holds it.
         self._conversation_busy_at = time.monotonic()
@@ -1681,6 +1685,11 @@ class DuplexVoiceSession:
         verdict = self._regex_words(
             text, conversation=conversation, over_her=over_her, whole_only=ask is not None,
         )
+        if verdict == "turn" and self._begin_line is not None:
+            try:
+                self._begin_line(turn_id, text, self._recent(), over_her, conversation)
+            except Exception:  # noqa: BLE001 - Jev cannot break capture; the line stays a turn
+                LOGGER.warning("begin_line failed turn_id=%s", turn_id, exc_info=True)
         if ask is None:
             return verdict
         if verdict != "turn":

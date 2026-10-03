@@ -70,6 +70,7 @@ from jarvis.decision import (
 )
 from jarvis.decision.confirm_grammar import ConfirmGrammarConfigError, load_confirm_grammar
 from jarvis.decision.cost_guard import CostRecorder
+from jarvis.decision.jev_oneshot import TOOL_GROUPS, JevOneShot
 from jarvis.decision.llm import LLMClient
 from jarvis.decision.llm_session import LLMSessionFactory
 from jarvis.decision.mail_reply import MailReply
@@ -108,7 +109,7 @@ from jarvis.decision.response_run import (
     start_response_run,
 )
 from jarvis.decision.stream_gate import routine_stream_policy, spoken_stream_policy
-from jarvis.decision.surrogate_route import JevLog, SurrogateRoute
+from jarvis.decision.surrogate_route import JevLog, SurrogateRoute, offered
 from jarvis.decision.think_mode import ThinkMode, ThinkModeConfigError, load_think_mode
 from jarvis.decision.tier0 import Tier0ConfigError, load_tier0_table, validate_tier0_table
 from jarvis.decision.turn_end_asks import TurnEndAsks
@@ -179,7 +180,12 @@ from jarvis.state.authorized_dispatch_outbox import (
 )
 from jarvis.state.committed_event_bus import CommittedEventBus
 from jarvis.state.daily_report import resolve_zone
-from jarvis.state.event_log import iter_events_for_turn, open_event_log, open_runtime_event_log
+from jarvis.state.event_log import (
+    emit_event,
+    iter_events_for_turn,
+    open_event_log,
+    open_runtime_event_log,
+)
 from jarvis.state.memory_db import (
     MemorySettings,
     SessionSettings,
@@ -472,6 +478,8 @@ class JarvisRuntime:
     turn_end_asks: TurnEndAsks | None = None
     # ADR 0130: Jev's read of short words heard over her voice or in hands-free mode. None = off.
     voice_words: VoiceWords | None = None
+    # ADR 0139: the voice line's one Jev request (intent, relation, tool group). None = off.
+    oneshot: JevOneShot | None = None
     # ADR 0052: the Settings page's file. None = hand-assembled.
     settings: Settings | None = None
     # ADR 0093: the night run; the daemon ticks it. None = hand-assembled.
@@ -1118,6 +1126,98 @@ def _voice_words(
         model=model.strip(), min_confidence=1.0, timeout_ms=timeout, log=log,
     )
     return VoiceWords(route, float(bar), chars)
+
+
+def _event_emitter(event_log_path: Path) -> Callable[[str, dict[str, Any], str], None]:
+    """``(type, payload, turn_id) -> None``: one event on a turn, on the caller's own connection."""
+
+    def emit(event_type: str, payload: dict[str, Any], turn_id: str) -> None:
+        with contextlib.closing(
+            open_runtime_event_log(event_log_path, deadline=time.monotonic() + 1.0),
+        ) as conn:
+            emit_event(
+                conn, type=event_type, payload=payload, correlation={"turn_id": turn_id},
+            )
+
+    return emit
+
+
+def _bar(value: object) -> float | None:
+    """A confidence bar in (0, 1], or None when it is anything else."""
+    if isinstance(value, bool) or not isinstance(value, int | float) or not 0 < value <= 1:
+        return None
+    return float(value)
+
+
+def _jev_oneshot(
+    config: Mapping[str, Any],
+    config_path: Path,
+    log: JevLog | None,
+    tier0_table: Tier0Table,
+    emit: Callable[[str, dict[str, Any], str], None] | None = None,
+) -> JevOneShot | None:
+    """``realtime.jev_oneshot`` (ADR 0139, 0140): off unless enabled; bad values stop boot.
+
+    It needs ``realtime.surrogate_route`` on (its instant functions and transport bar); the
+    control words need ``realtime.jev_words`` too, and without it the surface asks nothing.
+    """
+    realtime = config.get("realtime")
+    if not isinstance(realtime, Mapping):
+        return None
+    block = realtime.get("jev_oneshot")
+    if not isinstance(block, Mapping) or block.get("enabled") is not True:
+        return None
+    prefix = f"runtime: {config_path} realtime.jev_oneshot"
+    model, timeout = block.get("model"), block.get("timeout_ms")
+    relation, tool_line = block.get("relation"), block.get("tool_line")
+    words = realtime.get("jev_words")
+    surrogate = realtime.get("surrogate_route")
+    if not isinstance(surrogate, Mapping) or surrogate.get("enabled") is not True:
+        msg = f"{prefix} needs realtime.surrogate_route enabled"
+        raise RuntimeBootstrapError(msg)
+    if (
+        not isinstance(model, str) or not model.strip()
+        or isinstance(timeout, bool) or not isinstance(timeout, int) or timeout <= 0
+        or not isinstance(relation, Mapping) or not isinstance(tool_line, Mapping)
+    ):
+        msg = f"{prefix} needs model (text), timeout_ms (positive int), relation and tool_line"
+        raise RuntimeBootstrapError(msg)
+    relation_at = _bar(relation.get("at")) if relation.get("enabled") is True else None
+    window = relation.get("window_s")
+    tool_at = _bar(tool_line.get("at")) if tool_line.get("enabled") is True else None
+    groups = tool_line.get("groups")
+    if (
+        (relation.get("enabled") is True and relation_at is None)
+        or isinstance(window, bool) or not isinstance(window, int | float) or window <= 0
+        or (tool_line.get("enabled") is True and tool_at is None)
+        or not isinstance(groups, list) or not all(g in TOOL_GROUPS and g != "none" for g in groups)
+    ):
+        msg = (
+            f"{prefix}.relation needs at in (0, 1] and window_s > 0; .tool_line needs at in"
+            " (0, 1] and groups from the tool group names"
+        )
+        raise RuntimeBootstrapError(msg)
+    words_at = words_timeout = words_chars = None
+    if isinstance(words, Mapping) and words.get("enabled") is True:
+        words_at, words_timeout = _bar(words.get("at")), words.get("timeout_ms")
+        words_chars = words.get("max_chars")
+        if (
+            words_at is None
+            or isinstance(words_timeout, bool) or not isinstance(words_timeout, int)
+            or isinstance(words_chars, bool) or not isinstance(words_chars, int)
+        ):
+            msg = f"{prefix} reads realtime.jev_words at, timeout_ms and max_chars: not valid"
+            raise RuntimeBootstrapError(msg)
+    route = SurrogateRoute(
+        model=model.strip(), min_confidence=1.0, timeout_ms=timeout,
+        zdr=block.get("zdr") is not False, log=log,
+    )
+    return JevOneShot(
+        route, offered(tier0_table),
+        words_at=words_at, words_timeout_ms=words_timeout or 800, max_chars=words_chars or 24,
+        relation_at=relation_at, window_s=float(window),
+        tool_at=tool_at, tool_groups=frozenset(groups), emit=emit,
+    )
 
 
 def _daily_report_preset(config: Mapping[str, Any]) -> str:
@@ -2161,6 +2261,9 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         ),
         turn_end_asks=_turn_end_asks(full_config, config_path, jev_log),
         voice_words=_voice_words(full_config, config_path, jev_log),
+        oneshot=_jev_oneshot(
+            full_config, config_path, jev_log, tier0_table, _event_emitter(paths.event_log),
+        ),
         settings=Settings(paths.root, full_config, _audio_devices),
         night=night,
         daily_schedule=_daily_schedule(daily_report, paths.event_log, full_config),
@@ -2629,6 +2732,67 @@ def make_supersede_unspoken_callable(
                     _withdraw_card(conn, run.turn_id, turn_id)
 
     return _supersede
+
+
+def make_relation_supersede_callable(
+    runtime: JarvisRuntime,
+    drop_unspoken: Callable[[frozenset[str]], frozenset[str]],
+    stop_playback: Callable[[], object],
+) -> Callable[[str, str, str], str]:
+    """Build the ADR 0139 ``(earlier_turn_id, turn_id, relation) -> outcome`` seam.
+
+    Jev read a line as a supplement or correction of the one before it, confidently enough. The
+    earlier turn's open answer run is cancelled as ``superseded`` (the new turn's prompt then
+    folds the earlier words in, ADR 0044) and its card withdrawn, the way ADR 0074 does it for
+    an accepted line, but aimed at that one turn and not bounded by the 10 s window. A turn
+    that dispatched an action is left alone (it is working on a lookup). An answer that has
+    begun playing is left to barge-in, except for a correction, which stops it and cancels the
+    run. Outcomes: ``superseded``, ``stopped``, ``audible``, ``working``, ``no_open_run``,
+    ``no_registry``.
+    """
+    cancel = make_response_cancel_callable(runtime)
+    registry = runtime.response_runs
+    event_log_path = runtime.runtime_paths.event_log
+
+    def _relate(earlier: str, turn_id: str, relation: str) -> str:
+        if registry is None:  # pragma: no cover - wiring pairs the two flags
+            return "no_registry"
+        runs = [
+            run
+            for run in registry.open_runs()
+            if run.phase == "final"
+            and run.turn_id == earlier
+            and run.interrupt_policy.generation_action == "cancel"
+        ]
+        if not runs:
+            return "no_open_run"
+        with contextlib.closing(
+            open_runtime_event_log(event_log_path, deadline=time.monotonic() + 1.0),
+        ) as conn:
+            working = conn.execute(
+                "SELECT 1 FROM events WHERE type = 'action.dispatched' "
+                "AND json_extract(correlation_json, '$.turn_id') = ? LIMIT 1",
+                (earlier,),
+            ).fetchone()
+            if working is not None:
+                return "working"
+            unspoken = earlier in drop_unspoken(frozenset({earlier}))
+            if not unspoken:
+                if relation != "correction":
+                    return "audible"
+                stop_playback()
+            for run in runs:
+                outcome = cancel(run.response_id, "generation", "superseded")
+                LOGGER.info(
+                    "earlier answer %s by %s (%s): response %s -> %s",
+                    "superseded" if unspoken else "stopped", turn_id, relation,
+                    run.response_id, outcome,
+                )
+                if outcome == "cancelled":
+                    _withdraw_card(conn, run.turn_id, turn_id)
+        return "superseded" if unspoken else "stopped"
+
+    return _relate
 
 
 def _withdraw_card(conn: sqlite3.Connection, dropped_turn_id: str, turn_id: str) -> None:
@@ -3271,6 +3435,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             routine_stream=stream_route,
             slow_results=runtime.response_flags.slow_results,
             surrogate_route=runtime.surrogate_route,
+            oneshot=runtime.oneshot,
             # The same boot value as the system prompt's reply-language line.
             reply_language=str(runtime.config.get("reply_language", "follow")),
         )

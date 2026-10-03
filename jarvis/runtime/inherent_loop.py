@@ -142,6 +142,7 @@ from jarvis.runtime import (
     drive_turn,
     make_barge_in_interrupt_callable,
     make_foreground_decision_callable,
+    make_relation_supersede_callable,
     make_response_cancel_callable,
     make_supersede_unspoken_callable,
     make_turn_cancel_callable,
@@ -1757,7 +1758,9 @@ async def _tts_watcher(  # noqa: C901, PLR0912 - ordered durable dispatch FSM
 # `_COMMENTARY_STILL_AFTER_S` while the answer still has not started, at most
 # `_COMMENTARY_MAX_LINES` in all.
 
-_COMMENTARY_ACTION_TYPES: Final[tuple[str, ...]] = ("action.dispatched", "utterance.received")
+_COMMENTARY_ACTION_TYPES: Final[tuple[str, ...]] = (
+    "action.dispatched", "utterance.received", "route.tool_predicted",
+)
 """The D6 rows that speak (:data:`jarvis.decision.commentary._D6_ROWS`)."""
 
 _COMMENTARY_EARLIEST_S: Final[float] = 1.5
@@ -2151,7 +2154,8 @@ def _open_commentary_in_worker_thread(  # noqa: C901, PLR0911 - one early return
 ) -> _OpenCommentary | None:
     """Decide and deliver one row's commentary on a worker thread.
 
-    The row is the ``action.dispatched`` of a tool that is not quiet (ADR 0136) or the
+    The row is the ``action.dispatched`` of a tool that is not quiet (ADR 0136), Jev's
+    ``route.tool_predicted`` for the line (ADR 0140; it speaks at once, before any tool) or the
     ``utterance.received`` that carries his words; the second one is the clock
     of ADR 0116 and waits ``after_s`` (default :data:`_COMMENTARY_AFTER_S`) after
     his words before it looks at anything. ``still`` makes it a follow-up line
@@ -2204,8 +2208,11 @@ def _open_commentary_in_worker_thread(  # noqa: C901, PLR0911 - one early return
         if not still:  # the model's own line replaces the first line only
             lead_in = conn.execute(_SELECT_LEAD_IN_SQL, (turn_id, bound_id)).fetchone()
             line = lead_in_speech_text(lead_in[0] if lead_in is not None else None)
-        # A quick answer needs no lead-in: give it until the floor to begin.
-        if not clock and not _hold_until(said_at_ms, _COMMENTARY_EARLIEST_S, stop):
+        # A quick answer needs no lead-in: give it until the floor to begin. Jev's predicted
+        # group (ADR 0140) is a read or a draft, never quick, and speaks at once.
+        if trigger_event.type == "action.dispatched" and not _hold_until(
+            said_at_ms, _COMMENTARY_EARLIEST_S, stop,
+        ):
             return None
         with _COMMENTARY_LOCK:
             if _turn_commentary_count(conn, turn_id) >= (_COMMENTARY_MAX_LINES if still else 1):
@@ -3774,6 +3781,14 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
         cancel_voice_runs = (
             _make_cancel_voice_runs(runtime) if runtime.response_runs is not None else None
         )
+        oneshot = runtime.oneshot
+        if oneshot is not None and streaming is not None and runtime.response_runs is not None:
+            # ADR 0139: a supplement or correction of the line before it acts on that turn.
+            oneshot.relate = make_relation_supersede_callable(
+                runtime,
+                streaming.drop_unspoken,
+                lambda: streaming.stop_foreground_output(None, reason="correction"),
+            )
 
         def _dump_echo_history(canceller: voice_aec.EchoCanceller) -> None:
             path = canceller.dump(runtime.runtime_paths.root / "aec-diagnostics")
@@ -3837,8 +3852,13 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
             ).start(),
             turn_working=_turn_working,
             recent_speech=_recent_speech,
-            ask_words=runtime.voice_words.ask if runtime.voice_words is not None else None,
+            ask_words=(
+                oneshot.ask
+                if oneshot is not None and oneshot.words_enabled
+                else runtime.voice_words.ask if runtime.voice_words is not None else None
+            ),
             note_words=runtime.voice_words.note if runtime.voice_words is not None else None,
+            begin_line=oneshot.begin if oneshot is not None else None,
             stop_speaking=_stop_speaking,
             hold_output=_hold_output,
             supersede_unspoken=supersede_unspoken,

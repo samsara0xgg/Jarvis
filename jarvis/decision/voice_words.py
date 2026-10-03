@@ -58,6 +58,8 @@ _CRITERIA: Final[dict[str, str]] = {
         " someone else, quoting someone, a video)."
     ),
 }
+CONTROL_CRITERIA: Final[dict[str, str]] = {k: v for k, v in _CRITERIA.items() if k != NONE}
+"""The four control words' criteria, for the merged request (ADR 0139)."""
 _QUESTION: Final[dict[str, Any]] = {
     "words": {"type": "choice", "instructions": _INSTRUCTIONS, "criteria": _CRITERIA},
 }

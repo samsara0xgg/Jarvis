@@ -274,6 +274,17 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         ),
         schema_version=1,
     ),
+    # ADR 0140 — Jev's tool-group prediction for a voice line, written once the turn exists and
+    # only when the group is one with a wait line to say and the bar is met; the commentary
+    # watcher speaks it.
+    EventTypeSchema(
+        event_type="route.tool_predicted",
+        owner_layer="L3",
+        actor="jarvis_runtime",
+        required_payload=("turn_id", "group"),
+        optional_payload=("confidence",),
+        schema_version=1,
+    ),
     EventTypeSchema(
         event_type="utterance.received",
         owner_layer="L5",

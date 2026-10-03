@@ -46,6 +46,7 @@ is routine by definition — short, interruptible, independently permitted.
 _D6_ROWS: Final[dict[str, tuple[PresentationIntentType, str]]] = {
     "action.dispatched": ("acknowledge", "commentary.wait"),
     "utterance.received": ("acknowledge", "commentary.wait"),
+    "route.tool_predicted": ("acknowledge", "commentary.wait"),
 }
 """The rows that speak -> the key of the phrases they permit, in Chinese and
 in English, in the language table.
@@ -55,7 +56,8 @@ A dispatch speaks for every tool but the quiet ones (ADR 0136), and says
 line of what the tool does. The utterance row is the "nothing of the answer has
 started" check, run by the runtime once its clock says the turn is taking a
 while, and again for the follow-ups ("still working") of a longer wait. The
-result row's 「结果回来了」 was heard with nothing before it after a quick tool
+predicted row (ADR 0140: Jev's tool group for the line) is the first line, said before any
+tool is called. The result row's 「结果回来了」 was heard with nothing before it after a quick tool
 (ADR 0045), and a tool's own end says nothing about when the answer comes, so no
 other row speaks.
 
@@ -65,6 +67,15 @@ guidance names as the thing to avoid. The phrases claim only that the turn is
 still working, except the owner's 「马上好」 / "Almost there.", which claims
 progress nobody knows (ADR 0116).
 """
+
+_GROUP_LINES: Final = (
+    ("calendar_todo_read", "commentary.tool.calendar"),
+    ("mail_read", "commentary.tool.mail"),
+    ("web_search", "commentary.tool.web"),
+    ("comms_write", "commentary.tool.generic"),
+)
+"""Jev's predicted tool group (ADR 0140) -> the phrase key it says before any tool is called,
+the same lines a dispatch of that kind of tool says (ADR 0136)."""
 
 _QUIET_TOOLS: Final = (
     "get_current_time",
@@ -168,6 +179,13 @@ def commentary_intent_for(
             return None
         subject = action_id
         key = dispatch_key
+    elif event.type == "route.tool_predicted":
+        predicted_key = next(
+            (line for group, line in _GROUP_LINES if group == event.payload.get("group")), None,
+        )
+        if predicted_key is None:
+            return None
+        key = predicted_key
     elif still:
         key = "commentary.still"
     return PresentationIntent(

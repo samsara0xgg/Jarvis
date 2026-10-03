@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from jarvis.decision.response_run import ResponseCancelledError
-from jarvis.runtime import make_supersede_unspoken_callable
+from jarvis.runtime import make_relation_supersede_callable, make_supersede_unspoken_callable
 from jarvis.state.event_log import emit_event, iter_events_of_types, open_event_log
 from jarvis.state.projections import PendingConfirmations
 from jarvis.surface import voice_media, voice_pipeline
@@ -339,6 +339,87 @@ def test_a_turn_already_working_on_a_tool_is_superseded_only_without_slow_result
 
     assert dropped == [frozenset({"T-first"} if superseded else ())]
     assert len(_payloads(runtime.conn, "response.cancelled")) == int(superseded)
+    runtime.conn.close()
+
+
+@pytest.mark.parametrize(
+    ("relation", "unspoken", "dispatched", "outcome", "stopped"),
+    [
+        ("supplement", True, False, "superseded", False),
+        ("correction", True, False, "superseded", False),
+        ("supplement", False, False, "audible", False),
+        ("correction", False, False, "stopped", True),
+        ("supplement", True, True, "working", False),
+        ("correction", True, True, "working", False),
+    ],
+)
+def test_a_supplement_or_correction_acts_on_the_one_turn_it_names(  # noqa: PLR0913 - the table's columns
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    relation: str,
+    unspoken: bool,  # noqa: FBT001 - pytest parameter
+    dispatched: bool,  # noqa: FBT001 - pytest parameter
+    outcome: str,
+    stopped: bool,  # noqa: FBT001 - pytest parameter
+) -> None:
+    """ADR 0139: the earlier answer is dropped, or stopped when audible and corrected.
+
+    The turn's sentence is not within ADR 0074's 10 s window (no ``utterance.received`` at
+    all): the relation names the turn, so the window does not bound it. An answer that began
+    playing is left to barge-in, except a correction stops it; a turn working on a tool is
+    left alone.
+    """
+    runtime = _make_runtime(tmp_path, lifecycle=True, cancel=True)
+    _script_decide(monkeypatch, _final_result())
+    assert runtime.response_runs is not None
+    runtime.response_runs.hold_completion(held=True)
+    intent = _emit_intent(runtime.conn, "T-first")
+    if dispatched:
+        emit_event(
+            runtime.conn,
+            type="action.dispatched",
+            payload={"action_id": "A-first"},
+            correlation={"turn_id": "T-first", "action_id": "A-first"},
+        )
+    asked: list[frozenset[str]] = []
+    stops: list[str] = []
+
+    def _drop(turn_ids: frozenset[str]) -> frozenset[str]:
+        asked.append(turn_ids)
+        return turn_ids if unspoken else frozenset()
+
+    relate = make_relation_supersede_callable(runtime, _drop, lambda: stops.append("stop"))
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(
+            _drive_turn_on_own_connection,
+            runtime,
+            user_intent_event=intent,
+            available_surfaces=frozenset(),
+            streaming_enabled=True,
+        )
+        _wait_open(runtime, 1)
+        assert relate("T-first", "T-next", relation) == outcome
+        cancelled = outcome in {"superseded", "stopped"}
+        if cancelled:
+            with pytest.raises(ResponseCancelledError):
+                future.result(timeout=10)
+        runtime.response_runs.hold_completion(held=False)
+        if not cancelled:
+            future.result(timeout=10)
+
+    assert (stops == ["stop"]) is stopped
+    assert len(_payloads(runtime.conn, "response.cancelled")) == int(cancelled)
+    if cancelled:
+        (row,) = _payloads(runtime.conn, "response.cancelled")
+        assert (row["turn_id"], row["reason"]) == ("T-first", "superseded")
+    runtime.conn.close()
+
+
+def test_a_relation_to_a_turn_with_no_open_answer_does_nothing(tmp_path: Path) -> None:
+    """The earlier answer already left (or was dropped by the 10 s sweep): no open run."""
+    runtime = _make_runtime(tmp_path, lifecycle=True, cancel=True)
+    relate = make_relation_supersede_callable(runtime, lambda ids: ids, lambda: None)
+    assert relate("T-gone", "T-next", "supplement") == "no_open_run"
     runtime.conn.close()
 
 

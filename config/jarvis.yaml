@@ -634,6 +634,36 @@ realtime:
     at: 0.95
     timeout_ms: 800
     max_chars: 24
+  # ADR 0139, 0140.  One Jev request per voice line the word lists call a turn,
+  # in place of the separate calls of surrogate_route and jev_words (their blocks
+  # below stay the bars and the switches of what the answers may do): it asks
+  # intent (the control words and the instant functions), relation to the line
+  # before, and tool_group (which kind of tool the answer needs first).  Needs
+  # surrogate_route on; the control words also need jev_words.  The words and
+  # her latest speech leave the Mac for OpenRouter (zero data retention) on every
+  # voice line, Tier 0 hits included; every call, and every tool the model then
+  # proposes next to the group Jev predicted, is kept in ~/.jarvis/jev/decisions.jsonl.
+  # relation: a supplement or correction at `at` or above, of a line at most
+  # window_s old, cancels that turn's unspoken answer (its words fold into this
+  # turn's prompt); a correction also stops the answer if it is already audible.
+  # A turn that dispatched an action is left alone.  tool_line: a group in `groups`
+  # at `at` or above makes her say the line of that kind of work (calendar, mail,
+  # web; "on it" for a draft) at once, as the turn's first line, so the dispatch
+  # line and the wait clock stay quiet.  Both off here; the request itself is made
+  # whenever the block is on.
+  jev_oneshot:
+    enabled: false
+    model: typesafe/jev-1.13
+    timeout_ms: 800
+    zdr: true
+    relation:
+      enabled: false
+      at: 0.98
+      window_s: 30
+    tool_line:
+      enabled: false
+      at: 0.95
+      groups: [calendar_todo_read, mail_read, web_search, comms_write]
   # ADR-0008 D8 (Wave 5).  intent_pump replaces the daemon's "poll one
   # event, await its whole turn" watcher with a durable-claim queue: each
   # trigger is claimed once by an idempotent turn.started, the cursor

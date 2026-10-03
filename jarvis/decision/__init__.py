@@ -66,6 +66,7 @@ from jarvis.decision.intent import (
     tier_0_match,
     tool_definitions_for_llm,
 )
+from jarvis.decision.jev_oneshot import CONTROL, JevOneShot
 from jarvis.decision.llm_stream import LLMResponseFailed, LLMTextDelta, LLMToolCallCompleted
 from jarvis.decision.packet import (
     SituationPacket,
@@ -92,6 +93,7 @@ from jarvis.decision.surrogate_route import (
     OPTIONS_VERSION,
     PendingSurrogate,
     SurrogateAction,
+    SurrogateCall,
     SurrogateRoute,
     conversation_state,
     offered,
@@ -664,6 +666,9 @@ class DecideContext:
     # ADR 0122 (``realtime.surrogate_route``): Jev between Tier 0 and the model.
     # None (the default) never asks.
     surrogate_route: SurrogateRoute | None = None
+    # ADR 0139 (``realtime.jev_oneshot``): the voice line's one request, already in flight
+    # when the turn starts. None (the default) asks the instant question on its own.
+    oneshot: JevOneShot | None = None
 
 
 @dataclass(frozen=True)
@@ -1347,7 +1352,13 @@ def _start_surrogate(
     ):
         return None
     options = offered(ctx.tier0_table)
-    call = route.start(conversation_state(packet, ctx.conn, words), options, turn_id)
+    shared = ctx.oneshot.take(turn_id) if ctx.oneshot is not None and turn_id else None
+    if shared is not None:
+        call = SurrogateCall(
+            route, options, shared.started, shared.future, "intent", frozenset(CONTROL),
+        )
+    else:
+        call = route.start(conversation_state(packet, ctx.conn, words), options, turn_id)
     return PendingSurrogate(
         call, options, ctx.tier0_table, _last_spoken_voice(packet), trigger.event_uid,
     )
@@ -2000,6 +2011,8 @@ def _dispatch_one_tool_call(  # noqa: PLR0913, PLR0915 — single-pass orchestra
         correlation=_action_correlation(action_request),
     )
     scratch.events.append(proposed_event)
+    if ctx.oneshot is not None and scratch.turn_id:
+        ctx.oneshot.note_tool(scratch.turn_id, name, arguments)
 
     # 4. Pre-action Gate.
     gate = pre_action_gate(action_request, policy, tool_def=tool_def)

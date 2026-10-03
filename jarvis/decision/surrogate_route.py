@@ -314,12 +314,19 @@ class Reply:
 class SurrogateCall:
     """One question in flight; the deadline runs from when it was sent."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - the call's own parts
         self, route: SurrogateRoute, options: Sequence[SurrogateOption], started: float,
-        future: Future[Reply] | None,
+        future: Future[Reply] | None, key: str = "route", others: frozenset[str] = frozenset(),
     ) -> None:
-        """Wrap the worker's future; ``None`` means nothing was sent (no key)."""
+        """Wrap the worker's future; ``None`` means nothing was sent (no key).
+
+        ``key`` names this question's answer in the reply (ADR 0139: the merged request
+        carries it as ``intent``); ``others`` are its choices that are not options here (the
+        control words), read as valid and never run.
+        """
         self.route = route
+        self._key = key
+        self._others = others
         self._options = options
         self._started = started
         self._future = future
@@ -355,7 +362,7 @@ class SurrogateCall:
             return failed(reply.error, latency_ms)
         if latency_ms > limit_ms:
             return failed("timeout", latency_ms)  # the deadline is for the whole call
-        return _read_answer(reply.parsed, self._options, latency_ms)
+        return _read_answer(reply.parsed, self._options, latency_ms, self._key, self._others)
 
 
 @dataclass(frozen=True)
@@ -408,17 +415,19 @@ def _read_answer(
     parsed: Any,  # noqa: ANN401 — the decoded JSON body, any shape until checked
     options: Sequence[SurrogateOption],
     latency_ms: int,
+    key: str = "route",
+    others: frozenset[str] = frozenset(),
 ) -> SurrogateAnswer:
     """The choice and confidence out of Jev's body, or ``bad_json``."""
     bad = SurrogateAnswer(None, None, latency_ms, None, "bad_json")
     try:
-        route = parsed["answers"]["route"]
+        route = parsed["answers"][key]
         choice, confidence = route["choice"], route["confidence"]
         cost = (parsed.get("usage") or {}).get("cost")
     except (KeyError, TypeError, AttributeError):
         return bad
     if (
-        choice not in {o.id for o in options} | {NONE}
+        choice not in {o.id for o in options} | {NONE} | others
         or isinstance(confidence, bool)
         or not isinstance(confidence, int | float)
     ):
