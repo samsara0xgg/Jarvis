@@ -64,7 +64,7 @@ def test_the_next_turn_starts_with_the_last_turns_request(tmp_path: Path) -> Non
     assert sent.startswith("[State when this was said | from the program")
     assert "Channel: voice" in sent
     assert "Your reply is spoken aloud" not in sent
-    assert sent.endswith("你在吗")
+    assert sent.endswith("你在吗\n\n[Reply language for this turn: Chinese]")
 
 
 def test_without_it_the_history_drops_the_state_block(tmp_path: Path) -> None:

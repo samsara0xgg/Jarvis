@@ -1042,10 +1042,30 @@ def _current_status_block(packet: SituationPacket, ctx: DecideContext) -> str | 
     return "\n".join((header, *lines))
 
 
+# Kana and hangul: the "follow" rule knows only zh and en, so Japanese and Korean
+# words get no reply-language line (the 2026-10-02 eval saw Japanese forced to Chinese).
+_KANA_HANGUL_RE: Final[re.Pattern[str]] = re.compile("[\u3040-\u30ff\uac00-\ud7af]")
+_REPLY_LANGUAGE_NAME: Final[Mapping[str, str]] = {"zh": "Chinese", "en": "English"}
+
+
+def _reply_language_line(lang: Language | None, words: str) -> str | None:
+    """The last line of the live user message naming the reply language, or None.
+
+    A sentence in the system prompt alone left the model answering in the other
+    language on 7% of "follow" turns; one line after his words fixed 10 of 28
+    such samples to 0 and changed no zh or en turn (eval 2026-10-02). It follows
+    the pinned ``reply_language`` too.
+    """
+    if lang is None or _KANA_HANGUL_RE.search(words):
+        return None
+    return f"[Reply language for this turn: {_REPLY_LANGUAGE_NAME[lang]}]"
+
+
 def _insert_system_notes(
     messages: list[dict[str, Any]],
     packet: SituationPacket,
     ctx: DecideContext,
+    lang: Language | None,
 ) -> None:
     """History ahead of the conversation; this turn's state on the user message.
 
@@ -1057,11 +1077,16 @@ def _insert_system_notes(
     says it is not the user's words. A history ending on an unanswered
     user row folds that row in ahead of the header, so a request never
     carries two user messages in a row. With ``record_sent_message`` the
-    turn's own message is kept as sent, before any such fold.
+    turn's own message is kept as sent, before any such fold. The reply-language
+    line ends this message only, so the history ahead of it keeps its cache
+    prefix; the kept message carries it too, so later turns replay it.
     """
     status = _current_status_block(packet, ctx)
     for message in reversed(messages):
         if message.get("role") == "user":
+            line = _reply_language_line(lang, str(message["content"]))
+            if line is not None:
+                message["content"] = f"{message['content']}\n\n{line}"
             if status is not None:
                 message["content"] = f"{status}\n\n{message['content']}"
             if ctx.record_sent_message is not None:
@@ -1420,7 +1445,7 @@ def _run_tool_use_loop(
             return _run_spoken_stream(packet, policy, ctx, ctx.routine_stream, scratch)
         return _run_routine_stream(packet, ctx, ctx.routine_stream, scratch)
 
-    messages = _loop_messages(packet, ctx)
+    messages = _loop_messages(packet, ctx, scratch.lang)
     llm_surface = surface_for(policy, ctx.tool_registry, CallerPrincipal.JARVIS_LLM)
     late_noted = False
 
@@ -2187,10 +2212,12 @@ def _handle_action_terminal_failure(
     return _finalize_response(canonical_text, packet, ctx, scratch)
 
 
-def _loop_messages(packet: SituationPacket, ctx: DecideContext) -> list[dict[str, Any]]:
+def _loop_messages(
+    packet: SituationPacket, ctx: DecideContext, lang: Language | None
+) -> list[dict[str, Any]]:
     """Build the tool loop's messages: history, system notes, correction prefix."""
     messages = build_llm_messages(packet)
-    _insert_system_notes(messages, packet, ctx)
+    _insert_system_notes(messages, packet, ctx, lang)
     if ctx.stream_correction is not None:
         # The failed stream's exposed prefix is the model's own prior text;
         # the correction continues it and never rewrites it (ADR-0008 D3).
@@ -2504,7 +2531,7 @@ def _run_routine_stream(
     to the ordinary full-text path in place, on the text it already has.
     """
     messages = build_llm_messages(packet)
-    _insert_system_notes(messages, packet, ctx)
+    _insert_system_notes(messages, packet, ctx, scratch.lang)
     streamed = _stream_routine_text(ctx, route, messages, scratch, gate_segments=True)
     if streamed.emitted_segments == 0:
         # D2 rules 1 and 4: a seal before the first permit exposed nothing, so
@@ -2736,7 +2763,7 @@ def _run_spoken_stream(  # noqa: C901 - one request loop: calls, one continuatio
     call's ``action.proposed`` for the acknowledge to speak at dispatch. A
     response that ends on such a line with no call gets one more request.
     """
-    messages = _loop_messages(packet, ctx)
+    messages = _loop_messages(packet, ctx, scratch.lang)
     llm_surface = surface_for(policy, ctx.tool_registry, CallerPrincipal.JARVIS_LLM)
     speaker = _SegmentSpeaker(
         ctx, route, scratch, classifier=SegmentRiskClassifier(rule_version=SPOKEN_RULE_VERSION),

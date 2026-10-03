@@ -75,6 +75,7 @@ STATUS = (
     "Time: 2026-09-21T15:37-07:00 Monday\n"
     "Channel: voice\n"
 )
+LINE = "[Reply language for this turn: Chinese]"
 
 
 def _memory_db(tmp_path: Path) -> Path:
@@ -226,7 +227,7 @@ def test_turn_request_is_history_by_role_then_one_user_message_with_status(
     assert system.endswith("[About the user]\n- 用户叫 Allen。")
     assert [message["role"] for message in messages] == ["user", "assistant", "user"]
     assert messages[:2] == list(HISTORY)
-    assert messages[2]["content"] == f"{STATUS}\n后天呢"
+    assert messages[2]["content"] == f"{STATUS}\n后天呢\n\n{LINE}"
     assert not any("[system context]" in message["content"] for message in messages)
 
 
@@ -241,7 +242,7 @@ def test_connected_apps_ride_this_turns_state_after_the_history(tmp_path: Path) 
     _, messages = _drive_one_turn(tmp_path, stale, connected_apps=apps)
 
     assert messages[:2] == list(stale)
-    assert messages[2]["content"] == f"{STATUS}{apps}\n\n后天呢"
+    assert messages[2]["content"] == f"{STATUS}{apps}\n\n后天呢\n\n{LINE}"
 
 
 def test_history_ending_on_a_user_row_folds_into_this_turn(tmp_path: Path) -> None:
@@ -251,4 +252,4 @@ def test_history_ending_on_a_user_row_folds_into_this_turn(tmp_path: Path) -> No
     _, messages = _drive_one_turn(tmp_path, (*HISTORY, unanswered))
 
     assert [message["role"] for message in messages] == ["user", "assistant", "user"]
-    assert messages[2]["content"] == f"{unanswered['content']}\n\n{STATUS}\n后天呢"
+    assert messages[2]["content"] == f"{unanswered['content']}\n\n{STATUS}\n后天呢\n\n{LINE}"
