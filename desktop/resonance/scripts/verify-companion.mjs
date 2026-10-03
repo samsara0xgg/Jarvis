@@ -53,6 +53,16 @@ try {
   const shot = (name, clip = { x: 120, y: 0, width: 400, height: 210 }) => page.screenshot({ path: path.join(dir, `${name}.png`), clip });
   const waitPlace = async value => { await page.waitForFunction(v => document.querySelector('.companion-hit')?.dataset.place === v, value); await page.waitForTimeout(900); };
   const lobe = { x: 195.5, y: 16 }, out = { x: 195.5, y: 72 };
+  const dashOpen = () => page.locator('.companion-dashboard.is-open').count();
+  const dashGone = () => page.waitForFunction(() => !document.querySelector('.companion-dashboard.is-open'), null, { timeout: 3000 });
+  // Hovering under the island never brings her out; she is out for a reason (a conversation, a skin change, her menu), and the
+  // pointer under her then holds her there. Her menu is the quietest reason: Esc closes it and the pointer keeps her out.
+  const comeOut = async () => {
+    await move(out.x, out.y); await page.waitForTimeout(400);
+    if (await place() === 'out') return;
+    await hit.click({ button: 'right', force: true }); await waitPlace('out');
+    await move(out.x, out.y); await page.waitForTimeout(400); await page.keyboard.press('Escape'); await waitPlace('out');
+  };
 
   await page.waitForTimeout(800);
   check('01 rests in the island', await place() === 'home');
@@ -62,11 +72,12 @@ try {
   await move(320, 14);
   await page.locator('.companion-island-target').click({ position: { x: 155, y: 14 }, force: true });
   await page.waitForTimeout(200); await move(600, 560); await page.waitForTimeout(400);
-  check('refinement click pins home even when a hover timer was pending', await page.locator('.companion-dashboard.is-open').count() === 1);
-  await move(320, 14);
+  check('refinement click opens the Dashboard even when a hover timer was pending', await dashOpen() === 1);
+  await move(320, 14); await page.waitForTimeout(500);
+  check('refinement coming back within 0.6 s keeps it', await dashOpen() === 1);
   await page.locator('.companion-island-target').click({ position: { x: 155, y: 14 }, force: true });
   await page.evaluate(() => window.__cursor({ x: 320, y: 14 })); await page.waitForTimeout(350);
-  check('refinement clicking pinned home closes it until the pointer leaves', await page.locator('.companion-dashboard.is-open').count() === 0);
+  check('refinement clicking a Dashboard that a click opened closes it until the pointer leaves', await dashOpen() === 0);
   await move(600, 560); await waitPlace('home');
   await hit.click({ button: 'right', force: true });
   check('refinement right-click opens skin and expression controls', await page.getByRole('menuitemradio').count() === 9 && await page.getByRole('menuitem', { name: 'Preview expressions' }).count() === 1);
@@ -131,23 +142,33 @@ try {
   await page.waitForTimeout(80);
   check('01 the menu bar beside the island still gets its clicks', await page.evaluate(() => window.__state.passthrough === true));
   await move(lobe.x - 20, 14);
-  await waitPlace('peek');
+  await page.waitForFunction(() => document.querySelector('.companion-hit')?.dataset.place === 'peek');
   check('01 peeks when the cursor approaches the island', true);
   await shot('01-peek');
-  // Every frame of the way out: her centre and the alpha of a point on her body, right of her eyes.
+  await page.locator('.companion-dashboard.is-open').waitFor();
+  await waitPlace('home');
+  check('01 resting on her home goes on from the peek to the Dashboard, and she is home', await dashOpen() === 1);
+  await move(600, 560); await dashGone(); await waitPlace('home');
+  await move(out.x, out.y - 6);
+  await page.waitForTimeout(700);
+  check('02 hovering under the island leaves her home: no ball, no chip, clicks pass through',
+    await place() === 'home' && await page.locator('.companion-chip.is-open').count() === 0 && await page.evaluate(() => window.__state.passthrough === true));
+  // Every frame of the way out (her menu brings her): her centre and the alpha of a point on her body, right of her eyes.
   await page.evaluate(() => { const log = window.__drip = [], c = document.querySelector('.companion-canvas'), g = c.getContext('2d'), h = document.querySelector('.companion-hit'), t0 = performance.now();
     const k = c.width / c.getBoundingClientRect().width;
     const f = () => { const [, x, y, sc] = /translate\(([-\d.]+)px, ([-\d.]+)px\) scale\(([-\d.]+)\)/.exec(h.style.transform).map(Number);
       log.push([y + 30, g.getImageData(Math.round((x + 30 + 14 * sc) * k), Math.round((y + 30 + 8 * sc) * k), 1, 1).data[3]]);
       if (performance.now() - t0 < 900) requestAnimationFrame(f); };
     requestAnimationFrame(f); });
-  await move(out.x, out.y - 6);
+  await hit.click({ button: 'right', force: true });
   await waitPlace('out');
   const drip = await page.evaluate(() => window.__drip), clear = drip.find(([y]) => y > 36);
   check(`02 she leaves the island as a black drop and lights up into glass once clear of it (${JSON.stringify(clear)} → ${drip.at(-1)[1]})`,
     !!clear && clear[1] < 128 && drip.at(-1)[1] > 240);
-  check('02 comes out under the island on hover', await page.evaluate(() => window.__state.passthrough === false));
-  check('02 keyboard chip appears beside her', await page.locator('.companion-chip.is-open').count() === 1);
+  check('02 her menu brings her out under the island and the window takes clicks', await page.evaluate(() => window.__state.passthrough === false) && await page.getByRole('menu').count() === 1);
+  await move(out.x, out.y); await page.waitForTimeout(400);
+  await page.keyboard.press('Escape'); await waitPlace('out');
+  check('02 closing the menu with the pointer under her keeps her out, and the keyboard chip appears beside her', await page.locator('.companion-chip.is-open').count() === 1);
   await shot('02-out-chip');
   await move(460, 400);
   await page.waitForTimeout(80);
@@ -173,7 +194,7 @@ try {
 
   // A partial wardrobe hold cancels, and a short click starts voice on release without a double-click timer.
   const originalSkin = await wardrobe();
-  await move(out.x, out.y); await waitPlace('out');
+  await comeOut();
   await hit.hover(); await page.mouse.down(); await page.waitForTimeout(330);
   check('refinement charge ring appears after 200 ms', await page.locator('.companion-canvas').getAttribute('data-charge') === 'holding');
   await page.mouse.up(); await page.waitForTimeout(60);
@@ -225,26 +246,43 @@ try {
   await shot('06-dusk', { x: 120, y: 0, width: 400, height: 300 });
   await move(320, 200);
   await page.waitForTimeout(200);
+  let left = Date.now();
   await move(600, 560);
-  await page.waitForFunction(() => !document.querySelector('.companion-dashboard.is-open'), null, { timeout: 3000 });
+  await page.waitForTimeout(300);
+  check('06 a rest-opened Dashboard is still up 0.3 s after the cursor leaves', await dashOpen() === 1);
+  await dashGone();
+  let gone = Date.now() - left;
   await waitPlace('home');
-  check('06 closing the dashboard keeps her home', true);
+  check(`06 it folds about 0.6 s after the cursor leaves (${gone} ms), and closing keeps her home`, gone > 450 && gone < 1100);
   await shot('06-home-again');
-  await move(out.x, out.y);
-  await waitPlace('out');
+  await move(320, 14);
   await page.locator('.companion-island-target').click({ position: { x: 155, y: 14 }, force: true });
   await page.locator('.companion-dashboard.is-open').waitFor();
   await waitPlace('home');
+  left = Date.now();
   await move(600, 560);
-  await page.waitForTimeout(1200);
-  check('06 a click on the notch opens the Dashboard, and it stays when the cursor leaves',
-    await page.locator('.companion-dashboard.is-open').count() === 1 && await page.locator('.talk[data-hit]').count() === 0);
+  await dashGone();
+  gone = Date.now() - left;
+  check(`06 a click on the notch opens the Dashboard, and it folds about 0.6 s after the cursor leaves (${gone} ms), starting no voice`,
+    gone > 450 && gone < 1100 && await page.locator('.talk[data-hit]').count() === 0);
+  await move(320, 14);
+  await page.locator('.companion-dashboard.is-open').waitFor();
+  await page.locator('.companion-island-target').click({ position: { x: 155, y: 14 }, force: true });
+  await page.waitForTimeout(400);
+  check('06 a click on a Dashboard that a rest opened keeps it', await dashOpen() === 1);
   await page.locator('.companion-island-target').click({ position: { x: 155, y: 14 }, force: true });
   await page.waitForFunction(() => !document.querySelector('.companion-dashboard.is-open'), null, { timeout: 3000 });
   await waitPlace('home');
   await page.waitForTimeout(400);
-  check('06 another notch click closes it, and neither click starts voice', await page.locator('.talk[data-hit]').count() === 0);
+  check('06 another notch click closes it, and no click starts voice', await page.locator('.talk[data-hit]').count() === 0);
   await move(600, 560);
+  await move(320, 14);
+  await page.locator('.companion-dashboard.is-open').waitFor();
+  await page.locator('.ad .cmp input').focus();
+  await move(600, 560); await page.waitForTimeout(1200);
+  check('06 a field with focus in the Dashboard holds it open with the pointer away', await dashOpen() === 1);
+  await page.locator('.ad .cmp input').blur(); await move(600, 560); await dashGone();
+  check('06 once the field lets go it folds', true);
 
   // 09: the Dashboard around her. The home's blocks in their default order; each row grows into its page
   // at the same panel height, her face follows the page, and ‹ or Esc goes back one level.
@@ -255,7 +293,7 @@ try {
   const settle = () => page.waitForTimeout(700);
   const overlaps = {};
   await move(320, 14);
-  await panel.locator('.ad').waitFor();
+  await page.locator('.companion-dashboard.is-open').waitFor();
   await move(320, 200);
   await page.waitForTimeout(900);
   const homeHeight = (await panel.boundingBox()).height;
@@ -477,8 +515,7 @@ try {
   const wearing = () => page.locator('.companion-canvas').getAttribute('data-skin');
   const wearsSoon = key => page.waitForFunction(k => document.querySelector('.companion-canvas')?.dataset.skin === k, key, { timeout: 4000 });
   check('08 she starts in deep-space glass', await skinOn() === 'glass' && await wearing() === 'glass');
-  await move(out.x, out.y);
-  await waitPlace('out');
+  await comeOut();
   // Her glass body is opaque at the centre-left of the ball, where the eyes are not.
   const body = await page.evaluate(({ x, y }) => { const c = document.querySelector('.companion-canvas'), k = c.width / c.clientWidth;
     return c.getContext('2d').getImageData(Math.round((x - 16) * k), Math.round(y * k), 1, 1).data[3]; }, out);
@@ -513,8 +550,7 @@ try {
   for (const [key, label] of [['galaxy', 'Galaxy'], ['frost', 'Frost'], ['glass', 'Glass'], ['codex', 'Icon'], ['aurora', 'Aurora']]) {
     await pickLook('skin', label);
     await wearsSoon(key);
-    await move(out.x, out.y);
-    await waitPlace('out');
+    await comeOut();
     await page.waitForTimeout(1400);
     sky[key] = await colour();
     await shot(`08-${key}`);
@@ -591,8 +627,7 @@ try {
   // 12: ⌘ in the menu bar row hides the whole window (electron/companion.ts): it fades out, takes no clicks, and
   // tells the page the cursor went far away, so what hover opened closes behind the glass.
   const far = async () => { await page.mouse.move(600, 560); await page.evaluate(() => window.__cursor({ x: -1e4, y: -1e4 })); };
-  await move(lobe.x, out.y);
-  await waitPlace('out');
+  await comeOut();
   await far();
   await waitPlace('home');
   check('12 hidden, she goes home and the window gives up its clicks', await page.evaluate(() => window.__state.passthrough === true));
@@ -620,12 +655,20 @@ try {
   await page.waitForTimeout(80);
   check('07 the pill takes clicks too', await page.evaluate(() => window.__state.passthrough === false));
   await move(320, 14);
-  await waitPlace('peek');
+  await page.waitForFunction(() => document.querySelector('.companion-hit')?.dataset.place === 'peek');
   check('07 the pill centre makes her peek', true);
+  await page.locator('.companion-dashboard.is-open').waitFor();
+  await waitPlace('home');
+  check('07 resting on the pill goes on to open the Dashboard', await dashOpen() === 1);
+  await move(600, 560); await dashGone(); await waitPlace('home');
   await move(320, out.y);
+  await page.waitForTimeout(700);
+  check('07 hovering under the pill leaves her home', await place() === 'home');
+  await hit.click({ button: 'right', force: true });
   await waitPlace('out');
-  check('07 she comes out straight below the pill', Math.abs(await centre() - 320) < 2);
+  check('07 her menu brings her out straight below the pill', Math.abs(await centre() - 320) < 2);
   await shot('07-external-out', { x: 120, y: 0, width: 400, height: 210 });
+  await page.keyboard.press('Escape');
   await move(600, 560);
   await waitPlace('home');
   await move(268, 14);

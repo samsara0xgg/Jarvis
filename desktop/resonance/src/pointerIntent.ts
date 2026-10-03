@@ -4,6 +4,9 @@ export type PointerRect = { left: number; right: number; top: number; bottom: nu
 export const HOVER_DWELL_MS = 140;
 export const HOVER_EXIT_MS = 280;
 export const HOVER_SPEED = .25;
+// The Dashboard: a rest on the island opens it; it folds once the pointer has been off it and the island this long.
+export const DASHBOARD_DWELL_MS = 300;
+export const DASHBOARD_EXIT_MS = 600;
 const WINDOW_MS = 60;
 
 // Sample on each animation frame, including a stationary pointer: stopping naturally

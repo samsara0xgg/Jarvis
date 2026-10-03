@@ -176,7 +176,7 @@ try {
   await page.goto(`http://127.0.0.1:${web}/?companion=1&port=${port}`);
   await page.addStyleTag({ content: 'html,body{height:100%}body{background:linear-gradient(160deg,#7f98b8,#5d7898 55%,#4a6484)!important}' });
   const hit = page.locator('.companion-hit');
-  // A click on the notch opens the Dashboard and pins it; a click on a pinned one closes it.
+  // A click on the notch opens the Dashboard; a click on one a click opened closes it (it also folds by itself once the pointer leaves).
   const island = () => page.locator('.companion-island-target').click({ force: true });
   const closeDash = async () => { for (let i = 0; i < 2 && await page.locator('.companion-dashboard.is-open').count(); i++) { await island(); await page.waitForTimeout(200); } };
   const move = async (x, y) => { await page.mouse.move(x, y); await page.evaluate(([x, y]) => window.__cursor({ x, y }), [x, y]); };
@@ -206,6 +206,11 @@ try {
     return Math.abs(await fromBottom() - before) <= 50;
   };
   const out = { x: 195.5, y: 72 };
+  // Hovering under the island does not bring her out; her menu does, and Esc leaves the pointer under her to keep her there.
+  const comeOut = async () => {
+    await hit.click({ button: 'right', force: true }); await waitPlace('out');
+    await move(out.x, out.y); await page.waitForTimeout(400); await page.keyboard.press('Escape'); await waitPlace('out');
+  };
   await page.waitForTimeout(800);
 
   if (real) {
@@ -278,7 +283,6 @@ try {
     check('L1 she joins the daemon link and syncs its controls', posts.some(p => p.path === '/inherent/controls' && !Object.keys(p.body).length));
 
     // A poke turns on wave mode; the daemon's phases then drive her.
-    await move(out.x, out.y); await waitPlace('out');
     await hit.click({ force: true }); await page.waitForTimeout(600);
     check('L2 a poke asks the daemon for wave mode', posts.at(-1)?.path === '/inherent/controls' && posts.at(-1).body.conversation === true);
     check('L2 in wave mode she listens, the talk area open, one of her listening faces', (await area()).open && (await area()).state === 'listening' && await face('35', '35b') === '35');
@@ -412,7 +416,9 @@ try {
     await move(600, 560); await waitPlace('home');
 
     // Typed text from her own box goes to the daemon.
-    await move(out.x, out.y); await waitPlace('out');
+    await move(out.x, out.y); await page.waitForTimeout(400);
+    check('L7 hovering under the island leaves her home', await hit.getAttribute('data-place') === 'home');
+    await comeOut();
     await move(out.x + 26 + 12 + 16, out.y);
     await page.locator('.companion-chip button').click();
     await page.waitForFunction(() => document.activeElement?.matches('.talk textarea'));

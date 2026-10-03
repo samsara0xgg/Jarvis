@@ -23,6 +23,12 @@ const checks = [], failed = [], check = (name, pass) => {
 };
 const browser = await chromium.launch({ headless: true, channel: 'chrome', args: ['--disable-web-security'] });
 const out = { x: 195.5, y: 72 }; // where she stands out of the island in the 640 px window
+// Hovering under the island does not bring her out; she is out for a reason (voice, a turn, her menu). Her menu is the quietest one:
+// Esc closes it and the pointer under her keeps her out, so the keyboard chip shows.
+const comeOut = async ({ page, move }) => {
+  await page.locator('.companion-hit').click({ button: 'right', force: true }); await page.getByRole('menu').waitFor(); await page.waitForTimeout(700);
+  await move(out.x, out.y); await page.waitForTimeout(500); await page.keyboard.press('Escape'); await page.waitForTimeout(700);
+};
 
 // One page per scenario: its own settings, a fresh fake daemon.
 // `buttons`: the `talkButtons` setting. Most scenes below run with it on (the keyboard and end buttons, the pill as soon as she listens); the ones for the default, without them, say `buttons: false`.
@@ -462,7 +468,7 @@ try {
       const s = await scene({ captions: 'brief' });
       const { page, emit, move, skew, shot, settled } = s;
       await page.waitForTimeout(600);
-      if (fieldFirst) { await move(out.x, out.y); await page.waitForTimeout(700); await page.locator('.companion-chip button').click(); await page.waitForTimeout(900); } // (the typing field keeps the area up)
+      if (fieldFirst) { await comeOut(s); await page.locator('.companion-chip button').click(); await page.waitForTimeout(900); } // (the typing field keeps the area up)
       await emit('controls', { mic_muted: false, speech_muted: false, conversation: true }); s.daemonState.controls.conversation = true;
       await emit('voice', { phase: 'listening', turn_id: 'tp0' });
       await watch(page);
@@ -866,6 +872,8 @@ try {
     const s = await scene({ captions: 'brief', buttons: false });
     const { page, emit, move, area, posts } = s;
     await page.waitForTimeout(800);
+    await move(out.x, out.y); await page.waitForTimeout(700);
+    check('no buttons: hovering under the island with voice off leaves her home, no chip', await page.locator('.companion-chip.is-open').count() === 0 && await page.locator('.companion-hit').getAttribute('data-place') === 'home');
     await emit('controls', { mic_muted: false, speech_muted: false, conversation: true }); s.daemonState.controls.conversation = true;
     await emit('voice', { phase: 'listening', turn_id: 'ch1' }); await page.waitForTimeout(500);
     await move(out.x, out.y); await page.waitForTimeout(700);
@@ -984,7 +992,7 @@ try {
     const s = await scene({ captions: 'all' });
     const { page, move, area, folded } = s;
     await page.waitForTimeout(600);
-    await move(out.x, out.y); await page.waitForTimeout(700);
+    await comeOut(s);
     await page.locator('.companion-chip button').click(); await page.waitForTimeout(900);
     check('the keyboard opens the field with nothing to show yet', (await area()).fieldShown);
     await page.keyboard.press('Escape');

@@ -21,7 +21,7 @@ import { NightCard, isNightLook, markNightSeen, morningOf, seenNight, type Night
 import { tr, useCompanionSettings, type L, type Lang } from './companionSettings';
 import { useNow, useRoute } from './homeData';
 import type { Controls as DashControls, Look } from './SettingsPage';
-import { HOVER_DWELL_MS, HOVER_EXIT_MS, HOVER_SPEED, PointerIntent } from './pointerIntent';
+import { DASHBOARD_DWELL_MS, DASHBOARD_EXIT_MS, HOVER_DWELL_MS, HOVER_EXIT_MS, HOVER_SPEED, PointerIntent } from './pointerIntent';
 import './design-tokens.css';
 import './companion.css';
 
@@ -78,8 +78,8 @@ function layout({ topInset, notchWidth, surfaceWidth: width }: Placement) {
     lobe: notchWidth ? { x: lobe.left, y: 0, w: notchLeft - lobe.left, h: topInset } : { x: center - 36, y: 0, w: 72, h: topInset },
     ball: { x: x - R - 12, y: topInset, w: 2 * R + 24, h: out.y + R + 12 - topInset },
     chip: { x: x + R + 4, y: out.y - 18, w: 44, h: 36 },
-    dash: notchWidth ? [{ x: notchLeft, y: 0, w: notchWidth, h: topInset + 4 }]
-      : [{ x: lobe.left, y: 0, w: 30, h: topInset + 4 }, { x: center + 36, y: 0, w: 30, h: topInset + 4 }],
+    // A rest anywhere a click opens the Dashboard opens it: her home and the notch, or the whole pill.
+    dash: [{ x: lobe.left, y: 0, w: (notchWidth ? wingX : lobe.right) - lobe.left, h: topInset + 4 }],
     panel: { x: center - PANEL / 2 - 10, y: 0, w: PANEL + 20, h: panelTop + 660 },
   } };
 }
@@ -315,8 +315,8 @@ export function Companion() {
   const chip = place === 'out' && zone === 'ball' && !composer && (!busy || !companion.talkButtons && voice !== 'off');
   // During a notice she looks down at it from the island.
   const noticeLook = carded || nightShown ? { x: geo.center, y: placement.topInset + 90 } : notice ? { x: notice.kind === 'pop' ? geo.wingX + 80 : geo.center, y: placement.topInset + 90 } : null;
-  const live = useRef({ geo, dashboard, chip, composer, place, wardrobe, noticeLook, openBy: companion.openBy });
-  live.current = { geo, dashboard, chip, composer, place, wardrobe, noticeLook, openBy: companion.openBy };
+  const live = useRef({ geo, dashboard, chip, composer, place, wardrobe, noticeLook, openBy: companion.openBy, menu: !!menu });
+  live.current = { geo, dashboard, chip, composer, place, wardrobe, noticeLook, openBy: companion.openBy, menu: !!menu };
   const ball = useRef<BallHandle | null>(null), look = useRef<Point | null>(null), cursor = useRef<Point>({ x: -1e4, y: -1e4 });
   const input = useRef<HTMLTextAreaElement>(null), root = useRef<HTMLElement>(null), pressing = useRef(false);
 
@@ -479,11 +479,25 @@ export function Companion() {
     pinned.current = false; dashEntered.current = hovered; setDashboard(true); setComposer(false); if (!detached) void window.jarvis?.focus(false);
   };
   const closeDashboard = () => { if (detached) void window.jarvis?.dashboard?.('close'); else setDashboard(false); };
-  // Clicking the island pins the Dashboard; clicking it again closes it.
+  // Clicking the island opens the Dashboard; a click on one it is already showing closes it, unless a rest opened it a moment
+  // before (that click is the same reach for it). However it opened, it folds by itself once the pointer leaves (below).
   const toggleDashboard = () => {
     clearTimeout(dashTimer.current); dashTimer.current = undefined;
     if (live.current.dashboard && pinned.current) { setDashboard(false); pinned.current = false; dashClosedHere.current = true; }
-    else { if (!live.current.dashboard) openDashboard(false); pinned.current = true; }
+    else { if (!live.current.dashboard) openDashboard(false); pinned.current = true; dashEntered.current = true; }
+  };
+  // What keeps the Dashboard up with the pointer away: typing in it, her menu, or a press that began in it (a drag).
+  const dashPress = useRef(false);
+  useEffect(() => {
+    const down = (event: PointerEvent) => { dashPress.current = !!(event.target as Element | null)?.closest?.('.companion-dashboard'); };
+    const up = () => { dashPress.current = false; };
+    window.addEventListener('pointerdown', down, true); window.addEventListener('pointerup', up, true); window.addEventListener('pointercancel', up, true);
+    return () => { window.removeEventListener('pointerdown', down, true); window.removeEventListener('pointerup', up, true); window.removeEventListener('pointercancel', up, true); };
+  }, []);
+  const dashHeld = () => {
+    const el = document.activeElement;
+    const typing = document.hasFocus() && !!el?.closest('.companion-dashboard') && el.matches('input, textarea, select, [contenteditable="true"]');
+    return typing || live.current.menu || dashPress.current;
   };
   useEffect(() => {
     if (!window.jarvis?.dashboard) return;
@@ -604,7 +618,8 @@ export function Companion() {
       intent.sample(point, performance.now());
       if (!composer) look.current = live.current.noticeLook ?? point;
       refreshHit();
-      const next: Zone = within(point, z.ball) || (chip && within(point, z.chip)) ? 'ball' : within(point, z.lobe) ? 'lobe' : 'none';
+      // Passing under the island does not bring her out: the ball zone only keeps her out while she is already out for something else.
+      const next: Zone = live.current.place === 'out' && (within(point, z.ball) || (chip && within(point, z.chip))) ? 'ball' : within(point, z.lobe) ? 'lobe' : 'none';
       if (next !== pending.current) {
         pending.current = next; clearTimeout(zoneTimer.current);
         const reveal = () => {
@@ -619,10 +634,10 @@ export function Companion() {
       const toward = dashboard && !!panel && intent.headingTo(panel);
       if (!over) dashClosedHere.current = false;
       if (dashboard) {
-        if (over || pinned.current) { dashEntered.current = true; clearTimeout(dashTimer.current); dashTimer.current = undefined; }
+        if (over || dashHeld()) { if (over) dashEntered.current = true; clearTimeout(dashTimer.current); dashTimer.current = undefined; }
         else if (dashEntered.current && (toward || !dashTimer.current)) {
           clearTimeout(dashTimer.current);
-          dashTimer.current = setTimeout(() => { dashTimer.current = undefined; setDashboard(false); }, HOVER_EXIT_MS);
+          dashTimer.current = setTimeout(() => { dashTimer.current = undefined; if (!dashHeld()) { setDashboard(false); pinned.current = false; } }, DASHBOARD_EXIT_MS);
         }
       } else if (over && !dashTimer.current && !dashClosedHere.current && live.current.openBy !== 'click') {
         const reveal = () => {
@@ -630,7 +645,7 @@ export function Companion() {
           if (slow()) { dashTimer.current = undefined; openDashboard(true); }
           else dashTimer.current = setTimeout(reveal, 20);
         };
-        dashTimer.current = setTimeout(reveal, HOVER_DWELL_MS);
+        dashTimer.current = setTimeout(reveal, DASHBOARD_DWELL_MS);
       } else if (!over && dashTimer.current) { clearTimeout(dashTimer.current); dashTimer.current = undefined; }
     };
     const unsubscribe = window.jarvis?.onCursor(receive);
