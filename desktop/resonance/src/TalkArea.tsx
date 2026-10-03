@@ -187,7 +187,8 @@ export function TalkArea(p: TalkProps) {
   // the footer under the area says what she is doing.
   const label = kind === 'pill' ? heard || (p.level === 'brief' && (tool || state === 'thinking' && secs > 0) ? status : '') : heard || status;
   // While it folds away it keeps what it was showing.
-  const cur = { items, kind, state, label, heard: !!heard, tool, fading: fading && !coming, deep: p.deep.look, ready };
+  // The final words take the place of what was heard so far as a new label, so they come in again and the change is seen.
+  const cur = { items, kind, state, label, heard: !!heard, final: !!heard && !coming, tool, fading: fading && !coming, deep: p.deep.look, ready };
   const frozen = useRef(cur);
   if (p.open) frozen.current = cur;
   const v = frozen.current;
@@ -605,7 +606,7 @@ export function TalkArea(p: TalkProps) {
     <div ref={ftEl} className="talk-ft" hidden={row !== 'ft'}>
       <span className={`gl ${v.state}`} aria-hidden="true"><b/><b/><b/></span>
       {url ? <span className="lb url" key="url"><LinkSimple/><span>{url}</span></span>
-        : <span className={`lb ${shim ? 'shim' : ''} ${toolNow ? 'tool' : ''} ${v.heard ? 'heard' : ''} ${v.fading ? 'fade' : ''}`} key={v.heard ? 'heard' : toolNow ? `tool:${toolNow}` : v.state}>{v.heard ? <span dir="ltr">{v.label}</span> : v.label}</span>}
+        : <span className={`lb ${shim ? 'shim' : ''} ${toolNow ? 'tool' : ''} ${v.heard ? 'heard' : ''} ${v.fading ? 'fade' : ''}`} key={v.heard ? v.final ? 'heard-final' : 'heard' : toolNow ? `tool:${toolNow}` : v.state}>{v.heard ? <span dir="ltr">{v.label}</span> : v.label}</span>}
       {gone && <span className="lb-old" aria-hidden="true" style={{ left: gone.left }} onAnimationEnd={() => setGone(null)}>{gone.text}</span>}
       {p.buttons && <>
         <span className="sp"/>
