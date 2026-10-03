@@ -21,6 +21,10 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
+# The source of Allen's own lines; Jarvis writes jarvis and jarvis_live.
+_USER_SOURCE = "allen"
+
+
 def read_connection(path: Path | None) -> sqlite3.Connection:
     """Open only an existing memory store; a lookup must not create one."""
     if path is None or not path.is_file():
@@ -46,10 +50,18 @@ def search_records(path: Path | None, args: dict[str, Any]) -> dict[str, Any]:
             (snapshot,),
         ).fetchall()
     found = []
-    keyword = args.get("keyword", "").casefold()
+    # Any of the words: the model lists alternatives (「工作 岗位 求职」) that a single
+    # substring never matched.
+    words = args.get("keyword", "").casefold().split() or [""]
+    speaker = args.get("speaker")
     for record_id, ts, source, text in rows:
         moment = timestamp(ts)
-        if (start and moment < start) or (end and moment >= end) or keyword not in text.casefold():
+        if (start and moment < start) or (end and moment >= end):
+            continue
+        if speaker and (source == _USER_SOURCE) != (speaker == "user"):
+            continue
+        folded = text.casefold()
+        if not any(word in folded for word in words):
             continue
         found.append(
             {
@@ -61,7 +73,7 @@ def search_records(path: Path | None, args: dict[str, Any]) -> dict[str, Any]:
                 "source_ref": f"record:{record_id}",
             }
         )
-    return page_rows(found, args, binding, snapshot, offset, key="records")
+    return {**page_rows(found, args, binding, snapshot, offset, key="records"), "total": len(found)}
 
 
 def read_records(path: Path | None, args: dict[str, Any]) -> dict[str, Any]:

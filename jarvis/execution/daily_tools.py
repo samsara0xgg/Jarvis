@@ -29,10 +29,13 @@ if TYPE_CHECKING:
 
 _DESCRIPTIONS = {
     "search_records": (
-        "Search past conversations by keyword/time [from,to). Returns identified excerpts, "
-        "not full text, newest first; order=oldest starts from the earliest (the first thing "
-        "said in a period). Follow next_cursor with identical arguments for every page; "
-        "read_records retrieves originals."
+        "Search past conversations by keyword/time [from,to). from/to: ISO time with offset, "
+        "or a bare date (midnight local). keyword: words separated by spaces match a record "
+        "holding ANY of them, case-insensitive, literal text in the conversation's language. "
+        "speaker=user keeps only the user's lines, assistant only yours. Newest first; "
+        "order=oldest starts from the earliest (the first thing said in a period). Returns "
+        "identified excerpts, not full text, and total (all matches). Follow next_cursor with "
+        "identical arguments for every page; read_records retrieves originals."
     ),
     "read_records": (
         "Read exact original conversation text by record_ids from search_records. Returns "

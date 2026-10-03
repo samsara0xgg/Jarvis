@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -124,6 +125,23 @@ def test_revisions_retry_conflict_and_survive_restart(tmp_path: Path) -> None:
             assert items[0]["version"] == 3
     finally:
         h.fx.close()
+
+
+def test_record_search_takes_dates_any_word_and_speaker(daily: DailyHarness) -> None:
+    """Bare dates are local midnights; spaced words match any; speaker splits the lines."""
+    daily.record("job", "我今天投了求职简历")
+    daily.record("song", "Play some music")
+    append_record(daily.memory, record_id="reply", source="jarvis", text="好的简历已记下")
+    today = datetime.now().astimezone().date()
+    days = {"from": today.isoformat(), "to": (today + timedelta(days=1)).isoformat()}
+    found = daily.call("search_records", {**days, "keyword": "岗位 求职 MUSIC"})
+    assert [r["id"] for r in found["records"]] == ["song", "job"]
+    assert found["total"] == 2
+    assert daily.call("search_records", {"to": today.isoformat()})["total"] == 0
+    users = daily.call("search_records", {"keyword": "简历", "speaker": "user"})["records"]
+    assert [r["id"] for r in users] == ["job"]
+    mine = daily.call("search_records", {"keyword": "简历", "speaker": "assistant"})["records"]
+    assert [r["id"] for r in mine] == ["reply"]
 
 
 def test_record_pages_are_complete_and_snapshot_stable(daily: DailyHarness) -> None:

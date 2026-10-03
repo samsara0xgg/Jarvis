@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import re
 from datetime import datetime
 from typing import Any
 
@@ -91,6 +92,7 @@ SCHEMAS: dict[str, dict[str, Any]] = {
             "from": text_field(50),
             "to": text_field(50),
             "order": enum_field("newest", "oldest"),
+            "speaker": enum_field("user", "assistant"),
             **_PAGE,
         }
     ),
@@ -289,6 +291,9 @@ def fingerprint(value: Any) -> str:  # noqa: ANN401 — arbitrary validated JSON
     return hashlib.sha256(encoded(value).encode()).hexdigest()
 
 
+_BARE_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
 def timestamp(value: str) -> datetime:
     """Require an explicit timezone; never guess a date's local offset."""
     try:
@@ -301,10 +306,21 @@ def timestamp(value: str) -> datetime:
     raise DailyError(msg)
 
 
+def _bound(value: str) -> datetime:
+    """A window edge: a timestamp, or a bare date as midnight on this Mac's clock.
+
+    A third of search_records calls sent bare dates and failed (2026-09-19..10-02); a
+    window's edge is a day boundary where Allen is, so the Mac's zone is the right one.
+    """
+    if _BARE_DATE.fullmatch(value):
+        return datetime.fromisoformat(value).astimezone()
+    return timestamp(value)
+
+
 def window(args: dict[str, Any]) -> tuple[datetime | None, datetime | None]:
     """Validate an optional half-open date range."""
-    start = timestamp(args["from"]) if "from" in args else None
-    end = timestamp(args["to"]) if "to" in args else None
+    start = _bound(args["from"]) if "from" in args else None
+    end = _bound(args["to"]) if "to" in args else None
     if start and end and start >= end:
         msg = "from must precede to"
         raise DailyError(msg)
