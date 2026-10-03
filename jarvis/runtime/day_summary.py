@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any, Final
 
 from jarvis.decision.cost_guard import CostRecorder
 from jarvis.decision.day_summary import build_day_summary_messages, check_day_summary
+from jarvis.runtime.core_memory import CoreMemorySettings, run_core_memory
 from jarvis.runtime.session_compaction import build_compact_client
 from jarvis.state.event_log import open_runtime_event_log
 from jarvis.state.memory_db import (
@@ -184,6 +185,7 @@ class DaySummarySchedule:
         llm_config: Mapping[str, Any],
         event_log_path: Path,
         pricing_table: Mapping[str, Mapping[str, float]],
+        core_memory: CoreMemorySettings | None = None,
         poll_s: float = 60.0,
     ) -> None:
         """Bind the store and the knobs; nothing runs until :meth:`run`."""
@@ -192,8 +194,10 @@ class DaySummarySchedule:
         self._llm_config = llm_config
         self._event_log_path = event_log_path
         self._pricing_table = pricing_table
+        self._core_memory = core_memory
         self._poll_s = poll_s
         self._client: LLMClient | None = None
+        self._core_client: LLMClient | None = None
         self._last: date | None = None
 
     def due(self, now: datetime) -> date | None:
@@ -208,7 +212,7 @@ class DaySummarySchedule:
         self._last = today
         if self._client is None:
             self._client = build_compact_client(self._llm_config, self._settings.preset)
-        return run_day_summaries(
+        outcomes = run_day_summaries(
             self._memory,
             self._settings,
             self._client,
@@ -216,6 +220,27 @@ class DaySummarySchedule:
             pricing_table=self._pricing_table,
             today=today,
         )
+        if self._core_memory is not None:
+            self._consolidate(self._core_memory, today)
+        return outcomes
+
+    def _consolidate(self, settings: CoreMemorySettings, today: date) -> None:
+        """Core memory over the days just summarised; its failure never fails the summaries."""
+        try:
+            if self._core_client is None:
+                self._core_client = build_compact_client(self._llm_config, settings.preset)
+            core_outcomes = run_core_memory(
+                self._memory,
+                settings,
+                self._core_client,
+                event_log_path=self._event_log_path,
+                pricing_table=self._pricing_table,
+                today=today,
+            )
+        except Exception:
+            LOGGER.exception("core_memory: consolidation for %s failed", today)
+            return
+        LOGGER.info("core_memory: consolidated %s -> %s", today, core_outcomes)
 
     async def run(self) -> None:
         """A Mac asleep at ``at`` writes on its first check after waking or after a start."""

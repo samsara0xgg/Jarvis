@@ -148,6 +148,7 @@ from jarvis.runtime import (
     make_turn_cancel_callable,
     save_language,
 )
+from jarvis.runtime.core_memory import CoreMemorySettings
 from jarvis.runtime.day_summary import DaySummarySchedule, DaySummarySettings
 from jarvis.runtime.dictation import (
     COMMAND_PROMPT,
@@ -6190,6 +6191,9 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                         llm_config=llm_config if isinstance(llm_config, Mapping) else {},
                         event_log_path=runtime.runtime_paths.event_log,
                         pricing_table=load_pricing_table(repo_root() / "data" / "pricing.json"),
+                        core_memory=CoreMemorySettings.from_config(
+                            runtime.config.get("core_memory"),
+                        ),
                     ).run(),
                     name="day_summary_schedule",
                 ),
