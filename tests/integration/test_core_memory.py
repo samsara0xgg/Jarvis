@@ -539,12 +539,15 @@ def _reviewed(
     model: _Consolidator,
     route: SurrogateRoute | None,
     review_min_confidence: float | None = None,
+    *,
+    review_drop: bool = False,
 ) -> DaySummarySchedule:
     schedule = _schedule(tmp_path, model)
     schedule._core_memory = CoreMemorySettings(  # noqa: SLF001 — the review knobs under test
         preset="c",
         prompt="consolidate",
         review_min_confidence=review_min_confidence,
+        review_drop=review_drop,
     )
     schedule._review = route  # noqa: SLF001 — the transport seam
     return schedule
@@ -572,6 +575,7 @@ def test_jev_keeps_a_confident_keep_and_drops_only_the_rest_with_a_log(
         model,
         jev.route(JevLog(jev_log)),
         review_min_confidence=0.9,
+        review_drop=True,
     ).write(TODAY)
 
     assert _items(path) == {"关于你": ["城市: Victoria"], "偏好": ["HIGH 喜欢咖啡"]}
@@ -614,6 +618,7 @@ def test_jev_keeps_a_confident_keep_and_drops_only_the_rest_with_a_log(
         model,
         jev.route(),
         review_min_confidence=0.9,
+        review_drop=True,
     ).write(TODAY)
     assert jev.requests == []
     assert _items(path) == {"偏好": ["HIGH 喜欢咖啡"]}
@@ -641,7 +646,7 @@ def test_a_jev_failure_rejects_the_day_like_a_gate_and_stops_the_chain(
     current_core_memory(path)  # the first read migrates; that version is not the night's
     before = _versions(path)
 
-    schedule = _reviewed(tmp_path, model, jev.route(), review_min_confidence=0.9)
+    schedule = _reviewed(tmp_path, model, jev.route(), review_min_confidence=0.9, review_drop=True)
     schedule.write(TODAY)
 
     assert model.asked == [d3, d3]
@@ -655,6 +660,62 @@ def test_a_jev_failure_rejects_the_day_like_a_gate_and_stops_the_chain(
     schedule.write(TODAY)
     assert model.asked == [d3, d2]
     assert _items(path) == {"偏好": ["HIGH 喜欢咖啡"]}
+
+
+def test_log_only_review_lands_every_change_and_stores_each_verdict(
+    tmp_path: Path,
+    jev: _Jev,
+) -> None:
+    """Without review_drop nothing is dropped; each add and rewrite gets a reviewed entry."""
+    path = tmp_path / "memory.db"
+    _days(path, 3)
+    remember_fact(path, "城市", "Victoria")
+    d3 = _day(3).isoformat()
+    kept = {"op": "add", "section": "偏好", "text": "HIGH 喜欢咖啡", "sources": ["r1"]}
+    joke = {"op": "rewrite", "item": 1, "text": "JOKE 住在火星", "sources": ["r1"]}
+    model = _Consolidator()
+    model.script[d3] = [_changes(kept, joke)]
+    jev_log = tmp_path / "jev.jsonl"
+
+    _reviewed(tmp_path, model, jev.route(JevLog(jev_log)), review_min_confidence=0.9).write(TODAY)
+
+    assert _items(path) == {"关于你": ["JOKE 住在火星"], "偏好": ["HIGH 喜欢咖啡"]}
+    logged = _versions(path)[-1][2]
+    assert [c["op"] for c in logged] == ["add", "rewrite", "reviewed", "reviewed"]
+    assert logged[2:] == [
+        {"op": "reviewed", "target": 0, "choice": "keep", "confidence": 0.95},
+        {"op": "reviewed", "target": 1, "choice": "one_off", "confidence": 0.99},
+    ]
+    assert len(jev.requests) == 2
+    assert len(jev_log.read_text().splitlines()) == 2  # both calls are in the Jev dataset
+
+
+@pytest.mark.parametrize("failure", ["http", "no_key"])
+def test_log_only_review_failure_lands_the_day_unreviewed(
+    tmp_path: Path,
+    jev: _Jev,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    """A Jev failure is a warning: the changes land with no reviewed entries."""
+    path = tmp_path / "memory.db"
+    _days(path, 3)
+    d3 = _day(3).isoformat()
+    model = _Consolidator()
+    model.script[d3] = [
+        _changes({"op": "add", "section": "偏好", "text": "HIGH 喜欢咖啡", "sources": ["r1"]}),
+    ]
+    if failure == "http":
+        jev.status = 500
+    else:
+        monkeypatch.delenv(KEY_ENV)
+
+    _reviewed(tmp_path, model, jev.route(), review_min_confidence=0.9).write(TODAY)
+
+    assert model.asked == [d3]  # no retry: the day landed
+    assert _items(path) == {"偏好": ["HIGH 喜欢咖啡"]}
+    assert [c["op"] for c in _versions(path)[-1][2]] == ["add"]
+    assert current_core_memory(path).upto_day == d3
 
 
 def test_review_is_off_without_review_min_confidence(tmp_path: Path, jev: _Jev) -> None:
@@ -675,6 +736,7 @@ def test_review_is_off_without_review_min_confidence(tmp_path: Path, jev: _Jev) 
         {"preset": "p", "prompt": "x", "review_min_confidence": 0.8},
     )
     assert off is not None
+    assert not off.review_drop
     assert (off.review_min_confidence, off.review_model, off.review_timeout_ms) == (
         None,
         "typesafe/jev-1.13",

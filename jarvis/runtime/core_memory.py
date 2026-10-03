@@ -55,6 +55,7 @@ class CoreMemorySettings:
     max_chars: int = _DEFAULT_MAX_CHARS
     max_stale: int = _DEFAULT_MAX_STALE
     review_min_confidence: float | None = None  # None = no Jev review
+    review_drop: bool = False  # False: Jev's verdicts are only logged, every change lands
     review_model: str = DEFAULT_REVIEW_MODEL
     review_timeout_ms: int = _DEFAULT_REVIEW_TIMEOUT_MS
 
@@ -83,6 +84,7 @@ class CoreMemorySettings:
                 if isinstance(bar, int | float) and not isinstance(bar, bool) and 0 < bar <= 1
                 else None
             ),
+            review_drop=raw.get("review_drop") is True,
             review_model=model.strip()
             if isinstance(model, str) and model.strip()
             else DEFAULT_REVIEW_MODEL,
@@ -106,9 +108,11 @@ def consolidate_day(  # noqa: PLR0913 — the day, the store, the knobs, the cli
     """One LLM call for ``day``; append a version if the answer passes the gates.
 
     Returns a one-line outcome. A rejected answer stores nothing; an empty change list
-    still appends a version, because that is how ``upto_day`` advances. With ``review`` (and
-    ``settings.review_min_confidence``) Jev reads each add and rewrite first: a change it does
-    not keep is dropped and logged, and a review that fails rejects the day.
+    still appends a version, because that is how ``upto_day`` advances. With
+    ``settings.review_min_confidence`` Jev reads each add and rewrite first and its verdicts go
+    in the version's changes. With ``review_drop`` a change it does not keep is dropped, and a
+    review that fails rejects the day; without, every change lands and a failed review is only
+    a warning.
     """
     base = current_core_memory(memory.db_path)
     records = day_records(memory.db_path, day)
@@ -140,35 +144,39 @@ def consolidate_day(  # noqa: PLR0913 — the day, the store, the knobs, the cli
     if changes is None:
         LOGGER.warning("core_memory: %s rejected (%s); nothing stored", day, reason)
         return f"rejected ({reason})"
-    dropped: list[dict[str, Any]] = []
+    review_log: list[dict[str, Any]] = []
     if settings.review_min_confidence is not None:
-        if review is None:  # a review that was asked for never silently turns off
-            return "rejected (review: no Jev route)"
         try:
-            changes, dropped = review_changes(
+            if review is None:
+                msg = "no Jev route"
+                raise ReviewFailed(msg)  # noqa: TRY301 - one exit for every review failure
+            changes, review_log = review_changes(
                 changes,
                 doc=base.doc,
                 records=records,
                 day=day,
                 route=review,
                 min_confidence=settings.review_min_confidence,
+                drop=settings.review_drop,
             )
         except ReviewFailed as exc:
-            LOGGER.warning("core_memory: %s rejected (review: %s); nothing stored", day, exc)
-            return f"rejected (review: {exc})"
+            if settings.review_drop:  # an unreviewed item is never written
+                LOGGER.warning("core_memory: %s rejected (review: %s); nothing stored", day, exc)
+                return f"rejected (review: {exc})"
+            LOGGER.warning("core_memory: %s review failed (%s); landing unreviewed", day, exc)
     if (
         append_nightly_core_memory(
             memory.db_path,
             base_id=base.id,
             day=day,
             changes=changes,
-            dropped=dropped,
+            review_log=review_log,
         )
         is None
     ):
         LOGGER.warning("core_memory: %s rejected (core memory changed during the call)", day)
         return "rejected (core memory changed during the call)"
-    return f"landed ({len(changes)} changes, {len(dropped)} dropped)"
+    return f"landed ({len(changes)} changes, {len(review_log)} review entries)"
 
 
 def run_core_memory(  # noqa: PLR0913 — the store, the knobs, the client and the accounting seam.

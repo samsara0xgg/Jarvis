@@ -366,14 +366,14 @@ def append_nightly_core_memory(
     base_id: str,
     day: str,
     changes: Sequence[Mapping[str, object]],
-    dropped: Sequence[Mapping[str, object]] = (),
+    review_log: Sequence[Mapping[str, object]] = (),
 ) -> str | None:
     """Append the nightly version for ``day`` and return its id, or None when the world moved.
 
     The change list applies to the current document only if ``base_id`` is still the current
     version (the item numbers it cites are that version's); otherwise nothing is stored. An
-    empty list appends the same document, which advances ``upto_day``. ``dropped`` are
-    review log entries (ADR 0146): stored after ``changes`` in the row, never applied.
+    empty list appends the same document, which advances ``upto_day``. ``review_log`` are
+    Jev review entries (ADR 0146): stored after ``changes`` in the row, never applied.
     """
     now = iso_seconds(local_now())
     with closing(open_memory_db(path)) as conn, core_memory.write_transaction(conn):
@@ -386,7 +386,7 @@ def append_nightly_core_memory(
             doc=core_memory.apply_changes(base.doc, changes, day),
             origin="nightly",
             upto_day=day,
-            changes=[*changes, *dropped],
+            changes=[*changes, *review_log],
             now=now,
         )
 

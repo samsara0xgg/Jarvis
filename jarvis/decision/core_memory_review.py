@@ -1,11 +1,11 @@
 """L3 core memory review: Jev reads each add and rewrite before it lands (ADR 0146).
 
 After the model's change list passes the gates, every ``add`` and ``rewrite`` goes to Jev as
-one choice question: does this belong in the user's long-term memory? Only ``keep`` at
-``min_confidence`` or above lets that one change through; any other answer drops just it,
-and the drop is written into the version's ``changes`` log. A call that gives no usable
-answer (no key, timeout, HTTP error, unreadable body) raises :class:`ReviewFailed`: an
-unreviewed item is never written, because a missing memory costs less than a wrong one.
+one choice question: does this belong in the user's long-term memory? By default the verdicts
+are only recorded in the version's ``changes`` log. With ``drop``, only ``keep`` at
+``min_confidence`` or above lets that one change through; any other answer drops just it, and
+the drop is logged. A call that gives no usable answer (no key, timeout, HTTP error,
+unreadable body) raises :class:`ReviewFailed`; the caller decides what that costs.
 ``stale`` changes only remove, so they are not reviewed. Every call is in the Jev dataset
 (ADR 0128), through the route.
 
@@ -128,7 +128,7 @@ def _verdicts(
     return verdicts
 
 
-def review_changes(  # noqa: PLR0913 - the day, its gated changes, what the model saw, the route and the bar
+def review_changes(  # noqa: PLR0913 - the day, its gated changes, what the model saw, the route, the bar
     changes: Sequence[dict[str, Any]],
     *,
     doc: core_memory.Doc,
@@ -136,10 +136,13 @@ def review_changes(  # noqa: PLR0913 - the day, its gated changes, what the mode
     day: str,
     route: SurrogateRoute,
     min_confidence: float,
+    drop: bool,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """``(kept, dropped)``: ``kept`` is the changes that may land, in order.
+    """``(changes that may land, log entries to store after them)``.
 
-    ``dropped`` are log entries ``{"op": "dropped", "change", "choice", "confidence"}``.
+    With ``drop``, a change Jev does not keep is left out and logged as ``{"op": "dropped",
+    "change", "choice", "confidence"}``. Without, every change lands and each reviewed one gets
+    ``{"op": "reviewed", "target": <its index in changes>, "choice", "confidence"}``.
     ``records`` are the day's ``(id, time, speaker, words)`` rows; raises :class:`ReviewFailed`.
     """
     lines = {record[0]: f"{record[1]} | {record[2]} | {record[3]}" for record in records}
@@ -150,28 +153,33 @@ def review_changes(  # noqa: PLR0913 - the day, its gated changes, what the mode
     ]
     verdicts = dict(zip(map(id, reviewed), _verdicts(asked, route, day), strict=True))
     kept: list[dict[str, Any]] = []
-    dropped: list[dict[str, Any]] = []
-    for change in changes:
+    log: list[dict[str, Any]] = []
+    for index, change in enumerate(changes):
         if id(change) not in verdicts:
             kept.append(change)
             continue
         choice, confidence, _cost = verdicts[id(change)]
-        if choice == KEEP and confidence >= min_confidence:
+        if not drop:
+            kept.append(change)
+            log.append(
+                {"op": "reviewed", "target": index, "choice": choice, "confidence": confidence},
+            )
+        elif choice == KEEP and confidence >= min_confidence:
             kept.append(change)
         else:
-            dropped.append(
+            log.append(
                 {"op": "dropped", "change": change, "choice": choice, "confidence": confidence},
             )
     spent = sum(cost for _choice, _confidence, cost in verdicts.values())
     LOGGER.info(
-        "core_memory review: %s reviewed %d, kept %d, dropped %d, $%.6f",
+        "core_memory review: %s reviewed %d, landing %d of %d changes, $%.6f",
         day,
         len(reviewed),
-        len(reviewed) - len(dropped),
-        len(dropped),
+        len(kept),
+        len(changes),
         spent,
     )
-    return kept, dropped
+    return kept, log
 
 
 __all__ = ["KEEP", "ReviewFailed", "read_verdict", "review_changes", "review_state"]
