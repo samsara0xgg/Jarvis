@@ -2676,10 +2676,8 @@ def _build_tts_pipeline(  # noqa: C901 - rollout/degradation capability boundary
     tts_volume = realtime.get("tts_volume")
     volume_kwargs: dict[str, Any] = {} if tts_volume is None else {"volume": tts_volume}
     # Passed straight through to sd.OutputStream, which maps a name to a device
-    # index itself; an unresolvable value raises there and `start()` fails closed.
-    # Deliberately unvalidated: a type guard here would turn a mistyped key into
-    # a silent fall back to the system default, out of the owner's speakers.
-    output_device = realtime.get("output_device")
+    # index itself. Absent from CoreAudio's list: the system default (ADR 0054).
+    output_device = _output_or_default(realtime.get("output_device"))
     # ADR 0052: the Settings page's voice volume, applied in the player.
     playback_volume = float(realtime.get("playback_volume") or 1.0)
     streaming_raw = realtime.get("streaming_output")
@@ -4639,15 +4637,24 @@ _AUDIO_DEVICE_POLL_S = 1.0
 _MIC_RETRY_S = (2.0, 5.0, 15.0, 30.0)
 
 
-def _device_targets(choice: _AudioDeviceChoice) -> tuple[int | None, int | None] | None:
-    """The CoreAudio ids Jarvis should be on now: each default it follows, or its pick if in."""
+def _output_or_default(name: str | int | None) -> str | None:
+    """The picked speaker if CoreAudio lists it, else ``None``: the system default (ADR 0054)."""
+    devices = voice_backend.coreaudio_devices("output") if isinstance(name, str) else None
+    if devices is None or name in devices[1]:
+        return name
+    LOGGER.info("speaker %r is not there; playing on the system default", name)
+    return None
+
+
+def _device_targets(choice: _AudioDeviceChoice) -> tuple[int, int] | None:
+    """The CoreAudio ids Jarvis should be on now: its pick if in, else the system default."""
     inputs = voice_backend.coreaudio_devices("input")
     outputs = voice_backend.coreaudio_devices("output")
     if inputs is None or outputs is None:
         return None
     return (
-        inputs[0] if choice.input_device is None else inputs[1].get(choice.input_device),
-        outputs[0] if choice.output_device is None else outputs[1].get(choice.output_device),
+        inputs[1].get(choice.input_device, inputs[0]) if choice.input_device else inputs[0],
+        outputs[1].get(choice.output_device, outputs[0]) if choice.output_device else outputs[0],
     )
 
 
@@ -4658,6 +4665,9 @@ async def _watch_audio_devices(
     choice: _AudioDeviceChoice,
 ) -> None:
     """ADR 0054: re-read the devices when the ones to be on change, the mic is down, or on a pick.
+
+    A pick that is absent counts as the system default, so the re-read opens
+    that, and again on the pick when it is back.
 
     PortAudio lists only the devices there were when it initialised, so a
     microphone plugged back in stays invisible to every reopen until then.
@@ -4679,10 +4689,11 @@ async def _watch_audio_devices(
         )
         if not down:
             retries, retry_at = 0, 0.0
-        retry = down and now is not None and now[0] is not None and time.monotonic() >= retry_at
+        retry = down and now is not None and time.monotonic() >= retry_at
         if now is None or not (now != seen or retry or choice.changed) or not coordinator.quiet():
             continue
-        wanted = (choice.input_device, choice.output_device)
+        picked = (choice.input_device, choice.output_device)
+        wanted = (picked[0], await asyncio.to_thread(_output_or_default, picked[1]))
         paused = (
             live_voice.output_paused(wanted[1])
             if live_voice is not None
@@ -4703,7 +4714,7 @@ async def _watch_audio_devices(
         )
         if outcome.startswith("refreshed"):
             seen = now
-            if (choice.input_device, choice.output_device) == wanted:
+            if (choice.input_device, choice.output_device) == picked:
                 choice.changed = False
         if not outcome.startswith("busy"):
             retry_at = time.monotonic() + _MIC_RETRY_S[min(retries, len(_MIC_RETRY_S) - 1)]
@@ -5547,7 +5558,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 ingress=_live_ingress,
                 mic_muted=controls.mic_is_muted,
                 speech_muted=lambda: controls.speech_muted,
-                output_device=realtime_map.get("output_device"),
+                output_device=_output_or_default(realtime_map.get("output_device")),
                 volume=float(realtime_map.get("playback_volume") or 1.0),
                 on_owns_speech=lambda _owns: _apply_speech_mute(controls.speech_muted),
                 delegate=live_backend.delegate,

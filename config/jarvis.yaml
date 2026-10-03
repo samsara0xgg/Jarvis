@@ -414,12 +414,15 @@ confirmation:
 realtime:
   enabled: true
   # Output device name TTS playback opens, e.g. "BlackHole 16ch"; resolved by
-  # sounddevice.  Null means the CoreAudio system default output.  An
-  # unresolvable name fails the open closed rather than falling back.
+  # sounddevice.  Null means the CoreAudio system default output.  A name that
+  # is not plugged in plays on the system default, and goes back to the name
+  # when it returns (ADR 0054).
   output_device: null
   # Input device name the single audio ingress opens (ADR 0052), e.g.
   # "reSpeaker XVF3800 4-Mic Array".  Null means the system default input and
-  # follows it when it changes; a name that does not resolve fails the open.
+  # follows it when it changes.  A name that is not plugged in listens on the
+  # system default, on channel 0 only, and goes back to the name when it
+  # returns (ADR 0054).
   # The Settings page writes its choice to ~/.jarvis/settings.json, which wins.
   input_device: null
   # Her voice's playback level, 0.3-1, applied in our player (ADR 0052);

@@ -285,10 +285,9 @@ def test_the_watch_re_reads_only_when_the_device_to_be_on_changes(
 
     def _refresh(*, input_device: str | None, output_device: str | None) -> str:
         refreshes.append((input_device, output_device))
-        opened = input_device is None or input_device in inputs
+        # An absent pick opens the default, so the open never fails on it.
         ingress.capability = _capability(
-            voice_audio.InputCapabilityState.AVAILABLE if opened else _LOST,
-            ingress.capability.version + 1,
+            voice_audio.InputCapabilityState.AVAILABLE, ingress.capability.version + 1,
         )
         return "refreshed speaker=started microphone=started"
 
@@ -329,6 +328,50 @@ def test_the_watch_re_reads_only_when_the_device_to_be_on_changes(
         assert refreshes[3:] == [("reSpeaker", "Speakers")]
         await asyncio.sleep(0.1)
         assert len(refreshes) == 4
+        watch.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await watch
+
+    asyncio.run(_scenario())
+
+
+def test_an_absent_pick_follows_the_default_and_the_pick_coming_back_switches_to_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unplug: the default's id is the target and the speaker is None. Plug in: back on the pick."""
+    inputs = {"reSpeaker": 142, "MacBook Pro Microphone": 86}
+    outputs = {"Multi-Output Device 2": 63, "MacBook Pro Speakers": 55}
+    defaults = _system(monkeypatch, inputs, outputs)
+    choice = inherent_loop._AudioDeviceChoice("reSpeaker", "Multi-Output Device 2")
+    assert inherent_loop._device_targets(choice) == (142, 63)
+    assert inherent_loop._output_or_default("Multi-Output Device 2") == "Multi-Output Device 2"
+    ingress = MagicMock()
+    ingress.capability = _capability(voice_audio.InputCapabilityState.AVAILABLE, 1)
+    coordinator = MagicMock(spec=inherent_loop._VoicePowerCoordinator)
+    coordinator.quiet.return_value = True
+    coordinator.refresh_devices.return_value = "refreshed speaker=started microphone=started"
+
+    async def _scenario() -> None:
+        watch = asyncio.create_task(
+            inherent_loop._watch_audio_devices(coordinator, ingress, None, choice),
+        )
+        await asyncio.sleep(0.1)
+        assert coordinator.refresh_devices.call_count == 0
+        del inputs["reSpeaker"], outputs["Multi-Output Device 2"]  # unplugged
+        defaults["in"], defaults["out"] = 86, 55
+        assert inherent_loop._device_targets(choice) == (86, 55)
+        await asyncio.sleep(0.1)
+        # The mic's own name stays: the backend finds it absent and opens the default.
+        assert coordinator.refresh_devices.call_args_list[0].kwargs == {
+            "input_device": "reSpeaker", "output_device": None,
+        }
+        assert coordinator.refresh_devices.call_count == 1
+        inputs["reSpeaker"], outputs["Multi-Output Device 2"] = 142, 63  # plugged back in
+        await asyncio.sleep(0.1)
+        assert coordinator.refresh_devices.call_count == 2
+        assert coordinator.refresh_devices.call_args.kwargs == {
+            "input_device": "reSpeaker", "output_device": "Multi-Output Device 2",
+        }
         watch.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await watch

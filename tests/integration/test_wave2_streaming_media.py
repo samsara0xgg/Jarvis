@@ -25,7 +25,7 @@ from jarvis.shared.realtime import Wave1FeatureFlags, Wave4ResponseFlags
 from jarvis.shared.realtime_trace import realtime_trace_snapshot, reset_realtime_trace
 from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.lifecycle_terminal import terminalize_playback
-from jarvis.surface import voice_media, voice_tts
+from jarvis.surface import voice_backend, voice_media, voice_tts
 from jarvis.surface.playback_recovery import reconcile_open_playback
 from jarvis.surface.voice_ledger import (
     ForegroundBusy,
@@ -3729,6 +3729,9 @@ def test_realtime_output_device_reaches_both_builder_player_sites(
 
     streaming = {"enabled": True, "streaming_output": {"enabled": True}}
     legacy = {"enabled": False}
+    monkeypatch.setattr(
+        voice_backend, "coreaudio_devices", lambda _kind: (1, {"BlackHole 16ch": 7}),
+    )
     with (
         patch.object(voice_tts, "_open_output_stream", return_value=_FakeOutputStream()),
         patch.object(voice_tts, "AudioStreamPlayer", _recording_player),
@@ -3741,10 +3744,13 @@ def test_realtime_output_device_reaches_both_builder_player_sites(
         _build(dict(legacy), voice_tts.TTSPipeline)
         assert seen == [None, None]
         seen.clear()
-        # sounddevice also takes an integer index. Nothing here validates the
-        # value, so a mistyped key cannot degrade to the system default.
+        # sounddevice also takes an integer index, passed through as it is.
         _build({**legacy, "output_device": 3}, voice_tts.TTSPipeline)
         assert seen == [3]
+        seen.clear()
+        # A name CoreAudio does not list plays on the system default (ADR 0054).
+        _build({**legacy, "output_device": "Unplugged"}, voice_tts.TTSPipeline)
+        assert seen == [None]
     conn.close()
 
 

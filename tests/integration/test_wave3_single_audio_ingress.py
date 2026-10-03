@@ -963,6 +963,67 @@ def test_a_mono_microphone_opens_mono_when_a_wake_channel_is_asked_for() -> None
     assert stereo.input_format.channels == 2
 
 
+def _fake_sounddevice() -> MagicMock:
+    """A Mac whose reSpeaker is unplugged: the default is a two-channel built-in microphone."""
+    devices = {3: {"index": 3, "name": "MacBook Pro Microphone", "max_input_channels": 2}}
+
+    def _query(device: object, _kind: str) -> dict[str, object]:
+        if isinstance(device, int):
+            return devices[device]
+        msg = f"No input device matching {device!r}"
+        raise ValueError(msg)
+
+    fake_sd = MagicMock()
+    fake_sd.query_devices = _query
+    fake_sd.default.device = (3, 4)
+    return fake_sd
+
+
+def test_an_absent_pick_opens_the_default_on_channel_zero_only() -> None:
+    """ADR 0054: the wake channel is the reSpeaker's, so no other microphone is asked for it."""
+    asked = voice_backend.AudioInputFormat(16_000, 2, 512)
+    with patch.dict("sys.modules", {"sounddevice": _fake_sounddevice()}):
+        profile = voice_backend._default_input_device_profile(asked, "reSpeaker")
+    assert profile.device_name == "MacBook Pro Microphone"
+    assert profile.absent_pick == "reSpeaker"
+    assert profile.input_format.channels == 1
+    ambiguous = _fake_sounddevice()
+    ambiguous.query_devices = MagicMock(side_effect=ValueError("Multiple input devices found"))
+    with (
+        patch.dict("sys.modules", {"sounddevice": ambiguous}),
+        pytest.raises(ValueError, match="Multiple"),
+    ):
+        voice_backend._default_input_device_profile(asked, "reSpeaker")
+
+
+def test_a_start_with_the_pick_absent_listens_on_the_default() -> None:
+    """The daemon starts without its reSpeaker and still hears; no restart is needed for that."""
+    backend = voice_backend.SoundDeviceDuplexBackend(
+        input_format=voice_backend.AudioInputFormat(16_000, 2, 512),
+        open_timeout_s=1.0,
+        close_timeout_s=1.0,
+        device="reSpeaker",
+    )
+    opened: list[voice_backend.AudioInputFormat] = []
+
+    def _open(**kwargs: Any) -> Any:  # noqa: ANN401
+        opened.append(kwargs["input_format"])
+        stream = MagicMock()
+        stream.active = True
+        return stream
+
+    with (
+        patch.dict("sys.modules", {"sounddevice": _fake_sounddevice()}),
+        patch.object(voice_backend, "_open_sounddevice_input_stream", side_effect=_open),
+    ):
+        result = backend.start(
+            stream_epoch=1, attempt_id="a-1", frame_sink=lambda **_kwargs: None,
+        )
+        assert result.started
+        assert [one.channels for one in opened] == [1]
+        assert backend.stop(stream_epoch=1, attempt_id="a-1").definitively_closed
+
+
 def test_wake_window_and_pre_roll_are_contiguous_without_missing_or_duplicate() -> None:
     """32 ms input becomes continuous 80 ms wake windows and gap-free utterance PCM."""
     framer = voice_session.WakeWindowFramer()

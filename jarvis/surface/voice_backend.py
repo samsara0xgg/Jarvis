@@ -88,6 +88,8 @@ class InputDeviceProfile:
     backend: str
     input_format: AudioInputFormat
     device_index: int | None = None
+    # ADR 0054: the picked microphone that was absent, so this is the default instead.
+    absent_pick: str | None = None
 
 
 @dataclass(frozen=True)
@@ -596,15 +598,23 @@ def _default_input_device_profile(
 ) -> InputDeviceProfile:
     """Resolve the chosen input (ADR 0052), else sounddevice's default, outside the callback.
 
-    A chosen name that no longer resolves raises, like ``output_device``: the
-    open fails closed instead of quietly listening on another microphone.
+    A chosen name that is absent from PortAudio's list opens the default
+    instead and opens it mono: the wake channel is a reSpeaker beam, not a
+    channel of whatever microphone the Mac has (ADR 0054). Any other failure
+    to resolve it still raises, like ``output_device``.
     """
     import sounddevice as sd  # noqa: PLC0415
 
+    absent_pick = None
     with _PORTAUDIO_LOCK:
         if device is not None:
-            input_index = int(sd.query_devices(device, "input")["index"])
-        else:
+            try:
+                input_index = int(sd.query_devices(device, "input")["index"])
+            except ValueError as exc:
+                if not str(exc).startswith("No "):
+                    raise
+                absent_pick, device = device, None
+        if device is None:
             default_device = sd.default.device
             try:
                 # sounddevice 0.5.x exposes a private ``_InputOutputPair``: it is
@@ -616,12 +626,14 @@ def _default_input_device_profile(
     name = str(raw.get("name", f"input-{input_index}"))
     # ADR 0103: a wake channel is only asked for; a mono microphone opens mono.
     available = int(raw.get("max_input_channels", input_format.channels) or 1)
+    channels = 1 if absent_pick is not None else min(input_format.channels, available)
     return InputDeviceProfile(
         device_uid=f"sounddevice:{input_index}:{name}",
         device_name=name,
         backend="sounddevice",
-        input_format=replace(input_format, channels=min(input_format.channels, available)),
+        input_format=replace(input_format, channels=channels),
         device_index=input_index,
+        absent_pick=absent_pick,
     )
 
 
@@ -939,11 +951,16 @@ class SoundDeviceDuplexBackend:
             # PortAudio thread: publish a scalar for poll_fault(); no logging.
             self._finished_attempt = (stream_epoch, attempt_id)
 
-        def _open() -> None:  # noqa: C901 - exact foreign-open cleanup FSM
+        def _open() -> None:  # noqa: C901, PLR0912 - exact foreign-open cleanup FSM
             stream: Any | None = None
             try:
                 profile = _default_input_device_profile(self._input_format, self._device)
                 opened_channels[0] = profile.input_format.channels
+                if profile.absent_pick is not None:
+                    LOGGER.info(
+                        "microphone %r is not there; listening on the default, %r",
+                        profile.absent_pick, profile.device_name,
+                    )
                 stream = _open_sounddevice_input_stream(
                     input_format=profile.input_format,
                     device_index=profile.device_index,

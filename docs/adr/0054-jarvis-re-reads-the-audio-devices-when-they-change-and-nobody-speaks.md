@@ -1,7 +1,7 @@
 # ADR 0054 — Jarvis re-reads the audio devices when they change and nobody speaks
 
 **Status:** Accepted
-**Date:** 2026-09-26 (amended 2026-10-03: retry a microphone that is down)
+**Date:** 2026-09-26 (amended 2026-10-03: retry a microphone that is down, and an absent pick follows the default)
 **Supersedes:** ADR 0052's "a saved change applies on the next restart" for the microphone and the speaker only; the rest of ADR 0052 stands.
 
 ## Context
@@ -41,6 +41,11 @@
   reopen her speech channels (GPT-Live's included), and let the Settings
   page's microphone and speaker apply without a restart. The switch is for
   Jarvis only, not the whole Mac.
+- 2026-10-03: with the reSpeaker unplugged Jarvis heard nothing. The pick in
+  `~/.jarvis/settings.json` named a device that was gone, so the open failed
+  and a daemon start without it ran with no microphone, and no device watch,
+  until a restart. Allen expects the Mac's default input and output meanwhile
+  and his pick again when it returns.
 
 ## Decision
 
@@ -51,7 +56,12 @@ the microphone is newly lost, or when the Settings page picks a microphone
 or speaker, wait until nothing is playing, Allen is not mid-sentence and
 GPT-Live is silent. Then park new answers, close every stream, initialise
 PortAudio again, and reopen the microphone and the speakers on those
-devices. A picked device that is absent stays closed until it comes back. A
+devices. A picked device that is absent no longer stays closed (amended
+2026-10-03): the microphone and the speaker open on the system default
+instead, and the next re-read, which the pick's return triggers, moves them
+back. The microphone then opens on channel 0 only, since the wake channel is
+the reSpeaker's raw beam. A start without the picked microphone opens the
+default, so the voice session and this watch exist. A
 microphone that is down while its device is there, lost or parked by a wake
 that failed, is re-read again after 2, 5 and 15 s, then every 30 s, until it
 opens; a parked one wakes again after the re-read. Nothing is re-read from
@@ -61,6 +71,8 @@ the Mac's own default devices.
 
 ## Alternatives rejected
 
+- **Leave an absent pick closed** (the original decision) — a pick that is
+  unplugged left Jarvis deaf and mute until the device came back or a restart.
 - **Restart the daemon on a device change** — it ends a GPT-Live call and
   resets conversation mode and the mute switches, which are not persisted.
   A daemon start also takes about 3 s (23:50:39 to 23:50:42 on 2026-09-25),
@@ -94,3 +106,6 @@ coreaudiod restart that keeps the same device ids is recovered only through
 the lost-microphone trigger. A microphone that never opens though its device
 is listed closes the speakers for a third of a second every 30 s while
 nobody speaks.
+A built-in microphone and speakers have no echo reference, so with
+software echo cancellation off she may hear her own voice until the pick is
+back; this amendment does not address that.
