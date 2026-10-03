@@ -1068,7 +1068,11 @@ def _mail_reply(
     route = SurrogateRoute(
         model=model.strip(), min_confidence=1.0, timeout_ms=timeout, log=log,
     )
-    return MailReply(route, float(bars[1]), float(bars[0]), float(bars[2]))
+    rating = block.get("importance")  # ADR 0141
+    return MailReply(
+        route, float(bars[1]), float(bars[0]), float(bars[2]),
+        importance=isinstance(rating, Mapping) and rating.get("enabled") is True,
+    )
 
 
 def _turn_end_asks(

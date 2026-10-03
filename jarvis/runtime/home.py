@@ -169,8 +169,9 @@ class Home:
 
         Two read-only tools of the ``gmail`` server: a search in Gmail's own terms,
         then each hit's headers; nothing is marked read. Each letter's ``reply`` is "yes",
-        "fyi" or None (ADR 0123) and its ``junk`` a bool (ADR 0124); the junk ids are
-        remembered as the only ones :meth:`archive` accepts.
+        "fyi" or None (ADR 0123) and its ``junk`` a bool (ADR 0124); a rated letter also
+        carries ``importance`` (expected score 0-3, higher first) and ``category`` (ADR 0141);
+        the junk ids are remembered as the only ones :meth:`archive` accepts.
         """
         servers = self._servers(MAIL_SERVER)
         # Gmail's own sort into Primary is the "from people" filter.
@@ -185,11 +186,18 @@ class Home:
             (one["id"], "" if one["from"] == one["address"] else one["from"], one["subject"])
             for one in people
         ])
-        letters: list[dict[str, str | bool | None]] = []
+        letters: list[dict[str, str | bool | float | None]] = []
         for one in people:
             del one["address"]
             reply, junk = marks.get(one["id"], (None, False))
-            letters.append({**one, "reply": reply, "junk": junk and one["id"] not in self._kept})
+            rated = None if self._mail_reply is None else self._mail_reply.rating(one["id"])
+            # A letter not rated yet has no importance or category: the UI keeps its order.
+            rating = {} if rated is None else {
+                "importance": rated["score"], "category": rated["category"],
+            }
+            letters.append({
+                **one, "reply": reply, "junk": junk and one["id"] not in self._kept, **rating,
+            })
         self._junk = frozenset(str(one["id"]) for one in letters if one["junk"])
         return {"unread": sorted(letters, key=lambda one: str(one["received"]), reverse=True)}
 

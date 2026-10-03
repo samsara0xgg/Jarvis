@@ -211,6 +211,12 @@ home:
     fyi_at: 0.1
     junk_at: 0.9
     timeout_ms: 1500
+    # ADR 0141.  Two more questions in the same request rate each letter (urgent,
+    # important, normal, low) and name its kind; the home returns importance (expected
+    # score 0-3) and category per letter so it can show the most important first.  The
+    # reply and junk marks do not change.  Off here.
+    importance:
+      enabled: false
 
 # ADR 0125.  When a coding-agent session (Startrail's host, or a terminal Claude Code
 # session on the daemon's board) finishes a turn, ask Jev (through OpenRouter) whether the

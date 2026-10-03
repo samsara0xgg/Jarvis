@@ -329,6 +329,16 @@ class _Jev:
             "Our weekly newsletter": (0.05, 0.89),  # just under the junk bar
             "Quick question about your listing": (0.95, 0.99),  # junk-looking, but may need a reply
         }
+        # subject -> probabilities of the importance choice; unlisted subjects are "normal"
+        self.importance = {
+            "Office hours move to Thursday": {
+                "urgent": 0.5, "important": 0.3, "normal": 0.1, "low": 0.1,
+            },
+            "50% off everything this weekend": {
+                "urgent": 0.0, "important": 0.0, "normal": 0.1, "low": 0.9,
+            },
+        }
+        self.category = "school"
         self.status = 200
         self.delay_s = 0.0
         outer = self
@@ -340,10 +350,19 @@ class _Jev:
                 time.sleep(outer.delay_s)
                 subject = request["state"].split("Subject: ", 1)[1]
                 reply, junk = outer.odds[subject]
-                body = json.dumps({
-                    "answers": {"reply": {"noul": reply}, "junk": {"noul": junk}},
-                    "usage": {"cost": 0.00001},
-                }).encode()
+                answers: dict[str, Any] = {"reply": {"noul": reply}, "junk": {"noul": junk}}
+                if "importance" in request["questions"]:
+                    answers["importance"] = {
+                        "type": "choice", "choice": "normal", "confidence": 0.5,
+                        "probabilities": outer.importance.get(
+                            subject, {"urgent": 0.0, "important": 0.0, "normal": 1.0, "low": 0.0},
+                        ),
+                    }
+                    answers["category"] = {
+                        "type": "choice", "choice": outer.category, "confidence": 0.9,
+                        "probabilities": {outer.category: 0.9},
+                    }
+                body = json.dumps({"answers": answers, "usage": {"cost": 0.00001}}).encode()
                 self.send_response(outer.status)
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
@@ -356,12 +375,14 @@ class _Jev:
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
 
-    def reply(self, *, timeout_ms: int = 1500, log: JevLog | None = None) -> MailReply:
+    def reply(
+        self, *, timeout_ms: int = 1500, log: JevLog | None = None, importance: bool = False,
+    ) -> MailReply:
         route = SurrogateRoute(
             model="typesafe/jev-1.13", min_confidence=1.0, timeout_ms=timeout_ms,
             url=f"http://127.0.0.1:{self.server.server_address[1]}/decisions", log=log,
         )
-        return MailReply(route, 0.9, 0.1, 0.9)
+        return MailReply(route, 0.9, 0.1, 0.9, importance=importance)
 
 
 @pytest.fixture
@@ -428,6 +449,60 @@ def test_mail_reply_sends_only_name_and_subject_and_marks_by_threshold(
     # A second poll asks nothing: the answers are cached per message id.
     assert _marks(client)["199a1c0d4101"] == "yes"
     assert len(jev.requests) == 6
+
+
+def test_importance_rides_the_same_request_and_scores_by_expected_value(jev: _Jev) -> None:
+    """On: one request per letter also asks importance and category; the payload has the score."""
+    client = _with_jev(jev.reply(importance=True))
+    letters = {one["id"]: one for one in client.get("/inherent/mail").json()["unread"]}
+    assert len(jev.requests) == 6  # still one request per letter
+    for one in jev.requests:
+        assert set(one["questions"]) == {"reply", "junk", "importance", "category"}
+        assert one["questions"]["importance"]["type"] == "choice"
+        assert set(one["questions"]["importance"]["criteria"]) == {
+            "urgent", "important", "normal", "low",
+        }
+        assert len(one["questions"]["category"]["criteria"]) == 8
+        assert set(one) == {"model", "state", "questions", "provider"}
+    assert "@" not in json.dumps(jev.requests)
+    # 3*0.5 + 2*0.3 + 0.1 = 2.2; 3*0 + 2*0 + 0.1 = 0.1; "normal" alone is 1.
+    assert letters["199a1c0d4101"]["importance"] == pytest.approx(2.2)
+    assert letters["199a1c0d4105"]["importance"] == pytest.approx(0.1)
+    assert letters["199a1c0d4103"]["importance"] == pytest.approx(1.0)
+    assert letters["199a1c0d4101"]["category"] == "school"
+    # The reply and junk marks are what they were.
+    assert (letters["199a1c0d4101"]["reply"], letters["199a1c0d4105"]["junk"]) == ("yes", True)
+
+
+def test_importance_off_adds_no_question_and_no_field(jev: _Jev) -> None:
+    """Off (the default): today's request and payload, no importance or category."""
+    letters = _with_jev(jev.reply()).get("/inherent/mail").json()["unread"]
+    assert all("importance" not in one and "category" not in one for one in letters)
+    assert all(set(one["questions"]) == {"reply", "junk"} for one in jev.requests)
+
+
+def test_importance_missing_for_unrated_letters_and_bad_answers(jev: _Jev) -> None:
+    """A late or failed letter has no field; an unusable importance answer keeps the marks."""
+    jev.category = "not-a-category"
+    letters = _with_jev(jev.reply(importance=True)).get("/inherent/mail").json()["unread"]
+    assert all("importance" not in one and "category" not in one for one in letters)
+    assert {one["id"]: one["reply"] for one in letters}["199a1c0d4101"] == "yes"
+    jev.delay_s = 0.6
+    slow = _with_jev(jev.reply(timeout_ms=150, importance=True))
+    assert all("importance" not in one for one in slow.get("/inherent/mail").json()["unread"])
+
+
+def test_importance_is_kept_in_the_jev_log(jev: _Jev, tmp_path: Path) -> None:
+    """The decision line holds the score, the probabilities and the category (ADR 0128)."""
+    path = tmp_path / "decisions.jsonl"
+    _with_jev(jev.reply(importance=True, log=JevLog(path))).get("/inherent/mail")
+    lines = [json.loads(one) for one in path.read_text().splitlines()]
+    (office,) = [
+        one for one in lines if one["kind"] == "decision" and one["ref"] == "199a1c0d4101"
+    ]
+    assert office["importance"]["score"] == pytest.approx(2.2)
+    assert office["importance"]["category"] == "school"
+    assert office["importance"]["probabilities"]["urgent"] == 0.5
 
 
 def test_mail_reply_off_or_without_a_key_marks_nothing(
