@@ -25,7 +25,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, Final
 
-from jarvis.shared.lang import LONG_WAIT_TOOLS, variants
+from jarvis.shared.lang import CONFIRMED_TOOLS, LONG_WAIT_TOOLS, variants
 from jarvis.shared.realtime import PresentationIntent, PresentationIntentType
 from jarvis.shared.text import is_english
 
@@ -50,8 +50,9 @@ _D6_ROWS: Final[dict[str, tuple[PresentationIntentType, str]]] = {
 """The rows that speak -> the key of the phrases they permit, in Chinese and
 in English, in the language table.
 
-A dispatch speaks only for a tool on ``LONG_WAIT_TOOLS`` (ADR 0121: waits of
-about 2 s need no voice). The utterance row is the "nothing of the answer has
+A dispatch speaks for every tool but the quiet ones (ADR 0136), and says
+``commentary.long_wait`` for a tool on ``LONG_WAIT_TOOLS`` (ADR 0117), else the
+line of what the tool does. The utterance row is the "nothing of the answer has
 started" check, run by the runtime once its clock says the turn is taking a
 while, and again for the follow-ups ("still working") of a longer wait. The
 result row's 「结果回来了」 was heard with nothing before it after a quick tool
@@ -64,6 +65,44 @@ guidance names as the thing to avoid. The phrases claim only that the turn is
 still working, except the owner's 「马上好」 / "Almost there.", which claims
 progress nobody knows (ADR 0116).
 """
+
+_QUIET_TOOLS: Final = (
+    "get_current_time",
+    "ask_user",
+    "start_night_run",
+    "end_night_run",
+    "create_memo",
+    "remember",
+    "withdraw_card",
+    "mcp__hue__",
+)
+"""Tools (a name, or a ``mcp__hue__`` prefix) whose answer follows at once or
+that speak or ask for themselves; with every tool on ``CONFIRMED_TOOLS`` they
+say nothing at dispatch (ADR 0136)."""
+
+_TOOL_LINES: Final = (
+    ("web_search", "commentary.tool.web"),
+    ("web_fetch", "commentary.tool.web"),
+    ("screen_look", "commentary.tool.screen"),
+    ("search_records", "commentary.tool.records"),
+    ("mcp__gmail__", "commentary.tool.mail"),
+    ("mcp__microsoft__", "commentary.tool.calendar"),
+)
+"""Tool name prefix -> the phrase key of what the tool does; any other tool says
+``commentary.tool.generic``."""
+
+
+def _dispatch_key(tool_name: str | None) -> str | None:
+    """The phrase key a dispatch of ``tool_name`` says, ``None`` for a quiet tool."""
+    if tool_name is None or tool_name in CONFIRMED_TOOLS or tool_name.startswith(_QUIET_TOOLS):
+        return None
+    if tool_name in LONG_WAIT_TOOLS:
+        return "commentary.long_wait"
+    return next(
+        (key for prefix, key in _TOOL_LINES if tool_name.startswith(prefix)),
+        "commentary.tool.generic",
+    )
+
 
 _LEAD_IN_MAX_CHARS: Final = 60
 """The longest line before a call that is spoken: one speech candidate, the
@@ -106,8 +145,8 @@ def commentary_intent_for(
 ) -> PresentationIntent | None:
     """Return the D6 intent this event permits, or ``None``.
 
-    ``None`` for every event type but ``action.dispatched`` of a tool on
-    :data:`~jarvis.shared.lang.LONG_WAIT_TOOLS` and ``utterance.received``, and for
+    ``None`` for every event type but ``action.dispatched`` of a tool that is not
+    quiet (ADR 0136) and ``utterance.received``, and for
     a dispatch row that carries no usable ``action_id``, since ``subject_ref``
     is that id and an intent about nothing cannot be coalesced or superseded.
     The utterance row's subject is the row itself.
@@ -123,10 +162,11 @@ def commentary_intent_for(
     intent_type, key = row
     if event.type == "action.dispatched":
         action_id = event.payload.get("action_id")
-        if tool_name not in LONG_WAIT_TOOLS or not isinstance(action_id, str) or not action_id:
+        dispatch_key = _dispatch_key(tool_name)
+        if dispatch_key is None or not isinstance(action_id, str) or not action_id:
             return None
         subject = action_id
-        key = "commentary.long_wait"
+        key = dispatch_key
     elif still:
         key = "commentary.still"
     return PresentationIntent(

@@ -30,6 +30,7 @@ from jarvis.decision.commentary import (
     COMMENTARY_ATTENTION_CHANNEL,
     commentary_intent_for,
     commentary_speech_text,
+    lead_in_speech_text,
 )
 from jarvis.decision.gates import ResponsePlan
 from jarvis.decision.llm import LLMClient
@@ -53,7 +54,7 @@ from jarvis.runtime import (
     tool_status,
 )
 from jarvis.shared import Event, lang
-from jarvis.shared.lang import LONG_WAIT_TOOLS, SLOW_TOOLS
+from jarvis.shared.lang import CONFIRMED_TOOLS, LONG_WAIT_TOOLS, SLOW_TOOLS
 from jarvis.shared.realtime import (
     Wave1FeatureFlags,
     new_response_id,
@@ -166,8 +167,8 @@ def test_two_rows_speak_a_long_wait_tools_dispatch_and_his_words() -> None:
     assert by_words.content_hint == _WAIT_ZH[0]
 
 
-def test_the_slow_list_feeds_the_status_line_and_the_long_wait_tools_the_dispatch() -> None:
-    """ADR 0115's five tools show a status line; of them only the two slowest speak (ADR 0121)."""
+def test_the_slow_list_feeds_the_status_line_and_the_dispatch_says_what_the_tool_does() -> None:
+    """ADR 0115's five tools show a status line; each also says its line at dispatch (ADR 0136)."""
     assert set(SLOW_TOOLS) == {
         "web_search", "web_fetch", "screen_look", "refresh_work_state", "daily_work_report",
     }
@@ -176,24 +177,61 @@ def test_the_slow_list_feeds_the_status_line_and_the_long_wait_tools_the_dispatc
         intent = commentary_intent_for(
             _action_event("action.dispatched"), tool_name=tool_name, pick=_first,
         )
-        assert (intent is not None) == (tool_name in LONG_WAIT_TOOLS), tool_name
+        assert intent is not None, tool_name
+        long_wait = tool_name in LONG_WAIT_TOOLS
+        assert (intent.content_hint in _LONG_ZH) == long_wait, tool_name
+
+
+def _tool_pool(key: str, language: lang.Language) -> tuple[str, ...]:
+    return lang.variants(f"commentary.tool.{key}", language)
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "key"),
+    [
+        ("web_search", "web"), ("web_fetch", "web"), ("screen_look", "screen"),
+        ("search_records", "records"), ("mcp__gmail__gmail_search", "mail"),
+        ("mcp__microsoft__list_events", "calendar"), ("tool_search", "generic"),
+        ("query_activity", "generic"), ("search_notes", "generic"), ("calendar_list", "generic"),
+    ],
+)
+def test_a_dispatch_says_the_line_of_what_the_tool_does(tool_name: str, key: str) -> None:
+    """The line is the tool's own pool, in the language of his words, and claims no result."""
+    event = _action_event("action.dispatched")
+    texts: tuple[tuple[str, lang.Language], ...] = (
+        ("明天天气怎么样", "zh"), ("What's the weather tomorrow", "en"),
+    )
+    for text, language in texts:
+        pool = _tool_pool(key, language)
+        seen = {
+            intent.content_hint
+            for i in range(len(pool))
+            if (
+                intent := commentary_intent_for(
+                    event, user_text=text, tool_name=tool_name, pick=operator.itemgetter(i),
+                )
+            )
+        }
+        assert seen == set(pool), (tool_name, language)
+        assert all(lead_in_speech_text(line) is not None for line in pool), pool
 
 
 @pytest.mark.parametrize(
     "tool_name",
     [
-        "web_search", "web_fetch", "screen_look", "tool_search", "get_current_time",
-        "calendar_list", "remember", "ask_user", "write_file", "spawn_worker", None,
+        "get_current_time", "ask_user", "start_night_run", "end_night_run", "create_memo",
+        "remember", "withdraw_card", "mcp__hue__hue_set_light", *sorted(CONFIRMED_TOOLS), None,
     ],
 )
-def test_a_tool_off_the_long_wait_list_says_nothing_at_dispatch(tool_name: str | None) -> None:
-    """A wait of about 2 s needs no voice: the text under the orb is enough (ADR 0121).
-
-    Quick tools, the clock, a kept fact or a card are covered by the 4.0 s clock:
-    nothing is said unless the turn is still silent then.
-    """
+def test_a_quiet_tool_says_nothing_at_dispatch(tool_name: str | None) -> None:
+    """Its answer follows at once, or it speaks or asks for itself (ADR 0136)."""
     event = _action_event("action.dispatched")
     assert commentary_intent_for(event, tool_name=tool_name, pick=_first) is None
+
+
+def test_the_confirmation_tools_are_the_ones_the_action_table_names() -> None:
+    """The quiet set reuses the table of what a confirmed tool does rather than copying it."""
+    assert {"mcp__gmail__gmail_send", "spawn_worker"} <= set(CONFIRMED_TOOLS)
 
 
 @pytest.mark.parametrize(("text", "pool"), [("现在几点", _WAIT_ZH), ("What time is it", _WAIT_EN)])
@@ -916,7 +954,7 @@ def test_a_spoken_turn_hears_the_models_own_line_unless_it_claims_a_result(
 ) -> None:
     """docs/plans/speak-as-written-proposal.md: the model's line replaces the phrase.
 
-    A line written with a bookkeeping call speaks at the next long-wait dispatch
+    A line written with a bookkeeping call speaks at the next dispatch that speaks
     (the 2026-09-30 live run heard it 5 s later, at the first working one); one that
     already states a result, or runs past one sentence, gives way to the fixed
     phrase.
@@ -926,7 +964,7 @@ def test_a_spoken_turn_hears_the_models_own_line_unless_it_claims_a_result(
     line = "我查一下明天维多利亚的天气。"
     cases: list[tuple[str, list[tuple[str, str | None]], str | None]] = [
         ("T-line", [("refresh_work_state", line)], line),
-        ("T-early", [("tool_search", line), ("refresh_work_state", None)], line),
+        ("T-early", [("get_current_time", line), ("refresh_work_state", None)], line),
         ("T-claim", [("refresh_work_state", "已经查到了。")], None),
         ("T-long", [("refresh_work_state", "我查一下" + "明天维多利亚的天气" * 7)], None),
     ]
@@ -951,7 +989,7 @@ def test_a_spoken_turn_hears_the_models_own_line_unless_it_claims_a_result(
         started["response_group_id"]: started["active_subject_ref"]
         for started in _typed_payloads(reader, "response.started")
     }
-    # The first call is not a long-wait tool: its line speaks at the second.
+    # The first call is a quiet tool: its line speaks at the second.
     assert subjects[stable_response_group_id("T-early")] == "ACT-T-early-1"
 
 
@@ -1371,7 +1409,7 @@ def test_the_shipped_clock_is_silent_when_the_answer_opened_at_3_6_s(
     assert _count(reader, "response.started") == 0
 
 
-@pytest.mark.parametrize("quick_tool", [None, "calendar_list", "web_search"])
+@pytest.mark.parametrize("quick_tool", [None, "get_current_time", "mcp__hue__hue_set_light"])
 def test_an_answer_within_the_clock_hears_no_line_with_or_without_a_quick_tool(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, quick_tool: str | None,
 ) -> None:
@@ -1515,21 +1553,48 @@ def test_a_long_wait_tool_speaks_at_dispatch_and_the_follow_ups_still_come(
     assert all(line in _STILL_ZH for line in lines[1:])
 
 
-def test_a_quick_tool_dispatch_says_nothing_before_the_clock(
+def test_a_quiet_tool_dispatch_says_nothing_before_the_clock(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A calendar read or a web search is not a long wait: only the clock speaks for it."""
+    """A clock read, a light or a question is quiet at dispatch: only the clock speaks for it."""
     _clocks(monkeypatch, first=0.8, then=(600.0, 1200.0))
     runtime = _make_runtime(tmp_path)
     reader = _reader(runtime)
     with _Observer(runtime):
         _user_turn(runtime.conn, "T-cal")
-        for index, tool in enumerate(("calendar_list", "web_search", "ask_user")):
+        for index, tool in enumerate(("get_current_time", "mcp__hue__hue_set_light", "ask_user")):
             _dispatch(runtime.conn, action_id=f"ACT-{index}", turn_id="T-cal", tool_name=tool)
         _settle(0.5)
         assert _count(reader, "response.started") == 0
         _wait_until_turn_spoke(reader, "T-cal")
     assert _lines(reader, "T-cal")[0] in _WAIT_ZH
+
+
+@pytest.mark.parametrize(
+    ("transcript", "key", "language"),
+    [("明天天气怎么样", "web", "zh"), ("What's the weather tomorrow", "web", "en")],
+)
+def test_a_tool_dispatch_says_its_line_in_his_language_and_the_clock_adds_no_second(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    transcript: str,
+    key: str,
+    language: lang.Language,
+) -> None:
+    """ADR 0136: web_search says the web line at dispatch; a later tool and the clock add none."""
+    _clocks(monkeypatch, first=0.5, then=(600.0, 1200.0))
+    runtime = _make_runtime(tmp_path)
+    reader = _reader(runtime)
+    with _Observer(runtime):
+        _user_turn(runtime.conn, "T-web", transcript=transcript)
+        _dispatch(runtime.conn, action_id="ACT-w1", turn_id="T-web", tool_name="web_search")
+        _wait_until_turn_spoke(reader, "T-web")
+        _dispatch(runtime.conn, action_id="ACT-w2", turn_id="T-web", tool_name="screen_look")
+        _settle(0.8)  # past the clock
+    assert _lines(reader, "T-web") == [_only_phrase(reader)]
+    assert _only_phrase(reader) in _tool_pool(key, language)
+    started = _typed_payloads(reader, "response.started")
+    assert [p["active_subject_ref"] for p in started] == ["ACT-w1"]
 
 
 def test_a_follow_up_keeps_off_a_pending_confirmation(

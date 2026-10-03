@@ -1745,16 +1745,17 @@ async def _tts_watcher(  # noqa: C901, PLR0912 - ordered durable dispatch FSM
 # Nothing here re-enters `decide()`: `_RUNTIME_TRIGGER_TYPES` is untouched and
 # no model is ever called to produce a phrase (ADR-0008 D6, "a deep model is
 # never called only to generate 我在查"). A turn he spoke says one fixed line
-# when it is taking a while (ADR 0116, 0121): at the dispatch of one of the two
-# slowest tools, or once `_COMMENTARY_AFTER_S` have passed with nothing of the
-# answer started; then a follow-up at each of `_COMMENTARY_STILL_AFTER_S` while
-# the answer still has not started, at most `_COMMENTARY_MAX_LINES` in all.
+# when it is taking a while (ADR 0116, 0121, 0136): at the dispatch of a tool
+# that is not quiet, saying what it is about to do, or once `_COMMENTARY_AFTER_S`
+# have passed with nothing of the answer started; then a follow-up at each of
+# `_COMMENTARY_STILL_AFTER_S` while the answer still has not started, at most
+# `_COMMENTARY_MAX_LINES` in all.
 
 _COMMENTARY_ACTION_TYPES: Final[tuple[str, ...]] = ("action.dispatched", "utterance.received")
 """The D6 rows that speak (:data:`jarvis.decision.commentary._D6_ROWS`)."""
 
 _COMMENTARY_EARLIEST_S: Final[float] = 1.5
-"""How long after Allen's words a slow tool's line may start.
+"""How long after Allen's words a tool's dispatch line may start.
 
 An answer that begins within it needs no lead-in: a light switched in 0.4 s
 (2026-09-26 to 09-29). The line speaks for the turn, not for the one tool:
@@ -1908,7 +1909,7 @@ _SELECT_ACTION_TOOL_NAME_SQL = (
 
 # The turn's latest line before a call, up to the row that speaks (a call's
 # proposal, or the latest row for the clock). It speaks in place of the fixed
-# phrase; a line never spoken at one dispatch speaks at the next.
+# phrase; a line never spoken at one dispatch (a quiet tool's) speaks at the next.
 _SELECT_LEAD_IN_SQL = (
     "SELECT json_extract(payload_json, '$.lead_in') FROM events "
     "WHERE type = 'action.proposed' AND json_extract(payload_json, '$.turn_id') = ? "
@@ -2031,7 +2032,7 @@ def _render_commentary(  # noqa: PLR0913 - the run's identity plus what it says
     ``turn_id`` is the action's own turn, so ``response_group_id`` derives to
     that turn's group and voice_media appends the phrase to the lane instead
     of interrupting whatever else that group is saying. The trigger is the
-    row that justified the phrase, a slow tool's dispatch or his words: D6's
+    row that justified the phrase, a tool's dispatch or his words: D6's
     "truth derives from the durable event" is literally this run's
     ``source_event_id``.
 
@@ -2144,7 +2145,7 @@ def _open_commentary_in_worker_thread(  # noqa: C901, PLR0911 - one early return
 ) -> _OpenCommentary | None:
     """Decide and deliver one row's commentary on a worker thread.
 
-    The row is the ``action.dispatched`` of a long-wait tool or the
+    The row is the ``action.dispatched`` of a tool that is not quiet (ADR 0136) or the
     ``utterance.received`` that carries his words; the second one is the clock
     of ADR 0116 and waits ``after_s`` (default :data:`_COMMENTARY_AFTER_S`) after
     his words before it looks at anything. ``still`` makes it a follow-up line
@@ -2157,7 +2158,7 @@ def _open_commentary_in_worker_thread(  # noqa: C901, PLR0911 - one early return
     the TTS watcher polls on.
 
     Returns ``None`` — writing nothing at all — when the row maps to no D6
-    intent (a tool off the long-wait list), when the turn is not one he spoke
+    intent (a quiet tool), when the turn is not one he spoke
     (typed, GPT-Live, system), when the turn has ended or its answer has started
     by the time the wait is over, when this turn already said its lines, or when
     a confirmation is still awaiting an answer. The ended and answer-started
@@ -2191,7 +2192,7 @@ def _open_commentary_in_worker_thread(  # noqa: C901, PLR0911 - one early return
             still=still,
             pick=secrets.choice,
         )
-        if intent is None:  # a tool that does not take long
+        if intent is None:  # a quiet tool
             return None
         line = None
         if not still:  # the model's own line replaces the first line only

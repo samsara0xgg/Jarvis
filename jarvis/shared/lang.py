@@ -105,8 +105,8 @@ def variants(key: str, lang: Language | None = None) -> tuple[str, ...]:
 # --- Slow tools (ADR 0115, ADR 0117) -----------------------------------------
 
 # Tools slow enough to name at once, and the ``tool_status.*`` line each shows
-# under the ball. Only the two on LONG_WAIT_TOOLS also make her say a wait line
-# at their dispatch (ADR 0121).
+# under the ball. Every tool that is not quiet says a wait line at its dispatch
+# (ADR 0136); the two on LONG_WAIT_TOOLS say the long one (ADR 0117).
 # Measured run times (2026-09): web_search 1.9 s, screen_look 3.3 s,
 # refresh_work_state 7.6 s median, daily_work_report 58 s. Everything else on
 # the owner's log is under 0.6 s.
@@ -146,6 +146,9 @@ _ACTIONS: Final[dict[str, dict[Language, tuple[str, str]]]] = {
         "en": ("start this background task", "Started"),
     },
 }
+
+CONFIRMED_TOOLS: Final = frozenset(_ACTIONS)
+"""The tools that ask for a confirmation: the ask speaks for them (ADR 0136)."""
 
 
 def spoken_tool_name(tool_name: str) -> str:
@@ -984,6 +987,22 @@ VARIANTS: Final[dict[str, dict[Language, tuple[str, ...]]]] = {
             "This will take a little while. You can ask me something else meanwhile.",
             "This one takes a bit. Feel free to ask me something else.",
         ),
+    },
+    # ADR 0136: the line said at a tool's dispatch, by what the tool does.
+    "commentary.tool.web": {
+        "zh": ("我搜一下。", "我上网查查。"),
+        "en": ("Let me look that up.", "Searching now."),
+    },
+    "commentary.tool.screen": {"zh": ("我看一下屏幕。",), "en": ("Let me look at your screen.",)},
+    "commentary.tool.records": {
+        "zh": ("我翻一下之前的记录。", "我找找记录。"),
+        "en": ("Let me check our history.",),
+    },
+    "commentary.tool.mail": {"zh": ("我看一下邮件。",), "en": ("Checking your email.",)},
+    "commentary.tool.calendar": {"zh": ("我看一下日程。",), "en": ("Checking your calendar.",)},
+    "commentary.tool.generic": {
+        "zh": ("我查一下。", "我看一下。"),
+        "en": ("Let me check.", "One sec, checking."),
     },
     # ADR 0102: her answer to 「等我一下」 and to a dismissal, one picked at random.
     "conversation.wait": {
