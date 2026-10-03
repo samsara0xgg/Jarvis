@@ -686,14 +686,16 @@ try {
     await emit('voice', { phase: 'accepted', turn_id: 'd1', text: '深想一下，我下周该不该换工作' });
     await page.waitForTimeout(2600);
     let a = await area();
-    check('a deep turn pending: the area takes the deep look, and the footer counts the seconds', a.deep && /^Thinking \d+ s$/.test(a.label) && await page.evaluate(() => getComputedStyle(document.querySelector('.talk')).getPropertyValue('--lit').trim() === 'rgb(154, 134, 255)'));
+    check('a deep turn pending: the area takes the deep look, and the footer counts the seconds', a.deep && /^Thinking deeply · \d+ s$/.test(a.label) && await page.evaluate(() => getComputedStyle(document.querySelector('.talk')).getPropertyValue('--lit').trim() === 'rgb(154, 134, 255)'));
     check('its base is the deep gradient, its glyph the deep colour', await page.evaluate(() => getComputedStyle(document.querySelector('.tk-deep')).opacity === '1' && getComputedStyle(document.querySelector('.talk .gl'), '::before').backgroundColor !== 'rgba(0, 0, 0, 0)'));
+    check('while it is thought about a light runs round its rim', await page.evaluate(() => { const r = getComputedStyle(document.querySelector('.tk-deep'), '::after'); return r.opacity === '1' && r.animationName === 'talk-rim'; }));
     await shot('30-deep-thinking');
     daemonState.think = { on: false, on_words: '深想', turn_id: null }; // the daemon's `on` ends with the turn, around the answer opening
     await emit('open', { turn_id: 'd1', response_id: 'r-d1' }); await emit('append', { turn_id: 'd1', token: '<voice>先别急着换，下周你手上有两个关键交付。</voice>' }); await emit('done', { turn_id: 'd1', fadeMs: 100 });
     await page.waitForTimeout(1200);
     a = await area();
     check('her deep answer keeps the “Thought for N s” line above her words, and the deep look', a.deep && /^Thought for \d+\.\d s$/.test(a.think) && a.her.startsWith('先别急着换'));
+    check('the deep answer carries the violet rule down its left, and the rim light has stopped', await page.evaluate(() => !!document.querySelector('.tk-h.deep') && getComputedStyle(document.querySelector('.tk-deep'), '::after').animationName === 'none'));
     await shot('31-deep-answer');
     await emit('voice', { phase: 'spoken', turn_id: 'd1' });
     await emit('voice', { phase: 'listening', turn_id: 'n1' }); await emit('voice', { phase: 'accepted', turn_id: 'n1', text: '现在几点' });
@@ -720,7 +722,7 @@ try {
     const weather = order.findIndex(x => x.startsWith('her:') && x.includes('十八度')), you = order.findIndex(x => x === 'you:想一想我是谁');
     check(`an answer that came while your next words were coming in sits above them, not under them (${order.join(' | ')})`, weather >= 0 && you > weather);
     const a = await area();
-    check(`a deep turn waiting while the earlier answer is still said: the footer counts its seconds (${a.label})`, a.deep && /^Thinking \d+ s$/.test(a.label));
+    check(`a deep turn waiting while the earlier answer is still said: the footer counts its seconds (${a.label})`, a.deep && /^Thinking deeply · \d+ s$/.test(a.label));
     check('no page errors (answer above your next words)', s.errors.length === 0);
     await s.context.close();
   }

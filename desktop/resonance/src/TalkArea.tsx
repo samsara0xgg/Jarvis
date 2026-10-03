@@ -96,7 +96,7 @@ function Her({ it, reg, think, ready, silent, lang }: { it: Item; reg: Registry;
     reg.set(`${it.id}:w`, { p: el, chars, spans: [], lit: -1, ink: { t0: t0.current, clock } });
     return () => { reg.delete(`${it.id}:w`); };
   }, [it.id, it.written, lit, ready, reg]);
-  return <div className={`tk-h ${it.failed ? 'is-err' : ''}`} data-line={it.id}>
+  return <div className={`tk-h ${it.failed ? 'is-err' : ''} ${think ? 'deep' : ''}`} data-line={it.id}>
     {think && <small className="tk-think">{think}</small>}
     {it.spoken && <Said id={it.id} text={it.spoken} reg={reg}/>}
     {it.written && ready && <div ref={w} className="tk-w" data-written><Written text={it.written} lit={lit} lang={lang}/></div>}
@@ -177,7 +177,7 @@ export function TalkArea(p: TalkProps) {
   // The running tool's line stands for her state whatever she is doing meanwhile (thinking, saying a wait line, finishing an earlier answer); only
   // your own words coming in take the row. This is the one place it is placed: the pill's label and the footer's.
   const tool = state === 'hearing' ? '' : p.tool;
-  const status = tool || (state === 'idle' ? '' : state === 'thinking' ? secs > 0 ? t([`Thinking ${secs} s`, `深想 ${secs} 秒`]) : t(['Thinking', '在想'])
+  const status = tool || (state === 'idle' ? '' : state === 'thinking' ? secs > 0 ? t([`Thinking deeply · ${secs} s`, `深想中 · ${secs} 秒`]) : t(['Thinking', '在想'])
     : state === 'speaking' ? t(['Speaking · poke to interrupt', '在说 · 戳她打断']) : t(['Listening', '在听']));
   const coming = state === 'hearing' ? p.partial.replace(/\s+/g, ' ') : '';
   const heard = coming || (freshMs > 0 && lastYou ? lastYou.text.replace(/\s+/g, ' ') : '');
