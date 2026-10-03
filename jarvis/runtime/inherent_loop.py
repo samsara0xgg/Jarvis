@@ -2612,18 +2612,16 @@ def _native_streaming_player(
 ) -> voice_tts.AudioStreamPlayer | None:
     """The native (ADR 0129) player, started; ``None`` keeps her on the Python player.
 
-    Her voice must never disappear because of this switch: an echo canceller
-    (its far end is fed from the Python callback), a helper that cannot be
-    built, or one that does not come up each log one warning and fall back.
+    Her voice must never disappear because of this switch: a helper that cannot
+    be built, or one that does not come up, logs one warning and falls back.
+    The echo canceller's far end is the helper's rendered blocks (ADR 0129).
     """
-    if echo_canceller is not None:
-        LOGGER.warning(
-            "realtime.streaming_output.native_player ignored: echo cancellation needs the "
-            "Python player's playback tap.",
-        )
-        return None
     try:
-        player = voice_native_out.NativeAudioStreamPlayer(generation_safe=True, **kwargs)
+        player = voice_native_out.NativeAudioStreamPlayer(
+            generation_safe=True,
+            playback_tap=echo_canceller.add_playback if echo_canceller is not None else None,
+            **kwargs,
+        )
         started = player.start()
     except Exception as exc:  # noqa: BLE001 - the switch must fail safe
         LOGGER.warning("native voice output unavailable (%r); using the Python player.", exc)

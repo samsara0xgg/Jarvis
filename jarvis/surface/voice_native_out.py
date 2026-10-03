@@ -28,6 +28,8 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
+import numpy as np
+
 from jarvis.surface.voice_ledger import GenerationLease
 from jarvis.surface.voice_tts import (
     AudioStreamPlayer,
@@ -37,8 +39,6 @@ from jarvis.surface.voice_tts import (
 )
 
 if TYPE_CHECKING:
-    import numpy as np
-
     from jarvis.surface.voice_ledger import (
         AudibilityClass,
         ForegroundBusy,
@@ -54,7 +54,7 @@ _BUILD_TIMEOUT_S = 300.0
 # Python -> helper.
 _PCM, _ACTIVE, _DISCARD, _GAIN, _HOLD = 1, 2, 3, 4, 5
 # helper -> Python.
-_READY, _REPORT, _STATUS, _DISCARD_ACK = 0x81, 0x82, 0x83, 0x84
+_READY, _REPORT, _STATUS, _DISCARD_ACK, _RENDERED = 0x81, 0x82, 0x83, 0x84, 0x85
 # The helper's frame ceiling is 65536 samples; stay well inside it.
 _MAX_PCM_FRAME_SAMPLES = 32768
 # The wrong clock is off by seconds (CLOCK_MONOTONIC counts sleep, UPTIME_RAW
@@ -67,6 +67,7 @@ _AUDIBILITY: tuple[AudibilityClass, ...] = ("normal", "attenuated", "muted", "un
 _REPORT_FMT = struct.Struct("<qqqBqqB")
 _STATUS_FMT = struct.Struct("<qdQQQIQ")
 _READY_FMT = struct.Struct("<IIqq")
+_RENDERED_HEAD = struct.Struct("<Q")
 
 
 def ensure_helper_binary(source_dir: Path = _HELPER_DIR) -> Path:
@@ -152,8 +153,9 @@ class _MirroredRing(_GenerationRingBuffer):
 class NativeAudioStreamPlayer(AudioStreamPlayer):
     """``AudioStreamPlayer`` whose realtime callback runs in ``jarvis-voice-out``.
 
-    Needs ``generation_safe=True`` and no ``playback_tap`` (v1: the echo
-    canceller's far end is fed from the Python callback).
+    Needs ``generation_safe=True``.  ``playback_tap`` (the echo canceller's far
+    end) is fed from the helper's RENDERED frames: the final mono block it hands
+    the device, silence included, in order.
     """
 
     _READY_TIMEOUT_S = 5.0
@@ -167,9 +169,6 @@ class NativeAudioStreamPlayer(AudioStreamPlayer):
         **kwargs: Any,  # noqa: ANN401 - AudioStreamPlayer's own keyword surface
     ) -> None:
         """Build an idle player; ``extra_args`` go to the helper (``--null-device`` in tests)."""
-        if kwargs.get("playback_tap") is not None:
-            msg = "the native player has no playback tap"
-            raise NotImplementedError(msg)
         if not kwargs.get("generation_safe", False):
             msg = "the native player is generation-safe only"
             raise NotImplementedError(msg)
@@ -190,6 +189,8 @@ class NativeAudioStreamPlayer(AudioStreamPlayer):
         self._stderr_thread = threading.Thread()
         self._native_gain = 1.0
         self.clock_skew_ns = 0
+        self.rendered_dropped_samples = 0
+        self._tap_failed = False
         if not lazy_open:
             started = self.start()
             if not started.started:
@@ -259,6 +260,8 @@ class NativeAudioStreamPlayer(AudioStreamPlayer):
         elif frame_type == _DISCARD_ACK:
             (seq,) = struct.unpack("<Q", body)
             self._mirror.acked_seq = max(self._mirror.acked_seq, seq)
+        elif frame_type == _RENDERED:
+            self._on_rendered(body)
         elif frame_type == _READY:
             received_ns = time.monotonic_ns()
             _rate, frames, latency_ns, clock_ns = _READY_FMT.unpack(body)
@@ -267,6 +270,19 @@ class NativeAudioStreamPlayer(AudioStreamPlayer):
             self.clock_skew_ns = received_ns - clock_ns
             self._got_ready = True
             self._ready.set()
+
+    def _on_rendered(self, body: memoryview) -> None:
+        """Hand one rendered block to the playback tap; a broken tap never ends her voice."""
+        (self.rendered_dropped_samples,) = _RENDERED_HEAD.unpack_from(body)
+        tap = self._playback_tap
+        if tap is None:
+            return
+        try:
+            tap(np.frombuffer(body[_RENDERED_HEAD.size :], dtype="<f4"), self._sample_rate_hz)
+        except Exception:  # the far end must not kill the helper stream
+            if not self._tap_failed:
+                self._tap_failed = True
+                LOGGER.exception("playback tap failed; later failures are not logged")
 
     def _clamped_latency_ns(self, latency_ns: int) -> int:
         """A real report is clamped to the ceiling; a non-positive one carries no measurement."""
@@ -310,6 +326,8 @@ class NativeAudioStreamPlayer(AudioStreamPlayer):
             "--ring-samples", str(self._mirror._size),  # noqa: SLF001
             "--buffer-frames", str(self._buffer_frames),
         ]  # fmt: skip
+        if self._playback_tap is not None:
+            argv.append("--rendered")
         argv += self._extra_args
         if self._device is not None:
             argv += ["--device", str(self._device)]

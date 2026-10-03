@@ -751,8 +751,8 @@ realtime:
     # ADR 0129.  Render her voice in the Swift helper native/voice_out instead of
     # the Python PortAudio callback, which skips CoreAudio cycles (a pop) whenever
     # another daemon thread holds the GIL.  Built with swiftc on first start; if
-    # that fails, or echo_cancellation is on (the helper has no playback tap), the
-    # Python player is used.
+    # that fails, the Python player is used.  With echo_cancellation on, the helper
+    # streams back the blocks it renders as the canceller's far end.
     native_player: false
   # ADR-0006 Step 5. Disabled by default. When enabled it additionally
   # requires the Wave-1 transactional/terminal switches above and a live

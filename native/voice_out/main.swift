@@ -23,9 +23,15 @@
 //                       u32 tail_ramp_samples, u64 played_samples
 //     0x84 DISCARD_ACK  u64 seq (first callback after that boundary was applied; every report for
 //                       the discarded samples precedes it)
+//     0x85 RENDERED     u64 dropped_samples (cumulative), f32[] samples. Only with --rendered: the
+//                       final mono block handed to the device, silence included, in order. It is the
+//                       echo canceller's far end (the Python player's playback tap). The render
+//                       thread copies each block into a preallocated ring; a block that does not fit
+//                       (the daemon stopped reading) is dropped whole and counted, never waited for.
 //
 // Options: --rate N --ring-samples N (a power of two) --buffer-frames N
 //          --device NAME
+//          --rendered (send RENDERED frames; off, the render thread does no extra work)
 //          --null-device (a plain thread renders at real-time pace; for tests)
 //          --null-capture PATH (with --null-device: append every rendered block to PATH)
 
@@ -38,6 +44,8 @@ let kDeclickSamples = 128
 let kHeardGainFloor = 0.15
 let kMaxFrames = 4096
 let kOutRingCapacity = 4096
+let kRenderedRingCapacity = 1 << 16  // samples: ~1.4 s at 48 kHz
+let kMaxRenderedFrameSamples = 32768
 let kMaxPcmBytes = 17 + 4 * 65536
 
 func fail(_ message: String, code: Int32) -> Never {
@@ -130,9 +138,15 @@ final class Engine: @unchecked Sendable {
     let outR = Atomic<Int>(0)
     let outDrops = Atomic<UInt64>(0)
 
+    // Render -> stdout rendered-audio ring (--rendered only; nil otherwise).
+    let renderedRing: UnsafeMutablePointer<Float>?
+    let renderedW = Atomic<Int>(0)
+    let renderedR = Atomic<Int>(0)
+    let renderedDropped = Atomic<UInt64>(0)
+
     let shuttingDown = Atomic<Bool>(false)
 
-    init(sampleRate: Int, ringSize: Int, bufferFrames: Int) {
+    init(sampleRate: Int, ringSize: Int, bufferFrames: Int, rendered: Bool) {
         self.sampleRate = sampleRate
         self.ringSize = ringSize
         self.mask = ringSize - 1
@@ -151,6 +165,13 @@ final class Engine: @unchecked Sendable {
         rs.initialize(to: RenderState(gainConsumed: packGain(target: 1.0, ramp: 0, seq: 0)))
         outRing = .allocate(capacity: kOutRingCapacity)
         outRing.initialize(repeating: OutRecord(), count: kOutRingCapacity)
+        if rendered {
+            let ring = UnsafeMutablePointer<Float>.allocate(capacity: kRenderedRingCapacity)
+            ring.initialize(repeating: 0, count: kRenderedRingCapacity)
+            renderedRing = ring
+        } else {
+            renderedRing = nil
+        }
     }
 
     // MARK: render (realtime: no allocation, locks, syscalls or I/O)
@@ -164,6 +185,17 @@ final class Engine: @unchecked Sendable {
         outRing[w & (kOutRingCapacity - 1)] = record
         outW.store(w + 1, ordering: .releasing)
         return true
+    }
+
+    /// Copy the block just rendered for the stdout thread; a full ring drops the whole block.
+    func pushRendered(_ ring: UnsafeMutablePointer<Float>, _ out: UnsafeMutablePointer<Float>, _ frames: Int) {
+        let w = renderedW.load(ordering: .relaxed)
+        if w + frames - renderedR.load(ordering: .acquiring) > kRenderedRingCapacity {
+            renderedDropped.wrappingAdd(UInt64(frames), ordering: .relaxed)
+            return
+        }
+        for i in 0..<frames { ring[(w + i) & (kRenderedRingCapacity - 1)] = out[i] }
+        renderedW.store(w + frames, ordering: .releasing)
     }
 
     @inline(__always)
@@ -247,6 +279,7 @@ final class Engine: @unchecked Sendable {
 
     func render(_ out: UnsafeMutablePointer<Float>, frames: Int, delayNs: Int64) {
         renderBody(out, frames, delayNs)
+        if let ring = renderedRing { pushRendered(ring, out, frames) }
         let s = rs
         if s.pointee.appliedDiscardSeq != s.pointee.ackedDiscardSeq {
             var ack = OutRecord()
@@ -390,6 +423,10 @@ struct ByteBuffer {
 
     mutating func put(_ value: Double) { put(value.bitPattern) }
 
+    mutating func put(_ samples: UnsafeBufferPointer<Float>) {
+        bytes.append(contentsOf: UnsafeRawBufferPointer(samples))
+    }
+
     mutating func frame(type: UInt8, _ body: (inout ByteBuffer) -> Void) {
         let lengthAt = bytes.count
         put(UInt32(0))
@@ -519,6 +556,20 @@ func runStdoutWriter(_ engine: Engine) {
             r += 1
         }
         engine.outR.store(r, ordering: .releasing)
+        if let ring = engine.renderedRing {
+            // Little-endian host: the in-memory floats are the wire floats.
+            var rr = engine.renderedR.load(ordering: .relaxed)
+            let rw = engine.renderedW.load(ordering: .acquiring)
+            while rr < rw {
+                let n = min(rw - rr, kMaxRenderedFrameSamples, kRenderedRingCapacity - (rr & (kRenderedRingCapacity - 1)))
+                buffer.frame(type: 0x85) { b in
+                    b.put(engine.renderedDropped.load(ordering: .relaxed))
+                    b.put(UnsafeBufferPointer(start: ring + (rr & (kRenderedRingCapacity - 1)), count: n))
+                }
+                rr += n
+            }
+            engine.renderedR.store(rr, ordering: .releasing)
+        }
         if reported || uptimeNs() - lastStatus >= 20_000_000 { status() }
         if !buffer.bytes.isEmpty {
             writeAll(1, buffer.bytes)
@@ -692,6 +743,7 @@ var bufferFrames = 512
 var deviceArg: String?
 var nullDevice = false
 var nullCapture: String?
+var renderedOut = false
 var args = CommandLine.arguments.dropFirst().makeIterator()
 while let arg = args.next() {
     switch arg {
@@ -701,6 +753,7 @@ while let arg = args.next() {
     case "--device": deviceArg = args.next()
     case "--null-device": nullDevice = true
     case "--null-capture": nullCapture = args.next()
+    case "--rendered": renderedOut = true
     default: fail("unknown option \(arg)", code: 1)
     }
 }
@@ -708,7 +761,7 @@ if ringSamples <= 0 || ringSamples & (ringSamples - 1) != 0 { fail("--ring-sampl
 if bufferFrames <= 0 || bufferFrames > kMaxFrames { fail("--buffer-frames must be 1...\(kMaxFrames)", code: 1) }
 
 signal(SIGPIPE, SIG_IGN)
-let engine = Engine(sampleRate: rate, ringSize: ringSamples, bufferFrames: bufferFrames)
+let engine = Engine(sampleRate: rate, ringSize: ringSamples, bufferFrames: bufferFrames, rendered: renderedOut)
 
 func finish() -> Never {
     // stdin closed: let the last declick play out, then stop.

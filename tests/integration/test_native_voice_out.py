@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import shutil
 import signal
+import threading
 import time
 from itertools import pairwise
 from typing import TYPE_CHECKING
@@ -36,15 +37,27 @@ RATE = 48_000
 class _Rig:
     """A started native player whose callback reports are recorded as they drain."""
 
-    def __init__(self, tmp_path: Path, *, ring_seconds: float = 0.5) -> None:
+    def __init__(
+        self, tmp_path: Path, *, ring_seconds: float = 0.5, tap: bool = False,
+    ) -> None:
         self.capture = tmp_path / "rendered.f32"
+        self.tapped: list[np.ndarray] = []
+        self.frame_types: set[int] = set()
         self.player = NativeAudioStreamPlayer(
             sample_rate_hz=RATE,
             ring_seconds=ring_seconds,
             generation_safe=True,
             estimated_output_latency_s=0.0,
+            playback_tap=(lambda block, _rate: self.tapped.append(block.copy())) if tap else None,
             extra_args=("--null-device", "--null-capture", str(self.capture)),
         )
+        on_frame = self.player._on_frame  # noqa: SLF001
+
+        def recording_on_frame(frame_type: int, body: memoryview) -> None:
+            self.frame_types.add(frame_type)
+            on_frame(frame_type, body)
+
+        self.player._on_frame = recording_on_frame  # type: ignore[method-assign]  # noqa: SLF001
         self.reports: list[_CallbackReport] = []
         drain = self.player._callback_reports.drain  # noqa: SLF001
 
@@ -107,6 +120,16 @@ class _Rig:
 
     def of(self, generation: int) -> list[_CallbackReport]:
         return [r for r in self.reports if r.generation == generation]
+
+
+@pytest.fixture
+def tap_rig(tmp_path: Path) -> Iterator[_Rig]:
+    """A started native player on the null device with a playback tap."""
+    made = _Rig(tmp_path, tap=True)
+    started = made.player.start()
+    assert started.started, started.reason
+    yield made
+    made.player.stop()
 
 
 @pytest.fixture
@@ -344,3 +367,65 @@ def test_an_unknown_device_fails_closed_with_the_helper_message() -> None:
     assert player.stop().status == "already_closed"
     print(f"A1 unknown device: {started.status} {started.reason}")  # noqa: T201
 
+
+
+def test_the_playback_tap_gets_every_rendered_block_silence_included(tap_rig: _Rig) -> None:
+    """The far end is what the device was handed: silence, then the tone, then silence, in order."""
+    made = tap_rig
+    made.until(lambda: sum(map(len, made.tapped)) >= RATE // 10, "silence reaching the tap")
+    samples = _tone(0.4)
+    generation = made.speak(samples)
+    made.presented(generation)
+    made.until(lambda: sum(map(len, made.tapped)) >= RATE, "trailing silence")
+    made.player.stop()
+    tap = np.concatenate(made.tapped)
+    rendered = made.rendered()
+    assert len(tap) > 0
+    assert np.array_equal(tap, rendered[: len(tap)])  # in order, nothing missing or doubled
+    assert len(rendered) - len(tap) < RATE // 10  # only the stop-time tail is unseen
+    assert made.player.rendered_dropped_samples == 0
+    lit = np.flatnonzero(tap != 0.0)
+    assert lit[0] > 0  # silence before the tone
+    assert lit[-1] < len(tap) - 1000  # and after it
+    tone = np.count_nonzero(tap == np.float32(0.5))
+    assert tone >= len(samples) - 2 * 128  # the tone, less ramps
+    print(  # noqa: T201
+        f"A1 tap: {len(made.tapped)} blocks, {len(tap)} samples == rendered prefix, "
+        f"tone {tone}/{len(samples)}, "
+        f"silence {lit[0]} before / {len(tap) - 1 - lit[-1]} after",
+    )
+
+
+def test_without_a_tap_the_helper_sends_no_rendered_frames(rig: _Rig) -> None:
+    """The cost is zero when echo cancellation is off: no RENDERED frame ever crosses the pipe."""
+    generation = rig.speak(_tone(0.2))
+    rig.presented(generation)
+    time.sleep(0.1)
+    assert 0x85 not in rig.frame_types
+    assert 0x82 in rig.frame_types  # reports did flow, so the recorder is live
+
+
+def test_a_stalled_tap_drops_blocks_and_never_stalls_the_render_thread(tmp_path: Path) -> None:
+    """The daemon stops reading: pipe and ring fill, blocks drop (counted), rendering goes on."""
+    made = _Rig(tmp_path, tap=True)
+    release = threading.Event()
+    stalled = made.tapped.append
+
+    def stalling_tap(block: np.ndarray, _rate: int) -> None:
+        stalled(block.copy())
+        release.wait(5)
+
+    made.player._playback_tap = stalling_tap  # noqa: SLF001
+    assert made.player.start().started
+    try:
+        time.sleep(3.5)  # past the pipe (~0.3 s) and the 1.4 s ring
+        assert made.rendered().size > 3.0 * RATE  # the render thread never waited
+        release.set()
+        made.until(lambda: made.player.rendered_dropped_samples > 0, "a counted drop")
+        dropped = made.player.rendered_dropped_samples
+        assert dropped > 0
+        assert dropped % 512 == 0  # whole blocks
+        print(f"A1 tap stall: {dropped} samples dropped, rendered {made.rendered().size}")  # noqa: T201
+    finally:
+        release.set()
+        made.player.stop()

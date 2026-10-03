@@ -82,3 +82,32 @@ spawns and talks to over stdin and stdout, behind
 - The helper opens its device by name when it starts, so `refresh_devices`
   re-resolves it through `stop`, `set_device`, `start`; PortAudio's
   reinitialization no longer touches her output.
+
+> **Amendment (2026-10-03) — a far-end tap, so echo cancellation keeps the
+> native player.** The v1 rule above (echo cancellation on keeps the Python
+> player) is replaced.
+> With `--rendered` the helper copies the final block its render function hands
+> the device (after gain, declick, tail ramp and hold silence; silence included,
+> every callback) into a preallocated 65536-sample ring, and the stdout thread
+> sends it as `RENDERED` (0x85: `u64` cumulative dropped samples, `f32[]`).
+> `NativeAudioStreamPlayer` passes each one to its `playback_tap`, the same
+> `EchoCanceller.add_playback` the Python callback feeds, at the same level
+> (`volume` is applied before the ring). AEC3 estimates the delay itself, so
+> only order and continuity matter, and the pipe preserves both.
+>
+> - **Realtime cost**: the render thread does one bounded copy per block, no
+>   allocation, no lock. Without the tap Python omits `--rendered`: the ring is
+>   not allocated and nothing is copied or sent.
+> - **Overflow drops, never waits**: a block that does not fit (the daemon has
+>   not read for about 1.7 s: pipe plus ring) is dropped whole and added to the
+>   `dropped` counter, exposed as `rendered_dropped_samples`. Her voice and the
+>   reports are unaffected; the canceller sees a gap, which it re-adapts from.
+> - **Volume**: 192 KB/s each way at 48 kHz mono float32, about 1.2 KB/s of
+>   frame headers on top, and constant while the helper runs (silence is
+>   sent), as the Python tap's callback also ran every cycle.
+> - **A failing tap** is logged once and ignored; it does not end the helper
+>   stream.
+> - **Not measured**: echo suppression on real speakers with this path. The
+>   far end now trails the device by the pipe and wake-up latency (about a
+>   millisecond), well inside AEC3's delay search; confirm with
+>   `echo_diagnostics` in a live run.
