@@ -194,7 +194,8 @@ export function Companion() {
   // While your words are coming in she only listens: no answer starts then (ADR 0053), whatever text arrives.
   const inFlight = !!port && s.inFlight;
   const answering = !!s.turnId && !s.played;
-  const voice = !port ? simVoice : inFlight ? 'listening' : answering && s.reply ? 'speaking' : answering || s.askedAt !== null ? 'thinking'
+  // A newer turn of this surface still being thought about is what she is doing, even while an earlier answer is still being said.
+  const voice = !port ? simVoice : inFlight ? 'listening' : answering && s.reply && !(s.askedAt !== null && s.waiting !== s.turnId) ? 'speaking' : answering || s.askedAt !== null ? 'thinking'
     : s.conversation && s.phase !== 'error' ? 'listening' : 'off';
   // The tool the turn is waiting on (the daemon's fixed line); once the answer opens it is gone.
   const tool = port ? toolLine(s) : '';
