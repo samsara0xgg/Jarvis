@@ -80,6 +80,7 @@ _MATCHERS: Final[dict[str, frozenset[str]]] = {
          "WhisperFinalRecognizer.recognize", "HybridFinalRecognizer._hear",
          "HybridFinalRecognizer._hear_once", "_short_unclear", "_FULL_WIDTH"}
     ),
+    "jarvis/surface/voice_cues.py": frozenset({"_LAUGH_WORDS"}),
     "jarvis/surface/voice_live.py": frozenset({"_SENTENCE_ENDS"}),
 }
 

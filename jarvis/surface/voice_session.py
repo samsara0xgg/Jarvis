@@ -43,6 +43,7 @@ if TYPE_CHECKING:
 
     from jarvis.shared import Event
     from jarvis.surface import voice_backend
+    from jarvis.surface.voice_cues import VoiceCues
 
 LOGGER = logging.getLogger("jarvis.surface.voice_session")
 
@@ -1211,6 +1212,7 @@ class DuplexVoiceSession:
         recent_speech: Callable[[], str] | None = None,
         ask_words: Callable[[str, str, str, bool, bool], str | None] | None = None,
         note_words: Callable[[str, str, str, bool, bool], None] | None = None,
+        cues: VoiceCues | None = None,
         begin_line: Callable[[str, str, str, bool, bool], None] | None = None,
         stop_speaking: Callable[[], object] | None = None,
         hold_output: Callable[[bool], None] | None = None,
@@ -1269,6 +1271,7 @@ class DuplexVoiceSession:
         self._recent_speech = recent_speech
         self._ask_words = ask_words
         self._note_words = note_words
+        self._cues = cues  # ADR 0149: a laugh dropped as a listening sound is kept as a cue
         self._begin_line = begin_line
         # ADR 0102: when conversation mode last had an accepted turn or Jarvis's
         # speech; an accepted turn waits for her answer, 「等我一下」 holds it.
@@ -2068,6 +2071,7 @@ class DuplexVoiceSession:
                 utterance = self._commits.get(timeout=self._config.worker_poll_s)
             except queue.Empty:
                 continue
+            over_her = self._over_her(utterance.turn_id)
             try:
                 with realtime_trace_context(
                     session_id=utterance.session_id,
@@ -2086,7 +2090,7 @@ class DuplexVoiceSession:
                         utterance_id=utterance.utterance_id,
                         endpoint_reason=utterance.endpoint_reason,
                         before_emit=functools.partial(self._judge_words, utterance.turn_id),
-                        wake_lead=utterance.woken or self._over_her(utterance.turn_id),
+                        wake_lead=utterance.woken or over_her,
                         speech_s=utterance.speech_s,
                     )
                 self._assembler.mark_committed(utterance.utterance_id)
@@ -2095,6 +2099,8 @@ class DuplexVoiceSession:
                     "realtime wake: words over Jarvis were no turn (%s) turn_id=%s",
                     absorbed.reason, utterance.turn_id,
                 )
+                if self._cues is not None and absorbed.reason == "backchannel":
+                    self._cues.dropped(over_her=over_her)
             except voice_pipeline.VoicePipelineWakeOnlyError:
                 # Allen paused after "Hey Jarvis": listen for the question
                 # from where the wake phrase ended, as if the wake hit had
@@ -2114,6 +2120,8 @@ class DuplexVoiceSession:
                     )
             except voice_pipeline.VoicePipelineEmptyError as empty:
                 LOGGER.info("realtime wake: empty utterance turn_id=%s", utterance.turn_id)
+                if self._cues is not None:
+                    self._cues.dropped(over_her=over_her)
                 self._judge_no_words(utterance.turn_id, empty.heard)
             except voice_pipeline.VoiceInputBusyError:
                 LOGGER.warning("realtime wake: final ASR lane busy turn_id=%s", utterance.turn_id)

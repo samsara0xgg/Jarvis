@@ -53,6 +53,8 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
+    from jarvis.surface.voice_cues import VoiceCues
+
 VOICE, ROOM = 8_000, 30  # constant frames at about -12 and -60 dBFS
 # With the shipped profile (5-frame smoothing, 3 hits) speech starts on the
 # fifth voice frame and the last two voice frames' smoothing counts too, so a
@@ -69,14 +71,18 @@ class _ScriptedAsr:
     def __init__(self, texts: list[str]) -> None:
         self._texts = texts
         self.heard: list[bytes] = []
+        self.tags: dict[str, tuple[str | None, str | None]] = {}  # text -> (emotion, event)
 
     def recognize(self, audio_bytes: bytes) -> voice_asr.TranscriptionResult:
         self.heard.append(audio_bytes)
+        text = self._texts.pop(0)
+        emotion, event = self.tags.get(text, (None, None))
         return voice_asr.TranscriptionResult(
-            text=self._texts.pop(0),
+            text=text,
             confidence=0.9,
             language_detected=None,
-            emotion=None,
+            emotion=emotion,
+            event=event,
         )
 
 
@@ -102,6 +108,7 @@ class _Rig:
         stop_speaking: Callable[[], object] | None = None,
         answer_words: Callable[[str, str, str], None] | None = None,
         cancel_voice_runs: Callable[[], None] | None = None,
+        cues: VoiceCues | None = None,
     ) -> None:
         self.output: list[str] = []
         self.phases: list[tuple[str, object]] = []
@@ -120,6 +127,7 @@ class _Rig:
             normalizer=voice_asr.AsrNormalizer(corrections=[], aliases={}, fuzzy_enabled=False),
             broadcaster=self,
             artifacts_dir=None,
+            cues=cues,
         )
         with patch.object(voice_audio, "_load_silero_session", return_value=_EnergySilero()):
             self.session = voice_session.DuplexVoiceSession(
@@ -154,6 +162,7 @@ class _Rig:
                 ask_words=ask_words,
                 note_words=note_words,
                 begin_line=begin_line,
+                cues=cues,
             )
             assert self.session.start().started
 

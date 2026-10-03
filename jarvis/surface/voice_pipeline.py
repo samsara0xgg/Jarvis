@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from jarvis.shared import Event
+    from jarvis.surface.voice_cues import VoiceCues
 
 
 LOGGER = logging.getLogger("jarvis.surface.voice_pipeline")
@@ -93,6 +94,7 @@ class VoicePipeline:
         broadcaster: _BroadcasterProtocol | None,
         artifacts_dir: Path | None,
         sample_rate_hz: int = 16000,
+        cues: VoiceCues | None = None,
     ) -> None:
         """Wire together one VoicePipeline; see class docstring for semantics."""
         self._conn_factory = conn_factory
@@ -101,6 +103,7 @@ class VoicePipeline:
         self._broadcaster = broadcaster
         self._artifacts_dir = artifacts_dir
         self._sample_rate_hz = sample_rate_hz
+        self._cues = cues  # ADR 0149: the clip's tone and sounds, for her next turn
 
     def prewarm_input_model(self) -> None:
         """Prewarm the concrete local ASR provider for single-ingress activation."""
@@ -281,6 +284,8 @@ class VoicePipeline:
                 tr = recognize_prepared(utterance_id, audio_bytes, speech_s)
             else:
                 tr = self._recognizer.recognize(audio_bytes)
+            if self._cues is not None:
+                self._cues.heard(tr.text, tr.emotion, tr.event)
             record_realtime_trace(
                 "asr_final",
                 turn_id=turn_id,

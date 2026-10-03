@@ -211,6 +211,7 @@ from jarvis.surface.cli import (
 )
 from jarvis.surface.cli_render import render_response
 from jarvis.surface.stream_emission import emit_permitted_segment
+from jarvis.surface.voice_cues import VoiceCues
 
 if TYPE_CHECKING:
     import sqlite3
@@ -485,6 +486,8 @@ class JarvisRuntime:
     mail_drafts: MailDrafts | None = None
     # ADR 0148: one line each for the state block, in order; None skips a producer.
     live_context: tuple[Callable[[], str | None], ...] = ()
+    # ADR 0149: what his voice carried that the words did not; shared with the voice path.
+    voice_cues: VoiceCues | None = None
     # ADR 0125: Jev's read of whether a finished agent turn asks Allen something. None = off.
     turn_end_asks: TurnEndAsks | None = None
     # ADR 0130: Jev's read of short words heard over her voice or in hands-free mode. None = off.
@@ -2140,6 +2143,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
     )
     focus = FocusState() if _dashboard_mail(full_config) else None
     mail_drafts = None if focus is None else MailDrafts(focus)
+    voice_cues = VoiceCues()
     registry = build_default_registry(
         mail_drafts=mail_drafts,
         memory_db_path=memory.db_path,
@@ -2329,8 +2333,10 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         focus=focus,
         mail_drafts=mail_drafts,
         live_context=(
-            () if focus is None or mail_drafts is None else (focus.line, mail_drafts.line)
+            *(() if focus is None or mail_drafts is None else (focus.line, mail_drafts.line)),
+            voice_cues.line,
         ),
+        voice_cues=voice_cues,
         turn_end_asks=_turn_end_asks(full_config, config_path, jev_log),
         voice_words=_voice_words(full_config, config_path, jev_log),
         oneshot=_jev_oneshot(

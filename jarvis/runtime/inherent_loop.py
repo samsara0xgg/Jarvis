@@ -2630,6 +2630,7 @@ def _build_voice_pipeline(
         normalizer=normalizer,
         broadcaster=broadcaster,
         artifacts_dir=artifacts_dir,
+        cues=runtime.voice_cues,
     )
 
 
@@ -3903,6 +3904,7 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
                 else runtime.voice_words.ask if runtime.voice_words is not None else None
             ),
             note_words=runtime.voice_words.note if runtime.voice_words is not None else None,
+            cues=runtime.voice_cues,
             begin_line=oneshot.begin if oneshot is not None else None,
             stop_speaking=_stop_speaking,
             hold_output=_hold_output,

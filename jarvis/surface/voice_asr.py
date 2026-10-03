@@ -331,6 +331,7 @@ class TranscriptionResult:
     confidence: float
     language_detected: str | None
     emotion: str | None
+    event: str | None = None  # SenseVoice's audio-event label (Laughter, Cough, ...), ADR 0149
 
 
 class AsrRecognizer(Protocol):
@@ -413,6 +414,8 @@ class SenseVoiceRecognizer:
 
         emotion_raw = getattr(result, "emotion", "") or ""
         emotion = emotion_raw.strip("<|>") if emotion_raw else None
+        event_raw = getattr(result, "event", "") or ""
+        event = event_raw.strip("<|>") if event_raw else None
 
         rms = float(np.sqrt(np.mean(audio**2)))
         if rms < _SENSEVOICE_FLOAT_RMS_FLOOR or len(text) <= 1:
@@ -433,6 +436,7 @@ class SenseVoiceRecognizer:
             confidence=confidence,
             language_detected=language or None,
             emotion=emotion,
+            event=event,
         )
 
     def partial_text(self, audio_pcm: bytes) -> str:
@@ -932,6 +936,7 @@ class HybridFinalRecognizer:
             text += "。"
         return replace(
             again, text=text, language_detected=result.language_detected, emotion=result.emotion,
+            event=result.event,
         )
 
     def _hear_once(self, audio_pcm: bytes, speech_s: float) -> TranscriptionResult:
@@ -959,6 +964,7 @@ class HybridFinalRecognizer:
             text=text,
             language_detected=heard.language_detected,
             emotion=heard.emotion,
+            event=heard.event,
         )
 
 
