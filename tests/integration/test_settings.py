@@ -53,10 +53,15 @@ DEVICES = {
     "output": ["MacBook Pro Speakers", "Multi-Output Device 2"],
 }
 
+# What CoreAudio says "System default" is; a kind it cannot answer for is absent.
+DEFAULT_DEVICES = {"input": "MacBook Pro Microphone", "output": "MacBook Pro Speakers"}
+
 
 def _client(root: Path) -> TestClient:
     """The routes wired the way the daemon wires them, over a boot of ``YAML`` plus the file."""
-    settings = Settings(root, apply_settings(YAML, root), DEVICES.__getitem__)
+    settings = Settings(
+        root, apply_settings(YAML, root), DEVICES.__getitem__, DEFAULT_DEVICES.get,
+    )
 
     async def save(changes: dict[str, Any]) -> dict[str, Any]:
         return await asyncio.to_thread(settings.update, changes)
@@ -88,6 +93,9 @@ def test_the_page_reads_what_jarvis_booted_with(tmp_path: Path) -> None:
     assert "舒缓女声" in body["options"]["tts_voice"]
     assert "Warm Hearted Girl" in body["options"]["tts_voice"]
     assert body["options"]["audio_days"] == [7, 30, 90, None]  # None: keep forever (ADR 0067)
+    assert body["defaults"] == {
+        "input_device": "MacBook Pro Microphone", "output_device": "MacBook Pro Speakers",
+    }
     assert body["restart_pending"] is False
 
 

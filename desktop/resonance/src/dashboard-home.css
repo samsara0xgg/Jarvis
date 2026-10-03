@@ -182,6 +182,7 @@
 .ad .st-opts button:not(:disabled):hover { background:rgb(var(--glow) / .07); }
 .ad .st-opts button::before { content:''; flex:none; width:12px; height:12px; border-radius:50%; box-shadow:inset 0 0 0 1.5px var(--p-faint); }
 .ad .st-opts button[aria-checked="true"] { color:var(--p-ink); }
+.ad .st-opts .st-sub { font-size:var(--text-label); color:var(--p-muted); }
 .ad .st-opts button[aria-checked="true"]::before { box-shadow:inset 0 0 0 4px var(--data); }
 .ad .st-range { width:100%; accent-color:var(--data); }
 .ad .st-skins { display:grid; grid-template-columns:repeat(5,1fr); gap:6px; }

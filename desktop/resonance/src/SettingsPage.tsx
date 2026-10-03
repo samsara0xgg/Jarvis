@@ -22,12 +22,14 @@ export type Account = { name: string; ok: boolean; text: string };
 
 // Jarvis's own settings: GET /inherent/settings answers { values, options?, restart_pending? }; POST the same
 // route with { changes: { key: value } } saves and answers the same shape. POST /inherent/restart restarts Jarvis.
-type Daemon = { values: Record<string, unknown>; options?: Record<string, string[]>; restart_pending?: boolean };
+// defaults: what "System default" is right now for each device setting (null: unknown).
+type Daemon = { values: Record<string, unknown>; options?: Record<string, string[]>; defaults?: Record<string, string | null>; restart_pending?: boolean };
 const DEMO: Daemon = {
   values: { reply_language: 'follow', wake_threshold: .95, tts_voice: 'Warm Bestie', tts_volume: 1, output_device: 'System default', input_device: 'System default',
     gpt_live: true, mac_aec: false, timesink: true, keep_audio: true, repos: ['jarvis', 'typlus', 'timesink', 'guard-mode', 'drum-machine-pro', 'simple-wiki'],
     model_conversation: 'gpt-5.6-luna', model_background: 'GPT-6 luna', model_report: 'GPT-6 sol · flex' },
   options: { tts_voice: ['Warm Bestie', 'Explorative Girl'], output_device: ['System default', 'Multi-Output Device 2', 'MacBook Pro Speakers'], input_device: ['System default', 'reSpeaker XVF3800', 'MacBook Pro Microphone'] },
+  defaults: { output_device: 'MacBook Pro Speakers', input_device: 'MacBook Pro Microphone' },
 };
 const STALE: Record<'hour' | 'day' | 'never', L> = { hour: ['1 h', '1 小时'], day: ['1 day', '1 天'], never: ['never', '不收'] };
 const SKIN_EN: Record<Skin, string> = { glass: 'Glass', nebula: 'Nebula', galaxy: 'Galaxy', frost: 'Frost', aurora: 'Aurora', codex: 'Icon' };
@@ -60,7 +62,7 @@ type Ctl =
   | { k: 'switch'; on: boolean; set: (on: boolean) => void }
   | { k: 'seg'; value: string; opts: [string, L][]; set: (value: string) => void }
   | { k: 'range'; value: number; min: number; max: number; step: number; pct?: boolean; set: (value: number) => void }
-  | { k: 'pick'; value: string; opts: string[]; set: (value: string) => void }
+  | { k: 'pick'; value: string; opts: string[]; set: (value: string) => void; device?: { fallback: string | null } }
   | { k: 'info'; text: string; tone?: 'ok' | 'warn' }
   | { k: 'act'; label: L; run: () => void }
   | { k: 'key'; provider: Provider; text: string; tone?: 'ok' | 'warn' }
@@ -107,6 +109,8 @@ export function SettingsPage({ lang, port, open, cat, onCat, ctl, accounts, keyD
   // Daemon items: a value, its options, and how to save it; greyed out while the daemon does not serve settings.
   const dSwitch = (key: string): Ctl => ({ k: 'switch', on: v(key) === true, set: on => void save(key, on) });
   const dPick = (key: string): Ctl => ({ k: 'pick', value: String(v(key) ?? '—'), opts: daemon?.options?.[key] ?? [], set: value => void save(key, value) });
+  // A speaker or microphone: the first row names what the system default is now; a saved pick that is unplugged stays selected.
+  const dDevice = (key: string): Ctl => ({ ...dPick(key) as Extract<Ctl, { k: 'pick' }>, device: { fallback: daemon?.defaults?.[key] ?? null } });
   const dRange = (key: string, min: number, max: number, step: number, pct?: boolean): Ctl =>
     ({ k: 'range', value: draft[key] ?? (typeof v(key) === 'number' ? v(key) as number : min), min, max, step, pct, set: value => { setDraft(d => ({ ...d, [key]: value })); } });
   const commit = (key: string) => { if (draft[key] !== undefined) { void save(key, draft[key]); setDraft(({ [key]: _, ...rest }) => rest); } };
@@ -158,8 +162,8 @@ export function SettingsPage({ lang, port, open, cat, onCat, ctl, accounts, keyD
       { id: 'wake', name: ['Wake word sensitivity', '唤醒词灵敏度'], note: ['Higher means fewer false wakes', '越高越少误唤醒'], ctl: dRange('wake_threshold', .8, .99, .01), off },
       { id: 'voice', name: ['Jarvis’s voice', 'Jarvis 的声音'], ctl: dPick('tts_voice'), off },
       { id: 'vol', name: ['Voice volume', '说话音量'], note: ['Above 100% it crackles', '超过 100% 会破音'], ctl: dRange('tts_volume', .3, 1, .05, true), off },
-      { id: 'out', name: ['Speaker', '扬声器'], ctl: dPick('output_device'), off },
-      { id: 'in', name: ['Microphone', '麦克风'], ctl: dPick('input_device'), off },
+      { id: 'out', name: ['Speaker', '扬声器'], ctl: dDevice('output_device'), off },
+      { id: 'in', name: ['Microphone', '麦克风'], ctl: dDevice('input_device'), off },
       { id: 'live', name: ['GPT-Live', 'GPT-Live'], ctl: dSwitch('gpt_live'), off },
       { id: 'aec', name: ['Echo cancellation on the Mac', 'Mac 上的回声消除'], note: ['Off while the reSpeaker does it', 'reSpeaker 负责时关着'], ctl: dSwitch('mac_aec'), off },
     ] },
@@ -227,6 +231,13 @@ export function SettingsPage({ lang, port, open, cat, onCat, ctl, accounts, keyD
     const x = i.ctl;
     if (x.k === 'seg') return <div className="st-seg" role="radiogroup" aria-label={t(i.name)}>{x.opts.map(([key, name]) =>
       <button key={key} role="radio" aria-checked={x.value === key} disabled={i.off} onClick={() => x.set(key)}>{t(name)}</button>)}</div>;
+    if (x.k === 'pick' && x.device) {
+      const { fallback } = x.device, first = x.opts[0] ?? x.value, gone = x.value !== first && !x.opts.includes(x.value);
+      const label = (o: string) => o !== first ? o : t(['System default', '跟随系统']) + (fallback ? (lang === 'zh' ? `（${fallback}）` : ` (${fallback})`) : '');
+      return <div className="st-opts" role="radiogroup" aria-label={t(i.name)}>{(gone ? [first, x.value, ...x.opts.slice(1)] : x.opts).map(o =>
+        <button key={o} role="radio" aria-checked={x.value === o} disabled={i.off} onClick={() => x.value !== o && x.set(o)}>
+          {label(o)}{gone && o === x.value && <small className="st-sub">{t(['(not connected)', '（未连接）'])}</small>}</button>)}</div>;
+    }
     if (x.k === 'pick') return <div className="st-opts" role="radiogroup" aria-label={t(i.name)}>{(x.opts.length ? x.opts : [x.value]).map(o =>
       <button key={o} role="radio" aria-checked={x.value === o} disabled={i.off} onClick={() => x.set(o)}>{o}</button>)}</div>;
     if (x.k === 'range') return <input className="st-range" type="range" aria-label={t(i.name)} min={x.min} max={x.max} step={x.step} value={x.value} disabled={i.off}

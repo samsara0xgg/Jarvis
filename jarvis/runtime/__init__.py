@@ -1033,6 +1033,17 @@ def _audio_devices(kind: str) -> list[str]:
         return []
 
 
+def _default_audio_device(kind: str) -> str | None:
+    """The name the Settings page shows beside "System default"; none if CoreAudio will not say."""
+    try:
+        from jarvis.surface.voice_backend import default_device_name  # noqa: PLC0415 — on demand.
+
+        return default_device_name(kind)
+    except Exception as exc:  # noqa: BLE001 — a text-only checkout has no audio stack.
+        LOGGER.warning("settings: no default %s device: %s: %s", kind, type(exc).__name__, exc)
+        return None
+
+
 def _home_weather(config: Mapping[str, Any]) -> Mapping[str, Any] | None:
     """``home.weather`` — where the home's forecast is for (``latitude``, ``longitude``)."""
     block = config.get("home")
@@ -2268,7 +2279,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         oneshot=_jev_oneshot(
             full_config, config_path, jev_log, tier0_table, _event_emitter(paths.event_log),
         ),
-        settings=Settings(paths.root, full_config, _audio_devices),
+        settings=Settings(paths.root, full_config, _audio_devices, _default_audio_device),
         night=night,
         daily_schedule=_daily_schedule(daily_report, paths.event_log, full_config),
     )

@@ -557,6 +557,14 @@ def coreaudio_devices(kind: str) -> tuple[int, dict[str, int]] | None:
     return default.value, named
 
 
+def default_device_name(kind: str) -> str | None:
+    """The name of the system default ``kind`` (``input`` / ``output``) device now, or ``None``."""
+    devices = coreaudio_devices(kind)
+    if devices is None:
+        return None
+    return next((name for name, device in devices[1].items() if device == devices[0]), None)
+
+
 # Held around PortAudio device queries and the re-initialisation, which frees
 # the device list a query would be reading.
 _PORTAUDIO_LOCK = threading.Lock()

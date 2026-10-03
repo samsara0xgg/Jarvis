@@ -153,12 +153,17 @@ class Settings:
     """The page's view of the settings; this process is the file's only writer."""
 
     def __init__(
-        self, root: Path, config: Mapping[str, Any], devices: Callable[[str], list[str]]
+        self,
+        root: Path,
+        config: Mapping[str, Any],
+        devices: Callable[[str], list[str]],
+        default_device: Callable[[str], str | None] = lambda _kind: None,
     ) -> None:
-        """Bind the runtime root, the merged boot config and the audio device lister."""
+        """Bind the runtime root, the merged boot config, the device lister and default's name."""
         self._root = root
         self._config = config
         self._devices = devices
+        self._default_device = default_device
         # What this process runs with: the boot values, and a device picked
         # since when a voice chain took it live.
         self._booted = {
@@ -169,7 +174,7 @@ class Settings:
         self.on_devices: Callable[[str | None, str | None], None] | None = None
 
     def read(self) -> dict[str, Any]:
-        """``{values, options, restart_pending}`` in the shapes the Settings page shows."""
+        """``{values, options, defaults, restart_pending}`` in the shapes the page shows."""
         saved = _saved(self._root)
         current = {**self._booted, **saved}
         values: dict[str, Any] = {key: self._shown(key, value) for key, value in current.items()}
@@ -189,6 +194,8 @@ class Settings:
                 **{key: list(RETENTION_DAYS) for key in _RETENTION},
                 **{key: [SYSTEM_DEFAULT, *self._devices(kind)] for key, kind in _DEVICES.items()},
             },
+            # What "System default" is right now, for the page to name (None: unknown).
+            "defaults": {key: self._default_device(kind) for key, kind in _DEVICES.items()},
             "restart_pending": any(value != self._booted[key] for key, value in saved.items()),
         }
 
