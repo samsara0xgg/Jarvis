@@ -39,6 +39,26 @@ async def _archive_mail(_ids: list[str], _archive: bool) -> None:  # noqa: FBT00
     return None
 
 
+async def _empty_for(_message_id: str) -> dict[str, Any]:
+    return {}
+
+
+async def _save_draft(_message_id: str, _subject: str, _body: str) -> dict[str, Any]:
+    return {}
+
+
+async def _send_draft(_message_id: str, _subject: str, _body: str) -> None:
+    return None
+
+
+async def _discard_draft(_message_id: str) -> None:
+    return None
+
+
+async def _tap_mail(_ids: list[str], _do: bool) -> None:  # noqa: FBT001 — the deps signature
+    return None
+
+
 async def _save_settings(_changes: dict[str, Any]) -> dict[str, Any]:
     return {}
 
@@ -70,6 +90,14 @@ def _client(tmp_path: Any) -> tuple[TestClient, str, list[str]]:  # noqa: ANN401
             todo_set=_set_todo,
             mail_read=_empty,
             mail_archive=_archive_mail,
+            mail_letter=_empty_for,
+            mail_mark_read=_tap_mail,
+            mail_trash=_tap_mail,
+            focus_set=lambda *_: None,
+            mail_draft_read=_empty_for,
+            mail_draft_save=_save_draft,
+            mail_draft_send=_send_draft,
+            mail_draft_discard=_discard_draft,
             brief_read=dict,
             settings_read=_empty,
             settings_update=_save_settings,
@@ -89,7 +117,7 @@ def _client(tmp_path: Any) -> tuple[TestClient, str, list[str]]:  # noqa: ANN401
 
 def _call(client: TestClient, route: str, headers: dict[str, str]) -> int:
     method, path = route.split(" ", 1)
-    for name in ("{plugin_id}", "{request_id}", "{session_id}"):
+    for name in ("{plugin_id}", "{request_id}", "{session_id}", "{message_id}"):
         path = path.replace(name, "x")
     if method != "WS":
         return client.request(method, path, headers=headers).status_code
@@ -105,12 +133,12 @@ def _call(client: TestClient, route: str, headers: dict[str, str]) -> int:
 def test_the_route_table_is_the_one_this_test_walks(tmp_path: Any) -> None:  # noqa: ANN401
     """Pin the count, so a route added later is walked, not silently skipped.
 
-    39 HTTP method/path pairs, the four FastAPI docs pairs (GET and HEAD of
+    49 HTTP method/path pairs, the four FastAPI docs pairs (GET and HEAD of
     ``/openapi.json``, ``/docs``, ``/docs/oauth2-redirect``, ``/redoc``) and
     the ``/inherent/ws`` socket.
     """
     _, _, routes = _client(tmp_path)
-    assert len(routes) == 48, routes
+    assert len(routes) == 58, routes
 
 
 @pytest.mark.parametrize(

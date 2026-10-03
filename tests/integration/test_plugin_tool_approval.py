@@ -26,6 +26,7 @@ from jarvis.decision import (
     RuntimePathsLike,
     ToolRegistryLike,
     decide,
+    request_confirmation,
 )
 from jarvis.decision.confirm_grammar import load_confirm_grammar
 from jarvis.decision.llm import ChatResult, LLMClient, ToolCall
@@ -360,5 +361,31 @@ def test_the_model_takes_the_card_down_when_allen_says_not_to_send(
         assert "A card is waiting" not in llm.seen[-1]
         proposed = _rows(ctx.conn, "action.proposed")
         assert [r["tool_name"] for r in proposed].count("mcp__echo__add") == 1  # never run
+    finally:
+        ctx.conn.close()
+
+
+def test_a_card_raised_without_a_turn_sends_on_his_button(
+    tmp_path: Path, servers: McpServers
+) -> None:
+    """ADR 0147: the Dashboard's Send raises the letter card itself; only his button runs it."""
+    llm = _ScriptedClient()
+    ctx = _context(tmp_path, servers, llm)
+    try:
+        for no_card in ("mcp__echo__echo", "mcp__echo__nothing"):  # read-only, unknown
+            assert request_confirmation(ctx.conn, ctx.tool_registry, no_card, {}, ttl_ms=1) is None
+        asked = request_confirmation(
+            ctx.conn, ctx.tool_registry, "mcp__echo__send", LETTER, ttl_ms=60_000, lang="zh",
+        )
+        assert asked is not None
+        assert _rows(ctx.conn, "confirmation.requested")[0]["template_line"] == (
+            "信写好了，发给 allen@example.com，主题「周六见」。要发吗？"  # noqa: RUF001
+        )
+        assert _rows(ctx.conn, "action.proposed") == []  # nothing ran, no model asked
+        assert _press(ctx, {"confirmation_id": asked, "decision": "accept"}, "T1") == (
+            "已执行 echo send。"
+        )
+        assert llm.offered == []
+        assert len(_rows(ctx.conn, "action.result_observed")) == 1
     finally:
         ctx.conn.close()

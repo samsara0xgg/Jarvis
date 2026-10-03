@@ -182,7 +182,10 @@ class _CapturingLLMClient:
 
 
 def _drive_one_turn(
-    tmp_path: Path, history: Sequence[dict[str, str]], connected_apps: str | None = None,
+    tmp_path: Path,
+    history: Sequence[dict[str, str]],
+    connected_apps: str | None = None,
+    live_context: tuple[str, ...] = (),
 ) -> tuple[str, list[dict[str, Any]]]:
     """Run one ``surface.user_intent`` turn; return the ``system`` and ``messages`` sent."""
     conn = open_event_log(tmp_path / "events.db")
@@ -201,6 +204,7 @@ def _drive_one_turn(
         history=history,
         time_note="Time: 2026-09-21T15:37-07:00 Monday",
         connected_apps=connected_apps,
+        live_context=live_context,
     )
     try:
         trigger = emit_event(
@@ -253,3 +257,19 @@ def test_history_ending_on_a_user_row_folds_into_this_turn(tmp_path: Path) -> No
 
     assert [message["role"] for message in messages] == ["user", "assistant", "user"]
     assert messages[2]["content"] == f"{unanswered['content']}\n\n{STATUS}\n后天呢\n\n{LINE}"
+
+
+def test_live_context_ends_the_state_block_and_leaves_the_cached_prefix_alone(
+    tmp_path: Path,
+) -> None:
+    """ADR 0147: a live line follows the apps and precedes the words; the prefix is unchanged."""
+    apps = "Connected apps: Philips Hue (Control your Hue lights)"
+    focus = 'Dashboard: Allen has this letter open: "Lunch" (Gmail id 19a).'
+    plain_system, plain = _drive_one_turn(tmp_path, HISTORY, connected_apps=apps)
+    system, messages = _drive_one_turn(
+        tmp_path, HISTORY, connected_apps=apps, live_context=(focus, "Second line."),
+    )
+
+    assert system == plain_system
+    assert messages[:2] == plain[:2] == list(HISTORY)
+    assert messages[2]["content"] == f"{STATUS}{apps}\n{focus}\nSecond line.\n\n后天呢\n\n{LINE}"

@@ -32,6 +32,7 @@ from fastapi.testclient import TestClient
 from jarvis.decision.mail_reply import MailReply
 from jarvis.decision.surrogate_route import JevLog, SurrogateRoute
 from jarvis.execution.tools import ToolError
+from jarvis.runtime.dashboard import FocusState, MailDrafts
 from jarvis.runtime.home import Home
 from jarvis.state.daily_report import save_report
 from jarvis.state.event_log import open_event_log
@@ -76,6 +77,7 @@ LETTERS: list[dict[str, Any]] = [
         "id": "199a1c0d4101", "threadId": "199a1c0d4101", "labelIds": ["UNREAD", "INBOX"],
         "subject": "Office hours move to Thursday", "from": '"Prof. Lee" <lee@uvic.ca>',
         "to": "allen@example.com", "date": "Thu, 25 Sep 2026 14:40:00 -0700",
+        "body": "<div>Hi Allen,<br>Thursday 3pm.</div>",
     },
     {
         "id": "199a1c0d4102", "threadId": "199a1c0d4102", "labelIds": ["UNREAD", "INBOX"],
@@ -158,8 +160,11 @@ class _Gmail:
         if tool == "gmail_batchModify":
             body = {"modifiedCount": len(args["messageIds"]), "status": "success"}
             return {"text": json.dumps(body)}
-        letter = next(one for one in LETTERS if one["id"] == args["messageId"])
-        return {"text": json.dumps({**letter, "snippet": "", "body": "", "attachments": []})}
+        letter = next((one for one in LETTERS if one["id"] == args["messageId"]), None)
+        if letter is None:
+            return {"text": json.dumps({"error": "Requested entity was not found."})}
+        body = letter.get("body", "")
+        return {"text": json.dumps({**letter, "snippet": "", "body": body, "attachments": []})}
 
 
 class _Connections:
@@ -174,7 +179,18 @@ class _Connections:
         return found
 
 
-def _client(home: Home, conn: sqlite3.Connection | None = None) -> TestClient:
+def _flag(call: Any, name: str) -> Any:  # noqa: ANN401 — a route's (ids, flag) body.
+    """The routes' (ids, do) callable over a Home method whose keyword says the opposite."""
+
+    async def run(ids: list[str], do: bool) -> None:  # noqa: FBT001
+        await asyncio.to_thread(functools.partial(call, ids, **{name: not do}))
+
+    return run
+
+
+def _client(
+    home: Home, conn: sqlite3.Connection | None = None, focus: FocusState | None = None,
+) -> TestClient:
     """The routes wired the way the daemon wires them (runtime/inherent_loop.py)."""
 
     async def set_todo(todo_id: str, done: bool) -> None:  # noqa: FBT001 — the route's body.
@@ -191,6 +207,13 @@ def _client(home: Home, conn: sqlite3.Connection | None = None) -> TestClient:
         mail_read=functools.partial(asyncio.to_thread, home.mail),
         mail_archive=archive,
         brief_read=None if conn is None else functools.partial(home.brief, conn),
+        # ADR 0147: the mail page's routes, wired as inherent_loop wires them.
+        **({} if focus is None else {
+            "mail_letter": functools.partial(asyncio.to_thread, home.letter),
+            "mail_mark_read": _flag(home.mark_read, "unread"),
+            "mail_trash": _flag(home.trash, "undo"),
+            "focus_set": focus.set,
+        }),
     )))
 
 
@@ -306,7 +329,8 @@ def test_mail_is_unread_primary_gmail_from_people() -> None:
         ("199a1c0d4107", "Sam", None, False),
     ]
     assert letters[0] == {
-        "id": "199a1c0d4103", "from": "妈妈", "subject": "今晚还来吗？",  # noqa: RUF001 — her words.
+        "id": "199a1c0d4103", "thread_id": "199a1c0d4103", "from": "妈妈",
+        "address": "mom@example.com", "subject": "今晚还来吗？",  # noqa: RUF001 — her words.
         "received": "2026-09-25T22:05:00+00:00", "reply": None, "junk": False,
     }
     assert gmail.calls == [
@@ -692,3 +716,129 @@ def test_a_failed_mail_call_names_its_error_and_an_unwritable_dataset_changes_no
     }
     assert _junk(client) == ["199a1c0d4105"]
     assert client.post("/inherent/mail/archive", json={"ids": ["199a1c0d4105"]}).status_code == 200
+
+
+def test_the_open_letter_is_read_whole_marked_read_archived_and_trashed() -> None:
+    """ADR 0147: GET letter caches by id; taps act only on listed or open ids, each with an undo."""
+    gmail = _Gmail()
+    focus = FocusState()
+    home = Home(
+        _Connections(_Microsoft(), gmail),  # type: ignore[arg-type]
+        (ZONE, ZoneInfo(ZONE)), None, None, focus,
+    )
+    client = _client(home, focus=focus)
+    listed, unlisted = "199a1c0d4101", "199a1c0d9999"
+
+    got = client.get(f"/inherent/mail/{listed}")
+    assert got.json() == {
+        "id": listed, "thread_id": listed, "from": "Prof. Lee", "address": "lee@uvic.ca",
+        "to": "allen@example.com", "subject": "Office hours move to Thursday",
+        "received": "2026-09-25T21:40:00+00:00", "text": "Hi Allen,\nThursday 3pm.",
+    }
+    assert client.get("/inherent/mail/nope").status_code == 404
+    client.get(f"/inherent/mail/{listed}")
+    assert [a["messageId"] for t, a in gmail.calls if t == "gmail_get"] == [listed, "nope"]
+
+    def changes() -> list[dict[str, Any]]:
+        return [a for t, a in gmail.calls if t == "gmail_batchModify"]
+
+    for route in ("read", "unread", "archive", "unarchive", "trash", "untrash"):  # nothing yet
+        assert client.post(f"/inherent/mail/{route}", json={"ids": [listed]}).status_code == 400
+    assert changes() == []
+    client.get("/inherent/mail")
+    assert client.post("/inherent/mail/read", json={"ids": [listed]}).status_code == 200
+    assert client.post("/inherent/mail/archive", json={"ids": [listed]}).status_code == 200
+    assert client.post("/inherent/mail/unarchive", json={"ids": [listed]}).status_code == 200
+    assert client.post("/inherent/mail/unread", json={"ids": [listed]}).status_code == 200
+    assert client.post("/inherent/mail/trash", json={"ids": [listed]}).status_code == 200
+    assert client.post("/inherent/mail/untrash", json={"ids": [listed]}).status_code == 200
+    assert changes() == [
+        {"messageIds": [listed], "removeLabelIds": ["UNREAD"]},
+        {"messageIds": [listed], "removeLabelIds": ["INBOX"]},
+        {"messageIds": [listed], "addLabelIds": ["INBOX"]},
+        {"messageIds": [listed], "addLabelIds": ["UNREAD"]},
+        {"messageIds": [listed], "addLabelIds": ["TRASH"]},
+        {"messageIds": [listed], "removeLabelIds": ["TRASH"], "addLabelIds": ["INBOX"]},
+    ]
+    # An id the list never showed is refused until it is the open letter.
+    assert client.post("/inherent/mail/trash", json={"ids": [unlisted]}).status_code == 400
+    assert client.post("/inherent/focus", json={"kind": "mail", "id": unlisted}).status_code == 200
+    assert client.post("/inherent/mail/trash", json={"ids": [unlisted]}).status_code == 200
+    assert all("DELETE" not in json.dumps(args) for _, args in gmail.calls)
+
+
+def test_with_the_mail_page_off_its_routes_are_404_and_archive_stays_junk_only() -> None:
+    """No FocusState: the page's routes are not registered; a listed non-junk letter is a 400."""
+    client = _client(_home(_Microsoft(), _Gmail()))
+    client.get("/inherent/mail")
+    assert client.get("/inherent/mail/199a1c0d4101").status_code == 404
+    for route in ("read", "unread", "trash", "untrash", "../focus"):
+        reply = client.post(f"/inherent/mail/{route}", json={"ids": ["199a1c0d4101"]})
+        assert reply.status_code == 404
+    assert client.post("/inherent/mail/archive", json={"ids": ["199a1c0d4101"]}).status_code == 400
+
+
+def test_the_page_text_keeps_links_as_urls_and_the_models_record_does_not() -> None:
+    """ADR 0147: an anchor shows as ``text (url)`` on the page only; the cap is 4000."""
+    from jarvis.runtime.home import mail_body  # noqa: PLC0415
+
+    html_body = '<p>Join <a href="https://x.example/a">the call</a> or <a href="https://y.example">https://y.example</a></p>'
+    assert mail_body(html_body, links=True) == "Join the call (https://x.example/a) or https://y.example"
+    assert mail_body(html_body) == "Join the call or https://y.example"
+    assert len(mail_body("x" * 5000, links=True)) == 4001
+
+
+def _drafts_client(gmail: _Gmail | None = None) -> tuple[TestClient, FocusState, MailDrafts]:
+    """The mail page's draft routes wired over the real stores, as inherent_loop wires them."""
+    from jarvis.runtime.inherent_loop import _draft_view, _save_draft  # noqa: PLC0415
+
+    focus = FocusState()
+    drafts = MailDrafts(focus)
+    home = Home(
+        _Connections(_Microsoft(), gmail or _Gmail()),  # type: ignore[arg-type]
+        (ZONE, ZoneInfo(ZONE)), None, None, focus,
+    )
+
+    async def read(letter_id: str) -> dict[str, Any]:
+        return await asyncio.to_thread(_draft_view, home, drafts, letter_id)
+
+    async def save(letter_id: str, subject: str, body: str) -> dict[str, Any]:
+        return await asyncio.to_thread(_save_draft, home, drafts, letter_id, subject, body)
+
+    async def discard(letter_id: str) -> None:
+        drafts.discard(letter_id)
+
+    app = create_app(InherentDeps(
+        submit_callable=lambda _text: None, broadcaster=InherentBroadcaster(),
+        focus_set=focus.set, mail_draft_read=read, mail_draft_save=save, mail_draft_discard=discard,
+    ))
+    return TestClient(app), focus, drafts
+
+
+def test_the_draft_is_jarvis_then_allens_edit_with_a_revision_each_and_can_be_discarded() -> None:
+    """ADR 0147: GET {draft: null} first; Jarvis's body, then his hand edit, bump the revision."""
+    client, focus, drafts = _drafts_client()
+    letter = "199a1c0d4101"
+    assert client.get(f"/inherent/mail/{letter}/draft").json() == {"draft": None}
+    focus.set("mail", letter, "Office hours move to Thursday", "Prof. Lee")
+    first = drafts.write(letter, "Thanks, Thursday works.")
+    assert client.get(f"/inherent/mail/{letter}/draft").json() == {"draft": {
+        "revision": first, "to": "lee@uvic.ca", "subject": "Re: Office hours move to Thursday",
+        "body": "Thanks, Thursday works.", "by": "jarvis",
+    }}
+    saved = client.post(
+        f"/inherent/mail/{letter}/draft", json={"subject": "Thursday it is", "body": "Yes, 3pm."},
+    ).json()["draft"]
+    assert saved == {
+        "revision": first + 1, "to": "lee@uvic.ca", "subject": "Thursday it is",
+        "body": "Yes, 3pm.", "by": "owner",
+    }
+    assert drafts.line() == (
+        f"Draft reply under it (revision {first + 1}, last edited by Allen): Yes, 3pm."
+    )
+    drafts.write(letter, "Yes, 3pm works for me.")  # Jarvis revises; the subject Allen set stays
+    got = client.get(f"/inherent/mail/{letter}/draft").json()["draft"]
+    assert (got["by"], got["subject"], got["revision"]) == ("jarvis", "Thursday it is", first + 2)
+    drafts.discard(letter)
+    assert client.get(f"/inherent/mail/{letter}/draft").json() == {"draft": None}
+    assert drafts.line() is None

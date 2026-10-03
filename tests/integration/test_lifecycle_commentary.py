@@ -168,9 +168,10 @@ def test_three_rows_speak_a_long_wait_tools_dispatch_his_words_and_jevs_predicti
 
 
 def test_the_slow_list_feeds_the_status_line_and_the_dispatch_says_what_the_tool_does() -> None:
-    """ADR 0115's five tools show a status line; each also says its line at dispatch (ADR 0136)."""
+    """ADR 0115's slow tools show a status line; each also says its line at dispatch (ADR 0136)."""
     assert set(SLOW_TOOLS) == {
         "web_search", "web_fetch", "screen_look", "refresh_work_state", "daily_work_report",
+        "write_mail_draft",
     }
     for tool_name in SLOW_TOOLS:
         assert tool_status.plan(tool_name) == (SLOW_TOOLS[tool_name], 0.0)
