@@ -75,6 +75,7 @@ from jarvis.state.authorized_dispatch_outbox import (
     admit_authorized_dispatch,
     answer_confirmation_once,
 )
+from jarvis.state.core_memory import SECTIONS as CORE_MEMORY_SECTIONS
 from jarvis.state.event_log import emit_event, iter_events_of_types
 from jarvis.state.lifecycle_terminal import terminalize_action
 from jarvis.state.memory_db import remember_fact
@@ -886,7 +887,11 @@ def _make_remember(memory_db_path: Path) -> Tool:
         if not topic or not fact:
             msg = "remember: topic and fact are both required"
             raise ToolError(msg, code="invalid_argument")
-        remember_fact(memory_db_path, topic, fact)
+        section = args.get("section")
+        if section is not None and section not in CORE_MEMORY_SECTIONS:
+            msg = f"remember: section must be one of {', '.join(CORE_MEMORY_SECTIONS)}"
+            raise ToolError(msg, code="invalid_argument")
+        remember_fact(memory_db_path, topic, fact, section)
         return {"remembered": f"{topic}: {fact}"}
 
     return Tool(
@@ -896,7 +901,8 @@ def _make_remember(memory_db_path: Path) -> Tool:
             "start of every conversation: an address, a dietary need, a preference they "
             "state. Use it when the user tells you such a fact or asks you to remember "
             "something. A fact under a topic you used before replaces the old one. Not for "
-            "one-off choices or things that change from day to day."
+            "one-off choices or things that change from day to day. It is filed under a "
+            f"section: {', '.join(CORE_MEMORY_SECTIONS)} (default {CORE_MEMORY_SECTIONS[0]})."
         ),
         input_schema={
             "type": "object",
@@ -906,6 +912,7 @@ def _make_remember(memory_db_path: Path) -> Tool:
                     "description": "Short topic in the user's language, e.g. delivery address.",
                 },
                 "fact": {"type": "string", "description": "The fact, in the user's words."},
+                "section": {"type": "string", "enum": list(CORE_MEMORY_SECTIONS)},
             },
             "required": ["topic", "fact"],
         },

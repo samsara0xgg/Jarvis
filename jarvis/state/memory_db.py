@@ -1,11 +1,10 @@
-"""L2 memory store — utterances, answers, the user's profile, and history summaries.
+"""L2 memory store — utterances, answers, core memory, and history summaries.
 
 One standalone SQLite file (``memory.db``), deliberately separate from the
 runtime Event Log so the runtime can be rewritten without touching it.
-Append-only: rows are never updated or deleted, except two kinds of profile
-row: the name line first-run setup writes, and a fact the assistant keeps
-under a topic, which a later fact on the same topic rewrites in place (ADR
-0066). Every writer opens its own
+Append-only: rows are never updated or deleted. The user's lasting facts are
+``core_memory`` versions (ADR 0145); the legacy ``profile`` table is read once, to
+migrate it into the first version. Every writer opens its own
 short-lived connection, so callers on any thread can write without sharing
 state.
 
@@ -33,7 +32,7 @@ from pathlib import Path
 from typing import Final, NamedTuple
 
 from jarvis.shared import lang
-from jarvis.state import NewerDataError
+from jarvis.state import NewerDataError, core_memory
 
 _SCHEMA: Final[str] = """
 CREATE TABLE IF NOT EXISTS records (
@@ -72,12 +71,22 @@ CREATE TABLE IF NOT EXISTS day_summaries (
     input_chars  INTEGER NOT NULL,
     output_chars INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS core_memory (
+    id       TEXT PRIMARY KEY,
+    ts       TEXT NOT NULL,
+    base_id  TEXT,
+    origin   TEXT NOT NULL,
+    upto_day TEXT,
+    doc      TEXT NOT NULL,
+    changes  TEXT NOT NULL,
+    chars    INTEGER NOT NULL
+);
 """
 
 # ``PRAGMA user_version`` (ADR 0068). 0 is a file from before the stamp, same
 # schema as 1; a file above this was written by a newer Jarvis and is refused.
-# ``sent`` and ``day_summaries`` are additive: an older opener ignores them, so they need no
-# new version.
+# ``sent``, ``day_summaries`` and ``core_memory`` are additive: an older opener ignores them,
+# so they need no new version.
 SCHEMA_VERSION: Final[int] = 1
 DEFAULT_SEARCH_LIMIT: Final[int] = 20
 # The Live brief's label for the user's own rows; the stored source stays ``allen``.
@@ -203,7 +212,7 @@ class SessionSettings:
 class MemoryContext(NamedTuple):
     """The prompt blocks rendered from memory.db for one turn."""
 
-    profile: str  # [About the user] lines for the system prompt; "" when the profile is empty
+    profile: str  # [About the user] block (core memory) for the system prompt; "" when empty
     history: tuple[dict[str, str], ...]  # summary, then one message per record, by role
     now: str  # the time line: changes every turn, so it goes after the history
 
@@ -268,41 +277,116 @@ def open_memory_db(path: Path) -> sqlite3.Connection:
     return conn
 
 
-_NAME_ROW: Final[str] = "profile-name"
 _NAME_LINE: Final[tuple[str, str]] = ("The user's name is ", ".")
 
 
+def _keep_item(
+    path: Path,
+    *,
+    topic: str,
+    text: str,
+    section: str | None,
+    origin: str,
+) -> None:
+    """Append a core-memory version that keeps ``text`` under ``topic`` (ADR 0145)."""
+    now = local_now()
+    with closing(open_memory_db(path)) as conn, core_memory.write_transaction(conn):
+        base = core_memory.current(conn, iso_seconds(now))
+        doc, change = core_memory.remember(
+            base.doc,
+            topic=topic,
+            text=text,
+            section=section,
+            day=now.date().isoformat(),
+        )
+        core_memory.append_version(
+            conn,
+            base=base,
+            doc=doc,
+            origin=origin,
+            upto_day=base.upto_day,
+            changes=[change],
+            now=iso_seconds(now),
+        )
+
+
 def set_user_name(path: Path, name: str) -> None:
-    """Keep ``name`` as the profile's name line (first-run setup)."""
-    with closing(open_memory_db(path)) as conn, conn:
-        conn.execute(
-            "INSERT INTO profile (id, ts, text) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE "
-            "SET ts = excluded.ts, text = excluded.text",
-            (_NAME_ROW, iso_seconds(local_now()), name.join(_NAME_LINE)),
-        )
+    """Keep ``name`` as the core memory's name line (first-run setup)."""
+    _keep_item(
+        path,
+        topic=core_memory.NAME_TOPIC,
+        text=name.join(_NAME_LINE),
+        section=None,
+        origin="setup",
+    )
 
 
-def remember_fact(path: Path, topic: str, fact: str) -> None:
-    """Keep ``fact`` in the profile under ``topic``; the same topic replaces it (ADR 0066).
+def remember_fact(path: Path, topic: str, fact: str, section: str | None = None) -> None:
+    """Keep ``fact`` in core memory under ``topic``; the same topic replaces it (ADR 0066, 0145).
 
-    The row keeps its place in the block, so rewriting a fact never reorders
-    the prompt's ``[About the user]`` lines.
+    The item keeps its place in the block, so rewriting a fact never reorders the prompt's
+    ``[About the user]`` lines. A new topic goes to the end of ``section`` (default: 关于你).
     """
-    with closing(open_memory_db(path)) as conn, conn:
-        conn.execute(
-            "INSERT INTO profile (id, ts, text) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE "
-            "SET ts = excluded.ts, text = excluded.text",
-            (f"fact:{topic.casefold()}", iso_seconds(local_now()), f"{topic}: {fact}"),
-        )
+    _keep_item(path, topic=topic, text=f"{topic}: {fact}", section=section, origin="remember")
+
+
+def current_core_memory(path: Path) -> core_memory.Version:
+    """The current core memory version (migrating ``profile`` on the first read)."""
+    with closing(open_memory_db(path)) as conn:
+        return core_memory.current(conn, iso_seconds(local_now()))
 
 
 def user_name(path: Path) -> str | None:
     """The name first-run setup saved, or ``None``."""
     if not path.is_file():
         return None
+    for item in current_core_memory(path).doc[core_memory.DEFAULT_SECTION]:
+        if item["topic"] == core_memory.NAME_TOPIC:
+            return str(item["text"]).removeprefix(_NAME_LINE[0]).removesuffix(_NAME_LINE[1])
+    return None
+
+
+def core_memory_pending_days(path: Path, today: date) -> list[str]:
+    """Local days before ``today`` with a day summary that no nightly run consolidated yet.
+
+    Every day after the current version's ``upto_day`` (every day when it is unset), oldest first.
+    """
+    upto = current_core_memory(path).upto_day or ""
     with closing(open_memory_db(path)) as conn:
-        row = conn.execute("SELECT text FROM profile WHERE id = ?", (_NAME_ROW,)).fetchone()
-    return row[0].removeprefix(_NAME_LINE[0]).removesuffix(_NAME_LINE[1]) if row else None
+        rows = conn.execute(
+            "SELECT DISTINCT day FROM day_summaries WHERE day > ? AND day < ? ORDER BY day",
+            (upto, today.isoformat()),
+        ).fetchall()
+    return [str(day) for (day,) in rows]
+
+
+def append_nightly_core_memory(
+    path: Path,
+    *,
+    base_id: str,
+    day: str,
+    changes: Sequence[Mapping[str, object]],
+) -> str | None:
+    """Append the nightly version for ``day`` and return its id, or None when the world moved.
+
+    The change list applies to the current document only if ``base_id`` is still the current
+    version (the item numbers it cites are that version's); otherwise nothing is stored. An
+    empty list appends the same document, which advances ``upto_day``.
+    """
+    now = iso_seconds(local_now())
+    with closing(open_memory_db(path)) as conn, core_memory.write_transaction(conn):
+        base = core_memory.current(conn, now)
+        if base.id != base_id:
+            return None
+        return core_memory.append_version(
+            conn,
+            base=base,
+            doc=core_memory.apply_changes(base.doc, changes, day),
+            origin="nightly",
+            upto_day=day,
+            changes=changes,
+            now=now,
+        )
 
 
 def append_record(
@@ -394,9 +478,10 @@ def _current_summary(conn: sqlite3.Connection) -> _Summary | None:
     return _Summary(summary_id, summary, upto, int(anchor[0]), str(anchor[1]))
 
 
-def _profile_lines(conn: sqlite3.Connection) -> list[str]:
-    rows = conn.execute("SELECT text FROM profile ORDER BY rowid").fetchall()
-    return [f"- {text}" for (text,) in rows]
+def _core_memory_lines(conn: sqlite3.Connection) -> list[str]:
+    """The rendered core memory, one prompt line each (ADR 0145)."""
+    version = core_memory.current(conn, iso_seconds(local_now()))
+    return core_memory.render(version.doc).splitlines()
 
 
 def _effective_anchor(conn: sqlite3.Connection, anchor_rowid: int | None, since: str) -> int:
@@ -478,8 +563,8 @@ def render_context(
 ) -> MemoryContext:
     """Render the decision-path prompt blocks in one consistent read.
 
-    ``profile`` goes to the system prompt. ``history`` is the current summary
-    (if any) as a ``user`` message, then one message per record after its
+    ``profile`` (the rendered core memory) goes to the system prompt. ``history`` is the
+    current summary (if any) as a ``user`` message, then one message per record after its
     anchor and on or after ``since``: ``allen`` rows are ``user``, every
     other source is ``assistant``, and adjacent rows of one role join into
     one message. Records carry their words only (ADR 0044): no timestamp or
@@ -496,7 +581,7 @@ def render_context(
     """
     moment = now or local_now()
     with closing(open_memory_db(path)) as conn:
-        profile = _profile_lines(conn)
+        profile = _core_memory_lines(conn)
         current = _current_summary(conn)
         anchor = _effective_anchor(conn, current.anchor_rowid if current else None, since)
         records = _records_after(conn, anchor)
@@ -563,14 +648,14 @@ def brief_note(path: Path, *, max_chars: int, now: datetime | None = None) -> st
 
     Same content as :func:`render_context`. Trimming cuts whole items and
     never the tail of a text: the oldest verbatim records go first, then
-    the summary's sections from the bottom up, and the profile lines last.
+    the summary's sections from the bottom up, and the core memory's items last.
     The retrieval line tells the Live model
     to ask the backend, which it can, instead of naming ``search_records``,
     which it cannot call.
     """
     moment = now or local_now()
     with closing(open_memory_db(path)) as conn:
-        profile = _profile_lines(conn)
+        profile = _core_memory_lines(conn)
         current = _current_summary(conn)
         records = _records_after(conn, -1 if current is None else current.anchor_rowid)
     summary_head = (
@@ -603,8 +688,10 @@ def brief_note(path: Path, *, max_chars: int, now: datetime | None = None) -> st
             record_lines.pop(0)
         elif sections:
             sections.pop()
-        elif len(profile) > 1:
+        elif len(profile) > 2:  # noqa: PLR2004 — a section heading and its first item stay
             profile.pop()
+            if profile[-1].startswith("### "):
+                profile.pop()
         else:
             break
     return _assemble()
@@ -846,10 +933,13 @@ __all__ = [
     "SessionSettings",
     "VerbatimStats",
     "append_day_summary",
+    "append_nightly_core_memory",
     "append_record",
     "append_summary",
     "brief_note",
     "compaction_range",
+    "core_memory_pending_days",
+    "current_core_memory",
     "day_records",
     "iso_seconds",
     "latest_day_summaries",

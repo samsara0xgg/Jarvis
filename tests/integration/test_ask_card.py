@@ -140,7 +140,7 @@ def test_a_kept_fact_is_one_about_the_user_line_and_its_topic_rewrites_it_in_pla
     remember_fact(db, "饮食偏好", "不吃香菜")
     remember_fact(db, "送餐地址", "2 Sample Rd")
     assert render_context(db, exclude_id="").profile == (
-        "[About the user]\n- 送餐地址: 2 Sample Rd\n- 饮食偏好: 不吃香菜"
+        "[About the user]\n### 关于你\n- 送餐地址: 2 Sample Rd\n- 饮食偏好: 不吃香菜"
     )
 
 

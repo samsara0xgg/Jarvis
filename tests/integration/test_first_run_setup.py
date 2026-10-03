@@ -93,8 +93,10 @@ def test_a_fresh_install_is_a_first_run_until_done(tmp_path: Path) -> None:
     assert named.status_code == 200
     assert (named.json()["name"], named.json()["assistant_name"]) == ("Ada", "No")
     with closing(open_memory_db(tmp_path / "memory.db")) as conn:
-        rows = conn.execute("SELECT id, text FROM profile").fetchall()
-    assert rows == [("profile-name", "The user's name is Ada.")]
+        rows = conn.execute("SELECT origin, doc FROM core_memory").fetchall()
+    # The empty migration version, then the setup version; the legacy profile stays untouched.
+    assert [origin for origin, _ in rows] == ["migration", "setup"]
+    assert "The user's name is Ada." in rows[1][1]
     # "No" would read back as false unquoted; the next boot renders it into {assistant}.
     assert (tmp_path / "settings.yaml").read_text(encoding="utf-8") == 'assistant_name: "No"\n'
     shipped = tmp_path / "jarvis.yaml"
