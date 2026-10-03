@@ -1,4 +1,4 @@
-// The Dashboard comes by a rest on the notch and folds by itself; a rest on her is only a peek, so a click on her starts voice;
+// The Dashboard comes by a rest on the notch and folds by itself (without a notch, only by a click, and she is out of sight until the pointer comes near); a rest on her is only a peek, so a click on her starts voice;
 // passing under the island leaves her home.
 // Headless Chrome against the built page with the native bridge stubbed, like verify-companion.
 // Run after `npm run build`. Screenshots land in evidence/dashboard-hover/.
@@ -114,16 +114,25 @@ try {
   await move(far.x - 1, far.y); await page.waitForTimeout(1000);
   check('once the field lets go, it folds', !await open());
 
-  // A screen with no notch: the pill's ends open it, its middle is her.
+  // A screen with no notch: with nothing going on and the pointer away, all of her is out of sight and takes no clicks; the pointer
+  // coming near shows the pill alone. A rest never opens the Dashboard there, a click on an end of the pill does; its middle is her.
+  const stowed = () => page.locator('.companion.is-stowed').count().then(n => n === 1);
   await page.evaluate(() => window.__placement({ docked: false, topInset: 32, notchWidth: 0, surfaceWidth: 640, compactWidth: 0, displayId: 2 }));
   await page.waitForTimeout(900);
+  check('without a notch and with the pointer away, she is out of sight and lets clicks through', await stowed() && await page.evaluate(() => getComputedStyle(document.querySelector('.companion')).opacity === '0' && window.__state.passthrough));
+  await move(320, 50); await page.waitForTimeout(400);
+  check('the pointer coming near shows the pill', !await stowed() && await page.evaluate(() => getComputedStyle(document.querySelector('.companion')).opacity === '1'));
   await move(320, 14); await page.waitForTimeout(900);
   check('without a notch a rest on the middle of the pill (her) only peeks', !await open() && await place() === 'peek');
-  await move(375, 14); await page.waitForTimeout(700);
-  check('… and a rest on an end of the pill opens it', await open());
+  await move(375, 14); await page.waitForTimeout(900);
+  check('… and a rest on an end of the pill does not open the Dashboard', !await open());
   await shot('03-external-pill');
+  await page.mouse.click(375, 14); await page.waitForTimeout(150);
+  check('… a click on it does', await open());
   await move(...Object.values(far)); await page.waitForTimeout(1000);
   check('… and it folds when the pointer leaves', !await open());
+  await page.waitForTimeout(800);
+  check('… and she goes out of sight again', await stowed());
   await move(320, 60); await page.waitForTimeout(900);
   check('without a notch, a rest under the pill leaves her home', await place() === 'home');
 

@@ -113,6 +113,8 @@ export function Companion() {
   const t = (l: L) => tr(companion.lang, l);
   useEffect(() => { warmFeedback(); return stopFeedback; }, []);
   const [zone, setZone] = useState<Zone>('none');
+  // On a screen without a notch the pill stays out of sight until the pointer comes near it (`near`), so nothing sits over a full-screen window.
+  const [near, setNear] = useState(false);
   const [dashboard, setDashboard] = useState(detached), [remoteOpen, setRemoteOpen] = useState(false), [docking, setDocking] = useState(false);
   const [dashboardJoined, setDashboardJoined] = useState(false), [notchJoined, setNotchJoined] = useState(false);
   const detachedMode = useRef(detached);
@@ -318,12 +320,14 @@ export function Companion() {
   const chip = place === 'out' && zone === 'ball' && !composer && (!busy || !companion.talkButtons && voice !== 'off');
   // During a notice she looks down at it from the island.
   const noticeLook = carded || nightShown ? { x: geo.center, y: placement.topInset + 90 } : notice ? { x: notice.kind === 'pop' ? geo.wingX + 80 : geo.center, y: placement.topInset + 90 } : null;
-  const live = useRef({ geo, dashboard, chip, composer, place, wardrobe, noticeLook, openBy: companion.openBy, menu: !!menu });
-  live.current = { geo, dashboard, chip, composer, place, wardrobe, noticeLook, openBy: companion.openBy, menu: !!menu };
+  const live = useRef({ geo, dashboard, chip, composer, place, wardrobe, noticeLook, openBy: companion.openBy, menu: !!menu, stowed: false });
+  // Stowed: on a screen without a notch, with nothing going on and the pointer away, all of her is hidden and takes no clicks.
+  const stowed = !detached && !geo.lobe.notched && !near && place === 'home' && !dashboard && !menu && !notice && !nightShown && !carded && !moving;
+  live.current = { geo, dashboard, chip, composer, place, wardrobe, noticeLook, openBy: companion.openBy, menu: !!menu, stowed };
   const ball = useRef<BallHandle | null>(null), look = useRef<Point | null>(null), cursor = useRef<Point>({ x: -1e4, y: -1e4 });
   const input = useRef<HTMLTextAreaElement>(null), root = useRef<HTMLElement>(null), pressing = useRef(false);
 
-  const zoneTimer = useRef<ReturnType<typeof setTimeout>>(undefined), pending = useRef<Zone>('none');
+  const zoneTimer = useRef<ReturnType<typeof setTimeout>>(undefined), pending = useRef<Zone>('none'), nearTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const dashTimer = useRef<ReturnType<typeof setTimeout>>(undefined), dashEntered = useRef(false), pinned = useRef(false), dashClosedHere = useRef(false), interactive = useRef(false);
   const script = useRef<ReturnType<typeof setTimeout>[]>([]);
   const after = (ms: number, run: () => void) => { script.current.push(setTimeout(run, ms)); };
@@ -610,7 +614,7 @@ export function Companion() {
     if (detached) return;
     const p = cursor.current, { lobe } = live.current.geo;
     const island = p.y >= 0 && p.y <= lobe.height && p.x >= lobe.left - 6 && p.x <= lobe.right + (lobe.notched ? 0 : 6);
-    const hit = island || !!document.elementFromPoint(p.x, p.y)?.closest('[data-hit]');
+    const hit = !live.current.stowed && (island || !!document.elementFromPoint(p.x, p.y)?.closest('[data-hit]'));
     if (hit !== interactive.current && !pressing.current) { interactive.current = hit; window.jarvis?.passthrough(!hit); }
   };
   useEffect(() => {
@@ -622,6 +626,12 @@ export function Companion() {
       cursor.current = point;
       intent.sample(point, performance.now());
       if (!composer) look.current = live.current.noticeLook ?? point;
+      // The pill comes into sight once the pointer is about as near as the old approach that brought her out, and goes after it has left.
+      if (!geo.lobe.notched) {
+        const close = point.x >= geo.lobe.left - 40 && point.x <= geo.lobe.right + 40 && point.y >= -2 && point.y <= geo.lobe.height + 24;
+        clearTimeout(nearTimer.current);
+        if (close) setNear(true); else nearTimer.current = setTimeout(() => setNear(false), HOVER_EXIT_MS);
+      }
       refreshHit();
       // Passing under the island does not bring her out: the ball zone only keeps her out while she is already out for something else.
       const next: Zone = live.current.place === 'out' && (within(point, z.ball) || (chip && within(point, z.chip))) ? 'ball' : within(point, z.lobe) ? 'lobe' : 'none';
@@ -644,7 +654,7 @@ export function Companion() {
           clearTimeout(dashTimer.current);
           dashTimer.current = setTimeout(() => { dashTimer.current = undefined; if (!dashHeld()) { setDashboard(false); pinned.current = false; } }, DASHBOARD_EXIT_MS);
         }
-      } else if (over && !dashTimer.current && !dashClosedHere.current && live.current.openBy !== 'click') {
+      } else if (over && geo.lobe.notched && !dashTimer.current && !dashClosedHere.current && live.current.openBy !== 'click') {
         const reveal = () => {
           if (live.current.dashboard || !live.current.geo.zones.dash.some(r => within(cursor.current, r))) { dashTimer.current = undefined; return; }
           if (slow()) { dashTimer.current = undefined; openDashboard(true); }
@@ -654,7 +664,7 @@ export function Companion() {
       } else if (!over && dashTimer.current) { clearTimeout(dashTimer.current); dashTimer.current = undefined; }
     };
     const unsubscribe = window.jarvis?.onCursor(receive);
-    return () => { unsubscribe?.(); clearTimeout(zoneTimer.current); clearTimeout(dashTimer.current); };
+    return () => { unsubscribe?.(); clearTimeout(zoneTimer.current); clearTimeout(dashTimer.current); clearTimeout(nearTimer.current); };
   }, []);
   useEffect(() => {
     if (!menu) return;
@@ -664,7 +674,7 @@ export function Companion() {
     document.addEventListener('pointerdown', dismiss); document.addEventListener('keydown', escape, true);
     return () => { document.removeEventListener('pointerdown', dismiss); document.removeEventListener('keydown', escape, true); void window.jarvis?.focus(false); };
   }, [menu]);
-  useEffect(refreshHit, [place, chip, composer, dashboard, menu, voice, reply.text, talkUp, notice?.key, card?.id, nightKey]);
+  useEffect(refreshHit, [place, chip, composer, dashboard, menu, voice, reply.text, talkUp, notice?.key, card?.id, nightKey, stowed]);
 
   // Native frosted glass behind every visible panel, following its transitions.
   const kickGlass = useRef(() => {});
@@ -675,7 +685,7 @@ export function Companion() {
       const rects = [...el.querySelectorAll<HTMLElement>('[data-glass]')].map(node => {
         const r = node.getBoundingClientRect();
         let opacity = 1;
-        for (let n: HTMLElement | null = node; n && n !== el; n = n.parentElement) { const cs = getComputedStyle(n); opacity *= cs.visibility === 'hidden' ? 0 : Number(cs.opacity); }
+        for (let n: HTMLElement | null = node; n; n = n === el ? null : n.parentElement) { const cs = getComputedStyle(n); opacity *= cs.visibility === 'hidden' ? 0 : Number(cs.opacity); }
         // `css`: the shape's own corner radius as it is right now (the talk area morphs from a capsule to a panel).
         const radius = node.dataset.glass === 'css' ? parseFloat(getComputedStyle(node).borderTopLeftRadius) || 0 : Number(node.dataset.glass);
         return { x: r.x, y: r.y, width: r.width, height: r.height, radius: radius * r.width / (node.offsetWidth || 1), opacity };
@@ -746,7 +756,7 @@ export function Companion() {
     <main ref={root} className="companion companion-detached"><DuskDashboard open={dashboard} top={0} width={360} left={0} islandLeft={0} islandRight={360} lightX={40} detached>{dashboardContent}</DuskDashboard></main>
   </IconContext.Provider>;
   return <IconContext.Provider value={{ size: 16, weight: 'regular' }}>
-    <main ref={root} className="companion" onContextMenu={event => {
+    <main ref={root} className={`companion ${stowed ? 'is-stowed' : ''}`} onContextMenu={event => {
       if (!(event.target as Element).closest('.companion-hit')) return;
       event.preventDefault(); cancel();
       setMenu({ x: Math.min(geo.width - 230, Math.max(8, event.clientX)), y: Math.max(placement.topInset + 12, event.clientY) });

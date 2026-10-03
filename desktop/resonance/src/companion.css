@@ -1,5 +1,6 @@
 /* The companion: one black ball at the notch; every panel opens from beneath her. */
 .companion {
+  transition:opacity .2s ease;
   --mint:rgb(var(--glow));
   --spring:var(--spring-panel);
   --glass:rgb(14 15 18 / .62);
@@ -77,3 +78,5 @@
 .companion-dashboard.is-detached .dusk-material::after { inset:0; border:1px solid rgb(var(--dusk-glow) / .22); border-radius:inherit; mask-image:none; }
 .companion-detached { overflow:auto; scrollbar-width:none; }
 .dashboard-window-error { position:absolute; bottom:52px; left:12px; right:12px; margin:0; padding:10px; border-radius:var(--radius-control); background:#281519; color:#ffd2d0; font-size:var(--text-detail); }
+/* On a screen without a notch she is out of sight until the pointer comes near the pill (Companion.tsx `stowed`). */
+.companion.is-stowed { opacity:0; }
