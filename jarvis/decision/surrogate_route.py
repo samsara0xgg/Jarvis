@@ -47,7 +47,7 @@ SURROGATE_URL: Final[str] = "https://openrouter.ai/api/alpha/decisions"
 KEY_ENV: Final[str] = "OPENROUTER_API_KEY"
 # Bump when an option, a description or the instructions change: the logged
 # choices are only comparable within one version.
-OPTIONS_VERSION: Final[str] = "2"
+OPTIONS_VERSION: Final[str] = "3"
 NONE: Final[str] = "none"
 REPEAT: Final[str] = "repeat"
 _CONTEXT_EXCHANGES: Final[int] = 2

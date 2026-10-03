@@ -40,8 +40,9 @@ _INSTRUCTIONS: Final[str] = (
     "The text is the end of a coding assistant's message to its owner after finishing a turn"
     " of work. Does it ask the owner to decide, choose, approve, answer a question or provide"
     " something before it can go on? Answer no if it only reports what it did, even if it ends"
-    " with a polite offer like 'let me know if you need anything'. The text may be in Chinese,"
-    " English or both."
+    " with a polite offer like 'let me know if you need anything'. Saying it is waiting for the"
+    " owner's go-ahead, answer or choice before it starts or continues also counts as asking."
+    " The text may be in Chinese, English or both."
 )
 _QUESTION: Final[dict[str, dict[str, str]]] = {
     "asks": {"type": "noul", "instructions": _INSTRUCTIONS},

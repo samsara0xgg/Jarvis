@@ -50,7 +50,8 @@ _CRITERIA: Final[dict[str, str]] = {
     ),
     "dismiss": (
         "Tells the assistant the exchange is over and it can leave hands-free mode (dismissed,"
-        " that's all, no need anymore, you can go, bye)."
+        " that's all, no need anymore, you can go, bye; 退下, 你先回去吧, 回刘海里去,"
+        " 你先休息一会吧, 没事了)."
     ),
     NONE: (
         "Anything else: a new question or request to the assistant, an answer, a correction, a"
