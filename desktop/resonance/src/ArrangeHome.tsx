@@ -1,5 +1,5 @@
 import { useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react';
-import { Bell, CalendarBlank, ChartDonut, ChatCircle, Clock, DotsSixVertical, EnvelopeSimple, Minus, Plus, Robot, SquaresFour, SunHorizon } from '@phosphor-icons/react';
+import { Bell, CalendarBlank, ChartDonut, ChatCircle, Clock, DotsSixVertical, EnvelopeSimple, Minus, Notebook, Plus, Robot, SquaresFour, SunHorizon } from '@phosphor-icons/react';
 import { HOME_DEFAULTS, isPop, tr, useCompanionSettings, type BlockId, type L, type Lang } from './companionSettings';
 
 // The home's blocks, as the arrange page and her panel name them.
@@ -9,6 +9,7 @@ export const BLOCK: Record<BlockId, { icon: ReactNode; name: L; when?: L }> = {
   brief: { icon: <SunHorizon/>, name: ['Morning brief', '早报'], when: ['Once each morning, the first time you open', '每天早上第一次打开时出现'] },
   today: { icon: <CalendarBlank/>, name: ['Today', '今天'] },
   mail: { icon: <EnvelopeSimple/>, name: ['Mail', '邮件'], when: ['Unread mail from people', '有人发来的未读邮件'] },
+  memory: { icon: <Notebook/>, name: ['Memory', '记忆'], when: ['When Jarvis is connected', '连上 Jarvis 时出现'] },
   agents: { icon: <Robot/>, name: ['Agents', 'Agents'] },
   now: { icon: <Clock/>, name: ['Now', '现在'] },
   usage: { icon: <ChartDonut/>, name: ['Usage', '用量'] },

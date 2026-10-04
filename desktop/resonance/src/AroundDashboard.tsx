@@ -18,6 +18,7 @@ import { BriefPage } from './BriefPage';
 import { SettingsPage, type Account, type AccountKeyDrafts, type Controls } from './SettingsPage';
 import { ActionCard, MailCard, QuestionCard, type Answer, type Card, type Decide, type Question } from './ActionCard';
 import { MailLetter, MailList, type MailAct, type MailFilter } from './MailPage';
+import { MEM_HOME, MemoryPage, type MemNav, type MemoryOverview } from './MemoryPage';
 import { MOTION } from './motion';
 import './dashboard-around.css';
 import './dashboard-home.css';
@@ -26,9 +27,9 @@ import './dashboard-home.css';
 // blocks: the ones you keep, in your order, and the ones that show up when there is something. A block grows
 // into its page in place; the panel follows the blocks up to VIEW_MAX. Her light accents the surface;
 // measurements and agent states keep their own stable colours.
-type Page = 'conversation' | 'now' | 'agents' | 'usage' | 'plugins' | 'projects' | 'settings' | 'arrange' | 'brief' | 'mail';
+type Page = 'conversation' | 'now' | 'agents' | 'usage' | 'plugins' | 'projects' | 'settings' | 'arrange' | 'brief' | 'mail' | 'memory';
 export type DashboardView = {
-  page: Page | null; plugin: string | null; letter: Mail | null; settingsCat: string | null; unfolded: string | null;
+  page: Page | null; plugin: string | null; letter: Mail | null; memory: MemNav; settingsCat: string | null; unfolded: string | null;
   query: string; token: string; homeDraft: string; talkDraft: string; days: number; scroll: number;
   accountKeyDrafts: AccountKeyDrafts; conversationFirstSeq: number | null;
   briefRead: string; dismissed: Partial<Record<BlockId, string>>; hidden: Record<string, string>;
@@ -36,7 +37,7 @@ export type DashboardView = {
   questionDraft: { id: string; value: Record<string, string> } | null;
 };
 export type DashboardViewHandle = { snapshot: () => DashboardView; restore: (value: DashboardView) => void };
-const TITLES: Record<Page, L> = { conversation: ['Conversation', '对话'], now: ['Right now', '现在'], agents: ['Agents', 'Agents'], usage: ['Usage', '用量'], plugins: ['Plugins', '插件'], projects: ['Projects', '项目'], settings: ['Settings', '设置'], arrange: ['Arrange the home', '编辑首页'], brief: ['Morning brief', '早报'], mail: ['Mail', '邮件'] };
+const TITLES: Record<Page, L> = { conversation: ['Conversation', '对话'], now: ['Right now', '现在'], agents: ['Agents', 'Agents'], usage: ['Usage', '用量'], plugins: ['Plugins', '插件'], projects: ['Projects', '项目'], settings: ['Settings', '设置'], arrange: ['Arrange the home', '编辑首页'], brief: ['Morning brief', '早报'], mail: ['Mail', '邮件'], memory: ['Memory', '记忆'] };
 // The home follows its blocks from the old fixed height up to this, then scrolls inside the panel.
 const VIEW_MIN = 466, VIEW_MAX = 600, CORNER = 28, HOME_GAP = 8, HOLD = 560, TALK_STAYS = 10 * 60_000;
 // The room the resting input keeps under the home (the panel's bottom padding, 58 against a page's 12): a page, where the input is gone, takes it.
@@ -160,6 +161,8 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
   const [plugin, setPlugin] = useState<string | null>(null);
   // The Mail page: the letter open on it (null = the list) and the list's filter.
   const [letter, setLetter] = useState<Mail | null>(null), [mailFilter, setMailFilter] = useState<MailFilter>('all');
+  // The Memory page: its tab, search and the screens pushed on it.
+  const [memory, setMemory] = useState<MemNav>(MEM_HOME);
   const [settingsCat, setSettingsCat] = useState<string | null>(null);
   const [demoPlugins, setPlugins] = useState(DEMO_PLUGINS);
   const snapshot = live?.snapshot;
@@ -204,7 +207,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
   const restoredScroll = useRef<number | null>(null);
   const conversationRestore = useRef<{ firstSeq: number | null; scroll: number; loading: boolean; paused: boolean } | null>(null);
   const [restoringConversation, setRestoringConversation] = useState(false), [restoreRevision, setRestoreRevision] = useState(0);
-  const snapshotView = (): DashboardView => ({ page, plugin, letter, settingsCat, unfolded, query, token, homeDraft, talkDraft, days,
+  const snapshotView = (): DashboardView => ({ page, plugin, letter, memory, settingsCat, unfolded, query, token, homeDraft, talkDraft, days,
     accountKeyDrafts, conversationFirstSeq: conversationRestore.current?.firstSeq ?? (page === 'conversation' ? talk?.rows[0]?.seq ?? null : null),
     scroll: conversationRestore.current?.scroll ?? pageEl.current?.querySelector('.pg-body')?.scrollTop ?? 0, actionDraft, questionDraft, briefRead, dismissed, hidden });
   useImperativeHandle(viewRef, () => ({ snapshot: snapshotView, restore: value => {
@@ -214,7 +217,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
     // A reused window can still hold the previous page's filled opacity animation.
     // Keep the overview hidden only when the restored view is another page.
     if (value.page && home.current) home.current.animate([{ opacity: 0 }, { opacity: 0 }], { duration: 0, fill: 'forwards' });
-    setReset(null); setPage(value.page); setPlugin(value.plugin); setLetter(value.letter ?? null); setSettingsCat(value.settingsCat); setUnfolded(value.unfolded);
+    setReset(null); setPage(value.page); setPlugin(value.plugin); setLetter(value.letter ?? null); setMemory(value.memory ?? MEM_HOME); setSettingsCat(value.settingsCat); setUnfolded(value.unfolded);
     setQuery(value.query); setToken(value.token); setHomeDraft(value.homeDraft); setTalkDraft(value.talkDraft); setDays(value.days);
     setAccountKeyDrafts(value.accountKeyDrafts); setActionDraft(value.actionDraft); setQuestionDraft(value.questionDraft); setBriefRead(value.briefRead); setDismissed(value.dismissed); setHidden(value.hidden);
     const history = value.page === 'conversation' && !!talk;
@@ -228,7 +231,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
       restoredScroll.current = null;
     }
     publishView.current?.(snapshotView());
-  }, [page, plugin, letter, settingsCat, unfolded, query, token, homeDraft, talkDraft, days, accountKeyDrafts, actionDraft, questionDraft, briefRead, dismissed, hidden, restoringConversation]);
+  }, [page, plugin, letter, memory, settingsCat, unfolded, query, token, homeDraft, talkDraft, days, accountKeyDrafts, actionDraft, questionDraft, briefRead, dismissed, hidden, restoringConversation]);
 
   // Her face follows the page; '02' is her resting face, so it hands control back to the companion.
   const react = (expr: ExprId, ms: number, after: ExprId = '02') => {
@@ -245,7 +248,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
   useEffect(() => {
     if (open) return;
     conversationRestore.current = null; restoredScroll.current = null; setRestoringConversation(false);
-    closing.current = false; setPage(null); setPlugin(null); setLetter(null); setSettingsCat(null); setUnfolded(null); setReset(null); react('02', 0);
+    closing.current = false; setPage(null); setPlugin(null); setLetter(null); setMemory(MEM_HOME); setSettingsCat(null); setUnfolded(null); setReset(null); react('02', 0);
     // Having been on the home once is having seen the brief; the next opening that day leaves it out.
     if (briefShown.current) { setBriefRead(briefShown.current); briefShown.current = ''; }
     if (home.current) stopMotion(home.current);
@@ -264,7 +267,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
   const openPage = (name: Page, el?: HTMLElement | null) => {
     if (page || closing.current) return;
     origin.current = el ?? home.current?.querySelector<HTMLElement>(`[data-row="${name}"]`) ?? null;
-    setPage(name); setPlugin(null); setLetter(null); setSettingsCat(null);
+    setPage(name); setPlugin(null); setLetter(null); setMemory(MEM_HOME); setSettingsCat(null);
     if (name === 'conversation') { setDays(1); react(pick(TAKES.reply), 2600); }
     else if (name === 'now') react('37', 2400);
     else if (name === 'projects') { react('40', 1500); void projects.refresh(); }
@@ -309,12 +312,12 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
     back?.animate([{ opacity: 0 }, { opacity: 1 }], { duration: dur(MOTION.fast), delay: dur(MOTION.fast * MOTION.exit), fill: 'backwards' });
     shrink.onfinish = () => {
       if (!closing.current) return;
-      closing.current = false; setPage(null); setPlugin(null); setLetter(null); setSettingsCat(null); react('02', 0);
+      closing.current = false; setPage(null); setPlugin(null); setLetter(null); setMemory(MEM_HOME); setSettingsCat(null); react('02', 0);
       back?.classList.remove('is-holding');
       (back?.matches('button') ? back : back?.querySelector('button'))?.focus({ preventScroll: true });
     };
   };
-  const goUp = () => { if (page === 'plugins' && plugin) setPlugin(null); else if (page === 'mail' && letter) setLetter(null); else if (page === 'settings' && settingsCat) setSettingsCat(null); else if (page) closePage(); else onClose(); };
+  const goUp = () => { if (page === 'plugins' && plugin) setPlugin(null); else if (page === 'mail' && letter) setLetter(null); else if (page === 'memory' && memory.stack.length) setMemory(m => ({ ...m, stack: m.stack.slice(0, -1) })); else if (page === 'memory' && (memory.query || memory.tab !== 'items')) setMemory(MEM_HOME); else if (page === 'settings' && settingsCat) setSettingsCat(null); else if (page) closePage(); else onClose(); };
   const keys = (event: KeyboardEvent) => {
     if (event.key !== 'Escape') return;
     event.stopPropagation();
@@ -555,6 +558,8 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
   // The pop-ups, each keyed by what it shows: closing one hides that; something newer brings the block back.
   const briefRoute = useRoute<Brief>(port, '/inherent/brief', open, 10 * 60_000);
   const mailRoute = useRoute<{ unread: Mail[] }>(port, '/inherent/mail', open, 5 * 60_000);
+  const memoryRoute = useRoute<MemoryOverview>(port, '/inherent/memory', open, 60_000);
+  const memoryNow = Array.isArray(memoryRoute.data?.sections) ? memoryRoute.data : null; // an answer of another shape counts as no memory page
   const noticeRoute = useRoute<{ notices: Notice[] }>(port, '/inherent/notices', open, 60_000);
   // A first boot fetches the speech models (~240 MB) before she can hear or speak; the corner shows how far, polled until they are in.
   const [voiceIn, setVoiceIn] = useState(false);
@@ -619,7 +624,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
     // With Jev's marks the pop-up is for the newest letter that needs a reply or is junk to clear; without any mark it is the newest letter.
     mail: !settings.mail ? undefined : marked ? [mailYes[0], mailJunk[0]].filter(m => m).sort((a, b) => Date.parse(b.received) - Date.parse(a.received))[0]?.id : mail[0]?.id,
   };
-  const shows = (id: BlockId) => isPop(id) ? popKey[id] !== undefined && dismissed[id] !== popKey[id] : !settings.hidden.includes(id);
+  const shows = (id: BlockId) => id === 'memory' ? !!port && !!memoryNow && !settings.hidden.includes(id) : isPop(id) ? popKey[id] !== undefined && dismissed[id] !== popKey[id] : !settings.hidden.includes(id);
   if (open && shows('brief') && popKey.brief) briefShown.current = popKey.brief;
   const blocks = settings.order.filter(shows);
   const dismiss = (id: BlockId) => {
@@ -792,6 +797,10 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
       <div className="pg-body">{letter ? <MailLetter key={letter.id} port={port} letter={letter} onAct={kind => void actOnLetter(kind, letter)}/>
         : <MailList mail={mailRanked} filter={mailFilter} onFilter={setMailFilter} onOpen={setLetter}/>}</div>
     </>,
+    memory: () => <>
+      {back(t(TITLES.memory), memoryNow && t([`${memoryNow.items} kept`, `记着 ${memoryNow.items} 条`]))}
+      <div className="pg-body">{port && <MemoryPage port={port} overview={{ ...memoryRoute, data: memoryNow }} nav={memory} setNav={setMemory} notify={notify}/>}</div>
+    </>,
     projects: () => <>
       {back(t(TITLES.projects), t(['last 7 days', '最近 7 天']))}
       <div className="pg-body">{projects.missing ? <p className="pg-sec muted">{t(['No projects set up. List them under projects in ~/.jarvis/settings.yaml.', '还没设置项目。在 ~/.jarvis/settings.yaml 的 projects 下列出来。'])}</p> : !projectsView ? <p className="pg-sec muted">{t(['Syncing…', '同步中…'])}</p> : <>
@@ -858,6 +867,11 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
               {mailRanked.slice(0, 2).map(m => <button className="ml" key={m.id} title={t(['Open', '打开'])} onClick={e => { openPage('mail', e.currentTarget.parentElement); setLetter(m); }}><EnvelopeSimple size={13}/><b>{m.from}</b><span>{m.subject}</span>{m.reply === 'yes' && <em>{t(['Reply', '要回'])}</em>}</button>)}
               {mailJunk.length > 0 && <span className="mj"><span>{t([`${mailJunk.length} look like junk`, `${mailJunk.length} 封像垃圾邮件`])}</span><button onClick={() => void archiveJunk()}>{t(['Archive', '一键归档'])}</button></span>}
             </>,
+            memory: () => { const m = memoryNow, fresh = m?.new.entries.filter(e => e.kind === 'add' || e.kind === 'rewrite').length ?? 0, first = m?.new.entries[0];
+              return <button className="fill" data-row="memory" aria-label={t(['Open Memory', '打开记忆'])} onClick={e => openPage('memory', e.currentTarget.parentElement)}>
+                <span className="head"><span className="label">{t(['Memory', '记忆'])}</span><span className="meta">{m && t([`${m.items} kept`, `记着 ${m.items} 条`])}{fresh > 0 && t([` · ${fresh} new`, ` · ${fresh} 条新的`])}<CaretRight size={10}/></span></span>
+                <span className="text one">{first ? first.text : t(['Nothing new last night.', '昨晚没有新记的。'])}</span>
+              </button>; },
             agents: () => <button className="fill" data-row="agents" aria-label={t(['Open Agents', '打开 Agents'])} onClick={e => openPage('agents', e.currentTarget.parentElement)}>
               <span className="head"><span className="label">Agents</span><span className="head-r">
                 <span className="orbs">{[...waiting, ...stopped, ...finished, ...working].slice(0, 5).map(s => <AgentMark key={s.id} id={s.id} look={marks} state={markOf(s)} size={12}/>)}</span>

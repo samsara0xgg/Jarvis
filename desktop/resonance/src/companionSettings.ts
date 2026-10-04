@@ -9,8 +9,8 @@ export type L = readonly [string, string]; // [English, 中文]
 export const tr = (lang: Lang, l: L) => l[lang === 'zh' ? 1 : 0];
 
 // The home's blocks in their default order. Pop-ups show up only when there is something; the rest always.
-export type BlockId = 'talk' | 'foryou' | 'brief' | 'today' | 'mail' | 'agents' | 'now' | 'usage' | 'tiles';
-export const BLOCKS: BlockId[] = ['talk', 'foryou', 'brief', 'today', 'mail', 'agents', 'now', 'usage', 'tiles'];
+export type BlockId = 'talk' | 'foryou' | 'brief' | 'today' | 'mail' | 'memory' | 'agents' | 'now' | 'usage' | 'tiles';
+export const BLOCKS: BlockId[] = ['talk', 'foryou', 'brief', 'today', 'mail', 'memory', 'agents', 'now', 'usage', 'tiles'];
 export const POPS: BlockId[] = ['talk', 'foryou', 'brief', 'mail'];
 export const isPop = (id: BlockId) => POPS.includes(id);
 
