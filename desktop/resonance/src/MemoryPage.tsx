@@ -43,7 +43,9 @@ const dur = (ms: number) => reduced.matches ? 0 : ms;
 const EASE = 'cubic-bezier(.16,1,.3,1)';
 const pad = (n: number) => String(n).padStart(2, '0');
 const hhmm = (d: Date) => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
-const md = (iso: string) => { const d = new Date(iso); return `${d.getMonth() + 1}/${d.getDate()}`; };
+// A bare day ("2026-10-02") is that calendar day wherever you are; new Date() would read it as UTC midnight and show the day before west of Greenwich.
+const local = (s: string) => /^\d{4}-\d{2}-\d{2}$/.test(s) ? new Date(+s.slice(0, 4), +s.slice(5, 7) - 1, +s.slice(8)) : new Date(s);
+const md = (iso: string) => { const d = local(iso); return `${d.getMonth() + 1}/${d.getDate()}`; };
 const sameDay = (a: Date, b: Date) => a.toDateString() === b.toDateString();
 const focusWindow = (event: { currentTarget: HTMLElement }) => { const el = event.currentTarget; void window.jarvis?.focus(true).then(() => el.focus({ preventScroll: true })); };
 const grabFocus = (el: HTMLElement | null) => { if (el) void window.jarvis?.focus(true).then(() => el.focus({ preventScroll: true })); };
@@ -316,7 +318,7 @@ const WHO: [Who, L][] = [['all', ['All', '全部']], ['user', ['You', '你说的
 function Search({ q, who, setWho, a }: { q: string; who: Who; setWho: (who: Who) => void; a: Acts }) {
   const { t, lang } = a;
   const r = useGet<Found>(a.port, `/search?q=${encodeURIComponent(q)}&who=${who}`, 0), found = r.data;
-  const since = found?.since ? new Date(found.since) : null;
+  const since = found?.since ? local(found.since) : null;
   return <>
     <div className="mem-chips" role="group" aria-label={t(['Who said it', '谁说的'])}>
       {WHO.map(([id, name]) => <button key={id} className="mem-chip" aria-pressed={who === id} onClick={() => setWho(id)}>{t(name)}</button>)}

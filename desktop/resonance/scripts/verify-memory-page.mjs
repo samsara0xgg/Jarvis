@@ -83,7 +83,7 @@ mkdirSync(dir, { recursive: true });
 try {
   await server.listen();
   browser = await chromium.launch({ headless: true, channel: 'chrome' });
-  const context = await browser.newContext({ viewport: { width: 700, height: 900 }, deviceScaleFactor: 2 });
+  const context = await browser.newContext({ timezoneId: 'America/Vancouver', viewport: { width: 700, height: 900 }, deviceScaleFactor: 2 });
   const page = await context.newPage();
   page.on('pageerror', error => errors.push(error.message));
   await page.addInitScript(() => { if (!localStorage.getItem('companion-settings-v1')) localStorage.setItem('companion-settings-v1', JSON.stringify({ lang: 'en' })); window.jarvis = { focus: async () => {}, usage: async () => null, material: () => {}, openUrl: async () => true }; });
@@ -135,6 +135,7 @@ try {
   check('it opens the page titled Memory with the section headings and a count each', (await page.locator('.pg-head h3').textContent()) === 'Memory' && (await texts('.mem-sh h4')).filter(x => /· \d/.test(x)).length === 7 && (await count('.mem-row')) === 3);
   check('last night’s entries carry New / Edited / Stale tags, the quote and the right actions', (await texts('.mem-ent .mem-tag')).join('|') === 'New|Edited|Stale'
     && (await texts('.mem-q')).some(x => x.includes('You said')) && (await texts('.mem-ent[data-kind="stale"] .mem-act')).join('|') === 'Right|Keep it' && (await texts('.mem-ent[data-kind="add"] .mem-act')).join('|') === 'Right|Edit|Delete');
+  check('a bare day shows as that day in any time zone (TZ=America/Vancouver): the night of day 2026-10-02 reads 10/2, not 10/1', (await texts('.mem-sh small')).includes('from 10/2'));
   check('a section with nothing says so', (await texts('.mem-empty')).includes('Nothing yet.'));
   await shot('01-kept');
 
@@ -147,6 +148,7 @@ try {
   // One note: sources, the conversation, going back
   await page.locator('.mem-ent-t.is-link').first().click(); await settle(900);
   check('a note opens large with where it came from, who said it and when', (await count('.mem-src')) === 2 && (await texts('.mem-src-w b')).join('|') === 'You said|Jarvis said' && (await texts('.mem-big-t')).join('').includes('周六和朋友吃饭'));
+  check('and its timeline says which day it was noted from, as that day', (await texts('.mem-tl span')).join('').includes('Noted from 10/2'));
   await shot('02-item');
   await page.locator('.mem-src').first().click(); await settle(900);
   check('a source opens that day’s conversation and marks the line', (await count('.mem-line')) === 3 && (await page.locator('.mem-line[data-id="r1"]').count()) === 1);
@@ -210,6 +212,7 @@ try {
   // Changes and the limit
   await page.locator('.mem-chip', { hasText: 'Changes' }).click(); await settle(800);
   check('every version is a row, the newest marked Now', (await count('.mem-ver')) >= 4 && (await texts('.mem-ver')).at(0).includes('Now') && (await texts('.mem-ver .mem-ver-t'))[0].length > 0);
+  check('the night pass is titled with its own day', (await texts('.mem-ver .mem-ver-t')).some(x => x.includes('Night pass · 10/2')));
   await shot('08-changes');
   const undos = await count('.mem-ver > .mem-act');
   check('versions that can be taken back have an Undo, named for screen readers', undos >= 2 && (await page.locator('.mem-ver > .mem-act').first().getAttribute('aria-label')).startsWith('Undo: '));
