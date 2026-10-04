@@ -1013,8 +1013,36 @@ def test_a_second_row_in_the_same_turn_opens_nothing(tmp_path: Path) -> None:
     assert _cancel_reasons(reader) == ["shutdown"]
 
 
-def test_a_commentary_that_reached_the_speaker_finishes(tmp_path: Path) -> None:
-    """Playback closes the run through `complete`; the turn then says nothing more."""
+@pytest.mark.parametrize("slow_handoff", [False, True])
+def test_a_commentary_that_reached_the_speaker_finishes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    slow_handoff: bool,
+) -> None:
+    """Playback closes the run through `complete`; the turn then says nothing more.
+
+    The slow case hands each opened run back to the watcher late: the rows are already
+    on the log, so playback and teardown may arrive before the watcher holds the run.
+    """
+    if slow_handoff:
+        opener = inherent_loop._open_commentary_in_worker_thread  # noqa: SLF001
+
+        def late(
+            runtime: JarvisRuntime,
+            *,
+            trigger_event: Event,
+            stop: threading.Event,
+            after_s: float | None,
+            still: bool,
+        ) -> object:
+            opened = opener(
+                runtime, trigger_event=trigger_event, stop=stop, after_s=after_s, still=still,
+            )
+            time.sleep(0.15)
+            return opened
+
+        monkeypatch.setattr(inherent_loop, "_open_commentary_in_worker_thread", late)
     runtime = _make_runtime(tmp_path)
     reader = _reader(runtime)
     _user_turn(runtime.conn, "T-heard")

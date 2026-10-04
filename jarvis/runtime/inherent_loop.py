@@ -2290,7 +2290,7 @@ def _open_commentary_in_worker_thread(  # noqa: C901, PLR0911 - one early return
             conn.close()
 
 
-async def _commentary_watcher(  # noqa: C901 - the row handlers share the watcher's state
+async def _commentary_watcher(  # noqa: C901, PLR0915 - the row handlers share the watcher's state
     runtime: JarvisRuntime,
     *,
     poll_interval_s: float = _DEFAULT_POLL_INTERVAL_S,
@@ -2322,6 +2322,9 @@ async def _commentary_watcher(  # noqa: C901 - the row handlers share the watche
     open_by_subject: dict[str, _OpenCommentary] = {}  # by response id
     spoken: set[tuple[str, str]] = set()
     tasks: set[asyncio.Task[None]] = set()
+    # A playback or drop row can be read while the worker that rendered its phrase has not yet
+    # handed the run back; it waits here, by response id, until `_speak` registers that run.
+    early: dict[str, Event] = {}
     stop = threading.Event()
 
     async def _speak(ev: Event) -> None:
@@ -2332,16 +2335,28 @@ async def _commentary_watcher(  # noqa: C901 - the row handlers share the watche
             schedule = [(_COMMENTARY_AFTER_S, False)]
             schedule += [(after_s, True) for after_s in _COMMENTARY_STILL_AFTER_S]
         for after_s, still in schedule:
-            opened = await asyncio.to_thread(
-                _open_commentary_in_worker_thread,
-                runtime,
-                trigger_event=ev,
-                stop=stop,
-                after_s=after_s,
-                still=still,
+            work = asyncio.ensure_future(
+                asyncio.to_thread(
+                    _open_commentary_in_worker_thread,
+                    runtime,
+                    trigger_event=ev,
+                    stop=stop,
+                    after_s=after_s,
+                    still=still,
+                ),
             )
+            try:
+                opened = await asyncio.shield(work)
+            except asyncio.CancelledError:
+                # Shutdown while the worker may be mid-render: its run would otherwise be
+                # lost with the cancelled await and stay open for good.
+                if (late := await work) is not None:
+                    open_by_subject[late.run.response_id] = late
+                raise
             if opened is not None:
                 open_by_subject[opened.run.response_id] = opened
+                if (arrived := early.pop(opened.run.response_id, None)) is not None:
+                    await _commentary_closed(runtime, open_by_subject, arrived, None)
             elif len(schedule) > 1 and (
                 stop.is_set() or await asyncio.to_thread(_commentary_turn_is_over, runtime, ev)
             ):
@@ -2349,11 +2364,8 @@ async def _commentary_watcher(  # noqa: C901 - the row handlers share the watche
 
     async def _on_row(ev: Event) -> None:
         try:
-            if ev.type == "surface.playback_started":
-                await _commentary_heard(runtime, open_by_subject, ev)
-                return
-            if ev.type == "surface.speech_dropped":
-                await _commentary_dropped(runtime, open_by_subject, ev)
+            if ev.type in ("surface.playback_started", "surface.speech_dropped"):
+                await _commentary_closed(runtime, open_by_subject, ev, early if tasks else None)
                 return
             subject = _event_action_id(ev) or ev.event_uid
             if (subject, ev.type) in spoken:
@@ -2367,6 +2379,8 @@ async def _commentary_watcher(  # noqa: C901 - the row handlers share the watche
 
     def _task_done(task: asyncio.Task[None]) -> None:
         tasks.discard(task)
+        if not tasks:
+            early.clear()  # nothing can still be on its way to register
         if not task.cancelled() and (exc := task.exception()) is not None:
             LOGGER.warning("commentary_watcher: a line raised: %r", exc)
 
@@ -2390,6 +2404,7 @@ async def _commentary_watcher(  # noqa: C901 - the row handlers share the watche
         stop.set()
         for task in tasks:
             task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)  # a run mid-render lands first
         shutdown_deadline = time.monotonic() + _COMMENTARY_SHUTDOWN_BUDGET_S
         for entry in open_by_subject.values():
             with contextlib.suppress(Exception):
@@ -2403,38 +2418,58 @@ async def _commentary_watcher(  # noqa: C901 - the row handlers share the watche
         raise
 
 
+async def _commentary_closed(
+    runtime: JarvisRuntime,
+    open_by_subject: dict[str, _OpenCommentary],
+    event: Event,
+    early: dict[str, Event] | None,
+) -> None:
+    """Close (heard) or cancel (dropped) the run this row names.
+
+    A run that is not ours yet is kept in ``early`` when a worker may still be handing it
+    over (``early`` is not None); the watcher closes it as soon as it registers the run.
+    """
+    handler = _commentary_heard if event.type == "surface.playback_started" else _commentary_dropped
+    if not await handler(runtime, open_by_subject, event) and early is not None:
+        early[str(event.payload.get("response_id"))] = event
+
+
 async def _commentary_dropped(
     runtime: JarvisRuntime,
     open_by_subject: dict[str, _OpenCommentary],
     event: Event,
-) -> None:
+) -> bool:
     """Cancel the commentary run whose phrase the media owner discarded unplayed.
 
     The answer of the turn opened before the phrase started: the phrase was
-    never spoken, so its run must not stay open until teardown.
+    never spoken, so its run must not stay open until teardown. False when the
+    run is not (yet) one of ours.
     """
     entry = open_by_subject.pop(str(event.payload.get("response_id")), None)
-    if entry is not None:
-        await asyncio.to_thread(
-            _cancel_unheard_commentary, runtime, entry, reason="answer_started",
-        )
+    if entry is None:
+        return False
+    await asyncio.to_thread(
+        _cancel_unheard_commentary, runtime, entry, reason="answer_started",
+    )
+    return True
 
 
 async def _commentary_heard(
     runtime: JarvisRuntime,
     open_by_subject: dict[str, _OpenCommentary],
     event: Event,
-) -> None:
-    """Close the commentary run this playback belongs to, if it is ours."""
+) -> bool:
+    """Close the commentary run this playback belongs to; False when it is not (yet) ours."""
     response_id = event.payload.get("response_id")
     entry = next(
         (item for item in open_by_subject.values() if item.run.response_id == response_id),
         None,
     )
     if entry is None:
-        return
+        return False
     del open_by_subject[entry.run.response_id]
     await asyncio.to_thread(_complete_commentary, runtime, entry)
+    return True
 
 
 def _make_cancel_voice_runs(runtime: JarvisRuntime) -> Callable[[], None]:
