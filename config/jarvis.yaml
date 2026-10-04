@@ -278,6 +278,9 @@ core_memory:
     - Rewrite an existing item rather than add a near-duplicate. Mark an item
       stale when the day shows it is over or no longer true (a finished task, a
       past date, a changed plan).
+    - An item marked (pinned) was set by the user and is fixed: do not rewrite
+      or move it, and do not add a near-duplicate of it. If it is no longer true
+      you may still mark it stale; that only shows the user a reminder.
     - Keep the whole core memory under 4000 characters: merge or drop the least
       important items rather than go over.
     - Return {"changes": []} when nothing lasting happened that day.

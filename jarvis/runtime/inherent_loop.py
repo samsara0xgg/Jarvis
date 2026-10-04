@@ -163,6 +163,7 @@ from jarvis.runtime.dictation import (
     whisper_ears,
 )
 from jarvis.runtime.inherent_hub import start_inherent_view
+from jarvis.runtime.memory_page import MemoryPage
 from jarvis.runtime.night_watch import NightWatch
 from jarvis.runtime.session_compaction import CompactionSweep, preset_context_length
 from jarvis.runtime.settings import SETTINGS_FILE
@@ -6113,6 +6114,14 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             mail_trash=None if mail_home is None else functools.partial(_mail_trash, mail_home),
             focus_set=None if runtime.focus is None else runtime.focus.set,
             **_draft_deps(runtime, mail_home),
+            memory_page=(
+                None if window_memory is None
+                else MemoryPage(
+                    window_memory.db_path,
+                    runtime.settings,
+                    history_since=runtime.session.history_since,
+                )
+            ),
             brief_read=(
                 None if runtime.home is None
                 else functools.partial(runtime.home.brief, runtime.conn)

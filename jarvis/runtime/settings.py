@@ -68,6 +68,8 @@ PATHS: dict[str, tuple[str, ...]] = {
     "keep_audio": ("memory", "retain_audio"),
     "audio_days": ("memory", "audio_retention_days"),
     "screenshot_days": ("tools", "screen", "retention_days"),
+    # ADR 0154: the memory page's cap on the core memory note, read at boot like the rest.
+    "core_memory_max_chars": ("core_memory", "max_chars"),
     **{key: ("respeaker", key.removeprefix("board_")) for key in (
         "board_light", "board_brightness", "board_speed", "board_color",
         "board_direction_colors", "board_ring_colors", "board_headphone", "board_lineout",
@@ -79,9 +81,15 @@ _BOARD_DEFAULTS: dict[str, Any] = {
     "board_direction_colors": ["#002040", "#00c066"], "board_ring_colors": ["#002040"] * 12,
     "board_headphone": 8, "board_lineout": 8,
 }
-_DEFAULTS: dict[str, Any] = {"reply_language": "follow", "tts_volume": 1.0, **_BOARD_DEFAULTS}
+_DEFAULTS: dict[str, Any] = {
+    "reply_language": "follow", "tts_volume": 1.0, "core_memory_max_chars": 4000, **_BOARD_DEFAULTS,
+}
 _DEVICES = {"output_device": "output", "input_device": "input"}
-_RANGES = {"wake_threshold": (0.80, 0.99), "tts_volume": (0.3, 1.0)}
+_RANGES = {
+    "wake_threshold": (0.80, 0.99),
+    "tts_volume": (0.3, 1.0),
+    "core_memory_max_chars": (1000, 20000),
+}
 BOARD_LIGHTS = ("off", "breath", "rainbow", "solid", "direction", "ring")
 _LEVELS = {"board_speed": (1, 255), "board_headphone": (0, 9), "board_lineout": (0, 9)}
 _COLOR = re.compile(r"#[0-9a-f]{6}")
@@ -113,7 +121,8 @@ def _valid(key: str, value: object) -> bool:
     if key in _RANGES:
         low, high = _RANGES[key]
         number = isinstance(value, int | float) and not isinstance(value, bool)
-        return number and low <= value <= high  # type: ignore[operator]
+        whole = key != "core_memory_max_chars" or type(value) is int
+        return number and whole and low <= value <= high  # type: ignore[operator]
     if key in _SWITCHES:
         return isinstance(value, bool)
     if key in _RETENTION:
@@ -249,6 +258,12 @@ class Settings:
                 self._booted[key] = stored[key]
             self.on_board(board)
         return self.read()
+
+    def core_memory_cap(self) -> tuple[int, int]:
+        """``(saved or booted, booted)`` cap on the core memory note (the gate reads it at boot)."""
+        booted = int(self._booted["core_memory_max_chars"] or _DEFAULTS["core_memory_max_chars"])
+        saved: int | None = _saved(self._root).get("core_memory_max_chars")
+        return (booted if saved is None else saved), booted
 
     def board(self) -> dict[str, Any] | None:
         """The board look to keep (``light``, ``brightness``, ...); None until one is saved."""

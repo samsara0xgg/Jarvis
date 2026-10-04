@@ -8,12 +8,15 @@ failure. The runtime owns when it runs and the client; L2 owns the document and 
 from __future__ import annotations
 
 import json
+import logging
 from typing import TYPE_CHECKING, Any, Final
 
 from jarvis.state import core_memory
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
+
+LOGGER = logging.getLogger(__name__)
 
 _OPS: Final[frozenset[str]] = frozenset({"add", "rewrite", "stale"})
 _FENCE: Final[str] = "```"
@@ -134,6 +137,47 @@ def _list_gates(
     return f"{size} chars over the {max_chars} cap" if size > max_chars else None
 
 
+def pin_gate(
+    changes: Sequence[dict[str, Any]],
+    doc: core_memory.Doc,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """``(changes that may apply, notes to store beside them)`` (ADR 0154).
+
+    An item the user edited or moved is pinned and the night does not touch it: a rewrite of
+    it is dropped (note ``skipped``), a stale of it is not applied but kept as a
+    ``suggest_stale`` note the page shows as a reminder. Every other change passes.
+    """
+    items = core_memory.listing(doc)
+    kept: list[dict[str, Any]] = []
+    notes: list[dict[str, Any]] = []
+    for change in changes:
+        number = change.get("item")
+        if number is None or not items[number - 1][1].get("pinned"):
+            kept.append(change)
+            continue
+        section, item, item_id = items[number - 1]
+        if change["op"] == "stale":
+            notes.append(
+                {
+                    "op": "suggest_stale",
+                    "item": number,
+                    "id": item_id,
+                    "section": section,
+                    "text": item["text"],
+                    "sources": change["sources"],
+                },
+            )
+        else:
+            notes.append({"op": "skipped", "reason": "pinned", "id": item_id, "change": change})
+        LOGGER.info(
+            "core_memory: %s of pinned item %s not applied (%s)",
+            change["op"],
+            item_id,
+            item["text"][:40],
+        )
+    return kept, notes
+
+
 def check_core_memory(  # noqa: PLR0913 — the answer and every gate's input.
     text: str | None,
     finish_reason: str | None,
@@ -143,24 +187,26 @@ def check_core_memory(  # noqa: PLR0913 — the answer and every gate's input.
     max_stale: int,
     max_chars: int,
     day: str,
-) -> tuple[list[dict[str, Any]], None] | tuple[None, str]:
-    """``(changes, None)`` when the answer may land, else ``(None, why)``.
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], None] | tuple[None, None, str]:
+    """``(changes, notes, None)`` when the answer may land, else ``(None, None, why)``.
 
     ``labels`` is :func:`day_labels` of that day; the changes come back with real record ids.
+    ``notes`` are what :func:`pin_gate` kept out of ``changes``; the caller stores them.
     """
     if finish_reason in ("length", "max_tokens"):
-        return None, "cut off by the output limit"
+        return None, None, "cut off by the output limit"
     parsed = _parse(text or "")
     if isinstance(parsed, str):
-        return None, parsed
-    changes: list[dict[str, Any]] = []
+        return None, None, parsed
+    cleaned_all: list[dict[str, Any]] = []
     for raw in parsed:
         cleaned = _clean(raw, items=core_memory.item_count(doc), labels=labels)
         if isinstance(cleaned, str):
-            return None, cleaned
-        changes.append(cleaned)
+            return None, None, cleaned
+        cleaned_all.append(cleaned)
+    changes, notes = pin_gate(cleaned_all, doc)
     reason = _list_gates(changes, doc=doc, max_stale=max_stale, max_chars=max_chars, day=day)
-    return (changes, None) if reason is None else (None, reason)
+    return (changes, notes, None) if reason is None else (None, None, reason)
 
 
-__all__ = ["build_core_memory_messages", "check_core_memory", "day_labels"]
+__all__ = ["build_core_memory_messages", "check_core_memory", "day_labels", "pin_gate"]

@@ -63,6 +63,13 @@ async def _save_settings(_changes: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+class _NullMemory:
+    """ADR 0154's page with every answer empty: the walk only needs the routes to exist."""
+
+    def __getattr__(self, _name: str) -> Any:  # noqa: ANN401 — any page method
+        return lambda *_args: {}
+
+
 def _client(tmp_path: Any) -> tuple[TestClient, str, list[str]]:  # noqa: ANN401 — pytest tmp_path
     key = local_key(tmp_path)
     matches = functools.partial(local_key_matches, key)
@@ -99,6 +106,7 @@ def _client(tmp_path: Any) -> tuple[TestClient, str, list[str]]:  # noqa: ANN401
             mail_draft_save=_save_draft,
             mail_draft_send=_send_draft,
             mail_draft_discard=_discard_draft,
+            memory_page=_NullMemory(),
             brief_read=dict,
             settings_read=_empty,
             settings_update=_save_settings,
@@ -118,7 +126,14 @@ def _client(tmp_path: Any) -> tuple[TestClient, str, list[str]]:  # noqa: ANN401
 
 def _call(client: TestClient, route: str, headers: dict[str, str]) -> int:
     method, path = route.split(" ", 1)
-    for name in ("{plugin_id}", "{request_id}", "{session_id}", "{message_id}"):
+    for name in (
+        "{plugin_id}",
+        "{request_id}",
+        "{session_id}",
+        "{message_id}",
+        "{item_id}",
+        "{day}",
+    ):
         path = path.replace(name, "x")
     if method != "WS":
         return client.request(method, path, headers=headers).status_code
@@ -134,12 +149,12 @@ def _call(client: TestClient, route: str, headers: dict[str, str]) -> int:
 def test_the_route_table_is_the_one_this_test_walks(tmp_path: Any) -> None:  # noqa: ANN401
     """Pin the count, so a route added later is walked, not silently skipped.
 
-    50 HTTP method/path pairs, the four FastAPI docs pairs (GET and HEAD of
+    64 HTTP method/path pairs, the four FastAPI docs pairs (GET and HEAD of
     ``/openapi.json``, ``/docs``, ``/docs/oauth2-redirect``, ``/redoc``) and
     the ``/inherent/ws`` socket.
     """
     _, _, routes = _client(tmp_path)
-    assert len(routes) == 59, routes
+    assert len(routes) == 73, routes
 
 
 @pytest.mark.parametrize(

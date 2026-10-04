@@ -132,7 +132,7 @@ def consolidate_day(  # noqa: PLR0913 — the day, the store, the knobs, the cli
         kind=KIND,
         turn_id=None,
     )
-    changes, reason = check_core_memory(
+    changes, notes, reason = check_core_memory(
         result.text,
         result.finish_reason,
         doc=base.doc,
@@ -141,7 +141,7 @@ def consolidate_day(  # noqa: PLR0913 — the day, the store, the knobs, the cli
         max_chars=settings.max_chars,
         day=day,
     )
-    if changes is None:
+    if changes is None or notes is None:
         LOGGER.warning("core_memory: %s rejected (%s); nothing stored", day, reason)
         return f"rejected ({reason})"
     review_log: list[dict[str, Any]] = []
@@ -171,6 +171,7 @@ def consolidate_day(  # noqa: PLR0913 — the day, the store, the knobs, the cli
             day=day,
             changes=changes,
             review_log=review_log,
+            notes=notes,
         )
         is None
     ):
