@@ -158,20 +158,29 @@ try {
   check('the feedback row folds away untouched', await page.locator('.notch-note.is-open .nc-rate').count() === 0 && await page.locator('.notch-note.is-open .nc-rate-open').count() === 1);
   await page.keyboard.press('Escape'); await gone();
 
-  // (f) the digest: how many, one row each with kind, company, role and time; nothing opens.
+  // (f) the summary (ADR 0158): how many and how many interviews, one row each with kind, company, role and time; rows open nothing, its button opens the ledger page.
   const items = [
     { id: 'i-1', title: '面试邀请 · Northwind', company: 'Northwind', role: 'Backend Co-op', mail_kind: 'interview', at: at(30), event_at: new Date(Date.now() + 2 * 86_400_000).toISOString() },
     { id: 'i-2', title: '拒信 · Acme Robotics', company: 'Acme Robotics', role: 'ML Intern', mail_kind: 'rejection', at: at(120) },
     { id: 'i-3', title: '其他求职邮件 · Orbit Labs', company: 'Orbit Labs', role: 'SWE Co-op', mail_kind: 'job_other', at: at(300) }];
-  notices = [...notices, { id: 'd-1', kind: 'digest', title: '你不在时有 3 封求职邮件', line: '', level: 'card', text: '你不在时有 3 封求职邮件', at: at(1), items }];
+  notices = [...notices, { id: 'd-1', kind: 'digest', title: '最近两天有 3 封求职邮件，其中 1 封面试', line: '', level: 'card', text: '最近两天有 3 封求职邮件，其中 1 封面试', at: at(1), link: 'jobs', items }];
   await shows(); await settle();
   const digest = await page.locator('.notch-note.is-open .nc-jobs').innerText();
-  check('the digest says how many', /你不在时有 3 封求职邮件/.test(digest));
+  check('the digest says how many and how many interviews', /最近两天有 3 封求职邮件，其中 1 封面试/.test(digest));
   check('the digest lists a row per mail with company and role', await page.locator('.notch-note.is-open .nc-jobrow').count() === 3 && /Acme Robotics/.test(digest) && /ML Intern/.test(digest) && /Interview|面试/.test(digest) && /Orbit Labs/.test(digest));
   check('digest rows open nothing: no links, no buttons', await page.locator('.notch-note.is-open .nc-jobrow a, .notch-note.is-open .nc-jobrow button').count() === 0);
   await shot('digest');
   await page.keyboard.press('Escape'); await gone();
   check('Esc on the digest sends dismissed', of('d-1').at(-1) === '{"action":"feedback","reaction":"dismissed"}');
+  // Its button opens the Dashboard on the job ledger and sends no dismissed.
+  notices = [{ ...notices.at(-1), id: 'd-2', items }];
+  await shows(); await settle();
+  check('the summary has one button, the job list', await page.locator('.notch-note.is-open .nc-jobs .nc-open-jobs').count() === 1);
+  await page.locator('.notch-note.is-open .nc-open-jobs').click();
+  await page.waitForSelector('.ad .jp-g', { timeout: 5000 });
+  check('the button opens the ledger page without a dismissed', await page.locator('.ad .jp-g').count() === 3 && !of('d-2').some(b => /dismissed/.test(b)));
+  notices = [];
+  await open();
 
   // (g) the ledger page in the Dashboard: grouped by company, expand, a confirmed delete.
   await page.locator('.companion-island-target').click();

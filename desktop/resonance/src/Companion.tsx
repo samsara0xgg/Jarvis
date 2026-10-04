@@ -234,7 +234,7 @@ export function Companion() {
   const [wardrobe, setWardrobe] = useState(loadWardrobe);
   // A skin change brings her out of the island for a moment.
   const [outing, setOuting] = useState(false);
-  const [menu, setMenu] = useState<Point | null>(null), [settingsFocus, setSettingsFocus] = useState(0);
+  const [menu, setMenu] = useState<Point | null>(null), [settingsFocus, setSettingsFocus] = useState(0), [jobsFocus, setJobsFocus] = useState(0);
   const menuRef = useRef<HTMLDivElement>(null);
   const [preview, setPreview] = useState<ExprId | null>(null);
   // The page open in the Dashboard sets her face while nothing else is going on.
@@ -504,6 +504,8 @@ export function Companion() {
     if (detached || detachedMode.current) { void window.jarvis?.dashboard?.('open'); if (!detached) return; }
     pinned.current = false; dashEntered.current = hovered; setDashboard(true); setComposer(false); if (!detached) void window.jarvis?.focus(false);
   };
+  // The job summary's button: the Dashboard opens on the job ledger and the summary goes without a "dismissed".
+  const openJobs = () => { openDashboard(false); pinned.current = true; if (detachedMode.current) window.jarvis?.dashboardMessage?.('dashboard', { type: 'jobs' }); else setJobsFocus(n => n + 1); notices.next(); };
   const closeDashboard = () => { if (detached) void window.jarvis?.dashboard?.('close'); else setDashboard(false); };
   // Clicking the island opens the Dashboard; a click on one it is already showing closes it, unless a rest opened it a moment
   // before (that click is the same reach for it). However it opened, it folds by itself once the pointer leaves (below).
@@ -556,6 +558,7 @@ export function Companion() {
         const value = message.value as DashboardView;
         if (detached) dashboardView.current?.restore(value); else remoteView.current = value;
       } else if (detached && message.type === 'settings') setSettingsFocus(n => n + 1);
+      else if (detached && message.type === 'jobs') setJobsFocus(n => n + 1);
       else if (!detached && message.type === 'notice' && typeof message.id === 'string') { setDashboard(false); focusNotice.current(message.id); }
       else if (detached && message.type === 'glow' && typeof message.value === 'string' && /^\d{1,3} \d{1,3} \d{1,3}$/.test(message.value) && message.value.split(' ').every(v => Number(v) <= 255)) document.documentElement.style.setProperty('--glow', message.value);
       else if (!detached && message.type === 'ready') sendGlow();
@@ -762,7 +765,7 @@ export function Companion() {
     : !notice ? null : notice.kind === 'pop' ? { key: notice.key, pop: notice.ids, onClose: notices.next }
     : notice.kind === 'mail' ? { key: notice.key, id: notice.id, onClose: notices.dismiss,
       card: <MailNotice key={notice.key} n={notice} card={notices.card!} lang={companion.lang} onDismiss={notices.dismiss} onChange={notices.bump} onRate={(reaction, text) => notices.rate(notice, reaction, text)}/> }
-    : notice.kind === 'jobs' ? { key: notice.key, id: notice.id, onClose: notices.dismiss, card: <JobsDigestCard key={notice.key} n={notice} lang={companion.lang} onDismiss={notices.dismiss}/> }
+    : notice.kind === 'jobs' ? { key: notice.key, id: notice.id, onClose: notices.dismiss, card: <JobsDigestCard key={notice.key} n={notice} lang={companion.lang} onDismiss={notices.dismiss} onOpen={openJobs}/> }
     : notice.kind === 'digest' ? { key: notice.key, onClose: notices.next, card: <DigestCard key={notice.key} n={notice} agents={agents} lang={companion.lang} look={wardrobe.marks} onOpen={jump} onAnswer={notices.focus}/> }
     : { key: notice.key, id: notice.id, onClose: notices.dismiss,
     card: <NoticeCard key={notice.key} n={notice} card={notices.card!} agent={agents.find(a => a.id === notice.id)} count={notices.count} look={wardrobe.marks}
@@ -771,7 +774,7 @@ export function Companion() {
         void notices.resolve(notice, text, body).then(ok => { if (ok && body.decision !== 'deny') ball.current?.hop(.14); });
       }}/> };
   const dashboardContent = <AroundDashboard open={dashboard} port={port} onClose={closeDashboard} viewRef={dashboardView} onView={value => { if (detached && detachedMode.current) window.jarvis?.dashboardMessage?.('parent', { type: 'view', value }); }}
-          onMood={dashboardMood} settingFocus={settingsFocus} onHop={height => ball.current?.hop(height)}
+          onMood={dashboardMood} settingFocus={settingsFocus} jobsFocus={jobsFocus} onHop={height => ball.current?.hop(height)}
           talk={port ? { rows: s.rows, tail, busy: voice === 'thinking', offline: s.phase === 'error', floor, submit: ask, older, card, decide: decideCard, question, answer: answerQuestion,
             think: { on: deep, secs: deepSecs, words, thoughts } } : undefined}
           plugins={port ? plugins : undefined} pluginFocus={pluginFocus} marks={wardrobe.marks} onAgents={setAgents} unread={notices.unread}

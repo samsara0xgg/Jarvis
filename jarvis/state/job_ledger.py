@@ -38,6 +38,11 @@ ALERT_KEEP: Final[timedelta] = timedelta(days=7)
 # A pending alert this old was waited on while the client could not show it (a held quiet level).
 HELD_AFTER: Final[timedelta] = timedelta(seconds=30)
 SOUNDING: Final[frozenset[str]] = frozenset({"card_sound", "speak"})
+# Three or more alerts made within this span are one summary card, never a card each, and
+# never a spoken line (ADR 0158).
+BURST_WINDOW: Final[timedelta] = timedelta(seconds=90)
+BURST_SIZE: Final[int] = 3
+INTERVIEWING: Final[frozenset[str]] = frozenset({"offer", "interview"})
 # Digest order: what Allen wants first.
 _RANK: Final[dict[str, int]] = {"offer": 0, "interview": 1, "rejection": 2}
 _OTHER_RANK: Final[int] = 3
@@ -446,13 +451,42 @@ def _notice(row: sqlite3.Row, quiet: str) -> dict[str, Any]:
     }
 
 
+def recent_alerts(path: Path, now: datetime) -> int:
+    """How many mail alerts were made within ``BURST_WINDOW`` before ``now``."""
+    with _db(path) as conn:
+        (count,) = conn.execute(
+            "SELECT count(*) FROM job_alert WHERE message_id != ? AND created_at >= ?",
+            (HEALTH_ID, _stamp(now - BURST_WINDOW)),
+        ).fetchone()
+    return int(count)
+
+
+def _summarised(rows: list[sqlite3.Row], now: datetime) -> list[sqlite3.Row]:
+    """The mail alerts that are one summary: all of them when two or more waited, else bursts.
+
+    A burst is any ``BURST_SIZE`` alerts made within ``BURST_WINDOW`` of each other. ``rows``
+    are oldest first.
+    """
+    if sum(row["created_at"] <= _stamp(now - HELD_AFTER) for row in rows) >= 2:  # noqa: PLR2004 - two or more waited
+        return rows
+    at = [_moment(row["created_at"]) or now for row in rows]
+    marked = {
+        j
+        for i in range(len(rows) - BURST_SIZE + 1)
+        if at[i + BURST_SIZE - 1] - at[i] <= BURST_WINDOW
+        for j in range(i, i + BURST_SIZE)
+    }
+    return [rows[i] for i in sorted(marked)]
+
+
 def alerts_for_client(path: Path, quiet: str, now: datetime) -> list[dict[str, Any]]:
-    """The pending alerts a client may show at this quiet level (ADR 0153), as notices.
+    """The pending alerts a client may show at this quiet level (ADR 0153, 0158), as notices.
 
     ``no-pop`` and ``dnd`` return nothing and leave every alert pending. ``quiet`` returns the
-    cards with the sound taken off. Back at ``off``, two or more alerts that waited are one digest
-    (offers and interviews first); otherwise each alert is its own notice. Alerts older than
-    seven days, and those of a mail Allen deleted, are not returned.
+    cards with the sound taken off. Mail alerts are one summary notice when two or more waited
+    or three came within ``BURST_WINDOW`` (the summary never speaks and links to the ledger);
+    other alerts are their own notices. Alerts older than seven days, and those of a mail Allen
+    deleted, are not returned.
     """
     if quiet in ("no-pop", "dnd"):
         return []
@@ -466,15 +500,24 @@ def alerts_for_client(path: Path, quiet: str, now: datetime) -> list[dict[str, A
             " ORDER BY a.created_at, a.id",
             (_stamp(now - ALERT_KEEP),),
         ).fetchall()
-    held = [row for row in rows if row["created_at"] <= _stamp(now - HELD_AFTER)]
-    if quiet != "off" or len(held) < 2:  # noqa: PLR2004 - a digest is two or more
-        return [_notice(row, quiet) for row in rows]
+    mails = [row for row in rows if row["kind"] != "health"]
+    merged = {row["id"] for row in _summarised(mails, now)}
+    notices = [_notice(row, quiet) for row in rows if row["id"] not in merged]
+    if not merged:
+        return notices
     items = [
-        _notice(row, quiet) for row in sorted(rows, key=lambda r: _RANK.get(r["kind"], _OTHER_RANK))
+        _notice(row, quiet)
+        for row in sorted(mails, key=lambda r: _RANK.get(r["kind"], _OTHER_RANK))
+        if row["id"] in merged
     ]
-    title = lang.t("job.digest.title", n=len(items))
+    title = lang.t(
+        "job.digest.title",
+        n=len(items),
+        x=sum(item["mail_kind"] in INTERVIEWING for item in items),
+    )
     sound = any(item["level"] in SOUNDING for item in items)
     return [
+        *notices,
         {
             "id": "digest-" + "-".join(item["id"] for item in items),
             "kind": "digest",
@@ -487,8 +530,9 @@ def alerts_for_client(path: Path, quiet: str, now: datetime) -> list[dict[str, A
             "role": "",
             "event_at": None,
             "mail_kind": items[0]["mail_kind"],
+            "link": "jobs",
             "items": items,
-        }
+        },
     ]
 
 

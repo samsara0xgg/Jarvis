@@ -996,7 +996,10 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
         "zh": "{company}发来一封求职相关的邮件{role}。",
         "en": "{company} sent a job-related email{role}.",
     },
-    "job.digest.title": {"zh": "你不在时有 {n} 封求职邮件", "en": "{n} job emails while you were away"},
+    "job.digest.title": {
+        "zh": "最近两天有 {n} 封求职邮件，其中 {x} 封面试",
+        "en": "{n} job emails in the last two days, {x} about interviews",
+    },
     # ADR 0155: the mail channel's health alert: a title and one line naming the reason.
     "job.health.title": {"zh": "邮件通道不通了", "en": "Mail channel is down"},
     "job.health.auth": {"zh": "Gmail 需要重新登录。", "en": "Gmail needs you to sign in again."},

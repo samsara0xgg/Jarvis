@@ -149,10 +149,10 @@ const thoughtRows = (rows: Row[], thoughts: Think['thoughts']) => new Map(though
 }));
 const PULL = 240; // px of fresh upward scroll at the top that adds the day before
 
-export function AroundDashboard({ open, port = null, onClose, onMood, onHop, talk, plugins: live, pluginFocus = null, marks = 'spark', onAgents, agentsFocus = 0, settingFocus = 0, onAnswer, unread, ctl, viewRef, onView }: {
+export function AroundDashboard({ open, port = null, onClose, onMood, onHop, talk, plugins: live, pluginFocus = null, marks = 'spark', onAgents, agentsFocus = 0, settingFocus = 0, jobsFocus = 0, onAnswer, unread, ctl, viewRef, onView }: {
   open: boolean; port?: string | null; onClose: () => void; onMood: (expr: ExprId | null) => void; onHop: (height: number) => void;
   talk?: Talk; plugins?: PluginController; pluginFocus?: { plugin: string; key: string } | null;
-  marks?: MarkLook; onAgents?: (agents: ShownAgent[]) => void; agentsFocus?: number; settingFocus?: number; onAnswer?: (id: string) => void;
+  marks?: MarkLook; onAgents?: (agents: ShownAgent[]) => void; agentsFocus?: number; settingFocus?: number; jobsFocus?: number; onAnswer?: (id: string) => void;
   unread?: ReadonlySet<string>; ctl: Controls; viewRef?: Ref<DashboardViewHandle>; onView?: (value: DashboardView) => void;
 }) {
   const [settings, updateSettings] = useCompanionSettings(), lang = settings.lang;
@@ -414,6 +414,10 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
     if (!page) openPage('settings'); else if (page !== 'settings') setPage('settings');
     setSettingsCat(null);
   }, [settingFocus]);
+  useEffect(() => {
+    if (!jobsFocus || !open) return;
+    if (!page) openPage('jobs'); else if (page !== 'jobs') { setPage('jobs'); jobsRoute.reload(); }
+  }, [jobsFocus]);
   const move = (s: Agent, change: Partial<Agent>) => {
     const el = pageEl.current?.querySelector<HTMLElement>(`[data-id="${s.id}"]`);
     if (el) flip.current = { id: s.id, top: el.getBoundingClientRect().top };

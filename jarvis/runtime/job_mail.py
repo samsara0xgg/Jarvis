@@ -316,7 +316,7 @@ class JobMail:
         if judgement.level not in _ALERT_LEVELS:
             ledger.note_delivery(self._db, head.message_id, "ledger_only", now)
             return
-        level = judgement.level
+        level = self._unless_burst(judgement.level, head.message_id, now)
         silenced = False
         if level in ledger.SOUNDING:
             # Unprompted sound only on private output: on speakers it is a silent card.
@@ -352,6 +352,16 @@ class JobMail:
         self._last_spoke = time.monotonic()
         ledger.mark_spoken(self._db, alert_id)
         ledger.note_delivery(self._db, head.message_id, "spoken", now)
+
+    def _unless_burst(self, level: str, message_id: str, now: datetime) -> str:
+        """A line that would be the third alert within the burst window is a card with sound.
+
+        The burst is one summary card (ADR 0158) and a summary never speaks.
+        """
+        if level != "speak" or ledger.recent_alerts(self._db, now) < ledger.BURST_SIZE - 1:
+            return level
+        ledger.note_delivery(self._db, message_id, "suppressed", now)
+        return "card_sound"
 
     def _speak_now(self, quiet: str) -> bool:
         """Speak only at quiet ``off``, unmuted, outside a live conversation and not too soon.

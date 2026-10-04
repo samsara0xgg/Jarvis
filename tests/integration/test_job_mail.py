@@ -306,6 +306,10 @@ class _Harness:
         assert reply.status_code == 200
         return reply.json()["notices"]
 
+    def flat(self) -> list[dict[str, Any]]:
+        """The notices with a summary replaced by the alerts it stands for."""
+        return [one for n in self.notices() for one in n.get("items", [n])]
+
     def ledger(self) -> list[dict[str, Any]]:
         return self.client.get("/inherent/jobs").json()["ledger"]
 
@@ -357,7 +361,10 @@ def test_a_cycle_types_the_mail_fills_the_ledger_and_alerts_by_rule(
     tmp_path: Path,
     jev: _Jev,
 ) -> None:
-    """Receipt: ledger. Rejection: card. Other: card with sound. Interview or offer: speak."""
+    """Receipt: ledger. Rejection: card. Other: card with sound. Interview or offer: speak.
+
+    The offer is the third alert within the burst window, so it is a card with sound (ADR 0158).
+    """
     h = _harness(tmp_path, jev)
     assert h.job.poll_once() == len(MAILS)
 
@@ -400,11 +407,12 @@ def test_a_cycle_types_the_mail_fills_the_ledger_and_alerts_by_rule(
     assert levels == {
         "m-interview": "speak",
         "m-reject": "card",
-        "m-offer": "speak",
+        "m-offer": "card_sound",
         "m-digest": "card_sound",
         "m-followup": "card_sound",
     }
-    notices = {n["mail_kind"] + ":" + n["company"]: n for n in h.notices()}
+    (summary,) = h.notices()  # five alerts at once are one summary; its items are the notices
+    notices = {n["mail_kind"] + ":" + n["company"]: n for n in summary["items"]}
     interview = notices["interview:Northwind"]
     assert interview["kind"] == "mail"
     assert interview["title"] == lang.t("job.title.interview", company="Northwind")
@@ -415,7 +423,7 @@ def test_a_cycle_types_the_mail_fills_the_ledger_and_alerts_by_rule(
     assert notices["rejection:Orbital"]["level"] == "card"
     assert notices["job_other:LinkedIn"]["level"] == "card_sound"
 
-    # One spoken line, though two alerts are at the speak level: the gap holds the second.
+    # One spoken line: the interview said it, and the later alerts of the burst never speak.
     assert h.spoken == 1
     assert sum(spoken for (spoken,) in h.sql("SELECT spoken FROM job_alert")) == 1
 
@@ -524,9 +532,10 @@ def test_quiet_levels_hold_the_alerts_and_release_is_one_digest(tmp_path: Path, 
     h.job.poll_once()
 
     h.quiet = "quiet"
-    quiet = h.notices()
-    assert len(quiet) == 5
-    assert {n["level"] for n in quiet} == {"card"}
+    (quiet,) = h.notices()  # five alerts made together are one summary card
+    assert quiet["kind"] == "digest"
+    assert quiet["level"] == "card"
+    assert {n["level"] for n in quiet["items"]} == {"card"}
     for level in ("no-pop", "dnd"):
         h.quiet = level
         assert h.notices() == []
@@ -536,7 +545,8 @@ def test_quiet_levels_hold_the_alerts_and_release_is_one_digest(tmp_path: Path, 
     h.quiet = "off"
     (digest,) = h.notices()
     assert digest["kind"] == "digest"
-    assert digest["title"] == lang.t("job.digest.title", n=5)
+    assert digest["title"] == lang.t("job.digest.title", n=5, x=2)
+    assert digest["link"] == "jobs"
     assert [item["mail_kind"] for item in digest["items"]] == [
         "offer",
         "interview",
@@ -568,6 +578,98 @@ def test_one_waiting_alert_is_a_card_and_old_ones_are_dropped(tmp_path: Path, je
     (only,) = h.notices()
     assert only["kind"] == "mail"
     assert only["mail_kind"] == "offer"
+
+
+def _pending(h: _Harness, kinds: list[str], *, level: str, age: timedelta) -> None:
+    """One job_mail row and one pending alert per kind, all made ``age`` before NOW (the clock)."""
+    h.job.now = lambda: NOW
+    made = NOW - age
+    for i, kind in enumerate(kinds):
+        row = {
+            "message_id": f"p-{i}",
+            "received_at": made.isoformat(),
+            "subject": "s",
+            "kind": kind,
+            "company": f"Co{i}",
+            "role": "",
+        }
+        job_ledger.upsert_mail(h.db, row, made)
+        job_ledger.create_alert(h.db, f"p-{i}", level, f"T{i}", "line", made)
+
+
+def test_ten_pending_alerts_are_one_summary_that_never_speaks(tmp_path: Path, jev: _Jev) -> None:
+    """Allen's backfill left 10 pending alerts, three at speak: one card, a link, no speech."""
+    h = _harness(tmp_path, jev, [])
+    kinds = ["interview"] * 3 + ["job_other"] * 6 + ["offer"]
+    _pending(h, kinds, level="card_sound", age=timedelta(minutes=20))
+    h.sql("UPDATE job_alert SET level = 'speak' WHERE id IN (SELECT id FROM job_alert LIMIT 3)")
+
+    for quiet in ("off", "quiet"):
+        h.quiet = quiet
+        (summary,) = h.notices()
+        assert summary["kind"] == "digest"
+        assert summary["title"] == lang.t("job.digest.title", n=10, x=4)
+        assert summary["link"] == "jobs"
+        assert summary["level"] == ("card_sound" if quiet == "off" else "card")
+        assert len(summary["items"]) == 10
+    assert h.spoken == 0
+
+    # A health alert is not job mail: it stays its own card and is not counted.
+    job_ledger.create_alert(h.db, job_ledger.HEALTH_ID, "card_sound", "down", "x", NOW)
+    h.quiet = "off"
+    health, summary = h.notices()
+    assert (health["kind"], summary["kind"], len(summary["items"])) == ("mail", "digest", 10)
+
+
+def test_two_alerts_in_a_burst_are_two_cards_and_three_are_one_summary(
+    tmp_path: Path, jev: _Jev
+) -> None:
+    """Fresh alerts: two stay separate cards; a third within the window merges all of them."""
+    h = _harness(tmp_path, jev, [])
+    _pending(h, ["rejection", "job_other"], level="card", age=timedelta(seconds=5))
+    assert [n["kind"] for n in h.notices()] == ["mail", "mail"]
+
+    h = _harness(tmp_path / "three", jev, [])
+    _pending(h, ["rejection", "job_other", "receipt"], level="card", age=timedelta(seconds=5))
+    (summary,) = h.notices()
+    assert (summary["kind"], len(summary["items"])) == ("digest", 3)
+
+    # One alert that waited 120 s and two fresh ones span more than the window: not a burst.
+    assert timedelta(seconds=90) == job_ledger.BURST_WINDOW
+    far = _harness(tmp_path / "far", jev, [])
+    _pending(far, ["rejection"], level="card", age=timedelta(seconds=120))
+    for i in (1, 2):
+        made = NOW - timedelta(seconds=5)
+        row = {"message_id": f"p-{i}", "kind": "job_other", "company": f"Co{i}", "role": ""}
+        job_ledger.upsert_mail(far.db, row, made)
+        job_ledger.create_alert(far.db, f"p-{i}", "card", "t", "l", made)
+    assert [n["kind"] for n in far.notices()] == ["mail"] * 3
+
+
+def test_a_single_live_interview_speaks_but_a_burst_of_interviews_does_not(
+    tmp_path: Path, jev: _Jev
+) -> None:
+    """One interview at quiet off is spoken; the third alert within the window never is."""
+    one = _harness(tmp_path / "one", jev, [m for m in MAILS if m["id"] == "m-interview"])
+    one.job.poll_once()
+    assert one.spoken == 1
+    (notice,) = one.notices()
+    assert (notice["kind"], notice["level"]) == ("mail", "speak")
+
+    interviews = [
+        {**m, "id": f"m-i{i}", "threadId": f"t-i{i}"}
+        for i, m in enumerate([next(m for m in MAILS if m["id"] == "m-interview")] * 3)
+    ]
+    burst = _harness(tmp_path / "burst", jev, interviews, speak_gap_s=0)
+    burst.job.poll_once()
+    assert burst.spoken == 2  # the third is merged into the summary
+    assert [level for (level,) in burst.sql("SELECT level FROM job_alert ORDER BY rowid")] == [
+        "speak",
+        "speak",
+        "card_sound",
+    ]
+    (summary,) = burst.notices()
+    assert (summary["kind"], summary["level"]) == ("digest", "card_sound")
 
 
 def test_feedback_is_recorded_and_an_untouched_alert_ends_ignored(
@@ -817,7 +919,7 @@ def test_each_decision_is_logged_with_its_pack_delivery_and_feedback(
     assert (rows["m-old"]["level"], rows["m-old"]["reason"]) == ("ledger", "older than 48 hours")
 
     # What Allen did with the card is appended to the decision as it arrives.
-    alert = next(n for n in h.notices() if n["mail_kind"] == "rejection")
+    alert = next(n for n in h.flat() if n["mail_kind"] == "rejection")
     h.client.post(f"/inherent/notices/{alert['id']}", json={"action": "seen"})
     h.client.post(
         f"/inherent/notices/{alert['id']}",
@@ -985,7 +1087,7 @@ def test_flagging_a_held_back_mail_makes_it_job_mail_once(tmp_path: Path, jev: _
         one["message_id"] for one in h.client.get("/inherent/jobs").json()["skipped"]
     }
     # The quiet level still holds the sound off.
-    notice = next(n for n in h.notices() if n["company"] == "UVic Events")
+    notice = next(n for n in h.flat() if n["company"] == "UVic Events")
     assert notice["level"] == "card"
     assert h.sql("SELECT level FROM job_alert WHERE message_id = 'm-fair'") == [("card_sound",)]
     assert h.sql("SELECT reaction FROM job_feedback WHERE alert_id = 'm-fair'") == [
@@ -1113,10 +1215,10 @@ def test_on_private_output_the_levels_stay_and_the_log_names_the_device(
     h = _harness(tmp_path, jev, speak_gap_s=0)
     h.job.poll_once()
 
-    assert h.spoken == 2
+    assert h.spoken == 1  # the offer is the third of the burst: no line
     reply = h.client.get("/inherent/notices").json()
     assert reply["audio_private"] is True
-    assert {n["level"] for n in reply["notices"]} == {"speak", "card", "card_sound"}
+    assert {n["level"] for n in h.flat()} == {"speak", "card", "card_sound"}
     rows = {r["event_id"]: r for r in job_ledger.list_attention(h.db, "job_mail")}
     assert rows["m-interview"]["delivery"]["audio"] == {"device": "AirPods Pro", "private": True}
     assert rows["m-digest"]["delivery"]["audio"] == {"device": "AirPods Pro", "private": True}
@@ -1146,7 +1248,7 @@ def test_a_disconnect_between_polls_downgrades_what_the_route_serves(
     """Alerts made on headphones are served as cards the moment the output is not private."""
     h = _harness(tmp_path, jev)
     h.job.poll_once()
-    assert {n["level"] for n in h.notices()} == {"speak", "card", "card_sound"}
+    assert {n["level"] for n in h.flat()} == {"speak", "card", "card_sound"}
 
     h.device = dict(SPEAKERS)
     reply = h.client.get("/inherent/notices").json()
