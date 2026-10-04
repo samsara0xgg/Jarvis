@@ -47,3 +47,7 @@ the last turn that showed a line is not shown again, and a sound heard while she
 lost. The helper is built with `swiftc` on first start in the background, so the line is empty
 until that finishes; if it keeps dying (five restarts) the line stays off until the next
 daemon start.
+
+A replay of 420 real-prompt replies (2026-10-03) showed her naming a sound in 4.7% of them,
+only on open questions such as "你在干嘛呢"; the awkward ones echoed exact counts. So the
+line gives no counts ("coughed repeatedly") and calls itself background.

@@ -229,18 +229,21 @@ class AmbientSounds:
             else:
                 sure[e.name] = sure.get(e.name, 0) + 1
         facts = [
-            f"{words} {sure[name]}x" if counted and sure[name] > 1 else words
+            f"{words} repeatedly" if counted and sure[name] > 1 else words
             for name, (words, counted) in _PHRASES.items()
             if name in sure
         ]
         guesses = [
-            f"maybe {_PHRASES[name][0]} {'once' if n == 1 else f'{n}x'} "
+            f"maybe {_PHRASES[name][0]} "
             f"(~{round(best * 100)}%, this detector under-scores his laugh)"
-            for name, (n, best) in maybe.items()
+            for name, (_, best) in maybe.items()
             if name not in sure
         ]
         minutes = max(1, math.ceil((now - since) / 60))
-        head = f"Sounds around him (last {minutes} min, from audio): "
+        head = (
+            "Sounds around him (background, rarely worth mentioning; "
+            f"last {minutes} min, from audio): "
+        )
         tail = "; ".join(guesses) + "."
         room = _LINE_CHARS - len(head) - (len(tail) if guesses else 1)
         kept: list[str] = []

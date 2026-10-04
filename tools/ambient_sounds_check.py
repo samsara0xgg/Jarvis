@@ -69,7 +69,7 @@ def scenario() -> None:
     assert got == {"cough", "sigh", "bird", "music", "laughter"}, got
     line = s.line()
     print(line)
-    assert line == "Sounds around him (last 10 min, from audio): laughed, coughed, sighed, birds, music on.", line
+    assert line == "Sounds around him (background, rarely worth mentioning; last 10 min, from audio): laughed, coughed, sighed, birds, music on.", line
     assert s.line() is None  # shown once
 
     # Debounce: same label within 10 s is one event; 10 s of quiet makes the next one new.
@@ -82,7 +82,7 @@ def scenario() -> None:
     at(126)
     line = s.line()
     print(line)
-    assert line is not None and "coughed 2x" in line, line
+    assert line is not None and "coughed repeatedly" in line, line
 
     # A sound already shown is not shown again; a new one is.
     at(130)
@@ -100,7 +100,7 @@ def scenario() -> None:
     s.ingest(_line(207, cough=0.95, music=0.9))
     line = s.line()
     print(line)
-    assert line == "Sounds around him (last 2 min, from audio): coughed, music on; maybe laughed once (~55%, this detector under-scores his laugh).", line
+    assert line == "Sounds around him (background, rarely worth mentioning; last 2 min, from audio): coughed, music on; maybe laughed (~55%, this detector under-scores his laugh).", line
     clock[0] += 30
     s.ingest(_line(300, laughter=0.5))
     s.ingest(_line(301.5, laughter=0.6))
