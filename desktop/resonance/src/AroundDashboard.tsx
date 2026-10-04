@@ -7,6 +7,7 @@ import { AGENT_NAME, DEMO_AGENTS, fromClaude, fromCodex, useClaudeSessions, type
 import { freshnessLine, nowLine, useWorkState, type Basis } from './WorkStateModule';
 import { duration, useProjects } from './ProjectsModule';
 import { fmtReset } from './quota-time';
+import { TokenSection, useTokenUsage } from './TokenModule';
 import { plain, visible, type Row } from './model';
 import { Markdown } from './Markdown';
 import { AgentMark, type MarkLook, type MarkState } from './AgentMarks';
@@ -159,6 +160,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
   const tick = useNow(20_000);
   const quota = useUsage(port), codex = useCodexSessions(port), work = useWorkState(port), projects = useProjects(port, open), claudeRows = useClaudeSessions(port);
   const [page, setPage] = useState<Page | null>(null);
+  const tokens = useTokenUsage(page === 'usage');
   const [plugin, setPlugin] = useState<string | null>(null);
   // The Mail page: the letter open on it (null = the list) and the list's filter.
   const [letter, setLetter] = useState<Mail | null>(null), [mailFilter, setMailFilter] = useState<MailFilter>('all');
@@ -746,7 +748,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
       {port && window.jarvis?.openAgents && <div className="pg-sec"><button className="btn btn-ghost" onClick={() => window.jarvis?.openAgents?.()}>{t(['Open the Agents window', '打开 Agents 窗口'])}</button></div>}</div>
     </>,
     usage: () => <>
-      {back(t(TITLES.usage), <button className="us-sync" aria-label={t(['Refresh', '刷新'])} disabled={quota.refreshing} onClick={() => void quota.refresh()}>
+      {back(t(TITLES.usage), <button className="us-sync" aria-label={t(['Refresh', '刷新'])} disabled={quota.refreshing} onClick={() => { void quota.refresh(); tokens.refresh(); }}>
         {!quota.refreshing && synced ? t([`synced ${hm(synced)}`, `${hm(synced)} 同步`]) : t(['syncing…', '同步中…'])}<ArrowsClockwise size={11} className={quota.refreshing ? 'is-spinning' : ''}/></button>)}
       <div className="pg-body"><div className="pg-sec"><h4>{t(['Balances', '余额'])}</h4><div className="bal">
         <div className="bal-card"><Account id="deepseek">DeepSeek</Account><b>{deepseek?.status === 'ok' ? usd(deepseek.data.balance) : '—'}</b></div>
@@ -766,7 +768,8 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
         </div>}
         {codexUsage?.status === 'ok' ? <div className="bigrings">{(codexUsage.data.windows ?? []).map(w => <Ring key={w.key} w={w} name={w.label} sub={fmtReset(w.resets_at)}/>)}</div> : <p className="muted">{codexUsage?.error ?? t(['Not signed in to Codex', '没登录 Codex'])}</p>}</div>
       <div className="pg-sec"><div className="us-plan"><Account id="openai">OpenAI <em>API</em></Account>{openai?.status === 'ok' && <span className="meta">{t(['this month', '本月'])} {usd(openai.data.month_usd)}</span>}</div>
-        {openai?.status === 'ok' ? <Spend total={openai.data.today_usd ?? 0} models={openai.data.by_model ?? []}/> : <p className="muted">{openai?.error ?? t(['Needs an admin key', '缺管理密钥'])}</p>}</div></div>
+        {openai?.status === 'ok' ? <Spend total={openai.data.today_usd ?? 0} models={openai.data.by_model ?? []}/> : <p className="muted">{openai?.error ?? t(['Needs an admin key', '缺管理密钥'])}</p>}</div>
+      <TokenSection state={tokens}/></div>
     </>,
     plugins: () => {
       const p = plugin ? plugins[plugin] : null;

@@ -21,6 +21,7 @@ import { connect, type Runtime } from './runtime';
 import { usePlugins, type PluginSnapshot } from './PluginPanel';
 import { WorkspacePreview } from './WorkspacePreview';
 import { Companion } from './Companion';
+import type { TokenUsage } from './TokenModule';
 type WindowPlacement = { docked: boolean; topInset: number; surfaceWidth: number; compactWidth: number; notchWidth: number; displayId?: number };
 declare global { interface Window { jarvis?: {
   placement: () => Promise<WindowPlacement>;
@@ -49,6 +50,7 @@ declare global { interface Window { jarvis?: {
   openUrl?: (url: string) => Promise<boolean>;
   usageReset: (service: 'codex', requestId: string) => Promise<{ code: string; windows_reset: number }>;
   usageBalance: (service: 'openai', usd: number) => Promise<{ recorded: boolean }>;
+  tokenUsage?: (refresh?: boolean) => Promise<TokenUsage>;
   plugins: (operation: string, data?: Record<string, unknown>) => Promise<PluginSnapshot>;
   layout: (mode: string, height: number, surface?: { x: number; y: number; width: number; height: number }) => void; focus: (enabled: boolean) => Promise<void>; hide: () => void; quit?: () => void; passthrough: (enabled: boolean) => void;
   material: (rects: {x:number;y:number;width:number;height:number;radius:number;opacity:number;occlusion?:GlassOcclusion}[], strength: number) => void;
