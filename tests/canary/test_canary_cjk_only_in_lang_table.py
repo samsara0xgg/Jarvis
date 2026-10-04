@@ -34,6 +34,8 @@ _MATCHERS: Final[dict[str, frozenset[str]]] = {
     # A model-written line before a tool call that already claims a result is not spoken.
     "jarvis/decision/commentary.py": frozenset({"_RESULT_CLAIM"}),
     # The brief reads a saved report's own brackets, citation tails and sentence ends.
+    # The date sweep (ADR 0154) reads the dates a to-do item states: 10月3日, 10月3号.
+    "jarvis/decision/core_memory.py": frozenset({"_DATE"}),
     "jarvis/decision/daily_report.py": frozenset(
         {"_COMPLETION_WORDS", "_TITLE_TERM", "_BREAKS", "_REFS_TAIL", "_GROUP", "_SENTENCE_END",
          "_clip", "_status_of"}

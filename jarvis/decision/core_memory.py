@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+from datetime import date
 from typing import TYPE_CHECKING, Any, Final
 
 from jarvis.state import core_memory
@@ -20,6 +22,12 @@ LOGGER = logging.getLogger(__name__)
 
 _OPS: Final[frozenset[str]] = frozenset({"add", "rewrite", "stale"})
 _FENCE: Final[str] = "```"
+_DUE_SECTION: Final[str] = core_memory.SECTIONS[-1]  # 承诺和待办
+# ISO, 2026年10月3日, 10月3日 / 10月3号, 10/3: the groups are (y, m, d), (y?, m, d), (m, d).
+_DATE: Final[re.Pattern[str]] = re.compile(
+    r"(?<![\d-])(?:(\d{4})-(\d{1,2})-(\d{1,2})|(?:(\d{4})年)?(\d{1,2})月(\d{1,2})[日号]"
+    r"|(?<!/)(\d{1,2})/(\d{1,2})(?![\d/]))",
+)
 
 
 def day_labels(records: Sequence[tuple[str, str, str, str]]) -> dict[str, str]:
@@ -137,6 +145,56 @@ def _list_gates(
     return f"{size} chars over the {max_chars} cap" if size > max_chars else None
 
 
+def _dates_in(text: str, day: date) -> list[date]:
+    """Every valid date in ``text``; a year-less one takes the year that puts it nearest ``day``."""
+    found: list[date] = []
+    for match in _DATE.finditer(text):
+        year, month, dom = (
+            (match[1], match[2], match[3])
+            if match[1]
+            else (match[4], match[5], match[6])
+            if match[5]
+            else (None, match[7], match[8])
+        )
+        years = [int(year)] if year else [day.year - 1, day.year, day.year + 1]
+        candidates: list[date] = []
+        for candidate in years:
+            try:
+                candidates.append(date(candidate, int(month), int(dom)))
+            except ValueError:
+                continue  # not a calendar date (month 13, Feb 29 of a common year)
+        if candidates:
+            found.append(min(candidates, key=lambda c: abs((c - day).days)))
+    return found
+
+
+def date_stale(doc: core_memory.Doc, day: str, since: str | None) -> list[dict[str, Any]]:
+    """Stale changes for 承诺和待办 items whose latest date is on or before ``day``.
+
+    By code, no model: an item with no date is never touched, nor is any other section. A
+    pinned item only gets one on the night its date first passes (later than ``since``, the
+    version's ``upto_day``), so a reminder the user answered with 对 does not come back.
+    """
+    today = date.fromisoformat(day)
+    seen = date.fromisoformat(since) if since else None
+    out: list[dict[str, Any]] = []
+    for number, (section, item, _item_id) in enumerate(core_memory.listing(doc), start=1):
+        dates = _dates_in(item["text"], today) if section == _DUE_SECTION else []
+        if not dates or (due := max(dates)) > today:
+            continue
+        if item.get("pinned") and seen and due <= seen:
+            continue
+        out.append(
+            {
+                "op": "stale",
+                "item": number,
+                "sources": [],
+                "reason": f"date passed ({due.isoformat()})",
+            },
+        )
+    return out
+
+
 def pin_gate(
     changes: Sequence[dict[str, Any]],
     doc: core_memory.Doc,
@@ -187,11 +245,14 @@ def check_core_memory(  # noqa: PLR0913 — the answer and every gate's input.
     max_stale: int,
     max_chars: int,
     day: str,
+    since: str | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], None] | tuple[None, None, str]:
     """``(changes, notes, None)`` when the answer may land, else ``(None, None, why)``.
 
     ``labels`` is :func:`day_labels` of that day; the changes come back with real record ids.
     ``notes`` are what :func:`pin_gate` kept out of ``changes``; the caller stores them.
+    Past-dated to-dos (:func:`date_stale`, ``since`` = the base version's ``upto_day``) are
+    added after the gates, outside the ``max_stale`` cap, and skip an item the answer targets.
     """
     if finish_reason in ("length", "max_tokens"):
         return None, None, "cut off by the output limit"
@@ -206,7 +267,18 @@ def check_core_memory(  # noqa: PLR0913 — the answer and every gate's input.
         cleaned_all.append(cleaned)
     changes, notes = pin_gate(cleaned_all, doc)
     reason = _list_gates(changes, doc=doc, max_stale=max_stale, max_chars=max_chars, day=day)
-    return (changes, notes, None) if reason is None else (None, None, reason)
+    if reason is not None:
+        return None, None, reason
+    targeted = {change["item"] for change in cleaned_all if "item" in change}
+    swept = [c for c in date_stale(doc, day, since) if c["item"] not in targeted]
+    swept_changes, swept_notes = pin_gate(swept, doc)
+    return [*changes, *swept_changes], [*notes, *swept_notes], None
 
 
-__all__ = ["build_core_memory_messages", "check_core_memory", "day_labels", "pin_gate"]
+__all__ = [
+    "build_core_memory_messages",
+    "check_core_memory",
+    "date_stale",
+    "day_labels",
+    "pin_gate",
+]

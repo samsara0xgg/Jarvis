@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
+from jarvis.decision.core_memory import date_stale
 from jarvis.decision.llm import ChatResult
 from jarvis.decision.surrogate_route import KEY_ENV, JevLog, SurrogateRoute
 from jarvis.runtime.core_memory import CoreMemorySettings
@@ -744,3 +745,106 @@ def test_review_is_off_without_review_min_confidence(tmp_path: Path, jev: _Jev) 
     )
     assert on is not None
     assert on.review_min_confidence == 0.8
+
+
+def _doc_with(*texts: str, pinned: tuple[str, ...] = ()) -> core_memory.Doc:
+    doc = core_memory.empty_doc()
+    doc["承诺和待办"] = [{"text": t, "topic": None, "sources": [], "since": "x"} for t in texts]
+    for item in doc["承诺和待办"]:
+        item["pinned"] = item["text"] in pinned
+    return doc
+
+
+@pytest.mark.parametrize(
+    ("text", "day", "stale_items"),
+    [
+        ("计划于 2026-10-03 和朋友吃饭,2026-10-04 看电影。", "2026-10-03", []),
+        ("计划于 2026-10-03 和朋友吃饭,2026-10-04 看电影。", "2026-10-04", [1]),
+        ("Reliable Controls 线上面试 2026-10-08 13:00–14:00", "2026-10-07", []),  # noqa: RUF001
+        ("Reliable Controls 线上面试 2026-10-08 13:00–14:00", "2026-10-08", [1]),  # noqa: RUF001
+        ("2026年10月8日交表", "2026-10-07", []),
+        ("2026年10月8日交表", "2026-10-08", [1]),
+        ("10月8日开会", "2026-10-08", [1]),
+        ("10月8号开会", "2026-10-09", [1]),
+        ("10月8日开会", "2026-10-07", []),
+        ("10/8 取快递", "2026-10-08", [1]),
+        ("10/8 取快递", "2026-10-07", []),
+        ("2026/10/8 取快递", "2026-10-07", []),  # a slashed ISO date is not M/D
+        ("完成 3/4 的进度", "2026-03-07", [1]),  # any M/D reads as a date, a ratio too
+        ("3/4 取快递", "2026-10-07", []),  # >6 months past, nearest year is 2027: upcoming
+        ("记得买牛奶", "2026-10-08", []),  # no date: never touched
+        ("2026-13-45 不是日期", "2026-10-08", []),
+        ("1月5日交表", "2026-12-30", []),  # year-less: the year nearest the day, so Jan 2027
+        ("12月30日交表", "2027-01-02", [1]),  # ... and Dec 2026
+        ("2月29日交表", "2028-03-01", [1]),  # leap day found in 2028
+    ],
+)
+def test_a_to_do_goes_stale_by_code_when_its_latest_date_is_not_after_the_day(
+    text: str, day: str, stale_items: list[int]
+) -> None:
+    """Each date form, the latest-date rule, the year rule and an item with no date."""
+    changes = date_stale(_doc_with(text), day, None)
+    assert [c["item"] for c in changes] == stale_items
+
+
+def test_date_stale_touches_only_the_to_do_section_and_pins_remind_once() -> None:
+    """Section 正在做的事 is skipped; a pinned item is reminded only on the night it passes."""
+    doc = _doc_with("交表 2026-10-03", "交稿 2026-10-03", pinned=("交稿 2026-10-03",))
+    doc["正在做的事"] = [{"text": "写论文,截至 2026-10-01", "topic": None, "sources": []}]
+    assert [c["item"] for c in date_stale(doc, "2026-10-03", None)] == [2, 3]  # [1] is 正在做的事
+    assert [c["item"] for c in date_stale(doc, "2026-10-03", "2026-10-02")] == [2, 3]
+    assert [c["item"] for c in date_stale(doc, "2026-10-04", "2026-10-03")] == [2]  # 3: no reminder
+    assert date_stale(doc, "2026-10-03", None)[0]["reason"] == "date passed (2026-10-03)"
+
+
+def test_the_night_marks_past_dated_to_dos_stale_with_no_model_call_and_never_twice(
+    tmp_path: Path,
+) -> None:
+    """One nightly version per day: stale ops for unpinned, a reminder for pinned, nothing else."""
+    path = tmp_path / "memory.db"
+    d1, d0 = _day(1), _day(0)
+    when = f"{d1.month}月{d1.day}日"
+    for topic, fact in {
+        "过去": f"{d1 - timedelta(days=1)} 吃饭,{d1} 看电影",
+        "之后": f"{d1} 吃饭,{d0} 看电影",
+        "中文": f"{d1.year}年{when}交稿",
+        "斜杠": f"{d1.month}/{d1.day} 取快递",
+        "无日期": "买牛奶",
+        "已钉": f"{d1} 交表",
+    }.items():
+        remember_fact(path, topic, fact, "承诺和待办")
+    remember_fact(path, "论文", f"截至 {d1 - timedelta(days=1)} 写完", "正在做的事")
+    with closing(open_memory_db(path)) as conn, core_memory.write_transaction(conn):
+        base = core_memory.current(conn, "2026-01-01T00:00:00-07:00")
+        pin = core_memory.copy.deepcopy(base.doc)
+        next(i for i in pin["承诺和待办"] if i["topic"] == "已钉")["pinned"] = True
+        core_memory.append_version(
+            conn, base=base, doc=pin, origin="user", upto_day=None, changes=[], now=LEGACY_TS
+        )
+    _days(path, 1, 0, -1)
+    model = _Consolidator()  # answers "no changes" every day: every stale below is code's
+    schedule = _schedule(tmp_path, model)
+
+    schedule.write(TODAY)  # day 1 lands
+    assert _items(path)["承诺和待办"] == [
+        "之后: " + f"{d1} 吃饭,{d0} 看电影",
+        "无日期: 买牛奶",
+        "已钉: " + f"{d1} 交表",
+    ]
+    assert _items(path)["正在做的事"] == [f"论文: 截至 {d1 - timedelta(days=1)} 写完"]
+    nightly = [v for v in _versions(path) if v[0] == "nightly"]
+    assert [v[1] for v in nightly] == [d1.isoformat()]  # one version, upto_day intact
+    ops = [(c["op"], c.get("reason")) for c in nightly[0][2]]
+    assert ops == [("stale", f"date passed ({d1})")] * 3 + [("suggest_stale", None)]
+
+    schedule.write(
+        TODAY + timedelta(days=1)
+    )  # day 0: the 之后 item's date arrives; 已钉 is not re-reminded
+    nightly = [v for v in _versions(path) if v[0] == "nightly"]
+    assert [c["op"] for c in nightly[-1][2]] == ["stale"]
+    assert "之后" not in str(_items(path))
+
+    schedule.write(TODAY + timedelta(days=2))  # nothing due: the day's version has no changes
+    nightly = [v for v in _versions(path) if v[0] == "nightly"]
+    assert nightly[-1][2] == []
+    assert len(model.asked) == 3  # the model was asked for each day, never for a stale

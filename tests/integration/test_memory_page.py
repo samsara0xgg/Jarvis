@@ -268,6 +268,23 @@ def test_the_night_leaves_a_pinned_item_alone_and_keeps_a_stale_proposal_as_a_re
     assert world.items()["城市: Victoria (BC)"]["pinned"] is True
 
 
+def test_the_page_shows_a_date_stale_and_a_pinned_reminder_with_no_quote(world: World) -> None:
+    """The night's by-date stale is an entry without a source quote; a pinned one a reminder."""
+    d1 = _day(1).isoformat()
+    for topic in ("交表", "交稿"):
+        remember_fact(world.path, topic, d1, "承诺和待办")
+    pinned = world.items()[f"交稿: {d1}"]
+    world.post("/item/edit", {"id": pinned["id"], "text": f"交稿: {d1}", "section": None})
+    _insert(world.path, [(_rid(1, 1), _stamp(1, 21), "allen", "今天没什么事")])
+    _nightly(world, _Consolidator())
+    kinds = {e["kind"]: e for e in world.overview()["new"]["entries"]}
+    assert (kinds["stale"]["text"], kinds["stale"]["quote"]) == (f"交表: {d1}", None)
+    assert kinds["suggest_stale"]["id"] == pinned["id"]
+    assert f"交表: {d1}" not in world.items()
+    assert world.items()[f"交稿: {d1}"]["pinned"] is True
+    assert world.get(f"/item/{pinned['id']}")["reminder"] is True
+
+
 def _consolidation_input(world: World, model: _Consolidator, day: str) -> str:
     _nightly(world, model)
     return model.inputs[day]

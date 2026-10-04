@@ -55,3 +55,15 @@ a user write that would pass the cap is refused unless it makes the note shorter
   as a delete plus an add; undoing them still works.
 - A saved cap applies at the next boot; the page shows both values until then.
 - The page lists the latest 60 versions; older rows stay in the table.
+
+> **Amendment (2026-10-04) — A past-dated to-do is marked stale by date, in code.**
+> When a day is consolidated, the code reads each 承诺和待办 item for dates (`2026-10-03`,
+> `2026年10月3日`, `10月3日`/`10月3号`, `10/3`; a year-less date takes the year that puts it
+> nearest that day). An item whose latest date is on or before the day gets a `stale` change
+> with the reason `date passed (YYYY-MM-DD)` in the same nightly version, with no model call
+> and outside the `max_stale` cap; an item with no date, and every other section, is never
+> touched (正在做的事 has "截至" dates that are not deadlines). A pinned item gets the
+> `suggest_stale` reminder instead, and only on the night its date first passes, so a 对 on the
+> reminder is not undone the next night. Any `M/D` reads as a date, so "3/4" as a ratio goes
+> stale in March; items the answer itself targets are left to it, and an item added tonight
+> with a past date is caught the next night.
