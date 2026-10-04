@@ -51,8 +51,9 @@ export function itemsOf(lines: Line[], captions: Captions, before?: Item): Item[
     else {
       const { spoken, written } = split(l.text);
       // ADR 0114: a written part that adds to what she says (not the whole answer) shows under it, at the middle level too.
-      // A written part that only repeats what she says (the daemon sends one for a plain-text answer) shows once, as her line.
-      const again = !!l.written && words(l.written) === words(spoken);
+      // A written part that only repeats what she says (the daemon sends one for a plain-text answer) shows once, as her line;
+      // at the middle level one that is only sentences (prose carrying on from her line, which she never says) is not shown either.
+      const again = !!l.written && (words(l.written) === words(spoken) || captions === 'brief' && !!spoken && !worthReading(l.written));
       if (l.written && captions !== 'none') out.push({ ...base, who: 'her', spoken, written: again ? '' : l.written, failed: false });
       else if (captions === 'all' && (spoken || written)) out.push({ ...base, who: 'her', spoken, written, failed: false });
       // The middle level: a written part worth reading shows alone; one that is only sentences gives way to what she says, lit as she says it.

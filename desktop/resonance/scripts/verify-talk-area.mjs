@@ -336,6 +336,14 @@ try {
     check('the written part sits below the spoken line and holds the details', order.below && order.text.includes('Anna') && order.text.includes('评审会议'));
     await shot('13b-structured-brief');
     await emit('voice', { phase: 'spoken', turn_id: 'sa1' });
+    // A written part that is only sentences carrying on from her line (she never says it) is not shown at the middle level.
+    const said3 = '10月1日我们主要聊了实时语音和求职安排。', prose = '你当时发现首条长回复没有逐字渲染，这些问题当时尚未确认修复。晚上你要求电脑继续运行四小时。';
+    await emit('voice', { phase: 'listening', turn_id: 'sa3' }); await emit('voice', { phase: 'accepted', turn_id: 'sa3', text: '10月1号我们聊了什么' });
+    await emit('open', { turn_id: 'sa3', response_id: 'r-sa3' }); await emit('append', { turn_id: 'sa3', token: said3 });
+    await emit('done', { turn_id: 'sa3', fadeMs: 100, spoken: said3, written: prose }); await page.waitForTimeout(1500);
+    a = await area();
+    check('a written part that is only prose carrying on from her line is not shown under it: her line alone', a.her === said3 && await page.locator('.talk [data-written]').count() === 0);
+    await emit('voice', { phase: 'spoken', turn_id: 'sa3' });
     // The same answer without the signal is the old one: a <document> shows alone.
     await s.turn('sa2', '再说一遍', written); await page.waitForTimeout(2000);
     a = await area();
