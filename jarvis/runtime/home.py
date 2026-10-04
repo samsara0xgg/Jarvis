@@ -13,6 +13,7 @@ import json
 import logging
 import re
 import urllib.request
+from contextlib import closing
 from datetime import UTC, date, datetime, time, timedelta
 from email.utils import parseaddr, parsedate_to_datetime
 from typing import TYPE_CHECKING, Any, Final
@@ -20,19 +21,23 @@ from typing import TYPE_CHECKING, Any, Final
 from jarvis.decision.daily_report import brief_of
 from jarvis.execution.tools import ToolError
 from jarvis.runtime.daily_report import PLAN_SERVER, _graph
+from jarvis.shared import lang
 from jarvis.state.daily_contract import DailyError
 from jarvis.state.daily_store import get_briefing
+from jarvis.state.event_log import open_runtime_event_log
 
 if TYPE_CHECKING:
     import sqlite3
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
     from collections.abc import Set as AbstractSet
     from datetime import tzinfo
+    from pathlib import Path
 
     from jarvis.decision.mail_reply import MailReply
     from jarvis.execution.mcp_tools import McpServers
     from jarvis.runtime.dashboard import FocusState
     from jarvis.runtime.plugin_connections import PluginConnections
+    from jarvis.runtime.work_state import LLMAnalyst
 
 LOGGER = logging.getLogger(__name__)
 _OPEN_METEO = "https://api.open-meteo.com/v1/forecast"
@@ -85,6 +90,50 @@ def mail_body(body: str, *, links: bool = False) -> str:
     return body if len(body) <= _MAIL_BODY_CHARS else f"{body[:_MAIL_BODY_CHARS]}…"
 
 
+_LAYOUT_RE: Final = re.compile(r"<(?:table|img)\b", re.IGNORECASE)
+_URL_RE: Final = re.compile(r"https?://\S+")
+_FEW_WORDS: Final = 200
+_SUMMARY_PROMPT: Final = (
+    "Say in one short sentence, in {language}, what this email is (who sends it and what it "
+    "offers or asks). No greeting, no quotes."
+)
+
+
+def mail_layout(raw: str, text: str) -> str:
+    """``html`` when the page should draw the letter's own HTML rather than ``text`` (ADR 0148).
+
+    Only an HTML-only body qualifies (the server hands over the text part when there is one,
+    so a body with markup is the HTML part). Then it draws as HTML when it lays out in tables
+    or holds images, or when its text is mostly links: over half link characters, or links and
+    under 200 other characters.
+    """
+    if not _HTML_HINT_RE.search(raw):
+        return "text"
+    if _LAYOUT_RE.search(raw):
+        return "html"
+    links = sum(len(one) for one in _URL_RE.findall(text))
+    mostly_links = links > 0 and (links * 2 > len(text) or len(text) - links < _FEW_WORDS)
+    return "html" if mostly_links else "text"
+
+
+def mail_summarizer(
+    analyst: LLMAnalyst | None, event_log: Path,
+) -> Callable[[str, str], str] | None:
+    """``(system, letter) -> sentence`` over the analyst's preset, accounted as ``mail_summary``."""
+    if analyst is None:
+        return None
+
+    def summarize(system: str, letter: str) -> str:
+        with closing(open_runtime_event_log(event_log)) as conn:
+            result = analyst.analyze(
+                conn, system=system, messages=[{"role": "user", "content": letter}],
+                tools=[], tool_choice="none",
+            )
+        return (result.text or "").strip()
+
+    return summarize
+
+
 def _kind(code: int) -> str:
     return next((kind for codes, kind in _WMO if code in codes), "rain")
 
@@ -118,26 +167,30 @@ def weather(latitude: float, longitude: float) -> dict[str, Any]:
 class Home:
     """What the home's Today, mail and brief blocks read; built once at boot."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 — the connections, the zone and the optional parts.
         self,
         connections: PluginConnections,
         zone: tuple[str, tzinfo],
         weather_at: Mapping[str, Any] | None,
         mail_reply: MailReply | None = None,
         focus: FocusState | None = None,
+        summarizer: Callable[[str, str], str] | None = None,
     ) -> None:
         """Bind the live connections, the local zone (name, zone) and the forecast's place.
 
         ``weather_at`` holds ``latitude`` and ``longitude``; None leaves the weather out.
         ``mail_reply`` marks letters that need a reply (ADR 0123); None leaves them all unmarked.
         ``focus`` switches the Dashboard's mail page on (ADR 0147): its open letter may be read,
-        archived and trashed, not only the junk offered.
+        archived and trashed, not only the junk offered. ``summarizer`` writes a letter's one-line
+        summary (ADR 0148); None leaves :meth:`summary` a 404.
         """
         self._connections = connections
         self._zone_name, self._zone = zone
         self._weather_at = weather_at
         self._mail_reply = mail_reply
         self._focus = focus
+        self._summarizer = summarizer
+        self._summaries: dict[str, str] = {}
         # Gmail ids: what the last mail() listed, what it offered as junk, what Allen archived,
         # what he took back.
         self._listed: frozenset[str] = frozenset()
@@ -303,6 +356,8 @@ class Home:
                     raise LookupError(str(exc)) from exc
                 raise
             head = _letter(message)
+            raw = str(message.get("body") or "")
+            text = mail_body(raw, links=True)
             self._letters[message_id] = {
                 "id": head["id"],
                 "thread_id": head["thread_id"],
@@ -311,11 +366,37 @@ class Home:
                 "to": str(message.get("to") or ""),
                 "subject": head["subject"],
                 "received": head["received"],
-                "text": mail_body(str(message.get("body") or ""), links=True),
+                "text": text,
+                "layout": mail_layout(raw, text),
             }
             while len(self._letters) > _LETTERS_KEPT:
                 del self._letters[next(iter(self._letters))]
         return self._letters[message_id]
+
+    def summary(self, message_id: str) -> str:
+        """One short sentence on what the letter is, in the UI language; kept per id (ADR 0148).
+
+        A LookupError (404) when no model is configured or Gmail does not know the id; a failed
+        call raises and is not kept. The model is the daemon's cheapest analysis preset, never Jev.
+        """
+        if self._summarizer is None:
+            msg = "no summary model is configured"
+            raise LookupError(msg)
+        letter = self.letter(message_id)
+        if message_id not in self._summaries:
+            system = _SUMMARY_PROMPT.format(language=lang.language_name())
+            said = self._summarizer(
+                system,
+                f"Subject: {letter['subject']}\nFrom: {letter['from']} <{letter['address']}>\n\n"
+                f"{letter['text']}",
+            )
+            if not said:
+                msg = "the model said nothing"
+                raise RuntimeError(msg)
+            self._summaries[message_id] = said
+            while len(self._summaries) > _LETTERS_KEPT:
+                del self._summaries[next(iter(self._summaries))]
+        return self._summaries[message_id]
 
     def mark_read(self, ids: list[str], *, unread: bool = False) -> None:
         """Mark letters read (drop UNREAD) once Allen opened them, or unread again."""

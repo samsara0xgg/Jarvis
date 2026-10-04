@@ -4596,6 +4596,11 @@ async def _mail_letter(home: Home, message_id: str) -> dict[str, Any]:
     return await asyncio.to_thread(home.letter, message_id)
 
 
+async def _mail_summary(home: Home, message_id: str) -> dict[str, Any]:
+    """``GET /inherent/mail/{id}/summary`` (ADR 0148): one model call, off the loop thread."""
+    return {"summary": await asyncio.to_thread(home.summary, message_id)}
+
+
 def _draft_view(home: Home, drafts: MailDrafts, letter_id: str) -> dict[str, Any]:
     """``{draft: {revision, to, subject, body, by} | null}``: the letter gives ``to`` and "Re:"."""
     draft = drafts.get(letter_id)
@@ -6088,6 +6093,9 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 None if runtime.home is None else functools.partial(_archive_mail, runtime.home)
             ),
             mail_letter=None if mail_home is None else functools.partial(_mail_letter, mail_home),
+            mail_summary=(
+                None if mail_home is None else functools.partial(_mail_summary, mail_home)
+            ),
             mail_mark_read=None if mail_home is None else functools.partial(_mail_read, mail_home),
             mail_trash=None if mail_home is None else functools.partial(_mail_trash, mail_home),
             focus_set=None if runtime.focus is None else runtime.focus.set,

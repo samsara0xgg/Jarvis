@@ -554,6 +554,7 @@ class InherentDeps:
     # open on screen (kind, id, title, sender; kind None closes), and the reply draft under
     # the open letter. ``None`` leaves a route unregistered (404).
     mail_letter: Callable[[str], Awaitable[dict[str, Any]]] | None = None
+    mail_summary: Callable[[str], Awaitable[dict[str, Any]]] | None = None
     mail_mark_read: Callable[[list[str], bool], Awaitable[None]] | None = None
     mail_trash: Callable[[list[str], bool], Awaitable[None]] | None = None
     focus_set: (
@@ -1098,6 +1099,14 @@ def _register_mail_page_routes(app: FastAPI, deps: InherentDeps) -> None:  # noq
         async def mail_letter_route(message_id: str) -> dict[str, Any]:
             """One letter whole: headers and a plain-text body (ADR 0148)."""
             return await _home_call(mail_letter(message_id))
+
+    if deps.mail_summary is not None:
+        mail_summary = deps.mail_summary
+
+        @app.get("/inherent/mail/{message_id}/summary")
+        async def mail_summary_route(message_id: str) -> dict[str, Any]:
+            """``{summary}``: one sentence on the letter, written on demand and kept (ADR 0148)."""
+            return await _home_call(mail_summary(message_id))
 
     if deps.mail_mark_read is not None:
         mail_mark_read = deps.mail_mark_read

@@ -734,6 +734,7 @@ def test_the_open_letter_is_read_whole_marked_read_archived_and_trashed() -> Non
         "id": listed, "thread_id": listed, "from": "Prof. Lee", "address": "lee@uvic.ca",
         "to": "allen@example.com", "subject": "Office hours move to Thursday",
         "received": "2026-09-25T21:40:00+00:00", "text": "Hi Allen,\nThursday 3pm.",
+        "layout": "text",
     }
     assert client.get("/inherent/mail/nope").status_code == 404
     client.get(f"/inherent/mail/{listed}")

@@ -2,18 +2,30 @@
 
 from __future__ import annotations
 
+import asyncio
+import functools
+import json
 import logging
 from typing import TYPE_CHECKING, Any, cast
+from zoneinfo import ZoneInfo
 
 import pytest
+from fastapi.testclient import TestClient
 
+from jarvis.decision.llm import ChatResult
 from jarvis.execution.tools import ToolContext, ToolError, build_default_registry
 from jarvis.runtime import _dashboard_mail, _live_lines
 from jarvis.runtime.dashboard import DRAFT_CHARS, DRAFT_LINE_CHARS, FocusState, MailDrafts
-from jarvis.shared import CallerPrincipal
+from jarvis.runtime.home import Home, mail_layout, mail_summarizer
+from jarvis.runtime.inherent_loop import _mail_summary
+from jarvis.shared import CallerPrincipal, lang
+from jarvis.state.event_log import open_event_log
+from jarvis.surface.inherent_output import InherentBroadcaster
+from jarvis.surface.inherent_server import InherentDeps, create_app
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Iterator, Mapping
+    from pathlib import Path
 
 LETTER = "199a1c0d4101"
 
@@ -126,3 +138,174 @@ def test_write_mail_draft_rewrites_whole_and_refuses_closed_letters_and_oversize
     with pytest.raises(ToolError, match="not open"):
         write("another-letter", "Hi")
     assert drafts.get(LETTER).revision == first + 1  # type: ignore[union-attr]
+
+
+SENTENCE = " 速卖通促销，几件商品打五折左右\n"  # noqa: RUF001 — the page's own language.
+LONG = "word " * 200
+LINK = "https://shop.example/" + "p" * 80
+LETTER_BODIES = {
+    "plain": "<div>Hi Allen,<br>Thursday 3pm.</div>",
+    "table": "<table><tr><td>" + LONG + "</td></tr></table>",
+    "image": "<div>" + LONG + '<img src="https://x.example/a.png"></div>',
+    "links": f'<div><a href="{LINK}">Sale</a><br><a href="{LINK}">More</a></div>',
+    "short_note": f'<div>Pay here: <a href="{LINK}">{LINK}</a></div>',
+    "long_with_link": f'<div>{LONG}<a href="{LINK}">here</a></div>',
+    "text": "Plain words only, https://x.example/a",
+}
+
+
+@pytest.mark.parametrize(
+    ("name", "layout"),
+    [
+        ("plain", "text"),  # HTML but no tables or images, no links
+        ("table", "html"),
+        ("image", "html"),
+        ("links", "html"),  # nothing but links
+        ("short_note", "html"),  # a link and under 200 other characters
+        ("long_with_link", "text"),  # a long text with one link
+        ("text", "text"),  # no markup: never html, however short
+    ],
+)
+def test_layout_is_html_only_for_html_bodies_with_tables_images_or_mostly_links(
+    name: str, layout: str,
+) -> None:
+    """ADR 0148 addendum: the rule is on the raw body and the stripped text with links."""
+    from jarvis.runtime.home import mail_body  # noqa: PLC0415
+
+    raw = LETTER_BODIES[name]
+    assert mail_layout(raw, mail_body(raw, links=True)) == layout
+
+
+class _Gmail:
+    """gmail_get answers for LETTER_BODIES, by id; anything else is not found."""
+
+    def call(self, server: str, tool: str, args: Mapping[str, Any]) -> dict[str, Any]:
+        assert (server, tool) == ("gmail", "gmail_get")
+        body = LETTER_BODIES.get(str(args["messageId"]))
+        if body is None:
+            return {"text": json.dumps({"error": "Requested entity was not found."})}
+        letter = {
+            "id": args["messageId"], "threadId": "t", "subject": "Spring sale",
+            "from": '"Shop Deals" <deals@shop.example>', "to": "allen@example.com",
+            "date": "Thu, 25 Sep 2026 11:00:00 -0700", "body": body,
+        }
+        return {"text": json.dumps(letter)}
+
+
+class _Connections:
+    def client_for(self, server: str) -> _Gmail:  # noqa: ARG002 — the one server.
+        return _Gmail()
+
+
+class _Model:
+    """The analyst: records each call and answers a canned sentence or fails."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+        self.fail = False
+
+    def analyze(self, conn: object, **kwargs: Any) -> ChatResult:  # noqa: ANN401, ARG002 — the analyst's call.
+        self.calls.append(kwargs)
+        if self.fail:
+            msg = "provider down"
+            raise RuntimeError(msg)
+        return ChatResult(
+            text=SENTENCE, tool_calls=(), finish_reason="stop",
+            input_tokens=1, output_tokens=1, raw={}, model_used="fake",
+        )
+
+
+@pytest.fixture
+def zh() -> Iterator[None]:
+    """The UI language is Chinese for the test."""
+    before = lang.language()
+    lang.set_language("zh")
+    yield
+    lang.set_language(before)
+
+
+def _page(
+    tmp_path: Path, model: _Model | None, *, on: bool = True,
+) -> tuple[TestClient, _Model | None]:
+    log = tmp_path / "events.db"
+    open_event_log(log).close()
+    focus = FocusState() if on else None
+    home = Home(
+        _Connections(),  # type: ignore[arg-type]
+        ("America/Vancouver", ZoneInfo("America/Vancouver")), None, None, focus,
+        None if model is None else mail_summarizer(model, log),  # type: ignore[arg-type]
+    )
+    app = create_app(InherentDeps(
+        submit_callable=lambda _text: None,
+        broadcaster=InherentBroadcaster(),
+        **({} if focus is None else {
+            "mail_letter": functools.partial(asyncio.to_thread, home.letter),
+            "mail_summary": functools.partial(_mail_summary, home),
+        }),
+    ))
+    return TestClient(app), model
+
+
+@pytest.mark.parametrize(("name", "layout"), [("plain", "text"), ("table", "html")])
+def test_a_letter_comes_with_its_layout(tmp_path: Path, name: str, layout: str) -> None:
+    """GET /inherent/mail/{id} says whether to draw the text or the letter's own HTML."""
+    client, _ = _page(tmp_path, None)
+    assert client.get(f"/inherent/mail/{name}").json()["layout"] == layout
+
+
+def test_the_summary_is_one_sentence_in_the_ui_language_kept_per_letter(
+    tmp_path: Path, zh: None,
+) -> None:
+    """One model call per id; subject, sender and the stripped text go in; language by prompt."""
+    del zh
+    client, model = _page(tmp_path, _Model())
+    assert model is not None
+    got = client.get("/inherent/mail/links/summary")
+    assert got.json() == {"summary": SENTENCE.strip()}
+    assert client.get("/inherent/mail/links/summary").json() == got.json()
+    assert len(model.calls) == 1
+    call = model.calls[0]
+    assert call["tools"] == []
+    assert call["tool_choice"] == "none"
+    assert call["system"] == (
+        "Say in one short sentence, in Simplified Chinese, what this email is (who sends it and "
+        "what it offers or asks). No greeting, no quotes."
+    )
+    sent = call["messages"][0]["content"]
+    assert sent.startswith("Subject: Spring sale\nFrom: Shop Deals <deals@shop.example>\n\n")
+    assert f"Sale ({LINK})" in sent
+    assert "<div>" not in sent
+    client.get("/inherent/mail/plain/summary")
+    assert len(model.calls) == 2
+
+
+def test_the_summary_input_is_capped_and_a_failure_is_a_502_not_kept(tmp_path: Path) -> None:
+    """The text is the 4000-character letter; a provider error is 502 and the next ask retries."""
+    LETTER_BODIES["huge"] = "x" * 9000
+    try:
+        client, model = _page(tmp_path, _Model())
+        assert model is not None
+        assert client.get("/inherent/mail/huge/summary").status_code == 200
+        sent = model.calls[0]["messages"][0]["content"]
+        assert len(sent.split("\n\n", 1)[1]) == 4001
+        model.fail = True
+        assert client.get("/inherent/mail/plain/summary").status_code == 502
+        model.fail = False
+        assert client.get("/inherent/mail/plain/summary").status_code == 200
+        assert len(model.calls) == 3
+    finally:
+        del LETTER_BODIES["huge"]
+
+
+def test_the_summary_is_404_when_the_page_is_off_the_id_unknown_or_no_model(
+    tmp_path: Path,
+) -> None:
+    """Switch off: no route. Unknown id and an unconfigured model: 404, no model call."""
+    off, _ = _page(tmp_path, _Model(), on=False)
+    assert off.get("/inherent/mail/plain/summary").status_code == 404
+    client, model = _page(tmp_path, _Model())
+    assert model is not None
+    assert client.get("/inherent/mail/nope/summary").status_code == 404
+    assert model.calls == []
+    bare, _ = _page(tmp_path, None)
+    assert bare.get("/inherent/mail/plain/summary").status_code == 404

@@ -154,7 +154,7 @@ from jarvis.runtime.dashboard import (
     FocusState,
     MailDrafts,
 )
-from jarvis.runtime.home import Home, mail_body
+from jarvis.runtime.home import Home, mail_body, mail_summarizer
 from jarvis.runtime.night_run import NightRun, night_settings
 from jarvis.runtime.plugin_connections import PluginConnections
 from jarvis.runtime.plugins import Plugins, load_plugins
@@ -2314,6 +2314,17 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
             _home_weather(full_config),
             _mail_reply(full_config, config_path, jev_log),
             focus,
+            None if focus is None else mail_summarizer(
+                # ADR 0148: the cheapest preset (gpt-6-luna), never Jev: a body goes here.
+                build_analyst(
+                    full_config,
+                    _work_state_preset(full_config),
+                    pricing_path=repo_root / "data" / "pricing.json",
+                    account_cost=wave1_features.exactly_once_cost_accounting,
+                    kind="mail_summary",
+                ),
+                paths.event_log,
+            ),
         ),
         focus=focus,
         mail_drafts=mail_drafts,
