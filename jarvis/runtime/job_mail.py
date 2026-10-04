@@ -173,7 +173,8 @@ class JobMail:
         except Exception as exc:
             self._failed(exc)
             raise
-        self._failures, self._last_ok = 0, now  # a recovery is silent
+        self._failures, self._last_ok = 0, now
+        ledger.resolve_health(self._db)  # a recovery is silent and clears the old down card
         seen = ledger.seen_ids(self._db)
         fresh = [str(h["id"]) for h in hits if str(h["id"]) not in seen]
         fresh = fresh[: min(self._settings.max_messages_per_cycle, self._jev.room())]

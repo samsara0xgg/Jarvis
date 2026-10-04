@@ -71,7 +71,7 @@ Its limits:
   the stored packs and writes nothing.
 - If Gmail cannot be read in three cycles in a row, or for two hours, one
   health alert says so, at most once per twelve hours, under the same quiet
-  level; recovery says nothing.
+  level; recovery says nothing and marks a still-pending health card done.
 - All of it is off by default (`job_mail.enabled: false`).
 
 ## Alternatives rejected

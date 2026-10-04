@@ -1468,14 +1468,29 @@ def test_a_down_mail_channel_raises_one_alert_and_recovery_is_silent(
     h.quiet = "off"
 
     fail()  # a fourth failure within 12 hours says nothing more
-    h.job.poll_once()  # and the first good cycle is silent
-    assert len(h.sql("SELECT id FROM job_alert")) == 1
+    h.job.poll_once()  # and the first good cycle is silent, but the old down card is done
+    assert h.sql("SELECT state FROM job_alert") == [("done",)]
+    assert h.notices() == []
 
     h.job.now = lambda: NOW + timedelta(hours=13)
     h.gmail.search_failures = 3
     for _ in range(3):
         fail()
-    assert len(h.sql("SELECT id FROM job_alert")) == 2
+    assert h.sql("SELECT state FROM job_alert ORDER BY created_at") == [("done",), ("pending",)]
+    assert [n["mail_kind"] for n in h.notices()] == ["health"]
+
+
+def test_a_recovery_does_not_touch_a_health_card_already_shown(tmp_path: Path, jev: _Jev) -> None:
+    """Only a pending health card is cleared by a good cycle; a shown one keeps its state."""
+    h = _harness(tmp_path, jev, [])
+    h.gmail.search_error, h.gmail.search_failures = "backend down", 3
+    for _ in range(3):
+        with pytest.raises(ToolError):
+            h.job.poll_once()
+    (alert_id,) = (row[0] for row in h.sql("SELECT id FROM job_alert"))
+    job_ledger.mark_alert(h.db, alert_id, "shown", NOW)
+    h.job.poll_once()
+    assert h.sql("SELECT state FROM job_alert") == [("shown",)]
 
 
 def test_two_hours_without_a_good_cycle_is_down_even_after_one_failure(

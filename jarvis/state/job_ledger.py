@@ -593,6 +593,15 @@ def last_health_alert(path: Path) -> datetime | None:
     return None if latest is None else _moment(latest)
 
 
+def resolve_health(path: Path) -> int:
+    """Mark the pending channel-health alert done (a recovery); a shown one is left alone."""
+    with _db(path) as conn:
+        return conn.execute(
+            "UPDATE job_alert SET state = 'done' WHERE message_id = ? AND state = 'pending'",
+            (HEALTH_ID,),
+        ).rowcount
+
+
 # --- the attention log (ADR 0155): one row per decision, the pack exactly as the judge saw it ---
 
 
