@@ -621,11 +621,25 @@ try {
     await panelShot('L14-settings-voice');
     // Settings › Mic board: the board's status from /inherent/board, and only the controls the chosen light uses.
     await back(); await page.locator('.ad [data-cat="board"]').click(); await page.waitForTimeout(1500);
-    const swatches = page.locator('.ad [data-item="colors"] input[type="color"]'), boardItem = id => page.locator(`.ad [data-item="${id}"]`).count();
+    const swatches = page.locator('.ad [data-item="colors"] .st-sw'), boardItem = id => page.locator(`.ad [data-item="${id}"]`).count();
     check('L14 Mic board says the board is plugged in and where the sound comes from', (await text('.ad [data-item="board"] .st-val')) === 'XVF3800 · fw 2.1.1' && (await text('.ad [data-item="dir"] .st-val')) === '251° · quiet');
     check('L14 the Direction light shows two colors and a brightness, but no speed', await swatches.count() === 2 && await boardItem('bright') === 1 && await boardItem('speed') === 0);
-    await swatches.nth(1).fill('#ff0000'); await page.waitForTimeout(500);
-    check('L14 a picked color posts board_direction_colors and keeps its swatch', posts.at(-1)?.body.changes?.board_direction_colors?.join() === '#002040,#ff0000' && await swatches.nth(1).inputValue() === '#ff0000');
+    // The colors open the page's own picker: the companion panel never shows the system color panel.
+    const picker = page.locator('.ad [data-item="colors"] .st-pick'), directionColors = () => posts.at(-1)?.body.changes?.board_direction_colors?.join();
+    await swatches.nth(1).click(); await picker.locator('.st-pre button[aria-label="#ff3b30"]').click(); await page.waitForTimeout(300);
+    check('L14 a swatch opens the in-page picker and a preset posts board_direction_colors', await picker.count() === 1 && directionColors() === '#002040,#ff3b30'
+      && await swatches.nth(1).evaluate(el => getComputedStyle(el).backgroundColor) === 'rgb(255, 59, 48)');
+    await panelShot('L14-settings-board-picker');
+    await picker.locator('.st-pre input').fill('#123456'); await page.waitForTimeout(300);
+    const typedHex = directionColors();
+    await picker.locator('.st-sv').scrollIntoViewIfNeeded(); await page.waitForTimeout(400);
+    const square = await picker.locator('.st-sv').boundingBox();
+    await page.mouse.move(square.x + square.width - 1, square.y + 1); await page.mouse.down(); await page.mouse.move(square.x + square.width / 2, square.y + square.height / 2, { steps: 5 }); await page.mouse.up(); await page.waitForTimeout(300);
+    check('L14 a typed hex and a drag on the square post too', typedHex === '#002040,#123456' && /^#002040,#[0-9a-f]{6}$/.test(directionColors()) && directionColors() !== typedHex);
+    await picker.press('Escape'); await page.waitForTimeout(200);
+    const escClosed = await picker.count() === 0 && await page.locator('.ad [data-cat]').count() === 0;
+    await swatches.nth(0).click(); await page.locator('.ad [data-item="board"]').click(); await page.waitForTimeout(200);
+    check('L14 Esc and a click outside close the picker without leaving the page', escClosed && await picker.count() === 0);
     await page.locator('.ad [data-item="light"] .st-opts button', { hasText: 'Ring' }).click(); await page.waitForTimeout(600);
     check('L14 the Ring light posts board_light and shows twelve swatches', posts.at(-1)?.body.changes?.board_light === 'ring' && await swatches.count() === 12);
     await page.locator('.ad [data-item="light"] .st-opts button', { hasText: 'Breathe' }).click(); await page.waitForTimeout(600);

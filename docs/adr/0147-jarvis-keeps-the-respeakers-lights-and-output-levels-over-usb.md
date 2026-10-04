@@ -65,5 +65,5 @@ what Allen saved on the board for as long as it runs.
 - Two new dependencies (`pyusb`, `libusb-package`), loaded only when the board is used.
 - Once a look is saved, Jarvis rewrites the LED registers whenever something else changes them
   (Seeed's tools, a script); clearing the board keys from `settings.json` hands them back.
-- Which way `board_speed` runs (faster or slower as it rises) and how `board_headphone` and
-  `board_lineout` map to loudness come from the firmware and are not checked here.
+- A higher `board_speed` animates faster (Allen, on the board). How `board_headphone` and
+  `board_lineout` map to loudness comes from the firmware and is not checked here.

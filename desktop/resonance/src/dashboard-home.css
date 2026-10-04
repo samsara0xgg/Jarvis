@@ -192,9 +192,16 @@
 .ad .st-skins [aria-checked="true"] i { box-shadow:0 0 0 2px rgb(var(--glow)),0 0 12px rgb(var(--glow) / .6); }
 .ad .st-colors { display:flex; flex-wrap:wrap; gap:8px; }
 .ad .st-colors label { display:flex; flex-direction:column; align-items:center; gap:4px; font-size:var(--text-label); color:var(--p-muted); }
-.ad .st-colors input[type="color"] { width:28px; height:28px; padding:0; border:0; border-radius:50%; background:none; cursor:pointer; }
-.ad .st-colors input[type="color"]::-webkit-color-swatch-wrapper { padding:0; }
-.ad .st-colors input[type="color"]::-webkit-color-swatch { border:0; border-radius:50%; box-shadow:inset 0 0 0 .5px rgb(255 255 255 / .3); }
+.ad .st-sw { width:28px; height:28px; padding:0; border-radius:50%; box-shadow:inset 0 0 0 .5px rgb(255 255 255 / .3); cursor:pointer; }
+.ad .st-sw[aria-expanded="true"] { box-shadow:0 0 0 2px rgb(var(--glow)),0 0 12px rgb(var(--glow) / .6); }
+.ad .st-pick { flex-basis:100%; min-width:0; box-sizing:border-box; display:flex; flex-direction:column; gap:10px; padding:10px; border-radius:var(--radius-block); background:rgb(255 255 255 / .04); box-shadow:inset 0 0 0 .5px var(--p-line); outline:none; }
+.ad .st-sv { position:relative; height:120px; border-radius:var(--radius-control); cursor:crosshair; touch-action:none; }
+.ad .st-sv i { position:absolute; width:14px; height:14px; margin:-7px 0 0 -7px; border-radius:50%; box-shadow:0 0 0 2px #fff,0 0 3px 2px rgb(0 0 0 / .45); pointer-events:none; }
+.ad .st-hue { -webkit-appearance:none; appearance:none; width:100%; height:10px; border-radius:5px; background:linear-gradient(to right,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00); }
+.ad .st-hue::-webkit-slider-thumb { -webkit-appearance:none; width:14px; height:14px; border-radius:50%; background:#fff; box-shadow:0 0 3px rgb(0 0 0 / .5); cursor:pointer; }
+.ad .st-pre { display:flex; flex-wrap:wrap; align-items:center; gap:6px; }
+.ad .st-pre button { flex:none; width:18px; height:18px; padding:0; border-radius:50%; box-shadow:inset 0 0 0 .5px rgb(255 255 255 / .3); cursor:pointer; }
+.ad .st-pre input { flex:1 1 80px; width:0; padding:4px 8px; border:0; border-radius:var(--radius-control); background:rgb(0 0 0 / .25); color:var(--p-ink); font:var(--text-detail)/16px ui-monospace,monospace; }
 .ad .st.is-off .st-colors { opacity:.45; }
 .ad .st-warn { font-size:var(--text-detail); line-height:16px; color:var(--warm-c); }
 .ad .st-key { display:flex; gap:6px; }

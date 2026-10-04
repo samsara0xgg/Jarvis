@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from 'react';
 import { CaretRight, Check, Cpu, Globe, House, Key, Lightbulb, LockSimple, Microphone, Planet, Robot, SlidersHorizontal, SpeakerHigh, Waveform, Bell } from '@phosphor-icons/react';
 import { tr, useCompanionSettings, type L, type Lang } from './companionSettings';
 import { postRoute, useRoute } from './homeData';
@@ -122,7 +122,7 @@ export function SettingsPage({ lang, port, open, cat, onCat, ctl, accounts, keyD
   const dRange = (key: string, min: number, max: number, step: number, pct?: boolean): Ctl =>
     ({ k: 'range', value: draft[key] ?? (typeof v(key) === 'number' ? v(key) as number : min), min, max, step, pct, set: value => { setDraft(d => ({ ...d, [key]: value })); } });
   const commit = (key: string) => { if (draft[key] !== undefined) { void save(key, draft[key]); setDraft(({ [key]: _, ...rest }) => rest); } };
-  // The board's colors: the swatch follows the pointer from a local pick; the daemon hears it at most every 150 ms, and at once when the picker lets go.
+  // The board's colors: the swatch follows the pointer from a local pick; the daemon hears it at most every 100 ms, and at once when the picker lets go.
   // A pick is dropped once the daemon reports it back.
   const lag = useRef<{ t?: ReturnType<typeof setTimeout>; go: () => void }>({ go() {} });
   const dColors = (key: string, n: number, labels?: L[]): Ctl => {
@@ -130,7 +130,7 @@ export function SettingsPage({ lang, port, open, cat, onCat, ctl, accounts, keyD
     return { k: 'colors', labels, values: picks[key] ?? Array.from({ length: n }, (_, i) => String(saved[i] ?? '#000000')), set: (next, now) => {
       setPicks(p => ({ ...p, [key]: next }));
       lag.current.go = () => { clearTimeout(lag.current.t); lag.current.t = undefined; void save(key, n === 1 ? next[0] : next); };
-      if (now) lag.current.go(); else lag.current.t ??= setTimeout(() => lag.current.go(), 150);
+      if (now) lag.current.go(); else lag.current.t ??= setTimeout(() => lag.current.go(), 100);
     } };
   };
   useEffect(() => setPicks(p => { const keep = Object.entries(p).filter(([k, c]) => `${c}`.toLowerCase() !== `${v(k)}`.toLowerCase()); return keep.length === Object.keys(p).length ? p : Object.fromEntries(keep); }), [daemon]);
@@ -205,7 +205,7 @@ export function SettingsPage({ lang, port, open, cat, onCat, ctl, accounts, keyD
         ctl: dColors('board_ring_colors', 12, Array.from({ length: 12 }, (_, i): L => [`${i + 1}`, `${i + 1}`])), off }] : [],
       ...light !== 'off' ? [{ id: 'bright', name: ['Brightness', '亮度'] as L, ctl: dRange('board_brightness', 0, 1, .05, true), off,
         ...light === 'solid' || light === 'direction' || light === 'ring' ? { note: ['Dims the colors themselves', '把颜色本身调暗'] as L } : {} }] : [],
-      ...light === 'breath' || light === 'rainbow' ? [{ id: 'speed', name: ['Speed', '速度'] as L, ctl: dRange('board_speed', 1, 32, 1), off }] : [],
+      ...light === 'breath' || light === 'rainbow' ? [{ id: 'speed', name: ['Speed', '速度'] as L, note: ['Higher is faster', '数字越大越快'] as L, ctl: dRange('board_speed', 1, 32, 1), off }] : [],
       { id: 'hp', name: ['Headphone jack volume', '耳机口音量'], note: ['Only matters with something plugged into the board', '板子上插了耳机或音箱才有用'], ctl: dRange('board_headphone', 0, 9, 1), off },
       { id: 'line', name: ['Line-out volume', '线路输出音量'], ctl: dRange('board_lineout', 0, 9, 1), off },
     ] },
@@ -284,12 +284,7 @@ export function SettingsPage({ lang, port, open, cat, onCat, ctl, accounts, keyD
       <button key={o} role="radio" aria-checked={x.value === o} disabled={i.off} onClick={() => x.set(o)}>{o}</button>)}</div>;
     if (x.k === 'range') return <input className="st-range" type="range" aria-label={t(i.name)} min={x.min} max={x.max} step={x.step} value={x.value} disabled={i.off}
       onChange={e => x.set(Number(e.target.value))} onPointerUp={() => commit(keyOf(i))} onKeyUp={() => commit(keyOf(i))}/>;
-    if (x.k === 'colors') return <div className="st-colors" role="group" aria-label={t(i.name)}>{x.values.map((c, j) => {
-      const label = x.labels?.[j], to = (value: string) => x.values.map((o, k) => k === j ? value : o);
-      return <label key={j}><input type="color" value={c} disabled={i.off} aria-label={label ? `${t(i.name)} ${t(label)}` : t(i.name)} onChange={e => x.set(to(e.target.value))}
-        ref={el => { if (!el) return; const done = () => x.set(to(el.value), true); el.addEventListener('change', done); return () => el.removeEventListener('change', done); }}/>
-        {label && <small>{t(label)}</small>}</label>;
-    })}</div>;
+    if (x.k === 'colors') return <Swatches ctl={x} name={t(i.name)} off={i.off} lang={lang}/>;
     if (x.k === 'skins') return <div className="st-skins" role="radiogroup" aria-label={t(i.name)}>{SKIN_KEYS.map(k =>
       <button key={k} role="radio" aria-checked={ctl.look.skin === k} onClick={() => ctl.setLook({ skin: k })}><i style={{ background: SKIN_BG[k] }}/>{lang === 'zh' ? SKINS[k].name : SKIN_EN[k]}</button>)}</div>;
     if (x.k === 'key') return <KeyField provider={x.provider} name={t(i.name)} port={port} lang={lang} value={keyDrafts[x.provider] ?? ''}
@@ -322,6 +317,65 @@ export function SettingsPage({ lang, port, open, cat, onCat, ctl, accounts, keyD
         : <button onClick={() => void restart()}>{t(['Restart', '重启'])}</button>}
     </div>}
   </>;
+}
+
+// The board's colors. The companion is a panel that never becomes the key window, so the
+// system color panel behind <input type="color"> never opens there: the picker lives in the page.
+const PRESETS = ['#002040', '#00c066', '#ff3b30', '#ff9500', '#ffd60a', '#0a84ff', '#bf5af2', '#ffffff'];
+const toHsv = (hex: string) => {
+  const n = parseInt(hex.slice(1), 16), r = (n >> 16 & 255) / 255, g = (n >> 8 & 255) / 255, b = (n & 255) / 255;
+  const max = Math.max(r, g, b), d = max - Math.min(r, g, b);
+  const h = !d ? 0 : max === r ? ((g - b) / d + 6) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  return { h: h * 60, s: max ? d / max : 0, v: max };
+};
+const toHex = ({ h, s, v }: { h: number; s: number; v: number }) =>
+  '#' + [5, 3, 1].map(n => { const k = (n + h / 60) % 6; return Math.round(255 * (v - v * s * Math.max(0, Math.min(k, 4 - k, 1)))).toString(16).padStart(2, '0'); }).join('');
+
+function Swatches({ ctl: x, name, off, lang }: { ctl: Extract<Ctl, { k: 'colors' }>; name: string; off?: boolean; lang: Lang }) {
+  const t = (l: L) => tr(lang, l);
+  const [open, setOpen] = useState<number | null>(null);
+  const box = useRef<HTMLDivElement>(null);
+  const label = (j: number) => x.labels?.[j] ? `${name} ${t(x.labels[j])}` : name;
+  return <div className="st-colors" ref={box} role="group" aria-label={name}>
+    {x.values.map((c, j) => <label key={j}>
+      <button className="st-sw" style={{ background: c }} disabled={off} aria-label={label(j)} aria-expanded={open === j} onClick={() => setOpen(open === j ? null : j)}/>
+      {x.labels?.[j] && <small>{t(x.labels[j])}</small>}</label>)}
+    {open !== null && !off && <ColorPick key={open} value={x.values[open]} name={label(open)} box={box} onClose={() => setOpen(null)}
+      set={(c, now) => x.set(x.values.map((o, k) => k === open ? c : o), now)}/>}
+  </div>;
+}
+
+// Dragging sends at most every 100 ms (the caller's throttle); letting go, a preset or a typed hex sends at once.
+function ColorPick({ value, name, box, set, onClose }: { value: string; name: string; box: RefObject<HTMLDivElement | null>; set: (c: string, now?: boolean) => void; onClose: () => void }) {
+  const [hsv, setHsv] = useState(() => toHsv(value)), [typed, setTyped] = useState<string | null>(null);
+  const pop = useRef<HTMLDivElement>(null);
+  const pick = (next: typeof hsv, now?: boolean) => { setHsv(next); set(toHex(next), now); };
+  // Esc needs key focus, which the companion panel takes only when asked; an outside click closes it too.
+  useEffect(() => {
+    pop.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    void Promise.resolve(window.jarvis?.focus(true)).then(() => pop.current?.focus({ preventScroll: true }));
+    const outside = (e: PointerEvent) => { if (!box.current?.contains(e.target as Node)) onClose(); };
+    document.addEventListener('pointerdown', outside);
+    return () => { document.removeEventListener('pointerdown', outside); void window.jarvis?.focus(false); };
+  }, []);
+  const sv = (e: ReactPointerEvent<HTMLDivElement>, now?: boolean) => {
+    const r = e.currentTarget.getBoundingClientRect(), clamp = (n: number) => Math.min(1, Math.max(0, n));
+    pick({ ...hsv, s: clamp((e.clientX - r.left) / r.width), v: clamp(1 - (e.clientY - r.top) / r.height) }, now);
+  };
+  return <div className="st-pick" ref={pop} tabIndex={-1} role="dialog" aria-label={name}
+    onKeyDown={e => { if (e.key === 'Escape') { e.stopPropagation(); onClose(); } }}>
+    <div className="st-sv" style={{ background: `linear-gradient(to top,#000,transparent),linear-gradient(to right,#fff,hsl(${hsv.h} 100% 50%))` }}
+      onPointerDown={e => { e.currentTarget.setPointerCapture(e.pointerId); sv(e); }} onPointerMove={e => { if (e.buttons) sv(e); }} onPointerUp={e => sv(e, true)}>
+      <i style={{ left: `${hsv.s * 100}%`, top: `${(1 - hsv.v) * 100}%`, background: toHex(hsv) }}/>
+    </div>
+    <input className="st-hue" type="range" min={0} max={359} value={Math.round(hsv.h)} aria-label="Hue"
+      onChange={e => pick({ ...hsv, h: Number(e.target.value) })} onPointerUp={() => set(toHex(hsv), true)} onKeyUp={() => set(toHex(hsv), true)}/>
+    <div className="st-pre">
+      {PRESETS.map(c => <button key={c} style={{ background: c }} aria-label={c} onClick={() => pick(toHsv(c), true)}/>)}
+      <input value={typed ?? toHex(hsv)} aria-label="Hex" spellCheck={false} maxLength={7} onPointerDown={() => void window.jarvis?.focus(true)} onBlur={() => setTyped(null)}
+        onChange={e => { const c = e.target.value.trim(); setTyped(c); if (/^#?[0-9a-f]{6}$/i.test(c)) pick(toHsv(`#${c.replace('#', '').toLowerCase()}`), true); }}/>
+    </div>
+  </div>;
 }
 
 // A kept key restarts Jarvis, which reads keys only at boot. The OpenAI test makes real calls, so it gets 90 s.
