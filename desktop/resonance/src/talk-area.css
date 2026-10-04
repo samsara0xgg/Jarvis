@@ -58,10 +58,10 @@
 .tk-h + .tk-h { margin-top:10px; }
 .tk-s { margin:0; font-size:14.5px; line-height:22px; letter-spacing:.005em; color:#eef0fb; white-space:pre-line; overflow-wrap:anywhere; }
 /* Following along: the line is there whole and dim, lit as she says it; what is said settles back, and all said is full again. */
-.tk-s i,.tk-w .md p i { font-style:normal; color:rgb(238 240 251 / .28); transition:color .24s ease; }
-.tk-s i.on,.tk-w .md p i.on { color:#eef0fb; text-shadow:0 0 12px color-mix(in srgb,var(--lit) 55%,transparent); }
-.tk-s .done i.on,.tk-w .md p.done i.on { color:rgb(238 240 251 / .62); text-shadow:none; }
-.tk-s.all i,.tk-w.all .md p i { color:#eef0fb; text-shadow:none; }
+.tk-s i { font-style:normal; color:rgb(238 240 251 / .28); transition:color .24s ease; }
+.tk-s i.on { color:#eef0fb; text-shadow:0 0 12px color-mix(in srgb,var(--lit) 55%,transparent); }
+.tk-s .done i.on { color:rgb(238 240 251 / .62); text-shadow:none; }
+.tk-s.all i { color:#eef0fb; text-shadow:none; }
 .tk-h.is-err .tk-s i { color:#ffd6d2; }
 .tk-think { margin-bottom:2px; font-size:var(--text-label); line-height:14px; color:var(--deep-hi); }
 /* a deep answer keeps a fine violet rule down its left, so it is told apart when scrolled back to */
@@ -217,6 +217,6 @@
 @media (prefers-reduced-motion:reduce) {
   .talk .gl::after,.talk .gl.speaking b,.talk .lb.shim,.talk .lb.shim.tool,.talk .lb.heard,.tk-latest button,.talk[data-state=speaking] { animation:none; }
   .talk .lb-old { display:none; }
-  .talk,.tk-deep,.tk-s i,.tk-w .md p i { transition-duration:.01s; }
+  .talk,.tk-deep,.tk-s i { transition-duration:.01s; }
   .talk[data-deep][data-state=thinking] .tk-deep::after { animation:none; --rim:200deg; }
 }

@@ -37,7 +37,7 @@ export const worthReading = (written: string) => READ.test(written);
 
 // One thing on screen: what you said, or her answer split into the part she says and the part that is written.
 export type Item = { id: string; who: 'you' | 'her'; spoken: string; written: string; failed: boolean; at: number; said: boolean; cutAt?: number; turn?: string; queued: boolean; from: number; mark?: Mark; late?: boolean;
-  // She says something besides what is written, though it is not shown (the middle level shows the written part alone): the written part writes itself in.
+  // She says something besides what is written, though it is not shown (the middle level shows the written part alone): the written part comes up whole.
   voiced?: boolean };
 // Full: everything. The middle level: only what is written (lists, times, places, links), and what she says right after it.
 // Hidden: nothing. An error always shows.
@@ -105,20 +105,6 @@ export function reach(chars: string[], n: number): number {
 export function placed(text: string, clock: number[], m: Mark, now: number): number {
   const chars = [...text], at = reach(chars, m.n), from = at ? clock[at - 1] : 0;
   return Math.max(at, Math.min(said(clock, from + (Math.min(now, m.hold ?? now) - m.at) / 1000), reach(chars, m.ahead)));
-}
-// The written part writes itself in at a pace of its own, not her voice's: INK units a second (a Chinese character is 1, other characters .4),
-// a paragraph in at most INK_CAP s, paragraphs one after another. Seconds, from the block's first showing, at which each character is reached.
-export const INK = 25, INK_CAP = 2, INK_LEAD = .3, INK_GAP = .15;
-export function ink(paras: string[][]): number[] {
-  let t = INK_LEAD;
-  const out: number[] = [];
-  for (const chars of paras) {
-    const w = chars.map(ch => WIDE.test(ch) ? 1 : .4), total = w.reduce((a, b) => a + b, 0), secs = Math.min(total / INK, INK_CAP);
-    let acc = 0;
-    for (const x of w) out.push(t + (acc += x) / total * secs);
-    t += secs + INK_GAP;
-  }
-  return out;
 }
 // The text cut into sentences: each ends at its terminal mark, or at a line break.
 export function sentences(text: string): string[][] {

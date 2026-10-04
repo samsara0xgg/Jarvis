@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 
 // The markdown Jarvis's answers actually use (memory.db, 2026-09-25): headings, bold, code ticks, lists (some nested), tables; links since they began to carry sources.
 // Built as React elements, never innerHTML, so nothing in an answer can inject markup into the window.
@@ -8,14 +8,13 @@ export const openLink = (url: string) => { void window.jarvis?.openUrl?.(url); }
 export const Lk = ({ url, children }: { url: string; children: ReactNode }) => <a className="lk" href={url} onClick={e => { e.preventDefault(); openLink(url); }}>{children}</a>;
 // A bare address reads short: no scheme, no www., no trailing slash, cut at 32.
 export const short = (url: string) => { const s = url.replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, ''); return s.length > 32 ? `${s.slice(0, 31)}…` : s; };
-// `spell`: how plain text is set (the talk area lights it a character at a time); code and links stay whole.
 // A bare address ends on a character that is not punctuation, and stops at the first space, bracket or CJK character.
-export const inline = (text: string, spell?: (text: string) => ReactNode): ReactNode[] => text.split(/(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\(https?:\/\/[^\s)]+\)|https?:\/\/[^\s<>()"\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]*[^\s<>()"\u3000-\u303f\u4e00-\u9fff\uff00-\uffef.,;:!?])/).map((part, i) => {
-  if (i % 2 === 0) return spell ? <Fragment key={i}>{spell(part)}</Fragment> : part;
+export const inline = (text: string): ReactNode[] => text.split(/(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\(https?:\/\/[^\s)]+\)|https?:\/\/[^\s<>()"\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]*[^\s<>()"\u3000-\u303f\u4e00-\u9fff\uff00-\uffef.,;:!?])/).map((part, i) => {
+  if (i % 2 === 0) return part;
   if (part[0] === '`') return <code key={i}>{part.slice(1, -1)}</code>;
   if (part[0] === '[') { const at = part.indexOf(']('); return <Lk key={i} url={part.slice(at + 2, -1)}>{part.slice(1, at)}</Lk>; }
   if (part[0] === 'h') return <Lk key={i} url={part}>{short(part)}</Lk>;
-  return <strong key={i}>{inline(part.slice(2, -2), spell)}</strong>;
+  return <strong key={i}>{inline(part.slice(2, -2))}</strong>;
 });
 
 type Item = { indent: number; start: number | null; text: string };
@@ -44,7 +43,7 @@ function Copy({ text, label, done }: { text: string; label: string; done: string
 const cells = (line: string) => line.trim().replace(/^\||\|$/g, '').split('|').map(c => c.trim());
 
 // `copy`: the talk area's code blocks carry a copy button with these two labels; the Dashboard's do not.
-export function Markdown({ text, spell, copy }: { text: string; spell?: (text: string) => ReactNode; copy?: { label: string; done: string } }) {
+export function Markdown({ text, copy }: { text: string; copy?: { label: string; done: string } }) {
   const lines = text.split('\n'), blocks: ReactNode[] = [];
   for (let i = 0; i < lines.length;) {
     const line = lines[i], key = blocks.length;
@@ -78,7 +77,7 @@ export function Markdown({ text, spell, copy }: { text: string; spell?: (text: s
     } else {
       const para: string[] = [];
       for (; i < lines.length && lines[i].trim() && !/^(#{1,6}\s|\s*\||\s*```)/.test(lines[i]) && !ITEM.test(lines[i]); i++) para.push(lines[i]);
-      blocks.push(<p key={key}>{inline(para.join('\n'), spell)}</p>);
+      blocks.push(<p key={key}>{inline(para.join('\n'))}</p>);
     }
   }
   return <div className="md">{blocks}</div>;

@@ -3,7 +3,7 @@ import { ArrowUp, Keyboard, LinkSimple, Microphone, Stop } from '@phosphor-icons
 import { Lk, Markdown, inline } from './Markdown';
 import { tr, type L, type Lang } from './companionSettings';
 import type { Line } from './model';
-import { GESTURE_GAP, HEARD_MS, HEIGHT, LINGER_MS, PULL_AT, WIDTH, calm, ink, kindOf, pace, placed, pull, said as saidCount, sentences, shownOf, stretch, type Captions, type Item, type Kind, type Pull, type Voice } from './talk';
+import { GESTURE_GAP, HEARD_MS, HEIGHT, LINGER_MS, PULL_AT, WIDTH, calm, kindOf, pace, placed, pull, said as saidCount, sentences, shownOf, stretch, type Captions, type Item, type Kind, type Pull, type Voice } from './talk';
 import './talk-area.css';
 
 // Springs as CSS linear() curves: response in seconds, damping fraction (1 = no overshoot).
@@ -27,12 +27,9 @@ const rise = (el: Element, delay = 120) => {
 // The written part comes up this long after her spoken line, so the area grows twice: to the line, then to the rest.
 const STAGGER = 700;
 
-// `ink`: the written part's own write-in, when it began and when each character is reached.
-type Spoken = { p: HTMLElement; chars: HTMLElement[]; spans: HTMLElement[]; lit: number; ink?: { t0: number; clock: number[] } };
+type Spoken = { p: HTMLElement; chars: HTMLElement[]; spans: HTMLElement[]; lit: number };
 type Registry = Map<string, Spoken>;
 type Fly = { text: string; rect: DOMRect };
-// A character each, for the driver to light.
-const spell = (text: string) => [...text].map((ch, j) => <i key={j}>{ch}</i>);
 
 // Her spoken line, a span per character grouped by sentence: the driver lights them as she says them.
 const Said = memo(function Said({ id, text, reg }: { id: string; text: string; reg: Registry }) {
@@ -58,10 +55,10 @@ const words = (body: string) => {
   const url = /^https?:\/\/\S+$/.test(rest[0]?.trim() ?? '') && !/\]\(|https?:\/\//.test(head) ? rest.shift()!.trim() : '';
   return <>{url ? <Lk url={url}>{inline(head)}</Lk> : inline(head)}{rest.length > 0 && <span className="mt"> · {inline(rest.join(' · '))}</span>}</>;
 };
-function Written({ text, lit, lang }: { text: string; lit: boolean; lang: Lang }) {
+function Written({ text, lang }: { text: string; lang: Lang }) {
   const out: ReactNode[] = [];
   let md: string[] = [], rows: Entry[] = [];
-  const flushMd = () => { if (md.join('').trim()) out.push(<Markdown key={out.length} text={md.join('\n')} spell={lit ? spell : undefined} copy={{ label: tr(lang, ['Copy', '复制']), done: tr(lang, ['Copied ✓', '已复制 ✓']) }}/>); md = []; };
+  const flushMd = () => { if (md.join('').trim()) out.push(<Markdown key={out.length} text={md.join('\n')} copy={{ label: tr(lang, ['Copy', '复制']), done: tr(lang, ['Copied ✓', '已复制 ✓']) }}/>); md = []; };
   const flushRows = () => {
     if (rows.length) out.push(<div className="doc" key={out.length}>{rows.map((row, i) => <div key={i}>
       {row.lead && (row.n ? <span className="n">{row.lead}</span> : <time>{row.lead}</time>)}
@@ -82,24 +79,17 @@ function Written({ text, lit, lang }: { text: string; lit: boolean; lang: Lang }
 }
 
 function Her({ it, reg, think, ready, silent, lang }: { it: Item; reg: Registry; think: string; ready: boolean; silent: boolean; lang: Lang }) {
-  // The written part's plain paragraphs write themselves in at their own pace once it shows (lists, headings and code come whole). Decided
-  // when it first shows: with no voice, or her voice already done, or reduced motion, it is there whole and nothing animates.
-  const w = useRef<HTMLDivElement>(null), t0 = useRef(0), writes = useRef<boolean | null>(null);
-  if (writes.current === null && it.written && ready) writes.current = !!(it.spoken || it.voiced) && !silent && !it.failed && !(it.said && it.cutAt === undefined) && !reduced();
-  const lit = !!writes.current;
+  // The written part comes up whole when it first shows: a quick fade with a slight rise (there at once under reduced motion).
+  const w = useRef<HTMLDivElement>(null), shown = useRef(false);
   useLayoutEffect(() => {
-    const el = w.current, chars = el && lit ? [...el.querySelectorAll<HTMLElement>('.md p i')] : [];
-    if (!el || !chars.length) return;
-    t0.current ||= Date.now();
-    // (the paragraph that is still coming in re-registers with each token and picks up where the clock is)
-    const clock = ink([...el.querySelectorAll('.md p')].filter(p => p.querySelector('i')).map(p => [...p.querySelectorAll('i')].map(i => i.textContent!)));
-    reg.set(`${it.id}:w`, { p: el, chars, spans: [], lit: -1, ink: { t0: t0.current, clock } });
-    return () => { reg.delete(`${it.id}:w`); };
-  }, [it.id, it.written, lit, ready, reg]);
+    if (!it.written || !ready || shown.current) return;
+    shown.current = true;
+    if (!reduced()) w.current!.animate([{ opacity: 0, translate: '0 4px' }, { opacity: 1, translate: '0 0' }], { duration: 400, easing: 'ease-out', fill: 'backwards' });
+  }, [it.written, ready]);
   return <div className={`tk-h ${it.failed ? 'is-err' : ''} ${think ? 'deep' : ''}`} data-line={it.id}>
     {think && <small className="tk-think">{think}</small>}
     {it.spoken && <Said id={it.id} text={it.spoken} reg={reg}/>}
-    {it.written && ready && <div ref={w} className="tk-w" data-written><Written text={it.written} lit={lit} lang={lang}/></div>}
+    {it.written && ready && <div ref={w} className="tk-w" data-written><Written text={it.written} lang={lang}/></div>}
   </div>;
 }
 
@@ -140,10 +130,10 @@ export function TalkArea(p: TalkProps) {
   const [, redraw] = useState(0);
   // The address of the link under the pointer: the footer shows it in place of her state, until the pointer leaves.
   const [url, setUrl] = useState('');
-  const [row, setRow] = useState<Row>('ft'), [away, setAway] = useState(false), [fieldH, setFieldH] = useState(36), [inking, setInking] = useState(false);
+  const [row, setRow] = useState<Row>('ft'), [away, setAway] = useState(false), [fieldH, setFieldH] = useState(36);
   const reg = useRef<Registry>(new Map()), clocks = useRef(new Map<string, { text: string; clock: number[] }>());
   // The motion's own state: where the shape is, what is pending, and whether the reader has scrolled away from her.
-  const ctl = useRef({ at: 'gone' as 'gone' | Kind, closing: false, timers: [] as number[], staged: false, follow: true, progUntil: 0, wheelAt: 0, since: 0, pull: calm as Pull, pullTimer: 0, key: '', ghost: null as { nodes: Node[]; top: number } | null, reveal: false, fly: null as Fly | null, rise: false, back: false, shape: { w: 0, h: 0 }, lbW: 0, litEl: null as HTMLElement | null, ink: false, still: false });
+  const ctl = useRef({ at: 'gone' as 'gone' | Kind, closing: false, timers: [] as number[], staged: false, follow: true, progUntil: 0, wheelAt: 0, since: 0, pull: calm as Pull, pullTimer: 0, key: '', ghost: null as { nodes: Node[]; top: number } | null, reveal: false, fly: null as Fly | null, rise: false, back: false, shape: { w: 0, h: 0 }, lbW: 0, litEl: null as HTMLElement | null, still: false });
   const c = ctl.current;
 
   // Only the latest exchange shows; `rev.n` earlier ones of this session have been pulled up above it, and a new question puts them away again.
@@ -374,19 +364,16 @@ export function TalkArea(p: TalkProps) {
     r.lit = lit;
   };
   // Light up as far as she has got: where the daemon last put her voice (ADR 0112), carried on at pace; with no report, estimated from when she began.
-  // The written part is not her speech: it writes itself in on its own clock (whole when she is silent). The follow goes to the line she is
-  // saying, and never to the write-in while her voice is on the answer: that is faster than she is. Only with her voice done, or off, does
-  // it follow the front of the write-in. While she says a written part that shows alone (the middle level) there is nothing of hers to
-  // follow: the view stays (`c.still`).
+  // The follow goes to the line she is saying. While she says a written part that shows alone (the middle level) there is nothing of hers
+  // to follow: the view stays (`c.still`).
   const view = useRef(v); view.current = v;
   const high = useRef(new Map<string, { text: string; n: number }>());
   const drive = () => {
     let front: HTMLElement | null = null, going = false;
-    c.ink = false;
     for (const it of view.current.items) {
       if (it.who !== 'her') continue;
       const voiced = !!(it.spoken || it.voiced) && !it.said && !it.failed && !live.current.silent;
-      const sr = it.spoken ? reg.current.get(it.id) : undefined, wr = reg.current.get(`${it.id}:w`);
+      const sr = it.spoken ? reg.current.get(it.id) : undefined;
       let ahead: HTMLElement | null = null;
       if (sr) {
         const clock = clockFor(it), done = it.failed || live.current.silent || (it.said && it.cutAt === undefined);
@@ -399,11 +386,6 @@ export function TalkArea(p: TalkProps) {
         high.current.set(it.id, { text: it.spoken, n: said });
         paint(sr, said);
         if (!done && !it.queued && it.cutAt === undefined) ahead = sr.chars[Math.max(0, said - 1)] ?? null;
-      }
-      if (wr?.ink) {
-        const n = it.failed || live.current.silent ? wr.chars.length : saidCount(wr.ink.clock, (Date.now() - wr.ink.t0) / 1000);
-        paint(wr, n);
-        if (n < wr.chars.length) { c.ink = true; if (!voiced) ahead ||= wr.chars[Math.max(0, n - 1)]; }
       }
       if (ahead) front = ahead;
       going ||= voiced;
@@ -422,14 +404,14 @@ export function TalkArea(p: TalkProps) {
       el.scrollTo({ top: Math.max(0, Math.min(bottom - room * .7, el.scrollHeight - room)), behavior: reduced() ? 'auto' : 'smooth' });
     }
   };
-  // Ticking while she is saying a line or a written part is still writing itself in (`c.ink`, set by the driver).
+  // Ticking while she is saying a line.
   const speaking = v.items.some(it => it.who === 'her' && it.spoken && !it.said);
   const steps = useRef({ drive, followLit }); steps.current = { drive, followLit };
   useEffect(() => {
-    if (!speaking && !inking) return;
-    const id = window.setInterval(() => { steps.current.followLit(steps.current.drive()); if (!c.ink) setInking(false); }, 90);
+    if (!speaking) return;
+    const id = window.setInterval(() => steps.current.followLit(steps.current.drive()), 90);
     return () => clearInterval(id);
-  }, [speaking, inking]);
+  }, [speaking]);
 
   // ---- the bottom row: your state, or the field you type in ----
   const swapTo = (want: Row) => {
@@ -480,7 +462,6 @@ export function TalkArea(p: TalkProps) {
     if (c.rise && row === (p.field ? 'fd' : 'ft')) { c.rise = false; if (c.back) { c.back = false; rowEl().animate([{ opacity: 0 }, { opacity: 1 }], { duration: 260, delay: Math.round(OPEN.d * .5), easing: 'ease-out', fill: 'backwards' }); /* after the sent words have left it */ } else rise(rowEl(), 0); }
     runFly();
     followLit(drive());
-    setInking(c.ink);
     fades();
   }, [sig]);
   useEffect(() => {

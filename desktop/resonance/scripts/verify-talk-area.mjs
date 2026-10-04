@@ -352,80 +352,88 @@ try {
     await s.context.close();
   }
 
-  // ---- the written part writes itself in on a clock of its own, quickly: not tied to her voice, and the screen stays on what she says ----
+  // ---- the written part comes up whole: one fade-in with a slight rise, no per-character write-in ----
   const para = '下午三点之后的三场会议都已经往后推了一个小时，对应的日历邀请也已经更新。我给王老师发了一条消息，说明了改期的原因，并且问他明天上午是否方便再约一次。周五的评审会议和你的健身课时间冲突了，我没有擅自改动，等你决定。';
   const tail = '### 今天\n- 10:00 和 Anna 的产品会 · 3F 会议室\n- 14:30 评审会议\n- 17:00 健身课\n\n**提醒**：明早九点交报告。';
-  // What the written block shows now: characters lit or grey, in order, and what it is made of.
+  // From before the block first shows: its opacity and rise when it appears, and when it is fully opaque (animation time, not the skewed Date).
+  const watchFade = page => page.evaluate(() => {
+    window.__fade = null;
+    new MutationObserver((_, mo) => {
+      const w = [...document.querySelectorAll('.talk .tk-w')].at(-1);
+      if (!w || window.__fade) return;
+      mo.disconnect();
+      const f = window.__fade = { first: +getComputedStyle(w).opacity, rise: getComputedStyle(w).translate, props: [...new Set(w.getAnimations().flatMap(a => a.effect.getKeyframes().flatMap(k => Object.keys(k))))].filter(k => !['offset', 'computedOffset', 'easing', 'composite'].includes(k)).sort().join(), anims: w.getAnimations().length, t0: performance.now(), t1: 0, h: 0, w: 0 };
+      const tick = () => { if (+getComputedStyle(w).opacity >= .999) { f.t1 = performance.now(); f.h = w.offsetHeight; f.w = w.offsetWidth; } else requestAnimationFrame(tick); };
+      requestAnimationFrame(tick);
+    }).observe(document.body, { childList: true, subtree: true });
+  });
+  // What the written block is made of now.
   const wr = page => page.evaluate(() => {
-    const w = [...document.querySelectorAll('.talk .tk-w')].at(-1), cs = [...w.querySelectorAll('.md p i')], on = cs.filter(i => i.classList.contains('on')), off = cs.filter(i => !i.classList.contains('on'));
-    const col = i => i && getComputedStyle(i).color, sp = [...document.querySelectorAll('.talk .tk-s')].at(-1);
-    return { total: cs.length, on: on.length, off: off.length, prefix: cs.slice(0, on.length).every(i => i.classList.contains('on')), all: w.classList.contains('all'), h: w.offsetHeight,
-      onColor: col(on[0]), offColor: col(off.at(-1)), text: [...w.querySelectorAll('.md p')].map(p => p.textContent).join('|'), rows: w.querySelectorAll('.doc > div').length, inDoc: w.querySelectorAll('.doc i, h5 i, code i').length,
-      bold: [...w.querySelectorAll('strong')].map(b => b.textContent).join(), boldChars: w.querySelectorAll('strong i').length, spokenAll: !!sp?.classList.contains('all') };
+    const w = [...document.querySelectorAll('.talk .tk-w')].at(-1), cs = getComputedStyle(w);
+    return { split: w.querySelectorAll('i').length, on: w.querySelectorAll('.on').length, h: w.offsetHeight, w: w.offsetWidth, opacity: cs.opacity, rise: cs.translate, anims: w.getAnimations().length,
+      text: [...w.querySelectorAll('.md p')].map(p => p.textContent).join('|'), rows: w.querySelectorAll('.doc > div').length,
+      bold: [...w.querySelectorAll('strong')].map(b => b.textContent).join() };
   });
   for (const captions of ['brief', 'all']) {
     const s = await scene({ captions });
-    const { page, emit, skew, shot, area, turn } = s;
+    const { page, emit, shot, turn } = s;
     await page.waitForTimeout(600);
+    await watchFade(page);
     const doc = `<voice>好，我把今天的情况都写在下面了，你慢慢看，有不清楚的地方再问我。</voice><document>${para}\n\n${tail}</document>`;
     await turn('w1', '我今天有什么安排', doc, { spoken: false });
-    await page.waitForSelector('.talk .tk-w'); await page.waitForTimeout(150);
-    let m = await wr(page);
-    check(`write-in (${captions}): the paragraphs are a character each, grey until the write-in reaches them (${m.on} of ${m.total} lit)`, m.total > 100 && m.off > 0 && m.on < m.total / 2 && m.prefix);
-    await skew(900); await page.waitForTimeout(350);
-    const m2 = await wr(page), T2 = await page.evaluate(() => Date.now());
-    check(`write-in (${captions}): partway through some but not all are lit, in order (${m2.on} of ${m2.total})`, m2.on > m.on && m2.off > 0 && m2.on / m2.total > .2 && m2.on / m2.total < .8 && m2.prefix && !m2.all);
-    check(`write-in (${captions}): lit characters are bright, unread ones the same dim grey as her spoken line`, m2.onColor === 'rgb(238, 240, 251)' && m2.offColor === 'rgba(238, 240, 251, 0.28)');
-    check(`write-in (${captions}): the list stays the grouped .doc rows, whole, and headings and code are not split`, m2.rows === 3 && m2.inDoc === 0 && (await page.locator('.talk .doc time').allTextContents()).join() === '10:00,14:30,17:00');
-    check(`write-in (${captions}): Markdown still renders: the bold stays bold, the text is as written`, m2.bold === '提醒' && m2.boldChars === 2 && m2.text === `${para}|提醒：明早九点交报告。`);
-    await shot(`write-in-${captions}-mid`);
-    // Her voice is stopped here: that is not what writes it, so it goes on. (The clock goes back to where it was at the partway look, so the checks above cost no write-in time.)
-    await skew(T2 - await page.evaluate(() => Date.now()));
-    await emit('voice', { phase: 'spoken', turn_id: 'w1', output_outcome: 'interrupted' }); await skew(300); await page.waitForTimeout(350);
-    const m3 = await wr(page);
-    check(`write-in (${captions}): her voice being stopped does not freeze it: more is lit and it is not finished (${m3.on} of ${m3.total})`, m3.on > m2.on && m3.off > 0 && m3.prefix && !m3.all);
-    await skew(3000); await page.waitForTimeout(400);
-    const m4 = await wr(page);
-    check(`write-in (${captions}): within a few seconds all of it is lit`, m4.on === m4.total && m4.off === 0 && m4.all);
-    check(`write-in (${captions}): no layout jump while it writes in: the block is as tall at the end as at the start (${Math.round(m.h)}, ${Math.round(m4.h)})`, Math.abs(m.h - m4.h) < 1.5 && Math.abs(m2.h - m4.h) < 1.5);
-    await shot(`write-in-${captions}-done`);
-    // Her voice never reports in: the written part still finishes on its own, and her spoken line is not the one that decides it.
-    await turn('w3', '再说一遍', doc, { spoken: false });
-    await page.waitForFunction(() => !!document.querySelector('.talk [data-line="her:w3"] .tk-w'));
-    await skew(3600); await page.waitForTimeout(500);
-    const m5 = await wr(page);
-    check(`write-in (${captions}): with her voice still going (it never says it has finished) it is all lit on its own (${m5.on} of ${m5.total})`, m5.total > 100 && m5.on === m5.total && m5.all && (captions === 'brief' || !m5.spokenAll));
-    // Nothing spoken: the document is there whole.
+    await page.waitForSelector('.talk .tk-w'); await page.waitForTimeout(900);
+    const f = await page.evaluate(() => window.__fade), m = await wr(page);
+    check(`written part (${captions}): it is whole text, not split into characters (${m.split} split)`, m.split === 0 && m.on === 0 && m.text === `${para}|提醒：明早九点交报告。`);
+    check(`written part (${captions}): it first shows transparent and 4 px low (opacity ${f.first}, translate ${f.rise}), with a fade running`, f.first < .2 && f.rise.endsWith('4px') && f.anims === 1);
+    check(`written part (${captions}): it is fully opaque within 0.6 s, not at once (${Math.round(f.t1 - f.t0)} ms)`, f.t1 > 0 && f.t1 - f.t0 < 600 && f.t1 - f.t0 > 150);
+    check(`written part (${captions}): at rest it is opaque, in place, nothing running (opacity ${m.opacity}, translate ${m.rise})`, m.opacity === '1' && (m.rise === 'none' || m.rise === '0px') && m.anims === 0);
+    check(`written part (${captions}): no layout jump: the fade moves only opacity and the 4 px translate (${f.props}), and the block is as tall when the fade ends as at rest, at the same width, give or take the area's own settling (${Math.round(f.h)}, ${Math.round(m.h)}; ${Math.round(f.w)}, ${Math.round(m.w)})`, f.props === 'opacity,translate' && Math.abs(f.w - m.w) <= 4 && Math.abs(f.h - m.h) < 1.5);
+    check(`written part (${captions}): the list stays the grouped .doc rows and the times stay as written`, m.rows === 3 && (await page.locator('.talk .doc time').allTextContents()).join() === '10:00,14:30,17:00');
+    check(`written part (${captions}): Markdown still renders: the bold stays bold`, m.bold === '提醒');
+    await shot(`written-fade-${captions}`);
+    // Nothing spoken: the document is there whole, and fades in too.
     await turn('w2', '写在文档里', `<document>${para}</document>`); await page.waitForTimeout(1500);
-    const bare = await page.evaluate(() => { const w = [...document.querySelectorAll('.talk .tk-w')].at(-1); return { chars: w.querySelectorAll('i').length, text: w.textContent }; });
-    check(`write-in (${captions}): an answer with nothing spoken is a plain block, not split into characters`, bare.chars === 0 && bare.text === para);
+    const bare = await wr(page);
+    check(`written part (${captions}): an answer with nothing spoken is a plain block, not split into characters`, bare.split === 0 && bare.text === para);
     if (captions === 'all') {
-      // Her voice has already finished when the written part first shows (it comes up 0.7 s after the line): there is nothing to write along with.
+      // Her voice has already finished when the written part first shows (it comes up 0.7 s after the line).
       await turn('w4', '再来一次', doc, { spoken: false }); await emit('voice', { phase: 'spoken', turn_id: 'w4' }); await page.waitForTimeout(1500);
-      const done = await page.evaluate(() => { const w = [...document.querySelectorAll('.talk .tk-w')].at(-1); return { chars: w.querySelectorAll('i').length, text: w.textContent }; });
-      check('write-in (all): her voice was already done when the written part first showed: it is there whole, no characters split', done.chars === 0 && done.text.startsWith(para));
+      const done = await wr(page);
+      check('written part (all): her voice was already done when it first showed: it is there whole, not split, opaque', done.split === 0 && done.text.startsWith(para) && done.opacity === '1');
     }
-    check(`no page errors (write-in, ${captions})`, s.errors.length === 0);
+    check(`no page errors (written part, ${captions})`, s.errors.length === 0);
+    await s.context.close();
+  }
+  {
+    // Reduced motion: it is simply there, opaque from the first frame, nothing animating.
+    const s = await scene({ captions: 'all', reduced: true });
+    const { page, turn } = s;
+    await page.waitForTimeout(600);
+    await watchFade(page);
+    await turn('w5', '我今天有什么安排', `<voice>好，我把今天的情况都写在下面了。</voice><document>${para}\n\n${tail}</document>`, { spoken: false });
+    await page.waitForSelector('.talk .tk-w'); await page.waitForTimeout(900);
+    const f = await page.evaluate(() => window.__fade), m = await wr(page);
+    check(`written part (reduced motion): it is there at once: opaque and in place from the first frame, nothing animating (opacity ${f.first}, translate ${f.rise}, ${f.anims} animations)`, f.first === 1 && (f.rise === 'none' || f.rise === '0px') && f.anims === 0 && m.split === 0 && m.rows === 3);
+    check('no page errors (written part, reduced motion)', s.errors.length === 0);
     await s.context.close();
   }
 
-  // ---- the screen stays on what she says; with nothing said on screen it follows the write-in ----
+  // ---- the screen stays on what she says, and a long answer opens at its top ----
   {
     const s = await scene({ captions: 'all' });
-    const { page, emit, skew, shot, area, turn, settled } = s;
+    const { page, emit, skew, shot, turn, settled } = s;
     await page.waitForTimeout(600);
     await turn('l1', '全部告诉我', `<voice>${long}${long}</voice><document>${para}\n\n${tail}</document>`, { spoken: false });
     await page.waitForSelector('.talk .tk-w'); await settled();
-    await skew(110_000); await page.waitForTimeout(900); // the write-in is long over; she is still saying it
+    await skew(110_000); await page.waitForTimeout(900); // she is far into saying it
     const see = () => page.evaluate(() => {
       const tr = document.querySelector('.talk-tr').getBoundingClientRect(), on = [...document.querySelectorAll('.talk .tk-s i.on')].at(-1).getBoundingClientRect(), last = [...document.querySelectorAll('.talk .tk-w .md p')].at(-1).getBoundingClientRect();
       const t = document.querySelector('.talk-tr');
       return { front: on.top >= tr.top && on.bottom <= tr.bottom, writtenOut: last.top >= tr.bottom, top: t.scrollTop, end: t.scrollHeight - t.scrollTop - t.clientHeight < 3, scroll: t.scrollHeight - t.clientHeight };
     });
-    const w = await wr(page), a = await see();
-    check(`follow (all): while she speaks the written write-in is finished (${w.on} of ${w.total})`, w.on === w.total && w.all);
-    check(`follow (all): the view stays on the line she is saying, not the written part below it (front in view, written's last line out of it, scrolled ${a.top} of ${a.scroll})`, a.front && a.writtenOut && !a.end && a.top > 20);
-    await shot('write-in-all-follows-speech');
+    const a = await see();
+    check(`follow (all): while she speaks the view stays on the line she is saying, not the written part below it (front in view, written's last line out of it, scrolled ${a.top} of ${a.scroll})`, a.front && a.writtenOut && !a.end && a.top > 20);
+    await shot('written-all-follows-speech');
     await emit('voice', { phase: 'spoken', turn_id: 'l1' }); await page.waitForTimeout(1100);
     const e = await see();
     check('follow (all): once she has finished it rests at the end, the written part in view', e.end && !e.writtenOut);
@@ -434,32 +442,24 @@ try {
   }
   {
     const s = await scene({ captions: 'brief' });
-    const { page, emit, skew, shot, turn, area, settled } = s;
+    const { page, emit, skew, shot, turn, settled } = s;
     await page.waitForTimeout(600);
     await turn('l2', '全部告诉我', `<voice>好，都写在下面。</voice><document>${[para, para, para, para, para].join('\n\n')}\n\n${tail}</document>`, { spoken: false });
     await page.waitForSelector('.talk .tk-w'); await settled();
     await skew(6000); await page.waitForTimeout(900);
-    const see = () => page.evaluate(() => {
-      const t = document.querySelector('.talk-tr'), tr = t.getBoundingClientRect(), on = [...document.querySelectorAll('.talk .tk-w i.on')].at(-1)?.getBoundingClientRect();
-      return { front: !!on && on.top >= tr.top && on.bottom <= tr.bottom, top: t.scrollTop, scroll: t.scrollHeight - t.clientHeight, lit: document.querySelectorAll('.talk .tk-w i.on').length, all: document.querySelectorAll('.talk .tk-w i').length };
-    });
+    const see = () => page.evaluate(() => { const t = document.querySelector('.talk-tr'); return { top: t.scrollTop, scroll: t.scrollHeight - t.clientHeight, split: document.querySelectorAll('.talk .tk-w i').length }; });
     let a = await see();
-    check(`follow (brief): she is still saying it, so the write-in does not take the view down: it stays at the top (${a.lit} of ${a.all} lit, scrolled ${a.top} of ${a.scroll})`, a.lit > 0 && a.lit < a.all && a.top < 3 && a.scroll > 100);
-    await shot('write-in-brief-holds');
+    check(`follow (brief): she is still saying it and there is nothing of hers on screen to follow: the view stays at the top (scrolled ${a.top} of ${a.scroll})`, a.split === 0 && a.top < 3 && a.scroll > 100);
+    await shot('written-brief-holds');
     await emit('voice', { phase: 'spoken', turn_id: 'l2' });
     await skew(1500); await page.waitForTimeout(900);
     a = await see();
-    check(`follow (brief): once her voice is done the view follows the write-in front down (${a.lit} of ${a.all} lit, scrolled ${a.top} of ${a.scroll})`, a.lit > 0 && a.front && a.top > 40);
-    await shot('write-in-brief-follows');
-    await page.mouse.move(196, 240); await page.mouse.wheel(0, -3000); await page.waitForTimeout(700);
-    await skew(1500); await page.waitForTimeout(700);
-    const b = await see();
-    check(`follow (brief): scrolled away by hand, it stays where the reader is while the write-in goes on (${b.top}; ${a.lit} → ${b.lit} lit)`, b.top < 5 && b.lit > a.lit);
+    check(`follow (brief): once her voice is done it rests at the end like any finished answer, as before (scrolled ${a.top} of ${a.scroll})`, a.scroll > 100 && a.scroll - a.top < 3);
     check('no page errors (follow, brief)', s.errors.length === 0);
     await s.context.close();
   }
 
-  // ---- a long answer opens showing its top; the view goes down only as her lit words do, never with the write-in ----
+  // ---- a long answer opens showing its top; the view goes down only as her lit words do ----
   {
     const spokenLine = '好，都写在下面。这件事我从头到尾说一遍，你慢慢听，不清楚的地方再问我。';
     const doc = `<document>${[para, para, para, para].join('\n\n')}\n\n${tail}</document>`;
@@ -471,7 +471,7 @@ try {
       await s.emit('open', { turn_id: id, response_id: `r-${id}` }); await s.emit('append', { turn_id: id, token: text }); await s.emit('done', { turn_id: id, fadeMs: 100 });
       await s.emit('voice', { phase: 'playing', turn_id: id, played: 2, ahead: 8, held: false });
     };
-    // The middle level shows a written part alone while she says something else: nothing of hers is on screen to follow.
+    // The middle level shows a written part alone while she says something else: nothing of hers is on screen to follow, so the view stays.
     for (const [how, fieldFirst] of [['the pill grows into the area', false], ['the typing field keeps the area up', true]]) {
       const s = await scene({ captions: 'brief' });
       const { page, emit, move, skew, shot, settled } = s;
@@ -487,13 +487,13 @@ try {
       await shot(`talk-long-brief-first-${fieldFirst ? 'up' : 'pill'}`);
       await skew(10_000); await page.waitForTimeout(900);
       a = await seen(page);
-      check(`a long answer, middle level (${how}): the write-in is all in and she is still saying it, and the view has stayed at the top (highest scroll ${a.max})`, await page.evaluate(() => { const w = document.querySelectorAll('.talk .tk-w i'); return w.length > 100 && [...w].every(i => i.classList.contains('on')); }) && a.max < 3);
+      check(`a long answer, middle level (${how}): the written part is there whole and she is still saying it, and the view has stayed at the top (highest scroll ${a.max})`, await page.evaluate(() => { const w = document.querySelector('.talk .tk-w'); return w.textContent.length > 300 && w.querySelectorAll('i').length === 0; }) && a.max < 3);
       await shot(`talk-long-brief-mid-${fieldFirst ? 'up' : 'pill'}`);
       await page.evaluate(() => clearInterval(window.__iv));
       check(`no page errors (long answer, middle level, ${how})`, s.errors.length === 0);
       await s.context.close();
     }
-    // Everything: her spoken line is short and the written part under it is long; she says the line, the write-in does not take the view.
+    // Everything: her spoken line is short and the written part under it is long; she says the line, the written part does not take the view.
     {
       const s = await scene({ captions: 'all' });
       const { page, emit, skew, shot, area } = s;
@@ -504,7 +504,7 @@ try {
       await page.waitForSelector('.talk .tk-w'); await page.waitForTimeout(900);
       await skew(10_000); await page.waitForTimeout(900);
       const a = await seen(page);
-      check(`a long answer, everything: the write-in is all in, the view stayed at the top with her spoken line (highest scroll ${a.max})`, a.room > 100 && a.max < 3 && await page.evaluate(() => [...document.querySelectorAll('.talk .tk-w i')].every(i => i.classList.contains('on'))));
+      check(`a long answer, everything: the written part is there whole, the view stayed at the top with her spoken line (highest scroll ${a.max})`, a.room > 100 && a.max < 3 && await page.evaluate(() => document.querySelector('.talk .tk-w').querySelectorAll('i').length === 0));
       await page.evaluate(() => clearInterval(window.__iv));
       check('no page errors (long answer, everything, written part)', s.errors.length === 0);
       await s.context.close();
@@ -620,7 +620,7 @@ try {
     check('and the footer is neutral: no “Speaking · poke to interrupt” and no speaking bars for a voice that is off', a.state === 'idle' && a.label === '');
     await shot('15-voice-off');
     await turn('n3', '今天呢', '<voice>写在下面了。</voice><document>下午三点之后的三场会议都已经往后推了一个小时。</document>'); await page.waitForTimeout(1200);
-    check('her voice off: the written part is there whole at once, not written in', await page.evaluate(() => { const w = [...document.querySelectorAll('.talk .tk-w')].at(-1); return !!w && w.querySelectorAll('i').length === 0 && w.textContent === '下午三点之后的三场会议都已经往后推了一个小时。'; }));
+    check('her voice off: the written part is there whole, not split into characters', await page.evaluate(() => { const w = [...document.querySelectorAll('.talk .tk-w')].at(-1); return !!w && w.querySelectorAll('i').length === 0 && w.textContent === '下午三点之后的三场会议都已经往后推了一个小时。'; }));
     check('no page errors (none)', s.errors.length === 0);
     await s.context.close();
   }
@@ -960,7 +960,7 @@ try {
     const a = await area(), running = await page.evaluate(() => document.querySelector('.talk').getAnimations({ subtree: true }).filter(x => x.playState === 'running' && x.effect.getComputedTiming().iterations !== Infinity).length);
     check(`reduced motion: it is simply there at its size (${Math.round(a.r.w)} x ${Math.round(a.r.h)}), no shape animation running (${running})`, a.up && Math.round(a.r.w) === 360 && a.her === '你好，Allen。' && running === 0);
     await emit('append', { turn_id: 'r1', token: '<document>下午三点之后的三场会议都已经往后推了一个小时。</document>' }); await emit('done', { turn_id: 'r1', fadeMs: 100 }); await page.waitForTimeout(1200);
-    check('reduced motion: the written part is there whole, fully lit, nothing writes in', await page.evaluate(() => { const w = [...document.querySelectorAll('.talk .tk-w')].at(-1); return !!w && w.querySelectorAll('i').length === 0 && getComputedStyle(w.querySelector('p')).color === 'rgb(238, 240, 251)'; }));
+    check('reduced motion: the written part is there whole, not split into characters, in her colour', await page.evaluate(() => { const w = [...document.querySelectorAll('.talk .tk-w')].at(-1); return !!w && w.querySelectorAll('i').length === 0 && getComputedStyle(w.querySelector('p')).color === 'rgb(238, 240, 251)'; }));
     check('no page errors (reduced)', s.errors.length === 0);
     await s.context.close();
   }
