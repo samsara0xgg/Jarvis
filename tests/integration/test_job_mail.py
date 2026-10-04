@@ -858,46 +858,45 @@ def test_the_judge_is_the_one_seam_and_replay_runs_another_over_the_stored_packs
     assert h.sql("SELECT * FROM attention_log") == before
 
 
-def test_the_audit_list_shows_held_back_mail_that_came_close(tmp_path: Path, jev: _Jev) -> None:
-    """The audit list shows the newest held-back mail at 0.2 or more job-like, up to 30."""
+def test_the_audit_list_shows_the_newest_held_back_mail_at_any_probability(
+    tmp_path: Path, jev: _Jev
+) -> None:
+    """The audit list is the newest 50 held-back mails, from any job-likelihood."""
     h = _harness(tmp_path, jev)
     h.job.poll_once()
 
-    (close,) = h.client.get("/inherent/jobs").json()["skipped"]
-    assert {k: close[k] for k in ("message_id", "sender_name", "sender_domain", "subject")} == {
-        "message_id": "m-fair",
+    skipped = h.client.get("/inherent/jobs").json()["skipped"]
+    assert {one["message_id"] for one in skipped} == {"m-promo", "m-fair", "m-news", "m-mom"}
+    by_id = {one["message_id"]: one for one in skipped}
+    assert {k: by_id["m-fair"][k] for k in ("sender_name", "sender_domain", "subject")} == {
         "sender_name": "UVic Events",
         "sender_domain": "uvic.example",
         "subject": "Career fair next week",
     }
-    assert close["p_job"] == pytest.approx(0.3)
-    assert close["received_at"]
-    chances = dict(h.sql("SELECT message_id, p_job FROM job_seen"))
-    assert chances["m-news"] == pytest.approx(0.03)
-    assert chances["m-interview"] == pytest.approx(1.0)
-    # Header facts are kept for that one only, and never a body.
-    assert h.sql("SELECT message_id FROM job_seen WHERE subject IS NOT NULL") == [("m-fair",)]
+    assert by_id["m-fair"]["p_job"] == pytest.approx(0.3)
+    assert by_id["m-promo"]["p_job"] == pytest.approx(0.1)
+    assert by_id["m-news"]["p_job"] == pytest.approx(0.03)  # under the old 0.2 bar, now listed
+    assert all(one["received_at"] for one in skipped)
 
-    # Up to 30, newest first, from 0.2 up.
-    for i in range(35):
+    # Fifty at most, newest first.
+    for i in range(60):
         job_ledger.record_seen(
             h.db,
             f"x{i}",
             "not_job",
             NOW,
-            p_job=0.5 if i else 0.1,
+            p_job=0.01,
             audit={
-                "received_at": (NOW - timedelta(minutes=i)).isoformat(),
+                "received_at": (NOW + timedelta(minutes=60 - i)).isoformat(),
                 "name": "n",
                 "domain": "d",
                 "subject": f"s{i}",
             },
         )
     skipped = h.client.get("/inherent/jobs").json()["skipped"]
-    assert len(skipped) == 30
-    assert skipped[0]["message_id"] == "x1"
-    assert skipped[-1]["message_id"] == "x30"  # m-fair (three hours ago) is past the 30th
-    assert "x0" not in {one["message_id"] for one in skipped}  # 0.1 is under the bar
+    assert len(skipped) == 50
+    assert skipped[0]["message_id"] == "x0"
+    assert skipped[-1]["message_id"] == "x49"
     stamps = [one["received_at"] for one in skipped]
     assert stamps == sorted(stamps, reverse=True)
 

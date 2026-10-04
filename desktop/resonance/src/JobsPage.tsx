@@ -7,7 +7,7 @@ import { postRoute } from './homeData';
 // the facts, never the bodies; a deleted mail is hidden there (POST /inherent/jobs/{message_id}/delete). The kind chips
 // are shared with the notch's mail card and digest.
 export type JobMailRow = { message_id: string; kind: string; received_at: string; subject: string; event_at?: string | null; event_text?: string | null };
-// `skipped` (GET /inherent/jobs, up to 30, newest first, absent on older daemons): mail the triage judged not job, with its job-likelihood.
+// `skipped` (GET /inherent/jobs, up to 50, newest first, absent on older daemons): mail the triage held back as not job, whatever its job-likelihood.
 export type Skipped = { message_id: string; received_at: string; sender_name?: string; sender_domain?: string; subject: string; p_job?: number };
 export type JobGroup = { company: string; role?: string; kind: string; last_at: string; next_event_at?: string | null; count: number; mails: JobMailRow[] };
 

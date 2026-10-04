@@ -232,13 +232,7 @@ class JobMail:
             if verdict == "job":
                 continue
             seen = by_id.get(message_id)
-            audit = (
-                _audit(seen)
-                if verdict == "not_job"
-                and seen is not None
-                and (chances.get(message_id) or 0) >= ledger.AUDIT_MIN
-                else None
-            )
+            audit = _audit(seen) if verdict == "not_job" and seen is not None else None
             ledger.record_seen(
                 self._db, message_id, verdict, now, p_job=chances.get(message_id), audit=audit
             )

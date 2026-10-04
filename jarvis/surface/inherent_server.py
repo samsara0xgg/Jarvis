@@ -1321,7 +1321,7 @@ def _register_job_routes(app: FastAPI, deps: InherentDeps) -> None:
 
         @app.get("/inherent/jobs")
         async def jobs() -> dict[str, Any]:
-            """``{ledger}``: job mail grouped by company."""
+            """``{ledger, skipped}``: job mail grouped by company; the newest held-back mail."""
             return await _home_call(jobs_read())
 
     if deps.job_delete is not None:

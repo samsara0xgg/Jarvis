@@ -28,9 +28,8 @@ if TYPE_CHECKING:
 KINDS: Final[tuple[str, ...]] = ("offer", "interview", "rejection", "receipt", "job_other")
 LEVELS: Final[tuple[str, ...]] = ("card", "card_sound", "speak")
 MAX_ERROR_TRIES: Final[int] = 3
-# A held-back mail is shown in the audit list from this probability of being job mail.
-AUDIT_MIN: Final[float] = 0.2
-AUDIT_LIMIT: Final[int] = 30
+# The audit list of held-back mail shows this many, newest first, whatever Jev's probability.
+AUDIT_LIMIT: Final[int] = 50
 # The message id of a channel-health alert, which belongs to no mail.
 HEALTH_ID: Final[str] = "health"
 ALERT_KEEP: Final[timedelta] = timedelta(days=7)
@@ -157,8 +156,7 @@ def record_seen(  # noqa: PLR0913 - the row's fields
     """Remember a mail was triaged (``not_job``, ``job``, ``error``); an error counts its tries.
 
     ``p_job`` is Jev's probability that it is job mail. ``audit`` (received_at, name, domain,
-    subject) is kept only for a held-back mail that is close enough to job mail to be worth a
-    second look; it is never the body and never an address.
+    subject) is what the audit list of held-back mail shows; never the body, never an address.
     """
     failed = 1 if verdict == "error" else 0
     given = audit or {}
@@ -187,13 +185,13 @@ def record_seen(  # noqa: PLR0913 - the row's fields
 
 
 def list_skipped(path: Path) -> list[dict[str, Any]]:
-    """The newest held-back mails that were at least ``AUDIT_MIN`` likely to be job mail."""
+    """The newest ``AUDIT_LIMIT`` held-back mails, whatever their chance of being job mail."""
     with _db(path) as conn:
         rows = conn.execute(
             "SELECT message_id, received_at, sender_name, sender_domain, subject, p_job"
-            " FROM job_seen WHERE verdict = 'not_job' AND p_job >= ? AND subject IS NOT NULL"
+            " FROM job_seen WHERE verdict = 'not_job' AND subject IS NOT NULL"
             " ORDER BY received_at DESC, message_id LIMIT ?",
-            (AUDIT_MIN, AUDIT_LIMIT),
+            (AUDIT_LIMIT,),
         ).fetchall()
     return [dict(row) for row in rows]
 
