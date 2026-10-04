@@ -2407,6 +2407,8 @@ class _SegmentSpeaker:
                 self._expose(held)
             else:
                 self._feed_text(held)
+        if self._json is not None and self._json.moved_code and not self.voice.strip():
+            self._expose(t("voice.code_on_screen"))  # the reply was only code
         tail = self._splitter.finish()
         self._close_json()
         self.voice += tail.voice_tail

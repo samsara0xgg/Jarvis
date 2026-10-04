@@ -424,6 +424,10 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
         "zh": "刚才那个查询还没拿到结果，拿到后再说。",
         "en": "That lookup has no result yet; it will come once it arrives.",
     },
+    "voice.code_on_screen": {
+        "zh": "代码在屏幕上。",
+        "en": "The code is on screen.",
+    },
     "live.long_result": {
         "zh": "查到了，但结果太长不适合口述，完整结果在界面上。",
         "en": "Found it, but the result is too long to say aloud; the full result is on screen.",

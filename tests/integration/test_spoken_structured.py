@@ -106,6 +106,24 @@ def test_a_cut_stream_keeps_what_was_already_unescaped() -> None:
     assert (written.finish().written, written.failed) == ("", False)
 
 
+@pytest.mark.parametrize(("spoken", "said", "written"), [
+    ("Here:\n```python\nprint(1)\n```\nDone.", "Here:\n\nDone.",
+     "- note\n\n```python\nprint(1)\n```"),
+    ("Use `ls` and ``x``.", "Use `ls` and ``x``.", "- note"),
+    ("Open:\n```\nrm -rf", "Open:\n", "- note\n\n```\nrm -rf\n```"),
+])
+def test_a_code_block_in_spoken_goes_to_the_screen(spoken: str, said: str, written: str) -> None:
+    """A fenced block is never said wherever the deltas split; it lands after written, once."""
+    text = _reply(spoken, "- note", ascii_only=True)
+    for deltas in [[text], list(text)]:
+        extractor = SpokenJsonExtractor()
+        assert "".join(extractor.feed(delta) for delta in deltas) == said
+        assert extractor.finish().written == written
+    extractor = SpokenJsonExtractor()
+    extractor.feed(_reply("A:\n```\nprint(1)\n```", "print(1)", ascii_only=True))
+    assert extractor.finish().written == "print(1)"
+
+
 @pytest.mark.parametrize("text", ["plain words", "<voice>hi</voice>", '{"spoken":5}', '{"a" 1}'])
 def test_the_extractor_fails_on_what_the_schema_cannot_produce(text: str) -> None:
     """Text that is not the schema's JSON hands out no spoken text and says so."""
@@ -116,6 +134,17 @@ def test_the_extractor_fails_on_what_the_schema_cannot_produce(text: str) -> Non
 
 
 # ---- the turn ----------------------------------------------------------------
+
+
+def test_a_reply_that_is_only_code_says_it_is_on_screen(tmp_path: Path) -> None:
+    """Code put in spoken is not read aloud: the screen gets it, the voice one line about it."""
+    code = '```python\nprint("hi")\n```'
+    with _Peer([[("final_answer", _reply(code, ""))]]) as peer:
+        runtime = _structured_runtime(tmp_path, peer.url)
+        _drive(runtime, _spoken(runtime.conn, "turn-c", "用Python写个Hello World"))
+    assert _chunks(runtime) == ["代码在屏幕上。"]
+    (emitted,) = _payloads(runtime.conn, "surface.response_emitted")
+    assert (emitted["voice_text"], emitted["document_text"]) == ("代码在屏幕上。", code)
 
 
 def test_a_structured_answer_speaks_its_spoken_part_and_keeps_written_as_the_document(

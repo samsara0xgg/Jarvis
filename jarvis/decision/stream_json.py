@@ -4,8 +4,9 @@ On the structured spoken route the model's text is one JSON object whose
 ``spoken`` string comes first. The extractor reads it character by character
 and hands out each unescaped ``spoken`` character as soon as it is known, so
 the assembler downstream sees only the words to be said. ``written`` is
-collected for the screen. It never parses the object as a whole: a stream cut
-anywhere keeps what was already unescaped.
+collected for the screen. A fenced code block inside ``spoken`` is never
+read aloud: it moves to the screen, after ``written``. It never parses the
+object as a whole: a stream cut anywhere keeps what was already unescaped.
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ _NEXT: Final[dict[tuple[str, str], str]] = {
     ("start", "{"): "key_or_end", ("colon", ":"): "value", ("after_value", ","): "key_or_end",
 }
 _LOST: Final[str] = "�"  # a surrogate that never found its partner
+_FENCE: Final[str] = "```"
 
 
 @dataclass(frozen=True)
@@ -52,6 +54,9 @@ class SpokenJsonExtractor:
         self._spoken: list[str] = []
         self._written: list[str] = []
         self._written_done = ""
+        self._ticks = 0  # backticks in spoken, held until it is known whether they open a fence
+        self._code: list[str] | None = None  # the fenced block being read, while one is open
+        self._blocks: list[str] = []  # fenced blocks taken out of spoken
         self.has_spoken = False
         self.failed = False
         self.complete = False
@@ -63,8 +68,12 @@ class SpokenJsonExtractor:
 
     @property
     def written(self) -> str:
-        """The ``written`` value, once its closing quote has arrived."""
-        return self._written_done
+        """The ``written`` value, once its closing quote has arrived, then spoken's code blocks."""
+        if not self._blocks:
+            return self._written_done
+        blocks = [f"{_FENCE}{b.rstrip()}\n{_FENCE}" for b in self._blocks if b.strip()
+                  and b.split("\n", 1)[-1].strip() not in self._written_done]
+        return "\n\n".join(part for part in [self._written_done.strip(), *blocks] if part)
 
     def feed(self, delta: str) -> str:
         """Take one delta; return the ``spoken`` text it completes."""
@@ -75,9 +84,14 @@ class SpokenJsonExtractor:
         self._spoken.append(text)
         return text
 
+    @property
+    def moved_code(self) -> bool:
+        """A code block left spoken for the screen."""
+        return bool(self._blocks)
+
     def finish(self) -> JsonReply:
         """Return what the stream said; a cut stream is whatever was already read."""
-        return JsonReply(self.spoken, self._written_done, self.complete)
+        return JsonReply(self.spoken, self.written, self.complete)
 
     def _step(self, char: str, emitted: list[str]) -> None:
         if self._state in {"string", "escape", "unicode"}:
@@ -90,10 +104,7 @@ class SpokenJsonExtractor:
             if char == "\\":
                 self._state = "escape"
             elif char == '"':
-                self._put(self._lost(), emitted)
-                if self._target == "written":
-                    self._written_done = "".join(self._written)
-                self._state = "after_value"
+                self._close_string(emitted)
             else:
                 self._put(self._lost() + char, emitted)
         elif self._state == "escape":
@@ -111,6 +122,14 @@ class SpokenJsonExtractor:
             if len(self._hex) == _UNICODE_DIGITS:
                 self._put(self._unit(int(self._hex, 16)), emitted)
                 self._state = "string"
+
+    def _close_string(self, emitted: list[str]) -> None:
+        self._put(self._lost(), emitted)
+        if self._target == "spoken":
+            self._end_spoken(emitted)
+        if self._target == "written":
+            self._written_done = "".join(self._written)
+        self._state = "after_value"
 
     def _in_structure(self, char: str) -> None:
         state = self._state
@@ -167,6 +186,34 @@ class SpokenJsonExtractor:
 
     def _put(self, text: str, emitted: list[str]) -> None:
         if self._target == "spoken":
-            emitted.append(text)
+            for char in text:
+                self._speak(char, emitted)
         elif self._target == "written":
             self._written.append(text)
+
+    def _speak(self, char: str, emitted: list[str]) -> None:
+        """One spoken character: three backticks open or close a block that goes to the screen."""
+        if char == "`":
+            self._ticks += 1
+            if self._ticks == len(_FENCE):
+                self._ticks = 0
+                if self._code is None:
+                    self._code = []
+                else:
+                    self._blocks.append("".join(self._code))
+                    self._code = None
+            return
+        self._flush_ticks(emitted)
+        (emitted if self._code is None else self._code).append(char)
+
+    def _flush_ticks(self, emitted: list[str]) -> None:
+        if self._ticks:
+            (emitted if self._code is None else self._code).append("`" * self._ticks)
+            self._ticks = 0
+
+    def _end_spoken(self, emitted: list[str]) -> None:
+        """Spoken closed: held backticks are text; a block never closed still goes to the screen."""
+        self._flush_ticks(emitted)
+        if self._code is not None:
+            self._blocks.append("".join(self._code))
+            self._code = None
