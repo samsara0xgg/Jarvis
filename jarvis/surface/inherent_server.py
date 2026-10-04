@@ -1859,7 +1859,9 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 â
     # ADR 0046: Allen's own Claude Code sessions, read from Claude Code's own state;
     # ADR 0049: with the prompts Jarvis holds for them and their compacting / stopped marks.
     claude_board = ClaudeSessions(deps.turn_end_peek, deps.turn_end_answered)
-    claude_hooks = ClaudeHooks()
+    claude_hooks = ClaudeHooks(
+        lambda: deps.controls.quiet if deps.controls is not None else "off",
+    )
 
     @app.get("/inherent/claude-sessions")
     async def claude_sessions() -> dict[str, Any]:

@@ -26,6 +26,7 @@ from jarvis.state.plugin_settings import local_key, local_key_matches
 from jarvis.surface import claude_hooks, claude_sessions
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app, require_local_key
+from jarvis.surface.voice_controls import VoiceControls
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -78,8 +79,10 @@ class _Rig:
             self.port = str(sock.getsockname()[1])
         self.root = tmp_path / ".jarvis"
         key = local_key(self.root)
+        self.controls = VoiceControls()
         app = create_app(InherentDeps(
-            submit_callable=_noop, broadcaster=InherentBroadcaster(), claude_sessions_read=True
+            submit_callable=_noop, broadcaster=InherentBroadcaster(), claude_sessions_read=True,
+            controls=self.controls,
         ))
         require_local_key(app, functools.partial(local_key_matches, key))
         self.server = uvicorn.Server(
@@ -288,3 +291,26 @@ def test_a_prompt_from_a_session_off_the_board_is_let_go(
                 break
             time.sleep(0.1)
         assert _decision(proc) == {}
+
+
+def test_no_pop_releases_prompts_to_claude_code_and_quiet_still_holds_them(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR 0153: at ``quiet`` the card is still the way to answer; from ``no-pop`` up it is not.
+
+    A prompt that comes in at ``no-pop`` is let go at once and never reaches the board; one
+    already held at ``quiet`` goes within the hold loop's second when the level rises.
+    """
+    for rig in _rig(tmp_path, monkeypatch):
+        rig.row()  # the companion is reading
+        rig.controls.update(quiet="quiet")
+        held = rig.hook("PermissionRequest", tool_name="Bash", tool_input={"command": "ls"})
+        assert rig.held()["tool"] == "Bash"
+        rig.controls.update(quiet="no-pop")
+        started = time.monotonic()
+        assert _decision(held) == {}
+        assert time.monotonic() - started < 5
+        assert rig.row()["request"] is None
+        proc = rig.hook("PermissionRequest", tool_name="Bash", tool_input={"command": "pwd"})
+        assert _decision(proc) == {}
+        assert rig.row()["request"] is None

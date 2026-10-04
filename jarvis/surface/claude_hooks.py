@@ -11,7 +11,9 @@ A held prompt is never the only way to answer: Claude Code shows its own
 dialog alongside, and the first answer wins. Jarvis gives up a prompt (no
 decision, Claude Code carries on as without the hook) when no companion has
 read the board lately (or it stops reading while the prompt waits), when
-the hook process goes away, and when the session moved on without it.
+the hook process goes away, and when the session moved on without it. From the
+quiet level ``no-pop`` up (ADR 0153) the notch shows no cards, so nothing is
+held and a prompt already held is let go within a second.
 """
 
 from __future__ import annotations
@@ -77,8 +79,9 @@ def _always(suggestions: list[dict[str, Any]]) -> str:
 class ClaudeHooks:
     """Held permission prompts and the compacting / stopped marks, per session."""
 
-    def __init__(self) -> None:
-        """Nothing held, nothing marked, no companion reading yet."""
+    def __init__(self, quiet: Callable[[], str] | None = None) -> None:
+        """Nothing held, nothing marked, no companion reading yet; ``quiet`` reads the level."""
+        self._quiet = quiet or (lambda: "off")
         self._held: dict[str, _Held] = {}
         self._compacting: set[str] = set()
         self._stopped: dict[str, tuple[str, int]] = {}
@@ -107,7 +110,7 @@ class ClaudeHooks:
         self, payload: dict[str, Any], gone: Callable[[], Awaitable[bool]]
     ) -> dict[str, Any]:
         """Hold one prompt until Allen answers it; ``{}`` means no decision."""
-        if time.monotonic() - self._read_at > LISTENER_S:
+        if time.monotonic() - self._read_at > LISTENER_S or self._no_cards():
             return {}
         tool_input = payload.get("tool_input")
         suggestions = payload.get("permission_suggestions")
@@ -131,7 +134,7 @@ class ClaudeHooks:
                     await asyncio.wait_for(asyncio.shield(held.answer), timeout=1.0)
                 # The hook process went away, or the companion stopped reading: no answer is coming.
                 listening = time.monotonic() - self._read_at <= LISTENER_S
-                if not held.answer.done() and (not listening or await gone()):
+                if not held.answer.done() and (not listening or self._no_cards() or await gone()):
                     return {}
             decision = held.answer.result() if held.answer.done() else None
         finally:
@@ -139,6 +142,10 @@ class ClaudeHooks:
         if decision is None:
             return {}
         return {"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": decision}}
+
+    def _no_cards(self) -> bool:
+        """ADR 0153: at ``no-pop`` and ``dnd`` the notch shows no card to answer on."""
+        return self._quiet() in {"no-pop", "dnd"}
 
     def answer(self, request_id: str, body: dict[str, Any]) -> bool:
         """Turn Allen's answer into the hook's decision; False when the prompt is gone."""
@@ -192,7 +199,7 @@ class ClaudeHooks:
                 "always": _always(h.suggestions),
             }
             for h in sorted(self._held.values(), key=lambda h: h.at_ms, reverse=True)
-            if not h.answer.done()
+            if not h.answer.done() and not self._no_cards()
         }
         for session, (_, at_ms) in list(self._stopped.items()):
             row = rows.get(session)
