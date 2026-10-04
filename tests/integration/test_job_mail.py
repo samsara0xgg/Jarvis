@@ -708,42 +708,98 @@ def test_the_company_is_the_organisation_not_the_person_who_wrote(
     assert triage.company_of(name, domain, subject) == company
 
 
+@pytest.mark.parametrize(
+    ("subject", "body", "role"),
+    [
+        # Allen's real CGI mail: never "job"; the program word and the requisition id go.
+        ("Job Application Acknowledgement - Coop - AI Developer, J0926-0916", "", "AI Developer"),
+        (
+            "Job Application Acknowledgement - Winter 2027: AI Developer Co-op (8 months),"
+            " J0926-1622",
+            "",
+            "AI Developer",
+        ),
+        ("Winter 2027: AI Developer", "", "AI Developer"),
+        ("Yilun (Allen) Shi - Firmware QA Co-op - Virtual interview", "", "Firmware QA Co-op"),
+        ("Interview invitation: Software Developer Co-op", "", "Software Developer Co-op"),
+        ("Application for ML Intern at Acme", "", "ML Intern"),
+        (
+            "Offer",
+            "We would like to offer you the Backend Developer Intern position.",
+            "Backend Developer Intern",
+        ),
+        # No role in it: empty, and a generic word is never a role.
+        ("Re: Reliable Controls - Invitation to Interview", "", ""),
+        ("CGI - User Information", "", ""),
+        ("Thanks", "We received your application for the job position.", ""),
+    ],
+)
+def test_the_role_is_read_from_the_subject_or_body_and_never_a_generic_word(
+    subject: str, body: str, role: str
+) -> None:
+    """A role comes from known patterns; with none, it is empty."""
+    assert triage.role_of(subject, body) == role
+
+
 def test_the_repair_pass_fixes_stored_rows_offline_and_is_idempotent(
     tmp_path: Path, jev: _Jev
 ) -> None:
-    """Company is recomputed from the stored header; no Gmail, and no change the second time."""
+    """Company and role are recomputed from the stored header; no Gmail, nothing changes twice."""
     h = _harness(tmp_path, jev, [])
+    reliable = "Reliable Controls - Invitation to Interview"
     rows = [
-        ("a", "Jill Crowe", "app.bamboohr.com", "Re: Reliable Controls - Invitation to Interview"),
+        # key, name, domain, subject, stored role, company and role after repair
+        (
+            "a",
+            "Jill Crowe",
+            "app.bamboohr.com",
+            f"Re: {reliable}",
+            reliable,
+            ("Reliable Controls", ""),
+        ),
+        # read from the body once: the subject does not hold it, so it stays
         (
             "b",
             "Jill Crowe",
+            "app.bamboohr.com",
+            reliable,
+            "Firmware QA Analyst Co-op",
+            ("Reliable Controls", "Firmware QA Analyst Co-op"),
+        ),
+        (
+            "c",
+            "Jill Crowe",
             "reliablecontrols.com",
             "Yilun (Allen) Shi - Firmware QA Co-op - Virtual interview",
+            "",
+            ("Reliable Controls", "Firmware QA Co-op"),
         ),
-        ("c", "CGI", "njoyn.com", "CGI - User Information"),
+        (
+            "d",
+            "CGI",
+            "njoyn.com",
+            "Job Application Acknowledgement - Coop - AI Developer, J0926-0916",
+            "job",
+            ("CGI", "AI Developer"),
+        ),
+        ("e", "CGI", "njoyn.com", "CGI - User Information", "", ("CGI", "")),
     ]
-    for key, name, domain, subject in rows:
-        job_ledger.upsert_mail(
-            h.db,
-            {
-                "message_id": key,
-                "received_at": NOW.isoformat(),
-                "sender_name": name,
-                "sender_domain": domain,
-                "subject": subject,
-                "kind": "interview",
-                "company": name,
-                "role": "",
-            },
-            NOW,
-        )
-    assert repair(h.db) == 2  # CGI was right
-    assert dict(h.sql("SELECT message_id, company FROM job_mail")) == {
-        "a": "Reliable Controls",
-        "b": "Reliable Controls",
-        "c": "CGI",
-    }
+    for key, name, domain, subject, role, _after in rows:
+        mail = {
+            "message_id": key,
+            "received_at": NOW.isoformat(),
+            "sender_name": name,
+            "sender_domain": domain,
+            "subject": subject,
+            "kind": "interview",
+            "company": name,
+            "role": role,
+        }
+        job_ledger.upsert_mail(h.db, mail, NOW)
+    assert repair(h.db) == 4  # the account notice was right already
+    assert {
+        key: tuple(rest) for key, *rest in h.sql("SELECT message_id, company, role FROM job_mail")
+    } == {key: after for key, *_mid, after in rows}
     assert [one["company"] for one in h.ledger()] == ["Reliable Controls", "CGI"]
     assert repair(h.db) == 0
     assert h.gmail.calls == []

@@ -516,15 +516,25 @@ def repair(db: Path) -> int:
     """Recompute what the current rules read from each ledger row's stored header (ADR 0158).
 
     Idempotent and offline: only the stored sender name, domain and subject are used, never
-    Gmail; returns how many rows changed.
+    Gmail (the body is not stored); returns how many rows changed. A stored role that is a
+    generic word, or that the subject holds but the rules no longer read from it, is cleared;
+    a role the subject does not hold was read from the body and stays.
     """
     changed = 0
     for row in ledger.mail_rows(db):
-        company = triage.company_of(
-            row["sender_name"] or "", row["sender_domain"] or "", row["subject"] or ""
-        )
-        if company != row["company"]:
-            ledger.update_mail(db, row["message_id"], {"company": company})
+        subject = row["subject"] or ""
+        company = triage.company_of(row["sender_name"] or "", row["sender_domain"] or "", subject)
+        role = triage.role_of(subject, "")
+        old = (row["role"] or "").casefold()
+        if not role and old not in subject.casefold() and old not in triage.GENERIC_ROLES:
+            role = row["role"] or ""
+        fixes = {
+            name: value
+            for name, value in (("company", company), ("role", role))
+            if value != (row[name] or "")
+        }
+        if fixes:
+            ledger.update_mail(db, row["message_id"], fixes)
             changed += 1
     return changed
 

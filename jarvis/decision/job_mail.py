@@ -310,15 +310,36 @@ _SUBDOMAINS: Final = frozenset(
         "mailer",
     },
 )
+# What ends a role in a subject: a bracket, a comma (a requisition id follows), an id like J0926.
+_ROLE_END: Final = r"(?:\s+co-?op)?(?:\s*\(|\s*,|\s+[A-Z]\d{3,}|$)"
 _ROLE_PATTERNS: Final[tuple[re.Pattern[str], ...]] = tuple(
     re.compile(p, re.IGNORECASE)
     for p in (
+        rf"\b(?:winter|spring|summer|fall|autumn)\s+\d{{4}}\s*[-:\u2013]\s*(.{{3,60}}?){_ROLE_END}",
+        rf"\backnowledg\w*\s*[-:\u2013]\s*(?:co-?op\s*[-:\u2013]\s*)?(.{{3,60}}?){_ROLE_END}",
         r"\b(?:for|to|offer\s+you)\s+the\s+(.{3,80}?)\s+(?:position|role|opening|opportunity)\b",
         r"\b(?:for|to)\s+the\s+(.{3,80}?(?:co-?op|intern(?:ship)?))\b",
         r"\bapplication\s+(?:for|to)\s+(?:the\s+)?(.{3,80}?)(?:\s+(?:position|role)\b|\s+at\b|\s+with\b|[.,;:!\n]|$)",
-        r"^(?:re|fwd?):\s*(.{3,80})$",
-        r"[-:|\u2013]\s*(.{3,60}?(?:co-?op|intern(?:ship)?|developer|engineer|analyst))\s*$",
+        r"[-:|\u2013]\s*(.{3,60}?(?:co-?op|intern(?:ship)?|developer|engineer|analyst))\s*(?:[-:|\u2013(]|$)",
     )
+)
+# Words that name no role: never stored as one.
+GENERIC_ROLES: Final = frozenset(
+    {
+        "job",
+        "jobs",
+        "role",
+        "position",
+        "application",
+        "opportunity",
+        "opening",
+        "posting",
+        "vacancy",
+        "co-op",
+        "coop",
+        "intern",
+        "internship",
+    },
 )
 _EVENT_WORDS: Final = re.compile(
     r"\b(?:interview|meeting|call|chat|assessment|screen(?:ing)?|zoom|teams|session|conversation)\b",
@@ -507,12 +528,14 @@ def company_of(name: str, domain: str, subject: str = "", body: str = "") -> str
 
 def role_of(subject: str, body: str) -> str:
     """The position a letter names, from its subject first, else its body; '' when none reads."""
-    for text in (subject, body):
+    for text in (subject.strip(), body):
         for pattern in _ROLE_PATTERNS:
-            found = pattern.search(text.strip() if text is subject else text)
-            if found:
+            for found in pattern.finditer(text):
                 role = re.sub(r"\s+", " ", found.group(1)).strip(" -|:.,")
-                if 3 <= len(role) <= _PLAUSIBLE_ROLE_CHARS:  # noqa: PLR2004 - too short or too long reads as noise
+                if (
+                    3 <= len(role) <= _PLAUSIBLE_ROLE_CHARS  # noqa: PLR2004 - too short or long is noise
+                    and role.casefold() not in GENERIC_ROLES
+                ):
                     return role
     return ""
 
