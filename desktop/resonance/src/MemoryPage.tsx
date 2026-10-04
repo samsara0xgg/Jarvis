@@ -106,17 +106,20 @@ export function MemoryPage({ port, overview, nav, setNav, notify }: {
     push: view => setNav(n => ({ ...n, stack: [...n.stack, view] })), tab: tab => setNav(n => ({ ...n, tab, stack: [], query: '' })) };
 
   // A screen pushed on top comes in from the right, a screen revealed by going back from the left; the page is still while it happens.
-  const shown = useRef(`${nav.stack.length}`), key = top ? `${nav.stack.length}:${top.k}` : '0';
+  const shown = useRef(`${nav.stack.length}`), key = top ? `${nav.stack.length}:${top.k}` : '0', before = useRef<MemView[]>(nav.stack);
   useLayoutEffect(() => {
-    const prev = shown.current; shown.current = key;
+    const prev = shown.current, was = before.current; shown.current = key; before.current = nav.stack;
     if (prev === key) return;
     const deeper = nav.stack.length > Number(prev.split(':')[0]);
+    // Coming back to the list, the row you opened has the focus again.
+    const left = deeper ? null : was[nav.stack.length];
+    if (left?.k === 'item' && !top) { const row = root.current?.querySelector<HTMLElement>(`.mem-row[data-id="${left.id}"]`); row?.focus({ preventScroll: true }); }
     root.current?.querySelector('.mem-view')?.animate([{ transform: `translateX(${deeper ? 36 : -36}px)`, opacity: 0 }, { transform: 'none', opacity: 1 }], { duration: dur(deeper ? MOTION.medium : MOTION.medium * MOTION.exit), easing: EASE });
     root.current?.closest('.pg-body')?.scrollTo({ top: 0 });
   }, [key]);
 
   const o = overview.data;
-  return <div className="mem" ref={root}>
+  return <div className="mem" data-lang={lang} ref={root}>
     {!o ? <p className="pg-sec muted">{overview.missing ? t(['This Jarvis can’t show its memory yet.', '这个 Jarvis 还不能显示记忆。']) : t(['Reading what she remembers…', '正在读她记着的…'])}</p>
     : <div className="mem-view" key={key}>
       {!top ? <Main o={o} nav={nav} setNav={setNav} a={acts}/>
@@ -325,7 +328,7 @@ function Search({ q, who, setWho, a }: { q: string; who: Who; setWho: (who: Who)
         : found.days.map(day => <section className="mem-day" key={day.day}>
           <div className="mem-hday"><span>{dayLabel(day.day, lang)}</span><button onClick={() => a.push({ k: 'convo', day: day.day })}>{t(['That day ›', '那天的对话 ›'])}</button></div>
           {day.hits.map(h => <button className="mem-hit" key={h.id} onClick={() => a.push({ k: 'convo', day: day.day, around: h.id })}>
-            <time>{hhmm(new Date(h.ts))}</time><span className={`mem-who ${h.who === 'user' ? 'is-you' : ''}`}>{h.who === 'user' ? t(['You', '你']) : t(['Her', '她'])}</span><span><Marked text={h.text} words={found.words}/></span></button>)}
+            <time>{hhmm(new Date(h.ts))}</time><span className={`mem-who ${h.who === 'user' ? 'is-you' : ''}`}>{h.who === 'user' ? t(['You', '你']) : t(['Jarvis', '她'])}</span><span><Marked text={h.text} words={found.words}/></span></button>)}
         </section>)}
       {found && since && <p className="mem-note">{found.truncated ? t(['Showing the newest 200. ', '只显示最新的 200 句。']) : ''}{t([`Every line since ${since.toLocaleDateString('en-US', { month: 'long', day: 'numeric' })} is searchable here.`, `从 ${since.getMonth() + 1} 月 ${since.getDate()} 日起的每一句都搜得到。`])}</p>}
     </div>
@@ -361,7 +364,7 @@ function Convo({ day, around, a }: { day: string; around?: string; a: Acts }) {
   return <div className="mem-convo" ref={box}>
     <div className="mem-sh"><h4>{dayLabel(day, lang)}</h4><small>{t([`${pages.total} lines`, `${pages.total} 句`])}</small></div>
     {pages.offset > 0 && <button className="mem-more" disabled={more} onClick={() => void page(-1)}>{t(['Earlier ↑', '更早 ↑'])}</button>}
-    {pages.records.map(r => <div className="mem-line" key={r.id} data-id={r.id}><time>{hhmm(new Date(r.ts))}</time><span className={`mem-who ${r.who === 'user' ? 'is-you' : ''}`}>{r.who === 'user' ? t(['You', '你']) : t(['Her', '她'])}</span><span>{r.text}</span></div>)}
+    {pages.records.map(r => <div className="mem-line" key={r.id} data-id={r.id}><time>{hhmm(new Date(r.ts))}</time><span className={`mem-who ${r.who === 'user' ? 'is-you' : ''}`}>{r.who === 'user' ? t(['You', '你']) : t(['Jarvis', '她'])}</span><span>{r.text}</span></div>)}
     {pages.offset + pages.records.length < pages.total && <button className="mem-more" disabled={more} onClick={() => void page(1)}>{t(['Later ↓', '更晚 ↓'])}</button>}
     {!pages.total && <p className="mem-empty">{t(['Nothing was said that day.', '那天没有对话。'])}</p>}
   </div>;

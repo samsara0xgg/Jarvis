@@ -1,6 +1,10 @@
 /* The Memory page (ADR 0154). Same dusk glass as the mail page: its tokens, radii and springs; rounder corners on the rows and pills. */
 .ad .mem, .ad .mem-view, .ad .mem-pane, .ad .mem-item, .ad .mem-edit, .ad .mem-convo { display:flex; flex-direction:column; gap:14px; }
-.ad .mem-pane { animation:ad-rise var(--motion-fast) var(--ease-out) backwards; }
+.ad .mem-pane > *, .ad .mem-cards > * { animation:ad-rise var(--motion-medium) var(--ease-out) backwards; }
+.ad .mem-pane > :nth-child(2), .ad .mem-cards > :nth-child(2) { animation-delay:30ms; }
+.ad .mem-pane > :nth-child(3), .ad .mem-cards > :nth-child(3) { animation-delay:60ms; }
+.ad .mem-pane > :nth-child(4), .ad .mem-cards > :nth-child(4) { animation-delay:90ms; }
+.ad .mem-pane > :nth-child(n+5), .ad .mem-cards > :nth-child(n+5) { animation-delay:120ms; }
 .ad .mem-sec { display:flex; flex-direction:column; gap:6px; }
 .ad .mem-sh { display:flex; align-items:baseline; justify-content:space-between; gap:8px; }
 .ad .mem-sh h4 { font-size:var(--text-label); font-weight:600; letter-spacing:.09em; text-transform:uppercase; color:var(--p-faint); }
@@ -131,6 +135,7 @@
 .ad .mem-hit { transition:background var(--motion-fast),transform var(--motion-fast) var(--ease-out); }
 .ad .mem-hit:hover { background:rgb(var(--glow) / .08); }
 .ad .mem-hit:active { transform:scale(.99); }
+.ad .mem[data-lang="en"] .mem-hit, .ad .mem[data-lang="en"] .mem-line { grid-template-columns:34px 40px 1fr; }
 .ad .mem-hit time, .ad .mem-line time { font-size:var(--text-label); font-variant-numeric:tabular-nums; color:var(--p-faint); }
 .ad .mem-who { font-size:var(--text-label); font-weight:600; color:var(--p-faint); }
 .ad .mem-who.is-you { color:rgb(var(--glow)); }
@@ -196,6 +201,6 @@
 
 @media (prefers-reduced-motion:reduce) {
   .ad .mem-fold, .ad .mem-fold[data-shut] { transition:none; }
-  .ad .mem-pane, .ad .mem-move, .ad .mem-bar i { animation:none; }
+  .ad .mem-pane > *, .ad .mem-cards > *, .ad .mem-move, .ad .mem-bar i { animation:none; }
   .ad .mem-act:active, .ad .mem-chip:active, .ad .mem-row:active, .ad .mem-src:active, .ad .mem-hit:active { transform:none; }
 }

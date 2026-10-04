@@ -188,6 +188,10 @@ try {
   check('a search with no hits says so', (await texts('.mem-results .mem-empty')).join('').includes('Nothing says'));
   await page.locator('.mem-clear').click(); await settle(500);
 
+  // Back from a row's note puts the focus on that row again
+  await page.locator('.mem-row[data-id="a1"]').click(); await settle(700); await back();
+  check('going back focuses the row that was opened', await page.evaluate(() => document.activeElement?.getAttribute('data-id') === 'a1'));
+
   // Days
   await page.locator('.mem-chip', { hasText: 'Days' }).click(); await settle(600);
   check('the days list newest first, a verbatim day shows its lines', (await count('.mem-card')) === 3 && (await texts('.mem-card-top time'))[0].startsWith('10/2') && (await texts('.mem-card-s'))[1].includes('「今天测试一下麦克风。」'));
