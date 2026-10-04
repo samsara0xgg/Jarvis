@@ -5,6 +5,7 @@ import { AgentMark, type MarkLook } from './AgentMarks';
 import { Markdown } from './Markdown';
 import { palette, play, scoreOf } from './soundKit';
 import type { ExprId } from './starCore';
+import type { Quiet } from './model';
 import './notices.css';
 
 // Agent notices, after the notch lab (ADR 0057, 0069). A session that finishes or stops while Allen is not looking at
@@ -12,7 +13,9 @@ import './notices.css';
 // island, answered right there; it folds away after 30 s untouched and comes back once, softer, 10 minutes later.
 // Park (先放着) takes a session off his turn: no pops, no cards, no reminder, until he takes it back or it does
 // something new. Finishes within 1.5 s share one pop; needs-you cards go ahead of pops; nothing shows while she
-// talks, while the Dashboard is open or while the keys hold the island, and it all comes up after. Nothing pops for
+// talks, while the Dashboard is open or while the keys hold the island, and it all comes up after. From the quiet level
+// `no-pop` up (ADR 0153) nothing is queued: arrivals wait in `held` (marks and stars go on as they were) and come up
+// together, needs-you first, when the level drops. Nothing pops for
 // the session he is looking at, in Ghostty or on its page in the island.
 const POP_MS = 5000, FOLD_MS = 30_000, REMIND_MS = 600_000, TOGETHER_MS = 1500, CONFIRM_MS = 850;
 type Base = { key: string; id: string; at: number; reminded?: boolean };
@@ -23,6 +26,8 @@ export type Notice = Base & (
   | { kind: 'req'; req: AgentRequest });
 type Arrival = Notice extends infer N ? N extends Notice ? Omit<N, 'key' | 'at'> : never : never;
 export const needs = (n: Notice) => n.kind !== 'pop';
+// ADR 0153: from `no-pop` up the island shows no card and no name pop.
+const noCards = (quiet: Quiet) => quiet === 'no-pop' || quiet === 'dnd';
 export const ended = (state: AgentState) => state === 'done' || state === 'err';
 // One question's pick: an option, several options, or typed words.
 type Pick = number | number[] | string;
@@ -64,8 +69,8 @@ type Tone = 'ask' | 'done' | 'error';
 // hold the island) except a card brought forward on purpose; `watched` is the session Allen has been looking at in
 // Ghostty for 1.5 s, `viewing` the one whose page is open in the island. Startrail's sessions (`a.host`) are looked at
 // while its window is in front (`agentsFront`), and their marks are the host's: `mark` changes them there.
-export function useNotices({ port, agents, hold, watched, viewing, agentsFront, cue, answer, mark }: {
-  port: string | null; agents: Agent[]; hold: boolean; watched: string | null; viewing: string | null; agentsFront: boolean; cue: (name: Tone | 'send' | 'close', gain?: number) => void;
+export function useNotices({ port, agents, hold, quiet, watched, viewing, agentsFront, cue, answer, mark }: {
+  port: string | null; agents: Agent[]; hold: boolean; quiet: Quiet; watched: string | null; viewing: string | null; agentsFront: boolean; cue: (name: Tone | 'send' | 'close', gain?: number) => void;
   answer: (req: AgentRequest, body: { decision: 'allow' | 'always' | 'deny'; answers?: Record<string, string>; message?: string }, id: string) => Promise<boolean>;
   mark: (id: string, change: { seen: true } | { parked: boolean; archived: boolean }) => void;
 }) {
@@ -73,7 +78,7 @@ export function useNotices({ port, agents, hold, watched, viewing, agentsFront, 
   const [s] = useState(() => {
     const kept = loadKept();
     return {
-      queue: [] as Notice[], folded: [] as Notice[], cards: new Map<string, Card>(), shownReqs: new Set<string>(),
+      queue: [] as Notice[], folded: [] as Notice[], held: [] as Notice[], cards: new Map<string, Card>(), shownReqs: new Set<string>(),
       unread: new Set(kept.unread), archived: new Set(kept.cleared), parked: new Map<string, number>(), last: kept.last,
       soundAt: -1e9, shown: '', openedAt: 0, peek: false, touched: '', forced: '',
       // Sessions changed here before the daemon's marks arrived: their marks stay as she set them.
@@ -112,15 +117,27 @@ export function useNotices({ port, agents, hold, watched, viewing, agentsFront, 
   const later = (ms: number, run: () => void) => { const t = setTimeout(() => { s.timers.delete(t); run(); }, ms); s.timers.add(t); };
   useEffect(() => () => s.timers.forEach(clearTimeout), []);
   const byId = new Map(agents.map(a => [a.id, a]));
-  const live = useRef({ byId, hold });
-  live.current = { byId, hold };
+  const live = useRef({ byId, hold, quiet });
+  live.current = { byId, hold, quiet };
   const card = (n: Notice) => { let c = s.cards.get(n.key); if (!c) s.cards.set(n.key, c = { qi: 0, picks: [], review: false, feedback: false, ok: '' }); return c; };
   const toneOf = (n: Notice): Tone => needs(n) ? 'ask' : n.kind === 'pop' && n.ids.every(id => byId.get(id)?.state === 'err') ? 'error' : 'done';
   const sound = (n: Notice, gain = 1) => { const now = performance.now(); if (now - s.soundAt > TOGETHER_MS) { s.soundAt = now; cue(toneOf(n), gain); } };
 
+  // The level rising takes what is on the island into `held`; it dropping brings it all back, needs-you first, then errors, then done.
+  useEffect(() => {
+    if (noCards(quiet)) {
+      s.held = [...s.queue, ...s.folded, ...s.held]; s.queue = []; s.folded = []; s.forced = ''; bump();
+    } else if (s.held.length) {
+      const rank = (n: Notice) => needs(n) ? 0 : toneOf(n) === 'error' ? 1 : 2;
+      s.queue.push(...s.held.filter(n => !s.parked.has(n.id)).sort((a, b) => rank(a) - rank(b) || a.at - b.at)); s.held = []; bump();
+    }
+  }, [noCards(quiet)]);
+
   const arrive = (a: Arrival) => {
     if (s.parked.has(a.id)) return;
     const now = performance.now(), n = { ...a, key: `${a.kind}:${a.id}:${now}`, at: now } as Notice, head = s.queue[0], tail = s.queue.at(-1);
+    // Kept for when the level drops: a newer notice of a session takes the place of its older one.
+    if (noCards(live.current.quiet)) { s.held = [...s.held.filter(h => !(h.id === n.id && h.kind === n.kind)), n]; return; }
     if (n.kind === 'pop') {
       // Into the pop on screen, or the one that came up less than 1.5 s ago.
       if (head?.kind === 'pop' && !live.current.hold) { head.ids = [...head.ids.filter(x => x !== n.id), n.id]; return; }

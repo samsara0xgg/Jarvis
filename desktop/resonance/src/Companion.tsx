@@ -50,7 +50,7 @@ const WARDROBE = 'companion-wardrobe-v1';
 const PAUSED_KEY = 'companion-mic-paused';
 const CAPTIONS: [Captions, L][] = [['all', ['Show all', '全部显示']], ['brief', ['Only what to read', '只显示要看的']], ['none', ['None', '不显示']]];
 // ADR 0153: the quiet levels her menu offers so far, and the mark each one leaves on the island.
-const QUIET: [Quiet, L][] = [['off', ['Normal', '正常']], ['quiet', ['Quiet: no sounds', '安静：不出声']]];
+const QUIET: [Quiet, L][] = [['off', ['Normal', '正常']], ['quiet', ['Quiet: no sounds', '安静：不出声']], ['no-pop', ['No pop-ups: no cards either', '不弹：也不弹卡片']]];
 const QUIET_MARK = { quiet: SpeakerSlash, 'no-pop': BellSlash, dnd: Moon } as const;
 const SKIN_NAMES: Record<Skin, L> = { glass: ['Glass', '深空玻璃'], nebula: ['Nebula', '星云'], galaxy: ['Galaxy', '银河'], frost: ['Frost', '磨砂'], aurora: ['Aurora', '极光'], codex: ['Icon', '图标同款'] };
 function loadWardrobe(): Look {
@@ -290,7 +290,7 @@ export function Companion() {
   const [keysPress, setKeysPress] = useState(0), [keysOn, setKeysOn] = useState(false), [viewing, setViewing] = useState<string | null>(null);
   // No notice while she talks, while you type to her, while the Dashboard is open or while the keys hold the island;
   // they come up after.
-  const notices = useNotices({ port, agents, hold: agentsFront || busy || dashboard || remoteOpen || detached || moving || carded || nightShown || !!nightRun || keysOn || !!menu, watched, viewing, agentsFront,
+  const notices = useNotices({ port, agents, quiet: s.quiet, hold: agentsFront || busy || dashboard || remoteOpen || detached || moving || carded || nightShown || !!nightRun || keysOn || !!menu, watched, viewing, agentsFront,
     cue: (name, gain) => { if (preferences.feedbackEnabled && !s.soundMuted && s.quiet === 'off') noticeCue(name, preferences.feedbackVolume, gain); },
     answer: (req, body, id) => agents.find(a => a.id === id)?.host ? answerStartrail(id, req, body) : port ? answerRequest(port, req.id, body) : Promise.resolve(true), mark: markStartrail });
   const notice = notices.current;

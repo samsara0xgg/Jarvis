@@ -56,12 +56,12 @@ try {
   const shot = async (name, clip = { x: 0, y: 0, width: 640, height: 560 }) => { await page.waitForTimeout(1000); await page.screenshot({ path: path.join(dir, `${name}.png`), clip }); };
   const mark = () => page.locator('.companion-quiet').count();
   const menu = async () => { await page.locator('.companion-hit').first().dispatchEvent('contextmenu', { clientX: 300, clientY: 90, bubbles: true, cancelable: true }); await page.waitForTimeout(250); };
-  const card = () => page.locator('.notch-note .nc').count();
+  const card = () => page.locator('.notch-note.is-open .nc').count();
 
   check('normal: no mark on the island', await mark() === 0);
   // The notice for a session that needs him comes with its cue, while the level is off.
   board = [session('needs_input')];
-  await page.waitForFunction(() => document.querySelector('.notch-note .nc'), null, { timeout: 6000 });
+  await page.waitForFunction(() => document.querySelector('.notch-note.is-open .nc'), null, { timeout: 6000 });
   check('normal: the card shows', await card() === 1);
   check('normal: its cue sounds', await page.evaluate(() => window.__audio) >= 1);
   await shot('normal-card');
@@ -81,14 +81,30 @@ try {
 
   // A new notice in quiet: the card still shows, with no sound.
   const before = await page.evaluate(() => window.__audio);
-  board = [session('working')]; await page.waitForTimeout(1800);
-  board = [{ ...session('needs_input'), session_id: 'c-2', title: 'Second session' }]; 
-  await page.waitForFunction(() => document.querySelector('.notch-note .nc'), null, { timeout: 6000 });
+  board = [session('working'), { ...session('working'), session_id: 'c-2', title: 'Second session' }]; await page.waitForTimeout(1800);
+  board = [session('working'), { ...session('needs_input'), session_id: 'c-2', title: 'Second session' }];
+  await page.waitForFunction(() => document.querySelector('.notch-note.is-open .nc'), null, { timeout: 6000 });
   await page.waitForTimeout(500);
   check('quiet: the card still shows', await card() === 1);
   check('quiet: no cue sounded', await page.evaluate(() => window.__audio) === before);
   await shot('quiet-card');
 
+  // No-pop: the cards go away, new ones are kept back, the stars go on, and all of it comes up when the level drops.
+  const push = quiet => page.evaluate(q => window.__emit('controls', { mic_muted: false, speech_muted: false, conversation: false, quiet: q }), quiet);
+  await push('no-pop');
+  await page.waitForFunction(() => !document.querySelector('.notch-note.is-open .nc'), null, { timeout: 3000 });
+  check('no-pop: the card on the island goes away', await card() === 0);
+  board = [{ ...session('working'), session_id: 'c-3', title: 'Third session' }, ...board.map(b => ({ ...b, phase: 'working' }))];
+  await page.waitForTimeout(1800);
+  board = [{ ...session('needs_input'), session_id: 'c-3', title: 'Third session' }, ...board.slice(1)];
+  await page.waitForTimeout(2500);
+  check('no-pop: a new ask shows no card', await card() === 0);
+  await shot('no-pop');
+  await push('off');
+  await page.waitForFunction(() => document.querySelector('.notch-note.is-open .nc'), null, { timeout: 4000 });
+  const up = await page.locator('.notch-note.is-open .nc').first().innerText();
+  check('leaving no-pop brings the held asks up, the older first', await card() === 1 && /Second session/.test(up) && /1 of 2/.test(up));
+  await shot('no-pop-leave');
   // The level is the daemon's: a push from it (the voice phrase's path) changes the page with no click.
   await page.evaluate(() => window.__emit('controls', { mic_muted: false, speech_muted: false, conversation: false, quiet: 'off' }));
   await page.waitForFunction(() => !document.querySelector('.companion-quiet'), null, { timeout: 3000 });
