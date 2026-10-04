@@ -269,8 +269,8 @@ class AmbientSounds:
         ]
         minutes = max(1, math.ceil((now - since) / 60))
         head = (
-            "Sounds around him (background, rarely worth mentioning; "
-            f"last {minutes} min, from audio): "
+            f"Sounds you heard around him, last {minutes} min "
+            "(mention only if he asks or it matters, as something you heard): "
         )
         tail = "; ".join(guesses) + "."
         room = _LINE_CHARS - len(head) - (len(tail) if guesses else 1)

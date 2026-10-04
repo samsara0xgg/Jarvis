@@ -46,7 +46,7 @@ def test_a_laugh_over_her_and_a_happy_sentence_reach_the_next_request(tmp_path: 
         rig.close()
 
     cue_line = (
-        "Voice cues (background, rarely worth mentioning; from audio, may be wrong): "
+        "How his voice sounded to you (mention only if he asks or it matters; may be wrong): "
         "he sounded happy; "
         "he laughed without words while you were speaking.\n"
     )

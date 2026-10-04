@@ -68,5 +68,7 @@ class VoiceCues:
         for count, when in zip(laughs, whens, strict=True):
             if count:
                 parts.append(f"he laughed without words {when}")
-        head = "Voice cues (background, rarely worth mentioning; from audio, may be wrong): "
+        head = (
+            "How his voice sounded to you (mention only if he asks or it matters; may be wrong): "
+        )
         return f"{head}{'; '.join(parts)}." if parts else None

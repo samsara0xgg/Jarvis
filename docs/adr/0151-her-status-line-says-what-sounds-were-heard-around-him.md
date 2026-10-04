@@ -53,4 +53,6 @@ daemon start.
 
 A replay of 420 real-prompt replies (2026-10-03) showed her naming a sound in 4.7% of them,
 only on open questions such as "你在干嘛呢"; the awkward ones echoed exact counts. So the
-line gives no counts ("coughed repeatedly") and calls itself background.
+line gives no counts ("coughed repeatedly"). It is worded as what she heard ("Sounds you
+heard around him ... mention only if he asks or it matters"): worded as background, asked
+what she heard she sometimes said nothing, and she called it "系统提示".

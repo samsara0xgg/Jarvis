@@ -70,7 +70,7 @@ def scenario() -> None:
     assert got == {"cough", "sigh", "bird", "music", "laughter"}, got
     line = s.line()
     print(line)
-    assert line == "Sounds around him (background, rarely worth mentioning; last 10 min, from audio): laughed, coughed, sighed, birds, music on.", line
+    assert line == "Sounds you heard around him, last 10 min (mention only if he asks or it matters, as something you heard): laughed, coughed, sighed, birds, music on.", line
     assert s.line() == line  # every turn, not only once
     rows = [json.loads(r) for r in log.read_text().splitlines()]
     assert len(rows) == 9 and [r["her_voice"] for r in rows[:4]] == [False, True, True, True], rows
@@ -104,7 +104,7 @@ def scenario() -> None:
     s.ingest(_line(207, cough=0.95, music=0.9))
     line = s.line()
     print(line)
-    assert line == "Sounds around him (background, rarely worth mentioning; last 10 min, from audio): coughed, music on; maybe laughed (~55%, this detector under-scores his laugh).", line
+    assert line == "Sounds you heard around him, last 10 min (mention only if he asks or it matters, as something you heard): coughed, music on; maybe laughed (~55%, this detector under-scores his laugh).", line
     clock[0] += 30
     s.ingest(_line(300, laughter=0.5))
     s.ingest(_line(301.5, laughter=0.6))
