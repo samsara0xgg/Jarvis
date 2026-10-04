@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react';
-import { IconContext, Keyboard } from '@phosphor-icons/react';
+import { BellSlash, IconContext, Keyboard, Moon, SpeakerSlash } from '@phosphor-icons/react';
 import { CompanionBall, HOLD_MS, R, type BallHandle, type Lobe, type Place, type Point } from './CompanionBall';
 import { PREVIEW, SKIN_KEYS, TAKES, isSkin, pick, type ExprId, type Skin } from './starCore';
 import { AroundDashboard, type DashboardView, type DashboardViewHandle, type Think } from './AroundDashboard';
 import { DuskDashboard, DockingDrop } from './DuskDashboard';
 import { playFeedback, stopFeedback, warmFeedback, type FeedbackCue } from './feedback';
 import { usePreferences } from './preferences';
-import { initialState, plain, reducer, toolLine, visible } from './model';
+import { initialState, plain, reducer, toolLine, visible, type Quiet } from './model';
 import { TalkArea, usePresence } from './TalkArea';
 import { level, pace, split, type Captions } from './talk';
 import { connect, type Runtime } from './runtime';
@@ -49,6 +49,9 @@ const WARDROBE = 'companion-wardrobe-v1';
 // Set while this window has the microphone paused for typing.
 const PAUSED_KEY = 'companion-mic-paused';
 const CAPTIONS: [Captions, L][] = [['all', ['Show all', '全部显示']], ['brief', ['Only what to read', '只显示要看的']], ['none', ['None', '不显示']]];
+// ADR 0153: the quiet levels her menu offers so far, and the mark each one leaves on the island.
+const QUIET: [Quiet, L][] = [['off', ['Normal', '正常']], ['quiet', ['Quiet: no sounds', '安静：不出声']]];
+const QUIET_MARK = { quiet: SpeakerSlash, 'no-pop': BellSlash, dnd: Moon } as const;
 const SKIN_NAMES: Record<Skin, L> = { glass: ['Glass', '深空玻璃'], nebula: ['Nebula', '星云'], galaxy: ['Galaxy', '银河'], frost: ['Frost', '磨砂'], aurora: ['Aurora', '极光'], codex: ['Icon', '图标同款'] };
 function loadWardrobe(): Look {
   try {
@@ -288,7 +291,7 @@ export function Companion() {
   // No notice while she talks, while you type to her, while the Dashboard is open or while the keys hold the island;
   // they come up after.
   const notices = useNotices({ port, agents, hold: agentsFront || busy || dashboard || remoteOpen || detached || moving || carded || nightShown || !!nightRun || keysOn || !!menu, watched, viewing, agentsFront,
-    cue: (name, gain) => { if (preferences.feedbackEnabled && !s.soundMuted) noticeCue(name, preferences.feedbackVolume, gain); },
+    cue: (name, gain) => { if (preferences.feedbackEnabled && !s.soundMuted && s.quiet === 'off') noticeCue(name, preferences.feedbackVolume, gain); },
     answer: (req, body, id) => agents.find(a => a.id === id)?.host ? answerStartrail(id, req, body) : port ? answerRequest(port, req.id, body) : Promise.resolve(true), mark: markStartrail });
   const notice = notices.current;
   // Going to a session reads it: Startrail's window on it, its Codex thread, or its Ghostty terminal (a new tab attaches
@@ -761,6 +764,7 @@ export function Companion() {
       event.preventDefault(); cancel();
       setMenu({ x: Math.min(geo.width - 230, Math.max(8, event.clientX)), y: Math.max(placement.topInset + 12, event.clientY) });
     }}>
+      {s.quiet !== 'off' && (() => { const Mark = QUIET_MARK[s.quiet]; return <span className="companion-quiet" aria-label={t(['Quiet mode is on', '安静模式开着'])} style={{ left: geo.lobe.left + 8, top: placement.topInset / 2 - 6 }}><Mark size={12} weight="fill"/></span>; })()}
       <button className="companion-island-target" data-hit aria-label={t(['Open Dashboard', '打开主页'])} title={t(['Click the notch to open Dashboard', '点击刘海打开主页'])}
         style={{ left: geo.lobe.left, width: geo.lobe.notched ? geo.wingX - geo.lobe.left : geo.lobe.right - geo.lobe.left, height: placement.topInset }}
         onClick={toggleDashboard}/>
@@ -777,6 +781,9 @@ export function Companion() {
         <hr/>
         <div className="companion-menu-label" role="presentation">{t(['Captions', '字幕'])}</div>
         {CAPTIONS.map(([key, name]) => <button key={key} role="menuitemradio" aria-checked={companion.captions === key} onClick={() => { updateCompanion({ captions: key }); setMenu(null); }}>{t(name)}</button>)}
+        <hr/>
+        <div className="companion-menu-label" role="presentation">{t(['Quiet', '安静'])}</div>
+        {QUIET.map(([level, name]) => <button key={level} role="menuitemradio" aria-checked={s.quiet === level} onClick={() => { void link.current?.controls({ quiet: level }).catch(() => undefined); setMenu(null); }}>{t(name)}</button>)}
         <hr/>
         {nightState && (nightRun
           ? <button role="menuitem" onClick={() => { setMenu(null); nightAct('end'); }}>{t(['End the night run', '结束挂机'])}</button>

@@ -1,10 +1,10 @@
 // Live link to the Jarvis daemon over the Inherent v1 wire (ADR-0003/0005):
 // outbound-only WebSocket envelopes `{op, payload}` in, HTTP POSTs out. Audio never crosses this link; the daemon owns mic and speaker.
-import type { Action, Live, LiveState, Row } from './model';
+import { asQuiet, type Action, type Live, type LiveState, type Quiet, type Row } from './model';
 import type { Card, Question } from './ActionCard';
 import type { NightAction, NightState } from './NightCard';
 
-export interface Controls { mic_muted?: boolean; speech_muted?: boolean; conversation?: boolean; live?: 'start' | 'stop' }
+export interface Controls { mic_muted?: boolean; speech_muted?: boolean; conversation?: boolean; quiet?: Quiet; live?: 'start' | 'stop' }
 const liveStates: LiveState[] = ['idle', 'connecting', 'active', 'closing', 'unavailable'];
 // `LiveVoice.status()` as the daemon sends it, on the `live` op and inside every controls answer.
 const liveFrom = (p: Record<string, unknown>): Live => ({
@@ -44,7 +44,7 @@ export function connect(port: string, dispatch: (a: Action) => void): Runtime {
   // let a slow HTTP response overwrite a newer push.
   const controls = async (patch: Controls) => {
     const c = await post('/inherent/controls', patch);
-    dispatch({ type: 'controls', micMuted: c.mic_muted === true, soundMuted: c.speech_muted === true, conversation: c.conversation === true });
+    dispatch({ type: 'controls', micMuted: c.mic_muted === true, soundMuted: c.speech_muted === true, conversation: c.conversation === true, quiet: asQuiet(c.quiet) });
   };
   let ws: WebSocket | null = null;
   let attempt = 0;
@@ -73,7 +73,7 @@ export function connect(port: string, dispatch: (a: Action) => void): Runtime {
       else if (msg.op === 'tool') dispatch({ type: 'tool', turnId, label: typeof p.label === 'string' ? p.label : '' });
       else if (msg.op === 'live') dispatch({ type: 'live', live: liveFrom(p) });
       // ADR 0102: the wake word, a dismissal or quiet flips conversation mode from the daemon's side.
-      else if (msg.op === 'controls') dispatch({ type: 'controls', micMuted: p.mic_muted === true, soundMuted: p.speech_muted === true, conversation: p.conversation === true });
+      else if (msg.op === 'controls') dispatch({ type: 'controls', micMuted: p.mic_muted === true, soundMuted: p.speech_muted === true, conversation: p.conversation === true, quiet: asQuiet(p.quiet) });
       else if (msg.op === 'subtitle') dispatch({ type: 'subtitle', sessionId: String(p.session_id ?? ''), role: p.role === 'user' ? 'user' : 'assistant', delta: String(p.delta ?? ''), startMs: Number(p.start_ms ?? 0), endMs: Number(p.end_ms ?? 0) });
     };
     ws.onclose = () => {

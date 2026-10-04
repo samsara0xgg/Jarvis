@@ -63,6 +63,7 @@
 .companion-menu button { display:block; width:100%; padding:8px 10px; border-radius:var(--radius-control); text-align:left; color:#eef0fb; font-size:var(--text-detail); }
 .companion-menu button:hover,.companion-menu button:focus-visible { background:rgb(var(--glow) / .14); outline:none; }
 .companion-menu button[aria-checked=true] { color:rgb(var(--glow)); background:rgb(var(--glow) / .08); }
+.companion-quiet { position:absolute; z-index:6; display:grid; place-items:center; width:12px; height:12px; color:rgb(var(--glow) / .75); pointer-events:none; }
 .companion-menu hr { border:0; border-top:1px solid rgb(196 204 238 / .15); margin:6px 0; }
 .companion-menu-label { padding:4px 10px 2px; font-size:var(--text-label); letter-spacing:.02em; color:var(--p-faint); }
 .companion ::selection { background:rgb(var(--glow) / .3); color:#fff; }
