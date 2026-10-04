@@ -38,7 +38,7 @@ export function MailList({ mail, filter, onFilter, onOpen }: { mail: Mail[]; fil
   </div>;
 }
 
-type Detail = { thread_id?: string; address?: string; text: string };
+type Detail = { thread_id?: string; address?: string; text: string; layout?: 'text' | 'html' };
 // A bare address shows short; the daemon writes a link with words as `words (url)`, and that becomes a small arrow after the words.
 const URL_AT = /( ?\(https?:\/\/[^\s()]+\)|https?:\/\/[^\s<>()"]*[^\s<>()".,;:!?])/;
 const linked = (text: string) => text.split(URL_AT).map((part, i) => {
@@ -66,6 +66,27 @@ function Body({ text, onGmail }: { text: string; onGmail: () => void }) {
     {pictures > 0 && <button className="btn-text mp-pics" onClick={onGmail}>{t([`${pictures} picture${pictures > 1 ? 's' : ''} or picture links aren’t shown here; open it in Gmail to see them`, `还有 ${pictures} 张图片或图片链接没显示，在 Gmail 里能看到`])}</button>}
     {quoted && <button className="btn-text mp-quoted" aria-expanded={open} onClick={() => setOpen(v => !v)}>{open ? t(['Hide the quoted letter', '收起引用的信']) : t(['Show the quoted letter', '显示引用的信'])}</button>}
     {quoted && open && <p className="mp-text mp-quote">{linked(quoted)}</p>}
+  </>;
+}
+
+// A letter laid out in HTML (a shop's picture grid, a newsletter) falls apart as text, so it shows as Jarvis's one sentence
+// about it, with the original in Gmail; its text is still there behind 看文字版.
+function Gist({ port, id, text, onGmail }: { port: string | null; id: string; text: string; onGmail: () => void }) {
+  const t = useT(), [gist, setGist] = useState<string | 'failed' | null>(null), [plain, setPlain] = useState(false);
+  useEffect(() => {
+    if (!port) return;
+    let stop = false;
+    setGist(null);
+    fetch(`http://127.0.0.1:${port}/inherent/mail/${encodeURIComponent(id)}/summary`, { signal: AbortSignal.timeout(60_000) })
+      .then(r => r.ok ? r.json() as Promise<{ summary: string }> : Promise.reject(new Error(String(r.status)))).then(d => { if (!stop) setGist(d.summary || 'failed'); }, () => { if (!stop) setGist('failed'); });
+    return () => { stop = true; };
+  }, [port, id]);
+  return <>
+    <p className={`mp-gist ${gist && gist !== 'failed' ? '' : 'muted'}`}>{gist === 'failed' ? t(['Jarvis couldn’t sum this one up.', 'Jarvis 没能总结这封']) : gist ?? t(['Jarvis is reading it…', 'Jarvis 在看…'])}</p>
+    <span className="mp-gist-acts">
+      <button className="btn btn-ghost" data-act="original" onClick={onGmail}>{t(['See the original in Gmail', '在 Gmail 看原样'])}</button>
+      <button className="btn-text" aria-expanded={plain} onClick={() => setPlain(v => !v)}>{plain ? t(['Hide the text', '收起文字版']) : t(['Show the text', '看文字版'])}</button></span>
+    {plain && <Body text={text} onGmail={onGmail}/>}
   </>;
 }
 
@@ -109,7 +130,7 @@ export function MailLetter({ port, letter, onAct }: { port: string | null; lette
         <button className="icon-btn" data-act="archive" aria-label={t(['Archive', '归档'])} title={t(['Archive', '归档'])} onClick={() => onAct('archive')}><Archive size={14}/></button></span>
     </div>
     <div className="pg-sec mp-body">{detail === 'failed' ? <p className="muted">{t(['Can’t read this one yet. You can open it in Gmail.', '正文还读不到，可以在 Gmail 里看'])}</p>
-      : body ? <Body text={body.text} onGmail={() => void window.jarvis?.openMail?.(letter.id)}/> : <p className="muted">{t(['Loading…', '正在读…'])}</p>}</div>
+      : body ? body.layout === 'html' ? <Gist port={port} id={letter.id} text={body.text} onGmail={() => void window.jarvis?.openMail?.(letter.id)}/> : <Body text={body.text} onGmail={() => void window.jarvis?.openMail?.(letter.id)}/> : <p className="muted">{t(['Loading…', '正在读…'])}</p>}</div>
     <DraftArea d={d}/>
   </div>;
 }

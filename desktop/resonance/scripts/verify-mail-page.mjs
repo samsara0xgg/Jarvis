@@ -48,7 +48,7 @@ const MAIL = [
   { id: 'm4', from: 'Shop Deals', address: 'hi@shop.example', thread_id: 't4', subject: '50% off everything', received: today.toISOString(), reply: 'fyi', junk: true, importance: .2 },
   { id: 'm5', from: 'Weekly digest', address: 'news@digest.example', thread_id: 't5', subject: 'This week in tech', received: new Date().toISOString() },
 ];
-const TEXT = { m1: 'Hi all,\n\nOffice hours move to Thursday.\nQuestions on A3: https://courses.example/csc370/a3.\n\nProf. Lee', m2: 'Dinner tonight?\u00a0\n\u200c \n\n\n         https://img.example/banner.png\n.\n(https://img.example/shoe.png)\n   Explore now (https://shop.example/go)\n\nMom', m3: 'Please click here\n<https://jobs.example/listing?id=7\n>  to see the slots.  \n\n\n\nNorthwind\n\nOn Mon, Oct 1, 2026 at 9:00 AM Allen wrote:\n> Any slots?' };
+const TEXT = { m1: 'Hi all,\n\nOffice hours move to Thursday.\nQuestions on A3: https://courses.example/csc370/a3.\n\nProf. Lee', m2: 'Dinner tonight?\u00a0\n\u200c \n\n\n         https://img.example/banner.png\n.\n(https://img.example/shoe.png)\n   Explore now (https://shop.example/go)\n\nMom', m4: '.  -50%  .  C$2.17\n(https://shop.example/a)', m3: 'Please click here\n<https://jobs.example/listing?id=7\n>  to see the slots.  \n\n\n\nNorthwind\n\nOn Mon, Oct 1, 2026 at 9:00 AM Allen wrote:\n> Any slots?' };
 const DRAFT1 = 'Hi Prof. Lee,\n\nThursday works for me. I will bring my questions about A3.\n\nAllen';
 const DRAFT2 = 'Hi Prof. Lee,\n\nThanks for the update. Thursday at 3 suits me fine. I will bring my questions about A3 and a printed copy of the plan.\n\nBest,\nAllen';
 const daemon = { unread: new Set(MAIL.map(m => m.id)), drafts: {}, off: true, card: null };
@@ -90,11 +90,12 @@ try {
       if (m[2] === 'discard') delete daemon.drafts[m[1]]; else daemon.card = card('c1', 't-other');
       return reply({ ok: true });
     }
+    if ((m = p.match(/^\/inherent\/mail\/([^/]+)\/summary$/))) { await wait(400); return m[1] === 'm4' ? reply({ summary: 'Shop Deals 的促销：全场五折。' }) : reply({}, 404); }
     if ((m = p.match(/^\/inherent\/mail\/([^/]+)$/))) {
       if (!TEXT[m[1]]) return reply({}, 404);
       if (m[1] === 'm3') await wait(700);
       const x = MAIL.find(l => l.id === m[1]);
-      return reply({ id: x.id, thread_id: x.thread_id, from: x.from, address: x.address, to: 'me@example.com', subject: x.subject, received: x.received, text: TEXT[x.id] });
+      return reply({ id: x.id, thread_id: x.thread_id, from: x.from, address: x.address, to: 'me@example.com', subject: x.subject, received: x.received, text: TEXT[x.id], layout: x.id === 'm4' ? 'html' : 'text' });
     }
     if (p === '/inherent/confirmation') { if (method === 'POST') daemon.card = null; return reply(method === 'GET' ? { card: daemon.card } : { ok: true }); }
     if (p === '/inherent/setup') return reply({ keys: { openai: 'missing', minimax: 'missing', tavily: 'missing' }, voice_models: { state: 'ready' } });
@@ -240,7 +241,12 @@ try {
     JSON.stringify(sent('/inherent/mail/trash').at(-1)?.body) === '{"ids":["m5"]}' && await count('.mp-list') === 1 && await count('.mp-row[data-id="m5"]') === 0 && (await strip()).includes('Trash'));
   await page.locator('.ad .toast button').click(); await page.waitForTimeout(500);
   check('Undo posts /untrash', JSON.stringify(sent('/inherent/mail/untrash').at(-1)?.body) === '{"ids":["m5"]}' && await count('.mp-row[data-id="m5"]') === 1);
-  await page.locator('.mp-row[data-id="m4"]').click(); await page.waitForTimeout(500);
+  await page.locator('.mp-row[data-id="m4"]').click(); await page.waitForTimeout(150);
+  check('an HTML-laid-out letter says Jarvis is reading it, not its broken text', (await page.locator('.mp-gist').textContent()) === 'Jarvis is reading it…' && await count('.mp-text') === 0);
+  await page.waitForTimeout(700);
+  check('then shows her one sentence, a button for the original in Gmail, and the text only behind 看文字版', (await page.locator('.mp-gist').textContent()) === 'Shop Deals 的促销：全场五折。'
+    && (await page.locator('[data-act="original"]').click(), await page.evaluate(() => window.__gmail.at(-1))) === 'm4'
+    && (await page.locator('.mp-gist-acts .btn-text').click(), await count('.mp-text')) === 1);
   await page.locator('[data-act="archive"]').click(); await page.waitForTimeout(600);
   check('Archive posts /archive and shows an undo strip', JSON.stringify(sent('/inherent/mail/archive').at(-1)?.body) === '{"ids":["m4"]}' && await count('.mp-row[data-id="m4"]') === 0 && (await strip()).includes('Archived'));
   await page.locator('.ad .toast button').click(); await page.waitForTimeout(500);

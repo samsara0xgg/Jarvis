@@ -391,6 +391,9 @@
 .ad .mp-text { white-space:pre-wrap; overflow-wrap:anywhere; font-size:var(--text-body); line-height:1.55; color:var(--p-ink); }
 .ad .mp-bar { flex-direction:row; align-items:center; gap:6px; padding-bottom:10px; border-bottom:1px solid var(--p-line); }
 .ad .mp-bar .btn { white-space:nowrap; }
+.ad .mp-gist { font-size:var(--text-body); line-height:1.55; color:var(--p-ink); }
+.ad .mp-gist.muted { color:var(--p-muted); }
+.ad .mp-gist-acts { display:flex; align-items:center; gap:8px; margin-top:8px; }
 .ad .mp-go { vertical-align:-1px; margin-left:2px; }
 .ad .mp-pics { align-self:flex-start; margin:6px -6px 0; text-align:left; }
 .ad .mp-quoted { align-self:flex-start; margin:6px -6px 0; }
