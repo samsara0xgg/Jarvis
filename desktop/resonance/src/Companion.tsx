@@ -14,7 +14,7 @@ import { usePlugins } from './PluginPanel';
 import { isMarkLook } from './AgentMarks';
 import { answerRequest, type Agent, type ShownAgent } from './agents';
 import { answerStartrail, markStartrail, useStartrail } from './startrail';
-import { NoticeCard, ended, noticeCue, useNotices } from './Notices';
+import { DigestCard, NoticeCard, ended, noticeCue, useNotices } from './Notices';
 import { ActionCard, QuestionCard, type Answer, type Card, type Decide, type Question } from './ActionCard';
 import { Notch, type NotchNote } from './Notch';
 import { NightCard, isNightLook, markNightSeen, morningOf, seenNight, type NightAction, type NightSession, type NightState } from './NightCard';
@@ -50,7 +50,7 @@ const WARDROBE = 'companion-wardrobe-v1';
 const PAUSED_KEY = 'companion-mic-paused';
 const CAPTIONS: [Captions, L][] = [['all', ['Show all', '全部显示']], ['brief', ['Only what to read', '只显示要看的']], ['none', ['None', '不显示']]];
 // ADR 0153: the quiet levels her menu offers so far, and the mark each one leaves on the island.
-const QUIET: [Quiet, L][] = [['off', ['Normal', '正常']], ['quiet', ['Quiet: no sounds', '安静：不出声']], ['no-pop', ['No pop-ups: no cards either', '不弹：也不弹卡片']]];
+const QUIET: [Quiet, L][] = [['off', ['Normal', '正常']], ['quiet', ['Quiet: no sounds', '安静：不出声']], ['no-pop', ['No pop-ups: no cards either', '不弹：也不弹卡片']], ['dnd', ['Do not disturb: show nothing', '勿扰：什么都不显示']]];
 const QUIET_MARK = { quiet: SpeakerSlash, 'no-pop': BellSlash, dnd: Moon } as const;
 const SKIN_NAMES: Record<Skin, L> = { glass: ['Glass', '深空玻璃'], nebula: ['Nebula', '星云'], galaxy: ['Galaxy', '银河'], frost: ['Frost', '磨砂'], aurora: ['Aurora', '极光'], codex: ['Icon', '图标同款'] };
 function loadWardrobe(): Look {
@@ -294,6 +294,10 @@ export function Companion() {
     cue: (name, gain) => { if (preferences.feedbackEnabled && !s.soundMuted && s.quiet === 'off') noticeCue(name, preferences.feedbackVolume, gain); },
     answer: (req, body, id) => agents.find(a => a.id === id)?.host ? answerStartrail(id, req, body) : port ? answerRequest(port, req.id, body) : Promise.resolve(true), mark: markStartrail });
   const notice = notices.current;
+  // ADR 0153: at dnd the marks beside the notch stay as they were when it began; nothing outside shows there.
+  const frozen = useRef<{ agents: Agent[]; unread: ReadonlySet<string>; parked: ReadonlyMap<string, number>; archived: ReadonlySet<string> } | null>(null);
+  if (s.quiet !== 'dnd') frozen.current = null;
+  else frozen.current ??= { agents: agentsFront ? agents.filter(a => !agentsPresence.ids.includes(a.id)) : agents, unread: new Set(notices.unread), parked: new Map(notices.parked), archived: new Set(notices.archived) };
   // Going to a session reads it: Startrail's window on it, its Codex thread, or its Ghostty terminal (a new tab attaches
   // a background one).
   const jump = (a: Agent) => {
@@ -315,7 +319,7 @@ export function Companion() {
   const moment = performance.now();
   const stopped = notice?.kind === 'pop' && notice.ids.every(id => agents.find(a => a.id === id)?.state === 'err');
   const noticeFace: ExprId | null = carded ? 'ask' : nightShown ? nightFace : !notice ? null : notices.over && moment < notices.over.until ? notices.over.face
-    : notice.kind === 'pop' ? stopped ? moment - notices.openedAt < 1700 ? '34' : '02' : 'fin' : notices.card?.ok ? '02' : 'ask';
+    : notice.kind === 'digest' ? 'fin' : notice.kind === 'pop' ? stopped ? moment - notices.openedAt < 1700 ? '34' : '02' : 'fin' : notices.card?.ok ? '02' : 'ask';
   useEffect(() => { if (!stopped) return; const t = setTimeout(notices.bump, 1750); return () => clearTimeout(t); }, [notice?.key]);
   // A deep turn keeps her deep face while it is thought about and while its answer is said (ADR 0108).
   const expr: ExprId = preview ?? noticeFace ?? (receiving ? receiveFace.current : inFlight ? listenFace.current : deepLook ? 'deep' : voice === 'listening' ? listenFace.current : voice === 'thinking' ? '30' : voice === 'speaking' || talking ? replyFace.current : (dashboard || remoteOpen) && dashMood ? dashMood : reply.text ? port && s.failed ? '38' : '33' : '02');
@@ -743,7 +747,9 @@ export function Companion() {
   const note: NotchNote | null = carded && cardView ? { key: card ? `card:${card.id}` : `question:${question?.id}`, onClose: () => undefined, card: cardView }
     : nightShown && nightState ? { key: nightKey, onClose: closeMorning, card: <NightCard key={nightKey} state={nightState} morning={morning} unread={notices.unread.size} lang={companion.lang} marks={wardrobe.marks} look={wardrobe.night}
       act={nightAct} onGo={nightGo} onClose={closeMorning}/> }
-    : !notice ? null : notice.kind === 'pop' ? { key: notice.key, pop: notice.ids, onClose: notices.next } : { key: notice.key, id: notice.id, onClose: notices.fold,
+    : !notice ? null : notice.kind === 'pop' ? { key: notice.key, pop: notice.ids, onClose: notices.next }
+    : notice.kind === 'digest' ? { key: notice.key, onClose: notices.next, card: <DigestCard key={notice.key} n={notice} agents={agents} lang={companion.lang} look={wardrobe.marks} onOpen={jump} onAnswer={notices.focus}/> }
+    : { key: notice.key, id: notice.id, onClose: notices.fold,
     card: <NoticeCard key={notice.key} n={notice} card={notices.card!} agent={agents.find(a => a.id === notice.id)} count={notices.count} look={wardrobe.marks}
       onPark={() => notices.park([notice.id])} onOpen={jump} onChange={notices.bump} onResolve={(text, body) => {
         if (notice.kind !== 'req') return;
@@ -805,7 +811,7 @@ export function Companion() {
         {dashboardContent}
       </DuskDashboard>
       <DockingDrop near={docking} width={geo.width} top={placement.topInset} center={geo.center}/>
-      <Notch look={wardrobe.marks} agents={agentsFront ? agents.filter(a => !agentsPresence.ids.includes(a.id)) : agents} unread={notices.unread} parked={notices.parked} archived={notices.archived} cursor={cursor} quiet={agentsFront || dashboard || moving}
+      <Notch look={wardrobe.marks} agents={frozen.current?.agents ?? (agentsFront ? agents.filter(a => !agentsPresence.ids.includes(a.id)) : agents)} unread={frozen.current?.unread ?? notices.unread} parked={frozen.current?.parked ?? notices.parked} archived={frozen.current?.archived ?? notices.archived} cursor={cursor} quiet={agentsFront || dashboard || moving}
         onNoteHover={notices.setHover} geo={{ width: geo.width, top: placement.topInset, notchR: geo.wingX, lobeL: geo.lobe.left }} note={note}
         act={{ jump, answer: notices.focus, read: notices.read, back: notices.back, archive: notices.archive, park: notices.park, unpark: notices.unpark }}
         port={port} keys={keysPress} onViewing={setViewing} onJoinedChange={setNotchJoined} onKeys={on => { setKeysOn(on); void window.jarvis?.focus(on); }}/>

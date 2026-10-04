@@ -200,3 +200,10 @@
 .notch-pane.is-open .all .a-row { animation:notch-row-in var(--motion-medium) var(--ease-out) both; }
 @keyframes notch-row-in { from { opacity:.4; transform:translateY(6px); } to { opacity:1; transform:translateY(0); } }
 @media (prefers-reduced-motion:reduce) { .notch-pane.is-open .all .a-row { animation:none; } }
+
+/* ADR 0153: what waited while the level was no-pop or dnd. */
+.notch .nc-away { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; }
+.notch .nc-away-row { display:grid; grid-template-columns:16px minmax(0,1fr) auto; align-items:center; gap:9px; width:100%; padding:7px 2px; border-radius:var(--radius-control); text-align:left; color:var(--p-ink); font-size:var(--text-detail); }
+.notch .nc-away-row:hover,.notch .nc-away-row:focus-visible { background:rgb(var(--glow) / .1); outline:none; }
+.notch .nc-away-row b { font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.notch .nc-away-row span { color:var(--p-faint); }

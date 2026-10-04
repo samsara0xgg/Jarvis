@@ -102,9 +102,29 @@ try {
   await shot('no-pop');
   await push('off');
   await page.waitForFunction(() => document.querySelector('.notch-note.is-open .nc'), null, { timeout: 4000 });
-  const up = await page.locator('.notch-note.is-open .nc').first().innerText();
-  check('leaving no-pop brings the held asks up, the older first', await card() === 1 && /Second session/.test(up) && /1 of 2/.test(up));
-  await shot('no-pop-leave');
+  check('leaving no-pop brings one digest up, not two cards', await page.locator('.notch-note.is-open .nc-digest').count() === 1);
+  const up = await page.locator('.notch-note.is-open .nc-digest').innerText();
+  check('the digest says how many and lists asks', /2 things while you were away/i.test(up) && /Second session/.test(up) && /Third session/.test(up));
+  await shot('digest');
+  await page.locator('.notch-note.is-open .nc-away-row', { hasText: 'Third session' }).click();
+  await page.waitForFunction(() => /Third session/.test(document.querySelector('.notch-note.is-open .nc')?.innerText ?? '') && !document.querySelector('.notch-note.is-open .nc-digest'), null, { timeout: 4000 });
+  check('a row of the digest brings that ask up', true);
+
+  // DND: nothing outside shows; marks stay as they were; leaving brings it all up as one digest.
+  await push('dnd');
+  await page.waitForFunction(() => !document.querySelector('.notch-note.is-open .nc'), null, { timeout: 3000 });
+  check('dnd: the card is gone', await card() === 0);
+  board = [...board, { ...session('working'), session_id: 'c-4', title: 'Fourth session' }];
+  await page.waitForTimeout(1800);
+  board = board.map(b => b.session_id === 'c-4' ? { ...b, phase: 'done' } : b);
+  await page.waitForTimeout(2500);
+  check('dnd: a finish pops nothing', await page.locator('.notch-note.is-open').count() === 0);
+  await shot('dnd');
+  await push('off');
+  await page.waitForFunction(() => document.querySelector('.notch-note.is-open .nc-digest'), null, { timeout: 4000 });
+  const back = await page.locator('.notch-note.is-open .nc-digest').innerText();
+  check('leaving dnd: one digest with the asks and the finish', /Fourth session/.test(back) && /Finished/.test(back) && /Needs you/.test(back));
+  await shot('digest-after-dnd');
   // The level is the daemon's: a push from it (the voice phrase's path) changes the page with no click.
   await page.evaluate(() => window.__emit('controls', { mic_muted: false, speech_muted: false, conversation: false, quiet: 'off' }));
   await page.waitForFunction(() => !document.querySelector('.companion-quiet'), null, { timeout: 3000 });

@@ -1,7 +1,8 @@
 import { createContext, useContext, useEffect, useLayoutEffect, useReducer, useRef, useState, type ReactNode } from 'react';
 import { ArrowSquareOut, ArrowUp, Check, Moon } from '@phosphor-icons/react';
 import { AGENT_NAME, loadMarks, openLabel, saveMark, type Agent, type AgentRequest, type AgentState } from './agents';
-import { AgentMark, type MarkLook } from './AgentMarks';
+import { AgentMark, type MarkLook, type MarkState } from './AgentMarks';
+import { tr, type Lang } from './companionSettings';
 import { Markdown } from './Markdown';
 import { palette, play, scoreOf } from './soundKit';
 import type { ExprId } from './starCore';
@@ -17,15 +18,17 @@ import './notices.css';
 // `no-pop` up (ADR 0153) nothing is queued: arrivals wait in `held` (marks and stars go on as they were) and come up
 // together, needs-you first, when the level drops. Nothing pops for
 // the session he is looking at, in Ghostty or on its page in the island.
-const POP_MS = 5000, FOLD_MS = 30_000, REMIND_MS = 600_000, TOGETHER_MS = 1500, CONFIRM_MS = 850;
+const POP_MS = 5000, DIGEST_MS = 30_000, FOLD_MS = 30_000, REMIND_MS = 600_000, TOGETHER_MS = 1500, CONFIRM_MS = 850;
 type Base = { key: string; id: string; at: number; reminded?: boolean };
 export type Notice = Base & (
   | { kind: 'pop'; ids: string[] }
   // Needs you, answered elsewhere: a Codex approval, or a Claude prompt Jarvis is not holding.
   | { kind: 'wait'; line: string }
-  | { kind: 'req'; req: AgentRequest });
+  | { kind: 'req'; req: AgentRequest }
+  // What waited while the level was no-pop or dnd (ADR 0153): one session at a time, the most important first.
+  | { kind: 'digest'; items: Notice[] });
 type Arrival = Notice extends infer N ? N extends Notice ? Omit<N, 'key' | 'at'> : never : never;
-export const needs = (n: Notice) => n.kind !== 'pop';
+export const needs = (n: Notice) => n.kind === 'req' || n.kind === 'wait';
 // ADR 0153: from `no-pop` up the island shows no card and no name pop.
 const noCards = (quiet: Quiet) => quiet === 'no-pop' || quiet === 'dnd';
 export const ended = (state: AgentState) => state === 'done' || state === 'err';
@@ -126,10 +129,20 @@ export function useNotices({ port, agents, hold, quiet, watched, viewing, agents
   // The level rising takes what is on the island into `held`; it dropping brings it all back, needs-you first, then errors, then done.
   useEffect(() => {
     if (noCards(quiet)) {
-      s.held = [...s.queue, ...s.folded, ...s.held]; s.queue = []; s.folded = []; s.forced = ''; bump();
+      // A digest on the island goes back to the items it listed.
+      s.held = [...s.queue.flatMap(n => n.kind === 'digest' ? n.items : [n]), ...s.folded, ...s.held]; s.queue = []; s.folded = []; s.forced = ''; bump();
     } else if (s.held.length) {
-      const rank = (n: Notice) => needs(n) ? 0 : toneOf(n) === 'error' ? 1 : 2;
-      s.queue.push(...s.held.filter(n => !s.parked.has(n.id)).sort((a, b) => rank(a) - rank(b) || a.at - b.at)); s.held = []; bump();
+      const rank = (n: Notice) => needs(n) ? 0 : toneOf(n) === 'error' ? 1 : 2, at = performance.now();
+      // One entry per session, the most important of what it did; two or more of them make one digest, one is just shown.
+      const items = [...new Map(s.held.filter(n => !s.parked.has(n.id)).sort((a, b) => rank(a) - rank(b) || a.at - b.at).reverse().map(n => [n.id, n])).values()].sort((a, b) => rank(a) - rank(b) || a.at - b.at);
+      s.held = [];
+      if (items.length === 1) s.queue.push(items[0]);
+      else if (items.length) {
+        // The asks stay on the island's list, so a row in the digest can bring its card up.
+        s.folded.push(...items.filter(needs));
+        s.queue.push({ kind: 'digest', key: `digest:${at}`, id: '', at, items });
+      }
+      bump();
     }
   }, [noCards(quiet)]);
 
@@ -264,7 +277,7 @@ export function useNotices({ port, agents, hold, quiet, watched, viewing, agents
   useEffect(() => {
     if (!current || hover || ok) return;
     // A pop the pointer has been on goes 1.5 s after it leaves.
-    const t = setTimeout(() => needs(current) ? fold() : next(), needs(current) ? FOLD_MS : s.touched === current.key ? 1500 : POP_MS);
+    const t = setTimeout(() => needs(current) ? fold() : next(), needs(current) ? FOLD_MS : current.kind === 'digest' ? DIGEST_MS : s.touched === current.key ? 1500 : POP_MS);
     return () => clearTimeout(t);
   }, [current?.key, hover, ok, size]);
 
@@ -297,6 +310,25 @@ export function useNotices({ port, agents, hold, quiet, watched, viewing, agents
   return { current, count: s.queue.filter(needs).length, peek: s.peek, openedAt: s.openedAt, over: s.over, card: current ? card(current) : null,
     unread: s.unread as ReadonlySet<string>, archived: s.archived as ReadonlySet<string>, parked: s.parked as ReadonlyMap<string, number>,
     read, archive, park, unpark, setHover, next, fold, back, resolve, focus, bump };
+}
+
+// ---------- what waited ----------
+// ADR 0153: leaving no-pop or dnd. One line says how many sessions did something while Allen was away, then one row each:
+// asks first, then stops, then what finished. A row opens its session; an ask's brings its card up.
+export function DigestCard({ n, agents, lang, look, onOpen, onAnswer }: {
+  n: Notice & { kind: 'digest' }; agents: Agent[]; lang: Lang; look: MarkLook; onOpen: (agent: Agent) => void; onAnswer: (id: string) => void;
+}) {
+  const byId = new Map(agents.map(a => [a.id, a]));
+  const line = (m: Notice): [MarkState, string] => needs(m) ? ['wait', tr(lang, ['Needs you', '要你回答'])]
+    : m.kind === 'pop' && m.ids.every(id => byId.get(id)?.state === 'err') ? ['err', tr(lang, ['Stopped on an error', '出错停了'])] : ['done', tr(lang, ['Finished', '做完了'])];
+  return <div className="nc nc-digest">
+    <div className="nc-bar"><span className="nc-label"><i/>{tr(lang, [`${n.items.length} things while you were away`, `你不在时有 ${n.items.length} 件事`])}</span></div>
+    <ul className="nc-away">{n.items.map(m => {
+      const a = byId.get(m.id) ?? (m.kind === 'pop' ? byId.get(m.ids[0]) : undefined), [state, what] = line(m);
+      return <li key={m.key}><button type="button" className="nc-away-row" onClick={() => { if (needs(m)) onAnswer(m.id); else if (a) onOpen(a); }}>
+        <AgentMark look={look} state={state} id={m.id} size={12}/><b>{a?.title ?? tr(lang, ['A session', '一个会话'])}</b><span>{what}</span></button></li>;
+    })}</ul>
+  </div>;
 }
 
 // ---------- the card ----------
