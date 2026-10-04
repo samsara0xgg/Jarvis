@@ -45,3 +45,4 @@ AGENTS.md
 /desktop/caption-translator/
 /hardware/
 native/voice_out/.build/
+native/ambient_sounds/.build/

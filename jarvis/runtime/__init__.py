@@ -202,6 +202,7 @@ from jarvis.state.memory_db import (
 from jarvis.state.projects import parse_catalog
 from jarvis.state.stream_emission import committed_text_prefix
 from jarvis.state.trigger_consumption import mark_trigger_consumed
+from jarvis.surface.ambient_sounds import AmbientSounds
 from jarvis.surface.cli import (
     PreEmitTokenError,
     SurfaceState,
@@ -488,6 +489,9 @@ class JarvisRuntime:
     live_context: tuple[Callable[[], str | None], ...] = ()
     # ADR 0149: what his voice carried that the words did not; shared with the voice path.
     voice_cues: VoiceCues | None = None
+    # ADR 0151: non-speech sounds around him, fed by the voice session; its line is the last
+    # live-context producer. None = off.
+    ambient: AmbientSounds | None = None
     # ADR 0125: Jev's read of whether a finished agent turn asks Allen something. None = off.
     turn_end_asks: TurnEndAsks | None = None
     # ADR 0130: Jev's read of short words heard over her voice or in hands-free mode. None = off.
@@ -1070,6 +1074,16 @@ def _dashboard_mail(config: Mapping[str, Any]) -> bool:
     block = config.get("dashboard")
     mail = block.get("mail") if isinstance(block, Mapping) else None
     return isinstance(mail, Mapping) and mail.get("enabled") is True
+
+
+def _ambient_sounds(config: Mapping[str, Any]) -> bool:
+    """``realtime.ambient_sounds`` (ADR 0151): sound labels in the state block; on unless false."""
+    realtime = config.get("realtime")
+    value = realtime.get("ambient_sounds", True) if isinstance(realtime, Mapping) else True
+    if not isinstance(value, bool):
+        msg = "realtime.ambient_sounds must be true or false"
+        raise TypeError(msg)
+    return value
 
 
 _LIVE_LINE_CHARS: Final = 200
@@ -2144,6 +2158,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
     focus = FocusState() if _dashboard_mail(full_config) else None
     mail_drafts = None if focus is None else MailDrafts(focus)
     voice_cues = VoiceCues()
+    ambient = AmbientSounds() if _ambient_sounds(full_config) else None
     registry = build_default_registry(
         mail_drafts=mail_drafts,
         memory_db_path=memory.db_path,
@@ -2332,9 +2347,11 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         ),
         focus=focus,
         mail_drafts=mail_drafts,
+        ambient=ambient,
         live_context=(
             *(() if focus is None or mail_drafts is None else (focus.line, mail_drafts.line)),
             voice_cues.line,
+            *(() if ambient is None else (ambient.line,)),
         ),
         voice_cues=voice_cues,
         turn_end_asks=_turn_end_asks(full_config, config_path, jev_log),

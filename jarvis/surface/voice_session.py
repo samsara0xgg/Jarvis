@@ -36,7 +36,7 @@ from typing import TYPE_CHECKING, Protocol
 import numpy as np
 
 from jarvis.shared.realtime_trace import realtime_trace_context, record_realtime_trace
-from jarvis.surface import voice_asr, voice_audio, voice_pipeline
+from jarvis.surface import ambient_sounds, voice_asr, voice_audio, voice_pipeline
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -1220,6 +1220,7 @@ class DuplexVoiceSession:
         cancel_voice_runs: Callable[[], None] | None = None,
         yield_speaking: Callable[[float], None] | None = None,
         pause_speaking: Callable[[bool], None] | None = None,
+        ambient: ambient_sounds.AmbientSounds | None = None,
     ) -> None:
         """Register all bounded subscribers before any hardware starts.
 
@@ -1257,7 +1258,11 @@ class DuplexVoiceSession:
 
         ADR 0138: ``cancel_voice_runs()`` ends every answer still being written for
         the speaker, for :meth:`dismiss`.
+
+        ADR 0151: ``ambient`` is fed the diagnostic lane's frames, started and stopped with
+        this session.
         """
+        self._ambient = ambient
         self._ingress = ingress
         self._wake_engine = wake_engine
         self._pipeline = pipeline
@@ -2147,6 +2152,8 @@ class DuplexVoiceSession:
                 LOGGER.exception("realtime wake: partial decode failed")
 
     def _diagnostic_loop(self) -> None:
+        if self._ambient is not None:
+            self._ambient.start()
         while not self._stop.is_set():
             frame = self._diagnostic_subscription.read(
                 timeout_s=self._config.worker_poll_s,
@@ -2155,6 +2162,15 @@ class DuplexVoiceSession:
                 continue
             self._diagnostic_frames += 1
             self._diagnostic_last_cursor = frame.sample_cursor + frame.frame_count
+            if self._ambient is not None and not self._muted():
+                try:
+                    speaking = self._output_active is not None and self._output_active()
+                except Exception:  # noqa: BLE001 - unknown means her voice may be in it: drop
+                    speaking = True
+                self._ambient.feed(frame.pcm16_mono, speaking=speaking)
+
+    def _muted(self) -> bool:
+        return self._mic_muted is not None and self._mic_muted()
 
     def _show_partial(self, turn_id: str, settled: str, tail: str) -> None:
         """ADR 0111, 0145: what has been heard so far, for the surface to show while he speaks.
@@ -2213,6 +2229,8 @@ class DuplexVoiceSession:
         """Close ingress first, then join every software owner within one bound."""
         ingress_result = self._ingress.close()
         self._stop.set()
+        if self._ambient is not None:
+            self._ambient.stop()
         deadline = time.monotonic() + self._config.shutdown_timeout_s
         for thread in self._started_threads:
             thread.join(timeout=max(0.0, deadline - time.monotonic()))

@@ -70,10 +70,12 @@ _READY_FMT = struct.Struct("<IIqq")
 _RENDERED_HEAD = struct.Struct("<Q")
 
 
-def ensure_helper_binary(source_dir: Path = _HELPER_DIR) -> Path:
+def ensure_helper_binary(
+    source_dir: Path = _HELPER_DIR, binary_name: str = "jarvis-voice-out",
+) -> Path:
     """Return the helper binary, compiling it first when missing or older than its source."""
     source = source_dir / "main.swift"
-    binary = source_dir / ".build" / "jarvis-voice-out"
+    binary = source_dir / ".build" / binary_name
     if binary.exists() and binary.stat().st_mtime >= source.stat().st_mtime:
         return binary
     swiftc = shutil.which("swiftc") or "/usr/bin/swiftc"

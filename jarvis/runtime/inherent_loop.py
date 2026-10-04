@@ -3912,6 +3912,7 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
             cancel_voice_runs=cancel_voice_runs,
             yield_speaking=streaming.set_yield_gain if streaming is not None else None,
             pause_speaking=streaming.pause_speaking if streaming is not None else None,
+            ambient=runtime.ambient,
         )
     except Exception:
         LOGGER.exception(

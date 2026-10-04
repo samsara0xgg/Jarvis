@@ -515,6 +515,10 @@ confirmation:
 # enabling concurrent turns, model streaming, or streaming TTS/player work.
 realtime:
   enabled: true
+  # ADR 0151.  Apple SoundAnalysis listens to the mic audio the voice session already
+  # captures and gives each turn one line of the non-speech sounds heard lately (laughed,
+  # coughed, music on). Labels and times only; audio is never stored. false turns it off.
+  ambient_sounds: true
   # Output device name TTS playback opens, e.g. "BlackHole 16ch"; resolved by
   # sounddevice.  Null means the CoreAudio system default output.  A name that
   # is not plugged in plays on the system default, and goes back to the name
