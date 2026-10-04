@@ -50,6 +50,8 @@ class _Session:
         wake: bool = False,
         idle_exit_s: float = 30.0,
         turn_working: Callable[[], bool] | None = None,
+        set_quiet: Callable[[str], None] | None = None,
+        answer_words: Callable[[str, str, str], None] | None = None,
     ) -> None:
         monkeypatch.setitem(
             voice_audio._MODE_THRESHOLDS,  # noqa: SLF001 - loosened for one-frame onsets
@@ -86,6 +88,8 @@ class _Session:
                 mic_muted=lambda: self.muted,
                 conversation=lambda: self.conversation,
                 set_conversation=self._set_conversation,
+                set_quiet=set_quiet,
+                answer_words=answer_words,
                 turn_working=turn_working,
                 stop_speaking=self.stopped.set,
                 hold_output=hold_output,

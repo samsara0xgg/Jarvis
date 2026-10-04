@@ -1333,6 +1333,42 @@ _DISMISS_WORD_MAX_CHARS = 16
 _QUESTION_END_RE = re.compile(r"(?:[?？]|吗|呢)\W*$")
 
 
+# Allen setting the quiet level (ADR 0153), said whole, wake phrase, case and punctuation aside.
+# Whole 安静一点 and 安静模式 set it, ahead of the stop meaning of 安静; a bare 安静 or
+# 安静一下 only stops her (_STOP_PHRASE).
+QUIET_REASONS = {"quiet": "quiet", "no-pop": "nopop", "dnd": "dnd", "off": "normal"}
+_QUIET_RES = {
+    "off": re.compile(
+        r"(?:恢复正常|恢复通知|(?:关掉|关闭|取消|退出)(?:勿扰|请勿打扰|安静模式|不弹模式)"
+        r"|(?:backtonormal|normalmode|turnoff(?:donotdisturb|dnd|quietmode)))"
+    ),
+    "no-pop": re.compile(
+        r"(?:别弹|别弹窗|不要弹|不要弹窗|不弹|不弹模式|(?:开启|进入|开)不弹模式"
+        r"|nopopups|nomorepopups|stoppopups|nopopmode)"
+    ),
+    "dnd": re.compile(
+        r"(?:勿扰|勿扰模式|(?:开启|进入|开)勿扰(?:模式)?|勿打扰|别打扰我"
+        r"|dnd|dndmode|donotdisturb|donotdisturbmode)"
+    ),
+    "quiet": re.compile(
+        r"(?:安静一点|安静点|安静一些|安静模式|(?:开启|进入|开)安静模式"
+        r"|quietmode|stayquiet|keepquiet|bequietforawhile)"
+    ),
+}
+_QUIET_WRAP = re.compile(
+    r"(?:hey|hi|嘿|嗨)?(?:jarvis|贾维斯)?(?:ok|okay|好|行|嗯)?(?:你|请|please)?(?P<core>.+?)"
+    r"(?:了|吧|啦|啊|哈|please)*"
+)
+
+
+def quiet_command(text: str) -> str | None:
+    """The quiet level ``text`` sets, or None (ADR 0153); the whole sentence, never a part."""
+    wrapped = _QUIET_WRAP.fullmatch(_squashed(text))
+    if wrapped is None:
+        return None
+    return next((k for k, r in _QUIET_RES.items() if r.fullmatch(wrapped["core"])), None)
+
+
 # Allen asking Jarvis to keep listening for him (ADR 0102): conversation mode
 # waits conversation_wait_s, and it is no question to answer. A lone 「等一下」
 # stays a stop request; 「等我一下」 does not stop her for good, only waits.

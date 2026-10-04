@@ -8,7 +8,8 @@ speaker is silent, so unmuting mid-sentence resumes audibly. ``conversation``
 (ADR 0041) is the surface's wave mode: capture listens without a wake word,
 and speech over Jarvis lowers her until its words decide (ADR 0100). Not
 persisted: a daemon restart comes back unmuted and out of conversation, and
-the surface re-syncs on connect.
+the surface re-syncs on connect. ``quiet`` (ADR 0153) is the one exception:
+the runtime loads it at boot and saves every change through ``on_quiet``.
 """
 
 from __future__ import annotations
@@ -27,6 +28,10 @@ class VoiceControls:
     mic_muted: bool = False
     speech_muted: bool = False
     conversation: bool = False
+    # ADR 0153: ``off``, ``quiet``, ``no-pop`` or ``dnd`` (``jarvis.state.quiet_mode.LEVELS``).
+    quiet: str = "off"
+    # ``(level) -> None``, bound by the runtime to the saved file and the controls push.
+    on_quiet: Callable[[str], None] | None = None
     # ``(muted) -> None``, bound by the runtime to the TTS player's gain.
     on_speech_muted: Callable[[bool], None] | None = None
     # ``(muted) -> None``, bound by the runtime to the GPT-Live sender gate.
@@ -46,7 +51,8 @@ class VoiceControls:
         mic_muted: bool | None = None,
         speech_muted: bool | None = None,
         conversation: bool | None = None,
-    ) -> dict[str, bool]:
+        quiet: str | None = None,
+    ) -> dict[str, bool | str]:
         """Apply the given switches (``None`` leaves one unchanged) and return the state."""
         if mic_muted is not None and mic_muted != self.mic_muted:
             self.mic_muted = mic_muted
@@ -58,10 +64,15 @@ class VoiceControls:
                 self.on_speech_muted(speech_muted)
         if conversation is not None:
             self.conversation = conversation
+        if quiet is not None and quiet != self.quiet:
+            self.quiet = quiet
+            if self.on_quiet is not None:
+                self.on_quiet(quiet)
         return {
             "mic_muted": self.mic_muted,
             "speech_muted": self.speech_muted,
             "conversation": self.conversation,
+            "quiet": self.quiet,
         }
 
 

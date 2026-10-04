@@ -260,13 +260,15 @@ class ControlsRequest(BaseModel):
 
     Each field is optional; ``None`` leaves that switch untouched, so ``{}``
     is a pure read the surface uses to sync on connect. The response is
-    always the full current state ``{"mic_muted", "speech_muted", "conversation"}``.
+    always the full current state ``{"mic_muted", "speech_muted", "conversation", "quiet"}``.
     """
 
     mic_muted: bool | None = None
     speech_muted: bool | None = None
     # ADR 0041: the surface's wave mode, listening without a wake word.
     conversation: bool | None = None
+    # ADR 0153: the quiet level, the one controls field the daemon keeps across restarts.
+    quiet: Literal["off", "quiet", "no-pop", "dnd"] | None = None
     # GPT-Live phase A: ``start`` opens a session (refused with a reason when
     # the ingress or the API key is missing), ``stop`` hangs up.  The response
     # then also carries ``"live": {...}`` (``LiveVoice.status``), on every request.
@@ -1514,6 +1516,7 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 â
                     mic_muted=req.mic_muted,
                     speech_muted=req.speech_muted,
                     conversation=req.conversation,
+                    quiet=req.quiet,
                 ),
             )
             if req.mic_muted is not None or req.speech_muted is not None:

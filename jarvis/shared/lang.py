@@ -1011,6 +1011,23 @@ VARIANTS: Final[dict[str, dict[Language, tuple[str, ...]]]] = {
         "zh": ("好，等你吧。", "好，你先忙。", "不急，我等你。", "好的，我等着。", "嗯，你忙完叫我。"),
         "en": ("Sure, I'll wait.", "Take your time.", "No rush.", "Okay, I'm here.", "Sure, go ahead."),
     },
+    # ADR 0153: her answer to a quiet-level phrase, one picked at random.
+    "conversation.quiet": {
+        "zh": ("好，我安静。", "好，不出声了。"),
+        "en": ("Okay, quiet mode.", "Sure, I'll stay quiet."),
+    },
+    "conversation.nopop": {
+        "zh": ("好，不弹了。", "好，不弹卡片了。"),
+        "en": ("Okay, no pop-ups.", "Sure, nothing will pop up."),
+    },
+    "conversation.dnd": {
+        "zh": ("好，勿扰。", "好，先不打扰你。"),
+        "en": ("Okay, do not disturb.", "Sure, I won't disturb you."),
+    },
+    "conversation.normal": {
+        "zh": ("好，恢复正常。", "好，回到正常了。"),
+        "en": ("Okay, back to normal.", "Sure, back to normal."),
+    },
     "conversation.dismissed": {
         "zh": ("好，再见。", "好，有事再叫我。", "好的，回头见。", "嗯，那我先下了。", "好，需要再喊我。"),
         "en": ("Okay, bye.", "Sure, call me if you need me.", "See you.", "Alright, I'll step away.", "Bye for now."),

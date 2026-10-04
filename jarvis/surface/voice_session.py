@@ -1207,6 +1207,7 @@ class DuplexVoiceSession:
         mic_muted: Callable[[], bool] | None = None,
         conversation: Callable[[], bool] | None = None,
         set_conversation: Callable[[bool, str], None] | None = None,
+        set_quiet: Callable[[str], None] | None = None,
         answer_words: Callable[[str, str, str], None] | None = None,
         turn_working: Callable[[], bool] | None = None,
         recent_speech: Callable[[], str] | None = None,
@@ -1230,6 +1231,8 @@ class DuplexVoiceSession:
         ``stop_speaking``. ``set_conversation(on, reason)`` flips it (ADR
         0102): a wake hit turns it on, and a dismissal (退下) or
         ``conversation_idle_exit_s`` of quiet turns it off;
+        ``set_quiet(level)`` (ADR 0153) sets the quiet level for a fixed phrase, with
+        ``answer_words`` reason ``quiet``, ``nopop``, ``dnd`` or ``normal``;
         ``answer_words(turn_id, reason, text)`` has her say one line back to
         a dismissal or 「等我一下」 (``reason`` ``dismissed`` or ``wait``). With
         ``yield_speaking`` and ``pause_speaking`` it first only lowers her
@@ -1271,6 +1274,7 @@ class DuplexVoiceSession:
         self._mic_muted = mic_muted
         self._conversation = conversation
         self._set_conversation = set_conversation
+        self._set_quiet = set_quiet
         self._answer_words = answer_words
         self._turn_working = turn_working
         self._recent_speech = recent_speech
@@ -1781,6 +1785,9 @@ class DuplexVoiceSession:
     ) -> str:
         """What the regexes make of ``text``; ``whole_only`` leaves out the loose dismissal."""
         checks: list[tuple[str, Callable[[str], bool]]] = []
+        # ADR 0153: said in any state, ahead of every other verdict.
+        if self._set_quiet is not None and (level := voice_asr.quiet_command(text)) is not None:
+            return f"quiet:{level}"
         if conversation:
             dismissal = voice_asr.is_whole_dismissal if whole_only else voice_asr.is_dismissal
             checks += [("dismissed", dismissal), ("wait", voice_asr.is_wait_request)]
@@ -1802,6 +1809,14 @@ class DuplexVoiceSession:
 
     def _act_on_words(self, turn_id: str, text: str, verdict: str, *, over_her: bool) -> None:
         """Carry out a verdict; raises when the words are no turn."""
+        if verdict.startswith("quiet:") and self._set_quiet is not None:
+            level = verdict.removeprefix("quiet:")
+            self._settle_barge_in(turn_id, go_on=False)
+            self._cancel_runs()
+            self._supersede(turn_id)
+            self._set_quiet(level)
+            self._answer(turn_id, voice_asr.QUIET_REASONS[level], text)
+            raise voice_pipeline.VoicePipelineAbsorbedError(verdict)
         if verdict in {"dismissed", "wait"}:
             self._settle_barge_in(turn_id, go_on=False)
             if verdict == "dismissed":

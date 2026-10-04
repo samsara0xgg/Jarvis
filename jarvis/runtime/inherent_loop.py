@@ -178,6 +178,7 @@ from jarvis.shared.realtime import (
     new_response_id,
 )
 from jarvis.shared.realtime_trace import record_realtime_trace
+from jarvis.state import quiet_mode
 from jarvis.state.event_log import (
     emit_event,
     get_event,
@@ -3679,6 +3680,7 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
     mic_muted: Callable[[], bool] | None = None,
     conversation: Callable[[], bool] | None = None,
     set_conversation: Callable[[bool, str], None] | None = None,
+    set_quiet: Callable[[str], None] | None = None,
     echo_canceller: voice_aec.EchoCanceller | None = None,
 ) -> tuple[voice_session.DuplexVoiceSession | None, bool]:
     """Start Wave 3 or return whether a device-open attempt was made.
@@ -3890,6 +3892,7 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
             mic_muted=mic_muted,
             conversation=conversation,
             set_conversation=set_conversation,
+            set_quiet=set_quiet,
             answer_words=lambda turn_id, reason, text: threading.Thread(
                 target=_say_conversation_line,
                 args=(runtime, turn_id, reason, text),
@@ -4007,6 +4010,7 @@ def _spawn_voice_input_owners(  # noqa: PLR0913 - composition boundary dependenc
     mic_muted: Callable[[], bool] | None = None,
     conversation: Callable[[], bool] | None = None,
     set_conversation: Callable[[bool, str], None] | None = None,
+    set_quiet: Callable[[str], None] | None = None,
     echo_canceller: voice_aec.EchoCanceller | None = None,
 ) -> _VoiceInputOwners:
     """Select Wave 3 or legacy wake without ever opening both input owners."""
@@ -4021,6 +4025,7 @@ def _spawn_voice_input_owners(  # noqa: PLR0913 - composition boundary dependenc
         mic_muted=mic_muted,
         conversation=conversation,
         set_conversation=set_conversation,
+        set_quiet=set_quiet,
         echo_canceller=echo_canceller,
     )
     wake_listener: voice_wake.WakeListener | None = None
@@ -5587,7 +5592,19 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         duplex_voice_session: voice_session.DuplexVoiceSession | None = None
         # ADR-0015: the two mute switches the desktop surface flips over
         # POST /inherent/controls: mic on the wake threads, speech as the player's gain.
-        controls = voice_controls.VoiceControls()
+        # ADR 0153: the quiet level is the one switch kept across restarts.
+        quiet_path = runtime.runtime_paths.root / "quiet-mode.json"
+        controls = voice_controls.VoiceControls(quiet=quiet_mode.load(quiet_path))
+
+        def _keep_quiet(level: str) -> None:
+            quiet_mode.save(quiet_path, level)
+            LOGGER.info("controls: quiet=%s", level)
+            broadcaster.broadcast_op_sync("controls", **controls.update())
+
+        controls.on_quiet = _keep_quiet
+
+        def _set_quiet(level: str) -> None:
+            controls.update(quiet=level)
 
         def _set_conversation(on: bool, reason: str) -> None:  # noqa: FBT001 - session callback shape
             """ADR 0102: voice flips conversation mode; the surface hears it as a controls push."""
@@ -5680,6 +5697,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                         mic_muted=_old_chain_input_blocked,
                         conversation=controls.conversation_is_on,
                         set_conversation=_set_conversation,
+                        set_quiet=_set_quiet,
                         echo_canceller=echo_canceller,
                     )
                     duplex_voice_session = voice_input_owners.duplex_session
