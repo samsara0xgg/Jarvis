@@ -1,6 +1,6 @@
-# ADR 0147 — The History Is Day Summaries, Then Every Word from the Boundary Day
+# ADR 0149 — The History Is Day Summaries, Then Every Word from the Boundary Day
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-10-03
 **Supersedes:** none
 
@@ -39,7 +39,9 @@ fold do nothing. If the records from B on exceed `session.context_raw_max_chars`
 the oldest hide in blocks of 50 until they fit and a note says how many and to use `recall`
 or `search_records`. The system prompt, core memory last, is unchanged.
 
-`rolling` stays available until the switch is accepted; this ADR then gets its status.
+Accepted after a comparison on the 20 latest live turns: the median prompt fell from 24.3k
+to 15.6k tokens and median time to first token from 1.30 s to 0.98 s (within the spread of
+20 samples), with no detail question lost. `rolling` stays available as `session.context: rolling`.
 
 ## Alternatives rejected
 

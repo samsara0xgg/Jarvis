@@ -270,7 +270,7 @@ class CompactionSweep:
         if self._task is not None and not self._task.done():
             return
         if self._settings.context == DAY_SUMMARIES_CONTEXT:
-            return  # ADR 0147: the day summaries stand in for the rolling one; nothing is folded
+            return  # ADR 0149: the day summaries stand in for the rolling one; nothing is folded
         now = local_now()
         windowed = self._settings.recent_records > 0
         # A rejected or failed summary is retried no sooner than one idle

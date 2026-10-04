@@ -381,7 +381,7 @@ I8 到 I11 随审核链退役（ADR 0019），编号保留。
 <ul>
 <li><strong>压缩。</strong><code>session.recent_records</code> 为 0 时，估算的逐字历史超过预设上下文的 <code>session.compact_at_context_ratio</code>（0.4，也就是 105 万 token 窗口的约 42 万），而且一小时没有新记录、没有实时语音连接时，才压缩一次：早于 <code>session.verbatim_window_days</code>（7 天）的记录折成一段摘要，最近 7 天仍然逐字。</li>
 <li><strong>窗口决定压缩（ADR 0134）。</strong><code>recent_records</code> 大于 0 时，上面三个条件不再看：窗口放不下的记录一出现，就在后台折进摘要（上一段摘要加这些记录），一次只跑一个。折叠失败或被拒，保留旧摘要，等下一条新记录再试。</li>
-<li><strong>按天摘要的历史（ADR 0147）。</strong><code>session.context</code> 设成 <code>day_summaries</code> 时，历史改为：一条开头消息，列出最近三天（早于边界日）的日摘要，最早的在前；一行说明边界日（有日摘要的最新一天的后一天）从零点起每一句话都在下面；再是边界日起的每一句，渲染方式不变。这些句子的文字超过 <code>session.context_raw_max_chars</code>（40000）时，最早的按 50 句一块隐藏，前面加一行说明有几句、用 recall 或搜索工具去找。此时 <code>recent_records</code> 不起作用，滚动摘要既不发送也不再写，压缩和窗口折叠都不运行；还没有任何日摘要时，这一轮仍按上面的滚动历史。历史的开头每天只变一次，服务商的缓存整天接得上。</li>
+<li><strong>按天摘要的历史（ADR 0149）。</strong><code>session.context</code> 设成 <code>day_summaries</code> 时，历史改为：一条开头消息，列出最近三天（早于边界日）的日摘要，最早的在前；一行说明边界日（有日摘要的最新一天的后一天）从零点起每一句话都在下面；再是边界日起的每一句，渲染方式不变。这些句子的文字超过 <code>session.context_raw_max_chars</code>（40000）时，最早的按 50 句一块隐藏，前面加一行说明有几句、用 recall 或搜索工具去找。此时 <code>recent_records</code> 不起作用，滚动摘要既不发送也不再写，压缩和窗口折叠都不运行；还没有任何日摘要时，这一轮仍按上面的滚动历史。历史的开头每天只变一次，服务商的缓存整天接得上。</li>
 <li>压缩本身也是一次模型调用，发出的是要折叠的那些记录；一次折叠要读的记录太长时分段，每段接着上一段写出的摘要往下写。</li>
 <li><code>history_since</code> 之前的记录，以及 <code>recent_records</code> 窗口之外的记录，留在 memory.db，原话要用时通过搜索工具取回，不进每一轮的请求（窗口之外的内容进摘要）。窗口的起点每 N 句才往后挪一次，其间历史的开头不变，服务商的缓存才接得上。</li>
 </ul>

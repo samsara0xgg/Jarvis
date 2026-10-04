@@ -1,4 +1,4 @@
-"""``session.context: day_summaries`` (ADR 0147): the history's layout and what stops.
+"""``session.context: day_summaries`` (ADR 0149): the history's layout and what stops.
 
 Real memory.db and real ``render_context`` / ``CompactionSweep``; the days, records
 and summaries are made up. Day summaries are stored with their ``## YYYY-MM-DD``

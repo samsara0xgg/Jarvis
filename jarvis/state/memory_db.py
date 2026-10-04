@@ -89,9 +89,9 @@ CREATE TABLE IF NOT EXISTS core_memory (
 # so they need no new version.
 SCHEMA_VERSION: Final[int] = 1
 DEFAULT_SEARCH_LIMIT: Final[int] = 20
-# ``session.context`` value for ADR 0147's history layout; anything else is the rolling summary.
+# ``session.context`` value for ADR 0149's history layout; anything else is the rolling summary.
 DAY_SUMMARIES_CONTEXT: Final[str] = "day_summaries"
-# ADR 0147: the cap on the raw history cuts the oldest records in blocks of this many.
+# ADR 0149: the cap on the raw history cuts the oldest records in blocks of this many.
 _RAW_CUT_BLOCK: Final[int] = 50
 # The Live brief's label for the user's own rows; the stored source stays ``allen``.
 _USER_LABEL: Final[str] = "user"
@@ -160,7 +160,7 @@ class SessionSettings:
     or a compaction. ``recent_records`` (0: every record) shows only the
     latest records of that history; see :func:`render_context`.
     ``replay_sent`` replays each turn's user message as it was sent
-    (docs/plans/replay-as-sent-proposal.md). ``context`` ``day_summaries`` (ADR 0147)
+    (docs/plans/replay-as-sent-proposal.md). ``context`` ``day_summaries`` (ADR 0149)
     swaps the rolling summary and the recent window for the latest day summaries and
     every record from the day after the newest one, capped at ``context_raw_max_chars``.
     """
@@ -576,7 +576,7 @@ def _hidden_records(shown: int, recent: int) -> int:
 
 
 def _day_head(conn: sqlite3.Connection) -> tuple[date, str] | None:
-    """ADR 0147: the boundary day and the summaries message's text, or None with no summary.
+    """ADR 0149: the boundary day and the summaries message's text, or None with no summary.
 
     The boundary is the day after the newest local day with a day summary; the message is the
     current rows of the three latest days, oldest first, each under the heading it was stored with.
@@ -649,7 +649,7 @@ def render_context(  # noqa: PLR0913 — one read, two layouts, one render.
     shows only the latest records (see :func:`_hidden_records`); a note after
     the summary says how many earlier ones there are and how to find them.
 
-    ``context`` ``day_summaries`` (ADR 0147) replaces the summary and ``recent`` with the
+    ``context`` ``day_summaries`` (ADR 0149) replaces the summary and ``recent`` with the
     latest three day summaries, a line naming the boundary day, and every record from that day
     on, the oldest hidden in blocks of 50 while they exceed ``raw_max_chars``. With no day
     summary stored it renders the rolling layout.

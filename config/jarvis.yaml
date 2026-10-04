@@ -1072,13 +1072,13 @@ session:
   # 2.29 s for all 18 days. 0 shows every record (about 500 and 40k tokens on
   # 2026-09-30) and compacts by the settings above.
   recent_records: 0
-  # ADR 0147: "day_summaries" shows the latest three day summaries, a line naming the boundary
+  # ADR 0149: "day_summaries" shows the latest three day summaries, a line naming the boundary
   # day (the day after the newest summarised one) and every record from that day on, instead of
   # the rolling summary and recent_records; neither is shown, written or folded then. The oldest
   # records hide in blocks of 50 while those from the boundary on exceed context_raw_max_chars,
   # so the prompt's head moves once a day. "rolling" is the behaviour above. With no day summary
   # stored a turn renders as "rolling".
-  context: rolling
+  context: day_summaries
   context_raw_max_chars: 40000
   # The summariser's whole system prompt. The nine "###" headings are
   # required: a summary missing one is rejected. Edit the text freely; the
