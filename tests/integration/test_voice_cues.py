@@ -46,7 +46,8 @@ def test_a_laugh_over_her_and_a_happy_sentence_reach_the_next_request(tmp_path: 
         rig.close()
 
     cue_line = (
-        "Voice cues (from audio, may be wrong): he sounded happy; "
+        "Voice cues (background, rarely worth mentioning; from audio, may be wrong): "
+        "he sounded happy; "
         "he laughed without words while you were speaking.\n"
     )
     assert _request(tmp_path, cues) == f"{STATUS}{cue_line}\n后天呢\n\n{LINE}"

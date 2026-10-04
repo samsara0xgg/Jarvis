@@ -22,8 +22,8 @@
 
 ## Decision
 
-The state block of her next turn ends with one line, "Voice cues (from audio,
-may be wrong): ...", from the labels of Allen's last clip and his dropped
+The state block of her next turn ends with one line, "Voice cues (background, rarely worth
+mentioning; from audio, may be wrong): ...", from the labels of Allen's last clip and his dropped
 laughs, read once.
 
 Its limits:

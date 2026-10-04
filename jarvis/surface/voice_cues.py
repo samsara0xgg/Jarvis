@@ -67,6 +67,6 @@ class VoiceCues:
         whens = ("since your last turn", "while you were speaking")
         for count, when in zip(laughs, whens, strict=True):
             if count:
-                times = f" ({count}x)" if count > 1 else ""
-                parts.append(f"he laughed without words {when}{times}")
-        return f"Voice cues (from audio, may be wrong): {'; '.join(parts)}." if parts else None
+                parts.append(f"he laughed without words {when}")
+        head = "Voice cues (background, rarely worth mentioning; from audio, may be wrong): "
+        return f"{head}{'; '.join(parts)}." if parts else None
