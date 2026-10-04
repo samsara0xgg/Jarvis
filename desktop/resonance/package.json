@@ -12,7 +12,7 @@
     "dashboard": "npm run build && electron . --dashboard",
     "workspace-preview": "npm run build && node scripts/launch-workspace-preview.mjs",
     "companion": "npm run build && electron dist-electron/companion.js",
-    "verify": "npm run build && node scripts/verify-desktop-orbit.mjs",
+    "verify": "npm run build && node scripts/verify-all.mjs",
     "package": "npm run build && node scripts/package.mjs"
   },
   "dependencies": {

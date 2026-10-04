@@ -18,7 +18,7 @@ npm start
 
 插件从 Dashboard 的插件格进入，在同一区域展开列表、连接和管理页面；对话唤起、菜单「插件…」和外观设置也进入此处。底部 bar 或 Esc 返回原来的网格位置，长内容在固定区域内滚动。点击连接后才开始浏览器授权或使用输入的令牌；收起保留连接，取消停止当前连接。连接成功即时提供工具和技能；有待完成任务且对话未更新时自动继续。连接和操作审批分开，可在插件管理中调整审批或停用。
 
-此功能需要同时更新后台和桌面应用。插件管理凭证由主进程从 `JARVIS_RUNTIME_ROOT`（默认 `~/.jarvis`）读取，启停和令牌另存于 runtime，不改写 YAML。`npm run build && node scripts/verify-plugins.mjs` 使用隔离的真实后台、MCP 和 OAuth 服务验证面板，截图与检查结果保存在 `evidence/plugins/`；不会登录个人账号。
+此功能需要同时更新后台和桌面应用。插件管理凭证由主进程从 `JARVIS_RUNTIME_ROOT`（默认 `~/.jarvis`）读取，启停和令牌另存于 runtime，不改写 YAML。
 
 - `npm run lab`：圆点与 Live 形变预览，含高清放大模型及保留的六状态圆环。
 - `npm run workspace-preview`：独立 Electron 交互预览。一个限定高度的工作区切换 Dashboard、对话、插件、Codex、额度、状态与设置；切换保留草稿和滚动位置，输入框固定在对话底部。左侧可演示长回复、语音字幕和授权成功／失败，授权等待时可以离开页面。全部使用本地模拟数据，不连接 daemon、不读取真实账号、不录音、不保存令牌；独立资料目录，可与现有桌面界面同时运行。关闭预览窗口只退出预览进程。
@@ -29,8 +29,7 @@ npm start
 精修专项验收：构建后运行 `node scripts/verify-character.mjs`、`node scripts/verify-dashboard-refinement.mjs` 和 `node scripts/verify-notch-refinement.mjs`，分别检查角色生命层、主页数据与布局、刘海意图判定与审批操作；另用 `verify-character-material.mjs` 验证自发光与两种刘海，`verify-dusk-dashboard.mjs` 验证暮色像素边界与拖拽，`verify-dashboard-window.mjs` 验证独立 Electron 窗口，`verify-dashboard-handoff.mjs` 验证窗口间页面、草稿与操作入口的接续。异步历史与账户草稿用 `verify-dashboard-async-restore.mjs` 检查；审批草稿和接收水滴分别用 `verify-action-draft.mjs`、`verify-docking-drop.mjs` 检查；夜间挂机（ADR 0093）的睡前、夜里和昨晚卡片用 `verify-night-card.mjs` 检查。首页的早报卡片（两行以内、每天早上第一次打开才出现、重启不重现）和早报页（一屏扫完的分组短行、点开才看备注、超过五项折叠、定下来的事收进一个折叠）用 `verify-dashboard-brief.mjs` 检查。验收使用隔离的模拟数据。
 
 - `npm run package`：生成 `build/Jarvis Resonance.app`，用于本机打开；本地 ad-hoc 签名，未公证、未发布。
-- `npm run verify`：构建并运行真实 Electron 窗口验收脚本；独立验收资料目录，系统音频输出静音。
-- `node scripts/inspect-desktop.mjs --focus --silent`：Computer Use 辅助验收入口。临时允许窗口聚焦，输出窗口自身的几何信息到 `evidence/live-desktop.json`，不抓取其他应用。
+- `npm run verify`：构建后依次运行 `scripts/` 下全部 `verify-*.mjs`（跳过会启动真实 Claude Code 的 `verify-agents-keeper`、`verify-agents-clear`），只打印失败脚本的输出。
 
 Mac 原生材质编译需要 Xcode Command Line Tools 和 Node C headers；可用 `NODE_INCLUDE` 指定头文件目录。其他平台使用灰阶透明表面 fallback，未做平台验收。
 
@@ -47,21 +46,21 @@ Mac 原生材质编译需要 Xcode Command Line Tools 和 Node C headers；可�
 - 文字输入、对话记录与 Dashboard 在同一 300 像素宽玻璃区域组合展示，默认依次排列；标题栏支持拖动排序（Alt + ↑/↓ 可键盘排序，Escape 取消拖动），独立箭头折叠与关闭，草稿在折叠或关闭后保留。超过屏幕可用高度时内部滚动，内容淡入淡出与连续高度变化分阶段衔接，快速反向保留运动状态。Dashboard 按钮统一打开／收起面板，通知卡片位于首页底部，最多显示两条，更多内容在区域内滚动，无通知时收起该区域；卡片保留回复、详情和清除操作。焦点在通知区域时 Esc 优先退出详情／回复，再关闭面板。
 - 省略默认状态下常驻的 Listening 文案。辅助功能仍有状态描述，示例内容和菜单明确说明模拟性质。
 - Dashboard 首页使用固定正方形单位格：134 × 134，间距 8；可见区为两列三行（276 × 418）。左上对话、左中当前状态、右侧纵跨两格的额度、底部横跨两格的 Codex；插件和通知在下方，通过首页内部滚动查看。额度摘要展示所有返回的订阅限制及重置时间。
-- 首页底部 bar 在窗口内部 hover 展开成悬浮输入框，移出整个输入区域后收起；点击固定，再次点击图钉取消固定。输入框与原文字入口共用草稿、发送和回复，展开不会改变卡片或窗口尺寸；Esc 收起并保留草稿。动画使用可反向的宽高弹簧，减少动态效果时直接切换。详情布局沿用，底部 bar 仅点击返回。`node scripts/verify-dashboard-grid.mjs` 验收网格、hover/pin、草稿、发送及详情返回，截图在 `evidence/dashboard-grid/`。
+- 首页底部 bar 在窗口内部 hover 展开成悬浮输入框，移出整个输入区域后收起；点击固定，再次点击图钉取消固定。输入框与原文字入口共用草稿、发送和回复，展开不会改变卡片或窗口尺寸；Esc 收起并保留草稿。动画使用可反向的宽高弹簧，减少动态效果时直接切换。详情布局沿用，底部 bar 仅点击返回。
 
 - 悬停省略号、右键胶囊或菜单栏 J →「外观与提示音…」打开设置。不透明度与毛玻璃强度分别可调，设置保存在本原型的资料目录。强度控制原生毛玻璃的混合比例，不是任意半径的模糊调节。
-- 设置中的「Dashboard 风格」可在默认「统一风格」和「原卡片风格（备份）」之间切换，选择自动保存；`verify-dashboard-grid.mjs` 同时验收样式恢复与重载保留，备份截图为 `evidence/dashboard-grid/original-cards.png`。
+- 设置中的「Dashboard 风格」可在默认「统一风格」和「原卡片风格（备份）」之间切换，选择自动保存。
 - 默认遮罩不透明度 40%。图标按用户参考图描出 SVG 轮廓。
 - 已接入五类提示音。进入语音仍是来自录屏片段频带过滤的候选音，其现场噪声与操作时序存在不确定性，不声称与原版完全相同。
 - 麦克风开/关与播报开/关改为实时合成的触感点击，移植 Hermes desktop 的 `selection` / `open` / `close` intent（引擎取自 web-haptics 0.0.6，MIT）：每个脉冲是一段 4 ms 噪声过 bandpass，中心频率与增益都随强度走，所以麦克风两个方向是同一声单击，播报开是渐强的一对、关是渐弱的一对。没有对应的音频资源。
 - 默认低音量，可关闭或调节；不在启动、悬停、拖拽时播放，连续点击会平滑切断上一段。声音播放完毕会挂起 AudioContext。
 - `Cmd+Shift+J` 隐藏/恢复，`Cmd+Shift+K` 文字输入，`Cmd+Shift+L` 键盘控制。菜单栏 `J` 提供恢复和退出。`Esc` 逐层收起，`Cmd+.` 结束语音。
 
-额度页面提供「轻量标签 · 按类别」、「服务商切换 · 按服务商」和「B2 · 紧凑折叠」三种布局，在外观设置的「额度页面布局」中切换并自动保存。三版与 Dashboard、胶囊共用主题色、玻璃不透明度和原生毛玻璃强度；额度条使用主色的浅色变体，警戒色保留独立语义。额度重置时间显示相对倒计时，时间到期但尚未同步时显示「等待额度更新」。运行 `npm run build && node scripts/verify-quota-layouts.mjs` 可验证布局、设置联动与倒计时。
+额度页面提供「轻量标签 · 按类别」、「服务商切换 · 按服务商」和「B2 · 紧凑折叠」三种布局，在外观设置的「额度页面布局」中切换并自动保存。三版与 Dashboard、胶囊共用主题色、玻璃不透明度和原生毛玻璃强度；额度条使用主色的浅色变体，警戒色保留独立语义。额度重置时间显示相对倒计时，时间到期但尚未同步时显示「等待额度更新」。
 
 ## 材质与边界
 
-Codex 会话详情采用固定高度的紧凑滚动列表，无服务商图标和说明栏。普通行 32px，相邻收起行有淡分隔线；展开为 64px 两行胶囊时隐藏相邻分隔线。运行、待回应和未交互的完成项自动保持展开；点击底座或回复按钮后记为已交互，退出 Hover／回复后收起；新轮次或新的待处理状态重新展开，普通进度更新不会撑开。长按任务一秒固定，再次长按取消（键盘 P 等效），移动或滚动取消长按。左上小 × 从 Jarvis 移除本轮记录，可撤销；固定与移除跨窗口重开保留。普通记录保留最近 24 小时，活动中或固定的记录不因过期消失。点击任务底座打开对应 Codex 会话；回复按钮仅展开胶囊内的 Follow up 输入框，Esc 收回并保留本次面板内草稿。当前不支持直接向桌面 Codex 发消息或打断，输入框明确提示尚未接通发送，停止按钮标记不可用。同步失败会明确显示，不用演示数据代替。`node scripts/verify-codex-board.mjs` 用隔离 Electron 窗口验收交互，截图在 `evidence/codex-board/`。
+Codex 会话详情采用固定高度的紧凑滚动列表，无服务商图标和说明栏。普通行 32px，相邻收起行有淡分隔线；展开为 64px 两行胶囊时隐藏相邻分隔线。运行、待回应和未交互的完成项自动保持展开；点击底座或回复按钮后记为已交互，退出 Hover／回复后收起；新轮次或新的待处理状态重新展开，普通进度更新不会撑开。长按任务一秒固定，再次长按取消（键盘 P 等效），移动或滚动取消长按。左上小 × 从 Jarvis 移除本轮记录，可撤销；固定与移除跨窗口重开保留。普通记录保留最近 24 小时，活动中或固定的记录不因过期消失。点击任务底座打开对应 Codex 会话；回复按钮仅展开胶囊内的 Follow up 输入框，Esc 收回并保留本次面板内草稿。当前不支持直接向桌面 Codex 发消息或打断，输入框明确提示尚未接通发送，停止按钮标记不可用。同步失败会明确显示，不用演示数据代替。
 
 `native/material.mm` 用公开 AppKit 的 `NSVisualEffectView` 将桌面毛玻璃裁切到各个控件。React/CSS 只绘制中性灰阶遮罩、边缘、图标；没有固定绿色底色。macOS 材质会受桌面和辅助功能设置影响；截图不保证与静态概念图像素一致。
 
@@ -83,9 +82,5 @@ Codex 会话详情采用固定高度的紧凑滚动列表，无服务商图标�
 - `evidence/icon-fidelity.png`：参考轮廓与 Chromium 渲染结果。
 - `evidence/notification-fade.json`、`notification-dismissal.json`：运行时逐帧透明度与尺寸。
 - `design/analysis/feedback-source-map.json`：音效来源、截取时间及保留频带；`evidence/audio-signal-checks.json` 验证边界归零、峰值和无削波。
-
-整体布局验收：`npm run build && node scripts/verify-dashboard-overview.mjs` 检查 Dashboard 开关、额度摘要、通知滚动／回复／空状态和 transcript 光缝。右键设置 →「体验三条通知」可加入三条预置示例。
-
-组合区域验收：`npm run build && node scripts/verify-panel-stack.mjs` 使用隔离的 `--verify` Electron 实例，检查共存、排序、草稿、模拟发送与动画几何。
 
 融合展开区当前采用中性黑色主题；此前的墨绿色文字、边线和悬停处理保存在 `src/surface-themes.ts` 的 `inkGreen` 预设，`activeSurfaceTheme` 选择当前配置，不另增设置界面。验收同时采样内容透明度、模块/容器高度和原生窗口尺寸；renderer 截图不代表原生桌面材质合成验收。
