@@ -324,7 +324,15 @@ function companion(shown?: () => void) {
     clipboard.writeText(text);
     return true;
   });
-  ipcMain.on('quit', event => { if (mine(event) && app.isPackaged) app.quit(); });
+  ipcMain.on('quit', event => {
+    if (!mine(event)) return;
+    // A checkout runs as LaunchAgents that start her again at once: stop the daemon's job, then her own (launch.mjs).
+    const job = process.env.XPC_SERVICE_NAME ?? '';
+    if (app.isPackaged || !job.startsWith('com.allen.jarvis.resonance')) { app.quit(); return; }
+    const domain = `gui/${process.getuid?.() ?? 501}`;
+    execFile('launchctl', ['bootout', `${domain}/com.allen.jarvis`], () =>
+      spawn('launchctl', ['bootout', `${domain}/${job}`], { detached: true, stdio: 'ignore' }).unref());
+  });
   ipcMain.on('passthrough', (event, enabled) => { if (mine(event) === win && typeof enabled === 'boolean') { pass = enabled; win.setIgnoreMouseEvents(enabled || tucked, { forward: true }); } });
   ipcMain.handle('focus-input', (event, enabled) => {
     const sender = mine(event);

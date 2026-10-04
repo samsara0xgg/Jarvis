@@ -60,8 +60,6 @@ const WHY: Record<string, L> = {
   away: ['Jarvis isn’t answering. Try again in a moment.', 'Jarvis 没有回应，等一下再试。'],
   error: ['The key didn’t pass its test.', '这个密钥没测通。'],
 };
-// Only the installed app can quit for good: in a checkout launchd starts her again at once.
-const packaged = new URLSearchParams(location.search).has('packaged');
 
 type Ctl =
   | { k: 'switch'; on: boolean; set: (on: boolean) => void }
@@ -240,7 +238,7 @@ export function SettingsPage({ lang, port, open, cat, onCat, ctl, accounts, keyD
     { id: 'advanced', icon: <SlidersHorizontal/>, name: ['Advanced', '高级'], sum: port ? t([`Port ${port}`, `端口 ${port}`]) : t(['Demo data', '演示数据']), items: [
       { id: 'conn', name: ['Connection', '连接'], ctl: { k: 'info', text: port ? t([`Port ${port}`, `端口 ${port}`]) : t(['Demo data', '演示数据']), tone: 'ok' } },
       { id: 'restart', name: ['Restart Jarvis', '重启 Jarvis'], ctl: { k: 'act', label: ['Restart', '重启'], run: () => void restart() } },
-      ...packaged ? [{ id: 'quit', name: ['Quit Jarvis', '退出 Jarvis'], note: ['She and Jarvis’s background service stop until you open Jarvis again', '她和后台都会停下，直到你再打开 Jarvis'],
+      ...port ? [{ id: 'quit', name: ['Quit Jarvis', '退出 Jarvis'], note: ['She and Jarvis’s background service stop until you open Jarvis again', '她和后台都会停下，直到你再打开 Jarvis'],
         ctl: { k: 'act', label: ['Quit', '退出'], run: () => window.jarvis?.quit?.() } } satisfies Item] : [],
     ] },
   ];
