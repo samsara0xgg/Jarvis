@@ -2435,19 +2435,10 @@ async def _commentary_heard(
     await asyncio.to_thread(_complete_commentary, runtime, entry)
 
 
-def _last_words(conn: sqlite3.Connection) -> str:
-    """What Allen last said or typed to her; empty when nothing was heard yet."""
-    row = conn.execute(
-        "SELECT json_extract(payload_json, '$.transcript') FROM events "
-        "WHERE type IN ('utterance.received', 'surface.user_intent') ORDER BY id DESC LIMIT 1",
-    ).fetchone()
-    return row[0] if row is not None and isinstance(row[0], str) else ""
-
-
 def _make_cancel_voice_runs(runtime: JarvisRuntime) -> Callable[[], None]:
     """ADR 0138: the ``() -> None`` that ends every answer still being written for the speaker.
 
-    An exit from the surface must leave nothing that can speak after her goodbye,
+    An exit from the surface must leave nothing that can speak after it,
     whatever its age or number. Every open run of a turn that came from Allen's
     words, that is not for a document alone, and whose policy lets its generation
     be cancelled, is cancelled as ``user_stop``; its turn is marked stopped so a run
@@ -2516,10 +2507,7 @@ def _say_conversation_line(runtime: JarvisRuntime, turn_id: str, reason: str, te
                 payload={"turn_id": turn_id, "reason": reason, "transcript": text},
                 committed_event_bus=runtime.committed_event_bus,
             )
-            # An exit from the surface has no words: take the language of what he said last.
-            said_in = lang.reply_language(
-                text or _last_words(conn), str(runtime.config.get("reply_language", "follow")),
-            )
+            said_in = lang.reply_language(text, str(runtime.config.get("reply_language", "follow")))
             phrases = lang.variants(f"conversation.{reason}", said_in)
             plan = pre_emit_gate(secrets.choice(phrases))
             response_id = new_response_id()

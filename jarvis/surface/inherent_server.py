@@ -1507,8 +1507,8 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 â
         async def set_controls(req: ControlsRequest) -> dict[str, object]:
             """Flip the mute switches and drive GPT-Live; answer with the full state.
 
-            Conversation going on to off is the surface's exit: she is stopped and
-            says her goodbye, as for a spoken dismissal (``dismiss_callable``).
+            Conversation going on to off is the surface's exit: she is stopped at
+            once and says nothing back (``dismiss_callable``).
             """
             before = controls.conversation
             state: dict[str, object] = dict(

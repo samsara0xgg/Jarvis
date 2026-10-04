@@ -275,14 +275,14 @@ def test_a_dismissal_stops_her_ends_the_mode_and_is_no_turn(
 def test_leaving_from_the_surface_does_what_a_dismissal_does_without_the_words(
     tmp_path: Path, speaking: bool,  # noqa: FBT001 - pytest parameter
 ) -> None:
-    """ADR 0138: ``dismiss()`` ends every answer being written, stops her, says goodbye."""
+    """ADR 0138: ``dismiss()`` ends every answer being written and stops her, silently."""
     rig = _Rig(tmp_path, "", speaking=speaking)
     try:
         rig.session.dismiss()
     finally:
         rig.close()
     assert rig.output == (["cancel runs", "stop"] if speaking else ["cancel runs"])
-    assert rig.answers == ["dismissed"]
+    assert rig.answers == []
     # The surface turned the mode off itself; nothing is flipped a second time.
     assert rig.conversation_changes == []
 

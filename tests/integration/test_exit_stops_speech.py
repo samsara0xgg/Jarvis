@@ -3,14 +3,13 @@
 The companion's exit turned the mode off and named one response to stop, and the
 answer that was audible kept talking. Now ``POST /inherent/controls`` taking
 the mode from on to off ends every answer still being written, stops what is
-audible, drops what is queued, and says the goodbye line in the language he last
-spoke, through the same session callbacks as a spoken 退下.
+audible and drops what is queued, through the same session callbacks as a spoken
+退下, but says nothing back (yilun 2026-10-04).
 """
 
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import threading
 from typing import TYPE_CHECKING
 
@@ -24,15 +23,12 @@ from jarvis.decision.response_run import (
     start_response_run,
 )
 from jarvis.runtime import inherent_loop
-from jarvis.shared import lang
 from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.surface import voice_media
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
 from jarvis.surface.voice_controls import VoiceControls
 from tests.integration.test_incremental_tts import _chunk, _open, _pipeline
-from tests.integration.test_lifecycle_commentary import _make_runtime as _make_line_runtime
-from tests.integration.test_lifecycle_commentary import _only_phrase
 from tests.integration.test_soft_barge_in import _Rig
 from tests.integration.test_wave2_streaming_media import (
     _await_playback_started,
@@ -99,7 +95,7 @@ def test_a_failing_dismissal_still_answers_the_flip() -> None:
     assert reply.json()["conversation"] is False
 
 
-def test_exit_stops_the_audible_answer_drops_the_queued_one_and_says_goodbye(
+def test_exit_stops_the_audible_answer_drops_the_queued_one_and_says_nothing(
     tmp_path: Path,
 ) -> None:
     """One answer audible, another queued behind it, the surface turns the mode off."""
@@ -118,21 +114,11 @@ def test_exit_stops_the_audible_answer_drops_the_queued_one_and_says_goodbye(
         start_player=False,
     )
 
-    def _goodbye(turn_id: str, reason: str, _text: str) -> None:
-        assert reason == "dismissed"
-        with contextlib.closing(open_event_log(db_path)) as own:  # her thread, her connection
-            line = _emit_response(
-                own, response_id="RC", group_id="GBYE", turn_id=turn_id, text="好的 我先退下了。",
-                phase="commentary",
-            )
-        asyncio.run(_submit_response(pipeline, line))
-
     rig = _Rig(
         tmp_path,
         "",
         output_active=pipeline.is_output_active,
         stop_speaking=lambda: pipeline.stop_foreground_output(None, reason="barge_in"),
-        answer_words=_goodbye,
     )
     try:
         with _CallbackPump(player):
@@ -152,18 +138,17 @@ def test_exit_stops_the_audible_answer_drops_the_queued_one_and_says_goodbye(
                 "/inherent/controls", json={"conversation": False},
             )
             assert reply.json()["conversation"] is False
-            _await_playback_started(conn, "RC")
             hold.set()
             assert pipeline.wait_until_idle(timeout_s=2.0)
         interrupted = _playback_rows_for(conn, "RA", "surface.playback_interrupted")
         queued_started = _playback_rows_for(conn, "RB", "surface.playback_started")
-        goodbye_started = _playback_rows_for(conn, "RC", "surface.playback_started")
     finally:
         hold.set()
         rig.close()
         assert pipeline.close()
         conn.close()
-    assert (interrupted, queued_started, goodbye_started) == (1, 0, 1)
+    assert (interrupted, queued_started) == (1, 0)
+    assert rig.answers == []
     assert rig.output == ["cancel runs"]
 
 
@@ -288,28 +273,3 @@ def test_a_run_still_generating_at_exit_never_reaches_the_speaker(tmp_path: Path
     assert runtime.response_runs.turn_stopped("T-RG")
     assert not runtime.response_runs.open_runs()
 
-
-@pytest.mark.parametrize(
-    ("heard", "language"),
-    [("明天上午十点提醒我开会", "zh"), ("What is on my calendar?", "en"), (None, "en")],
-)
-def test_the_goodbye_of_an_exit_is_in_the_language_he_last_spoke(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    heard: str | None,
-    language: lang.Language,
-) -> None:
-    """No words with an exit: the last thing he said, else the system language (here en)."""
-    monkeypatch.setattr(lang, "_current", "en")
-    runtime = _make_line_runtime(tmp_path, commentary=False)
-    if heard is not None:
-        emit_event(
-            runtime.conn,
-            type="utterance.received",
-            payload={"transcript": heard, "turn_id": "T-heard", "channel": "inherent_wake"},
-            correlation={"turn_id": "T-heard"},
-        )
-
-    inherent_loop._say_conversation_line(runtime, "T-exit", "dismissed", "")  # noqa: SLF001
-
-    assert _only_phrase(runtime.conn) in lang.variants("conversation.dismissed", language)

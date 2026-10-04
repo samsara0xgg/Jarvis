@@ -27,6 +27,10 @@
 voice session's `dismiss()`: every open answer run that would speak is
 cancelled, what is audible stops, and she says the ADR 0102 goodbye line.
 
+**Amended 2026-10-04:** yilun asked that a click exit say nothing. `dismiss()`
+cancels and stops as above but no longer says the goodbye line; the spoken
+退下 still says it. The limit below on the goodbye's language is void.
+
 Its limits:
 
 - Only the on-to-off edge through this route: voice's own flips (a dismissal,

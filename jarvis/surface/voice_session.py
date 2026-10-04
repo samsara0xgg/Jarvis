@@ -1860,14 +1860,13 @@ class DuplexVoiceSession:
     def dismiss(self) -> None:
         """Allen left conversation mode from the surface: a dismissal without the words.
 
-        Every answer still being written is cancelled, what is audible stops at once,
-        and she says the one goodbye line. The mode is already off, since the
-        surface flipped it. Blocks on SQLite and the player, so not on the capture
-        thread.
+        Every answer still being written is cancelled and what is audible stops at
+        once; she says nothing back (yilun 2026-10-04: a click is a silent exit). The
+        mode is already off, since the surface flipped it. Blocks on SQLite and the
+        player, so not on the capture thread.
         """
         self._cancel_runs()
         self._stop_now()
-        self._answer("T" + secrets.token_hex(4), "dismissed", "")
 
     def _cancel_runs(self) -> None:
         if self._cancel_voice_runs is None:
