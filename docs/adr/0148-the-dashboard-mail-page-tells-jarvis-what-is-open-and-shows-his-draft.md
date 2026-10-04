@@ -74,3 +74,27 @@ in L3 freezes the arguments the way a model's call would); only his button sends
   it creates the same `confirmation.requested` row, so the answer path is unchanged, but a
   card no model proposed now appears whenever the page asks.
 - Each `live_context` producer runs at the start of every turn.
+
+## Addendum: the letter's layout and a one-line summary
+
+Still behind `dashboard.mail.enabled` (off: both are 404 or absent).
+
+- `GET /inherent/mail/{id}` gains `layout`: `html` or `text`. `gmail_get` hands over one body,
+  the text part when the letter has one, so a body with markup is an HTML-only letter. Only
+  such a letter is `html`, and only when it holds a `<table>` or `<img>`, or its stripped text
+  (links kept as `text (url)`) is mostly links: link characters over half of it, or links and
+  under 200 other characters. Everything else is `text`. The page decides how to draw `html`;
+  the daemon only labels it.
+- `GET /inherent/mail/{id}/summary` answers `{summary}`: one short sentence in the UI language
+  (`lang.language_name()`), written on demand from subject, sender and the same capped text
+  (4000 characters), kept per id in memory (50 ids). It runs off the loop like the other
+  mail routes; an unknown id or no configured model is 404, a failed call 502 and not kept.
+- The call goes through the analysis path the work-state, project and daily-report jobs use
+  (`LLMAnalyst`, cost accounted as `mail_summary`), on `work_state.preset` (gpt6-luna,
+  gpt-6-luna at $0.10 / $0.50 per million tokens, the cheapest configured preset). It does
+  not go to Jev: a body is third-party text and ADR 0123 and 0124 send OpenRouter only
+  names and subjects, so the body leaves the machine only to OpenAI, as with the work state
+  and `gmail_get` in a turn.
+- Rejected: the surrogate route (Jev) for the summary, which would put bodies on OpenRouter;
+  persisting summaries, which would keep third-party text on disk for a one-line gloss that a
+  restart can write again.
