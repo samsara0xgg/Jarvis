@@ -83,6 +83,7 @@ contextBridge.exposeInMainWorld('jarvis', {
   openUrl: (url: string) => ipcRenderer.invoke('open-url', url),
   usageReset: (service: string, requestId: string) => ipcRenderer.invoke('usage-reset', service, requestId),
   usageBalance: (service: string, usd: number) => ipcRenderer.invoke('usage-balance', service, usd),
+  tokenUsage: (refresh = false) => ipcRenderer.invoke('token-usage', refresh),
   plugins: (operation: string, data: Record<string, unknown> = {}) => ipcRenderer.invoke('plugins', operation, data),
   drag: (phase: 'start' | 'move' | 'end', point?: { x: number; y: number }) => ipcRenderer.send('drag', { phase, point }),
   passthrough: (enabled: boolean) => ipcRenderer.send('passthrough', enabled),

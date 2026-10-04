@@ -3,6 +3,7 @@ import path from 'node:path';
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { hostKey } from './agents/key.js';
+import { tokenUsage } from './tokenUsage.js';
 // The daemon-facing IPC every Resonance window shares: plugin operations, opening a Codex
 // thread, and Codex thread titles. The design lab and verification runs stay offline.
 let codexTitles: Record<string, string> = {};
@@ -124,6 +125,11 @@ export function registerDaemonBridge(win: BrowserWindow, { lab = false, verifica
     if (!fromThisWindow(event)) throw new Error('Not this window');
     if (service !== 'openai' || typeof usd !== 'number' || !Number.isFinite(usd) || usd < 0) throw new Error('Invalid balance');
     return usagePost('balance', { service, usd }, 'The balance was not saved. Try again.');
+  });
+  // The Usage page's Token section: local logs priced by ccusage, cached 10 minutes in main; `refresh` forces a rerun.
+  ipcMain.handle('token-usage', async (event, refresh) => {
+    if (!fromThisWindow(event)) throw new Error('Not this window');
+    return tokenUsage(refresh === true);
   });
   ipcMain.handle('open-codex', async (event, threadId) => {
     if (!fromThisWindow(event) || typeof threadId !== 'string'

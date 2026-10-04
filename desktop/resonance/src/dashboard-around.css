@@ -443,3 +443,39 @@
 .ad .jp-sk-meta small { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:inherit; }
 .ad .jp-sk-meta .btn-text { flex:none; white-space:nowrap; }
 .ad .jp-sk-meta time { flex:none; margin-left:auto; font-variant-numeric:tabular-nums; }
+
+/* Usage › Token: one total, a day-by-day stack, a row per software, then the costliest sessions. */
+.ad .tku { gap:10px; }
+.ad .tku-head { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.ad .tku-note { font-weight:400; letter-spacing:0; text-transform:none; color:var(--p-faint); }
+.ad .tku-seg { display:flex; gap:3px; }
+.ad .tku-seg .mp-chip { padding:2px 8px; font-size:var(--text-label); }
+.ad .tku-total { display:flex; flex-direction:column; gap:1px; }
+.ad .tku-total b { font-size:28px; line-height:1.15; font-weight:600; font-variant-numeric:tabular-nums; }
+.ad .tku-bars { display:flex; align-items:flex-end; gap:2px; height:56px; }
+.ad .tku-bars > span { flex:1; min-width:0; height:100%; display:flex; flex-direction:column-reverse; }
+.ad .tku-bars > span i { display:block; min-height:1px; }
+.ad .tku-bars > span i:last-child { border-radius:var(--radius-tag) var(--radius-tag) 0 0; }
+.ad .tku-legend { display:flex; align-items:center; gap:10px; font-size:var(--text-label); color:var(--p-muted); }
+.ad .tku-legend span { display:inline-flex; align-items:center; gap:4px; }
+.ad .tku-legend i { width:7px; height:7px; border-radius:50%; }
+.ad .tku-legend em { margin-left:auto; font-style:normal; color:var(--p-faint); font-variant-numeric:tabular-nums; }
+.ad .tku-by { display:flex; flex-direction:column; gap:6px; }
+.ad .tku-row { display:grid; grid-template-columns:76px 1fr auto 52px; align-items:center; gap:8px; font-size:var(--text-detail); }
+.ad .tku-row b { font-weight:500; font-variant-numeric:tabular-nums; }
+.ad .tku-row small, .ad .tku-ses small, .ad .tku-det small { font-size:var(--text-label); color:var(--p-faint); font-variant-numeric:tabular-nums; }
+.ad .tku-row small { text-align:right; }
+.ad .tku-share { height:4px; border-radius:2px; background:rgb(255 255 255 / .06); overflow:hidden; }
+.ad .tku-share i { display:block; height:100%; border-radius:2px; }
+.ad .tku-sub { margin-top:4px; }
+.ad .tku-list { display:flex; flex-direction:column; }
+.ad .tku-ses > button { display:flex; align-items:center; gap:6px; width:100%; padding:5px 0; text-align:left; font-size:var(--text-detail); color:var(--p-ink); }
+.ad .tku-ses > button:hover .tku-title { color:rgb(var(--glow)); }
+.ad .tku-title { flex:1; min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+.ad .tku-tag { flex:none; padding:0 5px; border-radius:var(--radius-tag); font-size:var(--text-label); color:var(--c); background:color-mix(in srgb,var(--c) 14%,transparent); }
+.ad .tku-ses > button b { flex:none; min-width:44px; text-align:right; font-weight:500; font-variant-numeric:tabular-nums; }
+.ad .tku-det { display:flex; flex-direction:column; gap:3px; padding:2px 0 8px; font-size:var(--text-detail); color:var(--p-muted); }
+.ad .tku-det > span { display:flex; align-items:baseline; gap:8px; font-variant-numeric:tabular-nums; }
+.ad .tku-det em { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; font-style:normal; }
+.ad .tku-more { align-self:flex-start; padding:0; font-size:var(--text-detail); color:var(--p-faint); }
+.ad .tku-more:hover { color:var(--p-ink); }
