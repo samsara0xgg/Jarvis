@@ -621,6 +621,13 @@ class InherentDeps:
     # ADR 0154: the Dashboard's memory page (core memory, day summaries, search, versions).
     # ``None`` leaves every ``/inherent/memory`` route unregistered (404).
     memory_page: MemoryRoutes | None = None
+    # ADR 0155: the job-mail notices the notch shows, Allen's tap on one (id, action, reaction)
+    # and the job ledger with its delete. ``None`` leaves the routes unregistered (404): the
+    # daemon wires them only while ``job_mail.enabled``. A LookupError is 404, a ValueError 400.
+    notices_read: Callable[[], Awaitable[dict[str, Any]]] | None = None
+    notice_act: Callable[[str, str, str | None], Awaitable[None]] | None = None
+    jobs_read: Callable[[], Awaitable[dict[str, Any]]] | None = None
+    job_delete: Callable[[str], Awaitable[None]] | None = None
     brief_read: Callable[[], dict[str, Any] | None] | None = None
     # ADR 0125: does a finished agent turn's ending ask Allen something? ``asks`` waits for Jev
     # (off the loop thread); ``peek`` never waits, for the terminal sessions' board. None = off.
@@ -1117,6 +1124,13 @@ class MailArchiveRequest(BaseModel):
     ids: list[str] = Field(max_length=20)
 
 
+class NoticeActionRequest(BaseModel):
+    """Body of ``POST /inherent/notices/{id}`` (ADR 0155): ``seen``, or feedback with a reaction."""
+
+    action: Literal["seen", "feedback", "dismissed"]
+    reaction: str | None = Field(default=None, max_length=50)
+
+
 class MailDraftRequest(BaseModel):
     """Body of ``POST /inherent/mail/{id}/draft`` and ``/draft/send`` (ADR 0148): Allen's edit."""
 
@@ -1281,6 +1295,43 @@ def _register_memory_routes(app: FastAPI, deps: InherentDeps) -> None:  # noqa: 
     ) -> dict[str, Any]:
         """One day's conversation, oldest first, a page at a time."""
         return await _memory_call(functools.partial(page.day_records, day, around, offset, limit))
+
+
+def _register_job_routes(app: FastAPI, deps: InherentDeps) -> None:
+    """ADR 0155: the job-mail notices and the job ledger; each route exists only when wired."""
+    if deps.notices_read is not None:
+        notices_read = deps.notices_read
+
+        @app.get("/inherent/notices")
+        async def notices() -> dict[str, Any]:
+            """``{notices}``: the job-mail alerts a client may show at the quiet level now."""
+            return await _home_call(notices_read())
+
+    if deps.notice_act is not None:
+        notice_act = deps.notice_act
+
+        @app.post("/inherent/notices/{notice_id}", status_code=200)
+        async def notice_action(notice_id: str, req: NoticeActionRequest) -> dict[str, bool]:
+            """Mark a notice seen or record Allen's reaction; a digest id covers its alerts."""
+            await _home_call(notice_act(notice_id, req.action, req.reaction))
+            return {"ok": True}
+
+    if deps.jobs_read is not None:
+        jobs_read = deps.jobs_read
+
+        @app.get("/inherent/jobs")
+        async def jobs() -> dict[str, Any]:
+            """``{ledger}``: job mail grouped by company."""
+            return await _home_call(jobs_read())
+
+    if deps.job_delete is not None:
+        job_delete = deps.job_delete
+
+        @app.post("/inherent/jobs/{message_id}/delete", status_code=200)
+        async def job_delete_route(message_id: str) -> dict[str, bool]:
+            """Hide one mail from the ledger; nothing is deleted in Gmail."""
+            await _home_call(job_delete(message_id))
+            return {"ok": True}
 
 
 def _register_mail_page_routes(app: FastAPI, deps: InherentDeps) -> None:  # noqa: C901 â€” one closed route table.
@@ -2025,6 +2076,7 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 â
 
     _register_home_routes(app, deps)
     _register_mail_page_routes(app, deps)
+    _register_job_routes(app, deps)
     _register_memory_routes(app, deps)
     _register_data_routes(app, deps)
     _register_setup_routes(app, deps)

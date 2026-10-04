@@ -94,6 +94,7 @@ if TYPE_CHECKING:
     from jarvis.deployment.sleep_wake import PowerObserver
     from jarvis.runtime.dashboard import MailDrafts
     from jarvis.runtime.home import Home
+    from jarvis.runtime.job_mail import JobMail
     from jarvis.runtime.settings import Settings
     from jarvis.runtime.work_state import WorkStateService
     from jarvis.shared.realtime import PresentationIntent
@@ -4592,6 +4593,30 @@ def _draft_deps(runtime: JarvisRuntime, home: Home | None) -> dict[str, Any]:
     }
 
 
+def _job_mail_deps(job_mail: JobMail | None) -> dict[str, Any]:
+    """The four job-mail routes' callables (ADR 0155), or none while ``job_mail`` is off (404)."""
+    if job_mail is None:
+        return {}
+
+    async def act(notice_id: str, action: str, reaction: str | None) -> None:
+        await asyncio.to_thread(job_mail.act, notice_id, action, reaction)
+
+    async def delete(message_id: str) -> None:
+        await asyncio.to_thread(job_mail.delete, message_id)
+
+    return {
+        "notices_read": functools.partial(asyncio.to_thread, job_mail.notices),
+        "notice_act": act,
+        "jobs_read": functools.partial(asyncio.to_thread, job_mail.ledger),
+        "job_delete": delete,
+    }
+
+
+def _say_job_line(runtime: JarvisRuntime) -> None:
+    """ADR 0155: the one fixed line for an interview or offer email, said as a conversation line."""
+    _say_conversation_line(runtime, _new_turn_id(), "job_speak", "")
+
+
 async def _mail_letter(home: Home, message_id: str) -> dict[str, Any]:
     """``GET /inherent/mail/{id}`` (ADR 0148): one Gmail read, off the loop thread."""
     return await asyncio.to_thread(home.letter, message_id)
@@ -6114,6 +6139,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             mail_trash=None if mail_home is None else functools.partial(_mail_trash, mail_home),
             focus_set=None if runtime.focus is None else runtime.focus.set,
             **_draft_deps(runtime, mail_home),
+            **_job_mail_deps(runtime.job_mail),
             memory_page=(
                 None if window_memory is None
                 else MemoryPage(
@@ -6336,6 +6362,13 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         watchers.extend(_start_repo_observer(runtime))
         watchers.extend(_start_usage_observer(usage_observer, runtime.config))
         watchers.extend(_start_timesink_observer(runtime))
+        if runtime.job_mail is not None:
+            # ADR 0155: she speaks only at quiet off, unmuted and outside a live conversation.
+            job_mail = runtime.job_mail
+            job_mail.quiet = lambda: controls.quiet
+            job_mail.may_speak = lambda: not controls.speech_muted and not controls.conversation
+            job_mail.say = functools.partial(_say_job_line, runtime)
+            watchers.append(asyncio.create_task(job_mail.run(), name="job_mail"))
         if runtime.night is not None:
             # ADR 0093: the night run mutes after the goodnight line, never under a wake capture.
             runtime.night.busy = lambda: shared_ducker.active or shared_ducker.outputting

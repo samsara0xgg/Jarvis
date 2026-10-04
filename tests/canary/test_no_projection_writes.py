@@ -71,6 +71,11 @@ _L2_OPERATIONAL_INSERTS: dict[str, frozenset[str]] = {
     # ADR 0019: which Codex threads this daemon opened (parent action, child
     # thread, open|closed). Topology, not a projection of events.
     "jarvis/state/worker_edges.py": frozenset({"worker_edges"}),
+    # ADR 0155: the job ledger and the attention log, in memory.db: typed facts of job
+    # mail, its alerts, Allen's reactions and one row per decision. Not a projection.
+    "jarvis/state/job_ledger.py": frozenset(
+        {"job_mail", "job_seen", "job_alert", "job_feedback", "attention_log"},
+    ),
 }
 
 # A receipt that could never move from `processing` to `accepted` would be a
@@ -84,6 +89,9 @@ _L2_OPERATIONAL_UPDATES: dict[str, frozenset[str]] = {
     "jarvis/state/input_submission_inbox.py": frozenset({"input_submission_receipts"}),
     # ADR 0019: an edge moves from open to closed exactly once.
     "jarvis/state/worker_edges.py": frozenset({"worker_edges"}),
+    # ADR 0155: a mail is retyped or hidden, an alert moves pending -> shown -> done, and a
+    # decision's delivery and feedback are filled in as they happen.
+    "jarvis/state/job_ledger.py": frozenset({"job_mail", "job_alert", "attention_log"}),
 }
 
 

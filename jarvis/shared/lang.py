@@ -971,6 +971,37 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
     "voice.English_FriendlyPerson.note": {"zh": "自然，像朋友", "en": "natural, like a friend"},
     "voice.English_Trustworth_Man": {"zh": "可靠男声", "en": "Trustworthy Man"},
     "voice.English_Trustworth_Man.note": {"zh": "浑厚，真诚", "en": "resonant, sincere"},
+    # ADR 0155: the job-mail card's title and one sentence, from the typed facts only.
+    "job.title.offer": {"zh": "录用通知 · {company}", "en": "Offer · {company}"},
+    "job.title.interview": {"zh": "面试邀请 · {company}", "en": "Interview invitation · {company}"},
+    "job.title.rejection": {"zh": "申请结果 · {company}", "en": "Application update · {company}"},
+    "job.title.receipt": {"zh": "申请已收到 · {company}", "en": "Application received · {company}"},
+    "job.title.job_other": {"zh": "求职邮件 · {company}", "en": "Job mail · {company}"},
+    "job.part.role": {"zh": "（{role}）", "en": " ({role})"},
+    "job.part.when": {"zh": "，{when}", "en": ", {when}"},
+    "job.line.offer": {"zh": "{company}发来 offer{role}{when}。", "en": "{company} sent an offer{role}{when}."},
+    "job.line.interview": {
+        "zh": "{company}邀请你面试{role}{when}。",
+        "en": "{company} invited you to an interview{role}{when}.",
+    },
+    "job.line.rejection": {
+        "zh": "{company}回复了你的申请{role}：这次没有通过。",
+        "en": "{company} replied to your application{role}: not this time.",
+    },
+    "job.line.receipt": {
+        "zh": "{company}确认收到了你的申请{role}。",
+        "en": "{company} confirmed it received your application{role}.",
+    },
+    "job.line.job_other": {
+        "zh": "{company}发来一封求职相关的邮件{role}。",
+        "en": "{company} sent a job-related email{role}.",
+    },
+    "job.digest.title": {"zh": "你不在时有 {n} 封求职邮件", "en": "{n} job emails while you were away"},
+    # ADR 0155: the mail channel's health alert: a title and one line naming the reason.
+    "job.health.title": {"zh": "邮件通道不通了", "en": "Mail channel is down"},
+    "job.health.auth": {"zh": "Gmail 需要重新登录。", "en": "Gmail needs you to sign in again."},
+    "job.health.timeout": {"zh": "Gmail 没有及时回应。", "en": "Gmail did not answer in time."},
+    "job.health.down": {"zh": "连不上 Gmail。", "en": "Cannot reach Gmail."},
 }
 
 # Sentences with several wordings of one thing to say; the caller picks one
@@ -1036,4 +1067,13 @@ VARIANTS: Final[dict[str, dict[Language, tuple[str, ...]]]] = {
         "zh": ("好，再见。", "好，有事再叫我。", "好的，回头见。", "嗯，那我先下了。", "好，需要再喊我。"),
         "en": ("Okay, bye.", "Sure, call me if you need me.", "See you.", "Alright, I'll step away.", "Bye for now."),
     },
+    # ADR 0155: the one fixed line said for an interview or offer email; the card has the rest.
+    "conversation.job_speak": {
+        "zh": ("有一封面试或 offer 的邮件，看一下卡片。",),
+        "en": ("There is an email about an interview or an offer. Take a look at the card.",),
+    },
 }
+
+# ADR 0155: the five levels the job-mail feedback row names (``level:<name>``), in order:
+# note only, glow, card, card with sound, speak. A wire token the client sends back, not text.
+JOB_LEVEL_NAMES: Final[tuple[str, ...]] = ("记下", "亮一下", "卡片", "卡片带声", "开口")

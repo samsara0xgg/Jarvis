@@ -314,6 +314,35 @@ home:
     importance:
       enabled: false
 
+# ADR 0155 — job-hunt mail.  In the background, every poll_s, Jarvis lists the last backfill_days
+# of Allen's Gmail (every category, no-reply senders included; spam, trash, sent and drafts
+# excluded) with gmail_search and gmail_get only: nothing is ever modified, labelled,
+# trashed or sent.  Jev (TypeSafe's hosted decision model, through OpenRouter, requests carry
+# provider.zdr: true) first sees each new letter's sender display name, the domain of its
+# address and its subject; at probability >= header_skip_at that it is not job mail the letter
+# is done.  Otherwise Jev also sees the first max_body_chars of its plain-text body and types
+# it (offer, interview, rejection, receipt, other job mail).  Only typed facts are kept in
+# memory.db (never the body, never an address); the Jev log keeps what Jev was sent.  A
+# receipt is ledger only, a rejection a card, other job mail a card with sound, an interview
+# or offer a card and one fixed spoken line (at most one per speak_gap_s, only at quiet level
+# off, unmuted, outside a live conversation).  The quiet level holds all of it (ADR 0153).
+# Letters older than 48 hours land in the ledger without an alert.  max_calls_per_day caps
+# Jev calls.  Needs the gmail server connected and OPENROUTER_API_KEY in ~/.jarvis/env.  Off
+# here; switch it on in settings.yaml.
+job_mail:
+  enabled: false
+  poll_s: 300
+  backfill_days: 14
+  max_messages_per_cycle: 25
+  header_skip_at: 0.9
+  body_min: 0.5
+  max_body_chars: 3000
+  model: typesafe/jev-1.13
+  timeout_ms: 8000
+  max_calls_per_day: 400
+  speak: true
+  speak_gap_s: 600
+
 # ADR 0147 — the Dashboard's mail page.  On: the page can open a letter whole, mark it read,
 # archive or trash it (Gmail's Trash, kept 30 days; nothing is deleted for good), tell Jarvis
 # which item is open so "this email" means it, and show a reply draft Jarvis writes under the
@@ -341,10 +370,11 @@ agents:
     timeout_ms: 1500
 
 # ADR 0128.  Every Jev call (the instant route, the mail marks, the turn-end asks, the voice
-# words, the core memory review) is appended to ~/.jarvis/jev/decisions.jsonl with the text it was sent, the questions and Jev's raw answer,
+# words, the core memory review, the job mail) is appended to ~/.jarvis/jev/decisions.jsonl with the text it was sent, the questions and Jev's raw answer,
 # plus a line per mail archive or undo, so a small model can be trained on it later.  It holds
-# what Allen said and the senders and subjects of his mail; it never leaves the Mac, is cut by
-# nothing, and grows by a few KB per call.  Written only while one of those five is on.
+# what Allen said and the senders and subjects of his mail, and the first 3000 characters of each job-hunt letter
+# (ADR 0155); it never leaves the Mac, is cut by
+# nothing, and grows by a few KB per call.  Written only while one of those six is on.
 jev_log:
   enabled: true
 
