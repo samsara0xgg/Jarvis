@@ -167,50 +167,47 @@ class JobMail:
         verdicts: dict[str, str] = {}
         chances: dict[str, float] = {}  # Jev's probability that a letter is job mail
         heads = self._heads(servers, ids, verdicts)
+        for message_id in verdicts:  # a header that could not be read: only the failure is known
+            self._snap(message_id, "header", "error", now)
         skips = self._jev.skips(heads)
         letters: list[tuple[triage.Head, str]] = []
         for head in heads:
             skip = skips[head.message_id]
             if skip is None:
                 verdicts[head.message_id] = "error"
+                self._snap(head.message_id, "header", "error", now, head=head)
                 continue
             chances[head.message_id] = skip.p_job
+            verdict = "not_job" if skip.skipped else "pass"
+            self._snap(head.message_id, "header", verdict, now, head, skip.probabilities)
             if skip.skipped:
                 verdicts[head.message_id] = "not_job"
+                continue
+            body = self._body(servers, head, verdicts)
+            if head.message_id in verdicts:  # the body could not be read
+                self._snap(head.message_id, "body", "error", now, head)
             else:
-                letters.append((head, self._body(servers, head, verdicts)))
-        letters = [one for one in letters if one[0].message_id not in verdicts]
+                letters.append((head, body))
         letters = letters[: self._jev.room()]  # the rest stay unseen and are asked tomorrow
         typed = self._jev.types(letters)
-        for head, _body in letters:
+        for head, body in letters:
             found = typed[head.message_id]
             if found is None:
                 verdicts[head.message_id] = "error"
+                self._snap(head.message_id, "body", "error", now, head, body=body)
                 continue
             chances[head.message_id] = found.p_job
             if found.kind == "not_job":
                 verdicts[head.message_id] = "not_job"
+                self._snap(head.message_id, "body", "not_job", now, head, found.probabilities, body)
                 continue
+            self._snap(head.message_id, "body", "job", now, head, found.probabilities, body)
             ledger.upsert_mail(self._db, triage.as_row(head, found), now)
             verdicts[head.message_id] = "job"
             # Seen before it is delivered: a failure after this line never alerts twice.
             ledger.record_seen(self._db, head.message_id, "job", now, p_job=found.p_job)
             self._deliver(head, found, now)
-        by_id = {head.message_id: head for head in heads}
-        for message_id, verdict in verdicts.items():
-            if verdict == "job":
-                continue
-            chance = chances.get(message_id)
-            seen = by_id.get(message_id)
-            audit = None
-            if verdict == "not_job" and seen is not None and (chance or 0) >= ledger.AUDIT_MIN:
-                audit = {
-                    "received_at": seen.received_at,
-                    "name": seen.name,
-                    "domain": seen.domain,
-                    "subject": seen.subject,
-                }
-            ledger.record_seen(self._db, message_id, verdict, now, p_job=chance, audit=audit)
+        self._record_rest(verdicts, chances, heads, now)
         counts = {v: list(verdicts.values()).count(v) for v in ("job", "not_job", "error")}
         LOGGER.info(
             "job mail: %d letters settled: %d job, %d not job, %d errors ($%.6f spent so far)",
@@ -221,6 +218,53 @@ class JobMail:
             self._jev.spent_usd,
         )
         return len(verdicts)
+
+    def _record_rest(
+        self,
+        verdicts: Mapping[str, str],
+        chances: Mapping[str, float],
+        heads: list[triage.Head],
+        now: datetime,
+    ) -> None:
+        """Mark every letter that was not a job as seen: held back (with its header) or an error."""
+        by_id = {head.message_id: head for head in heads}
+        for message_id, verdict in verdicts.items():
+            if verdict == "job":
+                continue
+            seen = by_id.get(message_id)
+            audit = (
+                _audit(seen)
+                if verdict == "not_job"
+                and seen is not None
+                and (chances.get(message_id) or 0) >= ledger.AUDIT_MIN
+                else None
+            )
+            ledger.record_seen(
+                self._db, message_id, verdict, now, p_job=chances.get(message_id), audit=audit
+            )
+
+    def _snap(  # noqa: PLR0913 - the row's fields
+        self,
+        message_id: str,
+        stage: str,
+        verdict: str,
+        now: datetime,
+        head: triage.Head | None = None,
+        probabilities: dict[str, float] | None = None,
+        body: str | None = None,
+    ) -> None:
+        """Keep what Jev saw and answered at a stage (ADR 0157), for any verdict."""
+        ledger.record_decision(
+            self._db,
+            message_id,
+            stage,
+            verdict,
+            now,
+            head=None if head is None else _audit(head),
+            probabilities=probabilities,
+            judge=self._jev.judge_id(stage),
+            body_excerpt=body,
+        )
 
     @staticmethod
     def _heads(servers: McpServers, ids: list[str], verdicts: dict[str, str]) -> list[triage.Head]:
@@ -406,7 +450,7 @@ class JobMail:
             ledger.mark_alert(self._db, alert["id"], "done", now)
 
     def ledger(self) -> dict[str, Any]:
-        """``GET /inherent/jobs``: the ledger by company, and the mail held back that came close."""
+        """``GET /inherent/jobs``: the ledger by company, and the newest held-back mail."""
         return {
             "ledger": ledger.list_ledger(self._db, self.now()),
             "skipped": ledger.list_skipped(self._db),
@@ -417,6 +461,16 @@ class JobMail:
         if not ledger.delete_mail(self._db, message_id):
             msg = f"no such mail: {message_id}"
             raise LookupError(msg)
+
+
+def _audit(head: triage.Head) -> dict[str, str]:
+    """The header facts kept for the audit list and the decision snapshot: never an address."""
+    return {
+        "received_at": head.received_at,
+        "name": head.name,
+        "domain": head.domain,
+        "subject": head.subject,
+    }
 
 
 def _known_reaction(reaction: str | None) -> bool:

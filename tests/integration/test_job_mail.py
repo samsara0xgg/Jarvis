@@ -902,6 +902,68 @@ def test_the_audit_list_shows_held_back_mail_that_came_close(tmp_path: Path, jev
     assert stamps == sorted(stamps, reverse=True)
 
 
+def test_every_decision_keeps_the_snapshot_jev_saw_and_never_an_address(
+    tmp_path: Path, jev: _Jev
+) -> None:
+    """A job, a not-job and an error each leave header and body snapshots in memory.db."""
+    h = _harness(tmp_path, jev)
+    h.job.poll_once()
+    columns = (
+        "stage, verdict, sender_name, sender_domain, subject, judge, probabilities, body_excerpt"
+    )
+
+    def snap(message_id: str, stage: str) -> tuple[Any, ...]:
+        (row,) = h.sql(
+            f"SELECT {columns} FROM job_decision WHERE message_id = ? AND stage = ?",  # noqa: S608
+            message_id,
+            stage,
+        )
+        return row
+
+    # One header snapshot per mail, a body snapshot for the nine that were read.
+    assert h.sql("SELECT count(*) FROM job_decision WHERE stage = 'header'") == [(len(MAILS),)]
+    assert h.sql("SELECT count(*) FROM job_decision WHERE stage = 'body'") == [(len(MAILS) - 2,)]
+
+    # A job: the header passed, the body was typed, and what Jev saw is kept.
+    assert snap("m-offer", "header")[:6] == (
+        "header",
+        "pass",
+        "Helix HR",
+        "helix.example",
+        "Offer of employment",
+        "jev-1.13/header-v1",
+    )
+    offer = snap("m-offer", "body")
+    assert offer[:2] == ("body", "job")
+    assert offer[5] == "jev-1.13/body-v1"
+    assert json.loads(offer[6])["offer"] == pytest.approx(0.99)
+    assert offer[7] == "We are delighted to offer you the Backend Developer Intern position."
+
+    # A not-job at the header: no body was read, so none is kept.
+    news = snap("m-news", "header")
+    assert news[1] == "not_job"
+    assert json.loads(news[6])["not_job"] == pytest.approx(0.97)
+    assert news[7] is None
+    assert h.sql("SELECT 1 FROM job_decision WHERE message_id = 'm-news' AND stage = 'body'") == []
+
+    # A not-job at the body keeps the body Jev read.
+    promo = snap("m-promo", "body")
+    assert promo[1] == "not_job"
+    assert promo[7] == "50% off"
+
+    # No address, only display name and domain.
+    stored = json.dumps(h.sql("SELECT sender_name, sender_domain, subject FROM job_decision"))
+    assert "@" not in stored
+
+    # An error (Jev down) is a snapshot too, with no probabilities.
+    jev.status = 500
+    failing = _harness(tmp_path / "e", jev, [m for m in MAILS if m["id"] == "m-offer"])
+    failing.job.poll_once()
+    assert failing.sql(
+        "SELECT stage, verdict, subject, probabilities, judge FROM job_decision"
+    ) == [("header", "error", "Offer of employment", None, "jev-1.13/header-v1")]
+
+
 @pytest.mark.parametrize(
     ("error", "reason"),
     [

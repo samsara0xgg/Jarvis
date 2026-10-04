@@ -1,9 +1,10 @@
-"""L2 job ledger (ADR 0155): typed job-hunt mail facts, alerts and Allen's feedback in memory.db.
+"""L2 job ledger (ADR 0155, 0157): typed job-hunt mail facts, alerts, feedback, what Jev saw.
 
-Four additive tables next to the memory tables (``CREATE TABLE IF NOT EXISTS``, so no schema
-version bump). Only the typed facts of a mail are kept (sender name and domain, subject, kind,
-company, role, an event sentence and time), never the body and never an address. Every function
-opens its own short-lived connection, so any thread may call it.
+Additive tables next to the memory tables (``CREATE TABLE IF NOT EXISTS``, so no schema version
+bump). The ledger keeps only the typed facts of a mail (sender name and domain, subject, kind,
+company, role, an event sentence and time); ``job_decision`` also keeps the body start Jev was
+shown (ADR 0157). Never an address. Every function opens its own short-lived connection, so any
+thread may call it.
 
 Layer rules: stdlib + L2 siblings + ``jarvis.shared``; no wiring.
 """
@@ -87,6 +88,21 @@ CREATE TABLE IF NOT EXISTS job_feedback (
     reaction    TEXT,
     at          TEXT
 );
+CREATE TABLE IF NOT EXISTS job_decision (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    message_id    TEXT,
+    at            TEXT,
+    stage         TEXT,
+    sender_name   TEXT,
+    sender_domain TEXT,
+    subject       TEXT,
+    received_at   TEXT,
+    probabilities TEXT,
+    judge         TEXT,
+    body_excerpt  TEXT,
+    verdict       TEXT
+);
+CREATE INDEX IF NOT EXISTS job_decision_message ON job_decision (message_id);
 CREATE TABLE IF NOT EXISTS attention_log (
     id            TEXT PRIMARY KEY,
     at            TEXT,
@@ -180,6 +196,45 @@ def list_skipped(path: Path) -> list[dict[str, Any]]:
             (AUDIT_MIN, AUDIT_LIMIT),
         ).fetchall()
     return [dict(row) for row in rows]
+
+
+def record_decision(  # noqa: PLR0913 - the row's fields
+    path: Path,
+    message_id: str,
+    stage: str,
+    verdict: str,
+    now: datetime,
+    *,
+    head: Mapping[str, str] | None = None,
+    probabilities: Mapping[str, float] | None = None,
+    judge: str | None = None,
+    body_excerpt: str | None = None,
+) -> None:
+    """One snapshot of what Jev was asked and answered at ``header`` or ``body`` (ADR 0157).
+
+    ``head`` is (received_at, name, domain, subject), never an address; ``body_excerpt`` is the
+    body start Jev saw, present only for the ``body`` stage. Appended, never changed.
+    """
+    given = head or {}
+    with _db(path) as conn:
+        conn.execute(
+            "INSERT INTO job_decision (message_id, at, stage, sender_name, sender_domain, subject,"
+            " received_at, probabilities, judge, body_excerpt, verdict)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                message_id,
+                _stamp(now),
+                stage,
+                given.get("name"),
+                given.get("domain"),
+                given.get("subject"),
+                given.get("received_at"),
+                None if probabilities is None else json.dumps(probabilities),
+                judge,
+                body_excerpt,
+                verdict,
+            ),
+        )
 
 
 def seen_ids(path: Path) -> set[str]:

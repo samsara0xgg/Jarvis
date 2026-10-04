@@ -286,7 +286,8 @@ header strong { color: var(--fg-strong); }
 <tr><td><code>summaries</code></td><td>历史压缩出的摘要</td><td>压缩（空闲时，或 <code>recent_records</code> 窗口移动后；<a href="#request">第 5 章</a>）</td></tr>
 <tr><td><code>day_summaries</code></td><td>过去每一天的对话摘要；只追加，每天最新的一行有效，是派生数据，原话以 <code>records</code> 为准（ADR 0142）</td><td>每天 <code>day_summary.at</code> 之后，补写所有有记录、还没摘要的过去日期；<code>recall</code> 把它们放在原话之前返回；用户在记忆页改过的一天另存一行（model 为 user），之后不再自动重写</td></tr>
 <tr><td><code>job_mail</code></td><td>求职邮件的类型化事实：发件人显示名、地址的域名、主题、类型（offer、面试、拒信、回执、其他）、公司、岗位，以及一句面试时间和解析出的时间；从不存正文，也不存邮件地址；主人在账本里删掉的只是被隐藏（ADR 0155）</td><td>打开 <code>job_mail</code> 时的后台读信</td></tr>
-<tr><td><code>job_seen</code></td><td>读过的邮件 id、判断（求职、不是求职、出错）和 Jev 给的是求职邮件的概率；被挡下却至少有 0.2 概率是求职的，另留发件人显示名、域名和主题，让主人能查看被挡下的（ADR 0155）</td><td>同上</td></tr>
+<tr><td><code>job_seen</code></td><td>读过的邮件 id、判断（求职、不是求职、出错）和 Jev 给的是求职邮件的概率；被挡下的每一封另留发件人显示名、域名和主题，让主人能查看最近 50 封被挡下的（ADR 0155、0157）</td><td>同上</td></tr>
+<tr><td><code>job_decision</code></td><td>Jev 对每封求职邮件的每次回答一行（先看邮件头、再看正文两步各一行，出错也记）：发件人显示名、域名（不存地址）、主题、收到时间、Jev 给的各类概率、裁判名和措辞版本，以及这一步的结论；读过正文的那一步还存发给 Jev 的正文前 3000 个字符。只追加，不裁剪，只在本机，用来回放别的措辞、阈值或裁判（ADR 0157）</td><td>同上</td></tr>
 <tr><td><code>job_alert</code>、<code>job_feedback</code></td><td>求职邮件的提醒（级别、标题、一句话、状态；邮件通道连不上时的提醒也在这里），以及主人对每条提醒的反应</td><td>同上；反应由刘海上的卡片写入</td></tr>
 <tr><td><code>attention_log</code></td><td>每个注意力决定一行：交给裁判的完整上下文包（只有类型化事实和当时的情形，不含正文）、裁判和版本、级别、理由、投递结果（带时间）和主人的反应；只追加，不裁剪（ADR 0155）</td><td>同上</td></tr>
 </tbody>
@@ -601,7 +602,7 @@ I8 到 I11 随审核链退役（ADR 0019），编号保留。
 <table>
 <thead><tr><th>位置</th><th>装什么</th><th>留多久</th></tr></thead>
 <tbody>
-<tr><td><code>memory.db</code></td><td>主人说的每一句和每一个回答、「关于你」、压缩摘要和每日摘要；打开 <code>job_mail</code> 时还有求职账本和注意力日志（表见<a href="#memory">第 3 章</a>）</td><td>永久；代码里没有删它的路径，只有「抹掉全部数据」</td></tr>
+<tr><td><code>memory.db</code></td><td>主人说的每一句和每一个回答、「关于你」、压缩摘要和每日摘要；打开 <code>job_mail</code> 时还有求职账本、Jev 看过的邮件头和正文开头的快照和注意力日志（表见<a href="#memory">第 3 章</a>）</td><td>永久；代码里没有删它的路径，只有「抹掉全部数据」</td></tr>
 <tr><td><code>mac_events.db</code></td><td>事件日志：动作、确认、花费、观察到的状态，以及待办、知识、日报和工作状态的每一版</td><td>永久，不裁剪</td></tr>
 <tr><td><code>memory/audio/</code></td><td>对话和听写的录音；每次听写还有一份 JSON，记着原话和润色后的文字（ADR 0084）</td><td>默认不录；见<a href="#retention">保留期</a></td></tr>
 <tr><td><code>artifacts/screen_artifacts/</code></td><td>看一眼屏幕时的截图</td><td>见<a href="#retention">保留期</a></td></tr>
@@ -625,7 +626,7 @@ I8 到 I11 随审核链退役（ADR 0019），编号保留。
 <li><strong>录音</strong>默认不留（<code>memory.retain_audio: false</code>）。打开后，超过 <code>memory.audio_retention_days</code>（默认 30）天的删掉。</li>
 <li><strong>截图</strong>超过 <code>tools.screen.retention_days</code>（默认 7）天的删掉。</li>
 <li>两者都按文件修改时间算，写 <code>null</code> 就永久保留；启动时和之后每小时检查一次。memory.db 里的对话记录不删，它指向的录音可能已经不在了。</li>
-<li><strong>求职账本和注意力日志</strong>（<code>job_mail</code>、<code>job_seen</code>、<code>job_alert</code>、<code>job_feedback</code>、<code>attention_log</code>，在 memory.db 里）不裁剪，主人在账本里删一封只是隐藏；它们不存邮件正文和地址，但 Jev 日志里有这条路径上发出去的正文；「抹掉全部数据」连同 memory.db 一起清掉（ADR 0155）。</li>
+<li><strong>求职账本和注意力日志</strong>（<code>job_mail</code>、<code>job_seen</code>、<code>job_decision</code>、<code>job_alert</code>、<code>job_feedback</code>、<code>attention_log</code>，在 memory.db 里）不裁剪，主人在账本里删一封只是隐藏；它们不存邮件地址；除了 <code>job_decision</code>（读过正文的那一行存发给 Jev 的正文前 3000 个字符），也不存邮件正文，Jev 日志里另有这条路径上发出去的正文；<code>job_decision</code> 和 <code>job_seen</code> 的发件人、主题让主人能查被挡下的邮件；「抹掉全部数据」连同 memory.db 一起清掉（ADR 0155、0157）。</li>
 <li><strong>日志</strong>每个文件超过 10 MB 就挪开一份，连当前的最多留 3 份。日志只记发生了什么和长度，不记主人说的话、实时语音的转写或回答的文字。</li>
 <li><strong>测试记录</strong>是上一条的例外，默认都关（<code>diagnostics.record_tts_audio</code>、<code>diagnostics.log_llm_io</code>，ADR 0120）。前者把她每段语音的音频存进录音目录，随录音的保留期删；后者把发给模型的每个请求和回来的回答逐行写进 <code>logs/llm-io.jsonl</code>，里面有主人说的话和她的回答，不裁剪，要自己删。</li>
 </ul>

@@ -36,6 +36,8 @@ _NOT_JOB: Final[str] = "not_job"
 _UNKNOWN_SENDER: Final[str] = "unknown"
 _UNKNOWN_COMPANY: Final[str] = "Unknown"
 _USE: Final[str] = "job_mail"
+# Bump when a stage's instructions or criteria change, so a logged decision names its wording.
+_STAGE_VERSION: Final[str] = "v1"
 
 _CONTEXT: Final[str] = (
     "The text is an email sent to Allen, a university student in Victoria, BC who is job"
@@ -101,6 +103,7 @@ class Typed:
     confidence: float
     facts: Facts
     p_job: float
+    probabilities: dict[str, float]
     extracted_by: str = "local"
 
 
@@ -110,6 +113,7 @@ class Skip:
 
     skipped: bool
     p_job: float
+    probabilities: dict[str, float]
 
 
 def header_state(head: Head) -> str:
@@ -145,6 +149,10 @@ class JobMailJev:
         self._calls = 0
         self.spent_usd = 0.0
 
+    def judge_id(self, stage: str) -> str:
+        """Who judged a stage, as logged in ``job_decision`` (ADR 0157): ``jev-1.13/header-v1``."""
+        return f"{self._route.model.rpartition('/')[2]}/{stage}-{_STAGE_VERSION}"
+
     def room(self) -> int:
         """How many more calls today's cap allows."""
         self._roll()
@@ -161,7 +169,9 @@ class JobMailJev:
         for head in heads:
             answer = odds[head.message_id]
             out[head.message_id] = (
-                None if answer is None else Skip(answer[_NOT_JOB] >= self._skip_at, _p_job(answer))
+                None
+                if answer is None
+                else Skip(answer[_NOT_JOB] >= self._skip_at, _p_job(answer), answer)
             )
         return out
 
@@ -195,7 +205,9 @@ class JobMailJev:
                 else (top if probabilities[top] >= self._body_min else "job_other")
             )
             facts = extract(head, body)
-            out[head.message_id] = Typed(kind, probabilities[top], facts, _p_job(probabilities))
+            out[head.message_id] = Typed(
+                kind, probabilities[top], facts, _p_job(probabilities), probabilities
+            )
             self._route.note(
                 "decision",
                 _USE,
