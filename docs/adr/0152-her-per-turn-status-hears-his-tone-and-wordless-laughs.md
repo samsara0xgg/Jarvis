@@ -1,4 +1,4 @@
-# ADR 0149 — Her per-turn status hears his tone and wordless laughs
+# ADR 0152 — Her per-turn status hears his tone and wordless laughs
 
 **Status:** Accepted
 **Date:** 2026-10-03

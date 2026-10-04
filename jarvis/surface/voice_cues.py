@@ -1,4 +1,4 @@
-"""What his voice carried that the words did not: tone and wordless laughs (ADR 0149).
+"""What his voice carried that the words did not: tone and wordless laughs (ADR 0152).
 
 SenseVoice hears every committed clip whole and labels its emotion and audio events; a
 lone 哈哈 is dropped as a listening sound and never becomes text. This keeps those labels

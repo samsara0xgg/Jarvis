@@ -103,7 +103,7 @@ class VoicePipeline:
         self._broadcaster = broadcaster
         self._artifacts_dir = artifacts_dir
         self._sample_rate_hz = sample_rate_hz
-        self._cues = cues  # ADR 0149: the clip's tone and sounds, for her next turn
+        self._cues = cues  # ADR 0152: the clip's tone and sounds, for her next turn
 
     def prewarm_input_model(self) -> None:
         """Prewarm the concrete local ASR provider for single-ingress activation."""

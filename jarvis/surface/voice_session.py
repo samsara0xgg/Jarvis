@@ -1276,7 +1276,7 @@ class DuplexVoiceSession:
         self._recent_speech = recent_speech
         self._ask_words = ask_words
         self._note_words = note_words
-        self._cues = cues  # ADR 0149: a laugh dropped as a listening sound is kept as a cue
+        self._cues = cues  # ADR 0152: a laugh dropped as a listening sound is kept as a cue
         self._begin_line = begin_line
         # ADR 0102: when conversation mode last had an accepted turn or Jarvis's
         # speech; an accepted turn waits for her answer, 「等我一下」 holds it.

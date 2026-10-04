@@ -331,7 +331,7 @@ class TranscriptionResult:
     confidence: float
     language_detected: str | None
     emotion: str | None
-    event: str | None = None  # SenseVoice's audio-event label (Laughter, Cough, ...), ADR 0149
+    event: str | None = None  # SenseVoice's audio-event label (Laughter, Cough, ...), ADR 0152
 
 
 class AsrRecognizer(Protocol):

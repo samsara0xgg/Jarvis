@@ -487,7 +487,7 @@ class JarvisRuntime:
     mail_drafts: MailDrafts | None = None
     # ADR 0148: one line each for the state block, in order; None skips a producer.
     live_context: tuple[Callable[[], str | None], ...] = ()
-    # ADR 0149: what his voice carried that the words did not; shared with the voice path.
+    # ADR 0152: what his voice carried that the words did not; shared with the voice path.
     voice_cues: VoiceCues | None = None
     # ADR 0151: non-speech sounds around him, fed by the voice session; its line is the last
     # live-context producer. None = off.
