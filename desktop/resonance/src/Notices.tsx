@@ -83,8 +83,10 @@ type Tone = 'ask' | 'done' | 'error';
 // hold the island) except a card brought forward on purpose; `watched` is the session Allen has been looking at in
 // Ghostty for 1.5 s, `viewing` the one whose page is open in the island. Startrail's sessions (`a.host`) are looked at
 // while its window is in front (`agentsFront`), and their marks are the host's: `mark` changes them there.
-export function useNotices({ port, poll, agents, hold, quiet, inClaude, watched, viewing, agentsFront, cue, answer, mark }: {
-  port: string | null; poll: boolean; agents: Agent[]; hold: boolean; quiet: Quiet; inClaude: boolean; watched: string | null; viewing: string | null; agentsFront: boolean; cue: (name: Tone | 'send' | 'close', gain?: number) => void;
+export function useNotices({ port, poll, agents, hold, quiet, inClaude, watched, viewing, agentsFront, audio, cue, answer, mark }: {
+  port: string | null; poll: boolean; agents: Agent[]; hold: boolean; quiet: Quiet; inClaude: boolean; watched: string | null; viewing: string | null; agentsFront: boolean;
+  // The daemon's last word on whether sound may play (`audio_private` of GET /inherent/notices); undefined while it has said nothing.
+  audio: { current: boolean | undefined }; cue: (name: Tone | 'send' | 'close', gain?: number) => void;
   answer: (req: AgentRequest, body: { decision: 'allow' | 'always' | 'deny'; answers?: Record<string, string>; message?: string }, id: string) => Promise<boolean>;
   mark: (id: string, change: { seen: true } | { parked: boolean; archived: boolean }) => void;
 }) {
@@ -200,13 +202,15 @@ export function useNotices({ port, poll, agents, hold, quiet, inClaude, watched,
     const load = async () => {
       try {
         const r = await fetch(`http://127.0.0.1:${port}/inherent/notices`, { signal: AbortSignal.timeout(4000) });
-        if (r.status === 404) return;
+        if (r.status === 404) { audio.current = undefined; return; }
+        if (!r.ok) audio.current = false;
         if (r.ok && !stop) {
-          const { notices } = await r.json() as { notices?: JobNotice[] };
+          const { notices, audio_private } = await r.json() as { notices?: JobNotice[]; audio_private?: boolean };
+          audio.current = typeof audio_private === 'boolean' ? audio_private : undefined;
           for (const n of Array.isArray(notices) ? notices : []) if ((n.kind === 'mail' || n.kind === 'digest') && typeof n.id === 'string' && typeof n.title === 'string') arrive({ kind: n.kind === 'mail' ? 'mail' : 'jobs', id: n.id, job: n });
           bump();
         }
-      } catch { /* daemon away; the next tick retries */ }
+      } catch { audio.current = false; /* daemon away: nothing new may sound; the next tick retries */ }
       if (!stop) timer = setTimeout(load, 5000);
     };
     void load();

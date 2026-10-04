@@ -35,7 +35,7 @@ HEALTH_ID: Final[str] = "health"
 ALERT_KEEP: Final[timedelta] = timedelta(days=7)
 # A pending alert this old was waited on while the client could not show it (a held quiet level).
 HELD_AFTER: Final[timedelta] = timedelta(seconds=30)
-_SOUNDING: Final[frozenset[str]] = frozenset({"card_sound", "speak"})
+SOUNDING: Final[frozenset[str]] = frozenset({"card_sound", "speak"})
 # Digest order: what Allen wants first.
 _RANK: Final[dict[str, int]] = {"offer": 0, "interview": 1, "rejection": 2}
 _OTHER_RANK: Final[int] = 3
@@ -350,7 +350,7 @@ def expire_shown(path: Path, now: datetime, after: timedelta) -> int:
 
 def shown_level(level: str, quiet: str) -> str:
     """The level the client is given at this quiet level: quiet takes the sound off."""
-    return "card" if quiet == "quiet" and level in _SOUNDING else level
+    return "card" if quiet == "quiet" and level in SOUNDING else level
 
 
 def _notice(row: sqlite3.Row, quiet: str) -> dict[str, Any]:
@@ -396,7 +396,7 @@ def alerts_for_client(path: Path, quiet: str, now: datetime) -> list[dict[str, A
         _notice(row, quiet) for row in sorted(rows, key=lambda r: _RANK.get(r["kind"], _OTHER_RANK))
     ]
     title = lang.t("job.digest.title", n=len(items))
-    sound = any(item["level"] in _SOUNDING for item in items)
+    sound = any(item["level"] in SOUNDING for item in items)
     return [
         {
             "id": "digest-" + "-".join(item["id"] for item in items),
@@ -475,6 +475,13 @@ def note_delivery(path: Path, event_id: str, state: str, now: datetime) -> None:
         _touch_event(conn, event_id, delivery=(state, _stamp(now)))
 
 
+def note_audio(path: Path, event_id: str, device: dict[str, Any]) -> None:
+    """Record the output device (name and private flag) a decision that would sound met."""
+    audio = {"device": device["name"], "private": device["private"]}
+    with _db(path) as conn:
+        _touch_event(conn, event_id, audio=audio)
+
+
 def list_attention(path: Path, source: str | None = None) -> list[dict[str, Any]]:
     """Every logged decision, oldest first, with delivery and feedback read back as JSON."""
     with _db(path) as conn:
@@ -510,8 +517,9 @@ def _touch_event(
     *,
     delivery: tuple[str, str] | None = None,
     feedback: tuple[str, str, str] | None = None,
+    audio: dict[str, Any] | None = None,
 ) -> None:
-    """Add a delivery state or a reaction to the latest decision on ``event_id``, if any."""
+    """Add a delivery state, an output device or a reaction to ``event_id``'s latest decision."""
     row = conn.execute(
         "SELECT id, delivery, feedback_json FROM attention_log WHERE event_id = ?"
         " ORDER BY at DESC, rowid DESC LIMIT 1",
@@ -522,6 +530,8 @@ def _touch_event(
     states, reactions = json.loads(row["delivery"]), json.loads(row["feedback_json"])
     if delivery is not None:
         states[delivery[0]] = delivery[1]
+    if audio is not None:
+        states["audio"] = audio
     if feedback is not None:
         reactions.append({"level_shown": feedback[0], "reaction": feedback[1], "at": feedback[2]})
     conn.execute(

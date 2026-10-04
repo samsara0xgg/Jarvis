@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any, Final
 from jarvis.decision import job_mail as triage
 from jarvis.decision.surrogate_route import KEY_ENV
 from jarvis.execution.tools import ToolError
+from jarvis.runtime import audio_output
 from jarvis.runtime.home import MAIL_SERVER, _gmail, _letter, mail_body
 from jarvis.shared import lang
 from jarvis.state import job_ledger as ledger
@@ -112,6 +113,9 @@ class JobMail:
         self.quiet: Callable[[], str] = lambda: "dnd"
         self.may_speak: Callable[[], bool] = lambda: False
         self.say: Callable[[], None] | None = None
+        # Where sound would come out now (``fresh=True`` skips the two-second cache); unprompted
+        # sound happens only on private output, so tests and the daemon may swap this.
+        self.output: Callable[..., dict[str, Any]] = audio_output.current_output
 
     # --- the poller ------------------------------------------------------------------
 
@@ -273,11 +277,28 @@ class JobMail:
         if judgement.level not in _ALERT_LEVELS:
             ledger.note_delivery(self._db, head.message_id, "ledger_only", now)
             return
+        level = judgement.level
+        silenced = False
+        if level in ledger.SOUNDING:
+            # Unprompted sound only on private output: on speakers it is a silent card.
+            device = self.output()
+            ledger.note_audio(self._db, head.message_id, device)
+            LOGGER.info(
+                "job mail: %s would sound (%s); output %r is %s",
+                head.message_id,
+                level,
+                device["name"],
+                "private" if device["private"] else "not private, so a silent card",
+            )
+            if not device["private"]:
+                level, silenced = "card", True
         title, line = triage.alert_text(typed.kind, typed.facts)
-        alert_id = ledger.create_alert(self._db, head.message_id, judgement.level, title, line, now)
+        alert_id = ledger.create_alert(self._db, head.message_id, level, title, line, now)
         if quiet != "off":
             ledger.note_delivery(self._db, head.message_id, "held", now)
-        if judgement.level != "speak":
+        if silenced:
+            ledger.note_delivery(self._db, head.message_id, "silenced", now)
+        if level != "speak":
             return
         say = self.say
         if say is None or not self._speak_now(quiet):
@@ -294,10 +315,18 @@ class JobMail:
         ledger.note_delivery(self._db, head.message_id, "spoken", now)
 
     def _speak_now(self, quiet: str) -> bool:
-        """Speak only at quiet ``off``, unmuted, outside a live conversation, and not too soon."""
+        """Speak only at quiet ``off``, unmuted, outside a live conversation and not too soon.
+
+        The output must also be private right now: a fresh look, not the one from decision time.
+        """
         gap = self._settings.speak_gap_s
         rested = self._last_spoke is None or time.monotonic() - self._last_spoke >= gap
-        return self._settings.speak and quiet == "off" and self.may_speak() and rested
+        if not (self._settings.speak and quiet == "off" and self.may_speak() and rested):
+            return False
+        device = self.output(fresh=True)
+        if not device["private"]:
+            LOGGER.warning("job mail: not spoken, output %r is not private", device["name"])
+        return bool(device["private"])
 
     def _failed(self, exc: BaseException) -> None:
         """Count a failed cycle; raise the one health alert when the channel is down."""
@@ -335,8 +364,19 @@ class JobMail:
     # --- what the surface reads ----------------------------------------------------
 
     def notices(self) -> dict[str, Any]:
-        """``GET /inherent/notices``: the alerts a client may show at the quiet level now."""
-        return {"notices": ledger.alerts_for_client(self._db, self.quiet(), self.now())}
+        """``GET /inherent/notices``: the alerts a client may show at the quiet level now.
+
+        ``audio_private`` says whether sound may play now; while it is false every alert is served
+        as a silent card, so a disconnect between two polls cannot leak a cue.
+        """
+        private = bool(self.output()["private"])
+        shown = ledger.alerts_for_client(self._db, self.quiet(), self.now())
+        if not private:
+            for notice in shown:
+                for one in (notice, *notice.get("items", [])):
+                    if one["level"] in ledger.SOUNDING:
+                        one["level"] = "card"
+        return {"notices": shown, "audio_private": private}
 
     def act(self, notice_id: str, action: str, reaction: str | None) -> None:
         """``POST /inherent/notices/{id}``: ``seen``, or feedback (``dismissed`` is feedback too).

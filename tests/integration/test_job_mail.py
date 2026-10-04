@@ -52,6 +52,12 @@ SETTINGS = JobMailSettings(
     speak=True,
     speak_gap_s=600,
 )
+AIRPODS = {"name": "AirPods Pro", "transport": "coreaudio_device_type_bluetooth", "private": True}
+SPEAKERS = {
+    "name": "MacBook Pro Speakers",
+    "transport": "coreaudio_device_type_builtin",
+    "private": False,
+}
 EVENT_SENTENCE = "We would like to invite you to an interview on March 4, 2027 at 2:00 PM PST."
 
 
@@ -277,6 +283,8 @@ class _Harness:
         self.quiet = "off"
         self.spoken = 0
         self.speech_ok = True
+        self.device: dict[str, Any] = dict(AIRPODS)
+        self.job.output = lambda fresh=False: dict(self.device)  # noqa: ARG005
         self.job.quiet = lambda: self.quiet
         self.job.may_speak = lambda: self.speech_ok
         self.job.say = self._say
@@ -495,7 +503,8 @@ def test_the_speak_line_is_only_for_quiet_off_unmuted_and_no_conversation(
     assert {level for _id, level in held.sql("SELECT id, level FROM job_alert")} == {"speak"}
     # The log says why nothing was said: held by the level, and suppressed.
     delivery = {r["event_id"]: set(r["delivery"]) for r in job_ledger.list_attention(held.db)}
-    assert delivery == {"m-interview": {"held", "suppressed"}, "m-offer": {"held", "suppressed"}}
+    both = {"held", "suppressed", "audio"}
+    assert delivery == {"m-interview": both, "m-offer": both}
     # Muted speech or a live conversation: no line either.
     silent = _harness(tmp_path / "b", jev, interview_and_offer)
     silent.speech_ok = False
@@ -796,8 +805,8 @@ def test_each_decision_is_logged_with_its_pack_delivery_and_feedback(
         "speak",
     )
     assert interview["reason"] == "rule: interview -> speak"
-    assert set(interview["delivery"]) == {"spoken"}
-    assert set(rows["m-offer"]["delivery"]) == {"suppressed"}  # the gap held the second line
+    assert set(interview["delivery"]) == {"spoken", "audio"}
+    assert set(rows["m-offer"]["delivery"]) == {"suppressed", "audio"}  # the gap held the second
     assert (rows["m-receipt"]["level"], set(rows["m-receipt"]["delivery"])) == (
         "ledger",
         {"ledger_only"},
@@ -957,3 +966,103 @@ def test_two_hours_without_a_good_cycle_is_down_even_after_one_failure(
         h.job.poll_once()
     (note,) = h.notices()
     assert note["title"] == lang.t("job.health.title")
+
+
+def test_on_speakers_sound_levels_are_silent_cards_and_the_log_says_why(
+    tmp_path: Path,
+    jev: _Jev,
+) -> None:
+    """Unprompted audio only on private output: speakers turn speak and card_sound into cards."""
+    h = _harness(tmp_path, jev)
+    h.device = dict(SPEAKERS)
+    h.job.poll_once()
+
+    assert h.spoken == 0
+    levels = dict(h.sql("SELECT message_id, level FROM job_alert"))
+    assert set(levels.values()) == {"card"}
+    assert len(levels) == 5
+    reply = h.client.get("/inherent/notices").json()
+    assert reply["audio_private"] is False
+    assert {n["level"] for n in reply["notices"]} == {"card"}
+    rows = {r["event_id"]: r for r in job_ledger.list_attention(h.db, "job_mail")}
+    # The judge's own level is kept; delivery says what the guard did and on which device.
+    assert rows["m-interview"]["level"] == "speak"
+    assert set(rows["m-interview"]["delivery"]) == {"audio", "silenced"}
+    assert rows["m-interview"]["delivery"]["audio"] == {
+        "device": "MacBook Pro Speakers",
+        "private": False,
+    }
+    assert set(rows["m-digest"]["delivery"]) == {"audio", "silenced"}  # card_sound
+    assert set(rows["m-reject"]["delivery"]) == set()  # a card would not have sounded
+    assert "audio" not in rows["m-receipt"]["delivery"]
+
+
+def test_on_private_output_the_levels_stay_and_the_log_names_the_device(
+    tmp_path: Path,
+    jev: _Jev,
+) -> None:
+    """On Bluetooth headphones speak and card_sound are served as before, with the device logged."""
+    h = _harness(tmp_path, jev, speak_gap_s=0)
+    h.job.poll_once()
+
+    assert h.spoken == 2
+    reply = h.client.get("/inherent/notices").json()
+    assert reply["audio_private"] is True
+    assert {n["level"] for n in reply["notices"]} == {"speak", "card", "card_sound"}
+    rows = {r["event_id"]: r for r in job_ledger.list_attention(h.db, "job_mail")}
+    assert rows["m-interview"]["delivery"]["audio"] == {"device": "AirPods Pro", "private": True}
+    assert rows["m-digest"]["delivery"]["audio"] == {"device": "AirPods Pro", "private": True}
+    assert "silenced" not in rows["m-interview"]["delivery"]
+
+
+def test_a_device_that_flips_to_speakers_before_the_line_is_said_means_no_speech(
+    tmp_path: Path,
+    jev: _Jev,
+) -> None:
+    """Private at decision time, speakers a moment later: the fresh look before speaking wins."""
+    h = _harness(tmp_path, jev, [m for m in MAILS if m["id"] == "m-interview"])
+    h.job.output = lambda fresh=False: dict(SPEAKERS if fresh else AIRPODS)
+    h.job.poll_once()
+
+    assert h.spoken == 0
+    assert dict(h.sql("SELECT message_id, level FROM job_alert")) == {"m-interview": "speak"}
+    (row,) = job_ledger.list_attention(h.db, "job_mail")
+    assert set(row["delivery"]) == {"audio", "suppressed"}
+    assert sum(spoken for (spoken,) in h.sql("SELECT spoken FROM job_alert")) == 0
+
+
+def test_a_disconnect_between_polls_downgrades_what_the_route_serves(
+    tmp_path: Path,
+    jev: _Jev,
+) -> None:
+    """Alerts made on headphones are served as cards the moment the output is not private."""
+    h = _harness(tmp_path, jev)
+    h.job.poll_once()
+    assert {n["level"] for n in h.notices()} == {"speak", "card", "card_sound"}
+
+    h.device = dict(SPEAKERS)
+    reply = h.client.get("/inherent/notices").json()
+    assert reply["audio_private"] is False
+    assert {n["level"] for n in reply["notices"]} == {"card"}
+
+    # A digest and the items inside it are silent too.
+    h.age_alerts(timedelta(minutes=10))
+    (digest,) = h.client.get("/inherent/notices").json()["notices"]
+    assert digest["kind"] == "digest"
+    assert digest["level"] == "card"
+    assert {item["level"] for item in digest["items"]} == {"card"}
+    h.device = dict(AIRPODS)
+    (digest,) = h.notices()
+    assert digest["level"] == "card_sound"
+    assert {item["level"] for item in digest["items"]} == {"speak", "card", "card_sound"}
+
+    # A health alert (card_sound) is silenced the same way.
+    health = _harness(tmp_path / "h", jev, [])
+    health.gmail.search_error, health.gmail.search_failures = "backend down", 3
+    for _ in range(3):
+        with pytest.raises(ToolError):
+            health.job.poll_once()
+    assert [n["level"] for n in health.notices()] == ["card_sound"]
+    health.device = dict(SPEAKERS)
+    reply = health.client.get("/inherent/notices").json()
+    assert [n["level"] for n in reply["notices"]] == ["card"]

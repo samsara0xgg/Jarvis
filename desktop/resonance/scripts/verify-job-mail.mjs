@@ -1,7 +1,7 @@
 // Job mail (ADR 0155), the client's half, in headless Chrome against the built page and a fake daemon (route mocking): a mail card
 // from GET /inherent/notices with its seen / feedback / dismiss posts, the cue sound only for card_sound and speak, the 合适吗 row,
-// one card per id and no return after a dismiss, the digest, the Dashboard's ledger page with its confirmed delete, and a 404 that
-// keeps the app calm. Silent: no desktop window, no audio. Run after `npm run build`.
+// one card per id and no return after a dismiss, the digest, the Dashboard's ledger page with its confirmed delete, the daemon's
+// `audio_private` (false: no cue for a sounding mail card or an agent notice; true: the cue as before), and a 404 that keeps the app calm. Silent: no desktop window, no audio. Run after `npm run build`.
 import { chromium } from 'playwright';
 import { spawn } from 'node:child_process';
 import assert from 'node:assert/strict';
@@ -22,7 +22,7 @@ try {
   for (let i = 0; i < 50; i++) { try { await fetch(`http://127.0.0.1:${web}/`); break; } catch { await wait(100); } }
   const page = await (await browser.newContext({ viewport: { width: 640, height: 900 }, deviceScaleFactor: 2 })).newPage();
   const errors = [], posts = [], deletes = [];
-  let featureOn = false, noticeGets = 0, notices = [], flagStatus = 200, skipped;
+  let featureOn = false, noticeGets = 0, notices = [], flagStatus = 200, skipped, audioPrivate, board = [];
   const flags = [];
   page.on('pageerror', error => errors.push(error.message));
   const at = minutes => new Date(Date.now() - minutes * 60_000).toISOString();
@@ -38,8 +38,10 @@ try {
       { message_id: 'g-4', kind: 'offer', received_at: at(60 * 5), subject: 'Offer letter: SWE Co-op', event_at: null, event_text: null }] },
   ];
   await page.addInitScript(() => {
-    window.__audio = 0;
+    window.__audio = 0; window.__cues = 0;
     const Real = window.AudioContext;
+    const resume = Real.prototype.resume;
+    Real.prototype.resume = function (...a) { window.__cues++; return resume.apply(this, a); };
     window.AudioContext = class extends Real { constructor(...a) { super(...a); window.__audio++; } };
     window.jarvis = {
       placement: async () => ({ docked: false, topInset: 32, notchWidth: 185, surfaceWidth: 640, compactWidth: 0, displayId: 1 }),
@@ -55,9 +57,9 @@ try {
     const url = new URL(route.request().url()), method = route.request().method(), p = url.pathname;
     const json = value => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(value) });
     if (p === '/inherent/controls') return json({ mic_muted: false, speech_muted: false, conversation: false, quiet: 'off' });
-    if (p === '/inherent/claude-sessions') return json({ sessions: [], error: null });
+    if (p === '/inherent/claude-sessions') return json({ sessions: board, error: null });
     if (p === '/inherent/agent-marks') return json({ marks: {} });
-    if (p === '/inherent/notices' && method === 'GET') { noticeGets++; if (featureOn) return json({ notices }); }
+    if (p === '/inherent/notices' && method === 'GET') { noticeGets++; if (featureOn) return json(audioPrivate === undefined ? { notices } : { notices, audio_private: audioPrivate }); }
     else if (p.startsWith('/inherent/notices/') && method === 'POST') { posts.push({ id: decodeURIComponent(p.split('/').pop()), body: JSON.parse(route.request().postData() || '{}') }); return json({ ok: true }); }
     else if (p === '/inherent/jobs' && method === 'GET' && featureOn) return json(skipped ? { ledger, skipped } : { ledger });
     else if (/^\/inherent\/jobs\/[^/]+\/flag$/.test(p) && method === 'POST') {
@@ -237,6 +239,34 @@ try {
   await page.waitForSelector('.ad .jp');
   await page.waitForTimeout(500);
   check('without skipped the page has no held-back section and no error', await page.locator('.ad .jp-skip').count() === 0 && errors.length === 0);
+
+  // (g3) ADR 0155: the daemon's `audio_private`. False: a sounding mail card and an agent notice come with no cue. True: the cue as before.
+  const cues = () => page.evaluate(() => window.__cues);
+  const session = (id, phase) => ({ agent: 'claude', session_id: id, kind: 'interactive', phase, title: `Session ${id}`, project: 'jarvis', branch: 'main', cwd: '/x', where: 'Ghostty', prompt: 'go', activity: 'Wants to run npm test', last_message: 'Needs your decision', started_ms: Date.now() - 60_000, updated_ms: Date.now(), request: null, compacting: false, error: '' });
+  featureOn = true; audioPrivate = false; board = []; notices = [mail('p-1', 'card_sound', { company: 'Orbit Labs' })];
+  await open(); await shows(); await page.waitForTimeout(500);
+  check('audio_private false: a card_sound mail still shows', await card() === 1);
+  check('audio_private false: its cue does not sound', await cues() === 0);
+  await page.keyboard.press('Escape'); await gone();
+  audioPrivate = true; notices = [mail('p-1', 'card_sound'), mail('p-2', 'card_sound', { company: 'Helix' })];
+  await shows();
+  check('audio_private true: the next card_sound mail sounds its cue', await cues() > 0);
+  notices = []; audioPrivate = false; board = [session('a-1', 'working')];
+  await open(); await page.waitForTimeout(1800);
+  board = [session('a-1', 'needs_input')];
+  await shows(); await page.waitForTimeout(500);
+  check('audio_private false: an agent notice shows', await card() === 1);
+  check('audio_private false: its cue does not sound', await cues() === 0);
+  audioPrivate = true; board = [session('a-2', 'working')];
+  await open(); await page.waitForTimeout(1800);
+  board = [session('a-2', 'needs_input')];
+  await shows(); await page.waitForTimeout(500);
+  check('audio_private true: an agent notice sounds its cue', await cues() > 0);
+  audioPrivate = undefined; board = [session('a-3', 'working')];
+  await open(); await page.waitForTimeout(1800);
+  board = [session('a-3', 'needs_input')];
+  await shows(); await page.waitForTimeout(500);
+  check('no audio_private field: the old gate, the cue sounds', await cues() > 0);
 
   // (h) the route gone (404): no ledger icon, no card, no error.
   featureOn = false; notices = []; ledger = [];
