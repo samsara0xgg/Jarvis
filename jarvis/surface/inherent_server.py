@@ -628,6 +628,7 @@ class InherentDeps:
     notice_act: Callable[[str, str, str | None], Awaitable[None]] | None = None
     jobs_read: Callable[[], Awaitable[dict[str, Any]]] | None = None
     job_delete: Callable[[str], Awaitable[None]] | None = None
+    job_flag: Callable[[str, str], Awaitable[None]] | None = None
     brief_read: Callable[[], dict[str, Any] | None] | None = None
     # ADR 0125: does a finished agent turn's ending ask Allen something? ``asks`` waits for Jev
     # (off the loop thread); ``peek`` never waits, for the terminal sessions' board. None = off.
@@ -1297,7 +1298,13 @@ def _register_memory_routes(app: FastAPI, deps: InherentDeps) -> None:  # noqa: 
         return await _memory_call(functools.partial(page.day_records, day, around, offset, limit))
 
 
-def _register_job_routes(app: FastAPI, deps: InherentDeps) -> None:
+class JobFlagRequest(BaseModel):
+    """Body of ``POST /inherent/jobs/{message_id}/flag``."""
+
+    reaction: str = Field(max_length=50)
+
+
+def _register_job_routes(app: FastAPI, deps: InherentDeps) -> None:  # noqa: C901 — one closed route table.
     """ADR 0155: the job-mail notices and the job ledger; each route exists only when wired."""
     if deps.notices_read is not None:
         notices_read = deps.notices_read
@@ -1331,6 +1338,15 @@ def _register_job_routes(app: FastAPI, deps: InherentDeps) -> None:
         async def job_delete_route(message_id: str) -> dict[str, bool]:
             """Hide one mail from the ledger; nothing is deleted in Gmail."""
             await _home_call(job_delete(message_id))
+            return {"ok": True}
+
+    if deps.job_flag is not None:
+        job_flag = deps.job_flag
+
+        @app.post("/inherent/jobs/{message_id}/flag", status_code=200)
+        async def job_flag_route(message_id: str, req: JobFlagRequest) -> dict[str, bool]:
+            """Allen says a held-back mail was job mail: read again, typed and delivered as such."""
+            await _home_call(job_flag(message_id, req.reaction))
             return {"ok": True}
 
 

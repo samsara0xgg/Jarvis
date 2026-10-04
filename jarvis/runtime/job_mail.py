@@ -11,6 +11,7 @@ trashed or sent from here. What a client shows of the alerts is held by the quie
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import os
 import time
@@ -449,6 +450,38 @@ class JobMail:
             "ledger": ledger.list_ledger(self._db, self.now()),
             "skipped": ledger.list_skipped(self._db),
         }
+
+    def flag(self, message_id: str, reaction: str) -> None:
+        """``POST /inherent/jobs/{id}/flag``: Allen says a held-back mail was job mail after all.
+
+        The mail is read again (``gmail_get`` only), typed with the header skip ignored, and
+        delivered as any job mail is (the judge and the quiet level still apply); a typing of
+        ``not_job`` becomes ``job_other``, so his flag wins. Flagging twice does nothing. A reaction
+        other than ``should_alert`` is a ValueError (400); a mail that cannot be read or typed
+        raises, and the flag is not recorded.
+        """
+        if reaction != "should_alert":
+            msg = f"not a flag: {reaction!r}"
+            raise ValueError(msg)
+        if ledger.is_flagged(self._db, message_id):
+            return
+        now = self.now()
+        servers = self._connections.client_for(MAIL_SERVER)
+        args = {"messageId": message_id, "format": "metadata"}
+        head = _head(gmail_read(servers, "gmail_get", args))
+        verdicts: dict[str, str] = {}
+        body = self._body(servers, head, verdicts)
+        found = None if verdicts else self._jev.types([(head, body)])[head.message_id]
+        if found is None:
+            msg = f"cannot read or type {message_id}"
+            raise RuntimeError(msg)
+        if found.kind == "not_job":
+            found = dataclasses.replace(found, kind="job_other")
+        self._snap(head.message_id, "body", "job", now, head, found.probabilities, body)
+        ledger.upsert_mail(self._db, triage.as_row(head, found), now)
+        ledger.record_seen(self._db, head.message_id, "job", now, p_job=found.p_job)
+        self._deliver(head, found, now)
+        ledger.add_flag(self._db, head.message_id, now)
 
     def delete(self, message_id: str) -> None:
         """``POST /inherent/jobs/{id}/delete``: hide a mail from the ledger; unknown is a 404."""

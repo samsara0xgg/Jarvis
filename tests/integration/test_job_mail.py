@@ -764,6 +764,9 @@ def test_off_by_default_no_routes_no_poller_and_bad_values_stop_boot(tmp_path: P
     assert client.post("/inherent/notices/x", json={"action": "seen"}).status_code == 404
     assert client.get("/inherent/jobs").status_code == 404
     assert client.post("/inherent/jobs/x/delete").status_code == 404
+    assert (
+        client.post("/inherent/jobs/x/flag", json={"reaction": "should_alert"}).status_code == 404
+    )
 
 
 def test_the_spoken_line_is_one_fixed_phrase_through_the_conversation_machinery(
@@ -961,6 +964,50 @@ def test_every_decision_keeps_the_snapshot_jev_saw_and_never_an_address(
     assert failing.sql(
         "SELECT stage, verdict, subject, probabilities, judge FROM job_decision"
     ) == [("header", "error", "Offer of employment", None, "jev-1.13/header-v1")]
+
+
+def test_flagging_a_held_back_mail_makes_it_job_mail_once(tmp_path: Path, jev: _Jev) -> None:
+    """A flag reads the mail again, types it past the skip, alerts under quiet, logs feedback."""
+    h = _harness(tmp_path, jev)
+    h.job.poll_once()
+    h.quiet = "quiet"
+    reads = len(h.gmail.calls)
+    assert h.sql("SELECT 1 FROM job_mail WHERE message_id = 'm-fair'") == []
+
+    reply = h.client.post("/inherent/jobs/m-fair/flag", json={"reaction": "should_alert"})
+    assert reply.status_code == 200
+    # Jev typed it not_job; his flag wins as job_other.
+    assert h.sql("SELECT kind, company FROM job_mail WHERE message_id = 'm-fair'") == [
+        ("job_other", "UVic Events")
+    ]
+    assert h.sql("SELECT verdict FROM job_seen WHERE message_id = 'm-fair'") == [("job",)]
+    assert "m-fair" not in {
+        one["message_id"] for one in h.client.get("/inherent/jobs").json()["skipped"]
+    }
+    # The quiet level still holds the sound off.
+    notice = next(n for n in h.notices() if n["company"] == "UVic Events")
+    assert notice["level"] == "card"
+    assert h.sql("SELECT level FROM job_alert WHERE message_id = 'm-fair'") == [("card_sound",)]
+    assert h.sql("SELECT reaction FROM job_feedback WHERE alert_id = 'm-fair'") == [
+        ("flag:should_alert",)
+    ]
+    (log,) = h.sql("SELECT feedback_json FROM attention_log WHERE event_id = 'm-fair'")
+    assert json.loads(log[0])[0]["reaction"] == "flag:should_alert"
+    assert {t for t, _a in h.gmail.calls[reads:]} == {"gmail_get"}  # read, never changed
+
+    # Flagging again changes nothing and reads nothing.
+    after = len(h.gmail.calls)
+    assert (
+        h.client.post("/inherent/jobs/m-fair/flag", json={"reaction": "should_alert"}).status_code
+        == 200
+    )
+    assert len(h.gmail.calls) == after
+    assert h.sql("SELECT count(*) FROM job_alert WHERE message_id = 'm-fair'") == [(1,)]
+    assert h.sql("SELECT count(*) FROM job_feedback WHERE reaction = 'flag:should_alert'") == [(1,)]
+
+    assert (
+        h.client.post("/inherent/jobs/m-promo/flag", json={"reaction": "nope"}).status_code == 400
+    )
 
 
 @pytest.mark.parametrize(

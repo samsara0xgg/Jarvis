@@ -4594,7 +4594,7 @@ def _draft_deps(runtime: JarvisRuntime, home: Home | None) -> dict[str, Any]:
 
 
 def _job_mail_deps(job_mail: JobMail | None) -> dict[str, Any]:
-    """The four job-mail routes' callables (ADR 0155), or none while ``job_mail`` is off (404)."""
+    """The job-mail routes' callables (ADR 0155), or none while ``job_mail`` is off (404)."""
     if job_mail is None:
         return {}
 
@@ -4604,11 +4604,15 @@ def _job_mail_deps(job_mail: JobMail | None) -> dict[str, Any]:
     async def delete(message_id: str) -> None:
         await asyncio.to_thread(job_mail.delete, message_id)
 
+    async def flag(message_id: str, reaction: str) -> None:
+        await asyncio.to_thread(job_mail.flag, message_id, reaction)
+
     return {
         "notices_read": functools.partial(asyncio.to_thread, job_mail.notices),
         "notice_act": act,
         "jobs_read": functools.partial(asyncio.to_thread, job_mail.ledger),
         "job_delete": delete,
+        "job_flag": flag,
     }
 
 

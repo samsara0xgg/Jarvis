@@ -32,6 +32,8 @@ MAX_ERROR_TRIES: Final[int] = 3
 AUDIT_LIMIT: Final[int] = 50
 # The message id of a channel-health alert, which belongs to no mail.
 HEALTH_ID: Final[str] = "health"
+# Allen's "this held-back mail was job mail" (job_feedback.reaction).
+FLAG_REACTION: Final[str] = "flag:should_alert"
 ALERT_KEEP: Final[timedelta] = timedelta(days=7)
 # A pending alert this old was waited on while the client could not show it (a held quiet level).
 HELD_AFTER: Final[timedelta] = timedelta(seconds=30)
@@ -232,6 +234,28 @@ def record_decision(  # noqa: PLR0913 - the row's fields
                 body_excerpt,
                 verdict,
             ),
+        )
+
+
+def add_flag(path: Path, message_id: str, now: datetime) -> None:
+    """Record Allen's "this was job mail" for a mail, on its latest logged decision too."""
+    with _db(path) as conn:
+        conn.execute(
+            "INSERT INTO job_feedback (alert_id, level_shown, reaction, at) VALUES (?, '', ?, ?)",
+            (message_id, FLAG_REACTION, _stamp(now)),
+        )
+        _touch_event(conn, message_id, feedback=("", FLAG_REACTION, _stamp(now)))
+
+
+def is_flagged(path: Path, message_id: str) -> bool:
+    """Whether Allen already flagged this mail as job mail."""
+    with _db(path) as conn:
+        return (
+            conn.execute(
+                "SELECT 1 FROM job_feedback WHERE alert_id = ? AND reaction = ?",
+                (message_id, FLAG_REACTION),
+            ).fetchone()
+            is not None
         )
 
 
