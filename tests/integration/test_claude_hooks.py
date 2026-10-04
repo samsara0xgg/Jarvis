@@ -314,3 +314,22 @@ def test_no_pop_releases_prompts_to_claude_code_and_quiet_still_holds_them(
         proc = rig.hook("PermissionRequest", tool_name="Bash", tool_input={"command": "pwd"})
         assert _decision(proc) == {}
         assert rig.row()["request"] is None
+
+
+def test_prompt_from_the_projects_folder_is_released_to_claude_code(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR 0153: a session a project thread starts in ``~/Projects`` is not held for the notch."""
+    for rig in _rig(tmp_path, monkeypatch):
+        rig.row()  # the companion is reading
+        thread = rig.hook(
+            "PermissionRequest",
+            tool_name="Bash",
+            tool_input={"command": "ls"},
+            cwd=str(Path.home() / "Projects"),
+        )
+        assert _decision(thread) == {}
+        assert rig.row()["request"] is None
+        own = rig.hook("PermissionRequest", tool_name="Bash", tool_input={"command": "pwd"})
+        assert rig.held()["tool"] == "Bash"
+        own.kill()

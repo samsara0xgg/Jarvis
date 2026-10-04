@@ -480,6 +480,9 @@ class ClaudeSessions:
                     "project": _project(cwd),
                     "branch": tx["branch"],
                     "cwd": cwd,
+                    # ADR 0153: a project thread's session (run in ~/Projects) asks in that
+                    # thread, so the notch does not queue it.
+                    "from_project": cwd == str(Path.home() / "Projects"),
                     "where": "background"
                     if agent.get("kind") == "background"
                     else where.get(agent.get("pid", 0), "terminal"),

@@ -103,6 +103,14 @@ def test_claude_sessions_rows_over_http(tmp_path: Path, monkeypatch: pytest.Monk
                 "startedAt": NOW_MS - 1000,
             },
             {
+                "sessionId": "s-thread",
+                "kind": "interactive",
+                "status": "busy",
+                "name": "from a project",
+                "cwd": f"{tmp_path}/Projects",
+                "startedAt": NOW_MS - 500,
+            },
+            {
                 "sessionId": "s-old",
                 "kind": "background",
                 "state": "done",
@@ -136,6 +144,7 @@ def test_claude_sessions_rows_over_http(tmp_path: Path, monkeypatch: pytest.Monk
         "s-inter",
         "s-bg",
         "s-busy-old",
+        "s-thread",
     }  # a day-old finished job drops, a busy one stays
     inter = rows["s-inter"]
     assert (inter["phase"], inter["project"], inter["branch"]) == (
@@ -154,6 +163,9 @@ def test_claude_sessions_rows_over_http(tmp_path: Path, monkeypatch: pytest.Monk
         "first ask",
     )
     assert rows["s-busy-old"]["phase"] == "working"
+    # ADR 0153: only the projects root marks a project thread's session.
+    flags = [rows[s]["from_project"] for s in ("s-thread", "s-inter", "s-bg")]
+    assert flags == [True, False, False]
     assert (bg["job_id"], inter["job_id"]) == ("job1", "")  # what `claude attach` takes
 
 

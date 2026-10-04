@@ -42,6 +42,17 @@ Its limits:
   安静模式 switch it; a bare 安静 or 安静一下 still only stops her.
 - Reminders he set himself are not held by any level.
 
+The notch's cards follow the same ownership, with rules that need no level:
+
+- A Claude session whose directory is `~/Projects` (a project thread's
+  Remote Control session) carries `from_project` on its board row; the notch
+  never queues it and the daemon never holds its permission prompt.
+- While his front app is Claude's desktop app, or his front terminal is a
+  Claude Code session, no pop or ask card shows and no cue sounds; a held
+  prompt waits and comes up when he leaves.
+- A card is put away by Esc, its ×, a sideways swipe or a press elsewhere; that
+  is not park and it is never reminded. One session and one line is one card.
+
 ## Alternatives rejected
 
 - **A preference in the companion's `localStorage`** — it is lost on a profile
@@ -63,3 +74,4 @@ Its limits:
 - A held prompt released to Claude Code's own dialog cannot be answered from
   the notch until he leaves `no-pop`.
 - Typed text does not pass the fixed phrases; typing "勿扰" reaches the model.
+- Esc on an approval card now puts it away instead of denying; Deny is its button only.

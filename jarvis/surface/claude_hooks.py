@@ -23,6 +23,7 @@ import contextlib
 import secrets
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -110,7 +111,12 @@ class ClaudeHooks:
         self, payload: dict[str, Any], gone: Callable[[], Awaitable[bool]]
     ) -> dict[str, Any]:
         """Hold one prompt until Allen answers it; ``{}`` means no decision."""
-        if time.monotonic() - self._read_at > LISTENER_S or self._no_cards():
+        # A project thread's session (cwd ~/Projects) is not his to answer on the notch (ADR 0153).
+        if (
+            time.monotonic() - self._read_at > LISTENER_S
+            or self._no_cards()
+            or payload.get("cwd") == str(Path.home() / "Projects")
+        ):
             return {}
         tool_input = payload.get("tool_input")
         suggestions = payload.get("permission_suggestions")
