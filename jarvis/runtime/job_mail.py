@@ -124,6 +124,7 @@ class JobMail:
         """Poll every ``poll_s``, first at once; a failed cycle is logged, never ends the loop."""
         LOGGER.info("job mail started (every %.0f s)", self._settings.poll_s)
         try:
+            await asyncio.to_thread(self.repair)
             while True:
                 try:
                     await asyncio.to_thread(self.poll_once)
@@ -133,6 +134,17 @@ class JobMail:
         except asyncio.CancelledError:
             LOGGER.info("job mail cancelled")
             raise
+
+    def repair(self) -> int:
+        """Run the repair pass over the ledger; a failure is logged and never stops the poller."""
+        try:
+            changed = repair(self._db)
+        except Exception:
+            LOGGER.exception("job mail: the ledger repair failed; the poller goes on")
+            return 0
+        if changed:
+            LOGGER.info("job mail: repaired %d ledger rows", changed)
+        return changed
 
     def poll_once(self) -> int:
         """One cycle, on the calling thread; returns how many letters it settled."""
@@ -498,6 +510,23 @@ class JobMail:
         if not ledger.delete_mail(self._db, message_id):
             msg = f"no such mail: {message_id}"
             raise LookupError(msg)
+
+
+def repair(db: Path) -> int:
+    """Recompute what the current rules read from each ledger row's stored header (ADR 0158).
+
+    Idempotent and offline: only the stored sender name, domain and subject are used, never
+    Gmail; returns how many rows changed.
+    """
+    changed = 0
+    for row in ledger.mail_rows(db):
+        company = triage.company_of(
+            row["sender_name"] or "", row["sender_domain"] or "", row["subject"] or ""
+        )
+        if company != row["company"]:
+            ledger.update_mail(db, row["message_id"], {"company": company})
+            changed += 1
+    return changed
 
 
 def _audit(head: triage.Head) -> dict[str, str]:

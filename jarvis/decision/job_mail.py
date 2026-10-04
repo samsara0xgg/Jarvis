@@ -376,23 +376,133 @@ _EVENT_CHARS: Final[int] = 200
 _PLAUSIBLE_ROLE_CHARS: Final[int] = 80
 
 
-def company_of(name: str, domain: str) -> str:
-    """The sender's display name without department words, else the domain's own label.
+# Applicant-tracking systems send for the employer: their domain is not the company.
+_ATS: Final = frozenset(
+    {
+        "myworkday",
+        "myworkdayjobs",
+        "greenhouse",
+        "lever",
+        "icims",
+        "smartrecruiters",
+        "ashby",
+        "ashbyhq",
+        "bamboohr",
+    },
+)
+_SECOND_LEVEL: Final = frozenset({"co", "com", "org", "net", "gov", "ac", "edu"})
+# ponytail: a lowercase domain label has no word boundaries to read; it is split only when it ends
+# in one of these corporate words ("reliablecontrols" -> "Reliable Controls"). A dictionary
+# would split more, at the cost of a dependency; the ledger shows the guess and Allen can see it.
+_TAILS: Final = frozenset(
+    {
+        "controls",
+        "systems",
+        "technologies",
+        "solutions",
+        "software",
+        "networks",
+        "robotics",
+        "labs",
+        "energy",
+        "group",
+        "capital",
+        "health",
+        "digital",
+        "industries",
+    },
+)
+_PERSON_WORD: Final = re.compile(r"[A-Z][a-z]+(?:[-'\u2019][A-Z]?[a-z]+)*\.?|[A-Z]\.")
+# A subject's leading "Company - Invitation to Interview" segment is not a company when it says
+# what the mail is, and a word after "at/from/to" is not one when it is one of these.
+_SUBJECT_WORDS: Final = re.compile(
+    r"\b(?:interview|invitation|application|acknowledg\w*|offer|update|thank|welcome|job|your|"
+    r"virtual|schedul\w*|reminder|status|re|fwd?)\b",
+    re.IGNORECASE,
+)
+_LEADING_SEGMENT: Final = re.compile(
+    r"^(?:(?:re|fwd?)\s*:\s*)*([^-\u2013|:()]{2,40}?)\s+[-\u2013|]\s+\S", re.IGNORECASE
+)
+_AFTER_PREPOSITION: Final = re.compile(
+    r"\b(?:[Aa]t|[Ff]rom|[Ww]ith|[Tt]o|[Jj]oin)\s+"
+    r"([A-Z][\w&.'\u2019-]*(?:\s+[A-Z][\w&.'\u2019-]*){0,3})"
+)
 
-    ponytail: a person's name as the display name reads as the company; the typed-company
-    column can be fixed by hand in the ledger later, and Jev cannot extract free text yet.
-    """
-    cleaned = re.sub(r"\s+", " ", _NOISE.sub(" ", name)).strip(" -|·,:&")
-    if len(cleaned) >= 2:  # noqa: PLR2004 - one letter is not a name
-        return cleaned
+
+def _owner_label(domain: str) -> str:
+    """The registrable label of a domain (``app.bamboohr.com`` -> ``bamboohr``), or ''."""
     labels = [one for one in domain.lower().split(".") if one]
+    if len(labels) >= 3 and labels[-2] in _SECOND_LEVEL:  # noqa: PLR2004 - co.uk, com.au
+        return labels[-3]
     if len(labels) >= 2:  # noqa: PLR2004 - a registrable name and a suffix
-        label = labels[-2]
-    else:
-        label = next((one for one in labels if one not in _SUBDOMAINS), "")
-    if not label:
-        return _UNKNOWN_COMPANY
-    return label.upper() if len(label) <= 3 else label.capitalize()  # noqa: PLR2004 - CGI, IBM
+        return labels[-2]
+    return next((one for one in labels if one not in _SUBDOMAINS), "")
+
+
+def _label_name(label: str) -> str:
+    """A domain label as a name: hyphens or a closing corporate word split it, else one word."""
+    words = label.replace("-", " ").split()
+    if len(words) == 1:
+        tail = next(
+            (t for t in _TAILS if words[0].endswith(t) and len(words[0]) - len(t) >= 3),  # noqa: PLR2004
+            None,
+        )
+        if tail:
+            words = [words[0][: -len(tail)], tail]
+    name = " ".join(words)
+    return name.upper() if len(name) <= 3 else name.title()  # noqa: PLR2004 - CGI, IBM
+
+
+def _is_person(name: str, label: str) -> bool:
+    """Whether a display name reads as a person's.
+
+    Two or three capitalised words, none an organisation word, and not the domain's own name
+    ("Reliable Controls" at reliablecontrols.com).
+    """
+    words = name.split()
+    if not 2 <= len(words) <= 3 or not all(_PERSON_WORD.fullmatch(w) for w in words):  # noqa: PLR2004
+        return False
+    if _NOISE.search(name) or words[-1].lower() in _TAILS:
+        return False
+    return not label or label not in re.sub(r"\W", "", name).lower()
+
+
+def _named_in(text: str) -> str:
+    """The company a subject or body names, or '' when none reads.
+
+    Its leading ``Company - ...`` segment, else the capitalised words after ``at``, ``from``,
+    ``with``, ``to`` or ``join``.
+    """
+    text = text.strip()
+    lead = _LEADING_SEGMENT.match(text)
+    if lead and not _SUBJECT_WORDS.search(lead[1]) and not _is_person(lead[1].strip(), ""):
+        return lead[1].strip()
+    for found in _AFTER_PREPOSITION.finditer(text):
+        name = found[1].strip(" .,-")
+        if not _SUBJECT_WORDS.search(name):
+            return name
+    return ""
+
+
+def company_of(name: str, domain: str, subject: str = "", body: str = "") -> str:
+    """Who the mail is from.
+
+    The sender's display name without department words, unless that reads as a person, then the
+    organisation of the sender's domain.
+
+    When the domain is an applicant-tracking system the company is read from the subject, then
+    the body, first. ponytail: a free-mail sender or a person's name that is not matched by
+    the rules above still reads as the company; there is no hand-edit in the ledger yet.
+    """
+    label = _owner_label(domain)
+    if label in _ATS:
+        found = _named_in(subject) or _named_in(body)
+        if found:
+            return found
+    cleaned = re.sub(r"\s+", " ", _NOISE.sub(" ", name)).strip(" -|\u00b7,:&")
+    if len(cleaned) >= 2 and not _is_person(cleaned, label):  # noqa: PLR2004 - one letter is not a name
+        return cleaned
+    return _label_name(label) if label else _UNKNOWN_COMPANY
 
 
 def role_of(subject: str, body: str) -> str:
@@ -482,7 +592,12 @@ def extract(head: Head, body: str) -> Facts:
     except ValueError:
         received = datetime.now(UTC)
     text, at = event_of(body, received)
-    return Facts(company_of(head.name, head.domain), role_of(head.subject, body), text, at)
+    return Facts(
+        company_of(head.name, head.domain, head.subject, body),
+        role_of(head.subject, body),
+        text,
+        at,
+    )
 
 
 # --- what the judge sees and what the card says ----------------------------------------

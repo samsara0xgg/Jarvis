@@ -302,6 +302,33 @@ def upsert_mail(path: Path, mail: dict[str, Any], now: datetime) -> None:
         )
 
 
+_EDITABLE: Final[tuple[str, ...]] = ("company", "role", "kind", "deleted")
+
+
+def mail_rows(path: Path) -> list[dict[str, Any]]:
+    """Every ledger row's stored facts, hidden ones too, for the repair pass (ADR 0158)."""
+    with _db(path) as conn:
+        rows = conn.execute(
+            "SELECT message_id, received_at, sender_name, sender_domain, subject, kind, company,"
+            " role, deleted FROM job_mail ORDER BY received_at, message_id",
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def update_mail(path: Path, message_id: str, fields: Mapping[str, str | int]) -> None:
+    """Change the typed facts of one ledger row (``company``, ``role``, ``kind``, ``deleted``)."""
+    names = [name for name in fields if name in _EDITABLE]
+    if len(names) != len(fields):
+        msg = f"not editable: {sorted(set(fields) - set(_EDITABLE))}"
+        raise ValueError(msg)
+    with _db(path) as conn:
+        conn.execute(
+            f"UPDATE job_mail SET {', '.join(f'{name} = ?' for name in names)}"  # noqa: S608 - fixed names
+            " WHERE message_id = ?",
+            (*fields.values(), message_id),
+        )
+
+
 def delete_mail(path: Path, message_id: str) -> bool:
     """Hide a mail from the ledger and its alerts; False when the id is unknown."""
     with _db(path) as conn:

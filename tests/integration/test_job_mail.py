@@ -23,12 +23,13 @@ import pytest
 import yaml
 from fastapi.testclient import TestClient
 
+from jarvis.decision import job_mail as triage
 from jarvis.decision.attention import ContextPack, Judgement, replay, rule_judge_v1
 from jarvis.decision.surrogate_route import SurrogateRoute
 from jarvis.execution.tools import ToolError
 from jarvis.runtime import RuntimeBootstrapError, _job_mail
 from jarvis.runtime.inherent_loop import _job_mail_deps, _say_job_line
-from jarvis.runtime.job_mail import JobMail, JobMailSettings, gmail_read
+from jarvis.runtime.job_mail import JobMail, JobMailSettings, gmail_read, repair
 from jarvis.shared import lang
 from jarvis.state import job_ledger
 from jarvis.surface.inherent_output import InherentBroadcaster
@@ -670,6 +671,82 @@ def test_a_single_live_interview_speaks_but_a_burst_of_interviews_does_not(
     ]
     (summary,) = burst.notices()
     assert (summary["kind"], summary["level"]) == ("digest", "card_sound")
+
+
+@pytest.mark.parametrize(
+    ("name", "domain", "subject", "company"),
+    [
+        # Allen's real mail: a recruiter's name is not the company.
+        (
+            "Jill Crowe",
+            "app.bamboohr.com",
+            "Re: Reliable Controls - Invitation to Interview",
+            "Reliable Controls",
+        ),
+        (
+            "Jill Crowe",
+            "reliablecontrols.com",
+            "Yilun (Allen) Shi - Firmware QA Co-op - Virtual interview",
+            "Reliable Controls",
+        ),
+        ("CGI", "njoyn.com", "CGI - User Information", "CGI"),
+        # An ATS speaks for the employer: the subject names it.
+        ("Acme Careers", "myworkdayjobs.com", "Thank you for applying to Acme", "Acme"),
+        ("", "greenhouse.io", "Application for Software Engineer at Acme Corp", "Acme Corp"),
+        # Organisation names stay, however many capitalised words.
+        ("Reliable Controls", "reliablecontrols.com", "Hello", "Reliable Controls"),
+        ("Mary Kay", "marykay.com", "Hello", "Mary Kay"),
+        ("Northwind Talent", "northwind.example", "Hello", "Northwind"),
+        ("", "mail.example.co.uk", "Hello", "Example"),
+        ("", "", "Hello", "Unknown"),
+    ],
+)
+def test_the_company_is_the_organisation_not_the_person_who_wrote(
+    name: str, domain: str, subject: str, company: str
+) -> None:
+    """A person's display name yields to the sender domain's organisation; an ATS to the subject."""
+    assert triage.company_of(name, domain, subject) == company
+
+
+def test_the_repair_pass_fixes_stored_rows_offline_and_is_idempotent(
+    tmp_path: Path, jev: _Jev
+) -> None:
+    """Company is recomputed from the stored header; no Gmail, and no change the second time."""
+    h = _harness(tmp_path, jev, [])
+    rows = [
+        ("a", "Jill Crowe", "app.bamboohr.com", "Re: Reliable Controls - Invitation to Interview"),
+        (
+            "b",
+            "Jill Crowe",
+            "reliablecontrols.com",
+            "Yilun (Allen) Shi - Firmware QA Co-op - Virtual interview",
+        ),
+        ("c", "CGI", "njoyn.com", "CGI - User Information"),
+    ]
+    for key, name, domain, subject in rows:
+        job_ledger.upsert_mail(
+            h.db,
+            {
+                "message_id": key,
+                "received_at": NOW.isoformat(),
+                "sender_name": name,
+                "sender_domain": domain,
+                "subject": subject,
+                "kind": "interview",
+                "company": name,
+                "role": "",
+            },
+            NOW,
+        )
+    assert repair(h.db) == 2  # CGI was right
+    assert dict(h.sql("SELECT message_id, company FROM job_mail")) == {
+        "a": "Reliable Controls",
+        "b": "Reliable Controls",
+        "c": "CGI",
+    }
+    assert [one["company"] for one in h.ledger()] == ["Reliable Controls", "CGI"]
+    assert repair(h.db) == 0
+    assert h.gmail.calls == []
 
 
 def test_feedback_is_recorded_and_an_untouched_alert_ends_ignored(
