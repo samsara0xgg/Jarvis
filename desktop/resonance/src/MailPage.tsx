@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Archive, ArrowSquareOut, EnvelopeOpen, Trash } from '@phosphor-icons/react';
+import { Archive, ArrowSquareOut, ArrowUpRight, EnvelopeOpen, Trash } from '@phosphor-icons/react';
 import { useT, type L } from './companionSettings';
 import { demoMailText, postRoute, type Mail } from './homeData';
 import { Lk, short } from './Markdown';
@@ -39,17 +39,31 @@ export function MailList({ mail, filter, onFilter, onOpen }: { mail: Mail[]; fil
 }
 
 type Detail = { thread_id?: string; address?: string; text: string };
-const URL_AT = /(https?:\/\/[^\s<>()"]*[^\s<>()".,;:!?])/;
-const linked = (text: string) => text.split(URL_AT).map((part, i) => i % 2 ? <Lk key={i} url={part}>{short(part)}</Lk> : part);
-// Mail as it comes, made readable: a link in angle brackets (`click here <url>`, often broken over lines) sits in the sentence,
-// trailing spaces go, runs of blank lines close up to one, and an earlier letter quoted under it folds away.
-const tidy = (text: string) => text.replace(/\s*<(https?:\/\/[^\s>]+)\s*>[ \t]*/g, ' $1 ').replace(/[ \t]+$/gm, '').replace(/\n{3,}/g, '\n\n').trim();
+// A bare address shows short; the daemon writes a link with words as `words (url)`, and that becomes a small arrow after the words.
+const URL_AT = /( ?\(https?:\/\/[^\s()]+\)|https?:\/\/[^\s<>()"]*[^\s<>()".,;:!?])/;
+const linked = (text: string) => text.split(URL_AT).map((part, i) => {
+  if (i % 2 === 0) return part;
+  const url = part.trim().replace(/^\((.*)\)$/, '$1');
+  return url === part ? <Lk key={i} url={url}>{short(url)}</Lk> : <Lk key={i} url={url}><ArrowUpRight className="mp-go" size={12} weight="bold"/></Lk>;
+});
+// Mail as it comes, made readable: the invisible padding of HTML mail goes, a link in angle brackets (`click here <url>`, often broken
+// over lines) sits in the sentence, a line that is only a link (an image or a picture button, no words) is counted instead of shown,
+// lines lose their indent and trailing spaces, runs of blank lines close up to one, and an earlier letter quoted under it folds away.
+const INVISIBLE = /[\u00a0\u00ad\u034f\u200b-\u200d\u2060\ufeff]/g;
+const LONE_LINK = /^\(?https?:\/\/\S+?\)?$/;
+const tidy = (text: string) => {
+  let pictures = 0;
+  const lines = text.replace(INVISIBLE, ' ').replace(/\s*<(https?:\/\/[^\s>]+)\s*>[ \t]*/g, ' $1 ').split('\n').map(line => line.trim())
+    .filter(line => !(LONE_LINK.test(line) && ++pictures) && !/^[.·•|]$/.test(line));
+  return { text: lines.join('\n').replace(/\n{3,}/g, '\n\n').trim(), pictures };
+};
 const QUOTED = /^(?:On .{4,200} wrote:|在.{2,200}写道[:：]|-{2,} ?Original Message ?-{2,}|>)/m;
-function Body({ text }: { text: string }) {
+function Body({ text, onGmail }: { text: string; onGmail: () => void }) {
   const t = useT(), [open, setOpen] = useState(false);
-  const all = tidy(text), at = all.search(QUOTED), main = at > 0 ? all.slice(0, at).trim() : all, quoted = at > 0 ? all.slice(at) : '';
+  const { text: all, pictures } = tidy(text), at = all.search(QUOTED), main = at > 0 ? all.slice(0, at).trim() : all, quoted = at > 0 ? all.slice(at) : '';
   return <>
-    <p className="mp-text">{linked(main)}</p>
+    {main && <p className="mp-text">{linked(main)}</p>}
+    {pictures > 0 && <button className="btn-text mp-pics" onClick={onGmail}>{t([`${pictures} picture${pictures > 1 ? 's' : ''} or picture links aren’t shown here; open it in Gmail to see them`, `还有 ${pictures} 张图片或图片链接没显示，在 Gmail 里能看到`])}</button>}
     {quoted && <button className="btn-text mp-quoted" aria-expanded={open} onClick={() => setOpen(v => !v)}>{open ? t(['Hide the quoted letter', '收起引用的信']) : t(['Show the quoted letter', '显示引用的信'])}</button>}
     {quoted && open && <p className="mp-text mp-quote">{linked(quoted)}</p>}
   </>;
@@ -95,7 +109,7 @@ export function MailLetter({ port, letter, onAct }: { port: string | null; lette
         <button className="icon-btn" data-act="archive" aria-label={t(['Archive', '归档'])} title={t(['Archive', '归档'])} onClick={() => onAct('archive')}><Archive size={14}/></button></span>
     </div>
     <div className="pg-sec mp-body">{detail === 'failed' ? <p className="muted">{t(['Can’t read this one yet. You can open it in Gmail.', '正文还读不到，可以在 Gmail 里看'])}</p>
-      : body ? <Body text={body.text}/> : <p className="muted">{t(['Loading…', '正在读…'])}</p>}</div>
+      : body ? <Body text={body.text} onGmail={() => void window.jarvis?.openMail?.(letter.id)}/> : <p className="muted">{t(['Loading…', '正在读…'])}</p>}</div>
     <DraftArea d={d}/>
   </div>;
 }

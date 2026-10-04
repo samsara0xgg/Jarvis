@@ -48,7 +48,7 @@ const MAIL = [
   { id: 'm4', from: 'Shop Deals', address: 'hi@shop.example', thread_id: 't4', subject: '50% off everything', received: today.toISOString(), reply: 'fyi', junk: true, importance: .2 },
   { id: 'm5', from: 'Weekly digest', address: 'news@digest.example', thread_id: 't5', subject: 'This week in tech', received: new Date().toISOString() },
 ];
-const TEXT = { m1: 'Hi all,\n\nOffice hours move to Thursday.\nQuestions on A3: https://courses.example/csc370/a3.\n\nProf. Lee', m2: 'Dinner tonight?\n\nMom', m3: 'Please click here\n<https://jobs.example/listing?id=7\n>  to see the slots.  \n\n\n\nNorthwind\n\nOn Mon, Oct 1, 2026 at 9:00 AM Allen wrote:\n> Any slots?' };
+const TEXT = { m1: 'Hi all,\n\nOffice hours move to Thursday.\nQuestions on A3: https://courses.example/csc370/a3.\n\nProf. Lee', m2: 'Dinner tonight?\u00a0\n\u200c \n\n\n         https://img.example/banner.png\n.\n(https://img.example/shoe.png)\n   Explore now (https://shop.example/go)\n\nMom', m3: 'Please click here\n<https://jobs.example/listing?id=7\n>  to see the slots.  \n\n\n\nNorthwind\n\nOn Mon, Oct 1, 2026 at 9:00 AM Allen wrote:\n> Any slots?' };
 const DRAFT1 = 'Hi Prof. Lee,\n\nThursday works for me. I will bring my questions about A3.\n\nAllen';
 const DRAFT2 = 'Hi Prof. Lee,\n\nThanks for the update. Thursday at 3 suits me fine. I will bring my questions about A3 and a printed copy of the plan.\n\nBest,\nAllen';
 const daemon = { unread: new Set(MAIL.map(m => m.id)), drafts: {}, off: true, card: null };
@@ -207,6 +207,9 @@ try {
   await page.locator('.mp-draft').waitFor({ timeout: 4000 });
   check('a draft already on the daemon shows when its letter opens, and it is that letter’s', await page.locator('.mp-subj').inputValue() === 'Re: Still on for tonight?' && await body() === 'Yes, see you at seven.');
   check('the focus carries the second letter', lastFocus()?.id === 'm2' && lastFocus().thread_id === 't2');
+  check('HTML mail reads clean: invisible padding gone, lone picture links counted not shown, `words (url)` is the words and a small arrow link',
+    await page.locator('.mp-text').first().textContent() === 'Dinner tonight?\n\nExplore now\n\nMom' && await count('.mp-text a.lk .mp-go') === 1
+    && (await page.locator('.mp-pics').textContent()).startsWith('2 pictures'));
   await page.locator('[data-act="send"]').click(); await page.waitForTimeout(1200);
   daemon.card = card('c3', 't2', { to: ['mom@home.example'] });
   await page.locator('.mp-confirm').waitFor({ timeout: 4000 });
