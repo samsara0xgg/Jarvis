@@ -34,7 +34,8 @@ def _line(t: float, **labels: float) -> str:
 
 def scenario() -> None:
     clock = [1000.0]
-    s = amb.AmbientSounds(clock=lambda: clock[0])
+    log = Path(tempfile.mkdtemp(prefix="ambient-log-")) / "ambient-sounds.jsonl"
+    s = amb.AmbientSounds(clock=lambda: clock[0], log_path=log)
 
     def at(t: float) -> None:  # advance audio and wall clock to second t of the run
         clock[0] = 1000.0 + t
@@ -70,7 +71,10 @@ def scenario() -> None:
     line = s.line()
     print(line)
     assert line == "Sounds around him (background, rarely worth mentioning; last 10 min, from audio): laughed, coughed, sighed, birds, music on.", line
-    assert s.line() is None  # shown once
+    assert s.line() == line  # every turn, not only once
+    rows = [json.loads(r) for r in log.read_text().splitlines()]
+    assert len(rows) == 9 and [r["her_voice"] for r in rows[:4]] == [False, True, True, True], rows
+    assert rows[0]["kept"] == ["cough"] and rows[5]["kept"] == [], rows  # labels logged, kept named
 
     # Debounce: same label within 10 s is one event; 10 s of quiet makes the next one new.
     at(100)
@@ -84,15 +88,15 @@ def scenario() -> None:
     print(line)
     assert line is not None and "coughed repeatedly" in line, line
 
-    # A sound already shown is not shown again; a new one is.
+    # A new sound joins the ones still inside the 10 minutes.
     at(130)
     s.ingest(_line(130, knock=0.95))
     s.ingest(_line(130, knock=0.95))
     at(131)
-    assert (s.line() or "").endswith("knocking."), "knock"
+    assert "knocking" in (s.line() or ""), "knock"
 
     # Uncertain laughter: two consecutive windows at 0.4-0.9 is a guess; one, or a gap, is nothing.
-    clock[0] += 100
+    clock[0] += 700  # everything above is now older than 10 minutes
     s.ingest(_line(200, laughter=0.45))
     s.ingest(_line(204, laughter=0.5))  # 4 s later: not consecutive
     assert s.line() is None, "lone windows"
@@ -100,12 +104,13 @@ def scenario() -> None:
     s.ingest(_line(207, cough=0.95, music=0.9))
     line = s.line()
     print(line)
-    assert line == "Sounds around him (background, rarely worth mentioning; last 2 min, from audio): coughed, music on; maybe laughed (~55%, this detector under-scores his laugh).", line
+    assert line == "Sounds around him (background, rarely worth mentioning; last 10 min, from audio): coughed, music on; maybe laughed (~55%, this detector under-scores his laugh).", line
     clock[0] += 30
     s.ingest(_line(300, laughter=0.5))
     s.ingest(_line(301.5, laughter=0.6))
     s.ingest(_line(303, laughter=0.95))  # a sure laugh wins over the guess
-    assert (s.line() or "").endswith("laughed."), "sure over maybe"
+    sure_line = s.line() or ""
+    assert "laughed" in sure_line and "maybe laughed" not in sure_line, sure_line
 
     # The 200-character cap holds with every name present, dropping whole phrases.
     clock[0] += 400

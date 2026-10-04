@@ -2158,7 +2158,10 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
     focus = FocusState() if _dashboard_mail(full_config) else None
     mail_drafts = None if focus is None else MailDrafts(focus)
     voice_cues = VoiceCues()
-    ambient = AmbientSounds() if _ambient_sounds(full_config) else None
+    ambient = (
+        AmbientSounds(log_path=logs_dir(paths.root) / "ambient-sounds.jsonl")
+        if _ambient_sounds(full_config) else None
+    )
     registry = build_default_registry(
         mail_drafts=mail_drafts,
         memory_db_path=memory.db_path,

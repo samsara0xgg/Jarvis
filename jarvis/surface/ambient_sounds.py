@@ -27,6 +27,7 @@ from jarvis.surface.voice_native_out import ensure_helper_binary
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from pathlib import Path
 
 LOGGER = logging.getLogger(__name__)
 
@@ -113,16 +114,22 @@ class _Event:
 class AmbientSounds:
     """The helper's lifecycle, the playback and threshold filter, and the ``live_context`` line."""
 
-    def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
-        """Idle until :meth:`start`; ``clock`` times events (monotonic seconds)."""
+    def __init__(
+        self, clock: Callable[[], float] = time.monotonic, *, log_path: Path | None = None,
+    ) -> None:
+        """Idle until :meth:`start`; ``clock`` times events (monotonic seconds).
+
+        ``log_path`` gets one JSON line per classifier window: its labels, whether her voice
+        was in it, and what was kept. Labels only, never audio.
+        """
         self._clock = clock
+        self._log_path = log_path
         self._lock = threading.Lock()
         # Samples sent to the helper so far: its clock, which a result's ``t`` is read on.
         self._fed = 0
         self._busy: deque[list[int]] = deque(maxlen=64)  # [start, end] samples while she spoke
         self._events: deque[_Event] = deque(maxlen=512)
         self._maybe_prev: dict[str, tuple[float, float]] = {}  # name -> (window end, confidence)
-        self._shown_at = 0.0
         self._queue: queue.Queue[bytes | None] | None = None
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -185,21 +192,39 @@ class AmbientSounds:
                 best[name] = max(best.get(name, 0.0), conf)
         window_end = int(end_s * _RATE)
         window_start = window_end - int(_WINDOW_S * _RATE)
+        kept: list[str] = []
         with self._lock:
             tail = int(_TAIL_S * _RATE)
-            if any(a < window_end and b + tail > window_start for a, b in self._busy):
-                return
+            her_voice = any(a < window_end and b + tail > window_start for a, b in self._busy)
             now = self._clock()
-            for name, conf in best.items():
+            for name, conf in best.items() if not her_voice else ():
                 sure, maybe = THRESHOLDS.get(name, DEFAULT_BAR)
                 if conf >= sure:
                     self._record_locked(name, now, 0.0)
+                    kept.append(name)
                 elif maybe is not None and conf >= maybe:
                     prev = self._maybe_prev.get(name)
                     if prev is not None and 0 < end_s - prev[0] <= _HOP_S:
                         self._record_locked(name, now, max(conf, prev[1]))
+                        kept.append(f"maybe {name}")
                 if maybe is not None and conf >= maybe:
                     self._maybe_prev[name] = (end_s, conf)
+        self._log(heard, her_voice=her_voice, kept=kept)
+
+    def _log(self, heard: list[tuple[str, float]], *, her_voice: bool, kept: list[str]) -> None:
+        if self._log_path is None or not heard:
+            return
+        row = {
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "labels": [[label, round(conf, 3)] for label, conf in heard],
+            "her_voice": her_voice,
+            "kept": kept,
+        }
+        try:
+            with self._log_path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(row) + "\n")
+        except OSError:
+            LOGGER.debug("ambient sounds: could not write %s", self._log_path, exc_info=True)
 
     def _record_locked(self, name: str, now: float, maybe: float) -> None:
         for event in reversed(self._events):
@@ -212,14 +237,17 @@ class AmbientSounds:
         self._events.append(_Event(now, name, maybe))
 
     def line(self) -> str | None:
-        """The state-block line for sounds heard since the last turn that showed one, or None."""
+        """The state-block line for the sounds of the last 10 minutes, every turn, or None.
+
+        Every turn, not only what is new: asked what he heard, she answers from it instead of
+        reaching for a tool (a 2026-10-03 replay: 6 of 10 tool calls without it, 2 with it).
+        """
         now = self._clock()
         with self._lock:
-            since = max(self._shown_at, now - _SPAN_S)
+            since = now - _SPAN_S
             fresh = [e for e in self._events if e.t > since]
             if not fresh:
                 return None
-            self._shown_at = now
         sure: dict[str, int] = {}
         maybe: dict[str, tuple[int, float]] = {}
         for e in fresh:

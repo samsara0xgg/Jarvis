@@ -25,9 +25,10 @@ diagnostic-lane frames, and put one line of recent whitelisted labels at or abov
 state block as the last `live_context` producer, with laughter alone also reported as
 "maybe" (with its confidence) when its family scores 0.4 to 0.9 in two consecutive windows,
 dropping any result whose 3 s window overlaps
-her playback (plus 0.5 s) or a muted microphone; only label names and times are kept, in
-memory, `realtime.ambient_sounds: false` turns it off, and she never speaks about a sound
-unprompted.
+her playback (plus 0.5 s) or a muted microphone. Every turn's line covers the last 10
+minutes, not only what is new since the last turn. Each classifier window's labels, whether
+her voice was in it and what was kept go to `logs/ambient-sounds.jsonl`, never audio;
+`realtime.ambient_sounds: false` turns it off, and she never speaks about a sound unprompted.
 
 ## Alternatives rejected
 
@@ -42,9 +43,11 @@ unprompted.
 
 ## Consequences
 
-A real sneeze or ringtone scored below 0.9 is not reported, and a laugh is only ever a guess. A sound that began before
-the last turn that showed a line is not shown again, and a sound heard while she spoke is
-lost. The helper is built with `swiftc` on first start in the background, so the line is empty
+A real sneeze or ringtone scored below 0.9 is not reported, and a laugh is only ever a guess. A sound heard while she
+spoke is lost. A sound stays in the line for 10 minutes, so it repeats across turns: with
+only new sounds, a replay of "刚才周围有什么声音？" asked right after the sound had been shown
+sent her to a tool (web search, screen look) in 6 of 10 runs; with the 10-minute line, 2. Repeating it across four-turn conversations did not make her
+raise a sound unprompted more often (1 of 96 turns, against 2 of 96 shown once). The helper is built with `swiftc` on first start in the background, so the line is empty
 until that finishes; if it keeps dying (five restarts) the line stays off until the next
 daemon start.
 
