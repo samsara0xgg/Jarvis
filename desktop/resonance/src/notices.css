@@ -207,3 +207,27 @@
 .notch .nc-away-row:hover,.notch .nc-away-row:focus-visible { background:rgb(var(--glow) / .1); outline:none; }
 .notch .nc-away-row b { font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .notch .nc-away-row span { color:var(--p-faint); }
+
+/* Job mail (ADR 0155): the mail card and its digest in the notch, the kind chips shared with the Dashboard's job ledger. */
+.jk { display:inline-flex; align-items:center; flex:none; padding:0 6px; border-radius:var(--radius-tag,5px); font-style:normal; font-size:var(--text-label); font-weight:600; line-height:16px; letter-spacing:.02em;
+  color:var(--jk,#c7a8ff); background:color-mix(in srgb,var(--jk,#c7a8ff) 16%,transparent); }
+.jk.is-offer { --jk:#6fe0b4; } .jk.is-interview { --jk:#8fb4ff; } .jk.is-rejection { --jk:#ff9a8a; } .jk.is-receipt { --jk:#aab3d6; } .jk.is-other { --jk:#c7a8ff; }
+.notch .is-offer { --tone:#6fe0b4; } .notch .is-interview { --tone:#8fb4ff; } .notch .is-rejection { --tone:#ff9a8a; } .notch .is-receipt { --tone:#aab3d6; } .notch .is-other { --tone:#c7a8ff; }
+.notch .nc-mail-t { margin:0; padding-inline:2px; font-size:var(--text-title); font-weight:600; line-height:1.35; overflow-wrap:anywhere; }
+.notch .nc-mail .nc-what { color:var(--p-ink); font-size:var(--text-body); line-height:1.45; }
+.notch .nc-mail .nc-tags { padding-inline:2px; margin:0; }
+.notch .nc-rate-open { align-self:flex-start; margin:0 0 -2px 0; padding:3px 8px; border-radius:var(--radius-control); font-size:var(--text-label); color:var(--p-faint); }
+.notch .nc-rate-open:hover { background:rgb(255 255 255 / .07); color:var(--p-ink); }
+.notch .nc-rate { display:grid; grid-template-columns:auto 1fr; gap:8px 10px; align-items:center; padding:9px 10px; border-radius:var(--radius-block); background:rgb(255 255 255 / .045); animation:notch-row-in var(--motion-fast) var(--ease-out) both; }
+.notch .nc-rate-q { grid-column:1 / -1; font-size:var(--text-label); font-weight:600; letter-spacing:.06em; color:var(--p-faint); }
+.notch .nc-right { height:40px; min-width:76px; font-size:18px; font-weight:700; }
+.notch .nc-levels { display:flex; flex-wrap:wrap; gap:5px; }
+.notch .nc-lv { height:26px; padding:0 9px; border-radius:var(--radius-tag); background:rgb(255 255 255 / .07); font-size:var(--text-detail); color:var(--p-muted); box-shadow:inset 0 0 0 .5px transparent; transition:background var(--motion-fast),color var(--motion-fast); }
+.notch .nc-lv:hover { background:rgb(255 255 255 / .13); color:var(--p-ink); }
+.notch .nc-lv.is-now { background:rgb(255 201 143 / .16); color:var(--warm-c); box-shadow:inset 0 0 0 1px rgb(255 201 143 / .55); }
+.notch .nc-jobrows { gap:1px; }
+.notch .nc-jobrow { display:grid; grid-template-columns:auto minmax(0,max-content) minmax(0,1fr) auto; align-items:center; gap:0 9px; padding:7px 2px; font-size:var(--text-detail); }
+.notch .nc-jobrow b { font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.notch .nc-jr-role { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--p-faint); }
+.notch .nc-jobrow time { font-size:var(--text-label); color:var(--p-faint); font-variant-numeric:tabular-nums; white-space:nowrap; }
+@media (prefers-reduced-motion:reduce) { .notch .nc-rate { animation:none; } .notch .nc-lv { transition:none; } }

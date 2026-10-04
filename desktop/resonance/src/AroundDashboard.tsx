@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent, type ReactNode, type Ref, type WheelEvent } from 'react';
-import { ArrowSquareOut, ArrowUp, ArrowsClockwise, CaretDown, CaretLeft, CaretRight, CaretUp, ChatCircle, Check, Cloud, CloudFog, CloudLightning, CloudRain, CloudSnow, EnvelopeSimple, GearSix, GitBranch, MagnifyingGlass, ShieldCheck, SpeakerHigh, SpeakerSlash, Sun, X } from '@phosphor-icons/react';
+import { ArrowSquareOut, ArrowUp, ArrowsClockwise, Briefcase, CaretDown, CaretLeft, CaretRight, CaretUp, ChatCircle, Check, Cloud, CloudFog, CloudLightning, CloudRain, CloudSnow, EnvelopeSimple, GearSix, GitBranch, MagnifyingGlass, ShieldCheck, SpeakerHigh, SpeakerSlash, Sun, X } from '@phosphor-icons/react';
 import { TAKES, pick, type ExprId } from './starCore';
 import { useUsage, type UsageWindow } from './QuotaModule';
 import { useCodexSessions } from './CodexModule';
@@ -17,6 +17,7 @@ import { ArrangeHome, BLOCK } from './ArrangeHome';
 import { BriefPage } from './BriefPage';
 import { SettingsPage, type Account, type AccountKeyDrafts, type Controls } from './SettingsPage';
 import { ActionCard, MailCard, QuestionCard, type Answer, type Card, type Decide, type Question } from './ActionCard';
+import { JobsPage, type JobGroup, type Skipped } from './JobsPage';
 import { MailLetter, MailList, type MailAct, type MailFilter } from './MailPage';
 import { MEM_HOME, MemoryPage, type MemNav, type MemoryOverview } from './MemoryPage';
 import { MOTION } from './motion';
@@ -27,7 +28,7 @@ import './dashboard-home.css';
 // blocks: the ones you keep, in your order, and the ones that show up when there is something. A block grows
 // into its page in place; the panel follows the blocks up to VIEW_MAX. Her light accents the surface;
 // measurements and agent states keep their own stable colours.
-type Page = 'conversation' | 'now' | 'agents' | 'usage' | 'plugins' | 'projects' | 'settings' | 'arrange' | 'brief' | 'mail' | 'memory';
+type Page = 'conversation' | 'now' | 'agents' | 'usage' | 'plugins' | 'projects' | 'settings' | 'arrange' | 'brief' | 'mail' | 'memory' | 'jobs';
 export type DashboardView = {
   page: Page | null; plugin: string | null; letter: Mail | null; memory: MemNav; settingsCat: string | null; unfolded: string | null;
   query: string; token: string; homeDraft: string; talkDraft: string; days: number; scroll: number;
@@ -37,7 +38,7 @@ export type DashboardView = {
   questionDraft: { id: string; value: Record<string, string> } | null;
 };
 export type DashboardViewHandle = { snapshot: () => DashboardView; restore: (value: DashboardView) => void };
-const TITLES: Record<Page, L> = { conversation: ['Conversation', '对话'], now: ['Right now', '现在'], agents: ['Agents', 'Agents'], usage: ['Usage', '用量'], plugins: ['Plugins', '插件'], projects: ['Projects', '项目'], settings: ['Settings', '设置'], arrange: ['Arrange the home', '编辑首页'], brief: ['Morning brief', '早报'], mail: ['Mail', '邮件'], memory: ['Memory', '记忆'] };
+const TITLES: Record<Page, L> = { conversation: ['Conversation', '对话'], now: ['Right now', '现在'], agents: ['Agents', 'Agents'], usage: ['Usage', '用量'], plugins: ['Plugins', '插件'], projects: ['Projects', '项目'], settings: ['Settings', '设置'], arrange: ['Arrange the home', '编辑首页'], brief: ['Morning brief', '早报'], mail: ['Mail', '邮件'], memory: ['Memory', '记忆'], jobs: ['Job mail', '求职邮件'] };
 // The home follows its blocks from the old fixed height up to this, then scrolls inside the panel.
 const VIEW_MIN = 466, VIEW_MAX = 600, CORNER = 28, HOME_GAP = 8, HOLD = 560, TALK_STAYS = 10 * 60_000;
 // The room the resting input keeps under the home (the panel's bottom padding, 58 against a page's 12): a page, where the input is gone, takes it.
@@ -275,6 +276,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
     else if (name === 'arrange') react('14', 1200);
     else if (name === 'brief') react('10', 1600);
     else if (name === 'mail') react('02', 0);
+    else if (name === 'jobs') { react('02', 0); jobsRoute.reload(); }
     else { react('02', 0); if (name === 'agents') onHop(.2); }
   };
   // The row grows into the page: its outline opens to the whole panel and its title slides up to the top.
@@ -561,6 +563,8 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
   const memoryRoute = useRoute<MemoryOverview>(port, '/inherent/memory', open, 60_000);
   const memoryNow = Array.isArray(memoryRoute.data?.sections) ? memoryRoute.data : null; // an answer of another shape counts as no memory page
   const noticeRoute = useRoute<{ notices: Notice[] }>(port, '/inherent/notices', open, 60_000);
+  // The job ledger (job mail, ADR 0155): its icon is in the corner only once the daemon serves the route (a 404 means the feature is off).
+  const jobsRoute = useRoute<{ ledger: JobGroup[]; skipped?: Skipped[] }>(port, '/inherent/jobs', open, 30_000), ledger = Array.isArray(jobsRoute.data?.ledger) ? jobsRoute.data.ledger : null;
   // A first boot fetches the speech models (~240 MB) before she can hear or speak; the corner shows how far, polled until they are in.
   const [voiceIn, setVoiceIn] = useState(false);
   const models = useRoute<{ voice_models?: { state: 'ready' | 'downloading' | 'failed'; done: number; total: number } }>(port, '/inherent/setup', open && !voiceIn, 3000).data?.voice_models;
@@ -797,6 +801,10 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
       <div className="pg-body">{letter ? <MailLetter key={letter.id} port={port} letter={letter} onAct={kind => void actOnLetter(kind, letter)}/>
         : <MailList mail={mailRanked} filter={mailFilter} onFilter={setMailFilter} onOpen={setLetter}/>}</div>
     </>,
+    jobs: () => <>
+      {back(t(TITLES.jobs), ledger && t([`${ledger.length} compan${ledger.length === 1 ? 'y' : 'ies'}`, `${ledger.length} 家公司`]))}
+      <div className="pg-body">{port && <JobsPage port={port} ledger={ledger ?? []} skipped={Array.isArray(jobsRoute.data?.skipped) ? jobsRoute.data.skipped : []} onChanged={jobsRoute.reload}/>}</div>
+    </>,
     memory: () => <>
       {back(t(TITLES.memory), memoryNow && t([`${memoryNow.items} kept`, `记着 ${memoryNow.items} 条`]))}
       <div className="pg-body">{port && <MemoryPage port={port} overview={{ ...memoryRoute, data: memoryNow }} nav={memory} setNav={setMemory} notify={notify}/>}</div>
@@ -831,6 +839,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
             <button className={`cb ${ctl.speechMuted ? 'is-muted' : ''}`} aria-pressed={ctl.speechMuted} onClick={mute}
               aria-label={t(ctl.speechMuted ? ['Unmute Jarvis', '取消静音'] : ['Mute Jarvis', '让 Jarvis 静音'])} title={t(ctl.speechMuted ? ['Unmute Jarvis', '取消静音'] : ['Mute Jarvis: voice and sounds', '让 Jarvis 静音：声音和提示音'])}>
               {ctl.speechMuted ? <SpeakerSlash size={15}/> : <SpeakerHigh size={15}/>}</button>
+            {ledger && <button className="cb" data-row="jobs" aria-label={t(['Job mail', '求职邮件'])} title={t(['Job mail', '求职邮件'])} onClick={e => openPage('jobs', e.currentTarget)}><Briefcase size={15}/></button>}
             <button className="cb" data-row="settings" aria-label={t(['Settings', '设置'])} title={t(['Settings', '设置'])} onClick={e => openPage('settings', e.currentTarget)}><GearSix size={15}/></button>
           </span>
         </div>

@@ -1,5 +1,7 @@
 import { createContext, useContext, useEffect, useLayoutEffect, useReducer, useRef, useState, type ReactNode } from 'react';
 import { ArrowSquareOut, ArrowUp, Check, Moon, X } from '@phosphor-icons/react';
+import { jobKind, jobStamp } from './JobsPage';
+import { postRoute } from './homeData';
 import { AGENT_NAME, loadMarks, openLabel, requestLine, saveMark, type Agent, type AgentRequest, type AgentState } from './agents';
 import { AgentMark, type MarkLook, type MarkState } from './AgentMarks';
 import { tr, type Lang } from './companionSettings';
@@ -26,7 +28,16 @@ export type Notice = Base & (
   | { kind: 'wait'; line: string }
   | { kind: 'req'; req: AgentRequest }
   // What waited while the level was no-pop or dnd (ADR 0153): one session at a time, the most important first.
-  | { kind: 'digest'; items: Notice[] });
+  | { kind: 'digest'; items: Notice[] }
+  // Job mail (ADR 0155), from GET /inherent/notices: one mail, and what waited while the level was no-pop or dnd.
+  | { kind: 'mail'; job: JobNotice }
+  | { kind: 'jobs'; job: JobNotice });
+// The daemon's notice as it arrives; it has already applied the quiet level. `level`: card (silent), card_sound or speak (both with her cue).
+export type JobItem = { id?: string; title?: string; line?: string; company?: string; role?: string; at?: string; event_at?: string | null; mail_kind?: string };
+export type JobNotice = JobItem & { id: string; kind: 'mail' | 'digest'; title: string; line?: string; level?: string; items?: JobItem[] };
+const isJob = (n: Notice): n is Notice & { kind: 'mail' | 'jobs' } => n.kind === 'mail' || n.kind === 'jobs';
+// What the daemon is told about a notice: POST /inherent/notices/{id} { action: 'seen' } or { action: 'feedback', reaction }.
+const tell = (port: string | null, id: string, body: { action: 'seen' } | { action: 'feedback'; reaction: string }) => { if (port) void postRoute(port, `/inherent/notices/${encodeURIComponent(id)}`, body).catch(() => undefined); };
 type Arrival = Notice extends infer N ? N extends Notice ? Omit<N, 'key' | 'at'> : never : never;
 export const needs = (n: Notice) => n.kind === 'req' || n.kind === 'wait';
 // ADR 0153: from `no-pop` up the island shows no card and no name pop.
@@ -72,8 +83,8 @@ type Tone = 'ask' | 'done' | 'error';
 // hold the island) except a card brought forward on purpose; `watched` is the session Allen has been looking at in
 // Ghostty for 1.5 s, `viewing` the one whose page is open in the island. Startrail's sessions (`a.host`) are looked at
 // while its window is in front (`agentsFront`), and their marks are the host's: `mark` changes them there.
-export function useNotices({ port, agents, hold, quiet, inClaude, watched, viewing, agentsFront, cue, answer, mark }: {
-  port: string | null; agents: Agent[]; hold: boolean; quiet: Quiet; inClaude: boolean; watched: string | null; viewing: string | null; agentsFront: boolean; cue: (name: Tone | 'send' | 'close', gain?: number) => void;
+export function useNotices({ port, poll, agents, hold, quiet, inClaude, watched, viewing, agentsFront, cue, answer, mark }: {
+  port: string | null; poll: boolean; agents: Agent[]; hold: boolean; quiet: Quiet; inClaude: boolean; watched: string | null; viewing: string | null; agentsFront: boolean; cue: (name: Tone | 'send' | 'close', gain?: number) => void;
   answer: (req: AgentRequest, body: { decision: 'allow' | 'always' | 'deny'; answers?: Record<string, string>; message?: string }, id: string) => Promise<boolean>;
   mark: (id: string, change: { seen: true } | { parked: boolean; archived: boolean }) => void;
 }) {
@@ -84,6 +95,8 @@ export function useNotices({ port, agents, hold, quiet, inClaude, watched, viewi
       queue: [] as Notice[], folded: [] as Notice[], held: [] as Notice[], cards: new Map<string, Card>(), shownReqs: new Set<string>(), dismissed: new Set<string>(),
       unread: new Set(kept.unread), archived: new Set(kept.cleared), parked: new Map<string, number>(), last: kept.last,
       soundAt: -1e9, shown: '', openedAt: 0, peek: false, touched: '', forced: '',
+      // Job mail: the notice ids taken in (one card each, never again) and those already told `seen`.
+      jobIds: new Set<string>(), seen: new Set<string>(),
       // Sessions changed here before the daemon's marks arrived: their marks stay as she set them.
       loaded: false, early: new Set<string>(),
       // The marks each of Startrail's sessions had when the lists last took them from the host.
@@ -123,14 +136,16 @@ export function useNotices({ port, agents, hold, quiet, inClaude, watched, viewi
   const live = useRef({ byId, hold, quiet, inClaude });
   live.current = { byId, hold, quiet, inClaude };
   const card = (n: Notice) => { let c = s.cards.get(n.key); if (!c) s.cards.set(n.key, c = { qi: 0, picks: [], review: false, feedback: false, ok: '' }); return c; };
-  const toneOf = (n: Notice): Tone => needs(n) ? 'ask' : n.kind === 'pop' && n.ids.every(id => byId.get(id)?.state === 'err') ? 'error' : 'done';
-  const sound = (n: Notice, gain = 1) => { const now = performance.now(); if (now - s.soundAt > TOGETHER_MS) { s.soundAt = now; cue(toneOf(n), gain); } };
+  const toneOf = (n: Notice): Tone => needs(n) ? 'ask' : isJob(n) ? n.job.level === 'speak' ? 'ask' : 'done' : n.kind === 'pop' && n.ids.every(id => byId.get(id)?.state === 'err') ? 'error' : 'done';
+  // Job mail at level card is silent.
+  const sound = (n: Notice, gain = 1) => { if (isJob(n) && n.job.level !== 'card_sound' && n.job.level !== 'speak') return; const now = performance.now(); if (now - s.soundAt > TOGETHER_MS) { s.soundAt = now; cue(toneOf(n), gain); } };
 
   // The level rising takes what is on the island into `held`; it dropping brings it all back, needs-you first, then errors, then done.
   useEffect(() => {
     if (noCards(quiet)) {
-      // A digest on the island goes back to the items it listed.
-      s.held = [...s.queue.flatMap(n => n.kind === 'digest' ? n.items : [n]), ...s.folded, ...s.held]; s.queue = []; s.folded = []; s.forced = ''; bump();
+      // A digest on the island goes back to the items it listed. Job mail is the daemon's to bring back (its own digest): one not yet shown is forgotten here, so it comes again.
+      for (const n of s.queue) if (isJob(n) && !s.seen.has(n.id)) s.jobIds.delete(n.id);
+      s.held = [...s.queue.filter(n => !isJob(n)).flatMap(n => n.kind === 'digest' ? n.items : [n]), ...s.folded, ...s.held]; s.queue = []; s.folded = []; s.forced = ''; bump();
     } else if (s.held.length) {
       const rank = (n: Notice) => needs(n) ? 0 : toneOf(n) === 'error' ? 1 : 2, at = performance.now();
       // One entry per session, the most important of what it did; two or more of them make one digest, one is just shown.
@@ -149,6 +164,13 @@ export function useNotices({ port, agents, hold, quiet, inClaude, watched, viewi
   // One ask is one card: the session and what it says (ADR 0153).
   const askKey = (n: { kind: string; id: string; req?: AgentRequest; line?: string }) => `${n.id}|${n.req ? requestLine(n.req) : n.line}`;
   const arrive = (a: Arrival) => {
+    // Job mail waits in the queue like any card (`hold`, in Claude); at no-pop and dnd it is not taken in, the daemon keeps it.
+    if (a.kind === 'mail' || a.kind === 'jobs') {
+      if (noCards(live.current.quiet) || s.jobIds.has(a.id)) return;
+      s.jobIds.add(a.id); const now = performance.now();
+      s.queue.push({ ...a, key: `${a.kind}:${a.id}:${now}`, at: now } as Notice);
+      return;
+    }
     // A project thread's session is not his to answer here; while he is in Claude a pop or ask line has no use, but
     // a prompt Jarvis holds waits behind `hold` until he leaves (a background session has no dialog of its own).
     if (s.parked.has(a.id) || live.current.byId.get(a.id)?.fromProject || live.current.inClaude && a.kind !== 'req') return;
@@ -170,6 +192,26 @@ export function useNotices({ port, agents, hold, quiet, inClaude, watched, viewi
     const i = s.queue.findIndex((m, j) => j > 0 && !needs(m));
     if (i < 0) s.queue.push(n); else s.queue.splice(i, 0, n);
   };
+  // GET /inherent/notices every 5 s while this window is up: the daemon's job mail and digest become cards. Its other notices are the
+  // Dashboard's; a 404 means job mail is off, and the poll stops without a word.
+  useEffect(() => {
+    if (!port || !poll) return;
+    let stop = false, timer: ReturnType<typeof setTimeout>;
+    const load = async () => {
+      try {
+        const r = await fetch(`http://127.0.0.1:${port}/inherent/notices`, { signal: AbortSignal.timeout(4000) });
+        if (r.status === 404) return;
+        if (r.ok && !stop) {
+          const { notices } = await r.json() as { notices?: JobNotice[] };
+          for (const n of Array.isArray(notices) ? notices : []) if ((n.kind === 'mail' || n.kind === 'digest') && typeof n.id === 'string' && typeof n.title === 'string') arrive({ kind: n.kind === 'mail' ? 'mail' : 'jobs', id: n.id, job: n });
+          bump();
+        }
+      } catch { /* daemon away; the next tick retries */ }
+      if (!stop) timer = setTimeout(load, 5000);
+    };
+    void load();
+    return () => { stop = true; clearTimeout(timer); };
+  }, [port, poll]);
   // Their names leave any pop; `cards` takes their needs-you cards away too.
   const drop = (ids: string[], cards = false) => {
     for (const n of s.queue) if (n.kind === 'pop') n.ids = n.ids.filter(id => !ids.includes(id));
@@ -259,7 +301,10 @@ export function useNotices({ port, agents, hold, quiet, inClaude, watched, viewi
   // A notice coming up: her sound (once per 1.5 s), and the clock for her error face.
   if ((current?.key ?? '') !== s.shown) {
     s.shown = current?.key ?? '';
-    if (current) { s.openedAt = performance.now(); sound(current); }
+    if (current) {
+      s.openedAt = performance.now(); sound(current);
+      if (isJob(current) && !s.seen.has(current.id)) { s.seen.add(current.id); tell(port, current.id, { action: 'seen' }); }
+    }
   }
   const next = () => { s.queue.shift(); s.forced = ''; bump(); };
   const fold = () => {
@@ -281,6 +326,7 @@ export function useNotices({ port, agents, hold, quiet, inClaude, watched, viewi
   const dismiss = () => {
     const n = s.queue[0];
     if (!n) return;
+    if (isJob(n)) { if (!card(n).ok) tell(port, n.id, { action: 'feedback', reaction: 'dismissed' }); return next(); }
     if (!needs(n)) return next();
     s.queue.shift(); s.dismissed.add(askKey(n)); s.forced = ''; bump();
   };
@@ -293,10 +339,17 @@ export function useNotices({ port, agents, hold, quiet, inClaude, watched, viewi
   useEffect(() => {
     if (!current || hover || ok) return;
     // A pop the pointer has been on goes 1.5 s after it leaves.
-    const t = setTimeout(() => needs(current) ? fold() : next(), needs(current) ? FOLD_MS : current.kind === 'digest' ? DIGEST_MS : s.touched === current.key ? 1500 : POP_MS);
+    const t = setTimeout(() => needs(current) ? fold() : next(), needs(current) ? FOLD_MS : current.kind === 'digest' || isJob(current) ? DIGEST_MS : s.touched === current.key ? 1500 : POP_MS);
     return () => clearTimeout(t);
   }, [current?.key, hover, ok, size]);
 
+  // The 合适吗 row on a mail card: the answer goes to the daemon, the card says thanks and goes.
+  const rate = (n: Notice & { kind: 'mail' }, reaction: string, text: string) => {
+    const c = card(n);
+    if (c.ok) return;
+    tell(port, n.id, { action: 'feedback', reaction }); c.ok = text; bump();
+    later(CONFIRM_MS, () => { if (s.queue[0] === n) next(); });
+  };
   const resolve = async (n: Notice & { kind: 'req' }, text: string, body: Parameters<typeof answer>[1]) => {
     const c = card(n);
     if (c.ok || c.pending) return false;
@@ -325,7 +378,7 @@ export function useNotices({ port, agents, hold, quiet, inClaude, watched, viewi
   };
   return { current, count: s.queue.filter(needs).length, peek: s.peek, openedAt: s.openedAt, over: s.over, card: current ? card(current) : null,
     unread: s.unread as ReadonlySet<string>, archived: s.archived as ReadonlySet<string>, parked: s.parked as ReadonlyMap<string, number>,
-    read, archive, park, unpark, setHover, hovering: hover, next, fold, dismiss, back, resolve, focus, bump };
+    read, archive, park, unpark, setHover, hovering: hover, next, fold, dismiss, back, resolve, rate, focus, bump };
 }
 
 // ---------- what waited ----------
@@ -344,6 +397,72 @@ export function DigestCard({ n, agents, lang, look, onOpen, onAnswer }: {
       return <li key={m.key}><button type="button" className="nc-away-row" onClick={() => { if (needs(m)) onAnswer(m.id); else if (a) onOpen(a); }}>
         <AgentMark look={look} state={state} id={m.id} size={12}/><b>{a?.title ?? tr(lang, ['A session', '一个会话'])}</b><span>{what}</span></button></li>;
     })}</ul>
+  </div>;
+}
+
+// ---------- job mail ----------
+// Esc puts the visible card away; fields and menus keep their own Escape.
+function useEscape(root: { current: HTMLElement | null }, on: boolean, run: () => void, key: string) {
+  useEffect(() => {
+    if (!on) return;
+    const down = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.isComposing || e.repeat) return;
+      const pane = root.current?.closest('.notch-pane');
+      if (!root.current?.checkVisibility({ opacityProperty: true, visibilityProperty: true }) || pane && !pane.classList.contains('is-open')) return;
+      if (e.target instanceof HTMLElement && e.target.closest('input,textarea,[contenteditable],[role="menu"],[role="listbox"],[role="combobox"]')) return;
+      e.preventDefault(); e.stopImmediatePropagation();
+      run();
+    };
+    document.addEventListener('keydown', down, true);
+    return () => document.removeEventListener('keydown', down, true);
+  }, [key, on]);
+}
+// The five levels the 合适吗 row offers, in the daemon's words; the first two keep it to the ledger or a glow only.
+const LEVELS: [string, string | null][] = [['记下', null], ['亮一下', null], ['卡片', 'card'], ['卡片带声', 'card_sound'], ['开口', 'speak']];
+const when = (job: JobItem) => [job.company, job.role, jobStamp(job.at)].filter(Boolean) as string[];
+
+// One job mail: its title and line, who and when as chips, and a small row asking whether this was the right level (folded away).
+export function MailNotice({ n, card, lang, onDismiss, onRate, onChange }: {
+  n: Notice & { kind: 'mail' }; card: Card; lang: Lang; onDismiss: () => void; onRate: (reaction: string, text: string) => void; onChange: () => void;
+}) {
+  const root = useRef<HTMLDivElement>(null), touched = useRef(performance.now()), { job } = n;
+  const level = job.level === 'speak' || job.level === 'card_sound' ? job.level : 'card', [kindClass, kindName] = jobKind(job.mail_kind);
+  useEscape(root, !card.ok, onDismiss, n.key);
+  // `card.feedback` is whether the row is open; it folds after 10 s without a touch.
+  useEffect(() => {
+    if (!card.feedback || card.ok) return;
+    touched.current = performance.now();
+    const t = setInterval(() => { if (performance.now() - touched.current > 10_000) { card.feedback = false; onChange(); } }, 1000);
+    return () => clearInterval(t);
+  }, [card.feedback, card.ok]);
+  const chips = when(job), event = job.event_at ? jobStamp(job.event_at, true) : '';
+  return <div ref={root} className="nc nc-mail">
+    <div className="nc-bar"><span className={`nc-label ${job.mail_kind ? kindClass : 'is-other'}`}><i/>{job.mail_kind ? tr(lang, kindName) : tr(lang, ['Job mail', '求职邮件'])}</span>
+      <button type="button" className="nc-x nc-dismiss" aria-label="Dismiss" title={tr(lang, ['Dismiss', '关掉'])} onClick={onDismiss}><X size={14}/></button></div>
+    <p className="nc-mail-t">{job.title}</p>
+    {job.line && <p className="nc-what">{job.line}</p>}
+    {(chips.length > 0 || event) && <div className="nc-tags">{chips.map((c, i) => <span key={i} className="tagc">{c}</span>)}{event && <span className="tagc">{tr(lang, ['Event', '日程'])} {event}</span>}</div>}
+    {card.ok ? <p className="nc-ok"><Check size={14} weight="bold"/><span>{card.ok}</span></p>
+      : !card.feedback ? <button type="button" className="nc-rate-open" aria-expanded="false" onClick={() => { card.feedback = true; onChange(); }}>{tr(lang, ['Right level?', '合适吗'])}</button>
+      : <div className="nc-rate" onPointerMove={() => { touched.current = performance.now(); }} onFocus={() => { touched.current = performance.now(); }}>
+        <span className="nc-rate-q">{tr(lang, ['Right level?', '合适吗'])}</span>
+        <button type="button" className="btn btn-warm nc-right" onClick={() => onRate('right', tr(lang, ['Noted · that level fits', '记下了 · 这个级别合适']))}>对</button>
+        <div className="nc-levels" role="group" aria-label={tr(lang, ['Or pick the level it should have', '或者选它该有的级别'])}>{LEVELS.map(([name, id]) =>
+          <button key={name} type="button" className={`nc-lv${id === level ? ' is-now' : ''}`} aria-pressed={id === level} onClick={() => onRate(`level:${name}`, tr(lang, [`Noted · ${name}`, `记下了 · ${name}`]))}>{name}</button>)}</div>
+      </div>}
+  </div>;
+}
+
+// What waited while the level was no-pop or dnd: the daemon's one digest. Rows only tell; nothing opens (no Gmail link).
+export function JobsDigestCard({ n, lang, onDismiss }: { n: Notice & { kind: 'jobs' }; lang: Lang; onDismiss: () => void }) {
+  const root = useRef<HTMLDivElement>(null), items = Array.isArray(n.job.items) ? n.job.items : [];
+  useEscape(root, true, onDismiss, n.key);
+  return <div ref={root} className="nc nc-digest nc-jobs">
+    <div className="nc-bar"><span className="nc-label is-other"><i/>{n.job.title}</span>
+      <button type="button" className="nc-x nc-dismiss" aria-label="Dismiss" title={tr(lang, ['Dismiss', '关掉'])} onClick={onDismiss}><X size={14}/></button></div>
+    <ul className="nc-away nc-jobrows">{items.map((m, i) => { const [cls, name] = jobKind(m.mail_kind);
+      return <li key={m.id ?? i} className="nc-jobrow"><em className={`jk ${cls}`}>{tr(lang, name)}</em>
+        <b>{m.company || m.title}</b><span className="nc-jr-role">{m.role ?? ''}</span><time>{jobStamp(m.event_at ?? m.at, !!m.event_at)}</time></li>; })}</ul>
   </div>;
 }
 

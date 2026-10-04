@@ -14,7 +14,7 @@ import { usePlugins } from './PluginPanel';
 import { isMarkLook } from './AgentMarks';
 import { answerRequest, type Agent, type ShownAgent } from './agents';
 import { answerStartrail, markStartrail, useStartrail } from './startrail';
-import { DigestCard, NoticeCard, ended, noticeCue, useNotices } from './Notices';
+import { DigestCard, JobsDigestCard, MailNotice, NoticeCard, ended, noticeCue, useNotices } from './Notices';
 import { ActionCard, QuestionCard, type Answer, type Card, type Decide, type Question } from './ActionCard';
 import { Notch, type NotchNote } from './Notch';
 import { NightCard, isNightLook, markNightSeen, morningOf, seenNight, type NightAction, type NightSession, type NightState } from './NightCard';
@@ -294,7 +294,7 @@ export function Companion() {
   const [keysPress, setKeysPress] = useState(0), [keysOn, setKeysOn] = useState(false), [viewing, setViewing] = useState<string | null>(null);
   // No notice while she talks, while you type to her, while the Dashboard is open or while the keys hold the island;
   // they come up after.
-  const notices = useNotices({ port, agents, quiet: s.quiet, inClaude, hold: agentsFront || busy || dashboard || remoteOpen || detached || moving || carded || nightShown || !!nightRun || keysOn || !!menu, watched, viewing, agentsFront,
+  const notices = useNotices({ port, poll: !detached, agents, quiet: s.quiet, inClaude, hold: agentsFront || busy || dashboard || remoteOpen || detached || moving || carded || nightShown || !!nightRun || keysOn || !!menu, watched, viewing, agentsFront,
     cue: (name, gain) => { if (preferences.feedbackEnabled && !s.soundMuted && s.quiet === 'off') noticeCue(name, preferences.feedbackVolume, gain); },
     answer: (req, body, id) => agents.find(a => a.id === id)?.host ? answerStartrail(id, req, body) : port ? answerRequest(port, req.id, body) : Promise.resolve(true), mark: markStartrail });
   const notice = notices.current;
@@ -328,7 +328,7 @@ export function Companion() {
   const moment = performance.now();
   const stopped = notice?.kind === 'pop' && notice.ids.every(id => agents.find(a => a.id === id)?.state === 'err');
   const noticeFace: ExprId | null = carded ? 'ask' : nightShown ? nightFace : !notice ? null : notices.over && moment < notices.over.until ? notices.over.face
-    : notice.kind === 'digest' ? 'fin' : notice.kind === 'pop' ? stopped ? moment - notices.openedAt < 1700 ? '34' : '02' : 'fin' : notices.card?.ok ? '02' : 'ask';
+    : notice.kind === 'digest' || notice.kind === 'jobs' ? 'fin' : notice.kind === 'mail' ? notices.card?.ok ? '02' : 'fin' : notice.kind === 'pop' ? stopped ? moment - notices.openedAt < 1700 ? '34' : '02' : 'fin' : notices.card?.ok ? '02' : 'ask';
   useEffect(() => { if (!stopped) return; const t = setTimeout(notices.bump, 1750); return () => clearTimeout(t); }, [notice?.key]);
   // A deep turn keeps her deep face while it is thought about and while its answer is said (ADR 0108).
   const expr: ExprId = preview ?? noticeFace ?? (receiving ? receiveFace.current : inFlight ? listenFace.current : deepLook ? 'deep' : voice === 'listening' ? listenFace.current : voice === 'thinking' ? '30' : voice === 'speaking' || talking ? replyFace.current : (dashboard || remoteOpen) && dashMood ? dashMood : reply.text ? port && s.failed ? '38' : '33' : '02');
@@ -757,6 +757,9 @@ export function Companion() {
     : nightShown && nightState ? { key: nightKey, onClose: closeMorning, card: <NightCard key={nightKey} state={nightState} morning={morning} unread={notices.unread.size} lang={companion.lang} marks={wardrobe.marks} look={wardrobe.night}
       act={nightAct} onGo={nightGo} onClose={closeMorning}/> }
     : !notice ? null : notice.kind === 'pop' ? { key: notice.key, pop: notice.ids, onClose: notices.next }
+    : notice.kind === 'mail' ? { key: notice.key, id: notice.id, onClose: notices.dismiss,
+      card: <MailNotice key={notice.key} n={notice} card={notices.card!} lang={companion.lang} onDismiss={notices.dismiss} onChange={notices.bump} onRate={(reaction, text) => notices.rate(notice, reaction, text)}/> }
+    : notice.kind === 'jobs' ? { key: notice.key, id: notice.id, onClose: notices.dismiss, card: <JobsDigestCard key={notice.key} n={notice} lang={companion.lang} onDismiss={notices.dismiss}/> }
     : notice.kind === 'digest' ? { key: notice.key, onClose: notices.next, card: <DigestCard key={notice.key} n={notice} agents={agents} lang={companion.lang} look={wardrobe.marks} onOpen={jump} onAnswer={notices.focus}/> }
     : { key: notice.key, id: notice.id, onClose: notices.dismiss,
     card: <NoticeCard key={notice.key} n={notice} card={notices.card!} agent={agents.find(a => a.id === notice.id)} count={notices.count} look={wardrobe.marks}
