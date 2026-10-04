@@ -256,6 +256,7 @@ function companion(shown?: () => void) {
   };
   // A double tap of the left ⌘ alone pokes her, like a click on her: talk, interrupt, or end. Each tap is under 0.3 s with no other
   // key or modifier, and the second starts within 0.4 s of the first; it never hides her (the ⌘ tuck above is undone at once).
+  let pressed = false;
   let lcmd = { down: false, at: 0, clean: false }, lastTap = 0;
   const leftCommand = () => {
     const key = material?.leftCommand?.() as { down: boolean; others: boolean; keyIdle: number } | undefined;
@@ -276,6 +277,10 @@ function companion(shown?: () => void) {
     const point = screen.getCursorScreenPoint();
     dictation?.tick(point);
     leftCommand();
+    // A press anywhere on screen (the window is click-through): the card he is not on is dismissed by it.
+    const press = !!material?.leftMouseDown?.();
+    if (press && !pressed && !win.isDestroyed()) win.webContents.send('mouse-down');
+    pressed = press;
     if (win.isDestroyed() || !win.isVisible()) return;
     const bounds = frame();
     const value = { x: point.x - bounds.x, y: point.y - bounds.y }, key = `${value.x},${value.y}`;
@@ -298,7 +303,18 @@ function companion(shown?: () => void) {
     else if (pending?.id !== under.id) pending = { id: under.id, since: Date.now() };
     else if (Date.now() - pending.since > 250) leave();
   }, 16);
-  win.on('closed', () => { clearInterval(cursor); clearTimeout(moving); clearTimeout(untuck); dictation?.close(); });
+  // ADR 0153: Claude's desktop app in front (a Claude Code terminal is the Ghostty watcher's), checked every second.
+  let frontApp = '';
+  const front = setInterval(() => {
+    if (win.isDestroyed()) return;
+    execFile('/bin/sh', ['-c', 'lsappinfo info -only bundleid "$(lsappinfo front)"'], { timeout: 900 }, (err, out) => {
+      const inClaude = !err && out.includes('com.anthropic.claudefordesktop');
+      if (String(inClaude) === frontApp || win.isDestroyed()) return;
+      frontApp = String(inClaude);
+      win.webContents.send('claude-front', inClaude);
+    });
+  }, 1000);
+  win.on('closed', () => { clearInterval(front); clearInterval(cursor); clearTimeout(moving); clearTimeout(untuck); dictation?.close(); });
   ipcMain.on('display-ready', event => { if (mine(event) === win && moving) move(); });
   ipcMain.handle('placement', event => { const sender = mine(event); return sender === win ? placement(target()) : sender ? dashboard.placement() : null; });
   // Settings › Advanced › Quit, the installed app's only way out (no Dock icon); the daemon stops with it (daemon.ts).

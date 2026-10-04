@@ -38,6 +38,8 @@ declare global { interface Window { jarvis?: {
   openCodex: (threadId: string) => Promise<boolean>;
   watchGhostty?: (on: boolean) => void;
   onGhostty?: (cb: (seen: { front: boolean; title: string }) => void) => () => void;
+  onMouseDown?: (cb: () => void) => () => void;
+  onClaudeFront?: (cb: (front: boolean) => void) => () => void;
   jumpGhostty?: (title: string, job: string) => Promise<boolean>;
   openAgents?: (id?: string) => void;
   onAgentsPresence?: (cb: (value: { active: boolean; ids: string[] }) => void) => () => void;

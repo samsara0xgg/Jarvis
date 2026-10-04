@@ -59,6 +59,16 @@ contextBridge.exposeInMainWorld('jarvis', {
     ipcRenderer.on('ghostty', listener);
     return () => ipcRenderer.removeListener('ghostty', listener);
   },
+  onMouseDown: (callback: () => void) => {
+    const listener = () => callback();
+    ipcRenderer.on('mouse-down', listener);
+    return () => ipcRenderer.removeListener('mouse-down', listener);
+  },
+  onClaudeFront: (callback: (front: boolean) => void) => {
+    const listener = (_: unknown, front: boolean) => callback(front);
+    ipcRenderer.on('claude-front', listener);
+    return () => ipcRenderer.removeListener('claude-front', listener);
+  },
   jumpGhostty: (title: string, job: string) => ipcRenderer.invoke('ghostty-jump', title, job),
   // ADR 0073: the Agents window.
   onAgentsPresence: (callback: (value: { active: boolean; ids: string[] }) => void) => {

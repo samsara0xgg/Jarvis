@@ -210,6 +210,7 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
     boxes: [] as Box[], wingTarget: 0, opened: false, dirty: true, innerL: 0, lastIn: 0, wantAt: 0, want: false, open: false, hot: '',
     dropGoal: { w: ALL_W, d: 0 }, noteGoal: { w: 24, d: 0 }, noteL: 0, onNote: false,
     s: { ww: spring(0), dx: spring(0), dw: spring(24), dd: spring(0), nx: spring(0), nw: spring(24), nd: spring(0) },
+    swipe: 0, swipeT: 0 as ReturnType<typeof setTimeout> | 0,
     press: null as { x: number; y: number } | null, drag: null as { x: number; y: number } | null,
     puffs: [] as { x: number; y: number; c: string; at: number }[], workAt: -1e9, workN: 0, turnIds: new Set<string>(), turnAt: -1e9,
     // Sessions on their way into the moon, from where the pointer was, and when the last one landed.
@@ -537,7 +538,13 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
     <div ref={drop} className="notch-pane notch-drop" data-hit={open ? true : undefined} role="dialog" aria-label="Sessions">
       <div ref={dropIn} className="notch-pane-in">{open ? panel : lastPanel.current}</div></div>
     <div ref={noteP} className="notch-pane notch-note" data-hit={note && !(kb && !kbCard) ? true : undefined} role="alertdialog" aria-label="Agent notice">
-      <div ref={noteIn} className="notch-pane-in"><NoticeFlightContext.Provider value={returnApproval}>{shownNote && (shownNote.pop ? lastPopAgents.current.length > 0 && <Pop agents={lastPopAgents.current} look={look} act={A} onClose={shownNote.onClose}/> : shownNote.card)}</NoticeFlightContext.Provider></div></div>
+      <div ref={noteIn} className="notch-pane-in" onWheel={e => {
+        // A sideways swipe on a notice puts it away; a slow drift or a vertical scroll does not.
+        if (!shownNote || Math.abs(e.deltaX) < Math.abs(e.deltaY) * 2) return;
+        st.swipe += e.deltaX;
+        clearTimeout(st.swipeT); st.swipeT = setTimeout(() => { st.swipe = 0; }, 200);
+        if (Math.abs(st.swipe) > 90) { st.swipe = 0; shownNote.onClose(); }
+      }}><NoticeFlightContext.Provider value={returnApproval}>{shownNote && (shownNote.pop ? lastPopAgents.current.length > 0 && <Pop agents={lastPopAgents.current} look={look} act={A} onClose={shownNote.onClose}/> : shownNote.card)}</NoticeFlightContext.Provider></div></div>
     {dragging && <div className="notch-catch" data-hit aria-hidden="true"/>}
   </div>;
 }

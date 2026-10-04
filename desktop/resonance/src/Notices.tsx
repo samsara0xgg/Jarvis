@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useLayoutEffect, useReducer, useRef, useState, type ReactNode } from 'react';
-import { ArrowSquareOut, ArrowUp, Check, Moon } from '@phosphor-icons/react';
-import { AGENT_NAME, loadMarks, openLabel, saveMark, type Agent, type AgentRequest, type AgentState } from './agents';
+import { ArrowSquareOut, ArrowUp, Check, Moon, X } from '@phosphor-icons/react';
+import { AGENT_NAME, loadMarks, openLabel, requestLine, saveMark, type Agent, type AgentRequest, type AgentState } from './agents';
 import { AgentMark, type MarkLook, type MarkState } from './AgentMarks';
 import { tr, type Lang } from './companionSettings';
 import { Markdown } from './Markdown';
@@ -72,8 +72,8 @@ type Tone = 'ask' | 'done' | 'error';
 // hold the island) except a card brought forward on purpose; `watched` is the session Allen has been looking at in
 // Ghostty for 1.5 s, `viewing` the one whose page is open in the island. Startrail's sessions (`a.host`) are looked at
 // while its window is in front (`agentsFront`), and their marks are the host's: `mark` changes them there.
-export function useNotices({ port, agents, hold, quiet, watched, viewing, agentsFront, cue, answer, mark }: {
-  port: string | null; agents: Agent[]; hold: boolean; quiet: Quiet; watched: string | null; viewing: string | null; agentsFront: boolean; cue: (name: Tone | 'send' | 'close', gain?: number) => void;
+export function useNotices({ port, agents, hold, quiet, inClaude, watched, viewing, agentsFront, cue, answer, mark }: {
+  port: string | null; agents: Agent[]; hold: boolean; quiet: Quiet; inClaude: boolean; watched: string | null; viewing: string | null; agentsFront: boolean; cue: (name: Tone | 'send' | 'close', gain?: number) => void;
   answer: (req: AgentRequest, body: { decision: 'allow' | 'always' | 'deny'; answers?: Record<string, string>; message?: string }, id: string) => Promise<boolean>;
   mark: (id: string, change: { seen: true } | { parked: boolean; archived: boolean }) => void;
 }) {
@@ -81,7 +81,7 @@ export function useNotices({ port, agents, hold, quiet, watched, viewing, agents
   const [s] = useState(() => {
     const kept = loadKept();
     return {
-      queue: [] as Notice[], folded: [] as Notice[], held: [] as Notice[], cards: new Map<string, Card>(), shownReqs: new Set<string>(),
+      queue: [] as Notice[], folded: [] as Notice[], held: [] as Notice[], cards: new Map<string, Card>(), shownReqs: new Set<string>(), dismissed: new Set<string>(),
       unread: new Set(kept.unread), archived: new Set(kept.cleared), parked: new Map<string, number>(), last: kept.last,
       soundAt: -1e9, shown: '', openedAt: 0, peek: false, touched: '', forced: '',
       // Sessions changed here before the daemon's marks arrived: their marks stay as she set them.
@@ -120,8 +120,8 @@ export function useNotices({ port, agents, hold, quiet, watched, viewing, agents
   const later = (ms: number, run: () => void) => { const t = setTimeout(() => { s.timers.delete(t); run(); }, ms); s.timers.add(t); };
   useEffect(() => () => s.timers.forEach(clearTimeout), []);
   const byId = new Map(agents.map(a => [a.id, a]));
-  const live = useRef({ byId, hold, quiet });
-  live.current = { byId, hold, quiet };
+  const live = useRef({ byId, hold, quiet, inClaude });
+  live.current = { byId, hold, quiet, inClaude };
   const card = (n: Notice) => { let c = s.cards.get(n.key); if (!c) s.cards.set(n.key, c = { qi: 0, picks: [], review: false, feedback: false, ok: '' }); return c; };
   const toneOf = (n: Notice): Tone => needs(n) ? 'ask' : n.kind === 'pop' && n.ids.every(id => byId.get(id)?.state === 'err') ? 'error' : 'done';
   const sound = (n: Notice, gain = 1) => { const now = performance.now(); if (now - s.soundAt > TOGETHER_MS) { s.soundAt = now; cue(toneOf(n), gain); } };
@@ -146,8 +146,16 @@ export function useNotices({ port, agents, hold, quiet, watched, viewing, agents
     }
   }, [noCards(quiet)]);
 
+  // One ask is one card: the session and what it says (ADR 0153).
+  const askKey = (n: { kind: string; id: string; req?: AgentRequest; line?: string }) => `${n.id}|${n.req ? requestLine(n.req) : n.line}`;
   const arrive = (a: Arrival) => {
-    if (s.parked.has(a.id)) return;
+    // A project thread's session is not his to answer here; while he is in Claude a pop or ask line has no use, but
+    // a prompt Jarvis holds waits behind `hold` until he leaves (a background session has no dialog of its own).
+    if (s.parked.has(a.id) || live.current.byId.get(a.id)?.fromProject || live.current.inClaude && a.kind !== 'req') return;
+    if (a.kind === 'req' || a.kind === 'wait') {
+      const k = askKey(a);
+      if (s.dismissed.has(k) || [...s.queue, ...s.folded, ...s.held].some(m => needs(m) && askKey(m) === k)) return;
+    }
     const now = performance.now(), n = { ...a, key: `${a.kind}:${a.id}:${now}`, at: now } as Notice, head = s.queue[0], tail = s.queue.at(-1);
     // Kept for when the level drops: a newer notice of a session takes the place of its older one.
     if (noCards(live.current.quiet)) { s.held = [...s.held.filter(h => !(h.id === n.id && h.kind === n.kind)), n]; return; }
@@ -204,6 +212,7 @@ export function useNotices({ port, agents, hold, quiet, watched, viewing, agents
     for (const a of agents) {
       const was = s.last[a.id]?.[0], looking = a.id === watched || a.id === viewing || !!a.host && agentsFront;
       s.last[a.id] = [a.state, now];
+      if (a.state !== 'wait') for (const k of s.dismissed) if (k.startsWith(`${a.id}|`)) s.dismissed.delete(k);
       // A background session shows no dialog of its own while Jarvis holds its prompt, so that card comes even
       // while he looks at the session; an interactive one asks in his terminal at the same time. A new question
       // is something new: it brings a parked session back (Startrail's stay parked, as in her queue).
@@ -246,7 +255,7 @@ export function useNotices({ port, agents, hold, quiet, watched, viewing, agents
     if (watched && s.unread.has(watched)) read([watched]); else { save(); bump(); }
   }, [key, watched, viewing]);
 
-  const current = hold && s.queue[0]?.key !== s.forced ? undefined : s.queue[0];
+  const current = (hold || inClaude) && s.queue[0]?.key !== s.forced ? undefined : s.queue[0];
   // A notice coming up: her sound (once per 1.5 s), and the clock for her error face.
   if ((current?.key ?? '') !== s.shown) {
     s.shown = current?.key ?? '';
@@ -265,8 +274,15 @@ export function useNotices({ port, agents, hold, quiet, watched, viewing, agents
     const i = s.folded.indexOf(n);
     if (i < 0 || s.parked.has(n.id)) return;
     s.folded.splice(i, 1); n.reminded = true; s.peek = true; bump();
-    s.soundAt = -1e9; sound(n, .5); s.soundAt = performance.now();
+    if (!live.current.inClaude) { s.soundAt = -1e9; sound(n, .5); s.soundAt = performance.now(); }
     later(1100, () => { s.peek = false; if (!s.parked.has(n.id)) { s.queue.unshift(n); s.shown = n.key; s.openedAt = performance.now(); } bump(); });
+  };
+  // Swipe, Esc, the × or a click away: gone for good, no moon and no reminder. It stays on his list while it waits.
+  const dismiss = () => {
+    const n = s.queue[0];
+    if (!n) return;
+    if (!needs(n)) return next();
+    s.queue.shift(); s.dismissed.add(askKey(n)); s.forced = ''; bump();
   };
   // A card brought up from the island's list and put back with Esc: it waits behind the beacon, no reminder.
   const back = () => { if (s.queue[0] && needs(s.queue[0])) { s.queue.shift(); s.forced = ''; bump(); } };
@@ -309,7 +325,7 @@ export function useNotices({ port, agents, hold, quiet, watched, viewing, agents
   };
   return { current, count: s.queue.filter(needs).length, peek: s.peek, openedAt: s.openedAt, over: s.over, card: current ? card(current) : null,
     unread: s.unread as ReadonlySet<string>, archived: s.archived as ReadonlySet<string>, parked: s.parked as ReadonlyMap<string, number>,
-    read, archive, park, unpark, setHover, next, fold, back, resolve, focus, bump };
+    read, archive, park, unpark, setHover, hovering: hover, next, fold, dismiss, back, resolve, focus, bump };
 }
 
 // ---------- what waited ----------
@@ -345,9 +361,9 @@ function diffLines(tool: string, i: Record<string, unknown>) {
 const pickText = (q: Question, p: Pick | undefined) => typeof p === 'number' ? q.options?.[p]?.label ?? '' : Array.isArray(p) ? p.map(k => q.options?.[k]?.label).join(', ') : p ?? '';
 
 // A needs-you card: what the session wants, answered right on it.
-export function NoticeCard({ n, agent, card, count, look, onPark, onOpen, onResolve, onChange }: {
+export function NoticeCard({ n, agent, card, count, look, onPark, onDismiss, onOpen, onResolve, onChange }: {
   n: Notice & { kind: 'req' | 'wait' }; agent?: Agent; card: Card; count: number; look: MarkLook;
-  onPark: () => void; onOpen: (agent: Agent) => void; onResolve: (text: string, body: Body) => void; onChange: () => void;
+  onPark: () => void; onDismiss: () => void; onOpen: (agent: Agent) => void; onResolve: (text: string, body: Body) => void; onChange: () => void;
 }) {
   const [typed, setTyped] = useState(''), [feedback, setFeedback] = useState(''), [alwaysAllowed, setAlwaysAllowed] = useState(false);
   const allowButton = useRef<HTMLButtonElement>(null), denyButton = useRef<HTMLButtonElement>(null), root = useRef<HTMLDivElement>(null), flew = useRef(false);
@@ -364,23 +380,29 @@ export function NoticeCard({ n, agent, card, count, look, onPark, onOpen, onReso
   useEffect(() => {
     if (n.kind !== 'req' || n.req.tool === 'AskUserQuestion' || card.ok) return;
     const key = (e: KeyboardEvent) => {
-      if (!['Enter', 'Escape'].includes(e.key) || e.isComposing) return;
+      if (e.key !== 'Enter' || e.isComposing) return;
       const button = allowButton.current, pane = button?.closest('.notch-pane');
       if (!button?.checkVisibility({ opacityProperty: true, visibilityProperty: true }) || pane && !pane.classList.contains('is-open')) return;
       const target = e.target instanceof HTMLElement ? e.target : null;
       if (target?.closest('button,input,textarea,[contenteditable],[role="menu"],[role="listbox"],[role="combobox"]') && !button.closest('.nc')?.contains(target)) return;
-      if (e.key === 'Escape') {
-        if (!denyButton.current || target?.closest('input,textarea,[contenteditable],[role="menu"],[role="listbox"],[role="combobox"]')) return;
-        e.preventDefault(); e.stopImmediatePropagation();
-        if (!e.repeat && !card.pending) denyButton.current.click();
-        return;
-      }
       if (e.target instanceof HTMLInputElement && n.req.tool === 'ExitPlanMode' && !e.metaKey) return;
       e.preventDefault(); e.stopImmediatePropagation();
       if (e.metaKey && !e.repeat && !card.pending) allowButton.current?.click();
     };
-    // The island's window listener yields visible approval keys. Document capture
-    // then handles Deny before defaults; fields and menus retain their own Escape.
+    document.addEventListener('keydown', key, true);
+    return () => document.removeEventListener('keydown', key, true);
+  }, [n.key, card.ok, card.pending]);
+  // Esc puts a visible card away without answering it (never Deny); fields and menus keep their own Escape.
+  useEffect(() => {
+    if (card.ok) return;
+    const key = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.isComposing || e.repeat || card.pending) return;
+      const pane = root.current?.closest('.notch-pane');
+      if (!root.current?.checkVisibility({ opacityProperty: true, visibilityProperty: true }) || pane && !pane.classList.contains('is-open')) return;
+      if (e.target instanceof HTMLElement && e.target.closest('input,textarea,[contenteditable],[role="menu"],[role="listbox"],[role="combobox"]')) return;
+      e.preventDefault(); e.stopImmediatePropagation();
+      onDismiss();
+    };
     document.addEventListener('keydown', key, true);
     return () => document.removeEventListener('keydown', key, true);
   }, [n.key, card.ok, card.pending]);
@@ -412,7 +434,8 @@ export function NoticeCard({ n, agent, card, count, look, onPark, onOpen, onReso
         <div className="nc-tags"><span className={`tagc ${agent.agent}`}>{who}</span>{agent.project && <span className="tagc">{agent.project}</span>}
           {agent.branch && <span className="tagc">{agent.branch.replace(/^worktree-/, '')}</span>}</div>
       </div>
-      <div className="nc-actions"><button type="button" className="nc-icon nc-park" aria-label="Park" title="Park: out of your turn until you take it back" onClick={onPark}><Moon size={14} weight="fill"/></button>
+      <div className="nc-actions"><button type="button" className="nc-icon nc-dismiss" aria-label="Dismiss" title="Dismiss: it stays on your list" onClick={onDismiss}><X size={14}/></button>
+        <button type="button" className="nc-icon nc-park" aria-label="Park" title="Park: out of your turn until you take it back" onClick={onPark}><Moon size={14} weight="fill"/></button>
         {open && <button type="button" className="nc-icon" aria-label={open} title={open} onClick={() => onOpen(agent)}><ArrowSquareOut size={14}/></button>}</div>
     </div>
     {agent.you && <p className="nc-you"><b>You</b>{agent.you}</p>}
@@ -426,7 +449,7 @@ export function NoticeCard({ n, agent, card, count, look, onPark, onOpen, onReso
       <input type="checkbox" checked={alwaysAllowed} disabled={card.pending} onChange={e => setAlwaysAllowed(e.target.checked)}/>
       <span>{bashRule ? <>Always allow <code>{bashRule}</code></> : always.replace("Don't ask again for", 'Always allow')} in <b>{project}</b></span>
     </label>}<div className="nc-choice">
-      <button ref={denyButton} type="button" className="btn btn-ghost" data-deny disabled={card.pending} onClick={() => onResolve(`Denied · ${who} will try another way`, { decision: 'deny' })}>Deny <kbd>esc</kbd></button>
+      <button ref={denyButton} type="button" className="btn btn-ghost" data-deny disabled={card.pending} onClick={() => onResolve(`Denied · ${who} will try another way`, { decision: 'deny' })}>Deny</button>
       <button ref={allowButton} type="button" className="btn btn-warm" disabled={card.pending} onClick={() => onResolve(alwaysAllowed && always ? `Allowed · ${always.replace("Don't ask", "won't ask")}` : `Allowed · ${who} continues`, { decision: alwaysAllowed && always ? 'always' : 'allow' })}>Allow <kbd>⌘⏎</kbd></button>
     </div></>;
   };

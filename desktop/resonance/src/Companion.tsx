@@ -284,16 +284,25 @@ export function Companion() {
   useEffect(() => { setDwelled(false); if (!ghostty.front || !ghostty.title) return; const t = setTimeout(() => setDwelled(true), 1500); return () => clearTimeout(t); }, [ghostty]);
   const anyClaude = agents.some(a => a.agent === 'claude' && !a.host);
   useEffect(() => window.jarvis?.watchGhostty?.(anyClaude), [anyClaude]);
+  // In Claude (its desktop app in front, or a Claude Code terminal): no card and no sound, at most the star mark.
+  const [claudeApp, setClaudeApp] = useState(false);
+  useEffect(() => window.jarvis?.onClaudeFront?.(setClaudeApp), []);
+  const inClaude = claudeApp || ghostty.front && agents.some(a => a.agent === 'claude' && !a.host && sameTitle(a.title, ghostty.title));
   const watched = dwelled ? agents.find(a => a.agent === 'claude' && !a.host && sameTitle(a.title, ghostty.title))?.id ?? null : null;
   // ⌥Tab (spec §15.3): each press toggles the island's list for the keys; while it holds them the window takes key
   // focus without activating the app. `viewing` is the session whose page is open in the island.
   const [keysPress, setKeysPress] = useState(0), [keysOn, setKeysOn] = useState(false), [viewing, setViewing] = useState<string | null>(null);
   // No notice while she talks, while you type to her, while the Dashboard is open or while the keys hold the island;
   // they come up after.
-  const notices = useNotices({ port, agents, quiet: s.quiet, hold: agentsFront || busy || dashboard || remoteOpen || detached || moving || carded || nightShown || !!nightRun || keysOn || !!menu, watched, viewing, agentsFront,
+  const notices = useNotices({ port, agents, quiet: s.quiet, inClaude, hold: agentsFront || busy || dashboard || remoteOpen || detached || moving || carded || nightShown || !!nightRun || keysOn || !!menu, watched, viewing, agentsFront,
     cue: (name, gain) => { if (preferences.feedbackEnabled && !s.soundMuted && s.quiet === 'off') noticeCue(name, preferences.feedbackVolume, gain); },
     answer: (req, body, id) => agents.find(a => a.id === id)?.host ? answerStartrail(id, req, body) : port ? answerRequest(port, req.id, body) : Promise.resolve(true), mark: markStartrail });
   const notice = notices.current;
+  // A press anywhere else on screen puts a card away (the window is click-through, so main reports it); not one that
+  // came up under the pointer a moment ago, and not while the pointer is on the card.
+  const away = useRef(() => undefined as void);
+  away.current = () => { if (notice && notice.kind !== 'pop' && !notices.hovering && performance.now() - notices.openedAt > 800) notices.dismiss(); };
+  useEffect(() => window.jarvis?.onMouseDown?.(() => away.current()), []);
   // ADR 0153: at dnd the marks beside the notch stay as they were when it began; nothing outside shows there.
   const frozen = useRef<{ agents: Agent[]; unread: ReadonlySet<string>; parked: ReadonlyMap<string, number>; archived: ReadonlySet<string> } | null>(null);
   if (s.quiet !== 'dnd') frozen.current = null;
@@ -749,9 +758,9 @@ export function Companion() {
       act={nightAct} onGo={nightGo} onClose={closeMorning}/> }
     : !notice ? null : notice.kind === 'pop' ? { key: notice.key, pop: notice.ids, onClose: notices.next }
     : notice.kind === 'digest' ? { key: notice.key, onClose: notices.next, card: <DigestCard key={notice.key} n={notice} agents={agents} lang={companion.lang} look={wardrobe.marks} onOpen={jump} onAnswer={notices.focus}/> }
-    : { key: notice.key, id: notice.id, onClose: notices.fold,
+    : { key: notice.key, id: notice.id, onClose: notices.dismiss,
     card: <NoticeCard key={notice.key} n={notice} card={notices.card!} agent={agents.find(a => a.id === notice.id)} count={notices.count} look={wardrobe.marks}
-      onPark={() => notices.park([notice.id])} onOpen={jump} onChange={notices.bump} onResolve={(text, body) => {
+      onPark={() => notices.park([notice.id])} onDismiss={notices.dismiss} onOpen={jump} onChange={notices.bump} onResolve={(text, body) => {
         if (notice.kind !== 'req') return;
         void notices.resolve(notice, text, body).then(ok => { if (ok && body.decision !== 'deny') ball.current?.hop(.14); });
       }}/> };

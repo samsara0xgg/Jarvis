@@ -17,6 +17,8 @@ export type Agent = {
   kind?: 'interactive' | 'background'; job?: string; replyable?: boolean;
   // One of Startrail's (src/startrail.ts): the agent host keeps its marks, and the notch follows and changes them there.
   host?: { unread: boolean; parked: boolean; archived: boolean };
+  // Started by a project thread in ~/Projects (ADR 0153): never joins his queue of pops and cards.
+  fromProject?: boolean;
 };
 // A row as the companion sees it: with the mark it wears and its one line for the hover list.
 export type ShownAgent = Agent & { mark: MarkState; line: string };
@@ -55,6 +57,7 @@ type ClaudeSession = {
   last_message: string; updated_ms: number; compacting?: boolean; error?: string; request?: AgentRequest | null; replyable?: boolean;
   // ADR 0125: the daemon's Jev read a finished turn's ending as asking Allen something (null: not known)
   asks?: boolean | null;
+  from_project?: boolean;
 };
 export const fromClaude = (r: ClaudeSession): Agent => ({
   id: r.session_id, agent: 'claude', title: r.title || r.prompt || 'Claude session', project: r.project, branch: r.branch || undefined,
@@ -62,7 +65,7 @@ export const fromClaude = (r: ClaudeSession): Agent => ({
   where: r.where === 'background' ? 'Background' : r.where, age: ago(r.updated_ms), you: r.prompt,
   last: r.request ? requestLine(r.request) : r.compacting ? 'Compacting its context' : r.phase === 'done' ? r.last_message : r.activity || r.last_message,
   request: r.request ?? undefined, error: r.error || undefined, at: r.updated_ms, kind: r.kind, job: r.job_id || undefined,
-  replyable: !!r.replyable && !r.request,
+  replyable: !!r.replyable && !r.request, fromProject: r.from_project === true,
 });
 // Polled all the time: the marks beside the notch and the notices read them too. A daemon that does not serve
 // the route yet simply has no Claude rows.
