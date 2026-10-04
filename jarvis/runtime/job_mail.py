@@ -52,6 +52,9 @@ _HEALTH_FAILURES: Final[int] = 3
 _HEALTH_AFTER: Final[timedelta] = timedelta(hours=2)
 _HEALTH_EVERY: Final[timedelta] = timedelta(hours=12)
 _LEVEL_PREFIX: Final[str] = "level:"
+LINKEDIN_ALERTS: Final[tuple[str, ...]] = ("ledger_only", "card_sound")
+# The judge name logged for a header held back by a local rule rather than by Jev.
+_RULE_JUDGE: Final[str] = "local-rule/social-v1"
 
 
 @dataclass(frozen=True)
@@ -67,6 +70,8 @@ class JobMailSettings:
     max_calls_per_day: int
     speak: bool
     speak_gap_s: float
+    # LinkedIn job-alert digests: ``ledger_only`` (no card, no sound) or ``card_sound``.
+    linkedin_alerts: str
 
 
 def gmail_read(servers: McpServers, tool: str, args: Mapping[str, Any]) -> dict[str, Any]:
@@ -138,7 +143,7 @@ class JobMail:
     def repair(self) -> int:
         """Run the repair pass over the ledger; a failure is logged and never stops the poller."""
         try:
-            changed = repair(self._db)
+            changed = repair(self._db, self._settings.linkedin_alerts)
         except Exception:
             LOGGER.exception("job mail: the ledger repair failed; the poller goes on")
             return 0
@@ -193,7 +198,10 @@ class JobMail:
             chances[head.message_id] = skip.p_job
             verdict = "not_job" if skip.skipped else "pass"
             self._snap(head.message_id, "header", verdict, now, head, skip.probabilities)
-            if skip.skipped:
+            social = not skip.skipped and triage.is_social(head.domain, head.subject)
+            if social:  # LinkedIn social news is not job mail whatever Jev said: held back unread
+                self._snap(head.message_id, "rule", "not_job", now, head, judge=_RULE_JUDGE)
+            if skip.skipped or social:
                 verdicts[head.message_id] = "not_job"
                 continue
             body = self._body(servers, head, verdicts)
@@ -259,8 +267,12 @@ class JobMail:
         head: triage.Head | None = None,
         probabilities: dict[str, float] | None = None,
         body: str | None = None,
+        judge: str | None = None,
     ) -> None:
-        """Keep what Jev saw and answered at a stage (ADR 0157), for any verdict."""
+        """Keep what Jev saw and answered at a stage (ADR 0157), for any verdict.
+
+        ``judge`` names a local rule instead of Jev for a ``rule`` stage (ADR 0158).
+        """
         ledger.record_decision(
             self._db,
             message_id,
@@ -269,7 +281,7 @@ class JobMail:
             now,
             head=None if head is None else _audit(head),
             probabilities=probabilities,
-            judge=self._jev.judge_id(stage),
+            judge=judge or self._jev.judge_id(stage),
             body_excerpt=body,
         )
 
@@ -311,6 +323,7 @@ class JobMail:
                 "weekday": local.weekday(),
                 "quiet": quiet,
                 "speech_ok": self.may_speak(),
+                "linkedin_alerts": self._settings.linkedin_alerts,
             },
         )
         judgement = self._judge(pack)
@@ -467,10 +480,14 @@ class JobMail:
             ledger.mark_alert(self._db, alert["id"], "done", now)
 
     def ledger(self) -> dict[str, Any]:
-        """``GET /inherent/jobs``: the ledger by company, and the newest held-back mail."""
+        """``GET /inherent/jobs``: the ledger by company, the newest held-back mail, and the rules.
+
+        ``rules`` are the standing alert rules in force, for the ledger page to show (ADR 0158).
+        """
         return {
             "ledger": ledger.list_ledger(self._db, self.now()),
             "skipped": ledger.list_skipped(self._db),
+            "rules": [{"id": "linkedin_alerts", "value": self._settings.linkedin_alerts}],
         }
 
     def flag(self, message_id: str, reaction: str) -> None:
@@ -497,8 +514,9 @@ class JobMail:
         if found is None:
             msg = f"cannot read or type {message_id}"
             raise RuntimeError(msg)
-        if found.kind == "not_job":
-            found = dataclasses.replace(found, kind="job_other")
+        # His flag wins over Jev's "not job" and over the local rules that kept it off the cards.
+        kind = "job_other" if found.kind in ("not_job", triage.ACCOUNT_KIND) else found.kind
+        found = dataclasses.replace(found, kind=kind, alert_digest=False)
         self._snap(head.message_id, "body", "job", now, head, found.probabilities, body)
         ledger.upsert_mail(self._db, triage.as_row(head, found), now)
         ledger.record_seen(self._db, head.message_id, "job", now, p_job=found.p_job)
@@ -512,31 +530,68 @@ class JobMail:
             raise LookupError(msg)
 
 
-def repair(db: Path) -> int:
+def repair(db: Path, linkedin_alerts: str) -> int:
     """Recompute what the current rules read from each ledger row's stored header (ADR 0158).
 
     Idempotent and offline: only the stored sender name, domain and subject are used, never
     Gmail (the body is not stored); returns how many rows changed. A stored role that is a
     generic word, or that the subject holds but the rules no longer read from it, is cleared;
-    a role the subject does not hold was read from the body and stays.
+    a role the subject does not hold was read from the body and stays. LinkedIn social mail
+    is hidden and shown as held back, an account notice becomes kind ``other``, and the
+    pending alerts of a mail that is now ledger only, ``other`` or hidden end as done. A mail
+    Allen flagged is never touched by the routing rules.
     """
     changed = 0
     for row in ledger.mail_rows(db):
-        subject = row["subject"] or ""
-        company = triage.company_of(row["sender_name"] or "", row["sender_domain"] or "", subject)
+        message_id, subject = row["message_id"], row["subject"] or ""
+        name, domain = row["sender_name"] or "", row["sender_domain"] or ""
+        fixes: dict[str, str | int] = {}
+        company = triage.company_of(name, domain, subject)
         role = triage.role_of(subject, "")
         old = (row["role"] or "").casefold()
         if not role and old not in subject.casefold() and old not in triage.GENERIC_ROLES:
             role = row["role"] or ""
-        fixes = {
-            name: value
-            for name, value in (("company", company), ("role", role))
-            if value != (row[name] or "")
-        }
+        fixes.update(
+            {
+                field: value
+                for field, value in (("company", company), ("role", role))
+                if value != (row[field] or "")
+            }
+        )
+        if not ledger.is_flagged(db, message_id):
+            quiet = False  # whether its pending alerts must go
+            if not row["deleted"] and triage.is_social(domain, subject):
+                _hold_back(db, row)
+                fixes["deleted"], quiet = 1, True
+            elif row["kind"] == "job_other" and triage.is_account_notice(subject):
+                fixes["kind"], quiet = triage.ACCOUNT_KIND, True
+            elif (
+                row["kind"] == "job_other"
+                and linkedin_alerts == "ledger_only"
+                and triage.is_alert_digest(name, domain, subject)
+            ):
+                quiet = True
+            if quiet and ledger.drop_alerts(db, message_id):
+                changed += 1
         if fixes:
-            ledger.update_mail(db, row["message_id"], fixes)
+            ledger.update_mail(db, message_id, fixes)
             changed += 1
     return changed
+
+
+def _hold_back(db: Path, row: Mapping[str, Any]) -> None:
+    """Show a ledger row in the held-back list: a ``not_job`` verdict and the rule's decision."""
+    now = datetime.now(UTC)
+    head = {
+        "received_at": row["received_at"] or "",
+        "name": row["sender_name"] or "",
+        "domain": row["sender_domain"] or "",
+        "subject": row["subject"] or "",
+    }
+    ledger.record_seen(db, row["message_id"], "not_job", now, audit=head)
+    ledger.record_decision(
+        db, row["message_id"], "rule", "not_job", now, head=head, judge=_RULE_JUDGE
+    )
 
 
 def _audit(head: triage.Head) -> dict[str, str]:

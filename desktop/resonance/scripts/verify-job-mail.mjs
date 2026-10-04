@@ -24,6 +24,8 @@ try {
   const errors = [], posts = [], deletes = [];
   let featureOn = false, noticeGets = 0, notices = [], flagStatus = 200, skipped, audioPrivate, board = [];
   const flags = [];
+  // ADR 0158: the daemon's standing alert rules, sent with the ledger (absent on older daemons, like `skipped`).
+  const rules = [{ id: 'linkedin_alerts', value: 'ledger_only' }];
   page.on('pageerror', error => errors.push(error.message));
   const at = minutes => new Date(Date.now() - minutes * 60_000).toISOString();
   const mail = (id, level, extra = {}) => ({ id, kind: 'mail', title: '面试邀请 · Northwind', line: 'Northwind wants a 30 minute interview for the Co-op role.', level, text: '面试邀请 · Northwind Northwind wants a 30 minute interview.',
@@ -61,7 +63,7 @@ try {
     if (p === '/inherent/agent-marks') return json({ marks: {} });
     if (p === '/inherent/notices' && method === 'GET') { noticeGets++; if (featureOn) return json(audioPrivate === undefined ? { notices } : { notices, audio_private: audioPrivate }); }
     else if (p.startsWith('/inherent/notices/') && method === 'POST') { posts.push({ id: decodeURIComponent(p.split('/').pop()), body: JSON.parse(route.request().postData() || '{}') }); return json({ ok: true }); }
-    else if (p === '/inherent/jobs' && method === 'GET' && featureOn) return json(skipped ? { ledger, skipped } : { ledger });
+    else if (p === '/inherent/jobs' && method === 'GET' && featureOn) return json(skipped ? { ledger, skipped, rules } : { ledger });
     else if (/^\/inherent\/jobs\/[^/]+\/flag$/.test(p) && method === 'POST') {
       if (flagStatus === 404) return route.fulfill({ status: 404, contentType: 'application/json', body: '{"detail":"Not Found"}' });
       const id = decodeURIComponent(p.split('/')[3]); flags.push({ id, body: JSON.parse(route.request().postData() || '{}') });
@@ -221,10 +223,15 @@ try {
   skipped = [
     { message_id: 's-1', received_at: at(90), sender_name: 'Zeta Careers', sender_domain: 'zeta.example', subject: 'Your profile caught our eye', p_job: 0.62 },
     { message_id: 's-2', received_at: at(200), sender_name: 'Campus Board', sender_domain: 'board.example', subject: 'Weekly postings from the campus job board: Co-op, intern and new grad roles in Victoria', p_job: 0.31 }];
+  // ADR 0158: a ledger row of kind `other` (an account notice) is labelled, not shown as a rejection or blank.
+  ledger = [{ company: 'CGI', role: '', kind: 'other', last_at: at(30), next_event_at: null, count: 1, mails: [
+    { message_id: 'o-1', kind: 'other', received_at: at(30), subject: 'CGI - User Information', event_at: null, event_text: null }] }];
   await page.locator('.ad .pg-back').click();
   await page.waitForTimeout(800);
   await page.locator('.ad .cb[data-row="jobs"]').click();
   await page.waitForSelector('.ad .jp-skip', { timeout: 40_000 });
+  check('the ledger page shows the LinkedIn rule from the daemon rules', /LinkedIn 职位提醒：只进账本，不提醒|LinkedIn job alerts: ledger only, no alert/.test(await page.locator('.ad .jp-rule').innerText()));
+  check('a kind other row is labelled as an account notice', /Account|账号通知/.test(await page.locator('.ad .jp-g[data-company="CGI"]').innerText()));
   check('held-back mail is a collapsed section with its count', await page.locator('.ad .jp-skip li').count() === 0 && /Held back as not job|被判成不相关的可疑邮件/.test(await page.locator('.ad .jp-skip').innerText()));
   await page.locator('.ad .jp-skip .jp-top').click();
   const held = await page.locator('.ad .jp-skip').innerText();
@@ -247,7 +254,7 @@ try {
   await page.locator('.ad .cb[data-row="jobs"]').click();
   await page.waitForSelector('.ad .jp');
   await page.waitForTimeout(500);
-  check('without skipped the page has no held-back section and no error', await page.locator('.ad .jp-skip').count() === 0 && errors.length === 0);
+  check('without skipped the page has no held-back section, no rule line and no error', await page.locator('.ad .jp-skip').count() === 0 && await page.locator('.ad .jp-rule').count() === 0 && errors.length === 0);
 
   // (g3) ADR 0155: the daemon's `audio_private`. False: a sounding mail card and an agent notice come with no cue. True: the cue as before.
   const cues = () => page.evaluate(() => window.__cues);

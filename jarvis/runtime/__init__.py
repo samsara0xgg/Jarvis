@@ -156,7 +156,7 @@ from jarvis.runtime.dashboard import (
     MailDrafts,
 )
 from jarvis.runtime.home import Home, mail_body, mail_summarizer
-from jarvis.runtime.job_mail import JobMail, JobMailSettings
+from jarvis.runtime.job_mail import LINKEDIN_ALERTS, JobMail, JobMailSettings
 from jarvis.runtime.night_run import NightRun, night_settings
 from jarvis.runtime.plugin_connections import PluginConnections
 from jarvis.runtime.plugins import Plugins, load_plugins
@@ -1174,6 +1174,9 @@ def _job_mail(
     if not isinstance(block.get("speak"), bool):
         msg = f"runtime: {config_path} job_mail.speak must be true or false"
         raise RuntimeBootstrapError(msg)
+    if block.get("linkedin_alerts") not in LINKEDIN_ALERTS:
+        msg = f"runtime: {config_path} job_mail.linkedin_alerts must be one of {LINKEDIN_ALERTS}"
+        raise RuntimeBootstrapError(msg)
     settings = JobMailSettings(
         poll_s=float(number("poll_s", low=1)),
         backfill_days=number("backfill_days", low=1, high=60, whole=True),
@@ -1184,6 +1187,7 @@ def _job_mail(
         max_calls_per_day=number("max_calls_per_day", low=1, whole=True),
         speak=block["speak"],
         speak_gap_s=float(number("speak_gap_s", low=0)),
+        linkedin_alerts=block["linkedin_alerts"],
     )
     timeout = number("timeout_ms", low=1, whole=True)
     # min_confidence is the choice question's bar; these questions read probabilities instead.

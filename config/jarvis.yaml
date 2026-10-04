@@ -326,9 +326,13 @@ home:
 # receipt is ledger only, a rejection a card, other job mail a card with sound, an interview
 # or offer a card and one fixed spoken line (at most one per speak_gap_s, only at quiet level
 # off, unmuted, outside a live conversation).  The quiet level holds all of it (ADR 0153).
-# Letters older than 48 hours land in the ledger without an alert.  max_calls_per_day caps
-# Jev calls.  Needs the gmail server connected and OPENROUTER_API_KEY in ~/.jarvis/env.  Off
-# here; switch it on in settings.yaml.
+# Letters older than 48 hours land in the ledger without an alert.  Alerts that wait, or three
+# within 90 seconds, are one summary card that never speaks (ADR 0158).  Local rules over the
+# sender and subject (ADR 0158): LinkedIn social news ("X recently posted") is held back as not
+# job mail; an account notice from a job site is kind other, ledger only; LinkedIn job-alert
+# digests follow linkedin_alerts: ledger_only (no card, no sound) or card_sound (a card with
+# sound, as other job mail).  max_calls_per_day caps Jev calls.  Needs the gmail server
+# connected and OPENROUTER_API_KEY in ~/.jarvis/env.  Off here; switch it on in settings.yaml.
 job_mail:
   enabled: false
   poll_s: 300
@@ -342,6 +346,10 @@ job_mail:
   max_calls_per_day: 400
   speak: true
   speak_gap_s: 600
+  # 2026-10-04 (Allen): LinkedIn job-alert digests never raise a card, a sound or speech; they
+  # only go in the ledger, and the ledger page shows this rule.  card_sound exists only for a
+  # later decision of his; do not change the default.
+  linkedin_alerts: ledger_only
 
 # ADR 0147 — the Dashboard's mail page.  On: the page can open a letter whole, mark it read,
 # archive or trash it (Gmail's Trash, kept 30 days; nothing is deleted for good), tell Jarvis

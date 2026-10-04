@@ -9,11 +9,13 @@ import { postRoute } from './homeData';
 export type JobMailRow = { message_id: string; kind: string; received_at: string; subject: string; event_at?: string | null; event_text?: string | null };
 // `skipped` (GET /inherent/jobs, up to 50, newest first, absent on older daemons): mail the triage held back as not job, whatever its job-likelihood.
 export type Skipped = { message_id: string; received_at: string; sender_name?: string; sender_domain?: string; subject: string; p_job?: number };
+// `rules` (GET /inherent/jobs, absent on older daemons): the standing alert rules the daemon is running, shown as one line each; `linkedin_alerts` is `ledger_only` or `card_sound`.
+export type JobRule = { id: string; value: string };
 export type JobGroup = { company: string; role?: string; kind: string; last_at: string; next_event_at?: string | null; count: number; mails: JobMailRow[] };
 
 const KINDS: Record<string, [string, L]> = {
   offer: ['is-offer', ['Offer', 'Offer']], interview: ['is-interview', ['Interview', '面试']], rejection: ['is-rejection', ['Rejection', '拒信']],
-  receipt: ['is-receipt', ['Received', '已收到']], job_other: ['is-other', ['Other', '其他']],
+  receipt: ['is-receipt', ['Received', '已收到']], job_other: ['is-other', ['Other', '其他']], other: ['is-other', ['Account', '账号通知']],
 };
 export const jobKind = (kind?: string) => KINDS[kind ?? ''] ?? KINDS.job_other;
 const pad = (n: number) => String(n).padStart(2, '0');
@@ -24,7 +26,7 @@ export function jobStamp(iso?: string | null, withTime = false) {
   return withTime ? `${d.getMonth() + 1}/${d.getDate()} ${hhmm}` : d.toDateString() === new Date().toDateString() ? hhmm : `${d.getMonth() + 1}/${d.getDate()}`;
 }
 
-export function JobsPage({ port, ledger, skipped, onChanged }: { port: string; ledger: JobGroup[]; skipped: Skipped[]; onChanged: () => void }) {
+export function JobsPage({ port, ledger, skipped, rules = [], onChanged }: { port: string; ledger: JobGroup[]; skipped: Skipped[]; rules?: JobRule[]; onChanged: () => void }) {
   const t = useT(), [open, setOpen] = useState(''), [confirm, setConfirm] = useState(''), [gone, setGone] = useState<string[]>([]), [failed, setFailed] = useState(false);
   // POST /inherent/jobs/{id}/flag { reaction: 'should_alert' } says a held-back mail was job mail after all; a 404 means the daemon has no such route, and the buttons go.
   const [skipOpen, setSkipOpen] = useState(false), [flagged, setFlagged] = useState<string[]>([]), [noFlag, setNoFlag] = useState(false);
@@ -40,7 +42,9 @@ export function JobsPage({ port, ledger, skipped, onChanged }: { port: string; l
     try { await postRoute(port, `/inherent/jobs/${encodeURIComponent(id)}/delete`, {}); onChanged(); }
     catch { setGone(v => v.filter(x => x !== id)); setFailed(true); }
   };
+  const linkedin = rules.find(r => r.id === 'linkedin_alerts')?.value;
   return <div className="jp">
+    {linkedin && <p className="pg-sec muted jp-rule" data-rule="linkedin_alerts">{linkedin === 'ledger_only' ? t(['LinkedIn job alerts: ledger only, no alert', 'LinkedIn 职位提醒：只进账本，不提醒']) : t(['LinkedIn job alerts: a card with sound', 'LinkedIn 职位提醒：出卡片带提示音'])}</p>}
     {failed && <p className="pg-sec muted is-warm" role="alert">{t(['That didn’t go through. Try again.', '没成功，请再试一次。'])}</p>}
     {!groups.length && <p className="pg-sec muted">{t(['No job mail yet. Jarvis adds it here as it comes in.', '还没有求职邮件，收到了会记在这里。'])}</p>}
     {groups.map((g, i) => { const key = `${g.company}|${g.role ?? ''}|${i}`, [cls, name] = jobKind(g.kind), on = open === key;

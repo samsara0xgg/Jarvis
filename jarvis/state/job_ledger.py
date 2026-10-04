@@ -25,7 +25,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping, Sequence
     from pathlib import Path
 
-KINDS: Final[tuple[str, ...]] = ("offer", "interview", "rejection", "receipt", "job_other")
+KINDS: Final[tuple[str, ...]] = ("offer", "interview", "rejection", "receipt", "job_other", "other")
 LEVELS: Final[tuple[str, ...]] = ("card", "card_sound", "speak")
 MAX_ERROR_TRIES: Final[int] = 3
 # The audit list of held-back mail shows this many, newest first, whatever Jev's probability.
@@ -172,7 +172,7 @@ def record_seen(  # noqa: PLR0913 - the row's fields
             "INSERT INTO job_seen (message_id, at, verdict, tries, p_job, received_at,"
             " sender_name, sender_domain, subject) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
             " ON CONFLICT(message_id) DO UPDATE SET at = excluded.at, verdict = excluded.verdict,"
-            " tries = job_seen.tries + ?, p_job = excluded.p_job,"
+            " tries = job_seen.tries + ?, p_job = coalesce(excluded.p_job, job_seen.p_job),"
             " received_at = excluded.received_at,"
             " sender_name = excluded.sender_name, sender_domain = excluded.sender_domain,"
             " subject = excluded.subject",
@@ -243,8 +243,12 @@ def record_decision(  # noqa: PLR0913 - the row's fields
 
 
 def add_flag(path: Path, message_id: str, now: datetime) -> None:
-    """Record Allen's "this was job mail" for a mail, on its latest logged decision too."""
+    """Record Allen's "this was job mail" for a mail, on its latest logged decision too.
+
+    A mail the repair pass hid as not job mail comes back to the ledger (ADR 0158).
+    """
     with _db(path) as conn:
+        conn.execute("UPDATE job_mail SET deleted = 0 WHERE message_id = ?", (message_id,))
         conn.execute(
             "INSERT INTO job_feedback (alert_id, level_shown, reaction, at) VALUES (?, '', ?, ?)",
             (message_id, FLAG_REACTION, _stamp(now)),
@@ -327,6 +331,15 @@ def update_mail(path: Path, message_id: str, fields: Mapping[str, str | int]) ->
             " WHERE message_id = ?",
             (*fields.values(), message_id),
         )
+
+
+def drop_alerts(path: Path, message_id: str) -> int:
+    """End a mail's pending alerts as ``done`` (not deleted); returns how many."""
+    with _db(path) as conn:
+        return conn.execute(
+            "UPDATE job_alert SET state = 'done' WHERE message_id = ? AND state = 'pending'",
+            (message_id,),
+        ).rowcount
 
 
 def delete_mail(path: Path, message_id: str) -> bool:

@@ -36,6 +36,8 @@ _NOT_JOB: Final[str] = "not_job"
 _UNKNOWN_SENDER: Final[str] = "unknown"
 _UNKNOWN_COMPANY: Final[str] = "Unknown"
 _USE: Final[str] = "job_mail"
+# A job site's account or system notice: in the ledger, never an alert (ADR 0158).
+ACCOUNT_KIND: Final[str] = "other"
 # Bump when a stage's instructions or criteria change, so a logged decision names its wording.
 _STAGE_VERSION: Final[str] = "v1"
 
@@ -105,6 +107,8 @@ class Typed:
     p_job: float
     probabilities: dict[str, float]
     extracted_by: str = "local"
+    # A LinkedIn job-alert digest: ledger only unless ``job_mail.linkedin_alerts`` says otherwise.
+    alert_digest: bool = False
 
 
 @dataclass(frozen=True)
@@ -205,8 +209,16 @@ class JobMailJev:
                 else (top if probabilities[top] >= self._body_min else "job_other")
             )
             facts = extract(head, body)
+            digest = kind == "job_other" and is_alert_digest(head.name, head.domain, head.subject)
+            if kind == "job_other" and is_account_notice(head.subject):
+                kind = ACCOUNT_KIND
             out[head.message_id] = Typed(
-                kind, probabilities[top], facts, _p_job(probabilities), probabilities
+                kind,
+                probabilities[top],
+                facts,
+                _p_job(probabilities),
+                probabilities,
+                alert_digest=digest,
             )
             self._route.note(
                 "decision",
@@ -281,6 +293,50 @@ class JobMailJev:
 def _p_job(probabilities: dict[str, float]) -> float:
     """Jev's probability that a letter is job mail: what is not the ``not_job`` choice."""
     return min(1.0, max(0.0, 1.0 - probabilities[_NOT_JOB]))
+
+
+# --- local rules over sender and subject (ADR 0158) ----------------------------------
+
+_LINKEDIN: Final = "linkedin.com"
+_SOCIAL: Final = re.compile(
+    r"\brecently posted\b|\bhired near you\b|\bis popular in your network\b"
+    r"|\bsomeone at .+ you may know\b|\bstarted a new (?:position|job|role)\b"
+    r"|\bwork anniversary\b|\bnew connections?\b|\bwants to connect\b|\bviewed your profile\b",
+    re.IGNORECASE,
+)
+_ALERT_SUBJECT: Final = re.compile(r"\bis hiring\b|\bnew jobs?\b", re.IGNORECASE)
+_ACCOUNT: Final = re.compile(
+    r"\b(?:user information|password|account|profile update|verify your|verification code|"
+    r"sign[- ]?in|security alert)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_linkedin(domain: str) -> bool:
+    return domain == _LINKEDIN or domain.endswith("." + _LINKEDIN)
+
+
+def is_social(domain: str, subject: str) -> bool:
+    """LinkedIn's social activity ("X recently posted", "X hired near you"): not job mail."""
+    return _is_linkedin(domain) and _SOCIAL.search(subject) is not None
+
+
+def is_alert_digest(name: str, domain: str, subject: str) -> bool:
+    """Whether a mail is a LinkedIn job-alert digest of new postings.
+
+    From "Job Alerts", or from LinkedIn's own name with a "Y is hiring" or "new jobs" subject.
+    A recruiter's InMail is neither.
+    """
+    if not _is_linkedin(domain):
+        return False
+    return "job alert" in name.casefold() or (
+        name.casefold() == "linkedin" and _ALERT_SUBJECT.search(subject) is not None
+    )
+
+
+def is_account_notice(subject: str) -> bool:
+    """An account or system notice from a job site ("CGI - User Information", a password mail)."""
+    return _ACCOUNT.search(subject) is not None
 
 
 # --- local extraction ---------------------------------------------------------------
@@ -644,6 +700,7 @@ def pack_for(head: Head, typed: Typed, now: datetime, situation: dict[str, Any])
             "role": facts.role,
             "event_at": facts.event_at,
             "sender_domain": head.domain,
+            "alert_digest": typed.alert_digest,
             "age_h": age_h,
         },
         situation=situation,

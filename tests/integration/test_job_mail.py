@@ -52,6 +52,7 @@ SETTINGS = JobMailSettings(
     max_calls_per_day=400,
     speak=True,
     speak_gap_s=600,
+    linkedin_alerts="card_sound",  # the older behaviour; ledger_only has its own tests
 )
 AIRPODS = {"name": "AirPods Pro", "transport": "coreaudio_device_type_bluetooth", "private": True}
 SPEAKERS = {
@@ -136,6 +137,34 @@ MAILS = [
         age=timedelta(days=5),
     ),
 ]
+LINKEDIN = [
+    _mail("post", "LinkedIn <messages-noreply@linkedin.com>", "Byron Kontou recently posted", "Hi"),
+    _mail(
+        "near",
+        "LinkedIn <notifications-noreply@linkedin.com>",
+        "Software Engineer: RBC hired near you",
+        "Hi",
+    ),
+    _mail(
+        "alert",
+        "LinkedIn Job Alerts <jobalerts-noreply@linkedin.com>",
+        "Machine Learning Engineer II at TD",
+        "New jobs",
+    ),
+    _mail(
+        "hiring",
+        "LinkedIn <jobs-noreply@linkedin.com>",
+        "CrowdStrike is hiring for a Remote role",
+        "New jobs",
+    ),
+    _mail("account", "CGI <no-reply@njoyn.com>", "CGI - User Information", "Your account"),
+    _mail(
+        "inmail",
+        "Jane Recruiter <inmail-hit-reply@linkedin.com>",
+        "Jane, interview for the Software Developer Co-op",
+        "Can we talk Tuesday?",
+    ),
+]
 # subject -> (header probabilities, body probabilities); a body entry only for mail that gets read.
 JOB, MAYBE, NOT = "job_related", "maybe_job", "not_job"
 
@@ -168,6 +197,25 @@ ANSWERS: dict[str, tuple[dict[str, float], dict[str, float] | None]] = {
     "Our weekly newsletter": (_odds(not_job=0.97), None),
     "Dinner on Sunday?": (_odds(not_job=0.95), None),
     "Your application status": (_odds(job_related=0.95), _odds(rejection=0.9)),
+    # ADR 0158: Allen's real LinkedIn and CGI mail. Social news is held back before its body.
+    "Byron Kontou recently posted": (
+        _odds(maybe_job=0.7, not_job=0.1),
+        _odds(not_job=0.6, job_other=0.3),
+    ),
+    "Software Engineer: RBC hired near you": (_odds(maybe_job=0.7, not_job=0.1), None),
+    "Machine Learning Engineer II at TD": (
+        _odds(job_related=0.8, not_job=0.1),
+        _odds(job_other=0.8),
+    ),
+    "CrowdStrike is hiring for a Remote role": (
+        _odds(job_related=0.8, not_job=0.1),
+        _odds(job_other=0.8),
+    ),
+    "CGI - User Information": (_odds(job_related=0.8, not_job=0.1), _odds(job_other=0.8)),
+    "Jane, interview for the Software Developer Co-op": (
+        _odds(job_related=0.9),
+        _odds(interview=0.9),
+    ),
 }
 
 
@@ -796,13 +844,144 @@ def test_the_repair_pass_fixes_stored_rows_offline_and_is_idempotent(
             "role": role,
         }
         job_ledger.upsert_mail(h.db, mail, NOW)
-    assert repair(h.db) == 4  # the account notice was right already
+    assert repair(h.db, "ledger_only") == 4  # the account notice was right already
     assert {
         key: tuple(rest) for key, *rest in h.sql("SELECT message_id, company, role FROM job_mail")
     } == {key: after for key, *_mid, after in rows}
     assert [one["company"] for one in h.ledger()] == ["Reliable Controls", "CGI"]
-    assert repair(h.db) == 0
+    assert repair(h.db, "ledger_only") == 0
     assert h.gmail.calls == []
+
+
+def test_local_rules_keep_linkedin_noise_and_account_notices_off_the_cards(
+    tmp_path: Path, jev: _Jev
+) -> None:
+    """Social news is held back unread, an account notice is kind other, a digest is ledger only."""
+    h = _harness(tmp_path, jev, LINKEDIN, linkedin_alerts="ledger_only")
+    h.job.poll_once()
+
+    assert dict(h.sql("SELECT message_id, verdict FROM job_seen")) == {
+        "m-post": "not_job",
+        "m-near": "not_job",
+        "m-alert": "job",
+        "m-hiring": "job",
+        "m-account": "job",
+        "m-inmail": "job",
+    }
+    assert h.gmail.full_reads() == {
+        "m-alert",
+        "m-hiring",
+        "m-account",
+        "m-inmail",
+    }  # no social body
+    held = {one["subject"] for one in h.client.get("/inherent/jobs").json()["skipped"]}
+    assert held == {"Byron Kontou recently posted", "Software Engineer: RBC hired near you"}
+    assert dict(h.sql("SELECT message_id, kind FROM job_mail")) == {
+        "m-alert": "job_other",
+        "m-hiring": "job_other",
+        "m-account": "other",
+        "m-inmail": "interview",
+    }
+    # Only the recruiter's interview alerts; the logs say what held the rest.
+    assert h.sql("SELECT message_id, level FROM job_alert") == [("m-inmail", "speak")]
+    rows = {r["event_id"]: r for r in job_ledger.list_attention(h.db, "job_mail")}
+    assert rows["m-alert"]["reason"] == "LinkedIn job-alert digest: ledger only"
+    assert set(rows["m-account"]["delivery"]) == {"ledger_only"}
+    rule = h.sql("SELECT judge, verdict FROM job_decision WHERE stage = 'rule'")
+    assert rule == [("local-rule/social-v1", "not_job")] * 2
+
+    # The ledger page is told the standing rule, not left to hardcode it.
+    jobs = h.client.get("/inherent/jobs").json()
+    assert jobs["rules"] == [{"id": "linkedin_alerts", "value": "ledger_only"}]
+
+    # card_sound brings the digests back as cards with sound; the account notice stays quiet.
+    # The interview is the third alert of the burst, so it is a card with sound, not a line.
+    on = _harness(tmp_path / "on", jev, LINKEDIN, linkedin_alerts="card_sound")
+    on.job.poll_once()
+    assert dict(on.sql("SELECT message_id, level FROM job_alert")) == {
+        "m-alert": "card_sound",
+        "m-hiring": "card_sound",
+        "m-inmail": "card_sound",
+    }
+
+
+def test_the_repair_pass_hides_noise_drops_its_alerts_and_respects_a_flag(
+    tmp_path: Path, jev: _Jev
+) -> None:
+    """Stored social mail is held back, notices retyped, alerts done; idempotent; flags win."""
+    h = _harness(tmp_path, jev, LINKEDIN, linkedin_alerts="card_sound")
+    h.job.poll_once()  # card_sound: digests alerted, the social mail never entered the ledger
+    # Rows as the first backfill left them: social mail typed job_other, with alerts pending.
+    for key, subject in (
+        ("old1", "Byron Kontou recently posted"),
+        ("old2", "Flagged recently posted"),
+    ):
+        mail = {
+            "message_id": key,
+            "received_at": NOW.isoformat(),
+            "sender_name": "LinkedIn",
+            "sender_domain": "linkedin.com",
+            "subject": subject,
+            "kind": "job_other",
+            "company": "LinkedIn",
+            "role": "",
+        }
+        job_ledger.upsert_mail(h.db, mail, NOW)
+        job_ledger.record_seen(h.db, key, "job", NOW, p_job=0.8)
+        job_ledger.create_alert(h.db, key, "card_sound", "t", "l", NOW)
+    job_ledger.add_flag(h.db, "old2", NOW)
+
+    def pending() -> set[str]:
+        return {m for (m,) in h.sql("SELECT message_id FROM job_alert WHERE state = 'pending'")}
+
+    assert {"old1", "old2", "m-alert", "m-hiring"} <= pending()
+
+    assert repair(h.db, "ledger_only") > 0
+    assert h.sql("SELECT deleted FROM job_mail WHERE message_id = 'old1'") == [(1,)]
+    assert h.sql("SELECT deleted FROM job_mail WHERE message_id = 'old2'") == [(0,)]  # flagged
+    assert h.sql("SELECT verdict, p_job FROM job_seen WHERE message_id = 'old1'") == [
+        ("not_job", 0.8)
+    ]
+    assert h.sql("SELECT stage, verdict, judge FROM job_decision WHERE message_id = 'old1'") == [
+        ("rule", "not_job", "local-rule/social-v1")
+    ]
+    assert "Byron Kontou recently posted" in {
+        one["subject"] for one in h.client.get("/inherent/jobs").json()["skipped"]
+    }
+    assert h.sql("SELECT kind FROM job_mail WHERE message_id = 'm-account'") == [("other",)]
+    assert not pending() & {"old1", "m-alert", "m-hiring", "m-account"}  # done, not deleted
+    assert pending() >= {"old2", "m-inmail"}
+    assert repair(h.db, "ledger_only") == 0  # a second run changes nothing
+
+    # With card_sound the digests keep their alerts.
+    keep = _harness(tmp_path / "keep", jev, LINKEDIN, linkedin_alerts="card_sound")
+    keep.job.poll_once()
+    repair(keep.db, "card_sound")
+    assert {m for (m,) in keep.sql("SELECT message_id FROM job_alert WHERE state = 'pending'")} == {
+        "m-alert",
+        "m-hiring",
+        "m-inmail",
+    }
+
+
+def test_flagging_a_hidden_social_mail_brings_it_back_to_the_ledger(
+    tmp_path: Path, jev: _Jev
+) -> None:
+    """Allen's flag wins over the local rule: the mail is job mail, in the ledger, with an alert."""
+    h = _harness(tmp_path, jev, LINKEDIN[:1], linkedin_alerts="ledger_only")
+    h.job.poll_once()
+    assert h.sql("SELECT 1 FROM job_mail") == []
+    assert (
+        h.client.post("/inherent/jobs/m-post/flag", json={"reaction": "should_alert"}).status_code
+        == 200
+    )
+    assert h.sql("SELECT kind, deleted FROM job_mail WHERE message_id = 'm-post'") == [
+        ("job_other", 0)
+    ]
+    assert h.sql("SELECT level FROM job_alert") == [("card_sound",)]
+    assert "m-post" not in {
+        one["message_id"] for one in h.client.get("/inherent/jobs").json()["skipped"]
+    }
 
 
 def test_feedback_is_recorded_and_an_untouched_alert_ends_ignored(
@@ -962,6 +1141,7 @@ def test_off_by_default_no_routes_no_poller_and_bad_values_stop_boot(tmp_path: P
         "max_calls_per_day": 400,
         "speak": True,
         "speak_gap_s": 600,
+        "linkedin_alerts": "ledger_only",
     }.items() <= block.items()
     config_path, db = tmp_path / "jarvis.yaml", tmp_path / "memory.db"
     connections: Any = _Connections(None)
@@ -979,6 +1159,7 @@ def test_off_by_default_no_routes_no_poller_and_bad_values_stop_boot(tmp_path: P
         ("model", " "),
         ("timeout_ms", 0),
         ("speak", "yes"),
+        ("linkedin_alerts", "sometimes"),
         ("max_calls_per_day", None),
     ):
         bad = {"job_mail": {**block, "enabled": True, key: value}}
@@ -1034,7 +1215,7 @@ def test_each_decision_is_logged_with_its_pack_delivery_and_feedback(
     assert pack.facts["kind"] == "interview"
     assert pack.facts["company"] == "Northwind"
     assert pack.facts["sender_domain"] == "northwind.example"
-    assert set(pack.situation) == {"hour", "weekday", "quiet", "speech_ok"}
+    assert set(pack.situation) == {"hour", "weekday", "quiet", "speech_ok", "linkedin_alerts"}
     assert pack.situation["quiet"] == "off"
     assert "Hi Allen" not in interview["pack_json"]  # typed facts, never the body
     assert (interview["judge_id"], interview["judge_version"], interview["level"]) == (

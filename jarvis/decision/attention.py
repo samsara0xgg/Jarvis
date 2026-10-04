@@ -68,7 +68,7 @@ _RULES: Final[dict[str, str]] = {
 
 
 def rule_judge_v1(pack: ContextPack) -> Judgement:
-    """Allen's job-mail rule table, with stale mail kept to the ledger."""
+    """Allen's job-mail rule table; stale mail and LinkedIn alert digests stay in the ledger."""
 
     def said(level: str, reason: str) -> Judgement:
         return Judgement(level, reason, "rule_judge", "1")
@@ -76,6 +76,8 @@ def rule_judge_v1(pack: ContextPack) -> Judgement:
     kind = pack.facts.get("kind")
     if kind not in _RULES:
         return said("ledger", f"no rule for kind {kind!r}")
+    if pack.facts.get("alert_digest") and pack.situation.get("linkedin_alerts") != "card_sound":
+        return said("ledger", "LinkedIn job-alert digest: ledger only")
     age_h = pack.facts.get("age_h")
     if isinstance(age_h, int | float) and age_h > STALE_AFTER_H:
         return said("ledger", "older than 48 hours")

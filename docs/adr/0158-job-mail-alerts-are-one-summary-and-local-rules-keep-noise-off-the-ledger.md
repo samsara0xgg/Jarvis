@@ -61,11 +61,14 @@ Its limits:
     mail back.
   - An account or system notice from a job site, which Jev typed `job_other`,
     is kind `other`: in the ledger, never an alert.
-  - A LinkedIn job-alert digest is `job_other` as before and is ledger only
-    while `job_mail.linkedin_alerts` is `ledger_only` (the default); with
-    `card_sound` it is a card with sound as before. The setting is part of the
-    context pack's situation, so the logged pack says which was in force.
-    Interviews and offers from LinkedIn senders are not downgraded.
+  - Allen's rule (2026-10-04): a LinkedIn job-alert digest never raises a card,
+    a sound or speech. It is `job_other` as before and ledger only while
+    `job_mail.linkedin_alerts` is `ledger_only`, the default and the standing
+    rule; `card_sound` is a switch for a later decision of his, not a mode in
+    use. The setting is part of the context pack's situation, so the logged pack
+    says which was in force, and `GET /inherent/jobs` returns it as `rules`, which
+    the ledger page shows as one line. Interviews and offers from LinkedIn
+    senders are not downgraded.
 - **Pending alerts** of a mail the repair pass turns ledger-only, `other` or
   `not_job` are marked done (not deleted), so they never join a summary.
 

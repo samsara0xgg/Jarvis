@@ -18,7 +18,7 @@ import { ArrangeHome, BLOCK } from './ArrangeHome';
 import { BriefPage } from './BriefPage';
 import { SettingsPage, type Account, type AccountKeyDrafts, type Controls } from './SettingsPage';
 import { ActionCard, MailCard, QuestionCard, type Answer, type Card, type Decide, type Question } from './ActionCard';
-import { JobsPage, type JobGroup, type Skipped } from './JobsPage';
+import { JobsPage, type JobGroup, type JobRule, type Skipped } from './JobsPage';
 import { MailLetter, MailList, type MailAct, type MailFilter } from './MailPage';
 import { MEM_HOME, MemoryPage, type MemNav, type MemoryOverview } from './MemoryPage';
 import { MOTION } from './motion';
@@ -570,7 +570,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
   const memoryNow = Array.isArray(memoryRoute.data?.sections) ? memoryRoute.data : null; // an answer of another shape counts as no memory page
   const noticeRoute = useRoute<{ notices: Notice[] }>(port, '/inherent/notices', open, 60_000);
   // The job ledger (job mail, ADR 0155): its icon is in the corner only once the daemon serves the route (a 404 means the feature is off).
-  const jobsRoute = useRoute<{ ledger: JobGroup[]; skipped?: Skipped[] }>(port, '/inherent/jobs', open, 30_000), ledger = Array.isArray(jobsRoute.data?.ledger) ? jobsRoute.data.ledger : null;
+  const jobsRoute = useRoute<{ ledger: JobGroup[]; skipped?: Skipped[]; rules?: JobRule[] }>(port, '/inherent/jobs', open, 30_000), ledger = Array.isArray(jobsRoute.data?.ledger) ? jobsRoute.data.ledger : null;
   // A first boot fetches the speech models (~240 MB) before she can hear or speak; the corner shows how far, polled until they are in.
   const [voiceIn, setVoiceIn] = useState(false);
   const models = useRoute<{ voice_models?: { state: 'ready' | 'downloading' | 'failed'; done: number; total: number } }>(port, '/inherent/setup', open && !voiceIn, 3000).data?.voice_models;
@@ -810,7 +810,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
     </>,
     jobs: () => <>
       {back(t(TITLES.jobs), ledger && t([`${ledger.length} compan${ledger.length === 1 ? 'y' : 'ies'}`, `${ledger.length} 家公司`]))}
-      <div className="pg-body">{port && <JobsPage port={port} ledger={ledger ?? []} skipped={Array.isArray(jobsRoute.data?.skipped) ? jobsRoute.data.skipped : []} onChanged={jobsRoute.reload}/>}</div>
+      <div className="pg-body">{port && <JobsPage port={port} ledger={ledger ?? []} skipped={Array.isArray(jobsRoute.data?.skipped) ? jobsRoute.data.skipped : []} rules={Array.isArray(jobsRoute.data?.rules) ? jobsRoute.data.rules : []} onChanged={jobsRoute.reload}/>}</div>
     </>,
     memory: () => <>
       {back(t(TITLES.memory), memoryNow && t([`${memoryNow.items} kept`, `记着 ${memoryNow.items} 条`]))}
