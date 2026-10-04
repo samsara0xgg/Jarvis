@@ -594,7 +594,7 @@ def test_quiet_levels_hold_the_alerts_and_release_is_one_digest(tmp_path: Path, 
     h.quiet = "off"
     (digest,) = h.notices()
     assert digest["kind"] == "digest"
-    assert digest["title"] == lang.t("job.digest.title", n=5, x=2)
+    assert digest["title"] == lang.t("job.digest.title_interviews", n=5, x=2)
     assert digest["link"] == "jobs"
     assert [item["mail_kind"] for item in digest["items"]] == [
         "offer",
@@ -646,6 +646,19 @@ def _pending(h: _Harness, kinds: list[str], *, level: str, age: timedelta) -> No
         job_ledger.create_alert(h.db, f"p-{i}", level, f"T{i}", "line", made)
 
 
+def test_a_summary_with_no_interview_has_no_interview_clause(tmp_path: Path, jev: _Jev) -> None:
+    """The count of interviews is only said when it is more than zero, in both languages."""
+    h = _harness(tmp_path, jev, [])
+    _pending(h, ["job_other"] * 3, level="card", age=timedelta(minutes=20))
+    for language in ("zh", "en"):
+        lang.set_language(language)
+        (summary,) = h.notices()
+        assert summary["title"] == lang.t("job.digest.title", n=3)
+        assert "{" not in summary["title"]
+    assert "封面试" not in summary["title"]
+    assert "interview" not in summary["title"]
+
+
 def test_ten_pending_alerts_are_one_summary_that_never_speaks(tmp_path: Path, jev: _Jev) -> None:
     """Allen's backfill left 10 pending alerts, three at speak: one card, a link, no speech."""
     h = _harness(tmp_path, jev, [])
@@ -657,7 +670,7 @@ def test_ten_pending_alerts_are_one_summary_that_never_speaks(tmp_path: Path, je
         h.quiet = quiet
         (summary,) = h.notices()
         assert summary["kind"] == "digest"
-        assert summary["title"] == lang.t("job.digest.title", n=10, x=4)
+        assert summary["title"] == lang.t("job.digest.title_interviews", n=10, x=4)
         assert summary["link"] == "jobs"
         assert summary["level"] == ("card_sound" if quiet == "off" else "card")
         assert len(summary["items"]) == 10

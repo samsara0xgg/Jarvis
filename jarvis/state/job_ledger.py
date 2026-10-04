@@ -550,10 +550,11 @@ def alerts_for_client(path: Path, quiet: str, now: datetime) -> list[dict[str, A
         for row in sorted(mails, key=lambda r: _RANK.get(r["kind"], _OTHER_RANK))
         if row["id"] in merged
     ]
-    title = lang.t(
-        "job.digest.title",
-        n=len(items),
-        x=sum(item["mail_kind"] in INTERVIEWING for item in items),
+    interviews = sum(item["mail_kind"] in INTERVIEWING for item in items)
+    title = (
+        lang.t("job.digest.title_interviews", n=len(items), x=interviews)
+        if interviews
+        else lang.t("job.digest.title", n=len(items))
     )
     sound = any(item["level"] in SOUNDING for item in items)
     return [

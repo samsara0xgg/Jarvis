@@ -997,6 +997,10 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
         "en": "{company} sent a job-related email{role}.",
     },
     "job.digest.title": {
+        "zh": "最近两天有 {n} 封求职邮件",
+        "en": "{n} job emails in the last two days",
+    },
+    "job.digest.title_interviews": {
         "zh": "最近两天有 {n} 封求职邮件，其中 {x} 封面试",
         "en": "{n} job emails in the last two days, {x} about interviews",
     },

@@ -35,7 +35,8 @@ Its limits:
 
 - **Summary.** Mail alerts are one notice when two or more waited more than 30
   seconds, or when any three were made within 90 seconds: "N job emails in the
-  last two days, X about interviews" (offers and interviews), at most
+  last two days, X about interviews" (offers and interviews; the clause is
+  left out when X is 0), at most
   `card_sound`, never `speak`, with a link that opens the Dashboard's job ledger.
   Rows already in the database are merged when read; nothing is migrated or
   deleted. A third alert within 90 seconds is made at `card_sound`, so only the
