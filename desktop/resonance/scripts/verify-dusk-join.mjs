@@ -84,7 +84,7 @@ async function runCase(dpr, notch, finish) {
       else if (pathname === '/inherent/language') data = { language: 'en' };
       else if (pathname === '/inherent/think') data = { on: false, on_words: 'think deeply' };
       else { status = 404; data = {}; }
-      if (req.method() === 'POST' && !['/inherent/controls', '/inherent/projects/refresh'].includes(pathname) && !pathname.startsWith('/inherent/agent-marks/')) report.unexpectedRequests.push(pathname);
+      if (req.method() === 'POST' && !['/inherent/controls', '/inherent/projects/refresh'].includes(pathname) && !pathname.startsWith('/inherent/agent-marks/') && !pathname.startsWith('/inherent/cards/')) report.unexpectedRequests.push(pathname); // card snapshots and reactions (ADR 0160) never decide anything
       await route.fulfill({ status, contentType: 'application/json', headers: { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': '*', 'Access-Control-Allow-Methods': '*' }, body: JSON.stringify(data) });
     });
     await page.routeWebSocket(`ws://127.0.0.1:${fixturePort}/**`, () => {});

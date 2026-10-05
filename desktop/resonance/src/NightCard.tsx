@@ -197,7 +197,7 @@ function Bedtime({ run, laptop, look, c, act, go }: { run: NightRun; laptop: boo
 }
 
 // ---------- the screen woke in the night ----------
-function Night({ run, look, c, act, go }: { run: NightRun; look: NightLook; c: Ctx; act: (action: NightAction) => void; go: (s: NightSession) => void }) {
+function Night({ run, look, c, act, go, rate }: { run: NightRun; look: NightLook; c: Ctx; act: (action: NightAction) => void; go: (s: NightSession) => void; rate?: ReactNode }) {
   const { t, lang, now } = c, w = run.watch, until = hhmm(run.until_ms), cap = hhmm(run.cap_ms);
   const released = run.released_ms !== null, worked = w.quiet_ms !== null, lookLine = run.wake_at_ms
     ? <p className="nc-line">{t([`Before ${hhmm(run.wake_at_ms)} the screen goes off again after a quiet minute`, `${hhmm(run.wake_at_ms)} 前看一眼，一分钟不动就再熄屏`])}</p> : null;
@@ -226,7 +226,7 @@ function Night({ run, look, c, act, go }: { run: NightRun; look: NightLook; c: C
     <div className="nc-list"><Section label={t([`Last seen ${w.blind_since_ms ? hhmm(w.blind_since_ms) : ''}`, `${w.blind_since_ms ? hhmm(w.blind_since_ms) : ''} 最后看到`])} n={w.sessions.length}>
       {w.sessions.map(s => <Row key={s.id} s={s} c={c} bedtime={false} gone said={s.busy ? t(['working then', '那时在干活']) : s.st === 'wait' ? t(['waiting then', '那时在等你']) : status(s, c, false)}/>)}
     </Section></div>
-    {lookLine}{foot}
+    {lookLine}{rate}{foot}
   </div>;
   if (look === 'trail' && w.seen) {
     const held = run.released_ms ?? now, plan = run.watch.release_ms ?? run.cap_ms;
@@ -239,7 +239,7 @@ function Night({ run, look, c, act, go }: { run: NightRun; look: NightLook; c: C
         <div className="nc-side"><Kv dt="3.2em" rows={[[t(['Floor', '兜底']), t([`until ${until}`, `至少到 ${until}`])], [t(['Working', '在干活']), w.busy ? t([`${w.busy}, let go ${SETTLE_MIN} min after`, `${w.busy} 个，停下 ${SETTLE_MIN} 分钟放开`]) : meta], [t(['Longest', '最长']), cap]]}/></div>
       </div>
       <Legend rows={ringed(w).concat(w.sessions.filter(s => !ringed(w).includes(s)))} c={c} bedtime={false}/>
-      {lookLine}{foot}
+      {lookLine}{rate}{foot}
     </div>;
   }
   // While work goes on the rule comes after the sessions; once all stopped, what happens next comes first.
@@ -247,12 +247,12 @@ function Night({ run, look, c, act, go }: { run: NightRun; look: NightLook; c: C
   return <div className="ac nc-night is-dim" data-night={run.id} data-look="list">
     {bar}{!working && said}
     <Listing w={w} c={c} bedtime={false} go={go} hints={{ due }}/>
-    {working && said}{lookLine}{foot}
+    {working && said}{lookLine}{rate}{foot}
   </div>;
 }
 
 // ---------- back in the morning ----------
-function Morning({ last, look, unread, c, onClose }: { last: NightLast; look: NightLook; unread: number; c: Ctx; onClose: () => void }) {
+function Morning({ last, look, unread, c, onClose, rate }: { last: NightLast; look: NightLook; unread: number; c: Ctx; onClose: () => void; rate?: ReactNode }) {
   const { t, lang } = c, w = last.watch, why = last.release_reason, until = hhmm(last.until_ms);
   const overnight = new Date(last.started_ms).toDateString() !== new Date(last.ended_ms).toDateString();
   const { brightness, volume } = last.restored;
@@ -292,7 +292,7 @@ function Morning({ last, look, unread, c, onClose }: { last: NightLast; look: Ni
         <div className="nc-side"><Kv dt="3.2em" rows={[[t(['Time', '按时间']), byTime], [t(['Watch', '按监控']), byWatch], [t(['Mac', 'Mac']), slept], [t(['Put back', '还原']), t(back)], ...agents]}/></div>
       </div>
       <Legend rows={ringed(w).concat(w.sessions.filter(s => !ringed(w).includes(s)))} c={c} bedtime={false}/>
-      {data}
+      {data}{rate}
     </div>;
   }
   const { busy } = groups(w);
@@ -301,16 +301,17 @@ function Morning({ last, look, unread, c, onClose }: { last: NightLast; look: Ni
     <Kv rows={[[t(['Kept awake', '防睡']), awake], ...w.seen || w.blind ? [[t(['By time', '按时间']), byTime], [t(['By watch', '按监控']), byWatch]] as [string, ReactNode][] : [],
       [t(['Mac', 'Mac']), slept], [t(['Put back', '还原']), t(back)], ...agents]}/>
     <Listing w={w} c={c} bedtime={false} hints={{ busy: why === 'cap' && busy.length ? t(['Check it is not stuck', '看看是不是卡住了']) : undefined }}/>
-    {data}
+    {data}{rate}
   </div>;
 }
 
-export function NightCard({ state, morning, unread, lang, marks, look, act, onGo, onClose }: {
+// `rate` is the 合适吗 row (ADR 0160), for the card when the screen wakes and for the morning one.
+export function NightCard({ state, morning, unread, lang, marks, look, act, onGo, onClose, rate }: {
   state: NightState; morning: NightLast | null; unread: number; lang: Lang; marks: MarkLook; look: NightLook;
-  act: (action: NightAction) => void; onGo: (session: NightSession) => void; onClose: () => void;
+  act: (action: NightAction) => void; onGo: (session: NightSession) => void; onClose: () => void; rate?: ReactNode;
 }) {
   const now = useNow(state.night?.phase === 'starting' ? 250 : 15_000), run = state.night;
   const c: Ctx = { lang, t: (l: L) => tr(lang, l), now, marks };
-  if (run) return run.phase === 'starting' ? <Bedtime run={run} laptop={state.laptop} look={look} c={c} act={act} go={onGo}/> : <Night run={run} look={look} c={c} act={act} go={onGo}/>;
-  return morning ? <Morning last={morning} look={look} unread={unread} c={c} onClose={onClose}/> : null;
+  if (run) return run.phase === 'starting' ? <Bedtime run={run} laptop={state.laptop} look={look} c={c} act={act} go={onGo}/> : <Night run={run} look={look} c={c} act={act} go={onGo} rate={rate}/>;
+  return morning ? <Morning last={morning} look={look} unread={unread} c={c} onClose={onClose} rate={rate}/> : null;
 }

@@ -14,7 +14,7 @@ import { usePlugins } from './PluginPanel';
 import { isMarkLook } from './AgentMarks';
 import { answerRequest, type Agent, type ShownAgent } from './agents';
 import { answerStartrail, markStartrail, useStartrail } from './startrail';
-import { DigestCard, JobsDigestCard, MailNotice, NoticeCard, ended, noticeCue, useNotices } from './Notices';
+import { CardRate, DigestCard, JobsDigestCard, MailNotice, NoticeCard, RateRow, cardTell, ended, noticeCue, useNotices } from './Notices';
 import { ActionCard, QuestionCard, type Answer, type Card, type Decide, type Question } from './ActionCard';
 import { Notch, type NotchNote } from './Notch';
 import { NightCard, isNightLook, markNightSeen, morningOf, seenNight, type NightAction, type NightSession, type NightState } from './NightCard';
@@ -182,13 +182,29 @@ export function Companion() {
   const nightShown = (!!nightRun || !!morning) && !card && !question && !dashboard && !remoteOpen && !moving;
   const nightKey = nightRun ? `night:${nightRun.id}:${nightRun.phase === 'starting' ? 'bed' : 'night'}` : morning ? `night:${morning.id}:morning` : '';
   const nightFace: ExprId = !nightRun ? 'fin' : nightRun.phase === 'starting' ? 'ask' : '00';
+  // ADR 0160: the card when the screen wakes in the night and the morning one are logged and rated like the other proactive cards; the bedtime card is Allen's own start of the run.
+  const nightCid = nightShown ? nightRun ? nightRun.phase === 'glance' ? nightKey : '' : morning ? nightKey : '' : '';
+  const nightTold = useRef(new Set<string>());
+  useEffect(() => {
+    if (!nightCid) return;
+    const watch = (nightRun ?? morning)!.watch, facts = nightRun ? { phase: nightRun.phase, busy: watch.busy, sessions: watch.sessions.length, released: nightRun.released_ms !== null } : { reason: morning!.reason, sessions: watch.sessions.length, slept: morning!.slept_ms !== null };
+    cardTell(port, nightCid, { action: 'seen', kind: nightRun ? 'night' : 'morning', level: 'card', facts, situation: { audio_private: audioPrivate.current ?? null } });
+  }, [nightCid]);
+  const nightReact = (reaction: string) => {
+    const told = nightTold.current, mine = [...told].some(k => k.startsWith(`${nightCid}|`));
+    if (!nightCid || told.has(`${nightCid}|${reaction}`) || reaction === 'dismissed' && mine) return;
+    told.add(`${nightCid}|${reaction}`);
+    cardTell(port, nightCid, reaction === 'dismissed' ? { action: 'dismissed' } : { action: 'feedback', reaction });
+  };
   const nightAct = (action: NightAction) => {
+    if (action !== 'start') nightReact('acted');
     if (action === 'end' && nightRun?.phase !== 'starting') ball.current?.hop(.14);
     void link.current?.nightAct(action).then(setNightState).catch(() => undefined); // a stale card: the next read shows the run as it is
   };
-  const closeMorning = () => { if (morning) { markNightSeen(morning.id); setNightSeen(morning.id); } };
+  const closeMorning = () => { if (morning) { nightReact('dismissed'); markNightSeen(morning.id); setNightSeen(morning.id); } };
   // A session on the night card: before dark the screen stays until Allen leaves it a quiet minute; then his way to it.
   const nightGo = (session: NightSession) => {
+    nightReact('acted');
     if (nightRun?.phase === 'starting') nightAct('stay');
     const known = agents.find(a => a.id === session.id);
     if (known) jump(known); else window.jarvis?.openAgents?.();
@@ -298,7 +314,7 @@ export function Companion() {
   // Unknown output counts as not private until the first poll answers (a 404 there means the feature is off).
   const audioPrivate = useRef<boolean | undefined>(port && !detached ? false : undefined);
   const notices = useNotices({ port, poll: !detached, agents, quiet: s.quiet, inClaude, hold: agentsFront || busy || dashboard || remoteOpen || detached || moving || carded || nightShown || !!nightRun || keysOn || !!menu, watched, viewing, agentsFront, audio: audioPrivate,
-    cue: (name, gain) => { if (preferences.feedbackEnabled && !s.soundMuted && s.quiet === 'off' && audioPrivate.current !== false) noticeCue(name, preferences.feedbackVolume, gain); },
+    cue: (name, gain) => { const on = preferences.feedbackEnabled && !s.soundMuted && s.quiet === 'off' && audioPrivate.current !== false; if (on) noticeCue(name, preferences.feedbackVolume, gain); return on; },
     answer: (req, body, id) => agents.find(a => a.id === id)?.host ? answerStartrail(id, req, body) : port ? answerRequest(port, req.id, body) : Promise.resolve(true), mark: markStartrail });
   const notice = notices.current;
   // A press anywhere else on screen puts a card away (the window is click-through, so main reports it); not one that
@@ -313,6 +329,7 @@ export function Companion() {
   // Going to a session reads it: Startrail's window on it, its Codex thread, or its Ghostty terminal (a new tab attaches
   // a background one).
   const jump = (a: Agent) => {
+    notices.acted([a.id]);
     if (ended(a.state)) notices.read([a.id]);
     if (a.host) window.jarvis?.openAgents?.(a.id);
     else if (a.agent === 'codex') void window.jarvis?.openCodex?.(a.id);
@@ -761,15 +778,17 @@ export function Companion() {
     : question ? <QuestionCard key={question.id} question={question} lang={companion.lang} onAnswer={answerQuestion}/> : undefined;
   const note: NotchNote | null = carded && cardView ? { key: card ? `card:${card.id}` : `question:${question?.id}`, onClose: () => undefined, card: cardView }
     : nightShown && nightState ? { key: nightKey, onClose: closeMorning, card: <NightCard key={nightKey} state={nightState} morning={morning} unread={notices.unread.size} lang={companion.lang} marks={wardrobe.marks} look={wardrobe.night}
-      act={nightAct} onGo={nightGo} onClose={closeMorning}/> }
-    : !notice ? null : notice.kind === 'pop' ? { key: notice.key, pop: notice.ids, onClose: notices.next }
+      act={nightAct} onGo={nightGo} onClose={closeMorning}
+      rate={nightCid ? <CardRate key={nightCid} level="card" lang={companion.lang} onRate={reaction => { nightReact(reaction); if (morning) setTimeout(closeMorning, 850); }}/> : undefined}/> }
+    : !notice ? null : notice.kind === 'pop' ? { key: notice.key, pop: notice.ids, onClose: notices.dismiss,
+      rate: <RateRow card={notices.card!} level={notices.card?.level ?? 'card'} lang={companion.lang} onChange={notices.bump} onRate={(reaction, text) => notices.rate(notice, reaction, text)}/> }
     : notice.kind === 'mail' ? { key: notice.key, id: notice.id, onClose: notices.dismiss,
       card: <MailNotice key={notice.key} n={notice} card={notices.card!} lang={companion.lang} onDismiss={notices.dismiss} onChange={notices.bump} onRate={(reaction, text) => notices.rate(notice, reaction, text)}/> }
     : notice.kind === 'jobs' ? { key: notice.key, id: notice.id, onClose: notices.dismiss, card: <JobsDigestCard key={notice.key} n={notice} card={notices.card!} lang={companion.lang} onDismiss={notices.dismiss} onOpen={openJobs} onChange={notices.bump} onRate={(reaction, text) => notices.rate(notice, reaction, text)}/> }
-    : notice.kind === 'digest' ? { key: notice.key, onClose: notices.next, card: <DigestCard key={notice.key} n={notice} agents={agents} lang={companion.lang} look={wardrobe.marks} onOpen={jump} onAnswer={notices.focus}/> }
+    : notice.kind === 'digest' ? { key: notice.key, onClose: notices.dismiss, card: <DigestCard key={notice.key} n={notice} agents={agents} lang={companion.lang} look={wardrobe.marks} card={notices.card!} onOpen={jump} onAnswer={notices.focus} onChange={notices.bump} onRate={(reaction, text) => notices.rate(notice, reaction, text)}/> }
     : { key: notice.key, id: notice.id, onClose: notices.dismiss,
-    card: <NoticeCard key={notice.key} n={notice} card={notices.card!} agent={agents.find(a => a.id === notice.id)} count={notices.count} look={wardrobe.marks}
-      onPark={() => notices.park([notice.id])} onDismiss={notices.dismiss} onOpen={jump} onChange={notices.bump} onResolve={(text, body) => {
+    card: <NoticeCard key={notice.key} n={notice} card={notices.card!} agent={agents.find(a => a.id === notice.id)} count={notices.count} look={wardrobe.marks} lang={companion.lang}
+      onPark={() => notices.park([notice.id])} onDismiss={notices.dismiss} onOpen={jump} onChange={notices.bump} onRate={(reaction, text) => notices.rate(notice, reaction, text)} onResolve={(text, body) => {
         if (notice.kind !== 'req') return;
         void notices.resolve(notice, text, body).then(ok => { if (ok && body.decision !== 'deny') ball.current?.hop(.14); });
       }}/> };
@@ -831,7 +850,7 @@ export function Companion() {
       <DockingDrop near={docking} width={geo.width} top={placement.topInset} center={geo.center}/>
       <Notch look={wardrobe.marks} agents={frozen.current?.agents ?? (agentsFront ? agents.filter(a => !agentsPresence.ids.includes(a.id)) : agents)} unread={frozen.current?.unread ?? notices.unread} parked={frozen.current?.parked ?? notices.parked} archived={frozen.current?.archived ?? notices.archived} cursor={cursor} quiet={agentsFront || dashboard || moving}
         onNoteHover={notices.setHover} geo={{ width: geo.width, top: placement.topInset, notchR: geo.wingX, lobeL: geo.lobe.left }} note={note}
-        act={{ jump, answer: notices.focus, read: notices.read, back: notices.back, archive: notices.archive, park: notices.park, unpark: notices.unpark }}
+        act={{ jump, answer: notices.focus, read: ids => { notices.acted(ids); notices.read(ids); }, back: notices.back, archive: notices.archive, park: notices.park, unpark: notices.unpark }}
         port={port} keys={keysPress} onViewing={setViewing} onJoinedChange={setNotchJoined} onKeys={on => { setKeysOn(on); void window.jarvis?.focus(on); }}/>
       <CompanionBall width={geo.width} height={placement.topInset + 560} lobe={geo.lobe} look={look} handle={ball} skin={worn.current}
         target={{ place, expr, pressed, anchors: geo.anchors, home: wardrobe.home, homeFinish: wardrobe.homeFinish, homeFace: !!notice || carded || nightShown || dashboard || remoteOpen, homeJoined: dashboard || dashboardJoined || notchJoined,

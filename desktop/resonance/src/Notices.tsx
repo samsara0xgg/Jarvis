@@ -21,7 +21,8 @@ import './notices.css';
 // together, needs-you first, when the level drops. Nothing pops for
 // the session he is looking at, in Ghostty or on its page in the island.
 const POP_MS = 5000, DIGEST_MS = 30_000, FOLD_MS = 30_000, REMIND_MS = 600_000, TOGETHER_MS = 1500, CONFIRM_MS = 850;
-type Base = { key: string; id: string; at: number; reminded?: boolean };
+// `cid` is the card's id for the daemon's feedback log (ADR 0160); job mail uses the daemon's own ids.
+type Base = { key: string; id: string; at: number; cid?: string; reminded?: boolean };
 export type Notice = Base & (
   | { kind: 'pop'; ids: string[] }
   // Needs you, answered elsewhere: a Codex approval, or a Claude prompt Jarvis is not holding.
@@ -38,14 +39,19 @@ export type JobNotice = JobItem & { id: string; kind: 'mail' | 'digest'; title: 
 const isJob = (n: Notice): n is Notice & { kind: 'mail' | 'jobs' } => n.kind === 'mail' || n.kind === 'jobs';
 // What the daemon is told about a notice: POST /inherent/notices/{id} { action: 'seen' } or { action: 'feedback', reaction }.
 const tell = (port: string | null, id: string, body: { action: 'seen' } | { action: 'feedback'; reaction: string }) => { if (port) void postRoute(port, `/inherent/notices/${encodeURIComponent(id)}`, body).catch(() => undefined); };
-type Arrival = Notice extends infer N ? N extends Notice ? Omit<N, 'key' | 'at'> : never : never;
+type Arrival = Notice extends infer N ? N extends Notice ? Omit<N, 'key' | 'at' | 'cid'> : never : never;
+// ADR 0160: every proactive card that is not job mail tells the daemon it was shown (with the facts and level it was shown at) and what Allen did with it.
+export const cardTell = (port: string | null, cid: string | undefined, body: Record<string, unknown>) => { if (port && cid) void postRoute(port, `/inherent/cards/${encodeURIComponent(cid)}`, body).catch(() => undefined); };
+const short = (text?: string) => (text ?? '').replace(/\s+/g, ' ').trim().slice(0, 80);
+const mint = (kind: string, id: string) => `${kind}:${id}:${Date.now()}`;
 export const needs = (n: Notice) => n.kind === 'req' || n.kind === 'wait';
 // ADR 0153: from `no-pop` up the island shows no card and no name pop.
 const noCards = (quiet: Quiet) => quiet === 'no-pop' || quiet === 'dnd';
 export const ended = (state: AgentState) => state === 'done' || state === 'err';
 // One question's pick: an option, several options, or typed words.
 type Pick = number | number[] | string;
-type Card = { qi: number; picks: (Pick | undefined)[]; review: boolean; feedback: boolean; ok: string; pending?: boolean; error?: string; resolved?: boolean };
+// `feedback` is the plan card's "what should change" field; `rating` is whether the 合适吗 row is open, `rated` what it said once answered, `level` the level the card was shown at.
+type Card = { qi: number; picks: (Pick | undefined)[]; review: boolean; feedback: boolean; ok: string; pending?: boolean; error?: string; resolved?: boolean; rating?: boolean; rated?: string; level?: string };
 // The card reports only a confirmed response. Its host owns the visual flight.
 export const NoticeFlightContext = createContext<((id: string, point: { x: number; y: number }) => void) | null>(null);
 
@@ -86,7 +92,7 @@ type Tone = 'ask' | 'done' | 'error';
 export function useNotices({ port, poll, agents, hold, quiet, inClaude, watched, viewing, agentsFront, audio, cue, answer, mark }: {
   port: string | null; poll: boolean; agents: Agent[]; hold: boolean; quiet: Quiet; inClaude: boolean; watched: string | null; viewing: string | null; agentsFront: boolean;
   // The daemon's last word on whether sound may play (`audio_private` of GET /inherent/notices); undefined while it has said nothing.
-  audio: { current: boolean | undefined }; cue: (name: Tone | 'send' | 'close', gain?: number) => void;
+  audio: { current: boolean | undefined }; cue: (name: Tone | 'send' | 'close', gain?: number) => boolean;
   answer: (req: AgentRequest, body: { decision: 'allow' | 'always' | 'deny'; answers?: Record<string, string>; message?: string }, id: string) => Promise<boolean>;
   mark: (id: string, change: { seen: true } | { parked: boolean; archived: boolean }) => void;
 }) {
@@ -99,6 +105,8 @@ export function useNotices({ port, poll, agents, hold, quiet, inClaude, watched,
       soundAt: -1e9, shown: '', openedAt: 0, peek: false, touched: '', forced: '',
       // Job mail: the notice ids taken in (one card each, never again) and those already told `seen`.
       jobIds: new Set<string>(), seen: new Set<string>(),
+      // Other cards (ADR 0160): the ids told `seen` to the daemon, and the reactions already told, as `cid|reaction`.
+      snapped: new Set<string>(), reacted: new Set<string>(),
       // Sessions changed here before the daemon's marks arrived: their marks stay as she set them.
       loaded: false, early: new Set<string>(),
       // The marks each of Startrail's sessions had when the lists last took them from the host.
@@ -140,7 +148,40 @@ export function useNotices({ port, poll, agents, hold, quiet, inClaude, watched,
   const card = (n: Notice) => { let c = s.cards.get(n.key); if (!c) s.cards.set(n.key, c = { qi: 0, picks: [], review: false, feedback: false, ok: '' }); return c; };
   const toneOf = (n: Notice): Tone => needs(n) ? 'ask' : isJob(n) ? n.job.level === 'speak' ? 'ask' : 'done' : n.kind === 'pop' && n.ids.every(id => byId.get(id)?.state === 'err') ? 'error' : 'done';
   // Job mail at level card is silent.
-  const sound = (n: Notice, gain = 1) => { if (isJob(n) && n.job.level !== 'card_sound' && n.job.level !== 'speak') return; const now = performance.now(); if (now - s.soundAt > TOGETHER_MS) { s.soundAt = now; cue(toneOf(n), gain); } };
+  // It says whether the cue was allowed to sound (the quiet level, her switches and the output), which is the level a card was shown at.
+  const sound = (n: Notice, gain = 1) => {
+    if (isJob(n) && n.job.level !== 'card_sound' && n.job.level !== 'speak') return false;
+    const now = performance.now();
+    if (now - s.soundAt <= TOGETHER_MS) return false;
+    s.soundAt = now;
+    return cue(toneOf(n), gain);
+  };
+  // ADR 0160: what the daemon is told of a card that is not job mail: a title, counts and a tool name, never what an agent wrote.
+  const factsOf = (n: Notice) => {
+    const a = (id: string) => live.current.byId.get(id), kinds = (list: Notice[], f: (m: Notice) => boolean) => list.filter(f).length;
+    if (n.kind === 'pop') { const as = n.ids.map(a).filter((x): x is Agent => !!x); return { count: n.ids.length, title: short(as[0]?.title), states: [...new Set(as.map(x => x.state))], agents: [...new Set(as.map(x => x.agent))] }; }
+    if (n.kind === 'digest') return { count: n.items.length, needs: kinds(n.items, needs), errors: kinds(n.items, m => !needs(m) && toneOf(m) === 'error'), done: kinds(n.items, m => !needs(m) && toneOf(m) === 'done') };
+    const x = a(n.id);
+    return { title: short(x?.title), agent: x?.agent ?? '', background: x?.kind === 'background', ...n.kind === 'req' && { tool: n.req.tool } };
+  };
+  // A card comes up: it is logged once with the level it is shown at (a cue that sounded is a card with sound) and the situation Allen is in.
+  const snap = (n: Notice, sounded: boolean) => {
+    if (isJob(n) || !n.cid || s.snapped.has(n.cid)) return;
+    s.snapped.add(n.cid);
+    const level = sounded ? 'card_sound' : 'card';
+    card(n).level = level;
+    cardTell(port, n.cid, { action: 'seen', kind: n.kind, level, facts: factsOf(n), situation: { in_claude: live.current.inClaude, watching: !!watched || !!viewing, agents_front: agentsFront, audio_private: audio.current ?? null } });
+  };
+  // What Allen did with the card on the island, told once each: `acted` is its own button or opening its session.
+  const react = (n: Notice | undefined, reaction: string) => {
+    if (!n || isJob(n) || !n.cid || s.reacted.has(`${n.cid}|${reaction}`)) return;
+    s.reacted.add(`${n.cid}|${reaction}`);
+    cardTell(port, n.cid, reaction === 'dismissed' ? { action: 'dismissed' } : { action: 'feedback', reaction });
+  };
+  const acted = (ids?: string[]) => {
+    const n = s.queue[0];
+    if (n && (!ids || (n.kind === 'pop' ? n.ids : n.kind === 'digest' ? n.items.map(m => m.id) : [n.id]).some(id => ids.includes(id)))) react(n, 'acted');
+  };
 
   // The level rising takes what is on the island into `held`; it dropping brings it all back, needs-you first, then errors, then done.
   useEffect(() => {
@@ -157,7 +198,7 @@ export function useNotices({ port, poll, agents, hold, quiet, inClaude, watched,
       else if (items.length) {
         // The asks stay on the island's list, so a row in the digest can bring its card up.
         s.folded.push(...items.filter(needs));
-        s.queue.push({ kind: 'digest', key: `digest:${at}`, id: '', at, items });
+        s.queue.push({ kind: 'digest', key: `digest:${at}`, id: '', at, items, cid: mint('digest', String(Date.now())) });
       }
       bump();
     }
@@ -180,7 +221,9 @@ export function useNotices({ port, poll, agents, hold, quiet, inClaude, watched,
       const k = askKey(a);
       if (s.dismissed.has(k) || [...s.queue, ...s.folded, ...s.held].some(m => needs(m) && askKey(m) === k)) return;
     }
-    const now = performance.now(), n = { ...a, key: `${a.kind}:${a.id}:${now}`, at: now } as Notice, head = s.queue[0], tail = s.queue.at(-1);
+    // A request's own id is the card's id, so the card brought up again from the list is the card already logged.
+    const now = performance.now(), cid = a.kind === 'req' ? `req:${a.req.id}` : mint(a.kind, a.kind === 'pop' ? a.ids[0] : a.id);
+    const n = { ...a, key: `${a.kind}:${a.id}:${now}`, at: now, cid } as Notice, head = s.queue[0], tail = s.queue.at(-1);
     // Kept for when the level drops: a newer notice of a session takes the place of its older one.
     if (noCards(live.current.quiet)) { s.held = [...s.held.filter(h => !(h.id === n.id && h.kind === n.kind)), n]; return; }
     if (n.kind === 'pop') {
@@ -229,12 +272,12 @@ export function useNotices({ port, poll, agents, hold, quiet, inClaude, watched,
   };
   // Done with: off the island until it does something new, kept for the Agents window's archive.
   const archive = (ids: string[]) => {
-    ids.forEach(id => { s.archived.add(id); s.unread.delete(id); s.parked.delete(id); persist(id); });
+    acted(ids); ids.forEach(id => { s.archived.add(id); s.unread.delete(id); s.parked.delete(id); persist(id); });
     cue('close'); drop(ids); save(); bump();
   };
   // 先放着: off his turn and quiet, a question still waiting, until he takes it back or it does something new.
   const park = (ids: string[]) => {
-    ids.forEach(id => { s.parked.set(id, Date.now()); persist(id); });
+    acted(ids); ids.forEach(id => { s.parked.set(id, Date.now()); persist(id); });
     cue('close', .7); drop(ids, true); bump();
   };
   const unpark = (ids: string[]) => {
@@ -306,7 +349,7 @@ export function useNotices({ port, poll, agents, hold, quiet, inClaude, watched,
   if ((current?.key ?? '') !== s.shown) {
     s.shown = current?.key ?? '';
     if (current) {
-      s.openedAt = performance.now(); sound(current);
+      s.openedAt = performance.now(); snap(current, sound(current));
       if (isJob(current) && !s.seen.has(current.id)) { s.seen.add(current.id); tell(port, current.id, { action: 'seen' }); }
     }
   }
@@ -331,6 +374,7 @@ export function useNotices({ port, poll, agents, hold, quiet, inClaude, watched,
     const n = s.queue[0];
     if (!n) return;
     if (isJob(n)) { if (!card(n).ok) tell(port, n.id, { action: 'feedback', reaction: 'dismissed' }); return next(); }
+    if (!card(n).rated) react(n, 'dismissed');
     if (!needs(n)) return next();
     s.queue.shift(); s.dismissed.add(askKey(n)); s.forced = ''; bump();
   };
@@ -338,21 +382,24 @@ export function useNotices({ port, poll, agents, hold, quiet, inClaude, watched,
   const back = () => { if (s.queue[0] && needs(s.queue[0])) { s.queue.shift(); s.forced = ''; bump(); } };
   const [hover, setHovering] = useState(false);
   const setHover = (on: boolean) => { if (on && s.queue[0]) s.touched = s.queue[0].key; setHovering(on); };
-  const ok = current ? card(current).ok : '';
+  const ok = current ? card(current).ok : '', rating = !!current && !!card(current).rating && !card(current).rated;
   const size = current?.kind === 'pop' ? current.ids.length : 0;
   useEffect(() => {
-    if (!current || hover || ok) return;
+    if (!current || hover || ok || rating) return;
     // A pop the pointer has been on goes 1.5 s after it leaves.
     const t = setTimeout(() => needs(current) ? fold() : next(), needs(current) ? FOLD_MS : current.kind === 'digest' || isJob(current) ? DIGEST_MS : s.touched === current.key ? 1500 : POP_MS);
     return () => clearTimeout(t);
-  }, [current?.key, hover, ok, size]);
+  }, [current?.key, hover, ok, rating, size]);
 
   // The 合适吗 row on a mail card or the summary: the answer goes to the daemon (for a summary, it applies to every mail in it), the card says thanks and goes.
-  const rate = (n: Notice & { kind: 'mail' | 'jobs' }, reaction: string, text: string) => {
+  // Any other card rates the same way (ADR 0160): a pop, the digest and the morning card then close; a needs-you card stays, since its answer is still due.
+  const rate = (n: Notice, reaction: string, text: string) => {
     const c = card(n);
-    if (c.ok) return;
-    tell(port, n.id, { action: 'feedback', reaction }); c.ok = text; bump();
-    later(CONFIRM_MS, () => { if (s.queue[0] === n) next(); });
+    if (c.ok || c.rated) return;
+    c.rated = text;
+    if (isJob(n)) tell(port, n.id, { action: 'feedback', reaction }); else { s.reacted.add(`${n.cid}|${reaction}`); cardTell(port, n.cid, { action: 'feedback', reaction }); }
+    if (!needs(n)) { c.ok = text; later(CONFIRM_MS, () => { if (s.queue[0] === n) next(); }); }
+    bump();
   };
   const resolve = async (n: Notice & { kind: 'req' }, text: string, body: Parameters<typeof answer>[1]) => {
     const c = card(n);
@@ -365,7 +412,7 @@ export function useNotices({ port, poll, agents, hold, quiet, inClaude, watched,
     }
     catch { c.error = 'Could not send your answer. Try again.'; return false; }
     finally { c.pending = false; bump(); }
-    if (c.resolved) { s.over = { face: yes ? '02' : '38', until: performance.now() + 900, hop: yes }; cue(yes ? 'send' : 'close'); }
+    if (c.resolved) { react(n, 'acted'); s.over = { face: yes ? '02' : '38', until: performance.now() + 900, hop: yes }; cue(yes ? 'send' : 'close'); }
     bump();
     later(CONFIRM_MS, () => { if (s.queue[0] === n) next(); });
     return c.resolved === true;
@@ -373,23 +420,25 @@ export function useNotices({ port, poll, agents, hold, quiet, inClaude, watched,
   // A session waiting on him, from his turn, the island's list or the Agents page: its card comes to the front,
   // even while the island is held.
   const focus = (id: string) => {
+    if (s.queue[0]?.id !== id) acted([id]);
     const f = s.folded.findIndex(n => n.id === id && needs(n)), q = s.queue.findIndex(n => n.id === id && needs(n));
     if (f >= 0) s.queue.unshift(...s.folded.splice(f, 1));
     else if (q > 0) s.queue.unshift(...s.queue.splice(q, 1));
-    else if (q < 0) { const a = live.current.byId.get(id); if (a?.request) s.queue.unshift({ key: `req:${id}:${performance.now()}`, id, at: performance.now(), kind: 'req', req: a.request }); }
+    else if (q < 0) { const a = live.current.byId.get(id); if (a?.request) s.queue.unshift({ key: `req:${id}:${performance.now()}`, id, at: performance.now(), cid: `req:${a.request.id}`, kind: 'req', req: a.request }); }
     s.forced = s.queue[0]?.id === id ? s.queue[0].key : '';
     bump();
   };
   return { current, count: s.queue.filter(needs).length, peek: s.peek, openedAt: s.openedAt, over: s.over, card: current ? card(current) : null,
     unread: s.unread as ReadonlySet<string>, archived: s.archived as ReadonlySet<string>, parked: s.parked as ReadonlyMap<string, number>,
-    read, archive, park, unpark, setHover, hovering: hover, next, fold, dismiss, back, resolve, rate, focus, bump };
+    read, archive, park, unpark, setHover, hovering: hover, next, fold, dismiss, back, resolve, rate, acted, focus, bump };
 }
 
 // ---------- what waited ----------
 // ADR 0153: leaving no-pop or dnd. One line says how many sessions did something while Allen was away, then one row each:
 // asks first, then stops, then what finished. A row opens its session; an ask's brings its card up.
-export function DigestCard({ n, agents, lang, look, onOpen, onAnswer }: {
-  n: Notice & { kind: 'digest' }; agents: Agent[]; lang: Lang; look: MarkLook; onOpen: (agent: Agent) => void; onAnswer: (id: string) => void;
+export function DigestCard({ n, agents, lang, look, card, onOpen, onAnswer, onRate, onChange }: {
+  n: Notice & { kind: 'digest' }; agents: Agent[]; lang: Lang; look: MarkLook; card: Card; onOpen: (agent: Agent) => void; onAnswer: (id: string) => void;
+  onRate: (reaction: string, text: string) => void; onChange: () => void;
 }) {
   const byId = new Map(agents.map(a => [a.id, a]));
   const line = (m: Notice): [MarkState, string] => needs(m) ? ['wait', tr(lang, ['Needs you', '要你回答'])]
@@ -401,6 +450,7 @@ export function DigestCard({ n, agents, lang, look, onOpen, onAnswer }: {
       return <li key={m.key}><button type="button" className="nc-away-row" onClick={() => { if (needs(m)) onAnswer(m.id); else if (a) onOpen(a); }}>
         <AgentMark look={look} state={state} id={m.id} size={12}/><b>{a?.title ?? tr(lang, ['A session', '一个会话'])}</b><span>{what}</span></button></li>;
     })}</ul>
+    <RateRow card={card} level={card.level ?? 'card'} lang={lang} onRate={onRate} onChange={onChange}/>
   </div>;
 }
 
@@ -422,27 +472,32 @@ function useEscape(root: { current: HTMLElement | null }, on: boolean, run: () =
   }, [key, on]);
 }
 // The five levels the 合适吗 row offers, in the daemon's words; the first two keep it to the ledger or a glow only.
-const LEVELS: [string, string | null][] = [['记下', null], ['亮一下', null], ['卡片', 'card'], ['卡片带声', 'card_sound'], ['开口', 'speak']];
+const LEVELS: [string, string][] = [['记下', 'ledger'], ['亮一下', 'glow'], ['卡片', 'card'], ['卡片带声', 'card_sound'], ['开口', 'speak']];
 const when = (job: JobItem) => [job.company, job.role, jobStamp(job.at)].filter(Boolean) as string[];
 
-// The 合适吗 row of a mail card and of the summary: folded to one word, opens to 对 and the five levels (the card's own marked), and folds after 10 s untouched.
-function RateRow({ card, level, lang, onRate, onChange }: { card: Card; level: string; lang: Lang; onRate: (reaction: string, text: string) => void; onChange: () => void }) {
+// The 合适吗 row of a mail card, the summary and every other proactive card (ADR 0160): folded to one word, opens to 对 and the five levels (the card's own marked), and folds after 10 s untouched.
+export function RateRow({ card, level, lang, onRate, onChange }: { card: Card; level: string; lang: Lang; onRate: (reaction: string, text: string) => void; onChange: () => void }) {
   const touched = useRef(performance.now());
-  // `card.feedback` is whether the row is open.
+  // `card.rating` is whether the row is open.
   useEffect(() => {
-    if (!card.feedback || card.ok) return;
+    if (!card.rating || card.rated) return;
     touched.current = performance.now();
-    const t = setInterval(() => { if (performance.now() - touched.current > 10_000) { card.feedback = false; onChange(); } }, 1000);
+    const t = setInterval(() => { if (performance.now() - touched.current > 10_000) { card.rating = false; onChange(); } }, 1000);
     return () => clearInterval(t);
-  }, [card.feedback, card.ok]);
-  return card.ok ? <p className="nc-ok"><Check size={14} weight="bold"/><span>{card.ok}</span></p>
-    : !card.feedback ? <button type="button" className="nc-rate-open" aria-expanded="false" onClick={() => { card.feedback = true; onChange(); }}>{tr(lang, ['Right level?', '合适吗'])}</button>
+  }, [card.rating, card.rated]);
+  return card.rated ? <p className="nc-ok"><Check size={14} weight="bold"/><span>{card.rated}</span></p>
+    : !card.rating ? <button type="button" className="nc-rate-open" aria-expanded="false" onClick={() => { card.rating = true; onChange(); }}>{tr(lang, ['Right level?', '合适吗'])}</button>
     : <div className="nc-rate" onPointerMove={() => { touched.current = performance.now(); }} onFocus={() => { touched.current = performance.now(); }}>
       <span className="nc-rate-q">{tr(lang, ['Right level?', '合适吗'])}</span>
       <button type="button" className="btn btn-warm nc-right" onClick={() => onRate('right', tr(lang, ['Noted · that level fits', '记下了 · 这个级别合适']))}>对</button>
       <div className="nc-levels" role="group" aria-label={tr(lang, ['Or pick the level it should have', '或者选它该有的级别'])}>{LEVELS.map(([name, id]) =>
         <button key={name} type="button" className={`nc-lv${id === level ? ' is-now' : ''}`} aria-pressed={id === level} onClick={() => onRate(`level:${name}`, tr(lang, [`Noted · ${name}`, `记下了 · ${name}`]))}>{name}</button>)}</div>
     </div>;
+}
+// The row for a card kept outside the notice queue (the night cards): it holds its own state, and tells `onRate` the reaction.
+export function CardRate({ level, lang, onRate }: { level: string; lang: Lang; onRate: (reaction: string) => void }) {
+  const [, bump] = useReducer((x: number) => x + 1, 0), card = useRef<Card>({ qi: 0, picks: [], review: false, feedback: false, ok: '' }).current;
+  return <RateRow card={card} level={level} lang={lang} onChange={bump} onRate={(reaction, text) => { card.rated = text; onRate(reaction); bump(); }}/>;
 }
 
 // One job mail: its title and line, who and when as chips, and a small row asking whether this was the right level (folded away).
@@ -503,9 +558,9 @@ function diffLines(tool: string, i: Record<string, unknown>) {
 const pickText = (q: Question, p: Pick | undefined) => typeof p === 'number' ? q.options?.[p]?.label ?? '' : Array.isArray(p) ? p.map(k => q.options?.[k]?.label).join(', ') : p ?? '';
 
 // A needs-you card: what the session wants, answered right on it.
-export function NoticeCard({ n, agent, card, count, look, onPark, onDismiss, onOpen, onResolve, onChange }: {
-  n: Notice & { kind: 'req' | 'wait' }; agent?: Agent; card: Card; count: number; look: MarkLook;
-  onPark: () => void; onDismiss: () => void; onOpen: (agent: Agent) => void; onResolve: (text: string, body: Body) => void; onChange: () => void;
+export function NoticeCard({ n, agent, card, count, look, lang, onPark, onDismiss, onOpen, onResolve, onRate, onChange }: {
+  n: Notice & { kind: 'req' | 'wait' }; agent?: Agent; card: Card; count: number; look: MarkLook; lang: Lang;
+  onPark: () => void; onDismiss: () => void; onOpen: (agent: Agent) => void; onResolve: (text: string, body: Body) => void; onRate: (reaction: string, text: string) => void; onChange: () => void;
 }) {
   const [typed, setTyped] = useState(''), [feedback, setFeedback] = useState(''), [alwaysAllowed, setAlwaysAllowed] = useState(false);
   const allowButton = useRef<HTMLButtonElement>(null), denyButton = useRef<HTMLButtonElement>(null), root = useRef<HTMLDivElement>(null), flew = useRef(false);
@@ -644,5 +699,5 @@ export function NoticeCard({ n, agent, card, count, look, onPark, onDismiss, onO
     } else body = <><p className="nc-what">Wants to use {tool.replace(/^mcp__([^_]+)__/, '$1 · ')}</p>
       <pre className="nc-box">{JSON.stringify(i, null, 1).slice(0, 600)}</pre>{choice(always)}</>;
   }
-  return <div ref={root} className="nc">{bar}{head}{body}{card.error && <p className="r-why" role="alert">{card.error}</p>}</div>;
+  return <div ref={root} className="nc">{bar}{head}{body}<RateRow card={card} level={card.level ?? 'card'} lang={lang} onRate={onRate} onChange={onChange}/>{card.error && <p className="r-why" role="alert">{card.error}</p>}</div>;
 }

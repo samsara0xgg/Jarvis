@@ -29,7 +29,8 @@ export type NotchAct = {
   archive: (ids: string[]) => void; park: (ids: string[]) => void; unpark: (ids: string[]) => void;
 };
 // A pop names sessions; a card is a needs-you card the companion builds, for session `id` when it has one.
-export type NotchNote = { key: string; id?: string; pop?: string[]; card?: ReactNode; onClose: () => void };
+// A pop carries its 合适吗 row in `rate` (ADR 0160).
+export type NotchNote = { key: string; id?: string; pop?: string[]; card?: ReactNode; rate?: ReactNode; onClose: () => void };
 
 // Your turn: asking first, then stopped, then finished.
 const TURN_ORDER: AgentState[] = ['wait', 'err', 'done'];
@@ -176,12 +177,12 @@ function PopRow({ a, look, act, tag }: { a: Agent; look: MarkLook; act: NotchAct
       {!ask && <Act tip="Mark as read" onClick={() => act.read([a.id])}><X size={12}/></Act>}</span>
   </div>;
 }
-function Pop({ agents, look, act, onClose }: { agents: Agent[]; look: MarkLook; act: NotchAct; onClose: () => void }) {
+function Pop({ agents, look, act, rate, onClose }: { agents: Agent[]; look: MarkLook; act: NotchAct; rate?: ReactNode; onClose: () => void }) {
   const errs = agents.filter(a => a.state === 'err').length, all = errs === agents.length, n = agents.length;
   const label = n === 1 ? errs ? 'Stopped' : 'Done' : all ? `${n} stopped` : errs ? `${n} need a look` : `${n} done`;
   return <div className="nt-card pop"><div className="c-bar"><span className={`c-label is-${all ? 'err' : 'done'}`}><i/>{label}</span>
     <button type="button" className="c-x" aria-label="Close" onClick={onClose}><X size={12}/></button></div>
-    <div className="u-list">{agents.map(a => <PopRow key={a.id} a={a} look={look} act={act} tag={a.state === 'err' && !all ? <em> stopped</em> : null}/>)}</div></div>;
+    <div className="u-list">{agents.map(a => <PopRow key={a.id} a={a} look={look} act={act} tag={a.state === 'err' && !all ? <em> stopped</em> : null}/>)}</div>{rate}</div>;
 }
 
 export function Notch({ look, agents, unread, parked, archived, geo, cursor, note, quiet, act, onNoteHover, port, keys, onKeys, onViewing, onJoinedChange }: {
@@ -544,7 +545,7 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
         st.swipe += e.deltaX;
         clearTimeout(st.swipeT); st.swipeT = setTimeout(() => { st.swipe = 0; }, 200);
         if (Math.abs(st.swipe) > 90) { st.swipe = 0; shownNote.onClose(); }
-      }}><NoticeFlightContext.Provider value={returnApproval}>{shownNote && (shownNote.pop ? lastPopAgents.current.length > 0 && <Pop agents={lastPopAgents.current} look={look} act={A} onClose={shownNote.onClose}/> : shownNote.card)}</NoticeFlightContext.Provider></div></div>
+      }}><NoticeFlightContext.Provider value={returnApproval}>{shownNote && (shownNote.pop ? lastPopAgents.current.length > 0 && <Pop agents={lastPopAgents.current} look={look} act={A} rate={shownNote.rate} onClose={shownNote.onClose}/> : shownNote.card)}</NoticeFlightContext.Provider></div></div>
     {dragging && <div className="notch-catch" data-hit aria-hidden="true"/>}
   </div>;
 }
