@@ -84,6 +84,8 @@ _MATCHERS: Final[dict[str, frozenset[str]]] = {
          "WhisperFinalRecognizer.recognize", "HybridFinalRecognizer._hear",
          "HybridFinalRecognizer._hear_once", "_short_unclear", "_FULL_WIDTH"}
     ),
+    # The silence trimmer (ADR 0165) reads the punctuation that ended a segment's text.
+    "jarvis/surface/tts_silence.py": frozenset({"_CLAUSE_ENDS", "_CLOSERS"}),
     "jarvis/surface/voice_cues.py": frozenset({"_LAUGH_WORDS"}),
     "jarvis/surface/voice_live.py": frozenset({"_SENTENCE_ENDS"}),
 }
