@@ -462,6 +462,12 @@ const rowTail = (m: JobItem, rows: number, lang: Lang) => {
   const n = m.count ?? 1, parts = [m.role, rows > 1 && n > 1 ? tr(lang, [`${n} emails`, `${n} 封往来`]) : ''].filter(Boolean);
   return parts.length ? `· ${parts.join(' · ')}` : '';
 };
+// The time cell of a summary row: the interview (or other event) time as the key fact, from the daemon's `event_at` (24 h, this
+// machine's zone) or else its short `event_text`; with neither, when the latest mail came.
+const rowWhen = (m: JobItem, lang: Lang) => {
+  const fact = jobStamp(m.event_at, true) || m.event_text;
+  return fact ? <time className="is-event">{tr(lang, m.mail_kind === 'interview' ? ['Interview', '面试'] : ['Event', '日程'])} {fact}</time> : <time>{jobStamp(m.at)}</time>;
+};
 // The daemon's one summary of what waited or came in a burst (ADR 0158). Rows only tell; the button opens the Dashboard's job ledger (no Gmail link).
 export function JobsDigestCard({ n, lang, onDismiss, onOpen }: { n: Notice & { kind: 'jobs' }; lang: Lang; onDismiss: () => void; onOpen: () => void }) {
   const root = useRef<HTMLDivElement>(null), items = Array.isArray(n.job.items) ? n.job.items : [];
@@ -471,7 +477,7 @@ export function JobsDigestCard({ n, lang, onDismiss, onOpen }: { n: Notice & { k
       <button type="button" className="nc-x nc-dismiss" aria-label="Dismiss" title={tr(lang, ['Dismiss', '关掉'])} onClick={onDismiss}><X size={14}/></button></div>
     <ul className="nc-away nc-jobrows">{items.map((m, i) => { const [cls, name] = jobKind(m.mail_kind);
       return <li key={m.id ?? i} className="nc-jobrow"><em className={`jk ${cls}`}>{tr(lang, name)}</em>
-        <b>{m.company || m.title}</b><span className="nc-jr-role">{rowTail(m, items.length, lang)}</span><time>{jobStamp(m.event_at ?? m.at, !!m.event_at)}</time></li>; })}</ul>
+        <b>{m.company || m.title}</b><span className="nc-jr-role">{rowTail(m, items.length, lang)}</span>{rowWhen(m, lang)}</li>; })}</ul>
     {n.job.link === 'jobs' && <button type="button" className="btn btn-warm nc-open-jobs" onClick={onOpen}>{tr(lang, ['Open the job list', '打开求职记录'])}</button>}
   </div>;
 }

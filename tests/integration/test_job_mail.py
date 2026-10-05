@@ -740,6 +740,52 @@ def test_a_mixed_summary_groups_by_thread_ranks_kinds_and_keeps_the_old_header(
     assert len(summary["items"]) == 1
 
 
+def test_a_summary_row_carries_the_interview_time_when_one_was_read(
+    tmp_path: Path, jev: _Jev
+) -> None:
+    """The time is the group's latest dated mail; a short sentence stands in; else nothing."""
+    h = _harness(tmp_path, jev, [])
+    long_sentence = "We would like to invite you to an interview next week, please reply."
+    _thread_mails(
+        h,
+        [
+            {
+                "company": "Dated",
+                "thread_id": "t-1",
+                "kind": "interview",
+                "event_at": "2027-10-08T13:00:00",
+            },
+            {
+                "company": "Dated",
+                "thread_id": "t-1",
+                "kind": "interview",
+                "event_at": "2027-10-09T09:30:00",
+            },
+            {"company": "Dated", "thread_id": "t-1", "kind": "job_other"},
+            {
+                "company": "Said",
+                "thread_id": "t-2",
+                "kind": "interview",
+                "event_text": " Tuesday 10:00 ",
+            },
+            {
+                "company": "Long",
+                "thread_id": "t-3",
+                "kind": "interview",
+                "event_text": long_sentence,
+            },
+            {"company": "None", "thread_id": "t-4", "kind": "interview"},
+        ],
+        age=timedelta(minutes=20),
+    )
+    (summary,) = h.notices()
+    rows = {item["company"]: item for item in summary["items"]}
+    assert (rows["Dated"]["event_at"], rows["Dated"]["event_text"]) == ("2027-10-09T09:30:00", None)
+    assert (rows["Said"]["event_at"], rows["Said"]["event_text"]) == (None, "Tuesday 10:00")
+    assert (rows["Long"]["event_at"], rows["Long"]["event_text"]) == (None, None)
+    assert (rows["None"]["event_at"], rows["None"]["event_text"]) == (None, None)
+
+
 def test_a_summary_with_no_interview_has_no_interview_clause(tmp_path: Path, jev: _Jev) -> None:
     """The count of interviews is only said when it is more than zero, in both languages."""
     h = _harness(tmp_path, jev, [])

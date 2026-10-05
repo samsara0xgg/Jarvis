@@ -190,6 +190,15 @@ try {
   check('a mixed summary shows the count of a multi-mail row only', mixed.length === 2 && /Reliable Controls · Firmware QA Analyst Co-op · (3 封往来|3 emails)/.test(mixed[0].replace(/\s+/g, ' ')) && !/往来|emails|·/.test(mixed[1]));
   await shot('digest-mixed');
   await page.keyboard.press('Escape'); await gone();
+  // ADR 0159: an interview time read from a mail is the row's key fact (24 h, month/day); a short sentence stands in; with neither, the row shows when the latest mail came.
+  notices = [{ ...base, id: 'd-5', title: '最近两天有 4 封求职邮件，其中 4 封面试', items: [rc('t-1', { event_at: '2027-10-08T13:00:00' }), rc('t-2', { company: 'Said Co', role: '', event_text: 'Tuesday 10:00', count: 1 }), rc('t-3', { company: 'Plain Co', role: '', count: 1 })] }];
+  await shows(); await settle();
+  const when = await page.locator('.notch-note.is-open .nc-jobrows li').evaluateAll(rows => rows.map(r => ({ fact: r.querySelector('time.is-event')?.textContent ?? null, plain: r.querySelector('time:not(.is-event)')?.textContent ?? null })));
+  check('a row with an extracted time shows it as the key fact', when[0].fact === 'Interview 10/8 13:00' && when[0].plain === null);
+  check('a short event sentence stands in when there is no parsed time', when[1].fact === 'Interview Tuesday 10:00');
+  check('a row with neither shows only when the latest mail came', when[2].fact === null && /^\d{1,2}[:/]\d{1,2}$/.test(when[2].plain));
+  await shot('digest-time');
+  await page.keyboard.press('Escape'); await gone();
   // Its button opens the Dashboard on the job ledger and sends no dismissed.
   notices = [{ ...base, id: 'd-2', items }];
   await shows(); await settle();

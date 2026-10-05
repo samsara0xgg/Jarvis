@@ -230,4 +230,5 @@
 .notch .nc-jobrow b { font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .notch .nc-jr-role { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--p-faint); }
 .notch .nc-jobrow time { font-size:var(--text-label); color:var(--p-faint); font-variant-numeric:tabular-nums; white-space:nowrap; }
+.notch .nc-jobrow time.is-event { color:var(--p-ink); font-weight:600; }
 @media (prefers-reduced-motion:reduce) { .notch .nc-rate { animation:none; } .notch .nc-lv { transition:none; } }
