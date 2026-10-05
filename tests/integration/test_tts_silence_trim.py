@@ -201,12 +201,12 @@ _LEAD_MS = _LEAD / (_RATE / 1000)
 
 
 def _script() -> dict[int, tuple[np.ndarray, tuple[tuple[int, float], ...]]]:
-    """Provider audio per segment, with the word ends the provider would report."""
+    """Provider audio per segment, with the word times MiniMax would report (where each starts)."""
     tone_ms = _TONE / (_RATE / 1000)
     return {
         sequence: (
             (_segment() * 32768).astype("<i2"),
-            ((1, _LEAD_MS + tone_ms / 2), (len(text), _LEAD_MS + tone_ms)),
+            ((1, _LEAD_MS), (len(text), _LEAD_MS + tone_ms / 2)),
         )
         for sequence, text in enumerate(_TEXTS)
     }
@@ -317,17 +317,16 @@ def test_word_timing_shifts_by_the_trimmed_lead(tmp_path: Path) -> None:
             speech.close()
     (plain, plain_total), (trimmed, trimmed_total) = found[False], found[True]
     # Off: provider ms to samples, segment 1 starting after all of segment 0's audio.
-    assert plain[0] == [[1, _LEAD + _TONE // 2], [3, _LEAD + _TONE]]
-    assert plain[1] == [[1, len(_segment()) + _LEAD + _TONE // 2],
-                        [3, len(_segment()) + _LEAD + _TONE]]
+    # The provider's word times mark where a word starts: the first word ends where the second does.
+    assert plain[0] == [[1, _LEAD + _TONE // 2]]
+    assert plain[1] == [[1, len(_segment()) + _LEAD + _TONE // 2]]
     # On: segment 0's boundaries move back by exactly the lead dropped (the onset sits one
-    # pre-roll plus at most a window after the new start), its words stay _TONE // 2 apart.
+    # pre-roll plus at most a window after the new start).
     first_word = trimmed[0][0][1]
     assert _PREROLL + _TONE // 2 <= first_word <= _PREROLL + _WINDOW + _TONE // 2
-    assert trimmed[0][1][1] - first_word == _TONE // 2
     # Segment 1 starts at the end of the written segment 0 (lead, tone, clause-sized tail) and
     # not at the end of the provider's: its first word is that start plus its own trimmed lead.
-    segment_0 = trimmed[0][1][1] + (_CLAUSE - _PREROLL) + _WINDOW  # last word end + tail kept
+    segment_0 = first_word + _TONE // 2 + (_CLAUSE - _PREROLL) + _WINDOW  # last word + tail kept
     assert abs(trimmed[1][0][1] - (segment_0 + _PREROLL + _TONE // 2)) <= 2 * _WINDOW
     assert trimmed[1][0][1] < plain[1][0][1] - 2 * (_LEAD - _PREROLL) + 2 * _WINDOW
     assert trimmed_total < plain_total

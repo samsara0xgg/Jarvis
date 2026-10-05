@@ -15,6 +15,7 @@ DAC/loopback mapping; the sounddevice backend used by Wave 2 reports
 from __future__ import annotations
 
 import hashlib
+import itertools
 from dataclasses import dataclass
 from typing import Literal
 
@@ -403,6 +404,32 @@ class PlaybackLedger:
         return before, before
 
 
+# Provider word timing is believed only when its last word starts after this share of the
+# segment's audio, from this many words on (a shorter run says too little to tell).
+_MIN_TIMED_SHARE = 0.6
+_MIN_TIMED_WORDS = 4
+
+
+def settle_boundaries(
+    boundaries: tuple[tuple[int, int], ...], *, segment_start: int, segment_end: int,
+) -> tuple[tuple[int, int], ...]:
+    """Word ends on the sample clock from the provider's word times; ``()`` when they are not true.
+
+    MiniMax stamps a word with the time it starts (the first "end" of a segment is the
+    voiced onset), so word i is done where word i+1 starts; the last word is done where the
+    segment's audio ends, which the closed segment already says. About a quarter of segments
+    also come back with every word squeezed into a third of the audio (word ends one
+    2048-sample frame apart). Nothing in that timing is true, so the segment keeps no word
+    ends and the captions pace across it (ADR 0112).
+    """
+    if (
+        len(boundaries) >= _MIN_TIMED_WORDS
+        and boundaries[-1][1] - segment_start < _MIN_TIMED_SHARE * (segment_end - segment_start)
+    ):
+        return ()
+    return tuple((end, following[1]) for (end, _), following in itertools.pairwise(boundaries))
+
+
 def _letters(text: str) -> int:
     """Count letters and digits: what survives the differences between speech and caption text."""
     return sum(ch.isalnum() for ch in text)
@@ -441,4 +468,5 @@ __all__ = [
     "PlaybackLedger",
     "SpeechChunk",
     "StalePlaybackGeneration",
+    "settle_boundaries",
 ]

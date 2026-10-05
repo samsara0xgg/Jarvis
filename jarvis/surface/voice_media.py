@@ -40,6 +40,7 @@ from jarvis.surface.voice_ledger import (
     GenerationLease,
     OutputTimelineSnapshot,
     StalePlaybackGeneration,
+    settle_boundaries,
 )
 from jarvis.surface.voice_tts import (
     AudioStreamPlayer,
@@ -2881,13 +2882,7 @@ class StreamingTTSPipeline:
                             raise RuntimeError(msg)  # noqa: TRY301 - provider failure lane
                         if isinstance(event, TTSAudioChunk):
                             if event.word_boundaries and event.timing_text == text:
-                                if accepted_segment:
-                                    self._record_alignment(
-                                        active, event, segment_start=segment_start,
-                                        trimmed=_head_dropped(trimmer),
-                                    )
-                                else:
-                                    pending_alignment.append(event)
+                                pending_alignment.append(event)
                             if not event.pcm:
                                 continue
                             if resampler is None:
@@ -2917,13 +2912,6 @@ class StreamingTTSPipeline:
                             )
                             accepted_segment += written
                             accepted_total += written
-                            if accepted_segment:
-                                for alignment in pending_alignment:
-                                    self._record_alignment(
-                                        active, alignment, segment_start=segment_start,
-                                        trimmed=_head_dropped(trimmer),
-                                    )
-                                pending_alignment.clear()
                             continue
                         tail = resampler.finish() if resampler is not None else b""
                         if trimmer is not None:
@@ -2932,12 +2920,11 @@ class StreamingTTSPipeline:
                             written = await self._write_all(active, tail, sequence=sequence)
                             accepted_segment += written
                             accepted_total += written
-                        if accepted_segment:
-                            for alignment in pending_alignment:
-                                self._record_alignment(
-                                    active, alignment, segment_start=segment_start,
-                                    trimmed=_head_dropped(trimmer),
-                                )
+                        if accepted_segment and pending_alignment:
+                            self._record_alignment(
+                                active, pending_alignment, segment_start=segment_start,
+                                segment_samples=accepted_segment, trimmed=_head_dropped(trimmer),
+                            )
                         finished = self._player.finish_generation_segment(
                             expected_playback_generation_id=lease.playback_generation_id,
                             sequence=sequence,
@@ -3106,19 +3093,27 @@ class StreamingTTSPipeline:
         )
 
     def _record_alignment(
-        self, active: _ActiveResponse, event: TTSAudioChunk, *, segment_start: int,
-        trimmed: int = 0,
+        self, active: _ActiveResponse, events: list[TTSAudioChunk], *, segment_start: int,
+        segment_samples: int, trimmed: int = 0,
     ) -> None:
         """Persist exact text/sample mappings before allowing a word checkpoint.
 
         Provider times count from the start of the provider's audio; the written
         segment starts ``trimmed`` samples later (its leading silence dropped).
+        Called once the segment's audio is complete: whether the provider's
+        timing is plausible can only be told against the audio it came with
+        (``settle_boundaries``).
         """
         rate = self._config.canonical_sample_rate_hz
-        boundaries = tuple(
-            (end, segment_start + max(0, math.ceil(ms * rate / 1000) - trimmed))
-            for end, ms in event.word_boundaries
+        boundaries = settle_boundaries(
+            tuple(
+                (end, segment_start + max(0, math.ceil(ms * rate / 1000) - trimmed))
+                for event in events for end, ms in event.word_boundaries
+            ),
+            segment_start=segment_start, segment_end=segment_start + segment_samples,
         )
+        if not boundaries:
+            return
         emit_event(
             self._require_conn(), type="surface.playback_alignment",
             payload={
@@ -3126,8 +3121,10 @@ class StreamingTTSPipeline:
                 "response_id": active.response.response_id,
                 "turn_id": active.response.turn_id,
                 "playback_generation_id": active.lease.playback_generation_id,
-                "sequence": event.sequence,
-                "speech_text_hash": hashlib.sha256((event.timing_text or "").encode()).hexdigest(),
+                "sequence": events[0].sequence,
+                "speech_text_hash": hashlib.sha256(
+                    (events[0].timing_text or "").encode(),
+                ).hexdigest(),
                 "word_boundaries": [list(boundary) for boundary in boundaries],
             },
             source_event_id=active.activation_event_uid,
@@ -3135,7 +3132,7 @@ class StreamingTTSPipeline:
         )
         self._player.align_generation_segment(
             expected_playback_generation_id=active.lease.playback_generation_id,
-            sequence=event.sequence, boundaries=boundaries,
+            sequence=events[0].sequence, boundaries=boundaries,
         )
 
     async def _await_segments(

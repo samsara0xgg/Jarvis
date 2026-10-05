@@ -13,7 +13,8 @@ import pytest
 
 from jarvis.state.conversation import fold_conversation_history
 from jarvis.state.event_log import emit_event, iter_events, open_event_log
-from jarvis.surface import voice_media, voice_tts
+from jarvis.surface import voice_ledger, voice_media, voice_tts
+from jarvis.surface.voice_ledger import StalePlaybackGeneration
 from tests.integration.test_incremental_tts import _spoken, _Trail
 from tests.integration.test_previous_answer_line import _asked, _next_turn_line
 from tests.integration.test_wave2_streaming_media import (
@@ -40,11 +41,14 @@ _RATE = 8_000
 
 
 class _AlignedSession(_FakeSession):
+    scale = 1.0  # the share of the audio the provider's word times span
+
     async def _events(self) -> AsyncIterator[voice_tts.TTSAudioEvent]:
         segment = await self._segments.get()
         assert segment.text == _TEXT
+        # MiniMax's word "end" is where the word starts (voiced onset for the first).
         ends = tuple(
-            (len("".join(_WORDS[:index])), index * 10.0)
+            (len("".join(_WORDS[:index])), (index - 1) * 10.0 * self.scale)
             for index in range(1, len(_WORDS) + 1)
         )
         yield voice_tts.TTSAudioChunk(
@@ -59,13 +63,19 @@ class _AlignedSession(_FakeSession):
         yield voice_tts.TTSSegmentFinished(sequence=segment.sequence)
 
 
+class _SqueezedSession(_AlignedSession):
+    scale = 0.3  # every word "said" in a third of the real audio, as MiniMax often does
+
+
 class _AlignedProvider(_FakeProvider):
+    session = _AlignedSession
+
     def create_tts_session(
         self, *, endpoint_index: int, language: str, idle_close_s: float,
         command_queue_capacity: int, audio_queue_capacity: int,
     ) -> voice_tts.TTSSession:
         del language, idle_close_s, command_queue_capacity, audio_queue_capacity
-        return _AlignedSession(self, endpoint_index=endpoint_index)
+        return self.session(self, endpoint_index=endpoint_index)
 
 
 @pytest.mark.parametrize("quiet_tail", [False, True])
@@ -265,3 +275,74 @@ def test_empty_confirmed_text_does_not_mean_no_audio(tmp_path: Path, ended: str)
         assert expected in line
     finally:
         conn.close()
+
+
+def test_squeezed_provider_timing_keeps_no_word_ends(tmp_path: Path) -> None:
+    """Words squeezed into a third of the audio are not believed: the segment stays whole."""
+    db = tmp_path / "squeezed.db"
+    conn = open_event_log(db)
+    player = _player(ring_seconds=1.0)
+    provider = _AlignedProvider(candidate_count=1)
+    provider.session = _SqueezedSession
+    pipeline = voice_media.StreamingTTSPipeline(
+        provider=provider, player=player, conn_factory=lambda: open_event_log(db),
+        boot_high_water_id=0, config=_config(), start_player=False,
+    )
+    try:
+        _asked(conn, "T")
+        rows = _emit_response(conn, response_id="R", group_id="G", turn_id="T", text=_TEXT)
+        asyncio.run(_submit_response(pipeline, rows))
+        _wait_until(lambda: player.bytes_pending() == len(_WORDS) * _SAMPLES_PER_WORD * 4)
+        _wait_until(lambda: getattr(player.poll_generation(1), "all_segments_closed", False))
+        pump = _CallbackPump(player)
+        for _ in range(15):
+            pump.step(frames=_SAMPLES_PER_WORD)
+        snapshot = player.poll_generation(1)
+        assert not isinstance(snapshot, StalePlaybackGeneration)
+        # Fifteen of fifty words have played; the provider's squeezed times would say all fifty.
+        assert (snapshot.played_letters, snapshot.heard_text) == (0, "")
+        assert snapshot.playing_letters == sum(ch.isalnum() for ch in _TEXT)
+        assert not [e for e in iter_events(conn) if e.type == "surface.playback_alignment"]
+    finally:
+        assert pipeline.close()
+        conn.close()
+
+
+_SECOND = 48_000
+# Word ends as MiniMax sent them (ms to samples at 48 kHz), written as the ledger gets them.
+_SQUEEZED = (  # RESP9d9ec3 seg 0: 17 words stamped within 1.15 s, the voice runs 3.3 s
+    (1, 1625), (2, 9817), (3, 15961), (4, 18009), (5, 24153), (6, 26201), (7, 28249),
+    (8, 30297), (9, 32345), (10, 34393), (11, 36441), (12, 38489), (13, 40537), (14, 42585),
+    (15, 44633), (16, 46681), (17, 48729),
+)
+_ONSETS = (  # "好,有事再叫我。": each word's time is where it starts (好 is the voiced onset)
+    (1, 171), (2, 213), (3, 853), (4, 981), (5, 1109), (6, 1237), (7, 1365), (8, 1536),
+)
+
+
+@pytest.mark.parametrize(
+    ("boundaries", "scale", "segment_ms", "expected"),
+    [
+        # More than a third of the audio unspoken at the last word: the timing is not true.
+        (_SQUEEZED, 1, 3_500, ()),
+        # Word i is done where word i+1 starts; the last is done with the segment (not listed).
+        (
+            _ONSETS, 48, 1_700,
+            ((1, 213 * 48), (2, 853 * 48), (3, 981 * 48), (4, 1109 * 48),
+             (5, 1237 * 48), (6, 1365 * 48), (7, 1536 * 48)),
+        ),
+        # Three words say too little to doubt them.
+        (((1, 100), (2, 200), (3, 300)), 48, 10_000, ((1, 200 * 48), (2, 300 * 48))),
+        # One word has no successor: the segment keeps no word ends.
+        (((1, 100),), 48, 400, ()),
+    ],
+)
+def test_provider_word_times_become_word_ends_or_nothing(
+    boundaries: tuple[tuple[int, int], ...], scale: int, segment_ms: int,
+    expected: tuple[tuple[int, int], ...],
+) -> None:
+    """Data-driven: the rule on the shapes MiniMax really sent (kept recordings, 2026-10-05)."""
+    scaled = tuple((end, ms * scale) for end, ms in boundaries)
+    assert voice_ledger.settle_boundaries(
+        scaled, segment_start=0, segment_end=segment_ms * _SECOND // 1000,
+    ) == expected
