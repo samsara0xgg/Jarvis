@@ -189,6 +189,8 @@ class ChatResult:
     llm_request_id: str = field(default_factory=_new_llm_request_id)
     provider_response_id: str | None = None
     usage_status: UsageStatus = "unavailable"
+    service_tier: str | None = None
+    """The tier the provider says it served (``fast``, ``default``, ...), else the one sent."""
 
 
 @dataclass(frozen=True)
@@ -483,6 +485,12 @@ class LLMClient:
             self._base_url,
         )
 
+    def request_tier(self, service_tier: str | None) -> str | None:
+        """The ``service_tier`` a request to this client sends: only OpenAI's own host gets one."""
+        if service_tier and self._provider == "openai" and _is_openai_host(self._base_url):
+            return service_tier
+        return None
+
     # ---- chat (Day-1: one round trip, no tool loop) -------------------
 
     def chat(
@@ -492,6 +500,7 @@ class LLMClient:
         system: str,
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str | None = "auto",
+        service_tier: str | None = None,
     ) -> ChatResult:
         """Send one chat turn and return the LLM's text or tool calls.
 
@@ -505,6 +514,8 @@ class LLMClient:
             tool_choice: ``auto`` / ``required`` / ``none``, or one tool's name to force
                 that call while the tool list, and so the prompt cache, stays the same.
                 Anthropic ignores.
+            service_tier: OpenAI ``service_tier`` for this request only; dropped for any
+                other provider or host (:meth:`request_tier`).
 
         Returns:
             A frozen :class:`ChatResult`.
@@ -535,6 +546,7 @@ class LLMClient:
                     system=system,
                     tools=tools,
                     tool_choice=tool_choice,
+                    service_tier=self.request_tier(service_tier),
                 )
             elif self._provider == "openai":
                 result = self._chat_openai(
@@ -542,6 +554,7 @@ class LLMClient:
                     system=system,
                     tools=tools,
                     tool_choice=tool_choice,
+                    service_tier=self.request_tier(service_tier),
                 )
             else:
                 result = self._chat_anthropic(
@@ -597,6 +610,7 @@ class LLMClient:
         responses: bool = False,
         max_output_tokens: int | None = None,
         text_format: Mapping[str, Any] | None = None,
+        service_tier: str | None = None,
     ) -> LLMStreamHandle:
         """Prepare an isolated typed stream; L3 must supply its cost settlement owner.
 
@@ -605,6 +619,8 @@ class LLMClient:
         ``max_output_tokens`` caps this request below the preset's limit.
         ``text_format`` is the Responses API ``text.format`` (a strict
         json_schema, ADR 0114); only a ``responses`` request carries it.
+        ``service_tier`` is OpenAI's request tier, sent on this request only
+        (:meth:`request_tier`).
         """
         request_id = _new_llm_request_id()
         responses = responses and self._provider == "openai"
@@ -650,6 +666,8 @@ class LLMClient:
             })
             if tools:
                 body["tools"] = copy.deepcopy(tools)
+        if tier := self.request_tier(service_tier):
+            body["service_tier"] = tier
         record = llm_io_log.start(
             {**{k: v for k, v in body.items() if k != "tools"}, "tools": _tool_names(tools)},
             call="stream", api="responses" if responses else self._provider,
@@ -789,6 +807,7 @@ class LLMClient:
         system: str,
         tools: list[dict[str, Any]] | None,
         tool_choice: str | None,
+        service_tier: str | None = None,
     ) -> ChatResult:
         client = self._get_openai_client()
 
@@ -810,6 +829,8 @@ class LLMClient:
             kwargs["reasoning_effort"] = self._reasoning_effort
         if self._extra_body:
             kwargs["extra_body"] = copy.deepcopy(self._extra_body)
+        if service_tier:
+            kwargs["service_tier"] = service_tier
 
         LOGGER.info("Sending request to OpenAI (model=%s base=%s)", self._model, self._base_url)
         record_realtime_trace(
@@ -879,6 +900,7 @@ class LLMClient:
             llm_request_id=str(self._last_metadata["llm_request_id"]),
             provider_response_id=getattr(response, "id", None),
             usage_status=self.last_usage_status,
+            service_tier=_served_tier(response, service_tier),
         )
 
     def _chat_openai_responses(
@@ -888,6 +910,7 @@ class LLMClient:
         system: str,
         tools: list[dict[str, Any]] | None,
         tool_choice: str | None,
+        service_tier: str | None = None,
     ) -> ChatResult:
         """One /v1/responses round trip, reported in chat/completions' vocabulary."""
         client = self._get_openai_client()
@@ -911,6 +934,8 @@ class LLMClient:
             kwargs["reasoning"] = {"effort": self._reasoning_effort}
         if self._extra_body:
             kwargs["extra_body"] = copy.deepcopy(self._extra_body)
+        if service_tier:
+            kwargs["service_tier"] = service_tier
 
         LOGGER.info("Sending request to OpenAI responses (model=%s)", self._model)
         record_realtime_trace(
@@ -961,6 +986,7 @@ class LLMClient:
             llm_request_id=str(self._last_metadata["llm_request_id"]),
             provider_response_id=response.id,
             usage_status=self.last_usage_status,
+            service_tier=_served_tier(response, service_tier),
         )
 
     def _chat_stream_openai(  # noqa: C901, PLR0915 - provider protocol normalization
@@ -1385,6 +1411,17 @@ def _openai_token_key(base_url: str) -> str:
     """OpenAI's own host takes only max_completion_tokens on reasoning models; others max_tokens."""
     openai_host = "api.openai.com" in (base_url or "api.openai.com")
     return "max_completion_tokens" if openai_host else "max_tokens"
+
+
+def _is_openai_host(base_url: str) -> bool:
+    """OpenAI's own API; the only host that knows ``service_tier``."""
+    return "api.openai.com" in (base_url or "api.openai.com")
+
+
+def _served_tier(response: object, sent: str | None) -> str | None:
+    """The tier the response reports, else the one that was sent."""
+    reported = getattr(response, "service_tier", None)
+    return reported if isinstance(reported, str) and reported else sent
 
 
 def _forced(tool_choice: str, function: dict[str, Any]) -> str | dict[str, Any]:

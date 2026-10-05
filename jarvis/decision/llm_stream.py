@@ -90,6 +90,8 @@ class LLMUsageCompleted(_Event):
     cache_read_tokens: int | None
     cache_write_tokens: int | None
     usage_status: LLMUsageStatus
+    service_tier: str | None = None
+    """The tier the provider reports it served (``fast``, ``default``, ...), if it said."""
     kind: Literal["usage_completed"] = "usage_completed"
 
 
@@ -239,6 +241,7 @@ class StreamNormalizer:
         self.output_tokens: int | None = None
         self.cache_read_tokens: int | None = None
         self.cache_write_tokens: int | None = None
+        self.service_tier: str | None = None
         self._tools: dict[int, _ToolBlock] = {}
         self._blocks: dict[int, str] = {}
         self._message_started = False
@@ -299,6 +302,11 @@ class StreamNormalizer:
             return self._openai(raw)
         return self._anthropic(raw)
 
+    def _tier(self, value: object) -> None:
+        """Keep the latest tier reported: ``created`` says ``auto``, the end the truth."""
+        if isinstance(value, str) and value:
+            self.service_tier = value
+
     def _openai_final_usage(self, usage: object) -> None:
         if self.finish_reason and isinstance(usage, dict) and all(
             usage.get(key) is not None for key in ("prompt_tokens", "completion_tokens")
@@ -307,6 +315,7 @@ class StreamNormalizer:
 
     def _openai(self, raw: Mapping[str, Any]) -> list[LLMStreamEvent]:  # noqa: C901, PLR0912
         self._response_id(raw.get("id"))
+        self._tier(raw.get("service_tier"))
         self._usage(raw.get("usage"), {
             "prompt_tokens": "input_tokens", "completion_tokens": "output_tokens",
         })
@@ -367,6 +376,7 @@ class StreamNormalizer:
     def _responses_end(self, kind: str, raw: Mapping[str, Any]) -> None:
         response = _object(raw.get("response"))
         self._response_id(response.get("id"))
+        self._tier(response.get("service_tier"))
         usage = response.get("usage")
         self._usage(usage, {"input_tokens": "input_tokens", "output_tokens": "output_tokens"})
         if isinstance(usage, dict):
@@ -417,7 +427,9 @@ class StreamNormalizer:
         if self._message_stopped:
             raise _protocol_error("event_after_message_stop")
         if kind in {"response.created", "response.in_progress", "response.queued"}:
-            self._response_id(_object(raw.get("response")).get("id"))
+            created = _object(raw.get("response"))
+            self._response_id(created.get("id"))
+            self._tier(created.get("service_tier"))
             return []
         if kind in {"response.completed", "response.incomplete"}:
             self._responses_end(kind, raw)
@@ -591,7 +603,7 @@ class StreamNormalizer:
         return LLMUsageCompleted(
             **self._identity(), input_tokens=self.input_tokens, output_tokens=self.output_tokens,
             cache_read_tokens=self.cache_read_tokens, cache_write_tokens=self.cache_write_tokens,
-            usage_status=status,
+            usage_status=status, service_tier=self.service_tier,
         )
 
 

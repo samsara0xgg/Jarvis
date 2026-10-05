@@ -754,6 +754,20 @@ def _confirmation_ttl_ms(config: Mapping[str, Any]) -> int:
     return value if value > 0 else _FALLBACK_CONFIRMATION_TTL_MS
 
 
+def _voice_service_tier(config: Mapping[str, Any], trigger: Event) -> str | None:
+    """``realtime.response.voice_service_tier``, for a turn Allen spoke; else ``None``.
+
+    The tier rides every model request that turn makes through ``decide()`` and
+    nothing else: the client still sends it to OpenAI's own host only.
+    """
+    realtime = config.get("realtime")
+    response = realtime.get("response") if isinstance(realtime, Mapping) else None
+    tier = response.get("voice_service_tier") if isinstance(response, Mapping) else None
+    if not isinstance(tier, str) or not tier.strip() or not spoken_turn(trigger):
+        return None
+    return tier.strip()
+
+
 def _jev_log(config: Mapping[str, Any], root: Path) -> JevLog | None:
     """``jev_log`` (ADR 0128): on unless ``enabled: false``; the file is made at the first line."""
     block = config.get("jev_log")
@@ -3661,6 +3675,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             oneshot=runtime.oneshot,
             # The same boot value as the system prompt's reply-language line.
             reply_language=str(runtime.config.get("reply_language", "follow")),
+            service_tier=_voice_service_tier(runtime.config, user_intent_event),
         )
 
         # SQLite row id of the surface.user_intent event — used as the

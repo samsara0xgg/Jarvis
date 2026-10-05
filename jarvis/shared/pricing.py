@@ -23,6 +23,10 @@ _warned_models: set[str] = set()
 
 DEFAULT_PRICING_JSON = Path("data/pricing.json")
 
+# OpenAI renamed its Priority tier Fast: a request sent with "priority" comes back
+# "fast". A tier's rates sit in the table under "<model>:<tier>".
+_TIER_NAMES = {"priority": "fast"}
+
 
 def compute_cost_usd(
     model: str | None,
@@ -31,6 +35,7 @@ def compute_cost_usd(
     cache_read_in: int | None,
     cache_write_in: int | None,
     pricing_table: dict,
+    service_tier: str | None = None,
 ) -> float | None:
     """Compute USD cost for one LLM turn.
 
@@ -47,6 +52,10 @@ def compute_cost_usd(
             keys ``input``, ``output``, and optionally ``cache_read`` /
             ``cache_write`` (all in USD per 1 M tokens).
 
+        service_tier: The tier the provider served (``fast``, ``priority``).
+            Billed at the ``"<model>:<tier>"`` row when the table has one, else
+            at the model's standard row.
+
     Returns:
         Rounded USD cost (6 decimal places), or ``None`` when inputs are
         insufficient to compute a cost.
@@ -54,7 +63,8 @@ def compute_cost_usd(
     if not model or tokens_in is None or tokens_out is None:
         return None
 
-    entry = pricing_table.get(model)
+    tier = _TIER_NAMES.get(service_tier or "", service_tier)
+    entry = (tier and pricing_table.get(f"{model}:{tier}")) or pricing_table.get(model)
     if not entry:
         if model not in _warned_models:
             LOGGER.warning(

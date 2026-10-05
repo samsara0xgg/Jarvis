@@ -234,6 +234,7 @@ def _emit_cost_recorded(
         chat_result.cache_read_in,
         chat_result.cache_write_in,
         dict(_pricing_table()),
+        chat_result.service_tier,
     )
     payload: dict[str, Any] = {
         "kind": kind,
@@ -244,6 +245,8 @@ def _emit_cost_recorded(
         "cache_write_in": chat_result.cache_write_in,
         "cost_usd": cost_usd,
     }
+    if chat_result.service_tier is not None:
+        payload["service_tier"] = chat_result.service_tier
     if run_id is not None:
         payload["run_id"] = run_id
     correlation: dict[str, str] = {}
@@ -285,11 +288,13 @@ def _run_llm_chat_with_cost_guard(  # noqa: PLR0913 - mirrors the provider call 
     if ctx.request_admission is not None:
         ctx.request_admission(kind)
     if cost_recorder is None:
+        extra: dict[str, Any] = {"service_tier": ctx.service_tier} if ctx.service_tier else {}
         return ctx.llm_client.chat(
             messages=messages,
             system=system,
             tools=tools,
             tool_choice=tool_choice,
+            **extra,
         )
     return cost_recorder.chat(
         ctx.llm_client,
@@ -299,6 +304,7 @@ def _run_llm_chat_with_cost_guard(  # noqa: PLR0913 - mirrors the provider call 
         tool_choice=tool_choice,
         kind=kind,
         turn_id=turn_id,
+        service_tier=ctx.service_tier,
     )
 
 
@@ -677,6 +683,12 @@ class DecideContext:
     # ADR 0164: how this turn reads the decision snapshot. The composition root passes
     # a reader that folds only the events since its last read; None folds the whole log.
     read_snapshot: SnapshotReader | None = None
+    # ``realtime.response.voice_service_tier``: OpenAI's ``service_tier`` for the model
+    # requests of THIS turn, set by the composition root only when Allen spoke it. Every
+    # request ``decide()`` makes of its own (the tool loop, the answer after the tool
+    # budget, the spoken-form rewrite, a spoken or routine stream) carries it; Jev and
+    # the background jobs never see it. None (the default) sends nothing.
+    service_tier: str | None = None
 
 
 @dataclass(frozen=True)
@@ -2490,6 +2502,7 @@ def _stream_routine_text(
             tools=None,
             kind="decision",
             turn_id=scratch.turn_id,
+            service_tier=ctx.service_tier,
         )
     stream = route.open_stream(handle)
     speaker = _SegmentSpeaker(
@@ -2755,6 +2768,7 @@ def _stream_spoken_request(  # noqa: C901, PLR0913 - one request, the turn's sea
             turn_id=scratch.turn_id,
             responses=True,
             text_format=SPOKEN_REPLY_FORMAT if route.structured else None,
+            service_tier=ctx.service_tier,
         )
     stream = route.open_stream(handle)
     pending = scratch.surrogate

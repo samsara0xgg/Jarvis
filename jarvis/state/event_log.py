@@ -441,6 +441,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
             "usage_status",
             "disposition",
             "error_code",
+            "service_tier",
         ),
         schema_version=1,
     ),

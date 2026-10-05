@@ -80,6 +80,7 @@ def _disposition_dict(disposition: CostAccountingDisposition) -> dict[str, objec
         "cache_write_tokens": disposition.cache_write_tokens,
         "cost_usd": disposition.cost_usd,
         "error_code": disposition.error_code,
+        "service_tier": disposition.service_tier,
     }
 
 
@@ -104,6 +105,7 @@ def _deserialize_disposition(raw: str) -> CostAccountingDisposition:
         cache_write_tokens=_optional_int(value.get("cache_write_tokens")),
         cost_usd=_optional_float(value.get("cost_usd")),
         error_code=_optional_str(value.get("error_code")),
+        service_tier=_optional_str(value.get("service_tier")),
     )
 
 
@@ -159,6 +161,7 @@ def _event_payload(disposition: CostAccountingDisposition) -> dict[str, object]:
         ("cache_read_in", disposition.cache_read_tokens),
         ("cache_write_in", disposition.cache_write_tokens),
         ("error_code", disposition.error_code),
+        ("service_tier", disposition.service_tier),
     )
     payload.update({key: value for key, value in optional_values if value is not None})
     return payload

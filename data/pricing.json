@@ -6,7 +6,8 @@
     "unit": "All *_per_1m values are USD per 1,000,000 tokens or characters.",
     "deepseek": "DeepSeek splits peak vs off-peak (off-peak is exactly half) and prices cache-hit input separately. pricing.json has one flat rate per field and no time dimension, so these rows carry the PEAK (standard, undiscounted) rate, which never underestimates spend. Verified 2026-09-05 against https://api-docs.deepseek.com/quick_start/pricing.",
     "speech-2.8-turbo": "Not yet in LiteLLM; mapped to speech-2.6-turbo which shares the same published rate ($0.06/1M chars). Re-verify when upstream lands.",
-    "openai-long-context": "OpenAI bills a request over 272K input tokens at 2x input and cache rates and 1.5x output for the whole request, gpt-5.6+ bill uncached input at the cache-write rate (1.25x input), and flex requests at half of everything. Rows carry the plain standard rate, so cost.recorded runs about 20% low on standard requests and about 2x high on flex ones; the OpenAI Costs API is the real bill."
+    "openai-long-context": "OpenAI bills a request over 272K input tokens at 2x input and cache rates and 1.5x output for the whole request, gpt-5.6+ bill uncached input at the cache-write rate (1.25x input), and flex requests at half of everything. Rows carry the plain standard rate, so cost.recorded runs about 20% low on standard requests and about 2x high on flex ones; the OpenAI Costs API is the real bill.",
+    "service-tier": "A row named <model>:<tier> prices requests the provider served on that tier (OpenAI reports 'fast' for a request sent as 'priority'); a tier with no row bills at the model's standard row. Added by hand, kept across refreshes by TIER_ROWS in scripts/refresh_pricing.py."
   },
   "llm": {
     "grok-4.20-0309-non-reasoning": {
@@ -278,6 +279,16 @@
       "cache_write_per_1m": 0.125,
       "supports_prompt_caching": true,
       "source": "https://developers.openai.com/api/docs/pricing"
+    },
+    "gpt-6-luna:fast": {
+      "litellm_id": "gpt-6-luna",
+      "provider": "openai",
+      "input_per_1m": 0.2,
+      "output_per_1m": 1.0,
+      "cache_read_per_1m": 0.02,
+      "cache_write_per_1m": 0.25,
+      "supports_prompt_caching": true,
+      "source": "UNVERIFIED, second-hand (2026-10-04): fast/priority tier at 2x standard; not checked against https://developers.openai.com/api/docs/pricing. cache_write assumed 2x standard."
     },
     "gpt-6-sol": {
       "litellm_id": "gpt-6-sol",

@@ -469,6 +469,8 @@ class CostAccountingDisposition:
     cache_write_tokens: int | None = None
     cost_usd: float | None = None
     error_code: str | None = None
+    service_tier: str | None = None
+    """The tier the provider said it served, else the one the request asked for."""
 
 
 @dataclass(frozen=True)

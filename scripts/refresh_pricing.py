@@ -88,6 +88,25 @@ LLM_MAP: dict[str, str] = {
     "gemini-2.5-flash": "gemini-2.5-flash",
 }
 
+# Service-tier rows, named "<model>:<tier>"; not in LiteLLM, so written by hand and merged in
+# after every refresh. OpenAI reports its Priority tier as "fast".
+TIER_ROWS: dict[str, dict[str, Any]] = {
+    "gpt-6-luna:fast": {
+        "litellm_id": "gpt-6-luna",
+        "provider": "openai",
+        "input_per_1m": 0.2,
+        "output_per_1m": 1.0,
+        "cache_read_per_1m": 0.02,
+        "cache_write_per_1m": 0.25,
+        "supports_prompt_caching": True,
+        "source": (
+            "UNVERIFIED, second-hand (2026-10-04): fast/priority tier at 2x standard; not "
+            "checked against https://developers.openai.com/api/docs/pricing. cache_write "
+            "assumed 2x standard."
+        ),
+    },
+}
+
 # TTS pricing: OpenAI bills per token, MiniMax per character.
 # ``speech-2.8-turbo`` is not in LiteLLM yet; fall back to ``speech-2.6-turbo``
 # which shares the same published rate ($0.06/1M chars).
@@ -167,6 +186,7 @@ def build_pricing(src: dict[str, Any]) -> dict[str, Any]:
         row = extract_llm(jid, lid, src)
         if row is not None:
             llm[jid] = row
+    llm.update(TIER_ROWS)
     tts: dict[str, dict[str, Any]] = {}
     for jid, lid in TTS_MAP.items():
         row = extract_tts(jid, lid, src)
@@ -197,6 +217,12 @@ def build_pricing(src: dict[str, Any]) -> dict[str, Any]:
                 "of everything. Rows carry the plain standard rate, so cost.recorded "
                 "runs about 20% low on standard requests and about 2x high on flex "
                 "ones; the OpenAI Costs API is the real bill."
+            ),
+            "service-tier": (
+                "A row named <model>:<tier> prices requests the provider served on that tier "
+                "(OpenAI reports 'fast' for a request sent as 'priority'); a tier with no row "
+                "bills at the model's standard row. Added by hand, kept across refreshes by "
+                "TIER_ROWS in scripts/refresh_pricing.py."
             ),
         },
         "llm": llm,

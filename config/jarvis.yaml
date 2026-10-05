@@ -747,6 +747,14 @@ realtime:
       enabled: false
       first_clause_chars: 0
       structured: false
+    # ADR 0166.  OpenAI's service_tier for the model requests of a turn Allen
+    # spoke: every request of the turn (tool loop, answer after the tool budget,
+    # spoken stream, spoken-form rewrite) carries it.  "priority" is OpenAI's
+    # Fast tier (the response reports "fast"): measured on gpt-6-luna, first
+    # token median 1.04 -> 0.68 s, at about twice the price (data/pricing.json).
+    # Typed turns, Jev, background jobs and prefix_warm never send it; neither
+    # does any preset whose base_url is not api.openai.com.  Empty: nothing sent.
+    voice_service_tier: ""
     # After each turn, send the next turn's prompt up to its new message as a
     # request of its own (16 output tokens), so the next turn's first request
     # finds the whole history cached. Without it that request found only the

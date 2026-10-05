@@ -81,7 +81,7 @@ class CostRecorder:
         self._last_outcome = outcome
         return outcome
 
-    def _known_cost(
+    def _known_cost(  # noqa: PLR0913 - one rate row per token class plus the tier
         self,
         *,
         model: str,
@@ -89,6 +89,7 @@ class CostRecorder:
         output_tokens: int | None,
         cache_read_tokens: int | None,
         cache_write_tokens: int | None,
+        service_tier: str | None = None,
     ) -> float | None:
         if input_tokens is None or output_tokens is None:
             return None
@@ -99,6 +100,7 @@ class CostRecorder:
             cache_read_tokens or 0,
             cache_write_tokens or 0,
             dict(self._pricing_table),
+            service_tier,
         )
 
     def _from_result(
@@ -130,7 +132,9 @@ class CostRecorder:
                 output_tokens=result.output_tokens,
                 cache_read_tokens=result.cache_read_in,
                 cache_write_tokens=result.cache_write_in,
+                service_tier=result.service_tier,
             ),
+            service_tier=result.service_tier,
         )
 
     def _from_client(
@@ -202,8 +206,13 @@ class CostRecorder:
         kind: str,
         turn_id: str | None,
         run_id: str | None = None,
+        service_tier: str | None = None,
     ) -> ChatResult:
-        """Run normal chat and commit completion or error exactly once."""
+        """Run normal chat and commit completion or error exactly once.
+
+        ``service_tier`` reaches the client only when set, so a client that does not
+        take it is called exactly as before.
+        """
         try:
             with llm_io_log.labels(kind=kind, turn_id=turn_id, run_id=run_id):
                 result = client.chat(
@@ -211,6 +220,7 @@ class CostRecorder:
                     system=system,
                     tools=tools,
                     tool_choice=tool_choice,
+                    **({"service_tier": service_tier} if service_tier else {}),
                 )
         except BaseException as exc:
             outcome: LLMRequestOutcome = (
@@ -325,13 +335,19 @@ class CostRecorder:
         self, client: LLMClient, *, messages: list[dict[str, Any]], system: str,
         tools: list[dict[str, Any]] | None = None, kind: str, turn_id: str | None,
         run_id: str | None = None, responses: bool = False, max_output_tokens: int | None = None,
-        text_format: Mapping[str, Any] | None = None,
+        text_format: Mapping[str, Any] | None = None, service_tier: str | None = None,
     ) -> LLMStreamHandle:
-        """Bind exactly-once accounting before any typed-stream network I/O."""
+        """Bind exactly-once accounting before any typed-stream network I/O.
+
+        ``service_tier`` is billed as the provider reports it, else as requested.
+        """
         provider, model = client.provider, client.model
+        extra = {"service_tier": service_tier} if service_tier else {}
+        sent_tier = client.request_tier(service_tier) if service_tier else None
 
         def settled(result: StreamDisposition) -> CostAccountingOutcome:
             usage = result.usage
+            tier = usage.service_tier or sent_tier
             return self._commit(
                 CostAccountingDisposition(
                     llm_request_id=result.llm_request_id, kind=kind,
@@ -345,8 +361,9 @@ class CostRecorder:
                         output_tokens=usage.output_tokens,
                         cache_read_tokens=usage.cache_read_tokens,
                         cache_write_tokens=usage.cache_write_tokens,
+                        service_tier=tier,
                     ),
-                    error_code=result.error_code,
+                    error_code=result.error_code, service_tier=tier,
                 ),
                 turn_id=turn_id, run_id=run_id,
             )
@@ -355,7 +372,7 @@ class CostRecorder:
             return client.stream_events(
                 messages=messages, system=system, tools=tools, on_settled=settled,
                 responses=responses, max_output_tokens=max_output_tokens,
-                text_format=text_format,
+                text_format=text_format, **extra,
             )
 
 
