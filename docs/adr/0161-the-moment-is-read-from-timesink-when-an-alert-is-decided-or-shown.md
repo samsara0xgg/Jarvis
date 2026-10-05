@@ -76,7 +76,8 @@ Its limits:
   help is to be learned from how he rates the cards. The doc and its structured
   fields are stored with every decision snapshot (`job_decision.moment_json`,
   the context pack's `situation.moment`) so it can be replayed. The generic
-  per-card snapshot of ADR 0160 must call the same `Moment.snapshot`.
+  per-card snapshot written in parallel (decision record 0160) must call
+  the same `Moment.snapshot`.
 - **Job time.** A span is job-site time on a LinkedIn `/jobs` path, an
   applicant-tracking host (Workday, Greenhouse, Lever, iCIMS, SmartRecruiters,
   Ashby), or a career host or path of a company in the ledger, derived from the
