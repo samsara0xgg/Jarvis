@@ -68,9 +68,10 @@ these rules — there is no external doc):
 6. Rank surviving candidates by `(open_frequency, exact_stem_match,
    mtime)`, all descending. `open_frequency` counts prior successful
    `open_path` completions for that exact path — `_open_frequencies` does
-   ONE `iter_events` pass over the L2 event log building a `path -> count`
-   dict (not one scan per candidate: that was O(candidates x log size)
-   and measured 3.9s at 2000 log rows x 166 candidates before the fix).
+   ONE indexed `iter_events_of_types` pass over the `action.result_observed`
+   rows only, building a `path -> count` dict (not one scan per candidate:
+   that was O(candidates x log size) and measured 3.9s at 2000 log rows x
+   166 candidates before the fix).
    Best-effort — any read/parse error degrades to an empty dict, never
    raises. `exact_stem_match` is 1 when the candidate's filename stem
    (extension stripped) case-insensitively equals the first surviving
@@ -95,7 +96,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Literal
 
-from jarvis.state.event_log import iter_events
+from jarvis.state.event_log import iter_events_of_types
 
 if TYPE_CHECKING:
     import sqlite3
@@ -410,8 +411,9 @@ def _passes_token_filter(
 def _open_frequencies(conn: sqlite3.Connection) -> dict[str, int]:
     """Count prior successful `open_path` completions, keyed by `opened_path`.
 
-    ONE `iter_events` pass over the whole L2 event log building a
-    `path -> count` dict — NOT one scan per candidate (that was
+    ONE indexed `iter_events_of_types` pass over the `action.result_observed`
+    rows only (not the whole log, which grows with every audio event),
+    building a `path -> count` dict — NOT one scan per candidate (that was
     O(candidates x log size); measured 3.9s at 2000 log rows x 166
     candidates before this fix, and real logs only grow). Every
     `open_path` success emits `action.result_observed` whose
@@ -423,9 +425,7 @@ def _open_frequencies(conn: sqlite3.Connection) -> dict[str, int]:
     """
     counts: dict[str, int] = {}
     try:
-        for evt in iter_events(conn):
-            if evt.type != "action.result_observed":
-                continue
+        for evt in iter_events_of_types(conn, ("action.result_observed",)):
             tool_output = evt.payload.get("tool_output")
             if not isinstance(tool_output, str):
                 continue

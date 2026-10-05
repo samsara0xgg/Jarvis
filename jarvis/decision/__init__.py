@@ -120,7 +120,7 @@ from jarvis.state.authorized_dispatch_outbox import (
     authorize_confirmation_dispatch,
 )
 from jarvis.state.cost_accounting import record_run_cost_once
-from jarvis.state.event_log import emit_event, iter_events_for_turn, iter_events_of_types
+from jarvis.state.event_log import emit_event, get_event, iter_events_for_turn
 from jarvis.state.stream_emission import committed_text_prefix
 from jarvis.state.turn_overlap import TurnInFlight, turns_in_flight, words_since
 
@@ -1209,14 +1209,12 @@ def _claimed_turn_started(conn: sqlite3.Connection, trigger_event_uid: str) -> E
     ``event_uid``, which is exactly what ``source_event_id`` holds, so the
     lookup needs no new index or payload field.
     """
-    return next(
-        (
-            event
-            for event in iter_events_of_types(conn, ("turn.started",))
-            if event.source_event_id == trigger_event_uid
-        ),
-        None,
-    )
+    row = conn.execute(
+        "SELECT event_uid FROM events WHERE type = 'turn.started' "
+        "AND source_event_id = ? ORDER BY id ASC LIMIT 1",
+        (trigger_event_uid,),
+    ).fetchone()
+    return None if row is None else get_event(conn, row[0])
 
 
 def _handle_utterance(

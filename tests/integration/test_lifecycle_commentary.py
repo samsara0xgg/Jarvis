@@ -17,6 +17,7 @@ import secrets
 import threading
 import time
 from dataclasses import FrozenInstanceError, replace
+from functools import partial
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Final
 
@@ -53,6 +54,7 @@ from jarvis.runtime import (
     make_response_cancel_callable,
     tool_status,
 )
+from jarvis.runtime.decision_state import DecisionStateCache
 from jarvis.shared import Event, lang
 from jarvis.shared.lang import CONFIRMED_TOOLS, LONG_WAIT_TOOLS, SLOW_TOOLS
 from jarvis.shared.realtime import (
@@ -1698,6 +1700,67 @@ def test_a_line_whose_answer_starts_during_the_decision_is_never_rendered(
     ) is None
     assert _count(reader, "response.started") == 0
     assert _count(reader, "surface.response_emitted") == 0
+
+
+def _cached(runtime: JarvisRuntime) -> JarvisRuntime:
+    """The runtime as the daemon builds it: one shared decision-state cache (ADR 0164)."""
+    return replace(
+        runtime,
+        decision_state=DecisionStateCache(partial(open_event_log, runtime.runtime_paths.event_log)),
+    )
+
+
+def _no_whole_log_fold(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _forbidden(_conn: sqlite3.Connection) -> object:
+        msg = "the commentary guard folded the whole log despite a shared cache"
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(inherent_loop, "rebuild_projections", _forbidden)
+
+
+def test_a_cached_runtime_sees_a_confirmation_requested_after_the_cache_warmed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The guard reads the shared cache, yet a card requested just before still silences it."""
+    _clocks(monkeypatch, first=0.0, then=(600.0, 1200.0))
+    runtime = _cached(_make_runtime(tmp_path))
+    reader = _reader(runtime)
+    spoke = _user_turn(runtime.conn, "T-cached")
+    assert runtime.decision_state is not None
+    runtime.decision_state.read(reader)  # warm: the next read is a delta
+    emit_event(
+        runtime.conn,
+        type="confirmation.requested",
+        payload={
+            "confirmation_id": "CONF-cached",
+            "action_snapshot": {"tool_name": "write_file", "risk_level": "high"},
+            "template_line": "要写入吗",
+            "expires_at_ms": int(time.time() * 1000) + 600_000,
+        },
+        correlation={"turn_id": "T-cached"},
+    )
+    _no_whole_log_fold(monkeypatch)
+    assert inherent_loop._open_commentary_in_worker_thread(  # noqa: SLF001
+        runtime, trigger_event=spoke,
+    ) is None
+    assert _count(reader, "response.started") == 0
+
+
+def test_a_cached_runtime_still_speaks_with_no_confirmation_pending(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The cached read does not suppress commentary, and the cache moved to the log's end."""
+    _clocks(monkeypatch, first=0.0, then=(600.0, 1200.0))
+    runtime = _cached(_make_runtime(tmp_path))
+    spoke = _user_turn(runtime.conn, "T-cached-ok")
+    _no_whole_log_fold(monkeypatch)
+    opened = inherent_loop._open_commentary_in_worker_thread(  # noqa: SLF001
+        runtime, trigger_event=spoke,
+    )
+    assert opened is not None
+    assert runtime.decision_state is not None
+    assert runtime.decision_state.cursor is not None
+    inherent_loop._cancel_unheard_commentary(runtime, opened, reason="shutdown")  # noqa: SLF001
 
 
 @pytest.mark.parametrize("kind", ["surface.response_chunk", "surface.playback_started"])

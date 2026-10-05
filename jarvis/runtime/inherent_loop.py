@@ -1919,6 +1919,13 @@ def _emit_pre_emit_verdict(
     )
 
 
+# The trigger a turn was claimed from: the first `turn.started` naming the turn, undecoded.
+_SELECT_TURN_CLAIM_TRIGGER_SQL: Final[str] = (
+    "SELECT source_event_id FROM events WHERE type = 'turn.started' "
+    "AND json_extract(payload_json, '$.turn_id') = ? ORDER BY id ASC LIMIT 1"
+)
+
+
 def _commentary_turn(
     conn: sqlite3.Connection, event: Event,
 ) -> tuple[str, str, int] | None:
@@ -1933,17 +1940,10 @@ def _commentary_turn(
     turn_id = (event.correlation or {}).get("turn_id")
     if not isinstance(turn_id, str) or not turn_id:
         return None
-    started = next(
-        (
-            row
-            for row in iter_events_of_types(conn, ("turn.started",))
-            if row.payload.get("turn_id") == turn_id
-        ),
-        None,
-    )
-    if started is None or started.source_event_id is None:
+    started = conn.execute(_SELECT_TURN_CLAIM_TRIGGER_SQL, (turn_id,)).fetchone()
+    if started is None or started[0] is None:
         return None
-    trigger = get_event(conn, started.source_event_id)
+    trigger = get_event(conn, started[0])
     if trigger is None or trigger.type != _COMMENTARY_ORIGIN_TRIGGER_TYPE:
         return None
     transcript = trigger.payload.get("transcript")
@@ -2261,7 +2261,13 @@ def _open_commentary_in_worker_thread(  # noqa: C901, PLR0911 - one early return
                 # consumes a slot, and under the lock, because the dispatch and
                 # the clocks of one turn race.
                 return None
-            projections = rebuild_projections(conn)
+            # ADR 0164: the shared cache folds only what was appended since the last read;
+            # hand-built runtimes hold none and fold the whole log.
+            projections = (
+                runtime.decision_state.read(conn).projections
+                if runtime.decision_state is not None
+                else rebuild_projections(conn)
+            )
             slot = projections.pending_confirmations.slot
             if slot is not None and slot.is_live(int(time.time() * 1000)):
                 # ADR-0014: new commentary never overwrites an unresolved
