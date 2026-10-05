@@ -9,6 +9,7 @@ whole log instead.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -29,6 +30,8 @@ if TYPE_CHECKING:
     import sqlite3
 
     from jarvis.shared import Event
+
+LOGGER = logging.getLogger("jarvis.state.decision_snapshot")
 
 
 @dataclass(frozen=True)
@@ -100,6 +103,11 @@ def fold_log_state(
     try:
         return _advance(_EMPTY, list(iter_events_after(conn, 0, cursor)))
     except RefoldRequired:
+        # Every later read pays a whole-log fold until this shape is folded incrementally.
+        LOGGER.warning(
+            "decision snapshot cannot fold incrementally at event %d; folding the whole log",
+            cursor,
+        )
         return None
 
 
