@@ -156,6 +156,7 @@ from jarvis.runtime.dashboard import (
     FocusState,
     MailDrafts,
 )
+from jarvis.runtime.decision_state import DecisionStateCache
 from jarvis.runtime.home import Home, mail_body, mail_summarizer
 from jarvis.runtime.job_mail import LINKEDIN_ALERTS, JobMail, JobMailSettings
 from jarvis.runtime.moment import Moment, MomentSettings
@@ -226,6 +227,7 @@ if TYPE_CHECKING:
     from jarvis.decision import ResponsePlan
     from jarvis.decision.confirm_grammar import ConfirmGrammarTable
     from jarvis.decision.llm_stream import LLMStreamHandle
+    from jarvis.decision.packet import SnapshotReader
     from jarvis.decision.tier0 import Tier0Table
     from jarvis.shared.realtime_trace import TraceValue
 
@@ -452,6 +454,9 @@ class JarvisRuntime:
     llm_session_factory: LLMSessionFactory | None = None
     response_runs: ResponseRunRegistry | None = None
     committed_event_bus: CommittedEventBus | None = None
+    # ADR 0164 — the one decision-snapshot cache every turn thread shares by reference
+    # (internally locked, like ``committed_event_bus``); None folds the whole log per read.
+    decision_state: DecisionStateCache | None = None
     input_flags: Wave5InputFlags = field(default_factory=Wave5InputFlags)
     # ADR-0006 §5 — the two voice artifact locations, already resolved against
     # the config file's own directory. The daemon reads these instead of
@@ -565,6 +570,11 @@ class TurnSuspended(Exception):  # noqa: N818 — internal scheduler handoff, no
         """Carry only connection-free state across worker invocations."""
         super().__init__(checkpoint.intent.payload["turn_id"])
         self.checkpoint = checkpoint
+
+
+def _snapshot_reader(runtime: JarvisRuntime) -> SnapshotReader | None:
+    """The shared incremental reader every read of a turn goes through (ADR 0164)."""
+    return runtime.decision_state.read if runtime.decision_state is not None else None
 
 
 # --- bootstrap_runtime_app --------------------------------------------------
@@ -2400,6 +2410,9 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         llm_session_factory=llm_session_factory,
         response_runs=response_runs,
         committed_event_bus=committed_event_bus,
+        decision_state=DecisionStateCache(
+            partial(open_runtime_event_log, paths.event_log),
+        ),
         input_flags=_wave5_input_flags(full_config),
         surrogate_route=_surrogate_route(full_config, config_path, jev_log),
         memory=memory,
@@ -2572,13 +2585,13 @@ def _start_drive_turn_response(
         # before a call from the answer, and speaks the answer as it is written.
         route = "spoken"
         context = spoken_risk_context(
-            assemble_packet(user_intent_event, runtime.conn),
+            assemble_packet(user_intent_event, runtime.conn, _snapshot_reader(runtime)),
             response_id=response_id,
             turn_id=turn_id,
         )
         policy = spoken_stream_policy(context, preset_snapshot_hash=snapshot.snapshot_hash)
     elif runtime.response_flags.routine_streaming and correction is None:
-        packet = assemble_packet(user_intent_event, runtime.conn)
+        packet = assemble_packet(user_intent_event, runtime.conn, _snapshot_reader(runtime))
         route = pre_route(
             packet,
             tier0_table=runtime.tier0_table,
@@ -3617,6 +3630,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
                 partial(run.admit_request, runtime.conn) if run is not None else None
             ),
             routine_stream=stream_route,
+            read_snapshot=_snapshot_reader(runtime),
             slow_results=runtime.response_flags.slow_results,
             surrogate_route=runtime.surrogate_route,
             oneshot=runtime.oneshot,

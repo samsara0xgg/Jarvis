@@ -5617,6 +5617,8 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             already holds the lock for this runtime root.
     """
     with acquire_exclusive(lock_path):
+        if runtime.decision_state is not None:
+            runtime.decision_state.warm()  # ADR 0164: the first turn then reads only a delta
         broadcaster = InherentBroadcaster()
         broadcaster.attach_loop(asyncio.get_running_loop())
 
