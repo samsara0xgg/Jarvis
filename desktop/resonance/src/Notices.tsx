@@ -347,8 +347,8 @@ export function useNotices({ port, poll, agents, hold, quiet, inClaude, watched,
     return () => clearTimeout(t);
   }, [current?.key, hover, ok, size]);
 
-  // The 合适吗 row on a mail card: the answer goes to the daemon, the card says thanks and goes.
-  const rate = (n: Notice & { kind: 'mail' }, reaction: string, text: string) => {
+  // The 合适吗 row on a mail card or the summary: the answer goes to the daemon (for a summary, it applies to every mail in it), the card says thanks and goes.
+  const rate = (n: Notice & { kind: 'mail' | 'jobs' }, reaction: string, text: string) => {
     const c = card(n);
     if (c.ok) return;
     tell(port, n.id, { action: 'feedback', reaction }); c.ok = text; bump();
@@ -425,20 +425,33 @@ function useEscape(root: { current: HTMLElement | null }, on: boolean, run: () =
 const LEVELS: [string, string | null][] = [['记下', null], ['亮一下', null], ['卡片', 'card'], ['卡片带声', 'card_sound'], ['开口', 'speak']];
 const when = (job: JobItem) => [job.company, job.role, jobStamp(job.at)].filter(Boolean) as string[];
 
-// One job mail: its title and line, who and when as chips, and a small row asking whether this was the right level (folded away).
-export function MailNotice({ n, card, lang, onDismiss, onRate, onChange }: {
-  n: Notice & { kind: 'mail' }; card: Card; lang: Lang; onDismiss: () => void; onRate: (reaction: string, text: string) => void; onChange: () => void;
-}) {
-  const root = useRef<HTMLDivElement>(null), touched = useRef(performance.now()), { job } = n;
-  const level = job.level === 'speak' || job.level === 'card_sound' ? job.level : 'card', [kindClass, kindName] = jobKind(job.mail_kind);
-  useEscape(root, !card.ok, onDismiss, n.key);
-  // `card.feedback` is whether the row is open; it folds after 10 s without a touch.
+// The 合适吗 row of a mail card and of the summary: folded to one word, opens to 对 and the five levels (the card's own marked), and folds after 10 s untouched.
+function RateRow({ card, level, lang, onRate, onChange }: { card: Card; level: string; lang: Lang; onRate: (reaction: string, text: string) => void; onChange: () => void }) {
+  const touched = useRef(performance.now());
+  // `card.feedback` is whether the row is open.
   useEffect(() => {
     if (!card.feedback || card.ok) return;
     touched.current = performance.now();
     const t = setInterval(() => { if (performance.now() - touched.current > 10_000) { card.feedback = false; onChange(); } }, 1000);
     return () => clearInterval(t);
   }, [card.feedback, card.ok]);
+  return card.ok ? <p className="nc-ok"><Check size={14} weight="bold"/><span>{card.ok}</span></p>
+    : !card.feedback ? <button type="button" className="nc-rate-open" aria-expanded="false" onClick={() => { card.feedback = true; onChange(); }}>{tr(lang, ['Right level?', '合适吗'])}</button>
+    : <div className="nc-rate" onPointerMove={() => { touched.current = performance.now(); }} onFocus={() => { touched.current = performance.now(); }}>
+      <span className="nc-rate-q">{tr(lang, ['Right level?', '合适吗'])}</span>
+      <button type="button" className="btn btn-warm nc-right" onClick={() => onRate('right', tr(lang, ['Noted · that level fits', '记下了 · 这个级别合适']))}>对</button>
+      <div className="nc-levels" role="group" aria-label={tr(lang, ['Or pick the level it should have', '或者选它该有的级别'])}>{LEVELS.map(([name, id]) =>
+        <button key={name} type="button" className={`nc-lv${id === level ? ' is-now' : ''}`} aria-pressed={id === level} onClick={() => onRate(`level:${name}`, tr(lang, [`Noted · ${name}`, `记下了 · ${name}`]))}>{name}</button>)}</div>
+    </div>;
+}
+
+// One job mail: its title and line, who and when as chips, and a small row asking whether this was the right level (folded away).
+export function MailNotice({ n, card, lang, onDismiss, onRate, onChange }: {
+  n: Notice & { kind: 'mail' }; card: Card; lang: Lang; onDismiss: () => void; onRate: (reaction: string, text: string) => void; onChange: () => void;
+}) {
+  const root = useRef<HTMLDivElement>(null), { job } = n;
+  const level = job.level === 'speak' || job.level === 'card_sound' ? job.level : 'card', [kindClass, kindName] = jobKind(job.mail_kind);
+  useEscape(root, !card.ok, onDismiss, n.key);
   const chips = when(job), event = job.event_at ? jobStamp(job.event_at, true) : '';
   return <div ref={root} className="nc nc-mail">
     <div className="nc-bar"><span className={`nc-label ${job.mail_kind ? kindClass : 'is-other'}`}><i/>{job.mail_kind ? tr(lang, kindName) : tr(lang, ['Job mail', '求职邮件'])}</span>
@@ -446,14 +459,7 @@ export function MailNotice({ n, card, lang, onDismiss, onRate, onChange }: {
     <p className="nc-mail-t">{job.title}</p>
     {job.line && <p className="nc-what">{job.line}</p>}
     {(chips.length > 0 || event) && <div className="nc-tags">{chips.map((c, i) => <span key={i} className="tagc">{c}</span>)}{event && <span className="tagc">{tr(lang, ['Event', '日程'])} {event}</span>}</div>}
-    {card.ok ? <p className="nc-ok"><Check size={14} weight="bold"/><span>{card.ok}</span></p>
-      : !card.feedback ? <button type="button" className="nc-rate-open" aria-expanded="false" onClick={() => { card.feedback = true; onChange(); }}>{tr(lang, ['Right level?', '合适吗'])}</button>
-      : <div className="nc-rate" onPointerMove={() => { touched.current = performance.now(); }} onFocus={() => { touched.current = performance.now(); }}>
-        <span className="nc-rate-q">{tr(lang, ['Right level?', '合适吗'])}</span>
-        <button type="button" className="btn btn-warm nc-right" onClick={() => onRate('right', tr(lang, ['Noted · that level fits', '记下了 · 这个级别合适']))}>对</button>
-        <div className="nc-levels" role="group" aria-label={tr(lang, ['Or pick the level it should have', '或者选它该有的级别'])}>{LEVELS.map(([name, id]) =>
-          <button key={name} type="button" className={`nc-lv${id === level ? ' is-now' : ''}`} aria-pressed={id === level} onClick={() => onRate(`level:${name}`, tr(lang, [`Noted · ${name}`, `记下了 · ${name}`]))}>{name}</button>)}</div>
-      </div>}
+    <RateRow card={card} level={level} lang={lang} onRate={onRate} onChange={onChange}/>
   </div>;
 }
 
@@ -468,17 +474,18 @@ const rowWhen = (m: JobItem, lang: Lang) => {
   const fact = jobStamp(m.event_at, true) || m.event_text;
   return fact ? <time className="is-event">{tr(lang, m.mail_kind === 'interview' ? ['Interview', '面试'] : ['Event', '日程'])} {fact}</time> : <time>{jobStamp(m.at)}</time>;
 };
-// The daemon's one summary of what waited or came in a burst (ADR 0158). Rows only tell; the button opens the Dashboard's job ledger (no Gmail link).
-export function JobsDigestCard({ n, lang, onDismiss, onOpen }: { n: Notice & { kind: 'jobs' }; lang: Lang; onDismiss: () => void; onOpen: () => void }) {
+// The daemon's one summary of what waited or came in a burst (ADR 0158, 0159). Rows only tell, and the 合适吗 row rates the whole card; the button opens the Dashboard's job ledger (no Gmail link).
+export function JobsDigestCard({ n, card, lang, onDismiss, onOpen, onRate, onChange }: { n: Notice & { kind: 'jobs' }; card: Card; lang: Lang; onDismiss: () => void; onOpen: () => void; onRate: (reaction: string, text: string) => void; onChange: () => void }) {
   const root = useRef<HTMLDivElement>(null), items = Array.isArray(n.job.items) ? n.job.items : [];
-  useEscape(root, true, onDismiss, n.key);
+  useEscape(root, !card.ok, onDismiss, n.key);
   return <div ref={root} className="nc nc-digest nc-jobs">
     <div className="nc-bar"><span className="nc-label is-other"><i/>{n.job.title}</span>
       <button type="button" className="nc-x nc-dismiss" aria-label="Dismiss" title={tr(lang, ['Dismiss', '关掉'])} onClick={onDismiss}><X size={14}/></button></div>
     <ul className="nc-away nc-jobrows">{items.map((m, i) => { const [cls, name] = jobKind(m.mail_kind);
       return <li key={m.id ?? i} className="nc-jobrow"><em className={`jk ${cls}`}>{tr(lang, name)}</em>
-        <b>{m.company || m.title}</b><span className="nc-jr-role">{rowTail(m, items.length, lang)}</span>{rowWhen(m, lang)}</li>; })}</ul>
+        <span className="nc-jr-who"><b>{m.company || m.title}</b> <span className="nc-jr-role">{rowTail(m, items.length, lang)}</span></span>{rowWhen(m, lang)}</li>; })}</ul>
     {n.job.link === 'jobs' && <button type="button" className="btn btn-warm nc-open-jobs" onClick={onOpen}>{tr(lang, ['Open the job list', '打开求职记录'])}</button>}
+    <RateRow card={card} level={n.job.level === 'card_sound' ? 'card_sound' : 'card'} lang={lang} onRate={onRate} onChange={onChange}/>
   </div>;
 }
 

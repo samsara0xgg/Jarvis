@@ -226,9 +226,11 @@
 .notch .nc-lv:hover { background:rgb(255 255 255 / .13); color:var(--p-ink); }
 .notch .nc-lv.is-now { background:rgb(255 201 143 / .16); color:var(--warm-c); box-shadow:inset 0 0 0 1px rgb(255 201 143 / .55); }
 .notch .nc-jobrows { gap:1px; }
-.notch .nc-jobrow { display:grid; grid-template-columns:auto minmax(0,max-content) minmax(0,1fr) auto; align-items:center; gap:0 9px; padding:7px 2px; font-size:var(--text-detail); }
-.notch .nc-jobrow b { font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.notch .nc-jr-role { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--p-faint); }
+.notch .nc-jobrow { display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:0 9px; padding:7px 2px; font-size:var(--text-detail); }
+.notch .nc-jr-who { min-width:0; overflow:hidden; display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; }
+.notch .nc-jobrow b { font-weight:500; }
+.notch .nc-jr-role { display:inline-block; max-width:100%; vertical-align:top; color:var(--p-faint); }
+.notch .nc-jobs .nc-label { text-transform:none; letter-spacing:.03em; }
 .notch .nc-jobrow time { font-size:var(--text-label); color:var(--p-faint); font-variant-numeric:tabular-nums; white-space:nowrap; }
 .notch .nc-jobrow time.is-event { color:var(--p-ink); font-weight:600; }
 @media (prefers-reduced-motion:reduce) { .notch .nc-rate { animation:none; } .notch .nc-lv { transition:none; } }

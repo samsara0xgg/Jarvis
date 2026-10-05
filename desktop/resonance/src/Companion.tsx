@@ -765,7 +765,7 @@ export function Companion() {
     : !notice ? null : notice.kind === 'pop' ? { key: notice.key, pop: notice.ids, onClose: notices.next }
     : notice.kind === 'mail' ? { key: notice.key, id: notice.id, onClose: notices.dismiss,
       card: <MailNotice key={notice.key} n={notice} card={notices.card!} lang={companion.lang} onDismiss={notices.dismiss} onChange={notices.bump} onRate={(reaction, text) => notices.rate(notice, reaction, text)}/> }
-    : notice.kind === 'jobs' ? { key: notice.key, id: notice.id, onClose: notices.dismiss, card: <JobsDigestCard key={notice.key} n={notice} lang={companion.lang} onDismiss={notices.dismiss} onOpen={openJobs}/> }
+    : notice.kind === 'jobs' ? { key: notice.key, id: notice.id, onClose: notices.dismiss, card: <JobsDigestCard key={notice.key} n={notice} card={notices.card!} lang={companion.lang} onDismiss={notices.dismiss} onOpen={openJobs} onChange={notices.bump} onRate={(reaction, text) => notices.rate(notice, reaction, text)}/> }
     : notice.kind === 'digest' ? { key: notice.key, onClose: notices.next, card: <DigestCard key={notice.key} n={notice} agents={agents} lang={companion.lang} look={wardrobe.marks} onOpen={jump} onAnswer={notices.focus}/> }
     : { key: notice.key, id: notice.id, onClose: notices.dismiss,
     card: <NoticeCard key={notice.key} n={notice} card={notices.card!} agent={agents.find(a => a.id === notice.id)} count={notices.count} look={wardrobe.marks}

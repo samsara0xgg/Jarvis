@@ -696,6 +696,7 @@ def test_the_summary_is_one_row_per_company_and_thread(tmp_path: Path, jev: _Jev
     seen = h.client.post(f"/inherent/notices/{summary['id']}", json={"action": "seen"})
     assert seen.status_code == 200
     assert h.notices() == []
+    assert {state for (state,) in h.sql("SELECT state FROM job_alert")} == {"shown"}
 
 
 def test_a_mixed_summary_groups_by_thread_ranks_kinds_and_keeps_the_old_header(
@@ -1200,6 +1201,48 @@ def test_feedback_is_recorded_and_an_untouched_alert_ends_ignored(
     )
     h2.job.poll_once()
     assert h2.sql("SELECT reaction, level_shown FROM job_feedback") == [("ignored", "card")]
+
+
+def test_feedback_on_a_summary_is_logged_for_every_alert_it_holds(
+    tmp_path: Path, jev: _Jev
+) -> None:
+    """A level or 对 on the summary writes one row per alert at the summary's level."""
+    level = lang.JOB_LEVEL_NAMES[3]
+    for quiet, shown in (("off", "card_sound"), ("quiet", "card")):
+        h = _harness(tmp_path / quiet, jev, [])
+        _pending(
+            h, ["interview", "job_other", "rejection"], level="card", age=timedelta(minutes=20)
+        )
+        h.sql("UPDATE job_alert SET level = 'speak' WHERE message_id = 'p-0'")
+        h.sql("UPDATE job_alert SET level = 'card_sound' WHERE message_id = 'p-1'")
+        h.quiet = quiet
+        (summary,) = h.notices()
+        assert summary["level"] == shown
+        ids = dict(h.sql("SELECT message_id, id FROM job_alert"))
+        for reaction in (f"level:{level}", "right"):
+            reply = h.client.post(
+                f"/inherent/notices/{summary['id']}",
+                json={"action": "feedback", "reaction": reaction},
+            )
+            assert reply.status_code == 200
+            rows = h.sql("SELECT alert_id, level_shown, reaction FROM job_feedback ORDER BY id")
+            assert sorted(rows) == sorted((ids[f"p-{i}"], shown, reaction) for i in range(3))
+            assert {state for (state,) in h.sql("SELECT state FROM job_alert")} == {"done"}
+            assert h.notices() == []
+            h.sql("DELETE FROM job_feedback")
+            h.sql("UPDATE job_alert SET state = 'pending'")
+
+    # Dismissed ends every alert in the summary, logged at the summary's level.
+    h = _harness(tmp_path / "gone", jev, [])
+    _pending(h, ["interview", "job_other", "rejection"], level="card", age=timedelta(minutes=20))
+    (summary,) = h.notices()
+    post = h.client.post
+    assert (
+        post(f"/inherent/notices/{summary['id']}", json={"action": "dismissed"}).status_code == 200
+    )
+    assert h.sql("SELECT level_shown, reaction FROM job_feedback") == [("card", "dismissed")] * 3
+    assert h.notices() == []
+    assert {state for (state,) in h.sql("SELECT state FROM job_alert")} == {"done"}
 
 
 def test_deleting_a_mail_hides_it_from_the_ledger_and_its_alert(tmp_path: Path, jev: _Jev) -> None:

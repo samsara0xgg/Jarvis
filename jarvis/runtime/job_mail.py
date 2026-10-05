@@ -457,7 +457,9 @@ class JobMail:
         """``POST /inherent/notices/{id}``: ``seen``, or feedback (``dismissed`` is feedback too).
 
         An unknown id is a LookupError (404), a reaction that is not one of ``right``,
-        ``dismissed`` and ``level:<name>`` a ValueError (400). A digest id stands for its alerts.
+        ``dismissed`` and ``level:<name>`` a ValueError (400). A digest id stands for its alerts:
+        seen, dismissed or a reaction applies to each, logged once per alert with the summary's
+        level as the level shown (ADR 0159).
         """
         if action == "dismissed":
             reaction = "dismissed"
@@ -469,6 +471,11 @@ class JobMail:
         if not alerts or any(one is None for one in alerts):
             msg = f"no such notice: {notice_id}"
             raise LookupError(msg)
+        quiet = self.quiet()
+        # A summary is one card: it was as loud as its loudest alert (and never spoke).
+        loud = any(
+            ledger.shown_level(one["level"], quiet) in ledger.SOUNDING for one in alerts if one
+        )
         for alert in alerts:
             if alert is None:
                 continue
@@ -476,7 +483,9 @@ class JobMail:
                 if alert["state"] == "pending":
                     ledger.mark_alert(self._db, alert["id"], "shown", now)
                 continue
-            level = ledger.shown_level(alert["level"], self.quiet())
+            level = ledger.shown_level(alert["level"], quiet)
+            if notice_id.startswith("digest-"):
+                level = "card_sound" if loud else "card"
             ledger.add_feedback(self._db, alert["id"], level, str(reaction), now)
             ledger.mark_alert(self._db, alert["id"], "done", now)
 

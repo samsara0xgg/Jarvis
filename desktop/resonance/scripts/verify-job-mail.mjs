@@ -199,6 +199,24 @@ try {
   check('a row with neither shows only when the latest mail came', when[2].fact === null && /^\d{1,2}[:/]\d{1,2}$/.test(when[2].plain));
   await shot('digest-time');
   await page.keyboard.press('Escape'); await gone();
+  // ADR 0159: the 合适吗 row on the summary, the same component as on a single card, folded at first; a choice applies to the whole card (the daemon logs it per mail).
+  notices = [{ ...base, id: 'd-6', level: 'card_sound', items }];
+  await shows(); await settle();
+  check('the summary has the 合适吗 row, folded at first', await page.locator('.notch-note.is-open .nc-jobs .nc-rate').count() === 0 && await page.locator('.notch-note.is-open .nc-jobs .nc-rate-open').count() === 1);
+  await page.locator('.notch-note.is-open .nc-rate-open').click();
+  await page.waitForSelector('.notch-note.is-open .nc-jobs .nc-rate');
+  check('it offers five levels with the summary level marked', (await page.locator('.notch-note.is-open .nc-lv').allInnerTexts()).join('|') === '记下|亮一下|卡片|卡片带声|开口' && await page.locator('.notch-note.is-open .nc-lv.is-now').innerText() === '卡片带声');
+  await shot('digest-feedback');
+  await page.locator('.notch-note.is-open .nc-lv', { hasText: '开口' }).click();
+  await gone();
+  check('a level chip on the summary sends level:开口 for the summary id, and no dismissed', of('d-6').at(-1) === '{"action":"feedback","reaction":"level:开口"}' && !of('d-6').some(b => /dismissed/.test(b)));
+  notices = [{ ...base, id: 'd-7', items }];
+  await shows(); await settle();
+  await page.locator('.notch-note.is-open .nc-rate-open').click();
+  check('a card-level summary marks 卡片', await page.locator('.notch-note.is-open .nc-lv.is-now').innerText() === '卡片');
+  await page.locator('.notch-note.is-open .nc-right').click();
+  await gone();
+  check('对 on the summary sends feedback right for the summary id', of('d-7').at(-1) === '{"action":"feedback","reaction":"right"}' && !of('d-7').some(b => /dismissed/.test(b)));
   // Its button opens the Dashboard on the job ledger and sends no dismissed.
   notices = [{ ...base, id: 'd-2', items }];
   await shows(); await settle();
@@ -207,6 +225,29 @@ try {
   await page.waitForSelector('.ad .jp-g', { timeout: 5000 });
   check('the button opens the ledger page without a dismissed', await page.locator('.ad .jp-g').count() === 3 && !of('d-2').some(b => /dismissed/.test(b)));
   notices = [];
+  await open();
+
+  // (f2) the summary in Chinese, as Allen reads it: one Reliable Controls thread with an extracted time, and without (evidence screenshots).
+  await page.evaluate(() => localStorage.setItem('companion-settings-v1', JSON.stringify({ lang: 'zh' })));
+  await open();
+  const zhRow = extra => ({ id: 'z-1', company: 'Reliable Controls', role: 'Firmware QA Analyst Co-op', mail_kind: 'interview', at: at(20), count: 3, ...extra });
+  const zhTitle = 'Reliable Controls 面试有 3 封新邮件';
+  for (const [name, row] of [['summary-grouped-time', zhRow({ event_at: '2027-10-08T13:00:00' })], ['summary-grouped-no-time', zhRow({})]]) {
+    notices = [{ ...base, id: name, title: zhTitle, items: [row] }];
+    await shows(); await settle();
+    const zh = await page.locator('.notch-note.is-open .nc-jobs').innerText();
+    check(`${name}: zh title, one row, role, and the count is not repeated`, new RegExp(zhTitle, 'i').test(zh) && await page.locator('.notch-note.is-open .nc-jobrow').count() === 1 && /Firmware QA Analyst Co-op/.test(zh) && !/封往来/.test(zh));
+    check(`${name}: the time fact is ${name.endsWith('no-time') ? 'absent' : '面试 10/8 13:00'}`, name.endsWith('no-time') ? await page.locator('.notch-note.is-open .nc-jobrow time.is-event').count() === 0 : await page.locator('.notch-note.is-open .nc-jobrow time.is-event').innerText() === '面试 10/8 13:00');
+    await shot(name);
+    await page.keyboard.press('Escape'); await gone();
+  }
+  notices = [{ ...base, id: 'summary-grouped-mixed', title: '最近两天有 5 封求职邮件，其中 3 封面试', items: [zhRow({ event_at: '2027-10-08T13:00:00' }), { id: 'z-2', company: 'Acme Robotics', role: '', mail_kind: 'rejection', at: at(120), count: 1 }, { id: 'z-3', company: 'Orbit Labs', role: 'SWE Co-op', mail_kind: 'job_other', at: at(300), count: 1 }] }];
+  await shows(); await settle();
+  check('a zh mixed summary counts the multi-mail row: 3 封往来', /3 封往来/.test(await page.locator('.notch-note.is-open .nc-jobs').innerText()));
+  await shot('summary-grouped-mixed');
+  await page.keyboard.press('Escape'); await gone();
+  notices = [];
+  await page.evaluate(() => localStorage.removeItem('companion-settings-v1'));
   await open();
 
   // (g) the ledger page in the Dashboard: grouped by company, expand, a confirmed delete.
