@@ -56,6 +56,7 @@ class DecisionStateCache:
         self._verify_every = verify_every_reads
         self._lock = threading.Lock()
         self._state: DecisionFoldState | None = None
+        self._epoch = 0  # counts resets: a read that began before one must not publish after it
         self._reads = 0
         self._verifying = False
 
@@ -68,7 +69,7 @@ class DecisionStateCache:
     def read(self, conn: sqlite3.Connection) -> DecisionStateSnapshot:
         """Read the snapshot on ``conn``'s view, advancing the shared state when it is newer."""
         with self._lock:
-            prior = self._state
+            prior, epoch = self._state, self._epoch
             self._reads += 1
             due = self._verify_every > 0 and self._reads % self._verify_every == 0
         snapshot = read_decision_snapshot(conn, prior)
@@ -76,7 +77,7 @@ class DecisionStateCache:
         if fresh is not None:
             with self._lock:
                 held = self._state
-                if held is None or fresh.cursor > held.cursor:
+                if epoch == self._epoch and (held is None or fresh.cursor > held.cursor):
                     self._state = fresh
         if due:
             self.verify_in_background()
@@ -98,6 +99,7 @@ class DecisionStateCache:
         """Forget the shared state; the next read folds the whole log."""
         with self._lock:
             self._state = None
+            self._epoch += 1
 
     def verify_in_background(self) -> None:
         """Compare the incremental state with a whole-log fold on a thread of its own, once idle."""

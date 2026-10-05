@@ -14,6 +14,7 @@ from jarvis.runtime.decision_state import DecisionStateCache
 from jarvis.state.decision_snapshot import read_decision_snapshot
 from jarvis.state.event_log import (
     EventTypeRegistry,
+    append_event_in_transaction,
     emit_event,
     iter_events_after,
     open_event_log,
@@ -99,6 +100,64 @@ def test_a_state_that_differs_from_the_log_is_dropped_by_the_self_check(
         cache._verify()  # noqa: SLF001 - the background thread's body, run inline
         assert cache.cursor != held
         assert cache.read(conn).projections == original(conn).projections
+        assert cache.agrees_with_whole_log()
+
+
+def test_a_read_in_flight_during_a_reset_does_not_republish_its_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A turn that read from the state the self-check just condemned must not put it back."""
+    path = tmp_path / "events.db"
+    conn = open_event_log(path)
+    with contextlib.closing(conn):
+        log = _Log(conn, seed=8)
+        for _ in range(40):
+            log.step()
+        cache = DecisionStateCache(partial(open_event_log, path), verify_every_reads=0)
+        cache.read(conn)
+        for _ in range(10):
+            log.step()
+        original = read_decision_snapshot
+
+        def reset_midway(
+            conn: sqlite3.Connection, prior: DecisionFoldState | None = None
+        ) -> object:
+            snapshot = original(conn, prior)
+            cache.reset()  # the self-check lands while this read is still running
+            return snapshot
+
+        monkeypatch.setattr(decision_state, "read_decision_snapshot", reset_midway)
+        cache.read(conn)
+        assert cache.cursor is None
+        monkeypatch.setattr(decision_state, "read_decision_snapshot", original)
+        assert cache.read(conn).fold_state is not None
+        assert cache.cursor == original(conn).event_cursor
+
+
+def test_a_read_inside_the_callers_transaction_never_publishes_its_state(tmp_path: Path) -> None:
+    """Uncommitted rows are read by their writer but never become the shared state."""
+    path = tmp_path / "events.db"
+    conn = open_event_log(path)
+    with contextlib.closing(conn):
+        log = _Log(conn, seed=2)
+        for _ in range(30):
+            log.step()
+        cache = DecisionStateCache(partial(open_event_log, path), verify_every_reads=0)
+        committed = cache.read(conn).event_cursor
+        conn.execute("BEGIN IMMEDIATE")
+        append_event_in_transaction(
+            conn,
+            type="utterance.received",
+            payload={"turn_id": "U", "transcript": "x"},
+        )
+        borrowed = cache.read(conn)
+        assert borrowed.event_cursor == committed + 1
+        assert borrowed.fold_state is None
+        assert cache.cursor == committed
+        conn.rollback()
+        # The rolled-back id is reused by a different event: the cache must not remember "x".
+        emit_event(conn, type="utterance.received", payload={"turn_id": "V", "transcript": "y"})
+        assert cache.read(conn).projections == read_decision_snapshot(conn).projections
         assert cache.agrees_with_whole_log()
 
 
