@@ -64,6 +64,10 @@ class Moment:
         """Why every card and sound should wait now (``call``, ``idle``, ...), or None."""
         return rules.hold_reason(self.facts())
 
+    def client_hold(self) -> str | None:
+        """What a client is told to hold for: ``call``, ``away`` or None (ADR 0163)."""
+        return rules.client_hold(self.facts())
+
     def snapshot(self) -> dict[str, Any]:
         """``{"facts", "doc"}``: what a decision snapshot stores so it can be replayed."""
         facts = self.facts()

@@ -46,6 +46,15 @@ def hold_reason(facts: dict[str, Any]) -> str | None:
     return presence if presence in ("asleep", "locked", "idle") else None
 
 
+def client_hold(facts: dict[str, Any]) -> str | None:
+    """What a client is told (ADR 0163): ``call``, ``away`` (idle, locked, asleep) or None.
+
+    The same rule as ``hold_reason``, which stays the one source of truth for what holds.
+    """
+    reason = hold_reason(facts)
+    return None if reason is None else "call" if reason == "call" else "away"
+
+
 def _hours(seconds: float) -> str:
     return f"{round(seconds / 60)} min" if seconds < 3600 else f"{seconds / 3600:.1f} h"  # noqa: PLR2004
 

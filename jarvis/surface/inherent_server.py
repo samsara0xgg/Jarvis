@@ -629,6 +629,9 @@ class InherentDeps:
     # ADR 0160: the same feedback for every other proactive card the client raises, by card id.
     # ``None`` leaves the route unregistered (404); a LookupError is 404, a ValueError 400.
     card_act: Callable[[str, dict[str, Any]], Awaitable[Any]] | None = None
+    # ADR 0163: ``{hold}`` (``call``, ``away`` or None), for a client whose daemon runs no job mail.
+    # ``None`` leaves the route unregistered (404): the daemon wires it while ``moment.enabled``.
+    moment_read: Callable[[], Awaitable[dict[str, Any]]] | None = None
     jobs_read: Callable[[], Awaitable[dict[str, Any]]] | None = None
     job_delete: Callable[[str], Awaitable[None]] | None = None
     job_flag: Callable[[str, str], Awaitable[None]] | None = None
@@ -1325,8 +1328,16 @@ def _register_job_routes(app: FastAPI, deps: InherentDeps) -> None:  # noqa: C90
 
         @app.get("/inherent/notices")
         async def notices() -> dict[str, Any]:
-            """``{notices}``: the job-mail alerts a client may show at the quiet level now."""
+            """``{notices, audio_private, hold}``: the job-mail alerts a client may show now."""
             return await _home_call(notices_read())
+
+    if deps.moment_read is not None:
+        moment_read = deps.moment_read
+
+        @app.get("/inherent/moment")
+        async def moment() -> dict[str, Any]:
+            """``{hold}``: ``call``, ``away`` or None; the client's own cards and sounds wait."""
+            return await _home_call(moment_read())
 
     if deps.notice_act is not None:
         notice_act = deps.notice_act

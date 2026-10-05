@@ -15,14 +15,18 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 import yaml
+from fastapi.testclient import TestClient
 
 from jarvis.decision import moment as rules
 from jarvis.decision.attention import replay, rule_judge_v1
 from jarvis.runtime import RuntimeBootstrapError, _moment
 from jarvis.runtime.card_feedback import CardFeedback
+from jarvis.runtime.inherent_loop import _moment_hold
 from jarvis.runtime.moment import Moment, MomentSettings
 from jarvis.shared import lang
 from jarvis.state import job_ledger, job_time, timesink_moment
+from jarvis.surface.inherent_output import InherentBroadcaster
+from jarvis.surface.inherent_server import InherentDeps, create_app
 from tests.canary._helpers import repo_root
 from tests.integration.test_job_mail import _Harness, _harness, _Jev
 
@@ -700,3 +704,77 @@ def test_a_missing_store_gives_an_empty_time_column(tmp_path: Path, jev: _Jev) -
     reply = h.client.get("/inherent/jobs").json()
     assert reply["job_site_other_s"] == 0
     assert all(g["time_spent"] == [] and g["time_total_s"] == 0 for g in reply["ledger"])
+
+
+# --- ADR 0163: the hold the client reads -------------------------------------------------
+
+
+def _hold_store(tmp_path: Path, state: str) -> FakeTimeSink | Path:
+    """A store in one state: ``call``, ``away``, ``active`` or ``unknown`` (stale, then missing)."""
+    store = FakeTimeSink(tmp_path)
+    if state == "call":
+        return _in_a_call(store)
+    if state == "away":
+        store.span(900, 600, CHROME, "Google Chrome", domain="a.example")
+        store.event(600, "lock")
+    elif state == "active":
+        store.span(100, 3, CHROME, "Google Chrome", domain="a.example")
+    elif state == "stale":
+        store.span(900, timesink_moment.FRESH_S + 30, CHROME, "Google Chrome", domain="a.example")
+    else:
+        return tmp_path / "missing.sqlite"
+    return store
+
+
+@pytest.mark.parametrize(
+    ("state", "expected"),
+    [
+        ("call", "call"),
+        ("away", "away"),
+        ("active", None),
+        ("stale", None),
+        ("missing", None),
+    ],
+)
+def test_the_hold_reaches_the_client_on_both_routes(
+    tmp_path: Path, jev: _Jev, state: str, expected: str | None
+) -> None:
+    """``hold`` is call, away or null, the same on the notices poll and on the moment route."""
+    h = _job_harness(tmp_path, jev, _hold_store(tmp_path, state))
+    notices = h.client.get("/inherent/notices").json()
+    assert notices["hold"] == expected
+    assert h.job.moment is not None
+    assert h.job.moment.client_hold() == expected
+    alone = TestClient(
+        create_app(
+            InherentDeps(
+                submit_callable=lambda _text: None,
+                broadcaster=InherentBroadcaster(),
+                moment_read=lambda: _moment_hold(h.job.moment),  # type: ignore[arg-type]
+            )
+        )
+    )
+    reply = alone.get("/inherent/moment")
+    assert (reply.status_code, reply.json()) == (200, {"hold": expected})
+
+
+def test_an_idle_call_holds_as_a_call_and_other_away_states_as_away() -> None:
+    """The client's word is the job-alert rule folded to two: call wins, the rest is away."""
+    for facts, expected in (
+        ({"in_call": "yes", "presence": "idle"}, "call"),
+        ({"in_call": "no", "presence": "idle"}, "away"),
+        ({"in_call": "no", "presence": "locked"}, "away"),
+        ({"in_call": "unknown", "presence": "asleep"}, "away"),
+        ({"in_call": "no", "presence": "active"}, None),
+        ({"in_call": "unknown", "presence": "unknown"}, None),
+        ({}, None),
+    ):
+        assert rules.client_hold(facts) == expected
+        assert (rules.hold_reason(facts) is None) == (expected is None)
+
+
+def test_without_a_moment_there_is_no_route_and_no_hold(tmp_path: Path, jev: _Jev) -> None:
+    """Moment off: the route is 404 and the notices say ``hold: null``."""
+    h = _job_harness(tmp_path, jev, None)
+    assert h.client.get("/inherent/notices").json()["hold"] is None
+    assert h.client.get("/inherent/moment").status_code == 404  # the harness wires job mail only

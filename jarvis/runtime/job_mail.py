@@ -502,17 +502,19 @@ class JobMail:
         as a silent card, so a disconnect between two polls cannot leak a cue.
         """
         private = bool(self.output()["private"])
-        if self._moment_hold() is not None:
+        # ``hold`` (ADR 0163) tells the client to hold its own cards: ``call``, ``away`` or None.
+        hold = None if self.moment is None else self.moment.client_hold()
+        if hold is not None:
             # In a call or away: every alert stays pending, so none is shown or marked shown, and
             # when it ends they come back as one summary (several waited) or one card.
-            return {"notices": [], "audio_private": private}
+            return {"notices": [], "audio_private": private, "hold": hold}
         shown = ledger.alerts_for_client(self._db, self.quiet(), self.now())
         if not private:
             for notice in shown:
                 for one in (notice, *notice.get("items", [])):
                     if one["level"] in ledger.SOUNDING:
                         one["level"] = "card"
-        return {"notices": shown, "audio_private": private}
+        return {"notices": shown, "audio_private": private, "hold": None}
 
     def act(self, notice_id: str, action: str, reaction: str | None) -> None:
         """``POST /inherent/notices/{id}``: ``seen``, or feedback (``dismissed`` is feedback too).

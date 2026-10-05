@@ -95,6 +95,7 @@ if TYPE_CHECKING:
     from jarvis.runtime.dashboard import MailDrafts
     from jarvis.runtime.home import Home
     from jarvis.runtime.job_mail import JobMail
+    from jarvis.runtime.moment import Moment
     from jarvis.runtime.settings import Settings
     from jarvis.runtime.work_state import WorkStateService
     from jarvis.shared.realtime import PresentationIntent
@@ -4652,6 +4653,11 @@ def _job_mail_deps(job_mail: JobMail | None) -> dict[str, Any]:
     }
 
 
+async def _moment_hold(moment: Moment) -> dict[str, Any]:
+    """``GET /inherent/moment`` (ADR 0163): ``{hold}``, one read of TimeSink off the loop thread."""
+    return {"hold": await asyncio.to_thread(moment.client_hold)}
+
+
 async def _card_act(cards: CardFeedback, card_id: str, body: dict[str, Any]) -> None:
     """``POST /inherent/cards/{id}`` (ADR 0160): one snapshot or reaction, off the loop thread."""
     await asyncio.to_thread(cards.act, card_id, body)
@@ -6185,6 +6191,9 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             focus_set=None if runtime.focus is None else runtime.focus.set,
             **_draft_deps(runtime, mail_home),
             **_job_mail_deps(runtime.job_mail),
+            moment_read=(
+                None if runtime.moment is None else functools.partial(_moment_hold, runtime.moment)
+            ),
             card_act=(
                 None if window_memory is None
                 else functools.partial(
