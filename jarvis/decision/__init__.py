@@ -73,6 +73,7 @@ from jarvis.decision.packet import (
     assemble_packet,
     format_pending_clarification_note,
     format_pending_confirmation_note,
+    read_state,
 )
 from jarvis.decision.policy import EffectivePolicy, effective_policy, surface_for
 from jarvis.decision.pre_route import SPOKEN_CHANNELS
@@ -120,7 +121,6 @@ from jarvis.state.authorized_dispatch_outbox import (
 )
 from jarvis.state.cost_accounting import record_run_cost_once
 from jarvis.state.event_log import emit_event, iter_events_for_turn, iter_events_of_types
-from jarvis.state.projections import make_snapshot
 from jarvis.state.stream_emission import committed_text_prefix
 from jarvis.state.turn_overlap import TurnInFlight, turns_in_flight, words_since
 
@@ -130,6 +130,7 @@ if TYPE_CHECKING:
     from jarvis.decision.confirm_grammar import ConfirmGrammarTable
     from jarvis.decision.llm import ChatResult, LLMClient
     from jarvis.decision.llm_stream import LLMStreamHandle
+    from jarvis.decision.packet import SnapshotReader
     from jarvis.decision.pre_route import RoutineStreamRoute, StreamCorrection
     from jarvis.decision.stream_sentences import SemanticCandidate
     from jarvis.decision.tier0 import Tier0Hit, Tier0Table
@@ -137,6 +138,7 @@ if TYPE_CHECKING:
     from jarvis.shared.lang import Language
     from jarvis.state.committed_event_bus import CommittedEventBus
     from jarvis.state.conversation import PresentationRecord
+    from jarvis.state.decision_snapshot import DecisionStateSnapshot
     from jarvis.state.projections import PendingConfirmationSlot
 
 LOGGER = logging.getLogger(__name__)
@@ -672,6 +674,9 @@ class DecideContext:
     # ADR 0139 (``realtime.jev_oneshot``): the voice line's one request, already in flight
     # when the turn starts. None (the default) asks the instant question on its own.
     oneshot: JevOneShot | None = None
+    # ADR 0164: how this turn reads the decision snapshot. The composition root passes
+    # a reader that folds only the events since its last read; None folds the whole log.
+    read_snapshot: SnapshotReader | None = None
 
 
 @dataclass(frozen=True)
@@ -1155,7 +1160,7 @@ def decide(trigger: Event, ctx: DecideContext) -> DecideResult:
         Frozen :class:`DecideResult`.
     """
     scratch = _Scratch(lang=reply_language(trigger.payload.get("transcript"), ctx.reply_language))
-    packet = assemble_packet(trigger, ctx.conn)
+    packet = assemble_packet(trigger, ctx.conn, ctx.read_snapshot)
     policy = effective_policy(_allowed_tool_surface(ctx.tool_registry))
 
     # ``utterance.received`` is the voice-surface twin of
@@ -1562,7 +1567,7 @@ def _run_tool_use_loop(
 
             # Refresh the packet so the next LLM call sees the log as the
             # tool dispatches left it.
-            packet = assemble_packet(packet.trigger_event, ctx.conn)
+            packet = assemble_packet(packet.trigger_event, ctx.conn, ctx.read_snapshot)
             _add_reply_language_note(messages, language_line)
             late_noted = late_noted or _add_late_answer_note(messages, packet, ctx)
             continue
@@ -2211,7 +2216,8 @@ def _handle_result_observed(
         )
     # Ask the LLM to compose a final response now that the result is on
     # the trace.
-    return _run_tool_use_loop(assemble_packet(trigger, ctx.conn), policy, ctx, scratch)
+    packet = assemble_packet(trigger, ctx.conn, ctx.read_snapshot)
+    return _run_tool_use_loop(packet, policy, ctx, scratch)
 
 
 # --- action.timeout_assumed / action.failed branch -------------------------
@@ -2836,7 +2842,7 @@ def _run_spoken_stream(  # noqa: C901 - one request loop: calls, one continuatio
             ending = _turn_ending_draft(scratch, reply.text)
             if ending is not None:
                 return _finish_spoken(packet, ctx, route, speaker, scratch, draft=ending)
-            packet = assemble_packet(packet.trigger_event, ctx.conn)
+            packet = assemble_packet(packet.trigger_event, ctx.conn, ctx.read_snapshot)
             _add_reply_language_note(messages, language_line)
             late_noted = late_noted or _add_late_answer_note(messages, packet, ctx)
             continue
@@ -3695,7 +3701,7 @@ def _revise_confirmation(
         source_event_id=_latest_event_uid_of_type(ctx.conn, event_type="confirmation.requested"),
         correlation=correlation,
     )
-    revised = make_snapshot(ctx.conn).pending_confirmations.slot
+    revised = _current_state(ctx).projections.pending_confirmations.slot
     return revised if revised is not None else slot
 
 
@@ -3881,7 +3887,7 @@ def _handle_confirmation_accepted(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR
     # contract #2), so the gate needs a projection that has already seen
     # THIS turn's acceptance. Re-fold fresh off the log — the event is
     # already durable; only the caller's cached VIEW of it needs a refresh.
-    pending_confirmations = make_snapshot(ctx.conn).pending_confirmations
+    pending_confirmations = _current_state(ctx).projections.pending_confirmations
     gate = pre_action_gate(
         action_request,
         policy,
@@ -4029,6 +4035,11 @@ def _find_registered_tool_def(
         if tool_def.name == name:
             return tool_def
     return None
+
+
+def _current_state(ctx: DecideContext) -> DecisionStateSnapshot:
+    """The log as it stands now, through this turn's snapshot reader."""
+    return read_state(ctx.conn, ctx.read_snapshot)
 
 
 def _allowed_tool_surface(

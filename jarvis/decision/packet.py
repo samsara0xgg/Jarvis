@@ -5,10 +5,9 @@ and spec §3.4.x.
 
 The Situation Packet bundles the trigger event, the most recent trace
 window, and (ADR-0009 D6) the Status Board for the L3 decision pipeline
-(Intent Router / Gates). Reading projections from disk on every L3
-invocation is fine Day-1 — the trace is short, and rebuilding per
-invocation is exactly what makes the Status Board's freshness automatic:
-there is no cache to invalidate.
+(Intent Router / Gates). Every L3 invocation reads the log again, so the
+Status Board's freshness is automatic; the read folds only the events since
+the reader's last one (ADR 0164), never a stale view.
 
 Layer rules: stdlib + ``jarvis.shared`` + ``jarvis.state``. No imports
 of sibling layers (``jarvis.execution`` / ``jarvis.surface`` /
@@ -27,10 +26,12 @@ from jarvis.state.decision_snapshot import read_decision_snapshot
 
 if TYPE_CHECKING:
     import sqlite3
+    from collections.abc import Callable
 
     from jarvis.shared import Event
     from jarvis.state.authorization_snapshot import AuthorizationSnapshot
     from jarvis.state.conversation import ConversationHistory
+    from jarvis.state.decision_snapshot import DecisionStateSnapshot
     from jarvis.state.projections import (
         ActionAdmissions,
         PendingClarification,
@@ -89,6 +90,17 @@ class SituationPacket:
 
 # --- assemble_packet --------------------------------------------------------
 
+type SnapshotReader = Callable[[sqlite3.Connection], DecisionStateSnapshot]
+"""How a turn reads the decision snapshot (ADR 0164): the composition root's reader
+folds only the events since its last read; ``None`` everywhere means the whole log."""
+
+
+def read_state(
+    conn: sqlite3.Connection, reader: SnapshotReader | None = None,
+) -> DecisionStateSnapshot:
+    """One decision snapshot, through the turn's reader when it has one."""
+    return (reader or read_decision_snapshot)(conn)
+
 
 def _extract_correlation(trigger: Event, key: str) -> str | None:
     """Return ``trigger.correlation[key]`` or ``trigger.payload[key]`` if str."""
@@ -102,7 +114,11 @@ def _extract_correlation(trigger: Event, key: str) -> str | None:
     return None
 
 
-def assemble_packet(trigger: Event, conn: sqlite3.Connection) -> SituationPacket:
+def assemble_packet(
+    trigger: Event,
+    conn: sqlite3.Connection,
+    read_snapshot: SnapshotReader | None = None,
+) -> SituationPacket:
     """Build a :class:`SituationPacket` from the live event log.
 
     Reads the Event Log and confirmation/dispatch operational tables under one
@@ -115,12 +131,14 @@ def assemble_packet(trigger: Event, conn: sqlite3.Connection) -> SituationPacket
             packet so downstream callers can inspect its payload
             without re-querying.
         conn: Open Event Log connection.
+        read_snapshot: The turn's snapshot reader, or ``None`` to fold the
+            whole log (ADR 0164).
 
     Returns:
         Frozen :class:`SituationPacket` ready for the Intent Router,
         Effective Policy resolver, and Gates.
     """
-    state = read_decision_snapshot(conn)
+    state = read_state(conn, read_snapshot)
     projections = state.projections
 
     return SituationPacket(
@@ -233,6 +251,7 @@ def format_pending_clarification_note(packet: SituationPacket) -> str | None:
 
 __all__ = [
     "SituationPacket",
+    "SnapshotReader",
     "assemble_packet",
     "format_pending_clarification_note",
     "format_pending_confirmation_note",
