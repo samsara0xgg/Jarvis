@@ -25,11 +25,11 @@ from tests.integration.test_wave1_concurrency_safety import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Mapping
     from pathlib import Path
 
     from jarvis.shared import Event
-    from jarvis.state.authorization_snapshot import AuthorizationSnapshot
+    from jarvis.state.authorization_snapshot import AuthorizationFacts, AuthorizationSnapshot
 
 
 def _consume(
@@ -210,13 +210,13 @@ def test_packet_event_cursor_and_operational_tables_share_one_read_view(
         consumed = False
 
         def consume_between_reads(
-            conn: sqlite3.Connection, events: Sequence[Event]
+            conn: sqlite3.Connection, facts: AuthorizationFacts
         ) -> AuthorizationSnapshot:
             nonlocal consumed
             if not consumed:
                 _consume(writer, accepted, frozen)
                 consumed = True
-            return original(conn, events)
+            return original(conn, facts)
 
         monkeypatch.setattr(decision_snapshot, "read_authorization_snapshot", consume_between_reads)
         before = read_decision_snapshot(reader)

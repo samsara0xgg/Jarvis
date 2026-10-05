@@ -8,11 +8,12 @@ measurement or proof that the human attended to the sound.
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Mapping
 
     from jarvis.shared import Event
 
@@ -213,12 +214,53 @@ def _fold_output(response: _Response, event: Event) -> None:  # noqa: C901 - clo
         )
 
 
+_INPUT_TYPES = frozenset({"utterance.received", "surface.user_intent"})
+
+
+class RefoldRequired(Exception):  # noqa: N818 - a control signal between L2 layers, not an error
+    """An incremental fold met a shape only a whole-log fold orders correctly."""
+
+
+def _build_history(
+    retained: Mapping[str, Event],
+    responses_by_turn: Mapping[str, Iterable[_Response]],
+    *,
+    truncated: bool,
+    consistent: bool,
+) -> ConversationHistory:
+    turns = tuple(
+        ConversationTurn(
+            turn_id=turn_id,
+            user_text=str(event.payload.get("transcript", "")),
+            input_event_uid=event.event_uid,
+            input_channel=str(event.payload.get("channel", "unknown")),
+            responses=tuple(r.freeze() for r in responses_by_turn.get(turn_id, ())),
+        )
+        for turn_id, event in retained.items()
+    )
+    return ConversationHistory(
+        turns=turns,
+        truncated=truncated or any(record.truncated for turn in turns for record in turn.responses),
+        consistent=consistent
+        and all(record.consistent for turn in turns for record in turn.responses),
+    )
+
+
+def _response_id(event: Event, turn_id: str) -> str:
+    response_id = event.payload.get("response_id")
+    return response_id if isinstance(response_id, str) and response_id else "legacy:" + turn_id
+
+
 def fold_conversation_history(  # noqa: C901 - bounded two-pass input/output fold
     events: Iterable[Event],
     *,
     max_turns: int = 20,
 ) -> ConversationHistory:
-    """Fold the same materialized Event Log used by the other packet projections."""
+    """Fold the same materialized Event Log used by the other packet projections.
+
+    The whole-log form: it sees every input before it folds any output, so it
+    is the reference :class:`ConversationFold` must equal.
+    """
     if max_turns < 1:
         message = "conversation history requires a positive turn bound"
         raise ValueError(message)
@@ -230,7 +272,7 @@ def fold_conversation_history(  # noqa: C901 - bounded two-pass input/output fol
         turn_id = event.payload.get("turn_id")
         if not isinstance(turn_id, str) or not turn_id:
             continue
-        if event.type in {"utterance.received", "surface.user_intent"}:
+        if event.type in _INPUT_TYPES:
             if turn_id in inputs and inputs[turn_id].event_uid != event.event_uid:
                 consistent = False
             inputs.setdefault(turn_id, event)
@@ -245,9 +287,7 @@ def fold_conversation_history(  # noqa: C901 - bounded two-pass input/output fol
             or event.type not in _OUTPUT_TYPES
         ):
             continue
-        response_id = event.payload.get("response_id")
-        if not isinstance(response_id, str) or not response_id:
-            response_id = "legacy:" + turn_id
+        response_id = _response_id(event, turn_id)
         if response_id not in responses:
             if per_turn_counts.get(turn_id, 0) >= MAX_RESPONSES_PER_TURN:
                 truncated = True
@@ -256,22 +296,121 @@ def fold_conversation_history(  # noqa: C901 - bounded two-pass input/output fol
             per_turn_counts[turn_id] = per_turn_counts.get(turn_id, 0) + 1
         response = responses[response_id]
         _fold_output(response, event)
-    grouped: dict[str, list[PresentationRecord]] = {}
+    grouped: dict[str, list[_Response]] = {}
     for response in responses.values():
-        grouped.setdefault(response.turn_id, []).append(response.freeze())
-    turns = tuple(
-        ConversationTurn(
-            turn_id=turn_id,
-            user_text=str(event.payload.get("transcript", "")),
-            input_event_uid=event.event_uid,
-            input_channel=str(event.payload.get("channel", "unknown")),
-            responses=tuple(grouped.get(turn_id, ())),
+        grouped.setdefault(response.turn_id, []).append(response)
+    return _build_history(retained, grouped, truncated=truncated, consistent=consistent)
+
+
+class ConversationFold:
+    """The same history, absorbing one event at a time (state is never mutated once shared).
+
+    :func:`fold_conversation_history` reads every input before any output; this
+    sees them in log order. They agree when each turn's input precedes its
+    outputs and no response id spans two turns, which the daemon's write path
+    keeps true. A log that breaks either raises :class:`RefoldRequired` rather
+    than guessing: an output whose turn has no input yet is remembered by turn
+    id only, and an input arriving for such a turn needs the whole log again.
+    """
+
+    __slots__ = (
+        "_capped",
+        "_consistent",
+        "_dropped",
+        "_inputs",
+        "_max_turns",
+        "_owned",
+        "_owner",
+        "_retained",
+        "_turns",
+    )
+
+    def __init__(self, max_turns: int = 20) -> None:
+        """The history of an empty log."""
+        if max_turns < 1:
+            message = "conversation history requires a positive turn bound"
+            raise ValueError(message)
+        self._max_turns = max_turns
+        self._inputs: dict[str, str] = {}  # every turn id ever seen -> its first input uid
+        self._retained: dict[str, Event] = {}  # the last ``max_turns`` inputs, oldest first
+        self._turns: dict[str, dict[str, _Response]] = {}  # retained turn -> its responses
+        self._owner: dict[str, str] = {}  # retained response id -> its turn
+        self._capped: set[str] = set()  # retained turns that hit MAX_RESPONSES_PER_TURN
+        self._dropped: set[str] = set()  # turns whose outputs arrived with no input yet
+        self._consistent = True
+        self._owned: set[int] = set()  # responses this copy may mutate
+
+    def copy(self) -> ConversationFold:
+        """A twin that shares every response until it has to change one."""
+        twin = ConversationFold(self._max_turns)
+        twin._inputs = dict(self._inputs)
+        twin._retained = dict(self._retained)
+        twin._turns = {turn: dict(rs) for turn, rs in self._turns.items()}
+        twin._owner = dict(self._owner)
+        twin._capped = set(self._capped)
+        twin._dropped = set(self._dropped)
+        twin._consistent = self._consistent
+        return twin
+
+    def apply(self, event: Event) -> None:
+        """Absorb the next event in log order."""
+        turn_id = event.payload.get("turn_id")
+        if not isinstance(turn_id, str) or not turn_id:
+            return
+        if event.type in _INPUT_TYPES:
+            self._apply_input(turn_id, event)
+        elif event.type in _OUTPUT_TYPES:
+            self._apply_output(turn_id, event)
+
+    def _apply_input(self, turn_id: str, event: Event) -> None:
+        first = self._inputs.get(turn_id)
+        if first is not None:
+            self._consistent = self._consistent and first == event.event_uid
+            return
+        if turn_id in self._dropped:
+            raise RefoldRequired
+        self._inputs[turn_id] = event.event_uid
+        self._retained[turn_id] = event
+        if len(self._retained) > self._max_turns:
+            evicted = next(iter(self._retained))
+            del self._retained[evicted]
+            self._capped.discard(evicted)
+            for response_id in self._turns.pop(evicted, ()):
+                del self._owner[response_id]
+        self._turns[turn_id] = {}
+
+    def _apply_output(self, turn_id: str, event: Event) -> None:
+        if turn_id not in self._inputs:
+            self._dropped.add(turn_id)
+            return
+        responses = self._turns.get(turn_id)
+        if responses is None:
+            return  # an evicted turn never comes back into the window
+        response_id = _response_id(event, turn_id)
+        owner = self._owner.get(response_id)
+        if owner is None:
+            if len(responses) >= MAX_RESPONSES_PER_TURN:
+                self._capped.add(turn_id)
+                return
+            response = _Response(response_id, turn_id)
+            responses[response_id] = response
+            self._owner[response_id] = turn_id
+            self._owned.add(id(response))
+        elif owner != turn_id:
+            raise RefoldRequired
+        else:
+            response = responses[response_id]
+            if id(response) not in self._owned:
+                response = copy.deepcopy(response)
+                responses[response_id] = response
+                self._owned.add(id(response))
+        _fold_output(response, event)
+
+    def freeze(self) -> ConversationHistory:
+        """The history as :func:`fold_conversation_history` would return it."""
+        return _build_history(
+            self._retained,
+            {turn: tuple(rs.values()) for turn, rs in self._turns.items()},
+            truncated=len(self._inputs) > self._max_turns or bool(self._capped),
+            consistent=self._consistent,
         )
-        for turn_id, event in retained.items()
-    )
-    return ConversationHistory(
-        turns=turns,
-        truncated=truncated or any(record.truncated for turn in turns for record in turn.responses),
-        consistent=consistent
-        and all(record.consistent for turn in turns for record in turn.responses),
-    )

@@ -1704,6 +1704,12 @@ _SELECT_ALL_ORDERED_SQL: Final[str] = (
     "FROM events ORDER BY id ASC"
 )
 
+_SELECT_RANGE_ORDERED_SQL: Final[str] = (
+    "SELECT id, event_uid, type, schema_version, ts_epoch_ms, "
+    "payload_json, source_event_id, correlation_json "
+    "FROM events WHERE id > ? AND id <= ? ORDER BY id ASC"
+)
+
 _SELECT_BY_UID_SQL: Final[str] = (
     "SELECT id, event_uid, type, schema_version, ts_epoch_ms, "
     "payload_json, source_event_id, correlation_json "
@@ -1721,6 +1727,22 @@ def iter_events(conn: sqlite3.Connection) -> Iterator[Event]:
     cursor = conn.execute(_SELECT_ALL_ORDERED_SQL)
     for row in cursor:
         yield _row_to_event(row)
+
+
+def iter_events_after(
+    conn: sqlite3.Connection,
+    after_id: int,
+    up_to_id: int,
+) -> Iterator[tuple[int, Event]]:
+    """Yield ``(id, Event)`` for rows with ``after_id < id <= up_to_id``, in id order.
+
+    The incremental twin of :func:`iter_events`: a reader that already holds
+    a fold up to ``after_id`` decodes only the rows appended since. The
+    ``id`` is the primary key, so the scan is a range seek, not a table scan.
+    """
+    cursor = conn.execute(_SELECT_RANGE_ORDERED_SQL, (after_id, up_to_id))
+    for row in cursor:
+        yield row[0], _row_to_event(row)
 
 
 def iter_events_of_types(
@@ -1802,6 +1824,7 @@ __all__ = [
     "emit_event",
     "get_event",
     "iter_events",
+    "iter_events_after",
     "iter_events_for_turn",
     "iter_events_of_types",
     "open_event_log",

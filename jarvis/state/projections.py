@@ -37,7 +37,12 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Final, Literal
 
-from jarvis.state.conversation import ConversationHistory, fold_conversation_history
+from jarvis.state.conversation import (
+    ConversationFold,
+    ConversationHistory,
+    RefoldRequired,
+    fold_conversation_history,
+)
 from jarvis.state.event_log import iter_events
 
 if TYPE_CHECKING:
@@ -208,8 +213,8 @@ class StatusBoard:
     """Folded Status Board projection (spec §6, ADR-0009 D6).
 
     "What is true about the machine right now" as distinct from "what is
-    true about the tasks" (Task Ledger). Full-refold like every other
-    projection here; Stage-2 incrementality stays deferred.
+    true about the tasks" (Task Ledger). Folds from the whole log or from a
+    high-water mark (:class:`ProjectionFold`) with the same result.
 
     Fold sources are exactly the §6 canonical ones minus the two
     domain-availability types that Mac-only scope does not yet register
@@ -312,42 +317,63 @@ def _fold_power_transition(evt: Event) -> PowerTransition:
     )
 
 
-def _fold_status_board(events: Iterable[Event]) -> StatusBoard:
-    """Single-pass fold producing the Status Board projection.
+@dataclass
+class _BoardFoldState:
+    """Per-pass scratch for the Status Board fold."""
 
-    Open-action rule: `action.dispatched` opens an action, and any of the
-    four terminal types closes it. `action.cancelled` is one of the four —
-    an action closed by cancellation leaves the board, exactly as it
-    leaves the supervisor sweep's pending map.
-    """
-    repos: dict[str, RepoObservation] = {}
-    latest_commits: dict[str, CommitObservation] = {}
+    repos: dict[str, RepoObservation] = field(default_factory=dict)
+    latest_commits: dict[str, CommitObservation] = field(default_factory=dict)
     power_transition: PowerTransition | None = None
-    dispatched_ts_by_action: dict[str, int] = {}
+    dispatched_ts_by_action: dict[str, int] = field(default_factory=dict)
 
-    for evt in events:
+    def copy(self) -> _BoardFoldState:
+        """Independent containers; the observation records themselves are frozen."""
+        return _BoardFoldState(
+            dict(self.repos),
+            dict(self.latest_commits),
+            self.power_transition,
+            dict(self.dispatched_ts_by_action),
+        )
+
+    def fold(self, evt: Event) -> None:
+        """Open-action rule: `action.dispatched` opens an action, any terminal type closes it.
+
+        `action.cancelled` is one of the four terminals, so an action closed
+        by cancellation leaves the board exactly as it leaves the supervisor
+        sweep's pending map.
+        """
         if evt.type == "repo.state_observed":
-            _fold_repo_observation(repos, evt)
+            _fold_repo_observation(self.repos, evt)
         elif evt.type == "project.commit_seen":
-            _fold_commit_observation(latest_commits, evt)
+            _fold_commit_observation(self.latest_commits, evt)
         elif evt.type in ("mac.sleeping", "mac.awake"):
-            power_transition = _fold_power_transition(evt)
+            self.power_transition = _fold_power_transition(evt)
         elif evt.type == "action.dispatched":
-            dispatched_ts_by_action.setdefault(
+            self.dispatched_ts_by_action.setdefault(
                 str(evt.payload["action_id"]), evt.ts_epoch_ms,
             )
         elif evt.type in _STATUS_BOARD_TERMINAL_ACTION_TYPES:
-            dispatched_ts_by_action.pop(str(evt.payload["action_id"]), None)
+            self.dispatched_ts_by_action.pop(str(evt.payload["action_id"]), None)
 
-    return StatusBoard(
-        repos=repos,
-        latest_commits=latest_commits,
-        last_power_transition=power_transition,
-        open_actions=tuple(
-            OpenAction(action_id=action_id, dispatched_ts_ms=dispatched_ts)
-            for action_id, dispatched_ts in dispatched_ts_by_action.items()
-        ),
-    )
+    def freeze(self) -> StatusBoard:
+        """The board as an independent value (a later fold cannot reach into it)."""
+        return StatusBoard(
+            repos=dict(self.repos),
+            latest_commits=dict(self.latest_commits),
+            last_power_transition=self.power_transition,
+            open_actions=tuple(
+                OpenAction(action_id=action_id, dispatched_ts_ms=dispatched_ts)
+                for action_id, dispatched_ts in self.dispatched_ts_by_action.items()
+            ),
+        )
+
+
+def _fold_status_board(events: Iterable[Event]) -> StatusBoard:
+    """Single-pass fold producing the Status Board projection."""
+    state = _BoardFoldState()
+    for evt in events:
+        state.fold(evt)
+    return state.freeze()
 
 
 # --- ActionAdmissions fold (ADR-0008 D10) --------------------------------------
@@ -360,6 +386,12 @@ class _ActionFoldState:
     admissions: dict[str, ActionAdmission] = field(default_factory=dict)
     gate_uid_by_action: dict[str, str] = field(default_factory=dict)
     lease_by_action: dict[str, str] = field(default_factory=dict)
+
+    def copy(self) -> _ActionFoldState:
+        """Independent containers; the admission records themselves are frozen."""
+        return _ActionFoldState(
+            dict(self.admissions), dict(self.gate_uid_by_action), dict(self.lease_by_action),
+        )
 
     def fold(self, evt: Event) -> None:
         """Fold one event's action-lifecycle contribution, if it has one."""
@@ -375,6 +407,10 @@ class _ActionFoldState:
             )
         elif evt.type in _STATUS_BOARD_TERMINAL_ACTION_TYPES:
             self.admissions.pop(str(evt.payload["action_id"]), None)
+
+    def freeze(self) -> ActionAdmissions:
+        """The admissions as an independent value."""
+        return ActionAdmissions(by_action_id=dict(self.admissions))
 
     def _note_pre_action_pass(self, evt: Event) -> None:
         """Remember the latest passing pre-action verdict per `action_id`.
@@ -408,7 +444,7 @@ def _fold_action_admissions(events: Iterable[Event]) -> ActionAdmissions:
     state = _ActionFoldState()
     for evt in events:
         state.fold(evt)
-    return ActionAdmissions(by_action_id=state.admissions)
+    return state.freeze()
 
 
 # --- ActionAdmissions (ADR-0008 D10) -------------------------------------------
@@ -597,8 +633,15 @@ def _pending_slot_from_requested(event: Event) -> PendingConfirmationSlot | None
     )
 
 
-def _fold_pending_confirmations(events: Iterable[Event]) -> PendingConfirmations:  # noqa: C901, PLR0912 - a flat one-branch-per-event-type dispatch; merging the three id-matching terminals to satisfy the counter would hide that each has its own rule
+def _fold_pending_confirmations(  # noqa: C901, PLR0912 - a flat one-branch-per-event-type dispatch; merging the three id-matching terminals to satisfy the counter would hide that each has its own rule
+    events: Iterable[Event],
+    start: PendingConfirmations | None = None,
+) -> PendingConfirmations:
     """Single-pass fold producing the PendingConfirmations projection.
+
+    ``start`` is the projection folded from the log's earlier events: the
+    result is the same as folding all of them in one pass, because this value
+    is its own fold state.
 
     Fold rules (ADR-0012 §3 D4, decisions pinned 2026-08-26):
 
@@ -638,8 +681,9 @@ def _fold_pending_confirmations(events: Iterable[Event]) -> PendingConfirmations
     A non-`"pass"` outcome never consumes, even carrying a `lease_id` —
     a refused gate did not spend the lease.
     """
-    slot: PendingConfirmationSlot | None = None
-    consumed_lease_ids: set[str] = set()
+    start = start or PendingConfirmations()
+    slot = start.slot
+    consumed_lease_ids = set(start.consumed_lease_ids)
 
     for evt in events:
         if evt.type == "confirmation.requested":
@@ -743,9 +787,15 @@ class PendingClarification:
         return _fold_pending_clarification(events)
 
 
-def _fold_pending_clarification(events: Iterable[Event]) -> PendingClarification | None:
-    """A newer ask replaces the slot; an answer or dismissal closes it only by its own id."""
-    slot: PendingClarification | None = None
+def _fold_pending_clarification(
+    events: Iterable[Event],
+    start: PendingClarification | None = None,
+) -> PendingClarification | None:
+    """A newer ask replaces the slot; an answer or dismissal closes it only by its own id.
+
+    ``start`` is the card folded from the log's earlier events; the card is its own fold state.
+    """
+    slot = start
     for evt in events:
         if evt.type == "clarification.requested":
             fields = evt.payload.get("fields")
@@ -804,6 +854,75 @@ class ProjectionSet:
     pending_clarification: PendingClarification | None = None
 
 
+class ProjectionFold:
+    """Every projection folded up to some event, advanced by returning a new value.
+
+    The incremental twin of :func:`fold_projections`: ``empty().advance(a)
+    .advance(b)`` yields the same :class:`ProjectionSet` as folding ``a + b`` in
+    one pass, wherever the log is split. A fold is never mutated once it is
+    shared: :meth:`advance` copies the containers it will touch and shares the
+    rest, so any number of threads can hold and advance one value.
+    """
+
+    __slots__ = (
+        "_actions",
+        "_board",
+        "_clarification",
+        "_confirmations",
+        "_conversation",
+        "_size",
+        "_trace",
+    )
+
+    def __init__(self, recent_trace_size: int = _RECENT_TRACE_DEFAULT_SIZE) -> None:
+        """The projections of an empty log."""
+        if recent_trace_size < 0:
+            msg = f"max_size must be non-negative, got {recent_trace_size!r}"
+            raise ValueError(msg)
+        self._size = recent_trace_size
+        self._trace: tuple[Event, ...] = ()
+        self._board = _BoardFoldState()
+        self._actions = _ActionFoldState()
+        self._confirmations = PendingConfirmations()
+        self._clarification: PendingClarification | None = None
+        self._conversation = ConversationFold()
+
+    def advance(self, events: Iterable[Event]) -> ProjectionFold:
+        """The fold after ``events``, which must follow this fold's last event in log order.
+
+        Raises :class:`RefoldRequired` when the conversation window cannot
+        absorb them (see :class:`ConversationFold`); the caller folds the whole log.
+        """
+        fresh = tuple(events)
+        if not fresh:
+            return self
+        twin = ProjectionFold(self._size)
+        board, actions = self._board.copy(), self._actions.copy()
+        conversation = self._conversation.copy()
+        for evt in fresh:
+            board.fold(evt)
+            actions.fold(evt)
+            conversation.apply(evt)
+        twin._trace = tuple(deque((*self._trace, *fresh), maxlen=self._size))
+        twin._board = board
+        twin._actions = actions
+        twin._conversation = conversation
+        twin._confirmations = _fold_pending_confirmations(fresh, self._confirmations)
+        twin._clarification = _fold_pending_clarification(fresh, self._clarification)
+        return twin
+
+    def projections(self) -> ProjectionSet:
+        """The folded projections, as independent values."""
+        return ProjectionSet(
+            recent_trace=RecentTrace(events=self._trace, max_size=self._size),
+            status_board=self._board.freeze(),
+            pending_confirmations=self._confirmations,
+            action_admissions=self._actions.freeze(),
+            conversation_history=self._conversation.freeze(),
+            pending_clarification=self._clarification,
+        )
+
+
 def rebuild_projections(
     conn: sqlite3.Connection,
     *,
@@ -846,9 +965,9 @@ def fold_projections(
 def make_snapshot(conn: sqlite3.Connection) -> ProjectionSet:
     """L3-facing alias for `rebuild_projections` (Day-1 identical).
 
-    Stage 2 may introduce snapshot-vs-rebuild differentiation (e.g.,
-    high-water-mark caching per spec §3.3.6); Day-1 keeps the contract
-    surface simple by aliasing to a fresh fold every call.
+    The decision path no longer rebuilds per call: it advances a
+    :class:`ProjectionFold` from a high-water mark (ADR 0164). This alias is
+    the whole-log fold for callers that hold no fold.
     """
     return rebuild_projections(conn)
 
@@ -865,8 +984,10 @@ __all__ = [
     "PendingConfirmations",
     "PowerState",
     "PowerTransition",
+    "ProjectionFold",
     "ProjectionSet",
     "RecentTrace",
+    "RefoldRequired",
     "RepoObservation",
     "StatusBoard",
     "make_snapshot",

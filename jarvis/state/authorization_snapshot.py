@@ -144,66 +144,210 @@ def _read_dispatches(
     return debts, names, truncated
 
 
-def _answers(
-    events: Sequence[Event],
-    requests: Mapping[str, Event],
-    errors: list[str],
-) -> dict[str, Event]:
-    answers: dict[str, Event] = {}
-    for event in events:
-        if event.type not in {"confirmation.accepted", "confirmation.rejected"}:
-            continue
-        requested = requests.get(event.source_event_id or "")
-        if requested is None or requested.payload.get("confirmation_id") != event.payload.get(
-            "confirmation_id"
-        ):
-            errors.append("unbound_confirmation_answer:" + event.event_uid)
-            continue
-        prior = answers.get(requested.event_uid)
-        if prior is not None and prior.event_uid != event.event_uid:
-            errors.append("conflicting_confirmation_answers:" + requested.event_uid)
-        else:
-            answers[requested.event_uid] = event
-    return answers
+@dataclass(frozen=True)
+class _Request:
+    """What the snapshot keeps of one `confirmation.requested`, decoded once."""
+
+    event_uid: str
+    confirmation_id: str
+    expires_at_ms: int | None
+    turn_id: str | None
+    frozen_snapshot_json: str
+    malformed: bool
 
 
-def _confirmation_fact(
-    requested: Event,
-    *,
-    answer: Event | None,
-    dispatch: DispatchDebt | None,
-    latest_request_uid: str,
-    errors: list[str],
-) -> ConfirmationFact:
-    payload = requested.payload
+@dataclass(frozen=True)
+class _Answer:
+    event_uid: str
+    accepted: bool
+    turn_id: str | None
+
+
+def _request_record(event: Event) -> _Request:
+    payload = event.payload
     confirmation_id = payload.get("confirmation_id")
     snapshot = payload.get("action_snapshot")
     expiry = payload.get("expires_at_ms")
-    if (
+    malformed = (
         not isinstance(confirmation_id, str)
         or not confirmation_id
         or not isinstance(snapshot, dict)
         or not isinstance(payload.get("template_line"), str)
         or type(expiry) is not int
-    ):
+    )
+    return _Request(
+        event_uid=event.event_uid,
+        confirmation_id=confirmation_id if isinstance(confirmation_id, str) else "unknown",
+        expires_at_ms=expiry if type(expiry) is int else None,
+        turn_id=_turn(event),
+        frozen_snapshot_json=json.dumps(snapshot, sort_keys=True, separators=(",", ":")),
+        malformed=malformed,
+    )
+
+
+class AuthorizationFacts:
+    """What the Event Log says about confirmations and dispatches, folded up to some event.
+
+    The event-derived half of :class:`AuthorizationSnapshot`; the operational
+    tables are the other half and are read afresh with each snapshot. Folding
+    is incremental and a value is never mutated once shared (:meth:`advance`
+    copies what it touches), so threads can hold and advance one value.
+
+    An answer binds to a request that precedes it: `emit_event` refuses a
+    `source_event_id` that is not already in the log, so a log has no other shape.
+    """
+
+    __slots__ = (
+        "_accepted",
+        "_answers",
+        "_by_source",
+        "_confirmation_ids",
+        "_dispatched",
+        "_errors",
+        "_known",
+        "_leased_gates",
+        "_request_count",
+        "_requests",
+    )
+
+    def __init__(self) -> None:
+        """The facts of an empty log."""
+        self._known: dict[str, object] = {}  # request uid -> its raw confirmation_id
+        self._requests: tuple[_Request, ...] = ()  # the last _MAX_FACTS, oldest first
+        self._request_count = 0
+        self._answers: dict[str, _Answer] = {}  # request uid -> its first answer
+        self._accepted: frozenset[str] = frozenset()  # uids of the accepted answers
+        self._confirmation_ids: frozenset[str] = frozenset()
+        self._errors: frozenset[str] = frozenset()
+        self._dispatched: dict[str, tuple[int, str | None]] = {}  # action id -> count, first source
+        self._by_source: dict[str, tuple[tuple[str, object], ...]] = {}  # gate uid -> (uid, action)
+        self._leased_gates: tuple[Event, ...] = ()
+
+    def advance(self, events: Sequence[Event]) -> AuthorizationFacts:
+        """The facts after ``events``, which must follow this value's last event in log order."""
+        if not events:
+            return self
+        twin = AuthorizationFacts()
+        twin._known = dict(self._known)
+        twin._answers = dict(self._answers)
+        twin._dispatched = dict(self._dispatched)
+        twin._by_source = dict(self._by_source)
+        twin._requests = self._requests
+        twin._request_count = self._request_count
+        twin._accepted = self._accepted
+        twin._confirmation_ids = self._confirmation_ids
+        twin._errors = self._errors
+        twin._leased_gates = self._leased_gates
+        requests: list[_Request] = []
+        errors: list[str] = []
+        accepted: list[str] = []
+        leased: list[Event] = []
+        for event in events:
+            if event.type == "confirmation.requested":
+                requests.append(_request_record(event))
+                twin._known[event.event_uid] = event.payload.get("confirmation_id")
+            elif event.type in {"confirmation.accepted", "confirmation.rejected"}:
+                twin._bind_answer(event, errors, accepted)
+            elif event.type == "action.dispatched":
+                twin._note_dispatch(event)
+            elif (
+                event.type == "gate.evaluated"
+                and event.payload.get("gate") == "pre_action"
+                and event.payload.get("outcome") == "pass"
+                and event.payload.get("lease_id")
+            ):
+                leased.append(event)
+        if requests:
+            twin._requests = (*self._requests, *requests)[-_MAX_FACTS:]
+            twin._request_count = self._request_count + len(requests)
+            twin._confirmation_ids = self._confirmation_ids | {
+                str(twin._known[r.event_uid]) for r in requests
+            }
+        twin._errors = self._errors | frozenset(errors)
+        twin._accepted = self._accepted | frozenset(accepted)
+        twin._leased_gates = (*self._leased_gates, *leased)
+        return twin
+
+    def _bind_answer(self, event: Event, errors: list[str], accepted: list[str]) -> None:
+        source = event.source_event_id or ""
+        if source not in self._known or self._known[source] != event.payload.get(
+            "confirmation_id"
+        ):
+            errors.append("unbound_confirmation_answer:" + event.event_uid)
+            return
+        prior = self._answers.get(source)
+        if prior is not None and prior.event_uid != event.event_uid:
+            errors.append("conflicting_confirmation_answers:" + source)
+            return
+        is_accepted = event.type == "confirmation.accepted"
+        self._answers[source] = _Answer(event.event_uid, is_accepted, _turn(event))
+        if is_accepted:
+            accepted.append(event.event_uid)
+
+    def _note_dispatch(self, event: Event) -> None:
+        action_id = event.payload.get("action_id")
+        if isinstance(action_id, str):
+            count, first = self._dispatched.get(action_id, (0, event.source_event_id))
+            self._dispatched[action_id] = (count + 1, first)
+        if event.source_event_id:
+            self._by_source[event.source_event_id] = (
+                *self._by_source.get(event.source_event_id, ()),
+                (event.event_uid, action_id),
+            )
+
+    def _validate_dispatch_events(
+        self,
+        debts: Mapping[str, DispatchDebt],
+        errors: list[str],
+    ) -> None:
+        by_gate = {debt.gate_event_uid: debt for debt in debts.values()}
+        for gate_uid, debt in by_gate.items():
+            errors.extend(
+                "foreign_action_uses_authorized_gate:" + uid
+                for uid, action_id in self._by_source.get(gate_uid, ())
+                if action_id != debt.action_id
+            )
+        errors.extend(
+            "unbacked_leased_gate:" + event.event_uid
+            for event in self._leased_gates
+            if not _validate_leased_gate(event, debts.get(event.source_event_id or ""))
+        )
+        for debt in debts.values():
+            count, first = self._dispatched.get(debt.action_id, (0, None))
+            if debt.state == "pending":
+                if count:
+                    errors.append("pending_outbox_already_dispatched:" + debt.dispatch_id)
+            elif count != 1 or first != debt.gate_event_uid:
+                errors.append("dispatched_outbox_admission_mismatch:" + debt.dispatch_id)
+
+
+def _confirmation_fact(
+    requested: _Request,
+    *,
+    answer: _Answer | None,
+    dispatch: DispatchDebt | None,
+    latest_request_uid: str,
+    errors: list[str],
+) -> ConfirmationFact:
+    if requested.malformed:
         errors.append("malformed_confirmation_request:" + requested.event_uid)
     state: Literal["pending", "superseded", "rejected", "accepted_unconsumed", "consumed"]
     if answer is None:
         state = "pending" if requested.event_uid == latest_request_uid else "superseded"
-    elif answer.type == "confirmation.rejected":
+    elif not answer.accepted:
         state = "rejected"
     else:
         state = "accepted_unconsumed" if dispatch is None else "consumed"
     return ConfirmationFact(
-        confirmation_id=confirmation_id if isinstance(confirmation_id, str) else "unknown",
+        confirmation_id=requested.confirmation_id,
         request_event_uid=requested.event_uid,
         answer_event_uid=None if answer is None else answer.event_uid,
         state=state,
         superseded=requested.event_uid != latest_request_uid,
-        expires_at_ms=expiry if type(expiry) is int else None,
-        request_turn_id=_turn(requested),
-        answer_turn_id=_turn(answer),
-        frozen_snapshot_json=json.dumps(snapshot, sort_keys=True, separators=(",", ":")),
+        expires_at_ms=requested.expires_at_ms,
+        request_turn_id=requested.turn_id,
+        answer_turn_id=None if answer is None else answer.turn_id,
+        frozen_snapshot_json=requested.frozen_snapshot_json,
         dispatch=dispatch,
     )
 
@@ -220,43 +364,11 @@ def _validate_leased_gate(event: Event, debt: DispatchDebt | None) -> bool:
     return all(event.payload.get(key) == value for key, value in expected.items())
 
 
-def _validate_dispatch_events(
-    debts: Mapping[str, DispatchDebt],
-    events: Sequence[Event],
-    errors: list[str],
-) -> None:
-    by_action: dict[str, list[Event]] = {}
-    by_gate = {debt.gate_event_uid: debt for debt in debts.values()}
-    for event in events:
-        if event.type == "action.dispatched":
-            action_id = event.payload.get("action_id")
-            if isinstance(action_id, str):
-                by_action.setdefault(action_id, []).append(event)
-            source_debt = by_gate.get(event.source_event_id or "")
-            if source_debt is not None and action_id != source_debt.action_id:
-                errors.append("foreign_action_uses_authorized_gate:" + event.event_uid)
-        if (
-            event.type == "gate.evaluated"
-            and event.payload.get("gate") == "pre_action"
-            and event.payload.get("outcome") == "pass"
-            and event.payload.get("lease_id")
-            and not _validate_leased_gate(event, debts.get(event.source_event_id or ""))
-        ):
-            errors.append("unbacked_leased_gate:" + event.event_uid)
-    for debt in debts.values():
-        admissions = by_action.get(debt.action_id, [])
-        if debt.state == "pending":
-            if admissions:
-                errors.append("pending_outbox_already_dispatched:" + debt.dispatch_id)
-        elif len(admissions) != 1 or admissions[0].source_event_id != debt.gate_event_uid:
-            errors.append("dispatched_outbox_admission_mismatch:" + debt.dispatch_id)
-
-
 def read_authorization_snapshot(
     conn: sqlite3.Connection,
-    events: Sequence[Event],
+    facts: AuthorizationFacts,
 ) -> AuthorizationSnapshot:
-    """Read operational tables under the transaction that produced ``events``."""
+    """Read operational tables under the transaction that produced ``facts``."""
     if not conn.in_transaction:
         message = "authorization snapshot requires a pinned read transaction"
         raise ValueError(message)
@@ -266,38 +378,31 @@ def read_authorization_snapshot(
     except sqlite3.DatabaseError:
         debts, names, truncated = {}, (), False
         errors.append("unreadable_authorization_schema")
-    requests = {
-        event.event_uid: event for event in events if event.type == "confirmation.requested"
-    }
-    answers = _answers(events, requests, errors)
-    if not names and any(answer.type == "confirmation.accepted" for answer in answers.values()):
+    errors.extend(facts._errors)  # noqa: SLF001 - the event-derived half of this snapshot
+    if not names and facts._accepted:  # noqa: SLF001
         errors.append("accepted_confirmation_without_authorization_schema")
-    _validate_dispatch_events(debts, events, errors)
-    accepted_sources = {
-        answer.event_uid for answer in answers.values() if answer.type == "confirmation.accepted"
-    }
-    if any(source not in accepted_sources for source in debts):
+    facts._validate_dispatch_events(debts, errors)  # noqa: SLF001
+    if any(source not in facts._accepted for source in debts):  # noqa: SLF001
         errors.append("outbox_acceptance_outside_event_snapshot")
-    confirmation_ids = [event.payload.get("confirmation_id") for event in requests.values()]
-    if len({str(value) for value in confirmation_ids}) != len(confirmation_ids):
+    if len(facts._confirmation_ids) != facts._request_count:  # noqa: SLF001
         errors.append("duplicate_confirmation_identity")
-    latest_uid = next(reversed(requests), "")
-    # Scan all answers before bounding. Omitted facts always make the view incomplete.
+    latest_uid = facts._requests[-1].event_uid if facts._requests else ""  # noqa: SLF001
+    # Omitted facts always make the view incomplete.
     records = tuple(
         _confirmation_fact(
             requested,
-            answer=answers.get(requested.event_uid),
-            dispatch=debts.get(answers[requested.event_uid].event_uid)
-            if requested.event_uid in answers
+            answer=facts._answers.get(requested.event_uid),  # noqa: SLF001
+            dispatch=debts.get(facts._answers[requested.event_uid].event_uid)  # noqa: SLF001
+            if requested.event_uid in facts._answers  # noqa: SLF001
             else None,
             latest_request_uid=latest_uid,
             errors=errors,
         )
-        for requested in tuple(requests.values())[-_MAX_FACTS:]
+        for requested in facts._requests  # noqa: SLF001
     )
     return AuthorizationSnapshot(
         confirmations=records,
         errors=tuple(sorted(set(errors))),
         tables_present=names,
-        truncated=truncated or len(requests) > _MAX_FACTS,
+        truncated=truncated or facts._request_count > _MAX_FACTS,  # noqa: SLF001
     )
