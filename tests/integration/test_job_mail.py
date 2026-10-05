@@ -278,6 +278,7 @@ class _Gmail:
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.search_failures = 0
         self.search_error = "backend down"
+        self.full_failures: set[str] = set()
 
     def call(self, server: str, tool: str, args: Mapping[str, Any]) -> dict[str, Any]:
         assert server == "gmail"
@@ -289,6 +290,8 @@ class _Gmail:
             hits = [{"id": one["id"], "threadId": one["threadId"]} for one in self.mails]
             return {"text": json.dumps({"messages": hits})}
         assert tool == "gmail_get", f"job mail must only read: {tool}"
+        if args["format"] == "full" and args["messageId"] in self.full_failures:
+            return {"text": json.dumps({"error": "message body unavailable"})}
         letter = next(one for one in self.mails if one["id"] == args["messageId"])
         body = letter["body"] if args["format"] == "full" else ""
         return {"text": json.dumps({**letter, "snippet": "", "body": body})}
@@ -298,6 +301,13 @@ class _Gmail:
 
     def full_reads(self) -> set[str]:
         return {a["messageId"] for t, a in self.calls if t == "gmail_get" and a["format"] == "full"}
+
+    def full_read_count(self, message_id: str) -> int:
+        return sum(
+            1
+            for t, a in self.calls
+            if t == "gmail_get" and a["format"] == "full" and a["messageId"] == message_id
+        )
 
 
 class _Connections:
@@ -492,21 +502,10 @@ def test_what_jev_is_sent_and_what_is_read_from_gmail(tmp_path: Path, jev: _Jev)
     assert h.gmail.tools() == {"gmail_search", "gmail_get"}
     search = next(args for tool, args in h.gmail.calls if tool == "gmail_search")
     assert search == {"query": "newer_than:14d -in:sent -in:drafts", "maxResults": 100}
-    # The newsletter and the personal mail were cleared by the header alone.
-    assert h.gmail.full_reads() == {
-        f"m-{one}"
-        for one in (
-            "receipt",
-            "interview",
-            "reject",
-            "offer",
-            "digest",
-            "followup",
-            "promo",
-            "fair",
-            "old",
-        )
-    }
+    # Every scanned mail is read in full once for the local snapshot (ADR 0162), the newsletter
+    # and the personal mail that the header cleared included, and never read twice.
+    assert h.gmail.full_reads() == {one["id"] for one in MAILS}
+    assert all(h.gmail.full_read_count(one["id"]) == 1 for one in MAILS)
 
     headers = jev.asked("job")
     assert len(headers) == len(MAILS)
@@ -515,6 +514,11 @@ def test_what_jev_is_sent_and_what_is_read_from_gmail(tmp_path: Path, jev: _Jev)
         assert request["model"] == "typesafe/jev-1.13"
         assert request["provider"] == {"zdr": True}
         assert "@" not in request["state"].split("\n\n", 1)[0]  # a domain, never an address
+    # The header question sees name, domain and subject only: no address, no body (ADR 0162).
+    for request in headers:
+        assert "@" not in request["state"]
+        assert "\n\n" not in request["state"]
+        assert not any(one["body"] in request["state"] for one in MAILS)
     cgi = next(r for r in headers if "applying to CGI" in r["state"])
     assert (
         cgi["state"] == "From: CGI Careers\nDomain: cgi.com\nSubject: Thank you for applying to CGI"
@@ -1022,12 +1026,9 @@ def test_local_rules_keep_linkedin_noise_and_account_notices_off_the_cards(
         "m-account": "job",
         "m-inmail": "job",
     }
-    assert h.gmail.full_reads() == {
-        "m-alert",
-        "m-hiring",
-        "m-account",
-        "m-inmail",
-    }  # no social body
+    # Every mail is read for the local snapshot, but Jev is asked about no social body.
+    assert h.gmail.full_reads() == {one["id"] for one in LINKEDIN}
+    assert len(jev.asked("kind")) == 4
     held = {one["subject"] for one in h.client.get("/inherent/jobs").json()["skipped"]}
     assert held == {"Byron Kontou recently posted", "Software Engineer: RBC hired near you"}
     assert dict(h.sql("SELECT message_id, kind FROM job_mail")) == {
@@ -1516,9 +1517,7 @@ def test_the_audit_list_shows_the_newest_held_back_mail_at_any_probability(
     assert stamps == sorted(stamps, reverse=True)
 
 
-def test_every_decision_keeps_the_snapshot_jev_saw_and_never_an_address(
-    tmp_path: Path, jev: _Jev
-) -> None:
+def test_every_decision_keeps_the_snapshot_jev_saw(tmp_path: Path, jev: _Jev) -> None:
     """A job, a not-job and an error each leave header and body snapshots in memory.db."""
     h = _harness(tmp_path, jev)
     h.job.poll_once()
@@ -1553,11 +1552,11 @@ def test_every_decision_keeps_the_snapshot_jev_saw_and_never_an_address(
     assert json.loads(offer[6])["offer"] == pytest.approx(0.99)
     assert offer[7] == "We are delighted to offer you the Backend Developer Intern position."
 
-    # A not-job at the header: no body was read, so none is kept.
+    # A not-job at the header never reaches the body question but its body is kept (ADR 0162).
     news = snap("m-news", "header")
     assert news[1] == "not_job"
     assert json.loads(news[6])["not_job"] == pytest.approx(0.97)
-    assert news[7] is None
+    assert news[7] == "Coffee news."
     assert h.sql("SELECT 1 FROM job_decision WHERE message_id = 'm-news' AND stage = 'body'") == []
 
     # A not-job at the body keeps the body Jev read.
@@ -1565,7 +1564,7 @@ def test_every_decision_keeps_the_snapshot_jev_saw_and_never_an_address(
     assert promo[1] == "not_job"
     assert promo[7] == "50% off"
 
-    # No address, only display name and domain.
+    # The columns that never held an address still hold none.
     stored = json.dumps(h.sql("SELECT sender_name, sender_domain, subject FROM job_decision"))
     assert "@" not in stored
 
@@ -1576,6 +1575,135 @@ def test_every_decision_keeps_the_snapshot_jev_saw_and_never_an_address(
     assert failing.sql(
         "SELECT stage, verdict, subject, probabilities, judge FROM job_decision"
     ) == [("header", "error", "Offer of employment", None, "jev-1.13/header-v1")]
+
+
+def test_every_scanned_mail_keeps_its_sender_address_and_body_locally(
+    tmp_path: Path, jev: _Jev
+) -> None:
+    """Header-dropped mail keeps name, address, subject, id, date and body, all local."""
+    h = _harness(tmp_path, jev)
+    h.job.poll_once()
+    columns = (
+        "message_id, stage, verdict, sender_name, sender_address, sender_domain, subject,"
+        " received_at, body_excerpt, body_status"
+    )
+    rows = h.sql(f"SELECT {columns} FROM job_decision ORDER BY id")  # noqa: S608
+    news = next(r for r in rows if r[0] == "m-news")
+    assert news[1:7] == (
+        "header",
+        "not_job",
+        "Weekly Brew",
+        "hello@brew.example",
+        "brew.example",
+        "Our weekly newsletter",
+    )
+    assert news[7] == (NOW - timedelta(hours=3)).replace(microsecond=0).isoformat()
+    assert news[8:] == ("Coffee news.", "read")
+    # Every row of every scanned mail has its address, its body and the status 'read'.
+    assert {r[0] for r in rows} == {one["id"] for one in MAILS}
+    for row in rows:
+        letter = next(one for one in MAILS if one["id"] == row[0])
+        assert row[4] == letter["from"].split("<")[1].rstrip(">")
+        assert row[8] == letter["body"]
+        assert row[9] == "read"
+    assert {r[1] for r in rows} == {"header", "body"}
+    # The rule row (LinkedIn social news, held back unread by Jev) carries them too.
+    social = _harness(tmp_path / "s", jev, LINKEDIN)
+    social.job.poll_once()
+    assert social.sql(
+        "SELECT sender_address, body_excerpt, body_status FROM job_decision"
+        " WHERE message_id = 'm-post' AND stage = 'rule'"
+    ) == [("messages-noreply@linkedin.com", "Hi", "read")]
+
+    # The address lives in job_decision only: not in the other tables, the routes or Jev's text.
+    for table in ("job_mail", "job_seen", "job_alert", "job_feedback", "attention_log"):
+        assert "@" not in json.dumps(h.sql(f"SELECT * FROM {table}"), ensure_ascii=False)  # noqa: S608
+    routes = [h.client.get(path).text for path in ("/inherent/jobs", "/inherent/notices")]
+    assert not any("@" in text for text in routes)
+    assert not any("@" in request["state"] for request in jev.requests)
+    assert not any(one["body"] in request["state"] for one in MAILS for request in jev.asked("job"))
+
+
+def test_an_unreadable_body_is_unavailable_and_never_breaks_the_cycle(
+    tmp_path: Path, jev: _Jev
+) -> None:
+    """A failed body read leaves body NULL and 'unavailable'; the triage verdict is unchanged."""
+    h = _harness(tmp_path, jev)
+    h.gmail.full_failures = {"m-news", "m-offer"}
+    h.job.poll_once()
+    news = h.sql(
+        "SELECT verdict, sender_address, body_excerpt, body_status FROM job_decision"
+        " WHERE message_id = 'm-news'"
+    )
+    # Held back by the header alone: kept as not_job, not an error, only its body is missing.
+    assert news == [("not_job", "hello@brew.example", None, "unavailable")]
+    assert h.sql("SELECT verdict FROM job_seen WHERE message_id = 'm-news'") == [("not_job",)]
+    # A job mail whose body cannot be read cannot be typed: an error, as before, with a snapshot.
+    assert h.sql("SELECT verdict FROM job_seen WHERE message_id = 'm-offer'") == [("error",)]
+    assert h.sql(
+        "SELECT stage, verdict, sender_address, body_excerpt, body_status FROM job_decision"
+        " WHERE message_id = 'm-offer' ORDER BY id"
+    ) == [
+        ("header", "pass", "hr@helix.example", None, "unavailable"),
+        ("body", "error", "hr@helix.example", None, "unavailable"),
+    ]
+    # The rest of the cycle went on: others were read, typed and kept.
+    assert h.sql(
+        "SELECT body_status FROM job_decision WHERE message_id = 'm-receipt' AND stage = 'body'"
+    ) == [("read",)]
+
+
+def test_a_mail_never_read_is_not_read_and_the_flag_keeps_its_body(
+    tmp_path: Path, jev: _Jev
+) -> None:
+    """A mail whose header cannot be read has 'not_read'; a flag stores the address and body too."""
+    h = _harness(tmp_path, jev)
+    original = h.gmail.call
+
+    def broken_header(server: str, tool: str, args: Mapping[str, Any]) -> dict[str, Any]:
+        if tool == "gmail_get" and args["format"] == "metadata" and args["messageId"] == "m-news":
+            return {"text": json.dumps({"error": "no such header"})}
+        return original(server, tool, args)
+
+    h.gmail.call = broken_header  # type: ignore[method-assign]
+    h.job.poll_once()
+    assert h.sql(
+        "SELECT stage, verdict, sender_address, body_excerpt, body_status FROM job_decision"
+        " WHERE message_id = 'm-news'"
+    ) == [("header", "error", None, None, "not_read")]
+    assert h.gmail.full_read_count("m-news") == 0
+
+    h.gmail.call = original  # type: ignore[method-assign]
+    assert h.client.post("/inherent/jobs/m-fair/flag", json={"reaction": "should_alert"}).is_success
+    assert h.sql(
+        "SELECT sender_address, body_excerpt, body_status FROM job_decision"
+        " WHERE message_id = 'm-fair' ORDER BY id DESC LIMIT 1"
+    ) == [("events@uvic.example", "Come and meet employers.", "read")]
+
+
+def test_an_old_job_decision_table_gets_the_snapshot_columns(tmp_path: Path) -> None:
+    """A memory.db made before ADR 0162 is upgraded in place and old rows stay readable."""
+    db = tmp_path / "memory.db"
+    conn = sqlite3.connect(db)
+    with conn:
+        conn.execute(
+            "CREATE TABLE job_decision (id INTEGER PRIMARY KEY AUTOINCREMENT, message_id TEXT,"
+            " at TEXT, stage TEXT, sender_name TEXT, sender_domain TEXT, subject TEXT,"
+            " received_at TEXT, probabilities TEXT, judge TEXT, body_excerpt TEXT, verdict TEXT)"
+        )
+        conn.execute("INSERT INTO job_decision (message_id, stage) VALUES ('old', 'header')")
+    conn.close()
+    job_ledger.record_decision(
+        db, "new", "header", "pass", NOW, body_status="read", body_excerpt="x"
+    )
+    job_ledger.record_decision(db, "newer", "header", "pass", NOW)
+    conn = sqlite3.connect(db)
+    try:
+        assert conn.execute(
+            "SELECT message_id, sender_address, body_status FROM job_decision ORDER BY id"
+        ).fetchall() == [("old", None, None), ("new", None, "read"), ("newer", None, "not_read")]
+    finally:
+        conn.close()
 
 
 def test_flagging_a_held_back_mail_makes_it_job_mail_once(tmp_path: Path, jev: _Jev) -> None:

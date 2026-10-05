@@ -55,6 +55,8 @@ _LEVEL_PREFIX: Final[str] = "level:"
 LINKEDIN_ALERTS: Final[tuple[str, ...]] = ("ledger_only", "card_sound")
 # The judge name logged for a header held back by a local rule rather than by Jev.
 _RULE_JUDGE: Final[str] = "local-rule/social-v1"
+# How much of each scanned mail's plain-text body the local decision snapshot keeps (ADR 0162).
+SNAPSHOT_BODY_CHARS: Final[int] = 3000
 
 
 @dataclass(frozen=True)
@@ -186,44 +188,48 @@ class JobMail:
         verdicts: dict[str, str] = {}
         chances: dict[str, float] = {}  # Jev's probability that a letter is job mail
         heads = self._heads(servers, ids, verdicts)
+        bodies = self._bodies(servers, heads)  # one full read of every letter, kept locally
+        snap = _Snapper(self, now, bodies)
+
         for message_id in verdicts:  # a header that could not be read: only the failure is known
-            self._snap(message_id, "header", "error", now)
+            snap(message_id, "header", "error")
         skips = self._jev.skips(heads)
         letters: list[tuple[triage.Head, str]] = []
         for head in heads:
             skip = skips[head.message_id]
             if skip is None:
                 verdicts[head.message_id] = "error"
-                self._snap(head.message_id, "header", "error", now, head=head)
+                snap(head.message_id, "header", "error", head)
                 continue
             chances[head.message_id] = skip.p_job
             verdict = "not_job" if skip.skipped else "pass"
-            self._snap(head.message_id, "header", verdict, now, head, skip.probabilities)
+            snap(head.message_id, "header", verdict, head, skip.probabilities)
             social = not skip.skipped and triage.is_social(head.domain, head.subject)
             if social:  # LinkedIn social news is not job mail whatever Jev said: held back unread
-                self._snap(head.message_id, "rule", "not_job", now, head, judge=_RULE_JUDGE)
+                snap(head.message_id, "rule", "not_job", head, judge=_RULE_JUDGE)
             if skip.skipped or social:
                 verdicts[head.message_id] = "not_job"
                 continue
-            body = self._body(servers, head, verdicts)
-            if head.message_id in verdicts:  # the body could not be read
-                self._snap(head.message_id, "body", "error", now, head)
+            body = bodies.get(head.message_id)
+            if body is None:  # the body could not be read
+                verdicts[head.message_id] = "error"
+                snap(head.message_id, "body", "error", head)
             else:
-                letters.append((head, body))
+                letters.append((head, body[: self._settings.max_body_chars]))
         letters = letters[: self._jev.room()]  # the rest stay unseen and are asked tomorrow
         typed = self._jev.types(letters)
-        for head, body in letters:
+        for head, _body in letters:
             found = typed[head.message_id]
             if found is None:
                 verdicts[head.message_id] = "error"
-                self._snap(head.message_id, "body", "error", now, head, body=body)
+                snap(head.message_id, "body", "error", head)
                 continue
             chances[head.message_id] = found.p_job
             if found.kind == "not_job":
                 verdicts[head.message_id] = "not_job"
-                self._snap(head.message_id, "body", "not_job", now, head, found.probabilities, body)
+                snap(head.message_id, "body", "not_job", head, found.probabilities)
                 continue
-            self._snap(head.message_id, "body", "job", now, head, found.probabilities, body)
+            snap(head.message_id, "body", "job", head, found.probabilities)
             ledger.upsert_mail(self._db, triage.as_row(head, found), now)
             verdicts[head.message_id] = "job"
             # Seen before it is delivered: a failure after this line never alerts twice.
@@ -269,10 +275,13 @@ class JobMail:
         probabilities: dict[str, float] | None = None,
         body: str | None = None,
         judge: str | None = None,
+        body_status: str = "",
     ) -> None:
         """Keep what Jev saw and answered at a stage (ADR 0157), for any verdict.
 
-        ``judge`` names a local rule instead of Jev for a ``rule`` stage (ADR 0158).
+        ``judge`` names a local rule instead of Jev for a ``rule`` stage (ADR 0158). The row also
+        keeps the sender address and the body start (ADR 0162); ``body_status`` says whether the
+        body was ``read``, ``unavailable`` (the read failed) or ``not_read`` (none was tried).
         """
         ledger.record_decision(
             self._db,
@@ -280,10 +289,11 @@ class JobMail:
             stage,
             verdict,
             now,
-            head=None if head is None else _audit(head),
+            head=None if head is None else _snapshot_head(head),
             probabilities=probabilities,
             judge=judge or self._jev.judge_id(stage),
-            body_excerpt=body,
+            body_excerpt=None if body is None else body[:SNAPSHOT_BODY_CHARS],
+            body_status=body_status or "not_read",
         )
 
     @staticmethod
@@ -299,17 +309,19 @@ class JobMail:
                 verdicts[message_id] = "error"
         return heads
 
-    def _body(self, servers: McpServers, head: triage.Head, verdicts: dict[str, str]) -> str:
-        """The plain-text start of a letter's body; a letter that cannot be read is an error."""
+    def _bodies(self, servers: McpServers, heads: list[triage.Head]) -> dict[str, str | None]:
+        """The plain-text body of every letter, read once; ``None`` where the read failed."""
+        return {head.message_id: self._read_body(servers, head.message_id) for head in heads}
+
+    @staticmethod
+    def _read_body(servers: McpServers, message_id: str) -> str | None:
+        """One ``gmail_get`` in full format as plain text; ``None`` if the letter cannot be read."""
         try:
-            message = gmail_read(
-                servers, "gmail_get", {"messageId": head.message_id, "format": "full"}
-            )
-        except Exception:  # noqa: BLE001 - as for the header
-            LOGGER.warning("job mail: cannot read the body of %s", head.message_id, exc_info=True)
-            verdicts[head.message_id] = "error"
-            return ""
-        return mail_body(str(message.get("body") or ""))[: self._settings.max_body_chars]
+            message = gmail_read(servers, "gmail_get", {"messageId": message_id, "format": "full"})
+        except Exception:  # noqa: BLE001 - one unreadable letter must not stop the others
+            LOGGER.warning("job mail: cannot read the body of %s", message_id, exc_info=True)
+            return None
+        return mail_body(str(message.get("body") or ""))
 
     def _deliver(self, head: triage.Head, typed: triage.Typed, now: datetime) -> None:
         """Build the pack, ask the judge, log the decision and act on its level."""
@@ -518,16 +530,18 @@ class JobMail:
         servers = self._connections.client_for(MAIL_SERVER)
         args = {"messageId": message_id, "format": "metadata"}
         head = _head(gmail_read(servers, "gmail_get", args))
-        verdicts: dict[str, str] = {}
-        body = self._body(servers, head, verdicts)
-        found = None if verdicts else self._jev.types([(head, body)])[head.message_id]
+        text = self._read_body(servers, message_id)
+        body = (text or "")[: self._settings.max_body_chars]
+        found = None if text is None else self._jev.types([(head, body)])[head.message_id]
         if found is None:
             msg = f"cannot read or type {message_id}"
             raise RuntimeError(msg)
         # His flag wins over Jev's "not job" and over the local rules that kept it off the cards.
         kind = "job_other" if found.kind in ("not_job", triage.ACCOUNT_KIND) else found.kind
         found = dataclasses.replace(found, kind=kind, alert_digest=False)
-        self._snap(head.message_id, "body", "job", now, head, found.probabilities, body)
+        _Snapper(self, now, {message_id: text})(
+            message_id, "body", "job", head, found.probabilities
+        )
         ledger.upsert_mail(self._db, triage.as_row(head, found), now)
         ledger.record_seen(self._db, head.message_id, "job", now, p_job=found.p_job)
         self._deliver(head, found, now)
@@ -604,8 +618,37 @@ def _hold_back(db: Path, row: Mapping[str, Any]) -> None:
     )
 
 
+class _Snapper:
+    """Writes the decision snapshots of one cycle; each row carries what was read of its mail."""
+
+    def __init__(self, job: JobMail, now: datetime, bodies: Mapping[str, str | None]) -> None:
+        """``bodies`` maps a message id to its body, or ``None`` where the read failed."""
+        self._job, self._now, self._bodies = job, now, bodies
+
+    def __call__(  # noqa: PLR0913 - the row's fields
+        self,
+        message_id: str,
+        stage: str,
+        verdict: str,
+        head: triage.Head | None = None,
+        probabilities: dict[str, float] | None = None,
+        judge: str | None = None,
+    ) -> None:
+        """A mail never read at all (``message_id`` not in ``bodies``) is ``not_read``."""
+        text = self._bodies.get(message_id)
+        status = "read" if text is not None else "unavailable" if message_id in self._bodies else ""
+        self._job._snap(  # noqa: SLF001 - the one writer of this module's snapshots
+            message_id, stage, verdict, self._now, head, probabilities, text, judge, status
+        )
+
+
+def _snapshot_head(head: triage.Head) -> dict[str, str]:
+    """The header facts of a decision snapshot: ``_audit`` and the sender address (ADR 0162)."""
+    return {**_audit(head), "address": head.address}
+
+
 def _audit(head: triage.Head) -> dict[str, str]:
-    """The header facts kept for the audit list and the decision snapshot: never an address."""
+    """The header facts kept for the audit list: never an address."""
     return {
         "received_at": head.received_at,
         "name": head.name,
@@ -623,7 +666,7 @@ def _known_reaction(reaction: str | None) -> bool:
 
 
 def _head(message: Mapping[str, Any]) -> triage.Head:
-    """A ``gmail_get`` metadata answer as a header: the domain is kept, never the address."""
+    """A ``gmail_get`` metadata answer as a header; the address goes to the snapshot alone."""
     one = _letter(message)
     _name, address = parseaddr(str(message.get("from") or ""))
     return triage.Head(
@@ -633,4 +676,5 @@ def _head(message: Mapping[str, Any]) -> triage.Head:
         name="" if one["from"] == address else one["from"],
         domain=address.rpartition("@")[2].lower(),
         subject=one["subject"],
+        address=address,
     )

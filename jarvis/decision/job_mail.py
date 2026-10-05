@@ -77,7 +77,11 @@ _BODY_CRITERIA: Final[dict[str, str]] = {
 
 @dataclass(frozen=True)
 class Head:
-    """What of a letter's header is kept: never the address, only its domain."""
+    """What of a letter's header is read.
+
+    ``address`` is for the local ``job_decision`` snapshot only (ADR 0162): no question to Jev,
+    typed row, pack or alert may carry it; those use the name and the domain.
+    """
 
     message_id: str
     thread_id: str
@@ -85,6 +89,7 @@ class Head:
     name: str
     domain: str
     subject: str
+    address: str = ""
 
 
 @dataclass(frozen=True)

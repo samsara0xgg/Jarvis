@@ -2,9 +2,9 @@
 
 Additive tables next to the memory tables (``CREATE TABLE IF NOT EXISTS``, so no schema version
 bump). The ledger keeps only the typed facts of a mail (sender name and domain, subject, kind,
-company, role, an event sentence and time); ``job_decision`` also keeps the body start Jev was
-shown (ADR 0157). Never an address. Every function opens its own short-lived connection, so any
-thread may call it.
+company, role, an event sentence and time, never an address or a body); ``job_decision`` alone
+keeps, for every scanned mail, the sender address and the body start too (ADR 0162). Every
+function opens its own short-lived connection, so any thread may call it.
 
 Layer rules: stdlib + L2 siblings + ``jarvis.shared``; no wiring.
 """
@@ -127,6 +127,19 @@ CREATE TABLE IF NOT EXISTS attention_log (
 """
 
 
+# The columns ADR 0162 added to ``job_decision``, as appended to a table made before it.
+_SNAPSHOT_COLUMNS: Final[tuple[str, ...]] = ("sender_address", "body_status")
+BODY_STATUSES: Final[tuple[str, ...]] = ("read", "unavailable", "not_read")
+
+
+def _add_snapshot_columns(conn: sqlite3.Connection) -> None:
+    """Add the ADR 0162 snapshot columns to a ``job_decision`` that lacks them."""
+    have = {row[1] for row in conn.execute("PRAGMA table_info(job_decision)")}
+    for column in _SNAPSHOT_COLUMNS:
+        if column not in have:
+            conn.execute(f"ALTER TABLE job_decision ADD COLUMN {column} TEXT")
+
+
 @contextmanager
 def _db(path: Path) -> Iterator[sqlite3.Connection]:
     """A connection with the tables made, committed on a clean exit and always closed."""
@@ -134,6 +147,7 @@ def _db(path: Path) -> Iterator[sqlite3.Connection]:
     try:
         conn.row_factory = sqlite3.Row
         conn.executescript(_SCHEMA)
+        _add_snapshot_columns(conn)
         with conn:
             yield conn
     finally:
@@ -216,18 +230,25 @@ def record_decision(  # noqa: PLR0913 - the row's fields
     probabilities: Mapping[str, float] | None = None,
     judge: str | None = None,
     body_excerpt: str | None = None,
+    body_status: str = "not_read",
 ) -> None:
     """One snapshot of what Jev was asked and answered at ``header`` or ``body`` (ADR 0157).
 
-    ``head`` is (received_at, name, domain, subject), never an address; ``body_excerpt`` is the
-    body start Jev saw, present only for the ``body`` stage. Appended, never changed.
+    ``head`` is (received_at, name, domain, subject) and may add ``address``, which is kept here
+    and nowhere else (ADR 0162). ``body_excerpt`` is the local plain-text body start, ``None``
+    when ``body_status`` is ``unavailable`` (a read failed) or ``not_read`` (none was tried).
+    Appended, never changed.
     """
+    if body_status not in BODY_STATUSES:
+        msg = f"not a body status: {body_status!r}"
+        raise ValueError(msg)
     given = head or {}
     with _db(path) as conn:
         conn.execute(
             "INSERT INTO job_decision (message_id, at, stage, sender_name, sender_domain, subject,"
-            " received_at, probabilities, judge, body_excerpt, verdict)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " received_at, probabilities, judge, body_excerpt, verdict, sender_address,"
+            " body_status)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 message_id,
                 _stamp(now),
@@ -240,6 +261,8 @@ def record_decision(  # noqa: PLR0913 - the row's fields
                 judge,
                 body_excerpt,
                 verdict,
+                given.get("address"),
+                body_status,
             ),
         )
 
