@@ -6188,7 +6188,8 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             card_act=(
                 None if window_memory is None
                 else functools.partial(
-                    _card_act, CardFeedback(window_memory.db_path, lambda: controls.quiet)
+                    _card_act,
+                    CardFeedback(window_memory.db_path, lambda: controls.quiet, runtime.moment),
                 )
             ),
             memory_page=(

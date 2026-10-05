@@ -57,8 +57,10 @@ Its limits:
   request, epoch ms), so one card is one id however often it is shown again.
 - `seen` stores one pack and is idempotent. The pack holds the kind, title,
   counts, agent type and tool name and the situation (front app flags, the
-  daemon's quiet level, hour, weekday); never what an agent wrote, a command, a
-  path or a body. A text value over 200 characters, a nested value or a pack
+  daemon's quiet level, hour, weekday, and the moment of ADR 0161 from
+  `Moment.snapshot`: facts and 现况 doc with app names and site domains only,
+  when `moment` is on); never what an agent wrote, a command, a path or a body.
+  Unlike ADR 0162's job-mail snapshots, a card keeps no sender address or body. A text value over 200 characters, a nested value or a pack
   over 1500 characters is refused.
 - The rule that raised a card is fixed, so the judge is `card_rule` v1, and
   its level is the one the client showed. Reactions: 对, a level, `dismissed`,
@@ -101,5 +103,9 @@ Its limits:
 - `ignored` is written lazily, at the next card shown, not on a timer.
 - Every card costs the client two posts to the daemon; with no `memory.db`
   the route is 404 and the client carries on without the log.
+- The moment's hold (ADR 0161: no card or sound while he is in a call or away)
+  still applies to job alerts only; the client makes these cards and shows
+  them without asking the daemon, so a pop can still appear during a call. The
+  snapshot records the moment, so the rows show how often that happens.
 - `glow` (亮一下) is a level a card can be rated at; the job-mail path still
   raises only `card`, `card_sound` and `speak`.

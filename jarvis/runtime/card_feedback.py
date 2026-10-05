@@ -19,6 +19,8 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
     from pathlib import Path
 
+    from jarvis.runtime.moment import Moment
+
 # The proactive card kinds the client reports; anything else is refused.
 KINDS: Final[frozenset[str]] = frozenset({"pop", "wait", "req", "digest", "night", "morning"})
 # right / a level / acted on the card (an answer, a session opened) / put away.
@@ -61,10 +63,16 @@ def _known_reaction(reaction: str | None) -> bool:
 class CardFeedback:
     """``POST /inherent/cards/{id}``: ``seen`` stores a snapshot, feedback stores a reaction."""
 
-    def __init__(self, db_path: Path, quiet: Callable[[], str]) -> None:
-        """``db_path`` is memory.db; ``quiet`` reads the daemon's level when a post arrives."""
+    def __init__(
+        self, db_path: Path, quiet: Callable[[], str], moment: Moment | None = None
+    ) -> None:
+        """``db_path`` is memory.db; ``quiet`` reads the daemon's level when a post arrives.
+
+        ``moment`` (ADR 0161) adds the situation and its 现况 doc to every snapshot; None: off.
+        """
         self._db = db_path
         self._quiet = quiet
+        self._moment = moment
         self.now: Callable[[], datetime] = lambda: datetime.now(UTC)
 
     def act(self, card_id: str, body: Mapping[str, Any]) -> None:
@@ -96,6 +104,7 @@ class CardFeedback:
             "hour": local.hour,
             "weekday": local.weekday(),
             "quiet": self._quiet(),
+            **({} if self._moment is None else {"moment": self._moment.snapshot()}),
         }
         judgement = attention.card_judgement(kind, level)
         ledger.snapshot_card(

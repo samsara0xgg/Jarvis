@@ -19,9 +19,10 @@ import yaml
 from jarvis.decision import moment as rules
 from jarvis.decision.attention import replay, rule_judge_v1
 from jarvis.runtime import RuntimeBootstrapError, _moment
+from jarvis.runtime.card_feedback import CardFeedback
 from jarvis.runtime.moment import Moment, MomentSettings
 from jarvis.shared import lang
-from jarvis.state import job_time, timesink_moment
+from jarvis.state import job_ledger, job_time, timesink_moment
 from tests.canary._helpers import repo_root
 from tests.integration.test_job_mail import _Harness, _harness, _Jev
 
@@ -523,10 +524,26 @@ def test_every_decision_snapshot_carries_the_moment_and_no_titles(
     assert replay(rule_judge_v1, [{"pack_json": json.dumps(p)} for p in packs])
 
 
+def test_a_card_snapshot_carries_the_moment_and_no_titles(
+    tmp_path: Path, store: FakeTimeSink
+) -> None:
+    """A card snapshot (ADR 0160) holds the same moment: app names and domains only."""
+    db = tmp_path / "memory.db"
+    cards = CardFeedback(db, lambda: "off", _moment_for(_secret_store(store), db))
+    cards.act("pop-1", {"action": "seen", "kind": "pop", "level": "card", "facts": {"count": 1}})
+    (row,) = job_ledger.list_attention(db, "card:pop")
+    situation = json.loads(row["pack_json"])["situation"]
+    assert situation["quiet"] == "off"
+    snap = situation["moment"]
+    assert snap["facts"]["front_app"] == "Google Chrome"
+    assert snap["facts"]["site_domain"] == "careers.example"
+    assert snap["doc"]["text"].startswith("Now: ")
+    for secret in (TITLE_WORD, PATH_WORD, "https://", "Zoom Meeting"):
+        assert secret not in row["pack_json"]
+
+
 def test_an_old_decision_table_gains_the_column(tmp_path: Path) -> None:
     """An old decision table gains the column."""
-    from jarvis.state import job_ledger  # noqa: PLC0415
-
     db = tmp_path / "memory.db"
     with sqlite3.connect(db) as conn:
         conn.execute(
