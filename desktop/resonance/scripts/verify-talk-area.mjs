@@ -1280,6 +1280,25 @@ try {
     await s.context.close();
   }
 
+  // her first report comes before any sound (played 0, ahead 0): nothing is lit and nothing is paced, whatever the clock does,
+  // until the report that says she has begun; then the words move on at pace inside the segment
+  {
+    const s = await scene({ captions: 'all', lang: 'en' });
+    const { page, emit, skew, area, turn } = s;
+    await page.waitForTimeout(600);
+    const text = 'The harbor was quiet that morning, and the boats rocked slowly against the old wooden pier while the gulls circled above them.';
+    await emit('controls', { mic_muted: false, speech_muted: false, conversation: true }); s.daemonState.controls.conversation = true;
+    await turn('z1', 'go on', [text], { done: true });
+    await emit('voice', { phase: 'playing', turn_id: 'z1', played: 0, ahead: 0, held: false });
+    await skew(20_000); await page.waitForTimeout(500);
+    check('before her first sound: nothing is lit, twenty seconds of the clock later', (await area()).lit === 0);
+    await emit('voice', { phase: 'playing', turn_id: 'z1', played: 0, ahead: 40, held: false });
+    await skew(1500); await page.waitForTimeout(400);
+    const lit = (await area()).lit;
+    check(`once she has begun the words move on at pace inside the segment (${lit})`, lit > 0 && lit <= 40);
+    await s.context.close();
+  }
+
   // ---- links, dates and sub-lines in her list; numbered steps; the footer shows where a link goes ----
   {
     const s = await scene({ captions: 'all', lang: 'zh' });

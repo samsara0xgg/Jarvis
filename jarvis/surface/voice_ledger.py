@@ -388,6 +388,8 @@ class PlaybackLedger:
         place, and the caption follows her place, not what a microphone could
         have caught.
         """
+        if self._estimated_audible_cursor <= 0:
+            return 0, 0  # nothing has reached her speaker yet: the captions wait, they do not pace
         before = 0
         for sequence in sorted(self._chunks):
             chunk = self._chunks[sequence]

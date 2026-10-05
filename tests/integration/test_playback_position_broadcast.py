@@ -85,7 +85,9 @@ def test_position_follows_the_words_played_and_is_sent_only_when_it_changes(tmp_
         _wait_until(lambda: any(p["played"] == _letters(15) for p in wire.playing()))
         reports = wire.playing()
         assert all(p["turn_id"] == "T" and p["held"] is False for p in reports)
-        assert all(p["ahead"] == _LETTERS for p in reports)  # one segment: all of it
+        # Before the first audio is audible nothing is lit or paced (ahead 0); then all of it.
+        assert (reports[0]["played"], reports[0]["ahead"]) == (0, 0)
+        assert all(p["ahead"] == _LETTERS for p in reports[1:])
         played = [p["played"] for p in reports]
         assert played == sorted(played)
         assert all(a != b for a, b in itertools.pairwise(reports))
@@ -155,3 +157,32 @@ def test_a_duck_keeps_her_place_though_it_stops_the_heard_text() -> None:
     assert snapshot.heard_text == ""  # ducked: not counted as heard
     assert snapshot.played_letters == len("Hellothere")  # but she has got there
     assert snapshot.playing_letters == len("Hellothere") + len("Secondone")
+
+
+def test_nothing_is_lit_or_paced_before_her_first_sound(tmp_path: Path) -> None:
+    """Written, not yet audible: the report says played 0, ahead 0, so the screen paces nothing."""
+    pipeline, _, pump, wire = _start(tmp_path)
+    try:
+        assert [(p["played"], p["ahead"]) for p in wire.playing()] == [(0, 0)]
+        pump.step(frames=_SAMPLES_PER_WORD)
+        _wait_until(lambda: wire.playing()[-1]["ahead"] == _LETTERS)
+        assert wire.playing()[-1]["played"] == _letters(1)  # one word of sound, one word lit
+    finally:
+        assert pipeline.close()
+
+
+def test_the_ledger_places_her_only_once_something_is_audible() -> None:
+    """Accepted and submitted samples are not sound: played, ahead stay 0 until audible."""
+    lease = voice_ledger.GenerationLease("S", "R", "G", "T", 1, 1)
+    ledger = voice_ledger.PlaybackLedger(lease, sample_rate=_RATE)
+    ledger.begin_segment(sequence=0, text="Hello there. ", segment_hash="a")
+    accepted = ledger.accept_samples(sequence=0, sample_count=1_000)
+    ledger.record_submitted(
+        output_start_cursor=accepted.output_start_cursor, output_end_cursor=500,
+        audibility_class="normal",
+    )
+    snapshot = ledger.snapshot()
+    assert (snapshot.played_letters, snapshot.playing_letters) == (0, 0)
+    ledger.record_audible(output_cursor=100, cursor_quality="estimated")
+    snapshot = ledger.snapshot()
+    assert (snapshot.played_letters, snapshot.playing_letters) == (0, len("Hellothere"))
