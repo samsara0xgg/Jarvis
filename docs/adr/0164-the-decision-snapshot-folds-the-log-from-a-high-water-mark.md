@@ -61,10 +61,12 @@ Its limits:
   between them, and so do the tool-loop re-reads and the two projection reads
   after a confirmation answer. The daemon folds the log once in the background
   when it starts.
-- **A self-check.** Every 100th read, a background thread opens its own
-  connection and compares the incremental snapshot with a whole-log fold of the
-  same view. A difference logs a warning and resets the holder, so the next
-  read folds the whole log.
+- **A self-check, only when idle.** Every 100th read marks a check due. A
+  background thread waits until no turn is in flight and no turn, answer or
+  playback row has been written for 15 s, then opens its own connection and
+  compares the incremental snapshot with a whole-log fold of the same view. A
+  difference logs a warning and resets the holder, so the next read folds the
+  whole log.
 
 ## Alternatives rejected
 
@@ -91,5 +93,5 @@ Its limits:
   shared by reference between reads, so no reader may mutate an event payload.
 - A log that makes the conversation window fold out of order is read in full on
   every call, slow but correct.
-- The self-check costs one whole-log fold of CPU every 100 reads, on a thread
-  that competes for the interpreter lock with a turn that may be running.
+- The self-check costs one whole-log fold of CPU every 100 reads; a turn that
+  starts while it runs still shares the interpreter lock with it.

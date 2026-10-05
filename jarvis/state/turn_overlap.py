@@ -95,6 +95,37 @@ def any_turn_in_flight(conn: sqlite3.Connection, *, since_ms: int) -> bool:
     )
 
 
+# What a turn and its sound leave on the log: input, the turn's own rows, the answer,
+# and the playback rows (checkpoints keep coming for as long as it is speaking).
+_ACTIVITY_TYPES: Final[tuple[str, ...]] = (
+    *_INPUT_TYPES,
+    "turn.started",
+    *_TURN_CLOSED_TYPES,
+    "response.started",
+    "response.completed",
+    "surface.playback_started",
+    "surface.playback_checkpoint",
+    "surface.playback_completed",
+    "surface.playback_interrupted",
+    "surface.playback_failed",
+)
+
+
+def turn_activity_since(conn: sqlite3.Connection, *, since_ms: int) -> bool:
+    """Whether Allen's input, a turn, its answer or its playback wrote a row since ``since_ms``."""
+    return (
+        conn.execute(
+            f"""
+            SELECT 1 FROM events
+            WHERE type IN ({", ".join("?" * len(_ACTIVITY_TYPES))}) AND ts_epoch_ms >= ?
+            LIMIT 1
+            """,  # noqa: S608 - only placeholders are interpolated
+            (*_ACTIVITY_TYPES, since_ms),
+        ).fetchone()
+        is not None
+    )
+
+
 def words_since(conn: sqlite3.Connection, *, trigger_event_uid: str) -> tuple[str, ...]:
     """What Allen said or typed after this trigger, oldest first."""
     rows = conn.execute(

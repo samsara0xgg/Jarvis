@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import threading
+import time
 from typing import TYPE_CHECKING, Final
 
 from jarvis.state.decision_snapshot import (
@@ -30,6 +31,7 @@ LOGGER = logging.getLogger("jarvis.runtime.decision_state")
 # Every turn reads at least twice, so this is a check every few dozen turns; the
 # whole-log fold costs about as much CPU as one old read.
 _VERIFY_EVERY_READS: Final[int] = 100
+_IDLE_POLL_S: Final[float] = 5.0
 
 
 class DecisionStateCache:
@@ -40,9 +42,17 @@ class DecisionStateCache:
         open_connection: Callable[[], sqlite3.Connection],
         *,
         verify_every_reads: int = _VERIFY_EVERY_READS,
+        is_idle: Callable[[], bool] | None = None,
+        idle_poll_s: float = _IDLE_POLL_S,
     ) -> None:
-        """``open_connection`` opens a fresh read connection for the background self-check."""
+        """``open_connection`` opens a fresh read connection for the background self-check.
+
+        ``is_idle`` says no turn is in flight and none has just spoken; a due
+        self-check waits for it, polling every ``idle_poll_s``. ``None`` never waits.
+        """
         self._open = open_connection
+        self._is_idle = is_idle
+        self._idle_poll_s = idle_poll_s
         self._verify_every = verify_every_reads
         self._lock = threading.Lock()
         self._state: DecisionFoldState | None = None
@@ -90,7 +100,7 @@ class DecisionStateCache:
             self._state = None
 
     def verify_in_background(self) -> None:
-        """Compare the incremental state with a whole-log fold on a thread of its own."""
+        """Compare the incremental state with a whole-log fold on a thread of its own, once idle."""
         with self._lock:
             if self._verifying:
                 return
@@ -102,6 +112,9 @@ class DecisionStateCache:
 
     def _verify(self) -> None:
         try:
+            # Never while a turn works or speaks: the comparison is a whole-log fold of CPU.
+            while self._is_idle is not None and not self._is_idle():
+                time.sleep(self._idle_poll_s)
             if not self.agrees_with_whole_log():
                 LOGGER.warning("incremental decision state differs from a whole-log fold; reset")
                 self.reset()

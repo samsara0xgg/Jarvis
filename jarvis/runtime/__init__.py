@@ -39,6 +39,7 @@ import logging
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -207,6 +208,7 @@ from jarvis.state.memory_db import (
 from jarvis.state.projects import parse_catalog
 from jarvis.state.stream_emission import committed_text_prefix
 from jarvis.state.trigger_consumption import mark_trigger_consumed
+from jarvis.state.turn_overlap import any_turn_in_flight, turn_activity_since
 from jarvis.surface.ambient_sounds import AmbientSounds
 from jarvis.surface.cli import (
     PreEmitTokenError,
@@ -220,7 +222,6 @@ from jarvis.surface.stream_emission import emit_permitted_segment
 from jarvis.surface.voice_cues import VoiceCues
 
 if TYPE_CHECKING:
-    import sqlite3
     from collections.abc import Callable
     from datetime import tzinfo
 
@@ -570,6 +571,29 @@ class TurnSuspended(Exception):  # noqa: N818 — internal scheduler handoff, no
         """Carry only connection-free state across worker invocations."""
         super().__init__(checkpoint.intent.payload["turn_id"])
         self.checkpoint = checkpoint
+
+
+_IDLE_WORKING_WINDOW_MS: Final[int] = 5 * 60 * 1000
+_IDLE_QUIET_MS: Final[int] = 15 * 1000
+
+
+def _daemon_idle(event_log_path: Path) -> bool:
+    """No turn in flight and no turn, answer or playback row in the last 15 s (ADR 0164).
+
+    The same in-flight probe the voice session's quiet clock uses
+    (``_turn_working`` in ``inherent_loop``); an unreadable log counts as busy.
+    """
+    now_ms = int(time.time() * 1000)
+    try:
+        with contextlib.closing(
+            open_runtime_event_log(event_log_path, deadline=time.monotonic() + 0.25),
+        ) as conn:
+            return not (
+                any_turn_in_flight(conn, since_ms=now_ms - _IDLE_WORKING_WINDOW_MS)
+                or turn_activity_since(conn, since_ms=now_ms - _IDLE_QUIET_MS)
+            )
+    except sqlite3.Error:
+        return False
 
 
 def _snapshot_reader(runtime: JarvisRuntime) -> SnapshotReader | None:
@@ -2412,6 +2436,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         committed_event_bus=committed_event_bus,
         decision_state=DecisionStateCache(
             partial(open_runtime_event_log, paths.event_log),
+            is_idle=partial(_daemon_idle, paths.event_log),
         ),
         input_flags=_wave5_input_flags(full_config),
         surrogate_route=_surrogate_route(full_config, config_path, jev_log),

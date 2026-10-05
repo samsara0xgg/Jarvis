@@ -19,6 +19,7 @@ from jarvis.state.event_log import (
     open_event_log,
 )
 from jarvis.state.projections import ProjectionFold, fold_projections
+from jarvis.state.turn_overlap import turn_activity_since
 from tests.integration.test_incremental_decision_snapshot import _Log
 
 if TYPE_CHECKING:
@@ -131,3 +132,55 @@ def test_a_packet_reads_through_the_turns_reader_and_matches_the_cold_packet(
         assert first.event_cursor == cold.event_cursor - 1
         assert second == cold
         assert cache.cursor == cold.event_cursor
+
+
+def test_the_self_check_waits_until_the_daemon_is_idle(tmp_path: Path) -> None:
+    """A due check never compares while a turn works or speaks; it runs once idle."""
+    path = tmp_path / "events.db"
+    conn = open_event_log(path)
+    with contextlib.closing(conn):
+        log = _Log(conn, seed=8)
+        for _ in range(40):
+            log.step()
+        busy = [True]
+        probes = []
+        compared = threading.Event()
+
+        def is_idle() -> bool:
+            probes.append(busy[0])
+            return not busy[0]
+
+        cache = DecisionStateCache(
+            partial(open_event_log, path),
+            verify_every_reads=2,
+            is_idle=is_idle,
+            idle_poll_s=0.01,
+        )
+        original = cache.agrees_with_whole_log
+
+        def compare() -> bool:
+            assert not busy[0], "compared while a turn was in flight"
+            compared.set()
+            return original()
+
+        cache.agrees_with_whole_log = compare  # type: ignore[method-assign]
+        cache.read(conn)
+        cache.read(conn)  # the second read is due
+        assert not compared.wait(0.3)
+        assert len(probes) > 3  # it kept asking, and kept waiting
+        busy[0] = False
+        assert compared.wait(5)
+
+
+def test_the_idle_probe_sees_turns_and_playback(tmp_path: Path) -> None:
+    """In flight, or a row of a turn or its playback in the last seconds, is not idle."""
+    conn = open_event_log(tmp_path / "events.db")
+    with contextlib.closing(conn):
+        assert not turn_activity_since(conn, since_ms=0)
+        emit_event(
+            conn,
+            type="surface.playback_checkpoint",
+            payload=dict.fromkeys(EventTypeRegistry.requires("surface.playback_checkpoint"), "x"),
+        )
+        assert turn_activity_since(conn, since_ms=0)
+        assert not turn_activity_since(conn, since_ms=10**13)
