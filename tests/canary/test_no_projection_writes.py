@@ -71,11 +71,19 @@ _L2_OPERATIONAL_INSERTS: dict[str, frozenset[str]] = {
     # ADR 0019: which Codex threads this daemon opened (parent action, child
     # thread, open|closed). Topology, not a projection of events.
     "jarvis/state/worker_edges.py": frozenset({"worker_edges"}),
-    # ADR 0155, 0157: the job ledger and the attention log, in memory.db: typed facts of job
-    # mail, its alerts, Allen's reactions, one row per decision and one per Jev answer.
-    # Not a projection.
+    # ADR 0155, 0157, 0160: the job ledger and the attention log, in memory.db: typed facts of
+    # job mail, its alerts, Allen's reactions (also to every other card), one row per decision
+    # and one per Jev answer. Not a projection.
     "jarvis/state/job_ledger.py": frozenset(
-        {"job_mail", "job_seen", "job_alert", "job_feedback", "job_decision", "attention_log"},
+        {
+            "job_mail",
+            "job_seen",
+            "job_alert",
+            "job_feedback",
+            "job_decision",
+            "attention_log",
+            "notice_feedback",
+        },
     ),
 }
 

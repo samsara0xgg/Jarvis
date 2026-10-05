@@ -154,6 +154,7 @@ from jarvis.runtime import (
     make_turn_cancel_callable,
     save_language,
 )
+from jarvis.runtime.card_feedback import CardFeedback
 from jarvis.runtime.core_memory import CoreMemorySettings
 from jarvis.runtime.day_summary import DaySummarySchedule, DaySummarySettings
 from jarvis.runtime.dictation import (
@@ -4651,6 +4652,11 @@ def _job_mail_deps(job_mail: JobMail | None) -> dict[str, Any]:
     }
 
 
+async def _card_act(cards: CardFeedback, card_id: str, body: dict[str, Any]) -> None:
+    """``POST /inherent/cards/{id}`` (ADR 0160): one snapshot or reaction, off the loop thread."""
+    await asyncio.to_thread(cards.act, card_id, body)
+
+
 def _say_job_line(runtime: JarvisRuntime) -> None:
     """ADR 0155: the one fixed line for an interview or offer email, said as a conversation line."""
     _say_conversation_line(runtime, _new_turn_id(), "job_speak", "")
@@ -6179,6 +6185,12 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             focus_set=None if runtime.focus is None else runtime.focus.set,
             **_draft_deps(runtime, mail_home),
             **_job_mail_deps(runtime.job_mail),
+            card_act=(
+                None if window_memory is None
+                else functools.partial(
+                    _card_act, CardFeedback(window_memory.db_path, lambda: controls.quiet)
+                )
+            ),
             memory_page=(
                 None if window_memory is None
                 else MemoryPage(

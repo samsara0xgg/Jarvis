@@ -626,6 +626,9 @@ class InherentDeps:
     # daemon wires them only while ``job_mail.enabled``. A LookupError is 404, a ValueError 400.
     notices_read: Callable[[], Awaitable[dict[str, Any]]] | None = None
     notice_act: Callable[[str, str, str | None], Awaitable[None]] | None = None
+    # ADR 0160: the same feedback for every other proactive card the client raises, by card id.
+    # ``None`` leaves the route unregistered (404); a LookupError is 404, a ValueError 400.
+    card_act: Callable[[str, dict[str, Any]], Awaitable[Any]] | None = None
     jobs_read: Callable[[], Awaitable[dict[str, Any]]] | None = None
     job_delete: Callable[[str], Awaitable[None]] | None = None
     job_flag: Callable[[str, str], Awaitable[None]] | None = None
@@ -1132,6 +1135,17 @@ class NoticeActionRequest(BaseModel):
     reaction: str | None = Field(default=None, max_length=50)
 
 
+class CardActionRequest(BaseModel):
+    """Body of ``POST /inherent/cards/{id}`` (ADR 0160): ``seen`` with a snapshot, or feedback."""
+
+    action: Literal["seen", "feedback", "dismissed"]
+    reaction: str | None = Field(default=None, max_length=50)
+    kind: str | None = Field(default=None, max_length=24)
+    level: str | None = Field(default=None, max_length=24)
+    facts: dict[str, Any] = Field(default_factory=dict)
+    situation: dict[str, Any] = Field(default_factory=dict)
+
+
 class MailDraftRequest(BaseModel):
     """Body of ``POST /inherent/mail/{id}/draft`` and ``/draft/send`` (ADR 0148): Allen's edit."""
 
@@ -1321,6 +1335,15 @@ def _register_job_routes(app: FastAPI, deps: InherentDeps) -> None:  # noqa: C90
         async def notice_action(notice_id: str, req: NoticeActionRequest) -> dict[str, bool]:
             """Mark a notice seen or record Allen's reaction; a digest id covers its alerts."""
             await _home_call(notice_act(notice_id, req.action, req.reaction))
+            return {"ok": True}
+
+    if deps.card_act is not None:
+        card_act = deps.card_act
+
+        @app.post("/inherent/cards/{card_id}", status_code=200)
+        async def card_action(card_id: str, req: CardActionRequest) -> dict[str, bool]:
+            """Store a shown card's snapshot (``seen``) or Allen's reaction to it."""
+            await _home_call(card_act(card_id, req.model_dump()))
             return {"ok": True}
 
     if deps.jobs_read is not None:

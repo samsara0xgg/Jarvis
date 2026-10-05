@@ -57,6 +57,23 @@ class Judgement:
 
 Judge = Callable[[ContextPack], Judgement]
 
+# Cards the client raises by fixed rules, not by a judge (ADR 0160): the kind decides the level.
+CARD_RULE_ID: Final[str] = "card_rule"
+CARD_LEVELS: Final[tuple[str, ...]] = ("ledger", "glow", "card", "card_sound", "speak")
+
+
+def card_pack(
+    kind: str, card_id: str, facts: dict[str, Any], situation: dict[str, Any]
+) -> ContextPack:
+    """The pack of a card the client showed: ``source`` is ``card:<kind>``, the id is the card's."""
+    return ContextPack(f"card:{kind}", card_id, facts, situation)
+
+
+def card_judgement(kind: str, level: str) -> Judgement:
+    """What the fixed rule of a card kind said: the level the client showed it at."""
+    return Judgement(level, f"fixed: a {kind} card is shown at {level}", CARD_RULE_ID, "1")
+
+
 # Mail kind -> level (job mail, ADR 0155).
 _RULES: Final[dict[str, str]] = {
     "receipt": "ledger",

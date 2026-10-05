@@ -1,10 +1,12 @@
-"""L2 job ledger (ADR 0155, 0157): typed job-hunt mail facts, alerts, feedback, what Jev saw.
+"""L2 job ledger (ADR 0155, 0157, 0160): typed job-hunt mail facts, alerts, feedback, what Jev saw.
 
 Additive tables next to the memory tables (``CREATE TABLE IF NOT EXISTS``, so no schema version
 bump). The ledger keeps only the typed facts of a mail (sender name and domain, subject, kind,
 company, role, an event sentence and time, never an address or a body); ``job_decision`` alone
-keeps, for every scanned mail, the sender address and the body start too (ADR 0162). Every
-function opens its own short-lived connection, so any thread may call it.
+keeps, for every scanned mail, the sender address and the body start too (ADR 0162).
+``notice_feedback`` and the ``attention_log`` rows of ``card:`` sources are the same record for
+every other proactive card (ADR 0160). Every function opens its own short-lived connection, so any
+thread may call it.
 
 Layer rules: stdlib + L2 siblings + ``jarvis.shared``; no wiring.
 """
@@ -111,6 +113,17 @@ CREATE TABLE IF NOT EXISTS job_decision (
     verdict       TEXT
 );
 CREATE INDEX IF NOT EXISTS job_decision_message ON job_decision (message_id);
+CREATE TABLE IF NOT EXISTS notice_feedback (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    notice_id    TEXT,
+    kind         TEXT,
+    level_shown  TEXT,
+    reaction     TEXT,
+    judge        TEXT,
+    context_json TEXT,
+    at           TEXT
+);
+CREATE INDEX IF NOT EXISTS notice_feedback_notice ON notice_feedback (notice_id);
 CREATE TABLE IF NOT EXISTS attention_log (
     id            TEXT PRIMARY KEY,
     at            TEXT,
@@ -748,6 +761,104 @@ def list_attention(path: Path, source: str | None = None) -> list[dict[str, Any]
         }
         for row in rows
     ]
+
+
+# --- the other proactive cards (ADR 0160): a snapshot when shown, one row per reaction ---
+
+CARD_SOURCE: Final[str] = "card:"
+# A card shown and left without any reaction for this long ends as ``ignored``.
+CARD_IGNORED_AFTER: Final[timedelta] = timedelta(minutes=30)
+
+
+def card_snapshot(path: Path, card_id: str) -> dict[str, Any] | None:
+    """The attention-log row of a card the client showed, or None when none was logged."""
+    with _db(path) as conn:
+        row = conn.execute(
+            "SELECT * FROM attention_log WHERE event_id = ? AND source LIKE ?"
+            " ORDER BY at DESC, rowid DESC LIMIT 1",
+            (card_id, f"{CARD_SOURCE}%"),
+        ).fetchone()
+    return None if row is None else dict(row)
+
+
+def snapshot_card(  # noqa: PLR0913 - the row's fields
+    path: Path,
+    *,
+    kind: str,
+    card_id: str,
+    pack_json: str,
+    judge_id: str,
+    judge_version: str,
+    level: str,
+    reason: str,
+    now: datetime,
+) -> bool:
+    """Log the pack of a card as it was shown; False (nothing written) when it already is.
+
+    Cards shown and left without a reaction for ``CARD_IGNORED_AFTER`` end as ``ignored`` here, at
+    the next card, so a card nobody answers still lands in the feedback table.
+    """
+    expire_cards(path, now)
+    if card_snapshot(path, card_id) is not None:
+        return False
+    log_decision(
+        path,
+        source=f"{CARD_SOURCE}{kind}",
+        event_id=card_id,
+        pack_json=pack_json,
+        judge_id=judge_id,
+        judge_version=judge_version,
+        level=level,
+        reason=reason,
+        now=now,
+    )
+    note_delivery(path, card_id, "shown", now)
+    return True
+
+
+def _card_reaction(
+    conn: sqlite3.Connection, row: Mapping[str, Any], reaction: str, now: datetime
+) -> None:
+    conn.execute(
+        "INSERT INTO notice_feedback (notice_id, kind, level_shown, reaction, judge, context_json,"
+        " at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (
+            row["event_id"],
+            str(row["source"]).removeprefix(CARD_SOURCE),
+            row["level"],
+            reaction,
+            f"{row['judge_id']}/{row['judge_version']}",
+            row["pack_json"],
+            _stamp(now),
+        ),
+    )
+    _touch_event(conn, row["event_id"], feedback=(row["level"], reaction, _stamp(now)))
+
+
+def add_card_feedback(path: Path, card_id: str, reaction: str, now: datetime) -> bool:
+    """One reaction to a shown card; False when no snapshot of that card exists."""
+    with _db(path) as conn:
+        row = conn.execute(
+            "SELECT * FROM attention_log WHERE event_id = ? AND source LIKE ?"
+            " ORDER BY at DESC, rowid DESC LIMIT 1",
+            (card_id, f"{CARD_SOURCE}%"),
+        ).fetchone()
+        if row is None:
+            return False
+        _card_reaction(conn, row, reaction, now)
+    return True
+
+
+def expire_cards(path: Path, now: datetime, after: timedelta = CARD_IGNORED_AFTER) -> int:
+    """Cards shown ``after`` ago with no reaction at all end as ``ignored``; returns how many."""
+    with _db(path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM attention_log WHERE source LIKE ? AND at <= ? AND feedback_json = '[]'",
+            (f"{CARD_SOURCE}%", _stamp(now - after)),
+        ).fetchall()
+        for row in rows:
+            _card_reaction(conn, row, "ignored", now)
+    return len(rows)
 
 
 def _touch(

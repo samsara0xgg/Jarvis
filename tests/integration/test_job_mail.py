@@ -1816,6 +1816,19 @@ def test_a_recovery_does_not_touch_a_health_card_already_shown(tmp_path: Path, j
     h.job.poll_once()
     assert h.sql("SELECT state FROM job_alert") == [("shown",)]
 
+    # ADR 0160: the health card keeps a snapshot, and his answer lands beside it.
+    (snap,) = job_ledger.list_attention(h.db, "job_health")
+    assert (snap["event_id"], snap["level"], snap["judge_id"]) == (
+        "health",
+        "card_sound",
+        "card_rule",
+    )
+    assert ContextPack.from_json(snap["pack_json"]).facts["kind"] == "health"
+    assert snap["delivery"].keys() >= {"shown"}
+    h.client.post(f"/inherent/notices/{alert_id}", json={"action": "feedback", "reaction": "right"})
+    (snap,) = job_ledger.list_attention(h.db, "job_health")
+    assert [f["reaction"] for f in snap["feedback"]] == ["right"]
+
 
 def test_two_hours_without_a_good_cycle_is_down_even_after_one_failure(
     tmp_path: Path,

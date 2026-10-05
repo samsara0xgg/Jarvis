@@ -20,6 +20,7 @@ from datetime import UTC, datetime, timedelta
 from email.utils import parseaddr
 from typing import TYPE_CHECKING, Any, Final
 
+from jarvis.decision import attention
 from jarvis.decision import job_mail as triage
 from jarvis.decision.surrogate_route import KEY_ENV
 from jarvis.execution.tools import ToolError
@@ -465,6 +466,25 @@ class JobMail:
             lang.t("job.health.title"),
             lang.t(reason),
             now,
+        )
+        # ADR 0160: the health card keeps a snapshot too, so his answer is logged like any other.
+        local = now.astimezone()
+        pack = attention.ContextPack(
+            "job_health",
+            ledger.HEALTH_ID,
+            {"kind": "health", "reason": reason, "failures": self._failures},
+            {"hour": local.hour, "weekday": local.weekday(), "quiet": self.quiet()},
+        )
+        ledger.log_decision(
+            self._db,
+            source=pack.source,
+            event_id=pack.event_id,
+            pack_json=pack.to_json(),
+            judge_id=attention.CARD_RULE_ID,
+            judge_version="1",
+            level="card_sound",
+            reason="fixed: a mail channel health alert is a card with sound",
+            now=now,
         )
         LOGGER.warning("job mail: the mail channel is down (%s)", reason)
 
