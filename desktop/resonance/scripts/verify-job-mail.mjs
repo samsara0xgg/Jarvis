@@ -24,6 +24,9 @@ try {
   const errors = [], posts = [], deletes = [];
   let featureOn = false, noticeGets = 0, notices = [], flagStatus = 200, skipped, audioPrivate, board = [];
   const flags = [];
+  // ADR 0161: seconds per local day on a company's job pages, and job-site time that names no company (both absent on older daemons).
+  const day = back => { const d = new Date(Date.now() - back * 86_400_000); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+  let otherS;
   // ADR 0158: the daemon's standing alert rules, sent with the ledger (absent on older daemons, like `skipped`).
   const rules = [{ id: 'linkedin_alerts', value: 'ledger_only' }];
   page.on('pageerror', error => errors.push(error.message));
@@ -31,12 +34,12 @@ try {
   const mail = (id, level, extra = {}) => ({ id, kind: 'mail', title: '面试邀请 · Northwind', line: 'Northwind wants a 30 minute interview for the Co-op role.', level, text: '面试邀请 · Northwind Northwind wants a 30 minute interview.',
     at: at(3), company: 'Northwind', role: 'Backend Co-op', event_at: null, mail_kind: 'interview', ...extra });
   let ledger = [
-    { company: 'Northwind', role: 'Backend Co-op', kind: 'interview', last_at: at(3), next_event_at: new Date(Date.now() + 86_400_000).toISOString(), count: 2, mails: [
+    { company: 'Northwind', role: 'Backend Co-op', kind: 'interview', last_at: at(3), next_event_at: new Date(Date.now() + 86_400_000).toISOString(), count: 2, time_spent: [{ day: day(1), seconds: 1200 }, { day: day(0), seconds: 3600 }], time_total_s: 4800, mails: [
       { message_id: 'g-1', kind: 'interview', received_at: at(3), subject: 'Interview slots for next week', event_at: null, event_text: 'Could you do Tuesday 10:00 or Wednesday 14:00?' },
       { message_id: 'g-2', kind: 'receipt', received_at: at(60 * 24 * 3), subject: 'We received your application', event_at: null, event_text: null }] },
     { company: 'Acme Robotics', role: 'ML Intern', kind: 'rejection', last_at: at(60 * 24 * 6), next_event_at: null, count: 1, mails: [
       { message_id: 'g-3', kind: 'rejection', received_at: at(60 * 24 * 6), subject: 'Your application to Acme Robotics', event_at: null, event_text: null }] },
-    { company: 'Orbit Labs', role: 'SWE Co-op', kind: 'offer', last_at: at(60 * 5), next_event_at: null, count: 1, mails: [
+    { company: 'Orbit Labs', role: 'SWE Co-op', kind: 'offer', last_at: at(60 * 5), next_event_at: null, count: 1, time_spent: [{ day: day(0), seconds: 20 }], time_total_s: 20, mails: [
       { message_id: 'g-4', kind: 'offer', received_at: at(60 * 5), subject: 'Offer letter: SWE Co-op', event_at: null, event_text: null }] },
   ];
   await page.addInitScript(() => {
@@ -63,7 +66,7 @@ try {
     if (p === '/inherent/agent-marks') return json({ marks: {} });
     if (p === '/inherent/notices' && method === 'GET') { noticeGets++; if (featureOn) return json(audioPrivate === undefined ? { notices } : { notices, audio_private: audioPrivate }); }
     else if (p.startsWith('/inherent/notices/') && method === 'POST') { posts.push({ id: decodeURIComponent(p.split('/').pop()), body: JSON.parse(route.request().postData() || '{}') }); return json({ ok: true }); }
-    else if (p === '/inherent/jobs' && method === 'GET' && featureOn) return json(skipped ? { ledger, skipped, rules } : { ledger });
+    else if (p === '/inherent/jobs' && method === 'GET' && featureOn) return json({ ...(skipped ? { ledger, skipped, rules } : { ledger }), ...(otherS === undefined ? {} : { job_site_other_s: otherS }) });
     else if (/^\/inherent\/jobs\/[^/]+\/flag$/.test(p) && method === 'POST') {
       if (flagStatus === 404) return route.fulfill({ status: 404, contentType: 'application/json', body: '{"detail":"Not Found"}' });
       const id = decodeURIComponent(p.split('/')[3]); flags.push({ id, body: JSON.parse(route.request().postData() || '{}') });
@@ -263,6 +266,16 @@ try {
   await page.waitForSelector('.ad .jp-mails li');
   check('a company opens to its mails', await page.locator('.ad .jp-g[data-company="Northwind"] .jp-mails li').count() === 2);
   await shot('ledger', { x: 0, y: 0, width: 640, height: 640 });
+  // ADR 0161: the time column, per company, dim, only when there is some; the per-day detail opens with the company; the other-sites line only when > 0.
+  const spent = company => page.locator(`.ad .jp-g[data-company="${company}"] [data-time]`);
+  check('a company shows how long its job pages held him', /^(Spent 1 h 20 min|花了 1 小时 20 分)$/.test(await spent('Northwind').innerText()));
+  check('a company without time shows no time line', await spent('Acme Robotics').count() === 0);
+  check('under a minute is said so', /^(Spent under 1 min|花了 不到 1 分)$/.test(await spent('Orbit Labs').innerText()));
+  check('the time line is dim, not ink', await spent('Northwind').evaluate(el => getComputedStyle(el).color !== getComputedStyle(el.closest('.jp-g').querySelector('.jp-name b')).color));
+  const days = await page.locator('.ad .jp-g[data-company="Northwind"] [data-days]').innerText();
+  check('an open company lists its days, newest first', days.split(' · ').length === 2 && days.startsWith(`${new Date().getMonth() + 1}/${new Date().getDate()} `) && /(1 h|1 小时)/.test(days.split(' · ')[0]) && /(20 min|20 分)$/.test(days));
+  check('without job_site_other_s there is no other-sites line', await page.locator('.ad [data-other]').count() === 0);
+  otherS = 300; // the next reload (a delete does one) brings the other-sites line
   await page.locator('.ad li[data-id="g-2"] [data-act="delete"]').click();
   check('delete asks first and posts nothing yet', await page.locator('.ad li[data-id="g-2"] [data-act="yes"]').count() === 1 && deletes.length === 0);
   await shot('ledger-confirm', { x: 0, y: 0, width: 640, height: 640 });
@@ -272,6 +285,9 @@ try {
   await page.locator('.ad li[data-id="g-2"] [data-act="yes"]').click();
   await page.waitForFunction(() => !document.querySelector('.ad li[data-id="g-2"]'), null, { timeout: 3000 });
   check('a confirmed delete posts the mail id and the row goes', JSON.stringify(deletes) === '["g-2"]');
+  await page.waitForSelector('.ad [data-other]', { timeout: 5000 });
+  check('job-site time that names no company is its own line', /^(Other job sites spent 5 min|其他求职网站 花了 5 分)$/.test(await page.locator('.ad [data-other]').innerText()));
+  await shot('ledger-time', { x: 0, y: 0, width: 640, height: 640 });
   for (const id of ['g-1', 'g-3', 'g-4']) {
     if (!await page.locator(`li[data-id="${id}"]`).count()) {
       const company = { 'g-1': 'Northwind', 'g-3': 'Acme Robotics', 'g-4': 'Orbit Labs' }[id];

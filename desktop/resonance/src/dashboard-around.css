@@ -426,6 +426,9 @@
 .ad .jp-name small { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:var(--text-detail); color:var(--p-muted); }
 .ad .jp-meta { display:flex; flex-wrap:wrap; gap:0 12px; padding-left:18px; font-size:var(--text-label); color:var(--p-faint); font-variant-numeric:tabular-nums; }
 .ad .jp-next { color:var(--p-ink); }
+.ad .jp-time { color:var(--p-faint); }
+.ad .jp-days { margin:2px 0 0; padding-left:18px; font-size:var(--text-label); color:var(--p-faint); font-variant-numeric:tabular-nums; }
+.ad .jp-other { font-size:var(--text-label); font-variant-numeric:tabular-nums; }
 .ad .jp-mails { list-style:none; margin:4px 0 0; padding:0 0 0 18px; display:flex; flex-direction:column; gap:2px; }
 .ad .jp-mails li { display:grid; grid-template-columns:minmax(0,1fr) auto auto; align-items:center; gap:0 8px; padding:5px 0; font-size:var(--text-detail); color:var(--p-muted); }
 .ad .jp-sub { display:flex; align-items:center; gap:7px; min-width:0; }

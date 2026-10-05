@@ -27,6 +27,7 @@ from jarvis.runtime import audio_output
 from jarvis.runtime.home import MAIL_SERVER, _gmail, _letter, mail_body
 from jarvis.shared import lang
 from jarvis.state import job_ledger as ledger
+from jarvis.state import job_time, timesink
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -527,8 +528,15 @@ class JobMail:
 
         ``rules`` are the standing alert rules in force, for the ledger page to show (ADR 0158).
         """
+        now = self.now()
+        groups = ledger.list_ledger(self._db, now)
+        with timesink.snapshot(self.timesink_path) as snap:
+            found = job_time.job_time(
+                snap, job_time.companies(ledger.company_sites(self._db)), now
+            )
         return {
-            "ledger": ledger.list_ledger(self._db, self.now()),
+            "ledger": [{**g, **job_time.spent_view(found, g["company"])} for g in groups],
+            "job_site_other_s": 0 if found is None else round(found["other_s"]),
             "skipped": ledger.list_skipped(self._db),
             "rules": [{"id": "linkedin_alerts", "value": self._settings.linkedin_alerts}],
         }

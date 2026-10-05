@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -20,7 +20,7 @@ from jarvis.decision import moment as rules
 from jarvis.runtime import RuntimeBootstrapError, _moment
 from jarvis.runtime.moment import Moment, MomentSettings
 from jarvis.shared import lang
-from jarvis.state import timesink_moment
+from jarvis.state import job_time, timesink_moment
 from tests.canary._helpers import repo_root
 from tests.integration.test_job_mail import _Harness, _harness, _Jev
 
@@ -492,3 +492,147 @@ def test_unknown_behaves_exactly_as_before(
 
     assert shape(h) == shape(baseline)
     assert h.spoken == baseline.spoken >= 1
+
+
+# --- the ledger's time column ------------------------------------------------------------
+
+
+def _day(moment: datetime) -> str:
+    return moment.astimezone().date().isoformat()
+
+
+def test_the_ledger_shows_time_per_company_and_the_other_job_sites(
+    tmp_path: Path, jev: _Jev, store: FakeTimeSink
+) -> None:
+    """The ledger shows time per company and the other job sites."""
+    now = datetime.now(UTC).replace(microsecond=0)
+    h = _job_harness(tmp_path, jev, store)
+    h.job.poll_once()
+    # Ten minutes on LinkedIn jobs with Northwind in the title; 90 s of a company's own career site
+    # (Helix, by its mail domain); 30 s on a Workday host that names CGI; 60 s on an unnamed ATS.
+    store.span(
+        900,
+        300,
+        CHROME,
+        "Google Chrome",
+        at=now,
+        domain="www.linkedin.com",
+        title="Software Developer Co-op - Northwind | LinkedIn",
+        url="https://www.linkedin.com/jobs/view/1",
+    )
+    store.span(
+        300,
+        210,
+        CHROME,
+        "Google Chrome",
+        at=now,
+        domain="careers.helix.example",
+        title="Open roles",
+        url="https://careers.helix.example/roles",
+    )
+    store.span(
+        200,
+        170,
+        CHROME,
+        "Google Chrome",
+        at=now,
+        domain="cgi.wd3.myworkdayjobs.com",
+        title="Apply",
+        url="https://cgi.wd3.myworkdayjobs.com/en-US/x",
+    )
+    store.span(
+        160,
+        100,
+        CHROME,
+        "Google Chrome",
+        at=now,
+        domain="acmecorp.greenhouse.io",
+        title="Apply now",
+        url="https://boards.greenhouse.io/other/jobs/1",
+    )
+    store.span(
+        90,
+        30,
+        CHROME,
+        "Google Chrome",
+        at=now,
+        domain="www.linkedin.com",
+        title="Feed | LinkedIn",
+        url="https://www.linkedin.com/feed/",
+    )  # not jobs
+    store.span(
+        30,
+        0,
+        CHROME,
+        "Google Chrome",
+        at=now,
+        domain="www.linkedin.com",
+        title="ai Jobs | LinkedIn",
+        url="https://www.linkedin.com/jobs/search/",
+    )  # no company
+    reply = h.client.get("/inherent/jobs").json()
+    by_company = {g["company"]: g for g in reply["ledger"]}
+    spent = {name: g["time_spent"] for name, g in by_company.items()}
+
+    def seconds(name: str) -> int:
+        """Seconds."""
+        return sum(one["seconds"] for one in spent[name])
+
+    assert (seconds("Northwind"), by_company["Northwind"]["time_total_s"]) == (600, 600)
+    assert seconds("Helix") == 90
+    assert seconds("CGI") == 30
+    assert spent["Orbital"] == []
+    assert by_company["Orbital"]["time_total_s"] == 0
+    # LinkedIn's own digests make a "LinkedIn" ledger group; it never collects job-page time.
+    assert by_company["LinkedIn"]["time_total_s"] == 0
+    assert reply["job_site_other_s"] == 90  # the unnamed ATS page and the unnamed LinkedIn search
+    assert all(
+        one["day"] == _day(now) or one["day"] == _day(now - timedelta(seconds=900))
+        for one in spent["Northwind"]
+    )
+    # Titles and URLs are used to attribute, never returned.
+    assert "Northwind |" not in json.dumps(reply["ledger"][0]["time_spent"])
+
+
+def test_time_is_split_at_local_midnight_and_limited_to_fourteen_days(store: FakeTimeSink) -> None:
+    """Time is split at local midnight and limited to fourteen days."""
+    noon = datetime.combine(datetime.now(UTC).astimezone().date(), time(12)).astimezone(UTC)
+    midnight = datetime.combine(datetime.now(UTC).astimezone().date(), time.min).astimezone(UTC)
+    books = [job_time.Company("Northwind", frozenset())]
+    # 20 minutes before and 10 after this local midnight, and a span 20 days ago.
+    store.span(
+        1800,
+        0,
+        CHROME,
+        "Google Chrome",
+        at=midnight + timedelta(seconds=600),
+        domain="x.myworkdayjobs.com",
+        title="Northwind",
+    )
+    old = noon - timedelta(days=20)
+    store.span(
+        600, 0, CHROME, "Google Chrome", at=old, domain="x.myworkdayjobs.com", title="Northwind"
+    )
+    from jarvis.state import timesink  # noqa: PLC0415
+
+    with timesink.snapshot(store.path) as snap:
+        found = job_time.job_time(snap, books, noon)
+    assert found is not None
+    days = found["by_company"]["northwind"]
+    assert days == {_day(midnight - timedelta(seconds=1)): 1200.0, _day(midnight): 600.0}
+    with timesink.snapshot(tmp_unreadable(store)) as snap:
+        assert job_time.job_time(snap, books, noon) is None
+
+
+def tmp_unreadable(store: FakeTimeSink) -> Path:
+    """Tmp unreadable."""
+    return store.path.parent / "absent.sqlite"
+
+
+def test_a_missing_store_gives_an_empty_time_column(tmp_path: Path, jev: _Jev) -> None:
+    """A missing store gives an empty time column."""
+    h = _job_harness(tmp_path, jev, tmp_path / "absent.sqlite")
+    h.job.poll_once()
+    reply = h.client.get("/inherent/jobs").json()
+    assert reply["job_site_other_s"] == 0
+    assert all(g["time_spent"] == [] and g["time_total_s"] == 0 for g in reply["ledger"])

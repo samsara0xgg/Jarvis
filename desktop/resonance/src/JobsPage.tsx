@@ -11,7 +11,8 @@ export type JobMailRow = { message_id: string; kind: string; received_at: string
 export type Skipped = { message_id: string; received_at: string; sender_name?: string; sender_domain?: string; subject: string; p_job?: number };
 // `rules` (GET /inherent/jobs, absent on older daemons): the standing alert rules the daemon is running, shown as one line each; `linkedin_alerts` is `ledger_only` or `card_sound`.
 export type JobRule = { id: string; value: string };
-export type JobGroup = { company: string; role?: string; kind: string; last_at: string; next_event_at?: string | null; count: number; mails: JobMailRow[] };
+// `time_spent` / `time_total_s` (GET /inherent/jobs, ADR 0161, absent on older daemons): seconds per local day on that company's job pages over the last 14 days, from TimeSink; `job_site_other_s` (top level) is job-site time that names no company.
+export type JobGroup = { company: string; role?: string; kind: string; last_at: string; next_event_at?: string | null; count: number; mails: JobMailRow[]; time_spent?: { day: string; seconds: number }[]; time_total_s?: number };
 
 const KINDS: Record<string, [string, L]> = {
   offer: ['is-offer', ['Offer', 'Offer']], interview: ['is-interview', ['Interview', '面试']], rejection: ['is-rejection', ['Rejection', '拒信']],
@@ -26,7 +27,15 @@ export function jobStamp(iso?: string | null, withTime = false) {
   return withTime ? `${d.getMonth() + 1}/${d.getDate()} ${hhmm}` : d.toDateString() === new Date().toDateString() ? hhmm : `${d.getMonth() + 1}/${d.getDate()}`;
 }
 
-export function JobsPage({ port, ledger, skipped, rules = [], onChanged }: { port: string; ledger: JobGroup[]; skipped: Skipped[]; rules?: JobRule[]; onChanged: () => void }) {
+// 「1 小时 20 分」: whole minutes, rounded; under a minute is said as such.
+export const spentText = (seconds: number): L => {
+  const m = Math.round(seconds / 60), h = Math.floor(m / 60), r = m % 60;
+  if (m < 1) return ['under 1 min', '不到 1 分'];
+  return [`${h ? `${h} h ` : ''}${r || !h ? `${r} min` : ''}`.trim(), `${h ? `${h} 小时 ` : ''}${r || !h ? `${r} 分` : ''}`.trim()];
+};
+const dayLabel = (day: string) => { const [, m, d] = day.split('-'); return `${Number(m)}/${Number(d)}`; };
+
+export function JobsPage({ port, ledger, skipped, rules = [], otherS = 0, onChanged }: { port: string; ledger: JobGroup[]; skipped: Skipped[]; rules?: JobRule[]; otherS?: number; onChanged: () => void }) {
   const t = useT(), [open, setOpen] = useState(''), [confirm, setConfirm] = useState(''), [gone, setGone] = useState<string[]>([]), [failed, setFailed] = useState(false);
   // POST /inherent/jobs/{id}/flag { reaction: 'should_alert' } says a held-back mail was job mail after all; a 404 means the daemon has no such route, and the buttons go.
   const [skipOpen, setSkipOpen] = useState(false), [flagged, setFlagged] = useState<string[]>([]), [noFlag, setNoFlag] = useState(false);
@@ -45,6 +54,7 @@ export function JobsPage({ port, ledger, skipped, rules = [], onChanged }: { por
   const linkedin = rules.find(r => r.id === 'linkedin_alerts')?.value;
   return <div className="jp">
     {linkedin && <p className="pg-sec muted jp-rule" data-rule="linkedin_alerts">{linkedin === 'ledger_only' ? t(['LinkedIn job alerts: ledger only, no alert', 'LinkedIn 职位提醒：只进账本，不提醒']) : t(['LinkedIn job alerts: a card with sound', 'LinkedIn 职位提醒：出卡片带提示音'])}</p>}
+    {otherS > 0 && <p className="pg-sec muted jp-other" data-other>{t(['Other job sites', '其他求职网站'])} {t(['spent', '花了'])} {t(spentText(otherS))}</p>}
     {failed && <p className="pg-sec muted is-warm" role="alert">{t(['That didn’t go through. Try again.', '没成功，请再试一次。'])}</p>}
     {!groups.length && <p className="pg-sec muted">{t(['No job mail yet. Jarvis adds it here as it comes in.', '还没有求职邮件，收到了会记在这里。'])}</p>}
     {groups.map((g, i) => { const key = `${g.company}|${g.role ?? ''}|${i}`, [cls, name] = jobKind(g.kind), on = open === key;
@@ -55,7 +65,9 @@ export function JobsPage({ port, ledger, skipped, rules = [], onChanged }: { por
           <em className={`jk ${cls}`}>{t(name)}</em></button>
         <span className="jp-meta"><span>{t(['Last mail', '最近来信'])} {jobStamp(g.last_at, true)}</span>
           {g.next_event_at && <span className="jp-next">{t(['Next', '下一个'])} {jobStamp(g.next_event_at, true)}</span>}
-          <span>{t([`${g.mails.length} mail${g.mails.length > 1 ? 's' : ''}`, `${g.mails.length} 封`])}</span></span>
+          <span>{t([`${g.mails.length} mail${g.mails.length > 1 ? 's' : ''}`, `${g.mails.length} 封`])}</span>
+          {(g.time_total_s ?? 0) > 0 && <span className="jp-time" data-time>{t(['Spent', '花了'])} {t(spentText(g.time_total_s!))}</span>}</span>
+        {on && (g.time_spent?.length ?? 0) > 0 && <p className="jp-days" data-days>{[...g.time_spent!].reverse().map(d => `${dayLabel(d.day)} ${t(spentText(d.seconds))}`).join(' · ')}</p>}
         {on && <ul className="jp-mails">{g.mails.map(m => { const [mc, mn] = jobKind(m.kind);
           return <li key={m.message_id} data-id={m.message_id}>
             <span className="jp-sub"><em className={`jk ${mc}`}>{t(mn)}</em><span title={m.subject}>{m.subject}</span></span>
