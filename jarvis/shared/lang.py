@@ -1004,6 +1004,17 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
         "zh": "最近两天有 {n} 封求职邮件，其中 {x} 封面试",
         "en": "{n} job emails in the last two days, {x} about interviews",
     },
+    # One company and one kind of mail in the whole summary: the company and the kind word (ADR 0159).
+    "job.digest.title_company": {
+        "zh": "{company} {kind}有 {n} 封新邮件",
+        "en": "{n} new {kind} emails from {company}",
+    },
+    "job.digest.kind.offer": {"zh": "offer", "en": "offer"},
+    "job.digest.kind.interview": {"zh": "面试", "en": "interview"},
+    "job.digest.kind.rejection": {"zh": "拒信", "en": "rejection"},
+    "job.digest.kind.receipt": {"zh": "申请回执", "en": "receipt"},
+    "job.digest.kind.job_other": {"zh": "求职", "en": "job"},
+    "job.digest.kind.other": {"zh": "账号通知", "en": "account notice"},
     # ADR 0155: the mail channel's health alert: a title and one line naming the reason.
     "job.health.title": {"zh": "邮件通道不通了", "en": "Mail channel is down"},
     "job.health.auth": {"zh": "Gmail 需要重新登录。", "en": "Gmail needs you to sign in again."},

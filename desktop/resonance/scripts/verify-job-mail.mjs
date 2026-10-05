@@ -165,7 +165,8 @@ try {
     { id: 'i-1', title: '面试邀请 · Northwind', company: 'Northwind', role: 'Backend Co-op', mail_kind: 'interview', at: at(30), event_at: new Date(Date.now() + 2 * 86_400_000).toISOString() },
     { id: 'i-2', title: '拒信 · Acme Robotics', company: 'Acme Robotics', role: 'ML Intern', mail_kind: 'rejection', at: at(120) },
     { id: 'i-3', title: '其他求职邮件 · Orbit Labs', company: 'Orbit Labs', role: 'SWE Co-op', mail_kind: 'job_other', at: at(300) }];
-  notices = [...notices, { id: 'd-1', kind: 'digest', title: '最近两天有 3 封求职邮件，其中 1 封面试', line: '', level: 'card', text: '最近两天有 3 封求职邮件，其中 1 封面试', at: at(1), link: 'jobs', items }];
+  const base = { kind: 'digest', title: '最近两天有 3 封求职邮件，其中 1 封面试', line: '', level: 'card', text: '最近两天有 3 封求职邮件，其中 1 封面试', at: at(1), link: 'jobs' };
+  notices = [...notices, { ...base, id: 'd-1', items }];
   await shows(); await settle();
   const digest = await page.locator('.notch-note.is-open .nc-jobs').innerText();
   check('the digest says how many and how many interviews', /最近两天有 3 封求职邮件，其中 1 封面试/.test(digest));
@@ -174,8 +175,23 @@ try {
   await shot('digest');
   await page.keyboard.press('Escape'); await gone();
   check('Esc on the digest sends dismissed', of('d-1').at(-1) === '{"action":"feedback","reaction":"dismissed"}');
+  // ADR 0159: a summary row is one company and thread, with `count` mails. One company, one kind: the title carries company and
+  // count, the lone row does not repeat the count; a mixed batch keeps the counts of the rows that hold more than one mail.
+  const rc = (id, extra) => ({ id, company: 'Reliable Controls', role: 'Firmware QA Analyst Co-op', mail_kind: 'interview', at: at(20), count: 3, ...extra });
+  notices = [{ ...base, id: 'd-3', title: 'Reliable Controls 面试有 3 封新邮件', items: [rc('r-1')] }];
+  await shows(); await settle();
+  const one = await page.locator('.notch-note.is-open .nc-jobs').innerText();
+  check('a grouped summary says company and kind in its title', /Reliable Controls 面试有 3 封新邮件/i.test(one));
+  check('one grouped row: kind, company and role, and the count is not repeated', await page.locator('.notch-note.is-open .nc-jobrow').count() === 1 && /Interview|面试/.test(one) && /· Firmware QA Analyst Co-op/.test(one) && !/封往来|emails/.test(one));
+  await page.keyboard.press('Escape'); await gone();
+  notices = [{ ...base, id: 'd-4', title: '最近两天有 4 封求职邮件，其中 3 封面试', items: [rc('r-2'), { id: 'r-3', company: 'Acme Robotics', role: '', mail_kind: 'rejection', at: at(120), count: 1 }] }];
+  await shows(); await settle();
+  const mixed = await page.locator('.notch-note.is-open .nc-jobrows li').allInnerTexts();
+  check('a mixed summary shows the count of a multi-mail row only', mixed.length === 2 && /Reliable Controls · Firmware QA Analyst Co-op · (3 封往来|3 emails)/.test(mixed[0].replace(/\s+/g, ' ')) && !/往来|emails|·/.test(mixed[1]));
+  await shot('digest-mixed');
+  await page.keyboard.press('Escape'); await gone();
   // Its button opens the Dashboard on the job ledger and sends no dismissed.
-  notices = [{ ...notices.at(-1), id: 'd-2', items }];
+  notices = [{ ...base, id: 'd-2', items }];
   await shows(); await settle();
   check('the summary has one button, the job list', await page.locator('.notch-note.is-open .nc-jobs .nc-open-jobs').count() === 1);
   await page.locator('.notch-note.is-open .nc-open-jobs').click();

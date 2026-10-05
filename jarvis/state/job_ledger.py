@@ -46,6 +46,8 @@ INTERVIEWING: Final[frozenset[str]] = frozenset({"offer", "interview"})
 # Digest order: what Allen wants first.
 _RANK: Final[dict[str, int]] = {"offer": 0, "interview": 1, "rejection": 2}
 _OTHER_RANK: Final[int] = 3
+# An interview time that was not read as a date shows on a summary row only when it is this short.
+EVENT_TEXT_MAX: Final[int] = 24
 
 _SCHEMA: Final[str] = """
 CREATE TABLE IF NOT EXISTS job_mail (
@@ -519,62 +521,104 @@ def _summarised(rows: list[sqlite3.Row], now: datetime) -> list[sqlite3.Row]:
     return [rows[i] for i in sorted(marked)]
 
 
+def _rank(row: sqlite3.Row) -> int:
+    return _RANK.get(row["kind"], _OTHER_RANK)
+
+
+def _group_item(group: list[sqlite3.Row], quiet: str) -> dict[str, Any]:
+    """One summary row for the alerts of one company and thread (``group`` is best kind first).
+
+    Kind and title are the most important mail's; the role is the longest one stored in the
+    group (the most specific); ``count`` is the mails; ``at`` the latest; the event is the
+    latest mail's time, else its short sentence, else none.
+    """
+    item = _notice(group[0], quiet)
+    latest = sorted(group, key=lambda row: row["created_at"], reverse=True)
+    sounding = [row for row in group if shown_level(row["level"], quiet) in SOUNDING]
+    dated = next((row for row in latest if row["event_at"]), None)
+    said = next((row for row in latest if 0 < len(_short(row)) <= EVENT_TEXT_MAX), None)
+    return {
+        **item,
+        "level": shown_level(sounding[0]["level"], quiet) if sounding else item["level"],
+        "role": max((row["role"] for row in group), key=len),
+        "at": latest[0]["created_at"],
+        "event_at": dated["event_at"] if dated else None,
+        "event_text": None if dated or not said else _short(said),
+        "count": len(group),
+    }
+
+
+def _short(row: sqlite3.Row) -> str:
+    return str(row["event_text"] or "").strip()
+
+
+def _summary(rows: list[sqlite3.Row], quiet: str) -> dict[str, Any]:
+    """The one summary notice for these mail alerts, grouped by company and thread."""
+    rows = sorted(rows, key=_rank)
+    groups: dict[tuple[str, str], list[sqlite3.Row]] = {}
+    for row in rows:
+        thread = row["thread_id"] or row["message_id"]
+        groups.setdefault((row["company"].casefold(), thread), []).append(row)
+    items = [_group_item(group, quiet) for group in groups.values()]
+    kinds = {row["kind"] for row in rows}
+    companies = {row["company"].casefold() for row in rows}
+    interviews = sum(row["kind"] in INTERVIEWING for row in rows)
+    if len(kinds) == 1 and len(companies) == 1 and rows[0]["company"]:
+        kind = rows[0]["kind"] if rows[0]["kind"] in KINDS else "job_other"
+        title = lang.t(
+            "job.digest.title_company",
+            company=rows[0]["company"],
+            kind=lang.t(f"job.digest.kind.{kind}"),
+            n=len(rows),
+        )
+    elif interviews:
+        title = lang.t("job.digest.title_interviews", n=len(rows), x=interviews)
+    else:
+        title = lang.t("job.digest.title", n=len(rows))
+    sound = any(item["level"] in SOUNDING for item in items)
+    return {
+        "id": "digest-" + "-".join(row["id"] for row in rows),
+        "kind": "digest",
+        "title": title,
+        "line": items[0]["title"],
+        "level": "card_sound" if sound else "card",
+        "text": f"{title} {items[0]['title']}",
+        "at": max(item["at"] for item in items),
+        "company": "",
+        "role": "",
+        "event_at": None,
+        "mail_kind": items[0]["mail_kind"],
+        "link": "jobs",
+        "items": items,
+    }
+
+
 def alerts_for_client(path: Path, quiet: str, now: datetime) -> list[dict[str, Any]]:
     """The pending alerts a client may show at this quiet level (ADR 0153, 0158), as notices.
 
     ``no-pop`` and ``dnd`` return nothing and leave every alert pending. ``quiet`` returns the
     cards with the sound taken off. Mail alerts are one summary notice when two or more waited
-    or three came within ``BURST_WINDOW`` (the summary never speaks and links to the ledger);
-    other alerts are their own notices. Alerts older than seven days, and those of a mail Allen
-    deleted, are not returned.
+    or three came within ``BURST_WINDOW`` (the summary never speaks and links to the ledger; its
+    rows are one per company and thread, ADR 0159); other alerts are their own notices. Alerts
+    older than seven days, and those of a mail Allen deleted, are not returned.
     """
     if quiet in ("no-pop", "dnd"):
         return []
     with _db(path) as conn:
         rows = conn.execute(
-            "SELECT a.id, a.level, a.title, a.line, a.created_at,"
+            "SELECT a.id, a.message_id, a.level, a.title, a.line, a.created_at,"
             " coalesce(m.company, '') AS company, coalesce(m.role, '') AS role, m.event_at,"
-            " coalesce(m.kind, 'health') AS kind"
+            " m.event_text, m.thread_id, coalesce(m.kind, 'health') AS kind"
             " FROM job_alert a LEFT JOIN job_mail m ON m.message_id = a.message_id"
             " WHERE a.state = 'pending' AND coalesce(m.deleted, 0) = 0 AND a.created_at >= ?"
             " ORDER BY a.created_at, a.id",
             (_stamp(now - ALERT_KEEP),),
         ).fetchall()
     mails = [row for row in rows if row["kind"] != "health"]
-    merged = {row["id"] for row in _summarised(mails, now)}
-    notices = [_notice(row, quiet) for row in rows if row["id"] not in merged]
-    if not merged:
-        return notices
-    items = [
-        _notice(row, quiet)
-        for row in sorted(mails, key=lambda r: _RANK.get(r["kind"], _OTHER_RANK))
-        if row["id"] in merged
-    ]
-    interviews = sum(item["mail_kind"] in INTERVIEWING for item in items)
-    title = (
-        lang.t("job.digest.title_interviews", n=len(items), x=interviews)
-        if interviews
-        else lang.t("job.digest.title", n=len(items))
-    )
-    sound = any(item["level"] in SOUNDING for item in items)
-    return [
-        *notices,
-        {
-            "id": "digest-" + "-".join(item["id"] for item in items),
-            "kind": "digest",
-            "title": title,
-            "line": items[0]["title"],
-            "level": "card_sound" if sound else "card",
-            "text": f"{title} {items[0]['title']}",
-            "at": max(item["at"] for item in items),
-            "company": "",
-            "role": "",
-            "event_at": None,
-            "mail_kind": items[0]["mail_kind"],
-            "link": "jobs",
-            "items": items,
-        },
-    ]
+    merged = _summarised(mails, now)
+    ids = {row["id"] for row in merged}
+    notices = [_notice(row, quiet) for row in rows if row["id"] not in ids]
+    return [*notices, _summary(merged, quiet)] if merged else notices
 
 
 def alert_ids(notice_id: str) -> Sequence[str]:

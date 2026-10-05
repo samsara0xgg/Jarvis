@@ -646,6 +646,100 @@ def _pending(h: _Harness, kinds: list[str], *, level: str, age: timedelta) -> No
         job_ledger.create_alert(h.db, f"p-{i}", level, f"T{i}", "line", made)
 
 
+def _thread_mails(h: _Harness, mails: list[dict[str, Any]], *, age: timedelta) -> None:
+    """One job_mail row and one pending alert per dict (company, thread, kind, role, event...)."""
+    h.job.now = lambda: NOW
+    made = NOW - age
+    for i, mail in enumerate(mails):
+        row = {"message_id": f"g-{i}", "subject": "s", "role": "", **mail}
+        row["received_at"] = (made + timedelta(seconds=i)).isoformat()
+        job_ledger.upsert_mail(h.db, row, made)
+        at = made + timedelta(seconds=i)
+        job_ledger.create_alert(h.db, f"g-{i}", "card", f"T{i}", "line", at)
+
+
+def test_the_summary_is_one_row_per_company_and_thread(tmp_path: Path, jev: _Jev) -> None:
+    """Allen's three Reliable Controls mails are one row: best kind, longest role, count, latest."""
+    h = _harness(tmp_path, jev, [])
+    rc = {"company": "Reliable Controls", "thread_id": "t-rc", "kind": "interview"}
+    _thread_mails(
+        h,
+        [
+            {**rc, "role": ""},
+            {**rc, "role": "Firmware QA Analyst Co-op"},
+            {**rc, "role": "Firmware QA Co-op"},
+        ],
+        age=timedelta(minutes=20),
+    )
+    (summary,) = h.notices()
+    (row,) = summary["items"]
+    assert summary["title"] == "Reliable Controls 面试有 3 封新邮件"
+    assert summary["title"] == lang.t(
+        "job.digest.title_company",
+        company="Reliable Controls",
+        kind=lang.t("job.digest.kind.interview"),
+        n=3,
+    )
+    assert (row["company"], row["role"], row["mail_kind"]) == (
+        "Reliable Controls",
+        "Firmware QA Analyst Co-op",
+        "interview",
+    )
+    assert row["count"] == 3
+    assert row["at"] == (NOW - timedelta(minutes=20) + timedelta(seconds=2)).isoformat(
+        timespec="seconds"
+    )
+    lang.set_language("en")
+    (english,) = h.notices()
+    assert english["title"] == "3 new interview emails from Reliable Controls"
+    # A seen summary settles all three alerts.
+    seen = h.client.post(f"/inherent/notices/{summary['id']}", json={"action": "seen"})
+    assert seen.status_code == 200
+    assert h.notices() == []
+
+
+def test_a_mixed_summary_groups_by_thread_ranks_kinds_and_keeps_the_old_header(
+    tmp_path: Path, jev: _Jev
+) -> None:
+    """Offer outranks interview in a thread; threads stay apart; a mail with no thread is alone."""
+    h = _harness(tmp_path, jev, [])
+    _thread_mails(
+        h,
+        [
+            {"company": "Acme", "thread_id": "t-a", "kind": "rejection", "role": "ML Intern"},
+            {"company": "Helix", "thread_id": "t-h", "kind": "interview", "role": "SWE"},
+            {"company": "Helix", "thread_id": "t-h", "kind": "offer", "role": "SWE Co-op"},
+            {"company": "Helix", "thread_id": "t-h2", "kind": "job_other"},
+            {"company": "Helix", "thread_id": None, "kind": "job_other"},
+        ],
+        age=timedelta(minutes=20),
+    )
+    (summary,) = h.notices()
+    assert [(i["mail_kind"], i["count"]) for i in summary["items"]] == [
+        ("offer", 2),
+        ("rejection", 1),
+        ("job_other", 1),
+        ("job_other", 1),
+    ]
+    assert summary["items"][0]["role"] == "SWE Co-op"
+    # Mails, not rows: five mails, the offer and the interview count as interviews.
+    assert summary["title"] == lang.t("job.digest.title_interviews", n=5, x=2)
+
+    # One company but two kinds of mail is not the company header either.
+    other = _harness(tmp_path / "two", jev, [])
+    _thread_mails(
+        other,
+        [
+            {"company": "Helix", "thread_id": "t-1", "kind": "receipt"},
+            {"company": "Helix", "thread_id": "t-1", "kind": "job_other"},
+        ],
+        age=timedelta(minutes=20),
+    )
+    (summary,) = other.notices()
+    assert summary["title"] == lang.t("job.digest.title", n=2)
+    assert len(summary["items"]) == 1
+
+
 def test_a_summary_with_no_interview_has_no_interview_clause(tmp_path: Path, jev: _Jev) -> None:
     """The count of interviews is only said when it is more than zero, in both languages."""
     h = _harness(tmp_path, jev, [])
