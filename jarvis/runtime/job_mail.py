@@ -615,21 +615,22 @@ class JobMail:
 def repair(db: Path, linkedin_alerts: str) -> int:
     """Recompute what the current rules read from each ledger row's stored header (ADR 0158).
 
-    Idempotent and offline: only the stored sender name, domain and subject are used, never
-    Gmail (the body is not stored); returns how many rows changed. A stored role that is a
-    generic word, or that the subject holds but the rules no longer read from it, is cleared;
-    a role the subject does not hold was read from the body and stays. LinkedIn social mail
-    is hidden and shown as held back, an account notice becomes kind ``other``, and the
-    pending alerts of a mail that is now ledger only, ``other`` or hidden end as done. A mail
-    Allen flagged is never touched by the routing rules.
+    Idempotent and offline: only the stored sender name, domain and subject and the body start
+    kept in the decision snapshots (ADR 0162) are used, never Gmail; returns how many rows
+    changed. A stored role that is a generic word, or that the subject holds but the rules no
+    longer read from it, is cleared; a role the subject does not hold was read from the body and
+    stays. LinkedIn social mail is hidden and shown as held back, an account notice becomes kind
+    ``other``, and the pending alerts of a mail that is now ledger only, ``other`` or hidden end
+    as done. A mail Allen flagged is never touched by the routing rules.
     """
     changed = 0
     for row in ledger.mail_rows(db):
         message_id, subject = row["message_id"], row["subject"] or ""
         name, domain = row["sender_name"] or "", row["sender_domain"] or ""
         fixes: dict[str, str | int] = {}
-        company = triage.company_of(name, domain, subject)
-        role = triage.role_of(subject, "")
+        body = ledger.body_excerpt(db, message_id)  # kept locally since ADR 0162; '' before it
+        company = triage.company_of(name, domain, subject, body)
+        role = triage.role_of(subject, body)
         old = (row["role"] or "").casefold()
         if not role and old not in subject.casefold() and old not in triage.GENERIC_ROLES:
             role = row["role"] or ""

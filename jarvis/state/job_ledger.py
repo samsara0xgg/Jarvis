@@ -370,6 +370,17 @@ def mail_rows(path: Path) -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
+def body_excerpt(path: Path, message_id: str) -> str:
+    """The newest local body start kept for a mail in its decision snapshots, or ''."""
+    with _db(path) as conn:
+        row = conn.execute(
+            "SELECT body_excerpt FROM job_decision"
+            " WHERE message_id = ? AND body_excerpt IS NOT NULL ORDER BY id DESC LIMIT 1",
+            (message_id,),
+        ).fetchone()
+    return row["body_excerpt"] if row else ""
+
+
 def update_mail(path: Path, message_id: str, fields: Mapping[str, str | int]) -> None:
     """Change the typed facts of one ledger row (``company``, ``role``, ``kind``, ``deleted``)."""
     names = [name for name in fields if name in _EDITABLE]

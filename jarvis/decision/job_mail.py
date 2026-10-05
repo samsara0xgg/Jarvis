@@ -306,7 +306,8 @@ _LINKEDIN: Final = "linkedin.com"
 _SOCIAL: Final = re.compile(
     r"\brecently posted\b|\bhired near you\b|\bis popular in your network\b"
     r"|\bsomeone at .+ you may know\b|\bstarted a new (?:position|job|role)\b"
-    r"|\bwork anniversary\b|\bnew connections?\b|\bwants to connect\b|\bviewed your profile\b",
+    r"|\bwork anniversary\b|\bnew connections?\b|\bwants to connect\b|\bviewed your profile\b"
+    r"|\bprofile was viewed\b|\bnew profile views?\b|\bappeared in \d+ search",
     re.IGNORECASE,
 )
 _ALERT_SUBJECT: Final = re.compile(r"\bis hiring\b|\bnew jobs?\b", re.IGNORECASE)
@@ -322,7 +323,7 @@ def _is_linkedin(domain: str) -> bool:
 
 
 def is_social(domain: str, subject: str) -> bool:
-    """LinkedIn's social activity ("X recently posted", "X hired near you"): not job mail."""
+    """LinkedIn's social news and profile-activity notices ("X recently posted"): not job mail."""
     return _is_linkedin(domain) and _SOCIAL.search(subject) is not None
 
 
@@ -371,6 +372,8 @@ _SUBDOMAINS: Final = frozenset(
         "mailer",
     },
 )
+# A capitalised company name and its possessive, kept out of the role that follows it.
+_COMPANY_POSSESSIVE: Final = r"(?-i:[A-Z])[\w&.-]*(?:\s+(?-i:[A-Z])[\w&.-]*){0,3}['\u2019]s\s+"
 # What ends a role in a subject: a bracket, a comma (a requisition id follows), an id like J0926.
 _ROLE_END: Final = r"(?:\s+co-?op)?(?:\s*\(|\s*,|\s+[A-Z]\d{3,}|$)"
 _ROLE_PATTERNS: Final[tuple[re.Pattern[str], ...]] = tuple(
@@ -380,6 +383,10 @@ _ROLE_PATTERNS: Final[tuple[re.Pattern[str], ...]] = tuple(
         rf"\backnowledg\w*\s*[-:\u2013]\s*(?:co-?op\s*[-:\u2013]\s*)?(.{{3,60}}?){_ROLE_END}",
         r"\b(?:for|to|offer\s+you)\s+the\s+(.{3,80}?)\s+(?:position|role|opening|opportunity)\b",
         r"\b(?:for|to)\s+the\s+(.{3,80}?(?:co-?op|intern(?:ship)?))\b",
+        # "applying to Cambio Earth's QA & Test Automation Developer Co-op position"
+        rf"\bapplying\s+(?:for|to)\s+(?:the\s+)?(?:{_COMPANY_POSSESSIVE})?(.{{3,80}}?)\s+(?:position|role|opening|job)\b",
+        # "the QA Engineer position": a capitalised start keeps "the next role" out
+        r"\bthe\s+((?-i:[A-Z])[^.\n]{2,79}?)\s+(?:position|role)\b",
         r"\bapplication\s+(?:for|to)\s+(?:the\s+)?(.{3,80}?)(?:\s+(?:position|role)\b|\s+at\b|\s+with\b|[.,;:!\n]|$)",
         r"[-:|\u2013]\s*(.{3,60}?(?:co-?op|intern(?:ship)?|developer|engineer|analyst))\s*(?:[-:|\u2013(]|$)",
     )
@@ -494,6 +501,15 @@ _TAILS: Final = frozenset(
         "industries",
     },
 )
+# A word that names a role or department: after a possessive it is not part of the company.
+_ROLE_WORD: Final = re.compile(
+    r"(?:qa|test(?:ing)?|engineering|software|hardware|firmware|data|backend|frontend|"
+    r"full-?stack|product|design|marketing|sales|finance|research|platform|devops|security|"
+    r"it|hr|operations|mechanical|electrical|summer|winter|fall|spring|co-?op|intern(?:ship)?|"
+    r"developer|engineer|analyst|team|department|group)\b",
+    re.IGNORECASE,
+)
+_POSSESSIVE: Final = re.compile(r"['\u2019]s\s+(.+)$")
 _PERSON_WORD: Final = re.compile(r"[A-Z][a-z]+(?:[-'\u2019][A-Z]?[a-z]+)*\.?|[A-Z]\.")
 # A subject's leading "Company - Invitation to Interview" segment is not a company when it says
 # what the mail is, and a word after "at/from/to" is not one when it is one of these.
@@ -549,6 +565,14 @@ def _is_person(name: str, label: str) -> bool:
     return not label or label not in re.sub(r"\W", "", name).lower()
 
 
+def _unpossessive(name: str) -> str:
+    """``Cambio Earth's QA`` -> ``Cambio Earth``: a possessive and the role word after it go."""
+    found = _POSSESSIVE.search(name)
+    if found and _ROLE_WORD.match(found[1]):
+        return name[: found.start()]
+    return name
+
+
 def _named_in(text: str) -> str:
     """The company a subject or body names, or '' when none reads.
 
@@ -560,7 +584,7 @@ def _named_in(text: str) -> str:
     if lead and not _SUBJECT_WORDS.search(lead[1]) and not _is_person(lead[1].strip(), ""):
         return lead[1].strip()
     for found in _AFTER_PREPOSITION.finditer(text):
-        name = found[1].strip(" .,-")
+        name = _unpossessive(found[1].strip(" .,-")).strip(" .,-")
         if not _SUBJECT_WORDS.search(name):
             return name
     return ""

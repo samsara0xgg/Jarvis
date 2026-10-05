@@ -165,6 +165,24 @@ LINKEDIN = [
         "Can we talk Tuesday?",
     ),
 ]
+# ADR 0164: LinkedIn profile-activity notices are held back like social news; an interview InMail
+# that mentions the profile in passing and a "Job Alerts" digest are not.
+PROFILE = [
+    _mail(
+        "searches",
+        "LinkedIn <notifications-noreply@linkedin.com>",
+        "You appeared in 5 searches",
+        "Hi",
+    ),
+    _mail(
+        "views",
+        "LinkedIn <notifications-noreply@linkedin.com>",
+        "Your profile was viewed 3 times",
+        "Hi",
+    ),
+    LINKEDIN[2],
+    LINKEDIN[5],
+]
 # subject -> (header probabilities, body probabilities); a body entry only for mail that gets read.
 JOB, MAYBE, NOT = "job_related", "maybe_job", "not_job"
 
@@ -216,6 +234,8 @@ ANSWERS: dict[str, tuple[dict[str, float], dict[str, float] | None]] = {
         _odds(job_related=0.9),
         _odds(interview=0.9),
     ),
+    "You appeared in 5 searches": (_odds(maybe_job=0.7, not_job=0.1), None),
+    "Your profile was viewed 3 times": (_odds(maybe_job=0.7, not_job=0.1), None),
 }
 
 
@@ -945,6 +965,96 @@ def test_the_role_is_read_from_the_subject_or_body_and_never_a_generic_word(
 ) -> None:
     """A role comes from known patterns; with none, it is empty."""
     assert triage.role_of(subject, body) == role
+
+
+CAMBIO_BODY = (
+    "Hi Allen,\n\nThank you for applying to Cambio Earth's QA & Test Automation Developer Co-op"
+    " position. We appreciate the time you took. While you were not selected for an interview"
+    " this time, we will keep your resume on file."
+)
+
+
+@pytest.mark.parametrize(
+    ("name", "domain", "subject", "body", "company"),
+    [
+        # Allen's real rejection mail: the possessive and the department word are not the company.
+        ("Maren Ingle", "app.bamboohr.com", "Cambio Earth - Update", CAMBIO_BODY, "Cambio Earth"),
+        (
+            "Pat Doe",
+            "greenhouse.io",
+            "Update",
+            "Please join Acme's Engineering team.",
+            "Acme",
+        ),
+        (
+            "Pat Doe",
+            "greenhouse.io",
+            "Update",
+            "Thanks for applying to Cambio Earth.",
+            "Cambio Earth",
+        ),
+        # A possessive that is the name stays.
+        (
+            "Pat Doe",
+            "greenhouse.io",
+            "Update",
+            "Please join Lowe's Burgers today.",
+            "Lowe's Burgers",
+        ),
+    ],
+)
+def test_a_possessive_and_the_role_word_after_it_are_not_the_company(
+    name: str, domain: str, subject: str, body: str, company: str
+) -> None:
+    """The company is Cambio Earth, not Cambio Earth's QA: role words after the 's go."""
+    assert triage.company_of(name, domain, subject, body) == company
+
+
+@pytest.mark.parametrize(
+    ("subject", "body", "role"),
+    [
+        ("Cambio Earth - Update", CAMBIO_BODY, "QA & Test Automation Developer Co-op"),
+        ("Update", "Thank you for applying to the Data Analyst role at Acme.", "Data Analyst"),
+        ("Update", "Please review the QA Engineer position details.", "QA Engineer"),
+        # A lowercase word after "the" is no role, and the generic words stay out.
+        ("Update", "We filled the next position. Thanks for the job role.", ""),
+    ],
+)
+def test_the_role_is_read_from_applying_to_a_company_s_role_position(
+    subject: str, body: str, role: str
+) -> None:
+    """The company's possessive is not part of the role; capitals and the ampersand are kept."""
+    assert triage.role_of(subject, body) == role
+
+
+@pytest.mark.parametrize(
+    ("name", "domain", "subject", "social"),
+    [
+        ("LinkedIn", "linkedin.com", "You appeared in 5 searches", True),
+        ("LinkedIn", "linkedin.com", "You appeared in 12 search appearances this week", True),
+        ("LinkedIn", "linkedin.com", "Your profile was viewed 3 times", True),
+        ("LinkedIn", "linkedin.com", "12 people viewed your profile", True),
+        ("LinkedIn", "linkedin.com", "You have 4 new profile views", True),
+        ("LinkedIn", "linkedin.com", "1 new profile view", True),
+        # Not profile activity: job alerts, digests, interview and offer InMail, other senders.
+        ("LinkedIn Job Alerts", "linkedin.com", "Machine Learning Engineer II at TD", False),
+        ("LinkedIn Job Alerts", "linkedin.com", "5 new jobs for Software Developer", False),
+        (
+            "Jane Recruiter",
+            "linkedin.com",
+            "Jane, interview for the Software Developer Co-op",
+            False,
+        ),
+        ("Jane Recruiter", "linkedin.com", "Offer of employment at Acme", False),
+        ("Acme", "acme.example", "You appeared in 5 searches", False),
+    ],
+)
+def test_linkedin_profile_activity_is_social_and_nothing_else_is(
+    name: str, domain: str, subject: str, *, social: bool
+) -> None:
+    """The profile-activity subjects join the social rule; real job mail does not."""
+    assert triage.is_social(domain, subject) is social
+    assert not social or not triage.is_alert_digest(name, domain, subject)
 
 
 def test_the_repair_pass_fixes_stored_rows_offline_and_is_idempotent(
@@ -1942,3 +2052,110 @@ def test_a_disconnect_between_polls_downgrades_what_the_route_serves(
     health.device = dict(SPEAKERS)
     reply = health.client.get("/inherent/notices").json()
     assert [n["level"] for n in reply["notices"]] == ["card"]
+
+
+def test_profile_activity_mail_is_held_back_unread_and_job_mail_is_not(
+    tmp_path: Path, jev: _Jev
+) -> None:
+    """A profile-activity notice is a rule hold: not asked, not in the ledger, in 被拦下."""
+    h = _harness(tmp_path, jev, PROFILE, linkedin_alerts="ledger_only")
+    h.job.poll_once()
+
+    assert dict(h.sql("SELECT message_id, verdict FROM job_seen")) == {
+        "m-searches": "not_job",
+        "m-views": "not_job",
+        "m-alert": "job",
+        "m-inmail": "job",
+    }
+    assert len(jev.asked("kind")) == 2  # only the digest and the InMail were typed
+    assert {one["subject"] for one in h.client.get("/inherent/jobs").json()["skipped"]} == {
+        "You appeared in 5 searches",
+        "Your profile was viewed 3 times",
+    }
+    assert {m for (m,) in h.sql("SELECT message_id FROM job_mail")} == {"m-alert", "m-inmail"}
+    assert (
+        h.sql("SELECT message_id FROM job_alert WHERE message_id IN ('m-searches', 'm-views')")
+        == []
+    )
+    assert (
+        h.sql("SELECT judge, verdict FROM job_decision WHERE stage = 'rule'")
+        == [("local-rule/social-v1", "not_job")] * 2
+    )
+    assert h.sql("SELECT kind FROM job_mail WHERE message_id = 'm-inmail'") == [("interview",)]
+
+
+def test_the_repair_pass_hides_a_stored_profile_activity_row_and_rereads_the_cambio_row(
+    tmp_path: Path, jev: _Jev
+) -> None:
+    """Both of today's misreads are mended offline, once, and a flagged mail is left alone."""
+    h = _harness(tmp_path, jev, [])
+    head = {
+        "received_at": NOW.isoformat(),
+        "name": "Maren Ingle",
+        "domain": "app.bamboohr.com",
+        "subject": "Cambio Earth - Update",
+    }
+    for key, name, domain, subject, kind, company in (
+        (
+            "cambio",
+            "Maren Ingle",
+            "app.bamboohr.com",
+            "Cambio Earth - Update",
+            "rejection",
+            "Cambio Earth's QA",
+        ),
+        (
+            "searches",
+            "LinkedIn",
+            "linkedin.com",
+            "You appeared in 5 searches",
+            "job_other",
+            "LinkedIn",
+        ),
+        (
+            "flagged",
+            "LinkedIn",
+            "linkedin.com",
+            "You appeared in 9 searches",
+            "job_other",
+            "LinkedIn",
+        ),
+    ):
+        job_ledger.upsert_mail(
+            h.db,
+            {
+                "message_id": key,
+                "received_at": NOW.isoformat(),
+                "sender_name": name,
+                "sender_domain": domain,
+                "subject": subject,
+                "kind": kind,
+                "company": company,
+                "role": "",
+            },
+            NOW,
+        )
+        job_ledger.record_seen(h.db, key, "job", NOW, p_job=0.8)
+        job_ledger.create_alert(h.db, key, "card_sound", "t", "l", NOW)
+    job_ledger.record_decision(
+        h.db, "cambio", "body", "job", NOW, head=head, body_excerpt=CAMBIO_BODY, body_status="read"
+    )
+    job_ledger.add_flag(h.db, "flagged", NOW)
+
+    assert repair(h.db, "ledger_only") > 0
+    assert h.sql("SELECT company, role, deleted FROM job_mail WHERE message_id = 'cambio'") == [
+        ("Cambio Earth", "QA & Test Automation Developer Co-op", 0)
+    ]
+    assert h.sql("SELECT deleted FROM job_mail WHERE message_id = 'searches'") == [(1,)]
+    assert h.sql("SELECT deleted FROM job_mail WHERE message_id = 'flagged'") == [(0,)]
+    assert h.sql("SELECT verdict FROM job_seen WHERE message_id = 'searches'") == [("not_job",)]
+    assert h.sql(
+        "SELECT stage, verdict, judge FROM job_decision WHERE message_id = 'searches'"
+    ) == [("rule", "not_job", "local-rule/social-v1")]
+    assert "You appeared in 5 searches" in {
+        one["subject"] for one in h.client.get("/inherent/jobs").json()["skipped"]
+    }
+    pending = {m for (m,) in h.sql("SELECT message_id FROM job_alert WHERE state = 'pending'")}
+    assert pending == {"cambio", "flagged"}  # the hidden row's alert ended as done
+    assert repair(h.db, "ledger_only") == 0
+    assert h.gmail.calls == []
