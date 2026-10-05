@@ -14,7 +14,7 @@ import { usePlugins } from './PluginPanel';
 import { isMarkLook } from './AgentMarks';
 import { answerRequest, type Agent, type ShownAgent } from './agents';
 import { answerStartrail, markStartrail, useStartrail } from './startrail';
-import { CardRate, DigestCard, JobsDigestCard, MailNotice, NoticeCard, RateRow, cardTell, ended, noticeCue, useNotices } from './Notices';
+import { CardRate, DigestCard, JobsDigestCard, MailNotice, NoticeCard, RateRow, cardTell, ended, noticeCue, useNotices, type MomentHold } from './Notices';
 import { ActionCard, QuestionCard, type Answer, type Card, type Decide, type Question } from './ActionCard';
 import { Notch, type NotchNote } from './Notch';
 import { NightCard, isNightLook, markNightSeen, morningOf, seenNight, type NightAction, type NightSession, type NightState } from './NightCard';
@@ -179,16 +179,21 @@ export function Companion() {
   // until its ×. While one is up, or a run is on, the agents' notices wait; she sleeps in the island through the night.
   const [nightSeen, setNightSeen] = useState(seenNight), nightClock = useNow(nightState?.last ? 60_000 : 3_600_000);
   const nightRun = nightState?.night ?? null, morning = morningOf(nightState, nightClock, nightSeen);
-  const nightShown = (!!nightRun || !!morning) && !card && !question && !dashboard && !remoteOpen && !moving;
+  // ADR 0163: the daemon's hold (a call, or he is away) keeps the glance and the morning card down; both are still there when it ends (the bedtime card is his own start and is never held).
+  const [momentHold, setMomentHold] = useState<MomentHold>(null);
+  const nightWait = !!momentHold && (nightRun ? nightRun.phase === 'glance' : !!morning);
+  const nightShown = (!!nightRun || !!morning) && !card && !question && !dashboard && !remoteOpen && !moving && !nightWait;
   const nightKey = nightRun ? `night:${nightRun.id}:${nightRun.phase === 'starting' ? 'bed' : 'night'}` : morning ? `night:${morning.id}:morning` : '';
   const nightFace: ExprId = !nightRun ? 'fin' : nightRun.phase === 'starting' ? 'ask' : '00';
   // ADR 0160: the card when the screen wakes in the night and the morning one are logged and rated like the other proactive cards; the bedtime card is Allen's own start of the run.
   const nightCid = nightShown ? nightRun ? nightRun.phase === 'glance' ? nightKey : '' : morning ? nightKey : '' : '';
-  const nightTold = useRef(new Set<string>());
+  const nightTold = useRef(new Set<string>()), nightWaited = useRef(new Map<string, { by: string; at: number }>());
+  useEffect(() => { if (nightWait && nightKey && !nightWaited.current.has(nightKey)) nightWaited.current.set(nightKey, { by: momentHold!, at: Date.now() }); }, [nightWait, nightKey]);
   useEffect(() => {
     if (!nightCid) return;
+    const held = nightWaited.current.get(nightCid);
     const watch = (nightRun ?? morning)!.watch, facts = nightRun ? { phase: nightRun.phase, busy: watch.busy, sessions: watch.sessions.length, released: nightRun.released_ms !== null } : { reason: morning!.reason, sessions: watch.sessions.length, slept: morning!.slept_ms !== null };
-    cardTell(port, nightCid, { action: 'seen', kind: nightRun ? 'night' : 'morning', level: 'card', facts, situation: { audio_private: audioPrivate.current ?? null } });
+    cardTell(port, nightCid, { action: 'seen', kind: nightRun ? 'night' : 'morning', level: 'card', facts, situation: { audio_private: audioPrivate.current ?? null, ...held && { held_by: held.by, held_s: Math.round((Date.now() - held.at) / 1000) } } });
   }, [nightCid]);
   const nightReact = (reaction: string) => {
     const told = nightTold.current, mine = [...told].some(k => k.startsWith(`${nightCid}|`));
@@ -313,7 +318,7 @@ export function Companion() {
   // ADR 0155: the daemon says whether the output is private (headphones); on speakers nothing unprompted sounds.
   // Unknown output counts as not private until the first poll answers (a 404 there means the feature is off).
   const audioPrivate = useRef<boolean | undefined>(port && !detached ? false : undefined);
-  const notices = useNotices({ port, poll: !detached, agents, quiet: s.quiet, inClaude, hold: agentsFront || busy || dashboard || remoteOpen || detached || moving || carded || nightShown || !!nightRun || keysOn || !!menu, watched, viewing, agentsFront, audio: audioPrivate,
+  const notices = useNotices({ port, poll: !detached, agents, moment: momentHold, onMoment: setMomentHold, quiet: s.quiet, inClaude, hold: agentsFront || busy || dashboard || remoteOpen || detached || moving || carded || nightShown || !!nightRun || keysOn || !!menu, watched, viewing, agentsFront, audio: audioPrivate,
     cue: (name, gain) => { const on = preferences.feedbackEnabled && !s.soundMuted && s.quiet === 'off' && audioPrivate.current !== false; if (on) noticeCue(name, preferences.feedbackVolume, gain); return on; },
     answer: (req, body, id) => agents.find(a => a.id === id)?.host ? answerStartrail(id, req, body) : port ? answerRequest(port, req.id, body) : Promise.resolve(true), mark: markStartrail });
   const notice = notices.current;

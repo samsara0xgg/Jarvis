@@ -19,10 +19,17 @@ import './notices.css';
 // talks, while the Dashboard is open or while the keys hold the island, and it all comes up after. From the quiet level
 // `no-pop` up (ADR 0153) nothing is queued: arrivals wait in `held` (marks and stars go on as they were) and come up
 // together, needs-you first, when the level drops. Nothing pops for
-// the session he is looking at, in Ghostty or on its page in the island.
+// the session he is looking at, in Ghostty or on its page in the island. ADR 0163: the daemon's `hold` (a call, or he is
+// away, as TimeSink saw it) holds the same way as no-pop: arrivals wait in `held`, no card, no sound, and come up as one
+// digest (or the one card) when it ends; his own clicks still bring a card up. Unknown, unreachable or stale (a call over
+// 3 h) holds nothing.
 const POP_MS = 5000, DIGEST_MS = 30_000, FOLD_MS = 30_000, REMIND_MS = 600_000, TOGETHER_MS = 1500, CONFIRM_MS = 850;
+// ADR 0163: a call is believed for at most 3 h; an unanswered poll keeps the last word for two more ticks.
+export type MomentHold = 'call' | 'away' | null;
+export const CALL_HOLD_CAP_MS = 3 * 3_600_000, HOLD_MISSES = 3;
 // `cid` is the card's id for the daemon's feedback log (ADR 0160); job mail uses the daemon's own ids.
-type Base = { key: string; id: string; at: number; cid?: string; reminded?: boolean };
+// `held` (ADR 0163): what kept it back (a call, away, or the quiet level) and since when (epoch ms), for its snapshot.
+type Base = { key: string; id: string; at: number; cid?: string; reminded?: boolean; held?: { by: string; at: number } };
 export type Notice = Base & (
   | { kind: 'pop'; ids: string[] }
   // Needs you, answered elsewhere: a Codex approval, or a Claude prompt Jarvis is not holding.
@@ -39,7 +46,7 @@ export type JobNotice = JobItem & { id: string; kind: 'mail' | 'digest'; title: 
 const isJob = (n: Notice): n is Notice & { kind: 'mail' | 'jobs' } => n.kind === 'mail' || n.kind === 'jobs';
 // What the daemon is told about a notice: POST /inherent/notices/{id} { action: 'seen' } or { action: 'feedback', reaction }.
 const tell = (port: string | null, id: string, body: { action: 'seen' } | { action: 'feedback'; reaction: string }) => { if (port) void postRoute(port, `/inherent/notices/${encodeURIComponent(id)}`, body).catch(() => undefined); };
-type Arrival = Notice extends infer N ? N extends Notice ? Omit<N, 'key' | 'at' | 'cid'> : never : never;
+type Arrival = Notice extends infer N ? N extends Notice ? Omit<N, 'key' | 'at' | 'cid' | 'held'> : never : never;
 // ADR 0160: every proactive card that is not job mail tells the daemon it was shown (with the facts and level it was shown at) and what Allen did with it.
 export const cardTell = (port: string | null, cid: string | undefined, body: Record<string, unknown>) => { if (port && cid) void postRoute(port, `/inherent/cards/${encodeURIComponent(cid)}`, body).catch(() => undefined); };
 const short = (text?: string) => (text ?? '').replace(/\s+/g, ' ').trim().slice(0, 80);
@@ -89,8 +96,10 @@ type Tone = 'ask' | 'done' | 'error';
 // hold the island) except a card brought forward on purpose; `watched` is the session Allen has been looking at in
 // Ghostty for 1.5 s, `viewing` the one whose page is open in the island. Startrail's sessions (`a.host`) are looked at
 // while its window is in front (`agentsFront`), and their marks are the host's: `mark` changes them there.
-export function useNotices({ port, poll, agents, hold, quiet, inClaude, watched, viewing, agentsFront, audio, cue, answer, mark }: {
-  port: string | null; poll: boolean; agents: Agent[]; hold: boolean; quiet: Quiet; inClaude: boolean; watched: string | null; viewing: string | null; agentsFront: boolean;
+export function useNotices({ port, poll, agents, hold, moment, onMoment, quiet, inClaude, watched, viewing, agentsFront, audio, cue, answer, mark }: {
+  port: string | null; poll: boolean; agents: Agent[]; hold: boolean;
+  // ADR 0163: the daemon's word (`hold` of GET /inherent/notices, or of /inherent/moment while job mail is off), as the poll reports it through `onMoment`.
+  moment: MomentHold; onMoment: (hold: MomentHold) => void; quiet: Quiet; inClaude: boolean; watched: string | null; viewing: string | null; agentsFront: boolean;
   // The daemon's last word on whether sound may play (`audio_private` of GET /inherent/notices); undefined while it has said nothing.
   audio: { current: boolean | undefined }; cue: (name: Tone | 'send' | 'close', gain?: number) => boolean;
   answer: (req: AgentRequest, body: { decision: 'allow' | 'always' | 'deny'; answers?: Record<string, string>; message?: string }, id: string) => Promise<boolean>;
@@ -143,13 +152,14 @@ export function useNotices({ port, poll, agents, hold, quiet, inClaude, watched,
   const later = (ms: number, run: () => void) => { const t = setTimeout(() => { s.timers.delete(t); run(); }, ms); s.timers.add(t); };
   useEffect(() => () => s.timers.forEach(clearTimeout), []);
   const byId = new Map(agents.map(a => [a.id, a]));
-  const live = useRef({ byId, hold, quiet, inClaude });
-  live.current = { byId, hold, quiet, inClaude };
+  const live = useRef({ byId, hold, quiet, inClaude, moment });
+  live.current = { byId, hold, quiet, inClaude, moment };
   const card = (n: Notice) => { let c = s.cards.get(n.key); if (!c) s.cards.set(n.key, c = { qi: 0, picks: [], review: false, feedback: false, ok: '' }); return c; };
   const toneOf = (n: Notice): Tone => needs(n) ? 'ask' : isJob(n) ? n.job.level === 'speak' ? 'ask' : 'done' : n.kind === 'pop' && n.ids.every(id => byId.get(id)?.state === 'err') ? 'error' : 'done';
   // Job mail at level card is silent.
   // It says whether the cue was allowed to sound (the quiet level, her switches and the output), which is the level a card was shown at.
   const sound = (n: Notice, gain = 1) => {
+    if (live.current.moment) return false;
     if (isJob(n) && n.job.level !== 'card_sound' && n.job.level !== 'speak') return false;
     const now = performance.now();
     if (now - s.soundAt <= TOGETHER_MS) return false;
@@ -170,7 +180,7 @@ export function useNotices({ port, poll, agents, hold, quiet, inClaude, watched,
     s.snapped.add(n.cid);
     const level = sounded ? 'card_sound' : 'card';
     card(n).level = level;
-    cardTell(port, n.cid, { action: 'seen', kind: n.kind, level, facts: factsOf(n), situation: { in_claude: live.current.inClaude, watching: !!watched || !!viewing, agents_front: agentsFront, audio_private: audio.current ?? null } });
+    cardTell(port, n.cid, { action: 'seen', kind: n.kind, level, facts: factsOf(n), situation: { in_claude: live.current.inClaude, watching: !!watched || !!viewing, agents_front: agentsFront, audio_private: audio.current ?? null, ...n.held && { held_by: n.held.by, held_s: Math.round((Date.now() - n.held.at) / 1000) } } });
   };
   // What Allen did with the card on the island, told once each: `acted` is its own button or opening its session.
   const react = (n: Notice | undefined, reaction: string) => {
@@ -183,12 +193,18 @@ export function useNotices({ port, poll, agents, hold, quiet, inClaude, watched,
     if (n && (!ids || (n.kind === 'pop' ? n.ids : n.kind === 'digest' ? n.items.map(m => m.id) : [n.id]).some(id => ids.includes(id)))) react(n, 'acted');
   };
 
-  // The level rising takes what is on the island into `held`; it dropping brings it all back, needs-you first, then errors, then done.
+  // The level rising, or the daemon's hold (ADR 0163), takes what is on the island into `held`; its ending brings it all back, needs-you first, then errors, then done.
+  const holdBy = (): string | null => live.current.moment ?? (noCards(live.current.quiet) ? 'quiet' : null);
+  const holding = noCards(quiet) || !!moment;
   useEffect(() => {
-    if (noCards(quiet)) {
+    if (holding) {
       // A digest on the island goes back to the items it listed. Job mail is the daemon's to bring back (its own digest): one not yet shown is forgotten here, so it comes again.
       for (const n of s.queue) if (isJob(n) && !s.seen.has(n.id)) s.jobIds.delete(n.id);
-      s.held = [...s.queue.filter(n => !isJob(n)).flatMap(n => n.kind === 'digest' ? n.items : [n]), ...s.folded, ...s.held]; s.queue = []; s.folded = []; s.forced = ''; bump();
+      // A card Allen brought up himself stays under a call or away hold (ADR 0163): his own click is never held back.
+      const mine = !noCards(quiet) && s.queue[0]?.key === s.forced ? s.queue[0] : undefined;
+      const taken = [...s.queue.filter(n => n !== mine && !isJob(n)).flatMap(n => n.kind === 'digest' ? n.items : [n]), ...s.folded], by = holdBy() ?? 'quiet', at = Date.now();
+      for (const n of taken) n.held ??= { by, at };
+      s.held = [...taken, ...s.held]; s.queue = mine ? [mine] : []; s.folded = []; if (!mine) s.forced = ''; bump();
     } else if (s.held.length) {
       const rank = (n: Notice) => needs(n) ? 0 : toneOf(n) === 'error' ? 1 : 2, at = performance.now();
       // One entry per session, the most important of what it did; two or more of them make one digest, one is just shown.
@@ -198,18 +214,18 @@ export function useNotices({ port, poll, agents, hold, quiet, inClaude, watched,
       else if (items.length) {
         // The asks stay on the island's list, so a row in the digest can bring its card up.
         s.folded.push(...items.filter(needs));
-        s.queue.push({ kind: 'digest', key: `digest:${at}`, id: '', at, items, cid: mint('digest', String(Date.now())) });
+        s.queue.push({ kind: 'digest', key: `digest:${at}`, id: '', at, items, cid: mint('digest', String(Date.now())), held: items.flatMap(n => n.held ?? []).sort((a, b) => a.at - b.at)[0] });
       }
       bump();
     }
-  }, [noCards(quiet)]);
+  }, [holding]);
 
   // One ask is one card: the session and what it says (ADR 0153).
   const askKey = (n: { kind: string; id: string; req?: AgentRequest; line?: string }) => `${n.id}|${n.req ? requestLine(n.req) : n.line}`;
   const arrive = (a: Arrival) => {
     // Job mail waits in the queue like any card (`hold`, in Claude); at no-pop and dnd it is not taken in, the daemon keeps it.
     if (a.kind === 'mail' || a.kind === 'jobs') {
-      if (noCards(live.current.quiet) || s.jobIds.has(a.id)) return;
+      if (holdBy() || s.jobIds.has(a.id)) return;
       s.jobIds.add(a.id); const now = performance.now();
       s.queue.push({ ...a, key: `${a.kind}:${a.id}:${now}`, at: now } as Notice);
       return;
@@ -225,7 +241,8 @@ export function useNotices({ port, poll, agents, hold, quiet, inClaude, watched,
     const now = performance.now(), cid = a.kind === 'req' ? `req:${a.req.id}` : mint(a.kind, a.kind === 'pop' ? a.ids[0] : a.id);
     const n = { ...a, key: `${a.kind}:${a.id}:${now}`, at: now, cid } as Notice, head = s.queue[0], tail = s.queue.at(-1);
     // Kept for when the level drops: a newer notice of a session takes the place of its older one.
-    if (noCards(live.current.quiet)) { s.held = [...s.held.filter(h => !(h.id === n.id && h.kind === n.kind)), n]; return; }
+    const by = holdBy();
+    if (by) { n.held = { by, at: Date.now() }; s.held = [...s.held.filter(h => !(h.id === n.id && h.kind === n.kind)), n]; return; }
     if (n.kind === 'pop') {
       // Into the pop on screen, or the one that came up less than 1.5 s ago.
       if (head?.kind === 'pop' && !live.current.hold) { head.ids = [...head.ids.filter(x => x !== n.id), n.id]; return; }
@@ -237,23 +254,36 @@ export function useNotices({ port, poll, agents, hold, quiet, inClaude, watched,
     const i = s.queue.findIndex((m, j) => j > 0 && !needs(m));
     if (i < 0) s.queue.push(n); else s.queue.splice(i, 0, n);
   };
-  // GET /inherent/notices every 5 s while this window is up: the daemon's job mail and digest become cards. Its other notices are the
-  // Dashboard's; a 404 means job mail is off, and the poll stops without a word.
+  // GET /inherent/notices every 5 s while this window is up: the daemon's job mail and digest become cards, and its `hold` (ADR 0163)
+  // holds the rest. Its other notices are the Dashboard's. A 404 means job mail is off: the poll goes on at GET /inherent/moment for the
+  // hold alone, and stops without a word on a second 404 (moment off too). A missing field (an older daemon) is no hold; an unanswered
+  // poll keeps the last word for HOLD_MISSES ticks, then none; a call is believed for CALL_HOLD_CAP_MS at most.
   useEffect(() => {
     if (!port || !poll) return;
-    let stop = false, timer: ReturnType<typeof setTimeout>;
+    let stop = false, timer: ReturnType<typeof setTimeout>, route = '/inherent/notices', since = 0, misses = 0, last: MomentHold = null;
+    const word = (hold: unknown) => {
+      misses = 0;
+      const next: MomentHold = hold === 'call' || hold === 'away' ? hold : null;
+      since = next === 'call' ? since || Date.now() : 0;
+      const now: MomentHold = next === 'call' && Date.now() - since > CALL_HOLD_CAP_MS ? null : next;
+      if (now !== last) { last = now; onMoment(now); }
+    };
+    const miss = () => { if (++misses >= HOLD_MISSES && last) { last = null; since = 0; onMoment(null); } };
+    const get = () => fetch(`http://127.0.0.1:${port}${route}`, { signal: AbortSignal.timeout(4000) });
     const load = async () => {
       try {
-        const r = await fetch(`http://127.0.0.1:${port}/inherent/notices`, { signal: AbortSignal.timeout(4000) });
-        if (r.status === 404) { audio.current = undefined; return; }
-        if (!r.ok) audio.current = false;
+        let r = await get();
+        if (r.status === 404 && route === '/inherent/notices') { audio.current = undefined; route = '/inherent/moment'; r = await get(); }
+        if (r.status === 404) { word(null); return; }
+        if (!r.ok) { if (route === '/inherent/notices') audio.current = false; miss(); }
         if (r.ok && !stop) {
-          const { notices, audio_private } = await r.json() as { notices?: JobNotice[]; audio_private?: boolean };
-          audio.current = typeof audio_private === 'boolean' ? audio_private : undefined;
+          const { notices, audio_private, hold } = await r.json() as { notices?: JobNotice[]; audio_private?: boolean; hold?: unknown };
+          if (route === '/inherent/notices') audio.current = typeof audio_private === 'boolean' ? audio_private : undefined;
+          word(hold);
           for (const n of Array.isArray(notices) ? notices : []) if ((n.kind === 'mail' || n.kind === 'digest') && typeof n.id === 'string' && typeof n.title === 'string') arrive({ kind: n.kind === 'mail' ? 'mail' : 'jobs', id: n.id, job: n });
           bump();
         }
-      } catch { audio.current = false; /* daemon away: nothing new may sound; the next tick retries */ }
+      } catch { if (route === '/inherent/notices') audio.current = false; miss(); /* daemon away: nothing new may sound; the next tick retries */ }
       if (!stop) timer = setTimeout(load, 5000);
     };
     void load();
@@ -344,7 +374,7 @@ export function useNotices({ port, poll, agents, hold, quiet, inClaude, watched,
     if (watched && s.unread.has(watched)) read([watched]); else { save(); bump(); }
   }, [key, watched, viewing]);
 
-  const current = (hold || inClaude) && s.queue[0]?.key !== s.forced ? undefined : s.queue[0];
+  const current = (hold || inClaude || !!moment) && s.queue[0]?.key !== s.forced ? undefined : s.queue[0];
   // A notice coming up: her sound (once per 1.5 s), and the clock for her error face.
   if ((current?.key ?? '') !== s.shown) {
     s.shown = current?.key ?? '';
@@ -364,10 +394,16 @@ export function useNotices({ port, poll, agents, hold, quiet, inClaude, watched,
   // Once, ten minutes on: she peeks out of the island with a softer sound, then the card comes back.
   const remind = (n: Notice) => {
     const i = s.folded.indexOf(n);
-    if (i < 0 || s.parked.has(n.id)) return;
+    if (i < 0 || s.parked.has(n.id) || live.current.moment) return;
     s.folded.splice(i, 1); n.reminded = true; s.peek = true; bump();
     if (!live.current.inClaude) { s.soundAt = -1e9; sound(n, .5); s.soundAt = performance.now(); }
-    later(1100, () => { s.peek = false; if (!s.parked.has(n.id)) { s.queue.unshift(n); s.shown = n.key; s.openedAt = performance.now(); } bump(); });
+    later(1100, () => {
+      s.peek = false;
+      const by = holdBy();
+      if (by) { n.held = { by, at: Date.now() }; s.held.push(n); } // a hold began while she peeked: it waits with the rest
+      else if (!s.parked.has(n.id)) { s.queue.unshift(n); s.shown = n.key; s.openedAt = performance.now(); }
+      bump();
+    });
   };
   // Swipe, Esc, the × or a click away: gone for good, no moon and no reminder. It stays on his list while it waits.
   const dismiss = () => {
