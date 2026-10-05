@@ -33,6 +33,7 @@ from jarvis.shared import Event, lang
 from jarvis.shared.realtime_trace import record_realtime_trace
 from jarvis.state.event_log import emit_event
 from jarvis.state.lifecycle_terminal import terminalize_playback
+from jarvis.surface.tts_silence import SilenceTrimConfig, SilenceTrimmer
 from jarvis.surface.voice_ledger import (
     AcceptedSamples,
     ForegroundBusy,
@@ -273,6 +274,15 @@ class StreamingMediaConfig:
     enable_macos_say_fallback: bool = True
     speak_from_segments: bool = False
     prefetch_network_lost_line: bool = True
+    # ADR 0165: drop the provider's silence at generation start and junctions.
+    trim_silence: bool = False
+    trim_threshold_db: float = -50.0
+    trim_window_ms: float = 5.0
+    trim_preroll_ms: float = 20.0
+    trim_fade_ms: float = 5.0
+    trim_max_cut_ms: float = 400.0
+    trim_clause_pause_ms: float = 120.0
+    trim_sentence_pause_ms: float = 250.0
 
     def __post_init__(self) -> None:
         """Reject unbounded or non-positive actor budgets."""
@@ -295,7 +305,16 @@ class StreamingMediaConfig:
             self.presentation_poll_s,
             self.shutdown_timeout_s,
             self.durability_retry_s,
+            self.trim_window_ms,
+            self.trim_preroll_ms,
+            self.trim_fade_ms,
+            self.trim_max_cut_ms,
+            self.trim_clause_pause_ms,
+            self.trim_sentence_pause_ms,
         )
+        if self.trim_threshold_db >= 0:
+            msg = "trim_threshold_db must be below 0 dBFS"
+            raise ValueError(msg)
         if any(value <= 0 for value in positive_ints + positive_floats):
             msg = "streaming media bounds must all be positive"
             raise ValueError(msg)
@@ -573,6 +592,10 @@ def _cut_off_cue(rate_hz: int) -> bytes:
         notes.append(0.18 * envelope * np.sin(2 * np.pi * frequency * t))
         notes.append(np.zeros(int(rate_hz * 0.03)))
     return np.concatenate(notes).astype("<f4").tobytes()
+
+
+def _head_dropped(trimmer: SilenceTrimmer | None) -> int:
+    return 0 if trimmer is None else trimmer.head_dropped
 
 
 class _SegmentResampler:
@@ -2778,6 +2801,7 @@ class StreamingTTSPipeline:
         """Walk ``segments``; while ``live`` the list grows until the buffer is emitted."""
         lease = active.lease
         accepted_total = 0
+        trimmer = self._new_silence_trimmer()
         last_error: BaseException | None = None
         endpoint_index = 0
         session: TTSSession | None = None
@@ -2842,6 +2866,8 @@ class StreamingTTSPipeline:
                     )
                     resampler: _SegmentResampler | None = None
                     pending_alignment: list[TTSAudioChunk] = []
+                    if trimmer is not None:
+                        trimmer.begin_segment(text)
                     while True:
                         if iterator is None:  # pragma: no cover - session invariant
                             msg = "opened TTS session has no audio iterator"
@@ -2858,6 +2884,7 @@ class StreamingTTSPipeline:
                                 if accepted_segment:
                                     self._record_alignment(
                                         active, event, segment_start=segment_start,
+                                        trimmed=_head_dropped(trimmer),
                                     )
                                 else:
                                     pending_alignment.append(event)
@@ -2881,6 +2908,8 @@ class StreamingTTSPipeline:
                                     ),
                                 )
                             canonical = resampler.feed(event.pcm)
+                            if trimmer is not None:
+                                canonical = trimmer.feed(canonical)
                             written = await self._write_all(
                                 active,
                                 canonical,
@@ -2892,21 +2921,22 @@ class StreamingTTSPipeline:
                                 for alignment in pending_alignment:
                                     self._record_alignment(
                                         active, alignment, segment_start=segment_start,
+                                        trimmed=_head_dropped(trimmer),
                                     )
                                 pending_alignment.clear()
                             continue
-                        if resampler is not None:
-                            written = await self._write_all(
-                                active,
-                                resampler.finish(),
-                                sequence=sequence,
-                            )
+                        tail = resampler.finish() if resampler is not None else b""
+                        if trimmer is not None:
+                            tail = trimmer.feed(tail) + trimmer.end_segment()
+                        if tail:
+                            written = await self._write_all(active, tail, sequence=sequence)
                             accepted_segment += written
                             accepted_total += written
                         if accepted_segment:
                             for alignment in pending_alignment:
                                 self._record_alignment(
                                     active, alignment, segment_start=segment_start,
+                                    trimmed=_head_dropped(trimmer),
                                 )
                         finished = self._player.finish_generation_segment(
                             expected_playback_generation_id=lease.playback_generation_id,
@@ -3057,12 +3087,36 @@ class StreamingTTSPipeline:
         )
         active.prepared_text += text
 
+    def _new_silence_trimmer(self) -> SilenceTrimmer | None:
+        """ADR 0165: one trimmer per playback generation, or none when switched off."""
+        config = self._config
+        if not config.trim_silence:
+            return None
+        return SilenceTrimmer(
+            sample_rate_hz=config.canonical_sample_rate_hz,
+            config=SilenceTrimConfig(
+                threshold_db=config.trim_threshold_db,
+                window_ms=config.trim_window_ms,
+                preroll_ms=config.trim_preroll_ms,
+                fade_ms=config.trim_fade_ms,
+                max_cut_ms=config.trim_max_cut_ms,
+                clause_pause_ms=config.trim_clause_pause_ms,
+                sentence_pause_ms=config.trim_sentence_pause_ms,
+            ),
+        )
+
     def _record_alignment(
         self, active: _ActiveResponse, event: TTSAudioChunk, *, segment_start: int,
+        trimmed: int = 0,
     ) -> None:
-        """Persist exact text/sample mappings before allowing a word checkpoint."""
+        """Persist exact text/sample mappings before allowing a word checkpoint.
+
+        Provider times count from the start of the provider's audio; the written
+        segment starts ``trimmed`` samples later (its leading silence dropped).
+        """
+        rate = self._config.canonical_sample_rate_hz
         boundaries = tuple(
-            (end, segment_start + math.ceil(ms * self._config.canonical_sample_rate_hz / 1000))
+            (end, segment_start + max(0, math.ceil(ms * rate / 1000) - trimmed))
             for end, ms in event.word_boundaries
         )
         emit_event(
@@ -4044,7 +4098,7 @@ class StreamingTTSPipeline:
             LOGGER.exception("tts usage: emit failed for %s#%d", response_id, sequence)
 
 
-def streaming_media_config_from_mapping(
+def streaming_media_config_from_mapping(  # noqa: C901 - one typed reader per key kind
     raw: Mapping[str, object] | None,
 ) -> StreamingMediaConfig:
     """Parse bounded rollout values; reject malformed explicit entries."""
@@ -4066,6 +4120,15 @@ def streaming_media_config_from_mapping(
             return fallback
         if isinstance(value, bool) or not isinstance(value, int | float) or value <= 0:
             msg = f"realtime.streaming_output.{key} must be a positive number"
+            raise ValueError(msg)
+        return float(value)
+
+    def _negative_float(key: str, fallback: float) -> float:
+        value = values.get(key)
+        if value is None:
+            return fallback
+        if isinstance(value, bool) or not isinstance(value, int | float) or value >= 0:
+            msg = f"realtime.streaming_output.{key} must be a negative number"
             raise ValueError(msg)
         return float(value)
 
@@ -4144,6 +4207,18 @@ def streaming_media_config_from_mapping(
         speak_from_segments=_boolean("speak_from_segments", defaults.speak_from_segments),
         prefetch_network_lost_line=_boolean(
             "prefetch_network_lost_line", defaults.prefetch_network_lost_line,
+        ),
+        trim_silence=_boolean("trim_silence", defaults.trim_silence),
+        trim_threshold_db=_negative_float("trim_threshold_db", defaults.trim_threshold_db),
+        trim_window_ms=_positive_float("trim_window_ms", defaults.trim_window_ms),
+        trim_preroll_ms=_positive_float("trim_preroll_ms", defaults.trim_preroll_ms),
+        trim_fade_ms=_positive_float("trim_fade_ms", defaults.trim_fade_ms),
+        trim_max_cut_ms=_positive_float("trim_max_cut_ms", defaults.trim_max_cut_ms),
+        trim_clause_pause_ms=_positive_float(
+            "trim_clause_pause_ms", defaults.trim_clause_pause_ms,
+        ),
+        trim_sentence_pause_ms=_positive_float(
+            "trim_sentence_pause_ms", defaults.trim_sentence_pause_ms,
         ),
     )
 
