@@ -5,12 +5,20 @@ from __future__ import annotations
 import contextlib
 import itertools
 import random
+from dataclasses import replace
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 import pytest
 
+from jarvis.shared.realtime import AuthorizedDispatch
+from jarvis.state import authorized_dispatch_outbox as outbox
 from jarvis.state.authorization_snapshot import AuthorizationFacts, read_authorization_snapshot
-from jarvis.state.authorized_dispatch_outbox import ensure_authorized_dispatch_schema
+from jarvis.state.authorized_dispatch_outbox import (
+    admit_authorized_dispatch,
+    authorize_confirmation_dispatch,
+    ensure_authorized_dispatch_schema,
+)
 from jarvis.state.decision_snapshot import read_decision_snapshot
 from jarvis.state.event_log import (
     EventTypeRegistry,
@@ -20,6 +28,10 @@ from jarvis.state.event_log import (
 )
 from jarvis.state.projections import ProjectionFold, fold_projections
 from tests.integration.test_authorization_snapshot import _seed_debt
+from tests.integration.test_wave1_concurrency_safety import (
+    _confirmation_candidate,
+    _seed_accepted_confirmation,
+)
 
 if TYPE_CHECKING:
     import sqlite3
@@ -391,3 +403,82 @@ def test_dispatch_debt_checks_agree_between_warm_and_cold_reads(tmp_path: Path) 
             assert warm.fold_state is not None
             state = warm.fold_state
         assert len(seen) == len(steps)  # each step raised a different set of errors
+
+
+def test_a_split_anywhere_in_the_confirmation_to_dispatch_lifecycle_changes_nothing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Request, answer, authorization, admission and result, with outbox rows, split everywhere.
+
+    The random log has no operational debt, so this walks the real lifecycle: after each
+    stage a warm read equals a cold read, and at the end every cut of the event list
+    (and a cut pair) folds to the same authorization snapshot as the whole log.
+    """
+    monkeypatch.setattr(outbox, "time", SimpleNamespace(time=lambda: 2_049.0))
+    conn = open_event_log(tmp_path / "events.db")
+    with contextlib.closing(conn):
+        ensure_authorized_dispatch_schema(conn)
+        state = read_decision_snapshot(conn).fold_state
+
+        def check() -> None:
+            nonlocal state
+            warm, cold = read_decision_snapshot(conn, state), read_decision_snapshot(conn)
+            assert warm.authorizations == cold.authorizations
+            assert warm.projections == cold.projections
+            assert warm.fold_state is not None
+            state = warm.fold_state
+
+        accepted, frozen = _seed_accepted_confirmation(conn, suffix="A")
+        check()
+        request, lease = _confirmation_candidate(accepted.event_uid, frozen, random_suffix="A")
+        dispatch = authorize_confirmation_dispatch(
+            conn,
+            source_confirmation_event_id=accepted.event_uid,
+            action_request=request,
+            lease=lease,
+            gate_payload={"gate": "pre_action", "outcome": "pass", "reasons": []},
+            now_ms=2_010_000,
+        )
+        assert isinstance(dispatch, AuthorizedDispatch)
+        check()
+        assert read_decision_snapshot(conn).authorizations.confirmations[0].state == "consumed"
+        _seed_accepted_confirmation(conn, suffix="B")  # a newer ask supersedes A's card
+        check()
+        stable = dict(lease, lease_id=dispatch.identity.lease_id)
+        admitted = replace(
+            request,
+            action_id=dispatch.identity.action_id,
+            authorization_lease=stable,  # type: ignore[arg-type]
+        )
+        admit_authorized_dispatch(
+            conn,
+            admitted,
+            payload={"action_id": admitted.action_id, "tool_name": "write_file"},
+        )
+        check()
+        _emit(conn, "action.result_observed", action_id=admitted.action_id, semantics="x")
+        check()
+        # A second admission of the same action, and a foreign action on the authorized gate.
+        _emit(conn, "action.dispatched", dispatch.gate_event.event_uid, action_id="foreign")
+        check()
+        _emit(conn, "action.dispatched", None, action_id=admitted.action_id)
+        check()
+        errors = read_decision_snapshot(conn).authorizations.errors
+        assert any(e.startswith("foreign_action_uses_authorized_gate") for e in errors)
+        assert any(e.startswith("dispatched_outbox_admission_mismatch") for e in errors)
+
+        events = list(iter_events(conn))
+        conn.execute("BEGIN")
+        expected = read_authorization_snapshot(conn, AuthorizationFacts().advance(events))
+        rng = random.Random(7)  # noqa: S311 - fixed seed, not a secret
+        for cut in range(len(events) + 1):
+            facts = AuthorizationFacts().advance(events[:cut]).advance(events[cut:])
+            assert read_authorization_snapshot(conn, facts) == expected, cut
+        for _ in range(40):
+            lo, hi = sorted(rng.sample(range(len(events) + 1), 2))
+            facts = AuthorizationFacts()
+            for part in (events[:lo], events[lo:hi], events[hi:]):
+                facts = facts.advance(part)
+            assert read_authorization_snapshot(conn, facts) == expected, (lo, hi)
+        conn.rollback()
