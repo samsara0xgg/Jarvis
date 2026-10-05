@@ -127,8 +127,8 @@ CREATE TABLE IF NOT EXISTS attention_log (
 """
 
 
-# The columns ADR 0162 added to ``job_decision``, as appended to a table made before it.
-_SNAPSHOT_COLUMNS: Final[tuple[str, ...]] = ("sender_address", "body_status")
+# The columns ADR 0162 and 0161 added to ``job_decision``, as appended to a table made before them.
+_SNAPSHOT_COLUMNS: Final[tuple[str, ...]] = ("sender_address", "body_status", "moment_json")
 BODY_STATUSES: Final[tuple[str, ...]] = ("read", "unavailable", "not_read")
 
 
@@ -231,12 +231,14 @@ def record_decision(  # noqa: PLR0913 - the row's fields
     judge: str | None = None,
     body_excerpt: str | None = None,
     body_status: str = "not_read",
+    moment: Mapping[str, Any] | None = None,
 ) -> None:
     """One snapshot of what Jev was asked and answered at ``header`` or ``body`` (ADR 0157).
 
     ``head`` is (received_at, name, domain, subject) and may add ``address``, which is kept here
     and nowhere else (ADR 0162). ``body_excerpt`` is the local plain-text body start, ``None``
     when ``body_status`` is ``unavailable`` (a read failed) or ``not_read`` (none was tried).
+    ``moment`` is the situation and its 现况 doc at that time (ADR 0161), kept as JSON.
     Appended, never changed.
     """
     if body_status not in BODY_STATUSES:
@@ -247,8 +249,8 @@ def record_decision(  # noqa: PLR0913 - the row's fields
         conn.execute(
             "INSERT INTO job_decision (message_id, at, stage, sender_name, sender_domain, subject,"
             " received_at, probabilities, judge, body_excerpt, verdict, sender_address,"
-            " body_status)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " body_status, moment_json)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 message_id,
                 _stamp(now),
@@ -263,6 +265,7 @@ def record_decision(  # noqa: PLR0913 - the row's fields
                 verdict,
                 given.get("address"),
                 body_status,
+                None if moment is None else json.dumps(moment, ensure_ascii=False),
             ),
         )
 

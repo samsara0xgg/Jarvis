@@ -303,6 +303,7 @@ class JobMail:
             judge=judge or self._jev.judge_id(stage),
             body_excerpt=None if body is None else body[:SNAPSHOT_BODY_CHARS],
             body_status=body_status or "not_read",
+            moment=self._situation(),
         )
 
     def _pack_situation(self, now: datetime, quiet: str) -> dict[str, Any]:
@@ -315,7 +316,13 @@ class JobMail:
             "speech_ok": self.may_speak(),
             "linkedin_alerts": self._settings.linkedin_alerts,
         }
+        if (moment := self._situation()) is not None:
+            situation["moment"] = moment
         return situation
+
+    def _situation(self) -> dict[str, Any] | None:
+        """The situation and its 现况 doc now, to store with a decision; None while it is off."""
+        return None if self.moment is None else self.moment.snapshot()
 
     @staticmethod
     def _heads(servers: McpServers, ids: list[str], verdicts: dict[str, str]) -> list[triage.Head]:

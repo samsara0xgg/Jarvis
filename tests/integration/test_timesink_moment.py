@@ -17,6 +17,7 @@ import pytest
 import yaml
 
 from jarvis.decision import moment as rules
+from jarvis.decision.attention import replay, rule_judge_v1
 from jarvis.runtime import RuntimeBootstrapError, _moment
 from jarvis.runtime.moment import Moment, MomentSettings
 from jarvis.shared import lang
@@ -492,6 +493,52 @@ def test_unknown_behaves_exactly_as_before(
 
     assert shape(h) == shape(baseline)
     assert h.spoken == baseline.spoken >= 1
+
+
+# --- snapshots ---------------------------------------------------------------------------
+
+
+def test_every_decision_snapshot_carries_the_moment_and_no_titles(
+    tmp_path: Path, jev: _Jev, store: FakeTimeSink
+) -> None:
+    """Every decision snapshot carries the moment and no titles."""
+    _secret_store(store)
+    h = _job_harness(tmp_path, jev, store)
+    h.job.poll_once()
+    rows = h.sql("SELECT stage, moment_json FROM job_decision")
+    assert {stage for stage, _ in rows} >= {"header", "body"}
+    for _stage, raw in rows:
+        snap = json.loads(raw)
+        assert snap["facts"]["front_app"] == "Google Chrome"
+        assert snap["facts"]["site_domain"] == "careers.example"
+        assert snap["doc"]["text"].startswith("此刻：")
+        assert set(snap["doc"]["fields"]) == set(rules.FIELDS)
+    packs = [json.loads(p) for (p,) in h.sql("SELECT pack_json FROM attention_log")]
+    assert packs
+    assert all(p["situation"]["moment"]["facts"]["read"] == "ok" for p in packs)
+    everything = json.dumps([rows, packs], ensure_ascii=False)
+    for secret in (TITLE_WORD, PATH_WORD):
+        assert secret not in everything
+    # Replaying a logged pack still works with the moment in its situation.
+    assert replay(rule_judge_v1, [{"pack_json": json.dumps(p)} for p in packs])
+
+
+def test_an_old_decision_table_gains_the_column(tmp_path: Path) -> None:
+    """An old decision table gains the column."""
+    from jarvis.state import job_ledger  # noqa: PLC0415
+
+    db = tmp_path / "memory.db"
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "CREATE TABLE job_decision (id INTEGER PRIMARY KEY AUTOINCREMENT, message_id TEXT,"
+            " at TEXT, stage TEXT, sender_name TEXT, sender_domain TEXT, subject TEXT,"
+            " received_at TEXT, probabilities TEXT, judge TEXT, body_excerpt TEXT, verdict TEXT)"
+        )
+    job_ledger.record_decision(db, "m", "header", "job", T0, moment={"facts": {"read": "ok"}})
+    with sqlite3.connect(db) as conn:
+        assert json.loads(conn.execute("SELECT moment_json FROM job_decision").fetchone()[0]) == {
+            "facts": {"read": "ok"}
+        }
 
 
 # --- the ledger's time column ------------------------------------------------------------
