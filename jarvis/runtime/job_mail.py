@@ -35,6 +35,7 @@ if TYPE_CHECKING:
     from jarvis.decision.attention import Judge
     from jarvis.decision.surrogate_route import SurrogateRoute
     from jarvis.execution.mcp_tools import McpServers
+    from jarvis.runtime.moment import Moment
     from jarvis.runtime.plugin_connections import PluginConnections
 
 LOGGER = logging.getLogger(__name__)
@@ -87,18 +88,25 @@ def gmail_read(servers: McpServers, tool: str, args: Mapping[str, Any]) -> dict[
 class JobMail:
     """The poller and what the surface reads of it; built once at boot."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - the poller's collaborators
         self,
         settings: JobMailSettings,
         route: SurrogateRoute,
         connections: PluginConnections,
         db_path: Path,
         judge: Judge,
+        *,
+        moment: Moment | None = None,
+        timesink_path: Path | None = None,
     ) -> None:
         """``route`` carries Jev's model and timeout; ``db_path`` is memory.db.
 
-        ``judge`` decides how loudly each typed letter reaches Allen (ADR 0155).
+        ``judge`` decides how loudly each typed letter reaches Allen (ADR 0155). ``moment``
+        holds alerts while Allen is in a call or away and is stored with each decision;
+        ``timesink_path`` is where the ledger's time column is read (ADR 0161).
         """
+        self.moment = moment
+        self.timesink_path = timesink_path
         self._settings = settings
         self._judge = judge
         self._connections = connections
@@ -296,6 +304,18 @@ class JobMail:
             body_status=body_status or "not_read",
         )
 
+    def _pack_situation(self, now: datetime, quiet: str) -> dict[str, Any]:
+        """What the judge sees besides the mail: the hour, the quiet level and the moment."""
+        local = now.astimezone()
+        situation: dict[str, Any] = {
+            "hour": local.hour,
+            "weekday": local.weekday(),
+            "quiet": quiet,
+            "speech_ok": self.may_speak(),
+            "linkedin_alerts": self._settings.linkedin_alerts,
+        }
+        return situation
+
     @staticmethod
     def _heads(servers: McpServers, ids: list[str], verdicts: dict[str, str]) -> list[triage.Head]:
         """The header of each letter; one that cannot be read is an error and the rest go on."""
@@ -325,20 +345,8 @@ class JobMail:
 
     def _deliver(self, head: triage.Head, typed: triage.Typed, now: datetime) -> None:
         """Build the pack, ask the judge, log the decision and act on its level."""
-        local = now.astimezone()
         quiet = self.quiet()
-        pack = triage.pack_for(
-            head,
-            typed,
-            now,
-            {
-                "hour": local.hour,
-                "weekday": local.weekday(),
-                "quiet": quiet,
-                "speech_ok": self.may_speak(),
-                "linkedin_alerts": self._settings.linkedin_alerts,
-            },
-        )
+        pack = triage.pack_for(head, typed, now, self._pack_situation(now, quiet))
         judgement = self._judge(pack)
         ledger.log_decision(
             self._db,
@@ -373,6 +381,8 @@ class JobMail:
         alert_id = ledger.create_alert(self._db, head.message_id, level, title, line, now)
         if quiet != "off":
             ledger.note_delivery(self._db, head.message_id, "held", now)
+        if reason := self._moment_hold():
+            ledger.note_delivery(self._db, head.message_id, f"held_{reason}", now)
         if silenced:
             ledger.note_delivery(self._db, head.message_id, "silenced", now)
         if level != "speak":
@@ -406,6 +416,9 @@ class JobMail:
 
         The output must also be private right now: a fresh look, not the one from decision time.
         """
+        if (reason := self._moment_hold()) is not None:
+            LOGGER.info("job mail: not spoken, Allen is %s", reason)
+            return False
         gap = self._settings.speak_gap_s
         rested = self._last_spoke is None or time.monotonic() - self._last_spoke >= gap
         if not (self._settings.speak and quiet == "off" and self.may_speak() and rested):
@@ -414,6 +427,10 @@ class JobMail:
         if not device["private"]:
             LOGGER.warning("job mail: not spoken, output %r is not private", device["name"])
         return bool(device["private"])
+
+    def _moment_hold(self) -> str | None:
+        """Why alerts wait for Allen now (a call, or he is away), or None (ADR 0161)."""
+        return None if self.moment is None else self.moment.hold()
 
     def _failed(self, exc: BaseException) -> None:
         """Count a failed cycle; raise the one health alert when the channel is down."""
@@ -457,6 +474,10 @@ class JobMail:
         as a silent card, so a disconnect between two polls cannot leak a cue.
         """
         private = bool(self.output()["private"])
+        if self._moment_hold() is not None:
+            # In a call or away: every alert stays pending, so none is shown or marked shown, and
+            # when it ends they come back as one summary (several waited) or one card.
+            return {"notices": [], "audio_private": private}
         shown = ledger.alerts_for_client(self._db, self.quiet(), self.now())
         if not private:
             for notice in shown:

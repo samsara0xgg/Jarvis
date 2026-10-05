@@ -334,6 +334,16 @@ def upsert_mail(path: Path, mail: dict[str, Any], now: datetime) -> None:
 _EDITABLE: Final[tuple[str, ...]] = ("company", "role", "kind", "deleted")
 
 
+def company_sites(path: Path) -> list[tuple[str, str]]:
+    """(company, sender host) of every visible ledger mail, for finding a company's own sites."""
+    with _db(path) as conn:
+        rows = conn.execute(
+            "SELECT company, sender_domain FROM job_mail"
+            " WHERE deleted = 0 AND coalesce(company, '') != ''",
+        ).fetchall()
+    return [(row["company"], row["sender_domain"] or "") for row in rows]
+
+
 def mail_rows(path: Path) -> list[dict[str, Any]]:
     """Every ledger row's stored facts, hidden ones too, for the repair pass (ADR 0158)."""
     with _db(path) as conn:

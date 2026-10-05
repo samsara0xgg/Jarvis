@@ -74,6 +74,7 @@ from jarvis.decision.jev_oneshot import TOOL_GROUPS, JevOneShot
 from jarvis.decision.llm import LLMClient
 from jarvis.decision.llm_session import LLMSessionFactory
 from jarvis.decision.mail_reply import MailReply
+from jarvis.decision.moment import FIELDS as MOMENT_FIELDS
 from jarvis.decision.packet import assemble_packet
 from jarvis.decision.policy import (
     PolicyConsistencyError,
@@ -157,6 +158,7 @@ from jarvis.runtime.dashboard import (
 )
 from jarvis.runtime.home import Home, mail_body, mail_summarizer
 from jarvis.runtime.job_mail import LINKEDIN_ALERTS, JobMail, JobMailSettings
+from jarvis.runtime.moment import Moment, MomentSettings
 from jarvis.runtime.night_run import NightRun, night_settings
 from jarvis.runtime.plugin_connections import PluginConnections
 from jarvis.runtime.plugins import Plugins, load_plugins
@@ -502,6 +504,8 @@ class JarvisRuntime:
     oneshot: JevOneShot | None = None
     # ADR 0155: the job-mail poller and the ledger it keeps. None = off.
     job_mail: JobMail | None = None
+    # ADR 0161: the situation TimeSink last recorded, read on demand. None = off.
+    moment: Moment | None = None
     # ADR 0052: the Settings page's file. None = hand-assembled.
     settings: Settings | None = None
     # ADR 0093: the night run; the daemon ticks it. None = hand-assembled.
@@ -1144,9 +1148,38 @@ def _mail_reply(
     )
 
 
-def _job_mail(
+def _moment(config: Mapping[str, Any], config_path: Path, db_path: Path) -> Moment | None:
+    """``moment`` (ADR 0161): off unless enabled; bad values stop boot.
+
+    It reads TimeSink only through ``observer.timesink``: with that off every fact is unknown
+    and nothing is held.
+    """
+    block = config.get("moment")
+    if not isinstance(block, Mapping):
+        return None
+    if not isinstance(block.get("enabled"), bool):
+        msg = f"runtime: {config_path} moment.enabled must be true or false"
+        raise RuntimeBootstrapError(msg)
+    fields = block.get("fields")
+    if (
+        not isinstance(fields, Mapping)
+        or set(fields) != set(MOMENT_FIELDS)
+        or not all(isinstance(on, bool) for on in fields.values())
+    ):
+        msg = (
+            f"runtime: {config_path} moment.fields must set each of {MOMENT_FIELDS} "
+            "to true or false"
+        )
+        raise RuntimeBootstrapError(msg)
+    if not block["enabled"]:
+        return None
+    return Moment(MomentSettings(dict(fields)), _timesink_db_path(config), db_path)
+
+
+def _job_mail(  # noqa: PLR0913 - the config, its collaborators and the moment
     config: Mapping[str, Any], config_path: Path, log: JevLog | None,
     connections: PluginConnections, db_path: Path,
+    moment: Moment | None = None,
 ) -> JobMail | None:
     """``job_mail`` (ADR 0155): off unless enabled; bad values stop boot."""
     block = config.get("job_mail")
@@ -1192,7 +1225,10 @@ def _job_mail(
     timeout = number("timeout_ms", low=1, whole=True)
     # min_confidence is the choice question's bar; these questions read probabilities instead.
     route = SurrogateRoute(model=model.strip(), min_confidence=1.0, timeout_ms=timeout, log=log)
-    return JobMail(settings, route, connections, db_path, rule_judge_v1)
+    return JobMail(
+        settings, route, connections, db_path, rule_judge_v1,
+        moment=moment, timesink_path=_timesink_db_path(config),
+    )
 
 
 def _turn_end_asks(
@@ -2152,6 +2188,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
     _install_open_path(full_config)
     vision_preset_name, screen_max_width_px = _screen_tools_config(full_config)
     memory = MemorySettings.from_config(full_config.get("memory"), runtime_root=paths.root)
+    moment = _moment(full_config, config_path, memory.db_path)
     # ADR 0068: refuse a memory.db a newer Jarvis wrote before anything writes to it.
     open_memory_db(memory.db_path).close()
     session = SessionSettings.from_config(full_config.get("session"))
@@ -2413,7 +2450,10 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         ),
         voice_cues=voice_cues,
         turn_end_asks=_turn_end_asks(full_config, config_path, jev_log),
-        job_mail=_job_mail(full_config, config_path, jev_log, plugin_connections, memory.db_path),
+        job_mail=_job_mail(
+            full_config, config_path, jev_log, plugin_connections, memory.db_path, moment,
+        ),
+        moment=moment,
         voice_words=_voice_words(full_config, config_path, jev_log),
         oneshot=_jev_oneshot(
             full_config, config_path, jev_log, tier0_table, _event_emitter(paths.event_log),

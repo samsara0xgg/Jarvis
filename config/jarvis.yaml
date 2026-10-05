@@ -351,6 +351,29 @@ job_mail:
   # later decision of his; do not change the default.
   linkedin_alerts: ledger_only
 
+# ADR 0161 — the moment.  When an alert is decided, delivered or shown, Jarvis reads TimeSink's
+# saved spans (read-only, nothing copied, no model) to see what Allen is doing.  In a call or
+# meeting every card and sound waits and nothing is spoken; away (idle, locked, asleep) they wait
+# too; when it ends the held alerts come as one summary.  An unreadable or stale TimeSink (older
+# than 120 s with no idle/lock/sleep mark) means "unknown" and nothing is held, as before; it
+# also needs observer.timesink on.  enabled: false switches the whole feature off.  fields picks
+# what the short 现况 doc and each decision snapshot say about him (apps and site domains only,
+# never a window title or URL): front_app, site, since (this stretch began), call, screen_share
+# (always unknown: TimeSink does not record it), presence, job_today (job-site time today),
+# apps_today (top apps today), situation (his watch list and goals: empty for now).
+moment:
+  enabled: true
+  fields:
+    front_app: true
+    site: true
+    since: true
+    call: true
+    screen_share: true
+    presence: true
+    job_today: true
+    apps_today: true
+    situation: true
+
 # ADR 0147 — the Dashboard's mail page.  On: the page can open a letter whole, mark it read,
 # archive or trash it (Gmail's Trash, kept 30 days; nothing is deleted for good), tell Jarvis
 # which item is open so "this email" means it, and show a reply draft Jarvis writes under the
