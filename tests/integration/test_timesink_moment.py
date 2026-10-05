@@ -242,7 +242,7 @@ def test_a_span_after_the_mark_means_he_is_active_again(
         ("com.apple.FaceTime", "Bo", None, None, "FaceTime"),
         ("com.apple.FaceTime", "FaceTime", None, None, None),
         ("com.webex.meetingmanager", "Webex", None, None, "Webex"),
-        ("com.tencent.meeting", "", None, None, "腾讯会议"),
+        ("com.tencent.meeting", "", None, None, "Tencent Meeting"),
         ("com.tencent.meeting", "腾讯会议", None, None, None),
         ("com.hnc.Discord", "General | Server - Discord", None, None, None),  # not detectable
     ],
@@ -341,8 +341,8 @@ def test_the_doc_names_apps_and_domains_never_titles_or_urls(
     """The doc names apps and domains never titles or urls."""
     snap = _moment_for(_secret_store(store), tmp_path / "memory.db").snapshot()
     doc = snap["doc"]
-    assert doc["text"].startswith("此刻：前台 Google Chrome，站点 careers.example，自 ")
-    assert "今天到现在：" in doc["text"]
+    assert doc["text"].startswith("Now: front app Google Chrome, site careers.example, since ")
+    assert "Today so far: " in doc["text"]
     assert len(doc["text"]) <= rules.DOC_MAX_CHARS
     dumped = json.dumps(snap, ensure_ascii=False)
     for secret in (TITLE_WORD, PATH_WORD, "https://", "Zoom Meeting"):
@@ -354,13 +354,13 @@ def test_each_field_can_be_switched_off(store: FakeTimeSink, tmp_path: Path) -> 
     """Each field can be switched off."""
     _secret_store(store)
     on = _moment_for(store, tmp_path / "m.db").snapshot()["doc"]
-    assert "站点 careers.example" in on["text"]
+    assert "site careers.example" in on["text"]
     fields = dict.fromkeys(rules.FIELDS, True)
     for name, gone in (
-        ("site", "站点"),
-        ("since", "自 "),
-        ("call", "通话"),
-        ("presence", "在电脑前"),
+        ("site", "site "),
+        ("since", "since "),
+        ("call", "call"),
+        ("presence", "at the computer"),
     ):
         off = _moment_for(store, tmp_path / "m.db", {**fields, name: False}).snapshot()["doc"]
         assert name not in off["fields"]
@@ -372,7 +372,7 @@ def test_each_field_can_be_switched_off(store: FakeTimeSink, tmp_path: Path) -> 
     assert none == {"text": "", "fields": {}}
     no_today = {**fields, "job_today": False, "apps_today": False}
     assert (
-        "今天到现在"
+        "Today so far"
         not in _moment_for(store, tmp_path / "m.db", no_today).snapshot()["doc"]["text"]
     )
 
@@ -381,7 +381,7 @@ def test_unknown_facts_render_as_unknown_and_the_doc_stays_short(tmp_path: Path)
     """Unknown facts render as unknown and the doc stays short."""
     facts = _moment_for(tmp_path / "missing.sqlite", tmp_path / "m.db").facts()
     doc = rules.render_doc(facts, dict.fromkeys(rules.FIELDS, True))
-    assert doc["text"] == "此刻：未知。\n今天到现在：未知。"
+    assert doc["text"] == "Now: unknown.\nToday so far: unknown."
     many = {**facts, "front_app": "x" * 600, "read": "ok"}
     assert (
         len(rules.render_doc(many, dict.fromkeys(rules.FIELDS, True), "y" * 900)["text"])
@@ -511,7 +511,7 @@ def test_every_decision_snapshot_carries_the_moment_and_no_titles(
         snap = json.loads(raw)
         assert snap["facts"]["front_app"] == "Google Chrome"
         assert snap["facts"]["site_domain"] == "careers.example"
-        assert snap["doc"]["text"].startswith("此刻：")
+        assert snap["doc"]["text"].startswith("Now: ")
         assert set(snap["doc"]["fields"]) == set(rules.FIELDS)
     packs = [json.loads(p) for (p,) in h.sql("SELECT pack_json FROM attention_log")]
     assert packs

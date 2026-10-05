@@ -68,10 +68,10 @@ Its limits:
   apply: two or more that waited are one summary, one alone is its own card.
   Unknown holds nothing, so behaviour is exactly as before. ADR 0156's output
   guard is untouched.
-- **现况 doc.** Built by code, no model, at most 400 characters, three parts:
-  此刻 (front app, site domain, since when, in a call, screen share, presence),
-  今天到现在 (job-site time and the top apps by time) and 你的情况 (his watch
-  list, goals and rules: empty for now). Each of nine fields is switched on or
+- **现况 doc.** Built by code, no model, at most 400 characters, in English
+  because it is text for models: Now (front app, site domain, since when, in a
+  call, screen share, presence), Today so far (job-site time and the top apps by
+  time) and Your situation (his watch list, goals and rules: empty for now). Each of nine fields is switched on or
   off in the `moment.fields` config block, checked at boot, because which facts
   help is to be learned from how he rates the cards. The doc and its structured
   fields are stored with every decision snapshot (`job_decision.moment_json`,

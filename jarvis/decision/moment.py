@@ -1,10 +1,10 @@
-"""L3 moment rules (ADR 0161): when to hold alerts, and the short 现况 doc a model may be shown.
+"""L3 moment rules (ADR 0161): when to hold alerts, and the short situation doc (现况).
 
 Facts come from ``jarvis.state.timesink_moment``; each may be ``unknown``. The hold rule acts
-only on what is known: unknown holds nothing, so behaviour is exactly as before. The doc is built
-by code in a few hundred characters, with three parts (此刻, 今天到现在, 你的情况) whose fields
-config can switch off one by one. It names apps and site domains only, never a window title
-or a URL.
+only on what is known: unknown holds nothing, so behaviour is exactly as before. The doc a model
+may be shown is built by code in a few hundred characters, with three parts (Now, Today so far,
+Your situation) whose fields config can switch off one by one. It names apps and site domains
+only, never a window title or a URL.
 
 Layer rules: stdlib only; no wiring.
 """
@@ -28,9 +28,9 @@ FIELDS: Final[tuple[str, ...]] = (
     "situation",
 )
 _PRESENCE: Final[dict[str, str]] = {
-    "idle": "离开（空闲）",
-    "locked": "离开（已锁屏）",
-    "asleep": "离开（休眠）",
+    "idle": "away (idle)",
+    "locked": "away (screen locked)",
+    "asleep": "away (asleep)",
 }
 _UNKNOWN: Final[str] = "unknown"
 
@@ -47,7 +47,7 @@ def hold_reason(facts: dict[str, Any]) -> str | None:
 
 
 def _hours(seconds: float) -> str:
-    return f"{round(seconds / 60)} 分钟" if seconds < 3600 else f"{seconds / 3600:.1f}h"  # noqa: PLR2004
+    return f"{round(seconds / 60)} min" if seconds < 3600 else f"{seconds / 3600:.1f} h"  # noqa: PLR2004
 
 
 def _clock(iso: str) -> str:
@@ -77,34 +77,36 @@ def _now_part(got: dict[str, Any]) -> str:
     pieces = []
     app, site = got.get("front_app"), got.get("site")
     if app not in (None, _UNKNOWN):
-        pieces.append(f"前台 {app}")
+        pieces.append(f"front app {app}")
     if site not in (None, _UNKNOWN):
-        pieces.append(f"站点 {site}")
+        pieces.append(f"site {site}")
     if got.get("since") not in (None, _UNKNOWN):
-        pieces.append(f"自 {_clock(got['since'])} 起")
+        pieces.append(f"since {_clock(got['since'])}")
     call = got.get("call")
     if isinstance(call, dict) and call["in_call"] != _UNKNOWN:
         pieces.append(
-            f"正在通话/会议（{call['app']}）" if call["in_call"] == "yes" else "不在通话/会议中"
+            f"in a call/meeting ({call['app']})" if call["in_call"] == "yes" else "not in a call"
         )
     if got.get("screen_share") == "yes":
-        pieces.append("正在共享屏幕")
+        pieces.append("sharing the screen")
     presence = got.get("presence")
     if presence is not None and presence != _UNKNOWN:
-        pieces.append(_PRESENCE.get(presence, "在电脑前"))
-    return "此刻：" + ("，".join(pieces) if pieces else "未知") + "。"
+        pieces.append(_PRESENCE.get(presence, "at the computer"))
+    return "Now: " + (", ".join(pieces) if pieces else "unknown") + "."
 
 
 def _today_part(got: dict[str, Any], *, apps: bool) -> str:
     items = []
     job, top = got.get("job_today"), got.get("apps_today")
     if isinstance(job, int | float) and job > 0:
-        items.append(f"求职 {_hours(job)}")
+        items.append(f"job hunting {_hours(job)}")
     if apps and isinstance(top, list):
         items.extend(f"{name} {_hours(seconds)}" for name, seconds in top)
     unknown = _UNKNOWN in (got.get("job_today"), got.get("apps_today"))
     return (
-        "今天到现在：" + ("；".join(items) if items else "未知" if unknown else "还没有记录") + "。"
+        "Today so far: "
+        + ("; ".join(items) if items else "unknown" if unknown else "none yet")
+        + "."
     )
 
 
@@ -115,14 +117,14 @@ def _text(got: dict[str, Any], *, apps: bool) -> str:
     if {"job_today", "apps_today"} & got.keys():
         parts.append(_today_part(got, apps=apps))
     if got.get("situation"):
-        parts.append(f"你的情况：{got['situation']}")
+        parts.append(f"Your situation: {got['situation']}")
     return "\n".join(parts)
 
 
 def render_doc(
     facts: dict[str, Any], fields: dict[str, bool], situation: str = ""
 ) -> dict[str, Any]:
-    """``{"text", "fields"}``: the 现况 doc and the structured values behind it.
+    """``{"text", "fields"}``: the situation doc and the structured values behind it.
 
     ``fields`` switches each field on or off; ``situation`` is Allen's watch list, goals and
     rules (empty for now, so the third part is left out). Over ``DOC_MAX_CHARS`` the per-app

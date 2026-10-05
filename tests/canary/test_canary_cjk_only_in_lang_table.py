@@ -70,6 +70,8 @@ _MATCHERS: Final[dict[str, frozenset[str]]] = {
     "jarvis/state/core_memory.py": frozenset({"SECTIONS"}),
     "jarvis/state/daily_report.py": frozenset({"MILESTONES", "_QUESTION"}),
     "jarvis/state/work_state.py": frozenset({"_STOP_WORDS", "_TERM", "_CJK_RUN"}),
+    # A call is read from the front window; Tencent Meeting titles its lobby 腾讯会议 (ADR 0161).
+    "jarvis/state/timesink_moment.py": frozenset({"call_app"}),
     "jarvis/surface/sentence_splitter.py": frozenset({"_DELIMITERS"}),
     "jarvis/surface/voice_asr.py": frozenset(
         {"_MISPLACED_PERIOD", "_ACTION_WORDS", "MlxWhisperRecognizer.__init__",

@@ -82,8 +82,6 @@ ignore = [
 "jarvis/shared/lang.py" = ["RUF001", "E501"]
 # The work-state material marks repeat counts with ×, which RUF001 reads as an x.
 "jarvis/decision/work_state.py" = ["RUF001"]
-# The 现况 doc is written in Chinese with fullwidth parentheses on purpose.
-"jarvis/decision/moment.py" = ["RUF001"]
 # Sentence splitter (ADR-0003 Step 2) needs CJK ``。！？`` literals as part
 # of its boundary detection contract: RUF001/RUF002/RUF003 ambiguous-char
 # warnings are the whole point of the module and must be silenced.
@@ -103,7 +101,6 @@ ignore = [
 "tests/integration/test_daily_report_live.py" = ["RUF001"]
 # Its acceptance test asserts on those Chinese strings verbatim.
 "tests/integration/test_work_state.py" = ["RUF001"]
-"tests/integration/test_timesink_moment.py" = ["RUF001"]  # asserts on the Chinese doc verbatim
 "tests/integration/test_projects.py" = ["RUF001"]  # asserts on real Chinese labels verbatim
 "tests/integration/test_projects_live.py" = ["RUF001"]  # spot-checks real Chinese labels
 # Asserts on the Chinese commentary a Live session is sent (ADR 0026).

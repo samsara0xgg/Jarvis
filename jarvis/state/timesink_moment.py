@@ -88,7 +88,7 @@ def call_app(  # noqa: PLR0911 - one flat table of call windows
     ):
         return "Webex"
     if bundle == "com.tencent.meeting" and title is not None and seen != "腾讯会议":
-        return "腾讯会议"
+        return "Tencent Meeting"
     return None
 
 
