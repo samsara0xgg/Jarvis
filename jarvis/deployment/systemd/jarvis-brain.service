@@ -1,0 +1,40 @@
+# Jarvis brain (ADR 0170): the always-on headless host. A systemd user unit; the repo only
+# keeps it, nothing installs it. On the brain host, as the owner:
+#
+#   mkdir -p ~/.config/systemd/user
+#   cp jarvis/deployment/systemd/jarvis-brain.service ~/.config/systemd/user/
+#   loginctl enable-linger "$USER"    # a user unit then starts at boot, with no login
+#   systemctl --user daemon-reload && systemctl --user enable --now jarvis-brain
+#
+# Before the first start, in the runtime root (below):
+#   settings.yaml  has  `runtime: {role: brain}`, so no microphone, playback, voice model
+#                  download or Mac observer is started; without it the daemon runs as `all`.
+#   env            0600, one `NAME=value` line per API key; the daemon reads it itself
+#                  (fill-only, no systemd quoting), so the unit carries no secret.
+#
+# The repo is expected at ~/Jarvis with its virtualenv (`uv sync --frozen`) beside it. The
+# daemon listens on 127.0.0.1:8006 only. Logs go to the journal: `journalctl --user -u jarvis-brain`.
+
+[Unit]
+Description=Jarvis brain
+Wants=network-online.target
+After=network-online.target
+# A daemon that cannot start (bad config, a database from a newer Jarvis) stops retrying
+# after five tries in five minutes instead of looping.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Jarvis
+Environment=JARVIS_RUNTIME_ROOT=%h/.jarvis
+ExecStart=%h/Jarvis/.venv/bin/python -m jarvis serve
+UMask=0077
+Restart=on-failure
+RestartSec=10
+# 2: another daemon holds this runtime root's lock. 3: memory.db or the event log was written
+# by a newer Jarvis. Starting again changes neither.
+RestartPreventExitStatus=2 3
+
+[Install]
+WantedBy=default.target
