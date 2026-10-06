@@ -48,6 +48,7 @@ import re
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -70,6 +71,12 @@ from jarvis.runtime.inherent_loop import serve_inherent
 from jarvis.shared.lang import t
 from jarvis.shared.text import is_english
 from jarvis.state import NewerDataError
+from jarvis.state.device_tokens import (
+    DeviceTokenError,
+    pair_device,
+    paired_devices,
+    unpair_device,
+)
 from jarvis.state.plugin_settings import local_key
 
 LOGGER = logging.getLogger("jarvis.cli")
@@ -103,8 +110,7 @@ _LONG_RUN_RE: re.Pattern[str] = re.compile(
 #
 # The daemon binds one address; the CLI is a thin client over the same
 # wire the inherent-swift app speaks.
-_DAEMON_HOST = "127.0.0.1"
-_DAEMON_PORT = 8006
+_DAEMON_URL = "http://127.0.0.1:8006"
 
 # Contract table (D2). Connection-refused means "lock acquired, uvicorn
 # not yet bound" — `acquire_exclusive` runs before bind with the voice
@@ -117,10 +123,14 @@ _FORWARD_DEFAULT_TIMEOUT_S = 120.0
 _WS_OPEN_TIMEOUT_S = 5.0
 _POST_TIMEOUT_S = 10.0
 
+# The daemon, local or a brain on the tailnet, is never behind an HTTP proxy.
+_DIRECT = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
 _EXIT_REFUSED = 2
 _EXIT_DAEMON_UNREACHABLE = 3
 _EXIT_RESPONSE_TIMEOUT = 4
 _EXIT_TURN_FAILED = 5
+_BRAIN_TOKEN_FILE = "brain-token"  # noqa: S105 — a file name, not a secret.
 
 
 def _utterance_implies_long_run(utterance: str) -> bool:
@@ -178,16 +188,14 @@ def _post_submit(url: str, utterance: str, key: str) -> str:
             taken before uvicorn binds).
     """
     payload = json.dumps({"text": utterance}).encode("utf-8")
-    request = urllib.request.Request(  # noqa: S310 — fixed http://127.0.0.1 URL built above.
+    request = urllib.request.Request(  # noqa: S310 — an http(s) URL checked by the caller.
         url,
         data=payload,
         headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
         method="POST",
     )
     try:
-        with urllib.request.urlopen(  # noqa: S310 — same fixed loopback URL.
-            request, timeout=_POST_TIMEOUT_S
-        ) as response:
+        with _DIRECT.open(request, timeout=_POST_TIMEOUT_S) as response:
             body = json.loads(response.read().decode("utf-8"))
     except ConnectionRefusedError as exc:
         raise _DaemonUnreachableError(str(exc)) from None
@@ -294,13 +302,13 @@ async def _drain_ws(ws: object, queue: asyncio.Queue[dict[str, object]]) -> None
                 queue.put_nowait(decoded)
 
 
-async def _forward_attempt(utterance: str, *, timeout_s: float, key: str) -> str:
+async def _forward_attempt(utterance: str, *, timeout_s: float, key: str, base_url: str) -> str:
     """One WS-connect → POST → collect cycle. Returns the response text."""
     from websockets.asyncio.client import connect  # noqa: PLC0415 — keeps CLI import cheap.
     from websockets.exceptions import InvalidStatus  # noqa: PLC0415 — same.
 
-    ws_url = f"ws://{_DAEMON_HOST}:{_DAEMON_PORT}/inherent/ws"
-    post_url = f"http://{_DAEMON_HOST}:{_DAEMON_PORT}/inherent/submit"
+    ws_url = f"ws{base_url.removeprefix('http')}/inherent/ws"
+    post_url = f"{base_url}/inherent/submit"
 
     # WS FIRST. Reversing these two lines loses the response on any turn
     # that finishes before the POST's HTTP response is read.
@@ -308,6 +316,7 @@ async def _forward_attempt(utterance: str, *, timeout_s: float, key: str) -> str
         async with connect(
             ws_url,
             open_timeout=_WS_OPEN_TIMEOUT_S,
+            proxy=None,
             additional_headers={"Authorization": f"Bearer {key}"},
         ) as ws:
             queue: asyncio.Queue[dict[str, object]] = asyncio.Queue()
@@ -322,7 +331,7 @@ async def _forward_attempt(utterance: str, *, timeout_s: float, key: str) -> str
                 with contextlib.suppress(asyncio.CancelledError):
                     await reader
     except InvalidStatus as exc:
-        # 403: the daemon runs from another runtime root, so its key differs.
+        # 403: the daemon runs from another runtime root, or the brain did not take the token.
         msg = f"daemon refused the connection: HTTP {exc.response.status_code}"
         raise _SubmitRejectedError(msg) from None
 
@@ -351,12 +360,16 @@ def _stdout_text(text: str) -> str:
     return channels.document or channels.voice
 
 
-async def _forward(utterance: str, *, timeout_s: float, key: str) -> int:
+async def _forward(
+    utterance: str, *, timeout_s: float, key: str, base_url: str = _DAEMON_URL
+) -> int:
     """D2 forward mode with the pinned retry / exit-code contract."""
     last_error = ""
     for attempt in range(1, _FORWARD_ATTEMPTS + 1):
         try:
-            text = await _forward_attempt(utterance, timeout_s=timeout_s, key=key)
+            text = await _forward_attempt(
+                utterance, timeout_s=timeout_s, key=key, base_url=base_url
+            )
         except (ConnectionRefusedError, _DaemonUnreachableError) as exc:
             last_error = str(exc)
             if attempt < _FORWARD_ATTEMPTS:
@@ -386,9 +399,11 @@ async def _forward(utterance: str, *, timeout_s: float, key: str) -> int:
     return _EXIT_DAEMON_UNREACHABLE
 
 
-def _forward_to_daemon(utterance: str, *, timeout_s: float, key: str) -> int:
+def _forward_to_daemon(
+    utterance: str, *, timeout_s: float, key: str, base_url: str = _DAEMON_URL
+) -> int:
     """Sync wrapper — the one-shot CLI has no running event loop."""
-    return asyncio.run(_forward(utterance, timeout_s=timeout_s, key=key))
+    return asyncio.run(_forward(utterance, timeout_s=timeout_s, key=key, base_url=base_url))
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -437,6 +452,22 @@ def _build_parser() -> argparse.ArgumentParser:
             "the pre-0009 exit-2 refusal when the daemon holds the lock; "
             "scripts that depend on that refusal pass this flag."
         ),
+    )
+    parser.add_argument(
+        "--brain",
+        metavar="URL",
+        default=None,
+        help=(
+            "Send the turn to this brain over the private network (ADR 0170), e.g. "
+            "http://jarvis:8006, authenticated by this device's token "
+            "(`jarvis pair` on the brain). No local daemon is involved."
+        ),
+    )
+    parser.add_argument(
+        "--brain-token-file",
+        type=Path,
+        default=None,
+        help="This device's brain token (default: <runtime root>/brain-token, mode 0600).",
     )
     parser.add_argument(
         "--timeout",
@@ -887,6 +918,44 @@ def _main_daemon(argv: list[str]) -> int:
     return 0
 
 
+def _brain_base_url(url: str) -> str:
+    """``http(s)://host[:port]`` for ``--brain``, without a trailing slash."""
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme not in {"http", "https"} or not parts.hostname or parts.path.strip("/"):
+        msg = f"--brain must look like http://jarvis:8006, not {url!r}"
+        raise ValueError(msg)
+    return f"{parts.scheme}://{parts.netloc}"
+
+
+def _read_brain_token(path: Path) -> str:
+    """This device's token; a missing, empty or group- or world-readable file is refused."""
+    try:
+        if path.stat().st_mode & 0o077:
+            msg = f"the brain token {path} is readable by others; run chmod 600 on it"
+            raise ValueError(msg)
+        token = path.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        msg = f"cannot read the brain token {path}: {exc.strerror}; pair this device first"
+        raise ValueError(msg) from None
+    if not token:
+        msg = f"the brain token {path} is empty"
+        raise ValueError(msg)
+    return token
+
+
+def _main_brain_turn(args: argparse.Namespace, runtime_root: Path) -> int:
+    """ADR 0170: one typed turn to a remote brain; nothing about a local daemon applies."""
+    try:
+        base_url = _brain_base_url(args.brain)
+        token = _read_brain_token(args.brain_token_file or runtime_root / _BRAIN_TOKEN_FILE)
+    except ValueError as exc:
+        sys.stderr.write(f"jarvis: {exc}\n")
+        return 1
+    return _forward_to_daemon(
+        args.utterance, timeout_s=args.timeout, key=token, base_url=base_url
+    )
+
+
 def _main_oneshot(argv: list[str]) -> int:
     """Existing one-shot flow with the ADR-0003 D4 lock-probe prepended.
 
@@ -914,9 +983,12 @@ def _main_oneshot(argv: list[str]) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
+    requested_root = _resolve_runtime_root(args.runtime_root)
+    if args.brain is not None:
+        return _main_brain_turn(args, requested_root)
+
     # ADR-0003 D4 / F2 — probe the requested root's lock first (kept
     # first so the ordering the D4 tests observe does not change).
-    requested_root = _resolve_runtime_root(args.runtime_root)
     lock_path = requested_root / "daemon.lock"
     lock_held = process_lock.is_held(lock_path)
 
@@ -983,6 +1055,44 @@ def _main_mcp_login(argv: list[str]) -> int:
         return 1
 
 
+def _main_devices(command: str, argv: list[str]) -> int:
+    """ADR 0170, on the brain: `pair <name>`, `unpair <name>` and `devices`."""
+    parser = argparse.ArgumentParser(
+        prog=f"{_PROG} {command}",
+        description={
+            "pair": "Pair a terminal: print its new token, the only output. Redirect it to a file.",
+            "unpair": "Revoke a terminal's token; it takes effect at once.",
+            "devices": "List the paired terminals, never their tokens.",
+        }[command],
+    )
+    if command != "devices":
+        parser.add_argument("name", help="The terminal's name, e.g. macbook.")
+    parser.add_argument(
+        "--runtime-root", type=Path, default=None, help="Override JARVIS_RUNTIME_ROOT."
+    )
+    args = parser.parse_args(argv)
+    root = _resolve_runtime_root(args.runtime_root)
+    try:
+        if command == "pair":
+            if sys.stdout.isatty():
+                sys.stderr.write(
+                    "jarvis pair: the token is printed once; redirect stdout to a file "
+                    "(> brain-token) so it never shows on screen.\n"
+                )
+                return 1
+            sys.stdout.write(pair_device(root, args.name) + "\n")
+        elif command == "unpair":
+            unpair_device(root, args.name)
+            sys.stdout.write(f"unpaired {args.name}\n")
+        else:
+            for name, created_at in paired_devices(root):
+                sys.stdout.write(f"{name}\t{created_at}\n")
+    except (DeviceTokenError, OSError) as exc:
+        sys.stderr.write(f"jarvis {command}: {exc}\n")
+        return 1
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI entry. Routes ``serve`` to the daemon; otherwise to one-shot.
 
@@ -1008,6 +1118,8 @@ def main(argv: list[str] | None = None) -> int:
         return _main_daemon(argv[1:])
     if argv and argv[0] == "mcp-login":
         return _main_mcp_login(argv[1:])
+    if argv and argv[0] in {"pair", "unpair", "devices"}:
+        return _main_devices(argv[0], argv[1:])
     return _main_oneshot(argv)
 
 

@@ -70,7 +70,12 @@ class _NullMemory:
         return lambda *_args: {}
 
 
-def _client(tmp_path: Any) -> tuple[TestClient, str, list[str]]:  # noqa: ANN401 — pytest tmp_path
+def _client(
+    tmp_path: Any,  # noqa: ANN401 — pytest tmp_path
+    *,
+    peer: str = "testclient",
+    **guard: Any,  # noqa: ANN401 — require_local_key's keyword arguments
+) -> tuple[TestClient, str, list[str]]:
     key = local_key(tmp_path)
     matches = functools.partial(local_key_matches, key)
     app = create_app(
@@ -114,14 +119,14 @@ def _client(tmp_path: Any) -> tuple[TestClient, str, list[str]]:  # noqa: ANN401
             agent_marks_path=tmp_path / "agent-marks.json",
         )
     )
-    require_local_key(app, matches)
+    require_local_key(app, matches, **guard)
     routes = [
         f"{method} {route.path}"
         for route in app.routes
         if isinstance(route, Route)
         for method in sorted(route.methods or ())
     ] + [f"WS {route.path}" for route in app.routes if isinstance(route, WebSocketRoute)]
-    return TestClient(app, base_url="http://127.0.0.1:8006"), key, routes
+    return TestClient(app, base_url="http://127.0.0.1:8006", client=(peer, 50000)), key, routes
 
 
 def _call(client: TestClient, route: str, headers: dict[str, str]) -> int:

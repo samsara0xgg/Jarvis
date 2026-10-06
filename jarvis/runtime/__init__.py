@@ -34,6 +34,7 @@ import asyncio
 import base64
 import contextlib
 import io
+import ipaddress
 import json
 import logging
 import os
@@ -354,6 +355,39 @@ def _role(config: Mapping[str, Any]) -> Role:
     raise RuntimeBootstrapError(msg)
 
 
+def _listen(config: Mapping[str, Any], role: Role) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """``runtime.listen_addresses`` and ``runtime.listen_hosts``: where a brain also answers.
+
+    Only a brain may have any, and only on private addresses (ADR 0170): a wildcard or a
+    public address stops the boot, so no setting can open the daemon to the internet.
+    """
+    block = config.get("runtime")
+    block = block if isinstance(block, Mapping) else {}
+    raw = {key: block.get(key) or [] for key in ("listen_addresses", "listen_hosts")}
+    for key, value in raw.items():
+        if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+            msg = f"runtime: runtime.{key} must be a list of strings"
+            raise RuntimeBootstrapError(msg)
+    if not raw["listen_addresses"] and not raw["listen_hosts"]:
+        return (), ()
+    if role != "brain":
+        msg = "runtime: runtime.listen_addresses and listen_hosts need runtime.role: brain"
+        raise RuntimeBootstrapError(msg)
+    for item in raw["listen_addresses"]:
+        try:
+            address = ipaddress.ip_address(item)
+        except ValueError:
+            msg = f"runtime: runtime.listen_addresses has {item!r}, which is not an IP address"
+            raise RuntimeBootstrapError(msg) from None
+        if address.is_unspecified or address.is_multicast or address.is_global:
+            msg = f"runtime: runtime.listen_addresses has {item!r}, which is not a private address"
+            raise RuntimeBootstrapError(msg)
+    if any(not item or "*" in item for item in raw["listen_hosts"]):
+        msg = "runtime: runtime.listen_hosts must be plain host names, no wildcards"
+        raise RuntimeBootstrapError(msg)
+    return tuple(raw["listen_addresses"]), tuple(raw["listen_hosts"])
+
+
 def _for_role(config: dict[str, Any], role: Role) -> dict[str, Any]:
     """The config this role runs on: the brain's has every device-bound switch forced off."""
     return _overlay(config, _BRAIN_OVERRIDES) if role == "brain" else config
@@ -498,6 +532,9 @@ class JarvisRuntime:
             means inert" posture as an empty ``tier0_table``).
         role: ``runtime.role`` (ADR 0170); the daemon starts no microphone,
             playback, power observer or device watcher in ``brain``.
+        listen_addresses: ``runtime.listen_addresses``, the private addresses a
+            brain also listens on; ``listen_hosts``, the Host names it accepts
+            there. Empty unless the role is ``brain``.
     """
 
     config: Mapping[str, Any]
@@ -579,6 +616,9 @@ class JarvisRuntime:
     daily_schedule: DailySchedule | None = None
     # ADR 0170: ``brain`` runs headless and starts nothing device-bound.
     role: Role = "all"
+    # ADR 0170: the private addresses a brain also listens on, and the Host names it accepts.
+    listen_addresses: tuple[str, ...] = ()
+    listen_hosts: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -2283,6 +2323,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
     # user's settings.yaml for this boot.
     full_config = apply_settings(_load_full_config(config_path, paths.settings), paths.root)
     role = _role(full_config)
+    listen_addresses, listen_hosts = _listen(full_config, role)
     full_config = _for_role(full_config, role)
     lang.set_language(_language(full_config))
     log_llm_io = diagnostics_flag(full_config, "log_llm_io")
@@ -2512,6 +2553,8 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         llm_client=llm_client,
         system_prompt=system_prompt,
         role=role,
+        listen_addresses=listen_addresses,
+        listen_hosts=listen_hosts,
         tier0_table=tier0_table,
         confirm_grammar_table=confirm_grammar_table,
         wave1_features=wave1_features,

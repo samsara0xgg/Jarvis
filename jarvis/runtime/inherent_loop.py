@@ -76,6 +76,7 @@ import math
 import os
 import secrets
 import signal
+import socket
 import sqlite3
 import threading
 import time
@@ -183,6 +184,7 @@ from jarvis.shared.realtime import (
 )
 from jarvis.shared.realtime_trace import record_realtime_trace
 from jarvis.state import quiet_mode
+from jarvis.state.device_tokens import device_token_matches
 from jarvis.state.event_log import (
     emit_event,
     get_event,
@@ -5533,6 +5535,24 @@ def _submit_asr_v2(  # noqa: PLR0913 — the bound path and pipeline plus the fo
             inner_conn.close()
 
 
+def _listen_sockets(host: str, port: int, addresses: tuple[str, ...]) -> list[socket.socket]:
+    """Listening sockets for ``host`` and each private address (ADR 0170).
+
+    uvicorn binds one host, so a brain with more addresses hands it the sockets.
+    """
+    sockets: list[socket.socket] = []
+    for address in (host, *addresses):
+        try:
+            family = socket.AF_INET6 if ":" in address else socket.AF_INET
+            sockets.append(socket.create_server((address, port), family=family, backlog=2048))
+        except OSError as exc:
+            for sock in sockets:
+                sock.close()
+            msg = f"cannot listen on {address}:{port}: {exc}"
+            raise OSError(msg) from exc
+    return sockets
+
+
 async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root entrypoint; the keyword args ARE the daemon contract and the voice-wiring plus boot-reconciliation branches necessarily inflate body length + branch count.
     runtime: JarvisRuntime,
     *,
@@ -6279,6 +6299,11 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             live=live_voice,
             v2=InherentV2Deps(
                 token_matches=functools.partial(inherent_v2_token_matches, v2_token),
+                device_token_matches=(
+                    functools.partial(device_token_matches, runtime.runtime_paths.root)
+                    if runtime.listen_addresses
+                    else None
+                ),
                 mint_connection_id=new_connection_id,
                 boot_id=boot_id,
                 log_epoch=log_epoch,
@@ -6310,6 +6335,12 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         require_local_key(
             app,
             functools.partial(local_key_matches, local_key(runtime.runtime_paths.root)),
+            extra_hosts=runtime.listen_hosts,
+            device_token_matches=(
+                functools.partial(device_token_matches, runtime.runtime_paths.root)
+                if runtime.listen_addresses
+                else None
+            ),
         )
 
         config = uvicorn.Config(
@@ -6524,7 +6555,11 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         )
 
         try:
-            await server.serve()
+            await server.serve(
+                sockets=_listen_sockets(host, port, runtime.listen_addresses)
+                if runtime.listen_addresses
+                else None,
+            )
         finally:
             LOGGER.info("serve_inherent: shutting down watchers")
             # Power observer FIRST: its closed flag must be set before the

@@ -63,6 +63,7 @@ import contextlib
 import functools
 import hashlib
 import io
+import ipaddress
 import json
 import logging
 import re
@@ -86,7 +87,7 @@ from fastapi import (
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field, ValidationError
 from starlette.background import BackgroundTask
-from starlette.datastructures import Headers
+from starlette.datastructures import Address, Headers
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.websockets import WebSocketClose
 
@@ -120,7 +121,7 @@ from jarvis.surface.inherent_protocol import (
 from jarvis.surface.voice_pipeline import VoiceInputBusyError, VoicePipelineEmptyError
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Awaitable, Callable
+    from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
     from datetime import time as clock
     from pathlib import Path
 
@@ -154,8 +155,9 @@ _REPLY_CHARS: Final = 4000
 _SESSION_ID_CHARS: Final = 128
 # Open without the local key: the liveness probe, and the v2 routes, which
 # check their own per-boot token.
+_HEALTH_PATH: Final = "/api/health"
 _KEYLESS_PATHS: Final[frozenset[str]] = frozenset(
-    {"/api/health", "/inherent/ws/v2", *_V2_INPUT_PATHS},
+    {_HEALTH_PATH, "/inherent/ws/v2", *_V2_INPUT_PATHS},
 )
 
 
@@ -470,6 +472,9 @@ class InherentV2Deps:
             the :mod:`jarvis.surface.voice_pipeline` exceptions the route
             maps to 422 (empty) and 503 (busy).
             ``None`` makes the route answer 501.
+        device_token_matches: ADR 0170 — the check a peer that is not on loopback
+            must pass instead of ``token_matches``, which only a process on this
+            machine can read. ``None`` (the default) leaves such a peer refused.
     """
 
     token_matches: Callable[[str], bool]
@@ -483,6 +488,7 @@ class InherentV2Deps:
     attach_client: Callable[[V2Session], Awaitable[V2ClientHandle]] | None = None
     submit_text: Callable[[str, str, str], InputSubmissionOutcome] | None = None
     submit_asr: Callable[[bytes, str, str, str, str], InputSubmissionOutcome] | None = None
+    device_token_matches: Callable[[str], bool] | None = None
 
 
 @dataclass(frozen=True)
@@ -869,7 +875,7 @@ async def _run_v2_session(deps: InherentV2Deps, ws: WebSocket) -> None:
     the daemon never allocates a ``connection_id`` for it (D5).
     """
     token = _v2_presented_token(ws.headers.get("authorization"))
-    if token is None or not deps.token_matches(token):
+    if token is None or not _v2_token_ok(deps, ws.client, token):
         await ws.close(code=1008)
         return
     await ws.accept()
@@ -897,10 +903,17 @@ async def _run_v2_session(deps: InherentV2Deps, ws: WebSocket) -> None:
         return
 
 
+def _v2_token_ok(deps: InherentV2Deps, client: Address | None, token: str) -> bool:
+    """Check ``token`` against the boot token, or a device token for a remote peer (ADR 0170)."""
+    if deps.device_token_matches is not None and not _is_loopback_peer(client):
+        return deps.device_token_matches(token)
+    return deps.token_matches(token)
+
+
 def _v2_authorized(deps: InherentV2Deps, request: Request) -> bool:
     """Report whether this HTTP v2 request presented the boot token (D5)."""
     token = _v2_presented_token(request.headers.get("authorization"))
-    return token is not None and deps.token_matches(token)
+    return token is not None and _v2_token_ok(deps, request.client, token)
 
 
 def _v2_input_auth_middleware(
@@ -927,24 +940,51 @@ def _v2_input_auth_middleware(
     return gate
 
 
+def _is_loopback_peer(client: Address | None) -> bool:
+    """Whether the TCP peer is this machine; no peer address (a unix socket) is too."""
+    if client is None:
+        return True
+    try:
+        return ipaddress.ip_address(client.host).is_loopback
+    except ValueError:
+        return False
+
+
 class _LocalKeyMiddleware:
     """Refuse every HTTP request and socket upgrade that lacks the local key.
 
     Pure ASGI rather than ``app.middleware("http")`` so ``/inherent/ws`` is
     covered too: a socket without the key is closed before ``accept``, which
     the server answers with HTTP 403.
+
+    With ``device_token_matches`` (ADR 0170), a peer that is not on loopback
+    cannot read the key, so it must carry a paired device's token on every
+    route but the liveness probe. A peer on loopback is checked as before.
     """
 
-    def __init__(self, app: ASGIApp, authorize: Callable[[str | None], bool]) -> None:
+    def __init__(
+        self,
+        app: ASGIApp,
+        authorize: Callable[[str | None], bool],
+        device_token_matches: Callable[[str], bool] | None = None,
+    ) -> None:
         self.app = app
         self.authorize = authorize
+        self.device_token_matches = device_token_matches
+
+    def _allowed(self, scope: Scope) -> bool:
+        if scope["path"] == _HEALTH_PATH:
+            return True
+        header = Headers(scope=scope).get("authorization")
+        if self.device_token_matches is not None and not _is_loopback_peer(
+            Address(*scope["client"]) if scope.get("client") else None,
+        ):
+            token = _v2_presented_token(header)
+            return token is not None and self.device_token_matches(token)
+        return scope["path"] in _KEYLESS_PATHS or self.authorize(header)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if (
-            scope["type"] in {"http", "websocket"}
-            and scope["path"] not in _KEYLESS_PATHS
-            and not self.authorize(Headers(scope=scope).get("authorization"))
-        ):
+        if scope["type"] in {"http", "websocket"} and not self._allowed(scope):
             if scope["type"] == "websocket":
                 await WebSocketClose(code=1008)(scope, receive, send)
             else:
@@ -955,15 +995,27 @@ class _LocalKeyMiddleware:
         await self.app(scope, receive, send)
 
 
-def require_local_key(app: FastAPI, authorize: Callable[[str | None], bool]) -> None:
+def require_local_key(
+    app: FastAPI,
+    authorize: Callable[[str | None], bool],
+    *,
+    extra_hosts: Sequence[str] = (),
+    device_token_matches: Callable[[str], bool] | None = None,
+) -> None:
     """Serve only requests addressed to this machine that carry the local key.
 
     ``authorize`` checks an ``Authorization`` header value (``Bearer <key>``).
     The host check runs first, so a rebound page is refused before anything
-    reads its headers.
+    reads its headers. ``extra_hosts`` are the further names a brain answers to
+    on its private addresses, and ``device_token_matches`` is what a peer on
+    one of those addresses must present (ADR 0170); both default to nothing.
     """
-    app.add_middleware(_LocalKeyMiddleware, authorize=authorize)
-    app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(_LOCAL_HOSTS))
+    app.add_middleware(
+        _LocalKeyMiddleware,
+        authorize=authorize,
+        device_token_matches=device_token_matches,
+    )
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=[*_LOCAL_HOSTS, *extra_hosts])
 
 
 def _v2_refusal(outcome: InputSubmissionOutcome) -> None:

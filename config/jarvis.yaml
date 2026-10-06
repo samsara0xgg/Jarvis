@@ -11,6 +11,11 @@ runtime:
   # 无头运行，只管状态、模型请求和调度；不碰任何设备，设备绑定的工具也不给模型。
   # 在那台主机的 settings.yaml 里写 brain。
   role: all
+  # 只在 brain 上可用（ADR 0170）：除了 127.0.0.1，再在这些私网地址上听同一个端口，
+  # 并接受这些 Host 名。写 tailnet 的地址和名字，如 ["100.87.250.92"] 和
+  # ["100.87.250.92", "jarvis"]。永远不听 0.0.0.0，也拒绝公网地址。默认都空，只听本机。
+  listen_addresses: []
+  listen_hosts: []
 
 llm:
   # LLM 提供商：openai（兼容 xAI/Kimi/DeepSeek）或 anthropic。
