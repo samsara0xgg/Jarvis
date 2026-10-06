@@ -120,6 +120,7 @@ _POST_TIMEOUT_S = 10.0
 _EXIT_REFUSED = 2
 _EXIT_DAEMON_UNREACHABLE = 3
 _EXIT_RESPONSE_TIMEOUT = 4
+_EXIT_TURN_FAILED = 5
 
 
 def _utterance_implies_long_run(utterance: str) -> bool:
@@ -145,6 +146,10 @@ class _DaemonUnreachableError(RuntimeError):
 
 class _SubmitRejectedError(RuntimeError):
     """The daemon answered the POST with an error status — not a retry case."""
+
+
+class _TurnFailedError(RuntimeError):
+    """The daemon ended our turn with ``failed`` and no answer (``turn.failed``)."""
 
 
 class _ResponseTimeoutError(RuntimeError):
@@ -243,6 +248,7 @@ async def _collect_response(
 
     Raises:
         _ResponseTimeoutError: Deadline hit before ``done``.
+        _TurnFailedError: The daemon ended the turn with ``failed``.
     """
     deadline = time.monotonic() + timeout_s
     matched = False
@@ -258,6 +264,10 @@ async def _collect_response(
         op = envelope.get("op")
         raw_payload = envelope.get("payload")
         payload: Mapping[str, object] = raw_payload if isinstance(raw_payload, dict) else {}
+        if op == "failed" and turn_id and payload.get("turn_id") == turn_id:
+            reason = str(payload.get("reason") or "error")
+            message = str(payload.get("message") or "")
+            raise _TurnFailedError(f"{message} ({reason})" if message else reason)
         if not matched:
             if op == "open":
                 matched = _envelope_opens_our_turn(
@@ -362,6 +372,9 @@ async def _forward(utterance: str, *, timeout_s: float, key: str) -> int:
         except _SubmitRejectedError as exc:
             sys.stderr.write(f"jarvis: {exc}\n")
             return 1
+        except _TurnFailedError as exc:
+            sys.stderr.write(f"jarvis: the turn failed: {exc}\n")
+            return _EXIT_TURN_FAILED
         else:
             print(_stdout_text(text))  # noqa: T201 — the daemon's response IS this command's output.
             return 0
