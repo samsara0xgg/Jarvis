@@ -5724,12 +5724,17 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         sensevoice_dir = runtime.sensevoice_dir
         silero_path = runtime.silero_vad_path
         model_fetch = models.Progress()
-        models_ok, missing = _voice_models_preflight(
-            sensevoice_dir=sensevoice_dir,
-            silero_path=silero_path,
+        brain = runtime.role == "brain"
+        models_ok, missing = (
+            (False, [])
+            if brain
+            else _voice_models_preflight(sensevoice_dir=sensevoice_dir, silero_path=silero_path)
         )
         voice_startup_reason = "models_missing"
-        if not models_ok:
+        if brain:
+            # ADR 0170: the microphone, wake, ASR and playback belong to a terminal.
+            voice_startup_reason = "role_brain"
+        elif not models_ok:
             LOGGER.error(
                 "voice models missing; running text-only. Missing: %s",
                 "; ".join(missing),
@@ -6238,7 +6243,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 else functools.partial(_save_settings, runtime.settings)
             ),
             board_status=(
-                None if runtime.settings is None
+                None if runtime.settings is None or brain
                 else functools.partial(asyncio.to_thread, respeaker_board.status)
             ),
             restart=_restart_soon if spawned_by_agent() else None,
@@ -6477,7 +6482,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             _data_sweep_task(_media_dirs(runtime), logs_dir(runtime.runtime_paths.root)),
             name="data_sweep",
         ))
-        if runtime.settings is not None:
+        if runtime.settings is not None and not brain:
             watchers.append(asyncio.create_task(_watch_board(runtime.settings), name="board_watch"))
         for watcher in watchers:
             watcher.add_done_callback(_log_watcher_death)
@@ -6506,11 +6511,16 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             power_coordinator.before_sleep if power_coordinator is not None else None
         )
         on_wake_hook = power_coordinator.on_wake if power_coordinator is not None else None
-        power_observer = _install_power_observer_or_degrade(
-            runtime.conn,
-            asyncio.get_running_loop(),
-            before_sleep_hook=before_sleep_hook,
-            on_wake_hook=on_wake_hook,
+        # ADR 0170: a brain has no lid or sleep of its own to report.
+        power_observer = (
+            None
+            if brain
+            else _install_power_observer_or_degrade(
+                runtime.conn,
+                asyncio.get_running_loop(),
+                before_sleep_hook=before_sleep_hook,
+                on_wake_hook=on_wake_hook,
+            )
         )
 
         try:

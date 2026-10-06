@@ -5,6 +5,13 @@
 # 用户给助手起的名字；提示词里的 {assistant} 都换成它。唤醒词不跟着变。
 assistant_name: Jarvis
 
+runtime:
+  # 这个进程在部署里的角色（ADR 0170）。all：一台机器做全部事，包括麦克风、播放、
+  # 回声消除、唤醒、ASR，以及读本机文件和应用的观察器和工具（默认）。brain：常开主机上
+  # 无头运行，只管状态、模型请求和调度；不碰任何设备，设备绑定的工具也不给模型。
+  # 在那台主机的 settings.yaml 里写 brain。
+  role: all
+
 llm:
   # LLM 提供商：openai（兼容 xAI/Kimi/DeepSeek）或 anthropic。
   provider: openai

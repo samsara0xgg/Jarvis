@@ -3665,6 +3665,10 @@ def write_file_handler(  # noqa: PLR0911 — one linear resolve/validate/mode/wr
 
 # --- Default registry assembly ----------------------------------------------
 
+def _leave_off(_tool: ToolDefinition | Tool) -> None:
+    """Stand in for ``registry.register`` where a tool is not on this menu."""
+
+
 def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 config value threaded into one tool's closure at registry-build time; bundling them into one options object defeats the point of each tool owning its own defaulted knobs.
     *,
     obsidian_vault_root: Path | None = DEFAULT_OBSIDIAN_VAULT_ROOT,
@@ -3684,6 +3688,7 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
     daily_report_run: DailyReportRun | None = None,
     night: NightControl | None = None,
     mail_drafts: DraftStore | None = None,
+    device_tools: bool = True,
 ) -> ToolRegistry:
     """Assemble the default ToolRegistry.
 
@@ -3742,12 +3747,17 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
         memory_db_path: `memory.db_path` — registers `search_records`
             over that memory.db. `None` (hand-built test registries)
             registers no memory tool.
+        device_tools: ADR 0170 — `False` leaves off every tool that acts on
+            the machine it runs on (`open_path`, `search_notes`, `read_file`,
+            `read_clipboard`, `open_url`, `screen_look`, `write_file`): the
+            brain's menu, since the brain holds no such device.
     """
     registry = ToolRegistry(confirmation_dispatch_outbox=confirmation_dispatch_outbox)
+    register_device_tool = registry.register if device_tools else _leave_off
     registry.register(get_current_time)
-    registry.register(open_path)
+    register_device_tool(open_path)
     if obsidian_vault_root is not None:
-        registry.register(
+        register_device_tool(
             ToolDefinition(
                 name="search_notes",
                 description=(
@@ -3765,7 +3775,7 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
                 requires_confirmation=False,
             )
         )
-    registry.register(
+    register_device_tool(
         ToolDefinition(
             name="read_file",
             description=(
@@ -3784,7 +3794,7 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
             requires_confirmation=False,
         )
     )
-    registry.register(read_clipboard)
+    register_device_tool(read_clipboard)
     registry.register(create_memo)
     registry.register(list_memos)
     registry.register(ask_user)
@@ -3812,7 +3822,7 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
             ),
         )
     )
-    registry.register(
+    register_device_tool(
         ToolDefinition(
             name="open_url",
             description=(
@@ -3829,10 +3839,10 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
             requires_confirmation=False,
         )
     )
-    registry.register(
+    register_device_tool(
         _make_screen_look(vision_client=vision_client, max_width_px=screen_max_width_px)
     )
-    registry.register(
+    register_device_tool(
         ToolDefinition(
             name="write_file",
             description=(

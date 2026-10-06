@@ -51,7 +51,7 @@ from dataclasses import dataclass, field, replace
 from datetime import time as clock
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final, cast
+from typing import TYPE_CHECKING, Any, Final, Literal, cast
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
@@ -323,6 +323,63 @@ class TriggerWaitTimeout(RuntimeError):  # noqa: N818 — Day-1 vocabulary keeps
     """Raised by :func:`_wait_for_next_trigger` when no trigger arrives in time."""
 
 
+# --- ADR 0170 — the process's role ------------------------------------------
+
+Role = Literal["all", "brain"]
+
+# What the brain forces off whatever the user's files say: each of these reads or
+# drives this machine's own devices, files or apps, and a terminal owns those.
+_BRAIN_OVERRIDES: Final[dict[str, Any]] = {
+    "observer": {
+        "repos": [],
+        "timesink": {"enabled": False},
+        "usage": {"enabled": False},
+        "claude_sessions": {"enabled": False},
+    },
+    "realtime": {"ambient_sounds": False, "gpt_live": {"enabled": False}},
+    "daily_report": {"codex_sessions": False},
+    "tools": {"workers": {"enabled": False}},
+}
+
+
+def _role(config: Mapping[str, Any]) -> Role:
+    """``runtime.role``: ``all`` (one machine does everything, the default) or ``brain``."""
+    block = config.get("runtime")
+    value = block.get("role", "all") if isinstance(block, Mapping) else "all"
+    if value == "all":
+        return "all"
+    if value == "brain":
+        return "brain"
+    msg = f"runtime: runtime.role must be all or brain, not {value!r}"
+    raise RuntimeBootstrapError(msg)
+
+
+def _for_role(config: dict[str, Any], role: Role) -> dict[str, Any]:
+    """The config this role runs on: the brain's has every device-bound switch forced off."""
+    return _overlay(config, _BRAIN_OVERRIDES) if role == "brain" else config
+
+
+def _on_menu(table: Tier0Table, registry: ToolRegistry, role: Role) -> Tier0Table:
+    """The Tier 0 rows the registry can serve.
+
+    A brain does not hold the clipboard, screen, open or night-run tools; a row naming one
+    would fail the boot's cross-check, so it is dropped (ADR 0170).
+    """
+    if role != "brain":
+        return table
+    held = {tool.name for tool in registry.get_definitions()}
+    return tuple(row for row in table if row.tool_name in held)
+
+
+def _no_audio_devices(_kind: str) -> list[str]:
+    """The brain has no speaker or microphone to list."""
+    return []
+
+
+def _no_default_audio_device(_kind: str) -> None:
+    """The brain has no default speaker or microphone to name."""
+
+
 # --- ADR-0011 D4 — resolve-on-propose wiring --------------------------------
 
 
@@ -439,6 +496,8 @@ class JarvisRuntime:
             grammar loaded from ``config/confirm_grammar.yaml``; empty
             tuple = the answer-path grammar hook disabled (same "off
             means inert" posture as an empty ``tier0_table``).
+        role: ``runtime.role`` (ADR 0170); the daemon starts no microphone,
+            playback, power observer or device watcher in ``brain``.
     """
 
     config: Mapping[str, Any]
@@ -518,6 +577,8 @@ class JarvisRuntime:
     night: NightRun | None = None
     # ADR 0101: the day before's report, written once a day. None = `daily_report.at` unset.
     daily_schedule: DailySchedule | None = None
+    # ADR 0170: ``brain`` runs headless and starts nothing device-bound.
+    role: Role = "all"
 
 
 @dataclass(frozen=True)
@@ -669,13 +730,15 @@ def _language(config: Mapping[str, Any]) -> lang.Language:
 
 def _system_language() -> lang.Language:
     """The first of macOS's preferred languages (then ``$LANG``): Chinese or English."""
-    try:
-        out = subprocess.run(
-            ["/usr/bin/defaults", "read", "-g", "AppleLanguages"],
-            capture_output=True, text=True, timeout=2, check=False,
-        ).stdout
-    except (OSError, subprocess.TimeoutExpired):
-        out = ""
+    out = ""
+    if sys.platform == "darwin":
+        try:
+            out = subprocess.run(
+                ["/usr/bin/defaults", "read", "-g", "AppleLanguages"],
+                capture_output=True, text=True, timeout=2, check=False,
+            ).stdout
+        except (OSError, subprocess.TimeoutExpired):
+            out = ""
     first = out.strip().strip("()").split(",")[0].strip().strip('"')
     return lang.normalize(first) or lang.normalize(os.environ.get("LANG")) or "en"
 
@@ -2219,6 +2282,8 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
     # ADR 0052: the Settings page's saved values lie over the YAML and the
     # user's settings.yaml for this boot.
     full_config = apply_settings(_load_full_config(config_path, paths.settings), paths.root)
+    role = _role(full_config)
+    full_config = _for_role(full_config, role)
     lang.set_language(_language(full_config))
     log_llm_io = diagnostics_flag(full_config, "log_llm_io")
     llm_io_log.configure(logs_dir(paths.root) / "llm-io.jsonl" if log_llm_io else None)
@@ -2289,11 +2354,15 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         tz=_work_state_timezone(full_config),
         codex_sessions_path=_codex_sessions_path(full_config),
     )
-    night = NightRun(
-        paths.event_log,
-        night_settings(full_config),
-        MacPower(),
-        zone=resolve_zone(None, _work_state_timezone(full_config))[1],
+    night = (
+        None
+        if role == "brain"  # ADR 0170: holding a Mac awake and dark is the terminal's job
+        else NightRun(
+            paths.event_log,
+            night_settings(full_config),
+            MacPower(),
+            zone=resolve_zone(None, _work_state_timezone(full_config))[1],
+        )
     )
     focus = FocusState() if _dashboard_mail(full_config) else None
     mail_drafts = None if focus is None else MailDrafts(focus)
@@ -2325,6 +2394,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
             account_cost=wave1_features.exactly_once_cost_accounting,
         ),
         screen_max_width_px=screen_max_width_px,
+        device_tools=role != "brain",
     )
     workers = _register_workers(registry, paths, full_config)
     plugin_connections = PluginConnections(
@@ -2340,7 +2410,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
     #     loudly (no silent pattern drops); missing file = Tier 0 off.
     tier0_path = config_path.parent / "tier0_patterns.yaml"
     try:
-        tier0_table = load_tier0_table(tier0_path)
+        tier0_table = _on_menu(load_tier0_table(tier0_path), registry, role)
         regex_router_tools = registry.for_caller(CallerPrincipal.REGEX_ROUTER)
         validate_tier0_table(
             tier0_table,
@@ -2441,6 +2511,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         lifecycle=lifecycle,
         llm_client=llm_client,
         system_prompt=system_prompt,
+        role=role,
         tier0_table=tier0_table,
         confirm_grammar_table=confirm_grammar_table,
         wave1_features=wave1_features,
@@ -2510,7 +2581,12 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         oneshot=_jev_oneshot(
             full_config, config_path, jev_log, tier0_table, _event_emitter(paths.event_log),
         ),
-        settings=Settings(paths.root, full_config, _audio_devices, _default_audio_device),
+        settings=Settings(
+            paths.root,
+            full_config,
+            _no_audio_devices if role == "brain" else _audio_devices,
+            _no_default_audio_device if role == "brain" else _default_audio_device,
+        ),
         night=night,
         daily_schedule=_daily_schedule(daily_report, paths.event_log, full_config),
     )
