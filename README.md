@@ -23,7 +23,10 @@ Jarvis sits next to the MacBook notch as a small glass ball with eyes. It answer
 
 - **What's left today, and what you did yesterday.** Answers come from your calendar, to-dos, git history and screen activity, and each item in the daily report points back to the record it came from.
 - **Claude Code and Codex from the notch.** Each session is a star beside the notch. When one wants to run a command, a card drops down and you allow or deny it without switching windows.
-- **Your limits.** The Usage page shows how much of your Claude and Codex plans you've used and when each limit resets.
+- **It remembers.** Each past day is kept as a short summary, and every night it rewrites what it knows about you as a new, undoable version. The Memory page shows each note with the record it came from, and lets you correct it.
+- **Mail that needs you.** A small model reads new mail, marks the letters that need a reply and the junk you can archive with one tap. The Mail page opens a letter with a one-line summary and can draft the reply.
+- **It speaks up, carefully.** When something needs you, a card comes to the notch, and every card asks in one tap whether it was worth it. You can tell it to stop popping up, or not to disturb you at all, and it saves what it held back for one summary later.
+- **Your limits.** The Usage page shows how much of your Claude and Codex plans you've used, when each limit resets, and where your tokens went by day and session.
 - **English and Chinese.** It follows whichever one you speak.
 - **Your accounts through MCP.** Gmail, Outlook, Microsoft To Do, GitHub and Notion connect as plugins, and it asks before it acts on any of them.
 
@@ -44,15 +47,17 @@ Jarvis sits next to the MacBook notch as a small glass ball with eyes. It answer
 
 **Interrupting it.** The first version, [jarvis-legacy](https://github.com/samsara0xgg/jarvis-legacy), had an interrupt feature. Measured later, it had never fired once. Here you can talk over Jarvis at any point. With a reSpeaker XVF3800 mic array, its own voice is removed on the board before speech recognition hears it.
 
-**Long answers.** A model's answer is written to be read, and read aloud word for word it drags. The full answer goes on screen, and Jarvis speaks a version of one to three sentences. Turns that call tools stay quiet until the answer is ready.
+**Long answers.** A model's answer is written to be read, and read aloud word for word it drags. The full answer goes on screen, and Jarvis speaks a version of one to three sentences; the written part lights up as she says it. A turn that calls a tool says what it is about to do, and a slow one says so instead of going silent.
+
+**Staying fast as it remembers more.** Every turn read the whole event log before calling the model, so the wait grew with the log: 0.16 s at 16k events, 1.36 s at 49k. Each turn now reads only the events since the last one. Asking OpenAI for its fast tier on spoken turns cut the first token from a median of 1.04 s to 0.68 s, and the speech provider's padding is trimmed so answers start without dead air.
 
 **Pops in the audio.** Faint clicks in replies looked like a streaming bug. They came from the speech provider's volume limiter, and went away with the volume left at its default.
 
-**Keeping the code in shape.** The daemon is split into six layers, and only `runtime/` may connect them; `lint-imports` fails if anything else does. Each decision that moves a boundary gets a short record in [docs/adr](docs/adr), 54 so far.
+**Keeping the code in shape.** The daemon is split into six layers, and only `runtime/` may connect them; `lint-imports` fails if anything else does. Each decision that moves a boundary gets a short record in [docs/adr](docs/adr), over 160 so far.
 
 ## How it's built
 
-A Python daemon owns the microphone, speaker, models, memory and tools. The companion is Electron with React and TypeScript, with a small AppKit module for the glass. They talk over localhost with a per-machine key. Wake word: microWakeWord. Speech recognition: SenseVoice with Silero VAD. Speech: MiniMax. Storage: SQLite. The full design is in [docs/spec.html](docs/spec.html).
+A Python daemon owns the microphone, speaker, models, memory and tools. The companion is Electron with React and TypeScript, with a small AppKit module for the glass. They talk over localhost with a per-machine key. Wake word: microWakeWord. Speech recognition: SenseVoice with Silero VAD, optionally with local Whisper for longer turns. Speech: MiniMax. Mail and agent sorting: a small model on zero-data-retention endpoints. Storage: SQLite. The full design is in [docs/spec.html](docs/spec.html).
 
 ## Run it
 
