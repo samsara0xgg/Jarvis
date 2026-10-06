@@ -221,6 +221,7 @@ from jarvis.surface.cli import (
 )
 from jarvis.surface.cli_render import render_response
 from jarvis.surface.stream_emission import emit_permitted_segment
+from jarvis.surface.terminal_events import BrainEvents
 from jarvis.surface.terminal_link import TerminalHub
 from jarvis.surface.voice_cues import VoiceCues
 
@@ -2435,7 +2436,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         AmbientSounds(log_path=logs_dir(paths.root) / "ambient-sounds.jsonl")
         if _ambient_sounds(full_config) else None
     )
-    terminal_hub = TerminalHub() if role == "brain" else None
+    terminal_hub = TerminalHub(events=BrainEvents(conn)) if role == "brain" else None
     registry = build_default_registry(
         mail_drafts=mail_drafts,
         memory_db_path=memory.db_path,

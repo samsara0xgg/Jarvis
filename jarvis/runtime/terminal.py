@@ -4,6 +4,11 @@ A terminal is a small client, not a daemon: no port, no event log of its own, no
 connects outward to the brain, declares the tools this machine can run, and runs the calls the
 brain sends with the very handlers the one-machine daemon uses. Each call gets a throwaway
 in-memory log (the handlers write their own observation to one), which is dropped with it.
+
+It also runs the observers that only read this machine's files and apps (the repos in
+``observer.repos`` and TimeSink): the same observer code the daemon runs, with its events sent
+to the brain's log instead of a log here. The usage observer needs provider keys and the Claude
+sessions page is a live read, so those stay with the brain (ADR 0170).
 """
 
 from __future__ import annotations
@@ -32,13 +37,21 @@ from jarvis.runtime import (
     _install_open_path,
     _load_full_config,
     _locate_repo_root,
+    _observer_poll_interval_s,
+    _observer_repo_paths,
     _obsidian_vault_root,
     _screen_tools_config,
+    _timesink_db_path,
+    _timesink_poll_interval_s,
 )
+from jarvis.runtime.inherent_loop import _repo_observer_task, _timesink_observer_task
 from jarvis.runtime.settings import apply_settings
 from jarvis.shared import ActionRequest
-from jarvis.state.event_log import open_event_log
+from jarvis.state.event_log import EventLogError, emit_event, open_event_log
+from jarvis.surface.repo_observer import RepoObserver
+from jarvis.surface.terminal_events import EventOutbox
 from jarvis.surface.terminal_link import Execute, TerminalRefusedError, run_terminal_client
+from jarvis.surface.timesink_observer import TimesinkObserver
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -122,17 +135,80 @@ def make_executor(registry: ToolRegistry) -> Execute:
     return execute
 
 
+@dataclass(frozen=True)
+class _Watched:
+    """What this machine's config asks the terminal to observe."""
+
+    repos: tuple[str, ...]
+    repo_interval_s: float
+    timesink: Path | None
+    timesink_interval_s: float
+
+
+async def _observe(outbox: EventOutbox, watched: _Watched) -> None:
+    """Run the observers until cancelled, their events going to ``outbox``.
+
+    They wait for the first connection to the brain: their change-baselines are what the
+    brain's log last heard, so they cannot start without it. After that they poll whether or
+    not the link is up.
+    """
+    try:
+        scratch = open_event_log(Path(":memory:"))  # only seeds the baselines; nothing is kept
+        for row in await outbox.baseline():
+            try:
+                emit_event(scratch, type=row["event_type"], payload=row["payload"])
+            except (EventLogError, KeyError, TypeError):
+                LOGGER.warning("terminal: ignored an unreadable baseline row from the brain")
+        tasks: list[asyncio.Task[None]] = []
+        if watched.repos:
+            repo_observer = RepoObserver(scratch, watched.repos, emit_event=outbox.emit_event)
+            repo_observer.recover_baselines()
+            tasks.append(asyncio.create_task(
+                _repo_observer_task(repo_observer, interval_s=watched.repo_interval_s),
+            ))
+        if watched.timesink is not None:
+            timesink = TimesinkObserver(scratch, watched.timesink, emit_event=outbox.emit_event)
+            timesink.recover_baseline()
+            tasks.append(asyncio.create_task(
+                _timesink_observer_task(timesink, interval_s=watched.timesink_interval_s),
+            ))
+        await asyncio.gather(*tasks)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        LOGGER.exception("terminal: the observers stopped")
+
+
+async def _run(
+    base_url: str, token: str, *, tools: frozenset[str], execute: Execute,
+    watched: _Watched | None,
+) -> None:
+    """The link, and beside it the observers when there is anything to observe."""
+    outbox = None if watched is None else EventOutbox()
+    observing = None if outbox is None or watched is None else asyncio.create_task(
+        _observe(outbox, watched),
+    )
+    try:
+        await run_terminal_client(base_url, token, tools=tools, execute=execute, events=outbox)
+    finally:
+        if observing is not None:
+            observing.cancel()
+            await asyncio.wait({observing})
+
+
 def run_terminal(
     base_url: str,
     token: str,
     *,
     runtime_root: Path,
     config_path: Path | None = None,
+    observers: bool = True,
 ) -> int:
     """Hold this device's link to the brain until interrupted; the exit code of the command.
 
     Reads only this machine's own config (the shipped YAML and the runtime root's
-    ``settings.yaml``); it opens no database, no env file and no key.
+    ``settings.yaml``); it opens no database, no env file and no key. With ``observers`` the
+    repos and TimeSink that config turns on are observed here and reported to the brain.
     """
     if config_path is None:
         config_path = _locate_repo_root(Path(__file__).parent) / _DEFAULT_CONFIG_FILENAME
@@ -141,7 +217,9 @@ def run_terminal(
             _load_full_config(config_path, runtime_root / "settings.yaml"), runtime_root,
         )
         _install_open_path(config)
-    except RuntimeBootstrapError as exc:
+        repos = _observer_repo_paths(config) if observers else ()
+        timesink = _timesink_db_path(config) if observers else None
+    except (RuntimeBootstrapError, ValueError) as exc:
         sys.stderr.write(f"jarvis terminal: {exc}\n")
         return 1
     _vision_preset, max_width_px = _screen_tools_config(config)
@@ -149,9 +227,19 @@ def run_terminal(
     registry.register(make_screen_capture(max_width_px))
     tools = _declared(registry)
     LOGGER.info("this terminal runs %s", sorted(tools))
+    watched = (
+        _Watched(
+            repos, _observer_poll_interval_s(config), timesink, _timesink_poll_interval_s(config),
+        )
+        if repos or timesink is not None
+        else None
+    )
+    if watched is not None:
+        LOGGER.info("this terminal observes %d repo(s)%s", len(repos),
+                    "" if timesink is None else " and TimeSink")
     try:
         asyncio.run(
-            run_terminal_client(base_url, token, tools=tools, execute=make_executor(registry)),
+            _run(base_url, token, tools=tools, execute=make_executor(registry), watched=watched),
         )
     except TerminalRefusedError as exc:
         sys.stderr.write(f"jarvis terminal: {exc}\n")

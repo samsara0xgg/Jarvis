@@ -963,7 +963,8 @@ def _main_terminal(argv: list[str]) -> int:
         prog=f"{_PROG} terminal",
         description=(
             "Connect to a brain and run its device-bound tool calls (open, clipboard, "
-            "files, screen) on this machine. Holds no model key and keeps no state."
+            "files, screen) on this machine, and report the repos and TimeSink data it "
+            "observes. Holds no model key and keeps no state."
         ),
     )
     parser.add_argument("--brain", required=True, help="The brain, e.g. http://jarvis:8006.")
@@ -977,6 +978,11 @@ def _main_terminal(argv: list[str]) -> int:
         "--runtime-root", type=Path, default=None, help="Override JARVIS_RUNTIME_ROOT."
     )
     parser.add_argument("--config", type=Path, default=None, help="Path to jarvis.yaml.")
+    parser.add_argument(
+        "--no-observers",
+        action="store_true",
+        help="Do not observe this machine's repos and TimeSink for the brain.",
+    )
     args = parser.parse_args(argv)
     root = _resolve_runtime_root(args.runtime_root)
     try:
@@ -986,7 +992,10 @@ def _main_terminal(argv: list[str]) -> int:
         sys.stderr.write(f"jarvis terminal: {exc}\n")
         return 1
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s: %(message)s")
-    return run_terminal(base_url, token, runtime_root=root, config_path=args.config)
+    return run_terminal(
+        base_url, token, runtime_root=root, config_path=args.config,
+        observers=not args.no_observers,
+    )
 
 
 def _main_oneshot(argv: list[str]) -> int:

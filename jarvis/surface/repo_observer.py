@@ -67,7 +67,7 @@ from jarvis.state.event_log import emit_event
 
 if TYPE_CHECKING:
     import sqlite3
-    from collections.abc import Iterable, Sequence
+    from collections.abc import Callable, Iterable, Sequence
     from pathlib import Path
 
     from jarvis.shared import Event
@@ -77,6 +77,10 @@ LOGGER = logging.getLogger("jarvis.surface.repo_observer")
 # Spec §5.1 principal, realized as a required payload field because the
 # L2 schema has no actor column (ADR-0009 V6).
 OBSERVER_ACTOR: Final[str] = "observer"
+
+# The two types this observer emits (the emit sites keep the literals: the canaries scan them).
+STATE_EVENT_TYPE: Final[str] = "repo.state_observed"
+COMMIT_EVENT_TYPE: Final[str] = "project.commit_seen"
 
 # Spec §3.3.9 bounded payloads — subject strings are capped, no diffs
 # inline, no artifacts in v0.
@@ -404,9 +408,15 @@ class RepoObserver:
         *,
         burst_cap: int = DEFAULT_BURST_CAP,
         git_timeout_s: float = DEFAULT_GIT_TIMEOUT_S,
+        emit_event: Callable[..., Event] = emit_event,
     ) -> None:
-        """Bind the observer to a log connection and the watched repos."""
+        """Bind the observer to a log connection and the watched repos.
+
+        ``emit_event`` is where the observer's events go: the log itself, or (ADR 0170) a
+        terminal's link to the brain's log, with ``event_log`` then only seeding the baselines.
+        """
         self._event_log = event_log
+        self.emit_event = emit_event
         self.repo_paths: tuple[str, ...] = tuple(str(path) for path in repo_paths)
         self._burst_cap = burst_cap
         self._git_timeout_s = git_timeout_s
@@ -462,12 +472,12 @@ class RepoObserver:
                 payload["truncated"] = True
                 payload["skipped_count"] = poll.skipped_count
             emitted.append(
-                emit_event(self._event_log, type="project.commit_seen", payload=payload)
+                self.emit_event(self._event_log, type="project.commit_seen", payload=payload)
             )
 
         if baseline != snapshot:
             emitted.append(
-                emit_event(
+                self.emit_event(
                     self._event_log,
                     type="repo.state_observed",
                     payload={
@@ -502,10 +512,12 @@ class RepoObserver:
 
 
 __all__ = [
+    "COMMIT_EVENT_TYPE",
     "DEFAULT_BURST_CAP",
     "DEFAULT_GIT_TIMEOUT_S",
     "MAX_SUBJECT_CHARS",
     "OBSERVER_ACTOR",
+    "STATE_EVENT_TYPE",
     "CommitRecord",
     "RepoObserver",
     "RepoPoll",

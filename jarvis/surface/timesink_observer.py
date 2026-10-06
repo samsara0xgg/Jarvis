@@ -22,7 +22,7 @@ from jarvis.state import timesink
 from jarvis.state.event_log import emit_event
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
     from pathlib import Path
 
     from jarvis.shared import Event
@@ -119,9 +119,20 @@ def latest_observation(event_log: sqlite3.Connection) -> dict[str, Any] | None:
 class TimesinkObserver:
     """Emit-on-change head perception over a log-recovered baseline."""
 
-    def __init__(self, event_log: sqlite3.Connection, path: Path | None) -> None:
-        """Bind the observer to the log connection and the configured store path."""
+    def __init__(
+        self,
+        event_log: sqlite3.Connection,
+        path: Path | None,
+        *,
+        emit_event: Callable[..., Event] = emit_event,
+    ) -> None:
+        """Bind the observer to the log connection and the configured store path.
+
+        ``emit_event`` is where the head goes: the log itself, or (ADR 0170) a terminal's link
+        to the brain's log, with ``event_log`` then only seeding the baseline.
+        """
         self._event_log = event_log
+        self.emit_event = emit_event
         self._path = path
         self._baseline: TimesinkHead | None = None
 
@@ -139,7 +150,7 @@ class TimesinkObserver:
         """Append one row when the head differs from the baseline; on the connection's thread."""
         if head == self._baseline:
             return None
-        event = emit_event(
+        event = self.emit_event(
             self._event_log,
             type="timesink.state_observed",  # literal: the observer canary scans it.
             payload={

@@ -10,6 +10,8 @@ tools it can run, and then answers calls. Every frame is one JSON text message::
     terminal -> brain   {"type": "result", "id": "<hex>", "ok": true, "output": {...}}
     terminal -> brain   {"type": "result", "id": "<hex>", "ok": false,
                          "code": "...", "message": "..."}
+    terminal -> brain   {"type": "event", ...}   an observer's event, see terminal_events
+    brain -> terminal   {"type": "ack", ...}
 
 Results are data: the brain reads ``output`` as a JSON object and nothing in it is run. This
 module holds the brain's side (:class:`TerminalHub`, :func:`serve_terminal`) and the terminal's
@@ -38,6 +40,8 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine, Mapping
 
     from fastapi import WebSocket
+
+    from jarvis.surface.terminal_events import BrainEvents, EventOutbox
 
 LOGGER = logging.getLogger("jarvis.surface.terminal_link")
 
@@ -79,9 +83,12 @@ class TerminalHub:
     the event loop that serves the sockets.
     """
 
-    def __init__(self, *, call_timeout_s: float = CALL_TIMEOUT_S) -> None:
-        """Start with no terminal connected."""
+    def __init__(
+        self, *, call_timeout_s: float = CALL_TIMEOUT_S, events: BrainEvents | None = None,
+    ) -> None:
+        """Start with no terminal connected; ``events`` is where their observers' events go."""
         self._call_timeout_s = call_timeout_s
+        self.events = events
         self._lock = threading.Lock()
         self._links: list[_Link] = []  # oldest connection first
         self._last_name: dict[str, str] = {}
@@ -227,7 +234,10 @@ async def serve_terminal(hub: TerminalHub, ws: WebSocket, name: str) -> None:
         return
     link = hub.attach(name, tools, ws.send_text)
     try:
-        await ws.send_text(json.dumps({"type": "ready", "device": name}))
+        ready: dict[str, Any] = {"type": "ready", "device": name}
+        if hub.events is not None:
+            ready["baseline"] = hub.events.baseline()
+        await ws.send_text(json.dumps(ready, ensure_ascii=False))
         while True:
             text = await ws.receive_text()
             if len(text) > MAX_FRAME_CHARS:
@@ -237,12 +247,38 @@ async def serve_terminal(hub: TerminalHub, ws: WebSocket, name: str) -> None:
                 frame = json.loads(text)
             except ValueError:
                 continue
-            if isinstance(frame, dict) and frame.get("type") == "result":
-                hub.deliver(link, frame)
+            if isinstance(frame, dict):
+                await _on_frame(hub, link, ws, frame, len(text))
     except WebSocketDisconnect:
         pass
     finally:
         hub.detach(link)
+
+
+async def _on_frame(
+    hub: TerminalHub, link: _Link, ws: WebSocket, frame: Mapping[str, Any], size: int,
+) -> None:
+    """A terminal's ``result`` goes to the call waiting for it; its ``event`` to the log."""
+    if frame.get("type") == "result":
+        hub.deliver(link, frame)
+    elif frame.get("type") == "event":
+        await _record_event(hub, ws, link.name, frame, size)
+
+
+async def _record_event(
+    hub: TerminalHub, ws: WebSocket, name: str, frame: Mapping[str, Any], size: int,
+) -> None:
+    """Append one observer event the terminal ``name`` sent, and answer it."""
+    if hub.events is None:
+        uid = frame.get("event_uid")
+        ack: dict[str, Any] | None = {
+            "type": "ack", "event_uid": uid if isinstance(uid, str) else None, "ok": False,
+            "code": "events_not_accepted",
+        }
+    else:
+        ack = hub.events.record(name, frame, size)
+    if ack is not None:
+        await ws.send_text(json.dumps(ack))
 
 
 class TerminalRefusedError(Exception):
@@ -269,8 +305,10 @@ async def _answer(ws: Any, execute: Execute, frame: Mapping[str, Any]) -> None: 
         )
 
 
-async def _serve_calls(ws: Any, execute: Execute) -> None:  # noqa: ANN401 — a websockets connection.
-    """Answer calls until the socket closes; a call in flight is dropped with it."""
+async def _serve_calls(
+    ws: Any, execute: Execute, events: EventOutbox | None,  # noqa: ANN401 — a websockets connection.
+) -> None:
+    """Answer calls and take acks until the socket closes; a call in flight is dropped with it."""
     running: set[asyncio.Task[None]] = set()
     try:
         async for message in ws:
@@ -282,15 +320,24 @@ async def _serve_calls(ws: Any, execute: Execute) -> None:  # noqa: ANN401 — a
                 task = asyncio.create_task(_answer(ws, execute, frame))
                 running.add(task)
                 task.add_done_callback(running.discard)
+            elif events is not None and isinstance(frame, dict) and frame.get("type") == "ack":
+                events.ack(frame)
     finally:
         for task in running:
             task.cancel()
 
 
 async def run_terminal_client(
-    base_url: str, token: str, *, tools: frozenset[str], execute: Execute,
+    base_url: str,
+    token: str,
+    *,
+    tools: frozenset[str],
+    execute: Execute,
+    events: EventOutbox | None = None,
 ) -> None:
     """Hold a connection to the brain's ``/terminal/ws`` forever, answering its calls.
+
+    With ``events`` it also sends the observers' events queued there and takes the brain's acks.
 
     Reconnects with a doubling wait (1 s up to 30 s) whenever the link drops or the brain is
     down; a token the brain refuses ends it with :class:`TerminalRefusedError`. Cancel it to
@@ -317,7 +364,18 @@ async def run_terminal_client(
                 LOGGER.info("connected to the brain as %s, runs %s", ready.get("device"),
                             sorted(tools))
                 wait = _RECONNECT_FIRST_S
-                await _serve_calls(ws, execute)
+                if events is None:
+                    await _serve_calls(ws, execute, None)
+                else:
+                    events.ready(ready)
+                    pump = asyncio.create_task(events.pump(ws))
+                    try:
+                        await _serve_calls(ws, execute, events)
+                    finally:
+                        pump.cancel()
+                        await asyncio.wait({pump})
+                        if not pump.cancelled():
+                            pump.exception()  # a dead socket; the loop below reconnects
         except InvalidStatus as exc:
             status = exc.response.status_code
             if status in _REFUSED_STATUSES:
