@@ -49,9 +49,13 @@ dev = [
 packages = ["jarvis"]
 
 [tool.uv]
-# Mac-only scope (docs/architecture-mac-only.md; RPi deferred): resolve the
-# lockfile for macOS only.
-environments = ["sys_platform == 'darwin'"]
+# macOS runs everything; Linux (x86_64, aarch64) runs the headless brain
+# (ADR 0170). Any darwin-only dependency carries a sys_platform marker.
+environments = [
+    "sys_platform == 'darwin'",
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "sys_platform == 'linux' and platform_machine == 'aarch64'",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
