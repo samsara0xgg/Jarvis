@@ -35,6 +35,8 @@ Layer boundary (`.importlinter` + canary H13): stdlib only plus
 
 from __future__ import annotations
 
+import base64
+import binascii
 import codecs
 import ipaddress
 import json
@@ -44,11 +46,12 @@ import re
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from html.parser import HTMLParser
 from pathlib import Path
@@ -69,6 +72,7 @@ from jarvis.shared import (
     lang,
 )
 from jarvis.shared.action_admission import action_admission_guard
+from jarvis.shared.device_link import DeviceCallError
 from jarvis.shared.text import truncate_utf8
 from jarvis.state.authorized_dispatch_outbox import (
     ConfirmationRevalidationError,
@@ -88,6 +92,7 @@ if TYPE_CHECKING:
     from jarvis.execution.mail_draft_tool import DraftStore
     from jarvis.execution.night_tools import NightControl
     from jarvis.shared import Event
+    from jarvis.shared.device_link import DeviceLink
 
 
 LOGGER = logging.getLogger(__name__)
@@ -3047,14 +3052,121 @@ def _screen_recording_permission_message() -> str:
     return f"Screen Recording permission missing for {sys.executable} — System Settings → Privacy"
 
 
-def _make_screen_look(*, vision_client: VisionClient | None, max_width_px: int) -> Tool:
-    """Bind the injected vision client + `tools.screen.max_width_px` (ADR-0011 D7).
+def _capture_screen(image_path: Path, max_width_px: int) -> None:
+    """Capture the main display into `image_path` and downscale it; raise `ToolError` if not.
+
+    The device half of `screen_look`: on a terminal it is all the tool does (ADR 0170),
+    on one machine it is followed by the vision call.
+    """
+    try:
+        capture_proc = _run_screencapture(image_path, timeout_s=_SCREEN_CAPTURE_TIMEOUT_S)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        msg = f"screen_look: screencapture failed to run: {exc}"
+        raise ToolError(msg, code="screen_capture_start_failed") from exc
+    if capture_proc.returncode != 0:
+        # The cause of a non-zero exit is not determinable from here (TCC
+        # denial, bad path, full disk...): report what happened and name
+        # Screen Recording only as the likely first-run cause.
+        stderr_tail = (capture_proc.stderr or b"").decode("utf-8", errors="replace").strip()
+        msg = (
+            f"screen_look: screencapture exited {capture_proc.returncode}"
+            f"{f': {stderr_tail}' if stderr_tail else ''}. If this is the "
+            f"first screen_look call, the likely cause is missing Screen "
+            f"Recording permission for {sys.executable} — System Settings → "
+            "Privacy; otherwise this is a genuine screencapture failure."
+        )
+        raise ToolError(msg, code="screen_capture_failed")
+    if not image_path.is_file() or not _looks_like_png(image_path):
+        # On some macOS versions a TCC-denied screencapture exits 0 but
+        # writes nothing (or a truncated file): that shape IS specific
+        # enough to name Screen Recording as the cause.
+        msg = (
+            f"screen_look: {_screen_recording_permission_message()} "
+            "(screencapture produced no image data)"
+        )
+        raise ToolError(msg, code="screen_recording_permission_denied")
+
+    try:
+        sips_proc = _run_sips_downscale(image_path, max_width_px, timeout_s=_SIPS_TIMEOUT_S)
+        if sips_proc.returncode != 0:
+            LOGGER.warning(
+                "screen_look: sips downscale failed (exit %s) for %s; "
+                "continuing with the full-resolution screenshot",
+                sips_proc.returncode,
+                image_path,
+            )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        # Downscaling is a cost/latency optimization, not a correctness
+        # requirement; the artifact on disk is untouched either way.
+        LOGGER.warning(
+            "screen_look: sips failed to run (%s) for %s; "
+            "continuing with the full-resolution screenshot",
+            exc,
+            image_path,
+        )
+
+
+def _describe_screen(
+    vision_client: VisionClient | None, image_path: Path, question: str | None,
+) -> dict[str, Any]:
+    """The vision half of `screen_look`: the saved screenshot in, `artifact_path` + text out.
 
     `vision_client=None` means `jarvis.runtime` found no usable
     `llm.presets.vision` block: the tool still registers (the menu stays
     complete) but every call degrades to a `vision_unconfigured` error —
     AFTER the screenshot is captured and saved, so evidence survives a
     config gap the same way it survives a live proxy outage.
+    """
+    if vision_client is None:
+        msg = (
+            "screen_look: no vision client configured "
+            f"(llm.presets.vision missing or invalid); screenshot saved at {image_path}"
+        )
+        raise ToolError(msg, code="vision_unconfigured")
+    try:
+        description = vision_client.describe_image(image_path, question=question)
+    except Exception as exc:  # degrades to an error; the screenshot is on disk regardless.
+        msg = (
+            f"screen_look: vision call failed: {type(exc).__name__}: {exc}; "
+            f"screenshot saved at {image_path}"
+        )
+        raise ToolError(msg, code="vision_call_failed") from exc
+    return {"artifact_path": str(image_path), "description": description}
+
+
+SCREEN_CAPTURE_MAX_IMAGE_BYTES: Final[int] = 4 * 1024 * 1024
+"""ADR 0170: the largest screenshot a terminal sends the brain (after the downscale)."""
+
+
+def _screenshot_from_device(link: DeviceLink) -> bytes:
+    """Ask the terminal for a screenshot and decode it; a bad reply is a `ToolError`."""
+    try:
+        reply = link("screen_capture", {}, None)
+    except DeviceCallError as exc:
+        raise ToolError(str(exc), code=exc.code) from exc
+    encoded = reply.get("image_b64")
+    if not isinstance(encoded, str) or len(encoded) > SCREEN_CAPTURE_MAX_IMAGE_BYTES * 4 // 3 + 4:
+        msg = "screen_look: the terminal sent no usable screenshot"
+        raise ToolError(msg, code="screen_capture_failed")
+    try:
+        image = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        msg = "screen_look: the terminal's screenshot is not valid base64"
+        raise ToolError(msg, code="screen_capture_failed") from exc
+    if len(image) > SCREEN_CAPTURE_MAX_IMAGE_BYTES or not image.startswith(_PNG_MAGIC):
+        msg = "screen_look: the terminal's screenshot is not a PNG within the size cap"
+        raise ToolError(msg, code="screen_capture_failed")
+    return image
+
+
+def _make_screen_look(
+    *, vision_client: VisionClient | None, max_width_px: int, device_link: DeviceLink | None = None,
+) -> Tool:
+    """Bind the injected vision client + `tools.screen.max_width_px` (ADR-0011 D7).
+
+    With a `device_link` (ADR 0170: this is a brain) the screenshot is taken by the terminal
+    and arrives as a PNG; the vision call stays here, so no model key or call ever reaches a
+    terminal.
     """
 
     def screen_look(args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
@@ -3066,70 +3178,11 @@ def _make_screen_look(*, vision_client: VisionClient | None, max_width_px: int) 
         artifacts_dir.mkdir(parents=True, exist_ok=True)
         # `action_id` makes this collision-free; the timestamp prefix is for chronological `ls`.
         image_path = artifacts_dir / f"{int(time.time() * 1000)}_{ctx.action_id}.png"
-
-        try:
-            capture_proc = _run_screencapture(image_path, timeout_s=_SCREEN_CAPTURE_TIMEOUT_S)
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            msg = f"screen_look: screencapture failed to run: {exc}"
-            raise ToolError(msg, code="screen_capture_start_failed") from exc
-        if capture_proc.returncode != 0:
-            # The cause of a non-zero exit is not determinable from here (TCC
-            # denial, bad path, full disk...): report what happened and name
-            # Screen Recording only as the likely first-run cause.
-            stderr_tail = (capture_proc.stderr or b"").decode("utf-8", errors="replace").strip()
-            msg = (
-                f"screen_look: screencapture exited {capture_proc.returncode}"
-                f"{f': {stderr_tail}' if stderr_tail else ''}. If this is the "
-                f"first screen_look call, the likely cause is missing Screen "
-                f"Recording permission for {sys.executable} — System Settings → "
-                "Privacy; otherwise this is a genuine screencapture failure."
-            )
-            raise ToolError(msg, code="screen_capture_failed")
-        if not image_path.is_file() or not _looks_like_png(image_path):
-            # On some macOS versions a TCC-denied screencapture exits 0 but
-            # writes nothing (or a truncated file): that shape IS specific
-            # enough to name Screen Recording as the cause.
-            msg = (
-                f"screen_look: {_screen_recording_permission_message()} "
-                "(screencapture produced no image data)"
-            )
-            raise ToolError(msg, code="screen_recording_permission_denied")
-
-        try:
-            sips_proc = _run_sips_downscale(image_path, max_width_px, timeout_s=_SIPS_TIMEOUT_S)
-            if sips_proc.returncode != 0:
-                LOGGER.warning(
-                    "screen_look: sips downscale failed (exit %s) for %s; "
-                    "continuing with the full-resolution screenshot",
-                    sips_proc.returncode,
-                    image_path,
-                )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            # Downscaling is a cost/latency optimization, not a correctness
-            # requirement; the artifact on disk is untouched either way.
-            LOGGER.warning(
-                "screen_look: sips failed to run (%s) for %s; "
-                "continuing with the full-resolution screenshot",
-                exc,
-                image_path,
-            )
-
-        if vision_client is None:
-            msg = (
-                "screen_look: no vision client configured "
-                f"(llm.presets.vision missing or invalid); screenshot saved at {image_path}"
-            )
-            raise ToolError(msg, code="vision_unconfigured")
-        try:
-            description = vision_client.describe_image(image_path, question=question)
-        except Exception as exc:  # degrades to an error; the screenshot is on disk regardless.
-            msg = (
-                f"screen_look: vision call failed: {type(exc).__name__}: {exc}; "
-                f"screenshot saved at {image_path}"
-            )
-            raise ToolError(msg, code="vision_call_failed") from exc
-
-        return {"artifact_path": str(image_path), "description": description}
+        if device_link is None:
+            _capture_screen(image_path, max_width_px)
+        else:
+            image_path.write_bytes(_screenshot_from_device(device_link))
+        return _describe_screen(vision_client, image_path, question)
 
     return Tool(
         name="screen_look",
@@ -3145,6 +3198,46 @@ def _make_screen_look(*, vision_client: VisionClient | None, max_width_px: int) 
         allowed_callers=frozenset({CallerPrincipal.REGEX_ROUTER, CallerPrincipal.JARVIS_LLM}),
         risk_level="L1",
         read_only=True,
+    )
+
+
+TERMINAL_TOOL_NAMES: Final[frozenset[str]] = frozenset(
+    {"open_path", "search_notes", "read_file", "read_clipboard", "open_url", "screen_capture"},
+)
+"""ADR 0170: the tools a terminal can run for its brain.
+
+`write_file` is not here: no caller may reach it (frozen 2026-09-12), so no terminal declares it.
+"""
+
+
+def make_screen_capture(max_width_px: int) -> Tool:
+    """ADR 0170: what a terminal runs for `screen_look`: capture, downscale, return the PNG.
+
+    No vision client and no model call: the brain describes the image with its own key.
+    """
+
+    def screen_capture(_args: Mapping[str, Any], _ctx: ToolContext) -> dict[str, Any]:
+        with tempfile.TemporaryDirectory(prefix="jarvis-screen-") as tmp:
+            image_path = Path(tmp) / "screen.png"
+            _capture_screen(image_path, max_width_px)
+            image = image_path.read_bytes()
+        if len(image) > SCREEN_CAPTURE_MAX_IMAGE_BYTES:
+            msg = (
+                f"screen_look: the screenshot is {len(image)} bytes, over the "
+                f"{SCREEN_CAPTURE_MAX_IMAGE_BYTES}-byte cap; lower tools.screen.max_width_px"
+            )
+            raise ToolError(msg, code="screen_image_too_large")
+        return {"image_b64": base64.b64encode(image).decode("ascii"), "bytes": len(image)}
+
+    return Tool(
+        name="screen_capture",
+        description="Capture the main display and return it as a base64 PNG.",
+        input_schema={"type": "object", "properties": {}, "required": []},
+        handler=screen_capture,
+        allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
+        risk_level="L1",
+        read_only=True,
+        max_result_chars=SCREEN_CAPTURE_MAX_IMAGE_BYTES * 4 // 3 + 1024,
     )
 
 
@@ -3665,8 +3758,47 @@ def write_file_handler(  # noqa: PLR0911 — one linear resolve/validate/mode/wr
 
 # --- Default registry assembly ----------------------------------------------
 
-def _leave_off(_tool: ToolDefinition | Tool) -> None:
-    """Stand in for ``registry.register`` where a tool is not on this menu."""
+def _device_proxy(original: ToolDefinition | Tool, link: DeviceLink) -> ToolDefinition | Tool:
+    """ADR 0170: `original` with its handler swapped for one that runs the call on a terminal.
+
+    Everything the model, the gate and the confirmation read (name, description, schema,
+    risk, flags, callers) is `original`'s own; only execution moves. A failed link is the
+    tool's plain error result.
+    """
+    name = original.name
+    if isinstance(original, Tool):
+
+        def flat(args: Mapping[str, Any], _ctx: ToolContext) -> dict[str, Any]:
+            try:
+                return link(name, args, None)
+            except DeviceCallError as exc:
+                raise ToolError(str(exc), code=exc.code) from exc
+
+        return replace(original, handler=flat)
+
+    def handler(
+        action_request: ActionRequest,
+        conn: sqlite3.Connection,
+        _runtime_paths: RuntimePathsLike,
+        lifecycle: ActionLifecycle,
+    ) -> RawResult:
+        action_id = action_request.action_id
+        running_event_uid = _get_running_event_uid(conn, action_id)
+        try:
+            payload = link(name, action_request.arguments, action_request.target_entity_ref)
+        except DeviceCallError as exc:
+            return _emit_tool_error(
+                conn=conn, lifecycle=lifecycle, action_id=action_id,
+                running_event_uid=running_event_uid, code=exc.code, message=str(exc),
+            )
+        return _emit_tool_observation(
+            conn=conn, lifecycle=lifecycle, action_id=action_id,
+            running_event_uid=running_event_uid,
+            payload=_fit_result(payload, DEFAULT_MAX_RESULT_CHARS),
+            semantics=original.result_semantics,
+        )
+
+    return replace(original, handler=handler)
 
 
 def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 config value threaded into one tool's closure at registry-build time; bundling them into one options object defeats the point of each tool owning its own defaulted knobs.
@@ -3688,7 +3820,7 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
     daily_report_run: DailyReportRun | None = None,
     night: NightControl | None = None,
     mail_drafts: DraftStore | None = None,
-    device_tools: bool = True,
+    device_link: DeviceLink | None = None,
 ) -> ToolRegistry:
     """Assemble the default ToolRegistry.
 
@@ -3747,13 +3879,19 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
         memory_db_path: `memory.db_path` — registers `search_records`
             over that memory.db. `None` (hand-built test registries)
             registers no memory tool.
-        device_tools: ADR 0170 — `False` leaves off every tool that acts on
-            the machine it runs on (`open_path`, `search_notes`, `read_file`,
-            `read_clipboard`, `open_url`, `screen_look`, `write_file`): the
-            brain's menu, since the brain holds no such device.
+        device_link: ADR 0170 — the brain's link to its terminal. Every tool that
+            acts on the machine it runs on (`open_path`, `search_notes`, `read_file`,
+            `read_clipboard`, `open_url`, `screen_look`, `write_file`) is then
+            registered, in the same place and with the same definition, as a proxy
+            that runs the call there. `None` (one machine) registers them as they are.
     """
     registry = ToolRegistry(confirmation_dispatch_outbox=confirmation_dispatch_outbox)
-    register_device_tool = registry.register if device_tools else _leave_off
+
+    def register_device_tool(device_tool: ToolDefinition | Tool) -> None:
+        registry.register(
+            device_tool if device_link is None else _device_proxy(device_tool, device_link)
+        )
+
     registry.register(get_current_time)
     register_device_tool(open_path)
     if obsidian_vault_root is not None:
@@ -3839,8 +3977,12 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
             requires_confirmation=False,
         )
     )
-    register_device_tool(
-        _make_screen_look(vision_client=vision_client, max_width_px=screen_max_width_px)
+    # Already link-aware: the terminal captures, this process describes (ADR 0170).
+    registry.register(
+        _make_screen_look(
+            vision_client=vision_client, max_width_px=screen_max_width_px,
+            device_link=device_link,
+        )
     )
     register_device_tool(
         ToolDefinition(
@@ -3941,6 +4083,7 @@ __all__ = [
     "DEFAULT_WEB_SEARCH_MAX_RESULTS",
     "DEFAULT_WEB_SEARCH_PROVIDER",
     "DEFAULT_WEB_TIMEOUT_S",
+    "TERMINAL_TOOL_NAMES",
     "ActionLifecycle",
     "CallerNotAllowedError",
     "DuplicateToolError",
@@ -3964,6 +4107,7 @@ __all__ = [
     "get_current_time",
     "list_memos",
     "live_action_ids",
+    "make_screen_capture",
     "open_path",
     "open_url_handler",
     "read_clipboard",

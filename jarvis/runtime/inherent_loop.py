@@ -184,7 +184,7 @@ from jarvis.shared.realtime import (
 )
 from jarvis.shared.realtime_trace import record_realtime_trace
 from jarvis.state import quiet_mode
-from jarvis.state.device_tokens import device_token_matches
+from jarvis.state.device_tokens import device_name_for_token, device_token_matches
 from jarvis.state.event_log import (
     emit_event,
     get_event,
@@ -6297,6 +6297,12 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 None if duplex_voice_session is None else duplex_voice_session.dismiss
             ),
             live=live_voice,
+            terminals=runtime.terminal_hub if runtime.listen_addresses else None,
+            device_name=(
+                functools.partial(device_name_for_token, runtime.runtime_paths.root)
+                if runtime.listen_addresses
+                else None
+            ),
             v2=InherentV2Deps(
                 token_matches=functools.partial(inherent_v2_token_matches, v2_token),
                 device_token_matches=(

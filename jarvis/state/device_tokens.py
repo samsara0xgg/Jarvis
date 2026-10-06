@@ -88,15 +88,20 @@ def paired_devices(root: Path) -> list[tuple[str, str]]:
     )
 
 
-def device_token_matches(root: Path, token: str) -> bool:
-    """Whether ``token`` belongs to a paired device; every row is compared in constant time."""
+def device_name_for_token(root: Path, token: str) -> str | None:
+    """The paired device ``token`` belongs to, else ``None``; rows are compared in constant time."""
     try:
         rows = _read(root)
     except (OSError, ValueError):
-        return False
+        return None
     presented = _digest(token)
-    found = False
-    for row in rows.values():
+    found: str | None = None
+    for name, row in rows.items():
         if secrets.compare_digest(presented, str(row.get("sha256", ""))):
-            found = True
+            found = name
     return found
+
+
+def device_token_matches(root: Path, token: str) -> bool:
+    """Whether ``token`` belongs to a paired device."""
+    return device_name_for_token(root, token) is not None

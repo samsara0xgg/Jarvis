@@ -118,6 +118,7 @@ from jarvis.surface.inherent_protocol import (
     SubmitV2Response,
     hello_is_supported,
 )
+from jarvis.surface.terminal_link import TERMINAL_PATH, TerminalHub, serve_terminal
 from jarvis.surface.voice_pipeline import VoiceInputBusyError, VoicePipelineEmptyError
 
 if TYPE_CHECKING:
@@ -558,6 +559,11 @@ class InherentDeps:
     dismiss_callable: Callable[[], None] | None = None
     # GPT-Live phase A controller; ``None`` means ``live`` requests are refused.
     live: LiveVoice | None = None
+    # ADR 0170: the brain's terminals. ``terminals`` holds the connected ones and
+    # ``device_name`` maps a device token to the paired name it belongs to; the route
+    # ``/terminal/ws`` exists only with both, i.e. only where device tokens are wired.
+    terminals: TerminalHub | None = None
+    device_name: Callable[[str], str | None] | None = None
     # ADR-0018: the quota dashboard's read model and its on-demand poll.
     # ``usage_read`` runs a small SQLite fold on the loop thread; ``usage_refresh``
     # awaits one full poll (network off-thread, emit on-thread) and returns
@@ -1972,6 +1978,24 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 â
                 language,
             )
             return await _run_asr_submit_v2(v2_deps, audio, fields)
+
+    if deps.terminals is not None and deps.device_name is not None:
+        terminals, device_name = deps.terminals, deps.device_name
+
+        @app.websocket(TERMINAL_PATH)
+        async def ws_terminal(ws: WebSocket) -> None:
+            """ADR 0170: a paired terminal's socket; only its own device token opens it.
+
+            The middleware has already required a device token from a remote peer. A peer
+            on loopback presents the local key there, which is not a device token, so it
+            is refused here: a terminal always names itself by its token.
+            """
+            token = _v2_presented_token(ws.headers.get("authorization"))
+            name = None if token is None else device_name(token)
+            if name is None:
+                await ws.close(code=1008)
+                return
+            await serve_terminal(terminals, ws, name)
 
     @app.get("/api/health")
     async def health() -> dict[str, str]:

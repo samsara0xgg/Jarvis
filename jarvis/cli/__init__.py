@@ -68,6 +68,7 @@ from jarvis.runtime import (
     run_turn,
 )
 from jarvis.runtime.inherent_loop import serve_inherent
+from jarvis.runtime.terminal import run_terminal
 from jarvis.shared.lang import t
 from jarvis.shared.text import is_english
 from jarvis.state import NewerDataError
@@ -956,6 +957,38 @@ def _main_brain_turn(args: argparse.Namespace, runtime_root: Path) -> int:
     )
 
 
+def _main_terminal(argv: list[str]) -> int:
+    """ADR 0170: `terminal --brain URL` runs this device's tools for a remote brain."""
+    parser = argparse.ArgumentParser(
+        prog=f"{_PROG} terminal",
+        description=(
+            "Connect to a brain and run its device-bound tool calls (open, clipboard, "
+            "files, screen) on this machine. Holds no model key and keeps no state."
+        ),
+    )
+    parser.add_argument("--brain", required=True, help="The brain, e.g. http://jarvis:8006.")
+    parser.add_argument(
+        "--brain-token-file",
+        type=Path,
+        default=None,
+        help="This device's brain token (default: <runtime root>/brain-token, mode 0600).",
+    )
+    parser.add_argument(
+        "--runtime-root", type=Path, default=None, help="Override JARVIS_RUNTIME_ROOT."
+    )
+    parser.add_argument("--config", type=Path, default=None, help="Path to jarvis.yaml.")
+    args = parser.parse_args(argv)
+    root = _resolve_runtime_root(args.runtime_root)
+    try:
+        base_url = _brain_base_url(args.brain)
+        token = _read_brain_token(args.brain_token_file or root / _BRAIN_TOKEN_FILE)
+    except ValueError as exc:
+        sys.stderr.write(f"jarvis terminal: {exc}\n")
+        return 1
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s: %(message)s")
+    return run_terminal(base_url, token, runtime_root=root, config_path=args.config)
+
+
 def _main_oneshot(argv: list[str]) -> int:
     """Existing one-shot flow with the ADR-0003 D4 lock-probe prepended.
 
@@ -1120,6 +1153,8 @@ def main(argv: list[str] | None = None) -> int:
         return _main_mcp_login(argv[1:])
     if argv and argv[0] in {"pair", "unpair", "devices"}:
         return _main_devices(argv[0], argv[1:])
+    if argv and argv[0] == "terminal":
+        return _main_terminal(argv[1:])
     return _main_oneshot(argv)
 
 

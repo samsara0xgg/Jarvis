@@ -50,10 +50,10 @@ def _menu(runtime: Any) -> set[str]:  # noqa: ANN401
     return {t.name for t in runtime.tool_registry.for_caller(CallerPrincipal.JARVIS_LLM)}
 
 
-def test_the_default_role_is_all_and_the_brain_holds_no_device_tools(
+def test_the_default_role_is_all_and_the_brain_runs_no_device_tool_itself(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`all` offers open, clipboard and screen as before; `brain` offers none of the device's."""
+    """`all` offers open, clipboard and screen as before; a brain has them as proxies only."""
     (tmp_path / "a").mkdir()
     (tmp_path / "b").mkdir()
     default = _runtime(tmp_path / "a", "assistant_name: Jarvis\n", monkeypatch)
@@ -65,10 +65,13 @@ def test_the_default_role_is_all_and_the_brain_holds_no_device_tools(
         }
         assert _menu(default) >= NIGHT_TOOLS
         assert default.night is not None
+        assert default.terminal_hub is None
 
         assert brain.role == "brain"
         held = {t.name for t in brain.tool_registry.get_definitions()}
-        assert not held & (DEVICE_TOOLS | NIGHT_TOOLS)
+        assert not held & NIGHT_TOOLS
+        assert brain.terminal_hub is not None
+        assert DEVICE_TOOLS - {"search_notes"} <= held  # no vault named: no search_notes
         assert {"create_memo", "remember", "web_fetch", "ask_user"} <= _menu(brain)
         assert brain.night is None
         assert {row.tool_name for row in brain.tier0_table} <= held

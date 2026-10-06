@@ -172,6 +172,7 @@ from jarvis.runtime.stream_bridge import LoopBoundTokenStream
 from jarvis.runtime.work_state import WorkStateService, build_analyst
 from jarvis.shared import CallerPrincipal, Event, lang, llm_io_log
 from jarvis.shared.action_admission import bind_action_admission
+from jarvis.shared.device_link import DeviceCallError
 from jarvis.shared.lang import language_name
 from jarvis.shared.pricing import load_pricing_table
 from jarvis.shared.realtime import (
@@ -220,6 +221,7 @@ from jarvis.surface.cli import (
 )
 from jarvis.surface.cli_render import render_response
 from jarvis.surface.stream_emission import emit_permitted_segment
+from jarvis.surface.terminal_link import TerminalHub
 from jarvis.surface.voice_cues import VoiceCues
 
 if TYPE_CHECKING:
@@ -396,8 +398,8 @@ def _for_role(config: dict[str, Any], role: Role) -> dict[str, Any]:
 def _on_menu(table: Tier0Table, registry: ToolRegistry, role: Role) -> Tier0Table:
     """The Tier 0 rows the registry can serve.
 
-    A brain does not hold the clipboard, screen, open or night-run tools; a row naming one
-    would fail the boot's cross-check, so it is dropped (ADR 0170).
+    A brain does not hold the night-run tools; a row naming one would fail the boot's
+    cross-check, so it is dropped (ADR 0170).
     """
     if role != "brain":
         return table
@@ -433,7 +435,9 @@ class _ResolvedFileEntity:
     match_basis: str
 
 
-def _make_entity_resolver(conn: sqlite3.Connection) -> EntityResolverLike:
+def _make_entity_resolver(
+    conn: sqlite3.Connection, terminals: TerminalHub | None = None,
+) -> EntityResolverLike:
     """Build the resolve-on-propose callable (ADR-0011 D4), closing over `conn`.
 
     Wired into `DecideContext.entity_resolver`; `_dispatch_one_tool_call`
@@ -443,17 +447,32 @@ def _make_entity_resolver(conn: sqlite3.Connection) -> EntityResolverLike:
     normal `None` return, not an exception, so this wrapper adds no
     try/except of its own; a real bug inside `resolve` should surface,
     not be swallowed here.
+
+    On a brain (ADR 0170) the file is on the terminal's disk, so the terminal resolves
+    the name; no terminal connected is a miss.
     """
 
     def _resolve(query: str) -> ResolvedEntityLike | None:
-        target = resolve_file_entity(query, "file", conn)
-        if target is None:
-            return None
+        path: str
+        source: str
+        if terminals is None:
+            target = resolve_file_entity(query, "file", conn)
+            if target is None:
+                return None
+            path, source = str(target.path), target.source
+        else:
+            try:
+                found = terminals.call("resolve_file", {"query": query}, None)
+            except DeviceCallError:
+                return None
+            path, source = str(found.get("path", "")), str(found.get("source", ""))
+            if not path:
+                return None
         return _ResolvedFileEntity(
-            entity_id=f"file:{target.path}",
-            canonical=str(target.path),
-            confidence="bookmark" if target.source == "bookmark" else "fuzzy",
-            match_basis=target.source,
+            entity_id=f"file:{path}",
+            canonical=path,
+            confidence="bookmark" if source == "bookmark" else "fuzzy",
+            match_basis=source,
         )
 
     return _resolve
@@ -535,6 +554,8 @@ class JarvisRuntime:
         listen_addresses: ``runtime.listen_addresses``, the private addresses a
             brain also listens on; ``listen_hosts``, the Host names it accepts
             there. Empty unless the role is ``brain``.
+        terminal_hub: the connected terminals a brain's device-bound tool calls go to;
+            ``None`` unless the role is ``brain``.
     """
 
     config: Mapping[str, Any]
@@ -619,6 +640,8 @@ class JarvisRuntime:
     # ADR 0170: the private addresses a brain also listens on, and the Host names it accepts.
     listen_addresses: tuple[str, ...] = ()
     listen_hosts: tuple[str, ...] = ()
+    # ADR 0170: where a brain's device-bound tool calls go. None unless ``role`` is ``brain``.
+    terminal_hub: TerminalHub | None = None
 
 
 @dataclass(frozen=True)
@@ -2412,6 +2435,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         AmbientSounds(log_path=logs_dir(paths.root) / "ambient-sounds.jsonl")
         if _ambient_sounds(full_config) else None
     )
+    terminal_hub = TerminalHub() if role == "brain" else None
     registry = build_default_registry(
         mail_drafts=mail_drafts,
         memory_db_path=memory.db_path,
@@ -2435,7 +2459,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
             account_cost=wave1_features.exactly_once_cost_accounting,
         ),
         screen_max_width_px=screen_max_width_px,
-        device_tools=role != "brain",
+        device_link=None if terminal_hub is None else terminal_hub.call,
     )
     workers = _register_workers(registry, paths, full_config)
     plugin_connections = PluginConnections(
@@ -2555,6 +2579,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         role=role,
         listen_addresses=listen_addresses,
         listen_hosts=listen_hosts,
+        terminal_hub=terminal_hub,
         tier0_table=tier0_table,
         confirm_grammar_table=confirm_grammar_table,
         wave1_features=wave1_features,
@@ -3766,10 +3791,14 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             # trivial closure) rather than stored on JarvisRuntime: it
             # closes over `runtime.conn`, which the JarvisRuntime fields
             # above already carry, so there is nothing to cache.
-            entity_resolver=_make_entity_resolver(runtime.conn),
+            entity_resolver=_make_entity_resolver(runtime.conn, runtime.terminal_hub),
             # ADR-0012 D1 — write-target resolve-on-propose. Same
-            # per-turn-closure rationale as `entity_resolver` above.
-            write_entity_resolver=_make_write_entity_resolver(runtime.conn),
+            # per-turn-closure rationale as `entity_resolver` above. A brain wires none:
+            # the target would resolve on the wrong disk, and `write_file` is frozen anyway.
+            write_entity_resolver=(
+                None if runtime.terminal_hub is not None
+                else _make_write_entity_resolver(runtime.conn)
+            ),
             # ADR-0012 §3 D4/V2 — confirmation TTL, config-overridable
             # via `confirmation.ttl_ms` so the live burn can shorten it.
             confirmation_ttl_ms=_confirmation_ttl_ms(runtime.config),
