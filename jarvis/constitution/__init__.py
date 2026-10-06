@@ -49,7 +49,9 @@ _C1 = ConstitutionalPrinciple(
         "particular person, and a stranger has to be able to understand it on their first "
         "run. Two people on one Mac are two accounts with two installs that share only the "
         "hardware. Jarvis does not tell voices apart: whoever speaks near the owner's Mac "
-        "is heard as the owner."
+        "is heard as the owner. When the brain runs apart from its terminals (ADR 0170), a "
+        "brain and the terminals paired to it are one install, and its owner is the person "
+        "who pairs them."
     ),
 )
 _C2 = ConstitutionalPrinciple(
@@ -119,8 +121,9 @@ NON_GOALS: Final[tuple[str, ...]] = (
     "and Codex.",
     "Not a multi-user or team tool: one install answers to one owner.",
     "Not a cloud service: it relays none of the owner's data and resells no model quota.",
-    "Not a smart-home hub: the Raspberry Pi, cross-device federation and room screens are "
-    "out of this version; devices such as Hue come in as plugins.",
+    "Not a smart-home hub: room screens are out of this version; devices such as Hue come "
+    "in as plugins. The owner's own devices may be terminals of one brain (ADR 0170), "
+    "which is neither sync nor anyone else's devices.",
     "Not companion-chat first: tone serves the state, not the other way round.",
 )
 """Product non-goals (docs/spec.html#positioning). Tuple — immutable by construction."""

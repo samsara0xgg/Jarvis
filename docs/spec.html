@@ -169,7 +169,7 @@ header strong { color: var(--fg-strong); }
 <tr><td><strong>一人一份。</strong>每个 macOS 账户一个主人，主人的名字在首次设置时定下（ADR 0090）。</td><td><strong>又一个干活的 agent。</strong>写代码、操作电脑交给 Claude Code 和 Codex。</td></tr>
 <tr><td><strong>agent 的总管。</strong>派活、盯进度、收结果，审批不用切窗口。</td><td><strong>多人协作或团队工具。</strong>一个安装只认一个主人。</td></tr>
 <tr><td><strong>本地优先。</strong>状态都在这台 Mac 的运行目录里。Jarvis 没有自己的服务器，发出的请求只去主人配置的服务商、主人连上的服务，或对话里要打开的网址（<a href="#egress">见第 5 章</a>）。</td><td><strong>云服务。</strong>不中转主人的数据，也不转售模型额度。</td></tr>
-<tr><td><strong>一把 key。</strong>默认打开的功能只用主人自己的一把 OpenAI key（ADR 0092）。</td><td><strong>智能家居中枢。</strong>树莓派、跨设备联邦和房间屏幕不在这一版里；Hue 这类设备走插件（ADR 0079）。</td></tr>
+<tr><td><strong>一把 key。</strong>默认打开的功能只用主人自己的一把 OpenAI key（ADR 0092）。</td><td><strong>智能家居中枢。</strong>房间屏幕不在这一版里；Hue 这类设备走插件（ADR 0079）。主人自己的设备可以连同一个大脑当终端（ADR 0170），但这不是同步，也不管别人的设备。</td></tr>
 </tbody>
 </table>
 
@@ -177,7 +177,7 @@ header strong { color: var(--fg-strong); }
 
 <p>六条原则约束下面所有章节。改其中任何一条都要先写 ADR。</p>
 
-<div class="constitution"><strong>C1. 一台 Mac 一个主人（ADR 0090）。</strong>一个安装只服务它所在 macOS 账户的那个人：记忆、key、确认和注意力都是这个人的。它可以尽量贴合主人的项目、习惯和说话方式，但代码里不写死任何具体的人，陌生人第一次打开也要看得懂。同一台 Mac 上的两个人是两个账户、两份安装，只共享硬件。Jarvis 不分辨声音：主人的 Mac 旁边说话的人，都被当成主人。</div>
+<div class="constitution"><strong>C1. 一台 Mac 一个主人（ADR 0090）。</strong>一个安装只服务它所在 macOS 账户的那个人：记忆、key、确认和注意力都是这个人的。它可以尽量贴合主人的项目、习惯和说话方式，但代码里不写死任何具体的人，陌生人第一次打开也要看得懂。同一台 Mac 上的两个人是两个账户、两份安装，只共享硬件。Jarvis 不分辨声音：主人的 Mac 旁边说话的人，都被当成主人。大脑和终端分开部署时（ADR 0170），一个大脑连同配对给它的终端算一个安装，主人是配对这些终端的那个人。</div>
 <div class="gap"><span class="tag gap">未满足</span>模型读得到的文字里还写着 Allen：浏览器护栏的拒绝语、Agents 窗口回给 Claude 的拒绝语，以及日报、工作状态和压缩的提示词（改2）。存下来的记录用 <code>allen</code> 标记主人说的话；这个存储值可以等数据迁移再改，但后三种提示词把它原样摆在模型面前，要先换成中性的说法。本机接口认的是固定端口，不是账户（<a href="#local-endpoints">见第 2 章</a>）。</div>
 
 <div class="constitution"><strong>C2. 状态才是本体。</strong>身份不在模型、提示词、工具或语音管线里，而在持续维护的状态里：只追加的事件日志，和从它折出来的投影（<a href="#state">第 3 章</a>）。换模型、改提示词、加工具都不动它。</div>
