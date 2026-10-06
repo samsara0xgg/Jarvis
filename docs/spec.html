@@ -508,7 +508,8 @@ I8 到 I11 随审核链退役（ADR 0019），编号保留。
 <h3 id="key-storage">key 放在哪</h3>
 <ul>
 <li>模型服务商的 key 存在主人的登录钥匙串里：每个运行目录一项（服务名 <code>Jarvis</code>，账户是运行目录的路径），内容是 <code>{环境变量名: key}</code> 的 JSON。写入走 <code>security -i</code> 的标准输入，key 不出现在任何进程的参数里。用临时运行目录跑的测试后台读不到主人的 key。</li>
-<li><code>~/.jarvis/env</code> 是主人自己写的明文 <code>名字=值</code> 文件，只补钥匙串和进程环境里都没有的变量。代码只读它、不写它，也不改它的权限；护住它的只有运行目录的 0700。</li>
+<li><code>~/.jarvis/env</code> 是主人自己写的明文 <code>名字=值</code> 文件，只补钥匙串和进程环境里都没有的变量。macOS 上代码只读它、不写它，也不改它的权限；护住它的只有运行目录的 0700。</li>
+<li>Linux（跑后台的那台机器，ADR 0170）没有钥匙串，key 就是这个 <code>env</code> 文件里的行。保存时把整个文件写到旁边再改名换上，权限 0600，别的行和注释原样保留；读取和保存都不调 <code>security</code>；「抹掉全部数据」连这个文件一起删。</li>
 <li>安装版里 Agents 窗口的 Claude 会话用的 Anthropic key 单独存一项（账户是运行目录里 <code>agents</code> 文件夹的路径），同样经 <code>security -i</code> 写入。后台不读这一项；宿主只把它放进自己开的 Claude 会话的环境里（ADR 0094）。</li>
 <li>插件凭据和 MCP 的登录令牌现在是 0600 的明文 JSON（改17）。</li>
 <li>「抹掉全部数据」会删掉这两项钥匙串（<a href="#export-erase">第 9 章</a>）。</li>

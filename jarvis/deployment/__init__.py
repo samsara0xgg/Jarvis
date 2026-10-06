@@ -29,9 +29,11 @@ from __future__ import annotations
 import hmac
 import json
 import os
+import re
 import secrets
 import stat
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -45,6 +47,8 @@ DEFAULT_RUNTIME_ROOT_LITERAL = "~/.jarvis"
 _ENV_VAR = "JARVIS_RUNTIME_ROOT"
 _SECURITY = "/usr/bin/security"
 _KEYCHAIN_SERVICE = "Jarvis"
+_ENV_FILE = "env"
+_ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
 @dataclass(frozen=True)
@@ -115,34 +119,105 @@ def _resolve_root(root: Path | None) -> Path:
     return Path(DEFAULT_RUNTIME_ROOT_LITERAL).expanduser().resolve()
 
 
-def read_keys(runtime_root: Path) -> dict[str, str]:
-    """The API keys saved for ``runtime_root`` in the login Keychain; ``{}`` when none.
+def _env_pairs(env_path: Path) -> list[tuple[str, str]]:
+    """``KEY=VALUE`` lines of an env file, in order; a missing file has none.
 
-    One generic-password item per runtime root (service ``Jarvis``, account
-    the root's path) holds a JSON object of ``{ENV_NAME: key}``, so a
-    temp-root test daemon never sees the owner's keys.
+    Split on the FIRST ``=``; key and value are whitespace-stripped, quotes are
+    NOT interpreted. Blank lines, ``#`` comments, lines without ``=`` and lines
+    with an empty key are skipped.
     """
+    if not env_path.is_file():
+        return []
+    pairs: list[tuple[str, str]] = []
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, _, value = stripped.partition("=")
+        if key.strip():
+            pairs.append((key.strip(), value.strip()))
+    return pairs
+
+
+def _write_env_pair(env_path: Path, name: str, key: str) -> None:
+    """Set ``name=key`` in the env file: 0600, written beside it and renamed over it.
+
+    Other lines, comments included, stay as written. The first line that
+    names ``name`` is replaced (the loader's first line wins); with none, the
+    pair is appended.
+    """
+    if not _ENV_NAME.fullmatch(name) or not key or "\n" in key or "\r" in key:
+        msg = f"cannot save {name}: not a variable name and a one-line key"
+        raise OSError(msg)
+    lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.is_file() else []
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and stripped.partition("=")[0].strip() == name:
+            lines[index] = f"{name}={key}"
+            break
+    else:
+        lines.append(f"{name}={key}")
+    temp_path = env_path.with_name(f"{env_path.name}.{secrets.token_hex(4)}.tmp")
+    try:
+        fd = os.open(temp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        try:
+            os.fchmod(fd, 0o600)
+            os.write(fd, ("\n".join(lines) + "\n").encode("utf-8"))
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        temp_path.replace(env_path)
+    except BaseException:
+        temp_path.unlink(missing_ok=True)
+        raise
+
+
+def _uses_keychain() -> bool:
+    """Only macOS has the login Keychain the keys live in."""
+    return sys.platform == "darwin"
+
+
+def read_keys(runtime_root: Path) -> dict[str, str]:
+    """The API keys saved for ``runtime_root``; ``{}`` when none.
+
+    macOS: one generic-password item per runtime root in the login Keychain
+    (service ``Jarvis``, account the root's path) holds a JSON object of
+    ``{ENV_NAME: key}``, so a temp-root test daemon never sees the owner's
+    keys. Elsewhere (the Linux brain, ADR 0170) there is no Keychain: the keys
+    are the ``${runtime_root}/env`` file's own lines, and ``security`` is never
+    called.
+    """
+    if not _uses_keychain():
+        keys: dict[str, str] = {}
+        for name, key in _env_pairs(runtime_root / _ENV_FILE):
+            keys.setdefault(name, key)
+        return keys
     try:
         found = subprocess.run(  # noqa: S603 — fixed macOS tool, no shell.
             [_SECURITY, "find-generic-password", "-s", _KEYCHAIN_SERVICE,
              "-a", str(runtime_root), "-w"],
             capture_output=True, text=True, timeout=10, check=False,
         )
-        keys = json.loads(found.stdout) if found.returncode == 0 else {}
+        saved = json.loads(found.stdout) if found.returncode == 0 else {}
     except (OSError, subprocess.TimeoutExpired, ValueError):
         return {}
-    if not isinstance(keys, dict):
+    if not isinstance(saved, dict):
         return {}
-    return {name: key for name, key in keys.items() if isinstance(key, str)}
+    return {name: key for name, key in saved.items() if isinstance(key, str)}
 
 
 def save_key(runtime_root: Path, name: str, key: str) -> None:
-    """Keep ``name=key`` in this root's Keychain item and in ``os.environ`` for this process.
+    """Keep ``name=key`` for this root and in ``os.environ`` for this process.
 
-    The item is written through ``security -i`` with hex data on stdin, so
-    the key never appears in a process's argument list. Raises ``OSError``
-    when the Keychain refuses.
+    macOS: in this root's Keychain item, written through ``security -i`` with
+    hex data on stdin, so the key never appears in a process's argument list.
+    Elsewhere: in ``${runtime_root}/env``, 0600, replaced atomically. Raises
+    ``OSError`` when the Keychain refuses or the file cannot be written.
     """
+    if not _uses_keychain():
+        _write_env_pair(runtime_root / _ENV_FILE, name, key)
+        os.environ[name] = key
+        return
     data = json.dumps({**read_keys(runtime_root), name: key}).encode().hex()
     command = (
         f'add-generic-password -U -s {_KEYCHAIN_SERVICE} -a "{runtime_root}" -X {data}\n'
@@ -158,7 +233,13 @@ def save_key(runtime_root: Path, name: str, key: str) -> None:
 
 
 def forget_keys(runtime_root: Path) -> None:
-    """Delete this root's Keychain item; a root with none is already clean."""
+    """Forget every key saved for this root: its Keychain item, or its ``env`` file off macOS.
+
+    A root with none is already clean.
+    """
+    if not _uses_keychain():
+        (runtime_root / _ENV_FILE).unlink(missing_ok=True)
+        return
     subprocess.run(  # noqa: S603 — fixed macOS tool, no shell.
         [_SECURITY, "delete-generic-password", "-s", _KEYCHAIN_SERVICE, "-a", str(runtime_root)],
         capture_output=True, timeout=10, check=False,
@@ -166,14 +247,14 @@ def forget_keys(runtime_root: Path) -> None:
 
 
 def load_env_file(runtime_root: Path) -> dict[str, str]:
-    """Fill-only loader for the Keychain keys, then ``${runtime_root}/env`` (ADR-0009 D1).
+    """Fill-only loader for the saved keys, then ``${runtime_root}/env`` (ADR-0009 D1).
 
     launchd strips the user's shell environment, so the plist-spawned
     daemon loses ``MINIMAX_API_KEY`` etc.; secrets must not live in the
     world-readable plist. Bootstrap calls this before any surface
-    preflight reads the environment. Keys saved in the Keychain
-    (:func:`save_key`) come first; the plaintext ``env`` file only fills
-    what is still unset.
+    preflight reads the environment. Keys saved by :func:`save_key` come
+    first (macOS: the Keychain; elsewhere they are this same file); the
+    plaintext ``env`` file only fills what is still unset.
 
     Contract:
         - ``KEY=VALUE`` lines, split on the FIRST ``=``; key and value
@@ -198,19 +279,9 @@ def load_env_file(runtime_root: Path) -> dict[str, str]:
     for key, value in read_keys(runtime_root).items():
         if key not in os.environ:
             os.environ[key] = applied[key] = value
-    env_path = runtime_root / "env"
-    if not env_path.is_file():
-        return applied
-    for line in env_path.read_text(encoding="utf-8").splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or "=" not in stripped:
-            continue
-        key, _, value = stripped.partition("=")
-        key = key.strip()
-        if not key or key in os.environ:
-            continue
-        os.environ[key] = value.strip()
-        applied[key] = value.strip()
+    for key, value in _env_pairs(runtime_root / _ENV_FILE):
+        if key not in os.environ:
+            os.environ[key] = applied[key] = value
     return applied
 
 

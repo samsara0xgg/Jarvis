@@ -202,6 +202,7 @@ def test_erase_forgets_the_daemons_key_and_the_agents_windows_key(
     security.write_text(f'#!/bin/sh\nprintf "%s\\n" "$*" >> "{calls}"\n')
     security.chmod(0o755)
     monkeypatch.setattr("jarvis.deployment._SECURITY", str(security))
+    monkeypatch.setattr("jarvis.deployment._uses_keychain", lambda: True)  # the macOS branch
     data.request_erase(root)
 
     bootstrap_runtime(root)

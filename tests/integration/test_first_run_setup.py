@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import stat
 import subprocess
 import sys
 from contextlib import closing
@@ -21,7 +22,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from jarvis.decision.llm import MissingAPIKeyError, failure_reason
-from jarvis.deployment import load_env_file, read_keys, save_key
+from jarvis.deployment import forget_keys, load_env_file, read_keys, save_key
 from jarvis.deployment.models import Progress
 from jarvis.runtime import _load_full_config
 from jarvis.runtime import setup as runtime_setup
@@ -221,3 +222,53 @@ def test_keys_round_trip_through_the_keychain_for_their_root_only(
             capture_output=True, check=False,
         )
     assert read_keys(tmp_path) == {}
+
+
+def test_keys_live_in_the_root_env_file_off_macos(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Linux brain (ADR 0170): keys round-trip through the 0600 ``env``, never ``security``."""
+    monkeypatch.setattr(sys, "platform", "linux")
+
+    def _no_security(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("the Keychain tool must not run off macOS")
+
+    monkeypatch.setattr(subprocess, "run", _no_security)
+    name, other = "JARVIS_SETUP_CHECK_KEY", "JARVIS_SETUP_OTHER_KEY"
+    for var in (name, other):
+        monkeypatch.delenv(var, raising=False)
+    env = tmp_path / "env"
+    env.write_text(
+        f"# owner's note\n{other} = sk-fake-other\n{name}=sk-fake-old\n", encoding="utf-8",
+    )
+    env.chmod(0o644)
+
+    save_key(tmp_path, name, "sk-fake-new")
+
+    assert os.environ[name] == "sk-fake-new"
+    assert stat.S_IMODE(env.stat().st_mode) == 0o600
+    assert env.read_text(encoding="utf-8") == (
+        f"# owner's note\n{other} = sk-fake-other\n{name}=sk-fake-new\n"
+    )
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["env"]
+    assert read_keys(tmp_path) == {other: "sk-fake-other", name: "sk-fake-new"}
+    assert read_keys(tmp_path / "other-root") == {}
+
+    save_key(tmp_path, "JARVIS_SETUP_THIRD_KEY", "sk-fake-third")
+    assert env.read_text(encoding="utf-8").endswith("JARVIS_SETUP_THIRD_KEY=sk-fake-third\n")
+    monkeypatch.delenv("JARVIS_SETUP_THIRD_KEY")
+    monkeypatch.delenv(name)
+    assert load_env_file(tmp_path) == {
+        other: "sk-fake-other", name: "sk-fake-new", "JARVIS_SETUP_THIRD_KEY": "sk-fake-third",
+    }
+
+    with pytest.raises(OSError, match="one-line key"):
+        save_key(tmp_path, name, "sk-fake\nINJECTED=1")
+    assert "INJECTED" not in env.read_text(encoding="utf-8")
+
+    forget_keys(tmp_path)
+    assert not env.exists()
+    assert read_keys(tmp_path) == {}
+    forget_keys(tmp_path)  # a root with none is already clean
+    for var in (other, "JARVIS_SETUP_THIRD_KEY"):
+        monkeypatch.delenv(var, raising=False)
