@@ -21,7 +21,10 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from jarvis.execution.mcp_tools import McpServers
+from jarvis.execution.tool_search import build_tool_search
+from jarvis.execution.tools import Tool
 from jarvis.runtime import mcp_login
+from jarvis.shared import CallerPrincipal
 from tests.integration.test_flat_tool_dispatch import _chain, _Fixture, _request
 
 if TYPE_CHECKING:
@@ -136,6 +139,37 @@ def test_always_loaded_names_stay_off_tool_search() -> None:
         "mcp__echo__echo": False, "mcp__echo__add": True,
         "mcp__echo__send": True, "mcp__echo__boom": True,
     }
+
+
+def _fake(name: str, *, deferred: bool) -> Tool:
+    return Tool(
+        name=name,
+        description=f"{name} mail search",
+        input_schema={"type": "object", "properties": {}},
+        handler=lambda _a, _c: {},
+        allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
+        risk_level="L0",
+        read_only=True,
+        deferred=deferred,
+    )
+
+
+def test_tool_search_covers_only_deferred_tools_and_names_the_loaded() -> None:
+    """ADR 0169: a loaded tool is not searchable, and the description says it is callable."""
+    tools = [
+        _fake("mcp__gmail__gmail_search", deferred=False),
+        _fake("mcp__gmail__gmail_get", deferred=False),
+        _fake("mcp__gmail__gmail_send", deferred=True),
+        _fake("mcp__other__loaded", deferred=False),
+    ]
+    (search,) = build_tool_search(tools, {})
+    assert search.description.count("Already available") == 1
+    assert "mcp__gmail__gmail_get, mcp__gmail__gmail_search." in search.description
+    assert "mcp__other__loaded" not in search.description  # its source has nothing deferred
+    # ADR 0056 still pulls the server's read-only tools, but never one that is not deferred.
+    out = search.handler({"query": "mail search send"}, None)  # type: ignore[arg-type]
+    assert out == {"loaded_tools": ["mcp__gmail__gmail_send"]}
+    assert build_tool_search(tools[:2] + tools[3:], {}) == ()
 
 
 def test_codex_approval_modes_move_the_risk(servers: McpServers) -> None:

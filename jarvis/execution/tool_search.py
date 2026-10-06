@@ -33,7 +33,7 @@ _DESCRIPTION: Final = (
     "# Tool discovery\n\n"
     "Searches over deferred tool metadata with BM25 and exposes matching tools for the "
     "next model call.\n\n"
-    "You have access to tools from the following sources:\n{sources}\n"
+    "You have access to tools from the following sources:\n{sources}\n{loaded}"
     "Some of the tools may not have been provided to you upfront, and you should use this "
     "tool (`tool_search`) to search for the required tools. Tool metadata is English, so "
     "search with English keywords."
@@ -125,18 +125,29 @@ class _Bm25:
         return [index for _, index in scored[:limit]]
 
 
-def build_tool_search(deferred: Sequence[Tool], sources: Mapping[str, str]) -> tuple[Tool, ...]:
-    """The ``tool_search`` tool over ``deferred``; none when nothing is deferred.
+def build_tool_search(tools: Sequence[Tool], sources: Mapping[str, str]) -> tuple[Tool, ...]:
+    """The ``tool_search`` tool over the deferred ``tools``; none when nothing is deferred.
+
+    Only deferred tools are indexed and returned. A non-deferred tool of a listed
+    source is already on the model's menu, so the description names it; without
+    that the model searches for tools it can already call (ADR 0169).
 
     ``sources`` maps a source (an MCP server) to the description the model
     reads in the tool's own description, as Codex lists its connectors.
     """
+    deferred = [t for t in tools if t.deferred]
     if not deferred:
         return ()
     index = _Bm25([_search_text(t) for t in deferred])
     names = [t.name for t in deferred]
     listed = sorted({_source(n) for n in names})
     source_lines = "\n".join(f"- {s}: {sources.get(s, s)}" for s in listed)
+    loaded = sorted(t.name for t in tools if not t.deferred and _source(t.name) in listed)
+    loaded_line = (
+        f"Already available, call these directly and never search for them: {', '.join(loaded)}.\n"
+        if loaded
+        else ""
+    )
 
     def handle(args: Mapping[str, Any], _ctx: ToolContext) -> dict[str, Any]:
         query = str(args.get("query") or "").strip()
@@ -162,7 +173,7 @@ def build_tool_search(deferred: Sequence[Tool], sources: Mapping[str, str]) -> t
     return (
         Tool(
             name=TOOL_SEARCH_NAME,
-            description=_DESCRIPTION.format(sources=source_lines),
+            description=_DESCRIPTION.format(sources=source_lines, loaded=loaded_line),
             input_schema=_SCHEMA,
             handler=handle,
             allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
