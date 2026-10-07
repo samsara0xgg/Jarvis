@@ -1110,15 +1110,18 @@ def _insert_system_notes(
     turn's own message is kept as sent, before any such fold. The reply-language
     line ends this message only, so the history ahead of it keeps its cache
     prefix; the kept message carries it too, so later turns replay it. The line is
-    returned for the tool loops, which repeat it after tool results (ADR 0135).
+    returned for the tool loops, which repeat it after tool results under a note naming
+    this turn's words (ADR 0135).
     """
     status = _current_status_block(packet, ctx)
     line = None
     for message in reversed(messages):
         if message.get("role") == "user":
-            line = _reply_language_line(lang, str(message["content"]))
+            words = str(message["content"])
+            line = _reply_language_line(lang, words)
             if line is not None:
-                message["content"] = f"{message['content']}\n\n{line}"
+                message["content"] = f"{words}\n\n{line}"
+                line = _after_results_note(words, line)
             if status is not None:
                 message["content"] = f"{status}\n\n{message['content']}"
             if ctx.record_sent_message is not None:
@@ -1129,6 +1132,22 @@ def _insert_system_notes(
         messages[0]["content"] = f"{head.pop()['content']}\n\n{messages[0]['content']}"
     messages[0:0] = head
     return line
+
+
+_NOTE_WORDS_CHARS: Final = 200
+
+
+def _after_results_note(words: str, line: str) -> str:
+    """The item after tool results: this turn's request named, then the language line.
+
+    Alone, the language line read as a new and empty user turn: after a page-turn
+    result the model answered an older request in the history instead (live,
+    2026-10-07). Naming the words keeps the answer on this turn (ADR 0135 addendum).
+    """
+    flat = " ".join(words.split()).replace('"', "'")
+    if len(flat) > _NOTE_WORDS_CHARS:
+        flat = flat[: _NOTE_WORDS_CHARS - 1] + "…"
+    return f'[Not new words from the user: still answering "{flat}"]\n{line}'
 
 
 def _add_reply_language_note(messages: list[dict[str, Any]], line: str | None) -> None:

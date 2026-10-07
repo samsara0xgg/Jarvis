@@ -170,9 +170,15 @@ def test_no_words_get_no_line_under_follow(tmp_path: Path) -> None:
 def test_request_after_tool_results_ends_with_the_line(
     tmp_path: Path, transcript: str, line: str
 ) -> None:
-    """English tool results sit between his words and the answer: the line goes last."""
+    """English tool results sit between his words and the answer: the line goes last.
+
+    Under a note naming his words, so the item never reads as a new, empty turn
+    (2026-10-07: alone, it sent the model back to an older request in the history).
+    """
     llm, kept = _run(tmp_path, transcript, "follow", call_a_tool=True)
-    assert llm.live[1] == line  # the second request; a third is the answer check
+    # the second request; a third is the answer check
+    assert llm.live[1] == f'[Not new words from the user: still answering "{transcript}"]\n{line}'
+
     assert kept == [llm.live[0]]  # the stored message is still the live one, line once
 
 

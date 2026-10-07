@@ -66,3 +66,18 @@ after the status block's header and the words.
   more short item to that turn's requests, never to history.
 - Japanese and Korean turns still rely on the system prompt alone and keep the
   7% mismatch rate.
+
+## Addendum: the item after tool results names this turn's words
+
+- Live, 2026-10-07 (turn Tb60b06a4): "Show my mail on the Dashboard." called
+  `show_on_dashboard`, and the next request ended on the bare line as a user item. The model
+  read it as a new, empty user turn and answered the newest open-ended request in the
+  history (an answered weather question from 19:25), with nine weather lookups. The first
+  request, without the item, had stayed on the mail ask.
+- The item after each batch of tool results is now two lines: `[Not new words from the
+  user: still answering "<his words>"]`, the words flattened to one line and capped at 200
+  characters, then the language line as before. The live message keeps the bare line. No
+  line, no item, as before.
+- Rejected: a developer-role item, which not every configured provider accepts mid-input;
+  dropping the item, which brings back the English answers to Chinese asks after English
+  results that the item was added for.

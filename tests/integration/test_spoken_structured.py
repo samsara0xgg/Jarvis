@@ -369,6 +369,10 @@ def test_a_spoken_turn_stops_at_the_voice_cap_and_wraps_up_in_the_spoken_shape(
     assert last["text"] == {"format": SPOKEN_REPLY_FORMAT}
     assert "no more tools can be called" in last["input"][-1]["content"]
     assert '"spoken"' in last["input"][-1]["content"]
-    language = {"role": "user", "content": "[Reply language for this turn: Chinese]"}
+    language = {
+        "role": "user",
+        "content": "[Not new words from the user: still answering "
+        '"帮我找找邮件里跟 co-op 有关的"]\n[Reply language for this turn: Chinese]',
+    }
     assert last["input"][-2] == language
     assert result.response_plan.text == compose_envelope(said, details)
