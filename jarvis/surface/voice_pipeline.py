@@ -24,7 +24,7 @@ from jarvis.surface import voice_artifact_store, voice_asr
 
 if TYPE_CHECKING:
     import sqlite3
-    from collections.abc import Callable
+    from collections.abc import Callable, Collection
     from pathlib import Path
 
     from jarvis.shared import Event
@@ -161,15 +161,16 @@ class VoicePipeline:
         audio_bytes: bytes,
         *,
         recognizer: voice_asr.AsrRecognizer | None = None,
+        rehear_among: Collection[str] = (),
     ) -> voice_asr.DictationHeard:
         """Dictation (ADR 0076/0077): one stretch between his pauses, heard and corrected, no emit.
 
         ``recognizer`` hears it instead of the voice path's own, as 言字 does
-        (local Whisper, ADR 0110).
+        (local Whisper, ADR 0110); ``rehear_among`` lets it hear a short clip again (ADR 0174).
         No words when nothing in it is speech; the caller judges the joined stretches as a whole.
         """
         if recognizer is not None:
-            heard = voice_asr.dictation_text(audio_bytes, recognizer)
+            heard = voice_asr.dictation_text(audio_bytes, recognizer, rehear_among=rehear_among)
             return heard._replace(text=self._normalizer.normalize(heard.text))
         if voice_asr.too_quiet_for_speech(audio_bytes):
             return voice_asr.DictationHeard("", "")

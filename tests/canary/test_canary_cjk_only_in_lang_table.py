@@ -74,7 +74,7 @@ _MATCHERS: Final[dict[str, frozenset[str]]] = {
     "jarvis/state/timesink_moment.py": frozenset({"call_app"}),
     "jarvis/surface/sentence_splitter.py": frozenset({"_DELIMITERS"}),
     "jarvis/surface/voice_asr.py": frozenset(
-        {"_MISPLACED_PERIOD", "_ACTION_WORDS", "MlxWhisperRecognizer.__init__",
+        {"_MISPLACED_PERIOD", "_ACTION_WORDS", "_SIMPLIFIED_PROMPT",
          "_TERMINAL_PUNCTUATION", "_DANGLING_SUFFIXES", "_is_punctuation_only", "_WAKE_ONLY_RE",
          "_WAKE_LEAD_RE", "_BACKCHANNEL_UNIT", "_STOP_PHRASE",
          "_STOP_REQUEST_RE", "_DISMISS_RE", "_WAIT_UNIT",

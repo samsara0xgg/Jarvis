@@ -41,6 +41,9 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(__name__)
 
+# ADR 0174: a clip under 4 s heard in any other language is heard again as the likelier of these.
+# ponytail: fixed {zh, en}; read the Mac's languages as 言字 languages.py does if he dictates a third language
+DICTATION_LANGUAGES = frozenset({"zh", "en"})
 # 言字's limit: fifteen minutes, then the session finishes on its own.
 MAX_SECONDS = 900
 # Frames kept from before the session: his tap, the desktop and the HTTP hop

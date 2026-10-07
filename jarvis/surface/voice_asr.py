@@ -33,7 +33,7 @@ import threading
 import time
 import unicodedata
 from collections import deque
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -505,6 +505,7 @@ _WHISPER_LOOP_RE = re.compile(r"(.{2,16})\1{2,}")
 _WHISPER_RUN_RE = re.compile(r"(\S)\1{7,}")
 _WHISPER_FALLBACK_TEMPERATURES = (0.0, 0.2, 0.4, 0.6, 0.8, 1.0)
 _WHISPER_TERMS_MAX_CHARS = 600
+_SIMPLIFIED_PROMPT = "以下是普通话的简体中文转录。"
 _WHISPER_WINDOW_S = 30
 # mlx_whisper keeps one model per process, so every recognizer shares one lock.
 _WHISPER_LOCK = threading.Lock()
@@ -550,7 +551,7 @@ class MlxWhisperRecognizer:
         language: str | None = None,
         # large-v3-turbo skews toward traditional CN tokens; a simplified-CN
         # prompt biases the decoder back toward simplified glyphs.
-        initial_prompt: str | None = "以下是普通话的简体中文转录。",
+        initial_prompt: str | None = _SIMPLIFIED_PROMPT,
         terms: Callable[[], Sequence[str]] | None = None,
         max_tokens: int | None = None,
         retry_loops: bool = True,
@@ -593,8 +594,12 @@ class MlxWhisperRecognizer:
 
         threading.Thread(target=_run, name="jarvis-whisper-warm", daemon=True).start()
 
-    def recognize(self, audio_pcm: bytes) -> TranscriptionResult:
-        """Transcribe PCM16 mono 16 kHz audio with mlx-whisper."""
+    def recognize(self, audio_pcm: bytes, *, language: str | None = None) -> TranscriptionResult:
+        """Transcribe PCM16 mono 16 kHz audio with mlx-whisper.
+
+        ``language`` forces one for this call, as the recognizer's own would be: Chinese then
+        gets the simplified-Chinese prompt, any other language none.
+        """
         audio = _pcm16_to_float32(audio_pcm)
         if audio.size == 0:
             return TranscriptionResult(
@@ -607,10 +612,15 @@ class MlxWhisperRecognizer:
         # 言字 050d27f: the list only for audio within one 30 s window; across windows it looped.
         fits = audio.size <= _WHISPER_WINDOW_S * _SAMPLE_RATE
         listed = _terms_prompt(self._terms()) if self._terms is not None and fits else ""
-        prompt = " ".join(part for part in (self._initial_prompt, listed) if part) or None
+        hint = self._initial_prompt
+        if language is not None:
+            hint = _SIMPLIFIED_PROMPT if language == "zh" else None
+        prompt = " ".join(part for part in (hint, listed) if part) or None
         with _WHISPER_LOCK:
-            transcription = self._decode(audio, prompt=prompt, temperature=self._temperature)
-            text = self._heard(transcription, prompt, self._initial_prompt, listed)
+            transcription = self._decode(
+                audio, prompt=prompt, temperature=self._temperature, language=language,
+            )
+            text = self._heard(transcription, prompt, hint, listed)
             if _looks_looped(text) and not self._retry_loops:
                 LOGGER.info("MLX Whisper looped; heard as nothing")
                 text = ""
@@ -618,37 +628,66 @@ class MlxWhisperRecognizer:
                 # 言文 e94d055: heard again without the list, hotter where it repeats.
                 LOGGER.info("MLX Whisper looped; hearing it again with temperature fallback")
                 transcription = self._decode(
-                    audio, prompt=self._initial_prompt, temperature=_WHISPER_FALLBACK_TEMPERATURES,
+                    audio, prompt=hint, temperature=_WHISPER_FALLBACK_TEMPERATURES,
+                    language=language,
                 )
-                text = self._heard(transcription, self._initial_prompt)
+                text = self._heard(transcription, hint)
             self.last_used = time.monotonic()
         if _WHISPER_SILENCE_RE.match(re.sub(r"[\s\W_]+$|^[\s\W_]+", "", text)):
             text = ""
-        language = str(transcription.get("language") or self._language or "") or None
+        heard_language = str(transcription.get("language") or language or self._language or "")
         confidence = _estimate_whisper_confidence(transcription)
 
         LOGGER.info(
             "MLX Whisper: language=%s confidence=%.3f chars=%d",  # never the words (ADR 0067)
-            language,
+            heard_language or None,
             confidence,
             len(text),
         )
         return TranscriptionResult(
             text=text,
             confidence=confidence,
-            language_detected=language,
+            language_detected=heard_language or None,
             emotion=None,
         )
 
+    def language_probs(self, audio_pcm: bytes) -> dict[str, float]:
+        """Whisper's probability for each language, from the first 30 s of the audio.
+
+        The steps ``mlx_whisper.transcribe`` takes when no language is set (言字
+        ``JarvisASR.detect_language``), on the model it already holds; ``{}`` for an
+        English-only model.
+        """
+        import mlx.core as mx  # noqa: PLC0415
+        from mlx_whisper.audio import (  # noqa: PLC0415
+            N_FRAMES,
+            N_SAMPLES,
+            log_mel_spectrogram,
+            pad_or_trim,
+        )
+        from mlx_whisper.transcribe import ModelHolder  # noqa: PLC0415
+
+        dtype = mx.float16 if self._fp16 else mx.float32
+        with _WHISPER_LOCK:
+            model = ModelHolder.get_model(self._repo, dtype)
+            if not model.is_multilingual:
+                return {}
+            mel = log_mel_spectrogram(
+                _pcm16_to_float32(audio_pcm), n_mels=model.dims.n_mels, padding=N_SAMPLES,
+            )
+            _, probs = model.detect_language(pad_or_trim(mel, N_FRAMES, axis=-2).astype(dtype))
+        return {lang: float(p) for lang, p in probs.items()}
+
     def _decode(
         self, audio: np.ndarray, *, prompt: str | None, temperature: float | tuple[float, ...],
+        language: str | None = None,
     ) -> Mapping[str, Any]:
         result: Mapping[str, Any] = self._load().transcribe(
             audio,
             path_or_hf_repo=self._repo,
             fp16=self._fp16,
             temperature=temperature,
-            language=self._language,
+            language=language or self._language,
             initial_prompt=prompt,
             condition_on_previous_text=False,
             verbose=None,
@@ -1002,6 +1041,8 @@ def _chinese_command(text: str) -> bool:
 # confidently English; Chinese is never dropped for being short.
 _SHORT_FRAGMENT_CHARS = 5
 _SHORT_ENGLISH_CONFIDENCE = 0.4
+# 言字 languages.SHORT_CLIP_S: below this Whisper has too little to detect a language from.
+_SHORT_CLIP_S = 4.0
 # 言字 5fddcba: Whisper often closes a Chinese clause with a half-width mark.
 _HALF_WIDTH_AFTER_CJK = re.compile(r"(?<=[\u3400-\u9fff\uf900-\ufaff])\s*([,?!:;])\s*")
 _FULL_WIDTH = dict(zip(",?!:;", "，？！：；", strict=True))
@@ -1019,16 +1060,31 @@ class DictationHeard(NamedTuple):
     language: str
 
 
-def dictation_text(audio_pcm: bytes, recognizer: AsrRecognizer) -> DictationHeard:
+def dictation_text(
+    audio_pcm: bytes,
+    recognizer: AsrRecognizer,
+    *,
+    rehear_among: Collection[str] = (),
+) -> DictationHeard:
     """One dictation stretch heard by local Whisper as 言字 0.4.1 hears it (ADR 0110, 0174).
 
     Only a dead or muted mic is cut before the model, a short fragment heard
     as neither Chinese nor confident English is noise, and Chinese clauses get
-    full-width punctuation.
+    full-width punctuation. With ``rehear_among`` set, a clip under 4 s that Whisper
+    heard in a language outside it is decoded again as the likeliest of those.
     """
     if too_quiet_for_speech(audio_pcm, floor=_WHISPER_LEVEL_FLOOR):
         return DictationHeard("", "")
     heard = recognizer.recognize(audio_pcm)
+    heard_language = (heard.language_detected or "").lower()
+    if (
+        rehear_among
+        and isinstance(recognizer, MlxWhisperRecognizer)
+        and len(audio_pcm) < _SHORT_CLIP_S * _SAMPLE_RATE * 2
+        and heard_language
+        and heard_language not in rehear_among
+    ):
+        heard = _rehear(audio_pcm, recognizer, rehear_among, heard)
     text = heard.text.strip()
     language = (heard.language_detected or "").lower()
     if (
@@ -1041,6 +1097,31 @@ def dictation_text(audio_pcm: bytes, recognizer: AsrRecognizer) -> DictationHear
         )
         return DictationHeard("", language)
     return DictationHeard(full_width_punctuation(text), language)
+
+
+def _rehear(
+    audio_pcm: bytes,
+    recognizer: MlxWhisperRecognizer,
+    among: Collection[str],
+    heard: TranscriptionResult,
+) -> TranscriptionResult:
+    """言字 ``_misheard_language``: a stray word often draws a language nobody here speaks.
+
+    Whisper's free guess is kept unless the likeliest of ``among`` can be found.
+    """
+    try:
+        probs = recognizer.language_probs(audio_pcm)
+    except Exception:  # noqa: BLE001 - detection is a refinement; the first hearing stands
+        LOGGER.info("dictation language detection failed; keeping the first hearing", exc_info=True)
+        return heard
+    chosen = max((lang for lang in among if lang in probs), key=probs.__getitem__, default=None)
+    if chosen is None:
+        return heard
+    LOGGER.info(
+        "dictation heard %s in a short clip; hearing it again as %s",
+        heard.language_detected, chosen,
+    )
+    return recognizer.recognize(audio_pcm, language=chosen)
 
 
 class LocalWhisperRecognizer:
