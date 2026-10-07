@@ -75,6 +75,8 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
     from pathlib import Path
 
+    from starlette.types import ASGIApp
+
     from jarvis.state.projects import Project
     from jarvis.surface.claude_sessions import ClaudeSessions
 
@@ -94,6 +96,7 @@ class _Brain:
     def __init__(
         self, root: Path, log: Path,
         deps: Callable[[TerminalHub], dict[str, Any]] | None = None,
+        tap: Callable[[ASGIApp], ASGIApp] | None = None,
     ) -> None:
         self.hub = TerminalHub(events=BrainEvents(_brain_log(log)))
         app = create_app(
@@ -112,8 +115,8 @@ class _Brain:
         )
         self.port = _free_port()
         self.server = uvicorn.Server(
-            uvicorn.Config(_AsRemote(app), host="127.0.0.1", port=self.port,
-                           log_level="warning", lifespan="off"),
+            uvicorn.Config(_AsRemote(app if tap is None else tap(app)), host="127.0.0.1",
+                           port=self.port, log_level="warning", lifespan="off"),
         )
         self.thread = threading.Thread(
             target=lambda: asyncio.run(self.server.serve()), daemon=True,

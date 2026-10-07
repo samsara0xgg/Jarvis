@@ -53,6 +53,8 @@ LOGGER = logging.getLogger("jarvis.surface.terminal_ui")
 UI_SOCKET: Final = "/inherent/ws"
 UNREACHABLE: Final = "the brain is not reachable"
 CONNECT_TIMEOUT_S: Final = 5.0
+DISCONNECT_POLL_S: Final = 0.5
+_CLIENT_CLOSED: Final = 499  # nginx's "client closed request": nobody is left to read it
 _METHODS: Final = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
 _SOCKET_UNREACHABLE: Final = 1013  # "try again later": the companion's reconnect ladder takes it
 
@@ -319,6 +321,13 @@ async def _drain(ws: WebSocket) -> None:
             await ws.receive_text()
 
 
+async def _until_gone(request: Request, sent: asyncio.Event) -> None:
+    """Return once the caller has disconnected; only looks after its body is all read."""
+    await sent.wait()
+    while not await request.is_disconnected():  # noqa: ASYNC110 — no ASGI event for it.
+        await asyncio.sleep(DISCONNECT_POLL_S)
+
+
 async def _forward(request: Request, brain: Brain) -> Response:
     """Send ``request`` on to the brain under this device's token and stream the answer back."""
     path = request.url.path + (f"?{request.url.query}" if request.url.query else "")
@@ -329,14 +338,35 @@ async def _forward(request: Request, brain: Brain) -> Response:
     has_body = request.headers.get("content-length", "0") != "0" or (
         "transfer-encoding" in request.headers
     )
+    sent = asyncio.Event()
+
+    async def content() -> AsyncIterator[bytes]:
+        try:
+            async for chunk in request.stream():
+                yield chunk
+        finally:
+            sent.set()
+
+    if not has_body:
+        sent.set()
+    opening = asyncio.ensure_future(
+        brain.open(request.method, path, headers, content() if has_body else None),
+    )
+    watching = asyncio.ensure_future(_until_gone(request, sent))
     try:
-        upstream = await brain.open(
-            request.method, path, headers, request.stream() if has_body else None,
-        )
+        await asyncio.wait({opening, watching}, return_when=asyncio.FIRST_COMPLETED)
+        if not opening.done():
+            # The caller hung up while the brain was still deciding (a held permission prompt):
+            # ending our request is how the brain learns, as it would from a direct socket.
+            opening.cancel()
+            return Response(status_code=_CLIENT_CLOSED)
+        upstream = opening.result()
     except httpx.TransportError as exc:
         LOGGER.warning("%s %s: the brain did not answer (%s)", request.method, request.url.path,
                        type(exc).__name__)
         return _unreachable()
+    finally:
+        watching.cancel()
 
     async def body() -> AsyncIterator[bytes]:
         try:
