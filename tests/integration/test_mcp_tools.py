@@ -141,17 +141,6 @@ def test_always_loaded_names_stay_off_tool_search() -> None:
     }
 
 
-def test_a_mail_servers_read_tools_say_to_scan_with_metadata(servers: McpServers) -> None:
-    """Search lists only ids and get defaults to full bodies; the menu says to scan cheap."""
-    entry = {"gmail": {"command": sys.executable, "args": [str(HERE / "mcp_gmail_server.py")]}}
-    described = {t.name: t.description for t in servers.connect(entry)}
-    assert 'format "metadata"' in described["mcp__gmail__gmail_search"]
-    assert 'format "metadata"' in described["mcp__gmail__gmail_get"]
-    assert 'format "metadata"' not in described["mcp__gmail__gmail_send"]
-    # A server that is not Gmail's mail set keeps its descriptions untouched.
-    assert servers.connect(ECHO)[0].description == "Return the text unchanged."
-
-
 def _fake(name: str, *, deferred: bool) -> Tool:
     return Tool(
         name=name,

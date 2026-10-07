@@ -230,19 +230,6 @@ def _mail_send(listed: mcp_types.Tool, address: str) -> tuple[str, dict[str, Any
     return description, schema
 
 
-# Broad mail questions read ~10 full bodies (8 KB each) per turn; the search answer is ids only.
-_MAIL_READ_HINTS: Final = {
-    "gmail_search": (
-        " It returns only message ids: to choose among them, gmail_get each with"
-        ' format "metadata" (subject, sender, date, snippet), not "full".'
-    ),
-    "gmail_get": (
-        ' Default format is "full", a whole body per message. To scan or pick among'
-        ' messages use format "metadata"; open "full" only for the few the answer needs.'
-    ),
-}
-
-
 class McpServers:
     """Every entered MCP client and the loop thread that keeps them open."""
 
@@ -438,8 +425,6 @@ class McpServers:
         if server in self._mail and listed.name == "gmail_send":
             run = partial(_send_in_thread, run, partial(self._call, server, client))
             description, schema = _mail_send(listed, self._mail[server])
-        if server in self._mail and listed.name in _MAIL_READ_HINTS:
-            description += _MAIL_READ_HINTS[listed.name]
 
         def call(args: Mapping[str, Any], _ctx: ToolContext) -> dict[str, Any]:
             return run(args)
