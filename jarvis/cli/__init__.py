@@ -920,6 +920,55 @@ def _main_daemon(argv: list[str]) -> int:
     return 0
 
 
+def _main_terminal_agent(argv: list[str]) -> int:
+    """``jarvis terminal-agent install --brain URL|uninstall`` — ADR 0183's LaunchAgent.
+
+    Exclusive with the daemon's agent: install refuses while ``com.allen.jarvis`` is
+    loaded, and uninstall is the way back to it.
+    """
+    parser = argparse.ArgumentParser(
+        prog=f"{_PROG} terminal-agent",
+        description=(
+            f"Run `jarvis terminal --voice --serve-ui` under the {launchd.TERMINAL_LABEL} "
+            "LaunchAgent (KeepAlive), in place of the daemon on this Mac. install is "
+            "idempotent and refuses while the daemon's agent is loaded; uninstall stops "
+            "and removes the agent so the daemon can come back."
+        ),
+    )
+    parser.add_argument("verb", choices=("install", "uninstall"))
+    parser.add_argument(
+        "--brain", default=None, help="install only: the brain, e.g. http://jarvis:8006."
+    )
+    args = parser.parse_args(argv)
+    if (args.verb == "install") != (args.brain is not None):
+        parser.error("--brain goes with install, and only there")
+    try:
+        if args.verb == "install":
+            installed = launchd.install_terminal(_brain_base_url(args.brain))
+            written = "written" if installed.plist_changed else "unchanged (idempotent re-install)"
+            lines = [
+                f"jarvis terminal-agent install: {launchd.terminal_service_target()} bootstrapped",
+                f"  plist       : {installed.plist_path} ({written})",
+                f"  interpreter : {installed.interpreter}",
+                f"  logs        : {installed.logs_dir}",
+                *(_render_launchctl_step(step) for step in installed.steps),
+            ]
+        else:
+            removed = launchd.uninstall_terminal()
+            fate = "removed" if removed.plist_removed else "absent"
+            lines = [
+                f"jarvis terminal-agent uninstall: {launchd.terminal_service_target()} booted out",
+                f"  plist       : {removed.plist_path} ({fate})",
+                *(_render_launchctl_step(step) for step in removed.steps),
+                "  next        : `jarvis daemon install` gives this Mac back to the daemon",
+            ]
+    except (launchd.LaunchdError, ValueError) as exc:
+        sys.stderr.write(f"jarvis terminal-agent {args.verb}: {exc}\n")
+        return 1
+    print("\n".join(lines))  # noqa: T201 — operator-facing report is this verb's whole output.
+    return 0
+
+
 def _brain_base_url(url: str) -> str:
     """``http(s)://host[:port]`` for ``--brain``, without a trailing slash."""
     parts = urllib.parse.urlsplit(url)
@@ -1181,16 +1230,17 @@ def main(argv: list[str] | None = None) -> int:
     """
     if argv is None:
         argv = sys.argv[1:]
-    if argv and argv[0] == "serve":
-        return _main_serve(argv[1:])
-    if argv and argv[0] == "daemon":
-        return _main_daemon(argv[1:])
-    if argv and argv[0] == "mcp-login":
-        return _main_mcp_login(argv[1:])
+    commands = {
+        "serve": _main_serve,
+        "daemon": _main_daemon,
+        "mcp-login": _main_mcp_login,
+        "terminal": _main_terminal,
+        "terminal-agent": _main_terminal_agent,
+    }
+    if argv and argv[0] in commands:
+        return commands[argv[0]](argv[1:])
     if argv and argv[0] in {"pair", "unpair", "devices"}:
         return _main_devices(argv[0], argv[1:])
-    if argv and argv[0] == "terminal":
-        return _main_terminal(argv[1:])
     return _main_oneshot(argv)
 
 

@@ -59,6 +59,11 @@ AGENT_LABEL = "com.allen.jarvis"
 # surface crash never touches the daemon. Installed and removed together.
 RESONANCE_LABEL = "com.allen.jarvis.resonance"
 
+# ADR 0170 / 0183: a Mac that is a terminal of a remote brain runs
+# ``jarvis terminal --voice --serve-ui`` under this agent instead of the
+# daemon. The two are exclusive (one microphone, one 127.0.0.1:8006).
+TERMINAL_LABEL = "com.allen.jarvis.terminal"
+
 # Stamped into the plist's ``EnvironmentVariables`` and read back by
 # :func:`spawned_by_agent`. The D1 manual-serve guard keys on the plist
 # EXISTING, but launchd's own child runs the very same
@@ -118,6 +123,10 @@ class SurfaceInvalidError(LaunchdError):
     """``node`` or the Resonance build inputs are missing (ADR-0015 D3)."""
 
 
+class DaemonLoadedError(LaunchdError):
+    """The daemon agent is loaded, and a terminal agent cannot share its Mac (ADR 0183)."""
+
+
 class ManualDaemonRunningError(LaunchdError):
     """``daemon.lock`` is held by a process launchd did not spawn (ADR-0015 D3)."""
 
@@ -160,6 +169,26 @@ class UninstallResult:
     steps: tuple[LaunchctlResult, ...]
     resonance_plist_path: Path | None = None
     resonance_plist_removed: bool = False
+
+
+@dataclass(frozen=True)
+class TerminalInstallResult:
+    """Outcome of :func:`install_terminal`."""
+
+    plist_path: Path
+    logs_dir: Path
+    interpreter: Path
+    plist_changed: bool
+    steps: tuple[LaunchctlResult, ...]
+
+
+@dataclass(frozen=True)
+class TerminalUninstallResult:
+    """Outcome of :func:`uninstall_terminal`."""
+
+    plist_path: Path
+    plist_removed: bool
+    steps: tuple[LaunchctlResult, ...]
 
 
 @dataclass(frozen=True)
@@ -270,6 +299,21 @@ def spawned_by_agent() -> bool:
     return os.environ.get(AGENT_ENV_MARKER) == AGENT_LABEL
 
 
+def spawned_by_terminal_agent() -> bool:
+    """True iff this process was exec'd by the terminal LaunchAgent (ADR 0183).
+
+    Same marker as :func:`spawned_by_agent`, with the terminal's label: it is what
+    tells a terminal that something respawns it, so ``POST /inherent/restart`` can
+    end it.
+    """
+    return os.environ.get(AGENT_ENV_MARKER) == TERMINAL_LABEL
+
+
+def terminal_plist_path(agents_dir: Path | None = None) -> Path:
+    """Absolute path of the terminal agent's plist file."""
+    return launch_agents_dir(agents_dir) / f"{TERMINAL_LABEL}.plist"
+
+
 def gui_domain() -> str:
     """The launchd user domain for the current uid (``gui/501``)."""
     return f"gui/{os.getuid()}"
@@ -278,6 +322,11 @@ def gui_domain() -> str:
 def service_target() -> str:
     """Fully-qualified service target (``gui/501/com.allen.jarvis``)."""
     return f"{gui_domain()}/{AGENT_LABEL}"
+
+
+def terminal_service_target() -> str:
+    """Fully-qualified terminal service target (``gui/501/com.allen.jarvis.terminal``)."""
+    return f"{gui_domain()}/{TERMINAL_LABEL}"
 
 
 def resonance_dir(working_directory: Path | None = None) -> Path:
@@ -397,6 +446,42 @@ def render_plist(
         "ThrottleInterval": _THROTTLE_INTERVAL_S,
         "StandardOutPath": str(logs / "daemon.out.log"),
         "StandardErrorPath": str(logs / "daemon.err.log"),
+    }
+    return plistlib.dumps(spec, sort_keys=True).decode("utf-8")
+
+
+def render_terminal_plist(
+    *,
+    brain_url: str,
+    interpreter: Path | None = None,
+    working_directory: Path | None = None,
+    runtime_root: Path | None = None,
+) -> str:
+    """Render the terminal agent's plist XML (ADR 0183).
+
+    ``python -m jarvis terminal --brain <url> --voice --serve-ui`` under the same
+    ``KeepAlive`` rules as the daemon's agent. The brain token is read from the
+    runtime root's own ``brain-token`` file at start, so it never lands in the plist.
+    """
+    interp = interpreter if interpreter is not None else default_interpreter()
+    workdir = working_directory if working_directory is not None else repo_root()
+    logs = logs_dir(runtime_root)
+    spec: dict[str, object] = {
+        "Label": TERMINAL_LABEL,
+        "ProgramArguments": [
+            str(interp), "-m", "jarvis", "terminal",
+            "--brain", brain_url, "--voice", "--serve-ui",
+        ],
+        "WorkingDirectory": str(workdir),
+        "EnvironmentVariables": {
+            AGENT_ENV_MARKER: TERMINAL_LABEL,
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin:/usr/sbin:/sbin"),
+        },
+        "RunAtLoad": True,
+        "KeepAlive": True,
+        "ThrottleInterval": _THROTTLE_INTERVAL_S,
+        "StandardOutPath": str(logs / "terminal.out.log"),
+        "StandardErrorPath": str(logs / "terminal.err.log"),
     }
     return plistlib.dumps(spec, sort_keys=True).decode("utf-8")
 
@@ -641,6 +726,70 @@ def install(
         resonance_plist_changed=surface_changed,
         node=node_bin,
     )
+
+
+def install_terminal(
+    brain_url: str,
+    *,
+    interpreter: Path | None = None,
+    working_directory: Path | None = None,
+    runtime_root: Path | None = None,
+    agents_dir: Path | None = None,
+) -> TerminalInstallResult:
+    """Validate, write the terminal agent's plist, and (re-)bootstrap it. Idempotent.
+
+    A terminal and the daemon cannot share a Mac: both open the one microphone and
+    listen on 127.0.0.1:8006. So this refuses, before anything is written, while the
+    daemon agent is loaded; ``jarvis daemon uninstall`` first, and
+    :func:`uninstall_terminal` is the way back.
+
+    Raises:
+        InterpreterInvalidError: The interpreter cannot import jarvis.
+        GuiSessionUnavailableError: No launchd user domain for this uid.
+        DaemonLoadedError: ``com.allen.jarvis`` is loaded.
+        LaunchdError: ``bootstrap`` or ``enable`` failed for another reason.
+    """
+    interp = interpreter if interpreter is not None else default_interpreter()
+    workdir = working_directory if working_directory is not None else repo_root()
+    validate_interpreter(interp, working_directory=workdir)
+    if not gui_session_available():
+        raise GuiSessionUnavailableError(gui_session_message())
+    if _launchctl("print", service_target()).ok:
+        msg = (
+            f"{AGENT_LABEL} is loaded: it holds this Mac's microphone and 127.0.0.1:8006, "
+            "which a terminal needs. Run `jarvis daemon uninstall` first; "
+            "`jarvis terminal-agent uninstall` gives the Mac back to it."
+        )
+        raise DaemonLoadedError(msg)
+    logs = logs_dir(runtime_root)
+    logs.mkdir(parents=True, exist_ok=True)
+    target = terminal_plist_path(agents_dir)
+    changed = _write_plist(
+        target,
+        render_terminal_plist(
+            brain_url=brain_url, interpreter=interp, working_directory=workdir,
+            runtime_root=runtime_root,
+        ),
+    )
+    steps: list[LaunchctlResult] = []
+    _bootstrap(target, terminal_service_target(), steps)
+    return TerminalInstallResult(
+        plist_path=target, logs_dir=logs, interpreter=interp, plist_changed=changed,
+        steps=tuple(steps),
+    )
+
+
+def uninstall_terminal(*, agents_dir: Path | None = None) -> TerminalUninstallResult:
+    """``bootout`` the terminal agent and delete its plist; the Mac can run the daemon again.
+
+    A non-zero ``bootout`` means the job was not loaded, which is a successful removal too.
+    """
+    steps = (_launchctl("bootout", terminal_service_target()),)
+    target = terminal_plist_path(agents_dir)
+    removed = target.is_file()
+    if removed:
+        target.unlink()
+    return TerminalUninstallResult(plist_path=target, plist_removed=removed, steps=steps)
 
 
 def uninstall(*, agents_dir: Path | None = None, remove_plist: bool = True) -> UninstallResult:
@@ -912,6 +1061,8 @@ __all__ = [
     "AGENT_ENV_MARKER",
     "AGENT_LABEL",
     "RESONANCE_LABEL",
+    "TERMINAL_LABEL",
+    "DaemonLoadedError",
     "DaemonStatus",
     "GuiSessionUnavailableError",
     "InstallResult",
@@ -922,6 +1073,8 @@ __all__ = [
     "ManualDaemonRunningError",
     "SurfaceInvalidError",
     "SurfaceStatus",
+    "TerminalInstallResult",
+    "TerminalUninstallResult",
     "UninstallResult",
     "default_node",
     "format_status",
@@ -929,19 +1082,25 @@ __all__ = [
     "gui_session_available",
     "gui_session_message",
     "install",
+    "install_terminal",
     "is_agent_installed",
     "logs_dir",
     "plist_path",
     "render_plist",
     "render_resonance_plist",
+    "render_terminal_plist",
     "resonance_dir",
     "resonance_plist_path",
     "resonance_service_target",
     "restart",
     "service_target",
     "spawned_by_agent",
+    "spawned_by_terminal_agent",
     "status",
+    "terminal_plist_path",
+    "terminal_service_target",
     "uninstall",
+    "uninstall_terminal",
     "validate_interpreter",
     "validate_surface",
 ]

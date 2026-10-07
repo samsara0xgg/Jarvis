@@ -44,7 +44,7 @@ from zoneinfo import ZoneInfo
 
 import uvicorn
 
-from jarvis.deployment.launchd import spawned_by_agent
+from jarvis.deployment.launchd import spawned_by_terminal_agent
 from jarvis.deployment.models import default_sensevoice_dir, default_silero_vad_path
 from jarvis.execution.path_resolver import resolve as resolve_file_entity
 from jarvis.execution.tools import (
@@ -760,7 +760,7 @@ def _ui_device(
                 Settings(ui.runtime_root, ui.config, _audio_devices, _default_audio_device),
             )
         ),
-        restart=_restart_soon if spawned_by_agent() else None,
+        restart=_restart_soon if spawned_by_terminal_agent() else None,
         dictation=None if speaking is None else lambda: _dictation_of(speech()),
         speaks=lambda: speech().pipeline is not None,
     )
