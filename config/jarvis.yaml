@@ -412,10 +412,11 @@ dashboard:
     enabled: false
   # ADR 0174.  On: the Dashboard tells the daemon which page, tab, open item and (up to ten)
   # rows are on screen, one Dashboard line carries them to the model, and show_on_dashboard
-  # lets her turn its pages.  The mail page needs this too (its open letter comes from it).
-  # Off here: POST /inherent/view answers 404, no line reaches the model, no tool is registered.
+  # lets her turn its pages.  The mail page needs this too (its open letter comes from it),
+  # so it is on here: off breaks a mail page that is on.  Off: POST /inherent/view answers
+  # 404, no line reaches the model, no tool is registered.
   view:
-    enabled: false
+    enabled: true
 
 # ADR 0125.  When a coding-agent session (Startrail's host, or a terminal Claude Code
 # session on the daemon's board) finishes a turn, ask Jev (through OpenRouter) whether the

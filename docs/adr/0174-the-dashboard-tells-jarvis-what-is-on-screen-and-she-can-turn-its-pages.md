@@ -66,7 +66,8 @@ move it:
   turn while the panel is open, not just the open letter's subject.
 - Another `live_context` producer runs at the start of every turn, and the state block can
   grow by 1200 characters.
-- The mail page's focus route is retired: the companion and daemon must ship together.
+- The mail page's focus route is retired: the companion and daemon must ship together,
+  and the mail page now needs the view switch too, so the switch ships on.
 - An id from a turn whose results have scrolled out of the view can no longer be opened
   by name; she must turn to the page and pick from its rows.
 - Pages whose rows are not addressable today (the "现在" timeline, usage rings) report

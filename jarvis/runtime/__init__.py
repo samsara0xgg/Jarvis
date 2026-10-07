@@ -1274,7 +1274,7 @@ def _dashboard_mail(config: Mapping[str, Any]) -> bool:
 
 
 def _dashboard_view(config: Mapping[str, Any]) -> bool:
-    """``dashboard.view.enabled`` (ADR 0174): the shell reports its view; off unless true."""
+    """``dashboard.view.enabled`` (ADR 0174): the shell reports its view."""
     return _dashboard_switch(config, "view")
 
 
