@@ -321,13 +321,14 @@ def test_voice_suffix_beyond_the_committed_chunks_is_one_more_prepared_segment(
 # --- L5 media owner: speak from the first permitted segment ------------------
 
 
-def _pipeline(
+def _pipeline(  # noqa: PLR0913 - one knob per pipeline option a test sets
     db_path: Path,
     provider: _FakeProvider,
     *,
     speak_from_segments: bool,
     response_timeout_s: float | None = None,
     broadcaster: _RecordingBroadcaster | None = None,
+    silent_intent_channels: frozenset[str] = frozenset(),
 ) -> tuple[voice_media.StreamingTTSPipeline, voice_tts.AudioStreamPlayer]:
     player = _player()
     config = replace(_config(), speak_from_segments=speak_from_segments)
@@ -341,6 +342,7 @@ def _pipeline(
         config=config,
         broadcaster=broadcaster,
         start_player=False,
+        silent_intent_channels=silent_intent_channels,
     )
     return pipeline, player
 
@@ -597,6 +599,52 @@ def test_queue_review_open_never_starts_playback(tmp_path: Path) -> None:
     conn = open_event_log(db_path)
     try:
         assert _rows(conn, "surface.playback_started", "RQ") == []
+    finally:
+        conn.close()
+
+
+def test_a_typed_turn_the_watcher_dropped_is_not_replayed_by_the_next_spoken_turn(
+    tmp_path: Path,
+) -> None:
+    """ADR 0181: the ordered drain crosses a dropped typed turn's rows; it must not play them."""
+    db_path = tmp_path / "typed.db"
+    conn = open_event_log(db_path)
+    pipeline, player = _pipeline(
+        db_path,
+        _FakeProvider(candidate_count=1),
+        speak_from_segments=False,
+        silent_intent_channels=inherent_loop._TTS_SILENT_CHANNELS,  # noqa: SLF001
+    )
+    try:
+        emit_event(
+            conn,
+            type="surface.user_intent",
+            payload={"channel": "cli_stdin", "turn_id": "T-RTYPED", "transcript": "t"},
+        )
+        # Committed, as the watcher saw them, but never submitted: it dropped the turn.
+        _open(conn, "RTYPED", attention_channel="voice_notify")
+        _chunk(conn, "RTYPED", 0, _SEGMENTS[0])
+        _emitted(conn, "RTYPED", _SEGMENTS[0])
+        emit_event(
+            conn,
+            type="surface.user_intent",
+            payload={"channel": "inherent_ptt", "turn_id": "T-RSPOKEN", "transcript": "s"},
+        )
+        spoken = [
+            _open(conn, "RSPOKEN", attention_channel="voice_notify"),
+            _chunk(conn, "RSPOKEN", 0, _SEGMENTS[0]),
+            _emitted(conn, "RSPOKEN", _SEGMENTS[0]),
+        ]
+        with _CallbackPump(player):
+            asyncio.run(_submit_response(pipeline, spoken))
+            assert pipeline.wait_until_idle(timeout_s=2.0)
+    finally:
+        assert pipeline.close()
+        conn.close()
+    conn = open_event_log(db_path)
+    try:
+        assert _rows(conn, "surface.playback_started", "RTYPED") == []
+        assert len(_rows(conn, "surface.playback_started", "RSPOKEN")) == 1
     finally:
         conn.close()
 

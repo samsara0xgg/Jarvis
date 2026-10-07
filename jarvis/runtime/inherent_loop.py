@@ -205,6 +205,7 @@ from jarvis.state.event_log import (
     open_event_log,
     open_runtime_event_log,
     read_log_epoch,
+    turn_intent_channel,
 )
 from jarvis.state.input_claim import (
     REALTIME_INTENT_CONSUMER,
@@ -805,34 +806,6 @@ def _fetch_response_events_after(
     return [_row_to_id_event(row) for row in cursor]
 
 
-_SELECT_TURN_INTENT_CHANNEL_SQL = (
-    "SELECT json_extract(payload_json, '$.channel') FROM events "
-    "WHERE type = 'surface.user_intent' "
-    "AND json_extract(payload_json, '$.turn_id') = ? LIMIT 1"
-)
-
-
-def _turn_intent_channel(conn: sqlite3.Connection, turn_id: str) -> str | None:
-    """The channel ``turn_id`` was submitted on, from its ``surface.user_intent``.
-
-    The intent channel (``gpt_live``, the v2 surface label, ...) never reaches
-    the ``surface.response_open`` header. That row carries its own ``channel``
-    key, but it holds the PRESENTATION split — ``both`` / ``speech`` /
-    ``document``, computed in ``cli_render`` from which text slices are
-    non-empty — so a consumer that must suppress a whole turn by where the turn
-    came from has to read the submission row instead.
-
-    ``None`` when the turn has no submission row at all (a reconciliation or
-    supervisor-sweep turn), which keeps :func:`_drop_for_silent_channel`'s
-    opt-in-by-explicit-label default: unknown origin is not silent.
-    """
-    if not turn_id:
-        return None
-    row = conn.execute(_SELECT_TURN_INTENT_CHANNEL_SQL, (turn_id,)).fetchone()
-    channel = row[0] if row is not None else None
-    return channel if isinstance(channel, str) else None
-
-
 def _drop_for_silent_channel(  # noqa: PLR0913 - two verdict sources, one bookkeeping set
     event: Event,
     *,
@@ -856,7 +829,7 @@ def _drop_for_silent_channel(  # noqa: PLR0913 - two verdict sources, one bookke
     none of it is.
 
     ``intent_channel`` is the second, parallel source of that verdict: the
-    caller's :func:`_turn_intent_channel` lookup, supplied on the open only.
+    caller's :func:`turn_intent_channel` lookup, supplied on the open only.
     Either label matching ``silent_channels`` suppresses the turn, so a
     consumer can silence a turn by its L3 routing verdict (ADR-0009 D4) or by
     where it was submitted from (ADR-0016 D8) through one mechanism. Callers
@@ -1742,7 +1715,7 @@ async def _tts_watcher(  # noqa: C901, PLR0912 - ordered durable dispatch FSM
                         silent_channels=_TTS_SILENT_CHANNELS,
                         consumer="tts_watcher",
                         intent_channel=(
-                            _turn_intent_channel(conn, turn_id)
+                            turn_intent_channel(conn, turn_id)
                             if ev.type == "surface.response_open"
                             else None
                         ),
@@ -2994,6 +2967,7 @@ def _build_tts_pipeline(  # noqa: C901, PLR0913, PLR0915 - rollout/degradation c
                 foreground_decision_callable=make_foreground_decision_callable(
                     wait_for_lane=runtime.response_flags.slow_results,
                 ),
+                silent_intent_channels=_TTS_SILENT_CHANNELS,
             )
         except voice_media.StreamingMediaStartupError as exc:
             if not exc.legacy_fallback_safe:
@@ -3084,7 +3058,7 @@ class _SpokenCursor:
                 silent_channels=_TTS_SILENT_CHANNELS,
                 consumer="terminal_speech",
                 intent_channel=(
-                    _turn_intent_channel(self._conn, turn_id)
+                    turn_intent_channel(self._conn, turn_id)
                     if event.type == "surface.response_open"
                     else None
                 ),

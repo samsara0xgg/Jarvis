@@ -1844,6 +1844,34 @@ def iter_events_for_turn(
         yield _row_to_event(row)
 
 
+_SELECT_TURN_INTENT_CHANNEL_SQL = (
+    "SELECT json_extract(payload_json, '$.channel') FROM events "
+    "WHERE type = 'surface.user_intent' "
+    "AND json_extract(payload_json, '$.turn_id') = ? LIMIT 1"
+)
+
+
+def turn_intent_channel(conn: sqlite3.Connection, turn_id: str) -> str | None:
+    """The channel ``turn_id`` was submitted on, from its ``surface.user_intent``.
+
+    The intent channel (``gpt_live``, the v2 surface label, ...) never reaches
+    the ``surface.response_open`` header. That row carries its own ``channel``
+    key, but it holds the PRESENTATION split — ``both`` / ``speech`` /
+    ``document``, computed in ``cli_render`` from which text slices are
+    non-empty — so a consumer that must suppress a whole turn by where the turn
+    came from has to read the submission row instead.
+
+    ``None`` when the turn has no submission row at all (a reconciliation or
+    supervisor-sweep turn), which keeps the silent-channel filters'
+    opt-in-by-explicit-label default: unknown origin is not silent.
+    """
+    if not turn_id:
+        return None
+    row = conn.execute(_SELECT_TURN_INTENT_CHANNEL_SQL, (turn_id,)).fetchone()
+    channel = row[0] if row is not None else None
+    return channel if isinstance(channel, str) else None
+
+
 __all__ = [
     "CommittedEventBus",
     "DanglingSourceEventError",
@@ -1864,4 +1892,5 @@ __all__ = [
     "iter_events_for_turn",
     "iter_events_of_types",
     "open_event_log",
+    "turn_intent_channel",
 ]

@@ -31,7 +31,7 @@ import numpy as np
 
 from jarvis.shared import Event, lang
 from jarvis.shared.realtime_trace import record_realtime_trace
-from jarvis.state.event_log import emit_event
+from jarvis.state.event_log import emit_event, turn_intent_channel
 from jarvis.state.lifecycle_terminal import terminalize_playback
 from jarvis.surface.tts_silence import SilenceTrimConfig, SilenceTrimmer
 from jarvis.surface.voice_ledger import (
@@ -670,6 +670,7 @@ class StreamingTTSPipeline:
         ducker: SystemAudioDucker | None = None,
         foreground_decision_callable: Callable[[str, int, str, int], str] | None = None,
         start_player: bool = True,
+        silent_intent_channels: frozenset[str] = frozenset(),
     ) -> None:
         """Start one persistent actor without letting stuck startup pin exit."""
         self._provider = provider
@@ -680,6 +681,7 @@ class StreamingTTSPipeline:
         self._ducker = ducker
         self._foreground_decision = foreground_decision_callable
         self._start_player = start_player
+        self._silent_intent_channels = silent_intent_channels
         self._registry = ActivePlaybackRegistry(
             boot_high_water_id=boot_high_water_id,
         )
@@ -2369,7 +2371,14 @@ class StreamingTTSPipeline:
                 "system power transition suspended output",
             )
         if event.type == "surface.response_open":
-            if payload.get("attention_channel") in _TTS_SILENT_CHANNELS:
+            # The drain replays every row up to the submitted one, including those of a
+            # turn the watcher refused to submit, so the verdict is read here too: by
+            # where the turn was submitted from, which the open header never carries.
+            if payload.get("attention_channel") in _TTS_SILENT_CHANNELS or (
+                self._silent_intent_channels
+                and turn_intent_channel(self._require_conn(), str(payload.get("turn_id", "")))
+                in self._silent_intent_channels
+            ):
                 self._registry.terminalize(response_id)
                 return outcome
             response_group_raw = payload.get("response_group_id")
