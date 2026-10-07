@@ -1,0 +1,38 @@
+---
+import { getCollection } from 'astro:content';
+import { CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+interface Props {
+  lang: 'en' | 'zh-cn';
+}
+const { lang } = Astro.props;
+
+// Order of the tour; titles and descriptions come from each page's own frontmatter.
+const order = [
+  'meet-her',
+  'talking',
+  'today',
+  'agents',
+  'memory',
+  'mail',
+  'proactive',
+  'usage',
+  'plugins',
+  'try-the-demo',
+];
+const prefix = lang === 'en' ? '' : `${lang}/`;
+const docs = await getCollection('docs');
+const cards = order.map((slug) => {
+  const entry = docs.find((d) => d.id === `${prefix}features/${slug}`);
+  if (!entry) throw new Error(`Missing feature page: ${prefix}features/${slug}`);
+  return {
+    title: entry.data.title,
+    description: entry.data.description,
+    href: `${import.meta.env.BASE_URL}/${prefix}features/${slug}/`,
+  };
+});
+---
+
+<CardGrid>
+  {cards.map((c) => <LinkCard title={c.title} description={c.description} href={c.href} />)}
+</CardGrid>

@@ -1,0 +1,30 @@
+---
+import StarlightPage from '@astrojs/starlight/components/StarlightPage.astro';
+import { getCollection, render } from 'astro:content';
+import { GITHUB_ADR_TREE } from '../lib/adr';
+
+interface Props {
+  lang: 'en' | 'zh-cn';
+  id: string;
+}
+const { lang, id } = Astro.props;
+const entry = (await getCollection('adr')).find((a) => a.id === id)!;
+const { Content, headings } = await render(entry);
+const prefix = lang === 'en' ? '' : `${lang}/`;
+const indexHref = `${import.meta.env.BASE_URL}/${prefix}architecture/decisions/`;
+---
+
+<StarlightPage frontmatter={{ title: entry.data.title }} headings={headings}>
+  <div lang="en">
+    {lang !== 'en' && <p><em>This decision record is in English only.</em></p>}
+    <p>
+      <strong>Status:</strong> {entry.data.status} · <strong>Date:</strong> {entry.data.date}
+    </p>
+    <Content />
+    <hr />
+    <p>
+      <a href={indexHref}>Back to decisions</a> ·
+      <a href={GITHUB_ADR_TREE}>All decision records on GitHub</a>
+    </p>
+  </div>
+</StarlightPage>

@@ -1,0 +1,11 @@
+---
+import AdrPage from '../../../../components/AdrPage.astro';
+import { getCollection } from 'astro:content';
+
+export async function getStaticPaths() {
+  return (await getCollection('adr')).map((entry) => ({ params: { id: entry.id } }));
+}
+const { id } = Astro.params;
+---
+
+<AdrPage lang="zh-cn" id={id!} />
