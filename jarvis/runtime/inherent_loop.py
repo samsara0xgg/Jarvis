@@ -4806,12 +4806,20 @@ def _job_mail_deps(job_mail: JobMail | None) -> dict[str, Any]:
     async def flag(message_id: str, reaction: str) -> None:
         await asyncio.to_thread(job_mail.flag, message_id, reaction)
 
+    async def application_add(fields: dict[str, Any]) -> str:
+        return await asyncio.to_thread(job_mail.add_application, fields)
+
+    async def application_edit(app_id: str, fields: dict[str, Any]) -> None:
+        await asyncio.to_thread(job_mail.edit_application, app_id, fields)
+
     return {
         "notices_read": functools.partial(asyncio.to_thread, job_mail.notices),
         "notice_act": act,
         "jobs_read": functools.partial(asyncio.to_thread, job_mail.ledger),
         "job_delete": delete,
         "job_flag": flag,
+        "application_add": application_add,
+        "application_edit": application_edit,
     }
 
 

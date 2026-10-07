@@ -332,11 +332,11 @@ home:
       enabled: false
 
 # ADR 0155 — job-hunt mail.  In the background, every poll_s, Jarvis lists the last backfill_days
-# of Allen's Gmail (every category, no-reply senders included; spam, trash, sent and drafts
-# excluded) with gmail_search and gmail_get only: nothing is ever modified, labelled,
-# trashed or sent.  Jev (TypeSafe's hosted decision model, through OpenRouter, requests carry
-# provider.zdr: true) first sees each new letter's sender display name, the domain of its
-# address and its subject; at probability >= header_skip_at that it is not job mail the letter
+# (or every day since backfill_since) of Allen's Gmail (every category, no-reply senders
+# included; spam, trash, sent and drafts excluded) with gmail_search and gmail_get only:
+# nothing is ever modified, labelled, trashed or sent.  Jev (TypeSafe's hosted decision model,
+# through OpenRouter, requests carry provider.zdr: true) first sees each new letter's sender
+# display name, the domain of its address and its subject; at probability >= header_skip_at that it is not job mail the letter
 # is done.  Otherwise Jev also sees the first max_body_chars of its plain-text body and types
 # it (offer, interview, rejection, receipt, other job mail).  Only typed facts are kept in
 # memory.db (never the body, never an address); the Jev log keeps what Jev was sent.  A
@@ -354,6 +354,9 @@ job_mail:
   enabled: false
   poll_s: 300
   backfill_days: 14
+  # 2026-10-06 (Allen): read mail back to this day (ADR 0177), paging through the search; it
+  # replaces backfill_days.  null goes back to the last backfill_days.
+  backfill_since: 2026-09-10
   max_messages_per_cycle: 25
   header_skip_at: 0.9
   body_min: 0.5

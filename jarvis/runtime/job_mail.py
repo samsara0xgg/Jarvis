@@ -16,7 +16,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from email.utils import parseaddr
 from typing import TYPE_CHECKING, Any, Final
 
@@ -45,7 +45,14 @@ LOGGER = logging.getLogger(__name__)
 # The only Gmail tools this module may call; a mail is read, never changed.
 READ_ONLY_TOOLS: Final[frozenset[str]] = frozenset({"gmail_search", "gmail_get"})
 _QUERY: Final[str] = "newer_than:{days}d -in:sent -in:drafts"
+# ``backfill_since`` replaces the window with a fixed date (ADR 0177).
+_QUERY_SINCE: Final[str] = "after:{day:%Y/%m/%d} -in:sent -in:drafts"
 _SEARCH_LIMIT: Final[int] = 100
+# At most this many result pages are read in one cycle.
+# ponytail: every poll re-lists the pages of mail already seen, newest first, before it reaches an
+# unseen id; once the backfill is done that is up to this many cheap searches each cycle. Upgrade:
+# keep the oldest received date scanned and search ``after:`` it instead of the fixed date.
+_MAX_PAGES: Final[int] = 30
 _IGNORED_AFTER: Final[timedelta] = timedelta(minutes=30)
 _REACTIONS: Final[frozenset[str]] = frozenset({"right", "dismissed"})
 _ALERT_LEVELS: Final[frozenset[str]] = frozenset({"card", "card_sound", "speak"})
@@ -81,6 +88,8 @@ class JobMailSettings:
     linkedin_alerts: str
     # Sender domains kept out of job mail: held back before Jev is asked, rows hidden (ADR 0171).
     exclude_domains: tuple[str, ...]
+    # A fixed first day of mail to read, instead of the last ``backfill_days`` (ADR 0177).
+    backfill_since: date | None = None
 
 
 def gmail_read(servers: McpServers, tool: str, args: Mapping[str, Any]) -> dict[str, Any]:
@@ -181,23 +190,42 @@ class JobMail:
             self._warn_once("no_gmail", "the gmail server is not connected; nothing is read")
             self._failed(exc)
             return 0
-        query = {
-            "query": _QUERY.format(days=self._settings.backfill_days),
-            "maxResults": _SEARCH_LIMIT,
-        }
         try:
-            hits = gmail_read(servers, "gmail_search", query).get("messages") or []
+            fresh = self._unseen(servers)
         except Exception as exc:
             self._failed(exc)
             raise
         self._failures, self._last_ok = 0, now
         ledger.resolve_health(self._db)  # a recovery is silent and clears the old down card
-        seen = ledger.seen_ids(self._db)
-        fresh = [str(h["id"]) for h in hits if str(h["id"]) not in seen]
-        fresh = fresh[: min(self._settings.max_messages_per_cycle, self._jev.room())]
         if not fresh:
             return 0
         return self._settle(servers, fresh, now)
+
+    def _unseen(self, servers: McpServers) -> list[str]:
+        """The newest ids not triaged yet, paged until a cycle's worth is found or the pages end."""
+        settings = self._settings
+        since = settings.backfill_since
+        query = (
+            _QUERY.format(days=settings.backfill_days)
+            if since is None
+            else _QUERY_SINCE.format(day=since)
+        )
+        seen = ledger.seen_ids(self._db)
+        want = min(settings.max_messages_per_cycle, self._jev.room())
+        fresh: list[str] = []
+        page = ""
+        for _ in range(_MAX_PAGES):
+            args: dict[str, Any] = {"query": query, "maxResults": _SEARCH_LIMIT}
+            if page:
+                args["pageToken"] = page
+            reply = gmail_read(servers, "gmail_search", args)
+            fresh += [
+                str(h["id"]) for h in reply.get("messages") or [] if str(h["id"]) not in seen
+            ]
+            page = str(reply.get("nextPageToken") or "")
+            if len(fresh) >= want or not page:
+                break
+        return list(dict.fromkeys(fresh))[:want]  # a mail arriving mid-listing shifts a page
 
     def _settle(self, servers: McpServers, ids: list[str], now: datetime) -> int:
         verdicts: dict[str, str] = {}
@@ -269,10 +297,13 @@ class JobMail:
         """Hold back the heads of ``exclude_domains`` by a local rule; return the others (ADR 0171).
 
         No Jev call is spent on them; their bodies are already read and kept like any scan's.
+        LinkedIn's "your application was sent to X" mail is the exception (ADR 0177).
         """
         left = []
         for head in heads:
-            if triage.is_excluded(head.domain, self._settings.exclude_domains):
+            if triage.is_excluded(
+                head.domain, self._settings.exclude_domains
+            ) and not triage.is_application_sent(head.domain, head.subject):
                 snap(head.message_id, "rule", "not_job", head, judge=_EXCLUDE_JUDGE)
                 verdicts[head.message_id] = "not_job"
             else:
@@ -575,7 +606,7 @@ class JobMail:
             ledger.mark_alert(self._db, alert["id"], "done", now)
 
     def ledger(self) -> dict[str, Any]:
-        """``GET /inherent/jobs``: the ledger by company, the newest held-back mail, and the rules.
+        """``GET /inherent/jobs``: the ledger by company, the applications, held-back mail, rules.
 
         ``rules`` are the standing alert rules in force, for the ledger page to show (ADR 0158).
         """
@@ -587,6 +618,7 @@ class JobMail:
             )
         return {
             "ledger": [{**g, **job_time.spent_view(found, g["company"])} for g in groups],
+            "applications": ledger.list_applications(self._db, now),
             "job_site_other_s": 0 if found is None else round(found["other_s"]),
             "skipped": ledger.list_skipped(self._db),
             "rules": [
@@ -598,6 +630,14 @@ class JobMail:
                 ),
             ],
         }
+
+    def add_application(self, fields: Mapping[str, Any]) -> str:
+        """``POST /inherent/jobs/applications``: Allen's own row; returns its id (400 if bad)."""
+        return ledger.add_application(self._db, self.now(), **fields)
+
+    def edit_application(self, app_id: str, fields: Mapping[str, Any]) -> None:
+        """``POST /inherent/jobs/applications/{id}``: his edit; an unknown id is a LookupError."""
+        ledger.edit_application(self._db, self.now(), app_id, fields)
 
     def flag(self, message_id: str, reaction: str) -> None:
         """``POST /inherent/jobs/{id}/flag``: Allen says a held-back mail was job mail after all.
@@ -650,8 +690,9 @@ def repair(db: Path, linkedin_alerts: str, exclude_domains: tuple[str, ...] = ()
     longer read from it, is cleared; a role the subject does not hold was read from the body and
     stays. LinkedIn social mail is hidden and shown as held back, an account notice becomes kind
     ``other``, and the pending alerts of a mail that is now ledger only, ``other`` or hidden end
-    as done. A row whose domain is in ``exclude_domains`` is hidden the same way (ADR 0171). A mail
-    Allen flagged is never touched by the routing rules.
+    as done. A row whose domain is in ``exclude_domains`` is hidden the same way (ADR 0171), except
+    a LinkedIn "your application was sent to X" row (ADR 0177). A mail Allen flagged is never
+    touched by the routing rules.
     """
     changed = 0
     for row in ledger.mail_rows(db):
@@ -673,7 +714,9 @@ def repair(db: Path, linkedin_alerts: str, exclude_domains: tuple[str, ...] = ()
         )
         if not ledger.is_flagged(db, message_id):
             quiet = False  # whether its pending alerts must go
-            kept_out = triage.is_excluded(domain, exclude_domains)
+            kept_out = triage.is_excluded(
+                domain, exclude_domains
+            ) and not triage.is_application_sent(domain, subject)
             if not row["deleted"] and (kept_out or triage.is_social(domain, subject)):
                 _hold_back(db, row, _EXCLUDE_JUDGE if kept_out else _RULE_JUDGE)
                 fixes["deleted"], quiet = 1, True

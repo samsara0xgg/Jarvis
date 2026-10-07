@@ -650,6 +650,10 @@ class InherentDeps:
     jobs_read: Callable[[], Awaitable[dict[str, Any]]] | None = None
     job_delete: Callable[[str], Awaitable[None]] | None = None
     job_flag: Callable[[str, str], Awaitable[None]] | None = None
+    # ADR 0177: the tracker's own rows: add one (fields, returns its id) and edit one by id
+    # (the fields given); a ValueError is 400, an unknown id a LookupError (404).
+    application_add: Callable[[dict[str, Any]], Awaitable[str]] | None = None
+    application_edit: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None
     brief_read: Callable[[], dict[str, Any] | None] | None = None
     # ADR 0125: does a finished agent turn's ending ask Allen something? ``asks`` waits for Jev
     # (off the loop thread); ``peek`` never waits, for the terminal sessions' board. None = off.
@@ -1394,6 +1398,25 @@ class JobFlagRequest(BaseModel):
     reaction: str = Field(max_length=50)
 
 
+class JobApplicationRequest(BaseModel):
+    """Body of ``POST /inherent/jobs/applications`` (ADR 0177); ``applied_at`` is YYYY-MM-DD."""
+
+    company: str = Field(max_length=200)
+    role: str = Field(default="", max_length=200)
+    applied_at: str | None = Field(default=None, max_length=10)
+    status: str | None = Field(default=None, max_length=20)
+    note: str = Field(default="", max_length=2000)
+
+
+class JobApplicationEditRequest(BaseModel):
+    """Body of ``POST /inherent/jobs/applications/{id}``: only the fields sent are changed."""
+
+    status: str | None = Field(default=None, max_length=20)
+    applied_at: str | None = Field(default=None, max_length=10)
+    note: str | None = Field(default=None, max_length=2000)
+    hidden: bool | None = None
+
+
 def _register_job_routes(app: FastAPI, deps: InherentDeps) -> None:  # noqa: C901 — one closed route table.
     """ADR 0155: the job-mail notices and the job ledger; each route exists only when wired."""
     if deps.notices_read is not None:
@@ -1435,8 +1458,27 @@ def _register_job_routes(app: FastAPI, deps: InherentDeps) -> None:  # noqa: C90
 
         @app.get("/inherent/jobs")
         async def jobs() -> dict[str, Any]:
-            """``{ledger, skipped}``: job mail grouped by company; the newest held-back mail."""
+            """``{ledger, applications, skipped}``: job mail by company, the tracker, held back."""
             return await _home_call(jobs_read())
+
+    if deps.application_add is not None:
+        application_add = deps.application_add
+
+        @app.post("/inherent/jobs/applications", status_code=200)
+        async def application_add_route(req: JobApplicationRequest) -> dict[str, Any]:
+            """Add an application Allen made that has no mail; returns its id."""
+            return {"ok": True, "id": await _home_call(application_add(req.model_dump()))}
+
+    if deps.application_edit is not None:
+        application_edit = deps.application_edit
+
+        @app.post("/inherent/jobs/applications/{app_id}", status_code=200)
+        async def application_edit_route(
+            app_id: str, req: JobApplicationEditRequest
+        ) -> dict[str, bool]:
+            """Change an application's status, date, note or hidden; a bad status is a 400."""
+            await _home_call(application_edit(app_id, req.model_dump(exclude_unset=True)))
+            return {"ok": True}
 
     if deps.job_delete is not None:
         job_delete = deps.job_delete

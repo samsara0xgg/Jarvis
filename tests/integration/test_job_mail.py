@@ -13,7 +13,7 @@ import contextlib
 import json
 import sqlite3
 import threading
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from email.utils import format_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import TYPE_CHECKING, Any
@@ -237,6 +237,11 @@ ANSWERS: dict[str, tuple[dict[str, float], dict[str, float] | None]] = {
     ),
     "You appeared in 5 searches": (_odds(maybe_job=0.7, not_job=0.1), None),
     "Your profile was viewed 3 times": (_odds(maybe_job=0.7, not_job=0.1), None),
+    # ADR 0177: LinkedIn's Easy Apply confirmation is an application, not kept-out mail.
+    "Allen, your application was sent to Cambio Earth": (
+        _odds(job_related=0.95),
+        _odds(receipt=0.9),
+    ),
 }
 
 
@@ -300,6 +305,7 @@ class _Gmail:
         self.search_failures = 0
         self.search_error = "backend down"
         self.full_failures: set[str] = set()
+        self.page_size: int | None = None  # None: one page holds every mail
 
     def call(self, server: str, tool: str, args: Mapping[str, Any]) -> dict[str, Any]:
         assert server == "gmail"
@@ -308,8 +314,16 @@ class _Gmail:
             if self.search_failures:
                 self.search_failures -= 1
                 return {"text": json.dumps({"error": self.search_error})}
-            hits = [{"id": one["id"], "threadId": one["threadId"]} for one in self.mails]
-            return {"text": json.dumps({"messages": hits})}
+            start = int(args.get("pageToken") or 0)
+            size = self.page_size or len(self.mails)
+            hits = [
+                {"id": one["id"], "threadId": one["threadId"]}
+                for one in self.mails[start : start + size]
+            ]
+            reply: dict[str, Any] = {"messages": hits, "resultSizeEstimate": len(self.mails)}
+            if start + size < len(self.mails):
+                reply["nextPageToken"] = str(start + size)
+            return {"text": json.dumps(reply)}
         assert tool == "gmail_get", f"job mail must only read: {tool}"
         if args["format"] == "full" and args["messageId"] in self.full_failures:
             return {"text": json.dumps({"error": "message body unavailable"})}
@@ -319,6 +333,9 @@ class _Gmail:
 
     def tools(self) -> set[str]:
         return {tool for tool, _args in self.calls}
+
+    def searches(self) -> list[dict[str, Any]]:
+        return [args for tool, args in self.calls if tool == "gmail_search"]
 
     def full_reads(self) -> set[str]:
         return {a["messageId"] for t, a in self.calls if t == "gmail_get" and a["format"] == "full"}
@@ -1470,7 +1487,10 @@ def test_only_gmail_search_and_get_can_be_called() -> None:
         with pytest.raises(ValueError, match="only read"):
             gmail_read(gmail, tool, {})  # type: ignore[arg-type]
     assert gmail.calls == []
-    assert gmail_read(gmail, "gmail_search", {"query": "x"}) == {"messages": []}  # type: ignore[arg-type]
+    assert gmail_read(gmail, "gmail_search", {"query": "x"}) == {  # type: ignore[arg-type]
+        "messages": [],
+        "resultSizeEstimate": 0,
+    }
 
 
 def test_the_loop_polls_and_survives_a_failed_cycle(tmp_path: Path, jev: _Jev) -> None:
@@ -1512,6 +1532,7 @@ def test_off_by_default_no_routes_no_poller_and_bad_values_stop_boot(tmp_path: P
         "speak_gap_s": 600,
         "linkedin_alerts": "ledger_only",
         "exclude_domains": ["linkedin.com"],
+        "backfill_since": date(2026, 9, 10),
     }.items() <= block.items()
     config_path, db = tmp_path / "jarvis.yaml", tmp_path / "memory.db"
     connections: Any = _Connections(None)
@@ -1525,6 +1546,11 @@ def test_off_by_default_no_routes_no_poller_and_bad_values_stop_boot(tmp_path: P
     built = _job_mail(spaced, config_path, None, connections, db)
     assert built is not None
     assert built._settings.exclude_domains == ("linkedin.com",)  # noqa: SLF001
+    assert built._settings.backfill_since == date(2026, 9, 10)  # noqa: SLF001
+    undated = {"job_mail": {**on["job_mail"], "backfill_since": None}}
+    built = _job_mail(undated, config_path, None, connections, db)
+    assert built is not None
+    assert built._settings.backfill_since is None  # noqa: SLF001
     for key, value in (
         ("poll_s", 0),
         ("backfill_days", "14"),
@@ -1537,6 +1563,7 @@ def test_off_by_default_no_routes_no_poller_and_bad_values_stop_boot(tmp_path: P
         ("linkedin_alerts", "sometimes"),
         ("exclude_domains", "linkedin.com"),
         ("exclude_domains", [" "]),
+        ("backfill_since", "2026-09-10"),
         ("max_calls_per_day", None),
     ):
         bad = {"job_mail": {**block, "enabled": True, key: value}}
@@ -2229,3 +2256,217 @@ def test_the_repair_pass_hides_a_stored_profile_activity_row_and_rereads_the_cam
     assert pending == {"cambio", "flagged"}  # the hidden row's alert ended as done
     assert repair(h.db, "ledger_only") == 0
     assert h.gmail.calls == []
+
+
+def test_the_search_pages_back_to_a_fixed_day_and_stops_at_a_cycles_worth(
+    tmp_path: Path, jev: _Jev
+) -> None:
+    """``backfill_since`` replaces the window; pages are read until a cycle's worth is unseen."""
+    h = _harness(tmp_path, jev, max_messages_per_cycle=5, backfill_since=date(2026, 9, 10))
+    h.gmail.page_size = 4
+    h.job.poll_once()
+
+    searches = h.gmail.searches()
+    assert [one.get("pageToken") for one in searches] == [None, "4"]  # 4 + 4 unseen: it stops
+    assert {one["query"] for one in searches} == {"after:2026/09/10 -in:sent -in:drafts"}
+    assert h.gmail.full_reads() == {one["id"] for one in MAILS[:5]}  # newest first, five only
+    assert len(h.sql("SELECT 1 FROM job_seen")) == 5
+
+    h.job.poll_once()  # the first page is seen now: this cycle reads on to the pages after it
+    assert [one.get("pageToken") for one in h.gmail.searches()[2:]] == [None, "4", "8"]
+    assert len(h.sql("SELECT 1 FROM job_seen")) == 10  # five more; the eleventh waits
+    h.job.poll_once()
+    assert len(h.sql("SELECT 1 FROM job_seen")) == len(MAILS)
+
+
+def test_a_linkedin_application_sent_mail_is_job_mail_and_the_rest_of_linkedin_is_not(
+    tmp_path: Path, jev: _Jev
+) -> None:
+    """The Easy Apply confirmation is typed and named by its subject; repair does not hide it."""
+    sent = _mail(
+        "sent",
+        "LinkedIn <jobs-noreply@linkedin.com>",
+        "Allen, your application was sent to Cambio Earth",
+        "Your application was sent to Cambio Earth.",
+    )
+    assert triage.is_application_sent("linkedin.com", sent["subject"])
+    assert triage.is_application_sent("mail.linkedin.com", "Your application was sent to X Ltd.")
+    assert not triage.is_application_sent("cgi.com", sent["subject"])
+    assert not triage.is_application_sent("linkedin.com", "Jane, interview for the Co-op")
+    assert triage.company_of("LinkedIn", "linkedin.com", sent["subject"]) == "Cambio Earth"
+    h = _harness(tmp_path, jev, [sent, LINKEDIN[5]], exclude_domains=("linkedin.com",))
+    h.job.poll_once()
+
+    assert h.sql("SELECT message_id, kind, company FROM job_mail") == [
+        ("m-sent", "receipt", "Cambio Earth")
+    ]
+    assert [one["message_id"] for one in h.client.get("/inherent/jobs").json()["skipped"]] == [
+        "m-inmail"
+    ]
+
+    # An old row (company "LinkedIn") is renamed, not hidden; another LinkedIn row still is.
+    for key, subject in (("old1", sent["subject"]), ("old2", "Jane, interview for the Co-op")):
+        mail = {
+            "message_id": key,
+            "received_at": NOW.isoformat(),
+            "sender_name": "LinkedIn",
+            "sender_domain": "linkedin.com",
+            "subject": subject,
+            "kind": "receipt",
+            "company": "LinkedIn",
+            "role": "",
+        }
+        job_ledger.upsert_mail(h.db, mail, NOW)
+    assert repair(h.db, "ledger_only", ("linkedin.com",)) > 0
+    assert h.sql("SELECT message_id, company, deleted FROM job_mail ORDER BY message_id") == [
+        ("m-sent", "Cambio Earth", 0),
+        ("old1", "Cambio Earth", 0),
+        ("old2", "LinkedIn", 1),
+    ]
+    assert repair(h.db, "ledger_only", ("linkedin.com",)) == 0
+
+
+def _stored(  # noqa: PLR0913 - a ledger row's fields
+    h: _Harness, key: str, company: str, role: str, kind: str, age: timedelta, event_at: str = ""
+) -> None:
+    job_ledger.upsert_mail(
+        h.db,
+        {
+            "message_id": key,
+            "received_at": (NOW - age).isoformat(),
+            "sender_name": company,
+            "sender_domain": "x.example",
+            "subject": f"{kind} {key}",
+            "kind": kind,
+            "company": company,
+            "role": role,
+            "event_at": event_at or None,
+        },
+        NOW,
+    )
+
+
+def _apps(h: _Harness) -> dict[tuple[str, str], dict[str, Any]]:
+    reply = h.client.get("/inherent/jobs").json()
+    assert reply["ledger"] is not None  # older clients keep reading it
+    return {(one["company"], one["role"]): one for one in reply["applications"]}
+
+
+def test_applications_group_by_company_and_role_and_the_status_follows_the_mail(
+    tmp_path: Path, jev: _Jev
+) -> None:
+    """Receipt, then interview is interviewing; a role-less mail joins the one roled application."""
+    h = _harness(tmp_path, jev, [])
+    soon = (NOW + timedelta(days=2)).isoformat()
+    _stored(h, "a1", "Acme", "QA Co-op", "receipt", timedelta(days=10))
+    _stored(h, "a2", "Acme", "QA Co-op", "interview", timedelta(days=5), event_at=soon)
+    _stored(h, "a3", "ACME", "", "job_other", timedelta(days=4))  # no role: joins QA Co-op
+    _stored(h, "b1", "Beta", "", "receipt", timedelta(days=22))  # silent for over 21 days
+    _stored(h, "c1", "Gamma", "Dev", "receipt", timedelta(days=2))
+    _stored(h, "c2", "Gamma", "Ops", "receipt", timedelta(days=2))
+    _stored(h, "c3", "Gamma", "", "rejection", timedelta(days=1))  # two roles: its own row
+    _stored(h, "d1", "Delta", "", "receipt", timedelta(days=3))
+    _stored(h, "d2", "Delta", "", "offer", timedelta(days=2))
+    _stored(h, "d3", "Delta", "", "receipt", timedelta(days=1))  # a later receipt: applied again
+    h.client.post("/inherent/jobs/c3/delete")  # a deleted mail is not counted
+    _stored(h, "e1", "Epsilon", "", "receipt", timedelta(days=1))
+
+    apps = _apps(h)
+    acme = apps[("ACME", "QA Co-op")]  # the newest mail names the company; case does not split it
+    assert (acme["status"], acme["status_auto"], acme["count"]) == ("interviewing", True, 3)
+    assert acme["source"] == "mail"
+    assert acme["applied_at"] == (NOW - timedelta(days=10)).isoformat()
+    assert acme["last_at"] == (NOW - timedelta(days=4)).isoformat()
+    assert acme["next_event_at"] == soon
+    assert [m["message_id"] for m in acme["mails"]] == ["a3", "a2", "a1"]  # newest first
+    assert set(acme["mails"][0]) == {
+        "message_id",
+        "kind",
+        "received_at",
+        "subject",
+        "event_at",
+        "event_text",
+    }
+    assert apps[("Beta", "")]["status"] == "no_reply"
+    assert {k: v["status"] for k, v in apps.items() if k[0] == "Gamma"} == {
+        ("Gamma", "Dev"): "applied",
+        ("Gamma", "Ops"): "applied",
+    }  # the deleted rejection left no role-less application behind
+    assert apps[("Delta", "")]["status"] == "applied"
+    assert [one["status"] for one in h.client.get("/inherent/jobs").json()["applications"]] == [
+        "interviewing",
+        "applied",
+        "applied",
+        "applied",
+        "applied",
+        "no_reply",
+    ]
+
+    # With the rejection kept, two roles leave the role-less mail a row of its own.
+    _stored(h, "c4", "Gamma", "", "rejection", timedelta(days=1))
+    apps = _apps(h)
+    assert apps[("Gamma", "")]["status"] == "rejected"
+    assert apps[("Gamma", "Dev")]["status"] == "applied"
+    assert list(apps.values())[-1]["status"] == "rejected"  # rejected sorts last
+
+
+def test_allens_own_rows_and_edits_go_through_the_routes(tmp_path: Path, jev: _Jev) -> None:
+    """Add a manual row, edit it and a mail-derived one; a newer deciding mail beats an old edit."""
+    h = _harness(tmp_path, jev, [])
+    _stored(h, "e1", "Epsilon", "", "receipt", timedelta(days=3))
+    _stored(h, "f1", "Zeta", "", "receipt", timedelta(days=3))
+    post = h.client.post
+
+    made = post(
+        "/inherent/jobs/applications",
+        json={"company": " Hand Co ", "role": "Dev", "applied_at": "2026-09-12", "note": "n"},
+    )
+    assert made.status_code == 200
+    mine = _apps(h)[("Hand Co", "Dev")]
+    assert mine["id"] == made.json()["id"]
+    assert (mine["source"], mine["status"], mine["applied_at"], mine["count"]) == (
+        "manual",
+        "applied",
+        "2026-09-12",
+        0,
+    )
+    assert mine["status_auto"] is False
+    assert mine["note"] == "n"
+    for bad in (
+        {"company": "X", "status": "withdrawn"},
+        {"company": "  "},
+        {"company": "X", "applied_at": "last week"},
+    ):
+        assert post("/inherent/jobs/applications", json=bad).status_code == 400
+    assert len(_apps(h)) == 3
+
+    edit = f"/inherent/jobs/applications/{mine['id']}"
+    assert post(edit, json={"status": "offer", "note": "call back"}).status_code == 200
+    assert (_apps(h)[("Hand Co", "Dev")]["status"], _apps(h)[("Hand Co", "Dev")]["note"]) == (
+        "offer",
+        "call back",
+    )
+    assert post(edit, json={"status": "maybe"}).status_code == 400
+    assert post("/inherent/jobs/applications/nope", json={"status": "offer"}).status_code == 404
+
+    # A mail-derived application gets an edit row; its status is his until a deciding mail comes.
+    zeta = _apps(h)[("Zeta", "")]
+    url = f"/inherent/jobs/applications/{zeta['id']}"
+    assert post(url, json={"status": "bogus"}).status_code == 400
+    assert h.sql("SELECT count(*) FROM job_application WHERE source = 'edit'") == [(0,)]
+    assert post(url, json={"status": "rejected", "applied_at": "2026-09-11"}).status_code == 200
+    again = _apps(h)[("Zeta", "")]
+    assert (again["id"], again["status"], again["status_auto"]) == (zeta["id"], "rejected", False)
+    assert (again["applied_at"], again["source"], again["count"]) == ("2026-09-11", "mail", 1)
+    assert h.sql("SELECT source FROM job_application WHERE id = ?", zeta["id"]) == [("edit",)]
+    _stored(h, "f2", "Zeta", "", "job_other", -timedelta(minutes=1))  # not a deciding kind
+    assert _apps(h)[("Zeta", "")]["status"] == "rejected"
+    assert post(url, json={"note": "chased"}).status_code == 200  # a note does not renew the status
+    _stored(h, "f3", "Zeta", "", "interview", -timedelta(hours=1))  # newer than his edit
+    newer = _apps(h)[("Zeta", "")]
+    assert (newer["status"], newer["status_auto"]) == ("interviewing", True)
+    assert newer["note"] == "chased"
+
+    assert post(url, json={"hidden": True}).status_code == 200
+    assert post(edit, json={"hidden": True}).status_code == 200
+    assert set(_apps(h)) == {("Epsilon", "")}

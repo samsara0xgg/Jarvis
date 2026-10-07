@@ -310,6 +310,7 @@ _SOCIAL: Final = re.compile(
     r"|\bprofile was viewed\b|\bnew profile views?\b|\bappeared in \d+ search",
     re.IGNORECASE,
 )
+_SENT_TO: Final = re.compile(r"\byour application was sent to\s+(.+?)[\s.!]*$", re.IGNORECASE)
 _ALERT_SUBJECT: Final = re.compile(r"\bis hiring\b|\bnew jobs?\b", re.IGNORECASE)
 _ACCOUNT: Final = re.compile(
     r"\b(?:user information|password|account|profile update|verify your|verification code|"
@@ -325,6 +326,14 @@ def _is_linkedin(domain: str) -> bool:
 def is_excluded(domain: str, excluded: tuple[str, ...]) -> bool:
     """Whether a sender domain is one the owner keeps out of job mail (``exclude_domains``)."""
     return any(domain == one or domain.endswith("." + one) for one in excluded)
+
+
+def is_application_sent(domain: str, subject: str) -> bool:
+    """LinkedIn's Easy Apply confirmation ("<name>, your application was sent to <Company>").
+
+    An application Allen made: the one LinkedIn mail that is not kept out of job mail (ADR 0177).
+    """
+    return _is_linkedin(domain) and _SENT_TO.search(subject) is not None
 
 
 def is_social(domain: str, subject: str) -> bool:
@@ -605,6 +614,8 @@ def company_of(name: str, domain: str, subject: str = "", body: str = "") -> str
     the body, first. ponytail: a free-mail sender or a person's name that is not matched by
     the rules above still reads as the company; there is no hand-edit in the ledger yet.
     """
+    if (sent := _SENT_TO.search(subject)) and _is_linkedin(domain):  # "sent to <Company>"
+        return sent[1]
     label = _owner_label(domain)
     if label in _ATS:
         found = _named_in(subject) or _named_in(body)

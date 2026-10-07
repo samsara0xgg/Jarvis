@@ -49,6 +49,7 @@ import uuid
 import webbrowser
 from collections.abc import Mapping  # runtime use: isinstance in the config readers.
 from dataclasses import dataclass, field, replace
+from datetime import date, datetime
 from datetime import time as clock
 from functools import partial
 from pathlib import Path
@@ -1435,6 +1436,10 @@ def _job_mail(  # noqa: PLR0913 - the config, its collaborators and the moment
     ):
         msg = f"runtime: {config_path} job_mail.exclude_domains must be a list of domain names"
         raise RuntimeBootstrapError(msg)
+    since = block.get("backfill_since")
+    if since is not None and (not isinstance(since, date) or isinstance(since, datetime)):
+        msg = f"runtime: {config_path} job_mail.backfill_since must be a date (YYYY-MM-DD) or null"
+        raise RuntimeBootstrapError(msg)
     settings = JobMailSettings(
         poll_s=float(number("poll_s", low=1)),
         backfill_days=number("backfill_days", low=1, high=60, whole=True),
@@ -1447,6 +1452,7 @@ def _job_mail(  # noqa: PLR0913 - the config, its collaborators and the moment
         speak_gap_s=float(number("speak_gap_s", low=0)),
         linkedin_alerts=block["linkedin_alerts"],
         exclude_domains=tuple(one.strip().lower() for one in excluded),
+        backfill_since=since,
     )
     timeout = number("timeout_ms", low=1, whole=True)
     # min_confidence is the choice question's bar; these questions read probabilities instead.

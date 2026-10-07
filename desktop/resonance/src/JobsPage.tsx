@@ -1,9 +1,9 @@
-import { useState } from 'react';
-import { CaretRight, Trash } from '@phosphor-icons/react';
+import { useEffect, useState } from 'react';
+import { CaretRight, PencilSimple, Trash } from '@phosphor-icons/react';
 import { useT, type L } from './companionSettings';
 import { postRoute } from './homeData';
 
-// The Dashboard's job ledger: GET /inherent/jobs, one row per company, its mails opened in place. The daemon (job_mail) keeps
+// The Dashboard's job ledger: GET /inherent/jobs. With `applications` (ADR 0177) it is a tracker, one table row per job applied to, its mails and note opened in place; without it (an older daemon) one section per company. The daemon (job_mail) keeps
 // the facts, never the bodies; a deleted mail is hidden there (POST /inherent/jobs/{message_id}/delete). The kind chips
 // are shared with the notch's mail card and digest.
 export type JobMailRow = { message_id: string; kind: string; received_at: string; subject: string; event_at?: string | null; event_text?: string | null };
@@ -13,6 +13,16 @@ export type Skipped = { message_id: string; received_at: string; sender_name?: s
 export type JobRule = { id: string; value: string };
 // `time_spent` / `time_total_s` (GET /inherent/jobs, ADR 0161, absent on older daemons): seconds per local day on that company's job pages over the last 14 days, from TimeSink; `job_site_other_s` (top level) is job-site time that names no company.
 export type JobGroup = { company: string; role?: string; kind: string; last_at: string; next_event_at?: string | null; count: number; mails: JobMailRow[]; time_spent?: { day: string; seconds: number }[]; time_total_s?: number };
+
+// `applications` (GET /inherent/jobs, ADR 0177, absent on older daemons): one per job applied to, from the mail or added by hand. `status_auto` is false once Allen set the status himself; `source` is `mail` or `manual`. Edits: POST /inherent/jobs/applications/{id} { status?, applied_at?, note?, hidden? }; a new row: POST /inherent/jobs/applications { company, role?, applied_at?, status? }.
+export type JobApplication = { id: string; company: string; role: string; status: string; status_auto: boolean; applied_at?: string | null; last_at?: string | null; next_event_at?: string | null; count: number; mails: JobMailRow[]; note: string; source: 'mail' | 'manual' };
+
+const STATUSES: Record<string, L> = { applied: ['Applied', '已投'], interviewing: ['Interviewing', '面试中'], offer: ['Offer', 'Offer'], rejected: ['Rejected', '拒了'], no_reply: ['No reply', '没回音'] };
+// "2026-09-12" is a day, not a moment: read it as written, so a western time zone does not step it back.
+const dayStamp = (v?: string | null) => {
+  const day = /^\d{4}-(\d\d)-(\d\d)$/.exec(v ?? ''); if (day) return `${Number(day[1])}/${Number(day[2])}`;
+  const d = new Date(v ?? ''); return Number.isNaN(d.getTime()) ? '' : `${d.getMonth() + 1}/${d.getDate()}`;
+};
 
 const KINDS: Record<string, [string, L]> = {
   offer: ['is-offer', ['Offer', 'Offer']], interview: ['is-interview', ['Interview', '面试']], rejection: ['is-rejection', ['Rejection', '拒信']],
@@ -38,7 +48,7 @@ const dayLabel = (day: string) => { const [, m, d] = day.split('-'); return `${N
 // A company's row has no id of its own; the view report and her page-turning name it by company and role.
 export const jobKey = (g: { company: string; role?: string }) => `${g.company}|${g.role ?? ''}`;
 
-export function JobsPage({ port, ledger, skipped, rules = [], otherS = 0, onChanged }: { port: string; ledger: JobGroup[]; skipped: Skipped[]; rules?: JobRule[]; otherS?: number; onChanged: () => void }) {
+export function JobsPage({ port, ledger, applications, skipped, rules = [], otherS = 0, onChanged }: { port: string; ledger: JobGroup[]; applications?: JobApplication[]; skipped: Skipped[]; rules?: JobRule[]; otherS?: number; onChanged: () => void }) {
   const t = useT(), [open, setOpen] = useState(''), [confirm, setConfirm] = useState(''), [gone, setGone] = useState<string[]>([]), [failed, setFailed] = useState(false);
   // POST /inherent/jobs/{id}/flag { reaction: 'should_alert' } says a held-back mail was job mail after all; a 404 means the daemon has no such route, and the buttons go.
   const [skipOpen, setSkipOpen] = useState(false), [flagged, setFlagged] = useState<string[]>([]), [noFlag, setNoFlag] = useState(false);
@@ -54,14 +64,68 @@ export function JobsPage({ port, ledger, skipped, rules = [], otherS = 0, onChan
     try { await postRoute(port, `/inherent/jobs/${encodeURIComponent(id)}/delete`, {}); onChanged(); }
     catch { setGone(v => v.filter(x => x !== id)); setFailed(true); }
   };
+  // The tracker: a status shown at once while its post is in flight, until the next answer from the daemon replaces it.
+  const [pending, setPending] = useState<Record<string, string>>({}), [adding, setAdding] = useState(false), [form, setForm] = useState({ company: '', role: '', applied_at: '', status: 'applied' });
+  useEffect(() => setPending({}), [applications]);
+  const edit = async (id: string, body: Record<string, unknown>) => {
+    setFailed(false);
+    try { await postRoute(port, `/inherent/jobs/applications/${encodeURIComponent(id)}`, body); onChanged(); }
+    catch { setPending(v => Object.fromEntries(Object.entries(v).filter(([k]) => k !== id))); setFailed(true); }
+  };
+  const add = async () => {
+    setFailed(false);
+    try { await postRoute(port, '/inherent/jobs/applications', { company: form.company.trim(), role: form.role.trim(), ...(form.applied_at ? { applied_at: form.applied_at } : {}), status: form.status }); setAdding(false); setForm({ company: '', role: '', applied_at: '', status: 'applied' }); onChanged(); }
+    catch { setFailed(true); }
+  };
+  const rows = (applications ?? []).map(a => ({ ...a, mails: a.mails.filter(m => !gone.includes(m.message_id)) })).filter(a => a.source === 'manual' || a.mails.length);
   const linkedin = rules.find(r => r.id === 'linkedin_alerts')?.value, excluded = rules.find(r => r.id === 'exclude_domains')?.value;
   return <div className="jp">
     {linkedin && <p className="pg-sec muted jp-rule" data-rule="linkedin_alerts">{linkedin === 'ledger_only' ? t(['LinkedIn job alerts: ledger only, no alert', 'LinkedIn 职位提醒：只进账本，不提醒']) : t(['LinkedIn job alerts: a card with sound', 'LinkedIn 职位提醒：出卡片带提示音'])}</p>}
     {excluded && <p className="pg-sec muted jp-rule" data-rule="exclude_domains">{t([`Not counted: mail from ${excluded}`, `不计入：来自 ${excluded} 的邮件`])}</p>}
     {otherS > 0 && <p className="pg-sec muted jp-other" data-other>{t(['Other job sites', '其他求职网站'])} {t(['spent', '花了'])} {t(spentText(otherS))}</p>}
     {failed && <p className="pg-sec muted is-warm" role="alert">{t(['That didn’t go through. Try again.', '没成功，请再试一次。'])}</p>}
-    {!groups.length && <p className="pg-sec muted">{t(['No job mail yet. Jarvis adds it here as it comes in.', '还没有求职邮件，收到了会记在这里。'])}</p>}
-    {groups.map((g, i) => { const key = `${g.company}|${g.role ?? ''}|${i}`, [cls, name] = jobKind(g.kind), on = open === key;
+    {applications && <>
+      <div className="pg-sec jp-bar"><button className="btn-text" data-act="add" aria-expanded={adding} onClick={() => setAdding(v => !v)}>{t(['Add', '添加'])}</button></div>
+      {adding && <form className="pg-sec jp-form" onSubmit={e => { e.preventDefault(); if (form.company.trim()) void add(); }}>
+        <input data-f="company" required value={form.company} placeholder={t(['Company', '公司'])} aria-label={t(['Company', '公司'])} onChange={e => setForm(f => ({ ...f, company: e.target.value }))}/>
+        <input data-f="role" value={form.role} placeholder={t(['Role', '职位'])} aria-label={t(['Role', '职位'])} onChange={e => setForm(f => ({ ...f, role: e.target.value }))}/>
+        <input data-f="applied_at" type="date" value={form.applied_at} aria-label={t(['Applied', '投递日期'])} onChange={e => setForm(f => ({ ...f, applied_at: e.target.value }))}/>
+        <select data-f="status" value={form.status} aria-label={t(['Status', '状态'])} onChange={e => setForm(f => ({ ...f, status: e.target.value }))}>{Object.entries(STATUSES).map(([k, name]) => <option key={k} value={k}>{t(name)}</option>)}</select>
+        <button className="btn-text" type="button" data-act="cancel" onClick={() => setAdding(false)}>{t(['Cancel', '取消'])}</button>
+        <button className="btn-text" type="submit" data-act="save" disabled={!form.company.trim()}>{t(['Add', '添加'])}</button>
+      </form>}
+      {!rows.length && <p className="pg-sec muted">{t(['No applications yet. Jarvis adds them from your mail, or add one here.', '还没有投递记录。Jarvis 会从邮件里记下，你也可以在这里添加。'])}</p>}
+      {rows.length > 0 && <div className="jp-scroll"><table className="jp-t">
+        <thead><tr><th>{t(['Company', '公司'])}</th><th>{t(['Role', '职位'])}</th><th>{t(['Status', '状态'])}</th><th>{t(['Applied', '投递日期'])}</th><th>{t(['Last activity', '最近动静'])}</th><th>{t(['Next', '下一步'])}</th><th>{t(['Mails', '来信'])}</th></tr></thead>
+        <tbody>{rows.map(a => { const on = open === a.id, status = pending[a.id] ?? a.status, spent = ledger.find(g => g.company.toLowerCase() === a.company.toLowerCase())?.time_total_s ?? 0;
+          return [<tr key={a.id} className="jp-r" data-id={a.id} data-company={a.company} data-vid={jobKey(a)}>
+            <td><button className="jp-top" aria-expanded={on} onClick={() => setOpen(on ? '' : a.id)}><CaretRight size={10} weight="bold" className="jp-caret"/><b title={a.company}>{a.company}</b></button></td>
+            <td title={a.role}>{a.role}</td>
+            <td className="jp-st"><select className={`is-${status}`} data-act="status" value={status} aria-label={t(['Status', '状态'])} onChange={e => { const v = e.target.value; setPending(p => ({ ...p, [a.id]: v })); void edit(a.id, { status: v }); }}>{Object.entries(STATUSES).map(([k, name]) => <option key={k} value={k}>{t(name)}</option>)}</select>
+              {!a.status_auto && <PencilSimple size={10} className="jp-hand" data-hand aria-label={t(['Set by you', '你手动设的'])}/>}</td>
+            <td>{dayStamp(a.applied_at)}</td>
+            <td>{jobStamp(a.last_at, true)}</td>
+            <td className="jp-next">{a.next_event_at ? jobStamp(a.next_event_at, true) : ''}</td>
+            <td>{a.count || ''}</td>
+          </tr>, on && <tr key={`${a.id}-x`} className="jp-x"><td colSpan={7}>
+            {spent > 0 && <p className="jp-days" data-time>{t(['Spent', '花了'])} {t(spentText(spent))}</p>}
+            {a.mails.length > 0 && <ul className="jp-mails">{a.mails.map(m => { const [mc, mn] = jobKind(m.kind);
+              return <li key={m.message_id} data-id={m.message_id}>
+                <span className="jp-sub"><em className={`jk ${mc}`}>{t(mn)}</em><span title={m.subject}>{m.subject}</span></span>
+                <time>{jobStamp(m.received_at, true)}</time>
+                <button className="icon-btn jp-del" data-act="delete" aria-label={t(['Delete from the ledger', '从记录里删除'])} title={t(['Delete from the ledger', '从记录里删除'])} onClick={() => setConfirm(m.message_id)}><Trash size={13}/></button>
+                {confirm === m.message_id && <span className="jp-sure">{t(['Delete this mail from the ledger?', '从记录里删掉这封？'])}
+                  <button className="btn-text" data-act="no" onClick={() => setConfirm('')}>{t(['Keep', '留着'])}</button>
+                  <button className="btn-text is-danger" data-act="yes" onClick={() => void remove(m.message_id)}>{t(['Delete', '删除'])}</button></span>}
+                {m.event_text && <small className="jp-event">{m.event_text}</small>}
+              </li>; })}</ul>}
+            <textarea className="jp-note" data-act="note" rows={2} defaultValue={a.note} placeholder={t(['Note', '备注'])} aria-label={t(['Note', '备注'])} onBlur={e => { if (e.target.value !== a.note) void edit(a.id, { note: e.target.value }); }}/>
+            <button className="btn-text jp-hide" data-act="hide" onClick={() => void edit(a.id, { hidden: true })}>{t(['Remove from the list', '从列表里移除'])}</button>
+          </td></tr>]; })}</tbody>
+      </table></div>}
+    </>}
+    {!applications && !groups.length && <p className="pg-sec muted">{t(['No job mail yet. Jarvis adds it here as it comes in.', '还没有求职邮件，收到了会记在这里。'])}</p>}
+    {!applications && groups.map((g, i) => { const key = `${g.company}|${g.role ?? ''}|${i}`, [cls, name] = jobKind(g.kind), on = open === key;
       return <section className="pg-sec jp-g" key={key} data-company={g.company} data-vid={jobKey(g)}>
         <button className="jp-top" aria-expanded={on} onClick={() => setOpen(on ? '' : key)}>
           <CaretRight size={10} weight="bold" className="jp-caret"/>

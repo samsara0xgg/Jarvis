@@ -73,10 +73,12 @@ _L2_OPERATIONAL_INSERTS: dict[str, frozenset[str]] = {
     "jarvis/state/worker_edges.py": frozenset({"worker_edges"}),
     # ADR 0155, 0157, 0160: the job ledger and the attention log, in memory.db: typed facts of
     # job mail, its alerts, Allen's reactions (also to every other card), one row per decision
-    # and one per Jev answer. Not a projection.
+    # and one per Jev answer. Not a projection. ADR 0177: job_application, Allen's own tracker
+    # rows and his edits of mail-derived ones.
     "jarvis/state/job_ledger.py": frozenset(
         {
             "job_mail",
+            "job_application",
             "job_seen",
             "job_alert",
             "job_feedback",
@@ -99,8 +101,11 @@ _L2_OPERATIONAL_UPDATES: dict[str, frozenset[str]] = {
     # ADR 0019: an edge moves from open to closed exactly once.
     "jarvis/state/worker_edges.py": frozenset({"worker_edges"}),
     # ADR 0155: a mail is retyped or hidden, an alert moves pending -> shown -> done, and a
-    # decision's delivery and feedback are filled in as they happen.
-    "jarvis/state/job_ledger.py": frozenset({"job_mail", "job_alert", "attention_log"}),
+    # decision's delivery and feedback are filled in as they happen; an application row is edited
+    # by Allen (ADR 0177).
+    "jarvis/state/job_ledger.py": frozenset(
+        {"job_mail", "job_alert", "attention_log", "job_application"}
+    ),
 }
 
 

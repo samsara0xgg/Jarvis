@@ -1,6 +1,6 @@
 // Job mail (ADR 0155), the client's half, in headless Chrome against the built page and a fake daemon (route mocking): a mail card
 // from GET /inherent/notices with its seen / feedback / dismiss posts, the cue sound only for card_sound and speak, the 合适吗 row,
-// one card per id and no return after a dismiss, the digest, the Dashboard's ledger page with its confirmed delete, the daemon's
+// one card per id and no return after a dismiss, the digest, the Dashboard's ledger page with its confirmed delete, the applications table (ADR 0177) with its status select and Add form, the daemon's
 // `audio_private` (false: no cue for a sounding mail card or an agent notice; true: the cue as before), and a 404 that keeps the app calm. Silent: no desktop window, no audio. Run after `npm run build`.
 import { chromium } from 'playwright';
 import { spawn } from 'node:child_process';
@@ -27,6 +27,9 @@ try {
   // ADR 0161: seconds per local day on a company's job pages, and job-site time that names no company (both absent on older daemons).
   const day = back => { const d = new Date(Date.now() - back * 86_400_000); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
   let otherS;
+  // ADR 0177: the tracker's rows (absent on older daemons, which keep the per-company view above) and what the page posted to its two routes.
+  let applications;
+  const appEdits = [], appAdds = [];
   // ADR 0158: the daemon's standing alert rules, sent with the ledger (absent on older daemons, like `skipped`).
   const rules = [{ id: 'linkedin_alerts', value: 'ledger_only' }];
   page.on('pageerror', error => errors.push(error.message));
@@ -66,7 +69,9 @@ try {
     if (p === '/inherent/agent-marks') return json({ marks: {} });
     if (p === '/inherent/notices' && method === 'GET') { noticeGets++; if (featureOn) return json(audioPrivate === undefined ? { notices } : { notices, audio_private: audioPrivate }); }
     else if (p.startsWith('/inherent/notices/') && method === 'POST') { posts.push({ id: decodeURIComponent(p.split('/').pop()), body: JSON.parse(route.request().postData() || '{}') }); return json({ ok: true }); }
-    else if (p === '/inherent/jobs' && method === 'GET' && featureOn) return json({ ...(skipped ? { ledger, skipped, rules } : { ledger }), ...(otherS === undefined ? {} : { job_site_other_s: otherS }) });
+    else if (p === '/inherent/jobs' && method === 'GET' && featureOn) return json({ ...(skipped ? { ledger, skipped, rules } : { ledger }), ...(applications ? { applications } : {}), ...(otherS === undefined ? {} : { job_site_other_s: otherS }) });
+    else if (p === '/inherent/jobs/applications' && method === 'POST') { appAdds.push(JSON.parse(route.request().postData() || '{}')); return json({ ok: true, id: 'hand-1' }); }
+    else if (/^\/inherent\/jobs\/applications\/[^/]+$/.test(p) && method === 'POST') { appEdits.push({ id: decodeURIComponent(p.split('/').pop()), body: JSON.parse(route.request().postData() || '{}') }); return json({ ok: true }); }
     else if (/^\/inherent\/jobs\/[^/]+\/flag$/.test(p) && method === 'POST') {
       if (flagStatus === 404) return route.fulfill({ status: 404, contentType: 'application/json', body: '{"detail":"Not Found"}' });
       const id = decodeURIComponent(p.split('/')[3]); flags.push({ id, body: JSON.parse(route.request().postData() || '{}') });
@@ -337,6 +342,42 @@ try {
   await page.waitForSelector('.ad .jp');
   await page.waitForTimeout(500);
   check('without skipped the page has no held-back section, no rule line and no error', await page.locator('.ad .jp-skip').count() === 0 && await page.locator('.ad .jp-rule').count() === 0 && errors.length === 0);
+
+  // (g4) ADR 0177: with `applications` the page is one table, a row per job applied to.
+  applications = [
+    { id: 'app-1', company: 'Northwind', role: 'Backend Co-op', status: 'interviewing', status_auto: true, applied_at: '2026-09-12', last_at: at(3), next_event_at: new Date(Date.now() + 86_400_000).toISOString(), count: 2, note: '', source: 'mail', mails: [
+      { message_id: 'h-1', kind: 'interview', received_at: at(3), subject: 'Interview slots for next week', event_at: null, event_text: null },
+      { message_id: 'h-2', kind: 'receipt', received_at: at(60 * 24 * 3), subject: 'We received your application', event_at: null, event_text: null }] },
+    { id: 'app-2', company: 'Orbit Labs', role: 'SWE Co-op', status: 'no_reply', status_auto: false, applied_at: '2026-09-10', last_at: at(60 * 24 * 30), next_event_at: null, count: 0, note: 'via a friend', source: 'manual', mails: [] }];
+  await open();
+  await page.locator('.companion-island-target').click();
+  await page.waitForSelector('.ad .cb[data-row="jobs"]', { timeout: 8000 });
+  await page.locator('.ad .cb[data-row="jobs"]').click();
+  await page.waitForSelector('.ad .jp-t', { timeout: 5000 });
+  const northwind = await page.locator('.ad .jp-r[data-company="Northwind"]').innerText();
+  check('the page is a table with a row per application, with company, role, date and mail count', await page.locator('.ad .jp-r').count() === 2 && await page.locator('.ad .jp-g').count() === 0 && /Northwind/.test(northwind) && /Backend Co-op/.test(northwind) && /9\/12/.test(northwind) && /2$/.test(northwind.trim()));
+  check('the status select shows the status and a faint mark only where he set it', await page.locator('.ad .jp-r[data-company="Northwind"] select[data-act="status"]').inputValue() === 'interviewing' && await page.locator('.ad .jp-r[data-company="Northwind"] [data-hand]').count() === 0 && await page.locator('.ad .jp-r[data-company="Orbit Labs"] [data-hand]').count() === 1);
+  check('the status is worded: 面试中 or Interviewing, 没回音 or No reply', /Interviewing|面试中/.test(northwind) && /No reply|没回音/.test(await page.locator('.ad .jp-r[data-company="Orbit Labs"]').innerText()));
+  await shot('applications', { x: 0, y: 0, width: 640, height: 480 });
+  await page.locator('.ad .jp-r[data-company="Northwind"] select[data-act="status"]').selectOption('offer');
+  await page.waitForFunction(() => document.querySelector('.ad .jp-r[data-company="Northwind"] select')?.value === 'offer', null, { timeout: 3000 });
+  check('changing the select posts the edit route with the status', JSON.stringify(appEdits) === '[{"id":"app-1","body":{"status":"offer"}}]');
+  await page.locator('.ad .jp-r[data-company="Northwind"] .jp-top').click();
+  await page.waitForSelector('.ad .jp-x li');
+  check('a row opens to its mails and a note', await page.locator('.ad .jp-x li').count() === 2 && await page.locator('.ad .jp-x [data-act="note"]').count() === 1);
+  await page.locator('.ad .jp-x [data-act="note"]').fill('phone screen booked');
+  await page.locator('.ad .jp-x [data-act="note"]').blur();
+  await page.waitForTimeout(300);
+  check('leaving the note posts it', JSON.stringify(appEdits[1]) === '{"id":"app-1","body":{"note":"phone screen booked"}}');
+  await page.locator('.ad [data-act="add"]').click();
+  await page.locator('.ad .jp-form [data-f="company"]').fill('Helix');
+  await page.locator('.ad .jp-form [data-f="role"]').fill('Backend Intern');
+  await page.locator('.ad .jp-form [data-f="applied_at"]').fill('2026-09-20');
+  await page.locator('.ad .jp-form [data-f="status"]').selectOption('rejected');
+  await page.locator('.ad .jp-form [data-act="save"]').click();
+  await page.waitForFunction(() => !document.querySelector('.ad .jp-form'), null, { timeout: 3000 });
+  check('Add posts the manual route with company, role, date and status, and the form closes', JSON.stringify(appAdds) === '[{"company":"Helix","role":"Backend Intern","applied_at":"2026-09-20","status":"rejected"}]');
+  applications = undefined;
 
   // (g3) ADR 0155: the daemon's `audio_private`. False: a sounding mail card and an agent notice come with no cue. True: the cue as before.
   const cues = () => page.evaluate(() => window.__cues);

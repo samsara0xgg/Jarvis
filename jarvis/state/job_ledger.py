@@ -13,11 +13,12 @@ Layer rules: stdlib + L2 siblings + ``jarvis.shared``; no wiring.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import uuid
 from contextlib import contextmanager
-from datetime import datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final
 
 from jarvis.shared import lang
@@ -50,6 +51,31 @@ _RANK: Final[dict[str, int]] = {"offer": 0, "interview": 1, "rejection": 2}
 _OTHER_RANK: Final[int] = 3
 # An interview time that was not read as a date shows on a summary row only when it is this short.
 EVENT_TEXT_MAX: Final[int] = 24
+# ADR 0177: an application's status; a mail of these kinds moves it, any other kind leaves it.
+APPLICATION_STATUSES: Final[tuple[str, ...]] = (
+    "applied",
+    "interviewing",
+    "offer",
+    "rejected",
+    "no_reply",
+)
+_KIND_STATUS: Final[dict[str, str]] = {
+    "receipt": "applied",
+    "interview": "interviewing",
+    "offer": "offer",
+    "rejection": "rejected",
+}
+# An application still ``applied`` whose newest mail is older than this is ``no_reply``.
+NO_REPLY_AFTER: Final[timedelta] = timedelta(days=21)
+# The tracker's order: offers and interviews first, then waiting, then silent, then rejected.
+_STATUS_RANK: Final[dict[str, int]] = {
+    "offer": 0,
+    "interviewing": 0,
+    "applied": 1,
+    "no_reply": 2,
+    "rejected": 3,
+}
+_EPOCH: Final[datetime] = datetime.fromtimestamp(0, UTC)
 
 _SCHEMA: Final[str] = """
 CREATE TABLE IF NOT EXISTS job_mail (
@@ -68,6 +94,18 @@ CREATE TABLE IF NOT EXISTS job_mail (
     extracted_by  TEXT,
     created_at    TEXT,
     deleted       INTEGER DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS job_application (
+    id         TEXT PRIMARY KEY,
+    company    TEXT,
+    role       TEXT,
+    applied_at TEXT,
+    status     TEXT,
+    note       TEXT,
+    source     TEXT,
+    hidden     INTEGER DEFAULT 0,
+    created_at TEXT,
+    updated_at TEXT
 );
 CREATE TABLE IF NOT EXISTS job_seen (
     message_id    TEXT PRIMARY KEY,
@@ -416,6 +454,26 @@ def delete_mail(path: Path, message_id: str) -> bool:
         )
 
 
+def _next_event(mails: Sequence[sqlite3.Row], now: datetime) -> str | None:
+    """The earliest event time among a company's mails that is still ahead, or None."""
+    upcoming = sorted(
+        (m["event_at"] for m in mails if (at := _moment(m["event_at"])) and at >= now),
+        key=lambda text: _moment(text) or now,
+    )
+    return upcoming[0] if upcoming else None
+
+
+def _mail_view(m: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "message_id": m["message_id"],
+        "kind": m["kind"],
+        "received_at": m["received_at"],
+        "subject": m["subject"],
+        "event_at": m["event_at"],
+        "event_text": m["event_text"],
+    }
+
+
 def list_ledger(path: Path, now: datetime) -> list[dict[str, Any]]:
     """One group per company, newest first: latest kind and role, next event, mails newest first."""
     with _db(path) as conn:
@@ -429,32 +487,220 @@ def list_ledger(path: Path, now: datetime) -> list[dict[str, Any]]:
     ledger = []
     for mails in groups.values():
         newest = mails[0]
-        upcoming = sorted(
-            (m["event_at"] for m in mails if (at := _moment(m["event_at"])) and at >= now),
-            key=lambda text: _moment(text) or now,
-        )
         ledger.append(
             {
                 "company": newest["company"],
                 "role": next((m["role"] for m in mails if m["role"]), ""),
                 "kind": newest["kind"],
                 "last_at": newest["received_at"],
-                "next_event_at": upcoming[0] if upcoming else None,
+                "next_event_at": _next_event(mails, now),
                 "count": len(mails),
-                "mails": [
-                    {
-                        "message_id": m["message_id"],
-                        "kind": m["kind"],
-                        "received_at": m["received_at"],
-                        "subject": m["subject"],
-                        "event_at": m["event_at"],
-                        "event_text": m["event_text"],
-                    }
-                    for m in mails
-                ],
+                "mails": [_mail_view(m) for m in mails],
             }
         )
     return sorted(ledger, key=lambda one: one["last_at"] or "", reverse=True)
+
+
+# --- applications (ADR 0177) ---------------------------------------------------------
+
+
+def application_id(company: str, role: str) -> str:
+    """The stable id of a mail-derived application: a hash of its company and role."""
+    key = f"{company.casefold()}\n{role.casefold()}"
+    return hashlib.sha1(key.encode(), usedforsecurity=False).hexdigest()[:12]
+
+
+def _mail_application(
+    app_id: str, mails: list[sqlite3.Row], edit: sqlite3.Row | None, now: datetime
+) -> dict[str, Any]:
+    """One application out of its mails (oldest first) and Allen's edit row, if he made one."""
+    status = "applied"
+    for m in mails:
+        status = _KIND_STATUS.get(m["kind"], status)
+    newest = mails[-1]
+    last = _moment(newest["received_at"])
+    if status == "applied" and last is not None and now - last > NO_REPLY_AFTER:
+        status = "no_reply"
+    auto, applied_at, note, hidden = True, mails[0]["received_at"], "", False
+    if edit is not None:
+        since = _moment(edit["updated_at"])
+        # His status stands until a mail that decides one arrives after he set it.
+        later = any(
+            m["kind"] in _KIND_STATUS and since and (at := _moment(m["received_at"])) and at > since
+            for m in mails
+        )
+        if edit["status"] and not later:
+            status, auto = edit["status"], False
+        applied_at = edit["applied_at"] or applied_at
+        note, hidden = edit["note"] or "", bool(edit["hidden"])
+    return {
+        "id": app_id,
+        "company": newest["company"] or "",
+        "role": next((m["role"] for m in reversed(mails) if m["role"]), ""),
+        "status": status,
+        "status_auto": auto,
+        "applied_at": applied_at,
+        "last_at": newest["received_at"],
+        "next_event_at": _next_event(mails, now),
+        "count": len(mails),
+        "mails": [_mail_view(m) for m in reversed(mails)],
+        "note": note,
+        "source": "mail",
+        "hidden": hidden,
+    }
+
+
+def _applications(path: Path, now: datetime) -> list[dict[str, Any]]:
+    """Every application, hidden ones too: the visible ledger mails grouped, plus Allen's rows.
+
+    Mails group by company; each distinct role is an application, and a mail with no role joins
+    the company's one roled application (any other count: the company's role-less one). The key
+    of an application is its company and role, case-folded; an ``edit`` row of that key overrides
+    its fields, a ``manual`` row is an application of its own.
+    """
+    with _db(path) as conn:
+        rows = conn.execute(
+            "SELECT message_id, received_at, subject, kind, company, role, event_at, event_text"
+            " FROM job_mail WHERE deleted = 0",
+        ).fetchall()
+        mine = conn.execute("SELECT * FROM job_application").fetchall()
+    edits = {row["id"]: row for row in mine if row["source"] == "edit"}
+    rows.sort(key=lambda m: (_moment(m["received_at"]) or _EPOCH, m["message_id"]))
+    by_company: dict[str, list[sqlite3.Row]] = {}
+    for m in rows:
+        by_company.setdefault((m["company"] or "").casefold(), []).append(m)
+    found = []
+    for mails in by_company.values():
+        roles = {r for m in mails if (r := (m["role"] or "").casefold())}
+        home = next(iter(roles)) if len(roles) == 1 else ""
+        apps: dict[str, list[sqlite3.Row]] = {}
+        for m in mails:
+            apps.setdefault((m["role"] or "").casefold() or home, []).append(m)
+        for role, group in apps.items():
+            app_id = application_id(group[0]["company"] or "", role)
+            found.append(_mail_application(app_id, group, edits.get(app_id), now))
+    found.extend(
+        {
+            "id": row["id"],
+            "company": row["company"],
+            "role": row["role"] or "",
+            "status": row["status"],
+            "status_auto": False,
+            "applied_at": row["applied_at"],
+            "last_at": row["updated_at"],
+            "next_event_at": None,
+            "count": 0,
+            "mails": [],
+            "note": row["note"] or "",
+            "source": "manual",
+            "hidden": bool(row["hidden"]),
+        }
+        for row in mine
+        if row["source"] == "manual"
+    )
+    return found
+
+
+def list_applications(path: Path, now: datetime) -> list[dict[str, Any]]:
+    """The tracker's rows (ADR 0177): offers and interviews first, then applied, no reply, rejected.
+
+    Newest activity first within a status. Hidden applications are left out.
+    """
+    shown = [app for app in _applications(path, now) if not app.pop("hidden")]
+    return sorted(
+        shown,
+        key=lambda a: (
+            _STATUS_RANK[a["status"]],
+            -(_moment(a["last_at"]) or _EPOCH).timestamp(),
+        ),
+    )
+
+
+def _check_application(status: str | None, applied_at: str | None) -> None:
+    if status is not None and status not in APPLICATION_STATUSES:
+        msg = f"not a status: {status!r}"
+        raise ValueError(msg)
+    if applied_at:
+        try:
+            date.fromisoformat(applied_at)
+        except ValueError:
+            msg = f"applied_at must be YYYY-MM-DD: {applied_at!r}"
+            raise ValueError(msg) from None
+
+
+def add_application(  # noqa: PLR0913 - the row's fields
+    path: Path,
+    now: datetime,
+    *,
+    company: str,
+    role: str = "",
+    applied_at: str | None = None,
+    status: str | None = None,
+    note: str = "",
+) -> str:
+    """Allen's own application, one with no mail; returns its id. A bad value is a ValueError."""
+    company = company.strip()
+    if not company:
+        msg = "company is required"
+        raise ValueError(msg)
+    _check_application(status, applied_at)
+    app_id = uuid.uuid4().hex[:12]
+    stamp = _stamp(now)
+    with _db(path) as conn:
+        conn.execute(
+            "INSERT INTO job_application (id, company, role, applied_at, status, note, source,"
+            " hidden, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'manual', 0, ?, ?)",
+            (
+                app_id,
+                company,
+                role.strip(),
+                applied_at or now.astimezone().date().isoformat(),
+                status or "applied",
+                note,
+                stamp,
+                stamp,
+            ),
+        )
+    return app_id
+
+
+_APPLICATION_EDITABLE: Final[tuple[str, ...]] = ("status", "applied_at", "note", "hidden")
+
+
+def edit_application(path: Path, now: datetime, app_id: str, fields: Mapping[str, Any]) -> None:
+    """Change ``status``, ``applied_at``, ``note`` or ``hidden`` of an application.
+
+    A mail-derived application gets an ``edit`` row (keyed by its id) on its first edit. On an
+    edit row ``updated_at`` is when the status was last set by hand, so only a status edit moves
+    it. An unknown id is a LookupError, a bad value a ValueError.
+    """
+    given = {name: fields[name] for name in _APPLICATION_EDITABLE if name in fields}
+    _check_application(given.get("status"), given.get("applied_at"))
+    with _db(path) as conn:
+        row = conn.execute("SELECT source FROM job_application WHERE id = ?", (app_id,)).fetchone()
+    base = None
+    if row is None:
+        base = next((a for a in _applications(path, now) if a["id"] == app_id), None)
+        if base is None:
+            msg = f"no such application: {app_id}"
+            raise LookupError(msg)
+    stamp = _stamp(now)
+    sets = {name: (int(bool(v)) if name == "hidden" else v) for name, v in given.items()}
+    if (row is not None and row["source"] == "manual") or "status" in sets:
+        sets["updated_at"] = stamp
+    with _db(path) as conn:
+        if base is not None:
+            conn.execute(
+                "INSERT INTO job_application (id, company, role, source, hidden, created_at,"
+                " updated_at) VALUES (?, ?, ?, 'edit', 0, ?, ?)",
+                (app_id, base["company"], base["role"], stamp, stamp),
+            )
+        if sets:
+            conn.execute(
+                f"UPDATE job_application SET {', '.join(f'{name} = ?' for name in sets)}"  # noqa: S608 - fixed names
+                " WHERE id = ?",
+                (*sets.values(), app_id),
+            )
 
 
 def create_alert(  # noqa: PLR0913 - the row's fields
