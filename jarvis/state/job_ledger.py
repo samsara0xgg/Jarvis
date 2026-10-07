@@ -476,6 +476,14 @@ def create_alert(  # noqa: PLR0913 - the row's fields
     return alert_id
 
 
+def has_alert(path: Path, message_id: str) -> bool:
+    """Whether any alert, in any state, was made for ``message_id`` (a mail id or a card key)."""
+    with _db(path) as conn:
+        return conn.execute(
+            "SELECT 1 FROM job_alert WHERE message_id = ? LIMIT 1", (message_id,)
+        ).fetchone() is not None
+
+
 def mark_spoken(path: Path, alert_id: str) -> None:
     """Note that the one spoken line for this alert was said."""
     with _db(path) as conn:

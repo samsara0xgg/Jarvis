@@ -172,6 +172,7 @@ from jarvis.runtime.night_watch import NightWatch
 from jarvis.runtime.session_compaction import CompactionSweep, preset_context_length
 from jarvis.runtime.settings import SETTINGS_FILE
 from jarvis.runtime.setup import Setup
+from jarvis.runtime.spend_cap import SpendCap, SpendCapSettings
 from jarvis.runtime.tool_status import EVENT_TYPES as _TOOL_STATUS_EVENT_TYPES
 from jarvis.runtime.tool_status import ToolStatus
 from jarvis.shared import Event, lang
@@ -6480,6 +6481,15 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             job_mail.may_speak = lambda: not controls.speech_muted and not controls.conversation
             job_mail.say = functools.partial(_say_job_line, runtime)
             watchers.append(asyncio.create_task(job_mail.run(), name="job_mail"))
+            # ADR 0173: its card is a job alert, served by job_mail.notices, so it needs job mail.
+            spend = SpendCapSettings.from_config(runtime.config.get("spend_cap"))
+            if spend is not None and runtime.memory is not None:
+                watchers.append(asyncio.create_task(
+                    SpendCap(
+                        spend, runtime.runtime_paths.event_log, runtime.memory.db_path,
+                    ).run(),
+                    name="spend_cap",
+                ))
         if runtime.night is not None:
             # ADR 0093: the night run mutes after the goodnight line, never under a wake capture.
             runtime.night.busy = lambda: shared_ducker.active or shared_ducker.outputting
