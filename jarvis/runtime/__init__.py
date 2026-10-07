@@ -172,6 +172,7 @@ from jarvis.runtime.night_run import NightRun, night_settings
 from jarvis.runtime.plugin_connections import PluginConnections
 from jarvis.runtime.plugins import Plugins, load_plugins
 from jarvis.runtime.projects import ProjectsService
+from jarvis.runtime.reminders import Reminders
 from jarvis.runtime.settings import REPLY_LINES, SETUP_VOICES, Settings, apply_settings
 from jarvis.runtime.setup import write_setting
 from jarvis.runtime.stream_bridge import LoopBoundTokenStream
@@ -638,6 +639,8 @@ class JarvisRuntime:
     job_mail: JobMail | None = None
     # ADR 0161: the situation TimeSink last recorded, read on demand. None = off.
     moment: Moment | None = None
+    # ADR 0171: the clock that fires the owner's reminders. None = hand-assembled.
+    reminders: Reminders | None = None
     # ADR 0052: the Settings page's file. None = hand-assembled.
     settings: Settings | None = None
     # ADR 0093: the night run; the daemon ticks it. None = hand-assembled.
@@ -2727,6 +2730,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         turn_end_asks=_turn_end_asks(full_config, config_path, jev_log),
         job_mail=job_mail,
         moment=moment,
+        reminders=Reminders(paths.event_log, moment=moment),
         voice_words=_voice_words(full_config, config_path, jev_log),
         oneshot=_jev_oneshot(
             full_config, config_path, jev_log, tier0_table, _event_emitter(paths.event_log),

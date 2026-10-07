@@ -97,6 +97,7 @@ if TYPE_CHECKING:
     from jarvis.runtime.home import Home
     from jarvis.runtime.job_mail import JobMail
     from jarvis.runtime.moment import Moment
+    from jarvis.runtime.reminders import Reminders
     from jarvis.runtime.settings import Settings
     from jarvis.runtime.work_state import WorkStateService
     from jarvis.shared.realtime import PresentationIntent, Wave1FeatureFlags, Wave4ResponseFlags
@@ -235,6 +236,7 @@ from jarvis.state.projections import (
     PendingConfirmations,
     rebuild_projections,
 )
+from jarvis.state.reminders import ID_PREFIX
 from jarvis.state.trigger_consumption import trigger_was_consumed
 from jarvis.state.turn_overlap import any_turn_in_flight
 from jarvis.surface import (
@@ -2542,8 +2544,13 @@ def _make_cancel_voice_runs(runtime: JarvisRuntime) -> Callable[[], None]:
     return _cancel_voice_runs
 
 
-def _say_conversation_line(runtime: JarvisRuntime, turn_id: str, reason: str, text: str) -> None:
+def _say_conversation_line(
+    runtime: JarvisRuntime, turn_id: str, reason: str, text: str, phrase: str | None = None,
+) -> None:
     """ADR 0102: one fixed line back to 「等我一下」 or a dismissal, no model and no turn.
+
+    ``phrase`` is the exact line when the caller has built it (a reminder, ADR 0171); otherwise
+    one wording of ``conversation.<reason>`` in the language of ``text``.
 
     The words make no turn, so a ``surface.conversation_words`` row is the
     run's trigger. Generation is done when the run opens, so it completes
@@ -2562,9 +2569,12 @@ def _say_conversation_line(runtime: JarvisRuntime, turn_id: str, reason: str, te
                 payload={"turn_id": turn_id, "reason": reason, "transcript": text},
                 committed_event_bus=runtime.committed_event_bus,
             )
-            said_in = lang.reply_language(text, str(runtime.config.get("reply_language", "follow")))
-            phrases = lang.variants(f"conversation.{reason}", said_in)
-            plan = pre_emit_gate(secrets.choice(phrases))
+            if phrase is None:
+                said_in = lang.reply_language(
+                    text, str(runtime.config.get("reply_language", "follow")),
+                )
+                phrase = secrets.choice(lang.variants(f"conversation.{reason}", said_in))
+            plan = pre_emit_gate(phrase)
             response_id = new_response_id()
             snapshot = factory.snapshot(None)
             run = start_response_run(
@@ -4958,6 +4968,41 @@ def _draft_deps(runtime: JarvisRuntime, home: Home | None) -> dict[str, Any]:
     }
 
 
+def _notice_deps(
+    job_mail: JobMail | None, reminders: Reminders | None, moment: Moment | None,
+) -> dict[str, Any]:
+    """The notice routes: job mail's (ADR 0155) plus the owner's fired reminders (ADR 0171).
+
+    A reminder card is served whatever the quiet level and the hold, ahead of the job mail's, and
+    ``POST /inherent/notices/{id}`` routes a ``reminder-`` id to the reminders.
+    """
+    deps = _job_mail_deps(job_mail)
+    if reminders is None:
+        return deps
+    mail_read, mail_act = deps.get("notices_read"), deps.get("notice_act")
+
+    async def read() -> dict[str, Any]:
+        if mail_read is not None:
+            body: dict[str, Any] = await mail_read()
+        else:  # no job mail: the same answer /inherent/moment gives, plus whether sound is private
+            hold = None if moment is None else await _moment_hold(moment)
+            private = bool((await asyncio.to_thread(reminders.output))["private"])
+            body = {"notices": [], "audio_private": private, **(hold or {"hold": None})}
+        cards = await asyncio.to_thread(reminders.notices)
+        return {**body, "notices": [*cards, *body["notices"]]}
+
+    async def act(notice_id: str, action: str, reaction: str | None) -> None:
+        if notice_id.startswith(ID_PREFIX):
+            await asyncio.to_thread(reminders.acknowledge, notice_id)
+        elif mail_act is not None:
+            await mail_act(notice_id, action, reaction)
+        else:
+            msg = f"no such notice: {notice_id}"
+            raise LookupError(msg)
+
+    return {**deps, "notices_read": read, "notice_act": act}
+
+
 def _job_mail_deps(job_mail: JobMail | None) -> dict[str, Any]:
     """The job-mail routes' callables (ADR 0155), or none while ``job_mail`` is off (404)."""
     if job_mail is None:
@@ -5002,6 +5047,11 @@ async def _card_act(cards: CardFeedback, card_id: str, body: dict[str, Any]) -> 
 def _say_job_line(runtime: JarvisRuntime) -> None:
     """ADR 0155: the one fixed line for an interview or offer email, said as a conversation line."""
     _say_conversation_line(runtime, _new_turn_id(), "job_speak", "")
+
+
+def _say_reminder(runtime: JarvisRuntime, said: str) -> None:
+    """ADR 0171: one reminder line, said as a conversation line (no model, no turn)."""
+    _say_conversation_line(runtime, _new_turn_id(), "reminder", "", phrase=said)
 
 
 async def _mail_letter(home: Home, message_id: str) -> dict[str, Any]:
@@ -6567,7 +6617,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             mail_trash=None if mail_home is None else functools.partial(_mail_trash, mail_home),
             view_set=None if runtime.view is None else runtime.view.set,
             **_draft_deps(runtime, mail_home),
-            **_job_mail_deps(runtime.job_mail),
+            **_notice_deps(runtime.job_mail, runtime.reminders, runtime.moment),
             moment_read=(
                 None if runtime.moment is None else functools.partial(_moment_hold, runtime.moment)
             ),
@@ -6833,6 +6883,12 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                     ).run(),
                     name="spend_cap",
                 ))
+        if runtime.reminders is not None:
+            # ADR 0171: reminders speak when unmuted and out of a conversation, at any quiet level.
+            reminders = runtime.reminders
+            reminders.may_speak = lambda: not controls.speech_muted and not controls.conversation
+            reminders.say = functools.partial(_say_reminder, runtime)
+            watchers.append(asyncio.create_task(reminders.run(), name="reminders"))
         if runtime.night is not None:
             # ADR 0093: the night run mutes after the goodnight line, never under a wake capture.
             runtime.night.busy = lambda: shared_ducker.active or shared_ducker.outputting
