@@ -30,10 +30,12 @@ Its limits:
 - Steps: volume ×1.4 or ×2 louder, ×0.7 or ×0.5 quieter (about 3 dB and 6 dB, the
   same change at any level; 15 and 30 points were near the edge of hearing, 2026-10-06),
   speed 0.2 or 0.4. Bounds: volume 30 to
-  300 %, speed 0.6 to 1.8, clamped, and the result says `at_limit`.
-- No confirmation before a loud step (dropped 2026-10-06): 200 % is only about 6 dB
-  louder, and the 300 % ceiling is where MiniMax's peaks reach about -2 dBFS, so no step
-  can distort.
+  500 %, speed 0.6 to 1.8, clamped, and the result says `at_limit`.
+- The percent is of MiniMax `vol` 1, which is quiet (about -26 dBFS RMS). The default is
+  300 % (about -16 dBFS) and the ceiling 500 %, the loudest with no clipping (600 % clips
+  0.1 %; measured 2026-10-07).
+- No confirmation before a loud step (dropped 2026-10-06): no step can pass the ceiling,
+  so none can distort.
 - The holder keeps `current` and `default`. Only `default` is saved
   (`voice-settings.json`, written by `remember`, cleared by `reset`) and loaded at
   boot. `current` returns to `default` when conversation mode goes from on to off.

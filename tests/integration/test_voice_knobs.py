@@ -41,7 +41,7 @@ def test_the_tool_is_on_the_models_menu_up_front_and_only_the_models() -> None:
 
 @pytest.mark.parametrize(
     ("word", "volume"),
-    [("louder_a_bit", 140), ("louder_a_lot", 200), ("quieter_a_bit", 70), ("quieter_a_lot", 50)],
+    [("louder_a_bit", 420), ("louder_a_lot", 500), ("quieter_a_bit", 210), ("quieter_a_lot", 150)],
 )
 def test_a_volume_word_is_one_program_step(word: str, volume: int) -> None:
     """The model names a direction and size; the program owns the number."""
@@ -60,14 +60,14 @@ def test_a_speed_word_is_one_program_step(word: str, speed: float) -> None:
     """Speed steps are 0.2 and 0.4."""
     voice = VoiceSettings()
     result = _call(voice, speed=word)
-    assert (result["volume_percent"], result["speed"]) == (100, speed)
+    assert (result["volume_percent"], result["speed"]) == (300, speed)
     assert result["changed"] == ["speed"]
 
 
 def test_bounds_clamp_and_say_at_the_limit() -> None:
     """Volume stops at 30%, speed at 1.8 and 0.6; the result says it is at the limit."""
     voice = VoiceSettings()
-    for _ in range(4):
+    for _ in range(5):
         result = _call(voice, volume="quieter_a_lot")
     assert result["volume_percent"] == 30
     assert result["at_limit"] is True
@@ -79,12 +79,12 @@ def test_bounds_clamp_and_say_at_the_limit() -> None:
     assert _call(voice, speed="slower_a_bit")["at_limit"] is False
 
 
-def test_the_ceiling_is_300() -> None:
-    """300% is the most: MiniMax's peaks reach about -2 dBFS there (measured 2026-10-06)."""
+def test_the_ceiling_is_500() -> None:
+    """500% is the most: above it MiniMax's audio starts to clip (measured 2026-10-07)."""
     voice = VoiceSettings()
     voice.set_current(290, 1.0)
     result = _call(voice, volume="louder_a_lot")
-    assert result["volume_percent"] == 300
+    assert result["volume_percent"] == 500
     assert result["at_limit"] is True
 
 
@@ -99,21 +99,21 @@ def test_remember_keeps_the_default_across_a_restart_and_reset_forgets_it(tmp_pa
     path = tmp_path / "voice-settings.json"
     voice = VoiceSettings(path)
     _call(voice, volume="louder_a_bit", speed="slower_a_bit", remember=True)
-    assert _call(voice, volume="louder_a_bit")["remembered"] is False  # 196, not kept
-    assert VoiceSettings(path).snapshot() == (140, 0.8)
+    assert _call(voice, volume="louder_a_bit")["remembered"] is False  # 500, not kept
+    assert VoiceSettings(path).snapshot() == (420, 0.8)
     reset = _call(voice, reset=True)
-    assert (reset["volume_percent"], reset["speed"], reset["reset"]) == (100, 1.0, True)
-    assert VoiceSettings(path).snapshot() == (100, 1.0)
+    assert (reset["volume_percent"], reset["speed"], reset["reset"]) == (300, 1.0, True)
+    assert VoiceSettings(path).snapshot() == (300, 1.0)
 
 
 def test_a_missing_or_broken_file_is_the_factory_voice(tmp_path: Path) -> None:
     """A missing, broken or out-of-range file never breaks the boot."""
     path = tmp_path / "voice-settings.json"
-    assert VoiceSettings(path).snapshot() == (100, 1.0)
+    assert VoiceSettings(path).snapshot() == (300, 1.0)
     path.write_text("{not json", encoding="utf-8")
-    assert VoiceSettings(path).snapshot() == (100, 1.0)
+    assert VoiceSettings(path).snapshot() == (300, 1.0)
     path.write_text('{"percent": 9000, "speed": 0.1}', encoding="utf-8")
-    assert VoiceSettings(path).snapshot() == (300, 0.6)
+    assert VoiceSettings(path).snapshot() == (500, 0.6)
 
 
 def test_the_end_of_a_conversation_returns_current_to_the_default(tmp_path: Path) -> None:
@@ -125,12 +125,12 @@ def test_the_end_of_a_conversation_returns_current_to_the_default(tmp_path: Path
     controls.on_conversation_end = voice.end_conversation
     controls.update(conversation=True)
     controls.update(conversation=True)
-    assert voice.snapshot() == (70, 1.2)
+    assert voice.snapshot() == (210, 1.2)
     controls.update(conversation=False)
-    assert voice.snapshot() == (140, 1.0)
+    assert voice.snapshot() == (420, 1.0)
     _call(voice, speed="faster_a_bit")
     controls.update(conversation=False)  # already off: no end, nothing returns
-    assert voice.snapshot() == (140, 1.2)
+    assert voice.snapshot() == (420, 1.2)
 
 
 def _client(voice: VoiceSettings | None, volume: int = 1) -> voice_tts.MiniMaxWSClient:
@@ -164,7 +164,7 @@ def test_the_session_task_start_carries_the_current_voice_and_a_stale_spare_reco
         return [s.sent[0] for s in sockets]
 
     first, second = asyncio.run(_body())
-    assert first["voice_setting"]["vol"] == 2
+    assert first["voice_setting"]["vol"] == 6.0
     assert first["voice_setting"]["speed"] == 1.0
     assert second["voice_setting"]["vol"] == 3.0
     assert second["voice_setting"]["speed"] == 1.2

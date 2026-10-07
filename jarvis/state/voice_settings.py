@@ -17,10 +17,12 @@ from jarvis.state.plugin_settings import write_private_json
 if TYPE_CHECKING:
     from pathlib import Path
 
-FACTORY_PERCENT: Final[int] = 100
+# Percent of MiniMax's vol 1, which is quiet (about -26 dBFS RMS); 300 is ordinary speech
+# loudness, and 500 still has no audible clipping (measured 2026-10-07: 600 clips 0.1%).
+FACTORY_PERCENT: Final[int] = 300
 FACTORY_SPEED: Final[float] = 1.0
 MIN_PERCENT: Final[int] = 30
-MAX_PERCENT: Final[int] = 300
+MAX_PERCENT: Final[int] = 500
 MIN_SPEED: Final[float] = 0.6
 MAX_SPEED: Final[float] = 1.8
 

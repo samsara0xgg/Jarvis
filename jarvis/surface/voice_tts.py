@@ -45,7 +45,7 @@ from jarvis.shared.realtime_trace import (
     realtime_trace_context,
     record_realtime_trace,
 )
-from jarvis.state.voice_settings import FACTORY_PERCENT, FACTORY_SPEED
+from jarvis.state.voice_settings import FACTORY_SPEED
 from jarvis.surface.voice_ledger import (
     AcceptedSamples,
     AudibilityClass,
@@ -2047,15 +2047,15 @@ def _voice_setting(
     """The MiniMax ``voice_setting`` and the (percent, speed) it carries (ADR 0174).
 
     Read at each task start, so an answer synthesized after ``set_voice`` ran uses the new
-    voice. ``vol`` is the configured base volume times the percent; at 100% it is the
+    voice. ``vol`` is the configured base volume times the percent; with no holder it is the
     configured value untouched.
     """
-    percent, speed = (
-        settings.snapshot() if settings is not None else (FACTORY_PERCENT, FACTORY_SPEED)
-    )
-    volume = base_volume
-    if percent != FACTORY_PERCENT:
-        volume = min(_MINIMAX_MAX_VOL, base_volume * percent / FACTORY_PERCENT)
+    if settings is None:
+        return {"voice_id": voice, "speed": FACTORY_SPEED, "vol": base_volume, "pitch": 0}, (
+            100, FACTORY_SPEED,
+        )
+    percent, speed = settings.snapshot()
+    volume = min(_MINIMAX_MAX_VOL, base_volume * percent / 100)
     return {"voice_id": voice, "speed": speed, "vol": volume, "pitch": 0}, (percent, speed)
 
 
