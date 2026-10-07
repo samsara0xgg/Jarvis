@@ -1,0 +1,15 @@
+/* Accent: a calm blue-violet (hue 250). Real visual design comes later. */
+:root,
+:root[data-theme='dark'] {
+  --sl-color-accent-low: hsl(250, 45%, 18%);
+  --sl-color-accent: hsl(250, 60%, 55%);
+  --sl-color-accent-high: hsl(250, 80%, 85%);
+}
+
+:root[data-theme='light'] {
+  --sl-color-accent-low: hsl(250, 80%, 90%);
+  --sl-color-accent: hsl(250, 60%, 48%);
+  --sl-color-accent-high: hsl(250, 70%, 25%);
+}
+
+/* No web fonts: system stacks only (the site must load without external hosts). */

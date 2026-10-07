@@ -1,0 +1,43 @@
+---
+import StarlightPage from '@astrojs/starlight/components/StarlightPage.astro';
+import { getCollection } from 'astro:content';
+import { GITHUB_ADR_TREE, readPicks } from '../lib/adr';
+
+interface Props {
+  lang: 'en' | 'zh-cn';
+}
+const { lang } = Astro.props;
+const adrs = await getCollection('adr');
+const ordered = readPicks().map((n) => adrs.find((a) => a.id === n)!);
+const prefix = lang === 'en' ? '' : `${lang}/`;
+const href = (id: string) => `${import.meta.env.BASE_URL}/${prefix}architecture/decisions/${id}/`;
+---
+
+<StarlightPage
+  frontmatter={{
+    title: lang === 'en' ? 'Decisions' : '决策记录',
+    description: 'A curated selection of the architecture decision records behind Jarvis.',
+  }}
+>
+  <div lang="en">
+    {lang !== 'en' && <p><em>The decision records are in English only.</em></p>}
+    <p>
+      Each decision that moves a boundary gets a short record. These are a few of them, rendered
+      straight from the repository.
+    </p>
+    <ul>
+      {
+        ordered.map((a) => (
+          <li>
+            <a href={href(a.id)}>{a.data.title}</a>
+            <br />
+            <small>
+              Status: {a.data.status} · Date: {a.data.date}
+            </small>
+          </li>
+        ))
+      }
+    </ul>
+    <p><a href={GITHUB_ADR_TREE}>All decision records on GitHub</a></p>
+  </div>
+</StarlightPage>
